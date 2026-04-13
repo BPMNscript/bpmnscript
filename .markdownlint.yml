@@ -1,0 +1,13 @@
+# markdownlint configuration
+
+# MD013 - Line length
+MD013: false
+
+# MD033 - Allow specific inline HTML
+MD033:
+  allowed_elements:
+    - kbd
+    - a
+    - sup
+    - sub
+    - br
