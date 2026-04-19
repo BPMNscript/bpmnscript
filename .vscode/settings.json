@@ -6,5 +6,6 @@
   "files.insertFinalNewline": true,
   "[markdown]": {
     "files.trimTrailingWhitespace": false
-  }
+  },
+  "langium.config": "packages/language/langium-config.json"
 }

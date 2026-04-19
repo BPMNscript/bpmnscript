@@ -3,6 +3,8 @@
     "DavidAnson.vscode-markdownlint",
     "ltex-plus.vscode-ltex-plus",
     "EditorConfig.EditorConfig",
-    "dbaeumer.vscode-eslint"
+    "dbaeumer.vscode-eslint",
+    "langium.langium-vscode",
+    "vitest.explorer"
   ]
 }

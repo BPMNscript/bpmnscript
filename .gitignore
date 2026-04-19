@@ -7,7 +7,8 @@ dist/
 lib/
 
 # Langium generated
-src/generated/
+**/src/generated/
+syntaxes/
 
 # TypeScript
 *.tsbuildinfo
@@ -21,6 +22,13 @@ src/generated/
 # OS
 .DS_Store
 Thumbs.db
+
+# VS Code workspace (share only curated files)
+.vscode/*
+!.vscode/extensions.json
+!.vscode/launch.json
+!.vscode/settings.json
+!.vscode/tasks.json
 
 # VS Code extension packaging
 *.vsix
