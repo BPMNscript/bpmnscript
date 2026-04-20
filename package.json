@@ -14,7 +14,7 @@
         "test": "npm run --workspace packages/language test"
     },
     "devDependencies": {
-        "@types/node": "~20.17.48",
+        "@types/node": "~25.6.0",
         "shx": "~0.4.0",
         "typescript": "~5.8.3"
     },
