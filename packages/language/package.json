@@ -38,7 +38,7 @@
         "langium": "~4.2.0"
     },
     "devDependencies": {
-        "langium-cli": "~4.2.0",
+        "langium-cli": "~4.2.1",
         "vitest": "~3.1.3"
     }
 }
