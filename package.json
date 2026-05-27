@@ -1,26 +1,36 @@
 {
-    "name": "bpmn-script-workspace",
-    "description": "Base workspace package",
-    "version": "0.0.1",
-    "type": "module",
-    "private": true,
-    "scripts": {
-        "clean": "npm run clean --workspaces",
-        "watch": "tsc -b tsconfig.build.json --watch",
-        "build": "tsc -b tsconfig.build.json && npm run build --workspaces",
-        "build:clean": "npm run clean && npm run build",
-        "langium:generate": "npm run --workspace packages/language langium:generate",
-        "langium:watch": "npm run --workspace packages/language langium:watch",
-        "test": "npm run --workspace packages/language test"
-    },
-    "devDependencies": {
-        "@types/node": "~20.17.48",
-        "shx": "~0.4.0",
-        "typescript": "~5.8.3"
-    },
-    "workspaces": [
-        "packages/language",
-        "packages/cli",
-        "packages/extension"
-    ]
+  "name": "bpmn-script-workspace",
+  "description": "Base workspace package",
+  "version": "0.0.1",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "clean": "npm run clean --workspaces --if-present",
+    "watch": "tsc -b tsconfig.build.json --watch",
+    "build": "npm run langium:generate && tsc -b tsconfig.build.json && npm run build:post --workspaces --if-present",
+    "build:clean": "npm run clean && npm run build",
+    "langium:generate": "npm run --workspace packages/language langium:generate",
+    "langium:watch": "npm run --workspace packages/language langium:watch",
+    "format": "prettier --write packages tests",
+    "format:check": "prettier --check packages tests",
+    "lint": "eslint packages tests",
+    "test": "npm run test --workspaces --if-present"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@typescript-eslint/parser": "^8.0.0",
+    "eslint": "^9.0.0",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-bpmn-io": "^2.2.0",
+    "prettier": "^3.8.3",
+    "shx": "~0.4.0",
+    "typescript": "~6.0.0"
+  },
+  "workspaces": [
+    "packages/language",
+    "packages/cli",
+    "packages/extension",
+    "packages/transform",
+    "tests"
+  ]
 }

@@ -14,7 +14,7 @@ Which language workbench should be used to implement the DSL infrastructure?
 ## Decision Drivers
 
 * VS Code must be the primary IDE target, with first-class extension support
-* IDE features (syntax highlighting, autocomplete, jump-to-definition, inline errors) are the core value proposition of a textual DSL
+* IDE features (syntax highlighting, autocomplete, jump-to-definition, inline errors) are a core value proposition of a textual DSL
 * A 15-week thesis timeline requires fast bootstrapping and minimal boilerplate
 * A post-thesis browser-based playground should be architecturally feasible
 * The workbench must support custom scoping, validation, and code generation to BPMN 2.0 XML
@@ -39,13 +39,9 @@ Chosen option: "Langium", because it is the only workbench that natively targets
 * Good, because the language server can run in a web worker, enabling a browser-based playground with approximately 95% code reuse
 * Good, because `bpmn-moddle` (the standard TypeScript library for BPMN 2.0 XML) integrates naturally
 * Good, because Langium is actively maintained by TypeFox as an Eclipse Foundation mature project
-* Bad, because Langium has no built-in AST-to-text serializer, requiring a hand-written emitter for the BPMN-to-DSL reverse transformation
+* Bad, because Langium has no built-in AST-to-text serializer, requiring a handwritten emitter for the BPMN-to-DSL reverse transformation
 * Bad, because documentation has gaps for advanced topics such as custom scoping patterns
-* Neutral, because Langium is younger (5 years) than Xtext (20 years), meaning some edge cases are less battle-tested
-
-### Confirmation
-
-The decision is confirmed when the Langium-generated VS Code extension successfully provides syntax highlighting, autocomplete, and inline error reporting for BPMNscript files.
+* Neutral, because Langium is younger (5 years) than Xtext (20 years), meaning some edge cases are less tested
 
 ## Pros and Cons of the Options
 

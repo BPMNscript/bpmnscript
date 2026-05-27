@@ -1,9 +1,8 @@
 {
   "recommendations": [
-    "DavidAnson.vscode-markdownlint",
-    "ltex-plus.vscode-ltex-plus",
     "EditorConfig.EditorConfig",
     "dbaeumer.vscode-eslint",
+    "esbenp.prettier-vscode",
     "langium.langium-vscode",
     "vitest.explorer"
   ]

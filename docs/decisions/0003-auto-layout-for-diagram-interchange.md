@@ -30,6 +30,6 @@ Chosen option: "Auto-layout on export, discard DI on import", because a textual 
 ### Consequences
 
 * Good, because the DSL syntax remains clean and focused on process semantics
-* Good, because auto-layout libraries (such as `elkjs`) produce consistent, readable diagrams
+* Good, because `bpmn-auto-layout` (the bpmn.io layout library) produces consistent, readable diagrams
 * Bad, because manually arranged layouts in imported BPMN files are lost after a round-trip
 * Neutral, because users who need precise layout control can adjust the generated BPMN in a graphical editor after export

@@ -15,11 +15,17 @@ body:
       label: Steps to Reproduce
       description: Steps to reproduce the behavior.
       placeholder: |
-        1. Create a `.bs` file with the following content: ...
+        1. Create a `.bpmnscript` file with the following content: ...
         2. Open the file in VS Code
         3. Observe ...
     validations:
       required: true
+  - type: input
+    id: reproduction
+    attributes:
+      label: Reproduction Link
+      description: Link to a minimal repository or gist that reproduces the issue.
+      placeholder: https://github.com/...
   - type: textarea
     id: expected
     attributes:

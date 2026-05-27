@@ -10,6 +10,15 @@ lib/
 **/src/generated/
 syntaxes/
 
+# TypeScript build artefacts that leak into src/ and test/ from tsc runs
+# without outDir like for test-only compilations
+packages/**/src/**/*.js
+packages/**/src/**/*.js.map
+packages/**/test/**/*.js
+packages/**/test/**/*.js.map
+packages/**/src/**/*.d.ts
+!packages/transform/src/bpmn-moddle.d.ts
+
 # TypeScript
 *.tsbuildinfo
 
@@ -40,5 +49,13 @@ Thumbs.db
 # Test coverage
 coverage/
 
+# Maven build output (Spring Boot fixture)
+examples/spring-boot/target/
+
 # npm
 npm-debug.log*
+
+# Compiled test artifacts
+packages/**/test/*.js
+packages/**/test/*.js.map
+packages/**/test/*.d.ts

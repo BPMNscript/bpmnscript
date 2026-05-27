@@ -1,63 +1,91 @@
 # Contributing to BPMNscript
 
-> **Note:** This project is under active development as part of a Bachelor thesis at the University of Hamburg.
+> This project is being developed as part of a bachelor's thesis.
 > External contributions are not accepted until after thesis submission.
-> After that, the guidelines below will apply.
+> The guidelines below will apply once the project opens up.
 
-## Development Setup
+## Development setup
 
 ### Prerequisites
 
-- [Node.js](https://nodejs.org/) >= 24
-- [VS Code](https://code.visualstudio.com/)
+- [Node.js](https://nodejs.org/) >= 22 (the project uses Node 24 via `.nvmrc`; [nvm](https://github.com/nvm-sh/nvm) picks this up automatically)
+- [VS Code](https://code.visualstudio.com/) with the recommended extensions (VS Code will prompt you on first open)
+- [Docker](https://www.docker.com/) for end-to-end tests (alternatives: [Podman](https://podman.io/), [Rancher Desktop](https://rancherdesktop.io/))
 
-### Getting Started
+### Getting started
 
-```bash
+```sh
 git clone https://github.com/BPMNscript/bpmnscript.git
 cd bpmnscript
 npm install
-npm run langium:generate
 npm run build
-```
-
-### Development Workflow
-
-1. Open the project in VS Code
-2. Press <kbd>F5</kbd> to launch the Extension Development Host
-3. Create or open a `.bs` file in the new window
-
-### Running Tests
-
-```bash
 npm test
 ```
 
-### Code Style
+`npm run build` runs the Langium code generator and compiles TypeScript across all packages. `npm test` runs the full test suite including Docker-based end-to-end tests. To skip those (no Docker installed, or just iterating on unit tests):
 
-- This project uses ESLint for linting
-- Run `npm run lint` to check for issues
-- Ensure your editor respects the `.editorconfig` settings
+```sh
+SKIP_DOCKER_TESTS=true npm test
+```
 
-## Guidelines (Post-Thesis)
+### Trying it out in VS Code
 
-### Reporting Bugs
+After building, press <kbd>F5</kbd> in VS Code. This opens a second VS Code window with the BPMNscript extension loaded. In that window you can create or open `.bpmnscript` files and get syntax highlighting, inline diagnostics, and autocompletion. To compile a file to BPMN XML, run `npx bpmns build <file>` from the terminal.
+
+### Editing the grammar
+
+The Langium grammar lives at `packages/language/src/bpmn-script.langium`. After editing it, regenerate the AST types before TypeScript can see the changes:
+
+```sh
+npm run langium:generate
+```
+
+For continuous regeneration while editing:
+
+```sh
+npm run langium:watch
+```
+
+Both commands run from the repo root.
+
+### Running tests
+
+```sh
+npm test                                   # Full suite (all packages + e2e)
+npm test --workspace packages/language     # Language package only
+npm test --workspace packages/transform    # Transform package only
+npm test --workspace packages/cli          # CLI package only
+```
+
+### Code style
+
+The project uses [Prettier](https://prettier.io/) for formatting and [ESLint](https://eslint.org/) (via `eslint-plugin-bpmn-io`) for linting. Both run from the repo root:
+
+```sh
+npm run format         # Auto-format all source files
+npm run format:check   # Check formatting without writing (used in CI)
+npm run lint           # Run ESLint
+```
+
+Formatting happens on save if you use VS Code with the recommended Prettier extension. The `.editorconfig` handles basics (indentation, line endings) for other editors.
+
+## Guidelines (post-thesis)
+
+### Reporting bugs
 
 Use the [bug report template](https://github.com/BPMNscript/bpmnscript/issues/new?template=bug_report.yml).
 
-### Suggesting Features
+### Suggesting features
 
 Use the [feature request template](https://github.com/BPMNscript/bpmnscript/issues/new?template=feature_request.yml).
 
-### Pull Requests
+### Pull requests
 
 - Reference the related issue with `Closes #...`
-- Include a brief description
-- Update the CHANGELOG.md
-- Ensure all tests pass
-- Update `external-libraries.md` if adding new dependencies
+- Include a brief description of what changed and why
+- Make sure `npm test`, `npm run lint`, and `npm run format:check` all pass
+- Update `CHANGELOG.md` if the change is user-facing
 
-### Architectural Decisions
+### Architectural decisions
 
-Non-trivial technical decisions are documented as [Markdown Architectural Decision Records (MADRs)](docs/decisions/) using [MADR 4.0.0](https://adr.github.io/madr/).
-If your change involves an architectural decision, please include a new ADR.
+Non-trivial technical decisions are documented as [Markdown ADRs](docs/decisions/) using [MADR 4.0.0](https://adr.github.io/madr/). If your change involves an architectural decision, include a new ADR.

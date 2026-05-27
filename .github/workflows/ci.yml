@@ -19,11 +19,15 @@ jobs:
           cache: npm
 
       - run: npm ci
-      - run: npm run langium:generate
-      - run: git diff --exit-code .
       - run: npm run build
+
+      - name: Check for uncommitted generated files
+        run: git diff --exit-code
+
       - run: npm test
         if: success() || failure()
+        env:
+          SKIP_DOCKER_TESTS: 'true'
 
   lint:
     runs-on: ubuntu-latest
@@ -37,5 +41,5 @@ jobs:
           cache: npm
 
       - run: npm ci
-      - run: npm run build
       - run: npm run lint
+      - run: npm run format:check
