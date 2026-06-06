@@ -1,0 +1,17 @@
+{
+  "name": "tests",
+  "description": "Integration and E2E tests for BPMNscript",
+  "version": "0.0.1",
+  "type": "module",
+  "private": true,
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "testcontainers": "^12.0.0",
+    "vitest": "^4.1.0"
+  }
+}

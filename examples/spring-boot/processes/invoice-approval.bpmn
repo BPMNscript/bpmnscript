@@ -1,0 +1,85 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI" xmlns:dc="http://www.omg.org/spec/DD/20100524/DC" xmlns:di="http://www.omg.org/spec/DD/20100524/DI" xmlns:operaton="http://operaton.org/schema/1.0/bpmn" targetNamespace="http://bpmnscript.io/processes">
+  <bpmn:process id="invoice-approval" name="Invoice Approval" isExecutable="true" operaton:historyTimeToLive="P30D">
+    <bpmn:startEvent id="ReviewStart">
+      <bpmn:outgoing>Flow_ReviewStart_ReviewInvoice</bpmn:outgoing>
+    </bpmn:startEvent>
+    <bpmn:userTask id="ReviewInvoice" name="Review invoice" operaton:assignee="demo">
+      <bpmn:incoming>Flow_ReviewStart_ReviewInvoice</bpmn:incoming>
+      <bpmn:outgoing>Flow_ReviewInvoice_AmountCheck</bpmn:outgoing>
+    </bpmn:userTask>
+    <bpmn:exclusiveGateway id="AmountCheck" name="Amount &#62; 1000?" default="AutoApprovePath">
+      <bpmn:incoming>Flow_ReviewInvoice_AmountCheck</bpmn:incoming>
+      <bpmn:outgoing>Flow_AmountCheck_SeniorApproval</bpmn:outgoing>
+      <bpmn:outgoing>AutoApprovePath</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+    <bpmn:userTask id="SeniorApproval" name="Senior approval" operaton:assignee="manager">
+      <bpmn:incoming>Flow_AmountCheck_SeniorApproval</bpmn:incoming>
+      <bpmn:outgoing>Flow_SeniorApproval_Done</bpmn:outgoing>
+    </bpmn:userTask>
+    <bpmn:serviceTask id="AutoApprove" name="Auto-approve" operaton:class="com.example.invoice.AutoApproveDelegate">
+      <bpmn:incoming>AutoApprovePath</bpmn:incoming>
+      <bpmn:outgoing>Flow_AutoApprove_Done</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:endEvent id="Done">
+      <bpmn:incoming>Flow_SeniorApproval_Done</bpmn:incoming>
+      <bpmn:incoming>Flow_AutoApprove_Done</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:sequenceFlow id="Flow_ReviewStart_ReviewInvoice" sourceRef="ReviewStart" targetRef="ReviewInvoice" />
+    <bpmn:sequenceFlow id="Flow_ReviewInvoice_AmountCheck" sourceRef="ReviewInvoice" targetRef="AmountCheck" />
+    <bpmn:sequenceFlow id="Flow_AmountCheck_SeniorApproval" sourceRef="AmountCheck" targetRef="SeniorApproval">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">${amount &gt; 1000}</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="AutoApprovePath" sourceRef="AmountCheck" targetRef="AutoApprove" />
+    <bpmn:sequenceFlow id="Flow_SeniorApproval_Done" sourceRef="SeniorApproval" targetRef="Done" />
+    <bpmn:sequenceFlow id="Flow_AutoApprove_Done" sourceRef="AutoApprove" targetRef="Done" />
+  </bpmn:process>
+  <bpmndi:BPMNDiagram id="BPMNDiagram_invoice-approval">
+    <bpmndi:BPMNPlane id="BPMNPlane_invoice-approval" bpmnElement="invoice-approval">
+      <bpmndi:BPMNShape id="ReviewStart_di" bpmnElement="ReviewStart">
+        <dc:Bounds x="57" y="52" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="ReviewInvoice_di" bpmnElement="ReviewInvoice">
+        <dc:Bounds x="175" y="30" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="AmountCheck_di" bpmnElement="AmountCheck" isMarkerVisible="true">
+        <dc:Bounds x="350" y="45" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="SeniorApproval_di" bpmnElement="SeniorApproval">
+        <dc:Bounds x="475" y="30" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Done_di" bpmnElement="Done">
+        <dc:Bounds x="657" y="52" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="AutoApprove_di" bpmnElement="AutoApprove">
+        <dc:Bounds x="475" y="170" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_ReviewStart_ReviewInvoice_di" bpmnElement="Flow_ReviewStart_ReviewInvoice">
+        <di:waypoint x="93" y="70" />
+        <di:waypoint x="175" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ReviewInvoice_AmountCheck_di" bpmnElement="Flow_ReviewInvoice_AmountCheck">
+        <di:waypoint x="275" y="70" />
+        <di:waypoint x="350" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_AmountCheck_SeniorApproval_di" bpmnElement="Flow_AmountCheck_SeniorApproval">
+        <di:waypoint x="400" y="70" />
+        <di:waypoint x="475" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="AutoApprovePath_di" bpmnElement="AutoApprovePath">
+        <di:waypoint x="375" y="95" />
+        <di:waypoint x="375" y="210" />
+        <di:waypoint x="475" y="210" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_SeniorApproval_Done_di" bpmnElement="Flow_SeniorApproval_Done">
+        <di:waypoint x="575" y="70" />
+        <di:waypoint x="657" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_AutoApprove_Done_di" bpmnElement="Flow_AutoApprove_Done">
+        <di:waypoint x="575" y="210" />
+        <di:waypoint x="675" y="210" />
+        <di:waypoint x="675" y="88" />
+      </bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>
