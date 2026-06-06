@@ -48,7 +48,7 @@
     "vscode-languageserver": "~9.0.1"
   },
   "devDependencies": {
-    "@types/vscode": "~1.100.0",
+    "@types/vscode": "~1.120.0",
     "concurrently": "^9.0.0",
     "esbuild": "~0.28.0"
   },
