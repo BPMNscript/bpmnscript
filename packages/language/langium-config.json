@@ -1,16 +1,14 @@
 {
-    "projectName": "BpmnScript",
-    "languages": [
-        {
-            "id": "bpmn-script",
-            "grammar": "src/bpmn-script.langium",
-            "fileExtensions": [
-                "bpmns"
-            ],
-            "textMate": {
-                "out": "syntaxes/bpmn-script.tmLanguage.json"
-            }
-        }
-    ],
-    "out": "src/generated"
+  "projectName": "BpmnScript",
+  "languages": [
+    {
+      "id": "bpmn-script",
+      "grammar": "src/bpmn-script.langium",
+      "fileExtensions": ["bpmnscript"],
+      "textMate": {
+        "out": "syntaxes/bpmn-script.tmLanguage.json"
+      }
+    }
+  ],
+  "out": "src/generated"
 }

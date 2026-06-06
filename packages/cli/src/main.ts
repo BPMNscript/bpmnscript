@@ -1,41 +1,52 @@
-import type { Definitions } from 'bpmn-script-language';
-import { createBpmnScriptServices, BpmnScriptLanguageMetaData } from 'bpmn-script-language';
-import chalk from 'chalk';
+/**
+ * BPMNscript CLI entry point.
+ *
+ * Exposes two subcommands:
+ *
+ *   bpmns build <file.bpmnscript> [-o <out.bpmn>]
+ *     DSL → BPMN XML pipeline.
+ *     Exit 0 on success, 1 on validation errors, 2 on I/O errors.
+ *
+ *   bpmns parse <file.bpmn> [-o <out.bpmnscript>]
+ *     BPMN XML → DSL pipeline.
+ *     Exit 0 on success, 1 on unsupported constructs, 2 on I/O errors.
+ */
+
 import { Command } from 'commander';
-import { extractAstNode } from './util.js';
-import { generateJavaScript } from './generator.js';
-import { NodeFileSystem } from 'langium/node';
-import * as url from 'node:url';
-import * as fs from 'node:fs/promises';
-import * as path from 'node:path';
-const __dirname = url.fileURLToPath(new URL('.', import.meta.url));
 
-const packagePath = path.resolve(__dirname, '..', 'package.json');
-const packageContent = await fs.readFile(packagePath, 'utf-8');
+import { buildAction } from './build.js';
+import { parseAction } from './parse.js';
+import { CLI_VERSION } from './util.js';
 
-export const generateAction = async (fileName: string, opts: GenerateOptions): Promise<void> => {
-    const services = createBpmnScriptServices(NodeFileSystem).BpmnScript;
-    const model = await extractAstNode<Definitions>(fileName, services);
-    const generatedFilePath = generateJavaScript(model, fileName, opts.destination);
-    console.log(chalk.green(`JavaScript code generated successfully: ${generatedFilePath}`));
-};
+export default function (): void {
+  const program = new Command();
 
-export type GenerateOptions = {
-    destination?: string;
-}
+  program
+    .name('bpmns')
+    .version(CLI_VERSION)
+    .description('BPMNscript — compile and decompile BPMN processes');
 
-export default function(): void {
-    const program = new Command();
+  // ── build ─────────────────────────────────────────────────────────────────
+  program
+    .command('build')
+    .argument('<file>', 'path to the .bpmnscript source file')
+    .option(
+      '-o, --output <file>',
+      'output .bpmn file path (default: same dir, same basename)',
+    )
+    .description('Compile a .bpmnscript source file to BPMN 2.0 XML')
+    .action(buildAction);
 
-    program.version(JSON.parse(packageContent).version);
+  // ── parse ─────────────────────────────────────────────────────────────────
+  program
+    .command('parse')
+    .argument('<file>', 'path to the .bpmn file')
+    .option(
+      '-o, --output <file>',
+      'output .bpmnscript file path (default: same dir, same basename)',
+    )
+    .description('Decompile a BPMN 2.0 XML file to .bpmnscript DSL')
+    .action(parseAction);
 
-    const fileExtensions = BpmnScriptLanguageMetaData.fileExtensions.join(', ');
-    program
-        .command('generate')
-        .argument('<file>', `source file (possible file extensions: ${fileExtensions})`)
-        .option('-d, --destination <dir>', 'destination directory of generating')
-        .description('generates JavaScript code that prints "Hello, {name}!" for each greeting in a source file')
-        .action(generateAction);
-
-    program.parse(process.argv);
+  program.parse(process.argv);
 }

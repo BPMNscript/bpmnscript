@@ -1,0 +1,58 @@
+{
+  "name": "Operaton",
+  "uri": "http://operaton.org/schema/1.0/bpmn",
+  "prefix": "operaton",
+  "xml": {
+    "tagAlias": "lowerCase"
+  },
+  "associations": [],
+  "types": [
+    {
+      "name": "Process",
+      "isAbstract": true,
+      "extends": ["bpmn:Process"],
+      "properties": [
+        {
+          "name": "historyTimeToLive",
+          "isAttr": true,
+          "type": "String"
+        }
+      ]
+    },
+    {
+      "name": "Assignable",
+      "extends": ["bpmn:UserTask"],
+      "properties": [
+        {
+          "name": "assignee",
+          "isAttr": true,
+          "type": "String"
+        }
+      ]
+    },
+    {
+      "name": "FormSupported",
+      "isAbstract": true,
+      "extends": ["bpmn:UserTask"],
+      "properties": [
+        {
+          "name": "formKey",
+          "isAttr": true,
+          "type": "String"
+        }
+      ]
+    },
+    {
+      "name": "ServiceTaskLike",
+      "extends": ["bpmn:ServiceTask"],
+      "properties": [
+        {
+          "name": "class",
+          "isAttr": true,
+          "type": "String"
+        }
+      ]
+    }
+  ],
+  "enumerations": []
+}

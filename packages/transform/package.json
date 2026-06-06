@@ -1,6 +1,6 @@
 {
-  "name": "@bpmn-script/language",
-  "description": "The language specific package",
+  "name": "@bpmn-script/transform",
+  "description": "IR type definitions and bidirectional BPMN transforms for BPMNscript",
   "version": "0.0.1",
   "type": "module",
   "engines": {
@@ -28,17 +28,17 @@
   },
   "scripts": {
     "clean": "shx rm -fr *.tsbuildinfo out",
-    "build": "langium generate && tsc -p tsconfig.src.json",
+    "build": "tsc -p tsconfig.json && shx cp src/operaton-moddle.json out/",
+    "build:post": "shx cp src/operaton-moddle.json out/",
     "build:clean": "npm run clean && npm run build",
-    "langium:generate": "langium generate",
-    "langium:watch": "langium generate --watch",
     "test": "vitest run"
   },
   "dependencies": {
-    "langium": "^4.2.0"
+    "bpmn-moddle": "^10.0.0",
+    "bpmn-auto-layout": "^1.2.0",
+    "@bpmn-script/language": "*"
   },
   "devDependencies": {
-    "langium-cli": "^4.2.0",
     "vitest": "^4.1.0"
   }
 }

@@ -1,51 +1,47 @@
-import type { AstNode, LangiumCoreServices, LangiumDocument } from 'langium';
-import chalk from 'chalk';
+/**
+ * Shared CLI utilities for the `build` and `parse` subcommands.
+ */
+
+import { readFileSync } from 'node:fs';
 import * as path from 'node:path';
-import * as fs from 'node:fs';
-import { URI } from 'langium';
 
-export async function extractDocument(fileName: string, services: LangiumCoreServices): Promise<LangiumDocument> {
-    const extensions = services.LanguageMetaData.fileExtensions;
-    if (!extensions.includes(path.extname(fileName))) {
-        console.error(chalk.yellow(`Please choose a file with one of these extensions: ${extensions}.`));
-        process.exit(1);
-    }
+/**
+ * This package's own version, read once from its `package.json`. Used both
+ * for the `--version` flag and as the `exporter` version stamped into
+ * generated BPMN. The path is resolved relative to this module so it is
+ * correct whether running from `out/` (compiled) or `src/` (vitest) — both
+ * sit one level below the package root.
+ */
+export const CLI_VERSION: string = (
+  JSON.parse(
+    readFileSync(new URL('../package.json', import.meta.url), 'utf-8'),
+  ) as { version: string }
+).version;
 
-    if (!fs.existsSync(fileName)) {
-        console.error(chalk.red(`File ${fileName} does not exist.`));
-        process.exit(1);
-    }
-
-    const document = await services.shared.workspace.LangiumDocuments.getOrCreateDocument(URI.file(path.resolve(fileName)));
-    await services.shared.workspace.DocumentBuilder.build([document], { validation: true });
-
-    const validationErrors = (document.diagnostics ?? []).filter(e => e.severity === 1);
-    if (validationErrors.length > 0) {
-        console.error(chalk.red('There are validation errors:'));
-        for (const validationError of validationErrors) {
-            console.error(chalk.red(
-                `line ${validationError.range.start.line + 1}: ${validationError.message} [${document.textDocument.getText(validationError.range)}]`
-            ));
-        }
-        process.exit(1);
-    }
-
-    return document;
-}
-
-export async function extractAstNode<T extends AstNode>(fileName: string, services: LangiumCoreServices): Promise<T> {
-    return (await extractDocument(fileName, services)).parseResult?.value as T;
-}
-
-interface FilePathData {
-    destination: string,
-    name: string
-}
-
-export function extractDestinationAndName(filePath: string, destination: string | undefined): FilePathData {
-    filePath = path.basename(filePath, path.extname(filePath)).replace(/[.-]/g, '');
-    return {
-        destination: destination ?? path.join(path.dirname(filePath), 'generated'),
-        name: path.basename(filePath)
-    };
+/**
+ * Compute the output file path for a CLI subcommand.
+ *
+ * When `outputOverride` is given it is used verbatim (resolved from cwd if
+ * relative). Otherwise the path is derived from the input by swapping its
+ * extension for `defaultExt` and writing the result next to the source.
+ *
+ * The trailing extension is stripped with `path.extname` rather than a
+ * hard-coded suffix, so dotted basenames such as `my.invoice.bpmnscript`
+ * keep everything before the final extension.
+ *
+ * @param resolvedInput  Absolute path to the input file.
+ * @param defaultExt     Extension (including the leading dot) for the output.
+ * @param outputOverride Optional explicit output path.
+ */
+export function resolveOutputPath(
+  resolvedInput: string,
+  defaultExt: string,
+  outputOverride?: string,
+): string {
+  if (outputOverride !== undefined) {
+    return path.resolve(outputOverride);
+  }
+  const dir = path.dirname(resolvedInput);
+  const base = path.basename(resolvedInput, path.extname(resolvedInput));
+  return path.join(dir, `${base}${defaultExt}`);
 }

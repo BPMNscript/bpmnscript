@@ -1,32 +1,49 @@
 import { type Module, inject } from 'langium';
-import { createDefaultModule, createDefaultSharedModule, type DefaultSharedModuleContext, type LangiumServices, type LangiumSharedServices, type PartialLangiumServices } from 'langium/lsp';
-import { BpmnScriptGeneratedModule, BpmnScriptGeneratedSharedModule } from './generated/module.js';
-import { BpmnScriptValidator, registerValidationChecks } from './bpmn-script-validator.js';
+import {
+  createDefaultModule,
+  createDefaultSharedModule,
+  type DefaultSharedModuleContext,
+  type LangiumServices,
+  type LangiumSharedServices,
+  type PartialLangiumServices,
+} from 'langium/lsp';
+import {
+  BpmnScriptGeneratedModule,
+  BpmnScriptGeneratedSharedModule,
+} from './generated/module.js';
+import {
+  BpmnScriptValidator,
+  registerValidationChecks,
+} from './bpmn-script-validator.js';
 
 /**
  * Declaration of custom services - add your own service classes here.
  */
 export type BpmnScriptAddedServices = {
-    validation: {
-        BpmnScriptValidator: BpmnScriptValidator
-    }
-}
+  validation: {
+    BpmnScriptValidator: BpmnScriptValidator;
+  };
+};
 
 /**
  * Union of Langium default services and your custom services - use this as constructor parameter
  * of custom service classes.
  */
-export type BpmnScriptServices = LangiumServices & BpmnScriptAddedServices
+export type BpmnScriptServices = LangiumServices & BpmnScriptAddedServices;
 
 /**
  * Dependency injection module that overrides Langium default services and contributes the
  * declared custom services. The Langium defaults can be partially specified to override only
+ *
  * selected services, while the custom services must be fully specified.
  */
-export const BpmnScriptModule: Module<BpmnScriptServices, PartialLangiumServices & BpmnScriptAddedServices> = {
-    validation: {
-        BpmnScriptValidator: () => new BpmnScriptValidator()
-    }
+export const BpmnScriptModule: Module<
+  BpmnScriptServices,
+  PartialLangiumServices & BpmnScriptAddedServices
+> = {
+  validation: {
+    BpmnScriptValidator: () => new BpmnScriptValidator(),
+  },
 };
 
 /**
@@ -45,24 +62,24 @@ export const BpmnScriptModule: Module<BpmnScriptServices, PartialLangiumServices
  * @returns An object wrapping the shared services and the language-specific services
  */
 export function createBpmnScriptServices(context: DefaultSharedModuleContext): {
-    shared: LangiumSharedServices,
-    BpmnScript: BpmnScriptServices
+  shared: LangiumSharedServices;
+  BpmnScript: BpmnScriptServices;
 } {
-    const shared = inject(
-        createDefaultSharedModule(context),
-        BpmnScriptGeneratedSharedModule
-    );
-    const BpmnScript = inject(
-        createDefaultModule({ shared }),
-        BpmnScriptGeneratedModule,
-        BpmnScriptModule
-    );
-    shared.ServiceRegistry.register(BpmnScript);
-    registerValidationChecks(BpmnScript);
-    if (!context.connection) {
-        // We don't run inside a language server
-        // Therefore, initialize the configuration provider instantly
-        shared.workspace.ConfigurationProvider.initialized({});
-    }
-    return { shared, BpmnScript };
+  const shared = inject(
+    createDefaultSharedModule(context),
+    BpmnScriptGeneratedSharedModule,
+  );
+  const BpmnScript = inject(
+    createDefaultModule({ shared }),
+    BpmnScriptGeneratedModule,
+    BpmnScriptModule,
+  );
+  shared.ServiceRegistry.register(BpmnScript);
+  registerValidationChecks(BpmnScript);
+  if (!context.connection) {
+    // We don't run inside a language server
+    // Therefore, initialize the configuration provider instantly
+    shared.workspace.ConfigurationProvider.initialized({});
+  }
+  return { shared, BpmnScript };
 }
