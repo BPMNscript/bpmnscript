@@ -3,10 +3,11 @@
 // use to show what the language looks like.
 //
 // What the process does:
-//   An invoice arrives and is reviewed by a user ("demo"). An exclusive gateway
-//   checks the amount. Invoices above 1000 go to a senior approver ("manager");
-//   invoices at or below 1000 are auto-approved by a Java delegate. Both branches
-//   meet at a shared end event.
+//   An invoice arrives and is reviewed by a user ("demo"). An `if` on the
+//   invoice amount routes the flow: invoices above 1000 go to a senior approver
+//   ("manager"); invoices at or below 1000 are auto-approved by a Java delegate
+//   (the trailing `else`, which desugars to the gateway's default flow). Both
+//   branches converge on a shared end event.
 //
 // The service task's class name below must stay in sync with the Java delegate at
 // examples/spring-boot/src/main/java/com/example/invoice/AutoApproveDelegate.java —
@@ -14,16 +15,11 @@
 
 process invoice-approval "Invoice Approval" {
   start ReviewStart
-  user  ReviewInvoice  "Review invoice"   assignee: "demo"
-  gateway AmountCheck  "Amount > 1000?"   default: AutoApprovePath
-  user  SeniorApproval "Senior approval"  assignee: "manager"
-  service AutoApprove  "Auto-approve"     class: "com.example.invoice.AutoApproveDelegate"
-  end   Done
-
-  ReviewStart    -> ReviewInvoice
-  ReviewInvoice  -> AmountCheck
-  AmountCheck    -> SeniorApproval  when: "${amount > 1000}"
-  AmountCheck    -> AutoApprove     as: AutoApprovePath
-  SeniorApproval -> Done
-  AutoApprove    -> Done
+  user ReviewInvoice "Review invoice" { assignee = "demo" }
+  if (amount > 1000) {
+    user SeniorApproval "Senior approval" { assignee = "manager" }
+  } else {
+    service AutoApprove "Auto-approve" { class = "com.example.invoice.AutoApproveDelegate" }
+  }
+  end Done
 }

@@ -15,11 +15,21 @@ import {
   BpmnScriptValidator,
   registerValidationChecks,
 } from './bpmn-script-validator.js';
+import {
+  DefaultVariableSymbolProvider,
+  type VariableSymbolProvider,
+} from './variable-symbol-provider.js';
 
 /**
  * Declaration of custom services - add your own service classes here.
+ *
+ * The {@link VariableSymbolProvider} lives in the `references` group (it resolves
+ * variable identifiers, the references layer's concern).
  */
 export type BpmnScriptAddedServices = {
+  references: {
+    VariableSymbolProvider: VariableSymbolProvider;
+  };
   validation: {
     BpmnScriptValidator: BpmnScriptValidator;
   };
@@ -41,8 +51,11 @@ export const BpmnScriptModule: Module<
   BpmnScriptServices,
   PartialLangiumServices & BpmnScriptAddedServices
 > = {
+  references: {
+    VariableSymbolProvider: () => new DefaultVariableSymbolProvider(),
+  },
   validation: {
-    BpmnScriptValidator: () => new BpmnScriptValidator(),
+    BpmnScriptValidator: (services) => new BpmnScriptValidator(services),
   },
 };
 

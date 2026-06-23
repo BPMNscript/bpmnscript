@@ -11,8 +11,8 @@
  * are present, `operaton:` wins. When only `camunda:assignee` is given,
  * its value is read into the IR.
  *
- * Unsupported constructs (parallel gateways, script tasks, service tasks
- * via `operaton:expression`, etc.) raise a typed error rather than being
+ * Unsupported constructs (script tasks, service tasks via
+ * `operaton:expression`, etc.) raise a typed error rather than being
  * silently dropped, so importers see a loud diagnostic instead of a
  * mysterious runtime mismatch.
  */
@@ -28,6 +28,7 @@ import type {
   EndEvent,
   ExclusiveGateway,
   FlowElement,
+  ParallelGateway,
   SequenceFlow,
   ServiceTaskJavaClass,
   StartEvent,
@@ -109,7 +110,7 @@ interface ModdleElement {
  *   or contains more than one `bpmn:Process` (multi-process definitions
  *   are out of scope).
  * @throws {UnsupportedElementError} when an unsupported flow-element
- *   kind is encountered (e.g. `bpmn:parallelGateway`).
+ *   kind is encountered (e.g. `bpmn:scriptTask`, `bpmn:subProcess`).
  * @throws {UnsupportedServiceTaskFormError} when a `bpmn:ServiceTask`
  *   uses an execution discriminator the IR cannot represent (e.g.
  *   `operaton:expression`).
@@ -187,6 +188,9 @@ function mapProcess(processEl: ModdleElement): BpmnProcess {
         break;
       case 'bpmn:ExclusiveGateway':
         flowElements.push(mapExclusiveGateway(child));
+        break;
+      case 'bpmn:ParallelGateway':
+        flowElements.push(mapParallelGateway(child));
         break;
       case 'bpmn:SequenceFlow':
         sequenceFlows.push(mapSequenceFlow(child));
@@ -314,6 +318,24 @@ function mapExclusiveGateway(el: ModdleElement): ExclusiveGateway {
     id,
     ...(name === undefined ? {} : { name }),
     ...(defaultFlowId === undefined ? {} : { defaultFlowId }),
+  };
+}
+
+/**
+ * Map a `bpmn:ParallelGateway` moddle element into the IR.
+ *
+ * Parallel gateways carry no `default` attribute — Operaton executes every
+ * outgoing path unconditionally, so there is no concept of a default flow.
+ * Fork and join roles are determined purely by degree (outgoing vs. incoming
+ * count) and require no separate representation in the IR.
+ */
+function mapParallelGateway(el: ModdleElement): ParallelGateway {
+  const id = requireId(el);
+  const name = readString(el, 'name');
+  return {
+    kind: 'parallelGateway',
+    id,
+    ...(name === undefined ? {} : { name }),
   };
 }
 

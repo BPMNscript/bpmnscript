@@ -8,7 +8,10 @@
  *   1. Parsing the canonical handwritten file yields the canonical IR (deep equality).
  *   2. Same file with `camunda:` prefixes instead of `operaton:` → same IR.
  *   3. Service task with `operaton:expression` → `UnsupportedServiceTaskFormError`.
- *   4. XML containing `bpmn:parallelGateway` → `UnsupportedElementError`.
+ *   4. XML containing `bpmn:parallelGateway` → successful import (parallelGateway in IR).
+ *   4b. Parallel split+join XML (§15.3 shape) → IR with two parallelGateway elements,
+ *       6 sequence flows, no conditionExpression on fork-outgoing flows.
+ *   4c. Genuinely unsupported element (e.g. `bpmn:scriptTask`) → `UnsupportedElementError`.
  *   5. XML with TWO processes → multi-process error.
  *   6. Bare service task (no discriminator) → `UnsupportedServiceTaskFormError`.
  *   7. DI nodes (`bpmndi:*`, `dc:*`, `di:*`) are dropped from IR (not in flowElements).
@@ -234,10 +237,10 @@ describe('xmlToIr — unsupported service task form', () => {
   });
 });
 
-// ── 4. bpmn:parallelGateway raises UnsupportedElementError ──────────────────
+// ── 4. bpmn:parallelGateway is now SUPPORTED (inverted from old "unsupported" test) ──
 
-describe('xmlToIr — unsupported element', () => {
-  it('XML containing bpmn:parallelGateway raises UnsupportedElementError', async () => {
+describe('xmlToIr — parallel gateway support (inverted from old unsupported test)', () => {
+  it('XML containing bpmn:parallelGateway is imported successfully (no error)', async () => {
     const xml = `<?xml version="1.0" encoding="UTF-8"?>
 <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
                   targetNamespace="http://test">
@@ -247,34 +250,129 @@ describe('xmlToIr — unsupported element', () => {
     <bpmn:endEvent id="E" />
     <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="PG" />
     <bpmn:sequenceFlow id="F2" sourceRef="PG" targetRef="E" />
+  </bpmn:process>
+</bpmn:definitions>`;
+
+    // Previously this threw UnsupportedElementError; now it must resolve.
+    const ir = await xmlToIr(xml);
+    expect(ir.flowElements.some((fe) => fe.kind === 'parallelGateway')).toBe(
+      true,
+    );
+  });
+
+  it('imported parallelGateway carries the correct id', async () => {
+    const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  targetNamespace="http://test">
+  <bpmn:process id="p" isExecutable="true">
+    <bpmn:startEvent id="S" />
+    <bpmn:parallelGateway id="PG" />
+    <bpmn:endEvent id="E" />
+    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="PG" />
+    <bpmn:sequenceFlow id="F2" sourceRef="PG" targetRef="E" />
+  </bpmn:process>
+</bpmn:definitions>`;
+
+    const ir = await xmlToIr(xml);
+    const pg = ir.flowElements.find((fe) => fe.kind === 'parallelGateway');
+    expect(pg?.id).toBe('PG');
+  });
+});
+
+// ── 4b. xmlToIr — parallel split+join (§15.3 shape) ─────────────────────────
+
+describe('xmlToIr — parallel split+join (fork + join)', () => {
+  /**
+   * §15.3 parallel split+join shape:
+   *   Start → Fork (parallelGateway, 2 outgoing)
+   *     → BranchA (userTask)
+   *     → BranchB (userTask)
+   *   BranchA, BranchB → Join (parallelGateway, 2 incoming)
+   *   Join → End
+   *
+   * No conditionExpression on fork-outgoing flows.
+   */
+  const parallelSplitJoinXml = `<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  targetNamespace="http://test">
+  <bpmn:process id="parallel-proc" isExecutable="true">
+    <bpmn:startEvent id="Start" />
+    <bpmn:parallelGateway id="Fork" name="Fork" />
+    <bpmn:userTask id="BranchA" name="Branch A" />
+    <bpmn:userTask id="BranchB" name="Branch B" />
+    <bpmn:parallelGateway id="Join" name="Join" />
+    <bpmn:endEvent id="End" />
+    <bpmn:sequenceFlow id="F_Start_Fork" sourceRef="Start" targetRef="Fork" />
+    <bpmn:sequenceFlow id="F_Fork_A" sourceRef="Fork" targetRef="BranchA" />
+    <bpmn:sequenceFlow id="F_Fork_B" sourceRef="Fork" targetRef="BranchB" />
+    <bpmn:sequenceFlow id="F_A_Join" sourceRef="BranchA" targetRef="Join" />
+    <bpmn:sequenceFlow id="F_B_Join" sourceRef="BranchB" targetRef="Join" />
+    <bpmn:sequenceFlow id="F_Join_End" sourceRef="Join" targetRef="End" />
+  </bpmn:process>
+</bpmn:definitions>`;
+
+  it('produces two parallelGateway elements in IR', async () => {
+    const ir = await xmlToIr(parallelSplitJoinXml);
+    const pgs = ir.flowElements.filter((fe) => fe.kind === 'parallelGateway');
+    expect(pgs).toHaveLength(2);
+  });
+
+  it('fork parallelGateway has correct id and name', async () => {
+    const ir = await xmlToIr(parallelSplitJoinXml);
+    const fork = ir.flowElements.find(
+      (fe) => fe.kind === 'parallelGateway' && fe.id === 'Fork',
+    );
+    expect(fork).toBeDefined();
+    expect(fork?.name).toBe('Fork');
+  });
+
+  it('join parallelGateway has correct id and name', async () => {
+    const ir = await xmlToIr(parallelSplitJoinXml);
+    const join = ir.flowElements.find(
+      (fe) => fe.kind === 'parallelGateway' && fe.id === 'Join',
+    );
+    expect(join).toBeDefined();
+    expect(join?.name).toBe('Join');
+  });
+
+  it('produces 6 sequence flows with no conditionExpression on fork-outgoing', async () => {
+    const ir = await xmlToIr(parallelSplitJoinXml);
+    expect(ir.sequenceFlows).toHaveLength(6);
+    // Fork outgoing flows must have no conditionExpression.
+    const forkOutgoing = ir.sequenceFlows.filter(
+      (f) => f.sourceRef === 'Fork',
+    );
+    expect(forkOutgoing).toHaveLength(2);
+    for (const flow of forkOutgoing) {
+      expect(flow.conditionExpression).toBeUndefined();
+    }
+  });
+
+  it('produces correct full IR for the parallel split+join process', async () => {
+    const ir = await xmlToIr(parallelSplitJoinXml);
+    expect(ir.id).toBe('parallel-proc');
+    expect(ir.flowElements).toHaveLength(6); // Start, Fork, A, B, Join, End
+    expect(ir.sequenceFlows).toHaveLength(6);
+  });
+});
+
+// ── 4c. xmlToIr — UnsupportedElementError for genuinely unsupported elements ──
+
+describe('xmlToIr — unsupported element (non-gateway kinds)', () => {
+  it('XML containing bpmn:scriptTask raises UnsupportedElementError', async () => {
+    const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  targetNamespace="http://test">
+  <bpmn:process id="p" isExecutable="true">
+    <bpmn:startEvent id="S" />
+    <bpmn:scriptTask id="ST" name="Script" />
+    <bpmn:endEvent id="E" />
+    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="ST" />
+    <bpmn:sequenceFlow id="F2" sourceRef="ST" targetRef="E" />
   </bpmn:process>
 </bpmn:definitions>`;
 
     await expect(xmlToIr(xml)).rejects.toBeInstanceOf(UnsupportedElementError);
-  });
-
-  it('UnsupportedElementError carries the element QName', async () => {
-    const xml = `<?xml version="1.0" encoding="UTF-8"?>
-<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
-                  targetNamespace="http://test">
-  <bpmn:process id="p" isExecutable="true">
-    <bpmn:startEvent id="S" />
-    <bpmn:parallelGateway id="PG" />
-    <bpmn:endEvent id="E" />
-    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="PG" />
-    <bpmn:sequenceFlow id="F2" sourceRef="PG" targetRef="E" />
-  </bpmn:process>
-</bpmn:definitions>`;
-
-    try {
-      await xmlToIr(xml);
-      expect.fail('Should have thrown');
-    } catch (err) {
-      expect(err).toBeInstanceOf(UnsupportedElementError);
-      expect((err as UnsupportedElementError).qname).toContain(
-        'ParallelGateway',
-      );
-    }
   });
 });
 
@@ -365,6 +463,7 @@ describe('xmlToIr — DI nodes dropped', () => {
       'userTask',
       'serviceTask',
       'exclusiveGateway',
+      'parallelGateway',
     ]);
     for (const k of kinds) {
       expect(validKinds.has(k)).toBe(true);

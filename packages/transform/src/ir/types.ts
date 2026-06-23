@@ -40,7 +40,8 @@ export type FlowElement =
   | EndEvent
   | UserTask
   | ServiceTaskJavaClass
-  | ExclusiveGateway;
+  | ExclusiveGateway
+  | ParallelGateway;
 
 /** A BPMN `startEvent` node. */
 export interface StartEvent {
@@ -104,6 +105,23 @@ export interface ExclusiveGateway {
    * When absent, the gateway has no explicit default path.
    */
   defaultFlowId?: string;
+}
+
+/**
+ * A BPMN `parallelGateway` (AND gateway).
+ *
+ * Used as both a fork (split into concurrent branches) and a join
+ * (synchronize all incoming branches). Parallel gateways do not carry
+ * conditions on outgoing flows — Operaton executes every outgoing path
+ * unconditionally.
+ *
+ * There is no `default` field: parallel gateways take all outgoing flows
+ * simultaneously; the concept of a "default path" does not apply.
+ */
+export interface ParallelGateway {
+  kind: 'parallelGateway';
+  id: string;
+  name?: string;
 }
 
 /**

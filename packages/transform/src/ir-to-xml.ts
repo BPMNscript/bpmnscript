@@ -104,8 +104,8 @@ export async function irToXml(
     operaton: operatonModdleExtension as Record<string, unknown>,
   });
 
-  // Phase 1: build moddle elements for every flow node and sequence flow.
-  // We hold them by id so we can wire references in phase 2.
+  // Pass 1: build moddle elements for every flow node and sequence flow.
+  // We hold them by id so we can wire references in pass 2.
   const flowNodeById = new Map<string, ModdleElement>();
   const sequenceFlowById = new Map<string, ModdleElement>();
 
@@ -120,12 +120,12 @@ export async function irToXml(
     );
   }
 
-  // Phase 2: wire up incoming/outgoing on every flow node — MIWG requires
+  // Pass 2: wire up incoming/outgoing on every flow node — MIWG requires
   // them and bpmn-moddle does not auto-derive them.
   attachIncomingOutgoing(process, flowNodeById, sequenceFlowById);
 
-  // Phase 3: wire up the gateway `default` references (these need the
-  // SequenceFlow moddle objects, so they have to happen after phase 1).
+  // Pass 3: wire up the gateway `default` references (these need the
+  // SequenceFlow moddle objects, so they have to happen after pass 1).
   attachGatewayDefaults(process, flowNodeById, sequenceFlowById);
 
   // Assemble the process and the definitions root.
@@ -212,6 +212,12 @@ function createFlowNode(
       // attachGatewayDefaults — because it needs the SequenceFlow
       // moddle objects to exist.
       return moddle.create('bpmn:ExclusiveGateway', baseAttrs);
+
+    case 'parallelGateway':
+      // Parallel gateways carry no `default` attribute — every outgoing
+      // path is executed unconditionally. Incoming/outgoing wiring is
+      // handled generically by `attachIncomingOutgoing` below.
+      return moddle.create('bpmn:ParallelGateway', baseAttrs);
 
     default: {
       // Exhaustiveness check — every variant of FlowElement is handled.

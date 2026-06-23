@@ -44,9 +44,9 @@ export class UnsupportedServiceTaskFormError extends Error {
  * kind that lies outside the supported subset.
  *
  * The supported subset is `bpmn:startEvent`, `bpmn:endEvent`,
- * `bpmn:userTask`, `bpmn:serviceTask`, `bpmn:exclusiveGateway`, and
- * `bpmn:sequenceFlow`. Anything else (`bpmn:parallelGateway`,
- * `bpmn:scriptTask`, `bpmn:intermediateCatchEvent`, `bpmn:subProcess`,
+ * `bpmn:userTask`, `bpmn:serviceTask`, `bpmn:exclusiveGateway`,
+ * `bpmn:parallelGateway`, and `bpmn:sequenceFlow`. Anything else
+ * (`bpmn:scriptTask`, `bpmn:intermediateCatchEvent`, `bpmn:subProcess`,
  * `bpmn:callActivity`, etc.) raises this error so unsupported workflows
  * fail loudly at import.
  */
@@ -61,7 +61,7 @@ export class UnsupportedElementError extends Error {
       `Unsupported BPMN element ${qname}` +
         (elementId ? ` (id='${elementId}')` : '') +
         '. Supported elements are start/end events, user tasks, service tasks ' +
-        '(with operaton:class), exclusive gateways, and sequence flows.',
+        '(with operaton:class), exclusive gateways, parallel gateways, and sequence flows.',
     );
     this.name = 'UnsupportedElementError';
     this.qname = qname;

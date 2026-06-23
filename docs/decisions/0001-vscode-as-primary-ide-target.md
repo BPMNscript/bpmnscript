@@ -14,7 +14,7 @@ Which IDE should be the primary target?
 ## Decision Drivers
 
 * IDE support is the core value proposition of a textual DSL
-* The chosen language workbench (Langium, see [ADR-0001](0001-use-langium-as-language-workbench.md)) natively targets VS Code
+* The chosen language workbench (Langium, see [ADR-0002](0002-use-langium-as-language-workbench.md)) natively targets VS Code
 * VS Code is the most widely used editor among developers
 * The Language Server Protocol (LSP) enables secondary IDE support without full reimplementation
 
