@@ -13,13 +13,13 @@
 // examples/spring-boot/src/main/java/com/example/invoice/AutoApproveDelegate.java —
 // that is the class Operaton loads and runs when the auto-approve branch fires.
 
-process invoice-approval "Invoice Approval" {
+process invoice-approval {
   start ReviewStart
-  user ReviewInvoice "Review invoice" { assignee = "demo" }
+  user ReviewInvoice { assignee = "demo" }
   if (amount > 1000) {
-    user SeniorApproval "Senior approval" { assignee = "manager" }
+    user SeniorApproval { assignee = "manager" }
   } else {
-    service AutoApprove "Auto-approve" { class = "com.example.invoice.AutoApproveDelegate" }
+    service AutoApprove { class = "com.example.invoice.AutoApproveDelegate" }
   }
   end Done
 }

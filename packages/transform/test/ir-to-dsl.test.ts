@@ -3,7 +3,7 @@
  *
  * `irToDsl` is the inverse of the desugaring `astToIr`: it turns a flat,
  * BPMN-shaped IR back into **structured** DSL source (`if`/`else if`/`else`,
- * `while`, `do … while`, `parallel { } and { }`, `goto`). These tests assert
+ * `while`, `do … while`, `parallel { { } { } }`, `goto`). These tests assert
  * that:
  *
  *   1. Each desugared construct (the exact IR shape `astToIr` produces)
@@ -263,7 +263,7 @@ const DO_WHILE_IR: BpmnProcess = {
   ],
 };
 
-/** Desugared `parallel { user X } and { service Y }`. */
+/** Desugared `parallel { { user X } { service Y } }`. */
 const PARALLEL_IR: BpmnProcess = {
   id: 'p',
   isExecutable: true,
@@ -379,11 +379,18 @@ describe('irToDsl — structured restructuring', () => {
     expect(hasGatewayKeyword(dsl)).toBe(false);
   });
 
-  it('restructures a desugared parallel IR to `parallel { } and { }`', () => {
+  it('restructures a desugared parallel IR to nested `parallel { { } { } }`', () => {
     const dsl = irToDsl(PARALLEL_IR);
     expect(dsl).toContain('parallel {');
-    expect(dsl).toContain('} and {');
+    // Branches are nested brace blocks, not `and`-separated.
+    expect(dsl).not.toMatch(/\band\b/);
+    expect(dsl).toContain('user X "X"');
+    expect(dsl).toContain('service Y { class = "com.example.Y" }');
     expect(hasGatewayKeyword(dsl)).toBe(false);
+    // The fork/join elide to a single `parallel { … }` wrapping two nested
+    // blocks — exactly two lines are a lone branch-opening `{`.
+    const branchOpens = dsl.split('\n').filter((l) => l.trim() === '{').length;
+    expect(branchOpens).toBe(2);
   });
 
   it('emits typed attribute blocks for user / service tasks', () => {

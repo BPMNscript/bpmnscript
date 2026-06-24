@@ -13,7 +13,7 @@ It's being developed as part of a bachelor's thesis at [University of Hamburg](h
 - Provides syntax highlighting and inline error diagnostics in VS Code.
 - Validates code at authoring time: undeclared variable references, type mismatches in conditions, duplicate attribute keys, unresolved `goto` targets.
 
-The DSL currently covers start events, end events, user tasks, service tasks, exclusive gateways, parallel gateways, and structured control flow (`if`/`else if`/`else`, `while`, `do…while`, `parallel`/`and`).
+The DSL currently covers start events, end events, user tasks, service tasks, exclusive gateways, parallel gateways, and structured control flow (`if`/`else if`/`else`, `while`, `do…while`, `parallel`). Element labels are optional: when omitted, the BPMN `name` is derived from the identifier (`invoice-approval` → "Invoice Approval"), and an explicit quoted label overrides it.
 
 ## Quick start
 

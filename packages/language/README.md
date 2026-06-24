@@ -47,21 +47,21 @@ The generated AST types (`Model`, `Process`, `Statement`, `IfStatement`, `WhileS
 The grammar accepts files with one `process` block per file. Sequence flow is implicit (top-to-bottom); control flow is expressed with structured statements. Optional `var` declarations go in the process header before the body.
 
 ```bpmnscript
-process invoice-approval "Invoice Approval" {
+process invoice-approval {
   var amount: number
 
   start ReviewStart
-  user ReviewInvoice "Review invoice" { assignee = "demo" }
+  user ReviewInvoice { assignee = "demo" }
   if (amount > 1000) {
-    user SeniorApproval "Senior approval" { assignee = "manager" }
+    user SeniorApproval { assignee = "manager" }
   } else {
-    service AutoApprove "Auto-approve" { class = "com.example.AutoApproveDelegate" }
+    service AutoApprove { class = "com.example.AutoApproveDelegate" }
   }
   end Done
 }
 ```
 
-Supported statements: `start`, `end`, `user` (attribute block: `assignee`, `formKey`), `service` (attribute block: `class`), `if`/`else if`/`else`, `while (cond) { }`, `do { } while (cond)`, `parallel { } and { }`, `goto <id>`. Every targetable statement carries an explicit `id` (e.g. `user ReviewInvoice`); the optional quoted label follows the id (e.g. `"Review invoice"`).
+Supported statements: `start`, `end`, `user` (attribute block: `assignee`, `formKey`), `service` (attribute block: `class`), `if`/`else if`/`else`, `while (cond) { }`, `do { } while (cond)`, `parallel { { } { } }`, `goto <id>`. Every targetable statement carries an explicit `id` (e.g. `user ReviewInvoice`). The human-readable BPMN `name` is derived from the id when no label is given (`ReviewInvoice` → "Review Invoice"); an optional quoted label after the id overrides it (e.g. `user ReviewInvoice "Review invoice"`).
 
 Condition expressions are parsed as a real AST (JUEL native subset): integer/decimal/string/boolean/null literals, variable references with dot-property and index accessors, unary `!`/`-`, binary arithmetic and comparison operators, logical `&&`/`||`, ternary `? :`, and parentheses. Expressions outside this subset use the quoted raw fallback `"${…}"`.
 

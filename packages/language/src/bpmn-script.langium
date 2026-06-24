@@ -2,7 +2,7 @@
 //
 // A process body is a sequence of statements that execute top-to-bottom
 // (implicit sequence flow); control flow is expressed with `if`/`else if`/
-// `else`, `while`, `do … while`, `parallel { } and { }`, and `goto <id>`.
+// `else`, `while`, `do … while`, `parallel { { } { } }`, and `goto <id>`.
 // `start`/`end` are explicit-allowed but implicit by default (the desugarer
 // synthesises them). There is no flat node/edge surface and no `gateway`
 // keyword: gateways are derived from the structured control-flow constructs.
@@ -132,12 +132,12 @@ WhileStatement:
 DoWhileStatement:
     'do' body=Block 'while' '(' condition=Expr ')';
 
-// parallel { … } and { … } → AND fork/join. Branch separator is the `and`
-// keyword between brace blocks; at least two branches are required (the first
-// `Block` then one-or-more `and Block`). The inclusive-gateway variant is not
-// yet supported.
+// parallel { { … } { … } } → AND fork/join. Each branch is a brace `Block`
+// nested directly inside the outer `parallel { … }`; at least two branches are
+// required (the first `Block` then one-or-more further `Block`s). The
+// inclusive-gateway variant is not yet supported.
 ParallelStatement:
-    'parallel' branches+=Block ('and' branches+=Block)+;
+    'parallel' '{' branches+=Block (branches+=Block)+ '}';
 
 // goto <id> → explicit jump to any targetable statement, keyed on `name`.
 GotoStatement:

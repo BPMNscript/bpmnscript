@@ -9,16 +9,19 @@
 //   driving the process to its end event.
 //
 // This exercises the parallel-gateway desugaring end-to-end: the `parallel
-// { } and { }` construct produces a parallelGateway fork/join pair in the
+// { { } { } }` construct produces a parallelGateway fork/join pair in the
 // BPMN XML, and Operaton's AND-split/AND-join semantics are verified at the
 // engine level by `tests/e2e/parallel-approval.test.ts`.
 
-process parallel-approval "Parallel Approval" {
+process parallel-approval {
   start ParallelStart
   parallel {
-    user ApproveA "Approve branch A" { assignee = "demo" }
-  } and {
-    user ApproveB "Approve branch B" { assignee = "manager" }
+    {
+      user ApproveA "Approve branch A" { assignee = "demo" }
+    }
+    {
+      user ApproveB "Approve branch B" { assignee = "manager" }
+    }
   }
   end ParallelEnd
 }

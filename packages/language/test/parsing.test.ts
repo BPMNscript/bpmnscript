@@ -3,7 +3,7 @@
  *
  * The surface is code-like: a `process` body is a sequence of statements
  * executed top-to-bottom (implicit sequence flow); control flow is `if`/
- * `else if`/`else`, `while`, `do … while`, `parallel { } and { }`, and
+ * `else if`/`else`, `while`, `do … while`, `parallel { { } { } }`, and
  * `goto <id>`. Conditions and attribute values are an embedded JUEL-subset
  * expression sub-language parsed to a real AST (never an opaque string).
  *
@@ -221,11 +221,11 @@ describe('Parsing — loops', () => {
   });
 });
 
-// ── 5. parallel { } and { } ─────────────────────────────────────────────────
+// ── 5. parallel { { } { } } ──────────────────────────────────────────────────
 
 describe('Parsing — parallel', () => {
   test('parallel with two branches parses into a ParallelStatement', async () => {
-    const source = `process p { parallel { user A } and { user B } }`;
+    const source = `process p { parallel { { user A } { user B } } }`;
     const document = await parse(source);
     expect(formatParseFailure(document)).toBeUndefined();
     const st = document.parseResult.value.processes[0]!
@@ -235,7 +235,7 @@ describe('Parsing — parallel', () => {
   });
 
   test('parallel supports more than two branches', async () => {
-    const source = `process p { parallel { user A } and { user B } and { user C } }`;
+    const source = `process p { parallel { { user A } { user B } { user C } } }`;
     const document = await parse(source);
     expect(formatParseFailure(document)).toBeUndefined();
     const st = document.parseResult.value.processes[0]!
@@ -244,9 +244,9 @@ describe('Parsing — parallel', () => {
   });
 
   test('parallel requires at least two branches (single branch is a parse error)', async () => {
-    // The grammar demands the first Block then one-or-more `and Block`, so a
+    // The grammar demands the first Block then one-or-more further Blocks, so a
     // lone branch must fail to parse.
-    const source = `process p { parallel { user A } }`;
+    const source = `process p { parallel { { user A } } }`;
     const document = await parse(source);
     expect(document.parseResult.parserErrors.length).toBeGreaterThan(0);
   });

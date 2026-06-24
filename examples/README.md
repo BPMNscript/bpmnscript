@@ -22,7 +22,7 @@ and stop it programmatically. The fixture exposes the Operaton REST API on port 
 Two canonical DSL sources live under `spring-boot/processes/`:
 
 - `invoice-approval.bpmnscript` — start → review user task → exclusive gateway (amount > 1000) → senior-approval or auto-approve service task → end. Exercises `if`/`else` desugaring.
-- `parallel-approval.bpmnscript` — start → parallel AND-split into two concurrent user tasks → AND-join → end. Exercises `parallel { } and { }` desugaring.
+- `parallel-approval.bpmnscript` — start → parallel AND-split into two concurrent user tasks → AND-join → end. Exercises `parallel { { } { } }` desugaring.
 
 Running `bpmns build` on either file produces the deployable `.bpmn` artifact.
 

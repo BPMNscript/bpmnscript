@@ -607,7 +607,7 @@ function lowerDoWhile(
 }
 
 /**
- * Lower `parallel { A } and { B } …` to an AND fork/join pair.
+ * Lower `parallel { { A } { B } … }` to an AND fork/join pair.
  *
  * `Gateway_<X>_fork` (`ParallelGateway`) and `Gateway_<X>_join`
  * (`ParallelGateway`) are emitted. Each branch gets one unconditioned flow

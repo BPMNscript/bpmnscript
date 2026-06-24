@@ -19,7 +19,7 @@
  *
  *   1. Structured idempotence (happy path) — `invoice-approval.bpmnscript`.
  *   2. Loop round-trip — the `while` of `structured-control-flow.bpmnscript`.
- *   3. Parallel round-trip — the `parallel { } and { }` of the same fixture.
+ *   3. Parallel round-trip — the `parallel { { } { } }` of the same fixture.
  *   4. Goto-degradation (totality) — the unstructured `unstructured-goto.bpmn`.
  *   5. Expression fallback — a bean method-call condition (raw `${…}`).
  *
@@ -257,13 +257,13 @@ describe('Scenario 2 — loop round-trip (while ⇒ conditioned back-edge, never
 });
 
 // ===========================================================================
-// Scenario 3 — Parallel round-trip (`parallel { } and { }`).
+// Scenario 3 — Parallel round-trip (`parallel { { } { } }`).
 //
 // The parallel branch survives the full loop with a `bpmn:parallelGateway`
 // fork+join pair in the XML and `parallel` reconstructed in the re-emitted DSL.
 // ===========================================================================
 
-describe('Scenario 3 — parallel round-trip (parallelGateway fork/join ⇒ parallel { } and { })', () => {
+describe('Scenario 3 — parallel round-trip (parallelGateway fork/join ⇒ parallel { { } { } })', () => {
   let xml: string;
   let reemittedDsl: string;
 
@@ -281,9 +281,11 @@ describe('Scenario 3 — parallel round-trip (parallelGateway fork/join ⇒ para
     expect(forkJoin.length).toBe(2); // exactly one fork + one join
   });
 
-  it('the re-emitted DSL reconstructs the `parallel { } and { }` construct', () => {
+  it('the re-emitted DSL reconstructs the nested `parallel { { } { } }` construct', () => {
     expect(reemittedDsl).toMatch(/\bparallel\s*\{/);
-    expect(reemittedDsl).toContain('} and {');
+    // Branches are nested brace blocks, not `and`-separated.
+    expect(reemittedDsl).not.toContain('} and {');
+    expect(reemittedDsl).not.toMatch(/\band\b/);
   });
 
   it('both parallel branch tasks survive the round-trip verbatim', () => {

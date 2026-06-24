@@ -45,7 +45,7 @@ The pattern catalogue:
 - XOR split with a post-dominating join → `if`/`else if`/`else`
 - Back-edge from body-exit to a dominating XOR head → `while` (unconditioned
   back-edge) or `do…while` (conditioned back-edge)
-- AND fork with a matching AND join → `parallel { } and { }`
+- AND fork with a matching AND join → `parallel { { } { } }`
 - Every other edge → `goto <targetId>`
 
 ### Consequences
