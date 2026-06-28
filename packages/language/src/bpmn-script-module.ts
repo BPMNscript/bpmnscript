@@ -19,6 +19,7 @@ import {
   DefaultVariableSymbolProvider,
   type VariableSymbolProvider,
 } from './variable-symbol-provider.js';
+import { BpmnScriptCompletionProvider } from './bpmn-script-completion.js';
 
 /**
  * Declaration of custom services - add your own service classes here.
@@ -56,6 +57,9 @@ export const BpmnScriptModule: Module<
   },
   validation: {
     BpmnScriptValidator: (services) => new BpmnScriptValidator(services),
+  },
+  lsp: {
+    CompletionProvider: (services) => new BpmnScriptCompletionProvider(services),
   },
 };
 
