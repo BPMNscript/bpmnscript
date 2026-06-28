@@ -1,0 +1,43 @@
+process loan-approval "Loan Approval" {
+  var extRes1: string
+  var extRes2: string
+  var intRes: string
+  var assessorRes: string
+
+  start RequestReceived "Loan request received"
+
+  parallel {
+    {
+      service CheckExternalS1 "Check external rating S1" {
+        class = "com.example.loan.ExternalRatingS1Delegate"
+      }
+    }
+    {
+      service CheckExternalS2 "Check external rating S2" {
+        class = "com.example.loan.ExternalRatingS2Delegate"
+      }
+    }
+    {
+      service CheckInternal "Check internal rating" {
+        class = "com.example.loan.InternalRatingDelegate"
+      }
+      if (intRes == "low") {
+        user AssessRisk "Manual risk assessment" {
+          assignee = "demo"
+        }
+      }
+    }
+  }
+
+  if ((extRes1 == "low" && extRes2 == "low") || (intRes == "low" && assessorRes == "low")) {
+    service AcceptLoan "Accept loan" {
+      class = "com.example.loan.AcceptLoanDelegate"
+    }
+  } else {
+    service RejectLoan "Reject loan" {
+      class = "com.example.loan.RejectLoanDelegate"
+    }
+  }
+
+  end Done "Loan request handled"
+}
