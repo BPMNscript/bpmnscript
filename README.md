@@ -10,7 +10,7 @@ It's being developed as part of a bachelor's thesis at [University of Hamburg](h
 
 - Compiles `.bpmnscript` source files to BPMN 2.0 XML with auto-generated diagram layout, ready for deployment to Operaton.
 - Decompiles BPMN 2.0 XML back to `.bpmnscript` source.
-- Provides syntax highlighting and inline error diagnostics in VS Code.
+- Provides a VS Code extension with syntax highlighting, inline error diagnostics, and a sidebar "Convert" panel that compiles the open file, jumps to its counterpart, or decompiles a BPMN file you pick from disk. The same conversions are in the command palette.
 - Validates code at authoring time: undeclared variable references, type mismatches in conditions, duplicate attribute keys, unresolved `goto` targets.
 
 The DSL currently covers start events, end events, user tasks, service tasks, exclusive gateways, parallel gateways, and structured control flow (`if`/`else if`/`else`, `while`, `do…while`, `parallel`). Element labels are optional: when omitted, the BPMN `name` is derived from the identifier (`invoice-approval` → "Invoice Approval"), and an explicit quoted label overrides it.
@@ -77,7 +77,7 @@ packages/
   language/      Langium grammar, AST, validator, language server
   transform/     IR types and bidirectional transforms (AST/IR/XML/DSL)
   cli/           bpmns build / parse commands
-  extension/     VS Code extension (bundles the language server)
+  extension/     VS Code extension: language server, compile/decompile commands, sidebar
 tests/           Round-trip, fixture, and end-to-end tests
 examples/
   spring-boot/   Operaton + Spring Boot Docker fixture for e2e testing

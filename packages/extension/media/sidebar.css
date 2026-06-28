@@ -1,0 +1,113 @@
+/* BPMNscript sidebar — styled exclusively with VS Code theme variables */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+body {
+  padding: 0;
+  margin: 0;
+  font-family: var(--vscode-font-family);
+  font-size: var(--vscode-font-size);
+  color: var(--vscode-foreground);
+  background-color: var(--vscode-sideBar-background, transparent);
+  overflow-x: hidden;
+}
+
+/* -------------------------------------------------------------------------
+   Panels
+------------------------------------------------------------------------- */
+
+.panel {
+  padding: 10px 12px;
+}
+
+#pick-panel {
+  padding: 0 12px 12px;
+}
+
+.file-name {
+  font-weight: 500;
+  margin-bottom: 8px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* -------------------------------------------------------------------------
+   Buttons
+------------------------------------------------------------------------- */
+
+button {
+  font-family: var(--vscode-font-family);
+  font-size: var(--vscode-font-size);
+  cursor: pointer;
+}
+
+/* Primary/secondary full-width action buttons. */
+.action {
+  display: block;
+  width: 100%;
+  padding: 5px 10px;
+  border: none;
+  border-radius: 2px;
+  line-height: 1.4;
+  background-color: var(--vscode-button-background);
+  color: var(--vscode-button-foreground);
+}
+
+.action:hover {
+  background-color: var(--vscode-button-hoverBackground);
+}
+
+.action.secondary {
+  background-color: var(--vscode-button-secondaryBackground, var(--vscode-button-background));
+  color: var(--vscode-button-secondaryForeground, var(--vscode-button-foreground));
+}
+
+.action.secondary:hover {
+  background-color: var(--vscode-button-secondaryHoverBackground, var(--vscode-button-hoverBackground));
+}
+
+/* -------------------------------------------------------------------------
+   Counterpart jump link
+------------------------------------------------------------------------- */
+
+.link {
+  display: block;
+  margin-top: 8px;
+  padding: 0;
+  background: none;
+  border: none;
+  text-align: left;
+  color: var(--vscode-textLink-foreground);
+  width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.link:hover {
+  color: var(--vscode-textLink-activeForeground);
+  text-decoration: underline;
+}
+
+/* -------------------------------------------------------------------------
+   Divider + placeholder
+------------------------------------------------------------------------- */
+
+.divider {
+  border: none;
+  border-top: 1px solid var(--vscode-panel-border, var(--vscode-widget-border, rgba(128, 128, 128, 0.35)));
+  margin: 2px 0;
+}
+
+.placeholder {
+  padding: 10px 12px;
+  margin: 0;
+  font-size: 0.9em;
+  opacity: 0.6;
+  font-style: italic;
+}
