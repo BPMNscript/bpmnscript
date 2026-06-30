@@ -134,7 +134,7 @@ describe('Always-on guard: parallel-approval.bpmnscript desugars to parallelGate
       (fe) => fe.kind === 'parallelGateway',
     );
 
-    // The `parallel { } and { }` construct must desugar to exactly one fork and
+    // The `parallel { { } { } }` construct must desugar to exactly one fork and
     // one join — both are parallel gateways in the IR.
     expect(parallelGateways).toHaveLength(2);
   });

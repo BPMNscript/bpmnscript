@@ -355,7 +355,7 @@ describe('astToIr — do-while loop', () => {
 // ── 6. parallel → fork/join parallelGateway pair ─────────────────────────────
 
 describe('astToIr — parallel fork/join', () => {
-  const SOURCE = `process P { parallel { user A } and { user B } }`;
+  const SOURCE = `process P { parallel { { user A } { user B } } }`;
 
   it('emits a fork and a join parallelGateway with unconditioned flows', async () => {
     const result = await ir(SOURCE);
@@ -459,7 +459,7 @@ describe('astToIr — synthesized id determinism', () => {
     const source = `process P {
       user Pre
       if (amount > 1000) { user S } else { service A { class = "com.example.X" } }
-      parallel { user L } and { user R }
+      parallel { { user L } { user R } }
     }`;
     const a = await ir(source);
     const b = await ir(source);
@@ -625,7 +625,7 @@ describe('astToIr — all synthesized ids are globally unique (property check)',
     },
     { name: 'while', source: `process P { user Pre while (r) { user R } user Post }` },
     { name: 'do-while', source: `process P { do { user R } while (r) }` },
-    { name: 'parallel', source: `process P { parallel { user A } and { user B } }` },
+    { name: 'parallel', source: `process P { parallel { { user A } { user B } } }` },
     {
       name: 'nested if in if-then',
       source: `process P { if (x) { if (y) { user A } } }`,
@@ -636,14 +636,14 @@ describe('astToIr — all synthesized ids are globally unique (property check)',
     },
     {
       name: 'nested compound in parallel branches',
-      source: `process P { parallel { if (a) { user X } } and { if (b) { user Y } } }`,
+      source: `process P { parallel { { if (a) { user X } } { if (b) { user Y } } } }`,
     },
     {
       name: 'nested compounds in two sibling parallel branches and loops',
       source: `process P {
         while (a) { if (b) { user X } }
         do { if (c) { user Y } } while (d)
-        parallel { while (e) { user Z } } and { while (f) { user W } }
+        parallel { { while (e) { user Z } } { while (f) { user W } } }
       }`,
     },
   ];

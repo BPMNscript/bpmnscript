@@ -80,7 +80,7 @@ clean, restructurable gateway shape and survives a full round-trip:
 - `while (retries < 3) { … }` → an exclusive loop gateway
   (`Gateway_structured-control-flow_3_loop`) with a conditioned back-edge,
   never `standardLoopCharacteristics`.
-- `parallel { … } and { … }` → a parallel-gateway fork/join pair
+- `parallel { { … } { … } }` → a parallel-gateway fork/join pair
   (`Gateway_structured-control-flow_4_fork` / `…_4_join`).
 
 Every flow node carries an explicit id so the round-trip can assert authored ids

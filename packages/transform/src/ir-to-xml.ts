@@ -30,6 +30,7 @@ import {
 } from 'bpmn-moddle';
 import { layoutProcess } from 'bpmn-auto-layout';
 
+import { humanize } from './humanize.js';
 import type { BpmnProcess, FlowElement, SequenceFlow } from './ir/types.js';
 
 /**
@@ -131,6 +132,9 @@ export async function irToXml(
   // Assemble the process and the definitions root.
   const processAttrs: Record<string, unknown> = {
     id: process.id,
+    // The process is always labelable: when no explicit name is carried in the
+    // IR, derive a human-readable one from the id so the BPMN stays meaningful.
+    name: process.name ?? humanize(process.id),
     isExecutable: process.isExecutable,
     'operaton:historyTimeToLive': HISTORY_TIME_TO_LIVE,
     flowElements: [
@@ -138,9 +142,6 @@ export async function irToXml(
       ...process.sequenceFlows.map((f) => requireById(sequenceFlowById, f.id)),
     ],
   };
-  if (process.name !== undefined) {
-    processAttrs.name = process.name;
-  }
   const processElement = moddle.create('bpmn:Process', processAttrs);
 
   const stem = options?.sourceFileName
@@ -177,8 +178,17 @@ function createFlowNode(
   node: FlowElement,
 ): ModdleElement {
   const baseAttrs: Record<string, unknown> = { id: node.id };
-  if (node.name !== undefined) {
-    baseAttrs.name = node.name;
+  // Derive a human-readable `name` from the id for labelable nodes when the IR
+  // carries none. Gateways are excluded: their ids are synthesized structural
+  // coordinates (e.g. `Gateway_…_split`) that would humanize to noise, and BPMN
+  // routing gateways are conventionally unnamed.
+  const derivedName =
+    node.name ??
+    (node.kind === 'exclusiveGateway' || node.kind === 'parallelGateway'
+      ? undefined
+      : humanize(node.id));
+  if (derivedName !== undefined) {
+    baseAttrs.name = derivedName;
   }
 
   switch (node.kind) {

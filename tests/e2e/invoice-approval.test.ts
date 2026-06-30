@@ -6,15 +6,15 @@
  *   1. Build BPMN XML from the DSL source via the real `bpmns` CLI.
  *   2. Boot Operaton via testcontainers (Spring Boot image).
  *   3. Deploy and start process instances.
- *   4. Drive each instance past the initial `Review invoice` user task and
+ *   4. Drive each instance past the initial `Review Invoice` user task and
  *      assert the post-gateway state (which branch the engine took).
  *
  * The three test cases cover:
  *   - Happy path (senior approval): amount = 5000 → after completing
- *     `Review invoice`, the gateway condition `${amount > 1000}` evaluates to
- *     true and the next active user task is `Senior approval`.
+ *     `Review Invoice`, the gateway condition `${amount > 1000}` evaluates to
+ *     true and the next active user task is `Senior Approval`.
  *   - Happy path (auto-approve): amount = 100 → after completing
- *     `Review invoice`, the gateway condition is false, the default branch
+ *     `Review Invoice`, the gateway condition is false, the default branch
  *     routes to the `AutoApprove` service task (a synchronous JavaDelegate),
  *     the process ends, and no user tasks remain.
  *   - Negative: a BPMN file with `operaton:expression` on a service task is
@@ -149,7 +149,7 @@ describe.skipIf(SKIP)('E2E: invoice-approval on Spring Boot Operaton', () => {
   });
 
   // -----------------------------------------------------------------------
-  // Test 1: Senior approval branch (high-amount invoice)
+  // Test 1: Senior Approval branch (high-amount invoice)
   // -----------------------------------------------------------------------
 
   /**
@@ -161,7 +161,7 @@ describe.skipIf(SKIP)('E2E: invoice-approval on Spring Boot Operaton', () => {
    * The test:
    *   1. starts the instance,
    *   2. completes the initial `ReviewInvoice` user task,
-   *   3. asserts the next active task is `Senior approval` (the
+   *   3. asserts the next active task is `Senior Approval` (the
    *      gateway-routed branch — not `ReviewInvoice` itself).
    *
    * This directly exercises the gateway: a different amount would route to
@@ -194,7 +194,7 @@ describe.skipIf(SKIP)('E2E: invoice-approval on Spring Boot Operaton', () => {
     );
     expect(next).toHaveLength(1);
     expect(next[0]!.taskDefinitionKey).toBe('SeniorApproval');
-    expect(next[0]!.name).toBe('Senior approval');
+    expect(next[0]!.name).toBe('Senior Approval');
   }, 30_000);
 
   // -----------------------------------------------------------------------

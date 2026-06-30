@@ -1,10 +1,10 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI" xmlns:dc="http://www.omg.org/spec/DD/20100524/DC" xmlns:di="http://www.omg.org/spec/DD/20100524/DI" xmlns:operaton="http://operaton.org/schema/1.0/bpmn" id="Definitions_invoice-approval" targetNamespace="http://bpmnscript.io/processes" exporter="BPMNscript" exporterVersion="0.0.0">
   <bpmn:process id="invoice-approval" name="Invoice Approval" isExecutable="true" operaton:historyTimeToLive="P30D">
-    <bpmn:startEvent id="ReviewStart">
+    <bpmn:startEvent id="ReviewStart" name="Review Start">
       <bpmn:outgoing>Flow_ReviewStart_ReviewInvoice</bpmn:outgoing>
     </bpmn:startEvent>
-    <bpmn:userTask id="ReviewInvoice" name="Review invoice" operaton:assignee="demo">
+    <bpmn:userTask id="ReviewInvoice" name="Review Invoice" operaton:assignee="demo">
       <bpmn:incoming>Flow_ReviewStart_ReviewInvoice</bpmn:incoming>
       <bpmn:outgoing>Flow_ReviewInvoice_Gateway_invoice-approval_2_split</bpmn:outgoing>
     </bpmn:userTask>
@@ -18,15 +18,15 @@
       <bpmn:incoming>Flow_AutoApprove_Gateway_invoice-approval_2_join</bpmn:incoming>
       <bpmn:outgoing>Flow_Gateway_invoice-approval_2_join_Done</bpmn:outgoing>
     </bpmn:exclusiveGateway>
-    <bpmn:userTask id="SeniorApproval" name="Senior approval" operaton:assignee="manager">
+    <bpmn:userTask id="SeniorApproval" name="Senior Approval" operaton:assignee="manager">
       <bpmn:incoming>Flow_Gateway_invoice-approval_2_split_SeniorApproval</bpmn:incoming>
       <bpmn:outgoing>Flow_SeniorApproval_Gateway_invoice-approval_2_join</bpmn:outgoing>
     </bpmn:userTask>
-    <bpmn:serviceTask id="AutoApprove" name="Auto-approve" operaton:class="com.example.invoice.AutoApproveDelegate">
+    <bpmn:serviceTask id="AutoApprove" name="Auto Approve" operaton:class="com.example.invoice.AutoApproveDelegate">
       <bpmn:incoming>Flow_Gateway_invoice-approval_2_split_default</bpmn:incoming>
       <bpmn:outgoing>Flow_AutoApprove_Gateway_invoice-approval_2_join</bpmn:outgoing>
     </bpmn:serviceTask>
-    <bpmn:endEvent id="Done">
+    <bpmn:endEvent id="Done" name="Done">
       <bpmn:incoming>Flow_Gateway_invoice-approval_2_join_Done</bpmn:incoming>
     </bpmn:endEvent>
     <bpmn:sequenceFlow id="Flow_ReviewStart_ReviewInvoice" sourceRef="ReviewStart" targetRef="ReviewInvoice" />

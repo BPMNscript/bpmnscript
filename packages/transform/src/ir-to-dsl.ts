@@ -3,7 +3,7 @@
  *
  * The inverse of the desugaring `astToIr`: it turns the **flat,
  * BPMN-shaped** {@link BpmnProcess} IR back into **structured** source —
- * `if`/`else if`/`else`, `while`, `do … while`, `parallel { } and { }`,
+ * `if`/`else if`/`else`, `while`, `do … while`, `parallel { { } { } }`,
  * explicit `start`/`end`, and `goto` — that re-parses through the grammar
  * and re-desugars to an equivalent IR.
  *
@@ -25,7 +25,7 @@
  *     → `do { } while`. The loop gateway is elided.
  *   - **Parallel (AND)** — a `parallelGateway` fork `F` and join `J` where `J`
  *     post-dominates `F`, `F` dominates `J`, and the branches are
- *     single-entry/single-exit. → `parallel { } and { }`. Both gateways elided.
+ *     single-entry/single-exit. → `parallel { { } { } }`. Both gateways elided.
  *   - **Sequence** — a linear single-in / single-out chain → consecutive
  *     statements with implicit top-to-bottom flow.
  *
@@ -648,7 +648,7 @@ class Emitter {
    * captured by a construct or a goto, never the final sweep).
    *
    * - **Clean fork** (2+ out-edges, parallel-gateway post-dominating join that
-   *   the fork dominates): `parallel { } and { }`; both gateways elided.
+   *   the fork dominates): `parallel { { } { } }`; both gateways elided.
    * - **Unstructured fork** (no clean parallel join): degrade to one `goto` per
    *   out-edge, preserving every fork edge.
    * - **1 out-edge** (a join arriving here, or a degenerate fork): transparent
@@ -696,9 +696,16 @@ class Emitter {
     // transparent pass-through in `emitNode`, reproducing the desugarer's
     // elision), so it is neither pre-elided nor double-consumed here.
     lines.push('parallel {');
-    outs.forEach((f, i) => {
-      if (i > 0) lines.push('} and {');
-      this.emitBranch(f.targetRef, join, lines, depth);
+    outs.forEach((f) => {
+      // Each branch is its own brace block nested inside `parallel { … }`.
+      // `emitBranch` already prefixes one INDENT to the branch body; wrap it in
+      // `{ … }` (at one INDENT) and re-indent the body by a further INDENT so it
+      // sits two levels below `parallel {`.
+      const branchLines: string[] = [];
+      this.emitBranch(f.targetRef, join, branchLines, depth);
+      lines.push(INDENT + '{');
+      for (const l of branchLines) lines.push(INDENT + l);
+      lines.push(INDENT + '}');
     });
     lines.push('}');
 

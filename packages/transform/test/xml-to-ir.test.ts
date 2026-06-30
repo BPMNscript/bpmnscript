@@ -39,15 +39,18 @@ const HANDWRITTEN_PATH = resolve(
 /**
  * Canonical IR produced by `xmlToIr` from the handwritten BPMN fixture.
  *
- * Note: Start event (ReviewStart) and end event (Done) have no `name` attribute
- * in the handwritten BPMN, so they appear without `name` in the IR.
+ * Note: the process is named "Invoice Approval" in the handwritten BPMN, which
+ * is exactly `humanize("invoice-approval")` — so it is treated as derivable and
+ * dropped on import (no redundant label in the IR; re-export reproduces it).
+ * Start event (ReviewStart) and end event (Done) have no `name` attribute in the
+ * handwritten BPMN, so they appear without `name` in the IR. The task/gateway
+ * names differ from their humanized ids (casing/hyphen) and are therefore kept.
  * The conditional branch flow uses the name given in the handwritten BPMN
  * (`Flow_SeniorBranch`), not the auto-generated id from `astToIr`.
  * `incoming`/`outgoing` children are dropped from the IR.
  */
 const CANONICAL_IR: BpmnProcess = {
   id: 'invoice-approval',
-  name: 'Invoice Approval',
   isExecutable: true,
   flowElements: [
     { kind: 'startEvent', id: 'ReviewStart' },
@@ -127,10 +130,13 @@ describe('xmlToIr — canonical handwritten file', () => {
     expect(ir.id).toBe('invoice-approval');
   });
 
-  it('process name equals "Invoice Approval"', async () => {
+  it('process name is dropped on import when it equals humanize(id)', async () => {
+    // The handwritten BPMN names the process "Invoice Approval", which is exactly
+    // humanize("invoice-approval"). It is treated as derivable and dropped, so
+    // the IR carries no redundant label (re-export reproduces it identically).
     const xml = readFileSync(HANDWRITTEN_PATH, 'utf-8');
     const ir = await xmlToIr(xml);
-    expect(ir.name).toBe('Invoice Approval');
+    expect(ir.name).toBeUndefined();
   });
 
   it('produces 6 flow elements', async () => {

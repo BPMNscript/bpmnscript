@@ -39,6 +39,7 @@ import {
   UnsupportedElementError,
   UnsupportedServiceTaskFormError,
 } from './errors.js';
+import { humanize } from './humanize.js';
 
 /**
  * Resolve the path to `operaton-moddle.json`. Tried locations, in order:
@@ -166,7 +167,7 @@ function mapProcess(processEl: ModdleElement): BpmnProcess {
   if (id === undefined) {
     throw new Error("<bpmn:process> is missing its required 'id' attribute.");
   }
-  const name = readString(processEl, 'name');
+  const name = readDerivableName(processEl, id);
 
   const flowElements: FlowElement[] = [];
   const sequenceFlows: SequenceFlow[] = [];
@@ -212,7 +213,7 @@ function mapProcess(processEl: ModdleElement): BpmnProcess {
 /** Map a `bpmn:StartEvent` moddle element into the IR. */
 function mapStartEvent(el: ModdleElement): StartEvent {
   const id = requireId(el);
-  const name = readString(el, 'name');
+  const name = readDerivableName(el, id);
   return {
     kind: 'startEvent',
     id,
@@ -223,7 +224,7 @@ function mapStartEvent(el: ModdleElement): StartEvent {
 /** Map a `bpmn:EndEvent` moddle element into the IR. */
 function mapEndEvent(el: ModdleElement): EndEvent {
   const id = requireId(el);
-  const name = readString(el, 'name');
+  const name = readDerivableName(el, id);
   return {
     kind: 'endEvent',
     id,
@@ -239,7 +240,7 @@ function mapEndEvent(el: ModdleElement): EndEvent {
  */
 function mapUserTask(el: ModdleElement): UserTask {
   const id = requireId(el);
-  const name = readString(el, 'name');
+  const name = readDerivableName(el, id);
   const assignee = readNamespacedAttr(el, 'assignee');
   const formKey = readNamespacedAttr(el, 'formKey');
 
@@ -262,7 +263,7 @@ function mapUserTask(el: ModdleElement): UserTask {
  */
 function mapServiceTask(el: ModdleElement): ServiceTaskJavaClass {
   const id = requireId(el);
-  const name = readString(el, 'name');
+  const name = readDerivableName(el, id);
   const javaClass = readNamespacedAttr(el, 'class');
 
   if (javaClass !== undefined) {
@@ -400,6 +401,20 @@ function requireId(el: ModdleElement): string {
 function readString(el: ModdleElement, name: string): string | undefined {
   const value = el.get(name);
   return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+
+/**
+ * Read a `name` that may have been auto-derived from the id on export. When the
+ * BPMN `name` exactly equals `humanize(id)`, it is treated as derivable and
+ * dropped (returns `undefined`), so the IR — and any DSL emitted from it —
+ * carries no redundant label. A `name` that differs from the derivation is a
+ * genuine label and is kept. This is the inverse of the derivation applied in
+ * {@link irToXml} and is what makes the DSL → XML → DSL round-trip idempotent
+ * for unlabeled elements.
+ */
+function readDerivableName(el: ModdleElement, id: string): string | undefined {
+  const name = readString(el, 'name');
+  return name === undefined || name === humanize(id) ? undefined : name;
 }
 
 /**

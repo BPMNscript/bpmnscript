@@ -51,7 +51,7 @@ fallback for unstructured BPMN graphs.
 * Good, because the DSL reads and writes like program code (`if`/`while`/`parallel`)
 * Good, because conditions are a first-class expression AST, enabling type-check
   validation and jump-to-definition for variable references
-* Good, because `parallel { } and { }` maps directly to AND fork/join pairs, making
+* Good, because `parallel { { } { } }` maps directly to AND fork/join pairs, making
   parallel-gateway support natural to author
 * Good, because `goto` as a residual form keeps decompilation total: every valid
   BPMN graph has a valid DSL representation
