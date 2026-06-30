@@ -37,6 +37,13 @@
       <version>2.1.0</version>
     </dependency>
 
+    <!-- Operaton web apps (Cockpit, Tasklist, Admin) — used by the manual loan-approval demo -->
+    <dependency>
+      <groupId>org.operaton.bpm.springboot</groupId>
+      <artifactId>operaton-bpm-spring-boot-starter-webapp</artifactId>
+      <version>2.1.0</version>
+    </dependency>
+
     <!-- Embedded database for the process engine -->
     <dependency>
       <groupId>com.h2database</groupId>
