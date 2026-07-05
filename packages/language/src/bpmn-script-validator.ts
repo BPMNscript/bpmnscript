@@ -43,9 +43,10 @@
  *     reusing a name already declared is an *error* (the symbol provider itself
  *     stays last-wins — see `variable-symbol-provider.ts` — this check is the
  *     one that actually surfaces the conflict).
- *  9. **Duplicate process label**: a second `label = "…"` declaration in one
- *     process is an *error* (the grammar accepts any number of `ProcessLabel`
- *     decls; only one is meaningful).
+ *  9. **Duplicate process label**: a second label declaration in one process
+ *     is an *error* — the inline `process P "…"` label counts as the first
+ *     occurrence (the grammar accepts an inline label plus any number of
+ *     `ProcessLabel` decls; only one label is meaningful).
  * 10. **Duplicate statement name**: two goto-targetable steps
  *     (`start`/`end`/`user`/`service`) sharing one name make `goto` ambiguous —
  *     an *error* naming the offending step.
@@ -150,7 +151,7 @@ const SERVICE_TASK_KEYS: ReadonlySet<string> = new Set(['class']);
  * bypass the `taken`/`resolveCollision` guard (see `ast-to-ir.ts` STRUCTURAL-
  * COORDINATE SCHEME docstring), so the guard must be applied here.
  *
- * Patterns are anchored and non-backtracking to avoid ReDoS.
+ * Patterns are anchored.
  *
  * **Flow_ rationale:** synthesised flow ids always carry ≥2 trailing segments
  * (`Flow_<src>_<tgt>` and `Flow_<gatewayId>_default`). Crucially, synthesised
@@ -161,7 +162,7 @@ const SERVICE_TASK_KEYS: ReadonlySet<string> = new Set(['class']);
  * genuinely id-shaped names while freeing single-segment names.
  */
 const RESERVED_ID_PATTERNS: ReadonlyArray<RegExp> = [
-  /^Gateway_[^_].*_(split|join|fork|loop)$/,
+  /^Gateway_.+_(split|join|fork|loop)$/,
   /^Flow_.+_.+$/,
   /^StartEvent_/,
   /^EndEvent_/,
@@ -391,9 +392,12 @@ export class BpmnScriptValidator {
   }
 
   /**
-   * Flag a second (or later) `label = "…"` declaration in one process. The
-   * grammar accepts any number of `ProcessLabel` decls in `process.decls`;
-   * only the first is meaningful, so every further one is an *error*.
+   * Flag a second (or later) label declaration in one process. The inline
+   * label string (`process P "…"`) counts as the first occurrence: `astToIr`
+   * prefers the inline label and silently drops any `label = "…"` attribute,
+   * so a `label = "…"` next to an inline label is dead text and an *error*.
+   * The grammar also accepts any number of `ProcessLabel` decls in
+   * `process.decls`; only the first is meaningful.
    *
    * @param process The process to scan.
    * @param accept The diagnostic sink.
@@ -402,7 +406,7 @@ export class BpmnScriptValidator {
     process: Process,
     accept: ValidationAcceptor,
   ): void {
-    let seenOne = false;
+    let seenOne = process.label !== undefined;
     for (const decl of process.decls) {
       if (!isProcessLabel(decl)) {
         continue;
@@ -459,17 +463,19 @@ export class BpmnScriptValidator {
     accept: ValidationAcceptor,
   ): void {
     // 1. Undeclared-variable warning: a VarRef root not in the symbol set.
-    //    Skip VarRefs that ARE an attribute value: `class = com.example.X` or a
-    //    dotted form key parses its value as a VarRef, but those identifiers name
-    //    Java classes / form keys, not process variables, so they must not fire a
-    //    spurious "not declared" warning. Only the direct attribute-value
-    //    position is skipped — VarRefs inside conditions (and nested operands of
-    //    a more complex attribute value) are still checked.
-    if (
-      isVarRef(expr) &&
-      !isAttribute(expr.$container) &&
-      !symbols.has(expr.name)
-    ) {
+    //    Skip VarRefs that are a `class` or `formKey` attribute value: those
+    //    identifiers name Java classes / form ids, not process variables, so
+    //    they must not fire a spurious "not declared" warning. An `assignee`
+    //    value is NOT skipped — a bare identifier there renders as a `${var}`
+    //    JUEL expression (see expression-render.ts), so it is a real variable
+    //    reference. Only the direct attribute-value position is skipped —
+    //    VarRefs inside conditions (and nested operands of a more complex
+    //    attribute value) are still checked.
+    const container = expr.$container;
+    const isNonVariableAttrValue =
+      isAttribute(container) &&
+      (container.key === 'class' || container.key === 'formKey');
+    if (isVarRef(expr) && !isNonVariableAttrValue && !symbols.has(expr.name)) {
       accept(
         'warning',
         `Variable '${expr.name}' is not declared. Add 'var ${expr.name}: <type>' to the process.`,

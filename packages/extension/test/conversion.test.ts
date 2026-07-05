@@ -113,7 +113,7 @@ describe('decompileCommand — composed notification strings', () => {
         {
           elementId: 'Task1',
           category: 'extensionAttribute',
-          message: 'dropped assignee',
+          message: "The 'assignee' setting on 'Task1' was not imported",
         },
       ],
     });
@@ -125,9 +125,12 @@ describe('decompileCommand — composed notification strings', () => {
     const message = mocks.showWarningMessage.mock.calls[0]?.[0] as string;
     expect(message).toBe(
       'BPMNscript: "example.bpmn" dropped 1 item(s) during decompile: ' +
-        'Task1: dropped assignee',
+        "The 'assignee' setting on 'Task1' was not imported",
     );
     expect(occurrences(message, 'example.bpmn')).toBe(1);
+    // The core message is the single source of the element id — no
+    // adapter-side "Task1:" prefix doubling it.
+    expect(occurrences(message, 'Task1')).toBe(1);
   });
 
   it('prefixes the filename exactly once in the unsupported-construct error message', async () => {
@@ -172,8 +175,13 @@ describe('compileCommand — composed notification strings', () => {
       ],
     });
 
-    const handler = compileCommand(fakeDiagnosticCollection(), '0.0.1');
+    const diagnostics = fakeDiagnosticCollection();
+    const handler = compileCommand(diagnostics, '0.0.1');
     await handler(vscode.Uri.file('/tmp/example.bpmnscript'));
+
+    // Stale diagnostics are cleared before the fresh set is applied.
+    expect(diagnostics.delete).toHaveBeenCalledTimes(1);
+    expect(diagnostics.set).toHaveBeenCalledTimes(1);
 
     expect(mocks.showErrorMessage).toHaveBeenCalledTimes(1);
     expect(mocks.showErrorMessage).toHaveBeenCalledWith(
@@ -188,8 +196,12 @@ describe('compileCommand — composed notification strings', () => {
       message: 'boom',
     });
 
-    const handler = compileCommand(fakeDiagnosticCollection(), '0.0.1');
+    const diagnostics = fakeDiagnosticCollection();
+    const handler = compileCommand(diagnostics, '0.0.1');
     await handler(vscode.Uri.file('/tmp/example.bpmnscript'));
+
+    // Even an unexpected failure clears stale diagnostics for the file.
+    expect(diagnostics.delete).toHaveBeenCalledTimes(1);
 
     expect(mocks.showErrorMessage).toHaveBeenCalledTimes(1);
     const message = mocks.showErrorMessage.mock.calls[0]?.[0] as string;

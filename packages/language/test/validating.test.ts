@@ -1,10 +1,11 @@
 /**
  * Validation test suite for the BPMNscript AST.
  *
- * Thirteen validator families are exercised (all `[unit]`):
+ * Fourteen validator families are exercised (all `[unit]`):
  *   - undeclared-variable WARNING (severity 2),
  *   - type-mismatch ERROR (severity 1),
  *   - duplicate attribute-key ERROR,
+ *   - allowed attribute keys per element kind ERROR,
  *   - exactly-one service `class` discriminator,
  *   - the unresolved-`goto` regression (linker owns it; no validator double-report),
  *   - structural empty-process-body WARNING,
@@ -88,6 +89,36 @@ process p {
       0,
     );
   });
+
+  test('an undeclared bare identifier as an assignee value is exactly one warning', async () => {
+    // A bare identifier in `assignee` renders as a `${var}` JUEL expression, so
+    // it is a real variable reference and must be checked like any other.
+    const { diagnostics } = await validate(
+      `process p { user T { assignee = someUndeclared } }`,
+    );
+    const warnings = bySeverity(diagnostics, SEVERITY_WARNING);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]!.message).toContain('someUndeclared');
+  });
+
+  test('a declared variable as an assignee value produces no warning', async () => {
+    const { diagnostics } = await validate(`
+process p {
+  var reviewer: string
+  user T { assignee = reviewer }
+}
+`);
+    expect(diagnosticsFor(diagnostics, 'is not declared')).toHaveLength(0);
+  });
+
+  test('a dotted formKey value produces no undeclared-variable warning', async () => {
+    // `formKey` values name form ids, not process variables — the check skips
+    // them, same as `class` values.
+    const { diagnostics } = await validate(
+      `process p { user T { formKey = forms.review } }`,
+    );
+    expect(diagnosticsFor(diagnostics, 'is not declared')).toHaveLength(0);
+  });
 });
 
 // ── Type-mismatch error ─────────────────────────────────────────────────────
@@ -159,6 +190,51 @@ describe('Validation — duplicate attribute key', () => {
       `process p { user T { assignee = "a" formKey = "f" } }`,
     );
     expect(diagnosticsFor(diagnostics, 'Duplicate attribute')).toHaveLength(0);
+  });
+});
+
+// ── Allowed attribute keys per element kind ─────────────────────────────────
+
+describe('Validation — allowed attribute keys', () => {
+  test('assignee on a service task is exactly one error naming it', async () => {
+    const { diagnostics } = await validate(
+      `process p { service S { assignee = "x" } }`,
+    );
+    const errors = diagnosticsFor(diagnostics, 'is not valid');
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.severity).toBe(SEVERITY_ERROR);
+    expect(errors[0]!.message).toContain('assignee');
+    expect(errors[0]!.message).toContain('service');
+  });
+
+  test('class on a user task is exactly one error naming it', async () => {
+    const { diagnostics } = await validate(
+      `process p { user T { class = com.example.X } }`,
+    );
+    const errors = diagnosticsFor(diagnostics, 'is not valid');
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.severity).toBe(SEVERITY_ERROR);
+    expect(errors[0]!.message).toContain('class');
+    expect(errors[0]!.message).toContain('user');
+  });
+
+  test('formKey on a service task is exactly one error naming it', async () => {
+    const { diagnostics } = await validate(
+      `process p { service S { class = com.example.X formKey = "f" } }`,
+    );
+    const errors = diagnosticsFor(diagnostics, 'is not valid');
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.message).toContain('formKey');
+  });
+
+  test('only legal keys on each kind produce no allowed-key error', async () => {
+    const { diagnostics } = await validate(`
+process p {
+  user T { assignee = "a" formKey = "f" }
+  service S { class = com.example.X }
+}
+`);
+    expect(diagnosticsFor(diagnostics, 'is not valid')).toHaveLength(0);
   });
 });
 
@@ -262,6 +338,19 @@ describe('Validation — reserved synthesised-id name', () => {
     );
     expect(errors).toHaveLength(1);
     expect(errors[0]!.message).toContain('Gateway_p_0_fork');
+  });
+
+  test('a Gateway_ name derived from an underscore-prefixed process id is exactly one error', async () => {
+    // Process `_p` synthesises gateway ids like `Gateway__p_split` — the
+    // segment after `Gateway_` starts with an underscore, which the pattern
+    // must still catch.
+    const { diagnostics } = await validate(
+      `process _p { user Gateway__p_split }`,
+    );
+    const errors = bySeverity(diagnostics, SEVERITY_ERROR);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.message).toContain('Gateway__p_split');
+    expect(errors[0]!.message).toContain('reserved');
   });
 
   test('a user task named with a Gateway_*_loop pattern is exactly one error', async () => {
@@ -486,6 +575,23 @@ process p {
     const errors = diagnosticsFor(diagnostics, 'label').filter(
       (d) => d.severity === SEVERITY_ERROR,
     );
+    expect(errors).toHaveLength(1);
+  });
+
+  test('a `label = …` declaration next to an inline process label is exactly one error', async () => {
+    // The inline label counts as the first occurrence: astToIr prefers it and
+    // silently drops the `label = "…"` attribute, so the attribute is flagged.
+    const { diagnostics } = await validate(`
+process P "A" {
+  label = "B"
+  start S
+  end E
+}
+`);
+    const errors = diagnosticsFor(
+      diagnostics,
+      'already has a label declared',
+    ).filter((d) => d.severity === SEVERITY_ERROR);
     expect(errors).toHaveLength(1);
   });
 

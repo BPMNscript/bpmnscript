@@ -21,7 +21,7 @@ body:
     validations:
       required: true
   - type: input
-    id: reproduction
+    id: reproduction_link
     attributes:
       label: Reproduction Link
       description: Link to a minimal repository or gist that reproduces the issue.

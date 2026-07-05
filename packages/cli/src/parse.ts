@@ -148,7 +148,8 @@ export async function parseAction(
   // Dropped-but-non-semantic content (extra Operaton/camunda extension
   // attributes, lanes) is printed to stderr so it is never silent, but does
   // NOT change the exit code — the parse already succeeded.
+  // The core message already names the owning element; no extra prefix.
   for (const w of warnings) {
-    console.error(chalk.yellow(`Warning: [${w.elementId}] ${w.message}`));
+    console.error(chalk.yellow(`Warning: ${w.message}`));
   }
 }

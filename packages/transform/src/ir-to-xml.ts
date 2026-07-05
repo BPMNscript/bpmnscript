@@ -181,12 +181,16 @@ function createFlowNode(
 ): ModdleElement {
   const baseAttrs: Record<string, unknown> = { id: node.id };
   // Derive a human-readable `name` from the id for labelable nodes when the IR
-  // carries none. Gateways are excluded: their ids are synthesized structural
-  // coordinates (e.g. `Gateway_…_split`) that would humanize to noise, and BPMN
-  // routing gateways are conventionally unnamed.
+  // carries none. Gateways and start/end events are excluded: their ids are
+  // synthesized structural coordinates (e.g. `Gateway_…_split`,
+  // `StartEvent_<processId>`) that would humanize to noise, and such elements
+  // are conventionally unnamed. Explicit names from the IR are always kept.
   const derivedName =
     node.name ??
-    (node.kind === 'exclusiveGateway' || node.kind === 'parallelGateway'
+    (node.kind === 'exclusiveGateway' ||
+    node.kind === 'parallelGateway' ||
+    node.kind === 'startEvent' ||
+    node.kind === 'endEvent'
       ? undefined
       : humanize(node.id));
   if (derivedName !== undefined) {

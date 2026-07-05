@@ -104,7 +104,12 @@ export class SidebarViewProvider implements vscode.WebviewViewProvider {
       undefined,
       disposables,
     );
-    webviewView.onDidDispose(() => disposables.forEach((d) => d.dispose()));
+    webviewView.onDidDispose(() => {
+      disposables.forEach((d) => d.dispose());
+      // Drop the reference so a later refresh() is a no-op instead of
+      // posting to a disposed webview.
+      this._view = undefined;
+    });
   }
 
   // -------------------------------------------------------------------------

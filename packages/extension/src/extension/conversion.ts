@@ -27,7 +27,7 @@ import type { ConvDiagnostic } from './conversion-core.js';
  * Resolve the source Uri for a command invocation.
  *
  * Preference order:
- *  1. The `uri` argument (passed by editor-title / explorer-context / sidebar).
+ *  1. The `uri` argument (passed by the sidebar or an explicit caller).
  *  2. The active text editor's document URI (command palette).
  */
 function resolveSourceUri(uri?: vscode.Uri): vscode.Uri | undefined {
@@ -129,6 +129,10 @@ export function compileCommand(
       extensionVersion,
     );
 
+    // Clear stale diagnostics for this source file on every outcome; the
+    // validation branch below re-populates them from the fresh result.
+    diagnostics.delete(sourceUri);
+
     if (result.ok) {
       const outputPath = swapExtension(sourceUri.fsPath, '.bpmn');
       const outputUri = vscode.Uri.file(outputPath);
@@ -141,9 +145,6 @@ export function compileCommand(
         outputUri,
         new TextEncoder().encode(result.output),
       );
-
-      // Clear any previous compilation diagnostics for this source file.
-      diagnostics.delete(sourceUri);
 
       await vscode.window.showTextDocument(outputUri);
 
@@ -207,6 +208,9 @@ export function decompileCommand(
 
     const result = await decompileBpmnToDsl(text, sourceFileName);
 
+    // Clear stale diagnostics for this source file on every outcome.
+    diagnostics.delete(sourceUri);
+
     if (result.ok) {
       const outputPath = swapExtension(sourceUri.fsPath, '.bpmnscript');
       const outputUri = vscode.Uri.file(outputPath);
@@ -220,9 +224,6 @@ export function decompileCommand(
         new TextEncoder().encode(result.output),
       );
 
-      // Clear any diagnostics associated with this source file.
-      diagnostics.delete(sourceUri);
-
       await vscode.window.showTextDocument(outputUri);
 
       void vscode.window.showInformationMessage(
@@ -233,10 +234,9 @@ export function decompileCommand(
       // lanes) never got an IR representation and would otherwise vanish
       // silently. Surface them as one aggregated warning, filename-prefixed
       // exactly once — symmetric with the unsupported-construct message below.
+      // Each core message already names the owning element.
       if (result.warnings.length > 0) {
-        const details = result.warnings
-          .map((w) => `${w.elementId}: ${w.message}`)
-          .join('; ');
+        const details = result.warnings.map((w) => w.message).join('; ');
         void vscode.window.showWarningMessage(
           `BPMNscript: "${sourceFileName}" dropped ${result.warnings.length} item(s) during decompile: ${details}`,
         );
