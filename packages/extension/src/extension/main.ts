@@ -1,10 +1,10 @@
 import type {
   LanguageClientOptions,
   ServerOptions,
-} from 'vscode-languageclient/node.js';
+} from 'vscode-languageclient/node';
 import * as vscode from 'vscode';
 import * as path from 'node:path';
-import { LanguageClient, TransportKind } from 'vscode-languageclient/node.js';
+import { LanguageClient, TransportKind } from 'vscode-languageclient/node';
 import {
   compileCommand,
   decompileCommand,

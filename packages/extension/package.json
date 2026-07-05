@@ -100,14 +100,13 @@
   "dependencies": {
     "@bpmn-script/language": "0.0.1",
     "@bpmn-script/transform": "0.0.1",
-    "vscode-languageclient": "~9.0.1",
-    "vscode-languageserver": "~9.0.1"
+    "vscode-languageclient": "~10.1.0"
   },
   "devDependencies": {
-    "@types/vscode": "~1.100.0",
+    "@types/vscode": "~1.125.0",
     "concurrently": "^9.2.3",
     "esbuild": "~0.28.1",
-    "vitest": "^4.1.0"
+    "vitest": "^4.1.9"
   },
   "vsce": {
     "dependencies": false
