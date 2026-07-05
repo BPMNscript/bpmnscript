@@ -30,6 +30,7 @@ import {
 } from 'bpmn-moddle';
 import { layoutProcess } from 'bpmn-auto-layout';
 
+import { humanize } from './humanize.js';
 import type { BpmnProcess, FlowElement, SequenceFlow } from './ir/types.js';
 
 /**
@@ -40,9 +41,11 @@ const TARGET_NAMESPACE = 'http://bpmnscript.io/processes';
 
 /**
  * Constant `operaton:historyTimeToLive` emitted on every process:
- * thirty-day retention, not parameterised at the IR level.
+ * thirty-day retention, not parameterised at the IR level. Exported so the
+ * importer can stay silent when a document carries exactly this value —
+ * re-export reproduces it, so no information is lost.
  */
-const HISTORY_TIME_TO_LIVE = 'P30D';
+export const HISTORY_TIME_TO_LIVE = 'P30D';
 
 /**
  * Load the local Operaton moddle extension at module-init time. Read via
@@ -104,8 +107,8 @@ export async function irToXml(
     operaton: operatonModdleExtension as Record<string, unknown>,
   });
 
-  // Phase 1: build moddle elements for every flow node and sequence flow.
-  // We hold them by id so we can wire references in phase 2.
+  // Pass 1: build moddle elements for every flow node and sequence flow.
+  // We hold them by id so we can wire references in pass 2.
   const flowNodeById = new Map<string, ModdleElement>();
   const sequenceFlowById = new Map<string, ModdleElement>();
 
@@ -120,17 +123,20 @@ export async function irToXml(
     );
   }
 
-  // Phase 2: wire up incoming/outgoing on every flow node — MIWG requires
+  // Pass 2: wire up incoming/outgoing on every flow node — MIWG requires
   // them and bpmn-moddle does not auto-derive them.
   attachIncomingOutgoing(process, flowNodeById, sequenceFlowById);
 
-  // Phase 3: wire up the gateway `default` references (these need the
-  // SequenceFlow moddle objects, so they have to happen after phase 1).
+  // Pass 3: wire up the gateway `default` references (these need the
+  // SequenceFlow moddle objects, so they have to happen after pass 1).
   attachGatewayDefaults(process, flowNodeById, sequenceFlowById);
 
   // Assemble the process and the definitions root.
   const processAttrs: Record<string, unknown> = {
     id: process.id,
+    // The process is always labelable: when no explicit name is carried in the
+    // IR, derive a human-readable one from the id so the BPMN stays meaningful.
+    name: process.name ?? humanize(process.id),
     isExecutable: process.isExecutable,
     'operaton:historyTimeToLive': HISTORY_TIME_TO_LIVE,
     flowElements: [
@@ -138,9 +144,6 @@ export async function irToXml(
       ...process.sequenceFlows.map((f) => requireById(sequenceFlowById, f.id)),
     ],
   };
-  if (process.name !== undefined) {
-    processAttrs.name = process.name;
-  }
   const processElement = moddle.create('bpmn:Process', processAttrs);
 
   const stem = options?.sourceFileName
@@ -177,8 +180,21 @@ function createFlowNode(
   node: FlowElement,
 ): ModdleElement {
   const baseAttrs: Record<string, unknown> = { id: node.id };
-  if (node.name !== undefined) {
-    baseAttrs.name = node.name;
+  // Derive a human-readable `name` from the id for labelable nodes when the IR
+  // carries none. Gateways and start/end events are excluded: their ids are
+  // synthesized structural coordinates (e.g. `Gateway_…_split`,
+  // `StartEvent_<processId>`) that would humanize to noise, and such elements
+  // are conventionally unnamed. Explicit names from the IR are always kept.
+  const derivedName =
+    node.name ??
+    (node.kind === 'exclusiveGateway' ||
+    node.kind === 'parallelGateway' ||
+    node.kind === 'startEvent' ||
+    node.kind === 'endEvent'
+      ? undefined
+      : humanize(node.id));
+  if (derivedName !== undefined) {
+    baseAttrs.name = derivedName;
   }
 
   switch (node.kind) {
@@ -212,6 +228,12 @@ function createFlowNode(
       // attachGatewayDefaults — because it needs the SequenceFlow
       // moddle objects to exist.
       return moddle.create('bpmn:ExclusiveGateway', baseAttrs);
+
+    case 'parallelGateway':
+      // Parallel gateways carry no `default` attribute — every outgoing
+      // path is executed unconditionally. Incoming/outgoing wiring is
+      // handled generically by `attachIncomingOutgoing` below.
+      return moddle.create('bpmn:ParallelGateway', baseAttrs);
 
     default: {
       // Exhaustiveness check — every variant of FlowElement is handled.

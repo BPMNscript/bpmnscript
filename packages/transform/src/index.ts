@@ -20,14 +20,35 @@ export type {
   UserTask,
   ServiceTaskJavaClass,
   ExclusiveGateway,
+  ParallelGateway,
   SequenceFlow,
 } from './ir/types.js';
 
+export {
+  makeGatewaySplitId,
+  makeGatewayJoinId,
+  makeGatewayForkId,
+  makeGatewayLoopId,
+  makeDefaultFlowId,
+  makeSequenceFlowId,
+  makeStartEventId,
+  makeEndEventId,
+  resolveCollision,
+} from './synthesize-ids.js';
+
+export { parseJuel, renderRawFallback } from './juel.js';
+export type { JuelNode, Accessor, BinaryOp, ExprResult } from './juel.js';
+
 export { irToXml, type IrToXmlOptions } from './ir-to-xml.js';
 export { xmlToIr } from './xml-to-ir.js';
+export type { ImportWarning, ImportWarningCategory } from './xml-to-ir.js';
 export {
+  UnsupportedConstructError,
   UnsupportedElementError,
   UnsupportedServiceTaskFormError,
+  UnsupportedEventDefinitionError,
+  UnsupportedLoopCharacteristicsError,
+  UnsupportedCollaborationError,
 } from './errors.js';
 
 export { astToIr } from './ast-to-ir.js';
@@ -45,5 +66,6 @@ export const IR_TYPE_NAMES = [
   'UserTask',
   'ServiceTaskJavaClass',
   'ExclusiveGateway',
+  'ParallelGateway',
   'SequenceFlow',
 ] as const;

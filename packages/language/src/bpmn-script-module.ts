@@ -15,11 +15,24 @@ import {
   BpmnScriptValidator,
   registerValidationChecks,
 } from './bpmn-script-validator.js';
+import {
+  DefaultVariableSymbolProvider,
+  type VariableSymbolProvider,
+} from './variable-symbol-provider.js';
+import { BpmnScriptCompletionProvider } from './bpmn-script-completion.js';
+import { BpmnScriptScopeProvider } from './bpmn-script-scope-provider.js';
+import { BpmnScriptParserErrorMessageProvider } from './bpmn-script-parser-error-message-provider.js';
 
 /**
  * Declaration of custom services - add your own service classes here.
+ *
+ * The {@link VariableSymbolProvider} lives in the `references` group (it resolves
+ * variable identifiers, the references layer's concern).
  */
 export type BpmnScriptAddedServices = {
+  references: {
+    VariableSymbolProvider: VariableSymbolProvider;
+  };
   validation: {
     BpmnScriptValidator: BpmnScriptValidator;
   };
@@ -41,8 +54,24 @@ export const BpmnScriptModule: Module<
   BpmnScriptServices,
   PartialLangiumServices & BpmnScriptAddedServices
 > = {
+  parser: {
+    // Enrich the "expected an identifier" parse errors when a reserved keyword
+    // is used as a bare name, pointing to the `"${…}"` raw-string fallback.
+    ParserErrorMessageProvider: (services) =>
+      new BpmnScriptParserErrorMessageProvider(services),
+  },
+  references: {
+    VariableSymbolProvider: () => new DefaultVariableSymbolProvider(),
+    // Process-scoped `goto`: a jump target is visible only within its own
+    // process, at any block-nesting depth (see the scope provider docstring).
+    ScopeProvider: (services) => new BpmnScriptScopeProvider(services),
+  },
   validation: {
-    BpmnScriptValidator: () => new BpmnScriptValidator(),
+    BpmnScriptValidator: (services) => new BpmnScriptValidator(services),
+  },
+  lsp: {
+    CompletionProvider: (services) =>
+      new BpmnScriptCompletionProvider(services),
   },
 };
 

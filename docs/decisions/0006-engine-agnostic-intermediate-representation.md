@@ -13,14 +13,14 @@ Should the transformation pipeline include an intermediate representation (IR) b
 
 ## Decision Drivers
 
-* Decoupling DSL syntax from BPMN serialization simplifies both grammar design and code generation
-* An engine-neutral IR allows future engine backends (Camunda 8, Flowable) without changing the DSL
-* The reverse transformation (BPMN XML to DSL) benefits from a shared IR
+- Decoupling DSL syntax from BPMN serialization simplifies both grammar design and code generation
+- An engine-neutral IR allows future engine backends (Camunda 8, Flowable) without changing the DSL
+- The reverse transformation (BPMN XML to DSL) benefits from a shared IR
 
 ## Considered Options
 
-* Engine-agnostic IR between AST and BPMN XML
-* Direct AST-to-XML transformation (no IR)
+- Engine-agnostic IR between AST and BPMN XML
+- Direct AST-to-XML transformation (no IR)
 
 ## Decision Outcome
 
@@ -28,7 +28,7 @@ Chosen option: "Engine-agnostic IR between AST and BPMN XML", because it decoupl
 
 ### Consequences
 
-* Good, because DSL grammar changes do not cascade into BPMN serialization logic
-* Good, because engine-specific extensions (Operaton namespace attributes) are applied at the IR-to-XML boundary, not embedded in the grammar
-* Good, because the reverse transformation (BPMN XML to DSL) shares the same IR
-* Bad, because an additional layer adds implementation effort and a mapping surface to maintain
+- Good, because DSL grammar changes do not cascade into BPMN serialization logic
+- Good, because engine-specific extensions (Operaton namespace attributes) are applied at the IR-to-XML boundary, not embedded in the grammar
+- Good, because the reverse transformation (BPMN XML to DSL) shares the same IR
+- Bad, because an additional layer adds implementation effort and a mapping surface to maintain

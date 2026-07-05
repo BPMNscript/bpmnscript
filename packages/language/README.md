@@ -8,7 +8,7 @@ This package knows the BPMNscript _language_ itself: what counts as valid syntax
 
 You write the language's rules once, in a single grammar file (`src/bpmn-script.langium`). [Langium](https://langium.org/) reads that grammar and generates three things for you: a **parser** (text → tree), the **AST** types (the tree's shape, as TypeScript interfaces), and a **language server** that powers the in-editor experience — syntax highlighting, autocompletion, and the red squiggles under mistakes. None of that generated code is checked in; `npm run build` regenerates it from the grammar.
 
-The only logic written by hand on top of Langium is the **validator** (`src/bpmn-script-validator.ts`): the structural rules a parser alone can't express, such as "every process needs a start event" or "a gateway's default branch can't carry a condition." Langium already reports purely syntactic errors and unresolved references; the validator adds the BPMN-specific rules.
+The only logic written by hand on top of Langium is the **validator** (`src/bpmn-script-validator.ts`): the structural rules a parser alone can't express, such as "a service task needs exactly one `class` attribute" or "a variable reference must match a declared `var` type." Langium already reports purely syntactic errors and unresolved references; the validator adds the BPMN-specific and type-system rules.
 
 ## Purpose
 
@@ -25,46 +25,72 @@ This package contains everything Langium generates and everything written on top
 import {
   createBpmnScriptServices, // factory: returns a fully wired Langium service container
   BpmnScriptLanguageMetaData, // file-extension constants (e.g. fileExtensions: ['bpmnscript'])
+  renderExpression, // serialize a parsed expression AST node to a "${…}" string
 } from '@bpmn-script/language';
 
-import type { Model } from '@bpmn-script/language'; // root AST node type
+import type {
+  Model, // root AST node (one or more processes)
+  Process, // process block
+  Statement, // union of all executable statement kinds
+  IfStatement,
+  ElseIf,
+  WhileStatement,
+  DoWhileStatement,
+  ParallelStatement,
+  GotoStatement,
+  StartEvent,
+  EndEvent,
+  UserTask,
+  ServiceTask,
+  Attribute,
+  VarDecl,
+  Expr,
+  VarRef, // expression AST nodes
+} from '@bpmn-script/language';
 ```
 
-The generated AST types (`Model`, `Process`, `FlowNode`, `SequenceFlow`, …) are also re-exported from the package root and consumed by `@bpmn-script/transform`'s `astToIr` function.
+The generated AST types (`Model`, `Process`, `Statement`, `IfStatement`, `WhileStatement`, `ParallelStatement`, …) are also re-exported from the package root and consumed by `@bpmn-script/transform`'s `astToIr` function.
 
 ## Grammar overview
 
-The grammar accepts files with one `process` block per file:
+The grammar accepts files with one `process` block per file. Sequence flow is implicit (top-to-bottom); control flow is expressed with structured statements. Optional `var` declarations go in the process header before the body.
 
 ```bpmnscript
-process invoice-approval "Invoice Approval" {
-  start ReviewStart
-  user  ReviewInvoice "Review invoice" assignee: "demo"
-  gateway AmountCheck "Amount > 1000?" default: AutoApprovePath
-  user  SeniorApproval "Senior approval" assignee: "manager"
-  service AutoApprove "Auto-approve" class: "com.example.AutoApproveDelegate"
-  end   Done
+process invoice-approval {
+  var amount: number
 
-  ReviewStart    -> ReviewInvoice
-  ReviewInvoice  -> AmountCheck
-  AmountCheck    -> SeniorApproval  when: "${amount > 1000}"
-  AmountCheck    -> AutoApprove     as: AutoApprovePath
-  SeniorApproval -> Done
-  AutoApprove    -> Done
+  start ReviewStart
+  user ReviewInvoice { assignee = "demo" }
+  if (amount > 1000) {
+    user SeniorApproval { assignee = "manager" }
+  } else {
+    service AutoApprove { class = "com.example.AutoApproveDelegate" }
+  }
+  end Done
 }
 ```
 
-Supported node kinds: `start`, `end`, `user` (optional `assignee:`, `formKey:`), `service` (required `class:`), `gateway` (optional `default:`). Sequence flows accept optional `when:` (condition expression) and `as:` (flow identifier, referenced by `default:`).
+Supported statements: `start`, `end`, `user` (attribute block: `assignee`, `formKey`), `service` (attribute block: `class`), `if`/`else if`/`else`, `while (cond) { }`, `do { } while (cond)`, `parallel { { } { } }`, `goto <id>`. Every targetable statement carries an explicit `id` (e.g. `user ReviewInvoice`). The human-readable BPMN `name` is derived from the id when no label is given (`ReviewInvoice` → "Review Invoice"); an optional quoted label after the id overrides it (e.g. `user ReviewInvoice "Review invoice"`).
+
+Condition expressions are parsed as a real AST (JUEL native subset): integer/decimal/string/boolean/null literals, variable references with dot-property and index accessors, unary `!`/`-`, binary arithmetic and comparison operators, logical `&&`/`||`, ternary `? :`, and parentheses. Expressions outside this subset use the quoted raw fallback `"${…}"`.
 
 ## Validator checks
 
-The built-in structural validator in `src/bpmn-script-validator.ts` reports errors for:
+The structural validator in `src/bpmn-script-validator.ts` reports:
 
-- A process with no `start` event.
-- A process with no `end` event.
-- A sequence flow whose source or target does not resolve to a declared node.
-- A gateway's `default:` that does not match any `as:` label among its outgoing flows.
-- Orphan nodes (nodes not connected by any sequence flow).
+- **Warning** — an undeclared variable reference (a `VarRef` whose root identifier has no matching `var` declaration in the enclosing process).
+- **Error** — a declared-variable type mismatch (e.g. a `string` variable used under a numeric comparison operator).
+- **Error** — a duplicate attribute key in an attribute block (e.g. two `assignee =` entries on one `user` task).
+- **Error** — a `service` task with no `class` attribute.
+- **Warning** — a process body with no executable statements.
+- **Error** — a `process` name reused by a later `process` in the same file.
+- **Error** — a `var` name declared twice in one process.
+- **Error** — a second `label = "…"` declaration in one process.
+- **Error** — a step name (`start`/`end`/`user`/`service`) reused by another step in the same process, which would make `goto` ambiguous.
+- **Warning** — an empty `if`/`else if`/`else` branch, `while`/`do … while` body, or `parallel` branch (zero statements — syntactically legal, almost always a mistake).
+- **Error** — a `goto` that reaches into a `parallel` branch from outside that branch's subtree; a branch's steps only run when the whole `parallel` statement is reached.
+
+`goto` targets are resolved by a custom `ScopeProvider` (`src/bpmn-script-scope-provider.ts`) that limits a `goto` to the steps of its own enclosing process, at any block-nesting depth — a `goto` can never resolve into another process's steps, even when both are declared in the same file. Using a reserved keyword where an identifier is expected (e.g. `if (date > deadline)`) is caught by a custom `ParserErrorMessageProvider` (`src/bpmn-script-parser-error-message-provider.ts`), which names the offending word and points to the quoted `"${…}"` raw-expression fallback instead of surfacing Chevrotain's raw token-mismatch message.
 
 ## Build and test
 
@@ -82,13 +108,21 @@ The `langium:generate` and `langium:watch` scripts are also available for IDE-on
 
 ## Source layout
 
-| Path                           | Purpose                                                                      |
-| ------------------------------ | ---------------------------------------------------------------------------- |
-| `src/bpmn-script.langium`      | Grammar definition                                                           |
-| `src/bpmn-script-validator.ts` | Structural BPMN validator                                                    |
-| `src/bpmn-script-module.ts`    | Langium dependency injection wiring                                          |
-| `src/index.ts`                 | Package re-exports                                                           |
-| `src/generated/`               | Langium-generated files (git-ignored, rebuilt by `npm run build`)            |
-| `syntaxes/`                    | TextMate grammar (git-ignored, generated by `langium generate`)              |
-| `test/parsing.test.ts`         | Grammar/parsing suite (canonical fixture, minimal process, lexer edge cases) |
-| `test/validating.test.ts`      | Structural validator suite (start/end/orphan/gateway-default checks)         |
+| Path                                               | Purpose                                                                                                                 |
+| -------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `src/bpmn-script.langium`                          | Grammar definition (structured statement syntax)                                                                        |
+| `src/bpmn-script-validator.ts`                     | AST-level validator: undeclared variables, type mismatches, duplicate attrs, empty body, whole-process integrity checks |
+| `src/bpmn-script-scope-provider.ts`                | `ScopeProvider` override: resolves `goto` targets within the enclosing process only                                     |
+| `src/bpmn-script-parser-error-message-provider.ts` | `ParserErrorMessageProvider` override: reserved-word-as-identifier guidance                                             |
+| `src/bpmn-script-completion.ts`                    | `CompletionProvider` override: snippet completions for structural keywords (`process`, `user`, `if`, …)                 |
+| `src/bpmn-script-module.ts`                        | Langium dependency injection wiring                                                                                     |
+| `src/expression-render.ts`                         | `renderExpression(astNode): string` — serializes a parsed expression AST to `${…}` text                                 |
+| `src/variable-symbol-provider.ts`                  | `VariableSymbolProvider` service — collects `var` declarations into a `VariableTable`                                   |
+| `src/index.ts`                                     | Package re-exports                                                                                                      |
+| `src/generated/`                                   | Langium-generated files (git-ignored, rebuilt by `npm run build`)                                                       |
+| `syntaxes/`                                        | TextMate grammar (git-ignored, generated by `langium generate`)                                                         |
+| `test/parsing.test.ts`                             | Grammar/parsing suite (canonical fixture, control-flow constructs, lexer edge cases)                                    |
+| `test/validating.test.ts`                          | Validator suite (undeclared vars, type mismatches, duplicate attrs, whole-process integrity checks)                     |
+| `test/scoping.test.ts`                             | `goto` process-scoping suite and reserved-word parse-error guidance                                                     |
+| `test/completion.test.ts`                          | Snippet-completion suite                                                                                                |
+| `test/variables.test.ts`                           | `VariableSymbolProvider` suite                                                                                          |

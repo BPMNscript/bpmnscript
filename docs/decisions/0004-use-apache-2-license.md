@@ -12,16 +12,16 @@ Which open-source license should BPMNscript use?
 
 ## Decision Drivers
 
-* Compatibility with Langium (MIT) and bpmn-moddle (MIT)
-* Compatibility with Operaton (Apache 2.0)
-* Patent protection for contributors
-* Permissive enough for academic and commercial use
+- Compatibility with Langium (MIT) and bpmn-moddle (MIT)
+- Compatibility with Operaton (Apache 2.0)
+- Patent protection for contributors
+- Permissive enough for academic and commercial use
 
 ## Considered Options
 
-* Apache 2.0
-* MIT
-* EPL-2.0
+- Apache 2.0
+- MIT
+- EPL-2.0
 
 ## Decision Outcome
 
@@ -29,6 +29,6 @@ Chosen option: "Apache 2.0", because it provides an explicit patent grant (unlik
 
 ### Consequences
 
-* Good, because Apache 2.0 includes an explicit patent grant, protecting contributors and users
-* Good, because it is compatible with the licenses of all key dependencies
-* Neutral, because Apache 2.0 requires a NOTICE file for derivative works, adding slight administrative overhead
+- Good, because Apache 2.0 includes an explicit patent grant, protecting contributors and users
+- Good, because it is compatible with the licenses of all key dependencies
+- Neutral, because Apache 2.0 requires a NOTICE file for derivative works, adding slight administrative overhead

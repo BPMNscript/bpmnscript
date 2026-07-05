@@ -9,11 +9,11 @@ It's being developed as part of a bachelor's thesis at [University of Hamburg](h
 ## What it does
 
 - Compiles `.bpmnscript` source files to BPMN 2.0 XML with auto-generated diagram layout, ready for deployment to Operaton.
-- Decompiles BPMN 2.0 XML back to `.bpmnscript` source.
-- Provides syntax highlighting and inline error diagnostics in VS Code.
-- Validates structural constraints at authoring time: missing start/end events, orphan nodes, unresolved references.
+- Decompiles BPMN 2.0 XML back to `.bpmnscript` source. Constructs the DSL cannot express (event definitions, loop characteristics, collaborations) are refused with an actionable error instead of being dropped; non-semantic content the IR doesn't carry (extra Operaton extension attributes, lanes) is dropped with a warning, not silently.
+- Provides a VS Code extension with syntax highlighting, inline error diagnostics, and a sidebar "Convert" panel that compiles the open file, jumps to its counterpart, or decompiles a BPMN file you pick from disk. The same conversions are in the command palette.
+- Validates code at authoring time: undeclared variable references, type mismatches in conditions, duplicate attribute/process/variable/step names, empty branches, and `goto` targets that fail to resolve or reach into a `parallel` branch from outside it.
 
-The DSL currently covers start events, end events, user tasks, service tasks, exclusive gateways, and sequence flows with conditions.
+The DSL currently covers start events, end events, user tasks, service tasks, exclusive gateways, parallel gateways, and structured control flow (`if`/`else if`/`else`, `while`, `do…while`, `parallel`). Element labels are optional: when omitted, the BPMN `name` is derived from the identifier (`invoice-approval` → "Invoice Approval"), and an explicit quoted label overrides it.
 
 ## Quick start
 
@@ -40,7 +40,7 @@ npx bpmns build invoice-approval.bpmnscript -o out/invoice-approval.bpmn
 npx bpmns parse invoice-approval.bpmn -o invoice-approval.bpmnscript
 ```
 
-Exit codes: `0` success, `1` validation/parse errors, `2` I/O errors.
+Exit codes: `0` success, `1` validation/parse errors, `2` I/O errors. `bpmns parse` prints any non-fatal import warnings (dropped extension attributes, lanes) to stderr without changing the exit code; a BPMN construct it cannot import at all exits `1` with an actionable message instead of writing a partial `.bpmnscript` file.
 
 ## Architecture
 
@@ -60,7 +60,7 @@ flowchart LR
     IR -- irToDsl --> SRC
 ```
 
-Compiling runs left to right (`.bpmnscript` → AST → IR → `.bpmn`); decompiling runs back along the lower arrows (`.bpmn` → IR → `.bpmnscript`). Reading that pipeline left to right: a `.bpmnscript` file is first parsed into an **AST** (abstract syntax tree — the parser's structured, in-memory view of the source). The AST is converted into the **IR**, a small set of plain TypeScript objects (`packages/transform/src/ir/types.ts`) that describe the process without any tie to a specific engine. Everything funnels through the IR: each transform only has to know how to convert _to_ or _from_ it, not to every other format directly. From the IR, one transform writes BPMN XML and another writes DSL text — so the same hub serves both compiling and decompiling.
+A `.bpmnscript` file is first parsed into an **AST** (abstract syntax tree — the parser's structured, in-memory view of the source). The AST is converted into the **IR**, a small set of plain TypeScript objects (`packages/transform/src/ir/types.ts`) that describe the process without any tie to a specific engine. Everything funnels through the IR: each transform only has to know how to convert _to_ or _from_ it, not to every other format directly. From the IR, one transform writes BPMN XML and another writes DSL text — so the same hub serves both compiling (`.bpmnscript` → AST → IR → `.bpmn`) and decompiling (`.bpmn` → IR → `.bpmnscript`).
 
 The IR stays vendor-neutral. Operaton-specific attributes (`operaton:class`, `operaton:assignee`, and so on) are added only at the final XML-serialization step, through a local [moddle extension](packages/transform/src/operaton-moddle.json) — keeping the engine's quirks out of the core data model.
 
@@ -77,7 +77,7 @@ packages/
   language/      Langium grammar, AST, validator, language server
   transform/     IR types and bidirectional transforms (AST/IR/XML/DSL)
   cli/           bpmns build / parse commands
-  extension/     VS Code extension (bundles the language server)
+  extension/     VS Code extension: language server, compile/decompile commands, sidebar
 tests/           Round-trip, fixture, and end-to-end tests
 examples/
   spring-boot/   Operaton + Spring Boot Docker fixture for e2e testing
@@ -99,9 +99,9 @@ Terms that show up across the READMEs, the ADRs, and the code:
 - **Langium** — the TypeScript toolkit used to build the language. From one grammar file it generates the parser, the AST types, and a language server. See [ADR-0002](docs/decisions/0002-use-langium-as-language-workbench.md).
 - **Grammar** — the file (`bpmn-script.langium`) that defines the DSL's syntax: which keywords and shapes are valid. Langium turns it into a parser.
 - **Parser** — the code that reads `.bpmnscript` text and builds the AST. Generated by Langium from the grammar.
-- **AST** — abstract syntax tree. The parser's structured, in-memory representation of a source file (nodes for each `process`, `user`, `gateway`, and so on).
+- **AST** — abstract syntax tree. The parser's structured, in-memory representation of a source file (nodes for each `process`, `user`, `service`, `if`, `while`, `parallel`, and so on).
 - **IR** — intermediate representation. A small set of plain objects (`packages/transform/src/ir/types.ts`) that every transform reads from or writes to. Engine-agnostic by design; see [ADR-0006](docs/decisions/0006-engine-agnostic-intermediate-representation.md).
-- **Validator** — checks that a parsed process is structurally sound (has a start and end, no orphan nodes, valid gateway defaults) and reports errors in the editor.
+- **Validator** — checks that a parsed process is structurally sound and reports errors in the editor. The full list of checks is in [packages/language/README.md](packages/language/README.md#validator-checks).
 - **LSP** — Language Server Protocol. The standard that lets one language server provide highlighting, autocompletion, and inline errors to any editor that speaks it. Langium implements it for us; the VS Code extension is the host.
 - **moddle / bpmn-moddle** — the library that reads and writes BPMN XML as objects. A _moddle extension_ (here, `operaton-moddle.json`) teaches it about the extra `operaton:` attributes.
 - **DI** — diagram interchange. The `<bpmndi:...>` part of a BPMN file that stores diagram coordinates (where each box sits). BPMNscript regenerates it automatically on export; see [ADR-0003](docs/decisions/0003-auto-layout-for-diagram-interchange.md).

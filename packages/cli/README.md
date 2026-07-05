@@ -6,7 +6,7 @@ The `bpmns` command-line binary for compiling and decompiling BPMNscript files.
 
 This package is the thin glue that wires the other two together for use in a terminal. It owns no transformation logic of its own: it reads a file, hands it to `@bpmn-script/language` (to parse and validate) and `@bpmn-script/transform` (to convert), prints any errors, and writes the result. Most of the code here is argument handling, file I/O, and turning failures into clear messages and exit codes.
 
-Two subcommands, and note the naming: `build` compiles DSL → BPMN, and `parse` goes the other way, decompiling BPMN → DSL.
+Two subcommands — careful with the names: `build` compiles DSL → BPMN, and `parse` goes the other way, decompiling BPMN → DSL.
 
 ## Purpose
 
@@ -31,7 +31,7 @@ bpmns parse invoice-approval.bpmn
 bpmns parse invoice-approval.bpmn -o invoice-approval.bpmnscript
 ```
 
-Exit codes: `0` success, `1` validation/parse errors, `2` I/O errors.
+Exit codes: `0` success, `1` validation/parse errors, `2` I/O errors. `bpmns parse` also prints non-fatal import warnings (dropped Operaton extension attributes, lanes) to stderr without changing the exit code, and exits `1` with an actionable message — writing no output file — when the BPMN contains a construct the DSL cannot express.
 
 ## Public API surface
 

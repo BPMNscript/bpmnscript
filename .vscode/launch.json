@@ -15,6 +15,7 @@
             "sourceMaps": true,
             "outFiles": [
                 "${workspaceFolder}/packages/language/out/**/*.js",
+                "${workspaceFolder}/packages/transform/out/**/*.js",
                 "${workspaceFolder}/packages/extension/out/**/*.js"
             ]
         },
@@ -29,6 +30,7 @@
             "sourceMaps": true,
             "outFiles": [
                 "${workspaceFolder}/packages/language/out/**/*.js",
+                "${workspaceFolder}/packages/transform/out/**/*.js",
                 "${workspaceFolder}/packages/extension/out/**/*.js",
                 "${workspaceFolder}/node_modules/langium"
             ]

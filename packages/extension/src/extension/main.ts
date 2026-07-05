@@ -2,9 +2,15 @@ import type {
   LanguageClientOptions,
   ServerOptions,
 } from 'vscode-languageclient/node.js';
-import type * as vscode from 'vscode';
+import * as vscode from 'vscode';
 import * as path from 'node:path';
 import { LanguageClient, TransportKind } from 'vscode-languageclient/node.js';
+import {
+  compileCommand,
+  decompileCommand,
+  pickBpmnAndDecompileCommand,
+} from './conversion.js';
+import { SidebarViewProvider } from './sidebar-view-provider.js';
 
 let client: LanguageClient;
 
@@ -12,6 +18,47 @@ let client: LanguageClient;
 export async function activate(
   context: vscode.ExtensionContext,
 ): Promise<void> {
+  const convDiagnostics =
+    vscode.languages.createDiagnosticCollection('bpmnscript');
+  context.subscriptions.push(convDiagnostics);
+
+  // Read the extension version once; stamped into generated BPMN as exporterVersion.
+  const extensionVersion = String(
+    (context.extension.packageJSON as { version?: string }).version ?? '0.0.1',
+  );
+
+  // `decompile` is reused by the file-picker command below.
+  const decompile = decompileCommand(convDiagnostics);
+  context.subscriptions.push(
+    vscode.commands.registerCommand(
+      'bpmnscript.compile',
+      compileCommand(convDiagnostics, extensionVersion),
+    ),
+    vscode.commands.registerCommand('bpmnscript.decompile', decompile),
+    vscode.commands.registerCommand(
+      'bpmnscript.openAndDecompile',
+      pickBpmnAndDecompileCommand(decompile),
+    ),
+  );
+
+  // Kept in scope so the active-editor listener below can call provider.refresh().
+  const provider = new SidebarViewProvider(context.extensionUri);
+  context.subscriptions.push(
+    vscode.window.registerWebviewViewProvider(
+      SidebarViewProvider.viewType,
+      provider,
+      { webviewOptions: { retainContextWhenHidden: false } },
+    ),
+  );
+
+  // Keeps the sidebar in sync when the user switches editor tabs.
+  context.subscriptions.push(
+    vscode.window.onDidChangeActiveTextEditor(() => void provider.refresh()),
+  );
+
+  // Safe to call before resolveWebviewView — refresh() is a no-op until the view is resolved.
+  void provider.refresh();
+
   client = await startLanguageClient(context);
 }
 

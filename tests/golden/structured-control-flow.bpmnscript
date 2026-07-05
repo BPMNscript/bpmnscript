@@ -1,0 +1,28 @@
+// Exercises if/else, while, and parallel in a single process — see README.md.
+
+process structured-control-flow {
+  start Begin
+
+  user Triage "Triage request" { assignee = "demo" }
+
+  if (priority > 5) {
+    user EscalateReview "Escalate review" { assignee = "manager" }
+  } else {
+    service AutoTriage "Auto-triage" { class = "com.example.flow.AutoTriageDelegate" }
+  }
+
+  while (retries < 3) {
+    service RetryFetch "Retry fetch" { class = "com.example.flow.RetryFetchDelegate" }
+  }
+
+  parallel {
+    {
+      user NotifyOwner "Notify owner" { assignee = "demo" }
+    }
+    {
+      service AuditLog "Write audit log" { class = "com.example.flow.AuditLogDelegate" }
+    }
+  }
+
+  end Finish
+}

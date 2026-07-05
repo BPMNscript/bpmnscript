@@ -10,6 +10,10 @@
   "categories": [
     "Programming Languages"
   ],
+  "activationEvents": [
+    "onCommand:bpmnscript.openAndDecompile",
+    "onView:bpmnscript.sidebar"
+  ],
   "contributes": {
     "languages": [
       {
@@ -30,7 +34,57 @@
         "scopeName": "source.bpmn-script",
         "path": "syntaxes/bpmn-script.tmLanguage.json"
       }
-    ]
+    ],
+    "commands": [
+      {
+        "command": "bpmnscript.compile",
+        "title": "Compile to BPMN",
+        "category": "BPMNscript"
+      },
+      {
+        "command": "bpmnscript.decompile",
+        "title": "Decompile to BPMNscript",
+        "category": "BPMNscript"
+      },
+      {
+        "command": "bpmnscript.openAndDecompile",
+        "title": "Open a BPMN file and convert it…",
+        "category": "BPMNscript"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "bpmnscript",
+          "title": "BPMNscript",
+          "icon": "media/sidebar-icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "bpmnscript": [
+        {
+          "type": "webview",
+          "id": "bpmnscript.sidebar",
+          "name": "Convert"
+        }
+      ]
+    },
+    "menus": {
+      "commandPalette": [
+        {
+          "command": "bpmnscript.compile",
+          "when": "resourceExtname == .bpmnscript"
+        },
+        {
+          "command": "bpmnscript.decompile",
+          "when": "resourceExtname == .bpmn"
+        },
+        {
+          "command": "bpmnscript.openAndDecompile"
+        }
+      ]
+    }
   },
   "main": "./out/extension/main.cjs",
   "scripts": {
@@ -40,17 +94,20 @@
     "build": "npm run build:prepare && tsc -b tsconfig.json && node esbuild.mjs",
     "build:post": "npm run build:prepare && node esbuild.mjs",
     "build:clean": "npm run clean && npm run build",
-    "watch": "npm run build:prepare && concurrently -n tsc,esbuild -c blue,yellow \"tsc -b tsconfig.json --watch\" \"node esbuild.mjs --watch\""
+    "watch": "npm run build:prepare && concurrently -n tsc,esbuild -c blue,yellow \"tsc -b tsconfig.json --watch\" \"node esbuild.mjs --watch\"",
+    "test": "vitest run"
   },
   "dependencies": {
     "@bpmn-script/language": "0.0.1",
+    "@bpmn-script/transform": "0.0.1",
     "vscode-languageclient": "~9.0.1",
     "vscode-languageserver": "~9.0.1"
   },
   "devDependencies": {
     "@types/vscode": "~1.100.0",
     "concurrently": "^9.0.0",
-    "esbuild": "~0.28.0"
+    "esbuild": "~0.28.0",
+    "vitest": "^4.1.0"
   },
   "vsce": {
     "dependencies": false

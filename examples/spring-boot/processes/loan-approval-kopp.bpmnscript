@@ -1,0 +1,56 @@
+process loan-approval-kopp "Loan Approval (Kopp 2009)" {
+  var amount: number
+  var creditScore: number
+  var extRes1: string
+  var extRes2: string
+  var intRes: string
+  var assessorRes: string
+
+  start RequestReceived "Loan request received"
+
+  // Conservative default: the manual assessment counts as high risk unless the
+  // assessor explicitly lowers it (and so an undefined assessorRes never reaches
+  // the final gateway).
+  service InitRequest "Initialise request" {
+    class = "com.example.loan.kopp.InitDelegate"
+  }
+
+  // The request is rated in parallel by two external bureaus and one internal
+  // service; the internal low-risk path additionally needs a human assessor.
+  parallel {
+    {
+      service CheckExternalS1 "Check external rating S1" {
+        class = "com.example.loan.kopp.ExternalRatingS1Delegate"
+      }
+    }
+    {
+      service CheckExternalS2 "Check external rating S2" {
+        class = "com.example.loan.kopp.ExternalRatingS2Delegate"
+      }
+    }
+    {
+      service CheckInternal "Check internal rating" {
+        class = "com.example.loan.kopp.InternalRatingDelegate"
+      }
+      if (intRes == "low") {
+        user AssessRisk "Manual risk assessment" {
+          assignee = "demo"
+        }
+      }
+    }
+  }
+
+  // Conservative accept: both external bureaus low, or internal low AND the
+  // human assessor agrees.
+  if ((extRes1 == "low" && extRes2 == "low") || (intRes == "low" && assessorRes == "low")) {
+    service AcceptLoan "Accept loan" {
+      class = "com.example.loan.kopp.AcceptLoanDelegate"
+    }
+  } else {
+    service RejectLoan "Reject loan" {
+      class = "com.example.loan.kopp.RejectLoanDelegate"
+    }
+  }
+
+  end Done "Loan request handled"
+}

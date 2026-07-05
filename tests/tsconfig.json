@@ -1,0 +1,11 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "rootDir": ".",
+    "outDir": "out",
+    "module": "esnext",
+    "moduleResolution": "bundler"
+  },
+  "include": ["fixtures/**/*.ts", "helpers/**/*.ts", "**/*.test.ts"],
+  "exclude": ["out/**", "node_modules/**"]
+}

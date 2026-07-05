@@ -1,0 +1,97 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI" xmlns:dc="http://www.omg.org/spec/DD/20100524/DC" xmlns:di="http://www.omg.org/spec/DD/20100524/DI" xmlns:operaton="http://operaton.org/schema/1.0/bpmn" id="Definitions_invoice-approval" targetNamespace="http://bpmnscript.io/processes" exporter="BPMNscript" exporterVersion="0.0.0">
+  <bpmn:process id="invoice-approval" name="Invoice Approval" isExecutable="true" operaton:historyTimeToLive="P30D">
+    <bpmn:startEvent id="ReviewStart">
+      <bpmn:outgoing>Flow_ReviewStart_ReviewInvoice</bpmn:outgoing>
+    </bpmn:startEvent>
+    <bpmn:userTask id="ReviewInvoice" name="Review Invoice" operaton:assignee="demo">
+      <bpmn:incoming>Flow_ReviewStart_ReviewInvoice</bpmn:incoming>
+      <bpmn:outgoing>Flow_ReviewInvoice_Gateway_invoice-approval_2_split</bpmn:outgoing>
+    </bpmn:userTask>
+    <bpmn:exclusiveGateway id="Gateway_invoice-approval_2_split" default="Flow_Gateway_invoice-approval_2_split_default">
+      <bpmn:incoming>Flow_ReviewInvoice_Gateway_invoice-approval_2_split</bpmn:incoming>
+      <bpmn:outgoing>Flow_Gateway_invoice-approval_2_split_SeniorApproval</bpmn:outgoing>
+      <bpmn:outgoing>Flow_Gateway_invoice-approval_2_split_default</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+    <bpmn:exclusiveGateway id="Gateway_invoice-approval_2_join">
+      <bpmn:incoming>Flow_SeniorApproval_Gateway_invoice-approval_2_join</bpmn:incoming>
+      <bpmn:incoming>Flow_AutoApprove_Gateway_invoice-approval_2_join</bpmn:incoming>
+      <bpmn:outgoing>Flow_Gateway_invoice-approval_2_join_Done</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+    <bpmn:userTask id="SeniorApproval" name="Senior Approval" operaton:assignee="manager">
+      <bpmn:incoming>Flow_Gateway_invoice-approval_2_split_SeniorApproval</bpmn:incoming>
+      <bpmn:outgoing>Flow_SeniorApproval_Gateway_invoice-approval_2_join</bpmn:outgoing>
+    </bpmn:userTask>
+    <bpmn:serviceTask id="AutoApprove" name="Auto Approve" operaton:class="com.example.invoice.AutoApproveDelegate">
+      <bpmn:incoming>Flow_Gateway_invoice-approval_2_split_default</bpmn:incoming>
+      <bpmn:outgoing>Flow_AutoApprove_Gateway_invoice-approval_2_join</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:endEvent id="Done">
+      <bpmn:incoming>Flow_Gateway_invoice-approval_2_join_Done</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:sequenceFlow id="Flow_ReviewStart_ReviewInvoice" sourceRef="ReviewStart" targetRef="ReviewInvoice" />
+    <bpmn:sequenceFlow id="Flow_Gateway_invoice-approval_2_split_SeniorApproval" sourceRef="Gateway_invoice-approval_2_split" targetRef="SeniorApproval">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">${amount &gt; 1000}</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="Flow_SeniorApproval_Gateway_invoice-approval_2_join" sourceRef="SeniorApproval" targetRef="Gateway_invoice-approval_2_join" />
+    <bpmn:sequenceFlow id="Flow_Gateway_invoice-approval_2_split_default" sourceRef="Gateway_invoice-approval_2_split" targetRef="AutoApprove" />
+    <bpmn:sequenceFlow id="Flow_AutoApprove_Gateway_invoice-approval_2_join" sourceRef="AutoApprove" targetRef="Gateway_invoice-approval_2_join" />
+    <bpmn:sequenceFlow id="Flow_ReviewInvoice_Gateway_invoice-approval_2_split" sourceRef="ReviewInvoice" targetRef="Gateway_invoice-approval_2_split" />
+    <bpmn:sequenceFlow id="Flow_Gateway_invoice-approval_2_join_Done" sourceRef="Gateway_invoice-approval_2_join" targetRef="Done" />
+  </bpmn:process>
+  <bpmndi:BPMNDiagram id="BPMNDiagram_invoice-approval">
+    <bpmndi:BPMNPlane id="BPMNPlane_invoice-approval" bpmnElement="invoice-approval">
+      <bpmndi:BPMNShape id="ReviewStart_di" bpmnElement="ReviewStart">
+        <dc:Bounds x="57" y="52" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="ReviewInvoice_di" bpmnElement="ReviewInvoice">
+        <dc:Bounds x="175" y="30" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_invoice-approval_2_split_di" bpmnElement="Gateway_invoice-approval_2_split" isMarkerVisible="true">
+        <dc:Bounds x="350" y="45" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="SeniorApproval_di" bpmnElement="SeniorApproval">
+        <dc:Bounds x="475" y="30" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_invoice-approval_2_join_di" bpmnElement="Gateway_invoice-approval_2_join" isMarkerVisible="true">
+        <dc:Bounds x="650" y="45" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Done_di" bpmnElement="Done">
+        <dc:Bounds x="807" y="52" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="AutoApprove_di" bpmnElement="AutoApprove">
+        <dc:Bounds x="475" y="170" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_ReviewStart_ReviewInvoice_di" bpmnElement="Flow_ReviewStart_ReviewInvoice">
+        <di:waypoint x="93" y="70" />
+        <di:waypoint x="175" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ReviewInvoice_Gateway_invoice-approval_2_split_di" bpmnElement="Flow_ReviewInvoice_Gateway_invoice-approval_2_split">
+        <di:waypoint x="275" y="70" />
+        <di:waypoint x="350" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Gateway_invoice-approval_2_split_SeniorApproval_di" bpmnElement="Flow_Gateway_invoice-approval_2_split_SeniorApproval">
+        <di:waypoint x="400" y="70" />
+        <di:waypoint x="475" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Gateway_invoice-approval_2_split_default_di" bpmnElement="Flow_Gateway_invoice-approval_2_split_default">
+        <di:waypoint x="375" y="95" />
+        <di:waypoint x="375" y="210" />
+        <di:waypoint x="475" y="210" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_SeniorApproval_Gateway_invoice-approval_2_join_di" bpmnElement="Flow_SeniorApproval_Gateway_invoice-approval_2_join">
+        <di:waypoint x="575" y="70" />
+        <di:waypoint x="650" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Gateway_invoice-approval_2_join_Done_di" bpmnElement="Flow_Gateway_invoice-approval_2_join_Done">
+        <di:waypoint x="700" y="70" />
+        <di:waypoint x="807" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_AutoApprove_Gateway_invoice-approval_2_join_di" bpmnElement="Flow_AutoApprove_Gateway_invoice-approval_2_join">
+        <di:waypoint x="575" y="210" />
+        <di:waypoint x="675" y="210" />
+        <di:waypoint x="675" y="95" />
+      </bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>

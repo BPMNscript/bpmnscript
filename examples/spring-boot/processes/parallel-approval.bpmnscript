@@ -1,0 +1,21 @@
+// Parallel Approval — a parallel-gateway example deployed by the
+// spring-boot engine end-to-end test. Two user tasks run concurrently on
+// independent parallel branches; the process ends only after both complete.
+//
+// This exercises the parallel-gateway desugaring end-to-end: the `parallel
+// { { } { } }` construct produces a parallelGateway fork/join pair in the
+// BPMN XML, and Operaton's AND-split/AND-join semantics are verified at the
+// engine level by `tests/e2e/parallel-approval.test.ts`.
+
+process parallel-approval {
+  start ParallelStart
+  parallel {
+    {
+      user ApproveA "Approve branch A" { assignee = "demo" }
+    }
+    {
+      user ApproveB "Approve branch B" { assignee = "manager" }
+    }
+  }
+  end ParallelEnd
+}

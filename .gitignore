@@ -52,6 +52,10 @@ coverage/
 # Maven build output (Spring Boot fixture)
 examples/spring-boot/target/
 
+# Compiled BPMN output of the example .bpmnscript sources (`bpmns build`).
+# Regenerate on demand; the tracked fixtures under tests/golden/ are unaffected.
+examples/**/*.bpmn
+
 # npm
 npm-debug.log*
 

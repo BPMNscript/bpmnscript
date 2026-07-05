@@ -1,0 +1,17 @@
+server:
+  port: 8080
+
+operaton.bpm:
+  # Admin user credentials used by the Operaton REST API and web apps.
+  admin-user:
+    id: demo
+    password: demo
+    firstName: Demo
+
+  # History level — "audit" (= Operaton's HISTORY_DEFAULT constant) records task and
+  # variable events needed by the E2E harness. Valid values: none | activity | audit | full | auto.
+  history-level: audit
+
+  # The testcontainers harness deploys process definitions via REST (POST /engine-rest/deployment/create).
+  # Disabling classpath auto-deployment prevents duplicate deployments on startup.
+  auto-deployment-enabled: false

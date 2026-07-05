@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions
+    xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+    id="Definitions_TimerStart"
+    targetNamespace="http://bpmn.io/schema/bpmn"
+    exporter="Operaton Modeler"
+    exporterVersion="5.0.0">
+
+  <bpmn:process id="timer-start" name="Timer Start" isExecutable="true">
+
+    <bpmn:startEvent id="ScheduledStart">
+      <bpmn:outgoing>Flow_ScheduledStart_Notify</bpmn:outgoing>
+      <bpmn:timerEventDefinition id="TimerDef_1">
+        <bpmn:timeDuration>PT1H</bpmn:timeDuration>
+      </bpmn:timerEventDefinition>
+    </bpmn:startEvent>
+
+    <bpmn:userTask id="Notify" name="Notify team">
+      <bpmn:incoming>Flow_ScheduledStart_Notify</bpmn:incoming>
+      <bpmn:outgoing>Flow_Notify_Done</bpmn:outgoing>
+    </bpmn:userTask>
+
+    <bpmn:endEvent id="Done">
+      <bpmn:incoming>Flow_Notify_Done</bpmn:incoming>
+    </bpmn:endEvent>
+
+    <bpmn:sequenceFlow id="Flow_ScheduledStart_Notify" sourceRef="ScheduledStart" targetRef="Notify" />
+    <bpmn:sequenceFlow id="Flow_Notify_Done" sourceRef="Notify" targetRef="Done" />
+
+  </bpmn:process>
+
+</bpmn:definitions>
