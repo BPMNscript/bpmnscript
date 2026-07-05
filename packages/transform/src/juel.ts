@@ -84,8 +84,7 @@ export type BinaryOp =
  * fallback carrying the verbatim inner body (without the `${…}` wrapper).
  */
 export type ExprResult =
-  | { kind: 'structured'; expr: JuelNode }
-  | { kind: 'raw'; text: string };
+  { kind: 'structured'; expr: JuelNode } | { kind: 'raw'; text: string };
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -191,14 +190,7 @@ function stripWrapperLenient(body: string): string {
 // ---------------------------------------------------------------------------
 
 type TokenType =
-  | 'int'
-  | 'decimal'
-  | 'string'
-  | 'id'
-  | 'bool'
-  | 'null'
-  | 'op'
-  | 'punct';
+  'int' | 'decimal' | 'string' | 'id' | 'bool' | 'null' | 'op' | 'punct';
 
 interface Token {
   type: TokenType;

@@ -494,8 +494,7 @@ function collectExtensionDrops(
 
   // 2. Extension elements (materialised children only — see docstring).
   const extensionElements = el.get('extensionElements') as
-    | ModdleElement
-    | undefined;
+    ModdleElement | undefined;
   if (extensionElements !== undefined) {
     const values =
       (extensionElements.get('values') as ModdleElement[] | undefined) ?? [];
@@ -726,8 +725,7 @@ function mapSequenceFlow(el: ModdleElement): SequenceFlow {
   }
 
   const expressionEl = el.get('conditionExpression') as
-    | ModdleElement
-    | undefined;
+    ModdleElement | undefined;
   const conditionExpression =
     expressionEl !== undefined
       ? ((expressionEl.get('body') as string | undefined) ?? undefined)
