@@ -105,7 +105,7 @@
   },
   "devDependencies": {
     "@types/vscode": "~1.125.0",
-    "concurrently": "^9.0.0",
+    "concurrently": "^9.2.3",
     "esbuild": "~0.28.1",
     "vitest": "^4.1.9"
   },
