@@ -126,7 +126,7 @@ export async function compileDslToBpmn(
         character: d.range.start.character,
         endLine: d.range.end.line,
         endCharacter: d.range.end.character,
-        message: d.message,
+        message: typeof d.message === 'string' ? d.message : d.message.value,
         severity: 1 as const,
         text: doc.textDocument.getText(d.range),
       }));

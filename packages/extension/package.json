@@ -100,8 +100,7 @@
   "dependencies": {
     "@bpmn-script/language": "0.0.1",
     "@bpmn-script/transform": "0.0.1",
-    "vscode-languageclient": "~9.0.1",
-    "vscode-languageserver": "~9.0.1"
+    "vscode-languageclient": "~10.1.0"
   },
   "devDependencies": {
     "@types/vscode": "~1.125.0",

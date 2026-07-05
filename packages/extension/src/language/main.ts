@@ -3,7 +3,7 @@ import { NodeFileSystem } from 'langium/node';
 import {
   createConnection,
   ProposedFeatures,
-} from 'vscode-languageserver/node.js';
+} from 'vscode-languageserver/node';
 import { createBpmnScriptServices } from '@bpmn-script/language';
 
 // Create a connection to the client
