@@ -5,10 +5,6 @@ import org.operaton.bpm.engine.delegate.JavaDelegate;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-/**
- * Records a rejected loan in the Kopp loan-approval variant.
- * Sets {@code decision = "REJECTED"}.
- */
 public class RejectLoanDelegate implements JavaDelegate {
 
     private static final Logger LOG = LoggerFactory.getLogger(RejectLoanDelegate.class);

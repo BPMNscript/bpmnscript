@@ -13,10 +13,11 @@
  * that the restructuring `irToDsl` can reproduce them exactly and the
  * round-trip is stable. No id is constructed inline.
  *
- * ============================================================================
- * STRUCTURAL-COORDINATE SCHEME  `<X>`  (FROZEN CONTRACT — `irToDsl` and the
- * round-trip normalizer consume it)
- * ============================================================================
+ * ## Structural-coordinate scheme `<X>`
+ *
+ * The scheme changes only in lockstep with `synthesize-ids.ts`, `ir-to-dsl.ts`,
+ * and the round-trip normalizer (`tests/helpers/normalize-ir.ts`) — decompile
+ * round-trip id stability depends on reproducing the same coordinates.
  *
  * Every compound statement (`if` / `while` / `do-while` / `parallel`) needs a
  * structural coordinate `<X>` that seeds its synthesised gateway ids
@@ -52,39 +53,22 @@
  *       i-th `parallel` branch <X>_b<i>   (0-based)
  *
  *     A loop owns exactly one block, so its body has no sibling to collide with
- *     and needs no segment; a nested compound at body index 0 of a `while`/`do`
- *     at <X> reads <X>_0, distinct from any if-branch (`<X>_t_0`, `<X>_e_0`, …)
- *     or parallel-branch (`<X>_b0_0`) coordinate because those carry a segment
- *     a bare loop body never produces.
+ *     and needs no segment.
  *
- * Concretely:
- *   - A top-level `if` at body index 2 of `process invoice-approval` →
- *       <X> = `invoice-approval_2`,
- *       split gateway id = `Gateway_invoice-approval_2_split`,
- *       join  gateway id = `Gateway_invoice-approval_2_join`.
- *   - A `while` nested at index 0 of that `if`'s `then` block →
+ * Example: a `while` nested at index 0 of the `then` block of an `if` at body
+ * index 2 of `process invoice-approval` →
  *       then block coord = `invoice-approval_2_t`,
  *       <X> = `invoice-approval_2_t_0`,
  *       loop gateway id = `Gateway_invoice-approval_2_t_0_loop`.
- *   - The same `while` nested at index 0 of that `if`'s `else` block →
- *       else block coord = `invoice-approval_2_e`,
- *       <X> = `invoice-approval_2_e_0` (distinct from the `then` sibling).
- *   - A `parallel` at body index 1, its second branch (index 1) containing a
- *     nested `if` at index 0 →
- *       parallel  <X> = `<proc>_1`,
- *       fork id      = `Gateway_<proc>_1_fork`, join id = `Gateway_<proc>_1_join`,
- *       nested `if`  <X> = `<proc>_1_b1_0`.
  *
  * The coordinate is passed down explicitly while walking; it never depends on
  * how many gateways were emitted before. Gateway ids are NOT routed through the
  * `taken`/`resolveCollision` guard — two distinct structural coordinates never
- * produce the same gateway id (the position-path scheme is injective). Names
- * that would collide with a synthesised gateway id pattern are rejected upstream
- * by the validator (see `bpmn-script-validator.ts`).
+ * produce the same gateway id. Names that would collide with a synthesised
+ * gateway id pattern are rejected upstream by the validator
+ * (see `bpmn-script-validator.ts`).
  *
- * ============================================================================
- * ENTRY / EXIT CONTRACT
- * ============================================================================
+ * ## Entry / exit contract
  *
  * Lowering a statement returns `{ entry, exit }` (or `null` exit when control
  * does not fall through — an explicit `end`, or a block whose final statement
@@ -653,8 +637,7 @@ function lowerParallel(
  * its `exit` is `null` (control transfers explicitly, so no fall-through).
  *
  * Because there is no synthesised node for the jump, the implicit sequence flow
- * from the preceding statement lands directly on the target — exactly the "raw
- * flow to the target node" the contract requires.
+ * from the preceding statement lands directly on the target as a raw flow.
  */
 function lowerGoto(stmt: GotoStatement): Frontier {
   // `$refText` is the target id verbatim (cross-refs key on `name=ID`), and is

@@ -11,23 +11,22 @@
  *      are the *imported* ids of the handwritten golden (`AmountCheck`,
  *      `AutoApprovePath`, `Flow_SeniorBranch`) and its gateway has no synthesized
  *      join (the handwritten process lets both branches converge directly on the
- *      end event). This fixture exercises `irToXml` **in isolation** — bpmn-moddle
+ *      end event). This fixture exercises `irToXml` in isolation — bpmn-moddle
  *      round-trip, Operaton attribute emission, and per-node incoming/outgoing
  *      degree — without depending on the parser or the desugarer.
  *
  *   B. The full pipeline — `irToXml(astToIr(parse(example.bpmnscript)))` on
  *      `examples/spring-boot/processes/invoice-approval.bpmnscript`. This is
  *      byte-compared against `tests/golden/invoice-approval-generated.bpmn`,
- *      which is the **frozen output of the whole pipeline**. Its gateway/default
+ *      the pinned output of the whole pipeline. Its gateway/default
  *      ids are the synthesized ids (`Gateway_invoice-approval_2_split`,
  *      `Flow_Gateway_invoice-approval_2_split_default`) and the `if`/`else`
  *      desugars to a paired split + join, distinct from the import-shaped
  *      fixture above.
  *
- * The two purposes are deliberately separated: `importShapedIr` keeps the
- * `irToXml` unit-level checks deterministic and decoupled from the parser, while
- * the full-pipeline golden test freezes the real end-to-end output the engine
- * E2E deploys.
+ * Keeping the two apart lets `importShapedIr` drive deterministic unit-level
+ * checks decoupled from the parser, while the full-pipeline golden test pins
+ * the real end-to-end output the engine E2E deploys.
  */
 
 import { describe, it, expect, beforeAll } from 'vitest';
@@ -58,10 +57,10 @@ const EXAMPLE_BPMNSCRIPT_PATH = resolve(
 /**
  * Import-shaped IR — mirrors what `xmlToIr` produces from
  * `tests/golden/invoice-approval-handwritten.bpmn`. Its ids are the imported,
- * handwritten ids (`AmountCheck`, `AutoApprovePath`, `Flow_SeniorBranch`), which
- * are preserved verbatim on import — the correct behaviour. This
+ * handwritten ids (`AmountCheck`, `AutoApprovePath`, `Flow_SeniorBranch`),
+ * preserved verbatim on import. This
  * fixture drives the `irToXml`-isolation checks (bpmn-moddle round-trip,
- * Operaton attributes, per-node graph degree); it is **not** byte-compared
+ * Operaton attributes, per-node graph degree); it is not byte-compared
  * against the generated golden, which is now the full-pipeline output (see the
  * dedicated full-pipeline describe block below).
  *
@@ -191,10 +190,8 @@ describe('irToXml — Operaton extension attributes', () => {
 describe('irToXml — per-node incoming/outgoing graph degree', () => {
   /**
    * Parse the XML into a moddle graph and verify incoming/outgoing counts
-   * for every flow node, matching the edges defined in the canonical IR.
-   *
-   * This is the reviewer's coverage gap fix: per-node check, not just
-   * aggregate totals.
+   * for every flow node, matching the edges defined in the canonical IR —
+   * a per-node check, not just aggregate totals.
    *
    * Expected degrees for the invoice-approval graph:
    *   ReviewStart:    in=0,  out=1  (start event)
@@ -246,14 +243,14 @@ describe('irToXml — per-node incoming/outgoing graph degree', () => {
 
 describe('irToXml — full-pipeline golden diff', () => {
   /**
-   * Freezes the **whole pipeline**:
+   * Pins the whole pipeline:
    *
    *   parse(example.bpmnscript) → astToIr → irToXml  ≡  generated golden (bytes)
    *
    * The `examples/spring-boot/processes/invoice-approval.bpmnscript`
    * is parsed with the real Langium services (mirroring how
    * `tests/round-trip.test.ts` wires `parseHelper` + `EmptyFileSystem`),
-   * desugared to IR, and serialised. The result must equal
+   * desugared to IR, and serialized. The result must equal
    * `tests/golden/invoice-approval-generated.bpmn` byte-for-byte — this is the
    * golden the engine E2E deploys, so the synthesized gateway/flow ids
    * (`Gateway_invoice-approval_2_split`/`_join`,

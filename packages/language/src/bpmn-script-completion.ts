@@ -13,9 +13,7 @@ import {
  * Snippet bodies for the structural keywords, keyed by keyword text. Accepting
  * one scaffolds the whole construct — braces, parentheses, and tab stops —
  * instead of inserting the bare word, so the caret lands inside the body where
- * the next statement/attribute completions are already offered. (Without this,
- * accepting `process` leaves you at `process│` with the grammar expecting an id
- * then `{`, a position where nothing is suggestible.)
+ * the next statement/attribute completions are already offered.
  *
  * Placeholders use LSP snippet syntax: `$1`/`$2` tab stops, `$0` final caret,
  * `${n:default}` defaults, `${n|a,b|}` choices. Indentation uses tabs; the

@@ -5,13 +5,7 @@ import org.operaton.bpm.engine.delegate.JavaDelegate;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-/**
- * External credit bureau S2 in the Kopp loan-approval variant.
- *
- * <p>Rates by loan size: {@code extRes2 = "low"} when {@code amount <= 50000},
- * otherwise {@code "high"}. Using a different signal from S1 makes the
- * "both external bureaus low" condition meaningfully selective.
- */
+/** External credit bureau S2: rates by loan size. */
 public class ExternalRatingS2Delegate implements JavaDelegate {
 
     private static final Logger LOG = LoggerFactory.getLogger(ExternalRatingS2Delegate.class);

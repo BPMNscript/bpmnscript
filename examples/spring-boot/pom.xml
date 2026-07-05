@@ -23,28 +23,25 @@
   </properties>
 
   <dependencies>
-    <!-- Operaton BPM Spring Boot Starter -->
     <dependency>
       <groupId>org.operaton.bpm.springboot</groupId>
       <artifactId>operaton-bpm-spring-boot-starter</artifactId>
       <version>2.1.0</version>
     </dependency>
 
-    <!-- Operaton REST API (engine-rest/deployment/create etc.) -->
     <dependency>
       <groupId>org.operaton.bpm.springboot</groupId>
       <artifactId>operaton-bpm-spring-boot-starter-rest</artifactId>
       <version>2.1.0</version>
     </dependency>
 
-    <!-- Operaton web apps (Cockpit, Tasklist, Admin) — used by the manual loan-approval demo -->
+    <!-- Cockpit/Tasklist web apps for the manual demo -->
     <dependency>
       <groupId>org.operaton.bpm.springboot</groupId>
       <artifactId>operaton-bpm-spring-boot-starter-webapp</artifactId>
       <version>2.1.0</version>
     </dependency>
 
-    <!-- Embedded database for the process engine -->
     <dependency>
       <groupId>com.h2database</groupId>
       <artifactId>h2</artifactId>

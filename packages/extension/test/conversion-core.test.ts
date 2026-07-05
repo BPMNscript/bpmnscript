@@ -64,11 +64,7 @@ for (const [label, p] of [
   }
 }
 
-// ---------------------------------------------------------------------------
-// Suite 1 — compileDslToBpmn: happy path (golden fixture)
-// ---------------------------------------------------------------------------
-
-describe('[integration] compileDslToBpmn — invoice-approval golden fixture', () => {
+describe('compileDslToBpmn — invoice-approval golden fixture', () => {
   it('compiles to ok:true; output contains bpmn:definitions; re-imports via xmlToIr with process id invoice-approval', async () => {
     const source = fs.readFileSync(INVOICE_APPROVAL_SRC, 'utf-8');
 
@@ -90,11 +86,7 @@ describe('[integration] compileDslToBpmn — invoice-approval golden fixture', (
   });
 });
 
-// ---------------------------------------------------------------------------
-// Suite 2 — compileDslToBpmn: validation error gate
-// ---------------------------------------------------------------------------
-
-describe('[integration] compileDslToBpmn — type-mismatch validation error', () => {
+describe('compileDslToBpmn — type-mismatch validation error', () => {
   it('returns ok:false, kind:validation, diagnostics.length >= 1, each with 0-based line and non-empty message', async () => {
     // `name` is declared as `string` but compared to a number — type-mismatch ERROR.
     const source = `process p {
@@ -124,11 +116,7 @@ describe('[integration] compileDslToBpmn — type-mismatch validation error', ()
   });
 });
 
-// ---------------------------------------------------------------------------
-// Suite 3 — compileDslToBpmn: severity gating — warnings do not block
-// ---------------------------------------------------------------------------
-
-describe('[integration] compileDslToBpmn — undeclared-variable warning does not block', () => {
+describe('compileDslToBpmn — undeclared-variable warning does not block', () => {
   it('returns ok:true for a source whose only diagnostic is an undeclared-variable warning', async () => {
     // `amount` is used without being declared: undeclared-variable WARNING (severity 2).
     // Warnings must NOT prevent compilation — only severity 1 (Error) diagnostics block.
@@ -144,11 +132,7 @@ describe('[integration] compileDslToBpmn — undeclared-variable warning does no
   });
 });
 
-// ---------------------------------------------------------------------------
-// Suite 4 — decompileBpmnToDsl: happy path (golden fixture)
-// ---------------------------------------------------------------------------
-
-describe('[integration] decompileBpmnToDsl — invoice-approval-generated golden fixture', () => {
+describe('decompileBpmnToDsl — invoice-approval-generated golden fixture', () => {
   let parse: ReturnType<typeof parseHelper<Model>>;
 
   beforeAll(() => {
@@ -175,10 +159,6 @@ describe('[integration] decompileBpmnToDsl — invoice-approval-generated golden
     expect(result.warnings).toEqual([]);
   });
 });
-
-// ---------------------------------------------------------------------------
-// Suite 4b — decompileBpmnToDsl: import-warning surfacing (dropped content)
-// ---------------------------------------------------------------------------
 
 /**
  * A BPMN process whose only supported subset is start → user task → end, but
@@ -207,7 +187,7 @@ const LANE_AND_ASYNC_ATTR_BPMN = `<?xml version="1.0" encoding="UTF-8"?>
   </bpmn:process>
 </bpmn:definitions>`;
 
-describe('[integration] decompileBpmnToDsl — surfaces import warnings for dropped content', () => {
+describe('decompileBpmnToDsl — surfaces import warnings for dropped content', () => {
   it('returns ok:true with populated warnings naming the dropped attribute, the lane, and their element ids', async () => {
     const result = await decompileBpmnToDsl(
       LANE_AND_ASYNC_ATTR_BPMN,
@@ -232,11 +212,7 @@ describe('[integration] decompileBpmnToDsl — surfaces import warnings for drop
   });
 });
 
-// ---------------------------------------------------------------------------
-// Suite 5 — decompileBpmnToDsl: unsupported construct rejection
-// ---------------------------------------------------------------------------
-
-describe('[integration] decompileBpmnToDsl — bad-service-task-expression.bpmn', () => {
+describe('decompileBpmnToDsl — bad-service-task-expression.bpmn', () => {
   it('returns ok:false, kind:unsupported; message mentions operaton:expression and BadService_1', async () => {
     const xml = fs.readFileSync(BAD_SERVICE_TASK_BPMN, 'utf-8');
 
@@ -257,10 +233,8 @@ describe('[integration] decompileBpmnToDsl — bad-service-task-expression.bpmn'
   });
 });
 
-// ---------------------------------------------------------------------------
-// Suite 5b — decompileBpmnToDsl: new refusal subclasses also classify as
-// kind:'unsupported' via the shared UnsupportedConstructError base check.
-// ---------------------------------------------------------------------------
+// New refusal subclasses also classify as kind:'unsupported' via the shared
+// UnsupportedConstructError base check.
 
 /** A start event with a timer definition — refused via UnsupportedEventDefinitionError. */
 const TIMER_START_BPMN = `<?xml version="1.0" encoding="UTF-8"?>
@@ -277,7 +251,7 @@ const TIMER_START_BPMN = `<?xml version="1.0" encoding="UTF-8"?>
   </bpmn:process>
 </bpmn:definitions>`;
 
-describe('[integration] decompileBpmnToDsl — timer-start.bpmn (new refusal subclass)', () => {
+describe('decompileBpmnToDsl — timer-start.bpmn (new refusal subclass)', () => {
   it('returns ok:false, kind:unsupported; message mentions the timer trigger and TimerStart', async () => {
     const result = await decompileBpmnToDsl(
       TIMER_START_BPMN,
@@ -295,11 +269,7 @@ describe('[integration] decompileBpmnToDsl — timer-start.bpmn (new refusal sub
   });
 });
 
-// ---------------------------------------------------------------------------
-// Suite 6 — swapExtension: pure helper
-// ---------------------------------------------------------------------------
-
-describe('[unit] swapExtension', () => {
+describe('swapExtension', () => {
   it('strips the final extension and appends the new one, preserving dotted basenames', () => {
     expect(swapExtension('/a/b/my.invoice.bpmnscript', '.bpmn')).toBe(
       '/a/b/my.invoice.bpmn',

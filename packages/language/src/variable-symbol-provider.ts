@@ -9,9 +9,8 @@
  * a referenced variable is declared and whether it is used compatibly with an
  * operator.
  *
- * The collection is an **injectable service** rather than an inline helper so
- * validators resolve it through dependency injection. Today it has exactly one
- * symbol source — the explicit `var name: type` declarations.
+ * Today there is exactly one symbol source — the explicit `var name: type`
+ * declarations.
  */
 
 import type { Process, VarType } from './generated/ast.js';
@@ -29,9 +28,6 @@ export interface VariableSymbol {
 
 /**
  * The set of variables visible within a process, keyed by name.
- *
- * A `Map` (not a plain object) so iteration order is insertion order and lookup
- * is O(1).
  */
 export type VariableTable = Map<string, VariableSymbol>;
 

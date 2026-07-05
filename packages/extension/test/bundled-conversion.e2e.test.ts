@@ -1,14 +1,14 @@
 /**
  * Bundled extension E2E and integration tests.
  *
- * Scenario 1 [e2e]: Proves the production esbuild shim (import.meta.url)
- * and the real operaton-moddle.json both work inside a CJS bundle. A tiny
- * verify entry is bundled with the same sharedBuildOptions as the production
- * extension and spawned under plain node — no VS Code host needed.
+ * Confirms the production esbuild shim (import.meta.url) and the real
+ * operaton-moddle.json both work inside a CJS bundle: a tiny verify entry is
+ * bundled with the same sharedBuildOptions as the production extension and
+ * spawned under plain node — no VS Code host needed.
  *
- * Scenarios 2–5 [integration]: Exercise the conversion-core API directly
- * against real repo fixtures, including a disk-write round-trip (temp dir),
- * Langium re-parse, error-gating, and unsupported-construct rejection.
+ * Also exercises the conversion-core API directly against real repo
+ * fixtures, including a disk-write round-trip (temp dir), Langium re-parse,
+ * error-gating, and unsupported-construct rejection.
  *
  * Build-order requirement: run `npm run build` (language + transform +
  * extension) before this suite. The conversion-core, esbuild.mjs, and the
@@ -77,17 +77,13 @@ for (const [label, p] of [
   }
 }
 
-// ---------------------------------------------------------------------------
-// Scenario 1 [e2e] — bundled asset resolution + transform under the shim
-// ---------------------------------------------------------------------------
-//
 // A tiny entry is bundled with the SAME esbuild options as the production
 // extension (sharedBuildOptions + assetCopyPlugin). The outfile lands in
 // out/extension/ so the import.meta.url shim resolves beside the real
-// operaton-moddle.json. Spawning node on it proves the shim + asset copy
-// both work at runtime — production shim + asset resolution proof.
+// operaton-moddle.json, exercising the shim and the asset copy together at
+// runtime.
 
-describe('[e2e] bundled asset resolution and transform under the shim', () => {
+describe('bundled asset resolution and transform under the shim', () => {
   // Unique filenames per run to avoid collisions when suites run in parallel.
   const runId = `${process.pid}-${Date.now()}`;
   const verifyEntryFile = path.join(os.tmpdir(), `verify-entry-${runId}.js`);
@@ -133,9 +129,9 @@ describe('[e2e] bundled asset resolution and transform under the shim', () => {
     fs.writeFileSync(verifyEntryFile, entrySource, 'utf-8');
 
     // Bundle with the identical configuration as the production extension.
-    // Single source of truth: sharedBuildOptions contains the proven
-    // import.meta.url shim; assetCopyPlugin copies operaton-moddle.json beside
-    // the bundle's outfile.
+    // Single source of truth: sharedBuildOptions contains the import.meta.url
+    // shim (see esbuild.mjs); assetCopyPlugin copies operaton-moddle.json
+    // beside the bundle's outfile.
     //
     // nodePaths provides the repo-root node_modules to esbuild so that
     // @bpmn-script/transform is resolvable when the entry file lives in /tmp/.
@@ -157,7 +153,7 @@ describe('[e2e] bundled asset resolution and transform under the shim', () => {
   });
 
   it(
-    'spawns node on the verify bundle; asserts process id and BPMN XML output (production shim + asset resolution proof)',
+    'the bundle resolves its moddle asset under plain Node and produces the expected process id and BPMN XML',
     { timeout: 35_000 },
     () => {
       expect(
@@ -165,9 +161,9 @@ describe('[e2e] bundled asset resolution and transform under the shim', () => {
         `verify bundle missing at ${verifyOutfile} — esbuild step failed`,
       ).toBe(true);
 
-      // Spawn node on the bundled file with the golden BPMN as the argument.
-      // This is the runtime proof: the import.meta.url shim resolves to
-      // out/extension/, so the transform's operaton-moddle.json lookup succeeds.
+      // Spawn node on the bundled file with the golden BPMN as the argument;
+      // the import.meta.url shim must resolve to out/extension/ so the
+      // transform's operaton-moddle.json lookup succeeds.
       const result = spawnSync(
         process.execPath,
         [verifyOutfile, GOLDEN_GENERATED_BPMN],
@@ -181,23 +177,19 @@ describe('[e2e] bundled asset resolution and transform under the shim', () => {
 
       const { stdout } = result;
 
-      // Process id proves xmlToIr parsed the BPMN correctly inside the bundle.
+      // The process id confirms xmlToIr parsed the BPMN correctly inside the bundle.
       expect(stdout).toContain('PROCESS_ID:invoice-approval');
 
-      // bpmn:definitions proves irToXml (including bpmn-auto-layout) produced output.
+      // bpmn:definitions confirms irToXml (including bpmn-auto-layout) produced output.
       expect(stdout).toContain('bpmn:definitions');
     },
   );
 });
 
-// ---------------------------------------------------------------------------
-// Scenario 2 [integration] — Full DSL → BPMN journey with disk write round-trip
-// ---------------------------------------------------------------------------
-//
 // compileDslToBpmn produces a BPMN XML string; it is written to a temp dir
 // (mirroring what the VS Code adapter does); xmlToIr re-imports it from disk.
 
-describe('[integration] DSL to BPMN journey with disk write round-trip', () => {
+describe('DSL to BPMN journey with disk write round-trip', () => {
   let tmpDir: string;
 
   beforeAll(() => {
@@ -240,11 +232,7 @@ describe('[integration] DSL to BPMN journey with disk write round-trip', () => {
   );
 });
 
-// ---------------------------------------------------------------------------
-// Scenario 3 [integration] — Decompile journey: BPMN → DSL → Langium re-parse
-// ---------------------------------------------------------------------------
-
-describe('[integration] decompile journey — BPMN to DSL with Langium re-parse', () => {
+describe('decompile journey — BPMN to DSL with Langium re-parse', () => {
   let parse: ReturnType<typeof parseHelper<Model>>;
 
   beforeAll(() => {
@@ -272,14 +260,10 @@ describe('[integration] decompile journey — BPMN to DSL with Langium re-parse'
   );
 });
 
-// ---------------------------------------------------------------------------
-// Scenario 4 [integration] — Validation gate: type-mismatch ERROR, no output
-// ---------------------------------------------------------------------------
-//
-// A bug in severity gating would silently emit invalid BPMN. This check proves
-// that a source with an error-level diagnostic produces no output.
+// A bug in severity gating would silently emit invalid BPMN. This check
+// confirms that a source with an error-level diagnostic produces no output.
 
-describe('[integration] validation gate — type-mismatch error blocks output', () => {
+describe('validation gate — type-mismatch error blocks output', () => {
   it(
     'returns kind:validation and produces no output for a type-mismatch source',
     { timeout: 30_000 },
@@ -298,9 +282,9 @@ describe('[integration] validation gate — type-mismatch error blocks output', 
 
       expect(result.kind).toBe('validation');
 
-      // Explicitly assert no output was produced — the type system alone is not
-      // sufficient proof because the adapter could still write result.output if the
-      // kind check were missing.
+      // Explicitly assert no output was produced — the type system alone
+      // doesn't guarantee this; the adapter could still write result.output
+      // if the kind check were missing.
       expect('output' in result).toBe(false);
 
       if (result.kind === 'validation') {
@@ -310,11 +294,7 @@ describe('[integration] validation gate — type-mismatch error blocks output', 
   );
 });
 
-// ---------------------------------------------------------------------------
-// Scenario 5 [integration] — Unsupported-construct gate
-// ---------------------------------------------------------------------------
-
-describe('[integration] unsupported-construct gate — bad-service-task-expression.bpmn', () => {
+describe('unsupported-construct gate — bad-service-task-expression.bpmn', () => {
   it(
     'returns kind:unsupported for a BPMN with an unsupported service task expression',
     { timeout: 30_000 },

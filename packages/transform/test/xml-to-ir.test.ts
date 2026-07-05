@@ -16,7 +16,7 @@
  *   2. Same file with `camunda:` prefixes instead of `operaton:` → same IR.
  *   3. Service task with `operaton:expression` → `UnsupportedServiceTaskFormError`.
  *   4. XML containing `bpmn:parallelGateway` → successful import (parallelGateway in IR).
- *   4b. Parallel split+join XML (§15.3 shape) → IR with two parallelGateway elements,
+ *   4b. Parallel split+join XML → IR with two parallelGateway elements,
  *       6 sequence flows, no conditionExpression on fork-outgoing flows.
  *   4c. Genuinely unsupported element (e.g. `bpmn:scriptTask`) → `UnsupportedElementError`.
  *   5. XML with TWO processes → multi-process error.
@@ -266,9 +266,9 @@ describe('xmlToIr — unsupported service task form', () => {
   });
 });
 
-// ── 4. bpmn:parallelGateway is now SUPPORTED (inverted from old "unsupported" test) ──
+// ── 4. bpmn:parallelGateway is supported ─────────────────────────────────────
 
-describe('xmlToIr — parallel gateway support (inverted from old unsupported test)', () => {
+describe('xmlToIr — parallel gateway support', () => {
   it('XML containing bpmn:parallelGateway is imported successfully (no error)', async () => {
     const xml = `<?xml version="1.0" encoding="UTF-8"?>
 <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
@@ -282,7 +282,6 @@ describe('xmlToIr — parallel gateway support (inverted from old unsupported te
   </bpmn:process>
 </bpmn:definitions>`;
 
-    // Previously this threw UnsupportedElementError; now it must resolve.
     const { ir } = await xmlToIr(xml);
     expect(ir.flowElements.some((fe) => fe.kind === 'parallelGateway')).toBe(
       true,
@@ -308,11 +307,11 @@ describe('xmlToIr — parallel gateway support (inverted from old unsupported te
   });
 });
 
-// ── 4b. xmlToIr — parallel split+join (§15.3 shape) ─────────────────────────
+// ── 4b. xmlToIr — parallel split+join ────────────────────────────────────────
 
 describe('xmlToIr — parallel split+join (fork + join)', () => {
   /**
-   * §15.3 parallel split+join shape:
+   * Parallel split+join shape:
    *   Start → Fork (parallelGateway, 2 outgoing)
    *     → BranchA (userTask)
    *     → BranchB (userTask)
@@ -949,18 +948,18 @@ describe('xmlToIr — warns for dropped extension elements', () => {
   });
 });
 
-// ── 11b. Regression: a clean empty <extensionElements/> is NOT falsely accused
+// ── 11b. Regression: a clean empty <extensionElements/> is not flagged
 // when another element in the same document carries a real drop. ────────────
 
-describe('xmlToIr — empty extensionElements is not falsely flagged (regression)', () => {
+describe('xmlToIr — empty extensionElements is not flagged (regression)', () => {
   /**
    * One document, two elements: a user task with a genuinely empty
    * `<bpmn:extensionElements/>` (a stray stub modelers leave behind) and a
-   * service task with a real `<operaton:inputOutput>` block. moddle used to
-   * report a single document-level "unparsable content" signal that a naive
-   * boolean fanned out onto BOTH elements — falsely accusing the empty one.
-   * Typing the operaton extension elements makes the drop attributable to the
-   * exact owning element, so exactly one warning must fire, on the real one.
+   * service task with a real `<operaton:inputOutput>` block. A single
+   * document-level "unparsable content" boolean cannot tell the two apart
+   * and would flag both; typing the operaton extension elements makes the
+   * drop attributable to the exact owning element, so exactly one warning
+   * must fire, on the element that really drops content.
    */
   const twoElementXml = `<?xml version="1.0" encoding="UTF-8"?>
 <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
@@ -1068,14 +1067,14 @@ describe('xmlToIr — undeclared operaton extension element residual', () => {
   </bpmn:process>
 </bpmn:definitions>`;
 
-  it('reports the undeclared element once (no silent loss) without accusing the clean task', async () => {
+  it('reports the undeclared element once (no silent loss) without flagging the clean task', async () => {
     const { warnings } = await xmlToIr(residualXml);
     const extWarnings = warnings.filter(
       (w) => w.category === 'extensionAttribute',
     );
     // Exactly one warning for the one real drop.
     expect(extWarnings).toHaveLength(1);
-    // The clean empty stub is never accused.
+    // The clean empty stub is never flagged.
     expect(warnings.some((w) => w.elementId === 'CleanTask')).toBe(false);
     // The concrete construct is named in the message.
     expect(extWarnings[0].message).toMatch(/properties/i);

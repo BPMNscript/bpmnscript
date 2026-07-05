@@ -20,9 +20,8 @@
  *   - Negative: a BPMN file with `operaton:expression` on a service task is
  *     rejected by `bpmns parse` (non-zero exit code).
  *
- * @gating  Controlled by the `SKIP_DOCKER_TESTS` environment variable.
- *          When set to "true" the entire describe block is skipped.
- *          CI runs with `SKIP_DOCKER_TESTS=true`.
+ * The Docker-backed describe block is skipped entirely when
+ * `SKIP_DOCKER_TESTS=true` (as in CI).
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
@@ -128,15 +127,12 @@ describe.skipIf(SKIP)('E2E: invoice-approval on Spring Boot Operaton', () => {
     // Ensure the output directory exists so the CLI can write into it.
     mkdirSync(path.dirname(XML_OUT_PATH), { recursive: true });
 
-    // Step 1 — build BPMN XML from the DSL source via the real CLI.
     execFileSync('npx', ['bpmns', 'build', DSL_PATH, '-o', XML_OUT_PATH], {
       stdio: 'inherit',
     });
 
-    // Step 2 — start Operaton via testcontainers.
     fixture = await startFixture('spring-boot');
 
-    // Step 3 — deploy once so every test reuses the same definition.
     const { deploymentId } = await fixture.deploy(
       XML_OUT_PATH,
       'invoice-approval-test',
@@ -147,10 +143,6 @@ describe.skipIf(SKIP)('E2E: invoice-approval on Spring Boot Operaton', () => {
   afterAll(async () => {
     await fixture?.stop();
   });
-
-  // -----------------------------------------------------------------------
-  // Test 1: Senior Approval branch (high-amount invoice)
-  // -----------------------------------------------------------------------
 
   /**
    * When `amount = 5000` the gateway condition `${amount > 1000}` is true.
@@ -197,10 +189,6 @@ describe.skipIf(SKIP)('E2E: invoice-approval on Spring Boot Operaton', () => {
     expect(next[0]!.name).toBe('Senior Approval');
   }, 30_000);
 
-  // -----------------------------------------------------------------------
-  // Test 2: Auto-approve branch (low-amount invoice, service task)
-  // -----------------------------------------------------------------------
-
   /**
    * When `amount = 100` the gateway condition `${amount > 1000}` is false.
    * The default branch (AutoApprovePath) routes to the AutoApprove service
@@ -241,10 +229,6 @@ describe.skipIf(SKIP)('E2E: invoice-approval on Spring Boot Operaton', () => {
     );
     expect(remaining).toHaveLength(0);
   }, 30_000);
-
-  // -----------------------------------------------------------------------
-  // Test 3: Negative — unsupported service-task form
-  // -----------------------------------------------------------------------
 
   /**
    * `tests/golden/bad-service-task-expression.bpmn` contains a service task

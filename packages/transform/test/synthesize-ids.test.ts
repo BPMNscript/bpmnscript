@@ -1,10 +1,9 @@
 /**
  * Unit tests for the deterministic synthesized-id utility.
  *
- * These tests serve as both a correctness guard and as the **frozen contract**
- * documentation for the id templates. The templates are coupled to the
- * round-trip normalizer: changing a template here requires a corresponding
- * update there.
+ * These tests serve as both a correctness guard and as documentation for the
+ * id templates. The templates are coupled to the round-trip normalizer:
+ * changing a template here requires a corresponding update there.
  *
  * Templates under test (shared by the desugarer, the emitter, and the
  * round-trip normalizer):
@@ -82,11 +81,11 @@ describe('determinism', () => {
 
   it('makeStartEventId resolves a collision with an author id and records it', () => {
     // A task literally named `StartEvent_P` in process `P` collides with the
-    // implicit start id; the synthesiser must suffix it deterministically.
+    // implicit start id; the synthesizer must suffix it deterministically.
     const taken = new Set<string>(['StartEvent_P']);
     const id = makeStartEventId('P', taken);
     expect(id).toBe('StartEvent_P_2');
-    // Side effect: the resolved id is recorded in `taken`.
+    // The resolved id is recorded in `taken`.
     expect(taken.has('StartEvent_P_2')).toBe(true);
   });
 

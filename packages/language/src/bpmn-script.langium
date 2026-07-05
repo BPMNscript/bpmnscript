@@ -15,7 +15,7 @@
 //     rules, never a terminal), with a quoted "${…}" raw-string fallback.
 //   - Optional typed `var name: type` declarations at process scope.
 //
-// Naming convention (CLAUDE.md NameProvider lesson): the AST property `name`
+// Naming convention: the AST property `name`
 // holds the DSL identifier used as the cross-reference *target* key. Every
 // targetable statement therefore exposes `name=ID`, which is what lets
 // `goto target=[Statement:ID]` resolve through Langium's default NameProvider.
@@ -148,7 +148,7 @@ GotoStatement:
 //
 // These are PARSER rules (never a terminal): the whole IDE value proposition
 // (validation, hovers, jump-to-def) depends on conditions being a real AST,
-// not an opaque string (thesis rule 15). Binary operators use Langium's
+// not an opaque string. Binary operators use Langium's
 // left-associative tree-rewriting idiom `{infer X.left=current}` so a chain
 // such as `a + b + c` builds a left-leaning tree rather than overwriting
 // `left`/`right`. Precedence climbs ternary → logical-or → logical-and →

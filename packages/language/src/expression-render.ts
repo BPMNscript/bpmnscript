@@ -1,12 +1,11 @@
 /**
- * Pure renderer from a parsed JUEL-subset expression AST back to its canonical
- * `${…}` body string.
+ * Renders a parsed JUEL-subset expression AST back to its canonical `${…}`
+ * body string.
  *
  * This helper lives in `packages/language` so it carries zero `transform`
  * dependencies. The desugaring `astToIr` imports `renderExpression` from
  * `@bpmn-script/language` to turn an `if`/`while` condition AST into the `${…}`
- * body stored verbatim in the IR (`conditionExpression`). It is a
- * side-effect-free tree-walk over the generated AST types — no I/O, no globals.
+ * body stored verbatim in the IR (`conditionExpression`).
  *
  * Two surfaces are provided:
  *  - {@link renderExpressionInner} emits the *inner* expression text without the

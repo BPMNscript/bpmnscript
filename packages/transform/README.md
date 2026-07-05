@@ -108,11 +108,7 @@ import {
 } from '@bpmn-script/transform';
 
 // JUEL expression parser and serializer (import / decompile path)
-import {
-  parseJuel,
-  renderRawFallback,
-  renderExprFromIr,
-} from '@bpmn-script/transform';
+import { parseJuel, renderRawFallback } from '@bpmn-script/transform';
 import type {
   JuelNode,
   Accessor,
@@ -196,7 +192,7 @@ npm test
 | `src/xml-to-ir.ts`         | `xmlToIr`: BPMN 2.0 XML → `{ ir, warnings }` (DI discarded, refuses constructs the IR cannot express, warns about non-semantic drops)                                                                                                  |
 | `src/cfg-analysis.ts`      | `analyzeCfg`: dominator/post-dominator/back-edge analysis for `irToDsl`                                                                                                                                                                |
 | `src/ir-to-dsl.ts`         | `irToDsl`: restructure flat IR → structured DSL text; degrades to `goto` (see [ADR-0009](../../docs/decisions/0009-dominator-based-restructuring.md))                                                                                  |
-| `src/juel.ts`              | `parseJuel`, `renderRawFallback`, `renderExprFromIr`: JUEL-subset parser and serializer for the import/decompile path                                                                                                                  |
+| `src/juel.ts`              | `parseJuel`, `renderRawFallback`: JUEL-subset parser and serializer for the import/decompile path                                                                                                                                      |
 | `src/errors.ts`            | `UnsupportedConstructError` (base) and its refusal subclasses: `UnsupportedElementError`, `UnsupportedServiceTaskFormError`, `UnsupportedEventDefinitionError`, `UnsupportedLoopCharacteristicsError`, `UnsupportedCollaborationError` |
 | `src/index.ts`             | Package barrel export                                                                                                                                                                                                                  |
 | `src/operaton-moddle.json` | Trimmed Operaton moddle extension descriptor (see [ADR-0007](../../docs/decisions/0007-operaton-moddle-extension-fork.md))                                                                                                             |

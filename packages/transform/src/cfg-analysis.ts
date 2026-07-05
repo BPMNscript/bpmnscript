@@ -33,12 +33,10 @@
  *   the sink post-dominates every real end.
  *
  * ## Algorithm
- * Cooper, Harvey & Kennedy's iterative dominator algorithm ("A Simple,
- * Fast Dominance Algorithm", 2001). Chosen over Lengauer-Tarjan because it
- * is short, easy to audit, and provably correct on **arbitrary** graphs —
- * including irreducible ones, which BPMNscript's `goto` can produce. We run
- * it once on the forward graph for dominators and once on the reversed
- * graph (rooted at the virtual exit) for post-dominators.
+ * Iterative dominators (Cooper/Harvey/Kennedy 2001); handles the irreducible
+ * graphs `goto` can produce. We run it once on the forward graph for
+ * dominators and once on the reversed graph (rooted at the virtual exit)
+ * for post-dominators.
  *
  * ## Unreachable nodes (degenerate but possible in hand-built IR)
  * A node with no path from the virtual entry has **no** immediate dominator
@@ -187,8 +185,8 @@ function buildGraph(process: BpmnProcess): Graph {
     if (!ins.includes(from)) ins.push(from);
   };
 
-  // Real edges. Defensively skip flows referencing unknown ids so a
-  // malformed IR cannot throw here (totality starts at construction).
+  // Real edges. Skip flows referencing unknown ids so a malformed IR
+  // cannot throw here.
   for (const f of process.sequenceFlows) {
     if (!realNodes.has(f.sourceRef) || !realNodes.has(f.targetRef)) continue;
     addEdge(f.sourceRef, f.targetRef);
@@ -283,10 +281,6 @@ function computeIdom(
 
   // The root has no immediate dominator; expose that as `undefined`.
   idom.set(root, undefined);
-
-  // Nodes unreachable from `root` never received a value above, so they are
-  // simply absent from the map — callers treat "absent" as "no immediate
-  // dominator". No bookkeeping is required here.
 
   return idom;
 }

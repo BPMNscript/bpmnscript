@@ -5,8 +5,8 @@
  * table (declared variable names → their Operaton-aligned types) that the
  * validators consult.
  *
- * These are `[unit]` tests: they parse a process with `parseHelper` (no
- * validation needed) and exercise the provider directly.
+ * The tests parse a process with `parseHelper` (no validation needed) and
+ * exercise the provider directly.
  */
 
 import { beforeAll, describe, expect, test } from 'vitest';

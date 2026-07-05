@@ -11,21 +11,7 @@
     exporter="Operaton Modeler"
     exporterVersion="5.0.0">
 
-  <!--
-    An intentionally UNSTRUCTURED process: two exclusive gateways cross-branch
-    so that no single gateway post-dominates the other, and there is no shared
-    join element where every branch reconverges. `RouteB` jumps into `Beta`,
-    which is ALSO a direct branch target of `RouteA`, so `Beta` has two
-    predecessors that originate in different gateway regions — the classic
-    irreducible shape a structured `if`/`while` cannot express.
-
-    This drives the goto-degradation import path: `xmlToIr` must read it
-    without throwing (every element kind is supported and every flow resolves),
-    and the restructuring `irToDsl` must fall back to `goto` for the edges it
-    cannot fold into a structured block. The fixture is semantics-only for that
-    test; the BPMNDI block below carries hand-picked coordinates so the file is
-    a realistic modeler artefact, but `xmlToIr` discards all DI data.
-  -->
+  <!-- Intentionally unstructured: RouteA and RouteB cross-branch with no shared join — see README.md. -->
   <bpmn:process id="unstructured-goto" name="Unstructured Goto" isExecutable="true" operaton:historyTimeToLive="P30D">
     <bpmn:startEvent id="Start">
       <bpmn:outgoing>Flow_Start_Intake</bpmn:outgoing>

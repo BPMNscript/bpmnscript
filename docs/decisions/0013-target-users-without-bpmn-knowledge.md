@@ -22,20 +22,20 @@ Decided in the supervision meeting of 2026-06-30.
 
 ## Decision Drivers
 
-* BPMN-literate users already have a well-supported option: the graphical modeler. The
+- BPMN-literate users already have a well-supported option: the graphical modeler. The
   textual language is motivated by the other population, for whom BPMN vocabulary is a
   barrier rather than a help.
-* Required syntax that carries no process information raises the entry barrier without
+- Required syntax that carries no process information raises the entry barrier without
   paying for itself.
-* ADR-0008's structured constructs already hide gateway mechanics behind
+- ADR-0008's structured constructs already hide gateway mechanics behind
   `if`/`while`/`parallel`; without an explicit audience decision, future grammar work has
   no tiebreaker between "closer to BPMN" and "simpler for newcomers".
 
 ## Considered Options
 
-* Assume BPMN literacy: mirror BPMN terminology and structure, keeping the text close to
+- Assume BPMN literacy: mirror BPMN terminology and structure, keeping the text close to
   the XML it compiles to
-* Assume general programming literacy but no BPMN knowledge, and minimize required syntax
+- Assume general programming literacy but no BPMN knowledge, and minimize required syntax
 
 ## Decision Outcome
 
@@ -54,14 +54,14 @@ follow both rules; this decision makes them binding for what comes next.
 
 ### Consequences
 
-* Good, because the entry barrier drops: a newcomer can write a running process without
+- Good, because the entry barrier drops: a newcomer can write a running process without
   first learning BPMN's vocabulary or diagram semantics.
-* Good, because grammar discussions get a tiebreaker instead of re-arguing the audience
+- Good, because grammar discussions get a tiebreaker instead of re-arguing the audience
   each time.
-* Bad, because hiding BPMN vocabulary makes the DSL-to-XML correspondence less obvious
+- Bad, because hiding BPMN vocabulary makes the DSL-to-XML correspondence less obvious
   for BPMN-literate readers; documentation has to carry that mapping (the README glossary
   is a start).
-* Bad, because every default the grammar adopts is a rule the round trip must invert —
+- Bad, because every default the grammar adopts is a rule the round trip must invert —
   synthesized on compile, elided on decompile — growing the mapping surface that ADR-0010
   normalization already covers for ids.
 

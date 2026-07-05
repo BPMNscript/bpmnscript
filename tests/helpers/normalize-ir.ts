@@ -21,8 +21,6 @@
  *      (`Gateway_<coord>_split`, `Flow_<gatewayId>_default`, `Flow_<src>_<tgt>`).
  *      We re-key every *generated-shaped* id to a structural key derived from
  *      the graph topology so equivalent elements/flows collapse to the same key.
- *      Each rule below is paired to the exact handwritten-id ↔ synthesized-id
- *      it reconciles.
  *
  *   3. **Synthesized pass-through join.** `irToDsl` collapses the hand-named
  *      gateway `AmountCheck` (one split, branches converging directly on
@@ -30,12 +28,9 @@
  *      gateway AND a *new* XOR join node (`Gateway_<coord>_join`) that the
  *      handwritten IR never had. The join is a genuine extra node and an extra
  *      two-hop (`branch → join → Done` vs. the handwritten `branch → Done`).
- *      We inline this ONE specific shape — a synthesized-family XOR/AND join
+ *      We inline this one specific shape — a synthesized-family XOR/AND join
  *      with exactly one outgoing flow — treating it as transparent, so the two
- *      halves have the same flow-element set. The rule is deliberately narrow
- *      (see {@link inlinePassThroughJoins}): a non-synthesized join, a join
- *      with more than one out-flow, or any *real* gateway is never inlined, so
- *      a genuinely-missing or mis-targeted gateway/flow still fails the test.
+ *      halves have the same flow-element set (see {@link inlinePassThroughJoins}).
  *
  * ─────────────────────────────────────────────────────────────────────────
  * Concrete handwritten ↔ synthesized reconciliation table for `invoice-approval`:
@@ -73,11 +68,7 @@ import type {
 /**
  * Matches the synthesized **join** gateway family from the id scheme:
  * `Gateway_<X>_join` (XOR join after `if/else`, AND join after `parallel`).
- *
- * Used ONLY by {@link inlinePassThroughJoins}, and only in combination with
- * the structural guard "exactly one outgoing flow". A hand-named gateway
- * (e.g. `AmountCheck`) does NOT match, so this rule cannot accidentally
- * delete a real convergence node.
+ * A hand-named gateway (e.g. `AmountCheck`) does not match.
  */
 const SYNTHESIZED_JOIN_ID = /^Gateway_.+_join$/;
 
@@ -112,31 +103,27 @@ const GATEWAY_KINDS = new Set<FlowElement['kind']>([
  * @returns A new normalized copy of the IR.
  */
 export function normalizeIr(ir: BpmnProcess): BpmnProcess {
-  // Step 1 — make synthesized pass-through joins transparent so both halves
-  // have the same flow-element/flow set before any re-keying.
+  // Make synthesized pass-through joins transparent so both halves have the
+  // same flow-element/flow set before any re-keying.
   const inlined = inlinePassThroughJoins(ir);
 
-  // Step 2 — derive a canonical structural id for every gateway element so
-  // the hand-named gateway and the synthesized gateway map identically.
+  // Derive a canonical structural id for every gateway element so the
+  // hand-named gateway and the synthesized gateway map identically.
   const gatewayIdMap = buildGatewayCanonicalIds(inlined);
 
   const canonicalId = (id: string): string => gatewayIdMap.get(id) ?? id;
 
-  // Step 3a — re-key flow-element ids (only gateways are re-keyed) and drop the
+  // Re-key flow-element ids (only gateways are re-keyed) and drop the
   // gateway `name` (only gateways; see below).
   const flowElements: FlowElement[] = inlined.flowElements
     .map((fe) => {
       if (!GATEWAY_KINDS.has(fe.kind)) return fe;
       const id = canonicalId(fe.id);
 
-      // **Reconciles:** the hand-named gateway's modeler label
-      // `name: "Amount > 1000?"` against the synthesized gateway, which has NO
-      // name. `irToDsl` collapses the gateway into
-      // `if (amount > 1000) { … } else { … }`, and the structured syntax has no
-      // slot to carry a gateway label — so the name is unrecoverable by design
-      // (the language has no `gateway`/edge form). We strip the name ONLY on
-      // gateways; task/event names are load-bearing and DO survive the
-      // round-trip verbatim, so they are never stripped here.
+      // Drop the gateway label: `irToDsl` collapses the gateway into
+      // `if (…) { … } else { … }`, and the structured syntax has no slot to
+      // carry a gateway label. Only gateways lose their name; task/event names
+      // survive the round-trip verbatim and are never stripped here.
       const { name: _name, ...withoutName } = fe;
 
       // The gateway's `defaultFlowId` points at a flow whose own id we re-key
@@ -157,7 +144,7 @@ export function normalizeIr(ir: BpmnProcess): BpmnProcess {
     })
     .sort((a, b) => a.id.localeCompare(b.id));
 
-  // Step 3b — re-key flow ids to their structural source→target key.
+  // Re-key flow ids to their structural source→target key.
   const sequenceFlows: SequenceFlow[] = inlined.sequenceFlows
     .map((sf) => normalizeFlow(sf, canonicalId))
     .sort((a, b) => a.id.localeCompare(b.id));
@@ -173,24 +160,12 @@ export function normalizeIr(ir: BpmnProcess): BpmnProcess {
  * Inline (remove) synthesized pass-through join gateways, redirecting every
  * flow that targets the join straight to the join's single successor.
  *
- * **Reconciles:** ir3's extra `Gateway_<coord>_join` node (and the resulting
- * `branch → join → Done` two-hop) against ir1's direct `branch → Done`. After
- * `irToDsl→astToIr` re-synthesis, an `if/else` always grows a join that the
- * hand-authored IR never had; treating that one specific shape as transparent
- * lets the two halves compare structurally.
- *
- * **Narrowness guarantees (each is a guard, not a heuristic):**
- *   - The node must be a gateway (`exclusiveGateway`/`parallelGateway`).
- *   - Its id must match {@link SYNTHESIZED_JOIN_ID} — a hand-named or non-join
- *     gateway is left untouched.
- *   - It must have **exactly one** outgoing flow. A join that fans out to more
- *     than one successor is NOT a pass-through and is left untouched.
- *   - It must have at least one incoming flow (otherwise there is nothing to
- *     redirect and the join is structurally meaningful as a source).
- *
- * A *real* gateway — one the user authored, or one with multiple out-edges, or
- * one whose absence changes routing — never matches all four guards, so a
- * genuinely-missing or mis-wired gateway still fails the equality assertion.
+ * After `irToDsl→astToIr` re-synthesis, an `if/else` always grows a join that
+ * the hand-authored IR never had; treating that shape as transparent lets the
+ * two halves compare structurally. A node is inlined only when it is a gateway
+ * (`exclusiveGateway`/`parallelGateway`), its id matches
+ * {@link SYNTHESIZED_JOIN_ID}, and it has exactly one outgoing flow and at
+ * least one incoming flow.
  *
  * @param ir - The IR to inline joins in.
  * @returns A new IR with pass-through joins removed and flows redirected.
@@ -230,24 +205,22 @@ function inlinePassThroughJoins(ir: BpmnProcess): BpmnProcess {
 /**
  * Build a map from each gateway's current id to a canonical structural id.
  *
- * **Reconciles:** the hand-named gateway `AmountCheck` with the synthesized
- * `Gateway_<coord>_split`. Both gateways have the identical
- * topological position once the join is inlined (incoming from
- * `{ReviewInvoice}`, outgoing to `{SeniorApproval, AutoApprove}`), so a key
- * derived purely from that adjacency is equal on both halves while being
- * unique per distinct gateway position.
+ * A hand-named gateway (`AmountCheck`) and its synthesized counterpart
+ * (`Gateway_<coord>_split`) share the identical topological position once the
+ * join is inlined (incoming from `{ReviewInvoice}`, outgoing to
+ * `{SeniorApproval, AutoApprove}`), so a key derived purely from that adjacency
+ * is equal on both halves while being unique per distinct gateway position.
  *
- * The structural key is built ONLY from non-gateway neighbour ids (which
+ * The structural key is built only from non-gateway neighbour ids (which
  * survive the round-trip verbatim), so it does not depend on any other
  * gateway's possibly-different id. The gateway `kind` is included so a XOR
  * and an AND gateway in the same position never collapse together.
  *
- * **Collision handling:** two gateways of the same `kind` with an identical
- * neighbour signature (same sorted in/out non-gateway neighbours) would map to
- * the same canonical id. Rather than silently collapse them — which could mask a
- * genuine structural difference — same-signature gateways receive a
- * deterministic positional suffix (`#1`, `#2`, …) assigned in `flowElements`
- * order, so distinct gateways always get distinct canonical ids.
+ * Two gateways of the same `kind` with an identical neighbour signature (same
+ * sorted in/out non-gateway neighbours) would map to the same canonical id;
+ * same-signature gateways receive a deterministic positional suffix
+ * (`#1`, `#2`, …) assigned in `flowElements` order, so distinct gateways
+ * always get distinct canonical ids.
  *
  * @param ir - The (already join-inlined) IR.
  * @returns Map of `originalGatewayId → canonicalGatewayId`.
@@ -282,24 +255,13 @@ function buildGatewayCanonicalIds(ir: BpmnProcess): Map<string, string> {
 }
 
 /**
- * Re-key a single sequence flow.
+ * Re-key a single sequence flow to a structural source→target key.
  *
- * **Reconciles** (all to a structural source→target key):
- *   - the synthesized `/^Flow_/` generated flows
- *     (e.g. `Flow_ReviewStart_ReviewInvoice`,
- *     `Flow_Gateway_<coord>_split_SeniorApproval`),
- *   - the synthesized default flow `Flow_<gatewayId>_default`,
- *   - the hand-authored flow ids that are NOT in `Flow_<src>_<tgt>` form but
- *     still connect a gateway: `AutoApprovePath` and `Flow_SeniorBranch`.
- *
- * A flow is re-keyed when either (a) its id starts with `Flow_` (the original
- * generated-flow rule, now also catching the `_default` family), or (b) it
- * touches a gateway on either end (so the hand-named `AutoApprovePath` /
- * `Flow_SeniorBranch`, which start a hand-named gateway, are reconciled with
- * their synthesized counterparts). Flows that connect only non-gateway elements
- * with a non-`Flow_` id are left verbatim — there are none in scope, and
- * leaving them keeps the rule from masking a hand-id mismatch between
- * non-gateway nodes.
+ * A flow is re-keyed when either (a) its id starts with `Flow_` (generated
+ * flows, including the `Flow_<gatewayId>_default` family), or (b) it touches a
+ * gateway on either end (the hand-named `AutoApprovePath` / `Flow_SeniorBranch`).
+ * Flows that connect only non-gateway elements with a non-`Flow_` id are left
+ * verbatim.
  *
  * The re-keyed id is `Flow_<canonical(source)>_<canonical(target)>`, where
  * `canonical` maps gateway ids to their structural key (so a flow into/out of

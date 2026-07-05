@@ -1,7 +1,7 @@
 /**
  * Validation test suite for the BPMNscript AST.
  *
- * Fourteen validator families are exercised (all `[unit]`):
+ * Fourteen validator families are exercised:
  *   - undeclared-variable WARNING (severity 2),
  *   - type-mismatch ERROR (severity 1),
  *   - duplicate attribute-key ERROR,
@@ -271,7 +271,7 @@ describe('Validation — service task class discriminator', () => {
   });
 });
 
-// ── goto regression (CLAUDE.md guard-ref lesson) ────────────────────────────
+// ── goto regression ─────────────────────────────────────────────────────────
 
 describe('Validation — goto reference', () => {
   test('an unresolved goto produces ONLY the linker error, no extra validator diagnostic', async () => {
@@ -280,7 +280,7 @@ describe('Validation — goto reference', () => {
     );
     const errors = bySeverity(diagnostics, SEVERITY_ERROR);
     // Exactly one error — the linker's unresolved-reference error. No custom
-    // validator fires on top of it (guard-ref lesson).
+    // validator fires on top of it.
     expect(errors).toHaveLength(1);
     expect(errors[0]!.message).toContain('Missing');
   });

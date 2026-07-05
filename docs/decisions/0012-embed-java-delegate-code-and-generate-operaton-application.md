@@ -24,23 +24,23 @@ application?
 
 ## Decision Drivers
 
-* Bidirectional conversion (DSL ↔ BPMN XML) is a core property of the tool. BPMN XML has
+- Bidirectional conversion (DSL ↔ BPMN XML) is a core property of the tool. BPMN XML has
   no representation for Java source, so embedded method bodies are lost on compile and
   cannot be recovered on decompile — the target format has no slot for the information.
-* ADR-0006 keeps the IR engine-agnostic. `JavaDelegate` bodies are specific to the
+- ADR-0006 keeps the IR engine-agnostic. `JavaDelegate` bodies are specific to the
   Camunda 7 engine family; carrying them through the IR pierces that boundary.
-* "Deploy" changes meaning. BPMN XML alone hot-deploys through a single REST call
+- "Deploy" changes meaning. BPMN XML alone hot-deploys through a single REST call
   (`POST /engine-rest/deployment/create`), but Java classes must be on the engine's
   classpath: every change to an embedded body forces a rebuild and restart of the host
   application. The deployment unit becomes the application, not the model.
-* A generated application scaffold is a long-lived support surface (dependency versions,
+- A generated application scaffold is a long-lived support surface (dependency versions,
   upgrade path, build tooling) that exceeds the thesis time budget.
 
 ## Considered Options
 
-* Embed Java method bodies in the DSL and generate delegate classes, a full Operaton
+- Embed Java method bodies in the DSL and generate delegate classes, a full Operaton
   application, and tests
-* Keep BPMN XML as the compilation boundary; delegates remain hand-written in a host
+- Keep BPMN XML as the compilation boundary; delegates remain hand-written in a host
   application
 
 ## Decision Outcome
@@ -52,14 +52,14 @@ application build. The scaffold's maintenance cost alone puts it outside the the
 
 ### Consequences
 
-* Good, because the existing round-trip guarantees are unchanged; no lossy construct
+- Good, because the existing round-trip guarantees are unchanged; no lossy construct
   enters the language.
-* Good, because the DSL and IR stay engine-agnostic per ADR-0006.
-* Good, because a future deploy command stays a thin REST client — the mechanics the E2E
+- Good, because the DSL and IR stay engine-agnostic per ADR-0006.
+- Good, because a future deploy command stays a thin REST client — the mechanics the E2E
   test adapters (`tests/fixtures/adapters/`) already exercise.
-* Bad, because delegates are written and kept in sync by hand; the `class = "..."` string
+- Bad, because delegates are written and kept in sync by hand; the `class = "..."` string
   is not checked against any Java source, so a mismatch surfaces only at engine runtime.
-* Bad, because the one-file authoring experience the proposal aimed for is not available.
+- Bad, because the one-file authoring experience the proposal aimed for is not available.
 
 ## More Information
 

@@ -22,40 +22,39 @@ code-like language with implicit sequence flow and block-scoped control statemen
 
 ## Decision Drivers
 
-* The thesis goal is a textual DSL that serves developers who prefer working in code
-* IDE support — inline errors, type-aware validation, jump-to-definition — is far
+- The thesis goal is a textual DSL that serves developers who prefer working in code
+- IDE support — inline errors, type-aware validation, jump-to-definition — is far
   richer for a real expression AST than for opaque condition strings
-* Authoring a flat graph requires the same mental model as a BPMN diagram; a
+- Authoring a flat graph requires the same mental model as a BPMN diagram; a
   structured language is closer to how developers already write sequential logic
-* The round-trip direction (BPMN XML → DSL) needs a `goto`-capable fallback for
+- The round-trip direction (BPMN XML → DSL) needs a `goto`-capable fallback for
   unstructured graphs — the structured surface naturally accommodates this
-* A JUEL-subset expression sub-language parsed to a real AST is needed to enable
-  type-check diagnostics on condition expressions (thesis rule 15: IDE support is
-  the entire value proposition)
+- A JUEL-subset expression sub-language parsed to a real AST is needed to enable
+  type-check diagnostics on condition expressions
 
 ## Considered Options
 
-* Structured code-like syntax (keyword + braces, implicit flow, `if`/`while`/`parallel`/`goto`)
-* A flat node/edge syntax (explicit declarations + `->` edges, mapping 1:1 to the BPMN graph)
-* Hybrid: named blocks for common patterns, with a fallback to explicit edges
+- Structured code-like syntax (keyword + braces, implicit flow, `if`/`while`/`parallel`/`goto`)
+- A flat node/edge syntax (explicit declarations + `->` edges, mapping 1:1 to the BPMN graph)
+- Hybrid: named blocks for common patterns, with a fallback to explicit edges
 
 ## Decision Outcome
 
-Chosen option: "Structured code-like syntax", because it aligns the DSL with how
-developers reason about sequential control flow, enables a real expression AST for
-rich LSP diagnostics, and provides a natural home for `goto` as a decompilation
-fallback for unstructured BPMN graphs.
+Chosen option: "Structured code-like syntax", because it matches how developers
+already write sequential logic. Conditions become a real expression AST, which is
+what makes type-check diagnostics possible; `goto` slots into the same surface as
+the decompilation fallback for unstructured BPMN graphs.
 
 ### Consequences
 
-* Good, because the DSL reads and writes like program code (`if`/`while`/`parallel`)
-* Good, because conditions are a first-class expression AST, enabling type-check
+- Good, because the DSL reads and writes like program code (`if`/`while`/`parallel`)
+- Good, because conditions are a first-class expression AST, enabling type-check
   validation and jump-to-definition for variable references
-* Good, because `parallel { { } { } }` maps directly to AND fork/join pairs, making
+- Good, because `parallel { { } { } }` maps directly to AND fork/join pairs, making
   parallel-gateway support natural to author
-* Good, because `goto` as a residual form keeps decompilation total: every valid
+- Good, because `goto` as a residual form keeps decompilation total: every valid
   BPMN graph has a valid DSL representation
-* Bad, because the desugaring (`astToIr`) must synthesize gateway pairs from block
+- Bad, because the desugaring (`astToIr`) must synthesize gateway pairs from block
   structure, adding complexity relative to a flat pass-through that mirrors the graph
   directly
 

@@ -19,23 +19,23 @@ the IR cannot carry, and should every such case be treated the same way?
 
 ## Decision Drivers
 
-* The "no silent semantic loss" claim must hold for content whose absence changes execution
+- The "no silent semantic loss" claim must hold for content whose absence changes execution
   semantics — a dropped timer or a dropped loop is not a cosmetic loss.
-* Not every unrepresentable construct is equally severe. Refusing content that causes no
+- Not every unrepresentable construct is equally severe. Refusing content that causes no
   semantic loss (an extension attribute, a lane) would make the importer unusable on any file
   a real modeler exports, since modelers routinely add such content.
-* Whatever channel reports non-fatal drops must be impossible to ignore by accident — a
+- Whatever channel reports non-fatal drops must be impossible to ignore by accident — a
   warning nobody reads is equivalent to a silent drop.
-* Consumers (the CLI, the VS Code extension) need one classification check ("is this an
+- Consumers (the CLI, the VS Code extension) need one classification check ("is this an
   unsupported-construct refusal?") that does not have to enumerate every error subclass by
   hand as new ones are added.
 
 ## Considered Options
 
-* Two-tier contract: refuse (throw) constructs that change execution semantics, warn (return)
+- Two-tier contract: refuse (throw) constructs that change execution semantics, warn (return)
   on constructs that do not
-* Refuse everything the IR cannot express, with no warning tier
-* Keep the current behavior (drop silently) and only correct the docstring to describe it
+- Refuse everything the IR cannot express, with no warning tier
+- Keep the current behavior (drop silently) and only correct the docstring to describe it
 
 ## Decision Outcome
 
@@ -47,11 +47,11 @@ carry cosmetic extension content that a total-refusal contract would reject outr
 **Refused** — a subclass of `UnsupportedConstructError` is thrown before any IR is produced,
 so there is never a partial IR:
 
-* an event definition on a start/end event → `UnsupportedEventDefinitionError`
-* loop characteristics on a task → `UnsupportedLoopCharacteristicsError`
-* a collaboration (pools/message flows) → `UnsupportedCollaborationError`
-* an unsupported flow-element kind (pre-existing) → `UnsupportedElementError`
-* an unsupported service-task execution form (pre-existing) → `UnsupportedServiceTaskFormError`
+- an event definition on a start/end event → `UnsupportedEventDefinitionError`
+- loop characteristics on a task → `UnsupportedLoopCharacteristicsError`
+- a collaboration (pools/message flows) → `UnsupportedCollaborationError`
+- an unsupported flow-element kind (pre-existing) → `UnsupportedElementError`
+- an unsupported service-task execution form (pre-existing) → `UnsupportedServiceTaskFormError`
 
 All five share the abstract base `UnsupportedConstructError`, so a consumer classifies every
 refusal with a single `instanceof` check while each subclass still carries construct-specific
@@ -60,9 +60,9 @@ metadata for a tailored message.
 **Warned** — returned in a `warnings: ImportWarning[]` array alongside the IR. `xmlToIr` now
 returns `{ ir, warnings }` rather than a bare `BpmnProcess`:
 
-* Operaton/camunda extension attributes and extension elements beyond the supported
+- Operaton/camunda extension attributes and extension elements beyond the supported
   `assignee`/`formKey`/`class`
-* lanes
+- lanes
 
 Returning `{ ir, warnings }` — rather than an optional collector parameter
 (`xmlToIr(xml, sink?)`) or a second function (`xmlToIrWithWarnings`) — makes the warnings
@@ -72,17 +72,16 @@ guarantee.
 
 ### Consequences
 
-* Good, because every caller (the CLI, the VS Code extension, the round-trip test suite) now
+- Good, because every caller (the CLI, the VS Code extension, the round-trip test suite) now
   surfaces both the refusal and the warning channel instead of only one or neither.
-* Good, because the shared `UnsupportedConstructError` base keeps consumer classification to
+- Good, because the shared `UnsupportedConstructError` base keeps consumer classification to
   one `instanceof` check as new refusal categories are added.
-* Bad, because every call site of `xmlToIr` had to migrate from
+- Bad, because every call site of `xmlToIr` had to migrate from
   `const ir = await xmlToIr(xml)` to `const { ir } = await xmlToIr(xml)` — a one-time,
   mechanical, but repo-wide edit.
-* Bad, because a handful of undeclared `operaton:` extension elements cannot be tied by
-  `bpmn-moddle` to a specific owning element and are attributed to the process id instead of
-  the precise element — the drop is never silent, but its attribution is coarser in that one
-  case.
+- Bad, because a handful of undeclared `operaton:` extension elements cannot be tied by
+  `bpmn-moddle` to a specific owning element; their warnings are attributed to the process id
+  rather than the precise element.
 
 ## More Information
 

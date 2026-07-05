@@ -20,10 +20,7 @@
   // Acquire the VS Code API handle (can only be called once per webview).
   const vscode = acquireVsCodeApi();
 
-  /**
-   * Current active-file state received from the host.
-   * @type {ActiveFile | null}
-   */
+  /** Current active-file state received from the host. */
   let activeFile = null;
 
   // Signal readiness immediately so the host pushes the current state.
@@ -34,7 +31,7 @@
   // -------------------------------------------------------------------------
 
   window.addEventListener('message', function (event) {
-    var msg = event.data;
+    const msg = event.data;
     if (msg.type === 'state') {
       activeFile = msg.activeFile || null;
       render();
@@ -51,13 +48,9 @@
     renderPickPanel();
   }
 
-  /**
-   * Render the active-file panel: the file name, one contextual convert
-   * button, and a jump-to-counterpart link when the twin file exists.
-   * @param {ActiveFile | null} file
-   */
+  /** Render the active-file panel: file name, convert button, counterpart link. */
   function renderActivePanel(file) {
-    var panel = document.getElementById('active-panel');
+    const panel = document.getElementById('active-panel');
     if (!panel) return;
     clearElement(panel);
 
@@ -68,20 +61,18 @@
       return;
     }
 
-    var container = document.createElement('div');
+    const container = document.createElement('div');
     container.className = 'panel';
 
-    // File name label.
-    var nameEl = document.createElement('div');
+    const nameEl = document.createElement('div');
     nameEl.className = 'file-name';
     nameEl.textContent = file.name;
     nameEl.title = file.name;
     container.appendChild(nameEl);
 
-    // One contextual convert button.
-    var convertBtn = document.createElement('button');
+    const convertBtn = document.createElement('button');
     convertBtn.className = 'action';
-    var uri = file.uri;
+    const uri = file.uri;
     if (file.kind === 'dsl') {
       convertBtn.textContent = 'Convert to BPMN';
       convertBtn.addEventListener('click', function () {
@@ -95,7 +86,6 @@
     }
     container.appendChild(convertBtn);
 
-    // Jump-to-counterpart link (only when the twin file already exists).
     if (file.counterpart) {
       container.appendChild(
         linkButton(
@@ -110,11 +100,11 @@
 
   /** Render the always-available "pick a BPMN file" button. */
   function renderPickPanel() {
-    var panel = document.getElementById('pick-panel');
+    const panel = document.getElementById('pick-panel');
     if (!panel) return;
     if (panel.firstChild) return; // static — render once.
 
-    var pickBtn = document.createElement('button');
+    const pickBtn = document.createElement('button');
     pickBtn.className = 'action secondary';
     pickBtn.textContent = 'Pick a BPMN file…';
     pickBtn.title = 'Choose a .bpmn file to convert to BPMNscript';
@@ -128,14 +118,9 @@
   // Element helpers
   // -------------------------------------------------------------------------
 
-  /**
-   * Build a link-styled button that opens a file URI in the editor.
-   * @param {string} label
-   * @param {string} uri
-   * @returns {HTMLButtonElement}
-   */
+  /** Build a link-styled button that opens a file URI in the editor. */
   function linkButton(label, uri) {
-    var link = document.createElement('button');
+    const link = document.createElement('button');
     link.className = 'link';
     link.textContent = label;
     link.title = label;
@@ -145,34 +130,18 @@
     return link;
   }
 
-  /**
-   * Build a muted placeholder paragraph.
-   * @param {string} text
-   * @returns {HTMLParagraphElement}
-   */
+  /** Build a muted placeholder paragraph. */
   function placeholder(text) {
-    var p = document.createElement('p');
+    const p = document.createElement('p');
     p.className = 'placeholder';
     p.textContent = text;
     return p;
   }
 
-  /**
-   * Remove all child nodes from an element.
-   * @param {HTMLElement} el
-   */
+  /** Remove all child nodes from an element. */
   function clearElement(el) {
     while (el.firstChild) {
       el.removeChild(el.firstChild);
     }
   }
-
-  // -------------------------------------------------------------------------
-  // Type definitions (JSDoc only — not executed)
-  // -------------------------------------------------------------------------
-
-  /**
-   * @typedef {{ uri: string; name: string }} Counterpart
-   * @typedef {{ uri: string; name: string; kind: 'dsl' | 'bpmn' | null; counterpart: Counterpart | null }} ActiveFile
-   */
 })();

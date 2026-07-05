@@ -45,8 +45,8 @@ interface OperatonVariable {
 
 /**
  * Convert a flat `Record<string, unknown>` into the Operaton REST API's
- * `{ value, type }` variable bag.  Supports the primitive types the slice
- * requires; any unrecognised type falls back to `String`.
+ * `{ value, type }` variable bag.  Supports the primitive types the tests
+ * require; any unrecognised type falls back to `String`.
  */
 function toOperatonVariables(
   flat: Record<string, unknown>,

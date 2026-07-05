@@ -20,14 +20,14 @@ coordinates.
 
 This is the **input** for the XML → IR direction. The `xmlToIr` test
 (`packages/transform/test/xml-to-ir.test.ts`) parses it and asserts the resulting
-IR matches the expected invoice-approval IR — proving the importer reads a
-realistic file correctly and drops the diagram data.
+IR matches the expected invoice-approval IR — covering the import of a
+realistic file and the dropping of the diagram data.
 
 ## `invoice-approval-generated.bpmn`
 
 The **frozen output of the full pipeline**, checked in. It is
 `irToXml(astToIr(parse(examples/spring-boot/processes/invoice-approval.bpmnscript)))`
-— the example parsed, desugared, and serialised end-to-end. The
+— the example parsed, desugared, and serialized end-to-end. The
 `irToXml` test (`packages/transform/test/ir-to-xml.test.ts`, describe block
 "irToXml — full-pipeline golden diff") reproduces that pipeline and compares the
 result against this file byte-for-byte, so any accidental change to the parser,
@@ -73,8 +73,8 @@ be deployed.
 A BPMNscript **source** (not BPMN XML) that exercises every structured
 control-flow construct in one process: `if`/`else`, `while`, and `parallel`.
 It is the **input** for the construct round-trip idempotence check
-(BPMNscript → IR → XML → IR → DSL → IR), proving each construct desugars to a
-clean, restructurable gateway shape and survives a full round-trip:
+(BPMNscript → IR → XML → IR → DSL → IR); each construct desugars to a clean,
+restructurable gateway shape and survives a full round-trip:
 
 - `if (priority > 5) { … } else { … }` → an exclusive-gateway split/join pair
   (`Gateway_structured-control-flow_2_split` / `…_2_join`).

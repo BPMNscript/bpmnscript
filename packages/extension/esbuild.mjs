@@ -70,9 +70,9 @@ export const assetCopyPlugin = {
  * Shared esbuild options — exported so that any verify/test bundle uses the
  * identical configuration as the production extension bundle. In particular:
  *
- *   define + banner: the proven fix for @bpmn-script/transform's use of
- *   fileURLToPath(import.meta.url) at module-init time. Without this shim,
- *   esbuild's CJS output leaves import.meta.url as undefined, causing
+ *   define + banner: needed because @bpmn-script/transform reads
+ *   fileURLToPath(import.meta.url) at module-init time. esbuild's CJS output
+ *   otherwise leaves import.meta.url as undefined, causing
  *   ERR_INVALID_ARG_TYPE on activation. The banner injects a CJS-compatible
  *   definition at the top of the bundle before any module-init code runs.
  *

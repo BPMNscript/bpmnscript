@@ -61,10 +61,8 @@ async function confirmOverwrite(outputUri: vscode.Uri): Promise<boolean> {
   try {
     await vscode.workspace.fs.stat(outputUri);
   } catch {
-    // Stat threw — file does not exist; no confirmation needed.
     return true;
   }
-  // File exists — ask.
   const answer = await vscode.window.showWarningMessage(
     `"${outputUri.fsPath}" already exists. Overwrite?`,
     { modal: true },
@@ -90,23 +88,7 @@ function toVsDiagnostic(d: ConvDiagnostic): vscode.Diagnostic {
 // Exported command factories
 // ---------------------------------------------------------------------------
 
-/**
- * Returns the command handler for `bpmnscript.compile`.
- *
- * Resolves the source Uri from the command argument or the active editor,
- * reads the .bpmnscript text, calls `compileDslToBpmn`, and on success
- * writes the BPMN XML next to the source file and opens it.
- *
- * On validation errors: sets diagnostics on the Problems panel and shows an
- * error notification. Does NOT write any output.
- *
- * On unexpected errors: shows an error notification. Does NOT write output.
- *
- * @param diagnostics      DiagnosticCollection owned by the extension host.
- * @param extensionVersion Stamped into the generated BPMN `exporterVersion`.
- * @returns A command handler that returns the output `Uri` on success so
- *   callers (e.g. the sidebar provider) can react to the produced file.
- */
+/** Command handler for `bpmnscript.compile`: compiles the source and writes/opens the `.bpmn`, or reports validation/runtime errors. */
 export function compileCommand(
   diagnostics: vscode.DiagnosticCollection,
   extensionVersion: string,
@@ -169,28 +151,7 @@ export function compileCommand(
   };
 }
 
-/**
- * Returns the command handler for `bpmnscript.decompile`.
- *
- * Resolves the source Uri from the command argument or the active editor,
- * reads the .bpmn XML, calls `decompileBpmnToDsl`, and on success writes
- * the BPMNscript DSL next to the source file and opens it.
- *
- * On unsupported-construct errors: shows an error notification that includes
- * the source file name. The core returns a context-free message; the adapter
- * prepends the filename here exactly once. Does NOT write any output.
- *
- * On success with non-empty `warnings` (non-semantic content the transform
- * dropped, e.g. extra Operaton/camunda extension attributes or lanes): shows
- * one aggregated warning notification, filename-prefixed exactly once, so the
- * drop is never silent. This does not block the write.
- *
- * On unexpected errors: shows an error notification. Does NOT write output.
- *
- * @param diagnostics DiagnosticCollection (cleared on success).
- * @returns A command handler that returns the output `Uri` on success so
- *   callers (e.g. the sidebar provider) can react to the produced file.
- */
+/** Command handler for `bpmnscript.decompile`: decompiles the source and writes/opens the `.bpmnscript`, or reports unsupported-construct/runtime errors. */
 export function decompileCommand(
   diagnostics: vscode.DiagnosticCollection,
 ): (uri?: vscode.Uri) => Promise<vscode.Uri | undefined> {
@@ -208,9 +169,10 @@ export function decompileCommand(
 
     const result = await decompileBpmnToDsl(text, sourceFileName);
 
-    // Clear stale diagnostics for this source file on every outcome.
     diagnostics.delete(sourceUri);
 
+    // decompileBpmnToDsl's messages are context-free; the filename is
+    // prepended exactly once, in each notification composed below.
     if (result.ok) {
       const outputPath = swapExtension(sourceUri.fsPath, '.bpmnscript');
       const outputUri = vscode.Uri.file(outputPath);
@@ -230,11 +192,6 @@ export function decompileCommand(
         `BPMNscript: Decompiled "${sourceFileName}" → "${path.basename(outputPath)}"`,
       );
 
-      // Non-semantic drops (extra Operaton/camunda extension attributes,
-      // lanes) never got an IR representation and would otherwise vanish
-      // silently. Surface them as one aggregated warning, filename-prefixed
-      // exactly once — symmetric with the unsupported-construct message below.
-      // Each core message already names the owning element.
       if (result.warnings.length > 0) {
         const details = result.warnings.map((w) => w.message).join('; ');
         void vscode.window.showWarningMessage(
@@ -244,7 +201,6 @@ export function decompileCommand(
 
       return outputUri;
     } else if (result.kind === 'unsupported') {
-      // The core returns a context-free message; prepend the filename once here.
       await vscode.window.showErrorMessage(
         `BPMNscript: "${sourceFileName}" contains an unsupported construct: ${result.message}`,
       );

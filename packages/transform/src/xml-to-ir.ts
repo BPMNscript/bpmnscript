@@ -11,7 +11,7 @@
  * are present, `operaton:` wins. When only `camunda:assignee` is given,
  * its value is read into the IR.
  *
- * ## Honest import contract
+ * ## Import contract
  *
  * The transform never silently discards content it cannot represent. Its
  * return value is `{ ir, warnings }`, and content splits into two buckets:
@@ -45,8 +45,8 @@
  *     - any *other* `operaton:` element the extension does not declare (e.g.
  *       `operaton:properties`) cannot be tied by moddle to a specific step, so
  *       it is reported once against the process id, naming the construct and
- *       its source line. This is the one honest imprecision in attribution —
- *       the drop is never silent, only its owner is coarser;
+ *       its source line — the drop is still reported, only its owner
+ *       attribution is coarser;
  * - lanes — one warning per lane.
  *
  * **Round-trips cleanly** (no warning, no refusal): the supported flow
@@ -120,6 +120,10 @@ const SUPPORTED_EXTENSION_ATTRS: ReadonlySet<string> = new Set([
   'formKey',
   'class',
 ]);
+
+/** Suffix of every dropped-extension warning, naming what IS imported. */
+const KEPT_SETTINGS_NOTE =
+  '(this tool keeps only the assignee, form, and Java-class settings).';
 
 /**
  * Declared extension attributes whose value the exporter re-stamps as a
@@ -332,8 +336,7 @@ function collectUnparsableResidualDrops(
       category: 'extensionAttribute',
       message:
         `Extra engine-specific configuration (${construct}${location}) was not ` +
-        'imported; it could not be attributed to a specific step ' +
-        '(this tool keeps only the assignee, form, and Java-class settings).',
+        `imported; it could not be attributed to a specific step ${KEPT_SETTINGS_NOTE}`,
     });
   }
 }
@@ -451,10 +454,8 @@ function collectLaneDrops(
  *    materialised — declared `operaton:` types (`operaton:inputOutput`,
  *    `operaton:executionListener`, `operaton:taskListener`) and any
  *    foreign-namespace element (e.g. the deprecated `camunda:` alias), which
- *    moddle keeps as a generic value. A truly-empty `<extensionElements/>`
- *    has no `values` and so is never flagged — the key fix that prevents a
- *    stray empty stub from being falsely accused when another element in the
- *    same document carries a real drop.
+ *    moddle keeps as a generic value. An empty `<extensionElements/>` has no
+ *    `values`, so it is never flagged.
  *
  *    Undeclared `operaton:` elements (e.g. `operaton:properties`) do NOT
  *    materialise as values; moddle reports them only at the document level.
@@ -487,9 +488,7 @@ function collectExtensionDrops(
     warnings.push({
       elementId: ownerId,
       category: 'extensionAttribute',
-      message:
-        `The '${key}' setting on '${ownerId}' was not imported ` +
-        '(this tool keeps only the assignee, form, and Java-class settings).',
+      message: `The '${key}' setting on '${ownerId}' was not imported ${KEPT_SETTINGS_NOTE}`,
     });
   }
 
@@ -523,9 +522,7 @@ function collectExtensionDrops(
     warnings.push({
       elementId: ownerId,
       category: 'extensionAttribute',
-      message:
-        `The '${prop.ns.name}' setting on '${ownerId}' was not imported ` +
-        '(this tool keeps only the assignee, form, and Java-class settings).',
+      message: `The '${prop.ns.name}' setting on '${ownerId}' was not imported ${KEPT_SETTINGS_NOTE}`,
     });
   }
 }

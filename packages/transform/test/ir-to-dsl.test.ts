@@ -2,7 +2,7 @@
  * Full test suite for the restructuring IR → DSL emitter (`irToDsl`).
  *
  * `irToDsl` is the inverse of the desugaring `astToIr`: it turns a flat,
- * BPMN-shaped IR back into **structured** DSL source (`if`/`else if`/`else`,
+ * BPMN-shaped IR back into structured DSL source (`if`/`else if`/`else`,
  * `while`, `do … while`, `parallel { { } { } }`, `goto`). These tests assert
  * that:
  *
@@ -11,14 +11,14 @@
  *   2. Local idempotence: re-parsing the emitted source through Langium and
  *      re-desugaring via `astToIr` yields an IR equal to the input up to
  *      synthesized-id normalization.
- *   3. Goto degradation is **total**: an unstructured hand-built IR emits valid
+ *   3. Goto degradation: an unstructured hand-built IR emits valid
  *      DSL source containing ≥1 `goto`, parses cleanly, and loses no edge
  *      (every real-node connectivity is preserved).
  *   4. Multiple / named end events survive as explicit `end` statements.
  *
  * All IR fixtures are inline literals (no fixture-file reads). The structured
- * fixtures match the **byte-for-byte shape** produced by `astToIr` on the
- * corresponding source (verified during implementation), so the idempotence
+ * fixtures match the byte-for-byte shape produced by `astToIr` on the
+ * corresponding source, so the idempotence
  * assertions are exact (not merely reachability-based).
  */
 

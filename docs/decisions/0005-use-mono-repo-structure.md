@@ -13,14 +13,14 @@ Should these components live in a single repository or be split across multiple 
 
 ## Decision Drivers
 
-* Simplicity of build and CI configuration for a solo thesis project
-* Ability for the thesis supervisor to review the entire project in one place
-* Langium projects conventionally use npm workspaces in a mono-repo
+- Simplicity of build and CI configuration for a solo thesis project
+- Ability for the thesis supervisor to review the entire project in one place
+- Langium projects conventionally use npm workspaces in a mono-repo
 
 ## Considered Options
 
-* Mono-repo with npm workspaces
-* Multi-repo (separate repos for core, CLI, VS Code extension)
+- Mono-repo with npm workspaces
+- Multi-repo (separate repos for core, CLI, VS Code extension)
 
 ## Decision Outcome
 
@@ -28,7 +28,7 @@ Chosen option: "Mono-repo with npm workspaces", because it minimizes operational
 
 ### Consequences
 
-* Good, because a single CI pipeline covers all components
-* Good, because cross-package changes are atomic (single commit, single PR)
-* Good, because Langium's scaffolding generator produces this layout by default
-* Neutral, because npm workspaces add slight complexity to the root `package.json`
+- Good, because a single CI pipeline covers all components
+- Good, because cross-package changes are atomic (single commit, single PR)
+- Good, because Langium's scaffolding generator produces this layout by default
+- Neutral, because npm workspaces add slight complexity to the root `package.json`

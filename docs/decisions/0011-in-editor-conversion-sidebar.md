@@ -26,27 +26,27 @@ Three related questions arose:
 
 ## Decision Drivers
 
-* Conversion must produce the same result whether invoked from the sidebar or the command
+- Conversion must produce the same result whether invoked from the sidebar or the command
   palette — a single execution path is preferable to separate implementations
-* The conversion pipeline logic must be unit-testable without a VS Code host; the extension
+- The conversion pipeline logic must be unit-testable without a VS Code host; the extension
   host's `vscode` module is not importable under vitest
-* `operaton-moddle.json` resolution must be verified against the **bundled** extension, not
+- `operaton-moddle.json` resolution must be verified against the **bundled** extension, not
   just source — a successful `npm run build` does not guarantee activation if the asset path
   is wrong at runtime
-* The sidebar should track the VS Code theme automatically, with no external UI toolkit
+- The sidebar should track the VS Code theme automatically, with no external UI toolkit
 
 ## Considered Options
 
 ### UI approach
 
-* Native VS Code tree view (`TreeDataProvider`) with command-keyed rows
-* Webview panel (`WebviewViewProvider`) in a dedicated activity-bar container
+- Native VS Code tree view (`TreeDataProvider`) with command-keyed rows
+- Webview panel (`WebviewViewProvider`) in a dedicated activity-bar container
 
 ### Bundling fix
 
-* Copy `operaton-moddle.json` to `out/extension/` and add a multi-candidate resolver fallback
+- Copy `operaton-moddle.json` to `out/extension/` and add a multi-candidate resolver fallback
   in the transform package to look there if the primary path fails
-* Add an esbuild `import.meta.url` CJS shim + copy the asset beside the bundle via an
+- Add an esbuild `import.meta.url` CJS shim + copy the asset beside the bundle via an
   `onEnd` plugin, keeping the transform package unmodified
 
 ## Decision Outcome
@@ -87,17 +87,17 @@ runtime, not just that the build succeeds.
 
 ### Consequences
 
-* Good, because the sidebar and the command palette reach the same code path — one
+- Good, because the sidebar and the command palette reach the same code path — one
   implementation to test and maintain
-* Good, because the pure conversion core is fully covered by vitest integration tests without
+- Good, because the pure conversion core is fully covered by vitest integration tests without
   any VS Code host setup
-* Good, because the bundled-runtime E2E test (`test/bundled-conversion.e2e.test.ts`) provides
-  an automated, reproducible check for the `import.meta.url` / asset-resolution risk — no
-  manual activation step is needed
-* Good, because the webview tracks VS Code themes with zero external UI dependencies
-* Neutral, because the esbuild shim is a build-time coupling: if esbuild's CJS handling
+- Good, because the bundled-runtime E2E test (`test/bundled-conversion.e2e.test.ts`) catches
+  a broken `import.meta.url` shim or a missing copied asset under plain Node, without
+  launching VS Code
+- Good, because the webview tracks VS Code themes with zero external UI dependencies
+- Neutral, because the esbuild shim is a build-time coupling: if esbuild's CJS handling
   changes the `import.meta.url` semantics, the shim must be revisited
-* Neutral, because the webview approach adds `media/sidebar.{html,css,js}` files that the
+- Neutral, because the webview approach adds `media/sidebar.{html,css,js}` files that the
   native-tree-view path would not require
 
 ### Confirmation

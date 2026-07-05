@@ -6,12 +6,9 @@ roadmap.
 
 ## Deployment modes
 
-| Directory | Mode | Status |
-|-----------|------|--------|
-| `spring-boot/` | Operaton embedded in a Spring Boot application | **Implemented** |
-
-Planned (no fixture yet): an Operaton REST engine with external-task workers, and a
-standalone Operaton engine without Spring Boot.
+Implemented: `spring-boot/` — Operaton embedded in a Spring Boot application. Planned
+(no fixture yet): an Operaton REST engine with external-task workers, and a standalone
+Operaton engine without Spring Boot.
 
 ## `spring-boot/`
 

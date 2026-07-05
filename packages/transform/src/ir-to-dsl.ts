@@ -29,14 +29,12 @@
  *   - **Sequence** — a linear single-in / single-out chain → consecutive
  *     statements with implicit top-to-bottom flow.
  *
- * ## Failure contract (TOTAL)
- * Any edge **not** consumed by a recognized region is emitted as an explicit
- * `goto <target>`. Every flow node is emitted **exactly once** (at its natural
+ * ## Failure contract
+ * Every well-formed IR input produces valid source; unstructurable regions
+ * degrade to `goto`. Each flow node is emitted exactly once (at its natural
  * position, labelled by its id, which is always a valid jump target per the
- * grammar). Unstructured / irreducible graphs therefore always produce **valid**
- * source — this function never throws on any well-formed IR and never
- * silently drops an edge. Edges are tracked in a consumed-set; whatever is left
- * after structured emission is flushed as `goto`s.
+ * grammar). Edges are tracked in a consumed-set; whatever is left after
+ * structured emission is flushed as `goto`s, so no edge is dropped.
  *
  * ## Synthesized-id elision (what makes DSL → IR → DSL idempotent)
  * The desugarer creates deterministic gateway ids
@@ -61,8 +59,7 @@ const INDENT = '  ';
  * Render an IR process as a structured `.bpmnscript` source string.
  *
  * @param process The IR process to restructure and pretty-print.
- * @returns A UTF-8 `.bpmnscript` source string with a trailing newline. Always
- *          valid source — never throws, never loses an edge.
+ * @returns A UTF-8 `.bpmnscript` source string with a trailing newline.
  */
 export function irToDsl(process: BpmnProcess): string {
   const emitter = new Emitter(process);
@@ -81,7 +78,7 @@ export function irToDsl(process: BpmnProcess): string {
  * Stateful restructuring pass over one process. Holds the CFG analysis, the
  * element/flow lookup tables, and the "consumed" bookkeeping (which nodes have
  * been emitted, which edges have been realized as structured flow) that the
- * total `goto` fallback relies on.
+ * `goto` fallback relies on.
  */
 class Emitter {
   private readonly cfg: CfgAnalysis;
@@ -139,10 +136,10 @@ class Emitter {
       }
     }
 
-    // 3. Totality flush: any flow edge not consumed by a structured region is
-    //    emitted as an explicit `goto` from the (already-emitted) source so no
-    //    edge is ever silently lost. Placed at the end of the body — a `goto`
-    //    statement may appear anywhere and references the target by id.
+    // 3. Final sweep: any flow edge not consumed by a structured region is
+    //    emitted as an explicit `goto` from the (already-emitted) source.
+    //    Placed at the end of the body — a `goto` statement may appear
+    //    anywhere and references the target by id.
     for (const f of this.process.sequenceFlows) {
       if (!this.consumedFlows.has(f.id)) {
         this.consumedFlows.add(f.id);
@@ -162,10 +159,10 @@ class Emitter {
    * @param stop   The region boundary: stop *before* emitting this node, and
    *               consume the edge into it. `undefined` means "until terminal".
    * @param lines  Output accumulator (un-indented; the caller indents blocks).
-   * @param depth  Block-nesting depth; a hard cap is a final totality safety
-   *               net against any pathological IR that could otherwise recurse
-   *               without bound (every well-formed graph terminates well below
-   *               it, since `emittedNodes` prevents re-entry).
+   * @param depth  Block-nesting depth; a hard cap guards against unbounded
+   *               recursion on a pathological IR (every well-formed graph
+   *               terminates well below it, since `emittedNodes` prevents
+   *               re-entry).
    */
   private emitFrom(
     node: string | undefined,
@@ -174,8 +171,8 @@ class Emitter {
     depth: number,
   ): void {
     if (depth > MAX_NESTING_DEPTH) {
-      // Refuse to recurse further; flush the arrival as a goto so the contract
-      // (never throw, never lose an edge) holds even on a pathological graph.
+      // Refuse to recurse further; flush the arrival as a goto rather than
+      // overflowing the stack on a pathological graph.
       if (node !== undefined) lines.push(`goto ${node}`);
       return;
     }
@@ -270,8 +267,7 @@ class Emitter {
 
     // More than one unconsumed out-edge on a plain node (an unrecognized
     // gateway, or a node with extra cross-edges): the first un-emitted target
-    // continues the chain; the rest become gotos. Totality over irreducible
-    // graphs lives here.
+    // continues the chain; the rest become gotos.
     let cont: string | typeof STOP = STOP;
     for (const f of outs) {
       this.consumedFlows.add(f.id);
@@ -288,11 +284,11 @@ class Emitter {
     return cont;
   }
 
-  // ── If / else-if / else (and total XOR degradation) ─────────────────────────
+  // ── If / else-if / else (and XOR degradation) ───────────────────────────────
 
   /**
-   * Emit an exclusive gateway exhaustively. This **always** captures every one
-   * of the gateway's out-edges (totality): an exclusive gateway has no
+   * Emit an exclusive gateway exhaustively, capturing every one of the
+   * gateway's out-edges: an exclusive gateway has no
    * statement form, so its edges must all be realized through an `if` construct
    * (re-synthesizing the gateway on the way back) — they cannot survive the
    * final goto sweep, which relies on a source statement to jump from.
@@ -372,7 +368,7 @@ class Emitter {
    * A chained `if (true) { } else { } else { }` is NOT valid DSL — an `if` has
    * at most one `else`. In practice a desugared XOR split always carries ≥1
    * conditioned flow, so this path only guards hand-built IR. We degrade it to a
-   * total, valid form: the first out-edge becomes `if (true) { … }`, the second
+   * valid form: the first out-edge becomes `if (true) { … }`, the second
    * (if any) its single `else { … }`, and every remaining out-edge is preserved
    * as a bare `goto target` after the structure so no edge is lost.
    */
@@ -665,10 +661,10 @@ class Emitter {
     return exit.targetRef;
   }
 
-  // ── Parallel (and total AND degradation) ────────────────────────────────────
+  // ── Parallel (and AND degradation) ──────────────────────────────────────────
 
   /**
-   * Emit a parallel gateway exhaustively (totality, as for exclusive gateways —
+   * Emit a parallel gateway exhaustively (as for exclusive gateways:
    * a parallel gateway has no statement form, so every out-edge must be
    * captured by a construct or a goto, never the final sweep).
    *
@@ -829,10 +825,9 @@ class Emitter {
 const STOP = Symbol('stop');
 
 /**
- * Hard cap on block-nesting depth. A final totality safety net: well-formed
- * graphs nest far below this (each construct consumes nodes, and `emittedNodes`
- * prevents re-entry), but a pathological/adversarial IR is degraded to a `goto`
- * rather than overflowing the stack.
+ * Hard cap on block-nesting depth. Well-formed graphs nest far below this
+ * (each construct consumes nodes, and `emittedNodes` prevents re-entry); a
+ * pathological IR is degraded to a `goto` rather than overflowing the stack.
  */
 const MAX_NESTING_DEPTH = 1000;
 

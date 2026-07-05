@@ -12,10 +12,10 @@ hand — see [Running processes on Operaton](#running-processes-on-operaton-demo
 
 | Component | Version | Notes |
 |---|---|---|
-| Spring Boot | **4.0.6** | Operaton 2.1.0 verified compatible with Spring Boot 4.0.6 |
+| Spring Boot | **4.0.6** | |
 | Operaton | **2.1.0** | `operaton-bpm-spring-boot-starter` + `-rest` + `-webapp` (Cockpit/Tasklist) |
-| Java | **17** | Hard-pinned |
-| Database | H2 (in-memory) | Sufficient for CI/testing |
+| Java | **17** | |
+| Database | H2 (in-memory) | |
 
 ## Build and run locally
 
@@ -56,7 +56,7 @@ Username: `demo` / Password: `demo` (configured in `src/main/resources/applicati
 
 ## Running processes on Operaton (demo)
 
-This module doubles as a hands-on harness: compile any BPMNscript process to BPMN, deploy it to a real
+This module is also a hands-on harness: compile any BPMNscript process to BPMN, deploy it to a real
 Operaton engine, and drive it from the Cockpit and Tasklist web apps. The **loan approval** process is
 the worked example; you can add your own (see [Add your own process](#add-your-own-process)).
 
@@ -128,8 +128,9 @@ tasks are `JavaDelegate`s in [`src/main/java/com/example/loan/`](src/main/java/c
    **Cockpit → Processes → Loan Approval** to see the finished instance, the path it took, and its
    variables.
 
-3. **The human path.** Start another request with `amount = 25000` (or a small loan with
-   `creditScore = 400`). The instance stops at the **Approve loan** task, which appears under the
+3. **The human path.** Start another request with `amount = 25000` (or a small loan that fails the
+   risk screen: `amount = 5000`, `creditScore = 400` — the assessment marks scores below 600 as high
+   risk). The instance stops at the **Approve loan** task, which appears under the
    `demo` user in **Tasklist**. Open it and, on **Complete**, add one variable:
    - `approved` — type `Boolean` — `true` to accept, `false` to reject.
 
@@ -156,7 +157,7 @@ approve that path, leave it `high` to decline. Some telling inputs:
   finish.
 - `creditScore = 720`, `amount = 60000` → S1 low, S2 high, internal low → the **assessor decides**:
   `assessorRes = low` accepts, `high` rejects.
-- `creditScore = 400` → nothing rates low → straight to reject, no human step.
+- `creditScore = 400`, `amount = 60000` → nothing rates low → straight to reject, no human step.
 
 ### Add your own process
 
@@ -167,15 +168,11 @@ approve that path, leave it `high` to decline. Some telling inputs:
    instead — the [`com.example.loan`](src/main/java/com/example/loan) delegates are the model.
 3. Recompile (step 2) and restart the engine (step 3). The new process shows up in Cockpit/Tasklist.
 
-## Design decisions
+## Configuration notes
 
-- **Auto-deployment disabled by default.** `operaton.bpm.auto-deployment-enabled: false` prevents the
-  engine from scanning the classpath for `.bpmn` files. All test deployments happen via REST, which
-  keeps the fixture stateless and lets multiple test runs deploy different definitions without
-  interference. The `demo` profile (`application-demo.yml`) flips this on so the compiled processes
-  under `src/main/resources/processes/` deploy on startup for the manual demo; the harness runs
-  without that profile, so its behavior is unchanged.
-- **In-memory H2.** Process state survives only for the lifetime of the container, which is exactly
-  what an ephemeral testcontainers instance requires.
-- **Two-stage Dockerfile.** The Maven build stage is separated from the JRE runtime stage so the
-  final image contains only the fat jar and a lean JRE, not the full JDK or Maven toolchain.
+Classpath auto-deployment is off by default (`operaton.bpm.auto-deployment-enabled: false`); the test
+harness deploys everything via REST, so the fixture stays stateless between runs. The `demo` profile
+(`application-demo.yml`) flips it on to deploy the compiled processes under
+`src/main/resources/processes/` at startup. H2 runs in-memory — process state lives only as long as
+the container — and the two-stage Dockerfile keeps the runtime image down to the fat jar on a plain
+JRE.

@@ -51,7 +51,7 @@ beforeAll(() => {
   parse = parseHelper<Model>(services.BpmnScript);
 });
 
-// ── 1. Structured process parses zero-error ─────────────────────────────────
+// ── Structured process parses zero-error ─────────────────────────────────
 
 describe('Parsing — structured process', () => {
   test('a full structured process parses with zero lexer/parser errors', async () => {
@@ -89,7 +89,7 @@ process invoice "Invoice Approval" {
   });
 });
 
-// ── 2. Implicit sequence ordering ───────────────────────────────────────────
+// ── Implicit sequence ordering ───────────────────────────────────────────
 
 describe('Parsing — implicit sequence', () => {
   test('three bare statements parse into three Statements in source order', async () => {
@@ -167,7 +167,7 @@ process p {
   });
 });
 
-// ── 3. if / else if / else ──────────────────────────────────────────────────
+// ── if / else if / else ──────────────────────────────────────────────────
 
 describe('Parsing — if / else if / else', () => {
   test('an if with two else-ifs and an else populates elseIfs and elseBlock', async () => {
@@ -202,7 +202,7 @@ process p {
   });
 });
 
-// ── 4. while and do … while ─────────────────────────────────────────────────
+// ── while and do … while ─────────────────────────────────────────────────
 
 describe('Parsing — loops', () => {
   test('while parses into a WhileStatement', async () => {
@@ -226,7 +226,7 @@ describe('Parsing — loops', () => {
   });
 });
 
-// ── 5. parallel { { } { } } ──────────────────────────────────────────────────
+// ── parallel { { } { } } ──────────────────────────────────────────────────
 
 describe('Parsing — parallel', () => {
   test('parallel with two branches parses into a ParallelStatement', async () => {
@@ -257,7 +257,7 @@ describe('Parsing — parallel', () => {
   });
 });
 
-// ── 6. goto cross-reference resolution ──────────────────────────────────────
+// ── goto cross-reference resolution ──────────────────────────────────────
 
 describe('Parsing — goto', () => {
   test('goto resolves to a statement with the matching name', async () => {
@@ -281,8 +281,7 @@ describe('Parsing — goto', () => {
   });
 
   test('goto to an unknown target produces exactly one linker error', async () => {
-    // The linker owns unresolved references; no custom validator double-reports
-    // (CLAUDE.md guard-ref lesson).
+    // The linker owns unresolved references; no custom validator double-reports.
     const source = `process p { user Foo goto Missing }`;
     const document = await parse(source, { validation: true });
     // No parser errors — the grammar accepts any ID here.
@@ -296,7 +295,7 @@ describe('Parsing — goto', () => {
   });
 });
 
-// ── 7. Expression sub-language parses to a real AST ─────────────────────────
+// ── Expression sub-language parses to a real AST ─────────────────────────
 
 describe('Parsing — expression AST', () => {
   test('`amount > 1000` parses to a Relational node (not a string)', async () => {
@@ -366,7 +365,7 @@ describe('Parsing — expression AST', () => {
   });
 });
 
-// ── 8. Attribute blocks ─────────────────────────────────────────────────────
+// ── Attribute blocks ─────────────────────────────────────────────────────
 
 describe('Parsing — attribute blocks', () => {
   test('a user task attribute value is a LiteralString, not a RawExpr', async () => {
@@ -416,7 +415,7 @@ describe('Parsing — attribute blocks', () => {
   });
 });
 
-// ── 9. renderExpression round-trip ──────────────────────────────────────────
+// ── renderExpression round-trip ──────────────────────────────────────────
 
 describe('renderExpression', () => {
   test('round-trips `amount > 1000` to `${amount > 1000}`', async () => {

@@ -114,16 +114,12 @@ async function withTempDir<T>(fn: (dir: string) => Promise<T>): Promise<T> {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Suite 1 — buildAction smoke
-// ---------------------------------------------------------------------------
-
 describe('buildAction smoke', () => {
   afterEach(() => {
     vi.restoreAllMocks();
   });
 
-  it('[integration] builds invoice-approval.bpmnscript; output re-imports via xmlToIr with process key invoice-approval', async () => {
+  it('builds invoice-approval.bpmnscript; output re-imports via xmlToIr with process key invoice-approval', async () => {
     await withTempDir(async (dir) => {
       const outBpmn = path.join(dir, 'invoice-approval.bpmn');
       const exitSpy = spyOnExit();
@@ -154,10 +150,6 @@ describe('buildAction smoke', () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// Suite 2 — parseAction smoke
-// ---------------------------------------------------------------------------
-
 describe('parseAction smoke', () => {
   let parse: ReturnType<typeof parseHelper<Model>>;
 
@@ -170,7 +162,7 @@ describe('parseAction smoke', () => {
     vi.restoreAllMocks();
   });
 
-  it('[integration] parses invoice-approval-generated.bpmn; re-parsing the emitted DSL yields zero parser errors', async () => {
+  it('parses invoice-approval-generated.bpmn; re-parsing the emitted DSL yields zero parser errors', async () => {
     await withTempDir(async (dir) => {
       const outDsl = path.join(dir, 'invoice-approval.bpmnscript');
       const exitSpy = spyOnExit();
@@ -191,10 +183,6 @@ describe('parseAction smoke', () => {
     });
   });
 });
-
-// ---------------------------------------------------------------------------
-// Suite 2b — parseAction: import-warning surfacing (non-fatal)
-// ---------------------------------------------------------------------------
 
 /**
  * A BPMN process whose only supported subset is start → user task → end, but
@@ -228,7 +216,7 @@ describe('parseAction — import-warning surfacing', () => {
     vi.restoreAllMocks();
   });
 
-  it('[integration] a dropped extension attribute and a lane print warning text + element id to stderr and do not fail the parse', async () => {
+  it('a dropped extension attribute and a lane print warning text + element id to stderr and do not fail the parse', async () => {
     await withTempDir(async (dir) => {
       const srcFile = path.join(dir, 'warns.bpmn');
       const outDsl = path.join(dir, 'warns.bpmnscript');
@@ -260,10 +248,6 @@ describe('parseAction — import-warning surfacing', () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// Suite 2c — parseAction: refused-construct classification
-// ---------------------------------------------------------------------------
-
 /** A start event with a timer definition — refused via UnsupportedEventDefinitionError. */
 const TIMER_START_BPMN = `<?xml version="1.0" encoding="UTF-8"?>
 <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
@@ -284,7 +268,7 @@ describe('parseAction — refused-construct classification', () => {
     vi.restoreAllMocks();
   });
 
-  it('[integration] a timer start event refuses loudly with exit code 1, an actionable message, and no output file', async () => {
+  it('a timer start event refuses loudly with exit code 1, an actionable message, and no output file', async () => {
     await withTempDir(async (dir) => {
       const srcFile = path.join(dir, 'timer.bpmn');
       const outDsl = path.join(dir, 'timer.bpmnscript');
@@ -311,10 +295,6 @@ describe('parseAction — refused-construct classification', () => {
     });
   });
 });
-
-// ---------------------------------------------------------------------------
-// Suite 3 — severity-gating regression
-// ---------------------------------------------------------------------------
 
 /**
  * A minimal valid BPMNscript that uses `amount` without declaring it.
@@ -353,7 +333,7 @@ describe('severity-gating regression', () => {
     vi.restoreAllMocks();
   });
 
-  it('[integration] warning-only source (undeclared variable) builds successfully (exit 0 path)', async () => {
+  it('warning-only source (undeclared variable) builds successfully (exit 0 path)', async () => {
     await withTempDir(async (dir) => {
       // Write the fixture source to a temp file with the correct extension.
       const srcFile = path.join(dir, 'warning-only.bpmnscript');
@@ -375,7 +355,7 @@ describe('severity-gating regression', () => {
     });
   });
 
-  it('[integration] type-mismatch error source fails the build (exit 1 path)', async () => {
+  it('type-mismatch error source fails the build (exit 1 path)', async () => {
     await withTempDir(async (dir) => {
       // Write the fixture source to a temp file with the correct extension.
       const srcFile = path.join(dir, 'type-mismatch.bpmnscript');
@@ -395,12 +375,8 @@ describe('severity-gating regression', () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// Suite 4 — tmLanguage copy check
-// ---------------------------------------------------------------------------
-
 describe('tmLanguage extension sync', () => {
-  it('[unit] extension/syntaxes/ tmLanguage.json matches language/syntaxes/ (not stale)', () => {
+  it('extension/syntaxes/ tmLanguage.json matches language/syntaxes/ (not stale)', () => {
     // Both files must exist.
     expect(
       fs.existsSync(LANGUAGE_TMLANGUAGE),
@@ -417,7 +393,7 @@ describe('tmLanguage extension sync', () => {
     expect(extensionContent).toBe(languageContent);
   });
 
-  it('[unit] extension package.json has a build:prepare script that copies the tmLanguage', () => {
+  it('extension package.json has a build:prepare script that copies the tmLanguage', () => {
     const extensionPkgJson = path.resolve(
       REPO_ROOT,
       'packages/extension/package.json',

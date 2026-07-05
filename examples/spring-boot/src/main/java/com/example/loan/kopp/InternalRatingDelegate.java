@@ -5,13 +5,7 @@ import org.operaton.bpm.engine.delegate.JavaDelegate;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-/**
- * Internal rating service in the Kopp loan-approval variant.
- *
- * <p>Stricter than the external bureaus: {@code intRes = "low"} only when
- * {@code creditScore >= 700}. A low internal rating is what triggers the manual
- * assessor task in the third parallel branch.
- */
+/** Internal rating service: stricter credit-score cutoff than the external bureaus. */
 public class InternalRatingDelegate implements JavaDelegate {
 
     private static final Logger LOG = LoggerFactory.getLogger(InternalRatingDelegate.class);

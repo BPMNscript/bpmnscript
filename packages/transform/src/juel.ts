@@ -6,9 +6,8 @@
  * out of BPMN XML; `irToDsl` renders them back to BPMNscript surface
  * syntax. This module is the hinge between the two: it decides whether a body
  * fits the JUEL native subset — and can therefore be emitted as clean
- * unquoted DSL — or must fall back to the quoted `"${…}"` raw form. Either way
- * the round-trip stays **total**: {@link parseJuel} never throws on arbitrary
- * input.
+ * unquoted DSL — or must fall back to the quoted `"${…}"` raw form.
+ * {@link parseJuel} never throws on arbitrary input.
  *
  * The subset boundary is fixed by the Langium expression sub-grammar
  * (`packages/language/src/bpmn-script.langium`):
@@ -100,9 +99,7 @@ export type ExprResult =
  * `{ kind: 'structured', expr }`; on any failure — a body that does not match
  * the `${…}` shape, contains method/bean calls, JUEL functions, or is otherwise
  * unparseable — returns `{ kind: 'raw', text }` with the verbatim inner body.
- *
- * Totality guarantee: this function never throws. Every failure path resolves
- * to a raw result so the import round-trip stays total.
+ * This function never throws.
  *
  * @param body A BPMN expression body, e.g. `${amount > 1000}`.
  * @returns A structured or raw {@link ExprResult}.
@@ -127,13 +124,13 @@ export function parseJuel(body: string): ExprResult {
     }
     return { kind: 'structured', expr };
   } catch {
-    // Any parse error → raw. Totality is preserved by construction.
+    // Any parse error → raw.
     return { kind: 'raw', text: inner };
   }
 }
 
 /**
- * Render an {@link ExprResult} to its **DSL surface string**.
+ * Render an {@link ExprResult} to its DSL surface string.
  *
  * Structured results render as a bare, unquoted expression (`amount > 1000`).
  * Raw results render as the quoted `"${…}"` fallback so the original body
@@ -143,23 +140,11 @@ export function parseJuel(body: string): ExprResult {
  * @param result A parsed {@link ExprResult}.
  * @returns The DSL surface string.
  */
-export function renderExprFromIr(result: ExprResult): string {
+export function renderRawFallback(result: ExprResult): string {
   if (result.kind === 'raw') {
     return `"\${${result.text}}"`;
   }
   return renderNode(result.expr);
-}
-
-/**
- * Alias of {@link renderExprFromIr}, named for the fallback-centric call sites
- * in `irToDsl`/`xmlToIr` that emphasise the raw-fallback contract. Both names
- * are part of the public API (the package barrel re-exports both).
- *
- * @param result A parsed {@link ExprResult}.
- * @returns The DSL surface string (bare when structured, quoted `"${…}"` when raw).
- */
-export function renderRawFallback(result: ExprResult): string {
-  return renderExprFromIr(result);
 }
 
 // ---------------------------------------------------------------------------

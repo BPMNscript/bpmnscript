@@ -95,10 +95,8 @@ export async function parseAction(
       process.exit(1);
     }
     if (err instanceof UnsupportedConstructError) {
-      // Catch-all for the remaining refusal subclasses (event definitions,
-      // loop characteristics, collaborations). Each subclass's own message
-      // already names the offending construct and element concretely, so no
-      // extra formatting is needed here beyond the file context.
+      // Remaining refusal subclasses; each message already names the
+      // offending construct and element.
       console.error(
         chalk.red(
           `Error: unsupported BPMN construct in ${fileName}:\n` +
@@ -145,10 +143,7 @@ export async function parseAction(
   console.log(chalk.green(`Parsed: ${outPath}`));
 
   // ── 7. Surface non-fatal import warnings ────────────────────────────────
-  // Dropped-but-non-semantic content (extra Operaton/camunda extension
-  // attributes, lanes) is printed to stderr so it is never silent, but does
-  // NOT change the exit code — the parse already succeeded.
-  // The core message already names the owning element; no extra prefix.
+  // Warnings go to stderr and do not change the exit code.
   for (const w of warnings) {
     console.error(chalk.yellow(`Warning: ${w.message}`));
   }

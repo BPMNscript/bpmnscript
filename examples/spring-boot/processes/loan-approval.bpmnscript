@@ -32,7 +32,6 @@ process loan-approval "Loan Approval" {
     }
   }
 
-  // Record the outcome.
   if (approved == true) {
     service NotifyAccepted "Notify accepted" {
       class = "com.example.loan.AcceptDelegate"

@@ -111,12 +111,9 @@ export interface ExclusiveGateway {
  * A BPMN `parallelGateway` (AND gateway).
  *
  * Used as both a fork (split into concurrent branches) and a join
- * (synchronize all incoming branches). Parallel gateways do not carry
- * conditions on outgoing flows — Operaton executes every outgoing path
- * unconditionally.
- *
- * There is no `default` field: parallel gateways take all outgoing flows
- * simultaneously; the concept of a "default path" does not apply.
+ * (synchronize all incoming branches). Every outgoing flow is taken
+ * unconditionally, so outgoing flows carry no conditions and there is
+ * no `default` field.
  */
 export interface ParallelGateway {
   kind: 'parallelGateway';

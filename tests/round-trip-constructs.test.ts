@@ -15,7 +15,7 @@
  *
  *   DSL → IR → XML → IR → DSL → IR
  *
- * Five scenarios, each a focused assertion on one part of the contract:
+ * Five cases:
  *
  *   1. Structured idempotence (happy path) — `invoice-approval.bpmnscript`.
  *   2. Loop round-trip — the `while` of `structured-control-flow.bpmnscript`.
@@ -23,28 +23,16 @@
  *   4. Goto-degradation (totality) — the unstructured `unstructured-goto.bpmn`.
  *   5. Expression fallback — a bean method-call condition (raw `${…}`).
  *
- * Normalization is REUSED from the shared `helpers/normalize-ir.ts`; it is
- * never duplicated here.
+ * Normalization comes from the shared `helpers/normalize-ir.ts`.
  *
- * ── A note on scenario 4's invariant ───────────────────────────────────────
- * The goal is that the goto-degraded edge set be "identical … (compare
- * source/target pairs, not flow ids)". The *literal* flow-endpoint set cannot
- * be byte-identical across the round-trip: the original fixture has hand-named
- * gateways (`RouteA`/`RouteB`), whereas re-desugaring synthesizes fresh
- * deterministic gateway ids AND grows phantom XOR joins for the `if`s whose
- * branches are pure `goto`s (a documented behaviour — see CLAUDE.md:
- * "an `if` with empty/goto branches gains a phantom join"). Those phantom joins
- * have ZERO incoming flows, so `normalizeIr`'s pass-through-join inliner (which
- * requires ≥1 incoming) correctly leaves them in place — they are genuine
- * extra scaffolding, not a maskable id rename.
- *
- * The faithful realization of that intent — *no structural data loss*, i.e.
- * every authored node stays reachable from the same predecessors — is the
- * reachability relation between the REAL (non-gateway) nodes, with the
- * synthesized gateway routing contracted away. {@link realNodeReachability}
- * computes exactly that. Asserting it is identical across the import round-trip
- * proves totality: no edge between real nodes is lost or rewired. See the test
- * body for the explicit relaxation note.
+ * The goto-degradation case compares connectivity, not raw flow endpoints: the
+ * original fixture has hand-named gateways (`RouteA`/`RouteB`), whereas
+ * re-desugaring synthesizes fresh deterministic gateway ids and grows phantom
+ * XOR joins for the `if`s whose branches are pure `goto`s. Those phantom joins
+ * have zero incoming flows, so `normalizeIr`'s pass-through-join inliner (which
+ * requires ≥1 incoming) leaves them in place. The compared invariant is the
+ * reachability relation between the real (non-gateway) nodes, with the
+ * synthesized gateway routing contracted away — see {@link realNodeReachability}.
  */
 
 import { describe, it, expect, beforeAll } from 'vitest';
@@ -162,7 +150,7 @@ function realNodeReachability(ir: BpmnProcess): string[] {
 }
 
 // ===========================================================================
-// Scenario 1 — Structured idempotence (happy path).
+// Structured idempotence (happy path).
 //
 //   invoice-approval.bpmnscript → astToIr (ir1)
 //     → irToXml → xmlToIr → irToDsl (dsl1)
@@ -172,7 +160,7 @@ function realNodeReachability(ir: BpmnProcess): string[] {
 // and dsl1 / dsl2 are byte-identical (deterministic synthesized ids).
 // ===========================================================================
 
-describe('Scenario 1 — structured idempotence (invoice-approval, if/else)', () => {
+describe('structured idempotence (invoice-approval, if/else)', () => {
   let irInitial: BpmnProcess;
   let irFinal: BpmnProcess;
   let dsl1: string;
@@ -219,14 +207,14 @@ describe('Scenario 1 — structured idempotence (invoice-approval, if/else)', ()
 });
 
 // ===========================================================================
-// Scenario 2 — Loop round-trip (`while`).
+// Loop round-trip (`while`).
 //
 // The `while (retries < 3)` branch of structured-control-flow.bpmnscript
 // survives DSL → XML → DSL reconstructed as `while`, with NO
 // `standardLoopCharacteristics` anywhere in the XML and no `goto` fallback.
 // ===========================================================================
 
-describe('Scenario 2 — loop round-trip (while ⇒ conditioned back-edge, never standardLoopCharacteristics)', () => {
+describe('loop round-trip (while ⇒ conditioned back-edge, never standardLoopCharacteristics)', () => {
   let xml: string;
   let reemittedDsl: string;
 
@@ -239,8 +227,8 @@ describe('Scenario 2 — loop round-trip (while ⇒ conditioned back-edge, never
   });
 
   it('the BPMN XML contains no standardLoopCharacteristics', () => {
-    // The catalogue (§3.4/§5) forbids loop-marker desugaring: a `while` is an
-    // exclusiveGateway with a conditioned back-edge, never a loop-marker task.
+    // A `while` desugars to an exclusiveGateway with a conditioned back-edge,
+    // never to a loop-marker task.
     expect(xml).not.toContain('standardLoopCharacteristics');
   });
 
@@ -258,13 +246,13 @@ describe('Scenario 2 — loop round-trip (while ⇒ conditioned back-edge, never
 });
 
 // ===========================================================================
-// Scenario 3 — Parallel round-trip (`parallel { { } { } }`).
+// Parallel round-trip (`parallel { { } { } }`).
 //
 // The parallel branch survives the full loop with a `bpmn:parallelGateway`
 // fork+join pair in the XML and `parallel` reconstructed in the re-emitted DSL.
 // ===========================================================================
 
-describe('Scenario 3 — parallel round-trip (parallelGateway fork/join ⇒ parallel { { } { } })', () => {
+describe('parallel round-trip (parallelGateway fork/join ⇒ parallel { { } { } })', () => {
   let xml: string;
   let reemittedDsl: string;
 
@@ -300,7 +288,7 @@ describe('Scenario 3 — parallel round-trip (parallelGateway fork/join ⇒ para
 });
 
 // ===========================================================================
-// Scenario 4 — Goto-degradation (the key totality / data-loss path).
+// Goto-degradation (the totality / data-loss path).
 //
 // Import the unstructured cross-branching fixture → `irToDsl` falls back to
 // `goto` for the edges it cannot fold → re-parse → re-desugar. The full set of
@@ -308,7 +296,7 @@ describe('Scenario 3 — parallel round-trip (parallelGateway fork/join ⇒ para
 // no lost edge, across a SECOND round-trip too.
 // ===========================================================================
 
-describe('Scenario 4 — goto-degradation preserves the full edge set (totality)', () => {
+describe('goto-degradation preserves the full edge set (totality)', () => {
   let irImport: BpmnProcess; // from xmlToIr(unstructured.bpmn)
   let degradedDsl: string; // irToDsl(irImport) — contains goto(s)
   let irReDesugared: BpmnProcess; // astToIr(parse(degradedDsl))
@@ -346,15 +334,11 @@ describe('Scenario 4 — goto-degradation preserves the full edge set (totality)
   });
 
   it('the real-node reachability is identical after the round-trip', () => {
-    // RELAXATION vs. the literal "the edge set is identical" wording.
     // The raw flow-endpoint set cannot match byte-for-byte: the import has
-    // hand-named gateways (RouteA/RouteB), while re-desugaring synthesizes
-    // fresh deterministic gateway ids AND grows phantom XOR joins for the `if`s
-    // whose branches are pure `goto`s (documented behaviour). Those phantom
-    // joins have zero incoming flows, so they are genuine extra scaffolding,
-    // not a maskable rename. The invariant that captures "no structural data
-    // loss" — the actual intent — is the connectivity between the REAL
-    // authored nodes with gateway routing contracted away, which IS identical.
+    // hand-named gateways (RouteA/RouteB), whereas re-desugaring synthesizes
+    // fresh deterministic gateway ids and grows phantom XOR joins for the
+    // `if`s whose branches are pure `goto`s. Compare the connectivity between
+    // the real authored nodes, with gateway routing contracted away, instead.
     expect(realNodeReachability(irReDesugared)).toEqual(
       realNodeReachability(irImport),
     );
@@ -371,7 +355,7 @@ describe('Scenario 4 — goto-degradation preserves the full edge set (totality)
     // `conditionExpression` on a surviving edge would NOT change the reachable
     // set and would pass the reachability checks above. Pin the conditions
     // explicitly. The fixture carries `${route == 'A'}` and `${retry == true}`;
-    // the round-trip canonicalises the single-quoted string literal to double
+    // the round-trip canonicalizes the single-quoted string literal to double
     // quotes (`'A'` → `"A"`), so the expected re-desugared set is the canonical
     // form. Both conditions must still be present after the goto degradation.
     const reConditions = irReDesugared.sequenceFlows
@@ -397,9 +381,8 @@ describe('Scenario 4 — goto-degradation preserves the full edge set (totality)
   });
 
   it('the meaningfulness guard: a dropped edge would make reachability differ', () => {
-    // Proves the reachability assertion is not a vacuous always-true compare:
-    // removing one import flow changes the relation, so the equality above is
-    // load-bearing.
+    // Removing one import flow changes the relation, so the reachability
+    // equality above is load-bearing (not a vacuous always-true compare).
     const corrupt: BpmnProcess = {
       ...irImport,
       sequenceFlows: irImport.sequenceFlows.slice(1),
@@ -411,7 +394,7 @@ describe('Scenario 4 — goto-degradation preserves the full edge set (totality)
 });
 
 // ===========================================================================
-// Scenario 5 — Expression fallback round-trip (bean method call).
+// Expression fallback round-trip (bean method call).
 //
 // A condition using a bean method call (`${myBean.check()}`) is outside the
 // JUEL native subset (the trailing `()` leaves tokens unconsumed → raw
@@ -419,7 +402,7 @@ describe('Scenario 4 — goto-degradation preserves the full edge set (totality)
 // without being mis-parsed into a structured subset expression.
 // ===========================================================================
 
-describe('Scenario 5 — bean-call condition stays quoted-raw end-to-end', () => {
+describe('bean-call condition stays quoted-raw end-to-end', () => {
   // Authored inline rather than as a new fixture file.
   const BEAN_DSL = [
     'process bean-cond "Bean Cond" {',

@@ -8,11 +8,6 @@
  * The VS Code adapter (`conversion.ts`) is a thin wrapper that calls these
  * functions and maps their results to VS Code notifications, diagnostics, and
  * file system writes.
- *
- * Build-order note: this module imports `@bpmn-script/language` and
- * `@bpmn-script/transform` via their compiled `out/` directories. Rebuild
- * those packages before running extension tests or building the extension —
- * a source edit in either package is invisible until rebuilt.
  */
 
 import { createBpmnScriptServices } from '@bpmn-script/language';
@@ -68,8 +63,7 @@ export type CompileResult =
  *
  * - `ok:true`  → `output` is the BPMNscript DSL string; `warnings` lists any
  *   non-semantic content the transform dropped (extra Operaton/camunda
- *   extension attributes, lanes) so the caller can surface it — never
- *   silently. Empty for input that round-trips cleanly.
+ *   extension attributes, lanes). Empty for input that round-trips cleanly.
  * - `ok:false, kind:'unsupported'` → the BPMN contains a construct that the
  *   transform cannot represent in the IR at all (see
  *   `UnsupportedConstructError` and its subclasses in `@bpmn-script/transform`).
@@ -125,7 +119,6 @@ export async function compileDslToBpmn(
   try {
     await shared.workspace.DocumentBuilder.build([doc], { validation: true });
 
-    // Filter to severity 1 (Error) only — warnings do not block.
     const errors = (doc.diagnostics ?? []).filter((d) => d.severity === 1);
     if (errors.length > 0) {
       const diagnostics: ConvDiagnostic[] = errors.map((d) => ({
@@ -140,7 +133,6 @@ export async function compileDslToBpmn(
       return { ok: false, kind: 'validation', diagnostics };
     }
 
-    // No blocking errors — proceed through the pipeline.
     const ast = doc.parseResult.value as Model;
     let ir;
     try {
@@ -184,22 +176,14 @@ export async function compileDslToBpmn(
  *
  * Every `UnsupportedConstructError` subclass (unsupported service task form,
  * unsupported element kind, event definitions, loop characteristics,
- * collaborations) is classified as `kind:'unsupported'` via a single base-class
- * check, so callers can surface a loud, actionable message rather than
- * silently emitting an incomplete DSL.
+ * collaborations) is classified as `kind:'unsupported'` via a single
+ * base-class check.
  *
- * Returned error messages, and the `warnings` on the success variant, are
- * context-free (no filename prefix) — same contract as `compileDslToBpmn`.
- * The VS Code adapter (`conversion.ts`) owns presentation and prepends the
- * filename exactly once when composing user-facing notifications.
- *
- * @param xml              BPMN 2.0 XML string.
- * @param _sourceFileName  Accepted for call-site symmetry with `compileDslToBpmn`;
- *                         not used here — the adapter adds file context to messages.
+ * @param xml BPMN 2.0 XML string.
  */
 export async function decompileBpmnToDsl(
   xml: string,
-  _sourceFileName: string,
+  _sourceFileName: string, // unused; keeps the signature parallel to compile
 ): Promise<DecompileResult> {
   let ir;
   let warnings: ImportWarning[];

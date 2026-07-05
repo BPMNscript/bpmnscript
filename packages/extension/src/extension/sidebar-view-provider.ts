@@ -11,12 +11,6 @@
  * `bpmnscript.decompile`, and `bpmnscript.openAndDecompile` commands (registered
  * in `main.ts`). This provider only handles messaging between the webview and
  * those commands.
- *
- * Security model:
- * - Strict CSP with a per-render nonce (no inline scripts, no remote sources).
- * - `localResourceRoots` limited to the `media/` directory.
- * - All DOM manipulation in the webview uses `textContent`/`createElement`
- *   (see `media/sidebar.js`) — no `innerHTML` with untrusted data.
  */
 
 import * as vscode from 'vscode';
@@ -25,9 +19,7 @@ import * as fs from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { swapExtension } from './conversion-core.js';
 
-// -------------------------------------------------------------------------
-// Types shared between host and webview (duplicated in sidebar.js as JSDoc)
-// -------------------------------------------------------------------------
+// Types shared between host and webview (duplicated in sidebar.js as JSDoc).
 
 interface Counterpart {
   uri: string;
@@ -41,10 +33,6 @@ interface ActiveFile {
   /** The existing twin file (other format), if one is present on disk. */
   counterpart: Counterpart | null;
 }
-
-// -------------------------------------------------------------------------
-// Provider
-// -------------------------------------------------------------------------
 
 /**
  * Provides the BPMNscript sidebar webview view.
@@ -65,10 +53,6 @@ export class SidebarViewProvider implements vscode.WebviewViewProvider {
    *   used to resolve `media/` asset paths for `webview.asWebviewUri`.
    */
   constructor(private readonly _extensionUri: vscode.Uri) {}
-
-  // -------------------------------------------------------------------------
-  // WebviewViewProvider implementation
-  // -------------------------------------------------------------------------
 
   /**
    * Called by VS Code when the sidebar view becomes visible for the first
@@ -112,10 +96,6 @@ export class SidebarViewProvider implements vscode.WebviewViewProvider {
     });
   }
 
-  // -------------------------------------------------------------------------
-  // Public API (called by the active-editor listener)
-  // -------------------------------------------------------------------------
-
   /**
    * Gather the current active-editor file (and its counterpart, if any), then
    * post `{type:'state', activeFile}` to the webview.
@@ -127,10 +107,6 @@ export class SidebarViewProvider implements vscode.WebviewViewProvider {
     if (!this._view) return;
     await this._postState();
   }
-
-  // -------------------------------------------------------------------------
-  // Private — message handling
-  // -------------------------------------------------------------------------
 
   /** Dispatch an incoming webview message to the appropriate handler. */
   private async _handleMessage(message: unknown): Promise<void> {
@@ -173,10 +149,6 @@ export class SidebarViewProvider implements vscode.WebviewViewProvider {
         break;
     }
   }
-
-  // -------------------------------------------------------------------------
-  // Private — state gathering
-  // -------------------------------------------------------------------------
 
   /**
    * Collect active-editor info (file name, kind, and existing counterpart),
@@ -225,19 +197,8 @@ export class SidebarViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
-  // -------------------------------------------------------------------------
-  // Private — HTML generation
-  // -------------------------------------------------------------------------
-
-  /**
-   * Read `media/sidebar.html`, substitute per-render nonce and asset URIs,
-   * and return the final HTML string to inject into the webview.
-   *
-   * A fresh 128-bit random nonce is generated on every call so each render
-   * cycle gets a unique token — even if the webview is hidden and shown again.
-   */
+  /** Read `media/sidebar.html` and substitute the per-render nonce and asset URIs. */
   private _buildHtml(webview: vscode.Webview): string {
-    // Generate a per-render nonce (128 bits of entropy, hex-encoded).
     const nonce = randomBytes(16).toString('hex');
     const cspSource = webview.cspSource;
 

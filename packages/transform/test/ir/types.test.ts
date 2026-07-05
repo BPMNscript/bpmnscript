@@ -8,9 +8,8 @@
  *      exhaustive helper without a compile error, which would only happen if
  *      `'parallelGateway'` is a valid discriminant in the union.
  *
- * The tests are deliberately free of trivial field-presence assertions
- * (we don't test "ParallelGateway has an `id` field") — those are obvious
- * from the interface definition and add no value.
+ * Trivial field-presence assertions ("ParallelGateway has an `id` field")
+ * are omitted — the interface definitions already pin them.
  */
 
 import { describe, it, expect } from 'vitest';

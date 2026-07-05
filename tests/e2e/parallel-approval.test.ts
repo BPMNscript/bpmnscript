@@ -16,9 +16,8 @@
  * that `parallel-approval.bpmnscript` desugars to a parallelGateway fork/join
  * pair in the IR, so a broken example is caught even when Docker is skipped.
  *
- * @gating  Controlled by the `SKIP_DOCKER_TESTS` environment variable.
- *          When set to "true" the Docker describe block is skipped.
- *          CI runs with `SKIP_DOCKER_TESTS=true`.
+ * The Docker-backed describe block is skipped when `SKIP_DOCKER_TESTS=true`
+ * (as in CI).
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
@@ -182,15 +181,12 @@ describe.skipIf(SKIP)('E2E: parallel-approval on Spring Boot Operaton', () => {
     // Ensure the output directory exists so the CLI can write into it.
     mkdirSync(path.dirname(XML_OUT_PATH), { recursive: true });
 
-    // Step 1 — build BPMN XML from the DSL source via the real CLI.
     execFileSync('npx', ['bpmns', 'build', DSL_PATH, '-o', XML_OUT_PATH], {
       stdio: 'inherit',
     });
 
-    // Step 2 — start Operaton via testcontainers.
     fixture = await startFixture('spring-boot');
 
-    // Step 3 — deploy once so every test reuses the same definition.
     const { deploymentId } = await fixture.deploy(
       XML_OUT_PATH,
       'parallel-approval-test',
@@ -202,14 +198,9 @@ describe.skipIf(SKIP)('E2E: parallel-approval on Spring Boot Operaton', () => {
     await fixture?.stop();
   });
 
-  // -----------------------------------------------------------------------
-  // Test 1: AND-split — both parallel branches are active simultaneously
-  // -----------------------------------------------------------------------
-
   /**
    * After starting the process, both user tasks (`ApproveA` and `ApproveB`)
-   * must be active at the same time (AND-split semantics). An XOR split would
-   * activate only one — finding exactly two tasks proves it is a parallelGateway.
+   * must be active at the same time (AND-split semantics).
    *
    * This is the distinguishing assertion between AND-split and XOR-split: a
    * parallel gateway fires all outgoing branches unconditionally, whereas an
@@ -233,10 +224,6 @@ describe.skipIf(SKIP)('E2E: parallel-approval on Spring Boot Operaton', () => {
     const keys = tasks.map((t) => t.taskDefinitionKey).sort();
     expect(keys).toEqual(['ApproveA', 'ApproveB']);
   }, 30_000);
-
-  // -----------------------------------------------------------------------
-  // Test 2: AND-join — process ends only after BOTH tasks complete
-  // -----------------------------------------------------------------------
 
   /**
    * After starting the process and confirming both tasks are active:

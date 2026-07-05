@@ -2,16 +2,16 @@
  * Unit tests for the standalone JUEL-subset expression parser / serializer
  * (`src/juel.ts`).
  *
- * This module is the **import-side mirror** of the language package's
+ * This module is the import-side mirror of the language package's
  * expression sub-grammar. On import, `xmlToIr` reads raw `${…}`
  * bodies out of BPMN XML and hands them to `parseJuel`; `irToDsl`
  * then renders the result back to DSL surface syntax. The contract:
  *
- *   - A body inside the JUEL subset → a **structured** result, rendered as a
+ *   - A body inside the JUEL subset → a structured result, rendered as a
  *     bare unquoted expression (`amount > 1000`).
  *   - A body outside the subset (method/bean calls, JUEL functions, or anything
  *     unparseable) → a `{ kind: 'raw' }` result, rendered as the quoted
- *     `"${…}"` fallback. Round-trip stays **total** — `parseJuel` NEVER throws.
+ *     `"${…}"` fallback. `parseJuel` never throws.
  *
  * The subset boundary is fixed by the grammar; the final two suites
  * (`idempotence with the grammar renderer` and `subset parity with the real
@@ -29,10 +29,10 @@ import {
 } from '@bpmn-script/language';
 import type { Expr, Model } from '@bpmn-script/language';
 
-import { parseJuel, renderExprFromIr, renderRawFallback } from '../src/juel.js';
+import { parseJuel, renderRawFallback } from '../src/juel.js';
 
 // ---------------------------------------------------------------------------
-// Structured-vs-raw classification (the core acceptance criteria)
+// Structured-vs-raw classification
 // ---------------------------------------------------------------------------
 
 describe('parseJuel — structured classification', () => {
@@ -44,7 +44,6 @@ describe('parseJuel — structured classification', () => {
   it('renders a structured comparison as a bare unquoted expression', () => {
     const r = parseJuel('${amount > 1000}');
     expect(renderRawFallback(r)).toBe('amount > 1000');
-    expect(renderExprFromIr(r)).toBe('amount > 1000');
   });
 
   it('classifies dotted property access as structured', () => {
@@ -59,7 +58,7 @@ describe('parseJuel — structured classification', () => {
 
   it('classifies string-key index access as structured', () => {
     expect(parseJuel("${map['k']}").kind).toBe('structured');
-    // String literals canonicalise to double quotes (matches renderExpression).
+    // String literals canonicalize to double quotes (matches renderExpression).
     expect(renderRawFallback(parseJuel("${map['k']}"))).toBe('map["k"]');
   });
 
@@ -97,7 +96,6 @@ describe('parseJuel — raw fallback classification', () => {
   it('renders a raw result as the quoted "${…}" fallback', () => {
     const r = parseJuel('${myBean.check()}');
     expect(renderRawFallback(r)).toBe('"${myBean.check()}"');
-    expect(renderExprFromIr(r)).toBe('"${myBean.check()}"');
   });
 
   it('classifies a JUEL function call as raw', () => {
@@ -160,11 +158,10 @@ describe('parseJuel — totality (never throws)', () => {
     expect(parseJuel(body).kind).toBe('raw');
   });
 
-  it('renderRawFallback / renderExprFromIr never throw on malformed input', () => {
+  it('renderRawFallback never throws on malformed input', () => {
     for (const body of malformed) {
       const r = parseJuel(body);
       expect(() => renderRawFallback(r)).not.toThrow();
-      expect(() => renderExprFromIr(r)).not.toThrow();
     }
   });
 });
@@ -225,8 +222,8 @@ describe('idempotence with the grammar renderExpression', () => {
     'order.items[0].price',
     // String literals: verifies the grammar renderer (expression-render.ts) and
     // the transform renderer (juel.ts) agree on the canonical quoted form,
-    // including re-escaping an embedded double quote (the divergence this
-    // finding closes). `greeting` avoids the `label` keyword.
+    // including re-escaping an embedded double quote.
+    // `greeting` avoids the `label` keyword.
     'x == "hello"',
     'greeting == "say \\"hi\\""',
   ];

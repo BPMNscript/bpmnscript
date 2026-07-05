@@ -5,7 +5,7 @@
  * transforms) can `import { UnsupportedElementError } from
  * '@bpmn-script/transform'` without pulling in the parser.
  *
- * ## The import contract, precisely
+ * ## Import contract
  *
  * `xmlToIr` never silently discards content it cannot represent. Content the
  * IR cannot express is **refused**: a subclass of {@link
@@ -96,10 +96,11 @@ export class UnsupportedElementError extends UnsupportedConstructError {
 
   constructor(qname: string, elementId?: string) {
     super(
-      `Unsupported BPMN element ${qname}` +
+      `The BPMN element ${qname}` +
         (elementId ? ` (id='${elementId}')` : '') +
-        '. Supported elements are start/end events, user tasks, service tasks ' +
-        '(with operaton:class), exclusive gateways, parallel gateways, and sequence flows.',
+        ' is a kind that this tool cannot import. ' +
+        'Only start/end events, user tasks, service tasks (with operaton:class), ' +
+        'exclusive gateways, parallel gateways, and sequence flows are supported.',
     );
     this.name = 'UnsupportedElementError';
     this.qname = qname;

@@ -1,44 +1,16 @@
 /**
- * Feature end-to-end tests for the honest `xmlToIr` decompile contract and
- * the whole-process validator integrity checks — the final gate suite.
+ * End-to-end tests for the CLI's decompile behaviour: `xmlToIr` / `irToDsl`
+ * and the `parseAction`/`buildAction` entry points, driven against real BPMN
+ * fixtures on disk with no mocks of the transform and no Docker.
  *
- * Writes no implementation code: only exercises pre-existing entry points
- * (`xmlToIr`, `irToDsl`, the CLI's `parseAction`/`buildAction`, and the real
- * Langium validation pipeline via `createBpmnScriptServices`) against real
- * BPMN fixtures on disk. No mocks of the transform, no Docker.
- *
- * `decompileBpmnToDsl` (the VS Code extension's typed wrapper around
- * `xmlToIr`) is not reachable from this package — `packages/extension` is
- * not a dependency of `packages/cli`. `xmlToIr` itself (the real transform
- * `decompileBpmnToDsl` wraps, with zero behavioural difference for what this
- * suite asserts) plus the CLI's own `parseAction`/`buildAction` entry points
- * exercise the identical contract end-to-end, per the plan's "and/or spawn
- * the CLI" allowance — no separate subprocess spawn is needed since these
- * action functions already drive the full real pipeline (parse → validate →
- * transform → write to disk).
- *
- * Critical paths covered:
- *   1. Warning path (happy) — `tests/fixtures/lanes-and-async.bpmn` decompiles
- *      successfully and surfaces warnings naming both dropped items (a lane
- *      and an `operaton:asyncBefore` extension attribute) with their element
- *      ids, both via the real `xmlToIr` return value and via `parseAction`
- *      (stderr text + exit code 0).
- *   2. Refusal path (error) — `tests/fixtures/timer-start.bpmn` refuses
- *      loudly (`UnsupportedEventDefinitionError`, a subclass of
- *      `UnsupportedConstructError`), via `xmlToIr` directly and via
- *      `parseAction` (exit code 1, no partial output file).
- *   3. Integration — the warning-path fixture also exercises the
- *      pre-existing happy path (start → user task → end) alongside the new
- *      drop logic; the DSL produced from it re-parses with zero parser
- *      errors and re-compiles (via the CLI's `buildAction`, the same
- *      parse → validate → astToIr → irToXml pipeline `compileDslToBpmn`
- *      wraps) without any validation error.
- *   4. Language integrity — one DSL source that trips two whole-process
- *      validator checks at once (a duplicate process name and a `goto` into
- *      a `parallel` branch from outside) is run through the real
- *      `createBpmnScriptServices` validation pipeline; the resulting
- *      diagnostics are asserted for count, severity, and jargon-free
- *      wording.
+ * Covers: decompiling a BPMN with non-semantic drops (a lane, a dropped
+ * Operaton extension attribute) and surfacing both as warnings with element
+ * ids, via `xmlToIr` directly and via `parseAction`'s stderr output; refusing
+ * a BPMN with an unsupported construct (a timer start event) with exit code 1
+ * and no partial output file; round-tripping the decompiled DSL back through
+ * `buildAction` without validation errors; and whole-process validator
+ * diagnostics (duplicate process name, `goto` into a `parallel` branch from
+ * outside) for count, severity, and jargon-free wording.
  */
 
 import { describe, it, expect, beforeAll, afterEach, vi } from 'vitest';
@@ -156,7 +128,7 @@ describe('decompile contract — warning path (lanes + dropped extension attribu
     vi.restoreAllMocks();
   });
 
-  it('[integration] xmlToIr decompiles the lanes-and-async fixture into the supported subset and surfaces one lane warning + one extension-attribute warning naming both dropped items and their element ids', async () => {
+  it('xmlToIr decompiles the lanes-and-async fixture into the supported subset and surfaces one lane warning + one extension-attribute warning naming both dropped items and their element ids', async () => {
     const xml = fs.readFileSync(LANES_AND_ASYNC_BPMN, 'utf-8');
     const { ir, warnings } = await xmlToIr(xml);
 
@@ -183,7 +155,7 @@ describe('decompile contract — warning path (lanes + dropped extension attribu
     expect(attrWarning?.message).toContain('asyncBefore');
   });
 
-  it('[integration] parseAction on the lanes-and-async fixture writes the .bpmnscript file and prints both warnings to stderr without changing the exit code', async () => {
+  it('parseAction on the lanes-and-async fixture writes the .bpmnscript file and prints both warnings to stderr without changing the exit code', async () => {
     await withTempDir(async (dir) => {
       const outDsl = path.join(dir, 'lanes-and-async.bpmnscript');
       const exitSpy = spyOnExit();
@@ -221,7 +193,7 @@ describe('decompile contract — refusal path (timer start event)', () => {
     vi.restoreAllMocks();
   });
 
-  it('[integration] xmlToIr refuses the timer-start fixture with UnsupportedEventDefinitionError (extends UnsupportedConstructError) naming the offending start event, with no BPMN jargon', async () => {
+  it('xmlToIr refuses the timer-start fixture with UnsupportedEventDefinitionError (extends UnsupportedConstructError) naming the offending start event, with no BPMN jargon', async () => {
     const xml = fs.readFileSync(TIMER_START_BPMN, 'utf-8');
 
     await expect(xmlToIr(xml)).rejects.toBeInstanceOf(
@@ -243,7 +215,7 @@ describe('decompile contract — refusal path (timer start event)', () => {
     }
   });
 
-  it('[integration] parseAction on the timer-start fixture exits 1, writes no output file, and prints an actionable message naming the offending element', async () => {
+  it('parseAction on the timer-start fixture exits 1, writes no output file, and prints an actionable message naming the offending element', async () => {
     await withTempDir(async (dir) => {
       const outDsl = path.join(dir, 'timer-start.bpmnscript');
       const exitSpy = spyOnExit();
@@ -277,7 +249,7 @@ describe('decompile contract — integration: decompiled DSL round-trips through
     vi.restoreAllMocks();
   });
 
-  it('[integration] the DSL produced from the lanes-and-async fixture re-parses with zero parser errors and zero validation diagnostics', async () => {
+  it('the DSL produced from the lanes-and-async fixture re-parses with zero parser errors and zero validation diagnostics', async () => {
     const xml = fs.readFileSync(LANES_AND_ASYNC_BPMN, 'utf-8');
     const { ir } = await xmlToIr(xml);
     const dsl = irToDsl(ir);
@@ -289,7 +261,7 @@ describe('decompile contract — integration: decompiled DSL round-trips through
     expect(diagnostics).toHaveLength(0);
   });
 
-  it("[integration] the DSL produced from the lanes-and-async fixture re-compiles via buildAction (compileDslToBpmn's own pipeline) without validation errors, and the rebuilt BPMN re-imports cleanly", async () => {
+  it("the DSL produced from the lanes-and-async fixture re-compiles via buildAction (compileDslToBpmn's own pipeline) without validation errors, and the rebuilt BPMN re-imports cleanly", async () => {
     const xml = fs.readFileSync(LANES_AND_ASYNC_BPMN, 'utf-8');
     const { ir } = await xmlToIr(xml);
     const dsl = irToDsl(ir);

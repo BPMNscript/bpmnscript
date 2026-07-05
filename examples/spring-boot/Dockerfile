@@ -1,5 +1,4 @@
 # Stage 1 — Build
-# Uses the official Maven image with Eclipse Temurin JDK 17.
 FROM maven:3.9-eclipse-temurin-17 AS build
 
 WORKDIR /workspace

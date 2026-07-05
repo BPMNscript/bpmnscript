@@ -5,12 +5,7 @@ import org.operaton.bpm.engine.delegate.JavaDelegate;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-/**
- * External credit bureau S1 in the Kopp loan-approval variant.
- *
- * <p>Rates by credit score: {@code extRes1 = "low"} when {@code creditScore >= 600},
- * otherwise {@code "high"}.
- */
+/** External credit bureau S1: rates by credit score. */
 public class ExternalRatingS1Delegate implements JavaDelegate {
 
     private static final Logger LOG = LoggerFactory.getLogger(ExternalRatingS1Delegate.class);

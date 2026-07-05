@@ -413,10 +413,10 @@ describe('astToIr — goto', () => {
     // A goto can target a compound statement's id. In the grammar only leaf
     // statements expose `name=ID` (`goto [Statement:ID]`); compound statements
     // (if/while/…) have NO name, so
-    // their synthesised split-gateway id is not a nameable target. The closest
-    // realisable behaviour — and the one that matters — is a goto to the first
+    // their synthesized split-gateway id is not a nameable target. The closest
+    // realizable behavior — and the one that matters — is a goto to the first
     // named statement INSIDE a compound block: it lands on that statement's
-    // entry, which is the entry node of the compound body (not the synthesised
+    // entry, which is the entry node of the compound body (not the synthesized
     // split gateway, which only convergent/implicit flow reaches).
     const result = await ir(
       `process P { user A goto Inner if (x) { user Inner } }`,
@@ -426,7 +426,7 @@ describe('astToIr — goto', () => {
     expect(flow(result, 'A', 'Inner').targetRef).toBe('Inner');
 
     // The split gateway still routes the if's true branch to `Inner` via its
-    // synthesised entry; the goto bypasses the gateway entirely (raw jump).
+    // synthesized entry; the goto bypasses the gateway entirely (raw jump).
     const splitId = makeGatewaySplitId('P_2');
     expect(result.flowElements.map((fe) => fe.id)).toContain(splitId);
     expect(flow(result, splitId, 'Inner')).toBeDefined();
@@ -551,9 +551,9 @@ describe('astToIr — empty model error', () => {
 
 describe('astToIr — sibling-branch coordinate uniqueness', () => {
   it('nested compounds in `then` vs `else` get distinct gateway ids', async () => {
-    // Regression for the BLOCKING defect: `lowerIf` passed the SAME coordinate
-    // to the `then`, every `elseIf`, and the `else` block, so a nested compound
-    // at index 0 of `then` and one at index 0 of `else` collided.
+    // Regression: `lowerIf` once passed the SAME coordinate to the `then`,
+    // every `elseIf`, and the `else` block, so a nested compound at index 0
+    // of `then` and one at index 0 of `else` collided on their gateway ids.
     const result = await ir(
       `process P { if (a) { if (b) { user X } } else { if (c) { user Y } } }`,
     );

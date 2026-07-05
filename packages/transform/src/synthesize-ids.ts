@@ -4,13 +4,9 @@
  * Pure functions — no I/O, no globals, no traversal-order-dependent counters.
  * Every id is derived exclusively from the structural coordinates passed in.
  *
- * ============================================================================
- * FROZEN ID CONTRACT (consumed by astToIr, irToDsl, and the round-trip normalizer)
- * ============================================================================
- *
- * Change any template here ONLY after updating the round-trip normalizer
- * (`tests/helpers/normalize-ir.ts`) and the desugaring / restructuring
- * transforms that call these helpers.
+ * These templates change only in lockstep with their consumers — `ast-to-ir.ts`,
+ * `ir-to-dsl.ts`, and the round-trip normalizer (`tests/helpers/normalize-ir.ts`)
+ * — because decompile round-trip id stability depends on reproducing them exactly.
  *
  * Template                          Produced by           Example
  * ──────────────────────────────────────────────────────────────────────────
@@ -31,90 +27,49 @@
  * Collision resolution (used internally and exposed as `resolveCollision`):
  *   - If the base id is not in the taken set → return it unchanged.
  *   - Otherwise try `<base>_2`, `<base>_3`, … until a free slot is found.
- *   - The caller is responsible for adding the returned id to the taken set
- *     when using `resolveCollision` directly; `makeSequenceFlowId` and
- *     `makeEndEventId` update the set themselves.
+ *   - `makeSequenceFlowId`, `makeStartEventId`, and `makeEndEventId` add the
+ *     returned id to the taken set themselves; a caller using
+ *     `resolveCollision` directly must record the returned id itself.
  */
 
 // ---------------------------------------------------------------------------
-// Gateway id constructors
+// Gateway / flow id constructors — pure string templates over the enclosing
+// compound statement's id (see the table above).
 // ---------------------------------------------------------------------------
 
-/**
- * Id for the XOR split gateway generated for an `if` statement.
- *
- * @param enclosingId  The id of the enclosing `if` statement or block coordinate.
- * @returns `Gateway_<enclosingId>_split`
- */
+/** XOR split gateway generated for an `if`: `Gateway_<enclosingId>_split`. */
 export function makeGatewaySplitId(enclosingId: string): string {
   return `Gateway_${enclosingId}_split`;
 }
 
 /**
- * Id for the XOR join gateway generated for an `if` statement or
- * the AND join gateway generated for a `parallel` block.
- *
- * Both the XOR join (after `if`/`else`) and the AND join (after `parallel`)
- * use this template because in both cases we need exactly one convergence
- * point per enclosing construct id.
- *
- * @param enclosingId  The id of the enclosing `if` or `parallel` statement.
- * @returns `Gateway_<enclosingId>_join`
+ * Convergence gateway: `Gateway_<enclosingId>_join`. Shared by the XOR join
+ * (after `if`/`else`) and the AND join (after `parallel`) — either way there
+ * is exactly one convergence point per enclosing construct id.
  */
 export function makeGatewayJoinId(enclosingId: string): string {
   return `Gateway_${enclosingId}_join`;
 }
 
-/**
- * Id for the AND fork (parallel split) gateway generated for a `parallel` block.
- *
- * @param enclosingId  The id of the enclosing `parallel` statement.
- * @returns `Gateway_<enclosingId>_fork`
- */
+/** AND fork generated for a `parallel` block: `Gateway_<enclosingId>_fork`. */
 export function makeGatewayForkId(enclosingId: string): string {
   return `Gateway_${enclosingId}_fork`;
 }
 
-/**
- * Id for the XOR loop-head gateway generated for a `while` or do-while statement.
- *
- * @param enclosingId  The id of the enclosing `while` statement.
- * @returns `Gateway_<enclosingId>_loop`
- */
+/** XOR loop-head gateway for a `while`/do-while: `Gateway_<enclosingId>_loop`. */
 export function makeGatewayLoopId(enclosingId: string): string {
   return `Gateway_${enclosingId}_loop`;
 }
 
-// ---------------------------------------------------------------------------
-// Flow id constructors
-// ---------------------------------------------------------------------------
-
-/**
- * Id for the default (else-branch) flow out of a gateway.
- *
- * @param gatewayId  The id of the gateway element.
- * @returns `Flow_<gatewayId>_default`
- */
+/** Default (else-branch) flow out of a gateway: `Flow_<gatewayId>_default`. */
 export function makeDefaultFlowId(gatewayId: string): string {
   return `Flow_${gatewayId}_default`;
 }
 
 /**
- * Id for a plain sequence flow between two elements.
- *
- * Implements the sequence-flow id collision rule (the caller is `addFlow` in `ast-to-ir.ts`):
- *   - First occurrence of a `source → target` pair → `Flow_<sourceId>_<targetId>`
- *   - Second occurrence → `Flow_<sourceId>_<targetId>_2`
- *   - Third → `_3`, and so on.
- *
- * **Side effect:** the returned id is added to `taken` so that subsequent
- * calls with the same `sourceId`/`targetId` pair automatically receive the
- * next free suffix.
- *
- * @param sourceId  Id of the source flow element.
- * @param targetId  Id of the target flow element.
- * @param taken     Mutable set of ids already in use; updated in place.
- * @returns A unique, deterministic sequence flow id.
+ * Id for a plain sequence flow between two elements:
+ * `Flow_<sourceId>_<targetId>`, with `_2`/`_3`/… suffixes for repeated
+ * occurrences of the same pair. Adds the returned id to `taken`.
  */
 export function makeSequenceFlowId(
   sourceId: string,
@@ -132,20 +87,11 @@ export function makeSequenceFlowId(
 // ---------------------------------------------------------------------------
 
 /**
- * Id for an implicit start event synthesized when the source omits `start`.
- *
- * There is exactly one implicit start event per process, but its base id
- * (`StartEvent_<processId>`) can still collide with an author-chosen statement
- * name (e.g. a task literally named `StartEvent_P` in process `P`). The `taken`
- * set guards against that: a collision is resolved with a numeric suffix via
- * {@link resolveCollision}, exactly as {@link makeEndEventId} does.
- *
- * **Side effect:** the returned id is added to `taken`.
- *
- * @param processId  The id of the enclosing process.
- * @param taken      Mutable set of ids already in use; updated in place.
- * @returns A unique, deterministic start event id (`StartEvent_<processId>`,
- *          or a `_2`/`_3`/… suffixed form on collision).
+ * Id for an implicit start event synthesized when the source omits `start`:
+ * `StartEvent_<processId>`. There is exactly one implicit start event per
+ * process, but the base id can still collide with an author-chosen statement
+ * name (e.g. a task literally named `StartEvent_P` in process `P`); such a
+ * collision gets a numeric suffix. Adds the returned id to `taken`.
  */
 export function makeStartEventId(
   processId: string,
@@ -158,16 +104,9 @@ export function makeStartEventId(
 }
 
 /**
- * Id for an implicit end event synthesized when the source omits `end`.
- *
- * Multiple implicit ends are allowed; duplicates receive numeric suffixes
- * (`_2`, `_3`, …) via {@link resolveCollision}.
- *
- * **Side effect:** the returned id is added to `taken`.
- *
- * @param processId  The id of the enclosing process.
- * @param taken      Mutable set of ids already in use; updated in place.
- * @returns A unique, deterministic end event id.
+ * Id for an implicit end event synthesized when the source omits `end`:
+ * `EndEvent_<processId>`. Multiple implicit ends are allowed; duplicates
+ * receive numeric suffixes (`_2`, `_3`, …). Adds the returned id to `taken`.
  */
 export function makeEndEventId(processId: string, taken: Set<string>): string {
   const base = `EndEvent_${processId}`;
@@ -181,20 +120,9 @@ export function makeEndEventId(processId: string, taken: Set<string>): string {
 // ---------------------------------------------------------------------------
 
 /**
- * Return a deterministic unique id derived from `base` that is not present
- * in `taken`.
- *
- * Strategy:
- *   - If `base` is not taken → return `base` unchanged.
- *   - Otherwise try `<base>_2`, `<base>_3`, … until a free slot is found.
- *
- * Does **not** mutate `taken`. The caller is responsible for recording the
+ * Return the first id in the sequence `base`, `base_2`, `base_3`, … that is
+ * not present in `taken`. Does not mutate `taken` — the caller records the
  * returned id if needed.
- *
- * @param base   Preferred id.
- * @param taken  Set of ids already in use.
- * @returns The first id in the sequence `base`, `base_2`, `base_3`, … that
- *          is not present in `taken`.
  */
 export function resolveCollision(base: string, taken: Set<string>): string {
   if (!taken.has(base)) {

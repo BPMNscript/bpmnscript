@@ -15,21 +15,21 @@
  *     expects exactly `ID` — e.g. a step name (`user date`, `goto date`).
  *   - **no-viable-alternative** (`buildNoViableAltMessage`) fires in *expression*
  *     position, where `ID` is only one of several alternatives (a literal, `(`,
- *     the raw template, …) — e.g. `if (date > deadline)`. Empirically this is the
- *     path a reserved word inside a condition actually takes.
+ *     the raw template, …) — e.g. `if (date > deadline)`. This is the path a
+ *     reserved word inside a condition takes.
  * Overriding both keeps the guidance consistent wherever a reserved word is
  * wrongly used as a name.
  *
  * The reserved-word set is derived from the grammar's own keyword tokens (not a
- * hardcoded list), so it stays correct as keywords are added or removed
- * (CLAUDE.md keyword-collision lesson). Only *word-like* keywords are
- * considered — operators such as `&&` can never be confused with an identifier.
+ * hardcoded list), so it stays correct as keywords are added or removed. Only
+ * *word-like* keywords are considered — operators such as `&&` can never be
+ * confused with an identifier.
  *
- * **Limitation (by design):** this only enriches the *message* Chevrotain
- * already built; it cannot suppress or restructure Chevrotain's error recovery,
- * and it does not change which token positions are legal. The grammar still
- * rejects the reserved word exactly where it did before — the author just gets
- * an actionable message instead of a raw one.
+ * This provider only enriches the *message* Chevrotain already built; it
+ * cannot suppress or restructure Chevrotain's error recovery, and it does not
+ * change which token positions are legal. The grammar still rejects the
+ * reserved word exactly where it did before — the author just gets an
+ * actionable message instead of a raw one.
  */
 
 import {

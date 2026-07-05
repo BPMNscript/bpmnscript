@@ -6,7 +6,7 @@
  *   input.bpmn → IR₁ → DSL → AST → IR₂ → XML₂ → IR₃
  *
  * produces an IR₃ that is semantically equivalent to IR₁ (modulo
- * array-ordering and auto-generated flow ids — both normalised by
+ * array-ordering and auto-generated flow ids — both normalized by
  * `normalizeIr` before comparison).
  *
  * This is an integration-level test: it exercises every real transform in the
@@ -37,12 +37,6 @@
  *     collapse.
  *   - The elided gateway `name` is stripped (a structured `if/else` cannot
  *     carry it).
- *
- * NOTE: the negative `operaton:expression`-rejection case in
- * `tests/e2e/invoice-approval.test.ts` (test 3) stays VALID — only
- * `operaton:class` service tasks are currently supported. It is expected to
- * INVERT once `expression`/`delegateExpression` service tasks become supported
- * syntax. Do not change that E2E negative case while that support is absent.
  */
 
 import { describe, it, expect, beforeAll } from 'vitest';
@@ -85,16 +79,12 @@ beforeAll(async () => {
   const services = createBpmnScriptServices(EmptyFileSystem);
   parse = parseHelper<Model>(services.BpmnScript);
 
-  // Step 1 — read the hand-written BPMN fixture.
   const xml = readFileSync(HANDWRITTEN_BPMN_PATH, 'utf-8');
 
-  // Step 2 — parse BPMN XML into IR.
   ({ ir: ir1 } = await xmlToIr(xml));
 
-  // Step 3 — pretty-print IR to DSL source.
   dslSource = irToDsl(ir1);
 
-  // Step 4 — parse the DSL source via Langium.
   const document = await parse(dslSource);
   if (document.parseResult.parserErrors.length > 0) {
     throw new Error(
@@ -103,13 +93,10 @@ beforeAll(async () => {
     );
   }
 
-  // Step 5 — convert AST to IR.
   const ir2 = astToIr(document.parseResult.value);
 
-  // Step 6 — serialize IR to BPMN XML.
   const xml2 = await irToXml(ir2);
 
-  // Step 7 — parse the generated XML back to IR.
   ({ ir: ir3 } = await xmlToIr(xml2));
 });
 
@@ -215,8 +202,8 @@ describe('Round-trip equivalence: BPMN → IR → DSL → IR → XML → IR', ()
   });
 
   it('intermediate DSL is structured syntax (if/else blocks, no gateway/edge)', () => {
-    // Proves `irToDsl` emits structured syntax, not a node/edge form. The
-    // gateway is rendered as an `if (…) { … } else { … }`.
+    // `irToDsl` emits structured syntax, not a node/edge form: the gateway is
+    // rendered as an `if (…) { … } else { … }`.
     expect(dslSource).toContain('if (');
     expect(dslSource).toContain('else');
     expect(dslSource).toContain('{');
@@ -231,15 +218,12 @@ describe('Round-trip equivalence: BPMN → IR → DSL → IR → XML → IR', ()
 });
 
 // ---------------------------------------------------------------------------
-// Meaningfulness guard — the normalizer must NOT mask structural regressions.
-//
 // These tests deliberately corrupt `ir3` and assert that `normalizeIr` still
-// reports a difference. They are the executable proof that the widened re-key
-// rules canonicalize generated *ids* only, never genuinely-different
-// *structure*.
+// reports a difference: the re-key rules canonicalize generated ids only,
+// never structure.
 // ---------------------------------------------------------------------------
 
-describe('normalizeIr is not a regression-masking sieve', () => {
+describe('normalizeIr preserves structural differences', () => {
   it('dropping a sequence flow from ir3 makes the comparison FAIL', () => {
     const ir3Corrupt: BpmnProcess = {
       ...ir3,
@@ -272,9 +256,9 @@ describe('normalizeIr is not a regression-masking sieve', () => {
 
   it('stripping the split gateway default flow makes the comparison FAIL', () => {
     // Mirrors the `defaultFlowId` assertion above: a gateway's default flow is
-    // load-bearing structure. Stripping it must make the NORMALIZED comparison
-    // fail — proving `normalizeIr` canonicalizes ids only, never the
-    // `defaultFlowId` field, so the round-trip equality is not masking the loss.
+    // load-bearing structure. Stripping it must make the normalized comparison
+    // fail — `normalizeIr` canonicalizes ids only, never the `defaultFlowId`
+    // field.
     const splitGw = ir3.flowElements.find(
       (fe) => fe.kind === 'exclusiveGateway' && fe.defaultFlowId !== undefined,
     );

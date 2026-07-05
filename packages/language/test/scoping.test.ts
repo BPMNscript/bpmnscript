@@ -132,7 +132,7 @@ process b { user Dup }
 
 describe('Scoping — reserved-word guidance', () => {
   test('a reserved word in expression position points to the raw-string fallback', async () => {
-    // Empirically a reserved word inside a condition is a Chevrotain
+    // A reserved word inside a condition is a Chevrotain
     // no-viable-alternative error; the provider enriches it either way.
     const document = await parse(
       `process p { if (date > deadline) { user A } }`,

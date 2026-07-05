@@ -1,17 +1,4 @@
-// structured-control-flow — a BPMNscript source that exercises every
-// structured control-flow construct in a single process: `if`/`else`, `while`,
-// and `parallel`. It drives the construct round-trip idempotence check
-// (BPMNscript → IR → XML → IR → DSL → IR), so each construct must desugar to a
-// clean, restructurable gateway shape:
-//
-//   `if (…) { } else { }`   → an exclusive-gateway split/join pair.
-//   `while (…) { }`         → an exclusive loop gateway with a conditioned
-//                             back-edge (never standardLoopCharacteristics).
-//   `parallel { { } { } }`  → a parallel-gateway fork/join pair.
-//
-// Every flow node carries an explicit id so the round-trip can assert that
-// authored ids survive; the synthesized gateway/flow ids follow the frozen
-// deterministic scheme (Gateway_<coord>_split|join|loop|fork, Flow_<gw>_default).
+// Exercises if/else, while, and parallel in a single process — see README.md.
 
 process structured-control-flow {
   start Begin

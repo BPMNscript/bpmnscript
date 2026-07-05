@@ -36,7 +36,7 @@ export {
   resolveCollision,
 } from './synthesize-ids.js';
 
-export { parseJuel, renderRawFallback, renderExprFromIr } from './juel.js';
+export { parseJuel, renderRawFallback } from './juel.js';
 export type { JuelNode, Accessor, BinaryOp, ExprResult } from './juel.js';
 
 export { irToXml, type IrToXmlOptions } from './ir-to-xml.js';
