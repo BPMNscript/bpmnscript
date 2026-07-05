@@ -29,7 +29,6 @@ import { createBpmnScriptServices } from '@bpmn-script/language';
 import type { Model } from '@bpmn-script/language';
 import { xmlToIr } from '@bpmn-script/transform';
 
-// eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore — esbuild.mjs is a plain JS module; types are inferred at runtime.
 import { sharedBuildOptions, assetCopyPlugin } from '../esbuild.mjs';
 import {
@@ -103,11 +102,16 @@ describe('[e2e] bundled asset resolution and transform under the shim', () => {
 
   beforeAll(async () => {
     // Assert the production extension build ran; operaton-moddle.json must be present.
-    const moddlePath = path.resolve(EXT_DIR, 'out', 'extension', 'operaton-moddle.json');
+    const moddlePath = path.resolve(
+      EXT_DIR,
+      'out',
+      'extension',
+      'operaton-moddle.json',
+    );
     if (!fs.existsSync(moddlePath)) {
       throw new Error(
         `operaton-moddle.json missing at ${moddlePath}. ` +
-        'Run `npm run build` from the repo root before this suite.',
+          'Run `npm run build` from the repo root before this suite.',
       );
     }
 
@@ -116,14 +120,14 @@ describe('[e2e] bundled asset resolution and transform under the shim', () => {
     const entrySource = [
       "import { xmlToIr, irToXml } from '@bpmn-script/transform';",
       "import { readFileSync } from 'node:fs';",
-      "(async () => {",
-      "  const bpmnPath = process.argv[2];",
+      '(async () => {',
+      '  const bpmnPath = process.argv[2];',
       "  const xml = readFileSync(bpmnPath, 'utf-8');",
-      "  const ir = await xmlToIr(xml);",
+      '  const { ir } = await xmlToIr(xml);',
       "  const bpmnOut = await irToXml(ir, { sourceFileName: 'verify', exporterVersion: '0.0.1' });",
       "  process.stdout.write('PROCESS_ID:' + ir.id + '\\n');",
-      "  process.stdout.write(bpmnOut);",
-      "})().catch(err => { console.error(err); process.exit(1); });",
+      '  process.stdout.write(bpmnOut);',
+      '})().catch(err => { console.error(err); process.exit(1); });',
     ].join('\n');
 
     fs.writeFileSync(verifyEntryFile, entrySource, 'utf-8');
@@ -229,7 +233,7 @@ describe('[integration] DSL to BPMN journey with disk write round-trip', () => {
 
       // Re-read and re-import from disk to close the round-trip loop.
       const xml = fs.readFileSync(outFile, 'utf-8');
-      const ir = await xmlToIr(xml);
+      const { ir } = await xmlToIr(xml);
 
       expect(ir.id).toBe('invoice-approval');
     },

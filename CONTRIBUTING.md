@@ -30,7 +30,7 @@ SKIP_DOCKER_TESTS=true npm test
 
 ### Trying it out in VS Code
 
-After building, press <kbd>F5</kbd> in VS Code. This opens a second VS Code window with the BPMNscript extension loaded. In that window you can create or open `.bpmnscript` files and get syntax highlighting, inline diagnostics, and autocompletion. To compile or decompile a file, use the command palette (`BPMNscript: Compile to BPMN` / `BPMNscript: Decompile to BPMNscript`), the editor title bar button, the explorer context menu, or the "Convert" panel in the BPMNscript activity-bar sidebar. The CLI alternative (`npx bpmns build <file>`) still works if you prefer the terminal.
+After building, press <kbd>F5</kbd> in VS Code. This opens a second VS Code window with the BPMNscript extension loaded. In that window you can create or open `.bpmnscript` files and get syntax highlighting, inline diagnostics, and autocompletion. To compile or decompile a file, use the command palette (`BPMNscript: Compile to BPMN` / `BPMNscript: Decompile to BPMNscript`) or the "Convert" panel in the BPMNscript activity-bar sidebar. The CLI alternative (`npx bpmns build <file>`) still works if you prefer the terminal.
 
 ### Editing the grammar
 

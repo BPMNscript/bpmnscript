@@ -51,11 +51,7 @@
  * quoted `"${…}"` when raw).
  */
 
-import type {
-  BpmnProcess,
-  FlowElement,
-  SequenceFlow,
-} from './ir/types.js';
+import type { BpmnProcess, FlowElement, SequenceFlow } from './ir/types.js';
 import { analyzeCfg, type CfgAnalysis } from './cfg-analysis.js';
 import { parseJuel, renderRawFallback } from './juel.js';
 
@@ -279,7 +275,11 @@ class Emitter {
     let cont: string | typeof STOP = STOP;
     for (const f of outs) {
       this.consumedFlows.add(f.id);
-      if (cont === STOP && !this.emittedNodes.has(f.targetRef) && f.targetRef !== stop) {
+      if (
+        cont === STOP &&
+        !this.emittedNodes.has(f.targetRef) &&
+        f.targetRef !== stop
+      ) {
         cont = f.targetRef;
       } else {
         lines.push(`goto ${f.targetRef}`);
@@ -333,10 +333,13 @@ class Emitter {
       return f.targetRef;
     }
 
-    // Partition: conditioned out-flows are if/else-if branches; the (at most
-    // one) unconditioned flow is the default → trailing else.
+    // Partition: conditioned out-flows are if/else-if branches; the first
+    // unconditioned flow is the default → trailing else. Desugared IR has at
+    // most one unconditioned flow; hand-built or imported IR may carry more.
     const conditioned = outs.filter((f) => f.conditionExpression !== undefined);
-    const unconditioned = outs.filter((f) => f.conditionExpression === undefined);
+    const unconditioned = outs.filter(
+      (f) => f.conditionExpression === undefined,
+    );
 
     // Determine whether this is a clean structured if (a real post-dominating
     // join that the split dominates, with every branch staying in-region).
@@ -348,7 +351,13 @@ class Emitter {
     if (conditioned.length === 0) {
       this.emitUnconditionedXorDegradation(unconditioned, join, lines, depth);
     } else {
-      this.emitConditionedIfChain(conditioned, unconditioned, join, lines, depth);
+      this.emitConditionedIfChain(
+        conditioned,
+        unconditioned,
+        join,
+        lines,
+        depth,
+      );
     }
 
     // Continue the outer chain after the (elided) join, or stop when the
@@ -391,9 +400,13 @@ class Emitter {
 
   /**
    * Emit the normal conditioned `if` / `else if` chain with an optional trailing
-   * `else` from the unconditioned default flow. Conditioned flows become the
-   * `if` / `else if` branches; the single unconditioned flow (if any, and not
-   * routing straight to the join) becomes the `else` body.
+   * `else` from the first unconditioned flow. Conditioned flows become the
+   * `if` / `else if` branches; the first unconditioned flow (if any, and not
+   * routing straight to the join) becomes the `else` body. Any further
+   * unconditioned flow (hand-built/imported IR only — an `if` has at most one
+   * `else`) is preserved as a bare `goto` after the structure, the same
+   * degradation the all-unconditioned path uses: the edge is re-anchored at
+   * the join, the closest form the DSL can express.
    */
   private emitConditionedIfChain(
     conditioned: SequenceFlow[],
@@ -409,8 +422,8 @@ class Emitter {
       this.emitIfBranch(f.targetRef, join, lines, depth);
     });
 
-    // Trailing `else` from the unconditioned default flow (if any).
-    const elseFlow = unconditioned[0];
+    // Trailing `else` from the first unconditioned flow (if any).
+    const [elseFlow, ...surplus] = unconditioned;
     if (elseFlow === undefined || elseFlow.targetRef === join) {
       // No default, or the default goes straight to the join: no else body.
       lines.push('}');
@@ -418,6 +431,13 @@ class Emitter {
       lines.push('} else {');
       this.emitIfBranch(elseFlow.targetRef, join, lines, depth);
       lines.push('}');
+    }
+
+    // Surplus unconditioned edges have no structured surface form; emit each
+    // as a goto so the edge survives (mirrors emitUnconditionedXorDegradation).
+    for (const f of surplus) {
+      if (f.targetRef === join) continue; // duplicate of the implicit fall-through
+      lines.push(`goto ${f.targetRef}`);
     }
   }
 
@@ -529,7 +549,9 @@ class Emitter {
     const backEdge = this.cfg
       .backEdges()
       .filter((f) => !this.consumedFlows.has(f.id))
-      .find((f) => f.targetRef === loop.id && f.conditionExpression === undefined);
+      .find(
+        (f) => f.targetRef === loop.id && f.conditionExpression === undefined,
+      );
     if (backEdge === undefined) return undefined;
 
     const outs = (this.out.get(loop.id) ?? []).filter(
@@ -593,7 +615,10 @@ class Emitter {
         if (f.targetRef !== node) return false;
         if (f.conditionExpression === undefined) return false;
         const head = this.byId.get(f.sourceRef);
-        return head?.kind === 'exclusiveGateway' && this.cfg.dominates(node, f.sourceRef);
+        return (
+          head?.kind === 'exclusiveGateway' &&
+          this.cfg.dominates(node, f.sourceRef)
+        );
       });
     if (backEdge === undefined) return undefined;
 
@@ -824,7 +849,9 @@ function buildProcessHeader(process: BpmnProcess): string {
 }
 
 /** Render a `user <id> "<label>"? { … }` statement with its attribute block. */
-function renderUserTask(el: Extract<FlowElement, { kind: 'userTask' }>): string {
+function renderUserTask(
+  el: Extract<FlowElement, { kind: 'userTask' }>,
+): string {
   const attrs: string[] = [];
   if (el.assignee !== undefined) attrs.push(`assignee = ${quote(el.assignee)}`);
   if (el.formKey !== undefined) attrs.push(`formKey = ${quote(el.formKey)}`);

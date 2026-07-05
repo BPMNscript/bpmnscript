@@ -41,9 +41,11 @@ const TARGET_NAMESPACE = 'http://bpmnscript.io/processes';
 
 /**
  * Constant `operaton:historyTimeToLive` emitted on every process:
- * thirty-day retention, not parameterised at the IR level.
+ * thirty-day retention, not parameterised at the IR level. Exported so the
+ * importer can stay silent when a document carries exactly this value —
+ * re-export reproduces it, so no information is lost.
  */
-const HISTORY_TIME_TO_LIVE = 'P30D';
+export const HISTORY_TIME_TO_LIVE = 'P30D';
 
 /**
  * Load the local Operaton moddle extension at module-init time. Read via

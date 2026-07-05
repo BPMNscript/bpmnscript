@@ -135,9 +135,10 @@ function realNodeReachability(ir: BpmnProcess): string[] {
 
   const outgoing = new Map<string, string[]>();
   for (const sf of ir.sequenceFlows) {
-    (outgoing.get(sf.sourceRef) ?? outgoing.set(sf.sourceRef, []).get(sf.sourceRef)!).push(
-      sf.targetRef,
-    );
+    (
+      outgoing.get(sf.sourceRef) ??
+      outgoing.set(sf.sourceRef, []).get(sf.sourceRef)!
+    ).push(sf.targetRef);
   }
 
   const pairs = new Set<string>();
@@ -183,7 +184,7 @@ describe('Scenario 1 — structured idempotence (invoice-approval, if/else)', ()
     irInitial = astToIr(await parseToAst(source));
 
     const xml = await irToXml(irInitial);
-    const irImported = await xmlToIr(xml);
+    const { ir: irImported } = await xmlToIr(xml);
     dsl1 = irToDsl(irImported);
 
     irFinal = astToIr(await parseToAst(dsl1));
@@ -233,7 +234,7 @@ describe('Scenario 2 — loop round-trip (while ⇒ conditioned back-edge, never
     const source = readFileSync(STRUCTURED_DSL_PATH, 'utf-8');
     const ir = astToIr(await parseToAst(source));
     xml = await irToXml(ir);
-    const imported = await xmlToIr(xml);
+    const { ir: imported } = await xmlToIr(xml);
     reemittedDsl = irToDsl(imported);
   });
 
@@ -271,7 +272,7 @@ describe('Scenario 3 — parallel round-trip (parallelGateway fork/join ⇒ para
     const source = readFileSync(STRUCTURED_DSL_PATH, 'utf-8');
     const ir = astToIr(await parseToAst(source));
     xml = await irToXml(ir);
-    const imported = await xmlToIr(xml);
+    const { ir: imported } = await xmlToIr(xml);
     reemittedDsl = irToDsl(imported);
   });
 
@@ -317,7 +318,7 @@ describe('Scenario 4 — goto-degradation preserves the full edge set (totality)
     const xml = readFileSync(UNSTRUCTURED_BPMN_PATH, 'utf-8');
 
     // xmlToIr must read an irreducible graph without throwing.
-    irImport = await xmlToIr(xml);
+    ({ ir: irImport } = await xmlToIr(xml));
     degradedDsl = irToDsl(irImport);
     irReDesugared = astToIr(await parseToAst(degradedDsl));
 
@@ -440,7 +441,7 @@ describe('Scenario 5 — bean-call condition stays quoted-raw end-to-end', () =>
   beforeAll(async () => {
     irInitial = astToIr(await parseToAst(BEAN_DSL));
     const xml = await irToXml(irInitial);
-    irImported = await xmlToIr(xml);
+    ({ ir: irImported } = await xmlToIr(xml));
     reemittedDsl = irToDsl(irImported);
   });
 

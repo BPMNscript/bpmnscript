@@ -41,9 +41,14 @@ export type { JuelNode, Accessor, BinaryOp, ExprResult } from './juel.js';
 
 export { irToXml, type IrToXmlOptions } from './ir-to-xml.js';
 export { xmlToIr } from './xml-to-ir.js';
+export type { ImportWarning, ImportWarningCategory } from './xml-to-ir.js';
 export {
+  UnsupportedConstructError,
   UnsupportedElementError,
   UnsupportedServiceTaskFormError,
+  UnsupportedEventDefinitionError,
+  UnsupportedLoopCharacteristicsError,
+  UnsupportedCollaborationError,
 } from './errors.js';
 
 export { astToIr } from './ast-to-ir.js';

@@ -52,6 +52,106 @@
           "type": "String"
         }
       ]
+    },
+    {
+      "name": "InputOutput",
+      "superClass": ["Element"],
+      "properties": [
+        {
+          "name": "inputParameters",
+          "type": "InputParameter",
+          "isMany": true
+        },
+        {
+          "name": "outputParameters",
+          "type": "OutputParameter",
+          "isMany": true
+        }
+      ]
+    },
+    {
+      "name": "InputParameter",
+      "superClass": ["Element"],
+      "properties": [
+        {
+          "name": "name",
+          "isAttr": true,
+          "type": "String"
+        },
+        {
+          "name": "value",
+          "isBody": true,
+          "type": "String"
+        }
+      ]
+    },
+    {
+      "name": "OutputParameter",
+      "superClass": ["Element"],
+      "properties": [
+        {
+          "name": "name",
+          "isAttr": true,
+          "type": "String"
+        },
+        {
+          "name": "value",
+          "isBody": true,
+          "type": "String"
+        }
+      ]
+    },
+    {
+      "name": "ExecutionListener",
+      "superClass": ["Element"],
+      "properties": [
+        {
+          "name": "event",
+          "isAttr": true,
+          "type": "String"
+        },
+        {
+          "name": "class",
+          "isAttr": true,
+          "type": "String"
+        },
+        {
+          "name": "expression",
+          "isAttr": true,
+          "type": "String"
+        },
+        {
+          "name": "delegateExpression",
+          "isAttr": true,
+          "type": "String"
+        }
+      ]
+    },
+    {
+      "name": "TaskListener",
+      "superClass": ["Element"],
+      "properties": [
+        {
+          "name": "event",
+          "isAttr": true,
+          "type": "String"
+        },
+        {
+          "name": "class",
+          "isAttr": true,
+          "type": "String"
+        },
+        {
+          "name": "expression",
+          "isAttr": true,
+          "type": "String"
+        },
+        {
+          "name": "delegateExpression",
+          "isAttr": true,
+          "type": "String"
+        }
+      ]
     }
   ],
   "enumerations": []

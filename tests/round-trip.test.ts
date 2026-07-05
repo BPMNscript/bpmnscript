@@ -89,7 +89,7 @@ beforeAll(async () => {
   const xml = readFileSync(HANDWRITTEN_BPMN_PATH, 'utf-8');
 
   // Step 2 — parse BPMN XML into IR.
-  ir1 = await xmlToIr(xml);
+  ({ ir: ir1 } = await xmlToIr(xml));
 
   // Step 3 — pretty-print IR to DSL source.
   dslSource = irToDsl(ir1);
@@ -110,7 +110,7 @@ beforeAll(async () => {
   const xml2 = await irToXml(ir2);
 
   // Step 7 — parse the generated XML back to IR.
-  ir3 = await xmlToIr(xml2);
+  ({ ir: ir3 } = await xmlToIr(xml2));
 });
 
 // ---------------------------------------------------------------------------
@@ -252,8 +252,7 @@ describe('normalizeIr is not a regression-masking sieve', () => {
     const ir3Corrupt: BpmnProcess = {
       ...ir3,
       flowElements: ir3.flowElements.filter(
-        (fe) =>
-          !(fe.kind === 'exclusiveGateway' && fe.id.endsWith('_split')),
+        (fe) => !(fe.kind === 'exclusiveGateway' && fe.id.endsWith('_split')),
       ),
     };
     expect(normalizeIr(ir3Corrupt)).not.toEqual(normalizeIr(ir1));

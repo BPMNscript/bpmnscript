@@ -145,9 +145,9 @@ describe('astToIr — implicit sequence and implicit start/end', () => {
   it('keeps an explicit start/end verbatim and adds no implicit ones', async () => {
     const result = await ir(`process P { start S user A end E }`);
 
-    expect(result.flowElements.filter((fe) => fe.kind === 'startEvent')).toEqual(
-      [{ kind: 'startEvent', id: 'S' }],
-    );
+    expect(
+      result.flowElements.filter((fe) => fe.kind === 'startEvent'),
+    ).toEqual([{ kind: 'startEvent', id: 'S' }]);
     expect(result.flowElements.filter((fe) => fe.kind === 'endEvent')).toEqual([
       { kind: 'endEvent', id: 'E' },
     ]);
@@ -389,9 +389,7 @@ describe('astToIr — parallel fork/join', () => {
 
 describe('astToIr — goto', () => {
   it('emits a sequence flow to the node named Foo', async () => {
-    const result = await ir(
-      `process P { user A goto Foo user Foo end Done }`,
-    );
+    const result = await ir(`process P { user A goto Foo user Foo end Done }`);
     // The implicit flow out of A lands on the goto target Foo.
     const gotoFlow = flow(result, 'A', 'Foo');
     expect(gotoFlow.targetRef).toBe('Foo');
@@ -420,7 +418,9 @@ describe('astToIr — goto', () => {
     // named statement INSIDE a compound block: it lands on that statement's
     // entry, which is the entry node of the compound body (not the synthesised
     // split gateway, which only convergent/implicit flow reaches).
-    const result = await ir(`process P { user A goto Inner if (x) { user Inner } }`);
+    const result = await ir(
+      `process P { user A goto Inner if (x) { user Inner } }`,
+    );
 
     // The goto out of A lands directly on the compound's body entry `Inner`.
     expect(flow(result, 'A', 'Inner').targetRef).toBe('Inner');
@@ -445,9 +445,7 @@ describe('astToIr — synthesized id determinism', () => {
 
   it('nested compound coordinates nest by structural index', async () => {
     // An `if` at body index 0 whose `then` block holds a `while` at index 0.
-    const result = await ir(
-      `process P { if (x) { while (y) { user A } } }`,
-    );
+    const result = await ir(`process P { if (x) { while (y) { user A } } }`);
     const ids = result.flowElements.map((fe) => fe.id);
     expect(ids).toContain(makeGatewaySplitId('P_0'));
     // The while's coordinate is the if's coord (`P_0`) plus the `then` branch's
@@ -530,7 +528,9 @@ describe('astToIr — attribute mapping', () => {
   });
 
   it('accepts a dotted bareword class value as a plain javaClass', async () => {
-    const result = await ir(`process P { service S { class = com.example.X } }`);
+    const result = await ir(
+      `process P { service S { class = com.example.X } }`,
+    );
     const svc = result.flowElements.find((fe) => fe.kind === 'serviceTask')!;
     expect((svc as { javaClass: string }).javaClass).toBe('com.example.X');
   });
@@ -614,7 +614,10 @@ describe('astToIr — all synthesized ids are globally unique (property check)',
   // synthesized gateway/event ids collides, the resulting IR is malformed.
   const FIXTURES: { name: string; source: string }[] = [
     { name: 'implicit sequence', source: `process P { user A user B }` },
-    { name: 'explicit start/end', source: `process P { start S user A end E }` },
+    {
+      name: 'explicit start/end',
+      source: `process P { start S user A end E }`,
+    },
     {
       name: 'if/else',
       source: `process P { if (x) { user S } else { service A { class = "c" } } }`,
@@ -623,9 +626,15 @@ describe('astToIr — all synthesized ids are globally unique (property check)',
       name: 'else-if chain',
       source: `process P { if (a) { user X } else if (b) { user Y } else { user Z } }`,
     },
-    { name: 'while', source: `process P { user Pre while (r) { user R } user Post }` },
+    {
+      name: 'while',
+      source: `process P { user Pre while (r) { user R } user Post }`,
+    },
     { name: 'do-while', source: `process P { do { user R } while (r) }` },
-    { name: 'parallel', source: `process P { parallel { { user A } { user B } } }` },
+    {
+      name: 'parallel',
+      source: `process P { parallel { { user A } { user B } } }`,
+    },
     {
       name: 'nested if in if-then',
       source: `process P { if (x) { if (y) { user A } } }`,
@@ -654,7 +663,9 @@ describe('astToIr — all synthesized ids are globally unique (property check)',
       const ids = allElementIds(result);
       const seen = new Map<string, number>();
       for (const id of ids) seen.set(id, (seen.get(id) ?? 0) + 1);
-      const dups = [...seen.entries()].filter(([, n]) => n > 1).map(([id]) => id);
+      const dups = [...seen.entries()]
+        .filter(([, n]) => n > 1)
+        .map(([id]) => id);
       expect(dups).toEqual([]);
     });
   }

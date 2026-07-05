@@ -123,7 +123,11 @@ export function compileCommand(
     const sourceFileName = path.basename(sourceUri.fsPath);
     const text = await readText(sourceUri);
 
-    const result = await compileDslToBpmn(text, sourceFileName, extensionVersion);
+    const result = await compileDslToBpmn(
+      text,
+      sourceFileName,
+      extensionVersion,
+    );
 
     if (result.ok) {
       const outputPath = swapExtension(sourceUri.fsPath, '.bpmn');
@@ -175,6 +179,11 @@ export function compileCommand(
  * the source file name. The core returns a context-free message; the adapter
  * prepends the filename here exactly once. Does NOT write any output.
  *
+ * On success with non-empty `warnings` (non-semantic content the transform
+ * dropped, e.g. extra Operaton/camunda extension attributes or lanes): shows
+ * one aggregated warning notification, filename-prefixed exactly once, so the
+ * drop is never silent. This does not block the write.
+ *
  * On unexpected errors: shows an error notification. Does NOT write output.
  *
  * @param diagnostics DiagnosticCollection (cleared on success).
@@ -219,6 +228,19 @@ export function decompileCommand(
       void vscode.window.showInformationMessage(
         `BPMNscript: Decompiled "${sourceFileName}" → "${path.basename(outputPath)}"`,
       );
+
+      // Non-semantic drops (extra Operaton/camunda extension attributes,
+      // lanes) never got an IR representation and would otherwise vanish
+      // silently. Surface them as one aggregated warning, filename-prefixed
+      // exactly once — symmetric with the unsupported-construct message below.
+      if (result.warnings.length > 0) {
+        const details = result.warnings
+          .map((w) => `${w.elementId}: ${w.message}`)
+          .join('; ');
+        void vscode.window.showWarningMessage(
+          `BPMNscript: "${sourceFileName}" dropped ${result.warnings.length} item(s) during decompile: ${details}`,
+        );
+      }
 
       return outputUri;
     } else if (result.kind === 'unsupported') {

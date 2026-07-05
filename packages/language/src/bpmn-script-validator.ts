@@ -1,7 +1,8 @@
 /**
  * Validation checks for the BPMNscript AST.
  *
- * Six families of checks, all registered through {@link registerValidationChecks}:
+ * Attribute/type/structural families, all registered through
+ * {@link registerValidationChecks}:
  *
  *  1. **Undeclared-variable warning**: every `VarRef` whose root identifier
  *     is not a declared process variable produces a *warning* (the variable may
@@ -33,37 +34,79 @@
  *     collision-guarded by the `taken` set (see `ast-to-ir.ts`), so the guard
  *     must be applied here at parse/validation time.
  *
- * CLAUDE.md guard-ref lesson: this file deliberately registers **no** check on
- * `GotoStatement`. An unresolved `goto` is owned by the linker, which already
- * emits exactly one "Could not resolve reference" error. Adding a validator that
- * touches `target.ref` would double-report on top of that error, so we don't.
+ * Whole-process integrity families (added for compile-time safety of `goto` and
+ * structural authoring mistakes):
+ *
+ *  7. **Duplicate process name** (`Model` check): a second `process` declaration
+ *     reusing a name already seen is an *error*.
+ *  8. **Duplicate variable name**: a second `var` declaration in one process
+ *     reusing a name already declared is an *error* (the symbol provider itself
+ *     stays last-wins — see `variable-symbol-provider.ts` — this check is the
+ *     one that actually surfaces the conflict).
+ *  9. **Duplicate process label**: a second `label = "…"` declaration in one
+ *     process is an *error* (the grammar accepts any number of `ProcessLabel`
+ *     decls; only one is meaningful).
+ * 10. **Duplicate statement name**: two goto-targetable steps
+ *     (`start`/`end`/`user`/`service`) sharing one name make `goto` ambiguous —
+ *     an *error* naming the offending step.
+ * 11. **Empty-block warning**: an `if`/`else if`/`else` branch, a `while`/
+ *     `do … while` body, or a `parallel` branch with zero statements is a
+ *     *warning* (syntactically legal, almost certainly an authoring mistake).
+ * 12. **Goto into a parallel branch from outside**: `target.ref` is only
+ *     inspected when it is already resolved (`if (goto.target.ref)` —
+ *     CLAUDE.md guard-ref lesson: an unresolved `goto` is owned by the linker,
+ *     which already emits exactly one "Could not resolve reference" error;
+ *     touching `target.ref` unguarded would double-report on top of that). When
+ *     resolved, a `goto` whose target lies inside a `parallel` branch, issued
+ *     from outside that same branch's subtree, is an *error* — a `parallel`
+ *     branch's steps run only when the whole `parallel` statement is reached,
+ *     not via an external `goto`.
  */
 
-import { AstUtils, type ValidationAcceptor, type ValidationChecks } from 'langium';
+import {
+  AstUtils,
+  type AstNode,
+  type ValidationAcceptor,
+  type ValidationChecks,
+} from 'langium';
 import type {
   Additive,
   Attribute,
+  Block,
   BpmnScriptAstType,
+  DoWhileStatement,
+  EndEvent,
   Expr,
+  GotoStatement,
+  IfStatement,
   Logical,
+  Model,
   Multiplicative,
+  ParallelStatement,
   Process,
   Relational,
   ServiceTask,
+  StartEvent,
+  Statement,
   UserTask,
   VarType,
+  WhileStatement,
 } from './generated/ast.js';
 import {
   isAdditive,
   isAttribute,
+  isBlock,
   isEndEvent,
   isExpr,
   isLogical,
   isMultiplicative,
+  isParallelStatement,
+  isProcessLabel,
   isRelational,
   isServiceTask,
   isStartEvent,
   isUserTask,
+  isVarDecl,
   isVarRef,
 } from './generated/ast.js';
 import type { BpmnScriptServices } from './bpmn-script-module.js';
@@ -79,9 +122,15 @@ export function registerValidationChecks(services: BpmnScriptServices) {
   const registry = services.validation.ValidationRegistry;
   const validator = services.validation.BpmnScriptValidator;
   const checks: ValidationChecks<BpmnScriptAstType> = {
+    Model: validator.checkModel,
     Process: validator.checkProcess,
     UserTask: validator.checkUserTaskAttributes,
     ServiceTask: validator.checkServiceTaskAttributes,
+    IfStatement: validator.checkIfStatement,
+    WhileStatement: validator.checkWhileStatement,
+    DoWhileStatement: validator.checkDoWhileStatement,
+    ParallelStatement: validator.checkParallelStatement,
+    GotoStatement: validator.checkGotoStatement,
   };
   registry.register(checks, validator);
 }
@@ -130,9 +179,50 @@ const RESERVED_ID_PATTERNS: ReadonlyArray<RegExp> = [
 type ExprType = VarType | 'unknown';
 
 /** Types that participate in arithmetic and ordered comparison without error. */
-const NUMERIC_OK: ReadonlySet<ExprType> = new Set<ExprType>(['number', 'any', 'json', 'unknown']);
+const NUMERIC_OK: ReadonlySet<ExprType> = new Set<ExprType>([
+  'number',
+  'any',
+  'json',
+  'unknown',
+]);
 /** Types that are valid operands of an ordered comparison (`< <= > >=`). */
-const ORDERED_OK: ReadonlySet<ExprType> = new Set<ExprType>(['number', 'date', 'any', 'json', 'unknown']);
+const ORDERED_OK: ReadonlySet<ExprType> = new Set<ExprType>([
+  'number',
+  'date',
+  'any',
+  'json',
+  'unknown',
+]);
+
+/**
+ * The concrete `Statement` subtypes that carry a `name` and are therefore valid
+ * `goto` targets. Shared by the reserved-name check and the duplicate-name
+ * check so both address exactly the same set of nodes (CLAUDE.md
+ * streamAst-attribute lesson: expression `VarRef`s are never part of this set).
+ */
+type NamedStatement = StartEvent | EndEvent | UserTask | ServiceTask;
+
+/**
+ * Collect every goto-targetable named statement in `process`, in document
+ * order, regardless of nesting depth (inside `if`/`while`/`parallel` blocks).
+ *
+ * @param process The process to scan.
+ * @returns Every `StartEvent`/`EndEvent`/`UserTask`/`ServiceTask` node.
+ */
+function collectNamedStatements(process: Process): NamedStatement[] {
+  const result: NamedStatement[] = [];
+  for (const node of AstUtils.streamAst(process)) {
+    if (
+      isStartEvent(node) ||
+      isEndEvent(node) ||
+      isUserTask(node) ||
+      isServiceTask(node)
+    ) {
+      result.push(node);
+    }
+  }
+  return result;
+}
 
 /**
  * Structural + variable + attribute validator for BPMNscript processes.
@@ -150,11 +240,58 @@ export class BpmnScriptValidator {
   }
 
   /**
-   * Process-level checks: the empty-body structural edge case plus the variable
+   * Whole-model check: BPMNscript supports one process per file. The grammar
+   * permits several so that a stray second `process` block produces a clear
+   * diagnostic here rather than being silently dropped by the AST → IR
+   * transform, which only converts the first process. Every process after
+   * the first is flagged, which also covers reused process names.
+   *
+   * @param model The parsed model (all top-level processes).
+   * @param accept The diagnostic sink.
+   */
+  checkModel = (model: Model, accept: ValidationAcceptor): void => {
+    for (const extra of model.processes.slice(1)) {
+      accept(
+        'error',
+        'Only one process is supported per file. ' +
+          'Move additional processes into separate files.',
+        { node: extra, property: 'name' },
+      );
+    }
+  };
+
+  /**
+   * An explicit `start` is only valid as the first statement of the process
+   * body. Anywhere else — later in the body or nested inside a branch — the
+   * desugarer gives it an incoming sequence flow, and a start event with
+   * incoming flows is invalid BPMN that Operaton rejects at deployment.
+   * (A process whose first statement is not a `start` gets an implicit one;
+   * that path never conflicts with this check.)
+   */
+  private checkStartPosition(
+    process: Process,
+    accept: ValidationAcceptor,
+  ): void {
+    for (const node of AstUtils.streamAst(process)) {
+      if (!isStartEvent(node)) continue;
+      if (node === process.body[0]) continue;
+      accept(
+        'error',
+        `'start ${node.name}' must be the first statement of the process. ` +
+          'A start event cannot have incoming flows.',
+        { node, property: 'name' },
+      );
+    }
+  }
+
+  /**
+   * Process-level checks: the empty-body structural edge case, the variable
    * checks (undeclared warning, type-mismatch error) over every expression in
-   * the process. Variable checks run here, not per-`VarRef`, because variable
-   * visibility is *process-scoped* and *position-independent* — the symbol
-   * table is built once per process and consulted for every reference.
+   * the process, and the whole-process integrity checks (duplicate variable
+   * name, duplicate process label, duplicate statement name). Variable checks
+   * run here, not per-`VarRef`, because variable visibility is *process-scoped*
+   * and *position-independent* — the symbol table is built once per process and
+   * consulted for every reference.
    *
    * @param process The process to validate.
    * @param accept The diagnostic sink.
@@ -178,8 +315,17 @@ export class BpmnScriptValidator {
       this.checkExpression(expr, symbols, accept);
     }
 
+    // Structural: an explicit `start` anywhere but first would deploy as
+    // invalid BPMN (see checkStartPosition).
+    this.checkStartPosition(process, accept);
+
     // Check every named statement for reserved synthesised-id name patterns.
     this.checkReservedNames(process, accept);
+
+    // Whole-process integrity: duplicate declarations and duplicate step names.
+    this.checkDuplicateVarDecls(process, accept);
+    this.checkDuplicateProcessLabel(process, accept);
+    this.checkDuplicateStatementNames(process, accept);
   };
 
   /**
@@ -198,23 +344,104 @@ export class BpmnScriptValidator {
    * @param process The process to scan.
    * @param accept The diagnostic sink.
    */
-  private checkReservedNames(process: Process, accept: ValidationAcceptor): void {
-    for (const node of AstUtils.streamAst(process)) {
-      if (
-        isStartEvent(node) ||
-        isEndEvent(node) ||
-        isUserTask(node) ||
-        isServiceTask(node)
-      ) {
-        if (isReservedName(node.name)) {
-          accept(
-            'error',
-            `Statement name '${node.name}' matches a reserved synthesised-id pattern. ` +
-              `Prefixes 'Gateway_…_(split|join|fork|loop)', 'Flow_', 'StartEvent_', and ` +
-              `'EndEvent_' are reserved for ids generated by the BPMNscript desugarer.`,
-            { node, property: 'name' },
-          );
-        }
+  private checkReservedNames(
+    process: Process,
+    accept: ValidationAcceptor,
+  ): void {
+    for (const node of collectNamedStatements(process)) {
+      if (isReservedName(node.name)) {
+        accept(
+          'error',
+          `Statement name '${node.name}' matches a reserved synthesised-id pattern. ` +
+            `Prefixes 'Gateway_…_(split|join|fork|loop)', 'Flow_', 'StartEvent_', and ` +
+            `'EndEvent_' are reserved for ids generated by the BPMNscript desugarer.`,
+          { node, property: 'name' },
+        );
+      }
+    }
+  }
+
+  /**
+   * Flag every `var` declaration in the process header whose name repeats an
+   * earlier declaration. The symbol provider itself stays last-wins (D-F); this
+   * check is what actually surfaces the conflict to the DSL author.
+   *
+   * @param process The process to scan.
+   * @param accept The diagnostic sink.
+   */
+  private checkDuplicateVarDecls(
+    process: Process,
+    accept: ValidationAcceptor,
+  ): void {
+    const seen = new Set<string>();
+    for (const decl of process.decls) {
+      if (!isVarDecl(decl)) {
+        continue;
+      }
+      if (seen.has(decl.name)) {
+        accept(
+          'error',
+          `Variable '${decl.name}' is already declared in process '${process.name}'.`,
+          { node: decl, property: 'name' },
+        );
+      } else {
+        seen.add(decl.name);
+      }
+    }
+  }
+
+  /**
+   * Flag a second (or later) `label = "…"` declaration in one process. The
+   * grammar accepts any number of `ProcessLabel` decls in `process.decls`;
+   * only the first is meaningful, so every further one is an *error*.
+   *
+   * @param process The process to scan.
+   * @param accept The diagnostic sink.
+   */
+  private checkDuplicateProcessLabel(
+    process: Process,
+    accept: ValidationAcceptor,
+  ): void {
+    let seenOne = false;
+    for (const decl of process.decls) {
+      if (!isProcessLabel(decl)) {
+        continue;
+      }
+      if (seenOne) {
+        accept(
+          'error',
+          `Process '${process.name}' already has a label declared; a second 'label = …' is not allowed.`,
+          { node: decl, property: 'value' },
+        );
+      } else {
+        seenOne = true;
+      }
+    }
+  }
+
+  /**
+   * Flag a goto-targetable step (`start`/`end`/`user`/`service`) whose name
+   * repeats an earlier step's name anywhere in the process — regardless of
+   * nesting — because `goto <name>` would then be ambiguous.
+   *
+   * @param process The process to scan.
+   * @param accept The diagnostic sink.
+   */
+  private checkDuplicateStatementNames(
+    process: Process,
+    accept: ValidationAcceptor,
+  ): void {
+    const seen = new Set<string>();
+    for (const node of collectNamedStatements(process)) {
+      if (seen.has(node.name)) {
+        accept(
+          'error',
+          `Step name '${node.name}' is already used by another step in process ` +
+            `'${process.name}'; 'goto ${node.name}' would be ambiguous.`,
+          { node, property: 'name' },
+        );
+      } else {
+        seen.add(node.name);
       }
     }
   }
@@ -238,7 +465,11 @@ export class BpmnScriptValidator {
     //    spurious "not declared" warning. Only the direct attribute-value
     //    position is skipped — VarRefs inside conditions (and nested operands of
     //    a more complex attribute value) are still checked.
-    if (isVarRef(expr) && !isAttribute(expr.$container) && !symbols.has(expr.name)) {
+    if (
+      isVarRef(expr) &&
+      !isAttribute(expr.$container) &&
+      !symbols.has(expr.name)
+    ) {
       accept(
         'warning',
         `Variable '${expr.name}' is not declared. Add 'var ${expr.name}: <type>' to the process.`,
@@ -249,9 +480,21 @@ export class BpmnScriptValidator {
     // 2. Type-mismatch error: an operator used with an operand whose declared
     //    type is incompatible. Only binary operator nodes carry a constraint.
     if (isRelational(expr)) {
-      this.checkBinaryTypes(expr, ORDERED_OK, 'an ordered comparison', symbols, accept);
+      this.checkBinaryTypes(
+        expr,
+        ORDERED_OK,
+        'an ordered comparison',
+        symbols,
+        accept,
+      );
     } else if (isAdditive(expr) || isMultiplicative(expr)) {
-      this.checkBinaryTypes(expr, NUMERIC_OK, 'an arithmetic expression', symbols, accept);
+      this.checkBinaryTypes(
+        expr,
+        NUMERIC_OK,
+        'an arithmetic expression',
+        symbols,
+        accept,
+      );
     } else if (isLogical(expr)) {
       this.checkLogicalTypes(expr, symbols, accept);
     }
@@ -326,7 +569,10 @@ export class BpmnScriptValidator {
    * @param task The user task.
    * @param accept The diagnostic sink.
    */
-  checkUserTaskAttributes = (task: UserTask, accept: ValidationAcceptor): void => {
+  checkUserTaskAttributes = (
+    task: UserTask,
+    accept: ValidationAcceptor,
+  ): void => {
     this.checkDuplicateKeys(task.attrs, accept);
     this.checkAllowedKeys(task.attrs, USER_TASK_KEYS, 'user', accept);
   };
@@ -339,7 +585,10 @@ export class BpmnScriptValidator {
    * @param task The service task.
    * @param accept The diagnostic sink.
    */
-  checkServiceTaskAttributes = (task: ServiceTask, accept: ValidationAcceptor): void => {
+  checkServiceTaskAttributes = (
+    task: ServiceTask,
+    accept: ValidationAcceptor,
+  ): void => {
     this.checkDuplicateKeys(task.attrs, accept);
     this.checkAllowedKeys(task.attrs, SERVICE_TASK_KEYS, 'service', accept);
 
@@ -357,7 +606,10 @@ export class BpmnScriptValidator {
    * Flag every attribute key that repeats within one block (one error per
    * duplicate *occurrence*, attached to the repeated entry's `key`).
    */
-  private checkDuplicateKeys(attrs: Attribute[], accept: ValidationAcceptor): void {
+  private checkDuplicateKeys(
+    attrs: Attribute[],
+    accept: ValidationAcceptor,
+  ): void {
     const seen = new Set<string>();
     for (const attr of attrs) {
       if (seen.has(attr.key)) {
@@ -390,6 +642,128 @@ export class BpmnScriptValidator {
       }
     }
   }
+
+  /**
+   * Warn on an empty `then` branch, each empty `else if` branch, and an empty
+   * `else` branch. Syntactically legal (the grammar allows a `Block` with zero
+   * statements) but almost always an authoring mistake, so this is a
+   * *warning*, not an error (D-G).
+   *
+   * @param stmt The `if` statement.
+   * @param accept The diagnostic sink.
+   */
+  checkIfStatement = (stmt: IfStatement, accept: ValidationAcceptor): void => {
+    this.warnIfEmptyBlock(stmt.then, "The 'if' branch has no steps.", accept);
+    for (const elseIf of stmt.elseIfs) {
+      this.warnIfEmptyBlock(
+        elseIf.body,
+        "The 'else if' branch has no steps.",
+        accept,
+      );
+    }
+    if (stmt.elseBlock) {
+      this.warnIfEmptyBlock(
+        stmt.elseBlock,
+        "The 'else' branch has no steps.",
+        accept,
+      );
+    }
+  };
+
+  /**
+   * Warn on an empty `while` body.
+   *
+   * @param stmt The `while` statement.
+   * @param accept The diagnostic sink.
+   */
+  checkWhileStatement = (
+    stmt: WhileStatement,
+    accept: ValidationAcceptor,
+  ): void => {
+    this.warnIfEmptyBlock(stmt.body, "The 'while' body has no steps.", accept);
+  };
+
+  /**
+   * Warn on an empty `do … while` body.
+   *
+   * @param stmt The `do … while` statement.
+   * @param accept The diagnostic sink.
+   */
+  checkDoWhileStatement = (
+    stmt: DoWhileStatement,
+    accept: ValidationAcceptor,
+  ): void => {
+    this.warnIfEmptyBlock(stmt.body, "The 'do' body has no steps.", accept);
+  };
+
+  /**
+   * Warn on each empty `parallel` branch (1-based position in the message so
+   * the DSL author can find it without counting from zero).
+   *
+   * @param stmt The `parallel` statement.
+   * @param accept The diagnostic sink.
+   */
+  checkParallelStatement = (
+    stmt: ParallelStatement,
+    accept: ValidationAcceptor,
+  ): void => {
+    stmt.branches.forEach((branch, index) => {
+      this.warnIfEmptyBlock(
+        branch,
+        `Branch ${index + 1} of the 'parallel' statement has no steps.`,
+        accept,
+      );
+    });
+  };
+
+  /**
+   * Emit one warning if `block` has zero statements. Shared by every
+   * empty-block check (if/else-if/else/while/do-while/parallel branch).
+   */
+  private warnIfEmptyBlock(
+    block: Block,
+    message: string,
+    accept: ValidationAcceptor,
+  ): void {
+    if (block.statements.length === 0) {
+      accept('warning', message, { node: block, property: 'statements' });
+    }
+  }
+
+  /**
+   * Flag a `goto` whose resolved target lies inside a `parallel` branch when
+   * the `goto` itself is not inside that same branch's subtree — a
+   * `parallel` branch's steps run only when the whole `parallel` statement is
+   * reached, not via an external `goto` into the middle of one of its
+   * branches.
+   *
+   * Guarded by `if (goto.target.ref)` (CLAUDE.md guard-ref lesson): an
+   * unresolved `goto` is owned by the linker, which already emits exactly one
+   * "Could not resolve reference" error. Touching `target.ref` unguarded here
+   * would double-report on top of that error, so an unresolved reference is
+   * silently skipped by this check.
+   *
+   * @param goto The `goto` statement.
+   * @param accept The diagnostic sink.
+   */
+  checkGotoStatement = (
+    goto: GotoStatement,
+    accept: ValidationAcceptor,
+  ): void => {
+    const target = goto.target.ref;
+    if (!target) {
+      return;
+    }
+    const branch = findEnclosingParallelBranch(target);
+    if (branch && !isWithinBlock(goto, branch)) {
+      const targetName = targetStatementName(target);
+      accept(
+        'error',
+        `'goto ${targetName}' jumps into a branch of a 'parallel' statement from outside that branch; a 'parallel' branch's steps run only when the whole 'parallel' statement is reached, not via an external 'goto'.`,
+        { node: goto, property: 'target' },
+      );
+    }
+  };
 }
 
 /**
@@ -425,4 +799,69 @@ function isExprNode(node: { $type: string }): node is Expr {
  */
 function isReservedName(name: string): boolean {
   return RESERVED_ID_PATTERNS.some((re) => re.test(name));
+}
+
+/**
+ * Walk up from `node` to the nearest `Block` whose direct container is a
+ * `ParallelStatement` — i.e. the nearest enclosing `parallel` branch, if any.
+ *
+ * A `Block`'s only possible containers are `DoWhileStatement`, `ElseIf`,
+ * `IfStatement`, `ParallelStatement`, and `WhileStatement` (per the grammar);
+ * `ParallelStatement`'s only `Block`-typed property is `branches`, so a
+ * `Block` whose container is a `ParallelStatement` is necessarily one of that
+ * statement's branches — no separate membership check is needed.
+ *
+ * @param node The node to walk up from (typically a resolved `goto` target).
+ * @returns The enclosing branch `Block`, or `undefined` if `node` is not
+ *   nested inside any `parallel` branch.
+ */
+function findEnclosingParallelBranch(node: AstNode): Block | undefined {
+  let child: AstNode = node;
+  let parent: AstNode | undefined = node.$container;
+  while (parent) {
+    if (isBlock(child) && isParallelStatement(parent)) {
+      return child;
+    }
+    child = parent;
+    parent = parent.$container;
+  }
+  return undefined;
+}
+
+/**
+ * Return `true` when `node` is `block` itself or nested anywhere inside it
+ * (checked by walking up `node`'s own `$container` chain).
+ *
+ * @param node The node to test (typically a `goto` statement).
+ * @param block The candidate enclosing block.
+ */
+function isWithinBlock(node: AstNode, block: Block): boolean {
+  let current: AstNode | undefined = node;
+  while (current) {
+    if (current === block) {
+      return true;
+    }
+    current = current.$container;
+  }
+  return false;
+}
+
+/**
+ * The `name` of a resolved `goto` target for use in a diagnostic message.
+ * Only `StartEvent`/`EndEvent`/`UserTask`/`ServiceTask` carry a `name` (the
+ * other `Statement` members are structurally impossible `goto` targets, since
+ * the grammar's `NameProvider` only keys on nodes exposing `name` — see the
+ * grammar's naming-convention comment), so the fallback is defensive rather
+ * than load-bearing.
+ */
+function targetStatementName(target: Statement): string {
+  if (
+    isStartEvent(target) ||
+    isEndEvent(target) ||
+    isUserTask(target) ||
+    isServiceTask(target)
+  ) {
+    return target.name;
+  }
+  return '?';
 }

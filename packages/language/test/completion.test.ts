@@ -15,7 +15,10 @@
 
 import { beforeAll, describe, expect, test } from 'vitest';
 import { EmptyFileSystem, URI } from 'langium';
-import { type CompletionItem, InsertTextFormat } from 'vscode-languageserver-types';
+import {
+  type CompletionItem,
+  InsertTextFormat,
+} from 'vscode-languageserver-types';
 import {
   type BpmnScriptServices,
   createBpmnScriptServices,
@@ -41,10 +44,13 @@ async function completionItems(
   const document = factory.fromString(text, uri);
   documents.addDocument(document);
   await services.shared.workspace.DocumentBuilder.build([document]);
-  const result = await services.lsp.CompletionProvider!.getCompletion(document, {
-    textDocument: { uri: uri.toString() },
-    position: { line, character },
-  });
+  const result = await services.lsp.CompletionProvider!.getCompletion(
+    document,
+    {
+      textDocument: { uri: uri.toString() },
+      position: { line, character },
+    },
+  );
   return result?.items ?? [];
 }
 
@@ -92,7 +98,9 @@ describe('structural keyword snippets', () => {
       (i) => i.label === 'parallel',
     );
     expect(item?.insertTextFormat).toBe(InsertTextFormat.Snippet);
-    expect(inserted(item!)).toMatch(/\{[\s\S]*\{[\s\S]*\}[\s\S]*\{[\s\S]*\}[\s\S]*\}/);
+    expect(inserted(item!)).toMatch(
+      /\{[\s\S]*\{[\s\S]*\}[\s\S]*\{[\s\S]*\}[\s\S]*\}/,
+    );
   });
 
   test('a `service` snippet pre-scaffolds the required `class` attribute', async () => {

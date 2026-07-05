@@ -85,7 +85,7 @@ describe('[integration] compileDslToBpmn — invoice-approval golden fixture', (
     expect(result.output).toContain('bpmn:definitions');
 
     // Re-importing via xmlToIr must not throw and must yield the correct process id.
-    const ir = await xmlToIr(result.output);
+    const { ir } = await xmlToIr(result.output);
     expect(ir.id).toBe('invoice-approval');
   });
 });
@@ -159,7 +159,10 @@ describe('[integration] decompileBpmnToDsl — invoice-approval-generated golden
   it('returns ok:true; output re-parses through Langium with zero parser errors', async () => {
     const xml = fs.readFileSync(GOLDEN_GENERATED_BPMN, 'utf-8');
 
-    const result = await decompileBpmnToDsl(xml, 'invoice-approval-generated.bpmn');
+    const result = await decompileBpmnToDsl(
+      xml,
+      'invoice-approval-generated.bpmn',
+    );
 
     expect(result.ok).toBe(true);
     if (!result.ok) return;
@@ -167,6 +170,65 @@ describe('[integration] decompileBpmnToDsl — invoice-approval-generated golden
     // The emitted DSL must re-parse without parser errors.
     const doc = await parse(result.output);
     expect(doc.parseResult.parserErrors).toHaveLength(0);
+
+    // The golden fixture round-trips cleanly — no dropped content.
+    expect(result.warnings).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Suite 4b — decompileBpmnToDsl: import-warning surfacing (dropped content)
+// ---------------------------------------------------------------------------
+
+/**
+ * A BPMN process whose only supported subset is start → user task → end, but
+ * the task carries a dropped Operaton extension attribute (`asyncBefore`,
+ * beyond the supported assignee/formKey/class set) and the process defines a
+ * lane. Both are non-semantic drops: `xmlToIr` warns instead of refusing.
+ */
+const LANE_AND_ASYNC_ATTR_BPMN = `<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  xmlns:operaton="http://operaton.org/schema/1.0/bpmn"
+                  targetNamespace="http://test">
+  <bpmn:process id="warns" isExecutable="true">
+    <bpmn:laneSet id="LS1">
+      <bpmn:lane id="Lane_Ops" name="Ops">
+        <bpmn:flowNodeRef>S</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>AsyncTask</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>E</bpmn:flowNodeRef>
+      </bpmn:lane>
+    </bpmn:laneSet>
+    <bpmn:startEvent id="S" />
+    <bpmn:userTask id="AsyncTask" name="Async Task"
+                   operaton:assignee="alice" operaton:asyncBefore="true" />
+    <bpmn:endEvent id="E" />
+    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="AsyncTask" />
+    <bpmn:sequenceFlow id="F2" sourceRef="AsyncTask" targetRef="E" />
+  </bpmn:process>
+</bpmn:definitions>`;
+
+describe('[integration] decompileBpmnToDsl — surfaces import warnings for dropped content', () => {
+  it('returns ok:true with populated warnings naming the dropped attribute, the lane, and their element ids', async () => {
+    const result = await decompileBpmnToDsl(
+      LANE_AND_ASYNC_ATTR_BPMN,
+      'warns.bpmn',
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(result.warnings.length).toBeGreaterThanOrEqual(2);
+
+    const attrWarning = result.warnings.find(
+      (w) => w.category === 'extensionAttribute',
+    );
+    expect(attrWarning).toBeDefined();
+    expect(attrWarning?.message).toContain('asyncBefore');
+    expect(attrWarning?.elementId).toBe('AsyncTask');
+
+    const laneWarning = result.warnings.find((w) => w.category === 'lane');
+    expect(laneWarning).toBeDefined();
+    expect(laneWarning?.elementId).toBe('Lane_Ops');
   });
 });
 
@@ -178,7 +240,10 @@ describe('[integration] decompileBpmnToDsl — bad-service-task-expression.bpmn'
   it('returns ok:false, kind:unsupported; message mentions operaton:expression and BadService_1', async () => {
     const xml = fs.readFileSync(BAD_SERVICE_TASK_BPMN, 'utf-8');
 
-    const result = await decompileBpmnToDsl(xml, 'bad-service-task-expression.bpmn');
+    const result = await decompileBpmnToDsl(
+      xml,
+      'bad-service-task-expression.bpmn',
+    );
 
     expect(result.ok).toBe(false);
     if (result.ok) return;
@@ -189,6 +254,44 @@ describe('[integration] decompileBpmnToDsl — bad-service-task-expression.bpmn'
     // The error message must identify both the offending construct and the task id.
     expect(result.message).toContain('BadService_1');
     expect(result.message).toContain('operaton:expression');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Suite 5b — decompileBpmnToDsl: new refusal subclasses also classify as
+// kind:'unsupported' via the shared UnsupportedConstructError base check.
+// ---------------------------------------------------------------------------
+
+/** A start event with a timer definition — refused via UnsupportedEventDefinitionError. */
+const TIMER_START_BPMN = `<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  targetNamespace="http://test">
+  <bpmn:process id="timer" isExecutable="true">
+    <bpmn:startEvent id="TimerStart">
+      <bpmn:timerEventDefinition id="td">
+        <bpmn:timeDuration>PT1H</bpmn:timeDuration>
+      </bpmn:timerEventDefinition>
+    </bpmn:startEvent>
+    <bpmn:endEvent id="E" />
+    <bpmn:sequenceFlow id="F1" sourceRef="TimerStart" targetRef="E" />
+  </bpmn:process>
+</bpmn:definitions>`;
+
+describe('[integration] decompileBpmnToDsl — timer-start.bpmn (new refusal subclass)', () => {
+  it('returns ok:false, kind:unsupported; message mentions the timer trigger and TimerStart', async () => {
+    const result = await decompileBpmnToDsl(
+      TIMER_START_BPMN,
+      'timer-start.bpmn',
+    );
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+
+    expect(result.kind).toBe('unsupported');
+    if (result.kind !== 'unsupported') return;
+
+    expect(result.message).toContain('TimerStart');
+    expect(result.message).toContain('timer');
   });
 });
 

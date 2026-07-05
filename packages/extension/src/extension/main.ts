@@ -19,7 +19,8 @@ export async function activate(
   context: vscode.ExtensionContext,
 ): Promise<void> {
   // --- Conversion: diagnostic collection for the Problems panel ---
-  const convDiagnostics = vscode.languages.createDiagnosticCollection('bpmnscript');
+  const convDiagnostics =
+    vscode.languages.createDiagnosticCollection('bpmnscript');
   context.subscriptions.push(convDiagnostics);
 
   // Read the extension version once; stamped into generated BPMN as exporterVersion.

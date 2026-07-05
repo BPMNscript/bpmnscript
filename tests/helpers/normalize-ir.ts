@@ -213,9 +213,7 @@ function inlinePassThroughJoins(ir: BpmnProcess): BpmnProcess {
   if (successorOf.size === 0) return ir;
 
   // Remove the join nodes.
-  const flowElements = ir.flowElements.filter(
-    (fe) => !successorOf.has(fe.id),
-  );
+  const flowElements = ir.flowElements.filter((fe) => !successorOf.has(fe.id));
 
   // Drop each join's single out-flow; redirect every flow that targeted the
   // join to the join's successor instead.

@@ -47,9 +47,7 @@ function describeFlowElement(fe: FlowElement): string {
       // every union variant is handled. A compile error on the line below
       // means a new variant was added without a matching arm above.
       const _: never = fe;
-      throw new Error(
-        `Unhandled FlowElement kind: ${JSON.stringify(_)}`,
-      );
+      throw new Error(`Unhandled FlowElement kind: ${JSON.stringify(_)}`);
     }
   }
 }
@@ -85,12 +83,10 @@ describe('FlowElement — ParallelGateway union member', () => {
   });
 
   it('exhaustive switch still handles all other variants correctly', () => {
-    expect(
-      describeFlowElement({ kind: 'startEvent', id: 'Start_1' }),
-    ).toBe('start');
-    expect(
-      describeFlowElement({ kind: 'endEvent', id: 'End_1' }),
-    ).toBe('end');
+    expect(describeFlowElement({ kind: 'startEvent', id: 'Start_1' })).toBe(
+      'start',
+    );
+    expect(describeFlowElement({ kind: 'endEvent', id: 'End_1' })).toBe('end');
     expect(
       describeFlowElement({
         kind: 'userTask',

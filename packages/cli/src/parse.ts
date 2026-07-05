@@ -9,9 +9,12 @@
  *          ──write to disk──►  .bpmnscript file
  *
  * Exit codes:
- *   0  — success
- *   1  — unsupported BPMN construct (UnsupportedServiceTaskFormError or
- *         UnsupportedElementError)
+ *   0  — success (non-fatal import warnings, if any, are printed to stderr
+ *         but do not change the exit code)
+ *   1  — unsupported BPMN construct (any UnsupportedConstructError subclass:
+ *         UnsupportedServiceTaskFormError, UnsupportedElementError,
+ *         UnsupportedEventDefinitionError, UnsupportedLoopCharacteristicsError,
+ *         UnsupportedCollaborationError)
  *   2  — I/O errors (file not found, cannot write output)
  */
 
@@ -23,9 +26,11 @@ import * as path from 'node:path';
 import {
   xmlToIr,
   irToDsl,
+  UnsupportedConstructError,
   UnsupportedServiceTaskFormError,
   UnsupportedElementError,
 } from '@bpmn-script/transform';
+import type { ImportWarning } from '@bpmn-script/transform';
 import { resolveOutputPath } from './util.js';
 
 export type ParseOptions = {
@@ -66,8 +71,9 @@ export async function parseAction(
 
   // ── 4. XML → IR ──────────────────────────────────────────────────────────
   let ir;
+  let warnings: ImportWarning[];
   try {
-    ir = await xmlToIr(xml);
+    ({ ir, warnings } = await xmlToIr(xml));
   } catch (err) {
     if (err instanceof UnsupportedServiceTaskFormError) {
       console.error(
@@ -83,6 +89,19 @@ export async function parseAction(
       console.error(
         chalk.red(
           `Error: unsupported BPMN element in ${fileName}:\n` +
+            `  ${err.message}`,
+        ),
+      );
+      process.exit(1);
+    }
+    if (err instanceof UnsupportedConstructError) {
+      // Catch-all for the remaining refusal subclasses (event definitions,
+      // loop characteristics, collaborations). Each subclass's own message
+      // already names the offending construct and element concretely, so no
+      // extra formatting is needed here beyond the file context.
+      console.error(
+        chalk.red(
+          `Error: unsupported BPMN construct in ${fileName}:\n` +
             `  ${err.message}`,
         ),
       );
@@ -124,4 +143,12 @@ export async function parseAction(
   }
 
   console.log(chalk.green(`Parsed: ${outPath}`));
+
+  // ── 7. Surface non-fatal import warnings ────────────────────────────────
+  // Dropped-but-non-semantic content (extra Operaton/camunda extension
+  // attributes, lanes) is printed to stderr so it is never silent, but does
+  // NOT change the exit code — the parse already succeeded.
+  for (const w of warnings) {
+    console.error(chalk.yellow(`Warning: [${w.elementId}] ${w.message}`));
+  }
 }

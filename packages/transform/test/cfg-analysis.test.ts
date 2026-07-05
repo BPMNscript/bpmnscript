@@ -12,7 +12,11 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { analyzeCfg, VIRTUAL_ENTRY, VIRTUAL_EXIT } from '../src/cfg-analysis.js';
+import {
+  analyzeCfg,
+  VIRTUAL_ENTRY,
+  VIRTUAL_EXIT,
+} from '../src/cfg-analysis.js';
 import type {
   BpmnProcess,
   FlowElement,
@@ -169,13 +173,7 @@ describe('diamond (parallel gateways) — gateway agnostic', () => {
 
 describe('pre-test loop', () => {
   const proc = process(
-    [
-      start('start'),
-      xor('head'),
-      task('body'),
-      task('exit'),
-      end('end'),
-    ],
+    [start('start'), xor('head'), task('body'), task('exit'), end('end')],
     [
       flow('start', 'head'),
       flow('head', 'body'),
@@ -213,17 +211,8 @@ describe('pre-test loop', () => {
 
 describe('multi-exit process', () => {
   const proc = process(
-    [
-      start('start'),
-      xor('split'),
-      end('end1'),
-      end('end2'),
-    ],
-    [
-      flow('start', 'split'),
-      flow('split', 'end1'),
-      flow('split', 'end2'),
-    ],
+    [start('start'), xor('split'), end('end1'), end('end2')],
+    [flow('start', 'split'), flow('split', 'end1'), flow('split', 'end2')],
   );
   const cfg = analyzeCfg(proc);
 
@@ -265,12 +254,7 @@ describe('multi-exit process', () => {
 
 describe('irreducible / unstructured graph', () => {
   const proc = process(
-    [
-      start('start'),
-      task('A'),
-      task('B'),
-      end('end'),
-    ],
+    [start('start'), task('A'), task('B'), end('end')],
     [
       flow('start', 'A'),
       flow('start', 'B'),
@@ -310,12 +294,7 @@ describe('irreducible / unstructured graph', () => {
 
 describe('unreachable nodes (degenerate IR)', () => {
   const proc = process(
-    [
-      start('start'),
-      task('reachable'),
-      task('orphan'),
-      end('end'),
-    ],
+    [start('start'), task('reachable'), task('orphan'), end('end')],
     [
       flow('start', 'reachable'),
       flow('reachable', 'end'),

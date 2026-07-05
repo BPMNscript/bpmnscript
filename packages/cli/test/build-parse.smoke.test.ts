@@ -14,6 +14,12 @@
  *     b. A source with a type-mismatch ERROR fails the build.
  *  4. tmLanguage copy: extension/syntaxes/ matches language/syntaxes/ and
  *     the extension's `build:prepare` script performs the copy.
+ *  5. Import-warning surfacing: parsing a BPMN with dropped non-semantic
+ *     content (extension attribute + lane) prints warning text and the
+ *     owning element id to stderr, and does not fail (no process.exit call).
+ *  6. Refusal classification: parsing a BPMN with a refused construct (a
+ *     timer start event) exits with code 1 and prints an actionable message
+ *     naming the offending element; no output file is written.
  *
  * NOTE on process.exit interception:
  *   `buildAction` / `parseAction` call `process.exit()` directly. To avoid
@@ -23,14 +29,7 @@
  *   exit code so we can assert on it.
  */
 
-import {
-  describe,
-  it,
-  expect,
-  beforeAll,
-  afterEach,
-  vi,
-} from 'vitest';
+import { describe, it, expect, beforeAll, afterEach, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as fsp from 'node:fs/promises';
 import * as os from 'node:os';
@@ -142,7 +141,7 @@ describe('buildAction smoke', () => {
       const xml = fs.readFileSync(outBpmn, 'utf-8');
       let ir;
       try {
-        ir = await xmlToIr(xml);
+        ({ ir } = await xmlToIr(xml));
       } catch (e) {
         throw new Error(
           `xmlToIr threw on the built output: ${(e as Error).message}`,
@@ -189,6 +188,126 @@ describe('parseAction smoke', () => {
       const dsl = fs.readFileSync(outDsl, 'utf-8');
       const doc = await parse(dsl);
       expect(doc.parseResult.parserErrors).toHaveLength(0);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Suite 2b — parseAction: import-warning surfacing (non-fatal)
+// ---------------------------------------------------------------------------
+
+/**
+ * A BPMN process whose only supported subset is start → user task → end, but
+ * the task carries a dropped Operaton extension attribute (`asyncBefore`,
+ * beyond the supported assignee/formKey/class set) and the process defines a
+ * lane. Both are non-semantic drops: `xmlToIr` warns instead of refusing.
+ */
+const LANE_AND_ASYNC_ATTR_BPMN = `<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  xmlns:operaton="http://operaton.org/schema/1.0/bpmn"
+                  targetNamespace="http://test">
+  <bpmn:process id="warns" isExecutable="true">
+    <bpmn:laneSet id="LS1">
+      <bpmn:lane id="Lane_Ops" name="Ops">
+        <bpmn:flowNodeRef>S</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>AsyncTask</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>E</bpmn:flowNodeRef>
+      </bpmn:lane>
+    </bpmn:laneSet>
+    <bpmn:startEvent id="S" />
+    <bpmn:userTask id="AsyncTask" name="Async Task"
+                   operaton:assignee="alice" operaton:asyncBefore="true" />
+    <bpmn:endEvent id="E" />
+    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="AsyncTask" />
+    <bpmn:sequenceFlow id="F2" sourceRef="AsyncTask" targetRef="E" />
+  </bpmn:process>
+</bpmn:definitions>`;
+
+describe('parseAction — import-warning surfacing', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('[integration] a dropped extension attribute and a lane print warning text + element id to stderr and do not fail the parse', async () => {
+    await withTempDir(async (dir) => {
+      const srcFile = path.join(dir, 'warns.bpmn');
+      const outDsl = path.join(dir, 'warns.bpmnscript');
+      fs.writeFileSync(srcFile, LANE_AND_ASYNC_ATTR_BPMN, 'utf-8');
+
+      const exitSpy = spyOnExit();
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+      await parseAction(srcFile, { output: outDsl });
+
+      // Success path: process.exit must never be called; exit code stays 0.
+      expect(exitSpy).not.toHaveBeenCalled();
+
+      // The parse still succeeds — the output file is written.
+      expect(fs.existsSync(outDsl)).toBe(true);
+
+      const stderrOutput = errorSpy.mock.calls
+        .map((call) => String(call[0]))
+        .join('\n');
+
+      // The extension-attribute warning names the concrete attribute and its
+      // owning element id.
+      expect(stderrOutput).toContain('asyncBefore');
+      expect(stderrOutput).toContain('AsyncTask');
+
+      // The lane warning names its element id.
+      expect(stderrOutput).toContain('Lane_Ops');
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Suite 2c — parseAction: refused-construct classification
+// ---------------------------------------------------------------------------
+
+/** A start event with a timer definition — refused via UnsupportedEventDefinitionError. */
+const TIMER_START_BPMN = `<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  targetNamespace="http://test">
+  <bpmn:process id="timer" isExecutable="true">
+    <bpmn:startEvent id="TimerStart">
+      <bpmn:timerEventDefinition id="td">
+        <bpmn:timeDuration>PT1H</bpmn:timeDuration>
+      </bpmn:timerEventDefinition>
+    </bpmn:startEvent>
+    <bpmn:endEvent id="E" />
+    <bpmn:sequenceFlow id="F1" sourceRef="TimerStart" targetRef="E" />
+  </bpmn:process>
+</bpmn:definitions>`;
+
+describe('parseAction — refused-construct classification', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('[integration] a timer start event refuses loudly with exit code 1, an actionable message, and no output file', async () => {
+    await withTempDir(async (dir) => {
+      const srcFile = path.join(dir, 'timer.bpmn');
+      const outDsl = path.join(dir, 'timer.bpmnscript');
+      fs.writeFileSync(srcFile, TIMER_START_BPMN, 'utf-8');
+
+      const exitSpy = spyOnExit();
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+      await expect(
+        parseAction(srcFile, { output: outDsl }),
+      ).rejects.toBeInstanceOf(ExitCalled);
+
+      // Exit code 1 = unsupported construct, not 2 (I/O/generic).
+      expect(exitSpy).toHaveBeenCalledWith(1);
+
+      // No partial output written.
+      expect(fs.existsSync(outDsl)).toBe(false);
+
+      const stderrOutput = errorSpy.mock.calls
+        .map((call) => String(call[0]))
+        .join('\n');
+      expect(stderrOutput).toContain('TimerStart');
+      expect(stderrOutput).toContain('timer');
     });
   });
 });
@@ -303,16 +422,17 @@ describe('tmLanguage extension sync', () => {
       REPO_ROOT,
       'packages/extension/package.json',
     );
-    const pkg = JSON.parse(
-      fs.readFileSync(extensionPkgJson, 'utf-8'),
-    ) as { scripts?: Record<string, string> };
+    const pkg = JSON.parse(fs.readFileSync(extensionPkgJson, 'utf-8')) as {
+      scripts?: Record<string, string>;
+    };
 
     const preparescript = pkg.scripts?.['build:prepare'] ?? '';
 
     // Must reference both the source (language/syntaxes) and destination (./syntaxes/).
-    expect(preparescript, 'build:prepare must mention language/syntaxes').toContain(
-      'language/syntaxes',
-    );
+    expect(
+      preparescript,
+      'build:prepare must mention language/syntaxes',
+    ).toContain('language/syntaxes');
     expect(preparescript, 'build:prepare must mention ./syntaxes/').toContain(
       'syntaxes',
     );

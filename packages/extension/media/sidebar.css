@@ -63,12 +63,21 @@ button {
 }
 
 .action.secondary {
-  background-color: var(--vscode-button-secondaryBackground, var(--vscode-button-background));
-  color: var(--vscode-button-secondaryForeground, var(--vscode-button-foreground));
+  background-color: var(
+    --vscode-button-secondaryBackground,
+    var(--vscode-button-background)
+  );
+  color: var(
+    --vscode-button-secondaryForeground,
+    var(--vscode-button-foreground)
+  );
 }
 
 .action.secondary:hover {
-  background-color: var(--vscode-button-secondaryHoverBackground, var(--vscode-button-hoverBackground));
+  background-color: var(
+    --vscode-button-secondaryHoverBackground,
+    var(--vscode-button-hoverBackground)
+  );
 }
 
 /* -------------------------------------------------------------------------
@@ -100,7 +109,11 @@ button {
 
 .divider {
   border: none;
-  border-top: 1px solid var(--vscode-panel-border, var(--vscode-widget-border, rgba(128, 128, 128, 0.35)));
+  border-top: 1px solid
+    var(
+      --vscode-panel-border,
+      var(--vscode-widget-border, rgba(128, 128, 128, 0.35))
+    );
   margin: 2px 0;
 }
 

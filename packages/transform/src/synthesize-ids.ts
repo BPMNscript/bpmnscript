@@ -147,7 +147,10 @@ export function makeSequenceFlowId(
  * @returns A unique, deterministic start event id (`StartEvent_<processId>`,
  *          or a `_2`/`_3`/… suffixed form on collision).
  */
-export function makeStartEventId(processId: string, taken: Set<string>): string {
+export function makeStartEventId(
+  processId: string,
+  taken: Set<string>,
+): string {
   const base = `StartEvent_${processId}`;
   const id = resolveCollision(base, taken);
   taken.add(id);
@@ -166,10 +169,7 @@ export function makeStartEventId(processId: string, taken: Set<string>): string 
  * @param taken      Mutable set of ids already in use; updated in place.
  * @returns A unique, deterministic end event id.
  */
-export function makeEndEventId(
-  processId: string,
-  taken: Set<string>,
-): string {
+export function makeEndEventId(processId: string, taken: Set<string>): string {
   const base = `EndEvent_${processId}`;
   const id = resolveCollision(base, taken);
   taken.add(id);

@@ -70,7 +70,22 @@ export default [
   },
 
   // -----------------------------------------------------------------------
-  // 5. Prettier — disables all ESLint rules that conflict with Prettier.
+  // 5. Webview assets — browser globals plus the VS Code webview API.
+  // sidebar.js runs inside the VS Code webview (Chromium sandbox), not
+  // Node, so it needs DOM globals and the injected acquireVsCodeApi().
+  // -----------------------------------------------------------------------
+  {
+    files: ['packages/extension/media/**/*.js'],
+    languageOptions: {
+      globals: {
+        ...globals.browser,
+        acquireVsCodeApi: 'readonly',
+      },
+    },
+  },
+
+  // -----------------------------------------------------------------------
+  // 6. Prettier — disables all ESLint rules that conflict with Prettier.
   // -----------------------------------------------------------------------
   prettierConfig,
 ];

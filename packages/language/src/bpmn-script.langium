@@ -25,8 +25,9 @@
 // Reserved words (cannot be used as a bare expression identifier; use the
 // quoted "${…}" raw-string fallback if a variable must be named like one):
 //   process, var, start, end, user, service, if, else, while, do, parallel,
-//   and, goto, label, assignee, formKey, class,
-//   string, number, boolean, date, json, any.
+//   goto, label, assignee, formKey, class,
+//   string, number, boolean, date, json, any,
+//   true, false, null.
 // JUEL identifiers that do NOT collide with this set lex as plain `ID` in
 // expression position and parse to `VarRef` as expected (e.g. `status`,
 // `order.type`, `items[0]`).

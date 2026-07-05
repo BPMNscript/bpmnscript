@@ -67,7 +67,10 @@ const DSL_PATH = path.resolve(
  * Absolute path for the generated BPMN XML output.
  * Written into `<repo-root>/out/` which is ignored by `.gitignore`.
  */
-const XML_OUT_PATH = path.resolve(__dirname, '../../out/parallel-approval.bpmn');
+const XML_OUT_PATH = path.resolve(
+  __dirname,
+  '../../out/parallel-approval.bpmn',
+);
 
 // ---------------------------------------------------------------------------
 // Helper: poll for the next active-task list that satisfies a predicate.
@@ -127,7 +130,10 @@ describe('Always-on guard: parallel-approval.bpmnscript desugars to parallelGate
 
     // Fail fast if the source has parser errors.
     const parserErrors = document.parseResult.parserErrors;
-    expect(parserErrors, 'Parser errors in parallel-approval.bpmnscript').toHaveLength(0);
+    expect(
+      parserErrors,
+      'Parser errors in parallel-approval.bpmnscript',
+    ).toHaveLength(0);
 
     const ir = astToIr(document.parseResult.value);
     const parallelGateways = ir.flowElements.filter(

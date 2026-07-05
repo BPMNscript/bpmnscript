@@ -6,7 +6,8 @@ every run. The three invoice-approval files here all describe the same process �
 start → review → gateway (amount > 1000?) → senior approval or auto-approve → end —
 but they come from different sources and drive the tests in different directions.
 Two additional construct fixtures (`structured-control-flow.bpmnscript` and
-`unstructured-goto.bpmn`) exercise the round-trip and goto-degradation paths.
+`unstructured-goto.bpmn`) exercise the round-trip and goto-degradation paths, and
+`bad-service-task-expression.bpmn` is the negative-path fixture for the import refusal path.
 
 ## `invoice-approval-handwritten.bpmn`
 

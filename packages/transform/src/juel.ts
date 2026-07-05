@@ -53,13 +53,16 @@ export type JuelNode =
   | { kind: 'varRef'; name: string; accessors: Accessor[] }
   | { kind: 'unary'; op: '!' | '-'; operand: JuelNode }
   | { kind: 'binary'; op: BinaryOp; left: JuelNode; right: JuelNode }
-  | { kind: 'ternary'; condition: JuelNode; whenTrue: JuelNode; whenFalse: JuelNode }
+  | {
+      kind: 'ternary';
+      condition: JuelNode;
+      whenTrue: JuelNode;
+      whenFalse: JuelNode;
+    }
   | { kind: 'paren'; inner: JuelNode };
 
 /** A property (`.prop`) or index (`[expr]`) accessor on a variable reference. */
-export type Accessor =
-  | { prop: string }
-  | { index: JuelNode };
+export type Accessor = { prop: string } | { index: JuelNode };
 
 /** Binary operators across all five precedence levels of the subset. */
 export type BinaryOp =
@@ -171,7 +174,11 @@ export function renderRawFallback(result: ExprResult): string {
  */
 function stripWrapper(body: string): string | undefined {
   const trimmed = body.trim();
-  if (trimmed.startsWith('${') && trimmed.endsWith('}') && trimmed.length >= 3) {
+  if (
+    trimmed.startsWith('${') &&
+    trimmed.endsWith('}') &&
+    trimmed.length >= 3
+  ) {
     return trimmed.slice(2, -1);
   }
   return undefined;
@@ -243,7 +250,14 @@ function tokenize(input: string): Token[] | undefined {
     const ch = input[i];
 
     // Whitespace.
-    if (ch === ' ' || ch === '\t' || ch === '\n' || ch === '\r' || ch === '\f' || ch === '\v') {
+    if (
+      ch === ' ' ||
+      ch === '\t' ||
+      ch === '\n' ||
+      ch === '\r' ||
+      ch === '\f' ||
+      ch === '\v'
+    ) {
       i++;
       continue;
     }
@@ -409,7 +423,9 @@ class Parser {
   private parseRelational(): JuelNode {
     // Grammar order is `<= >= < >`; longer operators are already lexed as a
     // single token, so the set membership check below is order-independent.
-    return this.parseBinaryLevel(['<=', '>=', '<', '>'], () => this.parseAdditive());
+    return this.parseBinaryLevel(['<=', '>=', '<', '>'], () =>
+      this.parseAdditive(),
+    );
   }
 
   private parseAdditive(): JuelNode {

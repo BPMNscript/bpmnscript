@@ -117,7 +117,9 @@ async function expectIdempotent(ir: BpmnProcess): Promise<string> {
 function realReachability(ir: BpmnProcess): Set<string> {
   const real = new Set(
     ir.flowElements
-      .filter((e) => e.kind !== 'exclusiveGateway' && e.kind !== 'parallelGateway')
+      .filter(
+        (e) => e.kind !== 'exclusiveGateway' && e.kind !== 'parallelGateway',
+      )
       .map((e) => e.id),
   );
   const adj = new Map<string, string[]>();
@@ -196,8 +198,16 @@ const IF_ELSE_IR: BpmnProcess = {
       sourceRef: 'C',
       targetRef: 'Gateway_p_2_join',
     },
-    { id: 'Flow_A_Gateway_p_2_split', sourceRef: 'A', targetRef: 'Gateway_p_2_split' },
-    { id: 'Flow_Gateway_p_2_join_E', sourceRef: 'Gateway_p_2_join', targetRef: 'E' },
+    {
+      id: 'Flow_A_Gateway_p_2_split',
+      sourceRef: 'A',
+      targetRef: 'Gateway_p_2_split',
+    },
+    {
+      id: 'Flow_Gateway_p_2_join_E',
+      sourceRef: 'Gateway_p_2_join',
+      targetRef: 'E',
+    },
   ],
 };
 
@@ -222,8 +232,16 @@ const WHILE_IR: BpmnProcess = {
       sourceRef: 'Gateway_p_1_loop',
       targetRef: 'W',
     },
-    { id: 'Flow_W_Gateway_p_1_loop', sourceRef: 'W', targetRef: 'Gateway_p_1_loop' },
-    { id: 'Flow_S_Gateway_p_1_loop', sourceRef: 'S', targetRef: 'Gateway_p_1_loop' },
+    {
+      id: 'Flow_W_Gateway_p_1_loop',
+      sourceRef: 'W',
+      targetRef: 'Gateway_p_1_loop',
+    },
+    {
+      id: 'Flow_S_Gateway_p_1_loop',
+      sourceRef: 'S',
+      targetRef: 'Gateway_p_1_loop',
+    },
     {
       id: 'Flow_Gateway_p_1_loop_default',
       sourceRef: 'Gateway_p_1_loop',
@@ -247,7 +265,11 @@ const DO_WHILE_IR: BpmnProcess = {
     { kind: 'endEvent', id: 'E' },
   ],
   sequenceFlows: [
-    { id: 'Flow_W_Gateway_p_1_loop', sourceRef: 'W', targetRef: 'Gateway_p_1_loop' },
+    {
+      id: 'Flow_W_Gateway_p_1_loop',
+      sourceRef: 'W',
+      targetRef: 'Gateway_p_1_loop',
+    },
     {
       id: 'Flow_Gateway_p_1_loop_W',
       conditionExpression: '${count < 10}',
@@ -276,13 +298,21 @@ const PARALLEL_IR: BpmnProcess = {
     { kind: 'endEvent', id: 'E' },
   ],
   sequenceFlows: [
-    { id: 'Flow_Gateway_p_1_fork_X', sourceRef: 'Gateway_p_1_fork', targetRef: 'X' },
+    {
+      id: 'Flow_Gateway_p_1_fork_X',
+      sourceRef: 'Gateway_p_1_fork',
+      targetRef: 'X',
+    },
     {
       id: 'Flow_X_Gateway_p_1_join',
       sourceRef: 'X',
       targetRef: 'Gateway_p_1_join',
     },
-    { id: 'Flow_Gateway_p_1_fork_Y', sourceRef: 'Gateway_p_1_fork', targetRef: 'Y' },
+    {
+      id: 'Flow_Gateway_p_1_fork_Y',
+      sourceRef: 'Gateway_p_1_fork',
+      targetRef: 'Y',
+    },
     {
       id: 'Flow_Y_Gateway_p_1_join',
       sourceRef: 'Y',
@@ -293,7 +323,11 @@ const PARALLEL_IR: BpmnProcess = {
       sourceRef: 'S',
       targetRef: 'Gateway_p_1_fork',
     },
-    { id: 'Flow_Gateway_p_1_join_E', sourceRef: 'Gateway_p_1_join', targetRef: 'E' },
+    {
+      id: 'Flow_Gateway_p_1_join_E',
+      sourceRef: 'Gateway_p_1_join',
+      targetRef: 'E',
+    },
   ],
 };
 
@@ -308,7 +342,12 @@ const INVOICE_IR: BpmnProcess = {
   isExecutable: true,
   flowElements: [
     { kind: 'startEvent', id: 'ReviewStart' },
-    { kind: 'userTask', id: 'ReviewInvoice', name: 'Review invoice', assignee: 'demo' },
+    {
+      kind: 'userTask',
+      id: 'ReviewInvoice',
+      name: 'Review invoice',
+      assignee: 'demo',
+    },
     {
       kind: 'exclusiveGateway',
       id: 'AmountCheck',
@@ -346,9 +385,21 @@ const INVOICE_IR: BpmnProcess = {
       sourceRef: 'AmountCheck',
       targetRef: 'SeniorApproval',
     },
-    { id: 'AutoApprovePath', sourceRef: 'AmountCheck', targetRef: 'AutoApprove' },
-    { id: 'Flow_SeniorApproval_Done', sourceRef: 'SeniorApproval', targetRef: 'Done' },
-    { id: 'Flow_AutoApprove_Done', sourceRef: 'AutoApprove', targetRef: 'Done' },
+    {
+      id: 'AutoApprovePath',
+      sourceRef: 'AmountCheck',
+      targetRef: 'AutoApprove',
+    },
+    {
+      id: 'Flow_SeniorApproval_Done',
+      sourceRef: 'SeniorApproval',
+      targetRef: 'Done',
+    },
+    {
+      id: 'Flow_AutoApprove_Done',
+      sourceRef: 'AutoApprove',
+      targetRef: 'Done',
+    },
   ],
 };
 
@@ -462,7 +513,9 @@ describe('irToDsl — local idempotence (re-desugar equivalence)', () => {
       'com.example.invoice.AutoApproveDelegate',
     );
 
-    const cond = ir.sequenceFlows.find((f) => f.conditionExpression !== undefined);
+    const cond = ir.sequenceFlows.find(
+      (f) => f.conditionExpression !== undefined,
+    );
     expect(cond?.conditionExpression).toBe('${amount > 1000}');
   });
 
@@ -498,11 +551,21 @@ describe('irToDsl — goto degradation (totality, no edge lost)', () => {
     ],
     sequenceFlows: [
       { id: 'f0', sourceRef: 'S', targetRef: 'G1' },
-      { id: 'f1', conditionExpression: '${p}', sourceRef: 'G1', targetRef: 'A' },
+      {
+        id: 'f1',
+        conditionExpression: '${p}',
+        sourceRef: 'G1',
+        targetRef: 'A',
+      },
       { id: 'd1', sourceRef: 'G1', targetRef: 'B' },
       { id: 'f2', sourceRef: 'A', targetRef: 'E' },
       { id: 'f3', sourceRef: 'B', targetRef: 'G2' },
-      { id: 'f4', conditionExpression: '${q}', sourceRef: 'G2', targetRef: 'A' },
+      {
+        id: 'f4',
+        conditionExpression: '${q}',
+        sourceRef: 'G2',
+        targetRef: 'A',
+      },
       { id: 'd2', sourceRef: 'G2', targetRef: 'E' },
     ],
   };
@@ -566,6 +629,66 @@ describe('irToDsl — goto degradation (totality, no edge lost)', () => {
     expect(ids.has('A')).toBe(true);
     expect(ids.has('B')).toBe(true);
     expect(ids.has('C')).toBe(true);
+  });
+
+  /**
+   * Hand-built IR with a MIXED XOR split: one conditioned flow plus two
+   * unconditioned ones. The chain can express one `if` branch and one `else`;
+   * the second unconditioned edge has no structured surface form and must
+   * survive as a `goto` (re-anchored at the join) — not vanish while its
+   * target dangles as unreachable trailing code.
+   */
+  const MIXED_SURPLUS_XOR: BpmnProcess = {
+    id: 'p',
+    isExecutable: true,
+    flowElements: [
+      { kind: 'startEvent', id: 'S' },
+      { kind: 'exclusiveGateway', id: 'G' },
+      { kind: 'userTask', id: 'A' },
+      { kind: 'userTask', id: 'B' },
+      { kind: 'userTask', id: 'C' },
+      { kind: 'endEvent', id: 'E' },
+    ],
+    sequenceFlows: [
+      { id: 'f0', sourceRef: 'S', targetRef: 'G' },
+      {
+        id: 'f1',
+        conditionExpression: '${x > 1}',
+        sourceRef: 'G',
+        targetRef: 'A',
+      },
+      { id: 'f2', sourceRef: 'G', targetRef: 'B' },
+      { id: 'f3', sourceRef: 'G', targetRef: 'C' },
+      { id: 'f4', sourceRef: 'A', targetRef: 'E' },
+      { id: 'f5', sourceRef: 'B', targetRef: 'E' },
+      { id: 'f6', sourceRef: 'C', targetRef: 'E' },
+    ],
+  };
+
+  it('keeps the surplus unconditioned edge of a mixed XOR reachable (regression)', async () => {
+    const dsl = irToDsl(MIXED_SURPLUS_XOR);
+    expect(dsl).toContain('goto C');
+    const ir2 = await reDesugar(dsl);
+    // Every real node must stay transitively reachable from the start —
+    // before the fix, C dangled as dead code with no incoming edge.
+    const adj = new Map<string, string[]>();
+    for (const f of ir2.sequenceFlows) {
+      (adj.get(f.sourceRef) ?? adj.set(f.sourceRef, []).get(f.sourceRef)!).push(
+        f.targetRef,
+      );
+    }
+    const start = ir2.flowElements.find((e) => e.kind === 'startEvent')!;
+    const reachable = new Set<string>();
+    const stack = [start.id];
+    while (stack.length > 0) {
+      const n = stack.pop()!;
+      if (reachable.has(n)) continue;
+      reachable.add(n);
+      stack.push(...(adj.get(n) ?? []));
+    }
+    for (const id of ['A', 'B', 'C', 'E']) {
+      expect(reachable, `node ${id} unreachable from start`).toContain(id);
+    }
   });
 
   it('never throws and always re-parses on degenerate graphs', async () => {
@@ -639,7 +762,11 @@ describe('irToDsl — multiple and named ends', () => {
       { kind: 'endEvent', id: 'Rejected', name: 'Rejected' },
     ],
     sequenceFlows: [
-      { id: 'Flow_S_Gateway_p_1_split', sourceRef: 'S', targetRef: 'Gateway_p_1_split' },
+      {
+        id: 'Flow_S_Gateway_p_1_split',
+        sourceRef: 'S',
+        targetRef: 'Gateway_p_1_split',
+      },
       {
         id: 'Flow_Gateway_p_1_split_Approved',
         conditionExpression: '${ok}',

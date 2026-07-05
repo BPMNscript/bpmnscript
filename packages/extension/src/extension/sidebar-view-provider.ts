@@ -238,10 +238,14 @@ export class SidebarViewProvider implements vscode.WebviewViewProvider {
 
     // Resolve asset URIs so the webview can load them from the media/ directory.
     const cssUri = webview
-      .asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'media', 'sidebar.css'))
+      .asWebviewUri(
+        vscode.Uri.joinPath(this._extensionUri, 'media', 'sidebar.css'),
+      )
       .toString();
     const jsUri = webview
-      .asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'media', 'sidebar.js'))
+      .asWebviewUri(
+        vscode.Uri.joinPath(this._extensionUri, 'media', 'sidebar.js'),
+      )
       .toString();
 
     // Read the HTML template from disk and substitute placeholders.

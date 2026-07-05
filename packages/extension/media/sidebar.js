@@ -98,7 +98,10 @@
     // Jump-to-counterpart link (only when the twin file already exists).
     if (file.counterpart) {
       container.appendChild(
-        linkButton('Open ' + file.counterpart.name + ' →', file.counterpart.uri),
+        linkButton(
+          'Open ' + file.counterpart.name + ' →',
+          file.counterpart.uri,
+        ),
       );
     }
 
@@ -172,4 +175,4 @@
    * @typedef {{ uri: string; name: string }} Counterpart
    * @typedef {{ uri: string; name: string; kind: 'dsl' | 'bpmn' | null; counterpart: Counterpart | null }} ActiveFile
    */
-}());
+})();

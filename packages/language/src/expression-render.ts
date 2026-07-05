@@ -24,10 +24,7 @@
  * dot/index accessors.
  */
 
-import type {
-  Expr,
-  Accessor,
-} from './generated/ast.js';
+import type { Expr, Accessor } from './generated/ast.js';
 import {
   isAdditive,
   isEquality,

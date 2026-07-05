@@ -88,7 +88,9 @@ export const sharedBuildOptions = {
   external: ['vscode'],
   platform: 'node',
   define: { 'import.meta.url': 'importMetaUrl' },
-  banner: { js: "const importMetaUrl = require('url').pathToFileURL(__filename).href;" },
+  banner: {
+    js: "const importMetaUrl = require('url').pathToFileURL(__filename).href;",
+  },
 };
 
 // ── Production build entry ────────────────────────────────────────────────────

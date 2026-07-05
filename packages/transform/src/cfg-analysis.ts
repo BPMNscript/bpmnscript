@@ -270,7 +270,8 @@ function computeIdom(
       for (const p of pred.get(node) ?? []) {
         if (!order.has(p)) continue; // predecessor not reachable from root
         if (idom.get(p) === undefined) continue; // not processed yet
-        newIdom = newIdom === undefined ? p : intersect(newIdom, p, idom, order);
+        newIdom =
+          newIdom === undefined ? p : intersect(newIdom, p, idom, order);
       }
 
       if (newIdom !== undefined && idom.get(node) !== newIdom) {
@@ -321,10 +322,7 @@ function intersect(
  * Reverse postorder of the nodes reachable from `root`, following `succ`.
  * Iterative DFS to avoid stack overflow on large graphs.
  */
-function reversePostorder(
-  root: string,
-  succ: Map<string, string[]>,
-): string[] {
+function reversePostorder(root: string, succ: Map<string, string[]>): string[] {
   const postorder: string[] = [];
   const visited = new Set<string>();
 

@@ -134,7 +134,10 @@ process p "Lbl" {
     expect(vars.map((v) => v.name)).toEqual(['amount', 'flag']);
     expect(vars.map((v) => v.type)).toEqual(['number', 'boolean']);
     // body holds only the executable statements.
-    expect(process.body.map((s) => s.$type)).toEqual(['StartEvent', 'EndEvent']);
+    expect(process.body.map((s) => s.$type)).toEqual([
+      'StartEvent',
+      'EndEvent',
+    ]);
   });
 
   test('every VarType keyword parses', async () => {
@@ -179,7 +182,8 @@ process p {
     const document = await parse(source);
     expect(formatParseFailure(document)).toBeUndefined();
 
-    const ifSt = document.parseResult.value.processes[0]!.body[0] as IfStatement;
+    const ifSt = document.parseResult.value.processes[0]!
+      .body[0] as IfStatement;
     expect(ifSt.$type).toBe('IfStatement');
     expect(ifSt.then.statements).toHaveLength(1);
     expect(ifSt.elseIfs).toHaveLength(2);
@@ -191,7 +195,8 @@ process p {
     const source = `process p { if (a) { user A } }`;
     const document = await parse(source);
     expect(formatParseFailure(document)).toBeUndefined();
-    const ifSt = document.parseResult.value.processes[0]!.body[0] as IfStatement;
+    const ifSt = document.parseResult.value.processes[0]!
+      .body[0] as IfStatement;
     expect(ifSt.elseIfs).toHaveLength(0);
     expect(ifSt.elseBlock).toBeUndefined();
   });
@@ -396,9 +401,10 @@ describe('Parsing — attribute blocks', () => {
     const ut = document.parseResult.value.processes[0]!.body[0] as UserTask;
     expect(ut.attrs).toHaveLength(2);
     expect(ut.attrs.map((a) => a.key)).toEqual(['assignee', 'assignee']);
-    expect(
-      ut.attrs.map((a) => (a.value as { value: string }).value),
-    ).toEqual(['a', 'b']);
+    expect(ut.attrs.map((a) => (a.value as { value: string }).value)).toEqual([
+      'a',
+      'b',
+    ]);
   });
 
   test('a task with no attribute block has an empty attrs list', async () => {
@@ -424,7 +430,9 @@ describe('renderExpression', () => {
   });
 
   test('renders nested logical / relational / accessor expressions', async () => {
-    const cond = await parseCondition(`order.total > 1000 && items[0] == status`);
+    const cond = await parseCondition(
+      `order.total > 1000 && items[0] == status`,
+    );
     expect(renderExpression(cond)).toBe(
       '${order.total > 1000 && items[0] == status}',
     );

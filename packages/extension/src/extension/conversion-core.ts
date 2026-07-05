@@ -24,9 +24,9 @@ import {
   irToXml,
   xmlToIr,
   irToDsl,
-  UnsupportedServiceTaskFormError,
-  UnsupportedElementError,
+  UnsupportedConstructError,
 } from '@bpmn-script/transform';
+import type { ImportWarning } from '@bpmn-script/transform';
 
 // ---------------------------------------------------------------------------
 // Exported types
@@ -66,13 +66,17 @@ export type CompileResult =
 /**
  * Result of a BPMN XML → DSL decompile operation.
  *
- * - `ok:true`  → `output` is the BPMNscript DSL string.
+ * - `ok:true`  → `output` is the BPMNscript DSL string; `warnings` lists any
+ *   non-semantic content the transform dropped (extra Operaton/camunda
+ *   extension attributes, lanes) so the caller can surface it — never
+ *   silently. Empty for input that round-trips cleanly.
  * - `ok:false, kind:'unsupported'` → the BPMN contains a construct that the
- *   transform cannot represent in the IR or DSL.
+ *   transform cannot represent in the IR at all (see
+ *   `UnsupportedConstructError` and its subclasses in `@bpmn-script/transform`).
  * - `ok:false, kind:'error'` → an unexpected runtime error occurred.
  */
 export type DecompileResult =
-  | { ok: true; output: string }
+  | { ok: true; output: string; warnings: ImportWarning[] }
   | { ok: false; kind: 'unsupported'; message: string }
   | { ok: false; kind: 'error'; message: string };
 
@@ -178,14 +182,16 @@ export async function compileDslToBpmn(
  * Mirrors the pipeline in `packages/cli/src/parse.ts` but returns a typed
  * result instead of writing to disk or calling `process.exit`.
  *
- * `UnsupportedServiceTaskFormError` and `UnsupportedElementError` are mapped
- * to `kind:'unsupported'` so callers can surface a loud, actionable message
- * rather than silently emitting an incomplete DSL.
+ * Every `UnsupportedConstructError` subclass (unsupported service task form,
+ * unsupported element kind, event definitions, loop characteristics,
+ * collaborations) is classified as `kind:'unsupported'` via a single base-class
+ * check, so callers can surface a loud, actionable message rather than
+ * silently emitting an incomplete DSL.
  *
- * Returned error messages are context-free (no filename prefix). The VS Code
- * adapter (`conversion.ts`) owns presentation and prepends the filename
- * exactly once when composing user-facing notifications — symmetric with
- * `compileDslToBpmn`.
+ * Returned error messages, and the `warnings` on the success variant, are
+ * context-free (no filename prefix) — same contract as `compileDslToBpmn`.
+ * The VS Code adapter (`conversion.ts`) owns presentation and prepends the
+ * filename exactly once when composing user-facing notifications.
  *
  * @param xml              BPMN 2.0 XML string.
  * @param _sourceFileName  Accepted for call-site symmetry with `compileDslToBpmn`;
@@ -196,15 +202,13 @@ export async function decompileBpmnToDsl(
   _sourceFileName: string,
 ): Promise<DecompileResult> {
   let ir;
+  let warnings: ImportWarning[];
   try {
-    ir = await xmlToIr(xml);
+    ({ ir, warnings } = await xmlToIr(xml));
   } catch (err) {
-    if (err instanceof UnsupportedServiceTaskFormError) {
-      // Use the error's own message — it names both the service task id and
-      // the offending execution discriminator (e.g. "operaton:expression").
-      return { ok: false, kind: 'unsupported', message: err.message };
-    }
-    if (err instanceof UnsupportedElementError) {
+    if (err instanceof UnsupportedConstructError) {
+      // Every refusal subclass's own message already names the offending
+      // construct and element concretely — surface it verbatim.
       return { ok: false, kind: 'unsupported', message: err.message };
     }
     return {
@@ -225,7 +229,7 @@ export async function decompileBpmnToDsl(
     };
   }
 
-  return { ok: true, output };
+  return { ok: true, output, warnings };
 }
 
 /**

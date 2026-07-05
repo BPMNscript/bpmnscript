@@ -1,12 +1,20 @@
 /**
  * Validation test suite for the BPMNscript AST.
  *
- * Five validator families are exercised (all `[unit]`):
+ * Thirteen validator families are exercised (all `[unit]`):
  *   - undeclared-variable WARNING (severity 2),
  *   - type-mismatch ERROR (severity 1),
  *   - duplicate attribute-key ERROR,
  *   - exactly-one service `class` discriminator,
- *   - the unresolved-`goto` regression (linker owns it; no validator double-report).
+ *   - the unresolved-`goto` regression (linker owns it; no validator double-report),
+ *   - structural empty-process-body WARNING,
+ *   - reserved synthesised-id name ERROR,
+ *   - duplicate process name ERROR,
+ *   - duplicate variable name ERROR,
+ *   - duplicate process label ERROR,
+ *   - duplicate statement name (goto-ambiguity) ERROR,
+ *   - empty-block WARNING (if/else-if/else/while/do-while/parallel branch),
+ *   - goto-into-parallel-branch-from-outside ERROR.
  *
  * Diagnostics are produced through Langium's `validationHelper`, which parses,
  * links and runs the registered validation checks, returning the merged
@@ -23,11 +31,10 @@ import { createBpmnScriptServices } from '@bpmn-script/language';
 const SEVERITY_ERROR = 1;
 const SEVERITY_WARNING = 2;
 
-let services: ReturnType<typeof createBpmnScriptServices>;
 let validate: (input: string) => Promise<ValidationResult<Model>>;
 
 beforeAll(() => {
-  services = createBpmnScriptServices(EmptyFileSystem);
+  const services = createBpmnScriptServices(EmptyFileSystem);
   validate = validationHelper<Model>(services.BpmnScript);
 });
 
@@ -77,7 +84,9 @@ process p {
   end Done
 }
 `);
-    expect(diagnosticsFor(declaredInHeader.diagnostics, 'amount')).toHaveLength(0);
+    expect(diagnosticsFor(declaredInHeader.diagnostics, 'amount')).toHaveLength(
+      0,
+    );
   });
 });
 
@@ -95,9 +104,9 @@ process p {
     expect(errors).toHaveLength(1);
     expect(errors[0]!.message).toContain('name');
     // The variable IS declared, so there is no undeclared warning for it.
-    expect(diagnosticsFor(diagnostics, "Variable 'name' is not declared")).toHaveLength(
-      0,
-    );
+    expect(
+      diagnosticsFor(diagnostics, "Variable 'name' is not declared"),
+    ).toHaveLength(0);
   });
 
   test('a number-typed var in an ordered comparison is not an error', async () => {
@@ -168,7 +177,9 @@ describe('Validation — service task class discriminator', () => {
     const { diagnostics } = await validate(
       `process p { service S { class = com.example.X } }`,
     );
-    expect(diagnosticsFor(diagnostics, "must declare a 'class'")).toHaveLength(0);
+    expect(diagnosticsFor(diagnostics, "must declare a 'class'")).toHaveLength(
+      0,
+    );
   });
 
   test('a dotted class reference produces no undeclared-variable warning', async () => {
@@ -266,9 +277,7 @@ describe('Validation — reserved synthesised-id name', () => {
     // Only the two-segment form matches synthesised flow ids (Flow_<src>_<tgt>,
     // Flow_<gatewayId>_default). Single-segment names like Flow_Control cannot
     // collide with a SequenceFlow.id and are therefore NOT reserved.
-    const { diagnostics } = await validate(
-      `process p { start Flow_A_B }`,
-    );
+    const { diagnostics } = await validate(`process p { start Flow_A_B }`);
     const errors = bySeverity(diagnostics, SEVERITY_ERROR);
     expect(errors).toHaveLength(1);
     expect(errors[0]!.message).toContain('Flow_A_B');
@@ -277,36 +286,34 @@ describe('Validation — reserved synthesised-id name', () => {
   test('a single-segment Flow_Control name is accepted (no diagnostic)', async () => {
     // Flow_Control has only one trailing segment — it cannot match the synthesised
     // Flow_<src>_<tgt> shape and therefore must NOT be rejected.
-    const { diagnostics } = await validate(
-      `process p { user Flow_Control }`,
+    const { diagnostics } = await validate(`process p { user Flow_Control }`);
+    const reservedErrors = diagnosticsFor(
+      diagnostics,
+      'reserved synthesised-id',
     );
-    const reservedErrors = diagnosticsFor(diagnostics, 'reserved synthesised-id');
     expect(reservedErrors).toHaveLength(0);
   });
 
   test('a single-segment Flow_State name is accepted (no diagnostic)', async () => {
     // Same rationale as Flow_Control: single-segment names are outside the
     // reserved id-shaped pattern and must be accepted.
-    const { diagnostics } = await validate(
-      `process p { user Flow_State }`,
+    const { diagnostics } = await validate(`process p { user Flow_State }`);
+    const reservedErrors = diagnosticsFor(
+      diagnostics,
+      'reserved synthesised-id',
     );
-    const reservedErrors = diagnosticsFor(diagnostics, 'reserved synthesised-id');
     expect(reservedErrors).toHaveLength(0);
   });
 
   test('an end event named with a StartEvent_ prefix is exactly one error', async () => {
-    const { diagnostics } = await validate(
-      `process p { end StartEvent_p }`,
-    );
+    const { diagnostics } = await validate(`process p { end StartEvent_p }`);
     const errors = bySeverity(diagnostics, SEVERITY_ERROR);
     expect(errors).toHaveLength(1);
     expect(errors[0]!.message).toContain('StartEvent_p');
   });
 
   test('a user task named with an EndEvent_ prefix is exactly one error', async () => {
-    const { diagnostics } = await validate(
-      `process p { user EndEvent_p }`,
-    );
+    const { diagnostics } = await validate(`process p { user EndEvent_p }`);
     const errors = bySeverity(diagnostics, SEVERITY_ERROR);
     expect(errors).toHaveLength(1);
     expect(errors[0]!.message).toContain('EndEvent_p');
@@ -329,9 +336,361 @@ describe('Validation — reserved synthesised-id name', () => {
     ];
     for (const src of cases) {
       const { diagnostics } = await validate(src);
-      const reservedErrors = diagnosticsFor(diagnostics, 'reserved synthesised-id');
+      const reservedErrors = diagnosticsFor(
+        diagnostics,
+        'reserved synthesised-id',
+      );
       expect(reservedErrors, `src: ${src}`).toHaveLength(0);
     }
+  });
+});
+
+// ── One process per file ────────────────────────────────────────────────────
+
+describe('Validation — one process per file', () => {
+  test('a second process block is exactly one error, on the extra block', async () => {
+    const { diagnostics } = await validate(`
+process Invoice { start S end E }
+process Shipping { start S end E }
+`);
+    const errors = diagnosticsFor(
+      diagnostics,
+      'Only one process is supported per file',
+    ).filter((d) => d.severity === SEVERITY_ERROR);
+    expect(errors).toHaveLength(1);
+  });
+
+  test('a duplicate-named second process is flagged the same way', async () => {
+    const { diagnostics } = await validate(`
+process Invoice { start S end E }
+process Invoice { start S end E }
+`);
+    const errors = diagnosticsFor(
+      diagnostics,
+      'Only one process is supported per file',
+    ).filter((d) => d.severity === SEVERITY_ERROR);
+    expect(errors).toHaveLength(1);
+  });
+
+  test('a single process produces no such error', async () => {
+    const { diagnostics } = await validate(`
+process Invoice { start S end E }
+`);
+    expect(
+      diagnosticsFor(diagnostics, 'Only one process is supported'),
+    ).toHaveLength(0);
+  });
+});
+
+// ── Start position ──────────────────────────────────────────────────────────
+
+describe('Validation — explicit start must come first', () => {
+  test('a start after another statement is exactly one error naming it', async () => {
+    const { diagnostics } = await validate(`
+process p {
+  user A
+  start S
+  end E
+}
+`);
+    const errors = diagnosticsFor(
+      diagnostics,
+      'must be the first statement',
+    ).filter((d) => d.severity === SEVERITY_ERROR);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.message).toContain('S');
+  });
+
+  test('a start nested in a branch is an error', async () => {
+    const { diagnostics } = await validate(`
+process p {
+  start S
+  if (true) {
+    start Nested
+  }
+  end E
+}
+`);
+    const errors = diagnosticsFor(
+      diagnostics,
+      'must be the first statement',
+    ).filter((d) => d.severity === SEVERITY_ERROR);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.message).toContain('Nested');
+  });
+
+  test('a start as the first statement produces no error', async () => {
+    const { diagnostics } = await validate(`
+process p { start S user A end E }
+`);
+    expect(
+      diagnosticsFor(diagnostics, 'must be the first statement'),
+    ).toHaveLength(0);
+  });
+
+  test('a process without an explicit start produces no error', async () => {
+    const { diagnostics } = await validate(`
+process p { user A end E }
+`);
+    expect(
+      diagnosticsFor(diagnostics, 'must be the first statement'),
+    ).toHaveLength(0);
+  });
+});
+
+// ── Duplicate variable name ─────────────────────────────────────────────────
+
+describe('Validation — duplicate variable name', () => {
+  test('two `var` declarations with the same name is exactly one error naming it', async () => {
+    const { diagnostics } = await validate(`
+process p {
+  var total: number
+  var total: string
+  start S
+  end E
+}
+`);
+    const errors = diagnosticsFor(
+      diagnostics,
+      "Variable 'total' is already declared",
+    );
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.severity).toBe(SEVERITY_ERROR);
+  });
+
+  test('two `var` declarations with different names produce no duplicate-variable error', async () => {
+    const { diagnostics } = await validate(`
+process p {
+  var total: number
+  var quantity: number
+  start S
+  end E
+}
+`);
+    expect(diagnosticsFor(diagnostics, 'is already declared')).toHaveLength(0);
+  });
+});
+
+// ── Duplicate process label ─────────────────────────────────────────────────
+
+describe('Validation — duplicate process label', () => {
+  test('two `label = …` declarations in one process is exactly one error', async () => {
+    const { diagnostics } = await validate(`
+process p {
+  label = "First"
+  label = "Second"
+  start S
+  end E
+}
+`);
+    const errors = diagnosticsFor(diagnostics, 'label').filter(
+      (d) => d.severity === SEVERITY_ERROR,
+    );
+    expect(errors).toHaveLength(1);
+  });
+
+  test('a single `label = …` declaration produces no duplicate-label error', async () => {
+    const { diagnostics } = await validate(`
+process p {
+  label = "Only"
+  start S
+  end E
+}
+`);
+    const errors = diagnosticsFor(diagnostics, 'label').filter(
+      (d) => d.severity === SEVERITY_ERROR,
+    );
+    expect(errors).toHaveLength(0);
+  });
+});
+
+// ── Duplicate statement name (goto ambiguity) ───────────────────────────────
+
+describe('Validation — duplicate statement name', () => {
+  test('two steps with the same name is exactly one ambiguity error naming it', async () => {
+    const { diagnostics } = await validate(`
+process p {
+  user Review
+  user Review
+}
+`);
+    const errors = bySeverity(diagnostics, SEVERITY_ERROR).filter((d) =>
+      d.message.includes('Review'),
+    );
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.message.toLowerCase()).toContain('ambiguous');
+  });
+
+  test('two steps with different names produce no ambiguity error', async () => {
+    const { diagnostics } = await validate(`
+process p {
+  user Review
+  user Approve
+}
+`);
+    expect(diagnosticsFor(diagnostics, 'ambiguous')).toHaveLength(0);
+  });
+});
+
+// ── Empty-block warnings ────────────────────────────────────────────────────
+
+describe('Validation — empty blocks', () => {
+  test('an empty `then` branch is exactly one warning', async () => {
+    const { diagnostics } = await validate(`
+process p {
+  if (flag == true) { }
+  start S
+  end E
+}
+`);
+    const warnings = bySeverity(diagnostics, SEVERITY_WARNING).filter((d) =>
+      d.message.toLowerCase().includes('no steps'),
+    );
+    expect(warnings).toHaveLength(1);
+  });
+
+  test('an empty `else if` branch is exactly one warning', async () => {
+    const { diagnostics } = await validate(`
+process p {
+  if (flag == true) { user A } else if (flag == false) { }
+}
+`);
+    const warnings = bySeverity(diagnostics, SEVERITY_WARNING).filter((d) =>
+      d.message.toLowerCase().includes('no steps'),
+    );
+    expect(warnings).toHaveLength(1);
+  });
+
+  test('an empty `else` branch is exactly one warning', async () => {
+    const { diagnostics } = await validate(`
+process p {
+  if (flag == true) { user A } else { }
+}
+`);
+    const warnings = bySeverity(diagnostics, SEVERITY_WARNING).filter((d) =>
+      d.message.toLowerCase().includes('no steps'),
+    );
+    expect(warnings).toHaveLength(1);
+  });
+
+  test('an empty `while` body is exactly one warning', async () => {
+    const { diagnostics } = await validate(`
+process p {
+  while (flag == true) { }
+}
+`);
+    const warnings = bySeverity(diagnostics, SEVERITY_WARNING).filter((d) =>
+      d.message.toLowerCase().includes('no steps'),
+    );
+    expect(warnings).toHaveLength(1);
+  });
+
+  test('an empty `do … while` body is exactly one warning', async () => {
+    const { diagnostics } = await validate(`
+process p {
+  do { } while (flag == true)
+}
+`);
+    const warnings = bySeverity(diagnostics, SEVERITY_WARNING).filter((d) =>
+      d.message.toLowerCase().includes('no steps'),
+    );
+    expect(warnings).toHaveLength(1);
+  });
+
+  test('an empty `parallel` branch is exactly one warning', async () => {
+    const { diagnostics } = await validate(`
+process p {
+  parallel {
+    { user A }
+    { }
+  }
+}
+`);
+    const warnings = bySeverity(diagnostics, SEVERITY_WARNING).filter((d) =>
+      d.message.toLowerCase().includes('no steps'),
+    );
+    expect(warnings).toHaveLength(1);
+  });
+
+  test('fully populated branches produce no empty-block warning', async () => {
+    const { diagnostics } = await validate(`
+process p {
+  if (flag == true) { user A } else if (flag == false) { user B } else { user C }
+  while (flag == true) { user D }
+  do { user E } while (flag == true)
+  parallel {
+    { user F }
+    { user G }
+  }
+}
+`);
+    const warnings = bySeverity(diagnostics, SEVERITY_WARNING).filter((d) =>
+      d.message.toLowerCase().includes('no steps'),
+    );
+    expect(warnings).toHaveLength(0);
+  });
+});
+
+// ── Goto into a parallel branch from outside ────────────────────────────────
+//
+// All four cases run end-to-end through the real `validate()` pipeline. The two
+// "positive" (error-firing) cases resolve their `goto` target through the
+// process-scoped `ScopeProvider`: a step nested in a `parallel` branch is
+// reachable from a `goto` elsewhere in the *same* process, which is exactly the
+// situation the goto-into-parallel check exists to reject.
+
+describe('Validation — goto into a parallel branch', () => {
+  test('a goto from outside jumping into a parallel branch is exactly one error', async () => {
+    const { diagnostics } = await validate(`
+process p {
+  parallel {
+    { user A }
+    { user B }
+  }
+  goto A
+}
+`);
+    const errors = bySeverity(diagnostics, SEVERITY_ERROR);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.message).toContain('A');
+    expect(errors[0]!.message.toLowerCase()).toContain('branch');
+  });
+
+  test('a goto from a sibling branch into another branch is exactly one error', async () => {
+    const { diagnostics } = await validate(`
+process p {
+  parallel {
+    { user A goto B }
+    { user B }
+  }
+}
+`);
+    const errors = bySeverity(diagnostics, SEVERITY_ERROR);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.message).toContain('B');
+    expect(errors[0]!.message.toLowerCase()).toContain('branch');
+  });
+
+  test('a goto from within the same branch to a step in that branch produces no error', async () => {
+    const { diagnostics } = await validate(`
+process p {
+  parallel {
+    { user A goto A }
+    { user B }
+  }
+}
+`);
+    expect(bySeverity(diagnostics, SEVERITY_ERROR)).toHaveLength(0);
+  });
+
+  test('a goto entirely outside any parallel statement produces no error', async () => {
+    const { diagnostics } = await validate(`
+process p {
+  user A
+  goto A
+}
+`);
+    expect(bySeverity(diagnostics, SEVERITY_ERROR)).toHaveLength(0);
   });
 });
 

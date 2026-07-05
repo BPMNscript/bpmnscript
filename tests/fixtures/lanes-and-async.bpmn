@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions
+    xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+    xmlns:operaton="http://operaton.org/schema/1.0/bpmn"
+    id="Definitions_LanesAndAsync"
+    targetNamespace="http://bpmn.io/schema/bpmn"
+    exporter="Operaton Modeler"
+    exporterVersion="5.0.0">
+
+  <bpmn:process id="lanes-and-async" name="Lanes And Async" isExecutable="true">
+
+    <bpmn:laneSet id="LaneSet_Ops">
+      <bpmn:lane id="Lane_Ops" name="Operations">
+        <bpmn:flowNodeRef>ReviewStart</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>ReviewRequest</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>ReviewDone</bpmn:flowNodeRef>
+      </bpmn:lane>
+    </bpmn:laneSet>
+
+    <bpmn:startEvent id="ReviewStart">
+      <bpmn:outgoing>Flow_ReviewStart_ReviewRequest</bpmn:outgoing>
+    </bpmn:startEvent>
+
+    <bpmn:userTask
+        id="ReviewRequest"
+        name="Review request"
+        operaton:assignee="demo"
+        operaton:asyncBefore="true">
+      <bpmn:incoming>Flow_ReviewStart_ReviewRequest</bpmn:incoming>
+      <bpmn:outgoing>Flow_ReviewRequest_ReviewDone</bpmn:outgoing>
+    </bpmn:userTask>
+
+    <bpmn:endEvent id="ReviewDone">
+      <bpmn:incoming>Flow_ReviewRequest_ReviewDone</bpmn:incoming>
+    </bpmn:endEvent>
+
+    <bpmn:sequenceFlow id="Flow_ReviewStart_ReviewRequest" sourceRef="ReviewStart" targetRef="ReviewRequest" />
+    <bpmn:sequenceFlow id="Flow_ReviewRequest_ReviewDone" sourceRef="ReviewRequest" targetRef="ReviewDone" />
+
+  </bpmn:process>
+
+</bpmn:definitions>

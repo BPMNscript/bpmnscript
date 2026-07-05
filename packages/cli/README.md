@@ -31,7 +31,7 @@ bpmns parse invoice-approval.bpmn
 bpmns parse invoice-approval.bpmn -o invoice-approval.bpmnscript
 ```
 
-Exit codes: `0` success, `1` validation/parse errors, `2` I/O errors.
+Exit codes: `0` success, `1` validation/parse errors, `2` I/O errors. `bpmns parse` also prints non-fatal import warnings (dropped Operaton extension attributes, lanes) to stderr without changing the exit code, and exits `1` with an actionable message — writing no output file — when the BPMN contains a construct the DSL cannot express (an event definition, loop characteristics, a collaboration).
 
 ## Public API surface
 

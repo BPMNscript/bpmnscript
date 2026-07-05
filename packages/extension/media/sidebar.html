@@ -1,18 +1,21 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src {{CSP_SOURCE}}; style-src {{CSP_SOURCE}}; script-src 'nonce-{{NONCE}}';">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <link rel="stylesheet" href="{{CSS_URI}}">
-  <title>BPMNscript</title>
-</head>
-<body>
-  <div id="active-panel">
-    <p class="placeholder">Loading&#8230;</p>
-  </div>
-  <hr class="divider">
-  <div id="pick-panel"></div>
-  <script nonce="{{NONCE}}" src="{{JS_URI}}"></script>
-</body>
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; img-src {{CSP_SOURCE}}; style-src {{CSP_SOURCE}}; script-src 'nonce-{{NONCE}}';"
+    />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="stylesheet" href="{{CSS_URI}}" />
+    <title>BPMNscript</title>
+  </head>
+  <body>
+    <div id="active-panel">
+      <p class="placeholder">Loading&#8230;</p>
+    </div>
+    <hr class="divider" />
+    <div id="pick-panel"></div>
+    <script nonce="{{NONCE}}" src="{{JS_URI}}"></script>
+  </body>
 </html>
