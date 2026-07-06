@@ -28,6 +28,6 @@
     "commander": "^14.0.0"
   },
   "devDependencies": {
-    "vitest": "^4.1.9"
+    "vitest": "^4.1.10"
   }
 }
