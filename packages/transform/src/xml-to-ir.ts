@@ -1,8 +1,8 @@
 /**
  * BPMN 2.0 XML → IR transform.
  *
- * Inverse of {@link irToXml}. Accepts a BPMN XML string and produces an
- * engine-agnostic {@link BpmnProcess}. Diagram interchange (DI) data is
+ * Inverse of {@link irToXml}. Accepts a BPMN XML string and produces a
+ * {@link BpmnProcess}. Diagram interchange (DI) data is
  * discarded per ADR 0003 — the IR holds semantics only.
  *
  * Dual-namespace handling: Operaton accepts the legacy `camunda:` prefix
@@ -65,6 +65,8 @@ import type {
   EndEvent,
   ExclusiveGateway,
   FlowElement,
+  FormField,
+  FormFieldType,
   ParallelGateway,
   SequenceFlow,
   ServiceTaskJavaClass,
@@ -76,6 +78,7 @@ import {
   UnsupportedCollaborationError,
   UnsupportedElementError,
   UnsupportedEventDefinitionError,
+  UnsupportedFormFieldTypeError,
   UnsupportedLoopCharacteristicsError,
   UnsupportedServiceTaskFormError,
 } from './errors.js';
@@ -120,6 +123,28 @@ const SUPPORTED_EXTENSION_ATTRS: ReadonlySet<string> = new Set([
   'formKey',
   'class',
 ]);
+
+/**
+ * Extension-element `$type`s that ARE read into the IR and therefore must NOT
+ * be reported as dropped by {@link collectExtensionDrops}. `operaton:FormData`
+ * is consumed by {@link readFormFields} on start events and user tasks.
+ */
+const CONSUMED_EXTENSION_ELEMENTS: ReadonlySet<string> = new Set([
+  'operaton:FormData',
+]);
+
+/**
+ * `operaton:formField` `type` values mapped to the DSL-level
+ * {@link FormFieldType}. `long` maps to `number` (the export direction emits
+ * `long` for `number`). `double`, `enum`, and any other type are absent, so
+ * {@link readFormFields} refuses them rather than narrowing their semantics.
+ */
+const OPERATON_TO_FORM_FIELD_TYPE: Readonly<Record<string, FormFieldType>> = {
+  string: 'string',
+  long: 'number',
+  boolean: 'boolean',
+  date: 'date',
+};
 
 /** Suffix of every dropped-extension warning, naming what IS imported. */
 const KEPT_SETTINGS_NOTE =
@@ -214,7 +239,7 @@ interface ModdlePropertyDescriptor {
 }
 
 /**
- * Parse a BPMN 2.0 XML document into the engine-agnostic IR.
+ * Parse a BPMN 2.0 XML document into the IR.
  *
  * @param xml The full BPMN XML document (as a string).
  * @returns `{ ir, warnings }` — the IR representation of the single
@@ -499,6 +524,11 @@ function collectExtensionDrops(
     const values =
       (extensionElements.get('values') as ModdleElement[] | undefined) ?? [];
     for (const value of values) {
+      // Extension elements the IR consumes (e.g. operaton:formData) are read in
+      // and must not be reported as dropped.
+      if (CONSUMED_EXTENSION_ELEMENTS.has(value.$type)) {
+        continue;
+      }
       warnings.push({
         elementId: ownerId,
         category: 'extensionAttribute',
@@ -536,10 +566,12 @@ function mapStartEvent(el: ModdleElement): StartEvent {
   const id = requireId(el);
   refuseEventDefinitions(el, id, 'start');
   const name = readDerivableName(el, id);
+  const formFields = readFormFields(el, id);
   return {
     kind: 'startEvent',
     id,
     ...(name === undefined ? {} : { name }),
+    ...(formFields === undefined ? {} : { formFields }),
   };
 }
 
@@ -602,6 +634,7 @@ function mapUserTask(el: ModdleElement): UserTask {
   const name = readDerivableName(el, id);
   const assignee = readNamespacedAttr(el, 'assignee');
   const formKey = readNamespacedAttr(el, 'formKey');
+  const formFields = readFormFields(el, id);
 
   return {
     kind: 'userTask',
@@ -609,6 +642,7 @@ function mapUserTask(el: ModdleElement): UserTask {
     ...(name === undefined ? {} : { name }),
     ...(assignee === undefined ? {} : { assignee }),
     ...(formKey === undefined ? {} : { formKey }),
+    ...(formFields === undefined ? {} : { formFields }),
   };
 }
 
@@ -799,4 +833,73 @@ function readNamespacedAttr(
     return camunda;
   }
   return undefined;
+}
+
+/**
+ * Read an element's `operaton:formData` extension element into IR
+ * {@link FormField}s, or `undefined` when the element carries none.
+ *
+ * The inverse of the form export in {@link irToXml}: each `operaton:formField`
+ * becomes a {@link FormField}, mapping the Operaton `type` back to its DSL
+ * spelling. A field whose type the DSL cannot express raises
+ * {@link UnsupportedFormFieldTypeError} rather than being silently narrowed.
+ */
+function readFormFields(
+  el: ModdleElement,
+  ownerId: string,
+): FormField[] | undefined {
+  const extensionElements = el.get('extensionElements') as
+    ModdleElement | undefined;
+  if (extensionElements === undefined) {
+    return undefined;
+  }
+  const values =
+    (extensionElements.get('values') as ModdleElement[] | undefined) ?? [];
+  const formData = values.find((v) => v.$type === 'operaton:FormData');
+  if (formData === undefined) {
+    return undefined;
+  }
+  const fields = (formData.get('fields') as ModdleElement[] | undefined) ?? [];
+  if (fields.length === 0) {
+    return undefined;
+  }
+  return fields.map((field) => {
+    const fieldId = requireId(field);
+    const type = importFormFieldType(
+      readString(field, 'type'),
+      fieldId,
+      ownerId,
+    );
+    const label = readString(field, 'label');
+    const defaultValue = readString(field, 'defaultValue');
+    return {
+      id: fieldId,
+      type,
+      ...(label === undefined ? {} : { label }),
+      ...(defaultValue === undefined ? {} : { defaultValue }),
+    };
+  });
+}
+
+/**
+ * Map an `operaton:formField` `type` to its DSL {@link FormFieldType}, refusing
+ * any type the DSL cannot express (`double`, `enum`, a custom type, or none).
+ */
+function importFormFieldType(
+  operatonType: string | undefined,
+  fieldId: string,
+  ownerId: string,
+): FormFieldType {
+  const mapped =
+    operatonType === undefined
+      ? undefined
+      : OPERATON_TO_FORM_FIELD_TYPE[operatonType];
+  if (mapped === undefined) {
+    throw new UnsupportedFormFieldTypeError(
+      ownerId,
+      fieldId,
+      operatonType ?? '(none)',
+    );
+  }
+  return mapped;
 }

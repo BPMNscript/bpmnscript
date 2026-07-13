@@ -21,7 +21,9 @@
  * - unsupported flow-element kinds (script task, sub-process, call activity,
  *   intermediate events, …) → {@link UnsupportedElementError};
  * - service tasks whose execution form is not `operaton:class` →
- *   {@link UnsupportedServiceTaskFormError}.
+ *   {@link UnsupportedServiceTaskFormError};
+ * - form fields whose type is not `string`/`long`/`boolean`/`date` →
+ *   {@link UnsupportedFormFieldTypeError}.
  *
  * Content the IR does not carry but that causes **no semantic loss** is
  * **dropped with a warning** rather than refused — see the `warnings`
@@ -74,6 +76,34 @@ export class UnsupportedServiceTaskFormError extends UnsupportedConstructError {
     this.name = 'UnsupportedServiceTaskFormError';
     this.serviceTaskId = serviceTaskId;
     this.construct = construct;
+  }
+}
+
+/**
+ * Thrown by {@link xmlToIr} when an `operaton:formField` uses a `type` the DSL
+ * cannot express. The DSL form types `string`, `number`, `boolean`, and `date`
+ * map to the Operaton `string`, `long`, `boolean`, and `date` field types. Any
+ * other field type (`double`, `enum`, a custom type, or none) is refused so the
+ * field's input semantics are not silently narrowed.
+ */
+export class UnsupportedFormFieldTypeError extends UnsupportedConstructError {
+  /** The BPMN id of the element carrying the form field. */
+  readonly elementId: string;
+  /** The `id` of the offending form field. */
+  readonly fieldId: string;
+  /** The unsupported `operaton:formField` `type` value. */
+  readonly fieldType: string;
+
+  constructor(elementId: string, fieldId: string, fieldType: string) {
+    super(
+      `The form field '${fieldId}' on '${elementId}' has type '${fieldType}', ` +
+        'which this tool cannot import. Supported form field types are ' +
+        'string, long, boolean, and date.',
+    );
+    this.name = 'UnsupportedFormFieldTypeError';
+    this.elementId = elementId;
+    this.fieldId = fieldId;
+    this.fieldType = fieldType;
   }
 }
 

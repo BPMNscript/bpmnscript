@@ -27,6 +27,7 @@ import type {
   DoWhileStatement,
   EndEvent,
   Expr,
+  FormBlock,
   GotoStatement,
   IfStatement,
   Logical,
@@ -46,8 +47,11 @@ import {
   isAdditive,
   isAttribute,
   isBlock,
+  isDoWhileStatement,
   isEndEvent,
   isExpr,
+  isGotoStatement,
+  isIfStatement,
   isLogical,
   isMultiplicative,
   isParallelStatement,
@@ -58,6 +62,7 @@ import {
   isUserTask,
   isVarDecl,
   isVarRef,
+  isWhileStatement,
 } from './generated/ast.js';
 import type { BpmnScriptServices } from './bpmn-script-module.js';
 import type { VariableSymbolProvider } from './variable-symbol-provider.js';
@@ -74,6 +79,7 @@ export function registerValidationChecks(services: BpmnScriptServices) {
   const checks: ValidationChecks<BpmnScriptAstType> = {
     Model: validator.checkModel,
     Process: validator.checkProcess,
+    StartEvent: validator.checkStartEvent,
     UserTask: validator.checkUserTaskAttributes,
     ServiceTask: validator.checkServiceTaskAttributes,
     IfStatement: validator.checkIfStatement,
@@ -91,6 +97,18 @@ export function registerValidationChecks(services: BpmnScriptServices) {
  */
 const USER_TASK_KEYS: ReadonlySet<string> = new Set(['assignee', 'formKey']);
 const SERVICE_TASK_KEYS: ReadonlySet<string> = new Set(['class']);
+
+/**
+ * The {@link VarType}s an Operaton form field can carry. `json`/`any` have no
+ * `operaton:formField` representation, so the grammar's permissive `VarType` is
+ * restricted here.
+ */
+const FORM_FIELD_TYPES: ReadonlySet<string> = new Set([
+  'string',
+  'number',
+  'boolean',
+  'date',
+]);
 
 /**
  * Patterns for synthesised element ids produced by the `astToIr` desugarer
@@ -171,6 +189,49 @@ function collectNamedStatements(process: Process): NamedStatement[] {
     }
   }
   return result;
+}
+
+/**
+ * The names referenced by every `goto` in `process`. A step whose name is in
+ * this set is an explicit jump target, and so reachable even when it sits after
+ * an `end`/`goto`.
+ */
+function collectGotoTargetNames(process: Process): Set<string> {
+  const names = new Set<string>();
+  for (const node of AstUtils.streamAst(process)) {
+    if (isGotoStatement(node) && node.target.$refText.length > 0) {
+      names.add(node.target.$refText);
+    }
+  }
+  return names;
+}
+
+/** The name of a step, or `undefined` for the unnamed constructs (`if`/`while`/`parallel`/`goto`). */
+function statementName(stmt: Statement): string | undefined {
+  return isStartEvent(stmt) ||
+    isEndEvent(stmt) ||
+    isUserTask(stmt) ||
+    isServiceTask(stmt)
+    ? stmt.name
+    : undefined;
+}
+
+/** The statement lists nested directly inside a compound statement. */
+function childBlocks(stmt: Statement): Block[] {
+  if (isIfStatement(stmt)) {
+    return [
+      stmt.then,
+      ...stmt.elseIfs.map((e) => e.body),
+      ...(stmt.elseBlock ? [stmt.elseBlock] : []),
+    ];
+  }
+  if (isWhileStatement(stmt) || isDoWhileStatement(stmt)) {
+    return [stmt.body];
+  }
+  if (isParallelStatement(stmt)) {
+    return stmt.branches;
+  }
+  return [];
 }
 
 /**
@@ -299,7 +360,93 @@ export class BpmnScriptValidator {
     this.checkDuplicateVarDecls(process, accept);
     this.checkDuplicateProcessLabel(process, accept);
     this.checkDuplicateStatementNames(process, named, accept);
+    this.checkFormVariableAgreement(process, accept);
+    this.checkUnreachableStatements(process, accept);
   };
+
+  /**
+   * Warn on steps that control flow can never reach. A step is unreachable once
+   * an earlier `end` or `goto` in the same block has stopped or diverted the
+   * flow and nothing jumps back to it. Reachability is tracked per statement
+   * list: it starts reachable, turns unreachable after an `end`/`goto`, and
+   * turns reachable again at a step some `goto` targets by name (an explicit
+   * jump re-enters the flow there). Nested blocks are scanned only when their
+   * owning construct is itself reachable, so an unreachable `if` is reported
+   * once rather than once per step inside it.
+   *
+   * The scan is deliberately sound rather than exhaustive: it never flags a
+   * reachable step (an `if` whose branches all `end` is treated as falling
+   * through), so a rarer dead step may go unreported, but a live one is never
+   * wrongly warned — the diagnostic an IDE surfaces stays trustworthy.
+   */
+  private checkUnreachableStatements(
+    process: Process,
+    accept: ValidationAcceptor,
+  ): void {
+    const gotoTargets = collectGotoTargetNames(process);
+
+    const scan = (statements: Statement[]): void => {
+      let reachable = true;
+      for (const stmt of statements) {
+        const name = statementName(stmt);
+        if (!reachable && name !== undefined && gotoTargets.has(name)) {
+          reachable = true;
+        }
+        if (!reachable) {
+          accept(
+            'warning',
+            'This step can never run: an earlier `end` or `goto` in the same ' +
+              'block always ends or redirects the flow before reaching it.',
+            { node: stmt },
+          );
+        } else {
+          for (const block of childBlocks(stmt)) {
+            scan(block.statements);
+          }
+        }
+        if (isEndEvent(stmt) || isGotoStatement(stmt)) {
+          reachable = false;
+        }
+      }
+    };
+
+    scan(process.body);
+  }
+
+  /**
+   * Every declaration of a given variable name — explicit `var`s and `form`
+   * fields alike — must agree on the type. A `form` field whose type conflicts
+   * with an earlier declaration of the same name (a `var`, or another field) is
+   * flagged, because both bind the same runtime process variable.
+   */
+  private checkFormVariableAgreement(
+    process: Process,
+    accept: ValidationAcceptor,
+  ): void {
+    const declaredType = new Map<string, VarType>();
+    for (const decl of process.decls) {
+      if (isVarDecl(decl)) {
+        declaredType.set(decl.name, decl.type);
+      }
+    }
+    for (const node of AstUtils.streamAst(process)) {
+      if (!isStartEvent(node) && !isUserTask(node)) continue;
+      for (const form of node.forms) {
+        for (const field of form.fields) {
+          const prior = declaredType.get(field.id);
+          if (prior === undefined) {
+            declaredType.set(field.id, field.type);
+          } else if (prior !== field.type) {
+            accept(
+              'error',
+              `Form field '${field.id}' is typed '${field.type}', but '${field.id}' is already declared as '${prior}'; the types must agree.`,
+              { node: field, property: 'type' },
+            );
+          }
+        }
+      }
+    }
+  }
 
   /**
    * Reject statement names that match the reserved synthesised-id patterns.
@@ -528,7 +675,25 @@ export class BpmnScriptValidator {
   }
 
   /**
-   * UserTask attribute checks: duplicate keys and key-kind validity.
+   * StartEvent checks: a start event may carry a `form { … }` block but no
+   * `assignee`/`formKey`/`class` attributes (those belong on tasks).
+   *
+   * @param start The start event.
+   */
+  checkStartEvent = (start: StartEvent, accept: ValidationAcceptor): void => {
+    for (const attr of start.attrs) {
+      accept(
+        'error',
+        `Attribute '${attr.key}' is not valid on a start event; only a 'form' block is allowed.`,
+        { node: attr, property: 'key' },
+      );
+    }
+    this.checkFormBlocks(start.forms, 'a start event', accept);
+  };
+
+  /**
+   * UserTask attribute checks: duplicate keys, key-kind validity, and its form
+   * blocks.
    *
    * @param task The user task.
    */
@@ -538,12 +703,14 @@ export class BpmnScriptValidator {
   ): void => {
     this.checkDuplicateKeys(task.attrs, accept);
     this.checkAllowedKeys(task.attrs, USER_TASK_KEYS, 'user', accept);
+    this.checkFormBlocks(task.forms, 'a user task', accept);
   };
 
   /**
-   * ServiceTask attribute checks: duplicate keys, key-kind validity, and the
+   * ServiceTask attribute checks: duplicate keys, key-kind validity, the
    * exactly-one-`class` discriminator (zero → error; the more-than-one case is
-   * reported by the duplicate-key check).
+   * reported by the duplicate-key check), and the absence of a form block
+   * (service tasks are automated and render no form).
    *
    * @param task The service task.
    */
@@ -562,7 +729,56 @@ export class BpmnScriptValidator {
         { node: task, property: 'name' },
       );
     }
+
+    for (const form of task.forms) {
+      accept(
+        'error',
+        "A service task cannot declare a 'form' block; forms belong on start events and user tasks.",
+        { node: form },
+      );
+    }
   };
+
+  /**
+   * Validate the `form { … }` block(s) on an element: at most one block, no
+   * duplicate field ids within a block, and only form-compatible field types.
+   * Cross-element agreement with a `var` of the same name is checked once at the
+   * process level (see {@link checkFormVariableAgreement}).
+   */
+  private checkFormBlocks(
+    forms: FormBlock[],
+    ownerDescription: string,
+    accept: ValidationAcceptor,
+  ): void {
+    forms.slice(1).forEach((form) => {
+      accept(
+        'error',
+        `${ownerDescription} may declare at most one 'form' block.`,
+        { node: form },
+      );
+    });
+
+    for (const form of forms) {
+      forEachDuplicate(
+        form.fields,
+        (field) => field.id,
+        (field) =>
+          accept('error', `Duplicate form field '${field.id}'.`, {
+            node: field,
+            property: 'id',
+          }),
+      );
+      for (const field of form.fields) {
+        if (!FORM_FIELD_TYPES.has(field.type)) {
+          accept(
+            'error',
+            `Form field '${field.id}' has type '${field.type}', which a form cannot use. Use string, number, boolean, or date.`,
+            { node: field, property: 'type' },
+          );
+        }
+      }
+    }
+  }
 
   /**
    * Flag every attribute key that repeats within one block (one error per

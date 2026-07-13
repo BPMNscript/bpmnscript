@@ -28,7 +28,7 @@ The IR itself carries no Operaton-specific fields. Engine quirks (the `operaton:
 
 ## Purpose
 
-This package is the transformation layer of BPMNscript. It defines the engine-agnostic Intermediate Representation (IR) that all transforms share, and implements the four functions that convert between IR, BPMN 2.0 XML, and DSL text (see [ADR-0006](../../docs/decisions/0006-engine-agnostic-intermediate-representation.md)).
+This package is the transformation layer of BPMNscript. It defines the shared Intermediate Representation (IR) that all transforms use, and implements the four functions that convert between IR, BPMN 2.0 XML, and DSL text (see [ADR-0006](../../docs/decisions/0006-engine-agnostic-intermediate-representation.md)).
 
 ## IR shape
 

@@ -4,7 +4,7 @@
  * Integration-level tests — they exercise `xmlToIr` against real BPMN
  * XML strings, including the golden fixture files under `tests/golden/`.
  *
- * `xmlToIr` returns `{ ir, warnings }`: `ir` is the engine-agnostic process,
+ * `xmlToIr` returns `{ ir, warnings }`: `ir` is the process IR,
  * `warnings` reports non-semantic content dropped on import (extra Operaton/
  * camunda extension attributes and elements, lanes). Semantic content the IR
  * cannot express is *refused* — an `UnsupportedConstructError` subclass is

@@ -1,10 +1,18 @@
 /**
- * Engine-agnostic Intermediate Representation (IR) for BPMNscript.
+ * Intermediate Representation (IR) for BPMNscript: a small, statically typed
+ * graph of flow elements and sequence flows.
  *
- * Per ADR 0006 the IR is the single hinge between all transforms. Every
- * transform either produces or consumes these types. Vendor-specific
- * concerns (e.g. `operaton:historyTimeToLive`) are not fields here; they
- * are attached at serialization time by the IR → XML transform.
+ * Per ADR 0006 the IR is the single hinge between all transforms. The compile
+ * (`astToIr`, `irToXml`) and decompile (`xmlToIr`, `irToDsl`) directions both
+ * meet here, so the round-trip is one shared model rather than two independent
+ * converters. Sitting between Langium's block-structured AST and moddle's
+ * serialization-bound object model, it gives gateway synthesis and structural
+ * recovery a clean graph to operate on.
+ *
+ * The project targets Operaton, so the IR carries the semantics Operaton
+ * executes under field names that carry no vendor prefix. Vendor-specific
+ * concerns that vary only at serialization (e.g. `operaton:historyTimeToLive`)
+ * are not fields here; they are attached by the IR → XML transform.
  */
 
 /**
@@ -43,11 +51,43 @@ export type FlowElement =
   | ExclusiveGateway
   | ParallelGateway;
 
-/** A BPMN `startEvent` node. */
+/**
+ * The type of a {@link FormField}, in DSL-level (vendor-neutral) spelling.
+ * Mapped to the Operaton `operaton:formField` `type` at serialization
+ * (`number` becomes `long`) and back again on import.
+ */
+export type FormFieldType = 'string' | 'number' | 'boolean' | 'date';
+
+/**
+ * A form field rendered by Operaton Tasklist, serialized as an
+ * `<operaton:formField>` inside the owning element's `<operaton:formData>`
+ * extension element.
+ *
+ * `id` is both the field id and the process variable the field binds, so a
+ * form field doubles as the declaration of where that variable comes from.
+ */
+export interface FormField {
+  /** `operaton:formField id` — also the bound process-variable name. */
+  id: string;
+  /** DSL-level field type; mapped to the Operaton `type` at serialization. */
+  type: FormFieldType;
+  /** `operaton:formField label` — the human-readable label. */
+  label?: string;
+  /** `operaton:formField defaultValue` — optional default, carried as text. */
+  defaultValue?: string;
+}
+
+/**
+ * A BPMN `startEvent` node.
+ *
+ * `formFields`, when present, become an `operaton:formData` block so Tasklist
+ * renders a start form.
+ */
 export interface StartEvent {
   kind: 'startEvent';
   id: string;
   name?: string;
+  formFields?: FormField[];
 }
 
 /** A BPMN `endEvent` node. */
@@ -63,6 +103,7 @@ export interface EndEvent {
  * Optional Operaton extensions:
  * - `assignee` maps to `operaton:assignee`.
  * - `formKey` maps to `operaton:formKey`.
+ * - `formFields` map to an `operaton:formData` block.
  */
 export interface UserTask {
   kind: 'userTask';
@@ -72,6 +113,8 @@ export interface UserTask {
   assignee?: string;
   /** `operaton:formKey` — the embedded form key. */
   formKey?: string;
+  /** `operaton:formData` fields Tasklist renders for this task. */
+  formFields?: FormField[];
 }
 
 /**

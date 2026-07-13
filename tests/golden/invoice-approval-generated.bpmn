@@ -2,6 +2,11 @@
 <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI" xmlns:dc="http://www.omg.org/spec/DD/20100524/DC" xmlns:di="http://www.omg.org/spec/DD/20100524/DI" xmlns:operaton="http://operaton.org/schema/1.0/bpmn" id="Definitions_invoice-approval" targetNamespace="http://bpmnscript.io/processes" exporter="BPMNscript" exporterVersion="0.0.0">
   <bpmn:process id="invoice-approval" name="Invoice Approval" isExecutable="true" operaton:historyTimeToLive="P30D">
     <bpmn:startEvent id="ReviewStart">
+      <bpmn:extensionElements>
+        <operaton:formData>
+          <operaton:formField id="amount" label="Invoice amount" type="long" />
+        </operaton:formData>
+      </bpmn:extensionElements>
       <bpmn:outgoing>Flow_ReviewStart_ReviewInvoice</bpmn:outgoing>
     </bpmn:startEvent>
     <bpmn:userTask id="ReviewInvoice" name="Review Invoice" operaton:assignee="demo">
@@ -30,7 +35,7 @@
       <bpmn:incoming>Flow_Gateway_invoice-approval_2_join_Done</bpmn:incoming>
     </bpmn:endEvent>
     <bpmn:sequenceFlow id="Flow_ReviewStart_ReviewInvoice" sourceRef="ReviewStart" targetRef="ReviewInvoice" />
-    <bpmn:sequenceFlow id="Flow_Gateway_invoice-approval_2_split_SeniorApproval" sourceRef="Gateway_invoice-approval_2_split" targetRef="SeniorApproval">
+    <bpmn:sequenceFlow id="Flow_Gateway_invoice-approval_2_split_SeniorApproval" name="amount &#62; 1000" sourceRef="Gateway_invoice-approval_2_split" targetRef="SeniorApproval">
       <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">${amount &gt; 1000}</bpmn:conditionExpression>
     </bpmn:sequenceFlow>
     <bpmn:sequenceFlow id="Flow_SeniorApproval_Gateway_invoice-approval_2_join" sourceRef="SeniorApproval" targetRef="Gateway_invoice-approval_2_join" />

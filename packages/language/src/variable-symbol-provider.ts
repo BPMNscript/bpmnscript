@@ -9,12 +9,14 @@
  * a referenced variable is declared and whether it is used compatibly with an
  * operator.
  *
- * Today there is exactly one symbol source — the explicit `var name: type`
- * declarations.
+ * There are two symbol sources: the explicit `var name: type` declarations, and
+ * the `form { … }` fields on start events and user tasks (a field binds the
+ * process variable named by its id).
  */
 
+import { AstUtils } from 'langium';
 import type { Process, VarType } from './generated/ast.js';
-import { isVarDecl } from './generated/ast.js';
+import { isVarDecl, isStartEvent, isUserTask } from './generated/ast.js';
 
 /**
  * A resolved variable: its declared name and its declared type.
@@ -48,8 +50,8 @@ export interface VariableSymbolProvider {
 }
 
 /**
- * Default {@link VariableSymbolProvider}: the explicit `var` declarations in a
- * process.
+ * Default {@link VariableSymbolProvider}: the explicit `var` declarations plus
+ * the `form { … }` fields of a process.
  */
 export class DefaultVariableSymbolProvider implements VariableSymbolProvider {
   collect(process: Process): VariableTable {
@@ -60,7 +62,20 @@ export class DefaultVariableSymbolProvider implements VariableSymbolProvider {
         table.set(decl.name, { name: decl.name, type: decl.type });
       }
     }
-    // TODO: extend here when a second variable source exists (e.g. output mappings)
+    // Form fields (on start events and user tasks, at any nesting depth) each
+    // declare the process variable they bind. An explicit `var` of the same name
+    // keeps precedence in the table; a type disagreement is reported separately
+    // by the validator.
+    for (const node of AstUtils.streamAst(process)) {
+      if (!isStartEvent(node) && !isUserTask(node)) continue;
+      for (const form of node.forms) {
+        for (const field of form.fields) {
+          if (!table.has(field.id)) {
+            table.set(field.id, { name: field.id, type: field.type });
+          }
+        }
+      }
+    }
     return table;
   }
 }
