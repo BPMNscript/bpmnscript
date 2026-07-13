@@ -35,16 +35,6 @@ Two E2E test files in `tests/e2e/` use [testcontainers-node](https://testcontain
 
 The harness is gated by the `SKIP_DOCKER_TESTS` environment variable: Docker tests run by default and are only skipped when `SKIP_DOCKER_TESTS=true` (set in CI).
 
-## `constructs/`
-
-One minimal `.bpmnscript` program per construct beyond the plain `class`-bound
-service task: `service-expression.bpmnscript` (`expression = "${…}"` binding),
-`service-delegate.bpmnscript` (`delegate = "${…}"` binding), `external-task.bpmnscript`
-(the `external` statement with a `topic`), and `script-task.bpmnscript` (the `script`
-statement with a fenced JavaScript body). Each demonstrates the syntax rather than
-deploying anywhere — they are not wired into the `spring-boot/` Maven build — and
-are exercised by the round-trip test in `tests/new-constructs.round-trip.test.ts`.
-
 ## Adding a new deployment mode
 
 1. Create a subdirectory with a `README.md` and whatever runtime files are needed

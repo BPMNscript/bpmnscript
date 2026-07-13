@@ -42,6 +42,13 @@
       <version>2.1.0</version>
     </dependency>
 
+    <!-- Groovy JSR-223 engine so scriptFormat="groovy" script tasks run
+         (the JDK ships no JavaScript engine). Version managed by the Spring Boot BOM. -->
+    <dependency>
+      <groupId>org.apache.groovy</groupId>
+      <artifactId>groovy-jsr223</artifactId>
+    </dependency>
+
     <dependency>
       <groupId>com.h2database</groupId>
       <artifactId>h2</artifactId>

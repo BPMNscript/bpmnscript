@@ -1,0 +1,16 @@
+// Compute a discount amount inline with a short Groovy snippet — no external
+// delegate needed for such a small calculation. The start form supplies the
+// order amount when the process is launched from Tasklist.
+
+process order-discount {
+  start OrderPlaced {
+    form {
+      amount: number "Order amount"
+    }
+  }
+  script ComputeDiscount ```groovy
+def discount = amount * 0.1
+execution.setVariable("discount", discount)
+```
+  end Done
+}

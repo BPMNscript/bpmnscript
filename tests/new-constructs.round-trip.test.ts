@@ -11,11 +11,12 @@
  *
  *   DSL → astToIr → irToXml → xmlToIr → irToDsl → (re-parse)
  *
- * and asserts the construct survives every hop. It intentionally stops short
- * of idempotence ceremony (no repeated round-trips, no IR normalization) and
- * does not touch Docker or a live Operaton engine — see
- * `tests/round-trip.test.ts` / `tests/round-trip-constructs.test.ts` for the
- * structured-control-flow round-trip and `tests/e2e/*` for the engine tests.
+ * and asserts the construct survives every hop. The example programs are inline
+ * so the test is self-contained. It intentionally stops short of idempotence
+ * ceremony (no repeated round-trips, no IR normalization) and does not touch
+ * Docker or a live Operaton engine — see `tests/round-trip.test.ts` /
+ * `tests/round-trip-constructs.test.ts` for the structured-control-flow
+ * round-trip and `tests/e2e/*` for the engine tests.
  *
  * The `delegate` case additionally asserts the alias both directions in one
  * flow: the DSL `delegate = "${…}"` must generate `operaton:delegateExpression`
@@ -26,9 +27,6 @@
  */
 
 import { describe, it, expect, beforeAll } from 'vitest';
-import { readFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 import { EmptyFileSystem } from 'langium';
 import { parseHelper } from 'langium/test';
@@ -39,23 +37,40 @@ import { xmlToIr, irToDsl, astToIr, irToXml } from '@bpmn-script/transform';
 import type { BpmnProcess } from '@bpmn-script/transform';
 
 // ---------------------------------------------------------------------------
-// File-path resolution (mirrors round-trip.test.ts / round-trip-constructs.test.ts).
+// Inline example programs — one minimal process per construct. Kept as string
+// constants (not files) so this smoke test carries its own inputs.
 // ---------------------------------------------------------------------------
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
+const SERVICE_EXPRESSION_SRC =
+  'process shipping-quote {\n' +
+  '  start OrderPlaced\n' +
+  '  service QuoteShipping { expression = "${shippingBean.quote(order)}" }\n' +
+  '  end Done\n' +
+  '}\n';
 
-const EXAMPLES_DIR = resolve(__dirname, '../examples/constructs');
+const SERVICE_DELEGATE_SRC =
+  'process payment-charge {\n' +
+  '  start OrderPlaced\n' +
+  '  service ChargeCustomer { delegate = "${chargeService}" }\n' +
+  '  end Done\n' +
+  '}\n';
 
-const SERVICE_EXPRESSION_PATH = resolve(
-  EXAMPLES_DIR,
-  'service-expression.bpmnscript',
-);
-const SERVICE_DELEGATE_PATH = resolve(
-  EXAMPLES_DIR,
-  'service-delegate.bpmnscript',
-);
-const EXTERNAL_TASK_PATH = resolve(EXAMPLES_DIR, 'external-task.bpmnscript');
-const SCRIPT_TASK_PATH = resolve(EXAMPLES_DIR, 'script-task.bpmnscript');
+const EXTERNAL_TASK_SRC =
+  'process shipment-label {\n' +
+  '  start OrderPlaced\n' +
+  '  external PrintLabel { topic = "print-label" }\n' +
+  '  end Done\n' +
+  '}\n';
+
+const SCRIPT_TASK_SRC =
+  'process order-discount {\n' +
+  '  start OrderPlaced\n' +
+  '  script ComputeDiscount ```js\n' +
+  'var discount = amount * 0.1;\n' +
+  'execution.setVariable("discount", discount);\n' +
+  '```\n' +
+  '  end Done\n' +
+  '}\n';
 
 // ---------------------------------------------------------------------------
 // Langium parse helper — one shared instance for the whole suite.
@@ -113,8 +128,7 @@ describe('round-trip: service task with an `expression` binding', () => {
   let reemittedDsl: string;
 
   beforeAll(async () => {
-    const source = readFileSync(SERVICE_EXPRESSION_PATH, 'utf-8');
-    irInitial = astToIr(await parseToAst(source));
+    irInitial = astToIr(await parseToAst(SERVICE_EXPRESSION_SRC));
     xml = await irToXml(irInitial);
     ({ ir: irImported } = await xmlToIr(xml));
     reemittedDsl = irToDsl(irImported);
@@ -160,8 +174,7 @@ describe('round-trip: service task with a `delegate` binding (delegateExpression
   let reemittedDsl: string;
 
   beforeAll(async () => {
-    const source = readFileSync(SERVICE_DELEGATE_PATH, 'utf-8');
-    irInitial = astToIr(await parseToAst(source));
+    irInitial = astToIr(await parseToAst(SERVICE_DELEGATE_SRC));
     xml = await irToXml(irInitial);
     ({ ir: irImported } = await xmlToIr(xml));
     reemittedDsl = irToDsl(irImported);
@@ -211,8 +224,7 @@ describe('round-trip: `external` task with a `topic`', () => {
   let reemittedDsl: string;
 
   beforeAll(async () => {
-    const source = readFileSync(EXTERNAL_TASK_PATH, 'utf-8');
-    irInitial = astToIr(await parseToAst(source));
+    irInitial = astToIr(await parseToAst(EXTERNAL_TASK_SRC));
     xml = await irToXml(irInitial);
     ({ ir: irImported } = await xmlToIr(xml));
     reemittedDsl = irToDsl(irImported);
@@ -260,8 +272,7 @@ describe('round-trip: `script` task with a fenced body', () => {
   let reemittedDsl: string;
 
   beforeAll(async () => {
-    const source = readFileSync(SCRIPT_TASK_PATH, 'utf-8');
-    irInitial = astToIr(await parseToAst(source));
+    irInitial = astToIr(await parseToAst(SCRIPT_TASK_SRC));
     xml = await irToXml(irInitial);
     ({ ir: irImported } = await xmlToIr(xml));
     reemittedDsl = irToDsl(irImported);
