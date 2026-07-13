@@ -892,6 +892,59 @@ process p {
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
+// ── Unreachable-statement warning ───────────────────────────────────────────
+
+describe('Validation — unreachable statement', () => {
+  const unreachable = (diagnostics: ValidationResult<Model>['diagnostics']) =>
+    diagnosticsFor(diagnostics, 'can never run');
+
+  test('a step after an `end` in the same block is flagged as unreachable', async () => {
+    const { diagnostics } = await validate(
+      `process p { start S end Done user Dead }`,
+    );
+    const warnings = unreachable(diagnostics);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]!.severity).toBe(SEVERITY_WARNING);
+  });
+
+  test('every dead step after an `end` is flagged, one warning each', async () => {
+    const { diagnostics } = await validate(
+      `process p { start S end Done user A user B }`,
+    );
+    expect(unreachable(diagnostics)).toHaveLength(2);
+  });
+
+  test('a step after a `goto` is unreachable (the jump always diverts the flow)', async () => {
+    const { diagnostics } = await validate(
+      `process p { user A goto A user Dead }`,
+    );
+    expect(unreachable(diagnostics)).toHaveLength(1);
+  });
+
+  test('a `goto` target after an `end` stays reachable — the jump re-enters there', async () => {
+    // `Retry` sits after `end Done`, but a `goto` targets it, so control can
+    // reach it; it must NOT be flagged.
+    const { diagnostics } = await validate(
+      `process p { start S if (cond) { goto Retry } end Done user Retry }`,
+    );
+    expect(unreachable(diagnostics)).toHaveLength(0);
+  });
+
+  test('an unreachable compound is reported once, not once per nested step', async () => {
+    const { diagnostics } = await validate(
+      `process p { start S end Done if (cond) { user A user B } }`,
+    );
+    expect(unreachable(diagnostics)).toHaveLength(1);
+  });
+
+  test('ordinary sequential flow yields no unreachable warning', async () => {
+    const { diagnostics } = await validate(
+      `process p { start S user A end Done }`,
+    );
+    expect(unreachable(diagnostics)).toHaveLength(0);
+  });
+});
+
 /** All diagnostics of the given LSP severity (1 = Error, 2 = Warning). */
 function bySeverity(
   diagnostics: ValidationResult<Model>['diagnostics'],

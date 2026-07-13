@@ -47,8 +47,11 @@ import {
   isAdditive,
   isAttribute,
   isBlock,
+  isDoWhileStatement,
   isEndEvent,
   isExpr,
+  isGotoStatement,
+  isIfStatement,
   isLogical,
   isMultiplicative,
   isParallelStatement,
@@ -59,6 +62,7 @@ import {
   isUserTask,
   isVarDecl,
   isVarRef,
+  isWhileStatement,
 } from './generated/ast.js';
 import type { BpmnScriptServices } from './bpmn-script-module.js';
 import type { VariableSymbolProvider } from './variable-symbol-provider.js';
@@ -188,6 +192,49 @@ function collectNamedStatements(process: Process): NamedStatement[] {
 }
 
 /**
+ * The names referenced by every `goto` in `process`. A step whose name is in
+ * this set is an explicit jump target, and so reachable even when it sits after
+ * an `end`/`goto`.
+ */
+function collectGotoTargetNames(process: Process): Set<string> {
+  const names = new Set<string>();
+  for (const node of AstUtils.streamAst(process)) {
+    if (isGotoStatement(node) && node.target.$refText.length > 0) {
+      names.add(node.target.$refText);
+    }
+  }
+  return names;
+}
+
+/** The name of a step, or `undefined` for the unnamed constructs (`if`/`while`/`parallel`/`goto`). */
+function statementName(stmt: Statement): string | undefined {
+  return isStartEvent(stmt) ||
+    isEndEvent(stmt) ||
+    isUserTask(stmt) ||
+    isServiceTask(stmt)
+    ? stmt.name
+    : undefined;
+}
+
+/** The statement lists nested directly inside a compound statement. */
+function childBlocks(stmt: Statement): Block[] {
+  if (isIfStatement(stmt)) {
+    return [
+      stmt.then,
+      ...stmt.elseIfs.map((e) => e.body),
+      ...(stmt.elseBlock ? [stmt.elseBlock] : []),
+    ];
+  }
+  if (isWhileStatement(stmt) || isDoWhileStatement(stmt)) {
+    return [stmt.body];
+  }
+  if (isParallelStatement(stmt)) {
+    return stmt.branches;
+  }
+  return [];
+}
+
+/**
  * Invoke `onDuplicate` for every item whose key repeats an earlier occurrence.
  * `seen` can be pre-seeded with keys that count as already present before the
  * first item.
@@ -314,7 +361,57 @@ export class BpmnScriptValidator {
     this.checkDuplicateProcessLabel(process, accept);
     this.checkDuplicateStatementNames(process, named, accept);
     this.checkFormVariableAgreement(process, accept);
+    this.checkUnreachableStatements(process, accept);
   };
+
+  /**
+   * Warn on steps that control flow can never reach. A step is unreachable once
+   * an earlier `end` or `goto` in the same block has stopped or diverted the
+   * flow and nothing jumps back to it. Reachability is tracked per statement
+   * list: it starts reachable, turns unreachable after an `end`/`goto`, and
+   * turns reachable again at a step some `goto` targets by name (an explicit
+   * jump re-enters the flow there). Nested blocks are scanned only when their
+   * owning construct is itself reachable, so an unreachable `if` is reported
+   * once rather than once per step inside it.
+   *
+   * The scan is deliberately sound rather than exhaustive: it never flags a
+   * reachable step (an `if` whose branches all `end` is treated as falling
+   * through), so a rarer dead step may go unreported, but a live one is never
+   * wrongly warned — the diagnostic an IDE surfaces stays trustworthy.
+   */
+  private checkUnreachableStatements(
+    process: Process,
+    accept: ValidationAcceptor,
+  ): void {
+    const gotoTargets = collectGotoTargetNames(process);
+
+    const scan = (statements: Statement[]): void => {
+      let reachable = true;
+      for (const stmt of statements) {
+        const name = statementName(stmt);
+        if (!reachable && name !== undefined && gotoTargets.has(name)) {
+          reachable = true;
+        }
+        if (!reachable) {
+          accept(
+            'warning',
+            'This step can never run: an earlier `end` or `goto` in the same ' +
+              'block always ends or redirects the flow before reaching it.',
+            { node: stmt },
+          );
+        } else {
+          for (const block of childBlocks(stmt)) {
+            scan(block.statements);
+          }
+        }
+        if (isEndEvent(stmt) || isGotoStatement(stmt)) {
+          reachable = false;
+        }
+      }
+    };
+
+    scan(process.body);
+  }
 
   /**
    * Every declaration of a given variable name — explicit `var`s and `form`
