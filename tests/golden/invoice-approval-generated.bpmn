@@ -35,7 +35,7 @@
       <bpmn:incoming>Flow_Gateway_invoice-approval_2_join_Done</bpmn:incoming>
     </bpmn:endEvent>
     <bpmn:sequenceFlow id="Flow_ReviewStart_ReviewInvoice" sourceRef="ReviewStart" targetRef="ReviewInvoice" />
-    <bpmn:sequenceFlow id="Flow_Gateway_invoice-approval_2_split_SeniorApproval" sourceRef="Gateway_invoice-approval_2_split" targetRef="SeniorApproval">
+    <bpmn:sequenceFlow id="Flow_Gateway_invoice-approval_2_split_SeniorApproval" name="amount &#62; 1000" sourceRef="Gateway_invoice-approval_2_split" targetRef="SeniorApproval">
       <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">${amount &gt; 1000}</bpmn:conditionExpression>
     </bpmn:sequenceFlow>
     <bpmn:sequenceFlow id="Flow_SeniorApproval_Gateway_invoice-approval_2_join" sourceRef="SeniorApproval" targetRef="Gateway_invoice-approval_2_join" />

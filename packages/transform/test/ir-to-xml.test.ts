@@ -157,6 +157,14 @@ describe('irToXml — bpmn-moddle round-trip', () => {
     expect(typeof xml).toBe('string');
     expect(xml.length).toBeGreaterThan(0);
   });
+
+  it('labels the conditioned flow with its bare condition text', () => {
+    // Viewers render a flow's `name`, not its `conditionExpression`, so the
+    // condition (minus the `${…}` delimiters) is mirrored as the edge label.
+    // `>` serializes as a numeric entity inside the attribute; decode to match.
+    const decoded = xml.replace(/&#62;/g, '>');
+    expect(decoded).toContain('name="amount > 1000"');
+  });
 });
 
 // ── 2. Expected Operaton attributes ──────────────────────────────────────────

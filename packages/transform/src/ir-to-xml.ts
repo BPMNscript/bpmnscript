@@ -295,6 +295,15 @@ function buildFormExtension(
 }
 
 /**
+ * The diagram label for a conditioned flow: the condition with its `${…}` EL
+ * delimiters removed (`${amount > 1000}` → `amount > 1000`). A condition body is
+ * always delimited; the regex leaves anything else untouched as a safe fallback.
+ */
+function conditionLabel(conditionExpression: string): string {
+  return conditionExpression.replace(/^\$\{([\s\S]*)\}$/, '$1');
+}
+
+/**
  * Build a single `bpmn:SequenceFlow` moddle element. `sourceRef` and
  * `targetRef` are wired as moddle-element references (not raw ids) so
  * the writer can serialize them correctly.
@@ -315,6 +324,11 @@ function createSequenceFlow(
     targetRef: requireById(flowNodeById, flow.targetRef),
   };
   if (flow.conditionExpression !== undefined) {
+    // Label the flow with its condition so the routing is readable on the
+    // generated diagram's canvas — viewers render a flow's `name`, not its
+    // `conditionExpression`. The label drops the `${…}` EL delimiters, which
+    // only matter for execution.
+    attrs.name = conditionLabel(flow.conditionExpression);
     attrs.conditionExpression = moddle.create('bpmn:FormalExpression', {
       body: flow.conditionExpression,
     });
