@@ -30,6 +30,13 @@
         "language": "bpmn-script",
         "scopeName": "source.bpmn-script",
         "path": "syntaxes/bpmn-script.tmLanguage.json"
+      },
+      {
+        "scopeName": "bpmn-script.injection",
+        "path": "syntaxes/bpmn-script.injection.tmLanguage.json",
+        "injectTo": [
+          "source.bpmn-script"
+        ]
       }
     ],
     "commands": [
@@ -88,7 +95,7 @@
   "scripts": {
     "clean": "shx rm -fr *.tsbuildinfo out syntaxes",
     "vscode:prepublish": "npm run build",
-    "build:prepare": "shx mkdir -p ./syntaxes/ && shx cp -f ../language/syntaxes/bpmn-script.tmLanguage.json ./syntaxes/bpmn-script.tmLanguage.json",
+    "build:prepare": "shx mkdir -p ./syntaxes/ && shx cp -f ../language/syntaxes/bpmn-script.tmLanguage.json ./syntaxes/bpmn-script.tmLanguage.json && shx cp -f ./injection/bpmn-script.injection.tmLanguage.json ./syntaxes/bpmn-script.injection.tmLanguage.json",
     "build": "npm run build:prepare && tsc -b tsconfig.json && node esbuild.mjs",
     "build:post": "npm run build:prepare && node esbuild.mjs",
     "build:clean": "npm run clean && npm run build",

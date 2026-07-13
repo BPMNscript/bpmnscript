@@ -6,7 +6,9 @@
  *   - type-mismatch ERROR (severity 1),
  *   - duplicate attribute-key ERROR,
  *   - allowed attribute keys per element kind ERROR,
- *   - exactly-one service `class` discriminator,
+ *   - exactly-one service-task binding discriminator (`class`/`expression`/`delegate`),
+ *   - external-task `topic` requirement,
+ *   - script-task fence (language tag, non-empty body),
  *   - the unresolved-`goto` regression (linker owns it; no validator double-report),
  *   - structural empty-process-body WARNING,
  *   - reserved synthesised-id name ERROR,
@@ -116,6 +118,15 @@ process p {
     // them, same as `class` values.
     const { diagnostics } = await validate(
       `process p { user T { formKey = forms.review } }`,
+    );
+    expect(diagnosticsFor(diagnostics, 'is not declared')).toHaveLength(0);
+  });
+
+  test('a bareword expression value produces no undeclared-variable warning', async () => {
+    // `expression` values are an EL binding, not a process variable — the
+    // check skips them, same as `class`/`formKey` values.
+    const { diagnostics } = await validate(
+      `process p { service S { expression = someBareword } }`,
     );
     expect(diagnosticsFor(diagnostics, 'is not declared')).toHaveLength(0);
   });
@@ -271,6 +282,123 @@ describe('Validation — service task class discriminator', () => {
   });
 });
 
+// ── Service-task binding discriminator ──────────────────────────────────────
+
+describe('Validation — service task binding discriminator', () => {
+  test('a service task with two distinct bindings is exactly one error', async () => {
+    const { diagnostics } = await validate(`
+process p {
+  service S { class = com.example.X expression = "\${bean.method(execution)}" }
+}
+`);
+    const errors = diagnosticsFor(diagnostics, 'more than one binding');
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.severity).toBe(SEVERITY_ERROR);
+    expect(errors[0]!.message).toContain('S');
+  });
+
+  test('a service task with an expression binding only has no discriminator error', async () => {
+    const { diagnostics } = await validate(
+      `process p { service S { expression = "\${bean.method(execution)}" } }`,
+    );
+    expect(diagnosticsFor(diagnostics, "must declare a 'class'")).toHaveLength(
+      0,
+    );
+    expect(diagnosticsFor(diagnostics, 'more than one binding')).toHaveLength(
+      0,
+    );
+  });
+
+  test('a service task with a delegate binding only has no discriminator error', async () => {
+    const { diagnostics } = await validate(
+      `process p { service S { delegate = "\${beanName}" } }`,
+    );
+    expect(diagnosticsFor(diagnostics, "must declare a 'class'")).toHaveLength(
+      0,
+    );
+    expect(diagnosticsFor(diagnostics, 'more than one binding')).toHaveLength(
+      0,
+    );
+  });
+});
+
+// ── External task ───────────────────────────────────────────────────────────
+
+describe('Validation — external task', () => {
+  test('an external task without a topic is exactly one error', async () => {
+    const { diagnostics } = await validate(`process p { external ship { } }`);
+    const errors = diagnosticsFor(diagnostics, "must declare a 'topic'");
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.severity).toBe(SEVERITY_ERROR);
+    expect(errors[0]!.message).toContain('ship');
+  });
+
+  test('an external task with a non-topic key is exactly one error', async () => {
+    const { diagnostics } = await validate(
+      `process p { external ship { class = com.example.X } }`,
+    );
+    const errors = diagnosticsFor(diagnostics, 'is not valid');
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.message).toContain('class');
+    expect(errors[0]!.message).toContain('external');
+  });
+
+  test('an external task with a topic has no discriminator error', async () => {
+    const { diagnostics } = await validate(
+      `process p { external ship { topic = "shipping" } }`,
+    );
+    expect(diagnosticsFor(diagnostics, "must declare a 'topic'")).toHaveLength(
+      0,
+    );
+  });
+});
+
+// ── Script task ──────────────────────────────────────────────────────────────
+
+describe('Validation — script task', () => {
+  // A triple-backtick fence, assembled without a literal fence in the test
+  // source so it can be interpolated into JS template-literal DSL fixtures.
+  const FENCE = '`' + '`' + '`';
+
+  test('a script task with an unsupported language tag is exactly one error', async () => {
+    const { diagnostics } = await validate(`
+process p {
+  script total ${FENCE}php
+x = 1
+${FENCE}
+}
+`);
+    const errors = diagnosticsFor(diagnostics, 'unsupported language tag');
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.severity).toBe(SEVERITY_ERROR);
+    expect(errors[0]!.message).toContain('total');
+  });
+
+  test('a script task with an empty body is exactly one error', async () => {
+    const { diagnostics } = await validate(`
+process p {
+  script total ${FENCE}js
+${FENCE}
+}
+`);
+    const errors = diagnosticsFor(diagnostics, 'empty script body');
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.severity).toBe(SEVERITY_ERROR);
+    expect(errors[0]!.message).toContain('total');
+  });
+
+  test('a valid script task produces no errors', async () => {
+    const { diagnostics } = await validate(`
+process p {
+  script total ${FENCE}js
+x = 1
+${FENCE}
+}
+`);
+    expect(bySeverity(diagnostics, SEVERITY_ERROR)).toHaveLength(0);
+  });
+});
+
 // ── goto regression ─────────────────────────────────────────────────────────
 
 describe('Validation — goto reference', () => {
@@ -287,6 +415,29 @@ describe('Validation — goto reference', () => {
 
   test('a resolved goto produces no error', async () => {
     const { diagnostics } = await validate(`process p { user Foo goto Foo }`);
+    expect(bySeverity(diagnostics, SEVERITY_ERROR)).toHaveLength(0);
+  });
+
+  test('a goto resolving to an external task produces no error', async () => {
+    const { diagnostics } = await validate(`
+process p {
+  external Ship { topic = "shipping" }
+  goto Ship
+}
+`);
+    expect(bySeverity(diagnostics, SEVERITY_ERROR)).toHaveLength(0);
+  });
+
+  test('a goto resolving to a script task produces no error', async () => {
+    const FENCE = '`' + '`' + '`';
+    const { diagnostics } = await validate(`
+process p {
+  script Compute ${FENCE}js
+x = 1
+${FENCE}
+  goto Compute
+}
+`);
     expect(bySeverity(diagnostics, SEVERITY_ERROR)).toHaveLength(0);
   });
 });
@@ -635,6 +786,22 @@ process p {
 }
 `);
     expect(diagnosticsFor(diagnostics, 'ambiguous')).toHaveLength(0);
+  });
+
+  test('an external task and a script task sharing a name is exactly one ambiguity error', async () => {
+    const FENCE = '`' + '`' + '`';
+    const { diagnostics } = await validate(`
+process p {
+  external A { topic = "shipping" }
+  script A ${FENCE}js
+x = 1
+${FENCE}
+}
+`);
+    const errors = diagnosticsFor(diagnostics, 'ambiguous');
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.severity).toBe(SEVERITY_ERROR);
+    expect(errors[0]!.message).toContain("'A'");
   });
 });
 

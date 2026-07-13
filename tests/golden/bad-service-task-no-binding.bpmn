@@ -12,8 +12,8 @@
     exporterVersion="5.0.0">
 
   <bpmn:process
-      id="bad-expression-process"
-      name="Bad Expression Process"
+      id="bad-service-process"
+      name="Bad Service Process"
       isExecutable="true"
       operaton:historyTimeToLive="P30D">
 
@@ -22,15 +22,15 @@
     </bpmn:startEvent>
 
     <!--
-      This service task deliberately uses operaton:expression instead of
-      operaton:class.  The BPMNscript xmlToIr transform must reject this
-      with UnsupportedServiceTaskFormError — only the Java-class pattern
-      (operaton:class) is supported.
+      This service task deliberately carries no execution binding: no
+      operaton:class, operaton:expression, operaton:delegateExpression, nor an
+      external operaton:type/operaton:topic pair. A service task with no
+      execution form cannot be represented, so the BPMNscript xmlToIr transform
+      must reject it with UnsupportedServiceTaskFormError.
     -->
     <bpmn:serviceTask
         id="BadService_1"
-        name="Bad service (expression)"
-        operaton:expression="${someBean.doIt()}">
+        name="Bad service">
       <bpmn:incoming>Flow_Start_Service</bpmn:incoming>
       <bpmn:outgoing>Flow_Service_End</bpmn:outgoing>
     </bpmn:serviceTask>

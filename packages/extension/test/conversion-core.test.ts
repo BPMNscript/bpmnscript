@@ -50,14 +50,14 @@ const GOLDEN_GENERATED_BPMN = path.resolve(
 
 const BAD_SERVICE_TASK_BPMN = path.resolve(
   REPO_ROOT,
-  'tests/golden/bad-service-task-expression.bpmn',
+  'tests/golden/bad-service-task-no-binding.bpmn',
 );
 
 // Verify fixtures exist at module load time to surface path errors early.
 for (const [label, p] of [
   ['invoice-approval.bpmnscript', INVOICE_APPROVAL_SRC],
   ['invoice-approval-generated.bpmn', GOLDEN_GENERATED_BPMN],
-  ['bad-service-task-expression.bpmn', BAD_SERVICE_TASK_BPMN],
+  ['bad-service-task-no-binding.bpmn', BAD_SERVICE_TASK_BPMN],
 ] as const) {
   if (!fs.existsSync(p)) {
     throw new Error(`Fixture not found: ${label} at ${p}`);
@@ -212,13 +212,13 @@ describe('decompileBpmnToDsl — surfaces import warnings for dropped content', 
   });
 });
 
-describe('decompileBpmnToDsl — bad-service-task-expression.bpmn', () => {
-  it('returns ok:false, kind:unsupported; message mentions operaton:expression and BadService_1', async () => {
+describe('decompileBpmnToDsl — bad-service-task-no-binding.bpmn', () => {
+  it('returns ok:false, kind:unsupported; message mentions the missing execution discriminator and BadService_1', async () => {
     const xml = fs.readFileSync(BAD_SERVICE_TASK_BPMN, 'utf-8');
 
     const result = await decompileBpmnToDsl(
       xml,
-      'bad-service-task-expression.bpmn',
+      'bad-service-task-no-binding.bpmn',
     );
 
     expect(result.ok).toBe(false);
@@ -229,7 +229,7 @@ describe('decompileBpmnToDsl — bad-service-task-expression.bpmn', () => {
 
     // The error message must identify both the offending construct and the task id.
     expect(result.message).toContain('BadService_1');
-    expect(result.message).toContain('operaton:expression');
+    expect(result.message).toContain('no execution discriminator');
   });
 });
 

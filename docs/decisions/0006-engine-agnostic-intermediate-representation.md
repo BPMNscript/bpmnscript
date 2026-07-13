@@ -29,7 +29,7 @@ Chosen option: an IR between the AST and BPMN XML.
 
 The IR is a small, statically typed graph: flow elements and sequence flows over a closed set of node kinds. Gateway synthesis (`astToIr`) and structural recovery (`irToDsl`) both operate on it, isolated from Langium's AST and from moddle's dynamically typed, diagram-carrying objects. Because both directions share it, the round-trip is verified against one representation rather than two.
 
-Portability across execution engines is a non-goal. The project targets Operaton (ADR-0007), so the IR is not abstracted for other engines. It models the semantics Operaton executes — executable processes, Java-class service tasks, process variables — under field names that carry no vendor prefix. Attributes that vary only at serialization, such as `operaton:historyTimeToLive`, are attached at the IR-to-XML boundary and are not stored in the IR.
+Portability across execution engines is a non-goal. The project targets Operaton (ADR-0007), so the IR is not abstracted for other engines. It models the semantics Operaton executes — executable processes, service tasks bound to a Java class, a JUEL expression, a delegate expression, or an external topic, script tasks, process variables — under field names that carry no vendor prefix. Attributes that vary only at serialization, such as `operaton:historyTimeToLive`, are attached at the IR-to-XML boundary and are not stored in the IR.
 
 ### Consequences
 

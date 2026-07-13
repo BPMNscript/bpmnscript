@@ -47,7 +47,8 @@ type FlowElement =
   | StartEvent // kind: 'startEvent'
   | EndEvent // kind: 'endEvent'
   | UserTask // kind: 'userTask'  (+assignee?, +formKey?)
-  | ServiceTaskJavaClass // kind: 'serviceTask' (+javaClass required)
+  | ServiceTask // kind: 'serviceTask' (+binding: class | expression | delegateExpression | external)
+  | ScriptTask // kind: 'scriptTask' (+format, +code)
   | ExclusiveGateway // kind: 'exclusiveGateway' (+defaultFlowId?)
   | ParallelGateway; // kind: 'parallelGateway'
 
@@ -58,6 +59,8 @@ interface SequenceFlow {
   conditionExpression?: string; // e.g. "${amount > 1000}"
 }
 ```
+
+A `ServiceTask` binds to exactly one execution form, tagged by `binding.kind`: `class` (a Java delegate class, `operaton:class`), `expression` (`operaton:expression`), `delegateExpression` (`operaton:delegateExpression` — the DSL surface alias is `delegate`), or `external` (`operaton:type="external"` + `operaton:topic`). The tagged union makes "more than one binding" unrepresentable at the type level and keeps every consumer's `switch (binding.kind)` exhaustive.
 
 Operaton-specific values (`operaton:historyTimeToLive = "P30D"`) are applied as constants at XML serialization time and are absent from the IR.
 
@@ -72,7 +75,8 @@ import type {
   StartEvent,
   EndEvent,
   UserTask,
-  ServiceTaskJavaClass,
+  ServiceTask,
+  ScriptTask,
   ExclusiveGateway,
   ParallelGateway,
 } from '@bpmn-script/transform';
@@ -147,7 +151,7 @@ See [ADR-0014](../../docs/decisions/0014-honest-bpmn-import-contract.md) for the
 | ------------------------------------- | --------- | -------------------------------------------------------------------------------------------------------------------------------------- |
 | `UnsupportedConstructError`           | —         | Abstract base of every refusal below. Catch it to classify any refusal as "unsupported construct" without enumerating subclasses.      |
 | `UnsupportedElementError`             | `xmlToIr` | Input XML contains a BPMN element type outside the supported subset (e.g. `bpmn:subProcess`, `bpmn:callActivity`)                      |
-| `UnsupportedServiceTaskFormError`     | `xmlToIr` | A service task uses `operaton:expression` or `operaton:delegateExpression` instead of the supported `operaton:class`                   |
+| `UnsupportedServiceTaskFormError`     | `xmlToIr` | A service task carries no supported execution binding — none of `operaton:class`, `operaton:expression`, `operaton:delegateExpression`, or `operaton:type="external"` with a usable `operaton:topic`                   |
 | `UnsupportedEventDefinitionError`     | `xmlToIr` | A start/end event carries an event definition (timer, message, signal, error, terminate, …); the IR models only plain start/end events |
 | `UnsupportedLoopCharacteristicsError` | `xmlToIr` | A task carries loop characteristics (multi-instance or standard loop); the IR models tasks that run exactly once                       |
 | `UnsupportedCollaborationError`       | `xmlToIr` | The document contains a `bpmn:Collaboration` (pools and/or message flows); the IR models a single standalone process                   |

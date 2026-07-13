@@ -86,6 +86,8 @@ import {
   isEndEvent,
   isUserTask,
   isServiceTask,
+  isExternalTask,
+  isScriptTask,
   isIfStatement,
   isWhileStatement,
   isDoWhileStatement,
@@ -108,6 +110,8 @@ import type {
   EndEvent as AstEndEvent,
   UserTask as AstUserTask,
   ServiceTask as AstServiceTask,
+  ExternalTask as AstExternalTask,
+  ScriptTask as AstScriptTask,
   IfStatement,
   WhileStatement,
   DoWhileStatement,
@@ -121,6 +125,7 @@ import type {
   FormField,
   FormFieldType,
   SequenceFlow as IrSequenceFlow,
+  ServiceTaskBinding,
 } from './ir/types.js';
 import {
   makeGatewaySplitId,
@@ -337,6 +342,12 @@ function lowerStatement(
   if (isServiceTask(stmt)) {
     return lowerServiceTask(builder, stmt);
   }
+  if (isExternalTask(stmt)) {
+    return lowerExternalTask(builder, stmt);
+  }
+  if (isScriptTask(stmt)) {
+    return lowerScriptTask(builder, stmt);
+  }
   if (isIfStatement(stmt)) {
     return lowerIf(builder, stmt, `${coord}_${index}`);
   }
@@ -470,14 +481,130 @@ function renderFormDefault(expr: Expr): string {
   return renderExpression(expr);
 }
 
-/** Lower a `service` task, mapping the `class` attribute to `javaClass`. */
+/**
+ * Lower a `service` task, reading whichever of `class` / `expression` /
+ * `delegate` is present to build the matching {@link ServiceTaskBinding}
+ * variant (see {@link serviceTaskBinding}).
+ */
 function lowerServiceTask(builder: Builder, stmt: AstServiceTask): Frontier {
-  const javaClass = attrValue(stmt.attrs, 'class') ?? '';
   builder.flowElements.push({
     kind: 'serviceTask',
     id: stmt.name,
     ...(stmt.label !== undefined ? { name: stmt.label } : {}),
-    javaClass,
+    binding: serviceTaskBinding(stmt.attrs),
+  });
+  return { entry: stmt.name, exit: stmt.name };
+}
+
+/**
+ * Build a `service` task's {@link ServiceTaskBinding} from whichever binding
+ * key is present.
+ *
+ * `class` is a bareword path ({@link attrValue}'s bareword handling strips the
+ * `${…}` wrapper down to `com.example.X`, correct for a plain Java class
+ * path). `expression` and `delegate` are JUEL EL text — most commonly a quoted
+ * `"${…}"` raw template, but the grammar also accepts an unquoted value (a
+ * bareword or dotted `VarRef`) — and must keep the `${…}` wrapper verbatim
+ * either way, since that text is exactly the `operaton:expression` /
+ * `operaton:delegateExpression` attribute value Operaton evaluates as EL, not
+ * a literal string. They are read via {@link rawExpressionAttrValue}, not
+ * `attrValue`, so a bareword is wrapped rather than stripped. `delegate` is
+ * the friendly DSL alias for `delegateExpression`.
+ *
+ * Exactly one binding key is expected on a valid program (the validator
+ * enforces this); when none is present the desugarer stays total by falling
+ * back to an empty `class` binding rather than throwing.
+ */
+function serviceTaskBinding(attrs: Attribute[]): ServiceTaskBinding {
+  const className = attrValue(attrs, 'class');
+  if (className !== undefined) {
+    return { kind: 'class', className };
+  }
+  const expression = rawExpressionAttrValue(attrs, 'expression');
+  if (expression !== undefined) {
+    return { kind: 'expression', expression };
+  }
+  const delegate = rawExpressionAttrValue(attrs, 'delegate');
+  if (delegate !== undefined) {
+    return { kind: 'delegateExpression', expression: delegate };
+  }
+  return { kind: 'class', className: '' };
+}
+
+/**
+ * Lower an `external` task to a `serviceTask` IR node carrying an `external`
+ * binding. Modelled as a serviceTask binding variant, not its own IR kind, so
+ * it emits/imports as a `bpmn:serviceTask` with `operaton:type="external"`.
+ * `topic` is a plain string-literal attribute.
+ */
+function lowerExternalTask(builder: Builder, stmt: AstExternalTask): Frontier {
+  const topic = attrValue(stmt.attrs, 'topic') ?? '';
+  builder.flowElements.push({
+    kind: 'serviceTask',
+    id: stmt.name,
+    ...(stmt.label !== undefined ? { name: stmt.label } : {}),
+    binding: { kind: 'external', topic },
+  });
+  return { entry: stmt.name, exit: stmt.name };
+}
+
+/**
+ * Fence-tag aliases and the canonical Operaton `scriptFormat` they normalize
+ * to. The IR and XML carry the canonical value; the printer emits the
+ * canonical tag, so a round-trip normalizes an alias like `js` to
+ * `javascript`.
+ */
+const SCRIPT_FORMAT_ALIASES: Readonly<Record<string, string>> = {
+  js: 'javascript',
+  javascript: 'javascript',
+  groovy: 'groovy',
+  py: 'python',
+  python: 'python',
+  rb: 'ruby',
+  ruby: 'ruby',
+  feel: 'feel',
+};
+
+/**
+ * Split a raw `FENCED_SCRIPT` token (the whole ```` ```<tag>\n…\n``` ````
+ * block, captured verbatim by the grammar) into its language tag and inner
+ * code body.
+ *
+ * The tag is the maximal run of ASCII letters immediately following the
+ * opening fence. A single line terminator directly after the tag — `\r\n` or
+ * `\n`, the delimiter separating the tag line from the body — is dropped;
+ * nothing else is touched, so indentation and trailing newlines inside the
+ * body survive verbatim. A fence with no such line terminator (e.g. a
+ * same-line ` ```jsfoo``` `) has no distinguishable tag/body split: the whole
+ * letter run becomes the tag and the body is empty.
+ */
+function splitFencedScript(raw: string): { tag: string; code: string } {
+  const inner = raw.slice(3, -3); // strip the opening/closing ``` delimiters
+  const tag = /^[a-zA-Z]+/.exec(inner)?.[0] ?? '';
+  const rest = inner.slice(tag.length);
+  const code = rest.startsWith('\r\n')
+    ? rest.slice(2)
+    : rest.startsWith('\n')
+      ? rest.slice(1)
+      : rest;
+  return { tag, code };
+}
+
+/**
+ * Lower a `script` task: split the fenced body into its language tag and
+ * inner code (see {@link splitFencedScript}), map the tag to the canonical
+ * Operaton `scriptFormat` via {@link SCRIPT_FORMAT_ALIASES}. An unrecognized
+ * tag is carried through as-is rather than rejected here — the validator (a
+ * later stage) rejects an unsupported tag before it reaches a bad IR.
+ */
+function lowerScriptTask(builder: Builder, stmt: AstScriptTask): Frontier {
+  const { tag, code } = splitFencedScript(stmt.body);
+  builder.flowElements.push({
+    kind: 'scriptTask',
+    id: stmt.name,
+    ...(stmt.label !== undefined ? { name: stmt.label } : {}),
+    format: SCRIPT_FORMAT_ALIASES[tag] ?? tag,
+    code,
   });
   return { entry: stmt.name, exit: stmt.name };
 }
@@ -792,7 +919,9 @@ function collectNamedIds(process: Process): Set<string> {
         isStartEvent(stmt) ||
         isEndEvent(stmt) ||
         isUserTask(stmt) ||
-        isServiceTask(stmt)
+        isServiceTask(stmt) ||
+        isExternalTask(stmt) ||
+        isScriptTask(stmt)
       ) {
         taken.add(stmt.name);
       } else if (isIfStatement(stmt)) {
@@ -813,7 +942,9 @@ function collectNamedIds(process: Process): Set<string> {
 
 /**
  * Resolve the value of a single attribute by key into the plain string the IR
- * carries for `assignee` / `formKey` / `javaClass`.
+ * carries for `assignee` / `formKey` / `class` / `topic`. NOT used for
+ * `expression` / `delegate` — see {@link rawExpressionAttrValue}, which keeps
+ * their `${…}` wrapper verbatim instead of stripping it.
  *
  * Attribute values are full expressions in the grammar, but the current
  * attribute set holds plain BPMN attribute text, not `${…}` expression bodies:
@@ -849,6 +980,28 @@ function attrValue(attrs: Attribute[], key: string): string | undefined {
     return stripExpressionWrapper(rendered);
   }
   return rendered;
+}
+
+/**
+ * Resolve the value of a single attribute by key into the `${…}` body text a
+ * raw JUEL expression attribute (`expression` / `delegate`) carries verbatim.
+ *
+ * Unlike {@link attrValue}, this never strips the `${…}` wrapper: it renders
+ * the attribute's value through {@link renderExpression} as-is, so a quoted
+ * `"${…}"` raw template passes through unchanged and a bareword or dotted
+ * `VarRef` (parsed the same way a `class` path is) is *wrapped* in `${…}`
+ * rather than unwrapped — the correct behaviour for a field Operaton
+ * evaluates as EL, not a literal string.
+ *
+ * Returns the value of the **first** matching attribute; duplicate-key
+ * detection is the validator's job, not the desugarer's.
+ */
+function rawExpressionAttrValue(
+  attrs: Attribute[],
+  key: string,
+): string | undefined {
+  const attr = attrs.find((a) => a.key === key);
+  return attr === undefined ? undefined : renderExpression(attr.value);
 }
 
 /**

@@ -21,7 +21,7 @@ The extension has three parts, all bundled into `out/extension/main.cjs`:
 
 The sidebar updates when you switch editors. It shows the active file, one convert button, and — when the other format already exists on disk — a link to open that counterpart. After a conversion the output opens, so jumping between the two files is just a click.
 
-The TextMate highlighting grammar is generated from the `language` package's `.langium` grammar at build time and copied in; it always tracks the real grammar.
+The base TextMate highlighting grammar is generated from the `language` package's `.langium` grammar at build time and copied in; it always tracks the real grammar. A separate, hand-maintained TextMate **injection** grammar (`injection/bpmn-script.injection.tmLanguage.json`) layers embedded-language highlighting onto a `script` task's fenced body, the way a markdown fenced code block works: the fence's opening language tag selects the embedded scope (`source.js`, `source.python`, `source.ruby`, `source.groovy`); `feel` and any other accepted tag with no installed grammar fall back to a plain, uncolored block instead of erroring. This is highlighting only — it does not add autocomplete, hover, or diagnostics inside the fence. `build:prepare` copies the injection asset into `syntaxes/` alongside the base grammar, and `package.json`'s `contributes.grammars` registers it with `injectTo: ["source.bpmn-script"]`.
 
 ## Build and run
 
@@ -50,7 +50,9 @@ npm run build --workspace packages/extension
 | `package.json`                           | Registers the language, commands, menus, sidebar, and activation events                                                                                                                   |
 | `language-configuration.json`            | Brackets, comments, and auto-closing pairs                                                                                                                                                |
 | `esbuild.mjs`                            | Bundles both entry points; adds `import.meta.url` CJS shim and copies the moddle asset                                                                                                    |
-| `syntaxes/`                              | TextMate grammar (copied from `language` at build)                                                                                                                                        |
+| `injection/bpmn-script.injection.tmLanguage.json` | TextMate injection grammar for embedded-language highlighting inside a `script` task's fenced body                                                                                 |
+| `syntaxes/`                              | TextMate grammars: the base grammar (copied from `language` at build) and the injection grammar (copied from `injection/` at build)                                                       |
 | `test/conversion-core.test.ts`           | Integration tests for the pure conversion core (no `vscode` host required)                                                                                                                |
 | `test/conversion.test.ts`                | Unit tests for the VS Code adapter (`conversion.ts`), with `vscode` mocked: notification wording (each notification names the file exactly once), aggregated import-warning notifications |
 | `test/bundled-conversion.e2e.test.ts`    | E2E test: confirms a bundled conversion resolves `operaton-moddle.json` at runtime                                                                                                        |
+| `test/injection-grammar.test.ts`         | Structural checks for the injection grammar: registration, per-tag embedded-scope routing, and the plain-block fallback for unrecognised/`feel` tags                                     |

@@ -24,8 +24,9 @@
 //
 // Reserved words (cannot be used as a bare expression identifier; use the
 // quoted "${…}" raw-string fallback if a variable must be named like one):
-//   process, var, start, end, user, service, if, else, while, do, parallel,
-//   goto, label, assignee, formKey, class, form,
+//   process, var, start, end, user, service, external, script, if, else,
+//   while, do, parallel, goto, label, assignee, formKey, class, expression,
+//   delegate, topic, form,
 //   string, number, boolean, date, json, any,
 //   true, false, null.
 // JUEL identifiers that do NOT collide with this set lex as plain `ID` in
@@ -71,7 +72,7 @@ VarType returns string:
 // `Statement`s through `Block`s.
 Statement:
       StartEvent | EndEvent
-    | UserTask | ServiceTask
+    | UserTask | ServiceTask | ExternalTask | ScriptTask
     | IfStatement | WhileStatement | DoWhileStatement
     | ParallelStatement | GotoStatement;
 
@@ -100,6 +101,20 @@ UserTask:
 
 ServiceTask:
     'service' name=ID (label=STRING)? AttributeBlock?;
+
+// A service task delegated to an external worker. Shares the AttributeBlock
+// shape with ServiceTask (so `topic` is just an attribute here); the validator
+// requires exactly a `topic`. Emits a bpmn:serviceTask carrying
+// operaton:type="external" and operaton:topic.
+ExternalTask:
+    'external' name=ID (label=STRING)? AttributeBlock?;
+
+// A script task with an inline body written as a markdown-style fenced block
+// opened by a language tag (```js … ```). The whole fenced block is captured
+// verbatim in `body`; the language tag and script text are extracted
+// downstream. Emits a bpmn:scriptTask.
+ScriptTask:
+    'script' name=ID (label=STRING)? body=FENCED_SCRIPT;
 
 // fragment: a brace-delimited body block. Reused verbatim by StartEvent,
 // UserTask, and ServiceTask. It holds a mix of `<key> = <value>` attributes and
@@ -134,7 +149,7 @@ Attribute:
 // datatype rule means the grammar accepts any key on any element; the validator
 // restricts `assignee`/`formKey` to `user` and `class` to `service`.
 AttrKey returns string:
-    'assignee' | 'formKey' | 'class';
+    'assignee' | 'formKey' | 'class' | 'expression' | 'delegate' | 'topic';
 
 // if / else if / else → exclusive gateway (desugared by `astToIr`).
 IfStatement:
@@ -274,6 +289,22 @@ terminal ID: /[_a-zA-Z]\w*(-\w+)*/;
 // `1.5`; INT then handles whole numbers.
 terminal DECIMAL returns number: /[0-9]+\.[0-9]+/;
 terminal INT returns number: /[0-9]+/;
+
+// FENCED_SCRIPT: a whole markdown-style fenced block opened by a language tag,
+// e.g. ```js\n…\n```. The match spans the opening fence and tag, the verbatim
+// body, and the closing fence — the tag/body split happens downstream, so the
+// body stays opaque and code-like text such as `if (a) { }` is never lexed as
+// DSL. `[\s\S]` matches across newlines without relying on a dotall flag; `*?`
+// is non-greedy so the match ends at the FIRST closing ``` fence. Backtick is a
+// fresh delimiter that cannot overlap the quote-delimited STRING / RAW_TEMPLATE
+// terminals, so this declaration's position relative to them is immaterial; it
+// sits here with the other content terminals for readability.
+// This terminal has no delimiter between the tag and the body — a same-line
+// fence such as ```jsfoo``` is captured as one unbroken letter run with an
+// empty body, so the downstream split (`splitFencedScript`) must derive the
+// boundary itself from the leading letter run and the newline that follows it.
+
+terminal FENCED_SCRIPT: /```[a-zA-Z]+[\s\S]*?```/;
 
 // RAW_TEMPLATE: a quoted string whose body begins with `${` — the raw-expression
 // fallback. Declared BEFORE STRING so a `"${…}"` body is lexed as RAW_TEMPLATE

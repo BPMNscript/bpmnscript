@@ -23,15 +23,17 @@
  *   {@link UnsupportedLoopCharacteristicsError};
  * - collaborations, i.e. pools and message flows →
  *   {@link UnsupportedCollaborationError};
- * - unsupported flow-element kinds (script task, sub-process, …) →
- *   {@link UnsupportedElementError};
- * - service tasks whose execution form is not `operaton:class` →
+ * - unsupported flow-element kinds (sub-process, call activity,
+ *   intermediate events, …) → {@link UnsupportedElementError};
+ * - service tasks whose execution form the IR cannot represent (a bare task
+ *   with no discriminator, or an external type with no topic) →
  *   {@link UnsupportedServiceTaskFormError}.
  *
  * **Dropped with a warning** (no semantic loss; reported via `warnings`):
  * - Operaton/camunda extension attributes beyond the supported
- *   `assignee`/`formKey`/`class` (e.g. `operaton:asyncBefore`) — one warning
- *   per attribute, attributed to the owning element by id;
+ *   `assignee`/`formKey`/`class`/`expression`/`delegateExpression`/`type`/
+ *   `topic` (e.g. `operaton:asyncBefore`) — one warning per attribute,
+ *   attributed to the owning element by id;
  * - engine-specific extension *elements* — one warning per element,
  *   attributed to the owning element by id and naming the concrete construct.
  *   Which elements can be pinned to an exact owner depends on how the parser
@@ -50,8 +52,9 @@
  * - lanes — one warning per lane.
  *
  * **Round-trips cleanly** (no warning, no refusal): the supported flow
- * elements and their `name`, `assignee`, `formKey`, `class`, condition
- * expressions, and default-flow references.
+ * elements and their `name`, `assignee`, `formKey`, service-task binding
+ * (`class`, `expression`, `delegateExpression`, or `external` + `topic`),
+ * script-task body, condition expressions, and default-flow references.
  */
 
 import { existsSync, readFileSync } from 'node:fs';
@@ -68,8 +71,10 @@ import type {
   FormField,
   FormFieldType,
   ParallelGateway,
+  ScriptTask,
   SequenceFlow,
-  ServiceTaskJavaClass,
+  ServiceTask,
+  ServiceTaskBinding,
   StartEvent,
   UserTask,
 } from './ir/types.js';
@@ -122,6 +127,10 @@ const SUPPORTED_EXTENSION_ATTRS: ReadonlySet<string> = new Set([
   'assignee',
   'formKey',
   'class',
+  'expression',
+  'delegateExpression',
+  'type',
+  'topic',
 ]);
 
 /**
@@ -148,7 +157,9 @@ const OPERATON_TO_FORM_FIELD_TYPE: Readonly<Record<string, FormFieldType>> = {
 
 /** Suffix of every dropped-extension warning, naming what IS imported. */
 const KEPT_SETTINGS_NOTE =
-  '(this tool keeps only the assignee, form, and Java-class settings).';
+  '(this tool keeps only the assignee, form, script, and service-task ' +
+  'binding settings — Java class, expression, delegate expression, or ' +
+  'external topic).';
 
 /**
  * Declared extension attributes whose value the exporter re-stamps as a
@@ -252,10 +263,10 @@ interface ModdlePropertyDescriptor {
  * @throws {UnsupportedCollaborationError} when the document contains a
  *   `bpmn:Collaboration` (pools / message flows).
  * @throws {UnsupportedElementError} when an unsupported flow-element
- *   kind is encountered (e.g. `bpmn:scriptTask`, `bpmn:subProcess`).
+ *   kind is encountered (e.g. `bpmn:subProcess`, `bpmn:callActivity`).
  * @throws {UnsupportedServiceTaskFormError} when a `bpmn:ServiceTask`
- *   uses an execution discriminator the IR cannot represent (e.g.
- *   `operaton:expression`).
+ *   carries no execution form the IR can represent (a bare task with no
+ *   discriminator, or an external type without a topic).
  * @throws {UnsupportedEventDefinitionError} when a start/end event carries
  *   an event definition (timer, message, terminate, …).
  * @throws {UnsupportedLoopCharacteristicsError} when a task carries loop
@@ -407,6 +418,9 @@ function mapProcess(
         break;
       case 'bpmn:ServiceTask':
         flowElements.push(mapServiceTask(child));
+        break;
+      case 'bpmn:ScriptTask':
+        flowElements.push(mapScriptTask(child));
         break;
       case 'bpmn:ExclusiveGateway':
         flowElements.push(mapExclusiveGateway(child));
@@ -649,47 +663,98 @@ function mapUserTask(el: ModdleElement): UserTask {
 /**
  * Map a `bpmn:ServiceTask` moddle element into the IR.
  *
- * Only the Java-class pattern is supported. Any other execution
- * discriminator (`operaton:expression`, `operaton:delegateExpression`,
- * `operaton:type`) raises {@link UnsupportedServiceTaskFormError} so the
- * caller cannot silently lose runtime semantics.
+ * The execution form is read from whichever discriminator the task carries,
+ * in this precedence order: `operaton:class` (Java delegate),
+ * `operaton:expression`, `operaton:delegateExpression`, or
+ * `operaton:type="external"` paired with an `operaton:topic`. A task with
+ * none of these — or an external type with no topic — raises
+ * {@link UnsupportedServiceTaskFormError} so the caller cannot silently lose
+ * runtime semantics.
  */
-function mapServiceTask(el: ModdleElement): ServiceTaskJavaClass {
+function mapServiceTask(el: ModdleElement): ServiceTask {
   const id = requireId(el);
   refuseLoopCharacteristics(el, id);
   const name = readDerivableName(el, id);
-  const javaClass = readNamespacedAttr(el, 'class');
-
-  if (javaClass !== undefined) {
-    return {
-      kind: 'serviceTask',
-      id,
-      ...(name === undefined ? {} : { name }),
-      javaClass,
-    };
-  }
-
-  // No Java-class discriminator. Identify which unsupported form was
-  // used (if any) so the error message is actionable.
-  const detected = detectUnsupportedServiceTaskForm(el);
-  throw new UnsupportedServiceTaskFormError(id, detected);
+  return {
+    kind: 'serviceTask',
+    id,
+    ...(name === undefined ? {} : { name }),
+    binding: readServiceTaskBinding(el, id),
+  };
 }
 
 /**
- * Inspect a service task that lacks `operaton:class` / `camunda:class`
- * and return a human-readable description of the form it actually used.
- * Falls back to a placeholder when none of the recognised constructs is
- * present (e.g. a bare `<bpmn:serviceTask>` with no execution attribute).
+ * Resolve the single execution binding of a service task from its
+ * discriminator attributes. The raw `${…}` text of an expression / delegate
+ * expression is carried verbatim — it is exactly the attribute value Operaton
+ * evaluates. `external` requires both `operaton:type="external"` and a
+ * non-empty `operaton:topic`; the `delegate` DSL alias is applied by the
+ * printer, so here the delegate form maps to the `delegateExpression` kind.
+ *
+ * @throws {UnsupportedServiceTaskFormError} when no representable form is present.
+ */
+function readServiceTaskBinding(
+  el: ModdleElement,
+  id: string,
+): ServiceTaskBinding {
+  const className = readNamespacedAttr(el, 'class');
+  if (className !== undefined) return { kind: 'class', className };
+
+  const expression = readNamespacedAttr(el, 'expression');
+  if (expression !== undefined) return { kind: 'expression', expression };
+
+  const delegate = readNamespacedAttr(el, 'delegateExpression');
+  if (delegate !== undefined) {
+    return { kind: 'delegateExpression', expression: delegate };
+  }
+
+  const topic = readNamespacedAttr(el, 'topic');
+  if (readNamespacedAttr(el, 'type') === 'external' && topic !== undefined) {
+    return { kind: 'external', topic };
+  }
+
+  throw new UnsupportedServiceTaskFormError(
+    id,
+    detectUnsupportedServiceTaskForm(el),
+  );
+}
+
+/**
+ * Describe the unrepresentable form a service task used, for the refusal
+ * message. Reached only after the class / expression / delegateExpression /
+ * external forms have been ruled out, so the remaining cases are an
+ * `operaton:type` value the IR cannot represent (including `external`
+ * without a usable topic) or no discriminator at all.
  */
 function detectUnsupportedServiceTaskForm(el: ModdleElement): string {
-  const tryRead = (localName: string): string | undefined =>
-    readNamespacedAttr(el, localName);
-
-  if (tryRead('expression') !== undefined) return 'operaton:expression';
-  if (tryRead('delegateExpression') !== undefined)
-    return 'operaton:delegateExpression';
-  if (tryRead('type') !== undefined) return 'operaton:type';
+  const type = readNamespacedAttr(el, 'type');
+  if (type === 'external') {
+    return 'operaton:type="external" without an operaton:topic';
+  }
+  if (type !== undefined) return `operaton:type="${type}"`;
   return 'no execution discriminator';
+}
+
+/**
+ * Map a `bpmn:ScriptTask` moddle element into the IR.
+ *
+ * `scriptFormat` becomes the IR `format`; the `<bpmn:script>` body — stored
+ * by moddle as the plain-string `script` property — becomes `code`, verbatim.
+ */
+function mapScriptTask(el: ModdleElement): ScriptTask {
+  const id = requireId(el);
+  refuseLoopCharacteristics(el, id);
+  const name = readDerivableName(el, id);
+  const format = readString(el, 'scriptFormat') ?? '';
+  const body = el.get('script');
+  const code = typeof body === 'string' ? body : '';
+  return {
+    kind: 'scriptTask',
+    id,
+    ...(name === undefined ? {} : { name }),
+    format,
+    code,
+  };
 }
 
 /**

@@ -34,10 +34,18 @@ const STRUCTURE_SNIPPETS: Readonly<Record<string, string>> = {
   // tasks
   user: 'user ${1:id} {\n\tassignee = "${2:user}"\n}',
   service: 'service ${1:id} {\n\tclass = "${2:com.example.Delegate}"\n}',
+  external: 'external ${1:id} {\n\ttopic = "${2:topic}"\n}',
+  script:
+    'script ${1:id} ```${2|javascript,groovy,python,ruby,feel|}\n\t$0\n```',
   // task attributes
   assignee: 'assignee = "${1:user}"',
   formKey: 'formKey = "${1:form-key}"',
   class: 'class = "${1:com.example.Delegate}"',
+  // the `\$` escapes keep the EL `${…}` literal instead of starting a nested
+  // snippet placeholder — only the tab stop's own `${1: … }` wrapper is live.
+  expression: 'expression = "${1:\\${bean.method(execution)}}"',
+  delegate: 'delegate = "${1:\\${beanName}}"',
+  topic: 'topic = "${1:topic-name}"',
   // control flow
   if: 'if (${1:condition}) {\n\t$0\n}',
   while: 'while (${1:condition}) {\n\t$0\n}',

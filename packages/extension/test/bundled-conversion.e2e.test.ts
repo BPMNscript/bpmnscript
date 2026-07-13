@@ -58,7 +58,7 @@ const GOLDEN_GENERATED_BPMN = path.resolve(
 
 const BAD_SERVICE_TASK_BPMN = path.resolve(
   REPO_ROOT,
-  'tests/golden/bad-service-task-expression.bpmn',
+  'tests/golden/bad-service-task-no-binding.bpmn',
 );
 
 const INVOICE_APPROVAL_SRC = path.resolve(
@@ -69,7 +69,7 @@ const INVOICE_APPROVAL_SRC = path.resolve(
 // Fail loudly at module load if fixtures are missing — surface path errors early.
 for (const [label, p] of [
   ['invoice-approval-generated.bpmn', GOLDEN_GENERATED_BPMN],
-  ['bad-service-task-expression.bpmn', BAD_SERVICE_TASK_BPMN],
+  ['bad-service-task-no-binding.bpmn', BAD_SERVICE_TASK_BPMN],
   ['invoice-approval.bpmnscript', INVOICE_APPROVAL_SRC],
 ] as const) {
   if (!fs.existsSync(p)) {
@@ -294,16 +294,16 @@ describe('validation gate — type-mismatch error blocks output', () => {
   );
 });
 
-describe('unsupported-construct gate — bad-service-task-expression.bpmn', () => {
+describe('unsupported-construct gate — bad-service-task-no-binding.bpmn', () => {
   it(
-    'returns kind:unsupported for a BPMN with an unsupported service task expression',
+    'returns kind:unsupported for a BPMN whose service task carries no execution discriminator',
     { timeout: 30_000 },
     async () => {
       const xml = fs.readFileSync(BAD_SERVICE_TASK_BPMN, 'utf-8');
 
       const result = await decompileBpmnToDsl(
         xml,
-        'bad-service-task-expression.bpmn',
+        'bad-service-task-no-binding.bpmn',
       );
 
       expect(result.ok).toBe(false);

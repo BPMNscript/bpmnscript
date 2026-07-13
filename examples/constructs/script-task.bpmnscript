@@ -1,0 +1,11 @@
+// Compute a discount amount inline with a short JavaScript snippet — no
+// external delegate needed for such a small calculation.
+
+process order-discount {
+  start OrderPlaced
+  script ComputeDiscount ```js
+var discount = amount * 0.1;
+execution.setVariable("discount", discount);
+```
+  end Done
+}
