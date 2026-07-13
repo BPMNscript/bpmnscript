@@ -25,7 +25,7 @@
 // Reserved words (cannot be used as a bare expression identifier; use the
 // quoted "${…}" raw-string fallback if a variable must be named like one):
 //   process, var, start, end, user, service, if, else, while, do, parallel,
-//   goto, label, assignee, formKey, class,
+//   goto, label, assignee, formKey, class, form,
 //   string, number, boolean, date, json, any,
 //   true, false, null.
 // JUEL identifiers that do NOT collide with this set lex as plain `ID` in
@@ -81,8 +81,12 @@ Statement:
 Block:
     '{' statements+=Statement* '}';
 
+// StartEvent with an optional attribute block. Only a `form { … }` block is
+// meaningful here (a start event has no assignee/class); the validator rejects
+// bare attributes on `start`. The block lets an author declare the process's
+// start variables as Tasklist form fields.
 StartEvent:
-    'start' name=ID (label=STRING)?;
+    'start' name=ID (label=STRING)? AttributeBlock?;
 
 EndEvent:
     'end' name=ID (label=STRING)?;
@@ -97,11 +101,27 @@ UserTask:
 ServiceTask:
     'service' name=ID (label=STRING)? AttributeBlock?;
 
-// fragment: a brace-delimited attribute block. Reused verbatim by UserTask and
-// ServiceTask. The set of legal keys per element kind is enforced by the
-// validator, not the grammar, so the same fragment serves both.
+// fragment: a brace-delimited body block. Reused verbatim by StartEvent,
+// UserTask, and ServiceTask. It holds a mix of `<key> = <value>` attributes and
+// `form { … }` blocks in any order. Which members are legal per element kind is
+// enforced by the validator, not the grammar, so the one fragment serves all
+// three (a start event allows only a form; a service task allows no form).
 fragment AttributeBlock:
-    '{' attrs+=Attribute* '}';
+    '{' (attrs+=Attribute | forms+=FormBlock)* '}';
+
+// A form declaration: `form { <field>* }`. Maps to `operaton:formData` so
+// Operaton Tasklist renders a labeled input per field. Modelled as a list on the
+// owning element so the validator can flag a second `form` block as a duplicate.
+FormBlock:
+    'form' '{' fields+=FormField* '}';
+
+// One form field: `<id>: <type> "<label>"? (= <default>)?`. `id` is the process
+// variable the field reads or writes; it is deliberately not `name=ID` so a
+// field and a `var` of the same id coexist (the validator checks their types
+// agree) instead of colliding in the symbol table. `type` reuses `VarType`; the
+// validator restricts it to the subset Operaton form fields support.
+FormField:
+    id=ID ':' type=VarType (label=STRING)? ('=' defaultValue=Expr)?;
 
 // A single attribute entry: `<key> = <expression>`. `key` is a fixed keyword,
 // `value` is a full expression (so `assignee = "demo"` stores a RawExpr/literal

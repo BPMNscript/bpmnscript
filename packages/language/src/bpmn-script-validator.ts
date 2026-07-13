@@ -27,6 +27,7 @@ import type {
   DoWhileStatement,
   EndEvent,
   Expr,
+  FormBlock,
   GotoStatement,
   IfStatement,
   Logical,
@@ -74,6 +75,7 @@ export function registerValidationChecks(services: BpmnScriptServices) {
   const checks: ValidationChecks<BpmnScriptAstType> = {
     Model: validator.checkModel,
     Process: validator.checkProcess,
+    StartEvent: validator.checkStartEvent,
     UserTask: validator.checkUserTaskAttributes,
     ServiceTask: validator.checkServiceTaskAttributes,
     IfStatement: validator.checkIfStatement,
@@ -91,6 +93,18 @@ export function registerValidationChecks(services: BpmnScriptServices) {
  */
 const USER_TASK_KEYS: ReadonlySet<string> = new Set(['assignee', 'formKey']);
 const SERVICE_TASK_KEYS: ReadonlySet<string> = new Set(['class']);
+
+/**
+ * The {@link VarType}s an Operaton form field can carry. `json`/`any` have no
+ * `operaton:formField` representation, so the grammar's permissive `VarType` is
+ * restricted here.
+ */
+const FORM_FIELD_TYPES: ReadonlySet<string> = new Set([
+  'string',
+  'number',
+  'boolean',
+  'date',
+]);
 
 /**
  * Patterns for synthesised element ids produced by the `astToIr` desugarer
@@ -299,7 +313,43 @@ export class BpmnScriptValidator {
     this.checkDuplicateVarDecls(process, accept);
     this.checkDuplicateProcessLabel(process, accept);
     this.checkDuplicateStatementNames(process, named, accept);
+    this.checkFormVariableAgreement(process, accept);
   };
+
+  /**
+   * Every declaration of a given variable name — explicit `var`s and `form`
+   * fields alike — must agree on the type. A `form` field whose type conflicts
+   * with an earlier declaration of the same name (a `var`, or another field) is
+   * flagged, because both bind the same runtime process variable.
+   */
+  private checkFormVariableAgreement(
+    process: Process,
+    accept: ValidationAcceptor,
+  ): void {
+    const declaredType = new Map<string, VarType>();
+    for (const decl of process.decls) {
+      if (isVarDecl(decl)) {
+        declaredType.set(decl.name, decl.type);
+      }
+    }
+    for (const node of AstUtils.streamAst(process)) {
+      if (!isStartEvent(node) && !isUserTask(node)) continue;
+      for (const form of node.forms) {
+        for (const field of form.fields) {
+          const prior = declaredType.get(field.id);
+          if (prior === undefined) {
+            declaredType.set(field.id, field.type);
+          } else if (prior !== field.type) {
+            accept(
+              'error',
+              `Form field '${field.id}' is typed '${field.type}', but '${field.id}' is already declared as '${prior}'; the types must agree.`,
+              { node: field, property: 'type' },
+            );
+          }
+        }
+      }
+    }
+  }
 
   /**
    * Reject statement names that match the reserved synthesised-id patterns.
@@ -528,7 +578,25 @@ export class BpmnScriptValidator {
   }
 
   /**
-   * UserTask attribute checks: duplicate keys and key-kind validity.
+   * StartEvent checks: a start event may carry a `form { … }` block but no
+   * `assignee`/`formKey`/`class` attributes (those belong on tasks).
+   *
+   * @param start The start event.
+   */
+  checkStartEvent = (start: StartEvent, accept: ValidationAcceptor): void => {
+    for (const attr of start.attrs) {
+      accept(
+        'error',
+        `Attribute '${attr.key}' is not valid on a start event; only a 'form' block is allowed.`,
+        { node: attr, property: 'key' },
+      );
+    }
+    this.checkFormBlocks(start.forms, 'a start event', accept);
+  };
+
+  /**
+   * UserTask attribute checks: duplicate keys, key-kind validity, and its form
+   * blocks.
    *
    * @param task The user task.
    */
@@ -538,12 +606,14 @@ export class BpmnScriptValidator {
   ): void => {
     this.checkDuplicateKeys(task.attrs, accept);
     this.checkAllowedKeys(task.attrs, USER_TASK_KEYS, 'user', accept);
+    this.checkFormBlocks(task.forms, 'a user task', accept);
   };
 
   /**
-   * ServiceTask attribute checks: duplicate keys, key-kind validity, and the
+   * ServiceTask attribute checks: duplicate keys, key-kind validity, the
    * exactly-one-`class` discriminator (zero → error; the more-than-one case is
-   * reported by the duplicate-key check).
+   * reported by the duplicate-key check), and the absence of a form block
+   * (service tasks are automated and render no form).
    *
    * @param task The service task.
    */
@@ -562,7 +632,56 @@ export class BpmnScriptValidator {
         { node: task, property: 'name' },
       );
     }
+
+    for (const form of task.forms) {
+      accept(
+        'error',
+        "A service task cannot declare a 'form' block; forms belong on start events and user tasks.",
+        { node: form },
+      );
+    }
   };
+
+  /**
+   * Validate the `form { … }` block(s) on an element: at most one block, no
+   * duplicate field ids within a block, and only form-compatible field types.
+   * Cross-element agreement with a `var` of the same name is checked once at the
+   * process level (see {@link checkFormVariableAgreement}).
+   */
+  private checkFormBlocks(
+    forms: FormBlock[],
+    ownerDescription: string,
+    accept: ValidationAcceptor,
+  ): void {
+    forms.slice(1).forEach((form) => {
+      accept(
+        'error',
+        `${ownerDescription} may declare at most one 'form' block.`,
+        { node: form },
+      );
+    });
+
+    for (const form of forms) {
+      forEachDuplicate(
+        form.fields,
+        (field) => field.id,
+        (field) =>
+          accept('error', `Duplicate form field '${field.id}'.`, {
+            node: field,
+            property: 'id',
+          }),
+      );
+      for (const field of form.fields) {
+        if (!FORM_FIELD_TYPES.has(field.type)) {
+          accept(
+            'error',
+            `Form field '${field.id}' has type '${field.type}', which a form cannot use. Use string, number, boolean, or date.`,
+            { node: field, property: 'type' },
+          );
+        }
+      }
+    }
+  }
 
   /**
    * Flag every attribute key that repeats within one block (one error per

@@ -7,7 +7,11 @@
 // that is the class Operaton loads and runs when the auto-approve branch fires.
 
 process invoice-approval {
-  start ReviewStart
+  start ReviewStart {
+    form {
+      amount: number "Invoice amount"
+    }
+  }
   user ReviewInvoice { assignee = "demo" }
   if (amount > 1000) {
     user SeniorApproval { assignee = "manager" }

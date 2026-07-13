@@ -10,10 +10,7 @@
   "categories": [
     "Programming Languages"
   ],
-  "activationEvents": [
-    "onCommand:bpmnscript.openAndDecompile",
-    "onView:bpmnscript.sidebar"
-  ],
+  "activationEvents": [],
   "contributes": {
     "languages": [
       {
@@ -66,7 +63,8 @@
         {
           "type": "webview",
           "id": "bpmnscript.sidebar",
-          "name": "Convert"
+          "name": "Convert",
+          "icon": "media/sidebar-icon.svg"
         }
       ]
     },

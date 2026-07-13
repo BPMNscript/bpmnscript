@@ -28,6 +28,7 @@ import type {
   DoWhileStatement,
   ParallelStatement,
   GotoStatement,
+  StartEvent,
   UserTask,
   ServiceTask,
   Relational,
@@ -412,6 +413,41 @@ describe('Parsing — attribute blocks', () => {
     expect(formatParseFailure(document)).toBeUndefined();
     const ut = document.parseResult.value.processes[0]!.body[0] as UserTask;
     expect(ut.attrs).toHaveLength(0);
+  });
+
+  test('a start event and a user task accept a form block', async () => {
+    const source = `process p {
+  start Begin { form { amount: number "Amount" = 0 } }
+  user Approve { assignee = "demo" form { ok: boolean "OK?" } }
+}`;
+    const document = await parse(source);
+    expect(formatParseFailure(document)).toBeUndefined();
+    const start = document.parseResult.value.processes[0]!
+      .body[0] as StartEvent;
+    expect(start.forms).toHaveLength(1);
+    expect(start.forms[0]!.fields[0]!.id).toBe('amount');
+    expect(start.forms[0]!.fields[0]!.type).toBe('number');
+    expect(start.forms[0]!.fields[0]!.label).toBe('Amount');
+    const user = document.parseResult.value.processes[0]!.body[1] as UserTask;
+    expect(user.forms[0]!.fields[0]!.id).toBe('ok');
+    expect(user.attrs[0]!.key).toBe('assignee');
+  });
+});
+
+// ── var-declaration placement ─────────────────────────────────────────────
+
+describe('Parsing — var placement', () => {
+  test("a 'var' after the first statement gives placement guidance", async () => {
+    const document = await parse(`process p {
+  start Begin
+  var amount: number
+}`);
+    const messages = document.parseResult.parserErrors.map((e) => e.message);
+    expect(
+      messages.some((m) => m.includes('must come before the first step')),
+    ).toBe(true);
+    // The confusing raw "Expecting token of type '}'" is not surfaced.
+    expect(messages.some((m) => /Expecting token of type/.test(m))).toBe(false);
   });
 });
 

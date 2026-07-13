@@ -49,7 +49,13 @@
  * quoted `"${…}"` when raw).
  */
 
-import type { BpmnProcess, FlowElement, SequenceFlow } from './ir/types.js';
+import type {
+  BpmnProcess,
+  FlowElement,
+  FormField,
+  FormFieldType,
+  SequenceFlow,
+} from './ir/types.js';
 import { analyzeCfg, type CfgAnalysis } from './cfg-analysis.js';
 import { parseJuel, renderRawFallback } from './juel.js';
 
@@ -799,7 +805,7 @@ class Emitter {
   private renderStatement(el: FlowElement): string | undefined {
     switch (el.kind) {
       case 'startEvent':
-        return `start ${el.id}${labelSuffix(el.name)}`;
+        return renderStartEvent(el);
       case 'endEvent':
         return `end ${el.id}${labelSuffix(el.name)}`;
       case 'userTask':
@@ -843,6 +849,15 @@ function buildProcessHeader(process: BpmnProcess): string {
   return `process ${process.id} {`;
 }
 
+/** Render a `start <id> "<label>"? { form { … } }` statement. */
+function renderStartEvent(
+  el: Extract<FlowElement, { kind: 'startEvent' }>,
+): string {
+  const members =
+    el.formFields !== undefined ? [renderFormBlock(el.formFields)] : [];
+  return `start ${el.id}${labelSuffix(el.name)}${attrBlock(members)}`;
+}
+
 /** Render a `user <id> "<label>"? { … }` statement with its attribute block. */
 function renderUserTask(
   el: Extract<FlowElement, { kind: 'userTask' }>,
@@ -850,7 +865,40 @@ function renderUserTask(
   const attrs: string[] = [];
   if (el.assignee !== undefined) attrs.push(`assignee = ${quote(el.assignee)}`);
   if (el.formKey !== undefined) attrs.push(`formKey = ${quote(el.formKey)}`);
+  if (el.formFields !== undefined) attrs.push(renderFormBlock(el.formFields));
   return `user ${el.id}${labelSuffix(el.name)}${attrBlock(attrs)}`;
+}
+
+/**
+ * Render a `form { <field>* }` block inline. Fields are whitespace-separated,
+ * which the grammar's `fields+=FormField*` accepts, so the whole block stays on
+ * one line (the emitter indents statements per-line, so a statement string must
+ * not contain newlines).
+ */
+function renderFormBlock(formFields: FormField[]): string {
+  return `form { ${formFields.map(renderFormField).join(' ')} }`;
+}
+
+/** Render one form field: `<id>: <type> "<label>"? (= <default>)?`. */
+function renderFormField(field: FormField): string {
+  const label = field.label !== undefined ? ` ${quote(field.label)}` : '';
+  const def =
+    field.defaultValue !== undefined
+      ? ` = ${renderFormDefault(field.defaultValue, field.type)}`
+      : '';
+  return `${field.id}: ${field.type}${label}${def}`;
+}
+
+/**
+ * Render a form field's default value as a DSL expression. `string`/`date`
+ * defaults are quoted; `number`/`boolean` defaults are bare literals; an EL
+ * expression (`${…}`) is quoted as the raw fallback form regardless of type.
+ */
+function renderFormDefault(value: string, type: FormFieldType): string {
+  if (value.startsWith('${')) {
+    return quote(value);
+  }
+  return type === 'number' || type === 'boolean' ? value : quote(value);
 }
 
 /** Render a `service <id> "<label>"? { class = "…" }` statement. */

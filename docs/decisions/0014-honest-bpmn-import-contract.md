@@ -88,7 +88,7 @@ guarantee.
 The exact refuse/warn boundary and the `ImportWarning` shape (`elementId`, `category`,
 `message`) are documented in `packages/transform/src/errors.ts` and
 `packages/transform/src/xml-to-ir.ts`; a consumer-facing summary is in
-`packages/transform/README.md`. Related: ADR-0006 (engine-agnostic IR — `warnings`
+`packages/transform/README.md`. Related: ADR-0006 (the shared IR — `warnings`
 deliberately lives outside the IR, which stays serializable) and ADR-0007 (the Operaton
 moddle extension fork, whose declared/undeclared elements determine warning-attribution
 precision).

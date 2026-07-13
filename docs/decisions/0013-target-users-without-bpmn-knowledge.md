@@ -1,7 +1,7 @@
 ---
 status: accepted
 date: 2026-06-30
-decision-makers: Marlon Kranz, thesis supervisor
+decision-makers: Marlon Kranz, Oliver Kopp
 ---
 
 # Target Users Without BPMN Knowledge and Minimize Boilerplate

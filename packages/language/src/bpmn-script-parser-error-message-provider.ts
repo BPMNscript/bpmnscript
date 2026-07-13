@@ -46,6 +46,17 @@ import {
 const ID_TOKEN_NAME = 'ID';
 
 /**
+ * Token names for the misplaced-`var` diagnostic. A `var` declaration is legal
+ * only in the process header (before the first statement); anywhere in a body or
+ * block the parser has finished the statement list and expects the closing `}`,
+ * so it reports "expecting `}`, found `var`". That exact shape — a `var` token
+ * where `}` was expected — is the misplacement, distinct from `var` used as a
+ * name (which expects `ID` and is handled by the reserved-word path).
+ */
+const CLOSE_BRACE_TOKEN_NAME = '}';
+const VAR_KEYWORD_TOKEN_NAME = 'var';
+
+/**
  * Option-object types for the two overridden Chevrotain error builders. Derived
  * from the base method signatures so the exact (Chevrotain) field shapes are
  * reused without naming the transitive `chevrotain` package.
@@ -78,12 +89,30 @@ export class BpmnScriptParserErrorMessageProvider extends LangiumParserErrorMess
   override buildMismatchTokenMessage(options: MismatchTokenOptions): string {
     const { expected, actual } = options;
     if (
+      actual.tokenType.name === VAR_KEYWORD_TOKEN_NAME &&
+      expected.name === CLOSE_BRACE_TOKEN_NAME
+    ) {
+      return this.varPlacementMessage();
+    }
+    if (
       expected.name === ID_TOKEN_NAME &&
       this.isReservedWord(actual.tokenType.name)
     ) {
       return this.reservedWordMessage(actual.image);
     }
     return super.buildMismatchTokenMessage(options);
+  }
+
+  /**
+   * Guidance for a `var` declaration written after the first statement. Variable
+   * declarations are header-only, so a misplaced one otherwise produces a
+   * confusing "expecting '}'" cascade. Free of BPMN vocabulary (ADR-0013).
+   */
+  private varPlacementMessage(): string {
+    return (
+      "A variable declaration ('var …') must come before the first step in the " +
+      'process, with the other declarations. Move it above the first statement.'
+    );
   }
 
   /**

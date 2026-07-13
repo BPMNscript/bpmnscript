@@ -6,7 +6,12 @@ process loan-approval-kopp "Loan Approval (Kopp 2009)" {
   var intRes: string
   var assessorRes: string
 
-  start RequestReceived "Loan request received"
+  start RequestReceived "Loan request received" {
+    form {
+      amount: number "Loan amount"
+      creditScore: number "Credit score"
+    }
+  }
 
   // Conservative default: the manual assessment counts as high risk unless the
   // assessor explicitly lowers it (and so an undefined assessorRes never reaches
@@ -35,6 +40,9 @@ process loan-approval-kopp "Loan Approval (Kopp 2009)" {
       if (intRes == "low") {
         user AssessRisk "Manual risk assessment" {
           assignee = "demo"
+          form {
+            assessorRes: string "Assessor result (low/high)"
+          }
         }
       }
     }

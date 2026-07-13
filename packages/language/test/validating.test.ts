@@ -800,6 +800,96 @@ process p {
   });
 });
 
+// ── Form fields ─────────────────────────────────────────────────────────────
+
+describe('Validation — form fields', () => {
+  test('a valid form on a start event and a user task produces no errors', async () => {
+    const { diagnostics } = await validate(`
+process p {
+  start Begin { form { amount: number "Amount" } }
+  user Approve { assignee = "demo" form { approved: boolean "OK?" = false } }
+}
+`);
+    expect(bySeverity(diagnostics, SEVERITY_ERROR)).toHaveLength(0);
+  });
+
+  test('a form field declares the variable it binds (no undeclared warning)', async () => {
+    const { diagnostics } = await validate(`
+process p {
+  start Begin { form { amount: number "Amount" } }
+  if (amount > 1000) { user A }
+}
+`);
+    expect(diagnosticsFor(diagnostics, 'not declared')).toHaveLength(0);
+    expect(bySeverity(diagnostics, SEVERITY_ERROR)).toHaveLength(0);
+  });
+
+  test('a form field type outside string/number/boolean/date is an error', async () => {
+    const { diagnostics } = await validate(
+      `process p { start Begin { form { blob: json "Blob" } } }`,
+    );
+    const errors = bySeverity(diagnostics, SEVERITY_ERROR);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.message).toContain('which a form cannot use');
+  });
+
+  test('a form block on a service task is an error', async () => {
+    const { diagnostics } = await validate(
+      `process p { service S { class = "com.x.Y" form { a: number } } }`,
+    );
+    expect(
+      diagnosticsFor(diagnostics, "cannot declare a 'form' block"),
+    ).toHaveLength(1);
+  });
+
+  test('a bare attribute on a start event is an error', async () => {
+    const { diagnostics } = await validate(
+      `process p { start Begin { assignee = "demo" } }`,
+    );
+    expect(
+      diagnosticsFor(diagnostics, 'not valid on a start event'),
+    ).toHaveLength(1);
+  });
+
+  test('duplicate field ids within a form block are flagged', async () => {
+    const { diagnostics } = await validate(
+      `process p { start Begin { form { a: number a: string } } }`,
+    );
+    expect(diagnosticsFor(diagnostics, 'Duplicate form field')).toHaveLength(1);
+  });
+
+  test('a second form block on one element is an error', async () => {
+    const { diagnostics } = await validate(
+      `process p { start Begin { form { a: number } form { b: string } } }`,
+    );
+    expect(
+      diagnosticsFor(diagnostics, "at most one 'form' block"),
+    ).toHaveLength(1);
+  });
+
+  test('a form field must agree with a var of the same name', async () => {
+    const conflict = await validate(`
+process p {
+  var amount: string
+  start Begin { form { amount: number "Amount" } }
+}
+`);
+    expect(
+      diagnosticsFor(conflict.diagnostics, 'the types must agree'),
+    ).toHaveLength(1);
+
+    const agrees = await validate(`
+process p {
+  var amount: number
+  start Begin { form { amount: number "Amount" } }
+}
+`);
+    expect(
+      diagnosticsFor(agrees.diagnostics, 'the types must agree'),
+    ).toHaveLength(0);
+  });
+});
+
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 /** All diagnostics of the given LSP severity (1 = Error, 2 = Warning). */

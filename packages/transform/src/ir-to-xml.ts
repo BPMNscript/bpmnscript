@@ -1,7 +1,7 @@
 /**
  * IR → BPMN 2.0 XML transform.
  *
- * Takes an engine-agnostic {@link BpmnProcess} and produces a BPMN 2.0
+ * Takes a {@link BpmnProcess} and produces a BPMN 2.0
  * XML string that Operaton can parse and deploy. The Operaton extension
  * namespace (`operaton:`) is attached at serialization time via the
  * local `operaton-moddle.json` extension — the IR itself stays
@@ -31,7 +31,13 @@ import {
 import { layoutProcess } from 'bpmn-auto-layout';
 
 import { humanize } from './humanize.js';
-import type { BpmnProcess, FlowElement, SequenceFlow } from './ir/types.js';
+import type {
+  BpmnProcess,
+  FlowElement,
+  FormField,
+  FormFieldType,
+  SequenceFlow,
+} from './ir/types.js';
 
 /**
  * Stable project-local namespace for all generated processes. Operaton
@@ -198,8 +204,13 @@ function createFlowNode(
   }
 
   switch (node.kind) {
-    case 'startEvent':
-      return moddle.create('bpmn:StartEvent', baseAttrs);
+    case 'startEvent': {
+      const attrs: Record<string, unknown> = { ...baseAttrs };
+      if (node.formFields !== undefined) {
+        attrs.extensionElements = buildFormExtension(moddle, node.formFields);
+      }
+      return moddle.create('bpmn:StartEvent', attrs);
+    }
 
     case 'endEvent':
       return moddle.create('bpmn:EndEvent', baseAttrs);
@@ -211,6 +222,9 @@ function createFlowNode(
       }
       if (node.formKey !== undefined) {
         attrs['operaton:formKey'] = node.formKey;
+      }
+      if (node.formFields !== undefined) {
+        attrs.extensionElements = buildFormExtension(moddle, node.formFields);
       }
       return moddle.create('bpmn:UserTask', attrs);
     }
@@ -243,6 +257,41 @@ function createFlowNode(
       );
     }
   }
+}
+
+/**
+ * DSL-level form field type mapped to the `operaton:formField` `type`
+ * attribute. `number` becomes `long`; keeping this mapping at the
+ * serialization boundary lets the IR spelling stay vendor-neutral (ADR 0006).
+ */
+const FORM_FIELD_TYPE_TO_OPERATON: Record<FormFieldType, string> = {
+  string: 'string',
+  number: 'long',
+  boolean: 'boolean',
+  date: 'date',
+};
+
+/**
+ * Build a `<bpmn:extensionElements>` wrapper holding one `<operaton:formData>`
+ * with an `<operaton:formField>` per IR {@link FormField}. Attached to the
+ * owning start event or user task so Operaton Tasklist renders a labeled form.
+ */
+function buildFormExtension(
+  moddle: BpmnModdleInstance,
+  formFields: FormField[],
+): ModdleElement {
+  const fields = formFields.map((field) =>
+    moddle.create('operaton:FormField', {
+      id: field.id,
+      type: FORM_FIELD_TYPE_TO_OPERATON[field.type],
+      ...(field.label !== undefined ? { label: field.label } : {}),
+      ...(field.defaultValue !== undefined
+        ? { defaultValue: field.defaultValue }
+        : {}),
+    }),
+  );
+  const formData = moddle.create('operaton:FormData', { fields });
+  return moddle.create('bpmn:ExtensionElements', { values: [formData] });
 }
 
 /**

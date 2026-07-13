@@ -27,8 +27,9 @@ application?
 - Bidirectional conversion (DSL ↔ BPMN XML) is a core property of the tool. BPMN XML has
   no representation for Java source, so embedded method bodies are lost on compile and
   cannot be recovered on decompile — the target format has no slot for the information.
-- ADR-0006 keeps the IR engine-agnostic. `JavaDelegate` bodies are specific to the
-  Camunda 7 engine family; carrying them through the IR pierces that boundary.
+- ADR-0006 keeps the IR a clean graph of process semantics, not a store for
+  host-language code. `JavaDelegate` bodies are Java source; carrying them through
+  the IR pierces that boundary.
 - "Deploy" changes meaning. BPMN XML alone hot-deploys through a single REST call
   (`POST /engine-rest/deployment/create`), but Java classes must be on the engine's
   classpath: every change to an embedded body forces a rebuild and restart of the host
@@ -46,15 +47,16 @@ application?
 ## Decision Outcome
 
 The proposal is rejected; BPMN XML remains the compilation boundary. Embedding Java gives
-up the two properties the design rests on — round-trippable conversion and the
-engine-agnostic IR — and turns deployment from a one-artifact REST call into an
+up the two properties the design rests on — round-trippable conversion and an IR
+that models process structure rather than host-language code — and turns deployment
+from a one-artifact REST call into an
 application build. The scaffold's maintenance cost alone puts it outside the thesis scope.
 
 ### Consequences
 
 - Good, because the existing round-trip guarantees are unchanged; no lossy construct
   enters the language.
-- Good, because the DSL and IR stay engine-agnostic per ADR-0006.
+- Good, because the DSL and IR stay free of host-language code per ADR-0006.
 - Good, because a future deploy command stays a thin REST client — the mechanics the E2E
   test adapters (`tests/fixtures/adapters/`) already exercise.
 - Bad, because delegates are written and kept in sync by hand; the `class = "..."` string

@@ -92,6 +92,9 @@ import {
   isParallelStatement,
   isGotoStatement,
   isLiteralString,
+  isLiteralBool,
+  isLiteralInt,
+  isLiteralDecimal,
   isVarRef,
   renderExpression,
 } from '@bpmn-script/language';
@@ -100,6 +103,7 @@ import type {
   Process,
   Statement,
   Block,
+  Expr,
   StartEvent as AstStartEvent,
   EndEvent as AstEndEvent,
   UserTask as AstUserTask,
@@ -114,6 +118,8 @@ import type {
 import type {
   BpmnProcess,
   FlowElement,
+  FormField,
+  FormFieldType,
   SequenceFlow as IrSequenceFlow,
 } from './ir/types.js';
 import {
@@ -172,7 +178,7 @@ interface Builder {
 }
 
 /**
- * Convert an AST `Model` into an engine-agnostic {@link BpmnProcess}.
+ * Convert an AST `Model` into a {@link BpmnProcess}.
  *
  * Only the **first** `process` block is converted; further `process` blocks are
  * ignored (a deliberate single-process limitation, not a parser guarantee).
@@ -356,12 +362,14 @@ function lowerStatement(
 // Simple statements
 // ---------------------------------------------------------------------------
 
-/** Lower an explicit `start` event. Entry === exit === its own id. */
+/** Lower an explicit `start` event, mapping any `form { … }` block. */
 function lowerStartEvent(builder: Builder, stmt: AstStartEvent): Frontier {
+  const formFields = lowerFormFields(stmt);
   builder.flowElements.push({
     kind: 'startEvent',
     id: stmt.name,
     ...(stmt.label !== undefined ? { name: stmt.label } : {}),
+    ...(formFields !== undefined ? { formFields } : {}),
   });
   return { entry: stmt.name, exit: stmt.name };
 }
@@ -379,18 +387,87 @@ function lowerEndEvent(builder: Builder, stmt: AstEndEvent): Frontier {
   return { entry: stmt.name, exit: null };
 }
 
-/** Lower a `user` task, mapping `assignee`/`formKey` attributes. */
+/** Lower a `user` task, mapping `assignee`/`formKey` and any `form` block. */
 function lowerUserTask(builder: Builder, stmt: AstUserTask): Frontier {
   const assignee = attrValue(stmt.attrs, 'assignee');
   const formKey = attrValue(stmt.attrs, 'formKey');
+  const formFields = lowerFormFields(stmt);
   builder.flowElements.push({
     kind: 'userTask',
     id: stmt.name,
     ...(stmt.label !== undefined ? { name: stmt.label } : {}),
     ...(assignee !== undefined ? { assignee } : {}),
     ...(formKey !== undefined ? { formKey } : {}),
+    ...(formFields !== undefined ? { formFields } : {}),
   });
   return { entry: stmt.name, exit: stmt.name };
+}
+
+/** DSL form-field types that map to an Operaton `operaton:formField`. */
+const FORM_FIELD_TYPES = new Set<string>([
+  'string',
+  'number',
+  'boolean',
+  'date',
+]);
+
+/**
+ * Map the fields of an element's `form { … }` block(s) into IR
+ * {@link FormField}s, or `undefined` when the element declares no fields.
+ *
+ * The grammar allows a `form` block on any element and permits every
+ * {@link VarType}; the validator restricts it to `start`/`user` with the four
+ * form-compatible types before this runs. Multiple blocks are flattened
+ * defensively — the validator flags a second block as a duplicate.
+ */
+function lowerFormFields(
+  node: AstStartEvent | AstUserTask,
+): FormField[] | undefined {
+  const fields = node.forms.flatMap((f) => f.fields);
+  if (fields.length === 0) {
+    return undefined;
+  }
+  return fields.map((f) => ({
+    id: f.id,
+    type: toFormFieldType(f.type),
+    ...(f.label !== undefined ? { label: f.label } : {}),
+    ...(f.defaultValue !== undefined
+      ? { defaultValue: renderFormDefault(f.defaultValue) }
+      : {}),
+  }));
+}
+
+/**
+ * Narrow a {@link VarType} to a {@link FormFieldType}. `json`/`any` have no form
+ * representation and are rejected by the validator; reaching one here is an
+ * internal invariant violation.
+ */
+function toFormFieldType(type: string): FormFieldType {
+  if (FORM_FIELD_TYPES.has(type)) {
+    return type as FormFieldType;
+  }
+  throw new Error(
+    `astToIr: unsupported form field type '${type}' (expected string, number, boolean, or date).`,
+  );
+}
+
+/**
+ * Render a form field's default-value expression to the plain text the
+ * `operaton:formField` `defaultValue` attribute carries. Literals yield their
+ * bare value; any other expression falls back to its `${…}` body (Operaton
+ * evaluates it as EL).
+ */
+function renderFormDefault(expr: Expr): string {
+  if (isLiteralString(expr)) {
+    return expr.value;
+  }
+  if (isLiteralBool(expr)) {
+    return expr.value;
+  }
+  if (isLiteralInt(expr) || isLiteralDecimal(expr)) {
+    return String(expr.value);
+  }
+  return renderExpression(expr);
 }
 
 /** Lower a `service` task, mapping the `class` attribute to `javaClass`. */

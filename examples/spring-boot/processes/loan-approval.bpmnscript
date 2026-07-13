@@ -4,13 +4,11 @@ process loan-approval "Loan Approval" {
   var risk: string
   var approved: boolean
 
-  start RequestReceived "Loan request received"
-
-  // Seed defaults so the variables exist before any gateway reads them — an
-  // undefined variable makes Operaton throw on ${approved == true} at the final
-  // gateway (it is not the same as a variable set to false).
-  service InitRequest "Initialise request" {
-    class = "com.example.loan.InitDelegate"
+  start RequestReceived "Loan request received" {
+    form {
+      amount: number "Loan amount"
+      creditScore: number "Credit score"
+    }
   }
 
   // Small loans are screened by an automated risk assessment.
@@ -29,6 +27,9 @@ process loan-approval "Loan Approval" {
   } else {
     user Approve "Approve loan" {
       assignee = "demo"
+      form {
+        approved: boolean "Approve the loan?"
+      }
     }
   }
 
