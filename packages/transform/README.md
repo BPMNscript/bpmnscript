@@ -147,14 +147,14 @@ See [ADR-0014](../../docs/decisions/0014-honest-bpmn-import-contract.md) for the
 
 ### Error classes (refusals)
 
-| Class                                 | Thrown by | Reason                                                                                                                                 |
-| ------------------------------------- | --------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| `UnsupportedConstructError`           | —         | Abstract base of every refusal below. Catch it to classify any refusal as "unsupported construct" without enumerating subclasses.      |
-| `UnsupportedElementError`             | `xmlToIr` | Input XML contains a BPMN element type outside the supported subset (e.g. `bpmn:subProcess`, `bpmn:callActivity`)                      |
-| `UnsupportedServiceTaskFormError`     | `xmlToIr` | A service task carries no supported execution binding — none of `operaton:class`, `operaton:expression`, `operaton:delegateExpression`, or `operaton:type="external"` with a usable `operaton:topic`                   |
-| `UnsupportedEventDefinitionError`     | `xmlToIr` | A start/end event carries an event definition (timer, message, signal, error, terminate, …); the IR models only plain start/end events |
-| `UnsupportedLoopCharacteristicsError` | `xmlToIr` | A task carries loop characteristics (multi-instance or standard loop); the IR models tasks that run exactly once                       |
-| `UnsupportedCollaborationError`       | `xmlToIr` | The document contains a `bpmn:Collaboration` (pools and/or message flows); the IR models a single standalone process                   |
+| Class                                 | Thrown by | Reason                                                                                                                                                                                               |
+| ------------------------------------- | --------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `UnsupportedConstructError`           | —         | Abstract base of every refusal below. Catch it to classify any refusal as "unsupported construct" without enumerating subclasses.                                                                    |
+| `UnsupportedElementError`             | `xmlToIr` | Input XML contains a BPMN element type outside the supported subset (e.g. `bpmn:subProcess`, `bpmn:callActivity`)                                                                                    |
+| `UnsupportedServiceTaskFormError`     | `xmlToIr` | A service task carries no supported execution binding — none of `operaton:class`, `operaton:expression`, `operaton:delegateExpression`, or `operaton:type="external"` with a usable `operaton:topic` |
+| `UnsupportedEventDefinitionError`     | `xmlToIr` | A start/end event carries an event definition (timer, message, signal, error, terminate, …); the IR models only plain start/end events                                                               |
+| `UnsupportedLoopCharacteristicsError` | `xmlToIr` | A task carries loop characteristics (multi-instance or standard loop); the IR models tasks that run exactly once                                                                                     |
+| `UnsupportedCollaborationError`       | `xmlToIr` | The document contains a `bpmn:Collaboration` (pools and/or message flows); the IR models a single standalone process                                                                                 |
 
 ### Import warnings (non-semantic drops)
 
