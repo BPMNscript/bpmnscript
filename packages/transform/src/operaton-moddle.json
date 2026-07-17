@@ -292,6 +292,47 @@
           "type": "String"
         }
       ]
+    },
+    {
+      "name": "ErrorEventDefinition",
+      "isAbstract": true,
+      "extends": ["bpmn:ErrorEventDefinition"],
+      "properties": [
+        {
+          "name": "errorCodeVariable",
+          "isAttr": true,
+          "type": "String"
+        },
+        {
+          "name": "errorMessageVariable",
+          "isAttr": true,
+          "type": "String"
+        }
+      ]
+    },
+    {
+      "name": "EscalationEventDefinition",
+      "isAbstract": true,
+      "extends": ["bpmn:EscalationEventDefinition"],
+      "properties": [
+        {
+          "name": "escalationCodeVariable",
+          "isAttr": true,
+          "type": "String"
+        }
+      ]
+    },
+    {
+      "name": "Error",
+      "isAbstract": true,
+      "extends": ["bpmn:Error"],
+      "properties": [
+        {
+          "name": "errorMessage",
+          "isAttr": true,
+          "type": "String"
+        }
+      ]
     }
   ],
   "enumerations": []

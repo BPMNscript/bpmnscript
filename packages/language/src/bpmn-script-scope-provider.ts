@@ -2,29 +2,32 @@
  * Container-scoped cross-reference resolution for `goto`.
  *
  * A `goto target=[Statement:ID]` may only jump to a step within its own
- * *flow container* — the nearest enclosing `process` or `subprocess`. Langium's
- * stock scope provider makes a named step visible only to references whose own
- * container chain passes through that step's block (classic block-lexical
- * visibility), which is wrong for `goto` in two ways:
+ * *flow container* — the nearest enclosing `process`, `subprocess`, or `on`
+ * handler body. Langium's stock scope provider makes a named step visible
+ * only to references whose own container chain passes through that step's
+ * block (classic block-lexical visibility), which is wrong for `goto` in two
+ * ways:
  *
  *   1. A step nested inside a `parallel`/`if`/`while` block is invisible to a
  *      `goto` positioned outside that block, so a legitimate same-container
  *      jump target cannot resolve at all — and the "goto into a parallel
  *      branch" validator can never see a resolved target to flag.
  *   2. Nothing structurally guarantees a `goto` cannot reach into a *different*
- *      container — a different process, or across a sub-process boundary.
- *      BPMN forbids a sequence flow from crossing a sub-process boundary, so
- *      `goto` must not synthesize one either.
+ *      container — a different process, across a sub-process boundary, or
+ *      into/out of an event handler body. BPMN forbids a sequence flow from
+ *      crossing a sub-process boundary (an event handler being a kind of
+ *      sub-process, this includes it too), so `goto` must not synthesize one
+ *      either.
  *
  * This provider replaces the scope for the `goto` target reference with the set
- * of every named step whose *own* nearest enclosing container (process or
- * sub-process) is the same container the `goto` itself sits in — regardless of
- * block nesting inside that container — and with no global fall-through. A
- * `goto` therefore resolves to any step of its own container (including a
- * sibling `subprocess` statement, targetable by name like any other step) and
- * to nothing outside it — not an ancestor container, not a sibling container's
- * interior, and not another process entirely. Every other cross-reference keeps
- * Langium's default scope.
+ * of every named step whose *own* nearest enclosing container (process,
+ * sub-process, or handler body) is the same container the `goto` itself sits
+ * in — regardless of block nesting inside that container — and with no global
+ * fall-through. A `goto` therefore resolves to any step of its own container
+ * (including a sibling `subprocess` statement, targetable by name like any
+ * other step) and to nothing outside it — not an ancestor container, not a
+ * sibling container's interior, and not another process entirely. Every other
+ * cross-reference keeps Langium's default scope.
  *
  * A cross-boundary `goto` therefore fails to resolve; the resulting linker
  * diagnostic is upgraded to a boundary explanation by {@link
@@ -44,22 +47,25 @@ import {
 } from 'langium';
 import {
   isGotoStatement,
+  isOnHandler,
   isProcess,
   isSubProcess,
+  type OnHandler,
   type Process,
   type SubProcess,
 } from './generated/ast.js';
 
 /**
- * A `goto` target lives in either a top-level `process` or a `subprocess`.
- * Exported so {@link BpmnScriptLinker} (the boundary-diagnostic hook) can
- * locate a resolved-elsewhere target's own container without duplicating the
- * walk.
+ * A `goto` target lives in a top-level `process`, a `subprocess`, or an `on`
+ * handler body — a handler body is a full BPMN container for every
+ * container-scoped rule, `goto` included. Exported so {@link BpmnScriptLinker}
+ * (the boundary-diagnostic hook) can locate a resolved-elsewhere target's own
+ * container without duplicating the walk.
  */
-export type FlowContainer = Process | SubProcess;
+export type FlowContainer = Process | SubProcess | OnHandler;
 
 export function isFlowContainer(node: AstNode): node is FlowContainer {
-  return isProcess(node) || isSubProcess(node);
+  return isProcess(node) || isSubProcess(node) || isOnHandler(node);
 }
 
 /**
@@ -100,11 +106,14 @@ export class BpmnScriptScopeProvider extends DefaultScopeProvider {
           (node) =>
             this.reflection.isSubtype(node.$type, referenceType) &&
             // A candidate counts only when THIS container is its own nearest
-            // enclosing container — a step inside a nested `subprocess` has
-            // that sub-process as its nearest container, not this one, so it
-            // is excluded (nesting isolation). A `subprocess` statement sitting
-            // directly in this container passes: its own nearest enclosing
-            // container (walking up from its `$container`) is this container.
+            // enclosing container — a step inside a nested `subprocess` or
+            // `on` handler body has that container as its nearest container,
+            // not this one, so it is excluded (nesting isolation). A
+            // `subprocess` statement sitting directly in this container
+            // passes: its own nearest enclosing container (walking up from
+            // its `$container`) is this container. An `on` handler itself
+            // never passes as a candidate — it carries no `name`, so
+            // `createScopeForNodes` drops it regardless of nesting depth.
             enclosingFlowContainer(node) === container,
         );
         // No outer scope: a goto sees only its own container's steps, so a

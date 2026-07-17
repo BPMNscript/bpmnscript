@@ -3,12 +3,12 @@
  *
  * The container-scoped `goto` resolution ({@link BpmnScriptScopeProvider})
  * means a `goto` whose target lies in a different flow container — the
- * process instead of a sub-process, another sub-process, or a nested one — is
- * *unresolved*. Langium's stock linker message for that case, "Could not
- * resolve reference to Statement named 'X'.", reads as "X doesn't exist" when
- * X *does* exist, just across a `subprocess` boundary — the most likely
- * authoring mistake with the new construct, and inline IDE errors are a core
- * value of the DSL.
+ * process instead of a sub-process, another sub-process, a nested one, or an
+ * `on` handler body (in either direction) — is *unresolved*. Langium's stock
+ * linker message for that case, "Could not resolve reference to Statement
+ * named 'X'.", reads as "X doesn't exist" when X *does* exist, just across a
+ * container boundary — the most likely authoring mistake with the new
+ * construct, and inline IDE errors are a core value of the DSL.
  *
  * This linker overrides {@link DefaultLinker.createLinkingError}, the single
  * hook every unresolved-reference path in `DefaultLinker` already funnels
@@ -35,21 +35,29 @@ import {
   type ReferenceInfo,
 } from 'langium';
 import {
+  isCallActivity,
+  isEmitStatement,
   isEndEvent,
   isExternalTask,
   isGotoStatement,
+  isOnHandler,
   isProcess,
   isScriptTask,
   isServiceTask,
   isStartEvent,
   isSubProcess,
+  isThrowStatement,
   isUserTask,
+  type CallActivity,
+  type EmitStatement,
   type EndEvent,
   type ExternalTask,
+  type OnHandler,
   type ScriptTask,
   type ServiceTask,
   type StartEvent,
   type SubProcess,
+  type ThrowStatement,
   type UserTask,
 } from './generated/ast.js';
 import {
@@ -59,9 +67,11 @@ import {
 
 /**
  * The concrete `Statement` subtypes that carry a `name` and are therefore
- * valid `goto` targets — mirrors the validator's `NamedStatement` set, plus
- * `SubProcess` (a sub-process's own name is a goto target too, per the
- * grammar's naming convention).
+ * valid `goto` targets — mirrors the validator's `NamedStatement` set:
+ * `SubProcess` and `CallActivity` (their own names are goto targets too), and
+ * `ThrowStatement`/`EmitStatement`, whose `name` is *optional* (synthesised
+ * when omitted), so an unnamed throw/emit is skipped by the `name` guard below
+ * and is never a goto target.
  */
 type NamedStatement =
   | StartEvent
@@ -70,7 +80,10 @@ type NamedStatement =
   | ServiceTask
   | ExternalTask
   | ScriptTask
-  | SubProcess;
+  | SubProcess
+  | CallActivity
+  | (ThrowStatement & { name: string })
+  | (EmitStatement & { name: string });
 
 function isNamedStatement(node: AstNode): node is NamedStatement {
   return (
@@ -80,7 +93,10 @@ function isNamedStatement(node: AstNode): node is NamedStatement {
     isServiceTask(node) ||
     isExternalTask(node) ||
     isScriptTask(node) ||
-    isSubProcess(node)
+    isSubProcess(node) ||
+    isCallActivity(node) ||
+    ((isThrowStatement(node) || isEmitStatement(node)) &&
+      node.name !== undefined)
   );
 }
 
@@ -103,26 +119,71 @@ function findNamedStatement(
 }
 
 /**
+ * The handler's header as an author would write it — `on <trigger>` for a
+ * catch-all, `on <trigger> "<code>"` for a coded one — used in place of a
+ * name, since a handler has none.
+ */
+function handlerHeader(handler: OnHandler): string {
+  return handler.code
+    ? `on ${handler.trigger} "${handler.code}"`
+    : `on ${handler.trigger}`;
+}
+
+/**
+ * A handler referred to by its header: `the 'on error "X"' handler` for a
+ * coded one, `an 'on error' handler` for a catch-all.
+ */
+function handlerPhrase(handler: OnHandler): string {
+  const article = handler.code ? 'the' : 'an';
+  return `${article} '${handlerHeader(handler)}' handler`;
+}
+
+/** Whether crossing this location involves an event-handler boundary rather
+ * than (only) a sub-process one — decides the trailing boundary sentence. */
+interface Location {
+  phrase: string;
+  crossesHandler: boolean;
+}
+
+/**
  * Describe where `target` lives relative to `gotoContainer`, the flow
  * container the `goto` itself sits in. Only called once the caller has
  * already established the two containers differ (the scope provider would
- * have resolved a same-container target), so exactly one of the two branches
- * below applies: the target is inside some sub-process (which cannot be
- * `gotoContainer`, since that would have resolved), or the target sits at
- * process level while the goto is inside a sub-process.
+ * have resolved a same-container target), so exactly one of the branches
+ * below applies: the target is inside some sub-process or handler body
+ * (neither of which can be `gotoContainer`, since that would have resolved),
+ * or the target sits at process level while the goto is inside a sub-process
+ * or a handler body.
  */
-function locationPhrase(
+function locateTarget(
   target: NamedStatement,
   gotoContainer: FlowContainer,
-): string {
+): Location {
   const targetContainer = enclosingFlowContainer(target);
   if (targetContainer && isSubProcess(targetContainer)) {
-    return `inside subprocess '${targetContainer.name}'`;
+    return {
+      phrase: `inside subprocess '${targetContainer.name}'`,
+      crossesHandler: false,
+    };
+  }
+  if (targetContainer && isOnHandler(targetContainer)) {
+    return {
+      phrase: `inside ${handlerPhrase(targetContainer)}`,
+      crossesHandler: true,
+    };
   }
   // The target lives at process level; since it did not resolve, the goto
-  // itself must be inside a sub-process (`Process` and `SubProcess` both
-  // expose `name`, so no further narrowing is needed to read it).
-  return `outside subprocess '${gotoContainer.name}'`;
+  // itself must be inside a sub-process or a handler body.
+  if (isOnHandler(gotoContainer)) {
+    return {
+      phrase: `outside ${handlerPhrase(gotoContainer)}`,
+      crossesHandler: true,
+    };
+  }
+  return {
+    phrase: `outside subprocess '${gotoContainer.name}'`,
+    crossesHandler: false,
+  };
 }
 
 /**
@@ -142,9 +203,13 @@ export class BpmnScriptLinker extends DefaultLinker {
         : undefined;
       const gotoContainer = enclosingFlowContainer(goto);
       if (target && gotoContainer) {
+        const { phrase, crossesHandler } = locateTarget(target, gotoContainer);
+        const boundary = crossesHandler
+          ? `a goto cannot cross an event handler boundary: an event handler's steps run only when its event fires.`
+          : `a goto cannot cross a sub-process boundary.`;
         return {
           info: refInfo,
-          message: `'${refInfo.reference.$refText}' is ${locationPhrase(target, gotoContainer)}; a goto cannot cross a sub-process boundary.`,
+          message: `'${refInfo.reference.$refText}' is ${phrase}; ${boundary}`,
         };
       }
     }

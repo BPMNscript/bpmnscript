@@ -9,14 +9,22 @@
  * a referenced variable is declared and whether it is used compatibly with an
  * operator.
  *
- * There are two symbol sources: the explicit `var name: type` declarations, and
+ * There are three symbol sources: the explicit `var name: type` declarations,
  * the `form { … }` fields on start events and user tasks (a field binds the
- * process variable named by its id).
+ * process variable named by its id), and an event handler's catch-parameter
+ * bindings (`on error "X" (code c, message m)` declares `c`/`m` as `string` —
+ * the code/message text an event carries). An explicit `var` always keeps
+ * precedence over either of the other two sources.
  */
 
 import { AstUtils } from 'langium';
 import type { Process, VarType } from './generated/ast.js';
-import { isVarDecl, isStartEvent, isUserTask } from './generated/ast.js';
+import {
+  isOnHandler,
+  isVarDecl,
+  isStartEvent,
+  isUserTask,
+} from './generated/ast.js';
 
 /**
  * A resolved variable: its declared name and its declared type.
@@ -73,6 +81,18 @@ export class DefaultVariableSymbolProvider implements VariableSymbolProvider {
           if (!table.has(field.id)) {
             table.set(field.id, { name: field.id, type: field.type });
           }
+        }
+      }
+    }
+    // Event-handler catch-parameter bindings each declare a `string` process
+    // variable (the code/message text of the event they caught). An explicit
+    // `var` (or a form field, whichever ran first above) of the same name
+    // keeps precedence.
+    for (const node of AstUtils.streamAst(process)) {
+      if (!isOnHandler(node)) continue;
+      for (const binding of node.bindings) {
+        if (!table.has(binding.variable)) {
+          table.set(binding.variable, { name: binding.variable, type: 'string' });
         }
       }
     }

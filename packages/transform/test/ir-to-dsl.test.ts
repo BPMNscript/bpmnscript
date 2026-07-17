@@ -1037,10 +1037,10 @@ describe('irToDsl — fenced script task', () => {
 // ---------------------------------------------------------------------------
 // 7. Sub-process emission (multi-line `subprocess { … }` groups).
 //
-// The `subprocess` construct is Task-1 grammar, not exercised here through a
-// re-parse (these tests are IR-literal-driven and grammar-independent). They
-// assert the emitted text: the opening line, the child body restructured by a
-// fresh Emitter and indented one level deeper, and the closing brace.
+// The `subprocess` surface is defined in the language package; these
+// IR-literal-driven tests do not re-parse. They assert the emitted text: the
+// opening line, the child body restructured by a fresh Emitter and indented one
+// level deeper, and the closing brace.
 // ---------------------------------------------------------------------------
 
 describe('irToDsl — sub-process emission', () => {
@@ -1245,9 +1245,9 @@ describe('irToDsl — sub-process emission', () => {
 // ---------------------------------------------------------------------------
 // 8. Call-activity emission (single-line `call <id> { … }` statements).
 //
-// IR-literal-driven and grammar-independent: these assert the emitted text
+// IR-literal-driven and parser-free: these assert the emitted text
 // (canonical member order, mapping shorthand, version print contract), not a
-// re-parse — the `call` grammar lands separately.
+// re-parse — the parser lives in the language package.
 // ---------------------------------------------------------------------------
 
 describe('irToDsl — call activity', () => {
@@ -1358,5 +1358,194 @@ describe('irToDsl — call activity', () => {
     expect(callIdx).toBeGreaterThan(beforeIdx);
     expect(afterIdx).toBeGreaterThan(callIdx);
     expect(hasGoto(dsl)).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Event layer: declarations, throws, emits, handlers.
+//
+// These fixtures are printed and asserted directly (no re-parse): the parser
+// lives in the language package, so the full round-trip is exercised by the
+// workspace-level tests instead.
+// ---------------------------------------------------------------------------
+
+describe('irToDsl — event layer', () => {
+  it('prints declarations, throws, emits, and trailing handlers in order', () => {
+    const ir: BpmnProcess = {
+      id: 'proc',
+      isExecutable: true,
+      errorMessages: [{ code: 'PF', message: 'boom' }],
+      flowElements: [
+        { kind: 'startEvent', id: 'PStart' },
+        { kind: 'userTask', id: 'Work' },
+        {
+          kind: 'intermediateThrowEvent',
+          id: 'Ping',
+          eventDefinition: { kind: 'escalation', escalationCode: 'LS' },
+        },
+        {
+          kind: 'endEvent',
+          id: 'Boom',
+          eventDefinition: { kind: 'error', errorCode: 'PF' },
+        },
+        {
+          kind: 'subProcess',
+          id: 'OnPF',
+          triggeredByEvent: true,
+          flowElements: [
+            {
+              kind: 'startEvent',
+              id: 'PFStart',
+              eventDefinition: {
+                kind: 'error',
+                errorCode: 'PF',
+                codeVariable: 'c',
+                messageVariable: 'm',
+              },
+            },
+            { kind: 'userTask', id: 'Recover' },
+            { kind: 'endEvent', id: 'PFEnd' },
+          ],
+          sequenceFlows: [
+            { id: 'SF_PFStart_Recover', sourceRef: 'PFStart', targetRef: 'Recover' },
+            { id: 'SF_Recover_PFEnd', sourceRef: 'Recover', targetRef: 'PFEnd' },
+          ],
+        },
+        {
+          kind: 'subProcess',
+          id: 'OnLS',
+          triggeredByEvent: true,
+          flowElements: [
+            {
+              kind: 'startEvent',
+              id: 'LSStart',
+              isInterrupting: false,
+              eventDefinition: {
+                kind: 'escalation',
+                escalationCode: 'LS',
+                codeVariable: 'v',
+              },
+            },
+            { kind: 'userTask', id: 'Note' },
+            { kind: 'endEvent', id: 'LSEnd' },
+          ],
+          sequenceFlows: [
+            { id: 'SF_LSStart_Note', sourceRef: 'LSStart', targetRef: 'Note' },
+            { id: 'SF_Note_LSEnd', sourceRef: 'Note', targetRef: 'LSEnd' },
+          ],
+        },
+      ],
+      sequenceFlows: [
+        { id: 'SF_PStart_Work', sourceRef: 'PStart', targetRef: 'Work' },
+        { id: 'SF_Work_Ping', sourceRef: 'Work', targetRef: 'Ping' },
+        { id: 'SF_Ping_Boom', sourceRef: 'Ping', targetRef: 'Boom' },
+      ],
+    };
+
+    expect(irToDsl(ir)).toBe(
+      [
+        'process proc {',
+        '  error "PF" message "boom"',
+        '  start PStart',
+        '  user Work',
+        '  emit escalation Ping "LS"',
+        '  throw error Boom "PF"',
+        '  on error "PF" (code c, message m) {',
+        '    start PFStart',
+        '    user Recover',
+        '    end PFEnd',
+        '  }',
+        '  on escalation "LS" (code v) alongside {',
+        '    start LSStart',
+        '    user Note',
+        '    end LSEnd',
+        '  }',
+        '}',
+        '',
+      ].join('\n'),
+    );
+  });
+
+  it('prints an escalation end event as a throw, and a plain end as end', () => {
+    const ir: BpmnProcess = {
+      id: 'p',
+      isExecutable: true,
+      flowElements: [
+        { kind: 'startEvent', id: 'S' },
+        {
+          kind: 'endEvent',
+          id: 'Esc',
+          eventDefinition: { kind: 'escalation', escalationCode: 'X' },
+        },
+      ],
+      sequenceFlows: [{ id: 'F', sourceRef: 'S', targetRef: 'Esc' }],
+    };
+    const dsl = irToDsl(ir);
+    expect(dsl).toContain('throw escalation Esc "X"');
+    expect(dsl).not.toContain('end Esc');
+  });
+
+  it('prints a plain end event as end', () => {
+    const ir: BpmnProcess = {
+      id: 'p',
+      isExecutable: true,
+      flowElements: [
+        { kind: 'startEvent', id: 'S' },
+        { kind: 'endEvent', id: 'Done' },
+      ],
+      sequenceFlows: [{ id: 'F', sourceRef: 'S', targetRef: 'Done' }],
+    };
+    expect(irToDsl(ir)).toContain('end Done');
+  });
+
+  it('nests a construct inside a handler body two levels deep', () => {
+    const ir: BpmnProcess = {
+      id: 'p',
+      isExecutable: true,
+      flowElements: [
+        { kind: 'startEvent', id: 'S' },
+        { kind: 'endEvent', id: 'E' },
+        {
+          kind: 'subProcess',
+          id: 'H',
+          triggeredByEvent: true,
+          flowElements: [
+            {
+              kind: 'startEvent',
+              id: 'HS',
+              eventDefinition: { kind: 'error', errorCode: 'C' },
+            },
+            {
+              kind: 'exclusiveGateway',
+              id: 'Gateway_HS_split',
+              defaultFlowId: 'DF',
+            },
+            { kind: 'userTask', id: 'A' },
+            { kind: 'exclusiveGateway', id: 'Gateway_HS_join' },
+            { kind: 'endEvent', id: 'HE' },
+          ],
+          sequenceFlows: [
+            { id: 'F1', sourceRef: 'HS', targetRef: 'Gateway_HS_split' },
+            {
+              id: 'F2',
+              sourceRef: 'Gateway_HS_split',
+              targetRef: 'A',
+              conditionExpression: '${amount > 1000}',
+            },
+            { id: 'DF', sourceRef: 'Gateway_HS_split', targetRef: 'Gateway_HS_join' },
+            { id: 'F3', sourceRef: 'A', targetRef: 'Gateway_HS_join' },
+            { id: 'F4', sourceRef: 'Gateway_HS_join', targetRef: 'HE' },
+          ],
+        },
+      ],
+      sequenceFlows: [{ id: 'F', sourceRef: 'S', targetRef: 'E' }],
+    };
+    const dsl = irToDsl(ir);
+    // The handler header sits at one indent level, its `if` at two, its body at
+    // three — the gateway pair is elided into the `if`.
+    expect(dsl).toContain('\n  on error "C" {\n');
+    expect(dsl).toContain('\n    if (amount > 1000) {\n');
+    expect(dsl).toContain('\n      user A\n');
+    expect(dsl).not.toContain('gateway');
   });
 });

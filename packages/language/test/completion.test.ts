@@ -209,6 +209,62 @@ describe('structural keyword snippets', () => {
   });
 });
 
+describe('event-layer structure snippets', () => {
+  test('`on` scaffolds a trigger/code choice and a brace body', async () => {
+    const item = (await completionItems('process p {\n  \n}', 1, 2)).find(
+      (i) => i.label === 'on',
+    );
+    expect(item?.insertTextFormat).toBe(InsertTextFormat.Snippet);
+    const text = inserted(item!)!;
+    expect(text).toContain('${1|error,escalation|}');
+    expect(text).toContain('{');
+    expect(text).toContain('}');
+  });
+
+  test('`throw` scaffolds a trigger/code choice', async () => {
+    const item = (await completionItems('process p {\n  \n}', 1, 2)).find(
+      (i) => i.label === 'throw',
+    );
+    expect(item?.insertTextFormat).toBe(InsertTextFormat.Snippet);
+    expect(inserted(item!)).toContain('${1|error,escalation|}');
+  });
+
+  test('`emit` scaffolds only the escalation code (its only continuing kind)', async () => {
+    const item = (await completionItems('process p {\n  \n}', 1, 2)).find(
+      (i) => i.label === 'emit',
+    );
+    expect(item?.insertTextFormat).toBe(InsertTextFormat.Snippet);
+    expect(inserted(item!)).toContain('escalation');
+  });
+});
+
+describe('event-layer ID-position completion (soft trigger/field words)', () => {
+  test('`error` and `escalation` are offered at the `on` trigger position', async () => {
+    const line = '  on ';
+    const labels = await labelsAt(`process p {\n${line}\n}`, 1, line.length);
+    expect(labels).toEqual(expect.arrayContaining(['error', 'escalation']));
+  });
+
+  test('`error` and `escalation` are offered at the `throw` trigger position', async () => {
+    const line = '  throw ';
+    const labels = await labelsAt(`process p {\n${line}\n}`, 1, line.length);
+    expect(labels).toEqual(expect.arrayContaining(['error', 'escalation']));
+  });
+
+  test('only `escalation` is offered at the `emit` trigger position', async () => {
+    const line = '  emit ';
+    const labels = await labelsAt(`process p {\n${line}\n}`, 1, line.length);
+    expect(labels).toContain('escalation');
+    expect(labels).not.toContain('error');
+  });
+
+  test('`code` and `message` are offered inside a handler binding parameter list', async () => {
+    const line = '  on error "X" (';
+    const labels = await labelsAt(`process p {\n${line}\n}`, 1, line.length);
+    expect(labels).toEqual(expect.arrayContaining(['code', 'message']));
+  });
+});
+
 describe('non-structural keywords fall through', () => {
   test('`VarType` literals stay plain keyword completions, not snippets', async () => {
     // After `var x:` the grammar expects a VarType; those keywords are not snippets.

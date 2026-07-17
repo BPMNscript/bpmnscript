@@ -30,14 +30,22 @@
  *   `calledElement`, a `calledElementBinding="version"` with no
  *   `calledElementVersion`, an unrecognized `calledElementBinding` value
  *   (e.g. `versionTag`), or an `operaton:in`/`operaton:out` mapping using a
- *   shape the IR cannot represent → {@link UnsupportedCallActivityError}.
+ *   shape the IR cannot represent → {@link UnsupportedCallActivityError};
+ * - an event-layer construct shaped in a way this tool's surface cannot
+ *   express — an event handler with the wrong start-event or definition
+ *   count, or with incoming/outgoing sequence flows; a non-interrupting
+ *   error handler; a throw or emit whose definition resolves to no code; an
+ *   error definition on an emit; a "none" emit; or two declared-message
+ *   roots that disagree — → {@link UnsupportedEventFeatureError}.
  *
  * Content the IR does not carry but that causes **no semantic loss** is
  * **dropped with a warning** rather than refused — see the `warnings`
  * channel returned by `xmlToIr` (extra Operaton/camunda extension attributes
  * and extension elements beyond `assignee`/`formKey`/`class`/`expression`/
  * `delegateExpression`/`type`/`topic`/`calledElementBinding`/
- * `calledElementVersion`, and lanes).
+ * `calledElementVersion`/`errorCodeVariable`/`errorMessageVariable`/
+ * `escalationCodeVariable`/`errorMessage`, lanes, a genuine label on an event
+ * handler/throw/emit, and an unreferenced message-less error/escalation root).
  *
  * All refusal errors share the abstract base {@link UnsupportedConstructError}
  * so a consumer can classify the whole family with a single `instanceof`
@@ -125,12 +133,19 @@ export class UnsupportedFormFieldTypeError extends UnsupportedConstructError {
  * kind that lies outside the supported subset.
  *
  * The supported subset is `bpmn:startEvent`, `bpmn:endEvent`,
- * `bpmn:userTask`, `bpmn:serviceTask`, `bpmn:scriptTask`,
- * `bpmn:exclusiveGateway`, `bpmn:parallelGateway`, an embedded
- * `bpmn:subProcess`, `bpmn:callActivity`, and `bpmn:sequenceFlow`. Anything
- * else (`bpmn:intermediateCatchEvent`, an event sub-process with
- * `triggeredByEvent="true"`, `bpmn:transaction`, `bpmn:adHocSubProcess`,
- * etc.) raises this error so unsupported workflows fail loudly at import.
+ * `bpmn:intermediateThrowEvent` (an `emit`), `bpmn:userTask`,
+ * `bpmn:serviceTask`, `bpmn:scriptTask`, `bpmn:exclusiveGateway`,
+ * `bpmn:parallelGateway`, an embedded `bpmn:subProcess` (plain, or an event
+ * handler when `triggeredByEvent="true"`), `bpmn:callActivity`, and
+ * `bpmn:sequenceFlow`. Anything else (`bpmn:intermediateCatchEvent`,
+ * `bpmn:transaction`, `bpmn:adHocSubProcess`, etc.) raises this error so
+ * unsupported workflows fail loudly at import.
+ *
+ * A supported *kind* that is nonetheless shaped in a way this tool's surface
+ * cannot express — an event handler with the wrong start-event/definition
+ * count, or a throw/emit with no resolvable code — refuses via {@link
+ * UnsupportedEventFeatureError} or {@link UnsupportedEventDefinitionError}
+ * instead: the element kind itself is fine, only its specific shape is not.
  */
 export class UnsupportedElementError extends UnsupportedConstructError {
   /** The fully-qualified BPMN type name, e.g. `bpmn:ParallelGateway`. */
@@ -143,9 +158,10 @@ export class UnsupportedElementError extends UnsupportedConstructError {
       `The BPMN element ${qname}` +
         (elementId ? ` (id='${elementId}')` : '') +
         ' is a kind that this tool cannot import. ' +
-        'Only start/end events, user tasks, service tasks, script tasks, ' +
-        'exclusive gateways, parallel gateways, embedded sub-processes, ' +
-        'call activities, and sequence flows are supported.',
+        'Only start/end events, throws, emits, event handlers, user tasks, ' +
+        'service tasks, script tasks, exclusive gateways, parallel ' +
+        'gateways, embedded sub-processes, call activities, and sequence ' +
+        'flows are supported.',
     );
     this.name = 'UnsupportedElementError';
     this.qname = qname;
@@ -188,16 +204,25 @@ export class UnsupportedCallActivityError extends UnsupportedConstructError {
 }
 
 /**
- * Thrown by {@link xmlToIr} when a start or end event carries an event
- * definition (timer, message, signal, error, terminate, …). The IR models
- * only plain start and end events, so the trigger/result semantics of a
- * defined event cannot be represented and must not be silently dropped.
+ * Thrown by {@link xmlToIr} when a start event, end event, or intermediate
+ * throw carries an event definition kind this tool does not import at that
+ * position: any definition on a plain start event (outside an event
+ * handler); any non-error/escalation definition (timer, message, signal,
+ * terminate, …) on an event handler's start, an end event, or an
+ * intermediate throw. The DSL's event layer models only the error/
+ * escalation catch (`on`) and throw (`throw`/`emit`) forms, so any other
+ * trigger/result semantics cannot be represented and must not be silently
+ * dropped.
+ *
+ * A definition of the *right* kind but the *wrong shape* (e.g. an error
+ * throw resolving to no code) refuses via {@link UnsupportedEventFeatureError}
+ * instead — this class is reserved for the wrong kind of definition.
  */
 export class UnsupportedEventDefinitionError extends UnsupportedConstructError {
-  /** The BPMN `id` of the offending start/end event. */
+  /** The BPMN `id` of the offending start/end/intermediate-throw event. */
   readonly elementId: string;
-  /** Whether the offending event is a start event or an end event. */
-  readonly eventKind: 'start' | 'end';
+  /** Which position the offending event occupies. */
+  readonly eventKind: 'start' | 'end' | 'intermediate throw';
   /**
    * The moddle `$type` of the first event definition found, e.g.
    * `bpmn:TimerEventDefinition` or `bpmn:MessageEventDefinition`.
@@ -206,18 +231,59 @@ export class UnsupportedEventDefinitionError extends UnsupportedConstructError {
 
   constructor(
     elementId: string,
-    eventKind: 'start' | 'end',
+    eventKind: 'start' | 'end' | 'intermediate throw',
     definitionType: string,
   ) {
     super(
       `The ${eventKind} event '${elementId}' carries a ${friendlyEventDefinition(definitionType)} ` +
         `definition (${definitionType}) that this tool cannot import. ` +
-        'Only plain start and end events are supported.',
+        "Only plain start and end events, an event handler's error/" +
+        'escalation catch, and a typed error/escalation throw are supported.',
     );
     this.name = 'UnsupportedEventDefinitionError';
     this.elementId = elementId;
     this.eventKind = eventKind;
     this.definitionType = definitionType;
+  }
+}
+
+/**
+ * Thrown by {@link xmlToIr} when an event-layer construct carries the right
+ * *kind* of event definition but is shaped in a way this tool's surface
+ * cannot express — as opposed to {@link UnsupportedEventDefinitionError},
+ * which refuses the wrong kind of definition outright.
+ *
+ * Concretely: an event handler (`triggeredByEvent="true"` sub-process) whose
+ * start-event count is not exactly one, whose start carries zero or
+ * multiple definitions, or which itself carries incoming/outgoing sequence
+ * flows; a non-interrupting error handler (`isInterrupting="false"` on an
+ * error trigger — BPMN forbids it); a typed end event or escalation
+ * intermediate throw whose definition resolves to no code; an error
+ * definition on an intermediate throw (no such BPMN form); a "none"
+ * intermediate throw; two `bpmn:Error` root elements sharing a code but
+ * disagreeing about the declared message; and a declared message on a root
+ * with no code to key it by.
+ *
+ * Mirrors {@link UnsupportedCallActivityError}: the shape is refused
+ * outright — never narrowed or silently reinterpreted — and `detail` names
+ * the concrete offending shape.
+ */
+export class UnsupportedEventFeatureError extends UnsupportedConstructError {
+  /** The BPMN `id` of the offending element (or root element). */
+  readonly elementId: string;
+  /** A description of the unrepresentable shape. */
+  readonly detail: string;
+
+  constructor(elementId: string, detail: string) {
+    super(
+      `The event construct at '${elementId}' cannot be imported: ${detail}. ` +
+        "Supported event handlers catch a single error or escalation on " +
+        "their one start event; supported throws and emits resolve to a " +
+        'single, non-empty error or escalation code.',
+    );
+    this.name = 'UnsupportedEventFeatureError';
+    this.elementId = elementId;
+    this.detail = detail;
   }
 }
 

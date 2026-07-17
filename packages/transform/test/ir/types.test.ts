@@ -18,13 +18,18 @@
 
 import { describe, it, expect } from 'vitest';
 import type {
+  BpmnProcess,
   CallActivity,
+  EndEvent,
+  EventDefinition,
   FlowContainer,
   FlowElement,
+  IntermediateThrowEvent,
   ParallelGateway,
   ServiceTask,
   ServiceTaskBinding,
   ScriptTask,
+  StartEvent,
   SubProcess,
 } from '../../src/ir/types.js';
 import { IR_TYPE_NAMES } from '../../src/index.js';
@@ -61,6 +66,8 @@ function describeFlowElement(fe: FlowElement): string {
       return 'subProcess';
     case 'callActivity':
       return 'callActivity';
+    case 'intermediateThrowEvent':
+      return 'intermediateThrow';
     default: {
       // Exhaustiveness check: if TypeScript infers `fe` as `never` here,
       // every union variant is handled. A compile error on the line below
@@ -343,6 +350,122 @@ describe('CallActivity — leaf FlowElement union member', () => {
   });
 });
 
+describe('IntermediateThrowEvent — event-layer FlowElement union member', () => {
+  it('an IntermediateThrowEvent literal is assignable to FlowElement', () => {
+    // Its `eventDefinition` is required: a none intermediate throw is
+    // inexpressible in the surface and refused on import, so the type mirrors
+    // that by making the field mandatory.
+    const emit: FlowElement = {
+      kind: 'intermediateThrowEvent',
+      id: 'Throw_p_1',
+      eventDefinition: { kind: 'escalation', escalationCode: 'LOW_STOCK' },
+    } satisfies IntermediateThrowEvent;
+
+    expect(emit.kind).toBe('intermediateThrowEvent');
+    // A leaf: it carries no container arrays.
+    expect('flowElements' in emit).toBe(false);
+  });
+
+  it('exhaustive switch includes an intermediateThrowEvent arm (compile-time + runtime)', () => {
+    const emit: FlowElement = {
+      kind: 'intermediateThrowEvent',
+      id: 'T',
+      eventDefinition: { kind: 'escalation', escalationCode: 'X' },
+    };
+    // A missing arm would make the `never` assignment in the helper's default
+    // branch a compile error.
+    expect(describeFlowElement(emit)).toBe('intermediateThrow');
+  });
+});
+
+describe('EventDefinition — error / escalation union', () => {
+  it('accepts an error definition with a code and both catch bindings', () => {
+    // On a catch definition the bindings name the process variables the caught
+    // code and message text fill (the `e` in `catch (Exception e)`).
+    const def: EventDefinition = {
+      kind: 'error',
+      errorCode: 'PAYMENT_FAILED',
+      codeVariable: 'c',
+      messageVariable: 'm',
+    };
+    expect(def.kind).toBe('error');
+  });
+
+  it('accepts a catch-all error definition (no code)', () => {
+    // A missing code on a catch definition means catch-all: it catches any
+    // error, and export emits no `errorRef`.
+    const def: EventDefinition = { kind: 'error' };
+    expect('errorCode' in def).toBe(false);
+  });
+
+  it('accepts an escalation definition with a code and a single binding', () => {
+    // Escalations carry a code but no message text, so only `codeVariable`.
+    const def: EventDefinition = {
+      kind: 'escalation',
+      escalationCode: 'LOW_STOCK',
+      codeVariable: 'v',
+    };
+    expect(def.kind).toBe('escalation');
+  });
+});
+
+describe('StartEvent / EndEvent / SubProcess — event-layer additions', () => {
+  it('a StartEvent carries an event definition and non-default isInterrupting', () => {
+    // `isInterrupting` is stored only when non-default (`false`) — BPMN defaults
+    // to `true` and the serializer drops it, so true-or-absent keeps IR
+    // deep-equality trivial.
+    const start: StartEvent = {
+      kind: 'startEvent',
+      id: 'S',
+      isInterrupting: false,
+      eventDefinition: {
+        kind: 'escalation',
+        escalationCode: 'LS',
+        codeVariable: 'v',
+      },
+    };
+    expect(start.isInterrupting).toBe(false);
+    expect(start.eventDefinition?.kind).toBe('escalation');
+  });
+
+  it('an EndEvent carries an event definition (a typed throw)', () => {
+    const end: EndEvent = {
+      kind: 'endEvent',
+      id: 'E',
+      eventDefinition: { kind: 'error', errorCode: 'PF' },
+    };
+    expect(end.eventDefinition?.kind).toBe('error');
+  });
+
+  it('a SubProcess flags triggeredByEvent for an event sub-process', () => {
+    // `triggeredByEvent` is only ever `true` (absent = a plain sub-process).
+    const sub: SubProcess = {
+      kind: 'subProcess',
+      id: 'OnPF',
+      triggeredByEvent: true,
+      flowElements: [],
+      sequenceFlows: [],
+    };
+    expect(sub.triggeredByEvent).toBe(true);
+  });
+});
+
+describe('BpmnProcess — errorMessages', () => {
+  it('carries declared error messages in insertion order', () => {
+    const process: BpmnProcess = {
+      id: 'p',
+      isExecutable: true,
+      errorMessages: [
+        { code: 'PF', message: 'Payment was declined' },
+        { code: 'OOS', message: 'Out of stock' },
+      ],
+      flowElements: [],
+      sequenceFlows: [],
+    };
+    expect(process.errorMessages?.map((m) => m.code)).toEqual(['PF', 'OOS']);
+  });
+});
+
 describe('IR_TYPE_NAMES', () => {
   it('lists ServiceTask and ScriptTask, and no longer ServiceTaskJavaClass', () => {
     expect(IR_TYPE_NAMES).toContain('ServiceTask');
@@ -357,5 +480,10 @@ describe('IR_TYPE_NAMES', () => {
 
   it('lists CallActivity', () => {
     expect(IR_TYPE_NAMES).toContain('CallActivity');
+  });
+
+  it('lists IntermediateThrowEvent and EventDefinition', () => {
+    expect(IR_TYPE_NAMES).toContain('IntermediateThrowEvent');
+    expect(IR_TYPE_NAMES).toContain('EventDefinition');
   });
 });

@@ -57,6 +57,41 @@ const CLOSE_BRACE_TOKEN_NAME = '}';
 const VAR_KEYWORD_TOKEN_NAME = 'var';
 
 /**
+ * Token/rule names for the header-typo diagnostic. `ErrorDecl` (`error "CODE"
+ * message "…"`) is the only declaration whose first word is a plain `ID`
+ * rather than a keyword — every statement and every other declaration starts
+ * with one. That makes it the sole ID-led alternative in the process-header
+ * region, so a *mistyped statement keyword* there (`usr Review` meaning
+ * `user Review`) mis-predicts into `ErrorDecl`: the parser commits to
+ * `kind=ID` and then fails expecting the declaration's `code=STRING`. That
+ * exact shape — a `STRING` expected inside `ErrorDecl` whose already-consumed
+ * leading word is not literally `error` — is the typo, distinct from a
+ * genuine `error` declaration gone wrong elsewhere.
+ *
+ * `ErrorDecl` (`kind=ID code=STRING field=ID message=STRING`) has *two* `STRING`
+ * positions. Only the first (the `code`, right after the leading `kind` word)
+ * marks the header typo. When the *second* `STRING` (the `message`) is malformed
+ * — a genuine `error "CODE" message …` whose text was left unquoted — the token
+ * just consumed is the `field` word `message`, not the leading word, so both the
+ * leading `error` and the field word `message` are excluded; a failure preceded
+ * by either is a real declaration gone wrong and takes the default message.
+ */
+const ERROR_DECL_RULE_NAME = 'ErrorDecl';
+const STRING_TOKEN_NAME = 'STRING';
+const ERROR_DECL_KEYWORD = 'error';
+const ERROR_DECL_FIELD_WORD = 'message';
+
+/**
+ * Langium's generated Chevrotain rules carry an internal trailing zero-width
+ * space on `ruleName` (`withRuleSuffix` in `langium-parser.ts`) so rule names
+ * never collide with reserved JavaScript identifiers; strip it before
+ * comparing against a plain grammar rule name like `'ErrorDecl'`.
+ */
+function bareRuleName(ruleName: string): string {
+  return ruleName.replace(/\u200b+$/, '');
+}
+
+/**
  * Option-object types for the two overridden Chevrotain error builders. Derived
  * from the base method signatures so the exact (Chevrotain) field shapes are
  * reused without naming the transitive `chevrotain` package.
@@ -87,12 +122,20 @@ export class BpmnScriptParserErrorMessageProvider extends LangiumParserErrorMess
    * reserved-word guidance; otherwise the default mismatched-token message.
    */
   override buildMismatchTokenMessage(options: MismatchTokenOptions): string {
-    const { expected, actual } = options;
+    const { expected, actual, previous, ruleName } = options;
     if (
       actual.tokenType.name === VAR_KEYWORD_TOKEN_NAME &&
       expected.name === CLOSE_BRACE_TOKEN_NAME
     ) {
       return this.varPlacementMessage();
+    }
+    if (
+      bareRuleName(ruleName) === ERROR_DECL_RULE_NAME &&
+      expected.name === STRING_TOKEN_NAME &&
+      previous.image !== ERROR_DECL_KEYWORD &&
+      previous.image !== ERROR_DECL_FIELD_WORD
+    ) {
+      return this.declarationOrStepMessage(previous.image);
     }
     if (
       expected.name === ID_TOKEN_NAME &&
@@ -112,6 +155,21 @@ export class BpmnScriptParserErrorMessageProvider extends LangiumParserErrorMess
     return (
       "A variable declaration ('var …') must come before the first step in the " +
       'process, with the other declarations. Move it above the first statement.'
+    );
+  }
+
+  /**
+   * Guidance for a mistyped statement keyword in the process-header region
+   * (e.g. `usr Review` meaning `user Review`). See the constants above for
+   * why this exact parse shape identifies the mistake. Free of BPMN
+   * vocabulary (ADR-0013).
+   */
+  private declarationOrStepMessage(word: string): string {
+    return (
+      `'${word}' is neither a known declaration nor a step keyword. ` +
+      'The only declaration that starts with a plain word is ' +
+      `'error "CODE" message "…"'; every step starts with a keyword such as ` +
+      "'start', 'user', 'service', 'if', 'on', 'throw', 'emit', …"
     );
   }
 

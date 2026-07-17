@@ -37,6 +37,8 @@ import {
   makeDefaultFlowId,
   makeStartEventId,
   makeEndEventId,
+  makeThrowEventId,
+  makeEventSubProcessId,
 } from '../src/synthesize-ids.js';
 import type {
   BpmnProcess,
@@ -1156,7 +1158,328 @@ describe('astToIr — call activity lowering', () => {
   });
 });
 
+// ── 15. Event handlers (`on`) — out-of-chain event sub-processes ─────────────
+
+describe('astToIr — on-handler lowering', () => {
+  it('lowers a handler outside the sequence chain (flows go around it)', async () => {
+    const result = await ir(
+      `process p {
+        service A { class = "x.A" }
+        on error "PF" { service R { class = "x.R" } }
+      }`,
+    );
+
+    // The parent chain skips the handler: start → A → end, with no flow into or
+    // out of the event sub-process node.
+    expect(flow(result, 'StartEvent_p', 'A')).toBeDefined();
+    expect(flow(result, 'A', 'EndEvent_p')).toBeDefined();
+    const handlerId = makeEventSubProcessId('p_1');
+    for (const f of result.sequenceFlows) {
+      expect(f.sourceRef).not.toBe(handlerId);
+      expect(f.targetRef).not.toBe(handlerId);
+    }
+
+    // The handler is a triggeredByEvent sub-process in the parent's elements.
+    const handler = subProcess(result, handlerId);
+    expect(handler.triggeredByEvent).toBe(true);
+
+    // Its body is its own container: start(def) → R → end.
+    const startId = makeStartEventId(handlerId, new Set());
+    const endId = makeEndEventId(handlerId, new Set());
+    expect(handler.flowElements.map((fe) => fe.id)).toEqual([
+      startId,
+      'R',
+      endId,
+    ]);
+    expect(flow(handler, startId, 'R')).toBeDefined();
+    expect(flow(handler, 'R', endId)).toBeDefined();
+
+    // The trigger lands on the body's start event; no isInterrupting stored.
+    const start = only(handler, 'startEvent');
+    expect(start.eventDefinition).toEqual({ kind: 'error', errorCode: 'PF' });
+    expect(start.isInterrupting).toBeUndefined();
+  });
+
+  it('maps escalation bindings and alongside onto the start event', async () => {
+    const result = await ir(
+      `process p {
+        service A { class = "x.A" }
+        on escalation "LS" (code v) alongside { service R { class = "x.R" } }
+      }`,
+    );
+    const handler = subProcess(result, makeEventSubProcessId('p_1'));
+    const start = only(handler, 'startEvent');
+    expect(start.eventDefinition).toEqual({
+      kind: 'escalation',
+      escalationCode: 'LS',
+      codeVariable: 'v',
+    });
+    expect(start.isInterrupting).toBe(false);
+  });
+
+  it('maps both error bindings (code + message)', async () => {
+    const result = await ir(
+      `process p {
+        on error "PF" (code c, message m) { service R { class = "x.R" } }
+      }`,
+    );
+    const handler = subProcess(result, makeEventSubProcessId('p_0'));
+    const start = only(handler, 'startEvent');
+    expect(start.eventDefinition).toEqual({
+      kind: 'error',
+      errorCode: 'PF',
+      codeVariable: 'c',
+      messageVariable: 'm',
+    });
+  });
+
+  it('lowers a catch-all handler without a code', async () => {
+    const result = await ir(
+      `process p { on error { service R { class = "x.R" } } }`,
+    );
+    const handler = subProcess(result, makeEventSubProcessId('p_0'));
+    const start = only(handler, 'startEvent');
+    expect(start.eventDefinition).toEqual({ kind: 'error' });
+  });
+
+  it('honours an explicit start as the trigger-carrying start (id + label kept)', async () => {
+    const result = await ir(
+      `process p {
+        on error "PF" { start In "Caught" service R { class = "x.R" } }
+      }`,
+    );
+    const handler = subProcess(result, makeEventSubProcessId('p_0'));
+    // No StartEvent_… synthesized — the explicit start is the trigger start.
+    const ids = handler.flowElements.map((fe) => fe.id);
+    expect(ids).toContain('In');
+    expect(ids).not.toContain(makeStartEventId(makeEventSubProcessId('p_0'), new Set()));
+    const start = only(handler, 'startEvent');
+    expect(start.id).toBe('In');
+    expect(start.name).toBe('Caught');
+    expect(start.eventDefinition).toEqual({ kind: 'error', errorCode: 'PF' });
+  });
+
+  it('roots the handler body coordinate at its own structural coordinate', async () => {
+    // Handler at process index 2; an `if` at handler-body index 1 → coord p_2_1.
+    const result = await ir(
+      `process p {
+        service A { class = "x.A" }
+        service B { class = "x.B" }
+        on error "PF" {
+          service X { class = "x.X" }
+          if (c) { service Y { class = "x.Y" } }
+        }
+      }`,
+    );
+    const handler = subProcess(result, makeEventSubProcessId('p_2'));
+    const gatewayIds = handler.flowElements
+      .filter((fe) => fe.kind === 'exclusiveGateway')
+      .map((fe) => fe.id);
+    expect(gatewayIds).toContain(makeGatewaySplitId('p_2_1'));
+    expect(gatewayIds).toContain(makeGatewayJoinId('p_2_1'));
+  });
+
+  it('composes a handler nested inside a sub-process', async () => {
+    const result = await ir(
+      `process p {
+        subprocess S {
+          service A { class = "x.A" }
+          on error "PF" { service R { class = "x.R" } }
+        }
+      }`,
+    );
+    // subprocess S coordinate p_0 → handler body index 1 → EventSubProcess_p_0_1.
+    const sub = subProcess(result, 'S');
+    const handler = subProcess(sub, makeEventSubProcessId('p_0_1'));
+    expect(handler.triggeredByEvent).toBe(true);
+    // Every id in the document is unique across the nesting.
+    const all = allElementIdsDeep(result);
+    expect(new Set(all).size).toBe(all.length);
+  });
+
+  it('synthesizes start(def) → flow → end for an empty handler body', async () => {
+    const result = await ir(`process p { on error "PF" { } }`);
+    const handlerId = makeEventSubProcessId('p_0');
+    const handler = subProcess(result, handlerId);
+    const startId = makeStartEventId(handlerId, new Set());
+    const endId = makeEndEventId(handlerId, new Set());
+    expect(handler.flowElements.map((fe) => fe.id)).toEqual([startId, endId]);
+    expect(handler.sequenceFlows).toHaveLength(1);
+    expect(flow(handler, startId, endId)).toBeDefined();
+    const start = only(handler, 'startEvent');
+    expect(start.eventDefinition).toEqual({ kind: 'error', errorCode: 'PF' });
+  });
+});
+
+// ── 16. Throw / emit lowering ────────────────────────────────────────────────
+
+describe('astToIr — throw/emit lowering', () => {
+  it('lowers `throw` to a typed end event with no fall-through', async () => {
+    const result = await ir(
+      `process p {
+        service A { class = "x.A" }
+        throw error "PF"
+        service B { class = "x.B" }
+      }`,
+    );
+    const throwId = makeThrowEventId('p_1');
+    const thrown = byId(result, throwId);
+    expect(thrown.kind).toBe('endEvent');
+    expect((thrown as { eventDefinition?: unknown }).eventDefinition).toEqual({
+      kind: 'error',
+      errorCode: 'PF',
+    });
+    // Reached from A, but nothing falls through out of it (terminal).
+    expect(flow(result, 'A', throwId)).toBeDefined();
+    expect(result.sequenceFlows.some((f) => f.sourceRef === throwId)).toBe(
+      false,
+    );
+    // B is still lowered (a possible jump target) but not reached from the throw.
+    expect(byId(result, 'B')).toBeDefined();
+  });
+
+  it('honours an explicit id on a throw', async () => {
+    const result = await ir(`process p { throw escalation Failed "X" }`);
+    const thrown = byId(result, 'Failed');
+    expect(thrown.kind).toBe('endEvent');
+    expect((thrown as { eventDefinition?: unknown }).eventDefinition).toEqual({
+      kind: 'escalation',
+      escalationCode: 'X',
+    });
+  });
+
+  it('lowers `emit` to an intermediate throw wired into the chain', async () => {
+    const result = await ir(
+      `process p {
+        service A { class = "x.A" }
+        emit escalation "LS"
+        service B { class = "x.B" }
+      }`,
+    );
+    const emitId = makeThrowEventId('p_1');
+    const emitted = byId(result, emitId);
+    expect(emitted.kind).toBe('intermediateThrowEvent');
+    expect((emitted as { eventDefinition?: unknown }).eventDefinition).toEqual({
+      kind: 'escalation',
+      escalationCode: 'LS',
+    });
+    // prev → emit → next: a plain fall-through node.
+    expect(flow(result, 'A', emitId)).toBeDefined();
+    expect(flow(result, emitId, 'B')).toBeDefined();
+  });
+
+  it('honours an explicit id on an emit', async () => {
+    const result = await ir(`process p { emit escalation Ping "LS" }`);
+    expect(byId(result, 'Ping').kind).toBe('intermediateThrowEvent');
+  });
+});
+
+// ── 17. Error-message declarations ───────────────────────────────────────────
+
+describe('astToIr — error-message declarations', () => {
+  it('collects declarations in order', async () => {
+    const result = await ir(
+      `process p {
+        error "PF" message "boom"
+        error "LS" message "low"
+        service A { class = "x.A" }
+      }`,
+    );
+    expect(result.errorMessages).toEqual([
+      { code: 'PF', message: 'boom' },
+      { code: 'LS', message: 'low' },
+    ]);
+  });
+
+  it('keeps the first declaration of a duplicated code (no throw)', async () => {
+    const result = await ir(
+      `process p {
+        error "PF" message "first"
+        error "PF" message "second"
+        service A { class = "x.A" }
+      }`,
+    );
+    expect(result.errorMessages).toEqual([{ code: 'PF', message: 'first' }]);
+  });
+
+  it('omits errorMessages entirely when no declaration is present', async () => {
+    const result = await ir(`process p { service A { class = "x.A" } }`);
+    expect(result.errorMessages).toBeUndefined();
+  });
+});
+
+// ── 18. Totality under mis-placed / unknown-word constructs ──────────────────
+
+describe('astToIr — handler/throw/emit totality', () => {
+  it('keeps the chain intact around a mid-body handler', async () => {
+    const result = await ir(
+      `process p {
+        service A { class = "x.A" }
+        on error "X" { service R { class = "x.R" } }
+        service B { class = "x.B" }
+      }`,
+    );
+    // A flows directly to B; the handler is not on the chain.
+    expect(flow(result, 'A', 'B')).toBeDefined();
+    const handlerId = makeEventSubProcessId('p_1');
+    for (const f of result.sequenceFlows) {
+      expect(f.sourceRef).not.toBe(handlerId);
+      expect(f.targetRef).not.toBe(handlerId);
+    }
+  });
+
+  it('lowers an empty-code handler', async () => {
+    const result = await ir(`process p { on error "" { } }`);
+    const start = only(subProcess(result, makeEventSubProcessId('p_0')), 'startEvent');
+    expect(start.eventDefinition).toEqual({ kind: 'error', errorCode: '' });
+  });
+
+  it('lowers an unknown trigger word as an error handler', async () => {
+    const result = await ir(
+      `process p { on banana "X" { service R { class = "x.R" } } }`,
+    );
+    const start = only(subProcess(result, makeEventSubProcessId('p_0')), 'startEvent');
+    expect(start.eventDefinition).toEqual({ kind: 'error', errorCode: 'X' });
+  });
+
+  it('ignores an unknown binding field', async () => {
+    const result = await ir(
+      `process p { on error "X" (coed c) { service R { class = "x.R" } } }`,
+    );
+    const start = only(subProcess(result, makeEventSubProcessId('p_0')), 'startEvent');
+    expect(start.eventDefinition).toEqual({ kind: 'error', errorCode: 'X' });
+  });
+
+  it('lowers an unknown throw trigger as an error end event', async () => {
+    const result = await ir(`process p { throw banana "X" }`);
+    const thrown = byId(result, makeThrowEventId('p_0'));
+    expect(thrown.kind).toBe('endEvent');
+    expect((thrown as { eventDefinition?: unknown }).eventDefinition).toEqual({
+      kind: 'error',
+      errorCode: 'X',
+    });
+  });
+
+  it('lowers every emit as an escalation intermediate throw regardless of trigger', async () => {
+    for (const trigger of ['error', 'banana']) {
+      const result = await ir(`process p { emit ${trigger} "X" }`);
+      const emitted = byId(result, makeThrowEventId('p_0'));
+      expect(emitted.kind).toBe('intermediateThrowEvent');
+      expect((emitted as { eventDefinition?: unknown }).eventDefinition).toEqual(
+        { kind: 'escalation', escalationCode: 'X' },
+      );
+    }
+  });
+});
+
 // ── Local helpers ────────────────────────────────────────────────────────────
+
+/** Find a flow element by id (asserting exactly one such element). */
+function byId(container: FlowContainer, id: string): FlowElement {
+  const node = container.flowElements.find((fe) => fe.id === id);
+  expect(node).toBeDefined();
+  return node!;
+}
 
 /** Stable sort an array of objects by their `id` field for set comparison. */
 function sortById<T extends { id: string }>(items: T[]): T[] {

@@ -66,10 +66,30 @@
  * needs the same join-inlining, gateway re-keying, flow re-keying, and sorting
  * applied to its own arrays, independently, at every depth. {@link normalizeIr}
  * delegates to {@link normalizeContainer}, which recurses into each nested
- * sub-process. The sub-process id itself is an authored name (never
+ * sub-process. A *plain* sub-process id is an authored name (never
  * gateway-shaped), so it is never re-keyed — only its children are. For a
  * container with no sub-processes the recursion never fires, so flat-IR
  * normalization is byte-identical to before.
+ *
+ * ─────────────────────────────────────────────────────────────────────────
+ * **Event-handler (event sub-process) ids.** An `on` handler lowers to a
+ * `triggeredByEvent` sub-process, and — unlike a plain `subprocess` — the DSL
+ * has no id slot for it: its id is synthesised from a structural coordinate
+ * (`EventSubProcess_<coord>`) that shifts when a round-trip re-orders the
+ * container's statements (the restructurer collects throws/ends and re-emits
+ * handlers last, so index-derived coordinates move). Its id therefore does not
+ * survive verbatim, exactly like a synthesised gateway id — so it is re-keyed
+ * to a structural signature drawn from what the handler actually catches:
+ * `(trigger kind, code-or-catch-all, interrupting?)` read off the handler's
+ * trigger start event. A duplicate signature (which the validator forbids but
+ * the IR permits) gets a deterministic positional suffix, mirroring
+ * {@link buildGatewayCanonicalIds}. An event sub-process is a *disconnected*
+ * node — no sequence flow references it — so re-keying its id needs no flow
+ * rewrite. Its children keep their own ids: the trigger `start` and the `end`
+ * are authored in the handler body (they print explicitly and survive
+ * verbatim), and any nested gateway is re-keyed structurally like any other.
+ * A container with no handlers never builds this map, so flat/plain-nested
+ * normalization stays byte-identical.
  */
 
 import type {
@@ -143,6 +163,11 @@ function normalizeContainer<T extends FlowContainer>(container: T): T {
   // hand-named gateway and the synthesized gateway map identically.
   const gatewayIdMap = buildGatewayCanonicalIds(inlined);
 
+  // Derive a canonical structural id for every event-handler sub-process so a
+  // handler whose synthesised coordinate shifted across the round-trip maps
+  // identically to its counterpart.
+  const handlerIdMap = buildEventSubProcessCanonicalIds(inlined);
+
   const canonicalId = (id: string): string => gatewayIdMap.get(id) ?? id;
 
   // Re-key flow-element ids (only gateways are re-keyed) and drop the
@@ -151,9 +176,16 @@ function normalizeContainer<T extends FlowContainer>(container: T): T {
     .map((fe) => {
       // A nested container is normalized recursively: its body is its own
       // node/edge set, so it gets the identical per-container pipeline at its
-      // own depth. The sub-process id is an authored name (never
-      // gateway-shaped), so it is preserved verbatim, not re-keyed.
-      if (fe.kind === 'subProcess') return normalizeContainer(fe);
+      // own depth. A plain sub-process id is an authored name (never
+      // gateway-shaped), so it is preserved verbatim; an event-handler
+      // (`triggeredByEvent`) sub-process has no surface id and is re-keyed to
+      // its structural trigger signature, exactly like a synthesised gateway.
+      if (fe.kind === 'subProcess') {
+        const normalized = normalizeContainer(fe);
+        return fe.triggeredByEvent === true
+          ? { ...normalized, id: handlerIdMap.get(fe.id) ?? fe.id }
+          : normalized;
+      }
       if (!GATEWAY_KINDS.has(fe.kind)) return fe;
       const id = canonicalId(fe.id);
 
@@ -294,6 +326,58 @@ function buildGatewayCanonicalIds(ir: FlowContainer): Map<string, string> {
     const canonical = seen === 0 ? signature : `${signature}#${seen}`;
 
     map.set(fe.id, canonical);
+  }
+  return map;
+}
+
+/**
+ * Build a map from each event-handler sub-process's current id to a canonical
+ * structural id derived from what it catches.
+ *
+ * An `on` handler lowers to a `triggeredByEvent` sub-process whose id is a
+ * synthesised coordinate with no surface slot; that coordinate moves when a
+ * round-trip re-orders the container's statements, so the id does not survive
+ * verbatim. The signature is drawn from the handler's *trigger start event*:
+ * the trigger kind (`error`/`escalation`), the caught code (or a catch-all
+ * marker when the definition carries none), and whether the handler is
+ * non-interrupting (`alongside`). Two same-kind, same-code handlers in one
+ * container are a validator error, so a signature collision cannot arise from a
+ * valid program; should the IR contain one anyway, it receives a deterministic
+ * positional suffix (`#1`, `#2`, …) assigned in `flowElements` order — the
+ * {@link buildGatewayCanonicalIds} treatment.
+ *
+ * Only `triggeredByEvent` sub-processes are considered; a plain `subprocess`
+ * keeps its authored id. A container with no handlers returns an empty map.
+ *
+ * @param ir - The (already join-inlined) container.
+ * @returns Map of `originalHandlerId → canonicalHandlerId`.
+ */
+function buildEventSubProcessCanonicalIds(
+  ir: FlowContainer,
+): Map<string, string> {
+  const map = new Map<string, string>();
+  const signatureCount = new Map<string, number>();
+  for (const fe of ir.flowElements) {
+    if (fe.kind !== 'subProcess' || fe.triggeredByEvent !== true) continue;
+
+    // The trigger is carried by the handler body's single start event.
+    const start = fe.flowElements.find((e) => e.kind === 'startEvent');
+    const def = start?.kind === 'startEvent' ? start.eventDefinition : undefined;
+    const kind = def?.kind ?? 'unknown';
+    const code =
+      def === undefined
+        ? '<none>'
+        : ((def.kind === 'error' ? def.errorCode : def.escalationCode) ??
+          '<catch-all>');
+    const interrupting =
+      start?.kind === 'startEvent' && start.isInterrupting === false
+        ? 'non-interrupting'
+        : 'interrupting';
+
+    const signature = `EventSubProcess_[trigger:${kind}]_[code:${code}]_[${interrupting}]`;
+    const seen = signatureCount.get(signature) ?? 0;
+    signatureCount.set(signature, seen + 1);
+    map.set(fe.id, seen === 0 ? signature : `${signature}#${seen}`);
   }
   return map;
 }

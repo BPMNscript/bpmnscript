@@ -1023,7 +1023,400 @@ describe('irToXml — callActivity serialization', () => {
   });
 });
 
+// ── 11. Event layer: errors + escalations ────────────────────────────────────
+
+describe('irToXml — event layer (errors + escalations)', () => {
+  /**
+   * A process exercising the whole event surface at once:
+   *   - `errorMessages` declaring the message for code `PF`.
+   *   - A normal sub-process `OuterSub` whose body is start/user/end, and which
+   *     *contains* an interrupting error handler `ErrHandler` (event
+   *     sub-process, code `PF`, both catch bindings).
+   *   - An `alongside` escalation handler `EscHandler` at process level (code
+   *     `LS`, one code binding).
+   *   - A `throw error` end event `ThrowPF` (code `PF`) in the main chain.
+   *   - An escalation intermediate throw `Emit1` (code `LS`) in the main chain.
+   * Handlers are disconnected (no incoming/outgoing) — event sub-processes are
+   * triggered, not flow-connected.
+   */
+  const eventIr: BpmnProcess = {
+    id: 'proc',
+    isExecutable: true,
+    errorMessages: [{ code: 'PF', message: 'boom' }],
+    flowElements: [
+      { kind: 'startEvent', id: 'PStart' },
+      {
+        kind: 'subProcess',
+        id: 'OuterSub',
+        flowElements: [
+          { kind: 'startEvent', id: 'OSubStart' },
+          { kind: 'userTask', id: 'OWork', assignee: 'demo' },
+          { kind: 'endEvent', id: 'OSubEnd' },
+          {
+            kind: 'subProcess',
+            id: 'ErrHandler',
+            triggeredByEvent: true,
+            flowElements: [
+              {
+                kind: 'startEvent',
+                id: 'ErrStart',
+                eventDefinition: {
+                  kind: 'error',
+                  errorCode: 'PF',
+                  codeVariable: 'c',
+                  messageVariable: 'm',
+                },
+              },
+              { kind: 'userTask', id: 'Recover' },
+              { kind: 'endEvent', id: 'ErrEnd' },
+            ],
+            sequenceFlows: [
+              {
+                id: 'SF_ErrStart_Recover',
+                sourceRef: 'ErrStart',
+                targetRef: 'Recover',
+              },
+              {
+                id: 'SF_Recover_ErrEnd',
+                sourceRef: 'Recover',
+                targetRef: 'ErrEnd',
+              },
+            ],
+          },
+        ],
+        sequenceFlows: [
+          { id: 'SF_OSubStart_OWork', sourceRef: 'OSubStart', targetRef: 'OWork' },
+          { id: 'SF_OWork_OSubEnd', sourceRef: 'OWork', targetRef: 'OSubEnd' },
+        ],
+      },
+      {
+        kind: 'intermediateThrowEvent',
+        id: 'Emit1',
+        eventDefinition: { kind: 'escalation', escalationCode: 'LS' },
+      },
+      {
+        kind: 'endEvent',
+        id: 'ThrowPF',
+        eventDefinition: { kind: 'error', errorCode: 'PF' },
+      },
+      {
+        kind: 'subProcess',
+        id: 'EscHandler',
+        triggeredByEvent: true,
+        flowElements: [
+          {
+            kind: 'startEvent',
+            id: 'EscStart',
+            isInterrupting: false,
+            eventDefinition: {
+              kind: 'escalation',
+              escalationCode: 'LS',
+              codeVariable: 'v',
+            },
+          },
+          { kind: 'userTask', id: 'Notify' },
+          { kind: 'endEvent', id: 'EscEnd' },
+        ],
+        sequenceFlows: [
+          { id: 'SF_EscStart_Notify', sourceRef: 'EscStart', targetRef: 'Notify' },
+          { id: 'SF_Notify_EscEnd', sourceRef: 'Notify', targetRef: 'EscEnd' },
+        ],
+      },
+    ],
+    sequenceFlows: [
+      { id: 'SF_PStart_OuterSub', sourceRef: 'PStart', targetRef: 'OuterSub' },
+      { id: 'SF_OuterSub_Emit1', sourceRef: 'OuterSub', targetRef: 'Emit1' },
+      { id: 'SF_Emit1_ThrowPF', sourceRef: 'Emit1', targetRef: 'ThrowPF' },
+    ],
+  };
+
+  let defs: EventNode;
+
+  beforeAll(async () => {
+    defs = await parseDefinitionsWithOperaton(await irToXml(eventIr));
+  });
+
+  it('synthesizes exactly one bpmn:Error root, shared by the handler and the throw', () => {
+    const errors = rootsOfType(defs, 'bpmn:Error');
+    expect(errors).toHaveLength(1);
+    const errorRoot = errors[0]!;
+    expect(errorRoot.id).toBe('Error_PF');
+    expect(errorRoot.errorCode).toBe('PF');
+    expect(errorRoot.errorMessage).toBe('boom');
+
+    const handlerStart = requireDeep(defs, 'ErrStart');
+    const throwEnd = requireDeep(defs, 'ThrowPF');
+    // Both refs resolve to the very same root element object.
+    expect(errorDef(handlerStart).errorRef?.id).toBe('Error_PF');
+    expect(errorDef(throwEnd).errorRef?.id).toBe('Error_PF');
+  });
+
+  it('synthesizes exactly one bpmn:Escalation root, shared by the handler and the emit', () => {
+    const escalations = rootsOfType(defs, 'bpmn:Escalation');
+    expect(escalations).toHaveLength(1);
+    const escRoot = escalations[0]!;
+    expect(escRoot.id).toBe('Escalation_LS');
+    expect(escRoot.escalationCode).toBe('LS');
+
+    const handlerStart = requireDeep(defs, 'EscStart');
+    const emit = requireDeep(defs, 'Emit1');
+    expect(escalationDef(handlerStart).escalationRef?.id).toBe('Escalation_LS');
+    expect(escalationDef(emit).escalationRef?.id).toBe('Escalation_LS');
+  });
+
+  it('orders rootElements as [process, ...errors, ...escalations]', () => {
+    const types = defs.rootElements.map((r) => r.$type);
+    expect(types).toEqual(['bpmn:Process', 'bpmn:Error', 'bpmn:Escalation']);
+  });
+
+  it('flags the error handler triggeredByEvent and stamps the catch bindings on its start', () => {
+    const handler = requireDeep(defs, 'ErrHandler');
+    expect(handler.$type).toBe('bpmn:SubProcess');
+    expect(handler.triggeredByEvent).toBe(true);
+
+    const def = errorDef(requireDeep(defs, 'ErrStart'));
+    expect(def.$type).toBe('bpmn:ErrorEventDefinition');
+    expect(def.errorCodeVariable).toBe('c');
+    expect(def.errorMessageVariable).toBe('m');
+  });
+
+  it('marks the alongside escalation handler start non-interrupting with its code binding', () => {
+    const start = requireDeep(defs, 'EscStart');
+    expect(start.isInterrupting).toBe(false);
+    const def = escalationDef(start);
+    expect(def.$type).toBe('bpmn:EscalationEventDefinition');
+    expect(def.escalationCodeVariable).toBe('v');
+  });
+
+  it('emits the escalation intermediate throw wired into the chain with incoming/outgoing', () => {
+    const emit = requireDeep(defs, 'Emit1');
+    expect(emit.$type).toBe('bpmn:IntermediateThrowEvent');
+    expect((emit.incoming ?? []).map((f) => f.id)).toEqual(['SF_OuterSub_Emit1']);
+    expect((emit.outgoing ?? []).map((f) => f.id)).toEqual(['SF_Emit1_ThrowPF']);
+  });
+
+  it('catch-all handler emits no errorRef and no root when the code is unused elsewhere', async () => {
+    const catchAllIr: BpmnProcess = {
+      id: 'p',
+      isExecutable: true,
+      flowElements: [
+        { kind: 'startEvent', id: 'S' },
+        { kind: 'endEvent', id: 'E' },
+        {
+          kind: 'subProcess',
+          id: 'AnyErr',
+          triggeredByEvent: true,
+          flowElements: [
+            {
+              kind: 'startEvent',
+              id: 'AnyStart',
+              eventDefinition: { kind: 'error' },
+            },
+            { kind: 'userTask', id: 'Log' },
+            { kind: 'endEvent', id: 'AnyEnd' },
+          ],
+          sequenceFlows: [
+            { id: 'SF_AnyStart_Log', sourceRef: 'AnyStart', targetRef: 'Log' },
+            { id: 'SF_Log_AnyEnd', sourceRef: 'Log', targetRef: 'AnyEnd' },
+          ],
+        },
+      ],
+      sequenceFlows: [{ id: 'SF_S_E', sourceRef: 'S', targetRef: 'E' }],
+    };
+    const d = await parseDefinitionsWithOperaton(await irToXml(catchAllIr));
+    expect(rootsOfType(d, 'bpmn:Error')).toHaveLength(0);
+    expect(errorDef(requireDeep(d, 'AnyStart')).errorRef).toBeUndefined();
+  });
+
+  it('shares one root across two handlers and a throw of the same code', async () => {
+    const handler = (id: string): FlowElement => ({
+      kind: 'subProcess',
+      id,
+      triggeredByEvent: true,
+      flowElements: [
+        {
+          kind: 'startEvent',
+          id: `${id}_S`,
+          eventDefinition: { kind: 'error', errorCode: 'DUP' },
+        },
+        { kind: 'endEvent', id: `${id}_E` },
+      ],
+      sequenceFlows: [
+        { id: `SF_${id}`, sourceRef: `${id}_S`, targetRef: `${id}_E` },
+      ],
+    });
+    const sharedIr: BpmnProcess = {
+      id: 'p',
+      isExecutable: true,
+      flowElements: [
+        { kind: 'startEvent', id: 'S' },
+        {
+          kind: 'endEvent',
+          id: 'T',
+          eventDefinition: { kind: 'error', errorCode: 'DUP' },
+        },
+        handler('H1'),
+        handler('H2'),
+      ],
+      sequenceFlows: [{ id: 'SF_S_T', sourceRef: 'S', targetRef: 'T' }],
+    };
+    const d = await parseDefinitionsWithOperaton(await irToXml(sharedIr));
+    const errors = rootsOfType(d, 'bpmn:Error');
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.id).toBe('Error_DUP');
+  });
+
+  it('sanitizes a root id from a code with non-id characters', async () => {
+    const ir: BpmnProcess = {
+      id: 'p',
+      isExecutable: true,
+      flowElements: [
+        { kind: 'startEvent', id: 'S' },
+        {
+          kind: 'endEvent',
+          id: 'T',
+          eventDefinition: { kind: 'error', errorCode: 'NEEDS REVIEW!' },
+        },
+      ],
+      sequenceFlows: [{ id: 'SF_S_T', sourceRef: 'S', targetRef: 'T' }],
+    };
+    const d = await parseDefinitionsWithOperaton(await irToXml(ir));
+    const errors = rootsOfType(d, 'bpmn:Error');
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.id).toBe('Error_NEEDS_REVIEW_');
+    // The name is the code verbatim (unsanitized).
+    expect(errors[0]!.errorCode).toBe('NEEDS REVIEW!');
+  });
+
+  it('suffixes a root id that would collide with an existing element id', async () => {
+    // A user task literally named `Error_Boom` occupies that id, so the root
+    // for code `Boom` must move to `Error_Boom_2`.
+    const ir: BpmnProcess = {
+      id: 'p',
+      isExecutable: true,
+      flowElements: [
+        { kind: 'startEvent', id: 'S' },
+        { kind: 'userTask', id: 'Error_Boom' },
+        {
+          kind: 'endEvent',
+          id: 'T',
+          eventDefinition: { kind: 'error', errorCode: 'Boom' },
+        },
+      ],
+      sequenceFlows: [
+        { id: 'SF_S_X', sourceRef: 'S', targetRef: 'Error_Boom' },
+        { id: 'SF_X_T', sourceRef: 'Error_Boom', targetRef: 'T' },
+      ],
+    };
+    const d = await parseDefinitionsWithOperaton(await irToXml(ir));
+    const errors = rootsOfType(d, 'bpmn:Error');
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.id).toBe('Error_Boom_2');
+  });
+
+  it('lays event sub-processes out with children strictly inside their handler box', async () => {
+    const shapes = await parseDiShapesById(await irToXml(eventIr));
+    // Exactly one diagram: the layout-generated one replaces the stubs.
+    const xml = await irToXml(eventIr);
+    expect((xml.match(/<bpmndi:BPMNDiagram\b/g) ?? []).length).toBe(1);
+
+    const escHandler = requireShape(shapes, 'EscHandler');
+    for (const child of ['EscStart', 'Notify', 'EscEnd']) {
+      expect(
+        boundsStrictlyInside(requireShape(shapes, child).bounds, escHandler.bounds),
+      ).toBe(true);
+    }
+
+    const outerSub = requireShape(shapes, 'OuterSub');
+    const errHandler = requireShape(shapes, 'ErrHandler');
+    // The nested event sub-process sits inside its parent sub-process.
+    expect(boundsStrictlyInside(errHandler.bounds, outerSub.bounds)).toBe(true);
+    for (const child of ['ErrStart', 'Recover', 'ErrEnd']) {
+      expect(
+        boundsStrictlyInside(requireShape(shapes, child).bounds, errHandler.bounds),
+      ).toBe(true);
+    }
+  });
+});
+
 // ── Helpers ──────────────────────────────────────────────────────────────────
+
+/** A parsed moddle node navigated for the event layer (roots, refs, defs). */
+interface EventNode {
+  $type: string;
+  id?: string;
+  name?: string;
+  errorCode?: string;
+  escalationCode?: string;
+  errorMessage?: string;
+  isInterrupting?: boolean;
+  triggeredByEvent?: boolean;
+  flowElements?: EventNode[];
+  eventDefinitions?: EventNode[];
+  incoming?: Array<{ id: string }>;
+  outgoing?: Array<{ id: string }>;
+  errorRef?: { id: string };
+  escalationRef?: { id: string };
+  errorCodeVariable?: string;
+  errorMessageVariable?: string;
+  escalationCodeVariable?: string;
+  rootElements: EventNode[];
+}
+
+/**
+ * Parse a BPMN XML string with the Operaton extension registered and return the
+ * `bpmn:Definitions` root, so both the semantic tree (`rootElements`, nested
+ * `flowElements`) and the Operaton-namespaced event attributes resolve to typed
+ * properties.
+ */
+async function parseDefinitionsWithOperaton(xmlStr: string): Promise<EventNode> {
+  const { rootElement } = await operatonModdle().fromXML(xmlStr);
+  return rootElement as unknown as EventNode;
+}
+
+/** Every root element of a given `$type` (e.g. `bpmn:Error`). */
+function rootsOfType(defs: EventNode, $type: string): EventNode[] {
+  return defs.rootElements.filter((r) => r.$type === $type);
+}
+
+/** The single `bpmn:Process` root. */
+function processRoot(defs: EventNode): EventNode {
+  const proc = defs.rootElements.find((r) => r.$type === 'bpmn:Process');
+  if (proc === undefined) throw new Error('No bpmn:Process root found.');
+  return proc;
+}
+
+/** Recursively locate a flow node by id anywhere under the process, or throw. */
+function requireDeep(defs: EventNode, id: string): EventNode {
+  const found = deepFind(processRoot(defs), id);
+  if (found === undefined) {
+    throw new Error(`Flow node id="${id}" not found in the process tree.`);
+  }
+  return found;
+}
+
+function deepFind(container: EventNode, id: string): EventNode | undefined {
+  for (const el of container.flowElements ?? []) {
+    if (el.id === id) return el;
+    const nested = deepFind(el, id);
+    if (nested !== undefined) return nested;
+  }
+  return undefined;
+}
+
+/** The sole `bpmn:ErrorEventDefinition` on an event node. */
+function errorDef(node: EventNode): EventNode {
+  const def = (node.eventDefinitions ?? [])[0];
+  if (def === undefined) {
+    throw new Error(`Node id="${node.id}" carries no event definition.`);
+  }
+  return def;
+}
+
+/** The sole `bpmn:EscalationEventDefinition` on an event node. */
+function escalationDef(node: EventNode): EventNode {
+  return errorDef(node);
+}
 
 /** Minimal `start → call → end` wrapper around one call-activity node. */
 function minimalCallIr(call: BpmnProcess['flowElements'][number]): BpmnProcess {

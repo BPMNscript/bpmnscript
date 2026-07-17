@@ -8,8 +8,9 @@ but they come from different sources and drive the tests in different directions
 Two additional construct fixtures (`structured-control-flow.bpmnscript` and
 `unstructured-goto.bpmn`) exercise the round-trip and goto-degradation paths, the
 `nested-subprocess.{bpmnscript,bpmn}` pair exercises the embedded sub-process
-round-trip, and `bad-service-task-no-binding.bpmn` is the negative-path fixture for
-the import refusal path.
+round-trip, the `event-handlers.{bpmnscript,bpmn}` pair exercises the error and
+escalation event layer, and `bad-service-task-no-binding.bpmn` is the
+negative-path fixture for the import refusal path.
 
 ## `invoice-approval-handwritten.bpmn`
 
@@ -132,6 +133,60 @@ id-scheme change), regenerate this file:
    contract (each sub-process `isExpanded="true"`; nested children inside their
    parent's bounds; authored ids unchanged) must stay intact; only synthesized
    gateway/flow ids and layout coordinates may move.
+
+## `event-handlers.bpmnscript` and `event-handlers.bpmn`
+
+A golden **pair** for the error and escalation event layer: a BPMNscript source
+and the frozen BPMN XML the full pipeline produces from it. The source is an
+order-processing narrative that exercises the whole try/catch surface in one
+program — an `error … message` declaration, a payment `subprocess` that throws
+(`throw error` inside an `if`) and escalates mid-chain (`emit escalation`) and
+owns an interrupting `on error` handler with both catch bindings, a process-level
+non-interrupting `on escalation … alongside` handler, a catch-all `on error`
+handler, a terminal `throw escalation`, explicit ids on a throw and an emit with a
+`goto` targeting the named emit, and a process variable named `message` used in a
+condition (so the contextual event words `error`/`escalation`/`code`/`message`
+coexist with same-named variables). The condition variables are declared on the
+start form so they survive an import-and-back round-trip, and each handler opens
+with an explicit trigger `start` and closes with an explicit `end`.
+
+`event-handlers.bpmnscript` is the **input**, and `event-handlers.bpmn` is the
+**frozen output of the full pipeline** (`irToXml(astToIr(parse(source)))`,
+services wired exactly as `tests/round-trip.test.ts` does). The round-trip test
+`tests/event-handlers.round-trip.test.ts` drives the pair both directions: it
+reproduces the pipeline and compares byte-for-byte against the frozen `.bpmn`,
+round-trips the source through XML and back asserting IR equivalence (through the
+recursive `normalizeIr`, which re-keys each event-handler sub-process id to a
+structural trigger signature), imports the frozen `.bpmn` warning-free, checks
+that the `throw error` end event and the `on error` handler share one
+`bpmn:Error` carrying the declared `operaton:errorMessage`, and asserts every
+handler shape's DI bounds fall strictly inside its parent container's bounds (the
+`isExpanded` expansion hint from `irToXml`, without which a disconnected event
+sub-process and its children leak into the root plane).
+
+Because it is the desugared output, the three root elements are synthesised from
+usage and deduped by code (`Error_PAYMENT_DECLINED` carrying the declared message,
+`Escalation_MANUAL_REVIEW` shared by both escalation sites, and
+`Escalation_ORDER_ABANDONED`), each handler is a `triggeredByEvent` sub-process,
+and the non-interrupting handler carries `isInterrupting="false"`, while every
+authored id (the tasks, the explicit events, the named `throw`/`emit`) survives
+verbatim.
+
+If you change the parser, the desugarer, or `irToXml` in a way that _should_
+alter the output (new attribute, different formatting, layout-library upgrade,
+id-scheme change), regenerate this file:
+
+1. Run the full pipeline on the source:
+   `irToXml(astToIr(parse(event-handlers.bpmnscript)))`, wiring the Langium
+   services exactly as `tests/round-trip.test.ts` does
+   (`createBpmnScriptServices(EmptyFileSystem)` + `parseHelper`).
+2. Write the returned string to `event-handlers.bpmn`.
+3. Inspect the diff to confirm every change is intended — the deduped root
+   elements (one per code, the error root carrying its message), the shared
+   `errorRef`/`escalationRef`, `isInterrupting="false"` on the `alongside`
+   handler, each handler shape inside its parent's bounds, and every authored id
+   must stay intact; only synthesised gateway/flow/handler ids and layout
+   coordinates may move.
 
 ## `unstructured-goto.bpmn`
 

@@ -28,6 +28,8 @@ export type {
   CalledElementBinding,
   CallVariableMapping,
   SequenceFlow,
+  EventDefinition,
+  IntermediateThrowEvent,
 } from './ir/types.js';
 
 export {
@@ -54,6 +56,7 @@ export {
   UnsupportedServiceTaskFormError,
   UnsupportedFormFieldTypeError,
   UnsupportedEventDefinitionError,
+  UnsupportedEventFeatureError,
   UnsupportedLoopCharacteristicsError,
   UnsupportedCollaborationError,
   UnsupportedCallActivityError,
@@ -80,4 +83,6 @@ export const IR_TYPE_NAMES = [
   'SubProcess',
   'CallActivity',
   'SequenceFlow',
+  'EventDefinition',
+  'IntermediateThrowEvent',
 ] as const;

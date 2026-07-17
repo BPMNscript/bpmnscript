@@ -22,7 +22,16 @@
  * EndEvent_<processId>              makeEndEventId        EndEvent_invoice-approval
  * EndEvent_<processId>_2            makeEndEventId        (second implicit end)
  * EndEvent_<processId>_3            makeEndEventId        (third implicit end, etc.)
+ * Throw_<X>                         makeThrowEventId      Throw_invoice-approval_2
+ * EventSubProcess_<X>               makeEventSubProcessId EventSubProcess_invoice-approval_1
  * ──────────────────────────────────────────────────────────────────────────
+ *
+ * `Throw_<X>` (an unnamed `throw`/`emit` at coordinate `<X>`) and
+ * `EventSubProcess_<X>` (an `on` handler at coordinate `<X>`) are **positional**
+ * — the coordinate is the statement's unique static position, so they are
+ * collision-free by construction and take no `taken` set. The validator reserves
+ * the anchored `Throw_`/`EventSubProcess_` prefixes so an author-chosen name can
+ * never occupy one.
  *
  * Collision resolution (used internally and exposed as `resolveCollision`):
  *   - If the base id is not in the taken set → return it unchanged.
@@ -113,6 +122,32 @@ export function makeEndEventId(processId: string, taken: Set<string>): string {
   const id = resolveCollision(base, taken);
   taken.add(id);
   return id;
+}
+
+// ---------------------------------------------------------------------------
+// Event id constructors — positional, collision-free by construction
+// ---------------------------------------------------------------------------
+
+/**
+ * Id for an unnamed `throw` (typed end event) or `emit` (intermediate throw
+ * event) at structural coordinate `<X>`: `Throw_<X>`. `<X>` is the statement's
+ * enclosing-block coordinate joined with its index, so the id is unique by
+ * position and needs no collision resolution. An author-chosen name on the
+ * `throw`/`emit` is used verbatim instead of this template.
+ */
+export function makeThrowEventId(x: string): string {
+  return `Throw_${x}`;
+}
+
+/**
+ * Id for an `on` handler — an event sub-process — at structural coordinate
+ * `<X>`: `EventSubProcess_<X>`. A handler is a single-block compound indexed
+ * like any statement, so its coordinate is unique by position and the id needs
+ * no collision resolution. The handler body's implicit start/end seed from this
+ * id (`StartEvent_<id>` / `EndEvent_<id>`, the container-id rule).
+ */
+export function makeEventSubProcessId(x: string): string {
+  return `EventSubProcess_${x}`;
 }
 
 // ---------------------------------------------------------------------------

@@ -52,6 +52,7 @@
 import type {
   BpmnProcess,
   CallVariableMapping,
+  EventDefinition,
   FlowContainer,
   FlowElement,
   FormField,
@@ -73,8 +74,20 @@ export function irToDsl(process: BpmnProcess): string {
   const emitter = new Emitter(process);
   const body = emitter.emit();
 
+  // Declared thrown-message texts print as `error … message …` declarations
+  // between the process header and the body, in declaration order — the
+  // grammar's process-declaration position.
+  const declarations = (process.errorMessages ?? []).map(
+    (m) => `${INDENT}error ${quote(m.code)} message ${quote(m.message)}`,
+  );
+
   const header = buildProcessHeader(process);
-  const lines = [header, ...body.map((l) => INDENT + l), '}'];
+  const lines = [
+    header,
+    ...declarations,
+    ...body.map((l) => INDENT + l),
+    '}',
+  ];
   return lines.join('\n') + '\n';
 }
 
@@ -131,9 +144,11 @@ class Emitter {
 
   /**
    * Emit the whole process body as a list of (un-indented) statement lines.
-   * The order is: structured emission from each start event, then any node
-   * still unemitted (unreachable / orphaned graph fragments), then a final
-   * sweep that flushes every flow edge not realized structurally as a `goto`.
+   * The order is: structured emission from each start event, then any non-handler
+   * node still unemitted (unreachable / orphaned graph fragments), then a final
+   * sweep that flushes every flow edge not realized structurally as a `goto`,
+   * then every `on` handler — handlers are not flow, and the surface requires
+   * them at the end of the body (the catch-block reading), so they print last.
    */
   emit(): string[] {
     const lines: string[] = [];
@@ -146,9 +161,12 @@ class Emitter {
       }
     }
 
-    // 2. Emit any node not yet reached (orphaned fragments in a hand-built /
-    //    irreducible IR). Each becomes its own little chain so no node is lost.
+    // 2. Emit any non-handler node not yet reached (orphaned fragments in a
+    //    hand-built / irreducible IR). Each becomes its own little chain so no
+    //    node is lost. Event sub-processes (`on` handlers) are skipped here —
+    //    they are not part of the flow graph and print last (step 4).
     for (const el of this.container.flowElements) {
+      if (isHandler(el)) continue;
       if (!this.emittedNodes.has(el.id)) {
         this.emitFrom(el.id, undefined, lines, 0);
       }
@@ -165,7 +183,32 @@ class Emitter {
       }
     }
 
+    // 4. Emit every `on` handler, after all flow. Each is a self-contained
+    //    event sub-process with no incoming/outgoing edges, so it never appears
+    //    in the fall-through walk.
+    for (const el of this.container.flowElements) {
+      if (isHandler(el) && !this.emittedNodes.has(el.id)) {
+        this.emitHandler(el, lines);
+      }
+    }
+
     return lines;
+  }
+
+  /**
+   * Emit one `on` handler: its header (recovered from the trigger start event)
+   * then its body, restructured by a fresh {@link Emitter} and indented one
+   * level, then the closing brace. A handler carries no flow edges, so there is
+   * no fall-through continuation.
+   */
+  private emitHandler(
+    handler: Extract<FlowElement, { kind: 'subProcess' }>,
+    lines: string[],
+  ): void {
+    this.emittedNodes.add(handler.id);
+    lines.push(buildOnHeader(handler));
+    for (const l of new Emitter(handler).emit()) lines.push(INDENT + l);
+    lines.push('}');
   }
 
   /**
@@ -265,6 +308,14 @@ class Emitter {
     // restructured by a fresh Emitter and indented one level, then the closing
     // brace — and continue the parent chain from its single fall-through edge.
     if (el.kind === 'subProcess') {
+      // An event sub-process (`on` handler) is not flow: it prints in the
+      // trailing handler pass, never on the fall-through walk. Should a
+      // malformed IR wire a flow edge into one, print it as a handler here and
+      // stop — it has no continuation.
+      if (el.triggeredByEvent === true) {
+        this.emitHandler(el, lines);
+        return STOP;
+      }
       this.emittedNodes.add(id);
       lines.push(`subprocess ${id}${labelSuffix(el.name)} {`);
       for (const l of new Emitter(el).emit()) lines.push(INDENT + l);
@@ -843,9 +894,29 @@ class Emitter {
   private renderStatement(el: FlowElement): string | undefined {
     switch (el.kind) {
       case 'startEvent':
+        // A start event prints as a plain `start` statement. Any event
+        // definition it carries surfaces only through its enclosing `on`
+        // handler's header, never here — a definition-carrying start in a
+        // normal container is malformed hand-built IR.
         return renderStartEvent(el);
       case 'endEvent':
-        return `end ${el.id}${labelSuffix(el.name)}`;
+        // A typed end event is a throw (`throw error`/`throw escalation`); a
+        // plain end (no definition) is the ordinary terminator.
+        return el.eventDefinition === undefined
+          ? `end ${el.id}${labelSuffix(el.name)}`
+          : renderThrow(el.id, el.eventDefinition);
+      case 'intermediateThrowEvent': {
+        // `emit` fires an event and keeps going. Only an escalation is
+        // emittable; an error definition here is malformed IR (BPMN has no
+        // intermediate error throw — `throw error` is the surface for that).
+        const def = el.eventDefinition;
+        if (def.kind !== 'escalation') {
+          throw new Error(
+            `irToDsl: intermediate throw '${el.id}' carries a ${def.kind} definition; only escalation can be emitted.`,
+          );
+        }
+        return `emit escalation ${el.id}${quotedCode(def.escalationCode)}`;
+      }
       case 'userTask':
         return renderUserTask(el);
       case 'serviceTask':
@@ -899,6 +970,70 @@ function buildProcessHeader(process: BpmnProcess): string {
     return `process ${process.id} ${quote(process.name)} {`;
   }
   return `process ${process.id} {`;
+}
+
+/**
+ * Whether a flow element is an `on` handler — an event sub-process. Handlers
+ * carry no flow edges and print at the end of their container's body, so they
+ * are excluded from the fall-through walk and emitted by a dedicated pass.
+ */
+function isHandler(
+  el: FlowElement,
+): el is Extract<FlowElement, { kind: 'subProcess' }> {
+  return el.kind === 'subProcess' && el.triggeredByEvent === true;
+}
+
+/**
+ * Render a typed end event as a `throw <trigger> <id> "<code>"` statement. The
+ * id is always printed (the explicit-event precedent) so it survives as a goto
+ * target across round-trips.
+ */
+function renderThrow(id: string, def: EventDefinition): string {
+  const code = def.kind === 'error' ? def.errorCode : def.escalationCode;
+  return `throw ${def.kind} ${id}${quotedCode(code)}`;
+}
+
+/**
+ * Build an `on` handler header from its trigger start event: the trigger word
+ * (`error`/`escalation`), the quoted code when present (absent = catch-all),
+ * the catch bindings in canonical `(code x, message y)` order, and ` alongside`
+ * for a non-interrupting handler, followed by the opening brace.
+ */
+function buildOnHeader(
+  handler: Extract<FlowElement, { kind: 'subProcess' }>,
+): string {
+  const start = handler.flowElements.find(
+    (e): e is Extract<FlowElement, { kind: 'startEvent' }> =>
+      e.kind === 'startEvent',
+  );
+  if (start === undefined || start.eventDefinition === undefined) {
+    throw new Error(
+      `irToDsl: event sub-process '${handler.id}' has no trigger start event.`,
+    );
+  }
+  const def = start.eventDefinition;
+  const code = def.kind === 'error' ? def.errorCode : def.escalationCode;
+  const alongside = start.isInterrupting === false ? ' alongside' : '';
+  return `on ${def.kind}${quotedCode(code)}${buildEventBindings(def)}${alongside} {`;
+}
+
+/**
+ * Render the catch bindings of an event definition as ` (code x, message y)`,
+ * in canonical order (code before message), or empty when no binding is set.
+ * Only an error carries a message binding; an escalation has just a code.
+ */
+function buildEventBindings(def: EventDefinition): string {
+  const parts: string[] = [];
+  if (def.codeVariable !== undefined) parts.push(`code ${def.codeVariable}`);
+  if (def.kind === 'error' && def.messageVariable !== undefined) {
+    parts.push(`message ${def.messageVariable}`);
+  }
+  return parts.length > 0 ? ` (${parts.join(', ')})` : '';
+}
+
+/** ` "<code>"` suffix, or empty when the code is absent (catch-all). */
+function quotedCode(code: string | undefined): string {
+  return code !== undefined ? ` ${quote(code)}` : '';
 }
 
 /** Render a `start <id> "<label>"? { form { … } }` statement. */

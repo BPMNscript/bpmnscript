@@ -51,6 +51,22 @@ export interface BpmnProcess extends FlowContainer {
   name?: string;
   /** Always `true`. */
   isExecutable: true;
+  /**
+   * Declared thrown-message texts, keyed by error code, in declaration order.
+   *
+   * This is the one piece of document-level root-element data that is not
+   * derivable from usage. Everything else about the `bpmn:Error` /
+   * `bpmn:Escalation` root elements — which codes exist, their ids, their refs —
+   * is synthesized from where codes are thrown and caught (see {@link
+   * EventDefinition}). But the message an error of a given code carries when
+   * thrown is authorial intent that no throw site records: two throws of one
+   * code share a single root element, so the text cannot live on the throw.
+   * It is declared once per code and stamped onto the synthesized
+   * `bpmn:Error` (as `operaton:errorMessage`) at export. Escalations have no
+   * message concept, so only error codes appear here. A declared code emits its
+   * root element even when otherwise unused.
+   */
+  errorMessages?: { code: string; message: string }[];
 }
 
 /**
@@ -72,7 +88,8 @@ export type FlowElement =
   | ExclusiveGateway
   | ParallelGateway
   | SubProcess
-  | CallActivity;
+  | CallActivity
+  | IntermediateThrowEvent;
 
 /**
  * The type of a {@link FormField}, in DSL-level (vendor-neutral) spelling.
@@ -101,23 +118,100 @@ export interface FormField {
 }
 
 /**
+ * An error or escalation event definition — the DSL's try/catch payload.
+ *
+ * The same shape describes both sides of the analogy:
+ *   - On a **catch** (the trigger start event of an `on` handler): the code
+ *     selects which thrown code this handler catches; a **missing** code means
+ *     catch-all (it catches any error/escalation, and export emits no
+ *     `errorRef`/`escalationRef`). The `codeVariable`/`messageVariable`
+ *     bindings name the process variables the caught code and message text
+ *     fill — the `e` in `catch (Exception e)`.
+ *   - On a **throw** (a typed `endEvent`, or an {@link IntermediateThrowEvent}):
+ *     the code identifies what is thrown; the bindings do not apply and the
+ *     engine ignores them there.
+ *
+ * The type stays permissive on purpose — it mirrors what BPMN can represent,
+ * not the rulebook for where each field is meaningful. The validator and the
+ * import contract enforce that bindings appear only on catch definitions and
+ * that a throw resolves to a non-empty code; the types do not.
+ *
+ * Escalations carry a code but no message text (BPMN/Operaton has no escalation
+ * message), so the escalation variant has only `codeVariable`.
+ */
+export type EventDefinition =
+  | {
+      kind: 'error';
+      /** The caught/thrown error code; absent on a catch means catch-all. */
+      errorCode?: string;
+      /** `operaton:errorCodeVariable` — process variable the code fills. */
+      codeVariable?: string;
+      /** `operaton:errorMessageVariable` — process variable the message fills. */
+      messageVariable?: string;
+    }
+  | {
+      kind: 'escalation';
+      /** The caught/thrown escalation code; absent on a catch means catch-all. */
+      escalationCode?: string;
+      /** `operaton:escalationCodeVariable` — process variable the code fills. */
+      codeVariable?: string;
+    };
+
+/**
  * A BPMN `startEvent` node.
  *
  * `formFields`, when present, become an `operaton:formData` block so Tasklist
  * renders a start form.
+ *
+ * Inside an event sub-process (a `triggeredByEvent` {@link SubProcess}) the
+ * start event is the handler's trigger: `eventDefinition` carries the caught
+ * error/escalation and its catch bindings, and `isInterrupting` is stored only
+ * when non-default. BPMN's default is interrupting (`true`), and the serializer
+ * drops the default, so the IR keeps only the non-default `false` — true or
+ * absent are the same thing, which keeps IR deep-equality trivial. A definition
+ * on a start event outside an event sub-process is malformed hand-built IR.
  */
 export interface StartEvent {
   kind: 'startEvent';
   id: string;
   name?: string;
   formFields?: FormField[];
+  /** The caught trigger, when this start opens an event sub-process. */
+  eventDefinition?: EventDefinition;
+  /** Stored only for a non-interrupting (`alongside`) handler start. */
+  isInterrupting?: false;
 }
 
-/** A BPMN `endEvent` node. */
+/**
+ * A BPMN `endEvent` node.
+ *
+ * When `eventDefinition` is present the end event is a typed throw — `throw
+ * error`/`throw escalation` — that ends the path while raising the code. A
+ * plain end (no definition) is the ordinary process/branch terminator.
+ */
 export interface EndEvent {
   kind: 'endEvent';
   id: string;
   name?: string;
+  /** The thrown error/escalation, when this end is a typed throw. */
+  eventDefinition?: EventDefinition;
+}
+
+/**
+ * A BPMN `intermediateThrowEvent` node — the DSL's `emit` verb.
+ *
+ * Unlike a typed {@link EndEvent} throw, an intermediate throw fires the event
+ * and lets flow continue (it is a plain fall-through node in the graph). Only
+ * an escalation is emittable this way: BPMN has no intermediate error throw, so
+ * `emit error` is refused and the author is taught `throw error` instead. The
+ * `eventDefinition` is therefore **required** — a none intermediate throw is
+ * inexpressible and refused on import — and there is no `name` field, because
+ * the `emit` surface carries no label slot.
+ */
+export interface IntermediateThrowEvent {
+  kind: 'intermediateThrowEvent';
+  id: string;
+  eventDefinition: EventDefinition;
 }
 
 /**
@@ -247,10 +341,18 @@ export interface ParallelGateway {
  *
  * `name`, when present, is the human-readable label viewers render on the
  * expanded box.
+ *
+ * `triggeredByEvent` marks an **event sub-process** — the container an `on`
+ * handler lowers to. Such a sub-process is not wired into its parent's flow
+ * (it has no incoming/outgoing sequence flows); it is triggered by the
+ * error/escalation its single start event catches. The field is only ever
+ * `true`; absent means a plain, flow-connected sub-process.
  */
 export interface SubProcess extends FlowContainer {
   kind: 'subProcess';
   name?: string;
+  /** `true` for an event sub-process (an `on` handler); absent otherwise. */
+  triggeredByEvent?: true;
 }
 
 /**

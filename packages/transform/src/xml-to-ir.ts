@@ -21,14 +21,24 @@
  * return value is `{ ir, warnings }`, and content splits into two buckets:
  *
  * **Refused** (throws before any IR is produced, so there is no partial IR):
- * - event definitions on start/end events (timer, message, terminate, …) →
+ * - a definition on a plain start event (outside an event handler), or a
+ *   non-error/escalation definition on an event handler's start, an end
+ *   event, or an intermediate throw (timer, message, signal, terminate, …) →
  *   {@link UnsupportedEventDefinitionError};
+ * - an event-layer construct shaped in a way this tool's surface cannot
+ *   express: an event handler whose start-event or definition count is not
+ *   exactly one, or which carries incoming/outgoing sequence flows; a
+ *   non-interrupting error handler; a throw/emit whose definition resolves
+ *   to no code; an error definition on an emit; a "none" emit; two
+ *   `bpmn:Error` roots sharing a code but disagreeing about the declared
+ *   message; or a declared message on a code-less root →
+ *   {@link UnsupportedEventFeatureError};
  * - loop characteristics on a task, sub-process, or call activity
  *   (multi-instance / standard loop) → {@link UnsupportedLoopCharacteristicsError};
  * - collaborations, i.e. pools and message flows →
  *   {@link UnsupportedCollaborationError};
- * - unsupported flow-element kinds (an event sub-process, a transaction, an
- *   ad-hoc sub-process, intermediate events, …) → {@link UnsupportedElementError};
+ * - unsupported flow-element kinds (`bpmn:intermediateCatchEvent`, a
+ *   transaction, an ad-hoc sub-process, …) → {@link UnsupportedElementError};
  * - service tasks whose execution form the IR cannot represent (a bare task
  *   with no discriminator, or an external type with no topic) →
  *   {@link UnsupportedServiceTaskFormError};
@@ -47,9 +57,15 @@
  * **Dropped with a warning** (no semantic loss; reported via `warnings`):
  * - Operaton/camunda extension attributes beyond the supported
  *   `assignee`/`formKey`/`class`/`expression`/`delegateExpression`/`type`/
- *   `topic`/`calledElementBinding`/`calledElementVersion` (e.g.
+ *   `topic`/`calledElementBinding`/`calledElementVersion`/
+ *   `errorCodeVariable`/`errorMessageVariable`/`escalationCodeVariable` (e.g.
  *   `operaton:asyncBefore`) — one warning per attribute, attributed to the
  *   owning element by id;
+ * - a binding attribute (`errorCodeVariable`/`errorMessageVariable`/
+ *   `escalationCodeVariable`) set on a throw-side definition, where the
+ *   engine ignores it;
+ * - a genuine label (`name`) on an event handler, a typed end event, or an
+ *   intermediate throw — none of these surfaces has a label slot;
  * - a `calledElementVersion` left dangling on a call activity — set while
  *   `calledElementBinding` is absent or not `"version"` — since Operaton
  *   ignores it in that case; one warning naming the attribute;
@@ -72,7 +88,11 @@
  *       it is reported once against the process id, naming the construct and
  *       its source line — the drop is still reported, only its owner
  *       attribution is coarser;
- * - lanes — one warning per lane.
+ * - lanes — one warning per lane;
+ * - an unreferenced `bpmn:Error`/`bpmn:Escalation` root that nothing catches
+ *   or throws and that carries no declared message (a declared,
+ *   message-carrying error root imports into `errorMessages` instead — no
+ *   warning, since the declaration is explicit authorial intent).
  *
  * **Round-trips cleanly** (no warning, no refusal): the supported flow
  * elements and their `name`, `assignee`, `formKey`, service-task binding
@@ -81,7 +101,11 @@
  * embedded `bpmn:subProcess` round-trips too — its nested body is mapped
  * recursively, at any nesting depth. A `bpmn:callActivity` round-trips its
  * `calledElement`, `latest`/`deployment`/`version` binding, business key, and
- * in/out variable mappings, in document order.
+ * in/out variable mappings, in document order. An event handler
+ * (`triggeredByEvent="true"` sub-process) round-trips its caught error/
+ * escalation, code, and catch bindings; a typed end event or an escalation
+ * intermediate throw round-trips its thrown code; declared error messages
+ * round-trip through `errorMessages`.
  */
 
 import { existsSync, readFileSync } from 'node:fs';
@@ -96,10 +120,12 @@ import type {
   CallActivity,
   CallVariableMapping,
   EndEvent,
+  EventDefinition,
   ExclusiveGateway,
   FlowElement,
   FormField,
   FormFieldType,
+  IntermediateThrowEvent,
   ParallelGateway,
   ScriptTask,
   SequenceFlow,
@@ -115,6 +141,7 @@ import {
   UnsupportedCollaborationError,
   UnsupportedElementError,
   UnsupportedEventDefinitionError,
+  UnsupportedEventFeatureError,
   UnsupportedFormFieldTypeError,
   UnsupportedLoopCharacteristicsError,
   UnsupportedServiceTaskFormError,
@@ -127,11 +154,24 @@ import { HISTORY_TIME_TO_LIVE } from './ir-to-xml.js';
  *
  * - `extensionAttribute` — an Operaton/camunda extension attribute or
  *   extension element the IR does not carry (e.g. `operaton:asyncBefore`,
- *   an `operaton:inputOutput` block).
+ *   an `operaton:inputOutput` block); also a binding attribute
+ *   (`errorCodeVariable`/`errorMessageVariable`/`escalationCodeVariable`)
+ *   set on the throw side, where it has no effect.
  * - `lane` — a `bpmn:Lane`; the IR has no notion of lanes, so every step is
  *   imported into a single flat process.
+ * - `label` — a genuine `name` on an event handler, a typed end event, or an
+ *   intermediate throw — none of these surfaces (`on`/`throw`/`emit`) has a
+ *   label slot, so the name is dropped rather than silently kept.
+ * - `unreferencedRoot` — a `bpmn:Error`/`bpmn:Escalation` root element that
+ *   nothing in the process catches or throws and that carries no declared
+ *   message (a declared, message-carrying error root imports into
+ *   `errorMessages` instead and is never reported here).
  */
-export type ImportWarningCategory = 'extensionAttribute' | 'lane';
+export type ImportWarningCategory =
+  | 'extensionAttribute'
+  | 'lane'
+  | 'label'
+  | 'unreferencedRoot';
 
 /**
  * A non-fatal notice that `xmlToIr` dropped content which the IR cannot
@@ -154,6 +194,14 @@ export interface ImportWarning {
  * Extension-attribute local names that ARE read into the IR and therefore
  * must NOT be reported as dropped. Matched against the local part of a
  * namespaced attribute regardless of its `operaton:`/`camunda:` prefix.
+ *
+ * `errorCodeVariable`/`errorMessageVariable`/`escalationCodeVariable` are
+ * consumed on the CATCH side only (an event handler's start event); on a
+ * throw-side definition (a typed end event or an intermediate throw) the
+ * engine ignores them, so {@link warnThrowSideBindingAttrs} reports that drop
+ * explicitly — the generic sweep here cannot tell which side a definition
+ * sits on and would otherwise stay silent for both. `errorMessage` lives on
+ * a `bpmn:Error` root, read directly by {@link resolveErrorMessages}.
  */
 const SUPPORTED_EXTENSION_ATTRS: ReadonlySet<string> = new Set([
   'assignee',
@@ -165,6 +213,10 @@ const SUPPORTED_EXTENSION_ATTRS: ReadonlySet<string> = new Set([
   'topic',
   'calledElementBinding',
   'calledElementVersion',
+  'errorCodeVariable',
+  'errorMessageVariable',
+  'escalationCodeVariable',
+  'errorMessage',
 ]);
 
 /**
@@ -302,8 +354,13 @@ interface ModdlePropertyDescriptor {
  * @throws {UnsupportedServiceTaskFormError} when a `bpmn:ServiceTask`
  *   carries no execution form the IR can represent (a bare task with no
  *   discriminator, or an external type without a topic).
- * @throws {UnsupportedEventDefinitionError} when a start/end event carries
- *   an event definition (timer, message, terminate, …), at any nesting depth.
+ * @throws {UnsupportedEventDefinitionError} when a plain start event carries
+ *   any event definition, or an event handler's start/end event/intermediate
+ *   throw carries a definition that is not error/escalation, at any nesting
+ *   depth.
+ * @throws {UnsupportedEventFeatureError} when an event-layer construct is
+ *   shaped in a way this tool's surface cannot express (see the module
+ *   docstring's "Refused" list for the complete taxonomy).
  * @throws {UnsupportedLoopCharacteristicsError} when a task, sub-process, or
  *   call activity carries loop characteristics (multi-instance or standard loop).
  * @throws {UnsupportedCallActivityError} when a `bpmn:CallActivity` carries a
@@ -363,13 +420,171 @@ export async function xmlToIr(
   }
 
   const warnings: ImportWarning[] = [];
-  const ir = mapProcess(processes[0], warnings);
+  const mappedProcess = mapProcess(processes[0], warnings);
+
+  // Root-element honesty pass: resolve the declared error messages off
+  // every `bpmn:Error` root, refusing a disagreeing or unkeyable
+  // declaration, then fold them into the process before checking for
+  // unreferenced roots (a declared, message-carrying root is never
+  // "unreferenced" — the declaration itself is authorial intent).
+  const errorRoots = rootElements.filter((e) => e.$type === 'bpmn:Error');
+  const escalationRoots = rootElements.filter(
+    (e) => e.$type === 'bpmn:Escalation',
+  );
+  const errorMessages = resolveErrorMessages(errorRoots);
+  const ir: BpmnProcess = {
+    ...mappedProcess,
+    ...(errorMessages.length > 0 ? { errorMessages } : {}),
+  };
+  warnUnreferencedRoots(errorRoots, escalationRoots, ir, warnings);
+
   // Extension elements moddle could not tie to a specific step (undeclared
   // `operaton:` types) surface only as document-level "unparsable content"
   // warnings. Emit one ImportWarning per such moddle warning, attributed to
   // the process — one drop reported per real drop, never fanned out.
   collectUnparsableResidualDrops(moddleWarnings, ir.id, warnings);
   return { ir, warnings };
+}
+
+/**
+ * Read the code → message map off every `bpmn:Error` root element
+ * (`operaton:errorMessage`/`camunda:errorMessage`), refusing loudly rather
+ * than collapsing silently when two roots disagree: a code-less root
+ * carrying a message has nothing to key it by, and two roots sharing a code
+ * but declaring different messages cannot both be honored by the single
+ * `errorMessages` entry the IR carries per code.
+ *
+ * @returns the declared `{ code, message }` entries, in root-element order,
+ *   deduped by code (a repeated *agreeing* declaration contributes once).
+ * @throws {UnsupportedEventFeatureError} for a message on a code-less root,
+ *   or two roots sharing a code with disagreeing messages.
+ */
+function resolveErrorMessages(
+  errorRoots: ModdleElement[],
+): { code: string; message: string }[] {
+  const seen = new Map<string, { message: string; rootId: string }>();
+  const entries: { code: string; message: string }[] = [];
+
+  for (const root of errorRoots) {
+    const rootId = requireId(root);
+    const message = readNamespacedAttr(root, 'errorMessage');
+    if (message === undefined) continue;
+
+    const code = readString(root, 'errorCode');
+    if (code === undefined) {
+      throw new UnsupportedEventFeatureError(
+        rootId,
+        'a declared error message needs a code to be keyed by, but this ' +
+          'error root has no errorCode',
+      );
+    }
+
+    const prior = seen.get(code);
+    if (prior !== undefined && prior.message !== message) {
+      throw new UnsupportedEventFeatureError(
+        rootId,
+        `error roots '${prior.rootId}' and '${rootId}' both declare code ` +
+          `"${code}" but disagree about the thrown message`,
+      );
+    }
+    if (prior === undefined) {
+      seen.set(code, { message, rootId });
+      entries.push({ code, message });
+    }
+  }
+
+  return entries;
+}
+
+/**
+ * Depth-first collect every distinct error/escalation code caught or thrown
+ * anywhere in the mapped IR (any container, any nesting depth) — used only
+ * to detect a root element that ended up unreferenced. Deliberately kept
+ * separate from `ir-to-xml.ts`'s equivalent collector: the two modules do
+ * not share private helpers, and the shapes they walk differ slightly (this
+ * one starts from an already-mapped {@link BpmnProcess}).
+ */
+function collectReferencedCodes(process: BpmnProcess): {
+  errorCodes: Set<string>;
+  escalationCodes: Set<string>;
+} {
+  const errorCodes = new Set<string>();
+  const escalationCodes = new Set<string>();
+
+  const visit = (elements: FlowElement[]): void => {
+    for (const el of elements) {
+      const def: EventDefinition | undefined =
+        el.kind === 'startEvent' ||
+        el.kind === 'endEvent' ||
+        el.kind === 'intermediateThrowEvent'
+          ? el.eventDefinition
+          : undefined;
+      if (def?.kind === 'error' && def.errorCode !== undefined) {
+        errorCodes.add(def.errorCode);
+      } else if (def?.kind === 'escalation' && def.escalationCode !== undefined) {
+        escalationCodes.add(def.escalationCode);
+      }
+      if (el.kind === 'subProcess') visit(el.flowElements);
+    }
+  };
+  visit(process.flowElements);
+
+  return { errorCodes, escalationCodes };
+}
+
+/**
+ * Warn once per `bpmn:Error`/`bpmn:Escalation` root that nothing in the
+ * mapped IR catches or throws: the drop is otherwise silent, since a root
+ * with no catcher/thrower never surfaces anywhere else. A message-less
+ * error root is genuinely dead; a message-carrying one is never unreferenced
+ * in effect, since {@link resolveErrorMessages} already folded it into
+ * `ir.errorMessages` regardless of usage (the declaration is explicit
+ * authorial intent) — so only the message-less case is checked here for
+ * errors. Escalations have no message concept, so every uncaught/unthrown
+ * escalation code warns.
+ */
+function warnUnreferencedRoots(
+  errorRoots: ModdleElement[],
+  escalationRoots: ModdleElement[],
+  ir: BpmnProcess,
+  warnings: ImportWarning[],
+): void {
+  const { errorCodes, escalationCodes } = collectReferencedCodes(ir);
+  const declaredCodes = new Set((ir.errorMessages ?? []).map((m) => m.code));
+
+  for (const root of errorRoots) {
+    const rootId = requireId(root);
+    const code = readString(root, 'errorCode');
+    if (code !== undefined && (errorCodes.has(code) || declaredCodes.has(code))) {
+      continue;
+    }
+    warnings.push({
+      elementId: rootId,
+      category: 'unreferencedRoot',
+      message:
+        code !== undefined
+          ? `The error "${code}" declared by root '${rootId}' is never ` +
+            'caught or thrown and carries no message; it was not imported.'
+          : `The error root '${rootId}' has no code, so it cannot be keyed ` +
+            'or represented in the model; it was not imported.',
+    });
+  }
+
+  for (const root of escalationRoots) {
+    const rootId = requireId(root);
+    const code = readString(root, 'escalationCode');
+    if (code !== undefined && escalationCodes.has(code)) continue;
+    warnings.push({
+      elementId: rootId,
+      category: 'unreferencedRoot',
+      message:
+        code !== undefined
+          ? `The escalation "${code}" declared by root '${rootId}' is never ` +
+            'caught or thrown; it was not imported.'
+          : `The escalation root '${rootId}' has no code, so it cannot be ` +
+            'keyed or represented in the model; it was not imported.',
+    });
+  }
 }
 
 /**
@@ -471,6 +686,22 @@ function mapContainer(
   el: ModdleElement,
   warnings: ImportWarning[],
 ): { flowElements: FlowElement[]; sequenceFlows: SequenceFlow[] } {
+  return mapContainerChildren(el, warnings, mapStartEvent);
+}
+
+/**
+ * Shared per-child dispatch for a container's `flowElements` collection.
+ * `mapStart` lets {@link mapEventSubProcess} substitute the trigger-carrying
+ * mapping for the single start event its body must carry ({@link
+ * mapEventSubProcessStart}); every other child kind maps exactly as it would
+ * in an ordinary container, so the refusals below apply uniformly at any
+ * nesting depth and inside an event handler's body alike.
+ */
+function mapContainerChildren(
+  el: ModdleElement,
+  warnings: ImportWarning[],
+  mapStart: (startEl: ModdleElement) => StartEvent,
+): { flowElements: FlowElement[]; sequenceFlows: SequenceFlow[] } {
   const flowElements: FlowElement[] = [];
   const sequenceFlows: SequenceFlow[] = [];
 
@@ -478,10 +709,13 @@ function mapContainer(
   for (const child of children) {
     switch (child.$type) {
       case 'bpmn:StartEvent':
-        flowElements.push(mapStartEvent(child));
+        flowElements.push(mapStart(child));
         break;
       case 'bpmn:EndEvent':
-        flowElements.push(mapEndEvent(child));
+        flowElements.push(mapEndEvent(child, warnings));
+        break;
+      case 'bpmn:IntermediateThrowEvent':
+        flowElements.push(mapIntermediateThrowEvent(child, warnings));
         break;
       case 'bpmn:UserTask':
         flowElements.push(mapUserTask(child));
@@ -499,7 +733,11 @@ function mapContainer(
         flowElements.push(mapParallelGateway(child));
         break;
       case 'bpmn:SubProcess':
-        flowElements.push(mapSubProcess(child, warnings));
+        flowElements.push(
+          child.get('triggeredByEvent') === true
+            ? mapEventSubProcess(child, warnings)
+            : mapSubProcess(child, warnings),
+        );
         break;
       case 'bpmn:CallActivity':
         flowElements.push(mapCallActivity(child, warnings));
@@ -524,13 +762,13 @@ function mapContainer(
  * Map a `bpmn:SubProcess` moddle element into a recursive IR {@link
  * SubProcess}.
  *
- * Only the embedded (plain) sub-process is representable. An event
- * sub-process (`triggeredByEvent="true"`) starts its body from an internal
- * event trigger rather than the parent flow — a different execution
- * semantic the IR does not model — so it is refused rather than mapped as
- * if it were an ordinary embedded sub-process. `bpmn:Transaction` and
+ * Only the embedded (plain) sub-process reaches this function — a
+ * `triggeredByEvent="true"` sub-process (an event handler) is dispatched to
+ * {@link mapEventSubProcess} instead, by {@link mapContainerChildren}, before
+ * this function is ever called. `bpmn:Transaction` and
  * `bpmn:AdHocSubProcess` carry their own moddle `$type`s and never reach
- * this function; they hit the default refusal arm in {@link mapContainer}.
+ * this function either; they hit the default refusal arm in {@link
+ * mapContainerChildren}.
  *
  * The nested body is mapped by recursing into {@link mapContainer}, so a
  * sub-process nested inside a sub-process imports just as well as one
@@ -541,12 +779,6 @@ function mapSubProcess(
   warnings: ImportWarning[],
 ): SubProcess {
   const id = requireId(el);
-  if (el.get('triggeredByEvent') === true) {
-    throw new UnsupportedElementError(
-      'bpmn:SubProcess with triggeredByEvent="true"',
-      id,
-    );
-  }
   refuseLoopCharacteristics(el, id);
   // A sub-process may own its own lane set, just like a process.
   collectLaneDrops(el, id, warnings);
@@ -560,6 +792,267 @@ function mapSubProcess(
     flowElements,
     sequenceFlows,
   };
+}
+
+/**
+ * Map a `bpmn:SubProcess` with `triggeredByEvent="true"` into an IR event
+ * handler — the import counterpart of an `on` handler. Its single start
+ * event carries the caught trigger; anything else about its shape is
+ * refused rather than narrowed: a start-event count other than one, a start
+ * with zero or multiple definitions, or the sub-process itself carrying
+ * incoming/outgoing sequence flows (it is triggered by its caught event,
+ * never wired into the parent flow — that would be invalid BPMN this tool
+ * cannot round-trip) all raise {@link UnsupportedEventFeatureError}.
+ *
+ * The body — including the trigger start's own definition-kind and
+ * definition-count checks — is mapped by {@link mapContainerChildren} with
+ * {@link mapEventSubProcessStart} substituted for the ordinary
+ * {@link mapStartEvent}, so nesting (an event handler inside a plain
+ * sub-process, or inside another handler) composes for free.
+ */
+function mapEventSubProcess(
+  el: ModdleElement,
+  warnings: ImportWarning[],
+): SubProcess {
+  const id = requireId(el);
+  refuseLoopCharacteristics(el, id);
+
+  const incoming = (el.get('incoming') as ModdleElement[] | undefined) ?? [];
+  const outgoing = (el.get('outgoing') as ModdleElement[] | undefined) ?? [];
+  if (incoming.length > 0 || outgoing.length > 0) {
+    throw new UnsupportedEventFeatureError(
+      id,
+      'an event handler carries incoming or outgoing sequence flows — it ' +
+        'is triggered by its caught event, not wired into the surrounding flow',
+    );
+  }
+
+  collectLaneDrops(el, id, warnings);
+  warnGenuineLabel(el, id, 'an event handler', warnings);
+
+  const children = (el.get('flowElements') as ModdleElement[]) ?? [];
+  const startEvents = children.filter((c) => c.$type === 'bpmn:StartEvent');
+  if (startEvents.length !== 1) {
+    throw new UnsupportedEventFeatureError(
+      id,
+      'an event handler must have exactly one start event carrying its ' +
+        `trigger (found ${startEvents.length})`,
+    );
+  }
+
+  const { flowElements, sequenceFlows } = mapContainerChildren(
+    el,
+    warnings,
+    (startEl) => mapEventSubProcessStart(startEl, id, warnings),
+  );
+
+  return {
+    kind: 'subProcess',
+    id,
+    triggeredByEvent: true,
+    flowElements,
+    sequenceFlows,
+  };
+}
+
+/**
+ * Map the single trigger-carrying start event of an event handler. Unlike
+ * {@link mapStartEvent} (which refuses every definition), this start is
+ * expected to carry exactly one error or escalation definition; anything
+ * else refuses. `isInterrupting="false"` is valid only for an
+ * escalation trigger — BPMN requires an error trigger to interrupt its
+ * scope, so that combination refuses too.
+ */
+function mapEventSubProcessStart(
+  startEl: ModdleElement,
+  handlerId: string,
+  warnings: ImportWarning[],
+): StartEvent {
+  const id = requireId(startEl);
+  const defs =
+    (startEl.get('eventDefinitions') as ModdleElement[] | undefined) ?? [];
+  if (defs.length !== 1) {
+    throw new UnsupportedEventFeatureError(
+      handlerId,
+      'its start event must carry exactly one trigger definition ' +
+        `(found ${defs.length})`,
+    );
+  }
+
+  const eventDefinition = readCatchEventDefinition(defs[0], id, warnings);
+
+  const isInterrupting =
+    startEl.get('isInterrupting') === false ? false : undefined;
+  if (isInterrupting === false && eventDefinition.kind === 'error') {
+    throw new UnsupportedEventFeatureError(
+      handlerId,
+      'an error handler cannot be non-interrupting (isInterrupting="false") ' +
+        '— BPMN requires an error trigger to interrupt its scope',
+    );
+  }
+
+  return {
+    kind: 'startEvent',
+    id,
+    eventDefinition,
+    ...(isInterrupting === false ? { isInterrupting: false } : {}),
+  };
+}
+
+/**
+ * Resolve one event definition's shape on the CATCH side (an event
+ * handler's trigger): a definition without a ref, or whose resolved root
+ * carries no code, means catch-all — the missing code is exactly what
+ * makes the handler match any error/escalation. Reads the binding
+ * attributes (`errorCodeVariable`/`errorMessageVariable`/
+ * `escalationCodeVariable`, dual `operaton:`/`camunda:` namespace via {@link
+ * readNamespacedAttr}) and runs {@link collectExtensionDrops} on the
+ * definition itself so an unrelated `operaton:` attribute there is never
+ * silently lost — definitions were never scanned for drops before because
+ * they were refused outright; now that they map, the sweep applies here too.
+ *
+ * @throws {UnsupportedEventDefinitionError} when the definition is neither
+ *   an error nor an escalation.
+ */
+function readCatchEventDefinition(
+  defEl: ModdleElement,
+  ownerId: string,
+  warnings: ImportWarning[],
+): EventDefinition {
+  collectExtensionDrops(defEl, ownerId, warnings);
+
+  if (defEl.$type === 'bpmn:ErrorEventDefinition') {
+    const ref = defEl.get('errorRef') as ModdleElement | undefined;
+    const errorCode =
+      ref !== undefined && ref !== null ? readString(ref, 'errorCode') : undefined;
+    const codeVariable = readNamespacedAttr(defEl, 'errorCodeVariable');
+    const messageVariable = readNamespacedAttr(defEl, 'errorMessageVariable');
+    return {
+      kind: 'error',
+      ...(errorCode === undefined ? {} : { errorCode }),
+      ...(codeVariable === undefined ? {} : { codeVariable }),
+      ...(messageVariable === undefined ? {} : { messageVariable }),
+    };
+  }
+
+  if (defEl.$type === 'bpmn:EscalationEventDefinition') {
+    const ref = defEl.get('escalationRef') as ModdleElement | undefined;
+    const escalationCode =
+      ref !== undefined && ref !== null
+        ? readString(ref, 'escalationCode')
+        : undefined;
+    const codeVariable = readNamespacedAttr(defEl, 'escalationCodeVariable');
+    return {
+      kind: 'escalation',
+      ...(escalationCode === undefined ? {} : { escalationCode }),
+      ...(codeVariable === undefined ? {} : { codeVariable }),
+    };
+  }
+
+  throw new UnsupportedEventDefinitionError(ownerId, 'start', defEl.$type);
+}
+
+/**
+ * Resolve one event definition's shape on the THROW side (a typed end event
+ * or an escalation intermediate throw): the code must resolve to a
+ * non-empty string — a throw with no code is not something the `throw`/
+ * `emit` surface can express. Binding attributes have no effect on a throw
+ * (the engine ignores them there), so their presence is warned explicitly
+ * via {@link warnThrowSideBindingAttrs} rather than silently kept, since
+ * {@link SUPPORTED_EXTENSION_ATTRS} declares them supported for the catch
+ * side and would otherwise silence this drop. Also runs
+ * {@link collectExtensionDrops} on the definition itself, exactly as the
+ * catch side does.
+ *
+ * @throws {UnsupportedEventFeatureError} when the resolved code is empty.
+ */
+function readThrowEventDefinition(
+  defEl: ModdleElement,
+  ownerId: string,
+  warnings: ImportWarning[],
+): EventDefinition {
+  collectExtensionDrops(defEl, ownerId, warnings);
+  warnThrowSideBindingAttrs(defEl, ownerId, warnings);
+
+  if (defEl.$type === 'bpmn:ErrorEventDefinition') {
+    const ref = defEl.get('errorRef') as ModdleElement | undefined;
+    const errorCode =
+      ref !== undefined && ref !== null ? readString(ref, 'errorCode') : undefined;
+    if (errorCode === undefined) {
+      throw new UnsupportedEventFeatureError(
+        ownerId,
+        'a throw must resolve to a non-empty code',
+      );
+    }
+    return { kind: 'error', errorCode };
+  }
+
+  const ref = defEl.get('escalationRef') as ModdleElement | undefined;
+  const escalationCode =
+    ref !== undefined && ref !== null
+      ? readString(ref, 'escalationCode')
+      : undefined;
+  if (escalationCode === undefined) {
+    throw new UnsupportedEventFeatureError(
+      ownerId,
+      'a throw must resolve to a non-empty code',
+    );
+  }
+  return { kind: 'escalation', escalationCode };
+}
+
+/**
+ * Warn (`category: 'extensionAttribute'`) when a binding attribute
+ * (`errorCodeVariable`/`errorMessageVariable` on an error definition,
+ * `escalationCodeVariable` on an escalation definition) is set on a
+ * THROW-side definition, where the engine ignores it. Declaring these names
+ * in {@link SUPPORTED_EXTENSION_ATTRS} (so the catch side reads them
+ * silently) would otherwise make the generic sweep in
+ * {@link collectExtensionDrops} silent here too — it cannot tell which side
+ * a definition sits on — so this explicit check is the honesty fix.
+ */
+function warnThrowSideBindingAttrs(
+  defEl: ModdleElement,
+  ownerId: string,
+  warnings: ImportWarning[],
+): void {
+  const names =
+    defEl.$type === 'bpmn:ErrorEventDefinition'
+      ? ['errorCodeVariable', 'errorMessageVariable']
+      : ['escalationCodeVariable'];
+  for (const name of names) {
+    if (readNamespacedAttr(defEl, name) === undefined) continue;
+    warnings.push({
+      elementId: ownerId,
+      category: 'extensionAttribute',
+      message:
+        `The '${name}' setting on '${ownerId}' only takes effect on a ` +
+        "catch (an 'on' handler); it has no effect on a throw and was not imported.",
+    });
+  }
+}
+
+/**
+ * Warn-drop a genuine label: the `on`/`throw`/`emit` surfaces have no label
+ * slot, so a `name` that survives {@link readDerivableName} on an
+ * event handler, a typed end event, or an intermediate throw is dropped
+ * with a warning rather than silently discarded.
+ */
+function warnGenuineLabel(
+  el: ModdleElement,
+  id: string,
+  surface: string,
+  warnings: ImportWarning[],
+): void {
+  const name = readDerivableName(el, id);
+  if (name === undefined) return;
+  warnings.push({
+    elementId: id,
+    category: 'label',
+    message:
+      `The label '${name}' on '${id}' was not imported: ${surface} has no ` +
+      "label in this tool's surface.",
+  });
 }
 
 /**
@@ -994,29 +1487,109 @@ function mapStartEvent(el: ModdleElement): StartEvent {
 /**
  * Map a `bpmn:EndEvent` moddle element into the IR.
  *
- * Refuses (throws) when the event carries any event definition (terminate,
- * error, message, …) — the IR models plain end events only.
+ * A plain end (no event definitions) maps exactly as before. Exactly one
+ * error or escalation definition maps to a typed throw — `throw error`/
+ * `throw escalation` — whose resolved code must be non-empty; any other
+ * shape (zero-or-multiple definitions, or a definition kind that is not
+ * error/escalation) refuses. A genuine label has no slot on a typed throw
+ * and is warn-dropped.
  */
-function mapEndEvent(el: ModdleElement): EndEvent {
+function mapEndEvent(el: ModdleElement, warnings: ImportWarning[]): EndEvent {
   const id = requireId(el);
-  refuseEventDefinitions(el, id, 'end');
-  const name = readDerivableName(el, id);
-  return {
-    kind: 'endEvent',
-    id,
-    ...(name === undefined ? {} : { name }),
-  };
+  const defs =
+    (el.get('eventDefinitions') as ModdleElement[] | undefined) ?? [];
+
+  if (defs.length === 0) {
+    const name = readDerivableName(el, id);
+    return { kind: 'endEvent', id, ...(name === undefined ? {} : { name }) };
+  }
+  if (defs.length > 1) {
+    throw new UnsupportedEventFeatureError(
+      id,
+      `a throw carries ${defs.length} event definitions — only a single ` +
+        'error or escalation is supported',
+    );
+  }
+
+  const [defEl] = defs;
+  if (
+    defEl.$type !== 'bpmn:ErrorEventDefinition' &&
+    defEl.$type !== 'bpmn:EscalationEventDefinition'
+  ) {
+    throw new UnsupportedEventDefinitionError(id, 'end', defEl.$type);
+  }
+
+  const eventDefinition = readThrowEventDefinition(defEl, id, warnings);
+  warnGenuineLabel(el, id, 'a throw', warnings);
+
+  return { kind: 'endEvent', id, eventDefinition };
 }
 
 /**
- * Throw {@link UnsupportedEventDefinitionError} when a start/end event
- * carries one or more event definitions. An empty (or absent)
- * `eventDefinitions` array is a plain event and is allowed.
+ * Map a `bpmn:IntermediateThrowEvent` moddle element into the IR — the
+ * `emit` surface. Only a single escalation definition with a resolvable code
+ * is representable: a "none" intermediate throw (zero definitions), an
+ * error definition (BPMN has no intermediate error throw — `throw error` is
+ * the surface for that), or more than one definition all refuse. A genuine
+ * label has no slot here either and is warn-dropped.
+ */
+function mapIntermediateThrowEvent(
+  el: ModdleElement,
+  warnings: ImportWarning[],
+): IntermediateThrowEvent {
+  const id = requireId(el);
+  const defs =
+    (el.get('eventDefinitions') as ModdleElement[] | undefined) ?? [];
+
+  if (defs.length === 0) {
+    throw new UnsupportedEventFeatureError(
+      id,
+      'an emit with no event definition (a "none" intermediate throw) ' +
+        'fires nothing this tool can represent',
+    );
+  }
+  if (defs.length > 1) {
+    throw new UnsupportedEventFeatureError(
+      id,
+      `an emit carries ${defs.length} event definitions — only a single ` +
+        'escalation is supported',
+    );
+  }
+
+  const [defEl] = defs;
+  if (defEl.$type === 'bpmn:ErrorEventDefinition') {
+    throw new UnsupportedEventFeatureError(
+      id,
+      'an emit cannot carry an error — BPMN has no intermediate error ' +
+        'throw; write "throw error" to end the path instead',
+    );
+  }
+  if (defEl.$type !== 'bpmn:EscalationEventDefinition') {
+    throw new UnsupportedEventDefinitionError(
+      id,
+      'intermediate throw',
+      defEl.$type,
+    );
+  }
+
+  const eventDefinition = readThrowEventDefinition(defEl, id, warnings);
+  warnGenuineLabel(el, id, 'an emit', warnings);
+
+  return { kind: 'intermediateThrowEvent', id, eventDefinition };
+}
+
+/**
+ * Throw {@link UnsupportedEventDefinitionError} when a start event carries
+ * one or more event definitions. An empty (or absent) `eventDefinitions`
+ * array is a plain event and is allowed. Used only by {@link mapStartEvent}
+ * (a *normal* container's start event, which never carries a trigger) — an
+ * event handler's start goes through {@link mapEventSubProcessStart}
+ * instead, which permits exactly one error/escalation definition.
  */
 function refuseEventDefinitions(
   el: ModdleElement,
   id: string,
-  eventKind: 'start' | 'end',
+  eventKind: 'start',
 ): void {
   const defs =
     (el.get('eventDefinitions') as ModdleElement[] | undefined) ?? [];

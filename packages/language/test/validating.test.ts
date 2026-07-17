@@ -1559,6 +1559,411 @@ process p {
   });
 });
 
+// ── Event handlers, throw / emit, error declaration ────────────────────────
+//
+// The event layer is validated as the DSL's try/catch: a handler sits at the
+// end of the body it guards like a catch block, `throw` always ends its
+// path, `emit` fires and continues, and a binding declares the process
+// variable it fills. The trigger kind (`error`/`escalation`) and binding
+// fields (`code`/`message`) are soft words (plain `ID`s in the grammar), so
+// an unknown word is a validator diagnostic that names the legal options
+// rather than a parse error.
+
+describe('Validation — clean event-layer programs', () => {
+  test('a surface block with coded/bound handlers and an alongside escalation is diagnostic-free', async () => {
+    const { diagnostics } = await validate(`
+process p {
+  var c: string
+  var m: string
+  var v: string
+
+  start S
+  user A
+  end E
+
+  on error "PAYMENT_FAILED" (code c, message m) { user R }
+  on escalation "LOW_STOCK" (code v) alongside { user Q }
+}
+`);
+    expect(diagnostics).toHaveLength(0);
+  });
+
+  test('a handler inside a subprocess is diagnostic-free', async () => {
+    const { diagnostics } = await validate(`
+process p {
+  subprocess S {
+    user A
+    on error "X" { user B }
+  }
+}
+`);
+    expect(diagnostics).toHaveLength(0);
+  });
+
+  test('a handler nested inside another handler is diagnostic-free', async () => {
+    const { diagnostics } = await validate(`
+process p {
+  on error "X" {
+    on escalation "Y" { user A }
+  }
+}
+`);
+    expect(diagnostics).toHaveLength(0);
+  });
+
+  test('a coded handler and a catch-all of the same trigger coexist without a duplicate error', async () => {
+    const { diagnostics } = await validate(`
+process p {
+  on error "X" { user A }
+  on error { user B }
+}
+`);
+    expect(diagnostics).toHaveLength(0);
+  });
+
+  test('an explicit start opening a handler body is diagnostic-free', async () => {
+    const { diagnostics } = await validate(`
+process p {
+  on error "X" {
+    start In
+    user A
+    end Out
+  }
+}
+`);
+    expect(diagnostics).toHaveLength(0);
+  });
+});
+
+describe('Validation — event handler placement', () => {
+  test('a handler nested inside an if block is exactly one placement error', async () => {
+    const { diagnostics } = await validate(`
+process p {
+  if (true) {
+    on error "X" { user A }
+  }
+}
+`);
+    const errors = diagnosticsFor(diagnostics, 'belongs directly in a process');
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.severity).toBe(SEVERITY_ERROR);
+  });
+
+  test('a handler directly in a process body has no placement error', async () => {
+    const { diagnostics } = await validate(`
+process p { on error "X" { user A } }
+`);
+    expect(
+      diagnosticsFor(diagnostics, 'belongs directly in a process'),
+    ).toHaveLength(0);
+  });
+});
+
+describe('Validation — event handler trailing position', () => {
+  test('a handler followed by a service task is exactly one trailing error', async () => {
+    const { diagnostics } = await validate(`
+process p {
+  on error "X" { user A }
+  service S { class = "x.Y" }
+}
+`);
+    const errors = diagnosticsFor(diagnostics, 'move it after the last step');
+    expect(errors).toHaveLength(1);
+  });
+
+  test('a handler followed by another handler has no trailing error', async () => {
+    const { diagnostics } = await validate(`
+process p {
+  on error "X" { user A }
+  on escalation "Y" { user B }
+}
+`);
+    expect(diagnosticsFor(diagnostics, 'move it after the last step')).toHaveLength(
+      0,
+    );
+  });
+
+  test('a handler after an end event produces no unreachable warning', async () => {
+    const { diagnostics } = await validate(`
+process p {
+  start S
+  end Done
+  on error "X" { user A }
+}
+`);
+    expect(diagnosticsFor(diagnostics, 'can never run')).toHaveLength(0);
+  });
+});
+
+describe('Validation — event handler alongside and empty code', () => {
+  test('`on error … alongside` is an error naming alongside', async () => {
+    const { diagnostics } = await validate(`
+process p { on error "X" alongside { user A } }
+`);
+    const errors = diagnosticsFor(diagnostics, 'alongside');
+    expect(errors.some((d) => d.severity === SEVERITY_ERROR)).toBe(true);
+  });
+
+  test('`on escalation … alongside` produces no interrupting-only error', async () => {
+    const { diagnostics } = await validate(`
+process p { on escalation "X" alongside { user A } }
+`);
+    expect(
+      diagnosticsFor(diagnostics, 'only available for escalations'),
+    ).toHaveLength(0);
+  });
+
+  test('an empty code string on `on` is an error teaching catch-all by omission', async () => {
+    const { diagnostics } = await validate(`
+process p { on error "" { user A } }
+`);
+    const errors = diagnosticsFor(diagnostics, 'omit the string entirely');
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.severity).toBe(SEVERITY_ERROR);
+  });
+});
+
+describe('Validation — event handler duplicates', () => {
+  test('two handlers with the same trigger and code is a duplicate error', async () => {
+    const { diagnostics } = await validate(`
+process p {
+  on error "X" { user A }
+  on error "X" { user B }
+}
+`);
+    expect(bySeverity(diagnostics, SEVERITY_ERROR).length).toBeGreaterThan(0);
+  });
+
+  test('two catch-all handlers of the same trigger is a duplicate error', async () => {
+    const { diagnostics } = await validate(`
+process p {
+  on error { user A }
+  on error { user B }
+}
+`);
+    expect(bySeverity(diagnostics, SEVERITY_ERROR).length).toBeGreaterThan(0);
+  });
+
+  test('a coded handler and the same code marked alongside is still a duplicate error', async () => {
+    const { diagnostics } = await validate(`
+process p {
+  on escalation "X" { user A }
+  on escalation "X" alongside { user B }
+}
+`);
+    expect(bySeverity(diagnostics, SEVERITY_ERROR).length).toBeGreaterThan(0);
+  });
+});
+
+describe('Validation — event handler bindings', () => {
+  test('two bindings with the same field is a duplicate error', async () => {
+    const { diagnostics } = await validate(`
+process p { on error "X" (code c, code d) { user A } }
+`);
+    expect(diagnosticsFor(diagnostics, 'Duplicate catch-binding field')).toHaveLength(
+      1,
+    );
+  });
+
+  test('a `message` binding on an escalation handler is an error', async () => {
+    const { diagnostics } = await validate(`
+process p { on escalation "X" (message m) { user A } }
+`);
+    expect(
+      diagnosticsFor(diagnostics, 'carries a code but no message'),
+    ).toHaveLength(1);
+  });
+
+  test('a binding variable already declared with a conflicting type is an agreement error', async () => {
+    const { diagnostics } = await validate(`
+process p {
+  var c: number
+  on error "X" (code c) { user A }
+}
+`);
+    expect(diagnosticsFor(diagnostics, 'the types must agree')).toHaveLength(1);
+  });
+
+  test('a handler body referencing a binding variable produces no undeclared-variable warning', async () => {
+    const { diagnostics } = await validate(`
+process p {
+  on error "X" (code c, message m) {
+    if (c == "y") { user A }
+  }
+}
+`);
+    expect(diagnosticsFor(diagnostics, 'is not declared')).toHaveLength(0);
+  });
+});
+
+describe('Validation — throw and emit statements', () => {
+  test('a statement after `throw error` is flagged unreachable', async () => {
+    const { diagnostics } = await validate(`
+process p { throw error "X" user Dead }
+`);
+    expect(diagnosticsFor(diagnostics, 'can never run')).toHaveLength(1);
+  });
+
+  test('a goto-targeted named statement after a `throw` stays reachable', async () => {
+    const { diagnostics } = await validate(`
+process p {
+  var cond: boolean
+  if (cond) { goto Retry }
+  throw error "X"
+  user Retry
+}
+`);
+    expect(diagnosticsFor(diagnostics, 'can never run')).toHaveLength(0);
+  });
+
+  test('a statement after `emit escalation` produces no unreachable warning', async () => {
+    const { diagnostics } = await validate(`
+process p { emit escalation "X" user Alive }
+`);
+    expect(diagnosticsFor(diagnostics, 'can never run')).toHaveLength(0);
+  });
+
+  test('`emit error` is a teaching error pointing at `throw error`', async () => {
+    const { diagnostics } = await validate(`process p { emit error "X" }`);
+    const errors = diagnosticsFor(diagnostics, 'throw error');
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.severity).toBe(SEVERITY_ERROR);
+  });
+
+  test('a task named with the Throw_ or EventSubProcess_ reserved prefix is an error', async () => {
+    const throwPrefixed = await validate(`process p { user Throw_p_1 }`);
+    expect(
+      diagnosticsFor(throwPrefixed.diagnostics, 'reserved synthesised-id'),
+    ).toHaveLength(1);
+
+    const eventSubProcessPrefixed = await validate(
+      `process p { user EventSubProcess_x }`,
+    );
+    expect(
+      diagnosticsFor(
+        eventSubProcessPrefixed.diagnostics,
+        'reserved synthesised-id',
+      ),
+    ).toHaveLength(1);
+  });
+
+  test('two throws sharing an authored name is a duplicate-name error', async () => {
+    const { diagnostics } = await validate(`
+process p {
+  throw error Same "X"
+  throw escalation Same "Y"
+}
+`);
+    expect(diagnosticsFor(diagnostics, 'ambiguous').length).toBeGreaterThan(0);
+  });
+
+  test('a goto targeting a named throw resolves with no unresolved-reference error', async () => {
+    const { diagnostics } = await validate(`
+process p {
+  var cond: boolean
+  start S
+  if (cond) { goto Failed }
+  throw error Failed "X"
+}
+`);
+    expect(bySeverity(diagnostics, SEVERITY_ERROR)).toHaveLength(0);
+  });
+});
+
+describe('Validation — error declaration', () => {
+  test('a duplicate `error … message …` declaration for the same code is an error', async () => {
+    const { diagnostics } = await validate(`
+process p {
+  error "X" message "A"
+  error "X" message "B"
+  start S
+  end E
+}
+`);
+    expect(
+      diagnosticsFor(diagnostics, 'already has a message declared'),
+    ).toHaveLength(1);
+  });
+
+  test('an empty declaration code is an error', async () => {
+    const { diagnostics } = await validate(`
+process p { error "" message "m" start S end E }
+`);
+    expect(diagnosticsFor(diagnostics, 'code cannot be empty')).toHaveLength(1);
+  });
+
+  test('a `start` carrying a form block inside a handler body is an error', async () => {
+    const { diagnostics } = await validate(`
+process p {
+  on error "X" {
+    start In { form { a: string } }
+    user A
+  }
+}
+`);
+    expect(bySeverity(diagnostics, SEVERITY_ERROR).length).toBeGreaterThan(0);
+  });
+
+  test('an empty handler body is exactly one warning', async () => {
+    const { diagnostics } = await validate(`process p { on error "X" { } }`);
+    const warnings = bySeverity(diagnostics, SEVERITY_WARNING).filter((d) =>
+      d.message.toLowerCase().includes('no steps'),
+    );
+    expect(warnings).toHaveLength(1);
+  });
+});
+
+describe('Validation — soft event words', () => {
+  test('an unknown trigger word on `on` is exactly one diagnostic naming both valid kinds', async () => {
+    const { diagnostics } = await validate(`process p { on erorr "X" { } }`);
+    expect(diagnostics).toHaveLength(1);
+    expect(diagnostics[0]!.message).toContain('error');
+    expect(diagnostics[0]!.message).toContain('escalation');
+  });
+
+  test('an unknown trigger word on `throw` is exactly one diagnostic', async () => {
+    const { diagnostics } = await validate(`process p { throw banana "X" }`);
+    expect(diagnostics).toHaveLength(1);
+    expect(diagnostics[0]!.message).toContain('error');
+    expect(diagnostics[0]!.message).toContain('escalation');
+  });
+
+  test('an unknown trigger word on `emit` is exactly one diagnostic', async () => {
+    const { diagnostics } = await validate(`process p { emit banana "X" }`);
+    expect(diagnostics).toHaveLength(1);
+    expect(diagnostics[0]!.message).toContain('error');
+    expect(diagnostics[0]!.message).toContain('escalation');
+  });
+
+  test('an unknown binding field is exactly one diagnostic naming both valid fields', async () => {
+    const { diagnostics } = await validate(`
+process p { on error "X" (coed c) { user A } }
+`);
+    expect(diagnostics).toHaveLength(1);
+    expect(diagnostics[0]!.message).toContain('code');
+    expect(diagnostics[0]!.message).toContain('message');
+  });
+
+  test('an unknown declaration kind is exactly one diagnostic naming the valid kind', async () => {
+    const { diagnostics } = await validate(`
+process p { banana "X" message "m" start S end E }
+`);
+    expect(diagnostics).toHaveLength(1);
+    expect(diagnostics[0]!.message).toContain('error');
+  });
+
+  test('a variable named `message` coexists with a handler binding field of the same word', async () => {
+    const { diagnostics } = await validate(`
+process p {
+  var message: string
+  if (message == "x") { user A }
+  on error "X" (message m) { user B }
+}
+`);
+    expect(diagnostics).toHaveLength(0);
+  });
+});
+
 /** All diagnostics of the given LSP severity (1 = Error, 2 = Warning). */
 function bySeverity(
   diagnostics: ValidationResult<Model>['diagnostics'],

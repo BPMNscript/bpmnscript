@@ -1,8 +1,9 @@
-import type { GrammarAST } from 'langium';
+import type { GrammarAST, MaybePromise } from 'langium';
 import {
   DefaultCompletionProvider,
   type CompletionAcceptor,
   type CompletionContext,
+  type NextFeature,
 } from 'langium/lsp';
 import {
   CompletionItemKind,
@@ -52,6 +53,16 @@ const STRUCTURE_SNIPPETS: Readonly<Record<string, string>> = {
   do: 'do {\n\t$1\n} while (${2:condition})',
   parallel: 'parallel {\n\t{\n\t\t$1\n\t}\n\t{\n\t\t$2\n\t}\n}',
   subprocess: 'subprocess ${1:id} {\n\t$0\n}',
+  // event handlers / throw / emit — the DSL's try/catch. `error`/`escalation`
+  // are soft words (plain identifiers, not keywords — see
+  // bpmn-script-validator.ts), so they are offered here as snippet choice
+  // placeholders and, at the bare ID position, through the ID-position
+  // completion override below.
+  on: 'on ${1|error,escalation|} "${2:CODE}" {\n\t$0\n}',
+  throw: 'throw ${1|error,escalation|} "${2:CODE}"',
+  // `emit` only has a continuing form for escalation (BPMN has no
+  // intermediate error throw), so there is no kind choice here.
+  emit: 'emit escalation "${1:CODE}"',
   // call — starts another process like a function call: `process` names the
   // callee, `in` entries are its arguments, `out` entries are its return
   // values.
@@ -81,6 +92,58 @@ const STRUCTURE_DETAILS: Readonly<Record<string, string>> = {
  * Langium's default behaviour.
  */
 export class BpmnScriptCompletionProvider extends DefaultCompletionProvider {
+  /**
+   * Offers items for the soft event words: `error`/`escalation`
+   * complete the `trigger` property of `on`/`throw` (both kinds are
+   * terminal-or-catchable there), `escalation` only completes the `trigger`
+   * of `emit` (the only kind with a continuing throw form), and
+   * `code`/`message` complete the `field` property of a handler binding.
+   * These words lex as plain `ID`s (not grammar keywords — see
+   * `bpmn-script-validator.ts`), so the default completion offers nothing at
+   * these positions; every other position keeps the inherited behaviour.
+   */
+  protected override completionFor(
+    context: CompletionContext,
+    next: NextFeature,
+    acceptor: CompletionAcceptor,
+  ): MaybePromise<void> {
+    const containerType = context.node?.$type;
+    if (next.property === 'trigger') {
+      if (containerType === 'EmitStatement') {
+        this.acceptEventWord(context, acceptor, ['escalation']);
+        return;
+      }
+      if (containerType === 'OnHandler' || containerType === 'ThrowStatement') {
+        this.acceptEventWord(context, acceptor, ['error', 'escalation']);
+        return;
+      }
+    }
+    if (
+      next.property === 'field' &&
+      (containerType === 'OnHandler' || containerType === 'EventBinding')
+    ) {
+      this.acceptEventWord(context, acceptor, ['code', 'message']);
+      return;
+    }
+    return super.completionFor(context, next, acceptor);
+  }
+
+  /** Emit one plain keyword-kind completion item per word in `words`. */
+  private acceptEventWord(
+    context: CompletionContext,
+    acceptor: CompletionAcceptor,
+    words: readonly string[],
+  ): void {
+    for (const word of words) {
+      acceptor(context, {
+        label: word,
+        kind: CompletionItemKind.Keyword,
+        detail: 'BPMNscript event word',
+        sortText: '1',
+      });
+    }
+  }
+
   protected override completionForKeyword(
     context: CompletionContext,
     keyword: GrammarAST.Keyword,

@@ -1,0 +1,33 @@
+// Order handling with an error handler and an escalation. The payment and
+// shipping steps are grouped into a `subprocess`; if a step fails it raises the
+// PAYMENT_FAILED error, which the interrupting `on error` handler catches to
+// cancel the order. A slow warehouse emits the SLOW_FULFILLMENT escalation,
+// which the non-interrupting `alongside` handler picks up — a supervisor is
+// notified while the main flow keeps running.
+//
+// The service tasks point at the generic delegate
+// examples/spring-boot/src/main/java/com/example/demo/LogDelegate.java, so this
+// process deploys and runs on the demo profile without additional Java classes.
+
+process order-recovery {
+  error "PAYMENT_FAILED" message "The card could not be charged"
+
+  start OrderPlaced
+  user ReviewOrder "Review order" { assignee = "demo" }
+
+  subprocess Fulfilment "Fulfil the order" {
+    service ChargePayment "Charge payment" { class = "com.example.demo.LogDelegate" }
+    emit escalation "SLOW_FULFILLMENT"
+    service ShipParcel "Ship the parcel" { class = "com.example.demo.LogDelegate" }
+
+    on error "PAYMENT_FAILED" {
+      service CancelOrder "Cancel the order" { class = "com.example.demo.LogDelegate" }
+    }
+  }
+
+  end OrderComplete
+
+  on escalation "SLOW_FULFILLMENT" alongside {
+    user NotifySupervisor "Notify supervisor" { assignee = "manager" }
+  }
+}

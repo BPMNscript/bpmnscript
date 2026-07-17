@@ -55,6 +55,22 @@
  *      foreign `camunda:` alias on a call activity, silent on a clean
  *      import. Nesting inside a sub-process; loop characteristics refused;
  *      `readDerivableName` symmetry.
+ *  14. Event layer import (the `on`/`throw`/`emit` counterpart): an event
+ *      handler (`triggeredByEvent="true"`), a typed end event, and an
+ *      escalation intermediate throw import to the matching IR shapes,
+ *      sharing one root per code; catch-all definitions (no ref, or a ref to
+ *      a code-less root) import with the code absent. Refusals: a
+ *      non-error/escalation trigger on a handler start, a handler with the
+ *      wrong start-event/definition count or with incoming/outgoing flows,
+ *      a non-interrupting error handler, a throw/emit resolving to no code,
+ *      an error definition on an emit, a "none" emit, and disagreeing or
+ *      unkeyable declared root messages. Warn-drops: a genuine label on a
+ *      handler/throw, a throw-side binding attribute, an unrelated
+ *      `operaton:` attribute on a mapped event definition, and an
+ *      unreferenced message-less root (a declared, unreferenced root with a
+ *      message imports silently into `errorMessages`). A handler nested
+ *      inside a plain sub-process; `bpmn:IntermediateCatchEvent` and a
+ *      defined normal start event stay refused.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -70,6 +86,7 @@ import {
   UnsupportedConstructError,
   UnsupportedElementError,
   UnsupportedEventDefinitionError,
+  UnsupportedEventFeatureError,
   UnsupportedLoopCharacteristicsError,
   UnsupportedServiceTaskFormError,
 } from '../src/errors.js';
@@ -1374,22 +1391,35 @@ describe('xmlToIr — embedded sub-process imports recursively', () => {
     expect(ir.sequenceFlows.map((f) => f.id)).toEqual(['F1', 'F2']);
   });
 
-  it('refuses an event sub-process (triggeredByEvent="true")', async () => {
+  it('an event sub-process (triggeredByEvent="true") is imported, not refused — see the "event layer import" suite below', async () => {
+    // The pinned refusal for `triggeredByEvent="true"` is superseded by a
+    // positive import contract — see "xmlToIr — event layer import" below
+    // for full coverage of the map/refuse/warn taxonomy. This assertion
+    // documents the flip: a well-formed event handler no longer raises
+    // UnsupportedElementError.
     const xml = `<?xml version="1.0" encoding="UTF-8"?>
 <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  xmlns:operaton="http://operaton.org/schema/1.0/bpmn"
                   targetNamespace="http://test">
+  <bpmn:error id="Error_PF" errorCode="PF" />
   <bpmn:process id="p" isExecutable="true">
     <bpmn:startEvent id="S" />
     <bpmn:subProcess id="Sub" triggeredByEvent="true">
-      <bpmn:startEvent id="SubStart" />
+      <bpmn:startEvent id="SubStart">
+        <bpmn:errorEventDefinition id="SubStartDef" errorRef="Error_PF" />
+      </bpmn:startEvent>
     </bpmn:subProcess>
     <bpmn:endEvent id="E" />
-    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="Sub" />
-    <bpmn:sequenceFlow id="F2" sourceRef="Sub" targetRef="E" />
+    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="E" />
   </bpmn:process>
 </bpmn:definitions>`;
 
-    await expect(xmlToIr(xml)).rejects.toBeInstanceOf(UnsupportedElementError);
+    const { ir } = await xmlToIr(xml);
+    expect(
+      ir.flowElements.some(
+        (fe) => fe.kind === 'subProcess' && fe.triggeredByEvent === true,
+      ),
+    ).toBe(true);
   });
 
   it('refuses a sub-process with multiInstanceLoopCharacteristics', async () => {
@@ -1966,5 +1996,697 @@ describe('xmlToIr — callActivity import', () => {
     expect(call?.kind === 'callActivity' && call.name).toBe(
       'Send the order to fulfilment',
     );
+  });
+});
+
+// ── 14. Event layer import: handlers, throws, emits, roots ──────────────────
+
+describe('xmlToIr — event layer import', () => {
+  // ── 14a. Full positive import (mirrors the ir-to-xml event-layer fixture) ─
+
+  const fullEventXml = `<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  xmlns:operaton="http://operaton.org/schema/1.0/bpmn"
+                  xmlns:camunda="http://camunda.org/schema/1.0/bpmn"
+                  targetNamespace="http://test">
+  <bpmn:error id="Error_PF" name="PF" errorCode="PF" operaton:errorMessage="boom" />
+  <bpmn:escalation id="Escalation_LS" name="LS" escalationCode="LS" />
+  <bpmn:process id="p" isExecutable="true">
+    <bpmn:startEvent id="PStart" />
+    <bpmn:subProcess id="ErrHandler" triggeredByEvent="true">
+      <bpmn:startEvent id="ErrStart">
+        <bpmn:errorEventDefinition id="ErrStartDef" errorRef="Error_PF"
+          operaton:errorCodeVariable="c" operaton:errorMessageVariable="m" />
+      </bpmn:startEvent>
+      <bpmn:userTask id="Recover" />
+      <bpmn:endEvent id="ErrEnd" />
+      <bpmn:sequenceFlow id="SF_ErrStart_Recover" sourceRef="ErrStart" targetRef="Recover" />
+      <bpmn:sequenceFlow id="SF_Recover_ErrEnd" sourceRef="Recover" targetRef="ErrEnd" />
+    </bpmn:subProcess>
+    <bpmn:subProcess id="EscHandler" triggeredByEvent="true">
+      <bpmn:startEvent id="EscStart" isInterrupting="false">
+        <bpmn:escalationEventDefinition id="EscStartDef" escalationRef="Escalation_LS"
+          camunda:escalationCodeVariable="v" />
+      </bpmn:startEvent>
+      <bpmn:userTask id="Notify" />
+      <bpmn:endEvent id="EscEnd" />
+      <bpmn:sequenceFlow id="SF_EscStart_Notify" sourceRef="EscStart" targetRef="Notify" />
+      <bpmn:sequenceFlow id="SF_Notify_EscEnd" sourceRef="Notify" targetRef="EscEnd" />
+    </bpmn:subProcess>
+    <bpmn:intermediateThrowEvent id="Emit1">
+      <bpmn:escalationEventDefinition id="Emit1Def" escalationRef="Escalation_LS" />
+    </bpmn:intermediateThrowEvent>
+    <bpmn:endEvent id="ThrowPF">
+      <bpmn:errorEventDefinition id="ThrowPFDef" errorRef="Error_PF" />
+    </bpmn:endEvent>
+    <bpmn:sequenceFlow id="F1" sourceRef="PStart" targetRef="Emit1" />
+    <bpmn:sequenceFlow id="F2" sourceRef="Emit1" targetRef="ThrowPF" />
+  </bpmn:process>
+</bpmn:definitions>`;
+
+  const EXPECTED_EVENT_IR: BpmnProcess = {
+    id: 'p',
+    isExecutable: true,
+    errorMessages: [{ code: 'PF', message: 'boom' }],
+    flowElements: [
+      { kind: 'startEvent', id: 'PStart' },
+      {
+        kind: 'subProcess',
+        id: 'ErrHandler',
+        triggeredByEvent: true,
+        flowElements: [
+          {
+            kind: 'startEvent',
+            id: 'ErrStart',
+            eventDefinition: {
+              kind: 'error',
+              errorCode: 'PF',
+              codeVariable: 'c',
+              messageVariable: 'm',
+            },
+          },
+          { kind: 'userTask', id: 'Recover' },
+          { kind: 'endEvent', id: 'ErrEnd' },
+        ],
+        sequenceFlows: [
+          {
+            id: 'SF_ErrStart_Recover',
+            sourceRef: 'ErrStart',
+            targetRef: 'Recover',
+          },
+          {
+            id: 'SF_Recover_ErrEnd',
+            sourceRef: 'Recover',
+            targetRef: 'ErrEnd',
+          },
+        ],
+      },
+      {
+        kind: 'subProcess',
+        id: 'EscHandler',
+        triggeredByEvent: true,
+        flowElements: [
+          {
+            kind: 'startEvent',
+            id: 'EscStart',
+            isInterrupting: false,
+            eventDefinition: {
+              kind: 'escalation',
+              escalationCode: 'LS',
+              codeVariable: 'v',
+            },
+          },
+          { kind: 'userTask', id: 'Notify' },
+          { kind: 'endEvent', id: 'EscEnd' },
+        ],
+        sequenceFlows: [
+          { id: 'SF_EscStart_Notify', sourceRef: 'EscStart', targetRef: 'Notify' },
+          { id: 'SF_Notify_EscEnd', sourceRef: 'Notify', targetRef: 'EscEnd' },
+        ],
+      },
+      {
+        kind: 'intermediateThrowEvent',
+        id: 'Emit1',
+        eventDefinition: { kind: 'escalation', escalationCode: 'LS' },
+      },
+      {
+        kind: 'endEvent',
+        id: 'ThrowPF',
+        eventDefinition: { kind: 'error', errorCode: 'PF' },
+      },
+    ],
+    sequenceFlows: [
+      { id: 'F1', sourceRef: 'PStart', targetRef: 'Emit1' },
+      { id: 'F2', sourceRef: 'Emit1', targetRef: 'ThrowPF' },
+    ],
+  };
+
+  it('imports an interrupting error handler, an alongside escalation handler (camunda: binding alias), a typed end, and an emit, sharing their roots, into the exact expected IR (deep equality)', async () => {
+    const { ir, warnings } = await xmlToIr(fullEventXml);
+    expect(ir).toEqual(EXPECTED_EVENT_IR);
+    expect(warnings).toEqual([]);
+  });
+
+  // ── 14b. Catch-all ────────────────────────────────────────────────────────
+
+  it('a handler definition without errorRef imports with the code absent (catch-all)', async () => {
+    const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  targetNamespace="http://test">
+  <bpmn:process id="p" isExecutable="true">
+    <bpmn:startEvent id="S" />
+    <bpmn:subProcess id="AnyErr" triggeredByEvent="true">
+      <bpmn:startEvent id="AnyStart">
+        <bpmn:errorEventDefinition id="d" />
+      </bpmn:startEvent>
+      <bpmn:endEvent id="AnyEnd" />
+      <bpmn:sequenceFlow id="SF1" sourceRef="AnyStart" targetRef="AnyEnd" />
+    </bpmn:subProcess>
+    <bpmn:endEvent id="E" />
+    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="E" />
+  </bpmn:process>
+</bpmn:definitions>`;
+
+    const { ir } = await xmlToIr(xml);
+    const handler = ir.flowElements.find((fe) => fe.id === 'AnyErr');
+    expect(handler?.kind).toBe('subProcess');
+    if (handler?.kind !== 'subProcess') return;
+    const start = handler.flowElements.find((fe) => fe.id === 'AnyStart');
+    expect(start?.kind === 'startEvent' && start.eventDefinition).toEqual({
+      kind: 'error',
+    });
+  });
+
+  it('a ref to a code-less bpmn:Error root imports with the code absent', async () => {
+    const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  targetNamespace="http://test">
+  <bpmn:error id="Error_NoCode" />
+  <bpmn:process id="p" isExecutable="true">
+    <bpmn:startEvent id="S" />
+    <bpmn:subProcess id="AnyErr" triggeredByEvent="true">
+      <bpmn:startEvent id="AnyStart">
+        <bpmn:errorEventDefinition id="d" errorRef="Error_NoCode" />
+      </bpmn:startEvent>
+      <bpmn:endEvent id="AnyEnd" />
+      <bpmn:sequenceFlow id="SF1" sourceRef="AnyStart" targetRef="AnyEnd" />
+    </bpmn:subProcess>
+    <bpmn:endEvent id="E" />
+    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="E" />
+  </bpmn:process>
+</bpmn:definitions>`;
+
+    const { ir } = await xmlToIr(xml);
+    const handler = ir.flowElements.find((fe) => fe.id === 'AnyErr');
+    expect(handler?.kind).toBe('subProcess');
+    if (handler?.kind !== 'subProcess') return;
+    const start = handler.flowElements.find((fe) => fe.id === 'AnyStart');
+    expect(start?.kind === 'startEvent' && start.eventDefinition).toEqual({
+      kind: 'error',
+    });
+  });
+
+  it('a code-less bpmn:Error root warns about the missing code, not "never caught"', async () => {
+    const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  targetNamespace="http://test">
+  <bpmn:error id="Error_NoCode" />
+  <bpmn:process id="p" isExecutable="true">
+    <bpmn:startEvent id="S" />
+    <bpmn:subProcess id="AnyErr" triggeredByEvent="true">
+      <bpmn:startEvent id="AnyStart">
+        <bpmn:errorEventDefinition id="d" errorRef="Error_NoCode" />
+      </bpmn:startEvent>
+      <bpmn:endEvent id="AnyEnd" />
+      <bpmn:sequenceFlow id="SF1" sourceRef="AnyStart" targetRef="AnyEnd" />
+    </bpmn:subProcess>
+    <bpmn:endEvent id="E" />
+    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="E" />
+  </bpmn:process>
+</bpmn:definitions>`;
+
+    // The root is referenced (errorRef), so "never caught or thrown" would be
+    // false; the message names the real reason — a code-less root cannot be
+    // keyed or represented.
+    const { warnings } = await xmlToIr(xml);
+    const w = warnings.find(
+      (w) => w.category === 'unreferencedRoot' && w.elementId === 'Error_NoCode',
+    );
+    expect(w).toBeDefined();
+    expect(w?.message).toContain('has no code');
+    expect(w?.message).not.toContain('never caught');
+  });
+
+  // ── 14c. Refusals (one per shape) ─────────────────────────────────────────
+
+  describe('refusals', () => {
+    it('a timer definition on a handler start refuses with UnsupportedEventDefinitionError', async () => {
+      const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  targetNamespace="http://test">
+  <bpmn:process id="p" isExecutable="true">
+    <bpmn:startEvent id="S" />
+    <bpmn:subProcess id="Handler" triggeredByEvent="true">
+      <bpmn:startEvent id="HStart">
+        <bpmn:timerEventDefinition id="td" />
+      </bpmn:startEvent>
+    </bpmn:subProcess>
+    <bpmn:endEvent id="E" />
+    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="E" />
+  </bpmn:process>
+</bpmn:definitions>`;
+
+      try {
+        await xmlToIr(xml);
+        expect.fail('Should have thrown');
+      } catch (err) {
+        expect(err).toBeInstanceOf(UnsupportedEventDefinitionError);
+        const e = err as UnsupportedEventDefinitionError;
+        expect(e.eventKind).toBe('start');
+        expect(e.definitionType).toBe('bpmn:TimerEventDefinition');
+      }
+    });
+
+    it('an event handler with zero start events refuses with UnsupportedEventFeatureError', async () => {
+      const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  targetNamespace="http://test">
+  <bpmn:process id="p" isExecutable="true">
+    <bpmn:startEvent id="S" />
+    <bpmn:subProcess id="Handler" triggeredByEvent="true">
+      <bpmn:userTask id="T" />
+    </bpmn:subProcess>
+    <bpmn:endEvent id="E" />
+    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="E" />
+  </bpmn:process>
+</bpmn:definitions>`;
+
+      await expect(xmlToIr(xml)).rejects.toBeInstanceOf(
+        UnsupportedEventFeatureError,
+      );
+    });
+
+    it('an event handler with two start events refuses with UnsupportedEventFeatureError', async () => {
+      const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  targetNamespace="http://test">
+  <bpmn:process id="p" isExecutable="true">
+    <bpmn:startEvent id="S" />
+    <bpmn:subProcess id="Handler" triggeredByEvent="true">
+      <bpmn:startEvent id="S1"><bpmn:errorEventDefinition /></bpmn:startEvent>
+      <bpmn:startEvent id="S2"><bpmn:errorEventDefinition /></bpmn:startEvent>
+    </bpmn:subProcess>
+    <bpmn:endEvent id="E" />
+    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="E" />
+  </bpmn:process>
+</bpmn:definitions>`;
+
+      await expect(xmlToIr(xml)).rejects.toBeInstanceOf(
+        UnsupportedEventFeatureError,
+      );
+    });
+
+    it('a handler start with two event definitions refuses with UnsupportedEventFeatureError', async () => {
+      const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  targetNamespace="http://test">
+  <bpmn:process id="p" isExecutable="true">
+    <bpmn:startEvent id="S" />
+    <bpmn:subProcess id="Handler" triggeredByEvent="true">
+      <bpmn:startEvent id="HStart">
+        <bpmn:errorEventDefinition />
+        <bpmn:escalationEventDefinition />
+      </bpmn:startEvent>
+    </bpmn:subProcess>
+    <bpmn:endEvent id="E" />
+    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="E" />
+  </bpmn:process>
+</bpmn:definitions>`;
+
+      await expect(xmlToIr(xml)).rejects.toBeInstanceOf(
+        UnsupportedEventFeatureError,
+      );
+    });
+
+    it('an event handler with an incoming flow refuses with UnsupportedEventFeatureError', async () => {
+      const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  targetNamespace="http://test">
+  <bpmn:process id="p" isExecutable="true">
+    <bpmn:startEvent id="S" />
+    <bpmn:subProcess id="Handler" triggeredByEvent="true">
+      <bpmn:incoming>F1</bpmn:incoming>
+      <bpmn:startEvent id="HStart">
+        <bpmn:errorEventDefinition />
+      </bpmn:startEvent>
+      <bpmn:endEvent id="HEnd" />
+      <bpmn:sequenceFlow id="SF1" sourceRef="HStart" targetRef="HEnd" />
+    </bpmn:subProcess>
+    <bpmn:endEvent id="E" />
+    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="Handler" />
+  </bpmn:process>
+</bpmn:definitions>`;
+
+      await expect(xmlToIr(xml)).rejects.toBeInstanceOf(
+        UnsupportedEventFeatureError,
+      );
+    });
+
+    it('isInterrupting="false" on an error handler refuses with UnsupportedEventFeatureError', async () => {
+      const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  targetNamespace="http://test">
+  <bpmn:error id="Error_X" errorCode="X" />
+  <bpmn:process id="p" isExecutable="true">
+    <bpmn:startEvent id="S" />
+    <bpmn:subProcess id="Handler" triggeredByEvent="true">
+      <bpmn:startEvent id="HStart" isInterrupting="false">
+        <bpmn:errorEventDefinition errorRef="Error_X" />
+      </bpmn:startEvent>
+      <bpmn:endEvent id="HEnd" />
+      <bpmn:sequenceFlow id="SF1" sourceRef="HStart" targetRef="HEnd" />
+    </bpmn:subProcess>
+    <bpmn:endEvent id="E" />
+    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="E" />
+  </bpmn:process>
+</bpmn:definitions>`;
+
+      await expect(xmlToIr(xml)).rejects.toBeInstanceOf(
+        UnsupportedEventFeatureError,
+      );
+    });
+
+    it('an error end event with no resolvable code refuses with UnsupportedEventFeatureError', async () => {
+      const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  targetNamespace="http://test">
+  <bpmn:process id="p" isExecutable="true">
+    <bpmn:startEvent id="S" />
+    <bpmn:endEvent id="ThrowNoCode">
+      <bpmn:errorEventDefinition />
+    </bpmn:endEvent>
+    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="ThrowNoCode" />
+  </bpmn:process>
+</bpmn:definitions>`;
+
+      await expect(xmlToIr(xml)).rejects.toBeInstanceOf(
+        UnsupportedEventFeatureError,
+      );
+    });
+
+    it('an error definition on an intermediate throw refuses with UnsupportedEventFeatureError', async () => {
+      const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  targetNamespace="http://test">
+  <bpmn:error id="Error_X" errorCode="X" />
+  <bpmn:process id="p" isExecutable="true">
+    <bpmn:startEvent id="S" />
+    <bpmn:intermediateThrowEvent id="BadEmit">
+      <bpmn:errorEventDefinition errorRef="Error_X" />
+    </bpmn:intermediateThrowEvent>
+    <bpmn:endEvent id="E" />
+    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="BadEmit" />
+    <bpmn:sequenceFlow id="F2" sourceRef="BadEmit" targetRef="E" />
+  </bpmn:process>
+</bpmn:definitions>`;
+
+      await expect(xmlToIr(xml)).rejects.toBeInstanceOf(
+        UnsupportedEventFeatureError,
+      );
+    });
+
+    it('a "none" intermediate throw (no event definition) refuses with UnsupportedEventFeatureError', async () => {
+      const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  targetNamespace="http://test">
+  <bpmn:process id="p" isExecutable="true">
+    <bpmn:startEvent id="S" />
+    <bpmn:intermediateThrowEvent id="NoneEmit" />
+    <bpmn:endEvent id="E" />
+    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="NoneEmit" />
+    <bpmn:sequenceFlow id="F2" sourceRef="NoneEmit" targetRef="E" />
+  </bpmn:process>
+</bpmn:definitions>`;
+
+      await expect(xmlToIr(xml)).rejects.toBeInstanceOf(
+        UnsupportedEventFeatureError,
+      );
+    });
+
+    it('two bpmn:Error roots sharing a code but disagreeing on the message refuse with UnsupportedEventFeatureError', async () => {
+      const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  xmlns:operaton="http://operaton.org/schema/1.0/bpmn"
+                  targetNamespace="http://test">
+  <bpmn:error id="Error_A" errorCode="DUP" operaton:errorMessage="first" />
+  <bpmn:error id="Error_B" errorCode="DUP" operaton:errorMessage="second" />
+  <bpmn:process id="p" isExecutable="true">
+    <bpmn:startEvent id="S" />
+    <bpmn:endEvent id="E" />
+    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="E" />
+  </bpmn:process>
+</bpmn:definitions>`;
+
+      await expect(xmlToIr(xml)).rejects.toBeInstanceOf(
+        UnsupportedEventFeatureError,
+      );
+    });
+
+    it('a declared message on a code-less bpmn:Error root refuses with UnsupportedEventFeatureError', async () => {
+      const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  xmlns:operaton="http://operaton.org/schema/1.0/bpmn"
+                  targetNamespace="http://test">
+  <bpmn:error id="Error_NoCode" operaton:errorMessage="oops" />
+  <bpmn:process id="p" isExecutable="true">
+    <bpmn:startEvent id="S" />
+    <bpmn:endEvent id="E" />
+    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="E" />
+  </bpmn:process>
+</bpmn:definitions>`;
+
+      await expect(xmlToIr(xml)).rejects.toBeInstanceOf(
+        UnsupportedEventFeatureError,
+      );
+    });
+  });
+
+  // ── 14d. Warn-drops ───────────────────────────────────────────────────────
+
+  describe('warn-drops', () => {
+    it('a genuine label on a typed end event warns once, attributed to it', async () => {
+      const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  targetNamespace="http://test">
+  <bpmn:error id="Error_X" errorCode="X" />
+  <bpmn:process id="p" isExecutable="true">
+    <bpmn:startEvent id="S" />
+    <bpmn:endEvent id="ThrowX" name="Custom Label">
+      <bpmn:errorEventDefinition errorRef="Error_X" />
+    </bpmn:endEvent>
+    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="ThrowX" />
+  </bpmn:process>
+</bpmn:definitions>`;
+
+      const { ir, warnings } = await xmlToIr(xml);
+      const end = ir.flowElements.find((fe) => fe.id === 'ThrowX');
+      expect(end && 'name' in end).toBe(false);
+
+      const labelWarnings = warnings.filter((w) => w.category === 'label');
+      expect(labelWarnings).toHaveLength(1);
+      expect(labelWarnings[0].elementId).toBe('ThrowX');
+      expect(labelWarnings[0].message).toContain('Custom Label');
+    });
+
+    it('a genuine label on an event handler warns once, attributed to it', async () => {
+      const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  targetNamespace="http://test">
+  <bpmn:process id="p" isExecutable="true">
+    <bpmn:startEvent id="S" />
+    <bpmn:subProcess id="Handler" triggeredByEvent="true" name="Custom Handler Label">
+      <bpmn:startEvent id="HStart">
+        <bpmn:errorEventDefinition />
+      </bpmn:startEvent>
+    </bpmn:subProcess>
+    <bpmn:endEvent id="E" />
+    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="E" />
+  </bpmn:process>
+</bpmn:definitions>`;
+
+      const { ir, warnings } = await xmlToIr(xml);
+      const handler = ir.flowElements.find((fe) => fe.id === 'Handler');
+      expect(handler && 'name' in handler).toBe(false);
+
+      const labelWarnings = warnings.filter((w) => w.category === 'label');
+      expect(labelWarnings).toHaveLength(1);
+      expect(labelWarnings[0].elementId).toBe('Handler');
+      expect(labelWarnings[0].message).toContain('Custom Handler Label');
+    });
+
+    it('operaton:errorCodeVariable on an error end event (throw side) warns — it has no effect there', async () => {
+      const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  xmlns:operaton="http://operaton.org/schema/1.0/bpmn"
+                  targetNamespace="http://test">
+  <bpmn:error id="Error_X" errorCode="X" />
+  <bpmn:process id="p" isExecutable="true">
+    <bpmn:startEvent id="S" />
+    <bpmn:endEvent id="ThrowX">
+      <bpmn:errorEventDefinition errorRef="Error_X" operaton:errorCodeVariable="c" />
+    </bpmn:endEvent>
+    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="ThrowX" />
+  </bpmn:process>
+</bpmn:definitions>`;
+
+      const { ir, warnings } = await xmlToIr(xml);
+      // The binding attribute has no effect on the throw side — the IR
+      // carries only the code.
+      const end = ir.flowElements.find((fe) => fe.id === 'ThrowX');
+      expect(end?.kind === 'endEvent' && end.eventDefinition).toEqual({
+        kind: 'error',
+        errorCode: 'X',
+      });
+
+      const w = warnings.find((w) => w.message.includes('errorCodeVariable'));
+      expect(w).toBeDefined();
+      expect(w?.elementId).toBe('ThrowX');
+    });
+
+    it('an unrelated operaton: attribute on a mapped event definition warns', async () => {
+      const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  xmlns:operaton="http://operaton.org/schema/1.0/bpmn"
+                  targetNamespace="http://test">
+  <bpmn:error id="Error_X" errorCode="X" />
+  <bpmn:process id="p" isExecutable="true">
+    <bpmn:startEvent id="S" />
+    <bpmn:subProcess id="Handler" triggeredByEvent="true">
+      <bpmn:startEvent id="HStart">
+        <bpmn:errorEventDefinition errorRef="Error_X" operaton:asyncBefore="true" />
+      </bpmn:startEvent>
+      <bpmn:endEvent id="HEnd" />
+      <bpmn:sequenceFlow id="SF1" sourceRef="HStart" targetRef="HEnd" />
+    </bpmn:subProcess>
+    <bpmn:endEvent id="E" />
+    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="E" />
+  </bpmn:process>
+</bpmn:definitions>`;
+
+      const { warnings } = await xmlToIr(xml);
+      const w = warnings.find((w) => w.message.includes('asyncBefore'));
+      expect(w).toBeDefined();
+      expect(w?.elementId).toBe('HStart');
+    });
+
+    it('an unreferenced message-less bpmn:Error root warns once', async () => {
+      const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  targetNamespace="http://test">
+  <bpmn:error id="Error_Unused" errorCode="UNUSED" />
+  <bpmn:process id="p" isExecutable="true">
+    <bpmn:startEvent id="S" />
+    <bpmn:endEvent id="E" />
+    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="E" />
+  </bpmn:process>
+</bpmn:definitions>`;
+
+      const { ir, warnings } = await xmlToIr(xml);
+      expect(ir.errorMessages).toBeUndefined();
+      const unreferenced = warnings.filter(
+        (w) => w.category === 'unreferencedRoot',
+      );
+      expect(unreferenced).toHaveLength(1);
+      expect(unreferenced[0].elementId).toBe('Error_Unused');
+    });
+
+    it('an unreferenced root WITH code+message imports into errorMessages with NO warning', async () => {
+      const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  xmlns:operaton="http://operaton.org/schema/1.0/bpmn"
+                  targetNamespace="http://test">
+  <bpmn:error id="Error_Declared" errorCode="DECL" operaton:errorMessage="declared but unused" />
+  <bpmn:process id="p" isExecutable="true">
+    <bpmn:startEvent id="S" />
+    <bpmn:endEvent id="E" />
+    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="E" />
+  </bpmn:process>
+</bpmn:definitions>`;
+
+      const { ir, warnings } = await xmlToIr(xml);
+      expect(ir.errorMessages).toEqual([
+        { code: 'DECL', message: 'declared but unused' },
+      ]);
+      expect(warnings).toEqual([]);
+    });
+  });
+
+  // ── 14e. Nesting and still-refused kinds ─────────────────────────────────
+
+  it('an event handler nested inside a plain sub-process imports into the nested container', async () => {
+    const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  targetNamespace="http://test">
+  <bpmn:error id="Error_X" errorCode="X" />
+  <bpmn:process id="p" isExecutable="true">
+    <bpmn:startEvent id="PStart" />
+    <bpmn:subProcess id="Outer">
+      <bpmn:startEvent id="OStart" />
+      <bpmn:userTask id="Work" />
+      <bpmn:endEvent id="OEnd" />
+      <bpmn:subProcess id="InnerHandler" triggeredByEvent="true">
+        <bpmn:startEvent id="IHStart">
+          <bpmn:errorEventDefinition errorRef="Error_X" />
+        </bpmn:startEvent>
+        <bpmn:endEvent id="IHEnd" />
+        <bpmn:sequenceFlow id="SF_IH" sourceRef="IHStart" targetRef="IHEnd" />
+      </bpmn:subProcess>
+      <bpmn:sequenceFlow id="SF_OStart_Work" sourceRef="OStart" targetRef="Work" />
+      <bpmn:sequenceFlow id="SF_Work_OEnd" sourceRef="Work" targetRef="OEnd" />
+    </bpmn:subProcess>
+    <bpmn:endEvent id="PEnd" />
+    <bpmn:sequenceFlow id="F1" sourceRef="PStart" targetRef="Outer" />
+    <bpmn:sequenceFlow id="F2" sourceRef="Outer" targetRef="PEnd" />
+  </bpmn:process>
+</bpmn:definitions>`;
+
+    const { ir, warnings } = await xmlToIr(xml);
+    expect(warnings).toEqual([]);
+
+    const outer = ir.flowElements.find((fe) => fe.id === 'Outer');
+    expect(outer?.kind).toBe('subProcess');
+    if (outer?.kind !== 'subProcess') return;
+
+    const inner = outer.flowElements.find((fe) => fe.id === 'InnerHandler');
+    expect(inner?.kind).toBe('subProcess');
+    if (inner?.kind !== 'subProcess') return;
+    expect(inner.triggeredByEvent).toBe(true);
+    const innerStart = inner.flowElements.find((fe) => fe.id === 'IHStart');
+    expect(innerStart?.kind === 'startEvent' && innerStart.eventDefinition).toEqual(
+      { kind: 'error', errorCode: 'X' },
+    );
+  });
+
+  it('bpmn:IntermediateCatchEvent still refuses with UnsupportedElementError', async () => {
+    const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  targetNamespace="http://test">
+  <bpmn:process id="p" isExecutable="true">
+    <bpmn:startEvent id="S" />
+    <bpmn:intermediateCatchEvent id="Wait">
+      <bpmn:timerEventDefinition />
+    </bpmn:intermediateCatchEvent>
+    <bpmn:endEvent id="E" />
+    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="Wait" />
+    <bpmn:sequenceFlow id="F2" sourceRef="Wait" targetRef="E" />
+  </bpmn:process>
+</bpmn:definitions>`;
+
+    await expect(xmlToIr(xml)).rejects.toBeInstanceOf(UnsupportedElementError);
+  });
+
+  it('a normal (non-handler) start event with an error definition still refuses', async () => {
+    const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  targetNamespace="http://test">
+  <bpmn:error id="Error_X" errorCode="X" />
+  <bpmn:process id="p" isExecutable="true">
+    <bpmn:startEvent id="S">
+      <bpmn:errorEventDefinition errorRef="Error_X" />
+    </bpmn:startEvent>
+    <bpmn:endEvent id="E" />
+    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="E" />
+  </bpmn:process>
+</bpmn:definitions>`;
+
+    try {
+      await xmlToIr(xml);
+      expect.fail('Should have thrown');
+    } catch (err) {
+      expect(err).toBeInstanceOf(UnsupportedEventDefinitionError);
+      const e = err as UnsupportedEventDefinitionError;
+      expect(e.eventKind).toBe('start');
+      expect(e.definitionType).toBe('bpmn:ErrorEventDefinition');
+    }
   });
 });

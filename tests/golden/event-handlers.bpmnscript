@@ -1,0 +1,81 @@
+// Event-layer round-trip fixture: one order-processing narrative that exercises
+// the DSL's try/catch surface end to end.
+//
+//   - an `error … message` declaration carrying the thrown message text;
+//   - a payment `subprocess` that throws (`throw error` inside an `if`),
+//     escalates mid-chain (`emit escalation`), and owns an interrupting
+//     `on error` handler binding both the code and the message, whose body wraps
+//     a pre-existing `if`/service construct;
+//   - a process-level non-interrupting `on escalation … (code v) alongside`
+//     handler for the escalation both escalation sites raise;
+//   - a catch-all `on error` handler for any error the process does not name;
+//   - a terminal `throw escalation`;
+//   - explicit ids on a throw (`PaymentFailed`) and an emit (`FlagForReview`),
+//     with a `goto` that targets the named emit.
+//
+// It also pins that the contextual event words (`error`, `escalation`, `code`,
+// `message`) coexist with same-named variables: `message` is an ordinary
+// process variable used in a condition here, as well as a binding field. The
+// condition variables are declared on the start form so they survive an
+// import-and-back round-trip. Every handler opens with an explicit trigger
+// `start` and closes with an explicit `end`, and every label differs from the
+// name humanised from its id, so authored ids and labels survive at their
+// correct container depth. See README.md.
+
+process order-processing {
+  error "PAYMENT_DECLINED" message "The payment was declined by the bank"
+
+  start OrderReceived {
+    form {
+      amount: number "Order amount"
+      retries: number "Retry count"
+      message: string "Gateway message"
+    }
+  }
+  user CheckStock "Verify stock levels" { assignee = "demo" }
+
+  subprocess ProcessPayment "Settle the payment" {
+    start PaymentStart
+    service ChargeCard "Charge the card" { class = "com.example.orders.ChargeCardDelegate" }
+
+    if (message == "declined") {
+      throw error PaymentFailed "PAYMENT_DECLINED"
+    }
+
+    service AuthorizeFunds "Authorize the funds" { class = "com.example.orders.AuthorizeDelegate" }
+    emit escalation "MANUAL_REVIEW"
+    service ConfirmOrder "Confirm the order" { class = "com.example.orders.ConfirmDelegate" }
+    end PaymentDone
+
+    on error "PAYMENT_DECLINED" (code c, message m) {
+      start CaughtPayment
+      user NotifyCustomer "Notify the customer" { assignee = "demo" }
+      if (retries < 3) {
+        service RetryCharge "Retry the charge" { class = "com.example.orders.ChargeCardDelegate" }
+      }
+      end PaymentHandled
+    }
+  }
+
+  service ShipOrder "Dispatch the order" { class = "com.example.orders.ShipDelegate" }
+
+  if (amount > 1000) {
+    goto FlagForReview
+  }
+  service SettleAccounts "Settle the ledger" { class = "com.example.orders.LedgerDelegate" }
+  end OrderCompleted
+
+  emit escalation FlagForReview "MANUAL_REVIEW"
+  throw escalation "ORDER_ABANDONED"
+
+  on escalation "MANUAL_REVIEW" (code v) alongside {
+    start CaughtReview
+    user ReviewOrder "Review the order manually" { assignee = "demo" }
+    end ReviewHandled
+  }
+  on error {
+    start CaughtAny
+    service RecordFailure "Record the failure" { class = "com.example.orders.RecordFailureDelegate" }
+    end FailureHandled
+  }
+}

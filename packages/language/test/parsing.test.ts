@@ -43,6 +43,10 @@ import type {
   RawExpr,
   VarDecl,
   ProcessLabel,
+  OnHandler,
+  ThrowStatement,
+  EmitStatement,
+  ErrorDecl,
 } from '@bpmn-script/language';
 import {
   createBpmnScriptServices,
@@ -494,6 +498,259 @@ describe('Parsing — call activity', () => {
   test('the raw-template fallback still parses a reserved word as an identifier', async () => {
     const cond = await parseCondition(`"\${version > 2}"`);
     expect(cond.$type).toBe('RawExpr');
+  });
+});
+
+// ── on handlers, throw / emit, error declaration ─────────────────────────
+
+describe('Parsing — on handlers', () => {
+  test('a full interrupting handler parses: trigger, code, two bindings, one body statement', async () => {
+    const source = `process p {
+  on error "PAYMENT_FAILED" (code c, message m) { service R { class = "x.Y" } }
+}`;
+    const document = await parse(source);
+    expect(formatParseFailure(document)).toBeUndefined();
+    const handler = document.parseResult.value.processes[0]!
+      .body[0] as OnHandler;
+    expect(handler.$type).toBe('OnHandler');
+    expect(handler.trigger).toBe('error');
+    expect(handler.code).toBe('PAYMENT_FAILED');
+    expect(handler.bindings).toHaveLength(2);
+    expect(handler.bindings[0]!.field).toBe('code');
+    expect(handler.bindings[0]!.variable).toBe('c');
+    expect(handler.bindings[1]!.field).toBe('message');
+    expect(handler.bindings[1]!.variable).toBe('m');
+    expect(handler.body.statements).toHaveLength(1);
+    expect(handler.body.statements[0]!.$type).toBe('ServiceTask');
+    expect(handler.alongside).toBeFalsy();
+  });
+
+  test('alongside marks a non-interrupting handler; a catch-all handler omits code', async () => {
+    const alongsideDoc = await parse(
+      `process p { on escalation "X" (code v) alongside { } }`,
+    );
+    expect(formatParseFailure(alongsideDoc)).toBeUndefined();
+    const alongsideHandler = alongsideDoc.parseResult.value.processes[0]!
+      .body[0] as OnHandler;
+    expect(alongsideHandler.alongside).toBe(true);
+
+    const catchAllError = await parse(`process p { on error { } }`);
+    expect(formatParseFailure(catchAllError)).toBeUndefined();
+    const errorHandler = catchAllError.parseResult.value.processes[0]!
+      .body[0] as OnHandler;
+    expect(errorHandler.trigger).toBe('error');
+    expect(errorHandler.code).toBeUndefined();
+
+    const catchAllEscalation = await parse(`process p { on escalation { } }`);
+    expect(formatParseFailure(catchAllEscalation)).toBeUndefined();
+    const escalationHandler = catchAllEscalation.parseResult.value
+      .processes[0]!.body[0] as OnHandler;
+    expect(escalationHandler.trigger).toBe('escalation');
+    expect(escalationHandler.code).toBeUndefined();
+  });
+});
+
+describe('Parsing — throw / emit', () => {
+  test('throw error / throw escalation parse as terminal statements carrying a code', async () => {
+    const throwError = await parse(`process p { throw error "C" }`);
+    expect(formatParseFailure(throwError)).toBeUndefined();
+    const throwErrorSt = throwError.parseResult.value.processes[0]!
+      .body[0] as ThrowStatement;
+    expect(throwErrorSt.$type).toBe('ThrowStatement');
+    expect(throwErrorSt.trigger).toBe('error');
+    expect(throwErrorSt.code).toBe('C');
+    expect(throwErrorSt.name).toBeUndefined();
+
+    const throwEscalation = await parse(`process p { throw escalation "C" }`);
+    expect(formatParseFailure(throwEscalation)).toBeUndefined();
+    const throwEscalationSt = throwEscalation.parseResult.value.processes[0]!
+      .body[0] as ThrowStatement;
+    expect(throwEscalationSt.trigger).toBe('escalation');
+    expect(throwEscalationSt.code).toBe('C');
+  });
+
+  test('an explicit id (name) is optional on throw', async () => {
+    const named = await parse(`process p { throw error Failed "C" }`);
+    expect(formatParseFailure(named)).toBeUndefined();
+    const namedSt = named.parseResult.value.processes[0]!
+      .body[0] as ThrowStatement;
+    expect(namedSt.name).toBe('Failed');
+    expect(namedSt.code).toBe('C');
+  });
+
+  test('emit escalation parses with and without an explicit id — one-token lookahead disambiguates', async () => {
+    const bare = await parse(`process p { emit escalation "C" }`);
+    expect(formatParseFailure(bare)).toBeUndefined();
+    const bareSt = bare.parseResult.value.processes[0]!
+      .body[0] as EmitStatement;
+    expect(bareSt.$type).toBe('EmitStatement');
+    expect(bareSt.trigger).toBe('escalation');
+    expect(bareSt.name).toBeUndefined();
+    expect(bareSt.code).toBe('C');
+
+    const named = await parse(`process p { emit escalation Ping "C" }`);
+    expect(formatParseFailure(named)).toBeUndefined();
+    const namedSt = named.parseResult.value.processes[0]!
+      .body[0] as EmitStatement;
+    expect(namedSt.name).toBe('Ping');
+    expect(namedSt.code).toBe('C');
+  });
+
+  test('emit error parses at the grammar level — the impossible verb/kind pair is the validator’s job', async () => {
+    const document = await parse(`process p { emit error "C" }`);
+    expect(formatParseFailure(document)).toBeUndefined();
+    const st = document.parseResult.value.processes[0]!
+      .body[0] as EmitStatement;
+    expect(st.trigger).toBe('error');
+  });
+});
+
+describe('Parsing — error declaration', () => {
+  test('`error "C" message "M"` parses as a process declaration alongside var decls', async () => {
+    const source = `
+process p {
+  var amount: number
+  error "PAYMENT_FAILED" message "Payment was declined"
+  start S
+  end E
+}
+`.trim();
+    const document = await parse(source);
+    expect(formatParseFailure(document)).toBeUndefined();
+    const process = document.parseResult.value.processes[0]!;
+    expect(process.decls.map((d) => d.$type)).toEqual([
+      'VarDecl',
+      'ErrorDecl',
+    ]);
+    const decl = process.decls[1] as ErrorDecl;
+    expect(decl.kind).toBe('error');
+    expect(decl.code).toBe('PAYMENT_FAILED');
+    expect(decl.field).toBe('message');
+    expect(decl.message).toBe('Payment was declined');
+  });
+});
+
+describe('Parsing — handler / throw / emit nesting', () => {
+  test('an on handler nests inside a subprocess body', async () => {
+    const source = `process p { subprocess S { on error "X" { } } }`;
+    const document = await parse(source);
+    expect(formatParseFailure(document)).toBeUndefined();
+    const sub = document.parseResult.value.processes[0]!
+      .body[0] as SubProcess;
+    expect(sub.body.statements[0]!.$type).toBe('OnHandler');
+  });
+
+  test('an on handler nests inside another on handler body', async () => {
+    const source = `process p { on error "X" { on escalation "Y" { } } }`;
+    const document = await parse(source);
+    expect(formatParseFailure(document)).toBeUndefined();
+    const outer = document.parseResult.value.processes[0]!
+      .body[0] as OnHandler;
+    expect(outer.body.statements[0]!.$type).toBe('OnHandler');
+    expect((outer.body.statements[0] as OnHandler).trigger).toBe(
+      'escalation',
+    );
+  });
+
+  test('throw and emit nest inside an if block', async () => {
+    const source = `process p { if (a) { throw error "X" } else { emit escalation "Y" } }`;
+    const document = await parse(source);
+    expect(formatParseFailure(document)).toBeUndefined();
+    const ifSt = document.parseResult.value.processes[0]!
+      .body[0] as IfStatement;
+    expect(ifSt.then.statements[0]!.$type).toBe('ThrowStatement');
+    expect(ifSt.elseBlock!.statements[0]!.$type).toBe('EmitStatement');
+  });
+
+  test('an explicit start as the first statement of an on body parses', async () => {
+    const source = `process p { on error "X" { start In } }`;
+    const document = await parse(source);
+    expect(formatParseFailure(document)).toBeUndefined();
+    const handler = document.parseResult.value.processes[0]!
+      .body[0] as OnHandler;
+    expect(handler.body.statements[0]!.$type).toBe('StartEvent');
+    expect((handler.body.statements[0] as StartEvent).name).toBe('In');
+  });
+});
+
+describe('Parsing — soft event words stay plain identifiers', () => {
+  test('error/escalation/code/message are usable as ordinary var/task names and identifiers', async () => {
+    const varMessage = await parse(
+      `process p { var message: string start S end E }`,
+    );
+    expect(formatParseFailure(varMessage)).toBeUndefined();
+
+    const varCode = await parse(`process p { var code: string start S end E }`);
+    expect(formatParseFailure(varCode)).toBeUndefined();
+
+    const cond = await parseCondition(`error == "x"`);
+    expect(cond.$type).toBe('Equality');
+
+    const taskNamedError = await parse(`process p { user error }`);
+    expect(formatParseFailure(taskNamedError)).toBeUndefined();
+    expect(
+      (taskNamedError.parseResult.value.processes[0]!.body[0] as UserTask)
+        .name,
+    ).toBe('error');
+  });
+
+  test('an unknown trigger word and an unknown binding field still parse — word legality is the validator’s job', async () => {
+    const unknownTrigger = await parse(`process p { on banana "X" { } }`);
+    expect(formatParseFailure(unknownTrigger)).toBeUndefined();
+
+    const unknownField = await parse(
+      `process p { on error "X" (coed c) { } }`,
+    );
+    expect(formatParseFailure(unknownField)).toBeUndefined();
+  });
+
+  test('the four newly reserved keywords are rejected as bare identifiers in expression position', async () => {
+    for (const word of ['on', 'throw', 'emit', 'alongside']) {
+      const document = await parse(`process p { if (${word} > 2) { user A } }`);
+      expect(document.parseResult.parserErrors.length).toBeGreaterThan(0);
+    }
+  });
+
+  test('the raw-template fallback still parses a reserved event keyword as an identifier', async () => {
+    const cond = await parseCondition(`"\${emit}"`);
+    expect(cond.$type).toBe('RawExpr');
+  });
+});
+
+describe('Parsing — header typo guidance', () => {
+  test('a mistyped statement keyword in the header region gives the declaration-or-step message', async () => {
+    const document = await parse(`process p { usr Review { } }`);
+    const messages = document.parseResult.parserErrors.map((e) => e.message);
+    expect(
+      messages.some(
+        (m) => m.includes("'usr'") && m.toLowerCase().includes('error'),
+      ),
+    ).toBe(true);
+    expect(document.parseResult.parserErrors.length).toBeGreaterThan(0);
+  });
+
+  // `ErrorDecl` has two STRING positions (`code`, `message`). When the *message*
+  // (the second STRING) is malformed, the token just consumed is the field word
+  // `message` — a real declaration gone wrong, not a mistyped leading keyword.
+  // The header-typo guidance must never blame that field word. (Chevrotain's
+  // resync may still cascade a separate complaint about the actual leftover
+  // token, which correctly names that token rather than `message`.)
+  const TYPO_PHRASE = 'neither a known declaration nor a step keyword';
+  const blamesFieldWord = (messages: string[]) =>
+    messages.some((m) => m.includes("'message'") && m.includes(TYPO_PHRASE));
+
+  test('a genuine `error` declaration with an unquoted message does not blame the field word', async () => {
+    const document = await parse(`process p { error "PF" message oops }`);
+    const messages = document.parseResult.parserErrors.map((e) => e.message);
+    expect(document.parseResult.parserErrors.length).toBeGreaterThan(0);
+    expect(blamesFieldWord(messages)).toBe(false);
+  });
+
+  test('a genuine `error` declaration with a missing message does not blame the field word', async () => {
+    const document = await parse(`process p { error "PF" message }`);
+    const messages = document.parseResult.parserErrors.map((e) => e.message);
+    expect(document.parseResult.parserErrors.length).toBeGreaterThan(0);
+    expect(blamesFieldWord(messages)).toBe(false);
   });
 });
 

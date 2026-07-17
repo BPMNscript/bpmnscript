@@ -28,11 +28,20 @@
 //   if, else, while, do, parallel, goto, label, assignee, formKey, class,
 //   expression, delegate, topic, form,
 //   call, in, out, local, binding, version, businessKey,
+//   on, throw, emit, alongside,
 //   string, number, boolean, date, json, any,
 //   true, false, null.
 // JUEL identifiers that do NOT collide with this set lex as plain `ID` in
 // expression position and parse to `VarRef` as expected (e.g. `status`,
 // `order.type`, `items[0]`).
+//
+// `error`, `escalation`, `code`, and `message` are deliberately NOT on this
+// list: they are the event vocabulary (the trigger kind an `on`/`throw`/
+// `emit` names, and the catch-binding field names), but they lex as plain
+// `ID` and are validated in position rather than reserved as keywords — so
+// `var message: string` and `if (code == "x")` stay legal everywhere else
+// (see `OnHandler`/`EventBinding`/`ThrowStatement`/`EmitStatement`/
+// `ErrorDecl` below).
 
 grammar BpmnScript
 
@@ -50,10 +59,11 @@ Process:
         body+=Statement*
     '}';
 
-// Process-scope declarations: the process-level label attribute and typed
-// `var` declarations. Kept separate from executable statements.
+// Process-scope declarations: the process-level label attribute, typed
+// `var` declarations, and thrown-message declarations for error codes. Kept
+// separate from executable statements.
 ProcessDecl:
-    ProcessLabel | VarDecl;
+    ProcessLabel | VarDecl | ErrorDecl;
 
 // Process-level label attribute, e.g. `label = "Invoice Approval"`. Stored as
 // its own node so the validator can flag a duplicate `label`.
@@ -75,7 +85,8 @@ Statement:
       StartEvent | EndEvent
     | UserTask | ServiceTask | ExternalTask | ScriptTask
     | IfStatement | WhileStatement | DoWhileStatement
-    | ParallelStatement | GotoStatement | SubProcess | CallActivity;
+    | ParallelStatement | GotoStatement | SubProcess | CallActivity
+    | OnHandler | ThrowStatement | EmitStatement;
 
 // A brace-delimited list of statements (the body of if/else/while/do/parallel
 // branches). The process body itself is an *implicit* block (no braces),
@@ -225,6 +236,70 @@ CallActivity:
 // `target` unknown in either scope) is validated downstream, not here.
 VariableMapping:
     direction=('in'|'out') (local?='local')? (all?='*' | target=ID ('=' source=Expr)?);
+
+// ── on / throw / emit — the DSL's try/catch ─────────────────────────────────
+//
+// `on <trigger>` is a catch block for one event kind: reads exactly like
+// `catch (Exception e) { … }`, sitting at the end of the body it guards (a
+// convention the validator enforces, not the grammar — see the file's
+// per-rule notes below). `throw` always ends its path, like `throw` in every
+// programming language; `emit` fires the event and keeps going — the one
+// distinction between the two verbs, uniform across every event kind this
+// DSL knows about. An `error … message …` declaration exists only for a code
+// whose thrown message text needs recording once, at the process header.
+//
+// `trigger` (`error`/`escalation`), each binding's `field` (`code`/
+// `message`), and the declaration's `kind`/`field` all lex as plain `ID`
+// rather than reserved keywords: they are among the most common variable
+// names a Java-background author reaches for, so reserving them would make
+// `var message: string` a parse error. Word legality at each of these
+// positions — is `trigger` one of the known kinds? is `field` one of the
+// known bindings? — is validated in position, exactly like every other
+// semantic rule in this grammar that the parser itself stays silent about.
+
+// A handler body reuses `Block` verbatim, so `start`/`end` and every other
+// statement — including a nested `on` — parse inside it for free. The
+// parenthesized list, when present, is the catch parameter: each entry pairs
+// a binding field with the process variable it fills, e.g. `(code c, message
+// m)` — deliberately written as a declaration (`field variable`), mirroring
+// `catch (ExceptionType name)`, rather than an assignment. An omitted `code`
+// means "catch any" of that trigger kind. `alongside` marks a
+// non-interrupting handler: the guarded scope's main flow keeps running
+// alongside this catch block instead of being interrupted by it.
+OnHandler:
+    'on' trigger=ID (code=STRING)?
+    ('(' bindings+=EventBinding (',' bindings+=EventBinding)* ')')?
+    (alongside?='alongside')? body=Block;
+
+// One catch-parameter binding inside an `on (…)` list — see `OnHandler`.
+EventBinding:
+    field=ID variable=ID;
+
+// `throw <trigger> <name>? "<code>"` — always terminal: this path ends here,
+// exactly like `throw` in every programming language. `name` is the optional
+// goto-target id (synthesized when omitted, like every other targetable
+// statement); one token of lookahead is all a parser needs to tell the
+// optional `name=ID` apart from the `code=STRING` that always follows it,
+// since the two are different token kinds.
+ThrowStatement:
+    'throw' trigger=ID (name=ID)? code=STRING;
+
+// `emit <trigger> <name>? "<code>"` — fires the event and keeps going; the
+// one difference from `throw` above. Which trigger kinds actually have a
+// continuing (non-terminal) form in BPMN is the validator's concern, not the
+// grammar's.
+EmitStatement:
+    'emit' trigger=ID (name=ID)? code=STRING;
+
+// `<kind> "<code>" <field> "<text>"` — a process-header declaration, written
+// alongside `var` declarations, for the one piece of event data usage alone
+// cannot express: the message text a thrown error of this code carries.
+// Only ever needed for a code whose `throw`/`on` sites should carry that
+// text; `kind` and `field` are the same soft-word ID convention as above
+// (written as `error … message …` for the one declaration this grammar
+// currently has).
+ErrorDecl:
+    kind=ID code=STRING field=ID message=STRING;
 
 // ── Expression sub-language (JUEL native subset) ────────────────────────────
 //

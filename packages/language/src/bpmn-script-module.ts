@@ -23,6 +23,7 @@ import { BpmnScriptCompletionProvider } from './bpmn-script-completion.js';
 import { BpmnScriptScopeProvider } from './bpmn-script-scope-provider.js';
 import { BpmnScriptLinker } from './bpmn-script-linker.js';
 import { BpmnScriptParserErrorMessageProvider } from './bpmn-script-parser-error-message-provider.js';
+import { BpmnScriptSemanticTokenProvider } from './bpmn-script-semantic-tokens.js';
 
 /**
  * Declaration of custom services - add your own service classes here.
@@ -78,6 +79,11 @@ export const BpmnScriptModule: Module<
   lsp: {
     CompletionProvider: (services) =>
       new BpmnScriptCompletionProvider(services),
+    // Highlights the soft event words (`error`/`escalation`/`code`/
+    // `message`) as keywords exactly where they carry event meaning — see
+    // the provider's module docstring.
+    SemanticTokenProvider: (services) =>
+      new BpmnScriptSemanticTokenProvider(services),
   },
 };
 

@@ -1,7 +1,7 @@
 /**
  * Scoping + reserved-word-guidance test suite for BPMNscript.
  *
- * Three concerns are exercised here, all driven through the real parser/linker
+ * Four concerns are exercised here, all driven through the real parser/linker
  * pipeline (`parseHelper`, with `{ validation: true }` where cross-reference
  * linking must run):
  *
@@ -20,6 +20,14 @@
  *     stock "Could not resolve reference" message with a boundary explanation
  *     naming the sub-process the target lives inside or outside of — replacing
  *     rather than adding, so exactly one diagnostic is emitted.
+ *   - **Container-scoped `goto` across an `on` handler boundary** (same
+ *     provider and linker, widened further): an event handler body is a flow
+ *     container in its own right, exactly like a `subprocess` body, so the
+ *     same isolation and boundary-message rules apply to it in either
+ *     direction — a handler's body cannot be reached from outside it, and a
+ *     `goto` inside a handler cannot escape to its enclosing body. The linker
+ *     names the handler by its header (trigger + code) instead of by name,
+ *     since a handler has none.
  *   - **Reserved-word guidance** (custom `ParserErrorMessageProvider`): a
  *     reserved keyword used as a bare identifier yields a parse error that names
  *     the word and points to the quoted `"${…}"` raw-string fallback, instead of
@@ -316,6 +324,255 @@ process p {
     expect(errors).toHaveLength(1);
     expect(errors[0]!.message).toBe(
       "Could not resolve reference to Statement named 'Missing'.",
+    );
+  });
+});
+
+// ── Container-scoped goto across an event-handler boundary ─────────────────
+
+describe('Scoping — container-scoped goto (event-handler boundary)', () => {
+  test('a container-body goto cannot resolve a step inside a handler, but the same name resolves from inside it', async () => {
+    const fromOutside = await parse(
+      `
+process p {
+  goto Inner
+  on error "PAYMENT_FAILED" {
+    user Inner
+  }
+}
+`,
+      { validation: true },
+    );
+    expect(fromOutside.parseResult.parserErrors).toHaveLength(0);
+    expect(findGoto(fromOutside.parseResult.value).target.ref).toBeUndefined();
+
+    const fromInside = await parse(
+      `
+process p {
+  on error "PAYMENT_FAILED" {
+    user Inner
+    goto Inner
+  }
+}
+`,
+      { validation: true },
+    );
+    expect(fromInside.parseResult.parserErrors).toHaveLength(0);
+    const goto = findGoto(fromInside.parseResult.value);
+    expect(goto.target.ref).toBeDefined();
+    expect((goto.target.ref as UserTask).name).toBe('Inner');
+  });
+
+  test('a goto inside a handler resolves a sibling step nested inside an if block of the same body', async () => {
+    const document = await parse(
+      `
+process p {
+  on error "PAYMENT_FAILED" {
+    if (true) {
+      user Deep
+    }
+    goto Deep
+  }
+}
+`,
+      { validation: true },
+    );
+    expect(document.parseResult.parserErrors).toHaveLength(0);
+    const goto = findGoto(document.parseResult.value);
+    expect(goto.target.ref).toBeDefined();
+    expect((goto.target.ref as UserTask).name).toBe('Deep');
+  });
+
+  test('a goto inside a handler cannot resolve a step of the enclosing body', async () => {
+    const document = await parse(
+      `
+process p {
+  user Outer
+  on error "PAYMENT_FAILED" {
+    goto Outer
+  }
+}
+`,
+      { validation: true },
+    );
+    expect(document.parseResult.parserErrors).toHaveLength(0);
+    const goto = findGoto(document.parseResult.value);
+    expect(goto.target.ref).toBeUndefined();
+
+    const errors = errorsOf(document);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.message).toContain("'Outer'");
+    expect(errors[0]!.message).toContain(
+      `the 'on error "PAYMENT_FAILED"' handler`,
+    );
+    expect(errors[0]!.message.toLowerCase()).toContain(
+      'cross an event handler boundary',
+    );
+  });
+
+  test('an outer handler goto cannot resolve a step inside a nested (inner) handler', async () => {
+    const document = await parse(
+      `
+process p {
+  on error "Outer" {
+    goto Deep
+    on escalation "Inner" {
+      user Deep
+    }
+  }
+}
+`,
+      { validation: true },
+    );
+    expect(document.parseResult.parserErrors).toHaveLength(0);
+    const goto = findGoto(document.parseResult.value);
+    expect(goto.target.ref).toBeUndefined();
+  });
+
+  test('boundary message names the coded handler the target is inside, when the goto is outside it (one diagnostic)', async () => {
+    const document = await parse(
+      `
+process p {
+  goto Inner
+  on error "PAYMENT_FAILED" {
+    user Inner
+  }
+}
+`,
+      { validation: true },
+    );
+    expect(document.parseResult.parserErrors).toHaveLength(0);
+
+    const errors = errorsOf(document);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.message).toContain("'Inner'");
+    expect(errors[0]!.message).toContain(
+      `the 'on error "PAYMENT_FAILED"' handler`,
+    );
+    expect(errors[0]!.message.toLowerCase()).toContain(
+      'cross an event handler boundary',
+    );
+    expect(errors[0]!.message.toLowerCase()).not.toContain(
+      'sub-process boundary',
+    );
+  });
+
+  test('boundary message names a catch-all handler without quoting a code', async () => {
+    const document = await parse(
+      `
+process p {
+  goto Inner
+  on error {
+    user Inner
+  }
+}
+`,
+      { validation: true },
+    );
+    expect(document.parseResult.parserErrors).toHaveLength(0);
+
+    const errors = errorsOf(document);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.message).toContain(`an 'on error' handler`);
+  });
+
+  test('boundary message names the handler the goto is inside, when the target is outside it (one diagnostic)', async () => {
+    const document = await parse(
+      `
+process p {
+  user Outer
+  on escalation "LOW_STOCK" {
+    goto Outer
+  }
+}
+`,
+      { validation: true },
+    );
+    expect(document.parseResult.parserErrors).toHaveLength(0);
+
+    const errors = errorsOf(document);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.message).toContain("'Outer'");
+    expect(errors[0]!.message).toContain(
+      `the 'on escalation "LOW_STOCK"' handler`,
+    );
+    expect(errors[0]!.message.toLowerCase()).toContain(
+      'cross an event handler boundary',
+    );
+  });
+
+  test('a goto to a name that exists nowhere yields the unchanged generic message (one diagnostic)', async () => {
+    const document = await parse(
+      `
+process p {
+  goto Missing
+  on error "PAYMENT_FAILED" {
+    user Inner
+  }
+}
+`,
+      { validation: true },
+    );
+    expect(document.parseResult.parserErrors).toHaveLength(0);
+    expect(findGoto(document.parseResult.value).target.ref).toBeUndefined();
+
+    const errors = errorsOf(document);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.message).toBe(
+      "Could not resolve reference to Statement named 'Missing'.",
+    );
+  });
+
+  test('a goto resolves a named throw/emit in the same container', async () => {
+    const document = await parse(
+      `
+process p {
+  goto Failed
+  goto Ping
+  throw error Failed "PAYMENT_FAILED"
+  emit escalation Ping "LOW_STOCK"
+}
+`,
+      { validation: true },
+    );
+    expect(document.parseResult.parserErrors).toHaveLength(0);
+
+    const gotos = AstUtils.streamAst(document.parseResult.value)
+      .filter((node): node is GotoStatement => node.$type === 'GotoStatement')
+      .toArray();
+    expect(gotos).toHaveLength(2);
+    const [toFailed, toPing] = gotos;
+    expect(toFailed!.target.ref).toBeDefined();
+    expect(toFailed!.target.ref!.$type).toBe('ThrowStatement');
+    expect(toPing!.target.ref).toBeDefined();
+    expect(toPing!.target.ref!.$type).toBe('EmitStatement');
+  });
+
+  test('boundary message names the handler when a goto targets a named throw inside it', async () => {
+    // A named throw/emit is a goto target, so a cross-boundary goto to one gets
+    // the tailored boundary message rather than the generic "does not exist".
+    const document = await parse(
+      `
+process p {
+  goto Failed
+  on error "PAYMENT_FAILED" {
+    throw error Failed "PAYMENT_FAILED"
+  }
+}
+`,
+      { validation: true },
+    );
+    expect(document.parseResult.parserErrors).toHaveLength(0);
+    expect(findGoto(document.parseResult.value).target.ref).toBeUndefined();
+
+    const errors = errorsOf(document);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.message).toContain("'Failed'");
+    expect(errors[0]!.message).toContain(
+      `the 'on error "PAYMENT_FAILED"' handler`,
+    );
+    expect(errors[0]!.message.toLowerCase()).toContain(
+      'cross an event handler boundary',
     );
   });
 });

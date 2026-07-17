@@ -56,6 +56,8 @@ The frozen id templates (from `packages/transform/src/synthesize-ids.ts`):
 | `Flow_<src>_<tgt>`         | `makeSequenceFlowId` | `Flow_ReviewInvoice_Gateway_invoice-approval_2_split` |
 | `StartEvent_<processId>`   | `makeStartEventId`   | `StartEvent_invoice-approval`                         |
 | `EndEvent_<processId>`     | `makeEndEventId`     | `EndEvent_invoice-approval`                           |
+| `Throw_<X>`                | `makeThrowEventId`   | `Throw_invoice-approval_2`                            |
+| `EventSubProcess_<X>`      | `makeEventSubProcessId` | `EventSubProcess_invoice-approval_1`               |
 
 The structural coordinate `<X>` for a compound statement at body index `i` inside
 a process with id `P` is `P_i`. For nested compounds the parent coordinate is

@@ -52,6 +52,7 @@
  *       loop body (do-while)  <X>          (sole block ⇒ no segment needed)
  *       i-th `parallel` branch <X>_b<i>   (0-based)
  *       subprocess body       <X>          (sole block ⇒ no segment needed)
+ *       `on` handler body     <X>          (sole block ⇒ no segment needed)
  *
  *     A loop owns exactly one block, so its body has no sibling to collide with
  *     and needs no segment; a `subprocess` is likewise a single-block compound,
@@ -60,6 +61,14 @@
  *     gateway ids skip `resolveCollision`, so a sub-process named like a
  *     structural coordinate could duplicate a gateway id elsewhere. Positional
  *     coordinates have no such hole.
+ *
+ *     An `on` handler is also a single-block compound: at index i of block C it
+ *     has coordinate <X> = C_i and id `EventSubProcess_<X>`, and — like a loop
+ *     body — its body's enclosing coordinate is that same <X>, so nested
+ *     gateways come out `Gateway_<X>_<j>_…`. Its implicit start/end seed from
+ *     the handler id (`StartEvent_<id>` / `EndEvent_<id>`). An unnamed
+ *     `throw`/`emit` at index i of block C is a leaf event with id
+ *     `Throw_<C>_<i>` (an authored id is used verbatim instead).
  *
  * ## Implicit-event seeding by container id
  *
@@ -93,6 +102,12 @@
  * For a simple statement entry === exit === the element's own id. For a
  * compound statement, entry is the split/fork/loop boundary and exit is the
  * join boundary (or the loop gateway, for a `while`).
+ *
+ * An `on` handler is the exception: it is lowered **out of the sequence chain**
+ * and returns no frontier at all. It contributes an event sub-process node to
+ * the container but never participates in flow — the statement before it flows
+ * directly to the statement after it, so a handler placed anywhere (including
+ * mid-body, which the validator rejects) still yields correct flow.
  */
 
 import {
@@ -109,6 +124,10 @@ import {
   isGotoStatement,
   isSubProcess,
   isCallActivity,
+  isOnHandler,
+  isThrowStatement,
+  isEmitStatement,
+  isErrorDecl,
   isLiteralString,
   isLiteralBool,
   isLiteralInt,
@@ -135,6 +154,9 @@ import type {
   GotoStatement,
   SubProcess as AstSubProcess,
   CallActivity as AstCallActivity,
+  OnHandler,
+  ThrowStatement,
+  EmitStatement,
   VariableMapping,
   Attribute,
 } from '@bpmn-script/language';
@@ -142,11 +164,13 @@ import type {
   BpmnProcess,
   CalledElementBinding,
   CallVariableMapping,
+  EventDefinition,
   FlowElement,
   FormField,
   FormFieldType,
   SequenceFlow as IrSequenceFlow,
   ServiceTaskBinding,
+  StartEvent as IrStartEvent,
 } from './ir/types.js';
 import {
   makeGatewaySplitId,
@@ -157,6 +181,8 @@ import {
   makeSequenceFlowId,
   makeStartEventId,
   makeEndEventId,
+  makeThrowEventId,
+  makeEventSubProcessId,
 } from './synthesize-ids.js';
 
 /**
@@ -234,6 +260,7 @@ export function astToIr(model: Model): BpmnProcess {
   lowerContainerBody(builder, process.body, process.name, process.name);
 
   const label = processLabel(process);
+  const errorMessages = collectErrorMessages(process);
 
   return {
     id: process.name,
@@ -241,7 +268,33 @@ export function astToIr(model: Model): BpmnProcess {
     isExecutable: true,
     flowElements: builder.flowElements,
     sequenceFlows: builder.sequenceFlows,
+    ...(errorMessages.length > 0 ? { errorMessages } : {}),
   };
+}
+
+/**
+ * Collect the process-header `error "CODE" message "…"` declarations into the
+ * IR's `errorMessages`, in declaration order.
+ *
+ * The declared message text is the one piece of root-element data usage alone
+ * cannot recover (two throws of a code share one root, so the text cannot live
+ * on a throw). A duplicate declaration of the same code keeps the **first** — the
+ * desugarer stays total; the validator owns the duplicate diagnostic. Every
+ * declaration contributes its entry regardless of the exact words written for
+ * its kind/field (those are validated in position, not here).
+ */
+function collectErrorMessages(
+  process: Process,
+): { code: string; message: string }[] {
+  const messages: { code: string; message: string }[] = [];
+  const seen = new Set<string>();
+  for (const decl of process.decls) {
+    if (isErrorDecl(decl) && !seen.has(decl.code)) {
+      seen.add(decl.code);
+      messages.push({ code: decl.code, message: decl.message });
+    }
+  }
+  return messages;
 }
 
 /**
@@ -333,6 +386,15 @@ function lowerBlockStatements(
   let lastFrontier: Frontier | undefined;
 
   statements.forEach((stmt, index) => {
+    // An `on` handler contributes a node but never joins the sequence chain: it
+    // is an event sub-process triggered by the error/escalation it catches, not
+    // a flow step. Lower it out-of-chain and leave `prevExit`/`entry` untouched,
+    // so the statement before it flows directly to the statement after it.
+    if (isOnHandler(stmt)) {
+      lowerOnHandler(builder, stmt, coord, index);
+      return;
+    }
+
     const frontier = lowerStatement(builder, stmt, coord, index);
     // A statement always has a concrete entry node (only an empty *block* — never
     // a top-level statement — yields a null entry), so this is non-null here.
@@ -424,7 +486,14 @@ function lowerStatement(
   if (isCallActivity(stmt)) {
     return lowerCallActivity(builder, stmt);
   }
-  // Exhaustiveness guard: the Statement union is closed by the grammar.
+  if (isThrowStatement(stmt)) {
+    return lowerThrow(builder, stmt, coord, index);
+  }
+  if (isEmitStatement(stmt)) {
+    return lowerEmit(builder, stmt, coord, index);
+  }
+  // `OnHandler` is intercepted by `lowerBlockStatements` (it is not a flow step),
+  // so it never reaches here. Every other Statement member is handled above.
   throw new Error(
     `astToIr: unexpected statement type '${(stmt as { $type: string }).$type}'.`,
   );
@@ -933,6 +1002,187 @@ function lowerSubProcess(
   return { entry: stmt.name, exit: stmt.name };
 }
 
+// ---------------------------------------------------------------------------
+// Event handlers, throws, and emits
+// ---------------------------------------------------------------------------
+
+/**
+ * Lower an `on` handler into a `triggeredByEvent` {@link SubProcess} — an event
+ * sub-process — pushed onto the **parent** container.
+ *
+ * A handler is a single-block compound, so its structural coordinate `<X>` is
+ * `<coord>_<index>` and its id is `EventSubProcess_<X>`. Its body lowers through
+ * the same container machinery every sub-process uses (a nested builder sharing
+ * the one `taken` set), with the handler id as the implicit-event seed
+ * (`StartEvent_<id>` / `EndEvent_<id>`) — the container-id rule.
+ *
+ * The caught trigger lands on the body's start event (explicit or synthesized):
+ * `eventDefinition` from the trigger word, code, and catch bindings, plus
+ * `isInterrupting: false` when the handler is marked `alongside`. Unlike a plain
+ * sub-process an event sub-process is **not** wired into the parent's flow, so
+ * this returns nothing and the caller keeps the sequence chain flowing around
+ * it.
+ *
+ * An event sub-process is invalid BPMN without its trigger start event, so an
+ * empty handler body still synthesizes start → flow → end (the deliberate
+ * deviation from the empty-container rule that leaves plain sub-processes bare).
+ */
+function lowerOnHandler(
+  builder: Builder,
+  stmt: OnHandler,
+  coord: string,
+  index: number,
+): void {
+  const x = `${coord}_${index}`;
+  const id = makeEventSubProcessId(x);
+
+  const nested: Builder = {
+    flowElements: [],
+    sequenceFlows: [],
+    taken: builder.taken,
+  };
+  lowerContainerBody(nested, stmt.body.statements, x, id);
+
+  const start = ensureHandlerStart(nested, id);
+  start.eventDefinition = handlerEventDefinition(stmt);
+  if (stmt.alongside) {
+    start.isInterrupting = false;
+  }
+
+  builder.flowElements.push({
+    kind: 'subProcess',
+    id,
+    triggeredByEvent: true,
+    flowElements: nested.flowElements,
+    sequenceFlows: nested.sequenceFlows,
+  });
+}
+
+/**
+ * Return the handler body's single start event — the trigger-carrying start.
+ *
+ * A non-empty body always has one (explicit, or synthesized by
+ * `lowerContainerBody`). An empty body has none, but an event sub-process is
+ * invalid BPMN without its start, so this synthesizes start → flow → end (the
+ * empty-body deviation from the empty-container rule) and returns the start.
+ */
+function ensureHandlerStart(nested: Builder, id: string): IrStartEvent {
+  const existing = nested.flowElements.find(
+    (fe): fe is IrStartEvent => fe.kind === 'startEvent',
+  );
+  if (existing !== undefined) {
+    return existing;
+  }
+  const startId = makeStartEventId(id, nested.taken);
+  const endId = makeEndEventId(id, nested.taken);
+  const start: IrStartEvent = { kind: 'startEvent', id: startId };
+  nested.flowElements.push(start, { kind: 'endEvent', id: endId });
+  addFlow(nested, startId, endId);
+  return start;
+}
+
+/**
+ * Build the caught {@link EventDefinition} for an `on` handler from its trigger
+ * word, code, and catch bindings.
+ *
+ * The trigger word is a soft identifier validated in position, so the desugarer
+ * stays total over any text: `escalation` maps to the escalation kind, and every
+ * other word (including a typo) lowers as `error` — the validator owns the
+ * unknown-word diagnostic. A binding whose field is neither `code` nor `message`
+ * is ignored for the same reason. A missing code is catch-all (the field is
+ * omitted). Escalations carry a code but no message, so a `message` binding on an
+ * escalation handler is dropped.
+ */
+function handlerEventDefinition(stmt: OnHandler): EventDefinition {
+  const codeVariable = bindingVariable(stmt, 'code');
+  if (stmt.trigger === 'escalation') {
+    return {
+      kind: 'escalation',
+      ...(stmt.code !== undefined ? { escalationCode: stmt.code } : {}),
+      ...(codeVariable !== undefined ? { codeVariable } : {}),
+    };
+  }
+  const messageVariable = bindingVariable(stmt, 'message');
+  return {
+    kind: 'error',
+    ...(stmt.code !== undefined ? { errorCode: stmt.code } : {}),
+    ...(codeVariable !== undefined ? { codeVariable } : {}),
+    ...(messageVariable !== undefined ? { messageVariable } : {}),
+  };
+}
+
+/**
+ * Resolve the process variable a handler binds for a given catch field
+ * (`code` / `message`), or `undefined` when the handler declares no such
+ * binding. A binding with an unrecognized field is never matched, so it is
+ * silently ignored — word legality is the validator's job.
+ */
+function bindingVariable(stmt: OnHandler, field: string): string | undefined {
+  return stmt.bindings.find((b) => b.field === field)?.variable;
+}
+
+/**
+ * Lower a `throw` to a typed end event — the terminal frontier, exactly like an
+ * explicit `end`. Its exit is `null`: `throw` always ends this path (like every
+ * programming language), so no fall-through flow reaches the next statement.
+ *
+ * The id is the authored `name` when present, else the positional
+ * `Throw_<coord>_<index>`. `escalation` maps to the escalation kind; any other
+ * trigger word lowers as `error` (totality — the validator polices the word).
+ */
+function lowerThrow(
+  builder: Builder,
+  stmt: ThrowStatement,
+  coord: string,
+  index: number,
+): Frontier {
+  const id = stmt.name ?? makeThrowEventId(`${coord}_${index}`);
+  builder.flowElements.push({
+    kind: 'endEvent',
+    id,
+    eventDefinition: throwEventDefinition(stmt),
+  });
+  return { entry: id, exit: null };
+}
+
+/**
+ * Lower an `emit` to an intermediate throw event — a plain fall-through node:
+ * `emit` fires the event and keeps going, so entry === exit === the node's id.
+ *
+ * The id is the authored `name` when present, else the positional
+ * `Throw_<coord>_<index>`. An intermediate throw is always an escalation
+ * regardless of the trigger word: BPMN has no intermediate error throw, so
+ * `emit error` (and any other word) lowers as an escalation and the validator
+ * teaches `throw error` instead.
+ */
+function lowerEmit(
+  builder: Builder,
+  stmt: EmitStatement,
+  coord: string,
+  index: number,
+): Frontier {
+  const id = stmt.name ?? makeThrowEventId(`${coord}_${index}`);
+  builder.flowElements.push({
+    kind: 'intermediateThrowEvent',
+    id,
+    eventDefinition: { kind: 'escalation', escalationCode: stmt.code },
+  });
+  return { entry: id, exit: id };
+}
+
+/**
+ * Build the thrown {@link EventDefinition} for a `throw`: `escalation` maps to
+ * the escalation kind, every other trigger word (including a typo) to `error`.
+ * A `throw`'s code is always written (the grammar requires it), so the code is
+ * always carried.
+ */
+function throwEventDefinition(stmt: ThrowStatement): EventDefinition {
+  if (stmt.trigger === 'escalation') {
+    return { kind: 'escalation', escalationCode: stmt.code };
+  }
+  return { kind: 'error', errorCode: stmt.code };
+}
+
 /**
  * Lower a `call` statement to a {@link CallActivity} leaf node.
  *
@@ -1185,6 +1435,16 @@ function collectNamedIds(process: Process): Set<string> {
         // is a nested container whose named steps share the one taken set.
         taken.add(stmt.name);
         visit(stmt.body.statements);
+      } else if (isOnHandler(stmt)) {
+        // The handler id is positional (collision-free, never registered), but
+        // its body's named steps share the one document-wide taken set.
+        visit(stmt.body.statements);
+      } else if (isThrowStatement(stmt) || isEmitStatement(stmt)) {
+        // An authored id on a throw/emit is used verbatim, so it is a document
+        // id; an unnamed one gets a positional id that never needs reserving.
+        if (stmt.name !== undefined) {
+          taken.add(stmt.name);
+        }
       }
       // GotoStatement contributes no new id (it references an existing one).
     }

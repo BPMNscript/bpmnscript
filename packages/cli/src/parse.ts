@@ -13,8 +13,9 @@
  *         but do not change the exit code)
  *   1  — unsupported BPMN construct (any UnsupportedConstructError subclass:
  *         UnsupportedServiceTaskFormError, UnsupportedElementError,
- *         UnsupportedEventDefinitionError, UnsupportedLoopCharacteristicsError,
- *         UnsupportedCollaborationError, UnsupportedCallActivityError)
+ *         UnsupportedEventDefinitionError, UnsupportedEventFeatureError,
+ *         UnsupportedLoopCharacteristicsError, UnsupportedCollaborationError,
+ *         UnsupportedCallActivityError)
  *   2  — I/O errors (file not found, cannot write output)
  */
 

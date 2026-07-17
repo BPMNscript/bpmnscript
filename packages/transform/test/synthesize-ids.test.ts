@@ -17,6 +17,8 @@
  *   Flow_<sourceId>_<targetId>  Sequence flow (plain); duplicate pairs get _2, _3, …
  *   StartEvent_<processId>    Implicit start event
  *   EndEvent_<processId>      Implicit end event; duplicates get _2, _3, …
+ *   Throw_<X>                 Unnamed `throw`/`emit` event at coordinate X
+ *   EventSubProcess_<X>       `on` handler (event sub-process) at coordinate X
  */
 
 import { describe, expect, it } from 'vitest';
@@ -29,6 +31,8 @@ import {
   makeSequenceFlowId,
   makeStartEventId,
   makeEndEventId,
+  makeThrowEventId,
+  makeEventSubProcessId,
   resolveCollision,
 } from '../src/synthesize-ids.js';
 
@@ -95,6 +99,14 @@ describe('determinism', () => {
     const taken2 = new Set<string>();
     const id2 = makeEndEventId('my-process', taken2);
     expect(id1).toBe(id2);
+  });
+
+  it('makeThrowEventId is pure', () => {
+    expect(makeThrowEventId('p_1')).toBe(makeThrowEventId('p_1'));
+  });
+
+  it('makeEventSubProcessId is pure', () => {
+    expect(makeEventSubProcessId('p_2')).toBe(makeEventSubProcessId('p_2'));
   });
 });
 
@@ -165,6 +177,28 @@ describe('structural stability', () => {
     expect(makeEndEventId('invoice-approval', taken)).toBe(
       'EndEvent_invoice-approval_3',
     );
+  });
+
+  it('makeThrowEventId → Throw_<X>', () => {
+    expect(makeThrowEventId('p_1')).toBe('Throw_p_1');
+    expect(makeThrowEventId('invoice-approval_2_t_0')).toBe(
+      'Throw_invoice-approval_2_t_0',
+    );
+  });
+
+  it('makeEventSubProcessId → EventSubProcess_<X>', () => {
+    expect(makeEventSubProcessId('p_1')).toBe('EventSubProcess_p_1');
+    expect(makeEventSubProcessId('invoice-approval_0')).toBe(
+      'EventSubProcess_invoice-approval_0',
+    );
+  });
+
+  it('the positional throw/handler templates take no taken set (no collision resolution)', () => {
+    // Positional ids are collision-free by construction — the coordinate is
+    // unique by position — so these templates are pure functions of the
+    // coordinate, unlike the implicit start/end constructors.
+    expect(makeThrowEventId).toHaveLength(1);
+    expect(makeEventSubProcessId).toHaveLength(1);
   });
 });
 

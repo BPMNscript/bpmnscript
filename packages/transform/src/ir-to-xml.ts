@@ -35,10 +35,12 @@ import {
 import { layoutProcess } from 'bpmn-auto-layout';
 
 import { humanize } from './humanize.js';
+import { resolveCollision } from './synthesize-ids.js';
 import type {
   BpmnProcess,
   CallActivity,
   CallVariableMapping,
+  EventDefinition,
   FlowContainer,
   FlowElement,
   FormField,
@@ -120,6 +122,11 @@ export async function irToXml(
     operaton: operatonModdleExtension as Record<string, unknown>,
   });
 
+  // Synthesize the document-level error/escalation root elements from usage
+  // before building the process, so each catch/throw can wire its
+  // `errorRef`/`escalationRef` to the shared root as it is created.
+  const roots = synthesizeRootElements(moddle, process);
+
   // Assemble the process and the definitions root. The process is one
   // FlowContainer; its ordered moddle children (nodes then flows, with
   // incoming/outgoing and gateway defaults wired) are built by the shared
@@ -131,7 +138,7 @@ export async function irToXml(
     name: process.name ?? humanize(process.id),
     isExecutable: process.isExecutable,
     'operaton:historyTimeToLive': HISTORY_TIME_TO_LIVE,
-    flowElements: buildContainerChildren(moddle, process),
+    flowElements: buildContainerChildren(moddle, process, roots),
   };
   const processElement = moddle.create('bpmn:Process', processAttrs);
 
@@ -144,7 +151,9 @@ export async function irToXml(
     targetNamespace: TARGET_NAMESPACE,
     exporter: 'BPMNscript',
     exporterVersion: options?.exporterVersion ?? '0.0.0',
-    rootElements: [processElement],
+    // The process first (today's output shape), then the synthesized error and
+    // escalation root elements.
+    rootElements: [processElement, ...roots.errorElements, ...roots.escalationElements],
     ...(diagrams.length > 0 ? { diagrams } : {}),
   });
 
@@ -159,6 +168,179 @@ export async function irToXml(
   const xmlWithDi = await layoutProcess(xml);
 
   return xmlWithDi;
+}
+
+/**
+ * The synthesized error/escalation root elements, plus code→element lookups for
+ * wiring each catch/throw's `errorRef`/`escalationRef` to the shared root.
+ *
+ * All handlers and throws of one code share a single root element (BPMN puts
+ * error/escalation definitions at `bpmn:Definitions` level, deduped by code), so
+ * a code maps to exactly one element here.
+ */
+interface RootElementIndex {
+  errorElements: ModdleElement[];
+  escalationElements: ModdleElement[];
+  errorByCode: Map<string, ModdleElement>;
+  escalationByCode: Map<string, ModdleElement>;
+}
+
+/**
+ * Build the document-level `bpmn:Error`/`bpmn:Escalation` root elements from
+ * usage. The root elements are not modeled in the IR: event definitions carry
+ * their codes inline, and the roots are derived here from where those codes
+ * appear (the `operaton:historyTimeToLive` precedent — vendor/serialization
+ * concerns attach at the transform).
+ *
+ * Collection order: a depth-first walk over every container collects the
+ * distinct error and escalation codes in first-appearance order, then any
+ * `errorMessages` code not yet seen (a declared code emits its root even when
+ * otherwise unused — the declaration is explicit authorial intent). Catch-all
+ * definitions (no code) contribute no root.
+ *
+ * Ids: `Error_<code>` / `Escalation_<code>` with any character outside
+ * `[A-Za-z0-9_.-]` replaced by `_`. Collisions — two codes sanitizing
+ * identically, or a sanitized id clashing with any element id already in the
+ * document — get `_2`, `_3`, … in synthesis order. The root `name` and
+ * `errorCode`/`escalationCode` carry the code verbatim; a declared message is
+ * stamped as `operaton:errorMessage` (errors only).
+ */
+function synthesizeRootElements(
+  moddle: BpmnModdleInstance,
+  process: BpmnProcess,
+): RootElementIndex {
+  const errorCodes: string[] = [];
+  const escalationCodes: string[] = [];
+  for (const def of collectEventDefinitions(process)) {
+    if (def.kind === 'error' && def.errorCode !== undefined) {
+      if (!errorCodes.includes(def.errorCode)) errorCodes.push(def.errorCode);
+    } else if (def.kind === 'escalation' && def.escalationCode !== undefined) {
+      if (!escalationCodes.includes(def.escalationCode)) {
+        escalationCodes.push(def.escalationCode);
+      }
+    }
+  }
+  const messageByCode = new Map(
+    (process.errorMessages ?? []).map((m) => [m.code, m.message]),
+  );
+  for (const code of messageByCode.keys()) {
+    if (!errorCodes.includes(code)) errorCodes.push(code);
+  }
+
+  // Seed the collision set with every id already present in the document so a
+  // synthesized root id never shadows a flow node, flow, or container id.
+  const taken = new Set<string>();
+  collectElementIds(process, taken);
+
+  const errorElements: ModdleElement[] = [];
+  const errorByCode = new Map<string, ModdleElement>();
+  for (const code of errorCodes) {
+    const id = resolveCollision(sanitizeRootId('Error_', code), taken);
+    taken.add(id);
+    const attrs: Record<string, unknown> = { id, name: code, errorCode: code };
+    const message = messageByCode.get(code);
+    if (message !== undefined) attrs['operaton:errorMessage'] = message;
+    const element = moddle.create('bpmn:Error', attrs);
+    errorElements.push(element);
+    errorByCode.set(code, element);
+  }
+
+  const escalationElements: ModdleElement[] = [];
+  const escalationByCode = new Map<string, ModdleElement>();
+  for (const code of escalationCodes) {
+    const id = resolveCollision(sanitizeRootId('Escalation_', code), taken);
+    taken.add(id);
+    const element = moddle.create('bpmn:Escalation', {
+      id,
+      name: code,
+      escalationCode: code,
+    });
+    escalationElements.push(element);
+    escalationByCode.set(code, element);
+  }
+
+  return { errorElements, escalationElements, errorByCode, escalationByCode };
+}
+
+/** Prefix + code with non-id characters replaced by `_` (an XML-safe id). */
+function sanitizeRootId(prefix: string, code: string): string {
+  return prefix + code.replace(/[^A-Za-z0-9_.-]/g, '_');
+}
+
+/**
+ * Depth-first collect every event definition carried by a start event, end
+ * event, or intermediate throw anywhere under a container (recursing into
+ * sub-processes), in first-appearance order.
+ */
+function collectEventDefinitions(container: FlowContainer): EventDefinition[] {
+  const defs: EventDefinition[] = [];
+  for (const el of container.flowElements) {
+    switch (el.kind) {
+      case 'startEvent':
+      case 'endEvent':
+        if (el.eventDefinition !== undefined) defs.push(el.eventDefinition);
+        break;
+      case 'intermediateThrowEvent':
+        defs.push(el.eventDefinition);
+        break;
+      case 'subProcess':
+        defs.push(...collectEventDefinitions(el));
+        break;
+      default:
+        break;
+    }
+  }
+  return defs;
+}
+
+/**
+ * Collect every id that occupies the document's id space — the container id,
+ * every flow node id (recursing into sub-processes), and every sequence flow
+ * id — so synthesized root-element ids can be checked against them.
+ */
+function collectElementIds(container: FlowContainer, into: Set<string>): void {
+  into.add(container.id);
+  for (const el of container.flowElements) {
+    into.add(el.id);
+    if (el.kind === 'subProcess') collectElementIds(el, into);
+  }
+  for (const flow of container.sequenceFlows) into.add(flow.id);
+}
+
+/**
+ * Build a `bpmn:ErrorEventDefinition` / `bpmn:EscalationEventDefinition` for one
+ * IR {@link EventDefinition}. The `errorRef`/`escalationRef` is wired to the
+ * shared root element (omitted for a catch-all — a ref-less definition catches
+ * any error/escalation). Catch bindings become the Operaton
+ * `errorCodeVariable`/`errorMessageVariable`/`escalationCodeVariable`
+ * attributes when set (the moddle fork resolves these onto the definition).
+ */
+function buildEventDefinition(
+  moddle: BpmnModdleInstance,
+  def: EventDefinition,
+  roots: RootElementIndex,
+): ModdleElement {
+  if (def.kind === 'error') {
+    const attrs: Record<string, unknown> = {};
+    if (def.errorCode !== undefined) {
+      attrs.errorRef = roots.errorByCode.get(def.errorCode);
+    }
+    if (def.codeVariable !== undefined) {
+      attrs['operaton:errorCodeVariable'] = def.codeVariable;
+    }
+    if (def.messageVariable !== undefined) {
+      attrs['operaton:errorMessageVariable'] = def.messageVariable;
+    }
+    return moddle.create('bpmn:ErrorEventDefinition', attrs);
+  }
+  const attrs: Record<string, unknown> = {};
+  if (def.escalationCode !== undefined) {
+    attrs.escalationRef = roots.escalationByCode.get(def.escalationCode);
+  }
+  if (def.codeVariable !== undefined) {
+    attrs['operaton:escalationCodeVariable'] = def.codeVariable;
+  }
+  return moddle.create('bpmn:EscalationEventDefinition', attrs);
 }
 
 /**
@@ -248,12 +430,13 @@ function collectSubProcessElements(container: ModdleElement): ModdleElement[] {
 function buildContainerChildren(
   moddle: BpmnModdleInstance,
   container: FlowContainer,
+  roots: RootElementIndex,
 ): ModdleElement[] {
   const flowNodeById = new Map<string, ModdleElement>();
   const sequenceFlowById = new Map<string, ModdleElement>();
 
   for (const node of container.flowElements) {
-    flowNodeById.set(node.id, createFlowNode(moddle, node));
+    flowNodeById.set(node.id, createFlowNode(moddle, node, roots));
   }
 
   for (const flow of container.sequenceFlows) {
@@ -280,21 +463,28 @@ function buildContainerChildren(
 function createFlowNode(
   moddle: BpmnModdleInstance,
   node: FlowElement,
+  roots: RootElementIndex,
 ): ModdleElement {
   const baseAttrs: Record<string, unknown> = { id: node.id };
   // Derive a human-readable `name` from the id for labelable nodes when the IR
   // carries none. Gateways and start/end events are excluded: their ids are
   // synthesized structural coordinates (e.g. `Gateway_…_split`,
   // `StartEvent_<processId>`) that would humanize to noise, and such elements
-  // are conventionally unnamed. Explicit names from the IR are always kept.
+  // are conventionally unnamed. An intermediate throw and an event sub-process
+  // are excluded too: their surface (`emit`, `on`) carries no label slot, so a
+  // humanized name would be spurious. Explicit names from the IR are always
+  // kept (a plain sub-process still humanizes so viewers label the expanded box).
   const derivedName =
-    node.name ??
-    (node.kind === 'exclusiveGateway' ||
-    node.kind === 'parallelGateway' ||
-    node.kind === 'startEvent' ||
-    node.kind === 'endEvent'
+    node.kind === 'intermediateThrowEvent'
       ? undefined
-      : humanize(node.id));
+      : node.name ??
+        (node.kind === 'exclusiveGateway' ||
+        node.kind === 'parallelGateway' ||
+        node.kind === 'startEvent' ||
+        node.kind === 'endEvent' ||
+        (node.kind === 'subProcess' && node.triggeredByEvent === true)
+          ? undefined
+          : humanize(node.id));
   if (derivedName !== undefined) {
     baseAttrs.name = derivedName;
   }
@@ -305,11 +495,38 @@ function createFlowNode(
       if (node.formFields !== undefined) {
         attrs.extensionElements = buildFormExtension(moddle, node.formFields);
       }
+      if (node.eventDefinition !== undefined) {
+        attrs.eventDefinitions = [
+          buildEventDefinition(moddle, node.eventDefinition, roots),
+        ];
+      }
+      // BPMN defaults to interrupting; store the attribute only for the
+      // non-default `alongside` handler start (the serializer drops the default).
+      if (node.isInterrupting === false) {
+        attrs.isInterrupting = false;
+      }
       return moddle.create('bpmn:StartEvent', attrs);
     }
 
-    case 'endEvent':
-      return moddle.create('bpmn:EndEvent', baseAttrs);
+    case 'endEvent': {
+      const attrs: Record<string, unknown> = { ...baseAttrs };
+      if (node.eventDefinition !== undefined) {
+        attrs.eventDefinitions = [
+          buildEventDefinition(moddle, node.eventDefinition, roots),
+        ];
+      }
+      return moddle.create('bpmn:EndEvent', attrs);
+    }
+
+    case 'intermediateThrowEvent':
+      // An `emit` fires the event and lets flow continue: incoming/outgoing are
+      // wired generically by `attachIncomingOutgoing`, exactly as for a task.
+      return moddle.create('bpmn:IntermediateThrowEvent', {
+        ...baseAttrs,
+        eventDefinitions: [
+          buildEventDefinition(moddle, node.eventDefinition, roots),
+        ],
+      });
 
     case 'userTask': {
       const attrs: Record<string, unknown> = { ...baseAttrs };
@@ -374,17 +591,25 @@ function createFlowNode(
       // handled generically by `attachIncomingOutgoing` below.
       return moddle.create('bpmn:ParallelGateway', baseAttrs);
 
-    case 'subProcess':
+    case 'subProcess': {
       // An embedded sub-process is an activity whose body is a nested
       // container. Its children are built by the same per-container pass
       // (mutual recursion); the parent's incoming/outgoing into this
       // sub-process node are wired generically by `attachIncomingOutgoing`,
-      // exactly as for any other activity. Per the derived-name path above,
-      // it carries a humanized `name` so viewers label the expanded box.
-      return moddle.create('bpmn:SubProcess', {
+      // exactly as for any other activity. A plain sub-process carries a
+      // humanized `name` (via the derived-name path above) so viewers label the
+      // expanded box; an event sub-process (`triggeredByEvent`) is unlabeled and
+      // has no flow connections — it is triggered by its start event's caught
+      // error/escalation.
+      const attrs: Record<string, unknown> = {
         ...baseAttrs,
-        flowElements: buildContainerChildren(moddle, node),
-      });
+        flowElements: buildContainerChildren(moddle, node, roots),
+      };
+      if (node.triggeredByEvent === true) {
+        attrs.triggeredByEvent = true;
+      }
+      return moddle.create('bpmn:SubProcess', attrs);
+    }
 
     case 'callActivity': {
       // A call activity invokes another process by id. `calledElement` is a
