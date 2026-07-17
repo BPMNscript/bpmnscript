@@ -25,7 +25,7 @@
     "@bpmn-script/transform": "*",
     "@bpmn-script/language": "0.0.1",
     "chalk": "^5.3.0",
-    "commander": "^14.0.0"
+    "commander": "^15.0.0"
   },
   "devDependencies": {
     "vitest": "^4.1.10"
