@@ -17,7 +17,7 @@
  *     `Review Invoice`, the gateway condition is false, the default branch
  *     routes to the `AutoApprove` service task (a synchronous JavaDelegate),
  *     the process ends, and no user tasks remain.
- *   - Negative: a BPMN file with `operaton:expression` on a service task is
+ *   - Negative: a BPMN file whose service task carries no execution binding is
  *     rejected by `bpmns parse` (non-zero exit code).
  *
  * The Docker-backed describe block is skipped entirely when
@@ -231,8 +231,9 @@ describe.skipIf(SKIP)('E2E: invoice-approval on Spring Boot Operaton', () => {
   }, 30_000);
 
   /**
-   * `tests/golden/bad-service-task-expression.bpmn` contains a service task
-   * with `operaton:expression` instead of `operaton:class`.  The `xmlToIr`
+   * `tests/golden/bad-service-task-no-binding.bpmn` contains a service task
+   * with no execution binding (no `operaton:class`, `operaton:expression`,
+   * `operaton:delegateExpression`, nor an external topic). The `xmlToIr`
    * transform (used by `bpmns parse`) must reject this with an
    * `UnsupportedServiceTaskFormError`, causing the CLI to exit non-zero.
    *
@@ -242,7 +243,7 @@ describe.skipIf(SKIP)('E2E: invoice-approval on Spring Boot Operaton', () => {
   it('refuses unsupported service-task form', () => {
     const badBpmnPath = path.resolve(
       __dirname,
-      '../golden/bad-service-task-expression.bpmn',
+      '../golden/bad-service-task-no-binding.bpmn',
     );
 
     // `bpmns parse` must exit non-zero for the unsupported BPMN file.

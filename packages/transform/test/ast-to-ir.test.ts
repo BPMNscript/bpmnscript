@@ -16,7 +16,9 @@
  *   6. `parallel` → fork/join `parallelGateway` pair, no conditions.
  *   7. `goto` → raw sequence flow to the target node.
  *   8. Synthesized-id determinism guard.
- *   9. Attribute mapping (assignee / formKey / javaClass / process label).
+ *   9. Attribute mapping (assignee / formKey / class binding / process label),
+ *      service task binding variants (expression / delegate), the `external`
+ *      task, the `script` task, and goto-targetability of both.
  *  10. Empty model throws `/no process definitions/i`.
  */
 
@@ -498,7 +500,7 @@ describe('astToIr — attribute mapping', () => {
       kind: 'serviceTask',
       id: 'S',
       name: 'Svc',
-      javaClass: 'com.example.Delegate',
+      binding: { kind: 'class', className: 'com.example.Delegate' },
     });
   });
 
@@ -527,12 +529,147 @@ describe('astToIr — attribute mapping', () => {
     expect(result.name).toBeUndefined();
   });
 
-  it('accepts a dotted bareword class value as a plain javaClass', async () => {
+  it('accepts a dotted bareword class value as a plain className binding', async () => {
     const result = await ir(
       `process P { service S { class = com.example.X } }`,
     );
     const svc = result.flowElements.find((fe) => fe.kind === 'serviceTask')!;
-    expect((svc as { javaClass: string }).javaClass).toBe('com.example.X');
+    expect((svc as { binding: { className: string } }).binding.className).toBe(
+      'com.example.X',
+    );
+  });
+});
+
+// ── 9b. Service task binding variants (expression / delegate) ───────────────
+
+describe('astToIr — service task binding variants', () => {
+  it('maps `expression = "${…}"` to binding {kind:"expression"}, the raw ${…} carried verbatim', async () => {
+    const result = await ir(
+      'process P { service S { expression = "${bean.method(execution)}" } }',
+    );
+    const svc = result.flowElements.find((fe) => fe.kind === 'serviceTask')!;
+    expect((svc as { binding: unknown }).binding).toEqual({
+      kind: 'expression',
+      expression: '${bean.method(execution)}',
+    });
+  });
+
+  it('maps `delegate = "${…}"` to binding {kind:"delegateExpression"} (friendly alias)', async () => {
+    const result = await ir(
+      'process P { service S { delegate = "${beanName}" } }',
+    );
+    const svc = result.flowElements.find((fe) => fe.kind === 'serviceTask')!;
+    expect((svc as { binding: unknown }).binding).toEqual({
+      kind: 'delegateExpression',
+      expression: '${beanName}',
+    });
+  });
+
+  it('wraps a bareword `delegate = chargeService` (no quotes) in ${…} rather than stripping it', async () => {
+    const result = await ir(
+      'process P { service S { delegate = chargeService } }',
+    );
+    const svc = result.flowElements.find((fe) => fe.kind === 'serviceTask')!;
+    expect((svc as { binding: unknown }).binding).toEqual({
+      kind: 'delegateExpression',
+      expression: '${chargeService}',
+    });
+  });
+
+  it('wraps a dotted-VarRef `expression = svc.status` (no quotes) in ${…} rather than stripping it', async () => {
+    // Unlike `class`, whose dotted-bareword value is a plain Java path and gets
+    // the ${…} wrapper stripped, `expression`/`delegate` must keep the wrapper
+    // so Operaton evaluates the value as EL, not a literal string.
+    const result = await ir(
+      'process P { service S { expression = svc.status } }',
+    );
+    const svc = result.flowElements.find((fe) => fe.kind === 'serviceTask')!;
+    expect((svc as { binding: unknown }).binding).toEqual({
+      kind: 'expression',
+      expression: '${svc.status}',
+    });
+  });
+});
+
+// ── 9c. External task (modelled as a serviceTask binding variant) ───────────
+
+describe('astToIr — external task', () => {
+  it('maps `external ship { topic = "shipping" }` to a serviceTask with binding {kind:"external"}', async () => {
+    const result = await ir(
+      'process P { external ship { topic = "shipping" } }',
+    );
+    const svc = result.flowElements.find((fe) => fe.kind === 'serviceTask')!;
+    expect(svc).toEqual({
+      kind: 'serviceTask',
+      id: 'ship',
+      binding: { kind: 'external', topic: 'shipping' },
+    });
+  });
+});
+
+// ── 9d. Script task (fenced body → format + code) ────────────────────────────
+
+describe('astToIr — script task', () => {
+  it('maps a fenced ```js``` script to scriptTask{format:"javascript", code:<inner body>}', async () => {
+    const result = await ir(
+      'process P { script total ```js\ntotal = amount * 1.1;\n``` }',
+    );
+    const script = result.flowElements.find((fe) => fe.kind === 'scriptTask')!;
+    expect(script).toEqual({
+      kind: 'scriptTask',
+      id: 'total',
+      format: 'javascript',
+      code: 'total = amount * 1.1;\n',
+    });
+  });
+
+  it('drops a trailing \\r from a \\r\\n-terminated opening fence line', async () => {
+    const result = await ir(
+      'process P { script total ```js\r\ntotal = amount * 1.1;\n``` }',
+    );
+    const script = result.flowElements.find((fe) => fe.kind === 'scriptTask')!;
+    expect(script).toEqual({
+      kind: 'scriptTask',
+      id: 'total',
+      format: 'javascript',
+      code: 'total = amount * 1.1;\n',
+    });
+  });
+});
+
+// ── 9e. goto reserves + resolves an external/script name ─────────────────────
+
+describe('astToIr — external/script names are goto-targetable', () => {
+  it('an external task name reserves the collision seed and resolves a goto to it', async () => {
+    const result = await ir(
+      'process P { user A goto Ship external Ship { topic = "shipping" } }',
+    );
+    // Resolves: the flow out of A lands directly on the external task's own id.
+    expect(flow(result, 'A', 'Ship').targetRef).toBe('Ship');
+
+    // Reserves: an external task literally named like a synthesized end
+    // forces the synthesized end to fall back to a `_2` suffix — only true
+    // if `collectNamedIds` registered the external task's name up front.
+    const collision = await ir(
+      'process P { external EndEvent_P { topic = "t" } }',
+    );
+    const ends = collision.flowElements.filter((fe) => fe.kind === 'endEvent');
+    expect(ends).toHaveLength(1);
+    expect(ends[0]!.id).toBe('EndEvent_P_2');
+  });
+
+  it('a script task name reserves the collision seed and resolves a goto to it', async () => {
+    const result = await ir(
+      'process P { user A goto Calc script Calc ```js\nx = 1;\n``` }',
+    );
+    expect(flow(result, 'A', 'Calc').targetRef).toBe('Calc');
+
+    const collision = await ir(
+      'process P { script EndEvent_P ```js\nx = 1;\n``` }',
+    );
+    const ends = collision.flowElements.filter((fe) => fe.kind === 'endEvent');
+    expect(ends).toHaveLength(1);
+    expect(ends[0]!.id).toBe('EndEvent_P_2');
   });
 });
 

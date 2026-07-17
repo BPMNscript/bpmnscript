@@ -1,0 +1,13 @@
+// Compute a shipping quote through a JUEL expression evaluated by Operaton
+// directly, rather than a Java delegate class. The start form supplies the
+// order reference passed to the bean.
+
+process shipping-quote {
+  start OrderPlaced {
+    form {
+      order: string "Order reference"
+    }
+  }
+  service QuoteShipping { expression = "${shippingBean.quote(order)}" }
+  end Done
+}

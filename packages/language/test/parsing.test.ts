@@ -31,6 +31,8 @@ import type {
   StartEvent,
   UserTask,
   ServiceTask,
+  ExternalTask,
+  ScriptTask,
   Relational,
   VarRef,
   Ternary,
@@ -476,6 +478,118 @@ describe('renderExpression', () => {
   test('renders a ternary', async () => {
     const cond = await parseCondition(`flag ? a : b`);
     expect(renderExpression(cond)).toBe('${flag ? a : b}');
+  });
+});
+
+// ── Service bindings, external tasks, fenced script tasks ────────────────────
+
+describe('Parsing — service bindings, external, script', () => {
+  // A triple-backtick fence, assembled without a literal fence in the test
+  // source so it can be interpolated into JS template-literal DSL fixtures.
+  const FENCE = '`' + '`' + '`';
+
+  test('service with an expression binding parses; the value is a raw ${…} template', async () => {
+    const source = `process p { service S { expression = "\${bean.method(execution)}" } }`;
+    const document = await parse(source);
+    expect(formatParseFailure(document)).toBeUndefined();
+    const st = document.parseResult.value.processes[0]!.body[0] as ServiceTask;
+    expect(st.$type).toBe('ServiceTask');
+    expect(st.attrs[0]!.key).toBe('expression');
+    expect(st.attrs[0]!.value.$type).toBe('RawExpr');
+  });
+
+  test('service with a delegate binding parses; the value is a raw ${…} template', async () => {
+    const source = `process p { service S { delegate = "\${beanName}" } }`;
+    const document = await parse(source);
+    expect(formatParseFailure(document)).toBeUndefined();
+    const st = document.parseResult.value.processes[0]!.body[0] as ServiceTask;
+    expect(st.attrs[0]!.key).toBe('delegate');
+    expect(st.attrs[0]!.value.$type).toBe('RawExpr');
+  });
+
+  test('external task with a topic parses into an ExternalTask', async () => {
+    const source = `process p { external ship "Ship it" { topic = "shipping" } }`;
+    const document = await parse(source);
+    expect(formatParseFailure(document)).toBeUndefined();
+    const st = document.parseResult.value.processes[0]!.body[0] as ExternalTask;
+    expect(st.$type).toBe('ExternalTask');
+    expect(st.name).toBe('ship');
+    expect(st.label).toBe('Ship it');
+    expect(st.attrs[0]!.key).toBe('topic');
+    expect(st.attrs[0]!.value.$type).toBe('LiteralString');
+    expect((st.attrs[0]!.value as { value: string }).value).toBe('shipping');
+  });
+
+  test('external task parses without a label', async () => {
+    const source = `process p { external ship { topic = "shipping" } }`;
+    const document = await parse(source);
+    expect(formatParseFailure(document)).toBeUndefined();
+    const st = document.parseResult.value.processes[0]!.body[0] as ExternalTask;
+    expect(st.$type).toBe('ExternalTask');
+    expect(st.label).toBeUndefined();
+  });
+
+  // (a) A fenced `js` body parses with zero parser errors, and `body` captures
+  //     the whole fenced block verbatim (opening fence + tag, body, close).
+  test('script task with a fenced js body parses; body captures the whole fence', async () => {
+    const source = `process p {
+  script total ${FENCE}js
+x = 1
+${FENCE}
+}`;
+    const document = await parse(source);
+    expect(formatParseFailure(document)).toBeUndefined();
+    const body = document.parseResult.value.processes[0]!.body;
+    expect(body).toHaveLength(1);
+    const st = body[0] as ScriptTask;
+    expect(st.$type).toBe('ScriptTask');
+    expect(st.name).toBe('total');
+    // The language tag and script text are extracted downstream, not here — the
+    // grammar keeps the block opaque.
+    expect(st.body.startsWith(`${FENCE}js`)).toBe(true);
+    expect(st.body.endsWith(FENCE)).toBe(true);
+    expect(st.body).toContain('x = 1');
+  });
+
+  // (b) A service `class` bareword and a "${…}" raw template elsewhere in the
+  //     SAME file still lex correctly: the backtick fence is a fresh delimiter
+  //     with no overlap against the quote-delimited STRING / RAW_TEMPLATE.
+  test('a fenced script coexists with a class bareword and a raw template — no lex ambiguity', async () => {
+    const source = `process p {
+  service Auto { class = com.acme.X }
+  user Review { assignee = "\${bean.pick()}" }
+  script total ${FENCE}js
+y = 2
+${FENCE}
+}`;
+    const document = await parse(source);
+    expect(formatParseFailure(document)).toBeUndefined();
+    const body = document.parseResult.value.processes[0]!.body;
+    expect(body.map((s) => s.$type)).toEqual([
+      'ServiceTask',
+      'UserTask',
+      'ScriptTask',
+    ]);
+    // The class value is a bareword path (VarRef), the assignee a "${…}" raw
+    // template (RawExpr) — neither is disturbed by the neighbouring fence.
+    expect((body[0] as ServiceTask).attrs[0]!.value.$type).toBe('VarRef');
+    expect((body[1] as UserTask).attrs[0]!.value.$type).toBe('RawExpr');
+  });
+
+  // (c) DSL-looking text inside a fence is captured, not parsed as DSL: the
+  //     process still holds exactly one statement (the script), no IfStatement.
+  test('DSL-looking text inside a fence is captured, not parsed as DSL', async () => {
+    const source = `process p {
+  script guard ${FENCE}js
+if (a) { }
+${FENCE}
+}`;
+    const document = await parse(source);
+    expect(formatParseFailure(document)).toBeUndefined();
+    const body = document.parseResult.value.processes[0]!.body;
+    expect(body).toHaveLength(1);
+    expect(body[0]!.$type).toBe('ScriptTask');
+    expect((body[0] as ScriptTask).body).toContain('if (a) { }');
   });
 });
 

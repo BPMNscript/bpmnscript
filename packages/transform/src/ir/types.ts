@@ -47,7 +47,8 @@ export type FlowElement =
   | StartEvent
   | EndEvent
   | UserTask
-  | ServiceTaskJavaClass
+  | ServiceTask
+  | ScriptTask
   | ExclusiveGateway
   | ParallelGateway;
 
@@ -118,18 +119,66 @@ export interface UserTask {
 }
 
 /**
- * A BPMN `serviceTask` implemented via a Java class delegate.
+ * The four ways a {@link ServiceTask} is bound to executable behavior.
  *
- * Only the Java-class pattern (`operaton:class`) is supported. Tasks using
- * `operaton:expression` or `operaton:delegateExpression` are refused on
- * import with an `UnsupportedServiceTaskFormError`.
+ * Exactly one binding applies per service task. Tagging the union on
+ * `kind` makes "more than one binding" unrepresentable at the type level,
+ * rather than pushing the invariant into a runtime check across several
+ * optional fields, and keeps every consumer's `switch (binding.kind)`
+ * exhaustive when a new binding is added.
  */
-export interface ServiceTaskJavaClass {
+export type ServiceTaskBinding =
+  | {
+      kind: 'class';
+      /** Fully-qualified Java class name (`operaton:class`). */
+      className: string;
+    }
+  | {
+      kind: 'expression';
+      /** Raw JUEL expression text, verbatim (`operaton:expression`). */
+      expression: string;
+    }
+  | {
+      kind: 'delegateExpression';
+      /** Raw JUEL expression text, verbatim (`operaton:delegateExpression`). */
+      expression: string;
+    }
+  | {
+      kind: 'external';
+      /** External task topic name (`operaton:topic`, with `operaton:type="external"`). */
+      topic: string;
+    };
+
+/**
+ * A BPMN `serviceTask` node.
+ *
+ * `binding` carries exactly one of the four execution forms Operaton
+ * supports: a Java class delegate, a JUEL expression, a delegate
+ * expression, or an external task topic.
+ */
+export interface ServiceTask {
   kind: 'serviceTask';
   id: string;
   name?: string;
-  /** Fully-qualified Java class name (`operaton:class`). */
-  javaClass: string;
+  /** The execution form and its associated value. */
+  binding: ServiceTaskBinding;
+}
+
+/**
+ * A BPMN `scriptTask` node.
+ *
+ * `format` is the canonical Operaton `scriptFormat` value (e.g.
+ * `"javascript"`, `"groovy"`); `code` is the raw script body as it
+ * appears inside the `<bpmn:script>` element, verbatim.
+ */
+export interface ScriptTask {
+  kind: 'scriptTask';
+  id: string;
+  name?: string;
+  /** Canonical Operaton `scriptFormat` (e.g. `"javascript"`, `"groovy"`). */
+  format: string;
+  /** Raw script body, verbatim. */
+  code: string;
 }
 
 /**

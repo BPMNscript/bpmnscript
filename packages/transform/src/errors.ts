@@ -18,9 +18,10 @@
  *   {@link UnsupportedLoopCharacteristicsError};
  * - collaborations, i.e. pools and message flows →
  *   {@link UnsupportedCollaborationError};
- * - unsupported flow-element kinds (script task, sub-process, call activity,
+ * - unsupported flow-element kinds (sub-process, call activity,
  *   intermediate events, …) → {@link UnsupportedElementError};
- * - service tasks whose execution form is not `operaton:class` →
+ * - service tasks whose execution form the IR cannot represent (a bare task
+ *   with no discriminator, or an external type without a topic) →
  *   {@link UnsupportedServiceTaskFormError};
  * - form fields whose type is not `string`/`long`/`boolean`/`date` →
  *   {@link UnsupportedFormFieldTypeError}.
@@ -47,13 +48,15 @@
 export abstract class UnsupportedConstructError extends Error {}
 
 /**
- * Thrown by {@link xmlToIr} when a BPMN service task uses an execution
- * discriminator that the IR cannot represent.
+ * Thrown by {@link xmlToIr} when a BPMN service task carries no execution
+ * form the IR can represent.
  *
- * Only the Java-class pattern (`operaton:class` or the deprecated
- * `camunda:class` alias) is supported. Tasks using `operaton:expression`,
- * `operaton:delegateExpression`, `operaton:type`, or no discriminator at
- * all are refused on import so semantic loss is impossible.
+ * The representable forms are a Java class (`operaton:class`, or the
+ * deprecated `camunda:class` alias), an `operaton:expression`, an
+ * `operaton:delegateExpression`, and an external task —
+ * `operaton:type="external"` paired with an `operaton:topic`. A task with
+ * none of these, or an external type missing its topic, is refused on import
+ * so semantic loss is impossible.
  *
  * The error message names the offending construct so callers can surface
  * a useful diagnostic to the user.
@@ -62,16 +65,18 @@ export class UnsupportedServiceTaskFormError extends UnsupportedConstructError {
   /** The BPMN id of the service task that triggered the error. */
   readonly serviceTaskId: string;
   /**
-   * The detected execution discriminator (e.g. `operaton:expression`), or
-   * the string `"no execution discriminator"` when the task carries none
-   * of the recognised forms.
+   * A description of the unrepresentable form (e.g.
+   * `operaton:type="external" without an operaton:topic`), or the string
+   * `"no execution discriminator"` when the task carries no execution form
+   * at all.
    */
   readonly construct: string;
 
   constructor(serviceTaskId: string, construct: string) {
     super(
       `Service task '${serviceTaskId}' uses unsupported execution form: ${construct}. ` +
-        'Only operaton:class (or the deprecated camunda:class alias) is supported.',
+        'Supported forms are a Java class, an expression, a delegate expression, ' +
+        'or an external task topic.',
     );
     this.name = 'UnsupportedServiceTaskFormError';
     this.serviceTaskId = serviceTaskId;
@@ -112,9 +117,9 @@ export class UnsupportedFormFieldTypeError extends UnsupportedConstructError {
  * kind that lies outside the supported subset.
  *
  * The supported subset is `bpmn:startEvent`, `bpmn:endEvent`,
- * `bpmn:userTask`, `bpmn:serviceTask`, `bpmn:exclusiveGateway`,
- * `bpmn:parallelGateway`, and `bpmn:sequenceFlow`. Anything else
- * (`bpmn:scriptTask`, `bpmn:intermediateCatchEvent`, `bpmn:subProcess`,
+ * `bpmn:userTask`, `bpmn:serviceTask`, `bpmn:scriptTask`,
+ * `bpmn:exclusiveGateway`, `bpmn:parallelGateway`, and `bpmn:sequenceFlow`.
+ * Anything else (`bpmn:intermediateCatchEvent`, `bpmn:subProcess`,
  * `bpmn:callActivity`, etc.) raises this error so unsupported workflows
  * fail loudly at import.
  */
@@ -129,7 +134,7 @@ export class UnsupportedElementError extends UnsupportedConstructError {
       `The BPMN element ${qname}` +
         (elementId ? ` (id='${elementId}')` : '') +
         ' is a kind that this tool cannot import. ' +
-        'Only start/end events, user tasks, service tasks (with operaton:class), ' +
+        'Only start/end events, user tasks, service tasks, script tasks, ' +
         'exclusive gateways, parallel gateways, and sequence flows are supported.',
     );
     this.name = 'UnsupportedElementError';

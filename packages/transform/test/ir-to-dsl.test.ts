@@ -30,7 +30,11 @@ import type { Model } from '@bpmn-script/language';
 
 import { irToDsl } from '../src/ir-to-dsl.js';
 import { astToIr } from '../src/ast-to-ir.js';
-import type { BpmnProcess, SequenceFlow } from '../src/ir/types.js';
+import type {
+  BpmnProcess,
+  FlowElement,
+  SequenceFlow,
+} from '../src/ir/types.js';
 
 let parse: (input: string) => Promise<LangiumDocument<Model>>;
 
@@ -172,7 +176,11 @@ const IF_ELSE_IR: BpmnProcess = {
     },
     { kind: 'exclusiveGateway', id: 'Gateway_p_2_join' },
     { kind: 'userTask', id: 'B', name: 'B task' },
-    { kind: 'serviceTask', id: 'C', javaClass: 'com.example.C' },
+    {
+      kind: 'serviceTask',
+      id: 'C',
+      binding: { kind: 'class', className: 'com.example.C' },
+    },
     { kind: 'endEvent', id: 'E' },
   ],
   sequenceFlows: [
@@ -294,7 +302,11 @@ const PARALLEL_IR: BpmnProcess = {
     { kind: 'parallelGateway', id: 'Gateway_p_1_fork' },
     { kind: 'parallelGateway', id: 'Gateway_p_1_join' },
     { kind: 'userTask', id: 'X', name: 'X' },
-    { kind: 'serviceTask', id: 'Y', javaClass: 'com.example.Y' },
+    {
+      kind: 'serviceTask',
+      id: 'Y',
+      binding: { kind: 'class', className: 'com.example.Y' },
+    },
     { kind: 'endEvent', id: 'E' },
   ],
   sequenceFlows: [
@@ -364,7 +376,10 @@ const INVOICE_IR: BpmnProcess = {
       kind: 'serviceTask',
       id: 'AutoApprove',
       name: 'Auto-approve',
-      javaClass: 'com.example.invoice.AutoApproveDelegate',
+      binding: {
+        kind: 'class',
+        className: 'com.example.invoice.AutoApproveDelegate',
+      },
     },
     { kind: 'endEvent', id: 'Done' },
   ],
@@ -497,7 +512,7 @@ describe('irToDsl — local idempotence (re-desugar equivalence)', () => {
     await expectIdempotent(PARALLEL_IR);
   });
 
-  it('invoice import preserves assignee, javaClass and condition through re-desugar', async () => {
+  it('invoice import preserves assignee, class binding and condition through re-desugar', async () => {
     const dsl = irToDsl(INVOICE_IR);
     const ir = await reDesugar(dsl);
 
@@ -509,9 +524,11 @@ describe('irToDsl — local idempotence (re-desugar equivalence)', () => {
     const auto = ir.flowElements.find(
       (e) => e.kind === 'serviceTask' && e.id === 'AutoApprove',
     );
-    expect(auto?.kind === 'serviceTask' && auto.javaClass).toBe(
-      'com.example.invoice.AutoApproveDelegate',
-    );
+    expect(
+      auto?.kind === 'serviceTask' &&
+        auto.binding.kind === 'class' &&
+        auto.binding.className,
+    ).toBe('com.example.invoice.AutoApproveDelegate');
 
     const cond = ir.sequenceFlows.find(
       (f) => f.conditionExpression !== undefined,
@@ -817,5 +834,202 @@ describe('irToDsl — output conventions', () => {
     const dsl = irToDsl(IF_ELSE_IR);
     // The conditioned branch body (a user task) is indented two levels.
     expect(dsl).toContain('\n    user B "B task"');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 6. Service-task bindings and fenced script tasks.
+// ---------------------------------------------------------------------------
+
+/**
+ * Wrap a single flow element in a minimal `start → node → end` process so one
+ * statement's rendering can be asserted in isolation and re-parsed.
+ */
+function singleNodeProcess(node: FlowElement): BpmnProcess {
+  return {
+    id: 'p',
+    isExecutable: true,
+    flowElements: [
+      { kind: 'startEvent', id: 'S' },
+      node,
+      { kind: 'endEvent', id: 'E' },
+    ],
+    sequenceFlows: [
+      { id: 'f0', sourceRef: 'S', targetRef: node.id },
+      { id: 'f1', sourceRef: node.id, targetRef: 'E' },
+    ],
+  };
+}
+
+describe('irToDsl — service-task bindings', () => {
+  it('renders a class binding as `service X { class = "…" }` (byte-unchanged)', () => {
+    const dsl = irToDsl(
+      singleNodeProcess({
+        kind: 'serviceTask',
+        id: 'Charge',
+        binding: { kind: 'class', className: 'com.example.Charge' },
+      }),
+    );
+    expect(dsl).toContain('service Charge { class = "com.example.Charge" }');
+  });
+
+  it('keeps a labelled class binding identical to the historical output (regression)', () => {
+    const dsl = irToDsl(
+      singleNodeProcess({
+        kind: 'serviceTask',
+        id: 'AutoApprove',
+        name: 'Auto-approve',
+        binding: {
+          kind: 'class',
+          className: 'com.example.invoice.AutoApproveDelegate',
+        },
+      }),
+    );
+    expect(dsl).toContain(
+      'service AutoApprove "Auto-approve" { class = "com.example.invoice.AutoApproveDelegate" }',
+    );
+  });
+
+  it('renders an expression binding as `service X { expression = "${…}" }`', () => {
+    const dsl = irToDsl(
+      singleNodeProcess({
+        kind: 'serviceTask',
+        id: 'Calc',
+        binding: {
+          kind: 'expression',
+          expression: '${greeter.hello(execution)}',
+        },
+      }),
+    );
+    expect(dsl).toContain(
+      'service Calc { expression = "${greeter.hello(execution)}" }',
+    );
+  });
+
+  it('renders a delegateExpression binding with the `delegate` alias', () => {
+    const dsl = irToDsl(
+      singleNodeProcess({
+        kind: 'serviceTask',
+        id: 'Ship',
+        binding: { kind: 'delegateExpression', expression: '${shipDelegate}' },
+      }),
+    );
+    expect(dsl).toContain('service Ship { delegate = "${shipDelegate}" }');
+    // The XML-level `delegateExpression` name never surfaces in the source.
+    expect(dsl).not.toContain('delegateExpression');
+  });
+
+  it('renders an external binding as `external X { topic = "…" }`', () => {
+    const dsl = irToDsl(
+      singleNodeProcess({
+        kind: 'serviceTask',
+        id: 'Notify',
+        binding: { kind: 'external', topic: 'notifications' },
+      }),
+    );
+    expect(dsl).toContain('external Notify { topic = "notifications" }');
+    // An external binding uses the `external` keyword, not `service`.
+    expect(dsl).not.toContain('service Notify');
+  });
+
+  it('re-parses each binding form back to the same binding kind', async () => {
+    const cases = [
+      {
+        node: {
+          kind: 'serviceTask' as const,
+          id: 'Calc',
+          binding: {
+            kind: 'expression' as const,
+            expression: '${bean.run(execution)}',
+          },
+        },
+        kind: 'expression',
+      },
+      {
+        node: {
+          kind: 'serviceTask' as const,
+          id: 'Ship',
+          binding: {
+            kind: 'delegateExpression' as const,
+            expression: '${shipDelegate}',
+          },
+        },
+        kind: 'delegateExpression',
+      },
+      {
+        node: {
+          kind: 'serviceTask' as const,
+          id: 'Notify',
+          binding: { kind: 'external' as const, topic: 'notifications' },
+        },
+        kind: 'external',
+      },
+    ];
+
+    for (const { node, kind } of cases) {
+      const ir = await reDesugar(irToDsl(singleNodeProcess(node)));
+      const svc = ir.flowElements.find((e) => e.id === node.id);
+      expect(svc?.kind === 'serviceTask' && svc.binding.kind).toBe(kind);
+    }
+  });
+});
+
+describe('irToDsl — fenced script task', () => {
+  it('emits a fenced `script X ```<format> … ``` ` block (open tag, body, close)', () => {
+    const code = 'var x = 1;\nexecution.setVariable("x", x);';
+    const dsl = irToDsl(
+      singleNodeProcess({
+        kind: 'scriptTask',
+        id: 'Compute',
+        format: 'javascript',
+        code,
+      }),
+    );
+    // The whole block: opening fence + language tag, verbatim body, closing fence.
+    expect(dsl).toContain(`script Compute \`\`\`javascript\n${code}\`\`\``);
+  });
+
+  it('reproduces the body byte-for-byte without re-indenting it', () => {
+    // A body carrying its own indentation must survive verbatim — the emitter
+    // must not prepend block indentation to the opaque script content.
+    const code = 'if (ok) {\n  doThing();\n}';
+    const dsl = irToDsl(
+      singleNodeProcess({
+        kind: 'scriptTask',
+        id: 'Guard',
+        format: 'groovy',
+        code,
+      }),
+    );
+    expect(dsl).toContain(`\`\`\`groovy\n${code}\`\`\``);
+  });
+
+  it('carries the label before the fence when present', () => {
+    const dsl = irToDsl(
+      singleNodeProcess({
+        kind: 'scriptTask',
+        id: 'Compute',
+        name: 'Compute totals',
+        format: 'javascript',
+        code: 'x = 1',
+      }),
+    );
+    expect(dsl).toContain('script Compute "Compute totals" ```javascript');
+  });
+
+  it('emits a fenced script that re-parses to an equivalent scriptTask', async () => {
+    const ir = await reDesugar(
+      irToDsl(
+        singleNodeProcess({
+          kind: 'scriptTask',
+          id: 'Compute',
+          format: 'javascript',
+          code: 'x = 1',
+        }),
+      ),
+    );
+    const script = ir.flowElements.find((e) => e.kind === 'scriptTask');
+    expect(script?.kind === 'scriptTask' && script.format).toBe('javascript');
+    expect(script?.kind === 'scriptTask' && script.code).toBe('x = 1');
   });
 });

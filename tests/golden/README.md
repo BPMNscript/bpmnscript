@@ -7,7 +7,7 @@ start → review → gateway (amount > 1000?) → senior approval or auto-approv
 but they come from different sources and drive the tests in different directions.
 Two additional construct fixtures (`structured-control-flow.bpmnscript` and
 `unstructured-goto.bpmn`) exercise the round-trip and goto-degradation paths, and
-`bad-service-task-expression.bpmn` is the negative-path fixture for the import refusal path.
+`bad-service-task-no-binding.bpmn` is the negative-path fixture for the import refusal path.
 
 ## `invoice-approval-handwritten.bpmn`
 
@@ -59,11 +59,13 @@ id-scheme change), regenerate this file:
    `operaton:assignee` demo/manager, condition `${amount > 1000}`) must stay
    unchanged; only gateway/default/synthesized-flow ids may move.
 
-## `bad-service-task-expression.bpmn`
+## `bad-service-task-no-binding.bpmn`
 
-A minimal one-process file whose single `<bpmn:serviceTask>` uses
-`operaton:expression="${someExpr}"` instead of the supported `operaton:class`. It
-is the negative-path fixture: `xmlToIr` must reject it with
+A minimal one-process file whose single `<bpmn:serviceTask>` carries no execution
+binding at all — no `operaton:class`, `operaton:expression`,
+`operaton:delegateExpression`, nor an external `operaton:type`/`operaton:topic`
+pair. A service task with no execution form cannot be represented, so it is the
+negative-path fixture: `xmlToIr` must reject it with
 `UnsupportedServiceTaskFormError`, and the `bpmns parse` CLI must exit non-zero.
 Used purely as a "this must be rejected" input — the file itself is not meant to
 be deployed.

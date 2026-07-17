@@ -110,6 +110,43 @@ describe('structural keyword snippets', () => {
     expect(inserted(item!)).toContain('class =');
   });
 
+  test('an `external` snippet pre-scaffolds the required `topic` attribute', async () => {
+    const item = (await completionItems('process p {\n  \n}', 1, 2)).find(
+      (i) => i.label === 'external',
+    );
+    expect(inserted(item!)).toContain('topic =');
+  });
+
+  test('a `script` snippet scaffolds a fenced block with a language choice', async () => {
+    const item = (await completionItems('process p {\n  \n}', 1, 2)).find(
+      (i) => i.label === 'script',
+    );
+    const text = inserted(item!)!;
+    expect(text).toContain('```');
+    expect(text).toContain('${2|javascript,groovy,python,ruby,feel|}');
+  });
+
+  test('a `delegate` attribute snippet is offered inside an attribute block', async () => {
+    const item = (
+      await completionItems('process p {\n  service s {\n    \n  }\n}', 2, 4)
+    ).find((i) => i.label === 'delegate');
+    const text = inserted(item!)!;
+    expect(text).toContain('delegate =');
+    // The `\$` escape must survive into the inserted text, or the default
+    // reads as an empty/nested snippet placeholder instead of a literal EL
+    // expression.
+    expect(text).toContain('${beanName}');
+  });
+
+  test('an `expression` attribute snippet is offered inside an attribute block', async () => {
+    const item = (
+      await completionItems('process p {\n  service s {\n    \n  }\n}', 2, 4)
+    ).find((i) => i.label === 'expression');
+    const text = inserted(item!)!;
+    expect(text).toContain('expression =');
+    expect(text).toContain('${bean.method(execution)}');
+  });
+
   test('the full body keyword set is still offered', async () => {
     const labels = await labelsAt('process p {\n  \n}', 1, 2);
     expect(labels).toEqual(

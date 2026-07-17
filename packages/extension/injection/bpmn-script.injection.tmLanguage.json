@@ -1,0 +1,77 @@
+{
+  "name": "BPMNscript embedded script",
+  "scopeName": "bpmn-script.injection",
+  "injectionSelector": "L:source.bpmn-script -comment -string",
+  "patterns": [
+    { "include": "#javascript-block" },
+    { "include": "#python-block" },
+    { "include": "#ruby-block" },
+    { "include": "#groovy-block" },
+    { "include": "#plain-block" }
+  ],
+  "repository": {
+    "javascript-block": {
+      "begin": "(`{3})(javascript|js)\\s*$",
+      "beginCaptures": {
+        "1": { "name": "punctuation.definition.script.begin.bpmn-script" },
+        "2": { "name": "fenced_code.block.language.bpmn-script" }
+      },
+      "end": "(`{3})",
+      "endCaptures": {
+        "1": { "name": "punctuation.definition.script.end.bpmn-script" }
+      },
+      "contentName": "meta.embedded.block.javascript",
+      "patterns": [{ "include": "source.js" }]
+    },
+    "python-block": {
+      "begin": "(`{3})(python|py)\\s*$",
+      "beginCaptures": {
+        "1": { "name": "punctuation.definition.script.begin.bpmn-script" },
+        "2": { "name": "fenced_code.block.language.bpmn-script" }
+      },
+      "end": "(`{3})",
+      "endCaptures": {
+        "1": { "name": "punctuation.definition.script.end.bpmn-script" }
+      },
+      "contentName": "meta.embedded.block.python",
+      "patterns": [{ "include": "source.python" }]
+    },
+    "ruby-block": {
+      "begin": "(`{3})(ruby|rb)\\s*$",
+      "beginCaptures": {
+        "1": { "name": "punctuation.definition.script.begin.bpmn-script" },
+        "2": { "name": "fenced_code.block.language.bpmn-script" }
+      },
+      "end": "(`{3})",
+      "endCaptures": {
+        "1": { "name": "punctuation.definition.script.end.bpmn-script" }
+      },
+      "contentName": "meta.embedded.block.ruby",
+      "patterns": [{ "include": "source.ruby" }]
+    },
+    "groovy-block": {
+      "begin": "(`{3})(groovy)\\s*$",
+      "beginCaptures": {
+        "1": { "name": "punctuation.definition.script.begin.bpmn-script" },
+        "2": { "name": "fenced_code.block.language.bpmn-script" }
+      },
+      "end": "(`{3})",
+      "endCaptures": {
+        "1": { "name": "punctuation.definition.script.end.bpmn-script" }
+      },
+      "contentName": "meta.embedded.block.groovy",
+      "patterns": [{ "include": "source.groovy" }]
+    },
+    "plain-block": {
+      "begin": "(`{3})([A-Za-z][\\w+-]*)\\s*$",
+      "beginCaptures": {
+        "1": { "name": "punctuation.definition.script.begin.bpmn-script" },
+        "2": { "name": "fenced_code.block.language.bpmn-script" }
+      },
+      "end": "(`{3})",
+      "endCaptures": {
+        "1": { "name": "punctuation.definition.script.end.bpmn-script" }
+      }
+    }
+  }
+}

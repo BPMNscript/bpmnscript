@@ -97,7 +97,10 @@ const importShapedIr: BpmnProcess = {
       kind: 'serviceTask',
       id: 'AutoApprove',
       name: 'Auto-approve',
-      javaClass: 'com.example.invoice.AutoApproveDelegate',
+      binding: {
+        kind: 'class',
+        className: 'com.example.invoice.AutoApproveDelegate',
+      },
     },
     { kind: 'endEvent', id: 'Done' },
   ],
@@ -393,6 +396,104 @@ describe('irToXml — parallelGateway serialization', () => {
 
   it('contains bpmndi:BPMNDiagram block (layout applied)', () => {
     expect(parallelXml).toMatch(/<bpmndi:BPMNDiagram\b/);
+  });
+});
+
+// ── 6. serviceTask binding variants ──────────────────────────────────────────
+
+describe('irToXml — serviceTask binding variants', () => {
+  /** Minimal single-task IR, parameterised over the service task's binding. */
+  function singleServiceTaskIr(binding: BpmnProcess['flowElements'][number]) {
+    return {
+      id: 'binding-proc',
+      isExecutable: true,
+      flowElements: [
+        { kind: 'startEvent', id: 'Start' },
+        binding,
+        { kind: 'endEvent', id: 'End' },
+      ],
+      sequenceFlows: [
+        { id: 'F_Start_Task', sourceRef: 'Start', targetRef: 'Task' },
+        { id: 'F_Task_End', sourceRef: 'Task', targetRef: 'End' },
+      ],
+    } satisfies BpmnProcess;
+  }
+
+  it('expression binding emits operaton:expression', async () => {
+    const ir = singleServiceTaskIr({
+      kind: 'serviceTask',
+      id: 'Task',
+      binding: { kind: 'expression', expression: '${bean.method(execution)}' },
+    });
+    const out = await irToXml(ir);
+    expect(out).toContain('operaton:expression="${bean.method(execution)}"');
+  });
+
+  it('delegateExpression binding emits operaton:delegateExpression', async () => {
+    const ir = singleServiceTaskIr({
+      kind: 'serviceTask',
+      id: 'Task',
+      binding: { kind: 'delegateExpression', expression: '${myDelegate}' },
+    });
+    const out = await irToXml(ir);
+    expect(out).toContain('operaton:delegateExpression="${myDelegate}"');
+  });
+
+  it('external binding emits operaton:type="external" and operaton:topic', async () => {
+    const ir = singleServiceTaskIr({
+      kind: 'serviceTask',
+      id: 'Task',
+      binding: { kind: 'external', topic: 'shipping' },
+    });
+    const out = await irToXml(ir);
+    expect(out).toContain('operaton:type="external"');
+    expect(out).toContain('operaton:topic="shipping"');
+  });
+});
+
+// ── 7. scriptTask serialization ──────────────────────────────────────────────
+
+describe('irToXml — scriptTask serialization', () => {
+  const scriptIr: BpmnProcess = {
+    id: 'script-proc',
+    isExecutable: true,
+    flowElements: [
+      { kind: 'startEvent', id: 'Start' },
+      {
+        kind: 'scriptTask',
+        id: 'Compute',
+        format: 'javascript',
+        code: 'var total = amount * 2;\nreturn total;',
+      },
+      { kind: 'endEvent', id: 'End' },
+    ],
+    sequenceFlows: [
+      { id: 'F_Start_Compute', sourceRef: 'Start', targetRef: 'Compute' },
+      { id: 'F_Compute_End', sourceRef: 'Compute', targetRef: 'End' },
+    ],
+  };
+
+  let scriptXml: string;
+
+  beforeAll(async () => {
+    scriptXml = await irToXml(scriptIr);
+  });
+
+  it('emits a bpmn:scriptTask element with scriptFormat="javascript"', () => {
+    expect(scriptXml).toMatch(
+      /<bpmn:scriptTask[^>]*id="Compute"[^>]*scriptFormat="javascript"/,
+    );
+  });
+
+  it('the script body text survives inside the element', () => {
+    expect(scriptXml).toContain('var total = amount * 2;');
+    expect(scriptXml).toContain('return total;');
+  });
+
+  it('parses cleanly via bpmn-moddle', async () => {
+    const moddle = new BpmnModdle({});
+    const { warnings } = await moddle.fromXML(scriptXml);
+    expect(warnings).toEqual([]);
   });
 });
 

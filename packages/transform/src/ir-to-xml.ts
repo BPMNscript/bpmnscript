@@ -230,11 +230,40 @@ function createFlowNode(
     }
 
     case 'serviceTask': {
+      const attrs: Record<string, unknown> = { ...baseAttrs };
+      switch (node.binding.kind) {
+        case 'class':
+          attrs['operaton:class'] = node.binding.className;
+          break;
+        case 'expression':
+          attrs['operaton:expression'] = node.binding.expression;
+          break;
+        case 'delegateExpression':
+          attrs['operaton:delegateExpression'] = node.binding.expression;
+          break;
+        case 'external':
+          attrs['operaton:type'] = 'external';
+          attrs['operaton:topic'] = node.binding.topic;
+          break;
+        default: {
+          // Exhaustiveness check — every variant of ServiceTaskBinding is
+          // handled.
+          const exhaustive: never = node.binding;
+          throw new Error(
+            `Unhandled ServiceTaskBinding kind: ${JSON.stringify(exhaustive)}`,
+          );
+        }
+      }
+      return moddle.create('bpmn:ServiceTask', attrs);
+    }
+
+    case 'scriptTask': {
       const attrs: Record<string, unknown> = {
         ...baseAttrs,
-        'operaton:class': node.javaClass,
+        scriptFormat: node.format,
+        script: node.code,
       };
-      return moddle.create('bpmn:ServiceTask', attrs);
+      return moddle.create('bpmn:ScriptTask', attrs);
     }
 
     case 'exclusiveGateway':

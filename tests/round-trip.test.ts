@@ -140,7 +140,7 @@ describe('Round-trip equivalence: BPMN → IR → DSL → IR → XML → IR', ()
     );
   });
 
-  it('operaton attributes (assignee, javaClass) survive the round-trip', () => {
+  it('operaton attributes (assignee, class binding) survive the round-trip', () => {
     const reviewTask3 = ir3.flowElements.find(
       (fe) => fe.kind === 'userTask' && fe.id === 'ReviewInvoice',
     );
@@ -154,9 +154,10 @@ describe('Round-trip equivalence: BPMN → IR → DSL → IR → XML → IR', ()
     );
     expect(serviceTask3).toBeDefined();
     if (serviceTask3?.kind === 'serviceTask') {
-      expect(serviceTask3.javaClass).toBe(
-        'com.example.invoice.AutoApproveDelegate',
-      );
+      expect(serviceTask3.binding).toEqual({
+        kind: 'class',
+        className: 'com.example.invoice.AutoApproveDelegate',
+      });
     }
   });
 

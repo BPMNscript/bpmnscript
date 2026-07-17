@@ -14,11 +14,14 @@
  *   1. Parsing the canonical handwritten file yields the canonical IR (deep equality)
  *      and an empty `warnings` array (clean input).
  *   2. Same file with `camunda:` prefixes instead of `operaton:` → same IR.
- *   3. Service task with `operaton:expression` → `UnsupportedServiceTaskFormError`.
+ *   3. Service task execution forms — `operaton:expression`,
+ *       `operaton:delegateExpression`, and `operaton:type="external"` + topic —
+ *       import to the matching `serviceTask` binding.
  *   4. XML containing `bpmn:parallelGateway` → successful import (parallelGateway in IR).
  *   4b. Parallel split+join XML → IR with two parallelGateway elements,
  *       6 sequence flows, no conditionExpression on fork-outgoing flows.
- *   4c. Genuinely unsupported element (e.g. `bpmn:scriptTask`) → `UnsupportedElementError`.
+ *   4c. `bpmn:scriptTask` → `scriptTask` IR; a genuinely unsupported kind
+ *       (e.g. `bpmn:subProcess`) → `UnsupportedElementError`.
  *   5. XML with TWO processes → multi-process error.
  *   6. Bare service task (no discriminator) → `UnsupportedServiceTaskFormError`.
  *   7. DI nodes (`bpmndi:*`, `dc:*`, `di:*`) are dropped from IR (not in flowElements).
@@ -93,7 +96,10 @@ const CANONICAL_IR: BpmnProcess = {
       kind: 'serviceTask',
       id: 'AutoApprove',
       name: 'Auto-approve',
-      javaClass: 'com.example.invoice.AutoApproveDelegate',
+      binding: {
+        kind: 'class',
+        className: 'com.example.invoice.AutoApproveDelegate',
+      },
     },
     { kind: 'endEvent', id: 'Done' },
   ],
@@ -218,10 +224,10 @@ describe('xmlToIr — camunda: prefix alias', () => {
   });
 });
 
-// ── 3. operaton:expression raises UnsupportedServiceTaskFormError ─────────────
+// ── 3. Service task execution forms import to their bindings ─────────────────
 
-describe('xmlToIr — unsupported service task form', () => {
-  it('service task with operaton:expression raises UnsupportedServiceTaskFormError', async () => {
+describe('xmlToIr — service task expression binding', () => {
+  it('operaton:expression imports to an expression binding carrying the raw text', async () => {
     const xml = `<?xml version="1.0" encoding="UTF-8"?>
 <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
                   xmlns:operaton="http://operaton.org/schema/1.0/bpmn"
@@ -235,34 +241,122 @@ describe('xmlToIr — unsupported service task form', () => {
   </bpmn:process>
 </bpmn:definitions>`;
 
-    await expect(xmlToIr(xml)).rejects.toBeInstanceOf(
-      UnsupportedServiceTaskFormError,
-    );
+    const { ir } = await xmlToIr(xml);
+    const svc = ir.flowElements.find((fe) => fe.id === 'T');
+    expect(svc?.kind).toBe('serviceTask');
+    if (svc?.kind === 'serviceTask') {
+      expect(svc.binding).toEqual({
+        kind: 'expression',
+        expression: '${someBean.execute(execution)}',
+      });
+    }
   });
 
-  it('the UnsupportedServiceTaskFormError names the offending service task id', async () => {
+  it('the camunda: prefix is accepted for the expression form', async () => {
+    const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  xmlns:camunda="http://camunda.org/schema/1.0/bpmn"
+                  targetNamespace="http://test">
+  <bpmn:process id="p" isExecutable="true">
+    <bpmn:startEvent id="S" />
+    <bpmn:serviceTask id="T" camunda:expression="\${x}" />
+    <bpmn:endEvent id="E" />
+    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="T" />
+    <bpmn:sequenceFlow id="F2" sourceRef="T" targetRef="E" />
+  </bpmn:process>
+</bpmn:definitions>`;
+
+    const { ir } = await xmlToIr(xml);
+    const svc = ir.flowElements.find((fe) => fe.id === 'T');
+    expect(svc?.kind === 'serviceTask' && svc.binding.kind).toBe('expression');
+  });
+});
+
+describe('xmlToIr — service task delegateExpression binding', () => {
+  it('operaton:delegateExpression imports to a delegateExpression binding', async () => {
     const xml = `<?xml version="1.0" encoding="UTF-8"?>
 <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
                   xmlns:operaton="http://operaton.org/schema/1.0/bpmn"
                   targetNamespace="http://test">
   <bpmn:process id="p" isExecutable="true">
     <bpmn:startEvent id="S" />
-    <bpmn:serviceTask id="MyExprTask" operaton:expression="\${x}" />
+    <bpmn:serviceTask id="T" name="Delegate Task" operaton:delegateExpression="\${myDelegate}" />
     <bpmn:endEvent id="E" />
-    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="MyExprTask" />
-    <bpmn:sequenceFlow id="F2" sourceRef="MyExprTask" targetRef="E" />
+    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="T" />
+    <bpmn:sequenceFlow id="F2" sourceRef="T" targetRef="E" />
   </bpmn:process>
 </bpmn:definitions>`;
 
-    try {
-      await xmlToIr(xml);
-      expect.fail('Should have thrown');
-    } catch (err) {
-      expect(err).toBeInstanceOf(UnsupportedServiceTaskFormError);
-      expect((err as UnsupportedServiceTaskFormError).serviceTaskId).toBe(
-        'MyExprTask',
-      );
+    const { ir } = await xmlToIr(xml);
+    const svc = ir.flowElements.find((fe) => fe.id === 'T');
+    expect(svc?.kind).toBe('serviceTask');
+    if (svc?.kind === 'serviceTask') {
+      expect(svc.binding).toEqual({
+        kind: 'delegateExpression',
+        expression: '${myDelegate}',
+      });
     }
+  });
+});
+
+describe('xmlToIr — external task binding', () => {
+  it('operaton:type="external" with a topic imports to an external binding', async () => {
+    const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  xmlns:operaton="http://operaton.org/schema/1.0/bpmn"
+                  targetNamespace="http://test">
+  <bpmn:process id="p" isExecutable="true">
+    <bpmn:startEvent id="S" />
+    <bpmn:serviceTask id="T" name="Ship It" operaton:type="external" operaton:topic="shipping" />
+    <bpmn:endEvent id="E" />
+    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="T" />
+    <bpmn:sequenceFlow id="F2" sourceRef="T" targetRef="E" />
+  </bpmn:process>
+</bpmn:definitions>`;
+
+    const { ir } = await xmlToIr(xml);
+    const svc = ir.flowElements.find((fe) => fe.id === 'T');
+    expect(svc?.kind).toBe('serviceTask');
+    if (svc?.kind === 'serviceTask') {
+      expect(svc.binding).toEqual({ kind: 'external', topic: 'shipping' });
+    }
+  });
+
+  it('an accepted external task produces no drop warnings for type/topic', async () => {
+    const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  xmlns:operaton="http://operaton.org/schema/1.0/bpmn"
+                  targetNamespace="http://test">
+  <bpmn:process id="p" isExecutable="true">
+    <bpmn:startEvent id="S" />
+    <bpmn:serviceTask id="T" operaton:type="external" operaton:topic="shipping" />
+    <bpmn:endEvent id="E" />
+    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="T" />
+    <bpmn:sequenceFlow id="F2" sourceRef="T" targetRef="E" />
+  </bpmn:process>
+</bpmn:definitions>`;
+
+    const { warnings } = await xmlToIr(xml);
+    expect(warnings).toEqual([]);
+  });
+
+  it('operaton:type="external" WITHOUT a topic stays refused', async () => {
+    const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  xmlns:operaton="http://operaton.org/schema/1.0/bpmn"
+                  targetNamespace="http://test">
+  <bpmn:process id="p" isExecutable="true">
+    <bpmn:startEvent id="S" />
+    <bpmn:serviceTask id="T" operaton:type="external" />
+    <bpmn:endEvent id="E" />
+    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="T" />
+    <bpmn:sequenceFlow id="F2" sourceRef="T" targetRef="E" />
+  </bpmn:process>
+</bpmn:definitions>`;
+
+    await expect(xmlToIr(xml)).rejects.toBeInstanceOf(
+      UnsupportedServiceTaskFormError,
+    );
   });
 });
 
@@ -382,19 +476,71 @@ describe('xmlToIr — parallel split+join (fork + join)', () => {
   });
 });
 
-// ── 4c. xmlToIr — UnsupportedElementError for genuinely unsupported elements ──
+// ── 4c. xmlToIr — script task imports to a scriptTask IR ─────────────────────
 
-describe('xmlToIr — unsupported element (non-gateway kinds)', () => {
-  it('XML containing bpmn:scriptTask raises UnsupportedElementError', async () => {
+describe('xmlToIr — script task support', () => {
+  it('bpmn:scriptTask imports to a scriptTask IR carrying scriptFormat and body', async () => {
     const xml = `<?xml version="1.0" encoding="UTF-8"?>
 <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
                   targetNamespace="http://test">
   <bpmn:process id="p" isExecutable="true">
     <bpmn:startEvent id="S" />
-    <bpmn:scriptTask id="ST" name="Script" />
+    <bpmn:scriptTask id="ST" name="Compute total" scriptFormat="javascript">
+      <bpmn:script>total = price * quantity;</bpmn:script>
+    </bpmn:scriptTask>
     <bpmn:endEvent id="E" />
     <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="ST" />
     <bpmn:sequenceFlow id="F2" sourceRef="ST" targetRef="E" />
+  </bpmn:process>
+</bpmn:definitions>`;
+
+    const { ir } = await xmlToIr(xml);
+    const script = ir.flowElements.find((fe) => fe.id === 'ST');
+    expect(script?.kind).toBe('scriptTask');
+    if (script?.kind === 'scriptTask') {
+      expect(script.format).toBe('javascript');
+      expect(script.code).toBe('total = price * quantity;');
+      expect(script.name).toBe('Compute total');
+    }
+  });
+
+  it('decodes an entity-escaped bpmn:script body to the literal text', async () => {
+    const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  targetNamespace="http://test">
+  <bpmn:process id="p" isExecutable="true">
+    <bpmn:startEvent id="S" />
+    <bpmn:scriptTask id="ST" scriptFormat="javascript">
+      <bpmn:script>a &lt; b &amp;&amp; c</bpmn:script>
+    </bpmn:scriptTask>
+    <bpmn:endEvent id="E" />
+    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="ST" />
+    <bpmn:sequenceFlow id="F2" sourceRef="ST" targetRef="E" />
+  </bpmn:process>
+</bpmn:definitions>`;
+
+    const { ir } = await xmlToIr(xml);
+    const script = ir.flowElements.find((fe) => fe.id === 'ST');
+    expect(script?.kind).toBe('scriptTask');
+    if (script?.kind === 'scriptTask') {
+      expect(script.code).toBe('a < b && c');
+    }
+  });
+});
+
+// ── 4d. xmlToIr — UnsupportedElementError for genuinely unsupported kinds ─────
+
+describe('xmlToIr — unsupported element (still refused kinds)', () => {
+  it('XML containing bpmn:subProcess raises UnsupportedElementError', async () => {
+    const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  targetNamespace="http://test">
+  <bpmn:process id="p" isExecutable="true">
+    <bpmn:startEvent id="S" />
+    <bpmn:subProcess id="Sub" name="Sub Process" />
+    <bpmn:endEvent id="E" />
+    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="Sub" />
+    <bpmn:sequenceFlow id="F2" sourceRef="Sub" targetRef="E" />
   </bpmn:process>
 </bpmn:definitions>`;
 

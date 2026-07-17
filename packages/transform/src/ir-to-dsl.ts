@@ -234,6 +234,18 @@ class Emitter {
       return this.emitParallelGateway(el, stop, lines, depth);
     }
 
+    // A script task's fenced body is opaque, multi-line text reproduced
+    // byte-for-byte. It cannot be a single indented statement line — its body
+    // must not be re-indented as DSL — so it is emitted here as its own line
+    // group: the opening fence (a normal DSL line the caller indents) followed
+    // by the verbatim body and closing fence. Otherwise it walks like any plain
+    // fall-through node.
+    if (el.kind === 'scriptTask') {
+      this.emittedNodes.add(id);
+      lines.push(renderScriptTask(el));
+      return this.followLinear(id, stop, lines, depth);
+    }
+
     // Plain task / event: emit the statement, then follow its sole fall-through
     // edge. A plain node has at most one outgoing flow in well-formed BPMN; any
     // extra out-edge (a malformed multi-out task) degrades to a `goto`.
@@ -812,6 +824,12 @@ class Emitter {
         return renderUserTask(el);
       case 'serviceTask':
         return renderServiceTask(el);
+      case 'scriptTask':
+        // A script task has no single-line form: its opaque fenced body is
+        // emitted as a multi-line group in `emitNode`, which never reaches this
+        // switch for a scriptTask. Listed for exhaustiveness so a new kind is
+        // caught by the type checker.
+        return undefined;
       case 'exclusiveGateway':
       case 'parallelGateway':
         // No statement form. An unrecognized gateway emits nothing; its
@@ -901,12 +919,67 @@ function renderFormDefault(value: string, type: FormFieldType): string {
   return type === 'number' || type === 'boolean' ? value : quote(value);
 }
 
-/** Render a `service <id> "<label>"? { class = "…" }` statement. */
+/**
+ * Render a service task's statement line, choosing the surface form from its
+ * binding:
+ *
+ *   - `class`              → `service <id> "<label>"? { class = "…" }`
+ *   - `expression`         → `service <id> "<label>"? { expression = "${…}" }`
+ *   - `delegateExpression` → `service <id> "<label>"? { delegate = "${…}" }`
+ *   - `external`           → `external <id> "<label>"? { topic = "…" }`
+ *
+ * The `delegate` keyword is the friendly DSL alias for
+ * `operaton:delegateExpression`; the alias is applied here, so the XML-level
+ * name never surfaces in the source. Expression/delegate values are quoted
+ * verbatim (the `${…}` wrapper is part of the value), re-parsing as a raw
+ * expression. An `external` binding switches the keyword to `external` and its
+ * one attribute to `topic`.
+ */
 function renderServiceTask(
   el: Extract<FlowElement, { kind: 'serviceTask' }>,
 ): string {
-  const attrs = [`class = ${quote(el.javaClass)}`];
-  return `service ${el.id}${labelSuffix(el.name)}${attrBlock(attrs)}`;
+  const binding = el.binding;
+  const head = (keyword: string, attr: string): string =>
+    `${keyword} ${el.id}${labelSuffix(el.name)}${attrBlock([attr])}`;
+  switch (binding.kind) {
+    case 'class':
+      return head('service', `class = ${quote(binding.className)}`);
+    case 'expression':
+      return head('service', `expression = ${quote(binding.expression)}`);
+    case 'delegateExpression':
+      return head('service', `delegate = ${quote(binding.expression)}`);
+    case 'external':
+      return head('external', `topic = ${quote(binding.topic)}`);
+    default: {
+      const exhaustive: never = binding;
+      throw new Error(
+        `irToDsl: unhandled service binding kind: ${JSON.stringify(exhaustive)}`,
+      );
+    }
+  }
+}
+
+/**
+ * Render a `script <id> "<label>"? ```<format> … ``` ` fenced block.
+ *
+ * The opening `script … ```<format>` is an ordinary DSL line (the caller
+ * indents it). The body and closing fence follow verbatim and are **opaque** —
+ * the script content is reproduced byte-for-byte, never re-indented as if it
+ * were DSL — so the returned value carries its own newlines rather than being a
+ * single statement line.
+ *
+ * The closing fence is placed **directly after** `code` with no injected
+ * newline: the desugarer's fence split strips only the single newline after the
+ * language tag and keeps the rest of the block verbatim, so any newline emitted
+ * before the closing fence would be re-absorbed into the body on re-parse. A
+ * `code` that already ends in a newline therefore lands its closing fence on its
+ * own line; one that does not keeps the fence on the final body line — either
+ * way the body round-trips unchanged.
+ */
+function renderScriptTask(
+  el: Extract<FlowElement, { kind: 'scriptTask' }>,
+): string {
+  return `script ${el.id}${labelSuffix(el.name)} \`\`\`${el.format}\n${el.code}\`\`\``;
 }
 
 /** ` "<label>"` suffix, or empty when no label. */

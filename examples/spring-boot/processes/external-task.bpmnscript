@@ -1,0 +1,8 @@
+// Hand the shipment label print-out off to an external worker that polls the
+// "print-label" topic, instead of running the work in the Operaton process.
+
+process shipment-label {
+  start OrderPlaced
+  external PrintLabel { topic = "print-label" }
+  end Done
+}

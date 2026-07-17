@@ -110,7 +110,8 @@ describe('Always-on guard: loan-approval.bpmnscript migration', () => {
     const initDelegateTasks = ir.flowElements.filter(
       (fe) =>
         fe.kind === 'serviceTask' &&
-        fe.javaClass === 'com.example.loan.InitDelegate',
+        fe.binding.kind === 'class' &&
+        fe.binding.className === 'com.example.loan.InitDelegate',
     );
     expect(initDelegateTasks).toHaveLength(0);
   });

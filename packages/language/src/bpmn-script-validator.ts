@@ -11,6 +11,11 @@
  * per element kind, the service-task `class` requirement). Diagnostics attach
  * to the most specific property of the offending node (usually `name`, `key`,
  * or the offending operand).
+ *
+ * Attribute checks additionally cover the service-task binding discriminant
+ * (`class`/`expression`/`delegate`, exactly one required), the external-task
+ * `topic` requirement, and the script-task fence (a supported language tag,
+ * a non-empty body).
  */
 
 import {
@@ -26,6 +31,7 @@ import type {
   BpmnScriptAstType,
   DoWhileStatement,
   EndEvent,
+  ExternalTask,
   Expr,
   FormBlock,
   GotoStatement,
@@ -36,6 +42,7 @@ import type {
   ParallelStatement,
   Process,
   Relational,
+  ScriptTask,
   ServiceTask,
   StartEvent,
   Statement,
@@ -50,6 +57,7 @@ import {
   isDoWhileStatement,
   isEndEvent,
   isExpr,
+  isExternalTask,
   isGotoStatement,
   isIfStatement,
   isLogical,
@@ -57,6 +65,7 @@ import {
   isParallelStatement,
   isProcessLabel,
   isRelational,
+  isScriptTask,
   isServiceTask,
   isStartEvent,
   isUserTask,
@@ -82,6 +91,8 @@ export function registerValidationChecks(services: BpmnScriptServices) {
     StartEvent: validator.checkStartEvent,
     UserTask: validator.checkUserTaskAttributes,
     ServiceTask: validator.checkServiceTaskAttributes,
+    ExternalTask: validator.checkExternalTaskAttributes,
+    ScriptTask: validator.checkScriptTask,
     IfStatement: validator.checkIfStatement,
     WhileStatement: validator.checkWhileStatement,
     DoWhileStatement: validator.checkDoWhileStatement,
@@ -96,7 +107,52 @@ export function registerValidationChecks(services: BpmnScriptServices) {
  * any element (a single `AttrKey` datatype rule); the validator restricts them.
  */
 const USER_TASK_KEYS: ReadonlySet<string> = new Set(['assignee', 'formKey']);
-const SERVICE_TASK_KEYS: ReadonlySet<string> = new Set(['class']);
+
+/**
+ * The service-task attribute keys. Every one of them is a binding key — a
+ * service task must declare exactly one — so this set doubles as both the
+ * allowed-keys set and the binding-key set (see
+ * {@link BpmnScriptValidator.checkServiceTaskAttributes}).
+ */
+const SERVICE_TASK_KEYS: ReadonlySet<string> = new Set([
+  'class',
+  'expression',
+  'delegate',
+]);
+
+const EXTERNAL_TASK_KEYS: ReadonlySet<string> = new Set(['topic']);
+
+/**
+ * Attribute keys whose value identifies something other than a process
+ * variable — a Java class, a form id, an EL binding, or a worker topic — so a
+ * bareword value there must not trigger the undeclared-variable warning (see
+ * {@link BpmnScriptValidator.checkExpression}).
+ */
+const NON_VARIABLE_ATTR_KEYS: ReadonlySet<string> = new Set([
+  'class',
+  'formKey',
+  'expression',
+  'delegate',
+  'topic',
+]);
+
+/**
+ * Accepted fence-tag aliases for a `script` task body. Mirrors
+ * `ast-to-ir.ts`'s `SCRIPT_FORMAT_ALIASES` key set, which normalizes these
+ * same tags to a canonical Operaton `scriptFormat`. Duplicated here (rather
+ * than imported) because the validator lives in `packages/language`, which
+ * cannot depend on `packages/transform`.
+ */
+const SUPPORTED_SCRIPT_TAGS: ReadonlySet<string> = new Set([
+  'javascript',
+  'js',
+  'groovy',
+  'python',
+  'py',
+  'ruby',
+  'rb',
+  'feel',
+]);
 
 /**
  * The {@link VarType}s an Operaton form field can carry. `json`/`any` have no
@@ -167,14 +223,16 @@ const ORDERED_OK: ReadonlySet<ExprType> = new Set<ExprType>([
  * check so both address exactly the same set of nodes (expression `VarRef`s
  * are never part of this set).
  */
-type NamedStatement = StartEvent | EndEvent | UserTask | ServiceTask;
+type NamedStatement =
+  StartEvent | EndEvent | UserTask | ServiceTask | ExternalTask | ScriptTask;
 
 /**
  * Collect every goto-targetable named statement in `process`, in document
  * order, regardless of nesting depth (inside `if`/`while`/`parallel` blocks).
  *
  * @param process The process to scan.
- * @returns Every `StartEvent`/`EndEvent`/`UserTask`/`ServiceTask` node.
+ * @returns Every `StartEvent`/`EndEvent`/`UserTask`/`ServiceTask`/
+ *   `ExternalTask`/`ScriptTask` node.
  */
 function collectNamedStatements(process: Process): NamedStatement[] {
   const result: NamedStatement[] = [];
@@ -183,7 +241,9 @@ function collectNamedStatements(process: Process): NamedStatement[] {
       isStartEvent(node) ||
       isEndEvent(node) ||
       isUserTask(node) ||
-      isServiceTask(node)
+      isServiceTask(node) ||
+      isExternalTask(node) ||
+      isScriptTask(node)
     ) {
       result.push(node);
     }
@@ -211,7 +271,9 @@ function statementName(stmt: Statement): string | undefined {
   return isStartEvent(stmt) ||
     isEndEvent(stmt) ||
     isUserTask(stmt) ||
-    isServiceTask(stmt)
+    isServiceTask(stmt) ||
+    isExternalTask(stmt) ||
+    isScriptTask(stmt)
     ? stmt.name
     : undefined;
 }
@@ -568,18 +630,18 @@ export class BpmnScriptValidator {
     accept: ValidationAcceptor,
   ): void {
     // 1. Undeclared-variable warning: a VarRef root not in the symbol set.
-    //    Skip VarRefs that are a `class` or `formKey` attribute value: those
-    //    identifiers name Java classes / form ids, not process variables, so
-    //    they must not fire a spurious "not declared" warning. An `assignee`
-    //    value is NOT skipped — a bare identifier there renders as a `${var}`
-    //    JUEL expression (see expression-render.ts), so it is a real variable
+    //    Skip VarRefs that are a `class`, `formKey`, `expression`, `delegate`,
+    //    or `topic` attribute value: those identifiers name Java classes, form
+    //    ids, EL bindings, or a worker topic — not process variables — so they
+    //    must not fire a spurious "not declared" warning. An `assignee` value
+    //    is NOT skipped — a bare identifier there renders as a `${var}` JUEL
+    //    expression (see expression-render.ts), so it is a real variable
     //    reference. Only the direct attribute-value position is skipped —
     //    VarRefs inside conditions (and nested operands of a more complex
     //    attribute value) are still checked.
     const container = expr.$container;
     const isNonVariableAttrValue =
-      isAttribute(container) &&
-      (container.key === 'class' || container.key === 'formKey');
+      isAttribute(container) && NON_VARIABLE_ATTR_KEYS.has(container.key);
     if (isVarRef(expr) && !isNonVariableAttrValue && !symbols.has(expr.name)) {
       accept(
         'warning',
@@ -702,15 +764,18 @@ export class BpmnScriptValidator {
     accept: ValidationAcceptor,
   ): void => {
     this.checkDuplicateKeys(task.attrs, accept);
-    this.checkAllowedKeys(task.attrs, USER_TASK_KEYS, 'user', accept);
+    this.checkAllowedKeys(task.attrs, USER_TASK_KEYS, 'a user task', accept);
     this.checkFormBlocks(task.forms, 'a user task', accept);
   };
 
   /**
-   * ServiceTask attribute checks: duplicate keys, key-kind validity, the
-   * exactly-one-`class` discriminator (zero → error; the more-than-one case is
-   * reported by the duplicate-key check), and the absence of a form block
-   * (service tasks are automated and render no form).
+   * ServiceTask attribute checks: duplicate keys, key-kind validity, and the
+   * exactly-one-binding discriminator. A service task binds to exactly one of
+   * `class` (Java delegate class), `expression` (`operaton:expression`), or
+   * `delegate` (`operaton:delegateExpression` alias) — zero bindings is an
+   * error, and more than one *distinct* binding key is a separate error (a
+   * repeated *same* key is already reported by the duplicate-key check). Also
+   * rejects a form block: service tasks are automated and render no form.
    *
    * @param task The service task.
    */
@@ -719,23 +784,91 @@ export class BpmnScriptValidator {
     accept: ValidationAcceptor,
   ): void => {
     this.checkDuplicateKeys(task.attrs, accept);
-    this.checkAllowedKeys(task.attrs, SERVICE_TASK_KEYS, 'service', accept);
+    this.checkAllowedKeys(
+      task.attrs,
+      SERVICE_TASK_KEYS,
+      'a service task',
+      accept,
+    );
 
-    const classCount = task.attrs.filter((a) => a.key === 'class').length;
-    if (classCount === 0) {
+    const bindingKeys = new Set(
+      task.attrs.map((a) => a.key).filter((key) => SERVICE_TASK_KEYS.has(key)),
+    );
+    if (bindingKeys.size === 0) {
       accept(
         'error',
-        `Service task '${task.name}' must declare a 'class' attribute.`,
+        `Service task '${task.name}' must declare a 'class', 'expression', or 'delegate' attribute.`,
+        { node: task, property: 'name' },
+      );
+    } else if (bindingKeys.size > 1) {
+      accept(
+        'error',
+        `Service task '${task.name}' declares more than one binding (${[...bindingKeys].join(', ')}); exactly one of 'class', 'expression', or 'delegate' is allowed.`,
         { node: task, property: 'name' },
       );
     }
 
-    for (const form of task.forms) {
+    this.rejectFormBlock(task.forms, 'A service task', accept);
+  };
+
+  /**
+   * ExternalTask attribute checks: duplicate keys, key-kind validity (`topic`
+   * is the only legal key), the required `topic` (zero → error), and the
+   * absence of a form block (an external task is a delegated service task —
+   * automated, no form).
+   *
+   * @param task The external task.
+   */
+  checkExternalTaskAttributes = (
+    task: ExternalTask,
+    accept: ValidationAcceptor,
+  ): void => {
+    this.checkDuplicateKeys(task.attrs, accept);
+    this.checkAllowedKeys(
+      task.attrs,
+      EXTERNAL_TASK_KEYS,
+      'an external task',
+      accept,
+    );
+
+    const hasTopic = task.attrs.some((a) => a.key === 'topic');
+    if (!hasTopic) {
       accept(
         'error',
-        "A service task cannot declare a 'form' block; forms belong on start events and user tasks.",
-        { node: form },
+        `External task '${task.name}' must declare a 'topic' attribute.`,
+        { node: task, property: 'name' },
       );
+    }
+
+    this.rejectFormBlock(task.forms, 'An external task', accept);
+  };
+
+  /**
+   * ScriptTask checks: the fence language tag must be one of the supported
+   * aliases (see {@link SUPPORTED_SCRIPT_TAGS}), and the script body must be
+   * non-empty. Both are checked against the raw `FENCED_SCRIPT` token, split
+   * with {@link splitFencedScript} the same way `ast-to-ir.ts`'s desugarer
+   * splits it.
+   *
+   * @param task The script task.
+   */
+  checkScriptTask = (task: ScriptTask, accept: ValidationAcceptor): void => {
+    const { tag, code } = splitFencedScript(task.body);
+
+    if (!SUPPORTED_SCRIPT_TAGS.has(tag)) {
+      accept(
+        'error',
+        `Script task '${task.name}' has an unsupported language tag '${tag}'. ` +
+          "Use 'javascript'/'js', 'groovy', 'python'/'py', 'ruby'/'rb', or 'feel'.",
+        { node: task, property: 'body' },
+      );
+    }
+
+    if (code.trim().length === 0) {
+      accept('error', `Script task '${task.name}' has an empty script body.`, {
+        node: task,
+        property: 'body',
+      });
     }
   };
 
@@ -781,6 +914,29 @@ export class BpmnScriptValidator {
   }
 
   /**
+   * Reject every `form { … }` block on an element that must not declare one.
+   * Shared by {@link checkServiceTaskAttributes} and
+   * {@link checkExternalTaskAttributes} — both are automated task kinds with
+   * no human actor to present a form to.
+   *
+   * @param description The element kind, as a full sentence-starting noun
+   *   phrase with article (e.g. `'A service task'`, `'An external task'`).
+   */
+  private rejectFormBlock(
+    forms: FormBlock[],
+    description: string,
+    accept: ValidationAcceptor,
+  ): void {
+    for (const form of forms) {
+      accept(
+        'error',
+        `${description} cannot declare a 'form' block; forms belong on start events and user tasks.`,
+        { node: form },
+      );
+    }
+  }
+
+  /**
    * Flag every attribute key that repeats within one block (one error per
    * duplicate *occurrence*, attached to the repeated entry's `key`).
    */
@@ -801,19 +957,25 @@ export class BpmnScriptValidator {
 
   /**
    * Flag every attribute whose key is not legal for this element kind.
+   *
+   * @param description The element kind, as a full noun phrase with article
+   *   (e.g. `'a user task'`, `'an external task'`) for the diagnostic message.
    */
   private checkAllowedKeys(
     attrs: Attribute[],
     allowed: ReadonlySet<string>,
-    kind: string,
+    description: string,
     accept: ValidationAcceptor,
   ): void {
     for (const attr of attrs) {
       if (!allowed.has(attr.key)) {
         accept(
           'error',
-          `Attribute '${attr.key}' is not valid on a ${kind} task.`,
-          { node: attr, property: 'key' },
+          `Attribute '${attr.key}' is not valid on ${description}.`,
+          {
+            node: attr,
+            property: 'key',
+          },
         );
       }
     }
@@ -963,6 +1125,33 @@ function isReservedName(name: string): boolean {
 }
 
 /**
+ * Split a raw `FENCED_SCRIPT` token (the whole ```` ```<tag>\n…\n``` ````
+ * block, captured verbatim by the grammar) into its language tag and inner
+ * code body — mirroring `ast-to-ir.ts`'s `splitFencedScript`. Duplicated here
+ * (rather than imported) because the validator lives in `packages/language`,
+ * which cannot depend on `packages/transform`.
+ *
+ * The tag is the maximal run of ASCII letters immediately following the
+ * opening fence. A single line terminator directly after the tag (`\r\n` or
+ * `\n`) is dropped; nothing else is touched, so the code body is returned
+ * exactly as the desugarer would see it.
+ *
+ * @param raw The raw fenced-script token, delimiters included.
+ * @returns The extracted `tag` and `code`.
+ */
+function splitFencedScript(raw: string): { tag: string; code: string } {
+  const inner = raw.slice(3, -3); // strip the opening/closing ``` delimiters
+  const tag = /^[a-zA-Z]+/.exec(inner)?.[0] ?? '';
+  const rest = inner.slice(tag.length);
+  const code = rest.startsWith('\r\n')
+    ? rest.slice(2)
+    : rest.startsWith('\n')
+      ? rest.slice(1)
+      : rest;
+  return { tag, code };
+}
+
+/**
  * Walk up from `node` to the nearest `Block` whose direct container is a
  * `ParallelStatement` — i.e. the nearest enclosing `parallel` branch, if any.
  *
@@ -1009,17 +1198,19 @@ function isWithinBlock(node: AstNode, block: Block): boolean {
 
 /**
  * The `name` of a resolved `goto` target for use in a diagnostic message.
- * Only `StartEvent`/`EndEvent`/`UserTask`/`ServiceTask` carry a `name` (the
- * other `Statement` members are structurally impossible `goto` targets, since
- * the grammar's `NameProvider` only keys on nodes exposing `name`), so the
- * `'?'` fallback shouldn't be reachable.
+ * Only `StartEvent`/`EndEvent`/`UserTask`/`ServiceTask`/`ExternalTask`/
+ * `ScriptTask` carry a `name` (the other `Statement` members are structurally
+ * impossible `goto` targets, since the grammar's `NameProvider` only keys on
+ * nodes exposing `name`), so the `'?'` fallback shouldn't be reachable.
  */
 function targetStatementName(target: Statement): string {
   if (
     isStartEvent(target) ||
     isEndEvent(target) ||
     isUserTask(target) ||
-    isServiceTask(target)
+    isServiceTask(target) ||
+    isExternalTask(target) ||
+    isScriptTask(target)
   ) {
     return target.name;
   }
