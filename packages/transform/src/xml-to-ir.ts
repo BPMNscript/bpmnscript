@@ -19,12 +19,13 @@
  * **Refused** (throws before any IR is produced, so there is no partial IR):
  * - event definitions on start/end events (timer, message, terminate, …) →
  *   {@link UnsupportedEventDefinitionError};
- * - loop characteristics on a task (multi-instance / standard loop) →
- *   {@link UnsupportedLoopCharacteristicsError};
+ * - loop characteristics on a task or sub-process (multi-instance / standard
+ *   loop) → {@link UnsupportedLoopCharacteristicsError};
  * - collaborations, i.e. pools and message flows →
  *   {@link UnsupportedCollaborationError};
- * - unsupported flow-element kinds (sub-process, call activity,
- *   intermediate events, …) → {@link UnsupportedElementError};
+ * - unsupported flow-element kinds (an event sub-process, a transaction, an
+ *   ad-hoc sub-process, a call activity, intermediate events, …) →
+ *   {@link UnsupportedElementError};
  * - service tasks whose execution form the IR cannot represent (a bare task
  *   with no discriminator, or an external type with no topic) →
  *   {@link UnsupportedServiceTaskFormError}.
@@ -54,7 +55,9 @@
  * **Round-trips cleanly** (no warning, no refusal): the supported flow
  * elements and their `name`, `assignee`, `formKey`, service-task binding
  * (`class`, `expression`, `delegateExpression`, or `external` + `topic`),
- * script-task body, condition expressions, and default-flow references.
+ * script-task body, condition expressions, and default-flow references. An
+ * embedded `bpmn:subProcess` round-trips too — its nested body is mapped
+ * recursively, at any nesting depth.
  */
 
 import { existsSync, readFileSync } from 'node:fs';
@@ -76,6 +79,7 @@ import type {
   ServiceTask,
   ServiceTaskBinding,
   StartEvent,
+  SubProcess,
   UserTask,
 } from './ir/types.js';
 
@@ -263,14 +267,15 @@ interface ModdlePropertyDescriptor {
  * @throws {UnsupportedCollaborationError} when the document contains a
  *   `bpmn:Collaboration` (pools / message flows).
  * @throws {UnsupportedElementError} when an unsupported flow-element
- *   kind is encountered (e.g. `bpmn:subProcess`, `bpmn:callActivity`).
+ *   kind is encountered (e.g. `bpmn:callActivity`, an event sub-process
+ *   with `triggeredByEvent="true"`, `bpmn:transaction`).
  * @throws {UnsupportedServiceTaskFormError} when a `bpmn:ServiceTask`
  *   carries no execution form the IR can represent (a bare task with no
  *   discriminator, or an external type without a topic).
  * @throws {UnsupportedEventDefinitionError} when a start/end event carries
- *   an event definition (timer, message, terminate, …).
- * @throws {UnsupportedLoopCharacteristicsError} when a task carries loop
- *   characteristics (multi-instance or standard loop).
+ *   an event definition (timer, message, terminate, …), at any nesting depth.
+ * @throws {UnsupportedLoopCharacteristicsError} when a task or sub-process
+ *   carries loop characteristics (multi-instance or standard loop).
  */
 export async function xmlToIr(
   xml: string,
@@ -382,6 +387,10 @@ function collectUnparsableResidualDrops(
  * `di:` content lives outside the process subtree, so simply iterating
  * `flowElements` drops every DI artefact for free.
  *
+ * The process-only concerns (id, name, lanes, process-level extension drops)
+ * are handled here; the per-child mapping itself is delegated to
+ * {@link mapContainer}, which recurses for an embedded sub-process.
+ *
  * @param warnings Accumulator for non-semantic drops (lanes, extra
  *   extension attributes/elements). Mutated in place.
  */
@@ -401,10 +410,37 @@ function mapProcess(
   // Extension attributes/elements attached to the process itself.
   collectExtensionDrops(processEl, id, warnings);
 
+  const { flowElements, sequenceFlows } = mapContainer(processEl, warnings);
+
+  return {
+    id,
+    ...(name === undefined ? {} : { name }),
+    isExecutable: true,
+    flowElements,
+    sequenceFlows,
+  };
+}
+
+/**
+ * Map the `flowElements` collection of a `bpmn:Process` or `bpmn:SubProcess`
+ * moddle element into IR flow elements and sequence flows.
+ *
+ * Shared by {@link mapProcess} (the top-level container) and
+ * {@link mapSubProcess} (a nested container) so the per-child switch — and
+ * every refusal it can raise — applies uniformly at any nesting depth: an
+ * event definition on a start event inside a sub-process is refused exactly
+ * as one at the top level would be.
+ *
+ * @param warnings Accumulator for non-semantic drops. Mutated in place.
+ */
+function mapContainer(
+  el: ModdleElement,
+  warnings: ImportWarning[],
+): { flowElements: FlowElement[]; sequenceFlows: SequenceFlow[] } {
   const flowElements: FlowElement[] = [];
   const sequenceFlows: SequenceFlow[] = [];
 
-  const children = (processEl.get('flowElements') as ModdleElement[]) ?? [];
+  const children = (el.get('flowElements') as ModdleElement[]) ?? [];
   for (const child of children) {
     switch (child.$type) {
       case 'bpmn:StartEvent':
@@ -428,6 +464,9 @@ function mapProcess(
       case 'bpmn:ParallelGateway':
         flowElements.push(mapParallelGateway(child));
         break;
+      case 'bpmn:SubProcess':
+        flowElements.push(mapSubProcess(child, warnings));
+        break;
       case 'bpmn:SequenceFlow':
         sequenceFlows.push(mapSequenceFlow(child));
         break;
@@ -441,10 +480,46 @@ function mapProcess(
     }
   }
 
+  return { flowElements, sequenceFlows };
+}
+
+/**
+ * Map a `bpmn:SubProcess` moddle element into a recursive IR {@link
+ * SubProcess}.
+ *
+ * Only the embedded (plain) sub-process is representable. An event
+ * sub-process (`triggeredByEvent="true"`) starts its body from an internal
+ * event trigger rather than the parent flow — a different execution
+ * semantic the IR does not model — so it is refused rather than mapped as
+ * if it were an ordinary embedded sub-process. `bpmn:Transaction` and
+ * `bpmn:AdHocSubProcess` carry their own moddle `$type`s and never reach
+ * this function; they hit the default refusal arm in {@link mapContainer}.
+ *
+ * The nested body is mapped by recursing into {@link mapContainer}, so a
+ * sub-process nested inside a sub-process imports just as well as one
+ * nested directly in the process.
+ */
+function mapSubProcess(
+  el: ModdleElement,
+  warnings: ImportWarning[],
+): SubProcess {
+  const id = requireId(el);
+  if (el.get('triggeredByEvent') === true) {
+    throw new UnsupportedElementError(
+      'bpmn:SubProcess with triggeredByEvent="true"',
+      id,
+    );
+  }
+  refuseLoopCharacteristics(el, id);
+  // A sub-process may own its own lane set, just like a process.
+  collectLaneDrops(el, id, warnings);
+  const name = readDerivableName(el, id);
+  const { flowElements, sequenceFlows } = mapContainer(el, warnings);
+
   return {
+    kind: 'subProcess',
     id,
     ...(name === undefined ? {} : { name }),
-    isExecutable: true,
     flowElements,
     sequenceFlows,
   };
@@ -624,10 +699,11 @@ function refuseEventDefinitions(
 }
 
 /**
- * Throw {@link UnsupportedLoopCharacteristicsError} when a task carries
- * loop characteristics — either a `bpmn:MultiInstanceLoopCharacteristics`
- * or a `bpmn:StandardLoopCharacteristics` child. The IR models tasks that
- * run exactly once.
+ * Throw {@link UnsupportedLoopCharacteristicsError} when a task or
+ * sub-process carries loop characteristics — either a
+ * `bpmn:MultiInstanceLoopCharacteristics` or a
+ * `bpmn:StandardLoopCharacteristics` child. The IR models elements that run
+ * exactly once.
  */
 function refuseLoopCharacteristics(el: ModdleElement, id: string): void {
   const loop = el.get('loopCharacteristics') as ModdleElement | undefined;

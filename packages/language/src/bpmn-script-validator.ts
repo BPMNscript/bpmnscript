@@ -46,6 +46,7 @@ import type {
   ServiceTask,
   StartEvent,
   Statement,
+  SubProcess,
   UserTask,
   VarType,
   WhileStatement,
@@ -68,6 +69,7 @@ import {
   isScriptTask,
   isServiceTask,
   isStartEvent,
+  isSubProcess,
   isUserTask,
   isVarDecl,
   isVarRef,
@@ -98,6 +100,7 @@ export function registerValidationChecks(services: BpmnScriptServices) {
     DoWhileStatement: validator.checkDoWhileStatement,
     ParallelStatement: validator.checkParallelStatement,
     GotoStatement: validator.checkGotoStatement,
+    SubProcess: validator.checkSubProcess,
   };
   registry.register(checks, validator);
 }
@@ -221,18 +224,28 @@ const ORDERED_OK: ReadonlySet<ExprType> = new Set<ExprType>([
  * The concrete `Statement` subtypes that carry a `name` and are therefore valid
  * `goto` targets. Shared by the reserved-name check and the duplicate-name
  * check so both address exactly the same set of nodes (expression `VarRef`s
- * are never part of this set).
+ * are never part of this set). `SubProcess` is included: its name is both a
+ * goto target (the container's entry point) and the seed for its implicit
+ * start/end ids (`StartEvent_<name>`/`EndEvent_<name>`), so it must clear the
+ * same reserved-pattern and duplicate-name checks as any other named step.
  */
 type NamedStatement =
-  StartEvent | EndEvent | UserTask | ServiceTask | ExternalTask | ScriptTask;
+  | StartEvent
+  | EndEvent
+  | UserTask
+  | ServiceTask
+  | ExternalTask
+  | ScriptTask
+  | SubProcess;
 
 /**
  * Collect every goto-targetable named statement in `process`, in document
- * order, regardless of nesting depth (inside `if`/`while`/`parallel` blocks).
+ * order, regardless of nesting depth (inside `if`/`while`/`parallel`/
+ * `subprocess` blocks).
  *
  * @param process The process to scan.
  * @returns Every `StartEvent`/`EndEvent`/`UserTask`/`ServiceTask`/
- *   `ExternalTask`/`ScriptTask` node.
+ *   `ExternalTask`/`ScriptTask`/`SubProcess` node.
  */
 function collectNamedStatements(process: Process): NamedStatement[] {
   const result: NamedStatement[] = [];
@@ -243,7 +256,8 @@ function collectNamedStatements(process: Process): NamedStatement[] {
       isUserTask(node) ||
       isServiceTask(node) ||
       isExternalTask(node) ||
-      isScriptTask(node)
+      isScriptTask(node) ||
+      isSubProcess(node)
     ) {
       result.push(node);
     }
@@ -273,12 +287,20 @@ function statementName(stmt: Statement): string | undefined {
     isUserTask(stmt) ||
     isServiceTask(stmt) ||
     isExternalTask(stmt) ||
-    isScriptTask(stmt)
+    isScriptTask(stmt) ||
+    isSubProcess(stmt)
     ? stmt.name
     : undefined;
 }
 
-/** The statement lists nested directly inside a compound statement. */
+/**
+ * The statement lists nested directly inside a compound statement. A
+ * `subprocess` body is a single `Block` (like a loop body — no branch
+ * segment), which the manual reachability scan in
+ * {@link BpmnScriptValidator.checkUnreachableStatements} relies on to
+ * descend into it; `AstUtils.streamAst`-based scans elsewhere in this file
+ * already reach a sub-process body for free and need no equivalent branch.
+ */
 function childBlocks(stmt: Statement): Block[] {
   if (isIfStatement(stmt)) {
     return [
@@ -292,6 +314,9 @@ function childBlocks(stmt: Statement): Block[] {
   }
   if (isParallelStatement(stmt)) {
     return stmt.branches;
+  }
+  if (isSubProcess(stmt)) {
+    return [stmt.body];
   }
   return [];
 }
@@ -356,12 +381,15 @@ export class BpmnScriptValidator {
   };
 
   /**
-   * An explicit `start` is only valid as the first statement of the process
-   * body. Anywhere else — later in the body or nested inside a branch — the
-   * desugarer gives it an incoming sequence flow, and a start event with
-   * incoming flows is invalid BPMN that Operaton rejects at deployment.
-   * (A process whose first statement is not a `start` gets an implicit one;
-   * that path never conflicts with this check.)
+   * An explicit `start` is only valid as the first statement of a *container*
+   * body — the process body, or the body of a `subprocess` (the desugarer
+   * honours a sub-process's own explicit start/end exactly like the
+   * process's). Anywhere else — later in a container body, or nested inside an
+   * `if`/`while`/`parallel` block at any position — the desugarer gives it an
+   * incoming sequence flow, and a start event with incoming flows is invalid
+   * BPMN that Operaton rejects at deployment. (A container whose first
+   * statement is not a `start` gets an implicit one; that path never conflicts
+   * with this check.)
    */
   private checkStartPosition(
     process: Process,
@@ -370,9 +398,17 @@ export class BpmnScriptValidator {
     for (const node of AstUtils.streamAst(process)) {
       if (!isStartEvent(node)) continue;
       if (node === process.body[0]) continue;
+      const container = node.$container;
+      if (
+        isBlock(container) &&
+        isSubProcess(container.$container) &&
+        container.statements[0] === node
+      ) {
+        continue;
+      }
       accept(
         'error',
-        `'start ${node.name}' must be the first statement of the process. ` +
+        `'start ${node.name}' must be the first statement of its process or subprocess. ` +
           'A start event cannot have incoming flows.',
         { node, property: 'name' },
       );
@@ -1032,6 +1068,21 @@ export class BpmnScriptValidator {
   };
 
   /**
+   * Warn on an empty `subprocess` body — syntactically legal (it lowers to an
+   * empty flow container, mirroring an empty process) but almost always an
+   * authoring mistake, so this mirrors every other empty-block warning.
+   *
+   * @param stmt The `subprocess` statement.
+   */
+  checkSubProcess = (stmt: SubProcess, accept: ValidationAcceptor): void => {
+    this.warnIfEmptyBlock(
+      stmt.body,
+      `The 'subprocess' body has no steps.`,
+      accept,
+    );
+  };
+
+  /**
    * Warn on each empty `parallel` branch.
    *
    * @param stmt The `parallel` statement.
@@ -1199,9 +1250,10 @@ function isWithinBlock(node: AstNode, block: Block): boolean {
 /**
  * The `name` of a resolved `goto` target for use in a diagnostic message.
  * Only `StartEvent`/`EndEvent`/`UserTask`/`ServiceTask`/`ExternalTask`/
- * `ScriptTask` carry a `name` (the other `Statement` members are structurally
- * impossible `goto` targets, since the grammar's `NameProvider` only keys on
- * nodes exposing `name`), so the `'?'` fallback shouldn't be reachable.
+ * `ScriptTask`/`SubProcess` carry a `name` (the other `Statement` members are
+ * structurally impossible `goto` targets, since the grammar's `NameProvider`
+ * only keys on nodes exposing `name`), so the `'?'` fallback shouldn't be
+ * reachable.
  */
 function targetStatementName(target: Statement): string {
   if (
@@ -1210,7 +1262,8 @@ function targetStatementName(target: Statement): string {
     isUserTask(target) ||
     isServiceTask(target) ||
     isExternalTask(target) ||
-    isScriptTask(target)
+    isScriptTask(target) ||
+    isSubProcess(target)
   ) {
     return target.name;
   }

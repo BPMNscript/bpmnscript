@@ -497,7 +497,471 @@ describe('irToXml — scriptTask serialization', () => {
   });
 });
 
+// ── 8. Sub-process containment ───────────────────────────────────────────────
+
+describe('irToXml — sub-process containment', () => {
+  /**
+   * Process `PStart → sub → PEnd`, where `sub` is an embedded sub-process
+   * whose own body is `SubStart → Review → SubEnd`. The semantic element tree
+   * (not the DI, which auto-layout regenerates) is inspected by parsing the
+   * output back with raw `bpmn-moddle`.
+   */
+  const nestedIr: BpmnProcess = {
+    id: 'proc',
+    isExecutable: true,
+    flowElements: [
+      { kind: 'startEvent', id: 'PStart' },
+      {
+        kind: 'subProcess',
+        id: 'sub',
+        flowElements: [
+          { kind: 'startEvent', id: 'SubStart' },
+          { kind: 'userTask', id: 'Review', name: 'Review', assignee: 'demo' },
+          { kind: 'endEvent', id: 'SubEnd' },
+        ],
+        sequenceFlows: [
+          {
+            id: 'SF_SubStart_Review',
+            sourceRef: 'SubStart',
+            targetRef: 'Review',
+          },
+          { id: 'SF_Review_SubEnd', sourceRef: 'Review', targetRef: 'SubEnd' },
+        ],
+      },
+      { kind: 'endEvent', id: 'PEnd' },
+    ],
+    sequenceFlows: [
+      { id: 'SF_PStart_sub', sourceRef: 'PStart', targetRef: 'sub' },
+      { id: 'SF_sub_PEnd', sourceRef: 'sub', targetRef: 'PEnd' },
+    ],
+  };
+
+  let proc: ModdleTree;
+  let nestedXml: string;
+
+  beforeAll(async () => {
+    nestedXml = await irToXml(nestedIr);
+    proc = await parseProcessTree(nestedXml);
+  });
+
+  it('emits a bpmn:SubProcess holding its three children and two nested flows', () => {
+    const sub = childById(proc, 'sub');
+    expect(sub.$type).toBe('bpmn:SubProcess');
+    const childTypes = (sub.flowElements ?? []).map((e) => e.$type);
+    expect(childTypes).toContain('bpmn:StartEvent');
+    expect(childTypes).toContain('bpmn:UserTask');
+    expect(childTypes).toContain('bpmn:EndEvent');
+    const nestedFlows = (sub.flowElements ?? []).filter(
+      (e) => e.$type === 'bpmn:SequenceFlow',
+    );
+    expect(nestedFlows.map((f) => f.id).sort()).toEqual([
+      'SF_Review_SubEnd',
+      'SF_SubStart_Review',
+    ]);
+  });
+
+  it('wires nested children incoming/outgoing to the nested flows', () => {
+    const sub = childById(proc, 'sub');
+    const review = childById(sub, 'Review');
+    expect((review.incoming ?? []).map((f) => f.id)).toEqual([
+      'SF_SubStart_Review',
+    ]);
+    expect((review.outgoing ?? []).map((f) => f.id)).toEqual([
+      'SF_Review_SubEnd',
+    ]);
+  });
+
+  it('routes parent-level flows to the sub-process element and keeps nested flows nested', () => {
+    const intoSub = childById(proc, 'SF_PStart_sub');
+    expect(intoSub.targetRef?.id).toBe('sub');
+    const outOfSub = childById(proc, 'SF_sub_PEnd');
+    expect(outOfSub.sourceRef?.id).toBe('sub');
+
+    // Nested nodes/flows never leak into the parent container's element list.
+    const parentIds = (proc.flowElements ?? []).map((e) => e.id);
+    expect(parentIds).toContain('sub');
+    expect(parentIds).not.toContain('SubStart');
+    expect(parentIds).not.toContain('SF_SubStart_Review');
+  });
+
+  it('parses cleanly via bpmn-moddle', async () => {
+    const moddle = new BpmnModdle({});
+    const { warnings } = await moddle.fromXML(nestedXml);
+    expect(warnings).toEqual([]);
+  });
+
+  it('wires a nested exclusive gateway default to the nested flow', async () => {
+    const gatewayIr: BpmnProcess = {
+      id: 'proc',
+      isExecutable: true,
+      flowElements: [
+        { kind: 'startEvent', id: 'PStart' },
+        {
+          kind: 'subProcess',
+          id: 'sub',
+          flowElements: [
+            { kind: 'startEvent', id: 'SubStart' },
+            {
+              kind: 'exclusiveGateway',
+              id: 'Gw',
+              defaultFlowId: 'SF_Gw_B',
+            },
+            { kind: 'userTask', id: 'A' },
+            { kind: 'userTask', id: 'B' },
+            { kind: 'endEvent', id: 'SubEnd' },
+          ],
+          sequenceFlows: [
+            { id: 'SF_SubStart_Gw', sourceRef: 'SubStart', targetRef: 'Gw' },
+            {
+              id: 'SF_Gw_A',
+              conditionExpression: '${ok}',
+              sourceRef: 'Gw',
+              targetRef: 'A',
+            },
+            { id: 'SF_Gw_B', sourceRef: 'Gw', targetRef: 'B' },
+            { id: 'SF_A_End', sourceRef: 'A', targetRef: 'SubEnd' },
+            { id: 'SF_B_End', sourceRef: 'B', targetRef: 'SubEnd' },
+          ],
+        },
+        { kind: 'endEvent', id: 'PEnd' },
+      ],
+      sequenceFlows: [
+        { id: 'SF_PStart_sub', sourceRef: 'PStart', targetRef: 'sub' },
+        { id: 'SF_sub_PEnd', sourceRef: 'sub', targetRef: 'PEnd' },
+      ],
+    };
+
+    const tree = await parseProcessTree(await irToXml(gatewayIr));
+    const sub = childById(tree, 'sub');
+    const gw = childById(sub, 'Gw');
+    expect(gw.$type).toBe('bpmn:ExclusiveGateway');
+    // The `default` reference resolves to the nested flow, not a parent flow.
+    expect(gw.default?.id).toBe('SF_Gw_B');
+  });
+
+  it('serializes two-level nesting recursively', async () => {
+    const twoLevelIr: BpmnProcess = {
+      id: 'proc',
+      isExecutable: true,
+      flowElements: [
+        { kind: 'startEvent', id: 'PStart' },
+        {
+          kind: 'subProcess',
+          id: 'Outer',
+          flowElements: [
+            { kind: 'startEvent', id: 'OStart' },
+            {
+              kind: 'subProcess',
+              id: 'Inner',
+              flowElements: [
+                { kind: 'startEvent', id: 'IStart' },
+                { kind: 'userTask', id: 'Deep' },
+                { kind: 'endEvent', id: 'IEnd' },
+              ],
+              sequenceFlows: [
+                {
+                  id: 'SF_IStart_Deep',
+                  sourceRef: 'IStart',
+                  targetRef: 'Deep',
+                },
+                { id: 'SF_Deep_IEnd', sourceRef: 'Deep', targetRef: 'IEnd' },
+              ],
+            },
+            { kind: 'endEvent', id: 'OEnd' },
+          ],
+          sequenceFlows: [
+            { id: 'SF_OStart_Inner', sourceRef: 'OStart', targetRef: 'Inner' },
+            { id: 'SF_Inner_OEnd', sourceRef: 'Inner', targetRef: 'OEnd' },
+          ],
+        },
+        { kind: 'endEvent', id: 'PEnd' },
+      ],
+      sequenceFlows: [
+        { id: 'SF_PStart_Outer', sourceRef: 'PStart', targetRef: 'Outer' },
+        { id: 'SF_Outer_PEnd', sourceRef: 'Outer', targetRef: 'PEnd' },
+      ],
+    };
+
+    const tree = await parseProcessTree(await irToXml(twoLevelIr));
+    const outer = childById(tree, 'Outer');
+    expect(outer.$type).toBe('bpmn:SubProcess');
+    const inner = childById(outer, 'Inner');
+    expect(inner.$type).toBe('bpmn:SubProcess');
+    const deep = childById(inner, 'Deep');
+    expect(deep.$type).toBe('bpmn:UserTask');
+    // The innermost flows live only in the innermost container.
+    const outerIds = (outer.flowElements ?? []).map((e) => e.id);
+    expect(outerIds).not.toContain('SF_IStart_Deep');
+  });
+});
+
+// ── 9. DI expansion hint for sub-processes ───────────────────────────────────
+
+describe('irToXml — DI expansion hint for sub-processes', () => {
+  /**
+   * `bpmn-auto-layout` fed DI-less XML containing a `bpmn:subProcess` renders
+   * it collapsed and scatters shapes for its children into the root plane —
+   * garbage, not a degraded fallback. `irToXml` pre-seeds a minimal
+   * `bpmndi:BPMNShape isExpanded="true"` per sub-process before layout so the
+   * library expands the parent box and lays the children out inside it. This
+   * block is the regression tripwire: if the hint is ever dropped, these
+   * containment assertions are the first thing to go red.
+   */
+  const twoChildrenIr: BpmnProcess = {
+    id: 'proc',
+    isExecutable: true,
+    flowElements: [
+      { kind: 'startEvent', id: 'PStart' },
+      {
+        kind: 'subProcess',
+        id: 'sub',
+        flowElements: [
+          { kind: 'startEvent', id: 'SubStart' },
+          { kind: 'userTask', id: 'ReviewA', name: 'Review A' },
+          { kind: 'userTask', id: 'ReviewB', name: 'Review B' },
+          { kind: 'endEvent', id: 'SubEnd' },
+        ],
+        sequenceFlows: [
+          {
+            id: 'SF_SubStart_ReviewA',
+            sourceRef: 'SubStart',
+            targetRef: 'ReviewA',
+          },
+          {
+            id: 'SF_ReviewA_ReviewB',
+            sourceRef: 'ReviewA',
+            targetRef: 'ReviewB',
+          },
+          {
+            id: 'SF_ReviewB_SubEnd',
+            sourceRef: 'ReviewB',
+            targetRef: 'SubEnd',
+          },
+        ],
+      },
+      { kind: 'endEvent', id: 'PEnd' },
+    ],
+    sequenceFlows: [
+      { id: 'SF_PStart_sub', sourceRef: 'PStart', targetRef: 'sub' },
+      { id: 'SF_sub_PEnd', sourceRef: 'sub', targetRef: 'PEnd' },
+    ],
+  };
+
+  it('every nested child shape falls strictly inside its parent sub-process shape', async () => {
+    const xml = await irToXml(twoChildrenIr);
+    const shapes = await parseDiShapesById(xml);
+    const parent = requireShape(shapes, 'sub');
+    for (const childId of ['SubStart', 'ReviewA', 'ReviewB', 'SubEnd']) {
+      const child = requireShape(shapes, childId);
+      expect(boundsStrictlyInside(child.bounds, parent.bounds)).toBe(true);
+    }
+  });
+
+  it('two-level nesting: inner sub-process sits inside the outer, inner children inside the inner', async () => {
+    const twoLevelIr: BpmnProcess = {
+      id: 'proc',
+      isExecutable: true,
+      flowElements: [
+        { kind: 'startEvent', id: 'PStart' },
+        {
+          kind: 'subProcess',
+          id: 'Outer',
+          flowElements: [
+            { kind: 'startEvent', id: 'OStart' },
+            {
+              kind: 'subProcess',
+              id: 'Inner',
+              flowElements: [
+                { kind: 'startEvent', id: 'IStart' },
+                { kind: 'userTask', id: 'Deep' },
+                { kind: 'endEvent', id: 'IEnd' },
+              ],
+              sequenceFlows: [
+                {
+                  id: 'SF_IStart_Deep',
+                  sourceRef: 'IStart',
+                  targetRef: 'Deep',
+                },
+                { id: 'SF_Deep_IEnd', sourceRef: 'Deep', targetRef: 'IEnd' },
+              ],
+            },
+            { kind: 'endEvent', id: 'OEnd' },
+          ],
+          sequenceFlows: [
+            { id: 'SF_OStart_Inner', sourceRef: 'OStart', targetRef: 'Inner' },
+            { id: 'SF_Inner_OEnd', sourceRef: 'Inner', targetRef: 'OEnd' },
+          ],
+        },
+        { kind: 'endEvent', id: 'PEnd' },
+      ],
+      sequenceFlows: [
+        { id: 'SF_PStart_Outer', sourceRef: 'PStart', targetRef: 'Outer' },
+        { id: 'SF_Outer_PEnd', sourceRef: 'Outer', targetRef: 'PEnd' },
+      ],
+    };
+
+    const xml = await irToXml(twoLevelIr);
+    const shapes = await parseDiShapesById(xml);
+    const outer = requireShape(shapes, 'Outer');
+    const inner = requireShape(shapes, 'Inner');
+    expect(boundsStrictlyInside(inner.bounds, outer.bounds)).toBe(true);
+    for (const childId of ['IStart', 'Deep', 'IEnd']) {
+      const child = requireShape(shapes, childId);
+      expect(boundsStrictlyInside(child.bounds, inner.bounds)).toBe(true);
+    }
+  });
+
+  it('emits exactly one bpmndi:BPMNDiagram (the layout-generated one replaces the stub)', async () => {
+    const xml = await irToXml(twoChildrenIr);
+    const diagramCount = (xml.match(/<bpmndi:BPMNDiagram\b/g) ?? []).length;
+    expect(diagramCount).toBe(1);
+  });
+
+  it('a sub-process-free process produces byte-identical output to the frozen golden', async () => {
+    // Regression guard for D5: the DI hint must only ever be attached when
+    // the process actually contains a sub-process. This re-asserts the
+    // full-pipeline golden byte-diff from the sub-process describe block
+    // above, right next to the DI-hint logic that could regress it.
+    const services = createBpmnScriptServices(EmptyFileSystem);
+    const parse = parseHelper<Model>(services.BpmnScript);
+    const src = readFileSync(EXAMPLE_BPMNSCRIPT_PATH, 'utf-8');
+    const document = await parse(src);
+    const ir = astToIr(document.parseResult.value);
+    const generatedXml = await irToXml(ir);
+    const goldenXml = readFileSync(GOLDEN_GENERATED_PATH, 'utf-8');
+    expect(generatedXml).toBe(goldenXml);
+  });
+
+  it('an empty sub-process body does not throw', async () => {
+    const emptySubIr: BpmnProcess = {
+      id: 'proc',
+      isExecutable: true,
+      flowElements: [
+        { kind: 'startEvent', id: 'PStart' },
+        { kind: 'subProcess', id: 'sub', flowElements: [], sequenceFlows: [] },
+        { kind: 'endEvent', id: 'PEnd' },
+      ],
+      sequenceFlows: [
+        { id: 'SF_PStart_sub', sourceRef: 'PStart', targetRef: 'sub' },
+        { id: 'SF_sub_PEnd', sourceRef: 'sub', targetRef: 'PEnd' },
+      ],
+    };
+    await expect(irToXml(emptySubIr)).resolves.not.toThrow();
+  });
+});
+
 // ── Helpers ──────────────────────────────────────────────────────────────────
+
+/** A DI shape's bounds, as parsed from `dc:Bounds`. */
+interface DiBounds {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/** One `bpmndi:BPMNShape`, keyed by the id of the BPMN element it lays out. */
+interface DiShape {
+  bpmnElementId: string;
+  bounds: DiBounds;
+}
+
+/**
+ * Parse a BPMN XML string's `bpmndi:BPMNDiagram` and return every
+ * `bpmndi:BPMNShape` it contains, keyed by the id of the BPMN element it
+ * represents (`shape.bpmnElement`). Used to assert on the generated layout —
+ * unlike {@link parseProcessTree}, which inspects the semantic element tree.
+ */
+async function parseDiShapesById(
+  xmlStr: string,
+): Promise<Map<string, DiShape>> {
+  const moddle = new BpmnModdle({});
+  const { rootElement } = await moddle.fromXML(xmlStr);
+  const definitions = rootElement as unknown as {
+    diagrams?: Array<{
+      plane?: {
+        planeElement?: Array<{
+          $type: string;
+          bpmnElement?: { id: string };
+          bounds?: DiBounds;
+        }>;
+      };
+    }>;
+  };
+  const planeElements = definitions.diagrams?.[0]?.plane?.planeElement ?? [];
+  const shapes = new Map<string, DiShape>();
+  for (const el of planeElements) {
+    if (el.$type !== 'bpmndi:BPMNShape') continue;
+    if (el.bpmnElement === undefined || el.bounds === undefined) continue;
+    shapes.set(el.bpmnElement.id, {
+      bpmnElementId: el.bpmnElement.id,
+      bounds: el.bounds,
+    });
+  }
+  return shapes;
+}
+
+/** Look up a DI shape by the id of the BPMN element it represents, or throw. */
+function requireShape(
+  shapes: Map<string, DiShape>,
+  bpmnElementId: string,
+): DiShape {
+  const shape = shapes.get(bpmnElementId);
+  if (shape === undefined) {
+    throw new Error(
+      `No bpmndi:BPMNShape found for bpmnElement id="${bpmnElementId}".`,
+    );
+  }
+  return shape;
+}
+
+/** Whether `inner` is fully, strictly contained within `outer` (no touching edges). */
+function boundsStrictlyInside(inner: DiBounds, outer: DiBounds): boolean {
+  return (
+    inner.x > outer.x &&
+    inner.y > outer.y &&
+    inner.x + inner.width < outer.x + outer.width &&
+    inner.y + inner.height < outer.y + outer.height
+  );
+}
+
+/** A parsed moddle element, navigated structurally rather than by regex. */
+interface ModdleTree {
+  $type: string;
+  id: string;
+  flowElements?: ModdleTree[];
+  incoming?: ModdleTree[];
+  outgoing?: ModdleTree[];
+  sourceRef?: ModdleTree;
+  targetRef?: ModdleTree;
+  default?: ModdleTree;
+}
+
+/**
+ * Parse a BPMN XML string with raw `bpmn-moddle` and return the root
+ * `bpmn:Process` element as a navigable tree. Used to inspect the semantic
+ * element structure (nesting, references) without asserting on DI shapes.
+ */
+async function parseProcessTree(xmlStr: string): Promise<ModdleTree> {
+  const moddle = new BpmnModdle({});
+  const { rootElement } = await moddle.fromXML(xmlStr);
+  const roots = (rootElement as unknown as { rootElements: ModdleTree[] })
+    .rootElements;
+  const proc = roots.find((e) => e.$type === 'bpmn:Process');
+  if (proc === undefined) {
+    throw new Error('No bpmn:Process found in parsed output.');
+  }
+  return proc;
+}
+
+/** Find a direct child flow element (node or flow) of a container by id. */
+function childById(container: ModdleTree, id: string): ModdleTree {
+  const found = (container.flowElements ?? []).find((e) => e.id === id);
+  if (found === undefined) {
+    throw new Error(`Child id="${id}" not found in ${container.$type}.`);
+  }
+  return found;
+}
 
 /**
  * Extract the XML block for a flow node element by its BPMN id. Works for

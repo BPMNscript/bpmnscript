@@ -1,0 +1,22 @@
+// Order handling with an embedded sub-process. The two payment steps are
+// grouped into a `subprocess` that Operaton Cockpit renders as an expanded box
+// with its children inside — the whole point of the containment construct.
+//
+// The service tasks point at the generic delegate
+// examples/spring-boot/src/main/java/com/example/demo/LogDelegate.java, so this
+// process deploys and runs on the demo profile without additional Java classes.
+
+process order-handling {
+  start OrderPlaced
+
+  user ReviewOrder "Review order" { assignee = "demo" }
+
+  subprocess Payment "Process payment" {
+    service AuthorizePayment "Authorize payment" { class = "com.example.demo.LogDelegate" }
+    service CapturePayment "Capture payment" { class = "com.example.demo.LogDelegate" }
+  }
+
+  service ShipOrder "Ship order" { class = "com.example.demo.LogDelegate" }
+
+  end OrderShipped
+}

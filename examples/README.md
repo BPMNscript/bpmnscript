@@ -16,15 +16,16 @@ The `spring-boot/` fixture runs Operaton 2.1.0 embedded in a Spring Boot 4.0.6 a
 (Java 17). It is packaged as a Docker image so the integration test harness can start
 and stop it programmatically. The fixture exposes the Operaton REST API on port 8080.
 
-Four DSL sources live under `spring-boot/processes/`:
+Five DSL sources live under `spring-boot/processes/`:
 
 - `invoice-approval.bpmnscript` — start → review user task → exclusive gateway (amount > 1000) → senior-approval or auto-approve service task → end. Exercises `if`/`else` desugaring.
 - `parallel-approval.bpmnscript` — start → parallel AND-split into two concurrent user tasks → AND-join → end. Exercises `parallel { { } { } }` desugaring.
+- `order-handling.bpmnscript` — start → review user task → an embedded `subprocess` grouping the two payment steps → ship service task → end. Exercises the sub-process containment construct; Cockpit renders the sub-process as an expanded box with its children inside.
 - `loan-approval.bpmnscript` and `loan-approval-kopp.bpmnscript` — the loan-approval walkthrough (plain and parallel-rating variants) used by the `demo` profile; see [Running processes on Operaton](spring-boot/README.md#running-processes-on-operaton-demo) for a hands-on tour of both.
 
-`invoice-approval` and `parallel-approval` are also the two processes exercised by the automated E2E suite below; the loan-approval variants are demo-only fixtures.
+`invoice-approval` and `parallel-approval` are also the two processes exercised by the automated E2E suite below; `order-handling` and the loan-approval variants are demo-only fixtures.
 
-Running `bpmns build` on any of the four files produces the deployable `.bpmn` artifact.
+Running `bpmns build` on any of the five files produces the deployable `.bpmn` artifact.
 
 ### Testcontainers harness
 

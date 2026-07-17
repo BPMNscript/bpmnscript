@@ -51,6 +51,7 @@ const STRUCTURE_SNIPPETS: Readonly<Record<string, string>> = {
   while: 'while (${1:condition}) {\n\t$0\n}',
   do: 'do {\n\t$1\n} while (${2:condition})',
   parallel: 'parallel {\n\t{\n\t\t$1\n\t}\n\t{\n\t\t$2\n\t}\n}',
+  subprocess: 'subprocess ${1:id} {\n\t$0\n}',
 };
 
 /**

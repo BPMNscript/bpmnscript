@@ -18,11 +18,13 @@
 
 import { describe, it, expect } from 'vitest';
 import type {
+  FlowContainer,
   FlowElement,
   ParallelGateway,
   ServiceTask,
   ServiceTaskBinding,
   ScriptTask,
+  SubProcess,
 } from '../../src/ir/types.js';
 import { IR_TYPE_NAMES } from '../../src/index.js';
 
@@ -54,6 +56,8 @@ function describeFlowElement(fe: FlowElement): string {
       return 'xor';
     case 'parallelGateway':
       return 'parallel';
+    case 'subProcess':
+      return 'subProcess';
     default: {
       // Exhaustiveness check: if TypeScript infers `fe` as `never` here,
       // every union variant is handled. A compile error on the line below
@@ -208,10 +212,92 @@ describe('ScriptTask — new FlowElement kind', () => {
   });
 });
 
+describe('SubProcess — recursive FlowContainer union member', () => {
+  it('a recursive SubProcess literal (children + flows) is assignable to FlowElement', () => {
+    // The body carries its own flow elements and sequence flows; the whole
+    // sub-process is itself a FlowElement. If SubProcess were not part of the
+    // union, or not a FlowContainer, TypeScript would reject this assignment.
+    const sub: FlowElement = {
+      kind: 'subProcess',
+      id: 'Handle',
+      name: 'Handle order',
+      flowElements: [
+        { kind: 'startEvent', id: 'StartEvent_Handle' },
+        { kind: 'userTask', id: 'Review', assignee: 'demo' },
+        { kind: 'endEvent', id: 'EndEvent_Handle' },
+      ],
+      sequenceFlows: [
+        {
+          id: 'Flow_Start_Review',
+          sourceRef: 'StartEvent_Handle',
+          targetRef: 'Review',
+        },
+        {
+          id: 'Flow_Review_End',
+          sourceRef: 'Review',
+          targetRef: 'EndEvent_Handle',
+        },
+      ],
+    } satisfies SubProcess;
+
+    expect(sub.kind).toBe('subProcess');
+    // The nested body is reachable and typed as a container.
+    expect(sub.kind === 'subProcess' && sub.flowElements).toHaveLength(3);
+    expect(sub.kind === 'subProcess' && sub.sequenceFlows).toHaveLength(2);
+  });
+
+  it('nests a sub-process inside a sub-process (recursion holds)', () => {
+    const outer: SubProcess = {
+      kind: 'subProcess',
+      id: 'Outer',
+      flowElements: [
+        {
+          kind: 'subProcess',
+          id: 'Inner',
+          flowElements: [{ kind: 'userTask', id: 'A' }],
+          sequenceFlows: [],
+        },
+      ],
+      sequenceFlows: [],
+    };
+
+    const inner = outer.flowElements[0];
+    expect(inner?.kind).toBe('subProcess');
+  });
+
+  it('SubProcess satisfies the FlowContainer shape', () => {
+    const sub: SubProcess = {
+      kind: 'subProcess',
+      id: 'C',
+      flowElements: [],
+      sequenceFlows: [],
+    };
+    // A SubProcess is a FlowContainer: the per-container transform passes take
+    // it by its container shape.
+    const container: FlowContainer = sub;
+    expect(container.id).toBe('C');
+  });
+
+  it('exhaustive switch includes a subProcess arm (compile-time + runtime)', () => {
+    const sub: FlowElement = {
+      kind: 'subProcess',
+      id: 'S',
+      flowElements: [],
+      sequenceFlows: [],
+    };
+    expect(describeFlowElement(sub)).toBe('subProcess');
+  });
+});
+
 describe('IR_TYPE_NAMES', () => {
   it('lists ServiceTask and ScriptTask, and no longer ServiceTaskJavaClass', () => {
     expect(IR_TYPE_NAMES).toContain('ServiceTask');
     expect(IR_TYPE_NAMES).toContain('ScriptTask');
     expect(IR_TYPE_NAMES).not.toContain('ServiceTaskJavaClass');
+  });
+
+  it('lists SubProcess and FlowContainer', () => {
+    expect(IR_TYPE_NAMES).toContain('SubProcess');
+    expect(IR_TYPE_NAMES).toContain('FlowContainer');
   });
 });

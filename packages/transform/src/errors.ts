@@ -14,12 +14,13 @@
  *
  * - event definitions on start/end events (timer, message, signal, error,
  *   terminate, …) → {@link UnsupportedEventDefinitionError};
- * - loop characteristics on a task (multi-instance or standard loop) →
- *   {@link UnsupportedLoopCharacteristicsError};
+ * - loop characteristics on a task or sub-process (multi-instance or
+ *   standard loop) → {@link UnsupportedLoopCharacteristicsError};
  * - collaborations, i.e. pools and message flows →
  *   {@link UnsupportedCollaborationError};
- * - unsupported flow-element kinds (sub-process, call activity,
- *   intermediate events, …) → {@link UnsupportedElementError};
+ * - unsupported flow-element kinds (an event sub-process, a transaction, an
+ *   ad-hoc sub-process, a call activity, intermediate events, …) →
+ *   {@link UnsupportedElementError};
  * - service tasks whose execution form the IR cannot represent (a bare task
  *   with no discriminator, or an external type without a topic) →
  *   {@link UnsupportedServiceTaskFormError};
@@ -118,9 +119,11 @@ export class UnsupportedFormFieldTypeError extends UnsupportedConstructError {
  *
  * The supported subset is `bpmn:startEvent`, `bpmn:endEvent`,
  * `bpmn:userTask`, `bpmn:serviceTask`, `bpmn:scriptTask`,
- * `bpmn:exclusiveGateway`, `bpmn:parallelGateway`, and `bpmn:sequenceFlow`.
- * Anything else (`bpmn:intermediateCatchEvent`, `bpmn:subProcess`,
- * `bpmn:callActivity`, etc.) raises this error so unsupported workflows
+ * `bpmn:exclusiveGateway`, `bpmn:parallelGateway`, an embedded
+ * `bpmn:subProcess`, and `bpmn:sequenceFlow`. Anything else
+ * (`bpmn:intermediateCatchEvent`, `bpmn:callActivity`, an event
+ * sub-process with `triggeredByEvent="true"`, `bpmn:transaction`,
+ * `bpmn:adHocSubProcess`, etc.) raises this error so unsupported workflows
  * fail loudly at import.
  */
 export class UnsupportedElementError extends UnsupportedConstructError {
@@ -135,7 +138,8 @@ export class UnsupportedElementError extends UnsupportedConstructError {
         (elementId ? ` (id='${elementId}')` : '') +
         ' is a kind that this tool cannot import. ' +
         'Only start/end events, user tasks, service tasks, script tasks, ' +
-        'exclusive gateways, parallel gateways, and sequence flows are supported.',
+        'exclusive gateways, parallel gateways, embedded sub-processes, ' +
+        'and sequence flows are supported.',
     );
     this.name = 'UnsupportedElementError';
     this.qname = qname;
@@ -178,12 +182,13 @@ export class UnsupportedEventDefinitionError extends UnsupportedConstructError {
 }
 
 /**
- * Thrown by {@link xmlToIr} when a task carries loop characteristics —
- * either a multi-instance marker or a standard loop. The IR models tasks
- * that run exactly once, so repetition semantics cannot be represented.
+ * Thrown by {@link xmlToIr} when a task or sub-process carries loop
+ * characteristics — either a multi-instance marker or a standard loop. The
+ * IR models elements that run exactly once, so repetition semantics cannot
+ * be represented.
  */
 export class UnsupportedLoopCharacteristicsError extends UnsupportedConstructError {
-  /** The BPMN `id` of the offending task. */
+  /** The BPMN `id` of the offending element. */
   readonly elementId: string;
   /**
    * The moddle `$type` of the loop characteristics, e.g.
@@ -194,8 +199,8 @@ export class UnsupportedLoopCharacteristicsError extends UnsupportedConstructErr
 
   constructor(elementId: string, loopType: string) {
     super(
-      `The task '${elementId}' repeats (${friendlyLoopType(loopType)}: ${loopType}), ` +
-        'which this tool cannot import. Only tasks that run once are supported.',
+      `The element '${elementId}' repeats (${friendlyLoopType(loopType)}: ${loopType}), ` +
+        'which this tool cannot import. Only elements that run once are supported.',
     );
     this.name = 'UnsupportedLoopCharacteristicsError';
     this.elementId = elementId;

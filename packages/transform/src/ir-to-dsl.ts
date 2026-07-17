@@ -4,8 +4,8 @@
  * The inverse of the desugaring `astToIr`: it turns the **flat,
  * BPMN-shaped** {@link BpmnProcess} IR back into **structured** source —
  * `if`/`else if`/`else`, `while`, `do … while`, `parallel { { } { } }`,
- * explicit `start`/`end`, and `goto` — that re-parses through the grammar
- * and re-desugars to an equivalent IR.
+ * `subprocess { … }`, explicit `start`/`end`, and `goto` — that re-parses
+ * through the grammar and re-desugars to an equivalent IR.
  *
  * ## How it works
  * Structure is recovered from a **dominator / post-dominator** analysis
@@ -51,6 +51,7 @@
 
 import type {
   BpmnProcess,
+  FlowContainer,
   FlowElement,
   FormField,
   FormFieldType,
@@ -81,10 +82,20 @@ export function irToDsl(process: BpmnProcess): string {
 // ---------------------------------------------------------------------------
 
 /**
- * Stateful restructuring pass over one process. Holds the CFG analysis, the
- * element/flow lookup tables, and the "consumed" bookkeeping (which nodes have
- * been emitted, which edges have been realized as structured flow) that the
- * `goto` fallback relies on.
+ * Stateful restructuring pass over one {@link FlowContainer}. Holds the CFG
+ * analysis, the element/flow lookup tables, and the "consumed" bookkeeping
+ * (which nodes have been emitted, which edges have been realized as structured
+ * flow) that the `goto` fallback relies on.
+ *
+ * ## One Emitter per container
+ * The Emitter operates on a single container's own `flowElements` /
+ * `sequenceFlows`. A sub-process's body lives in the child container's arrays,
+ * so the parent's CFG never sees inside it: the parent treats the sub-process
+ * as one opaque activity node (incoming flow lands on it, fall-through leaves
+ * it), and a fresh Emitter over the child container restructures the body
+ * independently. This keeps the dominator-based restructuring correct across
+ * the boundary — cross-container edges cannot exist, so no region ever spans
+ * two containers.
  */
 class Emitter {
   private readonly cfg: CfgAnalysis;
@@ -96,21 +107,21 @@ class Emitter {
   /** Flow ids already realized as structured flow (not needing a goto). */
   private readonly consumedFlows = new Set<string>();
 
-  constructor(private readonly process: BpmnProcess) {
-    this.cfg = analyzeCfg(process);
-    for (const el of process.flowElements) {
+  constructor(private readonly container: FlowContainer) {
+    this.cfg = analyzeCfg(container);
+    for (const el of container.flowElements) {
       // Duplicate element ids would silently overwrite the lookup table and
       // corrupt the structured walk. The desugarer guarantees unique
       // ids via collision resolution, so a duplicate here means malformed IR —
       // fail loudly rather than emit a wrong process.
       if (this.byId.has(el.id)) {
         throw new Error(
-          `irToDsl: duplicate flow element id '${el.id}' in process '${process.id}'.`,
+          `irToDsl: duplicate flow element id '${el.id}' in container '${container.id}'.`,
         );
       }
       this.byId.set(el.id, el);
     }
-    for (const f of process.sequenceFlows) {
+    for (const f of container.sequenceFlows) {
       const list = this.out.get(f.sourceRef) ?? [];
       list.push(f);
       this.out.set(f.sourceRef, list);
@@ -128,7 +139,7 @@ class Emitter {
 
     // 1. Emit from each start event in IR order. A start event roots a
     //    reachable region; the recursive walk emits the structured form.
-    for (const el of this.process.flowElements) {
+    for (const el of this.container.flowElements) {
       if (el.kind === 'startEvent' && !this.emittedNodes.has(el.id)) {
         this.emitFrom(el.id, undefined, lines, 0);
       }
@@ -136,7 +147,7 @@ class Emitter {
 
     // 2. Emit any node not yet reached (orphaned fragments in a hand-built /
     //    irreducible IR). Each becomes its own little chain so no node is lost.
-    for (const el of this.process.flowElements) {
+    for (const el of this.container.flowElements) {
       if (!this.emittedNodes.has(el.id)) {
         this.emitFrom(el.id, undefined, lines, 0);
       }
@@ -146,7 +157,7 @@ class Emitter {
     //    emitted as an explicit `goto` from the (already-emitted) source.
     //    Placed at the end of the body — a `goto` statement may appear
     //    anywhere and references the target by id.
-    for (const f of this.process.sequenceFlows) {
+    for (const f of this.container.sequenceFlows) {
       if (!this.consumedFlows.has(f.id)) {
         this.consumedFlows.add(f.id);
         lines.push(`goto ${f.targetRef}`);
@@ -243,6 +254,20 @@ class Emitter {
     if (el.kind === 'scriptTask') {
       this.emittedNodes.add(id);
       lines.push(renderScriptTask(el));
+      return this.followLinear(id, stop, lines, depth);
+    }
+
+    // A sub-process is an opaque activity in this container's graph: its body
+    // lives in the child container's own arrays, invisible to this Emitter's
+    // CFG. Emit it as a `subprocess <id> { … }` line group — the opening line
+    // (a normal DSL line the caller indents), the child container's body
+    // restructured by a fresh Emitter and indented one level, then the closing
+    // brace — and continue the parent chain from its single fall-through edge.
+    if (el.kind === 'subProcess') {
+      this.emittedNodes.add(id);
+      lines.push(`subprocess ${id}${labelSuffix(el.name)} {`);
+      for (const l of new Emitter(el).emit()) lines.push(INDENT + l);
+      lines.push('}');
       return this.followLinear(id, stop, lines, depth);
     }
 
@@ -828,6 +853,12 @@ class Emitter {
         // A script task has no single-line form: its opaque fenced body is
         // emitted as a multi-line group in `emitNode`, which never reaches this
         // switch for a scriptTask. Listed for exhaustiveness so a new kind is
+        // caught by the type checker.
+        return undefined;
+      case 'subProcess':
+        // A sub-process has no single-line form: it is emitted as a multi-line
+        // `subprocess <id> { … }` group in `emitNode`, which never reaches this
+        // switch for a subProcess. Listed for exhaustiveness so a new kind is
         // caught by the type checker.
         return undefined;
       case 'exclusiveGateway':

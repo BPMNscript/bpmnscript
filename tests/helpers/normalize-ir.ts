@@ -57,10 +57,24 @@
  * After inlining the join, re-keying every gateway/flow id to its structural
  * (source→target) form, and stripping the elided gateway name, both halves
  * collapse to an identical `BpmnProcess`.
+ *
+ * ─────────────────────────────────────────────────────────────────────────
+ * **Recursion into sub-process containers.** A `subProcess` flow element is
+ * itself a container — its own `flowElements`/`sequenceFlows` describe the
+ * nested body, and those flows never cross the container boundary. The four
+ * canonicalizations above are therefore *per-container*: each nested container
+ * needs the same join-inlining, gateway re-keying, flow re-keying, and sorting
+ * applied to its own arrays, independently, at every depth. {@link normalizeIr}
+ * delegates to {@link normalizeContainer}, which recurses into each nested
+ * sub-process. The sub-process id itself is an authored name (never
+ * gateway-shaped), so it is never re-keyed — only its children are. For a
+ * container with no sub-processes the recursion never fires, so flat-IR
+ * normalization is byte-identical to before.
  */
 
 import type {
   BpmnProcess,
+  FlowContainer,
   FlowElement,
   SequenceFlow,
 } from '@bpmn-script/transform';
@@ -103,9 +117,27 @@ const GATEWAY_KINDS = new Set<FlowElement['kind']>([
  * @returns A new normalized copy of the IR.
  */
 export function normalizeIr(ir: BpmnProcess): BpmnProcess {
+  return normalizeContainer(ir);
+}
+
+/**
+ * Normalize a single {@link FlowContainer} (the root process or a nested
+ * sub-process) and, recursively, every sub-process it contains.
+ *
+ * Applies the four canonicalizations to this container's own arrays and then
+ * descends into each `subProcess` child, so the whole containment tree is
+ * normalized bottom-up. Generic over the container type so the root call
+ * returns a `BpmnProcess` and the recursive call returns a `SubProcess`,
+ * preserving each container's own extra fields (`name`, `isExecutable`, `kind`)
+ * through the spread.
+ *
+ * @param container - The container to normalize.
+ * @returns A new normalized copy of the container.
+ */
+function normalizeContainer<T extends FlowContainer>(container: T): T {
   // Make synthesized pass-through joins transparent so both halves have the
   // same flow-element/flow set before any re-keying.
-  const inlined = inlinePassThroughJoins(ir);
+  const inlined = inlinePassThroughJoins(container);
 
   // Derive a canonical structural id for every gateway element so the
   // hand-named gateway and the synthesized gateway map identically.
@@ -117,6 +149,11 @@ export function normalizeIr(ir: BpmnProcess): BpmnProcess {
   // gateway `name` (only gateways; see below).
   const flowElements: FlowElement[] = inlined.flowElements
     .map((fe) => {
+      // A nested container is normalized recursively: its body is its own
+      // node/edge set, so it gets the identical per-container pipeline at its
+      // own depth. The sub-process id is an authored name (never
+      // gateway-shaped), so it is preserved verbatim, not re-keyed.
+      if (fe.kind === 'subProcess') return normalizeContainer(fe);
       if (!GATEWAY_KINDS.has(fe.kind)) return fe;
       const id = canonicalId(fe.id);
 
@@ -149,11 +186,14 @@ export function normalizeIr(ir: BpmnProcess): BpmnProcess {
     .map((sf) => normalizeFlow(sf, canonicalId))
     .sort((a, b) => a.id.localeCompare(b.id));
 
+  // The spread preserves every field of the concrete container (`name`,
+  // `isExecutable`, `kind`) and overrides only the two normalized arrays, so
+  // the result genuinely is a `T`; the assertion just tells the compiler that.
   return {
-    ...ir,
+    ...container,
     flowElements,
     sequenceFlows,
-  };
+  } as T;
 }
 
 /**
@@ -167,10 +207,14 @@ export function normalizeIr(ir: BpmnProcess): BpmnProcess {
  * {@link SYNTHESIZED_JOIN_ID}, and it has exactly one outgoing flow and at
  * least one incoming flow.
  *
- * @param ir - The IR to inline joins in.
- * @returns A new IR with pass-through joins removed and flows redirected.
+ * Operates on a single container's own arrays; {@link normalizeContainer}
+ * calls it once per container as it recurses, so a join is only ever inlined
+ * against the sibling flows of its own container.
+ *
+ * @param ir - The container to inline joins in.
+ * @returns A new container with pass-through joins removed and flows redirected.
  */
-function inlinePassThroughJoins(ir: BpmnProcess): BpmnProcess {
+function inlinePassThroughJoins(ir: FlowContainer): FlowContainer {
   // Identify the inlinable joins and remember each one's single successor.
   const successorOf = new Map<string, string>();
   for (const fe of ir.flowElements) {
@@ -222,10 +266,10 @@ function inlinePassThroughJoins(ir: BpmnProcess): BpmnProcess {
  * (`#1`, `#2`, …) assigned in `flowElements` order, so distinct gateways
  * always get distinct canonical ids.
  *
- * @param ir - The (already join-inlined) IR.
+ * @param ir - The (already join-inlined) container.
  * @returns Map of `originalGatewayId → canonicalGatewayId`.
  */
-function buildGatewayCanonicalIds(ir: BpmnProcess): Map<string, string> {
+function buildGatewayCanonicalIds(ir: FlowContainer): Map<string, string> {
   const map = new Map<string, string>();
   // Track how many gateways have already claimed each structural signature, so a
   // second occurrence gets a distinct positional suffix instead of overwriting.

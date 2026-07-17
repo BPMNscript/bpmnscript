@@ -13,6 +13,7 @@
  */
 
 export type {
+  FlowContainer,
   BpmnProcess,
   FlowElement,
   StartEvent,
@@ -22,6 +23,7 @@ export type {
   ScriptTask,
   ExclusiveGateway,
   ParallelGateway,
+  SubProcess,
   SequenceFlow,
 } from './ir/types.js';
 
@@ -60,6 +62,7 @@ export { irToDsl } from './ir-to-dsl.js';
  * Useful for introspection and validates that the module loaded correctly.
  */
 export const IR_TYPE_NAMES = [
+  'FlowContainer',
   'BpmnProcess',
   'FlowElement',
   'StartEvent',
@@ -69,5 +72,6 @@ export const IR_TYPE_NAMES = [
   'ScriptTask',
   'ExclusiveGateway',
   'ParallelGateway',
+  'SubProcess',
   'SequenceFlow',
 ] as const;

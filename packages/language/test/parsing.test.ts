@@ -29,10 +29,12 @@ import type {
   ParallelStatement,
   GotoStatement,
   StartEvent,
+  EndEvent,
   UserTask,
   ServiceTask,
   ExternalTask,
   ScriptTask,
+  SubProcess,
   Relational,
   VarRef,
   Ternary,
@@ -257,6 +259,80 @@ describe('Parsing — parallel', () => {
     const source = `process p { parallel { { user A } } }`;
     const document = await parse(source);
     expect(document.parseResult.parserErrors.length).toBeGreaterThan(0);
+  });
+});
+
+// ── subprocess ────────────────────────────────────────────────────────────
+
+describe('Parsing — subprocess', () => {
+  test('a labeled subprocess parses into a SubProcess with a body statement', async () => {
+    const source = `process p { subprocess Handle "Handle order" { user Review { assignee = "demo" } } }`;
+    const document = await parse(source);
+    expect(formatParseFailure(document)).toBeUndefined();
+    const sub = document.parseResult.value.processes[0]!
+      .body[0] as SubProcess;
+    expect(sub.$type).toBe('SubProcess');
+    expect(sub.name).toBe('Handle');
+    expect(sub.label).toBe('Handle order');
+    expect(sub.body.statements).toHaveLength(1);
+    expect(sub.body.statements[0]!.$type).toBe('UserTask');
+  });
+
+  test('explicit start/end inside the body parse as ordinary StartEvent/EndEvent', async () => {
+    const source = `process p { subprocess S { start In user A end Out } }`;
+    const document = await parse(source);
+    expect(formatParseFailure(document)).toBeUndefined();
+    const sub = document.parseResult.value.processes[0]!
+      .body[0] as SubProcess;
+    expect(sub.body.statements.map((s) => s.$type)).toEqual([
+      'StartEvent',
+      'UserTask',
+      'EndEvent',
+    ]);
+    expect((sub.body.statements[0] as StartEvent).name).toBe('In');
+    expect((sub.body.statements[2] as EndEvent).name).toBe('Out');
+  });
+
+  test('a subprocess nests inside a subprocess', async () => {
+    const source = `process p { subprocess Outer { subprocess Inner { user A } } }`;
+    const document = await parse(source);
+    expect(formatParseFailure(document)).toBeUndefined();
+    const outer = document.parseResult.value.processes[0]!
+      .body[0] as SubProcess;
+    expect(outer.name).toBe('Outer');
+    const inner = outer.body.statements[0] as SubProcess;
+    expect(inner.$type).toBe('SubProcess');
+    expect(inner.name).toBe('Inner');
+    expect(inner.body.statements[0]!.$type).toBe('UserTask');
+  });
+
+  test('a subprocess nests inside an if block', async () => {
+    const source = `process p { if (a) { subprocess S { user A } } }`;
+    const document = await parse(source);
+    expect(formatParseFailure(document)).toBeUndefined();
+    const ifSt = document.parseResult.value.processes[0]!
+      .body[0] as IfStatement;
+    const sub = ifSt.then.statements[0] as SubProcess;
+    expect(sub.$type).toBe('SubProcess');
+    expect(sub.name).toBe('S');
+  });
+
+  test('an empty subprocess body parses with zero statements', async () => {
+    const source = `process p { subprocess S { } }`;
+    const document = await parse(source);
+    expect(formatParseFailure(document)).toBeUndefined();
+    const sub = document.parseResult.value.processes[0]!
+      .body[0] as SubProcess;
+    expect(sub.body.statements).toHaveLength(0);
+  });
+
+  test('a subprocess without a label leaves label undefined', async () => {
+    const source = `process p { subprocess S { } }`;
+    const document = await parse(source);
+    expect(formatParseFailure(document)).toBeUndefined();
+    const sub = document.parseResult.value.processes[0]!
+      .body[0] as SubProcess;
+    expect(sub.label).toBeUndefined();
   });
 });
 

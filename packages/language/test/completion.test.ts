@@ -159,9 +159,21 @@ describe('structural keyword snippets', () => {
         'while',
         'do',
         'parallel',
+        'subprocess',
         'goto',
       ]),
     );
+  });
+
+  test('`subprocess` is offered as a snippet that scaffolds a brace body', async () => {
+    const item = (await completionItems('process p {\n  \n}', 1, 2)).find(
+      (i) => i.label === 'subprocess',
+    );
+    expect(item?.insertTextFormat).toBe(InsertTextFormat.Snippet);
+    const text = inserted(item!)!;
+    expect(text).toContain('${1:id}');
+    expect(text).toContain('{');
+    expect(text).toContain('}');
   });
 });
 

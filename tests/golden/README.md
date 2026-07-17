@@ -6,8 +6,10 @@ every run. The three invoice-approval files here all describe the same process �
 start → review → gateway (amount > 1000?) → senior approval or auto-approve → end —
 but they come from different sources and drive the tests in different directions.
 Two additional construct fixtures (`structured-control-flow.bpmnscript` and
-`unstructured-goto.bpmn`) exercise the round-trip and goto-degradation paths, and
-`bad-service-task-no-binding.bpmn` is the negative-path fixture for the import refusal path.
+`unstructured-goto.bpmn`) exercise the round-trip and goto-degradation paths, the
+`nested-subprocess.{bpmnscript,bpmn}` pair exercises the embedded sub-process
+round-trip, and `bad-service-task-no-binding.bpmn` is the negative-path fixture for
+the import refusal path.
 
 ## `invoice-approval-handwritten.bpmn`
 
@@ -89,6 +91,47 @@ restructurable gateway shape and survives a full round-trip:
 Every flow node carries an explicit id so the round-trip can assert authored ids
 survive; synthesized gateway/flow ids follow the frozen deterministic scheme
 (`Gateway_<coord>_split|join|loop|fork`, `Flow_<gateway>_default`).
+
+## `nested-subprocess.bpmnscript` and `nested-subprocess.bpmn`
+
+A golden **pair** for the embedded sub-process feature: a BPMNscript source and
+the frozen BPMN XML the full pipeline produces from it. The source is an
+order-fulfillment process that groups its stages into `subprocess` blocks —
+one sub-process with an implicit start/end wrapping an `if`/`else`, a labelled
+sub-process with an explicit start/end wrapping a `while`, and a two-level
+nested sub-process — with an explicit id on every named node so the round-trip
+can assert authored ids survive at their correct container depth.
+
+`nested-subprocess.bpmnscript` is the **input**, and `nested-subprocess.bpmn` is
+the **frozen output of the full pipeline** (`irToXml(astToIr(parse(source)))`,
+services wired exactly as `tests/round-trip.test.ts` does). The round-trip test
+`tests/nested-subprocess.round-trip.test.ts` drives the pair both directions:
+it reproduces the pipeline and compares byte-for-byte against the frozen `.bpmn`,
+round-trips the source through XML and back asserting IR equivalence (through the
+recursive `normalizeIr`), imports the frozen `.bpmn` warning-free, and asserts
+every nested child shape's DI bounds fall strictly inside its parent
+sub-process's bounds (the `isExpanded` layout hint from `irToXml`).
+
+Because it is the desugared output, each sub-process carries synthesized
+positional gateway ids (`Gateway_order-fulfillment_2_0_split`/`…_join`,
+`Gateway_order-fulfillment_3_1_loop`) and name-seeded implicit events
+(`StartEvent_Payment`, `EndEvent_Payment`, …), while every authored id
+(`Payment`, `Fulfillment`, `Shipping`, the tasks, the explicit events) survives
+verbatim.
+
+If you change the parser, the desugarer, or `irToXml` in a way that _should_
+alter the output (new attribute, different formatting, layout-library upgrade,
+id-scheme change), regenerate this file:
+
+1. Run the full pipeline on the source:
+   `irToXml(astToIr(parse(nested-subprocess.bpmnscript)))`, wiring the Langium
+   services exactly as `tests/round-trip.test.ts` does
+   (`createBpmnScriptServices(EmptyFileSystem)` + `parseHelper`).
+2. Write the returned string to `nested-subprocess.bpmn`.
+3. Inspect the diff to confirm every change is intended — the containment
+   contract (each sub-process `isExpanded="true"`; nested children inside their
+   parent's bounds; authored ids unchanged) must stay intact; only synthesized
+   gateway/flow ids and layout coordinates may move.
 
 ## `unstructured-goto.bpmn`
 

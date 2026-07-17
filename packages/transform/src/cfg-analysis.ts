@@ -2,10 +2,12 @@
  * CFG analysis utility — dominators, post-dominators, and back-edges.
  *
  * This is pure graph machinery with **no DSL knowledge**. It builds a
- * control-flow graph (CFG) from a {@link BpmnProcess} (nodes = flow
+ * control-flow graph (CFG) from a {@link FlowContainer} (nodes = flow
  * elements, edges = sequence flows), then answers the dominance and
  * back-edge queries the restructuring `irToDsl` pattern catalogue
- * needs to recognize structured regions.
+ * needs to recognize structured regions. It reads only a container's
+ * `flowElements`/`sequenceFlows`, so it runs identically on a whole process
+ * or on a single sub-process body.
  *
  * ## What the catalogue gets
  * - `immediateDominator(n)` / `immediatePostDominator(n)`
@@ -47,7 +49,7 @@
  * reach the virtual exit has no immediate post-dominator.
  */
 
-import type { BpmnProcess, SequenceFlow } from './ir/types.js';
+import type { FlowContainer, SequenceFlow } from './ir/types.js';
 
 /** The synthetic single source over all start events. */
 export const VIRTUAL_ENTRY = '__cfg_entry__';
@@ -102,11 +104,11 @@ export interface CfgAnalysis {
 }
 
 /**
- * Build the CFG and dominator / post-dominator trees for `process` and
+ * Build the CFG and dominator / post-dominator trees for `container` and
  * return the query surface. Pure — no I/O, no mutation of the input.
  */
-export function analyzeCfg(process: BpmnProcess): CfgAnalysis {
-  const graph = buildGraph(process);
+export function analyzeCfg(container: FlowContainer): CfgAnalysis {
+  const graph = buildGraph(container);
 
   // Forward dominators: rooted at the virtual entry.
   const idom = computeIdom(graph.succ, graph.pred, VIRTUAL_ENTRY);
@@ -129,7 +131,7 @@ export function analyzeCfg(process: BpmnProcess): CfgAnalysis {
     backEdges() {
       // A back-edge is u → v where v dominates u. Only real flows qualify:
       // the sentinel edges have no SequenceFlow and never loop.
-      return process.sequenceFlows.filter((f) =>
+      return container.sequenceFlows.filter((f) =>
         dominates(f.targetRef, f.sourceRef),
       );
     },
@@ -162,11 +164,11 @@ interface Graph {
  * {@link SequenceFlow} list — used for back-edge detection — keeps every
  * original edge.
  */
-function buildGraph(process: BpmnProcess): Graph {
+function buildGraph(container: FlowContainer): Graph {
   const succ = new Map<string, string[]>();
   const pred = new Map<string, string[]>();
 
-  const nodeIds = process.flowElements.map((e) => e.id);
+  const nodeIds = container.flowElements.map((e) => e.id);
   const realNodes = new Set(nodeIds);
 
   const ensure = (id: string) => {
@@ -187,7 +189,7 @@ function buildGraph(process: BpmnProcess): Graph {
 
   // Real edges. Skip flows referencing unknown ids so a malformed IR
   // cannot throw here.
-  for (const f of process.sequenceFlows) {
+  for (const f of container.sequenceFlows) {
     if (!realNodes.has(f.sourceRef) || !realNodes.has(f.targetRef)) continue;
     addEdge(f.sourceRef, f.targetRef);
   }
@@ -201,8 +203,8 @@ function buildGraph(process: BpmnProcess): Graph {
   // to the entry when a start event exists: such a node is genuinely
   // **unreachable** from the process entry, and the dominance queries must
   // reflect that (it has no immediate dominator). See the module docs.
-  const hasAnyStart = process.flowElements.some((e) => e.kind === 'startEvent');
-  for (const el of process.flowElements) {
+  const hasAnyStart = container.flowElements.some((e) => e.kind === 'startEvent');
+  for (const el of container.flowElements) {
     const hasRealPred = pred.get(el.id)!.length > 0;
     if (el.kind === 'startEvent') {
       addEdge(VIRTUAL_ENTRY, el.id);
@@ -216,7 +218,7 @@ function buildGraph(process: BpmnProcess): Graph {
   // the post-dominator analysis could not see, so even orphaned/unreachable
   // nodes drain to the exit; this keeps the post-dominator tree well-formed
   // and the virtual sink the post-dominator of every real end.
-  for (const el of process.flowElements) {
+  for (const el of container.flowElements) {
     const hasRealSucc = succ.get(el.id)!.length > 0;
     if (el.kind === 'endEvent' || !hasRealSucc) addEdge(el.id, VIRTUAL_EXIT);
   }

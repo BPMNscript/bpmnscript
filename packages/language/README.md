@@ -38,6 +38,7 @@ import type {
   DoWhileStatement,
   ParallelStatement,
   GotoStatement,
+  SubProcess,
   StartEvent,
   EndEvent,
   UserTask,
@@ -72,7 +73,7 @@ process invoice-approval {
 }
 ```
 
-Supported statements: `start`, `end`, `user` (attribute block: `assignee`, `formKey`), `service` (attribute block: exactly one of `class`, `expression`, or `delegate` — `class` is a Java delegate class name, `expression` maps to `operaton:expression`, `delegate` is a friendly alias for `operaton:delegateExpression`), `external` (attribute block: `topic`, delegates to an external worker via `operaton:type="external"` + `operaton:topic`), `script` (a markdown-style fenced body opened by a language tag, e.g. ` ```js … ``` `, mapping to `bpmn:scriptTask`; supported tags are `javascript`/`js`, `groovy`, `python`/`py`, `ruby`/`rb`, and `feel`), `if`/`else if`/`else`, `while (cond) { }`, `do { } while (cond)`, `parallel { { } { } }`, `goto <id>`. Every targetable statement carries an explicit `id` (e.g. `user ReviewInvoice`). The human-readable BPMN `name` is derived from the id when no label is given (`ReviewInvoice` → "Review Invoice"); an optional quoted label after the id overrides it (e.g. `user ReviewInvoice "Review invoice"`).
+Supported statements: `start`, `end`, `user` (attribute block: `assignee`, `formKey`), `service` (attribute block: exactly one of `class`, `expression`, or `delegate` — `class` is a Java delegate class name, `expression` maps to `operaton:expression`, `delegate` is a friendly alias for `operaton:delegateExpression`), `external` (attribute block: `topic`, delegates to an external worker via `operaton:type="external"` + `operaton:topic`), `script` (a markdown-style fenced body opened by a language tag, e.g. ` ```js … ``` `, mapping to `bpmn:scriptTask`; supported tags are `javascript`/`js`, `groovy`, `python`/`py`, `ruby`/`rb`, and `feel`), `if`/`else if`/`else`, `while (cond) { }`, `do { } while (cond)`, `parallel { { } { } }`, `goto <id>`, `subprocess <id> "<label>"? { }` (a nested flow container mapping to `bpmn:subProcess`; its body is a plain statement block using the same construct vocabulary as a process body — including a nested `subprocess` — and renders expanded, with its children inside the parent's bounds, in BPMN viewers). Every targetable statement carries an explicit `id` (e.g. `user ReviewInvoice`), including `subprocess` — a sequence flow (or `goto`) may target a sub-process in the same container by its id, the same way it targets any other step. The human-readable BPMN `name` is derived from the id when no label is given (`ReviewInvoice` → "Review Invoice"); an optional quoted label after the id overrides it (e.g. `user ReviewInvoice "Review invoice"`).
 
 Condition expressions are parsed as a real AST (JUEL native subset): integer/decimal/string/boolean/null literals, variable references with dot-property and index accessors, unary `!`/`-`, binary arithmetic and comparison operators, logical `&&`/`||`, ternary `? :`, and parentheses. Expressions outside this subset use the quoted raw fallback `"${…}"`.
 
@@ -87,14 +88,16 @@ The structural validator in `src/bpmn-script-validator.ts` reports:
 - **Error** — an `external` task with no `topic` attribute.
 - **Error** — a `script` task whose fence language tag is not one of the supported aliases, or whose body is empty.
 - **Warning** — a process body with no executable statements.
+- **Warning** — an empty `subprocess` body (zero statements) — the same empty-body warning a process gets.
 - **Error** — a `process` name reused by a later `process` in the same file.
 - **Error** — a `var` name declared twice in one process.
 - **Error** — a second `label = "…"` declaration in one process.
-- **Error** — a step name (`start`/`end`/`user`/`service`/`external`/`script`) reused by another step in the same process, which would make `goto` ambiguous.
+- **Error** — a step name (`start`/`end`/`user`/`service`/`external`/`script`/`subprocess`) reused by another step anywhere in the same process — even across a sub-process boundary — which would make `goto` ambiguous; BPMN ids must be document-unique, so this stays a whole-process check regardless of the container-scoped `goto` rule below.
 - **Warning** — an empty `if`/`else if`/`else` branch, `while`/`do … while` body, or `parallel` branch (zero statements — syntactically legal, almost always a mistake).
 - **Error** — a `goto` that reaches into a `parallel` branch from outside that branch's subtree; a branch's steps only run when the whole `parallel` statement is reached.
+- **Error** — an explicit `start` anywhere other than the first statement of its process or subprocess body: later in the same container's statement list, or nested inside an `if`/`while`/`do … while`/`parallel` block at any position, is rejected (a start event cannot have incoming flows). A `start` opening a `subprocess` body is valid in the same way one opening a `process` body is.
 
-`goto` targets are resolved by a custom `ScopeProvider` (`src/bpmn-script-scope-provider.ts`) that limits a `goto` to the steps of its own enclosing process, at any block-nesting depth — a `goto` can never resolve into another process's steps, even when both are declared in the same file. Using a reserved keyword where an identifier is expected (e.g. `if (date > deadline)`) is caught by a custom `ParserErrorMessageProvider` (`src/bpmn-script-parser-error-message-provider.ts`), which names the offending word and points to the quoted `"${…}"` raw-expression fallback instead of surfacing Chevrotain's raw token-mismatch message.
+`goto` targets are resolved by a custom `ScopeProvider` (`src/bpmn-script-scope-provider.ts`) that limits a `goto` to the steps of its own nearest enclosing *container* — the `process` or the `subprocess` it directly sits in — at any block-nesting depth within that container. A `goto` can therefore never resolve into another process's steps, into a sibling or nested `subprocess`'s interior, or out to the parent process from inside a `subprocess`, even when both are declared in the same file; a `subprocess` statement is itself a valid `goto` target, resolved from its own container, the same way any other step is. This mirrors BPMN's rule that a sequence flow cannot cross a sub-process boundary. A cross-boundary `goto` therefore fails to resolve — and a custom `Linker` (`src/bpmn-script-linker.ts`) replaces Langium's generic "could not resolve reference" message with a boundary explanation naming the sub-process the target lives inside or outside of (e.g. `'X' is inside subprocess 'Y'; a goto cannot cross a sub-process boundary.`) whenever the referenced name exists elsewhere in the process; the generic message is left unchanged when the name exists nowhere at all. Using a reserved keyword where an identifier is expected (e.g. `if (date > deadline)`) is caught by a custom `ParserErrorMessageProvider` (`src/bpmn-script-parser-error-message-provider.ts`), which names the offending word and points to the quoted `"${…}"` raw-expression fallback instead of surfacing Chevrotain's raw token-mismatch message.
 
 ## Build and test
 
@@ -116,7 +119,8 @@ The `langium:generate` and `langium:watch` scripts are also available for IDE-on
 | -------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
 | `src/bpmn-script.langium`                          | Grammar definition (structured statement syntax)                                                                        |
 | `src/bpmn-script-validator.ts`                     | AST-level validator: undeclared variables, type mismatches, duplicate attrs, empty body, whole-process integrity checks |
-| `src/bpmn-script-scope-provider.ts`                | `ScopeProvider` override: resolves `goto` targets within the enclosing process only                                     |
+| `src/bpmn-script-scope-provider.ts`                | `ScopeProvider` override: resolves `goto` targets within the enclosing process/subprocess container only                |
+| `src/bpmn-script-linker.ts`                        | `Linker` override: replaces the unresolved-`goto`-target message with a sub-process boundary explanation                |
 | `src/bpmn-script-parser-error-message-provider.ts` | `ParserErrorMessageProvider` override: reserved-word-as-identifier guidance                                             |
 | `src/bpmn-script-completion.ts`                    | `CompletionProvider` override: snippet completions for structural keywords (`process`, `user`, `if`, …)                 |
 | `src/bpmn-script-module.ts`                        | Langium dependency injection wiring                                                                                     |
@@ -127,6 +131,6 @@ The `langium:generate` and `langium:watch` scripts are also available for IDE-on
 | `syntaxes/`                                        | TextMate grammar (git-ignored, generated by `langium generate`)                                                         |
 | `test/parsing.test.ts`                             | Grammar/parsing suite (canonical fixture, control-flow constructs, lexer edge cases)                                    |
 | `test/validating.test.ts`                          | Validator suite (undeclared vars, type mismatches, duplicate attrs, whole-process integrity checks)                     |
-| `test/scoping.test.ts`                             | `goto` process-scoping suite and reserved-word parse-error guidance                                                     |
+| `test/scoping.test.ts`                             | `goto` container-scoping suite (process and subprocess), the sub-process boundary diagnostic, and reserved-word parse-error guidance |
 | `test/completion.test.ts`                          | Snippet-completion suite                                                                                                |
 | `test/variables.test.ts`                           | `VariableSymbolProvider` suite                                                                                          |

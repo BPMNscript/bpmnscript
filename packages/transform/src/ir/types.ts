@@ -16,7 +16,29 @@
  */
 
 /**
- * The root IR node. Represents a single executable BPMN process.
+ * A structural container of flow: a set of {@link FlowElement} nodes plus the
+ * {@link SequenceFlow} edges connecting them, addressed by a document-unique
+ * `id`. Both the root {@link BpmnProcess} and an embedded {@link SubProcess}
+ * are containers, so every per-container transform pass — CFG analysis,
+ * incoming/outgoing wiring, gateway defaults, restructuring — operates on this
+ * shape rather than on the process alone.
+ *
+ * Sequence flows never cross a container boundary: an edge's `sourceRef` and
+ * `targetRef` always name elements of the same container, which is why a
+ * parent can treat a nested container as one opaque activity node.
+ */
+export interface FlowContainer {
+  /** The BPMN `id` attribute. Document-unique across the definitions (an XML ID). */
+  id: string;
+  /** All flow nodes (start/end events, tasks, gateways, sub-processes). */
+  flowElements: FlowElement[];
+  /** All sequence flows connecting this container's flow elements. */
+  sequenceFlows: SequenceFlow[];
+}
+
+/**
+ * The root IR node. Represents a single executable BPMN process, and is the
+ * top-level {@link FlowContainer}.
  *
  * `isExecutable` is always `true` — the DSL targets Operaton, which
  * requires executable processes.
@@ -24,17 +46,11 @@
  * `operaton:historyTimeToLive` is emitted as `"P30D"` at serialization
  * and is therefore intentionally absent from the IR.
  */
-export interface BpmnProcess {
-  /** The BPMN `id` attribute. Must be unique within the definitions. */
-  id: string;
+export interface BpmnProcess extends FlowContainer {
   /** The human-readable process name (`name` attribute). */
   name?: string;
   /** Always `true`. */
   isExecutable: true;
-  /** All flow nodes (start events, end events, tasks, gateways). */
-  flowElements: FlowElement[];
-  /** All sequence flows connecting the flow elements. */
-  sequenceFlows: SequenceFlow[];
 }
 
 /**
@@ -42,6 +58,10 @@ export interface BpmnProcess {
  *
  * The `kind` discriminant is the single source of truth for narrowing
  * the union in switch/if chains across the codebase.
+ *
+ * The union is recursive: a {@link SubProcess} is itself a
+ * {@link FlowContainer}, so a flow element can nest a whole body of flow
+ * elements and sequence flows.
  */
 export type FlowElement =
   | StartEvent
@@ -50,7 +70,8 @@ export type FlowElement =
   | ServiceTask
   | ScriptTask
   | ExclusiveGateway
-  | ParallelGateway;
+  | ParallelGateway
+  | SubProcess;
 
 /**
  * The type of a {@link FormField}, in DSL-level (vendor-neutral) spelling.
@@ -210,6 +231,24 @@ export interface ExclusiveGateway {
 export interface ParallelGateway {
   kind: 'parallelGateway';
   id: string;
+  name?: string;
+}
+
+/**
+ * A BPMN `subProcess` (embedded) node — an activity that is itself a
+ * {@link FlowContainer}.
+ *
+ * Its `flowElements` and `sequenceFlows` describe the nested body. Those
+ * sequence flows never cross the container boundary, so the parent container
+ * treats the whole sub-process as one opaque activity node: a parent-level
+ * flow into the sub-process targets it by `id`, and a fall-through flow leaves
+ * it by `id`.
+ *
+ * `name`, when present, is the human-readable label viewers render on the
+ * expanded box.
+ */
+export interface SubProcess extends FlowContainer {
+  kind: 'subProcess';
   name?: string;
 }
 

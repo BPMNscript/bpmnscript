@@ -24,9 +24,9 @@
 //
 // Reserved words (cannot be used as a bare expression identifier; use the
 // quoted "${…}" raw-string fallback if a variable must be named like one):
-//   process, var, start, end, user, service, external, script, if, else,
-//   while, do, parallel, goto, label, assignee, formKey, class, expression,
-//   delegate, topic, form,
+//   process, var, start, end, user, service, external, script, subprocess,
+//   if, else, while, do, parallel, goto, label, assignee, formKey, class,
+//   expression, delegate, topic, form,
 //   string, number, boolean, date, json, any,
 //   true, false, null.
 // JUEL identifiers that do NOT collide with this set lex as plain `ID` in
@@ -68,13 +68,13 @@ VarType returns string:
     'string' | 'number' | 'boolean' | 'date' | 'json' | 'any';
 
 // Executable statements. Every concrete subtype that is a jump target exposes
-// `name=ID`. Compound statements (if/while/do-while/parallel) nest further
-// `Statement`s through `Block`s.
+// `name=ID`. Compound statements (if/while/do-while/parallel/subprocess) nest
+// further `Statement`s through `Block`s.
 Statement:
       StartEvent | EndEvent
     | UserTask | ServiceTask | ExternalTask | ScriptTask
     | IfStatement | WhileStatement | DoWhileStatement
-    | ParallelStatement | GotoStatement;
+    | ParallelStatement | GotoStatement | SubProcess;
 
 // A brace-delimited list of statements (the body of if/else/while/do/parallel
 // branches). The process body itself is an *implicit* block (no braces),
@@ -178,6 +178,15 @@ ParallelStatement:
 // goto <id> → explicit jump to any targetable statement, keyed on `name`.
 GotoStatement:
     'goto' target=[Statement:ID];
+
+// A nested flow container: `subprocess <id> "<label>"? { <statements> }`. The
+// body reuses `Block` verbatim, so `start`/`end` parse inside it exactly like
+// at process scope (the desugarer synthesises them when absent and honours
+// them when written). `name` is the goto-target key per the file's naming
+// convention above, so a sequence flow targeting the sub-process by name
+// resolves through the default NameProvider with no extra grammar machinery.
+SubProcess:
+    'subprocess' name=ID (label=STRING)? body=Block;
 
 // ── Expression sub-language (JUEL native subset) ────────────────────────────
 //

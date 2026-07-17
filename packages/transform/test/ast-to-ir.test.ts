@@ -41,8 +41,11 @@ import {
 import type {
   BpmnProcess,
   ExclusiveGateway,
+  FlowContainer,
+  FlowElement,
   ParallelGateway,
   SequenceFlow,
+  SubProcess,
   UserTask,
 } from '../src/ir/types.js';
 
@@ -62,26 +65,27 @@ async function ir(source: string): Promise<BpmnProcess> {
   return astToIr(doc.parseResult.value);
 }
 
-/** Find the single flow element of a given kind (asserting exactly one). */
-function only<K extends BpmnProcess['flowElements'][number]['kind']>(
-  process: BpmnProcess,
+/**
+ * Find the single flow element of a given kind (asserting exactly one).
+ * Operates on any {@link FlowContainer}, so it works on the root process and on
+ * a nested sub-process container alike.
+ */
+function only<K extends FlowElement['kind']>(
+  container: FlowContainer,
   kind: K,
-): Extract<BpmnProcess['flowElements'][number], { kind: K }> {
-  const matches = process.flowElements.filter((fe) => fe.kind === kind);
+): Extract<FlowElement, { kind: K }> {
+  const matches = container.flowElements.filter((fe) => fe.kind === kind);
   expect(matches).toHaveLength(1);
-  return matches[0] as Extract<
-    BpmnProcess['flowElements'][number],
-    { kind: K }
-  >;
+  return matches[0] as Extract<FlowElement, { kind: K }>;
 }
 
 /** Find a flow by `source → target` (asserting exactly one such pair). */
 function flow(
-  process: BpmnProcess,
+  container: FlowContainer,
   source: string,
   target: string,
 ): SequenceFlow {
-  const matches = process.sequenceFlows.filter(
+  const matches = container.sequenceFlows.filter(
     (f) => f.sourceRef === source && f.targetRef === target,
   );
   expect(matches).toHaveLength(1);
@@ -808,6 +812,162 @@ describe('astToIr — all synthesized ids are globally unique (property check)',
   }
 });
 
+// ── 13. Sub-process lowering (nested builder) ────────────────────────────────
+
+describe('astToIr — sub-process lowering', () => {
+  it('lowers a sub-process into its own container with implicit start/end', async () => {
+    const result = await ir(
+      `process p { subprocess S { user A { assignee = "x" } } }`,
+    );
+
+    // Parent arrays hold only the synthesized start, the sub-process activity,
+    // and the synthesized end — none of the nested elements or flows leak up.
+    expect(result.flowElements.map((fe) => fe.id)).toEqual([
+      'StartEvent_p',
+      'S',
+      'EndEvent_p',
+    ]);
+    expect(flow(result, 'StartEvent_p', 'S')).toBeDefined();
+    expect(flow(result, 'S', 'EndEvent_p')).toBeDefined();
+
+    const sub = subProcess(result, 'S');
+    expect(sub.kind).toBe('subProcess');
+    // The nested container carries StartEvent_S → A → EndEvent_S plus its flows.
+    expect(sub.flowElements.map((fe) => fe.id)).toEqual([
+      'StartEvent_S',
+      'A',
+      'EndEvent_S',
+    ]);
+    expect(flow(sub, 'StartEvent_S', 'A')).toBeDefined();
+    expect(flow(sub, 'A', 'EndEvent_S')).toBeDefined();
+
+    // Nothing nested leaks into the parent arrays.
+    const parentIds = result.flowElements.map((fe) => fe.id);
+    for (const nested of ['StartEvent_S', 'A', 'EndEvent_S']) {
+      expect(parentIds).not.toContain(nested);
+    }
+    for (const f of result.sequenceFlows) {
+      expect(['StartEvent_S', 'A', 'EndEvent_S']).not.toContain(f.sourceRef);
+      expect(['StartEvent_S', 'A', 'EndEvent_S']).not.toContain(f.targetRef);
+    }
+  });
+
+  it('honours explicit start/end inside the body (no synthesized events)', async () => {
+    const result = await ir(
+      `process p { subprocess S { start In user A { assignee = "x" } end Out } }`,
+    );
+    const sub = subProcess(result, 'S');
+    expect(sub.flowElements.map((fe) => fe.id)).toEqual(['In', 'A', 'Out']);
+    // No name-seeded implicit events were synthesized.
+    const ids = sub.flowElements.map((fe) => fe.id);
+    expect(ids).not.toContain('StartEvent_S');
+    expect(ids).not.toContain('EndEvent_S');
+    expect(flow(sub, 'In', 'A')).toBeDefined();
+    expect(flow(sub, 'A', 'Out')).toBeDefined();
+    // The parent still threads through the sub-process activity by id.
+    expect(flow(result, 'StartEvent_p', 'S')).toBeDefined();
+    expect(flow(result, 'S', 'EndEvent_p')).toBeDefined();
+  });
+
+  it('roots the body coordinate at the sub-process own structural coordinate', async () => {
+    // `subprocess S` at body index 1; an `if` at body index 0 of its body.
+    const result = await ir(
+      `process p {
+        user Pre { assignee = "x" }
+        subprocess S { if (c) { user A { assignee = "y" } } }
+      }`,
+    );
+    const sub = subProcess(result, 'S');
+    const gatewayIds = sub.flowElements
+      .filter((fe) => fe.kind === 'exclusiveGateway')
+      .map((fe) => fe.id);
+    // Positional coordinate `p_1` roots the body; the nested `if` is `p_1_0`.
+    expect(gatewayIds).toContain(makeGatewaySplitId('p_1_0'));
+    expect(gatewayIds).toContain(makeGatewayJoinId('p_1_0'));
+  });
+
+  it('composes coordinates through if-branch segments and nested sub-processes', async () => {
+    // A sub-process at index 0 of the `then` block of an `if` at process index 2
+    // has coordinate `p_2_t_0`; a compound in its body is `p_2_t_0_0`.
+    const inThen = await ir(
+      `process p {
+        user A { assignee = "x" }
+        user B { assignee = "x" }
+        if (c) { subprocess S { if (d) { user X { assignee = "x" } } } }
+      }`,
+    );
+    const sInThen = subProcess(inThen, 'S');
+    expect(
+      sInThen.flowElements
+        .filter((fe) => fe.kind === 'exclusiveGateway')
+        .map((fe) => fe.id),
+    ).toContain(makeGatewaySplitId('p_2_t_0_0'));
+
+    // A sub-process nested in a sub-process composes coordinates: outer `p_1`,
+    // inner `p_1_0`; a compound in the inner body is `p_1_0_0`.
+    const nested = await ir(
+      `process p {
+        user A { assignee = "x" }
+        subprocess Outer { subprocess Inner { if (d) { user X { assignee = "x" } } } }
+      }`,
+    );
+    const inner = subProcess(subProcess(nested, 'Outer'), 'Inner');
+    expect(
+      inner.flowElements
+        .filter((fe) => fe.kind === 'exclusiveGateway')
+        .map((fe) => fe.id),
+    ).toContain(makeGatewaySplitId('p_1_0_0'));
+  });
+
+  it('maps an inline label to the container name', async () => {
+    const result = await ir(`process p { subprocess S "Handle" { } }`);
+    const sub = subProcess(result, 'S');
+    expect(sub.name).toBe('Handle');
+    // Empty body lowers to an empty container — no implicit events.
+    expect(sub.flowElements).toEqual([]);
+    expect(sub.sequenceFlows).toEqual([]);
+  });
+
+  it('threads the parent chain into and out of the sub-process, goto-targetable', async () => {
+    const result = await ir(
+      `process p {
+        start Begin
+        user Before { assignee = "x" }
+        subprocess S { user A { assignee = "x" } }
+        user After { assignee = "x" }
+        goto S
+      }`,
+    );
+    // Statements before/after connect to the sub-process by its id.
+    expect(flow(result, 'Begin', 'Before')).toBeDefined();
+    expect(flow(result, 'Before', 'S')).toBeDefined();
+    expect(flow(result, 'S', 'After')).toBeDefined();
+    // A `goto S` elsewhere in the parent lands on the sub-process (entry = id).
+    expect(flow(result, 'After', 'S')).toBeDefined();
+  });
+
+  it('collision-resolves name-seeded implicit ids against the process-wide taken set', async () => {
+    // An explicit parent step already occupies `EndEvent_S`; the sub-process's
+    // implicit end must fall back to `EndEvent_S_2` (BPMN ids are document-unique).
+    const result = await ir(
+      `process p {
+        user EndEvent_S { assignee = "x" }
+        subprocess S { user A { assignee = "x" } }
+      }`,
+    );
+    expect(result.flowElements.map((fe) => fe.id)).toContain('EndEvent_S');
+    const sub = subProcess(result, 'S');
+    const ids = sub.flowElements.map((fe) => fe.id);
+    expect(ids).toContain('StartEvent_S');
+    expect(ids).toContain('EndEvent_S_2');
+    expect(ids).not.toContain('EndEvent_S');
+
+    // Every id across every container is document-unique.
+    const all = allElementIdsDeep(result);
+    expect(new Set(all).size).toBe(all.length);
+  });
+});
+
 // ── Local helpers ────────────────────────────────────────────────────────────
 
 /** Stable sort an array of objects by their `id` field for set comparison. */
@@ -818,4 +978,28 @@ function sortById<T extends { id: string }>(items: T[]): T[] {
 /** Collect every flow-element id (events, tasks, gateways) of a process. */
 function allElementIds(process: BpmnProcess): string[] {
   return process.flowElements.map((fe) => fe.id);
+}
+
+/**
+ * Collect every flow-element id across a container and all of its nested
+ * sub-process containers, recursively — the document-uniqueness view.
+ */
+function allElementIdsDeep(container: FlowContainer): string[] {
+  const ids: string[] = [];
+  for (const fe of container.flowElements) {
+    ids.push(fe.id);
+    if (fe.kind === 'subProcess') {
+      ids.push(...allElementIdsDeep(fe));
+    }
+  }
+  return ids;
+}
+
+/** Find the named sub-process node in a container (asserting exactly one). */
+function subProcess(container: FlowContainer, id: string): SubProcess {
+  const node = container.flowElements.find(
+    (fe): fe is SubProcess => fe.kind === 'subProcess' && fe.id === id,
+  );
+  expect(node).toBeDefined();
+  return node!;
 }

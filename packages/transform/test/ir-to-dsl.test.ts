@@ -1033,3 +1033,211 @@ describe('irToDsl — fenced script task', () => {
     expect(script?.kind === 'scriptTask' && script.code).toBe('x = 1');
   });
 });
+
+// ---------------------------------------------------------------------------
+// 7. Sub-process emission (multi-line `subprocess { … }` groups).
+//
+// The `subprocess` construct is Task-1 grammar, not exercised here through a
+// re-parse (these tests are IR-literal-driven and grammar-independent). They
+// assert the emitted text: the opening line, the child body restructured by a
+// fresh Emitter and indented one level deeper, and the closing brace.
+// ---------------------------------------------------------------------------
+
+describe('irToDsl — sub-process emission', () => {
+  /** `PStart → Before → sub(SubStart → Work → SubEnd) → After → PEnd`. */
+  const NESTED_IR: BpmnProcess = {
+    id: 'proc',
+    isExecutable: true,
+    flowElements: [
+      { kind: 'startEvent', id: 'PStart' },
+      { kind: 'userTask', id: 'Before' },
+      {
+        kind: 'subProcess',
+        id: 'sub',
+        flowElements: [
+          { kind: 'startEvent', id: 'SubStart' },
+          { kind: 'userTask', id: 'Work', assignee: 'demo' },
+          { kind: 'endEvent', id: 'SubEnd' },
+        ],
+        sequenceFlows: [
+          { id: 'a', sourceRef: 'SubStart', targetRef: 'Work' },
+          { id: 'b', sourceRef: 'Work', targetRef: 'SubEnd' },
+        ],
+      },
+      { kind: 'userTask', id: 'After' },
+      { kind: 'endEvent', id: 'PEnd' },
+    ],
+    sequenceFlows: [
+      { id: 'f0', sourceRef: 'PStart', targetRef: 'Before' },
+      { id: 'f1', sourceRef: 'Before', targetRef: 'sub' },
+      { id: 'f2', sourceRef: 'sub', targetRef: 'After' },
+      { id: 'f3', sourceRef: 'After', targetRef: 'PEnd' },
+    ],
+  };
+
+  it('prints `subprocess sub { … }` with the body indented one level', () => {
+    const dsl = irToDsl(NESTED_IR);
+    // The subprocess opening line sits at one indent level (2 spaces).
+    expect(dsl).toContain('\n  subprocess sub {\n');
+    // Its body statements sit one level deeper (4 spaces).
+    expect(dsl).toContain('\n    start SubStart');
+    expect(dsl).toContain('\n    user Work { assignee = "demo" }');
+    expect(dsl).toContain('\n    end SubEnd');
+    // The closing brace returns to the subprocess's own indent level.
+    expect(dsl).toContain('\n  }\n');
+    expect(hasGatewayKeyword(dsl)).toBe(false);
+  });
+
+  it('keeps the parent chain intact before and after the sub-process', () => {
+    const dsl = irToDsl(NESTED_IR);
+    const beforeIdx = dsl.indexOf('user Before');
+    const subIdx = dsl.indexOf('subprocess sub {');
+    const afterIdx = dsl.indexOf('user After');
+    expect(beforeIdx).toBeGreaterThanOrEqual(0);
+    expect(afterIdx).toBeGreaterThanOrEqual(0);
+    // Parent statements sit at the top level (2-space indent), not inside the
+    // sub-process body, and keep their document order around it.
+    expect(dsl).toContain('\n  user Before');
+    expect(dsl).toContain('\n  user After');
+    expect(beforeIdx).toBeLessThan(subIdx);
+    expect(subIdx).toBeLessThan(afterIdx);
+    // No goto is needed for the straight-line parent chain.
+    expect(hasGoto(dsl)).toBe(false);
+  });
+
+  it('restructures an if/else inside a sub-process body (two indent levels)', () => {
+    const SUB_WITH_IF: BpmnProcess = {
+      id: 'proc',
+      isExecutable: true,
+      flowElements: [
+        { kind: 'startEvent', id: 'PStart' },
+        {
+          kind: 'subProcess',
+          id: 'sub',
+          flowElements: [
+            { kind: 'startEvent', id: 'SubStart' },
+            {
+              kind: 'exclusiveGateway',
+              id: 'Gateway_sub_0_split',
+              defaultFlowId: 'df',
+            },
+            { kind: 'exclusiveGateway', id: 'Gateway_sub_0_join' },
+            { kind: 'userTask', id: 'Yes' },
+            { kind: 'userTask', id: 'No' },
+            { kind: 'endEvent', id: 'SubEnd' },
+          ],
+          sequenceFlows: [
+            {
+              id: 's0',
+              sourceRef: 'SubStart',
+              targetRef: 'Gateway_sub_0_split',
+            },
+            {
+              id: 's1',
+              conditionExpression: '${ok}',
+              sourceRef: 'Gateway_sub_0_split',
+              targetRef: 'Yes',
+            },
+            { id: 'df', sourceRef: 'Gateway_sub_0_split', targetRef: 'No' },
+            { id: 's2', sourceRef: 'Yes', targetRef: 'Gateway_sub_0_join' },
+            { id: 's3', sourceRef: 'No', targetRef: 'Gateway_sub_0_join' },
+            {
+              id: 's4',
+              sourceRef: 'Gateway_sub_0_join',
+              targetRef: 'SubEnd',
+            },
+          ],
+        },
+        { kind: 'endEvent', id: 'PEnd' },
+      ],
+      sequenceFlows: [
+        { id: 'f0', sourceRef: 'PStart', targetRef: 'sub' },
+        { id: 'f1', sourceRef: 'sub', targetRef: 'PEnd' },
+      ],
+    };
+
+    const dsl = irToDsl(SUB_WITH_IF);
+    // The `if` sits inside the sub-process body: two indent levels (4 spaces).
+    expect(dsl).toContain('\n    if (ok) {');
+    expect(dsl).toContain('\n    } else {');
+    // Branch bodies sit a further level in (6 spaces).
+    expect(dsl).toContain('\n      user Yes');
+    expect(dsl).toContain('\n      user No');
+    // The gateways are elided — no `gateway` keyword surfaces.
+    expect(hasGatewayKeyword(dsl)).toBe(false);
+  });
+
+  it('prints the quoted label for a named sub-process', () => {
+    const NAMED: BpmnProcess = {
+      id: 'proc',
+      isExecutable: true,
+      flowElements: [
+        { kind: 'startEvent', id: 'St' },
+        {
+          kind: 'subProcess',
+          id: 'S',
+          name: 'Handle order',
+          flowElements: [{ kind: 'userTask', id: 'Do' }],
+          sequenceFlows: [],
+        },
+        { kind: 'endEvent', id: 'En' },
+      ],
+      sequenceFlows: [
+        { id: 'f0', sourceRef: 'St', targetRef: 'S' },
+        { id: 'f1', sourceRef: 'S', targetRef: 'En' },
+      ],
+    };
+    const dsl = irToDsl(NAMED);
+    expect(dsl).toContain('subprocess S "Handle order" {');
+  });
+
+  it('prints an empty sub-process body as `subprocess S {` immediately followed by `}`', () => {
+    const EMPTY: BpmnProcess = {
+      id: 'proc',
+      isExecutable: true,
+      flowElements: [
+        { kind: 'startEvent', id: 'St' },
+        {
+          kind: 'subProcess',
+          id: 'S',
+          name: 'Handle order',
+          flowElements: [],
+          sequenceFlows: [],
+        },
+        { kind: 'endEvent', id: 'En' },
+      ],
+      sequenceFlows: [
+        { id: 'f0', sourceRef: 'St', targetRef: 'S' },
+        { id: 'f1', sourceRef: 'S', targetRef: 'En' },
+      ],
+    };
+    const dsl = irToDsl(EMPTY);
+    // Empty body: the opening line is directly followed by the closing brace,
+    // both at the sub-process's own indent level.
+    expect(dsl).toContain('  subprocess S "Handle order" {\n  }\n');
+  });
+
+  it('prints an unnamed empty sub-process body without a label', () => {
+    const UNNAMED_EMPTY: BpmnProcess = {
+      id: 'proc',
+      isExecutable: true,
+      flowElements: [
+        { kind: 'startEvent', id: 'St' },
+        {
+          kind: 'subProcess',
+          id: 'S',
+          flowElements: [],
+          sequenceFlows: [],
+        },
+        { kind: 'endEvent', id: 'En' },
+      ],
+      sequenceFlows: [
+        { id: 'f0', sourceRef: 'St', targetRef: 'S' },
+        { id: 'f1', sourceRef: 'S', targetRef: 'En' },
+      ],
+    };
+    const dsl = irToDsl(UNNAMED_EMPTY);
+    // No `name` means `labelSuffix(undefined)` is `''`: no quoted label.
+    expect(dsl).toContain('  subprocess S {\n  }\n');
+  });
+});

@@ -61,7 +61,13 @@ The structural coordinate `<X>` for a compound statement at body index `i` insid
 a process with id `P` is `P_i`. For nested compounds the parent coordinate is
 prepended (`P_i_j`). Branch segments distinguish sibling blocks within a compound:
 `_t` for the if-then block, `_e<i>` (0-based) for else-if branches, `_e` for the
-else block, `_b<i>` for parallel branches. Loop bodies carry no segment (single block).
+else block, `_b<i>` for parallel branches. Loop and sub-process bodies carry no
+segment (a single block ⇒ no sibling to disambiguate): a sub-process body's
+enclosing coordinate is the sub-process's own `<X>`, so gateways inside it stay
+positional. Implicit start/end events synthesized inside a container are seeded
+from that container's id — the process id at the top level, the sub-process name
+inside a sub-process — resolved against one process-wide taken set so every id
+is document-unique.
 
 Collision resolution: if a base id is already in the taken set, append `_2`, `_3`, …
 until a free slot is found.

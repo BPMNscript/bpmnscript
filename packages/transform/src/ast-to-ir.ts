@@ -51,9 +51,23 @@
  *       loop body (while)     <X>          (sole block ⇒ no segment needed)
  *       loop body (do-while)  <X>          (sole block ⇒ no segment needed)
  *       i-th `parallel` branch <X>_b<i>   (0-based)
+ *       subprocess body       <X>          (sole block ⇒ no segment needed)
  *
  *     A loop owns exactly one block, so its body has no sibling to collide with
- *     and needs no segment.
+ *     and needs no segment; a `subprocess` is likewise a single-block compound,
+ *     so its body's enclosing coordinate is the sub-process's own <X>. Rooting
+ *     the body at the sub-process *name* instead would be shorter but unsafe:
+ *     gateway ids skip `resolveCollision`, so a sub-process named like a
+ *     structural coordinate could duplicate a gateway id elsewhere. Positional
+ *     coordinates have no such hole.
+ *
+ * ## Implicit-event seeding by container id
+ *
+ * A container's implicit start/end are seeded from the container's own id — the
+ * process id at the top level, the sub-process *name* inside a sub-process
+ * (`StartEvent_<name>` / `EndEvent_<name>`) — and routed through
+ * `resolveCollision` against a single process-wide `taken` set, so every
+ * synthesised id is document-unique across all containers.
  *
  * Example: a `while` nested at index 0 of the `then` block of an `if` at body
  * index 2 of `process invoice-approval` →
@@ -93,6 +107,7 @@ import {
   isDoWhileStatement,
   isParallelStatement,
   isGotoStatement,
+  isSubProcess,
   isLiteralString,
   isLiteralBool,
   isLiteralInt,
@@ -117,6 +132,7 @@ import type {
   DoWhileStatement,
   ParallelStatement,
   GotoStatement,
+  SubProcess as AstSubProcess,
   Attribute,
 } from '@bpmn-script/language';
 import type {
@@ -168,15 +184,19 @@ interface Frontier {
 }
 
 /**
- * Mutable accumulator threaded through the recursive walk.
+ * Mutable accumulator threaded through the recursive walk. Each flow container
+ * (the process and every sub-process body) gets its own `flowElements` /
+ * `sequenceFlows` arrays, but shares one `taken` set with the whole document.
  *
  * `taken` seeds collision resolution: it is pre-populated with **every named
- * element id** before lowering begins, so synthesised flow/end ids never clash
- * with an author-chosen statement name. `makeSequenceFlowId`/`makeEndEventId`
- * mutate it in place.
+ * element id** in the process before lowering begins, so synthesised flow/end
+ * ids never clash with an author-chosen statement name — anywhere in the
+ * document, including inside a nested sub-process. A single shared set keeps
+ * every synthesised id document-unique, which BPMN requires (`id` is an XML
+ * ID). `makeSequenceFlowId`/`makeStartEventId`/`makeEndEventId` mutate it in
+ * place.
  */
 interface Builder {
-  readonly processId: string;
   readonly flowElements: FlowElement[];
   readonly sequenceFlows: IrSequenceFlow[];
   readonly taken: Set<string>;
@@ -199,43 +219,14 @@ export function astToIr(model: Model): BpmnProcess {
   }
 
   const builder: Builder = {
-    processId: process.name,
     flowElements: [],
     sequenceFlows: [],
     taken: collectNamedIds(process),
   };
 
-  // 1. Lower the process body block. `entry`/`exit` mark where the implicit
-  //    start flows in and where an implicit end (if any) flows out.
-  const body = lowerBlockStatements(builder, process.body, process.name);
-
-  // 2. Materialise the implicit start event when the body does not open with an
-  //    explicit `start`. The start always flows to the body's entry.
-  if (body.entry !== null) {
-    const firstIsExplicitStart =
-      process.body.length > 0 && isStartEvent(process.body[0]!);
-    if (!firstIsExplicitStart) {
-      // `makeStartEventId` resolves a collision with an author-chosen id and
-      // records the result in `builder.taken` itself.
-      const startId = makeStartEventId(process.name, builder.taken);
-      builder.flowElements.unshift({ kind: 'startEvent', id: startId });
-      addFlow(builder, startId, body.entry);
-    }
-  }
-
-  // 3. Materialise the implicit end event when control falls off the body end
-  //    and the last statement is not an explicit `end`.
-  if (body.exit !== null) {
-    const last = process.body[process.body.length - 1];
-    const lastIsExplicitEnd = last !== undefined && isEndEvent(last);
-    if (!lastIsExplicitEnd) {
-      const endId = makeEndEventId(process.name, builder.taken);
-      builder.flowElements.push({ kind: 'endEvent', id: endId });
-      // Honour a reserved exit-flow id (e.g. when the body ends in a `while`,
-      // the loop's default-exit flow id is stamped on the flow to the end).
-      addFlow(builder, body.exit, endId, undefined, body.exitFlowId);
-    }
-  }
+  // The process body is the top-level container: both its structural coordinate
+  // and its implicit-event seed are the process id.
+  lowerContainerBody(builder, process.body, process.name, process.name);
 
   const label = processLabel(process);
 
@@ -246,6 +237,65 @@ export function astToIr(model: Model): BpmnProcess {
     flowElements: builder.flowElements,
     sequenceFlows: builder.sequenceFlows,
   };
+}
+
+/**
+ * Lower one flow container's body — the process body, or a sub-process body —
+ * into the supplied builder: the statement list plus the implicit start/end
+ * events synthesised when the body does not declare them explicitly.
+ *
+ * The process and every sub-process share this exact shape (a node set + edge
+ * set), so one function serves both. It mutates `builder` in place and returns
+ * nothing.
+ *
+ * @param coord       Structural coordinate of the body's enclosing block —
+ *   compound children index against it to form their own `<X>`. For the process
+ *   body this is the process id; for a sub-process body it is the sub-process's
+ *   own structural coordinate `<X>` (the single-block compound rule, like a
+ *   loop body).
+ * @param containerId Seed for the implicit start/end ids
+ *   (`StartEvent_<containerId>` / `EndEvent_<containerId>`) — the process id at
+ *   the top level, the sub-process name inside a sub-process. Routed through
+ *   `resolveCollision` against the shared `taken` set so the ids stay
+ *   document-unique.
+ */
+function lowerContainerBody(
+  builder: Builder,
+  statements: Statement[],
+  coord: string,
+  containerId: string,
+): void {
+  // 1. Lower the statement list. `entry`/`exit` mark where an implicit start
+  //    flows in and where an implicit end (if any) flows out.
+  const body = lowerBlockStatements(builder, statements, coord);
+
+  // 2. Materialise the implicit start event when the body does not open with an
+  //    explicit `start`. The start always flows to the body's entry.
+  if (body.entry !== null) {
+    const firstIsExplicitStart =
+      statements.length > 0 && isStartEvent(statements[0]!);
+    if (!firstIsExplicitStart) {
+      // `makeStartEventId` resolves a collision with an author-chosen id and
+      // records the result in `builder.taken` itself.
+      const startId = makeStartEventId(containerId, builder.taken);
+      builder.flowElements.unshift({ kind: 'startEvent', id: startId });
+      addFlow(builder, startId, body.entry);
+    }
+  }
+
+  // 3. Materialise the implicit end event when control falls off the body end
+  //    and the last statement is not an explicit `end`.
+  if (body.exit !== null) {
+    const last = statements[statements.length - 1];
+    const lastIsExplicitEnd = last !== undefined && isEndEvent(last);
+    if (!lastIsExplicitEnd) {
+      const endId = makeEndEventId(containerId, builder.taken);
+      builder.flowElements.push({ kind: 'endEvent', id: endId });
+      // Honour a reserved exit-flow id (e.g. when the body ends in a `while`,
+      // the loop's default-exit flow id is stamped on the flow to the end).
+      addFlow(builder, body.exit, endId, undefined, body.exitFlowId);
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -362,6 +412,9 @@ function lowerStatement(
   }
   if (isGotoStatement(stmt)) {
     return lowerGoto(stmt);
+  }
+  if (isSubProcess(stmt)) {
+    return lowerSubProcess(builder, stmt, `${coord}_${index}`);
   }
   // Exhaustiveness guard: the Statement union is closed by the grammar.
   throw new Error(
@@ -832,6 +885,47 @@ function lowerParallel(
 }
 
 /**
+ * Lower a `subprocess` into a nested {@link SubProcess} flow container.
+ *
+ * A sub-process is a single-block compound statement: its body is lowered into
+ * a **nested builder** with its own `flowElements`/`sequenceFlows` arrays but
+ * the **same `taken` set** as the parent, so every synthesised id stays
+ * document-unique across the whole process (BPMN `id` is an XML ID). The body's
+ * enclosing-block coordinate is the sub-process's own structural coordinate
+ * `<X>` (the sole-block rule loop bodies already follow), so gateways inside
+ * the body come out positional — `Gateway_<X>_<i>_…` — and never collide with a
+ * gateway elsewhere in the document. Implicit start/end inside the body are
+ * seeded from the sub-process **name** (`StartEvent_<name>` / `EndEvent_<name>`,
+ * mirroring the top level, which seeds from the process id).
+ *
+ * The finished container is pushed onto the **parent** builder as one opaque
+ * activity node: an incoming flow targets it by id and a fall-through flow
+ * leaves it by id, so `entry === exit === name`. An empty body yields an empty
+ * container (no implicit events).
+ */
+function lowerSubProcess(
+  builder: Builder,
+  stmt: AstSubProcess,
+  x: string,
+): Frontier {
+  const nested: Builder = {
+    flowElements: [],
+    sequenceFlows: [],
+    taken: builder.taken,
+  };
+  lowerContainerBody(nested, stmt.body.statements, x, stmt.name);
+
+  builder.flowElements.push({
+    kind: 'subProcess',
+    id: stmt.name,
+    ...(stmt.label !== undefined ? { name: stmt.label } : {}),
+    flowElements: nested.flowElements,
+    sequenceFlows: nested.sequenceFlows,
+  });
+  return { entry: stmt.name, exit: stmt.name };
+}
+
+/**
  * Lower `goto target` to a raw sequence flow from this statement's position to
  * the target statement's entry node.
  *
@@ -932,6 +1026,11 @@ function collectNamedIds(process: Process): Set<string> {
         visit(stmt.body.statements);
       } else if (isParallelStatement(stmt)) {
         for (const branch of stmt.branches) visit(branch.statements);
+      } else if (isSubProcess(stmt)) {
+        // The sub-process name is itself a document id (a goto target); its body
+        // is a nested container whose named steps share the one taken set.
+        taken.add(stmt.name);
+        visit(stmt.body.statements);
       }
       // GotoStatement contributes no new id (it references an existing one).
     }

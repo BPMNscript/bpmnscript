@@ -21,6 +21,7 @@ import {
 } from './variable-symbol-provider.js';
 import { BpmnScriptCompletionProvider } from './bpmn-script-completion.js';
 import { BpmnScriptScopeProvider } from './bpmn-script-scope-provider.js';
+import { BpmnScriptLinker } from './bpmn-script-linker.js';
 import { BpmnScriptParserErrorMessageProvider } from './bpmn-script-parser-error-message-provider.js';
 
 /**
@@ -62,9 +63,14 @@ export const BpmnScriptModule: Module<
   },
   references: {
     VariableSymbolProvider: () => new DefaultVariableSymbolProvider(),
-    // Process-scoped `goto`: a jump target is visible only within its own
-    // process, at any block-nesting depth (see the scope provider docstring).
+    // Container-scoped `goto`: a jump target is visible only within its own
+    // process/subprocess, at any block-nesting depth (see the scope provider
+    // docstring).
     ScopeProvider: (services) => new BpmnScriptScopeProvider(services),
+    // Upgrades the unresolved-`goto`-target message to a boundary explanation
+    // when the name exists in another flow container (see the linker
+    // docstring).
+    Linker: (services) => new BpmnScriptLinker(services),
   },
   validation: {
     BpmnScriptValidator: (services) => new BpmnScriptValidator(services),

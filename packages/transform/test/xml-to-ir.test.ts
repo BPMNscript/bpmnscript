@@ -21,7 +21,8 @@
  *   4b. Parallel split+join XML → IR with two parallelGateway elements,
  *       6 sequence flows, no conditionExpression on fork-outgoing flows.
  *   4c. `bpmn:scriptTask` → `scriptTask` IR; a genuinely unsupported kind
- *       (e.g. `bpmn:subProcess`) → `UnsupportedElementError`.
+ *       (`bpmn:transaction`, `bpmn:adHocSubProcess`, `bpmn:callActivity`) →
+ *       `UnsupportedElementError`.
  *   5. XML with TWO processes → multi-process error.
  *   6. Bare service task (no discriminator) → `UnsupportedServiceTaskFormError`.
  *   7. DI nodes (`bpmndi:*`, `dc:*`, `di:*`) are dropped from IR (not in flowElements).
@@ -31,6 +32,13 @@
  *      matching `UnsupportedConstructError` subclass before any IR is produced.
  *  10. Warnings: an unsupported Operaton extension attribute and a lane each surface
  *      one `ImportWarning` naming the concrete dropped construct and its element id.
+ *  12. `bpmn:subProcess` imports recursively into an IR `SubProcess` (nested
+ *      body in its own `flowElements`/`sequenceFlows`, nothing leaked to the
+ *      parent); an event sub-process (`triggeredByEvent="true"`) and loop
+ *      characteristics on a sub-process are refused; an extension attribute
+ *      on a task nested inside a sub-process and an event definition on a
+ *      nested start event are handled exactly as at the top level;
+ *      two-level nesting imports recursively.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -531,16 +539,54 @@ describe('xmlToIr — script task support', () => {
 // ── 4d. xmlToIr — UnsupportedElementError for genuinely unsupported kinds ─────
 
 describe('xmlToIr — unsupported element (still refused kinds)', () => {
-  it('XML containing bpmn:subProcess raises UnsupportedElementError', async () => {
+  it('bpmn:transaction raises UnsupportedElementError', async () => {
     const xml = `<?xml version="1.0" encoding="UTF-8"?>
 <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
                   targetNamespace="http://test">
   <bpmn:process id="p" isExecutable="true">
     <bpmn:startEvent id="S" />
-    <bpmn:subProcess id="Sub" name="Sub Process" />
+    <bpmn:transaction id="Tx">
+      <bpmn:startEvent id="TxStart" />
+      <bpmn:endEvent id="TxEnd" />
+      <bpmn:sequenceFlow id="TxF" sourceRef="TxStart" targetRef="TxEnd" />
+    </bpmn:transaction>
     <bpmn:endEvent id="E" />
-    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="Sub" />
-    <bpmn:sequenceFlow id="F2" sourceRef="Sub" targetRef="E" />
+    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="Tx" />
+    <bpmn:sequenceFlow id="F2" sourceRef="Tx" targetRef="E" />
+  </bpmn:process>
+</bpmn:definitions>`;
+
+    await expect(xmlToIr(xml)).rejects.toBeInstanceOf(UnsupportedElementError);
+  });
+
+  it('bpmn:adHocSubProcess raises UnsupportedElementError', async () => {
+    const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  targetNamespace="http://test">
+  <bpmn:process id="p" isExecutable="true">
+    <bpmn:startEvent id="S" />
+    <bpmn:adHocSubProcess id="AdHoc">
+      <bpmn:userTask id="A" />
+    </bpmn:adHocSubProcess>
+    <bpmn:endEvent id="E" />
+    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="AdHoc" />
+    <bpmn:sequenceFlow id="F2" sourceRef="AdHoc" targetRef="E" />
+  </bpmn:process>
+</bpmn:definitions>`;
+
+    await expect(xmlToIr(xml)).rejects.toBeInstanceOf(UnsupportedElementError);
+  });
+
+  it('bpmn:callActivity raises UnsupportedElementError', async () => {
+    const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  targetNamespace="http://test">
+  <bpmn:process id="p" isExecutable="true">
+    <bpmn:startEvent id="S" />
+    <bpmn:callActivity id="Call" calledElement="other-process" />
+    <bpmn:endEvent id="E" />
+    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="Call" />
+    <bpmn:sequenceFlow id="F2" sourceRef="Call" targetRef="E" />
   </bpmn:process>
 </bpmn:definitions>`;
 
@@ -1227,5 +1273,220 @@ describe('xmlToIr — undeclared operaton extension element residual', () => {
     // Attributed to the process id — the documented coarse attribution for
     // residual drops moddle cannot tie to a specific step.
     expect(extWarnings[0].elementId).toBe('p');
+  });
+});
+
+// ── 12. Embedded bpmn:subProcess imports recursively ─────────────────────────
+
+describe('xmlToIr — embedded sub-process imports recursively', () => {
+  const nestedSubProcessXml = `<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  xmlns:operaton="http://operaton.org/schema/1.0/bpmn"
+                  targetNamespace="http://test">
+  <bpmn:process id="p" isExecutable="true">
+    <bpmn:startEvent id="PStart" />
+    <bpmn:subProcess id="Sub" name="Sub Process">
+      <bpmn:startEvent id="SubStart" />
+      <bpmn:userTask id="Review" name="Review" operaton:assignee="demo" />
+      <bpmn:endEvent id="SubEnd" />
+      <bpmn:sequenceFlow id="SF1" sourceRef="SubStart" targetRef="Review" />
+      <bpmn:sequenceFlow id="SF2" sourceRef="Review" targetRef="SubEnd" />
+    </bpmn:subProcess>
+    <bpmn:endEvent id="PEnd" />
+    <bpmn:sequenceFlow id="F1" sourceRef="PStart" targetRef="Sub" />
+    <bpmn:sequenceFlow id="F2" sourceRef="Sub" targetRef="PEnd" />
+  </bpmn:process>
+</bpmn:definitions>`;
+
+  it('maps to a recursive IR SubProcess carrying its own nested body', async () => {
+    const { ir, warnings } = await xmlToIr(nestedSubProcessXml);
+    expect(warnings).toEqual([]);
+
+    const sub = ir.flowElements.find((fe) => fe.id === 'Sub');
+    expect(sub?.kind).toBe('subProcess');
+    if (sub?.kind !== 'subProcess') return;
+
+    expect(sub.name).toBe('Sub Process');
+    expect(sub.flowElements.map((fe) => fe.id)).toEqual([
+      'SubStart',
+      'Review',
+      'SubEnd',
+    ]);
+    expect(sub.sequenceFlows.map((f) => f.id)).toEqual(['SF1', 'SF2']);
+    const review = sub.flowElements.find((fe) => fe.id === 'Review');
+    expect(review?.kind === 'userTask' && review.assignee).toBe('demo');
+  });
+
+  it('drops a sub-process name that exactly equals humanize(id)', async () => {
+    const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  targetNamespace="http://test">
+  <bpmn:process id="p" isExecutable="true">
+    <bpmn:startEvent id="S" />
+    <bpmn:subProcess id="Sub" name="Sub">
+      <bpmn:startEvent id="SubStart" />
+      <bpmn:endEvent id="SubEnd" />
+      <bpmn:sequenceFlow id="SF1" sourceRef="SubStart" targetRef="SubEnd" />
+    </bpmn:subProcess>
+    <bpmn:endEvent id="E" />
+    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="Sub" />
+    <bpmn:sequenceFlow id="F2" sourceRef="Sub" targetRef="E" />
+  </bpmn:process>
+</bpmn:definitions>`;
+
+    const { ir } = await xmlToIr(xml);
+    const sub = ir.flowElements.find((fe) => fe.id === 'Sub');
+    expect(sub?.kind).toBe('subProcess');
+    expect(sub && 'name' in sub).toBe(false);
+  });
+
+  it('leaks nothing from the nested body into the parent container', async () => {
+    const { ir } = await xmlToIr(nestedSubProcessXml);
+    expect(ir.flowElements.map((fe) => fe.id)).toEqual([
+      'PStart',
+      'Sub',
+      'PEnd',
+    ]);
+    expect(ir.sequenceFlows.map((f) => f.id)).toEqual(['F1', 'F2']);
+  });
+
+  it('refuses an event sub-process (triggeredByEvent="true")', async () => {
+    const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  targetNamespace="http://test">
+  <bpmn:process id="p" isExecutable="true">
+    <bpmn:startEvent id="S" />
+    <bpmn:subProcess id="Sub" triggeredByEvent="true">
+      <bpmn:startEvent id="SubStart" />
+    </bpmn:subProcess>
+    <bpmn:endEvent id="E" />
+    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="Sub" />
+    <bpmn:sequenceFlow id="F2" sourceRef="Sub" targetRef="E" />
+  </bpmn:process>
+</bpmn:definitions>`;
+
+    await expect(xmlToIr(xml)).rejects.toBeInstanceOf(UnsupportedElementError);
+  });
+
+  it('refuses a sub-process with multiInstanceLoopCharacteristics', async () => {
+    const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  targetNamespace="http://test">
+  <bpmn:process id="p" isExecutable="true">
+    <bpmn:startEvent id="S" />
+    <bpmn:subProcess id="Sub">
+      <bpmn:multiInstanceLoopCharacteristics isSequential="false" />
+      <bpmn:startEvent id="SubStart" />
+      <bpmn:endEvent id="SubEnd" />
+      <bpmn:sequenceFlow id="SF1" sourceRef="SubStart" targetRef="SubEnd" />
+    </bpmn:subProcess>
+    <bpmn:endEvent id="E" />
+    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="Sub" />
+    <bpmn:sequenceFlow id="F2" sourceRef="Sub" targetRef="E" />
+  </bpmn:process>
+</bpmn:definitions>`;
+
+    await expect(xmlToIr(xml)).rejects.toBeInstanceOf(
+      UnsupportedLoopCharacteristicsError,
+    );
+  });
+
+  it('warns for an unsupported extension attribute on a task nested inside a sub-process', async () => {
+    const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  xmlns:operaton="http://operaton.org/schema/1.0/bpmn"
+                  targetNamespace="http://test">
+  <bpmn:process id="p" isExecutable="true">
+    <bpmn:startEvent id="S" />
+    <bpmn:subProcess id="Sub">
+      <bpmn:startEvent id="SubStart" />
+      <bpmn:userTask id="InnerTask" name="Inner Task"
+                     operaton:assignee="alice" operaton:asyncBefore="true" />
+      <bpmn:endEvent id="SubEnd" />
+      <bpmn:sequenceFlow id="SF1" sourceRef="SubStart" targetRef="InnerTask" />
+      <bpmn:sequenceFlow id="SF2" sourceRef="InnerTask" targetRef="SubEnd" />
+    </bpmn:subProcess>
+    <bpmn:endEvent id="E" />
+    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="Sub" />
+    <bpmn:sequenceFlow id="F2" sourceRef="Sub" targetRef="E" />
+  </bpmn:process>
+</bpmn:definitions>`;
+
+    const { warnings } = await xmlToIr(xml);
+    const w = warnings.find((w) => w.message.includes('asyncBefore'));
+    expect(w).toBeDefined();
+    expect(w?.elementId).toBe('InnerTask');
+  });
+
+  it('refuses an event definition on a start event nested inside a sub-process', async () => {
+    const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  targetNamespace="http://test">
+  <bpmn:process id="p" isExecutable="true">
+    <bpmn:startEvent id="S" />
+    <bpmn:subProcess id="Sub">
+      <bpmn:startEvent id="SubStart">
+        <bpmn:timerEventDefinition />
+      </bpmn:startEvent>
+      <bpmn:endEvent id="SubEnd" />
+      <bpmn:sequenceFlow id="SF1" sourceRef="SubStart" targetRef="SubEnd" />
+    </bpmn:subProcess>
+    <bpmn:endEvent id="E" />
+    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="Sub" />
+    <bpmn:sequenceFlow id="F2" sourceRef="Sub" targetRef="E" />
+  </bpmn:process>
+</bpmn:definitions>`;
+
+    await expect(xmlToIr(xml)).rejects.toBeInstanceOf(
+      UnsupportedEventDefinitionError,
+    );
+  });
+
+  it('imports two-level nesting recursively', async () => {
+    const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  targetNamespace="http://test">
+  <bpmn:process id="p" isExecutable="true">
+    <bpmn:startEvent id="PStart" />
+    <bpmn:subProcess id="Outer">
+      <bpmn:startEvent id="OStart" />
+      <bpmn:subProcess id="Inner">
+        <bpmn:startEvent id="IStart" />
+        <bpmn:userTask id="Deep" />
+        <bpmn:endEvent id="IEnd" />
+        <bpmn:sequenceFlow id="SF_IStart_Deep" sourceRef="IStart" targetRef="Deep" />
+        <bpmn:sequenceFlow id="SF_Deep_IEnd" sourceRef="Deep" targetRef="IEnd" />
+      </bpmn:subProcess>
+      <bpmn:endEvent id="OEnd" />
+      <bpmn:sequenceFlow id="SF_OStart_Inner" sourceRef="OStart" targetRef="Inner" />
+      <bpmn:sequenceFlow id="SF_Inner_OEnd" sourceRef="Inner" targetRef="OEnd" />
+    </bpmn:subProcess>
+    <bpmn:endEvent id="PEnd" />
+    <bpmn:sequenceFlow id="F1" sourceRef="PStart" targetRef="Outer" />
+    <bpmn:sequenceFlow id="F2" sourceRef="Outer" targetRef="PEnd" />
+  </bpmn:process>
+</bpmn:definitions>`;
+
+    const { ir, warnings } = await xmlToIr(xml);
+    expect(warnings).toEqual([]);
+
+    const outer = ir.flowElements.find((fe) => fe.id === 'Outer');
+    expect(outer?.kind).toBe('subProcess');
+    if (outer?.kind !== 'subProcess') return;
+
+    const inner = outer.flowElements.find((fe) => fe.id === 'Inner');
+    expect(inner?.kind).toBe('subProcess');
+    if (inner?.kind !== 'subProcess') return;
+
+    expect(inner.flowElements.map((fe) => fe.id)).toEqual([
+      'IStart',
+      'Deep',
+      'IEnd',
+    ]);
+    expect(outer.flowElements.map((fe) => fe.id)).toEqual([
+      'OStart',
+      'Inner',
+      'OEnd',
+    ]);
   });
 });

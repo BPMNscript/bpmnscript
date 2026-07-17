@@ -1,13 +1,25 @@
 /**
  * Scoping + reserved-word-guidance test suite for BPMNscript.
  *
- * Two concerns are exercised here, both driven through the real parser/linker
+ * Three concerns are exercised here, all driven through the real parser/linker
  * pipeline (`parseHelper`, with `{ validation: true }` where cross-reference
  * linking must run):
  *
  *   - **Process-scoped `goto`** (custom `ScopeProvider`): a `goto` resolves to
  *     any named step of its *own* process — including one nested inside a
  *     `parallel`/`if`/`while` block — and to no step of any *other* process.
+ *   - **Container-scoped `goto` across a `subprocess` boundary** (same
+ *     `ScopeProvider`, narrowed further): a `goto` resolves only within its
+ *     *nearest enclosing container* — the `process` or the `subprocess` it
+ *     directly sits in — so it can neither reach into a sub-process from
+ *     outside nor escape a sub-process to the parent, and a `goto` inside one
+ *     sub-process cannot reach into a different (sibling or nested) one. A
+ *     `subprocess` statement is itself a valid `goto` target by name, resolved
+ *     from its own container. A cross-boundary `goto` fails to resolve, and
+ *     the custom `BpmnScriptLinker` (`src/bpmn-script-linker.ts`) replaces the
+ *     stock "Could not resolve reference" message with a boundary explanation
+ *     naming the sub-process the target lives inside or outside of — replacing
+ *     rather than adding, so exactly one diagnostic is emitted.
  *   - **Reserved-word guidance** (custom `ParserErrorMessageProvider`): a
  *     reserved keyword used as a bare identifier yields a parse error that names
  *     the word and points to the quoted `"${…}"` raw-string fallback, instead of
@@ -125,6 +137,186 @@ process b { user Dup }
       d.message.includes('Missing'),
     );
     expect(linkerErrors).toHaveLength(1);
+  });
+});
+
+// ── Container-scoped goto across a subprocess boundary ──────────────────────
+
+describe('Scoping — container-scoped goto (subprocess boundary)', () => {
+  test('a parent-body goto cannot resolve a step inside a sub-process, but the same name resolves from inside it', async () => {
+    const fromOutside = await parse(
+      `
+process p {
+  subprocess Sub {
+    user Inner
+  }
+  goto Inner
+}
+`,
+      { validation: true },
+    );
+    expect(fromOutside.parseResult.parserErrors).toHaveLength(0);
+    expect(findGoto(fromOutside.parseResult.value).target.ref).toBeUndefined();
+
+    const fromInside = await parse(
+      `
+process p {
+  subprocess Sub {
+    user Inner
+    goto Inner
+  }
+}
+`,
+      { validation: true },
+    );
+    expect(fromInside.parseResult.parserErrors).toHaveLength(0);
+    const goto = findGoto(fromInside.parseResult.value);
+    expect(goto.target.ref).toBeDefined();
+    expect((goto.target.ref as UserTask).name).toBe('Inner');
+  });
+
+  test('a goto inside a sub-process resolves a sibling step nested inside an if block of the same body', async () => {
+    const document = await parse(
+      `
+process p {
+  subprocess Sub {
+    if (true) {
+      user Deep
+    }
+    goto Deep
+  }
+}
+`,
+      { validation: true },
+    );
+    expect(document.parseResult.parserErrors).toHaveLength(0);
+    const goto = findGoto(document.parseResult.value);
+    expect(goto.target.ref).toBeDefined();
+    expect((goto.target.ref as UserTask).name).toBe('Deep');
+  });
+
+  test('a goto inside a sub-process cannot resolve a parent-body step', async () => {
+    const document = await parse(
+      `
+process p {
+  user Outer
+  subprocess Sub {
+    goto Outer
+  }
+}
+`,
+      { validation: true },
+    );
+    expect(document.parseResult.parserErrors).toHaveLength(0);
+    const goto = findGoto(document.parseResult.value);
+    expect(goto.target.ref).toBeUndefined();
+  });
+
+  test('a parent-body goto resolves a sub-process statement by its own name', async () => {
+    const document = await parse(
+      `
+process p {
+  subprocess Sub {
+    user Inner
+  }
+  goto Sub
+}
+`,
+      { validation: true },
+    );
+    expect(document.parseResult.parserErrors).toHaveLength(0);
+    const goto = findGoto(document.parseResult.value);
+    expect(goto.target.ref).toBeDefined();
+    expect(goto.target.ref!.$type).toBe('SubProcess');
+  });
+
+  test('a goto in an outer sub-process cannot resolve a step inside an inner (nested) sub-process', async () => {
+    const document = await parse(
+      `
+process p {
+  subprocess Outer {
+    subprocess Inner {
+      user Deep
+    }
+    goto Deep
+  }
+}
+`,
+      { validation: true },
+    );
+    expect(document.parseResult.parserErrors).toHaveLength(0);
+    const goto = findGoto(document.parseResult.value);
+    expect(goto.target.ref).toBeUndefined();
+  });
+
+  test('boundary message names the sub-process the target is inside, when the goto is outside it (one diagnostic)', async () => {
+    const document = await parse(
+      `
+process p {
+  subprocess Sub {
+    user Inner
+  }
+  goto Inner
+}
+`,
+      { validation: true },
+    );
+    expect(document.parseResult.parserErrors).toHaveLength(0);
+
+    const errors = errorsOf(document);
+    // Exactly one diagnostic on the document: the linker replaces the
+    // message rather than a validator stacking a second one on top.
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.message).toContain("'Inner'");
+    expect(errors[0]!.message).toContain("subprocess 'Sub'");
+    expect(errors[0]!.message.toLowerCase()).toContain(
+      'cross a sub-process boundary',
+    );
+  });
+
+  test('boundary message names the sub-process the goto is inside, when the target is outside it (one diagnostic)', async () => {
+    const document = await parse(
+      `
+process p {
+  user Outer
+  subprocess Sub {
+    goto Outer
+  }
+}
+`,
+      { validation: true },
+    );
+    expect(document.parseResult.parserErrors).toHaveLength(0);
+
+    const errors = errorsOf(document);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.message).toContain("'Outer'");
+    expect(errors[0]!.message).toContain("subprocess 'Sub'");
+    expect(errors[0]!.message.toLowerCase()).toContain(
+      'cross a sub-process boundary',
+    );
+  });
+
+  test('a goto to a name that exists nowhere yields the unchanged generic message (one diagnostic)', async () => {
+    const document = await parse(
+      `
+process p {
+  subprocess Sub {
+    user Inner
+  }
+  goto Missing
+}
+`,
+      { validation: true },
+    );
+    expect(document.parseResult.parserErrors).toHaveLength(0);
+    expect(findGoto(document.parseResult.value).target.ref).toBeUndefined();
+
+    const errors = errorsOf(document);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.message).toBe(
+      "Could not resolve reference to Statement named 'Missing'.",
+    );
   });
 });
 

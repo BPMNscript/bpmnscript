@@ -1112,6 +1112,163 @@ describe('Validation — unreachable statement', () => {
   });
 });
 
+// ── Sub-process statement ───────────────────────────────────────────────────
+
+describe('Validation — subprocess start position', () => {
+  test('an explicit `start` as the first statement of a subprocess body produces no error', async () => {
+    const { diagnostics } = await validate(`
+process p {
+  subprocess S {
+    start In
+    user A
+    end Out
+  }
+}
+`);
+    expect(
+      diagnosticsFor(diagnostics, 'must be the first statement'),
+    ).toHaveLength(0);
+  });
+
+  test('a `start` as the second statement of a subprocess body is exactly one error', async () => {
+    const { diagnostics } = await validate(`
+process p {
+  subprocess S {
+    user A
+    start In
+  }
+}
+`);
+    const errors = diagnosticsFor(
+      diagnostics,
+      'must be the first statement',
+    ).filter((d) => d.severity === SEVERITY_ERROR);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.message).toContain('In');
+  });
+
+  test('a `start` inside an `if` block nested in a subprocess body is exactly one error', async () => {
+    const { diagnostics } = await validate(`
+process p {
+  subprocess S {
+    if (true) {
+      start In
+    }
+  }
+}
+`);
+    const errors = diagnosticsFor(
+      diagnostics,
+      'must be the first statement',
+    ).filter((d) => d.severity === SEVERITY_ERROR);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.message).toContain('In');
+  });
+});
+
+describe('Validation — subprocess empty body', () => {
+  test('an empty subprocess body is exactly one warning', async () => {
+    const { diagnostics } = await validate(`
+process p {
+  subprocess S { }
+}
+`);
+    const warnings = bySeverity(diagnostics, SEVERITY_WARNING).filter((d) =>
+      d.message.toLowerCase().includes('no steps'),
+    );
+    expect(warnings).toHaveLength(1);
+  });
+
+  test('a non-empty subprocess body produces no empty-body warning', async () => {
+    const { diagnostics } = await validate(`
+process p {
+  subprocess S { user A }
+}
+`);
+    const warnings = bySeverity(diagnostics, SEVERITY_WARNING).filter((d) =>
+      d.message.toLowerCase().includes('no steps'),
+    );
+    expect(warnings).toHaveLength(0);
+  });
+});
+
+describe('Validation — subprocess reserved and duplicate names', () => {
+  test('a subprocess named with a reserved synthesised-id pattern is exactly one error', async () => {
+    const { diagnostics } = await validate(
+      `process p { subprocess Gateway_x_split { user A } }`,
+    );
+    const errors = diagnosticsFor(diagnostics, 'reserved synthesised-id');
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.message).toContain('Gateway_x_split');
+  });
+
+  test('a subprocess named with a StartEvent_ prefix is exactly one error', async () => {
+    const { diagnostics } = await validate(
+      `process p { subprocess StartEvent_foo { user A } }`,
+    );
+    const errors = diagnosticsFor(diagnostics, 'reserved synthesised-id');
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.message).toContain('StartEvent_foo');
+  });
+
+  test('two subprocesses with the same name is exactly one ambiguity error', async () => {
+    const { diagnostics } = await validate(`
+process p {
+  subprocess S { user A }
+  subprocess S { user B }
+}
+`);
+    const errors = diagnosticsFor(diagnostics, 'ambiguous');
+    expect(errors).toHaveLength(1);
+  });
+
+  test('a step nested inside a subprocess reusing a parent step name is exactly one ambiguity error', async () => {
+    const { diagnostics } = await validate(`
+process p {
+  user A
+  subprocess S { user A }
+}
+`);
+    const errors = diagnosticsFor(diagnostics, 'ambiguous');
+    expect(errors).toHaveLength(1);
+  });
+});
+
+describe('Validation — subprocess unreachable statements', () => {
+  const unreachable = (diagnostics: ValidationResult<Model>['diagnostics']) =>
+    diagnosticsFor(diagnostics, 'can never run');
+
+  test('a step after an `end` inside a subprocess body is flagged as unreachable', async () => {
+    const { diagnostics } = await validate(`
+process p {
+  subprocess S {
+    start In
+    end Out
+    user Dead
+  }
+}
+`);
+    expect(unreachable(diagnostics)).toHaveLength(1);
+  });
+
+  // The unreachable subprocess itself is flagged once; the check short-circuits
+  // before recursing into its nested steps, so no per-nested-step warnings pile
+  // up. (The nested-body recursion itself is pinned by the sibling test above.)
+  test('an unreachable subprocess in the parent body warns once for the subprocess, not once per nested step', async () => {
+    const { diagnostics } = await validate(`
+process p {
+  start S
+  end Done
+  subprocess Sub {
+    user A
+    user B
+  }
+}
+`);
+    expect(unreachable(diagnostics)).toHaveLength(1);
+  });
+});
+
 /** All diagnostics of the given LSP severity (1 = Error, 2 = Warning). */
 function bySeverity(
   diagnostics: ValidationResult<Model>['diagnostics'],

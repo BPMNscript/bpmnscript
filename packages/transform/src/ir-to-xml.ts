@@ -14,8 +14,12 @@
  *      counterpart, including Operaton extension attributes.
  *   4. Compute and attach `<bpmn:incoming>` / `<bpmn:outgoing>` references
  *      on every flow node (MIWG-compliant; required by Operaton Modeler).
- *   5. Serialize via `moddle.toXML(..., { format: true })`.
- *   6. Pass the string through `bpmn-auto-layout` to inject `bpmndi:`
+ *   5. If the process contains at least one sub-process, attach a minimal
+ *      `bpmndi:BPMNShape isExpanded="true"` hint per sub-process (see
+ *      {@link buildSubProcessExpansionHint} and ADR 0015) so that step 7 lays
+ *      its children out inside its bounds instead of scattering them.
+ *   6. Serialize via `moddle.toXML(..., { format: true })`.
+ *   7. Pass the string through `bpmn-auto-layout` to inject `bpmndi:`
  *      diagram-interchange data (ADR 0003: DI regenerated on export).
  */
 
@@ -33,6 +37,7 @@ import { layoutProcess } from 'bpmn-auto-layout';
 import { humanize } from './humanize.js';
 import type {
   BpmnProcess,
+  FlowContainer,
   FlowElement,
   FormField,
   FormFieldType,
@@ -113,31 +118,10 @@ export async function irToXml(
     operaton: operatonModdleExtension as Record<string, unknown>,
   });
 
-  // Pass 1: build moddle elements for every flow node and sequence flow.
-  // We hold them by id so we can wire references in pass 2.
-  const flowNodeById = new Map<string, ModdleElement>();
-  const sequenceFlowById = new Map<string, ModdleElement>();
-
-  for (const node of process.flowElements) {
-    flowNodeById.set(node.id, createFlowNode(moddle, node));
-  }
-
-  for (const flow of process.sequenceFlows) {
-    sequenceFlowById.set(
-      flow.id,
-      createSequenceFlow(moddle, flow, flowNodeById),
-    );
-  }
-
-  // Pass 2: wire up incoming/outgoing on every flow node — MIWG requires
-  // them and bpmn-moddle does not auto-derive them.
-  attachIncomingOutgoing(process, flowNodeById, sequenceFlowById);
-
-  // Pass 3: wire up the gateway `default` references (these need the
-  // SequenceFlow moddle objects, so they have to happen after pass 1).
-  attachGatewayDefaults(process, flowNodeById, sequenceFlowById);
-
-  // Assemble the process and the definitions root.
+  // Assemble the process and the definitions root. The process is one
+  // FlowContainer; its ordered moddle children (nodes then flows, with
+  // incoming/outgoing and gateway defaults wired) are built by the shared
+  // per-container pass, which recurses through any nested sub-process.
   const processAttrs: Record<string, unknown> = {
     id: process.id,
     // The process is always labelable: when no explicit name is carried in the
@@ -145,22 +129,21 @@ export async function irToXml(
     name: process.name ?? humanize(process.id),
     isExecutable: process.isExecutable,
     'operaton:historyTimeToLive': HISTORY_TIME_TO_LIVE,
-    flowElements: [
-      ...process.flowElements.map((n) => requireById(flowNodeById, n.id)),
-      ...process.sequenceFlows.map((f) => requireById(sequenceFlowById, f.id)),
-    ],
+    flowElements: buildContainerChildren(moddle, process),
   };
   const processElement = moddle.create('bpmn:Process', processAttrs);
 
   const stem = options?.sourceFileName
     ? basename(options.sourceFileName, extname(options.sourceFileName))
     : process.id;
+  const diagrams = buildSubProcessExpansionHint(moddle, processElement);
   const definitions = moddle.create('bpmn:Definitions', {
     id: `Definitions_${stem}`,
     targetNamespace: TARGET_NAMESPACE,
     exporter: 'BPMNscript',
     exporterVersion: options?.exporterVersion ?? '0.0.0',
     rootElements: [processElement],
+    ...(diagrams.length > 0 ? { diagrams } : {}),
   });
 
   // Serialize. `format: true` produces indented output; the formatted
@@ -174,6 +157,117 @@ export async function irToXml(
   const xmlWithDi = await layoutProcess(xml);
 
   return xmlWithDi;
+}
+
+/**
+ * Author a minimal diagram-interchange hint so `bpmn-auto-layout` expands
+ * every sub-process instead of laying it out collapsed (ADR 0015).
+ *
+ * Fed DI-less XML containing a `bpmn:SubProcess`, `bpmn-auto-layout` renders
+ * a collapsed parent box and scatters shapes for the nested children into the
+ * root plane at coordinates that duplicate unrelated top-level elements. The
+ * library reads the `isExpanded` boolean off a pre-existing
+ * `bpmndi:BPMNShape` for a given element and propagates it onto that
+ * element before laying out — any bounds supplied here are recomputed and
+ * discarded — but it only finds the shape at all by looking it up in its own
+ * id-keyed element index, so every shape needs an `id` even though nothing
+ * ever references it back. One shape per sub-process at any nesting depth,
+ * referencing the process as its plane's root element.
+ *
+ * Returns an empty array when the process has no sub-process anywhere, so
+ * `irToXml` omits the `diagrams` property entirely and sub-process-free
+ * output stays byte-identical.
+ */
+function buildSubProcessExpansionHint(
+  moddle: BpmnModdleInstance,
+  processElement: ModdleElement,
+): ModdleElement[] {
+  const subProcessElements = collectSubProcessElements(processElement);
+  if (subProcessElements.length === 0) {
+    return [];
+  }
+
+  const shapes = subProcessElements.map((subProcessElement) =>
+    moddle.create('bpmndi:BPMNShape', {
+      id: `${subProcessElement.id}_di`,
+      bpmnElement: subProcessElement,
+      isExpanded: true,
+    }),
+  );
+  const plane = moddle.create('bpmndi:BPMNPlane', {
+    id: `BPMNPlane_${processElement.id}`,
+    bpmnElement: processElement,
+    planeElement: shapes,
+  });
+  return [
+    moddle.create('bpmndi:BPMNDiagram', {
+      id: `BPMNDiagram_${processElement.id}`,
+      plane,
+    }),
+  ];
+}
+
+/**
+ * Recursively collect every `bpmn:SubProcess` moddle element under a
+ * container's `flowElements`, at any nesting depth (depth-first,
+ * outer-before-inner).
+ */
+function collectSubProcessElements(container: ModdleElement): ModdleElement[] {
+  const result: ModdleElement[] = [];
+  for (const element of container.flowElements ?? []) {
+    if (element.$type === 'bpmn:SubProcess') {
+      result.push(element);
+      result.push(...collectSubProcessElements(element));
+    }
+  }
+  return result;
+}
+
+/**
+ * Build the ordered moddle children of one {@link FlowContainer} — a process
+ * or a sub-process body — with all references wired.
+ *
+ * Runs the same three passes for every container:
+ *   - Pass 1: create a moddle element for each flow node and sequence flow,
+ *     held by id so references can be wired.
+ *   - Pass 2: attach `<bpmn:incoming>` / `<bpmn:outgoing>` on every flow node
+ *     (MIWG requires them; bpmn-moddle does not auto-derive them).
+ *   - Pass 3: attach the gateway `default` references (these need the
+ *     SequenceFlow moddle objects, so they run after pass 1).
+ *
+ * The returned array preserves the container's own order: every flow node
+ * first (in `flowElements` order), then every sequence flow (in
+ * `sequenceFlows` order).
+ *
+ * A nested sub-process node reaches this function again through
+ * {@link createFlowNode} (mutual recursion), building its body into its own
+ * maps; the parent never sees the child's nodes or flows.
+ */
+function buildContainerChildren(
+  moddle: BpmnModdleInstance,
+  container: FlowContainer,
+): ModdleElement[] {
+  const flowNodeById = new Map<string, ModdleElement>();
+  const sequenceFlowById = new Map<string, ModdleElement>();
+
+  for (const node of container.flowElements) {
+    flowNodeById.set(node.id, createFlowNode(moddle, node));
+  }
+
+  for (const flow of container.sequenceFlows) {
+    sequenceFlowById.set(
+      flow.id,
+      createSequenceFlow(moddle, flow, flowNodeById),
+    );
+  }
+
+  attachIncomingOutgoing(container, flowNodeById, sequenceFlowById);
+  attachGatewayDefaults(container, flowNodeById, sequenceFlowById);
+
+  return [
+    ...container.flowElements.map((n) => requireById(flowNodeById, n.id)),
+    ...container.sequenceFlows.map((f) => requireById(sequenceFlowById, f.id)),
+  ];
 }
 
 /**
@@ -278,6 +372,18 @@ function createFlowNode(
       // handled generically by `attachIncomingOutgoing` below.
       return moddle.create('bpmn:ParallelGateway', baseAttrs);
 
+    case 'subProcess':
+      // An embedded sub-process is an activity whose body is a nested
+      // container. Its children are built by the same per-container pass
+      // (mutual recursion); the parent's incoming/outgoing into this
+      // sub-process node are wired generically by `attachIncomingOutgoing`,
+      // exactly as for any other activity. Per the derived-name path above,
+      // it carries a humanized `name` so viewers label the expanded box.
+      return moddle.create('bpmn:SubProcess', {
+        ...baseAttrs,
+        flowElements: buildContainerChildren(moddle, node),
+      });
+
     default: {
       // Exhaustiveness check — every variant of FlowElement is handled.
       const exhaustive: never = node;
@@ -372,7 +478,7 @@ function createSequenceFlow(
  * in `process.sequenceFlows`, so the output is deterministic.
  */
 function attachIncomingOutgoing(
-  process: BpmnProcess,
+  container: FlowContainer,
   flowNodeById: Map<string, ModdleElement>,
   sequenceFlowById: Map<string, ModdleElement>,
 ): void {
@@ -382,7 +488,7 @@ function attachIncomingOutgoing(
     node.outgoing = [];
   }
 
-  for (const flow of process.sequenceFlows) {
+  for (const flow of container.sequenceFlows) {
     const flowModdle = requireById(sequenceFlowById, flow.id);
     const source = flowNodeById.get(flow.sourceRef);
     const target = flowNodeById.get(flow.targetRef);
@@ -407,11 +513,11 @@ function attachIncomingOutgoing(
  * moddle element, not a raw id.
  */
 function attachGatewayDefaults(
-  process: BpmnProcess,
+  container: FlowContainer,
   flowNodeById: Map<string, ModdleElement>,
   sequenceFlowById: Map<string, ModdleElement>,
 ): void {
-  for (const node of process.flowElements) {
+  for (const node of container.flowElements) {
     if (node.kind !== 'exclusiveGateway') continue;
     if (node.defaultFlowId === undefined) continue;
     const gateway = requireById(flowNodeById, node.id);
