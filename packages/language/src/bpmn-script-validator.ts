@@ -29,6 +29,7 @@ import type {
   Attribute,
   Block,
   BpmnScriptAstType,
+  CallActivity,
   DoWhileStatement,
   EndEvent,
   ExternalTask,
@@ -55,12 +56,14 @@ import {
   isAdditive,
   isAttribute,
   isBlock,
+  isCallActivity,
   isDoWhileStatement,
   isEndEvent,
   isExpr,
   isExternalTask,
   isGotoStatement,
   isIfStatement,
+  isLiteralString,
   isLogical,
   isMultiplicative,
   isParallelStatement,
@@ -72,6 +75,7 @@ import {
   isSubProcess,
   isUserTask,
   isVarDecl,
+  isVariableMapping,
   isVarRef,
   isWhileStatement,
 } from './generated/ast.js';
@@ -101,6 +105,7 @@ export function registerValidationChecks(services: BpmnScriptServices) {
     ParallelStatement: validator.checkParallelStatement,
     GotoStatement: validator.checkGotoStatement,
     SubProcess: validator.checkSubProcess,
+    CallActivity: validator.checkCallActivity,
   };
   registry.register(checks, validator);
 }
@@ -126,10 +131,35 @@ const SERVICE_TASK_KEYS: ReadonlySet<string> = new Set([
 const EXTERNAL_TASK_KEYS: ReadonlySet<string> = new Set(['topic']);
 
 /**
+ * The `call` attribute keys. `process` (the callee) is required; `binding`
+ * and `version` are the mutually exclusive version-pinning discriminators;
+ * `businessKey` sets the started process instance's business key. See
+ * {@link BpmnScriptValidator.checkCallActivity}.
+ */
+const CALL_ACTIVITY_KEYS: ReadonlySet<string> = new Set([
+  'process',
+  'binding',
+  'version',
+  'businessKey',
+]);
+
+/**
+ * The legal `binding` values (bare identifiers, read like the `latest`/
+ * `deployment` process-engine binding modes).
+ */
+const CALL_BINDING_VALUES: ReadonlySet<string> = new Set([
+  'latest',
+  'deployment',
+]);
+
+/**
  * Attribute keys whose value identifies something other than a process
- * variable — a Java class, a form id, an EL binding, or a worker topic — so a
- * bareword value there must not trigger the undeclared-variable warning (see
- * {@link BpmnScriptValidator.checkExpression}).
+ * variable — a Java class, a form id, an EL binding, a worker topic, a called
+ * process id, or a binding/version discriminant — so a bareword value there
+ * must not trigger the undeclared-variable warning (see
+ * {@link BpmnScriptValidator.checkExpression}). `businessKey` is deliberately
+ * NOT included: a bare identifier there renders as a `${var}` JUEL expression
+ * (the same reasoning as `assignee`), so it is a real variable reference.
  */
 const NON_VARIABLE_ATTR_KEYS: ReadonlySet<string> = new Set([
   'class',
@@ -137,6 +167,9 @@ const NON_VARIABLE_ATTR_KEYS: ReadonlySet<string> = new Set([
   'expression',
   'delegate',
   'topic',
+  'process',
+  'binding',
+  'version',
 ]);
 
 /**
@@ -228,6 +261,9 @@ const ORDERED_OK: ReadonlySet<ExprType> = new Set<ExprType>([
  * goto target (the container's entry point) and the seed for its implicit
  * start/end ids (`StartEvent_<name>`/`EndEvent_<name>`), so it must clear the
  * same reserved-pattern and duplicate-name checks as any other named step.
+ * `CallActivity` is included for the same reason: a call is a goto target
+ * (`name`) and a leaf step like any other, so it is subject to the same
+ * reserved-name, duplicate-name, and reachability checks.
  */
 type NamedStatement =
   | StartEvent
@@ -236,7 +272,8 @@ type NamedStatement =
   | ServiceTask
   | ExternalTask
   | ScriptTask
-  | SubProcess;
+  | SubProcess
+  | CallActivity;
 
 /**
  * Collect every goto-targetable named statement in `process`, in document
@@ -257,7 +294,8 @@ function collectNamedStatements(process: Process): NamedStatement[] {
       isServiceTask(node) ||
       isExternalTask(node) ||
       isScriptTask(node) ||
-      isSubProcess(node)
+      isSubProcess(node) ||
+      isCallActivity(node)
     ) {
       result.push(node);
     }
@@ -288,7 +326,8 @@ function statementName(stmt: Statement): string | undefined {
     isServiceTask(stmt) ||
     isExternalTask(stmt) ||
     isScriptTask(stmt) ||
-    isSubProcess(stmt)
+    isSubProcess(stmt) ||
+    isCallActivity(stmt)
     ? stmt.name
     : undefined;
 }
@@ -665,6 +704,22 @@ export class BpmnScriptValidator {
     symbols: ReturnType<VariableSymbolProvider['collect']>,
     accept: ValidationAcceptor,
   ): void {
+    // 0. Callee-scope exemption: an `out` mapping's source (`out result =
+    //    calleeVar`) is evaluated in the CALLED process's scope, not the
+    //    caller's — the caller's symbol table cannot judge whether it exists
+    //    or what type it has. `getContainerOfType` (rather than a direct
+    //    `$container` check) is required so a VarRef nested inside an
+    //    operator node of an `out` source (e.g. `out ok = a > 5 && flag`) is
+    //    exempted too, not just a bare `out x = y` shorthand. `in` mapping
+    //    sources stay fully checked — they are caller-scope.
+    const enclosingMapping = AstUtils.getContainerOfType(
+      expr,
+      isVariableMapping,
+    );
+    if (enclosingMapping?.direction === 'out') {
+      return;
+    }
+
     // 1. Undeclared-variable warning: a VarRef root not in the symbol set.
     //    Skip VarRefs that are a `class`, `formKey`, `expression`, `delegate`,
     //    or `topic` attribute value: those identifiers name Java classes, form
@@ -1147,6 +1202,140 @@ export class BpmnScriptValidator {
       );
     }
   };
+
+  /**
+   * `call` attribute and mapping checks, read like a function call at the
+   * process boundary: `process` names the called process (required), an
+   * optional `binding`/`version` pins which deployed version starts, and the
+   * `in`/`out` mappings are the call's arguments and return values. Runs, in
+   * order: duplicate keys, allowed keys, the required `process`, the
+   * `binding` value, the `binding`/`version` mutual exclusion, and mapping
+   * target duplicates within one direction.
+   *
+   * @param call The call activity.
+   */
+  checkCallActivity = (call: CallActivity, accept: ValidationAcceptor): void => {
+    this.checkDuplicateKeys(call.attrs, accept);
+    this.checkAllowedKeys(call.attrs, CALL_ACTIVITY_KEYS, 'a call', accept);
+    this.checkCallProcessAttribute(call, accept);
+    this.checkCallBindingAttribute(call, accept);
+    this.checkCallBindingVersionExclusion(call, accept);
+    this.checkCallMappingDuplicates(call, accept);
+  };
+
+  /**
+   * A call must name the process it starts. A missing `process` attribute has
+   * no attribute node to attach to, so the diagnostic lands on the call's own
+   * `name`; a present but empty `process = ""` is flagged on the attribute
+   * itself.
+   */
+  private checkCallProcessAttribute(
+    call: CallActivity,
+    accept: ValidationAcceptor,
+  ): void {
+    const processAttr = call.attrs.find((a) => a.key === 'process');
+    if (!processAttr) {
+      accept(
+        'error',
+        `A call must name the process it starts: add process = "<id>".`,
+        { node: call, property: 'name' },
+      );
+      return;
+    }
+    if (
+      isLiteralString(processAttr.value) &&
+      processAttr.value.value.length === 0
+    ) {
+      accept(
+        'error',
+        `A call's 'process' attribute cannot be empty; name the process to start.`,
+        { node: processAttr, property: 'value' },
+      );
+    }
+  }
+
+  /**
+   * A `binding` value must be `latest` or `deployment` (the process-engine
+   * binding modes). `version = version` is the one common authoring mistake
+   * worth a dedicated teaching message instead of the generic "must be
+   * latest/deployment" error — `version` itself is a reserved grammar keyword
+   * and so can only reach this check as a quoted string (`binding =
+   * "version"`); the bare-identifier spelling is already rejected by the
+   * parser before validation ever runs.
+   */
+  private checkCallBindingAttribute(
+    call: CallActivity,
+    accept: ValidationAcceptor,
+  ): void {
+    const bindingAttr = call.attrs.find((a) => a.key === 'binding');
+    if (!bindingAttr) {
+      return;
+    }
+    const value = bindingValueText(bindingAttr.value);
+    if (value !== undefined && CALL_BINDING_VALUES.has(value)) {
+      return;
+    }
+    if (value === 'version') {
+      accept(
+        'error',
+        `Write 'version = <number>' instead of 'binding = version'.`,
+        { node: bindingAttr, property: 'value' },
+      );
+      return;
+    }
+    accept(
+      'error',
+      `Attribute 'binding' must be 'latest' or 'deployment'.`,
+      { node: bindingAttr, property: 'value' },
+    );
+  }
+
+  /**
+   * `binding` and `version` both pin which deployed version of the called
+   * process starts; declaring both is one error, not two — the discriminators
+   * are mutually exclusive regardless of what value either one carries.
+   */
+  private checkCallBindingVersionExclusion(
+    call: CallActivity,
+    accept: ValidationAcceptor,
+  ): void {
+    const hasBinding = call.attrs.some((a) => a.key === 'binding');
+    const hasVersion = call.attrs.some((a) => a.key === 'version');
+    if (hasBinding && hasVersion) {
+      accept(
+        'error',
+        `A call cannot combine 'binding' and 'version'; use 'version = <number>' to pin a specific version, or 'binding = latest'/'binding = deployment' for the other modes.`,
+        { node: call, property: 'name' },
+      );
+    }
+  }
+
+  /**
+   * Flag a mapping whose target repeats an earlier one in the *same*
+   * direction — `in`/`out` are independent namespaces, and a bare `*` shares
+   * the repeat check with named targets (keyed on direction plus `'*'`) so a
+   * second `*` in one direction is caught the same way, while `*` alongside a
+   * named mapping in that direction is legal (they key differently).
+   */
+  private checkCallMappingDuplicates(
+    call: CallActivity,
+    accept: ValidationAcceptor,
+  ): void {
+    forEachDuplicate(
+      call.mappings,
+      (mapping) => `${mapping.direction}:${mapping.all ? '*' : mapping.target}`,
+      (mapping) =>
+        accept(
+          'error',
+          mapping.all
+            ? `Duplicate '${mapping.direction} *' mapping; a direction can copy every variable only once.`
+            : `Duplicate '${mapping.direction}' mapping target '${mapping.target}'.`,
+          mapping.all
+            ? { node: mapping }
+            : { node: mapping, property: 'target' },
+        ),
+    );
+  }
 }
 
 /**
@@ -1173,6 +1362,24 @@ function collectExpressions(process: Process): Expr[] {
  */
 function isReservedName(name: string): boolean {
   return RESERVED_ID_PATTERNS.some((re) => re.test(name));
+}
+
+/**
+ * The identifier-like text of a `binding` attribute value, however it parsed:
+ * a bareword (`binding = latest`) is a `VarRef`, and a quoted spelling
+ * (`binding = "latest"`) is a `LiteralString` — both mean the same value, so
+ * {@link BpmnScriptValidator.checkCallBindingAttribute} reads either shape the
+ * same way. `undefined` for any other expression shape (a number, a raw
+ * template, an operator node, …), which is never a legal binding value.
+ */
+function bindingValueText(expr: Expr): string | undefined {
+  if (isVarRef(expr)) {
+    return expr.name;
+  }
+  if (isLiteralString(expr)) {
+    return expr.value;
+  }
+  return undefined;
 }
 
 /**
@@ -1250,10 +1457,10 @@ function isWithinBlock(node: AstNode, block: Block): boolean {
 /**
  * The `name` of a resolved `goto` target for use in a diagnostic message.
  * Only `StartEvent`/`EndEvent`/`UserTask`/`ServiceTask`/`ExternalTask`/
- * `ScriptTask`/`SubProcess` carry a `name` (the other `Statement` members are
- * structurally impossible `goto` targets, since the grammar's `NameProvider`
- * only keys on nodes exposing `name`), so the `'?'` fallback shouldn't be
- * reachable.
+ * `ScriptTask`/`SubProcess`/`CallActivity` carry a `name` (the other
+ * `Statement` members are structurally impossible `goto` targets, since the
+ * grammar's `NameProvider` only keys on nodes exposing `name`), so the `'?'`
+ * fallback shouldn't be reachable.
  */
 function targetStatementName(target: Statement): string {
   if (
@@ -1263,7 +1470,8 @@ function targetStatementName(target: Statement): string {
     isServiceTask(target) ||
     isExternalTask(target) ||
     isScriptTask(target) ||
-    isSubProcess(target)
+    isSubProcess(target) ||
+    isCallActivity(target)
   ) {
     return target.name;
   }

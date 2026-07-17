@@ -18,6 +18,7 @@
 
 import { describe, it, expect } from 'vitest';
 import type {
+  CallActivity,
   FlowContainer,
   FlowElement,
   ParallelGateway,
@@ -58,6 +59,8 @@ function describeFlowElement(fe: FlowElement): string {
       return 'parallel';
     case 'subProcess':
       return 'subProcess';
+    case 'callActivity':
+      return 'callActivity';
     default: {
       // Exhaustiveness check: if TypeScript infers `fe` as `never` here,
       // every union variant is handled. A compile error on the line below
@@ -289,6 +292,57 @@ describe('SubProcess — recursive FlowContainer union member', () => {
   });
 });
 
+describe('CallActivity — leaf FlowElement union member', () => {
+  it('a full CallActivity literal (binding, businessKey, in/out mappings) is assignable to FlowElement', () => {
+    // The richest shape: every optional field populated, all three mapping
+    // variants present. If CallActivity were not part of the union — or a field
+    // were mistyped — TypeScript would reject this assignment.
+    const call: FlowElement = {
+      kind: 'callActivity',
+      id: 'Call_1',
+      name: 'Run sub-process',
+      calledElement: 'sub-process',
+      binding: { kind: 'version', version: '3' },
+      businessKey: '${execution.processBusinessKey}',
+      inMappings: [
+        { kind: 'all' },
+        { kind: 'variable', source: 'amount', target: 'amount' },
+        {
+          kind: 'expression',
+          sourceExpression: '${total * 2}',
+          target: 'doubled',
+          local: true,
+        },
+      ],
+      outMappings: [
+        { kind: 'variable', source: 'result', target: 'outcome' },
+      ],
+    } satisfies CallActivity;
+
+    expect(call.kind).toBe('callActivity');
+    // A CallActivity is a leaf: it carries no container arrays.
+    expect('flowElements' in call).toBe(false);
+  });
+
+  it('a minimal CallActivity (calledElement only) is assignable', () => {
+    const call: CallActivity = {
+      kind: 'callActivity',
+      id: 'Call_min',
+      calledElement: 'other',
+    };
+    expect(call.calledElement).toBe('other');
+  });
+
+  it('exhaustive switch includes a callActivity arm (compile-time + runtime)', () => {
+    const call: FlowElement = {
+      kind: 'callActivity',
+      id: 'Call_2',
+      calledElement: 'p',
+    };
+    expect(describeFlowElement(call)).toBe('callActivity');
+  });
+});
+
 describe('IR_TYPE_NAMES', () => {
   it('lists ServiceTask and ScriptTask, and no longer ServiceTaskJavaClass', () => {
     expect(IR_TYPE_NAMES).toContain('ServiceTask');
@@ -299,5 +353,9 @@ describe('IR_TYPE_NAMES', () => {
   it('lists SubProcess and FlowContainer', () => {
     expect(IR_TYPE_NAMES).toContain('SubProcess');
     expect(IR_TYPE_NAMES).toContain('FlowContainer');
+  });
+
+  it('lists CallActivity', () => {
+    expect(IR_TYPE_NAMES).toContain('CallActivity');
   });
 });

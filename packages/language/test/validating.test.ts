@@ -19,6 +19,14 @@
  *   - empty-block WARNING (if/else-if/else/while/do-while/parallel branch),
  *   - goto-into-parallel-branch-from-outside ERROR.
  *
+ * A call activity is checked like a function call at the process boundary: a
+ * required `process` (the callee), an optional `binding`/`version` pinning
+ * discriminator (mutually exclusive), and `in`/`out` variable mappings (the
+ * call's arguments and return values) that must not repeat a target within one
+ * direction. An `out` mapping's source is a callee-scope reference — evaluated
+ * in the CALLED process, not the caller's — so it is exempt from the caller's
+ * undeclared-variable and type-mismatch checks.
+ *
  * Diagnostics are produced through Langium's `validationHelper`, which parses,
  * links and runs the registered validation checks, returning the merged
  * diagnostic list. Severity follows the LSP convention: `1 = Error`,
@@ -436,6 +444,16 @@ process p {
 x = 1
 ${FENCE}
   goto Compute
+}
+`);
+    expect(bySeverity(diagnostics, SEVERITY_ERROR)).toHaveLength(0);
+  });
+
+  test('a goto resolving to a call activity produces no error', async () => {
+    const { diagnostics } = await validate(`
+process p {
+  call F { process = "p" }
+  goto F
 }
 `);
     expect(bySeverity(diagnostics, SEVERITY_ERROR)).toHaveLength(0);
@@ -1266,6 +1284,278 @@ process p {
 }
 `);
     expect(unreachable(diagnostics)).toHaveLength(1);
+  });
+});
+
+// ── Call activity ───────────────────────────────────────────────────────────
+
+describe('Validation — call activity valid programs', () => {
+  test('a minimal call naming only `process` is diagnostic-free', async () => {
+    const { diagnostics } = await validate(
+      `process p { call X { process = "p" } }`,
+    );
+    expect(diagnostics).toHaveLength(0);
+  });
+
+  test('a full-featured call (every attribute and mapping shape) is diagnostic-free', async () => {
+    // Mirrors the parser's canonical fixture; `amount`/`tax`/`vipFlag` are the
+    // caller-scope variables the `in` mappings read, so they must be declared
+    // here. `confirmed` (the `out shipped = confirmed` source) is a
+    // callee-scope reference and deliberately left undeclared.
+    const { diagnostics } = await validate(`
+process p {
+  var amount: number
+  var tax: number
+  var vipFlag: boolean
+
+  call Fulfilment "Fulfil order" {
+    process = "fulfilment-process"
+    binding = deployment
+    businessKey = "\${execution.processBusinessKey}"
+    in *
+    in orderId
+    in total = amount + tax
+    in local vip = vipFlag
+    out shipmentId
+    out shipped = confirmed
+  }
+}
+`);
+    expect(diagnostics).toHaveLength(0);
+  });
+
+  test('an explicit `binding = latest` is diagnostic-free', async () => {
+    const { diagnostics } = await validate(
+      `process p { call X { process = "p" binding = latest } }`,
+    );
+    expect(diagnostics).toHaveLength(0);
+  });
+});
+
+describe('Validation — call activity required `process`', () => {
+  test('a call with no `process` attribute is exactly one error naming the requirement', async () => {
+    const { diagnostics } = await validate(`process p { call X { } }`);
+    const errors = diagnosticsFor(diagnostics, 'must name the process');
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.severity).toBe(SEVERITY_ERROR);
+  });
+
+  test('a call with an empty `process = ""` is exactly one error', async () => {
+    const { diagnostics } = await validate(
+      `process p { call X { process = "" } }`,
+    );
+    const errors = bySeverity(diagnostics, SEVERITY_ERROR).filter((d) =>
+      d.message.includes('empty'),
+    );
+    expect(errors).toHaveLength(1);
+  });
+
+  test('a call with a non-empty `process` produces no required-process error', async () => {
+    const { diagnostics } = await validate(
+      `process p { call X { process = "p" } }`,
+    );
+    expect(diagnosticsFor(diagnostics, 'must name the process')).toHaveLength(
+      0,
+    );
+  });
+});
+
+describe('Validation — call activity allowed keys cut both ways', () => {
+  test('`assignee` on a call is exactly one not-valid-here error', async () => {
+    const { diagnostics } = await validate(
+      `process p { call X { process = "p" assignee = "x" } }`,
+    );
+    const errors = diagnosticsFor(diagnostics, 'is not valid');
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.message).toContain('assignee');
+    expect(errors[0]!.message).toContain('call');
+  });
+
+  test('`process` on a user task is exactly one not-valid-here error', async () => {
+    const { diagnostics } = await validate(
+      `process p { user T { process = "p" } }`,
+    );
+    const errors = diagnosticsFor(diagnostics, 'is not valid');
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.message).toContain('process');
+    expect(errors[0]!.message).toContain('user');
+  });
+});
+
+describe('Validation — call activity binding/version', () => {
+  test("`binding = version` (only authorable quoted, since `version` is a reserved word and cannot parse as a bare identifier) is the teaching error", async () => {
+    const { diagnostics } = await validate(
+      `process p { call X { process = "p" binding = "version" } }`,
+    );
+    const errors = diagnosticsFor(diagnostics, 'version = ');
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.severity).toBe(SEVERITY_ERROR);
+  });
+
+  test('an unrecognised `binding` value is exactly one error naming both legal values', async () => {
+    const { diagnostics } = await validate(
+      `process p { call X { process = "p" binding = weekly } }`,
+    );
+    const errors = bySeverity(diagnostics, SEVERITY_ERROR).filter((d) =>
+      d.message.includes("'binding'"),
+    );
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.message).toContain('latest');
+    expect(errors[0]!.message).toContain('deployment');
+  });
+
+  test('`binding` and `version` together is exactly one mutual-exclusion error', async () => {
+    const { diagnostics } = await validate(
+      `process p { call X { process = "p" binding = deployment version = 2 } }`,
+    );
+    const errors = diagnosticsFor(diagnostics, "combine 'binding' and 'version'");
+    expect(errors).toHaveLength(1);
+  });
+
+  test('`version` alone produces no diagnostic', async () => {
+    const { diagnostics } = await validate(
+      `process p { call X { process = "p" version = 2 } }`,
+    );
+    expect(diagnostics).toHaveLength(0);
+  });
+});
+
+describe('Validation — call activity mapping duplicates', () => {
+  test('two `in` mappings naming the same target is exactly one duplicate error, on the second', async () => {
+    const { diagnostics } = await validate(`
+process p {
+  var a: number
+  var b: number
+  call X {
+    process = "p"
+    in x = a
+    in x = b
+  }
+}
+`);
+    const errors = diagnosticsFor(diagnostics, 'Duplicate').filter(
+      (d) => d.severity === SEVERITY_ERROR,
+    );
+    expect(errors).toHaveLength(1);
+  });
+
+  test('`in x` and `out x` (independent directions) produce no duplicate error', async () => {
+    const { diagnostics } = await validate(
+      `process p { call X { process = "p" in x out x } }`,
+    );
+    expect(diagnosticsFor(diagnostics, 'Duplicate')).toHaveLength(0);
+  });
+
+  test('two `in *` mappings is exactly one duplicate error', async () => {
+    const { diagnostics } = await validate(
+      `process p { call X { process = "p" in * in * } }`,
+    );
+    expect(diagnosticsFor(diagnostics, 'Duplicate')).toHaveLength(1);
+  });
+
+  test('`in *` alongside a named `in` mapping produces no duplicate error', async () => {
+    const { diagnostics } = await validate(
+      `process p { call X { process = "p" in * in x } }`,
+    );
+    expect(diagnosticsFor(diagnostics, 'Duplicate')).toHaveLength(0);
+  });
+});
+
+describe('Validation — call activity callee-scope exemption', () => {
+  test('an undeclared `out` mapping source produces no undeclared-variable warning', async () => {
+    const { diagnostics } = await validate(
+      `process p { call X { process = "p" out y = calleeVar } }`,
+    );
+    expect(diagnostics).toHaveLength(0);
+  });
+
+  test('an `out` mapping source nested inside an operator is exempt from the type-mismatch check', async () => {
+    // `calleeVar` happens to share a name with a caller-declared `string`
+    // variable, and the source is nested two levels deep (inside a `Logical`
+    // node, itself the mapping's source) — this only stays diagnostic-free
+    // when the exemption walks the full container chain (`getContainerOfType`)
+    // rather than checking only the mapping's direct `source` node.
+    const { diagnostics } = await validate(`
+process p {
+  var calleeVar: string
+  call X { process = "p" out y = calleeVar > 5 && true }
+}
+`);
+    expect(diagnostics).toHaveLength(0);
+  });
+
+  test('an undeclared `in` mapping source still produces the usual undeclared-variable warning', async () => {
+    const { diagnostics } = await validate(
+      `process p { call X { process = "p" in y = callerVar } }`,
+    );
+    const warnings = bySeverity(diagnostics, SEVERITY_WARNING).filter((d) =>
+      d.message.includes('callerVar'),
+    );
+    expect(warnings).toHaveLength(1);
+  });
+
+  test('a bareword `process` value produces no undeclared-variable warning', async () => {
+    const { diagnostics } = await validate(
+      `process p { call X { process = some-id } }`,
+    );
+    expect(diagnostics).toHaveLength(0);
+  });
+
+  test('a bareword `businessKey` value still produces the undeclared-variable warning', async () => {
+    // Unlike process/binding/version, businessKey is a real variable reference
+    // (the assignee precedent), so it is NOT exempt from the check.
+    const { diagnostics } = await validate(
+      `process p { call X { process = "p" businessKey = someUndeclared } }`,
+    );
+    const warnings = bySeverity(diagnostics, SEVERITY_WARNING).filter((d) =>
+      d.message.includes('someUndeclared'),
+    );
+    expect(warnings).toHaveLength(1);
+  });
+});
+
+describe('Validation — call activity membership', () => {
+  test('a call and a task sharing a name is exactly one ambiguity error', async () => {
+    const { diagnostics } = await validate(`
+process p {
+  user A
+  call A { process = "p" }
+}
+`);
+    const errors = diagnosticsFor(
+      diagnostics,
+      'already used by another step',
+    );
+    expect(errors).toHaveLength(1);
+  });
+
+  test('a call named with a reserved synthesised-id pattern is exactly one error', async () => {
+    const { diagnostics } = await validate(
+      `process p { call StartEvent_x { process = "p" } }`,
+    );
+    const errors = diagnosticsFor(diagnostics, 'reserved synthesised-id');
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.message).toContain('StartEvent_x');
+  });
+
+  test('a call after an `end` is flagged as unreachable', async () => {
+    const { diagnostics } = await validate(
+      `process p { start S end Done call Dead { process = "p" } }`,
+    );
+    const warnings = diagnosticsFor(diagnostics, 'can never run');
+    expect(warnings).toHaveLength(1);
+  });
+
+  test('a `goto` targeting the call makes it reachable', async () => {
+    const { diagnostics } = await validate(`
+process p {
+  start S
+  if (cond) { goto Retry }
+  end Done
+  call Retry { process = "p" }
+}
+`);
+    expect(diagnosticsFor(diagnostics, 'can never run')).toHaveLength(0);
   });
 });
 

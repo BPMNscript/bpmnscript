@@ -175,6 +175,38 @@ describe('structural keyword snippets', () => {
     expect(text).toContain('{');
     expect(text).toContain('}');
   });
+
+  test('`call` is offered as a snippet that scaffolds `process`/`in`/`out`', async () => {
+    const item = (await completionItems('process p {\n  \n}', 1, 2)).find(
+      (i) => i.label === 'call',
+    );
+    expect(item?.insertTextFormat).toBe(InsertTextFormat.Snippet);
+    const text = inserted(item!)!;
+    expect(text).toContain('process =');
+    expect(text).toContain('in ');
+    expect(text).toContain('out ');
+    // The detail reads as the function-call analogy, not BPMN vocabulary.
+    expect(item!.detail).toMatch(/function/i);
+  });
+
+  test('`binding` is offered as a choice snippet inside a call block', async () => {
+    const item = (
+      await completionItems('process p {\n  call C {\n    \n  }\n}', 2, 4)
+    ).find((i) => i.label === 'binding');
+    expect(item?.insertTextFormat).toBe(InsertTextFormat.Snippet);
+    const text = inserted(item!)!;
+    expect(text).toContain('binding =');
+    expect(text).toContain('${1|latest,deployment|}');
+  });
+
+  test('a `businessKey` attribute snippet keeps the EL escape literal', async () => {
+    const item = (
+      await completionItems('process p {\n  call C {\n    \n  }\n}', 2, 4)
+    ).find((i) => i.label === 'businessKey');
+    const text = inserted(item!)!;
+    expect(text).toContain('businessKey =');
+    expect(text).toContain('${execution.processBusinessKey}');
+  });
 });
 
 describe('non-structural keywords fall through', () => {

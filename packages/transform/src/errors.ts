@@ -19,18 +19,25 @@
  * - collaborations, i.e. pools and message flows →
  *   {@link UnsupportedCollaborationError};
  * - unsupported flow-element kinds (an event sub-process, a transaction, an
- *   ad-hoc sub-process, a call activity, intermediate events, …) →
+ *   ad-hoc sub-process, intermediate events, …) →
  *   {@link UnsupportedElementError};
  * - service tasks whose execution form the IR cannot represent (a bare task
  *   with no discriminator, or an external type without a topic) →
  *   {@link UnsupportedServiceTaskFormError};
  * - form fields whose type is not `string`/`long`/`boolean`/`date` →
- *   {@link UnsupportedFormFieldTypeError}.
+ *   {@link UnsupportedFormFieldTypeError};
+ * - call activities the engine could not execute as written: no
+ *   `calledElement`, a `calledElementBinding="version"` with no
+ *   `calledElementVersion`, an unrecognized `calledElementBinding` value
+ *   (e.g. `versionTag`), or an `operaton:in`/`operaton:out` mapping using a
+ *   shape the IR cannot represent → {@link UnsupportedCallActivityError}.
  *
  * Content the IR does not carry but that causes **no semantic loss** is
  * **dropped with a warning** rather than refused — see the `warnings`
  * channel returned by `xmlToIr` (extra Operaton/camunda extension attributes
- * and extension elements beyond `assignee`/`formKey`/`class`, and lanes).
+ * and extension elements beyond `assignee`/`formKey`/`class`/`expression`/
+ * `delegateExpression`/`type`/`topic`/`calledElementBinding`/
+ * `calledElementVersion`, and lanes).
  *
  * All refusal errors share the abstract base {@link UnsupportedConstructError}
  * so a consumer can classify the whole family with a single `instanceof`
@@ -120,11 +127,10 @@ export class UnsupportedFormFieldTypeError extends UnsupportedConstructError {
  * The supported subset is `bpmn:startEvent`, `bpmn:endEvent`,
  * `bpmn:userTask`, `bpmn:serviceTask`, `bpmn:scriptTask`,
  * `bpmn:exclusiveGateway`, `bpmn:parallelGateway`, an embedded
- * `bpmn:subProcess`, and `bpmn:sequenceFlow`. Anything else
- * (`bpmn:intermediateCatchEvent`, `bpmn:callActivity`, an event
- * sub-process with `triggeredByEvent="true"`, `bpmn:transaction`,
- * `bpmn:adHocSubProcess`, etc.) raises this error so unsupported workflows
- * fail loudly at import.
+ * `bpmn:subProcess`, `bpmn:callActivity`, and `bpmn:sequenceFlow`. Anything
+ * else (`bpmn:intermediateCatchEvent`, an event sub-process with
+ * `triggeredByEvent="true"`, `bpmn:transaction`, `bpmn:adHocSubProcess`,
+ * etc.) raises this error so unsupported workflows fail loudly at import.
  */
 export class UnsupportedElementError extends UnsupportedConstructError {
   /** The fully-qualified BPMN type name, e.g. `bpmn:ParallelGateway`. */
@@ -139,11 +145,45 @@ export class UnsupportedElementError extends UnsupportedConstructError {
         ' is a kind that this tool cannot import. ' +
         'Only start/end events, user tasks, service tasks, script tasks, ' +
         'exclusive gateways, parallel gateways, embedded sub-processes, ' +
-        'and sequence flows are supported.',
+        'call activities, and sequence flows are supported.',
     );
     this.name = 'UnsupportedElementError';
     this.qname = qname;
     this.elementId = elementId;
+  }
+}
+
+/**
+ * Thrown by {@link xmlToIr} when a `bpmn:callActivity` carries a shape the
+ * engine could not resolve or execute: no `calledElement`, a
+ * `calledElementBinding` the IR cannot represent (`version` with no
+ * `calledElementVersion`, or any value other than `latest`/`deployment`/
+ * `version`), or an `operaton:in`/`operaton:out` mapping whose attributes do
+ * not match one of the recognized shapes (`source`+`target`,
+ * `sourceExpression`+`target`, `variables="all"`, or a lone `businessKey`).
+ *
+ * The import contract for a call activity is refuse-or-map: rather than
+ * narrowing an ambiguous or unresolvable shape into something that would
+ * silently change behavior at runtime, the transform refuses it outright and
+ * names the concrete offending shape via `detail`.
+ */
+export class UnsupportedCallActivityError extends UnsupportedConstructError {
+  /** The BPMN `id` of the offending call activity. */
+  readonly elementId: string;
+  /** A description of the unrepresentable shape, e.g. the malformed mapping. */
+  readonly detail: string;
+
+  constructor(elementId: string, detail: string) {
+    super(
+      `The call activity '${elementId}' cannot be imported: ${detail}. ` +
+        'Supported call activities name a calledElement, an optional ' +
+        'latest/deployment/version binding, a businessKey, and in/out ' +
+        'mappings using source+target, sourceExpression+target, or ' +
+        'variables="all".',
+    );
+    this.name = 'UnsupportedCallActivityError';
+    this.elementId = elementId;
+    this.detail = detail;
   }
 }
 

@@ -71,7 +71,8 @@ export type FlowElement =
   | ScriptTask
   | ExclusiveGateway
   | ParallelGateway
-  | SubProcess;
+  | SubProcess
+  | CallActivity;
 
 /**
  * The type of a {@link FormField}, in DSL-level (vendor-neutral) spelling.
@@ -250,6 +251,82 @@ export interface ParallelGateway {
 export interface SubProcess extends FlowContainer {
   kind: 'subProcess';
   name?: string;
+}
+
+/**
+ * How a {@link CallActivity} resolves the version of the process it calls.
+ *
+ * `latest` and `deployment` bind by strategy; `version` pins one concrete
+ * version. Tagging the union on `kind` makes `version` without a version
+ * string — and a version string without an explicit binding — unrepresentable
+ * at the type level, mirroring the {@link ServiceTaskBinding} precedent, so no
+ * consumer has to guard a "version set but binding absent" combination at
+ * runtime.
+ */
+export type CalledElementBinding =
+  | { kind: 'latest' }
+  | { kind: 'deployment' }
+  | { kind: 'version'; version: string };
+
+/**
+ * One data mapping between the caller and the called process — the argument
+ * and return-value passing of the function-call analogy (see
+ * {@link CallActivity}).
+ *
+ * The receiver always names the left-hand side: for an in-mapping `target` is
+ * the variable created in the callee; for an out-mapping `target` is the
+ * variable created back in the caller. Tagging the union on `kind` makes the
+ * three source forms mutually exclusive — `all` copies every variable,
+ * `variable` copies one source variable by name, `expression` evaluates an
+ * expression — so a mapping carrying both a plain `source` and a
+ * `sourceExpression` is unrepresentable, again mirroring
+ * {@link ServiceTaskBinding}.
+ *
+ * `local` restricts the mapping to the activity's local scope when set; it is
+ * only ever `true` (an absent `local` is the default, non-local behavior).
+ */
+export type CallVariableMapping =
+  | { kind: 'all'; local?: true }
+  | { kind: 'variable'; source: string; target: string; local?: true }
+  | {
+      kind: 'expression';
+      sourceExpression: string;
+      target: string;
+      local?: true;
+    };
+
+/**
+ * A BPMN `callActivity` node — an activity that invokes another process by id,
+ * the DSL's process-call construct.
+ *
+ * The construct reads as a function call: the called `process` is the function,
+ * the `inMappings` are its arguments (values passed from caller into callee),
+ * and the `outMappings` are its return values (values passed from callee back
+ * to caller). It is a LEAF, not a {@link FlowContainer}: the callee's body
+ * lives in its own definition, so a call activity carries no nested
+ * `flowElements`/`sequenceFlows`.
+ *
+ * The Operaton extension attributes and children serialize in one canonical
+ * order so the round-trip is stable: `calledElement` and the
+ * `calledElementBinding`/`calledElementVersion` attributes on the element, then
+ * inside `extensionElements` a single `operaton:in` for `businessKey` (when
+ * set), then one `operaton:in` per {@link inMappings} entry in order, then one
+ * `operaton:out` per {@link outMappings} entry in order.
+ */
+export interface CallActivity {
+  kind: 'callActivity';
+  id: string;
+  name?: string;
+  /** `bpmn:calledElement` — the id of the process this activity invokes. */
+  calledElement: string;
+  /** Version-resolution strategy; absent means the engine default (latest). */
+  binding?: CalledElementBinding;
+  /** `operaton:in businessKey` — the business key propagated to the callee. */
+  businessKey?: string;
+  /** Argument mappings passed from caller into callee, in emission order. */
+  inMappings?: CallVariableMapping[];
+  /** Return-value mappings passed from callee back to caller, in emission order. */
+  outMappings?: CallVariableMapping[];
 }
 
 /**

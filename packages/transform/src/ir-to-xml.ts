@@ -37,6 +37,8 @@ import { layoutProcess } from 'bpmn-auto-layout';
 import { humanize } from './humanize.js';
 import type {
   BpmnProcess,
+  CallActivity,
+  CallVariableMapping,
   FlowContainer,
   FlowElement,
   FormField,
@@ -384,6 +386,33 @@ function createFlowNode(
         flowElements: buildContainerChildren(moddle, node),
       });
 
+    case 'callActivity': {
+      // A call activity invokes another process by id. `calledElement` is a
+      // core BPMN attribute; the version-resolution strategy is carried by the
+      // Operaton `calledElementBinding`/`calledElementVersion` attributes.
+      const attrs: Record<string, unknown> = {
+        ...baseAttrs,
+        calledElement: node.calledElement,
+      };
+      if (node.binding !== undefined) {
+        attrs['operaton:calledElementBinding'] = node.binding.kind;
+        if (node.binding.kind === 'version') {
+          attrs['operaton:calledElementVersion'] = node.binding.version;
+        }
+      }
+      // Business key and variable mappings are extension-element children, not
+      // attributes. They emit in one canonical order so the round-trip is
+      // stable: the business-key `in`, then the in-mappings, then the
+      // out-mappings.
+      const values = buildCallExtensionValues(moddle, node);
+      if (values.length > 0) {
+        attrs.extensionElements = moddle.create('bpmn:ExtensionElements', {
+          values,
+        });
+      }
+      return moddle.create('bpmn:CallActivity', attrs);
+    }
+
     default: {
       // Exhaustiveness check — every variant of FlowElement is handled.
       const exhaustive: never = node;
@@ -427,6 +456,69 @@ function buildFormExtension(
   );
   const formData = moddle.create('operaton:FormData', { fields });
   return moddle.create('bpmn:ExtensionElements', { values: [formData] });
+}
+
+/**
+ * Build the ordered `extensionElements` children of a {@link CallActivity} in
+ * canonical order: a single `operaton:in` carrying the business key (when set),
+ * then one `operaton:in` per in-mapping in IR order, then one `operaton:out`
+ * per out-mapping in IR order. Returns an empty array when the call activity
+ * carries no business key and no mappings, so the caller omits the
+ * `extensionElements` wrapper entirely.
+ */
+function buildCallExtensionValues(
+  moddle: BpmnModdleInstance,
+  node: CallActivity,
+): ModdleElement[] {
+  const values: ModdleElement[] = [];
+  if (node.businessKey !== undefined) {
+    values.push(
+      moddle.create('operaton:In', { businessKey: node.businessKey }),
+    );
+  }
+  for (const mapping of node.inMappings ?? []) {
+    values.push(moddle.create('operaton:In', callMappingAttrs(mapping)));
+  }
+  for (const mapping of node.outMappings ?? []) {
+    values.push(moddle.create('operaton:Out', callMappingAttrs(mapping)));
+  }
+  return values;
+}
+
+/**
+ * Map one {@link CallVariableMapping} to the attributes of its
+ * `operaton:in` / `operaton:out` element: `all` copies every variable
+ * (`variables="all"`), `variable` copies one named source into a target, and
+ * `expression` evaluates a source expression into a target. `local="true"` is
+ * added only when the mapping is scope-local.
+ */
+function callMappingAttrs(
+  mapping: CallVariableMapping,
+): Record<string, unknown> {
+  const attrs: Record<string, unknown> = {};
+  switch (mapping.kind) {
+    case 'all':
+      attrs.variables = 'all';
+      break;
+    case 'variable':
+      attrs.source = mapping.source;
+      attrs.target = mapping.target;
+      break;
+    case 'expression':
+      attrs.sourceExpression = mapping.sourceExpression;
+      attrs.target = mapping.target;
+      break;
+    default: {
+      const exhaustive: never = mapping;
+      throw new Error(
+        `Unhandled CallVariableMapping kind: ${JSON.stringify(exhaustive)}`,
+      );
+    }
+  }
+  if (mapping.local === true) {
+    attrs.local = true;
+  }
+  return attrs;
 }
 
 /**

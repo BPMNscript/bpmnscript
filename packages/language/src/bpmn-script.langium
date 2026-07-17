@@ -27,6 +27,7 @@
 //   process, var, start, end, user, service, external, script, subprocess,
 //   if, else, while, do, parallel, goto, label, assignee, formKey, class,
 //   expression, delegate, topic, form,
+//   call, in, out, local, binding, version, businessKey,
 //   string, number, boolean, date, json, any,
 //   true, false, null.
 // JUEL identifiers that do NOT collide with this set lex as plain `ID` in
@@ -74,7 +75,7 @@ Statement:
       StartEvent | EndEvent
     | UserTask | ServiceTask | ExternalTask | ScriptTask
     | IfStatement | WhileStatement | DoWhileStatement
-    | ParallelStatement | GotoStatement | SubProcess;
+    | ParallelStatement | GotoStatement | SubProcess | CallActivity;
 
 // A brace-delimited list of statements (the body of if/else/while/do/parallel
 // branches). The process body itself is an *implicit* block (no braces),
@@ -148,8 +149,12 @@ Attribute:
 // Attribute keys are the union across all element kinds. Keeping them in one
 // datatype rule means the grammar accepts any key on any element; the validator
 // restricts `assignee`/`formKey` to `user` and `class` to `service`.
+// `process`/`binding`/`version`/`businessKey` are the `call` attribute keys
+// (`process` reuses the existing `process`-block keyword token — no new
+// reserved word for it); the validator restricts them to `call`.
 AttrKey returns string:
-    'assignee' | 'formKey' | 'class' | 'expression' | 'delegate' | 'topic';
+    'assignee' | 'formKey' | 'class' | 'expression' | 'delegate' | 'topic'
+    | 'process' | 'binding' | 'version' | 'businessKey';
 
 // if / else if / else → exclusive gateway (desugared by `astToIr`).
 IfStatement:
@@ -187,6 +192,39 @@ GotoStatement:
 // resolves through the default NameProvider with no extra grammar machinery.
 SubProcess:
     'subprocess' name=ID (label=STRING)? body=Block;
+
+// A call to another process by id: `call <id> "<label>"? { <body> }`. The
+// brace body mixes `<key> = <value>` attributes (see `AttrKey` above for the
+// `process`/`binding`/`version`/`businessKey` keys legal here) with `in`/`out`
+// variable mappings in any order, so it deliberately defines its own inline
+// body instead of reusing the `AttributeBlock` fragment: `AttributeBlock` also
+// admits a `form` block, which is meaningless on a call, and has no place to
+// carry mappings at all. `name` is the goto-target key per the file's naming
+// convention above, so a sequence flow into the call resolves through the
+// default NameProvider like every other `Statement`. Which attribute keys are
+// actually required (e.g. that `process` must be present) and whether the
+// mapping list is well-formed is the validator's job, not the grammar's — the
+// parser accepts any combination, including an empty body.
+CallActivity:
+    'call' name=ID (label=STRING)? '{' (attrs+=Attribute | mappings+=VariableMapping)* '}';
+
+// One variable-mapping entry inside a `call` body, read like a function call at
+// the process boundary: `in` carries a value INTO the called process (an
+// argument), `out` carries a value back OUT to the caller (a return value). As
+// with every `=` in this grammar, the left side is always the receiving name in
+// the receiving scope — for `in` that is a variable of the called process, for
+// `out` a variable of the caller. `source` is optional: shorthand `in x` /
+// `out x` copies a variable under the same name (`target` doubles as the
+// implied source when `source` is absent). `all='*'` copies every variable
+// instead of naming one (`in *` / `out *`). A `local` mapping reads from /
+// writes to variables that belong to the call step itself rather than to the
+// whole process — rarely needed when authoring, kept chiefly so diagrams that
+// use step-local variables import faithfully. The `*` keyword reuses the
+// existing multiplication token from the expression sub-language below — no
+// lexer change. Mapping well-formedness (e.g. `*` combined with `target`, or a
+// `target` unknown in either scope) is validated downstream, not here.
+VariableMapping:
+    direction=('in'|'out') (local?='local')? (all?='*' | target=ID ('=' source=Expr)?);
 
 // ── Expression sub-language (JUEL native subset) ────────────────────────────
 //

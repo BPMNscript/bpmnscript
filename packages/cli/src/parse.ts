@@ -14,7 +14,7 @@
  *   1  — unsupported BPMN construct (any UnsupportedConstructError subclass:
  *         UnsupportedServiceTaskFormError, UnsupportedElementError,
  *         UnsupportedEventDefinitionError, UnsupportedLoopCharacteristicsError,
- *         UnsupportedCollaborationError)
+ *         UnsupportedCollaborationError, UnsupportedCallActivityError)
  *   2  — I/O errors (file not found, cannot write output)
  */
 

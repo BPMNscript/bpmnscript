@@ -40,6 +40,7 @@ import {
 } from '../src/synthesize-ids.js';
 import type {
   BpmnProcess,
+  CallActivity,
   ExclusiveGateway,
   FlowContainer,
   FlowElement,
@@ -965,6 +966,193 @@ describe('astToIr — sub-process lowering', () => {
     // Every id across every container is document-unique.
     const all = allElementIdsDeep(result);
     expect(new Set(all).size).toBe(all.length);
+  });
+});
+
+// ── 14. Call activity lowering ───────────────────────────────────────────────
+
+describe('astToIr — call activity lowering', () => {
+  it('lowers a minimal call into the parent chain with no optional fields', async () => {
+    const result = await ir(`process p { call F { process = "fulfilment" } }`);
+
+    const startId = makeStartEventId('p', new Set());
+    const endId = makeEndEventId('p', new Set());
+    expect(flow(result, startId, 'F')).toBeDefined();
+    expect(flow(result, 'F', endId)).toBeDefined();
+
+    const call = only(result, 'callActivity');
+    expect(call).toEqual({
+      kind: 'callActivity',
+      id: 'F',
+      calledElement: 'fulfilment',
+    });
+  });
+
+  it('lowers a full-featured call to the exact expected IR literal', async () => {
+    const result = await ir(`process p {
+      var amount: number
+      var tax: number
+      var vipFlag: boolean
+      var confirmed: boolean
+      call Fulfilment "Fulfil order" {
+        process = "fulfilment-process"
+        binding = deployment
+        businessKey = "\${execution.processBusinessKey}"
+        in *
+        in orderId
+        in total = amount + tax
+        in local vip = vipFlag
+        out shipmentId
+        out shipped = confirmed
+      }
+    }`);
+
+    const call = only(result, 'callActivity');
+    const expected: CallActivity = {
+      kind: 'callActivity',
+      id: 'Fulfilment',
+      name: 'Fulfil order',
+      calledElement: 'fulfilment-process',
+      binding: { kind: 'deployment' },
+      businessKey: '${execution.processBusinessKey}',
+      inMappings: [
+        { kind: 'all' },
+        { kind: 'variable', source: 'orderId', target: 'orderId' },
+        {
+          kind: 'expression',
+          sourceExpression: '${amount + tax}',
+          target: 'total',
+        },
+        { kind: 'variable', source: 'vipFlag', target: 'vip', local: true },
+      ],
+      outMappings: [
+        { kind: 'variable', source: 'shipmentId', target: 'shipmentId' },
+        { kind: 'variable', source: 'confirmed', target: 'shipped' },
+      ],
+    };
+    expect(call).toEqual(expected);
+  });
+
+  it('lowers a dotted mapping source to the expression variant, not variable', async () => {
+    const result = await ir(
+      `process p { call X { process = "p" in doubled = order.total } }`,
+    );
+    // A VarRef carrying accessors is not a bare single-segment reference, so it
+    // renders through renderExpression into the expression variant rather than
+    // a plain variable copy.
+    expect(only(result, 'callActivity').inMappings).toEqual([
+      {
+        kind: 'expression',
+        sourceExpression: '${order.total}',
+        target: 'doubled',
+      },
+    ]);
+  });
+
+  it('reads a pinned version from an int, a raw expression, and a bare latest binding', async () => {
+    const intVersion = await ir(
+      `process p { call X { process = "p" version = 3 } }`,
+    );
+    expect(only(intVersion, 'callActivity').binding).toEqual({
+      kind: 'version',
+      version: '3',
+    });
+
+    const rawVersion = await ir(
+      'process p { call X { process = "p" version = "${v}" } }',
+    );
+    expect(only(rawVersion, 'callActivity').binding).toEqual({
+      kind: 'version',
+      version: '${v}',
+    });
+
+    const latest = await ir(
+      `process p { call X { process = "p" binding = latest } }`,
+    );
+    expect(only(latest, 'callActivity').binding).toEqual({ kind: 'latest' });
+
+    const none = await ir(`process p { call X { process = "p" } }`);
+    expect(only(none, 'callActivity').binding).toBeUndefined();
+  });
+
+  it('reads a version from a quoted string literal and from a decimal', async () => {
+    const stringVersion = await ir(
+      'process p { call X { process = "p" version = "1.0-GA" } }',
+    );
+    expect(only(stringVersion, 'callActivity').binding).toEqual({
+      kind: 'version',
+      version: '1.0-GA',
+    });
+
+    const decimalVersion = await ir(
+      `process p { call X { process = "p" version = 1.5 } }`,
+    );
+    expect(only(decimalVersion, 'callActivity').binding).toEqual({
+      kind: 'version',
+      version: '1.5',
+    });
+  });
+
+  it('stays total: never throws on an incomplete or contradictory call body', async () => {
+    const empty = await ir(`process p { call X { } }`);
+    expect(only(empty, 'callActivity').calledElement).toBe('');
+
+    // A `binding` value that is neither `latest` nor `deployment` is not a
+    // resolvable strategy; the desugarer leaves the binding absent rather than
+    // guessing, and the validator is the one that reports the bad value.
+    const unknownBinding = await ir(
+      `process p { call X { process = "p" binding = weekly } }`,
+    );
+    expect(only(unknownBinding, 'callActivity').binding).toBeUndefined();
+
+    // Both `binding` and `version` present: `version` wins (the derivation
+    // checks `version` first), and the stray `binding` is ignored here — the
+    // validator is the one that flags the contradiction.
+    const bothPresent = await ir(
+      `process p { call X { process = "p" binding = deployment version = 2 } }`,
+    );
+    expect(only(bothPresent, 'callActivity').binding).toEqual({
+      kind: 'version',
+      version: '2',
+    });
+  });
+
+  it('maps the label to name and resolves a goto elsewhere to the call node', async () => {
+    const result = await ir(
+      `process p { user A goto F call F "Fulfil order" { process = "p" } }`,
+    );
+    const call = only(result, 'callActivity');
+    expect(call.name).toBe('Fulfil order');
+    // The goto out of A lands directly on the call activity by id.
+    expect(flow(result, 'A', 'F').targetRef).toBe('F');
+  });
+
+  it('reserves a call name as a collision seed for synthesized ids', async () => {
+    // A call literally named like a synthesized end forces the real end to a
+    // `_2` suffix — only true if collectNamedIds registered the call's name.
+    const collision = await ir(
+      'process P { call EndEvent_P { process = "p" } }',
+    );
+    const ends = collision.flowElements.filter((fe) => fe.kind === 'endEvent');
+    expect(ends).toHaveLength(1);
+    expect(ends[0]!.id).toBe('EndEvent_P_2');
+  });
+
+  it('lowers a call inside a subprocess body into the nested container', async () => {
+    const result = await ir(
+      `process p { subprocess S { call C { process = "p" } } }`,
+    );
+    const sub = subProcess(result, 'S');
+    expect(only(sub, 'callActivity').id).toBe('C');
+    // Nothing about the nested call leaks into the parent's arrays.
+    expect(result.flowElements.map((fe) => fe.id)).not.toContain('C');
+    expect(
+      result.sequenceFlows.some(
+        (f) => f.sourceRef === 'C' || f.targetRef === 'C',
+      ),
+    ).toBe(false);
+    expect(flow(sub, 'StartEvent_S', 'C')).toBeDefined();
+    expect(flow(sub, 'C', 'EndEvent_S')).toBeDefined();
   });
 });
 

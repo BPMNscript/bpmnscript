@@ -21,8 +21,7 @@
  *   4b. Parallel split+join XML → IR with two parallelGateway elements,
  *       6 sequence flows, no conditionExpression on fork-outgoing flows.
  *   4c. `bpmn:scriptTask` → `scriptTask` IR; a genuinely unsupported kind
- *       (`bpmn:transaction`, `bpmn:adHocSubProcess`, `bpmn:callActivity`) →
- *       `UnsupportedElementError`.
+ *       (`bpmn:transaction`, `bpmn:adHocSubProcess`) → `UnsupportedElementError`.
  *   5. XML with TWO processes → multi-process error.
  *   6. Bare service task (no discriminator) → `UnsupportedServiceTaskFormError`.
  *   7. DI nodes (`bpmndi:*`, `dc:*`, `di:*`) are dropped from IR (not in flowElements).
@@ -32,6 +31,11 @@
  *      matching `UnsupportedConstructError` subclass before any IR is produced.
  *  10. Warnings: an unsupported Operaton extension attribute and a lane each surface
  *      one `ImportWarning` naming the concrete dropped construct and its element id.
+ *  11. Warnings: dropped extension elements — a declared `operaton:` element
+ *      (11), a clean empty `<extensionElements/>` stays silent even alongside
+ *      a real drop elsewhere (11b), a foreign-namespace `camunda:` element is
+ *      attributed to its owner (11c), and an undeclared `operaton:` element
+ *      moddle cannot pin to a step is reported once against the process (11d).
  *  12. `bpmn:subProcess` imports recursively into an IR `SubProcess` (nested
  *      body in its own `flowElements`/`sequenceFlows`, nothing leaked to the
  *      parent); an event sub-process (`triggeredByEvent="true"`) and loop
@@ -39,6 +43,18 @@
  *      on a task nested inside a sub-process and an event definition on a
  *      nested start event are handled exactly as at the top level;
  *      two-level nesting imports recursively.
+ *  13. `bpmn:callActivity` imports `calledElement`, binding, business key,
+ *      and in/out mappings — the exact shape the export side produces — into
+ *      the matching `callActivity` IR node (deep equality, document order,
+ *      `local` flags). The binding table (absent/`latest`/`deployment`/
+ *      `version`, the `camunda:` alias, refusals for a versionless `version`
+ *      binding and an unrecognized binding value, and the dangling-
+ *      `calledElementVersion` warning). Mapping-shape refusals (one per
+ *      malformed combination). The `operaton:in`/`operaton:out` honesty
+ *      guard: still a drop on any other element, still a drop for the
+ *      foreign `camunda:` alias on a call activity, silent on a clean
+ *      import. Nesting inside a sub-process; loop characteristics refused;
+ *      `readDerivableName` symmetry.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -49,14 +65,15 @@ import { fileURLToPath } from 'node:url';
 import { xmlToIr } from '../src/xml-to-ir.js';
 import type { ImportWarning } from '../src/xml-to-ir.js';
 import {
+  UnsupportedCallActivityError,
+  UnsupportedCollaborationError,
   UnsupportedConstructError,
   UnsupportedElementError,
-  UnsupportedServiceTaskFormError,
   UnsupportedEventDefinitionError,
   UnsupportedLoopCharacteristicsError,
-  UnsupportedCollaborationError,
+  UnsupportedServiceTaskFormError,
 } from '../src/errors.js';
-import type { BpmnProcess } from '../src/ir/types.js';
+import type { BpmnProcess, CallActivity } from '../src/ir/types.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const HANDWRITTEN_PATH = resolve(
@@ -577,7 +594,11 @@ describe('xmlToIr — unsupported element (still refused kinds)', () => {
     await expect(xmlToIr(xml)).rejects.toBeInstanceOf(UnsupportedElementError);
   });
 
-  it('bpmn:callActivity raises UnsupportedElementError', async () => {
+  it('bpmn:callActivity is imported, not refused (see the "callActivity import" suite below)', async () => {
+    // The pinned refusal for `bpmn:callActivity` is superseded by a positive
+    // import contract — see "xmlToIr — callActivity import" below for full
+    // coverage. This assertion documents the flip: a well-formed call
+    // activity no longer raises UnsupportedElementError.
     const xml = `<?xml version="1.0" encoding="UTF-8"?>
 <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
                   targetNamespace="http://test">
@@ -590,7 +611,10 @@ describe('xmlToIr — unsupported element (still refused kinds)', () => {
   </bpmn:process>
 </bpmn:definitions>`;
 
-    await expect(xmlToIr(xml)).rejects.toBeInstanceOf(UnsupportedElementError);
+    const { ir } = await xmlToIr(xml);
+    expect(ir.flowElements.some((fe) => fe.kind === 'callActivity')).toBe(
+      true,
+    );
   });
 });
 
@@ -1488,5 +1512,459 @@ describe('xmlToIr — embedded sub-process imports recursively', () => {
       'Inner',
       'OEnd',
     ]);
+  });
+});
+
+// ── 13. callActivity import ──────────────────────────────────────────────────
+
+describe('xmlToIr — callActivity import', () => {
+  const richCallXml = `<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  xmlns:operaton="http://operaton.org/schema/1.0/bpmn"
+                  targetNamespace="http://test">
+  <bpmn:process id="p" isExecutable="true">
+    <bpmn:startEvent id="Start" />
+    <bpmn:callActivity id="CallSub" name="Call sub" calledElement="sub-process"
+                       operaton:calledElementBinding="version" operaton:calledElementVersion="3">
+      <bpmn:extensionElements>
+        <operaton:in businessKey="\${execution.processBusinessKey}" />
+        <operaton:in variables="all" />
+        <operaton:in source="amount" target="amount" />
+        <operaton:in sourceExpression="\${total * 2}" target="doubled" local="true" />
+        <operaton:out source="result" target="outcome" />
+        <operaton:out sourceExpression="\${status}" target="final" />
+      </bpmn:extensionElements>
+    </bpmn:callActivity>
+    <bpmn:endEvent id="End" />
+    <bpmn:sequenceFlow id="F1" sourceRef="Start" targetRef="CallSub" />
+    <bpmn:sequenceFlow id="F2" sourceRef="CallSub" targetRef="End" />
+  </bpmn:process>
+</bpmn:definitions>`;
+
+  const EXPECTED_RICH_CALL: CallActivity = {
+    kind: 'callActivity',
+    id: 'CallSub',
+    name: 'Call sub',
+    calledElement: 'sub-process',
+    binding: { kind: 'version', version: '3' },
+    businessKey: '${execution.processBusinessKey}',
+    inMappings: [
+      { kind: 'all' },
+      { kind: 'variable', source: 'amount', target: 'amount' },
+      {
+        kind: 'expression',
+        sourceExpression: '${total * 2}',
+        target: 'doubled',
+        local: true,
+      },
+    ],
+    outMappings: [
+      { kind: 'variable', source: 'result', target: 'outcome' },
+      { kind: 'expression', sourceExpression: '${status}', target: 'final' },
+    ],
+  };
+
+  it('a fully-featured call activity imports to the exact expected IR node (deep equality)', async () => {
+    const { ir } = await xmlToIr(richCallXml);
+    const call = ir.flowElements.find((fe) => fe.id === 'CallSub');
+    expect(call).toEqual(EXPECTED_RICH_CALL);
+  });
+
+  // ── Binding table ───────────────────────────────────────────────────────
+
+  const callXmlWithBindingAttrs = (attrs: string): string => `<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  xmlns:operaton="http://operaton.org/schema/1.0/bpmn"
+                  xmlns:camunda="http://camunda.org/schema/1.0/bpmn"
+                  targetNamespace="http://test">
+  <bpmn:process id="p" isExecutable="true">
+    <bpmn:startEvent id="Start" />
+    <bpmn:callActivity id="CallSub" calledElement="sub-process" ${attrs} />
+    <bpmn:endEvent id="End" />
+    <bpmn:sequenceFlow id="F1" sourceRef="Start" targetRef="CallSub" />
+    <bpmn:sequenceFlow id="F2" sourceRef="CallSub" targetRef="End" />
+  </bpmn:process>
+</bpmn:definitions>`;
+
+  it('no binding attributes → the IR binding is absent', async () => {
+    const { ir } = await xmlToIr(callXmlWithBindingAttrs(''));
+    const call = ir.flowElements.find((fe) => fe.id === 'CallSub');
+    expect(call && 'binding' in call).toBe(false);
+  });
+
+  it('calledElementBinding="latest" → { kind: "latest" }', async () => {
+    const { ir } = await xmlToIr(
+      callXmlWithBindingAttrs('operaton:calledElementBinding="latest"'),
+    );
+    const call = ir.flowElements.find((fe) => fe.id === 'CallSub');
+    expect(call?.kind === 'callActivity' && call.binding).toEqual({
+      kind: 'latest',
+    });
+  });
+
+  it('calledElementBinding="deployment" → { kind: "deployment" }', async () => {
+    const { ir } = await xmlToIr(
+      callXmlWithBindingAttrs('operaton:calledElementBinding="deployment"'),
+    );
+    const call = ir.flowElements.find((fe) => fe.id === 'CallSub');
+    expect(call?.kind === 'callActivity' && call.binding).toEqual({
+      kind: 'deployment',
+    });
+  });
+
+  it('calledElementBinding="version" with calledElementVersion → { kind: "version", version }', async () => {
+    const { ir } = await xmlToIr(
+      callXmlWithBindingAttrs(
+        'operaton:calledElementBinding="version" operaton:calledElementVersion="7"',
+      ),
+    );
+    const call = ir.flowElements.find((fe) => fe.id === 'CallSub');
+    expect(call?.kind === 'callActivity' && call.binding).toEqual({
+      kind: 'version',
+      version: '7',
+    });
+  });
+
+  it('camunda:calledElementBinding is honored, matching the assignee dual-namespace contract', async () => {
+    const { ir } = await xmlToIr(
+      callXmlWithBindingAttrs('camunda:calledElementBinding="latest"'),
+    );
+    const call = ir.flowElements.find((fe) => fe.id === 'CallSub');
+    expect(call?.kind === 'callActivity' && call.binding).toEqual({
+      kind: 'latest',
+    });
+  });
+
+  it('calledElementBinding="version" WITHOUT a version is refused', async () => {
+    await expect(
+      xmlToIr(
+        callXmlWithBindingAttrs('operaton:calledElementBinding="version"'),
+      ),
+    ).rejects.toBeInstanceOf(UnsupportedCallActivityError);
+  });
+
+  it('an unrecognized calledElementBinding value (e.g. versionTag) is refused', async () => {
+    await expect(
+      xmlToIr(
+        callXmlWithBindingAttrs(
+          'operaton:calledElementBinding="versionTag"',
+        ),
+      ),
+    ).rejects.toBeInstanceOf(UnsupportedCallActivityError);
+  });
+
+  it('a dangling calledElementVersion (binding absent) imports with NO binding and exactly one warning', async () => {
+    const { ir, warnings } = await xmlToIr(
+      callXmlWithBindingAttrs('operaton:calledElementVersion="7"'),
+    );
+    const call = ir.flowElements.find((fe) => fe.id === 'CallSub');
+    expect(call && 'binding' in call).toBe(false);
+
+    const versionWarnings = warnings.filter((w) =>
+      w.message.includes('calledElementVersion'),
+    );
+    expect(versionWarnings).toHaveLength(1);
+    expect(versionWarnings[0].elementId).toBe('CallSub');
+  });
+
+  // ── Mapping-shape refusals ────────────────────────────────────────────────
+
+  const callXmlWithExtension = (extension: string): string => `<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  xmlns:operaton="http://operaton.org/schema/1.0/bpmn"
+                  targetNamespace="http://test">
+  <bpmn:process id="p" isExecutable="true">
+    <bpmn:startEvent id="Start" />
+    <bpmn:callActivity id="CallSub" calledElement="sub-process">
+      <bpmn:extensionElements>
+        ${extension}
+      </bpmn:extensionElements>
+    </bpmn:callActivity>
+    <bpmn:endEvent id="End" />
+    <bpmn:sequenceFlow id="F1" sourceRef="Start" targetRef="CallSub" />
+    <bpmn:sequenceFlow id="F2" sourceRef="CallSub" targetRef="End" />
+  </bpmn:process>
+</bpmn:definitions>`;
+
+  it('an operaton:in with both source and sourceExpression is refused, naming the shape', async () => {
+    try {
+      await xmlToIr(
+        callXmlWithExtension(
+          '<operaton:in source="a" sourceExpression="${b}" target="c" />',
+        ),
+      );
+      expect.fail('Should have thrown');
+    } catch (err) {
+      expect(err).toBeInstanceOf(UnsupportedCallActivityError);
+      expect((err as UnsupportedCallActivityError).detail).toMatch(
+        /source.*sourceExpression/i,
+      );
+    }
+  });
+
+  it('an operaton:in with source but no target is refused, naming the shape', async () => {
+    try {
+      await xmlToIr(
+        callXmlWithExtension('<operaton:in source="a" />'),
+      );
+      expect.fail('Should have thrown');
+    } catch (err) {
+      expect(err).toBeInstanceOf(UnsupportedCallActivityError);
+      expect((err as UnsupportedCallActivityError).detail).toMatch(
+        /source without a target/i,
+      );
+    }
+  });
+
+  it('an operaton:in with variables="foo" is refused, naming the shape', async () => {
+    try {
+      await xmlToIr(
+        callXmlWithExtension('<operaton:in variables="foo" />'),
+      );
+      expect.fail('Should have thrown');
+    } catch (err) {
+      expect(err).toBeInstanceOf(UnsupportedCallActivityError);
+      expect((err as UnsupportedCallActivityError).detail).toMatch(
+        /variables="foo"/,
+      );
+    }
+  });
+
+  it('a businessKey In combined with a target is refused, naming the shape', async () => {
+    try {
+      await xmlToIr(
+        callXmlWithExtension(
+          '<operaton:in businessKey="${execution.processBusinessKey}" target="x" />',
+        ),
+      );
+      expect.fail('Should have thrown');
+    } catch (err) {
+      expect(err).toBeInstanceOf(UnsupportedCallActivityError);
+      expect((err as UnsupportedCallActivityError).detail).toMatch(
+        /businessKey/i,
+      );
+    }
+  });
+
+  it('two businessKey Ins are refused, naming the shape', async () => {
+    try {
+      await xmlToIr(
+        callXmlWithExtension(
+          '<operaton:in businessKey="${a}" /><operaton:in businessKey="${b}" />',
+        ),
+      );
+      expect.fail('Should have thrown');
+    } catch (err) {
+      expect(err).toBeInstanceOf(UnsupportedCallActivityError);
+      expect((err as UnsupportedCallActivityError).detail).toMatch(
+        /more than one/i,
+      );
+    }
+  });
+
+  it('an empty operaton:in with no recognized attribute is refused', async () => {
+    try {
+      await xmlToIr(callXmlWithExtension('<operaton:in />'));
+      expect.fail('Should have thrown');
+    } catch (err) {
+      expect(err).toBeInstanceOf(UnsupportedCallActivityError);
+      expect((err as UnsupportedCallActivityError).detail).toMatch(
+        /none of the recognized shapes/i,
+      );
+    }
+  });
+
+  it('an operaton:in with sourceExpression but no target is refused, naming the shape', async () => {
+    try {
+      await xmlToIr(
+        callXmlWithExtension('<operaton:in sourceExpression="${a}" />'),
+      );
+      expect.fail('Should have thrown');
+    } catch (err) {
+      expect(err).toBeInstanceOf(UnsupportedCallActivityError);
+      expect((err as UnsupportedCallActivityError).detail).toMatch(
+        /sourceExpression without a target/i,
+      );
+    }
+  });
+
+  it('an operaton:in with variables="all" combined with source/target is refused, naming the shape', async () => {
+    try {
+      await xmlToIr(
+        callXmlWithExtension('<operaton:in variables="all" source="a" target="b" />'),
+      );
+      expect.fail('Should have thrown');
+    } catch (err) {
+      expect(err).toBeInstanceOf(UnsupportedCallActivityError);
+      expect((err as UnsupportedCallActivityError).detail).toMatch(
+        /variables="all" combined with/i,
+      );
+    }
+  });
+
+  it('a businessKey In combined with variables is refused, naming the shape', async () => {
+    try {
+      await xmlToIr(
+        callXmlWithExtension(
+          '<operaton:in businessKey="${a}" variables="all" />',
+        ),
+      );
+      expect.fail('Should have thrown');
+    } catch (err) {
+      expect(err).toBeInstanceOf(UnsupportedCallActivityError);
+      expect((err as UnsupportedCallActivityError).detail).toMatch(
+        /businessKey.*variables/i,
+      );
+    }
+  });
+
+  // ── The operaton:in/operaton:out honesty guard ───────────────────────────
+
+  it('an operaton:in inside a user task still produces one drop warning attributed to that task', async () => {
+    const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  xmlns:operaton="http://operaton.org/schema/1.0/bpmn"
+                  targetNamespace="http://test">
+  <bpmn:process id="p" isExecutable="true">
+    <bpmn:startEvent id="S" />
+    <bpmn:userTask id="T" name="T" operaton:assignee="alice">
+      <bpmn:extensionElements>
+        <operaton:in source="a" target="b" />
+      </bpmn:extensionElements>
+    </bpmn:userTask>
+    <bpmn:endEvent id="E" />
+    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="T" />
+    <bpmn:sequenceFlow id="F2" sourceRef="T" targetRef="E" />
+  </bpmn:process>
+</bpmn:definitions>`;
+
+    const { warnings } = await xmlToIr(xml);
+    const extWarnings = warnings.filter(
+      (w) => w.category === 'extensionAttribute' && w.elementId === 'T',
+    );
+    expect(extWarnings).toHaveLength(1);
+  });
+
+  it('a camunda:in on a call activity produces a drop warning (foreign-namespace element)', async () => {
+    const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  xmlns:camunda="http://camunda.org/schema/1.0/bpmn"
+                  targetNamespace="http://test">
+  <bpmn:process id="p" isExecutable="true">
+    <bpmn:startEvent id="Start" />
+    <bpmn:callActivity id="CallSub" calledElement="sub-process">
+      <bpmn:extensionElements>
+        <camunda:in source="a" target="b" />
+      </bpmn:extensionElements>
+    </bpmn:callActivity>
+    <bpmn:endEvent id="End" />
+    <bpmn:sequenceFlow id="F1" sourceRef="Start" targetRef="CallSub" />
+    <bpmn:sequenceFlow id="F2" sourceRef="CallSub" targetRef="End" />
+  </bpmn:process>
+</bpmn:definitions>`;
+
+    const { warnings } = await xmlToIr(xml);
+    const w = warnings.find(
+      (w) => w.category === 'extensionAttribute' && w.elementId === 'CallSub',
+    );
+    expect(w).toBeDefined();
+  });
+
+  it('a clean call-activity import produces no warnings', async () => {
+    const { warnings } = await xmlToIr(richCallXml);
+    expect(warnings).toEqual([]);
+  });
+
+  // ── Nesting and loop characteristics ─────────────────────────────────────
+
+  it('a call activity inside a sub-process imports into the nested container', async () => {
+    const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  targetNamespace="http://test">
+  <bpmn:process id="p" isExecutable="true">
+    <bpmn:startEvent id="PStart" />
+    <bpmn:subProcess id="Sub">
+      <bpmn:startEvent id="SubStart" />
+      <bpmn:callActivity id="InnerCall" calledElement="sub-process" />
+      <bpmn:endEvent id="SubEnd" />
+      <bpmn:sequenceFlow id="SF1" sourceRef="SubStart" targetRef="InnerCall" />
+      <bpmn:sequenceFlow id="SF2" sourceRef="InnerCall" targetRef="SubEnd" />
+    </bpmn:subProcess>
+    <bpmn:endEvent id="PEnd" />
+    <bpmn:sequenceFlow id="F1" sourceRef="PStart" targetRef="Sub" />
+    <bpmn:sequenceFlow id="F2" sourceRef="Sub" targetRef="PEnd" />
+  </bpmn:process>
+</bpmn:definitions>`;
+
+    const { ir } = await xmlToIr(xml);
+    const sub = ir.flowElements.find((fe) => fe.id === 'Sub');
+    expect(sub?.kind).toBe('subProcess');
+    if (sub?.kind !== 'subProcess') return;
+
+    const inner = sub.flowElements.find((fe) => fe.id === 'InnerCall');
+    expect(inner?.kind).toBe('callActivity');
+    expect(inner?.kind === 'callActivity' && inner.calledElement).toBe(
+      'sub-process',
+    );
+  });
+
+  it('a call activity with multiInstanceLoopCharacteristics is refused', async () => {
+    const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  targetNamespace="http://test">
+  <bpmn:process id="p" isExecutable="true">
+    <bpmn:startEvent id="S" />
+    <bpmn:callActivity id="CallSub" calledElement="sub-process">
+      <bpmn:multiInstanceLoopCharacteristics isSequential="false" />
+    </bpmn:callActivity>
+    <bpmn:endEvent id="E" />
+    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="CallSub" />
+    <bpmn:sequenceFlow id="F2" sourceRef="CallSub" targetRef="E" />
+  </bpmn:process>
+</bpmn:definitions>`;
+
+    await expect(xmlToIr(xml)).rejects.toBeInstanceOf(
+      UnsupportedLoopCharacteristicsError,
+    );
+  });
+
+  // ── readDerivableName symmetry ────────────────────────────────────────────
+
+  it('drops a call-activity name that exactly equals humanize(id)', async () => {
+    const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  targetNamespace="http://test">
+  <bpmn:process id="p" isExecutable="true">
+    <bpmn:startEvent id="S" />
+    <bpmn:callActivity id="Fulfil_Order" name="Fulfil Order" calledElement="sub-process" />
+    <bpmn:endEvent id="E" />
+    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="Fulfil_Order" />
+    <bpmn:sequenceFlow id="F2" sourceRef="Fulfil_Order" targetRef="E" />
+  </bpmn:process>
+</bpmn:definitions>`;
+
+    const { ir } = await xmlToIr(xml);
+    const call = ir.flowElements.find((fe) => fe.id === 'Fulfil_Order');
+    expect(call && 'name' in call).toBe(false);
+  });
+
+  it('keeps a genuine call-activity label that differs from humanize(id)', async () => {
+    const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  targetNamespace="http://test">
+  <bpmn:process id="p" isExecutable="true">
+    <bpmn:startEvent id="S" />
+    <bpmn:callActivity id="Fulfil_Order" name="Send the order to fulfilment" calledElement="sub-process" />
+    <bpmn:endEvent id="E" />
+    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="Fulfil_Order" />
+    <bpmn:sequenceFlow id="F2" sourceRef="Fulfil_Order" targetRef="E" />
+  </bpmn:process>
+</bpmn:definitions>`;
+
+    const { ir } = await xmlToIr(xml);
+    const call = ir.flowElements.find((fe) => fe.id === 'Fulfil_Order');
+    expect(call?.kind === 'callActivity' && call.name).toBe(
+      'Send the order to fulfilment',
+    );
   });
 });

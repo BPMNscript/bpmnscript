@@ -9,7 +9,11 @@
  * as an alias for `operaton:` on import. This transform does the same:
  * when both `operaton:assignee` and `camunda:assignee`
  * are present, `operaton:` wins. When only `camunda:assignee` is given,
- * its value is read into the IR.
+ * its value is read into the IR. The alias covers extension *attributes*
+ * only (`calledElementBinding`/`calledElementVersion` included) — a
+ * `camunda:in`/`camunda:out` extension *element* on a call activity is not
+ * recognized and stays a dropped-with-warning extension element, exactly
+ * like any other foreign-namespace element.
  *
  * ## Import contract
  *
@@ -19,22 +23,36 @@
  * **Refused** (throws before any IR is produced, so there is no partial IR):
  * - event definitions on start/end events (timer, message, terminate, …) →
  *   {@link UnsupportedEventDefinitionError};
- * - loop characteristics on a task or sub-process (multi-instance / standard
- *   loop) → {@link UnsupportedLoopCharacteristicsError};
+ * - loop characteristics on a task, sub-process, or call activity
+ *   (multi-instance / standard loop) → {@link UnsupportedLoopCharacteristicsError};
  * - collaborations, i.e. pools and message flows →
  *   {@link UnsupportedCollaborationError};
  * - unsupported flow-element kinds (an event sub-process, a transaction, an
- *   ad-hoc sub-process, a call activity, intermediate events, …) →
- *   {@link UnsupportedElementError};
+ *   ad-hoc sub-process, intermediate events, …) → {@link UnsupportedElementError};
  * - service tasks whose execution form the IR cannot represent (a bare task
  *   with no discriminator, or an external type with no topic) →
- *   {@link UnsupportedServiceTaskFormError}.
+ *   {@link UnsupportedServiceTaskFormError};
+ * - form fields whose type is not `string`/`long`/`boolean`/`date` →
+ *   {@link UnsupportedFormFieldTypeError};
+ * - call activities the engine could not execute as written: no
+ *   `calledElement`, a `calledElementBinding="version"` with no
+ *   `calledElementVersion`, an unrecognized `calledElementBinding` value
+ *   (e.g. `versionTag`), or an `operaton:in`/`operaton:out` mapping using a
+ *   shape the IR cannot represent (both `source` and `sourceExpression`, a
+ *   `source`/`sourceExpression` with no `target`, `variables` set to
+ *   anything but `"all"`, a `businessKey` combined with another attribute,
+ *   more than one `businessKey`, or none of the recognized shapes) →
+ *   {@link UnsupportedCallActivityError}.
  *
  * **Dropped with a warning** (no semantic loss; reported via `warnings`):
  * - Operaton/camunda extension attributes beyond the supported
  *   `assignee`/`formKey`/`class`/`expression`/`delegateExpression`/`type`/
- *   `topic` (e.g. `operaton:asyncBefore`) — one warning per attribute,
- *   attributed to the owning element by id;
+ *   `topic`/`calledElementBinding`/`calledElementVersion` (e.g.
+ *   `operaton:asyncBefore`) — one warning per attribute, attributed to the
+ *   owning element by id;
+ * - a `calledElementVersion` left dangling on a call activity — set while
+ *   `calledElementBinding` is absent or not `"version"` — since Operaton
+ *   ignores it in that case; one warning naming the attribute;
  * - engine-specific extension *elements* — one warning per element,
  *   attributed to the owning element by id and naming the concrete construct.
  *   Which elements can be pinned to an exact owner depends on how the parser
@@ -42,6 +60,10 @@
  *     - `operaton:inputOutput`, `operaton:executionListener`,
  *       `operaton:taskListener` are declared in the moddle extension, so they
  *       materialise as typed values and name their `$type` precisely;
+ *     - `operaton:in`/`operaton:out` on a call activity are consumed into
+ *       the IR's mappings (see above) rather than reported as a drop; on any
+ *       other element they are just another declared extension element and
+ *       are reported like the ones above;
  *     - extension elements in a foreign namespace (e.g. the deprecated
  *       `camunda:` alias) are kept by moddle as generic values and are also
  *       named against their owning element;
@@ -57,7 +79,9 @@
  * (`class`, `expression`, `delegateExpression`, or `external` + `topic`),
  * script-task body, condition expressions, and default-flow references. An
  * embedded `bpmn:subProcess` round-trips too — its nested body is mapped
- * recursively, at any nesting depth.
+ * recursively, at any nesting depth. A `bpmn:callActivity` round-trips its
+ * `calledElement`, `latest`/`deployment`/`version` binding, business key, and
+ * in/out variable mappings, in document order.
  */
 
 import { existsSync, readFileSync } from 'node:fs';
@@ -68,6 +92,9 @@ import { BpmnModdle } from 'bpmn-moddle';
 
 import type {
   BpmnProcess,
+  CalledElementBinding,
+  CallActivity,
+  CallVariableMapping,
   EndEvent,
   ExclusiveGateway,
   FlowElement,
@@ -84,6 +111,7 @@ import type {
 } from './ir/types.js';
 
 import {
+  UnsupportedCallActivityError,
   UnsupportedCollaborationError,
   UnsupportedElementError,
   UnsupportedEventDefinitionError,
@@ -135,6 +163,8 @@ const SUPPORTED_EXTENSION_ATTRS: ReadonlySet<string> = new Set([
   'delegateExpression',
   'type',
   'topic',
+  'calledElementBinding',
+  'calledElementVersion',
 ]);
 
 /**
@@ -267,15 +297,19 @@ interface ModdlePropertyDescriptor {
  * @throws {UnsupportedCollaborationError} when the document contains a
  *   `bpmn:Collaboration` (pools / message flows).
  * @throws {UnsupportedElementError} when an unsupported flow-element
- *   kind is encountered (e.g. `bpmn:callActivity`, an event sub-process
- *   with `triggeredByEvent="true"`, `bpmn:transaction`).
+ *   kind is encountered (e.g. an event sub-process with
+ *   `triggeredByEvent="true"`, `bpmn:transaction`).
  * @throws {UnsupportedServiceTaskFormError} when a `bpmn:ServiceTask`
  *   carries no execution form the IR can represent (a bare task with no
  *   discriminator, or an external type without a topic).
  * @throws {UnsupportedEventDefinitionError} when a start/end event carries
  *   an event definition (timer, message, terminate, …), at any nesting depth.
- * @throws {UnsupportedLoopCharacteristicsError} when a task or sub-process
- *   carries loop characteristics (multi-instance or standard loop).
+ * @throws {UnsupportedLoopCharacteristicsError} when a task, sub-process, or
+ *   call activity carries loop characteristics (multi-instance or standard loop).
+ * @throws {UnsupportedCallActivityError} when a `bpmn:CallActivity` carries a
+ *   shape the engine could not resolve (no `calledElement`, an unresolvable
+ *   `calledElementBinding`, or a malformed `operaton:in`/`operaton:out`
+ *   mapping).
  */
 export async function xmlToIr(
   xml: string,
@@ -467,6 +501,9 @@ function mapContainer(
       case 'bpmn:SubProcess':
         flowElements.push(mapSubProcess(child, warnings));
         break;
+      case 'bpmn:CallActivity':
+        flowElements.push(mapCallActivity(child, warnings));
+        break;
       case 'bpmn:SequenceFlow':
         sequenceFlows.push(mapSequenceFlow(child));
         break;
@@ -526,6 +563,277 @@ function mapSubProcess(
 }
 
 /**
+ * Map a `bpmn:CallActivity` moddle element into the IR. A call activity is a
+ * leaf (unlike {@link mapSubProcess}): it invokes another process by id
+ * rather than nesting a body.
+ *
+ * The import contract is refuse-or-map, never mangle: a shape the IR can
+ * represent unambiguously is mapped; anything else — a missing
+ * `calledElement`, an unresolvable `calledElementBinding`, or a malformed
+ * `operaton:in`/`operaton:out` mapping — throws {@link
+ * UnsupportedCallActivityError} rather than being narrowed or silently
+ * dropped.
+ */
+function mapCallActivity(
+  el: ModdleElement,
+  warnings: ImportWarning[],
+): CallActivity {
+  const id = requireId(el);
+  refuseLoopCharacteristics(el, id);
+  const name = readDerivableName(el, id);
+
+  const calledElement = readString(el, 'calledElement');
+  if (calledElement === undefined) {
+    throw new UnsupportedCallActivityError(
+      id,
+      'it has no calledElement — there is nothing for the engine to invoke',
+    );
+  }
+
+  const binding = readCalledElementBinding(el, id, warnings);
+  const { businessKey, inMappings, outMappings } = readCallMappings(el, id);
+
+  return {
+    kind: 'callActivity',
+    id,
+    ...(name === undefined ? {} : { name }),
+    calledElement,
+    ...(binding === undefined ? {} : { binding }),
+    ...(businessKey === undefined ? {} : { businessKey }),
+    ...(inMappings === undefined ? {} : { inMappings }),
+    ...(outMappings === undefined ? {} : { outMappings }),
+  };
+}
+
+/**
+ * Resolve a call activity's version-resolution binding from its
+ * `calledElementBinding`/`calledElementVersion` attributes (both attributes
+ * accept the `camunda:` alias via {@link readNamespacedAttr}, exactly like
+ * `assignee`).
+ *
+ * `calledElementVersion` is declared in {@link SUPPORTED_EXTENSION_ATTRS}, so
+ * the generic sweep in {@link collectExtensionDrops} stays silent on it even
+ * when it is left dangling (set while the binding is absent or not
+ * `"version"`, where Operaton ignores it) — this function is the one place
+ * that reports that specific drop, since the generic sweep cannot tell a
+ * meaningful `calledElementVersion` from a dangling one.
+ *
+ * @throws {UnsupportedCallActivityError} for `calledElementBinding="version"`
+ *   with no usable `calledElementVersion`, or any `calledElementBinding`
+ *   value other than `latest`/`deployment`/`version`.
+ */
+function readCalledElementBinding(
+  el: ModdleElement,
+  id: string,
+  warnings: ImportWarning[],
+): CalledElementBinding | undefined {
+  const bindingValue = readNamespacedAttr(el, 'calledElementBinding');
+  const version = readNamespacedAttr(el, 'calledElementVersion');
+
+  let binding: CalledElementBinding | undefined;
+  switch (bindingValue) {
+    case undefined:
+      binding = undefined;
+      break;
+    case 'latest':
+      binding = { kind: 'latest' };
+      break;
+    case 'deployment':
+      binding = { kind: 'deployment' };
+      break;
+    case 'version':
+      if (version === undefined) {
+        throw new UnsupportedCallActivityError(
+          id,
+          'calledElementBinding="version" is set without a ' +
+            'calledElementVersion, so the engine cannot resolve which ' +
+            'version to call',
+        );
+      }
+      binding = { kind: 'version', version };
+      break;
+    default:
+      throw new UnsupportedCallActivityError(
+        id,
+        `calledElementBinding="${bindingValue}" is not a binding this tool can represent`,
+      );
+  }
+
+  if (version !== undefined && binding?.kind !== 'version') {
+    warnings.push({
+      elementId: id,
+      category: 'extensionAttribute',
+      message:
+        `The 'calledElementVersion' setting on '${id}' has no effect ` +
+        'without calledElementBinding="version" and was not imported.',
+    });
+  }
+
+  return binding;
+}
+
+/** The `businessKey`, `inMappings`, and `outMappings` read off a call activity. */
+interface CallMappings {
+  businessKey?: string;
+  inMappings?: CallVariableMapping[];
+  outMappings?: CallVariableMapping[];
+}
+
+/**
+ * Read a call activity's `operaton:in`/`operaton:out` extension-element
+ * children into the IR's `businessKey`/`inMappings`/`outMappings`, preserving
+ * document order within each of the two mapping arrays.
+ *
+ * @throws {UnsupportedCallActivityError} for more than one `businessKey` In,
+ *   or a `businessKey` In combined with `source`/`sourceExpression`/`target`/
+ *   `variables`/`local` — see {@link readCallVariableMapping} for the
+ *   per-mapping shapes.
+ */
+function readCallMappings(el: ModdleElement, id: string): CallMappings {
+  const extensionElements = el.get('extensionElements') as
+    ModdleElement | undefined;
+  const values =
+    extensionElements === undefined
+      ? []
+      : ((extensionElements.get('values') as ModdleElement[] | undefined) ??
+        []);
+
+  let businessKey: string | undefined;
+  let businessKeyCount = 0;
+  const inMappings: CallVariableMapping[] = [];
+  const outMappings: CallVariableMapping[] = [];
+
+  for (const value of values) {
+    if (value.$type === 'operaton:In') {
+      const candidateBusinessKey = readString(value, 'businessKey');
+      if (candidateBusinessKey !== undefined) {
+        businessKeyCount += 1;
+        if (businessKeyCount > 1) {
+          throw new UnsupportedCallActivityError(
+            id,
+            'more than one operaton:in businessKey is set',
+          );
+        }
+        if (
+          readString(value, 'source') !== undefined ||
+          readString(value, 'sourceExpression') !== undefined ||
+          readString(value, 'target') !== undefined ||
+          readString(value, 'variables') !== undefined ||
+          value.get('local') === true
+        ) {
+          throw new UnsupportedCallActivityError(
+            id,
+            'an operaton:in businessKey is combined with ' +
+              'source/sourceExpression/target/variables/local',
+          );
+        }
+        businessKey = candidateBusinessKey;
+        continue;
+      }
+      inMappings.push(readCallVariableMapping(value, id, 'operaton:in'));
+    } else if (value.$type === 'operaton:Out') {
+      outMappings.push(readCallVariableMapping(value, id, 'operaton:out'));
+    }
+  }
+
+  return {
+    ...(businessKey === undefined ? {} : { businessKey }),
+    ...(inMappings.length > 0 ? { inMappings } : {}),
+    ...(outMappings.length > 0 ? { outMappings } : {}),
+  };
+}
+
+/**
+ * Map one `operaton:in`/`operaton:out` moddle element (excluding a
+ * `businessKey` In, handled separately by {@link readCallMappings}) into a
+ * {@link CallVariableMapping}. Recognizes exactly three shapes —
+ * `variables="all"`, `source`+`target`, `sourceExpression`+`target` — each
+ * optionally carrying `local="true"`; anything else is refused rather than
+ * mangled into a best-effort guess.
+ *
+ * @throws {UnsupportedCallActivityError} for both `source` and
+ *   `sourceExpression` set, a `source`/`sourceExpression` with no `target`,
+ *   a `variables` value other than `"all"`, `variables="all"` combined with
+ *   `source`/`sourceExpression`/`target`, or none of the recognized shapes.
+ */
+function readCallVariableMapping(
+  value: ModdleElement,
+  ownerId: string,
+  tag: 'operaton:in' | 'operaton:out',
+): CallVariableMapping {
+  const source = readString(value, 'source');
+  const sourceExpression = readString(value, 'sourceExpression');
+  const variables = readString(value, 'variables');
+  const target = readString(value, 'target');
+  const local = value.get('local') === true ? true : undefined;
+
+  if (source !== undefined && sourceExpression !== undefined) {
+    throw new UnsupportedCallActivityError(
+      ownerId,
+      `a ${tag} carries both source and sourceExpression`,
+    );
+  }
+
+  if (variables !== undefined) {
+    if (variables !== 'all') {
+      throw new UnsupportedCallActivityError(
+        ownerId,
+        `a ${tag} carries variables="${variables}", which this tool cannot ` +
+          'import (only variables="all" is supported)',
+      );
+    }
+    if (
+      source !== undefined ||
+      sourceExpression !== undefined ||
+      target !== undefined
+    ) {
+      throw new UnsupportedCallActivityError(
+        ownerId,
+        `a ${tag} carries variables="all" combined with ` +
+          'source/sourceExpression/target',
+      );
+    }
+    return { kind: 'all', ...(local === true ? { local } : {}) };
+  }
+
+  if (source !== undefined) {
+    if (target === undefined) {
+      throw new UnsupportedCallActivityError(
+        ownerId,
+        `a ${tag} carries source without a target`,
+      );
+    }
+    return {
+      kind: 'variable',
+      source,
+      target,
+      ...(local === true ? { local } : {}),
+    };
+  }
+
+  if (sourceExpression !== undefined) {
+    if (target === undefined) {
+      throw new UnsupportedCallActivityError(
+        ownerId,
+        `a ${tag} carries sourceExpression without a target`,
+      );
+    }
+    return {
+      kind: 'expression',
+      sourceExpression,
+      target,
+      ...(local === true ? { local } : {}),
+    };
+  }
+
+  throw new UnsupportedCallActivityError(
+    ownerId,
+    `a ${tag} carries none of the recognized shapes (source+target, ` +
+      'sourceExpression+target, variables="all", or businessKey)',
+  );
+}
+
+/**
  * Emit one {@link ImportWarning} (`category:'lane'`) per `bpmn:Lane` in the
  * process. The flat IR has no lane concept, so every step is imported into
  * a single process; the lane assignment is dropped.
@@ -557,19 +865,27 @@ function collectLaneDrops(
  * engine-specific content attached to `el` that the IR does not carry:
  *
  * 1. **Extension attributes** — `operaton:`/`camunda:`-prefixed attributes
- *    in `el.$attrs` whose local name is not one of the supported three
- *    (`assignee`/`formKey`/`class`). The supported names are read into the
- *    IR and are therefore never reported, regardless of prefix.
+ *    in `el.$attrs` whose local name is not one of the names in
+ *    {@link SUPPORTED_EXTENSION_ATTRS} (`assignee`/`formKey`/`class`/
+ *    `expression`/`delegateExpression`/`type`/`topic`/`calledElementBinding`/
+ *    `calledElementVersion`). Those names are read into the IR and are
+ *    therefore never reported, regardless of prefix.
  * 2. **Extension elements** — the materialised children of a
  *    `<bpmn:extensionElements>` block (`extensionElements.values`). The IR
- *    consumes no extension elements, so every materialised child is a drop:
- *    we emit one warning per child, attributed to this element and naming the
- *    child's `$type`. This branch fires only for children moddle actually
- *    materialised — declared `operaton:` types (`operaton:inputOutput`,
- *    `operaton:executionListener`, `operaton:taskListener`) and any
- *    foreign-namespace element (e.g. the deprecated `camunda:` alias), which
- *    moddle keeps as a generic value. An empty `<extensionElements/>` has no
- *    `values`, so it is never flagged.
+ *    consumes no extension elements except a call activity's `operaton:in`/
+ *    `operaton:out` mappings (read by {@link mapCallActivity}), so every
+ *    other materialised child is a drop: we emit one warning per child,
+ *    attributed to this element and naming the child's `$type`. This branch
+ *    fires only for children moddle actually materialised — declared
+ *    `operaton:` types (`operaton:inputOutput`, `operaton:executionListener`,
+ *    `operaton:taskListener`) and any foreign-namespace element (e.g. the
+ *    deprecated `camunda:` alias), which moddle keeps as a generic value. An
+ *    empty `<extensionElements/>` has no `values`, so it is never flagged.
+ *
+ *    `operaton:in`/`operaton:out` are only exempt from this drop when the
+ *    owning element is itself a `bpmn:CallActivity` — on any other element
+ *    (e.g. a plain user task) they are just another declared extension
+ *    element and are reported like the ones above.
  *
  *    Undeclared `operaton:` elements (e.g. `operaton:properties`) do NOT
  *    materialise as values; moddle reports them only at the document level.
@@ -616,6 +932,17 @@ function collectExtensionDrops(
       // Extension elements the IR consumes (e.g. operaton:formData) are read in
       // and must not be reported as dropped.
       if (CONSUMED_EXTENSION_ELEMENTS.has(value.$type)) {
+        continue;
+      }
+      // operaton:in/operaton:out are consumed by mapCallActivity, but only
+      // when the owner really is a call activity — on every other element
+      // they still name an unrepresented drop (the honesty guard: this
+      // sweep does not go silent just because the child element type is
+      // also used, elsewhere, for a supported construct).
+      if (
+        el.$type === 'bpmn:CallActivity' &&
+        (value.$type === 'operaton:In' || value.$type === 'operaton:Out')
+      ) {
         continue;
       }
       warnings.push({

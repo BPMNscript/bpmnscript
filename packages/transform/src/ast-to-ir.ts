@@ -108,6 +108,7 @@ import {
   isParallelStatement,
   isGotoStatement,
   isSubProcess,
+  isCallActivity,
   isLiteralString,
   isLiteralBool,
   isLiteralInt,
@@ -133,10 +134,14 @@ import type {
   ParallelStatement,
   GotoStatement,
   SubProcess as AstSubProcess,
+  CallActivity as AstCallActivity,
+  VariableMapping,
   Attribute,
 } from '@bpmn-script/language';
 import type {
   BpmnProcess,
+  CalledElementBinding,
+  CallVariableMapping,
   FlowElement,
   FormField,
   FormFieldType,
@@ -415,6 +420,9 @@ function lowerStatement(
   }
   if (isSubProcess(stmt)) {
     return lowerSubProcess(builder, stmt, `${coord}_${index}`);
+  }
+  if (isCallActivity(stmt)) {
+    return lowerCallActivity(builder, stmt);
   }
   // Exhaustiveness guard: the Statement union is closed by the grammar.
   throw new Error(
@@ -926,6 +934,151 @@ function lowerSubProcess(
 }
 
 /**
+ * Lower a `call` statement to a {@link CallActivity} leaf node.
+ *
+ * A call activity is a plain named step, not a compound: it contributes no
+ * gateway and no nested container, so its frontier is the trivial
+ * `entry === exit === stmt.name`, exactly like a `user`/`service` task.
+ * `builder` is whichever container the caller is currently lowering into
+ * (the process body, or a nested sub-process builder), so a call written
+ * inside a `subprocess` body lands in that nested container automatically —
+ * the same mechanism every other leaf statement already relies on.
+ *
+ * `calledElement` falls back to the empty string when the `process` attribute
+ * is absent, keeping the desugarer total over a program the validator will
+ * reject. `binding`/`businessKey`/`inMappings`/`outMappings` are omitted
+ * entirely when not applicable, per the file's spread-conditional house style.
+ */
+function lowerCallActivity(builder: Builder, stmt: AstCallActivity): Frontier {
+  const calledElement = attrValue(stmt.attrs, 'process') ?? '';
+  const binding = callActivityBinding(stmt.attrs);
+  const businessKey = rawExpressionAttrValue(stmt.attrs, 'businessKey');
+  const { inMappings, outMappings } = lowerCallMappings(stmt.mappings);
+
+  builder.flowElements.push({
+    kind: 'callActivity',
+    id: stmt.name,
+    ...(stmt.label !== undefined ? { name: stmt.label } : {}),
+    calledElement,
+    ...(binding !== undefined ? { binding } : {}),
+    ...(businessKey !== undefined ? { businessKey } : {}),
+    ...(inMappings.length > 0 ? { inMappings } : {}),
+    ...(outMappings.length > 0 ? { outMappings } : {}),
+  });
+  return { entry: stmt.name, exit: stmt.name };
+}
+
+/**
+ * Derive a call activity's version-resolution {@link CalledElementBinding}
+ * from its `binding`/`version` attributes — the exact inverse of
+ * `renderCallActivity` in `ir-to-dsl.ts`.
+ *
+ * `version` wins whenever present, even alongside a stray `binding` attribute:
+ * the two keys together are a validator error (not this function's job to
+ * flag), so the desugarer just picks the one BPMN can actually use. Absent a
+ * `version`, a `binding` attribute resolves only when it is a bare `latest` or
+ * `deployment` identifier; any other bareword (or a quoted value, which the
+ * grammar also accepts here) is not a resolvable strategy, so the binding
+ * comes back absent rather than guessing — again, the validator's job to
+ * flag.
+ */
+function callActivityBinding(
+  attrs: Attribute[],
+): CalledElementBinding | undefined {
+  const versionAttr = attrs.find((a) => a.key === 'version');
+  if (versionAttr !== undefined) {
+    return { kind: 'version', version: callVersionValue(versionAttr.value) };
+  }
+  const bindingAttr = attrs.find((a) => a.key === 'binding');
+  if (
+    bindingAttr !== undefined &&
+    isVarRef(bindingAttr.value) &&
+    bindingAttr.value.accessors.length === 0
+  ) {
+    if (bindingAttr.value.name === 'latest') {
+      return { kind: 'latest' };
+    }
+    if (bindingAttr.value.name === 'deployment') {
+      return { kind: 'deployment' };
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Read a call activity's `version` attribute value into the plain string the
+ * IR's `version` binding carries: an int/decimal literal renders as its bare
+ * digits, a string literal as its bare text, and anything else (a raw
+ * `${…}` template, a bareword variable reference, …) through
+ * {@link renderExpression} — so `version = "${v}"` keeps its `${…}` body
+ * verbatim.
+ */
+function callVersionValue(expr: Expr): string {
+  if (isLiteralInt(expr) || isLiteralDecimal(expr)) {
+    return String(expr.value);
+  }
+  if (isLiteralString(expr)) {
+    return expr.value;
+  }
+  return renderExpression(expr);
+}
+
+/**
+ * Partition a call activity's mappings into `inMappings`/`outMappings` by
+ * `direction`, preserving each direction's relative source order.
+ */
+function lowerCallMappings(mappings: VariableMapping[]): {
+  inMappings: CallVariableMapping[];
+  outMappings: CallVariableMapping[];
+} {
+  const inMappings: CallVariableMapping[] = [];
+  const outMappings: CallVariableMapping[] = [];
+  for (const mapping of mappings) {
+    const lowered = lowerCallMapping(mapping);
+    (mapping.direction === 'in' ? inMappings : outMappings).push(lowered);
+  }
+  return { inMappings, outMappings };
+}
+
+/**
+ * Lower one `in`/`out` mapping entry to a {@link CallVariableMapping}.
+ *
+ * - `all` (`*`) copies every variable.
+ * - A bare `target` with no `source` is the same-name shorthand: `source`
+ *   defaults to `target`.
+ * - A `source` that is a plain single-segment variable reference (no dotted/
+ *   indexed accessors — the grammar's `VarRef` with an empty `accessors`
+ *   list) copies that one variable by name.
+ * - Any other `source` expression (a dotted accessor, an operator, a literal,
+ *   …) is a computed value: it renders through {@link renderExpression} into
+ *   the `${…}` body the IR's `expression` variant carries.
+ *
+ * `local` is stamped only when the mapping's `local` modifier is set — an
+ * absent `local` is the non-local default, so the IR never carries `local:
+ * false`.
+ */
+function lowerCallMapping(mapping: VariableMapping): CallVariableMapping {
+  const local = mapping.local ? ({ local: true } as const) : {};
+  if (mapping.all) {
+    return { kind: 'all', ...local };
+  }
+  const target = mapping.target ?? '';
+  if (mapping.source === undefined) {
+    // Same-name shorthand: `in orderId` copies the variable `orderId`.
+    return { kind: 'variable', source: target, target, ...local };
+  }
+  if (isVarRef(mapping.source) && mapping.source.accessors.length === 0) {
+    return { kind: 'variable', source: mapping.source.name, target, ...local };
+  }
+  return {
+    kind: 'expression',
+    sourceExpression: renderExpression(mapping.source),
+    target,
+    ...local,
+  };
+}
+
+/**
  * Lower `goto target` to a raw sequence flow from this statement's position to
  * the target statement's entry node.
  *
@@ -1015,7 +1168,8 @@ function collectNamedIds(process: Process): Set<string> {
         isUserTask(stmt) ||
         isServiceTask(stmt) ||
         isExternalTask(stmt) ||
-        isScriptTask(stmt)
+        isScriptTask(stmt) ||
+        isCallActivity(stmt)
       ) {
         taken.add(stmt.name);
       } else if (isIfStatement(stmt)) {

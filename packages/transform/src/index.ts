@@ -24,6 +24,9 @@ export type {
   ExclusiveGateway,
   ParallelGateway,
   SubProcess,
+  CallActivity,
+  CalledElementBinding,
+  CallVariableMapping,
   SequenceFlow,
 } from './ir/types.js';
 
@@ -49,9 +52,11 @@ export {
   UnsupportedConstructError,
   UnsupportedElementError,
   UnsupportedServiceTaskFormError,
+  UnsupportedFormFieldTypeError,
   UnsupportedEventDefinitionError,
   UnsupportedLoopCharacteristicsError,
   UnsupportedCollaborationError,
+  UnsupportedCallActivityError,
 } from './errors.js';
 
 export { astToIr } from './ast-to-ir.js';
@@ -73,5 +78,6 @@ export const IR_TYPE_NAMES = [
   'ExclusiveGateway',
   'ParallelGateway',
   'SubProcess',
+  'CallActivity',
   'SequenceFlow',
 ] as const;

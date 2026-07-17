@@ -52,6 +52,26 @@ const STRUCTURE_SNIPPETS: Readonly<Record<string, string>> = {
   do: 'do {\n\t$1\n} while (${2:condition})',
   parallel: 'parallel {\n\t{\n\t\t$1\n\t}\n\t{\n\t\t$2\n\t}\n}',
   subprocess: 'subprocess ${1:id} {\n\t$0\n}',
+  // call — starts another process like a function call: `process` names the
+  // callee, `in` entries are its arguments, `out` entries are its return
+  // values.
+  call: 'call ${1:id} {\n\tprocess = "${2:process-id}"\n\tin ${3:input}\n\tout ${4:result}\n}',
+  // call attributes
+  binding: 'binding = ${1|latest,deployment|}',
+  version: 'version = ${1:1}',
+  // the `\$` escape keeps the EL `${…}` literal, same as `expression`/`delegate` above.
+  businessKey: 'businessKey = "${1:\\${execution.processBusinessKey}}"',
+};
+
+/**
+ * Per-keyword completion-item `detail` text, overriding the default
+ * `'BPMNscript construct'` caption for keywords where a more specific
+ * description helps (currently just `call`, whose analogy to a function call
+ * is the whole point of the construct). Every other structural keyword keeps
+ * the default detail.
+ */
+const STRUCTURE_DETAILS: Readonly<Record<string, string>> = {
+  call: 'call another process like a function',
 };
 
 /**
@@ -78,7 +98,7 @@ export class BpmnScriptCompletionProvider extends DefaultCompletionProvider {
     acceptor(context, {
       label: keyword.value,
       kind: CompletionItemKind.Snippet,
-      detail: 'BPMNscript construct',
+      detail: STRUCTURE_DETAILS[keyword.value] ?? 'BPMNscript construct',
       insertText: snippet,
       insertTextFormat: InsertTextFormat.Snippet,
       sortText: '1',

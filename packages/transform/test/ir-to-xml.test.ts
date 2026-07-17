@@ -850,7 +850,247 @@ describe('irToXml — DI expansion hint for sub-processes', () => {
   });
 });
 
+// ── 10. callActivity serialization ───────────────────────────────────────────
+
+describe('irToXml — callActivity serialization', () => {
+  /**
+   * `start → call → end`, where the call activity populates every feature:
+   * a label, a `deployment` binding, a business key, all three in-mapping
+   * variants (one carrying `local`), and two out-mappings. Exercises the full
+   * pipeline (layout included) and the canonical extension-element order.
+   */
+  const richCallIr: BpmnProcess = {
+    id: 'caller',
+    name: 'Caller',
+    isExecutable: true,
+    flowElements: [
+      { kind: 'startEvent', id: 'Start' },
+      {
+        kind: 'callActivity',
+        id: 'CallSub',
+        name: 'Call sub',
+        calledElement: 'sub-process',
+        binding: { kind: 'deployment' },
+        businessKey: '${execution.processBusinessKey}',
+        inMappings: [
+          { kind: 'all' },
+          { kind: 'variable', source: 'amount', target: 'amount' },
+          {
+            kind: 'expression',
+            sourceExpression: '${total * 2}',
+            target: 'doubled',
+            local: true,
+          },
+        ],
+        outMappings: [
+          { kind: 'variable', source: 'result', target: 'outcome' },
+          { kind: 'expression', sourceExpression: '${status}', target: 'final' },
+        ],
+      },
+      { kind: 'endEvent', id: 'End' },
+    ],
+    sequenceFlows: [
+      { id: 'F_Start_Call', sourceRef: 'Start', targetRef: 'CallSub' },
+      { id: 'F_Call_End', sourceRef: 'CallSub', targetRef: 'End' },
+    ],
+  };
+
+  let callXml: string;
+  let call: CallModdle;
+
+  beforeAll(async () => {
+    // `irToXml` runs bpmn-auto-layout on the output; a throw here fails the
+    // suite, which doubles as the "layout handles a call activity" check.
+    callXml = await irToXml(richCallIr);
+    const proc = await parseProcessTreeWithOperaton(callXml);
+    call = childById(proc, 'CallSub') as unknown as CallModdle;
+  });
+
+  it('emits a bpmn:CallActivity carrying calledElement and the deployment binding', () => {
+    expect(call.$type).toBe('bpmn:CallActivity');
+    expect(call.calledElement).toBe('sub-process');
+    expect(call.calledElementBinding).toBe('deployment');
+    // A non-version binding never emits a version attribute.
+    expect(call.calledElementVersion).toBeUndefined();
+  });
+
+  it('emits extension-element children in canonical order with exact attributes', () => {
+    const values = call.extensionElements?.values ?? [];
+    // businessKey `in`, then 3 in-mappings, then 2 out-mappings.
+    expect(values.map((v) => v.$type)).toEqual([
+      'operaton:In',
+      'operaton:In',
+      'operaton:In',
+      'operaton:In',
+      'operaton:Out',
+      'operaton:Out',
+    ]);
+
+    // (1) business key
+    expect(values[0]).toMatchObject({
+      businessKey: '${execution.processBusinessKey}',
+    });
+    // (2) in-mappings in IR order
+    expect(values[1]).toMatchObject({ variables: 'all' });
+    expect(values[2]).toMatchObject({ source: 'amount', target: 'amount' });
+    expect(values[3]).toMatchObject({
+      sourceExpression: '${total * 2}',
+      target: 'doubled',
+      local: true,
+    });
+    // (3) out-mappings in IR order
+    expect(values[4]).toMatchObject({ source: 'result', target: 'outcome' });
+    expect(values[5]).toMatchObject({
+      sourceExpression: '${status}',
+      target: 'final',
+    });
+  });
+
+  it('serializes `local` only on the mapping where it is set', () => {
+    const values = call.extensionElements?.values ?? [];
+    // Only the expression in-mapping (index 3) carries local.
+    expect(values[0]?.local).toBeUndefined();
+    expect(values[1]?.local).toBeUndefined();
+    expect(values[2]?.local).toBeUndefined();
+    expect(values[3]?.local).toBe(true);
+    expect(values[4]?.local).toBeUndefined();
+    expect(values[5]?.local).toBeUndefined();
+  });
+
+  it('wires the call activity with incoming/outgoing like any activity', () => {
+    // Assert on the parsed graph rather than the raw block: a call activity
+    // with self-closing `operaton:in` children defeats the string-scanning
+    // block extractor, but the wired references are unambiguous.
+    expect((call.incoming ?? []).map((f) => f.id)).toEqual(['F_Start_Call']);
+    expect((call.outgoing ?? []).map((f) => f.id)).toEqual(['F_Call_End']);
+  });
+
+  it('parses cleanly via bpmn-moddle carrying the extension', async () => {
+    const { warnings } = await operatonModdle().fromXML(callXml);
+    expect(warnings).toEqual([]);
+  });
+
+  it('emits both calledElementBinding and calledElementVersion for a version binding', async () => {
+    const ir = minimalCallIr({
+      kind: 'callActivity',
+      id: 'CallSub',
+      calledElement: 'sub',
+      binding: { kind: 'version', version: '7' },
+    });
+    const proc = await parseProcessTreeWithOperaton(await irToXml(ir));
+    const c = childById(proc, 'CallSub') as unknown as CallModdle;
+    expect(c.calledElementBinding).toBe('version');
+    expect(c.calledElementVersion).toBe('7');
+  });
+
+  it('emits neither binding attribute when no binding is present', async () => {
+    const ir = minimalCallIr({
+      kind: 'callActivity',
+      id: 'CallSub',
+      calledElement: 'sub',
+    });
+    const proc = await parseProcessTreeWithOperaton(await irToXml(ir));
+    const c = childById(proc, 'CallSub') as unknown as CallModdle;
+    expect(c.calledElementBinding).toBeUndefined();
+    expect(c.calledElementVersion).toBeUndefined();
+  });
+
+  it('emits no extensionElements for a minimal call (calledElement only)', async () => {
+    const ir = minimalCallIr({
+      kind: 'callActivity',
+      id: 'CallSub',
+      calledElement: 'sub',
+    });
+    const proc = await parseProcessTreeWithOperaton(await irToXml(ir));
+    const c = childById(proc, 'CallSub') as unknown as CallModdle;
+    expect(c.extensionElements).toBeUndefined();
+  });
+
+  it('derives a humanized name for an unnamed call activity', async () => {
+    const ir = minimalCallIr({
+      kind: 'callActivity',
+      id: 'ProcessPayment',
+      calledElement: 'sub',
+    });
+    const proc = await parseProcessTreeWithOperaton(await irToXml(ir));
+    const c = childById(proc, 'ProcessPayment') as unknown as CallModdle;
+    // The excluded-name path does not apply to activities: the id humanizes.
+    expect(c.name).toBe('Process Payment');
+  });
+
+  it('keeps an explicit name verbatim', () => {
+    expect(call.name).toBe('Call sub');
+  });
+});
+
 // ── Helpers ──────────────────────────────────────────────────────────────────
+
+/** Minimal `start → call → end` wrapper around one call-activity node. */
+function minimalCallIr(call: BpmnProcess['flowElements'][number]): BpmnProcess {
+  return {
+    id: 'caller',
+    isExecutable: true,
+    flowElements: [
+      { kind: 'startEvent', id: 'Start' },
+      call,
+      { kind: 'endEvent', id: 'End' },
+    ],
+    sequenceFlows: [
+      { id: 'F_Start_Call', sourceRef: 'Start', targetRef: call.id },
+      { id: 'F_Call_End', sourceRef: call.id, targetRef: 'End' },
+    ],
+  } satisfies BpmnProcess;
+}
+
+/** A parsed `bpmn:CallActivity` with the Operaton extension attributes/children. */
+interface CallModdle {
+  $type: string;
+  name?: string;
+  calledElement?: string;
+  calledElementBinding?: string;
+  calledElementVersion?: string;
+  incoming?: Array<{ id: string }>;
+  outgoing?: Array<{ id: string }>;
+  extensionElements?: {
+    values: Array<{
+      $type: string;
+      source?: string;
+      sourceExpression?: string;
+      variables?: string;
+      target?: string;
+      businessKey?: string;
+      local?: boolean;
+    }>;
+  };
+}
+
+/** The Operaton moddle extension descriptor, read from source (as `irToXml` does). */
+const OPERATON_EXTENSION: Record<string, unknown> = JSON.parse(
+  readFileSync(resolve(here, '../src/operaton-moddle.json'), 'utf-8'),
+);
+
+/** A raw `BpmnModdle` carrying the Operaton extension, for reading operaton:* nodes. */
+function operatonModdle(): InstanceType<typeof BpmnModdle> {
+  return new BpmnModdle({ operaton: OPERATON_EXTENSION });
+}
+
+/**
+ * Like {@link parseProcessTree}, but with the Operaton extension registered so
+ * `operaton:in`/`operaton:out` children and `operaton:calledElement*`
+ * attributes resolve to typed properties rather than raw XML.
+ */
+async function parseProcessTreeWithOperaton(
+  xmlStr: string,
+): Promise<ModdleTree> {
+  const { rootElement } = await operatonModdle().fromXML(xmlStr);
+  const roots = (rootElement as unknown as { rootElements: ModdleTree[] })
+    .rootElements;
+  const proc = roots.find((e) => e.$type === 'bpmn:Process');
+  if (proc === undefined) {
+    throw new Error('No bpmn:Process found in parsed output.');
+  }
+  return proc;
+}
 
 /** A DI shape's bounds, as parsed from `dc:Bounds`. */
 interface DiBounds {

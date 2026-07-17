@@ -51,6 +51,7 @@
 
 import type {
   BpmnProcess,
+  CallVariableMapping,
   FlowContainer,
   FlowElement,
   FormField,
@@ -849,6 +850,8 @@ class Emitter {
         return renderUserTask(el);
       case 'serviceTask':
         return renderServiceTask(el);
+      case 'callActivity':
+        return renderCallActivity(el);
       case 'scriptTask':
         // A script task has no single-line form: its opaque fenced body is
         // emitted as a multi-line group in `emitNode`, which never reaches this
@@ -988,6 +991,107 @@ function renderServiceTask(
       );
     }
   }
+}
+
+/**
+ * Render a call activity's single-line statement:
+ *
+ *   `call <id> "<label>"? { process = "…" [binding|version] [businessKey] <mappings> }`
+ *
+ * Members print in a fixed order so the round-trip is stable: the called
+ * `process`, then the version-resolution keyword, then the business key, then
+ * every in-mapping, then every out-mapping. The emitter indents each returned
+ * line, so the whole statement stays on one line.
+ *
+ * `binding = latest|deployment` prints for the strategy bindings; a pinned
+ * version prints only `version = <v>` (no `binding` key). An absent binding
+ * prints neither.
+ */
+function renderCallActivity(
+  el: Extract<FlowElement, { kind: 'callActivity' }>,
+): string {
+  const members: string[] = [`process = ${quote(el.calledElement)}`];
+
+  if (el.binding !== undefined) {
+    switch (el.binding.kind) {
+      case 'latest':
+        members.push('binding = latest');
+        break;
+      case 'deployment':
+        members.push('binding = deployment');
+        break;
+      case 'version':
+        members.push(`version = ${renderCallVersion(el.binding.version)}`);
+        break;
+      default: {
+        const exhaustive: never = el.binding;
+        throw new Error(
+          `irToDsl: unhandled call binding kind: ${JSON.stringify(exhaustive)}`,
+        );
+      }
+    }
+  }
+
+  if (el.businessKey !== undefined) {
+    members.push(`businessKey = ${quote(el.businessKey)}`);
+  }
+
+  for (const mapping of el.inMappings ?? []) {
+    members.push(renderCallMapping('in', mapping));
+  }
+  for (const mapping of el.outMappings ?? []) {
+    members.push(renderCallMapping('out', mapping));
+  }
+
+  return `call ${el.id}${labelSuffix(el.name)}${attrBlock(members)}`;
+}
+
+/**
+ * Render a pinned call-activity version as the exact inverse of the desugarer's
+ * read: an all-digit version prints as a bare integer, and anything else
+ * (including a `${…}` expression) prints double-quoted verbatim so it re-parses
+ * as a raw expression or string literal rather than a bare integer.
+ */
+function renderCallVersion(version: string): string {
+  return /^[0-9]+$/.test(version) ? version : quote(version);
+}
+
+/**
+ * Render one call-activity variable mapping as `in|out [local ]<body>`:
+ *   - `all`        → `*`
+ *   - `variable`   → `<target>` when source and target coincide (shorthand),
+ *                    else `<target> = <source>` (both bare identifiers).
+ *   - `expression` → `<target> = "<sourceExpression>"`, always quoted verbatim
+ *                    so a `${…}` value round-trips as an expression rather than
+ *                    re-desugaring to a bare `variable` mapping.
+ */
+function renderCallMapping(
+  keyword: 'in' | 'out',
+  mapping: CallVariableMapping,
+): string {
+  const localPrefix = mapping.local === true ? 'local ' : '';
+  let body: string;
+  switch (mapping.kind) {
+    case 'all':
+      body = '*';
+      break;
+    case 'variable':
+      body =
+        mapping.source === mapping.target
+          ? mapping.target
+          : `${mapping.target} = ${mapping.source}`;
+      break;
+    case 'expression':
+      body = `${mapping.target} = ${quote(mapping.sourceExpression)}`;
+      break;
+    default: {
+      const exhaustive: never = mapping;
+      throw new Error(
+        `irToDsl: unhandled call mapping kind: ${JSON.stringify(exhaustive)}`,
+      );
+    }
+  }
+  return `${keyword} ${localPrefix}${body}`;
 }
 
 /**

@@ -35,7 +35,9 @@ import type {
   ExternalTask,
   ScriptTask,
   SubProcess,
+  CallActivity,
   Relational,
+  Additive,
   VarRef,
   Ternary,
   RawExpr,
@@ -333,6 +335,165 @@ describe('Parsing — subprocess', () => {
     const sub = document.parseResult.value.processes[0]!
       .body[0] as SubProcess;
     expect(sub.label).toBeUndefined();
+  });
+});
+
+// ── call activity ─────────────────────────────────────────────────────────
+
+describe('Parsing — call activity', () => {
+  test('a full call activity parses: attrs and every mapping shape', async () => {
+    const source = `process p { call Fulfilment "Fulfil order" {
+  process = "fulfilment-process"
+  binding = deployment
+  businessKey = "\${execution.processBusinessKey}"
+  in *
+  in orderId
+  in total = amount + tax
+  in local vip = vipFlag
+  out shipmentId
+  out shipped = confirmed
+} }`;
+    const document = await parse(source);
+    expect(formatParseFailure(document)).toBeUndefined();
+
+    const call = document.parseResult.value.processes[0]!
+      .body[0] as CallActivity;
+    expect(call.$type).toBe('CallActivity');
+    expect(call.name).toBe('Fulfilment');
+    expect(call.label).toBe('Fulfil order');
+
+    expect(call.attrs).toHaveLength(3);
+    expect(call.attrs.map((a) => a.key)).toEqual([
+      'process',
+      'binding',
+      'businessKey',
+    ]);
+    expect(call.attrs[0]!.value.$type).toBe('LiteralString');
+    expect((call.attrs[0]!.value as { value: string }).value).toBe(
+      'fulfilment-process',
+    );
+    // A bare identifier attribute value (no quotes) is a VarRef, not a string.
+    expect(call.attrs[1]!.value.$type).toBe('VarRef');
+    expect((call.attrs[1]!.value as VarRef).name).toBe('deployment');
+    expect(call.attrs[2]!.value.$type).toBe('RawExpr');
+
+    expect(call.mappings).toHaveLength(6);
+    const [all, shorthand, arith, local, outShort, outExpr] = call.mappings;
+
+    expect(all!.direction).toBe('in');
+    expect(all!.all).toBe(true);
+    expect(all!.target).toBeUndefined();
+
+    // Shorthand `in orderId` names only the target; no explicit source is
+    // parsed (the target doubles as the implied source downstream).
+    expect(shorthand!.direction).toBe('in');
+    expect(shorthand!.all).toBeFalsy();
+    expect(shorthand!.local).toBeFalsy();
+    expect(shorthand!.target).toBe('orderId');
+    expect(shorthand!.source).toBeUndefined();
+
+    expect(arith!.direction).toBe('in');
+    expect(arith!.target).toBe('total');
+    expect(arith!.source!.$type).toBe('Additive');
+    expect((arith!.source as Additive).op).toBe('+');
+
+    expect(local!.direction).toBe('in');
+    expect(local!.local).toBe(true);
+    expect(local!.target).toBe('vip');
+    expect(local!.source!.$type).toBe('VarRef');
+    expect((local!.source as VarRef).name).toBe('vipFlag');
+
+    expect(outShort!.direction).toBe('out');
+    expect(outShort!.local).toBeFalsy();
+    expect(outShort!.target).toBe('shipmentId');
+    expect(outShort!.source).toBeUndefined();
+
+    expect(outExpr!.direction).toBe('out');
+    expect(outExpr!.target).toBe('shipped');
+    expect(outExpr!.source!.$type).toBe('VarRef');
+    expect((outExpr!.source as VarRef).name).toBe('confirmed');
+  });
+
+  test('an integer attribute value is a LiteralInt', async () => {
+    const source = `process p { call C { version = 3 } }`;
+    const document = await parse(source);
+    expect(formatParseFailure(document)).toBeUndefined();
+    const call = document.parseResult.value.processes[0]!
+      .body[0] as CallActivity;
+    expect(call.attrs[0]!.key).toBe('version');
+    expect(call.attrs[0]!.value.$type).toBe('LiteralInt');
+    expect((call.attrs[0]!.value as { value: number }).value).toBe(3);
+  });
+
+  test('a raw-template attribute value is a RawExpr', async () => {
+    const source = `process p { call C { version = "\${v}" } }`;
+    const document = await parse(source);
+    expect(formatParseFailure(document)).toBeUndefined();
+    const call = document.parseResult.value.processes[0]!
+      .body[0] as CallActivity;
+    expect(call.attrs[0]!.value.$type).toBe('RawExpr');
+  });
+
+  test('a minimal call with only `process` parses', async () => {
+    const source = `process p { call X { process = "p" } }`;
+    const document = await parse(source);
+    expect(formatParseFailure(document)).toBeUndefined();
+    const call = document.parseResult.value.processes[0]!
+      .body[0] as CallActivity;
+    expect(call.attrs).toHaveLength(1);
+    expect(call.mappings).toHaveLength(0);
+  });
+
+  test('an empty call body parses — a missing `process` is a validator concern, not a parse error', async () => {
+    const source = `process p { call X { } }`;
+    const document = await parse(source);
+    expect(formatParseFailure(document)).toBeUndefined();
+    const call = document.parseResult.value.processes[0]!
+      .body[0] as CallActivity;
+    expect(call.attrs).toHaveLength(0);
+    expect(call.mappings).toHaveLength(0);
+  });
+
+  test('a call nests inside an if block', async () => {
+    const source = `process p { if (a) { call X { process = "p" } } }`;
+    const document = await parse(source);
+    expect(formatParseFailure(document)).toBeUndefined();
+    const ifSt = document.parseResult.value.processes[0]!
+      .body[0] as IfStatement;
+    const call = ifSt.then.statements[0] as CallActivity;
+    expect(call.$type).toBe('CallActivity');
+    expect(call.name).toBe('X');
+  });
+
+  test('a call nests inside a subprocess body', async () => {
+    const source = `process p { subprocess S { call X { process = "p" } } }`;
+    const document = await parse(source);
+    expect(formatParseFailure(document)).toBeUndefined();
+    const sub = document.parseResult.value.processes[0]!
+      .body[0] as SubProcess;
+    const call = sub.body.statements[0] as CallActivity;
+    expect(call.$type).toBe('CallActivity');
+    expect(call.name).toBe('X');
+  });
+
+  test('the newly reserved mapping/attribute keywords are rejected as bare identifiers in expression position', async () => {
+    for (const word of [
+      'call',
+      'in',
+      'out',
+      'local',
+      'binding',
+      'version',
+      'businessKey',
+    ]) {
+      const document = await parse(`process p { if (${word} > 2) { user A } }`);
+      expect(document.parseResult.parserErrors.length).toBeGreaterThan(0);
+    }
+  });
+
+  test('the raw-template fallback still parses a reserved word as an identifier', async () => {
+    const cond = await parseCondition(`"\${version > 2}"`);
+    expect(cond.$type).toBe('RawExpr');
   });
 });
 

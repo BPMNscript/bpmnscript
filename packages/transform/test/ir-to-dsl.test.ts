@@ -1241,3 +1241,122 @@ describe('irToDsl — sub-process emission', () => {
     expect(dsl).toContain('  subprocess S {\n  }\n');
   });
 });
+
+// ---------------------------------------------------------------------------
+// 8. Call-activity emission (single-line `call <id> { … }` statements).
+//
+// IR-literal-driven and grammar-independent: these assert the emitted text
+// (canonical member order, mapping shorthand, version print contract), not a
+// re-parse — the `call` grammar lands separately.
+// ---------------------------------------------------------------------------
+
+describe('irToDsl — call activity', () => {
+  it('prints the full single-line form in canonical member order with shorthand', () => {
+    const dsl = irToDsl(
+      singleNodeProcess({
+        kind: 'callActivity',
+        id: 'CallSub',
+        name: 'Call sub',
+        calledElement: 'sub-process',
+        binding: { kind: 'deployment' },
+        businessKey: '${execution.processBusinessKey}',
+        inMappings: [
+          { kind: 'all' },
+          // source === target → bare shorthand.
+          { kind: 'variable', source: 'amount', target: 'amount' },
+          // source !== target → `target = source`.
+          { kind: 'variable', source: 'x', target: 'y' },
+          {
+            kind: 'expression',
+            sourceExpression: '${total * 2}',
+            target: 'doubled',
+            local: true,
+          },
+        ],
+        outMappings: [
+          { kind: 'variable', source: 'result', target: 'outcome' },
+          { kind: 'expression', sourceExpression: '${status}', target: 'final' },
+          { kind: 'all', local: true },
+        ],
+      }),
+    );
+    expect(dsl).toContain(
+      'call CallSub "Call sub" { process = "sub-process" binding = deployment ' +
+        'businessKey = "${execution.processBusinessKey}" ' +
+        'in * in amount in y = x in local doubled = "${total * 2}" ' +
+        'out outcome = result out final = "${status}" out local * }',
+    );
+  });
+
+  it('prints a minimal call as `call X { process = "p" }`', () => {
+    const dsl = irToDsl(
+      singleNodeProcess({ kind: 'callActivity', id: 'X', calledElement: 'p' }),
+    );
+    expect(dsl).toContain('call X { process = "p" }');
+  });
+
+  it('prints `binding = latest` for a latest binding', () => {
+    const dsl = irToDsl(
+      singleNodeProcess({
+        kind: 'callActivity',
+        id: 'X',
+        calledElement: 'p',
+        binding: { kind: 'latest' },
+      }),
+    );
+    expect(dsl).toContain('call X { process = "p" binding = latest }');
+  });
+
+  it('prints only `version = 3` for a numeric version binding (no `binding` key)', () => {
+    const dsl = irToDsl(
+      singleNodeProcess({
+        kind: 'callActivity',
+        id: 'X',
+        calledElement: 'p',
+        binding: { kind: 'version', version: '3' },
+      }),
+    );
+    expect(dsl).toContain('call X { process = "p" version = 3 }');
+    expect(dsl).not.toContain('binding =');
+  });
+
+  it('prints a non-numeric version quoted verbatim', () => {
+    const dsl = irToDsl(
+      singleNodeProcess({
+        kind: 'callActivity',
+        id: 'X',
+        calledElement: 'p',
+        binding: { kind: 'version', version: '${v}' },
+      }),
+    );
+    expect(dsl).toContain('call X { process = "p" version = "${v}" }');
+  });
+
+  it('prints a call in mid-chain as a plain fall-through node (order preserved)', () => {
+    const ir: BpmnProcess = {
+      id: 'p',
+      isExecutable: true,
+      flowElements: [
+        { kind: 'startEvent', id: 'S' },
+        { kind: 'userTask', id: 'Before' },
+        { kind: 'callActivity', id: 'Mid', calledElement: 'sub' },
+        { kind: 'userTask', id: 'After' },
+        { kind: 'endEvent', id: 'E' },
+      ],
+      sequenceFlows: [
+        { id: 'f0', sourceRef: 'S', targetRef: 'Before' },
+        { id: 'f1', sourceRef: 'Before', targetRef: 'Mid' },
+        { id: 'f2', sourceRef: 'Mid', targetRef: 'After' },
+        { id: 'f3', sourceRef: 'After', targetRef: 'E' },
+      ],
+    };
+    const dsl = irToDsl(ir);
+    const beforeIdx = dsl.indexOf('user Before');
+    const callIdx = dsl.indexOf('call Mid { process = "sub" }');
+    const afterIdx = dsl.indexOf('user After');
+    expect(beforeIdx).toBeGreaterThanOrEqual(0);
+    expect(callIdx).toBeGreaterThan(beforeIdx);
+    expect(afterIdx).toBeGreaterThan(callIdx);
+    expect(hasGoto(dsl)).toBe(false);
+  });
+});
