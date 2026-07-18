@@ -24,6 +24,7 @@ import { BpmnScriptScopeProvider } from './bpmn-script-scope-provider.js';
 import { BpmnScriptLinker } from './bpmn-script-linker.js';
 import { BpmnScriptParserErrorMessageProvider } from './bpmn-script-parser-error-message-provider.js';
 import { BpmnScriptSemanticTokenProvider } from './bpmn-script-semantic-tokens.js';
+import { BpmnScriptValueConverter } from './bpmn-script-value-converter.js';
 
 /**
  * Declaration of custom services - add your own service classes here.
@@ -61,6 +62,10 @@ export const BpmnScriptModule: Module<
     // is used as a bare name, pointing to the `"${…}"` raw-string fallback.
     ParserErrorMessageProvider: (services) =>
       new BpmnScriptParserErrorMessageProvider(services),
+    // Unquotes a `RAW_TEMPLATE` match filling `OnHandler.time` so it carries
+    // the same normalized shape as a `STRING` match — see the provider's
+    // module docstring.
+    ValueConverter: () => new BpmnScriptValueConverter(),
   },
   references: {
     VariableSymbolProvider: () => new DefaultVariableSymbolProvider(),

@@ -1472,6 +1472,244 @@ describe('astToIr — handler/throw/emit totality', () => {
   });
 });
 
+// ── 19. message / signal handler triggers ────────────────────────────────────
+
+describe('astToIr — message/signal handler triggers', () => {
+  it('lowers `on message` to a message event definition; the chain bypasses the handler', async () => {
+    const result = await ir(
+      `process p {
+        service A { class = "x.A" }
+        on message "PaymentReceived" { service R { class = "x.R" } }
+        service B { class = "x.B" }
+      }`,
+    );
+    const handler = subProcess(result, makeEventSubProcessId('p_1'));
+    const start = only(handler, 'startEvent');
+    expect(start.eventDefinition).toEqual({
+      kind: 'message',
+      messageName: 'PaymentReceived',
+    });
+    // Out-of-chain regression: A flows directly to B around the handler.
+    expect(flow(result, 'A', 'B')).toBeDefined();
+  });
+
+  it('lowers `on signal … alongside` to a signal event definition with isInterrupting false', async () => {
+    const result = await ir(`process p { on signal "X" alongside { } }`);
+    const handler = subProcess(result, makeEventSubProcessId('p_0'));
+    const start = only(handler, 'startEvent');
+    expect(start.eventDefinition).toEqual({ kind: 'signal', signalName: 'X' });
+    expect(start.isInterrupting).toBe(false);
+  });
+});
+
+// ── 20. timer / condition handler triggers ───────────────────────────────────
+
+describe('astToIr — timer and condition handler triggers', () => {
+  it('maps each timer particle to its BPMN timerKind, expression carried verbatim', async () => {
+    const after = await ir(`process p { on timer after "PT1H" { } }`);
+    expect(
+      only(subProcess(after, makeEventSubProcessId('p_0')), 'startEvent')
+        .eventDefinition,
+    ).toEqual({ kind: 'timer', timerKind: 'duration', expression: 'PT1H' });
+
+    const at = await ir(
+      `process p { on timer at "2024-01-01T00:00:00Z" { } }`,
+    );
+    expect(
+      only(subProcess(at, makeEventSubProcessId('p_0')), 'startEvent')
+        .eventDefinition,
+    ).toEqual({
+      kind: 'timer',
+      timerKind: 'date',
+      expression: '2024-01-01T00:00:00Z',
+    });
+
+    const every = await ir(`process p { on timer every "R/PT1H" { } }`);
+    expect(
+      only(subProcess(every, makeEventSubProcessId('p_0')), 'startEvent')
+        .eventDefinition,
+    ).toEqual({ kind: 'timer', timerKind: 'cycle', expression: 'R/PT1H' });
+
+    const templated = await ir(
+      'process p { on timer after "${dueDate}" { } }',
+    );
+    expect(
+      only(subProcess(templated, makeEventSubProcessId('p_0')), 'startEvent')
+        .eventDefinition,
+    ).toEqual({
+      kind: 'timer',
+      timerKind: 'duration',
+      expression: '${dueDate}',
+    });
+  });
+
+  it('renders a parsed condition to its ${…} body and keeps a raw template verbatim', async () => {
+    const parsed = await ir(`process p { on condition (amount > 100) { } }`);
+    expect(
+      only(subProcess(parsed, makeEventSubProcessId('p_0')), 'startEvent')
+        .eventDefinition,
+    ).toEqual({ kind: 'conditional', condition: '${amount > 100}' });
+
+    const raw = await ir(
+      'process p { on condition ("${bean.check()}") { } }',
+    );
+    expect(
+      only(subProcess(raw, makeEventSubProcessId('p_0')), 'startEvent')
+        .eventDefinition,
+    ).toEqual({ kind: 'conditional', condition: '${bean.check()}' });
+  });
+});
+
+// ── 21. signal throw / emit ───────────────────────────────────────────────────
+
+describe('astToIr — signal throw/emit', () => {
+  it('lowers `throw signal` to a typed end event with no fall-through', async () => {
+    const result = await ir(
+      `process p {
+        service A { class = "x.A" }
+        throw signal "S"
+        service B { class = "x.B" }
+      }`,
+    );
+    const throwId = makeThrowEventId('p_1');
+    const thrown = byId(result, throwId);
+    expect(thrown.kind).toBe('endEvent');
+    expect((thrown as { eventDefinition?: unknown }).eventDefinition).toEqual({
+      kind: 'signal',
+      signalName: 'S',
+    });
+    expect(flow(result, 'A', throwId)).toBeDefined();
+    expect(result.sequenceFlows.some((f) => f.sourceRef === throwId)).toBe(
+      false,
+    );
+  });
+
+  it('lowers `emit signal` to an intermediate throw wired into the chain', async () => {
+    const result = await ir(
+      `process p {
+        service A { class = "x.A" }
+        emit signal Ping "S"
+        service B { class = "x.B" }
+      }`,
+    );
+    const emitted = byId(result, 'Ping');
+    expect(emitted.kind).toBe('intermediateThrowEvent');
+    expect(
+      (emitted as { eventDefinition?: unknown }).eventDefinition,
+    ).toEqual({ kind: 'signal', signalName: 'S' });
+    expect(flow(result, 'A', 'Ping')).toBeDefined();
+    expect(flow(result, 'Ping', 'B')).toBeDefined();
+  });
+});
+
+// ── 22. Totality of the new triggers ─────────────────────────────────────────
+
+describe('astToIr — new-trigger totality', () => {
+  it('lowers every under-specified new-kind handler without throwing', async () => {
+    const message = await ir(`process p { on message { } }`);
+    expect(
+      only(subProcess(message, makeEventSubProcessId('p_0')), 'startEvent')
+        .eventDefinition,
+    ).toEqual({ kind: 'message', messageName: '' });
+
+    const timer = await ir(`process p { on timer { } }`);
+    expect(
+      only(subProcess(timer, makeEventSubProcessId('p_0')), 'startEvent')
+        .eventDefinition,
+    ).toEqual({ kind: 'timer', timerKind: 'duration', expression: '' });
+
+    const timerCodeFallback = await ir(`process p { on timer "PT1H" { } }`);
+    expect(
+      only(
+        subProcess(timerCodeFallback, makeEventSubProcessId('p_0')),
+        'startEvent',
+      ).eventDefinition,
+    ).toEqual({ kind: 'timer', timerKind: 'duration', expression: 'PT1H' });
+
+    const condition = await ir(`process p { on condition { } }`);
+    expect(
+      only(subProcess(condition, makeEventSubProcessId('p_0')), 'startEvent')
+        .eventDefinition,
+    ).toEqual({ kind: 'conditional', condition: '${true}' });
+  });
+
+  it('ignores bindings on a message handler and falls back to error for an unknown trigger with a particle/time payload', async () => {
+    const ignoredBindings = await ir(
+      `process p { on message "X" (code c) { } }`,
+    );
+    expect(
+      only(
+        subProcess(ignoredBindings, makeEventSubProcessId('p_0')),
+        'startEvent',
+      ).eventDefinition,
+    ).toEqual({ kind: 'message', messageName: 'X' });
+
+    const unknownWithParticle = await ir(
+      `process p { on banana every "x" { } }`,
+    );
+    expect(
+      only(
+        subProcess(unknownWithParticle, makeEventSubProcessId('p_0')),
+        'startEvent',
+      ).eventDefinition,
+    ).toEqual({ kind: 'error' });
+  });
+
+  it('keeps throw/emit total for trigger words outside their new special case', async () => {
+    const emitMessage = await ir(`process p { emit message "X" }`);
+    expect(
+      (byId(emitMessage, makeThrowEventId('p_0')) as { eventDefinition?: unknown })
+        .eventDefinition,
+    ).toEqual({ kind: 'escalation', escalationCode: 'X' });
+
+    const throwTimer = await ir(`process p { throw timer "X" }`);
+    expect(
+      (byId(throwTimer, makeThrowEventId('p_0')) as { eventDefinition?: unknown })
+        .eventDefinition,
+    ).toEqual({ kind: 'error', errorCode: 'X' });
+  });
+});
+
+// ── 23. New-trigger composition (nested coordinates) ─────────────────────────
+
+describe('astToIr — new-trigger composition (nested coordinates)', () => {
+  it('a timer handler inside a subprocess roots its coordinate at the subprocess body', async () => {
+    const result = await ir(
+      `process p {
+        subprocess S {
+          service A { class = "x.A" }
+          on timer after "PT1H" { service R { class = "x.R" } }
+        }
+      }`,
+    );
+    const sub = subProcess(result, 'S');
+    const handler = subProcess(sub, makeEventSubProcessId('p_0_1'));
+    const start = only(handler, 'startEvent');
+    expect(start.eventDefinition).toEqual({
+      kind: 'timer',
+      timerKind: 'duration',
+      expression: 'PT1H',
+    });
+  });
+
+  it('an on-condition handler containing an if nests gateway coordinates under its own handler id', async () => {
+    const result = await ir(
+      'process p { on condition (amount > 100) { service X { class = "x.X" } if (c) { service Y { class = "x.Y" } } } }',
+    );
+    const handler = subProcess(result, makeEventSubProcessId('p_0'));
+    const gatewayIds = handler.flowElements
+      .filter((fe) => fe.kind === 'exclusiveGateway')
+      .map((fe) => fe.id);
+    expect(gatewayIds).toContain(makeGatewaySplitId('p_0_1'));
+    expect(gatewayIds).toContain(makeGatewayJoinId('p_0_1'));
+    const start = only(handler, 'startEvent');
+    expect(start.eventDefinition).toEqual({
+      kind: 'conditional',
+      condition: '${amount > 100}',
+    });
+  });
+});
+
 // ── Local helpers ────────────────────────────────────────────────────────────
 
 /** Find a flow element by id (asserting exactly one such element). */

@@ -138,6 +138,31 @@ export interface FormField {
  *
  * Escalations carry a code but no message text (BPMN/Operaton has no escalation
  * message), so the escalation variant has only `codeVariable`.
+ *
+ * The remaining four variants are trigger-only (they have no throw-side bindings):
+ *   - **message** — the process's inbox. A handler runs when the engine delivers
+ *     a message with this name; delivery is the engine's correlation API, so
+ *     nothing about it is modeled here beyond the name.
+ *   - **signal** — a broadcast channel. `emit signal` notifies every listener
+ *     everywhere and keeps going; `throw signal` broadcasts and ends this path
+ *     (unlike an escalation, which only travels up its own scope).
+ *   - **timer** — a deadline relative to scope activation. `after` is a duration
+ *     ("if this scope is still running after an hour"), `at` a point in time,
+ *     `every` a repeating schedule; the clock starts when the surrounding scope
+ *     starts.
+ *   - **conditional** — a data watchdog. The condition is checked when the scope
+ *     starts and re-checked whenever a variable changes; the parens read exactly
+ *     like `if`.
+ *
+ * `messageName` and `signalName` are the identity of the message/signal: the
+ * engine subscribes by name, so a nameless handler is meaningless, and the
+ * document-level `bpmn:Message`/`bpmn:Signal` root elements are derived by
+ * deduplicating on this name (every use of one name — a handler, an `emit`, a
+ * `throw` — shares one root). `timerKind` maps 1:1 to the BPMN
+ * `timeDuration`/`timeDate`/`timeCycle` forms and `expression` is the verbatim
+ * time text (EL such as `${dueDate}` passes through unaltered for the engine to
+ * evaluate). `condition` is the raw `${…}` body, exactly the
+ * {@link SequenceFlow.conditionExpression} convention.
  */
 export type EventDefinition =
   | {
@@ -155,6 +180,28 @@ export type EventDefinition =
       escalationCode?: string;
       /** `operaton:escalationCodeVariable` — process variable the code fills. */
       codeVariable?: string;
+    }
+  | {
+      kind: 'message';
+      /** The message name — the correlation identity and root-element dedupe key. */
+      messageName: string;
+    }
+  | {
+      kind: 'signal';
+      /** The signal name — the broadcast identity and root-element dedupe key. */
+      signalName: string;
+    }
+  | {
+      kind: 'timer';
+      /** Maps 1:1 to the `timeDuration`/`timeDate`/`timeCycle` BPMN forms. */
+      timerKind: 'duration' | 'date' | 'cycle';
+      /** The verbatim time text (ISO-8601 or EL such as `${dueDate}`). */
+      expression: string;
+    }
+  | {
+      kind: 'conditional';
+      /** The raw `${…}` condition body (the `conditionExpression` convention). */
+      condition: string;
     };
 
 /**

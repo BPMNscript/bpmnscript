@@ -216,7 +216,7 @@ describe('event-layer structure snippets', () => {
     );
     expect(item?.insertTextFormat).toBe(InsertTextFormat.Snippet);
     const text = inserted(item!)!;
-    expect(text).toContain('${1|error,escalation|}');
+    expect(text).toContain('${1|error,escalation,message,signal|}');
     expect(text).toContain('{');
     expect(text).toContain('}');
   });
@@ -226,35 +226,65 @@ describe('event-layer structure snippets', () => {
       (i) => i.label === 'throw',
     );
     expect(item?.insertTextFormat).toBe(InsertTextFormat.Snippet);
-    expect(inserted(item!)).toContain('${1|error,escalation|}');
+    expect(inserted(item!)).toContain('${1|error,escalation,signal|}');
   });
 
-  test('`emit` scaffolds only the escalation code (its only continuing kind)', async () => {
+  test('`emit` scaffolds an escalation/signal choice (its two continuing kinds)', async () => {
     const item = (await completionItems('process p {\n  \n}', 1, 2)).find(
       (i) => i.label === 'emit',
     );
     expect(item?.insertTextFormat).toBe(InsertTextFormat.Snippet);
-    expect(inserted(item!)).toContain('escalation');
+    expect(inserted(item!)).toContain('${1|escalation,signal|}');
   });
 });
 
 describe('event-layer ID-position completion (soft trigger/field words)', () => {
-  test('`error` and `escalation` are offered at the `on` trigger position', async () => {
+  test('all six trigger words are offered at the `on` trigger position', async () => {
     const line = '  on ';
     const labels = await labelsAt(`process p {\n${line}\n}`, 1, line.length);
-    expect(labels).toEqual(expect.arrayContaining(['error', 'escalation']));
+    expect(labels).toEqual(
+      expect.arrayContaining([
+        'error',
+        'escalation',
+        'message',
+        'signal',
+        'timer',
+        'condition',
+      ]),
+    );
   });
 
-  test('`error` and `escalation` are offered at the `throw` trigger position', async () => {
+  test('accepting the `timer` item at the `on` trigger position inserts the particle scaffold', async () => {
+    const line = '  on ';
+    const item = (
+      await completionItems(`process p {\n${line}\n}`, 1, line.length)
+    ).find((i) => i.label === 'timer');
+    expect(item?.insertTextFormat).toBe(InsertTextFormat.Snippet);
+    expect(inserted(item!)).toContain('after "${1:PT1H}"');
+  });
+
+  test('accepting the `condition` item at the `on` trigger position inserts the parenthesized scaffold', async () => {
+    const line = '  on ';
+    const item = (
+      await completionItems(`process p {\n${line}\n}`, 1, line.length)
+    ).find((i) => i.label === 'condition');
+    expect(item?.insertTextFormat).toBe(InsertTextFormat.Snippet);
+    expect(inserted(item!)).toContain('condition ($1)');
+  });
+
+  test('`error`, `escalation`, and `signal` are offered at the `throw` trigger position', async () => {
     const line = '  throw ';
     const labels = await labelsAt(`process p {\n${line}\n}`, 1, line.length);
-    expect(labels).toEqual(expect.arrayContaining(['error', 'escalation']));
+    expect(labels).toEqual(
+      expect.arrayContaining(['error', 'escalation', 'signal']),
+    );
   });
 
-  test('only `escalation` is offered at the `emit` trigger position', async () => {
+  test('`escalation` and `signal` (not `error`) are offered at the `emit` trigger position', async () => {
     const line = '  emit ';
     const labels = await labelsAt(`process p {\n${line}\n}`, 1, line.length);
     expect(labels).toContain('escalation');
+    expect(labels).toContain('signal');
     expect(labels).not.toContain('error');
   });
 
@@ -262,6 +292,12 @@ describe('event-layer ID-position completion (soft trigger/field words)', () => 
     const line = '  on error "X" (';
     const labels = await labelsAt(`process p {\n${line}\n}`, 1, line.length);
     expect(labels).toEqual(expect.arrayContaining(['code', 'message']));
+  });
+
+  test('`after`, `at`, and `every` are offered at the timer particle position', async () => {
+    const line = '  on timer ';
+    const labels = await labelsAt(`process p {\n${line}\n}`, 1, line.length);
+    expect(labels).toEqual(expect.arrayContaining(['after', 'at', 'every']));
   });
 });
 

@@ -151,9 +151,15 @@ export async function irToXml(
     targetNamespace: TARGET_NAMESPACE,
     exporter: 'BPMNscript',
     exporterVersion: options?.exporterVersion ?? '0.0.0',
-    // The process first (today's output shape), then the synthesized error and
-    // escalation root elements.
-    rootElements: [processElement, ...roots.errorElements, ...roots.escalationElements],
+    // The process first (today's output shape), then the synthesized root
+    // elements grouped by kind: errors, escalations, messages, signals.
+    rootElements: [
+      processElement,
+      ...roots.errorElements,
+      ...roots.escalationElements,
+      ...roots.messageElements,
+      ...roots.signalElements,
+    ],
     ...(diagrams.length > 0 ? { diagrams } : {}),
   });
 
@@ -171,39 +177,47 @@ export async function irToXml(
 }
 
 /**
- * The synthesized error/escalation root elements, plus code→element lookups for
- * wiring each catch/throw's `errorRef`/`escalationRef` to the shared root.
+ * The synthesized document-level root elements, plus lookups for wiring each
+ * event definition's reference to the shared root.
  *
- * All handlers and throws of one code share a single root element (BPMN puts
- * error/escalation definitions at `bpmn:Definitions` level, deduped by code), so
- * a code maps to exactly one element here.
+ * Error and escalation roots are keyed by code; message and signal roots by
+ * name. All uses of one code (or one name) share a single root element — BPMN
+ * puts error/escalation/message/signal definitions at `bpmn:Definitions` level,
+ * deduped by that identity — so a code or name maps to exactly one element here.
  */
 interface RootElementIndex {
   errorElements: ModdleElement[];
   escalationElements: ModdleElement[];
+  messageElements: ModdleElement[];
+  signalElements: ModdleElement[];
   errorByCode: Map<string, ModdleElement>;
   escalationByCode: Map<string, ModdleElement>;
+  messageByName: Map<string, ModdleElement>;
+  signalByName: Map<string, ModdleElement>;
 }
 
 /**
- * Build the document-level `bpmn:Error`/`bpmn:Escalation` root elements from
- * usage. The root elements are not modeled in the IR: event definitions carry
- * their codes inline, and the roots are derived here from where those codes
- * appear (the `operaton:historyTimeToLive` precedent — vendor/serialization
- * concerns attach at the transform).
+ * Build the document-level `bpmn:Error`/`bpmn:Escalation`/`bpmn:Message`/
+ * `bpmn:Signal` root elements from usage. The root elements are not modeled in
+ * the IR: event definitions carry their codes/names inline, and the roots are
+ * derived here from where those identities appear (the
+ * `operaton:historyTimeToLive` precedent — vendor/serialization concerns attach
+ * at the transform).
  *
- * Collection order: a depth-first walk over every container collects the
- * distinct error and escalation codes in first-appearance order, then any
- * `errorMessages` code not yet seen (a declared code emits its root even when
- * otherwise unused — the declaration is explicit authorial intent). Catch-all
- * definitions (no code) contribute no root.
+ * Collection order: a single depth-first walk over every container collects the
+ * distinct error/escalation codes and message/signal names in first-appearance
+ * order, then any `errorMessages` code not yet seen (a declared code emits its
+ * root even when otherwise unused — the declaration is explicit authorial
+ * intent). Catch-all error/escalation definitions (no code) contribute no root;
+ * message/signal names are always present (the surface requires them).
  *
- * Ids: `Error_<code>` / `Escalation_<code>` with any character outside
- * `[A-Za-z0-9_.-]` replaced by `_`. Collisions — two codes sanitizing
- * identically, or a sanitized id clashing with any element id already in the
- * document — get `_2`, `_3`, … in synthesis order. The root `name` and
- * `errorCode`/`escalationCode` carry the code verbatim; a declared message is
- * stamped as `operaton:errorMessage` (errors only).
+ * Ids: `Error_<code>` / `Escalation_<code>` / `Message_<name>` / `Signal_<name>`
+ * with any character outside `[A-Za-z0-9_.-]` replaced by `_`. Collisions — two
+ * identities sanitizing identically, or a sanitized id clashing with any element
+ * id already in the document — get `_2`, `_3`, … in synthesis order (errors,
+ * then escalations, then messages, then signals). The root `name` carries the
+ * code/name verbatim; `errorCode`/`escalationCode` carry the code; a declared
+ * error message is stamped as `operaton:errorMessage`.
  */
 function synthesizeRootElements(
   moddle: BpmnModdleInstance,
@@ -211,13 +225,36 @@ function synthesizeRootElements(
 ): RootElementIndex {
   const errorCodes: string[] = [];
   const escalationCodes: string[] = [];
+  const messageNames: string[] = [];
+  const signalNames: string[] = [];
   for (const def of collectEventDefinitions(process)) {
-    if (def.kind === 'error' && def.errorCode !== undefined) {
-      if (!errorCodes.includes(def.errorCode)) errorCodes.push(def.errorCode);
-    } else if (def.kind === 'escalation' && def.escalationCode !== undefined) {
-      if (!escalationCodes.includes(def.escalationCode)) {
-        escalationCodes.push(def.escalationCode);
-      }
+    switch (def.kind) {
+      case 'error':
+        if (def.errorCode !== undefined && !errorCodes.includes(def.errorCode)) {
+          errorCodes.push(def.errorCode);
+        }
+        break;
+      case 'escalation':
+        if (
+          def.escalationCode !== undefined &&
+          !escalationCodes.includes(def.escalationCode)
+        ) {
+          escalationCodes.push(def.escalationCode);
+        }
+        break;
+      case 'message':
+        if (!messageNames.includes(def.messageName)) {
+          messageNames.push(def.messageName);
+        }
+        break;
+      case 'signal':
+        if (!signalNames.includes(def.signalName)) {
+          signalNames.push(def.signalName);
+        }
+        break;
+      default:
+        // Timer and conditional carry their payloads inline; no root element.
+        break;
     }
   }
   const messageByCode = new Map(
@@ -259,7 +296,47 @@ function synthesizeRootElements(
     escalationByCode.set(code, element);
   }
 
-  return { errorElements, escalationElements, errorByCode, escalationByCode };
+  const { elements: messageElements, byName: messageByName } =
+    synthesizeNamedRoots(moddle, 'bpmn:Message', 'Message_', messageNames, taken);
+  const { elements: signalElements, byName: signalByName } =
+    synthesizeNamedRoots(moddle, 'bpmn:Signal', 'Signal_', signalNames, taken);
+
+  return {
+    errorElements,
+    escalationElements,
+    messageElements,
+    signalElements,
+    errorByCode,
+    escalationByCode,
+    messageByName,
+    signalByName,
+  };
+}
+
+/**
+ * Build the name-keyed `bpmn:Message` / `bpmn:Signal` roots for a set of
+ * distinct names in first-appearance order. Each root carries a sanitized,
+ * collision-suffixed id (`<prefix><sanitized name>`) and the name verbatim; the
+ * name is the engine-side identity, so every use of one name shares this one
+ * root. `taken` is threaded through so ids stay document-wide unique.
+ */
+function synthesizeNamedRoots(
+  moddle: BpmnModdleInstance,
+  type: 'bpmn:Message' | 'bpmn:Signal',
+  prefix: string,
+  names: string[],
+  taken: Set<string>,
+): { elements: ModdleElement[]; byName: Map<string, ModdleElement> } {
+  const elements: ModdleElement[] = [];
+  const byName = new Map<string, ModdleElement>();
+  for (const name of names) {
+    const id = resolveCollision(sanitizeRootId(prefix, name), taken);
+    taken.add(id);
+    const element = moddle.create(type, { id, name });
+    elements.push(element);
+    byName.set(name, element);
+  }
+  return { elements, byName };
 }
 
 /** Prefix + code with non-id characters replaced by `_` (an XML-safe id). */
@@ -308,40 +385,94 @@ function collectElementIds(container: FlowContainer, into: Set<string>): void {
 }
 
 /**
- * Build a `bpmn:ErrorEventDefinition` / `bpmn:EscalationEventDefinition` for one
- * IR {@link EventDefinition}. The `errorRef`/`escalationRef` is wired to the
- * shared root element (omitted for a catch-all — a ref-less definition catches
- * any error/escalation). Catch bindings become the Operaton
- * `errorCodeVariable`/`errorMessageVariable`/`escalationCodeVariable`
- * attributes when set (the moddle fork resolves these onto the definition).
+ * Build the concrete `bpmn:*EventDefinition` for one IR {@link EventDefinition}:
+ *   - `error`/`escalation` — the `errorRef`/`escalationRef` is wired to the
+ *     shared root (omitted for a catch-all, so a ref-less definition catches
+ *     any code); catch bindings become the Operaton
+ *     `errorCodeVariable`/`errorMessageVariable`/`escalationCodeVariable`
+ *     attributes when set (the moddle fork resolves these onto the definition).
+ *   - `message`/`signal` — the `messageRef`/`signalRef` is wired to the shared
+ *     name-keyed root (all uses of one name reference the same root).
+ *   - `timer` — a `bpmn:TimerEventDefinition` with exactly one child
+ *     (`timeDuration`/`timeDate`/`timeCycle` per `timerKind`), a
+ *     `bpmn:FormalExpression` whose `body` is the verbatim time text.
+ *   - `conditional` — a `bpmn:ConditionalEventDefinition` whose `condition` is a
+ *     `bpmn:FormalExpression` carrying the raw `${…}` body (the
+ *     `conditionExpression` precedent).
  */
 function buildEventDefinition(
   moddle: BpmnModdleInstance,
   def: EventDefinition,
   roots: RootElementIndex,
 ): ModdleElement {
-  if (def.kind === 'error') {
-    const attrs: Record<string, unknown> = {};
-    if (def.errorCode !== undefined) {
-      attrs.errorRef = roots.errorByCode.get(def.errorCode);
+  switch (def.kind) {
+    case 'error': {
+      const attrs: Record<string, unknown> = {};
+      if (def.errorCode !== undefined) {
+        attrs.errorRef = roots.errorByCode.get(def.errorCode);
+      }
+      if (def.codeVariable !== undefined) {
+        attrs['operaton:errorCodeVariable'] = def.codeVariable;
+      }
+      if (def.messageVariable !== undefined) {
+        attrs['operaton:errorMessageVariable'] = def.messageVariable;
+      }
+      return moddle.create('bpmn:ErrorEventDefinition', attrs);
     }
-    if (def.codeVariable !== undefined) {
-      attrs['operaton:errorCodeVariable'] = def.codeVariable;
+    case 'escalation': {
+      const attrs: Record<string, unknown> = {};
+      if (def.escalationCode !== undefined) {
+        attrs.escalationRef = roots.escalationByCode.get(def.escalationCode);
+      }
+      if (def.codeVariable !== undefined) {
+        attrs['operaton:escalationCodeVariable'] = def.codeVariable;
+      }
+      return moddle.create('bpmn:EscalationEventDefinition', attrs);
     }
-    if (def.messageVariable !== undefined) {
-      attrs['operaton:errorMessageVariable'] = def.messageVariable;
+    case 'message':
+      return moddle.create('bpmn:MessageEventDefinition', {
+        messageRef: roots.messageByName.get(def.messageName),
+      });
+    case 'signal':
+      return moddle.create('bpmn:SignalEventDefinition', {
+        signalRef: roots.signalByName.get(def.signalName),
+      });
+    case 'timer': {
+      const expression = moddle.create('bpmn:FormalExpression', {
+        body: def.expression,
+      });
+      return moddle.create('bpmn:TimerEventDefinition', {
+        [TIMER_KIND_TO_CHILD[def.timerKind]]: expression,
+      });
     }
-    return moddle.create('bpmn:ErrorEventDefinition', attrs);
+    case 'conditional':
+      return moddle.create('bpmn:ConditionalEventDefinition', {
+        condition: moddle.create('bpmn:FormalExpression', {
+          body: def.condition,
+        }),
+      });
+    default: {
+      const exhaustive: never = def;
+      throw new Error(
+        `Unhandled EventDefinition kind: ${JSON.stringify(exhaustive)}`,
+      );
+    }
   }
-  const attrs: Record<string, unknown> = {};
-  if (def.escalationCode !== undefined) {
-    attrs.escalationRef = roots.escalationByCode.get(def.escalationCode);
-  }
-  if (def.codeVariable !== undefined) {
-    attrs['operaton:escalationCodeVariable'] = def.codeVariable;
-  }
-  return moddle.create('bpmn:EscalationEventDefinition', attrs);
 }
+
+/**
+ * The `bpmn:TimerEventDefinition` child element that carries each timer kind:
+ * a duration, a fixed date, or a repeating cycle, mapped 1:1 to the three BPMN
+ * time forms.
+ */
+const TIMER_KIND_TO_CHILD: Record<
+  Extract<EventDefinition, { kind: 'timer' }>['timerKind'],
+  'timeDuration' | 'timeDate' | 'timeCycle'
+> = {
+  duration: 'timeDuration',
+  date: 'timeDate',
+  cycle: 'timeCycle',
+};
 
 /**
  * Author a minimal diagram-interchange hint so `bpmn-auto-layout` expands

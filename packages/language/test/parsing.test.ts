@@ -523,6 +523,36 @@ describe('Parsing — on handlers', () => {
     expect(handler.body.statements).toHaveLength(1);
     expect(handler.body.statements[0]!.$type).toBe('ServiceTask');
     expect(handler.alongside).toBeFalsy();
+    // Regression pin for the paren alternation: two adjacent
+    // identifiers commit to a binding list, never a condition.
+    expect(handler.condition).toBeUndefined();
+  });
+
+  test('message and signal handlers take a required name and no particle/condition/bindings', async () => {
+    const messageDoc = await parse(
+      `process p { on message "PaymentReceived" { user Review { assignee = "demo" } } }`,
+    );
+    expect(formatParseFailure(messageDoc)).toBeUndefined();
+    const messageHandler = messageDoc.parseResult.value.processes[0]!
+      .body[0] as OnHandler;
+    expect(messageHandler.trigger).toBe('message');
+    expect(messageHandler.code).toBe('PaymentReceived');
+    expect(messageHandler.particle).toBeUndefined();
+    expect(messageHandler.time).toBeUndefined();
+    expect(messageHandler.condition).toBeUndefined();
+    expect(messageHandler.bindings).toHaveLength(0);
+    expect(messageHandler.body.statements).toHaveLength(1);
+    expect(messageHandler.body.statements[0]!.$type).toBe('UserTask');
+
+    const signalDoc = await parse(
+      `process p { on signal "Cancelled" alongside { } }`,
+    );
+    expect(formatParseFailure(signalDoc)).toBeUndefined();
+    const signalHandler = signalDoc.parseResult.value.processes[0]!
+      .body[0] as OnHandler;
+    expect(signalHandler.trigger).toBe('signal');
+    expect(signalHandler.code).toBe('Cancelled');
+    expect(signalHandler.alongside).toBe(true);
   });
 
   test('alongside marks a non-interrupting handler; a catch-all handler omits code', async () => {
@@ -547,6 +577,99 @@ describe('Parsing — on handlers', () => {
       .processes[0]!.body[0] as OnHandler;
     expect(escalationHandler.trigger).toBe('escalation');
     expect(escalationHandler.code).toBeUndefined();
+  });
+});
+
+describe('Parsing — on timer handlers', () => {
+  test('the three particles each carry their own time string', async () => {
+    const afterDoc = await parse(`process p { on timer after "PT1H" { } }`);
+    expect(formatParseFailure(afterDoc)).toBeUndefined();
+    const afterHandler = afterDoc.parseResult.value.processes[0]!
+      .body[0] as OnHandler;
+    expect(afterHandler.trigger).toBe('timer');
+    expect(afterHandler.particle).toBe('after');
+    expect(afterHandler.time).toBe('PT1H');
+    expect(afterHandler.code).toBeUndefined();
+
+    const atDoc = await parse(
+      `process p { on timer at "2026-08-01T09:00:00" alongside { } }`,
+    );
+    expect(formatParseFailure(atDoc)).toBeUndefined();
+    const atHandler = atDoc.parseResult.value.processes[0]!
+      .body[0] as OnHandler;
+    expect(atHandler.particle).toBe('at');
+    expect(atHandler.time).toBe('2026-08-01T09:00:00');
+    expect(atHandler.alongside).toBe(true);
+
+    const everyDoc = await parse(
+      `process p { on timer every "R/PT10M" alongside { } }`,
+    );
+    expect(formatParseFailure(everyDoc)).toBeUndefined();
+    const everyHandler = everyDoc.parseResult.value.processes[0]!
+      .body[0] as OnHandler;
+    expect(everyHandler.particle).toBe('every');
+    expect(everyHandler.time).toBe('R/PT10M');
+    expect(everyHandler.alongside).toBe(true);
+  });
+
+  test('an EL time template normalizes to the same unquoted shape a plain string would carry', async () => {
+    const document = await parse(
+      `process p { on timer after "\${dueDate}" { } }`,
+    );
+    expect(formatParseFailure(document)).toBeUndefined();
+    const handler = document.parseResult.value.processes[0]!
+      .body[0] as OnHandler;
+    expect(handler.particle).toBe('after');
+    // The RAW_TEMPLATE alternative arrives through the value converter
+    // unquoted, exactly like the STRING alternative's content — not
+    // `"${dueDate}"` with the author's quotes still attached.
+    expect(handler.time).toBe('${dueDate}');
+  });
+});
+
+describe('Parsing — on condition handlers', () => {
+  test('a relational condition parses to a Relational Expr with no bindings', async () => {
+    const document = await parse(
+      `process p { on condition (amount > 100) { } }`,
+    );
+    expect(formatParseFailure(document)).toBeUndefined();
+    const handler = document.parseResult.value.processes[0]!
+      .body[0] as OnHandler;
+    expect(handler.trigger).toBe('condition');
+    expect(handler.condition?.$type).toBe('Relational');
+    expect((handler.condition as Relational).op).toBe('>');
+    expect(handler.bindings).toHaveLength(0);
+  });
+
+  test('a lone identifier in the parens is a VarRef condition, not a binding attempt', async () => {
+    const document = await parse(`process p { on condition (approved) { } }`);
+    expect(formatParseFailure(document)).toBeUndefined();
+    const handler = document.parseResult.value.processes[0]!
+      .body[0] as OnHandler;
+    expect(handler.condition?.$type).toBe('VarRef');
+    expect((handler.condition as VarRef).name).toBe('approved');
+    expect(handler.bindings).toHaveLength(0);
+  });
+
+  test('a quoted raw template in the parens is a RawExpr condition', async () => {
+    const document = await parse(
+      `process p { on condition ("\${bean.check()}") { } }`,
+    );
+    expect(formatParseFailure(document)).toBeUndefined();
+    const handler = document.parseResult.value.processes[0]!
+      .body[0] as OnHandler;
+    expect(handler.condition?.$type).toBe('RawExpr');
+  });
+
+  test('alongside is legal on a condition handler', async () => {
+    const document = await parse(
+      `process p { on condition (amount > limit) alongside { } }`,
+    );
+    expect(formatParseFailure(document)).toBeUndefined();
+    const handler = document.parseResult.value.processes[0]!
+      .body[0] as OnHandler;
+    expect(handler.alongside).toBe(true);
+    expect(handler.condition?.$type).toBe('Relational');
   });
 });
 
@@ -576,6 +699,40 @@ describe('Parsing — throw / emit', () => {
       .body[0] as ThrowStatement;
     expect(namedSt.name).toBe('Failed');
     expect(namedSt.code).toBe('C');
+  });
+
+  test('throw signal and emit signal parse under the existing rules — no grammar change needed', async () => {
+    const throwBare = await parse(`process p { throw signal "S" }`);
+    expect(formatParseFailure(throwBare)).toBeUndefined();
+    const throwBareSt = throwBare.parseResult.value.processes[0]!
+      .body[0] as ThrowStatement;
+    expect(throwBareSt.trigger).toBe('signal');
+    expect(throwBareSt.name).toBeUndefined();
+    expect(throwBareSt.code).toBe('S');
+
+    const throwNamed = await parse(`process p { throw signal Sent "S" }`);
+    expect(formatParseFailure(throwNamed)).toBeUndefined();
+    const throwNamedSt = throwNamed.parseResult.value.processes[0]!
+      .body[0] as ThrowStatement;
+    expect(throwNamedSt.trigger).toBe('signal');
+    expect(throwNamedSt.name).toBe('Sent');
+    expect(throwNamedSt.code).toBe('S');
+
+    const emitBare = await parse(`process p { emit signal "S" }`);
+    expect(formatParseFailure(emitBare)).toBeUndefined();
+    const emitBareSt = emitBare.parseResult.value.processes[0]!
+      .body[0] as EmitStatement;
+    expect(emitBareSt.trigger).toBe('signal');
+    expect(emitBareSt.name).toBeUndefined();
+    expect(emitBareSt.code).toBe('S');
+
+    const emitNamed = await parse(`process p { emit signal Ping "S" }`);
+    expect(formatParseFailure(emitNamed)).toBeUndefined();
+    const emitNamedSt = emitNamed.parseResult.value.processes[0]!
+      .body[0] as EmitStatement;
+    expect(emitNamedSt.trigger).toBe('signal');
+    expect(emitNamedSt.name).toBe('Ping');
+    expect(emitNamedSt.code).toBe('S');
   });
 
   test('emit escalation parses with and without an explicit id — one-token lookahead disambiguates', async () => {
@@ -702,6 +859,70 @@ describe('Parsing — soft event words stay plain identifiers', () => {
       `process p { on error "X" (coed c) { } }`,
     );
     expect(formatParseFailure(unknownField)).toBeUndefined();
+  });
+
+  test('the new trigger and particle words stay usable as ordinary var/task names and identifiers', async () => {
+    const varAt = await parse(`process p { var at: string start S end E }`);
+    expect(formatParseFailure(varAt)).toBeUndefined();
+
+    const varTimer = await parse(
+      `process p { var timer: number start S end E }`,
+    );
+    expect(formatParseFailure(varTimer)).toBeUndefined();
+
+    const cond = await parseCondition(`after > 2`);
+    expect(cond.$type).toBe('Relational');
+
+    const taskNamedEvery = await parse(`process p { user every }`);
+    expect(formatParseFailure(taskNamedEvery)).toBeUndefined();
+    expect(
+      (taskNamedEvery.parseResult.value.processes[0]!.body[0] as UserTask)
+        .name,
+    ).toBe('every');
+
+    const varCondition = await parse(
+      `process p { var condition: boolean start S end E }`,
+    );
+    expect(formatParseFailure(varCondition)).toBeUndefined();
+  });
+
+  test('nonsense trigger/payload pairings parse — word and payload legality are the validator’s job', async () => {
+    const errorWithParticle = await parse(
+      `process p { on error after "x" { } }`,
+    );
+    expect(formatParseFailure(errorWithParticle)).toBeUndefined();
+    const errorWithParticleHandler = errorWithParticle.parseResult.value
+      .processes[0]!.body[0] as OnHandler;
+    expect(errorWithParticleHandler.particle).toBe('after');
+    expect(errorWithParticleHandler.time).toBe('x');
+
+    const timerWithBareCode = await parse(
+      `process p { on timer "PT1H" { } }`,
+    );
+    expect(formatParseFailure(timerWithBareCode)).toBeUndefined();
+    const timerWithBareCodeHandler = timerWithBareCode.parseResult.value
+      .processes[0]!.body[0] as OnHandler;
+    expect(timerWithBareCodeHandler.code).toBe('PT1H');
+    expect(timerWithBareCodeHandler.particle).toBeUndefined();
+
+    const messageWithBindings = await parse(
+      `process p { on message (code c) { } }`,
+    );
+    expect(formatParseFailure(messageWithBindings)).toBeUndefined();
+    const messageWithBindingsHandler = messageWithBindings.parseResult.value
+      .processes[0]!.body[0] as OnHandler;
+    expect(messageWithBindingsHandler.bindings).toHaveLength(1);
+    expect(messageWithBindingsHandler.condition).toBeUndefined();
+
+    const bananaWithEvery = await parse(
+      `process p { on banana every "x" { } }`,
+    );
+    expect(formatParseFailure(bananaWithEvery)).toBeUndefined();
+    const bananaWithEveryHandler = bananaWithEvery.parseResult.value
+      .processes[0]!.body[0] as OnHandler;
+    expect(bananaWithEveryHandler.trigger).toBe('banana');
+    expect(bananaWithEveryHandler.particle).toBe('every');
+    expect(bananaWithEveryHandler.time).toBe('x');
   });
 
   test('the four newly reserved keywords are rejected as bare identifiers in expression position', async () => {

@@ -35,13 +35,15 @@
 // expression position and parse to `VarRef` as expected (e.g. `status`,
 // `order.type`, `items[0]`).
 //
-// `error`, `escalation`, `code`, and `message` are deliberately NOT on this
-// list: they are the event vocabulary (the trigger kind an `on`/`throw`/
-// `emit` names, and the catch-binding field names), but they lex as plain
-// `ID` and are validated in position rather than reserved as keywords — so
-// `var message: string` and `if (code == "x")` stay legal everywhere else
-// (see `OnHandler`/`EventBinding`/`ThrowStatement`/`EmitStatement`/
-// `ErrorDecl` below).
+// `error`, `escalation`, `message`, `signal`, `timer`, and `condition` (the
+// trigger kinds an `on`/`throw`/`emit` names), `code` and the other catch-
+// binding field names, and the timer particles `after`/`at`/`every` are
+// deliberately NOT on this list: they lex as plain `ID` and are validated in
+// position rather than reserved as keywords — so `var message: string`,
+// `if (code == "x")`, `var timer: number`, `if (after > 2)`, and a step
+// named `every` all stay legal everywhere else (see
+// `OnHandler`/`EventBinding`/`ThrowStatement`/`EmitStatement`/`ErrorDecl`
+// below).
 
 grammar BpmnScript
 
@@ -248,27 +250,60 @@ VariableMapping:
 // DSL knows about. An `error … message …` declaration exists only for a code
 // whose thrown message text needs recording once, at the process header.
 //
-// `trigger` (`error`/`escalation`), each binding's `field` (`code`/
-// `message`), and the declaration's `kind`/`field` all lex as plain `ID`
-// rather than reserved keywords: they are among the most common variable
-// names a Java-background author reaches for, so reserving them would make
-// `var message: string` a parse error. Word legality at each of these
-// positions — is `trigger` one of the known kinds? is `field` one of the
-// known bindings? — is validated in position, exactly like every other
-// semantic rule in this grammar that the parser itself stays silent about.
+// `trigger` (`error`/`escalation`/`message`/`signal`/`timer`/`condition`),
+// each binding's `field` (`code`/`message`), the timer `particle`
+// (`after`/`at`/`every`), and the declaration's `kind`/`field` all lex as
+// plain `ID` rather than reserved keywords: they are among the most common
+// variable names a Java-background author reaches for, so reserving them
+// would make `var message: string` a parse error. Word legality at each of
+// these positions — is `trigger` one of the known kinds? is `field` one of
+// the known bindings? is `particle` one of the known timer forms? — is
+// validated in position, exactly like every other semantic rule in this
+// grammar that the parser itself stays silent about.
 
 // A handler body reuses `Block` verbatim, so `start`/`end` and every other
 // statement — including a nested `on` — parse inside it for free. The
-// parenthesized list, when present, is the catch parameter: each entry pairs
-// a binding field with the process variable it fills, e.g. `(code c, message
-// m)` — deliberately written as a declaration (`field variable`), mirroring
-// `catch (ExceptionType name)`, rather than an assignment. An omitted `code`
-// means "catch any" of that trigger kind. `alongside` marks a
-// non-interrupting handler: the guarded scope's main flow keeps running
-// alongside this catch block instead of being interrupted by it.
+// payload after `trigger` and the content of the parenthesized slot are
+// shaped per trigger kind; the grammar accepts any combination (the parser
+// stays silent about which shape actually belongs to which trigger — the
+// validator polices that pairing), but the payload matrix each trigger is
+// meant to carry is:
+//   - `error` / `escalation` — an optional code and optional parenthesized
+//     bindings, e.g. `on error "PAYMENT_FAILED" (code c, message m) { … }`.
+//     Each binding pairs a field with the process variable it fills,
+//     written as a declaration (`field variable`) mirroring
+//     `catch (ExceptionType name)` rather than an assignment. An omitted
+//     code means "catch any" of that trigger kind.
+//   - `message` / `signal` — a required name and no parenthesized slot,
+//     e.g. `on message "Invoice Received" { … }`. `message` reads like the
+//     process's inbox: it runs when something outside the model delivers a
+//     message carrying that name. `signal` is a broadcast channel: every
+//     listener anywhere that names the same signal wakes up — unlike an
+//     escalation, whose reach stops at the boundary of its own scope.
+//   - `timer` — a particle (`after`/`at`/`every`) followed by a time
+//     string in the same slot the code otherwise occupies, e.g.
+//     `on timer after "PT1H" { … }`. `after` reads as "if this scope is
+//     still running after this much time", `at` as "at this point in
+//     time", and `every` as "on this repeating schedule" — the clock
+//     starts when the surrounding scope starts.
+//   - `condition` — no code or particle; instead the parenthesized slot
+//     holds an expression that reads exactly like an `if` condition, e.g.
+//     `on condition (amount > 100) { … }`. It is checked once when the
+//     scope starts and again whenever a variable changes.
+// The parenthesized slot therefore holds EITHER a binding list OR a
+// condition expression, never both, decided purely by the shape of its
+// content: a binding is always `field variable` — two adjacent
+// identifiers — while the expression sub-language never places two
+// identifiers next to each other (every operator level needs an operator
+// token in between, and an accessor starts with `.`/`[`), so the parser
+// tells the two apart from the second token onward without any extra
+// keyword. `alongside` marks a non-interrupting handler: the guarded
+// scope's main flow keeps running alongside this catch block instead of
+// being interrupted by it.
 OnHandler:
-    'on' trigger=ID (code=STRING)?
-    ('(' bindings+=EventBinding (',' bindings+=EventBinding)* ')')?
+    'on' trigger=ID
+    (code=STRING | particle=ID time=(STRING | RAW_TEMPLATE))?
+    ('(' (bindings+=EventBinding (',' bindings+=EventBinding)* | condition=Expr) ')')?
     (alongside?='alongside')? body=Block;
 
 // One catch-parameter binding inside an `on (…)` list — see `OnHandler`.

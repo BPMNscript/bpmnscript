@@ -523,6 +523,56 @@ process p {
     );
   });
 
+  test('a parent-body goto cannot resolve a step inside an `on timer` handler; the boundary message names it by its code-less header', async () => {
+    // `on timer after "PT1H"` carries a particle+time instead of a code, so
+    // `handler.code` is undefined here exactly as it is for a catch-all
+    // handler — the same header-without-code branch applies unchanged.
+    // Filtered by the target name (like the process-scoped suite above) rather
+    // than a raw diagnostic count: a trigger-legality check outside this
+    // linker's remit may also fire on `timer` and must not be conflated with
+    // the boundary pin under test here.
+    const document = await parse(
+      `
+process p {
+  goto Inner
+  on timer after "PT1H" {
+    user Inner
+  }
+}
+`,
+      { validation: true },
+    );
+    expect(document.parseResult.parserErrors).toHaveLength(0);
+    expect(findGoto(document.parseResult.value).target.ref).toBeUndefined();
+
+    const boundaryErrors = errorsOf(document).filter((d) =>
+      d.message.includes("'Inner'"),
+    );
+    expect(boundaryErrors).toHaveLength(1);
+    expect(boundaryErrors[0]!.message).toContain(`an 'on timer' handler`);
+    expect(boundaryErrors[0]!.message.toLowerCase()).toContain(
+      'cross an event handler boundary',
+    );
+  });
+
+  test('a goto inside an `on message` handler resolves a sibling step of the same body', async () => {
+    const document = await parse(
+      `
+process p {
+  on message "Invoice Received" {
+    user Inner
+    goto Inner
+  }
+}
+`,
+      { validation: true },
+    );
+    expect(document.parseResult.parserErrors).toHaveLength(0);
+    const goto = findGoto(document.parseResult.value);
+    expect(goto.target.ref).toBeDefined();
+    expect((goto.target.ref as UserTask).name).toBe('Inner');
+  });
+
   test('a goto resolves a named throw/emit in the same container', async () => {
     const document = await parse(
       `

@@ -21,17 +21,25 @@
  * return value is `{ ir, warnings }`, and content splits into two buckets:
  *
  * **Refused** (throws before any IR is produced, so there is no partial IR):
- * - a definition on a plain start event (outside an event handler), or a
- *   non-error/escalation definition on an event handler's start, an end
- *   event, or an intermediate throw (timer, message, signal, terminate, …) →
- *   {@link UnsupportedEventDefinitionError};
+ * - an event definition of the wrong kind for its position: any definition
+ *   on a plain start event (outside an event handler); anything other than
+ *   error/escalation/message/signal/timer/conditional on an event handler's
+ *   start; anything other than error/escalation/signal on an end event;
+ *   anything other than escalation/signal on an intermediate throw
+ *   (terminate, compensation, …) → {@link UnsupportedEventDefinitionError};
  * - an event-layer construct shaped in a way this tool's surface cannot
  *   express: an event handler whose start-event or definition count is not
  *   exactly one, or which carries incoming/outgoing sequence flows; a
  *   non-interrupting error handler; a throw/emit whose definition resolves
  *   to no code; an error definition on an emit; a "none" emit; two
  *   `bpmn:Error` roots sharing a code but disagreeing about the declared
- *   message; or a declared message on a code-less root →
+ *   message; a declared message on a code-less root; a message/signal
+ *   definition with no ref, or whose resolved root has no non-empty name; a
+ *   timer definition with zero or more than one time child, or an empty
+ *   time body; a conditional definition with no condition child, an empty
+ *   condition body, or an evaluation-narrowing `operaton:`/`camunda:`
+ *   `variableName`/`variableEvents` attribute (the engine-side narrowing is
+ *   semantics-bearing and this surface has no way to express it) →
  *   {@link UnsupportedEventFeatureError};
  * - loop characteristics on a task, sub-process, or call activity
  *   (multi-instance / standard loop) → {@link UnsupportedLoopCharacteristicsError};
@@ -92,7 +100,14 @@
  * - an unreferenced `bpmn:Error`/`bpmn:Escalation` root that nothing catches
  *   or throws and that carries no declared message (a declared,
  *   message-carrying error root imports into `errorMessages` instead — no
- *   warning, since the declaration is explicit authorial intent).
+ *   warning, since the declaration is explicit authorial intent);
+ * - an unreferenced `bpmn:Message`/`bpmn:Signal` root that no handler,
+ *   throw, or emit uses — one warning per root (unlike the error/escalation
+ *   case, a message/signal root carries no declared data of its own, so
+ *   there is no "declared but unused" exception);
+ * - `itemRef` on a referenced `bpmn:Message` root, or `structureRef` on a
+ *   referenced `bpmn:Signal` root — data-structure metadata Operaton does
+ *   not execute, warned once and named against the root.
  *
  * **Round-trips cleanly** (no warning, no refusal): the supported flow
  * elements and their `name`, `assignee`, `formKey`, service-task binding
@@ -103,9 +118,16 @@
  * `calledElement`, `latest`/`deployment`/`version` binding, business key, and
  * in/out variable mappings, in document order. An event handler
  * (`triggeredByEvent="true"` sub-process) round-trips its caught error/
- * escalation, code, and catch bindings; a typed end event or an escalation
- * intermediate throw round-trips its thrown code; declared error messages
- * round-trip through `errorMessages`.
+ * escalation/message/signal/timer/conditional trigger, code or name, and
+ * catch bindings; a typed end event (error/escalation/signal) or an
+ * intermediate throw (escalation/signal) round-trips its thrown code or
+ * name; declared error messages round-trip through `errorMessages`. Every
+ * use of one message/signal name — a handler, an `emit`, a `throw` — shares
+ * one `bpmn:Message`/`bpmn:Signal` root; two roots that happen to share a
+ * name collapse to that one name on import with no warning, since the name
+ * is the engine-side identity and the roots carry no other data this tool
+ * consumes (unlike a `bpmn:Error` root's declared message, which is
+ * per-root data and refuses on disagreement instead).
  */
 
 import { existsSync, readFileSync } from 'node:fs';
@@ -156,16 +178,21 @@ import { HISTORY_TIME_TO_LIVE } from './ir-to-xml.js';
  *   extension element the IR does not carry (e.g. `operaton:asyncBefore`,
  *   an `operaton:inputOutput` block); also a binding attribute
  *   (`errorCodeVariable`/`errorMessageVariable`/`escalationCodeVariable`)
- *   set on the throw side, where it has no effect.
+ *   set on the throw side, where it has no effect; also `itemRef`/
+ *   `structureRef` on a referenced `bpmn:Message`/`bpmn:Signal` root —
+ *   data-structure metadata Operaton does not execute.
  * - `lane` — a `bpmn:Lane`; the IR has no notion of lanes, so every step is
  *   imported into a single flat process.
  * - `label` — a genuine `name` on an event handler, a typed end event, or an
  *   intermediate throw — none of these surfaces (`on`/`throw`/`emit`) has a
  *   label slot, so the name is dropped rather than silently kept.
- * - `unreferencedRoot` — a `bpmn:Error`/`bpmn:Escalation` root element that
- *   nothing in the process catches or throws and that carries no declared
- *   message (a declared, message-carrying error root imports into
- *   `errorMessages` instead and is never reported here).
+ * - `unreferencedRoot` — a `bpmn:Error`/`bpmn:Escalation`/`bpmn:Message`/
+ *   `bpmn:Signal` root element that nothing in the process catches, throws,
+ *   or emits, and — for a `bpmn:Error` root specifically — that carries no
+ *   declared message (a declared, message-carrying error root imports into
+ *   `errorMessages` instead and is never reported here; a message/signal
+ *   root has no declared-data exception, since it carries no data of its
+ *   own beyond the name).
  */
 export type ImportWarningCategory =
   | 'extensionAttribute'
@@ -355,9 +382,11 @@ interface ModdlePropertyDescriptor {
  *   carries no execution form the IR can represent (a bare task with no
  *   discriminator, or an external type without a topic).
  * @throws {UnsupportedEventDefinitionError} when a plain start event carries
- *   any event definition, or an event handler's start/end event/intermediate
- *   throw carries a definition that is not error/escalation, at any nesting
- *   depth.
+ *   any event definition; an event handler's start carries a definition
+ *   that is not error/escalation/message/signal/timer/conditional; an end
+ *   event carries a definition that is not error/escalation/signal; or an
+ *   intermediate throw carries a definition that is not escalation/signal —
+ *   at any nesting depth.
  * @throws {UnsupportedEventFeatureError} when an event-layer construct is
  *   shaped in a way this tool's surface cannot express (see the module
  *   docstring's "Refused" list for the complete taxonomy).
@@ -427,16 +456,30 @@ export async function xmlToIr(
   // declaration, then fold them into the process before checking for
   // unreferenced roots (a declared, message-carrying root is never
   // "unreferenced" — the declaration itself is authorial intent).
+  // `bpmn:Message`/`bpmn:Signal` roots carry no declared data of their own
+  // (see the module docstring) — every use of one name already read its
+  // name straight off its resolved ref while mapping, so two roots sharing
+  // a name simply collapse to that one name with nothing further to do
+  // here; only the unreferenced-root sweep below needs the root list.
   const errorRoots = rootElements.filter((e) => e.$type === 'bpmn:Error');
   const escalationRoots = rootElements.filter(
     (e) => e.$type === 'bpmn:Escalation',
   );
+  const messageRoots = rootElements.filter((e) => e.$type === 'bpmn:Message');
+  const signalRoots = rootElements.filter((e) => e.$type === 'bpmn:Signal');
   const errorMessages = resolveErrorMessages(errorRoots);
   const ir: BpmnProcess = {
     ...mappedProcess,
     ...(errorMessages.length > 0 ? { errorMessages } : {}),
   };
-  warnUnreferencedRoots(errorRoots, escalationRoots, ir, warnings);
+  warnUnreferencedRoots(
+    errorRoots,
+    escalationRoots,
+    messageRoots,
+    signalRoots,
+    ir,
+    warnings,
+  );
 
   // Extension elements moddle could not tie to a specific step (undeclared
   // `operaton:` types) surface only as document-level "unparsable content"
@@ -497,19 +540,24 @@ function resolveErrorMessages(
 }
 
 /**
- * Depth-first collect every distinct error/escalation code caught or thrown
- * anywhere in the mapped IR (any container, any nesting depth) — used only
- * to detect a root element that ended up unreferenced. Deliberately kept
- * separate from `ir-to-xml.ts`'s equivalent collector: the two modules do
- * not share private helpers, and the shapes they walk differ slightly (this
- * one starts from an already-mapped {@link BpmnProcess}).
+ * Depth-first collect every distinct error/escalation code and message/
+ * signal name caught, thrown, or emitted anywhere in the mapped IR (any
+ * container, any nesting depth) — used only to detect a root element that
+ * ended up unreferenced. Deliberately kept separate from `ir-to-xml.ts`'s
+ * equivalent collector: the two modules do not share private helpers, and
+ * the shapes they walk differ slightly (this one starts from an
+ * already-mapped {@link BpmnProcess}).
  */
 function collectReferencedCodes(process: BpmnProcess): {
   errorCodes: Set<string>;
   escalationCodes: Set<string>;
+  messageNames: Set<string>;
+  signalNames: Set<string>;
 } {
   const errorCodes = new Set<string>();
   const escalationCodes = new Set<string>();
+  const messageNames = new Set<string>();
+  const signalNames = new Set<string>();
 
   const visit = (elements: FlowElement[]): void => {
     for (const el of elements) {
@@ -523,33 +571,43 @@ function collectReferencedCodes(process: BpmnProcess): {
         errorCodes.add(def.errorCode);
       } else if (def?.kind === 'escalation' && def.escalationCode !== undefined) {
         escalationCodes.add(def.escalationCode);
+      } else if (def?.kind === 'message') {
+        messageNames.add(def.messageName);
+      } else if (def?.kind === 'signal') {
+        signalNames.add(def.signalName);
       }
       if (el.kind === 'subProcess') visit(el.flowElements);
     }
   };
   visit(process.flowElements);
 
-  return { errorCodes, escalationCodes };
+  return { errorCodes, escalationCodes, messageNames, signalNames };
 }
 
 /**
- * Warn once per `bpmn:Error`/`bpmn:Escalation` root that nothing in the
- * mapped IR catches or throws: the drop is otherwise silent, since a root
- * with no catcher/thrower never surfaces anywhere else. A message-less
- * error root is genuinely dead; a message-carrying one is never unreferenced
- * in effect, since {@link resolveErrorMessages} already folded it into
- * `ir.errorMessages` regardless of usage (the declaration is explicit
- * authorial intent) — so only the message-less case is checked here for
- * errors. Escalations have no message concept, so every uncaught/unthrown
- * escalation code warns.
+ * Warn once per `bpmn:Error`/`bpmn:Escalation`/`bpmn:Message`/`bpmn:Signal`
+ * root that nothing in the mapped IR catches, throws, or emits: the drop is
+ * otherwise silent, since a root with no user never surfaces anywhere else.
+ * A message-less error root is genuinely dead; a message-carrying one is
+ * never unreferenced in effect, since {@link resolveErrorMessages} already
+ * folded it into `ir.errorMessages` regardless of usage (the declaration is
+ * explicit authorial intent) — so only the message-less case is checked
+ * here for errors. Escalations have no message concept, so every
+ * uncaught/unthrown escalation code warns. Message/signal roots have no
+ * declared-data concept either (see the module docstring), so every root
+ * whose name matches no usage in the IR warns, via {@link
+ * warnUnreferencedNamedRoot}.
  */
 function warnUnreferencedRoots(
   errorRoots: ModdleElement[],
   escalationRoots: ModdleElement[],
+  messageRoots: ModdleElement[],
+  signalRoots: ModdleElement[],
   ir: BpmnProcess,
   warnings: ImportWarning[],
 ): void {
-  const { errorCodes, escalationCodes } = collectReferencedCodes(ir);
+  const { errorCodes, escalationCodes, messageNames, signalNames } =
+    collectReferencedCodes(ir);
   const declaredCodes = new Set((ir.errorMessages ?? []).map((m) => m.code));
 
   for (const root of errorRoots) {
@@ -585,6 +643,60 @@ function warnUnreferencedRoots(
             'keyed or represented in the model; it was not imported.',
     });
   }
+
+  for (const root of messageRoots) {
+    warnUnreferencedNamedRoot(root, messageNames, 'message', 'itemRef', warnings);
+  }
+  for (const root of signalRoots) {
+    warnUnreferencedNamedRoot(root, signalNames, 'signal', 'structureRef', warnings);
+  }
+}
+
+/**
+ * Handle one `bpmn:Message`/`bpmn:Signal` root against the names actually
+ * used in the mapped IR: a root whose `name` matches no handler/throw/emit
+ * is warned as unreferenced (`category: 'unreferencedRoot'`); a referenced
+ * root's `itemRef`/`structureRef` — the one other piece of data these root
+ * kinds can carry — is data-structure metadata Operaton does not execute at
+ * runtime, so it is warn-dropped instead (`category: 'extensionAttribute'`)
+ * rather than silently discarded. `dataRefProperty` is `itemRef` for a
+ * `bpmn:Message` root and `structureRef` for a `bpmn:Signal` root — moddle
+ * resolves both as element references, so presence is checked via `.get()`.
+ */
+function warnUnreferencedNamedRoot(
+  root: ModdleElement,
+  referencedNames: ReadonlySet<string>,
+  label: 'message' | 'signal',
+  dataRefProperty: 'itemRef' | 'structureRef',
+  warnings: ImportWarning[],
+): void {
+  const rootId = requireId(root);
+  const name = readString(root, 'name');
+
+  if (name !== undefined && referencedNames.has(name)) {
+    const dataRef = root.get(dataRefProperty);
+    if (dataRef !== undefined && dataRef !== null) {
+      warnings.push({
+        elementId: rootId,
+        category: 'extensionAttribute',
+        message:
+          `The '${dataRefProperty}' setting on ${label} root '${rootId}' names a ` +
+          "data structure Operaton does not execute; it was not imported.",
+      });
+    }
+    return;
+  }
+
+  warnings.push({
+    elementId: rootId,
+    category: 'unreferencedRoot',
+    message:
+      name !== undefined
+        ? `The ${label} "${name}" declared by root '${rootId}' is never used ` +
+          'by an on/throw/emit; it was not imported.'
+        : `The ${label} root '${rootId}' has no name, so it cannot be keyed ` +
+          'or represented in the model; it was not imported.',
+  });
 }
 
 /**
@@ -858,10 +970,11 @@ function mapEventSubProcess(
 /**
  * Map the single trigger-carrying start event of an event handler. Unlike
  * {@link mapStartEvent} (which refuses every definition), this start is
- * expected to carry exactly one error or escalation definition; anything
- * else refuses. `isInterrupting="false"` is valid only for an
- * escalation trigger — BPMN requires an error trigger to interrupt its
- * scope, so that combination refuses too.
+ * expected to carry exactly one error, escalation, message, signal, timer,
+ * or conditional definition; anything else refuses (see {@link
+ * readCatchEventDefinition}). `isInterrupting="false"` is valid for every
+ * kind except error — BPMN requires an error trigger to interrupt its scope,
+ * so that combination refuses too.
  */
 function mapEventSubProcessStart(
   startEl: ModdleElement,
@@ -901,18 +1014,27 @@ function mapEventSubProcessStart(
 
 /**
  * Resolve one event definition's shape on the CATCH side (an event
- * handler's trigger): a definition without a ref, or whose resolved root
- * carries no code, means catch-all — the missing code is exactly what
- * makes the handler match any error/escalation. Reads the binding
- * attributes (`errorCodeVariable`/`errorMessageVariable`/
- * `escalationCodeVariable`, dual `operaton:`/`camunda:` namespace via {@link
- * readNamespacedAttr}) and runs {@link collectExtensionDrops} on the
- * definition itself so an unrelated `operaton:` attribute there is never
- * silently lost — definitions were never scanned for drops before because
- * they were refused outright; now that they map, the sweep applies here too.
+ * handler's trigger). An error/escalation definition without a ref, or
+ * whose resolved root carries no code, means catch-all — the missing code
+ * is exactly what makes the handler match any error/escalation. A message/
+ * signal/timer/conditional trigger has no catch-all form (the surface
+ * always requires the identity that makes it a real subscription), so each
+ * refuses its own way when that identity cannot be resolved — see {@link
+ * resolveNamedRootRef}, {@link readTimerDefinition}, and {@link
+ * readConditionalDefinition}. Reads the binding attributes
+ * (`errorCodeVariable`/`errorMessageVariable`/`escalationCodeVariable`, dual
+ * `operaton:`/`camunda:` namespace via {@link readNamespacedAttr}) and runs
+ * {@link collectExtensionDrops} on the definition itself so an unrelated
+ * `operaton:` attribute there is never silently lost.
  *
- * @throws {UnsupportedEventDefinitionError} when the definition is neither
- *   an error nor an escalation.
+ * @throws {UnsupportedEventDefinitionError} when the definition is none of
+ *   error, escalation, message, signal, timer, or conditional (e.g. a
+ *   compensation or terminate definition).
+ * @throws {UnsupportedEventFeatureError} when a message/signal definition
+ *   has no ref or resolves to a nameless root, a timer definition has zero
+ *   or more than one time child or an empty body, or a conditional
+ *   definition has no condition, an empty condition body, or an
+ *   evaluation-narrowing `variableName`/`variableEvents` attribute.
  */
 function readCatchEventDefinition(
   defEl: ModdleElement,
@@ -949,22 +1071,177 @@ function readCatchEventDefinition(
     };
   }
 
+  if (defEl.$type === 'bpmn:MessageEventDefinition') {
+    return {
+      kind: 'message',
+      messageName: resolveNamedRootRef(defEl, 'messageRef', ownerId, 'message'),
+    };
+  }
+
+  if (defEl.$type === 'bpmn:SignalEventDefinition') {
+    return {
+      kind: 'signal',
+      signalName: resolveNamedRootRef(defEl, 'signalRef', ownerId, 'signal'),
+    };
+  }
+
+  if (defEl.$type === 'bpmn:TimerEventDefinition') {
+    return { kind: 'timer', ...readTimerDefinition(defEl, ownerId) };
+  }
+
+  if (defEl.$type === 'bpmn:ConditionalEventDefinition') {
+    return { kind: 'conditional', condition: readConditionalDefinition(defEl, ownerId) };
+  }
+
   throw new UnsupportedEventDefinitionError(ownerId, 'start', defEl.$type);
 }
 
 /**
- * Resolve one event definition's shape on the THROW side (a typed end event
- * or an escalation intermediate throw): the code must resolve to a
- * non-empty string — a throw with no code is not something the `throw`/
- * `emit` surface can express. Binding attributes have no effect on a throw
- * (the engine ignores them there), so their presence is warned explicitly
- * via {@link warnThrowSideBindingAttrs} rather than silently kept, since
- * {@link SUPPORTED_EXTENSION_ATTRS} declares them supported for the catch
- * side and would otherwise silence this drop. Also runs
- * {@link collectExtensionDrops} on the definition itself, exactly as the
- * catch side does.
+ * Resolve a message/signal event definition's name off its resolved root
+ * (`messageRef`/`signalRef`) — the value the DSL surface correlates
+ * (message) or broadcasts (signal) on. A definition with no ref, or whose
+ * resolved root carries no (or an empty) `name`, is refused: neither side of
+ * this surface has anything to catch, throw, or emit by.
  *
- * @throws {UnsupportedEventFeatureError} when the resolved code is empty.
+ * @throws {UnsupportedEventFeatureError} when no ref resolves to a root with
+ *   a non-empty name.
+ */
+function resolveNamedRootRef(
+  defEl: ModdleElement,
+  refProperty: 'messageRef' | 'signalRef',
+  ownerId: string,
+  label: 'message' | 'signal',
+): string {
+  const ref = defEl.get(refProperty) as ModdleElement | undefined;
+  const name = ref !== undefined && ref !== null ? readString(ref, 'name') : undefined;
+  if (name === undefined) {
+    const rootKind = label === 'message' ? 'bpmn:Message' : 'bpmn:Signal';
+    throw new UnsupportedEventFeatureError(
+      ownerId,
+      `a ${label} definition must reference a ${rootKind} root with a non-empty name`,
+    );
+  }
+  return name;
+}
+
+/**
+ * The `bpmn:TimerEventDefinition` child mapped to each IR `timerKind` — the
+ * inverse of `ir-to-xml.ts`'s `TIMER_KIND_TO_CHILD`.
+ */
+const TIMER_CHILD_TO_KIND: Readonly<
+  Record<'timeDuration' | 'timeDate' | 'timeCycle', 'duration' | 'date' | 'cycle'>
+> = {
+  timeDuration: 'duration',
+  timeDate: 'date',
+  timeCycle: 'cycle',
+};
+
+/**
+ * Resolve a `bpmn:TimerEventDefinition`'s single time child into the IR's
+ * `timerKind`/`expression`. Exactly one of `timeDuration`/`timeDate`/
+ * `timeCycle` must be present, each a `bpmn:FormalExpression` whose `body`
+ * (the `conditionExpression` read precedent) carries the verbatim time
+ * text — zero or more than one child, or an empty body, refuses: there is
+ * no sensible single deadline to import.
+ *
+ * @throws {UnsupportedEventFeatureError} when the definition carries zero
+ *   or more than one time child, or the one present child has an empty body.
+ */
+function readTimerDefinition(
+  defEl: ModdleElement,
+  ownerId: string,
+): { timerKind: 'duration' | 'date' | 'cycle'; expression: string } {
+  const childNames = Object.keys(TIMER_CHILD_TO_KIND) as (keyof typeof TIMER_CHILD_TO_KIND)[];
+  const present = childNames.filter((childName) => {
+    const child = defEl.get(childName) as ModdleElement | undefined;
+    return child !== undefined && child !== null;
+  });
+
+  if (present.length !== 1) {
+    throw new UnsupportedEventFeatureError(
+      ownerId,
+      'a timer definition must carry exactly one of timeDuration/timeDate/' +
+        `timeCycle (found ${present.length})`,
+    );
+  }
+
+  const [childName] = present;
+  const expressionEl = defEl.get(childName) as ModdleElement;
+  const expression = readString(expressionEl, 'body');
+  if (expression === undefined) {
+    throw new UnsupportedEventFeatureError(
+      ownerId,
+      `a timer definition's ${childName} has an empty body`,
+    );
+  }
+  return { timerKind: TIMER_CHILD_TO_KIND[childName], expression };
+}
+
+/**
+ * The deferred conditional-narrowing attribute local names — `operaton:`/
+ * `camunda:` `variableName`/`variableEvents`. Neither is declared by the
+ * moddle extension, so both surface only in `$attrs`, dual-namespace, on
+ * the `bpmn:ConditionalEventDefinition` element itself.
+ */
+const CONDITIONAL_NARROWING_ATTRS: readonly string[] = [
+  'variableName',
+  'variableEvents',
+];
+
+/**
+ * Resolve a `bpmn:ConditionalEventDefinition`'s `condition` child into the
+ * IR's raw `${…}` body (the `conditionExpression` read precedent), refusing
+ * a missing condition or an empty body. Also refuses an evaluation-narrowing
+ * `variableName`/`variableEvents` attribute (either `operaton:` or the
+ * deprecated `camunda:` prefix): narrowing changes *when* the condition is
+ * checked, which this surface has no way to express, so dropping it would
+ * silently alter runtime behavior — it is refused rather than warn-dropped.
+ *
+ * @throws {UnsupportedEventFeatureError} when a narrowing attribute is
+ *   present, the condition child is absent, or its body is empty.
+ */
+function readConditionalDefinition(defEl: ModdleElement, ownerId: string): string {
+  const attrs = defEl.$attrs ?? {};
+  for (const localName of CONDITIONAL_NARROWING_ATTRS) {
+    for (const prefix of ['operaton', 'camunda']) {
+      if (attrs[`${prefix}:${localName}`] !== undefined) {
+        throw new UnsupportedEventFeatureError(
+          ownerId,
+          `a conditional definition's ${prefix}:${localName} narrows when the ` +
+            'condition is (re-)evaluated, which this tool cannot represent',
+        );
+      }
+    }
+  }
+
+  const conditionEl = defEl.get('condition') as ModdleElement | undefined;
+  const condition =
+    conditionEl !== undefined && conditionEl !== null
+      ? readString(conditionEl, 'body')
+      : undefined;
+  if (condition === undefined) {
+    throw new UnsupportedEventFeatureError(
+      ownerId,
+      'a conditional definition must carry a condition with a non-empty body',
+    );
+  }
+  return condition;
+}
+
+/**
+ * Resolve one event definition's shape on the THROW side (a typed end event,
+ * or an escalation/signal intermediate throw): an error/escalation code, or
+ * a signal name, must resolve to a non-empty string — a throw with no
+ * identity is not something the `throw`/`emit` surface can express. Binding
+ * attributes have no effect on a throw (the engine ignores them there), so
+ * their presence is warned explicitly via {@link warnThrowSideBindingAttrs}
+ * rather than silently kept, since {@link SUPPORTED_EXTENSION_ATTRS} declares
+ * them supported for the catch side and would otherwise silence this drop.
+ * Also runs {@link collectExtensionDrops} on the definition itself, exactly
+ * as the catch side does.
+ *
+ * @throws {UnsupportedEventFeatureError} when the resolved code/name is
+ *   empty.
  */
 function readThrowEventDefinition(
   defEl: ModdleElement,
@@ -985,6 +1262,13 @@ function readThrowEventDefinition(
       );
     }
     return { kind: 'error', errorCode };
+  }
+
+  if (defEl.$type === 'bpmn:SignalEventDefinition') {
+    return {
+      kind: 'signal',
+      signalName: resolveNamedRootRef(defEl, 'signalRef', ownerId, 'signal'),
+    };
   }
 
   const ref = defEl.get('escalationRef') as ModdleElement | undefined;
@@ -1009,7 +1293,8 @@ function readThrowEventDefinition(
  * in {@link SUPPORTED_EXTENSION_ATTRS} (so the catch side reads them
  * silently) would otherwise make the generic sweep in
  * {@link collectExtensionDrops} silent here too — it cannot tell which side
- * a definition sits on — so this explicit check is the honesty fix.
+ * a definition sits on — so this explicit check is the honesty fix. A signal
+ * throw carries no binding attribute at all, so it checks none.
  */
 function warnThrowSideBindingAttrs(
   defEl: ModdleElement,
@@ -1019,7 +1304,9 @@ function warnThrowSideBindingAttrs(
   const names =
     defEl.$type === 'bpmn:ErrorEventDefinition'
       ? ['errorCodeVariable', 'errorMessageVariable']
-      : ['escalationCodeVariable'];
+      : defEl.$type === 'bpmn:EscalationEventDefinition'
+        ? ['escalationCodeVariable']
+        : [];
   for (const name of names) {
     if (readNamespacedAttr(defEl, name) === undefined) continue;
     warnings.push({
@@ -1488,11 +1775,11 @@ function mapStartEvent(el: ModdleElement): StartEvent {
  * Map a `bpmn:EndEvent` moddle element into the IR.
  *
  * A plain end (no event definitions) maps exactly as before. Exactly one
- * error or escalation definition maps to a typed throw — `throw error`/
- * `throw escalation` — whose resolved code must be non-empty; any other
- * shape (zero-or-multiple definitions, or a definition kind that is not
- * error/escalation) refuses. A genuine label has no slot on a typed throw
- * and is warn-dropped.
+ * error, escalation, or signal definition maps to a typed throw — `throw
+ * error`/`throw escalation`/`throw signal` — whose resolved code or name
+ * must be non-empty; any other shape (zero-or-multiple definitions, or a
+ * definition kind outside this set) refuses. A genuine label has no slot on
+ * a typed throw and is warn-dropped.
  */
 function mapEndEvent(el: ModdleElement, warnings: ImportWarning[]): EndEvent {
   const id = requireId(el);
@@ -1507,14 +1794,15 @@ function mapEndEvent(el: ModdleElement, warnings: ImportWarning[]): EndEvent {
     throw new UnsupportedEventFeatureError(
       id,
       `a throw carries ${defs.length} event definitions — only a single ` +
-        'error or escalation is supported',
+        'error, escalation, or signal is supported',
     );
   }
 
   const [defEl] = defs;
   if (
     defEl.$type !== 'bpmn:ErrorEventDefinition' &&
-    defEl.$type !== 'bpmn:EscalationEventDefinition'
+    defEl.$type !== 'bpmn:EscalationEventDefinition' &&
+    defEl.$type !== 'bpmn:SignalEventDefinition'
   ) {
     throw new UnsupportedEventDefinitionError(id, 'end', defEl.$type);
   }
@@ -1527,11 +1815,12 @@ function mapEndEvent(el: ModdleElement, warnings: ImportWarning[]): EndEvent {
 
 /**
  * Map a `bpmn:IntermediateThrowEvent` moddle element into the IR — the
- * `emit` surface. Only a single escalation definition with a resolvable code
- * is representable: a "none" intermediate throw (zero definitions), an
- * error definition (BPMN has no intermediate error throw — `throw error` is
- * the surface for that), or more than one definition all refuse. A genuine
- * label has no slot here either and is warn-dropped.
+ * `emit` surface. A single escalation or signal definition with a
+ * resolvable code/name is representable: a "none" intermediate throw (zero
+ * definitions), an error definition (BPMN has no intermediate error throw —
+ * `throw error` is the surface for that), more than one definition, or any
+ * other definition kind all refuse. A genuine label has no slot here either
+ * and is warn-dropped.
  */
 function mapIntermediateThrowEvent(
   el: ModdleElement,
@@ -1552,7 +1841,7 @@ function mapIntermediateThrowEvent(
     throw new UnsupportedEventFeatureError(
       id,
       `an emit carries ${defs.length} event definitions — only a single ` +
-        'escalation is supported',
+        'escalation or signal is supported',
     );
   }
 
@@ -1564,7 +1853,10 @@ function mapIntermediateThrowEvent(
         'throw; write "throw error" to end the path instead',
     );
   }
-  if (defEl.$type !== 'bpmn:EscalationEventDefinition') {
+  if (
+    defEl.$type !== 'bpmn:EscalationEventDefinition' &&
+    defEl.$type !== 'bpmn:SignalEventDefinition'
+  ) {
     throw new UnsupportedEventDefinitionError(
       id,
       'intermediate throw',
@@ -1584,7 +1876,8 @@ function mapIntermediateThrowEvent(
  * array is a plain event and is allowed. Used only by {@link mapStartEvent}
  * (a *normal* container's start event, which never carries a trigger) — an
  * event handler's start goes through {@link mapEventSubProcessStart}
- * instead, which permits exactly one error/escalation definition.
+ * instead, which permits exactly one error/escalation/message/signal/timer/
+ * conditional definition.
  */
 function refuseEventDefinitions(
   el: ModdleElement,

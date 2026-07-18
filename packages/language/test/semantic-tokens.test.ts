@@ -97,6 +97,69 @@ process p {
   });
 });
 
+describe('trigger word on the new on-handler kinds (timer/message)', () => {
+  test('`on message "X"` highlights the trigger word', async () => {
+    const result = await highlight(`
+process p {
+  on <|message|> "X" { }
+}
+`);
+    expectSemanticToken(result, { tokenType: SemanticTokenTypes.keyword });
+  });
+
+  test('`on condition (…)` highlights the trigger word, not the condition variable', async () => {
+    const result = await highlight(`
+process p {
+  on <|condition|> (<|amount|> > 100) { }
+}
+`);
+    expectSemanticToken(result, {
+      rangeIndex: 0,
+      tokenType: SemanticTokenTypes.keyword,
+    });
+    expectNoTokenAt(result, 1);
+  });
+});
+
+describe('timer particle on OnHandler', () => {
+  test('`on timer after "PT1H"` highlights both the trigger word and the particle', async () => {
+    const result = await highlight(`
+process p {
+  on <|timer|> <|after|> "PT1H" { }
+}
+`);
+    expectSemanticToken(result, {
+      rangeIndex: 0,
+      tokenType: SemanticTokenTypes.keyword,
+    });
+    expectSemanticToken(result, {
+      rangeIndex: 1,
+      tokenType: SemanticTokenTypes.keyword,
+    });
+  });
+
+  test('`var at: string` carries no token on `at`', async () => {
+    const result = await highlight(`
+process p {
+  var <|at|>: string
+}
+`);
+    expectNoTokenAt(result);
+  });
+
+  test('`if (after > 2)` carries no token on `after`', async () => {
+    const result = await highlight(`
+process p {
+  var after: number
+  if (<|after|> > 2) {
+    end Done
+  }
+}
+`);
+    expectNoTokenAt(result);
+  });
+});
+
 describe('kind/field on the ErrorDecl declaration', () => {
   test('`error "X" message "m"` highlights both words', async () => {
     const result = await highlight(`

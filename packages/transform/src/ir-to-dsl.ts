@@ -906,16 +906,21 @@ class Emitter {
           ? `end ${el.id}${labelSuffix(el.name)}`
           : renderThrow(el.id, el.eventDefinition);
       case 'intermediateThrowEvent': {
-        // `emit` fires an event and keeps going. Only an escalation is
-        // emittable; an error definition here is malformed IR (BPMN has no
-        // intermediate error throw — `throw error` is the surface for that).
+        // `emit` fires an event and keeps going. Only an escalation or a signal
+        // is emittable this way; an error, message, timer, or conditional
+        // definition here is malformed IR (an error aborts its path — that is
+        // `throw error` — and the other three have no throw surface at all).
         const def = el.eventDefinition;
-        if (def.kind !== 'escalation') {
-          throw new Error(
-            `irToDsl: intermediate throw '${el.id}' carries a ${def.kind} definition; only escalation can be emitted.`,
-          );
+        switch (def.kind) {
+          case 'escalation':
+            return `emit escalation ${el.id}${quotedCode(def.escalationCode)}`;
+          case 'signal':
+            return `emit signal ${el.id} ${quote(def.signalName)}`;
+          default:
+            throw new Error(
+              `irToDsl: intermediate throw '${el.id}' carries a ${def.kind} definition; only escalation or signal can be emitted.`,
+            );
         }
-        return `emit escalation ${el.id}${quotedCode(def.escalationCode)}`;
       }
       case 'userTask':
         return renderUserTask(el);
@@ -984,20 +989,33 @@ function isHandler(
 }
 
 /**
- * Render a typed end event as a `throw <trigger> <id> "<code>"` statement. The
- * id is always printed (the explicit-event precedent) so it survives as a goto
- * target across round-trips.
+ * Render a typed end event as a `throw <trigger> <id> …` statement. The id is
+ * always printed (the explicit-event precedent) so it survives as a goto target
+ * across round-trips. Error and escalation carry an optional code; a signal
+ * carries its required name. A message/timer/conditional definition here is
+ * malformed hand-built IR — nothing about those kinds can be thrown — so it is
+ * refused with a clear message.
  */
 function renderThrow(id: string, def: EventDefinition): string {
-  const code = def.kind === 'error' ? def.errorCode : def.escalationCode;
-  return `throw ${def.kind} ${id}${quotedCode(code)}`;
+  switch (def.kind) {
+    case 'error':
+      return `throw error ${id}${quotedCode(def.errorCode)}`;
+    case 'escalation':
+      return `throw escalation ${id}${quotedCode(def.escalationCode)}`;
+    case 'signal':
+      return `throw signal ${id} ${quote(def.signalName)}`;
+    default:
+      throw new Error(
+        `irToDsl: end event '${id}' carries a ${def.kind} definition; only error, escalation, or signal can be thrown.`,
+      );
+  }
 }
 
 /**
  * Build an `on` handler header from its trigger start event: the trigger word
- * (`error`/`escalation`), the quoted code when present (absent = catch-all),
- * the catch bindings in canonical `(code x, message y)` order, and ` alongside`
- * for a non-interrupting handler, followed by the opening brace.
+ * and its payload (a code with catch bindings, a message/signal name, a timer
+ * particle clause, or a parenthesized condition), plus ` alongside` for a
+ * non-interrupting handler, followed by the opening brace.
  */
 function buildOnHeader(
   handler: Extract<FlowElement, { kind: 'subProcess' }>,
@@ -1011,18 +1029,55 @@ function buildOnHeader(
       `irToDsl: event sub-process '${handler.id}' has no trigger start event.`,
     );
   }
-  const def = start.eventDefinition;
-  const code = def.kind === 'error' ? def.errorCode : def.escalationCode;
   const alongside = start.isInterrupting === false ? ' alongside' : '';
-  return `on ${def.kind}${quotedCode(code)}${buildEventBindings(def)}${alongside} {`;
+  return `on ${renderTriggerHead(start.eventDefinition)}${alongside} {`;
+}
+
+/** The DSL timer particle for each timer kind. */
+const TIMER_PARTICLE: Record<
+  Extract<EventDefinition, { kind: 'timer' }>['timerKind'],
+  string
+> = { duration: 'after', date: 'at', cycle: 'every' };
+
+/**
+ * Render an `on` handler's trigger word and payload (everything between `on ` and
+ * the ` alongside`/`{` suffix): `error`/`escalation` with their optional code and
+ * catch bindings, `message`/`signal` with the quoted name, `timer` with its
+ * particle and quoted time text, or `condition` with the recovered expression in
+ * parens (bare DSL when in the JUEL subset, else the quoted `"${…}"` fallback).
+ */
+function renderTriggerHead(def: EventDefinition): string {
+  switch (def.kind) {
+    case 'error':
+      return `error${quotedCode(def.errorCode)}${buildEventBindings(def)}`;
+    case 'escalation':
+      return `escalation${quotedCode(def.escalationCode)}${buildEventBindings(def)}`;
+    case 'message':
+      return `message ${quote(def.messageName)}`;
+    case 'signal':
+      return `signal ${quote(def.signalName)}`;
+    case 'timer':
+      return `timer ${TIMER_PARTICLE[def.timerKind]} ${quote(def.expression)}`;
+    case 'conditional':
+      return `condition (${renderRawCondition(def.condition)})`;
+    default: {
+      const exhaustive: never = def;
+      throw new Error(
+        `irToDsl: unhandled EventDefinition kind: ${JSON.stringify(exhaustive)}`,
+      );
+    }
+  }
 }
 
 /**
- * Render the catch bindings of an event definition as ` (code x, message y)`,
- * in canonical order (code before message), or empty when no binding is set.
- * Only an error carries a message binding; an escalation has just a code.
+ * Render the catch bindings of an error/escalation definition as
+ * ` (code x, message y)`, in canonical order (code before message), or empty
+ * when no binding is set. Only an error carries a message binding; an escalation
+ * has just a code.
  */
-function buildEventBindings(def: EventDefinition): string {
+function buildEventBindings(
+  def: Extract<EventDefinition, { kind: 'error' | 'escalation' }>,
+): string {
   const parts: string[] = [];
   if (def.codeVariable !== undefined) parts.push(`code ${def.codeVariable}`);
   if (def.kind === 'error' && def.messageVariable !== undefined) {
@@ -1274,7 +1329,16 @@ function attrBlock(attrs: string[]): string {
  * ({@link renderRawFallback}).
  */
 function renderCondition(flow: SequenceFlow): string {
-  const body = flow.conditionExpression ?? '';
+  return renderRawCondition(flow.conditionExpression ?? '');
+}
+
+/**
+ * Recover a raw `${…}` condition body as DSL surface text: {@link parseJuel}
+ * decides whether it fits the JUEL subset (→ bare unquoted DSL) or must fall
+ * back to the quoted `"${…}"` raw form ({@link renderRawFallback}). Shared by
+ * conditioned flows and `on condition (…)` handler headers.
+ */
+function renderRawCondition(body: string): string {
   return renderRawFallback(parseJuel(body));
 }
 

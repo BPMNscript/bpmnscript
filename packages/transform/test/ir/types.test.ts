@@ -378,6 +378,33 @@ describe('IntermediateThrowEvent — event-layer FlowElement union member', () =
   });
 });
 
+/**
+ * Exhaustive switch helper over `EventDefinition`, mirroring
+ * `describeFlowElement`: a missing arm makes the `never` assignment a compile
+ * error, so adding a definition kind without updating a consumer's switch is
+ * caught here first.
+ */
+function describeDefinition(def: EventDefinition): string {
+  switch (def.kind) {
+    case 'error':
+      return 'error';
+    case 'escalation':
+      return 'escalation';
+    case 'message':
+      return `message:${def.messageName}`;
+    case 'signal':
+      return `signal:${def.signalName}`;
+    case 'timer':
+      return `timer:${def.timerKind}:${def.expression}`;
+    case 'conditional':
+      return `conditional:${def.condition}`;
+    default: {
+      const _: never = def;
+      throw new Error(`Unhandled EventDefinition kind: ${JSON.stringify(_)}`);
+    }
+  }
+}
+
 describe('EventDefinition — error / escalation union', () => {
   it('accepts an error definition with a code and both catch bindings', () => {
     // On a catch definition the bindings name the process variables the caught
@@ -406,6 +433,77 @@ describe('EventDefinition — error / escalation union', () => {
       codeVariable: 'v',
     };
     expect(def.kind).toBe('escalation');
+  });
+
+  it('exhaustive switch handles error and escalation arms', () => {
+    expect(describeDefinition({ kind: 'error', errorCode: 'PF' })).toBe('error');
+    expect(
+      describeDefinition({ kind: 'escalation', escalationCode: 'LS' }),
+    ).toBe('escalation');
+  });
+});
+
+describe('EventDefinition — message / signal / timer / conditional members', () => {
+  it('accepts a message definition (name required, no bindings)', () => {
+    const def: EventDefinition = { kind: 'message', messageName: 'PaymentReceived' };
+    expect(describeDefinition(def)).toBe('message:PaymentReceived');
+  });
+
+  it('accepts a signal definition (name required, no bindings)', () => {
+    const def: EventDefinition = { kind: 'signal', signalName: 'Cancelled' };
+    expect(describeDefinition(def)).toBe('signal:Cancelled');
+  });
+
+  it('accepts a timer definition for each of the three kinds', () => {
+    const duration: EventDefinition = {
+      kind: 'timer',
+      timerKind: 'duration',
+      expression: 'PT1H',
+    };
+    const date: EventDefinition = {
+      kind: 'timer',
+      timerKind: 'date',
+      expression: '${dueDate}',
+    };
+    const cycle: EventDefinition = {
+      kind: 'timer',
+      timerKind: 'cycle',
+      expression: 'R/PT10M',
+    };
+    expect(describeDefinition(duration)).toBe('timer:duration:PT1H');
+    expect(describeDefinition(date)).toBe('timer:date:${dueDate}');
+    expect(describeDefinition(cycle)).toBe('timer:cycle:R/PT10M');
+  });
+
+  it('accepts a conditional definition carrying the raw ${…} body', () => {
+    const def: EventDefinition = {
+      kind: 'conditional',
+      condition: '${amount > 100}',
+    };
+    expect(describeDefinition(def)).toBe('conditional:${amount > 100}');
+  });
+
+  it('carries the new definitions on start / end / intermediate throw nodes', () => {
+    // A signal is usable across all three positions, sharing one name.
+    const start: StartEvent = {
+      kind: 'startEvent',
+      id: 'S',
+      isInterrupting: false,
+      eventDefinition: { kind: 'signal', signalName: 'Cancelled' },
+    };
+    const end: EndEvent = {
+      kind: 'endEvent',
+      id: 'E',
+      eventDefinition: { kind: 'signal', signalName: 'Cancelled' },
+    };
+    const emit: IntermediateThrowEvent = {
+      kind: 'intermediateThrowEvent',
+      id: 'T',
+      eventDefinition: { kind: 'signal', signalName: 'Cancelled' },
+    };
+    expect(start.eventDefinition?.kind).toBe('signal');
+    expect(end.eventDefinition?.kind).toBe('signal');
+    expect(emit.eventDefinition.kind).toBe('signal');
   });
 });
 

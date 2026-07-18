@@ -387,9 +387,10 @@ function lowerBlockStatements(
 
   statements.forEach((stmt, index) => {
     // An `on` handler contributes a node but never joins the sequence chain: it
-    // is an event sub-process triggered by the error/escalation it catches, not
-    // a flow step. Lower it out-of-chain and leave `prevExit`/`entry` untouched,
-    // so the statement before it flows directly to the statement after it.
+    // is an event sub-process triggered by the event it catches (error,
+    // escalation, message, signal, timer, or condition), not a flow step. Lower
+    // it out-of-chain and leave `prevExit`/`entry` untouched, so the statement
+    // before it flows directly to the statement after it.
     if (isOnHandler(stmt)) {
       lowerOnHandler(builder, stmt, coord, index);
       return;
@@ -1083,25 +1084,62 @@ function ensureHandlerStart(nested: Builder, id: string): IrStartEvent {
 
 /**
  * Build the caught {@link EventDefinition} for an `on` handler from its trigger
- * word, code, and catch bindings.
+ * word, code, particle/time, condition, and catch bindings.
  *
  * The trigger word is a soft identifier validated in position, so the desugarer
- * stays total over any text: `escalation` maps to the escalation kind, and every
- * other word (including a typo) lowers as `error` — the validator owns the
- * unknown-word diagnostic. A binding whose field is neither `code` nor `message`
- * is ignored for the same reason. A missing code is catch-all (the field is
- * omitted). Escalations carry a code but no message, so a `message` binding on an
+ * stays total over any text — every branch below produces a well-formed
+ * definition regardless of what else the handler carries, leaving word/shape
+ * legality to the validator:
+ *   - `escalation` — the escalation kind; carries a code and its `code` binding.
+ *   - `message` — `{ kind: 'message', messageName: code ?? '' }`; bindings are
+ *     ignored (a message has no catch bindings).
+ *   - `signal` — `{ kind: 'signal', signalName: code ?? '' }`; bindings ignored.
+ *   - `timer` — `{ kind: 'timer', timerKind, expression }`; `timerKind` comes
+ *     from the particle via {@link timerParticleKind} and `expression` is the
+ *     time text, falling back to `code` (the shape a bare `on timer "PT1H"`
+ *     parses to when no particle is written) and then `''`.
+ *   - `condition` — `{ kind: 'conditional', condition }`; the condition renders
+ *     through `renderExpression` exactly like an `if`, or the total placeholder
+ *     `${true}` when the handler carries none.
+ *   - every other word (including a typo) — the error kind, exactly as before.
+ *
+ * A binding whose field is neither `code` nor `message` is ignored for the same
+ * totality reason. A missing code is catch-all (the field is omitted).
+ * Escalations carry a code but no message, so a `message` binding on an
  * escalation handler is dropped.
  */
 function handlerEventDefinition(stmt: OnHandler): EventDefinition {
-  const codeVariable = bindingVariable(stmt, 'code');
   if (stmt.trigger === 'escalation') {
+    const codeVariable = bindingVariable(stmt, 'code');
     return {
       kind: 'escalation',
       ...(stmt.code !== undefined ? { escalationCode: stmt.code } : {}),
       ...(codeVariable !== undefined ? { codeVariable } : {}),
     };
   }
+  if (stmt.trigger === 'message') {
+    return { kind: 'message', messageName: stmt.code ?? '' };
+  }
+  if (stmt.trigger === 'signal') {
+    return { kind: 'signal', signalName: stmt.code ?? '' };
+  }
+  if (stmt.trigger === 'timer') {
+    return {
+      kind: 'timer',
+      timerKind: timerParticleKind(stmt.particle),
+      expression: stmt.time ?? stmt.code ?? '',
+    };
+  }
+  if (stmt.trigger === 'condition') {
+    return {
+      kind: 'conditional',
+      condition:
+        stmt.condition !== undefined
+          ? renderExpression(stmt.condition)
+          : '${true}',
+    };
+  }
+  const codeVariable = bindingVariable(stmt, 'code');
   const messageVariable = bindingVariable(stmt, 'message');
   return {
     kind: 'error',
@@ -1109,6 +1147,24 @@ function handlerEventDefinition(stmt: OnHandler): EventDefinition {
     ...(codeVariable !== undefined ? { codeVariable } : {}),
     ...(messageVariable !== undefined ? { messageVariable } : {}),
   };
+}
+
+/**
+ * Map an `on timer` particle word (`after` / `at` / `every`) to the BPMN
+ * `timerKind` it selects. Total over any other word (a missing particle, or an
+ * unrecognized one) by falling back to `duration` — the same fallback a bare
+ * `on timer "PT1H"` (no particle at all) needs to lower sensibly.
+ */
+function timerParticleKind(
+  particle: string | undefined,
+): 'duration' | 'date' | 'cycle' {
+  if (particle === 'at') {
+    return 'date';
+  }
+  if (particle === 'every') {
+    return 'cycle';
+  }
+  return 'duration';
 }
 
 /**
@@ -1127,8 +1183,9 @@ function bindingVariable(stmt: OnHandler, field: string): string | undefined {
  * programming language), so no fall-through flow reaches the next statement.
  *
  * The id is the authored `name` when present, else the positional
- * `Throw_<coord>_<index>`. `escalation` maps to the escalation kind; any other
- * trigger word lowers as `error` (totality — the validator polices the word).
+ * `Throw_<coord>_<index>`. `escalation` maps to the escalation kind, `signal`
+ * to the signal kind; any other trigger word lowers as `error` (totality — the
+ * validator polices the word).
  */
 function lowerThrow(
   builder: Builder,
@@ -1150,10 +1207,10 @@ function lowerThrow(
  * `emit` fires the event and keeps going, so entry === exit === the node's id.
  *
  * The id is the authored `name` when present, else the positional
- * `Throw_<coord>_<index>`. An intermediate throw is always an escalation
- * regardless of the trigger word: BPMN has no intermediate error throw, so
- * `emit error` (and any other word) lowers as an escalation and the validator
- * teaches `throw error` instead.
+ * `Throw_<coord>_<index>`. `signal` maps to the signal kind; every other
+ * trigger word (including a typo) lowers as an escalation regardless: BPMN has
+ * no intermediate error throw, so `emit error` (and any other word) lowers as
+ * an escalation and the validator teaches `throw error` instead.
  */
 function lowerEmit(
   builder: Builder,
@@ -1165,20 +1222,26 @@ function lowerEmit(
   builder.flowElements.push({
     kind: 'intermediateThrowEvent',
     id,
-    eventDefinition: { kind: 'escalation', escalationCode: stmt.code },
+    eventDefinition:
+      stmt.trigger === 'signal'
+        ? { kind: 'signal', signalName: stmt.code }
+        : { kind: 'escalation', escalationCode: stmt.code },
   });
   return { entry: id, exit: id };
 }
 
 /**
  * Build the thrown {@link EventDefinition} for a `throw`: `escalation` maps to
- * the escalation kind, every other trigger word (including a typo) to `error`.
- * A `throw`'s code is always written (the grammar requires it), so the code is
- * always carried.
+ * the escalation kind, `signal` to the signal kind, every other trigger word
+ * (including a typo) to `error`. A `throw`'s code is always written (the
+ * grammar requires it), so the code is always carried.
  */
 function throwEventDefinition(stmt: ThrowStatement): EventDefinition {
   if (stmt.trigger === 'escalation') {
     return { kind: 'escalation', escalationCode: stmt.code };
+  }
+  if (stmt.trigger === 'signal') {
+    return { kind: 'signal', signalName: stmt.code };
   }
   return { kind: 'error', errorCode: stmt.code };
 }

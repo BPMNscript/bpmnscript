@@ -53,16 +53,18 @@ const STRUCTURE_SNIPPETS: Readonly<Record<string, string>> = {
   do: 'do {\n\t$1\n} while (${2:condition})',
   parallel: 'parallel {\n\t{\n\t\t$1\n\t}\n\t{\n\t\t$2\n\t}\n}',
   subprocess: 'subprocess ${1:id} {\n\t$0\n}',
-  // event handlers / throw / emit — the DSL's try/catch. `error`/`escalation`
-  // are soft words (plain identifiers, not keywords — see
-  // bpmn-script-validator.ts), so they are offered here as snippet choice
-  // placeholders and, at the bare ID position, through the ID-position
-  // completion override below.
-  on: 'on ${1|error,escalation|} "${2:CODE}" {\n\t$0\n}',
-  throw: 'throw ${1|error,escalation|} "${2:CODE}"',
-  // `emit` only has a continuing form for escalation (BPMN has no
-  // intermediate error throw), so there is no kind choice here.
-  emit: 'emit escalation "${1:CODE}"',
+  // event handlers / throw / emit — the DSL's try/catch. The trigger words
+  // are soft (plain identifiers, not keywords — see bpmn-script-validator.ts),
+  // so they are offered here as snippet choice placeholders and, at the bare
+  // ID position, through the ID-position completion override below. Only the
+  // four triggers that take a plain `"CODE"` string appear in this choice —
+  // `timer` and `condition` read a differently-shaped payload and get their
+  // own scaffolding items at the ID position instead.
+  on: 'on ${1|error,escalation,message,signal|} "${2:CODE}" {\n\t$0\n}',
+  throw: 'throw ${1|error,escalation,signal|} "${2:CODE}"',
+  // `emit` has no continuing form for `error` (an error always ends its
+  // path), so `error` is absent from this choice.
+  emit: 'emit ${1|escalation,signal|} "${2:CODE}"',
   // call — starts another process like a function call: `process` names the
   // callee, `in` entries are its arguments, `out` entries are its return
   // values.
@@ -93,10 +95,12 @@ const STRUCTURE_DETAILS: Readonly<Record<string, string>> = {
  */
 export class BpmnScriptCompletionProvider extends DefaultCompletionProvider {
   /**
-   * Offers items for the soft event words: `error`/`escalation`
-   * complete the `trigger` property of `on`/`throw` (both kinds are
-   * terminal-or-catchable there), `escalation` only completes the `trigger`
-   * of `emit` (the only kind with a continuing throw form), and
+   * Offers items for the soft event words: the `trigger` property of
+   * `on`/`throw`/`emit` offers each construct's legal trigger words (`on`
+   * offers all six — `timer` and `condition` as snippet items that also
+   * scaffold their differently-shaped payload, since neither reads a plain
+   * `"CODE"` string), the `particle` property of an `on timer` handler
+   * offers the three timer particles with a one-line description each, and
    * `code`/`message` complete the `field` property of a handler binding.
    * These words lex as plain `ID`s (not grammar keywords — see
    * `bpmn-script-validator.ts`), so the default completion offers nothing at
@@ -110,13 +114,44 @@ export class BpmnScriptCompletionProvider extends DefaultCompletionProvider {
     const containerType = context.node?.$type;
     if (next.property === 'trigger') {
       if (containerType === 'EmitStatement') {
-        this.acceptEventWord(context, acceptor, ['escalation']);
+        this.acceptEventWord(context, acceptor, ['escalation', 'signal']);
         return;
       }
-      if (containerType === 'OnHandler' || containerType === 'ThrowStatement') {
-        this.acceptEventWord(context, acceptor, ['error', 'escalation']);
+      if (containerType === 'ThrowStatement') {
+        this.acceptEventWord(context, acceptor, [
+          'error',
+          'escalation',
+          'signal',
+        ]);
         return;
       }
+      if (containerType === 'OnHandler') {
+        this.acceptEventWord(context, acceptor, [
+          'error',
+          'escalation',
+          'message',
+          'signal',
+        ]);
+        this.acceptEventSnippet(
+          context,
+          acceptor,
+          'timer',
+          'timer after "${1:PT1H}"',
+          'a scheduled or relative deadline',
+        );
+        this.acceptEventSnippet(
+          context,
+          acceptor,
+          'condition',
+          'condition ($1)',
+          'a data-change watchdog',
+        );
+        return;
+      }
+    }
+    if (next.property === 'particle' && containerType === 'OnHandler') {
+      this.acceptParticleWords(context, acceptor);
+      return;
     }
     if (
       next.property === 'field' &&
@@ -139,6 +174,53 @@ export class BpmnScriptCompletionProvider extends DefaultCompletionProvider {
         label: word,
         kind: CompletionItemKind.Keyword,
         detail: 'BPMNscript event word',
+        sortText: '1',
+      });
+    }
+  }
+
+  /**
+   * Emit one snippet-kind completion item at a trigger position, for a
+   * trigger word whose payload does not fit the plain `"CODE"` string
+   * choice (`timer`, `condition`) — accepting it inserts the trigger word
+   * together with a scaffold for its own payload shape.
+   */
+  private acceptEventSnippet(
+    context: CompletionContext,
+    acceptor: CompletionAcceptor,
+    label: string,
+    insertText: string,
+    detail: string,
+  ): void {
+    acceptor(context, {
+      label,
+      kind: CompletionItemKind.Snippet,
+      detail,
+      insertText,
+      insertTextFormat: InsertTextFormat.Snippet,
+      sortText: '1',
+    });
+  }
+
+  /** The one-line description offered for each timer particle word. */
+  private static readonly PARTICLE_DETAILS: Readonly<Record<string, string>> = {
+    after: 'a duration relative to when this scope starts',
+    at: 'a fixed point in time',
+    every: 'a repeating schedule',
+  };
+
+  /** Emit one keyword-kind completion item per timer particle, each with its own `detail`. */
+  private acceptParticleWords(
+    context: CompletionContext,
+    acceptor: CompletionAcceptor,
+  ): void {
+    for (const [word, detail] of Object.entries(
+      BpmnScriptCompletionProvider.PARTICLE_DETAILS,
+    )) {
+      acceptor(context, {
+        label: word,
+        kind: CompletionItemKind.Keyword,
+        detail,
         sortText: '1',
       });
     }

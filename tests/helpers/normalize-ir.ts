@@ -94,6 +94,7 @@
 
 import type {
   BpmnProcess,
+  EventDefinition,
   FlowContainer,
   FlowElement,
   SequenceFlow,
@@ -338,9 +339,14 @@ function buildGatewayCanonicalIds(ir: FlowContainer): Map<string, string> {
  * synthesised coordinate with no surface slot; that coordinate moves when a
  * round-trip re-orders the container's statements, so the id does not survive
  * verbatim. The signature is drawn from the handler's *trigger start event*:
- * the trigger kind (`error`/`escalation`), the caught code (or a catch-all
- * marker when the definition carries none), and whether the handler is
- * non-interrupting (`alongside`). Two same-kind, same-code handlers in one
+ * the trigger kind (`error`/`escalation`/`message`/`signal`/`timer`/
+ * `conditional`), the definition payload that distinguishes two same-kind
+ * handlers (see {@link definitionPayloadKey}), and whether the handler is
+ * non-interrupting (`alongside`). The payload is what makes two same-kind
+ * handlers of the name-keyed or expression-carrying kinds distinguishable: an
+ * `on message "A"` and an `on message "B"` in one container share the trigger
+ * kind but not the message name, so keying on the name (not just the kind)
+ * keeps them apart. Two same-kind handlers with an identical payload in one
  * container are a validator error, so a signature collision cannot arise from a
  * valid program; should the IR contain one anyway, it receives a deterministic
  * positional suffix (`#1`, `#2`, …) assigned in `flowElements` order — the
@@ -364,11 +370,7 @@ function buildEventSubProcessCanonicalIds(
     const start = fe.flowElements.find((e) => e.kind === 'startEvent');
     const def = start?.kind === 'startEvent' ? start.eventDefinition : undefined;
     const kind = def?.kind ?? 'unknown';
-    const code =
-      def === undefined
-        ? '<none>'
-        : ((def.kind === 'error' ? def.errorCode : def.escalationCode) ??
-          '<catch-all>');
+    const code = definitionPayloadKey(def);
     const interrupting =
       start?.kind === 'startEvent' && start.isInterrupting === false
         ? 'non-interrupting'
@@ -380,6 +382,49 @@ function buildEventSubProcessCanonicalIds(
     map.set(fe.id, seen === 0 ? signature : `${signature}#${seen}`);
   }
   return map;
+}
+
+/**
+ * The payload part of a handler's structural signature: whatever distinguishes
+ * two handlers of the *same* trigger kind.
+ *
+ * Each kind contributes exactly the datum the engine (and the DSL) treats as
+ * the handler's identity within its kind:
+ *
+ *   - `error`/`escalation` — the caught code, or a catch-all marker when the
+ *     definition names none. This arm is byte-identical to the original
+ *     error/escalation keying, so error-and-escalation normalization is
+ *     unchanged and the prior round-trip suites stay green.
+ *   - `message`/`signal` — the correlation name (the root's identity).
+ *   - `timer` — the particle kind and the verbatim time expression, so two
+ *     timers in one scope (a legal pattern) with different deadlines stay apart.
+ *   - `conditional` — the raw condition body.
+ *   - a handler with no definition — a single `<none>` marker (also unchanged).
+ *
+ * @param def - The handler trigger start's event definition, or `undefined`.
+ * @returns A string that is equal for two structurally-equivalent handlers and
+ *   distinct for two same-kind handlers that differ in payload.
+ */
+function definitionPayloadKey(def: EventDefinition | undefined): string {
+  if (def === undefined) return '<none>';
+  switch (def.kind) {
+    case 'error':
+      return def.errorCode ?? '<catch-all>';
+    case 'escalation':
+      return def.escalationCode ?? '<catch-all>';
+    case 'message':
+      return def.messageName;
+    case 'signal':
+      return def.signalName;
+    case 'timer':
+      return `${def.timerKind} ${def.expression}`;
+    case 'conditional':
+      return def.condition;
+    default: {
+      const exhaustive: never = def;
+      return JSON.stringify(exhaustive);
+    }
+  }
 }
 
 /**

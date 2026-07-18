@@ -12,8 +12,11 @@
  * UnsupportedConstructError} is thrown before any IR is produced, so the
  * caller can surface a loud, actionable diagnostic. Refused content:
  *
- * - event definitions on start/end events (timer, message, signal, error,
- *   terminate, …) → {@link UnsupportedEventDefinitionError};
+ * - an event definition of the wrong kind for its position: any definition
+ *   on a plain start event; anything other than error/escalation/message/
+ *   signal/timer/conditional on an event handler's start; anything other
+ *   than error/escalation/signal on an end event or an intermediate throw
+ *   (terminate, compensation, …) → {@link UnsupportedEventDefinitionError};
  * - loop characteristics on a task or sub-process (multi-instance or
  *   standard loop) → {@link UnsupportedLoopCharacteristicsError};
  * - collaborations, i.e. pools and message flows →
@@ -35,8 +38,13 @@
  *   express — an event handler with the wrong start-event or definition
  *   count, or with incoming/outgoing sequence flows; a non-interrupting
  *   error handler; a throw or emit whose definition resolves to no code; an
- *   error definition on an emit; a "none" emit; or two declared-message
- *   roots that disagree — → {@link UnsupportedEventFeatureError}.
+ *   error definition on an emit; a "none" emit; two declared-message roots
+ *   that disagree; a message/signal definition with no ref or whose
+ *   resolved root has no non-empty name; a timer definition with zero or
+ *   more than one time child, or an empty time body; a conditional
+ *   definition with no condition, an empty condition body, or an
+ *   evaluation-narrowing `variableName`/`variableEvents` attribute — →
+ *   {@link UnsupportedEventFeatureError}.
  *
  * Content the IR does not carry but that causes **no semantic loss** is
  * **dropped with a warning** rather than refused — see the `warnings`
@@ -45,7 +53,9 @@
  * `delegateExpression`/`type`/`topic`/`calledElementBinding`/
  * `calledElementVersion`/`errorCodeVariable`/`errorMessageVariable`/
  * `escalationCodeVariable`/`errorMessage`, lanes, a genuine label on an event
- * handler/throw/emit, and an unreferenced message-less error/escalation root).
+ * handler/throw/emit, `itemRef`/`structureRef` on a referenced
+ * `bpmn:Message`/`bpmn:Signal` root, and an unreferenced error/escalation/
+ * message/signal root).
  *
  * All refusal errors share the abstract base {@link UnsupportedConstructError}
  * so a consumer can classify the whole family with a single `instanceof`
@@ -207,16 +217,19 @@ export class UnsupportedCallActivityError extends UnsupportedConstructError {
  * Thrown by {@link xmlToIr} when a start event, end event, or intermediate
  * throw carries an event definition kind this tool does not import at that
  * position: any definition on a plain start event (outside an event
- * handler); any non-error/escalation definition (timer, message, signal,
- * terminate, …) on an event handler's start, an end event, or an
- * intermediate throw. The DSL's event layer models only the error/
- * escalation catch (`on`) and throw (`throw`/`emit`) forms, so any other
- * trigger/result semantics cannot be represented and must not be silently
- * dropped.
+ * handler); any definition other than error/escalation/message/signal/timer/
+ * conditional on an event handler's start; any definition other than error/
+ * escalation/signal on an end event; any definition other than escalation/
+ * signal on an intermediate throw (terminate, compensation, …). The DSL's
+ * event layer models only these catch (`on`) and throw/emit (`throw`/`emit`)
+ * forms, so any other trigger/result semantics cannot be represented and
+ * must not be silently dropped.
  *
  * A definition of the *right* kind but the *wrong shape* (e.g. an error
- * throw resolving to no code) refuses via {@link UnsupportedEventFeatureError}
- * instead — this class is reserved for the wrong kind of definition.
+ * throw resolving to no code, a timer with no time child, a conditional
+ * carrying an evaluation-narrowing attribute) refuses via
+ * {@link UnsupportedEventFeatureError} instead — this class is reserved for
+ * the wrong kind of definition.
  */
 export class UnsupportedEventDefinitionError extends UnsupportedConstructError {
   /** The BPMN `id` of the offending start/end/intermediate-throw event. */
@@ -225,7 +238,7 @@ export class UnsupportedEventDefinitionError extends UnsupportedConstructError {
   readonly eventKind: 'start' | 'end' | 'intermediate throw';
   /**
    * The moddle `$type` of the first event definition found, e.g.
-   * `bpmn:TimerEventDefinition` or `bpmn:MessageEventDefinition`.
+   * `bpmn:TerminateEventDefinition` or `bpmn:CompensateEventDefinition`.
    */
   readonly definitionType: string;
 
@@ -237,8 +250,7 @@ export class UnsupportedEventDefinitionError extends UnsupportedConstructError {
     super(
       `The ${eventKind} event '${elementId}' carries a ${friendlyEventDefinition(definitionType)} ` +
         `definition (${definitionType}) that this tool cannot import. ` +
-        "Only plain start and end events, an event handler's error/" +
-        'escalation catch, and a typed error/escalation throw are supported.',
+        supportedKindsMessage(eventKind),
     );
     this.name = 'UnsupportedEventDefinitionError';
     this.elementId = elementId;
@@ -342,6 +354,30 @@ export class UnsupportedCollaborationError extends UnsupportedConstructError {
 function friendlyEventDefinition(definitionType: string): string {
   const local = definitionType.replace(/^.*:/, '');
   return local.replace(/EventDefinition$/, '').toLowerCase() || 'special';
+}
+
+/**
+ * Name the event definition kinds this tool imports at a given position, for
+ * the {@link UnsupportedEventDefinitionError} message. A plain start event
+ * accepts none at all — the sentence explains that the six trigger kinds are
+ * only available on an event handler's start, which also reads correctly
+ * when the offending element genuinely is a handler start carrying the wrong
+ * kind (e.g. a compensation or terminate definition).
+ */
+function supportedKindsMessage(
+  eventKind: 'start' | 'end' | 'intermediate throw',
+): string {
+  switch (eventKind) {
+    case 'start':
+      return (
+        "A plain start event carries no definition; an event handler's " +
+        'start supports error, escalation, message, signal, timer, or conditional.'
+      );
+    case 'end':
+      return 'A typed end event supports error, escalation, or signal.';
+    case 'intermediate throw':
+      return 'An emit supports escalation or signal.';
+  }
 }
 
 /**

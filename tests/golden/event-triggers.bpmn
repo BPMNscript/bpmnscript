@@ -1,0 +1,454 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI" xmlns:dc="http://www.omg.org/spec/DD/20100524/DC" xmlns:di="http://www.omg.org/spec/DD/20100524/DI" xmlns:operaton="http://operaton.org/schema/1.0/bpmn" id="Definitions_order-fulfilment" targetNamespace="http://bpmnscript.io/processes" exporter="BPMNscript" exporterVersion="0.0.0">
+  <bpmn:process id="order-fulfilment" name="Order Fulfilment" isExecutable="true" operaton:historyTimeToLive="P30D">
+    <bpmn:startEvent id="OrderPlaced">
+      <bpmn:extensionElements>
+        <operaton:formData>
+          <operaton:formField id="priority" label="Order priority" type="long" />
+          <operaton:formField id="stockLevel" label="Available stock" type="long" />
+        </operaton:formData>
+      </bpmn:extensionElements>
+      <bpmn:outgoing>Flow_OrderPlaced_ReviewOrder</bpmn:outgoing>
+    </bpmn:startEvent>
+    <bpmn:userTask id="ReviewOrder" name="Review the order" operaton:assignee="demo">
+      <bpmn:incoming>Flow_OrderPlaced_ReviewOrder</bpmn:incoming>
+      <bpmn:outgoing>Flow_ReviewOrder_ScheduleReminder</bpmn:outgoing>
+    </bpmn:userTask>
+    <bpmn:serviceTask id="ScheduleReminder" name="Schedule the reminder" operaton:expression="${reminderService.schedule(timer)}">
+      <bpmn:incoming>Flow_ReviewOrder_ScheduleReminder</bpmn:incoming>
+      <bpmn:outgoing>Flow_ScheduleReminder_FulfilOrder</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:subProcess id="FulfilOrder" name="Fulfil the order">
+      <bpmn:incoming>Flow_ScheduleReminder_FulfilOrder</bpmn:incoming>
+      <bpmn:outgoing>Flow_FulfilOrder_ShipParcel</bpmn:outgoing>
+      <bpmn:startEvent id="FulfilStart">
+        <bpmn:outgoing>Flow_FulfilStart_ReserveStock</bpmn:outgoing>
+      </bpmn:startEvent>
+      <bpmn:serviceTask id="ReserveStock" name="Reserve the stock" operaton:class="com.example.orders.ReserveStockDelegate">
+        <bpmn:incoming>Flow_FulfilStart_ReserveStock</bpmn:incoming>
+        <bpmn:outgoing>Flow_ReserveStock_PackParcel</bpmn:outgoing>
+      </bpmn:serviceTask>
+      <bpmn:serviceTask id="PackParcel" name="Pack the parcel" operaton:class="com.example.orders.PackParcelDelegate">
+        <bpmn:incoming>Flow_ReserveStock_PackParcel</bpmn:incoming>
+        <bpmn:outgoing>Flow_PackParcel_FulfilDone</bpmn:outgoing>
+      </bpmn:serviceTask>
+      <bpmn:endEvent id="FulfilDone">
+        <bpmn:incoming>Flow_PackParcel_FulfilDone</bpmn:incoming>
+      </bpmn:endEvent>
+      <bpmn:subProcess id="EventSubProcess_order-fulfilment_3_4" triggeredByEvent="true">
+        <bpmn:startEvent id="RemindStart" isInterrupting="false">
+          <bpmn:outgoing>Flow_RemindStart_ChaseWarehouse</bpmn:outgoing>
+          <bpmn:timerEventDefinition>
+            <bpmn:timeDuration xsi:type="bpmn:tFormalExpression">PT2H</bpmn:timeDuration>
+          </bpmn:timerEventDefinition>
+        </bpmn:startEvent>
+        <bpmn:userTask id="ChaseWarehouse" name="Chase the warehouse" operaton:assignee="demo">
+          <bpmn:incoming>Flow_RemindStart_ChaseWarehouse</bpmn:incoming>
+          <bpmn:outgoing>Flow_ChaseWarehouse_RemindDone</bpmn:outgoing>
+        </bpmn:userTask>
+        <bpmn:endEvent id="RemindDone">
+          <bpmn:incoming>Flow_ChaseWarehouse_RemindDone</bpmn:incoming>
+        </bpmn:endEvent>
+        <bpmn:sequenceFlow id="Flow_RemindStart_ChaseWarehouse" sourceRef="RemindStart" targetRef="ChaseWarehouse" />
+        <bpmn:sequenceFlow id="Flow_ChaseWarehouse_RemindDone" sourceRef="ChaseWarehouse" targetRef="RemindDone" />
+      </bpmn:subProcess>
+      <bpmn:subProcess id="EventSubProcess_order-fulfilment_3_5" triggeredByEvent="true">
+        <bpmn:startEvent id="LowStockStart" isInterrupting="false">
+          <bpmn:outgoing>Flow_LowStockStart_ReorderStock</bpmn:outgoing>
+          <bpmn:conditionalEventDefinition>
+            <bpmn:condition xsi:type="bpmn:tFormalExpression">${stockLevel &lt; 5}</bpmn:condition>
+          </bpmn:conditionalEventDefinition>
+        </bpmn:startEvent>
+        <bpmn:serviceTask id="ReorderStock" name="Reorder the stock" operaton:class="com.example.orders.ReorderDelegate">
+          <bpmn:incoming>Flow_LowStockStart_ReorderStock</bpmn:incoming>
+          <bpmn:outgoing>Flow_ReorderStock_LowStockDone</bpmn:outgoing>
+        </bpmn:serviceTask>
+        <bpmn:endEvent id="LowStockDone">
+          <bpmn:incoming>Flow_ReorderStock_LowStockDone</bpmn:incoming>
+        </bpmn:endEvent>
+        <bpmn:sequenceFlow id="Flow_LowStockStart_ReorderStock" sourceRef="LowStockStart" targetRef="ReorderStock" />
+        <bpmn:sequenceFlow id="Flow_ReorderStock_LowStockDone" sourceRef="ReorderStock" targetRef="LowStockDone" />
+      </bpmn:subProcess>
+      <bpmn:sequenceFlow id="Flow_FulfilStart_ReserveStock" sourceRef="FulfilStart" targetRef="ReserveStock" />
+      <bpmn:sequenceFlow id="Flow_ReserveStock_PackParcel" sourceRef="ReserveStock" targetRef="PackParcel" />
+      <bpmn:sequenceFlow id="Flow_PackParcel_FulfilDone" sourceRef="PackParcel" targetRef="FulfilDone" />
+    </bpmn:subProcess>
+    <bpmn:serviceTask id="ShipParcel" name="Ship the parcel" operaton:class="com.example.orders.ShipDelegate">
+      <bpmn:incoming>Flow_FulfilOrder_ShipParcel</bpmn:incoming>
+      <bpmn:outgoing>Flow_ShipParcel_Gateway_order-fulfilment_5_split</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:exclusiveGateway id="Gateway_order-fulfilment_5_split" default="Flow_Gateway_order-fulfilment_5_split_default">
+      <bpmn:incoming>Flow_ShipParcel_Gateway_order-fulfilment_5_split</bpmn:incoming>
+      <bpmn:outgoing>Flow_Gateway_order-fulfilment_5_split_ExpediteDispatch</bpmn:outgoing>
+      <bpmn:outgoing>Flow_Gateway_order-fulfilment_5_split_default</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+    <bpmn:exclusiveGateway id="Gateway_order-fulfilment_5_join">
+      <bpmn:incoming>Flow_StandardDispatch_Gateway_order-fulfilment_5_join</bpmn:incoming>
+      <bpmn:outgoing>Flow_Gateway_order-fulfilment_5_join_Notify</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+    <bpmn:serviceTask id="ExpediteDispatch" name="Expedite the dispatch" operaton:class="com.example.orders.ExpediteDelegate">
+      <bpmn:incoming>Flow_Gateway_order-fulfilment_5_split_ExpediteDispatch</bpmn:incoming>
+      <bpmn:outgoing>Flow_ExpediteDispatch_Notify</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:serviceTask id="StandardDispatch" name="Dispatch normally" operaton:class="com.example.orders.DispatchDelegate">
+      <bpmn:incoming>Flow_Gateway_order-fulfilment_5_split_default</bpmn:incoming>
+      <bpmn:outgoing>Flow_StandardDispatch_Gateway_order-fulfilment_5_join</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:intermediateThrowEvent id="Notify">
+      <bpmn:incoming>Flow_ExpediteDispatch_Notify</bpmn:incoming>
+      <bpmn:incoming>Flow_Gateway_order-fulfilment_5_join_Notify</bpmn:incoming>
+      <bpmn:outgoing>Flow_Notify_ArchiveStage</bpmn:outgoing>
+      <bpmn:signalEventDefinition signalRef="Signal_OrderFulfilled" />
+    </bpmn:intermediateThrowEvent>
+    <bpmn:subProcess id="ArchiveStage" name="Archive the order">
+      <bpmn:incoming>Flow_Notify_ArchiveStage</bpmn:incoming>
+      <bpmn:outgoing>Flow_ArchiveStage_Announce</bpmn:outgoing>
+      <bpmn:startEvent id="ArchiveStart">
+        <bpmn:outgoing>Flow_ArchiveStart_WriteArchive</bpmn:outgoing>
+      </bpmn:startEvent>
+      <bpmn:serviceTask id="WriteArchive" name="Write the archive record" operaton:class="com.example.orders.ArchiveDelegate">
+        <bpmn:incoming>Flow_ArchiveStart_WriteArchive</bpmn:incoming>
+        <bpmn:outgoing>Flow_WriteArchive_ArchiveDone</bpmn:outgoing>
+      </bpmn:serviceTask>
+      <bpmn:endEvent id="ArchiveDone">
+        <bpmn:incoming>Flow_WriteArchive_ArchiveDone</bpmn:incoming>
+      </bpmn:endEvent>
+      <bpmn:subProcess id="EventSubProcess_order-fulfilment_7_3" triggeredByEvent="true">
+        <bpmn:startEvent id="PurgeStart">
+          <bpmn:outgoing>Flow_PurgeStart_PurgeDraft</bpmn:outgoing>
+          <bpmn:timerEventDefinition>
+            <bpmn:timeDate xsi:type="bpmn:tFormalExpression">2026-08-01T09:00:00</bpmn:timeDate>
+          </bpmn:timerEventDefinition>
+        </bpmn:startEvent>
+        <bpmn:serviceTask id="PurgeDraft" name="Purge the draft" operaton:class="com.example.orders.PurgeDelegate">
+          <bpmn:incoming>Flow_PurgeStart_PurgeDraft</bpmn:incoming>
+          <bpmn:outgoing>Flow_PurgeDraft_PurgeDone</bpmn:outgoing>
+        </bpmn:serviceTask>
+        <bpmn:endEvent id="PurgeDone">
+          <bpmn:incoming>Flow_PurgeDraft_PurgeDone</bpmn:incoming>
+        </bpmn:endEvent>
+        <bpmn:sequenceFlow id="Flow_PurgeStart_PurgeDraft" sourceRef="PurgeStart" targetRef="PurgeDraft" />
+        <bpmn:sequenceFlow id="Flow_PurgeDraft_PurgeDone" sourceRef="PurgeDraft" targetRef="PurgeDone" />
+      </bpmn:subProcess>
+      <bpmn:sequenceFlow id="Flow_ArchiveStart_WriteArchive" sourceRef="ArchiveStart" targetRef="WriteArchive" />
+      <bpmn:sequenceFlow id="Flow_WriteArchive_ArchiveDone" sourceRef="WriteArchive" targetRef="ArchiveDone" />
+    </bpmn:subProcess>
+    <bpmn:endEvent id="Announce">
+      <bpmn:incoming>Flow_ArchiveStage_Announce</bpmn:incoming>
+      <bpmn:signalEventDefinition signalRef="Signal_OrderFulfilled" />
+    </bpmn:endEvent>
+    <bpmn:subProcess id="EventSubProcess_order-fulfilment_9" triggeredByEvent="true">
+      <bpmn:startEvent id="CancelledStart">
+        <bpmn:outgoing>Flow_CancelledStart_RollbackOrder</bpmn:outgoing>
+        <bpmn:messageEventDefinition messageRef="Message_OrderCancelled" />
+      </bpmn:startEvent>
+      <bpmn:serviceTask id="RollbackOrder" name="Roll back the order" operaton:class="com.example.orders.RollbackDelegate">
+        <bpmn:incoming>Flow_CancelledStart_RollbackOrder</bpmn:incoming>
+        <bpmn:outgoing>Flow_RollbackOrder_CancelledDone</bpmn:outgoing>
+      </bpmn:serviceTask>
+      <bpmn:endEvent id="CancelledDone">
+        <bpmn:incoming>Flow_RollbackOrder_CancelledDone</bpmn:incoming>
+      </bpmn:endEvent>
+      <bpmn:sequenceFlow id="Flow_CancelledStart_RollbackOrder" sourceRef="CancelledStart" targetRef="RollbackOrder" />
+      <bpmn:sequenceFlow id="Flow_RollbackOrder_CancelledDone" sourceRef="RollbackOrder" targetRef="CancelledDone" />
+    </bpmn:subProcess>
+    <bpmn:subProcess id="EventSubProcess_order-fulfilment_10" triggeredByEvent="true">
+      <bpmn:startEvent id="FulfilledStart" isInterrupting="false">
+        <bpmn:outgoing>Flow_FulfilledStart_ArchiveOrder</bpmn:outgoing>
+        <bpmn:signalEventDefinition signalRef="Signal_OrderFulfilled" />
+      </bpmn:startEvent>
+      <bpmn:userTask id="ArchiveOrder" name="Archive the order manually" operaton:assignee="demo">
+        <bpmn:incoming>Flow_FulfilledStart_ArchiveOrder</bpmn:incoming>
+        <bpmn:outgoing>Flow_ArchiveOrder_FulfilledDone</bpmn:outgoing>
+      </bpmn:userTask>
+      <bpmn:endEvent id="FulfilledDone">
+        <bpmn:incoming>Flow_ArchiveOrder_FulfilledDone</bpmn:incoming>
+      </bpmn:endEvent>
+      <bpmn:sequenceFlow id="Flow_FulfilledStart_ArchiveOrder" sourceRef="FulfilledStart" targetRef="ArchiveOrder" />
+      <bpmn:sequenceFlow id="Flow_ArchiveOrder_FulfilledDone" sourceRef="ArchiveOrder" targetRef="FulfilledDone" />
+    </bpmn:subProcess>
+    <bpmn:subProcess id="EventSubProcess_order-fulfilment_11" triggeredByEvent="true">
+      <bpmn:startEvent id="StockErrStart">
+        <bpmn:outgoing>Flow_StockErrStart_ContactCustomer</bpmn:outgoing>
+        <bpmn:errorEventDefinition errorRef="Error_STOCK_UNAVAILABLE" operaton:errorCodeVariable="c" operaton:errorMessageVariable="m" />
+      </bpmn:startEvent>
+      <bpmn:userTask id="ContactCustomer" name="Contact the customer" operaton:assignee="demo">
+        <bpmn:incoming>Flow_StockErrStart_ContactCustomer</bpmn:incoming>
+        <bpmn:outgoing>Flow_ContactCustomer_StockErrDone</bpmn:outgoing>
+      </bpmn:userTask>
+      <bpmn:endEvent id="StockErrDone">
+        <bpmn:incoming>Flow_ContactCustomer_StockErrDone</bpmn:incoming>
+      </bpmn:endEvent>
+      <bpmn:sequenceFlow id="Flow_StockErrStart_ContactCustomer" sourceRef="StockErrStart" targetRef="ContactCustomer" />
+      <bpmn:sequenceFlow id="Flow_ContactCustomer_StockErrDone" sourceRef="ContactCustomer" targetRef="StockErrDone" />
+    </bpmn:subProcess>
+    <bpmn:sequenceFlow id="Flow_OrderPlaced_ReviewOrder" sourceRef="OrderPlaced" targetRef="ReviewOrder" />
+    <bpmn:sequenceFlow id="Flow_ReviewOrder_ScheduleReminder" sourceRef="ReviewOrder" targetRef="ScheduleReminder" />
+    <bpmn:sequenceFlow id="Flow_ScheduleReminder_FulfilOrder" sourceRef="ScheduleReminder" targetRef="FulfilOrder" />
+    <bpmn:sequenceFlow id="Flow_FulfilOrder_ShipParcel" sourceRef="FulfilOrder" targetRef="ShipParcel" />
+    <bpmn:sequenceFlow id="Flow_ExpediteDispatch_Notify" sourceRef="ExpediteDispatch" targetRef="Notify" />
+    <bpmn:sequenceFlow id="Flow_Gateway_order-fulfilment_5_split_ExpediteDispatch" name="priority &#62; 5" sourceRef="Gateway_order-fulfilment_5_split" targetRef="ExpediteDispatch">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">${priority &gt; 5}</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="Flow_Gateway_order-fulfilment_5_split_default" sourceRef="Gateway_order-fulfilment_5_split" targetRef="StandardDispatch" />
+    <bpmn:sequenceFlow id="Flow_StandardDispatch_Gateway_order-fulfilment_5_join" sourceRef="StandardDispatch" targetRef="Gateway_order-fulfilment_5_join" />
+    <bpmn:sequenceFlow id="Flow_ShipParcel_Gateway_order-fulfilment_5_split" sourceRef="ShipParcel" targetRef="Gateway_order-fulfilment_5_split" />
+    <bpmn:sequenceFlow id="Flow_Gateway_order-fulfilment_5_join_Notify" sourceRef="Gateway_order-fulfilment_5_join" targetRef="Notify" />
+    <bpmn:sequenceFlow id="Flow_Notify_ArchiveStage" sourceRef="Notify" targetRef="ArchiveStage" />
+    <bpmn:sequenceFlow id="Flow_ArchiveStage_Announce" sourceRef="ArchiveStage" targetRef="Announce" />
+  </bpmn:process>
+  <bpmn:error id="Error_STOCK_UNAVAILABLE" name="STOCK_UNAVAILABLE" errorCode="STOCK_UNAVAILABLE" operaton:errorMessage="The requested item is out of stock" />
+  <bpmn:message id="Message_OrderCancelled" name="OrderCancelled" />
+  <bpmn:signal id="Signal_OrderFulfilled" name="OrderFulfilled" />
+  <bpmndi:BPMNDiagram id="BPMNDiagram_order-fulfilment">
+    <bpmndi:BPMNPlane id="BPMNPlane_order-fulfilment" bpmnElement="order-fulfilment">
+      <bpmndi:BPMNShape id="OrderPlaced_di" bpmnElement="OrderPlaced">
+        <dc:Bounds x="57" y="52" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="ReviewOrder_di" bpmnElement="ReviewOrder">
+        <dc:Bounds x="625" y="30" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="ScheduleReminder_di" bpmnElement="ScheduleReminder">
+        <dc:Bounds x="775" y="30" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="FulfilOrder_di" bpmnElement="FulfilOrder" isExpanded="true">
+        <dc:Bounds x="925" y="30" width="1150" height="780" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="ShipParcel_di" bpmnElement="ShipParcel">
+        <dc:Bounds x="2125" y="30" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_order-fulfilment_5_split_di" bpmnElement="Gateway_order-fulfilment_5_split" isMarkerVisible="true">
+        <dc:Bounds x="2300" y="45" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="ExpediteDispatch_di" bpmnElement="ExpediteDispatch">
+        <dc:Bounds x="2425" y="30" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Notify_di" bpmnElement="Notify">
+        <dc:Bounds x="2757" y="52" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="ArchiveStage_di" bpmnElement="ArchiveStage" isExpanded="true">
+        <dc:Bounds x="2875" y="30" width="1000" height="500" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Announce_di" bpmnElement="Announce">
+        <dc:Bounds x="3957" y="52" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="EventSubProcess_order-fulfilment_9_di" bpmnElement="EventSubProcess_order-fulfilment_9" isExpanded="true">
+        <dc:Bounds x="25" y="870" width="550" height="220" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="StandardDispatch_di" bpmnElement="StandardDispatch">
+        <dc:Bounds x="2425" y="870" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_order-fulfilment_5_join_di" bpmnElement="Gateway_order-fulfilment_5_join" isMarkerVisible="true">
+        <dc:Bounds x="2600" y="885" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="EventSubProcess_order-fulfilment_10_di" bpmnElement="EventSubProcess_order-fulfilment_10" isExpanded="true">
+        <dc:Bounds x="25" y="1150" width="550" height="220" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="EventSubProcess_order-fulfilment_11_di" bpmnElement="EventSubProcess_order-fulfilment_11" isExpanded="true">
+        <dc:Bounds x="25" y="1430" width="550" height="220" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_OrderPlaced_ReviewOrder_di" bpmnElement="Flow_OrderPlaced_ReviewOrder">
+        <di:waypoint x="93" y="70" />
+        <di:waypoint x="625" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ReviewOrder_ScheduleReminder_di" bpmnElement="Flow_ReviewOrder_ScheduleReminder">
+        <di:waypoint x="725" y="70" />
+        <di:waypoint x="775" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ScheduleReminder_FulfilOrder_di" bpmnElement="Flow_ScheduleReminder_FulfilOrder">
+        <di:waypoint x="875" y="70" />
+        <di:waypoint x="925" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_FulfilOrder_ShipParcel_di" bpmnElement="Flow_FulfilOrder_ShipParcel">
+        <di:waypoint x="2075" y="70" />
+        <di:waypoint x="2125" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ShipParcel_Gateway_order-fulfilment_5_split_di" bpmnElement="Flow_ShipParcel_Gateway_order-fulfilment_5_split">
+        <di:waypoint x="2225" y="70" />
+        <di:waypoint x="2300" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Gateway_order-fulfilment_5_split_ExpediteDispatch_di" bpmnElement="Flow_Gateway_order-fulfilment_5_split_ExpediteDispatch">
+        <di:waypoint x="2350" y="70" />
+        <di:waypoint x="2425" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Gateway_order-fulfilment_5_split_default_di" bpmnElement="Flow_Gateway_order-fulfilment_5_split_default">
+        <di:waypoint x="2325" y="95" />
+        <di:waypoint x="2325" y="910" />
+        <di:waypoint x="2425" y="910" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ExpediteDispatch_Notify_di" bpmnElement="Flow_ExpediteDispatch_Notify">
+        <di:waypoint x="2525" y="70" />
+        <di:waypoint x="2757" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Notify_ArchiveStage_di" bpmnElement="Flow_Notify_ArchiveStage">
+        <di:waypoint x="2793" y="70" />
+        <di:waypoint x="2875" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ArchiveStage_Announce_di" bpmnElement="Flow_ArchiveStage_Announce">
+        <di:waypoint x="3875" y="70" />
+        <di:waypoint x="3957" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_StandardDispatch_Gateway_order-fulfilment_5_join_di" bpmnElement="Flow_StandardDispatch_Gateway_order-fulfilment_5_join">
+        <di:waypoint x="2525" y="910" />
+        <di:waypoint x="2600" y="910" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Gateway_order-fulfilment_5_join_Notify_di" bpmnElement="Flow_Gateway_order-fulfilment_5_join_Notify">
+        <di:waypoint x="2650" y="910" />
+        <di:waypoint x="2775" y="910" />
+        <di:waypoint x="2775" y="88" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNShape id="StockErrStart_di" bpmnElement="StockErrStart">
+        <dc:Bounds x="132" y="1522" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="ContactCustomer_di" bpmnElement="ContactCustomer">
+        <dc:Bounds x="250" y="1500" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="StockErrDone_di" bpmnElement="StockErrDone">
+        <dc:Bounds x="432" y="1522" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_StockErrStart_ContactCustomer_di" bpmnElement="Flow_StockErrStart_ContactCustomer">
+        <di:waypoint x="168" y="1540" />
+        <di:waypoint x="250" y="1540" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ContactCustomer_StockErrDone_di" bpmnElement="Flow_ContactCustomer_StockErrDone">
+        <di:waypoint x="350" y="1540" />
+        <di:waypoint x="432" y="1540" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNShape id="FulfilledStart_di" bpmnElement="FulfilledStart">
+        <dc:Bounds x="132" y="1242" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="ArchiveOrder_di" bpmnElement="ArchiveOrder">
+        <dc:Bounds x="250" y="1220" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="FulfilledDone_di" bpmnElement="FulfilledDone">
+        <dc:Bounds x="432" y="1242" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_FulfilledStart_ArchiveOrder_di" bpmnElement="Flow_FulfilledStart_ArchiveOrder">
+        <di:waypoint x="168" y="1260" />
+        <di:waypoint x="250" y="1260" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ArchiveOrder_FulfilledDone_di" bpmnElement="Flow_ArchiveOrder_FulfilledDone">
+        <di:waypoint x="350" y="1260" />
+        <di:waypoint x="432" y="1260" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNShape id="CancelledStart_di" bpmnElement="CancelledStart">
+        <dc:Bounds x="132" y="962" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="RollbackOrder_di" bpmnElement="RollbackOrder">
+        <dc:Bounds x="250" y="940" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="CancelledDone_di" bpmnElement="CancelledDone">
+        <dc:Bounds x="432" y="962" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_CancelledStart_RollbackOrder_di" bpmnElement="Flow_CancelledStart_RollbackOrder">
+        <di:waypoint x="168" y="980" />
+        <di:waypoint x="250" y="980" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_RollbackOrder_CancelledDone_di" bpmnElement="Flow_RollbackOrder_CancelledDone">
+        <di:waypoint x="350" y="980" />
+        <di:waypoint x="432" y="980" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNShape id="ArchiveStart_di" bpmnElement="ArchiveStart">
+        <dc:Bounds x="2982" y="122" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="WriteArchive_di" bpmnElement="WriteArchive">
+        <dc:Bounds x="3550" y="100" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="ArchiveDone_di" bpmnElement="ArchiveDone">
+        <dc:Bounds x="3732" y="122" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="EventSubProcess_order-fulfilment_7_3_di" bpmnElement="EventSubProcess_order-fulfilment_7_3" isExpanded="true">
+        <dc:Bounds x="2950" y="240" width="550" height="220" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_ArchiveStart_WriteArchive_di" bpmnElement="Flow_ArchiveStart_WriteArchive">
+        <di:waypoint x="3018" y="140" />
+        <di:waypoint x="3550" y="140" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_WriteArchive_ArchiveDone_di" bpmnElement="Flow_WriteArchive_ArchiveDone">
+        <di:waypoint x="3650" y="140" />
+        <di:waypoint x="3732" y="140" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNShape id="FulfilStart_di" bpmnElement="FulfilStart">
+        <dc:Bounds x="1032" y="122" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="ReserveStock_di" bpmnElement="ReserveStock">
+        <dc:Bounds x="1600" y="100" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="PackParcel_di" bpmnElement="PackParcel">
+        <dc:Bounds x="1750" y="100" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="FulfilDone_di" bpmnElement="FulfilDone">
+        <dc:Bounds x="1932" y="122" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="EventSubProcess_order-fulfilment_3_4_di" bpmnElement="EventSubProcess_order-fulfilment_3_4" isExpanded="true">
+        <dc:Bounds x="1000" y="240" width="550" height="220" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="EventSubProcess_order-fulfilment_3_5_di" bpmnElement="EventSubProcess_order-fulfilment_3_5" isExpanded="true">
+        <dc:Bounds x="1000" y="520" width="550" height="220" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_FulfilStart_ReserveStock_di" bpmnElement="Flow_FulfilStart_ReserveStock">
+        <di:waypoint x="1068" y="140" />
+        <di:waypoint x="1600" y="140" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ReserveStock_PackParcel_di" bpmnElement="Flow_ReserveStock_PackParcel">
+        <di:waypoint x="1700" y="140" />
+        <di:waypoint x="1750" y="140" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_PackParcel_FulfilDone_di" bpmnElement="Flow_PackParcel_FulfilDone">
+        <di:waypoint x="1850" y="140" />
+        <di:waypoint x="1932" y="140" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNShape id="PurgeStart_di" bpmnElement="PurgeStart">
+        <dc:Bounds x="3057" y="332" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="PurgeDraft_di" bpmnElement="PurgeDraft">
+        <dc:Bounds x="3175" y="310" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="PurgeDone_di" bpmnElement="PurgeDone">
+        <dc:Bounds x="3357" y="332" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_PurgeStart_PurgeDraft_di" bpmnElement="Flow_PurgeStart_PurgeDraft">
+        <di:waypoint x="3093" y="350" />
+        <di:waypoint x="3175" y="350" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_PurgeDraft_PurgeDone_di" bpmnElement="Flow_PurgeDraft_PurgeDone">
+        <di:waypoint x="3275" y="350" />
+        <di:waypoint x="3357" y="350" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNShape id="LowStockStart_di" bpmnElement="LowStockStart">
+        <dc:Bounds x="1107" y="612" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="ReorderStock_di" bpmnElement="ReorderStock">
+        <dc:Bounds x="1225" y="590" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="LowStockDone_di" bpmnElement="LowStockDone">
+        <dc:Bounds x="1407" y="612" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_LowStockStart_ReorderStock_di" bpmnElement="Flow_LowStockStart_ReorderStock">
+        <di:waypoint x="1143" y="630" />
+        <di:waypoint x="1225" y="630" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ReorderStock_LowStockDone_di" bpmnElement="Flow_ReorderStock_LowStockDone">
+        <di:waypoint x="1325" y="630" />
+        <di:waypoint x="1407" y="630" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNShape id="RemindStart_di" bpmnElement="RemindStart">
+        <dc:Bounds x="1107" y="332" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="ChaseWarehouse_di" bpmnElement="ChaseWarehouse">
+        <dc:Bounds x="1225" y="310" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="RemindDone_di" bpmnElement="RemindDone">
+        <dc:Bounds x="1407" y="332" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_RemindStart_ChaseWarehouse_di" bpmnElement="Flow_RemindStart_ChaseWarehouse">
+        <di:waypoint x="1143" y="350" />
+        <di:waypoint x="1225" y="350" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ChaseWarehouse_RemindDone_di" bpmnElement="Flow_ChaseWarehouse_RemindDone">
+        <di:waypoint x="1325" y="350" />
+        <di:waypoint x="1407" y="350" />
+      </bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>

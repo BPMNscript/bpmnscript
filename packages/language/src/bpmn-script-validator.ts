@@ -203,15 +203,130 @@ const SUPPORTED_SCRIPT_TAGS: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * The legal `trigger` words for `on`/`throw`/`emit`. `error` and
- * `escalation` lex as plain `ID`s (not grammar keywords), so an unrecognised
- * word is a validator diagnostic, not a parse error — see
- * {@link isKnownTrigger}.
+ * The per-trigger payload contract for an `on` handler: whether the STRING
+ * head (`code`, immediately after the trigger word) is required, optional,
+ * or forbidden; whether the timer particle clause (`particle` + `time`) is
+ * required; what the parenthesized `(…)` slot may legally hold; and whether
+ * a non-interrupting `alongside` handler is legal. One record per trigger
+ * word (the payload matrix), consumed by exactly one check — {@link
+ * BpmnScriptValidator.checkHandlerPayload} — that walks a handler's
+ * properties against its row, so a new trigger kind is a new row, not a new
+ * rule.
  */
-const EVENT_TRIGGERS: ReadonlySet<string> = new Set(['error', 'escalation']);
+interface TriggerPayloadRule {
+  /** Whether the trigger's STRING head is required, optional, or forbidden. */
+  readonly code: 'required' | 'optional' | 'forbidden';
+  /** Whether the `particle`/`time` clause (`after`/`at`/`every` + a time string) is required. */
+  readonly timer: boolean;
+  /** What the parenthesized `(…)` slot may legally hold. */
+  readonly parens: 'bindings' | 'condition' | 'forbidden';
+  /** Whether a non-interrupting `alongside` handler is legal. */
+  readonly alongside: boolean;
+}
+
+/**
+ * The soft trigger words `on` accepts, each mapped to its payload contract.
+ * `error`/`escalation` read like a `catch` clause (an optional code,
+ * optional catch-parameter bindings; `error` has no `alongside` since an
+ * error always interrupts). `message`/`signal` are name-keyed subscriptions
+ * — the engine matches by name, so the name is required and there is no
+ * catch-all. `timer` reads its payload from the particle clause instead of
+ * a code string. `condition` reads its payload from the parenthesized
+ * expression instead of a code string. These words lex as plain `ID`s (not
+ * grammar keywords), so an unrecognised word is a validator diagnostic, not
+ * a parse error.
+ */
+const TRIGGER_PAYLOAD: Readonly<Record<string, TriggerPayloadRule>> = {
+  error: {
+    code: 'optional',
+    timer: false,
+    parens: 'bindings',
+    alongside: false,
+  },
+  escalation: {
+    code: 'optional',
+    timer: false,
+    parens: 'bindings',
+    alongside: true,
+  },
+  message: {
+    code: 'required',
+    timer: false,
+    parens: 'forbidden',
+    alongside: true,
+  },
+  signal: {
+    code: 'required',
+    timer: false,
+    parens: 'forbidden',
+    alongside: true,
+  },
+  timer: {
+    code: 'forbidden',
+    timer: true,
+    parens: 'forbidden',
+    alongside: true,
+  },
+  condition: {
+    code: 'forbidden',
+    timer: false,
+    parens: 'condition',
+    alongside: true,
+  },
+};
+
+/** The legal `on` trigger words — the keys of {@link TRIGGER_PAYLOAD}. */
+const ON_TRIGGERS: readonly string[] = Object.keys(TRIGGER_PAYLOAD);
+const ON_TRIGGERS_SET: ReadonlySet<string> = new Set(ON_TRIGGERS);
+
+/**
+ * The legal `throw` trigger words: every kind with a terminal form. A
+ * message arrives via the engine's correlation API, a timer fires off the
+ * clock, and a condition fires off data — there is nothing for any of them
+ * to throw.
+ */
+const THROW_TRIGGERS: readonly string[] = ['error', 'escalation', 'signal'];
+
+/**
+ * The legal `emit` trigger words: every kind with a continuing
+ * (fire-and-keep-going) form. An error always ends its path, so it has no
+ * `emit` form.
+ */
+const EMIT_TRIGGERS: readonly string[] = ['escalation', 'signal'];
+
+/** The legal timer particle words, each mapping 1:1 to one BPMN timer shape. */
+const TIMER_PARTICLES: ReadonlySet<string> = new Set(['after', 'at', 'every']);
 
 /** The legal catch-binding `field` words inside an `on (…)` list. */
 const EVENT_BINDING_FIELDS: ReadonlySet<string> = new Set(['code', 'message']);
+
+/** The name-less `on message`/`on signal` teaching text. */
+const MESSAGELESS_NAME_MESSAGE =
+  "A message handler needs the message's name — the engine matches messages by name.";
+
+/** The payload-less (or STRING-instead-of-particle) `on timer` teaching text. */
+const TIMER_PAYLOAD_MESSAGE =
+  `A timer needs to know how to read the time: write 'after "PT1H"', ` +
+  `'at "2026-08-01T09:00:00"', or 'every "R/PT10M"'.`;
+
+/** The condition-less `on condition` teaching text. */
+const CONDITION_REQUIRED_MESSAGE =
+  "A condition handler needs its condition: 'on condition (amount > 100)'.";
+
+/** A code string on `on condition`, whose payload lives in the parens instead. */
+const CONDITION_NO_CODE_MESSAGE =
+  "A condition handler takes no code string — write the condition in parentheses: 'on condition (amount > 100)'.";
+
+/** A condition expression in the parens of a trigger that does not read one. */
+const CONDITION_ONLY_MESSAGE =
+  "Only 'on condition' takes a condition expression.";
+
+/** A timer particle clause on a trigger that does not read one. */
+const PARTICLE_ONLY_MESSAGE = "Only 'on timer' takes a particle.";
+
+/** A message reaches this process from outside — `throw`/`emit` has nothing to send. */
+const MESSAGE_NOTHING_TO_SEND_MESSAGE =
+  "A message reaches this process from outside — there is nothing to send; write a message handler with 'on message'.";
 
 /**
  * The {@link VarType}s an Operaton form field can carry. `json`/`any` have no
@@ -499,7 +614,8 @@ export class BpmnScriptValidator {
       const container = node.$container;
       if (
         isBlock(container) &&
-        (isSubProcess(container.$container) || isOnHandler(container.$container)) &&
+        (isSubProcess(container.$container) ||
+          isOnHandler(container.$container)) &&
         container.statements[0] === node
       ) {
         continue;
@@ -623,7 +739,11 @@ export class BpmnScriptValidator {
             scan(block.statements);
           }
         }
-        if (isEndEvent(stmt) || isGotoStatement(stmt) || isThrowStatement(stmt)) {
+        if (
+          isEndEvent(stmt) ||
+          isGotoStatement(stmt) ||
+          isThrowStatement(stmt)
+        ) {
           reachable = false;
         }
       }
@@ -1330,7 +1450,10 @@ export class BpmnScriptValidator {
    *
    * @param call The call activity.
    */
-  checkCallActivity = (call: CallActivity, accept: ValidationAcceptor): void => {
+  checkCallActivity = (
+    call: CallActivity,
+    accept: ValidationAcceptor,
+  ): void => {
     this.checkDuplicateKeys(call.attrs, accept);
     this.checkAllowedKeys(call.attrs, CALL_ACTIVITY_KEYS, 'a call', accept);
     this.checkCallProcessAttribute(call, accept);
@@ -1399,11 +1522,10 @@ export class BpmnScriptValidator {
       );
       return;
     }
-    accept(
-      'error',
-      `Attribute 'binding' must be 'latest' or 'deployment'.`,
-      { node: bindingAttr, property: 'value' },
-    );
+    accept('error', `Attribute 'binding' must be 'latest' or 'deployment'.`, {
+      node: bindingAttr,
+      property: 'value',
+    });
   }
 
   /**
@@ -1466,6 +1588,16 @@ export class BpmnScriptValidator {
   // that node would either be meaningless (is `alongside` legal for a
   // trigger we don't recognise?) or would pile a second diagnostic onto the
   // same mistake.
+  //
+  // Beyond error/escalation, `on` accepts four more triggers — message,
+  // signal, timer, condition — each with a differently-shaped payload (a
+  // required name, a particle+time clause, or a condition expression instead
+  // of catch-parameter bindings). Which shape is legal per trigger is the
+  // small table `TRIGGER_PAYLOAD`, walked by one check
+  // ({@link checkHandlerPayload}), so a new trigger kind is a new row rather
+  // than new rule plumbing. `throw`/`emit` gain their own, smaller legal
+  // sets (`THROW_TRIGGERS`/`EMIT_TRIGGERS`) since only some kinds have a
+  // throw form.
 
   /**
    * `on` handler checks: the soft trigger word, placement (directly in a
@@ -1480,8 +1612,8 @@ export class BpmnScriptValidator {
    * @param handler The `on` handler.
    */
   checkOnHandler = (handler: OnHandler, accept: ValidationAcceptor): void => {
-    if (!isKnownTrigger(handler.trigger)) {
-      accept('error', unknownTriggerMessage(handler.trigger), {
+    if (!ON_TRIGGERS_SET.has(handler.trigger)) {
+      accept('error', onTriggerMessage(handler.trigger), {
         node: handler,
         property: 'trigger',
       });
@@ -1491,7 +1623,9 @@ export class BpmnScriptValidator {
     this.checkHandlerPlacement(handler, accept);
     this.checkHandlerTrailing(handler, accept);
 
-    if (handler.alongside && handler.trigger === 'error') {
+    const rule = TRIGGER_PAYLOAD[handler.trigger];
+
+    if (handler.alongside && !rule.alongside) {
       accept(
         'error',
         "An error always interrupts: the handler takes over from the failed scope; 'alongside' is only available for escalations.",
@@ -1499,14 +1633,143 @@ export class BpmnScriptValidator {
       );
     }
 
-    checkEmptyCode(handler.code, handler, accept);
-    this.checkHandlerBindings(handler, accept);
+    this.checkHandlerPayload(handler, rule, accept);
+
+    if (rule.parens === 'bindings') {
+      this.checkHandlerBindings(handler, accept);
+    }
+
     this.warnIfEmptyBlock(
       handler.body,
       'The event handler has no steps.',
       accept,
     );
   };
+
+  /**
+   * Walk a handler's payload members against its trigger's row in {@link
+   * TRIGGER_PAYLOAD}: the STRING head (`code`), the timer particle
+   * clause (`particle`/`time`), and the parenthesized slot (bindings vs.
+   * condition vs. forbidden). An empty string in a required slot is treated
+   * the same as an omitted one — there is no "empty means catch-all"
+   * shorthand for a name-keyed or timed trigger. `alongside` is checked by
+   * the caller (its legality is a per-row flag, not a payload member).
+   */
+  private checkHandlerPayload(
+    handler: OnHandler,
+    rule: TriggerPayloadRule,
+    accept: ValidationAcceptor,
+  ): void {
+    if (rule.code === 'required') {
+      if (!handler.code) {
+        accept('error', MESSAGELESS_NAME_MESSAGE, {
+          node: handler,
+          property: 'trigger',
+        });
+      }
+    } else if (rule.code === 'optional') {
+      checkEmptyCode(handler.code, handler, accept);
+    } else if (handler.trigger === 'condition' && handler.code !== undefined) {
+      // Timer's forbidden code folds into the timer-payload branch below —
+      // `on timer "PT1H"` is "missing particle+time", not "has a stray code".
+      accept('error', CONDITION_NO_CODE_MESSAGE, {
+        node: handler,
+        property: 'code',
+      });
+    }
+
+    if (rule.timer) {
+      if (!handler.particle || !handler.time) {
+        accept('error', TIMER_PAYLOAD_MESSAGE, {
+          node: handler,
+          property: 'trigger',
+        });
+      } else {
+        this.checkTimerParticle(handler, accept);
+      }
+    } else if (handler.particle !== undefined) {
+      accept('error', PARTICLE_ONLY_MESSAGE, {
+        node: handler,
+        property: 'particle',
+      });
+    }
+
+    if (rule.parens === 'condition') {
+      if (handler.condition === undefined) {
+        accept('error', CONDITION_REQUIRED_MESSAGE, {
+          node: handler,
+          property: 'trigger',
+        });
+      }
+    } else if (rule.parens === 'forbidden' && handler.bindings.length > 0) {
+      for (const binding of handler.bindings) {
+        accept(
+          'error',
+          `'(code c)' bindings belong to error and escalation handlers — a ${handler.trigger} carries no code.`,
+          { node: binding, property: 'field' },
+        );
+      }
+    }
+
+    if (handler.trigger !== 'condition' && handler.condition !== undefined) {
+      accept('error', CONDITION_ONLY_MESSAGE, {
+        node: handler,
+        property: 'condition',
+      });
+    }
+  }
+
+  /**
+   * Timer-specific checks, run only once the required particle/time pair is
+   * present: the particle word itself (`after`/`at`/`every`), two
+   * mistake-guard shape warnings (an `after` value that does not read as a
+   * duration, an `at` value that reads as one instead), and the
+   * `every`-on-an-interrupting-handler warning — a repeating timer that also
+   * interrupts its scope could only ever fire once.
+   */
+  private checkTimerParticle(
+    handler: OnHandler,
+    accept: ValidationAcceptor,
+  ): void {
+    const particle = handler.particle!;
+    const time = handler.time!;
+    if (!TIMER_PARTICLES.has(particle)) {
+      accept(
+        'error',
+        `Unknown timer particle '${particle}'; write 'after', 'at', or 'every'.`,
+        { node: handler, property: 'particle' },
+      );
+      return;
+    }
+
+    if (particle === 'after' && !time.startsWith('P') && !time.includes('${')) {
+      accept('warning', "'after' expects a duration such as PT1H.", {
+        node: handler,
+        property: 'time',
+      });
+    } else if (
+      particle === 'at' &&
+      (time.startsWith('P') || time.startsWith('R')) &&
+      !time.includes('${')
+    ) {
+      accept(
+        'warning',
+        "'at' expects a point in time such as 2026-08-01T09:00:00.",
+        { node: handler, property: 'time' },
+      );
+    }
+    // `every` gets no shape check — cycles and cron are too varied to police
+    // honestly.
+
+    if (particle === 'every' && !handler.alongside) {
+      accept(
+        'warning',
+        'A repeating timer that interrupts its scope fires at most once — ' +
+          "add 'alongside' to let it repeat, or use 'after'.",
+        { node: handler, property: 'particle' },
+      );
+    }
+  }
 
   /**
    * A handler belongs directly in a process body, a `subprocess` body, or
@@ -1570,11 +1833,10 @@ export class BpmnScriptValidator {
       handler.bindings,
       (binding) => binding.field,
       (binding) =>
-        accept(
-          'error',
-          `Duplicate catch-binding field '${binding.field}'.`,
-          { node: binding, property: 'field' },
-        ),
+        accept('error', `Duplicate catch-binding field '${binding.field}'.`, {
+          node: binding,
+          property: 'field',
+        }),
     );
 
     for (const binding of handler.bindings) {
@@ -1587,11 +1849,10 @@ export class BpmnScriptValidator {
         continue;
       }
       if (binding.field === 'message' && handler.trigger === 'escalation') {
-        accept(
-          'error',
-          'An escalation carries a code but no message.',
-          { node: binding, property: 'field' },
-        );
+        accept('error', 'An escalation carries a code but no message.', {
+          node: binding,
+          property: 'field',
+        });
       }
     }
   }
@@ -1612,6 +1873,10 @@ export class BpmnScriptValidator {
     const byContainer = new Map<AstNode, OnHandler[]>();
     for (const node of AstUtils.streamAst(process)) {
       if (!isOnHandler(node)) continue;
+      // Timer and conditional handlers key no engine subscription name — two
+      // timers with different deadlines (or two conditions) in one scope is
+      // a real pattern, so they never conflict and are excluded here.
+      if (node.trigger === 'timer' || node.trigger === 'condition') continue;
       const siblings = byContainer.get(node.$container) ?? [];
       siblings.push(node);
       byContainer.set(node.$container, siblings);
@@ -1641,8 +1906,8 @@ export class BpmnScriptValidator {
     stmt: ThrowStatement,
     accept: ValidationAcceptor,
   ): void => {
-    if (!isKnownTrigger(stmt.trigger)) {
-      accept('error', unknownTriggerMessage(stmt.trigger), {
+    if (!THROW_TRIGGERS.includes(stmt.trigger)) {
+      accept('error', throwTriggerMessage(stmt.trigger), {
         node: stmt,
         property: 'trigger',
       });
@@ -1652,9 +1917,10 @@ export class BpmnScriptValidator {
   };
 
   /**
-   * `emit <trigger> "<code>"` checks: the soft trigger word, the
-   * impossible-verb teaching error (`emit error` — an error always ends its
-   * path, so it can never be a continuing throw), and an empty code string.
+   * `emit <trigger> "<code>"` checks: the soft trigger word (with the
+   * impossible-verb teaching error for `emit error` — an error always ends
+   * its path, so it can never be a continuing throw — folded into {@link
+   * emitTriggerMessage}) and an empty code string.
    *
    * @param stmt The `emit` statement.
    */
@@ -1662,19 +1928,11 @@ export class BpmnScriptValidator {
     stmt: EmitStatement,
     accept: ValidationAcceptor,
   ): void => {
-    if (!isKnownTrigger(stmt.trigger)) {
-      accept('error', unknownTriggerMessage(stmt.trigger), {
+    if (!EMIT_TRIGGERS.includes(stmt.trigger)) {
+      accept('error', emitTriggerMessage(stmt.trigger), {
         node: stmt,
         property: 'trigger',
       });
-      return;
-    }
-    if (stmt.trigger === 'error') {
-      accept(
-        'error',
-        `An error always ends its path — write 'throw error "${stmt.code}"'; 'emit' is for events the flow survives, such as an escalation.`,
-        { node: stmt, property: 'trigger' },
-      );
       return;
     }
     checkEmptyCode(stmt.code, stmt, accept);
@@ -1692,10 +1950,14 @@ export class BpmnScriptValidator {
     const wellFormed: ErrorDecl[] = [];
     for (const decl of decls) {
       if (decl.kind !== 'error') {
-        accept('error', `Unknown declaration kind '${decl.kind}'; write 'error'.`, {
-          node: decl,
-          property: 'kind',
-        });
+        accept(
+          'error',
+          `Unknown declaration kind '${decl.kind}'; write 'error'.`,
+          {
+            node: decl,
+            property: 'kind',
+          },
+        );
         continue;
       }
       if (decl.field !== 'message') {
@@ -1759,17 +2021,59 @@ function isReservedName(name: string): boolean {
   return RESERVED_ID_PATTERNS.some((re) => re.test(name));
 }
 
-/** Return `true` when `word` is a recognised event trigger kind. */
-function isKnownTrigger(word: string): boolean {
-  return EVENT_TRIGGERS.has(word);
+/**
+ * Render a legal-word list as a quoted English "or"/"…, or …" clause — the
+ * shared tail of every soft-word naming diagnostic in this file.
+ */
+function formatWordList(words: readonly string[]): string {
+  const quoted = words.map((w) => `'${w}'`);
+  if (quoted.length === 1) return quoted[0]!;
+  if (quoted.length === 2) return `${quoted[0]} or ${quoted[1]}`;
+  return `${quoted.slice(0, -1).join(', ')}, or ${quoted[quoted.length - 1]}`;
+}
+
+/** The generic "unknown event kind" diagnostic, naming every legal word for the position. */
+function unknownTriggerMessage(word: string, legal: readonly string[]): string {
+  return `Unknown event kind '${word}'; write ${formatWordList(legal)}.`;
 }
 
 /**
- * The "unknown event kind" diagnostic message: names both legal options,
- * which is the whole did-you-mean payoff for a two-element set.
+ * The `on` trigger diagnostic: a near-miss teaching message for
+ * `conditional` (the one plausible typo for `condition`), otherwise the
+ * generic naming message over all six legal words.
  */
-function unknownTriggerMessage(word: string): string {
-  return `Unknown event kind '${word}'; write 'error' or 'escalation'.`;
+function onTriggerMessage(word: string): string {
+  if (word === 'conditional') {
+    return `Unknown event kind 'conditional'; did you mean 'condition'?`;
+  }
+  return unknownTriggerMessage(word, ON_TRIGGERS);
+}
+
+/**
+ * The `throw` trigger diagnostic: a near-miss teaching message for
+ * `message` (nothing to send on the throwing side — write a handler
+ * instead), otherwise the generic naming message.
+ */
+function throwTriggerMessage(word: string): string {
+  if (word === 'message') {
+    return MESSAGE_NOTHING_TO_SEND_MESSAGE;
+  }
+  return unknownTriggerMessage(word, THROW_TRIGGERS);
+}
+
+/**
+ * The `emit` trigger diagnostic: near-miss teaching messages for `error`
+ * (always terminal — write `throw error`) and `message` (nothing to send),
+ * otherwise the generic naming message.
+ */
+function emitTriggerMessage(word: string): string {
+  if (word === 'error') {
+    return "An error always aborts its path — write 'throw error'.";
+  }
+  if (word === 'message') {
+    return MESSAGE_NOTHING_TO_SEND_MESSAGE;
+  }
+  return unknownTriggerMessage(word, EMIT_TRIGGERS);
 }
 
 /**

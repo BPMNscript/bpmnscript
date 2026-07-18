@@ -16,17 +16,18 @@ The `spring-boot/` fixture runs Operaton 2.1.0 embedded in a Spring Boot 4.0.6 a
 (Java 17). It is packaged as a Docker image so the integration test harness can start
 and stop it programmatically. The fixture exposes the Operaton REST API on port 8080.
 
-Six DSL sources live under `spring-boot/processes/`:
+Seven DSL sources live under `spring-boot/processes/`:
 
 - `invoice-approval.bpmnscript` — start → review user task → exclusive gateway (amount > 1000) → senior-approval or auto-approve service task → end. Exercises `if`/`else` desugaring.
 - `parallel-approval.bpmnscript` — start → parallel AND-split into two concurrent user tasks → AND-join → end. Exercises `parallel { { } { } }` desugaring.
 - `order-handling.bpmnscript` — start → review user task → an embedded `subprocess` grouping the two payment steps → ship service task → end. Exercises the sub-process containment construct; Cockpit renders the sub-process as an expanded box with its children inside.
 - `order-recovery.bpmnscript` — a fulfilment `subprocess` guarded by an interrupting `on error "PAYMENT_FAILED"` handler that cancels the order, plus a non-interrupting `on escalation "SLOW_FULFILLMENT" alongside` handler that notifies a supervisor while the main flow continues. Exercises the error/escalation event layer (the `error … message` declaration, `emit escalation`, and both handler kinds).
+- `order-reminder.bpmnscript` — a fulfilment `subprocess` with a non-interrupting `on timer after "PT1H" alongside` reminder that chases the warehouse while the steps run, plus a process-level `on message "OrderCancelled"` handler that rolls the order back when the engine correlates a cancellation from outside. Exercises the timer and message triggers.
 - `loan-approval.bpmnscript` and `loan-approval-kopp.bpmnscript` — the loan-approval walkthrough (plain and parallel-rating variants) used by the `demo` profile; see [Running processes on Operaton](spring-boot/README.md#running-processes-on-operaton-demo) for a hands-on tour of both.
 
-`invoice-approval` and `parallel-approval` are also the two processes exercised by the automated E2E suite below; `order-handling`, `order-recovery`, and the loan-approval variants are demo-only fixtures.
+`invoice-approval` and `parallel-approval` are also the two processes exercised by the automated E2E suite below; `order-handling`, `order-recovery`, `order-reminder`, and the loan-approval variants are demo-only fixtures.
 
-Running `bpmns build` on any of the six files produces the deployable `.bpmn` artifact.
+Running `bpmns build` on any of the seven files produces the deployable `.bpmn` artifact.
 
 ### Testcontainers harness
 

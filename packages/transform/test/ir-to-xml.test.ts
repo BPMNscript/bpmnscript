@@ -42,7 +42,11 @@ import type { Model } from '@bpmn-script/language';
 
 import { irToXml } from '../src/ir-to-xml.js';
 import { astToIr } from '../src/ast-to-ir.js';
-import type { BpmnProcess } from '../src/ir/types.js';
+import type {
+  BpmnProcess,
+  EventDefinition,
+  FlowElement,
+} from '../src/ir/types.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const GOLDEN_GENERATED_PATH = resolve(
@@ -1339,6 +1343,265 @@ describe('irToXml — event layer (errors + escalations)', () => {
   });
 });
 
+// ── 12. Event layer: message + signal + timer + conditional ──────────────────
+
+/** Build an event sub-process (`on …` handler) wrapping a start/user/end body. */
+function eventHandler(
+  id: string,
+  startId: string,
+  def: EventDefinition,
+  isInterrupting?: false,
+): FlowElement {
+  const start: FlowElement =
+    isInterrupting === false
+      ? { kind: 'startEvent', id: startId, isInterrupting, eventDefinition: def }
+      : { kind: 'startEvent', id: startId, eventDefinition: def };
+  return {
+    kind: 'subProcess',
+    id,
+    triggeredByEvent: true,
+    flowElements: [
+      start,
+      { kind: 'userTask', id: `${id}_Work` },
+      { kind: 'endEvent', id: `${id}_End` },
+    ],
+    sequenceFlows: [
+      { id: `SF_${id}_a`, sourceRef: startId, targetRef: `${id}_Work` },
+      { id: `SF_${id}_b`, sourceRef: `${id}_Work`, targetRef: `${id}_End` },
+    ],
+  };
+}
+
+describe('irToXml — event layer (message + signal + timer + conditional)', () => {
+  /**
+   * A process exercising message/signal handlers plus both signal throw forms:
+   *   - An interrupting `on message "PaymentReceived"` handler.
+   *   - An `alongside` `on signal "Cancelled"` handler.
+   *   - An `emit signal "Cancelled"` intermediate throw mid-chain.
+   *   - A `throw signal "Cancelled"` end event — sharing the one signal root.
+   */
+  const signalIr: BpmnProcess = {
+    id: 'proc',
+    isExecutable: true,
+    flowElements: [
+      { kind: 'startEvent', id: 'PStart' },
+      eventHandler('MsgHandler', 'MsgStart', {
+        kind: 'message',
+        messageName: 'PaymentReceived',
+      }),
+      eventHandler(
+        'SigHandler',
+        'SigStart',
+        { kind: 'signal', signalName: 'Cancelled' },
+        false,
+      ),
+      {
+        kind: 'intermediateThrowEvent',
+        id: 'EmitSig',
+        eventDefinition: { kind: 'signal', signalName: 'Cancelled' },
+      },
+      {
+        kind: 'endEvent',
+        id: 'ThrowSig',
+        eventDefinition: { kind: 'signal', signalName: 'Cancelled' },
+      },
+    ],
+    sequenceFlows: [
+      { id: 'SF_PStart_EmitSig', sourceRef: 'PStart', targetRef: 'EmitSig' },
+      { id: 'SF_EmitSig_ThrowSig', sourceRef: 'EmitSig', targetRef: 'ThrowSig' },
+    ],
+  };
+
+  let defs: EventNode;
+
+  beforeAll(async () => {
+    defs = await parseDefinitionsWithOperaton(await irToXml(signalIr));
+  });
+
+  it('synthesizes exactly one bpmn:Message root referenced by the handler start', () => {
+    const messages = rootsOfType(defs, 'bpmn:Message');
+    expect(messages).toHaveLength(1);
+    expect(messages[0]!.id).toBe('Message_PaymentReceived');
+    expect(messages[0]!.name).toBe('PaymentReceived');
+
+    const def = soleDef(requireDeep(defs, 'MsgStart'));
+    expect(def.$type).toBe('bpmn:MessageEventDefinition');
+    expect(def.messageRef?.id).toBe('Message_PaymentReceived');
+  });
+
+  it('synthesizes one bpmn:Signal root shared by the handler, the emit, and the throw', () => {
+    const signals = rootsOfType(defs, 'bpmn:Signal');
+    expect(signals).toHaveLength(1);
+    expect(signals[0]!.id).toBe('Signal_Cancelled');
+    expect(signals[0]!.name).toBe('Cancelled');
+
+    const handlerStart = soleDef(requireDeep(defs, 'SigStart'));
+    const emit = soleDef(requireDeep(defs, 'EmitSig'));
+    const throwEnd = soleDef(requireDeep(defs, 'ThrowSig'));
+    expect(handlerStart.$type).toBe('bpmn:SignalEventDefinition');
+    expect(emit.$type).toBe('bpmn:SignalEventDefinition');
+    expect(throwEnd.$type).toBe('bpmn:SignalEventDefinition');
+    // All three resolve to the single shared root.
+    expect(handlerStart.signalRef?.id).toBe('Signal_Cancelled');
+    expect(emit.signalRef?.id).toBe('Signal_Cancelled');
+    expect(throwEnd.signalRef?.id).toBe('Signal_Cancelled');
+  });
+
+  it('marks the alongside signal handler start non-interrupting', () => {
+    expect(requireDeep(defs, 'SigStart').isInterrupting).toBe(false);
+  });
+
+  it('orders rootElements as [process, ...messages, ...signals] with no error/escalation roots', () => {
+    const types = defs.rootElements.map((r) => r.$type);
+    expect(types).toEqual(['bpmn:Process', 'bpmn:Message', 'bpmn:Signal']);
+  });
+
+  it('lays the message and signal handler bodies out inside their handler boxes', async () => {
+    const xml = await irToXml(signalIr);
+    expect((xml.match(/<bpmndi:BPMNDiagram\b/g) ?? []).length).toBe(1);
+    const shapes = await parseDiShapesById(xml);
+    for (const [handler, children] of [
+      ['MsgHandler', ['MsgStart', 'MsgHandler_Work', 'MsgHandler_End']],
+      ['SigHandler', ['SigStart', 'SigHandler_Work', 'SigHandler_End']],
+    ] as const) {
+      const box = requireShape(shapes, handler);
+      for (const child of children) {
+        expect(
+          boundsStrictlyInside(requireShape(shapes, child).bounds, box.bounds),
+        ).toBe(true);
+      }
+    }
+  });
+
+  it('emits one FormalExpression child per timer kind with the verbatim body, and no roots', async () => {
+    const timerIr: BpmnProcess = {
+      id: 'proc',
+      isExecutable: true,
+      flowElements: [
+        { kind: 'startEvent', id: 'PStart' },
+        { kind: 'endEvent', id: 'PEnd' },
+        eventHandler('AfterH', 'AfterStart', {
+          kind: 'timer',
+          timerKind: 'duration',
+          expression: 'PT1H',
+        }),
+        eventHandler('AtH', 'AtStart', {
+          kind: 'timer',
+          timerKind: 'date',
+          expression: '${dueDate}',
+        }),
+        eventHandler('EveryH', 'EveryStart', {
+          kind: 'timer',
+          timerKind: 'cycle',
+          expression: 'R/PT10M',
+        }),
+        eventHandler('CondH', 'CondStart', {
+          kind: 'conditional',
+          condition: '${amount > 100}',
+        }),
+      ],
+      sequenceFlows: [{ id: 'SF_PStart_PEnd', sourceRef: 'PStart', targetRef: 'PEnd' }],
+    };
+    const d = await parseDefinitionsWithOperaton(await irToXml(timerIr));
+
+    const after = soleDef(requireDeep(d, 'AfterStart'));
+    expect(after.$type).toBe('bpmn:TimerEventDefinition');
+    expect(after.timeDuration?.body).toBe('PT1H');
+    expect(after.timeDate).toBeUndefined();
+    expect(after.timeCycle).toBeUndefined();
+
+    const at = soleDef(requireDeep(d, 'AtStart'));
+    expect(at.timeDate?.body).toBe('${dueDate}');
+    expect(at.timeDuration).toBeUndefined();
+
+    const every = soleDef(requireDeep(d, 'EveryStart'));
+    expect(every.timeCycle?.body).toBe('R/PT10M');
+    expect(every.timeDuration).toBeUndefined();
+
+    const cond = soleDef(requireDeep(d, 'CondStart'));
+    expect(cond.$type).toBe('bpmn:ConditionalEventDefinition');
+    expect(cond.condition?.body).toBe('${amount > 100}');
+
+    // Timer and conditional contribute nothing at bpmn:Definitions level.
+    expect(d.rootElements.map((r) => r.$type)).toEqual(['bpmn:Process']);
+  });
+
+  it('orders mixed roots [process, ...errors, ...escalations, ...messages, ...signals] and sanitizes the message name', async () => {
+    const mixedIr: BpmnProcess = {
+      id: 'proc',
+      isExecutable: true,
+      flowElements: [
+        { kind: 'startEvent', id: 'S' },
+        {
+          kind: 'intermediateThrowEvent',
+          id: 'EmitEsc',
+          eventDefinition: { kind: 'escalation', escalationCode: 'LS' },
+        },
+        {
+          kind: 'intermediateThrowEvent',
+          id: 'EmitSig',
+          eventDefinition: { kind: 'signal', signalName: 'Cancelled' },
+        },
+        {
+          kind: 'endEvent',
+          id: 'ThrowErr',
+          eventDefinition: { kind: 'error', errorCode: 'PF' },
+        },
+        eventHandler('MsgHandler', 'MsgStart', {
+          kind: 'message',
+          messageName: 'Order received!',
+        }),
+      ],
+      sequenceFlows: [
+        { id: 'SF_S_EmitEsc', sourceRef: 'S', targetRef: 'EmitEsc' },
+        { id: 'SF_EmitEsc_EmitSig', sourceRef: 'EmitEsc', targetRef: 'EmitSig' },
+        { id: 'SF_EmitSig_ThrowErr', sourceRef: 'EmitSig', targetRef: 'ThrowErr' },
+      ],
+    };
+    const d = await parseDefinitionsWithOperaton(await irToXml(mixedIr));
+    expect(d.rootElements.map((r) => r.$type)).toEqual([
+      'bpmn:Process',
+      'bpmn:Error',
+      'bpmn:Escalation',
+      'bpmn:Message',
+      'bpmn:Signal',
+    ]);
+    const message = rootsOfType(d, 'bpmn:Message')[0]!;
+    expect(message.id).toBe('Message_Order_received_');
+    // The name is the DSL string verbatim (unsanitized).
+    expect(message.name).toBe('Order received!');
+  });
+
+  it('suffixes a synthesized signal root id that collides with an existing element id', async () => {
+    // A user task literally named `Signal_Ping` occupies that id, so the root
+    // for signal `Ping` must move to `Signal_Ping_2`.
+    const ir: BpmnProcess = {
+      id: 'p',
+      isExecutable: true,
+      flowElements: [
+        { kind: 'startEvent', id: 'S' },
+        { kind: 'userTask', id: 'Signal_Ping' },
+        {
+          kind: 'intermediateThrowEvent',
+          id: 'Emit',
+          eventDefinition: { kind: 'signal', signalName: 'Ping' },
+        },
+        { kind: 'endEvent', id: 'E' },
+      ],
+      sequenceFlows: [
+        { id: 'SF_S_X', sourceRef: 'S', targetRef: 'Signal_Ping' },
+        { id: 'SF_X_Emit', sourceRef: 'Signal_Ping', targetRef: 'Emit' },
+        { id: 'SF_Emit_E', sourceRef: 'Emit', targetRef: 'E' },
+      ],
+    };
+    const d = await parseDefinitionsWithOperaton(await irToXml(ir));
+    const signals = rootsOfType(d, 'bpmn:Signal');
+    expect(signals).toHaveLength(1);
+    expect(signals[0]!.id).toBe('Signal_Ping_2');
+    expect(signals[0]!.name).toBe('Ping');
+  });
+});
+
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 /** A parsed moddle node navigated for the event layer (roots, refs, defs). */
@@ -1357,6 +1620,12 @@ interface EventNode {
   outgoing?: Array<{ id: string }>;
   errorRef?: { id: string };
   escalationRef?: { id: string };
+  messageRef?: { id: string; name?: string };
+  signalRef?: { id: string; name?: string };
+  condition?: { $type: string; body?: string };
+  timeDuration?: { $type: string; body?: string };
+  timeDate?: { $type: string; body?: string };
+  timeCycle?: { $type: string; body?: string };
   errorCodeVariable?: string;
   errorMessageVariable?: string;
   escalationCodeVariable?: string;
@@ -1417,6 +1686,9 @@ function errorDef(node: EventNode): EventNode {
 function escalationDef(node: EventNode): EventNode {
   return errorDef(node);
 }
+
+/** The sole event definition on an event node, whatever its kind. */
+const soleDef = errorDef;
 
 /** Minimal `start → call → end` wrapper around one call-activity node. */
 function minimalCallIr(call: BpmnProcess['flowElements'][number]): BpmnProcess {

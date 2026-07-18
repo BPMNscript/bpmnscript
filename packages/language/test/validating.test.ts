@@ -1383,7 +1383,7 @@ describe('Validation — call activity allowed keys cut both ways', () => {
 });
 
 describe('Validation — call activity binding/version', () => {
-  test("`binding = version` (only authorable quoted, since `version` is a reserved word and cannot parse as a bare identifier) is the teaching error", async () => {
+  test('`binding = version` (only authorable quoted, since `version` is a reserved word and cannot parse as a bare identifier) is the teaching error', async () => {
     const { diagnostics } = await validate(
       `process p { call X { process = "p" binding = "version" } }`,
     );
@@ -1408,7 +1408,10 @@ describe('Validation — call activity binding/version', () => {
     const { diagnostics } = await validate(
       `process p { call X { process = "p" binding = deployment version = 2 } }`,
     );
-    const errors = diagnosticsFor(diagnostics, "combine 'binding' and 'version'");
+    const errors = diagnosticsFor(
+      diagnostics,
+      "combine 'binding' and 'version'",
+    );
     expect(errors).toHaveLength(1);
   });
 
@@ -1522,10 +1525,7 @@ process p {
   call A { process = "p" }
 }
 `);
-    const errors = diagnosticsFor(
-      diagnostics,
-      'already used by another step',
-    );
+    const errors = diagnosticsFor(diagnostics, 'already used by another step');
     expect(errors).toHaveLength(1);
   });
 
@@ -1678,9 +1678,9 @@ process p {
   on escalation "Y" { user B }
 }
 `);
-    expect(diagnosticsFor(diagnostics, 'move it after the last step')).toHaveLength(
-      0,
-    );
+    expect(
+      diagnosticsFor(diagnostics, 'move it after the last step'),
+    ).toHaveLength(0);
   });
 
   test('a handler after an end event produces no unreachable warning', async () => {
@@ -1760,9 +1760,9 @@ describe('Validation — event handler bindings', () => {
     const { diagnostics } = await validate(`
 process p { on error "X" (code c, code d) { user A } }
 `);
-    expect(diagnosticsFor(diagnostics, 'Duplicate catch-binding field')).toHaveLength(
-      1,
-    );
+    expect(
+      diagnosticsFor(diagnostics, 'Duplicate catch-binding field'),
+    ).toHaveLength(1);
   });
 
   test('a `message` binding on an escalation handler is an error', async () => {
@@ -1914,25 +1914,35 @@ process p {
 });
 
 describe('Validation — soft event words', () => {
-  test('an unknown trigger word on `on` is exactly one diagnostic naming both valid kinds', async () => {
+  test('an unknown trigger word on `on` is exactly one diagnostic naming all six kinds', async () => {
     const { diagnostics } = await validate(`process p { on erorr "X" { } }`);
     expect(diagnostics).toHaveLength(1);
-    expect(diagnostics[0]!.message).toContain('error');
-    expect(diagnostics[0]!.message).toContain('escalation');
+    for (const kind of [
+      'error',
+      'escalation',
+      'message',
+      'signal',
+      'timer',
+      'condition',
+    ]) {
+      expect(diagnostics[0]!.message).toContain(kind);
+    }
   });
 
-  test('an unknown trigger word on `throw` is exactly one diagnostic', async () => {
+  test('an unknown trigger word on `throw` is exactly one diagnostic naming its legal kinds', async () => {
     const { diagnostics } = await validate(`process p { throw banana "X" }`);
     expect(diagnostics).toHaveLength(1);
     expect(diagnostics[0]!.message).toContain('error');
     expect(diagnostics[0]!.message).toContain('escalation');
+    expect(diagnostics[0]!.message).toContain('signal');
   });
 
-  test('an unknown trigger word on `emit` is exactly one diagnostic', async () => {
+  test('an unknown trigger word on `emit` is exactly one diagnostic naming its legal kinds', async () => {
     const { diagnostics } = await validate(`process p { emit banana "X" }`);
     expect(diagnostics).toHaveLength(1);
-    expect(diagnostics[0]!.message).toContain('error');
     expect(diagnostics[0]!.message).toContain('escalation');
+    expect(diagnostics[0]!.message).toContain('signal');
+    expect(diagnostics[0]!.message).not.toContain('error');
   });
 
   test('an unknown binding field is exactly one diagnostic naming both valid fields', async () => {
@@ -1961,6 +1971,278 @@ process p {
 }
 `);
     expect(diagnostics).toHaveLength(0);
+  });
+});
+
+describe('Validation — trigger near-miss teaching messages', () => {
+  test('`emit error` is a teaching error pointing at `throw error`', async () => {
+    const { diagnostics } = await validate(`process p { emit error "X" }`);
+    expect(diagnosticsFor(diagnostics, 'throw error')).toHaveLength(1);
+  });
+
+  test('`throw message` teaches that a message has nothing to send', async () => {
+    const { diagnostics } = await validate(`process p { throw message "X" }`);
+    expect(diagnosticsFor(diagnostics, 'on message')).toHaveLength(1);
+  });
+
+  test('`emit message` teaches the same nothing-to-send lesson', async () => {
+    const { diagnostics } = await validate(`process p { emit message "X" }`);
+    expect(diagnosticsFor(diagnostics, 'on message')).toHaveLength(1);
+  });
+
+  test('`on conditional` is a did-you-mean naming `condition`', async () => {
+    const { diagnostics } = await validate(
+      `process p { on conditional { user A } }`,
+    );
+    expect(diagnostics).toHaveLength(1);
+    expect(diagnostics[0]!.message).toContain('condition');
+  });
+});
+
+describe('Validation — trigger payload matrix: clean programs', () => {
+  test('a name-only `on message` handler is diagnostic-free', async () => {
+    const { diagnostics } = await validate(
+      `process p { on message "PaymentReceived" { user A } }`,
+    );
+    expect(diagnostics).toHaveLength(0);
+  });
+
+  test('an `on signal … alongside` handler is diagnostic-free', async () => {
+    const { diagnostics } = await validate(
+      `process p { on signal "Cancelled" alongside { user A } }`,
+    );
+    expect(diagnostics).toHaveLength(0);
+  });
+
+  test('all three timer particles are diagnostic-free', async () => {
+    const after = await validate(
+      `process p { on timer after "PT1H" { user A } }`,
+    );
+    expect(after.diagnostics).toHaveLength(0);
+
+    const at = await validate(
+      `process p { on timer at "2026-08-01T09:00:00" { user A } }`,
+    );
+    expect(at.diagnostics).toHaveLength(0);
+
+    const every = await validate(
+      `process p { on timer every "R/PT10M" alongside { user A } }`,
+    );
+    expect(every.diagnostics).toHaveLength(0);
+  });
+
+  test('an `on condition` handler with a declared variable is diagnostic-free', async () => {
+    const { diagnostics } = await validate(`
+process p {
+  var amount: number
+  on condition (amount > 100) { user A }
+}
+`);
+    expect(diagnostics).toHaveLength(0);
+  });
+
+  test('`throw signal`/`emit signal` in a body are diagnostic-free', async () => {
+    const thrown = await validate(`process p { start S throw signal "Alert" }`);
+    expect(thrown.diagnostics).toHaveLength(0);
+
+    const emitted = await validate(
+      `process p { start S emit signal "Ping" user A }`,
+    );
+    expect(emitted.diagnostics).toHaveLength(0);
+  });
+});
+
+describe('Validation — trigger payload matrix: violations', () => {
+  test('a name-less `on message` is exactly one diagnostic about the message name', async () => {
+    const { diagnostics } = await validate(
+      `process p { on message { user A } }`,
+    );
+    expect(diagnosticsFor(diagnostics, "message's name")).toHaveLength(1);
+  });
+
+  test('a name-less `on signal` is exactly one diagnostic about the message name', async () => {
+    const { diagnostics } = await validate(
+      `process p { on signal { user A } }`,
+    );
+    expect(diagnosticsFor(diagnostics, "message's name")).toHaveLength(1);
+  });
+
+  test('a payload-less `on timer` is exactly one diagnostic about reading the time', async () => {
+    const { diagnostics } = await validate(`process p { on timer { user A } }`);
+    expect(diagnosticsFor(diagnostics, 'read the time')).toHaveLength(1);
+  });
+
+  test('a bare STRING on `on timer` (no particle) is the same diagnostic', async () => {
+    const { diagnostics } = await validate(
+      `process p { on timer "PT1H" { user A } }`,
+    );
+    expect(diagnosticsFor(diagnostics, 'read the time')).toHaveLength(1);
+  });
+
+  test('a condition-less `on condition` is exactly one diagnostic', async () => {
+    const { diagnostics } = await validate(
+      `process p { on condition { user A } }`,
+    );
+    expect(diagnosticsFor(diagnostics, 'needs its condition')).toHaveLength(1);
+  });
+
+  test('bindings on `on message` are forbidden', async () => {
+    const { diagnostics } = await validate(`
+process p { on message "X" (code c) { user A } }
+`);
+    expect(
+      diagnosticsFor(diagnostics, 'belong to error and escalation handlers'),
+    ).toHaveLength(1);
+  });
+
+  test('a condition on `on error` is exactly one diagnostic', async () => {
+    const { diagnostics } = await validate(`
+process p {
+  var amount: number
+  on error (amount > 100) { user A }
+}
+`);
+    expect(diagnostics).toHaveLength(1);
+    expect(diagnostics[0]!.message).toContain("Only 'on condition'");
+  });
+
+  test('a particle on `on signal` is exactly one particle-forbidden diagnostic', async () => {
+    const { diagnostics } = await validate(
+      `process p { on signal after "PT1H" { user A } }`,
+    );
+    expect(
+      diagnosticsFor(diagnostics, "Only 'on timer' takes a particle"),
+    ).toHaveLength(1);
+  });
+
+  test('a STRING on `on condition` is exactly one diagnostic (parens still required)', async () => {
+    const { diagnostics } = await validate(`
+process p {
+  var amount: number
+  on condition "X" (amount > 100) { user A }
+}
+`);
+    expect(diagnosticsFor(diagnostics, 'takes no code string')).toHaveLength(1);
+  });
+});
+
+describe('Validation — timer particle shape and interrupting warnings', () => {
+  test('`after "banana"` is a duration-shape warning', async () => {
+    const { diagnostics } = await validate(
+      `process p { on timer after "banana" { user A } }`,
+    );
+    const warnings = diagnosticsFor(diagnostics, 'expects a duration');
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]!.severity).toBe(SEVERITY_WARNING);
+  });
+
+  test('`after "${dueDate}"` is diagnostic-free (EL passes through)', async () => {
+    const { diagnostics } = await validate(
+      `process p { on timer after "\${dueDate}" { user A } }`,
+    );
+    expect(diagnostics).toHaveLength(0);
+  });
+
+  test('`at "PT1H"` is a point-in-time-shape warning', async () => {
+    const { diagnostics } = await validate(
+      `process p { on timer at "PT1H" { user A } }`,
+    );
+    expect(diagnosticsFor(diagnostics, 'expects a point in time')).toHaveLength(
+      1,
+    );
+  });
+
+  test('`every` on an interrupting handler warns naming `alongside`; `alongside` is clean', async () => {
+    const interrupting = await validate(
+      `process p { on timer every "R/PT10M" { user A } }`,
+    );
+    expect(diagnosticsFor(interrupting.diagnostics, 'alongside')).toHaveLength(
+      1,
+    );
+
+    const nonInterrupting = await validate(
+      `process p { on timer every "R/PT10M" alongside { user A } }`,
+    );
+    expect(
+      diagnosticsFor(nonInterrupting.diagnostics, 'fires at most once'),
+    ).toHaveLength(0);
+  });
+});
+
+describe('Validation — handler duplicates (message/signal/timer/condition)', () => {
+  test('two `on message` handlers sharing one name is a duplicate error', async () => {
+    const { diagnostics } = await validate(`
+process p {
+  on message "X" { user A }
+  on message "X" { user B }
+}
+`);
+    expect(bySeverity(diagnostics, SEVERITY_ERROR).length).toBeGreaterThan(0);
+  });
+
+  test('`on message "X"` and `on message "Y"` coexist without a duplicate error', async () => {
+    const { diagnostics } = await validate(`
+process p {
+  on message "X" { user A }
+  on message "Y" { user B }
+}
+`);
+    expect(diagnosticsFor(diagnostics, 'duplicate catch')).toHaveLength(0);
+  });
+
+  test('`on signal "X"` in two different containers is not a duplicate', async () => {
+    const { diagnostics } = await validate(`
+process p {
+  subprocess S {
+    user T
+    on signal "X" { user B }
+  }
+  on signal "X" { user A }
+}
+`);
+    expect(diagnosticsFor(diagnostics, 'duplicate catch')).toHaveLength(0);
+  });
+
+  test('two `on timer after "PT1H"` handlers in one container are legal', async () => {
+    const { diagnostics } = await validate(`
+process p {
+  on timer after "PT1H" { user A }
+  on timer after "PT1H" { user B }
+}
+`);
+    expect(diagnosticsFor(diagnostics, 'duplicate catch')).toHaveLength(0);
+  });
+});
+
+describe('Validation — condition expression variable checks', () => {
+  test('an undeclared variable in an `on condition` expression is the standard warning', async () => {
+    const { diagnostics } = await validate(
+      `process p { on condition (amount > 100) { user A } }`,
+    );
+    const warnings = bySeverity(diagnostics, SEVERITY_WARNING).filter((d) =>
+      d.message.includes('amount'),
+    );
+    expect(warnings).toHaveLength(1);
+  });
+
+  test('a declared numeric variable in an `on condition` expression is clean', async () => {
+    const { diagnostics } = await validate(`
+process p {
+  var amount: number
+  on condition (amount > 100) { user A }
+}
+`);
+    expect(diagnosticsFor(diagnostics, 'amount')).toHaveLength(0);
+  });
+
+  test('a string-typed variable in an `on condition` ordered comparison is the standard type-mismatch error', async () => {
+    const { diagnostics } = await validate(`
+process p {
+  var amount: string
+  on condition (amount > 100) { user A }
+}
+`);
+    expect(diagnosticsFor(diagnostics, 'cannot be used in')).toHaveLength(1);
   });
 });
 

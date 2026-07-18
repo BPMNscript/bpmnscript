@@ -32,6 +32,7 @@ import { irToDsl } from '../src/ir-to-dsl.js';
 import { astToIr } from '../src/ast-to-ir.js';
 import type {
   BpmnProcess,
+  EventDefinition,
   FlowElement,
   SequenceFlow,
 } from '../src/ir/types.js';
@@ -1547,5 +1548,182 @@ describe('irToDsl — event layer', () => {
     expect(dsl).toContain('\n    if (amount > 1000) {\n');
     expect(dsl).toContain('\n      user A\n');
     expect(dsl).not.toContain('gateway');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Event layer: message / signal / timer / conditional triggers and signal throws.
+// ---------------------------------------------------------------------------
+
+describe('irToDsl — event layer (message / signal / timer / conditional)', () => {
+  /** An `on …` handler wrapping a single `start → user → end` body. */
+  function handler(
+    id: string,
+    startId: string,
+    def: EventDefinition,
+    isInterrupting?: false,
+  ): FlowElement {
+    const start: FlowElement =
+      isInterrupting === false
+        ? { kind: 'startEvent', id: startId, isInterrupting, eventDefinition: def }
+        : { kind: 'startEvent', id: startId, eventDefinition: def };
+    return {
+      kind: 'subProcess',
+      id,
+      triggeredByEvent: true,
+      flowElements: [
+        start,
+        { kind: 'userTask', id: `${id}_Work` },
+        { kind: 'endEvent', id: `${id}_End` },
+      ],
+      sequenceFlows: [
+        { id: `SF_${id}_a`, sourceRef: startId, targetRef: `${id}_Work` },
+        { id: `SF_${id}_b`, sourceRef: `${id}_Work`, targetRef: `${id}_End` },
+      ],
+    };
+  }
+
+  it('prints message/signal headers, the signal emit/throw, and trailing handlers', () => {
+    const ir: BpmnProcess = {
+      id: 'proc',
+      isExecutable: true,
+      flowElements: [
+        { kind: 'startEvent', id: 'PStart' },
+        {
+          kind: 'intermediateThrowEvent',
+          id: 'EmitSig',
+          eventDefinition: { kind: 'signal', signalName: 'Cancelled' },
+        },
+        {
+          kind: 'endEvent',
+          id: 'ThrowSig',
+          eventDefinition: { kind: 'signal', signalName: 'Cancelled' },
+        },
+        handler('OnMsg', 'MsgStart', {
+          kind: 'message',
+          messageName: 'PaymentReceived',
+        }),
+        handler(
+          'OnSig',
+          'SigStart',
+          { kind: 'signal', signalName: 'Cancelled' },
+          false,
+        ),
+      ],
+      sequenceFlows: [
+        { id: 'SF_PStart_EmitSig', sourceRef: 'PStart', targetRef: 'EmitSig' },
+        { id: 'SF_EmitSig_ThrowSig', sourceRef: 'EmitSig', targetRef: 'ThrowSig' },
+      ],
+    };
+    const dsl = irToDsl(ir);
+    expect(dsl).toContain('  emit signal EmitSig "Cancelled"\n');
+    expect(dsl).toContain('  throw signal ThrowSig "Cancelled"\n');
+    expect(dsl).toContain('  on message "PaymentReceived" {\n');
+    expect(dsl).toContain('  on signal "Cancelled" alongside {\n');
+    // Handlers print last: both headers follow the throw.
+    expect(dsl.indexOf('on message')).toBeGreaterThan(dsl.indexOf('throw signal'));
+    expect(dsl.indexOf('on signal')).toBeGreaterThan(dsl.indexOf('on message'));
+  });
+
+  it('prints the three timer particles, with alongside on the repeating one', () => {
+    const ir: BpmnProcess = {
+      id: 'proc',
+      isExecutable: true,
+      flowElements: [
+        { kind: 'startEvent', id: 'S' },
+        { kind: 'endEvent', id: 'E' },
+        handler('OnAfter', 'AfterStart', {
+          kind: 'timer',
+          timerKind: 'duration',
+          expression: 'PT1H',
+        }),
+        handler('OnAt', 'AtStart', {
+          kind: 'timer',
+          timerKind: 'date',
+          expression: '2026-08-01T09:00:00',
+        }),
+        handler(
+          'OnEvery',
+          'EveryStart',
+          { kind: 'timer', timerKind: 'cycle', expression: 'R/PT10M' },
+          false,
+        ),
+      ],
+      sequenceFlows: [{ id: 'F', sourceRef: 'S', targetRef: 'E' }],
+    };
+    const dsl = irToDsl(ir);
+    expect(dsl).toContain('  on timer after "PT1H" {\n');
+    expect(dsl).toContain('  on timer at "2026-08-01T09:00:00" {\n');
+    expect(dsl).toContain('  on timer every "R/PT10M" alongside {\n');
+  });
+
+  it('prints a condition header as bare DSL when the body is in the subset', () => {
+    const ir: BpmnProcess = {
+      id: 'proc',
+      isExecutable: true,
+      flowElements: [
+        { kind: 'startEvent', id: 'S' },
+        { kind: 'endEvent', id: 'E' },
+        handler('OnCond', 'CondStart', {
+          kind: 'conditional',
+          condition: '${amount > 100}',
+        }),
+      ],
+      sequenceFlows: [{ id: 'F', sourceRef: 'S', targetRef: 'E' }],
+    };
+    expect(irToDsl(ir)).toContain('  on condition (amount > 100) {\n');
+  });
+
+  it('prints a condition header as a quoted raw fallback when out of subset', () => {
+    const ir: BpmnProcess = {
+      id: 'proc',
+      isExecutable: true,
+      flowElements: [
+        { kind: 'startEvent', id: 'S' },
+        { kind: 'endEvent', id: 'E' },
+        handler('OnCond', 'CondStart', {
+          kind: 'conditional',
+          condition: '${bean.check()}',
+        }),
+      ],
+      sequenceFlows: [{ id: 'F', sourceRef: 'S', targetRef: 'E' }],
+    };
+    expect(irToDsl(ir)).toContain('  on condition ("${bean.check()}") {\n');
+  });
+
+  it('refuses a throw-side event carrying a non-throwable definition', () => {
+    const badEnd: BpmnProcess = {
+      id: 'p',
+      isExecutable: true,
+      flowElements: [
+        { kind: 'startEvent', id: 'S' },
+        {
+          kind: 'endEvent',
+          id: 'Bad',
+          eventDefinition: { kind: 'message', messageName: 'X' },
+        },
+      ],
+      sequenceFlows: [{ id: 'F', sourceRef: 'S', targetRef: 'Bad' }],
+    };
+    expect(() => irToDsl(badEnd)).toThrow(/message/);
+
+    const badEmit: BpmnProcess = {
+      id: 'p',
+      isExecutable: true,
+      flowElements: [
+        { kind: 'startEvent', id: 'S' },
+        {
+          kind: 'intermediateThrowEvent',
+          id: 'Bad',
+          eventDefinition: { kind: 'timer', timerKind: 'duration', expression: 'PT1H' },
+        },
+        { kind: 'endEvent', id: 'E' },
+      ],
+      sequenceFlows: [
+        { id: 'F1', sourceRef: 'S', targetRef: 'Bad' },
+        { id: 'F2', sourceRef: 'Bad', targetRef: 'E' },
+      ],
+    };
+    expect(() => irToDsl(badEmit)).toThrow(/timer/);
   });
 });
