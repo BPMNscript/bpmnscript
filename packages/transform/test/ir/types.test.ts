@@ -390,6 +390,8 @@ function describeDefinition(def: EventDefinition): string {
       return 'error';
     case 'escalation':
       return 'escalation';
+    case 'compensation':
+      return 'compensation';
     case 'message':
       return `message:${def.messageName}`;
     case 'signal':
@@ -504,6 +506,43 @@ describe('EventDefinition — message / signal / timer / conditional members', (
     expect(start.eventDefinition?.kind).toBe('signal');
     expect(end.eventDefinition?.kind).toBe('signal');
     expect(emit.eventDefinition.kind).toBe('signal');
+  });
+});
+
+describe('EventDefinition — compensation member', () => {
+  it('accepts a payload-less compensation definition', () => {
+    // Compensation carries no code and no bindings — the object literal has
+    // exactly the `kind` discriminant and nothing else.
+    const def: EventDefinition = { kind: 'compensation' };
+    expect(describeDefinition(def)).toBe('compensation');
+    expect(Object.keys(def)).toEqual(['kind']);
+  });
+
+  it('exhaustive switch includes a compensation arm (compile-time + runtime)', () => {
+    // A missing arm would make the `never` assignment in the helper's default
+    // branch a compile error.
+    expect(describeDefinition({ kind: 'compensation' })).toBe('compensation');
+  });
+
+  it('is usable on start, end, and intermediate throw nodes, like error/escalation', () => {
+    const start: StartEvent = {
+      kind: 'startEvent',
+      id: 'S',
+      eventDefinition: { kind: 'compensation' },
+    };
+    const end: EndEvent = {
+      kind: 'endEvent',
+      id: 'E',
+      eventDefinition: { kind: 'compensation' },
+    };
+    const emit: IntermediateThrowEvent = {
+      kind: 'intermediateThrowEvent',
+      id: 'T',
+      eventDefinition: { kind: 'compensation' },
+    };
+    expect(start.eventDefinition?.kind).toBe('compensation');
+    expect(end.eventDefinition?.kind).toBe('compensation');
+    expect(emit.eventDefinition.kind).toBe('compensation');
   });
 });
 

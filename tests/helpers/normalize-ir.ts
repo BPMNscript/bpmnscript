@@ -340,7 +340,7 @@ function buildGatewayCanonicalIds(ir: FlowContainer): Map<string, string> {
  * round-trip re-orders the container's statements, so the id does not survive
  * verbatim. The signature is drawn from the handler's *trigger start event*:
  * the trigger kind (`error`/`escalation`/`message`/`signal`/`timer`/
- * `conditional`), the definition payload that distinguishes two same-kind
+ * `conditional`/`compensation`), the definition payload that distinguishes two same-kind
  * handlers (see {@link definitionPayloadKey}), and whether the handler is
  * non-interrupting (`alongside`). The payload is what makes two same-kind
  * handlers of the name-keyed or expression-carrying kinds distinguishable: an
@@ -399,6 +399,9 @@ function buildEventSubProcessCanonicalIds(
  *   - `timer` — the particle kind and the verbatim time expression, so two
  *     timers in one scope (a legal pattern) with different deadlines stay apart.
  *   - `conditional` — the raw condition body.
+ *   - `compensation` — a single constant marker: an undo block is payload-less,
+ *     so its identity within its container is just the trigger kind. A
+ *     subprocess has at most one undo block, so this can never collide.
  *   - a handler with no definition — a single `<none>` marker (also unchanged).
  *
  * @param def - The handler trigger start's event definition, or `undefined`.
@@ -420,6 +423,11 @@ function definitionPayloadKey(def: EventDefinition | undefined): string {
       return `${def.timerKind} ${def.expression}`;
     case 'conditional':
       return def.condition;
+    case 'compensation':
+      // Payload-less: an undo block carries no code, name, or expression, so
+      // every occurrence keys identically. One undo block per container (a
+      // validator rule) makes that constant collision-free.
+      return '<compensation>';
     default: {
       const exhaustive: never = def;
       return JSON.stringify(exhaustive);

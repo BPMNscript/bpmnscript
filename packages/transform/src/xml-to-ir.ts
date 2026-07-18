@@ -23,23 +23,29 @@
  * **Refused** (throws before any IR is produced, so there is no partial IR):
  * - an event definition of the wrong kind for its position: any definition
  *   on a plain start event (outside an event handler); anything other than
- *   error/escalation/message/signal/timer/conditional on an event handler's
- *   start; anything other than error/escalation/signal on an end event;
- *   anything other than escalation/signal on an intermediate throw
- *   (terminate, compensation, …) → {@link UnsupportedEventDefinitionError};
+ *   error/escalation/message/signal/timer/conditional/compensation on an
+ *   event handler's start; anything other than error/escalation/signal/
+ *   compensation on an end event; anything other than escalation/signal/
+ *   compensation on an intermediate throw (terminate, …) →
+ *   {@link UnsupportedEventDefinitionError};
  * - an event-layer construct shaped in a way this tool's surface cannot
  *   express: an event handler whose start-event or definition count is not
  *   exactly one, or which carries incoming/outgoing sequence flows; a
- *   non-interrupting error handler; a throw/emit whose definition resolves
- *   to no code; an error definition on an emit; a "none" emit; two
- *   `bpmn:Error` roots sharing a code but disagreeing about the declared
- *   message; a declared message on a code-less root; a message/signal
- *   definition with no ref, or whose resolved root has no non-empty name; a
- *   timer definition with zero or more than one time child, or an empty
- *   time body; a conditional definition with no condition child, an empty
- *   condition body, or an evaluation-narrowing `operaton:`/`camunda:`
+ *   non-interrupting error or compensation handler; a throw/emit whose
+ *   definition resolves to no code; an error definition on an emit; a "none"
+ *   emit; two `bpmn:Error` roots sharing a code but disagreeing about the
+ *   declared message; a declared message on a code-less root; a message/
+ *   signal definition with no ref, or whose resolved root has no non-empty
+ *   name; a timer definition with zero or more than one time child, or an
+ *   empty time body; a conditional definition with no condition child, an
+ *   empty condition body, or an evaluation-narrowing `operaton:`/`camunda:`
  *   `variableName`/`variableEvents` attribute (the engine-side narrowing is
- *   semantics-bearing and this surface has no way to express it) →
+ *   semantics-bearing and this surface has no way to express it); a
+ *   compensate definition (at any position) carrying an `activityRef` or
+ *   `waitForCompletion="false"`; a compensation event sub-process hosted by
+ *   the process or by another event sub-process rather than the plain
+ *   sub-process it compensates; `isForCompensation="true"` on any mapped
+ *   activity (task, sub-process, call activity) →
  *   {@link UnsupportedEventFeatureError};
  * - loop characteristics on a task, sub-process, or call activity
  *   (multi-instance / standard loop) → {@link UnsupportedLoopCharacteristicsError};
@@ -118,10 +124,13 @@
  * `calledElement`, `latest`/`deployment`/`version` binding, business key, and
  * in/out variable mappings, in document order. An event handler
  * (`triggeredByEvent="true"` sub-process) round-trips its caught error/
- * escalation/message/signal/timer/conditional trigger, code or name, and
- * catch bindings; a typed end event (error/escalation/signal) or an
- * intermediate throw (escalation/signal) round-trips its thrown code or
- * name; declared error messages round-trip through `errorMessages`. Every
+ * escalation/message/signal/timer/conditional/compensation trigger, code or
+ * name, and catch bindings — the compensation trigger only when the handler
+ * is hosted directly by the plain sub-process it compensates; a typed end
+ * event (error/escalation/signal/compensation) or an intermediate throw
+ * (escalation/signal/compensation) round-trips its thrown code or name (or,
+ * for compensation, nothing — it is payload-less); declared error messages
+ * round-trip through `errorMessages`. Every
  * use of one message/signal name — a handler, an `emit`, a `throw` — shares
  * one `bpmn:Message`/`bpmn:Signal` root; two roots that happen to share a
  * name collapse to that one name on import with no warning, since the name
@@ -376,17 +385,18 @@ interface ModdlePropertyDescriptor {
  * @throws {UnsupportedCollaborationError} when the document contains a
  *   `bpmn:Collaboration` (pools / message flows).
  * @throws {UnsupportedElementError} when an unsupported flow-element
- *   kind is encountered (e.g. an event sub-process with
- *   `triggeredByEvent="true"`, `bpmn:transaction`).
+ *   kind is encountered (e.g. a `bpmn:intermediateCatchEvent`,
+ *   `bpmn:transaction`, or `bpmn:adHocSubProcess`).
  * @throws {UnsupportedServiceTaskFormError} when a `bpmn:ServiceTask`
  *   carries no execution form the IR can represent (a bare task with no
  *   discriminator, or an external type without a topic).
  * @throws {UnsupportedEventDefinitionError} when a plain start event carries
  *   any event definition; an event handler's start carries a definition
- *   that is not error/escalation/message/signal/timer/conditional; an end
- *   event carries a definition that is not error/escalation/signal; or an
- *   intermediate throw carries a definition that is not escalation/signal —
- *   at any nesting depth.
+ *   that is not error/escalation/message/signal/timer/conditional/
+ *   compensation; an end event carries a definition that is not error/
+ *   escalation/signal/compensation; or an intermediate throw carries a
+ *   definition that is not escalation/signal/compensation — at any nesting
+ *   depth.
  * @throws {UnsupportedEventFeatureError} when an event-layer construct is
  *   shaped in a way this tool's surface cannot express (see the module
  *   docstring's "Refused" list for the complete taxonomy).
@@ -771,7 +781,11 @@ function mapProcess(
   // Extension attributes/elements attached to the process itself.
   collectExtensionDrops(processEl, id, warnings);
 
-  const { flowElements, sequenceFlows } = mapContainer(processEl, warnings);
+  const { flowElements, sequenceFlows } = mapContainer(
+    processEl,
+    warnings,
+    'process',
+  );
 
   return {
     id,
@@ -781,6 +795,20 @@ function mapProcess(
     sequenceFlows,
   };
 }
+
+/**
+ * Which kind of container currently hosts the element being mapped —
+ * threaded through {@link mapContainer}/{@link mapContainerChildren} so
+ * {@link mapEventSubProcessStart} can check a compensation handler's own
+ * host without relying on moddle's `$parent` back-reference. BPMN requires a
+ * compensation handler to sit directly inside the plain sub-process it
+ * compensates, so `'process'` and `'eventSubProcess'` are both refused as a
+ * compensation handler's host — only `'subProcess'` is accepted. Every other
+ * event-handler kind (error, escalation, message, signal, timer,
+ * conditional) ignores this parameter; it exists solely for that one
+ * structural check.
+ */
+type ContainerHostKind = 'process' | 'subProcess' | 'eventSubProcess';
 
 /**
  * Map the `flowElements` collection of a `bpmn:Process` or `bpmn:SubProcess`
@@ -793,12 +821,55 @@ function mapProcess(
  * as one at the top level would be.
  *
  * @param warnings Accumulator for non-semantic drops. Mutated in place.
+ * @param hostKind What kind of container `el` itself is — passed straight
+ *   through to a nested `bpmn:SubProcess` child so it can identify its own
+ *   host; see {@link ContainerHostKind}.
  */
 function mapContainer(
   el: ModdleElement,
   warnings: ImportWarning[],
+  hostKind: ContainerHostKind,
 ): { flowElements: FlowElement[]; sequenceFlows: SequenceFlow[] } {
-  return mapContainerChildren(el, warnings, mapStartEvent);
+  return mapContainerChildren(el, warnings, mapStartEvent, hostKind);
+}
+
+/**
+ * The BPMN `Activity` subtypes this tool maps — the only kinds that carry
+ * `isForCompensation` (declared on the abstract `bpmn:Activity`, not on
+ * `bpmn:Event`/`bpmn:Gateway`/`bpmn:SequenceFlow`).
+ */
+const ACTIVITY_TYPES: ReadonlySet<string> = new Set([
+  'bpmn:UserTask',
+  'bpmn:ServiceTask',
+  'bpmn:ScriptTask',
+  'bpmn:SubProcess',
+  'bpmn:CallActivity',
+]);
+
+/**
+ * Refuse `isForCompensation="true"` on any mapped activity (task,
+ * sub-process, or call activity) — the boundary-event compensation-handler
+ * pattern, where such an activity is excluded from normal flow and only
+ * starts when a `bpmn:BoundaryEvent` compensation trigger on some other
+ * activity fires it. This tool has no boundary-event surface (a
+ * `bpmn:BoundaryEvent` is refused by the default arm below, unchanged), so an
+ * activity marked this way can never actually run; importing it as an
+ * ordinary step would silently change its reachability. One shared guard,
+ * checked for every child reaching {@link mapContainerChildren}'s switch,
+ * covers every activity kind uniformly at any nesting depth.
+ *
+ * @throws {UnsupportedEventFeatureError} when `isForCompensation` is `true`.
+ */
+function refuseIfForCompensation(child: ModdleElement): void {
+  if (!ACTIVITY_TYPES.has(child.$type)) return;
+  if (child.get('isForCompensation') !== true) return;
+  throw new UnsupportedEventFeatureError(
+    child.id ?? '(unknown)',
+    'isForCompensation="true" marks this activity as excluded from normal ' +
+      'flow — the boundary-event compensation-handler pattern, which this ' +
+      'tool cannot import; wrap the steps in their own sub-process and ' +
+      'target it with "on compensation" instead',
+  );
 }
 
 /**
@@ -808,17 +879,23 @@ function mapContainer(
  * mapEventSubProcessStart}); every other child kind maps exactly as it would
  * in an ordinary container, so the refusals below apply uniformly at any
  * nesting depth and inside an event handler's body alike.
+ *
+ * @param hostKind What kind of container `el` is; threaded to a nested
+ *   `bpmn:SubProcess` child (see {@link ContainerHostKind}) so a
+ *   compensation handler can check its own host.
  */
 function mapContainerChildren(
   el: ModdleElement,
   warnings: ImportWarning[],
   mapStart: (startEl: ModdleElement) => StartEvent,
+  hostKind: ContainerHostKind,
 ): { flowElements: FlowElement[]; sequenceFlows: SequenceFlow[] } {
   const flowElements: FlowElement[] = [];
   const sequenceFlows: SequenceFlow[] = [];
 
   const children = (el.get('flowElements') as ModdleElement[]) ?? [];
   for (const child of children) {
+    refuseIfForCompensation(child);
     switch (child.$type) {
       case 'bpmn:StartEvent':
         flowElements.push(mapStart(child));
@@ -847,7 +924,7 @@ function mapContainerChildren(
       case 'bpmn:SubProcess':
         flowElements.push(
           child.get('triggeredByEvent') === true
-            ? mapEventSubProcess(child, warnings)
+            ? mapEventSubProcess(child, warnings, hostKind)
             : mapSubProcess(child, warnings),
         );
         break;
@@ -895,7 +972,7 @@ function mapSubProcess(
   // A sub-process may own its own lane set, just like a process.
   collectLaneDrops(el, id, warnings);
   const name = readDerivableName(el, id);
-  const { flowElements, sequenceFlows } = mapContainer(el, warnings);
+  const { flowElements, sequenceFlows } = mapContainer(el, warnings, 'subProcess');
 
   return {
     kind: 'subProcess',
@@ -920,11 +997,16 @@ function mapSubProcess(
  * definition-count checks — is mapped by {@link mapContainerChildren} with
  * {@link mapEventSubProcessStart} substituted for the ordinary
  * {@link mapStartEvent}, so nesting (an event handler inside a plain
- * sub-process, or inside another handler) composes for free.
+ * sub-process, or inside another handler) composes for free. `hostKind`
+ * (the container that hosts `el`, threaded in from the caller) is passed
+ * down to {@link mapEventSubProcessStart}: a compensation trigger is the one
+ * kind whose validity depends on where the handler itself sits, so the
+ * check lives there rather than here.
  */
 function mapEventSubProcess(
   el: ModdleElement,
   warnings: ImportWarning[],
+  hostKind: ContainerHostKind,
 ): SubProcess {
   const id = requireId(el);
   refuseLoopCharacteristics(el, id);
@@ -955,7 +1037,8 @@ function mapEventSubProcess(
   const { flowElements, sequenceFlows } = mapContainerChildren(
     el,
     warnings,
-    (startEl) => mapEventSubProcessStart(startEl, id, warnings),
+    (startEl) => mapEventSubProcessStart(startEl, id, warnings, hostKind),
+    'eventSubProcess',
   );
 
   return {
@@ -971,15 +1054,23 @@ function mapEventSubProcess(
  * Map the single trigger-carrying start event of an event handler. Unlike
  * {@link mapStartEvent} (which refuses every definition), this start is
  * expected to carry exactly one error, escalation, message, signal, timer,
- * or conditional definition; anything else refuses (see {@link
- * readCatchEventDefinition}). `isInterrupting="false"` is valid for every
- * kind except error — BPMN requires an error trigger to interrupt its scope,
- * so that combination refuses too.
+ * conditional, or compensation definition; anything else refuses (see
+ * {@link readCatchEventDefinition}). `isInterrupting="false"` is valid for
+ * every kind except error and compensation — BPMN requires both an error and
+ * a compensation trigger to interrupt their scope, so either combination
+ * refuses too.
+ *
+ * A compensation trigger carries one further, host-specific constraint: BPMN
+ * requires a compensation handler to sit directly inside the plain
+ * sub-process it compensates, never in the process itself or in another
+ * event sub-process — so `hostKind` (threaded down from {@link
+ * mapEventSubProcess}) is checked only for that one definition kind.
  */
 function mapEventSubProcessStart(
   startEl: ModdleElement,
   handlerId: string,
   warnings: ImportWarning[],
+  hostKind: ContainerHostKind,
 ): StartEvent {
   const id = requireId(startEl);
   const defs =
@@ -994,13 +1085,30 @@ function mapEventSubProcessStart(
 
   const eventDefinition = readCatchEventDefinition(defs[0], id, warnings);
 
-  const isInterrupting =
-    startEl.get('isInterrupting') === false ? false : undefined;
-  if (isInterrupting === false && eventDefinition.kind === 'error') {
+  if (eventDefinition.kind === 'compensation' && hostKind !== 'subProcess') {
     throw new UnsupportedEventFeatureError(
       handlerId,
-      'an error handler cannot be non-interrupting (isInterrupting="false") ' +
-        '— BPMN requires an error trigger to interrupt its scope',
+      'a compensation handler must be hosted directly by the plain ' +
+        `sub-process it compensates, not by ${
+          hostKind === 'process' ? 'the process' : 'another event sub-process'
+        } — move it into the sub-process it compensates`,
+    );
+  }
+
+  const isInterrupting =
+    startEl.get('isInterrupting') === false ? false : undefined;
+  if (
+    isInterrupting === false &&
+    (eventDefinition.kind === 'error' || eventDefinition.kind === 'compensation')
+  ) {
+    throw new UnsupportedEventFeatureError(
+      handlerId,
+      eventDefinition.kind === 'error'
+        ? 'an error handler cannot be non-interrupting (isInterrupting="false") ' +
+          '— BPMN requires an error trigger to interrupt its scope'
+        : 'a compensation handler cannot be non-interrupting ' +
+          '(isInterrupting="false") — BPMN requires a compensation trigger ' +
+          'to interrupt its scope',
     );
   }
 
@@ -1028,13 +1136,14 @@ function mapEventSubProcessStart(
  * `operaton:` attribute there is never silently lost.
  *
  * @throws {UnsupportedEventDefinitionError} when the definition is none of
- *   error, escalation, message, signal, timer, or conditional (e.g. a
- *   compensation or terminate definition).
+ *   error, escalation, message, signal, timer, conditional, or compensation
+ *   (e.g. a terminate definition).
  * @throws {UnsupportedEventFeatureError} when a message/signal definition
  *   has no ref or resolves to a nameless root, a timer definition has zero
- *   or more than one time child or an empty body, or a conditional
- *   definition has no condition, an empty condition body, or an
- *   evaluation-narrowing `variableName`/`variableEvents` attribute.
+ *   or more than one time child or an empty body, a conditional definition
+ *   has no condition, an empty condition body, or an evaluation-narrowing
+ *   `variableName`/`variableEvents` attribute, or a compensation definition
+ *   carries an `activityRef` or `waitForCompletion="false"`.
  */
 function readCatchEventDefinition(
   defEl: ModdleElement,
@@ -1093,7 +1202,58 @@ function readCatchEventDefinition(
     return { kind: 'conditional', condition: readConditionalDefinition(defEl, ownerId) };
   }
 
+  if (defEl.$type === 'bpmn:CompensateEventDefinition') {
+    refuseCompensateActivityRef(defEl, ownerId);
+    refuseCompensateWaitForCompletionFalse(defEl, ownerId);
+    return { kind: 'compensation' };
+  }
+
   throw new UnsupportedEventDefinitionError(ownerId, 'start', defEl.$type);
+}
+
+/**
+ * Refuse an `activityRef` on a `bpmn:CompensateEventDefinition`, at any
+ * position (a handler's catch, a typed end throw, or an emit). BPMN lets a
+ * compensate definition target one specific activity by reference; this
+ * tool's `on`/`throw`/`emit compensation` surface always addresses the
+ * enclosing scope instead (see the `compensation` variant of {@link
+ * EventDefinition}), so a targeted reference cannot be represented.
+ *
+ * @throws {UnsupportedEventFeatureError} when `activityRef` is set.
+ */
+function refuseCompensateActivityRef(defEl: ModdleElement, ownerId: string): void {
+  const activityRef = defEl.get('activityRef') as ModdleElement | undefined;
+  if (activityRef === undefined || activityRef === null) return;
+  throw new UnsupportedEventFeatureError(
+    ownerId,
+    'a compensation definition targets one activity by reference ' +
+      `(activityRef="${activityRef.id ?? '(unknown)'}") — this tool always ` +
+      'addresses the enclosing scope and cannot target a single activity',
+  );
+}
+
+/**
+ * Refuse `waitForCompletion="false"` on a `bpmn:CompensateEventDefinition`,
+ * at any position. The moddle schema defaults the attribute to `true` (the
+ * only value Operaton executes) and reads an absent attribute back as
+ * `true`, so a bare `<bpmn:compensateEventDefinition/>` and an explicit
+ * `waitForCompletion="true"` both import identically (see the
+ * `compensation` variant of {@link EventDefinition}); only an explicit
+ * `false` differs from what this tool imports, so it is refused rather than
+ * silently narrowed to the default.
+ *
+ * @throws {UnsupportedEventFeatureError} when `waitForCompletion` is `false`.
+ */
+function refuseCompensateWaitForCompletionFalse(
+  defEl: ModdleElement,
+  ownerId: string,
+): void {
+  if (defEl.get('waitForCompletion') !== false) return;
+  throw new UnsupportedEventFeatureError(
+    ownerId,
+    'a compensation definition sets waitForCompletion="false" — this tool ' +
+      'only imports the default (wait for the compensation to complete) behavior',
+  );
 }
 
 /**
@@ -1230,18 +1390,24 @@ function readConditionalDefinition(defEl: ModdleElement, ownerId: string): strin
 
 /**
  * Resolve one event definition's shape on the THROW side (a typed end event,
- * or an escalation/signal intermediate throw): an error/escalation code, or
- * a signal name, must resolve to a non-empty string — a throw with no
- * identity is not something the `throw`/`emit` surface can express. Binding
- * attributes have no effect on a throw (the engine ignores them there), so
- * their presence is warned explicitly via {@link warnThrowSideBindingAttrs}
- * rather than silently kept, since {@link SUPPORTED_EXTENSION_ATTRS} declares
- * them supported for the catch side and would otherwise silence this drop.
- * Also runs {@link collectExtensionDrops} on the definition itself, exactly
- * as the catch side does.
+ * or an escalation/signal/compensation intermediate throw): an error/
+ * escalation code, or a signal name, must resolve to a non-empty string — a
+ * throw with no identity is not something the `throw`/`emit` surface can
+ * express. Compensation carries no identity at all (it is payload-less by
+ * construction), so it has no such check — only its shared `activityRef`/
+ * `waitForCompletion` refusals apply, exactly as on the catch side (see
+ * {@link refuseCompensateActivityRef}, {@link
+ * refuseCompensateWaitForCompletionFalse}). Binding attributes have no
+ * effect on a throw (the engine ignores them there), so their presence is
+ * warned explicitly via {@link warnThrowSideBindingAttrs} rather than
+ * silently kept, since {@link SUPPORTED_EXTENSION_ATTRS} declares them
+ * supported for the catch side and would otherwise silence this drop. Also
+ * runs {@link collectExtensionDrops} on the definition itself, exactly as
+ * the catch side does.
  *
  * @throws {UnsupportedEventFeatureError} when the resolved code/name is
- *   empty.
+ *   empty, or a compensation definition carries an `activityRef` or
+ *   `waitForCompletion="false"`.
  */
 function readThrowEventDefinition(
   defEl: ModdleElement,
@@ -1269,6 +1435,12 @@ function readThrowEventDefinition(
       kind: 'signal',
       signalName: resolveNamedRootRef(defEl, 'signalRef', ownerId, 'signal'),
     };
+  }
+
+  if (defEl.$type === 'bpmn:CompensateEventDefinition') {
+    refuseCompensateActivityRef(defEl, ownerId);
+    refuseCompensateWaitForCompletionFalse(defEl, ownerId);
+    return { kind: 'compensation' };
   }
 
   const ref = defEl.get('escalationRef') as ModdleElement | undefined;
@@ -1775,11 +1947,12 @@ function mapStartEvent(el: ModdleElement): StartEvent {
  * Map a `bpmn:EndEvent` moddle element into the IR.
  *
  * A plain end (no event definitions) maps exactly as before. Exactly one
- * error, escalation, or signal definition maps to a typed throw — `throw
- * error`/`throw escalation`/`throw signal` — whose resolved code or name
- * must be non-empty; any other shape (zero-or-multiple definitions, or a
- * definition kind outside this set) refuses. A genuine label has no slot on
- * a typed throw and is warn-dropped.
+ * error, escalation, signal, or compensation definition maps to a typed
+ * throw — `throw error`/`throw escalation`/`throw signal`/`throw
+ * compensation` — whose resolved code or name must be non-empty (except
+ * compensation, which is payload-less and carries none); any other shape
+ * (zero-or-multiple definitions, or a definition kind outside this set)
+ * refuses. A genuine label has no slot on a typed throw and is warn-dropped.
  */
 function mapEndEvent(el: ModdleElement, warnings: ImportWarning[]): EndEvent {
   const id = requireId(el);
@@ -1794,7 +1967,7 @@ function mapEndEvent(el: ModdleElement, warnings: ImportWarning[]): EndEvent {
     throw new UnsupportedEventFeatureError(
       id,
       `a throw carries ${defs.length} event definitions — only a single ` +
-        'error, escalation, or signal is supported',
+        'error, escalation, signal, or compensation is supported',
     );
   }
 
@@ -1802,7 +1975,8 @@ function mapEndEvent(el: ModdleElement, warnings: ImportWarning[]): EndEvent {
   if (
     defEl.$type !== 'bpmn:ErrorEventDefinition' &&
     defEl.$type !== 'bpmn:EscalationEventDefinition' &&
-    defEl.$type !== 'bpmn:SignalEventDefinition'
+    defEl.$type !== 'bpmn:SignalEventDefinition' &&
+    defEl.$type !== 'bpmn:CompensateEventDefinition'
   ) {
     throw new UnsupportedEventDefinitionError(id, 'end', defEl.$type);
   }
@@ -1815,8 +1989,9 @@ function mapEndEvent(el: ModdleElement, warnings: ImportWarning[]): EndEvent {
 
 /**
  * Map a `bpmn:IntermediateThrowEvent` moddle element into the IR — the
- * `emit` surface. A single escalation or signal definition with a
- * resolvable code/name is representable: a "none" intermediate throw (zero
+ * `emit` surface. A single escalation, signal, or compensation definition
+ * with a resolvable code/name (or, for compensation, no identity at all — it
+ * is payload-less) is representable: a "none" intermediate throw (zero
  * definitions), an error definition (BPMN has no intermediate error throw —
  * `throw error` is the surface for that), more than one definition, or any
  * other definition kind all refuse. A genuine label has no slot here either
@@ -1841,7 +2016,7 @@ function mapIntermediateThrowEvent(
     throw new UnsupportedEventFeatureError(
       id,
       `an emit carries ${defs.length} event definitions — only a single ` +
-        'escalation or signal is supported',
+        'escalation, signal, or compensation is supported',
     );
   }
 
@@ -1855,7 +2030,8 @@ function mapIntermediateThrowEvent(
   }
   if (
     defEl.$type !== 'bpmn:EscalationEventDefinition' &&
-    defEl.$type !== 'bpmn:SignalEventDefinition'
+    defEl.$type !== 'bpmn:SignalEventDefinition' &&
+    defEl.$type !== 'bpmn:CompensateEventDefinition'
   ) {
     throw new UnsupportedEventDefinitionError(
       id,
@@ -1877,7 +2053,7 @@ function mapIntermediateThrowEvent(
  * (a *normal* container's start event, which never carries a trigger) — an
  * event handler's start goes through {@link mapEventSubProcessStart}
  * instead, which permits exactly one error/escalation/message/signal/timer/
- * conditional definition.
+ * conditional/compensation definition.
  */
 function refuseEventDefinitions(
   el: ModdleElement,

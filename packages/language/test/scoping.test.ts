@@ -627,6 +627,74 @@ process p {
   });
 });
 
+// ── Container-scoped goto across a compensation handler boundary ───────────
+
+describe('Scoping — container-scoped goto (compensation handler boundary)', () => {
+  test('a subprocess-body goto cannot resolve a step inside its `on compensation` handler; the boundary message names it by its code-less header (one diagnostic)', async () => {
+    const document = await parse(
+      `
+process p {
+  subprocess Sub {
+    goto Inner
+    on compensation {
+      user Inner
+    }
+  }
+}
+`,
+      { validation: true },
+    );
+    expect(document.parseResult.parserErrors).toHaveLength(0);
+    expect(findGoto(document.parseResult.value).target.ref).toBeUndefined();
+
+    const errors = errorsOf(document);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.message).toContain("'Inner'");
+    expect(errors[0]!.message).toContain(`an 'on compensation' handler`);
+    expect(errors[0]!.message.toLowerCase()).toContain(
+      'cross an event handler boundary',
+    );
+  });
+
+  test('a goto inside an `on compensation` handler resolves a sibling step of the same body', async () => {
+    const document = await parse(
+      `
+process p {
+  subprocess Sub {
+    on compensation {
+      user Inner
+      goto Inner
+    }
+  }
+}
+`,
+      { validation: true },
+    );
+    expect(document.parseResult.parserErrors).toHaveLength(0);
+    const goto = findGoto(document.parseResult.value);
+    expect(goto.target.ref).toBeDefined();
+    expect((goto.target.ref as UserTask).name).toBe('Inner');
+  });
+
+  test('a goto resolves a named `throw compensation` in the same container (code is optional for compensation)', async () => {
+    const document = await parse(
+      `
+process p {
+  subprocess Sub {
+    goto Undo
+    throw compensation Undo
+  }
+}
+`,
+      { validation: true },
+    );
+    expect(document.parseResult.parserErrors).toHaveLength(0);
+    const goto = findGoto(document.parseResult.value);
+    expect(goto.target.ref).toBeDefined();
+    expect(goto.target.ref!.$type).toBe('ThrowStatement');
+  });
+});
+
 // ── Reserved-word guidance ──────────────────────────────────────────────────
 
 describe('Scoping — reserved-word guidance', () => {

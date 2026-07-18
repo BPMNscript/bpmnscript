@@ -17,6 +17,7 @@ import { beforeAll, describe, expect, test } from 'vitest';
 import { EmptyFileSystem, URI } from 'langium';
 import {
   type CompletionItem,
+  CompletionItemKind,
   InsertTextFormat,
 } from 'vscode-languageserver-types';
 import {
@@ -298,6 +299,41 @@ describe('event-layer ID-position completion (soft trigger/field words)', () => 
     const line = '  on timer ';
     const labels = await labelsAt(`process p {\n${line}\n}`, 1, line.length);
     expect(labels).toEqual(expect.arrayContaining(['after', 'at', 'every']));
+  });
+
+  test('`compensation` is offered at the `on` trigger position with the undo-block detail', async () => {
+    const line = '  on ';
+    const item = (
+      await completionItems(`process p {\n${line}\n}`, 1, line.length)
+    ).find((i) => i.label === 'compensation');
+    expect(item).toBeDefined();
+    expect(item!.kind).toBe(CompletionItemKind.Keyword);
+    expect(item!.detail).toContain('undo block of this subprocess');
+  });
+
+  test('`compensation` is offered at the `throw` trigger position, framed as ending the path', async () => {
+    const line = '  throw ';
+    const item = (
+      await completionItems(`process p {\n${line}\n}`, 1, line.length)
+    ).find((i) => i.label === 'compensation');
+    expect(item).toBeDefined();
+    expect(item!.detail).toContain('then end this path');
+  });
+
+  test('`compensation` is offered at the `emit` trigger position, framed as continuing', async () => {
+    const line = '  emit ';
+    const item = (
+      await completionItems(`process p {\n${line}\n}`, 1, line.length)
+    ).find((i) => i.label === 'compensation');
+    expect(item).toBeDefined();
+    expect(item!.detail).toContain('then continue');
+  });
+
+  test('the `on` keyword snippet choice list does not offer `compensation`', async () => {
+    const item = (await completionItems('process p {\n  \n}', 1, 2)).find(
+      (i) => i.label === 'on',
+    );
+    expect(inserted(item!)).not.toContain('compensation');
   });
 });
 

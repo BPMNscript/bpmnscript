@@ -822,7 +822,7 @@ describe('irToXml — DI expansion hint for sub-processes', () => {
   });
 
   it('a sub-process-free process produces byte-identical output to the frozen golden', async () => {
-    // Regression guard for D5: the DI hint must only ever be attached when
+    // Regression guard: the DI hint must only ever be attached when
     // the process actually contains a sub-process. This re-asserts the
     // full-pipeline golden byte-diff from the sub-process describe block
     // above, right next to the DI-hint logic that could regress it.
@@ -1599,6 +1599,138 @@ describe('irToXml — event layer (message + signal + timer + conditional)', () 
     expect(signals).toHaveLength(1);
     expect(signals[0]!.id).toBe('Signal_Ping_2');
     expect(signals[0]!.name).toBe('Ping');
+  });
+});
+
+// ── 13. Event layer: compensation ────────────────────────────────────────────
+
+describe('irToXml — event layer (compensation)', () => {
+  /**
+   * A process exercising the whole compensation surface at once:
+   *   - `OuterSub`, a normal sub-process with an interior start/user/end chain,
+   *     containing a compensation handler (`CompHandler`, an event
+   *     sub-process whose start carries `{ kind: 'compensation' }`, no
+   *     `isInterrupting`).
+   *   - A compensation intermediate throw (`EmitComp`) mid-chain.
+   *   - A compensation end event (`ThrowComp`) terminal in the parent process.
+   * Compensation is payload-less, so none of these carry a code — unlike the
+   * error/escalation fixture above, there is no identity to share a root over.
+   */
+  const compensationIr: BpmnProcess = {
+    id: 'proc',
+    isExecutable: true,
+    flowElements: [
+      { kind: 'startEvent', id: 'PStart' },
+      {
+        kind: 'subProcess',
+        id: 'OuterSub',
+        flowElements: [
+          { kind: 'startEvent', id: 'OSubStart' },
+          { kind: 'userTask', id: 'OWork', assignee: 'demo' },
+          { kind: 'endEvent', id: 'OSubEnd' },
+          eventHandler('CompHandler', 'CompStart', { kind: 'compensation' }),
+        ],
+        sequenceFlows: [
+          {
+            id: 'SF_OSubStart_OWork',
+            sourceRef: 'OSubStart',
+            targetRef: 'OWork',
+          },
+          { id: 'SF_OWork_OSubEnd', sourceRef: 'OWork', targetRef: 'OSubEnd' },
+        ],
+      },
+      {
+        kind: 'intermediateThrowEvent',
+        id: 'EmitComp',
+        eventDefinition: { kind: 'compensation' },
+      },
+      {
+        kind: 'endEvent',
+        id: 'ThrowComp',
+        eventDefinition: { kind: 'compensation' },
+      },
+    ],
+    sequenceFlows: [
+      { id: 'SF_PStart_OuterSub', sourceRef: 'PStart', targetRef: 'OuterSub' },
+      {
+        id: 'SF_OuterSub_EmitComp',
+        sourceRef: 'OuterSub',
+        targetRef: 'EmitComp',
+      },
+      {
+        id: 'SF_EmitComp_ThrowComp',
+        sourceRef: 'EmitComp',
+        targetRef: 'ThrowComp',
+      },
+    ],
+  };
+
+  let defs: EventNode;
+  let xml: string;
+
+  beforeAll(async () => {
+    xml = await irToXml(compensationIr);
+    defs = await parseDefinitionsWithOperaton(xml);
+  });
+
+  it('emits the handler start with a bare CompensateEventDefinition and no isInterrupting attribute', () => {
+    // Raw-XML assertion (not the parsed moddle object): bpmn-moddle applies
+    // the schema default (`waitForCompletion`/`isInterrupting` both default to
+    // `true`) when reading an attribute back, so the parsed tree would show
+    // `true` either way. Checking the serialized text is the only way to pin
+    // that the attribute itself is genuinely absent from the output.
+    const startBlock = extractNodeBlock(xml, 'CompStart');
+    expect(startBlock).not.toContain('isInterrupting');
+    expect(startBlock).toContain('<bpmn:compensateEventDefinition />');
+    expect(startBlock).not.toContain('waitForCompletion');
+    expect(startBlock).not.toContain('activityRef');
+  });
+
+  it('carries exactly one compensate definition on the intermediate throw and the end event', () => {
+    expect(soleDef(requireDeep(defs, 'EmitComp')).$type).toBe(
+      'bpmn:CompensateEventDefinition',
+    );
+    expect(soleDef(requireDeep(defs, 'ThrowComp')).$type).toBe(
+      'bpmn:CompensateEventDefinition',
+    );
+  });
+
+  it('synthesizes zero roots — rootElements contains only the process', () => {
+    expect(defs.rootElements.map((r) => r.$type)).toEqual(['bpmn:Process']);
+  });
+
+  it('adds an error handler alongside compensation: one bpmn:Error root, still nothing for compensation, order unchanged', async () => {
+    const mixedIr: BpmnProcess = {
+      ...compensationIr,
+      flowElements: [
+        ...compensationIr.flowElements,
+        eventHandler('ErrHandler', 'ErrStart', {
+          kind: 'error',
+          errorCode: 'PF',
+        }),
+      ],
+    };
+    const d = await parseDefinitionsWithOperaton(await irToXml(mixedIr));
+    expect(d.rootElements.map((r) => r.$type)).toEqual([
+      'bpmn:Process',
+      'bpmn:Error',
+    ]);
+    expect(rootsOfType(d, 'bpmn:Error')).toHaveLength(1);
+  });
+
+  it('lays the compensation handler out inside its host sub-process, children inside the handler', async () => {
+    expect((xml.match(/<bpmndi:BPMNDiagram\b/g) ?? []).length).toBe(1);
+    const shapes = await parseDiShapesById(xml);
+
+    const outerSub = requireShape(shapes, 'OuterSub');
+    const handler = requireShape(shapes, 'CompHandler');
+    expect(boundsStrictlyInside(handler.bounds, outerSub.bounds)).toBe(true);
+
+    for (const child of ['CompStart', 'CompHandler_Work', 'CompHandler_End']) {
+      expect(
+        boundsStrictlyInside(requireShape(shapes, child).bounds, handler.bounds),
+      ).toBe(true);
+    }
   });
 });
 

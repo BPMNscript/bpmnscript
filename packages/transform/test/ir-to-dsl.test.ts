@@ -1727,3 +1727,164 @@ describe('irToDsl — event layer (message / signal / timer / conditional)', () 
     expect(() => irToDsl(badEmit)).toThrow(/timer/);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Event layer: compensation (payload-less catch + throw + emit).
+// ---------------------------------------------------------------------------
+
+describe('irToDsl — event layer (compensation)', () => {
+  /**
+   * A process exercising the whole compensation surface: `emit compensation`
+   * mid-chain, a terminal `throw compensation`, and a trailing `on
+   * compensation` handler wrapping a start/user/end body. Compensation is
+   * payload-less, so none of the three carry a code or a name.
+   */
+  const compensationIr: BpmnProcess = {
+    id: 'proc',
+    isExecutable: true,
+    flowElements: [
+      { kind: 'startEvent', id: 'PStart' },
+      { kind: 'userTask', id: 'Work' },
+      {
+        kind: 'intermediateThrowEvent',
+        id: 'EmitComp',
+        eventDefinition: { kind: 'compensation' },
+      },
+      {
+        kind: 'endEvent',
+        id: 'ThrowComp',
+        eventDefinition: { kind: 'compensation' },
+      },
+      {
+        kind: 'subProcess',
+        id: 'CompHandler',
+        triggeredByEvent: true,
+        flowElements: [
+          {
+            kind: 'startEvent',
+            id: 'CompStart',
+            eventDefinition: { kind: 'compensation' },
+          },
+          { kind: 'userTask', id: 'Undo' },
+          { kind: 'endEvent', id: 'CompEnd' },
+        ],
+        sequenceFlows: [
+          { id: 'SF_CompStart_Undo', sourceRef: 'CompStart', targetRef: 'Undo' },
+          { id: 'SF_Undo_CompEnd', sourceRef: 'Undo', targetRef: 'CompEnd' },
+        ],
+      },
+    ],
+    sequenceFlows: [
+      { id: 'SF_PStart_Work', sourceRef: 'PStart', targetRef: 'Work' },
+      { id: 'SF_Work_EmitComp', sourceRef: 'Work', targetRef: 'EmitComp' },
+      {
+        id: 'SF_EmitComp_ThrowComp',
+        sourceRef: 'EmitComp',
+        targetRef: 'ThrowComp',
+      },
+    ],
+  };
+
+  it('prints a bare on-compensation handler after all flow, with emit/throw compensation carrying no trailing string', () => {
+    expect(irToDsl(compensationIr)).toBe(
+      [
+        'process proc {',
+        '  start PStart',
+        '  user Work',
+        '  emit compensation EmitComp',
+        '  throw compensation ThrowComp',
+        '  on compensation {',
+        '    start CompStart',
+        '    user Undo',
+        '    end CompEnd',
+        '  }',
+        '}',
+        '',
+      ].join('\n'),
+    );
+  });
+
+  it('nests an if one further level inside a compensation handler body', () => {
+    const ir: BpmnProcess = {
+      id: 'p',
+      isExecutable: true,
+      flowElements: [
+        { kind: 'startEvent', id: 'S' },
+        { kind: 'endEvent', id: 'E' },
+        {
+          kind: 'subProcess',
+          id: 'H',
+          triggeredByEvent: true,
+          flowElements: [
+            {
+              kind: 'startEvent',
+              id: 'HS',
+              eventDefinition: { kind: 'compensation' },
+            },
+            {
+              kind: 'exclusiveGateway',
+              id: 'Gateway_HS_split',
+              defaultFlowId: 'DF',
+            },
+            { kind: 'userTask', id: 'A' },
+            { kind: 'exclusiveGateway', id: 'Gateway_HS_join' },
+            { kind: 'endEvent', id: 'HE' },
+          ],
+          sequenceFlows: [
+            { id: 'F1', sourceRef: 'HS', targetRef: 'Gateway_HS_split' },
+            {
+              id: 'F2',
+              sourceRef: 'Gateway_HS_split',
+              targetRef: 'A',
+              conditionExpression: '${amount > 1000}',
+            },
+            {
+              id: 'DF',
+              sourceRef: 'Gateway_HS_split',
+              targetRef: 'Gateway_HS_join',
+            },
+            { id: 'F3', sourceRef: 'A', targetRef: 'Gateway_HS_join' },
+            { id: 'F4', sourceRef: 'Gateway_HS_join', targetRef: 'HE' },
+          ],
+        },
+      ],
+      sequenceFlows: [{ id: 'F', sourceRef: 'S', targetRef: 'E' }],
+    };
+    const dsl = irToDsl(ir);
+    // The handler header sits at one indent level, its `if` at two, its body
+    // at three — the gateway pair is elided into the `if`, exactly as for the
+    // error-triggered handler above.
+    expect(dsl).toContain('\n  on compensation {\n');
+    expect(dsl).toContain('\n    if (amount > 1000) {\n');
+    expect(dsl).toContain('\n      user A\n');
+    expect(dsl).not.toContain('gateway');
+  });
+
+  it('prints alongside for a malformed-IR compensation start with isInterrupting: false (the printer mirrors the IR; prohibiting it is the validator\'s job)', () => {
+    const ir: BpmnProcess = {
+      id: 'p',
+      isExecutable: true,
+      flowElements: [
+        { kind: 'startEvent', id: 'S' },
+        { kind: 'endEvent', id: 'E' },
+        {
+          kind: 'subProcess',
+          id: 'H',
+          triggeredByEvent: true,
+          flowElements: [
+            {
+              kind: 'startEvent',
+              id: 'HS',
+              isInterrupting: false,
+              eventDefinition: { kind: 'compensation' },
+            },
+            { kind: 'endEvent', id: 'HE' },
+          ],
+          sequenceFlows: [{ id: 'F1', sourceRef: 'HS', targetRef: 'HE' }],
+        },
+      ],
+      sequenceFlows: [{ id: 'F', sourceRef: 'S', targetRef: 'E' }],
+    };
+    expect(irToDsl(ir)).toContain('  on compensation alongside {\n');
+  });
+});

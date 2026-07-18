@@ -35,9 +35,10 @@
 // expression position and parse to `VarRef` as expected (e.g. `status`,
 // `order.type`, `items[0]`).
 //
-// `error`, `escalation`, `message`, `signal`, `timer`, and `condition` (the
-// trigger kinds an `on`/`throw`/`emit` names), `code` and the other catch-
-// binding field names, and the timer particles `after`/`at`/`every` are
+// `error`, `escalation`, `message`, `signal`, `timer`, `condition`, and
+// `compensation` (the trigger kinds an `on`/`throw`/`emit` names), `code` and
+// the other catch-binding field names, and the timer particles
+// `after`/`at`/`every` are
 // deliberately NOT on this list: they lex as plain `ID` and are validated in
 // position rather than reserved as keywords — so `var message: string`,
 // `if (code == "x")`, `var timer: number`, `if (after > 2)`, and a step
@@ -310,21 +311,28 @@ OnHandler:
 EventBinding:
     field=ID variable=ID;
 
-// `throw <trigger> <name>? "<code>"` — always terminal: this path ends here,
+// `throw <trigger> <name>? "<code>"?` — always terminal: this path ends here,
 // exactly like `throw` in every programming language. `name` is the optional
 // goto-target id (synthesized when omitted, like every other targetable
-// statement); one token of lookahead is all a parser needs to tell the
-// optional `name=ID` apart from the `code=STRING` that always follows it,
-// since the two are different token kinds.
+// statement). `code` names the error/escalation/signal being thrown; every
+// trigger but `compensation` needs one to say which error/escalation/signal it
+// is. `compensation` — the undo block for a subprocess's already-completed
+// work — names nothing, so it carries no code at all. One token of lookahead
+// is all a parser needs to place each optional member: `ID` predicts `name`,
+// `STRING` predicts `code`, and anything else ends the statement (every
+// statement in this grammar is keyword-led, so a following statement can
+// never be swallowed as `name`).
 ThrowStatement:
-    'throw' trigger=ID (name=ID)? code=STRING;
+    'throw' trigger=ID (name=ID)? (code=STRING)?;
 
-// `emit <trigger> <name>? "<code>"` — fires the event and keeps going; the
-// one difference from `throw` above. Which trigger kinds actually have a
-// continuing (non-terminal) form in BPMN is the validator's concern, not the
-// grammar's.
+// `emit <trigger> <name>? "<code>"?` — fires the event and keeps going; the
+// one difference from `throw` above. `code` names the escalation/signal being
+// emitted; `compensation` — the undo block — names nothing, so it carries
+// none, same as `throw compensation` above. Which trigger kinds actually have
+// a continuing (non-terminal) form in BPMN is the validator's concern, not
+// the grammar's.
 EmitStatement:
-    'emit' trigger=ID (name=ID)? code=STRING;
+    'emit' trigger=ID (name=ID)? (code=STRING)?;
 
 // `<kind> "<code>" <field> "<text>"` — a process-header declaration, written
 // alongside `var` declarations, for the one piece of event data usage alone

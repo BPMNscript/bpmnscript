@@ -14,15 +14,16 @@
  *
  * - an event definition of the wrong kind for its position: any definition
  *   on a plain start event; anything other than error/escalation/message/
- *   signal/timer/conditional on an event handler's start; anything other
- *   than error/escalation/signal on an end event or an intermediate throw
- *   (terminate, compensation, …) → {@link UnsupportedEventDefinitionError};
+ *   signal/timer/conditional/compensation on an event handler's start;
+ *   anything other than error/escalation/signal/compensation on an end
+ *   event or an intermediate throw (terminate, …) →
+ *   {@link UnsupportedEventDefinitionError};
  * - loop characteristics on a task or sub-process (multi-instance or
  *   standard loop) → {@link UnsupportedLoopCharacteristicsError};
  * - collaborations, i.e. pools and message flows →
  *   {@link UnsupportedCollaborationError};
- * - unsupported flow-element kinds (an event sub-process, a transaction, an
- *   ad-hoc sub-process, intermediate events, …) →
+ * - unsupported flow-element kinds (a transaction, an ad-hoc sub-process,
+ *   intermediate catch events, …) →
  *   {@link UnsupportedElementError};
  * - service tasks whose execution form the IR cannot represent (a bare task
  *   with no discriminator, or an external type without a topic) →
@@ -37,13 +38,18 @@
  * - an event-layer construct shaped in a way this tool's surface cannot
  *   express — an event handler with the wrong start-event or definition
  *   count, or with incoming/outgoing sequence flows; a non-interrupting
- *   error handler; a throw or emit whose definition resolves to no code; an
- *   error definition on an emit; a "none" emit; two declared-message roots
- *   that disagree; a message/signal definition with no ref or whose
- *   resolved root has no non-empty name; a timer definition with zero or
- *   more than one time child, or an empty time body; a conditional
- *   definition with no condition, an empty condition body, or an
- *   evaluation-narrowing `variableName`/`variableEvents` attribute — →
+ *   error or compensation handler; a throw or emit whose definition resolves
+ *   to no code; an error definition on an emit; a "none" emit; two
+ *   declared-message roots that disagree; a message/signal definition with
+ *   no ref or whose resolved root has no non-empty name; a timer definition
+ *   with zero or more than one time child, or an empty time body; a
+ *   conditional definition with no condition, an empty condition body, or an
+ *   evaluation-narrowing `variableName`/`variableEvents` attribute; a
+ *   compensate definition (at any position) carrying an `activityRef` or
+ *   `waitForCompletion="false"`; a compensation event sub-process hosted by
+ *   the process or by another event sub-process rather than the plain
+ *   sub-process it compensates; `isForCompensation="true"` on any mapped
+ *   activity (task, sub-process, call activity) — →
  *   {@link UnsupportedEventFeatureError}.
  *
  * Content the IR does not carry but that causes **no semantic loss** is
@@ -218,12 +224,12 @@ export class UnsupportedCallActivityError extends UnsupportedConstructError {
  * throw carries an event definition kind this tool does not import at that
  * position: any definition on a plain start event (outside an event
  * handler); any definition other than error/escalation/message/signal/timer/
- * conditional on an event handler's start; any definition other than error/
- * escalation/signal on an end event; any definition other than escalation/
- * signal on an intermediate throw (terminate, compensation, …). The DSL's
- * event layer models only these catch (`on`) and throw/emit (`throw`/`emit`)
- * forms, so any other trigger/result semantics cannot be represented and
- * must not be silently dropped.
+ * conditional/compensation on an event handler's start; any definition other
+ * than error/escalation/signal/compensation on an end event; any definition
+ * other than escalation/signal/compensation on an intermediate throw
+ * (terminate, …). The DSL's event layer models only these catch (`on`) and
+ * throw/emit (`throw`/`emit`) forms, so any other trigger/result semantics
+ * cannot be represented and must not be silently dropped.
  *
  * A definition of the *right* kind but the *wrong shape* (e.g. an error
  * throw resolving to no code, a timer with no time child, a conditional
@@ -238,7 +244,7 @@ export class UnsupportedEventDefinitionError extends UnsupportedConstructError {
   readonly eventKind: 'start' | 'end' | 'intermediate throw';
   /**
    * The moddle `$type` of the first event definition found, e.g.
-   * `bpmn:TerminateEventDefinition` or `bpmn:CompensateEventDefinition`.
+   * `bpmn:TerminateEventDefinition` or `bpmn:LinkEventDefinition`.
    */
   readonly definitionType: string;
 
@@ -268,13 +274,18 @@ export class UnsupportedEventDefinitionError extends UnsupportedConstructError {
  * Concretely: an event handler (`triggeredByEvent="true"` sub-process) whose
  * start-event count is not exactly one, whose start carries zero or
  * multiple definitions, or which itself carries incoming/outgoing sequence
- * flows; a non-interrupting error handler (`isInterrupting="false"` on an
- * error trigger — BPMN forbids it); a typed end event or escalation
- * intermediate throw whose definition resolves to no code; an error
- * definition on an intermediate throw (no such BPMN form); a "none"
- * intermediate throw; two `bpmn:Error` root elements sharing a code but
- * disagreeing about the declared message; and a declared message on a root
- * with no code to key it by.
+ * flows; a non-interrupting error or compensation handler
+ * (`isInterrupting="false"` on either trigger — BPMN forbids it); a typed
+ * end event or escalation intermediate throw whose definition resolves to no
+ * code; an error definition on an intermediate throw (no such BPMN form); a
+ * "none" intermediate throw; two `bpmn:Error` root elements sharing a code
+ * but disagreeing about the declared message; a declared message on a root
+ * with no code to key it by; a compensate definition (at any position)
+ * carrying an `activityRef` or `waitForCompletion="false"`; a compensation
+ * event sub-process hosted by the process or by another event sub-process
+ * rather than the plain sub-process it compensates; and
+ * `isForCompensation="true"` on any mapped activity (task, sub-process, call
+ * activity).
  *
  * Mirrors {@link UnsupportedCallActivityError}: the shape is refused
  * outright — never narrowed or silently reinterpreted — and `detail` names
@@ -289,9 +300,10 @@ export class UnsupportedEventFeatureError extends UnsupportedConstructError {
   constructor(elementId: string, detail: string) {
     super(
       `The event construct at '${elementId}' cannot be imported: ${detail}. ` +
-        "Supported event handlers catch a single error or escalation on " +
-        "their one start event; supported throws and emits resolve to a " +
-        'single, non-empty error or escalation code.',
+        'Event handlers catch one error, escalation, message, signal, timer, ' +
+        'conditional, or compensation trigger on their single start event; ' +
+        'throws and emits carry the code or name their kind requires, and ' +
+        'compensation carries neither.',
     );
     this.name = 'UnsupportedEventFeatureError';
     this.elementId = elementId;
@@ -359,10 +371,10 @@ function friendlyEventDefinition(definitionType: string): string {
 /**
  * Name the event definition kinds this tool imports at a given position, for
  * the {@link UnsupportedEventDefinitionError} message. A plain start event
- * accepts none at all — the sentence explains that the six trigger kinds are
- * only available on an event handler's start, which also reads correctly
+ * accepts none at all — the sentence explains that the seven trigger kinds
+ * are only available on an event handler's start, which also reads correctly
  * when the offending element genuinely is a handler start carrying the wrong
- * kind (e.g. a compensation or terminate definition).
+ * kind (e.g. a terminate definition).
  */
 function supportedKindsMessage(
   eventKind: 'start' | 'end' | 'intermediate throw',
@@ -371,12 +383,13 @@ function supportedKindsMessage(
     case 'start':
       return (
         "A plain start event carries no definition; an event handler's " +
-        'start supports error, escalation, message, signal, timer, or conditional.'
+        'start supports error, escalation, message, signal, timer, ' +
+        'conditional, or compensation.'
       );
     case 'end':
-      return 'A typed end event supports error, escalation, or signal.';
+      return 'A typed end event supports error, escalation, signal, or compensation.';
     case 'intermediate throw':
-      return 'An emit supports escalation or signal.';
+      return 'An emit supports escalation, signal, or compensation.';
   }
 }
 

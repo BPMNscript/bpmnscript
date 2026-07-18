@@ -10,7 +10,9 @@ Two additional construct fixtures (`structured-control-flow.bpmnscript` and
 `nested-subprocess.{bpmnscript,bpmn}` pair exercises the embedded sub-process
 round-trip, the `event-handlers.{bpmnscript,bpmn}` pair exercises the error and
 escalation event layer, the `event-triggers.{bpmnscript,bpmn}` pair exercises
-the message, signal, timer, and conditional triggers, and
+the message, signal, timer, and conditional triggers, the
+`compensation.{bpmnscript,bpmn}` pair exercises the compensation (undo-block)
+layer, and
 `bad-service-task-no-binding.bpmn` is the negative-path fixture for the import
 refusal path.
 
@@ -251,6 +253,66 @@ id-scheme change), regenerate this file:
    per timer, each handler shape inside its parent's bounds, and every authored
    id must stay intact; only synthesised gateway/flow/handler ids and layout
    coordinates may move.
+
+## `compensation.bpmnscript` and `compensation.bpmn`
+
+A golden **pair** for the compensation (undo-block) event layer: a BPMNscript
+source and the frozen BPMN XML the full pipeline produces from it. The source is
+a trip-booking saga that exercises the whole undo surface in one program — two
+`subprocess`es each owning an `on compensation` undo block (the flight booking
+reverses in one step; the hotel booking reverses through an `if` reading a
+declared form variable, so the undo logic is more than a single step); an
+`error … message` declaration and a process-level `on error` handler whose body
+raises a named `emit compensation Undo` (a compensation intermediate throw) and
+then continues to notify the traveller; a matching `emit escalation Overspend` in
+the main flow and a process-level `on escalation` handler that gives up — it
+records the abandonment and ends its path with a named `throw compensation
+CancelAll` (a compensation end event), a cross-kind interplay; and a
+`var compensation: number` read in a service expression, pinning that the
+compensation particle word coexists with a same-named variable. The `if`
+variables (`seats`, `budget`) are declared on the start form so they survive an
+import-and-back round-trip, and every throw/emit is explicitly named so its
+printed id re-parses cleanly.
+
+`compensation.bpmnscript` is the **input**, and `compensation.bpmn` is the
+**frozen output of the full pipeline** (`irToXml(astToIr(parse(source)))`,
+services wired exactly as `tests/round-trip.test.ts` does). The round-trip test
+`tests/compensation.round-trip.test.ts` drives the pair both directions: it
+reproduces the pipeline and compares byte-for-byte against the frozen `.bpmn`,
+round-trips the source through XML and back asserting IR equivalence (through the
+recursive `normalizeIr`, whose handler re-keying folds a payload-less
+`<compensation>` marker into the structural signature — one undo block per
+container, so it never collides), imports the frozen `.bpmn` warning-free, and
+asserts every undo-block handler shape's DI bounds fall strictly inside its host
+sub-process's bounds. Like the event-triggers pair, the restructured DSL′ here is
+asserted validator-clean: every throw/emit is explicitly named, and the `if`
+variables live on the start form.
+
+Because it is the desugared output, compensation contributes **no** document-level
+root element — it is payload-less — so the only roots are the declared
+`Error_BOOKING_FAILED` (carrying its message) and the `Escalation_BUDGET_EXCEEDED`
+synthesised from use; every `bpmn:compensateEventDefinition` (the two undo-block
+trigger starts, the `emit` intermediate throw, and the `throw` end event) is the
+bare `<bpmn:compensateEventDefinition />` with no `activityRef` or
+`waitForCompletion`; each undo block is a `triggeredByEvent` sub-process whose
+start carries no `isInterrupting` (compensation always interrupts, and the
+serializer drops the default); and every authored id (the tasks, the explicit
+events, the named `throw`/`emit`) survives verbatim.
+
+If you change the parser, the desugarer, or `irToXml` in a way that _should_
+alter the output (new attribute, different formatting, layout-library upgrade,
+id-scheme change), regenerate this file:
+
+1. Run the full pipeline on the source:
+   `irToXml(astToIr(parse(compensation.bpmnscript)))`, wiring the Langium
+   services exactly as `tests/round-trip.test.ts` does
+   (`createBpmnScriptServices(EmptyFileSystem)` + `parseHelper`).
+2. Write the returned string to `compensation.bpmn`.
+3. Inspect the diff to confirm every change is intended — the absence of any
+   compensation root, the bare compensate definitions, the `triggeredByEvent`
+   undo blocks with interrupting starts, each undo-block shape inside its host's
+   bounds, and every authored id must stay intact; only synthesised
+   gateway/flow/handler ids and layout coordinates may move.
 
 ## `unstructured-goto.bpmn`
 

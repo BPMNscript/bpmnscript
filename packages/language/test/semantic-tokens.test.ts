@@ -178,6 +178,39 @@ process p {
   });
 });
 
+describe('trigger word on compensation (on/throw/emit)', () => {
+  test('`on compensation { }` highlights the trigger word as a keyword token', async () => {
+    const result = await highlight(`
+process p {
+  on <|compensation|> { }
+}
+`);
+    expectSemanticToken(result, { tokenType: SemanticTokenTypes.keyword });
+  });
+
+  test('`throw compensation` highlights the trigger word', async () => {
+    const result = await highlight(`
+process p {
+  throw <|compensation|>
+}
+`);
+    expectSemanticToken(result, { tokenType: SemanticTokenTypes.keyword });
+  });
+
+  test('`emit compensation Undo` highlights the trigger word, not the name id', async () => {
+    const result = await highlight(`
+process p {
+  emit <|compensation|> <|Undo|>
+}
+`);
+    expectSemanticToken(result, {
+      rangeIndex: 0,
+      tokenType: SemanticTokenTypes.keyword,
+    });
+    expectNoTokenAt(result, 1);
+  });
+});
+
 describe('negative: the same words used as ordinary identifiers stay plain', () => {
   test('`var message: string` carries no token on `message`', async () => {
     const result = await highlight(`
@@ -193,6 +226,27 @@ process p {
 process p {
   var code: string
   if (<|code|> == "x") {
+    end Done
+  }
+}
+`);
+    expectNoTokenAt(result);
+  });
+
+  test('`var compensation: number` carries no token on `compensation`', async () => {
+    const result = await highlight(`
+process p {
+  var <|compensation|>: number
+}
+`);
+    expectNoTokenAt(result);
+  });
+
+  test('`if (compensation > 0)` carries no token on `compensation`', async () => {
+    const result = await highlight(`
+process p {
+  var compensation: number
+  if (<|compensation|> > 0) {
     end Done
   }
 }

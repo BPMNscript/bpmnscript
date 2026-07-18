@@ -1710,6 +1710,198 @@ describe('astToIr — new-trigger composition (nested coordinates)', () => {
   });
 });
 
+// ── 24. compensation trigger ─────────────────────────────────────────────────
+
+describe('astToIr — compensation handler lowering', () => {
+  it('lowers a compensation handler out of the sequence chain inside a subprocess', async () => {
+    const result = await ir(
+      `process p {
+        subprocess S {
+          service A { class = "x.A" }
+          on compensation { service U { class = "x.U" } }
+        }
+      }`,
+    );
+    const sub = subProcess(result, 'S');
+    // S's own chain is intact around the handler (out-of-chain regression pin).
+    expect(flow(sub, 'StartEvent_S', 'A')).toBeDefined();
+    expect(flow(sub, 'A', 'EndEvent_S')).toBeDefined();
+
+    const handlerId = makeEventSubProcessId('p_0_1');
+    const handler = subProcess(sub, handlerId);
+    expect(handler.triggeredByEvent).toBe(true);
+    for (const f of sub.sequenceFlows) {
+      expect(f.sourceRef).not.toBe(handlerId);
+      expect(f.targetRef).not.toBe(handlerId);
+    }
+
+    const start = only(handler, 'startEvent');
+    expect(start.eventDefinition).toEqual({ kind: 'compensation' });
+    expect(start.isInterrupting).toBeUndefined();
+  });
+
+  it('honours an explicit start as the trigger-carrying start', async () => {
+    const result = await ir(
+      `process p {
+        on compensation { start In "Undo" service R { class = "x.R" } }
+      }`,
+    );
+    const handler = subProcess(result, makeEventSubProcessId('p_0'));
+    const ids = handler.flowElements.map((fe) => fe.id);
+    expect(ids).toContain('In');
+    expect(ids).not.toContain(
+      makeStartEventId(makeEventSubProcessId('p_0'), new Set()),
+    );
+    const start = only(handler, 'startEvent');
+    expect(start.id).toBe('In');
+    expect(start.name).toBe('Undo');
+    expect(start.eventDefinition).toEqual({ kind: 'compensation' });
+  });
+
+  it('synthesizes start(def) → flow → end for an empty handler body (validator owns placement)', async () => {
+    const result = await ir(`process p { on compensation { } }`);
+    const handlerId = makeEventSubProcessId('p_0');
+    const handler = subProcess(result, handlerId);
+    expect(handler.triggeredByEvent).toBe(true);
+    const startId = makeStartEventId(handlerId, new Set());
+    const endId = makeEndEventId(handlerId, new Set());
+    expect(handler.flowElements.map((fe) => fe.id)).toEqual([startId, endId]);
+    expect(handler.sequenceFlows).toHaveLength(1);
+    expect(flow(handler, startId, endId)).toBeDefined();
+    const start = only(handler, 'startEvent');
+    expect(start.eventDefinition).toEqual({ kind: 'compensation' });
+  });
+
+  it('is total over a stray code, binding, and condition on the handler, still stamping isInterrupting: false for alongside', async () => {
+    const result = await ir(
+      `process p { on compensation "X" (code c) alongside { } }`,
+    );
+    const handler = subProcess(result, makeEventSubProcessId('p_0'));
+    const start = only(handler, 'startEvent');
+    expect(start.eventDefinition).toEqual({ kind: 'compensation' });
+    expect(start.isInterrupting).toBe(false);
+  });
+});
+
+describe('astToIr — compensation throw/emit lowering', () => {
+  it('lowers `throw compensation` to a typed end event with no fall-through', async () => {
+    const result = await ir(
+      `process p {
+        service A { class = "x.A" }
+        throw compensation
+        service B { class = "x.B" }
+      }`,
+    );
+    const throwId = makeThrowEventId('p_1');
+    const thrown = byId(result, throwId);
+    expect(thrown.kind).toBe('endEvent');
+    expect((thrown as { eventDefinition?: unknown }).eventDefinition).toEqual({
+      kind: 'compensation',
+    });
+    expect(flow(result, 'A', throwId)).toBeDefined();
+    expect(result.sequenceFlows.some((f) => f.sourceRef === throwId)).toBe(
+      false,
+    );
+  });
+
+  it('lowers `emit compensation Undo` to an intermediate throw wired into the chain', async () => {
+    const result = await ir(
+      `process p {
+        service A { class = "x.A" }
+        emit compensation Undo
+        service B { class = "x.B" }
+      }`,
+    );
+    const emitted = byId(result, 'Undo');
+    expect(emitted.kind).toBe('intermediateThrowEvent');
+    expect((emitted as { eventDefinition?: unknown }).eventDefinition).toEqual(
+      { kind: 'compensation' },
+    );
+    expect(flow(result, 'A', 'Undo')).toBeDefined();
+    expect(flow(result, 'Undo', 'B')).toBeDefined();
+  });
+
+  it('lowers `emit compensation` normally inside an on-error handler body and inside an on-compensation body', async () => {
+    const inErrorHandler = await ir(
+      `process p { on error "PF" { emit compensation } }`,
+    );
+    const errorHandler = subProcess(
+      inErrorHandler,
+      makeEventSubProcessId('p_0'),
+    );
+    const emittedInError = byId(errorHandler, makeThrowEventId('p_0_0'));
+    expect(emittedInError.kind).toBe('intermediateThrowEvent');
+    expect(
+      (emittedInError as { eventDefinition?: unknown }).eventDefinition,
+    ).toEqual({ kind: 'compensation' });
+
+    const inCompensationHandler = await ir(
+      `process p { on compensation { emit compensation } }`,
+    );
+    const compHandler = subProcess(
+      inCompensationHandler,
+      makeEventSubProcessId('p_0'),
+    );
+    const emittedInComp = byId(compHandler, makeThrowEventId('p_0_0'));
+    expect(emittedInComp.kind).toBe('intermediateThrowEvent');
+    expect(
+      (emittedInComp as { eventDefinition?: unknown }).eventDefinition,
+    ).toEqual({ kind: 'compensation' });
+  });
+
+  it('ignores a stray code string on `throw compensation`', async () => {
+    const result = await ir(`process p { throw compensation "X" }`);
+    const thrown = byId(result, makeThrowEventId('p_0'));
+    expect(thrown.kind).toBe('endEvent');
+    expect((thrown as { eventDefinition?: unknown }).eventDefinition).toEqual({
+      kind: 'compensation',
+    });
+  });
+
+  it('keeps the code-less error/signal sinks lowering unchanged (regression pin)', async () => {
+    const thrown = await ir(`process p { throw error }`);
+    const thrownDef = (
+      byId(thrown, makeThrowEventId('p_0')) as {
+        eventDefinition?: { errorCode?: string };
+      }
+    ).eventDefinition;
+    expect(thrownDef).toEqual({ kind: 'error' });
+    expect(thrownDef?.errorCode).toBeUndefined();
+
+    const emitted = await ir(`process p { emit signal }`);
+    expect(
+      (
+        byId(emitted, makeThrowEventId('p_0')) as { eventDefinition?: unknown }
+      ).eventDefinition,
+    ).toEqual({ kind: 'signal', signalName: '' });
+  });
+});
+
+describe('astToIr — compensation coordinate composition', () => {
+  it('composes coordinates when a compensation handler and an if are siblings inside a subprocess', async () => {
+    const result = await ir(
+      `process p {
+        subprocess S {
+          if (c) { service Y { class = "x.Y" } }
+          on compensation { service U { class = "x.U" } }
+        }
+      }`,
+    );
+    const sub = subProcess(result, 'S');
+    // S's own coordinate is p_0; the `if` at S-body index 0 is p_0_0.
+    const gatewayIds = sub.flowElements
+      .filter((fe) => fe.kind === 'exclusiveGateway')
+      .map((fe) => fe.id);
+    expect(gatewayIds).toContain(makeGatewaySplitId('p_0_0'));
+    expect(gatewayIds).toContain(makeGatewayJoinId('p_0_0'));
+
+    // The compensation handler at S-body index 1 is EventSubProcess_p_0_1.
+    const handler = subProcess(sub, makeEventSubProcessId('p_0_1'));
+    const start = only(handler, 'startEvent');
+    expect(start.eventDefinition).toEqual({ kind: 'compensation' });
+  });
+});
+
 // ── Local helpers ────────────────────────────────────────────────────────────
 
 /** Find a flow element by id (asserting exactly one such element). */

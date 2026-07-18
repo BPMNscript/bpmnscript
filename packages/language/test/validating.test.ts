@@ -1914,7 +1914,7 @@ process p {
 });
 
 describe('Validation — soft event words', () => {
-  test('an unknown trigger word on `on` is exactly one diagnostic naming all six kinds', async () => {
+  test('an unknown trigger word on `on` is exactly one diagnostic naming all seven kinds', async () => {
     const { diagnostics } = await validate(`process p { on erorr "X" { } }`);
     expect(diagnostics).toHaveLength(1);
     for (const kind of [
@@ -1924,6 +1924,7 @@ describe('Validation — soft event words', () => {
       'signal',
       'timer',
       'condition',
+      'compensation',
     ]) {
       expect(diagnostics[0]!.message).toContain(kind);
     }
@@ -1935,6 +1936,7 @@ describe('Validation — soft event words', () => {
     expect(diagnostics[0]!.message).toContain('error');
     expect(diagnostics[0]!.message).toContain('escalation');
     expect(diagnostics[0]!.message).toContain('signal');
+    expect(diagnostics[0]!.message).toContain('compensation');
   });
 
   test('an unknown trigger word on `emit` is exactly one diagnostic naming its legal kinds', async () => {
@@ -1942,6 +1944,7 @@ describe('Validation — soft event words', () => {
     expect(diagnostics).toHaveLength(1);
     expect(diagnostics[0]!.message).toContain('escalation');
     expect(diagnostics[0]!.message).toContain('signal');
+    expect(diagnostics[0]!.message).toContain('compensation');
     expect(diagnostics[0]!.message).not.toContain('error');
   });
 
@@ -2243,6 +2246,262 @@ process p {
 }
 `);
     expect(diagnosticsFor(diagnostics, 'cannot be used in')).toHaveLength(1);
+  });
+});
+
+describe('Validation — compensation clean programs', () => {
+  test('a subprocess with an `on compensation` block is diagnostic-free', async () => {
+    const { diagnostics } = await validate(`
+process p {
+  subprocess S {
+    user A
+    on compensation { user Undo }
+  }
+}
+`);
+    expect(diagnostics).toHaveLength(0);
+  });
+
+  test('a process-level `on error` handler with `emit compensation` and a named `throw compensation Undo` is diagnostic-free', async () => {
+    const { diagnostics } = await validate(`
+process p {
+  user A
+  on error "X" {
+    emit compensation
+    throw compensation Undo
+  }
+}
+`);
+    expect(diagnostics).toHaveLength(0);
+  });
+
+  test('a variable named `compensation` coexists with the trigger word', async () => {
+    const { diagnostics } = await validate(`
+process p {
+  var compensation: number
+  if (compensation > 1) { user A }
+}
+`);
+    expect(diagnostics).toHaveLength(0);
+  });
+});
+
+describe('Validation — compensation payload matrix', () => {
+  test('a STRING on `on compensation` is the omission message', async () => {
+    const { diagnostics } = await validate(`
+process p {
+  subprocess S {
+    on compensation "X" { user A }
+  }
+}
+`);
+    expect(diagnosticsFor(diagnostics, 'omit the string')).toHaveLength(1);
+  });
+
+  test('bindings on `on compensation` are the no-values message', async () => {
+    const { diagnostics } = await validate(`
+process p {
+  subprocess S {
+    on compensation (code c) { user A }
+  }
+}
+`);
+    expect(diagnosticsFor(diagnostics, 'carries no values')).toHaveLength(1);
+  });
+
+  test('`alongside` on `on compensation` is the finished-work message', async () => {
+    const { diagnostics } = await validate(`
+process p {
+  subprocess S {
+    on compensation alongside { user A }
+  }
+}
+`);
+    expect(
+      diagnosticsFor(diagnostics, 'no running flow to run alongside'),
+    ).toHaveLength(1);
+  });
+
+  test('a particle on `on compensation` fires exactly the inherited particle-forbidden diagnostic', async () => {
+    const { diagnostics } = await validate(`
+process p {
+  subprocess S {
+    on compensation after "PT1H" { user A }
+  }
+}
+`);
+    expect(diagnostics).toHaveLength(1);
+    expect(diagnostics[0]!.message).toContain(
+      "Only 'on timer' takes a particle",
+    );
+  });
+
+  test('a condition on `on compensation` fires exactly the inherited condition-only diagnostic', async () => {
+    const { diagnostics } = await validate(`
+process p {
+  var amount: number
+  subprocess S {
+    on compensation (amount > 100) { user A }
+  }
+}
+`);
+    expect(diagnostics).toHaveLength(1);
+    expect(diagnostics[0]!.message).toContain("Only 'on condition'");
+  });
+});
+
+describe('Validation — compensation placement', () => {
+  test('`on compensation` directly in a process body is the undo-block placement error', async () => {
+    const { diagnostics } = await validate(`
+process p { on compensation { user A } }
+`);
+    expect(
+      diagnosticsFor(diagnostics, 'a process cannot undo itself'),
+    ).toHaveLength(1);
+  });
+
+  test('`on compensation` inside an `on error` body gets the same placement error', async () => {
+    const { diagnostics } = await validate(`
+process p {
+  on error "X" {
+    on compensation { user A }
+  }
+}
+`);
+    expect(
+      diagnosticsFor(diagnostics, 'a process cannot undo itself'),
+    ).toHaveLength(1);
+  });
+
+  test('`on compensation` inside an `if` inside a subprocess is exactly one (inherited) diagnostic', async () => {
+    const { diagnostics } = await validate(`
+process p {
+  subprocess S {
+    if (true) {
+      on compensation { user A }
+    }
+  }
+}
+`);
+    expect(diagnostics).toHaveLength(1);
+    expect(diagnostics[0]!.message).toContain(
+      'belongs directly in a process or subprocess body',
+    );
+  });
+
+  test('`on compensation` directly inside a subprocess body is diagnostic-free', async () => {
+    const { diagnostics } = await validate(`
+process p {
+  subprocess S {
+    user A
+    on compensation { user Undo }
+  }
+}
+`);
+    expect(diagnostics).toHaveLength(0);
+  });
+});
+
+describe('Validation — compensation duplicates', () => {
+  test('two `on compensation` in one subprocess is the merge-the-steps error', async () => {
+    const { diagnostics } = await validate(`
+process p {
+  subprocess S {
+    on compensation { user A }
+    on compensation { user B }
+  }
+}
+`);
+    expect(diagnosticsFor(diagnostics, 'merge the steps')).toHaveLength(1);
+  });
+
+  test('one `on compensation` in each of two different subprocesses is diagnostic-free', async () => {
+    const { diagnostics } = await validate(`
+process p {
+  subprocess S1 {
+    user A
+    on compensation { user U1 }
+  }
+  subprocess S2 {
+    user B
+    on compensation { user U2 }
+  }
+}
+`);
+    expect(diagnostics).toHaveLength(0);
+  });
+});
+
+describe('Validation — throw/emit code-required shift', () => {
+  test('`throw error` with no code names the shape', async () => {
+    const { diagnostics } = await validate(`process p { throw error }`);
+    expect(diagnosticsFor(diagnostics, 'throw error "CODE"')).toHaveLength(1);
+  });
+
+  test('`emit signal` with no code names the shape (analog)', async () => {
+    const { diagnostics } = await validate(`process p { emit signal }`);
+    expect(diagnosticsFor(diagnostics, 'emit signal "CODE"')).toHaveLength(1);
+  });
+
+  test('`throw escalation ""` gets the same code-required family, reworded', async () => {
+    const { diagnostics } = await validate(`process p { throw escalation "" }`);
+    expect(
+      diagnosticsFor(diagnostics, 'throw escalation "CODE"'),
+    ).toHaveLength(1);
+    // The old catch-all-by-omission phrasing stays on `on` only.
+    expect(diagnosticsFor(diagnostics, 'omit the string entirely')).toHaveLength(
+      0,
+    );
+  });
+
+  test('`throw compensation "X"` is the nothing-to-name message', async () => {
+    const { diagnostics } = await validate(
+      `process p { throw compensation "X" }`,
+    );
+    expect(diagnosticsFor(diagnostics, 'nothing to name')).toHaveLength(1);
+  });
+
+  test('`throw compensation` in a valid context is diagnostic-free', async () => {
+    const { diagnostics } = await validate(`process p { throw compensation }`);
+    expect(diagnostics).toHaveLength(0);
+  });
+});
+
+describe('Validation — compensation unreachable scan', () => {
+  test('a statement after `throw compensation` is flagged unreachable', async () => {
+    const { diagnostics } = await validate(
+      `process p { throw compensation user Dead }`,
+    );
+    expect(diagnosticsFor(diagnostics, 'can never run')).toHaveLength(1);
+  });
+
+  test('a statement after `emit compensation` produces no unreachable warning', async () => {
+    const { diagnostics } = await validate(
+      `process p { emit compensation user Alive }`,
+    );
+    expect(diagnosticsFor(diagnostics, 'can never run')).toHaveLength(0);
+  });
+});
+
+describe('Validation — compensation did-you-mean', () => {
+  test('`on compensate` is exactly one diagnostic naming compensation', async () => {
+    const { diagnostics } = await validate(
+      `process p { on compensate { user A } }`,
+    );
+    expect(diagnostics).toHaveLength(1);
+    expect(diagnostics[0]!.message).toContain('compensation');
+  });
+
+  test('`throw compensate` is exactly one diagnostic naming compensation', async () => {
+    const { diagnostics } = await validate(`process p { throw compensate }`);
+    expect(diagnostics).toHaveLength(1);
+    expect(diagnostics[0]!.message).toContain('compensation');
+  });
+
+  test('`emit compensate` is exactly one diagnostic naming compensation', async () => {
+    const { diagnostics } = await validate(`process p { emit compensate }`);
+    expect(diagnostics).toHaveLength(1);
+    expect(diagnostics[0]!.message).toContain('compensation');
   });
 });
 

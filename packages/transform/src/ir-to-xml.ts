@@ -209,7 +209,9 @@ interface RootElementIndex {
  * order, then any `errorMessages` code not yet seen (a declared code emits its
  * root even when otherwise unused — the declaration is explicit authorial
  * intent). Catch-all error/escalation definitions (no code) contribute no root;
- * message/signal names are always present (the surface requires them).
+ * message/signal names are always present (the surface requires them);
+ * compensation contributes no root at all — it is payload-less, so there is no
+ * identity to synthesize one from.
  *
  * Ids: `Error_<code>` / `Escalation_<code>` / `Message_<name>` / `Signal_<name>`
  * with any character outside `[A-Za-z0-9_.-]` replaced by `_`. Collisions — two
@@ -251,6 +253,9 @@ function synthesizeRootElements(
         if (!signalNames.includes(def.signalName)) {
           signalNames.push(def.signalName);
         }
+        break;
+      case 'compensation':
+        // No document-level element exists for compensation.
         break;
       default:
         // Timer and conditional carry their payloads inline; no root element.
@@ -393,6 +398,10 @@ function collectElementIds(container: FlowContainer, into: Set<string>): void {
  *     attributes when set (the moddle fork resolves these onto the definition).
  *   - `message`/`signal` — the `messageRef`/`signalRef` is wired to the shared
  *     name-keyed root (all uses of one name reference the same root).
+ *   - `compensation` — a `bpmn:CompensateEventDefinition` with no properties at
+ *     all: the moddle schema defaults `waitForCompletion` to `true`, the only
+ *     value Operaton supports, and there is no code to wire a ref for, so the
+ *     element serializes as the bare `<bpmn:compensateEventDefinition />`.
  *   - `timer` — a `bpmn:TimerEventDefinition` with exactly one child
  *     (`timeDuration`/`timeDate`/`timeCycle` per `timerKind`), a
  *     `bpmn:FormalExpression` whose `body` is the verbatim time text.
@@ -437,6 +446,11 @@ function buildEventDefinition(
       return moddle.create('bpmn:SignalEventDefinition', {
         signalRef: roots.signalByName.get(def.signalName),
       });
+    case 'compensation':
+      // No properties: the moddle schema defaults `waitForCompletion` to
+      // `true` (the only value Operaton supports), and compensation carries
+      // no code or ref, so the bare element is the whole definition.
+      return moddle.create('bpmn:CompensateEventDefinition', {});
     case 'timer': {
       const expression = moddle.create('bpmn:FormalExpression', {
         body: def.expression,

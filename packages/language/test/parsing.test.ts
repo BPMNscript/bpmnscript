@@ -762,6 +762,156 @@ describe('Parsing — throw / emit', () => {
   });
 });
 
+// ── compensation: the code is optional on throw / emit ───────────────────
+//
+// Compensation undoes a subprocess's already-completed work rather than
+// naming an error/escalation/signal, so it carries no code at all. Making
+// `code=STRING` optional on both `ThrowStatement` and `EmitStatement` is the
+// one grammar change this covers; every other trigger keeps parsing a code
+// exactly as before, and — as a side effect — every other trigger's code
+// becomes optional at the grammar level too (word/payload legality per
+// trigger stays the validator's job, not the parser's).
+describe('Parsing — compensation (optional throw/emit code)', () => {
+  test('a bare `throw compensation` / `emit compensation` carries no name and no code', async () => {
+    const thrown = await parse(`process p { throw compensation }`);
+    expect(formatParseFailure(thrown)).toBeUndefined();
+    const thrownSt = thrown.parseResult.value.processes[0]!
+      .body[0] as ThrowStatement;
+    expect(thrownSt.$type).toBe('ThrowStatement');
+    expect(thrownSt.trigger).toBe('compensation');
+    expect(thrownSt.name).toBeUndefined();
+    expect(thrownSt.code).toBeUndefined();
+
+    const emitted = await parse(`process p { emit compensation }`);
+    expect(formatParseFailure(emitted)).toBeUndefined();
+    const emittedSt = emitted.parseResult.value.processes[0]!
+      .body[0] as EmitStatement;
+    expect(emittedSt.$type).toBe('EmitStatement');
+    expect(emittedSt.trigger).toBe('compensation');
+    expect(emittedSt.name).toBeUndefined();
+    expect(emittedSt.code).toBeUndefined();
+  });
+
+  test('a named `throw compensation Undo` / `emit compensation Ping` carries a name but no code', async () => {
+    const thrown = await parse(`process p { throw compensation Undo }`);
+    expect(formatParseFailure(thrown)).toBeUndefined();
+    const thrownSt = thrown.parseResult.value.processes[0]!
+      .body[0] as ThrowStatement;
+    expect(thrownSt.name).toBe('Undo');
+    expect(thrownSt.code).toBeUndefined();
+
+    const emitted = await parse(`process p { emit compensation Ping }`);
+    expect(formatParseFailure(emitted)).toBeUndefined();
+    const emittedSt = emitted.parseResult.value.processes[0]!
+      .body[0] as EmitStatement;
+    expect(emittedSt.name).toBe('Ping');
+    expect(emittedSt.code).toBeUndefined();
+  });
+
+  test('regression: a coded throw/emit still parses exactly as before, name then code', async () => {
+    const thrown = await parse(`process p { throw error Failed "C" }`);
+    expect(formatParseFailure(thrown)).toBeUndefined();
+    const thrownSt = thrown.parseResult.value.processes[0]!
+      .body[0] as ThrowStatement;
+    expect(thrownSt.trigger).toBe('error');
+    expect(thrownSt.name).toBe('Failed');
+    expect(thrownSt.code).toBe('C');
+
+    const emitted = await parse(`process p { emit signal Ping "S" }`);
+    expect(formatParseFailure(emitted)).toBeUndefined();
+    const emittedSt = emitted.parseResult.value.processes[0]!
+      .body[0] as EmitStatement;
+    expect(emittedSt.trigger).toBe('signal');
+    expect(emittedSt.name).toBe('Ping');
+    expect(emittedSt.code).toBe('S');
+  });
+
+  test('a code-less throw/emit now parses for every trigger, not just compensation — word legality is the validator’s job', async () => {
+    const throwError = await parse(`process p { throw error }`);
+    expect(formatParseFailure(throwError)).toBeUndefined();
+    expect(
+      (throwError.parseResult.value.processes[0]!.body[0] as ThrowStatement)
+        .code,
+    ).toBeUndefined();
+
+    const emitSignal = await parse(`process p { emit signal }`);
+    expect(formatParseFailure(emitSignal)).toBeUndefined();
+    expect(
+      (emitSignal.parseResult.value.processes[0]!.body[0] as EmitStatement)
+        .code,
+    ).toBeUndefined();
+
+    const throwBanana = await parse(`process p { throw banana }`);
+    expect(formatParseFailure(throwBanana)).toBeUndefined();
+    expect(
+      (throwBanana.parseResult.value.processes[0]!.body[0] as ThrowStatement)
+        .trigger,
+    ).toBe('banana');
+  });
+
+  test('a statement following a code-less throw is not swallowed as its name', async () => {
+    const document = await parse(
+      `process p { throw compensation service R { class = "x.Y" } }`,
+    );
+    expect(formatParseFailure(document)).toBeUndefined();
+    const body = document.parseResult.value.processes[0]!.body;
+    expect(body).toHaveLength(2);
+    expect(body.map((s) => s.$type)).toEqual([
+      'ThrowStatement',
+      'ServiceTask',
+    ]);
+    expect((body[0] as ThrowStatement).name).toBeUndefined();
+  });
+
+  test('`on compensation { }` parses under the unchanged OnHandler rule, with no code/particle/bindings/condition', async () => {
+    const document = await parse(`process p { on compensation { } }`);
+    expect(formatParseFailure(document)).toBeUndefined();
+    const handler = document.parseResult.value.processes[0]!
+      .body[0] as OnHandler;
+    expect(handler.$type).toBe('OnHandler');
+    expect(handler.trigger).toBe('compensation');
+    expect(handler.code).toBeUndefined();
+    expect(handler.particle).toBeUndefined();
+    expect(handler.bindings).toHaveLength(0);
+    expect(handler.condition).toBeUndefined();
+    expect(handler.alongside).toBeFalsy();
+  });
+
+  test('`on compensation "X" { }` and `on compensation alongside { }` also parse — the validator rejects them later', async () => {
+    const withCode = await parse(`process p { on compensation "X" { } }`);
+    expect(formatParseFailure(withCode)).toBeUndefined();
+    const withCodeHandler = withCode.parseResult.value.processes[0]!
+      .body[0] as OnHandler;
+    expect(withCodeHandler.trigger).toBe('compensation');
+    expect(withCodeHandler.code).toBe('X');
+
+    const withAlongside = await parse(
+      `process p { on compensation alongside { } }`,
+    );
+    expect(formatParseFailure(withAlongside)).toBeUndefined();
+    const withAlongsideHandler = withAlongside.parseResult.value.processes[0]!
+      .body[0] as OnHandler;
+    expect(withAlongsideHandler.trigger).toBe('compensation');
+    expect(withAlongsideHandler.alongside).toBe(true);
+  });
+
+  test('`compensation` stays a plain soft word: a var, a task name, and an expression identifier', async () => {
+    const varDoc = await parse(
+      `process p { var compensation: number start S end E }`,
+    );
+    expect(formatParseFailure(varDoc)).toBeUndefined();
+
+    const taskDoc = await parse(`process p { user compensation }`);
+    expect(formatParseFailure(taskDoc)).toBeUndefined();
+    expect(
+      (taskDoc.parseResult.value.processes[0]!.body[0] as UserTask).name,
+    ).toBe('compensation');
+
+    const cond = await parseCondition(`compensation > 0`);
+    expect(cond.$type).toBe('Relational');
+  });
+});
+
 describe('Parsing — error declaration', () => {
   test('`error "C" message "M"` parses as a process declaration alongside var decls', async () => {
     const source = `

@@ -139,6 +139,14 @@ export interface FormField {
  * Escalations carry a code but no message text (BPMN/Operaton has no escalation
  * message), so the escalation variant has only `codeVariable`.
  *
+ * **Compensation** is the odd one out among the catch/throw pair: it appears on
+ * all three surfaces exactly like error/escalation — `on compensation` catches
+ * it, `throw compensation`/`emit compensation` raise it — but it is
+ * payload-less. BPMN compensation always addresses the enclosing scope rather
+ * than naming one, so there is no code to carry and no bindings to fill; every
+ * occurrence of the kind is the identical undo-block request (think `finally`,
+ * not `catch (Exception e)`).
+ *
  * The remaining four variants are trigger-only (they have no throw-side bindings):
  *   - **message** — the process's inbox. A handler runs when the engine delivers
  *     a message with this name; delivery is the engine's correlation API, so
@@ -180,6 +188,25 @@ export type EventDefinition =
       escalationCode?: string;
       /** `operaton:escalationCodeVariable` — process variable the code fills. */
       codeVariable?: string;
+    }
+  | {
+      /**
+       * Compensation — the undo-block analogy: `on compensation` catches the
+       * request to run a sub-process's undo steps; `throw compensation` (a typed
+       * end event) and `emit compensation` (an intermediate throw) raise that
+       * request. Payload-less by construction: BPMN compensation carries no
+       * code and no `activityRef` (it always addresses the enclosing scope,
+       * never one activity by reference), so there is nothing to identify and
+       * nothing to bind.
+       *
+       * `waitForCompletion` (the `bpmn:CompensateEventDefinition` attribute) is
+       * intentionally UNMODELED: the moddle schema defaults it to `true` and
+       * the engine supports no other value, so an absent field already carries
+       * the only semantics the `throw`/`emit compensation` verb pair promises —
+       * unlike {@link StartEvent.isInterrupting}, there is no non-default case
+       * to store.
+       */
+      kind: 'compensation';
     }
   | {
       kind: 'message';

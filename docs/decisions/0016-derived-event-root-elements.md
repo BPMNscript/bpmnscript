@@ -241,6 +241,10 @@ like `on`, `throw`, and `emit`.
 
 ## More Information
 
+Extended by ADR-0017 (message/signal/timer/conditional payloads) and ADR-0018
+(compensation) — the later event kinds that reuse this decision's `throw`/`emit`
+terminality rule and soft-word design without adding a reserved word.
+
 Related decisions: ADR-0006 (the IR as the shared model — vendor- or serialization-only
 data, like `operaton:historyTimeToLive`, attaches at the IR-to-XML boundary rather than
 living in the IR; `errorMessages` is the one exception, and it is an exception because it

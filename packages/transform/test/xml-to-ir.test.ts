@@ -60,17 +60,18 @@
  *      escalation intermediate throw import to the matching IR shapes,
  *      sharing one root per code; catch-all definitions (no ref, or a ref to
  *      a code-less root) import with the code absent. Refusals: a
- *      non-error/escalation trigger on a handler start, a handler with the
- *      wrong start-event/definition count or with incoming/outgoing flows,
- *      a non-interrupting error handler, a throw/emit resolving to no code,
- *      an error definition on an emit, a "none" emit, and disagreeing or
- *      unkeyable declared root messages. Warn-drops: a genuine label on a
- *      handler/throw, a throw-side binding attribute, an unrelated
- *      `operaton:` attribute on a mapped event definition, and an
- *      unreferenced message-less root (a declared, unreferenced root with a
- *      message imports silently into `errorMessages`). A handler nested
- *      inside a plain sub-process; `bpmn:IntermediateCatchEvent` and a
- *      defined normal start event stay refused.
+ *      non-error/escalation trigger on a handler start (a terminate
+ *      definition), a handler with the wrong start-event/definition count or
+ *      with incoming/outgoing flows, a non-interrupting error handler, a
+ *      throw/emit resolving to no code, an error definition on an emit, a
+ *      "none" emit, and disagreeing or unkeyable declared root messages.
+ *      Warn-drops: a genuine label on a handler/throw, a throw-side binding
+ *      attribute, an unrelated `operaton:` attribute on a mapped event
+ *      definition, and an unreferenced message-less root (a declared,
+ *      unreferenced root with a message imports silently into
+ *      `errorMessages`). A handler nested inside a plain sub-process;
+ *      `bpmn:IntermediateCatchEvent` and a defined normal start event stay
+ *      refused.
  *  15. Message/signal/timer/conditional import: a message handler, a
  *      non-interrupting signal handler, a duration timer handler, a date
  *      timer handler, a conditional handler, and a signal end event/emit
@@ -80,15 +81,32 @@
  *      a timer with an empty body; a conditional with no condition child;
  *      `operaton:variableName`/`camunda:variableEvents` on a conditional
  *      definition; a message definition on an end event; a conditional
- *      definition on an intermediate throw; a compensation definition on a
- *      handler start (still refused, unchanged error class). Root honesty:
- *      two same-named `bpmn:Signal` roots, both referenced, collapse to one
- *      IR name with no warning; an unreferenced `bpmn:Message` root warns
- *      once; a referenced message root's `itemRef` warns once and still
- *      imports. `camunda:` parity: `camunda:variableName` refuses the same
- *      way, and a clean `camunda:`-free conditional handler is not
- *      false-refused. A timer handler nested inside a plain sub-process
- *      imports into the nested container.
+ *      definition on an intermediate throw. Root honesty: two same-named
+ *      `bpmn:Signal` roots, both referenced, collapse to one IR name with no
+ *      warning; an unreferenced `bpmn:Message` root warns once; a referenced
+ *      message root's `itemRef` warns once and still imports. `camunda:`
+ *      parity: `camunda:variableName` refuses the same way, and a clean
+ *      `camunda:`-free conditional handler is not false-refused. A timer
+ *      handler nested inside a plain sub-process imports into the nested
+ *      container.
+ *  16. Compensation import: a compensation handler (hosted by the plain
+ *      sub-process it compensates), a compensation intermediate throw, and a
+ *      compensation end event import to `{ kind: 'compensation' }` (no
+ *      code, no `activityRef`), `warnings: []`; an explicit
+ *      `waitForCompletion="true"` on both throw positions imports
+ *      identically to the default (absent) form. Refusals (one per shape):
+ *      `activityRef` on a handler-start/end-event compensate definition;
+ *      `waitForCompletion="false"` on an intermediate throw/end event; a
+ *      non-interrupting compensation handler; a compensation event
+ *      sub-process hosted directly by the process, or by another event
+ *      sub-process, instead of the plain sub-process it compensates;
+ *      `isForCompensation="true"` on a service task and on a sub-process;
+ *      `bpmn:BoundaryEvent` still refuses with `UnsupportedElementError`
+ *      (unchanged — this tool has no boundary-event surface). The six prior
+ *      definition kinds (error, escalation, message, signal, timer,
+ *      conditional) still import unchanged; a compensation handler nested
+ *      inside a plain sub-process that is itself nested inside another
+ *      plain sub-process imports into the correct (deepest) container.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -2238,7 +2256,7 @@ describe('xmlToIr — event layer import', () => {
   // ── 14c. Refusals (one per shape) ─────────────────────────────────────────
 
   describe('refusals', () => {
-    it('a compensation definition on a handler start still refuses with UnsupportedEventDefinitionError', async () => {
+    it('a terminate definition on a handler start still refuses with UnsupportedEventDefinitionError', async () => {
       const xml = `<?xml version="1.0" encoding="UTF-8"?>
 <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
                   targetNamespace="http://test">
@@ -2246,7 +2264,7 @@ describe('xmlToIr — event layer import', () => {
     <bpmn:startEvent id="S" />
     <bpmn:subProcess id="Handler" triggeredByEvent="true">
       <bpmn:startEvent id="HStart">
-        <bpmn:compensateEventDefinition id="cd" />
+        <bpmn:terminateEventDefinition id="td" />
       </bpmn:startEvent>
     </bpmn:subProcess>
     <bpmn:endEvent id="E" />
@@ -2261,7 +2279,7 @@ describe('xmlToIr — event layer import', () => {
         expect(err).toBeInstanceOf(UnsupportedEventDefinitionError);
         const e = err as UnsupportedEventDefinitionError;
         expect(e.eventKind).toBe('start');
-        expect(e.definitionType).toBe('bpmn:CompensateEventDefinition');
+        expect(e.definitionType).toBe('bpmn:TerminateEventDefinition');
       }
     });
 
@@ -3360,5 +3378,663 @@ describe('xmlToIr — message/signal/timer/conditional import', () => {
       timerKind: 'duration',
       expression: 'PT30M',
     });
+  });
+});
+
+// ── 16. Compensation import ──────────────────────────────────────────────────
+
+describe('xmlToIr — compensation import', () => {
+  // ── 16a. Full positive import ────────────────────────────────────────────
+
+  const compensationXml = `<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  targetNamespace="http://test">
+  <bpmn:process id="p" isExecutable="true">
+    <bpmn:startEvent id="PStart" />
+    <bpmn:subProcess id="Booking">
+      <bpmn:startEvent id="BStart" />
+      <bpmn:userTask id="ReserveRoom" />
+      <bpmn:endEvent id="BEnd" />
+      <bpmn:subProcess id="UndoBooking" triggeredByEvent="true">
+        <bpmn:startEvent id="UndoStart">
+          <bpmn:compensateEventDefinition id="UndoStartDef" />
+        </bpmn:startEvent>
+        <bpmn:userTask id="CancelRoom" />
+        <bpmn:endEvent id="UndoEnd" />
+        <bpmn:sequenceFlow id="Flow_UndoStart_CancelRoom" sourceRef="UndoStart" targetRef="CancelRoom" />
+        <bpmn:sequenceFlow id="Flow_CancelRoom_UndoEnd" sourceRef="CancelRoom" targetRef="UndoEnd" />
+      </bpmn:subProcess>
+      <bpmn:sequenceFlow id="Flow_BStart_ReserveRoom" sourceRef="BStart" targetRef="ReserveRoom" />
+      <bpmn:sequenceFlow id="Flow_ReserveRoom_BEnd" sourceRef="ReserveRoom" targetRef="BEnd" />
+    </bpmn:subProcess>
+    <bpmn:intermediateThrowEvent id="EmitUndo">
+      <bpmn:compensateEventDefinition id="EmitUndoDef" />
+    </bpmn:intermediateThrowEvent>
+    <bpmn:endEvent id="ThrowUndo">
+      <bpmn:compensateEventDefinition id="ThrowUndoDef" />
+    </bpmn:endEvent>
+    <bpmn:sequenceFlow id="Flow_PStart_Booking" sourceRef="PStart" targetRef="Booking" />
+    <bpmn:sequenceFlow id="Flow_Booking_EmitUndo" sourceRef="Booking" targetRef="EmitUndo" />
+    <bpmn:sequenceFlow id="Flow_EmitUndo_ThrowUndo" sourceRef="EmitUndo" targetRef="ThrowUndo" />
+  </bpmn:process>
+</bpmn:definitions>`;
+
+  const EXPECTED_COMPENSATION_IR: BpmnProcess = {
+    id: 'p',
+    isExecutable: true,
+    flowElements: [
+      { kind: 'startEvent', id: 'PStart' },
+      {
+        kind: 'subProcess',
+        id: 'Booking',
+        flowElements: [
+          { kind: 'startEvent', id: 'BStart' },
+          { kind: 'userTask', id: 'ReserveRoom' },
+          { kind: 'endEvent', id: 'BEnd' },
+          {
+            kind: 'subProcess',
+            id: 'UndoBooking',
+            triggeredByEvent: true,
+            flowElements: [
+              {
+                kind: 'startEvent',
+                id: 'UndoStart',
+                eventDefinition: { kind: 'compensation' },
+              },
+              { kind: 'userTask', id: 'CancelRoom' },
+              { kind: 'endEvent', id: 'UndoEnd' },
+            ],
+            sequenceFlows: [
+              {
+                id: 'Flow_UndoStart_CancelRoom',
+                sourceRef: 'UndoStart',
+                targetRef: 'CancelRoom',
+              },
+              {
+                id: 'Flow_CancelRoom_UndoEnd',
+                sourceRef: 'CancelRoom',
+                targetRef: 'UndoEnd',
+              },
+            ],
+          },
+        ],
+        sequenceFlows: [
+          {
+            id: 'Flow_BStart_ReserveRoom',
+            sourceRef: 'BStart',
+            targetRef: 'ReserveRoom',
+          },
+          {
+            id: 'Flow_ReserveRoom_BEnd',
+            sourceRef: 'ReserveRoom',
+            targetRef: 'BEnd',
+          },
+        ],
+      },
+      {
+        kind: 'intermediateThrowEvent',
+        id: 'EmitUndo',
+        eventDefinition: { kind: 'compensation' },
+      },
+      {
+        kind: 'endEvent',
+        id: 'ThrowUndo',
+        eventDefinition: { kind: 'compensation' },
+      },
+    ],
+    sequenceFlows: [
+      { id: 'Flow_PStart_Booking', sourceRef: 'PStart', targetRef: 'Booking' },
+      { id: 'Flow_Booking_EmitUndo', sourceRef: 'Booking', targetRef: 'EmitUndo' },
+      {
+        id: 'Flow_EmitUndo_ThrowUndo',
+        sourceRef: 'EmitUndo',
+        targetRef: 'ThrowUndo',
+      },
+    ],
+  };
+
+  it('imports a compensation handler hosted by the plain sub-process it compensates, a compensation emit, and a compensation throw, into the exact expected IR (deep equality), warnings: []', async () => {
+    const { ir, warnings } = await xmlToIr(compensationXml);
+    expect(ir).toEqual(EXPECTED_COMPENSATION_IR);
+    expect(warnings).toEqual([]);
+  });
+
+  it('an explicit waitForCompletion="true" on both throw positions imports identically to the default (absent) form', async () => {
+    const xml = compensationXml
+      .replace(
+        '<bpmn:compensateEventDefinition id="EmitUndoDef" />',
+        '<bpmn:compensateEventDefinition id="EmitUndoDef" waitForCompletion="true" />',
+      )
+      .replace(
+        '<bpmn:compensateEventDefinition id="ThrowUndoDef" />',
+        '<bpmn:compensateEventDefinition id="ThrowUndoDef" waitForCompletion="true" />',
+      );
+
+    const { ir, warnings } = await xmlToIr(xml);
+    expect(ir).toEqual(EXPECTED_COMPENSATION_IR);
+    expect(warnings).toEqual([]);
+  });
+
+  // ── 16b. Refusals (one per shape) ─────────────────────────────────────────
+
+  describe('refusals', () => {
+    it('an activityRef on a compensation handler-start definition refuses with UnsupportedEventFeatureError naming activityRef', async () => {
+      const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  targetNamespace="http://test">
+  <bpmn:process id="p" isExecutable="true">
+    <bpmn:startEvent id="PStart" />
+    <bpmn:subProcess id="Booking">
+      <bpmn:startEvent id="BStart" />
+      <bpmn:userTask id="ReserveRoom" />
+      <bpmn:endEvent id="BEnd" />
+      <bpmn:subProcess id="UndoBooking" triggeredByEvent="true">
+        <bpmn:startEvent id="UndoStart">
+          <bpmn:compensateEventDefinition id="UndoStartDef" activityRef="ReserveRoom" />
+        </bpmn:startEvent>
+        <bpmn:endEvent id="UndoEnd" />
+        <bpmn:sequenceFlow id="Flow_UndoStart_UndoEnd" sourceRef="UndoStart" targetRef="UndoEnd" />
+      </bpmn:subProcess>
+      <bpmn:sequenceFlow id="Flow_BStart_ReserveRoom" sourceRef="BStart" targetRef="ReserveRoom" />
+      <bpmn:sequenceFlow id="Flow_ReserveRoom_BEnd" sourceRef="ReserveRoom" targetRef="BEnd" />
+    </bpmn:subProcess>
+    <bpmn:endEvent id="PEnd" />
+    <bpmn:sequenceFlow id="Flow_PStart_Booking" sourceRef="PStart" targetRef="Booking" />
+    <bpmn:sequenceFlow id="Flow_Booking_PEnd" sourceRef="Booking" targetRef="PEnd" />
+  </bpmn:process>
+</bpmn:definitions>`;
+
+      try {
+        await xmlToIr(xml);
+        expect.fail('Should have thrown');
+      } catch (err) {
+        expect(err).toBeInstanceOf(UnsupportedEventFeatureError);
+        expect((err as UnsupportedEventFeatureError).detail).toContain('activityRef');
+      }
+    });
+
+    it('an activityRef on a compensation end-event definition refuses with UnsupportedEventFeatureError naming activityRef', async () => {
+      const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  targetNamespace="http://test">
+  <bpmn:process id="p" isExecutable="true">
+    <bpmn:startEvent id="S" />
+    <bpmn:userTask id="T" />
+    <bpmn:endEvent id="ThrowUndo">
+      <bpmn:compensateEventDefinition id="d" activityRef="T" />
+    </bpmn:endEvent>
+    <bpmn:sequenceFlow id="Flow_S_T" sourceRef="S" targetRef="T" />
+    <bpmn:sequenceFlow id="Flow_T_ThrowUndo" sourceRef="T" targetRef="ThrowUndo" />
+  </bpmn:process>
+</bpmn:definitions>`;
+
+      try {
+        await xmlToIr(xml);
+        expect.fail('Should have thrown');
+      } catch (err) {
+        expect(err).toBeInstanceOf(UnsupportedEventFeatureError);
+        expect((err as UnsupportedEventFeatureError).detail).toContain('activityRef');
+      }
+    });
+
+    it('waitForCompletion="false" on an intermediate throw refuses with UnsupportedEventFeatureError naming waitForCompletion', async () => {
+      const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  targetNamespace="http://test">
+  <bpmn:process id="p" isExecutable="true">
+    <bpmn:startEvent id="S" />
+    <bpmn:intermediateThrowEvent id="EmitUndo">
+      <bpmn:compensateEventDefinition id="d" waitForCompletion="false" />
+    </bpmn:intermediateThrowEvent>
+    <bpmn:endEvent id="E" />
+    <bpmn:sequenceFlow id="Flow_S_EmitUndo" sourceRef="S" targetRef="EmitUndo" />
+    <bpmn:sequenceFlow id="Flow_EmitUndo_E" sourceRef="EmitUndo" targetRef="E" />
+  </bpmn:process>
+</bpmn:definitions>`;
+
+      try {
+        await xmlToIr(xml);
+        expect.fail('Should have thrown');
+      } catch (err) {
+        expect(err).toBeInstanceOf(UnsupportedEventFeatureError);
+        expect((err as UnsupportedEventFeatureError).detail).toContain(
+          'waitForCompletion',
+        );
+      }
+    });
+
+    it('waitForCompletion="false" on an end event refuses with UnsupportedEventFeatureError naming waitForCompletion', async () => {
+      const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  targetNamespace="http://test">
+  <bpmn:process id="p" isExecutable="true">
+    <bpmn:startEvent id="S" />
+    <bpmn:endEvent id="ThrowUndo">
+      <bpmn:compensateEventDefinition id="d" waitForCompletion="false" />
+    </bpmn:endEvent>
+    <bpmn:sequenceFlow id="Flow_S_ThrowUndo" sourceRef="S" targetRef="ThrowUndo" />
+  </bpmn:process>
+</bpmn:definitions>`;
+
+      try {
+        await xmlToIr(xml);
+        expect.fail('Should have thrown');
+      } catch (err) {
+        expect(err).toBeInstanceOf(UnsupportedEventFeatureError);
+        expect((err as UnsupportedEventFeatureError).detail).toContain(
+          'waitForCompletion',
+        );
+      }
+    });
+
+    it('isInterrupting="false" on a compensation handler start refuses with UnsupportedEventFeatureError', async () => {
+      const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  targetNamespace="http://test">
+  <bpmn:process id="p" isExecutable="true">
+    <bpmn:startEvent id="PStart" />
+    <bpmn:subProcess id="Booking">
+      <bpmn:startEvent id="BStart" />
+      <bpmn:endEvent id="BEnd" />
+      <bpmn:subProcess id="UndoBooking" triggeredByEvent="true">
+        <bpmn:startEvent id="UndoStart" isInterrupting="false">
+          <bpmn:compensateEventDefinition id="d" />
+        </bpmn:startEvent>
+        <bpmn:endEvent id="UndoEnd" />
+        <bpmn:sequenceFlow id="Flow_UndoStart_UndoEnd" sourceRef="UndoStart" targetRef="UndoEnd" />
+      </bpmn:subProcess>
+      <bpmn:sequenceFlow id="Flow_BStart_BEnd" sourceRef="BStart" targetRef="BEnd" />
+    </bpmn:subProcess>
+    <bpmn:endEvent id="PEnd" />
+    <bpmn:sequenceFlow id="Flow_PStart_Booking" sourceRef="PStart" targetRef="Booking" />
+    <bpmn:sequenceFlow id="Flow_Booking_PEnd" sourceRef="Booking" targetRef="PEnd" />
+  </bpmn:process>
+</bpmn:definitions>`;
+
+      try {
+        await xmlToIr(xml);
+        expect.fail('Should have thrown');
+      } catch (err) {
+        expect(err).toBeInstanceOf(UnsupportedEventFeatureError);
+        expect((err as UnsupportedEventFeatureError).detail).toContain(
+          'non-interrupting',
+        );
+      }
+    });
+
+    it('a compensation event sub-process hosted directly by the process refuses with UnsupportedEventFeatureError', async () => {
+      const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  targetNamespace="http://test">
+  <bpmn:process id="p" isExecutable="true">
+    <bpmn:startEvent id="S" />
+    <bpmn:subProcess id="UndoBooking" triggeredByEvent="true">
+      <bpmn:startEvent id="UndoStart">
+        <bpmn:compensateEventDefinition id="d" />
+      </bpmn:startEvent>
+      <bpmn:endEvent id="UndoEnd" />
+      <bpmn:sequenceFlow id="Flow_UndoStart_UndoEnd" sourceRef="UndoStart" targetRef="UndoEnd" />
+    </bpmn:subProcess>
+    <bpmn:endEvent id="E" />
+    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="E" />
+  </bpmn:process>
+</bpmn:definitions>`;
+
+      try {
+        await xmlToIr(xml);
+        expect.fail('Should have thrown');
+      } catch (err) {
+        expect(err).toBeInstanceOf(UnsupportedEventFeatureError);
+        const detail = (err as UnsupportedEventFeatureError).detail;
+        expect(detail).toContain('the process');
+        expect(detail).toContain('compensat');
+      }
+    });
+
+    it('a compensation event sub-process hosted by another event sub-process refuses with UnsupportedEventFeatureError', async () => {
+      const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  targetNamespace="http://test">
+  <bpmn:process id="p" isExecutable="true">
+    <bpmn:startEvent id="PStart" />
+    <bpmn:subProcess id="OuterHandler" triggeredByEvent="true">
+      <bpmn:startEvent id="OuterStart">
+        <bpmn:errorEventDefinition id="od" />
+      </bpmn:startEvent>
+      <bpmn:subProcess id="UndoBooking" triggeredByEvent="true">
+        <bpmn:startEvent id="UndoStart">
+          <bpmn:compensateEventDefinition id="d" />
+        </bpmn:startEvent>
+        <bpmn:endEvent id="UndoEnd" />
+        <bpmn:sequenceFlow id="Flow_UndoStart_UndoEnd" sourceRef="UndoStart" targetRef="UndoEnd" />
+      </bpmn:subProcess>
+      <bpmn:endEvent id="OuterEnd" />
+      <bpmn:sequenceFlow id="Flow_OuterStart_OuterEnd" sourceRef="OuterStart" targetRef="OuterEnd" />
+    </bpmn:subProcess>
+    <bpmn:endEvent id="PEnd" />
+    <bpmn:sequenceFlow id="F1" sourceRef="PStart" targetRef="PEnd" />
+  </bpmn:process>
+</bpmn:definitions>`;
+
+      try {
+        await xmlToIr(xml);
+        expect.fail('Should have thrown');
+      } catch (err) {
+        expect(err).toBeInstanceOf(UnsupportedEventFeatureError);
+        const detail = (err as UnsupportedEventFeatureError).detail;
+        expect(detail).toContain('another event sub-process');
+        expect(detail).toContain('compensat');
+      }
+    });
+
+    it('isForCompensation="true" on a service task refuses with UnsupportedEventFeatureError', async () => {
+      const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  xmlns:operaton="http://operaton.org/schema/1.0/bpmn"
+                  targetNamespace="http://test">
+  <bpmn:process id="p" isExecutable="true">
+    <bpmn:startEvent id="S" />
+    <bpmn:serviceTask id="CancelReservation" operaton:class="com.example.Cancel" isForCompensation="true" />
+    <bpmn:endEvent id="E" />
+    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="CancelReservation" />
+    <bpmn:sequenceFlow id="F2" sourceRef="CancelReservation" targetRef="E" />
+  </bpmn:process>
+</bpmn:definitions>`;
+
+      try {
+        await xmlToIr(xml);
+        expect.fail('Should have thrown');
+      } catch (err) {
+        expect(err).toBeInstanceOf(UnsupportedEventFeatureError);
+        const e = err as UnsupportedEventFeatureError;
+        expect(e.elementId).toBe('CancelReservation');
+        expect(e.detail).toContain('isForCompensation');
+      }
+    });
+
+    it('isForCompensation="true" on a sub-process refuses with UnsupportedEventFeatureError', async () => {
+      const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  targetNamespace="http://test">
+  <bpmn:process id="p" isExecutable="true">
+    <bpmn:startEvent id="S" />
+    <bpmn:subProcess id="UndoBlock" isForCompensation="true">
+      <bpmn:startEvent id="US" />
+      <bpmn:endEvent id="UE" />
+      <bpmn:sequenceFlow id="Flow_US_UE" sourceRef="US" targetRef="UE" />
+    </bpmn:subProcess>
+    <bpmn:endEvent id="E" />
+    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="UndoBlock" />
+    <bpmn:sequenceFlow id="F2" sourceRef="UndoBlock" targetRef="E" />
+  </bpmn:process>
+</bpmn:definitions>`;
+
+      try {
+        await xmlToIr(xml);
+        expect.fail('Should have thrown');
+      } catch (err) {
+        expect(err).toBeInstanceOf(UnsupportedEventFeatureError);
+        const e = err as UnsupportedEventFeatureError;
+        expect(e.elementId).toBe('UndoBlock');
+        expect(e.detail).toContain('isForCompensation');
+      }
+    });
+
+    it('a compensation boundary event still refuses with UnsupportedElementError (unchanged — no boundary-event surface)', async () => {
+      const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  xmlns:operaton="http://operaton.org/schema/1.0/bpmn"
+                  targetNamespace="http://test">
+  <bpmn:process id="p" isExecutable="true">
+    <bpmn:startEvent id="S" />
+    <bpmn:serviceTask id="ReserveRoom" operaton:class="com.example.Reserve" />
+    <bpmn:boundaryEvent id="CompensationBoundary" attachedToRef="ReserveRoom">
+      <bpmn:compensateEventDefinition id="d" />
+    </bpmn:boundaryEvent>
+    <bpmn:endEvent id="E" />
+    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="ReserveRoom" />
+    <bpmn:sequenceFlow id="F2" sourceRef="ReserveRoom" targetRef="E" />
+  </bpmn:process>
+</bpmn:definitions>`;
+
+      try {
+        await xmlToIr(xml);
+        expect.fail('Should have thrown');
+      } catch (err) {
+        expect(err).toBeInstanceOf(UnsupportedElementError);
+        expect((err as UnsupportedElementError).qname).toBe('bpmn:BoundaryEvent');
+      }
+    });
+  });
+
+  // ── 16c. Six prior kinds untouched + deeper nesting ──────────────────────
+
+  it('the six prior definition kinds (error, escalation, message, signal, timer, conditional) still import through their untouched arms', async () => {
+    const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  targetNamespace="http://test">
+  <bpmn:error id="Error_PF" name="PF" errorCode="PF" />
+  <bpmn:escalation id="Escalation_LS" name="LS" escalationCode="LS" />
+  <bpmn:message id="Message_Pay" name="PaymentReceived" />
+  <bpmn:signal id="Signal_Ping" name="Ping" />
+  <bpmn:process id="p" isExecutable="true">
+    <bpmn:startEvent id="PStart" />
+    <bpmn:subProcess id="ErrHandler" triggeredByEvent="true">
+      <bpmn:startEvent id="ErrStart">
+        <bpmn:errorEventDefinition id="ErrStartDef" errorRef="Error_PF" />
+      </bpmn:startEvent>
+      <bpmn:endEvent id="ErrEnd" />
+      <bpmn:sequenceFlow id="Flow_ErrStart_ErrEnd" sourceRef="ErrStart" targetRef="ErrEnd" />
+    </bpmn:subProcess>
+    <bpmn:subProcess id="EscHandler" triggeredByEvent="true">
+      <bpmn:startEvent id="EscStart">
+        <bpmn:escalationEventDefinition id="EscStartDef" escalationRef="Escalation_LS" />
+      </bpmn:startEvent>
+      <bpmn:endEvent id="EscEnd" />
+      <bpmn:sequenceFlow id="Flow_EscStart_EscEnd" sourceRef="EscStart" targetRef="EscEnd" />
+    </bpmn:subProcess>
+    <bpmn:subProcess id="MsgHandler" triggeredByEvent="true">
+      <bpmn:startEvent id="MsgStart">
+        <bpmn:messageEventDefinition id="MsgDef" messageRef="Message_Pay" />
+      </bpmn:startEvent>
+      <bpmn:endEvent id="MsgEnd" />
+      <bpmn:sequenceFlow id="Flow_MsgStart_MsgEnd" sourceRef="MsgStart" targetRef="MsgEnd" />
+    </bpmn:subProcess>
+    <bpmn:subProcess id="SigHandler" triggeredByEvent="true">
+      <bpmn:startEvent id="SigStart">
+        <bpmn:signalEventDefinition id="SigDef" signalRef="Signal_Ping" />
+      </bpmn:startEvent>
+      <bpmn:endEvent id="SigEnd" />
+      <bpmn:sequenceFlow id="Flow_SigStart_SigEnd" sourceRef="SigStart" targetRef="SigEnd" />
+    </bpmn:subProcess>
+    <bpmn:subProcess id="TimerHandler" triggeredByEvent="true">
+      <bpmn:startEvent id="TimerStart">
+        <bpmn:timerEventDefinition id="TimerDef">
+          <bpmn:timeDuration>PT1H</bpmn:timeDuration>
+        </bpmn:timerEventDefinition>
+      </bpmn:startEvent>
+      <bpmn:endEvent id="TimerEnd" />
+      <bpmn:sequenceFlow id="Flow_TimerStart_TimerEnd" sourceRef="TimerStart" targetRef="TimerEnd" />
+    </bpmn:subProcess>
+    <bpmn:subProcess id="CondHandler" triggeredByEvent="true">
+      <bpmn:startEvent id="CondStart">
+        <bpmn:conditionalEventDefinition id="CondDef">
+          <bpmn:condition>\${amount &gt; 100}</bpmn:condition>
+        </bpmn:conditionalEventDefinition>
+      </bpmn:startEvent>
+      <bpmn:endEvent id="CondEnd" />
+      <bpmn:sequenceFlow id="Flow_CondStart_CondEnd" sourceRef="CondStart" targetRef="CondEnd" />
+    </bpmn:subProcess>
+    <bpmn:endEvent id="PEnd" />
+    <bpmn:sequenceFlow id="Flow_PStart_PEnd" sourceRef="PStart" targetRef="PEnd" />
+  </bpmn:process>
+</bpmn:definitions>`;
+
+    const EXPECTED_SMOKE_IR: BpmnProcess = {
+      id: 'p',
+      isExecutable: true,
+      flowElements: [
+        { kind: 'startEvent', id: 'PStart' },
+        {
+          kind: 'subProcess',
+          id: 'ErrHandler',
+          triggeredByEvent: true,
+          flowElements: [
+            {
+              kind: 'startEvent',
+              id: 'ErrStart',
+              eventDefinition: { kind: 'error', errorCode: 'PF' },
+            },
+            { kind: 'endEvent', id: 'ErrEnd' },
+          ],
+          sequenceFlows: [
+            { id: 'Flow_ErrStart_ErrEnd', sourceRef: 'ErrStart', targetRef: 'ErrEnd' },
+          ],
+        },
+        {
+          kind: 'subProcess',
+          id: 'EscHandler',
+          triggeredByEvent: true,
+          flowElements: [
+            {
+              kind: 'startEvent',
+              id: 'EscStart',
+              eventDefinition: { kind: 'escalation', escalationCode: 'LS' },
+            },
+            { kind: 'endEvent', id: 'EscEnd' },
+          ],
+          sequenceFlows: [
+            { id: 'Flow_EscStart_EscEnd', sourceRef: 'EscStart', targetRef: 'EscEnd' },
+          ],
+        },
+        {
+          kind: 'subProcess',
+          id: 'MsgHandler',
+          triggeredByEvent: true,
+          flowElements: [
+            {
+              kind: 'startEvent',
+              id: 'MsgStart',
+              eventDefinition: { kind: 'message', messageName: 'PaymentReceived' },
+            },
+            { kind: 'endEvent', id: 'MsgEnd' },
+          ],
+          sequenceFlows: [
+            { id: 'Flow_MsgStart_MsgEnd', sourceRef: 'MsgStart', targetRef: 'MsgEnd' },
+          ],
+        },
+        {
+          kind: 'subProcess',
+          id: 'SigHandler',
+          triggeredByEvent: true,
+          flowElements: [
+            {
+              kind: 'startEvent',
+              id: 'SigStart',
+              eventDefinition: { kind: 'signal', signalName: 'Ping' },
+            },
+            { kind: 'endEvent', id: 'SigEnd' },
+          ],
+          sequenceFlows: [
+            { id: 'Flow_SigStart_SigEnd', sourceRef: 'SigStart', targetRef: 'SigEnd' },
+          ],
+        },
+        {
+          kind: 'subProcess',
+          id: 'TimerHandler',
+          triggeredByEvent: true,
+          flowElements: [
+            {
+              kind: 'startEvent',
+              id: 'TimerStart',
+              eventDefinition: { kind: 'timer', timerKind: 'duration', expression: 'PT1H' },
+            },
+            { kind: 'endEvent', id: 'TimerEnd' },
+          ],
+          sequenceFlows: [
+            { id: 'Flow_TimerStart_TimerEnd', sourceRef: 'TimerStart', targetRef: 'TimerEnd' },
+          ],
+        },
+        {
+          kind: 'subProcess',
+          id: 'CondHandler',
+          triggeredByEvent: true,
+          flowElements: [
+            {
+              kind: 'startEvent',
+              id: 'CondStart',
+              eventDefinition: { kind: 'conditional', condition: '${amount > 100}' },
+            },
+            { kind: 'endEvent', id: 'CondEnd' },
+          ],
+          sequenceFlows: [
+            { id: 'Flow_CondStart_CondEnd', sourceRef: 'CondStart', targetRef: 'CondEnd' },
+          ],
+        },
+        { kind: 'endEvent', id: 'PEnd' },
+      ],
+      sequenceFlows: [
+        { id: 'Flow_PStart_PEnd', sourceRef: 'PStart', targetRef: 'PEnd' },
+      ],
+    };
+
+    const { ir, warnings } = await xmlToIr(xml);
+    expect(ir).toEqual(EXPECTED_SMOKE_IR);
+    expect(warnings).toEqual([]);
+  });
+
+  it('a compensation handler nested inside a plain sub-process nested inside another plain sub-process imports into the deepest container', async () => {
+    const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  targetNamespace="http://test">
+  <bpmn:process id="p" isExecutable="true">
+    <bpmn:startEvent id="PStart" />
+    <bpmn:subProcess id="Outer">
+      <bpmn:startEvent id="OStart" />
+      <bpmn:subProcess id="Inner">
+        <bpmn:startEvent id="IStart" />
+        <bpmn:userTask id="ReserveRoom" />
+        <bpmn:endEvent id="IEnd" />
+        <bpmn:subProcess id="UndoBooking" triggeredByEvent="true">
+          <bpmn:startEvent id="UndoStart">
+            <bpmn:compensateEventDefinition id="UndoStartDef" />
+          </bpmn:startEvent>
+          <bpmn:endEvent id="UndoEnd" />
+          <bpmn:sequenceFlow id="Flow_UndoStart_UndoEnd" sourceRef="UndoStart" targetRef="UndoEnd" />
+        </bpmn:subProcess>
+        <bpmn:sequenceFlow id="Flow_IStart_ReserveRoom" sourceRef="IStart" targetRef="ReserveRoom" />
+        <bpmn:sequenceFlow id="Flow_ReserveRoom_IEnd" sourceRef="ReserveRoom" targetRef="IEnd" />
+      </bpmn:subProcess>
+      <bpmn:endEvent id="OEnd" />
+      <bpmn:sequenceFlow id="Flow_OStart_Inner" sourceRef="OStart" targetRef="Inner" />
+      <bpmn:sequenceFlow id="Flow_Inner_OEnd" sourceRef="Inner" targetRef="OEnd" />
+    </bpmn:subProcess>
+    <bpmn:endEvent id="PEnd" />
+    <bpmn:sequenceFlow id="Flow_PStart_Outer" sourceRef="PStart" targetRef="Outer" />
+    <bpmn:sequenceFlow id="Flow_Outer_PEnd" sourceRef="Outer" targetRef="PEnd" />
+  </bpmn:process>
+</bpmn:definitions>`;
+
+    const { ir, warnings } = await xmlToIr(xml);
+    expect(warnings).toEqual([]);
+
+    const outer = ir.flowElements.find((fe) => fe.id === 'Outer');
+    expect(outer?.kind).toBe('subProcess');
+    if (outer?.kind !== 'subProcess') return;
+
+    const inner = outer.flowElements.find((fe) => fe.id === 'Inner');
+    expect(inner?.kind).toBe('subProcess');
+    if (inner?.kind !== 'subProcess') return;
+
+    const handler = inner.flowElements.find((fe) => fe.id === 'UndoBooking');
+    expect(handler?.kind).toBe('subProcess');
+    if (handler?.kind !== 'subProcess') return;
+    expect(handler.triggeredByEvent).toBe(true);
+
+    const start = handler.flowElements.find((fe) => fe.id === 'UndoStart');
+    expect(start?.kind === 'startEvent' && start.eventDefinition).toEqual({
+      kind: 'compensation',
+    });
+    expect(start?.kind === 'startEvent' && start.isInterrupting).toBeUndefined();
   });
 });

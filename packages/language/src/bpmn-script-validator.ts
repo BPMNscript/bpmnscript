@@ -232,9 +232,12 @@ interface TriggerPayloadRule {
  * — the engine matches by name, so the name is required and there is no
  * catch-all. `timer` reads its payload from the particle clause instead of
  * a code string. `condition` reads its payload from the parenthesized
- * expression instead of a code string. These words lex as plain `ID`s (not
- * grammar keywords), so an unrecognised word is a validator diagnostic, not
- * a parse error.
+ * expression instead of a code string. `compensation` is the undo block for
+ * a subprocess's already-completed work: it takes no code, no bindings, and
+ * no `alongside` — there is nothing to catch by name, and no running flow
+ * to interrupt alongside, only finished work to reverse. These words lex as
+ * plain `ID`s (not grammar keywords), so an unrecognised word is a
+ * validator diagnostic, not a parse error.
  */
 const TRIGGER_PAYLOAD: Readonly<Record<string, TriggerPayloadRule>> = {
   error: {
@@ -273,6 +276,12 @@ const TRIGGER_PAYLOAD: Readonly<Record<string, TriggerPayloadRule>> = {
     parens: 'condition',
     alongside: true,
   },
+  compensation: {
+    code: 'forbidden',
+    timer: false,
+    parens: 'forbidden',
+    alongside: false,
+  },
 };
 
 /** The legal `on` trigger words — the keys of {@link TRIGGER_PAYLOAD}. */
@@ -283,16 +292,27 @@ const ON_TRIGGERS_SET: ReadonlySet<string> = new Set(ON_TRIGGERS);
  * The legal `throw` trigger words: every kind with a terminal form. A
  * message arrives via the engine's correlation API, a timer fires off the
  * clock, and a condition fires off data — there is nothing for any of them
- * to throw.
+ * to throw. `compensation` throws the undo block of the nearest completed
+ * subprocess; it carries no code (see {@link checkThrowEmitCode}).
  */
-const THROW_TRIGGERS: readonly string[] = ['error', 'escalation', 'signal'];
+const THROW_TRIGGERS: readonly string[] = [
+  'error',
+  'escalation',
+  'signal',
+  'compensation',
+];
 
 /**
  * The legal `emit` trigger words: every kind with a continuing
  * (fire-and-keep-going) form. An error always ends its path, so it has no
- * `emit` form.
+ * `emit` form. `compensation` also fires and keeps going — reversing
+ * completed work does not itself end the flow.
  */
-const EMIT_TRIGGERS: readonly string[] = ['escalation', 'signal'];
+const EMIT_TRIGGERS: readonly string[] = [
+  'escalation',
+  'signal',
+  'compensation',
+];
 
 /** The legal timer particle words, each mapping 1:1 to one BPMN timer shape. */
 const TIMER_PARTICLES: ReadonlySet<string> = new Set(['after', 'at', 'every']);
@@ -327,6 +347,28 @@ const PARTICLE_ONLY_MESSAGE = "Only 'on timer' takes a particle.";
 /** A message reaches this process from outside — `throw`/`emit` has nothing to send. */
 const MESSAGE_NOTHING_TO_SEND_MESSAGE =
   "A message reaches this process from outside — there is nothing to send; write a message handler with 'on message'.";
+
+/** A STRING on `on compensation`, which carries no code or name at all. */
+const COMPENSATION_NO_CODE_MESSAGE =
+  "Compensation has no code or name — 'on compensation { }' is the undo block for this subprocess; omit the string.";
+
+/** `(code c)` bindings on `on compensation`, which carries no values at all. */
+const COMPENSATION_BINDINGS_MESSAGE =
+  "'(code c)' bindings belong to error and escalation handlers — compensation carries no values.";
+
+/** `alongside` on `on compensation`: the work it reverses has already finished. */
+const COMPENSATION_ALONGSIDE_MESSAGE =
+  'The work an undo block reverses has already finished — there is no ' +
+  "running flow to run alongside; remove 'alongside'.";
+
+/** `on compensation` sitting anywhere but directly inside a `subprocess` body. */
+const COMPENSATION_PLACEMENT_MESSAGE =
+  "An undo block belongs directly inside the 'subprocess' whose work it " +
+  'undoes — a process cannot undo itself.';
+
+/** A second `on compensation` in one container — a subprocess has exactly one undo block. */
+const COMPENSATION_DUPLICATE_MESSAGE =
+  'A subprocess has one undo block — merge the steps.';
 
 /**
  * The {@link VarType}s an Operaton form field can carry. `json`/`any` have no
@@ -1589,15 +1631,15 @@ export class BpmnScriptValidator {
   // trigger we don't recognise?) or would pile a second diagnostic onto the
   // same mistake.
   //
-  // Beyond error/escalation, `on` accepts four more triggers — message,
-  // signal, timer, condition — each with a differently-shaped payload (a
-  // required name, a particle+time clause, or a condition expression instead
-  // of catch-parameter bindings). Which shape is legal per trigger is the
-  // small table `TRIGGER_PAYLOAD`, walked by one check
-  // ({@link checkHandlerPayload}), so a new trigger kind is a new row rather
-  // than new rule plumbing. `throw`/`emit` gain their own, smaller legal
-  // sets (`THROW_TRIGGERS`/`EMIT_TRIGGERS`) since only some kinds have a
-  // throw form.
+  // Beyond error/escalation, `on` accepts five more triggers — message,
+  // signal, timer, condition, compensation — each with a differently-shaped
+  // payload (a required name, a particle+time clause, a condition expression,
+  // or nothing at all, instead of catch-parameter bindings). Which shape is
+  // legal per trigger is the small table `TRIGGER_PAYLOAD`, walked by one
+  // check ({@link checkHandlerPayload}), so a new trigger kind is a new row
+  // rather than new rule plumbing. `throw`/`emit` gain their own, smaller
+  // legal sets (`THROW_TRIGGERS`/`EMIT_TRIGGERS`) since only some kinds have
+  // a throw form.
 
   /**
    * `on` handler checks: the soft trigger word, placement (directly in a
@@ -1628,7 +1670,9 @@ export class BpmnScriptValidator {
     if (handler.alongside && !rule.alongside) {
       accept(
         'error',
-        "An error always interrupts: the handler takes over from the failed scope; 'alongside' is only available for escalations.",
+        handler.trigger === 'compensation'
+          ? COMPENSATION_ALONGSIDE_MESSAGE
+          : "An error always interrupts: the handler takes over from the failed scope; 'alongside' is only available for escalations.",
         { node: handler, property: 'alongside' },
       );
     }
@@ -1676,6 +1720,14 @@ export class BpmnScriptValidator {
         node: handler,
         property: 'code',
       });
+    } else if (
+      handler.trigger === 'compensation' &&
+      handler.code !== undefined
+    ) {
+      accept('error', COMPENSATION_NO_CODE_MESSAGE, {
+        node: handler,
+        property: 'code',
+      });
     }
 
     if (rule.timer) {
@@ -1705,7 +1757,9 @@ export class BpmnScriptValidator {
       for (const binding of handler.bindings) {
         accept(
           'error',
-          `'(code c)' bindings belong to error and escalation handlers — a ${handler.trigger} carries no code.`,
+          handler.trigger === 'compensation'
+            ? COMPENSATION_BINDINGS_MESSAGE
+            : `'(code c)' bindings belong to error and escalation handlers — a ${handler.trigger} carries no code.`,
           { node: binding, property: 'field' },
         );
       }
@@ -1776,6 +1830,13 @@ export class BpmnScriptValidator {
    * another handler's body (BPMN allows nested event sub-processes) — never
    * inside an `if`/`while`/`do`/`parallel` branch, since an event handler
    * scopes to a whole container, not to one branch of it.
+   *
+   * `on compensation` tightens this further: an undo block reverses one
+   * particular subprocess's completed work, so it belongs directly inside
+   * that `subprocess` body and nowhere else — not the process body, not
+   * another handler's body. That tightened rule only ever applies where the
+   * generic placement rule above has already passed (a compensation handler
+   * still inside an `if`/branch gets the generic message, never both).
    */
   private checkHandlerPlacement(
     handler: OnHandler,
@@ -1783,10 +1844,16 @@ export class BpmnScriptValidator {
   ): void {
     const container = handler.$container;
     if (isProcess(container)) {
+      if (handler.trigger === 'compensation') {
+        accept('error', COMPENSATION_PLACEMENT_MESSAGE, { node: handler });
+      }
       return;
     }
     const owner = container.$container;
     if (isSubProcess(owner) || isOnHandler(owner)) {
+      if (handler.trigger === 'compensation' && !isSubProcess(owner)) {
+        accept('error', COMPENSATION_PLACEMENT_MESSAGE, { node: handler });
+      }
       return;
     }
     accept(
@@ -1865,6 +1932,12 @@ export class BpmnScriptValidator {
    * is the fallback), since they key differently. Runs once per process
    * (not per handler) so a duplicate pair is reported once per extra
    * occurrence, not once per comparison direction.
+   *
+   * `on compensation` always carries no code, so two of them in one
+   * container always key identically and always collide; the message is
+   * reworded away from the engine-ambiguity framing ({@link
+   * COMPENSATION_DUPLICATE_MESSAGE}) since a subprocess having one undo
+   * block is a simpler rule than a duplicate catch.
    */
   private checkHandlerDuplicates(
     process: Process,
@@ -1888,7 +1961,9 @@ export class BpmnScriptValidator {
         (handler) =>
           accept(
             'error',
-            `Another 'on ${handler.trigger}' handler in this scope already catches ${handler.code !== undefined ? `code '${handler.code}'` : 'every event of this kind'}; a duplicate catch is ambiguous to the engine.`,
+            handler.trigger === 'compensation'
+              ? COMPENSATION_DUPLICATE_MESSAGE
+              : `Another 'on ${handler.trigger}' handler in this scope already catches ${handler.code !== undefined ? `code '${handler.code}'` : 'every event of this kind'}; a duplicate catch is ambiguous to the engine.`,
             { node: handler, property: 'trigger' },
           ),
       );
@@ -1896,9 +1971,10 @@ export class BpmnScriptValidator {
   }
 
   /**
-   * `throw <trigger> "<code>"` checks: the soft trigger word, and an empty
-   * code string (a throw always carries a code — catch-all has no meaning on
-   * the throwing side).
+   * `throw <trigger> "<code>"` checks: the soft trigger word, and the
+   * code-required shift ({@link checkThrowEmitCode}) — every
+   * trigger but `compensation` must name its code, and `compensation` must
+   * not carry one.
    *
    * @param stmt The `throw` statement.
    */
@@ -1913,14 +1989,15 @@ export class BpmnScriptValidator {
       });
       return;
     }
-    checkEmptyCode(stmt.code, stmt, accept);
+    checkThrowEmitCode(stmt, 'A thrown', 'throw', accept);
   };
 
   /**
    * `emit <trigger> "<code>"` checks: the soft trigger word (with the
    * impossible-verb teaching error for `emit error` — an error always ends
    * its path, so it can never be a continuing throw — folded into {@link
-   * emitTriggerMessage}) and an empty code string.
+   * emitTriggerMessage}) and the code-required shift ({@link
+   * checkThrowEmitCode}).
    *
    * @param stmt The `emit` statement.
    */
@@ -1935,7 +2012,7 @@ export class BpmnScriptValidator {
       });
       return;
     }
-    checkEmptyCode(stmt.code, stmt, accept);
+    checkThrowEmitCode(stmt, 'An emitted', 'emit', accept);
   };
 
   /**
@@ -2038,33 +2115,49 @@ function unknownTriggerMessage(word: string, legal: readonly string[]): string {
 }
 
 /**
- * The `on` trigger diagnostic: a near-miss teaching message for
- * `conditional` (the one plausible typo for `condition`), otherwise the
- * generic naming message over all six legal words.
+ * The near-miss message for the `compensate` typo — the correct spelling
+ * names an already-completed undo block, not a verb — shared by the `on`,
+ * `throw`, and `emit` trigger diagnostics below.
+ */
+function compensateTypoMessage(): string {
+  return `Unknown event kind 'compensate'; write 'compensation'.`;
+}
+
+/**
+ * The `on` trigger diagnostic: near-miss teaching messages for `conditional`
+ * (the one plausible typo for `condition`) and `compensate` (for
+ * `compensation`), otherwise the generic naming message over all seven
+ * legal words.
  */
 function onTriggerMessage(word: string): string {
   if (word === 'conditional') {
     return `Unknown event kind 'conditional'; did you mean 'condition'?`;
   }
+  if (word === 'compensate') {
+    return compensateTypoMessage();
+  }
   return unknownTriggerMessage(word, ON_TRIGGERS);
 }
 
 /**
- * The `throw` trigger diagnostic: a near-miss teaching message for
- * `message` (nothing to send on the throwing side — write a handler
- * instead), otherwise the generic naming message.
+ * The `throw` trigger diagnostic: near-miss teaching messages for `message`
+ * (nothing to send on the throwing side — write a handler instead) and
+ * `compensate` (for `compensation`), otherwise the generic naming message.
  */
 function throwTriggerMessage(word: string): string {
   if (word === 'message') {
     return MESSAGE_NOTHING_TO_SEND_MESSAGE;
+  }
+  if (word === 'compensate') {
+    return compensateTypoMessage();
   }
   return unknownTriggerMessage(word, THROW_TRIGGERS);
 }
 
 /**
  * The `emit` trigger diagnostic: near-miss teaching messages for `error`
- * (always terminal — write `throw error`) and `message` (nothing to send),
- * otherwise the generic naming message.
+ * (always terminal — write `throw error`), `message` (nothing to send), and
+ * `compensate` (for `compensation`), otherwise the generic naming message.
  */
 function emitTriggerMessage(word: string): string {
   if (word === 'error') {
@@ -2073,13 +2166,18 @@ function emitTriggerMessage(word: string): string {
   if (word === 'message') {
     return MESSAGE_NOTHING_TO_SEND_MESSAGE;
   }
+  if (word === 'compensate') {
+    return compensateTypoMessage();
+  }
   return unknownTriggerMessage(word, EMIT_TRIGGERS);
 }
 
 /**
- * Flag an empty code string on `on`/`throw`/`emit` (rule 4): catch-all is the
- * *omitted* string, so an empty one is always a mistake, never a shorthand
- * for it.
+ * Flag an empty code string on `on` (rule 4): catch-all is the *omitted*
+ * string, so an empty one is always a mistake, never a shorthand for it.
+ * `throw`/`emit` read an empty or omitted code differently — see {@link
+ * checkThrowEmitCode} — since there is no catch-all concept on the throwing
+ * side.
  */
 function checkEmptyCode(
   code: string | undefined,
@@ -2092,6 +2190,44 @@ function checkEmptyCode(
       'An empty code ("") is not a catch-all; to catch every error, omit the string entirely.',
       { node, property: 'code' },
     );
+  }
+}
+
+/**
+ * `throw <trigger> "<code>"`/`emit <trigger> "<code>"` code-shape checks
+ * (the code-required shift): every trigger but `compensation` must
+ * name the code it throws/emits, so an omitted or empty code string is the
+ * same mistake — there is no catch-all shorthand on the throwing/emitting
+ * side, unlike a catch block. `compensation` is the mirror case: it undoes
+ * already-completed work and names nothing, so carrying a code (even an
+ * empty string) is the mistake there instead.
+ *
+ * @param stmt The `throw`/`emit` statement.
+ * @param subject The diagnostic's leading noun phrase (`'A thrown'`/`'An emitted'`).
+ * @param keyword The statement's own keyword (`'throw'`/`'emit'`), echoed in the message.
+ */
+function checkThrowEmitCode(
+  stmt: ThrowStatement | EmitStatement,
+  subject: 'A thrown' | 'An emitted',
+  keyword: 'throw' | 'emit',
+  accept: ValidationAcceptor,
+): void {
+  if (stmt.trigger === 'compensation') {
+    if (stmt.code !== undefined) {
+      accept(
+        'error',
+        'Compensation undoes completed work — there is nothing to name; ' +
+          `write '${keyword} compensation'.`,
+        { node: stmt, property: 'code' },
+      );
+    }
+    return;
+  }
+  const message = `${subject} ${stmt.trigger} names its code: '${keyword} ${stmt.trigger} "CODE"'.`;
+  if (stmt.code === undefined) {
+    accept('error', message, { node: stmt, property: 'trigger' });
+  } else if (stmt.code.length === 0) {
+    accept('error', message, { node: stmt, property: 'code' });
   }
 }
 

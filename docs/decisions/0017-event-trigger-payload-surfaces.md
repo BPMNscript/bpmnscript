@@ -161,6 +161,9 @@ expressive gain.
 
 ## More Information
 
+Extended by ADR-0018 (compensation) — the one trigger kind whose payload is empty, slotting
+into the same `on`/`throw`/`emit` surface this decision shapes without a new reserved word.
+
 Related decisions: ADR-0013 (the target audience and the no-boilerplate rule — the reason
 message and signal get no declaration form, and the reason the conditional narrowing attributes
 stay off the surface until an author actually needs them). ADR-0014 (the honest import

@@ -900,25 +900,29 @@ class Emitter {
         // normal container is malformed hand-built IR.
         return renderStartEvent(el);
       case 'endEvent':
-        // A typed end event is a throw (`throw error`/`throw escalation`); a
-        // plain end (no definition) is the ordinary terminator.
+        // A typed end event is a throw (`throw error`/`throw escalation`/
+        // `throw compensation`); a plain end (no definition) is the ordinary
+        // terminator.
         return el.eventDefinition === undefined
           ? `end ${el.id}${labelSuffix(el.name)}`
           : renderThrow(el.id, el.eventDefinition);
       case 'intermediateThrowEvent': {
-        // `emit` fires an event and keeps going. Only an escalation or a signal
-        // is emittable this way; an error, message, timer, or conditional
-        // definition here is malformed IR (an error aborts its path — that is
-        // `throw error` — and the other three have no throw surface at all).
+        // `emit` fires an event and keeps going. Only an escalation, a signal,
+        // or compensation is emittable this way; an error, message, timer, or
+        // conditional definition here is malformed IR (an error aborts its path
+        // — that is `throw error` — and the other three have no throw surface
+        // at all).
         const def = el.eventDefinition;
         switch (def.kind) {
           case 'escalation':
             return `emit escalation ${el.id}${quotedCode(def.escalationCode)}`;
           case 'signal':
             return `emit signal ${el.id} ${quote(def.signalName)}`;
+          case 'compensation':
+            return `emit compensation ${el.id}`;
           default:
             throw new Error(
-              `irToDsl: intermediate throw '${el.id}' carries a ${def.kind} definition; only escalation or signal can be emitted.`,
+              `irToDsl: intermediate throw '${el.id}' carries a ${def.kind} definition; only escalation, signal, or compensation can be emitted.`,
             );
         }
       }
@@ -992,9 +996,11 @@ function isHandler(
  * Render a typed end event as a `throw <trigger> <id> …` statement. The id is
  * always printed (the explicit-event precedent) so it survives as a goto target
  * across round-trips. Error and escalation carry an optional code; a signal
- * carries its required name. A message/timer/conditional definition here is
- * malformed hand-built IR — nothing about those kinds can be thrown — so it is
- * refused with a clear message.
+ * carries its required name; compensation carries neither — it is
+ * payload-less, so `throw compensation <id>` never takes a trailing string. A
+ * message/timer/conditional definition here is malformed hand-built IR —
+ * nothing about those kinds can be thrown — so it is refused with a clear
+ * message.
  */
 function renderThrow(id: string, def: EventDefinition): string {
   switch (def.kind) {
@@ -1004,9 +1010,11 @@ function renderThrow(id: string, def: EventDefinition): string {
       return `throw escalation ${id}${quotedCode(def.escalationCode)}`;
     case 'signal':
       return `throw signal ${id} ${quote(def.signalName)}`;
+    case 'compensation':
+      return `throw compensation ${id}`;
     default:
       throw new Error(
-        `irToDsl: end event '${id}' carries a ${def.kind} definition; only error, escalation, or signal can be thrown.`,
+        `irToDsl: end event '${id}' carries a ${def.kind} definition; only error, escalation, signal, or compensation can be thrown.`,
       );
   }
 }
@@ -1014,7 +1022,8 @@ function renderThrow(id: string, def: EventDefinition): string {
 /**
  * Build an `on` handler header from its trigger start event: the trigger word
  * and its payload (a code with catch bindings, a message/signal name, a timer
- * particle clause, or a parenthesized condition), plus ` alongside` for a
+ * particle clause, a parenthesized condition, or nothing at all for
+ * compensation, which is bare `on compensation`), plus ` alongside` for a
  * non-interrupting handler, followed by the opening brace.
  */
 function buildOnHeader(
@@ -1043,8 +1052,10 @@ const TIMER_PARTICLE: Record<
  * Render an `on` handler's trigger word and payload (everything between `on ` and
  * the ` alongside`/`{` suffix): `error`/`escalation` with their optional code and
  * catch bindings, `message`/`signal` with the quoted name, `timer` with its
- * particle and quoted time text, or `condition` with the recovered expression in
- * parens (bare DSL when in the JUEL subset, else the quoted `"${…}"` fallback).
+ * particle and quoted time text, `condition` with the recovered expression in
+ * parens (bare DSL when in the JUEL subset, else the quoted `"${…}"` fallback),
+ * or `compensation` with no payload at all — it is a bare trigger word, never a
+ * code and never parens.
  */
 function renderTriggerHead(def: EventDefinition): string {
   switch (def.kind) {
@@ -1052,6 +1063,8 @@ function renderTriggerHead(def: EventDefinition): string {
       return `error${quotedCode(def.errorCode)}${buildEventBindings(def)}`;
     case 'escalation':
       return `escalation${quotedCode(def.escalationCode)}${buildEventBindings(def)}`;
+    case 'compensation':
+      return 'compensation';
     case 'message':
       return `message ${quote(def.messageName)}`;
     case 'signal':

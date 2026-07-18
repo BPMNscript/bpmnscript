@@ -388,9 +388,9 @@ function lowerBlockStatements(
   statements.forEach((stmt, index) => {
     // An `on` handler contributes a node but never joins the sequence chain: it
     // is an event sub-process triggered by the event it catches (error,
-    // escalation, message, signal, timer, or condition), not a flow step. Lower
-    // it out-of-chain and leave `prevExit`/`entry` untouched, so the statement
-    // before it flows directly to the statement after it.
+    // escalation, compensation, message, signal, timer, or condition), not a
+    // flow step. Lower it out-of-chain and leave `prevExit`/`entry` untouched,
+    // so the statement before it flows directly to the statement after it.
     if (isOnHandler(stmt)) {
       lowerOnHandler(builder, stmt, coord, index);
       return;
@@ -1091,6 +1091,10 @@ function ensureHandlerStart(nested: Builder, id: string): IrStartEvent {
  * definition regardless of what else the handler carries, leaving word/shape
  * legality to the validator:
  *   - `escalation` — the escalation kind; carries a code and its `code` binding.
+ *   - `compensation` — the payload-less undo-block kind, `{ kind: 'compensation'
+ *     }`; a stray code, binding, or condition on the handler is ignored (there
+ *     is nothing to bind). `alongside` still stamps `isInterrupting: false`,
+ *     exactly as for every other trigger kind.
  *   - `message` — `{ kind: 'message', messageName: code ?? '' }`; bindings are
  *     ignored (a message has no catch bindings).
  *   - `signal` — `{ kind: 'signal', signalName: code ?? '' }`; bindings ignored.
@@ -1116,6 +1120,9 @@ function handlerEventDefinition(stmt: OnHandler): EventDefinition {
       ...(stmt.code !== undefined ? { escalationCode: stmt.code } : {}),
       ...(codeVariable !== undefined ? { codeVariable } : {}),
     };
+  }
+  if (stmt.trigger === 'compensation') {
+    return { kind: 'compensation' };
   }
   if (stmt.trigger === 'message') {
     return { kind: 'message', messageName: stmt.code ?? '' };
@@ -1207,10 +1214,12 @@ function lowerThrow(
  * `emit` fires the event and keeps going, so entry === exit === the node's id.
  *
  * The id is the authored `name` when present, else the positional
- * `Throw_<coord>_<index>`. `signal` maps to the signal kind; every other
- * trigger word (including a typo) lowers as an escalation regardless: BPMN has
- * no intermediate error throw, so `emit error` (and any other word) lowers as
- * an escalation and the validator teaches `throw error` instead.
+ * `Throw_<coord>_<index>`. `signal` maps to the signal kind; `compensation`
+ * maps to the payload-less compensation kind (a stray code string is
+ * ignored — there is nothing to carry it); every other trigger word
+ * (including a typo) lowers as an escalation regardless: BPMN has no
+ * intermediate error throw, so `emit error` (and any other word) lowers as an
+ * escalation and the validator teaches `throw error` instead.
  */
 function lowerEmit(
   builder: Builder,
@@ -1224,24 +1233,34 @@ function lowerEmit(
     id,
     eventDefinition:
       stmt.trigger === 'signal'
-        ? { kind: 'signal', signalName: stmt.code }
-        : { kind: 'escalation', escalationCode: stmt.code },
+        ? { kind: 'signal', signalName: stmt.code ?? '' }
+        : stmt.trigger === 'compensation'
+          ? { kind: 'compensation' }
+          : { kind: 'escalation', escalationCode: stmt.code },
   });
   return { entry: id, exit: id };
 }
 
 /**
  * Build the thrown {@link EventDefinition} for a `throw`: `escalation` maps to
- * the escalation kind, `signal` to the signal kind, every other trigger word
- * (including a typo) to `error`. A `throw`'s code is always written (the
- * grammar requires it), so the code is always carried.
+ * the escalation kind, `compensation` to the payload-less compensation kind,
+ * `signal` to the signal kind, every other trigger word (including a typo) to
+ * `error`. The code is optional at the grammar level (compensation — the undo
+ * block — never carries one, so no fallback is needed for that arm), so
+ * `signalName` falls back to `''` the same way `handlerEventDefinition` does
+ * above; the empty name is only reachable for validator-rejected programs. A
+ * stray code string on `throw compensation` is ignored (there is nothing to
+ * carry it).
  */
 function throwEventDefinition(stmt: ThrowStatement): EventDefinition {
   if (stmt.trigger === 'escalation') {
     return { kind: 'escalation', escalationCode: stmt.code };
   }
+  if (stmt.trigger === 'compensation') {
+    return { kind: 'compensation' };
+  }
   if (stmt.trigger === 'signal') {
-    return { kind: 'signal', signalName: stmt.code };
+    return { kind: 'signal', signalName: stmt.code ?? '' };
   }
   return { kind: 'error', errorCode: stmt.code };
 }

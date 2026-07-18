@@ -59,7 +59,9 @@ const STRUCTURE_SNIPPETS: Readonly<Record<string, string>> = {
   // ID position, through the ID-position completion override below. Only the
   // four triggers that take a plain `"CODE"` string appear in this choice —
   // `timer` and `condition` read a differently-shaped payload and get their
-  // own scaffolding items at the ID position instead.
+  // own scaffolding items at the ID position instead; `compensation` carries
+  // no code at all and is offered only as a plain keyword item at the ID
+  // position, never in this choice.
   on: 'on ${1|error,escalation,message,signal|} "${2:CODE}" {\n\t$0\n}',
   throw: 'throw ${1|error,escalation,signal|} "${2:CODE}"',
   // `emit` has no continuing form for `error` (an error always ends its
@@ -97,12 +99,14 @@ export class BpmnScriptCompletionProvider extends DefaultCompletionProvider {
   /**
    * Offers items for the soft event words: the `trigger` property of
    * `on`/`throw`/`emit` offers each construct's legal trigger words (`on`
-   * offers all six — `timer` and `condition` as snippet items that also
+   * offers all seven — `timer` and `condition` as snippet items that also
    * scaffold their differently-shaped payload, since neither reads a plain
-   * `"CODE"` string), the `particle` property of an `on timer` handler
-   * offers the three timer particles with a one-line description each, and
-   * `code`/`message` complete the `field` property of a handler binding.
-   * These words lex as plain `ID`s (not grammar keywords — see
+   * `"CODE"` string; `compensation` as a plain keyword item on every one of
+   * the three, each with its own undo-framed `detail` text, since it carries
+   * no payload at all to scaffold), the `particle` property of an `on timer`
+   * handler offers the three timer particles with a one-line description
+   * each, and `code`/`message` complete the `field` property of a handler
+   * binding. These words lex as plain `ID`s (not grammar keywords — see
    * `bpmn-script-validator.ts`), so the default completion offers nothing at
    * these positions; every other position keeps the inherited behaviour.
    */
@@ -114,24 +118,36 @@ export class BpmnScriptCompletionProvider extends DefaultCompletionProvider {
     const containerType = context.node?.$type;
     if (next.property === 'trigger') {
       if (containerType === 'EmitStatement') {
-        this.acceptEventWord(context, acceptor, ['escalation', 'signal']);
+        this.acceptEventWord(
+          context,
+          acceptor,
+          ['escalation', 'signal', 'compensation'],
+          {
+            compensation:
+              "undo this scope's completed work, then continue",
+          },
+        );
         return;
       }
       if (containerType === 'ThrowStatement') {
-        this.acceptEventWord(context, acceptor, [
-          'error',
-          'escalation',
-          'signal',
-        ]);
+        this.acceptEventWord(
+          context,
+          acceptor,
+          ['error', 'escalation', 'signal', 'compensation'],
+          {
+            compensation:
+              "undo this scope's completed work, then end this path",
+          },
+        );
         return;
       }
       if (containerType === 'OnHandler') {
-        this.acceptEventWord(context, acceptor, [
-          'error',
-          'escalation',
-          'message',
-          'signal',
-        ]);
+        this.acceptEventWord(
+          context,
+          acceptor,
+          ['error', 'escalation', 'message', 'signal', 'compensation'],
+          { compensation: 'the undo block of this subprocess' },
+        );
         this.acceptEventSnippet(
           context,
           acceptor,
@@ -163,17 +179,23 @@ export class BpmnScriptCompletionProvider extends DefaultCompletionProvider {
     return super.completionFor(context, next, acceptor);
   }
 
-  /** Emit one plain keyword-kind completion item per word in `words`. */
+  /**
+   * Emit one plain keyword-kind completion item per word in `words`, each
+   * with the default `'BPMNscript event word'` detail unless `detailOverrides`
+   * names a more specific one for it (used for `compensation`'s undo-framed
+   * text, which differs per statement).
+   */
   private acceptEventWord(
     context: CompletionContext,
     acceptor: CompletionAcceptor,
     words: readonly string[],
+    detailOverrides?: Readonly<Record<string, string>>,
   ): void {
     for (const word of words) {
       acceptor(context, {
         label: word,
         kind: CompletionItemKind.Keyword,
-        detail: 'BPMNscript event word',
+        detail: detailOverrides?.[word] ?? 'BPMNscript event word',
         sortText: '1',
       });
     }

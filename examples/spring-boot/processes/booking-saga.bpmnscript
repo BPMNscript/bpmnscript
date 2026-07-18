@@ -1,0 +1,40 @@
+// Trip-booking saga with compensation. Two booking steps are grouped into
+// `subprocess`es, and each carries an `on compensation` undo block that reverses
+// its own work. If a later step fails it raises the BOOKING_FAILED error, and the
+// interrupting `on error` handler emits compensation to unwind the bookings that
+// already completed (newest first) before notifying the traveller.
+//
+// The service tasks point at the generic delegate
+// examples/spring-boot/src/main/java/com/example/demo/LogDelegate.java, so this
+// process deploys and runs on the demo profile without additional Java classes.
+
+process booking-saga {
+  error "BOOKING_FAILED" message "A booking step could not be completed"
+
+  start TripRequested
+  user ReviewTrip "Review the trip" { assignee = "demo" }
+
+  subprocess BookFlight "Book the flight" {
+    service ReserveSeat "Reserve the seat" { class = "com.example.demo.LogDelegate" }
+
+    on compensation {
+      service ReleaseSeat "Release the seat" { class = "com.example.demo.LogDelegate" }
+    }
+  }
+
+  subprocess BookHotel "Book the hotel" {
+    service ReserveRoom "Reserve the room" { class = "com.example.demo.LogDelegate" }
+
+    on compensation {
+      service ReleaseRoom "Release the room" { class = "com.example.demo.LogDelegate" }
+    }
+  }
+
+  service ConfirmTrip "Confirm the trip" { class = "com.example.demo.LogDelegate" }
+  end TripConfirmed
+
+  on error "BOOKING_FAILED" {
+    emit compensation Undo
+    user NotifyTraveller "Notify the traveller" { assignee = "demo" }
+  }
+}
