@@ -1,5 +1,6 @@
 /**
- * Container-scoped cross-reference resolution for `goto`.
+ * Container-scoped cross-reference resolution for `goto` and for an `on`
+ * handler's host.
  *
  * A `goto target=[Statement:ID]` may only jump to a step within its own
  * *flow container* — the nearest enclosing `process`, `subprocess`, or `on`
@@ -32,6 +33,25 @@
  * A cross-boundary `goto` therefore fails to resolve; the resulting linker
  * diagnostic is upgraded to a boundary explanation by {@link
  * BpmnScriptLinker} rather than by an extra validator rule here.
+ *
+ * An `on` handler's `host=[Statement:ID]` reference gets the *same* treatment,
+ * for the same BPMN reason: an event attached to a step is a flow element of
+ * the container that step belongs to, so a host in another process, in a
+ * sibling sub-process, or inside another handler's body is not attachable and
+ * must not resolve. The candidate set is left at "the named steps of this
+ * container" rather than narrowed to activities: a host naming a step that
+ * cannot carry an attached event is a resolvable reference with a diagnosable
+ * problem, and the validator can name what the step actually is — far more
+ * actionable than the reference silently not resolving at all.
+ *
+ * A handler that carries a host is *transparent* to the container walk. Such a
+ * handler does not wrap its body in a container of its own the way a host-less
+ * one does; it lowers inline into the container its host lives in, so its body's
+ * steps and the surrounding main flow share one container and one sequence-flow
+ * scope. `enclosingFlowContainer` therefore walks straight past it, which makes
+ * a `goto` legal in both directions across such a body — and, since the host
+ * reference itself is resolved from that same container, keeps the host and the
+ * handler's own body in exactly the scope relationship the lowering produces.
  *
  * The `NameProvider` still keys on the AST `name` property (see the grammar's
  * naming-convention comment); this provider only *narrows the candidate set*, it
@@ -73,42 +93,68 @@ export function isFlowContainer(node: AstNode): node is FlowContainer {
  * container `node` itself lives in, found by walking `$container` upward
  * starting at `node.$container` (so `node` matching the predicate itself, as a
  * `SubProcess` statement would, does not short-circuit the walk).
+ *
+ * A handler carrying a host is skipped rather than returned: its body compiles
+ * into the container its host lives in, not into a container of its own, so the
+ * flow container of anything written inside it is that same outer container.
  */
 export function enclosingFlowContainer(node: AstNode): FlowContainer | undefined {
-  return AstUtils.getContainerOfType(node.$container, isFlowContainer);
+  let container = AstUtils.getContainerOfType(node.$container, isFlowContainer);
+  while (container && isOnHandler(container) && container.host !== undefined) {
+    container = AstUtils.getContainerOfType(
+      container.$container,
+      isFlowContainer,
+    );
+  }
+  return container;
 }
 
 /**
- * Restricts `goto` resolution to the enclosing process/sub-process; delegates
- * every other cross-reference to {@link DefaultScopeProvider}.
+ * Whether this cross-reference is one of the two the language resolves against
+ * the enclosing flow container rather than lexically: a `goto` target and an
+ * `on` handler's host.
+ */
+function isContainerScoped(context: ReferenceInfo): boolean {
+  return (
+    (isGotoStatement(context.container) && context.property === 'target') ||
+    (isOnHandler(context.container) && context.property === 'host')
+  );
+}
+
+/**
+ * Restricts `goto` and handler-host resolution to the enclosing
+ * process/sub-process; delegates every other cross-reference to
+ * {@link DefaultScopeProvider}.
  */
 export class BpmnScriptScopeProvider extends DefaultScopeProvider {
   /**
    * @param context The cross-reference for which a scope is requested.
-   * @returns For the `goto` target reference, the named steps of the enclosing
-   *   container (any nesting depth within it, no outer scope); otherwise the
-   *   default scope.
+   * @returns For the `goto` target and the handler host references, the named
+   *   steps of the enclosing container (any nesting depth within it, no outer
+   *   scope); otherwise the default scope.
    */
   override getScope(context: ReferenceInfo): Scope {
-    // Only the `goto` target reference is container-scoped; delegate the rest.
-    if (isGotoStatement(context.container) && context.property === 'target') {
-      const container = AstUtils.getContainerOfType(
-        context.container,
-        isFlowContainer,
-      );
+    if (isContainerScoped(context)) {
+      // Started from the reference's container rather than from the node
+      // itself: for a handler host the referencing node IS a flow container
+      // candidate, and a scope taken from it would offer the handler's own body
+      // instead of the container the host has to be attachable in.
+      const container = enclosingFlowContainer(context.container);
       if (container) {
         // The reference type is `Statement`; keep only the named descendants
-        // that are goto-targetable (its `Statement` subtypes), so process-scope
+        // that are referenceable (its `Statement` subtypes), so process-scope
         // declarations such as `var` (which also carry a `name`) never pollute
-        // the goto scope. `createScopeForNodes` drops the ones without a name.
+        // the scope. `createScopeForNodes` drops the ones without a name.
         const referenceType = this.reflection.getReferenceType(context);
         const targets = AstUtils.streamAllContents(container).filter(
           (node) =>
             this.reflection.isSubtype(node.$type, referenceType) &&
             // A candidate counts only when THIS container is its own nearest
             // enclosing container — a step inside a nested `subprocess` or
-            // `on` handler body has that container as its nearest container,
-            // not this one, so it is excluded (nesting isolation). A
+            // host-less `on` handler body has that container as its nearest
+            // container, not this one, so it is excluded (nesting isolation);
+            // a step inside a *hosted* handler's body belongs to this
+            // container and therefore passes, matching the inline lowering. A
             // `subprocess` statement sitting directly in this container
             // passes: its own nearest enclosing container (walking up from
             // its `$container`) is this container. An `on` handler itself
@@ -116,8 +162,8 @@ export class BpmnScriptScopeProvider extends DefaultScopeProvider {
             // `createScopeForNodes` drops it regardless of nesting depth.
             enclosingFlowContainer(node) === container,
         );
-        // No outer scope: a goto sees only its own container's steps, so a
-        // step of an ancestor container, a sibling container, or another
+        // No outer scope: the reference sees only its own container's steps,
+        // so a step of an ancestor container, a sibling container, or another
         // process entirely is unreachable by construction.
         return this.createScopeForNodes(targets);
       }

@@ -16,7 +16,9 @@
  *   on a plain start event; anything other than error/escalation/message/
  *   signal/timer/conditional/compensation on an event handler's start;
  *   anything other than error/escalation/signal/compensation on an end
- *   event or an intermediate throw (terminate, …) →
+ *   event or an intermediate throw (terminate, …); anything other than
+ *   error/escalation/message/signal/timer/conditional on a boundary event (a
+ *   cancel or terminate definition, …) →
  *   {@link UnsupportedEventDefinitionError};
  * - loop characteristics on a task or sub-process (multi-instance or
  *   standard loop) → {@link UnsupportedLoopCharacteristicsError};
@@ -49,7 +51,15 @@
  *   `waitForCompletion="false"`; a compensation event sub-process hosted by
  *   the process or by another event sub-process rather than the plain
  *   sub-process it compensates; `isForCompensation="true"` on any mapped
- *   activity (task, sub-process, call activity) — →
+ *   activity (task, sub-process, call activity); a boundary event with no
+ *   `attachedToRef`, with an incoming sequence flow, with
+ *   `cancelActivity="false"` on an error trigger, with a compensation
+ *   trigger (compensation attaches through `isForCompensation` and a
+ *   `bpmn:association` instead, surfaced by this language as a sub-process
+ *   undo block), with an `operaton:inputOutput` mapping (Operaton forbids
+ *   one on a boundary event), with an escalation trigger attached to
+ *   anything other than a sub-process/call activity/user task, or whose
+ *   `attachedToRef` does not name a mapped activity in the same container →
  *   {@link UnsupportedEventFeatureError}.
  *
  * Content the IR does not carry but that causes **no semantic loss** is
@@ -149,7 +159,8 @@ export class UnsupportedFormFieldTypeError extends UnsupportedConstructError {
  * kind that lies outside the supported subset.
  *
  * The supported subset is `bpmn:startEvent`, `bpmn:endEvent`,
- * `bpmn:intermediateThrowEvent` (an `emit`), `bpmn:userTask`,
+ * `bpmn:intermediateThrowEvent` (an `emit`), `bpmn:boundaryEvent` (attached
+ * to an activity in the same container), `bpmn:userTask`,
  * `bpmn:serviceTask`, `bpmn:scriptTask`, `bpmn:exclusiveGateway`,
  * `bpmn:parallelGateway`, an embedded `bpmn:subProcess` (plain, or an event
  * handler when `triggeredByEvent="true"`), `bpmn:callActivity`, and
@@ -174,10 +185,10 @@ export class UnsupportedElementError extends UnsupportedConstructError {
       `The BPMN element ${qname}` +
         (elementId ? ` (id='${elementId}')` : '') +
         ' is a kind that this tool cannot import. ' +
-        'Only start/end events, throws, emits, event handlers, user tasks, ' +
-        'service tasks, script tasks, exclusive gateways, parallel ' +
-        'gateways, embedded sub-processes, call activities, and sequence ' +
-        'flows are supported.',
+        'Only start/end events, throws, emits, boundary events, event ' +
+        'handlers, user tasks, service tasks, script tasks, exclusive ' +
+        'gateways, parallel gateways, embedded sub-processes, call ' +
+        'activities, and sequence flows are supported.',
     );
     this.name = 'UnsupportedElementError';
     this.qname = qname;
@@ -220,16 +231,21 @@ export class UnsupportedCallActivityError extends UnsupportedConstructError {
 }
 
 /**
- * Thrown by {@link xmlToIr} when a start event, end event, or intermediate
- * throw carries an event definition kind this tool does not import at that
- * position: any definition on a plain start event (outside an event
- * handler); any definition other than error/escalation/message/signal/timer/
- * conditional/compensation on an event handler's start; any definition other
- * than error/escalation/signal/compensation on an end event; any definition
- * other than escalation/signal/compensation on an intermediate throw
- * (terminate, …). The DSL's event layer models only these catch (`on`) and
- * throw/emit (`throw`/`emit`) forms, so any other trigger/result semantics
- * cannot be represented and must not be silently dropped.
+ * Thrown by {@link xmlToIr} when a start event, end event, intermediate
+ * throw, or boundary event carries an event definition kind this tool does
+ * not import at that position: any definition on a plain start event
+ * (outside an event handler); any definition other than error/escalation/
+ * message/signal/timer/conditional/compensation on an event handler's
+ * start; any definition other than error/escalation/signal/compensation on
+ * an end event; any definition other than escalation/signal/compensation on
+ * an intermediate throw (terminate, …); any definition other than error/
+ * escalation/message/signal/timer/conditional on a boundary event (a cancel
+ * or terminate definition, …) — a boundary event's own compensation trigger
+ * refuses earlier, with a dedicated message pointing at the sub-process undo
+ * block, so it never reaches this class. The DSL's event layer models only
+ * these catch (`on`) and throw/emit (`throw`/`emit`) forms, so any other
+ * trigger/result semantics cannot be represented and must not be silently
+ * dropped.
  *
  * A definition of the *right* kind but the *wrong shape* (e.g. an error
  * throw resolving to no code, a timer with no time child, a conditional
@@ -238,10 +254,10 @@ export class UnsupportedCallActivityError extends UnsupportedConstructError {
  * the wrong kind of definition.
  */
 export class UnsupportedEventDefinitionError extends UnsupportedConstructError {
-  /** The BPMN `id` of the offending start/end/intermediate-throw event. */
+  /** The BPMN `id` of the offending start/end/intermediate-throw/boundary event. */
   readonly elementId: string;
   /** Which position the offending event occupies. */
-  readonly eventKind: 'start' | 'end' | 'intermediate throw';
+  readonly eventKind: 'start' | 'end' | 'intermediate throw' | 'boundary';
   /**
    * The moddle `$type` of the first event definition found, e.g.
    * `bpmn:TerminateEventDefinition` or `bpmn:LinkEventDefinition`.
@@ -250,7 +266,7 @@ export class UnsupportedEventDefinitionError extends UnsupportedConstructError {
 
   constructor(
     elementId: string,
-    eventKind: 'start' | 'end' | 'intermediate throw',
+    eventKind: 'start' | 'end' | 'intermediate throw' | 'boundary',
     definitionType: string,
   ) {
     super(
@@ -285,7 +301,14 @@ export class UnsupportedEventDefinitionError extends UnsupportedConstructError {
  * event sub-process hosted by the process or by another event sub-process
  * rather than the plain sub-process it compensates; and
  * `isForCompensation="true"` on any mapped activity (task, sub-process, call
- * activity).
+ * activity); a boundary event with no `attachedToRef`, with an incoming
+ * sequence flow, with `cancelActivity="false"` on an error trigger, with a
+ * compensation trigger (compensation attaches through `isForCompensation`
+ * and a `bpmn:association` instead, surfaced by this language as a
+ * sub-process undo block), with an `operaton:inputOutput` mapping (Operaton
+ * forbids one on a boundary event), with an escalation trigger attached to
+ * anything other than a sub-process/call activity/user task, or whose
+ * `attachedToRef` does not name a mapped activity in the same container.
  *
  * Mirrors {@link UnsupportedCallActivityError}: the shape is refused
  * outright — never narrowed or silently reinterpreted — and `detail` names
@@ -374,10 +397,14 @@ function friendlyEventDefinition(definitionType: string): string {
  * accepts none at all — the sentence explains that the seven trigger kinds
  * are only available on an event handler's start, which also reads correctly
  * when the offending element genuinely is a handler start carrying the wrong
- * kind (e.g. a terminate definition).
+ * kind (e.g. a terminate definition). A boundary event supports six of those
+ * seven — compensation is excluded here because it refuses earlier with its
+ * own dedicated message (see {@link UnsupportedEventFeatureError}), so this
+ * class only ever sees a boundary event carrying something else entirely
+ * (a cancel or terminate definition, …).
  */
 function supportedKindsMessage(
-  eventKind: 'start' | 'end' | 'intermediate throw',
+  eventKind: 'start' | 'end' | 'intermediate throw' | 'boundary',
 ): string {
   switch (eventKind) {
     case 'start':
@@ -390,6 +417,11 @@ function supportedKindsMessage(
       return 'A typed end event supports error, escalation, signal, or compensation.';
     case 'intermediate throw':
       return 'An emit supports escalation, signal, or compensation.';
+    case 'boundary':
+      return (
+        'A boundary event supports error, escalation, message, signal, ' +
+        'timer, or conditional.'
+      );
   }
 }
 

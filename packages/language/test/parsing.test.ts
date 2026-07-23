@@ -673,6 +673,103 @@ describe('Parsing — on condition handlers', () => {
   });
 });
 
+describe('Parsing — hosted on handlers', () => {
+  test('each trigger takes a host, and the host is never mistaken for the trigger', async () => {
+    // Both the host and the trigger are bare `ID`s, so every trigger has to be
+    // pinned individually: the word before the colon is the host, the word
+    // after it is the trigger.
+    for (const trigger of [
+      'error',
+      'escalation',
+      'message',
+      'signal',
+      'timer',
+      'condition',
+      'compensation',
+    ]) {
+      const document = await parse(`process p { on Review: ${trigger} { } }`);
+      expect(formatParseFailure(document)).toBeUndefined();
+      const handler = document.parseResult.value.processes[0]!
+        .body[0] as OnHandler;
+      expect(handler.host?.$refText).toBe('Review');
+      expect(handler.trigger).toBe(trigger);
+    }
+  });
+
+  test('a hosted timer keeps its particle and time, with the host separate from both', async () => {
+    const document = await parse(
+      `process p { user Review on Review: timer after "PT2H" { } }`,
+    );
+    expect(formatParseFailure(document)).toBeUndefined();
+    const handler = document.parseResult.value.processes[0]!
+      .body[1] as OnHandler;
+    expect(handler.host?.$refText).toBe('Review');
+    expect(handler.trigger).toBe('timer');
+    expect(handler.particle).toBe('after');
+    expect(handler.time).toBe('PT2H');
+    expect(handler.code).toBeUndefined();
+  });
+
+  test('a hosted handler carries a code, bindings, and a body exactly as a host-less one does', async () => {
+    const document = await parse(
+      `process p {
+  user Pack
+  on Pack: error "OUT_OF_STOCK" (code c, message m) { service R { class = "x.Y" } }
+}`,
+    );
+    expect(formatParseFailure(document)).toBeUndefined();
+    const handler = document.parseResult.value.processes[0]!
+      .body[1] as OnHandler;
+    expect(handler.host?.$refText).toBe('Pack');
+    expect(handler.trigger).toBe('error');
+    expect(handler.code).toBe('OUT_OF_STOCK');
+    expect(handler.bindings).toHaveLength(2);
+    expect(handler.bindings[0]!.field).toBe('code');
+    expect(handler.bindings[1]!.variable).toBe('m');
+    expect(handler.body.statements).toHaveLength(1);
+    expect(handler.alongside).toBeFalsy();
+  });
+
+  test('a hosted handler takes a parenthesized condition, and alongside after it', async () => {
+    const document = await parse(
+      `process p { user Review on Review: condition (amount > 100) alongside { } }`,
+    );
+    expect(formatParseFailure(document)).toBeUndefined();
+    const handler = document.parseResult.value.processes[0]!
+      .body[1] as OnHandler;
+    expect(handler.host?.$refText).toBe('Review');
+    expect(handler.trigger).toBe('condition');
+    expect(handler.condition?.$type).toBe('Relational');
+    expect(handler.alongside).toBe(true);
+    expect(handler.bindings).toHaveLength(0);
+  });
+
+  test('alongside is legal on a hosted handler with a code', async () => {
+    const document = await parse(
+      `process p { user Review on Review: message "Cancelled" alongside { } }`,
+    );
+    expect(formatParseFailure(document)).toBeUndefined();
+    const handler = document.parseResult.value.processes[0]!
+      .body[1] as OnHandler;
+    expect(handler.host?.$refText).toBe('Review');
+    expect(handler.alongside).toBe(true);
+  });
+
+  test('a host-less handler leaves the host slot empty', async () => {
+    const document = await parse(`process p { on error "X" { } }`);
+    expect(formatParseFailure(document)).toBeUndefined();
+    const handler = document.parseResult.value.processes[0]!
+      .body[0] as OnHandler;
+    expect(handler.host).toBeUndefined();
+    expect(handler.trigger).toBe('error');
+  });
+
+  test('a colon with no trigger after it is a parse error', async () => {
+    const document = await parse(`process p { user Pack on Pack: { } }`);
+    expect(document.parseResult.parserErrors.length).toBeGreaterThan(0);
+  });
+});
+
 describe('Parsing — throw / emit', () => {
   test('throw error / throw escalation parse as terminal statements carrying a code', async () => {
     const throwError = await parse(`process p { throw error "C" }`);

@@ -101,12 +101,26 @@
  *      sub-process hosted directly by the process, or by another event
  *      sub-process, instead of the plain sub-process it compensates;
  *      `isForCompensation="true"` on a service task and on a sub-process;
- *      `bpmn:BoundaryEvent` still refuses with `UnsupportedElementError`
- *      (unchanged — this tool has no boundary-event surface). The six prior
- *      definition kinds (error, escalation, message, signal, timer,
- *      conditional) still import unchanged; a compensation handler nested
- *      inside a plain sub-process that is itself nested inside another
- *      plain sub-process imports into the correct (deepest) container.
+ *      a compensation `bpmn:BoundaryEvent` still refuses, now with
+ *      `UnsupportedEventFeatureError` naming the sub-process undo block
+ *      instead. The six prior definition kinds (error, escalation, message,
+ *      signal, timer, conditional) still import unchanged; a compensation
+ *      handler nested inside a plain sub-process that is itself nested
+ *      inside another plain sub-process imports into the correct (deepest)
+ *      container.
+ *  17. Boundary event import: each of the six supported triggers imports a
+ *      `bpmn:BoundaryEvent` into a `boundaryEvent` IR node with the right
+ *      `attachedToRef`; `cancelActivity="false"` imports as
+ *      `cancelActivity: false` and is absent otherwise; a boundary event on
+ *      a host nested inside a sub-process imports at that depth; a
+ *      warning-free import produces zero `ImportWarning`s. Refusals (one per
+ *      shape): no `attachedToRef`; an incoming sequence flow; an
+ *      `operaton:inputOutput` mapping; a trigger definition kind outside the
+ *      six (`UnsupportedEventDefinitionError`, naming the boundary
+ *      position); `cancelActivity="false"` together with an error trigger;
+ *      an escalation trigger attached to a service or script task; and an
+ *      `attachedToRef` naming an activity that lives in a different
+ *      container.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -3780,7 +3794,7 @@ describe('xmlToIr — compensation import', () => {
       }
     });
 
-    it('a compensation boundary event still refuses with UnsupportedElementError (unchanged — no boundary-event surface)', async () => {
+    it('a compensation boundary event refuses with UnsupportedEventFeatureError naming the subprocess undo block', async () => {
       const xml = `<?xml version="1.0" encoding="UTF-8"?>
 <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
                   xmlns:operaton="http://operaton.org/schema/1.0/bpmn"
@@ -3801,8 +3815,11 @@ describe('xmlToIr — compensation import', () => {
         await xmlToIr(xml);
         expect.fail('Should have thrown');
       } catch (err) {
-        expect(err).toBeInstanceOf(UnsupportedElementError);
-        expect((err as UnsupportedElementError).qname).toBe('bpmn:BoundaryEvent');
+        expect(err).toBeInstanceOf(UnsupportedEventFeatureError);
+        const e = err as UnsupportedEventFeatureError;
+        expect(e.elementId).toBe('CompensationBoundary');
+        expect(e.detail).toContain('compensation');
+        expect(e.detail).toContain('on compensation');
       }
     });
   });
@@ -4036,5 +4053,596 @@ describe('xmlToIr — compensation import', () => {
       kind: 'compensation',
     });
     expect(start?.kind === 'startEvent' && start.isInterrupting).toBeUndefined();
+  });
+});
+
+// ── 17. Boundary event import ────────────────────────────────────────────────
+
+describe('xmlToIr — boundary event import', () => {
+  // ── 17a. Full positive import: six triggers, cancelActivity, escalation host ─
+
+  const boundaryXml = `<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  targetNamespace="http://test">
+  <bpmn:error id="Error_Oops" errorCode="OOPS" />
+  <bpmn:message id="Message_Ping" name="Ping" />
+  <bpmn:signal id="Signal_Go" name="Go" />
+  <bpmn:process id="p" isExecutable="true">
+    <bpmn:startEvent id="PStart" />
+    <bpmn:userTask id="Review" />
+    <bpmn:subProcess id="Booking">
+      <bpmn:startEvent id="BStart" />
+      <bpmn:endEvent id="BEnd" />
+      <bpmn:sequenceFlow id="SF_Booking" sourceRef="BStart" targetRef="BEnd" />
+    </bpmn:subProcess>
+    <bpmn:endEvent id="PEnd" />
+    <bpmn:boundaryEvent id="Boundary_Review_error" attachedToRef="Review">
+      <bpmn:errorEventDefinition id="ErrDef" errorRef="Error_Oops" />
+    </bpmn:boundaryEvent>
+    <bpmn:boundaryEvent id="Boundary_Review_message" attachedToRef="Review" cancelActivity="false">
+      <bpmn:messageEventDefinition id="MsgDef" messageRef="Message_Ping" />
+    </bpmn:boundaryEvent>
+    <bpmn:boundaryEvent id="Boundary_Review_signal" attachedToRef="Review">
+      <bpmn:signalEventDefinition id="SigDef" signalRef="Signal_Go" />
+    </bpmn:boundaryEvent>
+    <bpmn:boundaryEvent id="Boundary_Review_timer" attachedToRef="Review">
+      <bpmn:timerEventDefinition id="TimerDef">
+        <bpmn:timeDuration>PT2H</bpmn:timeDuration>
+      </bpmn:timerEventDefinition>
+    </bpmn:boundaryEvent>
+    <bpmn:boundaryEvent id="Boundary_Review_condition" attachedToRef="Review">
+      <bpmn:conditionalEventDefinition id="CondDef">
+        <bpmn:condition>\${flag}</bpmn:condition>
+      </bpmn:conditionalEventDefinition>
+    </bpmn:boundaryEvent>
+    <bpmn:boundaryEvent id="Boundary_Booking_escalation" attachedToRef="Booking">
+      <bpmn:escalationEventDefinition id="EscDef" />
+    </bpmn:boundaryEvent>
+    <bpmn:sequenceFlow id="F1" sourceRef="PStart" targetRef="Review" />
+    <bpmn:sequenceFlow id="F2" sourceRef="Review" targetRef="Booking" />
+    <bpmn:sequenceFlow id="F3" sourceRef="Booking" targetRef="PEnd" />
+  </bpmn:process>
+</bpmn:definitions>`;
+
+  const EXPECTED_BOUNDARY_IR: BpmnProcess = {
+    id: 'p',
+    isExecutable: true,
+    flowElements: [
+      { kind: 'startEvent', id: 'PStart' },
+      { kind: 'userTask', id: 'Review' },
+      {
+        kind: 'subProcess',
+        id: 'Booking',
+        flowElements: [
+          { kind: 'startEvent', id: 'BStart' },
+          { kind: 'endEvent', id: 'BEnd' },
+        ],
+        sequenceFlows: [
+          { id: 'SF_Booking', sourceRef: 'BStart', targetRef: 'BEnd' },
+        ],
+      },
+      { kind: 'endEvent', id: 'PEnd' },
+      {
+        kind: 'boundaryEvent',
+        id: 'Boundary_Review_error',
+        attachedToRef: 'Review',
+        eventDefinition: { kind: 'error', errorCode: 'OOPS' },
+      },
+      {
+        kind: 'boundaryEvent',
+        id: 'Boundary_Review_message',
+        attachedToRef: 'Review',
+        eventDefinition: { kind: 'message', messageName: 'Ping' },
+        cancelActivity: false,
+      },
+      {
+        kind: 'boundaryEvent',
+        id: 'Boundary_Review_signal',
+        attachedToRef: 'Review',
+        eventDefinition: { kind: 'signal', signalName: 'Go' },
+      },
+      {
+        kind: 'boundaryEvent',
+        id: 'Boundary_Review_timer',
+        attachedToRef: 'Review',
+        eventDefinition: {
+          kind: 'timer',
+          timerKind: 'duration',
+          expression: 'PT2H',
+        },
+      },
+      {
+        kind: 'boundaryEvent',
+        id: 'Boundary_Review_condition',
+        attachedToRef: 'Review',
+        eventDefinition: { kind: 'conditional', condition: '${flag}' },
+      },
+      {
+        kind: 'boundaryEvent',
+        id: 'Boundary_Booking_escalation',
+        attachedToRef: 'Booking',
+        eventDefinition: { kind: 'escalation' },
+      },
+    ],
+    sequenceFlows: [
+      { id: 'F1', sourceRef: 'PStart', targetRef: 'Review' },
+      { id: 'F2', sourceRef: 'Review', targetRef: 'Booking' },
+      { id: 'F3', sourceRef: 'Booking', targetRef: 'PEnd' },
+    ],
+  };
+
+  it('imports all six boundary triggers with the right attachedToRef, cancelActivity, and an escalation boundary on a sub-process host, with zero warnings', async () => {
+    const { ir, warnings } = await xmlToIr(boundaryXml);
+    expect(ir).toEqual(EXPECTED_BOUNDARY_IR);
+    expect(warnings).toEqual([]);
+  });
+
+  it('a boundary event on a host nested inside a sub-process imports at that depth', async () => {
+    const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  targetNamespace="http://test">
+  <bpmn:process id="p" isExecutable="true">
+    <bpmn:startEvent id="PStart" />
+    <bpmn:subProcess id="Outer">
+      <bpmn:startEvent id="OStart" />
+      <bpmn:userTask id="Pack" />
+      <bpmn:boundaryEvent id="Boundary_Pack_timer" attachedToRef="Pack">
+        <bpmn:timerEventDefinition id="TimerDef">
+          <bpmn:timeDuration>PT30M</bpmn:timeDuration>
+        </bpmn:timerEventDefinition>
+      </bpmn:boundaryEvent>
+      <bpmn:endEvent id="OEnd" />
+      <bpmn:sequenceFlow id="SF1" sourceRef="OStart" targetRef="Pack" />
+      <bpmn:sequenceFlow id="SF2" sourceRef="Pack" targetRef="OEnd" />
+    </bpmn:subProcess>
+    <bpmn:endEvent id="PEnd" />
+    <bpmn:sequenceFlow id="F1" sourceRef="PStart" targetRef="Outer" />
+    <bpmn:sequenceFlow id="F2" sourceRef="Outer" targetRef="PEnd" />
+  </bpmn:process>
+</bpmn:definitions>`;
+
+    const { ir, warnings } = await xmlToIr(xml);
+    expect(warnings).toEqual([]);
+
+    const outer = ir.flowElements.find((fe) => fe.id === 'Outer');
+    expect(outer?.kind).toBe('subProcess');
+    if (outer?.kind !== 'subProcess') return;
+
+    const boundary = outer.flowElements.find(
+      (fe) => fe.id === 'Boundary_Pack_timer',
+    );
+    expect(boundary).toEqual({
+      kind: 'boundaryEvent',
+      id: 'Boundary_Pack_timer',
+      attachedToRef: 'Pack',
+      eventDefinition: {
+        kind: 'timer',
+        timerKind: 'duration',
+        expression: 'PT30M',
+      },
+    });
+  });
+
+  // ── 17b. Refusals (one per shape) ───────────────────────────────────────
+
+  describe('refusals', () => {
+    it('a missing attachedToRef refuses with UnsupportedEventFeatureError naming attachedToRef', async () => {
+      const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  targetNamespace="http://test">
+  <bpmn:process id="p" isExecutable="true">
+    <bpmn:startEvent id="PStart" />
+    <bpmn:userTask id="Review" />
+    <bpmn:boundaryEvent id="Orphan">
+      <bpmn:timerEventDefinition id="TimerDef">
+        <bpmn:timeDuration>PT1H</bpmn:timeDuration>
+      </bpmn:timerEventDefinition>
+    </bpmn:boundaryEvent>
+    <bpmn:endEvent id="PEnd" />
+    <bpmn:sequenceFlow id="F1" sourceRef="PStart" targetRef="Review" />
+    <bpmn:sequenceFlow id="F2" sourceRef="Review" targetRef="PEnd" />
+  </bpmn:process>
+</bpmn:definitions>`;
+
+      try {
+        await xmlToIr(xml);
+        expect.fail('Should have thrown');
+      } catch (err) {
+        expect(err).toBeInstanceOf(UnsupportedEventFeatureError);
+        const e = err as UnsupportedEventFeatureError;
+        expect(e.elementId).toBe('Orphan');
+        expect(e.detail).toContain('attachedToRef');
+      }
+    });
+
+    it('an incoming sequence flow refuses with UnsupportedEventFeatureError naming incoming', async () => {
+      const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  targetNamespace="http://test">
+  <bpmn:process id="p" isExecutable="true">
+    <bpmn:startEvent id="PStart" />
+    <bpmn:userTask id="Review" />
+    <bpmn:boundaryEvent id="Boundary_Review_timer" attachedToRef="Review">
+      <bpmn:incoming>F0</bpmn:incoming>
+      <bpmn:timerEventDefinition id="TimerDef">
+        <bpmn:timeDuration>PT1H</bpmn:timeDuration>
+      </bpmn:timerEventDefinition>
+    </bpmn:boundaryEvent>
+    <bpmn:endEvent id="PEnd" />
+    <bpmn:sequenceFlow id="F0" sourceRef="PStart" targetRef="Boundary_Review_timer" />
+    <bpmn:sequenceFlow id="F1" sourceRef="PStart" targetRef="Review" />
+    <bpmn:sequenceFlow id="F2" sourceRef="Review" targetRef="PEnd" />
+  </bpmn:process>
+</bpmn:definitions>`;
+
+      try {
+        await xmlToIr(xml);
+        expect.fail('Should have thrown');
+      } catch (err) {
+        expect(err).toBeInstanceOf(UnsupportedEventFeatureError);
+        const e = err as UnsupportedEventFeatureError;
+        expect(e.elementId).toBe('Boundary_Review_timer');
+        expect(e.detail).toContain('incoming');
+      }
+    });
+
+    it('an operaton:inputOutput mapping refuses with UnsupportedEventFeatureError naming inputOutput', async () => {
+      const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  xmlns:operaton="http://operaton.org/schema/1.0/bpmn"
+                  targetNamespace="http://test">
+  <bpmn:process id="p" isExecutable="true">
+    <bpmn:startEvent id="PStart" />
+    <bpmn:userTask id="Review" />
+    <bpmn:boundaryEvent id="Boundary_Review_timer" attachedToRef="Review">
+      <bpmn:extensionElements>
+        <operaton:inputOutput>
+          <operaton:inputParameter name="foo">bar</operaton:inputParameter>
+        </operaton:inputOutput>
+      </bpmn:extensionElements>
+      <bpmn:timerEventDefinition id="TimerDef">
+        <bpmn:timeDuration>PT1H</bpmn:timeDuration>
+      </bpmn:timerEventDefinition>
+    </bpmn:boundaryEvent>
+    <bpmn:endEvent id="PEnd" />
+    <bpmn:sequenceFlow id="F1" sourceRef="PStart" targetRef="Review" />
+    <bpmn:sequenceFlow id="F2" sourceRef="Review" targetRef="PEnd" />
+  </bpmn:process>
+</bpmn:definitions>`;
+
+      try {
+        await xmlToIr(xml);
+        expect.fail('Should have thrown');
+      } catch (err) {
+        expect(err).toBeInstanceOf(UnsupportedEventFeatureError);
+        const e = err as UnsupportedEventFeatureError;
+        expect(e.elementId).toBe('Boundary_Review_timer');
+        expect(e.detail).toContain('inputOutput');
+      }
+    });
+
+    it('a trigger definition kind outside the six supported refuses with UnsupportedEventDefinitionError naming the boundary position', async () => {
+      const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  targetNamespace="http://test">
+  <bpmn:process id="p" isExecutable="true">
+    <bpmn:startEvent id="PStart" />
+    <bpmn:userTask id="Review" />
+    <bpmn:boundaryEvent id="Boundary_Review_cancel" attachedToRef="Review">
+      <bpmn:cancelEventDefinition id="CancelDef" />
+    </bpmn:boundaryEvent>
+    <bpmn:endEvent id="PEnd" />
+    <bpmn:sequenceFlow id="F1" sourceRef="PStart" targetRef="Review" />
+    <bpmn:sequenceFlow id="F2" sourceRef="Review" targetRef="PEnd" />
+  </bpmn:process>
+</bpmn:definitions>`;
+
+      try {
+        await xmlToIr(xml);
+        expect.fail('Should have thrown');
+      } catch (err) {
+        expect(err).toBeInstanceOf(UnsupportedEventDefinitionError);
+        const e = err as UnsupportedEventDefinitionError;
+        expect(e.eventKind).toBe('boundary');
+        expect(e.definitionType).toBe('bpmn:CancelEventDefinition');
+      }
+    });
+
+    it('cancelActivity="false" on an error boundary refuses with UnsupportedEventFeatureError naming cancelActivity', async () => {
+      const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  targetNamespace="http://test">
+  <bpmn:process id="p" isExecutable="true">
+    <bpmn:startEvent id="PStart" />
+    <bpmn:userTask id="Review" />
+    <bpmn:boundaryEvent id="Boundary_Review_error" attachedToRef="Review" cancelActivity="false">
+      <bpmn:errorEventDefinition id="ErrDef" />
+    </bpmn:boundaryEvent>
+    <bpmn:endEvent id="PEnd" />
+    <bpmn:sequenceFlow id="F1" sourceRef="PStart" targetRef="Review" />
+    <bpmn:sequenceFlow id="F2" sourceRef="Review" targetRef="PEnd" />
+  </bpmn:process>
+</bpmn:definitions>`;
+
+      try {
+        await xmlToIr(xml);
+        expect.fail('Should have thrown');
+      } catch (err) {
+        expect(err).toBeInstanceOf(UnsupportedEventFeatureError);
+        const e = err as UnsupportedEventFeatureError;
+        expect(e.elementId).toBe('Boundary_Review_error');
+        expect(e.detail).toContain('cancelActivity');
+      }
+    });
+
+    it('an escalation boundary on a service task refuses with UnsupportedEventFeatureError naming the legal host kinds', async () => {
+      const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  xmlns:operaton="http://operaton.org/schema/1.0/bpmn"
+                  targetNamespace="http://test">
+  <bpmn:process id="p" isExecutable="true">
+    <bpmn:startEvent id="PStart" />
+    <bpmn:serviceTask id="Ship" operaton:class="com.example.Ship" />
+    <bpmn:boundaryEvent id="Boundary_Ship_escalation" attachedToRef="Ship">
+      <bpmn:escalationEventDefinition id="EscDef" />
+    </bpmn:boundaryEvent>
+    <bpmn:endEvent id="PEnd" />
+    <bpmn:sequenceFlow id="F1" sourceRef="PStart" targetRef="Ship" />
+    <bpmn:sequenceFlow id="F2" sourceRef="Ship" targetRef="PEnd" />
+  </bpmn:process>
+</bpmn:definitions>`;
+
+      try {
+        await xmlToIr(xml);
+        expect.fail('Should have thrown');
+      } catch (err) {
+        expect(err).toBeInstanceOf(UnsupportedEventFeatureError);
+        const e = err as UnsupportedEventFeatureError;
+        expect(e.elementId).toBe('Boundary_Ship_escalation');
+        expect(e.detail).toContain('sub-process');
+        expect(e.detail).toContain('call activity');
+        expect(e.detail).toContain('user task');
+      }
+    });
+
+    it('an attachedToRef naming an activity in a different container refuses with UnsupportedEventFeatureError', async () => {
+      const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  targetNamespace="http://test">
+  <bpmn:process id="p" isExecutable="true">
+    <bpmn:startEvent id="PStart" />
+    <bpmn:subProcess id="Elsewhere">
+      <bpmn:startEvent id="EStart" />
+      <bpmn:userTask id="Other" />
+      <bpmn:endEvent id="EEnd" />
+      <bpmn:sequenceFlow id="SF1" sourceRef="EStart" targetRef="Other" />
+      <bpmn:sequenceFlow id="SF2" sourceRef="Other" targetRef="EEnd" />
+    </bpmn:subProcess>
+    <bpmn:boundaryEvent id="Boundary_Other_timer" attachedToRef="Other">
+      <bpmn:timerEventDefinition id="TimerDef">
+        <bpmn:timeDuration>PT1H</bpmn:timeDuration>
+      </bpmn:timerEventDefinition>
+    </bpmn:boundaryEvent>
+    <bpmn:endEvent id="PEnd" />
+    <bpmn:sequenceFlow id="F1" sourceRef="PStart" targetRef="Elsewhere" />
+    <bpmn:sequenceFlow id="F2" sourceRef="Elsewhere" targetRef="PEnd" />
+  </bpmn:process>
+</bpmn:definitions>`;
+
+      try {
+        await xmlToIr(xml);
+        expect.fail('Should have thrown');
+      } catch (err) {
+        expect(err).toBeInstanceOf(UnsupportedEventFeatureError);
+        const e = err as UnsupportedEventFeatureError;
+        expect(e.elementId).toBe('Boundary_Other_timer');
+        expect(e.detail).toContain('attachedToRef');
+      }
+    });
+
+    it('a boundary event inside a sub-process attached to an id in the outer process refuses', async () => {
+      // The mirror of the case above: nesting runs its own host check over its
+      // own container, so an id that exists one level out is not in scope.
+      const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  targetNamespace="http://test">
+  <bpmn:process id="p" isExecutable="true">
+    <bpmn:startEvent id="PStart" />
+    <bpmn:userTask id="Outer" />
+    <bpmn:subProcess id="Wrap">
+      <bpmn:startEvent id="WStart" />
+      <bpmn:userTask id="Inner" />
+      <bpmn:boundaryEvent id="Boundary_Outer_timer" attachedToRef="Outer">
+        <bpmn:timerEventDefinition id="TimerDef">
+          <bpmn:timeDuration>PT1H</bpmn:timeDuration>
+        </bpmn:timerEventDefinition>
+      </bpmn:boundaryEvent>
+      <bpmn:endEvent id="WEnd" />
+      <bpmn:sequenceFlow id="SF1" sourceRef="WStart" targetRef="Inner" />
+      <bpmn:sequenceFlow id="SF2" sourceRef="Inner" targetRef="WEnd" />
+    </bpmn:subProcess>
+    <bpmn:endEvent id="PEnd" />
+    <bpmn:sequenceFlow id="F1" sourceRef="PStart" targetRef="Outer" />
+    <bpmn:sequenceFlow id="F2" sourceRef="Outer" targetRef="Wrap" />
+    <bpmn:sequenceFlow id="F3" sourceRef="Wrap" targetRef="PEnd" />
+  </bpmn:process>
+</bpmn:definitions>`;
+
+      try {
+        await xmlToIr(xml);
+        expect.fail('Should have thrown');
+      } catch (err) {
+        expect(err).toBeInstanceOf(UnsupportedEventFeatureError);
+        const e = err as UnsupportedEventFeatureError;
+        expect(e.elementId).toBe('Boundary_Outer_timer');
+        expect(e.detail).toContain('attachedToRef');
+      }
+    });
+
+    it('an attachedToRef naming a gateway in the same container refuses', async () => {
+      const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  targetNamespace="http://test">
+  <bpmn:process id="p" isExecutable="true">
+    <bpmn:startEvent id="PStart" />
+    <bpmn:exclusiveGateway id="Choose" />
+    <bpmn:boundaryEvent id="Boundary_Choose_timer" attachedToRef="Choose">
+      <bpmn:timerEventDefinition id="TimerDef">
+        <bpmn:timeDuration>PT1H</bpmn:timeDuration>
+      </bpmn:timerEventDefinition>
+    </bpmn:boundaryEvent>
+    <bpmn:endEvent id="PEnd" />
+    <bpmn:sequenceFlow id="F1" sourceRef="PStart" targetRef="Choose" />
+    <bpmn:sequenceFlow id="F2" sourceRef="Choose" targetRef="PEnd" />
+  </bpmn:process>
+</bpmn:definitions>`;
+
+      try {
+        await xmlToIr(xml);
+        expect.fail('Should have thrown');
+      } catch (err) {
+        expect(err).toBeInstanceOf(UnsupportedEventFeatureError);
+        const e = err as UnsupportedEventFeatureError;
+        expect(e.elementId).toBe('Boundary_Choose_timer');
+        expect(e.detail).toContain('attachedToRef');
+      }
+    });
+
+    it('an attachedToRef naming an event sub-process refuses', async () => {
+      // An event sub-process is authored as a bare `on <trigger> { … }` and
+      // carries no id or name of its own, so nothing could name it as a host.
+      const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  targetNamespace="http://test">
+  <bpmn:process id="p" isExecutable="true">
+    <bpmn:startEvent id="PStart" />
+    <bpmn:userTask id="Review" />
+    <bpmn:subProcess id="Handler" triggeredByEvent="true">
+      <bpmn:startEvent id="HStart">
+        <bpmn:errorEventDefinition id="HErrDef" />
+      </bpmn:startEvent>
+      <bpmn:userTask id="Recover" />
+      <bpmn:endEvent id="HEnd" />
+      <bpmn:sequenceFlow id="HF1" sourceRef="HStart" targetRef="Recover" />
+      <bpmn:sequenceFlow id="HF2" sourceRef="Recover" targetRef="HEnd" />
+    </bpmn:subProcess>
+    <bpmn:boundaryEvent id="Boundary_Handler_timer" attachedToRef="Handler">
+      <bpmn:timerEventDefinition id="TimerDef">
+        <bpmn:timeDuration>PT1H</bpmn:timeDuration>
+      </bpmn:timerEventDefinition>
+    </bpmn:boundaryEvent>
+    <bpmn:endEvent id="PEnd" />
+    <bpmn:sequenceFlow id="F1" sourceRef="PStart" targetRef="Review" />
+    <bpmn:sequenceFlow id="F2" sourceRef="Review" targetRef="PEnd" />
+  </bpmn:process>
+</bpmn:definitions>`;
+
+      try {
+        await xmlToIr(xml);
+        expect.fail('Should have thrown');
+      } catch (err) {
+        expect(err).toBeInstanceOf(UnsupportedEventFeatureError);
+        const e = err as UnsupportedEventFeatureError;
+        expect(e.elementId).toBe('Boundary_Handler_timer');
+        expect(e.detail).toContain('attachedToRef');
+      }
+    });
+
+    it('a sequence flow targeting a boundary event refuses even with no bpmn:incoming child', async () => {
+      // `<bpmn:incoming>` is optional in BPMN and moddle fills `incoming` from
+      // those children alone, so the flow's own targetRef is what has to be
+      // checked; Operaton reads it either way.
+      const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  targetNamespace="http://test">
+  <bpmn:process id="p" isExecutable="true">
+    <bpmn:startEvent id="PStart" />
+    <bpmn:userTask id="Review" />
+    <bpmn:boundaryEvent id="Boundary_Review_timer" attachedToRef="Review">
+      <bpmn:timerEventDefinition id="TimerDef">
+        <bpmn:timeDuration>PT1H</bpmn:timeDuration>
+      </bpmn:timerEventDefinition>
+    </bpmn:boundaryEvent>
+    <bpmn:endEvent id="PEnd" />
+    <bpmn:sequenceFlow id="F0" sourceRef="PStart" targetRef="Boundary_Review_timer" />
+    <bpmn:sequenceFlow id="F1" sourceRef="PStart" targetRef="Review" />
+    <bpmn:sequenceFlow id="F2" sourceRef="Review" targetRef="PEnd" />
+  </bpmn:process>
+</bpmn:definitions>`;
+
+      try {
+        await xmlToIr(xml);
+        expect.fail('Should have thrown');
+      } catch (err) {
+        expect(err).toBeInstanceOf(UnsupportedEventFeatureError);
+        const e = err as UnsupportedEventFeatureError;
+        expect(e.elementId).toBe('Boundary_Review_timer');
+        expect(e.detail).toContain('incoming');
+      }
+    });
+  });
+
+  // ── 17c. Host resolution independent of document order, and the label drop ──
+
+  it('a boundary event written before its host imports cleanly', async () => {
+    // The whole reason host checking is a post-loop pass: moddle presents
+    // children in document order, and BPMN does not require the host first.
+    const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  targetNamespace="http://test">
+  <bpmn:process id="p" isExecutable="true">
+    <bpmn:startEvent id="PStart" />
+    <bpmn:boundaryEvent id="Boundary_Review_timer" attachedToRef="Review">
+      <bpmn:timerEventDefinition id="TimerDef">
+        <bpmn:timeDuration>PT1H</bpmn:timeDuration>
+      </bpmn:timerEventDefinition>
+    </bpmn:boundaryEvent>
+    <bpmn:userTask id="Review" />
+    <bpmn:endEvent id="PEnd" />
+    <bpmn:sequenceFlow id="F1" sourceRef="PStart" targetRef="Review" />
+    <bpmn:sequenceFlow id="F2" sourceRef="Review" targetRef="PEnd" />
+  </bpmn:process>
+</bpmn:definitions>`;
+
+    const { ir, warnings } = await xmlToIr(xml);
+    expect(warnings).toEqual([]);
+    expect(
+      ir.flowElements.find((fe) => fe.id === 'Boundary_Review_timer'),
+    ).toEqual({
+      kind: 'boundaryEvent',
+      id: 'Boundary_Review_timer',
+      attachedToRef: 'Review',
+      eventDefinition: {
+        kind: 'timer',
+        timerKind: 'duration',
+        expression: 'PT1H',
+      },
+    });
+  });
+
+  it('a name on a boundary event is dropped with exactly one label warning', async () => {
+    const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  targetNamespace="http://test">
+  <bpmn:process id="p" isExecutable="true">
+    <bpmn:startEvent id="PStart" />
+    <bpmn:userTask id="Review" />
+    <bpmn:boundaryEvent id="Boundary_Review_timer" name="Timed out" attachedToRef="Review">
+      <bpmn:timerEventDefinition id="TimerDef">
+        <bpmn:timeDuration>PT1H</bpmn:timeDuration>
+      </bpmn:timerEventDefinition>
+    </bpmn:boundaryEvent>
+    <bpmn:endEvent id="PEnd" />
+    <bpmn:sequenceFlow id="F1" sourceRef="PStart" targetRef="Review" />
+    <bpmn:sequenceFlow id="F2" sourceRef="Review" targetRef="PEnd" />
+  </bpmn:process>
+</bpmn:definitions>`;
+
+    const { warnings } = await xmlToIr(xml);
+    const labelWarnings = warnings.filter((w) => w.category === 'label');
+    expect(labelWarnings).toHaveLength(1);
+    expect(labelWarnings[0]!.elementId).toBe('Boundary_Review_timer');
+    expect(labelWarnings[0]!.message).toContain('Timed out');
+    expect(labelWarnings[0]!.message).toContain('a boundary event');
   });
 });

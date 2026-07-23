@@ -232,7 +232,10 @@ function synthesizeRootElements(
   for (const def of collectEventDefinitions(process)) {
     switch (def.kind) {
       case 'error':
-        if (def.errorCode !== undefined && !errorCodes.includes(def.errorCode)) {
+        if (
+          def.errorCode !== undefined &&
+          !errorCodes.includes(def.errorCode)
+        ) {
           errorCodes.push(def.errorCode);
         }
         break;
@@ -302,7 +305,13 @@ function synthesizeRootElements(
   }
 
   const { elements: messageElements, byName: messageByName } =
-    synthesizeNamedRoots(moddle, 'bpmn:Message', 'Message_', messageNames, taken);
+    synthesizeNamedRoots(
+      moddle,
+      'bpmn:Message',
+      'Message_',
+      messageNames,
+      taken,
+    );
   const { elements: signalElements, byName: signalByName } =
     synthesizeNamedRoots(moddle, 'bpmn:Signal', 'Signal_', signalNames, taken);
 
@@ -351,8 +360,13 @@ function sanitizeRootId(prefix: string, code: string): string {
 
 /**
  * Depth-first collect every event definition carried by a start event, end
- * event, or intermediate throw anywhere under a container (recursing into
- * sub-processes), in first-appearance order.
+ * event, boundary event, or intermediate throw anywhere under a container
+ * (recursing into sub-processes), in first-appearance order. A boundary
+ * event's code/name must be collected here exactly like a handler start's:
+ * it shares the same document-level `bpmn:Error`/`bpmn:Escalation`/
+ * `bpmn:Message`/`bpmn:Signal` root as every other catch or throw of that
+ * identity, so a message caught by a boundary event and one caught by a
+ * host-less handler reference one root, not two.
  */
 function collectEventDefinitions(container: FlowContainer): EventDefinition[] {
   const defs: EventDefinition[] = [];
@@ -363,6 +377,7 @@ function collectEventDefinitions(container: FlowContainer): EventDefinition[] {
         if (el.eventDefinition !== undefined) defs.push(el.eventDefinition);
         break;
       case 'intermediateThrowEvent':
+      case 'boundaryEvent':
         defs.push(el.eventDefinition);
         break;
       case 'subProcess':
@@ -556,13 +571,18 @@ function collectSubProcessElements(container: ModdleElement): ModdleElement[] {
  * Build the ordered moddle children of one {@link FlowContainer} — a process
  * or a sub-process body — with all references wired.
  *
- * Runs the same three passes for every container:
+ * Runs the same four passes for every container:
  *   - Pass 1: create a moddle element for each flow node and sequence flow,
  *     held by id so references can be wired.
  *   - Pass 2: attach `<bpmn:incoming>` / `<bpmn:outgoing>` on every flow node
  *     (MIWG requires them; bpmn-moddle does not auto-derive them).
  *   - Pass 3: attach the gateway `default` references (these need the
  *     SequenceFlow moddle objects, so they run after pass 1).
+ *   - Pass 4: attach each boundary event's `attachedToRef` to its host's
+ *     moddle element — the identical deferred-wiring constraint pass 3
+ *     already solves: the reference must be a moddle object, not a raw id
+ *     string, and the host's element only exists once pass 1 has built every
+ *     node in this container.
  *
  * The returned array preserves the container's own order: every flow node
  * first (in `flowElements` order), then every sequence flow (in
@@ -593,6 +613,7 @@ function buildContainerChildren(
 
   attachIncomingOutgoing(container, flowNodeById, sequenceFlowById);
   attachGatewayDefaults(container, flowNodeById, sequenceFlowById);
+  attachBoundaryHosts(container, flowNodeById);
 
   return [
     ...container.flowElements.map((n) => requireById(flowNodeById, n.id)),
@@ -615,21 +636,24 @@ function createFlowNode(
   // carries none. Gateways and start/end events are excluded: their ids are
   // synthesized structural coordinates (e.g. `Gateway_…_split`,
   // `StartEvent_<processId>`) that would humanize to noise, and such elements
-  // are conventionally unnamed. An intermediate throw and an event sub-process
-  // are excluded too: their surface (`emit`, `on`) carries no label slot, so a
-  // humanized name would be spurious. Explicit names from the IR are always
+  // are conventionally unnamed. An intermediate throw, a boundary event, and
+  // an event sub-process are excluded too: their surface (`emit`, `on`)
+  // carries no label slot, so a humanized name would be spurious — a boundary
+  // event's id is a synthesized structural coordinate
+  // (`Boundary_<hostId>_<trigger>`) exactly like a gateway's, and the type
+  // carries no `name` field at all. Explicit names from the IR are always
   // kept (a plain sub-process still humanizes so viewers label the expanded box).
   const derivedName =
-    node.kind === 'intermediateThrowEvent'
+    node.kind === 'intermediateThrowEvent' || node.kind === 'boundaryEvent'
       ? undefined
-      : node.name ??
+      : (node.name ??
         (node.kind === 'exclusiveGateway' ||
         node.kind === 'parallelGateway' ||
         node.kind === 'startEvent' ||
         node.kind === 'endEvent' ||
         (node.kind === 'subProcess' && node.triggeredByEvent === true)
           ? undefined
-          : humanize(node.id));
+          : humanize(node.id)));
   if (derivedName !== undefined) {
     baseAttrs.name = derivedName;
   }
@@ -672,6 +696,28 @@ function createFlowNode(
           buildEventDefinition(moddle, node.eventDefinition, roots),
         ],
       });
+
+    case 'boundaryEvent': {
+      // `attachedToRef` is wired in a deferred pass (`attachBoundaryHosts`,
+      // below) once every node in this container has a moddle element to
+      // reference — not here, where only this node's own element exists.
+      // Incoming/outgoing are wired generically by `attachIncomingOutgoing`;
+      // a well-formed boundary event ends up with an empty `incoming` (it is
+      // never the target of a sequence flow) and one or more `outgoing`.
+      const attrs: Record<string, unknown> = {
+        ...baseAttrs,
+        eventDefinitions: [
+          buildEventDefinition(moddle, node.eventDefinition, roots),
+        ],
+      };
+      // BPMN defaults a boundary event to interrupting; store the attribute
+      // only for the non-default `alongside` boundary (the serializer drops
+      // the default), mirroring the handler-start `isInterrupting` treatment.
+      if (node.cancelActivity === false) {
+        attrs.cancelActivity = false;
+      }
+      return moddle.create('bpmn:BoundaryEvent', attrs);
+    }
 
     case 'userTask': {
       const attrs: Record<string, unknown> = { ...baseAttrs };
@@ -990,6 +1036,35 @@ function attachGatewayDefaults(
       );
     }
     gateway.default = defaultFlow;
+  }
+}
+
+/**
+ * Wire the `attachedToRef` reference on every boundary event to its host's
+ * moddle element. Deferred to run after pass 1 has built every node in this
+ * container — the identical constraint {@link attachGatewayDefaults} already
+ * solves for a gateway's `default` flow: the reference must be a moddle
+ * object, not the raw id string the IR carries, so it cannot be assigned
+ * while {@link createFlowNode} is still building the boundary event's own
+ * element. A host id that resolves to nothing in this container is an
+ * internal bug (the desugarer only ever emits a boundary event alongside its
+ * host, in the same container), not a user error, so it throws rather than
+ * silently dropping the reference.
+ */
+function attachBoundaryHosts(
+  container: FlowContainer,
+  flowNodeById: Map<string, ModdleElement>,
+): void {
+  for (const node of container.flowElements) {
+    if (node.kind !== 'boundaryEvent') continue;
+    const boundaryElement = requireById(flowNodeById, node.id);
+    const host = flowNodeById.get(node.attachedToRef);
+    if (host === undefined) {
+      throw new Error(
+        `BoundaryEvent "${node.id}" is attached to "${node.attachedToRef}", which is not a flow element of this container.`,
+      );
+    }
+    boundaryElement.attachedToRef = host;
   }
 }
 

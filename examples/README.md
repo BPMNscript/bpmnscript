@@ -25,7 +25,7 @@ Thirteen DSL sources live under `spring-boot/processes/`:
 - `external-task.bpmnscript` — hands a shipment-label print-out to an external worker polling the `print-label` topic. Exercises the `external` task binding.
 - `script-task.bpmnscript` — computes a discount inline with a Groovy snippet. Exercises the `script` task's fenced body.
 - `purchasing.bpmnscript` — starts a purchase request and delegates the invoice sign-off to the `invoice-approval` process through a `call` activity, passing the order amount in and reading the decision back. Exercises the call activity and its in/out mappings.
-- `order-handling.bpmnscript` — start → review user task → an embedded `subprocess` grouping the two payment steps → ship service task → end. Exercises the sub-process containment construct; Cockpit renders the sub-process as an expanded box with its children inside.
+- `order-handling.bpmnscript` — start → review user task → an embedded `subprocess` grouping the two payment steps → ship service task → end. Exercises the sub-process containment construct (Cockpit renders the sub-process as an expanded box with its children inside) plus the attached boundary-event form: the review task carries a non-interrupting timer reminder, an interrupting message that rejoins the main flow via `goto`, and a non-interrupting message that records a status note, while the payment sub-process carries an interrupting error and a non-interrupting escalation.
 - `order-recovery.bpmnscript` — a fulfilment `subprocess` guarded by an interrupting `on error "PAYMENT_FAILED"` handler that cancels the order, plus a non-interrupting `on escalation "SLOW_FULFILLMENT" alongside` handler that notifies a supervisor while the main flow continues. Exercises the error/escalation event layer (the `error … message` declaration, `emit escalation`, and both handler kinds).
 - `order-reminder.bpmnscript` — a fulfilment `subprocess` with a non-interrupting `on timer after "PT1H" alongside` reminder that chases the warehouse while the steps run, plus a process-level `on message "OrderCancelled"` handler that rolls the order back when the engine correlates a cancellation from outside. Exercises the timer and message triggers.
 - `booking-saga.bpmnscript` — two booking `subprocess`es each owning an `on compensation` undo block that reverses its own work, plus an interrupting `on error "BOOKING_FAILED"` handler that raises `emit compensation` to unwind the completed bookings before notifying the traveller. Exercises the compensation (undo-block) layer.
@@ -37,12 +37,13 @@ Running `bpmns build` on any of these files produces the deployable `.bpmn` arti
 
 ### Testcontainers harness
 
-Four E2E test files in `tests/e2e/` use [testcontainers-node](https://testcontainers.com/) to start the Docker image, deploy compiled BPMN via the Operaton REST API, start process instances, and assert engine behaviour:
+Five E2E test files in `tests/e2e/` use [testcontainers-node](https://testcontainers.com/) to start the Docker image, deploy compiled BPMN via the Operaton REST API, start process instances, and assert engine behaviour:
 
 - `invoice-approval.test.ts` — deploys the invoice-approval process, completes the `ReviewInvoice` task, and asserts routing by amount (> 1000 → `SeniorApproval`; ≤ 1000 → `AutoApprove` delegate → process ends).
 - `parallel-approval.test.ts` — deploys the parallel-approval process and asserts that both `ApproveA` and `ApproveB` tasks are active concurrently before the AND-join fires.
 - `loan-approval.test.ts` — deploys the loan-approval process and asserts a low-risk small loan auto-approves to completion, while a large loan routes to the human `Approve` task that resolves the gateway.
 - `loan-approval-kopp.test.ts` — deploys the Kopp 2009 parallel-rating variant and asserts a strong internal rating opens the manual assessment task, while a weak rating skips assessment and rejects to completion.
+- `boundary-events.test.ts` — deploys the order-handling process and asserts boundary-event semantics on the `ReviewOrder` task: correlating the interrupting message cancels the task and its escape path rejoins the main flow through `goto`; correlating the non-interrupting one leaves the task active alongside the escalation path.
 
 The harness is gated by the `SKIP_DOCKER_TESTS` environment variable: Docker tests run by default and are only skipped when `SKIP_DOCKER_TESTS=true` (set in CI).
 

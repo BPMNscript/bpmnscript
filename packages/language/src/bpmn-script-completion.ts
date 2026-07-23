@@ -61,7 +61,14 @@ const STRUCTURE_SNIPPETS: Readonly<Record<string, string>> = {
   // `timer` and `condition` read a differently-shaped payload and get their
   // own scaffolding items at the ID position instead; `compensation` carries
   // no code at all and is offered only as a plain keyword item at the ID
-  // position, never in this choice.
+  // position, never in this choice. No hosted (attached) variant is offered
+  // here: the host is a cross-reference into the enclosing container's own
+  // steps, not a fixed word, so it cannot be folded into a `${n|a,b|}` choice
+  // placeholder without forcing every accepted snippet to name some
+  // arbitrary host. Building the attached form is instead an interactive
+  // three-step completion — accept an activity name at the host position,
+  // type the colon, then accept a trigger word — which the ID-position
+  // completion below already offers in full.
   on: 'on ${1|error,escalation,message,signal|} "${2:CODE}" {\n\t$0\n}',
   throw: 'throw ${1|error,escalation,signal|} "${2:CODE}"',
   // `emit` has no continuing form for `error` (an error always ends its
@@ -109,6 +116,16 @@ export class BpmnScriptCompletionProvider extends DefaultCompletionProvider {
    * binding. These words lex as plain `ID`s (not grammar keywords — see
    * `bpmn-script-validator.ts`), so the default completion offers nothing at
    * these positions; every other position keeps the inherited behaviour.
+   *
+   * `OnHandler.host` is deliberately absent from this dispatch: it is a real
+   * cross-reference, not a soft trigger word, so the inherited
+   * `completionForCrossReference` already offers it — scoped to the enclosing
+   * container's named steps by `BpmnScriptScopeProvider`, the same narrowing
+   * `goto` gets. Because the host is optional, the parser reports both the
+   * host and the trigger as valid next features right after `on`, so an
+   * author sees the container's activity names alongside the trigger words at
+   * that position; typing a host and a colon narrows the next position down
+   * to `trigger` alone, still dispatched exactly as the host-less case above.
    */
   protected override completionFor(
     context: CompletionContext,

@@ -184,3 +184,5 @@ are refused rather than approximated). ADR-0016 (the `throw`/`emit` terminality 
 soft-word design — compensation reuses both without adding a reserved word or a
 position-dependent reading). ADR-0017 (the trigger-payload design — compensation is the one
 trigger kind whose payload is empty, since it has no code, name, or condition to carry).
+
+Extended by ADR-0019 (boundary events attached to an activity), which adds the attachment axis for six other trigger kinds while leaving this decision intact: compensation is still reachable only as a subprocess undo block, and a compensation boundary event is still refused on import.

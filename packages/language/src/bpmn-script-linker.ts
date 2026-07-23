@@ -1,5 +1,5 @@
 /**
- * Boundary-explanation linker for `goto`.
+ * Boundary-explanation linker for `goto` and for an `on` handler's host.
  *
  * The container-scoped `goto` resolution ({@link BpmnScriptScopeProvider})
  * means a `goto` whose target lies in a different flow container — the
@@ -17,6 +17,14 @@
  * message replacing another is exactly one diagnostic, by construction. Every
  * other case (the name exists nowhere, or the reference is not a `goto`
  * target) delegates to `super`, so the generic message stays byte-identical.
+ *
+ * A handler's `host` reference is container-scoped for the same BPMN reason and
+ * runs into the same failure mode: an author names the step to attach to, that
+ * step exists but lives in a different container, and the stock message claims
+ * it does not exist. The same substitution applies, with the attachment rule as
+ * the trailing sentence instead of the sequence-flow one — an attached event is
+ * a flow element of the container holding the step it attaches to, so a step
+ * anywhere else is not attachable no matter how the handler is written.
  *
  * A validator rule cannot do this instead: `checkGotoStatement` only sees a
  * `goto` once its `target` is *resolved* (it reads `goto.target.ref`, guarded
@@ -146,18 +154,22 @@ interface Location {
 }
 
 /**
- * Describe where `target` lives relative to `gotoContainer`, the flow
- * container the `goto` itself sits in. Only called once the caller has
- * already established the two containers differ (the scope provider would
- * have resolved a same-container target), so exactly one of the branches
+ * Describe where `target` lives relative to `sourceContainer`, the flow
+ * container the unresolved reference itself sits in. Only called once the
+ * caller has already established the two containers differ (the scope provider
+ * would have resolved a same-container target), so exactly one of the branches
  * below applies: the target is inside some sub-process or handler body
- * (neither of which can be `gotoContainer`, since that would have resolved),
- * or the target sits at process level while the goto is inside a sub-process
- * or a handler body.
+ * (neither of which can be `sourceContainer`, since that would have resolved),
+ * or the target sits at process level while the reference is inside a
+ * sub-process or a handler body.
+ *
+ * A handler carrying a host is never reported here: it is transparent to the
+ * container walk, so it is neither a container a target can sit inside of nor
+ * one a reference can sit inside of.
  */
 function locateTarget(
   target: NamedStatement,
-  gotoContainer: FlowContainer,
+  sourceContainer: FlowContainer,
 ): Location {
   const targetContainer = enclosingFlowContainer(target);
   if (targetContainer && isSubProcess(targetContainer)) {
@@ -172,41 +184,50 @@ function locateTarget(
       crossesHandler: true,
     };
   }
-  // The target lives at process level; since it did not resolve, the goto
-  // itself must be inside a sub-process or a handler body.
-  if (isOnHandler(gotoContainer)) {
+  // The target lives at process level; since it did not resolve, the
+  // reference itself must be inside a sub-process or a handler body.
+  if (isOnHandler(sourceContainer)) {
     return {
-      phrase: `outside ${handlerPhrase(gotoContainer)}`,
+      phrase: `outside ${handlerPhrase(sourceContainer)}`,
       crossesHandler: true,
     };
   }
   return {
-    phrase: `outside subprocess '${gotoContainer.name}'`,
+    phrase: `outside subprocess '${sourceContainer.name}'`,
     crossesHandler: false,
   };
 }
 
 /**
- * `DefaultLinker` subclass that upgrades the unresolved-`goto`-target message
- * to a boundary explanation (see module docstring).
+ * `DefaultLinker` subclass that upgrades the unresolved-`goto`-target and
+ * unresolved-handler-host messages to a boundary explanation (see module
+ * docstring).
  */
 export class BpmnScriptLinker extends DefaultLinker {
   override createLinkingError(
     refInfo: ReferenceInfo,
     targetDescription?: AstNodeDescription,
   ): LinkingError {
-    if (isGotoStatement(refInfo.container) && refInfo.property === 'target') {
-      const goto = refInfo.container;
-      const process = AstUtils.getContainerOfType(goto, isProcess);
+    const source = refInfo.container;
+    const isHost = isOnHandler(source) && refInfo.property === 'host';
+    const isGotoTarget =
+      isGotoStatement(source) && refInfo.property === 'target';
+    if (isHost || isGotoTarget) {
+      const process = AstUtils.getContainerOfType(source, isProcess);
       const target = process
         ? findNamedStatement(process, refInfo.reference.$refText)
         : undefined;
-      const gotoContainer = enclosingFlowContainer(goto);
-      if (target && gotoContainer) {
-        const { phrase, crossesHandler } = locateTarget(target, gotoContainer);
-        const boundary = crossesHandler
-          ? `a goto cannot cross an event handler boundary: an event handler's steps run only when its event fires.`
-          : `a goto cannot cross a sub-process boundary.`;
+      const sourceContainer = enclosingFlowContainer(source);
+      if (target && sourceContainer) {
+        const { phrase, crossesHandler } = locateTarget(
+          target,
+          sourceContainer,
+        );
+        const boundary = isHost
+          ? `a boundary event attaches to an activity in its own scope.`
+          : crossesHandler
+            ? `a goto cannot cross an event handler boundary: an event handler's steps run only when its event fires.`
+            : `a goto cannot cross a sub-process boundary.`;
         return {
           info: refInfo,
           message: `'${refInfo.reference.$refText}' is ${phrase}; ${boundary}`,

@@ -337,6 +337,48 @@ describe('event-layer ID-position completion (soft trigger/field words)', () => 
   });
 });
 
+describe('the host slot on a handler attached to an activity', () => {
+  test("the host position offers the container's activity names and nothing from another scope", async () => {
+    // `Decoy` (another process) and `Inner` (a nested subprocess body) are
+    // both named statements the scope must keep out — a presence-only
+    // assertion would pass even if every named step in the file leaked in.
+    const text =
+      'process p {\n  user Review\n  service Ship\n  subprocess Sub {\n    user Inner\n  }\n  on \n}\nprocess q { user Decoy }';
+    // Line 6 is `  on `, right after the keyword — the host slot.
+    const labels = await labelsAt(text, 6, '  on '.length);
+    expect(labels).toEqual(expect.arrayContaining(['Review', 'Ship']));
+    expect(labels).not.toContain('Decoy');
+    expect(labels).not.toContain('Inner');
+  });
+
+  test('the position after the colon offers the seven trigger items, exactly as the host-less position does', async () => {
+    const text = 'process p {\n  user Review\n  on Review: \n}';
+    const line = '  on Review: ';
+    const labels = await labelsAt(text, 2, line.length);
+    expect(labels).toEqual(
+      expect.arrayContaining([
+        'error',
+        'escalation',
+        'message',
+        'signal',
+        'timer',
+        'condition',
+        'compensation',
+      ]),
+    );
+  });
+
+  test('accepting `timer` after the colon still inserts the particle scaffold', async () => {
+    const text = 'process p {\n  user Review\n  on Review: \n}';
+    const line = '  on Review: ';
+    const item = (await completionItems(text, 2, line.length)).find(
+      (i) => i.label === 'timer',
+    );
+    expect(item?.insertTextFormat).toBe(InsertTextFormat.Snippet);
+    expect(inserted(item!)).toContain('after "${1:PT1H}"');
+  });
+});
+
 describe('non-structural keywords fall through', () => {
   test('`VarType` literals stay plain keyword completions, not snippets', async () => {
     // After `var x:` the grammar expects a VarType; those keywords are not snippets.

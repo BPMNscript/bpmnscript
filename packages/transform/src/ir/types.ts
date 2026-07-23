@@ -89,7 +89,8 @@ export type FlowElement =
   | ParallelGateway
   | SubProcess
   | CallActivity
-  | IntermediateThrowEvent;
+  | IntermediateThrowEvent
+  | BoundaryEvent;
 
 /**
  * The type of a {@link FormField}, in DSL-level (vendor-neutral) spelling.
@@ -503,6 +504,47 @@ export interface CallActivity {
   inMappings?: CallVariableMapping[];
   /** Return-value mappings passed from callee back to caller, in emission order. */
   outMappings?: CallVariableMapping[];
+}
+
+/**
+ * A BPMN `boundaryEvent` node — attached to an activity in the same
+ * container, rather than sitting in the main sequence-flow chain.
+ *
+ * It is the IR's first flow element with outgoing flow but no incoming: a
+ * token appears here directly when the host activity is running and the
+ * trigger fires, never by traversing a sequence flow into it (see
+ * `cfg-analysis.ts`, which wires a boundary event to the container's virtual
+ * entry for exactly this reason — it is a second entry point, like a start
+ * event). `id` is host-derived (`Boundary_<hostId>_<trigger>`, see
+ * `makeBoundaryEventId`) rather than positional, so it stays stable across a
+ * round-trip no matter where the handler is placed in the statement list.
+ *
+ * `attachedToRef` names the host activity by id; BPMN requires the host to be
+ * a flow element of this same container (a boundary event is never attached
+ * across a container boundary).
+ *
+ * `cancelActivity` mirrors {@link StartEvent.isInterrupting}: BPMN defaults a
+ * boundary event to interrupting (the host activity is cancelled the moment
+ * the trigger fires), and the IR stores only the non-default `false`
+ * (`alongside` in the DSL) — `true`/absent are the same thing, keeping IR
+ * deep-equality trivial. An error boundary is always interrupting (BPMN has
+ * no non-interrupting error boundary), so `cancelActivity` never appears
+ * together with an `error` `eventDefinition`.
+ *
+ * `eventDefinition` is never `{ kind: 'compensation' }`: BPMN attaches
+ * compensation through a `bpmn:association` and `isForCompensation` on the
+ * activity being compensated, a different mechanism entirely, which this
+ * language surfaces as a sub-process undo block rather than a boundary event.
+ */
+export interface BoundaryEvent {
+  kind: 'boundaryEvent';
+  id: string;
+  /** Id of the activity this event is attached to, in the same container. */
+  attachedToRef: string;
+  /** The caught trigger. Never a compensation definition. */
+  eventDefinition: EventDefinition;
+  /** Stored only for a non-interrupting (`alongside`) boundary. */
+  cancelActivity?: false;
 }
 
 /**

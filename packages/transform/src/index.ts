@@ -30,6 +30,7 @@ export type {
   SequenceFlow,
   EventDefinition,
   IntermediateThrowEvent,
+  BoundaryEvent,
 } from './ir/types.js';
 
 export {
@@ -41,6 +42,7 @@ export {
   makeSequenceFlowId,
   makeStartEventId,
   makeEndEventId,
+  makeBoundaryEventId,
   resolveCollision,
 } from './synthesize-ids.js';
 
@@ -85,4 +87,5 @@ export const IR_TYPE_NAMES = [
   'SequenceFlow',
   'EventDefinition',
   'IntermediateThrowEvent',
+  'BoundaryEvent',
 ] as const;

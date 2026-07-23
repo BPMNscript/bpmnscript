@@ -89,6 +89,7 @@ import {
   isWhileStatement,
 } from './generated/ast.js';
 import type { BpmnScriptServices } from './bpmn-script-module.js';
+import { enclosingFlowContainer } from './bpmn-script-scope-provider.js';
 import type { VariableSymbolProvider } from './variable-symbol-provider.js';
 
 /**
@@ -206,12 +207,14 @@ const SUPPORTED_SCRIPT_TAGS: ReadonlySet<string> = new Set([
  * The per-trigger payload contract for an `on` handler: whether the STRING
  * head (`code`, immediately after the trigger word) is required, optional,
  * or forbidden; whether the timer particle clause (`particle` + `time`) is
- * required; what the parenthesized `(…)` slot may legally hold; and whether
- * a non-interrupting `alongside` handler is legal. One record per trigger
- * word (the payload matrix), consumed by exactly one check — {@link
- * BpmnScriptValidator.checkHandlerPayload} — that walks a handler's
- * properties against its row, so a new trigger kind is a new row, not a new
- * rule.
+ * required; what the parenthesized `(…)` slot may legally hold; whether a
+ * non-interrupting `alongside` handler is legal; and whether the trigger may
+ * name a host and attach as a `bpmn:boundaryEvent` at all. One record per
+ * trigger word (the payload matrix), consumed by two checks — {@link
+ * BpmnScriptValidator.checkHandlerPayload} for the code/timer/parens shape,
+ * {@link BpmnScriptValidator.checkHandlerHost} for the boundary dimension —
+ * that each walk a handler's properties against its row, so a new trigger
+ * kind is a new row, not a new rule.
  */
 interface TriggerPayloadRule {
   /** Whether the trigger's STRING head is required, optional, or forbidden. */
@@ -222,6 +225,15 @@ interface TriggerPayloadRule {
   readonly parens: 'bindings' | 'condition' | 'forbidden';
   /** Whether a non-interrupting `alongside` handler is legal. */
   readonly alongside: boolean;
+  /**
+   * Whether the trigger may name a host and attach as a `bpmn:boundaryEvent`
+   * instead of guarding its whole enclosing container. `false` only for
+   * `compensation`: a compensation handler undoes a subprocess's
+   * already-completed work through `bpmn:association`/`isForCompensation`, a
+   * different attachment mechanism entirely, which this language surfaces as
+   * the subprocess's own undo block rather than as something with a host.
+   */
+  readonly boundary: boolean;
 }
 
 /**
@@ -245,42 +257,49 @@ const TRIGGER_PAYLOAD: Readonly<Record<string, TriggerPayloadRule>> = {
     timer: false,
     parens: 'bindings',
     alongside: false,
+    boundary: true,
   },
   escalation: {
     code: 'optional',
     timer: false,
     parens: 'bindings',
     alongside: true,
+    boundary: true,
   },
   message: {
     code: 'required',
     timer: false,
     parens: 'forbidden',
     alongside: true,
+    boundary: true,
   },
   signal: {
     code: 'required',
     timer: false,
     parens: 'forbidden',
     alongside: true,
+    boundary: true,
   },
   timer: {
     code: 'forbidden',
     timer: true,
     parens: 'forbidden',
     alongside: true,
+    boundary: true,
   },
   condition: {
     code: 'forbidden',
     timer: false,
     parens: 'condition',
     alongside: true,
+    boundary: true,
   },
   compensation: {
     code: 'forbidden',
     timer: false,
     parens: 'forbidden',
     alongside: false,
+    boundary: false,
   },
 };
 
@@ -370,6 +389,13 @@ const COMPENSATION_PLACEMENT_MESSAGE =
 const COMPENSATION_DUPLICATE_MESSAGE =
   'A subprocess has one undo block — merge the steps.';
 
+/** `on <host>: compensation` — compensation has no boundary form at all. */
+const COMPENSATION_HOST_MESSAGE =
+  "Compensation cannot attach to a host — it undoes a subprocess's " +
+  'already-completed work through its own undo block, not through a ' +
+  "boundary event; remove the host and write 'on compensation { … }' " +
+  'directly inside the subprocess it reverses.';
+
 /**
  * The {@link VarType}s an Operaton form field can carry. `json`/`any` have no
  * `operaton:formField` representation, so the grammar's permissive `VarType` is
@@ -404,6 +430,14 @@ const FORM_FIELD_TYPES: ReadonlySet<string> = new Set([
  * `makeEventSubProcessId`): they bypass collision resolution the same way
  * gateway ids do, so an author-chosen name with either prefix is reserved
  * the same way.
+ *
+ * `Boundary_` is the host-derived id a hosted `on <Host>: <trigger>` handler
+ * synthesises (see `synthesize-ids.ts`'s `makeBoundaryEventId`). It runs
+ * through the same `taken`/`resolveCollision` guard as `StartEvent_`/
+ * `EndEvent_` rather than bypassing it, but an author-chosen name with this
+ * prefix would still be silently renamed with a numeric suffix on collision
+ * instead of being flagged, so it is reserved the same way as every other
+ * synthesised prefix here.
  */
 const RESERVED_ID_PATTERNS: ReadonlyArray<RegExp> = [
   /^Gateway_.+_(split|join|fork|loop)$/,
@@ -412,6 +446,7 @@ const RESERVED_ID_PATTERNS: ReadonlyArray<RegExp> = [
   /^EndEvent_/,
   /^Throw_/,
   /^EventSubProcess_/,
+  /^Boundary_/,
 ];
 
 /**
@@ -635,16 +670,21 @@ export class BpmnScriptValidator {
 
   /**
    * An explicit `start` is only valid as the first statement of a *container*
-   * body — the process body, the body of a `subprocess`, or the body of an
-   * `on` handler (the desugarer honours a sub-process's/handler's own
-   * explicit start/end exactly like the process's; inside a handler, this
-   * explicit start is the trigger-carrying start — see
+   * body — the process body, the body of a `subprocess`, or the body of a
+   * host-less `on` handler (the desugarer honours a sub-process's/handler's own
+   * explicit start/end exactly like the process's; inside a host-less handler,
+   * this explicit start is the trigger-carrying start — see
    * {@link checkOnHandler}). Anywhere else — later in a container body, or
    * nested inside an `if`/`while`/`parallel` block at any position — the
    * desugarer gives it an incoming sequence flow, and a start event with
    * incoming flows is invalid BPMN that Operaton rejects at deployment. (A
    * container whose first statement is not a `start` gets an implicit one;
    * that path never conflicts with this check.)
+   *
+   * A hosted handler's body is not a container of its own: it lowers inline
+   * into the host's container and is entered by a flow from the boundary
+   * event, so a `start` there would be a second none-start of the process
+   * carrying an incoming flow — rejected with its own message.
    */
   private checkStartPosition(
     process: Process,
@@ -654,13 +694,16 @@ export class BpmnScriptValidator {
       if (!isStartEvent(node)) continue;
       if (node === process.body[0]) continue;
       const container = node.$container;
-      if (
-        isBlock(container) &&
-        (isSubProcess(container.$container) ||
-          isOnHandler(container.$container)) &&
-        container.statements[0] === node
-      ) {
-        continue;
+      if (isBlock(container) && container.statements[0] === node) {
+        if (isSubProcess(container.$container)) continue;
+        if (isOnHandler(container.$container)) {
+          if (container.$container.host === undefined) continue;
+          accept('error', hostedHandlerStartMessage(node.name), {
+            node,
+            property: 'name',
+          });
+          continue;
+        }
       }
       accept(
         'error',
@@ -873,8 +916,8 @@ export class BpmnScriptValidator {
           'error',
           `Statement name '${node.name}' matches a reserved synthesised-id pattern. ` +
             `Prefixes 'Gateway_…_(split|join|fork|loop)', 'Flow_', 'StartEvent_', ` +
-            `'EndEvent_', 'Throw_', and 'EventSubProcess_' are reserved for ids ` +
-            `generated by the BPMNscript desugarer.`,
+            `'EndEvent_', 'Throw_', 'EventSubProcess_', and 'Boundary_' are reserved ` +
+            `for ids generated by the BPMNscript desugarer.`,
           { node, property: 'name' },
         );
       }
@@ -1640,16 +1683,35 @@ export class BpmnScriptValidator {
   // rather than new rule plumbing. `throw`/`emit` gain their own, smaller
   // legal sets (`THROW_TRIGGERS`/`EMIT_TRIGGERS`) since only some kinds have
   // a throw form.
+  //
+  // A handler may additionally name a host and attach as a `bpmn:boundaryEvent`
+  // instead of guarding its whole enclosing container ({@link
+  // checkHandlerHost}). The scope provider already restricts a resolvable host
+  // to a named step of the handler's own container — an unresolved host is
+  // therefore the linker's problem, not this file's — so this check only ever
+  // sees a *resolved* host and asks four questions of it: is the trigger one
+  // that has a boundary form at all (`compensation` does not — it undoes
+  // already-completed work through its own undo block, a different attachment
+  // mechanism entirely); does it point back into the handler's own escape
+  // path (structurally valid BPMN, but a step that only ever runs after this
+  // handler has already fired can never host the event that starts that
+  // path); is it an activity at all (a start/end event, a `throw`, or a named
+  // `emit` cannot carry a boundary event); and, for `escalation` specifically,
+  // is it one of the three host kinds Operaton allows one on. Duplicate
+  // detection ({@link checkHandlerDuplicates}) folds the host into its key so
+  // a container-scoped handler and a hosted one never collide with each
+  // other, and two hosted handlers only collide when they share both host and
+  // code.
 
   /**
    * `on` handler checks: the soft trigger word, placement (directly in a
    * process/subprocess/handler body — never a branch), trailing position
    * (only further handlers may follow), the error-is-always-interrupting
    * rule, an empty code string (catch-all is the *omitted* string, not an
-   * empty one), the catch-parameter bindings, and the empty-body warning.
-   * Sibling-duplicate detection runs once per process in
-   * {@link checkHandlerDuplicates}, not here, since it compares a handler
-   * against the others in its container.
+   * empty one), the catch-parameter bindings, the host/boundary dimension,
+   * and the empty-body warning. Sibling-duplicate detection runs once per
+   * process in {@link checkHandlerDuplicates}, not here, since it compares a
+   * handler against the others in its container.
    *
    * @param handler The `on` handler.
    */
@@ -1666,6 +1728,8 @@ export class BpmnScriptValidator {
     this.checkHandlerTrailing(handler, accept);
 
     const rule = TRIGGER_PAYLOAD[handler.trigger];
+
+    this.checkHandlerHost(handler, rule, accept);
 
     if (handler.alongside && !rule.alongside) {
       accept(
@@ -1925,16 +1989,97 @@ export class BpmnScriptValidator {
   }
 
   /**
-   * Two handlers in the same container catching the same trigger and
+   * The host/boundary dimension: whether this handler is even allowed to
+   * name a host, and — once it does — whether the host it names is one this
+   * handler could legally attach to. Runs in this order, stopping at the
+   * first violation, so one mistake never stacks a second diagnostic on top
+   * of itself:
+   *
+   *   1. `compensation` has no boundary form at all — a host on it is
+   *      rejected outright, independent of whether the name even resolves.
+   *   2. An unresolved host is the linker's problem: {@link
+   *      BpmnScriptLinker} already reports it (a boundary-crossing
+   *      explanation or the generic "could not resolve" message), so this
+   *      check is guarded on `.ref` being present, the {@link
+   *      checkGotoStatement} precedent — touching an unresolved reference
+   *      unguarded here would double-report on top of that error.
+   *   3. The host cannot be a descendant of this same handler's own body.
+   *      The scope-provider transparency rule that lets a hosted handler's
+   *      `goto` reach the main flow (and vice versa) also makes the
+   *      handler's own escape-path steps visible as host candidates — but a
+   *      step inside this handler's own body only ever runs *after* this
+   *      boundary event has already fired, so attaching the event to it is
+   *      circular: structurally valid BPMN the engine would deploy, but a
+   *      path that can never be taken.
+   *   4. The host must be an activity: a start/end event, a `throw`, or a
+   *      named `emit` cannot carry an attached boundary event.
+   *   5. An `escalation` boundary additionally restricts its host to a
+   *      `subprocess`, a `call`, or a `user` task — Operaton's own
+   *      restriction, read from `BpmnParse.parseBoundaryEvents`.
+   */
+  private checkHandlerHost(
+    handler: OnHandler,
+    rule: TriggerPayloadRule,
+    accept: ValidationAcceptor,
+  ): void {
+    if (handler.host === undefined) {
+      return;
+    }
+    if (!rule.boundary) {
+      accept('error', COMPENSATION_HOST_MESSAGE, {
+        node: handler,
+        property: 'host',
+      });
+      return;
+    }
+
+    const host = handler.host.ref;
+    if (host === undefined) {
+      return;
+    }
+
+    if (AstUtils.hasContainerOfType(host, (n) => n === handler)) {
+      accept('error', selfAttachedHostMessage(targetStatementName(host)), {
+        node: handler,
+        property: 'host',
+      });
+      return;
+    }
+
+    if (!isActivityStatement(host)) {
+      accept('error', illegalHostMessage(host), {
+        node: handler,
+        property: 'host',
+      });
+      return;
+    }
+
+    if (handler.trigger === 'escalation' && !isEscalationLegalHost(host)) {
+      accept('error', escalationHostMessage(host), {
+        node: handler,
+        property: 'host',
+      });
+    }
+  }
+
+  /**
+   * Two handlers in the same container catching the same host, trigger, and
    * code (or both catch-all) are ambiguous to the engine regardless of
    * `alongside` — Operaton rejects such a deployment. A coded handler and a
    * catch-all of the same trigger coexist legally (specific wins, catch-all
-   * is the fallback), since they key differently. Runs once per process
-   * (not per handler) so a duplicate pair is reported once per extra
-   * occurrence, not once per comparison direction.
+   * is the fallback), since they key differently, and so do two handlers
+   * with the same trigger and code that attach to *different* hosts — each
+   * host gets its own engine subscription. A host-less handler and a hosted
+   * one sharing a trigger and code never collide either: the host segment is
+   * empty only for the host-less side, so the keys differ. "Same container"
+   * means the same *flow* container — the one the handler's node lowers into —
+   * so a handler written inside a hosted handler's body is compared against
+   * the surrounding flow's handlers, which is where it actually lands. Runs
+   * once per process (not per handler) so a duplicate pair is reported once
+   * per extra occurrence, not once per comparison direction.
    *
-   * `on compensation` always carries no code, so two of them in one
-   * container always key identically and always collide; the message is
+   * `on compensation` always carries no code and no host, so two of them in
+   * one container always key identically and always collide; the message is
    * reworded away from the engine-ambiguity framing ({@link
    * COMPENSATION_DUPLICATE_MESSAGE}) since a subprocess having one undo
    * block is a simpler rule than a duplicate catch.
@@ -1950,20 +2095,31 @@ export class BpmnScriptValidator {
       // timers with different deadlines (or two conditions) in one scope is
       // a real pattern, so they never conflict and are excluded here.
       if (node.trigger === 'timer' || node.trigger === 'condition') continue;
-      const siblings = byContainer.get(node.$container) ?? [];
+      // An unresolved host is the linker's problem: its key segment is empty,
+      // which would collide with every host-less handler here and stack a
+      // second, misleading diagnostic on top of the resolution error.
+      if (node.host !== undefined && node.host.ref === undefined) continue;
+      // Group by the *flow* container, not the syntactic parent: a hosted
+      // handler's body lowers inline into its host's container, so two
+      // handlers written at different nesting depths can still land in one
+      // container and key the same engine subscription.
+      const container = enclosingFlowContainer(node);
+      if (container === undefined) continue;
+      const siblings = byContainer.get(container) ?? [];
       siblings.push(node);
-      byContainer.set(node.$container, siblings);
+      byContainer.set(container, siblings);
     }
     for (const siblings of byContainer.values()) {
       forEachDuplicate(
         siblings,
-        (handler) => `${handler.trigger}:${handler.code ?? ''}`,
+        (handler) =>
+          `${handlerHostKey(handler)}:${handler.trigger}:${handler.code ?? ''}`,
         (handler) =>
           accept(
             'error',
             handler.trigger === 'compensation'
               ? COMPENSATION_DUPLICATE_MESSAGE
-              : `Another 'on ${handler.trigger}' handler in this scope already catches ${handler.code !== undefined ? `code '${handler.code}'` : 'every event of this kind'}; a duplicate catch is ambiguous to the engine.`,
+              : handlerDuplicateMessage(handler),
             { node: handler, property: 'trigger' },
           ),
       );
@@ -2170,6 +2326,125 @@ function emitTriggerMessage(word: string): string {
     return compensateTypoMessage();
   }
   return unknownTriggerMessage(word, EMIT_TRIGGERS);
+}
+
+/**
+ * The `Statement` kinds a boundary event may attach to: the six activities
+ * Operaton lets a token dock at. Everything else in the `Statement` union is
+ * a control construct, a terminal event, a `goto`, or another handler — none
+ * of which an engine token is ever "at" the way it is at a running activity.
+ */
+function isActivityStatement(stmt: Statement): boolean {
+  return (
+    isUserTask(stmt) ||
+    isServiceTask(stmt) ||
+    isExternalTask(stmt) ||
+    isScriptTask(stmt) ||
+    isSubProcess(stmt) ||
+    isCallActivity(stmt)
+  );
+}
+
+/**
+ * Operaton additionally restricts an `escalation` boundary to exactly these
+ * three host kinds (read from `BpmnParse.parseBoundaryEvents`) — narrower
+ * than the general activity set every other boundary-capable trigger allows.
+ */
+function isEscalationLegalHost(stmt: Statement): boolean {
+  return isSubProcess(stmt) || isCallActivity(stmt) || isUserTask(stmt);
+}
+
+/**
+ * A human-readable name for a resolved host's `Statement` kind, used to tell
+ * an author what their `host` actually named. `[Statement:ID]` only ever
+ * matches a node that carries a `name` (see {@link targetStatementName}), so
+ * a control construct (`if`/`while`/`parallel`), a `goto`, or another handler
+ * can never reach here — none of them have a name to resolve against — and
+ * the fallback below exists only so this function stays total.
+ */
+function describeStatementKind(stmt: Statement): string {
+  if (isStartEvent(stmt)) return 'a start event';
+  if (isEndEvent(stmt)) return 'an end event';
+  if (isUserTask(stmt)) return 'a user task';
+  if (isServiceTask(stmt)) return 'a service task';
+  if (isExternalTask(stmt)) return 'an external task';
+  if (isScriptTask(stmt)) return 'a script task';
+  if (isSubProcess(stmt)) return 'a subprocess';
+  if (isCallActivity(stmt)) return 'a call';
+  if (isThrowStatement(stmt)) return 'a throw statement';
+  if (isEmitStatement(stmt)) return 'an emit statement';
+  return 'not an activity';
+}
+
+/** A host resolving to a non-activity step: names what it actually is. */
+function illegalHostMessage(host: Statement): string {
+  return (
+    'A boundary event can only attach to an activity — a user, service, ' +
+    `external, or script task, a subprocess, or a call; '${targetStatementName(host)}' is ` +
+    `${describeStatementKind(host)}.`
+  );
+}
+
+/** An `escalation` boundary whose host is outside Operaton's three legal kinds. */
+function escalationHostMessage(host: Statement): string {
+  return (
+    'An escalation boundary can only attach to a subprocess, a call, or a ' +
+    `user task; '${targetStatementName(host)}' is ${describeStatementKind(host)}.`
+  );
+}
+
+/**
+ * A host resolving into a descendant of the handler's own body: the step
+ * only ever runs after this same boundary event has already fired, so
+ * attaching to it is circular — see {@link BpmnScriptValidator.checkHandlerHost}.
+ */
+function selfAttachedHostMessage(hostName: string): string {
+  return (
+    `A boundary event cannot attach to a step inside its own escape path: ` +
+    `'${hostName}' only runs after this handler has already fired, so it ` +
+    'can never host the event that starts that path.'
+  );
+}
+
+/**
+ * A `start` written as the first statement of a *hosted* handler's body — the
+ * one place the container rule does not extend to, since such a body lowers
+ * inline rather than into a scope of its own.
+ */
+function hostedHandlerStartMessage(name: string): string {
+  return (
+    `'start ${name}' cannot open a handler that names a host: the body runs ` +
+    "inside the host's own container and is entered from the boundary event, " +
+    'so it is not a scope with a start of its own. Remove the start; the ' +
+    'first step of the body is where the escape path begins.'
+  );
+}
+
+/**
+ * The resolved host's name for use as a duplicate-detection key segment, or
+ * `''` for a host-less handler (or one whose host did not resolve — the
+ * linker's problem, not this check's). Kept as its own function because
+ * `Statement`'s `name` is not a common property across every union member —
+ * {@link targetStatementName} is the total accessor.
+ */
+function handlerHostKey(handler: OnHandler): string {
+  return handler.host?.ref ? targetStatementName(handler.host.ref) : '';
+}
+
+/**
+ * The sibling-duplicate message for a non-compensation handler. The
+ * host-less phrasing ("in this scope") is byte-identical to the message this
+ * file has always produced, so an existing host-less program's diagnostics
+ * do not change; a hosted handler instead names the activity it attaches to.
+ */
+function handlerDuplicateMessage(handler: OnHandler): string {
+  const caught =
+    handler.code !== undefined
+      ? `code '${handler.code}'`
+      : 'every event of this kind';
+  const hostKey = handlerHostKey(handler);
+  const scope = hostKey ? `attached to '${hostKey}'` : 'in this scope';
+  return `Another 'on ${handler.trigger}' handler ${scope} already catches ${caught}; a duplicate catch is ambiguous to the engine.`;
 }
 
 /**

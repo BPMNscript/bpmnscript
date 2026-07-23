@@ -577,6 +577,16 @@ describe('Validation — reserved synthesised-id name', () => {
     expect(errors[0]!.message).toContain('EndEvent_p');
   });
 
+  test('a user task named with a Boundary_X_error pattern is exactly one error', async () => {
+    const { diagnostics } = await validate(
+      `process p { user Boundary_X_error }`,
+    );
+    const errors = bySeverity(diagnostics, SEVERITY_ERROR);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.message).toContain('Boundary_X_error');
+    expect(errors[0]!.message).toContain('reserved');
+  });
+
   test('normal names including Gateway-prefixed ones without suffix produce no error', async () => {
     // GatewayCheck does not end in _split|join|fork|loop → not reserved.
     // MyFlow_Thing → lacks the Flow_ prefix (starts with My).
@@ -690,6 +700,33 @@ process p { start S user A end E }
     const { diagnostics } = await validate(`
 process p { user A end E }
 `);
+    expect(
+      diagnosticsFor(diagnostics, 'must be the first statement'),
+    ).toHaveLength(0);
+  });
+
+  test('a start opening a host-less handler body is legal', async () => {
+    const { diagnostics } = await validate(`
+process p {
+  service A { class = "x.A" }
+  on error "PF" { start S  service R { class = "x.R" } }
+}
+`);
+    expect(bySeverity(diagnostics, SEVERITY_ERROR)).toHaveLength(0);
+  });
+
+  test('a start opening a hosted handler body is exactly one error', async () => {
+    const { diagnostics } = await validate(`
+process p {
+  service A { class = "x.A" }
+  on A: error "PF" { start S  service R { class = "x.R" } }
+}
+`);
+    const errors = diagnosticsFor(diagnostics, 'cannot open a handler');
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.severity).toBe(SEVERITY_ERROR);
+    expect(errors[0]!.message).toContain('S');
+    // The container-body wording belongs to the other arm and must not fire.
     expect(
       diagnosticsFor(diagnostics, 'must be the first statement'),
     ).toHaveLength(0);
@@ -2214,6 +2251,367 @@ process p {
 }
 `);
     expect(diagnosticsFor(diagnostics, 'duplicate catch')).toHaveLength(0);
+  });
+});
+
+// ── Boundary host dimension ──────────────────────────────────────────────────
+//
+// A hosted handler (`on <Host>: <trigger> { … }`) compiles to a
+// `bpmn:boundaryEvent` instead of an event sub-process. The scope provider
+// already restricts a resolvable `host` to a named step of the handler's own
+// container, so an unresolved host never reaches these checks — it stays the
+// linker's "does not resolve"/boundary-crossing diagnostic, exactly like an
+// unresolved `goto` (see 'Validation — goto reference' above). Two illegal-host
+// shapes are therefore never exercised below at all: a `goto` and an
+// `if`/`while`/`parallel` construct carry no `name` at all, so
+// `host=[Statement:ID]` can never spell one; a host naming a step inside a
+// host-less handler's body is excluded by the scope's nesting isolation (see
+// `scoping.test.ts`'s "a host inside a host-less handler body does not
+// resolve") and so never reaches the validator either. Only the resolvable
+// illegal kinds — a start/end event and a named throw/emit — are exercised
+// here.
+
+describe('Validation — boundary host: compensation has no attached form', () => {
+  test('`on <host>: compensation` is the host-forbidden error, naming the undo block', async () => {
+    const { diagnostics } = await validate(`
+process p {
+  subprocess S {
+    user A
+    on A: compensation { user Undo }
+  }
+}
+`);
+    const errors = diagnosticsFor(diagnostics, 'undo block');
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.severity).toBe(SEVERITY_ERROR);
+  });
+
+  test('a host-less `on compensation` is unaffected by the host-forbidden rule', async () => {
+    const { diagnostics } = await validate(`
+process p {
+  subprocess S {
+    user A
+    on compensation { user Undo }
+  }
+}
+`);
+    expect(diagnosticsFor(diagnostics, 'cannot attach to a host')).toHaveLength(
+      0,
+    );
+  });
+});
+
+describe('Validation — boundary host: must be an activity', () => {
+  test('a host naming a start event is exactly one "must attach to an activity" error', async () => {
+    const { diagnostics } = await validate(`
+process p {
+  start S
+  on S: error "X" { user A }
+}
+`);
+    const errors = diagnosticsFor(
+      diagnostics,
+      'can only attach to an activity',
+    );
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.message).toContain('a start event');
+  });
+
+  test('a host naming an emit statement names it as an emit', async () => {
+    const { diagnostics } = await validate(`
+process p {
+  user A
+  emit signal Sig "S"
+  on Sig: error "X" { user B }
+}
+`);
+    const errors = diagnosticsFor(
+      diagnostics,
+      'can only attach to an activity',
+    );
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.message).toContain('an emit statement');
+  });
+
+  test('a host naming an end event is exactly one "must attach to an activity" error', async () => {
+    const { diagnostics } = await validate(`
+process p {
+  start S
+  end E
+  on E: error "X" { user A }
+}
+`);
+    const errors = diagnosticsFor(
+      diagnostics,
+      'can only attach to an activity',
+    );
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.message).toContain('an end event');
+  });
+
+  test('a host naming a named throw statement is exactly one "must attach to an activity" error', async () => {
+    const { diagnostics } = await validate(`
+process p {
+  throw error Foo "PAYMENT_FAILED"
+  on Foo: escalation { user A }
+}
+`);
+    const errors = diagnosticsFor(
+      diagnostics,
+      'can only attach to an activity',
+    );
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.message).toContain('a throw statement');
+  });
+
+  test('a host naming a user/service/external/script/subprocess/call activity is clean', async () => {
+    const FENCE = '`' + '`' + '`';
+    const cases = [
+      `process p { user U on U: error "X" { user A } }`,
+      `process p { service Svc { class = "x.Y" } on Svc: error "X" { user A } }`,
+      `process p { external Ext { topic = "t" } on Ext: error "X" { user A } }`,
+      `process p {
+  script Scr ${FENCE}js
+x = 1
+${FENCE}
+  on Scr: error "X" { user A }
+}`,
+      `process p { subprocess Sub { user X } on Sub: error "X" { user A } }`,
+      `process p { call C { process = "p" } on C: error "X" { user A } }`,
+    ];
+    for (const src of cases) {
+      const { diagnostics } = await validate(src);
+      expect(
+        diagnosticsFor(diagnostics, 'can only attach to an activity'),
+        `src: ${src}`,
+      ).toHaveLength(0);
+      // `validationHelper` folds parser errors into the same list, so a
+      // fixture that stopped parsing would satisfy the assertion above.
+      expect(
+        bySeverity(diagnostics, SEVERITY_ERROR),
+        `src: ${src}`,
+      ).toHaveLength(0);
+    }
+  });
+});
+
+describe('Validation — boundary host: escalation host restriction', () => {
+  test('an escalation on a service task is exactly one restriction error', async () => {
+    const { diagnostics } = await validate(`
+process p {
+  service Pack { class = "x.Y" }
+  on Pack: escalation { user A }
+}
+`);
+    const errors = diagnosticsFor(
+      diagnostics,
+      'can only attach to a subprocess, a call, or a user task',
+    );
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.message).toContain('a service task');
+  });
+
+  test('an escalation on a script task is exactly one restriction error', async () => {
+    const FENCE = '`' + '`' + '`';
+    const { diagnostics } = await validate(`
+process p {
+  script Pack ${FENCE}js
+x = 1
+${FENCE}
+  on Pack: escalation { user A }
+}
+`);
+    const errors = diagnosticsFor(
+      diagnostics,
+      'can only attach to a subprocess, a call, or a user task',
+    );
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.message).toContain('a script task');
+  });
+
+  test('an escalation on an external task is exactly one restriction error', async () => {
+    const { diagnostics } = await validate(`
+process p {
+  external Pack { topic = "t" }
+  on Pack: escalation { user A }
+}
+`);
+    const errors = diagnosticsFor(
+      diagnostics,
+      'can only attach to a subprocess, a call, or a user task',
+    );
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.message).toContain('an external task');
+  });
+
+  test('an escalation on a subprocess, a call, or a user task is clean', async () => {
+    const cases = [
+      `process p { subprocess Sub { user X } on Sub: escalation { user A } }`,
+      `process p { call C { process = "p" } on C: escalation { user A } }`,
+      `process p { user U on U: escalation { user A } }`,
+    ];
+    for (const src of cases) {
+      const { diagnostics } = await validate(src);
+      expect(
+        diagnosticsFor(
+          diagnostics,
+          'can only attach to a subprocess, a call, or a user task',
+        ),
+        `src: ${src}`,
+      ).toHaveLength(0);
+      // `validationHelper` folds parser errors into the same list, so a
+      // fixture that stopped parsing would satisfy the assertion above.
+      expect(
+        bySeverity(diagnostics, SEVERITY_ERROR),
+        `src: ${src}`,
+      ).toHaveLength(0);
+    }
+  });
+});
+
+describe('Validation — boundary host: self-attachment', () => {
+  test('a handler hosted on a step of its own body is exactly one self-attachment error', async () => {
+    const { diagnostics } = await validate(`
+process p {
+  user A
+  on Self: error "X" { user Self }
+}
+`);
+    const errors = diagnosticsFor(diagnostics, 'its own escape path');
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.severity).toBe(SEVERITY_ERROR);
+  });
+
+  test('a handler hosted on a step of a DIFFERENT handler’s escape path is clean', async () => {
+    const { diagnostics } = await validate(`
+process p {
+  user A
+  on A: error "X" { user Relay }
+  on Relay: escalation "Y" { user B }
+}
+`);
+    expect(diagnosticsFor(diagnostics, 'its own escape path')).toHaveLength(0);
+  });
+});
+
+describe('Validation — boundary host: duplicates', () => {
+  test('two hosted handlers on the same host with the same code is a duplicate error naming the host', async () => {
+    const { diagnostics } = await validate(`
+process p {
+  user Pack
+  on Pack: error "X" { user A }
+  on Pack: error "X" { user B }
+}
+`);
+    const errors = diagnosticsFor(diagnostics, "attached to 'Pack'");
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.severity).toBe(SEVERITY_ERROR);
+  });
+
+  test('the same trigger and code on two DIFFERENT hosts is not a duplicate', async () => {
+    const { diagnostics } = await validate(`
+process p {
+  user Pack1
+  user Pack2
+  on Pack1: error "X" { user A }
+  on Pack2: error "X" { user B }
+}
+`);
+    expect(diagnosticsFor(diagnostics, 'duplicate catch')).toHaveLength(0);
+  });
+
+  test('a hosted and a host-less handler sharing a trigger and code is not a duplicate', async () => {
+    const { diagnostics } = await validate(`
+process p {
+  user Pack
+  on error "X" { user A }
+  on Pack: error "X" { user B }
+}
+`);
+    expect(diagnosticsFor(diagnostics, 'duplicate catch')).toHaveLength(0);
+  });
+
+  test('two hosted timers on one host are legal (timer stays exempt)', async () => {
+    const { diagnostics } = await validate(`
+process p {
+  user Pack
+  on Pack: timer after "PT1H" { user A }
+  on Pack: timer after "PT2H" { user B }
+}
+`);
+    expect(diagnosticsFor(diagnostics, 'duplicate catch')).toHaveLength(0);
+  });
+
+  test('a handler nested inside a hosted handler body still collides with the outer one', async () => {
+    // Both lower into the process container as a boundary event on `A` with
+    // the same message subscription — the nesting is syntactic only.
+    const { diagnostics } = await validate(`
+process p {
+  user A
+  on A: message "M" {
+    user B
+    on A: message "M" { user C }
+  }
+}
+`);
+    const errors = diagnosticsFor(diagnostics, 'duplicate catch');
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.severity).toBe(SEVERITY_ERROR);
+    expect(errors[0]!.message).toContain("attached to 'A'");
+  });
+
+  test('a handler whose host does not resolve reports only the resolution error', async () => {
+    const { diagnostics } = await validate(`
+process p {
+  on message "M" { user A }
+  on Missing: message "M" { user B }
+}
+`);
+    expect(diagnosticsFor(diagnostics, 'duplicate catch')).toHaveLength(0);
+    expect(bySeverity(diagnostics, SEVERITY_ERROR)).toHaveLength(1);
+  });
+});
+
+describe('Validation — boundary host: regression for host-less programs', () => {
+  test('a host-less duplicate-handler diagnostic is byte-identical to the pre-boundary wording', async () => {
+    const { diagnostics } = await validate(`
+process p {
+  on error "X" { user A }
+  on error "X" { user B }
+}
+`);
+    const errors = diagnosticsFor(diagnostics, 'duplicate catch');
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.message).toBe(
+      "Another 'on error' handler in this scope already catches code 'X'; " +
+        'a duplicate catch is ambiguous to the engine.',
+    );
+  });
+
+  test('`on error … alongside` still fires the pre-existing interrupting-only message when hosted', async () => {
+    const { diagnostics } = await validate(`
+process p { user Pack on Pack: error "X" alongside { user A } }
+`);
+    const errors = diagnosticsFor(
+      diagnostics,
+      'only available for escalations',
+    );
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.severity).toBe(SEVERITY_ERROR);
+  });
+
+  test('a fully host-less program is diagnostic-free (no boundary machinery fires)', async () => {
+    const { diagnostics } = await validate(`
+process p {
+  var c: string
+  start S
+  user A
+  end E
+  on error "X" (code c) { user R }
+  on escalation "Y" alongside { user Q }
+}
+`);
+    expect(diagnostics).toHaveLength(0);
   });
 });
 

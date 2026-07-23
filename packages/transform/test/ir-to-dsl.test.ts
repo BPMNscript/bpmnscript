@@ -23,7 +23,7 @@
  */
 
 import { describe, it, expect, beforeAll } from 'vitest';
-import { EmptyFileSystem, type LangiumDocument } from 'langium';
+import { EmptyFileSystem } from 'langium';
 import { parseHelper } from 'langium/test';
 import { createBpmnScriptServices } from '@bpmn-script/language';
 import type { Model } from '@bpmn-script/language';
@@ -37,7 +37,7 @@ import type {
   SequenceFlow,
 } from '../src/ir/types.js';
 
-let parse: (input: string) => Promise<LangiumDocument<Model>>;
+let parse: ReturnType<typeof parseHelper<Model>>;
 
 beforeAll(() => {
   const services = createBpmnScriptServices(EmptyFileSystem);
@@ -1886,5 +1886,480 @@ describe('irToDsl — event layer (compensation)', () => {
       sequenceFlows: [{ id: 'F', sourceRef: 'S', targetRef: 'E' }],
     };
     expect(irToDsl(ir)).toContain('  on compensation alongside {\n');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Boundary events — the escape-chain emission pass.
+//
+// A boundary event is the only IR node with outgoing but no incoming flow, so
+// its chain is unreachable from the start event and must be printed by its own
+// pass, before the orphan sweep would otherwise flush it as a detached
+// top-level chain. The chain lives in the *same* container as the main flow, so
+// the shared emitted-node / consumed-flow bookkeeping is what makes a rejoin
+// degrade to a `goto`.
+// ---------------------------------------------------------------------------
+
+describe('irToDsl — boundary events', () => {
+  it('prints an interrupting boundary as a hosted handler with its chain indented', () => {
+    const ir: BpmnProcess = {
+      id: 'p',
+      isExecutable: true,
+      flowElements: [
+        { kind: 'startEvent', id: 'S' },
+        { kind: 'userTask', id: 'Review' },
+        { kind: 'endEvent', id: 'E' },
+        {
+          kind: 'boundaryEvent',
+          id: 'Boundary_Review_timer',
+          attachedToRef: 'Review',
+          eventDefinition: {
+            kind: 'timer',
+            timerKind: 'duration',
+            expression: 'PT2H',
+          },
+        },
+        { kind: 'userTask', id: 'Escalate' },
+        { kind: 'endEvent', id: 'Timeout' },
+      ],
+      sequenceFlows: [
+        { id: 'F1', sourceRef: 'S', targetRef: 'Review' },
+        { id: 'F2', sourceRef: 'Review', targetRef: 'E' },
+        {
+          id: 'F3',
+          sourceRef: 'Boundary_Review_timer',
+          targetRef: 'Escalate',
+        },
+        { id: 'F4', sourceRef: 'Escalate', targetRef: 'Timeout' },
+      ],
+    };
+    expect(irToDsl(ir)).toBe(
+      [
+        'process p {',
+        '  start S',
+        '  user Review',
+        '  end E',
+        '  on Review: timer after "PT2H" {',
+        '    user Escalate',
+        '    end Timeout',
+        '  }',
+        '}',
+        '',
+      ].join('\n'),
+    );
+  });
+
+  it('prints alongside for a non-interrupting boundary', () => {
+    const ir: BpmnProcess = {
+      id: 'p',
+      isExecutable: true,
+      flowElements: [
+        { kind: 'startEvent', id: 'S' },
+        { kind: 'userTask', id: 'Pack' },
+        { kind: 'endEvent', id: 'E' },
+        {
+          kind: 'boundaryEvent',
+          id: 'Boundary_Pack_message',
+          attachedToRef: 'Pack',
+          cancelActivity: false,
+          eventDefinition: { kind: 'message', messageName: 'Nudge' },
+        },
+        {
+          kind: 'serviceTask',
+          id: 'Notify',
+          binding: { kind: 'expression', expression: '${n.go()}' },
+        },
+        { kind: 'endEvent', id: 'Nudged' },
+      ],
+      sequenceFlows: [
+        { id: 'F1', sourceRef: 'S', targetRef: 'Pack' },
+        { id: 'F2', sourceRef: 'Pack', targetRef: 'E' },
+        { id: 'F3', sourceRef: 'Boundary_Pack_message', targetRef: 'Notify' },
+        { id: 'F4', sourceRef: 'Notify', targetRef: 'Nudged' },
+      ],
+    };
+    const dsl = irToDsl(ir);
+    expect(dsl).toContain('  on Pack: message "Nudge" alongside {\n');
+    expect(dsl).toContain('    end Nudged\n');
+  });
+
+  it('degrades a rejoin into the main flow to a goto and prints the main-flow node once', () => {
+    const ir: BpmnProcess = {
+      id: 'p',
+      isExecutable: true,
+      flowElements: [
+        { kind: 'startEvent', id: 'S' },
+        { kind: 'userTask', id: 'Fetch' },
+        { kind: 'userTask', id: 'Ship' },
+        { kind: 'endEvent', id: 'E' },
+        {
+          kind: 'boundaryEvent',
+          id: 'Boundary_Fetch_error',
+          attachedToRef: 'Fetch',
+          eventDefinition: { kind: 'error', errorCode: 'GONE' },
+        },
+        { kind: 'userTask', id: 'Retry' },
+      ],
+      sequenceFlows: [
+        { id: 'F1', sourceRef: 'S', targetRef: 'Fetch' },
+        { id: 'F2', sourceRef: 'Fetch', targetRef: 'Ship' },
+        { id: 'F3', sourceRef: 'Ship', targetRef: 'E' },
+        { id: 'F4', sourceRef: 'Boundary_Fetch_error', targetRef: 'Retry' },
+        { id: 'F5', sourceRef: 'Retry', targetRef: 'Ship' },
+      ],
+    };
+    const dsl = irToDsl(ir);
+    expect(dsl).toContain('  on Fetch: error "GONE" {\n');
+    expect(dsl).toContain('    user Retry\n');
+    expect(dsl).toContain('    goto Ship\n');
+    expect(dsl.match(/^ *user Ship$/gm)).toHaveLength(1);
+  });
+
+  it('restructures an if/else inside an escape chain (the boundary is a second CFG entry)', () => {
+    const ir: BpmnProcess = {
+      id: 'p',
+      isExecutable: true,
+      flowElements: [
+        { kind: 'startEvent', id: 'S' },
+        { kind: 'userTask', id: 'Review' },
+        { kind: 'endEvent', id: 'E' },
+        {
+          kind: 'boundaryEvent',
+          id: 'Boundary_Review_signal',
+          attachedToRef: 'Review',
+          eventDefinition: { kind: 'signal', signalName: 'Abort' },
+        },
+        {
+          kind: 'exclusiveGateway',
+          id: 'Gateway_p_9_split',
+          defaultFlowId: 'B4',
+        },
+        { kind: 'exclusiveGateway', id: 'Gateway_p_9_join' },
+        { kind: 'userTask', id: 'Refund' },
+        { kind: 'userTask', id: 'Keep' },
+        { kind: 'endEvent', id: 'Aborted' },
+      ],
+      sequenceFlows: [
+        { id: 'F1', sourceRef: 'S', targetRef: 'Review' },
+        { id: 'F2', sourceRef: 'Review', targetRef: 'E' },
+        {
+          id: 'B1',
+          sourceRef: 'Boundary_Review_signal',
+          targetRef: 'Gateway_p_9_split',
+        },
+        {
+          id: 'B2',
+          sourceRef: 'Gateway_p_9_split',
+          targetRef: 'Refund',
+          conditionExpression: '${paid}',
+        },
+        { id: 'B3', sourceRef: 'Refund', targetRef: 'Gateway_p_9_join' },
+        { id: 'B4', sourceRef: 'Gateway_p_9_split', targetRef: 'Keep' },
+        { id: 'B5', sourceRef: 'Keep', targetRef: 'Gateway_p_9_join' },
+        { id: 'B6', sourceRef: 'Gateway_p_9_join', targetRef: 'Aborted' },
+      ],
+    };
+    const dsl = irToDsl(ir);
+    expect(dsl).toContain('  on Review: signal "Abort" {\n');
+    expect(dsl).toContain('    if (paid) {\n');
+    expect(dsl).toContain('    } else {\n');
+    expect(hasGoto(dsl)).toBe(false);
+    expect(hasGatewayKeyword(dsl)).toBe(false);
+  });
+
+  it('prints two boundaries on one host as two blocks in IR order', () => {
+    const ir: BpmnProcess = {
+      id: 'p',
+      isExecutable: true,
+      flowElements: [
+        { kind: 'startEvent', id: 'S' },
+        { kind: 'userTask', id: 'Review' },
+        { kind: 'endEvent', id: 'E' },
+        {
+          kind: 'boundaryEvent',
+          id: 'Boundary_Review_timer',
+          attachedToRef: 'Review',
+          eventDefinition: {
+            kind: 'timer',
+            timerKind: 'duration',
+            expression: 'PT2H',
+          },
+        },
+        { kind: 'endEvent', id: 'Late' },
+        {
+          kind: 'boundaryEvent',
+          id: 'Boundary_Review_escalation',
+          attachedToRef: 'Review',
+          eventDefinition: {
+            kind: 'escalation',
+            escalationCode: 'LOUD',
+            codeVariable: 'c',
+          },
+        },
+        { kind: 'endEvent', id: 'Loud' },
+      ],
+      sequenceFlows: [
+        { id: 'F1', sourceRef: 'S', targetRef: 'Review' },
+        { id: 'F2', sourceRef: 'Review', targetRef: 'E' },
+        { id: 'F3', sourceRef: 'Boundary_Review_timer', targetRef: 'Late' },
+        {
+          id: 'F4',
+          sourceRef: 'Boundary_Review_escalation',
+          targetRef: 'Loud',
+        },
+      ],
+    };
+    const dsl = irToDsl(ir);
+    const timer = dsl.indexOf('on Review: timer after "PT2H" {');
+    const escalation = dsl.indexOf('on Review: escalation "LOUD" (code c) {');
+    expect(timer).toBeGreaterThan(-1);
+    expect(escalation).toBeGreaterThan(timer);
+    // Each boundary prints exactly one header: neither the escape-chain walk
+    // nor the orphan sweep may print a boundary a second time.
+    expect(dsl.match(/^ *on Review: /gm)).toHaveLength(2);
+  });
+
+  it('keeps the handler block trailing when the body also flushes sweep gotos', async () => {
+    const source = [
+      'process p {',
+      '  var r: string',
+      '  user Intake',
+      '  if (r == "A") { goto Alpha } else { goto Beta }',
+      '  user Alpha',
+      '  user Beta',
+      '  end E',
+      '  on Intake: error "X" { user Fix }',
+      '}',
+      '',
+    ].join('\n');
+    const doc = await parse(source);
+    expect(doc.parseResult.parserErrors).toHaveLength(0);
+
+    const dsl = irToDsl(astToIr(doc.parseResult.value));
+    // A handler reads like a catch block: no ordinary statement, and in
+    // particular no swept `goto`, may follow it.
+    expect(dsl.indexOf('on Intake: error "X" {')).toBeGreaterThan(
+      dsl.lastIndexOf('goto '),
+    );
+    // …so re-opening the emitted source raises no handler-placement error.
+    const reparsed = await parse(dsl, { validation: true });
+    expect(
+      (reparsed.diagnostics ?? [])
+        .map((d) => d.message)
+        .filter((m) => m.includes('catch blocks')),
+    ).toEqual([]);
+  });
+
+  it('keeps the handler block trailing when the container holds an orphan fragment', () => {
+    const ir: BpmnProcess = {
+      id: 'p',
+      isExecutable: true,
+      flowElements: [
+        { kind: 'startEvent', id: 'S' },
+        { kind: 'userTask', id: 'Review' },
+        { kind: 'endEvent', id: 'E' },
+        {
+          kind: 'boundaryEvent',
+          id: 'Boundary_Review_error',
+          attachedToRef: 'Review',
+          eventDefinition: { kind: 'error', errorCode: 'X' },
+        },
+        { kind: 'userTask', id: 'Fix' },
+        // Unreachable from the start event and from the escape chain.
+        { kind: 'userTask', id: 'Stranded' },
+      ],
+      sequenceFlows: [
+        { id: 'F1', sourceRef: 'S', targetRef: 'Review' },
+        { id: 'F2', sourceRef: 'Review', targetRef: 'E' },
+        { id: 'F3', sourceRef: 'Boundary_Review_error', targetRef: 'Fix' },
+      ],
+    };
+    const dsl = irToDsl(ir);
+    expect(dsl.indexOf('on Review: error "X" {')).toBeGreaterThan(
+      dsl.indexOf('user Stranded'),
+    );
+  });
+
+  it('prints the handler block for a boundary event a malformed flow edge points at', () => {
+    const ir: BpmnProcess = {
+      id: 'p',
+      isExecutable: true,
+      flowElements: [
+        { kind: 'startEvent', id: 'S' },
+        { kind: 'userTask', id: 'A' },
+        {
+          kind: 'boundaryEvent',
+          id: 'Boundary_A_error',
+          attachedToRef: 'A',
+          eventDefinition: { kind: 'error', errorCode: 'X' },
+        },
+        { kind: 'userTask', id: 'Fix' },
+      ],
+      sequenceFlows: [
+        { id: 'F1', sourceRef: 'S', targetRef: 'A' },
+        { id: 'F2', sourceRef: 'A', targetRef: 'Boundary_A_error' },
+        { id: 'F3', sourceRef: 'Boundary_A_error', targetRef: 'Fix' },
+      ],
+    };
+    const dsl = irToDsl(ir);
+    expect(dsl).toContain('on A: error "X" {');
+    expect(dsl).toContain('user Fix');
+    // Printed at its arrival point and nowhere else: the boundary pass must
+    // find it already emitted.
+    expect(dsl.match(/^ *on A: /gm)).toHaveLength(1);
+  });
+
+  it('prints a boundary event before a host-less handler in the same container', () => {
+    const ir: BpmnProcess = {
+      id: 'p',
+      isExecutable: true,
+      flowElements: [
+        { kind: 'startEvent', id: 'S' },
+        { kind: 'userTask', id: 'Review' },
+        { kind: 'endEvent', id: 'E' },
+        {
+          kind: 'subProcess',
+          id: 'OnPF',
+          triggeredByEvent: true,
+          flowElements: [
+            {
+              kind: 'startEvent',
+              id: 'PFStart',
+              eventDefinition: { kind: 'error', errorCode: 'PF' },
+            },
+            { kind: 'endEvent', id: 'PFEnd' },
+          ],
+          sequenceFlows: [
+            { id: 'H1', sourceRef: 'PFStart', targetRef: 'PFEnd' },
+          ],
+        },
+        {
+          kind: 'boundaryEvent',
+          id: 'Boundary_Review_timer',
+          attachedToRef: 'Review',
+          eventDefinition: {
+            kind: 'timer',
+            timerKind: 'duration',
+            expression: 'PT2H',
+          },
+        },
+        { kind: 'endEvent', id: 'Late' },
+      ],
+      sequenceFlows: [
+        { id: 'F1', sourceRef: 'S', targetRef: 'Review' },
+        { id: 'F2', sourceRef: 'Review', targetRef: 'E' },
+        { id: 'F3', sourceRef: 'Boundary_Review_timer', targetRef: 'Late' },
+      ],
+    };
+    const dsl = irToDsl(ir);
+    expect(dsl.indexOf('on Review: timer')).toBeGreaterThan(-1);
+    expect(dsl.indexOf('on error "PF" {')).toBeGreaterThan(
+      dsl.indexOf('on Review: timer'),
+    );
+  });
+
+  it('prints a boundary event inside the sub-process container that holds its host', () => {
+    const ir: BpmnProcess = {
+      id: 'p',
+      isExecutable: true,
+      flowElements: [
+        { kind: 'startEvent', id: 'S' },
+        {
+          kind: 'subProcess',
+          id: 'Inner',
+          flowElements: [
+            { kind: 'startEvent', id: 'IS' },
+            { kind: 'userTask', id: 'Check' },
+            { kind: 'endEvent', id: 'IE' },
+            {
+              kind: 'boundaryEvent',
+              id: 'Boundary_Check_condition',
+              attachedToRef: 'Check',
+              eventDefinition: { kind: 'conditional', condition: '${stale}' },
+            },
+            { kind: 'endEvent', id: 'Stale' },
+          ],
+          sequenceFlows: [
+            { id: 'I1', sourceRef: 'IS', targetRef: 'Check' },
+            { id: 'I2', sourceRef: 'Check', targetRef: 'IE' },
+            {
+              id: 'I3',
+              sourceRef: 'Boundary_Check_condition',
+              targetRef: 'Stale',
+            },
+          ],
+        },
+        { kind: 'endEvent', id: 'E' },
+      ],
+      sequenceFlows: [
+        { id: 'F1', sourceRef: 'S', targetRef: 'Inner' },
+        { id: 'F2', sourceRef: 'Inner', targetRef: 'E' },
+      ],
+    };
+    expect(irToDsl(ir)).toContain('    on Check: condition (stale) {\n');
+  });
+
+  it('prints an empty body for a boundary event with no outgoing flow', () => {
+    const ir: BpmnProcess = {
+      id: 'p',
+      isExecutable: true,
+      flowElements: [
+        { kind: 'startEvent', id: 'S' },
+        { kind: 'userTask', id: 'Review' },
+        { kind: 'endEvent', id: 'E' },
+        {
+          kind: 'boundaryEvent',
+          id: 'Boundary_Review_timer',
+          attachedToRef: 'Review',
+          eventDefinition: {
+            kind: 'timer',
+            timerKind: 'cycle',
+            expression: 'R/PT1H',
+          },
+        },
+      ],
+      sequenceFlows: [
+        { id: 'F1', sourceRef: 'S', targetRef: 'Review' },
+        { id: 'F2', sourceRef: 'Review', targetRef: 'E' },
+      ],
+    };
+    expect(irToDsl(ir)).toContain('  on Review: timer every "R/PT1H" {\n  }\n');
+  });
+
+  it('still prints the header when the host lives outside this container', () => {
+    const ir: BpmnProcess = {
+      id: 'p',
+      isExecutable: true,
+      flowElements: [
+        { kind: 'startEvent', id: 'S' },
+        { kind: 'endEvent', id: 'E' },
+        {
+          kind: 'boundaryEvent',
+          id: 'Boundary_Elsewhere_message',
+          attachedToRef: 'Elsewhere',
+          eventDefinition: { kind: 'message', messageName: 'M' },
+        },
+      ],
+      sequenceFlows: [{ id: 'F1', sourceRef: 'S', targetRef: 'E' }],
+    };
+    expect(irToDsl(ir)).toContain('  on Elsewhere: message "M" {\n  }\n');
+  });
+
+  it('leaves a container without boundary events printing exactly as before', () => {
+    expect(irToDsl(IF_ELSE_IR)).toBe(
+      [
+        'process p {',
+        '  start S',
+        '  user A "A task"',
+        '  if (amount > 1000) {',
+        '    user B "B task"',
+        '  } else {',
+        '    service C { class = "com.example.C" }',
+        '  }',
+        '  end E',
+        '}',
+        '',
+      ].join('\n'),
+    );
   });
 });

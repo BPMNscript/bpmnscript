@@ -90,6 +90,35 @@
  * verbatim), and any nested gateway is re-keyed structurally like any other.
  * A container with no handlers never builds this map, so flat/plain-nested
  * normalization stays byte-identical.
+ *
+ * ─────────────────────────────────────────────────────────────────────────
+ * **Boundary-event ids.** A hosted `on <Host>: <trigger>` handler lowers to a
+ * `boundaryEvent` node whose id is host-derived (`Boundary_<hostId>_<trigger>`,
+ * collision-resolved with a positional `_2`/`_3` suffix). That positional
+ * suffix is stable in the generation direction, but exposed on import: two
+ * handlers on one host sharing a trigger kind but differing in payload
+ * (`on Pack: error "A"` and `on Pack: error "B"`) both base to the identical
+ * `Boundary_Pack_error`, and moddle may present the two children in a
+ * different order than the author wrote them, so which one owns the `_2`
+ * suffix is purely positional, not structural. The re-key signature is
+ * therefore drawn from what the event actually is, not from its id: the host
+ * id (`attachedToRef`, authored, survives verbatim, and is itself never
+ * re-keyed), the trigger kind, the definition payload (the same
+ * {@link definitionPayloadKey} the event-handler re-key above uses — this is
+ * exactly what tells `error "A"` and `error "B"` apart), and interrupting vs.
+ * non-interrupting. A duplicate signature (unreachable from a valid program;
+ * see {@link definitionPayloadKey}) gets the same deterministic positional
+ * suffix as every other re-key family here.
+ *
+ * The one genuine difference from an event-handler sub-process: a boundary
+ * event has outgoing sequence flow (a handler sub-process has none — it is
+ * disconnected), so its canonical id has to flow through `canonicalId` the
+ * same way a gateway's does, or the flows leaving it keep the stale raw id
+ * and the two halves of a round-trip never compare equal. The end event that
+ * terminates an escape chain needs no such treatment: the printer emits it
+ * under its literal id, so it is authored on the way back and survives the
+ * round trip verbatim. A container with no boundary events never builds this
+ * map, so normalization for a container without one is untouched.
  */
 
 import type {
@@ -129,9 +158,12 @@ const GATEWAY_KINDS = new Set<FlowElement['kind']>([
  *
  * Pipeline (each step is pure; the input is never mutated):
  *   1. Inline synthesized pass-through join gateways (transparent).
- *   2. Build a structural id map for every gateway element.
- *   3. Re-key gateway elements, every `/^Flow_/`- or generated-shaped flow,
- *      and the gateway `defaultFlowId` to source→target structural keys.
+ *   2. Build a structural id map for every gateway element and every boundary
+ *      event (see {@link buildGatewayCanonicalIds} and
+ *      {@link buildBoundaryCanonicalIds}).
+ *   3. Re-key gateway and boundary-event elements, every `/^Flow_/`- or
+ *      generated-shaped flow, and the gateway `defaultFlowId` to
+ *      source→target structural keys.
  *   4. Sort both arrays by canonical id.
  *
  * @param ir - The IR to normalize.
@@ -169,10 +201,17 @@ function normalizeContainer<T extends FlowContainer>(container: T): T {
   // identically to its counterpart.
   const handlerIdMap = buildEventSubProcessCanonicalIds(inlined);
 
-  const canonicalId = (id: string): string => gatewayIdMap.get(id) ?? id;
+  // Derive a canonical structural id for every boundary event so a handler
+  // whose positional `_2`/`_3` suffix shifted across a round-trip (moddle can
+  // present two same-host, same-trigger boundary events in either order) maps
+  // identically to its counterpart.
+  const boundaryIdMap = buildBoundaryCanonicalIds(inlined);
 
-  // Re-key flow-element ids (only gateways are re-keyed) and drop the
-  // gateway `name` (only gateways; see below).
+  const canonicalId = (id: string): string =>
+    gatewayIdMap.get(id) ?? boundaryIdMap.get(id) ?? id;
+
+  // Re-key flow-element ids (gateways and boundary events are re-keyed) and
+  // drop the gateway `name` (only gateways; see below).
   const flowElements: FlowElement[] = inlined.flowElements
     .map((fe) => {
       // A nested container is normalized recursively: its body is its own
@@ -187,6 +226,16 @@ function normalizeContainer<T extends FlowContainer>(container: T): T {
           ? { ...normalized, id: handlerIdMap.get(fe.id) ?? fe.id }
           : normalized;
       }
+
+      // A boundary event's id is re-keyed to its structural signature the
+      // same way a handler sub-process's is; unlike a handler sub-process it
+      // has outgoing flow, so `canonicalId` (used below by `normalizeFlow`)
+      // must agree with this replacement. `attachedToRef` is an authored host
+      // id and is left untouched — only the boundary event's own id moves.
+      if (fe.kind === 'boundaryEvent') {
+        return { ...fe, id: canonicalId(fe.id) };
+      }
+
       if (!GATEWAY_KINDS.has(fe.kind)) return fe;
       const id = canonicalId(fe.id);
 
@@ -385,6 +434,52 @@ function buildEventSubProcessCanonicalIds(
 }
 
 /**
+ * Build a map from each boundary event's current id to a canonical structural
+ * id derived from what it is attached to and what it catches.
+ *
+ * A hosted `on <Host>: <trigger>` handler lowers to a `boundaryEvent` whose id
+ * is host-derived (`Boundary_<hostId>_<trigger>`, collision-resolved with a
+ * positional `_2`/`_3` suffix — see `makeBoundaryEventId`). That suffix is
+ * stable in the generation direction, but not on import: two boundary events
+ * on one host that share a trigger kind but differ in payload (`on Pack:
+ * error "A"` and `on Pack: error "B"`) both base to the identical
+ * `Boundary_Pack_error`, and moddle may present the two children in a
+ * different order than the author wrote them — so which one owns the `_2`
+ * suffix is a positional accident, not a structural fact. The signature is
+ * therefore built from the host id (`attachedToRef`, authored, survives the
+ * round-trip verbatim), the trigger kind, the definition payload (the same
+ * {@link definitionPayloadKey} the event-handler re-key uses, so `error "A"`
+ * and `error "B"` never collapse together), and interrupting vs.
+ * non-interrupting (`cancelActivity === false`). A duplicate signature is
+ * unreachable from a valid program (the validator's `(host, trigger, code)`
+ * duplicate check forbids it) but, should the IR contain one anyway, receives
+ * a positional suffix (`#1`, `#2`, …) assigned in `flowElements` order, as
+ * every other re-key family here does.
+ *
+ * A container with no boundary events returns an empty map.
+ *
+ * @param ir - The (already join-inlined) container.
+ * @returns Map of `originalBoundaryId → canonicalBoundaryId`.
+ */
+function buildBoundaryCanonicalIds(ir: FlowContainer): Map<string, string> {
+  const map = new Map<string, string>();
+  const signatureCount = new Map<string, number>();
+  for (const fe of ir.flowElements) {
+    if (fe.kind !== 'boundaryEvent') continue;
+
+    const code = definitionPayloadKey(fe.eventDefinition);
+    const interrupting =
+      fe.cancelActivity === false ? 'non-interrupting' : 'interrupting';
+
+    const signature = `Boundary_[host:${fe.attachedToRef}]_[trigger:${fe.eventDefinition.kind}]_[code:${code}]_[${interrupting}]`;
+    const seen = signatureCount.get(signature) ?? 0;
+    signatureCount.set(signature, seen + 1);
+    map.set(fe.id, seen === 0 ? signature : `${signature}#${seen}`);
+  }
+  return map;
+}
+
+/**
  * The payload part of a handler's structural signature: whatever distinguishes
  * two handlers of the *same* trigger kind.
  *
@@ -440,13 +535,14 @@ function definitionPayloadKey(def: EventDefinition | undefined): string {
  *
  * A flow is re-keyed when either (a) its id starts with `Flow_` (generated
  * flows, including the `Flow_<gatewayId>_default` family), or (b) it touches a
- * gateway on either end (the hand-named `AutoApprovePath` / `Flow_SeniorBranch`).
- * Flows that connect only non-gateway elements with a non-`Flow_` id are left
- * verbatim.
+ * re-keyed node on either end — a gateway (the hand-named `AutoApprovePath` /
+ * `Flow_SeniorBranch`) or a boundary event (the flow leaving a hosted
+ * handler's boundary node). Flows that connect only untouched elements with a
+ * non-`Flow_` id are left verbatim.
  *
  * The re-keyed id is `Flow_<canonical(source)>_<canonical(target)>`, where
- * `canonical` maps gateway ids to their structural key (so a flow into/out of
- * a gateway keys identically on both halves).
+ * `canonical` maps gateway and boundary-event ids to their structural key (so
+ * a flow into/out of one of those keys identically on both halves).
  *
  * @param sf          - The flow to re-key.
  * @param canonicalId - Maps a flow-element id to its canonical id.
@@ -456,11 +552,11 @@ function normalizeFlow(
   sf: SequenceFlow,
   canonicalId: (id: string) => string,
 ): SequenceFlow {
-  const touchesGateway =
+  const touchesReKeyedNode =
     canonicalId(sf.sourceRef) !== sf.sourceRef ||
     canonicalId(sf.targetRef) !== sf.targetRef;
 
-  if (/^Flow_/.test(sf.id) || touchesGateway) {
+  if (/^Flow_/.test(sf.id) || touchesReKeyedNode) {
     return {
       ...sf,
       id: canonicalFlowKey(sf, canonicalId),

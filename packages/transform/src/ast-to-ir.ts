@@ -104,10 +104,20 @@
  * join boundary (or the loop gateway, for a `while`).
  *
  * An `on` handler is the exception: it is lowered **out of the sequence chain**
- * and returns no frontier at all. It contributes an event sub-process node to
- * the container but never participates in flow — the statement before it flows
- * directly to the statement after it, so a handler placed anywhere (including
- * mid-body, which the validator rejects) still yields correct flow.
+ * and returns no frontier at all. It contributes nodes to the container but
+ * never participates in its flow — the statement before it flows directly to
+ * the statement after it, so a handler placed anywhere (including mid-body,
+ * which the validator rejects) still yields correct flow.
+ *
+ * Which nodes it contributes depends on its host slot. A host-less handler
+ * guards the whole surrounding body and becomes one `triggeredByEvent`
+ * sub-process wrapping its body. A hosted handler (`on <Host>: <trigger>`)
+ * guards a single running activity and becomes a `boundaryEvent` attached to
+ * it, lowered **inline into the host's own container**: the event node and
+ * every statement of its body land in the same arrays as the main flow, chained
+ * from the boundary event to an end event of the escape path's own. Sharing one
+ * container is what lets a `goto` cross between the escape chain and the main
+ * flow — the only route back, since nothing rejoins implicitly.
  */
 
 import {
@@ -183,6 +193,7 @@ import {
   makeEndEventId,
   makeThrowEventId,
   makeEventSubProcessId,
+  makeBoundaryEventId,
 } from './synthesize-ids.js';
 
 /**
@@ -386,13 +397,28 @@ function lowerBlockStatements(
   let lastFrontier: Frontier | undefined;
 
   statements.forEach((stmt, index) => {
-    // An `on` handler contributes a node but never joins the sequence chain: it
-    // is an event sub-process triggered by the event it catches (error,
-    // escalation, compensation, message, signal, timer, or condition), not a
-    // flow step. Lower it out-of-chain and leave `prevExit`/`entry` untouched,
-    // so the statement before it flows directly to the statement after it.
+    // An `on` handler contributes nodes but never joins the sequence chain: it
+    // catches an event (error, escalation, compensation, message, signal,
+    // timer, or condition), it is not a flow step. Both forms are lowered
+    // out-of-chain, leaving `prevExit`/`entry` untouched, so the statement
+    // before the handler flows directly to the statement after it.
+    //
+    // The host slot decides *which* BPMN construct catches: a host-less handler
+    // guards the whole surrounding body and becomes an event sub-process; a
+    // hosted one guards a single running activity and becomes a boundary event
+    // attached to it, lowered inline into this same container.
     if (isOnHandler(stmt)) {
-      lowerOnHandler(builder, stmt, coord, index);
+      if (stmt.host !== undefined) {
+        // `$refText` is the host id verbatim (cross-refs key on `name=ID`) and
+        // is present even when the linker could not resolve the reference — the
+        // same totality `lowerGoto` relies on. Dispatching on the *slot* rather
+        // than on its resolution also keeps this in step with the scope
+        // provider, whose container walk is transparent for any handler that
+        // carries a host, resolved or not.
+        lowerBoundaryHandler(builder, stmt, stmt.host.$refText, coord, index);
+      } else {
+        lowerOnHandler(builder, stmt, coord, index);
+      }
       return;
     }
 
@@ -1057,6 +1083,78 @@ function lowerOnHandler(
     flowElements: nested.flowElements,
     sequenceFlows: nested.sequenceFlows,
   });
+}
+
+/**
+ * Lower a hosted `on <Host>: <trigger>` handler into a boundary event **inline
+ * in the host's own container** — the node itself plus its whole body, pushed
+ * onto the very builder the host was lowered into.
+ *
+ * There is no wrapping container. The body's statements become siblings of the
+ * main flow, so a `goto` crosses between the two in either direction and lands
+ * as a plain sequence flow — which is the only way an escape chain can rejoin
+ * the main flow at all. Nothing rejoins implicitly: the chain runs boundary →
+ * body → its own end event, and where control goes after the catch is the
+ * author's decision, written as a `goto`.
+ *
+ * The escape chain's implicit end is seeded from the **boundary event id**
+ * (`EndEvent_<boundaryId>`) rather than from the container id, so the main
+ * flow's own `EndEvent_<containerId>` keeps its number whatever handlers the
+ * container carries, and the inline lowering needs no container id threaded
+ * into it. An empty body still gets boundary → end: an escape path that leads
+ * nowhere is not well-formed BPMN.
+ *
+ * Element order is a real constraint, not a cosmetic one: `bpmn-auto-layout`
+ * positions an attached event from `attachedTo.di.bounds`, so the host shape
+ * has to exist before the attacher is laid out. The boundary node is pushed
+ * when the handler statement is reached, and a handler always follows its host
+ * in the statement list, so the host always precedes it in `flowElements`.
+ *
+ * The trigger payload is built by the same {@link handlerEventDefinition} an
+ * event sub-process uses — a caught error is a caught error wherever it is
+ * caught. `alongside` stores `cancelActivity: false`, the non-interrupting
+ * boundary; interrupting is the BPMN default and is left unwritten.
+ *
+ * @param hostId Id of the activity the event attaches to — the host reference's
+ *   text, which is the host statement's authored name verbatim.
+ */
+function lowerBoundaryHandler(
+  builder: Builder,
+  stmt: OnHandler,
+  hostId: string,
+  coord: string,
+  index: number,
+): void {
+  const id = makeBoundaryEventId(hostId, stmt.trigger, builder.taken);
+  builder.flowElements.push({
+    kind: 'boundaryEvent',
+    id,
+    attachedToRef: hostId,
+    eventDefinition: handlerEventDefinition(stmt),
+    ...(stmt.alongside ? { cancelActivity: false } : {}),
+  });
+
+  // A handler is a single-block compound, so its body's enclosing coordinate is
+  // the handler's own `<X>` — the sole-block rule loop bodies follow.
+  const body = lowerBlockStatements(
+    builder,
+    stmt.body.statements,
+    `${coord}_${index}`,
+  );
+  if (body.entry !== null) {
+    addFlow(builder, id, body.entry);
+  }
+
+  // Terminate the escape chain. An empty body has no entry at all, so the
+  // boundary event itself is what falls through to the end.
+  const exit = body.entry === null ? id : body.exit;
+  if (exit !== null) {
+    const endId = makeEndEventId(id, builder.taken);
+    builder.flowElements.push({ kind: 'endEvent', id: endId });
+    // Honour a reserved exit-flow id the same way a container body does (a body
+    // ending in a `while` hands down its loop's default-exit flow id).
+    addFlow(builder, exit, endId, undefined, body.exitFlowId);
+  }
 }
 
 /**

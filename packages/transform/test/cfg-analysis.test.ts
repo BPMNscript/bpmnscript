@@ -42,6 +42,14 @@ function xor(id: string, defaultFlowId?: string): FlowElement {
 function and(id: string): FlowElement {
   return { kind: 'parallelGateway', id };
 }
+function boundary(id: string, attachedToRef: string): FlowElement {
+  return {
+    kind: 'boundaryEvent',
+    id,
+    attachedToRef,
+    eventDefinition: { kind: 'error' },
+  };
+}
 function flow(sourceRef: string, targetRef: string): SequenceFlow {
   return { id: `Flow_${sourceRef}_${targetRef}`, sourceRef, targetRef };
 }
@@ -417,5 +425,195 @@ describe('two-loop process — backEdges preserves input order', () => {
       ['body2', 'head2'],
       ['body1', 'head1'],
     ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 9. Boundary event as a second CFG entry.
+//
+// A boundary event has outgoing edges but never any incoming sequence flow —
+// a token appears there directly from its host activity, not by traversing a
+// flow. It must be wired to the virtual entry unconditionally (like a start
+// event), or its whole escape chain has no immediate dominator.
+// ---------------------------------------------------------------------------
+
+describe('boundary event as a second CFG entry', () => {
+  it("the escape chain's first node is immediately dominated by the boundary event", () => {
+    const proc = process(
+      [
+        start('start'),
+        task('main'),
+        end('end'),
+        boundary('Boundary_main_error', 'main'),
+        task('escapeA'),
+        end('escapeEnd'),
+      ],
+      [
+        flow('start', 'main'),
+        flow('main', 'end'),
+        flow('Boundary_main_error', 'escapeA'),
+        flow('escapeA', 'escapeEnd'),
+      ],
+    );
+    const cfg = analyzeCfg(proc);
+
+    expect(cfg.immediateDominator('escapeA')).toBe('Boundary_main_error');
+  });
+
+  it('the boundary event itself is immediately dominated by the virtual entry', () => {
+    const proc = process(
+      [
+        start('start'),
+        task('main'),
+        end('end'),
+        boundary('Boundary_main_error', 'main'),
+        task('escapeA'),
+        end('escapeEnd'),
+      ],
+      [
+        flow('start', 'main'),
+        flow('main', 'end'),
+        flow('Boundary_main_error', 'escapeA'),
+        flow('escapeA', 'escapeEnd'),
+      ],
+    );
+    const cfg = analyzeCfg(proc);
+
+    expect(cfg.immediateDominator('Boundary_main_error')).toBe(VIRTUAL_ENTRY);
+  });
+
+  it('an if/else inside an escape chain gets a clean post-dominating join', () => {
+    const proc = process(
+      [
+        start('start'),
+        task('main'),
+        end('end'),
+        boundary('Boundary_main_error', 'main'),
+        xor('splitB'),
+        task('branchA'),
+        task('branchB'),
+        xor('joinB'),
+        end('endB'),
+      ],
+      [
+        flow('start', 'main'),
+        flow('main', 'end'),
+        flow('Boundary_main_error', 'splitB'),
+        flow('splitB', 'branchA'),
+        flow('splitB', 'branchB'),
+        flow('branchA', 'joinB'),
+        flow('branchB', 'joinB'),
+        flow('joinB', 'endB'),
+      ],
+    );
+    const cfg = analyzeCfg(proc);
+
+    expect(cfg.immediateDominator('joinB')).toBe('splitB');
+    expect(cfg.immediatePostDominator('splitB')).toBe('joinB');
+  });
+
+  it('a node reached from both the main flow and an escape chain loses its tight idom (accepted trade-off)', () => {
+    // `shared` is reachable both by the ordinary flow (start -> main -> shared)
+    // and directly from the boundary event's escape chain
+    // (Boundary_main_error -> shared). Neither `main` nor the boundary event
+    // dominates it any longer — only the virtual entry, their nearest common
+    // ancestor, does. This is the deliberately accepted consequence of wiring
+    // a boundary event to the entry: an `if`/`else` whose join a boundary
+    // chain jumps into degrades to `goto`s on decompile, because the region
+    // genuinely is not dominated by its split.
+    const proc = process(
+      [
+        start('start'),
+        task('main'),
+        boundary('Boundary_main_error', 'main'),
+        task('shared'),
+        end('end'),
+      ],
+      [
+        flow('start', 'main'),
+        flow('main', 'shared'),
+        flow('Boundary_main_error', 'shared'),
+        flow('shared', 'end'),
+      ],
+    );
+    const cfg = analyzeCfg(proc);
+
+    expect(cfg.immediateDominator('shared')).toBe(VIRTUAL_ENTRY);
+    expect(cfg.dominates('main', 'shared')).toBe(false);
+    expect(cfg.dominates('Boundary_main_error', 'shared')).toBe(false);
+  });
+
+  it('a back-edge inside an escape chain is still detected', () => {
+    const proc = process(
+      [
+        start('start'),
+        task('main'),
+        end('end'),
+        boundary('Boundary_main_error', 'main'),
+        xor('head2'),
+        task('body2'),
+        end('escEnd'),
+      ],
+      [
+        flow('start', 'main'),
+        flow('main', 'end'),
+        flow('Boundary_main_error', 'head2'),
+        flow('head2', 'body2'),
+        flow('body2', 'head2'),
+        flow('head2', 'escEnd'),
+      ],
+    );
+    const cfg = analyzeCfg(proc);
+
+    const back = cfg.backEdges();
+    expect(back).toHaveLength(1);
+    expect(back[0].sourceRef).toBe('body2');
+    expect(back[0].targetRef).toBe('head2');
+    expect(cfg.dominates('head2', 'body2')).toBe(true);
+  });
+
+  it('a container with no boundary events produces the identical analysis as today', () => {
+    // The exact diamond fixture from the first describe block above, re-run
+    // here as the regression net for this change: with no `boundaryEvent`
+    // node present, the new wiring condition never fires and the relations
+    // must be untouched.
+    const proc = process(
+      [
+        start('start'),
+        xor('split'),
+        task('A'),
+        task('B'),
+        xor('join'),
+        end('end'),
+      ],
+      [
+        flow('start', 'split'),
+        flow('split', 'A'),
+        flow('split', 'B'),
+        flow('A', 'join'),
+        flow('B', 'join'),
+        flow('join', 'end'),
+      ],
+    );
+    const cfg = analyzeCfg(proc);
+
+    expect(cfg.immediateDominator('join')).toBe('split');
+    expect(cfg.immediatePostDominator('split')).toBe('join');
+    expect(cfg.backEdges()).toEqual([]);
+  });
+
+  it('a container with no start event roots both its boundary event and its main flow', () => {
+    // The boundary arm is unconditional; the no-predecessor fallback is keyed
+    // on the absence of a start event. Both fire here, and folding the first
+    // into the second would leave `main` (a no-predecessor non-boundary node)
+    // depending on a condition that has nothing to do with it.
+    const proc = process(
+      [task('main'), boundary('B', 'main'), task('esc'), end('e')],
+      [flow('B', 'esc'), flow('esc', 'e')],
+    );
+    const cfg = analyzeCfg(proc);
+
+    expect(cfg.immediateDominator('B')).toBe(VIRTUAL_ENTRY);
+    expect(cfg.immediateDominator('main')).toBe(VIRTUAL_ENTRY);
   });
 });

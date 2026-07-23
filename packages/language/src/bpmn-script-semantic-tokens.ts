@@ -22,6 +22,12 @@
  * token the same way as a lexical one, so `on error` reads visually
  * identical to `on`, while `var error: string` stays a plain identifier.
  * Every other AST node falls through to Langium's default (no token).
+ *
+ * `OnHandler.host` is deliberately excluded: it is a cross-reference to the
+ * activity the handler attaches to, not a trigger word, so `on Review: timer
+ * after "PT2H" { }` marks `timer`/`after` as keywords while `Review` stays
+ * plain — the same look a variable reference gets, which is what it
+ * structurally is.
  */
 
 import type { AstNode } from 'langium';

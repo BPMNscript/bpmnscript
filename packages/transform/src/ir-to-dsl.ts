@@ -82,12 +82,7 @@ export function irToDsl(process: BpmnProcess): string {
   );
 
   const header = buildProcessHeader(process);
-  const lines = [
-    header,
-    ...declarations,
-    ...body.map((l) => INDENT + l),
-    '}',
-  ];
+  const lines = [header, ...declarations, ...body.map((l) => INDENT + l), '}'];
   return lines.join('\n') + '\n';
 }
 
@@ -143,39 +138,68 @@ class Emitter {
   }
 
   /**
-   * Emit the whole process body as a list of (un-indented) statement lines.
-   * The order is: structured emission from each start event, then any non-handler
-   * node still unemitted (unreachable / orphaned graph fragments), then a final
-   * sweep that flushes every flow edge not realized structurally as a `goto`,
-   * then every `on` handler — handlers are not flow, and the surface requires
-   * them at the end of the body (the catch-block reading), so they print last.
+   * Emit the whole process body as a list of (un-indented) statement lines, in
+   * five passes:
+   *
+   *   1. **Structured emission from each start event** — a start event roots the
+   *      main reachable region, which the recursive walk prints in its
+   *      structured form.
+   *   2. **Boundary handlers** — each `boundaryEvent` with its escape chain, as
+   *      an `on <host>: <trigger> { … }` block. A boundary event has outgoing
+   *      but no incoming flow, so its chain is never reached from a start event;
+   *      it needs a pass of its own. The *walk* has to run here, before the
+   *      orphan sweep, or the orphan sweep would find every escape-chain node
+   *      unemitted and print it as a detached top-level chain with no header and
+   *      no host; running it after pass 1 (rather than before) is what makes a
+   *      chain rejoining the main flow degrade to a `goto`, since the main-flow
+   *      nodes are already in `emittedNodes` and the arrival is realized as a
+   *      jump rather than printing the node a second time. Its *lines*, though,
+   *      are held back and appended with the trailing handler group: a handler
+   *      block reads as a catch block and must follow the last step of the body
+   *      it guards, so nothing from passes 3 and 4 may print after it.
+   *   3. **Orphaned fragments** — any node still unemitted (an unreachable
+   *      fragment in a hand-built / irreducible IR) becomes its own little
+   *      chain, so no node is lost. Handlers and boundary events are skipped:
+   *      both have their own pass.
+   *   4. **Goto sweep** — every flow edge not realized structurally is flushed
+   *      as an explicit `goto` from its (already-emitted) source. Placed at the
+   *      end of the flow body, since a `goto` may appear anywhere and names its
+   *      target by id.
+   *   5. **Handler group** — the boundary blocks walked in pass 2, then the
+   *      host-less `on` handlers, which are not flow at all (no incoming and no
+   *      outgoing edges). The surface requires handlers at the end of the body
+   *      (the catch-block reading), so the whole group prints last.
    */
   emit(): string[] {
     const lines: string[] = [];
 
-    // 1. Emit from each start event in IR order. A start event roots a
-    //    reachable region; the recursive walk emits the structured form.
+    // 1. Structured emission from each start event, in IR order.
     for (const el of this.container.flowElements) {
       if (el.kind === 'startEvent' && !this.emittedNodes.has(el.id)) {
         this.emitFrom(el.id, undefined, lines, 0);
       }
     }
 
-    // 2. Emit any non-handler node not yet reached (orphaned fragments in a
-    //    hand-built / irreducible IR). Each becomes its own little chain so no
-    //    node is lost. Event sub-processes (`on` handlers) are skipped here —
-    //    they are not part of the flow graph and print last (step 4).
+    // 2. Boundary handlers and their escape chains, walked here but held back
+    //    for the trailing handler group. A boundary event is only ever already
+    //    emitted here if a malformed IR wired a flow edge into it, in which case
+    //    pass 1 printed it at its (wrong but harmless) arrival point.
+    const boundaryLines: string[] = [];
     for (const el of this.container.flowElements) {
-      if (isHandler(el)) continue;
+      if (isBoundary(el) && !this.emittedNodes.has(el.id)) {
+        this.emitBoundaryHandler(el, boundaryLines, 0);
+      }
+    }
+
+    // 3. Orphaned fragments.
+    for (const el of this.container.flowElements) {
+      if (isHandler(el) || isBoundary(el)) continue;
       if (!this.emittedNodes.has(el.id)) {
         this.emitFrom(el.id, undefined, lines, 0);
       }
     }
 
-    // 3. Final sweep: any flow edge not consumed by a structured region is
-    //    emitted as an explicit `goto` from the (already-emitted) source.
-    //    Placed at the end of the body — a `goto` statement may appear
-    //    anywhere and references the target by id.
+    // 4. Final goto sweep.
     for (const f of this.container.sequenceFlows) {
       if (!this.consumedFlows.has(f.id)) {
         this.consumedFlows.add(f.id);
@@ -183,9 +207,9 @@ class Emitter {
       }
     }
 
-    // 4. Emit every `on` handler, after all flow. Each is a self-contained
-    //    event sub-process with no incoming/outgoing edges, so it never appears
-    //    in the fall-through walk.
+    // 5. Trailing handler group: the boundary blocks from pass 2, then the
+    //    event sub-processes.
+    for (const l of boundaryLines) lines.push(l);
     for (const el of this.container.flowElements) {
       if (isHandler(el) && !this.emittedNodes.has(el.id)) {
         this.emitHandler(el, lines);
@@ -208,6 +232,42 @@ class Emitter {
     this.emittedNodes.add(handler.id);
     lines.push(buildOnHeader(handler));
     for (const l of new Emitter(handler).emit()) lines.push(INDENT + l);
+    lines.push('}');
+  }
+
+  /**
+   * Emit one boundary handler: the `on <host>: <trigger> … {` header, then its
+   * escape chain restructured and indented one level, then the closing brace.
+   *
+   * Unlike an event sub-process, a boundary event's body is **not** a separate
+   * container — the escape chain's nodes and edges live in this container's own
+   * arrays. So the chain is walked by *this* Emitter, sharing its
+   * `emittedNodes` / `consumedFlows` state with the main flow: a chain that
+   * rejoins the main flow reaches an already-emitted node and degrades to a
+   * `goto` through the ordinary machinery, and the rejoined node is still
+   * printed exactly once, at its main-flow position.
+   *
+   * The chain starts with `followLinear` on the boundary event itself, which
+   * applies the plain-node out-edge rule: no out-edge is an empty body (a
+   * boundary event that catches and stops), one out-edge continues the chain,
+   * and any further out-edge on a malformed IR becomes a `goto` inside the
+   * body rather than being dropped.
+   *
+   * `depth` is the caller's block-nesting depth, so a chain reached through a
+   * flow edge into the boundary event keeps spending the same
+   * {@link MAX_NESTING_DEPTH} budget instead of restarting it.
+   */
+  private emitBoundaryHandler(
+    boundary: Extract<FlowElement, { kind: 'boundaryEvent' }>,
+    lines: string[],
+    depth: number,
+  ): void {
+    this.emittedNodes.add(boundary.id);
+    lines.push(buildBoundaryHeader(boundary));
+    const body: string[] = [];
+    const next = this.followLinear(boundary.id, undefined, body, depth);
+    if (next !== STOP) this.emitFrom(next, undefined, body, depth);
+    for (const l of body) lines.push(INDENT + l);
     lines.push('}');
   }
 
@@ -321,6 +381,16 @@ class Emitter {
       for (const l of new Emitter(el).emit()) lines.push(INDENT + l);
       lines.push('}');
       return this.followLinear(id, stop, lines, depth);
+    }
+
+    // A boundary event is not reached by flow either: it prints in the boundary
+    // handler pass. Should a malformed IR wire a flow edge into one, print its
+    // handler block here and stop — it has no single-line statement form, so
+    // falling through to the plain-node case would emit nothing and the element
+    // would vanish from the output.
+    if (isBoundary(el)) {
+      this.emitBoundaryHandler(el, lines, depth);
+      return STOP;
     }
 
     // Plain task / event: emit the statement, then follow its sole fall-through
@@ -944,6 +1014,14 @@ class Emitter {
         // switch for a subProcess. Listed for exhaustiveness so a new kind is
         // caught by the type checker.
         return undefined;
+      case 'boundaryEvent':
+        // A boundary event has no single-line form either: like a
+        // sub-process, it prints as a multi-line group — an
+        // `on <attachedToRef>: <trigger> … { … }` handler body — emitted by
+        // `emitBoundaryHandler`, which this switch is never reached for.
+        // Listed for exhaustiveness so the type checker still catches the
+        // next new FlowElement kind added here.
+        return undefined;
       case 'exclusiveGateway':
       case 'parallelGateway':
         // No statement form. An unrecognized gateway emits nothing; its
@@ -990,6 +1068,18 @@ function isHandler(
   el: FlowElement,
 ): el is Extract<FlowElement, { kind: 'subProcess' }> {
   return el.kind === 'subProcess' && el.triggeredByEvent === true;
+}
+
+/**
+ * Whether a flow element is a boundary event — an `on` handler attached to a
+ * host activity. A boundary event has outgoing flow but no incoming, so it is
+ * never reached by the fall-through walk and prints, together with its escape
+ * chain, in a dedicated pass.
+ */
+function isBoundary(
+  el: FlowElement,
+): el is Extract<FlowElement, { kind: 'boundaryEvent' }> {
+  return el.kind === 'boundaryEvent';
 }
 
 /**
@@ -1040,6 +1130,23 @@ function buildOnHeader(
   }
   const alongside = start.isInterrupting === false ? ' alongside' : '';
   return `on ${renderTriggerHead(start.eventDefinition)}${alongside} {`;
+}
+
+/**
+ * Build a boundary handler header: the host id, the colon that separates it
+ * from the trigger, then the same trigger word and payload a host-less handler
+ * prints, plus ` alongside` for a non-interrupting boundary.
+ *
+ * `attachedToRef` is printed verbatim. It is the whole surface the header
+ * needs, so a host that does not resolve in this container still prints — the
+ * emitter's job is to render the IR it is given, and refusing a cross-container
+ * attachment belongs to validation, not to printing.
+ */
+function buildBoundaryHeader(
+  boundary: Extract<FlowElement, { kind: 'boundaryEvent' }>,
+): string {
+  const alongside = boundary.cancelActivity === false ? ' alongside' : '';
+  return `on ${boundary.attachedToRef}: ${renderTriggerHead(boundary.eventDefinition)}${alongside} {`;
 }
 
 /** The DSL timer particle for each timer kind. */

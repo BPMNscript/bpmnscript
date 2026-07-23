@@ -888,7 +888,11 @@ describe('irToXml — callActivity serialization', () => {
         ],
         outMappings: [
           { kind: 'variable', source: 'result', target: 'outcome' },
-          { kind: 'expression', sourceExpression: '${status}', target: 'final' },
+          {
+            kind: 'expression',
+            sourceExpression: '${status}',
+            target: 'final',
+          },
         ],
       },
       { kind: 'endEvent', id: 'End' },
@@ -1089,7 +1093,11 @@ describe('irToXml — event layer (errors + escalations)', () => {
           },
         ],
         sequenceFlows: [
-          { id: 'SF_OSubStart_OWork', sourceRef: 'OSubStart', targetRef: 'OWork' },
+          {
+            id: 'SF_OSubStart_OWork',
+            sourceRef: 'OSubStart',
+            targetRef: 'OWork',
+          },
           { id: 'SF_OWork_OSubEnd', sourceRef: 'OWork', targetRef: 'OSubEnd' },
         ],
       },
@@ -1122,7 +1130,11 @@ describe('irToXml — event layer (errors + escalations)', () => {
           { kind: 'endEvent', id: 'EscEnd' },
         ],
         sequenceFlows: [
-          { id: 'SF_EscStart_Notify', sourceRef: 'EscStart', targetRef: 'Notify' },
+          {
+            id: 'SF_EscStart_Notify',
+            sourceRef: 'EscStart',
+            targetRef: 'Notify',
+          },
           { id: 'SF_Notify_EscEnd', sourceRef: 'Notify', targetRef: 'EscEnd' },
         ],
       },
@@ -1195,8 +1207,12 @@ describe('irToXml — event layer (errors + escalations)', () => {
   it('emits the escalation intermediate throw wired into the chain with incoming/outgoing', () => {
     const emit = requireDeep(defs, 'Emit1');
     expect(emit.$type).toBe('bpmn:IntermediateThrowEvent');
-    expect((emit.incoming ?? []).map((f) => f.id)).toEqual(['SF_OuterSub_Emit1']);
-    expect((emit.outgoing ?? []).map((f) => f.id)).toEqual(['SF_Emit1_ThrowPF']);
+    expect((emit.incoming ?? []).map((f) => f.id)).toEqual([
+      'SF_OuterSub_Emit1',
+    ]);
+    expect((emit.outgoing ?? []).map((f) => f.id)).toEqual([
+      'SF_Emit1_ThrowPF',
+    ]);
   });
 
   it('catch-all handler emits no errorRef and no root when the code is unused elsewhere', async () => {
@@ -1327,7 +1343,10 @@ describe('irToXml — event layer (errors + escalations)', () => {
     const escHandler = requireShape(shapes, 'EscHandler');
     for (const child of ['EscStart', 'Notify', 'EscEnd']) {
       expect(
-        boundsStrictlyInside(requireShape(shapes, child).bounds, escHandler.bounds),
+        boundsStrictlyInside(
+          requireShape(shapes, child).bounds,
+          escHandler.bounds,
+        ),
       ).toBe(true);
     }
 
@@ -1337,7 +1356,10 @@ describe('irToXml — event layer (errors + escalations)', () => {
     expect(boundsStrictlyInside(errHandler.bounds, outerSub.bounds)).toBe(true);
     for (const child of ['ErrStart', 'Recover', 'ErrEnd']) {
       expect(
-        boundsStrictlyInside(requireShape(shapes, child).bounds, errHandler.bounds),
+        boundsStrictlyInside(
+          requireShape(shapes, child).bounds,
+          errHandler.bounds,
+        ),
       ).toBe(true);
     }
   });
@@ -1354,7 +1376,12 @@ function eventHandler(
 ): FlowElement {
   const start: FlowElement =
     isInterrupting === false
-      ? { kind: 'startEvent', id: startId, isInterrupting, eventDefinition: def }
+      ? {
+          kind: 'startEvent',
+          id: startId,
+          isInterrupting,
+          eventDefinition: def,
+        }
       : { kind: 'startEvent', id: startId, eventDefinition: def };
   return {
     kind: 'subProcess',
@@ -1408,7 +1435,11 @@ describe('irToXml — event layer (message + signal + timer + conditional)', () 
     ],
     sequenceFlows: [
       { id: 'SF_PStart_EmitSig', sourceRef: 'PStart', targetRef: 'EmitSig' },
-      { id: 'SF_EmitSig_ThrowSig', sourceRef: 'EmitSig', targetRef: 'ThrowSig' },
+      {
+        id: 'SF_EmitSig_ThrowSig',
+        sourceRef: 'EmitSig',
+        targetRef: 'ThrowSig',
+      },
     ],
   };
 
@@ -1500,7 +1531,9 @@ describe('irToXml — event layer (message + signal + timer + conditional)', () 
           condition: '${amount > 100}',
         }),
       ],
-      sequenceFlows: [{ id: 'SF_PStart_PEnd', sourceRef: 'PStart', targetRef: 'PEnd' }],
+      sequenceFlows: [
+        { id: 'SF_PStart_PEnd', sourceRef: 'PStart', targetRef: 'PEnd' },
+      ],
     };
     const d = await parseDefinitionsWithOperaton(await irToXml(timerIr));
 
@@ -1554,8 +1587,16 @@ describe('irToXml — event layer (message + signal + timer + conditional)', () 
       ],
       sequenceFlows: [
         { id: 'SF_S_EmitEsc', sourceRef: 'S', targetRef: 'EmitEsc' },
-        { id: 'SF_EmitEsc_EmitSig', sourceRef: 'EmitEsc', targetRef: 'EmitSig' },
-        { id: 'SF_EmitSig_ThrowErr', sourceRef: 'EmitSig', targetRef: 'ThrowErr' },
+        {
+          id: 'SF_EmitEsc_EmitSig',
+          sourceRef: 'EmitEsc',
+          targetRef: 'EmitSig',
+        },
+        {
+          id: 'SF_EmitSig_ThrowErr',
+          sourceRef: 'EmitSig',
+          targetRef: 'ThrowErr',
+        },
       ],
     };
     const d = await parseDefinitionsWithOperaton(await irToXml(mixedIr));
@@ -1728,9 +1769,326 @@ describe('irToXml — event layer (compensation)', () => {
 
     for (const child of ['CompStart', 'CompHandler_Work', 'CompHandler_End']) {
       expect(
-        boundsStrictlyInside(requireShape(shapes, child).bounds, handler.bounds),
+        boundsStrictlyInside(
+          requireShape(shapes, child).bounds,
+          handler.bounds,
+        ),
       ).toBe(true);
     }
+  });
+});
+
+// ── 14. Boundary events ───────────────────────────────────────────────────────
+
+/**
+ * A minimal process with one host activity carrying one boundary event:
+ * `PStart → Host → PEnd` in the main flow, plus a `boundaryEvent` attached to
+ * `Host` whose one outgoing flow lands on its own end event — the shape a
+ * hosted handler with an empty body lowers to.
+ */
+function hostedBoundaryIr(
+  eventDefinition: EventDefinition,
+  cancelActivity?: false,
+): BpmnProcess {
+  return {
+    id: 'proc',
+    isExecutable: true,
+    flowElements: [
+      { kind: 'startEvent', id: 'PStart' },
+      { kind: 'userTask', id: 'Host' },
+      { kind: 'endEvent', id: 'PEnd' },
+      {
+        kind: 'boundaryEvent',
+        id: 'Boundary_Host_x',
+        attachedToRef: 'Host',
+        eventDefinition,
+        ...(cancelActivity === false ? { cancelActivity } : {}),
+      },
+      { kind: 'endEvent', id: 'BoundaryEnd' },
+    ],
+    sequenceFlows: [
+      { id: 'SF_PStart_Host', sourceRef: 'PStart', targetRef: 'Host' },
+      { id: 'SF_Host_PEnd', sourceRef: 'Host', targetRef: 'PEnd' },
+      {
+        id: 'SF_Boundary_BoundaryEnd',
+        sourceRef: 'Boundary_Host_x',
+        targetRef: 'BoundaryEnd',
+      },
+    ],
+  };
+}
+
+describe('irToXml — boundary events', () => {
+  it('emits a bpmn:BoundaryEvent attached to its host with no cancelActivity attribute when interrupting', async () => {
+    const xml = await irToXml(
+      hostedBoundaryIr({ kind: 'message', messageName: 'Ping' }),
+    );
+    const defs = await parseDefinitionsWithOperaton(xml);
+    const boundary = requireDeep(defs, 'Boundary_Host_x');
+    expect(boundary.$type).toBe('bpmn:BoundaryEvent');
+    expect(boundary.attachedToRef?.id).toBe('Host');
+    // Raw-XML assertion: bpmn-moddle applies the schema default
+    // (`cancelActivity` defaults to `true`) when reading the attribute back,
+    // so a parsed check can't distinguish "absent" from "explicitly true".
+    // Only the serialized text pins that the attribute is genuinely absent.
+    expect(extractNodeBlock(xml, 'Boundary_Host_x')).not.toContain(
+      'cancelActivity',
+    );
+    // A boundary event carries no humanized name: its id is synthesized, so a
+    // derived label would be noise in the diagram and churn in the goldens.
+    expect(boundary.name).toBeUndefined();
+  });
+
+  it('emits cancelActivity="false" for a non-interrupting (alongside) boundary', async () => {
+    const xml = await irToXml(
+      hostedBoundaryIr({ kind: 'message', messageName: 'Ping' }, false),
+    );
+    const defs = await parseDefinitionsWithOperaton(xml);
+    expect(requireDeep(defs, 'Boundary_Host_x').cancelActivity).toBe(false);
+    expect(extractNodeBlock(xml, 'Boundary_Host_x')).toContain(
+      'cancelActivity="false"',
+    );
+  });
+
+  it.each<[string, EventDefinition, string]>([
+    ['error', { kind: 'error', errorCode: 'PF' }, 'bpmn:ErrorEventDefinition'],
+    [
+      'escalation',
+      { kind: 'escalation', escalationCode: 'LS' },
+      'bpmn:EscalationEventDefinition',
+    ],
+    [
+      'message',
+      { kind: 'message', messageName: 'Ping' },
+      'bpmn:MessageEventDefinition',
+    ],
+    [
+      'signal',
+      { kind: 'signal', signalName: 'Cancelled' },
+      'bpmn:SignalEventDefinition',
+    ],
+    [
+      'timer',
+      { kind: 'timer', timerKind: 'duration', expression: 'PT1H' },
+      'bpmn:TimerEventDefinition',
+    ],
+    [
+      'conditional',
+      { kind: 'conditional', condition: '${amount > 100}' },
+      'bpmn:ConditionalEventDefinition',
+    ],
+  ])(
+    'carries the %s event definition child',
+    async (_label, def, expectedType) => {
+      const defs = await parseDefinitionsWithOperaton(
+        await irToXml(hostedBoundaryIr(def)),
+      );
+      expect(soleDef(requireDeep(defs, 'Boundary_Host_x')).$type).toBe(
+        expectedType,
+      );
+    },
+  );
+
+  it('carries an outgoing sequence flow and no incoming', async () => {
+    const defs = await parseDefinitionsWithOperaton(
+      await irToXml(hostedBoundaryIr({ kind: 'message', messageName: 'Ping' })),
+    );
+    const boundary = requireDeep(defs, 'Boundary_Host_x');
+    expect(boundary.incoming ?? []).toHaveLength(0);
+    expect((boundary.outgoing ?? []).map((f) => f.id)).toEqual([
+      'SF_Boundary_BoundaryEnd',
+    ]);
+  });
+
+  it('serializes two boundary events attached to one host', async () => {
+    const ir: BpmnProcess = {
+      id: 'proc',
+      isExecutable: true,
+      flowElements: [
+        { kind: 'startEvent', id: 'PStart' },
+        { kind: 'userTask', id: 'Host' },
+        { kind: 'endEvent', id: 'PEnd' },
+        {
+          kind: 'boundaryEvent',
+          id: 'Boundary_Host_error',
+          attachedToRef: 'Host',
+          eventDefinition: { kind: 'error', errorCode: 'PF' },
+        },
+        { kind: 'endEvent', id: 'ErrEnd' },
+        {
+          kind: 'boundaryEvent',
+          id: 'Boundary_Host_timer',
+          attachedToRef: 'Host',
+          eventDefinition: {
+            kind: 'timer',
+            timerKind: 'duration',
+            expression: 'PT1H',
+          },
+        },
+        { kind: 'endEvent', id: 'TimerEnd' },
+      ],
+      sequenceFlows: [
+        { id: 'SF_PStart_Host', sourceRef: 'PStart', targetRef: 'Host' },
+        { id: 'SF_Host_PEnd', sourceRef: 'Host', targetRef: 'PEnd' },
+        {
+          id: 'SF_ErrB_ErrEnd',
+          sourceRef: 'Boundary_Host_error',
+          targetRef: 'ErrEnd',
+        },
+        {
+          id: 'SF_TimerB_TimerEnd',
+          sourceRef: 'Boundary_Host_timer',
+          targetRef: 'TimerEnd',
+        },
+      ],
+    };
+    const defs = await parseDefinitionsWithOperaton(await irToXml(ir));
+    const errBoundary = requireDeep(defs, 'Boundary_Host_error');
+    const timerBoundary = requireDeep(defs, 'Boundary_Host_timer');
+    expect(errBoundary.$type).toBe('bpmn:BoundaryEvent');
+    expect(timerBoundary.$type).toBe('bpmn:BoundaryEvent');
+    expect(errBoundary.attachedToRef?.id).toBe('Host');
+    expect(timerBoundary.attachedToRef?.id).toBe('Host');
+  });
+
+  it('serializes a boundary event on a sub-process host with exactly one bpmndi:BPMNDiagram', async () => {
+    const ir: BpmnProcess = {
+      id: 'proc',
+      isExecutable: true,
+      flowElements: [
+        { kind: 'startEvent', id: 'PStart' },
+        {
+          kind: 'subProcess',
+          id: 'HostSub',
+          flowElements: [
+            { kind: 'startEvent', id: 'SubStart' },
+            { kind: 'userTask', id: 'SubWork' },
+            { kind: 'endEvent', id: 'SubEnd' },
+          ],
+          sequenceFlows: [
+            {
+              id: 'SF_SubStart_SubWork',
+              sourceRef: 'SubStart',
+              targetRef: 'SubWork',
+            },
+            {
+              id: 'SF_SubWork_SubEnd',
+              sourceRef: 'SubWork',
+              targetRef: 'SubEnd',
+            },
+          ],
+        },
+        { kind: 'endEvent', id: 'PEnd' },
+        {
+          kind: 'boundaryEvent',
+          id: 'Boundary_HostSub_escalation',
+          attachedToRef: 'HostSub',
+          eventDefinition: { kind: 'escalation', escalationCode: 'LS' },
+        },
+        { kind: 'endEvent', id: 'EscEnd' },
+      ],
+      sequenceFlows: [
+        { id: 'SF_PStart_HostSub', sourceRef: 'PStart', targetRef: 'HostSub' },
+        { id: 'SF_HostSub_PEnd', sourceRef: 'HostSub', targetRef: 'PEnd' },
+        {
+          id: 'SF_Boundary_EscEnd',
+          sourceRef: 'Boundary_HostSub_escalation',
+          targetRef: 'EscEnd',
+        },
+      ],
+    };
+    const xml = await irToXml(ir);
+    expect((xml.match(/<bpmndi:BPMNDiagram\b/g) ?? []).length).toBe(1);
+    const defs = await parseDefinitionsWithOperaton(xml);
+    const boundary = requireDeep(defs, 'Boundary_HostSub_escalation');
+    expect(boundary.attachedToRef?.id).toBe('HostSub');
+  });
+
+  it('throws when a boundary event references an unknown host', async () => {
+    const ir = hostedBoundaryIr({ kind: 'message', messageName: 'Ping' });
+    const broken: BpmnProcess = {
+      ...ir,
+      flowElements: ir.flowElements.map((el) =>
+        el.kind === 'boundaryEvent' ? { ...el, attachedToRef: 'Ghost' } : el,
+      ),
+    };
+    await expect(irToXml(broken)).rejects.toThrow(
+      'BoundaryEvent "Boundary_Host_x" is attached to "Ghost", which is not a flow element of this container.',
+    );
+  });
+
+  it('names the container rule when the host exists but sits inside a sub-process', async () => {
+    // The misleading case: the id does exist in the document, just not where a
+    // boundary event may reach it. A bare "unknown id" message would send a
+    // reader looking for a missing element instead of a misplaced attachment.
+    const nested: BpmnProcess = {
+      id: 'proc',
+      isExecutable: true,
+      flowElements: [
+        { kind: 'startEvent', id: 'PStart' },
+        {
+          kind: 'subProcess',
+          id: 'Sub',
+          flowElements: [{ kind: 'userTask', id: 'Host' }],
+          sequenceFlows: [],
+        },
+        { kind: 'endEvent', id: 'PEnd' },
+        {
+          kind: 'boundaryEvent',
+          id: 'Boundary_Host_x',
+          attachedToRef: 'Host',
+          eventDefinition: { kind: 'message', messageName: 'Ping' },
+        },
+      ],
+      sequenceFlows: [
+        { id: 'SF_PStart_Sub', sourceRef: 'PStart', targetRef: 'Sub' },
+        { id: 'SF_Sub_PEnd', sourceRef: 'Sub', targetRef: 'PEnd' },
+      ],
+    };
+    await expect(irToXml(nested)).rejects.toThrow(
+      'BoundaryEvent "Boundary_Host_x" is attached to "Host", which is not a flow element of this container.',
+    );
+  });
+
+  it('shares one root across a message caught by a boundary event and by a host-less handler', async () => {
+    const ir: BpmnProcess = {
+      id: 'proc',
+      isExecutable: true,
+      flowElements: [
+        { kind: 'startEvent', id: 'PStart' },
+        { kind: 'userTask', id: 'Host' },
+        { kind: 'endEvent', id: 'PEnd' },
+        {
+          kind: 'boundaryEvent',
+          id: 'Boundary_Host_message',
+          attachedToRef: 'Host',
+          eventDefinition: { kind: 'message', messageName: 'Shared' },
+        },
+        { kind: 'endEvent', id: 'BoundaryEnd' },
+        eventHandler('MsgHandler', 'MsgStart', {
+          kind: 'message',
+          messageName: 'Shared',
+        }),
+      ],
+      sequenceFlows: [
+        { id: 'SF_PStart_Host', sourceRef: 'PStart', targetRef: 'Host' },
+        { id: 'SF_Host_PEnd', sourceRef: 'Host', targetRef: 'PEnd' },
+        {
+          id: 'SF_Boundary_BoundaryEnd',
+          sourceRef: 'Boundary_Host_message',
+          targetRef: 'BoundaryEnd',
+        },
+      ],
+    };
+    const defs = await parseDefinitionsWithOperaton(await irToXml(ir));
+    const messages = rootsOfType(defs, 'bpmn:Message');
+    expect(messages).toHaveLength(1);
+    expect(
+      soleDef(requireDeep(defs, 'Boundary_Host_message')).messageRef?.id,
+    ).toBe(messages[0]!.id);
+    expect(soleDef(requireDeep(defs, 'MsgStart')).messageRef?.id).toBe(
+      messages[0]!.id,
+    );
   });
 });
 
@@ -1770,7 +2128,9 @@ interface EventNode {
  * `flowElements`) and the Operaton-namespaced event attributes resolve to typed
  * properties.
  */
-async function parseDefinitionsWithOperaton(xmlStr: string): Promise<EventNode> {
+async function parseDefinitionsWithOperaton(
+  xmlStr: string,
+): Promise<EventNode> {
   const { rootElement } = await operatonModdle().fromXML(xmlStr);
   return rootElement as unknown as EventNode;
 }

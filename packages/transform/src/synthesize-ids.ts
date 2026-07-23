@@ -24,6 +24,8 @@
  * EndEvent_<processId>_3            makeEndEventId        (third implicit end, etc.)
  * Throw_<X>                         makeThrowEventId      Throw_invoice-approval_2
  * EventSubProcess_<X>               makeEventSubProcessId EventSubProcess_invoice-approval_1
+ * Boundary_<hostId>_<trigger>       makeBoundaryEventId   Boundary_Pack_error
+ * Boundary_<hostId>_<trigger>_2     makeBoundaryEventId   (second occurrence of same pair)
  * ──────────────────────────────────────────────────────────────────────────
  *
  * `Throw_<X>` (an unnamed `throw`/`emit` at coordinate `<X>`) and
@@ -32,6 +34,18 @@
  * collision-free by construction and take no `taken` set. The validator reserves
  * the anchored `Throw_`/`EventSubProcess_` prefixes so an author-chosen name can
  * never occupy one.
+ *
+ * `Boundary_<hostId>_<trigger>` (a hosted `on <Host>: <trigger>` handler) is
+ * **host-derived**, not positional, and takes a `taken` set like the implicit
+ * start/end constructors: the host id and the trigger word are both authored
+ * text that survives a round-trip verbatim, so the id stays put no matter
+ * where the decompiler places the handler in its container's statement list —
+ * a positional coordinate would drift the moment the printer reorders
+ * handlers to the end of the body, exactly the instability `normalizeIr`
+ * already canonicalizes away for event sub-processes. Two boundaries sharing
+ * one host and trigger (e.g. two `timer` boundaries, which carry no engine
+ * subscription key and so are not rejected as duplicates) collide on the base
+ * id and are told apart by the numeric suffix.
  *
  * Collision resolution (used internally and exposed as `resolveCollision`):
  *   - If the base id is not in the taken set → return it unchanged.
@@ -148,6 +162,24 @@ export function makeThrowEventId(x: string): string {
  */
 export function makeEventSubProcessId(x: string): string {
   return `EventSubProcess_${x}`;
+}
+
+/**
+ * Id for a boundary event — a hosted `on <Host>: <trigger>` handler attached
+ * to an activity: `Boundary_<hostId>_<trigger>`. Unlike `Throw_<X>` /
+ * `EventSubProcess_<X>`, this id is host-derived rather than positional (see
+ * the template table above for why); it therefore needs collision resolution
+ * like the implicit start/end constructors. Adds the returned id to `taken`.
+ */
+export function makeBoundaryEventId(
+  hostId: string,
+  trigger: string,
+  taken: Set<string>,
+): string {
+  const base = `Boundary_${hostId}_${trigger}`;
+  const id = resolveCollision(base, taken);
+  taken.add(id);
+  return id;
 }
 
 // ---------------------------------------------------------------------------

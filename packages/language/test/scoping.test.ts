@@ -28,6 +28,16 @@
  *     `goto` inside a handler cannot escape to its enclosing body. The linker
  *     names the handler by its header (trigger + code) instead of by name,
  *     since a handler has none.
+ *   - **Container-scoped host resolution** (same provider and linker): an `on`
+ *     handler that names a host activity attaches to it, so the host must be a
+ *     step of the handler's *own* container — the same candidate set a `goto`
+ *     sees from that container, with no global fall-through, and with the
+ *     linker replacing the stock message by one that explains the attachment
+ *     scope. Because such a handler lowers inline into its host's container
+ *     rather than into a container of its own, its body is *transparent* to the
+ *     container walk: a `goto` crosses between the handler body and the main
+ *     flow in both directions, while a host-less handler nested inside it stays
+ *     a container boundary of its own.
  *   - **Reserved-word guidance** (custom `ParserErrorMessageProvider`): a
  *     reserved keyword used as a bare identifier yields a parse error that names
  *     the word and points to the quoted `"${…}"` raw-string fallback, instead of
@@ -39,7 +49,13 @@
 import { beforeAll, describe, expect, test } from 'vitest';
 import { AstUtils, EmptyFileSystem } from 'langium';
 import { parseHelper } from 'langium/test';
-import type { GotoStatement, Model, UserTask } from '@bpmn-script/language';
+import type {
+  GotoStatement,
+  Model,
+  OnHandler,
+  SubProcess,
+  UserTask,
+} from '@bpmn-script/language';
 import { createBpmnScriptServices, isProcess } from '@bpmn-script/language';
 
 const SEVERITY_ERROR = 1;
@@ -627,6 +643,310 @@ process p {
   });
 });
 
+// ── Container-scoped host resolution for a hosted handler ──────────────────
+
+describe('Scoping — hosted handler host reference', () => {
+  test('a host resolves to an activity of the handler’s own container', async () => {
+    const document = await parse(
+      `
+process p {
+  user Review
+  on Review: timer after "PT2H" { }
+}
+`,
+      { validation: true },
+    );
+    expect(document.parseResult.parserErrors).toHaveLength(0);
+
+    const handler = findHostedHandler(document.parseResult.value);
+    expect(handler.host!.ref).toBeDefined();
+    expect((handler.host!.ref as UserTask).name).toBe('Review');
+  });
+
+  test('a host resolves to an activity nested inside an if block of the same container', async () => {
+    const document = await parse(
+      `
+process p {
+  if (true) {
+    user Deep
+  }
+  on Deep: message "Cancelled" { }
+}
+`,
+      { validation: true },
+    );
+    expect(document.parseResult.parserErrors).toHaveLength(0);
+
+    const handler = findHostedHandler(document.parseResult.value);
+    expect(handler.host!.ref).toBeDefined();
+    expect((handler.host!.ref as UserTask).name).toBe('Deep');
+  });
+
+  test('a host inside a sibling sub-process does not resolve', async () => {
+    const document = await parse(
+      `
+process p {
+  subprocess Sub {
+    user Inner
+  }
+  on Inner: error "X" { }
+}
+`,
+      { validation: true },
+    );
+    expect(document.parseResult.parserErrors).toHaveLength(0);
+    expect(
+      findHostedHandler(document.parseResult.value).host!.ref,
+    ).toBeUndefined();
+  });
+
+  test('a host inside a host-less handler body does not resolve', async () => {
+    const document = await parse(
+      `
+process p {
+  user Review
+  on error "X" {
+    user Inner
+  }
+  on Inner: message "Cancelled" { }
+}
+`,
+      { validation: true },
+    );
+    expect(document.parseResult.parserErrors).toHaveLength(0);
+    expect(
+      findHostedHandler(document.parseResult.value).host!.ref,
+    ).toBeUndefined();
+  });
+
+  test('a host that names an activity of another process does not resolve', async () => {
+    const document = await parse(
+      `
+process a {
+  user Review
+  on Only: signal "Cancelled" { }
+}
+process b {
+  user Only
+}
+`,
+      { validation: true },
+    );
+    expect(document.parseResult.parserErrors).toHaveLength(0);
+    expect(
+      findHostedHandler(document.parseResult.value).host!.ref,
+    ).toBeUndefined();
+  });
+
+  test('a host resolves against the handler’s container, not the handler’s own body', async () => {
+    // A handler is itself a container node, so a scope seeded from the handler
+    // rather than from the container around it comes out empty under the
+    // transparency rule — the host would not resolve at all.
+    const document = await parse(
+      `
+process p {
+  user Review
+  on Review: error "X" {
+    user Review2
+  }
+}
+`,
+      { validation: true },
+    );
+    expect(document.parseResult.parserErrors).toHaveLength(0);
+
+    const handler = findHostedHandler(document.parseResult.value);
+    const process = document.parseResult.value.processes[0]!;
+    expect(handler.host!.ref).toBe(process.body[0]);
+  });
+
+  test('a host inside a sub-process resolves to that sub-process’s own step', async () => {
+    // The host reference is the one that starts at a node which is itself a
+    // container, so the walk past it matters most at depth: a handler written
+    // inside a sub-process must see that sub-process, not the process around it.
+    const document = await parse(
+      `
+process p {
+  user Outer
+  subprocess Sub {
+    user Review
+    on Review: error "X" { }
+  }
+}
+`,
+      { validation: true },
+    );
+    expect(document.parseResult.parserErrors).toHaveLength(0);
+
+    const handler = findHostedHandler(document.parseResult.value);
+    const sub = document.parseResult.value.processes[0]!.body[1] as SubProcess;
+    expect(handler.host!.ref).toBe(sub.body.statements[0]);
+  });
+
+  test('a host inside a sub-process does not reach a step of the enclosing process', async () => {
+    const document = await parse(
+      `
+process p {
+  user Outer
+  subprocess Sub {
+    user Review
+    on Outer: error "X" { }
+  }
+}
+`,
+      { validation: true },
+    );
+    expect(document.parseResult.parserErrors).toHaveLength(0);
+    expect(
+      findHostedHandler(document.parseResult.value).host!.ref,
+    ).toBeUndefined();
+
+    const errors = errorsOf(document).filter((d) =>
+      d.message.includes("'Outer'"),
+    );
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.message).toContain("subprocess 'Sub'");
+  });
+
+  test('a cross-container host gets the boundary message, not the generic one', async () => {
+    const document = await parse(
+      `
+process p {
+  subprocess Sub {
+    user Inner
+  }
+  on Inner: error "X" { }
+}
+`,
+      { validation: true },
+    );
+    expect(document.parseResult.parserErrors).toHaveLength(0);
+
+    const errors = errorsOf(document).filter((d) =>
+      d.message.includes("'Inner'"),
+    );
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.message).toContain("subprocess 'Sub'");
+    expect(errors[0]!.message.toLowerCase()).toContain(
+      'a boundary event attaches to an activity in its own scope',
+    );
+    expect(errors[0]!.message).not.toContain('Could not resolve reference');
+  });
+
+  test('a host that names nothing anywhere keeps the unchanged generic message', async () => {
+    const document = await parse(
+      `
+process p {
+  user Review
+  on Missing: error "X" { }
+}
+`,
+      { validation: true },
+    );
+    expect(document.parseResult.parserErrors).toHaveLength(0);
+
+    const errors = errorsOf(document).filter((d) =>
+      d.message.includes('Missing'),
+    );
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.message).toBe(
+      "Could not resolve reference to Statement named 'Missing'.",
+    );
+  });
+});
+
+// ── goto across a hosted handler body (transparent container) ──────────────
+
+describe('Scoping — goto through a hosted handler body', () => {
+  test('a goto inside a hosted handler body resolves a main-flow step', async () => {
+    // A hosted handler lowers inline into its host's container, so its body's
+    // steps and the main flow share one container and one sequence-flow scope.
+    const document = await parse(
+      `
+process p {
+  user Review
+  user Next
+  on Review: error "X" {
+    goto Next
+  }
+}
+`,
+      { validation: true },
+    );
+    expect(document.parseResult.parserErrors).toHaveLength(0);
+
+    const goto = findGoto(document.parseResult.value);
+    expect(goto.target.ref).toBeDefined();
+    expect((goto.target.ref as UserTask).name).toBe('Next');
+  });
+
+  test('a main-flow goto resolves a step inside a hosted handler body', async () => {
+    const document = await parse(
+      `
+process p {
+  user Review
+  goto Fix
+  on Review: error "X" {
+    user Fix
+  }
+}
+`,
+      { validation: true },
+    );
+    expect(document.parseResult.parserErrors).toHaveLength(0);
+
+    const goto = findGoto(document.parseResult.value);
+    expect(goto.target.ref).toBeDefined();
+    expect((goto.target.ref as UserTask).name).toBe('Fix');
+  });
+
+  test('a hosted handler body inside a sub-process stays isolated from the process body', async () => {
+    const document = await parse(
+      `
+process p {
+  user Outer
+  subprocess Sub {
+    user Review
+    on Review: error "X" {
+      goto Outer
+    }
+  }
+}
+`,
+      { validation: true },
+    );
+    expect(document.parseResult.parserErrors).toHaveLength(0);
+
+    const goto = findGoto(document.parseResult.value);
+    expect(goto.target.ref).toBeUndefined();
+
+    const errors = errorsOf(document).filter((d) =>
+      d.message.includes("'Outer'"),
+    );
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.message).toContain("subprocess 'Sub'");
+  });
+
+  test('a host-less handler nested in a hosted handler body is still its own container', async () => {
+    const document = await parse(
+      `
+process p {
+  user Review
+  on Review: error "X" {
+    goto Inner
+    on escalation "Y" {
+      user Inner
+    }
+  }
+}
+`,
+      { validation: true },
+    );
+    expect(document.parseResult.parserErrors).toHaveLength(0);
+    expect(findGoto(document.parseResult.value).target.ref).toBeUndefined();
+  });
+});
+
 // ── Container-scoped goto across a compensation handler boundary ───────────
 
 describe('Scoping — container-scoped goto (compensation handler boundary)', () => {
@@ -743,6 +1063,18 @@ function findGoto(model: Model): GotoStatement {
     throw new Error('Test fixture must contain exactly one goto statement.');
   }
   return goto;
+}
+
+/** The (assumed single) `OnHandler` carrying a host anywhere in the model. */
+function findHostedHandler(model: Model): OnHandler {
+  const handler = AstUtils.streamAst(model).find(
+    (node): node is OnHandler =>
+      node.$type === 'OnHandler' && (node as OnHandler).host !== undefined,
+  );
+  if (!handler) {
+    throw new Error('Test fixture must contain exactly one hosted handler.');
+  }
+  return handler;
 }
 
 /** All error-severity diagnostics of a built document. */

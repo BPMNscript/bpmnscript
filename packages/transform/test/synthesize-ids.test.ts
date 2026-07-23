@@ -19,6 +19,7 @@
  *   EndEvent_<processId>      Implicit end event; duplicates get _2, _3, …
  *   Throw_<X>                 Unnamed `throw`/`emit` event at coordinate X
  *   EventSubProcess_<X>       `on` handler (event sub-process) at coordinate X
+ *   Boundary_<hostId>_<trigger>  Hosted `on <Host>: <trigger>` handler; duplicates get _2, _3, …
  */
 
 import { describe, expect, it } from 'vitest';
@@ -33,6 +34,7 @@ import {
   makeEndEventId,
   makeThrowEventId,
   makeEventSubProcessId,
+  makeBoundaryEventId,
   resolveCollision,
 } from '../src/synthesize-ids.js';
 
@@ -107,6 +109,21 @@ describe('determinism', () => {
 
   it('makeEventSubProcessId is pure', () => {
     expect(makeEventSubProcessId('p_2')).toBe(makeEventSubProcessId('p_2'));
+  });
+
+  it('makeBoundaryEventId is deterministic for an untaken base', () => {
+    const taken1 = new Set<string>();
+    const taken2 = new Set<string>();
+    expect(makeBoundaryEventId('Pack', 'error', taken1)).toBe(
+      makeBoundaryEventId('Pack', 'error', taken2),
+    );
+  });
+
+  it('makeBoundaryEventId resolves a collision and records it in taken', () => {
+    const taken = new Set<string>(['Boundary_Pack_error']);
+    const id = makeBoundaryEventId('Pack', 'error', taken);
+    expect(id).toBe('Boundary_Pack_error_2');
+    expect(taken.has('Boundary_Pack_error_2')).toBe(true);
   });
 });
 
@@ -199,6 +216,35 @@ describe('structural stability', () => {
     // coordinate, unlike the implicit start/end constructors.
     expect(makeThrowEventId).toHaveLength(1);
     expect(makeEventSubProcessId).toHaveLength(1);
+  });
+
+  it('makeBoundaryEventId → Boundary_<hostId>_<trigger>', () => {
+    expect(makeBoundaryEventId('Pack', 'error', new Set())).toBe(
+      'Boundary_Pack_error',
+    );
+    expect(makeBoundaryEventId('Review', 'timer', new Set())).toBe(
+      'Boundary_Review_timer',
+    );
+  });
+
+  it('makeBoundaryEventId (second occurrence) → Boundary_<hostId>_<trigger>_2', () => {
+    const taken = new Set(['Boundary_Pack_timer']);
+    expect(makeBoundaryEventId('Pack', 'timer', taken)).toBe(
+      'Boundary_Pack_timer_2',
+    );
+  });
+
+  it('makeBoundaryEventId (third occurrence) → Boundary_<hostId>_<trigger>_3', () => {
+    const taken = new Set(['Boundary_Pack_timer', 'Boundary_Pack_timer_2']);
+    expect(makeBoundaryEventId('Pack', 'timer', taken)).toBe(
+      'Boundary_Pack_timer_3',
+    );
+  });
+
+  it('is host-derived, not positional: it takes a taken set and adds its result', () => {
+    const taken = new Set<string>();
+    const id = makeBoundaryEventId('Pack', 'error', taken);
+    expect(taken.has(id)).toBe(true);
   });
 });
 

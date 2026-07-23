@@ -211,6 +211,26 @@ process p {
   });
 });
 
+describe('host slot on a handler attached to an activity', () => {
+  test('`on Review: timer after "PT2H" { }` highlights the trigger and particle, not the host', async () => {
+    const result = await highlight(`
+process p {
+  user Review
+  on <|Review|>: <|timer|> <|after|> "PT2H" { }
+}
+`);
+    expectNoTokenAt(result, 0);
+    expectSemanticToken(result, {
+      rangeIndex: 1,
+      tokenType: SemanticTokenTypes.keyword,
+    });
+    expectSemanticToken(result, {
+      rangeIndex: 2,
+      tokenType: SemanticTokenTypes.keyword,
+    });
+  });
+});
+
 describe('negative: the same words used as ordinary identifiers stay plain', () => {
   test('`var message: string` carries no token on `message`', async () => {
     const result = await highlight(`

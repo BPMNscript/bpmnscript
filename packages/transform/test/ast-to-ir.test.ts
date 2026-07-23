@@ -39,6 +39,7 @@ import {
   makeEndEventId,
   makeThrowEventId,
   makeEventSubProcessId,
+  makeBoundaryEventId,
 } from '../src/synthesize-ids.js';
 import type {
   BpmnProcess,
@@ -1308,6 +1309,229 @@ describe('astToIr — on-handler lowering', () => {
     expect(flow(handler, startId, endId)).toBeDefined();
     const start = only(handler, 'startEvent');
     expect(start.eventDefinition).toEqual({ kind: 'error', errorCode: 'PF' });
+  });
+});
+
+// ── 15b. Hosted handlers (`on <Host>:`) — inline boundary events ─────────────
+
+describe('astToIr — hosted-handler lowering', () => {
+  it('emits a boundary event attached to the host, with the body inline in the same container', async () => {
+    const result = await ir(
+      `process p {
+        service A { class = "x.A" }
+        on A: error "PF" { service R { class = "x.R" } }
+      }`,
+    );
+
+    const boundaryId = makeBoundaryEventId('A', 'error', new Set());
+    const boundary = only(result, 'boundaryEvent');
+    expect(boundary.id).toBe(boundaryId);
+    expect(boundary.attachedToRef).toBe('A');
+    expect(boundary.eventDefinition).toEqual({
+      kind: 'error',
+      errorCode: 'PF',
+    });
+    expect(boundary.cancelActivity).toBeUndefined();
+
+    // No wrapping container: the body's step is a sibling of the main flow, and
+    // the boundary node follows its host in the element list (the layout engine
+    // needs the host shape before the attacher).
+    expect(
+      result.flowElements.filter((fe) => fe.kind === 'subProcess'),
+    ).toEqual([]);
+    const ids = result.flowElements.map((fe) => fe.id);
+    expect(ids.indexOf('A')).toBeLessThan(ids.indexOf(boundaryId));
+    expect(ids).toContain('R');
+
+    // The escape chain runs boundary → R → its own implicit end, seeded from the
+    // boundary id, and never rejoins the main flow.
+    const escapeEndId = makeEndEventId(boundaryId, new Set());
+    expect(flow(result, boundaryId, 'R')).toBeDefined();
+    expect(flow(result, 'R', escapeEndId)).toBeDefined();
+    expect(byId(result, escapeEndId).kind).toBe('endEvent');
+
+    // The main chain is untouched: start → A → the container's own end, whose id
+    // does not shift because a handler is present.
+    expect(flow(result, 'StartEvent_p', 'A')).toBeDefined();
+    expect(flow(result, 'A', 'EndEvent_p')).toBeDefined();
+    expect(result.sequenceFlows.some((f) => f.targetRef === boundaryId)).toBe(
+      false,
+    );
+  });
+
+  it('stores cancelActivity: false for an alongside handler only', async () => {
+    const result = await ir(
+      `process p {
+        service A { class = "x.A" }
+        on A: timer after "PT2H" alongside { service R { class = "x.R" } }
+      }`,
+    );
+    const boundary = only(result, 'boundaryEvent');
+    expect(boundary.id).toBe(makeBoundaryEventId('A', 'timer', new Set()));
+    expect(boundary.cancelActivity).toBe(false);
+    expect(boundary.eventDefinition).toEqual({
+      kind: 'timer',
+      timerKind: 'duration',
+      expression: 'PT2H',
+    });
+  });
+
+  it('resolves a goto out of the body onto a main-flow node as a real flow', async () => {
+    const result = await ir(
+      `process p {
+        service A { class = "x.A" }
+        service B { class = "x.B" }
+        on A: error "PF" {
+          service R { class = "x.R" }
+          goto B
+        }
+      }`,
+    );
+    const boundaryId = makeBoundaryEventId('A', 'error', new Set());
+    expect(flow(result, boundaryId, 'R')).toBeDefined();
+    expect(flow(result, 'R', 'B')).toBeDefined();
+    // The chain transferred control, so no implicit end terminates it.
+    expect(result.flowElements.map((fe) => fe.id)).not.toContain(
+      makeEndEventId(boundaryId, new Set()),
+    );
+  });
+
+  it('still yields boundary → end for an empty body', async () => {
+    const result = await ir(
+      `process p {
+        service A { class = "x.A" }
+        on A: error "PF" { }
+      }`,
+    );
+    const boundaryId = makeBoundaryEventId('A', 'error', new Set());
+    const endId = makeEndEventId(boundaryId, new Set());
+    expect(flow(result, boundaryId, endId)).toBeDefined();
+    expect(byId(result, endId).kind).toBe('endEvent');
+  });
+
+  it('suffixes the second boundary id when two handlers share a host and trigger', async () => {
+    const result = await ir(
+      `process p {
+        service A { class = "x.A" }
+        on A: timer after "PT1H" { service R { class = "x.R" } }
+        on A: timer after "PT2H" { service S { class = "x.S" } }
+      }`,
+    );
+    const boundaries = result.flowElements.filter(
+      (fe) => fe.kind === 'boundaryEvent',
+    );
+    // Statement order decides which handler keeps the unsuffixed id.
+    expect(boundaries.map((fe) => fe.id)).toEqual([
+      'Boundary_A_timer',
+      'Boundary_A_timer_2',
+    ]);
+    expect(flow(result, 'Boundary_A_timer', 'R')).toBeDefined();
+    expect(flow(result, 'Boundary_A_timer_2', 'S')).toBeDefined();
+  });
+
+  it('lands a handler hosted inside a sub-process in that sub-process container', async () => {
+    const result = await ir(
+      `process p {
+        subprocess S {
+          service A { class = "x.A" }
+          on A: error "PF" { service R { class = "x.R" } }
+        }
+      }`,
+    );
+    const sub = subProcess(result, 'S');
+    const boundary = only(sub, 'boundaryEvent');
+    expect(boundary.attachedToRef).toBe('A');
+    expect(sub.flowElements.map((fe) => fe.id)).toContain('R');
+    expect(result.flowElements.some((fe) => fe.kind === 'boundaryEvent')).toBe(
+      false,
+    );
+    const all = allElementIdsDeep(result);
+    expect(new Set(all).size).toBe(all.length);
+  });
+
+  it('keeps a host-less handler an event sub-process when a hosted one shares the container', async () => {
+    const result = await ir(
+      `process p {
+        service A { class = "x.A" }
+        on A: error "PF" { service R { class = "x.R" } }
+        on escalation "LS" { service E { class = "x.E" } }
+      }`,
+    );
+    // The hosted handler is inline; the host-less one still wraps its body in a
+    // triggeredByEvent container with a trigger-carrying start.
+    expect(only(result, 'boundaryEvent').attachedToRef).toBe('A');
+    const handlerId = makeEventSubProcessId('p_2');
+    const handler = subProcess(result, handlerId);
+    expect(handler.triggeredByEvent).toBe(true);
+    expect(handler.flowElements.map((fe) => fe.id)).toEqual([
+      makeStartEventId(handlerId, new Set()),
+      'E',
+      makeEndEventId(handlerId, new Set()),
+    ]);
+    expect(only(handler, 'startEvent').eventDefinition).toEqual({
+      kind: 'escalation',
+      escalationCode: 'LS',
+    });
+    // The event sub-process stays out of the chain; the boundary body's step does
+    // not join it either.
+    for (const f of result.sequenceFlows) {
+      expect(f.sourceRef).not.toBe(handlerId);
+      expect(f.targetRef).not.toBe(handlerId);
+    }
+    expect(byId(result, 'R')).toBeDefined();
+  });
+
+  it('lifts a host-less handler written inside a hosted body into the outer container', async () => {
+    const result = await ir(
+      `process p {
+        service A { class = "x.A" }
+        on A: error "PF" {
+          service R { class = "x.R" }
+          on escalation "LS" { service E { class = "x.E" } }
+        }
+      }`,
+    );
+    // A hosted handler's body is not a scope of its own, so a host-less handler
+    // written inside it guards the whole enclosing container rather than just
+    // the escape path it is indented under. The event sub-process therefore
+    // lands beside the process body, not inside the escape chain.
+    const handler = result.flowElements.find(
+      (fe) => fe.kind === 'subProcess' && fe.triggeredByEvent === true,
+    );
+    expect(handler).toBeDefined();
+    expect(only(result, 'boundaryEvent').attachedToRef).toBe('A');
+    expect(result.flowElements.find((fe) => fe.id === 'E')).toBeUndefined();
+    expect(byId(handler!, 'E')).toBeDefined();
+  });
+
+  it('carries a hyphenated host name into attachedToRef and the boundary id verbatim', async () => {
+    const result = await ir(
+      `process p {
+        service Check-Stock-2 { class = "x.A" }
+        on Check-Stock-2: timer after "PT1H" { service R { class = "x.R" } }
+      }`,
+    );
+    const boundary = only(result, 'boundaryEvent');
+    expect(boundary.attachedToRef).toBe('Check-Stock-2');
+    expect(boundary.id).toBe('Boundary_Check-Stock-2_timer');
+  });
+
+  it('lowers a handler whose host does not resolve to a boundary event all the same', async () => {
+    // The desugarer is total: an unresolvable host is a validator/linker
+    // diagnostic, and the construct a handler lowers to is decided by the
+    // presence of the host slot, not by whether it resolved.
+    const result = await ir(
+      `process p {
+        service A { class = "x.A" }
+        on Missing: timer after "PT1H" { service R { class = "x.R" } }
+      }`,
+    );
+    const boundary = only(result, 'boundaryEvent');
+    expect(boundary.attachedToRef).toBe('Missing');
+    expect(boundary.id).toBe('Boundary_Missing_timer');
+    expect(
+      result.flowElements.filter((fe) => fe.kind === 'subProcess'),
+    ).toEqual([]);
   });
 });
 

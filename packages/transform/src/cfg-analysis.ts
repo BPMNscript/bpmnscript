@@ -26,10 +26,22 @@
  * ## Virtual entry / exit (single-source, single-sink)
  * Dominator analysis needs a single root; post-dominator analysis needs a
  * single sink. We synthesize:
- * - {@link VIRTUAL_ENTRY}: edges to every start event, and — defensively —
- *   to every real node that has no real predecessor (so a hand-built IR
- *   with no `startEvent` still has a root). Unreachable nodes are
- *   deliberately **not** wired to the entry; see "Unreachable nodes".
+ * - {@link VIRTUAL_ENTRY}: edges to every start event, to every boundary
+ *   event, and — defensively — to every other real node that has no real
+ *   predecessor (so a hand-built IR with no `startEvent` still has a root).
+ *   A boundary event is wired unconditionally, exactly like a start event:
+ *   it has no incoming sequence flow by construction (its token appears the
+ *   moment its host activity is running and the trigger fires, never by
+ *   traversing a flow edge), so without this it would be unreachable and
+ *   its whole escape chain would have no immediate dominator — nothing in
+ *   it could ever be recognized as an `if`/`while`. The accepted trade-off:
+ *   a node reachable from *both* the main flow and an escape chain no
+ *   longer has a tight immediate dominator (only the virtual entry, their
+ *   nearest common ancestor, does), so a structured region whose join a
+ *   boundary chain jumps into degrades to `goto`s on decompile. That is
+ *   correct, not a regression — such a region genuinely is not dominated by
+ *   its split. Unreachable nodes are deliberately **not** wired to the
+ *   entry; see "Unreachable nodes".
  * - {@link VIRTUAL_EXIT}: an edge from every end event, and from every real
  *   node with no real successor, so multi-exit processes have one sink and
  *   the sink post-dominates every real end.
@@ -46,7 +58,10 @@
  * nor is dominated by anything. All queries stay **total**: every helper
  * returns a defined value (never throws) for unknown ids, unreachable
  * nodes, and the virtual sentinels alike. Symmetrically, a node that cannot
- * reach the virtual exit has no immediate post-dominator.
+ * reach the virtual exit has no immediate post-dominator. A `boundaryEvent`
+ * is never itself unreachable: it is always wired to the virtual entry (see
+ * above), so only the nodes *inside* a malformed escape chain — never the
+ * boundary event that starts it — could be unreachable.
  */
 
 import type { FlowContainer, SequenceFlow } from './ir/types.js';
@@ -194,19 +209,28 @@ function buildGraph(container: FlowContainer): Graph {
     addEdge(f.sourceRef, f.targetRef);
   }
 
-  // Wire the ENTRY to every start event. A `startEvent` is the canonical
-  // process source. If the IR has NO start event at all (degenerate, but
-  // possible in a hand-built fixture) we fall back to wiring every node
-  // that has no real predecessor, so the forward analysis still has a root.
+  // Wire the ENTRY to every start event, and to every boundary event. A
+  // `startEvent` is the canonical process source. A `boundaryEvent` is a
+  // second, independent entry: at runtime a token appears there the moment
+  // its host activity is running and the trigger fires — never by
+  // traversing a sequence flow into it (a boundary event has no incoming
+  // flow at all) — so it is wired unconditionally, the same as a start
+  // event, not folded into the no-start fallback below. If the IR has NO
+  // start event at all (degenerate, but possible in a hand-built fixture) we
+  // fall back to wiring every remaining node that has no real predecessor,
+  // so the forward analysis still has a root; this fallback stays keyed on
+  // the absence of a *start* event, since a boundary event's presence says
+  // nothing about whether the main flow has its own entry.
   //
-  // Deliberately we do NOT wire an arbitrary no-predecessor *non-start* node
-  // to the entry when a start event exists: such a node is genuinely
-  // **unreachable** from the process entry, and the dominance queries must
-  // reflect that (it has no immediate dominator). See the module docs.
+  // Deliberately we do NOT wire an arbitrary no-predecessor node that is
+  // neither a start nor a boundary event to the entry when a start event
+  // exists: such a node is genuinely **unreachable** from the process entry,
+  // and the dominance queries must reflect that (it has no immediate
+  // dominator). See the module docs.
   const hasAnyStart = container.flowElements.some((e) => e.kind === 'startEvent');
   for (const el of container.flowElements) {
     const hasRealPred = pred.get(el.id)!.length > 0;
-    if (el.kind === 'startEvent') {
+    if (el.kind === 'startEvent' || el.kind === 'boundaryEvent') {
       addEdge(VIRTUAL_ENTRY, el.id);
     } else if (!hasAnyStart && !hasRealPred) {
       addEdge(VIRTUAL_ENTRY, el.id);

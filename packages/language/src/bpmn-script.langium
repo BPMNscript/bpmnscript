@@ -301,8 +301,24 @@ VariableMapping:
 // keyword. `alongside` marks a non-interrupting handler: the guarded
 // scope's main flow keeps running alongside this catch block instead of
 // being interrupted by it.
+//
+// The optional `host` slot names the single step the handler attaches to —
+// `on Review: timer after "PT2H" { … }` catches only while `Review` itself is
+// running, instead of guarding the whole surrounding body the way a host-less
+// handler does. The reference is resolved against the handler's own container
+// by the scope provider, and which steps may legally carry a handler is a
+// validator concern, as everywhere else in this grammar.
+//
+// The separator has to be a colon, and cannot be omitted: `on Pack error "X"`
+// and `on timer after "X"` are both `ID ID STRING` at the token level, because
+// the trigger words and timer particles all lex as plain identifiers. Nothing
+// in the token *types* separates a host from a trigger, so no amount of
+// lookahead can tell the two forms apart — only the words themselves would,
+// and reserving them is exactly what this grammar deliberately avoids. The
+// colon decides at token 2, before either interpretation has to be committed
+// to.
 OnHandler:
-    'on' trigger=ID
+    'on' (host=[Statement:ID] ':')? trigger=ID
     (code=STRING | particle=ID time=(STRING | RAW_TEMPLATE))?
     ('(' (bindings+=EventBinding (',' bindings+=EventBinding)* | condition=Expr) ')')?
     (alongside?='alongside')? body=Block;

@@ -26,7 +26,9 @@
  *   error/escalation/message/signal/timer/conditional/compensation on an
  *   event handler's start; anything other than error/escalation/signal/
  *   compensation on an end event; anything other than escalation/signal/
- *   compensation on an intermediate throw (terminate, …) →
+ *   compensation on an intermediate throw (terminate, …); anything other
+ *   than error/escalation/message/signal/timer/conditional on a boundary
+ *   event (a cancel or terminate definition, …) →
  *   {@link UnsupportedEventDefinitionError};
  * - an event-layer construct shaped in a way this tool's surface cannot
  *   express: an event handler whose start-event or definition count is not
@@ -45,7 +47,14 @@
  *   `waitForCompletion="false"`; a compensation event sub-process hosted by
  *   the process or by another event sub-process rather than the plain
  *   sub-process it compensates; `isForCompensation="true"` on any mapped
- *   activity (task, sub-process, call activity) →
+ *   activity (task, sub-process, call activity); a boundary event with no
+ *   `attachedToRef`, with an incoming sequence flow, with
+ *   `cancelActivity="false"` on an error trigger, with a compensation
+ *   trigger (pointing at the sub-process undo block instead), with an
+ *   `operaton:inputOutput` mapping (Operaton forbids one on a boundary
+ *   event), with an escalation trigger attached to anything other than a
+ *   sub-process/call activity/user task, or whose `attachedToRef` does not
+ *   name a mapped activity in the same container →
  *   {@link UnsupportedEventFeatureError};
  * - loop characteristics on a task, sub-process, or call activity
  *   (multi-instance / standard loop) → {@link UnsupportedLoopCharacteristicsError};
@@ -78,8 +87,9 @@
  * - a binding attribute (`errorCodeVariable`/`errorMessageVariable`/
  *   `escalationCodeVariable`) set on a throw-side definition, where the
  *   engine ignores it;
- * - a genuine label (`name`) on an event handler, a typed end event, or an
- *   intermediate throw — none of these surfaces has a label slot;
+ * - a genuine label (`name`) on an event handler, a typed end event, an
+ *   intermediate throw, or a boundary event — none of these surfaces has a
+ *   label slot;
  * - a `calledElementVersion` left dangling on a call activity — set while
  *   `calledElementBinding` is absent or not `"version"` — since Operaton
  *   ignores it in that case; one warning naming the attribute;
@@ -130,8 +140,12 @@
  * event (error/escalation/signal/compensation) or an intermediate throw
  * (escalation/signal/compensation) round-trips its thrown code or name (or,
  * for compensation, nothing — it is payload-less); declared error messages
- * round-trip through `errorMessages`. Every
- * use of one message/signal name — a handler, an `emit`, a `throw` — shares
+ * round-trip through `errorMessages`. A `bpmn:boundaryEvent` round-trips its
+ * `attachedToRef` (the host activity's id, in the same container), its
+ * `cancelActivity` interrupting flag, and its caught error/escalation/
+ * message/signal/timer/conditional trigger — never compensation, which stays
+ * refused so a sub-process undo block remains the only way to express it.
+ * Every use of one message/signal name — a handler, an `emit`, a `throw` — shares
  * one `bpmn:Message`/`bpmn:Signal` root; two roots that happen to share a
  * name collapse to that one name on import with no warning, since the name
  * is the engine-side identity and the roots carry no other data this tool
@@ -146,6 +160,7 @@ import { dirname, join } from 'node:path';
 import { BpmnModdle } from 'bpmn-moddle';
 
 import type {
+  BoundaryEvent,
   BpmnProcess,
   CalledElementBinding,
   CallActivity,
@@ -192,9 +207,10 @@ import { HISTORY_TIME_TO_LIVE } from './ir-to-xml.js';
  *   data-structure metadata Operaton does not execute.
  * - `lane` — a `bpmn:Lane`; the IR has no notion of lanes, so every step is
  *   imported into a single flat process.
- * - `label` — a genuine `name` on an event handler, a typed end event, or an
- *   intermediate throw — none of these surfaces (`on`/`throw`/`emit`) has a
- *   label slot, so the name is dropped rather than silently kept.
+ * - `label` — a genuine `name` on an event handler, a boundary event, a typed
+ *   end event, or an intermediate throw — none of these surfaces
+ *   (`on`/`throw`/`emit`) has a label slot, so the name is dropped rather than
+ *   silently kept.
  * - `unreferencedRoot` — a `bpmn:Error`/`bpmn:Escalation`/`bpmn:Message`/
  *   `bpmn:Signal` root element that nothing in the process catches, throws,
  *   or emits, and — for a `bpmn:Error` root specifically — that carries no
@@ -394,9 +410,10 @@ interface ModdlePropertyDescriptor {
  *   any event definition; an event handler's start carries a definition
  *   that is not error/escalation/message/signal/timer/conditional/
  *   compensation; an end event carries a definition that is not error/
- *   escalation/signal/compensation; or an intermediate throw carries a
- *   definition that is not escalation/signal/compensation — at any nesting
- *   depth.
+ *   escalation/signal/compensation; an intermediate throw carries a
+ *   definition that is not escalation/signal/compensation; or a boundary
+ *   event carries a definition that is not error/escalation/message/signal/
+ *   timer/conditional — at any nesting depth.
  * @throws {UnsupportedEventFeatureError} when an event-layer construct is
  *   shaped in a way this tool's surface cannot express (see the module
  *   docstring's "Refused" list for the complete taxonomy).
@@ -553,10 +570,12 @@ function resolveErrorMessages(
  * Depth-first collect every distinct error/escalation code and message/
  * signal name caught, thrown, or emitted anywhere in the mapped IR (any
  * container, any nesting depth) — used only to detect a root element that
- * ended up unreferenced. Deliberately kept separate from `ir-to-xml.ts`'s
- * equivalent collector: the two modules do not share private helpers, and
- * the shapes they walk differ slightly (this one starts from an
- * already-mapped {@link BpmnProcess}).
+ * ended up unreferenced. A boundary event's trigger counts as a use exactly
+ * like an event handler's start: it caught its trigger by attaching to a
+ * host, not by traversing flow, but the root it names is no less referenced.
+ * Deliberately kept separate from `ir-to-xml.ts`'s equivalent collector: the
+ * two modules do not share private helpers, and the shapes they walk differ
+ * slightly (this one starts from an already-mapped {@link BpmnProcess}).
  */
 function collectReferencedCodes(process: BpmnProcess): {
   errorCodes: Set<string>;
@@ -574,7 +593,8 @@ function collectReferencedCodes(process: BpmnProcess): {
       const def: EventDefinition | undefined =
         el.kind === 'startEvent' ||
         el.kind === 'endEvent' ||
-        el.kind === 'intermediateThrowEvent'
+        el.kind === 'intermediateThrowEvent' ||
+        el.kind === 'boundaryEvent'
           ? el.eventDefinition
           : undefined;
       if (def?.kind === 'error' && def.errorCode !== undefined) {
@@ -851,12 +871,15 @@ const ACTIVITY_TYPES: ReadonlySet<string> = new Set([
  * sub-process, or call activity) — the boundary-event compensation-handler
  * pattern, where such an activity is excluded from normal flow and only
  * starts when a `bpmn:BoundaryEvent` compensation trigger on some other
- * activity fires it. This tool has no boundary-event surface (a
- * `bpmn:BoundaryEvent` is refused by the default arm below, unchanged), so an
- * activity marked this way can never actually run; importing it as an
- * ordinary step would silently change its reachability. One shared guard,
- * checked for every child reaching {@link mapContainerChildren}'s switch,
- * covers every activity kind uniformly at any nesting depth.
+ * activity fires it. `mapBoundaryEvent` does import a real
+ * `bpmn:BoundaryEvent` for every other trigger, but a compensation trigger is
+ * refused there too — BPMN attaches compensation through
+ * `isForCompensation` and a `bpmn:association`, a different mechanism this
+ * tool surfaces as a sub-process undo block instead — so an activity marked
+ * this way still can never actually run; importing it as an ordinary step
+ * would silently change its reachability. One shared guard, checked for
+ * every child reaching {@link mapContainerChildren}'s switch, covers every
+ * activity kind uniformly at any nesting depth.
  *
  * @throws {UnsupportedEventFeatureError} when `isForCompensation` is `true`.
  */
@@ -879,6 +902,14 @@ function refuseIfForCompensation(child: ModdleElement): void {
  * mapEventSubProcessStart}); every other child kind maps exactly as it would
  * in an ordinary container, so the refusals below apply uniformly at any
  * nesting depth and inside an event handler's body alike.
+ *
+ * A `bpmn:BoundaryEvent` child is mapped by {@link mapBoundaryEvent}, but its
+ * `attachedToRef` is only checked for container membership and (for an
+ * escalation trigger) host-kind eligibility in {@link
+ * checkBoundaryEventHosts}, run once after this loop finishes — moddle may
+ * present a boundary event before or after its host in `flowElements`, so
+ * the full set of this container's mapped activity ids is only known once
+ * every child has been visited.
  *
  * @param hostKind What kind of container `el` is; threaded to a nested
  *   `bpmn:SubProcess` child (see {@link ContainerHostKind}) so a
@@ -905,6 +936,9 @@ function mapContainerChildren(
         break;
       case 'bpmn:IntermediateThrowEvent':
         flowElements.push(mapIntermediateThrowEvent(child, warnings));
+        break;
+      case 'bpmn:BoundaryEvent':
+        flowElements.push(mapBoundaryEvent(child, warnings));
         break;
       case 'bpmn:UserTask':
         flowElements.push(mapUserTask(child));
@@ -944,7 +978,112 @@ function mapContainerChildren(
     }
   }
 
+  checkBoundaryEventHosts(flowElements, sequenceFlows);
   return { flowElements, sequenceFlows };
+}
+
+/**
+ * The `FlowElement` kinds a `bpmn:BoundaryEvent` may legally attach to — the
+ * activity subtypes {@link mapContainerChildren} maps into `flowElements`
+ * (mirrors {@link ACTIVITY_TYPES}, at the IR level rather than the moddle
+ * `$type` level).
+ */
+const BOUNDARY_HOST_KINDS: ReadonlySet<FlowElement['kind']> = new Set([
+  'userTask',
+  'serviceTask',
+  'scriptTask',
+  'subProcess',
+  'callActivity',
+]);
+
+/**
+ * Of {@link BOUNDARY_HOST_KINDS}, the subset an escalation boundary may
+ * attach to, per Operaton's own `BpmnParse.parseBoundaryEvents`: a service or
+ * script task is excluded.
+ */
+const ESCALATION_BOUNDARY_HOST_KINDS: ReadonlySet<FlowElement['kind']> =
+  new Set(['subProcess', 'callActivity', 'userTask']);
+
+/**
+ * Validate every `boundaryEvent` in `flowElements` against the other
+ * elements mapped in this same container, once the whole child loop in
+ * {@link mapContainerChildren} has finished. This has to be a separate pass
+ * rather than an inline check in {@link mapBoundaryEvent}: moddle presents a
+ * container's children in document order, and a boundary event's host may be
+ * written before or after it in the XML, so the full set of this
+ * container's mapped activity ids is only known once every child has been
+ * visited. A nested sub-process runs its own instance of this check over its
+ * own `flowElements`, so a host in a different (nesting) container is never
+ * mistaken for one in this container.
+ *
+ * The same pass also catches an inbound sequence flow written only as
+ * `sequenceFlow/@targetRef`. {@link mapBoundaryEvent} sees a boundary event's
+ * `incoming` list, which moddle fills from `<bpmn:incoming>` children alone —
+ * those are optional in BPMN, and Operaton reads the flow's `targetRef`
+ * regardless — so a file that omits them would otherwise map an inbound edge
+ * onto a node that can never carry one.
+ *
+ * @throws {UnsupportedEventFeatureError} when a boundary event's
+ *   `attachedToRef` does not name a mapped activity in this same container,
+ *   an escalation boundary attaches to an activity kind Operaton does not
+ *   allow (a service or script task), or a sequence flow in this container
+ *   targets a boundary event.
+ */
+function checkBoundaryEventHosts(
+  flowElements: FlowElement[],
+  sequenceFlows: SequenceFlow[],
+): void {
+  const activityById = new Map<string, FlowElement>();
+  for (const el of flowElements) {
+    // An event sub-process is written as a bare `on <trigger> { … }` and has
+    // no authored id or name, so a boundary event attached to one could only
+    // be printed against a synthesized id that names nothing in the source —
+    // a mangle. Left out of the host map, it falls into the refusal below.
+    if (
+      BOUNDARY_HOST_KINDS.has(el.kind) &&
+      !(el.kind === 'subProcess' && el.triggeredByEvent === true)
+    ) {
+      activityById.set(el.id, el);
+    }
+  }
+
+  const boundaryIds = new Set(
+    flowElements.filter((el) => el.kind === 'boundaryEvent').map((el) => el.id),
+  );
+  for (const sf of sequenceFlows) {
+    if (!boundaryIds.has(sf.targetRef)) continue;
+    throw new UnsupportedEventFeatureError(
+      sf.targetRef,
+      'a boundary event carries an incoming sequence flow — it is ' +
+        'triggered by its own event, not by an incoming flow',
+    );
+  }
+
+  for (const el of flowElements) {
+    if (el.kind !== 'boundaryEvent') continue;
+
+    const host = activityById.get(el.attachedToRef);
+    if (host === undefined) {
+      throw new UnsupportedEventFeatureError(
+        el.id,
+        `attachedToRef "${el.attachedToRef}" does not name a user task, ` +
+          'service task, script task, sub-process, or call activity that is ' +
+          'itself a flow element of this same container — a boundary event ' +
+          'can only attach to an activity alongside it',
+      );
+    }
+    if (
+      el.eventDefinition.kind === 'escalation' &&
+      !ESCALATION_BOUNDARY_HOST_KINDS.has(host.kind)
+    ) {
+      throw new UnsupportedEventFeatureError(
+        el.id,
+        `an escalation boundary event attaches to "${el.attachedToRef}", a ` +
+          `${host.kind} — Operaton only allows an escalation boundary on a ` +
+          'sub-process, a call activity, or a user task',
+      );
+    }
+  }
 }
 
 /**
@@ -1083,7 +1222,12 @@ function mapEventSubProcessStart(
     );
   }
 
-  const eventDefinition = readCatchEventDefinition(defs[0], id, warnings);
+  const eventDefinition = readCatchEventDefinition(
+    defs[0],
+    id,
+    warnings,
+    'start',
+  );
 
   if (eventDefinition.kind === 'compensation' && hostKind !== 'subProcess') {
     throw new UnsupportedEventFeatureError(
@@ -1121,8 +1265,152 @@ function mapEventSubProcessStart(
 }
 
 /**
- * Resolve one event definition's shape on the CATCH side (an event
- * handler's trigger). An error/escalation definition without a ref, or
+ * Map a `bpmn:BoundaryEvent` moddle element into the IR — a catch that
+ * attaches to an activity in the same container rather than sitting in the
+ * main sequence-flow chain. Six of the seven catch triggers this tool
+ * imports are valid here (error, escalation, message, signal, timer,
+ * conditional); the import contract is refuse-or-map, never mangle, so every
+ * shape the engine would reject or that this tool's surface cannot express
+ * is refused before any IR is produced, rather than narrowed:
+ *
+ * - a missing `attachedToRef` (BPMN requires every boundary event to attach
+ *   to a host);
+ * - an incoming sequence flow (a boundary event is triggered by its own
+ *   event, never wired into the flow the way a plain node is);
+ * - an `operaton:inputOutput` mapping (Operaton's own parser forbids
+ *   input/output variable mappings on a boundary event);
+ * - a `bpmn:CompensateEventDefinition` (BPMN attaches compensation through
+ *   `isForCompensation` and a `bpmn:association` on the activity being
+ *   compensated instead — a different mechanism this tool surfaces as a
+ *   sub-process undo block, never as a boundary event; see {@link
+ *   refuseIfForCompensation});
+ * - any other definition kind this tool's catch surface does not support
+ *   (a cancel or terminate definition, …), via {@link
+ *   readCatchEventDefinition}'s own final refusal;
+ * - `cancelActivity="false"` together with an error trigger (BPMN gives an
+ *   error boundary no non-interrupting form).
+ *
+ * `attachedToRef` itself resolves to the actual moddle host element (BPMN
+ * declares it `isReference: true`, so `bpmn-moddle` resolves it regardless
+ * of where the host is written relative to this boundary event in the XML);
+ * only its `id` is kept, to hold the IR to plain strings. Whether that host
+ * is actually a mapped activity *in this same container* — and, for an
+ * escalation trigger, an eligible host kind — is checked once for every
+ * boundary event in the container, by {@link checkBoundaryEventHosts}, after
+ * {@link mapContainerChildren}'s child loop has finished.
+ *
+ * @throws {UnsupportedEventFeatureError} for a missing `attachedToRef`, an
+ *   incoming sequence flow, an `operaton:inputOutput` mapping, a
+ *   compensation trigger, a trigger-definition count other than one, or
+ *   `cancelActivity="false"` combined with an error trigger.
+ * @throws {UnsupportedEventDefinitionError} when the trigger definition is
+ *   none of error, escalation, message, signal, timer, or conditional.
+ */
+function mapBoundaryEvent(
+  el: ModdleElement,
+  warnings: ImportWarning[],
+): BoundaryEvent {
+  const id = requireId(el);
+
+  const hostEl = el.get('attachedToRef') as ModdleElement | undefined | null;
+  if (hostEl === undefined || hostEl === null) {
+    throw new UnsupportedEventFeatureError(
+      id,
+      'a boundary event has no attachedToRef — BPMN requires every ' +
+        'boundary event to attach to an activity in its own container',
+    );
+  }
+
+  const incoming = (el.get('incoming') as ModdleElement[] | undefined) ?? [];
+  if (incoming.length > 0) {
+    throw new UnsupportedEventFeatureError(
+      id,
+      'a boundary event carries an incoming sequence flow — it is ' +
+        'triggered by its own event, not by an incoming flow',
+    );
+  }
+
+  refuseBoundaryInputOutput(el, id);
+
+  const defs =
+    (el.get('eventDefinitions') as ModdleElement[] | undefined) ?? [];
+  if (defs.length !== 1) {
+    throw new UnsupportedEventFeatureError(
+      id,
+      `a boundary event must carry exactly one trigger definition (found ${defs.length})`,
+    );
+  }
+  const [defEl] = defs;
+
+  if (defEl.$type === 'bpmn:CompensateEventDefinition') {
+    throw new UnsupportedEventFeatureError(
+      id,
+      'a compensation boundary event is not imported — BPMN attaches ' +
+        'compensation through isForCompensation and a bpmn:association on ' +
+        'the activity being compensated, not a boundary event; wrap the ' +
+        'steps in their own sub-process and target it with "on compensation" instead',
+    );
+  }
+
+  const eventDefinition = readCatchEventDefinition(
+    defEl,
+    id,
+    warnings,
+    'boundary',
+  );
+  warnGenuineLabel(el, id, 'a boundary event', warnings);
+
+  const cancelActivity = el.get('cancelActivity') === false ? false : undefined;
+  if (cancelActivity === false && eventDefinition.kind === 'error') {
+    throw new UnsupportedEventFeatureError(
+      id,
+      'an error boundary event cannot be non-interrupting ' +
+        '(cancelActivity="false") — BPMN gives an error boundary no ' +
+        'non-interrupting form',
+    );
+  }
+
+  return {
+    kind: 'boundaryEvent',
+    id,
+    attachedToRef: requireId(hostEl),
+    eventDefinition,
+    ...(cancelActivity === false ? { cancelActivity: false } : {}),
+  };
+}
+
+/**
+ * Refuse an `operaton:inputOutput` extension element on a boundary event.
+ * Operaton's own parser accepts `operaton:inputOutput` on many activities
+ * but rejects it on a `bpmn:BoundaryEvent` — a boundary event has no
+ * execution scope of its own to bind variables into — so importing it as an
+ * ordinary dropped extension (a warning, {@link collectExtensionDrops}'s
+ * generic treatment for every other element) would understate an engine
+ * rejection this tool can already see at parse time.
+ *
+ * @throws {UnsupportedEventFeatureError} when an `operaton:inputOutput`
+ *   extension element is present.
+ */
+function refuseBoundaryInputOutput(el: ModdleElement, id: string): void {
+  const extensionElements = el.get('extensionElements') as
+    ModdleElement | undefined;
+  if (extensionElements === undefined) return;
+  const values =
+    (extensionElements.get('values') as ModdleElement[] | undefined) ?? [];
+  if (values.some((value) => value.$type === 'operaton:InputOutput')) {
+    throw new UnsupportedEventFeatureError(
+      id,
+      'a boundary event carries an operaton:inputOutput mapping — Operaton ' +
+        'forbids input/output variable mappings on a boundary event',
+    );
+  }
+}
+
+/**
+ * Resolve one event definition's shape on the CATCH side — an event
+ * handler's trigger, or a boundary event's (see {@link mapBoundaryEvent},
+ * which reuses this verbatim: a boundary event catches exactly what an event
+ * handler's start catches). An error/escalation definition without a ref, or
  * whose resolved root carries no code, means catch-all — the missing code
  * is exactly what makes the handler match any error/escalation. A message/
  * signal/timer/conditional trigger has no catch-all form (the surface
@@ -1135,6 +1423,11 @@ function mapEventSubProcessStart(
  * {@link collectExtensionDrops} on the definition itself so an unrelated
  * `operaton:` attribute there is never silently lost.
  *
+ * @param position Which surface `defEl` sits on — `'start'` for an event
+ *   handler's start event, `'boundary'` for a boundary event — threaded only
+ *   into the final refusal below, so its message names the surface that
+ *   actually carried the unsupported definition instead of always claiming
+ *   a start event.
  * @throws {UnsupportedEventDefinitionError} when the definition is none of
  *   error, escalation, message, signal, timer, conditional, or compensation
  *   (e.g. a terminate definition).
@@ -1149,6 +1442,7 @@ function readCatchEventDefinition(
   defEl: ModdleElement,
   ownerId: string,
   warnings: ImportWarning[],
+  position: 'start' | 'boundary',
 ): EventDefinition {
   collectExtensionDrops(defEl, ownerId, warnings);
 
@@ -1208,7 +1502,7 @@ function readCatchEventDefinition(
     return { kind: 'compensation' };
   }
 
-  throw new UnsupportedEventDefinitionError(ownerId, 'start', defEl.$type);
+  throw new UnsupportedEventDefinitionError(ownerId, position, defEl.$type);
 }
 
 /**
@@ -1494,8 +1788,8 @@ function warnThrowSideBindingAttrs(
 /**
  * Warn-drop a genuine label: the `on`/`throw`/`emit` surfaces have no label
  * slot, so a `name` that survives {@link readDerivableName} on an
- * event handler, a typed end event, or an intermediate throw is dropped
- * with a warning rather than silently discarded.
+ * event handler, a boundary event, a typed end event, or an intermediate
+ * throw is dropped with a warning rather than silently discarded.
  */
 function warnGenuineLabel(
   el: ModdleElement,

@@ -12,7 +12,8 @@ round-trip, the `event-handlers.{bpmnscript,bpmn}` pair exercises the error and
 escalation event layer, the `event-triggers.{bpmnscript,bpmn}` pair exercises
 the message, signal, timer, and conditional triggers, the
 `compensation.{bpmnscript,bpmn}` pair exercises the compensation (undo-block)
-layer, and
+layer, the `boundary-events.{bpmnscript,bpmn}` pair exercises handlers attached
+to a host activity, and
 `bad-service-task-no-binding.bpmn` is the negative-path fixture for the import
 refusal path.
 
@@ -313,6 +314,69 @@ id-scheme change), regenerate this file:
    undo blocks with interrupting starts, each undo-block shape inside its host's
    bounds, and every authored id must stay intact; only synthesised
    gateway/flow/handler ids and layout coordinates may move.
+
+## `boundary-events.bpmnscript` and `boundary-events.bpmn`
+
+A golden **pair** for handlers attached to a host activity: a BPMNscript source
+and the frozen BPMN XML the full pipeline produces from it. The source is a
+parcel-dispatch narrative that exercises the whole attached-handler surface in
+one program — all six boundary-capable triggers (`error`, `escalation`,
+`message`, `signal`, `timer`, `condition`); interrupting and non-interrupting
+(`alongside`) attachment wherever Operaton permits both; a boundary on a
+`subprocess` host (whose escalation is raised by an `emit escalation` one
+container down) and one on a `call` host; two hosts carrying two boundaries each,
+so the layout library has to distribute the attachers along the host's lower
+edge; an escape chain that rejoins the main flow through `goto`; an escape chain
+containing an `if`/`else`; and two host-less handlers (a signal and a message)
+coexisting with all of them in the same container. The `if` and condition
+variables are declared on the start form so they survive an import-and-back
+round-trip, the escalation is emitted under an explicit id so its printed id
+re-parses cleanly, and every label differs from the name humanised from its id.
+
+`boundary-events.bpmnscript` is the **input**, and `boundary-events.bpmn` is the
+**frozen output of the full pipeline** (`irToXml(astToIr(parse(source)))`,
+services wired exactly as `tests/round-trip.test.ts` does). The round-trip test
+`tests/boundary-events.round-trip.test.ts` drives the pair both directions: it
+reproduces the pipeline and compares byte-for-byte against the frozen `.bpmn`,
+round-trips the source through XML and back asserting IR equivalence (through
+the recursive `normalizeIr`, which re-keys each boundary event's host-derived id
+to a structural signature of host, trigger kind, payload, and interrupting flag;
+the chain's terminal end needs no such treatment, since the printer emits it
+under its literal id), imports the frozen
+`.bpmn` warning-free, checks that the boundary signal and the host-less
+handler's signal share one `bpmn:Signal` (and likewise for the escalation
+thrown inside the sub-process and caught on its boundary), and asserts every
+boundary shape sits centred and half-overlapping on its host's bottom edge with
+multiple attachers distributed along it.
+
+Because it is the desugared output, each hosted handler is a
+`bpmn:boundaryEvent` inside the host's own container, carrying
+`attachedToRef="<host>"`, `cancelActivity="false"` when written `alongside`, and
+a host-derived id (`Boundary_<hostId>_<trigger>`); its escape chain is a plain
+run of flow nodes in that same container ending in `EndEvent_<boundaryId>`,
+except for the chain that rejoins, whose last step flows straight into
+`PackGoods`. The five roots are synthesised from usage and deduped by code or
+name (`Error_ADDRESS_REJECTED` carrying the declared message,
+`Escalation_OVERSIZED_PARCEL` shared by the emit and the boundary,
+`Message_AddressVerified`, `Message_DispatchCancelled`, and `Signal_CarrierStrike`
+shared by the boundary and the host-less handler), while every authored id (the
+tasks, the sub-process, the call, the explicit events, the named `emit`)
+survives verbatim.
+
+If you change the parser, the desugarer, or `irToXml` in a way that _should_
+alter the output (new attribute, different formatting, layout-library upgrade,
+id-scheme change), regenerate this file:
+
+1. Run the full pipeline on the source:
+   `irToXml(astToIr(parse(boundary-events.bpmnscript)))`, wiring the Langium
+   services exactly as `tests/round-trip.test.ts` does
+   (`createBpmnScriptServices(EmptyFileSystem)` + `parseHelper`).
+2. Write the returned string to `boundary-events.bpmn`.
+3. Inspect the diff to confirm every change is intended — every
+   `attachedToRef`, `cancelActivity="false"` on each `alongside` boundary, the
+   shared `signalRef`/`escalationRef`, each boundary shape centred on its host's
+   bottom edge, and every authored id must stay intact; only synthesised
+   gateway/flow/boundary ids and layout coordinates may move.
 
 ## `unstructured-goto.bpmn`
 
