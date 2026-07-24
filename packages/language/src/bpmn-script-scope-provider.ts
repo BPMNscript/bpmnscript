@@ -98,7 +98,9 @@ export function isFlowContainer(node: AstNode): node is FlowContainer {
  * into the container its host lives in, not into a container of its own, so the
  * flow container of anything written inside it is that same outer container.
  */
-export function enclosingFlowContainer(node: AstNode): FlowContainer | undefined {
+export function enclosingFlowContainer(
+  node: AstNode,
+): FlowContainer | undefined {
   let container = AstUtils.getContainerOfType(node.$container, isFlowContainer);
   while (container && isOnHandler(container) && container.host !== undefined) {
     container = AstUtils.getContainerOfType(

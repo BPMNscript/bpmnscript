@@ -37,7 +37,10 @@ export class BpmnScriptValueConverter extends DefaultValueConverter {
     input: string,
     cstNode: CstNode,
   ): ValueType {
-    if (rule.name === RAW_TEMPLATE_RULE_NAME && this.fillsTimeFeature(cstNode)) {
+    if (
+      rule.name === RAW_TEMPLATE_RULE_NAME &&
+      this.fillsTimeFeature(cstNode)
+    ) {
       return ValueConverter.convertString(input);
     }
     return super.runConverter(rule, input, cstNode);

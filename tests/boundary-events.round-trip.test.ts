@@ -31,11 +31,12 @@
  *      byte-for-byte (the frozen artifact is the diff tripwire; any drift is a
  *      real defect, not a regeneration trigger).
  *   2. Idempotence — `normalizeIr(IR₁)` equals `normalizeIr(IR₃)`; DSL′
- *      re-parses with zero parser errors and places every handler block where
- *      the surface rule demands; the authored ids survive at their correct
- *      container depth; each boundary's `attachedToRef` and `cancelActivity`
- *      survive at every hop; the `goto` rejoin stays a real edge and the
- *      `if`/`else` inside an escape chain comes back structured.
+ *      re-parses with zero parser errors, recompiles without validation
+ *      errors, and places every handler block where the surface rule
+ *      demands; the authored ids survive at their correct container depth;
+ *      each boundary's `attachedToRef` and `cancelActivity` survive at every
+ *      hop; the `goto` rejoin stays a real edge and the `if`/`else` inside an
+ *      escape chain comes back structured.
  *   3. Import path — `xmlToIr(frozen)` warns nothing, and the imported IR
  *      restructured back to DSL and re-desugared is normalized-equal to IR₁.
  *   4. DI tripwire — every boundary shape sits centred on its host's bottom
@@ -57,20 +58,6 @@
  *
  * One health assertion covers the requirement that the fixture opens
  * validator-clean in the IDE (no diagnostics at all).
- *
- * A note on DSL′ and validation (case 2). DSL′ re-parses cleanly, but it is not
- * asserted to be validator-clean, and cannot be: an escape chain's implicit end
- * event is named after the boundary event that starts the chain
- * (`EndEvent_<boundaryId>`), the printer always prints a terminal end event
- * under its id, and `EndEvent_` is a reserved synthesised-id prefix, so DSL′
- * carries one reserved-name diagnostic per terminating escape chain. That is a
- * property of printing a generated id back out, not a round-trip defect — the
- * ids are regenerated identically by `astToIr`, so IR₃ is topologically
- * correct. What DSL′ *is* asserted to be free of is a handler-placement
- * diagnostic: a handler block printed anywhere but at the end of its body
- * produces source the validator rejects, which would make the decompiler's
- * output un-reopenable. The meaningful validation guarantee — the authored
- * program is clean — is the fixture check below.
  */
 
 import { describe, it, expect, beforeAll } from 'vitest';
@@ -445,6 +432,11 @@ describe('idempotence: DSL → IR₁ → XML → IR₂ → DSL′ → IR₃', ()
   it('the restructured DSL′ re-parses with zero parser errors', async () => {
     const document = await parse(dslPrime);
     expect(document.parseResult.parserErrors).toHaveLength(0);
+  });
+
+  it('the decompiled DSL recompiles without validation errors', async () => {
+    const { diagnostics } = await validate(dslPrime);
+    expect(diagnostics.filter((d) => d.severity === 1)).toEqual([]);
   });
 
   it('every handler block in DSL′ trails the body it guards', async () => {

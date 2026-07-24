@@ -2092,6 +2092,138 @@ describe('irToXml — boundary events', () => {
   });
 });
 
+// ── 15. Intermediate catch events ─────────────────────────────────────────────
+
+/** The event definitions an `intermediateCatchEvent` node may carry. */
+type CatchEventDefinition = Extract<
+  EventDefinition,
+  { kind: 'message' | 'signal' | 'timer' | 'conditional' }
+>;
+
+/**
+ * A minimal process with an `intermediateCatchEvent` sitting inline on the
+ * main flow: `PStart → Catch → PEnd` — the shape the desugarer produces for
+ * `await`, with one incoming and one outgoing sequence flow.
+ */
+function mainFlowCatchIr(
+  eventDefinition: CatchEventDefinition,
+  id = 'Catch_x',
+): BpmnProcess {
+  return {
+    id: 'proc',
+    isExecutable: true,
+    flowElements: [
+      { kind: 'startEvent', id: 'PStart' },
+      { kind: 'intermediateCatchEvent', id, eventDefinition },
+      { kind: 'endEvent', id: 'PEnd' },
+    ],
+    sequenceFlows: [
+      { id: 'SF_PStart_Catch', sourceRef: 'PStart', targetRef: id },
+      { id: 'SF_Catch_PEnd', sourceRef: id, targetRef: 'PEnd' },
+    ],
+  };
+}
+
+describe('irToXml — intermediate catch events', () => {
+  it('emits a bpmn:IntermediateCatchEvent with a MessageEventDefinition referencing a derived Message root, wired with incoming and outgoing', async () => {
+    const ir = mainFlowCatchIr({
+      kind: 'message',
+      messageName: 'Invoice Received',
+    });
+    const defs = await parseDefinitionsWithOperaton(await irToXml(ir));
+    const catchNode = requireDeep(defs, 'Catch_x');
+    expect(catchNode.$type).toBe('bpmn:IntermediateCatchEvent');
+
+    const def = soleDef(catchNode);
+    expect(def.$type).toBe('bpmn:MessageEventDefinition');
+
+    const messages = rootsOfType(defs, 'bpmn:Message');
+    expect(messages).toHaveLength(1);
+    expect(messages[0]!.id).toBe('Message_Invoice_Received');
+    expect(messages[0]!.name).toBe('Invoice Received');
+    expect(def.messageRef?.id).toBe(messages[0]!.id);
+
+    expect((catchNode.incoming ?? []).map((f) => f.id)).toEqual([
+      'SF_PStart_Catch',
+    ]);
+    expect((catchNode.outgoing ?? []).map((f) => f.id)).toEqual([
+      'SF_Catch_PEnd',
+    ]);
+  });
+
+  it.each<
+    [string, CatchEventDefinition, 'timeDuration' | 'timeDate' | 'timeCycle']
+  >([
+    [
+      'duration',
+      { kind: 'timer', timerKind: 'duration', expression: 'PT1H' },
+      'timeDuration',
+    ],
+    [
+      'date',
+      { kind: 'timer', timerKind: 'date', expression: '${dueDate}' },
+      'timeDate',
+    ],
+    [
+      'cycle',
+      { kind: 'timer', timerKind: 'cycle', expression: 'R/PT10M' },
+      'timeCycle',
+    ],
+  ])(
+    'emits a TimerEventDefinition with the matching %s child',
+    async (_label, eventDefinition, child) => {
+      const defs = await parseDefinitionsWithOperaton(
+        await irToXml(mainFlowCatchIr(eventDefinition)),
+      );
+      const def = soleDef(requireDeep(defs, 'Catch_x'));
+      expect(def.$type).toBe('bpmn:TimerEventDefinition');
+      expect(eventDefinition.kind).toBe('timer');
+      const expression =
+        eventDefinition.kind === 'timer' ? eventDefinition.expression : '';
+      expect(def[child]?.body).toBe(expression);
+
+      const others = (
+        ['timeDuration', 'timeDate', 'timeCycle'] as const
+      ).filter((c) => c !== child);
+      for (const other of others) {
+        expect(def[other]).toBeUndefined();
+      }
+    },
+  );
+
+  it('emits a SignalEventDefinition referencing a derived Signal root', async () => {
+    const defs = await parseDefinitionsWithOperaton(
+      await irToXml(mainFlowCatchIr({ kind: 'signal', signalName: 'Ready' })),
+    );
+    const def = soleDef(requireDeep(defs, 'Catch_x'));
+    expect(def.$type).toBe('bpmn:SignalEventDefinition');
+
+    const signals = rootsOfType(defs, 'bpmn:Signal');
+    expect(signals).toHaveLength(1);
+    expect(signals[0]!.id).toBe('Signal_Ready');
+    expect(signals[0]!.name).toBe('Ready');
+    expect(def.signalRef?.id).toBe(signals[0]!.id);
+  });
+
+  it('emits a ConditionalEventDefinition whose condition body is the raw expression', async () => {
+    const defs = await parseDefinitionsWithOperaton(
+      await irToXml(
+        mainFlowCatchIr({ kind: 'conditional', condition: '${amount > 100}' }),
+      ),
+    );
+    const def = soleDef(requireDeep(defs, 'Catch_x'));
+    expect(def.$type).toBe('bpmn:ConditionalEventDefinition');
+    expect(def.condition?.body).toBe('${amount > 100}');
+  });
+
+  it('stamps no name attribute on the catch element — the await surface carries no label slot', async () => {
+    const defs = await parseDefinitionsWithOperaton(
+      await irToXml(mainFlowCatchIr({ kind: 'message', messageName: 'Ping' })),
+    );
+    expect(requireDeep(defs, 'Catch_x').name).toBeUndefined();
+  });
+});
+
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 /** A parsed moddle node navigated for the event layer (roots, refs, defs). */

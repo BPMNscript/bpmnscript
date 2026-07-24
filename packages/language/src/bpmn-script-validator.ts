@@ -39,6 +39,7 @@ import type {
   FormBlock,
   GotoStatement,
   IfStatement,
+  IntermediateCatchEvent,
   Logical,
   Model,
   Multiplicative,
@@ -119,6 +120,7 @@ export function registerValidationChecks(services: BpmnScriptServices) {
     OnHandler: validator.checkOnHandler,
     ThrowStatement: validator.checkThrowStatement,
     EmitStatement: validator.checkEmitStatement,
+    IntermediateCatchEvent: validator.checkIntermediateCatchEvent,
   };
   registry.register(checks, validator);
 }
@@ -333,6 +335,21 @@ const EMIT_TRIGGERS: readonly string[] = [
   'compensation',
 ];
 
+/**
+ * The legal `await` trigger words: the four kinds with a blocking inline
+ * catch form. Error and escalation are raised outward with `throw`/`emit`,
+ * never awaited; compensation is a subprocess's undo block, run through its
+ * own `on compensation` body, not a wait — none of the three has a catch
+ * form for `await` to accept.
+ */
+const CATCH_TRIGGERS: readonly string[] = [
+  'message',
+  'timer',
+  'signal',
+  'condition',
+];
+const CATCH_TRIGGERS_SET: ReadonlySet<string> = new Set(CATCH_TRIGGERS);
+
 /** The legal timer particle words, each mapping 1:1 to one BPMN timer shape. */
 const TIMER_PARTICLES: ReadonlySet<string> = new Set(['after', 'at', 'every']);
 
@@ -362,6 +379,25 @@ const CONDITION_ONLY_MESSAGE =
 
 /** A timer particle clause on a trigger that does not read one. */
 const PARTICLE_ONLY_MESSAGE = "Only 'on timer' takes a particle.";
+
+/** The name-less `await message`/`await signal` teaching text. */
+const CATCH_NAME_REQUIRED_MESSAGE =
+  "An awaited message needs the message's name — the engine matches messages by name.";
+
+/** The parens-less `await condition` teaching text. */
+const CATCH_CONDITION_REQUIRED_MESSAGE =
+  "An awaited condition needs its condition: 'await condition (amount > 100)'.";
+
+/** A code string on `await condition`, whose payload lives in the parens instead. */
+const CATCH_CONDITION_NO_CODE_MESSAGE =
+  "An awaited condition takes no code string — write the condition in parentheses: 'await condition (amount > 100)'.";
+
+/** A condition expression in the parens of a catch trigger that does not read one. */
+const CATCH_CONDITION_ONLY_MESSAGE =
+  "Only 'await condition' takes a condition expression.";
+
+/** A timer particle clause on a catch trigger that does not read one. */
+const CATCH_PARTICLE_ONLY_MESSAGE = "Only 'await timer' takes a particle.";
 
 /** A message reaches this process from outside — `throw`/`emit` has nothing to send. */
 const MESSAGE_NOTHING_TO_SEND_MESSAGE =
@@ -447,6 +483,7 @@ const RESERVED_ID_PATTERNS: ReadonlyArray<RegExp> = [
   /^Throw_/,
   /^EventSubProcess_/,
   /^Boundary_/,
+  /^Catch_/,
 ];
 
 /**
@@ -610,6 +647,54 @@ function childBlocks(stmt: Statement): Block[] {
 }
 
 /**
+ * True when `statements` has no flow step for the desugarer to lower into a
+ * start-reachable container: the body is empty, or every statement is an
+ * `on` handler. A handler never joins the main sequence (it is a catch
+ * block, not a step the flow passes through), so a handler-only body is the
+ * same emptiness the zero-statement case is — a lone `on` guards nothing.
+ */
+function hasNoFlowStep(statements: Statement[]): boolean {
+  return statements.every(isOnHandler);
+}
+
+/**
+ * Whether `stmt`, once reached, always ends or diverts the flow so that
+ * nothing after it in the same block is ever reached. The leaf cases are an
+ * `end`, `goto`, or `throw`. A compound counts too when it can no longer
+ * fall through: an `if` that has an `else` terminates when every branch does
+ * — the `then`, every `else if`, and the `else` — and a `parallel`
+ * terminates when every one of its branches does. This is the exact case
+ * where `lowerIf`/`lowerParallel` in the transform prune the construct's
+ * synthesized join to zero incoming flows, so there is no fall-through left
+ * to reach. An `if` without an `else` and a `while`/`do-while` never count,
+ * however their body ends: their gateway always keeps a non-terminating
+ * exit (the implicit else, or the loop's false-condition edge).
+ */
+function statementTerminates(stmt: Statement): boolean {
+  if (isEndEvent(stmt) || isGotoStatement(stmt) || isThrowStatement(stmt)) {
+    return true;
+  }
+  if (isIfStatement(stmt) && stmt.elseBlock !== undefined) {
+    return (
+      blockTerminates(stmt.then.statements) &&
+      stmt.elseIfs.every((elseIf) => blockTerminates(elseIf.body.statements)) &&
+      blockTerminates(stmt.elseBlock.statements)
+    );
+  }
+  if (isParallelStatement(stmt)) {
+    return stmt.branches.every((branch) => blockTerminates(branch.statements));
+  }
+  return false;
+}
+
+/** Whether every path through `statements` is cut off by a terminator (see {@link statementTerminates}) before falling off the block's end. */
+function blockTerminates(statements: Statement[]): boolean {
+  return statements.some(
+    (stmt) => !isOnHandler(stmt) && statementTerminates(stmt),
+  );
+}
+
+/**
  * Invoke `onDuplicate` for every item whose key repeats an earlier occurrence.
  * `seen` can be pre-seeded with keys that count as already present before the
  * first item.
@@ -715,7 +800,7 @@ export class BpmnScriptValidator {
   }
 
   /**
-   * Process-level checks: the empty-body structural edge case, the variable
+   * Process-level checks: the no-flow-step structural edge case, the variable
    * checks (undeclared warning, type-mismatch error) over every expression in
    * the process, and the whole-process integrity checks (duplicate variable
    * name, duplicate process label, duplicate statement name). Variable checks
@@ -726,13 +811,17 @@ export class BpmnScriptValidator {
    * @param process The process to validate.
    */
   checkProcess = (process: Process, accept: ValidationAcceptor): void => {
-    // Structural: implicit start/end make a missing start/end impossible, so the
-    // only surviving structural edge case is a process with no executable body.
-    if (process.body.length === 0) {
-      accept('warning', `Process '${process.name}' has an empty body.`, {
-        node: process,
-        property: 'name',
-      });
+    // Structural: implicit start/end make a missing start/end impossible, but
+    // a body with no flow step at all — empty, or every statement an `on`
+    // handler — never starts a process (handlers alone never open one), so
+    // it is rejected outright rather than silently lowering to a bare,
+    // pointless start-end pair.
+    if (hasNoFlowStep(process.body)) {
+      accept(
+        'error',
+        `Process '${process.name}' has no flow steps: a process needs at least one step on its main flow (handlers alone do not start a process).`,
+        { node: process, property: 'name' },
+      );
     }
 
     const symbols = this.variables.collect(process);
@@ -768,15 +857,17 @@ export class BpmnScriptValidator {
   };
 
   /**
-   * Warn on steps that control flow can never reach. A step is unreachable once
-   * an earlier `end`, `throw`, or `goto` in the same block has stopped or
-   * diverted the flow and nothing jumps back to it. Reachability is tracked
-   * per statement list: it starts reachable, turns unreachable after an
-   * `end`/`throw`/`goto`, and turns reachable again at a step some `goto`
-   * targets by name (an explicit jump re-enters the flow there). Nested
-   * blocks are scanned only when their owning construct is itself reachable,
-   * so an unreachable `if` is reported once rather than once per step inside
-   * it.
+   * Reject a step that control flow can never reach: it would lower to a
+   * disconnected node with no incoming flow, which is invalid BPMN. A step is
+   * unreachable once an earlier terminator in the same block — an `end`,
+   * `throw`, `goto`, or an all-terminating `if`/`parallel` (see
+   * {@link statementTerminates}) — has stopped or diverted the flow and
+   * nothing jumps back to it. Reachability is tracked per statement list: it
+   * starts reachable, turns unreachable after such a terminator, and turns
+   * reachable again at a step some `goto` targets by name (an explicit jump
+   * re-enters the flow there). Nested blocks are scanned only when their
+   * owning construct is itself reachable, so an unreachable `if` is reported
+   * once rather than once per step inside it.
    *
    * An `on` handler is never part of this sequential flow — it is a catch
    * block for the whole container, not a step the main path falls into or
@@ -788,9 +879,11 @@ export class BpmnScriptValidator {
    * fall-through statement (it does not affect `reachable`).
    *
    * The scan is deliberately sound rather than exhaustive: it never flags a
-   * reachable step (an `if` whose branches all `end` is treated as falling
-   * through), so a rarer dead step may go unreported, but a live one is never
-   * wrongly warned — the diagnostic an IDE surfaces stays trustworthy.
+   * step control can actually reach — an `if` without an `else`, and a
+   * `while`/`do-while` whose body always ends, still fall through their
+   * gateway's non-terminating exit, so neither counts as a terminator — so a
+   * rarer dead step may go unreported, but a live one is never wrongly
+   * rejected.
    */
   private checkUnreachableStatements(
     process: Process,
@@ -813,10 +906,12 @@ export class BpmnScriptValidator {
         }
         if (!reachable) {
           accept(
-            'warning',
-            'This step can never run: an earlier `end`, `throw`, or `goto` in ' +
-              'the same block always ends or redirects the flow before ' +
-              'reaching it.',
+            'error',
+            'This step can never run: an earlier `end`, `throw`, `goto`, or ' +
+              'an all-terminating `if`/`parallel` in the same block always ' +
+              'ends or redirects the flow before reaching it, so this step ' +
+              'would lower to a disconnected node with no incoming flow — ' +
+              'invalid BPMN.',
             { node: stmt },
           );
         } else {
@@ -824,11 +919,7 @@ export class BpmnScriptValidator {
             scan(block.statements);
           }
         }
-        if (
-          isEndEvent(stmt) ||
-          isGotoStatement(stmt) ||
-          isThrowStatement(stmt)
-        ) {
+        if (statementTerminates(stmt)) {
           reachable = false;
         }
       }
@@ -1265,6 +1356,20 @@ export class BpmnScriptValidator {
    * @param task The script task.
    */
   checkScriptTask = (task: ScriptTask, accept: ValidationAcceptor): void => {
+    if (task.body === undefined) {
+      // Parser error recovery: an unterminated fenced block (no closing
+      // ```) is never lexed as FENCED_SCRIPT, so the parser recovers into a
+      // ScriptTask with no body. `property: 'name'` is used because a
+      // missing body has no CST node to attach a range to.
+      accept(
+        'error',
+        `Script task '${task.name}' has a malformed or unterminated fenced ` +
+          'script body; a script must be a closed ```<lang> … ``` block.',
+        { node: task, property: 'name' },
+      );
+      return;
+    }
+
     const { tag, code } = splitFencedScript(task.body);
 
     if (!SUPPORTED_SCRIPT_TAGS.has(tag)) {
@@ -1444,18 +1549,21 @@ export class BpmnScriptValidator {
   };
 
   /**
-   * Warn on an empty `subprocess` body — syntactically legal (it lowers to an
-   * empty flow container, mirroring an empty process) but almost always an
-   * authoring mistake, so this mirrors every other empty-block warning.
+   * Reject a `subprocess` body with no flow step — empty, or every statement
+   * an `on` handler — the same structural rule {@link checkProcess} applies
+   * to the top-level body: a subprocess whose main flow does nothing is not
+   * a valid thing to compile.
    *
    * @param stmt The `subprocess` statement.
    */
   checkSubProcess = (stmt: SubProcess, accept: ValidationAcceptor): void => {
-    this.warnIfEmptyBlock(
-      stmt.body,
-      `The 'subprocess' body has no steps.`,
-      accept,
-    );
+    if (hasNoFlowStep(stmt.body.statements)) {
+      accept(
+        'error',
+        `Subprocess '${stmt.name}' has no flow steps: a subprocess needs at least one step on its main flow (handlers alone do not start it).`,
+        { node: stmt, property: 'name' },
+      );
+    }
   };
 
   /**
@@ -1838,6 +1946,29 @@ export class BpmnScriptValidator {
   }
 
   /**
+   * The particle word itself (`after`/`at`/`every`) — shared between the `on`
+   * handler and the `await` catch, since both grammar rules accept any ID
+   * there. Returns whether the particle is legal, so callers can skip
+   * particle-dependent follow-up checks (the shape warnings below apply only
+   * to a handler, not a catch) once it is not.
+   */
+  private checkTimerParticleWord(
+    node: OnHandler | IntermediateCatchEvent,
+    particle: string,
+    accept: ValidationAcceptor,
+  ): boolean {
+    if (!TIMER_PARTICLES.has(particle)) {
+      accept(
+        'error',
+        `Unknown timer particle '${particle}'; write 'after', 'at', or 'every'.`,
+        { node, property: 'particle' },
+      );
+      return false;
+    }
+    return true;
+  }
+
+  /**
    * Timer-specific checks, run only once the required particle/time pair is
    * present: the particle word itself (`after`/`at`/`every`), two
    * mistake-guard shape warnings (an `after` value that does not read as a
@@ -1851,12 +1982,7 @@ export class BpmnScriptValidator {
   ): void {
     const particle = handler.particle!;
     const time = handler.time!;
-    if (!TIMER_PARTICLES.has(particle)) {
-      accept(
-        'error',
-        `Unknown timer particle '${particle}'; write 'after', 'at', or 'every'.`,
-        { node: handler, property: 'particle' },
-      );
+    if (!this.checkTimerParticleWord(handler, particle, accept)) {
       return;
     }
 
@@ -2172,6 +2298,101 @@ export class BpmnScriptValidator {
   };
 
   /**
+   * `await <trigger> <payload>` checks: the soft trigger word, restricted to
+   * the four kinds with a blocking catch form ({@link CATCH_TRIGGERS}), and
+   * the payload shape for whichever kind it is. The grammar carries no host,
+   * bindings, `alongside`, or body on this node, so there is nothing else to
+   * check — {@link checkHandlerPayload} is the mirror for `on`, minus those
+   * four members.
+   *
+   * @param catchEvent The `await` statement.
+   */
+  checkIntermediateCatchEvent = (
+    catchEvent: IntermediateCatchEvent,
+    accept: ValidationAcceptor,
+  ): void => {
+    if (!CATCH_TRIGGERS_SET.has(catchEvent.trigger)) {
+      accept('error', catchTriggerMessage(catchEvent.trigger), {
+        node: catchEvent,
+        property: 'trigger',
+      });
+      return;
+    }
+
+    this.checkCatchPayload(
+      catchEvent,
+      TRIGGER_PAYLOAD[catchEvent.trigger]!,
+      accept,
+    );
+  };
+
+  /**
+   * Walk a catch event's payload against its trigger's row in {@link
+   * TRIGGER_PAYLOAD}: the STRING head (`code`) for message/signal, the timer
+   * particle clause for timer, and the parenthesized condition for
+   * condition. Mirrors {@link checkHandlerPayload}'s code/timer/parens walk;
+   * the bindings and `alongside` dimensions do not apply here, since the
+   * catch reads neither.
+   */
+  private checkCatchPayload(
+    catchEvent: IntermediateCatchEvent,
+    rule: TriggerPayloadRule,
+    accept: ValidationAcceptor,
+  ): void {
+    if (rule.code === 'required') {
+      if (!catchEvent.code) {
+        accept('error', CATCH_NAME_REQUIRED_MESSAGE, {
+          node: catchEvent,
+          property: 'trigger',
+        });
+      }
+    } else if (
+      catchEvent.trigger === 'condition' &&
+      catchEvent.code !== undefined
+    ) {
+      // Timer's forbidden code folds into the timer-payload branch below —
+      // `await timer "PT1H"` is "missing particle", not "has a stray code".
+      accept('error', CATCH_CONDITION_NO_CODE_MESSAGE, {
+        node: catchEvent,
+        property: 'code',
+      });
+    }
+
+    if (rule.timer) {
+      if (!catchEvent.particle || !catchEvent.time) {
+        accept('error', TIMER_PAYLOAD_MESSAGE, {
+          node: catchEvent,
+          property: 'trigger',
+        });
+      } else {
+        this.checkTimerParticleWord(catchEvent, catchEvent.particle, accept);
+      }
+    } else if (catchEvent.particle !== undefined) {
+      accept('error', CATCH_PARTICLE_ONLY_MESSAGE, {
+        node: catchEvent,
+        property: 'particle',
+      });
+    }
+
+    if (rule.parens === 'condition' && catchEvent.condition === undefined) {
+      accept('error', CATCH_CONDITION_REQUIRED_MESSAGE, {
+        node: catchEvent,
+        property: 'trigger',
+      });
+    }
+
+    if (
+      catchEvent.trigger !== 'condition' &&
+      catchEvent.condition !== undefined
+    ) {
+      accept('error', CATCH_CONDITION_ONLY_MESSAGE, {
+        node: catchEvent,
+        property: 'condition',
+      });
+    }
+  }
+
+  /**
    * `error "<code>" message "<text>"` process-header declaration checks: the
    * soft `kind`/`field` words, an empty code or message string, and a
    * duplicate declaration for one code (the duplicate-process-label
@@ -2326,6 +2547,21 @@ function emitTriggerMessage(word: string): string {
     return compensateTypoMessage();
   }
   return unknownTriggerMessage(word, EMIT_TRIGGERS);
+}
+
+/**
+ * The `await` trigger diagnostic: names the four legal catch words and
+ * points at the right construct for everything else — error/escalation fire
+ * outward through `throw`/`emit`, and compensation is a subprocess's own
+ * undo block, so none of the three (nor any other unrecognised word) can be
+ * awaited inline.
+ */
+function catchTriggerMessage(word: string): string {
+  return (
+    `Unknown event kind '${word}'; intermediate catch supports ${formatWordList(CATCH_TRIGGERS)}. ` +
+    "Errors and escalations are raised with 'throw'/'emit', and compensation " +
+    "is a subprocess's undo block, so none of them can be awaited inline."
+  );
 }
 
 /**

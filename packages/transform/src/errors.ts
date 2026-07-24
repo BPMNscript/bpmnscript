@@ -232,20 +232,23 @@ export class UnsupportedCallActivityError extends UnsupportedConstructError {
 
 /**
  * Thrown by {@link xmlToIr} when a start event, end event, intermediate
- * throw, or boundary event carries an event definition kind this tool does
- * not import at that position: any definition on a plain start event
- * (outside an event handler); any definition other than error/escalation/
- * message/signal/timer/conditional/compensation on an event handler's
- * start; any definition other than error/escalation/signal/compensation on
- * an end event; any definition other than escalation/signal/compensation on
- * an intermediate throw (terminate, …); any definition other than error/
- * escalation/message/signal/timer/conditional on a boundary event (a cancel
- * or terminate definition, …) — a boundary event's own compensation trigger
- * refuses earlier, with a dedicated message pointing at the sub-process undo
- * block, so it never reaches this class. The DSL's event layer models only
- * these catch (`on`) and throw/emit (`throw`/`emit`) forms, so any other
- * trigger/result semantics cannot be represented and must not be silently
- * dropped.
+ * throw, intermediate catch, or boundary event carries an event definition
+ * kind this tool does not import at that position: any definition on a
+ * plain start event (outside an event handler); any definition other than
+ * error/escalation/message/signal/timer/conditional/compensation on an
+ * event handler's start; any definition other than error/escalation/signal/
+ * compensation on an end event; any definition other than escalation/
+ * signal/compensation on an intermediate throw (terminate, …); any
+ * definition other than error/escalation/message/signal/timer/conditional
+ * on a boundary event (a cancel or terminate definition, …) — a boundary
+ * event's own compensation trigger refuses earlier, with a dedicated
+ * message pointing at the sub-process undo block, so it never reaches this
+ * class; an intermediate catch is narrowed to message/signal/timer/
+ * conditional before this class is ever consulted, so it likewise never
+ * reaches this class in practice, but shares the same shape check for
+ * consistency. The DSL's event layer models only these catch (`on`) and
+ * throw/emit (`throw`/`emit`) forms, so any other trigger/result semantics
+ * cannot be represented and must not be silently dropped.
  *
  * A definition of the *right* kind but the *wrong shape* (e.g. an error
  * throw resolving to no code, a timer with no time child, a conditional
@@ -254,10 +257,11 @@ export class UnsupportedCallActivityError extends UnsupportedConstructError {
  * the wrong kind of definition.
  */
 export class UnsupportedEventDefinitionError extends UnsupportedConstructError {
-  /** The BPMN `id` of the offending start/end/intermediate-throw/boundary event. */
+  /** The BPMN `id` of the offending start/end/intermediate-throw/catch/boundary event. */
   readonly elementId: string;
   /** Which position the offending event occupies. */
-  readonly eventKind: 'start' | 'end' | 'intermediate throw' | 'boundary';
+  readonly eventKind:
+    'start' | 'end' | 'intermediate throw' | 'intermediate catch' | 'boundary';
   /**
    * The moddle `$type` of the first event definition found, e.g.
    * `bpmn:TerminateEventDefinition` or `bpmn:LinkEventDefinition`.
@@ -266,7 +270,12 @@ export class UnsupportedEventDefinitionError extends UnsupportedConstructError {
 
   constructor(
     elementId: string,
-    eventKind: 'start' | 'end' | 'intermediate throw' | 'boundary',
+    eventKind:
+      | 'start'
+      | 'end'
+      | 'intermediate throw'
+      | 'intermediate catch'
+      | 'boundary',
     definitionType: string,
   ) {
     super(
@@ -401,10 +410,15 @@ function friendlyEventDefinition(definitionType: string): string {
  * seven — compensation is excluded here because it refuses earlier with its
  * own dedicated message (see {@link UnsupportedEventFeatureError}), so this
  * class only ever sees a boundary event carrying something else entirely
- * (a cancel or terminate definition, …).
+ * (a cancel or terminate definition, …). An intermediate catch supports
+ * four of those seven (message, signal, timer, conditional); this branch
+ * is unreachable today (the caller narrows to those four kinds before
+ * ever consulting this class) but is kept accurate in case that narrowing
+ * ever moves.
  */
 function supportedKindsMessage(
-  eventKind: 'start' | 'end' | 'intermediate throw' | 'boundary',
+  eventKind:
+    'start' | 'end' | 'intermediate throw' | 'intermediate catch' | 'boundary',
 ): string {
   switch (eventKind) {
     case 'start':
@@ -417,6 +431,8 @@ function supportedKindsMessage(
       return 'A typed end event supports error, escalation, signal, or compensation.';
     case 'intermediate throw':
       return 'An emit supports escalation, signal, or compensation.';
+    case 'intermediate catch':
+      return 'An await supports message, timer, signal, or conditional.';
     case 'boundary':
       return (
         'A boundary event supports error, escalation, message, signal, ' +

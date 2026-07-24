@@ -16,7 +16,7 @@ The `spring-boot/` fixture runs Operaton 2.1.0 embedded in a Spring Boot 4.0.6 a
 (Java 17). It is packaged as a Docker image so the integration test harness can start
 and stop it programmatically. The fixture exposes the Operaton REST API on port 8080.
 
-Thirteen DSL sources live under `spring-boot/processes/`:
+Sixteen DSL sources live under `spring-boot/processes/`:
 
 - `invoice-approval.bpmnscript` — start → review user task → exclusive gateway (amount > 1000) → senior-approval or auto-approve service task → end. Exercises `if`/`else` desugaring.
 - `parallel-approval.bpmnscript` — start → parallel AND-split into two concurrent user tasks → AND-join → end. Exercises `parallel { { } { } }` desugaring.
@@ -30,20 +30,25 @@ Thirteen DSL sources live under `spring-boot/processes/`:
 - `order-reminder.bpmnscript` — a fulfilment `subprocess` with a non-interrupting `on timer after "PT1H" alongside` reminder that chases the warehouse while the steps run, plus a process-level `on message "OrderCancelled"` handler that rolls the order back when the engine correlates a cancellation from outside. Exercises the timer and message triggers.
 - `booking-saga.bpmnscript` — two booking `subprocess`es each owning an `on compensation` undo block that reverses its own work, plus an interrupting `on error "BOOKING_FAILED"` handler that raises `emit compensation` to unwind the completed bookings before notifying the traveller. Exercises the compensation (undo-block) layer.
 - `loan-approval.bpmnscript` and `loan-approval-kopp.bpmnscript` — the loan-approval walkthrough (plain and parallel-rating variants) used by the `demo` profile; see [Running processes on Operaton](spring-boot/README.md#running-processes-on-operaton-demo) for a hands-on tour of both.
+- `awaiting-confirmation.bpmnscript` — start → submit-request service task → `await message "ConfirmationReceived"` → finalize-request service task → end. The token blocks in place at the `await` with no user task in between; exercises the intermediate catch event (a message correlated from outside releases the wait).
+- `charge-with-recovery.bpmnscript` — start → charge-card service task, bound to a delegate that conditionally throws a `BpmnError` → confirm-charge service task → end, with an interrupting `on ChargeCard: error "CHARGE_FAILED"` boundary that routes a failed charge to a manual review task instead. Exercises an error boundary attached to a **service** task host.
+- `compensating-saga.bpmnscript` — start → a `subprocess` that reserves a seat and owns an `on compensation` undo block that releases it → a service task bound to the same conditionally-failing delegate `charge-with-recovery` uses → end, with a process-level `on error "CHARGE_FAILED" { emit compensation }` that unwinds the completed reservation. Exercises `compensate all` raised from inside a process-level error handler over a completed compensable subprocess.
 
-`invoice-approval`, `parallel-approval`, `loan-approval`, and `loan-approval-kopp` are exercised by the automated E2E suite below; the remaining fixtures are demo-only.
+`invoice-approval`, `parallel-approval`, `loan-approval`, `loan-approval-kopp`, `order-handling`, `awaiting-confirmation`, `charge-with-recovery`, and `compensating-saga` are exercised by the automated E2E suite below; the remaining fixtures are demo-only.
 
 Running `bpmns build` on any of these files produces the deployable `.bpmn` artifact.
 
 ### Testcontainers harness
 
-Five E2E test files in `tests/e2e/` use [testcontainers-node](https://testcontainers.com/) to start the Docker image, deploy compiled BPMN via the Operaton REST API, start process instances, and assert engine behaviour:
+Seven E2E test files in `tests/e2e/` use [testcontainers-node](https://testcontainers.com/) to start the Docker image, deploy compiled BPMN via the Operaton REST API, start process instances, and assert engine behaviour:
 
 - `invoice-approval.test.ts` — deploys the invoice-approval process, completes the `ReviewInvoice` task, and asserts routing by amount (> 1000 → `SeniorApproval`; ≤ 1000 → `AutoApprove` delegate → process ends).
 - `parallel-approval.test.ts` — deploys the parallel-approval process and asserts that both `ApproveA` and `ApproveB` tasks are active concurrently before the AND-join fires.
 - `loan-approval.test.ts` — deploys the loan-approval process and asserts a low-risk small loan auto-approves to completion, while a large loan routes to the human `Approve` task that resolves the gateway.
 - `loan-approval-kopp.test.ts` — deploys the Kopp 2009 parallel-rating variant and asserts a strong internal rating opens the manual assessment task, while a weak rating skips assessment and rejects to completion.
 - `boundary-events.test.ts` — deploys the order-handling process and asserts boundary-event semantics on the `ReviewOrder` task: correlating the interrupting message cancels the task and its escape path rejoins the main flow through `goto`; correlating the non-interrupting one leaves the task active alongside the escalation path.
+- `awaiting-confirmation.test.ts` — deploys the awaiting-confirmation process, asserts the instance is genuinely waiting at the `await message` catch before any correlation, then correlates the message over REST and asserts the instance runs to completion.
+- `service-boundary-and-compensation.test.ts` — deploys both `charge-with-recovery` and `compensating-saga` in one container boot. For `charge-with-recovery`, asserts an interrupting error boundary on the `ChargeCard` **service task** catches the delegate's `BpmnError`, cancels the host, and routes to the review task (plus a control instance where the charge succeeds and no boundary fires). For `compensating-saga`, hard-asserts only that the failure and its `on error` handler run, and separately observes — without hard-asserting — whether the handler's `emit compensation` reaches the completed subprocess's `on compensation` undo block on the live engine, surfacing the outcome as a greppable log line rather than a pass/fail.
 
 The harness is gated by the `SKIP_DOCKER_TESTS` environment variable: Docker tests run by default and are only skipped when `SKIP_DOCKER_TESTS=true` (set in CI).
 

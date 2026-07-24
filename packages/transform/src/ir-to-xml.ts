@@ -360,13 +360,14 @@ function sanitizeRootId(prefix: string, code: string): string {
 
 /**
  * Depth-first collect every event definition carried by a start event, end
- * event, boundary event, or intermediate throw anywhere under a container
- * (recursing into sub-processes), in first-appearance order. A boundary
- * event's code/name must be collected here exactly like a handler start's:
- * it shares the same document-level `bpmn:Error`/`bpmn:Escalation`/
- * `bpmn:Message`/`bpmn:Signal` root as every other catch or throw of that
- * identity, so a message caught by a boundary event and one caught by a
- * host-less handler reference one root, not two.
+ * event, boundary event, intermediate throw, or intermediate catch anywhere
+ * under a container (recursing into sub-processes), in first-appearance
+ * order. A boundary event's or intermediate catch's code/name must be
+ * collected here exactly like a handler start's: it shares the same
+ * document-level `bpmn:Error`/`bpmn:Escalation`/`bpmn:Message`/`bpmn:Signal`
+ * root as every other catch or throw of that identity, so a message caught
+ * by an `await` and one caught by a host-less handler reference one root,
+ * not two.
  */
 function collectEventDefinitions(container: FlowContainer): EventDefinition[] {
   const defs: EventDefinition[] = [];
@@ -377,6 +378,7 @@ function collectEventDefinitions(container: FlowContainer): EventDefinition[] {
         if (el.eventDefinition !== undefined) defs.push(el.eventDefinition);
         break;
       case 'intermediateThrowEvent':
+      case 'intermediateCatchEvent':
       case 'boundaryEvent':
         defs.push(el.eventDefinition);
         break;
@@ -636,15 +638,18 @@ function createFlowNode(
   // carries none. Gateways and start/end events are excluded: their ids are
   // synthesized structural coordinates (e.g. `Gateway_…_split`,
   // `StartEvent_<processId>`) that would humanize to noise, and such elements
-  // are conventionally unnamed. An intermediate throw, a boundary event, and
-  // an event sub-process are excluded too: their surface (`emit`, `on`)
-  // carries no label slot, so a humanized name would be spurious — a boundary
-  // event's id is a synthesized structural coordinate
-  // (`Boundary_<hostId>_<trigger>`) exactly like a gateway's, and the type
-  // carries no `name` field at all. Explicit names from the IR are always
-  // kept (a plain sub-process still humanizes so viewers label the expanded box).
+  // are conventionally unnamed. An intermediate throw, an intermediate catch,
+  // a boundary event, and an event sub-process are excluded too: their
+  // surface (`emit`, `await`, `on`) carries no label slot, so a humanized
+  // name would be spurious — a boundary event's id is a synthesized
+  // structural coordinate (`Boundary_<hostId>_<trigger>`) exactly like a
+  // gateway's, and the type carries no `name` field at all. Explicit names
+  // from the IR are always kept (a plain sub-process still humanizes so
+  // viewers label the expanded box).
   const derivedName =
-    node.kind === 'intermediateThrowEvent' || node.kind === 'boundaryEvent'
+    node.kind === 'intermediateThrowEvent' ||
+    node.kind === 'intermediateCatchEvent' ||
+    node.kind === 'boundaryEvent'
       ? undefined
       : (node.name ??
         (node.kind === 'exclusiveGateway' ||
@@ -691,6 +696,18 @@ function createFlowNode(
       // An `emit` fires the event and lets flow continue: incoming/outgoing are
       // wired generically by `attachIncomingOutgoing`, exactly as for a task.
       return moddle.create('bpmn:IntermediateThrowEvent', {
+        ...baseAttrs,
+        eventDefinitions: [
+          buildEventDefinition(moddle, node.eventDefinition, roots),
+        ],
+      });
+
+    case 'intermediateCatchEvent':
+      // An `await` blocks on the main flow until the trigger fires, then
+      // continues: incoming/outgoing are wired generically by
+      // `attachIncomingOutgoing`, exactly as for a task or an intermediate
+      // throw.
+      return moddle.create('bpmn:IntermediateCatchEvent', {
         ...baseAttrs,
         eventDefinitions: [
           buildEventDefinition(moddle, node.eventDefinition, roots),

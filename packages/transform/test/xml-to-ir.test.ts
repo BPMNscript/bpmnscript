@@ -69,9 +69,10 @@
  *      attribute, an unrelated `operaton:` attribute on a mapped event
  *      definition, and an unreferenced message-less root (a declared,
  *      unreferenced root with a message imports silently into
- *      `errorMessages`). A handler nested inside a plain sub-process;
- *      `bpmn:IntermediateCatchEvent` and a defined normal start event stay
- *      refused.
+ *      `errorMessages`). A handler nested inside a plain sub-process; a
+ *      defined normal start event still refuses; `bpmn:IntermediateCatchEvent`
+ *      is imported, not refused (flip documented here, full coverage in
+ *      section 18 below).
  *  15. Message/signal/timer/conditional import: a message handler, a
  *      non-interrupting signal handler, a duration timer handler, a date
  *      timer handler, a conditional handler, and a signal end event/emit
@@ -121,6 +122,16 @@
  *      an escalation trigger attached to a service or script task; and an
  *      `attachedToRef` naming an activity that lives in a different
  *      container.
+ *  18. Intermediate catch event import (the `await` counterpart): each of
+ *      the four supported triggers (message, timer — all three kinds —,
+ *      signal, conditional) imports a `bpmn:IntermediateCatchEvent` into an
+ *      `intermediateCatchEvent` IR node on the main flow, incoming and
+ *      outgoing sequence flows preserved. Refusals: a link, error,
+ *      escalation, compensation, or cancel definition, each naming the
+ *      unsupported form in `.detail`; two event definitions on one catch;
+ *      `parallelMultiple="true"`; a conditional catch carrying an
+ *      evaluation-narrowing `operaton:variableName` attribute (inherited
+ *      from `readCatchEventDefinition`, pinned here explicitly).
  */
 
 import { describe, it, expect } from 'vitest';
@@ -679,9 +690,7 @@ describe('xmlToIr — unsupported element (still refused kinds)', () => {
 </bpmn:definitions>`;
 
     const { ir } = await xmlToIr(xml);
-    expect(ir.flowElements.some((fe) => fe.kind === 'callActivity')).toBe(
-      true,
-    );
+    expect(ir.flowElements.some((fe) => fe.kind === 'callActivity')).toBe(true);
   });
 });
 
@@ -1367,6 +1376,68 @@ describe('xmlToIr — undeclared operaton extension element residual', () => {
   });
 });
 
+// ── 11e. bpmn:documentation is warned-and-dropped, per owning element ───────
+
+describe('xmlToIr — warns for dropped documentation', () => {
+  const documentationXml = `<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  xmlns:operaton="http://operaton.org/schema/1.0/bpmn"
+                  targetNamespace="http://test">
+  <bpmn:process id="p" isExecutable="true">
+    <bpmn:documentation>This process handles onboarding.</bpmn:documentation>
+    <bpmn:startEvent id="S" />
+    <bpmn:userTask id="DocTask" name="Review the application" operaton:assignee="alice">
+      <bpmn:documentation>Collect the signed form.</bpmn:documentation>
+    </bpmn:userTask>
+    <bpmn:endEvent id="E" />
+    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="DocTask" />
+    <bpmn:sequenceFlow id="F2" sourceRef="DocTask" targetRef="E" />
+  </bpmn:process>
+</bpmn:definitions>`;
+
+  it('surfaces one documentation warning per owning element (process and task)', async () => {
+    const { warnings } = await xmlToIr(documentationXml);
+    const docWarnings = warnings.filter(
+      (w: ImportWarning) => w.category === 'documentation',
+    );
+    expect(docWarnings).toHaveLength(2);
+
+    const processWarning = docWarnings.find((w) => w.elementId === 'p');
+    expect(processWarning).toBeDefined();
+    expect(processWarning?.message).toMatch(/documentation/i);
+
+    const taskWarning = docWarnings.find((w) => w.elementId === 'DocTask');
+    expect(taskWarning).toBeDefined();
+    expect(taskWarning?.message).toMatch(/documentation/i);
+  });
+
+  it('still imports the process body when documentation is present', async () => {
+    const { ir } = await xmlToIr(documentationXml);
+    expect(ir.flowElements.some((fe) => fe.kind === 'startEvent')).toBe(true);
+    const task = ir.flowElements.find((fe) => fe.id === 'DocTask');
+    expect(task?.kind === 'userTask' && task.name).toBe(
+      'Review the application',
+    );
+    expect(task?.kind === 'userTask' && task.assignee).toBe('alice');
+  });
+
+  it('does NOT warn when no element carries documentation (no false positives)', async () => {
+    const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  targetNamespace="http://test">
+  <bpmn:process id="p" isExecutable="true">
+    <bpmn:startEvent id="S" />
+    <bpmn:userTask id="T" name="T" />
+    <bpmn:endEvent id="E" />
+    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="T" />
+    <bpmn:sequenceFlow id="F2" sourceRef="T" targetRef="E" />
+  </bpmn:process>
+</bpmn:definitions>`;
+    const { warnings } = await xmlToIr(xml);
+    expect(warnings.some((w) => w.category === 'documentation')).toBe(false);
+  });
+});
+
 // ── 12. Embedded bpmn:subProcess imports recursively ─────────────────────────
 
 describe('xmlToIr — embedded sub-process imports recursively', () => {
@@ -1652,7 +1723,9 @@ describe('xmlToIr — callActivity import', () => {
 
   // ── Binding table ───────────────────────────────────────────────────────
 
-  const callXmlWithBindingAttrs = (attrs: string): string => `<?xml version="1.0" encoding="UTF-8"?>
+  const callXmlWithBindingAttrs = (
+    attrs: string,
+  ): string => `<?xml version="1.0" encoding="UTF-8"?>
 <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
                   xmlns:operaton="http://operaton.org/schema/1.0/bpmn"
                   xmlns:camunda="http://camunda.org/schema/1.0/bpmn"
@@ -1726,9 +1799,7 @@ describe('xmlToIr — callActivity import', () => {
   it('an unrecognized calledElementBinding value (e.g. versionTag) is refused', async () => {
     await expect(
       xmlToIr(
-        callXmlWithBindingAttrs(
-          'operaton:calledElementBinding="versionTag"',
-        ),
+        callXmlWithBindingAttrs('operaton:calledElementBinding="versionTag"'),
       ),
     ).rejects.toBeInstanceOf(UnsupportedCallActivityError);
   });
@@ -1747,9 +1818,84 @@ describe('xmlToIr — callActivity import', () => {
     expect(versionWarnings[0].elementId).toBe('CallSub');
   });
 
+  // ── Execution-affecting extension attributes ─────────────────────────────
+
+  it('operaton:variableMappingClass is refused, naming the variable-mapping attribute', async () => {
+    try {
+      await xmlToIr(
+        callXmlWithBindingAttrs(
+          'operaton:variableMappingClass="com.acme.Mapper"',
+        ),
+      );
+      expect.fail('Should have thrown');
+    } catch (err) {
+      expect(err).toBeInstanceOf(UnsupportedCallActivityError);
+      expect((err as UnsupportedCallActivityError).detail).toMatch(
+        /variableMappingClass/,
+      );
+    }
+  });
+
+  it('operaton:variableMappingDelegateExpression is refused, naming the variable-mapping attribute', async () => {
+    try {
+      await xmlToIr(
+        callXmlWithBindingAttrs(
+          'operaton:variableMappingDelegateExpression="${mapper}"',
+        ),
+      );
+      expect.fail('Should have thrown');
+    } catch (err) {
+      expect(err).toBeInstanceOf(UnsupportedCallActivityError);
+      expect((err as UnsupportedCallActivityError).detail).toMatch(
+        /variableMappingDelegateExpression/,
+      );
+    }
+  });
+
+  it('operaton:calledElementTenantId is refused, naming the tenant attribute', async () => {
+    try {
+      await xmlToIr(
+        callXmlWithBindingAttrs('operaton:calledElementTenantId="tenant-a"'),
+      );
+      expect.fail('Should have thrown');
+    } catch (err) {
+      expect(err).toBeInstanceOf(UnsupportedCallActivityError);
+      expect((err as UnsupportedCallActivityError).detail).toMatch(
+        /calledElementTenantId/,
+      );
+    }
+  });
+
+  it('camunda:calledElementTenantId is refused too, matching the dual-namespace contract', async () => {
+    try {
+      await xmlToIr(
+        callXmlWithBindingAttrs('camunda:calledElementTenantId="tenant-a"'),
+      );
+      expect.fail('Should have thrown');
+    } catch (err) {
+      expect(err).toBeInstanceOf(UnsupportedCallActivityError);
+      expect((err as UnsupportedCallActivityError).detail).toMatch(
+        /calledElementTenantId/,
+      );
+    }
+  });
+
+  it('a call activity with one of these attributes throws instead of importing with a warning', async () => {
+    const result = xmlToIr(
+      callXmlWithBindingAttrs(
+        'operaton:variableMappingClass="com.acme.Mapper"',
+      ),
+    );
+    // Previously this attribute was a warn-drop and the promise resolved
+    // with { ir, warnings }; it must now reject instead.
+    await expect(result).rejects.toBeInstanceOf(UnsupportedCallActivityError);
+  });
+
   // ── Mapping-shape refusals ────────────────────────────────────────────────
 
-  const callXmlWithExtension = (extension: string): string => `<?xml version="1.0" encoding="UTF-8"?>
+  const callXmlWithExtension = (
+    extension: string,
+  ): string => `<?xml version="1.0" encoding="UTF-8"?>
 <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
                   xmlns:operaton="http://operaton.org/schema/1.0/bpmn"
                   targetNamespace="http://test">
@@ -1784,9 +1930,7 @@ describe('xmlToIr — callActivity import', () => {
 
   it('an operaton:in with source but no target is refused, naming the shape', async () => {
     try {
-      await xmlToIr(
-        callXmlWithExtension('<operaton:in source="a" />'),
-      );
+      await xmlToIr(callXmlWithExtension('<operaton:in source="a" />'));
       expect.fail('Should have thrown');
     } catch (err) {
       expect(err).toBeInstanceOf(UnsupportedCallActivityError);
@@ -1798,9 +1942,7 @@ describe('xmlToIr — callActivity import', () => {
 
   it('an operaton:in with variables="foo" is refused, naming the shape', async () => {
     try {
-      await xmlToIr(
-        callXmlWithExtension('<operaton:in variables="foo" />'),
-      );
+      await xmlToIr(callXmlWithExtension('<operaton:in variables="foo" />'));
       expect.fail('Should have thrown');
     } catch (err) {
       expect(err).toBeInstanceOf(UnsupportedCallActivityError);
@@ -1871,7 +2013,9 @@ describe('xmlToIr — callActivity import', () => {
   it('an operaton:in with variables="all" combined with source/target is refused, naming the shape', async () => {
     try {
       await xmlToIr(
-        callXmlWithExtension('<operaton:in variables="all" source="a" target="b" />'),
+        callXmlWithExtension(
+          '<operaton:in variables="all" source="a" target="b" />',
+        ),
       );
       expect.fail('Should have thrown');
     } catch (err) {
@@ -2150,7 +2294,11 @@ describe('xmlToIr — event layer import', () => {
           { kind: 'endEvent', id: 'EscEnd' },
         ],
         sequenceFlows: [
-          { id: 'SF_EscStart_Notify', sourceRef: 'EscStart', targetRef: 'Notify' },
+          {
+            id: 'SF_EscStart_Notify',
+            sourceRef: 'EscStart',
+            targetRef: 'Notify',
+          },
           { id: 'SF_Notify_EscEnd', sourceRef: 'Notify', targetRef: 'EscEnd' },
         ],
       },
@@ -2260,7 +2408,8 @@ describe('xmlToIr — event layer import', () => {
     // keyed or represented.
     const { warnings } = await xmlToIr(xml);
     const w = warnings.find(
-      (w) => w.category === 'unreferencedRoot' && w.elementId === 'Error_NoCode',
+      (w) =>
+        w.category === 'unreferencedRoot' && w.elementId === 'Error_NoCode',
     );
     expect(w).toBeDefined();
     expect(w?.message).toContain('has no code');
@@ -2692,12 +2841,19 @@ describe('xmlToIr — event layer import', () => {
     if (inner?.kind !== 'subProcess') return;
     expect(inner.triggeredByEvent).toBe(true);
     const innerStart = inner.flowElements.find((fe) => fe.id === 'IHStart');
-    expect(innerStart?.kind === 'startEvent' && innerStart.eventDefinition).toEqual(
-      { kind: 'error', errorCode: 'X' },
-    );
+    expect(
+      innerStart?.kind === 'startEvent' && innerStart.eventDefinition,
+    ).toEqual({ kind: 'error', errorCode: 'X' });
   });
 
-  it('bpmn:IntermediateCatchEvent still refuses with UnsupportedElementError', async () => {
+  it('bpmn:IntermediateCatchEvent is imported, not refused (see the "intermediate catch event import" suite below)', async () => {
+    // The pinned wholesale refusal for `bpmn:IntermediateCatchEvent` is
+    // superseded by a positive import contract — see "xmlToIr —
+    // intermediate catch event import" below for full coverage. This
+    // assertion documents the flip: a well-formed catch no longer raises
+    // UnsupportedElementError. An empty timer still refuses, but now with
+    // UnsupportedEventFeatureError (an unsupported shape, not an
+    // unsupported kind).
     const xml = `<?xml version="1.0" encoding="UTF-8"?>
 <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
                   targetNamespace="http://test">
@@ -2712,7 +2868,12 @@ describe('xmlToIr — event layer import', () => {
   </bpmn:process>
 </bpmn:definitions>`;
 
-    await expect(xmlToIr(xml)).rejects.toBeInstanceOf(UnsupportedElementError);
+    await expect(xmlToIr(xml)).rejects.toBeInstanceOf(
+      UnsupportedEventFeatureError,
+    );
+    await expect(xmlToIr(xml)).rejects.not.toBeInstanceOf(
+      UnsupportedElementError,
+    );
   });
 
   it('a normal (non-handler) start event with an error definition still refuses', async () => {
@@ -2818,7 +2979,10 @@ describe('xmlToIr — message/signal/timer/conditional import', () => {
           {
             kind: 'startEvent',
             id: 'MsgStart',
-            eventDefinition: { kind: 'message', messageName: 'PaymentReceived' },
+            eventDefinition: {
+              kind: 'message',
+              messageName: 'PaymentReceived',
+            },
           },
           { kind: 'endEvent', id: 'MsgEnd' },
         ],
@@ -2851,7 +3015,11 @@ describe('xmlToIr — message/signal/timer/conditional import', () => {
           {
             kind: 'startEvent',
             id: 'DurStart',
-            eventDefinition: { kind: 'timer', timerKind: 'duration', expression: 'PT1H' },
+            eventDefinition: {
+              kind: 'timer',
+              timerKind: 'duration',
+              expression: 'PT1H',
+            },
           },
           { kind: 'endEvent', id: 'DurEnd' },
         ],
@@ -2887,7 +3055,10 @@ describe('xmlToIr — message/signal/timer/conditional import', () => {
           {
             kind: 'startEvent',
             id: 'CondStart',
-            eventDefinition: { kind: 'conditional', condition: '${amount > 100}' },
+            eventDefinition: {
+              kind: 'conditional',
+              condition: '${amount > 100}',
+            },
           },
           { kind: 'endEvent', id: 'CondEnd' },
         ],
@@ -2942,7 +3113,9 @@ describe('xmlToIr — message/signal/timer/conditional import', () => {
         expect.fail('Should have thrown');
       } catch (err) {
         expect(err).toBeInstanceOf(UnsupportedEventFeatureError);
-        expect((err as UnsupportedEventFeatureError).detail).toContain('message');
+        expect((err as UnsupportedEventFeatureError).detail).toContain(
+          'message',
+        );
       }
     });
 
@@ -2968,7 +3141,9 @@ describe('xmlToIr — message/signal/timer/conditional import', () => {
         expect.fail('Should have thrown');
       } catch (err) {
         expect(err).toBeInstanceOf(UnsupportedEventFeatureError);
-        expect((err as UnsupportedEventFeatureError).detail).toContain('signal');
+        expect((err as UnsupportedEventFeatureError).detail).toContain(
+          'signal',
+        );
       }
     });
 
@@ -3073,7 +3248,9 @@ describe('xmlToIr — message/signal/timer/conditional import', () => {
         expect.fail('Should have thrown');
       } catch (err) {
         expect(err).toBeInstanceOf(UnsupportedEventFeatureError);
-        expect((err as UnsupportedEventFeatureError).detail).toContain('conditional');
+        expect((err as UnsupportedEventFeatureError).detail).toContain(
+          'conditional',
+        );
       }
     });
 
@@ -3101,7 +3278,9 @@ describe('xmlToIr — message/signal/timer/conditional import', () => {
         expect.fail('Should have thrown');
       } catch (err) {
         expect(err).toBeInstanceOf(UnsupportedEventFeatureError);
-        expect((err as UnsupportedEventFeatureError).detail).toContain('variableName');
+        expect((err as UnsupportedEventFeatureError).detail).toContain(
+          'variableName',
+        );
       }
     });
 
@@ -3129,7 +3308,9 @@ describe('xmlToIr — message/signal/timer/conditional import', () => {
         expect.fail('Should have thrown');
       } catch (err) {
         expect(err).toBeInstanceOf(UnsupportedEventFeatureError);
-        expect((err as UnsupportedEventFeatureError).detail).toContain('variableEvents');
+        expect((err as UnsupportedEventFeatureError).detail).toContain(
+          'variableEvents',
+        );
       }
     });
 
@@ -3225,7 +3406,9 @@ describe('xmlToIr — message/signal/timer/conditional import', () => {
         signalName: 'Ping',
       });
       const emit = ir.flowElements.find((fe) => fe.id === 'Emit');
-      expect(emit?.kind === 'intermediateThrowEvent' && emit.eventDefinition).toEqual({
+      expect(
+        emit?.kind === 'intermediateThrowEvent' && emit.eventDefinition,
+      ).toEqual({
         kind: 'signal',
         signalName: 'Ping',
       });
@@ -3244,12 +3427,14 @@ describe('xmlToIr — message/signal/timer/conditional import', () => {
 </bpmn:definitions>`;
 
       const { warnings } = await xmlToIr(xml);
-      const unreferenced = warnings.filter((w) => w.category === 'unreferencedRoot');
+      const unreferenced = warnings.filter(
+        (w) => w.category === 'unreferencedRoot',
+      );
       expect(unreferenced).toHaveLength(1);
       expect(unreferenced[0].elementId).toBe('Message_Unused');
     });
 
-    it("itemRef on a referenced bpmn:Message root warns once and still imports", async () => {
+    it('itemRef on a referenced bpmn:Message root warns once and still imports', async () => {
       const xml = `<?xml version="1.0" encoding="UTF-8"?>
 <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
                   targetNamespace="http://test">
@@ -3311,7 +3496,9 @@ describe('xmlToIr — message/signal/timer/conditional import', () => {
       expect.fail('Should have thrown');
     } catch (err) {
       expect(err).toBeInstanceOf(UnsupportedEventFeatureError);
-      expect((err as UnsupportedEventFeatureError).detail).toContain('variableName');
+      expect((err as UnsupportedEventFeatureError).detail).toContain(
+        'variableName',
+      );
     }
   });
 
@@ -3382,12 +3569,16 @@ describe('xmlToIr — message/signal/timer/conditional import', () => {
     expect(outer?.kind).toBe('subProcess');
     if (outer?.kind !== 'subProcess') return;
 
-    const inner = outer.flowElements.find((fe) => fe.id === 'InnerTimerHandler');
+    const inner = outer.flowElements.find(
+      (fe) => fe.id === 'InnerTimerHandler',
+    );
     expect(inner?.kind).toBe('subProcess');
     if (inner?.kind !== 'subProcess') return;
     expect(inner.triggeredByEvent).toBe(true);
     const innerStart = inner.flowElements.find((fe) => fe.id === 'ITStart');
-    expect(innerStart?.kind === 'startEvent' && innerStart.eventDefinition).toEqual({
+    expect(
+      innerStart?.kind === 'startEvent' && innerStart.eventDefinition,
+    ).toEqual({
       kind: 'timer',
       timerKind: 'duration',
       expression: 'PT30M',
@@ -3498,7 +3689,11 @@ describe('xmlToIr — compensation import', () => {
     ],
     sequenceFlows: [
       { id: 'Flow_PStart_Booking', sourceRef: 'PStart', targetRef: 'Booking' },
-      { id: 'Flow_Booking_EmitUndo', sourceRef: 'Booking', targetRef: 'EmitUndo' },
+      {
+        id: 'Flow_Booking_EmitUndo',
+        sourceRef: 'Booking',
+        targetRef: 'EmitUndo',
+      },
       {
         id: 'Flow_EmitUndo_ThrowUndo',
         sourceRef: 'EmitUndo',
@@ -3563,7 +3758,9 @@ describe('xmlToIr — compensation import', () => {
         expect.fail('Should have thrown');
       } catch (err) {
         expect(err).toBeInstanceOf(UnsupportedEventFeatureError);
-        expect((err as UnsupportedEventFeatureError).detail).toContain('activityRef');
+        expect((err as UnsupportedEventFeatureError).detail).toContain(
+          'activityRef',
+        );
       }
     });
 
@@ -3587,7 +3784,9 @@ describe('xmlToIr — compensation import', () => {
         expect.fail('Should have thrown');
       } catch (err) {
         expect(err).toBeInstanceOf(UnsupportedEventFeatureError);
-        expect((err as UnsupportedEventFeatureError).detail).toContain('activityRef');
+        expect((err as UnsupportedEventFeatureError).detail).toContain(
+          'activityRef',
+        );
       }
     });
 
@@ -3905,7 +4104,11 @@ describe('xmlToIr — compensation import', () => {
             { kind: 'endEvent', id: 'ErrEnd' },
           ],
           sequenceFlows: [
-            { id: 'Flow_ErrStart_ErrEnd', sourceRef: 'ErrStart', targetRef: 'ErrEnd' },
+            {
+              id: 'Flow_ErrStart_ErrEnd',
+              sourceRef: 'ErrStart',
+              targetRef: 'ErrEnd',
+            },
           ],
         },
         {
@@ -3921,7 +4124,11 @@ describe('xmlToIr — compensation import', () => {
             { kind: 'endEvent', id: 'EscEnd' },
           ],
           sequenceFlows: [
-            { id: 'Flow_EscStart_EscEnd', sourceRef: 'EscStart', targetRef: 'EscEnd' },
+            {
+              id: 'Flow_EscStart_EscEnd',
+              sourceRef: 'EscStart',
+              targetRef: 'EscEnd',
+            },
           ],
         },
         {
@@ -3932,12 +4139,19 @@ describe('xmlToIr — compensation import', () => {
             {
               kind: 'startEvent',
               id: 'MsgStart',
-              eventDefinition: { kind: 'message', messageName: 'PaymentReceived' },
+              eventDefinition: {
+                kind: 'message',
+                messageName: 'PaymentReceived',
+              },
             },
             { kind: 'endEvent', id: 'MsgEnd' },
           ],
           sequenceFlows: [
-            { id: 'Flow_MsgStart_MsgEnd', sourceRef: 'MsgStart', targetRef: 'MsgEnd' },
+            {
+              id: 'Flow_MsgStart_MsgEnd',
+              sourceRef: 'MsgStart',
+              targetRef: 'MsgEnd',
+            },
           ],
         },
         {
@@ -3953,7 +4167,11 @@ describe('xmlToIr — compensation import', () => {
             { kind: 'endEvent', id: 'SigEnd' },
           ],
           sequenceFlows: [
-            { id: 'Flow_SigStart_SigEnd', sourceRef: 'SigStart', targetRef: 'SigEnd' },
+            {
+              id: 'Flow_SigStart_SigEnd',
+              sourceRef: 'SigStart',
+              targetRef: 'SigEnd',
+            },
           ],
         },
         {
@@ -3964,12 +4182,20 @@ describe('xmlToIr — compensation import', () => {
             {
               kind: 'startEvent',
               id: 'TimerStart',
-              eventDefinition: { kind: 'timer', timerKind: 'duration', expression: 'PT1H' },
+              eventDefinition: {
+                kind: 'timer',
+                timerKind: 'duration',
+                expression: 'PT1H',
+              },
             },
             { kind: 'endEvent', id: 'TimerEnd' },
           ],
           sequenceFlows: [
-            { id: 'Flow_TimerStart_TimerEnd', sourceRef: 'TimerStart', targetRef: 'TimerEnd' },
+            {
+              id: 'Flow_TimerStart_TimerEnd',
+              sourceRef: 'TimerStart',
+              targetRef: 'TimerEnd',
+            },
           ],
         },
         {
@@ -3980,12 +4206,19 @@ describe('xmlToIr — compensation import', () => {
             {
               kind: 'startEvent',
               id: 'CondStart',
-              eventDefinition: { kind: 'conditional', condition: '${amount > 100}' },
+              eventDefinition: {
+                kind: 'conditional',
+                condition: '${amount > 100}',
+              },
             },
             { kind: 'endEvent', id: 'CondEnd' },
           ],
           sequenceFlows: [
-            { id: 'Flow_CondStart_CondEnd', sourceRef: 'CondStart', targetRef: 'CondEnd' },
+            {
+              id: 'Flow_CondStart_CondEnd',
+              sourceRef: 'CondStart',
+              targetRef: 'CondEnd',
+            },
           ],
         },
         { kind: 'endEvent', id: 'PEnd' },
@@ -4052,7 +4285,9 @@ describe('xmlToIr — compensation import', () => {
     expect(start?.kind === 'startEvent' && start.eventDefinition).toEqual({
       kind: 'compensation',
     });
-    expect(start?.kind === 'startEvent' && start.isInterrupting).toBeUndefined();
+    expect(
+      start?.kind === 'startEvent' && start.isInterrupting,
+    ).toBeUndefined();
   });
 });
 
@@ -4644,5 +4879,338 @@ describe('xmlToIr — boundary event import', () => {
     expect(labelWarnings[0]!.elementId).toBe('Boundary_Review_timer');
     expect(labelWarnings[0]!.message).toContain('Timed out');
     expect(labelWarnings[0]!.message).toContain('a boundary event');
+  });
+});
+
+// ── 18. Intermediate catch event import ──────────────────────────────────────
+
+describe('xmlToIr — intermediate catch event import', () => {
+  // ── 18a. Map: the four supported triggers, on the main flow ────────────────
+
+  it('imports message, timer (duration/date/cycle), signal, and conditional catches into the exact expected IR, incoming/outgoing preserved, warnings: []', async () => {
+    const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  targetNamespace="http://test">
+  <bpmn:message id="Message_Pay" name="PaymentReceived" />
+  <bpmn:signal id="Signal_Ping" name="Ping" />
+  <bpmn:process id="p" isExecutable="true">
+    <bpmn:startEvent id="Start" />
+    <bpmn:intermediateCatchEvent id="WaitMsg">
+      <bpmn:messageEventDefinition id="WaitMsgDef" messageRef="Message_Pay" />
+    </bpmn:intermediateCatchEvent>
+    <bpmn:intermediateCatchEvent id="WaitDur">
+      <bpmn:timerEventDefinition id="WaitDurDef">
+        <bpmn:timeDuration>PT1H</bpmn:timeDuration>
+      </bpmn:timerEventDefinition>
+    </bpmn:intermediateCatchEvent>
+    <bpmn:intermediateCatchEvent id="WaitDate">
+      <bpmn:timerEventDefinition id="WaitDateDef">
+        <bpmn:timeDate>2026-08-01T09:00:00</bpmn:timeDate>
+      </bpmn:timerEventDefinition>
+    </bpmn:intermediateCatchEvent>
+    <bpmn:intermediateCatchEvent id="WaitCycle">
+      <bpmn:timerEventDefinition id="WaitCycleDef">
+        <bpmn:timeCycle>R3/PT10M</bpmn:timeCycle>
+      </bpmn:timerEventDefinition>
+    </bpmn:intermediateCatchEvent>
+    <bpmn:intermediateCatchEvent id="WaitSig">
+      <bpmn:signalEventDefinition id="WaitSigDef" signalRef="Signal_Ping" />
+    </bpmn:intermediateCatchEvent>
+    <bpmn:intermediateCatchEvent id="WaitCond">
+      <bpmn:conditionalEventDefinition id="WaitCondDef">
+        <bpmn:condition>\${amount &gt; 100}</bpmn:condition>
+      </bpmn:conditionalEventDefinition>
+    </bpmn:intermediateCatchEvent>
+    <bpmn:endEvent id="End" />
+    <bpmn:sequenceFlow id="F1" sourceRef="Start" targetRef="WaitMsg" />
+    <bpmn:sequenceFlow id="F2" sourceRef="WaitMsg" targetRef="WaitDur" />
+    <bpmn:sequenceFlow id="F3" sourceRef="WaitDur" targetRef="WaitDate" />
+    <bpmn:sequenceFlow id="F4" sourceRef="WaitDate" targetRef="WaitCycle" />
+    <bpmn:sequenceFlow id="F5" sourceRef="WaitCycle" targetRef="WaitSig" />
+    <bpmn:sequenceFlow id="F6" sourceRef="WaitSig" targetRef="WaitCond" />
+    <bpmn:sequenceFlow id="F7" sourceRef="WaitCond" targetRef="End" />
+  </bpmn:process>
+</bpmn:definitions>`;
+
+    const expectedIr: BpmnProcess = {
+      id: 'p',
+      isExecutable: true,
+      flowElements: [
+        { kind: 'startEvent', id: 'Start' },
+        {
+          kind: 'intermediateCatchEvent',
+          id: 'WaitMsg',
+          eventDefinition: { kind: 'message', messageName: 'PaymentReceived' },
+        },
+        {
+          kind: 'intermediateCatchEvent',
+          id: 'WaitDur',
+          eventDefinition: {
+            kind: 'timer',
+            timerKind: 'duration',
+            expression: 'PT1H',
+          },
+        },
+        {
+          kind: 'intermediateCatchEvent',
+          id: 'WaitDate',
+          eventDefinition: {
+            kind: 'timer',
+            timerKind: 'date',
+            expression: '2026-08-01T09:00:00',
+          },
+        },
+        {
+          kind: 'intermediateCatchEvent',
+          id: 'WaitCycle',
+          eventDefinition: {
+            kind: 'timer',
+            timerKind: 'cycle',
+            expression: 'R3/PT10M',
+          },
+        },
+        {
+          kind: 'intermediateCatchEvent',
+          id: 'WaitSig',
+          eventDefinition: { kind: 'signal', signalName: 'Ping' },
+        },
+        {
+          kind: 'intermediateCatchEvent',
+          id: 'WaitCond',
+          eventDefinition: {
+            kind: 'conditional',
+            condition: '${amount > 100}',
+          },
+        },
+        { kind: 'endEvent', id: 'End' },
+      ],
+      sequenceFlows: [
+        { id: 'F1', sourceRef: 'Start', targetRef: 'WaitMsg' },
+        { id: 'F2', sourceRef: 'WaitMsg', targetRef: 'WaitDur' },
+        { id: 'F3', sourceRef: 'WaitDur', targetRef: 'WaitDate' },
+        { id: 'F4', sourceRef: 'WaitDate', targetRef: 'WaitCycle' },
+        { id: 'F5', sourceRef: 'WaitCycle', targetRef: 'WaitSig' },
+        { id: 'F6', sourceRef: 'WaitSig', targetRef: 'WaitCond' },
+        { id: 'F7', sourceRef: 'WaitCond', targetRef: 'End' },
+      ],
+    };
+
+    const { ir, warnings } = await xmlToIr(xml);
+    expect(ir).toEqual(expectedIr);
+    expect(warnings).toEqual([]);
+
+    // Every catch sits on the main flow: exactly one incoming and one
+    // outgoing sequence flow apiece.
+    for (const catchId of [
+      'WaitMsg',
+      'WaitDur',
+      'WaitDate',
+      'WaitCycle',
+      'WaitSig',
+      'WaitCond',
+    ]) {
+      expect(
+        ir.sequenceFlows.filter((f) => f.targetRef === catchId),
+      ).toHaveLength(1);
+      expect(
+        ir.sequenceFlows.filter((f) => f.sourceRef === catchId),
+      ).toHaveLength(1);
+    }
+  });
+
+  it('a genuine label on an intermediate catch is dropped with exactly one label warning', async () => {
+    const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  targetNamespace="http://test">
+  <bpmn:message id="Message_Pay" name="PaymentReceived" />
+  <bpmn:process id="p" isExecutable="true">
+    <bpmn:startEvent id="S" />
+    <bpmn:intermediateCatchEvent id="Wait" name="Awaiting payment">
+      <bpmn:messageEventDefinition id="d" messageRef="Message_Pay" />
+    </bpmn:intermediateCatchEvent>
+    <bpmn:endEvent id="E" />
+    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="Wait" />
+    <bpmn:sequenceFlow id="F2" sourceRef="Wait" targetRef="E" />
+  </bpmn:process>
+</bpmn:definitions>`;
+
+    const { warnings } = await xmlToIr(xml);
+    const labelWarnings = warnings.filter((w) => w.category === 'label');
+    expect(labelWarnings).toHaveLength(1);
+    expect(labelWarnings[0]!.elementId).toBe('Wait');
+    expect(labelWarnings[0]!.message).toContain('Awaiting payment');
+    expect(labelWarnings[0]!.message).toContain('an await');
+  });
+
+  // ── 18b. Refuse trigger: link, error, escalation, compensation, cancel ─────
+
+  describe('refuses an unsupported trigger', () => {
+    const unsupportedTriggerXml = (
+      definitionXml: string,
+    ) => `<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  targetNamespace="http://test">
+  <bpmn:process id="p" isExecutable="true">
+    <bpmn:startEvent id="S" />
+    <bpmn:intermediateCatchEvent id="Wait">
+      ${definitionXml}
+    </bpmn:intermediateCatchEvent>
+    <bpmn:endEvent id="E" />
+    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="Wait" />
+    <bpmn:sequenceFlow id="F2" sourceRef="Wait" targetRef="E" />
+  </bpmn:process>
+</bpmn:definitions>`;
+
+    it.each([
+      [
+        'link',
+        '<bpmn:linkEventDefinition id="d" name="X" />',
+        'LinkEventDefinition',
+      ],
+      ['error', '<bpmn:errorEventDefinition id="d" />', 'ErrorEventDefinition'],
+      [
+        'escalation',
+        '<bpmn:escalationEventDefinition id="d" />',
+        'EscalationEventDefinition',
+      ],
+      [
+        'compensation',
+        '<bpmn:compensateEventDefinition id="d" />',
+        'CompensateEventDefinition',
+      ],
+      [
+        'cancel',
+        '<bpmn:cancelEventDefinition id="d" />',
+        'CancelEventDefinition',
+      ],
+    ] as const)(
+      'a %s trigger refuses with UnsupportedEventFeatureError naming the form',
+      async (_label, definitionXml, expectedTypeName) => {
+        try {
+          await xmlToIr(unsupportedTriggerXml(definitionXml));
+          expect.fail('Should have thrown');
+        } catch (err) {
+          expect(err).toBeInstanceOf(UnsupportedEventFeatureError);
+          expect((err as UnsupportedEventFeatureError).elementId).toBe('Wait');
+          expect((err as UnsupportedEventFeatureError).detail).toContain(
+            expectedTypeName,
+          );
+        }
+      },
+    );
+  });
+
+  // ── 18c. Refuse multiple: >1 event definition, or parallelMultiple ─────────
+
+  describe('refuses multiple triggers', () => {
+    it('two event definitions on one catch refuse with UnsupportedEventFeatureError', async () => {
+      const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  targetNamespace="http://test">
+  <bpmn:signal id="Signal_Ping" name="Ping" />
+  <bpmn:process id="p" isExecutable="true">
+    <bpmn:startEvent id="S" />
+    <bpmn:intermediateCatchEvent id="Wait">
+      <bpmn:timerEventDefinition id="d1">
+        <bpmn:timeDuration>PT1H</bpmn:timeDuration>
+      </bpmn:timerEventDefinition>
+      <bpmn:signalEventDefinition id="d2" signalRef="Signal_Ping" />
+    </bpmn:intermediateCatchEvent>
+    <bpmn:endEvent id="E" />
+    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="Wait" />
+    <bpmn:sequenceFlow id="F2" sourceRef="Wait" targetRef="E" />
+  </bpmn:process>
+</bpmn:definitions>`;
+
+      try {
+        await xmlToIr(xml);
+        expect.fail('Should have thrown');
+      } catch (err) {
+        expect(err).toBeInstanceOf(UnsupportedEventFeatureError);
+        expect((err as UnsupportedEventFeatureError).detail).toContain(
+          '2 event definitions',
+        );
+      }
+    });
+
+    it('parallelMultiple="true" refuses with UnsupportedEventFeatureError', async () => {
+      const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  targetNamespace="http://test">
+  <bpmn:signal id="Signal_Ping" name="Ping" />
+  <bpmn:process id="p" isExecutable="true">
+    <bpmn:startEvent id="S" />
+    <bpmn:intermediateCatchEvent id="Wait" parallelMultiple="true">
+      <bpmn:signalEventDefinition id="d" signalRef="Signal_Ping" />
+    </bpmn:intermediateCatchEvent>
+    <bpmn:endEvent id="E" />
+    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="Wait" />
+    <bpmn:sequenceFlow id="F2" sourceRef="Wait" targetRef="E" />
+  </bpmn:process>
+</bpmn:definitions>`;
+
+      try {
+        await xmlToIr(xml);
+        expect.fail('Should have thrown');
+      } catch (err) {
+        expect(err).toBeInstanceOf(UnsupportedEventFeatureError);
+        expect((err as UnsupportedEventFeatureError).detail).toContain(
+          'parallelMultiple',
+        );
+      }
+    });
+
+    it('a "none" catch with zero event definitions refuses with UnsupportedEventFeatureError', async () => {
+      const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  targetNamespace="http://test">
+  <bpmn:process id="p" isExecutable="true">
+    <bpmn:startEvent id="S" />
+    <bpmn:intermediateCatchEvent id="Wait" />
+    <bpmn:endEvent id="E" />
+    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="Wait" />
+    <bpmn:sequenceFlow id="F2" sourceRef="Wait" targetRef="E" />
+  </bpmn:process>
+</bpmn:definitions>`;
+
+      try {
+        await xmlToIr(xml);
+        expect.fail('Should have thrown');
+      } catch (err) {
+        expect(err).toBeInstanceOf(UnsupportedEventFeatureError);
+        expect((err as UnsupportedEventFeatureError).detail).toContain('none');
+      }
+    });
+  });
+
+  // ── 18d. Refuse narrowing: inherited from readCatchEventDefinition ─────────
+
+  it('operaton:variableName on a conditional catch refuses with UnsupportedEventFeatureError naming the attribute (ADR-0017, inherited from readCatchEventDefinition)', async () => {
+    const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  xmlns:operaton="http://operaton.org/schema/1.0/bpmn"
+                  targetNamespace="http://test">
+  <bpmn:process id="p" isExecutable="true">
+    <bpmn:startEvent id="S" />
+    <bpmn:intermediateCatchEvent id="Wait">
+      <bpmn:conditionalEventDefinition id="d" operaton:variableName="amount">
+        <bpmn:condition>\${amount &gt; 100}</bpmn:condition>
+      </bpmn:conditionalEventDefinition>
+    </bpmn:intermediateCatchEvent>
+    <bpmn:endEvent id="E" />
+    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="Wait" />
+    <bpmn:sequenceFlow id="F2" sourceRef="Wait" targetRef="E" />
+  </bpmn:process>
+</bpmn:definitions>`;
+
+    try {
+      await xmlToIr(xml);
+      expect.fail('Should have thrown');
+    } catch (err) {
+      expect(err).toBeInstanceOf(UnsupportedEventFeatureError);
+      expect((err as UnsupportedEventFeatureError).detail).toContain(
+        'variableName',
+      );
+    }
   });
 });

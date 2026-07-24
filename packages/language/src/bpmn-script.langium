@@ -28,7 +28,7 @@
 //   if, else, while, do, parallel, goto, label, assignee, formKey, class,
 //   expression, delegate, topic, form,
 //   call, in, out, local, binding, version, businessKey,
-//   on, throw, emit, alongside,
+//   on, throw, emit, alongside, await,
 //   string, number, boolean, date, json, any,
 //   true, false, null.
 // JUEL identifiers that do NOT collide with this set lex as plain `ID` in
@@ -89,7 +89,7 @@ Statement:
     | UserTask | ServiceTask | ExternalTask | ScriptTask
     | IfStatement | WhileStatement | DoWhileStatement
     | ParallelStatement | GotoStatement | SubProcess | CallActivity
-    | OnHandler | ThrowStatement | EmitStatement;
+    | OnHandler | ThrowStatement | EmitStatement | IntermediateCatchEvent;
 
 // A brace-delimited list of statements (the body of if/else/while/do/parallel
 // branches). The process body itself is an *implicit* block (no braces),
@@ -349,6 +349,38 @@ ThrowStatement:
 // the grammar's.
 EmitStatement:
     'emit' trigger=ID (name=ID)? (code=STRING)?;
+
+// `await <trigger> <payload>` — a blocking wait on the main flow: the token
+// pauses here until the named trigger fires, then continues to the next
+// statement, unlike `on` (a scope-wide guard racing the block it wraps) and
+// unlike `throw`/`emit` (which fire outward instead of waiting). Only
+// message, timer, signal, and condition are awaitable inline; error,
+// escalation, and compensation are raised with `throw`/`emit` and never
+// caught this way — the grammar stays silent about which trigger words are
+// legal here (the validator polices that, as everywhere else in this file),
+// but the shape below only has room for the four awaitable payloads.
+//
+// There is no name slot: the goto-target id is always synthesized (see
+// `makeIntermediateCatchEventId`), because a trial `name=ID` slot collided
+// with the timer particle at the token level — `await timer after "PT1H"`
+// and a hypothetical `await MyWait timer` are both `ID ID ID/STRING`, so the
+// parser cannot commit to which `ID` after `trigger` is the name and which
+// is the particle without a keyword to tell them apart, and reserving
+// `after`/`at`/`every` was rejected for the same reason the `on` particles
+// stay soft (see the file header). Dropping the name slot removes the
+// ambiguity entirely, mirroring how `emit`/`throw` already leave positional
+// events unnamed.
+//
+// The payload shape per trigger mirrors `OnHandler`'s: `message`/`signal`
+// take a required name string (`await message "Invoice Received"`), `timer`
+// takes a particle (`after`/`at`/`every`) followed by a time string in the
+// same slot (`await timer after "PT1H"`), and `condition` takes a
+// parenthesized expression read exactly like an `if` condition
+// (`await condition (amount > 100)`).
+IntermediateCatchEvent:
+    'await' trigger=ID
+    (code=STRING | particle=ID time=(STRING | RAW_TEMPLATE))?
+    ('(' condition=Expr ')')?;
 
 // `<kind> "<code>" <field> "<text>"` — a process-header declaration, written
 // alongside `var` declarations, for the one piece of event data usage alone

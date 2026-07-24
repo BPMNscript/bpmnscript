@@ -1276,7 +1276,11 @@ describe('irToDsl — call activity', () => {
         ],
         outMappings: [
           { kind: 'variable', source: 'result', target: 'outcome' },
-          { kind: 'expression', sourceExpression: '${status}', target: 'final' },
+          {
+            kind: 'expression',
+            sourceExpression: '${status}',
+            target: 'final',
+          },
           { kind: 'all', local: true },
         ],
       }),
@@ -1408,8 +1412,16 @@ describe('irToDsl — event layer', () => {
             { kind: 'endEvent', id: 'PFEnd' },
           ],
           sequenceFlows: [
-            { id: 'SF_PFStart_Recover', sourceRef: 'PFStart', targetRef: 'Recover' },
-            { id: 'SF_Recover_PFEnd', sourceRef: 'Recover', targetRef: 'PFEnd' },
+            {
+              id: 'SF_PFStart_Recover',
+              sourceRef: 'PFStart',
+              targetRef: 'Recover',
+            },
+            {
+              id: 'SF_Recover_PFEnd',
+              sourceRef: 'Recover',
+              targetRef: 'PFEnd',
+            },
           ],
         },
         {
@@ -1533,7 +1545,11 @@ describe('irToDsl — event layer', () => {
               targetRef: 'A',
               conditionExpression: '${amount > 1000}',
             },
-            { id: 'DF', sourceRef: 'Gateway_HS_split', targetRef: 'Gateway_HS_join' },
+            {
+              id: 'DF',
+              sourceRef: 'Gateway_HS_split',
+              targetRef: 'Gateway_HS_join',
+            },
             { id: 'F3', sourceRef: 'A', targetRef: 'Gateway_HS_join' },
             { id: 'F4', sourceRef: 'Gateway_HS_join', targetRef: 'HE' },
           ],
@@ -1565,7 +1581,12 @@ describe('irToDsl — event layer (message / signal / timer / conditional)', () 
   ): FlowElement {
     const start: FlowElement =
       isInterrupting === false
-        ? { kind: 'startEvent', id: startId, isInterrupting, eventDefinition: def }
+        ? {
+            kind: 'startEvent',
+            id: startId,
+            isInterrupting,
+            eventDefinition: def,
+          }
         : { kind: 'startEvent', id: startId, eventDefinition: def };
     return {
       kind: 'subProcess',
@@ -1612,7 +1633,11 @@ describe('irToDsl — event layer (message / signal / timer / conditional)', () 
       ],
       sequenceFlows: [
         { id: 'SF_PStart_EmitSig', sourceRef: 'PStart', targetRef: 'EmitSig' },
-        { id: 'SF_EmitSig_ThrowSig', sourceRef: 'EmitSig', targetRef: 'ThrowSig' },
+        {
+          id: 'SF_EmitSig_ThrowSig',
+          sourceRef: 'EmitSig',
+          targetRef: 'ThrowSig',
+        },
       ],
     };
     const dsl = irToDsl(ir);
@@ -1621,7 +1646,9 @@ describe('irToDsl — event layer (message / signal / timer / conditional)', () 
     expect(dsl).toContain('  on message "PaymentReceived" {\n');
     expect(dsl).toContain('  on signal "Cancelled" alongside {\n');
     // Handlers print last: both headers follow the throw.
-    expect(dsl.indexOf('on message')).toBeGreaterThan(dsl.indexOf('throw signal'));
+    expect(dsl.indexOf('on message')).toBeGreaterThan(
+      dsl.indexOf('throw signal'),
+    );
     expect(dsl.indexOf('on signal')).toBeGreaterThan(dsl.indexOf('on message'));
   });
 
@@ -1715,7 +1742,11 @@ describe('irToDsl — event layer (message / signal / timer / conditional)', () 
         {
           kind: 'intermediateThrowEvent',
           id: 'Bad',
-          eventDefinition: { kind: 'timer', timerKind: 'duration', expression: 'PT1H' },
+          eventDefinition: {
+            kind: 'timer',
+            timerKind: 'duration',
+            expression: 'PT1H',
+          },
         },
         { kind: 'endEvent', id: 'E' },
       ],
@@ -1725,6 +1756,73 @@ describe('irToDsl — event layer (message / signal / timer / conditional)', () 
       ],
     };
     expect(() => irToDsl(badEmit)).toThrow(/timer/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Event layer: intermediate catch (`await`) — a blocking, one-in/one-out node
+// inline on the main flow, printed with no id token (it has no name slot).
+// ---------------------------------------------------------------------------
+
+describe('irToDsl — event layer (intermediate catch / await)', () => {
+  /** A `start → task → catch → task → end` body: the catch sits on the main flow. */
+  function catchBody(def: EventDefinition): BpmnProcess {
+    return {
+      id: 'proc',
+      isExecutable: true,
+      flowElements: [
+        { kind: 'startEvent', id: 'S' },
+        { kind: 'userTask', id: 'Before' },
+        { kind: 'intermediateCatchEvent', id: 'Catch_1', eventDefinition: def },
+        { kind: 'userTask', id: 'After' },
+        { kind: 'endEvent', id: 'E' },
+      ],
+      sequenceFlows: [
+        { id: 'F1', sourceRef: 'S', targetRef: 'Before' },
+        { id: 'F2', sourceRef: 'Before', targetRef: 'Catch_1' },
+        { id: 'F3', sourceRef: 'Catch_1', targetRef: 'After' },
+        { id: 'F4', sourceRef: 'After', targetRef: 'E' },
+      ],
+    };
+  }
+
+  it('prints "await message …" inline between the surrounding steps, with no id token', () => {
+    const dsl = irToDsl(catchBody({ kind: 'message', messageName: 'M' }));
+    expect(dsl).toBe(
+      [
+        'process proc {',
+        '  start S',
+        '  user Before',
+        '  await message "M"',
+        '  user After',
+        '  end E',
+        '}',
+        '',
+      ].join('\n'),
+    );
+    expect(dsl).not.toContain('Catch_');
+  });
+
+  it('prints "await timer after …" for a duration timer catch', () => {
+    const dsl = irToDsl(
+      catchBody({ kind: 'timer', timerKind: 'duration', expression: 'PT1H' }),
+    );
+    expect(dsl).toContain('  await timer after "PT1H"\n');
+    expect(dsl).not.toContain('Catch_');
+  });
+
+  it('prints "await signal …" for a signal catch', () => {
+    const dsl = irToDsl(catchBody({ kind: 'signal', signalName: 'S' }));
+    expect(dsl).toContain('  await signal "S"\n');
+    expect(dsl).not.toContain('Catch_');
+  });
+
+  it('prints "await condition (…)" for a conditional catch, bare DSL in the JUEL subset', () => {
+    const dsl = irToDsl(
+      catchBody({ kind: 'conditional', condition: '${amount > 100}' }),
+    );
+    expect(dsl).toContain('  await condition (amount > 100)\n');
+    expect(dsl).not.toContain('Catch_');
   });
 });
 
@@ -1769,7 +1867,11 @@ describe('irToDsl — event layer (compensation)', () => {
           { kind: 'endEvent', id: 'CompEnd' },
         ],
         sequenceFlows: [
-          { id: 'SF_CompStart_Undo', sourceRef: 'CompStart', targetRef: 'Undo' },
+          {
+            id: 'SF_CompStart_Undo',
+            sourceRef: 'CompStart',
+            targetRef: 'Undo',
+          },
           { id: 'SF_Undo_CompEnd', sourceRef: 'Undo', targetRef: 'CompEnd' },
         ],
       },
@@ -1860,7 +1962,7 @@ describe('irToDsl — event layer (compensation)', () => {
     expect(dsl).not.toContain('gateway');
   });
 
-  it('prints alongside for a malformed-IR compensation start with isInterrupting: false (the printer mirrors the IR; prohibiting it is the validator\'s job)', () => {
+  it("prints alongside for a malformed-IR compensation start with isInterrupting: false (the printer mirrors the IR; prohibiting it is the validator's job)", () => {
     const ir: BpmnProcess = {
       id: 'p',
       isExecutable: true,
@@ -2361,5 +2463,361 @@ describe('irToDsl — boundary events', () => {
         '',
       ].join('\n'),
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Synthesized-terminal omission: a reserved `StartEvent_`/`EndEvent_`/
+// `Throw_` id is the desugarer's own doing, not something an author could
+// type (the validator rejects the prefixes), so printing it back out as a
+// name produces DSL′ the validator then rejects. These ids must be omitted
+// (start/end) or dropped from the name slot (throw/emit) instead.
+// ---------------------------------------------------------------------------
+
+describe('irToDsl — synthesized terminal omission', () => {
+  /** A synthesized implicit start/end pair wrapping a sibling container that
+   * carries its own authored start/end. */
+  const IMPLICIT_TERMINALS_IR: BpmnProcess = {
+    id: 'p',
+    isExecutable: true,
+    flowElements: [
+      { kind: 'startEvent', id: 'StartEvent_p' },
+      { kind: 'userTask', id: 'Work' },
+      {
+        kind: 'subProcess',
+        id: 'Sub',
+        flowElements: [
+          { kind: 'startEvent', id: 'S' },
+          { kind: 'userTask', id: 'Inner' },
+          { kind: 'endEvent', id: 'Done' },
+        ],
+        sequenceFlows: [
+          { id: 'SF1', sourceRef: 'S', targetRef: 'Inner' },
+          { id: 'SF2', sourceRef: 'Inner', targetRef: 'Done' },
+        ],
+      },
+      { kind: 'endEvent', id: 'EndEvent_p' },
+    ],
+    sequenceFlows: [
+      { id: 'F1', sourceRef: 'StartEvent_p', targetRef: 'Work' },
+      { id: 'F2', sourceRef: 'Work', targetRef: 'Sub' },
+      { id: 'F3', sourceRef: 'Sub', targetRef: 'EndEvent_p' },
+    ],
+  };
+
+  it('omits synthesized implicit start/end terminals but keeps authored ones in a nested container', async () => {
+    const dsl = await expectIdempotent(IMPLICIT_TERMINALS_IR);
+    expect(dsl).not.toContain('StartEvent_');
+    expect(dsl).not.toContain('EndEvent_');
+    expect(dsl).toContain('start S');
+    expect(dsl).toContain('end Done');
+  });
+
+  it('drops a synthesized Throw_ id from throw/emit but keeps an authored name', () => {
+    const unnamedThrow = irToDsl({
+      id: 'p',
+      isExecutable: true,
+      flowElements: [
+        { kind: 'startEvent', id: 'S' },
+        {
+          kind: 'endEvent',
+          id: 'Throw_p_1',
+          eventDefinition: { kind: 'escalation', escalationCode: 'ESC' },
+        },
+      ],
+      sequenceFlows: [{ id: 'F', sourceRef: 'S', targetRef: 'Throw_p_1' }],
+    });
+    expect(unnamedThrow).toContain('throw escalation "ESC"');
+    expect(unnamedThrow).not.toContain('Throw_');
+
+    const unnamedEmit = irToDsl({
+      id: 'p',
+      isExecutable: true,
+      flowElements: [
+        { kind: 'startEvent', id: 'S' },
+        {
+          kind: 'intermediateThrowEvent',
+          id: 'Throw_p_2',
+          eventDefinition: { kind: 'signal', signalName: 'Ping' },
+        },
+        { kind: 'endEvent', id: 'E' },
+      ],
+      sequenceFlows: [
+        { id: 'F1', sourceRef: 'S', targetRef: 'Throw_p_2' },
+        { id: 'F2', sourceRef: 'Throw_p_2', targetRef: 'E' },
+      ],
+    });
+    expect(unnamedEmit).toContain('emit signal "Ping"');
+    expect(unnamedEmit).not.toContain('Throw_');
+
+    const namedThrow = irToDsl({
+      id: 'p',
+      isExecutable: true,
+      flowElements: [
+        { kind: 'startEvent', id: 'S' },
+        {
+          kind: 'endEvent',
+          id: 'PaymentFailed',
+          eventDefinition: { kind: 'error', errorCode: 'PF' },
+        },
+      ],
+      sequenceFlows: [{ id: 'F', sourceRef: 'S', targetRef: 'PaymentFailed' }],
+    });
+    expect(namedThrow).toContain('throw error PaymentFailed "PF"');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Guard-clause continuation + the never-goto-a-gateway invariant.
+// ---------------------------------------------------------------------------
+
+describe('irToDsl — guard-clause continuation', () => {
+  it('recovers a throw-guard `if` with the continuation at the body level and no gateway token', async () => {
+    // `if (c) { throw }` with no else: the then-branch terminates, the default
+    // continues the main flow. There is no clean post-dominating join, so the
+    // fallback consumes the sole default edge as the continuation.
+    const ir = await reDesugar(`process p {
+  start S
+  service Pre { class = "x.Pre" }
+  if (amount > 1000) {
+    throw error "BOOM"
+  }
+  service Post { class = "x.Post" }
+  end Done
+}
+`);
+    const dsl = await expectIdempotent(ir);
+
+    // No jump to a synthesized join gateway, and no synthesized gateway id at
+    // all — both the split and the join are elided.
+    expect(dsl).not.toContain('goto Gateway_');
+    expect(dsl).not.toContain('Gateway_');
+
+    // The guard's terminal prints inline, not as a jump to the throw node.
+    expect(dsl).toContain('throw error "BOOM"');
+    expect(dsl).not.toContain('goto Throw_');
+
+    // The continuation prints AFTER the `if`, at the container body level —
+    // it is not swept to the end past a terminating gateway.
+    const ifIdx = dsl.indexOf('if (amount > 1000)');
+    const postIdx = dsl.indexOf('service Post');
+    const doneIdx = dsl.indexOf('end Done');
+    expect(ifIdx).toBeGreaterThan(-1);
+    expect(postIdx).toBeGreaterThan(ifIdx);
+    expect(doneIdx).toBeGreaterThan(postIdx);
+  });
+
+  it('keeps a loop-body statement after a terminal-branch guard inside the while block', async () => {
+    // `while (…) { A; if (d){ throw }; B }`: the guard's terminal branch must
+    // not push `B` out of the loop. `B` stays inside the `while` block.
+    const ir = await reDesugar(`process p {
+  start S
+  while (retries < 3) {
+    service A { class = "x.A" }
+    if (retries < 1) {
+      throw error "X"
+    }
+    service B { class = "x.B" }
+  }
+  end Done
+}
+`);
+    const dsl = await expectIdempotent(ir);
+    expect(dsl).not.toContain('goto Gateway_');
+
+    const lines = dsl.split('\n');
+    const indentOf = (s: string): number => s.length - s.trimStart().length;
+    const whileIdx = lines.findIndex((l) => l.includes('while (retries < 3)'));
+    const bIdx = lines.findIndex((l) => l.includes('service B'));
+    const doneIdx = lines.findIndex((l) => l.includes('end Done'));
+
+    // `B` appears after the `while` header and before `end Done`, and is
+    // indented deeper than `end Done` — i.e. nested inside the loop, not after.
+    expect(whileIdx).toBeGreaterThan(-1);
+    expect(bIdx).toBeGreaterThan(whileIdx);
+    expect(doneIdx).toBeGreaterThan(bIdx);
+    expect(indentOf(lines[bIdx]!)).toBeGreaterThan(indentOf(lines[doneIdx]!));
+  });
+});
+
+describe('irToDsl — never emit a goto to a gateway', () => {
+  /**
+   * A multi-out real node whose second out-edge lands on a one-out pass-through
+   * gateway `Gateway_p_9_join → R`. The second arrival is realized as a goto;
+   * the invariant forwards it through the elided gateway to the real successor.
+   */
+  const PASS_THROUGH_IR: BpmnProcess = {
+    id: 'p',
+    isExecutable: true,
+    flowElements: [
+      { kind: 'startEvent', id: 'S' },
+      { kind: 'userTask', id: 'A' },
+      { kind: 'exclusiveGateway', id: 'Gateway_p_9_join' },
+      { kind: 'userTask', id: 'R' },
+      { kind: 'endEvent', id: 'E' },
+    ],
+    sequenceFlows: [
+      { id: 'f0', sourceRef: 'S', targetRef: 'A' },
+      { id: 'f1', sourceRef: 'A', targetRef: 'E' },
+      { id: 'f2', sourceRef: 'A', targetRef: 'Gateway_p_9_join' },
+      { id: 'f3', sourceRef: 'Gateway_p_9_join', targetRef: 'R' },
+      { id: 'f4', sourceRef: 'R', targetRef: 'E' },
+    ],
+  };
+
+  it('forwards a goto through a one-out pass-through gateway to the real successor', async () => {
+    const dsl = irToDsl(PASS_THROUGH_IR);
+    // The jump names the real successor, never the elided gateway.
+    expect(dsl).toContain('goto R');
+    expect(dsl).not.toContain('goto Gateway_');
+    expect(dsl).not.toContain('Gateway_p_9_join');
+    // Still valid source.
+    await reDesugar(dsl);
+  });
+
+  /**
+   * A parallel fork with a back-edge into it (`B → fork`). By the time the
+   * back-arrival is realized, the fork's out-edges are all consumed, so there
+   * is no single successor to forward to — the edge becomes a hand-repair
+   * marker rather than an unresolvable `goto` into the fork. This shape is only
+   * reachable through hostile input; the forward compiler never emits it.
+   */
+  const GOTO_INTO_FORK_IR: BpmnProcess = {
+    id: 'p',
+    isExecutable: true,
+    flowElements: [
+      { kind: 'startEvent', id: 'S' },
+      { kind: 'parallelGateway', id: 'Gateway_p_1_fork' },
+      { kind: 'userTask', id: 'A' },
+      { kind: 'userTask', id: 'B' },
+      { kind: 'endEvent', id: 'E' },
+    ],
+    sequenceFlows: [
+      { id: 'f0', sourceRef: 'S', targetRef: 'Gateway_p_1_fork' },
+      { id: 'f1', sourceRef: 'Gateway_p_1_fork', targetRef: 'A' },
+      { id: 'f2', sourceRef: 'Gateway_p_1_fork', targetRef: 'B' },
+      { id: 'f3', sourceRef: 'A', targetRef: 'E' },
+      { id: 'f4', sourceRef: 'B', targetRef: 'Gateway_p_1_fork' },
+    ],
+  };
+
+  it('emits the hand-repair marker for a goto into a fork, never a gateway-targeting goto', async () => {
+    const dsl = irToDsl(GOTO_INTO_FORK_IR);
+    expect(dsl).toContain('// unstructured region: hand-repair required');
+    expect(dsl).not.toContain('goto Gateway_');
+    expect(dsl).not.toContain('goto Gateway_p_1_fork');
+    // The marker is a hidden comment, so the output still parses.
+    await reDesugar(dsl);
+  });
+});
+
+describe('irToDsl — parallel-fork recovery (terminating branch)', () => {
+  it('recovers an asymmetric fork as `parallel { … }` with the throw inline and the continuation after', async () => {
+    // A `parallel` where one branch terminates (`throw`) and the other flows on
+    // to the join. The fork's immediate post-dominator is the virtual exit (the
+    // throw branch bypasses the join), so there is no clean parallel join — the
+    // fork must be recovered structurally rather than degrading to raw gotos.
+    const ir = await reDesugar(`process p {
+  error "BOOM" message "it broke"
+  start Begin
+  parallel {
+    { service A "a" { class = "x.A" } }
+    { throw error "BOOM" }
+  }
+  end Finish
+}
+`);
+    const dsl = irToDsl(ir);
+
+    // The fork recovers to a `parallel { … }` block, not a flat goto sequence.
+    expect(dsl).toContain('parallel {');
+    // Both branch bodies print inline; the terminating branch prints its throw
+    // in place, never as a jump to the (un-nameable) synthesized throw node.
+    expect(dsl).toContain('service A "a" { class = "x.A" }');
+    expect(dsl).toContain('throw error "BOOM"');
+
+    // No jump at all, and no synthesized gateway / throw id token anywhere.
+    expect(hasGoto(dsl)).toBe(false);
+    expect(dsl).not.toContain('goto Throw_');
+    expect(dsl).not.toContain('goto Gateway_');
+    expect(dsl).not.toContain('Gateway_');
+    expect(dsl).not.toContain('Throw_');
+
+    // The continuation prints AFTER the parallel, at the container body level
+    // (one indent), not swept to the end and not nested inside the block.
+    const parIdx = dsl.indexOf('parallel {');
+    const finishIdx = dsl.indexOf('end Finish');
+    expect(parIdx).toBeGreaterThan(-1);
+    expect(finishIdx).toBeGreaterThan(parIdx);
+    expect(dsl).toContain('\n  end Finish');
+  });
+
+  it('leaves a fully symmetric parallel decompile byte-for-byte unchanged (both branches survive)', () => {
+    // Both branches reach the join, so the clean-join path handles it and the
+    // recovery is never entered — the output is exactly as before the fix.
+    expect(irToDsl(PARALLEL_IR)).toBe(
+      'process p {\n' +
+        '  start S\n' +
+        '  parallel {\n' +
+        '    {\n' +
+        '      user X "X"\n' +
+        '    }\n' +
+        '    {\n' +
+        '      service Y { class = "com.example.Y" }\n' +
+        '    }\n' +
+        '  }\n' +
+        '  end E\n' +
+        '}\n',
+    );
+  });
+
+  it('round-trips the asymmetric fork to a topologically equal IR (idempotence)', async () => {
+    const ir = await reDesugar(`process p {
+  error "BOOM" message "it broke"
+  start Begin
+  parallel {
+    { service A "a" { class = "x.A" } }
+    { throw error "BOOM" }
+  }
+  end Finish
+}
+`);
+    await expectIdempotent(ir);
+  });
+
+  it('recovers the shared continuation of a nested fork with a terminating branch (idempotence)', async () => {
+    // An outer `parallel` whose surviving branches each hold their own nested
+    // `parallel`, plus one terminating `throw`. The continuation (`end Finish`)
+    // must resume after the OUTER join both survivors reconverge at, not the
+    // first survivor's inner join — otherwise it drifts into a sibling branch, a
+    // silent, non-idempotent structural change on round-trip.
+    const ir = await reDesugar(`process p {
+  error "BOOM" message "it broke"
+  start Begin
+  parallel {
+    {
+      parallel {
+        { service A "a" { class = "x.A" } }
+        { service B "b" { class = "x.B" } }
+      }
+    }
+    {
+      parallel {
+        { service C "c" { class = "x.C" } }
+        { service D "d" { class = "x.D" } }
+      }
+    }
+    { throw error "BOOM" }
+  }
+  end Finish
+}
+`);
+    const dsl = await expectIdempotent(ir);
+
+    // The continuation lands after the outer parallel at container level, and no
+    // edge is silently dropped through a bare gateway/throw-targeting goto.
+    expect(dsl).toContain('\n  end Finish');
+    expect(dsl).not.toContain('goto Gateway_');
+    expect(dsl).not.toContain('goto Throw_');
   });
 });

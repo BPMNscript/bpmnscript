@@ -160,6 +160,24 @@ process p {
   });
 });
 
+describe('trigger word and timer particle on IntermediateCatchEvent', () => {
+  test('`await timer after "PT1H"` highlights both the trigger word and the particle', async () => {
+    const result = await highlight(`
+process p {
+  await <|timer|> <|after|> "PT1H"
+}
+`);
+    expectSemanticToken(result, {
+      rangeIndex: 0,
+      tokenType: SemanticTokenTypes.keyword,
+    });
+    expectSemanticToken(result, {
+      rangeIndex: 1,
+      tokenType: SemanticTokenTypes.keyword,
+    });
+  });
+});
+
 describe('kind/field on the ErrorDecl declaration', () => {
   test('`error "X" message "m"` highlights both words', async () => {
     const result = await highlight(`

@@ -35,6 +35,7 @@ import {
   makeThrowEventId,
   makeEventSubProcessId,
   makeBoundaryEventId,
+  makeIntermediateCatchEventId,
   resolveCollision,
 } from '../src/synthesize-ids.js';
 
@@ -210,12 +211,28 @@ describe('structural stability', () => {
     );
   });
 
-  it('the positional throw/handler templates take no taken set (no collision resolution)', () => {
+  it('makeIntermediateCatchEventId → Catch_<X>', () => {
+    expect(makeIntermediateCatchEventId('p_2')).toBe('Catch_p_2');
+    expect(makeIntermediateCatchEventId('invoice-approval_1_c_0')).toBe(
+      'Catch_invoice-approval_1_c_0',
+    );
+  });
+
+  it("makeIntermediateCatchEventId's prefix matches the validator's reserved pattern, so an authored id can never collide", () => {
+    // Mirrors `RESERVED_ID_PATTERNS`'s `/^Catch_/` entry in
+    // `bpmn-script-validator.ts` — kept as a literal here rather than an
+    // import because the validator's pattern list is a private module
+    // constant, not part of this package's public surface.
+    expect(makeIntermediateCatchEventId('p_2')).toMatch(/^Catch_/);
+  });
+
+  it('the positional throw/handler/catch templates take no taken set (no collision resolution)', () => {
     // Positional ids are collision-free by construction — the coordinate is
     // unique by position — so these templates are pure functions of the
     // coordinate, unlike the implicit start/end constructors.
     expect(makeThrowEventId).toHaveLength(1);
     expect(makeEventSubProcessId).toHaveLength(1);
+    expect(makeIntermediateCatchEventId).toHaveLength(1);
   });
 
   it('makeBoundaryEventId → Boundary_<hostId>_<trigger>', () => {

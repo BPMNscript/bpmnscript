@@ -405,6 +405,23 @@ ${FENCE}
 `);
     expect(bySeverity(diagnostics, SEVERITY_ERROR)).toHaveLength(0);
   });
+
+  test('a script task with an unterminated fence resolves to a clean error, not a crash', async () => {
+    const { diagnostics } = await validate(`
+process p {
+  script total ${FENCE}js
+x = 1
+}
+`);
+    const errors = diagnosticsFor(diagnostics, 'malformed or unterminated');
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.severity).toBe(SEVERITY_ERROR);
+    expect(errors[0]!.message).toContain('total');
+    // The uncaught-exception fallback message must no longer appear.
+    expect(
+      diagnosticsFor(diagnostics, 'An error occurred during validation'),
+    ).toHaveLength(0);
+  });
 });
 
 // ── goto regression ─────────────────────────────────────────────────────────
@@ -463,16 +480,30 @@ process p {
 // ── Structural ──────────────────────────────────────────────────────────────
 
 describe('Validation — structural', () => {
-  test('a process with an empty body produces a warning', async () => {
+  test('a process with an empty body produces an error', async () => {
     const { diagnostics } = await validate(`process empty { }`);
-    const warnings = diagnosticsFor(diagnostics, 'empty body');
-    expect(warnings).toHaveLength(1);
-    expect(warnings[0]!.severity).toBe(SEVERITY_WARNING);
+    const errors = diagnosticsFor(diagnostics, 'no flow steps');
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.severity).toBe(SEVERITY_ERROR);
   });
 
-  test('a non-empty process produces no empty-body warning', async () => {
+  test('a handler-only process body produces an error', async () => {
+    const { diagnostics } = await validate(
+      `process p { on error "Boom" { end H } }`,
+    );
+    const errors = diagnosticsFor(diagnostics, 'no flow steps');
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.severity).toBe(SEVERITY_ERROR);
+  });
+
+  test('a start-only process body produces no no-flow-step error', async () => {
+    const { diagnostics } = await validate(`process p { start S }`);
+    expect(diagnosticsFor(diagnostics, 'no flow steps')).toHaveLength(0);
+  });
+
+  test('a non-empty process produces no no-flow-step error', async () => {
     const { diagnostics } = await validate(`process p { start S end E }`);
-    expect(diagnosticsFor(diagnostics, 'empty body')).toHaveLength(0);
+    expect(diagnosticsFor(diagnostics, 'no flow steps')).toHaveLength(0);
   });
 });
 
@@ -1124,9 +1155,9 @@ describe('Validation — unreachable statement', () => {
     const { diagnostics } = await validate(
       `process p { start S end Done user Dead }`,
     );
-    const warnings = unreachable(diagnostics);
-    expect(warnings).toHaveLength(1);
-    expect(warnings[0]!.severity).toBe(SEVERITY_WARNING);
+    const errors = unreachable(diagnostics);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.severity).toBe(SEVERITY_ERROR);
   });
 
   test('every dead step after an `end` is flagged, one warning each', async () => {
@@ -1162,6 +1193,38 @@ describe('Validation — unreachable statement', () => {
   test('ordinary sequential flow yields no unreachable warning', async () => {
     const { diagnostics } = await validate(
       `process p { start S user A end Done }`,
+    );
+    expect(unreachable(diagnostics)).toHaveLength(0);
+  });
+
+  test('a step after an all-terminating `if`/`else` is flagged as unreachable, as an error', async () => {
+    const { diagnostics } = await validate(
+      `process p { if (cond) { end A } else { end B } user Dead }`,
+    );
+    const errors = unreachable(diagnostics);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.severity).toBe(SEVERITY_ERROR);
+  });
+
+  test('a step after an all-terminating `parallel` is flagged as unreachable, as an error', async () => {
+    const { diagnostics } = await validate(
+      `process p { parallel { { end A } { end B } } user Dead }`,
+    );
+    const errors = unreachable(diagnostics);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.severity).toBe(SEVERITY_ERROR);
+  });
+
+  test('a step after an `if` without `else` stays reachable even when its branch ends', async () => {
+    const { diagnostics } = await validate(
+      `process p { if (cond) { end A } user Alive }`,
+    );
+    expect(unreachable(diagnostics)).toHaveLength(0);
+  });
+
+  test('a step after a `while` whose body always ends stays reachable', async () => {
+    const { diagnostics } = await validate(
+      `process p { while (cond) { end A } user Alive }`,
     );
     expect(unreachable(diagnostics)).toHaveLength(0);
   });
@@ -1222,28 +1285,35 @@ process p {
 });
 
 describe('Validation — subprocess empty body', () => {
-  test('an empty subprocess body is exactly one warning', async () => {
+  test('an empty subprocess body is exactly one error', async () => {
     const { diagnostics } = await validate(`
 process p {
   subprocess S { }
 }
 `);
-    const warnings = bySeverity(diagnostics, SEVERITY_WARNING).filter((d) =>
-      d.message.toLowerCase().includes('no steps'),
-    );
-    expect(warnings).toHaveLength(1);
+    const errors = diagnosticsFor(diagnostics, 'no flow steps');
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.severity).toBe(SEVERITY_ERROR);
   });
 
-  test('a non-empty subprocess body produces no empty-body warning', async () => {
+  test('a handler-only subprocess body is exactly one error', async () => {
+    const { diagnostics } = await validate(`
+process p {
+  subprocess S { on error "Boom" { end H } }
+}
+`);
+    const errors = diagnosticsFor(diagnostics, 'no flow steps');
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.severity).toBe(SEVERITY_ERROR);
+  });
+
+  test('a non-empty subprocess body produces no no-flow-step error', async () => {
     const { diagnostics } = await validate(`
 process p {
   subprocess S { user A }
 }
 `);
-    const warnings = bySeverity(diagnostics, SEVERITY_WARNING).filter((d) =>
-      d.message.toLowerCase().includes('no steps'),
-    );
-    expect(warnings).toHaveLength(0);
+    expect(diagnosticsFor(diagnostics, 'no flow steps')).toHaveLength(0);
   });
 });
 
@@ -1640,6 +1710,7 @@ process p {
   test('a handler nested inside another handler is diagnostic-free', async () => {
     const { diagnostics } = await validate(`
 process p {
+  start S
   on error "X" {
     on escalation "Y" { user A }
   }
@@ -1651,6 +1722,7 @@ process p {
   test('a coded handler and a catch-all of the same trigger coexist without a duplicate error', async () => {
     const { diagnostics } = await validate(`
 process p {
+  start S
   on error "X" { user A }
   on error { user B }
 }
@@ -1661,6 +1733,7 @@ process p {
   test('an explicit start opening a handler body is diagnostic-free', async () => {
     const { diagnostics } = await validate(`
 process p {
+  start S
   on error "X" {
     start In
     user A
@@ -1952,7 +2025,9 @@ process p {
 
 describe('Validation — soft event words', () => {
   test('an unknown trigger word on `on` is exactly one diagnostic naming all seven kinds', async () => {
-    const { diagnostics } = await validate(`process p { on erorr "X" { } }`);
+    const { diagnostics } = await validate(
+      `process p { start S on erorr "X" { } }`,
+    );
     expect(diagnostics).toHaveLength(1);
     for (const kind of [
       'error',
@@ -1987,7 +2062,7 @@ describe('Validation — soft event words', () => {
 
   test('an unknown binding field is exactly one diagnostic naming both valid fields', async () => {
     const { diagnostics } = await validate(`
-process p { on error "X" (coed c) { user A } }
+process p { start S on error "X" (coed c) { user A } }
 `);
     expect(diagnostics).toHaveLength(1);
     expect(diagnostics[0]!.message).toContain('code');
@@ -2032,7 +2107,7 @@ describe('Validation — trigger near-miss teaching messages', () => {
 
   test('`on conditional` is a did-you-mean naming `condition`', async () => {
     const { diagnostics } = await validate(
-      `process p { on conditional { user A } }`,
+      `process p { start S on conditional { user A } }`,
     );
     expect(diagnostics).toHaveLength(1);
     expect(diagnostics[0]!.message).toContain('condition');
@@ -2042,31 +2117,31 @@ describe('Validation — trigger near-miss teaching messages', () => {
 describe('Validation — trigger payload matrix: clean programs', () => {
   test('a name-only `on message` handler is diagnostic-free', async () => {
     const { diagnostics } = await validate(
-      `process p { on message "PaymentReceived" { user A } }`,
+      `process p { start S on message "PaymentReceived" { user A } }`,
     );
     expect(diagnostics).toHaveLength(0);
   });
 
   test('an `on signal … alongside` handler is diagnostic-free', async () => {
     const { diagnostics } = await validate(
-      `process p { on signal "Cancelled" alongside { user A } }`,
+      `process p { start S on signal "Cancelled" alongside { user A } }`,
     );
     expect(diagnostics).toHaveLength(0);
   });
 
   test('all three timer particles are diagnostic-free', async () => {
     const after = await validate(
-      `process p { on timer after "PT1H" { user A } }`,
+      `process p { start S on timer after "PT1H" { user A } }`,
     );
     expect(after.diagnostics).toHaveLength(0);
 
     const at = await validate(
-      `process p { on timer at "2026-08-01T09:00:00" { user A } }`,
+      `process p { start S on timer at "2026-08-01T09:00:00" { user A } }`,
     );
     expect(at.diagnostics).toHaveLength(0);
 
     const every = await validate(
-      `process p { on timer every "R/PT10M" alongside { user A } }`,
+      `process p { start S on timer every "R/PT10M" alongside { user A } }`,
     );
     expect(every.diagnostics).toHaveLength(0);
   });
@@ -2075,6 +2150,7 @@ describe('Validation — trigger payload matrix: clean programs', () => {
     const { diagnostics } = await validate(`
 process p {
   var amount: number
+  start S
   on condition (amount > 100) { user A }
 }
 `);
@@ -2139,6 +2215,7 @@ process p { on message "X" (code c) { user A } }
     const { diagnostics } = await validate(`
 process p {
   var amount: number
+  start S
   on error (amount > 100) { user A }
 }
 `);
@@ -2178,7 +2255,7 @@ describe('Validation — timer particle shape and interrupting warnings', () => 
 
   test('`after "${dueDate}"` is diagnostic-free (EL passes through)', async () => {
     const { diagnostics } = await validate(
-      `process p { on timer after "\${dueDate}" { user A } }`,
+      `process p { start S on timer after "\${dueDate}" { user A } }`,
     );
     expect(diagnostics).toHaveLength(0);
   });
@@ -2563,6 +2640,7 @@ process p {
   test('a handler whose host does not resolve reports only the resolution error', async () => {
     const { diagnostics } = await validate(`
 process p {
+  start S
   on message "M" { user A }
   on Missing: message "M" { user B }
 }
@@ -2724,6 +2802,7 @@ process p {
     const { diagnostics } = await validate(`
 process p {
   subprocess S {
+    start In
     on compensation after "PT1H" { user A }
   }
 }
@@ -2739,6 +2818,7 @@ process p {
 process p {
   var amount: number
   subprocess S {
+    start In
     on compensation (amount > 100) { user A }
   }
 }
@@ -2843,13 +2923,13 @@ describe('Validation — throw/emit code-required shift', () => {
 
   test('`throw escalation ""` gets the same code-required family, reworded', async () => {
     const { diagnostics } = await validate(`process p { throw escalation "" }`);
-    expect(
-      diagnosticsFor(diagnostics, 'throw escalation "CODE"'),
-    ).toHaveLength(1);
-    // The old catch-all-by-omission phrasing stays on `on` only.
-    expect(diagnosticsFor(diagnostics, 'omit the string entirely')).toHaveLength(
-      0,
+    expect(diagnosticsFor(diagnostics, 'throw escalation "CODE"')).toHaveLength(
+      1,
     );
+    // The old catch-all-by-omission phrasing stays on `on` only.
+    expect(
+      diagnosticsFor(diagnostics, 'omit the string entirely'),
+    ).toHaveLength(0);
   });
 
   test('`throw compensation "X"` is the nothing-to-name message', async () => {
@@ -2884,7 +2964,7 @@ describe('Validation — compensation unreachable scan', () => {
 describe('Validation — compensation did-you-mean', () => {
   test('`on compensate` is exactly one diagnostic naming compensation', async () => {
     const { diagnostics } = await validate(
-      `process p { on compensate { user A } }`,
+      `process p { start S on compensate { user A } }`,
     );
     expect(diagnostics).toHaveLength(1);
     expect(diagnostics[0]!.message).toContain('compensation');
@@ -2900,6 +2980,145 @@ describe('Validation — compensation did-you-mean', () => {
     const { diagnostics } = await validate(`process p { emit compensate }`);
     expect(diagnostics).toHaveLength(1);
     expect(diagnostics[0]!.message).toContain('compensation');
+  });
+});
+
+describe('Validation — await trigger: accepted catch kinds', () => {
+  test('`await message "M"` validates with zero error diagnostics', async () => {
+    const { diagnostics } = await validate(`process p { await message "M" }`);
+    expect(bySeverity(diagnostics, SEVERITY_ERROR)).toHaveLength(0);
+  });
+
+  test('`await timer after "PT1H"` validates with zero error diagnostics', async () => {
+    const { diagnostics } = await validate(
+      `process p { await timer after "PT1H" }`,
+    );
+    expect(bySeverity(diagnostics, SEVERITY_ERROR)).toHaveLength(0);
+  });
+
+  test('`await signal "S"` validates with zero error diagnostics', async () => {
+    const { diagnostics } = await validate(`process p { await signal "S" }`);
+    expect(bySeverity(diagnostics, SEVERITY_ERROR)).toHaveLength(0);
+  });
+
+  test('`await condition (x > 1)` validates with zero error diagnostics', async () => {
+    const { diagnostics } = await validate(`
+process p {
+  var x: number
+  await condition (x > 1)
+}
+`);
+    expect(bySeverity(diagnostics, SEVERITY_ERROR)).toHaveLength(0);
+  });
+});
+
+describe('Validation — await trigger: rejects non-catchable triggers', () => {
+  test('`await error "E"` names the legal catch triggers and the throw/emit alternative', async () => {
+    const { diagnostics } = await validate(`process p { await error "E" }`);
+    const errors = bySeverity(diagnostics, SEVERITY_ERROR);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.message).toContain('message');
+    expect(errors[0]!.message).toContain('timer');
+    expect(errors[0]!.message).toContain('signal');
+    expect(errors[0]!.message).toContain('condition');
+    expect(errors[0]!.message).toContain('throw');
+  });
+
+  test('`await escalation "E"` names the legal catch triggers and the throw/emit alternative', async () => {
+    const { diagnostics } = await validate(
+      `process p { await escalation "E" }`,
+    );
+    const errors = bySeverity(diagnostics, SEVERITY_ERROR);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.message).toContain('emit');
+  });
+
+  test('`await compensation` names the legal catch triggers and the undo-block alternative', async () => {
+    const { diagnostics } = await validate(`process p { await compensation }`);
+    const errors = bySeverity(diagnostics, SEVERITY_ERROR);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.message).toContain('undo block');
+  });
+});
+
+describe('Validation — await trigger: rejects unknown words', () => {
+  test('`await frobnicate "x"` is an options-naming diagnostic', async () => {
+    const { diagnostics } = await validate(
+      `process p { await frobnicate "x" }`,
+    );
+    const errors = bySeverity(diagnostics, SEVERITY_ERROR);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.message).toContain('message');
+    expect(errors[0]!.message).toContain('condition');
+  });
+});
+
+describe('Validation — await trigger: rejects missing payload', () => {
+  test('`await message` (no name) describes the missing name', async () => {
+    const { diagnostics } = await validate(`process p { await message }`);
+    expect(diagnosticsFor(diagnostics, "message's name")).toHaveLength(1);
+  });
+
+  test('`await signal` (no name) describes the missing name', async () => {
+    const { diagnostics } = await validate(`process p { await signal }`);
+    expect(diagnosticsFor(diagnostics, "message's name")).toHaveLength(1);
+  });
+
+  test('`await timer` (no particle/time) describes the missing time payload', async () => {
+    const { diagnostics } = await validate(`process p { await timer }`);
+    expect(diagnosticsFor(diagnostics, 'read the time')).toHaveLength(1);
+  });
+
+  test('`await condition` (no parens) describes the missing condition', async () => {
+    const { diagnostics } = await validate(`process p { await condition }`);
+    expect(diagnosticsFor(diagnostics, 'needs its condition')).toHaveLength(1);
+  });
+});
+
+describe('Validation — await trigger: rejects payload on the wrong shape', () => {
+  test('a particle on `await message` is a particle-forbidden diagnostic', async () => {
+    const { diagnostics } = await validate(
+      `process p { await message after "PT1H" }`,
+    );
+    expect(
+      diagnosticsFor(diagnostics, "Only 'await timer' takes a particle"),
+    ).toHaveLength(1);
+  });
+
+  test('a condition expression on `await message` is a condition-forbidden diagnostic', async () => {
+    const { diagnostics } = await validate(`
+process p {
+  var x: number
+  await message "M" (x > 1)
+}
+`);
+    expect(
+      diagnosticsFor(
+        diagnostics,
+        "Only 'await condition' takes a condition expression",
+      ),
+    ).toHaveLength(1);
+  });
+
+  test('a code string on `await condition` is a code-forbidden diagnostic (parens still required)', async () => {
+    const { diagnostics } = await validate(`
+process p {
+  var x: number
+  await condition "X" (x > 1)
+}
+`);
+    expect(diagnosticsFor(diagnostics, 'takes no code string')).toHaveLength(1);
+  });
+
+  test('an unknown timer particle on `await timer` names the legal particles', async () => {
+    const { diagnostics } = await validate(
+      `process p { await timer foo "PT1H" }`,
+    );
+    const errors = bySeverity(diagnostics, SEVERITY_ERROR);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.message).toContain('after');
+    expect(errors[0]!.message).toContain('at');
+    expect(errors[0]!.message).toContain('every');
   });
 });
 

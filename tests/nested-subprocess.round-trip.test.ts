@@ -27,8 +27,9 @@
  *      byte-for-byte (the frozen artifact is the diff tripwire; any drift is a
  *      real defect, not a regeneration trigger).
  *   2. Idempotence — `normalizeIr(IR₁)` equals `normalizeIr(IR₃)`; DSL′
- *      re-parses with zero parser errors; authored ids (tasks, explicit events,
- *      sub-process names) survive verbatim at their correct container depth.
+ *      re-parses with zero parser errors and recompiles without validation
+ *      errors; authored ids (tasks, explicit events, sub-process names)
+ *      survive verbatim at their correct container depth.
  *   3. Import path — `xmlToIr(frozen)` warns nothing, and the imported IR
  *      restructured back to DSL and re-desugared is normalized-equal to IR₁.
  *   4. DI sanity — every nested child shape in the frozen `.bpmn` lies strictly
@@ -41,8 +42,8 @@
  *      container boundary, and the parent chain threads through both
  *      sub-processes as opaque activities.
  *
- * A sixth assertion covers the acceptance requirement that the fixture opens
- * validator-clean in the IDE (no diagnostics at all).
+ * A sixth assertion, independent of the round-trip, covers the fixture
+ * itself: it opens validator-clean in the IDE (no diagnostics at all).
  */
 
 import { describe, it, expect, beforeAll } from 'vitest';
@@ -113,7 +114,9 @@ function subProcess(
     (fe) => fe.kind === 'subProcess' && fe.id === id,
   );
   if (el === undefined || el.kind !== 'subProcess') {
-    throw new Error(`expected a sub-process '${id}' in container '${container.id}'`);
+    throw new Error(
+      `expected a sub-process '${id}' in container '${container.id}'`,
+    );
   }
   return el;
 }
@@ -168,11 +171,7 @@ function parseShapeBounds(xml: string): Map<string, Bounds> {
   const shape =
     /<bpmndi:BPMNShape\b[^>]*\bbpmnElement="([^"]+)"[^>]*>\s*<dc:Bounds x="([-\d.]+)" y="([-\d.]+)" width="([-\d.]+)" height="([-\d.]+)"/g;
   const bounds = new Map<string, Bounds>();
-  for (
-    let m = shape.exec(xml);
-    m !== null;
-    m = shape.exec(xml)
-  ) {
+  for (let m = shape.exec(xml); m !== null; m = shape.exec(xml)) {
     bounds.set(m[1]!, {
       x: Number(m[2]),
       y: Number(m[3]),
@@ -277,6 +276,11 @@ describe('golden generation: the pipeline output matches the frozen .bpmn', () =
 describe('idempotence: DSL → IR₁ → XML → IR₂ → DSL′ → IR₃', () => {
   it('normalizeIr(IR₁) equals normalizeIr(IR₃)', () => {
     expect(normalizeIr(ir3)).toEqual(normalizeIr(ir1));
+  });
+
+  it('the decompiled DSL recompiles without validation errors', async () => {
+    const { diagnostics } = await validate(dslPrime);
+    expect(diagnostics.filter((d) => d.severity === 1)).toEqual([]);
   });
 
   it('the restructured DSL′ re-parses with zero parser errors', async () => {

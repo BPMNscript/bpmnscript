@@ -152,7 +152,9 @@ function subProcess(
     (fe) => fe.kind === 'subProcess' && fe.id === id,
   );
   if (el === undefined || el.kind !== 'subProcess') {
-    throw new Error(`expected a sub-process '${id}' in container '${container.id}'`);
+    throw new Error(
+      `expected a sub-process '${id}' in container '${container.id}'`,
+    );
   }
   return el;
 }
@@ -171,7 +173,8 @@ function findHandlerDef(
     if (fe.kind !== 'subProcess') continue;
     if (fe.triggeredByEvent === true) {
       const start = fe.flowElements.find((e) => e.kind === 'startEvent');
-      const def = start?.kind === 'startEvent' ? start.eventDefinition : undefined;
+      const def =
+        start?.kind === 'startEvent' ? start.eventDefinition : undefined;
       if (match(def)) return def;
     }
     const nested = findHandlerDef(fe, match);
@@ -192,7 +195,8 @@ function timerExpressions(container: FlowContainer): string[] {
     if (fe.kind !== 'subProcess') continue;
     if (fe.triggeredByEvent === true) {
       const start = fe.flowElements.find((e) => e.kind === 'startEvent');
-      const def = start?.kind === 'startEvent' ? start.eventDefinition : undefined;
+      const def =
+        start?.kind === 'startEvent' ? start.eventDefinition : undefined;
       if (def?.kind === 'timer') out.push(def.expression);
     }
     out.push(...timerExpressions(fe));
@@ -265,7 +269,10 @@ function assertShapeContainment(
 ): void {
   const parentBounds = isRoot ? undefined : bounds.get(container.id);
   if (!isRoot) {
-    expect(parentBounds, `sub-process ${container.id} has no BPMNShape`).toBeDefined();
+    expect(
+      parentBounds,
+      `sub-process ${container.id} has no BPMNShape`,
+    ).toBeDefined();
   }
   for (const fe of container.flowElements) {
     if (parentBounds !== undefined) {
@@ -292,7 +299,9 @@ function signalRefOf(xml: string, elementId: string): string | undefined {
     `<bpmn:(?:start|end|intermediateThrow)Event id="${elementId}"[^>]*>([\\s\\S]*?)</bpmn:(?:start|end|intermediateThrow)Event>`,
   ).exec(xml);
   if (block === null) return undefined;
-  return /<bpmn:signalEventDefinition\b[^>]*\bsignalRef="([^"]+)"/.exec(block[1]!)?.[1];
+  return /<bpmn:signalEventDefinition\b[^>]*\bsignalRef="([^"]+)"/.exec(
+    block[1]!,
+  )?.[1];
 }
 
 // ---------------------------------------------------------------------------
@@ -463,10 +472,7 @@ describe('idempotence: DSL → IR₁ → XML → IR₂ → DSL′ → IR₃', ()
 
   it('the timer expressions survive verbatim at every hop', () => {
     for (const ir of [ir1, ir2, ir3]) {
-      expect(timerExpressions(ir)).toEqual([
-        '2026-08-01T09:00:00',
-        'PT2H',
-      ]);
+      expect(timerExpressions(ir)).toEqual(['2026-08-01T09:00:00', 'PT2H']);
     }
   });
 

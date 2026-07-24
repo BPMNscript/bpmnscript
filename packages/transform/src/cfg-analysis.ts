@@ -227,7 +227,9 @@ function buildGraph(container: FlowContainer): Graph {
   // exists: such a node is genuinely **unreachable** from the process entry,
   // and the dominance queries must reflect that (it has no immediate
   // dominator). See the module docs.
-  const hasAnyStart = container.flowElements.some((e) => e.kind === 'startEvent');
+  const hasAnyStart = container.flowElements.some(
+    (e) => e.kind === 'startEvent',
+  );
   for (const el of container.flowElements) {
     const hasRealPred = pred.get(el.id)!.length > 0;
     if (el.kind === 'startEvent' || el.kind === 'boundaryEvent') {

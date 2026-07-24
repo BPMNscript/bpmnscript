@@ -617,3 +617,58 @@ describe('boundary event as a second CFG entry', () => {
     expect(cfg.immediateDominator('main')).toBe(VIRTUAL_ENTRY);
   });
 });
+
+// ---------------------------------------------------------------------------
+// 9. Intermediate catch event — the topological twin of an intermediate throw.
+//
+// Neither wires to VIRTUAL_ENTRY/VIRTUAL_EXIT (that is reserved for
+// start/boundary and end events); both are plain one-in/one-out main-flow
+// nodes, so a catch in a given position must restructure identically to a
+// throw in that same position.
+// ---------------------------------------------------------------------------
+
+describe('intermediate catch event — CFG no-op (twin of an intermediate throw)', () => {
+  /** `start → task → node → end`, where `node` is the element under test. */
+  function containerWith(node: FlowElement) {
+    return process(
+      [start('start'), task('task'), node, end('end')],
+      [flow('start', 'task'), flow('task', node.id), flow(node.id, 'end')],
+    );
+  }
+
+  const catchCfg = analyzeCfg(
+    containerWith({
+      kind: 'intermediateCatchEvent',
+      id: 'node',
+      eventDefinition: { kind: 'message', messageName: 'M' },
+    }),
+  );
+  const throwCfg = analyzeCfg(
+    containerWith({
+      kind: 'intermediateThrowEvent',
+      id: 'node',
+      eventDefinition: { kind: 'signal', signalName: 'S' },
+    }),
+  );
+
+  it('gives the catch a normal immediate dominator — its predecessor on the main flow, not the virtual entry', () => {
+    expect(catchCfg.immediateDominator('node')).toBe('task');
+    expect(catchCfg.immediateDominator('node')).not.toBe(VIRTUAL_ENTRY);
+  });
+
+  it('produces no back-edge / degradation', () => {
+    expect(catchCfg.backEdges()).toEqual([]);
+  });
+
+  it('restructures exactly like an intermediate throw in the same position', () => {
+    expect(catchCfg.immediateDominator('node')).toBe(
+      throwCfg.immediateDominator('node'),
+    );
+    expect(catchCfg.immediatePostDominator('task')).toBe(
+      throwCfg.immediatePostDominator('task'),
+    );
+    expect(catchCfg.dominates('node', 'end')).toBe(
+      throwCfg.dominates('node', 'end'),
+    );
+  });
+});

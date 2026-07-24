@@ -30,6 +30,7 @@ export type {
   SequenceFlow,
   EventDefinition,
   IntermediateThrowEvent,
+  IntermediateCatchEvent,
   BoundaryEvent,
 } from './ir/types.js';
 
@@ -65,7 +66,7 @@ export {
 } from './errors.js';
 
 export { astToIr } from './ast-to-ir.js';
-export { irToDsl } from './ir-to-dsl.js';
+export { irToDsl, UNSTRUCTURED_MARKER } from './ir-to-dsl.js';
 
 /**
  * Runtime-visible list of all IR type names exported from this package.
@@ -87,5 +88,6 @@ export const IR_TYPE_NAMES = [
   'SequenceFlow',
   'EventDefinition',
   'IntermediateThrowEvent',
+  'IntermediateCatchEvent',
   'BoundaryEvent',
 ] as const;

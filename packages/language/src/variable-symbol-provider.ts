@@ -92,7 +92,10 @@ export class DefaultVariableSymbolProvider implements VariableSymbolProvider {
       if (!isOnHandler(node)) continue;
       for (const binding of node.bindings) {
         if (!table.has(binding.variable)) {
-          table.set(binding.variable, { name: binding.variable, type: 'string' });
+          table.set(binding.variable, {
+            name: binding.variable,
+            type: 'string',
+          });
         }
       }
     }

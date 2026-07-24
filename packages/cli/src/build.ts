@@ -65,7 +65,7 @@ export async function buildAction(
   // ── 2. Determine output path ──────────────────────────────────────────────
   const outPath = resolveOutputPath(resolvedInput, '.bpmn', opts.output);
 
-  // ── 3. Langium parse + structural validation ──────────────────────────────
+  // ── 3. Langium parse, structural validation, and diagnostics ──────────────
   const services = createBpmnScriptServices(NodeFileSystem).BpmnScript;
 
   let document;
@@ -98,6 +98,17 @@ export async function buildAction(
       );
     }
     process.exit(1);
+  }
+
+  // Remaining diagnostics (severity 2) are non-fatal warnings: surface them
+  // on stderr but do not change the exit code.
+  const warnings = (document.diagnostics ?? []).filter((d) => d.severity === 2);
+  for (const diag of warnings) {
+    console.error(
+      chalk.yellow(
+        `Warning: line ${diag.range.start.line + 1}: ${diag.message}`,
+      ),
+    );
   }
 
   const ast = document.parseResult?.value as Model;

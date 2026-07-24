@@ -27,6 +27,7 @@ import * as path from 'node:path';
 import {
   xmlToIr,
   irToDsl,
+  UNSTRUCTURED_MARKER,
   UnsupportedConstructError,
   UnsupportedServiceTaskFormError,
   UnsupportedElementError,
@@ -149,5 +150,18 @@ export async function parseAction(
   // Warnings go to stderr and do not change the exit code.
   for (const w of warnings) {
     console.error(chalk.yellow(`Warning: ${w.message}`));
+  }
+
+  // A region the decompiler could not express structurally leaves a marker
+  // comment in the output. That only happens for hand-built / hostile input the
+  // tool never generates itself, but when it does the output is still written
+  // (the marker keeps it parseable); flag it so the region gets a human's eye.
+  // The exit code is unchanged — the marker is a signal, not a failure.
+  if (dsl.includes(UNSTRUCTURED_MARKER)) {
+    console.error(
+      chalk.yellow(
+        'Warning: the decompiled model contains an unstructured region that needs hand-repair (see the marker comment).',
+      ),
+    );
   }
 }

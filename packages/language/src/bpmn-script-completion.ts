@@ -74,6 +74,11 @@ const STRUCTURE_SNIPPETS: Readonly<Record<string, string>> = {
   // `emit` has no continuing form for `error` (an error always ends its
   // path), so `error` is absent from this choice.
   emit: 'emit ${1|escalation,signal|} "${2:CODE}"',
+  // `await` only ever catches message/timer/signal/condition (never
+  // error/escalation/compensation, which are thrown, not awaited inline);
+  // of those, `message`/`signal` are the two that take the plain `"CODE"`
+  // string this choice scaffolds, mirroring `emit` above.
+  await: 'await ${1|message,signal|} "${2:CODE}"',
   // call — starts another process like a function call: `process` names the
   // callee, `in` entries are its arguments, `out` entries are its return
   // values.
@@ -110,8 +115,13 @@ export class BpmnScriptCompletionProvider extends DefaultCompletionProvider {
    * scaffold their differently-shaped payload, since neither reads a plain
    * `"CODE"` string; `compensation` as a plain keyword item on every one of
    * the three, each with its own undo-framed `detail` text, since it carries
-   * no payload at all to scaffold), the `particle` property of an `on timer`
-   * handler offers the three timer particles with a one-line description
+   * no payload at all to scaffold), the `trigger` property of
+   * `IntermediateCatchEvent` (`await`) offers only its four catch-legal
+   * words — `message`/`signal` as plain items, `timer`/`condition` as the
+   * same scaffolding snippets `on` offers, with `error`/`escalation`/
+   * `compensation` withheld because they are thrown, not awaited inline —
+   * the `particle` property of an `on timer` handler or an `await timer`
+   * catch offers the three timer particles with a one-line description
    * each, and `code`/`message` complete the `field` property of a handler
    * binding. These words lex as plain `ID`s (not grammar keywords — see
    * `bpmn-script-validator.ts`), so the default completion offers nothing at
@@ -140,8 +150,7 @@ export class BpmnScriptCompletionProvider extends DefaultCompletionProvider {
           acceptor,
           ['escalation', 'signal', 'compensation'],
           {
-            compensation:
-              "undo this scope's completed work, then continue",
+            compensation: "undo this scope's completed work, then continue",
           },
         );
         return;
@@ -181,8 +190,30 @@ export class BpmnScriptCompletionProvider extends DefaultCompletionProvider {
         );
         return;
       }
+      if (containerType === 'IntermediateCatchEvent') {
+        this.acceptEventWord(context, acceptor, ['message', 'signal']);
+        this.acceptEventSnippet(
+          context,
+          acceptor,
+          'timer',
+          'timer after "${1:PT1H}"',
+          'a scheduled or relative deadline',
+        );
+        this.acceptEventSnippet(
+          context,
+          acceptor,
+          'condition',
+          'condition ($1)',
+          'a data-change watchdog',
+        );
+        return;
+      }
     }
-    if (next.property === 'particle' && containerType === 'OnHandler') {
+    if (
+      next.property === 'particle' &&
+      (containerType === 'OnHandler' ||
+        containerType === 'IntermediateCatchEvent')
+    ) {
       this.acceptParticleWords(context, acceptor);
       return;
     }

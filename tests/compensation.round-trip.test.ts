@@ -151,7 +151,9 @@ function subProcess(
     (fe) => fe.kind === 'subProcess' && fe.id === id,
   );
   if (el === undefined || el.kind !== 'subProcess') {
-    throw new Error(`expected a sub-process '${id}' in container '${container.id}'`);
+    throw new Error(
+      `expected a sub-process '${id}' in container '${container.id}'`,
+    );
   }
   return el;
 }
@@ -170,7 +172,8 @@ function findHandlerDef(
     if (fe.kind !== 'subProcess') continue;
     if (fe.triggeredByEvent === true) {
       const start = fe.flowElements.find((e) => e.kind === 'startEvent');
-      const def = start?.kind === 'startEvent' ? start.eventDefinition : undefined;
+      const def =
+        start?.kind === 'startEvent' ? start.eventDefinition : undefined;
       if (match(def)) return def;
     }
     const nested = findHandlerDef(fe, match);
@@ -266,7 +269,10 @@ function assertShapeContainment(
 ): void {
   const parentBounds = isRoot ? undefined : bounds.get(container.id);
   if (!isRoot) {
-    expect(parentBounds, `sub-process ${container.id} has no BPMNShape`).toBeDefined();
+    expect(
+      parentBounds,
+      `sub-process ${container.id} has no BPMNShape`,
+    ).toBeDefined();
   }
   for (const fe of container.flowElements) {
     if (parentBounds !== undefined) {
@@ -508,7 +514,8 @@ describe('compensation shape pins on the frozen .bpmn', () => {
     // Two undo-block trigger starts, one `emit` intermediate throw, one `throw`
     // end event — four in all, and every one bare: no `activityRef`, no
     // `waitForCompletion`.
-    const all = frozenXml.match(/<bpmn:compensateEventDefinition\b[^>]*>/g) ?? [];
+    const all =
+      frozenXml.match(/<bpmn:compensateEventDefinition\b[^>]*>/g) ?? [];
     expect(all).toHaveLength(4);
     for (const tag of all) {
       expect(tag).toBe('<bpmn:compensateEventDefinition />');
@@ -526,7 +533,9 @@ describe('compensation shape pins on the frozen .bpmn', () => {
       expect(handler?.kind).toBe('subProcess');
       if (handler?.kind === 'subProcess') {
         const start = handler.flowElements.find((e) => e.kind === 'startEvent');
-        expect(start?.kind === 'startEvent' && start.isInterrupting).toBeUndefined();
+        expect(
+          start?.kind === 'startEvent' && start.isInterrupting,
+        ).toBeUndefined();
       }
     }
 
@@ -572,8 +581,12 @@ describe('import-first: a handwritten .bpmn with an undo block round-trips', () 
   });
 
   it('the emit and throw resolve to the payload-less compensation kind', () => {
-    expect(definitionOf(firstImport, 'Raise')).toEqual({ kind: 'compensation' });
-    expect(definitionOf(firstImport, 'GiveUp')).toEqual({ kind: 'compensation' });
+    expect(definitionOf(firstImport, 'Raise')).toEqual({
+      kind: 'compensation',
+    });
+    expect(definitionOf(firstImport, 'GiveUp')).toEqual({
+      kind: 'compensation',
+    });
   });
 
   it('the hand-named undo block is re-keyed so the re-desugared IR matches the import', () => {

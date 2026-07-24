@@ -15,8 +15,9 @@
  * tokens exist to solve properly: they are computed from the parsed AST, so
  * a soft word highlights precisely when the grammar itself put it in one of
  * the positions that give it event meaning. This provider marks those
- * positions — `OnHandler`/`ThrowStatement`/`EmitStatement.trigger`, the
- * `OnHandler.particle` timer word (`after`/`at`/`every`),
+ * positions — `OnHandler`/`ThrowStatement`/`EmitStatement`/
+ * `IntermediateCatchEvent.trigger`, the `OnHandler`/
+ * `IntermediateCatchEvent.particle` timer word (`after`/`at`/`every`),
  * `EventBinding.field`, and `ErrorDecl.kind`/`field` — with the `keyword`
  * semantic token type. VS Code's default themes render a semantic `keyword`
  * token the same way as a lexical one, so `on error` reads visually
@@ -40,6 +41,7 @@ import {
   isEmitStatement,
   isErrorDecl,
   isEventBinding,
+  isIntermediateCatchEvent,
   isOnHandler,
   isThrowStatement,
 } from './generated/ast.js';
@@ -49,13 +51,21 @@ export class BpmnScriptSemanticTokenProvider extends AbstractSemanticTokenProvid
     node: AstNode,
     acceptor: SemanticTokenAcceptor,
   ): void | undefined | 'prune' {
-    if (isOnHandler(node) || isThrowStatement(node) || isEmitStatement(node)) {
+    if (
+      isOnHandler(node) ||
+      isThrowStatement(node) ||
+      isEmitStatement(node) ||
+      isIntermediateCatchEvent(node)
+    ) {
       acceptor({
         node,
         property: 'trigger',
         type: SemanticTokenTypes.keyword,
       });
-      if (isOnHandler(node) && node.particle) {
+      if (
+        (isOnHandler(node) || isIntermediateCatchEvent(node)) &&
+        node.particle
+      ) {
         acceptor({
           node,
           property: 'particle',

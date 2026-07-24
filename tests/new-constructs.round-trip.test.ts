@@ -29,7 +29,7 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 
 import { EmptyFileSystem } from 'langium';
-import { parseHelper } from 'langium/test';
+import { parseHelper, validationHelper } from 'langium/test';
 import { createBpmnScriptServices } from '@bpmn-script/language';
 import type { Model } from '@bpmn-script/language';
 
@@ -77,10 +77,12 @@ const SCRIPT_TASK_SRC =
 // ---------------------------------------------------------------------------
 
 let parse: ReturnType<typeof parseHelper<Model>>;
+let validate: ReturnType<typeof validationHelper<Model>>;
 
 beforeAll(() => {
   const services = createBpmnScriptServices(EmptyFileSystem);
   parse = parseHelper<Model>(services.BpmnScript);
+  validate = validationHelper<Model>(services.BpmnScript);
 });
 
 /**
@@ -301,5 +303,10 @@ describe('round-trip: `script` task with a fenced body', () => {
     );
     const document = await parse(reemittedDsl);
     expect(document.parseResult.parserErrors).toHaveLength(0);
+  });
+
+  it('the decompiled DSL recompiles without validation errors', async () => {
+    const { diagnostics } = await validate(reemittedDsl);
+    expect(diagnostics.filter((d) => d.severity === 1)).toEqual([]);
   });
 });

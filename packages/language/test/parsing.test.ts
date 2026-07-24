@@ -47,6 +47,7 @@ import type {
   ThrowStatement,
   EmitStatement,
   ErrorDecl,
+  IntermediateCatchEvent,
 } from '@bpmn-script/language';
 import {
   createBpmnScriptServices,
@@ -275,8 +276,7 @@ describe('Parsing — subprocess', () => {
     const source = `process p { subprocess Handle "Handle order" { user Review { assignee = "demo" } } }`;
     const document = await parse(source);
     expect(formatParseFailure(document)).toBeUndefined();
-    const sub = document.parseResult.value.processes[0]!
-      .body[0] as SubProcess;
+    const sub = document.parseResult.value.processes[0]!.body[0] as SubProcess;
     expect(sub.$type).toBe('SubProcess');
     expect(sub.name).toBe('Handle');
     expect(sub.label).toBe('Handle order');
@@ -288,8 +288,7 @@ describe('Parsing — subprocess', () => {
     const source = `process p { subprocess S { start In user A end Out } }`;
     const document = await parse(source);
     expect(formatParseFailure(document)).toBeUndefined();
-    const sub = document.parseResult.value.processes[0]!
-      .body[0] as SubProcess;
+    const sub = document.parseResult.value.processes[0]!.body[0] as SubProcess;
     expect(sub.body.statements.map((s) => s.$type)).toEqual([
       'StartEvent',
       'UserTask',
@@ -327,8 +326,7 @@ describe('Parsing — subprocess', () => {
     const source = `process p { subprocess S { } }`;
     const document = await parse(source);
     expect(formatParseFailure(document)).toBeUndefined();
-    const sub = document.parseResult.value.processes[0]!
-      .body[0] as SubProcess;
+    const sub = document.parseResult.value.processes[0]!.body[0] as SubProcess;
     expect(sub.body.statements).toHaveLength(0);
   });
 
@@ -336,8 +334,7 @@ describe('Parsing — subprocess', () => {
     const source = `process p { subprocess S { } }`;
     const document = await parse(source);
     expect(formatParseFailure(document)).toBeUndefined();
-    const sub = document.parseResult.value.processes[0]!
-      .body[0] as SubProcess;
+    const sub = document.parseResult.value.processes[0]!.body[0] as SubProcess;
     expect(sub.label).toBeUndefined();
   });
 });
@@ -473,8 +470,7 @@ describe('Parsing — call activity', () => {
     const source = `process p { subprocess S { call X { process = "p" } } }`;
     const document = await parse(source);
     expect(formatParseFailure(document)).toBeUndefined();
-    const sub = document.parseResult.value.processes[0]!
-      .body[0] as SubProcess;
+    const sub = document.parseResult.value.processes[0]!.body[0] as SubProcess;
     const call = sub.body.statements[0] as CallActivity;
     expect(call.$type).toBe('CallActivity');
     expect(call.name).toBe('X');
@@ -573,8 +569,8 @@ describe('Parsing — on handlers', () => {
 
     const catchAllEscalation = await parse(`process p { on escalation { } }`);
     expect(formatParseFailure(catchAllEscalation)).toBeUndefined();
-    const escalationHandler = catchAllEscalation.parseResult.value
-      .processes[0]!.body[0] as OnHandler;
+    const escalationHandler = catchAllEscalation.parseResult.value.processes[0]!
+      .body[0] as OnHandler;
     expect(escalationHandler.trigger).toBe('escalation');
     expect(escalationHandler.code).toBeUndefined();
   });
@@ -859,6 +855,86 @@ describe('Parsing — throw / emit', () => {
   });
 });
 
+describe('Parsing — await (intermediate catch)', () => {
+  test('await message takes a required name string', async () => {
+    const document = await parse(
+      `process p { await message "Invoice Received" }`,
+    );
+    expect(formatParseFailure(document)).toBeUndefined();
+    const catchEvent = document.parseResult.value.processes[0]!
+      .body[0] as IntermediateCatchEvent;
+    expect(catchEvent.$type).toBe('IntermediateCatchEvent');
+    expect(catchEvent.trigger).toBe('message');
+    expect(catchEvent.code).toBe('Invoice Received');
+    expect(catchEvent.particle).toBeUndefined();
+    expect(catchEvent.time).toBeUndefined();
+    expect(catchEvent.condition).toBeUndefined();
+  });
+
+  test('await timer keeps its particle and time — the particle is never swallowed as a name', async () => {
+    const afterDoc = await parse(`process p { await timer after "PT1H" }`);
+    expect(formatParseFailure(afterDoc)).toBeUndefined();
+    const afterEvent = afterDoc.parseResult.value.processes[0]!
+      .body[0] as IntermediateCatchEvent;
+    expect(afterEvent.trigger).toBe('timer');
+    expect(afterEvent.particle).toBe('after');
+    expect(afterEvent.time).toBe('PT1H');
+    expect(afterEvent.code).toBeUndefined();
+
+    const atDoc = await parse(
+      `process p { await timer at "2026-08-01T09:00:00" }`,
+    );
+    expect(formatParseFailure(atDoc)).toBeUndefined();
+    const atEvent = atDoc.parseResult.value.processes[0]!
+      .body[0] as IntermediateCatchEvent;
+    expect(atEvent.particle).toBe('at');
+    expect(atEvent.time).toBe('2026-08-01T09:00:00');
+
+    const everyDoc = await parse(`process p { await timer every "R/PT10M" }`);
+    expect(formatParseFailure(everyDoc)).toBeUndefined();
+    const everyEvent = everyDoc.parseResult.value.processes[0]!
+      .body[0] as IntermediateCatchEvent;
+    expect(everyEvent.particle).toBe('every');
+    expect(everyEvent.time).toBe('R/PT10M');
+  });
+
+  test('await signal takes a required name string', async () => {
+    const document = await parse(`process p { await signal "Ready" }`);
+    expect(formatParseFailure(document)).toBeUndefined();
+    const catchEvent = document.parseResult.value.processes[0]!
+      .body[0] as IntermediateCatchEvent;
+    expect(catchEvent.trigger).toBe('signal');
+    expect(catchEvent.code).toBe('Ready');
+  });
+
+  test('await condition takes a parenthesized expression, the same AST an if condition parses to', async () => {
+    const document = await parse(
+      `process p { await condition (amount > 100) }`,
+    );
+    expect(formatParseFailure(document)).toBeUndefined();
+    const catchEvent = document.parseResult.value.processes[0]!
+      .body[0] as IntermediateCatchEvent;
+    expect(catchEvent.trigger).toBe('condition');
+    expect(catchEvent.condition?.$type).toBe('Relational');
+    expect((catchEvent.condition as Relational).op).toBe('>');
+    expect(catchEvent.code).toBeUndefined();
+  });
+
+  test('await is reserved: a bare `var await` does not parse, while the trigger/particle words stay soft', async () => {
+    const reservedDoc = await parse(`process p { var await: string }`);
+    expect(reservedDoc.parseResult.parserErrors.length).toBeGreaterThan(0);
+
+    const varMessage = await parse(`process p { var message: string }`);
+    expect(formatParseFailure(varMessage)).toBeUndefined();
+
+    const stepNamedEvery = await parse(`process p { user every }`);
+    expect(formatParseFailure(stepNamedEvery)).toBeUndefined();
+    expect(
+      (stepNamedEvery.parseResult.value.processes[0]!.body[0] as UserTask).name,
+    ).toBe('every');
+  });
+});
+
 // ── compensation: the code is optional on throw / emit ───────────────────
 //
 // Compensation undoes a subprocess's already-completed work rather than
@@ -953,10 +1029,7 @@ describe('Parsing — compensation (optional throw/emit code)', () => {
     expect(formatParseFailure(document)).toBeUndefined();
     const body = document.parseResult.value.processes[0]!.body;
     expect(body).toHaveLength(2);
-    expect(body.map((s) => s.$type)).toEqual([
-      'ThrowStatement',
-      'ServiceTask',
-    ]);
+    expect(body.map((s) => s.$type)).toEqual(['ThrowStatement', 'ServiceTask']);
     expect((body[0] as ThrowStatement).name).toBeUndefined();
   });
 
@@ -1022,10 +1095,7 @@ process p {
     const document = await parse(source);
     expect(formatParseFailure(document)).toBeUndefined();
     const process = document.parseResult.value.processes[0]!;
-    expect(process.decls.map((d) => d.$type)).toEqual([
-      'VarDecl',
-      'ErrorDecl',
-    ]);
+    expect(process.decls.map((d) => d.$type)).toEqual(['VarDecl', 'ErrorDecl']);
     const decl = process.decls[1] as ErrorDecl;
     expect(decl.kind).toBe('error');
     expect(decl.code).toBe('PAYMENT_FAILED');
@@ -1039,8 +1109,7 @@ describe('Parsing — handler / throw / emit nesting', () => {
     const source = `process p { subprocess S { on error "X" { } } }`;
     const document = await parse(source);
     expect(formatParseFailure(document)).toBeUndefined();
-    const sub = document.parseResult.value.processes[0]!
-      .body[0] as SubProcess;
+    const sub = document.parseResult.value.processes[0]!.body[0] as SubProcess;
     expect(sub.body.statements[0]!.$type).toBe('OnHandler');
   });
 
@@ -1048,12 +1117,9 @@ describe('Parsing — handler / throw / emit nesting', () => {
     const source = `process p { on error "X" { on escalation "Y" { } } }`;
     const document = await parse(source);
     expect(formatParseFailure(document)).toBeUndefined();
-    const outer = document.parseResult.value.processes[0]!
-      .body[0] as OnHandler;
+    const outer = document.parseResult.value.processes[0]!.body[0] as OnHandler;
     expect(outer.body.statements[0]!.$type).toBe('OnHandler');
-    expect((outer.body.statements[0] as OnHandler).trigger).toBe(
-      'escalation',
-    );
+    expect((outer.body.statements[0] as OnHandler).trigger).toBe('escalation');
   });
 
   test('throw and emit nest inside an if block', async () => {
@@ -1093,8 +1159,7 @@ describe('Parsing — soft event words stay plain identifiers', () => {
     const taskNamedError = await parse(`process p { user error }`);
     expect(formatParseFailure(taskNamedError)).toBeUndefined();
     expect(
-      (taskNamedError.parseResult.value.processes[0]!.body[0] as UserTask)
-        .name,
+      (taskNamedError.parseResult.value.processes[0]!.body[0] as UserTask).name,
     ).toBe('error');
   });
 
@@ -1102,9 +1167,7 @@ describe('Parsing — soft event words stay plain identifiers', () => {
     const unknownTrigger = await parse(`process p { on banana "X" { } }`);
     expect(formatParseFailure(unknownTrigger)).toBeUndefined();
 
-    const unknownField = await parse(
-      `process p { on error "X" (coed c) { } }`,
-    );
+    const unknownField = await parse(`process p { on error "X" (coed c) { } }`);
     expect(formatParseFailure(unknownField)).toBeUndefined();
   });
 
@@ -1123,8 +1186,7 @@ describe('Parsing — soft event words stay plain identifiers', () => {
     const taskNamedEvery = await parse(`process p { user every }`);
     expect(formatParseFailure(taskNamedEvery)).toBeUndefined();
     expect(
-      (taskNamedEvery.parseResult.value.processes[0]!.body[0] as UserTask)
-        .name,
+      (taskNamedEvery.parseResult.value.processes[0]!.body[0] as UserTask).name,
     ).toBe('every');
 
     const varCondition = await parse(
@@ -1143,9 +1205,7 @@ describe('Parsing — soft event words stay plain identifiers', () => {
     expect(errorWithParticleHandler.particle).toBe('after');
     expect(errorWithParticleHandler.time).toBe('x');
 
-    const timerWithBareCode = await parse(
-      `process p { on timer "PT1H" { } }`,
-    );
+    const timerWithBareCode = await parse(`process p { on timer "PT1H" { } }`);
     expect(formatParseFailure(timerWithBareCode)).toBeUndefined();
     const timerWithBareCodeHandler = timerWithBareCode.parseResult.value
       .processes[0]!.body[0] as OnHandler;

@@ -137,6 +137,7 @@ import {
   isOnHandler,
   isThrowStatement,
   isEmitStatement,
+  isIntermediateCatchEvent,
   isErrorDecl,
   isLiteralString,
   isLiteralBool,
@@ -167,6 +168,7 @@ import type {
   OnHandler,
   ThrowStatement,
   EmitStatement,
+  IntermediateCatchEvent,
   VariableMapping,
   Attribute,
 } from '@bpmn-script/language';
@@ -194,6 +196,7 @@ import {
   makeThrowEventId,
   makeEventSubProcessId,
   makeBoundaryEventId,
+  makeIntermediateCatchEventId,
 } from './synthesize-ids.js';
 
 /**
@@ -364,6 +367,17 @@ function lowerContainerBody(
       // the loop's default-exit flow id is stamped on the flow to the end).
       addFlow(builder, body.exit, endId, undefined, body.exitFlowId);
     }
+  } else if (body.entry === null) {
+    // The body has no flow step at all (empty, or every statement is an `on`
+    // handler contributing no entry): neither branch above ran, so the
+    // container would otherwise end up with no start event — invalid BPMN.
+    // Synthesise a bare start → end pair, the same shape `ensureHandlerStart`
+    // gives an empty event-sub-process body.
+    const startId = makeStartEventId(containerId, builder.taken);
+    const endId = makeEndEventId(containerId, builder.taken);
+    builder.flowElements.unshift({ kind: 'startEvent', id: startId });
+    builder.flowElements.push({ kind: 'endEvent', id: endId });
+    addFlow(builder, startId, endId);
   }
 }
 
@@ -518,6 +532,9 @@ function lowerStatement(
   }
   if (isEmitStatement(stmt)) {
     return lowerEmit(builder, stmt, coord, index);
+  }
+  if (isIntermediateCatchEvent(stmt)) {
+    return lowerIntermediateCatch(builder, stmt, coord, index);
   }
   // `OnHandler` is intercepted by `lowerBlockStatements` (it is not a flow step),
   // so it never reaches here. Every other Statement member is handled above.
@@ -783,8 +800,14 @@ function lowerScriptTask(builder: Builder, stmt: AstScriptTask): Frontier {
  *   (Operaton rejects a conditioned default).
  * - Each branch's fall-through exit flows into the join. A branch terminating
  *   in an explicit `end` (null exit) gets no join continuation.
+ * - When an `else` is present and every branch (every conditioned branch plus
+ *   the else) terminates, the join ends up with zero incoming flows — nothing
+ *   ever reaches it — so it is pruned (see {@link pruneUnreachableJoin}) and
+ *   the construct reports `exit: null`, exactly like an explicit `end`. An
+ *   `if` without an `else` can never reach this: its implicit fall-through
+ *   always wires an unconditioned split→join flow.
  *
- * Entry is the split gateway; exit is the join gateway.
+ * Entry is the split gateway; exit is the join gateway, or `null` when pruned.
  */
 function lowerIf(builder: Builder, stmt: IfStatement, x: string): Frontier {
   const splitId = makeGatewaySplitId(x);
@@ -820,7 +843,7 @@ function lowerIf(builder: Builder, stmt: IfStatement, x: string): Frontier {
     addFlow(builder, splitId, joinId, undefined, defaultFlowId);
   }
 
-  return { entry: splitId, exit: joinId };
+  return { entry: splitId, exit: pruneUnreachableJoin(builder, joinId) };
 }
 
 /**
@@ -961,7 +984,9 @@ function lowerDoWhile(
  *
  * Each branch's compound children index against a `b<branchIndex>` segment of
  * the coordinate (a branch is a block with no statement to index against).
- * Entry is the fork; exit is the join.
+ * Entry is the fork; exit is the join — or `null` when every branch
+ * terminates and the join is left with zero incoming flows, in which case it
+ * is pruned (see {@link pruneUnreachableJoin}).
  */
 function lowerParallel(
   builder: Builder,
@@ -985,7 +1010,7 @@ function lowerParallel(
     joinContinuation(builder, lowered, joinId);
   });
 
-  return { entry: forkId, exit: joinId };
+  return { entry: forkId, exit: pruneUnreachableJoin(builder, joinId) };
 }
 
 /**
@@ -1004,8 +1029,9 @@ function lowerParallel(
  *
  * The finished container is pushed onto the **parent** builder as one opaque
  * activity node: an incoming flow targets it by id and a fall-through flow
- * leaves it by id, so `entry === exit === name`. An empty body yields an empty
- * container (no implicit events).
+ * leaves it by id, so `entry === exit === name`. An empty or handler-only body
+ * still needs a valid start event, so it gets the same bare start → end pair
+ * a bodyless process body does.
  */
 function lowerSubProcess(
   builder: Builder,
@@ -1051,8 +1077,9 @@ function lowerSubProcess(
  * it.
  *
  * An event sub-process is invalid BPMN without its trigger start event, so an
- * empty handler body still synthesizes start → flow → end (the deliberate
- * deviation from the empty-container rule that leaves plain sub-processes bare).
+ * empty handler body still synthesizes start → flow → end (the same bare pair
+ * every empty or handler-only flow container gets); `ensureHandlerStart` below
+ * then attaches the trigger to it.
  */
 function lowerOnHandler(
   builder: Builder,
@@ -1160,10 +1187,10 @@ function lowerBoundaryHandler(
 /**
  * Return the handler body's single start event — the trigger-carrying start.
  *
- * A non-empty body always has one (explicit, or synthesized by
- * `lowerContainerBody`). An empty body has none, but an event sub-process is
- * invalid BPMN without its start, so this synthesizes start → flow → end (the
- * empty-body deviation from the empty-container rule) and returns the start.
+ * `lowerContainerBody` always leaves one behind (explicit, or synthesized,
+ * including the bare start → end pair for an empty or handler-only body), so
+ * this normally just finds and returns it; the synthesis below is a fallback
+ * for the case that guarantee ever stops holding.
  */
 function ensureHandlerStart(nested: Builder, id: string): IrStartEvent {
   const existing = nested.flowElements.find(
@@ -1340,6 +1367,30 @@ function lowerEmit(
 }
 
 /**
+ * Lower an `await` to an intermediate catch event — a plain fall-through node
+ * on the main flow, exactly like {@link lowerEmit}'s intermediate throw,
+ * except it waits for the trigger instead of firing it: entry === exit === the
+ * node's id. The surface carries no name slot (a trial `name=ID` slot
+ * collided with the timer particle at the token level), so the id is always
+ * the positional `Catch_<coord>_<index>` — there is no authored-id branch to
+ * mirror from `lowerEmit`.
+ */
+function lowerIntermediateCatch(
+  builder: Builder,
+  stmt: IntermediateCatchEvent,
+  coord: string,
+  index: number,
+): Frontier {
+  const id = makeIntermediateCatchEventId(`${coord}_${index}`);
+  builder.flowElements.push({
+    kind: 'intermediateCatchEvent',
+    id,
+    eventDefinition: catchEventDefinition(stmt),
+  });
+  return { entry: id, exit: id };
+}
+
+/**
  * Build the thrown {@link EventDefinition} for a `throw`: `escalation` maps to
  * the escalation kind, `compensation` to the payload-less compensation kind,
  * `signal` to the signal kind, every other trigger word (including a typo) to
@@ -1361,6 +1412,52 @@ function throwEventDefinition(stmt: ThrowStatement): EventDefinition {
     return { kind: 'signal', signalName: stmt.code ?? '' };
   }
   return { kind: 'error', errorCode: stmt.code };
+}
+
+/**
+ * Build the caught {@link EventDefinition} for an `await`: `message`/`signal`
+ * map to their named catch kinds (name falling back to `''`, mirroring
+ * `handlerEventDefinition`); `timer` combines the particle-derived
+ * `timerKind` ({@link timerParticleKind}) with the time text, falling back to
+ * `code` and then `''`; `condition` renders through `renderExpression`
+ * exactly like an `if`, or the total placeholder `${true}` when the catch
+ * carries none. The catch's `eventDefinition` field is narrowed to these four
+ * kinds — an error/escalation/compensation catch is unrepresentable (they are
+ * raised with `throw`/`emit`, never awaited inline) — so any other trigger
+ * word (a validator-rejected program) also falls back to the always-true
+ * conditional catch: total over any input without ever producing an
+ * unrepresentable kind. The catch has no bindings to read, so this does not
+ * route through `handlerEventDefinition`.
+ */
+function catchEventDefinition(
+  stmt: IntermediateCatchEvent,
+): Extract<
+  EventDefinition,
+  { kind: 'message' | 'signal' | 'timer' | 'conditional' }
+> {
+  if (stmt.trigger === 'message') {
+    return { kind: 'message', messageName: stmt.code ?? '' };
+  }
+  if (stmt.trigger === 'signal') {
+    return { kind: 'signal', signalName: stmt.code ?? '' };
+  }
+  if (stmt.trigger === 'timer') {
+    return {
+      kind: 'timer',
+      timerKind: timerParticleKind(stmt.particle),
+      expression: stmt.time ?? stmt.code ?? '',
+    };
+  }
+  if (stmt.trigger === 'condition') {
+    return {
+      kind: 'conditional',
+      condition:
+        stmt.condition !== undefined
+          ? renderExpression(stmt.condition)
+          : '${true}',
+    };
+  }
+  return { kind: 'conditional', condition: '${true}' };
 }
 
 /**
@@ -1581,6 +1678,31 @@ function joinContinuation(
   if (branch.exit !== null) {
     addFlow(builder, branch.exit, joinId, undefined, branch.exitFlowId);
   }
+}
+
+/**
+ * After every branch of an `if`-with-`else` or a `parallel` has been lowered,
+ * decide whether the synthesized join gateway `joinId` still has anything
+ * flowing into it. It does whenever at least one branch is empty (routed
+ * straight through by its caller) or falls through ({@link joinContinuation}
+ * wired its exit into the join); it does not when every branch terminates
+ * (`end`/`throw`/`goto`, or a nested compound that itself never falls
+ * through). A join with zero incoming flows is invalid BPMN, so this removes
+ * the join {@link FlowElement} that was pushed for it — never an authored
+ * node, only the gateway `lowerIf`/`lowerParallel` synthesized — and reports
+ * no exit, exactly like a branch ending in an explicit `end`.
+ *
+ * @returns `joinId` when it stays reachable, or `null` once pruned.
+ */
+function pruneUnreachableJoin(builder: Builder, joinId: string): string | null {
+  if (builder.sequenceFlows.some((flow) => flow.targetRef === joinId)) {
+    return joinId;
+  }
+  const index = builder.flowElements.findIndex((fe) => fe.id === joinId);
+  if (index !== -1) {
+    builder.flowElements.splice(index, 1);
+  }
+  return null;
 }
 
 /**

@@ -40,6 +40,7 @@ import {
   makeThrowEventId,
   makeEventSubProcessId,
   makeBoundaryEventId,
+  makeIntermediateCatchEventId,
 } from '../src/synthesize-ids.js';
 import type {
   BpmnProcess,
@@ -172,6 +173,27 @@ describe('astToIr — implicit sequence and implicit start/end', () => {
       { kind: 'endEvent', id: 'Done' },
     ]);
   });
+
+  it('synthesizes a start/end pair for a handler-only body', async () => {
+    const result = await ir(`process p { on error "Boom" { end H } }`);
+    const startId = makeStartEventId('p', new Set());
+    const endId = makeEndEventId('p', new Set());
+
+    expect(only(result, 'startEvent').id).toBe(startId);
+    expect(only(result, 'endEvent').id).toBe(endId);
+    expect(flow(result, startId, endId)).toBeDefined();
+  });
+
+  it('synthesizes a start/end pair for a bodyless sub-process', async () => {
+    const result = await ir(`process p { subprocess S { } }`);
+    const sub = subProcess(result, 'S');
+    const startId = makeStartEventId('S', new Set());
+    const endId = makeEndEventId('S', new Set());
+
+    expect(only(sub, 'startEvent').id).toBe(startId);
+    expect(only(sub, 'endEvent').id).toBe(endId);
+    expect(flow(sub, startId, endId)).toBeDefined();
+  });
 });
 
 // ── 2. if / else → XOR split + join ──────────────────────────────────────────
@@ -243,6 +265,28 @@ describe('astToIr — if/else exclusive gateway', () => {
       (f) => f.id === gw.defaultFlowId,
     )!;
     expect(defaultFlow.conditionExpression).toBeUndefined();
+  });
+
+  it('prunes the join when both the if and else branch terminate, and emits no implicit end', async () => {
+    const result = await ir(
+      `process P { if (c) { throw error B "e" } else { end S } }`,
+    );
+    const joinId = makeGatewayJoinId('P_0');
+    expect(result.flowElements.some((fe) => fe.id === joinId)).toBe(false);
+    // Nothing falls through out of the construct, so the container gets no
+    // synthesized end either.
+    const implicitEndId = makeEndEventId('P', new Set());
+    expect(result.flowElements.some((fe) => fe.id === implicitEndId)).toBe(
+      false,
+    );
+  });
+
+  it('keeps the split→join default flow when there is no else (never pruned)', async () => {
+    const result = await ir(`process P { if (c) { end A } }`);
+    const splitId = makeGatewaySplitId('P_0');
+    const joinId = makeGatewayJoinId('P_0');
+    expect(result.flowElements.some((fe) => fe.id === joinId)).toBe(true);
+    expect(flow(result, splitId, joinId)).toBeDefined();
   });
 });
 
@@ -327,6 +371,20 @@ describe('astToIr — while loop', () => {
     // The serialized IR contains no such string anywhere.
     expect(JSON.stringify(result)).not.toMatch(/loopCharacteristics/i);
   });
+
+  it('a body that always throws stays valid: the loop gateway keeps one incoming and two outgoing', async () => {
+    const result = await ir(
+      `process P { while (c) { throw error B "e" } end Done }`,
+    );
+    const loopId = makeGatewayLoopId('P_0');
+    const incoming = result.sequenceFlows.filter((f) => f.targetRef === loopId);
+    const outgoing = result.sequenceFlows.filter((f) => f.sourceRef === loopId);
+    // Only the entry from start — the body throws, so no back-edge.
+    expect(incoming).toHaveLength(1);
+    // The conditioned entry into the body and the unconditioned exit.
+    expect(outgoing).toHaveLength(2);
+    expect(flow(result, loopId, 'Done')).toBeDefined();
+  });
 });
 
 // ── 5. do … while → post-test XOR loop ───────────────────────────────────────
@@ -392,6 +450,14 @@ describe('astToIr — parallel fork/join', () => {
         expect(fe).not.toHaveProperty('defaultFlowId');
       }
     }
+  });
+
+  it('prunes the join when every branch terminates', async () => {
+    const result = await ir(
+      `process P { parallel { { throw error B "e" } { end S } } }`,
+    );
+    const joinId = makeGatewayJoinId('P_0');
+    expect(result.flowElements.some((fe) => fe.id === joinId)).toBe(false);
   });
 });
 
@@ -927,9 +993,13 @@ describe('astToIr — sub-process lowering', () => {
     const result = await ir(`process p { subprocess S "Handle" { } }`);
     const sub = subProcess(result, 'S');
     expect(sub.name).toBe('Handle');
-    // Empty body lowers to an empty container — no implicit events.
-    expect(sub.flowElements).toEqual([]);
-    expect(sub.sequenceFlows).toEqual([]);
+    // Empty body still needs a valid start event, so it gets the bare
+    // start/end pair every empty container gets.
+    expect(sub.flowElements.map((fe) => fe.id)).toEqual([
+      'StartEvent_S',
+      'EndEvent_S',
+    ]);
+    expect(flow(sub, 'StartEvent_S', 'EndEvent_S')).toBeDefined();
   });
 
   it('threads the parent chain into and out of the sub-process, goto-targetable', async () => {
@@ -1253,7 +1323,9 @@ describe('astToIr — on-handler lowering', () => {
     // No StartEvent_… synthesized — the explicit start is the trigger start.
     const ids = handler.flowElements.map((fe) => fe.id);
     expect(ids).toContain('In');
-    expect(ids).not.toContain(makeStartEventId(makeEventSubProcessId('p_0'), new Set()));
+    expect(ids).not.toContain(
+      makeStartEventId(makeEventSubProcessId('p_0'), new Set()),
+    );
     const start = only(handler, 'startEvent');
     expect(start.id).toBe('In');
     expect(start.name).toBe('Caught');
@@ -1654,7 +1726,10 @@ describe('astToIr — handler/throw/emit totality', () => {
 
   it('lowers an empty-code handler', async () => {
     const result = await ir(`process p { on error "" { } }`);
-    const start = only(subProcess(result, makeEventSubProcessId('p_0')), 'startEvent');
+    const start = only(
+      subProcess(result, makeEventSubProcessId('p_0')),
+      'startEvent',
+    );
     expect(start.eventDefinition).toEqual({ kind: 'error', errorCode: '' });
   });
 
@@ -1662,7 +1737,10 @@ describe('astToIr — handler/throw/emit totality', () => {
     const result = await ir(
       `process p { on banana "X" { service R { class = "x.R" } } }`,
     );
-    const start = only(subProcess(result, makeEventSubProcessId('p_0')), 'startEvent');
+    const start = only(
+      subProcess(result, makeEventSubProcessId('p_0')),
+      'startEvent',
+    );
     expect(start.eventDefinition).toEqual({ kind: 'error', errorCode: 'X' });
   });
 
@@ -1670,7 +1748,10 @@ describe('astToIr — handler/throw/emit totality', () => {
     const result = await ir(
       `process p { on error "X" (coed c) { service R { class = "x.R" } } }`,
     );
-    const start = only(subProcess(result, makeEventSubProcessId('p_0')), 'startEvent');
+    const start = only(
+      subProcess(result, makeEventSubProcessId('p_0')),
+      'startEvent',
+    );
     expect(start.eventDefinition).toEqual({ kind: 'error', errorCode: 'X' });
   });
 
@@ -1689,9 +1770,9 @@ describe('astToIr — handler/throw/emit totality', () => {
       const result = await ir(`process p { emit ${trigger} "X" }`);
       const emitted = byId(result, makeThrowEventId('p_0'));
       expect(emitted.kind).toBe('intermediateThrowEvent');
-      expect((emitted as { eventDefinition?: unknown }).eventDefinition).toEqual(
-        { kind: 'escalation', escalationCode: 'X' },
-      );
+      expect(
+        (emitted as { eventDefinition?: unknown }).eventDefinition,
+      ).toEqual({ kind: 'escalation', escalationCode: 'X' });
     }
   });
 });
@@ -1736,9 +1817,7 @@ describe('astToIr — timer and condition handler triggers', () => {
         .eventDefinition,
     ).toEqual({ kind: 'timer', timerKind: 'duration', expression: 'PT1H' });
 
-    const at = await ir(
-      `process p { on timer at "2024-01-01T00:00:00Z" { } }`,
-    );
+    const at = await ir(`process p { on timer at "2024-01-01T00:00:00Z" { } }`);
     expect(
       only(subProcess(at, makeEventSubProcessId('p_0')), 'startEvent')
         .eventDefinition,
@@ -1754,9 +1833,7 @@ describe('astToIr — timer and condition handler triggers', () => {
         .eventDefinition,
     ).toEqual({ kind: 'timer', timerKind: 'cycle', expression: 'R/PT1H' });
 
-    const templated = await ir(
-      'process p { on timer after "${dueDate}" { } }',
-    );
+    const templated = await ir('process p { on timer after "${dueDate}" { } }');
     expect(
       only(subProcess(templated, makeEventSubProcessId('p_0')), 'startEvent')
         .eventDefinition,
@@ -1774,9 +1851,7 @@ describe('astToIr — timer and condition handler triggers', () => {
         .eventDefinition,
     ).toEqual({ kind: 'conditional', condition: '${amount > 100}' });
 
-    const raw = await ir(
-      'process p { on condition ("${bean.check()}") { } }',
-    );
+    const raw = await ir('process p { on condition ("${bean.check()}") { } }');
     expect(
       only(subProcess(raw, makeEventSubProcessId('p_0')), 'startEvent')
         .eventDefinition,
@@ -1818,9 +1893,10 @@ describe('astToIr — signal throw/emit', () => {
     );
     const emitted = byId(result, 'Ping');
     expect(emitted.kind).toBe('intermediateThrowEvent');
-    expect(
-      (emitted as { eventDefinition?: unknown }).eventDefinition,
-    ).toEqual({ kind: 'signal', signalName: 'S' });
+    expect((emitted as { eventDefinition?: unknown }).eventDefinition).toEqual({
+      kind: 'signal',
+      signalName: 'S',
+    });
     expect(flow(result, 'A', 'Ping')).toBeDefined();
     expect(flow(result, 'Ping', 'B')).toBeDefined();
   });
@@ -1882,14 +1958,20 @@ describe('astToIr — new-trigger totality', () => {
   it('keeps throw/emit total for trigger words outside their new special case', async () => {
     const emitMessage = await ir(`process p { emit message "X" }`);
     expect(
-      (byId(emitMessage, makeThrowEventId('p_0')) as { eventDefinition?: unknown })
-        .eventDefinition,
+      (
+        byId(emitMessage, makeThrowEventId('p_0')) as {
+          eventDefinition?: unknown;
+        }
+      ).eventDefinition,
     ).toEqual({ kind: 'escalation', escalationCode: 'X' });
 
     const throwTimer = await ir(`process p { throw timer "X" }`);
     expect(
-      (byId(throwTimer, makeThrowEventId('p_0')) as { eventDefinition?: unknown })
-        .eventDefinition,
+      (
+        byId(throwTimer, makeThrowEventId('p_0')) as {
+          eventDefinition?: unknown;
+        }
+      ).eventDefinition,
     ).toEqual({ kind: 'error', errorCode: 'X' });
   });
 });
@@ -2038,9 +2120,9 @@ describe('astToIr — compensation throw/emit lowering', () => {
     );
     const emitted = byId(result, 'Undo');
     expect(emitted.kind).toBe('intermediateThrowEvent');
-    expect((emitted as { eventDefinition?: unknown }).eventDefinition).toEqual(
-      { kind: 'compensation' },
-    );
+    expect((emitted as { eventDefinition?: unknown }).eventDefinition).toEqual({
+      kind: 'compensation',
+    });
     expect(flow(result, 'A', 'Undo')).toBeDefined();
     expect(flow(result, 'Undo', 'B')).toBeDefined();
   });
@@ -2094,9 +2176,8 @@ describe('astToIr — compensation throw/emit lowering', () => {
 
     const emitted = await ir(`process p { emit signal }`);
     expect(
-      (
-        byId(emitted, makeThrowEventId('p_0')) as { eventDefinition?: unknown }
-      ).eventDefinition,
+      (byId(emitted, makeThrowEventId('p_0')) as { eventDefinition?: unknown })
+        .eventDefinition,
     ).toEqual({ kind: 'signal', signalName: '' });
   });
 });
@@ -2123,6 +2204,100 @@ describe('astToIr — compensation coordinate composition', () => {
     const handler = subProcess(sub, makeEventSubProcessId('p_0_1'));
     const start = only(handler, 'startEvent');
     expect(start.eventDefinition).toEqual({ kind: 'compensation' });
+  });
+});
+
+// ── 25. await → intermediate catch lowering ──────────────────────────────────
+
+describe('astToIr — await intermediate catch lowering', () => {
+  it('lowers `await message` to an intermediate catch wired into the chain', async () => {
+    const result = await ir(
+      `process p {
+        service A { class = "x.A" }
+        await message "M"
+        service B { class = "x.B" }
+      }`,
+    );
+    const catchId = makeIntermediateCatchEventId('p_1');
+    const caught = byId(result, catchId);
+    expect(caught.kind).toBe('intermediateCatchEvent');
+    expect((caught as { eventDefinition?: unknown }).eventDefinition).toEqual({
+      kind: 'message',
+      messageName: 'M',
+    });
+    // prev → catch → next: a plain fall-through node, one-in/one-out.
+    expect(flow(result, 'A', catchId)).toBeDefined();
+    expect(flow(result, catchId, 'B')).toBeDefined();
+  });
+
+  it('maps each timer particle to its BPMN timerKind, expression carried verbatim', async () => {
+    const after = await ir(`process p { await timer after "PT1H" }`);
+    expect(
+      (
+        byId(after, makeIntermediateCatchEventId('p_0')) as {
+          eventDefinition?: unknown;
+        }
+      ).eventDefinition,
+    ).toEqual({ kind: 'timer', timerKind: 'duration', expression: 'PT1H' });
+
+    const at = await ir(`process p { await timer at "2024-01-01T00:00:00Z" }`);
+    expect(
+      (
+        byId(at, makeIntermediateCatchEventId('p_0')) as {
+          eventDefinition?: unknown;
+        }
+      ).eventDefinition,
+    ).toEqual({
+      kind: 'timer',
+      timerKind: 'date',
+      expression: '2024-01-01T00:00:00Z',
+    });
+
+    const every = await ir(`process p { await timer every "R/PT1H" }`);
+    expect(
+      (
+        byId(every, makeIntermediateCatchEventId('p_0')) as {
+          eventDefinition?: unknown;
+        }
+      ).eventDefinition,
+    ).toEqual({ kind: 'timer', timerKind: 'cycle', expression: 'R/PT1H' });
+  });
+
+  it('lowers `await signal` to a signal event definition', async () => {
+    const result = await ir(`process p { await signal "S" }`);
+    expect(
+      (
+        byId(result, makeIntermediateCatchEventId('p_0')) as {
+          eventDefinition?: unknown;
+        }
+      ).eventDefinition,
+    ).toEqual({ kind: 'signal', signalName: 'S' });
+  });
+
+  it('renders `await condition` through renderExpression, same as an `if`', async () => {
+    const result = await ir(`process p { await condition (amount > 100) }`);
+    expect(
+      (
+        byId(result, makeIntermediateCatchEventId('p_0')) as {
+          eventDefinition?: unknown;
+        }
+      ).eventDefinition,
+    ).toEqual({ kind: 'conditional', condition: '${amount > 100}' });
+  });
+
+  it('gives two catches in one body distinct, non-colliding ids', async () => {
+    const result = await ir(
+      `process p {
+        await message "First"
+        await signal "Second"
+      }`,
+    );
+    const firstId = makeIntermediateCatchEventId('p_0');
+    const secondId = makeIntermediateCatchEventId('p_1');
+    expect(firstId).not.toBe(secondId);
+    expect(byId(result, firstId).kind).toBe('intermediateCatchEvent');
+    expect(byId(result, secondId).kind).toBe('intermediateCatchEvent');
+    expect(flow(result, firstId, secondId)).toBeDefined();
   });
 });
 

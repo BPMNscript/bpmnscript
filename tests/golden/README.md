@@ -13,7 +13,10 @@ escalation event layer, the `event-triggers.{bpmnscript,bpmn}` pair exercises
 the message, signal, timer, and conditional triggers, the
 `compensation.{bpmnscript,bpmn}` pair exercises the compensation (undo-block)
 layer, the `boundary-events.{bpmnscript,bpmn}` pair exercises handlers attached
-to a host activity, and
+to a host activity, the `boundary-task-hosts.{bpmnscript,bpmn}` pair exercises a
+boundary handler attached to the service/script/external task hosts no other
+golden covers, the `intermediate-catch.{bpmnscript,bpmn}` pair exercises the
+`await` intermediate catch event across all four catchable triggers, and
 `bad-service-task-no-binding.bpmn` is the negative-path fixture for the import
 refusal path.
 
@@ -377,6 +380,97 @@ id-scheme change), regenerate this file:
    shared `signalRef`/`escalationRef`, each boundary shape centred on its host's
    bottom edge, and every authored id must stay intact; only synthesised
    gateway/flow/boundary ids and layout coordinates may move.
+
+## `intermediate-catch.bpmnscript` and `intermediate-catch.bpmn`
+
+A golden **pair** for the `await` intermediate catch event: a BPMNscript source
+and the frozen BPMN XML the full pipeline produces from it. The source is a
+single main flow that awaits all four catchable triggers back to back —
+`await message "PaymentConfirmed"`, `await timer after "PT1H"`,
+`await signal "StockReplenished"`, `await condition (amount > 100)` — sitting
+between a review task and a dispatch task, so the golden covers every payload
+shape (a message name, a timer duration, a signal name, and a rendered
+boolean expression) in one artifact.
+
+`intermediate-catch.bpmnscript` is the **input**, and `intermediate-catch.bpmn`
+is the **frozen output of the full pipeline** (`irToXml(astToIr(parse(source)))`,
+services wired exactly as `tests/round-trip.test.ts` does). The round-trip test
+`tests/intermediate-catch.round-trip.test.ts` reproduces the pipeline and
+compares byte-for-byte against the frozen `.bpmn`, round-trips the source
+through XML and back asserting IR equivalence (through `normalizeIr`) and that
+every catch keeps its trigger and payload in order at every hop, asserts the
+decompiled DSL′ contains no `Catch_` id token (the surface has no name slot to
+print), asserts DSL′ recompiles with zero error diagnostics, and checks the
+authored fixture itself opens validator-clean.
+
+Because it is the desugared output, each catch is a `bpmn:intermediateCatchEvent`
+with a synthesised `Catch_<coord>` id (`Catch_order-processing_2`…`_5`) and
+exactly one matching `*EventDefinition` — a `bpmn:messageEventDefinition`
+referencing the derived `bpmn:Message`, a `bpmn:timerEventDefinition` with a
+`bpmn:timeDuration`, a `bpmn:signalEventDefinition` referencing the derived
+`bpmn:Signal`, and a `bpmn:conditionalEventDefinition` with the rendered
+`${amount > 100}` condition — and none of the four carries a `name` attribute,
+since the surface has no label slot for a catch.
+
+If you change the parser, the desugarer, or `irToXml` in a way that _should_
+alter the output (new attribute, different formatting, layout-library upgrade,
+id-scheme change), regenerate this file:
+
+1. Run the full pipeline on the source:
+   `irToXml(astToIr(parse(intermediate-catch.bpmnscript)))`, wiring the Langium
+   services exactly as `tests/round-trip.test.ts` does
+   (`createBpmnScriptServices(EmptyFileSystem)` + `parseHelper`).
+2. Write the returned string to `intermediate-catch.bpmn`.
+3. Inspect the diff to confirm every change is intended — the four event
+   definitions, their order, and the absence of any `name` attribute on a catch
+   must stay intact; only synthesised gateway/flow/catch ids and layout
+   coordinates may move.
+
+## `boundary-task-hosts.bpmnscript` and `boundary-task-hosts.bpmn`
+
+A golden **pair** covering the boundary-event host kinds no other golden
+exercises: a **service** task, a **script** task, and an **external** task,
+each carrying its own attached handler. The source is a checkout narrative —
+charge the card, compute the shipping cost, print the label — where a card
+decline raises an interrupting `on ChargeCard: error "PAYMENT_DECLINED"`
+boundary that routes to a manual review, a slow shipping calculation raises a
+non-interrupting (`alongside`) `on ComputeShipping: timer after "PT1H"`
+boundary that notifies the delay desk while the calculation keeps running, and
+a warehouse expedite request raises an interrupting
+`on PrintLabel: message "ExpediteRequested"` boundary that reroutes to an
+expedited shipment. Each escape chain ends on its own (an implicit end).
+
+`boundary-task-hosts.bpmnscript` is the **input**, and `boundary-task-hosts.bpmn`
+is the **frozen output of the full pipeline** (`irToXml(astToIr(parse(source)))`,
+services wired exactly as `tests/round-trip.test.ts` does). The round-trip test
+`tests/boundary-task-hosts.round-trip.test.ts` checks the fixture is
+validator-clean, reproduces the pipeline and compares byte-for-byte against the
+frozen `.bpmn` (pinning each host's `attachedToRef`), round-trips the source
+through XML and back asserting IR equivalence (through `normalizeIr`), and
+asserts the decompiled DSL′ recompiles with zero error diagnostics.
+
+Because it is the desugared output, each hosted handler is a
+`bpmn:boundaryEvent` inside the process's own container carrying
+`attachedToRef="<host>"` (`Boundary_ChargeCard_error`,
+`Boundary_ComputeShipping_timer` with `cancelActivity="false"`,
+`Boundary_PrintLabel_message`), each escape chain ends in a host-derived
+`EndEvent_Boundary_<hostId>_<trigger>`, and the two document-level roots are
+the declared `Error_PAYMENT_DECLINED` (carrying its message) and the
+synthesised `Message_ExpediteRequested`.
+
+If you change the parser, the desugarer, or `irToXml` in a way that _should_
+alter the output (new attribute, different formatting, layout-library upgrade,
+id-scheme change), regenerate this file:
+
+1. Run the full pipeline on the source:
+   `irToXml(astToIr(parse(boundary-task-hosts.bpmnscript)))`, wiring the
+   Langium services exactly as `tests/round-trip.test.ts` does
+   (`createBpmnScriptServices(EmptyFileSystem)` + `parseHelper`).
+2. Write the returned string to `boundary-task-hosts.bpmn`.
+3. Inspect the diff to confirm every change is intended — the three
+   `attachedToRef`s, `cancelActivity="false"` on the timer boundary, and the
+   two roots must stay intact; only synthesised gateway/flow ids and layout
+   coordinates may move.
 
 ## `unstructured-goto.bpmn`
 

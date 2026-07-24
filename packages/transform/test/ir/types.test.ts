@@ -321,9 +321,7 @@ describe('CallActivity — leaf FlowElement union member', () => {
           local: true,
         },
       ],
-      outMappings: [
-        { kind: 'variable', source: 'result', target: 'outcome' },
-      ],
+      outMappings: [{ kind: 'variable', source: 'result', target: 'outcome' }],
     } satisfies CallActivity;
 
     expect(call.kind).toBe('callActivity');
@@ -438,7 +436,9 @@ describe('EventDefinition — error / escalation union', () => {
   });
 
   it('exhaustive switch handles error and escalation arms', () => {
-    expect(describeDefinition({ kind: 'error', errorCode: 'PF' })).toBe('error');
+    expect(describeDefinition({ kind: 'error', errorCode: 'PF' })).toBe(
+      'error',
+    );
     expect(
       describeDefinition({ kind: 'escalation', escalationCode: 'LS' }),
     ).toBe('escalation');
@@ -447,7 +447,10 @@ describe('EventDefinition — error / escalation union', () => {
 
 describe('EventDefinition — message / signal / timer / conditional members', () => {
   it('accepts a message definition (name required, no bindings)', () => {
-    const def: EventDefinition = { kind: 'message', messageName: 'PaymentReceived' };
+    const def: EventDefinition = {
+      kind: 'message',
+      messageName: 'PaymentReceived',
+    };
     expect(describeDefinition(def)).toBe('message:PaymentReceived');
   });
 

@@ -337,6 +337,25 @@ describe('event-layer ID-position completion (soft trigger/field words)', () => 
   });
 });
 
+describe('event-layer ID-position completion (await trigger words)', () => {
+  test('exactly the four catch triggers are offered at the `await` trigger position, not error/escalation/compensation', async () => {
+    const line = '  await ';
+    const labels = await labelsAt(`process p {\n${line}\n}`, 1, line.length);
+    expect(labels).toEqual(
+      expect.arrayContaining(['message', 'timer', 'signal', 'condition']),
+    );
+    expect(labels).not.toContain('error');
+    expect(labels).not.toContain('escalation');
+    expect(labels).not.toContain('compensation');
+  });
+
+  test('`after`, `at`, and `every` are offered at the `await timer` particle position', async () => {
+    const line = '  await timer ';
+    const labels = await labelsAt(`process p {\n${line}\n}`, 1, line.length);
+    expect(labels).toEqual(expect.arrayContaining(['after', 'at', 'every']));
+  });
+});
+
 describe('the host slot on a handler attached to an activity', () => {
   test("the host position offers the container's activity names and nothing from another scope", async () => {
     // `Decoy` (another process) and `Inner` (a nested subprocess body) are

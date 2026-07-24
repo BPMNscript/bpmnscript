@@ -417,7 +417,8 @@ function buildEventSubProcessCanonicalIds(
 
     // The trigger is carried by the handler body's single start event.
     const start = fe.flowElements.find((e) => e.kind === 'startEvent');
-    const def = start?.kind === 'startEvent' ? start.eventDefinition : undefined;
+    const def =
+      start?.kind === 'startEvent' ? start.eventDefinition : undefined;
     const kind = def?.kind ?? 'unknown';
     const code = definitionPayloadKey(def);
     const interrupting =

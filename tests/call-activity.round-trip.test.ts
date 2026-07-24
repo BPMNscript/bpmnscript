@@ -116,7 +116,9 @@ function findCallActivity(container: FlowContainer, id: string): CallActivity {
     (fe) => fe.kind === 'callActivity' && fe.id === id,
   );
   if (el === undefined || el.kind !== 'callActivity') {
-    throw new Error(`expected a callActivity '${id}' in container '${container.id}'`);
+    throw new Error(
+      `expected a callActivity '${id}' in container '${container.id}'`,
+    );
   }
   return el;
 }
@@ -130,7 +132,9 @@ function findSubProcess(
     (fe) => fe.kind === 'subProcess' && fe.id === id,
   );
   if (el === undefined || el.kind !== 'subProcess') {
-    throw new Error(`expected a sub-process '${id}' in container '${container.id}'`);
+    throw new Error(
+      `expected a sub-process '${id}' in container '${container.id}'`,
+    );
   }
   return el;
 }
@@ -185,7 +189,9 @@ describe('round-trip: minimal call (process only)', () => {
   });
 
   it('re-emits the same one-attribute call and re-parses with zero errors', async () => {
-    expect(reemittedDsl).toContain('call InvokeSub { process = "invoice-approval" }');
+    expect(reemittedDsl).toContain(
+      'call InvokeSub { process = "invoice-approval" }',
+    );
     const document = await parse(reemittedDsl);
     expect(document.parseResult.parserErrors).toHaveLength(0);
   });
@@ -340,6 +346,7 @@ describe('round-trip: call activity — businessKey and every mapping shape', ()
   let xml: string;
   let importWarnings: string[];
   let irImported: BpmnProcess;
+  let dslPrime: string;
   let irSecondRound: BpmnProcess;
 
   beforeAll(async () => {
@@ -349,7 +356,7 @@ describe('round-trip: call activity — businessKey and every mapping shape', ()
     importWarnings = imported.warnings;
     irImported = imported.ir;
 
-    const dslPrime = irToDsl(irImported);
+    dslPrime = irToDsl(irImported);
     irSecondRound = astToIr(await parseToAst(dslPrime));
   });
 
@@ -366,6 +373,11 @@ describe('round-trip: call activity — businessKey and every mapping shape', ()
 
   it('a second round-trip (DSL′ → IR₃) is normalized-equal to the first', () => {
     expect(normalizeIr(irSecondRound)).toEqual(normalizeIr(irInitial));
+  });
+
+  it('the decompiled DSL recompiles without validation errors', async () => {
+    const { diagnostics } = await validate(dslPrime);
+    expect(diagnostics.filter((d) => d.severity === 1)).toEqual([]);
   });
 });
 

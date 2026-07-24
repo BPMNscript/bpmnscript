@@ -24,16 +24,17 @@
  * EndEvent_<processId>_3            makeEndEventId        (third implicit end, etc.)
  * Throw_<X>                         makeThrowEventId      Throw_invoice-approval_2
  * EventSubProcess_<X>               makeEventSubProcessId EventSubProcess_invoice-approval_1
+ * Catch_<X>                         makeIntermediateCatchEventId Catch_invoice-approval_1
  * Boundary_<hostId>_<trigger>       makeBoundaryEventId   Boundary_Pack_error
  * Boundary_<hostId>_<trigger>_2     makeBoundaryEventId   (second occurrence of same pair)
  * ──────────────────────────────────────────────────────────────────────────
  *
- * `Throw_<X>` (an unnamed `throw`/`emit` at coordinate `<X>`) and
- * `EventSubProcess_<X>` (an `on` handler at coordinate `<X>`) are **positional**
- * — the coordinate is the statement's unique static position, so they are
- * collision-free by construction and take no `taken` set. The validator reserves
- * the anchored `Throw_`/`EventSubProcess_` prefixes so an author-chosen name can
- * never occupy one.
+ * `Throw_<X>` (an unnamed `throw`/`emit` at coordinate `<X>`), `EventSubProcess_<X>`
+ * (an `on` handler at coordinate `<X>`), and `Catch_<X>` (an `await` at coordinate
+ * `<X>`) are **positional** — the coordinate is the statement's unique static
+ * position, so they are collision-free by construction and take no `taken` set.
+ * The validator reserves the anchored `Throw_`/`EventSubProcess_`/`Catch_`
+ * prefixes so an author-chosen name can never occupy one.
  *
  * `Boundary_<hostId>_<trigger>` (a hosted `on <Host>: <trigger>` handler) is
  * **host-derived**, not positional, and takes a `taken` set like the implicit
@@ -162,6 +163,18 @@ export function makeThrowEventId(x: string): string {
  */
 export function makeEventSubProcessId(x: string): string {
   return `EventSubProcess_${x}`;
+}
+
+/**
+ * Id for an `await` (intermediate catch event) at structural coordinate
+ * `<X>`: `Catch_<X>`. Positional like `makeThrowEventId`, whose mirror this
+ * is: `await` carries no authored name — a trial `name=ID` slot collided
+ * with the timer particle at the token level, so the surface deliberately
+ * has no name to prefer over the synthesized id — so the coordinate is
+ * unique by position and the id needs no collision resolution.
+ */
+export function makeIntermediateCatchEventId(x: string): string {
+  return `Catch_${x}`;
 }
 
 /**

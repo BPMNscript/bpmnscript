@@ -248,6 +248,66 @@ describe('parseAction — import-warning surfacing', () => {
   });
 });
 
+/**
+ * A parallel fork with a back-edge into it (`B → Fork`): structurally valid
+ * BPMN that `xmlToIr` imports, but not expressible as a nested `parallel { … }`.
+ * By the time the back-arrival is realized the fork's out-edges are consumed, so
+ * the decompiler leaves the hand-repair marker comment rather than a `goto` into
+ * the fork. Only hand-built / hostile input produces this; the compiler never
+ * emits it.
+ */
+const UNSTRUCTURED_FORK_BPMN = `<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  targetNamespace="http://test">
+  <bpmn:process id="unstructured" isExecutable="true">
+    <bpmn:startEvent id="S" />
+    <bpmn:parallelGateway id="Fork" />
+    <bpmn:userTask id="A" name="A" />
+    <bpmn:userTask id="B" name="B" />
+    <bpmn:endEvent id="E" />
+    <bpmn:sequenceFlow id="F0" sourceRef="S" targetRef="Fork" />
+    <bpmn:sequenceFlow id="F1" sourceRef="Fork" targetRef="A" />
+    <bpmn:sequenceFlow id="F2" sourceRef="Fork" targetRef="B" />
+    <bpmn:sequenceFlow id="F3" sourceRef="A" targetRef="E" />
+    <bpmn:sequenceFlow id="F4" sourceRef="B" targetRef="Fork" />
+  </bpmn:process>
+</bpmn:definitions>`;
+
+describe('parseAction — unstructured-region hand-repair warning', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('a marker-containing decompile prints the hand-repair warning to stderr, exits 0, and still writes the file', async () => {
+    await withTempDir(async (dir) => {
+      const srcFile = path.join(dir, 'unstructured.bpmn');
+      const outDsl = path.join(dir, 'unstructured.bpmnscript');
+      fs.writeFileSync(srcFile, UNSTRUCTURED_FORK_BPMN, 'utf-8');
+
+      const exitSpy = spyOnExit();
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+      await parseAction(srcFile, { output: outDsl });
+
+      // Success path: the marker is a signal, not a failure — exit stays 0.
+      expect(exitSpy).not.toHaveBeenCalled();
+
+      // The file is still written (the marker keeps the output parseable).
+      expect(fs.existsSync(outDsl)).toBe(true);
+      expect(fs.readFileSync(outDsl, 'utf-8')).toContain(
+        '// unstructured region: hand-repair required',
+      );
+
+      // The yellow hand-repair warning is surfaced on stderr.
+      const stderrOutput = errorSpy.mock.calls
+        .map((call) => String(call[0]))
+        .join('\n');
+      expect(stderrOutput).toContain('unstructured region');
+      expect(stderrOutput).toContain('hand-repair');
+    });
+  });
+});
+
 /** A start event with a timer definition — refused via UnsupportedEventDefinitionError. */
 const TIMER_START_BPMN = `<?xml version="1.0" encoding="UTF-8"?>
 <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
@@ -341,6 +401,7 @@ describe('severity-gating regression', () => {
       fs.writeFileSync(srcFile, WARNING_ONLY_SOURCE, 'utf-8');
 
       const exitSpy = spyOnExit();
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
       // Must NOT throw (no ExitCalled), because the warning does not fail.
       await expect(
@@ -352,6 +413,13 @@ describe('severity-gating regression', () => {
 
       // The output file must be written.
       expect(fs.existsSync(outBpmn)).toBe(true);
+
+      // The undeclared-variable warning is surfaced on stderr, non-fatally.
+      const stderrOutput = errorSpy.mock.calls
+        .map((call) => String(call[0]))
+        .join('\n');
+      expect(stderrOutput).toContain('amount');
+      expect(stderrOutput).toContain('not declared');
     });
   });
 

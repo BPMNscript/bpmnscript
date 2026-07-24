@@ -35,14 +35,19 @@
  *   exactly one, or which carries incoming/outgoing sequence flows; a
  *   non-interrupting error or compensation handler; a throw/emit whose
  *   definition resolves to no code; an error definition on an emit; a "none"
- *   emit; two `bpmn:Error` roots sharing a code but disagreeing about the
- *   declared message; a declared message on a code-less root; a message/
- *   signal definition with no ref, or whose resolved root has no non-empty
- *   name; a timer definition with zero or more than one time child, or an
- *   empty time body; a conditional definition with no condition child, an
- *   empty condition body, or an evaluation-narrowing `operaton:`/`camunda:`
- *   `variableName`/`variableEvents` attribute (the engine-side narrowing is
- *   semantics-bearing and this surface has no way to express it); a
+ *   emit; a "none" intermediate catch (zero event definitions), more than
+ *   one event definition on a catch, a `parallelMultiple="true"` catch, or a
+ *   catch carrying a link, error, escalation, compensation, or cancel
+ *   definition (message/timer/signal/conditional are the only triggers
+ *   awaitable inline); two `bpmn:Error` roots sharing a code but disagreeing
+ *   about the declared message; a declared message on a code-less root; a
+ *   message/signal definition with no ref, or whose resolved root has no
+ *   non-empty name; a timer definition with zero or more than one time
+ *   child, or an empty time body; a conditional definition with no condition
+ *   child, an empty condition body, or an evaluation-narrowing
+ *   `operaton:`/`camunda:` `variableName`/`variableEvents` attribute (the
+ *   engine-side narrowing is semantics-bearing and this surface has no way
+ *   to express it); a
  *   compensate definition (at any position) carrying an `activityRef` or
  *   `waitForCompletion="false"`; a compensation event sub-process hosted by
  *   the process or by another event sub-process rather than the plain
@@ -60,21 +65,27 @@
  *   (multi-instance / standard loop) → {@link UnsupportedLoopCharacteristicsError};
  * - collaborations, i.e. pools and message flows →
  *   {@link UnsupportedCollaborationError};
- * - unsupported flow-element kinds (`bpmn:intermediateCatchEvent`, a
- *   transaction, an ad-hoc sub-process, …) → {@link UnsupportedElementError};
+ * - unsupported flow-element kinds (a transaction, an ad-hoc sub-process,
+ *   …) → {@link UnsupportedElementError};
  * - service tasks whose execution form the IR cannot represent (a bare task
  *   with no discriminator, or an external type with no topic) →
  *   {@link UnsupportedServiceTaskFormError};
  * - form fields whose type is not `string`/`long`/`boolean`/`date` →
  *   {@link UnsupportedFormFieldTypeError};
  * - call activities the engine could not execute as written: no
- *   `calledElement`, a `calledElementBinding="version"` with no
- *   `calledElementVersion`, an unrecognized `calledElementBinding` value
- *   (e.g. `versionTag`), or an `operaton:in`/`operaton:out` mapping using a
- *   shape the IR cannot represent (both `source` and `sourceExpression`, a
- *   `source`/`sourceExpression` with no `target`, `variables` set to
- *   anything but `"all"`, a `businessKey` combined with another attribute,
- *   more than one `businessKey`, or none of the recognized shapes) →
+ *   `calledElement`, a `variableMappingClass` or
+ *   `variableMappingDelegateExpression` (replaces the `operaton:in`/
+ *   `operaton:out` mapping with a Java/delegate hook — the imported call
+ *   activity would pass no variables into or out of the called process), a
+ *   `calledElementTenantId` (pins the tenant the engine resolves the called
+ *   process against — dropping it changes which process runs), a
+ *   `calledElementBinding="version"` with no `calledElementVersion`, an
+ *   unrecognized `calledElementBinding` value (e.g. `versionTag`), or an
+ *   `operaton:in`/`operaton:out` mapping using a shape the IR cannot
+ *   represent (both `source` and `sourceExpression`, a `source`/
+ *   `sourceExpression` with no `target`, `variables` set to anything but
+ *   `"all"`, a `businessKey` combined with another attribute, more than one
+ *   `businessKey`, or none of the recognized shapes) →
  *   {@link UnsupportedCallActivityError}.
  *
  * **Dropped with a warning** (no semantic loss; reported via `warnings`):
@@ -83,13 +94,16 @@
  *   `topic`/`calledElementBinding`/`calledElementVersion`/
  *   `errorCodeVariable`/`errorMessageVariable`/`escalationCodeVariable` (e.g.
  *   `operaton:asyncBefore`) — one warning per attribute, attributed to the
- *   owning element by id;
+ *   owning element by id; on a call activity specifically,
+ *   `variableMappingClass`, `variableMappingDelegateExpression`, and
+ *   `calledElementTenantId` are excluded from this generic sweep — they are
+ *   execution-affecting and refused instead (see above);
  * - a binding attribute (`errorCodeVariable`/`errorMessageVariable`/
  *   `escalationCodeVariable`) set on a throw-side definition, where the
  *   engine ignores it;
  * - a genuine label (`name`) on an event handler, a typed end event, an
- *   intermediate throw, or a boundary event — none of these surfaces has a
- *   label slot;
+ *   intermediate throw, an intermediate catch, or a boundary event — none of
+ *   these surfaces has a label slot;
  * - a `calledElementVersion` left dangling on a call activity — set while
  *   `calledElementBinding` is absent or not `"version"` — since Operaton
  *   ignores it in that case; one warning naming the attribute;
@@ -113,6 +127,10 @@
  *       its source line — the drop is still reported, only its owner
  *       attribution is coarser;
  * - lanes — one warning per lane;
+ * - `bpmn:documentation` attached to any mapped element (the process itself,
+ *   a flow element, a sub-process, a call activity, …) — one warning per
+ *   owning element, naming the id; the IR carries no documentation surface,
+ *   so the text is dropped rather than kept;
  * - an unreferenced `bpmn:Error`/`bpmn:Escalation` root that nothing catches
  *   or throws and that carries no declared message (a declared,
  *   message-carrying error root imports into `errorMessages` instead — no
@@ -171,6 +189,7 @@ import type {
   FlowElement,
   FormField,
   FormFieldType,
+  IntermediateCatchEvent,
   IntermediateThrowEvent,
   ParallelGateway,
   ScriptTask,
@@ -218,12 +237,17 @@ import { HISTORY_TIME_TO_LIVE } from './ir-to-xml.js';
  *   `errorMessages` instead and is never reported here; a message/signal
  *   root has no declared-data exception, since it carries no data of its
  *   own beyond the name).
+ * - `documentation` — a `bpmn:documentation` element attached to any mapped
+ *   element; the IR has no documentation surface, so the text is dropped,
+ *   one warning per owning element regardless of how many documentation
+ *   children it carries.
  */
 export type ImportWarningCategory =
   | 'extensionAttribute'
   | 'lane'
   | 'label'
-  | 'unreferencedRoot';
+  | 'unreferencedRoot'
+  | 'documentation';
 
 /**
  * A non-fatal notice that `xmlToIr` dropped content which the IR cannot
@@ -401,8 +425,7 @@ interface ModdlePropertyDescriptor {
  * @throws {UnsupportedCollaborationError} when the document contains a
  *   `bpmn:Collaboration` (pools / message flows).
  * @throws {UnsupportedElementError} when an unsupported flow-element
- *   kind is encountered (e.g. a `bpmn:intermediateCatchEvent`,
- *   `bpmn:transaction`, or `bpmn:adHocSubProcess`).
+ *   kind is encountered (e.g. a `bpmn:transaction` or `bpmn:adHocSubProcess`).
  * @throws {UnsupportedServiceTaskFormError} when a `bpmn:ServiceTask`
  *   carries no execution form the IR can represent (a bare task with no
  *   discriminator, or an external type without a topic).
@@ -594,12 +617,16 @@ function collectReferencedCodes(process: BpmnProcess): {
         el.kind === 'startEvent' ||
         el.kind === 'endEvent' ||
         el.kind === 'intermediateThrowEvent' ||
+        el.kind === 'intermediateCatchEvent' ||
         el.kind === 'boundaryEvent'
           ? el.eventDefinition
           : undefined;
       if (def?.kind === 'error' && def.errorCode !== undefined) {
         errorCodes.add(def.errorCode);
-      } else if (def?.kind === 'escalation' && def.escalationCode !== undefined) {
+      } else if (
+        def?.kind === 'escalation' &&
+        def.escalationCode !== undefined
+      ) {
         escalationCodes.add(def.escalationCode);
       } else if (def?.kind === 'message') {
         messageNames.add(def.messageName);
@@ -643,7 +670,10 @@ function warnUnreferencedRoots(
   for (const root of errorRoots) {
     const rootId = requireId(root);
     const code = readString(root, 'errorCode');
-    if (code !== undefined && (errorCodes.has(code) || declaredCodes.has(code))) {
+    if (
+      code !== undefined &&
+      (errorCodes.has(code) || declaredCodes.has(code))
+    ) {
       continue;
     }
     warnings.push({
@@ -675,10 +705,22 @@ function warnUnreferencedRoots(
   }
 
   for (const root of messageRoots) {
-    warnUnreferencedNamedRoot(root, messageNames, 'message', 'itemRef', warnings);
+    warnUnreferencedNamedRoot(
+      root,
+      messageNames,
+      'message',
+      'itemRef',
+      warnings,
+    );
   }
   for (const root of signalRoots) {
-    warnUnreferencedNamedRoot(root, signalNames, 'signal', 'structureRef', warnings);
+    warnUnreferencedNamedRoot(
+      root,
+      signalNames,
+      'signal',
+      'structureRef',
+      warnings,
+    );
   }
 }
 
@@ -711,7 +753,7 @@ function warnUnreferencedNamedRoot(
         category: 'extensionAttribute',
         message:
           `The '${dataRefProperty}' setting on ${label} root '${rootId}' names a ` +
-          "data structure Operaton does not execute; it was not imported.",
+          'data structure Operaton does not execute; it was not imported.',
       });
     }
     return;
@@ -937,6 +979,9 @@ function mapContainerChildren(
       case 'bpmn:IntermediateThrowEvent':
         flowElements.push(mapIntermediateThrowEvent(child, warnings));
         break;
+      case 'bpmn:IntermediateCatchEvent':
+        flowElements.push(mapIntermediateCatchEvent(child, warnings));
+        break;
       case 'bpmn:BoundaryEvent':
         flowElements.push(mapBoundaryEvent(child, warnings));
         break;
@@ -1111,7 +1156,11 @@ function mapSubProcess(
   // A sub-process may own its own lane set, just like a process.
   collectLaneDrops(el, id, warnings);
   const name = readDerivableName(el, id);
-  const { flowElements, sequenceFlows } = mapContainer(el, warnings, 'subProcess');
+  const { flowElements, sequenceFlows } = mapContainer(
+    el,
+    warnings,
+    'subProcess',
+  );
 
   return {
     kind: 'subProcess',
@@ -1243,16 +1292,17 @@ function mapEventSubProcessStart(
     startEl.get('isInterrupting') === false ? false : undefined;
   if (
     isInterrupting === false &&
-    (eventDefinition.kind === 'error' || eventDefinition.kind === 'compensation')
+    (eventDefinition.kind === 'error' ||
+      eventDefinition.kind === 'compensation')
   ) {
     throw new UnsupportedEventFeatureError(
       handlerId,
       eventDefinition.kind === 'error'
         ? 'an error handler cannot be non-interrupting (isInterrupting="false") ' +
-          '— BPMN requires an error trigger to interrupt its scope'
+            '— BPMN requires an error trigger to interrupt its scope'
         : 'a compensation handler cannot be non-interrupting ' +
-          '(isInterrupting="false") — BPMN requires a compensation trigger ' +
-          'to interrupt its scope',
+            '(isInterrupting="false") — BPMN requires a compensation trigger ' +
+            'to interrupt its scope',
     );
   }
 
@@ -1424,10 +1474,10 @@ function refuseBoundaryInputOutput(el: ModdleElement, id: string): void {
  * `operaton:` attribute there is never silently lost.
  *
  * @param position Which surface `defEl` sits on — `'start'` for an event
- *   handler's start event, `'boundary'` for a boundary event — threaded only
- *   into the final refusal below, so its message names the surface that
- *   actually carried the unsupported definition instead of always claiming
- *   a start event.
+ *   handler's start event, `'boundary'` for a boundary event, `'intermediate
+ *   catch'` for an await — threaded only into the final refusal below, so
+ *   its message names the surface that actually carried the unsupported
+ *   definition instead of always claiming a start event.
  * @throws {UnsupportedEventDefinitionError} when the definition is none of
  *   error, escalation, message, signal, timer, conditional, or compensation
  *   (e.g. a terminate definition).
@@ -1442,14 +1492,16 @@ function readCatchEventDefinition(
   defEl: ModdleElement,
   ownerId: string,
   warnings: ImportWarning[],
-  position: 'start' | 'boundary',
+  position: 'start' | 'boundary' | 'intermediate catch',
 ): EventDefinition {
   collectExtensionDrops(defEl, ownerId, warnings);
 
   if (defEl.$type === 'bpmn:ErrorEventDefinition') {
     const ref = defEl.get('errorRef') as ModdleElement | undefined;
     const errorCode =
-      ref !== undefined && ref !== null ? readString(ref, 'errorCode') : undefined;
+      ref !== undefined && ref !== null
+        ? readString(ref, 'errorCode')
+        : undefined;
     const codeVariable = readNamespacedAttr(defEl, 'errorCodeVariable');
     const messageVariable = readNamespacedAttr(defEl, 'errorMessageVariable');
     return {
@@ -1493,7 +1545,10 @@ function readCatchEventDefinition(
   }
 
   if (defEl.$type === 'bpmn:ConditionalEventDefinition') {
-    return { kind: 'conditional', condition: readConditionalDefinition(defEl, ownerId) };
+    return {
+      kind: 'conditional',
+      condition: readConditionalDefinition(defEl, ownerId),
+    };
   }
 
   if (defEl.$type === 'bpmn:CompensateEventDefinition') {
@@ -1515,7 +1570,10 @@ function readCatchEventDefinition(
  *
  * @throws {UnsupportedEventFeatureError} when `activityRef` is set.
  */
-function refuseCompensateActivityRef(defEl: ModdleElement, ownerId: string): void {
+function refuseCompensateActivityRef(
+  defEl: ModdleElement,
+  ownerId: string,
+): void {
   const activityRef = defEl.get('activityRef') as ModdleElement | undefined;
   if (activityRef === undefined || activityRef === null) return;
   throw new UnsupportedEventFeatureError(
@@ -1567,7 +1625,8 @@ function resolveNamedRootRef(
   label: 'message' | 'signal',
 ): string {
   const ref = defEl.get(refProperty) as ModdleElement | undefined;
-  const name = ref !== undefined && ref !== null ? readString(ref, 'name') : undefined;
+  const name =
+    ref !== undefined && ref !== null ? readString(ref, 'name') : undefined;
   if (name === undefined) {
     const rootKind = label === 'message' ? 'bpmn:Message' : 'bpmn:Signal';
     throw new UnsupportedEventFeatureError(
@@ -1583,7 +1642,10 @@ function resolveNamedRootRef(
  * inverse of `ir-to-xml.ts`'s `TIMER_KIND_TO_CHILD`.
  */
 const TIMER_CHILD_TO_KIND: Readonly<
-  Record<'timeDuration' | 'timeDate' | 'timeCycle', 'duration' | 'date' | 'cycle'>
+  Record<
+    'timeDuration' | 'timeDate' | 'timeCycle',
+    'duration' | 'date' | 'cycle'
+  >
 > = {
   timeDuration: 'duration',
   timeDate: 'date',
@@ -1605,7 +1667,9 @@ function readTimerDefinition(
   defEl: ModdleElement,
   ownerId: string,
 ): { timerKind: 'duration' | 'date' | 'cycle'; expression: string } {
-  const childNames = Object.keys(TIMER_CHILD_TO_KIND) as (keyof typeof TIMER_CHILD_TO_KIND)[];
+  const childNames = Object.keys(
+    TIMER_CHILD_TO_KIND,
+  ) as (keyof typeof TIMER_CHILD_TO_KIND)[];
   const present = childNames.filter((childName) => {
     const child = defEl.get(childName) as ModdleElement | undefined;
     return child !== undefined && child !== null;
@@ -1654,7 +1718,10 @@ const CONDITIONAL_NARROWING_ATTRS: readonly string[] = [
  * @throws {UnsupportedEventFeatureError} when a narrowing attribute is
  *   present, the condition child is absent, or its body is empty.
  */
-function readConditionalDefinition(defEl: ModdleElement, ownerId: string): string {
+function readConditionalDefinition(
+  defEl: ModdleElement,
+  ownerId: string,
+): string {
   const attrs = defEl.$attrs ?? {};
   for (const localName of CONDITIONAL_NARROWING_ATTRS) {
     for (const prefix of ['operaton', 'camunda']) {
@@ -1714,7 +1781,9 @@ function readThrowEventDefinition(
   if (defEl.$type === 'bpmn:ErrorEventDefinition') {
     const ref = defEl.get('errorRef') as ModdleElement | undefined;
     const errorCode =
-      ref !== undefined && ref !== null ? readString(ref, 'errorCode') : undefined;
+      ref !== undefined && ref !== null
+        ? readString(ref, 'errorCode')
+        : undefined;
     if (errorCode === undefined) {
       throw new UnsupportedEventFeatureError(
         ownerId,
@@ -1835,6 +1904,7 @@ function mapCallActivity(
       'it has no calledElement — there is nothing for the engine to invoke',
     );
   }
+  refuseExecutionAffectingCallActivityAttrs(el, id);
 
   const binding = readCalledElementBinding(el, id, warnings);
   const { businessKey, inMappings, outMappings } = readCallMappings(el, id);
@@ -1849,6 +1919,58 @@ function mapCallActivity(
     ...(inMappings === undefined ? {} : { inMappings }),
     ...(outMappings === undefined ? {} : { outMappings }),
   };
+}
+
+/**
+ * Refuse the three call-activity extension attributes that change what the
+ * engine executes rather than merely decorating it: `variableMappingClass`
+ * and `variableMappingDelegateExpression` replace the `operaton:in`/
+ * `operaton:out` mapping with a Java/delegate hook (dropping them would
+ * import a call activity that passes no variables into or out of the called
+ * process), and `calledElementTenantId` pins the tenant the engine resolves
+ * the called process against (dropping it changes which process runs). All
+ * three go through {@link readNamespacedAttr}, so the `camunda:` alias is
+ * refused identically to `operaton:`. Checked before mapping proceeds so no
+ * partial IR is produced.
+ *
+ * @throws {UnsupportedCallActivityError} for the first offending attribute found.
+ */
+function refuseExecutionAffectingCallActivityAttrs(
+  el: ModdleElement,
+  id: string,
+): void {
+  const variableMappingClass = readNamespacedAttr(el, 'variableMappingClass');
+  if (variableMappingClass !== undefined) {
+    throw new UnsupportedCallActivityError(
+      id,
+      'it sets variableMappingClass, which replaces the operaton:in/operaton:out ' +
+        'mapping with a Java delegate — importing it would pass no variables ' +
+        'into or out of the called process',
+    );
+  }
+
+  const variableMappingDelegateExpression = readNamespacedAttr(
+    el,
+    'variableMappingDelegateExpression',
+  );
+  if (variableMappingDelegateExpression !== undefined) {
+    throw new UnsupportedCallActivityError(
+      id,
+      'it sets variableMappingDelegateExpression, which replaces the ' +
+        'operaton:in/operaton:out mapping with a delegate expression — ' +
+        'importing it would pass no variables into or out of the called process',
+    );
+  }
+
+  const calledElementTenantId = readNamespacedAttr(el, 'calledElementTenantId');
+  if (calledElementTenantId !== undefined) {
+    throw new UnsupportedCallActivityError(
+      id,
+      'it sets calledElementTenantId, which pins the tenant the engine ' +
+        'resolves the called process against — dropping it would change ' +
+        'which process is invoked',
+    );
+  }
 }
 
 /**
@@ -2107,8 +2229,10 @@ function collectLaneDrops(
 }
 
 /**
- * Emit {@link ImportWarning}s (`category:'extensionAttribute'`) for
- * engine-specific content attached to `el` that the IR does not carry:
+ * Emit {@link ImportWarning}s for content attached to `el` that the IR does
+ * not carry: engine-specific extension attributes/elements
+ * (`category:'extensionAttribute'`) and BPMN documentation
+ * (`category:'documentation'`):
  *
  * 1. **Extension attributes** — `operaton:`/`camunda:`-prefixed attributes
  *    in `el.$attrs` whose local name is not one of the names in
@@ -2146,6 +2270,12 @@ function collectLaneDrops(
  *    verbatim ({@link REEXPORTED_CONSTANT_ATTRS}) loses no information
  *    and stays silent. New properties added to `operaton-moddle.json`
  *    are picked up here automatically.
+ * 4. **Documentation** — `el.get('documentation')` is a plain BPMN
+ *    `bpmn:BaseElement` property (no Operaton extension involved), so every
+ *    mapped element carries it, not just call activities or tasks. The IR
+ *    has no documentation surface, so a non-empty `documentation` array is a
+ *    drop: one warning for the owning element, regardless of how many
+ *    `<bpmn:documentation>` children it holds.
  */
 function collectExtensionDrops(
   el: ModdleElement,
@@ -2214,6 +2344,17 @@ function collectExtensionDrops(
       elementId: ownerId,
       category: 'extensionAttribute',
       message: `The '${prop.ns.name}' setting on '${ownerId}' was not imported ${KEPT_SETTINGS_NOTE}`,
+    });
+  }
+
+  // 4. Documentation (see docstring) — one warning per owning element.
+  const documentation =
+    (el.get('documentation') as ModdleElement[] | undefined) ?? [];
+  if (documentation.length > 0) {
+    warnings.push({
+      elementId: ownerId,
+      category: 'documentation',
+      message: `Documentation on '${ownerId}' was not imported; documentation is not yet carried by this tool.`,
     });
   }
 }
@@ -2338,6 +2479,87 @@ function mapIntermediateThrowEvent(
   warnGenuineLabel(el, id, 'an emit', warnings);
 
   return { kind: 'intermediateThrowEvent', id, eventDefinition };
+}
+
+/**
+ * Map a `bpmn:IntermediateCatchEvent` moddle element into the IR — the
+ * `await` surface. A single message, signal, timer, or conditional
+ * definition is representable: the token pauses on the main flow until the
+ * trigger fires, then falls through, mirroring how {@link
+ * mapIntermediateThrowEvent} maps `emit`, except waiting instead of firing.
+ * A "none" catch (zero definitions), more than one definition, a
+ * `parallelMultiple="true"` catch (waiting for several triggers together),
+ * or a definition kind this surface never awaits inline — link, error,
+ * escalation, compensation, cancel — all refuse: error and escalation are
+ * caught by an event handler and raised with `throw`/`emit`, never awaited
+ * inline; compensation is undone by a sub-process block, not awaited; link
+ * and cancel have no surface here at all. A genuine label has no slot
+ * either and is warn-dropped, exactly like an emit's.
+ */
+function mapIntermediateCatchEvent(
+  el: ModdleElement,
+  warnings: ImportWarning[],
+): IntermediateCatchEvent {
+  const id = requireId(el);
+
+  if (el.get('parallelMultiple') === true) {
+    throw new UnsupportedEventFeatureError(
+      id,
+      'an await with parallelMultiple="true" waits for several triggers ' +
+        'together — only a single message, timer, signal, or conditional ' +
+        'trigger can be awaited',
+    );
+  }
+
+  const defs =
+    (el.get('eventDefinitions') as ModdleElement[] | undefined) ?? [];
+
+  if (defs.length === 0) {
+    throw new UnsupportedEventFeatureError(
+      id,
+      'an await with no event definition (a "none" intermediate catch) ' +
+        'waits for nothing this tool can represent',
+    );
+  }
+  if (defs.length > 1) {
+    throw new UnsupportedEventFeatureError(
+      id,
+      `an await carries ${defs.length} event definitions — only a single ` +
+        'message, timer, signal, or conditional trigger can be awaited',
+    );
+  }
+
+  const [defEl] = defs;
+  if (
+    defEl.$type !== 'bpmn:MessageEventDefinition' &&
+    defEl.$type !== 'bpmn:SignalEventDefinition' &&
+    defEl.$type !== 'bpmn:TimerEventDefinition' &&
+    defEl.$type !== 'bpmn:ConditionalEventDefinition'
+  ) {
+    throw new UnsupportedEventFeatureError(
+      id,
+      `an await cannot carry a ${defEl.$type} — only message, timer, ` +
+        'signal, or conditional triggers can be awaited inline; error and ' +
+        'escalation are caught by an event handler and raised with ' +
+        'throw/emit, compensation is undone by a sub-process block, and ' +
+        'link and cancel triggers have no surface',
+    );
+  }
+
+  // Every kind reaching here is one of the four readCatchEventDefinition
+  // maps; every other kind was refused above, so its own final refusal (for
+  // a kind outside error/escalation/message/signal/timer/conditional/
+  // compensation) is unreachable — the 'intermediate catch' position label
+  // passed through never surfaces, but names the right surface if it ever did.
+  const eventDefinition = readCatchEventDefinition(
+    defEl,
+    id,
+    warnings,
+    'intermediate catch',
+  ) as IntermediateCatchEvent['eventDefinition'];
+  warnGenuineLabel(el, id, 'an await', warnings);
+
+  return { kind: 'intermediateCatchEvent', id, eventDefinition };
 }
 
 /**

@@ -29,10 +29,11 @@
  *   1. Golden generation — the pipeline output equals the frozen `.bpmn`
  *      byte-for-byte (the frozen artifact is the diff tripwire; any drift is a
  *      real defect, not a regeneration trigger).
- *   2. Idempotence — `normalizeIr(IR₁)` equals `normalizeIr(IR₃)`; DSL′ re-parses
- *      with zero parser errors; the authored throw/emit ids and the
- *      `errorMessages` entry survive; the handler trigger start carries its event
- *      definition at every hop.
+ *   2. Idempotence — `normalizeIr(IR₁)` equals `normalizeIr(IR₃)`; DSL′
+ *      recompiles with no error-severity diagnostics and re-parses with zero
+ *      parser errors; the authored throw/emit ids and the `errorMessages` entry
+ *      survive; the handler trigger start carries its event definition at every
+ *      hop.
  *   3. Import path — `xmlToIr(frozen)` warns nothing, and the imported IR
  *      restructured back to DSL and re-desugared is normalized-equal to IR₁.
  *   4. DI tripwire — every handler shape in the frozen `.bpmn` lies strictly
@@ -55,19 +56,12 @@
  * and the deployable example open validator-clean in the IDE (no diagnostics at
  * all).
  *
- * A note on DSL′ and validation (case 2). DSL′ re-parses cleanly, but it is not
- * asserted to be validator-clean, and cannot be: the restructurer degrades an
- * early-exit branch — a `throw`/`end`/`goto` inside an `if` whose enclosing flow
- * continues past it, which this fixture requires (`throw error` inside an `if`,
- * and the `goto`) — into a `goto` that targets the synthesised join gateway of
- * that `if`. That join has no surface name, so the goto does not resolve at parse
- * time; `astToIr` regenerates the same deterministic join id, so IR₃ is
- * topologically correct and the normalized comparison holds. A plain `end`
- * inside an `if` degrades identically, so this is a property of the restructurer
- * that predates the event layer, not of the event constructs. The printer also
- * always prints a throw/emit id, and a synthesised `Throw_<coord>` id matches a
- * reserved-name pattern when re-parsed. The meaningful validation guarantee — the
- * authored program is clean — is the fixture check below.
+ * DSL′ recompiles cleanly (case 2): parsing and validating the restructured
+ * output yields no error-severity diagnostics, the same gate the CLI `build`
+ * applies. This fixture exercises a guard clause — a `throw` branch inside an
+ * `if` whose enclosing flow continues past it. It is recovered structurally:
+ * the terminal prints inside the `if` and the continuation resumes after it, so
+ * no jump ever targets the `if`'s synthesized join gateway.
  */
 
 import { describe, it, expect, beforeAll } from 'vitest';
@@ -150,7 +144,9 @@ function subProcess(
     (fe) => fe.kind === 'subProcess' && fe.id === id,
   );
   if (el === undefined || el.kind !== 'subProcess') {
-    throw new Error(`expected a sub-process '${id}' in container '${container.id}'`);
+    throw new Error(
+      `expected a sub-process '${id}' in container '${container.id}'`,
+    );
   }
   return el;
 }
@@ -170,7 +166,8 @@ function handlerTriggerDef(
     if (fe.kind !== 'subProcess') continue;
     if (fe.triggeredByEvent === true) {
       const start = fe.flowElements.find((e) => e.kind === 'startEvent');
-      const def = start?.kind === 'startEvent' ? start.eventDefinition : undefined;
+      const def =
+        start?.kind === 'startEvent' ? start.eventDefinition : undefined;
       if (match(def)) return def;
     }
     const nested = handlerTriggerDef(fe, match);
@@ -244,7 +241,10 @@ function assertShapeContainment(
 ): void {
   const parentBounds = isRoot ? undefined : bounds.get(container.id);
   if (!isRoot) {
-    expect(parentBounds, `sub-process ${container.id} has no BPMNShape`).toBeDefined();
+    expect(
+      parentBounds,
+      `sub-process ${container.id} has no BPMNShape`,
+    ).toBeDefined();
   }
   for (const fe of container.flowElements) {
     if (parentBounds !== undefined) {
@@ -271,7 +271,9 @@ function errorRefOf(xml: string, elementId: string): string | undefined {
     `<bpmn:(?:start|end)Event id="${elementId}"[^>]*>([\\s\\S]*?)</bpmn:(?:start|end)Event>`,
   ).exec(xml);
   if (block === null) return undefined;
-  return /<bpmn:errorEventDefinition\b[^>]*\berrorRef="([^"]+)"/.exec(block[1]!)?.[1];
+  return /<bpmn:errorEventDefinition\b[^>]*\berrorRef="([^"]+)"/.exec(
+    block[1]!,
+  )?.[1];
 }
 
 // ---------------------------------------------------------------------------
@@ -373,6 +375,11 @@ describe('idempotence: DSL → IR₁ → XML → IR₂ → DSL′ → IR₃', ()
     expect(normalizeIr(ir3)).toEqual(normalizeIr(ir1));
   });
 
+  it('the decompiled DSL recompiles without validation errors', async () => {
+    const { diagnostics } = await validate(dslPrime);
+    expect(diagnostics.filter((d) => d.severity === 1)).toEqual([]);
+  });
+
   it('the restructured DSL′ re-parses with zero parser errors', async () => {
     const document = await parse(dslPrime);
     expect(document.parseResult.parserErrors).toHaveLength(0);
@@ -388,7 +395,10 @@ describe('idempotence: DSL → IR₁ → XML → IR₂ → DSL′ → IR₃', ()
 
   it('the errorMessages entry survives the round-trip', () => {
     expect(ir3.errorMessages).toEqual([
-      { code: 'PAYMENT_DECLINED', message: 'The payment was declined by the bank' },
+      {
+        code: 'PAYMENT_DECLINED',
+        message: 'The payment was declined by the bank',
+      },
     ]);
   });
 

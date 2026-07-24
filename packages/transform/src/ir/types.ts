@@ -90,6 +90,7 @@ export type FlowElement =
   | SubProcess
   | CallActivity
   | IntermediateThrowEvent
+  | IntermediateCatchEvent
   | BoundaryEvent;
 
 /**
@@ -287,6 +288,32 @@ export interface IntermediateThrowEvent {
   kind: 'intermediateThrowEvent';
   id: string;
   eventDefinition: EventDefinition;
+}
+
+/**
+ * A BPMN `intermediateCatchEvent` node — the DSL's `await` verb.
+ *
+ * A blocking wait on the main flow: the token pauses here until the trigger
+ * fires, then continues to the next element, exactly like an
+ * {@link IntermediateThrowEvent} except waiting instead of firing (it is
+ * likewise a plain fall-through node in the graph, `entry === exit === id`).
+ * Only message, timer, signal, and conditional are awaitable inline; error,
+ * escalation, and compensation are raised with `throw`/`emit`, never caught
+ * this way, so `eventDefinition` is narrowed to those four kinds — an
+ * error/escalation/compensation catch is unrepresentable at the type level,
+ * mirroring how {@link ServiceTaskBinding} makes an invalid binding
+ * combination unrepresentable. The `eventDefinition` is **required** — an
+ * unconditioned wait is inexpressible — and there is no `name` field,
+ * because the `await` surface carries no label slot (its id is always the
+ * synthesized `Catch_<coord>`, never an authored name).
+ */
+export interface IntermediateCatchEvent {
+  kind: 'intermediateCatchEvent';
+  id: string;
+  eventDefinition: Extract<
+    EventDefinition,
+    { kind: 'message' | 'signal' | 'timer' | 'conditional' }
+  >;
 }
 
 /**
