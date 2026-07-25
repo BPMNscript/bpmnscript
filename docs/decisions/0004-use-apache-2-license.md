@@ -25,7 +25,8 @@ Which open-source license should BPMNscript use?
 
 ## Decision Outcome
 
-Chosen option: "Apache 2.0", because it provides an explicit patent grant (unlike MIT) and aligns with Operaton's license. It is compatible with both MIT and EPL-2.0 dependencies.
+Chosen option: "Apache 2.0", because it provides an explicit patent grant (unlike MIT) and aligns with Operaton's license.
+It is compatible with both MIT and EPL-2.0 dependencies.
 
 ### Consequences
 
