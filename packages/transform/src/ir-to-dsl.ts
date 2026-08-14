@@ -30,11 +30,35 @@
  *     statements with implicit top-to-bottom flow.
  *
  * ## Failure contract
- * Every well-formed IR input produces valid source; unstructurable regions
+ * Every well-formed IR input produces parseable source; unstructurable regions
  * degrade to `goto`. Each flow node is emitted exactly once (at its natural
  * position, labelled by its id, which is always a valid jump target per the
- * grammar). Edges are tracked in a consumed-set; whatever is left after
- * structured emission is flushed as `goto`s, so no edge is dropped.
+ * grammar). Edges are tracked in a consumed-set, and whatever is left after
+ * structured emission is flushed as `goto`s.
+ *
+ * Parseable is not the same as clean. A surplus jump ends the chain it sits in
+ * (see below), so the statements after it are left with no incoming flow and
+ * the output can fail the validator's unreachable-statement check even though
+ * it parses.
+ *
+ * Two edges resist that flush, and both are dropped with
+ * {@link UNSTRUCTURED_MARKER} printed in their place naming where the edge
+ * led. The CLI reports the marker as a warning.
+ *
+ * The first is an edge arriving at a gateway that still chooses between
+ * branches. A `goto` names a statement and a gateway has no statement form, so
+ * such an edge is expressible only through the gateway's successor, which
+ * works while the routing has one outcome and stops working once it has two.
+ * Valid BPMN reaches this: a loop whose condition sits on the back-edge rather
+ * than on the forward edge into the body matches no loop pattern, so its head
+ * gateway is emitted as an `if` and the back-edge has nothing left to name.
+ * Approximations exist for that shape, but each moves the condition onto a
+ * synthesized gateway and changes when it is evaluated, so the emitter reports
+ * the loss instead of shipping a model that reads right and runs differently.
+ *
+ * The second is a surplus out-edge: a statement carries one fall-through, so a
+ * node's second out-edge has no position to be written at
+ * ({@link Emitter.pushSurplusEdge}).
  *
  * ## Synthesized-id elision (what makes DSL → IR → DSL idempotent)
  * The desugarer creates deterministic gateway ids
@@ -431,8 +455,11 @@ class Emitter {
     }
 
     // More than one unconsumed out-edge on a plain node (an unrecognized
-    // gateway, or a node with extra cross-edges): the first un-emitted target
-    // continues the chain; the rest become gotos.
+    // gateway, or a node with extra cross-edges). A statement has room for
+    // exactly one fall-through, so the first un-emitted target continues the
+    // chain and every other edge is surplus. A surplus jump that does get
+    // written still cuts the fall-through off, which is why the choice between
+    // writing it and dropping it is made per edge in `pushSurplusEdge`.
     let cont: string | typeof STOP = STOP;
     for (const f of outs) {
       this.consumedFlows.add(f.id);
@@ -443,7 +470,7 @@ class Emitter {
       ) {
         cont = f.targetRef;
       } else {
-        this.pushGoto(f.targetRef, lines);
+        this.pushSurplusEdge(f.targetRef, lines);
       }
     }
     return cont;
@@ -563,10 +590,11 @@ class Emitter {
       this.emitIfBranch(second!.targetRef, join, splitId, lines, depth);
     }
     lines.push('}');
-    // Extra (3rd+) unconditioned edges have no structured surface form; emit
-    // each as a goto so the edge survives the round-trip.
+    // Extra (3rd+) unconditioned edges have no structured surface form, and no
+    // position either: the chain continues from the join after this construct,
+    // so a jump written here would cut that continuation off.
     for (const f of rest) {
-      this.pushGoto(f.targetRef, lines);
+      this.pushSurplusEdge(f.targetRef, lines);
     }
   }
 
@@ -606,11 +634,12 @@ class Emitter {
       lines.push('}');
     }
 
-    // Surplus unconditioned edges have no structured surface form; emit each
-    // as a goto so the edge survives (mirrors emitUnconditionedXorDegradation).
+    // Surplus unconditioned edges have no structured surface form and no
+    // position (mirrors emitUnconditionedXorDegradation): the chain resumes
+    // from the join below, which a jump written here would cut off.
     for (const f of surplus) {
       if (f.targetRef === join) continue; // duplicate of the implicit fall-through
-      this.pushGoto(f.targetRef, lines);
+      this.pushSurplusEdge(f.targetRef, lines);
     }
   }
 
@@ -1095,44 +1124,87 @@ class Emitter {
    * Emit a `goto` to `target`, the single guarded jump-emission site every
    * other site routes through so the invariant "a `goto` never names a gateway"
    * holds in one place. A gateway has no statement form, so it can never be a
-   * `goto` target; a one-out pass-through gateway is elided on both the forward
-   * and reverse paths, so a jump to it is a jump to whatever it flows into —
-   * we follow the chain of single-out gateways to the first real successor and
-   * name that (lossless). A gateway with no single successor to forward to (a
-   * fork, or one whose out-edges are already all consumed) has nothing to name;
-   * the edge is dropped in favour of a hand-repair marker.
+   * `goto` target; {@link forwardToRealTarget} follows the gateway chain to the
+   * first node that does have one and names that instead.
+   *
+   * A jump into a gateway that still has a choice to make cannot be named at
+   * all: nothing in the surface stands for the gateway, and there is no single
+   * successor to name in its place. That edge is dropped, and the marker names
+   * the element it led into so the reader can find the spot rather than hunt
+   * for it.
    */
   private pushGoto(target: string, lines: string[]): void {
     const real = this.forwardToRealTarget(target, new Set());
-    lines.push(real !== undefined ? `goto ${real}` : UNSTRUCTURED_MARKER);
+    lines.push(real !== undefined ? `goto ${real}` : droppedEdgeMarker(target));
   }
 
   /**
-   * Follow single-out pass-through gateways from `target` to the first node
-   * with a statement form (a real, nameable jump target). Returns `undefined`
-   * when the chain hits a gateway with zero or ≥2 unconsumed out-edges — a
-   * fork or a fully consumed gateway that cannot be forwarded past — or when it
-   * revisits a gateway (a cyclic gateway chain has no real successor). Any
-   * non-gateway target (including an unknown id) is named verbatim.
+   * Emit a surplus out-edge: a second or later edge leaving a position that
+   * already carries a fall-through.
+   *
+   * A `goto` written here ends the enclosing chain when re-desugared, so it
+   * costs the fall-through the position was going to express, and whatever
+   * followed is then left unreachable. The jump is written anyway when it is
+   * the only thing keeping its target attached, since an orphaned node is the
+   * worse outcome; source that trips the unreachable-statement check is the
+   * known price of that trade, and it is why the resolution below runs without
+   * the consumed-edge fallback {@link forwardToRealTarget} applies elsewhere.
+   * When the target is already reachable through routes the walk has printed,
+   * the jump buys nothing and would cost the continuation for free, so the
+   * edge is dropped and marked instead.
+   *
+   * Moving the jump after the chain is not an escape: it re-anchors on
+   * whatever statement ends up last, which is a different edge, and lands
+   * after a trailing `end` where it can never run either. Placing surplus
+   * jumps properly needs a mechanism this emitter does not have.
+   */
+  private pushSurplusEdge(target: string, lines: string[]): void {
+    const real = this.forwardToRealTarget(target, new Set(), false);
+    lines.push(real !== undefined ? `goto ${real}` : droppedEdgeMarker(target));
+  }
+
+  /**
+   * Follow pass-through gateways from `target` to the first node with a
+   * statement form, which is the only kind of node a `goto` can name.
+   *
+   * A jump into a gateway re-runs that gateway's routing, so it means the same
+   * thing as a jump at the successor whenever the routing has just one
+   * outcome. Two cases qualify. The walk forwards across the single out-edge
+   * the structured emission has not realized yet, and — once emission has
+   * realized every out-edge — across the sole out-edge of a gateway that never
+   * had a choice to make. The second case matters because consumption records
+   * that an edge was already printed as structured flow, not that the edge
+   * stopped existing: a back-edge arriving at a pass-through join still routes
+   * to that join's one successor.
+   *
+   * Returns `undefined` when the routing has more than one outcome, when the
+   * chain revisits a gateway (a cyclic gateway chain reaches no real node),
+   * and when it lands on a node the emitter drops on print — a `goto` naming
+   * one of those parses but never resolves, which is worse than the marker
+   * because the damage only surfaces at link time. An unknown id is named
+   * verbatim: it is a dangling reference in the IR rather than an elision.
    */
   private forwardToRealTarget(
     target: string,
     seen: Set<string>,
+    acrossConsumed = true,
   ): string | undefined {
     const el = this.byId.get(target);
-    if (
-      el === undefined ||
-      (el.kind !== 'exclusiveGateway' && el.kind !== 'parallelGateway')
-    ) {
-      return target;
+    // An unknown id is named verbatim: that is a dangling reference in the IR,
+    // not a node the emitter chose to drop.
+    if (el === undefined) return target;
+    if (el.kind !== 'exclusiveGateway' && el.kind !== 'parallelGateway') {
+      return isElidedOnPrint(el) ? undefined : target;
     }
     if (seen.has(target)) return undefined;
     seen.add(target);
-    const outs = (this.out.get(target) ?? []).filter(
-      (f) => !this.consumedFlows.has(f.id),
-    );
-    if (outs.length !== 1) return undefined;
-    return this.forwardToRealTarget(outs[0]!.targetRef, seen);
+    const outs = this.out.get(target) ?? [];
+    const unconsumed = outs.filter((f) => !this.consumedFlows.has(f.id));
+    let forward: SequenceFlow | undefined;
+    if (unconsumed.length === 1) forward = unconsumed[0];
+    else if (acrossConsumed && outs.length === 1) forward = outs[0];
+    if (forward === undefined) return undefined;
+    return this.forwardToRealTarget(forward.targetRef, seen, acrossConsumed);
   }
 
   // ── Statement rendering ─────────────────────────────────────────────────────
@@ -1236,15 +1308,25 @@ class Emitter {
 const STOP = Symbol('stop');
 
 /**
- * Stand-in printed for an edge that cannot be expressed as a `goto` — a jump
- * into a gateway with no single successor to name (a fork, or a fully consumed
- * gateway). Such an edge is only reachable through a hand-built / hostile IR
- * (the compiler never emits a jump into a parallel split), so rather than
- * fabricate a target the emitter drops a hidden comment in its place: the
- * output stays parseable and the region is flagged for a human to repair.
+ * Stand-in printed for an edge the emitter can neither name nor place: a jump
+ * into a gateway that still has a choice to make, or a surplus out-edge with
+ * no position to occupy. Ordinary BPMN produces both. A loop whose condition
+ * sits on the back-edge rather than on the forward edge into the body is the
+ * common case for the first, since no loop pattern matches it and the head
+ * gateway is emitted as an `if`.
+ *
+ * Rather than fabricate a target or approximate the semantics, the emitter
+ * prints this comment where the edge would have gone and appends the element
+ * the edge led into. The output stays parseable, and the CLI turns the marker
+ * into a warning so the loss is reported rather than silent.
  */
 export const UNSTRUCTURED_MARKER =
   '// unstructured region: hand-repair required';
+
+/** The marker text for one dropped edge, naming where the edge led. */
+function droppedEdgeMarker(target: string): string {
+  return `${UNSTRUCTURED_MARKER} (dropped edge into ${target})`;
+}
 
 /**
  * Hard cap on block-nesting depth. Well-formed graphs nest far below this
@@ -1286,6 +1368,58 @@ function isBoundary(
   el: FlowElement,
 ): el is Extract<FlowElement, { kind: 'boundaryEvent' }> {
   return el.kind === 'boundaryEvent';
+}
+
+/**
+ * Whether this element's id is absent from its printed form, leaving nothing
+ * in the output for a `goto` to resolve against.
+ *
+ * The question is only ever "does the printed form spell the id", so every
+ * kind is answered here rather than by a list of the ones that came to mind.
+ * Three reasons an id goes missing: the surface has no name slot for that kind
+ * at all (`await` takes only a trigger), the element prints as a block header
+ * keyed on something else (a boundary event and an event sub-process both
+ * print `on …`), or the id is synthesized and deliberately dropped so the
+ * forward compiler can re-derive it. An ordinary sub-process, a script task
+ * and a call activity all print their id and stay valid jump targets.
+ */
+function isElidedOnPrint(el: FlowElement): boolean {
+  switch (el.kind) {
+    case 'startEvent':
+      // A synthesized start without a form block prints no statement at all.
+      return el.formFields === undefined && isSynthesizedTerminalId(el.id);
+    case 'endEvent':
+    case 'intermediateThrowEvent':
+      // Both spell the id through `throwNameSuffix`, which drops a synthesized
+      // one; a plain synthesized end prints no statement at all.
+      return isSynthesizedTerminalId(el.id);
+    case 'intermediateCatchEvent':
+      // `await <trigger>` has no name slot in the grammar.
+      return true;
+    case 'boundaryEvent':
+      // Prints as `on <attachedToRef>: <trigger>`, keyed on the host.
+      return true;
+    case 'subProcess':
+      // An event sub-process prints as an `on` handler header; an ordinary one
+      // prints `subprocess <id> { … }`.
+      return el.triggeredByEvent === true;
+    case 'userTask':
+    case 'serviceTask':
+    case 'callActivity':
+    case 'scriptTask':
+      return false;
+    case 'exclusiveGateway':
+    case 'parallelGateway':
+      // No statement form at all. Callers forward past a gateway rather than
+      // ask about it, so this arm is unreachable from `forwardToRealTarget`.
+      return true;
+    default: {
+      const exhaustive: never = el;
+      throw new Error(
+        `irToDsl: unhandled FlowElement kind: ${JSON.stringify(exhaustive)}`,
+      );
+    }
+  }
 }
 
 /**

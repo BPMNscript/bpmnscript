@@ -152,15 +152,16 @@ export async function parseAction(
     console.error(chalk.yellow(`Warning: ${w.message}`));
   }
 
-  // A region the decompiler could not express structurally leaves a marker
-  // comment in the output. That only happens for hand-built / hostile input the
-  // tool never generates itself, but when it does the output is still written
-  // (the marker keeps it parseable); flag it so the region gets a human's eye.
-  // The exit code is unchanged — the marker is a signal, not a failure.
+  // An edge the decompiler could not express leaves a marker comment in the
+  // output, naming the element the edge led into. Ordinary BPMN reaches this —
+  // a loop whose condition sits on the back-edge is the common case — so the
+  // warning has to be loud: that edge is gone from the decompiled model and
+  // only a human can put the control flow back. The output is still written
+  // (the marker keeps it parseable) and the exit code is unchanged.
   if (dsl.includes(UNSTRUCTURED_MARKER)) {
     console.error(
       chalk.yellow(
-        'Warning: the decompiled model contains an unstructured region that needs hand-repair (see the marker comment).',
+        'Warning: the decompiled model contains an unstructured region that needs hand-repair (see the marker comment). At least one sequence flow could not be expressed and was dropped.',
       ),
     );
   }

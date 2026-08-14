@@ -115,9 +115,9 @@ async function expectIdempotent(ir: BpmnProcess): Promise<string> {
 /**
  * Real-node reachability set (gateway-transparent): for every non-gateway node,
  * the set of non-gateway nodes reachable through any number of gateway hops.
- * Used to prove "no edge lost" for unstructured / degraded graphs, where the
- * literal edge set legitimately changes (synthesized gateways) but connectivity
- * between real nodes must be preserved exactly.
+ * Used to check that every edge with a `goto` form keeps it in unstructured /
+ * degraded graphs, where the literal edge set legitimately changes (synthesized
+ * gateways) but connectivity between real nodes must be preserved exactly.
  */
 function realReachability(ir: BpmnProcess): Set<string> {
   const real = new Set(
@@ -546,10 +546,10 @@ describe('irToDsl — local idempotence (re-desugar equivalence)', () => {
 });
 
 // ---------------------------------------------------------------------------
-// 3. Goto degradation — total over unstructured / irreducible graphs.
+// 3. Goto degradation — unstructured / irreducible graphs stay parseable.
 // ---------------------------------------------------------------------------
 
-describe('irToDsl — goto degradation (totality, no edge lost)', () => {
+describe('irToDsl — goto degradation (every edge with a form keeps it)', () => {
   /**
    * Hand-built unstructured IR: two XOR gateways whose branches cross so no
    * single post-dominating join exists (`G2` re-enters `A`, which `G1` also

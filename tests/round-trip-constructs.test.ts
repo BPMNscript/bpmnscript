@@ -20,7 +20,7 @@
  *   1. Structured idempotence (happy path) — `invoice-approval.bpmnscript`.
  *   2. Loop round-trip — the `while` of `structured-control-flow.bpmnscript`.
  *   3. Parallel round-trip — the `parallel { { } { } }` of the same fixture.
- *   4. Goto-degradation (totality) — the unstructured `unstructured-goto.bpmn`.
+ *   4. Goto-degradation — the unstructured `unstructured-goto.bpmn`.
  *   5. Expression fallback — a bean method-call condition (raw `${…}`).
  *
  * Normalization comes from the shared `helpers/normalize-ir.ts`.
@@ -49,6 +49,7 @@ import { xmlToIr, irToDsl, astToIr, irToXml } from '@bpmn-script/transform';
 import type { BpmnProcess } from '@bpmn-script/transform';
 
 import { normalizeIr } from './helpers/normalize-ir.js';
+import { realNodeReachability } from './helpers/real-node-reachability.js';
 
 // ---------------------------------------------------------------------------
 // File-path resolution (mirrors round-trip.test.ts).
@@ -100,53 +101,6 @@ async function parseToAst(source: string) {
     );
   }
   return document.parseResult.value;
-}
-
-/**
- * The reachability relation between the REAL (non-gateway) flow nodes, with
- * every gateway contracted to a transparent routing point.
- *
- * For each real node `r`, we walk forward across any number of gateways and
- * record `r -> t` for every real node `t` first reached. This collapses the
- * synthesized gateway scaffolding (splits, joins, phantom joins) that differs
- * between an imported graph and its re-desugared counterpart, leaving exactly
- * the authored-node connectivity — the quantity that must be preserved for the
- * round-trip to be lossless (totality, scenario 4).
- */
-function realNodeReachability(ir: BpmnProcess): string[] {
-  const isGateway = new Map<string, boolean>(
-    ir.flowElements.map((fe) => [
-      fe.id,
-      fe.kind === 'exclusiveGateway' || fe.kind === 'parallelGateway',
-    ]),
-  );
-
-  const outgoing = new Map<string, string[]>();
-  for (const sf of ir.sequenceFlows) {
-    (
-      outgoing.get(sf.sourceRef) ??
-      outgoing.set(sf.sourceRef, []).get(sf.sourceRef)!
-    ).push(sf.targetRef);
-  }
-
-  const pairs = new Set<string>();
-  for (const node of ir.flowElements) {
-    if (isGateway.get(node.id)) continue; // start from real nodes only
-    const seen = new Set<string>();
-    const stack = [...(outgoing.get(node.id) ?? [])];
-    while (stack.length > 0) {
-      const next = stack.pop()!;
-      if (seen.has(next)) continue;
-      seen.add(next);
-      if (isGateway.get(next)) {
-        // Transparent: walk through the gateway to its successors.
-        for (const t of outgoing.get(next) ?? []) stack.push(t);
-      } else {
-        pairs.add(`${node.id}->${next}`);
-      }
-    }
-  }
-  return [...pairs].sort();
 }
 
 // ===========================================================================
@@ -288,15 +242,17 @@ describe('parallel round-trip (parallelGateway fork/join ⇒ parallel { { } { } 
 });
 
 // ===========================================================================
-// Goto-degradation (the totality / data-loss path).
+// Goto-degradation (the data-loss path).
 //
 // Import the unstructured cross-branching fixture → `irToDsl` falls back to
-// `goto` for the edges it cannot fold → re-parse → re-desugar. The full set of
-// connections between authored nodes must be preserved, with no exception and
-// no lost edge, across a SECOND round-trip too.
+// `goto` for the edges it cannot fold → re-parse → re-desugar. Every edge in
+// this fixture has a `goto` form, so the full set of connections between
+// authored nodes survives, across a SECOND round-trip too. The edges that have
+// no form at all — a jump into a gateway that still chooses, and a surplus
+// out-edge — are covered in `goto-fallback.round-trip.test.ts`.
 // ===========================================================================
 
-describe('goto-degradation preserves the full edge set (totality)', () => {
+describe('goto-degradation preserves the edges that have a goto form', () => {
   let irImport: BpmnProcess; // from xmlToIr(unstructured.bpmn)
   let degradedDsl: string; // irToDsl(irImport) — contains goto(s)
   let irReDesugared: BpmnProcess; // astToIr(parse(degradedDsl))
