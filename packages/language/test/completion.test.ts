@@ -111,10 +111,10 @@ describe('structural keyword snippets', () => {
     expect(inserted(item!)).toContain('class =');
   });
 
-  test('an `external` snippet pre-scaffolds the required `topic` attribute', async () => {
-    const item = (await completionItems('process p {\n  \n}', 1, 2)).find(
-      (i) => i.label === 'external',
-    );
+  test('a `topic` attribute snippet is offered inside a `service` attribute block', async () => {
+    const item = (
+      await completionItems('process p {\n  service s {\n    \n  }\n}', 2, 4)
+    ).find((i) => i.label === 'topic');
     expect(inserted(item!)).toContain('topic =');
   });
 

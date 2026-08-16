@@ -17,8 +17,8 @@
  *   7. `goto` → raw sequence flow to the target node.
  *   8. Synthesized-id determinism guard.
  *   9. Attribute mapping (assignee / formKey / class binding / process label),
- *      service task binding variants (expression / delegate), the `external`
- *      task, the `script` task, and goto-targetability of both.
+ *      service task binding variants (expression / delegate / topic), the
+ *      `script` task, and goto-targetability of both.
  *  10. Empty model throws `/no process definitions/i`.
  */
 
@@ -665,12 +665,12 @@ describe('astToIr — service task binding variants', () => {
   });
 });
 
-// ── 9c. External task (modelled as a serviceTask binding variant) ───────────
+// ── 9c. Service task's `topic` binding (the external-worker form) ───────────
 
-describe('astToIr — external task', () => {
-  it('maps `external ship { topic = "shipping" }` to a serviceTask with binding {kind:"external"}', async () => {
+describe('astToIr — service task topic binding', () => {
+  it('maps `service ship { topic = "shipping" }` to a serviceTask with binding {kind:"external"}', async () => {
     const result = await ir(
-      'process P { external ship { topic = "shipping" } }',
+      'process P { service ship { topic = "shipping" } }',
     );
     const svc = result.flowElements.find((fe) => fe.kind === 'serviceTask')!;
     expect(svc).toEqual({
@@ -711,21 +711,21 @@ describe('astToIr — script task', () => {
   });
 });
 
-// ── 9e. goto reserves + resolves an external/script name ─────────────────────
+// ── 9e. goto reserves + resolves a topic-bound service/script name ──────────
 
-describe('astToIr — external/script names are goto-targetable', () => {
-  it('an external task name reserves the collision seed and resolves a goto to it', async () => {
+describe('astToIr — topic-bound service/script names are goto-targetable', () => {
+  it('a topic-bound service task name reserves the collision seed and resolves a goto to it', async () => {
     const result = await ir(
-      'process P { user A goto Ship external Ship { topic = "shipping" } }',
+      'process P { user A goto Ship service Ship { topic = "shipping" } }',
     );
-    // Resolves: the flow out of A lands directly on the external task's own id.
+    // Resolves: the flow out of A lands directly on the service task's own id.
     expect(flow(result, 'A', 'Ship').targetRef).toBe('Ship');
 
-    // Reserves: an external task literally named like a synthesized end
-    // forces the synthesized end to fall back to a `_2` suffix — only true
-    // if `collectNamedIds` registered the external task's name up front.
+    // Reserves: a service task literally named like a synthesized end forces
+    // the synthesized end to fall back to a `_2` suffix — only true if
+    // `collectNamedIds` registered the service task's name up front.
     const collision = await ir(
-      'process P { external EndEvent_P { topic = "t" } }',
+      'process P { service EndEvent_P { topic = "t" } }',
     );
     const ends = collision.flowElements.filter((fe) => fe.kind === 'endEvent');
     expect(ends).toHaveLength(1);

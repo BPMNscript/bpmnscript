@@ -14,8 +14,8 @@ the message, signal, timer, and conditional triggers, the
 `compensation.{bpmnscript,bpmn}` pair exercises the compensation (undo-block)
 layer, the `boundary-events.{bpmnscript,bpmn}` pair exercises handlers attached
 to a host activity, the `boundary-task-hosts.{bpmnscript,bpmn}` pair exercises a
-boundary handler attached to the service/script/external task hosts no other
-golden covers, the `intermediate-catch.{bpmnscript,bpmn}` pair exercises the
+boundary handler attached to a script task and a topic-bound service task, the
+binding no other golden covers, the `intermediate-catch.{bpmnscript,bpmn}` pair exercises the
 `await` intermediate catch event across all four catchable triggers, and
 `bad-service-task-no-binding.bpmn` is the negative-path fixture for the import
 refusal path.
@@ -428,9 +428,9 @@ id-scheme change), regenerate this file:
 
 ## `boundary-task-hosts.bpmnscript` and `boundary-task-hosts.bpmn`
 
-A golden **pair** covering the boundary-event host kinds no other golden
-exercises: a **service** task, a **script** task, and an **external** task,
-each carrying its own attached handler. The source is a checkout narrative —
+A golden **pair** covering the one service-task binding no other golden
+exercises: `topic`, the delegated-to-an-external-worker form, attached to a
+boundary handler alongside a script task carrying its own. The source is a checkout narrative —
 charge the card, compute the shipping cost, print the label — where a card
 decline raises an interrupting `on ChargeCard: error "PAYMENT_DECLINED"`
 boundary that routes to a manual review, a slow shipping calculation raises a

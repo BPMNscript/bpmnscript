@@ -6,8 +6,7 @@
  *   - type-mismatch ERROR (severity 1),
  *   - duplicate attribute-key ERROR,
  *   - allowed attribute keys per element kind ERROR,
- *   - exactly-one service-task binding discriminator (`class`/`expression`/`delegate`),
- *   - external-task `topic` requirement,
+ *   - exactly-one service-task binding discriminator (`class`/`expression`/`delegate`/`topic`),
  *   - script-task fence (language tag, non-empty body),
  *   - the unresolved-`goto` regression (linker owns it; no validator double-report),
  *   - structural empty-process-body WARNING,
@@ -268,6 +267,15 @@ describe('Validation — service task class discriminator', () => {
     expect(classErrors[0]!.message).toContain('S');
   });
 
+  test('the zero-binding error names all four legal attributes', async () => {
+    const { diagnostics } = await validate(`process p { service S { } }`);
+    const errors = diagnosticsFor(diagnostics, "must declare a 'class'");
+    expect(errors).toHaveLength(1);
+    for (const key of ['class', 'expression', 'delegate', 'topic']) {
+      expect(errors[0]!.message).toContain(key);
+    }
+  });
+
   test('a service task with a class has no discriminator error', async () => {
     const { diagnostics } = await validate(
       `process p { service S { class = com.example.X } }`,
@@ -328,34 +336,15 @@ process p {
       0,
     );
   });
-});
 
-// ── External task ───────────────────────────────────────────────────────────
-
-describe('Validation — external task', () => {
-  test('an external task without a topic is exactly one error', async () => {
-    const { diagnostics } = await validate(`process p { external ship { } }`);
-    const errors = diagnosticsFor(diagnostics, "must declare a 'topic'");
-    expect(errors).toHaveLength(1);
-    expect(errors[0]!.severity).toBe(SEVERITY_ERROR);
-    expect(errors[0]!.message).toContain('ship');
-  });
-
-  test('an external task with a non-topic key is exactly one error', async () => {
+  test('a service task with a topic binding only has no discriminator error', async () => {
     const { diagnostics } = await validate(
-      `process p { external ship { class = com.example.X } }`,
+      `process p { service S { topic = "shipping" } }`,
     );
-    const errors = diagnosticsFor(diagnostics, 'is not valid');
-    expect(errors).toHaveLength(1);
-    expect(errors[0]!.message).toContain('class');
-    expect(errors[0]!.message).toContain('external');
-  });
-
-  test('an external task with a topic has no discriminator error', async () => {
-    const { diagnostics } = await validate(
-      `process p { external ship { topic = "shipping" } }`,
+    expect(diagnosticsFor(diagnostics, "must declare a 'class'")).toHaveLength(
+      0,
     );
-    expect(diagnosticsFor(diagnostics, "must declare a 'topic'")).toHaveLength(
+    expect(diagnosticsFor(diagnostics, 'more than one binding')).toHaveLength(
       0,
     );
   });
@@ -443,10 +432,10 @@ describe('Validation — goto reference', () => {
     expect(bySeverity(diagnostics, SEVERITY_ERROR)).toHaveLength(0);
   });
 
-  test('a goto resolving to an external task produces no error', async () => {
+  test('a goto resolving to a service task with a topic binding produces no error', async () => {
     const { diagnostics } = await validate(`
 process p {
-  external Ship { topic = "shipping" }
+  service Ship { topic = "shipping" }
   goto Ship
 }
 `);
@@ -874,11 +863,11 @@ process p {
     expect(diagnosticsFor(diagnostics, 'ambiguous')).toHaveLength(0);
   });
 
-  test('an external task and a script task sharing a name is exactly one ambiguity error', async () => {
+  test('a topic-bound service task and a script task sharing a name is exactly one ambiguity error', async () => {
     const FENCE = '`' + '`' + '`';
     const { diagnostics } = await validate(`
 process p {
-  external A { topic = "shipping" }
+  service A { topic = "shipping" }
   script A ${FENCE}js
 x = 1
 ${FENCE}
@@ -2441,12 +2430,12 @@ process p {
     expect(errors[0]!.message).toContain('a throw statement');
   });
 
-  test('a host naming a user/service/external/script/subprocess/call activity is clean', async () => {
+  test('a host naming a user/service/script/subprocess/call activity is clean', async () => {
     const FENCE = '`' + '`' + '`';
     const cases = [
       `process p { user U on U: error "X" { user A } }`,
       `process p { service Svc { class = "x.Y" } on Svc: error "X" { user A } }`,
-      `process p { external Ext { topic = "t" } on Ext: error "X" { user A } }`,
+      `process p { service Ext { topic = "t" } on Ext: error "X" { user A } }`,
       `process p {
   script Scr ${FENCE}js
 x = 1
@@ -2504,21 +2493,6 @@ ${FENCE}
     );
     expect(errors).toHaveLength(1);
     expect(errors[0]!.message).toContain('a script task');
-  });
-
-  test('an escalation on an external task is exactly one restriction error', async () => {
-    const { diagnostics } = await validate(`
-process p {
-  external Pack { topic = "t" }
-  on Pack: escalation { user A }
-}
-`);
-    const errors = diagnosticsFor(
-      diagnostics,
-      'can only attach to a subprocess, a call, or a user task',
-    );
-    expect(errors).toHaveLength(1);
-    expect(errors[0]!.message).toContain('an external task');
   });
 
   test('an escalation on a subprocess, a call, or a user task is clean', async () => {

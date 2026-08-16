@@ -920,7 +920,7 @@ describe('irToDsl — service-task bindings', () => {
     expect(dsl).not.toContain('delegateExpression');
   });
 
-  it('renders an external binding as `external X { topic = "…" }`', () => {
+  it('renders an external binding as `service X { topic = "…" }`', () => {
     const dsl = irToDsl(
       singleNodeProcess({
         kind: 'serviceTask',
@@ -928,9 +928,9 @@ describe('irToDsl — service-task bindings', () => {
         binding: { kind: 'external', topic: 'notifications' },
       }),
     );
-    expect(dsl).toContain('external Notify { topic = "notifications" }');
-    // An external binding uses the `external` keyword, not `service`.
-    expect(dsl).not.toContain('service Notify');
+    expect(dsl).toContain('service Notify { topic = "notifications" }');
+    // An external binding keeps the `service` keyword, never `external`.
+    expect(dsl).not.toContain('external Notify');
   });
 
   it('re-parses each binding form back to the same binding kind', async () => {

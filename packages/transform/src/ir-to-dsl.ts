@@ -1643,36 +1643,36 @@ function renderFormDefault(value: string, type: FormFieldType): string {
 }
 
 /**
- * Render a service task's statement line, choosing the surface form from its
- * binding:
+ * Render a service task's statement line, choosing the attribute from its
+ * binding — always under the one `service` keyword:
  *
  *   - `class`              → `service <id> "<label>"? { class = "…" }`
  *   - `expression`         → `service <id> "<label>"? { expression = "${…}" }`
  *   - `delegateExpression` → `service <id> "<label>"? { delegate = "${…}" }`
- *   - `external`           → `external <id> "<label>"? { topic = "…" }`
+ *   - `external`           → `service <id> "<label>"? { topic = "…" }`
  *
  * The `delegate` keyword is the friendly DSL alias for
  * `operaton:delegateExpression`; the alias is applied here, so the XML-level
  * name never surfaces in the source. Expression/delegate values are quoted
  * verbatim (the `${…}` wrapper is part of the value), re-parsing as a raw
- * expression. An `external` binding switches the keyword to `external` and its
- * one attribute to `topic`.
+ * expression. An `external` binding keeps the `service` keyword and prints
+ * its one attribute as `topic`.
  */
 function renderServiceTask(
   el: Extract<FlowElement, { kind: 'serviceTask' }>,
 ): string {
   const binding = el.binding;
-  const head = (keyword: string, attr: string): string =>
-    `${keyword} ${el.id}${labelSuffix(el.name)}${attrBlock([attr])}`;
+  const head = (attr: string): string =>
+    `service ${el.id}${labelSuffix(el.name)}${attrBlock([attr])}`;
   switch (binding.kind) {
     case 'class':
-      return head('service', `class = ${quote(binding.className)}`);
+      return head(`class = ${quote(binding.className)}`);
     case 'expression':
-      return head('service', `expression = ${quote(binding.expression)}`);
+      return head(`expression = ${quote(binding.expression)}`);
     case 'delegateExpression':
-      return head('service', `delegate = ${quote(binding.expression)}`);
+      return head(`delegate = ${quote(binding.expression)}`);
     case 'external':
-      return head('external', `topic = ${quote(binding.topic)}`);
+      return head(`topic = ${quote(binding.topic)}`);
     default: {
       const exhaustive: never = binding;
       throw new Error(

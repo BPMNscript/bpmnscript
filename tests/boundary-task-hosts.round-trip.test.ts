@@ -1,14 +1,15 @@
 /**
  * Frozen forward golden + round-trip proof that a boundary handler attaches
- * cleanly to each of the three task host kinds no other golden covers: a
- * service task, a script task, and an external task.
+ * cleanly to a script task and to a service task bound through its `topic`
+ * attribute — the delegated-to-an-external-worker binding no other golden
+ * covers.
  *
  * The fixture (`golden/boundary-task-hosts.bpmnscript`) is a checkout
  * narrative — charge the card, compute the shipping cost, print the label —
  * with one boundary handler on each step: an interrupting error boundary on
- * the service task (the flagship shape), a non-interrupting (`alongside`)
- * timer boundary on the script task, and an interrupting message boundary on
- * the external task.
+ * the class-bound service task (the flagship shape), a non-interrupting
+ * (`alongside`) timer boundary on the script task, and an interrupting
+ * message boundary on the topic-bound service task.
  *
  * Four cases, mirroring the structure of the other construct round-trip
  * suites (`boundary-events.round-trip.test.ts`, `intermediate-catch.round-trip.test.ts`):

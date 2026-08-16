@@ -35,7 +35,6 @@ const STRUCTURE_SNIPPETS: Readonly<Record<string, string>> = {
   // tasks
   user: 'user ${1:id} {\n\tassignee = "${2:user}"\n}',
   service: 'service ${1:id} {\n\tclass = "${2:com.example.Delegate}"\n}',
-  external: 'external ${1:id} {\n\ttopic = "${2:topic}"\n}',
   script:
     'script ${1:id} ```${2|javascript,groovy,python,ruby,feel|}\n\t$0\n```',
   // task attributes

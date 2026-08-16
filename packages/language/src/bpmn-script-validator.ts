@@ -13,9 +13,8 @@
  * or the offending operand).
  *
  * Attribute checks additionally cover the service-task binding discriminant
- * (`class`/`expression`/`delegate`, exactly one required), the external-task
- * `topic` requirement, and the script-task fence (a supported language tag,
- * a non-empty body).
+ * (`class`/`expression`/`delegate`/`topic`, exactly one required) and the
+ * script-task fence (a supported language tag, a non-empty body).
  */
 
 import {
@@ -34,7 +33,6 @@ import type {
   EmitStatement,
   EndEvent,
   ErrorDecl,
-  ExternalTask,
   Expr,
   FormBlock,
   GotoStatement,
@@ -67,7 +65,6 @@ import {
   isEndEvent,
   isErrorDecl,
   isExpr,
-  isExternalTask,
   isGotoStatement,
   isIfStatement,
   isLiteralString,
@@ -108,7 +105,6 @@ export function registerValidationChecks(services: BpmnScriptServices) {
     StartEvent: validator.checkStartEvent,
     UserTask: validator.checkUserTaskAttributes,
     ServiceTask: validator.checkServiceTaskAttributes,
-    ExternalTask: validator.checkExternalTaskAttributes,
     ScriptTask: validator.checkScriptTask,
     IfStatement: validator.checkIfStatement,
     WhileStatement: validator.checkWhileStatement,
@@ -135,15 +131,17 @@ const USER_TASK_KEYS: ReadonlySet<string> = new Set(['assignee', 'formKey']);
  * The service-task attribute keys. Every one of them is a binding key — a
  * service task must declare exactly one — so this set doubles as both the
  * allowed-keys set and the binding-key set (see
- * {@link BpmnScriptValidator.checkServiceTaskAttributes}).
+ * {@link BpmnScriptValidator.checkServiceTaskAttributes}). `topic` is the
+ * fourth binding: it delegates the task to an external worker that polls the
+ * engine for that topic, instead of the engine invoking `class`/`expression`/
+ * `delegate` directly.
  */
 const SERVICE_TASK_KEYS: ReadonlySet<string> = new Set([
   'class',
   'expression',
   'delegate',
+  'topic',
 ]);
-
-const EXTERNAL_TASK_KEYS: ReadonlySet<string> = new Set(['topic']);
 
 /**
  * The `call` attribute keys. `process` (the callee) is required; `binding`
@@ -534,7 +532,6 @@ type NamedStatement =
   | EndEvent
   | UserTask
   | ServiceTask
-  | ExternalTask
   | ScriptTask
   | SubProcess
   | CallActivity
@@ -549,8 +546,7 @@ type NamedStatement =
  *
  * @param process The process to scan.
  * @returns Every `StartEvent`/`EndEvent`/`UserTask`/`ServiceTask`/
- *   `ExternalTask`/`ScriptTask`/`SubProcess`/`CallActivity`/named-`throw`/
- *   named-`emit` node.
+ *   `ScriptTask`/`SubProcess`/`CallActivity`/named-`throw`/named-`emit` node.
  */
 function collectNamedStatements(process: Process): NamedStatement[] {
   const result: NamedStatement[] = [];
@@ -560,7 +556,6 @@ function collectNamedStatements(process: Process): NamedStatement[] {
       isEndEvent(node) ||
       isUserTask(node) ||
       isServiceTask(node) ||
-      isExternalTask(node) ||
       isScriptTask(node) ||
       isSubProcess(node) ||
       isCallActivity(node)
@@ -604,7 +599,6 @@ function statementName(stmt: Statement): string | undefined {
     isEndEvent(stmt) ||
     isUserTask(stmt) ||
     isServiceTask(stmt) ||
-    isExternalTask(stmt) ||
     isScriptTask(stmt) ||
     isSubProcess(stmt) ||
     isCallActivity(stmt)
@@ -1274,9 +1268,11 @@ export class BpmnScriptValidator {
   /**
    * ServiceTask attribute checks: duplicate keys, key-kind validity, and the
    * exactly-one-binding discriminator. A service task binds to exactly one of
-   * `class` (Java delegate class), `expression` (`operaton:expression`), or
-   * `delegate` (`operaton:delegateExpression` alias) — zero bindings is an
-   * error, and more than one *distinct* binding key is a separate error (a
+   * `class` (Java delegate class), `expression` (`operaton:expression`),
+   * `delegate` (`operaton:delegateExpression` alias), or `topic` (delegates
+   * to an external worker that polls the engine, emitting
+   * `operaton:type="external"` alongside `operaton:topic`) — zero bindings is
+   * an error, and more than one *distinct* binding key is a separate error (a
    * repeated *same* key is already reported by the duplicate-key check). Also
    * rejects a form block: service tasks are automated and render no form.
    *
@@ -1300,50 +1296,18 @@ export class BpmnScriptValidator {
     if (bindingKeys.size === 0) {
       accept(
         'error',
-        `Service task '${task.name}' must declare a 'class', 'expression', or 'delegate' attribute.`,
+        `Service task '${task.name}' must declare a 'class', 'expression', 'delegate', or 'topic' attribute.`,
         { node: task, property: 'name' },
       );
     } else if (bindingKeys.size > 1) {
       accept(
         'error',
-        `Service task '${task.name}' declares more than one binding (${[...bindingKeys].join(', ')}); exactly one of 'class', 'expression', or 'delegate' is allowed.`,
+        `Service task '${task.name}' declares more than one binding (${[...bindingKeys].join(', ')}); exactly one of 'class', 'expression', 'delegate', or 'topic' is allowed.`,
         { node: task, property: 'name' },
       );
     }
 
     this.rejectFormBlock(task.forms, 'A service task', accept);
-  };
-
-  /**
-   * ExternalTask attribute checks: duplicate keys, key-kind validity (`topic`
-   * is the only legal key), the required `topic` (zero → error), and the
-   * absence of a form block (an external task is a delegated service task —
-   * automated, no form).
-   *
-   * @param task The external task.
-   */
-  checkExternalTaskAttributes = (
-    task: ExternalTask,
-    accept: ValidationAcceptor,
-  ): void => {
-    this.checkDuplicateKeys(task.attrs, accept);
-    this.checkAllowedKeys(
-      task.attrs,
-      EXTERNAL_TASK_KEYS,
-      'an external task',
-      accept,
-    );
-
-    const hasTopic = task.attrs.some((a) => a.key === 'topic');
-    if (!hasTopic) {
-      accept(
-        'error',
-        `External task '${task.name}' must declare a 'topic' attribute.`,
-        { node: task, property: 'name' },
-      );
-    }
-
-    this.rejectFormBlock(task.forms, 'An external task', accept);
   };
 
   /**
@@ -1432,12 +1396,12 @@ export class BpmnScriptValidator {
 
   /**
    * Reject every `form { … }` block on an element that must not declare one.
-   * Shared by {@link checkServiceTaskAttributes} and
-   * {@link checkExternalTaskAttributes} — both are automated task kinds with
-   * no human actor to present a form to.
+   * Used by {@link checkServiceTaskAttributes} — a service task is an
+   * automated step with no human actor to present a form to, regardless of
+   * which of its four bindings it uses.
    *
    * @param description The element kind, as a full sentence-starting noun
-   *   phrase with article (e.g. `'A service task'`, `'An external task'`).
+   *   phrase with article (e.g. `'A service task'`).
    */
   private rejectFormBlock(
     forms: FormBlock[],
@@ -1476,7 +1440,7 @@ export class BpmnScriptValidator {
    * Flag every attribute whose key is not legal for this element kind.
    *
    * @param description The element kind, as a full noun phrase with article
-   *   (e.g. `'a user task'`, `'an external task'`) for the diagnostic message.
+   *   (e.g. `'a user task'`, `'a service task'`) for the diagnostic message.
    */
   private checkAllowedKeys(
     attrs: Attribute[],
@@ -2565,7 +2529,7 @@ function catchTriggerMessage(word: string): string {
 }
 
 /**
- * The `Statement` kinds a boundary event may attach to: the six activities
+ * The `Statement` kinds a boundary event may attach to: the five activities
  * Operaton lets a token dock at. Everything else in the `Statement` union is
  * a control construct, a terminal event, a `goto`, or another handler — none
  * of which an engine token is ever "at" the way it is at a running activity.
@@ -2574,7 +2538,6 @@ function isActivityStatement(stmt: Statement): boolean {
   return (
     isUserTask(stmt) ||
     isServiceTask(stmt) ||
-    isExternalTask(stmt) ||
     isScriptTask(stmt) ||
     isSubProcess(stmt) ||
     isCallActivity(stmt)
@@ -2603,7 +2566,6 @@ function describeStatementKind(stmt: Statement): string {
   if (isEndEvent(stmt)) return 'an end event';
   if (isUserTask(stmt)) return 'a user task';
   if (isServiceTask(stmt)) return 'a service task';
-  if (isExternalTask(stmt)) return 'an external task';
   if (isScriptTask(stmt)) return 'a script task';
   if (isSubProcess(stmt)) return 'a subprocess';
   if (isCallActivity(stmt)) return 'a call';
@@ -2616,7 +2578,7 @@ function describeStatementKind(stmt: Statement): string {
 function illegalHostMessage(host: Statement): string {
   return (
     'A boundary event can only attach to an activity — a user, service, ' +
-    `external, or script task, a subprocess, or a call; '${targetStatementName(host)}' is ` +
+    `or script task, a subprocess, or a call; '${targetStatementName(host)}' is ` +
     `${describeStatementKind(host)}.`
   );
 }
@@ -2844,11 +2806,11 @@ function isWithinBlock(node: AstNode, block: Block): boolean {
 
 /**
  * The `name` of a resolved `goto` target for use in a diagnostic message.
- * Only `StartEvent`/`EndEvent`/`UserTask`/`ServiceTask`/`ExternalTask`/
- * `ScriptTask`/`SubProcess`/`CallActivity`/named-`ThrowStatement`/named-
- * `EmitStatement` carry a resolvable `name` (a *resolved* cross-reference
- * necessarily has one — an unnamed throw/emit can never be a link target),
- * so the `'?'` fallback shouldn't be reachable.
+ * Only `StartEvent`/`EndEvent`/`UserTask`/`ServiceTask`/`ScriptTask`/
+ * `SubProcess`/`CallActivity`/named-`ThrowStatement`/named-`EmitStatement`
+ * carry a resolvable `name` (a *resolved* cross-reference necessarily has
+ * one — an unnamed throw/emit can never be a link target), so the `'?'`
+ * fallback shouldn't be reachable.
  */
 function targetStatementName(target: Statement): string {
   if (
@@ -2856,7 +2818,6 @@ function targetStatementName(target: Statement): string {
     isEndEvent(target) ||
     isUserTask(target) ||
     isServiceTask(target) ||
-    isExternalTask(target) ||
     isScriptTask(target) ||
     isSubProcess(target) ||
     isCallActivity(target)

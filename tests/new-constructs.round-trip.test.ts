@@ -1,7 +1,7 @@
 /**
  * Cross-stage round-trip smoke for the executable task bindings and inline
- * script task: service `expression`, service `delegate`, `external`, and
- * `script`.
+ * script task: service `expression`, service `delegate`, service `topic`,
+ * and `script`.
  *
  * Each single-stage transform (desugar, generate, decompile, print) already
  * has its own focused tests. What none of them catches on its own is a
@@ -55,10 +55,10 @@ const SERVICE_DELEGATE_SRC =
   '  end Done\n' +
   '}\n';
 
-const EXTERNAL_TASK_SRC =
+const SERVICE_TOPIC_SRC =
   'process shipment-label {\n' +
   '  start OrderPlaced\n' +
-  '  external PrintLabel { topic = "print-label" }\n' +
+  '  service PrintLabel { topic = "print-label" }\n' +
   '  end Done\n' +
   '}\n';
 
@@ -216,17 +216,17 @@ describe('round-trip: service task with a `delegate` binding (delegateExpression
 });
 
 // ===========================================================================
-// `external` task.
+// service `topic` binding — the delegated-to-an-external-worker form.
 // ===========================================================================
 
-describe('round-trip: `external` task with a `topic`', () => {
+describe('round-trip: service task with a `topic` binding', () => {
   let irInitial: BpmnProcess;
   let xml: string;
   let irImported: BpmnProcess;
   let reemittedDsl: string;
 
   beforeAll(async () => {
-    irInitial = astToIr(await parseToAst(EXTERNAL_TASK_SRC));
+    irInitial = astToIr(await parseToAst(SERVICE_TOPIC_SRC));
     xml = await irToXml(irInitial);
     ({ ir: irImported } = await xmlToIr(xml));
     reemittedDsl = irToDsl(irImported);
@@ -251,8 +251,8 @@ describe('round-trip: `external` task with a `topic`', () => {
     });
   });
 
-  it('re-emits `external … { topic = "…" }` and re-parses with zero errors', async () => {
-    expect(reemittedDsl).toContain('external PrintLabel');
+  it('re-emits `service … { topic = "…" }` and re-parses with zero errors', async () => {
+    expect(reemittedDsl).toContain('service PrintLabel');
     expect(reemittedDsl).toContain('topic = "print-label"');
     const document = await parse(reemittedDsl);
     expect(document.parseResult.parserErrors).toHaveLength(0);

@@ -1,6 +1,7 @@
 // Boundary-event round-trip fixture: one checkout narrative that attaches a
-// boundary handler to each of the three remaining activity host kinds — a
-// service task, a script task, and an external task.
+// boundary handler to a script task and to a service task bound through its
+// `topic` attribute — the delegated-to-an-external-worker form, the one
+// binding this suite's other goldens leave uncovered.
 //
 // A card charge, a shipping-cost calculation, and a label print each run as
 // their own step, one after another:
@@ -28,7 +29,7 @@ def shippingCost = weight * 2.5
 execution.setVariable("shippingCost", shippingCost)
 ```
 
-  external PrintLabel "Print the shipping label" { topic = "print-label" }
+  service PrintLabel "Print the shipping label" { topic = "print-label" }
 
   end OrderShipped
 

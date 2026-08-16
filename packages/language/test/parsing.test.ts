@@ -32,7 +32,6 @@ import type {
   EndEvent,
   UserTask,
   ServiceTask,
-  ExternalTask,
   ScriptTask,
   SubProcess,
   CallActivity,
@@ -1503,9 +1502,9 @@ describe('renderExpression', () => {
   });
 });
 
-// ── Service bindings, external tasks, fenced script tasks ────────────────────
+// ── Service bindings, fenced script tasks ─────────────────────────────────────
 
-describe('Parsing — service bindings, external, script', () => {
+describe('Parsing — service bindings, script', () => {
   // A triple-backtick fence, assembled without a literal fence in the test
   // source so it can be interpolated into JS template-literal DSL fixtures.
   const FENCE = '`' + '`' + '`';
@@ -1529,12 +1528,12 @@ describe('Parsing — service bindings, external, script', () => {
     expect(st.attrs[0]!.value.$type).toBe('RawExpr');
   });
 
-  test('external task with a topic parses into an ExternalTask', async () => {
-    const source = `process p { external ship "Ship it" { topic = "shipping" } }`;
+  test('service task with a topic parses as its fourth binding', async () => {
+    const source = `process p { service ship "Ship it" { topic = "shipping" } }`;
     const document = await parse(source);
     expect(formatParseFailure(document)).toBeUndefined();
-    const st = document.parseResult.value.processes[0]!.body[0] as ExternalTask;
-    expect(st.$type).toBe('ExternalTask');
+    const st = document.parseResult.value.processes[0]!.body[0] as ServiceTask;
+    expect(st.$type).toBe('ServiceTask');
     expect(st.name).toBe('ship');
     expect(st.label).toBe('Ship it');
     expect(st.attrs[0]!.key).toBe('topic');
@@ -1542,13 +1541,34 @@ describe('Parsing — service bindings, external, script', () => {
     expect((st.attrs[0]!.value as { value: string }).value).toBe('shipping');
   });
 
-  test('external task parses without a label', async () => {
-    const source = `process p { external ship { topic = "shipping" } }`;
+  test('a service task with a topic binding parses without a label', async () => {
+    const source = `process p { service ship { topic = "shipping" } }`;
     const document = await parse(source);
     expect(formatParseFailure(document)).toBeUndefined();
-    const st = document.parseResult.value.processes[0]!.body[0] as ExternalTask;
-    expect(st.$type).toBe('ExternalTask');
+    const st = document.parseResult.value.processes[0]!.body[0] as ServiceTask;
+    expect(st.$type).toBe('ServiceTask');
     expect(st.label).toBeUndefined();
+  });
+
+  // `external` is no longer a grammar keyword, so it lexes as a plain ID
+  // everywhere an identifier is expected — a `var` name, a step id, and an
+  // expression VarRef alike.
+  test('`external` parses as an ordinary identifier, not a keyword', async () => {
+    const source = `process p {
+  var external: string
+  user external { assignee = "\${external}" }
+}`;
+    const document = await parse(source);
+    expect(formatParseFailure(document)).toBeUndefined();
+    const varDecl = document.parseResult.value.processes[0]!.decls[0] as {
+      $type: string;
+      name: string;
+    };
+    expect(varDecl.$type).toBe('VarDecl');
+    expect(varDecl.name).toBe('external');
+    const ut = document.parseResult.value.processes[0]!.body[0] as UserTask;
+    expect(ut.$type).toBe('UserTask');
+    expect(ut.name).toBe('external');
   });
 
   // (a) A fenced `js` body parses with zero parser errors, and `body` captures

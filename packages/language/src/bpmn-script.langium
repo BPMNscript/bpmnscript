@@ -24,7 +24,7 @@
 //
 // Reserved words (cannot be used as a bare expression identifier; use the
 // quoted "${…}" raw-string fallback if a variable must be named like one):
-//   process, var, start, end, user, service, external, script, subprocess,
+//   process, var, start, end, user, service, script, subprocess,
 //   if, else, while, do, parallel, goto, label, assignee, formKey, class,
 //   expression, delegate, topic, form,
 //   call, in, out, local, binding, version, businessKey,
@@ -86,7 +86,7 @@ VarType returns string:
 // further `Statement`s through `Block`s.
 Statement:
       StartEvent | EndEvent
-    | UserTask | ServiceTask | ExternalTask | ScriptTask
+    | UserTask | ServiceTask | ScriptTask
     | IfStatement | WhileStatement | DoWhileStatement
     | ParallelStatement | GotoStatement | SubProcess | CallActivity
     | OnHandler | ThrowStatement | EmitStatement | IntermediateCatchEvent;
@@ -114,15 +114,14 @@ EndEvent:
 UserTask:
     'user' name=ID (label=STRING)? AttributeBlock?;
 
+// A service task binds to exactly one of four execution forms: `class`, a
+// JUEL `expression`, a `delegate` expression, or a `topic` — the last of
+// these delegates the work to an external worker that polls the engine for
+// that topic instead of the engine invoking code directly, and emits
+// operaton:type="external" alongside operaton:topic. All four share this one
+// statement and AttributeBlock shape; the validator requires exactly one.
 ServiceTask:
     'service' name=ID (label=STRING)? AttributeBlock?;
-
-// A service task delegated to an external worker. Shares the AttributeBlock
-// shape with ServiceTask (so `topic` is just an attribute here); the validator
-// requires exactly a `topic`. Emits a bpmn:serviceTask carrying
-// operaton:type="external" and operaton:topic.
-ExternalTask:
-    'external' name=ID (label=STRING)? AttributeBlock?;
 
 // A script task with an inline body written as a markdown-style fenced block
 // opened by a language tag (```js … ```). The whole fenced block is captured

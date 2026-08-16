@@ -125,7 +125,6 @@ import {
   isEndEvent,
   isUserTask,
   isServiceTask,
-  isExternalTask,
   isScriptTask,
   isIfStatement,
   isWhileStatement,
@@ -156,7 +155,6 @@ import type {
   EndEvent as AstEndEvent,
   UserTask as AstUserTask,
   ServiceTask as AstServiceTask,
-  ExternalTask as AstExternalTask,
   ScriptTask as AstScriptTask,
   IfStatement,
   WhileStatement,
@@ -500,9 +498,6 @@ function lowerStatement(
   if (isServiceTask(stmt)) {
     return lowerServiceTask(builder, stmt);
   }
-  if (isExternalTask(stmt)) {
-    return lowerExternalTask(builder, stmt);
-  }
   if (isScriptTask(stmt)) {
     return lowerScriptTask(builder, stmt);
   }
@@ -657,8 +652,8 @@ function renderFormDefault(expr: Expr): string {
 
 /**
  * Lower a `service` task, reading whichever of `class` / `expression` /
- * `delegate` is present to build the matching {@link ServiceTaskBinding}
- * variant (see {@link serviceTaskBinding}).
+ * `delegate` / `topic` is present to build the matching
+ * {@link ServiceTaskBinding} variant (see {@link serviceTaskBinding}).
  */
 function lowerServiceTask(builder: Builder, stmt: AstServiceTask): Frontier {
   builder.flowElements.push({
@@ -683,7 +678,10 @@ function lowerServiceTask(builder: Builder, stmt: AstServiceTask): Frontier {
  * `operaton:delegateExpression` attribute value Operaton evaluates as EL, not
  * a literal string. They are read via {@link rawExpressionAttrValue}, not
  * `attrValue`, so a bareword is wrapped rather than stripped. `delegate` is
- * the friendly DSL alias for `delegateExpression`.
+ * the friendly DSL alias for `delegateExpression`. `topic` is a plain
+ * string-literal attribute naming the external worker topic — the fourth
+ * binding, emitting `operaton:type="external"` alongside `operaton:topic`
+ * instead of invoking code the engine holds directly.
  *
  * Exactly one binding key is expected on a valid program (the validator
  * enforces this); when none is present the desugarer stays total by falling
@@ -702,24 +700,11 @@ function serviceTaskBinding(attrs: Attribute[]): ServiceTaskBinding {
   if (delegate !== undefined) {
     return { kind: 'delegateExpression', expression: delegate };
   }
+  const topic = attrValue(attrs, 'topic');
+  if (topic !== undefined) {
+    return { kind: 'external', topic };
+  }
   return { kind: 'class', className: '' };
-}
-
-/**
- * Lower an `external` task to a `serviceTask` IR node carrying an `external`
- * binding. Modelled as a serviceTask binding variant, not its own IR kind, so
- * it emits/imports as a `bpmn:serviceTask` with `operaton:type="external"`.
- * `topic` is a plain string-literal attribute.
- */
-function lowerExternalTask(builder: Builder, stmt: AstExternalTask): Frontier {
-  const topic = attrValue(stmt.attrs, 'topic') ?? '';
-  builder.flowElements.push({
-    kind: 'serviceTask',
-    id: stmt.name,
-    ...(stmt.label !== undefined ? { name: stmt.label } : {}),
-    binding: { kind: 'external', topic },
-  });
-  return { entry: stmt.name, exit: stmt.name };
 }
 
 /**
@@ -1719,7 +1704,6 @@ function collectNamedIds(process: Process): Set<string> {
         isEndEvent(stmt) ||
         isUserTask(stmt) ||
         isServiceTask(stmt) ||
-        isExternalTask(stmt) ||
         isScriptTask(stmt) ||
         isCallActivity(stmt)
       ) {

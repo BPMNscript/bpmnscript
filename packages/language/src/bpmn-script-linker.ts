@@ -46,7 +46,6 @@ import {
   isCallActivity,
   isEmitStatement,
   isEndEvent,
-  isExternalTask,
   isGotoStatement,
   isOnHandler,
   isProcess,
@@ -59,7 +58,6 @@ import {
   type CallActivity,
   type EmitStatement,
   type EndEvent,
-  type ExternalTask,
   type OnHandler,
   type ScriptTask,
   type ServiceTask,
@@ -86,7 +84,6 @@ type NamedStatement =
   | EndEvent
   | UserTask
   | ServiceTask
-  | ExternalTask
   | ScriptTask
   | SubProcess
   | CallActivity
@@ -99,7 +96,6 @@ function isNamedStatement(node: AstNode): node is NamedStatement {
     isEndEvent(node) ||
     isUserTask(node) ||
     isServiceTask(node) ||
-    isExternalTask(node) ||
     isScriptTask(node) ||
     isSubProcess(node) ||
     isCallActivity(node) ||
