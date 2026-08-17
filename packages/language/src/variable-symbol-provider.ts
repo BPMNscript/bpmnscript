@@ -4,17 +4,17 @@
  * Variables live in a **flat process scope** with **position-independent
  * visibility**: a `var` declared anywhere in a process is visible from every
  * expression in that process, regardless of source order. This service turns a
- * {@link Process} AST into a {@link VariableTable} (declared variable names →
+ * {@link Process} AST into a {@link VariableTable} (declared variable names to
  * their declared {@link VarType}) that the validators consult to decide whether
  * a referenced variable is declared and whether it is used compatibly with an
  * operator.
  *
  * There are three symbol sources: the explicit `var name: type` declarations,
- * the `form { … }` fields on start events and user tasks (a field binds the
+ * the `form { ... }` fields on start events and user tasks (a field binds the
  * process variable named by its id), and an event handler's catch-parameter
- * bindings (`on error "X" (code c, message m)` declares `c`/`m` as `string` —
+ * bindings (`on error "X" (code c, message m)` declares `c`/`m` as `string`,
  * the code/message text an event carries). An explicit `var` always keeps
- * precedence over either of the other two sources.
+ * precedence over the other two sources.
  */
 
 import { AstUtils } from 'langium';
@@ -30,7 +30,7 @@ import {
  * A resolved variable: its declared name and its declared type.
  */
 export interface VariableSymbol {
-  /** The variable identifier as written in the source (`var <name>: …`). */
+  /** The variable identifier as written in the source (`var <name>: ...`). */
   name: string;
   /** The declared Operaton-aligned variable type. */
   type: VarType;
@@ -59,7 +59,7 @@ export interface VariableSymbolProvider {
 
 /**
  * Default {@link VariableSymbolProvider}: the explicit `var` declarations plus
- * the `form { … }` fields of a process.
+ * the `form { ... }` fields of a process.
  */
 export class DefaultVariableSymbolProvider implements VariableSymbolProvider {
   collect(process: Process): VariableTable {
@@ -85,9 +85,8 @@ export class DefaultVariableSymbolProvider implements VariableSymbolProvider {
       }
     }
     // Event-handler catch-parameter bindings each declare a `string` process
-    // variable (the code/message text of the event they caught). An explicit
-    // `var` (or a form field, whichever ran first above) of the same name
-    // keeps precedence.
+    // variable (the code/message text of the event they caught). A `var` or
+    // form field of the same name keeps precedence.
     for (const node of AstUtils.streamAst(process)) {
       if (!isOnHandler(node)) continue;
       for (const binding of node.bindings) {

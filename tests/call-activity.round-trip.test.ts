@@ -1,46 +1,14 @@
 /**
- * Whole-feature E2E: `call` activity round-trip.
+ * End-to-end round-trip for the `call` activity (a leaf `bpmn:CallActivity`
+ * invoking another process by id, with a version-resolution binding, a business
+ * key, and `in`/`out` variable mappings).
  *
- * The `call` construct (a leaf `bpmn:CallActivity` invoking another process by
- * id, with a version-resolution binding, a business key, and `in`/`out`
- * variable mappings) is fully implemented and merged; each single-stage
- * transform already has its own focused unit tests. What none of those catch
- * on its own is a field-name or ordering disagreement BETWEEN stages — e.g.
- * the generator writing `operaton:in`/`operaton:out` in one order and the
- * importer reconstructing a different one. This file drives the construct
- * through the full, unmocked pipeline
- *
- *   DSL → astToIr → irToXml → xmlToIr → irToDsl → (re-parse) → astToIr
- *
- * over real Langium parsing/validation, real `bpmn-moddle`, and real
- * `bpmn-auto-layout` (invoked inside `irToXml`). There is no Docker and no
- * engine here.
- *
- * Five cases:
- *
- *   1. Minimal — a `call` naming only `process`: the XML carries
- *      `calledElement` and nothing else (no binding attributes, no
- *      `extensionElements`), and the re-emitted DSL is the same one-attribute
- *      call.
- *   2. Full-featured — the three `CalledElementBinding` kinds (`deployment`,
- *      pinned `version`, `latest`) and every mapping shape (`*`, same-name
- *      shorthand, an operator expression, a quoted-raw expression, a `local`
- *      mapping, and a plain-copy `out`), asserting the call node survives an
- *      import verbatim and a second round-trip is normalized-equal.
- *   3. Composition with nesting — a `call` inside a `subprocess` body stays in
- *      the nested container at every hop.
- *   4. Goto interplay — a `goto` targeting a `call` step converges correctly
- *      and the program stays validator-clean.
- *   5. Import-first direction — a handwritten `.bpmn` fixture with
- *      interleaved `operaton:in`/`operaton:out` order and the
- *      `camunda:calledElementBinding` alias imports, reconstructs, and
- *      re-desugars to the same normalized IR (proving both the canonical
- *      reorder and the namespace-alias normalization).
- *
- * A final section exercises the example process added alongside this file
- * (`examples/spring-boot/processes/purchasing.bpmnscript`), asserting it is
- * validator-clean and that its `call` resolves the real neighbouring
- * `invoice-approval` example by id.
+ * Single-stage unit tests cannot catch a field-name or ordering disagreement
+ * between stages, such as the generator writing `operaton:in`/`operaton:out` in
+ * one order and the importer reconstructing another. This file drives the
+ * construct through the full, unmocked pipeline over real Langium parsing and
+ * validation, real `bpmn-moddle`, and real `bpmn-auto-layout` inside `irToXml`.
+ * No Docker and no engine.
  */
 
 import { describe, it, expect, beforeAll } from 'vitest';
@@ -57,27 +25,18 @@ import { xmlToIr, irToDsl, astToIr, irToXml } from '@bpmn-script/transform';
 import type {
   BpmnProcess,
   FlowContainer,
-  FlowElement,
   CallActivity,
 } from '@bpmn-script/transform';
 
 import { normalizeIr } from './helpers/normalize-ir.js';
-
-// ---------------------------------------------------------------------------
-// File-path resolution (mirrors round-trip.test.ts / new-constructs.round-trip.test.ts).
-// ---------------------------------------------------------------------------
+import { idsOf, subProcess as findSubProcess } from './helpers/ir-query.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-/** The example process added alongside this test. */
 const PURCHASING_EXAMPLE_PATH = resolve(
   __dirname,
   '../examples/spring-boot/processes/purchasing.bpmnscript',
 );
-
-// ---------------------------------------------------------------------------
-// Langium services — one shared instance for the whole suite.
-// ---------------------------------------------------------------------------
 
 let parse: ReturnType<typeof parseHelper<Model>>;
 let validate: ReturnType<typeof validationHelper<Model>>;
@@ -89,10 +48,8 @@ beforeAll(() => {
 });
 
 /**
- * Parse DSL source into a checked AST. Throws (failing the test) if the
- * source has any parser error — a round-tripped source that does not re-parse
- * is itself a round-trip failure, so it must abort the test, never be
- * swallowed.
+ * Parse DSL source into a checked AST, throwing on any parser error. A
+ * round-tripped source that does not re-parse is itself a round-trip failure.
  */
 async function parseToAst(source: string) {
   const document = await parse(source);
@@ -106,11 +63,6 @@ async function parseToAst(source: string) {
   return document.parseResult.value;
 }
 
-// ---------------------------------------------------------------------------
-// Small container helpers (mirrors nested-subprocess.round-trip.test.ts).
-// ---------------------------------------------------------------------------
-
-/** Find the call-activity flow element with the given id in a container's own array. */
 function findCallActivity(container: FlowContainer, id: string): CallActivity {
   const el = container.flowElements.find(
     (fe) => fe.kind === 'callActivity' && fe.id === id,
@@ -122,31 +74,6 @@ function findCallActivity(container: FlowContainer, id: string): CallActivity {
   }
   return el;
 }
-
-/** Find the sub-process element with the given id in a container's own array. */
-function findSubProcess(
-  container: FlowContainer,
-  id: string,
-): Extract<FlowElement, { kind: 'subProcess' }> {
-  const el = container.flowElements.find(
-    (fe) => fe.kind === 'subProcess' && fe.id === id,
-  );
-  if (el === undefined || el.kind !== 'subProcess') {
-    throw new Error(
-      `expected a sub-process '${id}' in container '${container.id}'`,
-    );
-  }
-  return el;
-}
-
-/** The set of flow-element ids directly held by a container. */
-function idsOf(container: FlowContainer): Set<string> {
-  return new Set(container.flowElements.map((fe) => fe.id));
-}
-
-// ===========================================================================
-// 1. Minimal — `call <id> { process = "…" }`.
-// ===========================================================================
 
 describe('round-trip: minimal call (process only)', () => {
   const MINIMAL_CALL_SRC = [
@@ -196,10 +123,6 @@ describe('round-trip: minimal call (process only)', () => {
     expect(document.parseResult.parserErrors).toHaveLength(0);
   });
 });
-
-// ===========================================================================
-// 2. Full-featured.
-// ===========================================================================
 
 describe('round-trip: call activity — deployment binding', () => {
   const DEPLOYMENT_BINDING_SRC = [
@@ -296,9 +219,9 @@ describe('round-trip: call activity — pinned version', () => {
 });
 
 describe('round-trip: call activity — businessKey and every mapping shape', () => {
-  // `a`, `b`, `w` are the caller-scope variables the `in` sources below
-  // reference (`in` sources are checked by the validator; `out` sources are
-  // evaluated in the CALLED process's scope and need no caller declaration).
+  // `in` sources are checked by the validator against caller scope, so they are
+  // declared below; `out` sources are evaluated in the called process and are
+  // not.
   const FULL_FEATURED_SRC = [
     'process call-full-featured {',
     '  var a: number',
@@ -381,10 +304,6 @@ describe('round-trip: call activity — businessKey and every mapping shape', ()
   });
 });
 
-// ===========================================================================
-// 3. Composition with nesting — a `call` inside a `subprocess` body.
-// ===========================================================================
-
 describe('round-trip: call activity nested inside a subprocess', () => {
   const NESTED_CALL_SRC = [
     'process call-in-subprocess {',
@@ -430,10 +349,6 @@ describe('round-trip: call activity nested inside a subprocess', () => {
     expect(document.parseResult.parserErrors).toHaveLength(0);
   });
 });
-
-// ===========================================================================
-// 4. Goto interplay — a `goto` targeting a `call` step.
-// ===========================================================================
 
 describe('round-trip: goto targeting a call activity', () => {
   const GOTO_CALL_SRC = [
@@ -483,13 +398,10 @@ describe('round-trip: goto targeting a call activity', () => {
   });
 
   it('a second round-trip (DSL′ → IR₃) is normalized-equal to the first, and re-parses with zero errors', async () => {
-    // `irToDsl` reconstructs the goto/fallthrough convergence on `Invoke` as a
-    // structured `if`/`else` (an empty true-branch, the fallthrough task in
-    // the else) rather than replaying the literal `goto` — the same
-    // structure-over-goto preference already exercised for other constructs.
-    // Re-desugaring that structured form grows the documented synthesized
-    // pass-through join (see `helpers/normalize-ir.ts`), so the comparison
-    // goes through `normalizeIr` rather than a raw flow-endpoint diff.
+    // `irToDsl` reconstructs the goto/fallthrough convergence as a structured
+    // `if`/`else` rather than replaying the literal `goto`, and re-desugaring
+    // that form grows a synthesized pass-through join, so the comparison goes
+    // through `normalizeIr` rather than a raw flow-endpoint diff.
     expect(findCallActivity(irSecondRound, 'Invoke').calledElement).toBe(
       'invoice-approval',
     );
@@ -500,16 +412,9 @@ describe('round-trip: goto targeting a call activity', () => {
   });
 });
 
-// ===========================================================================
-// 5. Import-first direction — interleaved In/Out order + camunda: alias.
-// ===========================================================================
-
 describe('round-trip: import-first — interleaved mappings and the camunda: binding alias', () => {
-  // Canonical namespaces of `tests/golden/invoice-approval-handwritten.bpmn`,
-  // plus `camunda:` to exercise the `calledElementBinding` alias. The call's
-  // `name` ("Get invoice sign-off") deliberately does NOT equal
-  // `humanize('ReviewApprovalCall')` ("Review Approval Call"), so it is kept
-  // as a genuine label rather than silently dropped as derivable.
+  // The call's `name` deliberately differs from the name humanised from its id,
+  // so it is kept as a genuine label rather than dropped as derivable.
   const HANDWRITTEN_BPMN = `<?xml version="1.0" encoding="UTF-8"?>
 <bpmn:definitions
     xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
@@ -606,10 +511,6 @@ describe('round-trip: import-first — interleaved mappings and the camunda: bin
     );
   });
 });
-
-// ===========================================================================
-// Example program: `examples/spring-boot/processes/purchasing.bpmnscript`.
-// ===========================================================================
 
 describe('example: purchasing.bpmnscript calls the invoice-approval example by id', () => {
   let source: string;

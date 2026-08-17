@@ -1,15 +1,13 @@
 /**
  * Semantic-token test suite for the soft event words.
  *
- * `error`, `escalation`, `code`, and `message` lex as plain `ID` (the
- * grammar's soft-word convention — see `bpmn-script.langium`), so they get
- * no highlighting from the generated TextMate grammar, which only knows the
- * four real keywords (`on`, `throw`, `emit`, `alongside`). These tests drive
- * `BpmnScriptSemanticTokenProvider` through the real LSP semantic-tokens
- * request (`langium/test`'s `highlightHelper`) and assert it marks a soft
- * word with the `keyword` token type exactly where it carries event
- * meaning, and nowhere else — `var message: string` and a plain `code`
- * variable reference stay untouched.
+ * `error`, `escalation`, `code`, and `message` lex as plain `ID` under the
+ * grammar's soft-word convention, so the generated TextMate grammar (which
+ * knows only the real keywords `on`, `throw`, `emit`, `alongside`) gives them
+ * no highlighting. These tests drive `BpmnScriptSemanticTokenProvider` through
+ * the real LSP semantic-tokens request and assert it marks a soft word with the
+ * `keyword` token type exactly where it carries event meaning: `var message:
+ * string` and a plain `code` variable reference stay untouched.
  */
 
 import { beforeAll, describe, expect, test } from 'vitest';
@@ -29,7 +27,18 @@ beforeAll(() => {
   highlight = highlightHelper<Model>(services.BpmnScript);
 });
 
-/** Asserts that no token in `result` covers exactly the marked `<|…|>` range. */
+/** Asserts the marked `<|...|>` range at `rangeIndex` is a keyword token. */
+function expectKeywordAt(
+  result: DecodedSemanticTokensWithRanges,
+  rangeIndex = 0,
+): void {
+  expectSemanticToken(result, {
+    rangeIndex,
+    tokenType: SemanticTokenTypes.keyword,
+  });
+}
+
+/** Asserts that no token in `result` covers exactly the marked `<|...|>` range. */
 function expectNoTokenAt(
   result: DecodedSemanticTokensWithRanges,
   rangeIndex = 0,
@@ -48,7 +57,7 @@ process p {
   on <|error|> "X" { }
 }
 `);
-    expectSemanticToken(result, { tokenType: SemanticTokenTypes.keyword });
+    expectKeywordAt(result);
   });
 
   test('`throw escalation "C"` highlights the trigger word', async () => {
@@ -57,7 +66,7 @@ process p {
   throw <|escalation|> "C"
 }
 `);
-    expectSemanticToken(result, { tokenType: SemanticTokenTypes.keyword });
+    expectKeywordAt(result);
   });
 
   test('`emit escalation "C"` highlights the trigger word', async () => {
@@ -66,7 +75,7 @@ process p {
   emit <|escalation|> "C"
 }
 `);
-    expectSemanticToken(result, { tokenType: SemanticTokenTypes.keyword });
+    expectKeywordAt(result);
   });
 });
 
@@ -77,16 +86,8 @@ process p {
   on error "X" (<|code|> c, <|message|> m) { }
 }
 `);
-    expectSemanticToken(result, {
-      rangeIndex: 0,
-      tokenType: SemanticTokenTypes.keyword,
-    });
-    expectSemanticToken(result, {
-      rangeIndex: 1,
-      tokenType: SemanticTokenTypes.keyword,
-    });
-    // The variable names sit right after each field word — mark them too and
-    // assert they carry no token at all.
+    expectKeywordAt(result, 0);
+    expectKeywordAt(result, 1);
     const result2 = await highlight(`
 process p {
   on error "X" (code <|c|>, message <|m|>) { }
@@ -104,7 +105,7 @@ process p {
   on <|message|> "X" { }
 }
 `);
-    expectSemanticToken(result, { tokenType: SemanticTokenTypes.keyword });
+    expectKeywordAt(result);
   });
 
   test('`on condition (…)` highlights the trigger word, not the condition variable', async () => {
@@ -113,10 +114,7 @@ process p {
   on <|condition|> (<|amount|> > 100) { }
 }
 `);
-    expectSemanticToken(result, {
-      rangeIndex: 0,
-      tokenType: SemanticTokenTypes.keyword,
-    });
+    expectKeywordAt(result, 0);
     expectNoTokenAt(result, 1);
   });
 });
@@ -128,14 +126,8 @@ process p {
   on <|timer|> <|after|> "PT1H" { }
 }
 `);
-    expectSemanticToken(result, {
-      rangeIndex: 0,
-      tokenType: SemanticTokenTypes.keyword,
-    });
-    expectSemanticToken(result, {
-      rangeIndex: 1,
-      tokenType: SemanticTokenTypes.keyword,
-    });
+    expectKeywordAt(result, 0);
+    expectKeywordAt(result, 1);
   });
 
   test('`var at: string` carries no token on `at`', async () => {
@@ -167,14 +159,8 @@ process p {
   await <|timer|> <|after|> "PT1H"
 }
 `);
-    expectSemanticToken(result, {
-      rangeIndex: 0,
-      tokenType: SemanticTokenTypes.keyword,
-    });
-    expectSemanticToken(result, {
-      rangeIndex: 1,
-      tokenType: SemanticTokenTypes.keyword,
-    });
+    expectKeywordAt(result, 0);
+    expectKeywordAt(result, 1);
   });
 });
 
@@ -185,14 +171,8 @@ process p {
   <|error|> "X" <|message|> "m"
 }
 `);
-    expectSemanticToken(result, {
-      rangeIndex: 0,
-      tokenType: SemanticTokenTypes.keyword,
-    });
-    expectSemanticToken(result, {
-      rangeIndex: 1,
-      tokenType: SemanticTokenTypes.keyword,
-    });
+    expectKeywordAt(result, 0);
+    expectKeywordAt(result, 1);
   });
 });
 
@@ -203,7 +183,7 @@ process p {
   on <|compensation|> { }
 }
 `);
-    expectSemanticToken(result, { tokenType: SemanticTokenTypes.keyword });
+    expectKeywordAt(result);
   });
 
   test('`throw compensation` highlights the trigger word', async () => {
@@ -212,7 +192,7 @@ process p {
   throw <|compensation|>
 }
 `);
-    expectSemanticToken(result, { tokenType: SemanticTokenTypes.keyword });
+    expectKeywordAt(result);
   });
 
   test('`emit compensation Undo` highlights the trigger word, not the name id', async () => {
@@ -221,10 +201,7 @@ process p {
   emit <|compensation|> <|Undo|>
 }
 `);
-    expectSemanticToken(result, {
-      rangeIndex: 0,
-      tokenType: SemanticTokenTypes.keyword,
-    });
+    expectKeywordAt(result, 0);
     expectNoTokenAt(result, 1);
   });
 });
@@ -238,14 +215,8 @@ process p {
 }
 `);
     expectNoTokenAt(result, 0);
-    expectSemanticToken(result, {
-      rangeIndex: 1,
-      tokenType: SemanticTokenTypes.keyword,
-    });
-    expectSemanticToken(result, {
-      rangeIndex: 2,
-      tokenType: SemanticTokenTypes.keyword,
-    });
+    expectKeywordAt(result, 1);
+    expectKeywordAt(result, 2);
   });
 });
 

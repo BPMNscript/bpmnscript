@@ -6,42 +6,28 @@
  * linking must run):
  *
  *   - **Process-scoped `goto`** (custom `ScopeProvider`): a `goto` resolves to
- *     any named step of its *own* process — including one nested inside a
- *     `parallel`/`if`/`while` block — and to no step of any *other* process.
- *   - **Container-scoped `goto` across a `subprocess` boundary** (same
- *     `ScopeProvider`, narrowed further): a `goto` resolves only within its
- *     *nearest enclosing container* — the `process` or the `subprocess` it
- *     directly sits in — so it can neither reach into a sub-process from
- *     outside nor escape a sub-process to the parent, and a `goto` inside one
- *     sub-process cannot reach into a different (sibling or nested) one. A
- *     `subprocess` statement is itself a valid `goto` target by name, resolved
- *     from its own container. A cross-boundary `goto` fails to resolve, and
- *     the custom `BpmnScriptLinker` (`src/bpmn-script-linker.ts`) replaces the
- *     stock "Could not resolve reference" message with a boundary explanation
- *     naming the sub-process the target lives inside or outside of — replacing
- *     rather than adding, so exactly one diagnostic is emitted.
- *   - **Container-scoped `goto` across an `on` handler boundary** (same
- *     provider and linker, widened further): an event handler body is a flow
- *     container in its own right, exactly like a `subprocess` body, so the
- *     same isolation and boundary-message rules apply to it in either
- *     direction — a handler's body cannot be reached from outside it, and a
- *     `goto` inside a handler cannot escape to its enclosing body. The linker
- *     names the handler by its header (trigger + code) instead of by name,
- *     since a handler has none.
+ *     any named step of its *own* process, including one nested inside a
+ *     `parallel`/`if`/`while` block, and to no step of any *other* process.
+ *   - **Container-scoped `goto`** (same `ScopeProvider`, narrowed further): a
+ *     `goto` resolves only within its nearest enclosing container, the
+ *     `process`, `subprocess`, or `on` handler body it directly sits in. A
+ *     `subprocess` statement is itself a valid target by name. A cross-boundary
+ *     `goto` fails to resolve and the custom `BpmnScriptLinker` replaces the
+ *     stock "Could not resolve reference" message with a boundary explanation,
+ *     replacing rather than adding, so exactly one diagnostic is emitted. A
+ *     handler is named in that message by its header (trigger + code), since it
+ *     has no name of its own.
  *   - **Container-scoped host resolution** (same provider and linker): an `on`
  *     handler that names a host activity attaches to it, so the host must be a
- *     step of the handler's *own* container — the same candidate set a `goto`
- *     sees from that container, with no global fall-through, and with the
- *     linker replacing the stock message by one that explains the attachment
- *     scope. Because such a handler lowers inline into its host's container
- *     rather than into a container of its own, its body is *transparent* to the
- *     container walk: a `goto` crosses between the handler body and the main
- *     flow in both directions, while a host-less handler nested inside it stays
- *     a container boundary of its own.
+ *     step of the handler's own container, with no global fall-through. Such a
+ *     handler lowers inline into its host's container rather than into one of
+ *     its own, so its body is transparent to the container walk: a `goto`
+ *     crosses between the handler body and the main flow in both directions,
+ *     while a host-less handler nested inside it stays a boundary of its own.
  *   - **Reserved-word guidance** (custom `ParserErrorMessageProvider`): a
  *     reserved keyword used as a bare identifier yields a parse error that names
- *     the word and points to the quoted `"${…}"` raw-string fallback, instead of
- *     a raw Chevrotain "expected ID" / "no viable alternative" message.
+ *     the word and points to the quoted `"${...}"` raw-string fallback, instead
+ *     of a raw Chevrotain "expected ID" / "no viable alternative" message.
  *
  * Diagnostic severity follows the LSP convention: `1 = Error`, `2 = Warning`.
  */
@@ -81,17 +67,14 @@ describe('Scoping — process-scoped goto', () => {
     expect(goto.target.ref).toBeDefined();
     expect((goto.target.ref as UserTask).name).toBe('Foo');
 
-    // A same-process, non-parallel target is a clean resolve — no errors.
     expect(errorsOf(document)).toHaveLength(0);
   });
 
   test('a goto resolves to a step nested inside a parallel branch of the same process', async () => {
     // The stock (block-lexical) scope makes a step nested in a `parallel` branch
-    // invisible to an outside goto, so this resolves ONLY through the process-
-    // scoped provider. (The goto-into-parallel VALIDATOR then fires — see the
-    // validator suite — but resolution itself is the concern here.)
-    const document = await parse(
-      `
+    // invisible to an outside goto, so this resolves only through the
+    // process-scoped provider.
+    const goto = await gotoIn(`
 process p {
   parallel {
     { user A }
@@ -99,25 +82,16 @@ process p {
   }
   goto A
 }
-`,
-      { validation: true },
-    );
-    expect(document.parseResult.parserErrors).toHaveLength(0);
-
-    const goto = findGoto(document.parseResult.value);
+`);
     expect(goto.target.ref).toBeDefined();
     expect((goto.target.ref as UserTask).name).toBe('A');
   });
 
   test('a goto does not resolve to a same-named step in another process', async () => {
-    const document = await parse(
-      `
+    const document = await link(`
 process a { user Foo goto Only }
 process b { user Only }
-`,
-      { validation: true },
-    );
-    expect(document.parseResult.parserErrors).toHaveLength(0);
+`);
 
     const goto = findGoto(document.parseResult.value);
     // `Only` exists only in process `b`; process-scoped goto cannot reach it.
@@ -130,14 +104,10 @@ process b { user Only }
   });
 
   test('a goto resolves within its own process when the name also exists elsewhere', async () => {
-    const document = await parse(
-      `
+    const document = await link(`
 process a { user Dup goto Dup }
 process b { user Dup }
-`,
-      { validation: true },
-    );
-    expect(document.parseResult.parserErrors).toHaveLength(0);
+`);
 
     const model = document.parseResult.value;
     const processA = model.processes[0]!;
@@ -168,40 +138,30 @@ process b { user Dup }
 
 describe('Scoping — container-scoped goto (subprocess boundary)', () => {
   test('a parent-body goto cannot resolve a step inside a sub-process, but the same name resolves from inside it', async () => {
-    const fromOutside = await parse(
-      `
+    const fromOutside = await link(`
 process p {
   subprocess Sub {
     user Inner
   }
   goto Inner
 }
-`,
-      { validation: true },
-    );
-    expect(fromOutside.parseResult.parserErrors).toHaveLength(0);
+`);
     expect(findGoto(fromOutside.parseResult.value).target.ref).toBeUndefined();
 
-    const fromInside = await parse(
-      `
+    const goto = await gotoIn(`
 process p {
   subprocess Sub {
     user Inner
     goto Inner
   }
 }
-`,
-      { validation: true },
-    );
-    expect(fromInside.parseResult.parserErrors).toHaveLength(0);
-    const goto = findGoto(fromInside.parseResult.value);
+`);
     expect(goto.target.ref).toBeDefined();
     expect((goto.target.ref as UserTask).name).toBe('Inner');
   });
 
   test('a goto inside a sub-process resolves a sibling step nested inside an if block of the same body', async () => {
-    const document = await parse(
-      `
+    const goto = await gotoIn(`
 process p {
   subprocess Sub {
     if (true) {
@@ -210,53 +170,38 @@ process p {
     goto Deep
   }
 }
-`,
-      { validation: true },
-    );
-    expect(document.parseResult.parserErrors).toHaveLength(0);
-    const goto = findGoto(document.parseResult.value);
+`);
     expect(goto.target.ref).toBeDefined();
     expect((goto.target.ref as UserTask).name).toBe('Deep');
   });
 
   test('a goto inside a sub-process cannot resolve a parent-body step', async () => {
-    const document = await parse(
-      `
+    const goto = await gotoIn(`
 process p {
   user Outer
   subprocess Sub {
     goto Outer
   }
 }
-`,
-      { validation: true },
-    );
-    expect(document.parseResult.parserErrors).toHaveLength(0);
-    const goto = findGoto(document.parseResult.value);
+`);
     expect(goto.target.ref).toBeUndefined();
   });
 
   test('a parent-body goto resolves a sub-process statement by its own name', async () => {
-    const document = await parse(
-      `
+    const goto = await gotoIn(`
 process p {
   subprocess Sub {
     user Inner
   }
   goto Sub
 }
-`,
-      { validation: true },
-    );
-    expect(document.parseResult.parserErrors).toHaveLength(0);
-    const goto = findGoto(document.parseResult.value);
+`);
     expect(goto.target.ref).toBeDefined();
     expect(goto.target.ref!.$type).toBe('SubProcess');
   });
 
   test('a goto in an outer sub-process cannot resolve a step inside an inner (nested) sub-process', async () => {
-    const document = await parse(
-      `
+    const goto = await gotoIn(`
 process p {
   subprocess Outer {
     subprocess Inner {
@@ -265,27 +210,19 @@ process p {
     goto Deep
   }
 }
-`,
-      { validation: true },
-    );
-    expect(document.parseResult.parserErrors).toHaveLength(0);
-    const goto = findGoto(document.parseResult.value);
+`);
     expect(goto.target.ref).toBeUndefined();
   });
 
   test('boundary message names the sub-process the target is inside, when the goto is outside it (one diagnostic)', async () => {
-    const document = await parse(
-      `
+    const document = await link(`
 process p {
   subprocess Sub {
     user Inner
   }
   goto Inner
 }
-`,
-      { validation: true },
-    );
-    expect(document.parseResult.parserErrors).toHaveLength(0);
+`);
 
     const errors = errorsOf(document);
     // Exactly one diagnostic on the document: the linker replaces the
@@ -299,18 +236,14 @@ process p {
   });
 
   test('boundary message names the sub-process the goto is inside, when the target is outside it (one diagnostic)', async () => {
-    const document = await parse(
-      `
+    const document = await link(`
 process p {
   user Outer
   subprocess Sub {
     goto Outer
   }
 }
-`,
-      { validation: true },
-    );
-    expect(document.parseResult.parserErrors).toHaveLength(0);
+`);
 
     const errors = errorsOf(document);
     expect(errors).toHaveLength(1);
@@ -322,18 +255,14 @@ process p {
   });
 
   test('a goto to a name that exists nowhere yields the unchanged generic message (one diagnostic)', async () => {
-    const document = await parse(
-      `
+    const document = await link(`
 process p {
   subprocess Sub {
     user Inner
   }
   goto Missing
 }
-`,
-      { validation: true },
-    );
-    expect(document.parseResult.parserErrors).toHaveLength(0);
+`);
     expect(findGoto(document.parseResult.value).target.ref).toBeUndefined();
 
     const errors = errorsOf(document);
@@ -348,40 +277,30 @@ process p {
 
 describe('Scoping — container-scoped goto (event-handler boundary)', () => {
   test('a container-body goto cannot resolve a step inside a handler, but the same name resolves from inside it', async () => {
-    const fromOutside = await parse(
-      `
+    const fromOutside = await link(`
 process p {
   goto Inner
   on error "PAYMENT_FAILED" {
     user Inner
   }
 }
-`,
-      { validation: true },
-    );
-    expect(fromOutside.parseResult.parserErrors).toHaveLength(0);
+`);
     expect(findGoto(fromOutside.parseResult.value).target.ref).toBeUndefined();
 
-    const fromInside = await parse(
-      `
+    const goto = await gotoIn(`
 process p {
   on error "PAYMENT_FAILED" {
     user Inner
     goto Inner
   }
 }
-`,
-      { validation: true },
-    );
-    expect(fromInside.parseResult.parserErrors).toHaveLength(0);
-    const goto = findGoto(fromInside.parseResult.value);
+`);
     expect(goto.target.ref).toBeDefined();
     expect((goto.target.ref as UserTask).name).toBe('Inner');
   });
 
   test('a goto inside a handler resolves a sibling step nested inside an if block of the same body', async () => {
-    const document = await parse(
-      `
+    const goto = await gotoIn(`
 process p {
   on error "PAYMENT_FAILED" {
     if (true) {
@@ -390,28 +309,20 @@ process p {
     goto Deep
   }
 }
-`,
-      { validation: true },
-    );
-    expect(document.parseResult.parserErrors).toHaveLength(0);
-    const goto = findGoto(document.parseResult.value);
+`);
     expect(goto.target.ref).toBeDefined();
     expect((goto.target.ref as UserTask).name).toBe('Deep');
   });
 
   test('a goto inside a handler cannot resolve a step of the enclosing body', async () => {
-    const document = await parse(
-      `
+    const document = await link(`
 process p {
   user Outer
   on error "PAYMENT_FAILED" {
     goto Outer
   }
 }
-`,
-      { validation: true },
-    );
-    expect(document.parseResult.parserErrors).toHaveLength(0);
+`);
     const goto = findGoto(document.parseResult.value);
     expect(goto.target.ref).toBeUndefined();
 
@@ -427,8 +338,7 @@ process p {
   });
 
   test('an outer handler goto cannot resolve a step inside a nested (inner) handler', async () => {
-    const document = await parse(
-      `
+    const goto = await gotoIn(`
 process p {
   on error "Outer" {
     goto Deep
@@ -437,27 +347,19 @@ process p {
     }
   }
 }
-`,
-      { validation: true },
-    );
-    expect(document.parseResult.parserErrors).toHaveLength(0);
-    const goto = findGoto(document.parseResult.value);
+`);
     expect(goto.target.ref).toBeUndefined();
   });
 
   test('boundary message names the coded handler the target is inside, when the goto is outside it (one diagnostic)', async () => {
-    const document = await parse(
-      `
+    const document = await link(`
 process p {
   goto Inner
   on error "PAYMENT_FAILED" {
     user Inner
   }
 }
-`,
-      { validation: true },
-    );
-    expect(document.parseResult.parserErrors).toHaveLength(0);
+`);
 
     const errors = errorsOf(document);
     expect(errors).toHaveLength(1);
@@ -474,18 +376,14 @@ process p {
   });
 
   test('boundary message names a catch-all handler without quoting a code', async () => {
-    const document = await parse(
-      `
+    const document = await link(`
 process p {
   goto Inner
   on error {
     user Inner
   }
 }
-`,
-      { validation: true },
-    );
-    expect(document.parseResult.parserErrors).toHaveLength(0);
+`);
 
     const errors = errorsOf(document);
     expect(errors).toHaveLength(1);
@@ -493,18 +391,14 @@ process p {
   });
 
   test('boundary message names the handler the goto is inside, when the target is outside it (one diagnostic)', async () => {
-    const document = await parse(
-      `
+    const document = await link(`
 process p {
   user Outer
   on escalation "LOW_STOCK" {
     goto Outer
   }
 }
-`,
-      { validation: true },
-    );
-    expect(document.parseResult.parserErrors).toHaveLength(0);
+`);
 
     const errors = errorsOf(document);
     expect(errors).toHaveLength(1);
@@ -518,18 +412,14 @@ process p {
   });
 
   test('a goto to a name that exists nowhere yields the unchanged generic message (one diagnostic)', async () => {
-    const document = await parse(
-      `
+    const document = await link(`
 process p {
   goto Missing
   on error "PAYMENT_FAILED" {
     user Inner
   }
 }
-`,
-      { validation: true },
-    );
-    expect(document.parseResult.parserErrors).toHaveLength(0);
+`);
     expect(findGoto(document.parseResult.value).target.ref).toBeUndefined();
 
     const errors = errorsOf(document);
@@ -540,25 +430,19 @@ process p {
   });
 
   test('a parent-body goto cannot resolve a step inside an `on timer` handler; the boundary message names it by its code-less header', async () => {
-    // `on timer after "PT1H"` carries a particle+time instead of a code, so
-    // `handler.code` is undefined here exactly as it is for a catch-all
-    // handler — the same header-without-code branch applies unchanged.
-    // Filtered by the target name (like the process-scoped suite above) rather
-    // than a raw diagnostic count: a trigger-legality check outside this
-    // linker's remit may also fire on `timer` and must not be conflated with
-    // the boundary pin under test here.
-    const document = await parse(
-      `
+    // `on timer after "PT1H"` carries a particle and a time instead of a code,
+    // so `handler.code` is undefined, as it is for a catch-all handler.
+    // Diagnostics are filtered by target name rather than counted: a
+    // trigger-legality check outside this linker's remit may also fire on
+    // `timer`.
+    const document = await link(`
 process p {
   goto Inner
   on timer after "PT1H" {
     user Inner
   }
 }
-`,
-      { validation: true },
-    );
-    expect(document.parseResult.parserErrors).toHaveLength(0);
+`);
     expect(findGoto(document.parseResult.value).target.ref).toBeUndefined();
 
     const boundaryErrors = errorsOf(document).filter((d) =>
@@ -572,36 +456,27 @@ process p {
   });
 
   test('a goto inside an `on message` handler resolves a sibling step of the same body', async () => {
-    const document = await parse(
-      `
+    const goto = await gotoIn(`
 process p {
   on message "Invoice Received" {
     user Inner
     goto Inner
   }
 }
-`,
-      { validation: true },
-    );
-    expect(document.parseResult.parserErrors).toHaveLength(0);
-    const goto = findGoto(document.parseResult.value);
+`);
     expect(goto.target.ref).toBeDefined();
     expect((goto.target.ref as UserTask).name).toBe('Inner');
   });
 
   test('a goto resolves a named throw/emit in the same container', async () => {
-    const document = await parse(
-      `
+    const document = await link(`
 process p {
   goto Failed
   goto Ping
   throw error Failed "PAYMENT_FAILED"
   emit escalation Ping "LOW_STOCK"
 }
-`,
-      { validation: true },
-    );
-    expect(document.parseResult.parserErrors).toHaveLength(0);
+`);
 
     const gotos = AstUtils.streamAst(document.parseResult.value)
       .filter((node): node is GotoStatement => node.$type === 'GotoStatement')
@@ -617,18 +492,14 @@ process p {
   test('boundary message names the handler when a goto targets a named throw inside it', async () => {
     // A named throw/emit is a goto target, so a cross-boundary goto to one gets
     // the tailored boundary message rather than the generic "does not exist".
-    const document = await parse(
-      `
+    const document = await link(`
 process p {
   goto Failed
   on error "PAYMENT_FAILED" {
     throw error Failed "PAYMENT_FAILED"
   }
 }
-`,
-      { validation: true },
-    );
-    expect(document.parseResult.parserErrors).toHaveLength(0);
+`);
     expect(findGoto(document.parseResult.value).target.ref).toBeUndefined();
 
     const errors = errorsOf(document);
@@ -647,16 +518,12 @@ process p {
 
 describe('Scoping — hosted handler host reference', () => {
   test('a host resolves to an activity of the handler’s own container', async () => {
-    const document = await parse(
-      `
+    const document = await link(`
 process p {
   user Review
   on Review: timer after "PT2H" { }
 }
-`,
-      { validation: true },
-    );
-    expect(document.parseResult.parserErrors).toHaveLength(0);
+`);
 
     const handler = findHostedHandler(document.parseResult.value);
     expect(handler.host!.ref).toBeDefined();
@@ -664,18 +531,14 @@ process p {
   });
 
   test('a host resolves to an activity nested inside an if block of the same container', async () => {
-    const document = await parse(
-      `
+    const document = await link(`
 process p {
   if (true) {
     user Deep
   }
   on Deep: message "Cancelled" { }
 }
-`,
-      { validation: true },
-    );
-    expect(document.parseResult.parserErrors).toHaveLength(0);
+`);
 
     const handler = findHostedHandler(document.parseResult.value);
     expect(handler.host!.ref).toBeDefined();
@@ -683,26 +546,21 @@ process p {
   });
 
   test('a host inside a sibling sub-process does not resolve', async () => {
-    const document = await parse(
-      `
+    const document = await link(`
 process p {
   subprocess Sub {
     user Inner
   }
   on Inner: error "X" { }
 }
-`,
-      { validation: true },
-    );
-    expect(document.parseResult.parserErrors).toHaveLength(0);
+`);
     expect(
       findHostedHandler(document.parseResult.value).host!.ref,
     ).toBeUndefined();
   });
 
   test('a host inside a host-less handler body does not resolve', async () => {
-    const document = await parse(
-      `
+    const document = await link(`
 process p {
   user Review
   on error "X" {
@@ -710,18 +568,14 @@ process p {
   }
   on Inner: message "Cancelled" { }
 }
-`,
-      { validation: true },
-    );
-    expect(document.parseResult.parserErrors).toHaveLength(0);
+`);
     expect(
       findHostedHandler(document.parseResult.value).host!.ref,
     ).toBeUndefined();
   });
 
   test('a host that names an activity of another process does not resolve', async () => {
-    const document = await parse(
-      `
+    const document = await link(`
 process a {
   user Review
   on Only: signal "Cancelled" { }
@@ -729,10 +583,7 @@ process a {
 process b {
   user Only
 }
-`,
-      { validation: true },
-    );
-    expect(document.parseResult.parserErrors).toHaveLength(0);
+`);
     expect(
       findHostedHandler(document.parseResult.value).host!.ref,
     ).toBeUndefined();
@@ -741,19 +592,15 @@ process b {
   test('a host resolves against the handler’s container, not the handler’s own body', async () => {
     // A handler is itself a container node, so a scope seeded from the handler
     // rather than from the container around it comes out empty under the
-    // transparency rule — the host would not resolve at all.
-    const document = await parse(
-      `
+    // transparency rule, leaving the host unresolved.
+    const document = await link(`
 process p {
   user Review
   on Review: error "X" {
     user Review2
   }
 }
-`,
-      { validation: true },
-    );
-    expect(document.parseResult.parserErrors).toHaveLength(0);
+`);
 
     const handler = findHostedHandler(document.parseResult.value);
     const process = document.parseResult.value.processes[0]!;
@@ -761,11 +608,7 @@ process p {
   });
 
   test('a host inside a sub-process resolves to that sub-process’s own step', async () => {
-    // The host reference is the one that starts at a node which is itself a
-    // container, so the walk past it matters most at depth: a handler written
-    // inside a sub-process must see that sub-process, not the process around it.
-    const document = await parse(
-      `
+    const document = await link(`
 process p {
   user Outer
   subprocess Sub {
@@ -773,10 +616,7 @@ process p {
     on Review: error "X" { }
   }
 }
-`,
-      { validation: true },
-    );
-    expect(document.parseResult.parserErrors).toHaveLength(0);
+`);
 
     const handler = findHostedHandler(document.parseResult.value);
     const sub = document.parseResult.value.processes[0]!.body[1] as SubProcess;
@@ -784,8 +624,7 @@ process p {
   });
 
   test('a host inside a sub-process does not reach a step of the enclosing process', async () => {
-    const document = await parse(
-      `
+    const document = await link(`
 process p {
   user Outer
   subprocess Sub {
@@ -793,10 +632,7 @@ process p {
     on Outer: error "X" { }
   }
 }
-`,
-      { validation: true },
-    );
-    expect(document.parseResult.parserErrors).toHaveLength(0);
+`);
     expect(
       findHostedHandler(document.parseResult.value).host!.ref,
     ).toBeUndefined();
@@ -809,18 +645,14 @@ process p {
   });
 
   test('a cross-container host gets the boundary message, not the generic one', async () => {
-    const document = await parse(
-      `
+    const document = await link(`
 process p {
   subprocess Sub {
     user Inner
   }
   on Inner: error "X" { }
 }
-`,
-      { validation: true },
-    );
-    expect(document.parseResult.parserErrors).toHaveLength(0);
+`);
 
     const errors = errorsOf(document).filter((d) =>
       d.message.includes("'Inner'"),
@@ -834,16 +666,12 @@ process p {
   });
 
   test('a host that names nothing anywhere keeps the unchanged generic message', async () => {
-    const document = await parse(
-      `
+    const document = await link(`
 process p {
   user Review
   on Missing: error "X" { }
 }
-`,
-      { validation: true },
-    );
-    expect(document.parseResult.parserErrors).toHaveLength(0);
+`);
 
     const errors = errorsOf(document).filter((d) =>
       d.message.includes('Missing'),
@@ -861,8 +689,7 @@ describe('Scoping — goto through a hosted handler body', () => {
   test('a goto inside a hosted handler body resolves a main-flow step', async () => {
     // A hosted handler lowers inline into its host's container, so its body's
     // steps and the main flow share one container and one sequence-flow scope.
-    const document = await parse(
-      `
+    const goto = await gotoIn(`
 process p {
   user Review
   user Next
@@ -870,19 +697,13 @@ process p {
     goto Next
   }
 }
-`,
-      { validation: true },
-    );
-    expect(document.parseResult.parserErrors).toHaveLength(0);
-
-    const goto = findGoto(document.parseResult.value);
+`);
     expect(goto.target.ref).toBeDefined();
     expect((goto.target.ref as UserTask).name).toBe('Next');
   });
 
   test('a main-flow goto resolves a step inside a hosted handler body', async () => {
-    const document = await parse(
-      `
+    const goto = await gotoIn(`
 process p {
   user Review
   goto Fix
@@ -890,19 +711,13 @@ process p {
     user Fix
   }
 }
-`,
-      { validation: true },
-    );
-    expect(document.parseResult.parserErrors).toHaveLength(0);
-
-    const goto = findGoto(document.parseResult.value);
+`);
     expect(goto.target.ref).toBeDefined();
     expect((goto.target.ref as UserTask).name).toBe('Fix');
   });
 
   test('a hosted handler body inside a sub-process stays isolated from the process body', async () => {
-    const document = await parse(
-      `
+    const document = await link(`
 process p {
   user Outer
   subprocess Sub {
@@ -912,10 +727,7 @@ process p {
     }
   }
 }
-`,
-      { validation: true },
-    );
-    expect(document.parseResult.parserErrors).toHaveLength(0);
+`);
 
     const goto = findGoto(document.parseResult.value);
     expect(goto.target.ref).toBeUndefined();
@@ -928,8 +740,7 @@ process p {
   });
 
   test('a host-less handler nested in a hosted handler body is still its own container', async () => {
-    const document = await parse(
-      `
+    const document = await link(`
 process p {
   user Review
   on Review: error "X" {
@@ -939,10 +750,7 @@ process p {
     }
   }
 }
-`,
-      { validation: true },
-    );
-    expect(document.parseResult.parserErrors).toHaveLength(0);
+`);
     expect(findGoto(document.parseResult.value).target.ref).toBeUndefined();
   });
 });
@@ -951,8 +759,7 @@ process p {
 
 describe('Scoping — container-scoped goto (compensation handler boundary)', () => {
   test('a subprocess-body goto cannot resolve a step inside its `on compensation` handler; the boundary message names it by its code-less header (one diagnostic)', async () => {
-    const document = await parse(
-      `
+    const document = await link(`
 process p {
   subprocess Sub {
     goto Inner
@@ -961,10 +768,7 @@ process p {
     }
   }
 }
-`,
-      { validation: true },
-    );
-    expect(document.parseResult.parserErrors).toHaveLength(0);
+`);
     expect(findGoto(document.parseResult.value).target.ref).toBeUndefined();
 
     const errors = errorsOf(document);
@@ -977,8 +781,7 @@ process p {
   });
 
   test('a goto inside an `on compensation` handler resolves a sibling step of the same body', async () => {
-    const document = await parse(
-      `
+    const goto = await gotoIn(`
 process p {
   subprocess Sub {
     on compensation {
@@ -987,29 +790,20 @@ process p {
     }
   }
 }
-`,
-      { validation: true },
-    );
-    expect(document.parseResult.parserErrors).toHaveLength(0);
-    const goto = findGoto(document.parseResult.value);
+`);
     expect(goto.target.ref).toBeDefined();
     expect((goto.target.ref as UserTask).name).toBe('Inner');
   });
 
   test('a goto resolves a named `throw compensation` in the same container (code is optional for compensation)', async () => {
-    const document = await parse(
-      `
+    const goto = await gotoIn(`
 process p {
   subprocess Sub {
     goto Undo
     throw compensation Undo
   }
 }
-`,
-      { validation: true },
-    );
-    expect(document.parseResult.parserErrors).toHaveLength(0);
-    const goto = findGoto(document.parseResult.value);
+`);
     expect(goto.target.ref).toBeDefined();
     expect(goto.target.ref!.$type).toBe('ThrowStatement');
   });
@@ -1029,12 +823,12 @@ describe('Scoping — reserved-word guidance', () => {
     expect(document.parseResult.parserErrors.length).toBeGreaterThan(0);
     expect(message).toContain('date');
     expect(message.toLowerCase()).toContain('reserved');
-    // Points to the quoted "${…}" raw-string fallback for the offending name.
+    // Points to the quoted "${...}" raw-string fallback for the offending name.
     expect(message).toContain('"${date}"');
   });
 
   test('a reserved word in a name position points to the raw-string fallback', async () => {
-    // `user <name>` expects exactly ID → a Chevrotain mismatched-token error.
+    // `user <name>` expects exactly ID, a Chevrotain mismatched-token error.
     const document = await parse(`process p { user date }`);
     const message = parserErrorText(document);
 
@@ -1053,6 +847,18 @@ describe('Scoping — reserved-word guidance', () => {
 });
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
+
+/** The single `goto` of a cleanly parsed and linked `source`. */
+async function gotoIn(source: string) {
+  return findGoto((await link(source)).parseResult.value);
+}
+
+/** Parse `source` with linking enabled, asserting it parses cleanly. */
+async function link(source: string) {
+  const document = await parse(source, { validation: true });
+  expect(document.parseResult.parserErrors).toHaveLength(0);
+  return document;
+}
 
 /** The (assumed single) `GotoStatement` anywhere in the parsed model. */
 function findGoto(model: Model): GotoStatement {

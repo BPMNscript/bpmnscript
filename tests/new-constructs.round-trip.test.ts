@@ -216,7 +216,7 @@ describe('round-trip: service task with a `delegate` binding (delegateExpression
 });
 
 // ===========================================================================
-// service `topic` binding — the delegated-to-an-external-worker form.
+// service `topic` binding, the external-worker form.
 // ===========================================================================
 
 describe('round-trip: service task with a `topic` binding', () => {

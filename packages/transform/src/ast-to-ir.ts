@@ -1,13 +1,13 @@
 /**
- * Desugaring AST → IR transform.
+ * Desugaring AST -> IR transform.
  *
  * Walks the structured Langium AST produced by the grammar and
  * lowers it into the flat, BPMN-shaped {@link BpmnProcess} IR defined in
  * `./ir/types.js`. The structured control-flow keywords (`if`/`else if`/`else`,
- * `while`, `do … while`, `parallel`, `goto`) become gateways + sequence flows;
+ * `while`, `do ... while`, `parallel`, `goto`) become gateways + sequence flows;
  * implicit top-to-bottom sequence flow is materialised; implicit `start`/`end`
  * events are synthesised when the body does not declare them; conditions are
- * rendered to `${…}` bodies on the conditioned flows.
+ * rendered to `${...}` bodies on the conditioned flows.
  *
  * All synthesised ids come exclusively from `./synthesize-ids.js` so
  * that the restructuring `irToDsl` can reproduce them exactly and the
@@ -16,16 +16,16 @@
  * ## Structural-coordinate scheme `<X>`
  *
  * The scheme changes only in lockstep with `synthesize-ids.ts`, `ir-to-dsl.ts`,
- * and the round-trip normalizer (`tests/helpers/normalize-ir.ts`) — decompile
+ * and the round-trip normalizer (`tests/helpers/normalize-ir.ts`): decompile
  * round-trip id stability depends on reproducing the same coordinates.
  *
  * Every compound statement (`if` / `while` / `do-while` / `parallel`) needs a
  * structural coordinate `<X>` that seeds its synthesised gateway ids
  * (`Gateway_<X>_split`, `Gateway_<X>_join`, `Gateway_<X>_fork`,
- * `Gateway_<X>_loop`). The coordinate is **structural and deterministic** — it
- * is the compound statement's static position in the block tree, never a
- * traversal-order counter. Re-running this transform on the output of `irToDsl`
- * (which reconstructs the same block tree) therefore yields identical ids.
+ * `Gateway_<X>_loop`). The coordinate is the compound statement's static
+ * position in the block tree, never a traversal-order counter. Re-running this
+ * transform on the output of `irToDsl` (which reconstructs the same block tree)
+ * therefore yields identical ids.
  *
  * Definition:
  *
@@ -37,65 +37,60 @@
  *   - <enclosingBlockCoord> identifies that enclosing block. The process body is
  *     identified by the process id. A *nested* block belongs to a parent
  *     compound and is identified by the parent's <X> followed by a static
- *     **branch-discriminating segment** — because a single compound can own
+ *     **branch-discriminating segment**, because a single compound can own
  *     several sibling blocks (an `if`'s `then`/`else if`/`else`, a `parallel`'s
- *     branches), and a block has no statement of its own to index against. The
- *     segments, all static/structural (never traversal counters), are:
+ *     branches) and a block has no statement of its own to index against. The
+ *     segments, all static (never traversal counters), are:
  *
  *       Block kind            Enclosing-block coordinate
  *       ────────────────────────────────────────────────
  *       process body          <processId>
  *       `if` then block       <X>_t
- *       i-th `else if` block   <X>_e<i>   (0-based: first `else if` ⇒ `_e0`)
+ *       i-th `else if` block   <X>_e<i>   (0-based: first `else if` => `_e0`)
  *       `else` block          <X>_e
- *       loop body (while)     <X>          (sole block ⇒ no segment needed)
- *       loop body (do-while)  <X>          (sole block ⇒ no segment needed)
+ *       loop body (while)     <X>          (sole block => no segment needed)
+ *       loop body (do-while)  <X>          (sole block => no segment needed)
  *       i-th `parallel` branch <X>_b<i>   (0-based)
- *       subprocess body       <X>          (sole block ⇒ no segment needed)
- *       `on` handler body     <X>          (sole block ⇒ no segment needed)
+ *       subprocess body       <X>          (sole block => no segment needed)
+ *       `on` handler body     <X>          (sole block => no segment needed)
  *
- *     A loop owns exactly one block, so its body has no sibling to collide with
- *     and needs no segment; a `subprocess` is likewise a single-block compound,
- *     so its body's enclosing coordinate is the sub-process's own <X>. Rooting
- *     the body at the sub-process *name* instead would be shorter but unsafe:
+ *     A loop, a `subprocess`, and an `on` handler each own exactly one block, so
+ *     their bodies have no sibling to collide with and need no segment: the
+ *     body's enclosing coordinate is the compound's own <X>. Rooting a
+ *     sub-process body at its *name* instead would be shorter but unsafe:
  *     gateway ids skip `resolveCollision`, so a sub-process named like a
- *     structural coordinate could duplicate a gateway id elsewhere. Positional
- *     coordinates have no such hole.
+ *     structural coordinate could duplicate a gateway id elsewhere.
  *
- *     An `on` handler is also a single-block compound: at index i of block C it
- *     has coordinate <X> = C_i and id `EventSubProcess_<X>`, and — like a loop
- *     body — its body's enclosing coordinate is that same <X>, so nested
- *     gateways come out `Gateway_<X>_<j>_…`. Its implicit start/end seed from
- *     the handler id (`StartEvent_<id>` / `EndEvent_<id>`). An unnamed
- *     `throw`/`emit` at index i of block C is a leaf event with id
+ *     An `on` handler at index i of block C has coordinate <X> = C_i and id
+ *     `EventSubProcess_<X>`; its implicit start/end seed from the handler id.
+ *     An unnamed `throw`/`emit` at index i of block C is a leaf event with id
  *     `Throw_<C>_<i>` (an authored id is used verbatim instead).
  *
  * ## Implicit-event seeding by container id
  *
- * A container's implicit start/end are seeded from the container's own id — the
- * process id at the top level, the sub-process *name* inside a sub-process
- * (`StartEvent_<name>` / `EndEvent_<name>`) — and routed through
- * `resolveCollision` against a single process-wide `taken` set, so every
- * synthesised id is document-unique across all containers.
+ * A container's implicit start/end are seeded from the container's own id (the
+ * process id at the top level, the sub-process *name* inside a sub-process) and
+ * routed through `resolveCollision` against a single process-wide `taken` set,
+ * so every synthesised id is document-unique across all containers.
  *
  * Example: a `while` nested at index 0 of the `then` block of an `if` at body
- * index 2 of `process invoice-approval` →
+ * index 2 of `process invoice-approval` ->
  *       then block coord = `invoice-approval_2_t`,
  *       <X> = `invoice-approval_2_t_0`,
  *       loop gateway id = `Gateway_invoice-approval_2_t_0_loop`.
  *
  * The coordinate is passed down explicitly while walking; it never depends on
  * how many gateways were emitted before. Gateway ids are NOT routed through the
- * `taken`/`resolveCollision` guard — two distinct structural coordinates never
- * produce the same gateway id. Names that would collide with a synthesised
+ * `taken`/`resolveCollision` guard, since two distinct structural coordinates
+ * never produce the same gateway id. Names that would collide with a synthesised
  * gateway id pattern are rejected upstream by the validator
  * (see `bpmn-script-validator.ts`).
  *
  * ## Entry / exit contract
  *
- * Lowering a statement returns `{ entry, exit }` (or `null` exit when control
- * does not fall through — an explicit `end`, or a block whose final statement
- * jumped away via `goto`):
+ * Lowering a statement returns `{ entry, exit }`, with a `null` exit when
+ * control does not fall through (an explicit `end`, or a block whose final
+ * statement jumped away via `goto`):
  *   - `entry` is the id of the node an incoming flow must target.
  *   - `exit`  is the id of the node an outgoing fall-through flow leaves from,
  *             or `null` when control terminates / transfers explicitly.
@@ -104,10 +99,9 @@
  * join boundary (or the loop gateway, for a `while`).
  *
  * An `on` handler is the exception: it is lowered **out of the sequence chain**
- * and returns no frontier at all. It contributes nodes to the container but
- * never participates in its flow — the statement before it flows directly to
- * the statement after it, so a handler placed anywhere (including mid-body,
- * which the validator rejects) still yields correct flow.
+ * and returns no frontier at all. The statement before it flows directly to the
+ * statement after it, so a handler placed anywhere (including mid-body, which
+ * the validator rejects) still yields correct flow.
  *
  * Which nodes it contributes depends on its host slot. A host-less handler
  * guards the whole surrounding body and becomes one `triggeredByEvent`
@@ -117,7 +111,7 @@
  * every statement of its body land in the same arrays as the main flow, chained
  * from the boundary event to an end event of the escape path's own. Sharing one
  * container is what lets a `goto` cross between the escape chain and the main
- * flow — the only route back, since nothing rejoins implicitly.
+ * flow, the only route back since nothing rejoins implicitly.
  */
 
 import {
@@ -207,9 +201,9 @@ import {
  */
 interface Frontier {
   /**
-   * Id of the node an incoming flow must target, or `null` for an empty block
-   * (no statements to enter — the caller routes the incoming flow straight to
-   * the construct's join instead).
+   * Id of the node an incoming flow must target, or `null` for an empty block,
+   * in which case the caller routes the incoming flow straight to the
+   * construct's join instead.
    */
   entry: string | null;
   /** Id of the node a fall-through flow leaves from, or `null` if none. */
@@ -233,7 +227,7 @@ interface Frontier {
  *
  * `taken` seeds collision resolution: it is pre-populated with **every named
  * element id** in the process before lowering begins, so synthesised flow/end
- * ids never clash with an author-chosen statement name — anywhere in the
+ * ids never clash with an author-chosen statement name anywhere in the
  * document, including inside a nested sub-process. A single shared set keeps
  * every synthesised id document-unique, which BPMN requires (`id` is an XML
  * ID). `makeSequenceFlowId`/`makeStartEventId`/`makeEndEventId` mutate it in
@@ -285,15 +279,13 @@ export function astToIr(model: Model): BpmnProcess {
 }
 
 /**
- * Collect the process-header `error "CODE" message "…"` declarations into the
+ * Collect the process-header `error "CODE" message "..."` declarations into the
  * IR's `errorMessages`, in declaration order.
  *
  * The declared message text is the one piece of root-element data usage alone
  * cannot recover (two throws of a code share one root, so the text cannot live
- * on a throw). A duplicate declaration of the same code keeps the **first** — the
- * desugarer stays total; the validator owns the duplicate diagnostic. Every
- * declaration contributes its entry regardless of the exact words written for
- * its kind/field (those are validated in position, not here).
+ * on a throw). A duplicate declaration of the same code keeps the **first**:
+ * the desugarer stays total and the validator owns the duplicate diagnostic.
  */
 function collectErrorMessages(
   process: Process,
@@ -310,21 +302,17 @@ function collectErrorMessages(
 }
 
 /**
- * Lower one flow container's body — the process body, or a sub-process body —
+ * Lower one flow container's body (the process body, or a sub-process body)
  * into the supplied builder: the statement list plus the implicit start/end
  * events synthesised when the body does not declare them explicitly.
  *
- * The process and every sub-process share this exact shape (a node set + edge
- * set), so one function serves both. It mutates `builder` in place and returns
- * nothing.
- *
- * @param coord       Structural coordinate of the body's enclosing block —
- *   compound children index against it to form their own `<X>`. For the process
+ * @param coord       Structural coordinate of the body's enclosing block, which
+ *   compound children index against to form their own `<X>`. For the process
  *   body this is the process id; for a sub-process body it is the sub-process's
  *   own structural coordinate `<X>` (the single-block compound rule, like a
  *   loop body).
  * @param containerId Seed for the implicit start/end ids
- *   (`StartEvent_<containerId>` / `EndEvent_<containerId>`) — the process id at
+ *   (`StartEvent_<containerId>` / `EndEvent_<containerId>`): the process id at
  *   the top level, the sub-process name inside a sub-process. Routed through
  *   `resolveCollision` against the shared `taken` set so the ids stay
  *   document-unique.
@@ -335,26 +323,22 @@ function lowerContainerBody(
   coord: string,
   containerId: string,
 ): void {
-  // 1. Lower the statement list. `entry`/`exit` mark where an implicit start
-  //    flows in and where an implicit end (if any) flows out.
   const body = lowerBlockStatements(builder, statements, coord);
 
-  // 2. Materialise the implicit start event when the body does not open with an
-  //    explicit `start`. The start always flows to the body's entry.
+  // Materialise the implicit start event when the body does not open with an
+  // explicit `start`.
   if (body.entry !== null) {
     const firstIsExplicitStart =
       statements.length > 0 && isStartEvent(statements[0]!);
     if (!firstIsExplicitStart) {
-      // `makeStartEventId` resolves a collision with an author-chosen id and
-      // records the result in `builder.taken` itself.
       const startId = makeStartEventId(containerId, builder.taken);
       builder.flowElements.unshift({ kind: 'startEvent', id: startId });
       addFlow(builder, startId, body.entry);
     }
   }
 
-  // 3. Materialise the implicit end event when control falls off the body end
-  //    and the last statement is not an explicit `end`.
+  // Materialise the implicit end event when control falls off the body end and
+  // the last statement is not an explicit `end`.
   if (body.exit !== null) {
     const last = statements[statements.length - 1];
     const lastIsExplicitEnd = last !== undefined && isEndEvent(last);
@@ -367,10 +351,9 @@ function lowerContainerBody(
     }
   } else if (body.entry === null) {
     // The body has no flow step at all (empty, or every statement is an `on`
-    // handler contributing no entry): neither branch above ran, so the
-    // container would otherwise end up with no start event — invalid BPMN.
-    // Synthesise a bare start → end pair, the same shape `ensureHandlerStart`
-    // gives an empty event-sub-process body.
+    // handler contributing no entry), so neither branch above ran and the
+    // container would end up with no start event, which is invalid BPMN.
+    // Synthesise a bare start -> end pair.
     const startId = makeStartEventId(containerId, builder.taken);
     const endId = makeEndEventId(containerId, builder.taken);
     builder.flowElements.unshift({ kind: 'startEvent', id: startId });
@@ -392,8 +375,8 @@ function lowerContainerBody(
  * subsequent statements are still lowered (they may be jump targets) but no
  * implicit flow bridges the gap.
  *
- * @param coord The structural coordinate of the *enclosing* block — compound
- *   children index against it to form their own `<X>`.
+ * @param coord The structural coordinate of the *enclosing* block, which
+ *   compound children index against to form their own `<X>`.
  * @returns The block frontier: `entry` is the first statement's entry (or
  *   `null` for an empty block), `exit` is the last fall-through exit (or `null`
  *   when control does not reach the block end).
@@ -409,24 +392,18 @@ function lowerBlockStatements(
   let lastFrontier: Frontier | undefined;
 
   statements.forEach((stmt, index) => {
-    // An `on` handler contributes nodes but never joins the sequence chain: it
-    // catches an event (error, escalation, compensation, message, signal,
-    // timer, or condition), it is not a flow step. Both forms are lowered
-    // out-of-chain, leaving `prevExit`/`entry` untouched, so the statement
-    // before the handler flows directly to the statement after it.
-    //
-    // The host slot decides *which* BPMN construct catches: a host-less handler
-    // guards the whole surrounding body and becomes an event sub-process; a
-    // hosted one guards a single running activity and becomes a boundary event
-    // attached to it, lowered inline into this same container.
+    // An `on` handler catches an event rather than being a flow step, so both
+    // forms are lowered out-of-chain, leaving `prevExit`/`entry` untouched. The
+    // host slot decides which BPMN construct catches: a host-less handler
+    // becomes an event sub-process, a hosted one a boundary event lowered
+    // inline into this same container.
     if (isOnHandler(stmt)) {
       if (stmt.host !== undefined) {
         // `$refText` is the host id verbatim (cross-refs key on `name=ID`) and
-        // is present even when the linker could not resolve the reference — the
-        // same totality `lowerGoto` relies on. Dispatching on the *slot* rather
-        // than on its resolution also keeps this in step with the scope
-        // provider, whose container walk is transparent for any handler that
-        // carries a host, resolved or not.
+        // is present even when the linker could not resolve the reference.
+        // Dispatching on the slot rather than on its resolution keeps this in
+        // step with the scope provider, whose container walk is transparent for
+        // any handler carrying a host, resolved or not.
         lowerBoundaryHandler(builder, stmt, stmt.host.$refText, coord, index);
       } else {
         lowerOnHandler(builder, stmt, coord, index);
@@ -435,8 +412,8 @@ function lowerBlockStatements(
     }
 
     const frontier = lowerStatement(builder, stmt, coord, index);
-    // A statement always has a concrete entry node (only an empty *block* — never
-    // a top-level statement — yields a null entry), so this is non-null here.
+    // A statement always has a concrete entry node; only an empty *block*,
+    // never a top-level statement, yields a null entry.
     const stmtEntry = frontier.entry!;
 
     if (entry === null) {
@@ -542,7 +519,7 @@ function lowerStatement(
 // Simple statements
 // ---------------------------------------------------------------------------
 
-/** Lower an explicit `start` event, mapping any `form { … }` block. */
+/** Lower an explicit `start` event, mapping any `form { ... }` block. */
 function lowerStartEvent(builder: Builder, stmt: AstStartEvent): Frontier {
   const formFields = lowerFormFields(stmt);
   builder.flowElements.push({
@@ -592,13 +569,13 @@ const FORM_FIELD_TYPES = new Set<string>([
 ]);
 
 /**
- * Map the fields of an element's `form { … }` block(s) into IR
+ * Map the fields of an element's `form { ... }` block(s) into IR
  * {@link FormField}s, or `undefined` when the element declares no fields.
  *
  * The grammar allows a `form` block on any element and permits every
  * {@link VarType}; the validator restricts it to `start`/`user` with the four
  * form-compatible types before this runs. Multiple blocks are flattened
- * defensively — the validator flags a second block as a duplicate.
+ * defensively; the validator flags a second block as a duplicate.
  */
 function lowerFormFields(
   node: AstStartEvent | AstUserTask,
@@ -634,7 +611,7 @@ function toFormFieldType(type: string): FormFieldType {
 /**
  * Render a form field's default-value expression to the plain text the
  * `operaton:formField` `defaultValue` attribute carries. Literals yield their
- * bare value; any other expression falls back to its `${…}` body (Operaton
+ * bare value; any other expression falls back to its `${...}` body (Operaton
  * evaluates it as EL).
  */
 function renderFormDefault(expr: Expr): string {
@@ -670,18 +647,15 @@ function lowerServiceTask(builder: Builder, stmt: AstServiceTask): Frontier {
  * key is present.
  *
  * `class` is a bareword path ({@link attrValue}'s bareword handling strips the
- * `${…}` wrapper down to `com.example.X`, correct for a plain Java class
- * path). `expression` and `delegate` are JUEL EL text — most commonly a quoted
- * `"${…}"` raw template, but the grammar also accepts an unquoted value (a
- * bareword or dotted `VarRef`) — and must keep the `${…}` wrapper verbatim
- * either way, since that text is exactly the `operaton:expression` /
- * `operaton:delegateExpression` attribute value Operaton evaluates as EL, not
- * a literal string. They are read via {@link rawExpressionAttrValue}, not
- * `attrValue`, so a bareword is wrapped rather than stripped. `delegate` is
- * the friendly DSL alias for `delegateExpression`. `topic` is a plain
- * string-literal attribute naming the external worker topic — the fourth
- * binding, emitting `operaton:type="external"` alongside `operaton:topic`
- * instead of invoking code the engine holds directly.
+ * `${...}` wrapper down to `com.example.X`, correct for a plain Java class
+ * path). `expression` and `delegate` are JUEL EL text and must keep the
+ * `${...}` wrapper verbatim, since that text is exactly the
+ * `operaton:expression` / `operaton:delegateExpression` attribute value
+ * Operaton evaluates as EL. They are read via {@link rawExpressionAttrValue}
+ * rather than `attrValue`, so a bareword is wrapped instead of stripped.
+ * `delegate` is the DSL alias for `delegateExpression`. `topic` names the
+ * external worker topic, emitting `operaton:type="external"` alongside
+ * `operaton:topic`.
  *
  * Exactly one binding key is expected on a valid program (the validator
  * enforces this); when none is present the desugarer stays total by falling
@@ -725,17 +699,17 @@ const SCRIPT_FORMAT_ALIASES: Readonly<Record<string, string>> = {
 };
 
 /**
- * Split a raw `FENCED_SCRIPT` token (the whole ```` ```<tag>\n…\n``` ````
+ * Split a raw `FENCED_SCRIPT` token (the whole ```` ```<tag>\n...\n``` ````
  * block, captured verbatim by the grammar) into its language tag and inner
  * code body.
  *
  * The tag is the maximal run of ASCII letters immediately following the
- * opening fence. A single line terminator directly after the tag — `\r\n` or
- * `\n`, the delimiter separating the tag line from the body — is dropped;
- * nothing else is touched, so indentation and trailing newlines inside the
- * body survive verbatim. A fence with no such line terminator (e.g. a
- * same-line ` ```jsfoo``` `) has no distinguishable tag/body split: the whole
- * letter run becomes the tag and the body is empty.
+ * opening fence. A single line terminator directly after the tag (`\r\n` or
+ * `\n`, the delimiter between tag line and body) is dropped; nothing else is
+ * touched, so indentation and trailing newlines inside the body survive
+ * verbatim. A fence with no such line terminator (e.g. a same-line
+ * ` ```jsfoo``` `) has no distinguishable tag/body split: the whole letter run
+ * becomes the tag and the body is empty.
  */
 function splitFencedScript(raw: string): { tag: string; code: string } {
   const inner = raw.slice(3, -3); // strip the opening/closing ``` delimiters
@@ -753,8 +727,8 @@ function splitFencedScript(raw: string): { tag: string; code: string } {
  * Lower a `script` task: split the fenced body into its language tag and
  * inner code (see {@link splitFencedScript}), map the tag to the canonical
  * Operaton `scriptFormat` via {@link SCRIPT_FORMAT_ALIASES}. An unrecognized
- * tag is carried through as-is rather than rejected here — the validator (a
- * later stage) rejects an unsupported tag before it reaches a bad IR.
+ * tag is carried through as-is; the validator rejects it before it reaches a
+ * bad IR.
  */
 function lowerScriptTask(builder: Builder, stmt: AstScriptTask): Frontier {
   const { tag, code } = splitFencedScript(stmt.body);
@@ -777,20 +751,20 @@ function lowerScriptTask(builder: Builder, stmt: AstScriptTask): Frontier {
  *
  * - A split `ExclusiveGateway` `Gateway_<X>_split` and join
  *   `ExclusiveGateway` `Gateway_<X>_join` are emitted.
- * - Each `if`/`else if` branch gets a conditioned flow split→(branch entry)
+ * - Each `if`/`else if` branch gets a conditioned flow split->(branch entry)
  *   carrying `conditionExpression = ${c}`.
  * - The trailing `else` (or an implicit fall-through when absent) gets an
- *   **unconditioned** flow split→(else entry / join) whose id becomes the
+ *   **unconditioned** flow split->(else entry / join) whose id becomes the
  *   gateway's `defaultFlowId`. The default flow never carries a condition
  *   (Operaton rejects a conditioned default).
  * - Each branch's fall-through exit flows into the join. A branch terminating
  *   in an explicit `end` (null exit) gets no join continuation.
- * - When an `else` is present and every branch (every conditioned branch plus
- *   the else) terminates, the join ends up with zero incoming flows — nothing
- *   ever reaches it — so it is pruned (see {@link pruneUnreachableJoin}) and
- *   the construct reports `exit: null`, exactly like an explicit `end`. An
- *   `if` without an `else` can never reach this: its implicit fall-through
- *   always wires an unconditioned split→join flow.
+ * - When an `else` is present and every branch terminates, the join ends up
+ *   with zero incoming flows, so it is pruned (see
+ *   {@link pruneUnreachableJoin}) and the construct reports `exit: null`,
+ *   exactly like an explicit `end`. An `if` without an `else` can never reach
+ *   this: its implicit fall-through always wires an unconditioned split->join
+ *   flow.
  *
  * Entry is the split gateway; exit is the join gateway, or `null` when pruned.
  */
@@ -814,7 +788,7 @@ function lowerIf(builder: Builder, stmt: IfStatement, x: string): Frontier {
   lowerConditionedBranches(builder, stmt, x, splitId, joinId);
 
   // The trailing `else`, or an implicit fall-through, is the default flow. The
-  // `else` block carries the `_e` segment (no index — there is at most one).
+  // `else` block carries the `_e` segment (no index; there is at most one).
   if (stmt.elseBlock !== undefined) {
     const elseBranch = lowerBlock(builder, stmt.elseBlock, `${x}_e`);
     if (elseBranch.entry !== null) {
@@ -824,7 +798,7 @@ function lowerIf(builder: Builder, stmt: IfStatement, x: string): Frontier {
     }
     joinContinuation(builder, elseBranch, joinId);
   } else {
-    // No `else`: the implicit fall-through goes split→join as the default.
+    // No `else`: the implicit fall-through goes split->join as the default.
     addFlow(builder, splitId, joinId, undefined, defaultFlowId);
   }
 
@@ -833,12 +807,12 @@ function lowerIf(builder: Builder, stmt: IfStatement, x: string): Frontier {
 
 /**
  * Lower the conditioned branches of an `if` (the `then` block plus every
- * `else if`) into conditioned split→branch flows and their join continuations.
+ * `else if`) into conditioned split->branch flows and their join continuations.
  *
  * Each branch is a block with no statement of its own to index against, so it
  * contributes a static branch-discriminating coordinate segment (`_t` for
  * `then`, `_e<i>` for the i-th `else if`) before its nested compounds index
- * against it — keeping a nested compound at index 0 of `then` (`<X>_t_0`)
+ * against it, keeping a nested compound at index 0 of `then` (`<X>_t_0`)
  * distinct from one at index 0 of `else` (`<X>_e_0`), exactly as `parallel`
  * does with `b<i>`. An empty conditioned branch routes the condition straight
  * to the join.
@@ -879,7 +853,7 @@ function lowerConditionedBranches(
  * and an unconditioned **default** flow leaves the loop (the loop exit). The
  * body's fall-through exit flows **back** to the loop gateway (the back-edge).
  *
- * Never emits `standardLoopCharacteristics` — the loop is a gateway + back-edge
+ * Never emits `standardLoopCharacteristics`: the loop is a gateway + back-edge
  * only. Entry === exit === the loop gateway (the default flow leaves from it).
  */
 function lowerWhile(
@@ -960,18 +934,18 @@ function lowerDoWhile(
 }
 
 /**
- * Lower `parallel { { A } { B } … }` to an AND fork/join pair.
+ * Lower `parallel { { A } { B } ... }` to an AND fork/join pair.
  *
  * `Gateway_<X>_fork` (`ParallelGateway`) and `Gateway_<X>_join`
  * (`ParallelGateway`) are emitted. Each branch gets one unconditioned flow
- * fork→(branch entry); each branch fall-through exit flows to the join. No
+ * fork->(branch entry); each branch fall-through exit flows to the join. No
  * conditions are emitted on parallel-outgoing flows (Operaton ignores them).
  *
  * Each branch's compound children index against a `b<branchIndex>` segment of
  * the coordinate (a branch is a block with no statement to index against).
- * Entry is the fork; exit is the join — or `null` when every branch
- * terminates and the join is left with zero incoming flows, in which case it
- * is pruned (see {@link pruneUnreachableJoin}).
+ * Entry is the fork; exit is the join, or `null` when every branch terminates
+ * and the join is left with zero incoming flows, in which case it is pruned
+ * (see {@link pruneUnreachableJoin}).
  */
 function lowerParallel(
   builder: Builder,
@@ -1007,15 +981,15 @@ function lowerParallel(
  * document-unique across the whole process (BPMN `id` is an XML ID). The body's
  * enclosing-block coordinate is the sub-process's own structural coordinate
  * `<X>` (the sole-block rule loop bodies already follow), so gateways inside
- * the body come out positional — `Gateway_<X>_<i>_…` — and never collide with a
+ * the body come out positional (`Gateway_<X>_<i>_...`) and never collide with a
  * gateway elsewhere in the document. Implicit start/end inside the body are
- * seeded from the sub-process **name** (`StartEvent_<name>` / `EndEvent_<name>`,
- * mirroring the top level, which seeds from the process id).
+ * seeded from the sub-process **name**, mirroring the top level, which seeds
+ * from the process id.
  *
  * The finished container is pushed onto the **parent** builder as one opaque
  * activity node: an incoming flow targets it by id and a fall-through flow
  * leaves it by id, so `entry === exit === name`. An empty or handler-only body
- * still needs a valid start event, so it gets the same bare start → end pair
+ * still needs a valid start event, so it gets the same bare start -> end pair
  * a bodyless process body does.
  */
 function lowerSubProcess(
@@ -1045,26 +1019,23 @@ function lowerSubProcess(
 // ---------------------------------------------------------------------------
 
 /**
- * Lower an `on` handler into a `triggeredByEvent` {@link SubProcess} — an event
- * sub-process — pushed onto the **parent** container.
+ * Lower an `on` handler into a `triggeredByEvent` {@link SubProcess} (an event
+ * sub-process) pushed onto the **parent** container.
  *
  * A handler is a single-block compound, so its structural coordinate `<X>` is
  * `<coord>_<index>` and its id is `EventSubProcess_<X>`. Its body lowers through
  * the same container machinery every sub-process uses (a nested builder sharing
- * the one `taken` set), with the handler id as the implicit-event seed
- * (`StartEvent_<id>` / `EndEvent_<id>`) — the container-id rule.
+ * the one `taken` set), with the handler id as the implicit-event seed.
  *
  * The caught trigger lands on the body's start event (explicit or synthesized):
  * `eventDefinition` from the trigger word, code, and catch bindings, plus
- * `isInterrupting: false` when the handler is marked `alongside`. Unlike a plain
- * sub-process an event sub-process is **not** wired into the parent's flow, so
- * this returns nothing and the caller keeps the sequence chain flowing around
- * it.
+ * `isInterrupting: false` when the handler is marked `alongside`. An event
+ * sub-process is **not** wired into the parent's flow, so this returns nothing
+ * and the caller keeps the sequence chain flowing around it.
  *
  * An event sub-process is invalid BPMN without its trigger start event, so an
- * empty handler body still synthesizes start → flow → end (the same bare pair
- * every empty or handler-only flow container gets); `ensureHandlerStart` below
- * then attaches the trigger to it.
+ * empty handler body still synthesizes start -> flow -> end, which
+ * `ensureHandlerStart` then attaches the trigger to.
  */
 function lowerOnHandler(
   builder: Builder,
@@ -1099,35 +1070,34 @@ function lowerOnHandler(
 
 /**
  * Lower a hosted `on <Host>: <trigger>` handler into a boundary event **inline
- * in the host's own container** — the node itself plus its whole body, pushed
+ * in the host's own container**: the node itself plus its whole body, pushed
  * onto the very builder the host was lowered into.
  *
  * There is no wrapping container. The body's statements become siblings of the
  * main flow, so a `goto` crosses between the two in either direction and lands
- * as a plain sequence flow — which is the only way an escape chain can rejoin
- * the main flow at all. Nothing rejoins implicitly: the chain runs boundary →
- * body → its own end event, and where control goes after the catch is the
- * author's decision, written as a `goto`.
+ * as a plain sequence flow, the only way an escape chain can rejoin the main
+ * flow. Nothing rejoins implicitly: the chain runs boundary -> body -> its own
+ * end event, and where control goes after the catch is written as a `goto`.
  *
  * The escape chain's implicit end is seeded from the **boundary event id**
- * (`EndEvent_<boundaryId>`) rather than from the container id, so the main
- * flow's own `EndEvent_<containerId>` keeps its number whatever handlers the
- * container carries, and the inline lowering needs no container id threaded
- * into it. An empty body still gets boundary → end: an escape path that leads
- * nowhere is not well-formed BPMN.
+ * rather than from the container id, so the main flow's own
+ * `EndEvent_<containerId>` keeps its number whatever handlers the container
+ * carries, and the inline lowering needs no container id threaded into it. An
+ * empty body still gets boundary -> end: an escape path that leads nowhere is
+ * not well-formed BPMN.
  *
- * Element order is a real constraint, not a cosmetic one: `bpmn-auto-layout`
- * positions an attached event from `attachedTo.di.bounds`, so the host shape
- * has to exist before the attacher is laid out. The boundary node is pushed
- * when the handler statement is reached, and a handler always follows its host
- * in the statement list, so the host always precedes it in `flowElements`.
+ * Element order is a constraint: `bpmn-auto-layout` positions an attached event
+ * from `attachedTo.di.bounds`, so the host shape has to exist before the
+ * attacher is laid out. The boundary node is pushed when the handler statement
+ * is reached, and a handler always follows its host in the statement list, so
+ * the host always precedes it in `flowElements`.
  *
  * The trigger payload is built by the same {@link handlerEventDefinition} an
- * event sub-process uses — a caught error is a caught error wherever it is
- * caught. `alongside` stores `cancelActivity: false`, the non-interrupting
- * boundary; interrupting is the BPMN default and is left unwritten.
+ * event sub-process uses. `alongside` stores `cancelActivity: false`, the
+ * non-interrupting boundary; interrupting is the BPMN default and is left
+ * unwritten.
  *
- * @param hostId Id of the activity the event attaches to — the host reference's
+ * @param hostId Id of the activity the event attaches to, the host reference's
  *   text, which is the host statement's authored name verbatim.
  */
 function lowerBoundaryHandler(
@@ -1147,7 +1117,7 @@ function lowerBoundaryHandler(
   });
 
   // A handler is a single-block compound, so its body's enclosing coordinate is
-  // the handler's own `<X>` — the sole-block rule loop bodies follow.
+  // the handler's own `<X>`, the sole-block rule loop bodies follow.
   const body = lowerBlockStatements(
     builder,
     stmt.body.statements,
@@ -1163,17 +1133,17 @@ function lowerBoundaryHandler(
   if (exit !== null) {
     const endId = makeEndEventId(id, builder.taken);
     builder.flowElements.push({ kind: 'endEvent', id: endId });
-    // Honour a reserved exit-flow id the same way a container body does (a body
-    // ending in a `while` hands down its loop's default-exit flow id).
+    // Honour a reserved exit-flow id the same way a container body does: a body
+    // ending in a `while` hands down its loop's default-exit flow id.
     addFlow(builder, exit, endId, undefined, body.exitFlowId);
   }
 }
 
 /**
- * Return the handler body's single start event — the trigger-carrying start.
+ * Return the handler body's single start event, the trigger-carrying start.
  *
  * `lowerContainerBody` always leaves one behind (explicit, or synthesized,
- * including the bare start → end pair for an empty or handler-only body), so
+ * including the bare start -> end pair for an empty or handler-only body), so
  * this normally just finds and returns it; the synthesis below is a fallback
  * for the case that guarantee ever stops holding.
  */
@@ -1196,31 +1166,16 @@ function ensureHandlerStart(nested: Builder, id: string): IrStartEvent {
  * Build the caught {@link EventDefinition} for an `on` handler from its trigger
  * word, code, particle/time, condition, and catch bindings.
  *
- * The trigger word is a soft identifier validated in position, so the desugarer
- * stays total over any text — every branch below produces a well-formed
- * definition regardless of what else the handler carries, leaving word/shape
- * legality to the validator:
- *   - `escalation` — the escalation kind; carries a code and its `code` binding.
- *   - `compensation` — the payload-less undo-block kind, `{ kind: 'compensation'
- *     }`; a stray code, binding, or condition on the handler is ignored (there
- *     is nothing to bind). `alongside` still stamps `isInterrupting: false`,
- *     exactly as for every other trigger kind.
- *   - `message` — `{ kind: 'message', messageName: code ?? '' }`; bindings are
- *     ignored (a message has no catch bindings).
- *   - `signal` — `{ kind: 'signal', signalName: code ?? '' }`; bindings ignored.
- *   - `timer` — `{ kind: 'timer', timerKind, expression }`; `timerKind` comes
- *     from the particle via {@link timerParticleKind} and `expression` is the
- *     time text, falling back to `code` (the shape a bare `on timer "PT1H"`
- *     parses to when no particle is written) and then `''`.
- *   - `condition` — `{ kind: 'conditional', condition }`; the condition renders
- *     through `renderExpression` exactly like an `if`, or the total placeholder
- *     `${true}` when the handler carries none.
- *   - every other word (including a typo) — the error kind, exactly as before.
+ * The trigger word is a soft identifier validated in position, so every branch
+ * below produces a well-formed definition regardless of what else the handler
+ * carries, leaving word and shape legality to the validator. An unrecognized
+ * word falls back to the error kind. Fields that have nowhere to go (a code on
+ * `compensation`, bindings on `message`/`signal`, a `message` binding on an
+ * escalation, a binding field other than `code`/`message`) are dropped rather
+ * than rejected. A missing code is catch-all: the field is omitted.
  *
- * A binding whose field is neither `code` nor `message` is ignored for the same
- * totality reason. A missing code is catch-all (the field is omitted).
- * Escalations carry a code but no message, so a `message` binding on an
- * escalation handler is dropped.
+ * A bare `on timer "PT1H"` with no particle parses its time text into `code`,
+ * hence the timer expression's fallback chain.
  */
 function handlerEventDefinition(stmt: OnHandler): EventDefinition {
   if (stmt.trigger === 'escalation') {
@@ -1269,8 +1224,8 @@ function handlerEventDefinition(stmt: OnHandler): EventDefinition {
 /**
  * Map an `on timer` particle word (`after` / `at` / `every`) to the BPMN
  * `timerKind` it selects. Total over any other word (a missing particle, or an
- * unrecognized one) by falling back to `duration` — the same fallback a bare
- * `on timer "PT1H"` (no particle at all) needs to lower sensibly.
+ * unrecognized one) by falling back to `duration`, which is also what a bare
+ * `on timer "PT1H"` with no particle needs.
  */
 function timerParticleKind(
   particle: string | undefined,
@@ -1287,22 +1242,20 @@ function timerParticleKind(
 /**
  * Resolve the process variable a handler binds for a given catch field
  * (`code` / `message`), or `undefined` when the handler declares no such
- * binding. A binding with an unrecognized field is never matched, so it is
- * silently ignored — word legality is the validator's job.
+ * binding. A binding with an unrecognized field is never matched and so is
+ * ignored; word legality is the validator's job.
  */
 function bindingVariable(stmt: OnHandler, field: string): string | undefined {
   return stmt.bindings.find((b) => b.field === field)?.variable;
 }
 
 /**
- * Lower a `throw` to a typed end event — the terminal frontier, exactly like an
- * explicit `end`. Its exit is `null`: `throw` always ends this path (like every
- * programming language), so no fall-through flow reaches the next statement.
+ * Lower a `throw` to a typed end event, the terminal frontier like an explicit
+ * `end`. Its exit is `null`: `throw` always ends this path, so no fall-through
+ * flow reaches the next statement.
  *
  * The id is the authored `name` when present, else the positional
- * `Throw_<coord>_<index>`. `escalation` maps to the escalation kind, `signal`
- * to the signal kind; any other trigger word lowers as `error` (totality — the
- * validator polices the word).
+ * `Throw_<coord>_<index>`.
  */
 function lowerThrow(
   builder: Builder,
@@ -1320,16 +1273,13 @@ function lowerThrow(
 }
 
 /**
- * Lower an `emit` to an intermediate throw event — a plain fall-through node:
+ * Lower an `emit` to an intermediate throw event, a plain fall-through node:
  * `emit` fires the event and keeps going, so entry === exit === the node's id.
  *
  * The id is the authored `name` when present, else the positional
- * `Throw_<coord>_<index>`. `signal` maps to the signal kind; `compensation`
- * maps to the payload-less compensation kind (a stray code string is
- * ignored — there is nothing to carry it); every other trigger word
- * (including a typo) lowers as an escalation regardless: BPMN has no
- * intermediate error throw, so `emit error` (and any other word) lowers as an
- * escalation and the validator teaches `throw error` instead.
+ * `Throw_<coord>_<index>`. BPMN has no intermediate error throw, so every
+ * trigger word other than `signal`/`compensation` lowers as an escalation and
+ * the validator points the author at `throw error` instead.
  */
 function lowerEmit(
   builder: Builder,
@@ -1352,13 +1302,11 @@ function lowerEmit(
 }
 
 /**
- * Lower an `await` to an intermediate catch event — a plain fall-through node
- * on the main flow, exactly like {@link lowerEmit}'s intermediate throw,
- * except it waits for the trigger instead of firing it: entry === exit === the
- * node's id. The surface carries no name slot (a trial `name=ID` slot
- * collided with the timer particle at the token level), so the id is always
- * the positional `Catch_<coord>_<index>` — there is no authored-id branch to
- * mirror from `lowerEmit`.
+ * Lower an `await` to an intermediate catch event, a plain fall-through node on
+ * the main flow like {@link lowerEmit}'s intermediate throw, except it waits
+ * for the trigger instead of firing it: entry === exit === the node's id. The
+ * surface carries no name slot, so the id is always the positional
+ * `Catch_<coord>_<index>`.
  */
 function lowerIntermediateCatch(
   builder: Builder,
@@ -1376,15 +1324,11 @@ function lowerIntermediateCatch(
 }
 
 /**
- * Build the thrown {@link EventDefinition} for a `throw`: `escalation` maps to
- * the escalation kind, `compensation` to the payload-less compensation kind,
- * `signal` to the signal kind, every other trigger word (including a typo) to
- * `error`. The code is optional at the grammar level (compensation — the undo
- * block — never carries one, so no fallback is needed for that arm), so
- * `signalName` falls back to `''` the same way `handlerEventDefinition` does
- * above; the empty name is only reachable for validator-rejected programs. A
- * stray code string on `throw compensation` is ignored (there is nothing to
- * carry it).
+ * Build the thrown {@link EventDefinition} for a `throw`. Every trigger word
+ * other than `escalation`/`compensation`/`signal` maps to `error`. The code is
+ * optional at the grammar level, so `signalName` falls back to `''`; that empty
+ * name is only reachable for validator-rejected programs. A stray code on
+ * `throw compensation` is dropped, since compensation carries no payload.
  */
 function throwEventDefinition(stmt: ThrowStatement): EventDefinition {
   if (stmt.trigger === 'escalation') {
@@ -1400,19 +1344,14 @@ function throwEventDefinition(stmt: ThrowStatement): EventDefinition {
 }
 
 /**
- * Build the caught {@link EventDefinition} for an `await`: `message`/`signal`
- * map to their named catch kinds (name falling back to `''`, mirroring
- * `handlerEventDefinition`); `timer` combines the particle-derived
- * `timerKind` ({@link timerParticleKind}) with the time text, falling back to
- * `code` and then `''`; `condition` renders through `renderExpression`
- * exactly like an `if`, or the total placeholder `${true}` when the catch
- * carries none. The catch's `eventDefinition` field is narrowed to these four
- * kinds — an error/escalation/compensation catch is unrepresentable (they are
- * raised with `throw`/`emit`, never awaited inline) — so any other trigger
- * word (a validator-rejected program) also falls back to the always-true
- * conditional catch: total over any input without ever producing an
- * unrepresentable kind. The catch has no bindings to read, so this does not
- * route through `handlerEventDefinition`.
+ * Build the caught {@link EventDefinition} for an `await`.
+ *
+ * The catch's `eventDefinition` field is narrowed to message, signal, timer,
+ * and conditional; error, escalation, and compensation are raised with
+ * `throw`/`emit` and never awaited inline. Any other trigger word therefore
+ * falls back to the always-true conditional catch, keeping this total over any
+ * input without producing an unrepresentable kind. The catch has no bindings to
+ * read, so this does not route through `handlerEventDefinition`.
  */
 function catchEventDefinition(
   stmt: IntermediateCatchEvent,
@@ -1448,18 +1387,13 @@ function catchEventDefinition(
 /**
  * Lower a `call` statement to a {@link CallActivity} leaf node.
  *
- * A call activity is a plain named step, not a compound: it contributes no
- * gateway and no nested container, so its frontier is the trivial
- * `entry === exit === stmt.name`, exactly like a `user`/`service` task.
- * `builder` is whichever container the caller is currently lowering into
- * (the process body, or a nested sub-process builder), so a call written
- * inside a `subprocess` body lands in that nested container automatically —
- * the same mechanism every other leaf statement already relies on.
+ * A call activity is a plain named step: it contributes no gateway and no
+ * nested container, so `entry === exit === stmt.name` like a `user`/`service`
+ * task.
  *
  * `calledElement` falls back to the empty string when the `process` attribute
  * is absent, keeping the desugarer total over a program the validator will
- * reject. `binding`/`businessKey`/`inMappings`/`outMappings` are omitted
- * entirely when not applicable, per the file's spread-conditional house style.
+ * reject.
  */
 function lowerCallActivity(builder: Builder, stmt: AstCallActivity): Frontier {
   const calledElement = attrValue(stmt.attrs, 'process') ?? '';
@@ -1481,18 +1415,15 @@ function lowerCallActivity(builder: Builder, stmt: AstCallActivity): Frontier {
 }
 
 /**
- * Derive a call activity's version-resolution {@link CalledElementBinding}
- * from its `binding`/`version` attributes — the exact inverse of
- * `renderCallActivity` in `ir-to-dsl.ts`.
+ * Derive a call activity's version-resolution {@link CalledElementBinding} from
+ * its `binding`/`version` attributes, the inverse of `renderCallActivity` in
+ * `ir-to-dsl.ts`.
  *
  * `version` wins whenever present, even alongside a stray `binding` attribute:
- * the two keys together are a validator error (not this function's job to
- * flag), so the desugarer just picks the one BPMN can actually use. Absent a
- * `version`, a `binding` attribute resolves only when it is a bare `latest` or
- * `deployment` identifier; any other bareword (or a quoted value, which the
- * grammar also accepts here) is not a resolvable strategy, so the binding
- * comes back absent rather than guessing — again, the validator's job to
- * flag.
+ * the two keys together are a validator error, so the desugarer picks the one
+ * BPMN can use. Absent a `version`, a `binding` attribute resolves only when it
+ * is a bare `latest` or `deployment` identifier; anything else is not a
+ * resolvable strategy, so the binding comes back absent rather than guessed.
  */
 function callActivityBinding(
   attrs: Attribute[],
@@ -1520,10 +1451,9 @@ function callActivityBinding(
 /**
  * Read a call activity's `version` attribute value into the plain string the
  * IR's `version` binding carries: an int/decimal literal renders as its bare
- * digits, a string literal as its bare text, and anything else (a raw
- * `${…}` template, a bareword variable reference, …) through
- * {@link renderExpression} — so `version = "${v}"` keeps its `${…}` body
- * verbatim.
+ * digits, a string literal as its bare text, and anything else (a raw `${...}`
+ * template, a bareword variable reference) through {@link renderExpression}, so
+ * `version = "${v}"` keeps its `${...}` body verbatim.
  */
 function callVersionValue(expr: Expr): string {
   if (isLiteralInt(expr) || isLiteralDecimal(expr)) {
@@ -1558,16 +1488,14 @@ function lowerCallMappings(mappings: VariableMapping[]): {
  * - `all` (`*`) copies every variable.
  * - A bare `target` with no `source` is the same-name shorthand: `source`
  *   defaults to `target`.
- * - A `source` that is a plain single-segment variable reference (no dotted/
- *   indexed accessors — the grammar's `VarRef` with an empty `accessors`
- *   list) copies that one variable by name.
- * - Any other `source` expression (a dotted accessor, an operator, a literal,
- *   …) is a computed value: it renders through {@link renderExpression} into
- *   the `${…}` body the IR's `expression` variant carries.
+ * - A `source` that is a plain single-segment variable reference (the grammar's
+ *   `VarRef` with an empty `accessors` list) copies that one variable by name.
+ * - Any other `source` expression is a computed value: it renders through
+ *   {@link renderExpression} into the `${...}` body the IR's `expression`
+ *   variant carries.
  *
- * `local` is stamped only when the mapping's `local` modifier is set — an
- * absent `local` is the non-local default, so the IR never carries `local:
- * false`.
+ * `local` is stamped only when the mapping's `local` modifier is set; an absent
+ * `local` is the non-local default, so the IR never carries `local: false`.
  */
 function lowerCallMapping(mapping: VariableMapping): CallVariableMapping {
   const local = mapping.local ? ({ local: true } as const) : {};
@@ -1618,11 +1546,10 @@ function lowerGoto(stmt: GotoStatement): Frontier {
 /**
  * Emit a {@link SequenceFlow} from `sourceRef` to `targetRef`.
  *
- * When `forcedId` is supplied the flow is created with that exact id — used for
+ * When `forcedId` is supplied the flow is created with that exact id, used for
  * a gateway's reserved default flow (the gateway already references it as its
  * `defaultFlowId`) and for a `while` loop's reserved default-exit flow.
- * Otherwise a deterministic id is synthesised via {@link makeSequenceFlowId}. A
- * `conditionExpression` is attached only when `condition` is provided.
+ * Otherwise a deterministic id is synthesised via {@link makeSequenceFlowId}.
  */
 function addFlow(
   builder: Builder,
@@ -1653,7 +1580,7 @@ function addFlow(
  * Emit the flow from a branch's fall-through exit into a convergence gateway
  * (an `if`/`else` XOR join or a `parallel` AND join), honouring a reserved
  * `exitFlowId` when the branch ends in a `while` loop. A branch that terminated
- * (null exit — explicit `end` or `goto`) gets no continuation.
+ * (null exit, from an explicit `end` or `goto`) gets no continuation.
  */
 function joinContinuation(
   builder: Builder,
@@ -1668,14 +1595,11 @@ function joinContinuation(
 /**
  * After every branch of an `if`-with-`else` or a `parallel` has been lowered,
  * decide whether the synthesized join gateway `joinId` still has anything
- * flowing into it. It does whenever at least one branch is empty (routed
- * straight through by its caller) or falls through ({@link joinContinuation}
- * wired its exit into the join); it does not when every branch terminates
- * (`end`/`throw`/`goto`, or a nested compound that itself never falls
- * through). A join with zero incoming flows is invalid BPMN, so this removes
- * the join {@link FlowElement} that was pushed for it — never an authored
- * node, only the gateway `lowerIf`/`lowerParallel` synthesized — and reports
- * no exit, exactly like a branch ending in an explicit `end`.
+ * flowing into it. Nothing does when every branch terminates via
+ * `end`/`throw`/`goto`, or via a nested compound that itself never falls
+ * through. A join with zero incoming flows is invalid BPMN, so this removes the
+ * gateway `lowerIf`/`lowerParallel` synthesized (never an authored node) and
+ * reports no exit, like a branch ending in an explicit `end`.
  *
  * @returns `joinId` when it stays reachable, or `null` once pruned.
  */
@@ -1742,20 +1666,19 @@ function collectNamedIds(process: Process): Set<string> {
 /**
  * Resolve the value of a single attribute by key into the plain string the IR
  * carries for `assignee` / `formKey` / `class` / `topic`. NOT used for
- * `expression` / `delegate` — see {@link rawExpressionAttrValue}, which keeps
- * their `${…}` wrapper verbatim instead of stripping it.
+ * `expression` / `delegate`: see {@link rawExpressionAttrValue}, which keeps
+ * their `${...}` wrapper verbatim instead of stripping it.
  *
- * Attribute values are full expressions in the grammar, but the current
- * attribute set holds plain BPMN attribute text, not `${…}` expression bodies:
+ * Attribute values are full expressions in the grammar, but these attributes
+ * hold plain BPMN attribute text rather than `${...}` expression bodies:
  *   - A **string literal** (`assignee = "demo"`) yields its bare value `demo`.
  *   - A **bareword** value (`class = com.example.X`, parsed as a dotted
- *     `VarRef` with no accessors collapsing to the dotted path) yields the path
- *     verbatim — `com.example.X`.
- *   - Any **other expression** (genuinely dynamic value) falls back to the
- *     canonical `${…}` body via {@link renderExpression}, stored verbatim.
+ *     `VarRef` with no accessors) yields the dotted path verbatim.
+ *   - Any **other expression** falls back to the canonical `${...}` body via
+ *     {@link renderExpression}, stored verbatim.
  *
  * Returns the value of the **first** matching attribute; duplicate-key
- * detection is the validator's job, not the desugarer's.
+ * detection is the validator's job.
  */
 function attrValue(attrs: Attribute[], key: string): string | undefined {
   const attr = attrs.find((a) => a.key === key);
@@ -1764,16 +1687,14 @@ function attrValue(attrs: Attribute[], key: string): string | undefined {
   }
   const value = attr.value;
   if (isLiteralString(value)) {
-    // The lexer already stripped the surrounding quotes — carry the bare value.
+    // The lexer already stripped the surrounding quotes.
     return value.value;
   }
   if (isVarRef(value) && value.accessors.length === 0) {
-    // A bare identifier (e.g. a single-segment class would be unusual but legal).
     return value.name;
   }
-  // A dotted/bracketed VarRef (`com.example.X`) or any other expression: render
-  // it. For a dotted VarRef this yields `${com.example.X}`; strip the `${…}`
-  // wrapper so the IR carries the plain dotted path the BPMN attribute expects.
+  // A dotted VarRef renders as `${com.example.X}`; strip the `${...}` wrapper so
+  // the IR carries the plain dotted path the BPMN attribute expects.
   const rendered = renderExpression(value);
   if (isVarRef(value)) {
     return stripExpressionWrapper(rendered);
@@ -1782,18 +1703,17 @@ function attrValue(attrs: Attribute[], key: string): string | undefined {
 }
 
 /**
- * Resolve the value of a single attribute by key into the `${…}` body text a
+ * Resolve the value of a single attribute by key into the `${...}` body text a
  * raw JUEL expression attribute (`expression` / `delegate`) carries verbatim.
  *
- * Unlike {@link attrValue}, this never strips the `${…}` wrapper: it renders
+ * Unlike {@link attrValue}, this never strips the `${...}` wrapper: it renders
  * the attribute's value through {@link renderExpression} as-is, so a quoted
- * `"${…}"` raw template passes through unchanged and a bareword or dotted
- * `VarRef` (parsed the same way a `class` path is) is *wrapped* in `${…}`
- * rather than unwrapped — the correct behaviour for a field Operaton
- * evaluates as EL, not a literal string.
+ * `"${...}"` raw template passes through unchanged and a bareword or dotted
+ * `VarRef` is *wrapped* in `${...}` rather than unwrapped, which is what a
+ * field Operaton evaluates as EL needs.
  *
  * Returns the value of the **first** matching attribute; duplicate-key
- * detection is the validator's job, not the desugarer's.
+ * detection is the validator's job.
  */
 function rawExpressionAttrValue(
   attrs: Attribute[],
@@ -1804,7 +1724,7 @@ function rawExpressionAttrValue(
 }
 
 /**
- * Strip a `${…}` wrapper from a rendered expression, returning the bare inner
+ * Strip a `${...}` wrapper from a rendered expression, returning the bare inner
  * text. Used for dotted-identifier attribute values (`com.example.X`) that the
  * grammar parses as a `VarRef` but that map to plain BPMN attribute text. A
  * string without the wrapper is returned unchanged.
@@ -1817,11 +1737,11 @@ function stripExpressionWrapper(rendered: string): string {
 }
 
 /**
- * Extract the process-level `label = "…"` declaration value, if present.
+ * Extract the process-level `label = "..."` declaration value, if present.
  *
  * The label can be authored either inline after the process id
- * (`process P "Label" { … }`, stored as `process.label`) or as a header
- * `label = "…"` declaration (a `ProcessLabel` in `process.decls`). The inline
+ * (`process P "Label" { ... }`, stored as `process.label`) or as a header
+ * `label = "..."` declaration (a `ProcessLabel` in `process.decls`). The inline
  * form takes precedence; otherwise the first `ProcessLabel` declaration wins.
  */
 function processLabel(process: Process): string | undefined {

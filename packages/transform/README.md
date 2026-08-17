@@ -1,12 +1,10 @@
 # @bpmn-script/transform
 
-IR type definitions and the four bidirectional transforms that form the core of the BPMNscript pipeline.
+The conversion layer: the IR type definitions and the four transforms that move a process between formats.
+It's the bulk of the project's hand-written code, where the `language` package is mostly generated.
 
-## In plain terms
-
-This is the conversion layer — the part that actually moves a process between formats. It's the bulk of the project's original code (the `language` package is mostly generated; this package is hand-written).
-
-Everything pivots on the **IR** (intermediate representation): a small set of plain TypeScript objects, defined in `src/ir/types.ts`, that describe a process without committing to any one file format. Four transforms each convert between the IR and one neighbouring format:
+Everything pivots on the IR, a small set of plain TypeScript objects in `src/ir/types.ts` that describe a process without committing to any one file format ([ADR-0006](../../docs/decisions/0006-engine-agnostic-intermediate-representation.md)).
+Each transform converts between the IR and one neighbouring format, so none of them has to know about any of the others.
 
 ```mermaid
 flowchart LR
@@ -22,17 +20,17 @@ flowchart LR
     XML -- xmlToIr --> IR
 ```
 
-The four solid arrows are this package's transforms; the dotted one (text → AST) is the parser from `@bpmn-script/language`. Routing everything through the IR means each transform only has to understand one conversion, not every pairing. `astToIr` turns the parsed DSL (from the `language` package) into IR; `irToXml` writes deployable BPMN XML and runs auto-layout to add the diagram coordinates; `xmlToIr` reads an existing BPMN file back into IR; `irToDsl` prints IR as `.bpmnscript` text. Compiling is `astToIr` then `irToXml`; decompiling is `xmlToIr` then `irToDsl`.
+The four solid arrows are this package; the dotted one is the parser from `@bpmn-script/language`.
+`astToIr` turns the parsed DSL into IR, `irToXml` writes deployable BPMN XML and runs auto-layout for the diagram coordinates, `xmlToIr` reads an existing BPMN file back into IR, and `irToDsl` prints IR as `.bpmnscript` text.
+Compiling is `astToIr` then `irToXml`; decompiling is `xmlToIr` then `irToDsl`.
 
-The IR itself carries no Operaton-specific fields. Engine quirks (the `operaton:` attributes, the 30-day history setting) are attached only inside `irToXml`, so the data model in the middle stays clean.
-
-## Purpose
-
-This package is the transformation layer of BPMNscript. It defines the shared Intermediate Representation (IR) that all transforms use, and implements the four functions that convert between IR, BPMN 2.0 XML, and DSL text (see [ADR-0006](../../docs/decisions/0006-engine-agnostic-intermediate-representation.md)).
+The IR carries no Operaton-specific fields.
+Engine details (the `operaton:` attributes, the 30-day history setting) are attached inside `irToXml` alone, which keeps the data model in the middle vendor-neutral.
 
 ## IR shape
 
-The IR represents a single executable BPMN process. All types are in `src/ir/types.ts` and re-exported from the package root.
+The IR represents one executable BPMN process.
+All types live in `src/ir/types.ts` and are re-exported from the package root.
 
 ```ts
 interface BpmnProcess {
@@ -66,117 +64,65 @@ interface SequenceFlow {
 }
 ```
 
-A `ServiceTask` binds to exactly one execution form, tagged by `binding.kind`: `class` (a Java delegate class, `operaton:class`), `expression` (`operaton:expression`), `delegateExpression` (`operaton:delegateExpression` — the DSL surface alias is `delegate`), or `external` (`operaton:type="external"` + `operaton:topic` — the DSL surface for this binding is `service X { topic = "…" }`, the same `service` statement every other binding uses). The tagged union makes "more than one binding" unrepresentable at the type level and keeps every consumer's `switch (binding.kind)` exhaustive.
+A `ServiceTask` binds to exactly one execution form, tagged by `binding.kind`: `class` (a Java delegate class, `operaton:class`), `expression`, `delegateExpression` (the DSL spells this one `delegate`), or `external` (`operaton:type="external"` plus `operaton:topic`, written `service X { topic = "..." }`).
+The tagged union makes "more than one binding" unrepresentable at the type level and keeps every `switch (binding.kind)` exhaustive.
 
-`SubProcess` is itself a `FlowContainer`, so the IR is recursive: a sub-process nests its own `flowElements`/`sequenceFlows` at any depth, and sequence flows never cross a container boundary. Event-layer semantics ride on an `eventDefinition` field (optional on a start or end event, required on an intermediate throw, an intermediate catch, or a boundary event): a handler's `StartEvent`, a typed `EndEvent`, an `IntermediateThrowEvent`, an `IntermediateCatchEvent`, and a `BoundaryEvent` each carry an `EventDefinition` (error, escalation, message, signal, timer, or conditional on a `BoundaryEvent` — never the payload-less compensation, which BPMN attaches through `isForCompensation` and an association instead of a boundary event; every other holder may also carry compensation, except `IntermediateCatchEvent`, whose `eventDefinition` is restricted to message, signal, timer, or conditional — the four triggers a linear flow can block on and then continue past; see [ADR-0020](../../docs/decisions/0020-intermediate-catch-events.md)). The document-level `bpmn:Error`/`bpmn:Escalation`/`bpmn:Message`/`bpmn:Signal` root elements are derived from usage rather than modeled — see [ADR-0016](../../docs/decisions/0016-derived-event-root-elements.md) and [ADR-0017](../../docs/decisions/0017-event-trigger-payload-surfaces.md).
+`SubProcess` is itself a `FlowContainer`, so the IR is recursive: a sub-process nests its own `flowElements` and `sequenceFlows` at any depth, and no sequence flow crosses a container boundary.
 
-`IntermediateCatchEvent` is a plain one-in/one-out, fall-through node on the main flow — the topological twin of `IntermediateThrowEvent`, differing only in whether the token fires forward immediately or stops and waits for its trigger. It carries no `name`: unlike a hosted handler, it has no body to `goto` back into, so its id is always the synthesized `Catch_<coord>` and never an authored name.
+Event semantics ride on an `eventDefinition` field, optional on a start or end event and required on an intermediate throw, an intermediate catch, and a boundary event.
+Compensation is the odd one out, because BPMN expresses it through `isForCompensation` and an association rather than a boundary event: every holder may carry it except `BoundaryEvent`.
+`IntermediateCatchEvent` is restricted to message, signal, timer, or conditional, the four triggers a linear flow can block on and then continue past ([ADR-0020](../../docs/decisions/0020-intermediate-catch-events.md)).
+The document-level `bpmn:Error`, `bpmn:Escalation`, `bpmn:Message`, and `bpmn:Signal` roots are derived from usage rather than modeled ([ADR-0016](../../docs/decisions/0016-derived-event-root-elements.md), [ADR-0017](../../docs/decisions/0017-event-trigger-payload-surfaces.md)).
 
-`BoundaryEvent` is the IR's first flow element with outgoing flow but no incoming: a token appears there directly when its host activity (named by `attachedToRef`, a flow element of the same container) is running and the trigger fires, rather than by traversing a sequence flow into it — see [ADR-0009](../../docs/decisions/0009-dominator-based-restructuring.md) for how the restructuring analysis treats it as a second control-flow entry, and [ADR-0019](../../docs/decisions/0019-boundary-events-attached-to-an-activity.md) for the full set of decisions behind the construct. `cancelActivity` mirrors `StartEvent.isInterrupting`: only the non-default `false` (a non-interrupting, `alongside` boundary) is stored.
+`IntermediateCatchEvent` is a one-in, one-out node on the main flow, the topological twin of `IntermediateThrowEvent` and differing only in whether the token fires forward immediately or waits.
+It carries no `name`: there is no body to `goto` back into, so its id is always the synthesized `Catch_<coord>`.
 
-Operaton-specific values (`operaton:historyTimeToLive = "P30D"`) are applied as constants at XML serialization time and are absent from the IR.
+`BoundaryEvent` is the one flow element with outgoing flow but no incoming.
+A token appears there directly when its host activity (named by `attachedToRef`, a flow element of the same container) is running and the trigger fires, rather than by traversing a sequence flow into it.
+[ADR-0009](../../docs/decisions/0009-dominator-based-restructuring.md) covers how the restructuring analysis treats that second control-flow entry, and [ADR-0019](../../docs/decisions/0019-boundary-events-attached-to-an-activity.md) the rest of the construct.
+`cancelActivity` mirrors `StartEvent.isInterrupting` in storing only the non-default `false`, an `alongside` boundary.
 
 ## Public API
 
 ```ts
-// IR types (re-exported)
-import type {
-  BpmnProcess,
-  FlowElement,
-  SequenceFlow,
-  StartEvent,
-  EndEvent,
-  UserTask,
-  ServiceTask,
-  ScriptTask,
-  ExclusiveGateway,
-  ParallelGateway,
-} from '@bpmn-script/transform';
+import { astToIr, irToXml, xmlToIr, irToDsl } from '@bpmn-script/transform';
 
-// Langium AST → IR  (synchronous)
-import { astToIr } from '@bpmn-script/transform';
-const ir: BpmnProcess = astToIr(langiumAstModel);
-
-// IR → BPMN 2.0 XML string with bpmndi: layout data  (async)
-import { irToXml } from '@bpmn-script/transform';
-const xml: string = await irToXml(ir);
-
-// BPMN 2.0 XML string → IR  (async; discards DI on import, refuses BPMN
-// content the IR cannot express, and warns about non-semantic drops)
-import { xmlToIr } from '@bpmn-script/transform';
-const { ir, warnings } = await xmlToIr(xmlString);
-
-// IR → .bpmnscript DSL string  (synchronous)
-import { irToDsl } from '@bpmn-script/transform';
-const dsl: string = irToDsl(ir);
-
-// Deterministic id helpers
-import {
-  makeGatewaySplitId,
-  makeGatewayJoinId,
-  makeGatewayForkId,
-  makeGatewayLoopId,
-  makeDefaultFlowId,
-  makeSequenceFlowId,
-  makeStartEventId,
-  makeEndEventId,
-  resolveCollision,
-} from '@bpmn-script/transform';
-
-// JUEL expression parser and serializer (import / decompile path)
-import { parseJuel, renderRawFallback } from '@bpmn-script/transform';
-import type {
-  JuelNode,
-  Accessor,
-  BinaryOp,
-  ExprResult,
-} from '@bpmn-script/transform';
-
-// Error classes
-import {
-  UnsupportedConstructError,
-  UnsupportedElementError,
-  UnsupportedServiceTaskFormError,
-  UnsupportedFormFieldTypeError,
-  UnsupportedCallActivityError,
-  UnsupportedEventDefinitionError,
-  UnsupportedEventFeatureError,
-  UnsupportedLoopCharacteristicsError,
-  UnsupportedCollaborationError,
-} from '@bpmn-script/transform';
-
-// Import-warnings type (non-fatal, non-semantic drops)
-import type {
-  ImportWarning,
-  ImportWarningCategory,
-} from '@bpmn-script/transform';
+const ir: BpmnProcess = astToIr(langiumAstModel); // sync
+const xml: string = await irToXml(ir); // async; adds bpmndi: layout data
+const { ir, warnings } = await xmlToIr(xmlString); // async; discards DI, may throw
+const dsl: string = irToDsl(ir); // sync
 ```
 
-### The import contract: refuse or warn, never drop silently
+`src/index.ts` is the full export list: the IR types, the deterministic id helpers, the JUEL parser (`parseJuel`, `renderRawFallback`), the `Unsupported*Error` classes, and the `ImportWarning` types.
 
-See [ADR-0014](../../docs/decisions/0014-honest-bpmn-import-contract.md) for the rationale.
-`xmlToIr` never silently discards content it cannot represent. Content splits into two buckets:
+## The import contract
 
-- **Refused** — content the IR cannot express at all. `xmlToIr` throws a subclass of `UnsupportedConstructError` before producing any IR, so there is no partial output.
-- **Dropped with a warning** — content the IR does not carry but whose absence causes no semantic loss (an extra Operaton extension attribute, a lane). `xmlToIr` returns it via the `warnings` array instead of throwing.
+`xmlToIr` never discards content without saying so.
+What it cannot represent falls into two buckets, and the reasoning is in [ADR-0014](../../docs/decisions/0014-honest-bpmn-import-contract.md).
 
-### Error classes (refusals)
+Content the IR cannot express at all is refused: `xmlToIr` throws a subclass of `UnsupportedConstructError` before producing any IR, so there is no partial output.
+Content the IR does not carry but whose absence changes nothing about what the process executes (an extra Operaton extension attribute, a lane) comes back through the `warnings` array instead.
 
-| Class                                 | Thrown by | Reason                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| ------------------------------------- | --------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `UnsupportedConstructError`           | —         | Abstract base of every refusal below. Catch it to classify any refusal as "unsupported construct" without enumerating subclasses.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| `UnsupportedElementError`             | `xmlToIr` | Input XML contains a BPMN element _kind_ outside the supported subset (e.g. `bpmn:transaction`, `bpmn:adHocSubProcess`) — embedded sub-processes, call activities, and (message/timer/signal/conditional) intermediate catch events are supported                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| `UnsupportedServiceTaskFormError`     | `xmlToIr` | A service task carries no supported execution binding — none of `operaton:class`, `operaton:expression`, `operaton:delegateExpression`, or `operaton:type="external"` with a usable `operaton:topic`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| `UnsupportedFormFieldTypeError`       | `xmlToIr` | An `operaton:formField` uses a `type` outside `string`/`long`/`boolean`/`date` (e.g. `double`, `enum`, a custom type); refused so the field's input semantics are not silently narrowed                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
-| `UnsupportedCallActivityError`        | `xmlToIr` | A `bpmn:callActivity` the engine could not resolve or execute as written — no `calledElement`, a `variableMappingClass`/`variableMappingDelegateExpression` (replaces the `operaton:in`/`operaton:out` mapping with a Java/delegate hook, so the imported call would pass no variables into or out of the called process), a `calledElementTenantId` (pins the tenant the engine resolves the called process against, so dropping it would change which process runs), a `version` binding with no `calledElementVersion`, an unrecognized binding value, or an `operaton:in`/`operaton:out` mapping shape the IR cannot represent                                                                                                                                                                                                                                                                                                                                                                                                |
-| `UnsupportedEventDefinitionError`     | `xmlToIr` | An event carries the _wrong kind_ of definition for its position — any definition on a plain start event; anything but error/escalation/message/signal/timer/conditional/compensation on a handler start; anything but error/escalation/signal/compensation on an end event or intermediate throw (terminate, link, …)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| `UnsupportedEventFeatureError`        | `xmlToIr` | An event construct of the _right kind_ but a _shape_ the surface cannot express — a non-interrupting error or compensation handler, a throw/emit resolving to no code, a boundary compensation event, an `activityRef`- or `waitForCompletion="false"`-carrying compensate throw, an `isForCompensation` activity, a mis-hosted compensation event sub-process, a handler with the wrong start-event/definition count, a `bpmn:BoundaryEvent` with no `attachedToRef`, with an incoming sequence flow, with `cancelActivity="false"` on an error trigger, with an `operaton:inputOutput` mapping, with an escalation trigger attached to anything other than a subprocess/call activity/user task, or whose `attachedToRef` does not name a mapped activity in the same container, or an intermediate catch event with zero or more than one event definition, `parallelMultiple="true"`, or a link/error/escalation/compensation/cancel trigger — message, timer, signal, and conditional are the only triggers awaitable inline |
-| `UnsupportedLoopCharacteristicsError` | `xmlToIr` | A task or sub-process carries loop characteristics (multi-instance or standard loop); the IR models elements that run exactly once                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| `UnsupportedCollaborationError`       | `xmlToIr` | The document contains a `bpmn:Collaboration` (pools and/or message flows); the IR models a single standalone process                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+### Refusals
 
-### Import warnings (non-semantic drops)
+Every class below extends `UnsupportedConstructError`, so catching that one classifies any refusal.
+`src/errors.ts` carries the per-class detail and `src/xml-to-ir.ts` the exact conditions.
 
-`xmlToIr` returns `{ ir, warnings }`. Each `ImportWarning` names a construct that was dropped but did not change what the process executes:
+| Class                                 | Refused because                                                           |
+| ------------------------------------- | ------------------------------------------------------------------------- |
+| `UnsupportedElementError`             | An element kind outside the supported subset (`bpmn:transaction`, ...)    |
+| `UnsupportedServiceTaskFormError`     | A service task with no supported execution binding                        |
+| `UnsupportedFormFieldTypeError`       | A form field typed outside `string`/`long`/`boolean`/`date`               |
+| `UnsupportedCallActivityError`        | A call activity the engine could not resolve or execute as written        |
+| `UnsupportedEventDefinitionError`     | An event definition of the wrong kind for its position                    |
+| `UnsupportedEventFeatureError`        | An event of the right kind in a shape the surface cannot express          |
+| `UnsupportedLoopCharacteristicsError` | Multi-instance or standard loop characteristics; IR elements run once     |
+| `UnsupportedCollaborationError`       | A collaboration, meaning pools or message flows; the IR holds one process |
+
+### Import warnings
+
+`xmlToIr` returns `{ ir, warnings }`, and each `ImportWarning` names something dropped that does not change what the process executes.
+`warnings` is `[]` for input that round-trips cleanly.
 
 ```ts
 interface ImportWarning {
@@ -191,13 +137,21 @@ interface ImportWarning {
 }
 ```
 
-- `extensionAttribute` — an Operaton/camunda extension attribute or extension element beyond the supported `assignee`/`formKey`/`class` (e.g. `operaton:asyncBefore`, an `operaton:inputOutput` block, or `itemRef`/`structureRef` on a referenced message/signal root). Attribution is exact when moddle ties the content to its owning element; the handful of undeclared `operaton:` elements moddle cannot pin to a specific step are reported once against the process id instead — still never silent, only coarser. On a call activity specifically, `variableMappingClass`, `variableMappingDelegateExpression`, and `calledElementTenantId` are excluded from this warn tier and refused instead (see `UnsupportedCallActivityError` below) — they are execution-affecting, not cosmetic.
-- `lane` — a `bpmn:Lane`; the flat IR has no lane concept, so every step lands in a single process and the lane assignment is dropped.
-- `label` — a distinct `name` on an event handler, a typed end event, an intermediate throw, an intermediate catch, or a boundary event; these read from their trigger and code, so a label that differs has nowhere to render and is dropped.
-- `unreferencedRoot` — a `bpmn:Error`/`bpmn:Escalation`/`bpmn:Message`/`bpmn:Signal` root element no event definition references; with nothing pointing at it, it adds nothing to the imported process.
-- `documentation` — `bpmn:documentation` attached to any mapped element (the process itself, a flow element, a sub-process, a call activity, …); the IR carries no documentation surface, so the text is dropped rather than kept. One warning per element that carries documentation. Full round-trip support for documentation (a DSL surface that carries it through both transform directions) is a genuine but separate future feature, not yet built.
+`extensionAttribute` covers an Operaton or camunda extension beyond the supported `assignee`, `formKey`, and `class`, such as `operaton:asyncBefore` or an `operaton:inputOutput` block.
+Attribution is exact wherever moddle ties the content to its owning element; the few undeclared `operaton:` elements it cannot pin down are reported once against the process id instead, coarser but still reported.
+On a call activity, `variableMappingClass`, `variableMappingDelegateExpression`, and `calledElementTenantId` are execution-affecting rather than cosmetic, so they are refused instead of warned about.
 
-`warnings` is `[]` for input that round-trips cleanly.
+`lane` covers a `bpmn:Lane`.
+The flat IR has no lane concept, so every step lands in one process and the assignment goes.
+
+`label` covers a distinct `name` on an event handler, a typed end event, an intermediate throw, an intermediate catch, or a boundary event.
+Those read from their trigger and code, so a differing label has nowhere to render.
+
+`unreferencedRoot` covers a `bpmn:Error`, `bpmn:Escalation`, `bpmn:Message`, or `bpmn:Signal` root that no event definition references.
+
+`documentation` covers `bpmn:documentation` on any mapped element, one warning per element.
+The IR has no documentation surface, so the text is dropped rather than kept.
+Carrying documentation through both transform directions is a real future feature, not yet built.
 
 ## Build and test
 
@@ -213,30 +167,37 @@ npm test
 
 ## Source layout
 
-| Path                       | Purpose                                                                                                                                                                                                                                                                                                                                 |
-| -------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `src/ir/types.ts`          | IR type definitions (`BpmnProcess`, `FlowElement`, `SequenceFlow`, …)                                                                                                                                                                                                                                                                   |
-| `src/synthesize-ids.ts`    | Deterministic structural id generators (frozen contract; see [ADR-0010](../../docs/decisions/0010-deterministic-structural-ids.md))                                                                                                                                                                                                     |
-| `src/ast-to-ir.ts`         | `astToIr`: desugar structured AST → flat IR (gateway synthesis, implicit start/end)                                                                                                                                                                                                                                                     |
-| `src/ir-to-xml.ts`         | `irToXml`: IR → BPMN 2.0 XML with Operaton extensions and auto-layout                                                                                                                                                                                                                                                                   |
-| `src/xml-to-ir.ts`         | `xmlToIr`: BPMN 2.0 XML → `{ ir, warnings }` (DI discarded, refuses constructs the IR cannot express, warns about non-semantic drops)                                                                                                                                                                                                   |
-| `src/cfg-analysis.ts`      | `analyzeCfg`: dominator/post-dominator/back-edge analysis for `irToDsl`                                                                                                                                                                                                                                                                 |
-| `src/ir-to-dsl.ts`         | `irToDsl`: restructure flat IR → structured DSL text; degrades to `goto` (see [ADR-0009](../../docs/decisions/0009-dominator-based-restructuring.md))                                                                                                                                                                                   |
-| `src/juel.ts`              | `parseJuel`, `renderRawFallback`: JUEL-subset parser and serializer for the import/decompile path                                                                                                                                                                                                                                       |
-| `src/errors.ts`            | `UnsupportedConstructError` (base) and its refusal subclasses: `UnsupportedElementError`, `UnsupportedServiceTaskFormError`, `UnsupportedFormFieldTypeError`, `UnsupportedCallActivityError`, `UnsupportedEventDefinitionError`, `UnsupportedEventFeatureError`, `UnsupportedLoopCharacteristicsError`, `UnsupportedCollaborationError` |
-| `src/index.ts`             | Package barrel export                                                                                                                                                                                                                                                                                                                   |
-| `src/operaton-moddle.json` | Trimmed Operaton moddle extension descriptor (see [ADR-0007](../../docs/decisions/0007-operaton-moddle-extension-fork.md))                                                                                                                                                                                                              |
+| Path                       | Purpose                                                                                                                                    |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| `src/ir/types.ts`          | IR type definitions (`BpmnProcess`, `FlowElement`, `SequenceFlow`, ...)                                                                    |
+| `src/synthesize-ids.ts`    | Deterministic structural id generators; the contract is frozen ([ADR-0010](../../docs/decisions/0010-deterministic-structural-ids.md))     |
+| `src/ast-to-ir.ts`         | `astToIr`: desugar the structured AST into flat IR (gateway synthesis, implicit start and end)                                             |
+| `src/ir-to-xml.ts`         | `irToXml`: IR to BPMN 2.0 XML with Operaton extensions and auto-layout                                                                     |
+| `src/xml-to-ir.ts`         | `xmlToIr`: BPMN 2.0 XML to `{ ir, warnings }`                                                                                              |
+| `src/cfg-analysis.ts`      | `analyzeCfg`: dominator, post-dominator, and back-edge analysis for `irToDsl`                                                              |
+| `src/ir-to-dsl.ts`         | `irToDsl`: restructure flat IR into DSL text, degrading to `goto` ([ADR-0009](../../docs/decisions/0009-dominator-based-restructuring.md)) |
+| `src/juel.ts`              | `parseJuel`, `renderRawFallback`: the JUEL-subset parser and serializer for the import path                                                |
+| `src/errors.ts`            | `UnsupportedConstructError` and its refusal subclasses                                                                                     |
+| `src/index.ts`             | Package barrel export                                                                                                                      |
+| `src/operaton-moddle.json` | Trimmed Operaton moddle extension descriptor ([ADR-0007](../../docs/decisions/0007-operaton-moddle-extension-fork.md))                     |
 
-## Key implementation notes
+## Implementation notes
 
-- `irToXml` uses `bpmn-moddle@^10` and `bpmn-auto-layout@^1.2.0`. The layout library injects `<bpmndi:BPMNDiagram>` data automatically; the IR has no coordinate fields.
-- The Operaton namespace is applied via `src/operaton-moddle.json`, a trimmed fork of the camunda-bpmn-moddle descriptor. See [ADR-0007](../../docs/decisions/0007-operaton-moddle-extension-fork.md).
-- `bpmn-auto-layout@1.x` exposes `layoutProcess(xml)` as a flat named export. The `new BpmnAutoLayout()` constructor pattern belongs to the 0.x series and is not used here.
-- `irToDsl` uses dominator/post-dominator analysis from `cfg-analysis.ts` to recognize structured patterns; unmatched edges become `goto`. See [ADR-0009](../../docs/decisions/0009-dominator-based-restructuring.md).
-- All synthesized gateway, flow, and boundary-event ids come from `synthesize-ids.ts`. Gateway and flow ids are positional (derived from the element's structural coordinate); a boundary event's id is host-derived (`Boundary_<hostId>_<trigger>`) instead, so it survives a round-trip unmoved regardless of where the decompiler places the handler. The id templates are frozen — changes require updating the round-trip normalizer and regenerating `tests/golden/invoice-approval-generated.bpmn`. See [ADR-0010](../../docs/decisions/0010-deterministic-structural-ids.md) and [ADR-0019](../../docs/decisions/0019-boundary-events-attached-to-an-activity.md).
-- `juel.ts` is a hand-rolled recursive-descent parser that mirrors the Langium expression sub-grammar in `bpmn-script.langium`. It is used on the import path (`xmlToIr` reads raw `${…}` bodies; `irToDsl` decides whether to emit native syntax or the quoted fallback).
-- `xml-to-ir.ts` refuses (throws) BPMN content the IR cannot express — an event definition of the wrong kind for its position, an event feature the surface does not model, an unsupported element kind, an unresolvable call activity, loop characteristics, collaborations — before producing any IR, and warns (via the returned `warnings` array) about non-semantic drops such as extra Operaton extension attributes and lanes. See the file's own docstring and "Import warnings" above for the exact contract.
+`irToXml` uses `bpmn-moddle@^10` and `bpmn-auto-layout@^1.2.0`.
+The layout library injects the `<bpmndi:BPMNDiagram>` data, so the IR needs no coordinate fields.
+Version 1.x exposes `layoutProcess(xml)` as a flat named export; the `new BpmnAutoLayout()` constructor belongs to the 0.x series and is not used here.
+The Operaton namespace comes from `src/operaton-moddle.json`, a trimmed fork of the camunda-bpmn-moddle descriptor ([ADR-0007](../../docs/decisions/0007-operaton-moddle-extension-fork.md)).
+
+`irToDsl` recognizes structured patterns through the dominator analysis in `cfg-analysis.ts`, and edges that match nothing become `goto` ([ADR-0009](../../docs/decisions/0009-dominator-based-restructuring.md)).
+
+Every synthesized gateway, flow, and boundary-event id comes from `synthesize-ids.ts`.
+Gateway and flow ids are positional, derived from the element's structural coordinate.
+A boundary event's id is host-derived instead (`Boundary_<hostId>_<trigger>`), so it survives a round trip unmoved no matter where the decompiler places the handler.
+The templates are frozen: changing one means updating the round-trip normalizer and regenerating `tests/golden/invoice-approval-generated.bpmn` ([ADR-0010](../../docs/decisions/0010-deterministic-structural-ids.md), [ADR-0019](../../docs/decisions/0019-boundary-events-attached-to-an-activity.md)).
+
+`juel.ts` is a hand-rolled recursive-descent parser mirroring the Langium expression sub-grammar in `bpmn-script.langium`.
+It runs on the import path: `xmlToIr` reads raw `${...}` bodies, and `irToDsl` decides between native syntax and the quoted fallback.
 
 ## Dependencies on other packages
 
-- `@bpmn-script/language` (workspace) — provides the Langium-generated AST types consumed by `astToIr` and the `renderExpression` helper.
+- `@bpmn-script/language` (workspace) for the Langium-generated AST types `astToIr` consumes, and the `renderExpression` helper

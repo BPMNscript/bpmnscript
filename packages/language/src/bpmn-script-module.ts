@@ -59,23 +59,20 @@ export const BpmnScriptModule: Module<
 > = {
   parser: {
     // Enrich the "expected an identifier" parse errors when a reserved keyword
-    // is used as a bare name, pointing to the `"${…}"` raw-string fallback.
+    // is used as a bare name, pointing to the `"${...}"` raw-string fallback.
     ParserErrorMessageProvider: (services) =>
       new BpmnScriptParserErrorMessageProvider(services),
     // Unquotes a `RAW_TEMPLATE` match filling `OnHandler.time` so it carries
-    // the same normalized shape as a `STRING` match — see the provider's
-    // module docstring.
+    // the same normalized shape as a `STRING` match.
     ValueConverter: () => new BpmnScriptValueConverter(),
   },
   references: {
     VariableSymbolProvider: () => new DefaultVariableSymbolProvider(),
     // Container-scoped `goto`: a jump target is visible only within its own
-    // process/subprocess, at any block-nesting depth (see the scope provider
-    // docstring).
+    // process/subprocess, at any block-nesting depth.
     ScopeProvider: (services) => new BpmnScriptScopeProvider(services),
     // Upgrades the unresolved-`goto`-target message to a boundary explanation
-    // when the name exists in another flow container (see the linker
-    // docstring).
+    // when the name exists in another flow container.
     Linker: (services) => new BpmnScriptLinker(services),
   },
   validation: {
@@ -84,9 +81,8 @@ export const BpmnScriptModule: Module<
   lsp: {
     CompletionProvider: (services) =>
       new BpmnScriptCompletionProvider(services),
-    // Highlights the soft event words (`error`/`escalation`/`code`/
-    // `message`) as keywords exactly where they carry event meaning — see
-    // the provider's module docstring.
+    // Highlights the soft event words (`error`/`escalation`/`code`/`message`)
+    // as keywords exactly where they carry event meaning.
     SemanticTokenProvider: (services) =>
       new BpmnScriptSemanticTokenProvider(services),
   },

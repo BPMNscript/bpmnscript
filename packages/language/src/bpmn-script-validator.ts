@@ -2,19 +2,8 @@
  * Validation checks for the BPMNscript AST, all registered through
  * {@link registerValidationChecks}.
  *
- * The checks fall into four families: structural checks (one process per
- * file, start-event position, empty bodies/blocks, goto into a parallel
- * branch), naming and id-collision checks (reserved synthesised-id patterns,
- * duplicate variable/label/statement names), variable and expression checks
- * (undeclared-variable warning, operator/type mismatch against the declared
- * Operaton-aligned types), and attribute checks (duplicate keys, allowed keys
- * per element kind, the service-task `class` requirement). Diagnostics attach
- * to the most specific property of the offending node (usually `name`, `key`,
- * or the offending operand).
- *
- * Attribute checks additionally cover the service-task binding discriminant
- * (`class`/`expression`/`delegate`/`topic`, exactly one required) and the
- * script-task fence (a supported language tag, a non-empty body).
+ * Diagnostics attach to the most specific property of the offending node,
+ * usually `name`, `key`, or the offending operand.
  */
 
 import {
@@ -128,13 +117,11 @@ export function registerValidationChecks(services: BpmnScriptServices) {
 const USER_TASK_KEYS: ReadonlySet<string> = new Set(['assignee', 'formKey']);
 
 /**
- * The service-task attribute keys. Every one of them is a binding key — a
- * service task must declare exactly one — so this set doubles as both the
- * allowed-keys set and the binding-key set (see
- * {@link BpmnScriptValidator.checkServiceTaskAttributes}). `topic` is the
- * fourth binding: it delegates the task to an external worker that polls the
- * engine for that topic, instead of the engine invoking `class`/`expression`/
- * `delegate` directly.
+ * The service-task attribute keys. Every one of them is a binding key (a
+ * service task must declare exactly one), so this set doubles as both the
+ * allowed-keys set and the binding-key set. `topic` delegates the task to an
+ * external worker that polls the engine, rather than having the engine invoke
+ * the binding itself.
  */
 const SERVICE_TASK_KEYS: ReadonlySet<string> = new Set([
   'class',
@@ -144,10 +131,8 @@ const SERVICE_TASK_KEYS: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * The `call` attribute keys. `process` (the callee) is required; `binding`
- * and `version` are the mutually exclusive version-pinning discriminators;
- * `businessKey` sets the started process instance's business key. See
- * {@link BpmnScriptValidator.checkCallActivity}.
+ * The `call` attribute keys. `process` (the callee) is required; `binding` and
+ * `version` are the mutually exclusive version-pinning discriminators.
  */
 const CALL_ACTIVITY_KEYS: ReadonlySet<string> = new Set([
   'process',
@@ -156,10 +141,7 @@ const CALL_ACTIVITY_KEYS: ReadonlySet<string> = new Set([
   'businessKey',
 ]);
 
-/**
- * The legal `binding` values (bare identifiers, read like the `latest`/
- * `deployment` process-engine binding modes).
- */
+/** The process-engine binding modes a `binding` attribute may name. */
 const CALL_BINDING_VALUES: ReadonlySet<string> = new Set([
   'latest',
   'deployment',
@@ -167,12 +149,11 @@ const CALL_BINDING_VALUES: ReadonlySet<string> = new Set([
 
 /**
  * Attribute keys whose value identifies something other than a process
- * variable — a Java class, a form id, an EL binding, a worker topic, a called
- * process id, or a binding/version discriminant — so a bareword value there
- * must not trigger the undeclared-variable warning (see
- * {@link BpmnScriptValidator.checkExpression}). `businessKey` is deliberately
- * NOT included: a bare identifier there renders as a `${var}` JUEL expression
- * (the same reasoning as `assignee`), so it is a real variable reference.
+ * variable (a Java class, a form id, an EL binding, a worker topic, a called
+ * process id), so a bareword value there must not trigger the
+ * undeclared-variable warning. `businessKey` and `assignee` are excluded: a
+ * bare identifier there renders as a `${var}` JUEL expression, so it is a real
+ * variable reference.
  */
 const NON_VARIABLE_ATTR_KEYS: ReadonlySet<string> = new Set([
   'class',
@@ -204,52 +185,39 @@ const SUPPORTED_SCRIPT_TAGS: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * The per-trigger payload contract for an `on` handler: whether the STRING
- * head (`code`, immediately after the trigger word) is required, optional,
- * or forbidden; whether the timer particle clause (`particle` + `time`) is
- * required; what the parenthesized `(…)` slot may legally hold; whether a
- * non-interrupting `alongside` handler is legal; and whether the trigger may
- * name a host and attach as a `bpmn:boundaryEvent` at all. One record per
- * trigger word (the payload matrix), consumed by two checks — {@link
- * BpmnScriptValidator.checkHandlerPayload} for the code/timer/parens shape,
- * {@link BpmnScriptValidator.checkHandlerHost} for the boundary dimension —
- * that each walk a handler's properties against its row, so a new trigger
- * kind is a new row, not a new rule.
+ * The per-trigger payload contract for an `on` handler. One row per trigger
+ * word, walked by {@link BpmnScriptValidator.checkHandlerPayload} for the
+ * code/timer/parens shape and {@link BpmnScriptValidator.checkHandlerHost} for
+ * the boundary dimension, so a new trigger kind is a new row, not a new rule.
  */
 interface TriggerPayloadRule {
-  /** Whether the trigger's STRING head is required, optional, or forbidden. */
+  /** The STRING head immediately after the trigger word. */
   readonly code: 'required' | 'optional' | 'forbidden';
   /** Whether the `particle`/`time` clause (`after`/`at`/`every` + a time string) is required. */
   readonly timer: boolean;
-  /** What the parenthesized `(…)` slot may legally hold. */
+  /** What the parenthesized slot may legally hold. */
   readonly parens: 'bindings' | 'condition' | 'forbidden';
   /** Whether a non-interrupting `alongside` handler is legal. */
   readonly alongside: boolean;
   /**
    * Whether the trigger may name a host and attach as a `bpmn:boundaryEvent`
    * instead of guarding its whole enclosing container. `false` only for
-   * `compensation`: a compensation handler undoes a subprocess's
-   * already-completed work through `bpmn:association`/`isForCompensation`, a
-   * different attachment mechanism entirely, which this language surfaces as
-   * the subprocess's own undo block rather than as something with a host.
+   * `compensation`, which attaches through `bpmn:association`/
+   * `isForCompensation` instead and is surfaced here as the subprocess's own
+   * undo block.
    */
   readonly boundary: boolean;
 }
 
 /**
  * The soft trigger words `on` accepts, each mapped to its payload contract.
- * `error`/`escalation` read like a `catch` clause (an optional code,
- * optional catch-parameter bindings; `error` has no `alongside` since an
- * error always interrupts). `message`/`signal` are name-keyed subscriptions
- * — the engine matches by name, so the name is required and there is no
- * catch-all. `timer` reads its payload from the particle clause instead of
- * a code string. `condition` reads its payload from the parenthesized
- * expression instead of a code string. `compensation` is the undo block for
- * a subprocess's already-completed work: it takes no code, no bindings, and
- * no `alongside` — there is nothing to catch by name, and no running flow
- * to interrupt alongside, only finished work to reverse. These words lex as
- * plain `ID`s (not grammar keywords), so an unrecognised word is a
- * validator diagnostic, not a parse error.
+ * An error always interrupts, so it has no `alongside`. `message`/`signal` are
+ * name-keyed engine subscriptions, so the name is required and there is no
+ * catch-all. `compensation` reverses already-finished work, so there is
+ * nothing to catch by name and no running flow to interrupt alongside.
+ *
+ * These words lex as plain `ID`s, not grammar keywords, so an unrecognised
+ * word is a validator diagnostic rather than a parse error.
  */
 const TRIGGER_PAYLOAD: Readonly<Record<string, TriggerPayloadRule>> = {
   error: {
@@ -303,16 +271,13 @@ const TRIGGER_PAYLOAD: Readonly<Record<string, TriggerPayloadRule>> = {
   },
 };
 
-/** The legal `on` trigger words — the keys of {@link TRIGGER_PAYLOAD}. */
 const ON_TRIGGERS: readonly string[] = Object.keys(TRIGGER_PAYLOAD);
 const ON_TRIGGERS_SET: ReadonlySet<string> = new Set(ON_TRIGGERS);
 
 /**
- * The legal `throw` trigger words: every kind with a terminal form. A
- * message arrives via the engine's correlation API, a timer fires off the
- * clock, and a condition fires off data — there is nothing for any of them
- * to throw. `compensation` throws the undo block of the nearest completed
- * subprocess; it carries no code (see {@link checkThrowEmitCode}).
+ * The legal `throw` trigger words: every kind with a terminal form. A message
+ * arrives via the engine's correlation API, a timer fires off the clock, and a
+ * condition fires off data, so none of them has anything to throw.
  */
 const THROW_TRIGGERS: readonly string[] = [
   'error',
@@ -324,8 +289,7 @@ const THROW_TRIGGERS: readonly string[] = [
 /**
  * The legal `emit` trigger words: every kind with a continuing
  * (fire-and-keep-going) form. An error always ends its path, so it has no
- * `emit` form. `compensation` also fires and keeps going — reversing
- * completed work does not itself end the flow.
+ * `emit` form.
  */
 const EMIT_TRIGGERS: readonly string[] = [
   'escalation',
@@ -334,11 +298,10 @@ const EMIT_TRIGGERS: readonly string[] = [
 ];
 
 /**
- * The legal `await` trigger words: the four kinds with a blocking inline
- * catch form. Error and escalation are raised outward with `throw`/`emit`,
- * never awaited; compensation is a subprocess's undo block, run through its
- * own `on compensation` body, not a wait — none of the three has a catch
- * form for `await` to accept.
+ * The legal `await` trigger words: the kinds with a blocking inline catch
+ * form. Error and escalation are raised outward with `throw`/`emit`, and
+ * compensation runs through a subprocess's own `on compensation` body, so
+ * none of the three can be awaited.
  */
 const CATCH_TRIGGERS: readonly string[] = [
   'message',
@@ -348,82 +311,65 @@ const CATCH_TRIGGERS: readonly string[] = [
 ];
 const CATCH_TRIGGERS_SET: ReadonlySet<string> = new Set(CATCH_TRIGGERS);
 
-/** The legal timer particle words, each mapping 1:1 to one BPMN timer shape. */
 const TIMER_PARTICLES: ReadonlySet<string> = new Set(['after', 'at', 'every']);
 
-/** The legal catch-binding `field` words inside an `on (…)` list. */
 const EVENT_BINDING_FIELDS: ReadonlySet<string> = new Set(['code', 'message']);
 
-/** The name-less `on message`/`on signal` teaching text. */
 const MESSAGELESS_NAME_MESSAGE =
   "A message handler needs the message's name — the engine matches messages by name.";
 
-/** The payload-less (or STRING-instead-of-particle) `on timer` teaching text. */
 const TIMER_PAYLOAD_MESSAGE =
   `A timer needs to know how to read the time: write 'after "PT1H"', ` +
   `'at "2026-08-01T09:00:00"', or 'every "R/PT10M"'.`;
 
-/** The condition-less `on condition` teaching text. */
 const CONDITION_REQUIRED_MESSAGE =
   "A condition handler needs its condition: 'on condition (amount > 100)'.";
 
-/** A code string on `on condition`, whose payload lives in the parens instead. */
 const CONDITION_NO_CODE_MESSAGE =
   "A condition handler takes no code string — write the condition in parentheses: 'on condition (amount > 100)'.";
 
-/** A condition expression in the parens of a trigger that does not read one. */
 const CONDITION_ONLY_MESSAGE =
   "Only 'on condition' takes a condition expression.";
 
-/** A timer particle clause on a trigger that does not read one. */
 const PARTICLE_ONLY_MESSAGE = "Only 'on timer' takes a particle.";
 
-/** The name-less `await message`/`await signal` teaching text. */
+const COMPENSATE_TYPO_MESSAGE =
+  "Unknown event kind 'compensate'; write 'compensation'.";
+
 const CATCH_NAME_REQUIRED_MESSAGE =
   "An awaited message needs the message's name — the engine matches messages by name.";
 
-/** The parens-less `await condition` teaching text. */
 const CATCH_CONDITION_REQUIRED_MESSAGE =
   "An awaited condition needs its condition: 'await condition (amount > 100)'.";
 
-/** A code string on `await condition`, whose payload lives in the parens instead. */
 const CATCH_CONDITION_NO_CODE_MESSAGE =
   "An awaited condition takes no code string — write the condition in parentheses: 'await condition (amount > 100)'.";
 
-/** A condition expression in the parens of a catch trigger that does not read one. */
 const CATCH_CONDITION_ONLY_MESSAGE =
   "Only 'await condition' takes a condition expression.";
 
-/** A timer particle clause on a catch trigger that does not read one. */
 const CATCH_PARTICLE_ONLY_MESSAGE = "Only 'await timer' takes a particle.";
 
-/** A message reaches this process from outside — `throw`/`emit` has nothing to send. */
 const MESSAGE_NOTHING_TO_SEND_MESSAGE =
   "A message reaches this process from outside — there is nothing to send; write a message handler with 'on message'.";
 
-/** A STRING on `on compensation`, which carries no code or name at all. */
 const COMPENSATION_NO_CODE_MESSAGE =
   "Compensation has no code or name — 'on compensation { }' is the undo block for this subprocess; omit the string.";
 
-/** `(code c)` bindings on `on compensation`, which carries no values at all. */
 const COMPENSATION_BINDINGS_MESSAGE =
   "'(code c)' bindings belong to error and escalation handlers — compensation carries no values.";
 
-/** `alongside` on `on compensation`: the work it reverses has already finished. */
 const COMPENSATION_ALONGSIDE_MESSAGE =
   'The work an undo block reverses has already finished — there is no ' +
   "running flow to run alongside; remove 'alongside'.";
 
-/** `on compensation` sitting anywhere but directly inside a `subprocess` body. */
 const COMPENSATION_PLACEMENT_MESSAGE =
   "An undo block belongs directly inside the 'subprocess' whose work it " +
   'undoes — a process cannot undo itself.';
 
-/** A second `on compensation` in one container — a subprocess has exactly one undo block. */
 const COMPENSATION_DUPLICATE_MESSAGE =
   'A subprocess has one undo block — merge the steps.';
 
-/** `on <host>: compensation` — compensation has no boundary form at all. */
 const COMPENSATION_HOST_MESSAGE =
   "Compensation cannot attach to a host — it undoes a subprocess's " +
   'already-completed work through its own undo block, not through a ' +
@@ -444,34 +390,23 @@ const FORM_FIELD_TYPES: ReadonlySet<string> = new Set([
 
 /**
  * Patterns for synthesised element ids produced by the `astToIr` desugarer
- * (`packages/transform/src/synthesize-ids.ts`). These prefixes are reserved —
+ * (`packages/transform/src/synthesize-ids.ts`). These prefixes are reserved:
  * an author-chosen statement name matching any of them would collide with a
  * desugarer-generated id, producing duplicate-id IR. Gateway ids in particular
- * bypass the `taken`/`resolveCollision` guard (see `ast-to-ir.ts` STRUCTURAL-
- * COORDINATE SCHEME docstring), so the guard must be applied here.
+ * bypass the `taken`/`resolveCollision` guard, so the guard must be applied
+ * here.
  *
  * Patterns are anchored.
  *
  * Synthesised flow ids always carry at least two trailing segments
  * (`Flow_<src>_<tgt>` and `Flow_<gatewayId>_default`) and are only assigned
- * to `SequenceFlow.id` — they never appear in the node-name namespace. A
- * single-segment name such as `Flow_Control` therefore cannot collide with
- * any synthesised id, so only the two-segment shape is reserved
- * (`/^Flow_.+_.+$/`).
+ * to `SequenceFlow.id`, never to the node-name namespace. A single-segment
+ * name such as `Flow_Control` therefore cannot collide with any synthesised
+ * id, so only the two-segment shape is reserved (`/^Flow_.+_.+$/`).
  *
- * `Throw_` and `EventSubProcess_` are the unnamed `throw`/`emit`/`on`
- * positional ids (see `synthesize-ids.ts`'s `makeThrowEventId`/
- * `makeEventSubProcessId`): they bypass collision resolution the same way
- * gateway ids do, so an author-chosen name with either prefix is reserved
- * the same way.
- *
- * `Boundary_` is the host-derived id a hosted `on <Host>: <trigger>` handler
- * synthesises (see `synthesize-ids.ts`'s `makeBoundaryEventId`). It runs
- * through the same `taken`/`resolveCollision` guard as `StartEvent_`/
- * `EndEvent_` rather than bypassing it, but an author-chosen name with this
- * prefix would still be silently renamed with a numeric suffix on collision
- * instead of being flagged, so it is reserved the same way as every other
- * synthesised prefix here.
+ * `Boundary_` does run through the `taken`/`resolveCollision` guard, but a
+ * colliding author-chosen name would be renamed with a numeric suffix rather
+ * than flagged, so it is reserved like every other prefix here.
  */
 const RESERVED_ID_PATTERNS: ReadonlyArray<RegExp> = [
   /^Gateway_.+_(split|join|fork|loop)$/,
@@ -490,7 +425,7 @@ const RESERVED_ID_PATTERNS: ReadonlyArray<RegExp> = [
  * for anything we cannot (or deliberately do not) constrain.
  *
  * `any`/`json`/`unknown` are compatible with every operator (Operaton coerces),
- * so they never trigger a mismatch — keeping the lattice small and false
+ * so they never trigger a mismatch, which keeps the lattice small and false
  * positives out.
  */
 type ExprType = VarType | 'unknown';
@@ -515,17 +450,9 @@ const ORDERED_OK: ReadonlySet<ExprType> = new Set<ExprType>([
  * The concrete `Statement` subtypes that carry a `name` and are therefore valid
  * `goto` targets. Shared by the reserved-name check and the duplicate-name
  * check so both address exactly the same set of nodes (expression `VarRef`s
- * are never part of this set). `SubProcess` is included: its name is both a
- * goto target (the container's entry point) and the seed for its implicit
- * start/end ids (`StartEvent_<name>`/`EndEvent_<name>`), so it must clear the
- * same reserved-pattern and duplicate-name checks as any other named step.
- * `CallActivity` is included for the same reason: a call is a goto target
- * (`name`) and a leaf step like any other, so it is subject to the same
- * reserved-name, duplicate-name, and reachability checks. `ThrowStatement`/
- * `EmitStatement` are included too, but their `name` is *optional* (the id
- * is synthesised when omitted, see `synthesize-ids.ts`), so every
- * consumer of this type skips an instance whose `name` is `undefined`: an
- * unnamed throw/emit is not a goto target and cannot collide with anything.
+ * are never part of this set). A `throw`/`emit` name is optional (the id is
+ * synthesised when omitted), so consumers skip an unnamed one: it is neither a
+ * goto target nor able to collide with anything.
  */
 type NamedStatement =
   | StartEvent
@@ -540,13 +467,10 @@ type NamedStatement =
 
 /**
  * Collect every goto-targetable named statement in `process`, in document
- * order, regardless of nesting depth (inside `if`/`while`/`parallel`/
- * `subprocess`/`on` blocks). An unnamed `throw`/`emit` (the common case — its
- * id is synthesised) is not a goto target and is excluded.
+ * order, regardless of nesting depth. An unnamed `throw`/`emit` is not a goto
+ * target and is excluded.
  *
  * @param process The process to scan.
- * @returns Every `StartEvent`/`EndEvent`/`UserTask`/`ServiceTask`/
- *   `ScriptTask`/`SubProcess`/`CallActivity`/named-`throw`/named-`emit` node.
  */
 function collectNamedStatements(process: Process): NamedStatement[] {
   const result: NamedStatement[] = [];
@@ -565,8 +489,8 @@ function collectNamedStatements(process: Process): NamedStatement[] {
       (isThrowStatement(node) || isEmitStatement(node)) &&
       node.name !== undefined
     ) {
-      // Runtime-verified above: only push a named instance, so the cast to
-      // the narrowed (name required) union member is sound.
+      // The guard leaves TypeScript unable to narrow the optional `name` into
+      // the union member that requires it.
       result.push(node as NamedStatement);
     }
   }
@@ -591,7 +515,7 @@ function collectGotoTargetNames(process: Process): Set<string> {
 /**
  * The name of a step, or `undefined` for the unnamed constructs (`if`/
  * `while`/`parallel`/`goto`/`on`) and for a `throw`/`emit` whose id was
- * omitted (the common case — an id-less throw/emit is synthesised downstream).
+ * omitted.
  */
 function statementName(stmt: Statement): string | undefined {
   if (
@@ -612,13 +536,10 @@ function statementName(stmt: Statement): string | undefined {
 }
 
 /**
- * The statement lists nested directly inside a compound statement. A
- * `subprocess`/`on` body is a single `Block` (like a loop body — no branch
- * segment), which the manual reachability scan in
- * {@link BpmnScriptValidator.checkUnreachableStatements} relies on to
- * descend into it; `AstUtils.streamAst`-based scans elsewhere in this file
- * already reach a sub-process/handler body for free and need no equivalent
- * branch.
+ * The statement lists nested directly inside a compound statement. Only the
+ * manual reachability scan in
+ * {@link BpmnScriptValidator.checkUnreachableStatements} needs this;
+ * `AstUtils.streamAst`-based scans reach nested bodies on their own.
  */
 function childBlocks(stmt: Statement): Block[] {
   if (isIfStatement(stmt)) {
@@ -642,10 +563,8 @@ function childBlocks(stmt: Statement): Block[] {
 
 /**
  * True when `statements` has no flow step for the desugarer to lower into a
- * start-reachable container: the body is empty, or every statement is an
- * `on` handler. A handler never joins the main sequence (it is a catch
- * block, not a step the flow passes through), so a handler-only body is the
- * same emptiness the zero-statement case is — a lone `on` guards nothing.
+ * start-reachable container. A handler never joins the main sequence, so a
+ * handler-only body is as empty as a zero-statement one.
  */
 function hasNoFlowStep(statements: Statement[]): boolean {
   return statements.every(isOnHandler);
@@ -653,16 +572,12 @@ function hasNoFlowStep(statements: Statement[]): boolean {
 
 /**
  * Whether `stmt`, once reached, always ends or diverts the flow so that
- * nothing after it in the same block is ever reached. The leaf cases are an
- * `end`, `goto`, or `throw`. A compound counts too when it can no longer
- * fall through: an `if` that has an `else` terminates when every branch does
- * — the `then`, every `else if`, and the `else` — and a `parallel`
- * terminates when every one of its branches does. This is the exact case
- * where `lowerIf`/`lowerParallel` in the transform prune the construct's
- * synthesized join to zero incoming flows, so there is no fall-through left
- * to reach. An `if` without an `else` and a `while`/`do-while` never count,
- * however their body ends: their gateway always keeps a non-terminating
- * exit (the implicit else, or the loop's false-condition edge).
+ * nothing after it in the same block is ever reached. A compound counts when
+ * every one of its branches does, which is the exact case where the transform
+ * prunes the construct's synthesized join to zero incoming flows. An `if`
+ * without an `else` and a `while`/`do-while` never count, however their body
+ * ends: their gateway always keeps a non-terminating exit (the implicit else,
+ * or the loop's false-condition edge).
  */
 function statementTerminates(stmt: Statement): boolean {
   if (isEndEvent(stmt) || isGotoStatement(stmt) || isThrowStatement(stmt)) {
@@ -681,7 +596,7 @@ function statementTerminates(stmt: Statement): boolean {
   return false;
 }
 
-/** Whether every path through `statements` is cut off by a terminator (see {@link statementTerminates}) before falling off the block's end. */
+/** Whether a terminator cuts `statements` off before the block's end. */
 function blockTerminates(statements: Statement[]): boolean {
   return statements.some(
     (stmt) => !isOnHandler(stmt) && statementTerminates(stmt),
@@ -727,9 +642,9 @@ export class BpmnScriptValidator {
   /**
    * Whole-model check: BPMNscript supports one process per file. The grammar
    * permits several so that a stray second `process` block produces a clear
-   * diagnostic here rather than being silently dropped by the AST → IR
-   * transform, which only converts the first process. Every process after
-   * the first is flagged, which also covers reused process names.
+   * diagnostic here rather than being dropped by the AST -> IR transform,
+   * which only converts the first process. Every process after the first is
+   * flagged, which also covers reused process names.
    *
    * @param model The parsed model (all top-level processes).
    */
@@ -748,22 +663,15 @@ export class BpmnScriptValidator {
   };
 
   /**
-   * An explicit `start` is only valid as the first statement of a *container*
-   * body — the process body, the body of a `subprocess`, or the body of a
-   * host-less `on` handler (the desugarer honours a sub-process's/handler's own
-   * explicit start/end exactly like the process's; inside a host-less handler,
-   * this explicit start is the trigger-carrying start — see
-   * {@link checkOnHandler}). Anywhere else — later in a container body, or
-   * nested inside an `if`/`while`/`parallel` block at any position — the
-   * desugarer gives it an incoming sequence flow, and a start event with
-   * incoming flows is invalid BPMN that Operaton rejects at deployment. (A
-   * container whose first statement is not a `start` gets an implicit one;
-   * that path never conflicts with this check.)
+   * An explicit `start` is only valid as the first statement of a container
+   * body: the process body, a `subprocess` body, or a host-less `on` handler
+   * body. Anywhere else the desugarer gives it an incoming sequence flow, and
+   * a start event with incoming flows is invalid BPMN that Operaton rejects at
+   * deployment.
    *
    * A hosted handler's body is not a container of its own: it lowers inline
    * into the host's container and is entered by a flow from the boundary
-   * event, so a `start` there would be a second none-start of the process
-   * carrying an incoming flow — rejected with its own message.
+   * event, so a `start` there gets its own message.
    */
   private checkStartPosition(
     process: Process,
@@ -794,22 +702,15 @@ export class BpmnScriptValidator {
   }
 
   /**
-   * Process-level checks: the no-flow-step structural edge case, the variable
-   * checks (undeclared warning, type-mismatch error) over every expression in
-   * the process, and the whole-process integrity checks (duplicate variable
-   * name, duplicate process label, duplicate statement name). Variable checks
-   * run here, not per-`VarRef`, because variable visibility is *process-scoped*
-   * and *position-independent* — the symbol table is built once per process and
-   * consulted for every reference.
+   * Every check that needs the whole process at once. The variable checks run
+   * here rather than per-`VarRef` because variable visibility is process-scoped
+   * and position-independent: the symbol table is built once and consulted for
+   * every reference. Duplicate handlers likewise need sibling comparison within
+   * a container.
    *
    * @param process The process to validate.
    */
   checkProcess = (process: Process, accept: ValidationAcceptor): void => {
-    // Structural: implicit start/end make a missing start/end impossible, but
-    // a body with no flow step at all — empty, or every statement an `on`
-    // handler — never starts a process (handlers alone never open one), so
-    // it is rejected outright rather than silently lowering to a bare,
-    // pointless start-end pair.
     if (hasNoFlowStep(process.body)) {
       accept(
         'error',
@@ -820,64 +721,39 @@ export class BpmnScriptValidator {
 
     const symbols = this.variables.collect(process);
 
-    // Walk every expression in the process and run the variable checks. The
-    // symbol table is flat/process-scoped, so a single table serves every
-    // reference regardless of where the `var` was declared (position-independent).
     for (const expr of collectExpressions(process)) {
       this.checkExpression(expr, symbols, accept);
     }
 
-    // Structural: an explicit `start` anywhere but first would deploy as
-    // invalid BPMN (see checkStartPosition).
     this.checkStartPosition(process, accept);
 
     const named = collectNamedStatements(process);
-
-    // Check every named statement for reserved synthesised-id name patterns.
     this.checkReservedNames(named, accept);
 
-    // Whole-process integrity: duplicate declarations and duplicate step names.
     this.checkDuplicateVarDecls(process, accept);
     this.checkDuplicateProcessLabel(process, accept);
     this.checkDuplicateStatementNames(process, named, accept);
     this.checkFormVariableAgreement(process, accept);
     this.checkUnreachableStatements(process, accept);
-
-    // Event layer: duplicate handlers need sibling comparison within a
-    // container, and `error … message` declarations are process-header decls
-    // like `label` — both run here, the `ProcessLabel` precedent.
     this.checkHandlerDuplicates(process, accept);
     this.checkErrorDecls(process, accept);
   };
 
   /**
    * Reject a step that control flow can never reach: it would lower to a
-   * disconnected node with no incoming flow, which is invalid BPMN. A step is
-   * unreachable once an earlier terminator in the same block — an `end`,
-   * `throw`, `goto`, or an all-terminating `if`/`parallel` (see
-   * {@link statementTerminates}) — has stopped or diverted the flow and
-   * nothing jumps back to it. Reachability is tracked per statement list: it
-   * starts reachable, turns unreachable after such a terminator, and turns
-   * reachable again at a step some `goto` targets by name (an explicit jump
-   * re-enters the flow there). Nested blocks are scanned only when their
-   * owning construct is itself reachable, so an unreachable `if` is reported
-   * once rather than once per step inside it.
+   * disconnected node with no incoming flow, which is invalid BPMN. A step
+   * named by some `goto` becomes reachable again, since an explicit jump
+   * re-enters the flow there. Nested blocks are scanned only when their owning
+   * construct is reachable, so an unreachable `if` is reported once rather than
+   * once per step inside it.
    *
-   * An `on` handler is never part of this sequential flow — it is a catch
-   * block for the whole container, not a step the main path falls into or
-   * out of — so it is skipped by the state machine entirely: it never turns
-   * up as unreachable itself (a handler legally follows an `end`/`throw`,
-   * exactly like a `catch` legally follows the end of a `try` body), and it
-   * never resets `reachable`. Its own body is scanned as a fresh reachable
-   * root regardless of the surrounding flow's state. `emit` is a plain
-   * fall-through statement (it does not affect `reachable`).
+   * An `on` handler is not part of the sequential flow, so the scan skips it:
+   * a handler legally follows an `end`/`throw` the way a `catch` legally
+   * follows a `try` body, and its own body is scanned as a fresh reachable
+   * root.
    *
-   * The scan is deliberately sound rather than exhaustive: it never flags a
-   * step control can actually reach — an `if` without an `else`, and a
-   * `while`/`do-while` whose body always ends, still fall through their
-   * gateway's non-terminating exit, so neither counts as a terminator — so a
-   * rarer dead step may go unreported, but a live one is never wrongly
-   * rejected.
+   * The scan is sound rather than exhaustive. A dead step may go unreported,
+   * but a live one is never wrongly rejected.
    */
   private checkUnreachableStatements(
     process: Process,
@@ -923,14 +799,10 @@ export class BpmnScriptValidator {
   }
 
   /**
-   * Every declaration of a given variable name — explicit `var`s, `form`
-   * fields, and event-handler catch bindings alike — must agree on the type.
-   * A `form` field whose type conflicts with an earlier declaration of the
-   * same name (a `var`, or another field) is flagged, because both bind the
-   * same runtime process variable. A catch binding always fills a `string`
-   * variable (the code/message text an event carries), so a binding whose
-   * variable is already declared with a non-`string` type is the same kind
-   * of conflict.
+   * Every declaration of a given variable name must agree on the type, whether
+   * it is a `var`, a `form` field, or a catch binding: they all bind the same
+   * runtime process variable. A catch binding always fills a `string` variable,
+   * the code or message text the event carries.
    */
   private checkFormVariableAgreement(
     process: Process,
@@ -979,15 +851,9 @@ export class BpmnScriptValidator {
   /**
    * Reject statement names that match the reserved synthesised-id patterns.
    *
-   * The `astToIr` desugarer produces gateway ids (`Gateway_<X>_split/join/…`),
-   * sequence-flow ids (`Flow_<src>_<tgt>` and `Flow_<gatewayId>_default`), and
-   * implicit event ids (`StartEvent_…`, `EndEvent_…`) from structural
-   * coordinates. These ids bypass the `taken`/`resolveCollision` guard, so an
-   * author-chosen name colliding with one of those patterns would produce
-   * duplicate-id IR. Rejecting the name here at validation time surfaces the
-   * conflict as a clear IDE error. Only the two-segment `Flow_*_*` shape is
-   * reserved (single-segment `Flow_X` cannot collide — see {@link
-   * RESERVED_ID_PATTERNS} comment).
+   * A name colliding with one of them would produce duplicate-id IR; rejecting
+   * it here surfaces the conflict as an IDE error instead. See
+   * {@link RESERVED_ID_PATTERNS}.
    *
    * @param named The goto-targetable named statements of the process.
    */
@@ -1034,11 +900,9 @@ export class BpmnScriptValidator {
 
   /**
    * Flag a second (or later) label declaration in one process. The inline
-   * label string (`process P "…"`) counts as the first occurrence: `astToIr`
-   * prefers the inline label and silently drops any `label = "…"` attribute,
-   * so a `label = "…"` next to an inline label is dead text and an *error*.
-   * The grammar also accepts any number of `ProcessLabel` decls in
-   * `process.decls`; only the first is meaningful.
+   * label string counts as the first occurrence: the desugarer prefers it and
+   * drops any `label` attribute, so a `label` next to an inline label is dead
+   * text and an error rather than a warning.
    *
    * @param process The process to scan.
    */
@@ -1055,15 +919,14 @@ export class BpmnScriptValidator {
           `Process '${process.name}' already has a label declared; a second 'label = …' is not allowed.`,
           { node: decl, property: 'value' },
         ),
-      // The inline `process P "…"` label counts as the first occurrence.
       new Set(process.label !== undefined ? ['label'] : []),
     );
   }
 
   /**
-   * Flag a goto-targetable step (`start`/`end`/`user`/`service`) whose name
-   * repeats an earlier step's name anywhere in the process — regardless of
-   * nesting — because `goto <name>` would then be ambiguous.
+   * Flag a goto-targetable step whose name repeats an earlier step's name
+   * anywhere in the process, at any nesting depth, because `goto <name>` would
+   * then be ambiguous.
    *
    * @param process The process to scan.
    */
@@ -1096,14 +959,11 @@ export class BpmnScriptValidator {
     symbols: ReturnType<VariableSymbolProvider['collect']>,
     accept: ValidationAcceptor,
   ): void {
-    // 0. Callee-scope exemption: an `out` mapping's source (`out result =
-    //    calleeVar`) is evaluated in the CALLED process's scope, not the
-    //    caller's — the caller's symbol table cannot judge whether it exists
-    //    or what type it has. `getContainerOfType` (rather than a direct
-    //    `$container` check) is required so a VarRef nested inside an
-    //    operator node of an `out` source (e.g. `out ok = a > 5 && flag`) is
-    //    exempted too, not just a bare `out x = y` shorthand. `in` mapping
-    //    sources stay fully checked — they are caller-scope.
+    // 0. Callee-scope exemption: an `out` mapping's source is evaluated in the
+    //    called process's scope, which the caller's symbol table cannot judge.
+    //    `getContainerOfType` rather than a `$container` check, so a VarRef
+    //    nested in an operator node of an `out` source is exempted too. `in`
+    //    sources are caller-scope and stay checked.
     const enclosingMapping = AstUtils.getContainerOfType(
       expr,
       isVariableMapping,
@@ -1113,15 +973,9 @@ export class BpmnScriptValidator {
     }
 
     // 1. Undeclared-variable warning: a VarRef root not in the symbol set.
-    //    Skip VarRefs that are a `class`, `formKey`, `expression`, `delegate`,
-    //    or `topic` attribute value: those identifiers name Java classes, form
-    //    ids, EL bindings, or a worker topic — not process variables — so they
-    //    must not fire a spurious "not declared" warning. An `assignee` value
-    //    is NOT skipped — a bare identifier there renders as a `${var}` JUEL
-    //    expression (see expression-render.ts), so it is a real variable
-    //    reference. Only the direct attribute-value position is skipped —
-    //    VarRefs inside conditions (and nested operands of a more complex
-    //    attribute value) are still checked.
+    //    Only the direct attribute-value position is skipped (see
+    //    NON_VARIABLE_ATTR_KEYS); VarRefs inside conditions and nested
+    //    operands of a more complex attribute value are still checked.
     const container = expr.$container;
     const isNonVariableAttrValue =
       isAttribute(container) && NON_VARIABLE_ATTR_KEYS.has(container.key);
@@ -1176,7 +1030,7 @@ export class BpmnScriptValidator {
       }
       const type = symbols.get(operand.name)?.type;
       if (type === undefined) {
-        continue; // Undeclared — handled by the warning, not a type error.
+        continue; // Undeclared: handled by the warning, not a type error.
       }
       if (!allowed.has(type)) {
         accept(
@@ -1220,11 +1074,10 @@ export class BpmnScriptValidator {
   }
 
   /**
-   * StartEvent checks: a start event may carry a `form { … }` block but no
-   * `assignee`/`formKey`/`class` attributes (those belong on tasks). A start
-   * event opening an `on` handler body is the trigger-carrying start (the
-   * desugarer stamps the event definition onto it); it has no form
-   * semantics, so a `form` block there is rejected.
+   * StartEvent checks: a start event may carry a `form` block but no
+   * attributes, which belong on tasks. The start opening an `on` handler body
+   * carries the event definition instead and has no form semantics, so a
+   * `form` block there is rejected too.
    *
    * @param start The start event.
    */
@@ -1250,12 +1103,6 @@ export class BpmnScriptValidator {
     }
   };
 
-  /**
-   * UserTask attribute checks: duplicate keys, key-kind validity, and its form
-   * blocks.
-   *
-   * @param task The user task.
-   */
   checkUserTaskAttributes = (
     task: UserTask,
     accept: ValidationAcceptor,
@@ -1266,15 +1113,10 @@ export class BpmnScriptValidator {
   };
 
   /**
-   * ServiceTask attribute checks: duplicate keys, key-kind validity, and the
-   * exactly-one-binding discriminator. A service task binds to exactly one of
-   * `class` (Java delegate class), `expression` (`operaton:expression`),
-   * `delegate` (`operaton:delegateExpression` alias), or `topic` (delegates
-   * to an external worker that polls the engine, emitting
-   * `operaton:type="external"` alongside `operaton:topic`) — zero bindings is
-   * an error, and more than one *distinct* binding key is a separate error (a
-   * repeated *same* key is already reported by the duplicate-key check). Also
-   * rejects a form block: service tasks are automated and render no form.
+   * ServiceTask attribute checks. A service task binds to exactly one of
+   * `class`, `expression`, `delegate`, or `topic`; a repeated *same* key is
+   * left to the duplicate-key check. A form block is rejected because a
+   * service task is automated and renders no form.
    *
    * @param task The service task.
    */
@@ -1321,10 +1163,9 @@ export class BpmnScriptValidator {
    */
   checkScriptTask = (task: ScriptTask, accept: ValidationAcceptor): void => {
     if (task.body === undefined) {
-      // Parser error recovery: an unterminated fenced block (no closing
-      // ```) is never lexed as FENCED_SCRIPT, so the parser recovers into a
-      // ScriptTask with no body. `property: 'name'` is used because a
-      // missing body has no CST node to attach a range to.
+      // An unterminated fenced block never lexes as FENCED_SCRIPT, so the
+      // parser recovers into a ScriptTask with no body. A missing body has no
+      // CST node, hence the diagnostic on `name`.
       accept(
         'error',
         `Script task '${task.name}' has a malformed or unterminated fenced ` +
@@ -1354,7 +1195,7 @@ export class BpmnScriptValidator {
   };
 
   /**
-   * Validate the `form { … }` block(s) on an element: at most one block, no
+   * Validate the `form` block(s) on an element: at most one block, no
    * duplicate field ids within a block, and only form-compatible field types.
    * Cross-element agreement with a `var` of the same name is checked once at the
    * process level (see {@link checkFormVariableAgreement}).
@@ -1395,10 +1236,7 @@ export class BpmnScriptValidator {
   }
 
   /**
-   * Reject every `form { … }` block on an element that must not declare one.
-   * Used by {@link checkServiceTaskAttributes} — a service task is an
-   * automated step with no human actor to present a form to, regardless of
-   * which of its four bindings it uses.
+   * Reject every `form` block on an element that must not declare one.
    *
    * @param description The element kind, as a full sentence-starting noun
    *   phrase with article (e.g. `'A service task'`).
@@ -1488,11 +1326,6 @@ export class BpmnScriptValidator {
     }
   };
 
-  /**
-   * Warn on an empty `while` body.
-   *
-   * @param stmt The `while` statement.
-   */
   checkWhileStatement = (
     stmt: WhileStatement,
     accept: ValidationAcceptor,
@@ -1500,11 +1333,6 @@ export class BpmnScriptValidator {
     this.warnIfEmptyBlock(stmt.body, "The 'while' body has no steps.", accept);
   };
 
-  /**
-   * Warn on an empty `do … while` body.
-   *
-   * @param stmt The `do … while` statement.
-   */
   checkDoWhileStatement = (
     stmt: DoWhileStatement,
     accept: ValidationAcceptor,
@@ -1513,10 +1341,8 @@ export class BpmnScriptValidator {
   };
 
   /**
-   * Reject a `subprocess` body with no flow step — empty, or every statement
-   * an `on` handler — the same structural rule {@link checkProcess} applies
-   * to the top-level body: a subprocess whose main flow does nothing is not
-   * a valid thing to compile.
+   * Reject a `subprocess` body with no flow step, the same structural rule
+   * {@link checkProcess} applies to the top-level body.
    *
    * @param stmt The `subprocess` statement.
    */
@@ -1530,11 +1356,6 @@ export class BpmnScriptValidator {
     }
   };
 
-  /**
-   * Warn on each empty `parallel` branch.
-   *
-   * @param stmt The `parallel` statement.
-   */
   checkParallelStatement = (
     stmt: ParallelStatement,
     accept: ValidationAcceptor,
@@ -1564,16 +1385,12 @@ export class BpmnScriptValidator {
 
   /**
    * Flag a `goto` whose resolved target lies inside a `parallel` branch when
-   * the `goto` itself is not inside that same branch's subtree — a
-   * `parallel` branch's steps run only when the whole `parallel` statement is
-   * reached, not via an external `goto` into the middle of one of its
-   * branches.
+   * the `goto` itself is not inside that same branch's subtree. A branch's
+   * steps run only when the whole `parallel` statement is reached.
    *
-   * Guarded by `if (goto.target.ref)`: an unresolved `goto` is owned by the
-   * linker, which already emits exactly one
-   * "Could not resolve reference" error. Touching `target.ref` unguarded here
-   * would double-report on top of that error, so an unresolved reference is
-   * silently skipped by this check.
+   * An unresolved `goto` is skipped: the linker already emits exactly one
+   * "Could not resolve reference" error, and reporting here would stack a
+   * second diagnostic on top of it.
    *
    * @param goto The `goto` statement.
    */
@@ -1597,13 +1414,10 @@ export class BpmnScriptValidator {
   };
 
   /**
-   * `call` attribute and mapping checks, read like a function call at the
-   * process boundary: `process` names the called process (required), an
-   * optional `binding`/`version` pins which deployed version starts, and the
-   * `in`/`out` mappings are the call's arguments and return values. Runs, in
-   * order: duplicate keys, allowed keys, the required `process`, the
-   * `binding` value, the `binding`/`version` mutual exclusion, and mapping
-   * target duplicates within one direction.
+   * `call` attribute and mapping checks. A call reads like a function call at
+   * the process boundary: `process` names the callee, `binding`/`version` pin
+   * which deployed version starts, and the `in`/`out` mappings are its
+   * arguments and return values.
    *
    * @param call The call activity.
    */
@@ -1651,13 +1465,10 @@ export class BpmnScriptValidator {
   }
 
   /**
-   * A `binding` value must be `latest` or `deployment` (the process-engine
-   * binding modes). `version = version` is the one common authoring mistake
-   * worth a dedicated teaching message instead of the generic "must be
-   * latest/deployment" error — `version` itself is a reserved grammar keyword
-   * and so can only reach this check as a quoted string (`binding =
-   * "version"`); the bare-identifier spelling is already rejected by the
-   * parser before validation ever runs.
+   * A `binding` value must be `latest` or `deployment`. `binding = version`
+   * gets a dedicated message instead of the generic one; it can only reach
+   * this check quoted, since `version` is a grammar keyword and the bare
+   * spelling is already a parse error.
    */
   private checkCallBindingAttribute(
     call: CallActivity,
@@ -1687,8 +1498,7 @@ export class BpmnScriptValidator {
 
   /**
    * `binding` and `version` both pin which deployed version of the called
-   * process starts; declaring both is one error, not two — the discriminators
-   * are mutually exclusive regardless of what value either one carries.
+   * process starts, so declaring both is one error regardless of the values.
    */
   private checkCallBindingVersionExclusion(
     call: CallActivity,
@@ -1706,11 +1516,10 @@ export class BpmnScriptValidator {
   }
 
   /**
-   * Flag a mapping whose target repeats an earlier one in the *same*
-   * direction — `in`/`out` are independent namespaces, and a bare `*` shares
-   * the repeat check with named targets (keyed on direction plus `'*'`) so a
-   * second `*` in one direction is caught the same way, while `*` alongside a
-   * named mapping in that direction is legal (they key differently).
+   * Flag a mapping whose target repeats an earlier one in the same direction;
+   * `in` and `out` are independent namespaces. A bare `*` keys on the
+   * direction, so a second `*` collides but `*` alongside a named mapping in
+   * the same direction is legal.
    */
   private checkCallMappingDuplicates(
     call: CallActivity,
@@ -1732,58 +1541,17 @@ export class BpmnScriptValidator {
     );
   }
 
-  // ── Event layer: handlers, throw/emit, error declaration ────────────────
-  //
-  // The mental model is try/catch throughout: an `on` handler is a catch
-  // block that must sit at the end of the body it guards; `throw` always
-  // ends its path; `emit` fires and keeps going; a binding declares the
-  // process variable it fills. The trigger kind and binding fields are soft
-  // words — plain `ID`s, not grammar keywords — so an unknown word is a
-  // diagnostic that names the (small) set of legal words rather than a parse
-  // error. Exactly one diagnostic per mistake: an unknown trigger/field word
-  // makes the owning check return immediately, since the remaining rules for
-  // that node would either be meaningless (is `alongside` legal for a
-  // trigger we don't recognise?) or would pile a second diagnostic onto the
-  // same mistake.
-  //
-  // Beyond error/escalation, `on` accepts five more triggers — message,
-  // signal, timer, condition, compensation — each with a differently-shaped
-  // payload (a required name, a particle+time clause, a condition expression,
-  // or nothing at all, instead of catch-parameter bindings). Which shape is
-  // legal per trigger is the small table `TRIGGER_PAYLOAD`, walked by one
-  // check ({@link checkHandlerPayload}), so a new trigger kind is a new row
-  // rather than new rule plumbing. `throw`/`emit` gain their own, smaller
-  // legal sets (`THROW_TRIGGERS`/`EMIT_TRIGGERS`) since only some kinds have
-  // a throw form.
-  //
-  // A handler may additionally name a host and attach as a `bpmn:boundaryEvent`
-  // instead of guarding its whole enclosing container ({@link
-  // checkHandlerHost}). The scope provider already restricts a resolvable host
-  // to a named step of the handler's own container — an unresolved host is
-  // therefore the linker's problem, not this file's — so this check only ever
-  // sees a *resolved* host and asks four questions of it: is the trigger one
-  // that has a boundary form at all (`compensation` does not — it undoes
-  // already-completed work through its own undo block, a different attachment
-  // mechanism entirely); does it point back into the handler's own escape
-  // path (structurally valid BPMN, but a step that only ever runs after this
-  // handler has already fired can never host the event that starts that
-  // path); is it an activity at all (a start/end event, a `throw`, or a named
-  // `emit` cannot carry a boundary event); and, for `escalation` specifically,
-  // is it one of the three host kinds Operaton allows one on. Duplicate
-  // detection ({@link checkHandlerDuplicates}) folds the host into its key so
-  // a container-scoped handler and a hosted one never collide with each
-  // other, and two hosted handlers only collide when they share both host and
-  // code.
+  // The event checks below aim for exactly one diagnostic per mistake: an
+  // unknown trigger or field word makes the owning check return immediately,
+  // since the remaining rules for that node would either be meaningless or
+  // pile a second diagnostic onto the same mistake.
 
   /**
-   * `on` handler checks: the soft trigger word, placement (directly in a
-   * process/subprocess/handler body — never a branch), trailing position
-   * (only further handlers may follow), the error-is-always-interrupting
-   * rule, an empty code string (catch-all is the *omitted* string, not an
-   * empty one), the catch-parameter bindings, the host/boundary dimension,
-   * and the empty-body warning. Sibling-duplicate detection runs once per
-   * process in {@link checkHandlerDuplicates}, not here, since it compares a
-   * handler against the others in its container.
+   * `on` handler checks: the soft trigger word, placement, trailing position,
+   * the code string, the catch-parameter bindings, the host/boundary
+   * dimension, and the empty-body warning. Sibling-duplicate detection runs
+   * once per process in {@link checkHandlerDuplicates} instead, since it
+   * compares a handler against the others in its container.
    *
    * @param handler The `on` handler.
    */
@@ -1827,13 +1595,10 @@ export class BpmnScriptValidator {
   };
 
   /**
-   * Walk a handler's payload members against its trigger's row in {@link
-   * TRIGGER_PAYLOAD}: the STRING head (`code`), the timer particle
-   * clause (`particle`/`time`), and the parenthesized slot (bindings vs.
-   * condition vs. forbidden). An empty string in a required slot is treated
-   * the same as an omitted one — there is no "empty means catch-all"
-   * shorthand for a name-keyed or timed trigger. `alongside` is checked by
-   * the caller (its legality is a per-row flag, not a payload member).
+   * Walk a handler's payload members against its trigger's row in
+   * {@link TRIGGER_PAYLOAD}. An empty string in a required slot counts as an
+   * omitted one: there is no "empty means catch-all" shorthand for a
+   * name-keyed or timed trigger.
    */
   private checkHandlerPayload(
     handler: OnHandler,
@@ -1850,8 +1615,8 @@ export class BpmnScriptValidator {
     } else if (rule.code === 'optional') {
       checkEmptyCode(handler.code, handler, accept);
     } else if (handler.trigger === 'condition' && handler.code !== undefined) {
-      // Timer's forbidden code folds into the timer-payload branch below —
-      // `on timer "PT1H"` is "missing particle+time", not "has a stray code".
+      // Timer's forbidden code folds into the timer-payload branch below, so
+      // `on timer "PT1H"` reads as a missing particle rather than a stray code.
       accept('error', CONDITION_NO_CODE_MESSAGE, {
         node: handler,
         property: 'code',
@@ -1910,11 +1675,9 @@ export class BpmnScriptValidator {
   }
 
   /**
-   * The particle word itself (`after`/`at`/`every`) — shared between the `on`
-   * handler and the `await` catch, since both grammar rules accept any ID
-   * there. Returns whether the particle is legal, so callers can skip
-   * particle-dependent follow-up checks (the shape warnings below apply only
-   * to a handler, not a catch) once it is not.
+   * The particle word itself, shared between the `on` handler and the `await`
+   * catch since both grammar rules accept any ID there. Returns whether the
+   * particle is legal, so callers can skip particle-dependent follow-ups.
    */
   private checkTimerParticleWord(
     node: OnHandler | IntermediateCatchEvent,
@@ -1934,11 +1697,8 @@ export class BpmnScriptValidator {
 
   /**
    * Timer-specific checks, run only once the required particle/time pair is
-   * present: the particle word itself (`after`/`at`/`every`), two
-   * mistake-guard shape warnings (an `after` value that does not read as a
-   * duration, an `at` value that reads as one instead), and the
-   * `every`-on-an-interrupting-handler warning — a repeating timer that also
-   * interrupts its scope could only ever fire once.
+   * present. The shape checks are warnings rather than errors because they
+   * guess at intent from the value's spelling.
    */
   private checkTimerParticle(
     handler: OnHandler,
@@ -1966,8 +1726,7 @@ export class BpmnScriptValidator {
         { node: handler, property: 'time' },
       );
     }
-    // `every` gets no shape check — cycles and cron are too varied to police
-    // honestly.
+    // `every` gets no shape check: cycles and cron are too varied to police.
 
     if (particle === 'every' && !handler.alongside) {
       accept(
@@ -1981,16 +1740,15 @@ export class BpmnScriptValidator {
 
   /**
    * A handler belongs directly in a process body, a `subprocess` body, or
-   * another handler's body (BPMN allows nested event sub-processes) — never
-   * inside an `if`/`while`/`do`/`parallel` branch, since an event handler
-   * scopes to a whole container, not to one branch of it.
+   * another handler's body (BPMN allows nested event sub-processes), never
+   * inside a branch: an event handler scopes to a whole container, not to one
+   * branch of it.
    *
-   * `on compensation` tightens this further: an undo block reverses one
-   * particular subprocess's completed work, so it belongs directly inside
-   * that `subprocess` body and nowhere else — not the process body, not
-   * another handler's body. That tightened rule only ever applies where the
-   * generic placement rule above has already passed (a compensation handler
-   * still inside an `if`/branch gets the generic message, never both).
+   * `on compensation` is tighter still. An undo block reverses one particular
+   * subprocess's completed work, so it belongs directly inside that
+   * `subprocess` body and nowhere else. That rule only applies where the
+   * generic one has already passed, so a mis-placed compensation handler never
+   * collects both messages.
    */
   private checkHandlerPlacement(
     handler: OnHandler,
@@ -2018,8 +1776,8 @@ export class BpmnScriptValidator {
   }
 
   /**
-   * A handler reads like a catch block: only further handlers may follow it
-   * in its statement list — it must sit at the end of the body it guards.
+   * A handler reads like a catch block, so it must sit at the end of the body
+   * it guards: only further handlers may follow it.
    */
   private checkHandlerTrailing(
     handler: OnHandler,
@@ -2040,11 +1798,8 @@ export class BpmnScriptValidator {
   }
 
   /**
-   * Catch-parameter binding checks: a duplicate `field` within one handler
-   * (checked by the literal field text, regardless of word legality — the
-   * {@link checkDuplicateKeys} precedent), then per binding, the soft `field`
-   * word and the semantic rule that an escalation carries a code but no
-   * message.
+   * Catch-parameter binding checks. Duplicates are keyed on the literal field
+   * text, regardless of whether the word itself is legal.
    */
   private checkHandlerBindings(
     handler: OnHandler,
@@ -2079,33 +1834,18 @@ export class BpmnScriptValidator {
   }
 
   /**
-   * The host/boundary dimension: whether this handler is even allowed to
-   * name a host, and — once it does — whether the host it names is one this
-   * handler could legally attach to. Runs in this order, stopping at the
-   * first violation, so one mistake never stacks a second diagnostic on top
-   * of itself:
+   * The host/boundary dimension: whether this handler may name a host, and
+   * whether the host it names is one it could legally attach to. Stops at the
+   * first violation so one mistake never stacks a second diagnostic on itself.
    *
-   *   1. `compensation` has no boundary form at all — a host on it is
-   *      rejected outright, independent of whether the name even resolves.
-   *   2. An unresolved host is the linker's problem: {@link
-   *      BpmnScriptLinker} already reports it (a boundary-crossing
-   *      explanation or the generic "could not resolve" message), so this
-   *      check is guarded on `.ref` being present, the {@link
-   *      checkGotoStatement} precedent — touching an unresolved reference
-   *      unguarded here would double-report on top of that error.
-   *   3. The host cannot be a descendant of this same handler's own body.
-   *      The scope-provider transparency rule that lets a hosted handler's
-   *      `goto` reach the main flow (and vice versa) also makes the
-   *      handler's own escape-path steps visible as host candidates — but a
-   *      step inside this handler's own body only ever runs *after* this
-   *      boundary event has already fired, so attaching the event to it is
-   *      circular: structurally valid BPMN the engine would deploy, but a
-   *      path that can never be taken.
-   *   4. The host must be an activity: a start/end event, a `throw`, or a
-   *      named `emit` cannot carry an attached boundary event.
-   *   5. An `escalation` boundary additionally restricts its host to a
-   *      `subprocess`, a `call`, or a `user` task — Operaton's own
-   *      restriction, read from `BpmnParse.parseBoundaryEvents`.
+   * An unresolved host is skipped; the linker already reports it, and touching
+   * the reference here would double-report. A host inside the handler's own
+   * body is rejected as circular: the scope provider makes those steps visible
+   * as candidates, but such a step only runs after the boundary event has
+   * fired, so the engine would deploy a path nothing can take. An `escalation`
+   * boundary is restricted further, to a `subprocess`, a `call`, or a `user`
+   * task, which is Operaton's own restriction in
+   * `BpmnParse.parseBoundaryEvents`.
    */
   private checkHandlerHost(
     handler: OnHandler,
@@ -2153,53 +1893,36 @@ export class BpmnScriptValidator {
   }
 
   /**
-   * Two handlers in the same container catching the same host, trigger, and
-   * code (or both catch-all) are ambiguous to the engine regardless of
-   * `alongside` — Operaton rejects such a deployment. A coded handler and a
-   * catch-all of the same trigger coexist legally (specific wins, catch-all
-   * is the fallback), since they key differently, and so do two handlers
-   * with the same trigger and code that attach to *different* hosts — each
-   * host gets its own engine subscription. A host-less handler and a hosted
-   * one sharing a trigger and code never collide either: the host segment is
-   * empty only for the host-less side, so the keys differ. "Same container"
-   * means the same *flow* container — the one the handler's node lowers into —
-   * so a handler written inside a hosted handler's body is compared against
-   * the surrounding flow's handlers, which is where it actually lands. Runs
-   * once per process (not per handler) so a duplicate pair is reported once
-   * per extra occurrence, not once per comparison direction.
-   *
-   * `on compensation` always carries no code and no host, so two of them in
-   * one container always key identically and always collide; the message is
-   * reworded away from the engine-ambiguity framing ({@link
-   * COMPENSATION_DUPLICATE_MESSAGE}) since a subprocess having one undo
-   * block is a simpler rule than a duplicate catch.
+   * Two handlers in one container catching the same host, trigger, and code
+   * are ambiguous to the engine regardless of `alongside`, and Operaton
+   * rejects the deployment. A coded handler and a catch-all of the same
+   * trigger coexist legally, as do two handlers attached to different hosts:
+   * each host gets its own engine subscription, and all of them key
+   * differently here. Runs once per process rather than per handler, so a
+   * duplicate pair is reported once per extra occurrence instead of once per
+   * comparison direction.
    */
   private checkHandlerDuplicates(
     process: Process,
     accept: ValidationAcceptor,
   ): void {
-    const byContainer = new Map<AstNode, OnHandler[]>();
+    const candidates: OnHandler[] = [];
     for (const node of AstUtils.streamAst(process)) {
       if (!isOnHandler(node)) continue;
-      // Timer and conditional handlers key no engine subscription name — two
-      // timers with different deadlines (or two conditions) in one scope is
-      // a real pattern, so they never conflict and are excluded here.
+      // Timer and conditional handlers key no engine subscription name, and
+      // two deadlines in one scope is a real pattern, so they never conflict.
       if (node.trigger === 'timer' || node.trigger === 'condition') continue;
-      // An unresolved host is the linker's problem: its key segment is empty,
-      // which would collide with every host-less handler here and stack a
-      // second, misleading diagnostic on top of the resolution error.
+      // An unresolved host would key an empty segment and collide with every
+      // host-less handler, stacking a second diagnostic on the linker's.
       if (node.host !== undefined && node.host.ref === undefined) continue;
-      // Group by the *flow* container, not the syntactic parent: a hosted
-      // handler's body lowers inline into its host's container, so two
-      // handlers written at different nesting depths can still land in one
-      // container and key the same engine subscription.
-      const container = enclosingFlowContainer(node);
-      if (container === undefined) continue;
-      const siblings = byContainer.get(container) ?? [];
-      siblings.push(node);
-      byContainer.set(container, siblings);
+      candidates.push(node);
     }
-    for (const siblings of byContainer.values()) {
+    // Group by the flow container, not the syntactic parent: a hosted
+    // handler's body lowers inline into its host's container, so handlers
+    // written at different nesting depths can still land in the same one.
+    const byContainer = Map.groupBy(candidates, enclosingFlowContainer);
+    for (const [container, siblings] of byContainer) {
+      if (container === undefined) continue;
       forEachDuplicate(
         siblings,
         (handler) =>
@@ -2217,10 +1940,8 @@ export class BpmnScriptValidator {
   }
 
   /**
-   * `throw <trigger> "<code>"` checks: the soft trigger word, and the
-   * code-required shift ({@link checkThrowEmitCode}) — every
-   * trigger but `compensation` must name its code, and `compensation` must
-   * not carry one.
+   * `throw <trigger> "<code>"` checks: the soft trigger word, then the code
+   * (see {@link checkThrowEmitCode}).
    *
    * @param stmt The `throw` statement.
    */
@@ -2239,11 +1960,8 @@ export class BpmnScriptValidator {
   };
 
   /**
-   * `emit <trigger> "<code>"` checks: the soft trigger word (with the
-   * impossible-verb teaching error for `emit error` — an error always ends
-   * its path, so it can never be a continuing throw — folded into {@link
-   * emitTriggerMessage}) and the code-required shift ({@link
-   * checkThrowEmitCode}).
+   * `emit <trigger> "<code>"` checks: the soft trigger word, then the code
+   * (see {@link checkThrowEmitCode}).
    *
    * @param stmt The `emit` statement.
    */
@@ -2262,12 +1980,9 @@ export class BpmnScriptValidator {
   };
 
   /**
-   * `await <trigger> <payload>` checks: the soft trigger word, restricted to
-   * the four kinds with a blocking catch form ({@link CATCH_TRIGGERS}), and
-   * the payload shape for whichever kind it is. The grammar carries no host,
-   * bindings, `alongside`, or body on this node, so there is nothing else to
-   * check — {@link checkHandlerPayload} is the mirror for `on`, minus those
-   * four members.
+   * `await <trigger> <payload>` checks: the soft trigger word and the payload
+   * shape for whichever kind it is. The grammar carries no host, bindings,
+   * `alongside`, or body on this node, so there is nothing else to check.
    *
    * @param catchEvent The `await` statement.
    */
@@ -2291,12 +2006,9 @@ export class BpmnScriptValidator {
   };
 
   /**
-   * Walk a catch event's payload against its trigger's row in {@link
-   * TRIGGER_PAYLOAD}: the STRING head (`code`) for message/signal, the timer
-   * particle clause for timer, and the parenthesized condition for
-   * condition. Mirrors {@link checkHandlerPayload}'s code/timer/parens walk;
-   * the bindings and `alongside` dimensions do not apply here, since the
-   * catch reads neither.
+   * Walk a catch event's payload against its trigger's row in
+   * {@link TRIGGER_PAYLOAD}. Mirrors {@link checkHandlerPayload} without the
+   * bindings and `alongside` dimensions, which a catch does not read.
    */
   private checkCatchPayload(
     catchEvent: IntermediateCatchEvent,
@@ -2314,8 +2026,8 @@ export class BpmnScriptValidator {
       catchEvent.trigger === 'condition' &&
       catchEvent.code !== undefined
     ) {
-      // Timer's forbidden code folds into the timer-payload branch below —
-      // `await timer "PT1H"` is "missing particle", not "has a stray code".
+      // Timer's forbidden code folds into the timer-payload branch below, so
+      // `await timer "PT1H"` reads as a missing particle, not a stray code.
       accept('error', CATCH_CONDITION_NO_CODE_MESSAGE, {
         node: catchEvent,
         property: 'code',
@@ -2357,11 +2069,9 @@ export class BpmnScriptValidator {
   }
 
   /**
-   * `error "<code>" message "<text>"` process-header declaration checks: the
-   * soft `kind`/`field` words, an empty code or message string, and a
-   * duplicate declaration for one code (the duplicate-process-label
-   * precedent — a second declaration for a code that already has a message
-   * is dead/conflicting text, not a merge).
+   * `error "<code>" message "<text>"` process-header declaration checks. A
+   * second declaration for a code that already has a message is conflicting
+   * text rather than a merge, so it is an error.
    */
   private checkErrorDecls(process: Process, accept: ValidationAcceptor): void {
     const decls = process.decls.filter(isErrorDecl);
@@ -2414,12 +2124,10 @@ export class BpmnScriptValidator {
 }
 
 /**
- * Collect every expression node reachable from a process: conditions of
- * `if`/`else if`/`while`/`do … while` and attribute values. Returns flat list of
- * `Expr` nodes (including nested sub-expressions, via {@link AstUtils.streamAst}).
+ * Collect every expression node reachable from a process, nested
+ * sub-expressions included: loop and branch conditions, and attribute values.
  *
  * @param process The process to scan.
- * @returns Every `Expr` node in the process.
  */
 function collectExpressions(process: Process): Expr[] {
   const result: Expr[] = [];
@@ -2440,8 +2148,8 @@ function isReservedName(name: string): boolean {
 }
 
 /**
- * Render a legal-word list as a quoted English "or"/"…, or …" clause — the
- * shared tail of every soft-word naming diagnostic in this file.
+ * Render a legal-word list as a quoted English "or" clause, the shared tail of
+ * every soft-word naming diagnostic in this file.
  */
 function formatWordList(words: readonly string[]): string {
   const quoted = words.map((w) => `'${w}'`);
@@ -2450,56 +2158,30 @@ function formatWordList(words: readonly string[]): string {
   return `${quoted.slice(0, -1).join(', ')}, or ${quoted[quoted.length - 1]}`;
 }
 
-/** The generic "unknown event kind" diagnostic, naming every legal word for the position. */
 function unknownTriggerMessage(word: string, legal: readonly string[]): string {
   return `Unknown event kind '${word}'; write ${formatWordList(legal)}.`;
 }
 
-/**
- * The near-miss message for the `compensate` typo — the correct spelling
- * names an already-completed undo block, not a verb — shared by the `on`,
- * `throw`, and `emit` trigger diagnostics below.
- */
-function compensateTypoMessage(): string {
-  return `Unknown event kind 'compensate'; write 'compensation'.`;
-}
-
-/**
- * The `on` trigger diagnostic: near-miss teaching messages for `conditional`
- * (the one plausible typo for `condition`) and `compensate` (for
- * `compensation`), otherwise the generic naming message over all seven
- * legal words.
- */
 function onTriggerMessage(word: string): string {
   if (word === 'conditional') {
     return `Unknown event kind 'conditional'; did you mean 'condition'?`;
   }
   if (word === 'compensate') {
-    return compensateTypoMessage();
+    return COMPENSATE_TYPO_MESSAGE;
   }
   return unknownTriggerMessage(word, ON_TRIGGERS);
 }
 
-/**
- * The `throw` trigger diagnostic: near-miss teaching messages for `message`
- * (nothing to send on the throwing side — write a handler instead) and
- * `compensate` (for `compensation`), otherwise the generic naming message.
- */
 function throwTriggerMessage(word: string): string {
   if (word === 'message') {
     return MESSAGE_NOTHING_TO_SEND_MESSAGE;
   }
   if (word === 'compensate') {
-    return compensateTypoMessage();
+    return COMPENSATE_TYPO_MESSAGE;
   }
   return unknownTriggerMessage(word, THROW_TRIGGERS);
 }
 
-/**
- * The `emit` trigger diagnostic: near-miss teaching messages for `error`
- * (always terminal — write `throw error`), `message` (nothing to send), and
- * `compensate` (for `compensation`), otherwise the generic naming message.
- */
 function emitTriggerMessage(word: string): string {
   if (word === 'error') {
     return "An error always aborts its path — write 'throw error'.";
@@ -2508,18 +2190,11 @@ function emitTriggerMessage(word: string): string {
     return MESSAGE_NOTHING_TO_SEND_MESSAGE;
   }
   if (word === 'compensate') {
-    return compensateTypoMessage();
+    return COMPENSATE_TYPO_MESSAGE;
   }
   return unknownTriggerMessage(word, EMIT_TRIGGERS);
 }
 
-/**
- * The `await` trigger diagnostic: names the four legal catch words and
- * points at the right construct for everything else — error/escalation fire
- * outward through `throw`/`emit`, and compensation is a subprocess's own
- * undo block, so none of the three (nor any other unrecognised word) can be
- * awaited inline.
- */
 function catchTriggerMessage(word: string): string {
   return (
     `Unknown event kind '${word}'; intermediate catch supports ${formatWordList(CATCH_TRIGGERS)}. ` +
@@ -2529,10 +2204,9 @@ function catchTriggerMessage(word: string): string {
 }
 
 /**
- * The `Statement` kinds a boundary event may attach to: the five activities
- * Operaton lets a token dock at. Everything else in the `Statement` union is
- * a control construct, a terminal event, a `goto`, or another handler — none
- * of which an engine token is ever "at" the way it is at a running activity.
+ * The `Statement` kinds a boundary event may attach to: the activities an
+ * engine token can be "at". Everything else in the `Statement` union is a
+ * control construct, a terminal event, a `goto`, or another handler.
  */
 function isActivityStatement(stmt: Statement): boolean {
   return (
@@ -2545,21 +2219,18 @@ function isActivityStatement(stmt: Statement): boolean {
 }
 
 /**
- * Operaton additionally restricts an `escalation` boundary to exactly these
- * three host kinds (read from `BpmnParse.parseBoundaryEvents`) — narrower
- * than the general activity set every other boundary-capable trigger allows.
+ * Operaton restricts an `escalation` boundary to these three host kinds, which
+ * is narrower than the activity set every other boundary-capable trigger
+ * allows. Read from `BpmnParse.parseBoundaryEvents`.
  */
 function isEscalationLegalHost(stmt: Statement): boolean {
   return isSubProcess(stmt) || isCallActivity(stmt) || isUserTask(stmt);
 }
 
 /**
- * A human-readable name for a resolved host's `Statement` kind, used to tell
- * an author what their `host` actually named. `[Statement:ID]` only ever
- * matches a node that carries a `name` (see {@link targetStatementName}), so
- * a control construct (`if`/`while`/`parallel`), a `goto`, or another handler
- * can never reach here — none of them have a name to resolve against — and
- * the fallback below exists only so this function stays total.
+ * A human-readable name for a resolved host's `Statement` kind, to tell an
+ * author what their `host` actually named. Only a node carrying a `name` can
+ * resolve, so the fallback exists to keep this function total.
  */
 function describeStatementKind(stmt: Statement): string {
   if (isStartEvent(stmt)) return 'a start event';
@@ -2574,7 +2245,6 @@ function describeStatementKind(stmt: Statement): string {
   return 'not an activity';
 }
 
-/** A host resolving to a non-activity step: names what it actually is. */
 function illegalHostMessage(host: Statement): string {
   return (
     'A boundary event can only attach to an activity — a user, service, ' +
@@ -2583,7 +2253,6 @@ function illegalHostMessage(host: Statement): string {
   );
 }
 
-/** An `escalation` boundary whose host is outside Operaton's three legal kinds. */
 function escalationHostMessage(host: Statement): string {
   return (
     'An escalation boundary can only attach to a subprocess, a call, or a ' +
@@ -2591,11 +2260,6 @@ function escalationHostMessage(host: Statement): string {
   );
 }
 
-/**
- * A host resolving into a descendant of the handler's own body: the step
- * only ever runs after this same boundary event has already fired, so
- * attaching to it is circular — see {@link BpmnScriptValidator.checkHandlerHost}.
- */
 function selfAttachedHostMessage(hostName: string): string {
   return (
     `A boundary event cannot attach to a step inside its own escape path: ` +
@@ -2604,11 +2268,6 @@ function selfAttachedHostMessage(hostName: string): string {
   );
 }
 
-/**
- * A `start` written as the first statement of a *hosted* handler's body — the
- * one place the container rule does not extend to, since such a body lowers
- * inline rather than into a scope of its own.
- */
 function hostedHandlerStartMessage(name: string): string {
   return (
     `'start ${name}' cannot open a handler that names a host: the body runs ` +
@@ -2620,21 +2279,12 @@ function hostedHandlerStartMessage(name: string): string {
 
 /**
  * The resolved host's name for use as a duplicate-detection key segment, or
- * `''` for a host-less handler (or one whose host did not resolve — the
- * linker's problem, not this check's). Kept as its own function because
- * `Statement`'s `name` is not a common property across every union member —
- * {@link targetStatementName} is the total accessor.
+ * `''` for a handler with no host or an unresolved one.
  */
 function handlerHostKey(handler: OnHandler): string {
   return handler.host?.ref ? targetStatementName(handler.host.ref) : '';
 }
 
-/**
- * The sibling-duplicate message for a non-compensation handler. The
- * host-less phrasing ("in this scope") is byte-identical to the message this
- * file has always produced, so an existing host-less program's diagnostics
- * do not change; a hosted handler instead names the activity it attaches to.
- */
 function handlerDuplicateMessage(handler: OnHandler): string {
   const caught =
     handler.code !== undefined
@@ -2646,11 +2296,10 @@ function handlerDuplicateMessage(handler: OnHandler): string {
 }
 
 /**
- * Flag an empty code string on `on` (rule 4): catch-all is the *omitted*
- * string, so an empty one is always a mistake, never a shorthand for it.
- * `throw`/`emit` read an empty or omitted code differently — see {@link
- * checkThrowEmitCode} — since there is no catch-all concept on the throwing
- * side.
+ * Flag an empty code string on `on`: catch-all is the omitted string, so an
+ * empty one is a mistake. There is no catch-all on the throwing side, so
+ * `throw`/`emit` read the same shape differently (see
+ * {@link checkThrowEmitCode}).
  */
 function checkEmptyCode(
   code: string | undefined,
@@ -2667,17 +2316,14 @@ function checkEmptyCode(
 }
 
 /**
- * `throw <trigger> "<code>"`/`emit <trigger> "<code>"` code-shape checks
- * (the code-required shift): every trigger but `compensation` must
- * name the code it throws/emits, so an omitted or empty code string is the
- * same mistake — there is no catch-all shorthand on the throwing/emitting
- * side, unlike a catch block. `compensation` is the mirror case: it undoes
- * already-completed work and names nothing, so carrying a code (even an
- * empty string) is the mistake there instead.
+ * Code-shape checks for `throw`/`emit`. Every trigger but `compensation` must
+ * name the code it throws, so an omitted and an empty code string are the same
+ * mistake: there is no catch-all shorthand on the throwing side.
+ * `compensation` names nothing, so carrying a code at all is the mistake
+ * there.
  *
- * @param stmt The `throw`/`emit` statement.
  * @param subject The diagnostic's leading noun phrase (`'A thrown'`/`'An emitted'`).
- * @param keyword The statement's own keyword (`'throw'`/`'emit'`), echoed in the message.
+ * @param keyword The statement's own keyword, echoed in the message.
  */
 function checkThrowEmitCode(
   stmt: ThrowStatement | EmitStatement,
@@ -2705,9 +2351,8 @@ function checkThrowEmitCode(
 }
 
 /**
- * The statement list a handler sits in — `process.body` when it is directly
- * in the process, or the enclosing `Block`'s `statements` otherwise (a
- * `subprocess`/`on` body). Used by {@link BpmnScriptValidator.checkHandlerTrailing}.
+ * The statement list a handler sits in: `process.body` when it is directly in
+ * the process, the enclosing `Block`'s `statements` otherwise.
  */
 function statementListOf(handler: OnHandler): Statement[] {
   const container = handler.$container;
@@ -2715,12 +2360,10 @@ function statementListOf(handler: OnHandler): Statement[] {
 }
 
 /**
- * The identifier-like text of a `binding` attribute value, however it parsed:
- * a bareword (`binding = latest`) is a `VarRef`, and a quoted spelling
- * (`binding = "latest"`) is a `LiteralString` — both mean the same value, so
- * {@link BpmnScriptValidator.checkCallBindingAttribute} reads either shape the
- * same way. `undefined` for any other expression shape (a number, a raw
- * template, an operator node, …), which is never a legal binding value.
+ * The identifier-like text of a `binding` attribute value, however it parsed.
+ * A bareword is a `VarRef` and a quoted spelling a `LiteralString`, and both
+ * mean the same value. Any other expression shape is never a legal binding
+ * value and yields `undefined`.
  */
 function bindingValueText(expr: Expr): string | undefined {
   if (isVarRef(expr)) {
@@ -2733,11 +2376,10 @@ function bindingValueText(expr: Expr): string | undefined {
 }
 
 /**
- * Split a raw `FENCED_SCRIPT` token (the whole ```` ```<tag>\n…\n``` ````
- * block, captured verbatim by the grammar) into its language tag and inner
- * code body — mirroring `ast-to-ir.ts`'s `splitFencedScript`. Duplicated here
- * (rather than imported) because the validator lives in `packages/language`,
- * which cannot depend on `packages/transform`.
+ * Split a raw `FENCED_SCRIPT` token, captured verbatim by the grammar, into
+ * its language tag and inner code body. Mirrors `ast-to-ir.ts`'s
+ * `splitFencedScript`, duplicated rather than imported because the validator
+ * lives in `packages/language`, which cannot depend on `packages/transform`.
  *
  * The tag is the maximal run of ASCII letters immediately following the
  * opening fence. A single line terminator directly after the tag (`\r\n` or
@@ -2760,14 +2402,11 @@ function splitFencedScript(raw: string): { tag: string; code: string } {
 }
 
 /**
- * Walk up from `node` to the nearest `Block` whose direct container is a
- * `ParallelStatement` — i.e. the nearest enclosing `parallel` branch, if any.
+ * Walk up from `node` to the nearest enclosing `parallel` branch, if any.
  *
- * A `Block`'s only possible containers are `DoWhileStatement`, `ElseIf`,
- * `IfStatement`, `ParallelStatement`, and `WhileStatement` (per the grammar);
  * `ParallelStatement`'s only `Block`-typed property is `branches`, so a
  * `Block` whose container is a `ParallelStatement` is necessarily one of that
- * statement's branches — no separate membership check is needed.
+ * statement's branches and needs no separate membership check.
  *
  * @param node The node to walk up from (typically a resolved `goto` target).
  * @returns The enclosing branch `Block`, or `undefined` if `node` is not
@@ -2805,12 +2444,9 @@ function isWithinBlock(node: AstNode, block: Block): boolean {
 }
 
 /**
- * The `name` of a resolved `goto` target for use in a diagnostic message.
- * Only `StartEvent`/`EndEvent`/`UserTask`/`ServiceTask`/`ScriptTask`/
- * `SubProcess`/`CallActivity`/named-`ThrowStatement`/named-`EmitStatement`
- * carry a resolvable `name` (a *resolved* cross-reference necessarily has
- * one — an unnamed throw/emit can never be a link target), so the `'?'`
- * fallback shouldn't be reachable.
+ * The `name` of a resolved `goto` target for use in a diagnostic message. A
+ * resolved cross-reference necessarily carries a name, so the `'?'` fallback
+ * exists only to keep this function total.
  */
 function targetStatementName(target: Statement): string {
   if (

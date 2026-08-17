@@ -12,15 +12,15 @@
  * The project targets Operaton, so the IR carries the semantics Operaton
  * executes under field names that carry no vendor prefix. Vendor-specific
  * concerns that vary only at serialization (e.g. `operaton:historyTimeToLive`)
- * are not fields here; they are attached by the IR → XML transform.
+ * are not fields here; they are attached by the IR -> XML transform.
  */
 
 /**
  * A structural container of flow: a set of {@link FlowElement} nodes plus the
  * {@link SequenceFlow} edges connecting them, addressed by a document-unique
  * `id`. Both the root {@link BpmnProcess} and an embedded {@link SubProcess}
- * are containers, so every per-container transform pass — CFG analysis,
- * incoming/outgoing wiring, gateway defaults, restructuring — operates on this
+ * are containers, so every per-container transform pass (CFG analysis,
+ * incoming/outgoing wiring, gateway defaults, restructuring) operates on this
  * shape rather than on the process alone.
  *
  * Sequence flows never cross a container boundary: an edge's `sourceRef` and
@@ -40,8 +40,8 @@ export interface FlowContainer {
  * The root IR node. Represents a single executable BPMN process, and is the
  * top-level {@link FlowContainer}.
  *
- * `isExecutable` is always `true` — the DSL targets Operaton, which
- * requires executable processes.
+ * `isExecutable` is always `true`: the DSL targets Operaton, which requires
+ * executable processes.
  *
  * `operaton:historyTimeToLive` is emitted as `"P30D"` at serialization
  * and is therefore intentionally absent from the IR.
@@ -55,16 +55,15 @@ export interface BpmnProcess extends FlowContainer {
    * Declared thrown-message texts, keyed by error code, in declaration order.
    *
    * This is the one piece of document-level root-element data that is not
-   * derivable from usage. Everything else about the `bpmn:Error` /
-   * `bpmn:Escalation` root elements — which codes exist, their ids, their refs —
-   * is synthesized from where codes are thrown and caught (see {@link
-   * EventDefinition}). But the message an error of a given code carries when
-   * thrown is authorial intent that no throw site records: two throws of one
-   * code share a single root element, so the text cannot live on the throw.
-   * It is declared once per code and stamped onto the synthesized
-   * `bpmn:Error` (as `operaton:errorMessage`) at export. Escalations have no
-   * message concept, so only error codes appear here. A declared code emits its
-   * root element even when otherwise unused.
+   * derivable from usage. Which codes exist, their ids, and their refs are all
+   * synthesized from where codes are thrown and caught (see
+   * {@link EventDefinition}), but the message an error of a given code carries
+   * is authorial intent that no throw site records: two throws of one code
+   * share a single root element, so the text cannot live on the throw. It is
+   * declared once per code and stamped onto the synthesized `bpmn:Error` (as
+   * `operaton:errorMessage`) at export. Escalations have no message concept, so
+   * only error codes appear here. A declared code emits its root element even
+   * when otherwise unused.
    */
   errorMessages?: { code: string; message: string }[];
 }
@@ -109,115 +108,89 @@ export type FormFieldType = 'string' | 'number' | 'boolean' | 'date';
  * form field doubles as the declaration of where that variable comes from.
  */
 export interface FormField {
-  /** `operaton:formField id` — also the bound process-variable name. */
+  /** `operaton:formField id`, also the bound process-variable name. */
   id: string;
   /** DSL-level field type; mapped to the Operaton `type` at serialization. */
   type: FormFieldType;
-  /** `operaton:formField label` — the human-readable label. */
+  /** `operaton:formField label`, the human-readable label. */
   label?: string;
-  /** `operaton:formField defaultValue` — optional default, carried as text. */
+  /** `operaton:formField defaultValue`, an optional default carried as text. */
   defaultValue?: string;
 }
 
 /**
- * An error or escalation event definition — the DSL's try/catch payload.
- *
- * The same shape describes both sides of the analogy:
- *   - On a **catch** (the trigger start event of an `on` handler): the code
+ * The payload of a catch or throw event, in either direction:
+ *   - On a **catch** (the trigger start event of an `on` handler) the code
  *     selects which thrown code this handler catches; a **missing** code means
- *     catch-all (it catches any error/escalation, and export emits no
- *     `errorRef`/`escalationRef`). The `codeVariable`/`messageVariable`
- *     bindings name the process variables the caught code and message text
- *     fill — the `e` in `catch (Exception e)`.
- *   - On a **throw** (a typed `endEvent`, or an {@link IntermediateThrowEvent}):
+ *     catch-all (export emits no `errorRef`/`escalationRef`). The
+ *     `codeVariable`/`messageVariable` bindings name the process variables the
+ *     caught code and message text fill.
+ *   - On a **throw** (a typed `endEvent`, or an {@link IntermediateThrowEvent})
  *     the code identifies what is thrown; the bindings do not apply and the
  *     engine ignores them there.
  *
- * The type stays permissive on purpose — it mirrors what BPMN can represent,
- * not the rulebook for where each field is meaningful. The validator and the
- * import contract enforce that bindings appear only on catch definitions and
- * that a throw resolves to a non-empty code; the types do not.
+ * The type stays permissive on purpose: it mirrors what BPMN can represent, not
+ * where each field is meaningful. The validator and the import contract enforce
+ * that bindings appear only on catch definitions and that a throw resolves to a
+ * non-empty code; the types do not.
  *
  * Escalations carry a code but no message text (BPMN/Operaton has no escalation
- * message), so the escalation variant has only `codeVariable`.
+ * message), so the escalation variant has only `codeVariable`. Compensation
+ * appears on all three surfaces like error/escalation but is payload-less: BPMN
+ * compensation always addresses the enclosing scope rather than naming one, so
+ * there is no code to carry and no bindings to fill.
  *
- * **Compensation** is the odd one out among the catch/throw pair: it appears on
- * all three surfaces exactly like error/escalation — `on compensation` catches
- * it, `throw compensation`/`emit compensation` raise it — but it is
- * payload-less. BPMN compensation always addresses the enclosing scope rather
- * than naming one, so there is no code to carry and no bindings to fill; every
- * occurrence of the kind is the identical undo-block request (think `finally`,
- * not `catch (Exception e)`).
- *
- * The remaining four variants are trigger-only (they have no throw-side bindings):
- *   - **message** — the process's inbox. A handler runs when the engine delivers
- *     a message with this name; delivery is the engine's correlation API, so
- *     nothing about it is modeled here beyond the name.
- *   - **signal** — a broadcast channel. `emit signal` notifies every listener
- *     everywhere and keeps going; `throw signal` broadcasts and ends this path
- *     (unlike an escalation, which only travels up its own scope).
- *   - **timer** — a deadline relative to scope activation. `after` is a duration
- *     ("if this scope is still running after an hour"), `at` a point in time,
- *     `every` a repeating schedule; the clock starts when the surrounding scope
- *     starts.
- *   - **conditional** — a data watchdog. The condition is checked when the scope
- *     starts and re-checked whenever a variable changes; the parens read exactly
- *     like `if`.
- *
+ * The remaining four variants are trigger-only, with no throw-side bindings.
  * `messageName` and `signalName` are the identity of the message/signal: the
  * engine subscribes by name, so a nameless handler is meaningless, and the
  * document-level `bpmn:Message`/`bpmn:Signal` root elements are derived by
- * deduplicating on this name (every use of one name — a handler, an `emit`, a
- * `throw` — shares one root). `timerKind` maps 1:1 to the BPMN
- * `timeDuration`/`timeDate`/`timeCycle` forms and `expression` is the verbatim
- * time text (EL such as `${dueDate}` passes through unaltered for the engine to
- * evaluate). `condition` is the raw `${…}` body, exactly the
- * {@link SequenceFlow.conditionExpression} convention.
+ * deduplicating on this name (every use of one name shares one root). A signal
+ * is a global broadcast where an escalation only travels up its own scope.
+ * `timerKind` maps 1:1 to the BPMN `timeDuration`/`timeDate`/`timeCycle` forms
+ * and `expression` is the verbatim time text (EL such as `${dueDate}` passes
+ * through unaltered for the engine to evaluate); the clock starts when the
+ * surrounding scope starts. `condition` is the raw `${...}` body, the same
+ * convention as {@link SequenceFlow.conditionExpression}, re-checked whenever a
+ * variable changes.
  */
 export type EventDefinition =
   | {
       kind: 'error';
       /** The caught/thrown error code; absent on a catch means catch-all. */
       errorCode?: string;
-      /** `operaton:errorCodeVariable` — process variable the code fills. */
+      /** `operaton:errorCodeVariable`, the process variable the code fills. */
       codeVariable?: string;
-      /** `operaton:errorMessageVariable` — process variable the message fills. */
+      /** `operaton:errorMessageVariable`, the variable the message fills. */
       messageVariable?: string;
     }
   | {
       kind: 'escalation';
       /** The caught/thrown escalation code; absent on a catch means catch-all. */
       escalationCode?: string;
-      /** `operaton:escalationCodeVariable` — process variable the code fills. */
+      /** `operaton:escalationCodeVariable`, the variable the code fills. */
       codeVariable?: string;
     }
   | {
       /**
-       * Compensation — the undo-block analogy: `on compensation` catches the
-       * request to run a sub-process's undo steps; `throw compensation` (a typed
-       * end event) and `emit compensation` (an intermediate throw) raise that
-       * request. Payload-less by construction: BPMN compensation carries no
-       * code and no `activityRef` (it always addresses the enclosing scope,
-       * never one activity by reference), so there is nothing to identify and
-       * nothing to bind.
+       * `on compensation` catches the request to run a sub-process's undo
+       * steps; `throw compensation` (a typed end event) and `emit compensation`
+       * (an intermediate throw) raise it. Payload-less by construction: BPMN
+       * compensation carries no code and no `activityRef`.
        *
        * `waitForCompletion` (the `bpmn:CompensateEventDefinition` attribute) is
-       * intentionally UNMODELED: the moddle schema defaults it to `true` and
-       * the engine supports no other value, so an absent field already carries
-       * the only semantics the `throw`/`emit compensation` verb pair promises —
-       * unlike {@link StartEvent.isInterrupting}, there is no non-default case
-       * to store.
+       * unmodeled: the moddle schema defaults it to `true` and the engine
+       * supports no other value, so there is no non-default case to store.
        */
       kind: 'compensation';
     }
   | {
       kind: 'message';
-      /** The message name — the correlation identity and root-element dedupe key. */
+      /** The correlation identity and root-element dedupe key. */
       messageName: string;
     }
   | {
       kind: 'signal';
-      /** The signal name — the broadcast identity and root-element dedupe key. */
+      /** The broadcast identity and root-element dedupe key. */
       signalName: string;
     }
   | {
@@ -229,7 +202,7 @@ export type EventDefinition =
     }
   | {
       kind: 'conditional';
-      /** The raw `${…}` condition body (the `conditionExpression` convention). */
+      /** The raw `${...}` condition body (the `conditionExpression` convention). */
       condition: string;
     };
 
@@ -243,8 +216,8 @@ export type EventDefinition =
  * start event is the handler's trigger: `eventDefinition` carries the caught
  * error/escalation and its catch bindings, and `isInterrupting` is stored only
  * when non-default. BPMN's default is interrupting (`true`), and the serializer
- * drops the default, so the IR keeps only the non-default `false` — true or
- * absent are the same thing, which keeps IR deep-equality trivial. A definition
+ * drops the default, so the IR keeps only the non-default `false`: true and
+ * absent are the same thing, which keeps IR deep-equality simple. A definition
  * on a start event outside an event sub-process is malformed hand-built IR.
  */
 export interface StartEvent {
@@ -261,8 +234,8 @@ export interface StartEvent {
 /**
  * A BPMN `endEvent` node.
  *
- * When `eventDefinition` is present the end event is a typed throw — `throw
- * error`/`throw escalation` — that ends the path while raising the code. A
+ * When `eventDefinition` is present the end event is a typed throw (`throw
+ * error`/`throw escalation`) that ends the path while raising the code. A
  * plain end (no definition) is the ordinary process/branch terminator.
  */
 export interface EndEvent {
@@ -274,14 +247,14 @@ export interface EndEvent {
 }
 
 /**
- * A BPMN `intermediateThrowEvent` node — the DSL's `emit` verb.
+ * A BPMN `intermediateThrowEvent` node, the DSL's `emit` verb.
  *
- * Unlike a typed {@link EndEvent} throw, an intermediate throw fires the event
- * and lets flow continue (it is a plain fall-through node in the graph). Only
- * an escalation is emittable this way: BPMN has no intermediate error throw, so
- * `emit error` is refused and the author is taught `throw error` instead. The
- * `eventDefinition` is therefore **required** — a none intermediate throw is
- * inexpressible and refused on import — and there is no `name` field, because
+ * Where a typed {@link EndEvent} throw ends the path, an intermediate throw
+ * fires the event and lets flow continue (a plain fall-through node in the
+ * graph). Only an escalation is emittable this way: BPMN has no intermediate
+ * error throw, so `emit error` is refused in favour of `throw error`. The
+ * `eventDefinition` is therefore **required** (a none intermediate throw is
+ * inexpressible and refused on import), and there is no `name` field, because
  * the `emit` surface carries no label slot.
  */
 export interface IntermediateThrowEvent {
@@ -291,21 +264,17 @@ export interface IntermediateThrowEvent {
 }
 
 /**
- * A BPMN `intermediateCatchEvent` node — the DSL's `await` verb.
+ * A BPMN `intermediateCatchEvent` node, the DSL's `await` verb.
  *
  * A blocking wait on the main flow: the token pauses here until the trigger
- * fires, then continues to the next element, exactly like an
- * {@link IntermediateThrowEvent} except waiting instead of firing (it is
- * likewise a plain fall-through node in the graph, `entry === exit === id`).
- * Only message, timer, signal, and conditional are awaitable inline; error,
- * escalation, and compensation are raised with `throw`/`emit`, never caught
- * this way, so `eventDefinition` is narrowed to those four kinds — an
- * error/escalation/compensation catch is unrepresentable at the type level,
- * mirroring how {@link ServiceTaskBinding} makes an invalid binding
- * combination unrepresentable. The `eventDefinition` is **required** — an
- * unconditioned wait is inexpressible — and there is no `name` field,
- * because the `await` surface carries no label slot (its id is always the
- * synthesized `Catch_<coord>`, never an authored name).
+ * fires, then continues to the next element. Like an
+ * {@link IntermediateThrowEvent} it is a plain fall-through node in the graph,
+ * `entry === exit === id`. Only message, timer, signal, and conditional are
+ * awaitable inline; error, escalation, and compensation are raised with
+ * `throw`/`emit` and never caught this way, so `eventDefinition` is narrowed to
+ * those four kinds. It is **required** (an unconditioned wait is
+ * inexpressible), and there is no `name` field, because the `await` surface
+ * carries no label slot: its id is always the synthesized `Catch_<coord>`.
  */
 export interface IntermediateCatchEvent {
   kind: 'intermediateCatchEvent';
@@ -328,9 +297,9 @@ export interface UserTask {
   kind: 'userTask';
   id: string;
   name?: string;
-  /** `operaton:assignee` — the user or group responsible for this task. */
+  /** `operaton:assignee`, the user or group responsible for this task. */
   assignee?: string;
-  /** `operaton:formKey` — the embedded form key. */
+  /** `operaton:formKey`, the embedded form key. */
   formKey?: string;
   /** `operaton:formData` fields Tasklist renders for this task. */
   formFields?: FormField[];
@@ -432,7 +401,7 @@ export interface ParallelGateway {
 }
 
 /**
- * A BPMN `subProcess` (embedded) node — an activity that is itself a
+ * A BPMN `subProcess` (embedded) node: an activity that is itself a
  * {@link FlowContainer}.
  *
  * Its `flowElements` and `sequenceFlows` describe the nested body. Those
@@ -444,7 +413,7 @@ export interface ParallelGateway {
  * `name`, when present, is the human-readable label viewers render on the
  * expanded box.
  *
- * `triggeredByEvent` marks an **event sub-process** — the container an `on`
+ * `triggeredByEvent` marks an **event sub-process**, the container an `on`
  * handler lowers to. Such a sub-process is not wired into its parent's flow
  * (it has no incoming/outgoing sequence flows); it is triggered by the
  * error/escalation its single start event catches. The field is only ever
@@ -461,10 +430,9 @@ export interface SubProcess extends FlowContainer {
  * How a {@link CallActivity} resolves the version of the process it calls.
  *
  * `latest` and `deployment` bind by strategy; `version` pins one concrete
- * version. Tagging the union on `kind` makes `version` without a version
- * string — and a version string without an explicit binding — unrepresentable
- * at the type level, mirroring the {@link ServiceTaskBinding} precedent, so no
- * consumer has to guard a "version set but binding absent" combination at
+ * version. Tagging the union on `kind` makes both `version` without a version
+ * string and a version string without an explicit binding unrepresentable, so
+ * no consumer has to guard a "version set but binding absent" combination at
  * runtime.
  */
 export type CalledElementBinding =
@@ -473,18 +441,15 @@ export type CalledElementBinding =
   | { kind: 'version'; version: string };
 
 /**
- * One data mapping between the caller and the called process — the argument
- * and return-value passing of the function-call analogy (see
+ * One data mapping between the caller and the called process (see
  * {@link CallActivity}).
  *
- * The receiver always names the left-hand side: for an in-mapping `target` is
- * the variable created in the callee; for an out-mapping `target` is the
- * variable created back in the caller. Tagging the union on `kind` makes the
- * three source forms mutually exclusive — `all` copies every variable,
- * `variable` copies one source variable by name, `expression` evaluates an
- * expression — so a mapping carrying both a plain `source` and a
- * `sourceExpression` is unrepresentable, again mirroring
- * {@link ServiceTaskBinding}.
+ * `target` always names the receiving side: for an in-mapping the variable
+ * created in the callee, for an out-mapping the variable created back in the
+ * caller. Tagging the union on `kind` keeps the three source forms mutually
+ * exclusive (`all` copies every variable, `variable` copies one by name,
+ * `expression` evaluates an expression), so a mapping carrying both a plain
+ * `source` and a `sourceExpression` is unrepresentable.
  *
  * `local` restricts the mapping to the activity's local scope when set; it is
  * only ever `true` (an absent `local` is the default, non-local behavior).
@@ -500,13 +465,11 @@ export type CallVariableMapping =
     };
 
 /**
- * A BPMN `callActivity` node — an activity that invokes another process by id,
- * the DSL's process-call construct.
+ * A BPMN `callActivity` node: an activity that invokes another process by id.
  *
- * The construct reads as a function call: the called `process` is the function,
- * the `inMappings` are its arguments (values passed from caller into callee),
- * and the `outMappings` are its return values (values passed from callee back
- * to caller). It is a LEAF, not a {@link FlowContainer}: the callee's body
+ * The construct reads as a function call, with `inMappings` the arguments
+ * passed from caller into callee and `outMappings` the return values passed
+ * back. It is a leaf rather than a {@link FlowContainer}: the callee's body
  * lives in its own definition, so a call activity carries no nested
  * `flowElements`/`sequenceFlows`.
  *
@@ -521,11 +484,11 @@ export interface CallActivity {
   kind: 'callActivity';
   id: string;
   name?: string;
-  /** `bpmn:calledElement` — the id of the process this activity invokes. */
+  /** `bpmn:calledElement`, the id of the process this activity invokes. */
   calledElement: string;
   /** Version-resolution strategy; absent means the engine default (latest). */
   binding?: CalledElementBinding;
-  /** `operaton:in businessKey` — the business key propagated to the callee. */
+  /** `operaton:in businessKey`, the key propagated to the callee. */
   businessKey?: string;
   /** Argument mappings passed from caller into callee, in emission order. */
   inMappings?: CallVariableMapping[];
@@ -534,34 +497,30 @@ export interface CallActivity {
 }
 
 /**
- * A BPMN `boundaryEvent` node — attached to an activity in the same
- * container, rather than sitting in the main sequence-flow chain.
+ * A BPMN `boundaryEvent` node, attached to an activity in the same container
+ * rather than sitting in the main sequence-flow chain.
  *
- * It is the IR's first flow element with outgoing flow but no incoming: a
- * token appears here directly when the host activity is running and the
- * trigger fires, never by traversing a sequence flow into it (see
- * `cfg-analysis.ts`, which wires a boundary event to the container's virtual
- * entry for exactly this reason — it is a second entry point, like a start
- * event). `id` is host-derived (`Boundary_<hostId>_<trigger>`, see
- * `makeBoundaryEventId`) rather than positional, so it stays stable across a
- * round-trip no matter where the handler is placed in the statement list.
+ * It is the IR's only flow element with outgoing flow but no incoming: a token
+ * appears here when the host activity is running and the trigger fires, never
+ * by traversing a sequence flow into it. `cfg-analysis.ts` therefore wires a
+ * boundary event to the container's virtual entry, treating it as a second
+ * entry point like a start event. `id` is host-derived
+ * (`Boundary_<hostId>_<trigger>`) rather than positional, so it stays stable
+ * across a round-trip wherever the handler sits in the statement list.
  *
  * `attachedToRef` names the host activity by id; BPMN requires the host to be
- * a flow element of this same container (a boundary event is never attached
- * across a container boundary).
+ * a flow element of this same container.
  *
  * `cancelActivity` mirrors {@link StartEvent.isInterrupting}: BPMN defaults a
- * boundary event to interrupting (the host activity is cancelled the moment
- * the trigger fires), and the IR stores only the non-default `false`
- * (`alongside` in the DSL) — `true`/absent are the same thing, keeping IR
- * deep-equality trivial. An error boundary is always interrupting (BPMN has
- * no non-interrupting error boundary), so `cancelActivity` never appears
- * together with an `error` `eventDefinition`.
+ * boundary event to interrupting (the host activity is cancelled when the
+ * trigger fires), and the IR stores only the non-default `false` (`alongside`
+ * in the DSL). An error boundary is always interrupting in BPMN, so
+ * `cancelActivity` never appears together with an `error` `eventDefinition`.
  *
  * `eventDefinition` is never `{ kind: 'compensation' }`: BPMN attaches
  * compensation through a `bpmn:association` and `isForCompensation` on the
- * activity being compensated, a different mechanism entirely, which this
- * language surfaces as a sub-process undo block rather than a boundary event.
+ * activity being compensated, which this language surfaces as a sub-process
+ * undo block rather than a boundary event.
  */
 export interface BoundaryEvent {
   kind: 'boundaryEvent';

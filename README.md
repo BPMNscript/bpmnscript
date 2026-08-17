@@ -84,7 +84,8 @@ Press <kbd>F5</kbd> from the repo root. VS Code opens a second window with the e
 - errors and warnings inline as you type, so a `goto` that can't reach its target or a `string` variable compared against a number is flagged before you ever run the compiler
 - a **Convert** panel in the sidebar: compile the open file, jump to its counterpart when one exists, or pick a `.bpmn` from disk to decompile
 
-Compiling and decompiling are the same two operations as `bpmns build` and `bpmns parse` above, without leaving the editor. Both are in the command palette too, under "BPMNscript". See [packages/extension/README.md](packages/extension/README.md) for how the pieces fit together.
+Compiling and decompiling are the same two operations as `bpmns build` and `bpmns parse` above, without leaving the editor.
+Both are in the command palette too, under "BPMNscript". See [packages/extension/README.md](packages/extension/README.md) for how the pieces fit together.
 
 ## The language
 
@@ -113,11 +114,13 @@ Every step carries an id (`user ReviewInvoice`), which is what `goto` and bounda
 | `await <kind> …`               | stop here until the event arrives                     | intermediate catch event       |
 | `throw` / `emit <kind>`        | raise an event, ending the path or continuing         | throw event                    |
 
-[packages/language/README.md](packages/language/README.md) is the full reference: every attribute, every validator check, and the scoping rules for `goto`.
+Refer to [packages/language/README.md](packages/language/README.md) for the full and up to date language specification.
 
 ### Events
 
-The event layer reads like try/catch. A handler written at the end of a body catches an event raised anywhere inside it, `throw` ends the current path the way `throw` does in Java, and `emit` fires the event and carries on. Seven trigger kinds share that surface: error, escalation, message, signal, timer, condition, and compensation.
+The event layer reads like try/catch.
+A handler written at the end of a body catches an event raised anywhere inside it, `throw` ends the current path the way `throw` does in Java, and `emit` fires the event and carries on.
+Seven trigger kinds share that surface: error, escalation, message, signal, timer, condition, and compensation.
 
 A handler can also attach to one step instead of the whole body, which is where `on Host: kind` comes in. This process reviews an order, takes payment in a sub-process, and hangs four different escapes off those two activities:
 
@@ -195,22 +198,22 @@ process booking-saga {
 }
 ```
 
-Book the hotel after the flight, then fail: the seat gets released, and the traveller gets told. It's the rollback you'd otherwise write by hand, with each unit of work declaring its own reversal.
+Book the hotel after the flight, then fail: the seat gets released, and the traveller gets told.
 
-Every example on this page is a real file from [examples/spring-boot/processes/](examples/spring-boot/processes/), along with thirteen others. The end-to-end suite deploys them to an Operaton engine, so they can't quietly rot.
+Every example on this page is a real file from [examples/spring-boot/processes/](examples/spring-boot/processes/), along with some others. The end-to-end suite deploys them to an Operaton engine for testing on language changes.
 
-## Going back the other way
+## Roundtripping BPMN XML -> BPMNscript
 
-Decompiling is not lossy-by-default. BPMN is a much larger language than this DSL, so a `.bpmn` file can hold things `.bpmnscript` has no words for, and the import says so rather than dropping them:
+BPMN is a much larger language than this DSL, so a `.bpmn` file can hold elements unsupported in `.bpmnscript` and the decompiler will emit warnings for those:
 
-- A construct the DSL cannot express (a collaboration, loop characteristics, a compensation boundary event, an event definition the language doesn't model) is refused outright, with an error naming it. You get no file rather than a quietly wrong one.
+- A construct the DSL cannot express (a collaboration, loop characteristics, a compensation boundary event, an event definition the language doesn't model) is refused with an error.
 - Content the intermediate representation doesn't carry but that changes nothing semantically (extra Operaton extension attributes, lanes) is dropped with a warning naming each item.
 
-The reasoning is in [ADR-0014](docs/decisions/0014-honest-bpmn-import-contract.md). The short version: a round trip that silently loses a boundary event is worse than one that refuses to run.
+The reasoning is in [ADR-0014](docs/decisions/0014-honest-bpmn-import-contract.md). The short version: a round trip that silently changes the model/workflow is worse than one that refuses to run.
 
 ## Running a process on a real engine
 
-[examples/spring-boot/](examples/spring-boot/) is a working Operaton 2.1.0 + Spring Boot deployment with Java delegates for the service tasks. Its [README](examples/spring-boot/README.md) walks through compiling the processes, starting the engine, opening Cockpit and Tasklist, and stepping through a loan approval by hand.
+[examples/spring-boot/](examples/spring-boot/) is a working Operaton 2.1.0 + Spring Boot deployment with Java delegates for the service tasks. Its [README](examples/spring-boot/README.md) walks through compiling the processes, starting the engine, opening Cockpit and Tasklist, and stepping through a loan approval example process by hand.
 
 ## Architecture
 
@@ -230,9 +233,9 @@ flowchart LR
     IR -- irToDsl --> SRC
 ```
 
-A source file is parsed into an AST, converted into the IR (a small set of plain TypeScript objects in `packages/transform/src/ir/types.ts` that describe a process without reference to any engine), and written out from there. Compiling is `.bpmnscript` -> AST -> IR -> `.bpmn`; decompiling is `.bpmn` -> IR -> `.bpmnscript`.
+A source file is parsed into an AST, converted into the IR (a small set of plain TypeScript objects in `packages/transform/src/ir/types.ts` that describe a process without reference to any specific engine), and written out from there. Compiling is `.bpmnscript` -> AST -> IR -> `.bpmn`; decompiling is `.bpmn` -> IR -> `.bpmnscript`.
 
-The IR stays vendor-neutral. Operaton-specific attributes (`operaton:class`, `operaton:assignee`, and so on) are added only at the final XML-serialization step through a local [moddle extension](packages/transform/src/operaton-moddle.json), which keeps the engine's quirks out of the core data model. See [ADR-0006](docs/decisions/0006-engine-agnostic-intermediate-representation.md).
+The IR stays vendor-neutral. Operaton-specific attributes (`operaton:class`, `operaton:assignee`, and so on) are added only at the final XML-serialization step through a local [moddle extension](packages/transform/src/operaton-moddle.json), which keeps the engine's specifics out of the core data model. See [ADR-0006](docs/decisions/0006-engine-agnostic-intermediate-representation.md).
 
 | Library                                                         | Role                                                |
 | --------------------------------------------------------------- | --------------------------------------------------- |
@@ -257,7 +260,7 @@ docs/
 
 ## Project status
 
-BPMNscript is being built as a bachelor's thesis at [University of Hamburg](https://www.uni-hamburg.de/), supervised by Dr. Oliver Kopp. The thesis asks whether a textual DSL can be a practical alternative to graphical BPMN editors for developers who prefer working in code, which is why the IDE support is treated as part of the language rather than an extra.
+BPMNscript is being built as a bachelor's thesis at [University of Hamburg](https://www.uni-hamburg.de/), supervised by Dr. Oliver Kopp. The thesis asks whether a textual DSL can be a practical alternative to graphical BPMN editors for developers who prefer working in code.
 
 Design decisions are written up as [Markdown ADRs](docs/decisions/) using [MADR 4.0.0](https://adr.github.io/madr/); they're the best place to find out why something is the way it is. Shared vocabulary is collected in [docs/glossary.md](docs/glossary.md).
 

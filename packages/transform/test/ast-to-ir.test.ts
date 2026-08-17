@@ -1,25 +1,8 @@
 /**
- * Full test suite for the desugaring AST → IR transform (`astToIr`).
- *
- * Unit-level tests: each parses inline BpmnScript DSL source through the real
- * Langium grammar and asserts the flat, BPMN-shaped IR produced by `astToIr`.
- *
- * No fixture files are read — the expected IR is expressed as inline literals so
- * the desugaring rules are pinned without depending on external fixtures.
- *
- * Coverage (one block per desugaring rule):
- *   1. Implicit sequence + implicit start/end.
- *   2. `if`/`else` → XOR split+join with conditioned + default flows.
- *   3. `else if` chain → multiple conditioned split flows + one default.
- *   4. `while` → pre-test XOR loop + back-edge, no loop characteristics.
- *   5. `do … while` → post-test XOR loop.
- *   6. `parallel` → fork/join `parallelGateway` pair, no conditions.
- *   7. `goto` → raw sequence flow to the target node.
- *   8. Synthesized-id determinism guard.
- *   9. Attribute mapping (assignee / formKey / class binding / process label),
- *      service task binding variants (expression / delegate / topic), the
- *      `script` task, and goto-targetability of both.
- *  10. Empty model throws `/no process definitions/i`.
+ * Each test parses inline BpmnScript DSL through the real Langium grammar and
+ * asserts the flat, BPMN-shaped IR that `astToIr` desugars it to. The expected
+ * IR is inline rather than read from fixture files so the desugaring rules are
+ * pinned here.
  */
 
 import { beforeAll, describe, expect, it } from 'vitest';
@@ -71,9 +54,9 @@ async function ir(source: string): Promise<BpmnProcess> {
 }
 
 /**
- * Find the single flow element of a given kind (asserting exactly one).
- * Operates on any {@link FlowContainer}, so it works on the root process and on
- * a nested sub-process container alike.
+ * Find the single flow element of a given kind (asserting exactly one). Takes
+ * any {@link FlowContainer}, so it serves the root process and a nested
+ * sub-process alike.
  */
 function only<K extends FlowElement['kind']>(
   container: FlowContainer,
@@ -84,7 +67,7 @@ function only<K extends FlowElement['kind']>(
   return matches[0] as Extract<FlowElement, { kind: K }>;
 }
 
-/** Find a flow by `source → target` (asserting exactly one such pair). */
+/** Find a flow by `source -> target` (asserting exactly one such pair). */
 function flow(
   container: FlowContainer,
   source: string,
@@ -196,7 +179,7 @@ describe('astToIr — implicit sequence and implicit start/end', () => {
   });
 });
 
-// ── 2. if / else → XOR split + join ──────────────────────────────────────────
+// ── 2. if / else -> XOR split + join ─────────────────────────────────────────
 
 describe('astToIr — if/else exclusive gateway', () => {
   const SOURCE = `process P {
@@ -290,7 +273,7 @@ describe('astToIr — if/else exclusive gateway', () => {
   });
 });
 
-// ── 3. else-if chain → multiple conditioned split flows + one default ────────
+// ── 3. else-if chain -> conditioned split flows + one default ────────────────
 
 describe('astToIr — else-if chain', () => {
   const SOURCE = `process P {
@@ -326,7 +309,7 @@ describe('astToIr — else-if chain', () => {
   });
 });
 
-// ── 4. while → pre-test XOR loop + back-edge ─────────────────────────────────
+// ── 4. while -> pre-test XOR loop + back-edge ────────────────────────────────
 
 describe('astToIr — while loop', () => {
   const SOURCE = `process P { user Pre while (rejected) { user R } user Post }`;
@@ -379,7 +362,7 @@ describe('astToIr — while loop', () => {
     const loopId = makeGatewayLoopId('P_0');
     const incoming = result.sequenceFlows.filter((f) => f.targetRef === loopId);
     const outgoing = result.sequenceFlows.filter((f) => f.sourceRef === loopId);
-    // Only the entry from start — the body throws, so no back-edge.
+    // Only the entry from start: the body throws, so there is no back-edge.
     expect(incoming).toHaveLength(1);
     // The conditioned entry into the body and the unconditioned exit.
     expect(outgoing).toHaveLength(2);
@@ -387,7 +370,7 @@ describe('astToIr — while loop', () => {
   });
 });
 
-// ── 5. do … while → post-test XOR loop ───────────────────────────────────────
+// ── 5. do ... while -> post-test XOR loop ────────────────────────────────────
 
 describe('astToIr — do-while loop', () => {
   const SOURCE = `process P { do { user R } while (rejected) }`;
@@ -420,7 +403,7 @@ describe('astToIr — do-while loop', () => {
   });
 });
 
-// ── 6. parallel → fork/join parallelGateway pair ─────────────────────────────
+// ── 6. parallel -> fork/join parallelGateway pair ────────────────────────────
 
 describe('astToIr — parallel fork/join', () => {
   const SOURCE = `process P { parallel { { user A } { user B } } }`;
@@ -461,7 +444,7 @@ describe('astToIr — parallel fork/join', () => {
   });
 });
 
-// ── 7. goto → raw sequence flow to the target node ───────────────────────────
+// ── 7. goto -> raw sequence flow to the target node ──────────────────────────
 
 describe('astToIr — goto', () => {
   it('emits a sequence flow to the node named Foo', async () => {
@@ -474,9 +457,9 @@ describe('astToIr — goto', () => {
   });
 
   it('suppresses implicit fall-through after a goto', async () => {
-    // After `goto Foo`, control transfers — no implicit end follows the goto.
+    // After `goto Foo` control transfers, so no implicit end follows the goto.
     const result = await ir(`process P { user A goto A }`);
-    // The only flows are start→A and the back-jump A→A.
+    // The only flows are start->A and the back-jump A->A.
     const selfJump = flow(result, 'A', 'A');
     expect(selfJump).toBeDefined();
     // No synthesized end (control never falls off the end).
@@ -486,14 +469,10 @@ describe('astToIr — goto', () => {
   });
 
   it('a goto into a compound block resolves to the compound body entry', async () => {
-    // A goto can target a compound statement's id. In the grammar only leaf
-    // statements expose `name=ID` (`goto [Statement:ID]`); compound statements
-    // (if/while/…) have NO name, so
-    // their synthesized split-gateway id is not a nameable target. The closest
-    // realizable behavior — and the one that matters — is a goto to the first
-    // named statement INSIDE a compound block: it lands on that statement's
-    // entry, which is the entry node of the compound body (not the synthesized
-    // split gateway, which only convergent/implicit flow reaches).
+    // In the grammar only leaf statements expose `name=ID`, so a compound
+    // statement's synthesized split-gateway id is not a nameable goto target.
+    // A goto naming the first statement inside a compound block lands on that
+    // statement, which is the entry node of the compound body.
     const result = await ir(
       `process P { user A goto Inner if (x) { user Inner } }`,
     );
@@ -652,7 +631,7 @@ describe('astToIr — service task binding variants', () => {
 
   it('wraps a dotted-VarRef `expression = svc.status` (no quotes) in ${…} rather than stripping it', async () => {
     // Unlike `class`, whose dotted-bareword value is a plain Java path and gets
-    // the ${…} wrapper stripped, `expression`/`delegate` must keep the wrapper
+    // the ${...} wrapper stripped, `expression`/`delegate` must keep the wrapper
     // so Operaton evaluates the value as EL, not a literal string.
     const result = await ir(
       'process P { service S { expression = svc.status } }',
@@ -681,7 +660,7 @@ describe('astToIr — service task topic binding', () => {
   });
 });
 
-// ── 9d. Script task (fenced body → format + code) ────────────────────────────
+// ── 9d. Script task (fenced body -> format + code) ───────────────────────────
 
 describe('astToIr — script task', () => {
   it('maps a fenced ```js``` script to scriptTask{format:"javascript", code:<inner body>}', async () => {
@@ -718,12 +697,10 @@ describe('astToIr — topic-bound service/script names are goto-targetable', () 
     const result = await ir(
       'process P { user A goto Ship service Ship { topic = "shipping" } }',
     );
-    // Resolves: the flow out of A lands directly on the service task's own id.
     expect(flow(result, 'A', 'Ship').targetRef).toBe('Ship');
 
-    // Reserves: a service task literally named like a synthesized end forces
-    // the synthesized end to fall back to a `_2` suffix — only true if
-    // `collectNamedIds` registered the service task's name up front.
+    // A service task named like a synthesized end forces that end to `_2`,
+    // which only happens if `collectNamedIds` registered the name up front.
     const collision = await ir(
       'process P { service EndEvent_P { topic = "t" } }',
     );
@@ -762,9 +739,8 @@ describe('astToIr — empty model error', () => {
 
 describe('astToIr — sibling-branch coordinate uniqueness', () => {
   it('nested compounds in `then` vs `else` get distinct gateway ids', async () => {
-    // Regression: `lowerIf` once passed the SAME coordinate to the `then`,
-    // every `elseIf`, and the `else` block, so a nested compound at index 0
-    // of `then` and one at index 0 of `else` collided on their gateway ids.
+    // A nested compound at index 0 of `then` and one at index 0 of `else` must
+    // not collide: each branch contributes its own coordinate segment.
     const result = await ir(
       `process P { if (a) { if (b) { user X } } else { if (c) { user Y } } }`,
     );
@@ -775,8 +751,8 @@ describe('astToIr — sibling-branch coordinate uniqueness', () => {
     expect(elementIds).toHaveLength(10);
     expect(new Set(elementIds).size).toBe(elementIds.length);
 
-    // The branch-discriminating segments produce structurally distinct coords:
-    // `then` → `P_0_t_0`, `else` → `P_0_e_0`.
+    // The branch-discriminating segments produce distinct coords:
+    // `then` -> `P_0_t_0`, `else` -> `P_0_e_0`.
     const gatewayIds = result.flowElements
       .filter((fe) => fe.kind === 'exclusiveGateway')
       .map((fe) => fe.id);
@@ -798,7 +774,7 @@ describe('astToIr — sibling-branch coordinate uniqueness', () => {
     const gatewayIds = result.flowElements
       .filter((fe) => fe.kind === 'exclusiveGateway')
       .map((fe) => fe.id);
-    // then → `_t`, first else-if → `_e0`, else → `_e`.
+    // then -> `_t`, first else-if -> `_e0`, else -> `_e`.
     expect(gatewayIds).toContain(makeGatewaySplitId('P_0_t_0'));
     expect(gatewayIds).toContain(makeGatewaySplitId('P_0_e0_0'));
     expect(gatewayIds).toContain(makeGatewaySplitId('P_0_e_0'));
@@ -890,8 +866,6 @@ describe('astToIr — sub-process lowering', () => {
       `process p { subprocess S { user A { assignee = "x" } } }`,
     );
 
-    // Parent arrays hold only the synthesized start, the sub-process activity,
-    // and the synthesized end — none of the nested elements or flows leak up.
     expect(result.flowElements.map((fe) => fe.id)).toEqual([
       'StartEvent_p',
       'S',
@@ -902,7 +876,6 @@ describe('astToIr — sub-process lowering', () => {
 
     const sub = subProcess(result, 'S');
     expect(sub.kind).toBe('subProcess');
-    // The nested container carries StartEvent_S → A → EndEvent_S plus its flows.
     expect(sub.flowElements.map((fe) => fe.id)).toEqual([
       'StartEvent_S',
       'A',
@@ -911,7 +884,6 @@ describe('astToIr — sub-process lowering', () => {
     expect(flow(sub, 'StartEvent_S', 'A')).toBeDefined();
     expect(flow(sub, 'A', 'EndEvent_S')).toBeDefined();
 
-    // Nothing nested leaks into the parent arrays.
     const parentIds = result.flowElements.map((fe) => fe.id);
     for (const nested of ['StartEvent_S', 'A', 'EndEvent_S']) {
       expect(parentIds).not.toContain(nested);
@@ -928,19 +900,16 @@ describe('astToIr — sub-process lowering', () => {
     );
     const sub = subProcess(result, 'S');
     expect(sub.flowElements.map((fe) => fe.id)).toEqual(['In', 'A', 'Out']);
-    // No name-seeded implicit events were synthesized.
     const ids = sub.flowElements.map((fe) => fe.id);
     expect(ids).not.toContain('StartEvent_S');
     expect(ids).not.toContain('EndEvent_S');
     expect(flow(sub, 'In', 'A')).toBeDefined();
     expect(flow(sub, 'A', 'Out')).toBeDefined();
-    // The parent still threads through the sub-process activity by id.
     expect(flow(result, 'StartEvent_p', 'S')).toBeDefined();
     expect(flow(result, 'S', 'EndEvent_p')).toBeDefined();
   });
 
   it('roots the body coordinate at the sub-process own structural coordinate', async () => {
-    // `subprocess S` at body index 1; an `if` at body index 0 of its body.
     const result = await ir(
       `process p {
         user Pre { assignee = "x" }
@@ -993,8 +962,8 @@ describe('astToIr — sub-process lowering', () => {
     const result = await ir(`process p { subprocess S "Handle" { } }`);
     const sub = subProcess(result, 'S');
     expect(sub.name).toBe('Handle');
-    // Empty body still needs a valid start event, so it gets the bare
-    // start/end pair every empty container gets.
+    // An empty body still needs a valid start event, so it gets the bare
+    // start/end pair.
     expect(sub.flowElements.map((fe) => fe.id)).toEqual([
       'StartEvent_S',
       'EndEvent_S',
@@ -1012,17 +981,16 @@ describe('astToIr — sub-process lowering', () => {
         goto S
       }`,
     );
-    // Statements before/after connect to the sub-process by its id.
     expect(flow(result, 'Begin', 'Before')).toBeDefined();
     expect(flow(result, 'Before', 'S')).toBeDefined();
     expect(flow(result, 'S', 'After')).toBeDefined();
-    // A `goto S` elsewhere in the parent lands on the sub-process (entry = id).
+    // A `goto S` in the parent lands on the sub-process: its entry is its id.
     expect(flow(result, 'After', 'S')).toBeDefined();
   });
 
   it('collision-resolves name-seeded implicit ids against the process-wide taken set', async () => {
-    // An explicit parent step already occupies `EndEvent_S`; the sub-process's
-    // implicit end must fall back to `EndEvent_S_2` (BPMN ids are document-unique).
+    // An explicit parent step already occupies `EndEvent_S`, so the
+    // sub-process's implicit end falls back to `EndEvent_S_2`.
     const result = await ir(
       `process p {
         user EndEvent_S { assignee = "x" }
@@ -1036,7 +1004,6 @@ describe('astToIr — sub-process lowering', () => {
     expect(ids).toContain('EndEvent_S_2');
     expect(ids).not.toContain('EndEvent_S');
 
-    // Every id across every container is document-unique.
     const all = allElementIdsDeep(result);
     expect(new Set(all).size).toBe(all.length);
   });
@@ -1171,16 +1138,15 @@ describe('astToIr — call activity lowering', () => {
     expect(only(empty, 'callActivity').calledElement).toBe('');
 
     // A `binding` value that is neither `latest` nor `deployment` is not a
-    // resolvable strategy; the desugarer leaves the binding absent rather than
-    // guessing, and the validator is the one that reports the bad value.
+    // resolvable strategy, so the desugarer leaves the binding absent and the
+    // validator reports the bad value.
     const unknownBinding = await ir(
       `process p { call X { process = "p" binding = weekly } }`,
     );
     expect(only(unknownBinding, 'callActivity').binding).toBeUndefined();
 
-    // Both `binding` and `version` present: `version` wins (the derivation
-    // checks `version` first), and the stray `binding` is ignored here — the
-    // validator is the one that flags the contradiction.
+    // With both `binding` and `version` present the derivation checks `version`
+    // first, so it wins and the validator flags the contradiction.
     const bothPresent = await ir(
       `process p { call X { process = "p" binding = deployment version = 2 } }`,
     );
@@ -1196,13 +1162,12 @@ describe('astToIr — call activity lowering', () => {
     );
     const call = only(result, 'callActivity');
     expect(call.name).toBe('Fulfil order');
-    // The goto out of A lands directly on the call activity by id.
     expect(flow(result, 'A', 'F').targetRef).toBe('F');
   });
 
   it('reserves a call name as a collision seed for synthesized ids', async () => {
-    // A call literally named like a synthesized end forces the real end to a
-    // `_2` suffix — only true if collectNamedIds registered the call's name.
+    // A call named like a synthesized end forces that end to `_2`, which only
+    // happens if `collectNamedIds` registered the call's name up front.
     const collision = await ir(
       'process P { call EndEvent_P { process = "p" } }',
     );
@@ -1217,7 +1182,6 @@ describe('astToIr — call activity lowering', () => {
     );
     const sub = subProcess(result, 'S');
     expect(only(sub, 'callActivity').id).toBe('C');
-    // Nothing about the nested call leaks into the parent's arrays.
     expect(result.flowElements.map((fe) => fe.id)).not.toContain('C');
     expect(
       result.sequenceFlows.some(
@@ -1229,7 +1193,7 @@ describe('astToIr — call activity lowering', () => {
   });
 });
 
-// ── 15. Event handlers (`on`) — out-of-chain event sub-processes ─────────────
+// ── 15. Event handlers (`on`): out-of-chain event sub-processes ──────────────
 
 describe('astToIr — on-handler lowering', () => {
   it('lowers a handler outside the sequence chain (flows go around it)', async () => {
@@ -1240,8 +1204,6 @@ describe('astToIr — on-handler lowering', () => {
       }`,
     );
 
-    // The parent chain skips the handler: start → A → end, with no flow into or
-    // out of the event sub-process node.
     expect(flow(result, 'StartEvent_p', 'A')).toBeDefined();
     expect(flow(result, 'A', 'EndEvent_p')).toBeDefined();
     const handlerId = makeEventSubProcessId('p_1');
@@ -1250,11 +1212,9 @@ describe('astToIr — on-handler lowering', () => {
       expect(f.targetRef).not.toBe(handlerId);
     }
 
-    // The handler is a triggeredByEvent sub-process in the parent's elements.
     const handler = subProcess(result, handlerId);
     expect(handler.triggeredByEvent).toBe(true);
 
-    // Its body is its own container: start(def) → R → end.
     const startId = makeStartEventId(handlerId, new Set());
     const endId = makeEndEventId(handlerId, new Set());
     expect(handler.flowElements.map((fe) => fe.id)).toEqual([
@@ -1265,7 +1225,6 @@ describe('astToIr — on-handler lowering', () => {
     expect(flow(handler, startId, 'R')).toBeDefined();
     expect(flow(handler, 'R', endId)).toBeDefined();
 
-    // The trigger lands on the body's start event; no isInterrupting stored.
     const start = only(handler, 'startEvent');
     expect(start.eventDefinition).toEqual({ kind: 'error', errorCode: 'PF' });
     expect(start.isInterrupting).toBeUndefined();
@@ -1320,7 +1279,7 @@ describe('astToIr — on-handler lowering', () => {
       }`,
     );
     const handler = subProcess(result, makeEventSubProcessId('p_0'));
-    // No StartEvent_… synthesized — the explicit start is the trigger start.
+    // No start event is synthesized: the explicit start is the trigger start.
     const ids = handler.flowElements.map((fe) => fe.id);
     expect(ids).toContain('In');
     expect(ids).not.toContain(
@@ -1333,7 +1292,7 @@ describe('astToIr — on-handler lowering', () => {
   });
 
   it('roots the handler body coordinate at its own structural coordinate', async () => {
-    // Handler at process index 2; an `if` at handler-body index 1 → coord p_2_1.
+    // Handler at process index 2, `if` at handler-body index 1 -> coord p_2_1.
     const result = await ir(
       `process p {
         service A { class = "x.A" }
@@ -1361,11 +1320,10 @@ describe('astToIr — on-handler lowering', () => {
         }
       }`,
     );
-    // subprocess S coordinate p_0 → handler body index 1 → EventSubProcess_p_0_1.
+    // subprocess S is p_0, handler body index 1 -> EventSubProcess_p_0_1.
     const sub = subProcess(result, 'S');
     const handler = subProcess(sub, makeEventSubProcessId('p_0_1'));
     expect(handler.triggeredByEvent).toBe(true);
-    // Every id in the document is unique across the nesting.
     const all = allElementIdsDeep(result);
     expect(new Set(all).size).toBe(all.length);
   });
@@ -1384,7 +1342,7 @@ describe('astToIr — on-handler lowering', () => {
   });
 });
 
-// ── 15b. Hosted handlers (`on <Host>:`) — inline boundary events ─────────────
+// ── 15b. Hosted handlers (`on <Host>:`): inline boundary events ──────────────
 
 describe('astToIr — hosted-handler lowering', () => {
   it('emits a boundary event attached to the host, with the body inline in the same container', async () => {
@@ -1406,8 +1364,8 @@ describe('astToIr — hosted-handler lowering', () => {
     expect(boundary.cancelActivity).toBeUndefined();
 
     // No wrapping container: the body's step is a sibling of the main flow, and
-    // the boundary node follows its host in the element list (the layout engine
-    // needs the host shape before the attacher).
+    // the boundary node follows its host in the element list, because the layout
+    // engine needs the host shape before the attacher.
     expect(
       result.flowElements.filter((fe) => fe.kind === 'subProcess'),
     ).toEqual([]);
@@ -1415,15 +1373,15 @@ describe('astToIr — hosted-handler lowering', () => {
     expect(ids.indexOf('A')).toBeLessThan(ids.indexOf(boundaryId));
     expect(ids).toContain('R');
 
-    // The escape chain runs boundary → R → its own implicit end, seeded from the
-    // boundary id, and never rejoins the main flow.
+    // The escape chain runs boundary -> R -> its own implicit end, seeded from
+    // the boundary id, and never rejoins the main flow.
     const escapeEndId = makeEndEventId(boundaryId, new Set());
     expect(flow(result, boundaryId, 'R')).toBeDefined();
     expect(flow(result, 'R', escapeEndId)).toBeDefined();
     expect(byId(result, escapeEndId).kind).toBe('endEvent');
 
-    // The main chain is untouched: start → A → the container's own end, whose id
-    // does not shift because a handler is present.
+    // The main chain is untouched, and the container's own end id does not
+    // shift because a handler is present.
     expect(flow(result, 'StartEvent_p', 'A')).toBeDefined();
     expect(flow(result, 'A', 'EndEvent_p')).toBeDefined();
     expect(result.sequenceFlows.some((f) => f.targetRef === boundaryId)).toBe(
@@ -1544,8 +1502,6 @@ describe('astToIr — hosted-handler lowering', () => {
       kind: 'escalation',
       escalationCode: 'LS',
     });
-    // The event sub-process stays out of the chain; the boundary body's step does
-    // not join it either.
     for (const f of result.sequenceFlows) {
       expect(f.sourceRef).not.toBe(handlerId);
       expect(f.targetRef).not.toBe(handlerId);
@@ -1564,9 +1520,8 @@ describe('astToIr — hosted-handler lowering', () => {
       }`,
     );
     // A hosted handler's body is not a scope of its own, so a host-less handler
-    // written inside it guards the whole enclosing container rather than just
-    // the escape path it is indented under. The event sub-process therefore
-    // lands beside the process body, not inside the escape chain.
+    // written inside it guards the whole enclosing container. The event
+    // sub-process lands beside the process body, not in the escape chain.
     const handler = result.flowElements.find(
       (fe) => fe.kind === 'subProcess' && fe.triggeredByEvent === true,
     );
@@ -1589,9 +1544,9 @@ describe('astToIr — hosted-handler lowering', () => {
   });
 
   it('lowers a handler whose host does not resolve to a boundary event all the same', async () => {
-    // The desugarer is total: an unresolvable host is a validator/linker
-    // diagnostic, and the construct a handler lowers to is decided by the
-    // presence of the host slot, not by whether it resolved.
+    // The desugarer is total: an unresolvable host is a validator diagnostic,
+    // and the construct a handler lowers to is decided by the presence of the
+    // host slot, not by whether it resolved.
     const result = await ir(
       `process p {
         service A { class = "x.A" }
@@ -1625,12 +1580,11 @@ describe('astToIr — throw/emit lowering', () => {
       kind: 'error',
       errorCode: 'PF',
     });
-    // Reached from A, but nothing falls through out of it (terminal).
     expect(flow(result, 'A', throwId)).toBeDefined();
     expect(result.sequenceFlows.some((f) => f.sourceRef === throwId)).toBe(
       false,
     );
-    // B is still lowered (a possible jump target) but not reached from the throw.
+    // B is still lowered as a possible jump target, but the throw is terminal.
     expect(byId(result, 'B')).toBeDefined();
   });
 
@@ -1659,7 +1613,6 @@ describe('astToIr — throw/emit lowering', () => {
       kind: 'escalation',
       escalationCode: 'LS',
     });
-    // prev → emit → next: a plain fall-through node.
     expect(flow(result, 'A', emitId)).toBeDefined();
     expect(flow(result, emitId, 'B')).toBeDefined();
   });
@@ -1715,7 +1668,6 @@ describe('astToIr — handler/throw/emit totality', () => {
         service B { class = "x.B" }
       }`,
     );
-    // A flows directly to B; the handler is not on the chain.
     expect(flow(result, 'A', 'B')).toBeDefined();
     const handlerId = makeEventSubProcessId('p_1');
     for (const f of result.sequenceFlows) {
@@ -1724,56 +1676,48 @@ describe('astToIr — handler/throw/emit totality', () => {
     }
   });
 
-  it('lowers an empty-code handler', async () => {
-    const result = await ir(`process p { on error "" { } }`);
-    const start = only(
-      subProcess(result, makeEventSubProcessId('p_0')),
-      'startEvent',
-    );
-    expect(start.eventDefinition).toEqual({ kind: 'error', errorCode: '' });
-  });
-
-  it('lowers an unknown trigger word as an error handler', async () => {
-    const result = await ir(
+  // An empty code, an unknown trigger word and an unknown binding field all
+  // stay total and fall back to an error definition.
+  it.each([
+    [`process p { on error "" { } }`, { kind: 'error', errorCode: '' }],
+    [
       `process p { on banana "X" { service R { class = "x.R" } } }`,
-    );
-    const start = only(
-      subProcess(result, makeEventSubProcessId('p_0')),
-      'startEvent',
-    );
-    expect(start.eventDefinition).toEqual({ kind: 'error', errorCode: 'X' });
-  });
-
-  it('ignores an unknown binding field', async () => {
-    const result = await ir(
+      { kind: 'error', errorCode: 'X' },
+    ],
+    [
       `process p { on error "X" (coed c) { service R { class = "x.R" } } }`,
+      { kind: 'error', errorCode: 'X' },
+    ],
+  ])('lowers a handler: %s', async (source, expected) => {
+    expect(handlerStart(await ir(source), 'p_0').eventDefinition).toEqual(
+      expected,
     );
-    const start = only(
-      subProcess(result, makeEventSubProcessId('p_0')),
-      'startEvent',
-    );
-    expect(start.eventDefinition).toEqual({ kind: 'error', errorCode: 'X' });
   });
 
-  it('lowers an unknown throw trigger as an error end event', async () => {
-    const result = await ir(`process p { throw banana "X" }`);
-    const thrown = byId(result, makeThrowEventId('p_0'));
-    expect(thrown.kind).toBe('endEvent');
-    expect((thrown as { eventDefinition?: unknown }).eventDefinition).toEqual({
-      kind: 'error',
-      errorCode: 'X',
-    });
-  });
-
-  it('lowers every emit as an escalation intermediate throw regardless of trigger', async () => {
-    for (const trigger of ['error', 'banana']) {
-      const result = await ir(`process p { emit ${trigger} "X" }`);
-      const emitted = byId(result, makeThrowEventId('p_0'));
-      expect(emitted.kind).toBe('intermediateThrowEvent');
-      expect(
-        (emitted as { eventDefinition?: unknown }).eventDefinition,
-      ).toEqual({ kind: 'escalation', escalationCode: 'X' });
-    }
+  // A `throw` becomes a typed end event, an `emit` an intermediate throw, for
+  // every trigger word including one the grammar does not know.
+  it.each([
+    [
+      `process p { throw banana "X" }`,
+      'endEvent',
+      { kind: 'error', errorCode: 'X' },
+    ],
+    [
+      `process p { emit error "X" }`,
+      'intermediateThrowEvent',
+      { kind: 'escalation', escalationCode: 'X' },
+    ],
+    [
+      `process p { emit banana "X" }`,
+      'intermediateThrowEvent',
+      { kind: 'escalation', escalationCode: 'X' },
+    ],
+  ])('lowers a throw/emit: %s', async (source, kind, expected) => {
+    const node = byId(await ir(source), makeThrowEventId('p_0'));
+    expect(node.kind).toBe(kind);
+    expect((node as { eventDefinition?: unknown }).eventDefinition).toEqual(
+      expected,
+    );
   });
 });
 
@@ -1794,7 +1738,6 @@ describe('astToIr — message/signal handler triggers', () => {
       kind: 'message',
       messageName: 'PaymentReceived',
     });
-    // Out-of-chain regression: A flows directly to B around the handler.
     expect(flow(result, 'A', 'B')).toBeDefined();
   });
 
@@ -1810,52 +1753,38 @@ describe('astToIr — message/signal handler triggers', () => {
 // ── 20. timer / condition handler triggers ───────────────────────────────────
 
 describe('astToIr — timer and condition handler triggers', () => {
-  it('maps each timer particle to its BPMN timerKind, expression carried verbatim', async () => {
-    const after = await ir(`process p { on timer after "PT1H" { } }`);
-    expect(
-      only(subProcess(after, makeEventSubProcessId('p_0')), 'startEvent')
-        .eventDefinition,
-    ).toEqual({ kind: 'timer', timerKind: 'duration', expression: 'PT1H' });
-
-    const at = await ir(`process p { on timer at "2024-01-01T00:00:00Z" { } }`);
-    expect(
-      only(subProcess(at, makeEventSubProcessId('p_0')), 'startEvent')
-        .eventDefinition,
-    ).toEqual({
-      kind: 'timer',
-      timerKind: 'date',
-      expression: '2024-01-01T00:00:00Z',
-    });
-
-    const every = await ir(`process p { on timer every "R/PT1H" { } }`);
-    expect(
-      only(subProcess(every, makeEventSubProcessId('p_0')), 'startEvent')
-        .eventDefinition,
-    ).toEqual({ kind: 'timer', timerKind: 'cycle', expression: 'R/PT1H' });
-
-    const templated = await ir('process p { on timer after "${dueDate}" { } }');
-    expect(
-      only(subProcess(templated, makeEventSubProcessId('p_0')), 'startEvent')
-        .eventDefinition,
-    ).toEqual({
-      kind: 'timer',
-      timerKind: 'duration',
-      expression: '${dueDate}',
-    });
-  });
-
-  it('renders a parsed condition to its ${…} body and keeps a raw template verbatim', async () => {
-    const parsed = await ir(`process p { on condition (amount > 100) { } }`);
-    expect(
-      only(subProcess(parsed, makeEventSubProcessId('p_0')), 'startEvent')
-        .eventDefinition,
-    ).toEqual({ kind: 'conditional', condition: '${amount > 100}' });
-
-    const raw = await ir('process p { on condition ("${bean.check()}") { } }');
-    expect(
-      only(subProcess(raw, makeEventSubProcessId('p_0')), 'startEvent')
-        .eventDefinition,
-    ).toEqual({ kind: 'conditional', condition: '${bean.check()}' });
+  // Each timer particle maps to its BPMN timerKind with the expression carried
+  // verbatim; a parsed condition renders to its ${…} body and a raw template
+  // survives untouched.
+  it.each([
+    [
+      `process p { on timer after "PT1H" { } }`,
+      { kind: 'timer', timerKind: 'duration', expression: 'PT1H' },
+    ],
+    [
+      `process p { on timer at "2024-01-01T00:00:00Z" { } }`,
+      { kind: 'timer', timerKind: 'date', expression: '2024-01-01T00:00:00Z' },
+    ],
+    [
+      `process p { on timer every "R/PT1H" { } }`,
+      { kind: 'timer', timerKind: 'cycle', expression: 'R/PT1H' },
+    ],
+    [
+      'process p { on timer after "${dueDate}" { } }',
+      { kind: 'timer', timerKind: 'duration', expression: '${dueDate}' },
+    ],
+    [
+      `process p { on condition (amount > 100) { } }`,
+      { kind: 'conditional', condition: '${amount > 100}' },
+    ],
+    [
+      'process p { on condition ("${bean.check()}") { } }',
+      { kind: 'conditional', condition: '${bean.check()}' },
+    ],
+  ])('%s', async (source, expected) => {
+    expect(handlerStart(await ir(source), 'p_0').eventDefinition).toEqual(
+      expected,
+    );
   });
 });
 
@@ -1905,74 +1834,46 @@ describe('astToIr — signal throw/emit', () => {
 // ── 22. Totality of the new triggers ─────────────────────────────────────────
 
 describe('astToIr — new-trigger totality', () => {
-  it('lowers every under-specified new-kind handler without throwing', async () => {
-    const message = await ir(`process p { on message { } }`);
-    expect(
-      only(subProcess(message, makeEventSubProcessId('p_0')), 'startEvent')
-        .eventDefinition,
-    ).toEqual({ kind: 'message', messageName: '' });
-
-    const timer = await ir(`process p { on timer { } }`);
-    expect(
-      only(subProcess(timer, makeEventSubProcessId('p_0')), 'startEvent')
-        .eventDefinition,
-    ).toEqual({ kind: 'timer', timerKind: 'duration', expression: '' });
-
-    const timerCodeFallback = await ir(`process p { on timer "PT1H" { } }`);
-    expect(
-      only(
-        subProcess(timerCodeFallback, makeEventSubProcessId('p_0')),
-        'startEvent',
-      ).eventDefinition,
-    ).toEqual({ kind: 'timer', timerKind: 'duration', expression: 'PT1H' });
-
-    const condition = await ir(`process p { on condition { } }`);
-    expect(
-      only(subProcess(condition, makeEventSubProcessId('p_0')), 'startEvent')
-        .eventDefinition,
-    ).toEqual({ kind: 'conditional', condition: '${true}' });
-  });
-
-  it('ignores bindings on a message handler and falls back to error for an unknown trigger with a particle/time payload', async () => {
-    const ignoredBindings = await ir(
+  // Every under-specified handler lowers without throwing; bindings on a
+  // message handler are ignored, and an unknown trigger carrying a
+  // particle/time payload falls back to a bare error definition.
+  it.each([
+    [`process p { on message { } }`, { kind: 'message', messageName: '' }],
+    [
+      `process p { on timer { } }`,
+      { kind: 'timer', timerKind: 'duration', expression: '' },
+    ],
+    [
+      `process p { on timer "PT1H" { } }`,
+      { kind: 'timer', timerKind: 'duration', expression: 'PT1H' },
+    ],
+    [
+      `process p { on condition { } }`,
+      { kind: 'conditional', condition: '${true}' },
+    ],
+    [
       `process p { on message "X" (code c) { } }`,
+      { kind: 'message', messageName: 'X' },
+    ],
+    [`process p { on banana every "x" { } }`, { kind: 'error' }],
+  ])('%s', async (source, expected) => {
+    expect(handlerStart(await ir(source), 'p_0').eventDefinition).toEqual(
+      expected,
     );
-    expect(
-      only(
-        subProcess(ignoredBindings, makeEventSubProcessId('p_0')),
-        'startEvent',
-      ).eventDefinition,
-    ).toEqual({ kind: 'message', messageName: 'X' });
-
-    const unknownWithParticle = await ir(
-      `process p { on banana every "x" { } }`,
-    );
-    expect(
-      only(
-        subProcess(unknownWithParticle, makeEventSubProcessId('p_0')),
-        'startEvent',
-      ).eventDefinition,
-    ).toEqual({ kind: 'error' });
   });
 
-  it('keeps throw/emit total for trigger words outside their new special case', async () => {
-    const emitMessage = await ir(`process p { emit message "X" }`);
-    expect(
-      (
-        byId(emitMessage, makeThrowEventId('p_0')) as {
-          eventDefinition?: unknown;
-        }
-      ).eventDefinition,
-    ).toEqual({ kind: 'escalation', escalationCode: 'X' });
-
-    const throwTimer = await ir(`process p { throw timer "X" }`);
-    expect(
-      (
-        byId(throwTimer, makeThrowEventId('p_0')) as {
-          eventDefinition?: unknown;
-        }
-      ).eventDefinition,
-    ).toEqual({ kind: 'error', errorCode: 'X' });
+  // throw/emit stay total for trigger words outside their new special case.
+  it.each([
+    [
+      `process p { emit message "X" }`,
+      { kind: 'escalation', escalationCode: 'X' },
+    ],
+    [`process p { throw timer "X" }`, { kind: 'error', errorCode: 'X' }],
+  ])('%s', async (source, expected) => {
+    const node = byId(await ir(source), makeThrowEventId('p_0'));
+    expect((node as { eventDefinition?: unknown }).eventDefinition).toEqual(
+      expected,
+    );
   });
 });
 
@@ -2029,7 +1930,6 @@ describe('astToIr — compensation handler lowering', () => {
       }`,
     );
     const sub = subProcess(result, 'S');
-    // S's own chain is intact around the handler (out-of-chain regression pin).
     expect(flow(sub, 'StartEvent_S', 'A')).toBeDefined();
     expect(flow(sub, 'A', 'EndEvent_S')).toBeDefined();
 
@@ -2193,7 +2093,7 @@ describe('astToIr — compensation coordinate composition', () => {
       }`,
     );
     const sub = subProcess(result, 'S');
-    // S's own coordinate is p_0; the `if` at S-body index 0 is p_0_0.
+    // S's own coordinate is p_0, so the `if` at S-body index 0 is p_0_0.
     const gatewayIds = sub.flowElements
       .filter((fe) => fe.kind === 'exclusiveGateway')
       .map((fe) => fe.id);
@@ -2207,7 +2107,7 @@ describe('astToIr — compensation coordinate composition', () => {
   });
 });
 
-// ── 25. await → intermediate catch lowering ──────────────────────────────────
+// ── 25. await -> intermediate catch lowering ─────────────────────────────────
 
 describe('astToIr — await intermediate catch lowering', () => {
   it('lowers `await message` to an intermediate catch wired into the chain', async () => {
@@ -2225,64 +2125,35 @@ describe('astToIr — await intermediate catch lowering', () => {
       kind: 'message',
       messageName: 'M',
     });
-    // prev → catch → next: a plain fall-through node, one-in/one-out.
     expect(flow(result, 'A', catchId)).toBeDefined();
     expect(flow(result, catchId, 'B')).toBeDefined();
   });
 
-  it('maps each timer particle to its BPMN timerKind, expression carried verbatim', async () => {
-    const after = await ir(`process p { await timer after "PT1H" }`);
-    expect(
-      (
-        byId(after, makeIntermediateCatchEventId('p_0')) as {
-          eventDefinition?: unknown;
-        }
-      ).eventDefinition,
-    ).toEqual({ kind: 'timer', timerKind: 'duration', expression: 'PT1H' });
-
-    const at = await ir(`process p { await timer at "2024-01-01T00:00:00Z" }`);
-    expect(
-      (
-        byId(at, makeIntermediateCatchEventId('p_0')) as {
-          eventDefinition?: unknown;
-        }
-      ).eventDefinition,
-    ).toEqual({
-      kind: 'timer',
-      timerKind: 'date',
-      expression: '2024-01-01T00:00:00Z',
-    });
-
-    const every = await ir(`process p { await timer every "R/PT1H" }`);
-    expect(
-      (
-        byId(every, makeIntermediateCatchEventId('p_0')) as {
-          eventDefinition?: unknown;
-        }
-      ).eventDefinition,
-    ).toEqual({ kind: 'timer', timerKind: 'cycle', expression: 'R/PT1H' });
-  });
-
-  it('lowers `await signal` to a signal event definition', async () => {
-    const result = await ir(`process p { await signal "S" }`);
-    expect(
-      (
-        byId(result, makeIntermediateCatchEventId('p_0')) as {
-          eventDefinition?: unknown;
-        }
-      ).eventDefinition,
-    ).toEqual({ kind: 'signal', signalName: 'S' });
-  });
-
-  it('renders `await condition` through renderExpression, same as an `if`', async () => {
-    const result = await ir(`process p { await condition (amount > 100) }`);
-    expect(
-      (
-        byId(result, makeIntermediateCatchEventId('p_0')) as {
-          eventDefinition?: unknown;
-        }
-      ).eventDefinition,
-    ).toEqual({ kind: 'conditional', condition: '${amount > 100}' });
+  // Each timer particle maps to its BPMN timerKind with the expression carried
+  // verbatim; a condition renders through renderExpression, same as an `if`.
+  it.each([
+    [
+      `process p { await timer after "PT1H" }`,
+      { kind: 'timer', timerKind: 'duration', expression: 'PT1H' },
+    ],
+    [
+      `process p { await timer at "2024-01-01T00:00:00Z" }`,
+      { kind: 'timer', timerKind: 'date', expression: '2024-01-01T00:00:00Z' },
+    ],
+    [
+      `process p { await timer every "R/PT1H" }`,
+      { kind: 'timer', timerKind: 'cycle', expression: 'R/PT1H' },
+    ],
+    [`process p { await signal "S" }`, { kind: 'signal', signalName: 'S' }],
+    [
+      `process p { await condition (amount > 100) }`,
+      { kind: 'conditional', condition: '${amount > 100}' },
+    ],
+  ])('%s', async (source, expected) => {
+    const result = await ir(source);
+    expect(definitionOf(result, makeIntermediateCatchEventId('p_0'))).toEqual(
+      expected,
+    );
   });
 
   it('gives two catches in one body distinct, non-colliding ids', async () => {
@@ -2310,6 +2181,11 @@ function byId(container: FlowContainer, id: string): FlowElement {
   return node!;
 }
 
+/** The event definition carried by the flow element with the given id. */
+function definitionOf(container: FlowContainer, id: string): unknown {
+  return (byId(container, id) as { eventDefinition?: unknown }).eventDefinition;
+}
+
 /** Stable sort an array of objects by their `id` field for set comparison. */
 function sortById<T extends { id: string }>(items: T[]): T[] {
   return [...items].sort((a, b) => a.id.localeCompare(b.id));
@@ -2322,7 +2198,7 @@ function allElementIds(process: BpmnProcess): string[] {
 
 /**
  * Collect every flow-element id across a container and all of its nested
- * sub-process containers, recursively — the document-uniqueness view.
+ * sub-process containers, the document-uniqueness view.
  */
 function allElementIdsDeep(container: FlowContainer): string[] {
   const ids: string[] = [];
@@ -2333,6 +2209,14 @@ function allElementIdsDeep(container: FlowContainer): string[] {
     }
   }
   return ids;
+}
+
+/** The start event of the `on` handler lowered at the given coordinate. */
+function handlerStart(container: FlowContainer, coordinate: string) {
+  return only(
+    subProcess(container, makeEventSubProcessId(coordinate)),
+    'startEvent',
+  );
 }
 
 /** Find the named sub-process node in a container (asserting exactly one). */

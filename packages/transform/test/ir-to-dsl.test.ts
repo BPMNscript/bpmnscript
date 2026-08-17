@@ -1,25 +1,9 @@
 /**
- * Full test suite for the restructuring IR → DSL emitter (`irToDsl`).
- *
  * `irToDsl` is the inverse of the desugaring `astToIr`: it turns a flat,
- * BPMN-shaped IR back into structured DSL source (`if`/`else if`/`else`,
- * `while`, `do … while`, `parallel { { } { } }`, `goto`). These tests assert
- * that:
- *
- *   1. Each desugared construct (the exact IR shape `astToIr` produces)
- *      restructures back to its surface form — no `gateway` keyword appears.
- *   2. Local idempotence: re-parsing the emitted source through Langium and
- *      re-desugaring via `astToIr` yields an IR equal to the input up to
- *      synthesized-id normalization.
- *   3. Goto degradation: an unstructured hand-built IR emits valid
- *      DSL source containing ≥1 `goto`, parses cleanly, and loses no edge
- *      (every real-node connectivity is preserved).
- *   4. Multiple / named end events survive as explicit `end` statements.
- *
- * All IR fixtures are inline literals (no fixture-file reads). The structured
- * fixtures match the byte-for-byte shape produced by `astToIr` on the
- * corresponding source, so the idempotence
- * assertions are exact (not merely reachability-based).
+ * BPMN-shaped IR back into structured DSL source. The IR fixtures are inline
+ * literals matching byte-for-byte what `astToIr` emits for the corresponding
+ * source, so the idempotence assertions are exact rather than
+ * reachability-based.
  */
 
 import { describe, it, expect, beforeAll } from 'vitest';
@@ -30,6 +14,7 @@ import type { Model } from '@bpmn-script/language';
 
 import { irToDsl } from '../src/ir-to-dsl.js';
 import { astToIr } from '../src/ast-to-ir.js';
+import { HANDWRITTEN_IMPORT_IR } from './helpers/ir-fixtures.js';
 import type {
   BpmnProcess,
   EventDefinition,
@@ -115,9 +100,8 @@ async function expectIdempotent(ir: BpmnProcess): Promise<string> {
 /**
  * Real-node reachability set (gateway-transparent): for every non-gateway node,
  * the set of non-gateway nodes reachable through any number of gateway hops.
- * Used to check that every edge with a `goto` form keeps it in unstructured /
- * degraded graphs, where the literal edge set legitimately changes (synthesized
- * gateways) but connectivity between real nodes must be preserved exactly.
+ * In degraded graphs the literal edge set legitimately changes as gateways are
+ * synthesized, but connectivity between real nodes must be preserved exactly.
  */
 function realReachability(ir: BpmnProcess): Set<string> {
   const real = new Set(
@@ -160,7 +144,7 @@ function hasGatewayKeyword(dsl: string): boolean {
 }
 
 // ---------------------------------------------------------------------------
-// Inline IR fixtures — the exact shapes `astToIr` emits for each construct.
+// Inline IR fixtures: the exact shapes `astToIr` emits for each construct.
 // ---------------------------------------------------------------------------
 
 /** Desugared `if (amount > 1000) { user B } else { service C }` at body index 2. */
@@ -345,82 +329,17 @@ const PARALLEL_IR: BpmnProcess = {
 };
 
 /**
- * Canonical invoice IR — the `xmlToIr` import shape of the handwritten golden
+ * Canonical invoice IR: the `xmlToIr` import shape of the handwritten golden
  * (an XOR split with named branch flows, no explicit join). Drives the
  * "structured restructuring of a real import" assertions.
  */
 const INVOICE_IR: BpmnProcess = {
-  id: 'invoice-approval',
+  ...HANDWRITTEN_IMPORT_IR,
   name: 'Invoice Approval',
-  isExecutable: true,
-  flowElements: [
-    { kind: 'startEvent', id: 'ReviewStart' },
-    {
-      kind: 'userTask',
-      id: 'ReviewInvoice',
-      name: 'Review invoice',
-      assignee: 'demo',
-    },
-    {
-      kind: 'exclusiveGateway',
-      id: 'AmountCheck',
-      name: 'Amount > 1000?',
-      defaultFlowId: 'AutoApprovePath',
-    },
-    {
-      kind: 'userTask',
-      id: 'SeniorApproval',
-      name: 'Senior approval',
-      assignee: 'manager',
-    },
-    {
-      kind: 'serviceTask',
-      id: 'AutoApprove',
-      name: 'Auto-approve',
-      binding: {
-        kind: 'class',
-        className: 'com.example.invoice.AutoApproveDelegate',
-      },
-    },
-    { kind: 'endEvent', id: 'Done' },
-  ],
-  sequenceFlows: [
-    {
-      id: 'Flow_ReviewStart_ReviewInvoice',
-      sourceRef: 'ReviewStart',
-      targetRef: 'ReviewInvoice',
-    },
-    {
-      id: 'Flow_ReviewInvoice_AmountCheck',
-      sourceRef: 'ReviewInvoice',
-      targetRef: 'AmountCheck',
-    },
-    {
-      id: 'Flow_SeniorBranch',
-      conditionExpression: '${amount > 1000}',
-      sourceRef: 'AmountCheck',
-      targetRef: 'SeniorApproval',
-    },
-    {
-      id: 'AutoApprovePath',
-      sourceRef: 'AmountCheck',
-      targetRef: 'AutoApprove',
-    },
-    {
-      id: 'Flow_SeniorApproval_Done',
-      sourceRef: 'SeniorApproval',
-      targetRef: 'Done',
-    },
-    {
-      id: 'Flow_AutoApprove_Done',
-      sourceRef: 'AutoApprove',
-      targetRef: 'Done',
-    },
-  ],
 };
 
 // ---------------------------------------------------------------------------
-// 1. Structured restructuring — each construct emits its surface form.
+// 1. Structured restructuring: each construct emits its surface form.
 // ---------------------------------------------------------------------------
 
 describe('irToDsl — structured restructuring', () => {
@@ -454,8 +373,8 @@ describe('irToDsl — structured restructuring', () => {
     expect(dsl).toContain('user X "X"');
     expect(dsl).toContain('service Y { class = "com.example.Y" }');
     expect(hasGatewayKeyword(dsl)).toBe(false);
-    // The fork/join elide to a single `parallel { … }` wrapping two nested
-    // blocks — exactly two lines are a lone branch-opening `{`.
+    // The fork/join elide to a single `parallel { ... }` wrapping two nested
+    // blocks, so exactly two lines are a lone branch-opening `{`.
     const branchOpens = dsl.split('\n').filter((l) => l.trim() === '{').length;
     expect(branchOpens).toBe(2);
   });
@@ -493,7 +412,7 @@ describe('irToDsl — structured restructuring', () => {
 });
 
 // ---------------------------------------------------------------------------
-// 2. Local idempotence — re-parse + re-desugar equals input up to id norm.
+// 2. Local idempotence: re-parse + re-desugar equals input up to id norm.
 // ---------------------------------------------------------------------------
 
 describe('irToDsl — local idempotence (re-desugar equivalence)', () => {
@@ -546,7 +465,7 @@ describe('irToDsl — local idempotence (re-desugar equivalence)', () => {
 });
 
 // ---------------------------------------------------------------------------
-// 3. Goto degradation — unstructured / irreducible graphs stay parseable.
+// 3. Goto degradation: unstructured / irreducible graphs stay parseable.
 // ---------------------------------------------------------------------------
 
 describe('irToDsl — goto degradation (every edge with a form keeps it)', () => {
@@ -642,7 +561,7 @@ describe('irToDsl — goto degradation (every edge with a form keeps it)', () =>
     // A naive `if (true) { } else { } else { }` would have two `else` keywords;
     // the degraded form has at most one.
     expect((dsl.match(/}\s*else\s*{/g) ?? []).length).toBeLessThanOrEqual(1);
-    // No branch target is dropped — every one of A, B, C survives as an element.
+    // No branch target is dropped: A, B and C all survive as elements.
     const ids = new Set(ir2.flowElements.map((e) => e.id));
     expect(ids.has('A')).toBe(true);
     expect(ids.has('B')).toBe(true);
@@ -653,7 +572,7 @@ describe('irToDsl — goto degradation (every edge with a form keeps it)', () =>
    * Hand-built IR with a MIXED XOR split: one conditioned flow plus two
    * unconditioned ones. The chain can express one `if` branch and one `else`;
    * the second unconditioned edge has no structured surface form and must
-   * survive as a `goto` (re-anchored at the join) — not vanish while its
+   * survive as a `goto` re-anchored at the join, rather than vanish while its
    * target dangles as unreachable trailing code.
    */
   const MIXED_SURPLUS_XOR: BpmnProcess = {
@@ -687,8 +606,8 @@ describe('irToDsl — goto degradation (every edge with a form keeps it)', () =>
     const dsl = irToDsl(MIXED_SURPLUS_XOR);
     expect(dsl).toContain('goto C');
     const ir2 = await reDesugar(dsl);
-    // Every real node must stay transitively reachable from the start —
-    // before the fix, C dangled as dead code with no incoming edge.
+    // Every real node must stay transitively reachable from the start: C must
+    // not dangle with no incoming edge.
     const adj = new Map<string, string[]>();
     for (const f of ir2.sequenceFlows) {
       (adj.get(f.sourceRef) ?? adj.set(f.sourceRef, []).get(f.sourceRef)!).push(
@@ -843,7 +762,7 @@ describe('irToDsl — output conventions', () => {
 // ---------------------------------------------------------------------------
 
 /**
- * Wrap a single flow element in a minimal `start → node → end` process so one
+ * Wrap a single flow element in a minimal `start -> node -> end` process so one
  * statement's rendering can be asserted in isolation and re-parsed.
  */
 function singleNodeProcess(node: FlowElement): BpmnProcess {
@@ -991,7 +910,7 @@ describe('irToDsl — fenced script task', () => {
   });
 
   it('reproduces the body byte-for-byte without re-indenting it', () => {
-    // A body carrying its own indentation must survive verbatim — the emitter
+    // A body carrying its own indentation must survive verbatim: the emitter
     // must not prepend block indentation to the opaque script content.
     const code = 'if (ok) {\n  doThing();\n}';
     const dsl = irToDsl(
@@ -1036,16 +955,14 @@ describe('irToDsl — fenced script task', () => {
 });
 
 // ---------------------------------------------------------------------------
-// 7. Sub-process emission (multi-line `subprocess { … }` groups).
+// 7. Sub-process emission (multi-line `subprocess { ... }` groups).
 //
-// The `subprocess` surface is defined in the language package; these
-// IR-literal-driven tests do not re-parse. They assert the emitted text: the
-// opening line, the child body restructured by a fresh Emitter and indented one
-// level deeper, and the closing brace.
+// The `subprocess` surface is defined in the language package, so these
+// IR-literal-driven tests assert the emitted text instead of re-parsing.
 // ---------------------------------------------------------------------------
 
 describe('irToDsl — sub-process emission', () => {
-  /** `PStart → Before → sub(SubStart → Work → SubEnd) → After → PEnd`. */
+  /** `PStart -> Before -> sub(SubStart -> Work -> SubEnd) -> After -> PEnd`. */
   const NESTED_IR: BpmnProcess = {
     id: 'proc',
     isExecutable: true,
@@ -1078,13 +995,10 @@ describe('irToDsl — sub-process emission', () => {
 
   it('prints `subprocess sub { … }` with the body indented one level', () => {
     const dsl = irToDsl(NESTED_IR);
-    // The subprocess opening line sits at one indent level (2 spaces).
     expect(dsl).toContain('\n  subprocess sub {\n');
-    // Its body statements sit one level deeper (4 spaces).
     expect(dsl).toContain('\n    start SubStart');
     expect(dsl).toContain('\n    user Work { assignee = "demo" }');
     expect(dsl).toContain('\n    end SubEnd');
-    // The closing brace returns to the subprocess's own indent level.
     expect(dsl).toContain('\n  }\n');
     expect(hasGatewayKeyword(dsl)).toBe(false);
   });
@@ -1096,13 +1010,10 @@ describe('irToDsl — sub-process emission', () => {
     const afterIdx = dsl.indexOf('user After');
     expect(beforeIdx).toBeGreaterThanOrEqual(0);
     expect(afterIdx).toBeGreaterThanOrEqual(0);
-    // Parent statements sit at the top level (2-space indent), not inside the
-    // sub-process body, and keep their document order around it.
     expect(dsl).toContain('\n  user Before');
     expect(dsl).toContain('\n  user After');
     expect(beforeIdx).toBeLessThan(subIdx);
     expect(subIdx).toBeLessThan(afterIdx);
-    // No goto is needed for the straight-line parent chain.
     expect(hasGoto(dsl)).toBe(false);
   });
 
@@ -1158,13 +1069,10 @@ describe('irToDsl — sub-process emission', () => {
     };
 
     const dsl = irToDsl(SUB_WITH_IF);
-    // The `if` sits inside the sub-process body: two indent levels (4 spaces).
     expect(dsl).toContain('\n    if (ok) {');
     expect(dsl).toContain('\n    } else {');
-    // Branch bodies sit a further level in (6 spaces).
     expect(dsl).toContain('\n      user Yes');
     expect(dsl).toContain('\n      user No');
-    // The gateways are elided — no `gateway` keyword surfaces.
     expect(hasGatewayKeyword(dsl)).toBe(false);
   });
 
@@ -1213,8 +1121,6 @@ describe('irToDsl — sub-process emission', () => {
       ],
     };
     const dsl = irToDsl(EMPTY);
-    // Empty body: the opening line is directly followed by the closing brace,
-    // both at the sub-process's own indent level.
     expect(dsl).toContain('  subprocess S "Handle order" {\n  }\n');
   });
 
@@ -1244,11 +1150,10 @@ describe('irToDsl — sub-process emission', () => {
 });
 
 // ---------------------------------------------------------------------------
-// 8. Call-activity emission (single-line `call <id> { … }` statements).
+// 8. Call-activity emission (single-line `call <id> { ... }` statements).
 //
-// IR-literal-driven and parser-free: these assert the emitted text
-// (canonical member order, mapping shorthand, version print contract), not a
-// re-parse — the parser lives in the language package.
+// IR-literal-driven and parser-free: these assert the emitted text (canonical
+// member order, mapping shorthand, version print contract), not a re-parse.
 // ---------------------------------------------------------------------------
 
 describe('irToDsl — call activity', () => {
@@ -1263,9 +1168,9 @@ describe('irToDsl — call activity', () => {
         businessKey: '${execution.processBusinessKey}',
         inMappings: [
           { kind: 'all' },
-          // source === target → bare shorthand.
+          // source === target -> bare shorthand.
           { kind: 'variable', source: 'amount', target: 'amount' },
-          // source !== target → `target = source`.
+          // source !== target -> `target = source`.
           { kind: 'variable', source: 'x', target: 'y' },
           {
             kind: 'expression',
@@ -1369,9 +1274,8 @@ describe('irToDsl — call activity', () => {
 // ---------------------------------------------------------------------------
 // Event layer: declarations, throws, emits, handlers.
 //
-// These fixtures are printed and asserted directly (no re-parse): the parser
-// lives in the language package, so the full round-trip is exercised by the
-// workspace-level tests instead.
+// These fixtures are printed and asserted directly. The parser lives in the
+// language package, so the workspace-level tests exercise the full round-trip.
 // ---------------------------------------------------------------------------
 
 describe('irToDsl — event layer', () => {
@@ -1558,8 +1462,6 @@ describe('irToDsl — event layer', () => {
       sequenceFlows: [{ id: 'F', sourceRef: 'S', targetRef: 'E' }],
     };
     const dsl = irToDsl(ir);
-    // The handler header sits at one indent level, its `if` at two, its body at
-    // three — the gateway pair is elided into the `if`.
     expect(dsl).toContain('\n  on error "C" {\n');
     expect(dsl).toContain('\n    if (amount > 1000) {\n');
     expect(dsl).toContain('\n      user A\n');
@@ -1572,7 +1474,7 @@ describe('irToDsl — event layer', () => {
 // ---------------------------------------------------------------------------
 
 describe('irToDsl — event layer (message / signal / timer / conditional)', () => {
-  /** An `on …` handler wrapping a single `start → user → end` body. */
+  /** An `on ...` handler wrapping a single `start -> user -> end` body. */
   function handler(
     id: string,
     startId: string,
@@ -1760,12 +1662,12 @@ describe('irToDsl — event layer (message / signal / timer / conditional)', () 
 });
 
 // ---------------------------------------------------------------------------
-// Event layer: intermediate catch (`await`) — a blocking, one-in/one-out node
+// Event layer: intermediate catch (`await`), a blocking one-in/one-out node
 // inline on the main flow, printed with no id token (it has no name slot).
 // ---------------------------------------------------------------------------
 
 describe('irToDsl — event layer (intermediate catch / await)', () => {
-  /** A `start → task → catch → task → end` body: the catch sits on the main flow. */
+  /** A `start -> task -> catch -> task -> end` body: the catch is on the main flow. */
   function catchBody(def: EventDefinition): BpmnProcess {
     return {
       id: 'proc',
@@ -1834,8 +1736,8 @@ describe('irToDsl — event layer (compensation)', () => {
   /**
    * A process exercising the whole compensation surface: `emit compensation`
    * mid-chain, a terminal `throw compensation`, and a trailing `on
-   * compensation` handler wrapping a start/user/end body. Compensation is
-   * payload-less, so none of the three carry a code or a name.
+   * compensation` handler. Compensation is payload-less, so none of the three
+   * carry a code or a name.
    */
   const compensationIr: BpmnProcess = {
     id: 'proc',
@@ -1953,9 +1855,6 @@ describe('irToDsl — event layer (compensation)', () => {
       sequenceFlows: [{ id: 'F', sourceRef: 'S', targetRef: 'E' }],
     };
     const dsl = irToDsl(ir);
-    // The handler header sits at one indent level, its `if` at two, its body
-    // at three — the gateway pair is elided into the `if`, exactly as for the
-    // error-triggered handler above.
     expect(dsl).toContain('\n  on compensation {\n');
     expect(dsl).toContain('\n    if (amount > 1000) {\n');
     expect(dsl).toContain('\n      user A\n');
@@ -1992,25 +1891,46 @@ describe('irToDsl — event layer (compensation)', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Boundary events — the escape-chain emission pass.
+// Boundary events: the escape-chain emission pass.
 //
 // A boundary event is the only IR node with outgoing but no incoming flow, so
 // its chain is unreachable from the start event and must be printed by its own
 // pass, before the orphan sweep would otherwise flush it as a detached
-// top-level chain. The chain lives in the *same* container as the main flow, so
+// top-level chain. The chain lives in the same container as the main flow, so
 // the shared emitted-node / consumed-flow bookkeeping is what makes a rejoin
 // degrade to a `goto`.
 // ---------------------------------------------------------------------------
 
 describe('irToDsl — boundary events', () => {
+  /**
+   * `start S -> user <host> -> end E`, flows F1 and F2, with `rest` and
+   * `flows` appended verbatim: the boundary event, its escape chain, and
+   * their edges.
+   */
+  const boundaryIr = (
+    host: string,
+    rest: readonly FlowElement[],
+    flows: readonly SequenceFlow[],
+  ): BpmnProcess => ({
+    id: 'p',
+    isExecutable: true,
+    flowElements: [
+      { kind: 'startEvent', id: 'S' },
+      { kind: 'userTask', id: host },
+      { kind: 'endEvent', id: 'E' },
+      ...rest,
+    ],
+    sequenceFlows: [
+      { id: 'F1', sourceRef: 'S', targetRef: host },
+      { id: 'F2', sourceRef: host, targetRef: 'E' },
+      ...flows,
+    ],
+  });
+
   it('prints an interrupting boundary as a hosted handler with its chain indented', () => {
-    const ir: BpmnProcess = {
-      id: 'p',
-      isExecutable: true,
-      flowElements: [
-        { kind: 'startEvent', id: 'S' },
-        { kind: 'userTask', id: 'Review' },
-        { kind: 'endEvent', id: 'E' },
+    const ir = boundaryIr(
+      'Review',
+      [
         {
           kind: 'boundaryEvent',
           id: 'Boundary_Review_timer',
@@ -2024,9 +1944,7 @@ describe('irToDsl — boundary events', () => {
         { kind: 'userTask', id: 'Escalate' },
         { kind: 'endEvent', id: 'Timeout' },
       ],
-      sequenceFlows: [
-        { id: 'F1', sourceRef: 'S', targetRef: 'Review' },
-        { id: 'F2', sourceRef: 'Review', targetRef: 'E' },
+      [
         {
           id: 'F3',
           sourceRef: 'Boundary_Review_timer',
@@ -2034,7 +1952,7 @@ describe('irToDsl — boundary events', () => {
         },
         { id: 'F4', sourceRef: 'Escalate', targetRef: 'Timeout' },
       ],
-    };
+    );
     expect(irToDsl(ir)).toBe(
       [
         'process p {',
@@ -2052,13 +1970,9 @@ describe('irToDsl — boundary events', () => {
   });
 
   it('prints alongside for a non-interrupting boundary', () => {
-    const ir: BpmnProcess = {
-      id: 'p',
-      isExecutable: true,
-      flowElements: [
-        { kind: 'startEvent', id: 'S' },
-        { kind: 'userTask', id: 'Pack' },
-        { kind: 'endEvent', id: 'E' },
+    const ir = boundaryIr(
+      'Pack',
+      [
         {
           kind: 'boundaryEvent',
           id: 'Boundary_Pack_message',
@@ -2073,13 +1987,11 @@ describe('irToDsl — boundary events', () => {
         },
         { kind: 'endEvent', id: 'Nudged' },
       ],
-      sequenceFlows: [
-        { id: 'F1', sourceRef: 'S', targetRef: 'Pack' },
-        { id: 'F2', sourceRef: 'Pack', targetRef: 'E' },
+      [
         { id: 'F3', sourceRef: 'Boundary_Pack_message', targetRef: 'Notify' },
         { id: 'F4', sourceRef: 'Notify', targetRef: 'Nudged' },
       ],
-    };
+    );
     const dsl = irToDsl(ir);
     expect(dsl).toContain('  on Pack: message "Nudge" alongside {\n');
     expect(dsl).toContain('    end Nudged\n');
@@ -2118,13 +2030,9 @@ describe('irToDsl — boundary events', () => {
   });
 
   it('restructures an if/else inside an escape chain (the boundary is a second CFG entry)', () => {
-    const ir: BpmnProcess = {
-      id: 'p',
-      isExecutable: true,
-      flowElements: [
-        { kind: 'startEvent', id: 'S' },
-        { kind: 'userTask', id: 'Review' },
-        { kind: 'endEvent', id: 'E' },
+    const ir = boundaryIr(
+      'Review',
+      [
         {
           kind: 'boundaryEvent',
           id: 'Boundary_Review_signal',
@@ -2141,9 +2049,7 @@ describe('irToDsl — boundary events', () => {
         { kind: 'userTask', id: 'Keep' },
         { kind: 'endEvent', id: 'Aborted' },
       ],
-      sequenceFlows: [
-        { id: 'F1', sourceRef: 'S', targetRef: 'Review' },
-        { id: 'F2', sourceRef: 'Review', targetRef: 'E' },
+      [
         {
           id: 'B1',
           sourceRef: 'Boundary_Review_signal',
@@ -2160,7 +2066,7 @@ describe('irToDsl — boundary events', () => {
         { id: 'B5', sourceRef: 'Keep', targetRef: 'Gateway_p_9_join' },
         { id: 'B6', sourceRef: 'Gateway_p_9_join', targetRef: 'Aborted' },
       ],
-    };
+    );
     const dsl = irToDsl(ir);
     expect(dsl).toContain('  on Review: signal "Abort" {\n');
     expect(dsl).toContain('    if (paid) {\n');
@@ -2170,13 +2076,9 @@ describe('irToDsl — boundary events', () => {
   });
 
   it('prints two boundaries on one host as two blocks in IR order', () => {
-    const ir: BpmnProcess = {
-      id: 'p',
-      isExecutable: true,
-      flowElements: [
-        { kind: 'startEvent', id: 'S' },
-        { kind: 'userTask', id: 'Review' },
-        { kind: 'endEvent', id: 'E' },
+    const ir = boundaryIr(
+      'Review',
+      [
         {
           kind: 'boundaryEvent',
           id: 'Boundary_Review_timer',
@@ -2200,9 +2102,7 @@ describe('irToDsl — boundary events', () => {
         },
         { kind: 'endEvent', id: 'Loud' },
       ],
-      sequenceFlows: [
-        { id: 'F1', sourceRef: 'S', targetRef: 'Review' },
-        { id: 'F2', sourceRef: 'Review', targetRef: 'E' },
+      [
         { id: 'F3', sourceRef: 'Boundary_Review_timer', targetRef: 'Late' },
         {
           id: 'F4',
@@ -2210,7 +2110,7 @@ describe('irToDsl — boundary events', () => {
           targetRef: 'Loud',
         },
       ],
-    };
+    );
     const dsl = irToDsl(ir);
     const timer = dsl.indexOf('on Review: timer after "PT2H" {');
     const escalation = dsl.indexOf('on Review: escalation "LOUD" (code c) {');
@@ -2243,7 +2143,7 @@ describe('irToDsl — boundary events', () => {
     expect(dsl.indexOf('on Intake: error "X" {')).toBeGreaterThan(
       dsl.lastIndexOf('goto '),
     );
-    // …so re-opening the emitted source raises no handler-placement error.
+    // Re-opening the emitted source must raise no handler-placement error.
     const reparsed = await parse(dsl, { validation: true });
     expect(
       (reparsed.diagnostics ?? [])
@@ -2253,13 +2153,9 @@ describe('irToDsl — boundary events', () => {
   });
 
   it('keeps the handler block trailing when the container holds an orphan fragment', () => {
-    const ir: BpmnProcess = {
-      id: 'p',
-      isExecutable: true,
-      flowElements: [
-        { kind: 'startEvent', id: 'S' },
-        { kind: 'userTask', id: 'Review' },
-        { kind: 'endEvent', id: 'E' },
+    const ir = boundaryIr(
+      'Review',
+      [
         {
           kind: 'boundaryEvent',
           id: 'Boundary_Review_error',
@@ -2270,12 +2166,8 @@ describe('irToDsl — boundary events', () => {
         // Unreachable from the start event and from the escape chain.
         { kind: 'userTask', id: 'Stranded' },
       ],
-      sequenceFlows: [
-        { id: 'F1', sourceRef: 'S', targetRef: 'Review' },
-        { id: 'F2', sourceRef: 'Review', targetRef: 'E' },
-        { id: 'F3', sourceRef: 'Boundary_Review_error', targetRef: 'Fix' },
-      ],
-    };
+      [{ id: 'F3', sourceRef: 'Boundary_Review_error', targetRef: 'Fix' }],
+    );
     const dsl = irToDsl(ir);
     expect(dsl.indexOf('on Review: error "X" {')).toBeGreaterThan(
       dsl.indexOf('user Stranded'),
@@ -2312,13 +2204,9 @@ describe('irToDsl — boundary events', () => {
   });
 
   it('prints a boundary event before a host-less handler in the same container', () => {
-    const ir: BpmnProcess = {
-      id: 'p',
-      isExecutable: true,
-      flowElements: [
-        { kind: 'startEvent', id: 'S' },
-        { kind: 'userTask', id: 'Review' },
-        { kind: 'endEvent', id: 'E' },
+    const ir = boundaryIr(
+      'Review',
+      [
         {
           kind: 'subProcess',
           id: 'OnPF',
@@ -2347,12 +2235,8 @@ describe('irToDsl — boundary events', () => {
         },
         { kind: 'endEvent', id: 'Late' },
       ],
-      sequenceFlows: [
-        { id: 'F1', sourceRef: 'S', targetRef: 'Review' },
-        { id: 'F2', sourceRef: 'Review', targetRef: 'E' },
-        { id: 'F3', sourceRef: 'Boundary_Review_timer', targetRef: 'Late' },
-      ],
-    };
+      [{ id: 'F3', sourceRef: 'Boundary_Review_timer', targetRef: 'Late' }],
+    );
     const dsl = irToDsl(ir);
     expect(dsl.indexOf('on Review: timer')).toBeGreaterThan(-1);
     expect(dsl.indexOf('on error "PF" {')).toBeGreaterThan(
@@ -2402,13 +2286,9 @@ describe('irToDsl — boundary events', () => {
   });
 
   it('prints an empty body for a boundary event with no outgoing flow', () => {
-    const ir: BpmnProcess = {
-      id: 'p',
-      isExecutable: true,
-      flowElements: [
-        { kind: 'startEvent', id: 'S' },
-        { kind: 'userTask', id: 'Review' },
-        { kind: 'endEvent', id: 'E' },
+    const ir = boundaryIr(
+      'Review',
+      [
         {
           kind: 'boundaryEvent',
           id: 'Boundary_Review_timer',
@@ -2420,11 +2300,8 @@ describe('irToDsl — boundary events', () => {
           },
         },
       ],
-      sequenceFlows: [
-        { id: 'F1', sourceRef: 'S', targetRef: 'Review' },
-        { id: 'F2', sourceRef: 'Review', targetRef: 'E' },
-      ],
-    };
+      [],
+    );
     expect(irToDsl(ir)).toContain('  on Review: timer every "R/PT1H" {\n  }\n');
   });
 
@@ -2467,11 +2344,11 @@ describe('irToDsl — boundary events', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Synthesized-terminal omission: a reserved `StartEvent_`/`EndEvent_`/
-// `Throw_` id is the desugarer's own doing, not something an author could
-// type (the validator rejects the prefixes), so printing it back out as a
-// name produces DSL′ the validator then rejects. These ids must be omitted
-// (start/end) or dropped from the name slot (throw/emit) instead.
+// Synthesized-terminal omission: a reserved `StartEvent_`/`EndEvent_`/`Throw_`
+// id is the desugarer's own doing, not something an author could type (the
+// validator rejects the prefixes), so printing it back out as a name produces
+// source the validator then rejects. These ids must be omitted (start/end) or
+// dropped from the name slot (throw/emit) instead.
 // ---------------------------------------------------------------------------
 
 describe('irToDsl — synthesized terminal omission', () => {
@@ -2588,8 +2465,8 @@ describe('irToDsl — guard-clause continuation', () => {
 `);
     const dsl = await expectIdempotent(ir);
 
-    // No jump to a synthesized join gateway, and no synthesized gateway id at
-    // all — both the split and the join are elided.
+    // Both the split and the join are elided, so no synthesized gateway id
+    // appears and nothing jumps to one.
     expect(dsl).not.toContain('goto Gateway_');
     expect(dsl).not.toContain('Gateway_');
 
@@ -2597,8 +2474,8 @@ describe('irToDsl — guard-clause continuation', () => {
     expect(dsl).toContain('throw error "BOOM"');
     expect(dsl).not.toContain('goto Throw_');
 
-    // The continuation prints AFTER the `if`, at the container body level —
-    // it is not swept to the end past a terminating gateway.
+    // The continuation prints AFTER the `if`, at the container body level, not
+    // swept to the end past a terminating gateway.
     const ifIdx = dsl.indexOf('if (amount > 1000)');
     const postIdx = dsl.indexOf('service Post');
     const doneIdx = dsl.indexOf('end Done');
@@ -2608,8 +2485,8 @@ describe('irToDsl — guard-clause continuation', () => {
   });
 
   it('keeps a loop-body statement after a terminal-branch guard inside the while block', async () => {
-    // `while (…) { A; if (d){ throw }; B }`: the guard's terminal branch must
-    // not push `B` out of the loop. `B` stays inside the `while` block.
+    // `while (...) { A; if (d) { throw }; B }`: the guard's terminal branch must
+    // not push `B` out of the loop.
     const ir = await reDesugar(`process p {
   start S
   while (retries < 3) {
@@ -2631,8 +2508,8 @@ describe('irToDsl — guard-clause continuation', () => {
     const bIdx = lines.findIndex((l) => l.includes('service B'));
     const doneIdx = lines.findIndex((l) => l.includes('end Done'));
 
-    // `B` appears after the `while` header and before `end Done`, and is
-    // indented deeper than `end Done` — i.e. nested inside the loop, not after.
+    // `B` appears after the `while` header, before `end Done`, and indented
+    // deeper than it, so it is nested inside the loop rather than after it.
     expect(whileIdx).toBeGreaterThan(-1);
     expect(bIdx).toBeGreaterThan(whileIdx);
     expect(doneIdx).toBeGreaterThan(bIdx);
@@ -2643,7 +2520,7 @@ describe('irToDsl — guard-clause continuation', () => {
 describe('irToDsl — never emit a goto to a gateway', () => {
   /**
    * A multi-out real node whose second out-edge lands on a one-out pass-through
-   * gateway `Gateway_p_9_join → R`. The second arrival is realized as a goto;
+   * gateway `Gateway_p_9_join -> R`. The second arrival is realized as a goto;
    * the invariant forwards it through the elided gateway to the real successor.
    */
   const PASS_THROUGH_IR: BpmnProcess = {
@@ -2671,14 +2548,13 @@ describe('irToDsl — never emit a goto to a gateway', () => {
     expect(dsl).toContain('goto R');
     expect(dsl).not.toContain('goto Gateway_');
     expect(dsl).not.toContain('Gateway_p_9_join');
-    // Still valid source.
     await reDesugar(dsl);
   });
 
   /**
-   * A parallel fork with a back-edge into it (`B → fork`). By the time the
+   * A parallel fork with a back-edge into it (`B -> fork`). By the time the
    * back-arrival is realized, the fork's out-edges are all consumed, so there
-   * is no single successor to forward to — the edge becomes a hand-repair
+   * is no single successor to forward to, so the edge becomes a hand-repair
    * marker rather than an unresolvable `goto` into the fork. This shape is only
    * reachable through hostile input; the forward compiler never emits it.
    */
@@ -2714,9 +2590,9 @@ describe('irToDsl — never emit a goto to a gateway', () => {
 describe('irToDsl — parallel-fork recovery (terminating branch)', () => {
   it('recovers an asymmetric fork as `parallel { … }` with the throw inline and the continuation after', async () => {
     // A `parallel` where one branch terminates (`throw`) and the other flows on
-    // to the join. The fork's immediate post-dominator is the virtual exit (the
-    // throw branch bypasses the join), so there is no clean parallel join — the
-    // fork must be recovered structurally rather than degrading to raw gotos.
+    // to the join. The fork's immediate post-dominator is the virtual exit, so
+    // there is no clean parallel join and the fork must be recovered
+    // structurally rather than degrading to raw gotos.
     const ir = await reDesugar(`process p {
   error "BOOM" message "it broke"
   start Begin
@@ -2729,14 +2605,12 @@ describe('irToDsl — parallel-fork recovery (terminating branch)', () => {
 `);
     const dsl = irToDsl(ir);
 
-    // The fork recovers to a `parallel { … }` block, not a flat goto sequence.
     expect(dsl).toContain('parallel {');
     // Both branch bodies print inline; the terminating branch prints its throw
     // in place, never as a jump to the (un-nameable) synthesized throw node.
     expect(dsl).toContain('service A "a" { class = "x.A" }');
     expect(dsl).toContain('throw error "BOOM"');
 
-    // No jump at all, and no synthesized gateway / throw id token anywhere.
     expect(hasGoto(dsl)).toBe(false);
     expect(dsl).not.toContain('goto Throw_');
     expect(dsl).not.toContain('goto Gateway_');
@@ -2754,7 +2628,7 @@ describe('irToDsl — parallel-fork recovery (terminating branch)', () => {
 
   it('leaves a fully symmetric parallel decompile byte-for-byte unchanged (both branches survive)', () => {
     // Both branches reach the join, so the clean-join path handles it and the
-    // recovery is never entered — the output is exactly as before the fix.
+    // recovery is never entered.
     expect(irToDsl(PARALLEL_IR)).toBe(
       'process p {\n' +
         '  start S\n' +
@@ -2789,8 +2663,8 @@ describe('irToDsl — parallel-fork recovery (terminating branch)', () => {
     // An outer `parallel` whose surviving branches each hold their own nested
     // `parallel`, plus one terminating `throw`. The continuation (`end Finish`)
     // must resume after the OUTER join both survivors reconverge at, not the
-    // first survivor's inner join — otherwise it drifts into a sibling branch, a
-    // silent, non-idempotent structural change on round-trip.
+    // first survivor's inner join, which would drift it into a sibling branch
+    // and make the round-trip non-idempotent.
     const ir = await reDesugar(`process p {
   error "BOOM" message "it broke"
   start Begin
@@ -2814,8 +2688,8 @@ describe('irToDsl — parallel-fork recovery (terminating branch)', () => {
 `);
     const dsl = await expectIdempotent(ir);
 
-    // The continuation lands after the outer parallel at container level, and no
-    // edge is silently dropped through a bare gateway/throw-targeting goto.
+    // The continuation lands after the outer parallel at container level, and
+    // no edge is dropped through a bare gateway or throw-targeting goto.
     expect(dsl).toContain('\n  end Finish');
     expect(dsl).not.toContain('goto Gateway_');
     expect(dsl).not.toContain('goto Throw_');

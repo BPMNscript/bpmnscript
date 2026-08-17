@@ -1,12 +1,6 @@
 /**
- * Unit tests for the deterministic synthesized-id utility.
- *
- * These tests serve as both a correctness guard and as documentation for the
- * id templates. The templates are coupled to the round-trip normalizer:
- * changing a template here requires a corresponding update there.
- *
- * Templates under test (shared by the desugarer, the emitter, and the
- * round-trip normalizer):
+ * The id templates are shared by the desugarer, the emitter, and the round-trip
+ * normalizer, so changing one here requires a matching change there.
  *
  *   Gateway_<X>_split         XOR split gateway for an `if` statement with id X
  *   Gateway_<X>_join          XOR join gateway for an `if` statement with id X
@@ -14,12 +8,12 @@
  *   Gateway_<X>_join          AND join (parallel) gateway for a `parallel` block X
  *   Gateway_<X>_loop          XOR loop-head gateway for a `while` statement X
  *   Flow_<gatewayId>_default  Default (else-branch) flow out of a gateway
- *   Flow_<sourceId>_<targetId>  Sequence flow (plain); duplicate pairs get _2, _3, …
+ *   Flow_<sourceId>_<targetId>  Sequence flow (plain); duplicate pairs get _2, _3, ...
  *   StartEvent_<processId>    Implicit start event
- *   EndEvent_<processId>      Implicit end event; duplicates get _2, _3, …
+ *   EndEvent_<processId>      Implicit end event; duplicates get _2, _3, ...
  *   Throw_<X>                 Unnamed `throw`/`emit` event at coordinate X
  *   EventSubProcess_<X>       `on` handler (event sub-process) at coordinate X
- *   Boundary_<hostId>_<trigger>  Hosted `on <Host>: <trigger>` handler; duplicates get _2, _3, …
+ *   Boundary_<hostId>_<trigger>  Hosted `on <Host>: <trigger>` handler; duplicates get _2, _3, ...
  */
 
 import { describe, expect, it } from 'vitest';
@@ -40,84 +34,18 @@ import {
 } from '../src/synthesize-ids.js';
 
 // ---------------------------------------------------------------------------
-// Determinism — every constructor is called twice; results must be identical
+// Determinism: a collision with an author-supplied id resolves to a stable
+// suffixed id, and the resolved id is recorded in the taken set
 // ---------------------------------------------------------------------------
 
 describe('determinism', () => {
-  it('makeGatewaySplitId is pure', () => {
-    expect(makeGatewaySplitId('AmountCheck')).toBe(
-      makeGatewaySplitId('AmountCheck'),
-    );
-  });
-
-  it('makeGatewayJoinId is pure', () => {
-    expect(makeGatewayJoinId('AmountCheck')).toBe(
-      makeGatewayJoinId('AmountCheck'),
-    );
-  });
-
-  it('makeGatewayForkId is pure', () => {
-    expect(makeGatewayForkId('Step1')).toBe(makeGatewayForkId('Step1'));
-  });
-
-  it('makeGatewayLoopId is pure', () => {
-    expect(makeGatewayLoopId('MyWhile')).toBe(makeGatewayLoopId('MyWhile'));
-  });
-
-  it('makeDefaultFlowId is pure', () => {
-    expect(makeDefaultFlowId('Gateway_AmountCheck_split')).toBe(
-      makeDefaultFlowId('Gateway_AmountCheck_split'),
-    );
-  });
-
-  it('makeSequenceFlowId is pure for untaken base', () => {
-    const taken = new Set<string>();
-    const id1 = makeSequenceFlowId('A', 'B', taken);
-    const taken2 = new Set<string>();
-    const id2 = makeSequenceFlowId('A', 'B', taken2);
-    expect(id1).toBe(id2);
-  });
-
-  it('makeStartEventId is deterministic for an untaken base', () => {
-    const taken1 = new Set<string>();
-    const taken2 = new Set<string>();
-    expect(makeStartEventId('my-process', taken1)).toBe(
-      makeStartEventId('my-process', taken2),
-    );
-  });
-
   it('makeStartEventId resolves a collision with an author id and records it', () => {
     // A task literally named `StartEvent_P` in process `P` collides with the
     // implicit start id; the synthesizer must suffix it deterministically.
     const taken = new Set<string>(['StartEvent_P']);
     const id = makeStartEventId('P', taken);
     expect(id).toBe('StartEvent_P_2');
-    // The resolved id is recorded in `taken`.
     expect(taken.has('StartEvent_P_2')).toBe(true);
-  });
-
-  it('makeEndEventId is pure for untaken base', () => {
-    const taken = new Set<string>();
-    const id1 = makeEndEventId('my-process', taken);
-    const taken2 = new Set<string>();
-    const id2 = makeEndEventId('my-process', taken2);
-    expect(id1).toBe(id2);
-  });
-
-  it('makeThrowEventId is pure', () => {
-    expect(makeThrowEventId('p_1')).toBe(makeThrowEventId('p_1'));
-  });
-
-  it('makeEventSubProcessId is pure', () => {
-    expect(makeEventSubProcessId('p_2')).toBe(makeEventSubProcessId('p_2'));
-  });
-
-  it('makeBoundaryEventId is deterministic for an untaken base', () => {
-    const taken1 = new Set<string>();
-    const taken2 = new Set<string>();
-    expect(makeBoundaryEventId('Pack', 'error', taken1)).toBe(
-      makeBoundaryEventId('Pack', 'error', taken2),
-    );
   });
 
   it('makeBoundaryEventId resolves a collision and records it in taken', () => {
@@ -129,133 +57,102 @@ describe('determinism', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Structural stability — templates match exact documented forms
+// Structural stability: templates match the exact documented forms
 // ---------------------------------------------------------------------------
 
 describe('structural stability', () => {
-  it('makeGatewaySplitId → Gateway_<X>_split', () => {
-    expect(makeGatewaySplitId('AmountCheck')).toBe('Gateway_AmountCheck_split');
-    expect(makeGatewaySplitId('Step1')).toBe('Gateway_Step1_split');
-  });
-
-  it('makeGatewayJoinId → Gateway_<X>_join', () => {
-    expect(makeGatewayJoinId('AmountCheck')).toBe('Gateway_AmountCheck_join');
-    expect(makeGatewayJoinId('OuterIf')).toBe('Gateway_OuterIf_join');
-  });
-
-  it('makeGatewayForkId → Gateway_<X>_fork', () => {
-    expect(makeGatewayForkId('Step1')).toBe('Gateway_Step1_fork');
-    expect(makeGatewayForkId('ParallelBlock')).toBe(
-      'Gateway_ParallelBlock_fork',
-    );
-  });
-
-  it('makeGatewayLoopId → Gateway_<X>_loop', () => {
-    expect(makeGatewayLoopId('MyWhile')).toBe('Gateway_MyWhile_loop');
-    expect(makeGatewayLoopId('RetryLoop')).toBe('Gateway_RetryLoop_loop');
-  });
-
-  it('makeDefaultFlowId → Flow_<gatewayId>_default', () => {
-    expect(makeDefaultFlowId('Gateway_AmountCheck_split')).toBe(
+  it.each([
+    ['Gateway_AmountCheck_split', () => makeGatewaySplitId('AmountCheck')],
+    ['Gateway_Step1_split', () => makeGatewaySplitId('Step1')],
+    ['Gateway_AmountCheck_join', () => makeGatewayJoinId('AmountCheck')],
+    ['Gateway_OuterIf_join', () => makeGatewayJoinId('OuterIf')],
+    ['Gateway_Step1_fork', () => makeGatewayForkId('Step1')],
+    ['Gateway_ParallelBlock_fork', () => makeGatewayForkId('ParallelBlock')],
+    ['Gateway_MyWhile_loop', () => makeGatewayLoopId('MyWhile')],
+    ['Gateway_RetryLoop_loop', () => makeGatewayLoopId('RetryLoop')],
+    [
       'Flow_Gateway_AmountCheck_split_default',
-    );
-    expect(makeDefaultFlowId('Gateway_X_join')).toBe(
-      'Flow_Gateway_X_join_default',
-    );
-  });
-
-  it('makeStartEventId → StartEvent_<processId>', () => {
-    expect(makeStartEventId('invoice-approval', new Set())).toBe(
+      () => makeDefaultFlowId('Gateway_AmountCheck_split'),
+    ],
+    ['Flow_Gateway_X_join_default', () => makeDefaultFlowId('Gateway_X_join')],
+    [
       'StartEvent_invoice-approval',
-    );
-    expect(makeStartEventId('my-process', new Set())).toBe(
-      'StartEvent_my-process',
-    );
-  });
-
-  it('makeEndEventId (first) → EndEvent_<processId>', () => {
-    const taken = new Set<string>();
-    expect(makeEndEventId('invoice-approval', taken)).toBe(
+      () => makeStartEventId('invoice-approval', new Set()),
+    ],
+    ['StartEvent_my-process', () => makeStartEventId('my-process', new Set())],
+    [
       'EndEvent_invoice-approval',
-    );
-  });
-
-  it('makeEndEventId (second) → EndEvent_<processId>_2', () => {
-    const taken = new Set(['EndEvent_invoice-approval']);
-    expect(makeEndEventId('invoice-approval', taken)).toBe(
+      () => makeEndEventId('invoice-approval', new Set()),
+    ],
+    [
       'EndEvent_invoice-approval_2',
-    );
-  });
-
-  it('makeEndEventId (third) → EndEvent_<processId>_3', () => {
-    const taken = new Set([
-      'EndEvent_invoice-approval',
-      'EndEvent_invoice-approval_2',
-    ]);
-    expect(makeEndEventId('invoice-approval', taken)).toBe(
+      () =>
+        makeEndEventId(
+          'invoice-approval',
+          new Set(['EndEvent_invoice-approval']),
+        ),
+    ],
+    [
       'EndEvent_invoice-approval_3',
-    );
-  });
-
-  it('makeThrowEventId → Throw_<X>', () => {
-    expect(makeThrowEventId('p_1')).toBe('Throw_p_1');
-    expect(makeThrowEventId('invoice-approval_2_t_0')).toBe(
+      () =>
+        makeEndEventId(
+          'invoice-approval',
+          new Set(['EndEvent_invoice-approval', 'EndEvent_invoice-approval_2']),
+        ),
+    ],
+    ['Throw_p_1', () => makeThrowEventId('p_1')],
+    [
       'Throw_invoice-approval_2_t_0',
-    );
-  });
-
-  it('makeEventSubProcessId → EventSubProcess_<X>', () => {
-    expect(makeEventSubProcessId('p_1')).toBe('EventSubProcess_p_1');
-    expect(makeEventSubProcessId('invoice-approval_0')).toBe(
+      () => makeThrowEventId('invoice-approval_2_t_0'),
+    ],
+    ['EventSubProcess_p_1', () => makeEventSubProcessId('p_1')],
+    [
       'EventSubProcess_invoice-approval_0',
-    );
-  });
-
-  it('makeIntermediateCatchEventId → Catch_<X>', () => {
-    expect(makeIntermediateCatchEventId('p_2')).toBe('Catch_p_2');
-    expect(makeIntermediateCatchEventId('invoice-approval_1_c_0')).toBe(
+      () => makeEventSubProcessId('invoice-approval_0'),
+    ],
+    ['Catch_p_2', () => makeIntermediateCatchEventId('p_2')],
+    [
       'Catch_invoice-approval_1_c_0',
-    );
+      () => makeIntermediateCatchEventId('invoice-approval_1_c_0'),
+    ],
+    [
+      'Boundary_Pack_error',
+      () => makeBoundaryEventId('Pack', 'error', new Set()),
+    ],
+    [
+      'Boundary_Review_timer',
+      () => makeBoundaryEventId('Review', 'timer', new Set()),
+    ],
+    [
+      'Boundary_Pack_timer_2',
+      () =>
+        makeBoundaryEventId('Pack', 'timer', new Set(['Boundary_Pack_timer'])),
+    ],
+    [
+      'Boundary_Pack_timer_3',
+      () =>
+        makeBoundaryEventId(
+          'Pack',
+          'timer',
+          new Set(['Boundary_Pack_timer', 'Boundary_Pack_timer_2']),
+        ),
+    ],
+  ] as const)('%s', (expected, make) => {
+    expect(make()).toBe(expected);
   });
 
   it("makeIntermediateCatchEventId's prefix matches the validator's reserved pattern, so an authored id can never collide", () => {
-    // Mirrors `RESERVED_ID_PATTERNS`'s `/^Catch_/` entry in
-    // `bpmn-script-validator.ts` — kept as a literal here rather than an
-    // import because the validator's pattern list is a private module
-    // constant, not part of this package's public surface.
+    // The validator's `RESERVED_ID_PATTERNS` list is a private module
+    // constant, so its `/^Catch_/` entry is mirrored here as a literal.
     expect(makeIntermediateCatchEventId('p_2')).toMatch(/^Catch_/);
   });
 
   it('the positional throw/handler/catch templates take no taken set (no collision resolution)', () => {
-    // Positional ids are collision-free by construction — the coordinate is
-    // unique by position — so these templates are pure functions of the
-    // coordinate, unlike the implicit start/end constructors.
+    // The coordinate is unique by position, so these templates are pure
+    // functions of it and need no collision resolution.
     expect(makeThrowEventId).toHaveLength(1);
     expect(makeEventSubProcessId).toHaveLength(1);
     expect(makeIntermediateCatchEventId).toHaveLength(1);
-  });
-
-  it('makeBoundaryEventId → Boundary_<hostId>_<trigger>', () => {
-    expect(makeBoundaryEventId('Pack', 'error', new Set())).toBe(
-      'Boundary_Pack_error',
-    );
-    expect(makeBoundaryEventId('Review', 'timer', new Set())).toBe(
-      'Boundary_Review_timer',
-    );
-  });
-
-  it('makeBoundaryEventId (second occurrence) → Boundary_<hostId>_<trigger>_2', () => {
-    const taken = new Set(['Boundary_Pack_timer']);
-    expect(makeBoundaryEventId('Pack', 'timer', taken)).toBe(
-      'Boundary_Pack_timer_2',
-    );
-  });
-
-  it('makeBoundaryEventId (third occurrence) → Boundary_<hostId>_<trigger>_3', () => {
-    const taken = new Set(['Boundary_Pack_timer', 'Boundary_Pack_timer_2']);
-    expect(makeBoundaryEventId('Pack', 'timer', taken)).toBe(
-      'Boundary_Pack_timer_3',
-    );
   });
 
   it('is host-derived, not positional: it takes a taken set and adds its result', () => {
@@ -335,9 +232,8 @@ describe('makeSequenceFlowId — plain sequence-flow convention', () => {
   });
 
   it('applies the collision rule to sequential duplicates', () => {
-    // Simulate how addFlow (in ast-to-ir.ts) repeats the same source→target pair:
-    //   flows = [A→B, A→B, A→B]
-    //   expected: 'Flow_A_B', 'Flow_A_B_2', 'Flow_A_B_3'
+    // addFlow repeats the same source/target pair when a node has parallel
+    // edges to the same successor.
     const taken = new Set<string>();
     const id1 = makeSequenceFlowId('A', 'B', taken);
     const id2 = makeSequenceFlowId('A', 'B', taken);

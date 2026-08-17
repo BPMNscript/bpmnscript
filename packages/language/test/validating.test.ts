@@ -22,9 +22,8 @@
  * required `process` (the callee), an optional `binding`/`version` pinning
  * discriminator (mutually exclusive), and `in`/`out` variable mappings (the
  * call's arguments and return values) that must not repeat a target within one
- * direction. An `out` mapping's source is a callee-scope reference — evaluated
- * in the CALLED process, not the caller's — so it is exempt from the caller's
- * undeclared-variable and type-mismatch checks.
+ * direction. An `out` mapping's source is evaluated in the called process, so
+ * it is exempt from the caller's undeclared-variable and type-mismatch checks.
  *
  * Diagnostics are produced through Langium's `validationHelper`, which parses,
  * links and runs the registered validation checks, returning the merged
@@ -58,7 +57,7 @@ describe('Validation — undeclared variable', () => {
     const warnings = bySeverity(diagnostics, SEVERITY_WARNING);
     expect(warnings).toHaveLength(1);
     expect(warnings[0]!.message).toContain('amount');
-    // No errors — an undeclared variable is only a warning, never an error.
+    // No errors: an undeclared variable is only a warning.
     expect(bySeverity(diagnostics, SEVERITY_ERROR)).toHaveLength(0);
   });
 
@@ -102,10 +101,9 @@ process p {
   test('an undeclared bare identifier as an assignee value is exactly one warning', async () => {
     // A bare identifier in `assignee` renders as a `${var}` JUEL expression, so
     // it is a real variable reference and must be checked like any other.
-    const { diagnostics } = await validate(
+    const warnings = await warningsIn(
       `process p { user T { assignee = someUndeclared } }`,
     );
-    const warnings = bySeverity(diagnostics, SEVERITY_WARNING);
     expect(warnings).toHaveLength(1);
     expect(warnings[0]!.message).toContain('someUndeclared');
   });
@@ -121,7 +119,7 @@ process p {
   });
 
   test('a dotted formKey value produces no undeclared-variable warning', async () => {
-    // `formKey` values name form ids, not process variables — the check skips
+    // `formKey` values name form ids, not process variables, so the check skips
     // them, same as `class` values.
     const { diagnostics } = await validate(
       `process p { user T { formKey = forms.review } }`,
@@ -130,7 +128,7 @@ process p {
   });
 
   test('a bareword expression value produces no undeclared-variable warning', async () => {
-    // `expression` values are an EL binding, not a process variable — the
+    // `expression` values are an EL binding, not a process variable, so the
     // check skips them, same as `class`/`formKey` values.
     const { diagnostics } = await validate(
       `process p { service S { expression = someBareword } }`,
@@ -169,13 +167,12 @@ process p {
   });
 
   test('a boolean-typed var used in arithmetic is an error', async () => {
-    const { diagnostics } = await validate(`
+    const errors = await errorsIn(`
 process p {
   var flag: boolean
   if (flag + 1 > 0) { user A }
 }
 `);
-    const errors = bySeverity(diagnostics, SEVERITY_ERROR);
     expect(errors.some((d) => d.message.includes('flag'))).toBe(true);
   });
 
@@ -288,7 +285,7 @@ describe('Validation — service task class discriminator', () => {
   test('a dotted class reference produces no undeclared-variable warning', async () => {
     // `class = com.example.X` parses its value as a VarRef rooted at `com`. That
     // identifier names a Java class, not a process variable, so the
-    // undeclared-variable check must skip attribute-value VarRefs entirely — zero
+    // undeclared-variable check must skip attribute-value VarRefs entirely: zero
     // "Variable 'com' is not declared" warnings.
     const { diagnostics } = await validate(
       `process p { service S { class = com.example.X } }`,
@@ -406,7 +403,7 @@ x = 1
     expect(errors).toHaveLength(1);
     expect(errors[0]!.severity).toBe(SEVERITY_ERROR);
     expect(errors[0]!.message).toContain('total');
-    // The uncaught-exception fallback message must no longer appear.
+    // The uncaught-exception fallback message must not appear.
     expect(
       diagnosticsFor(diagnostics, 'An error occurred during validation'),
     ).toHaveLength(0);
@@ -417,19 +414,15 @@ x = 1
 
 describe('Validation — goto reference', () => {
   test('an unresolved goto produces ONLY the linker error, no extra validator diagnostic', async () => {
-    const { diagnostics } = await validate(
-      `process p { user Foo goto Missing }`,
-    );
-    const errors = bySeverity(diagnostics, SEVERITY_ERROR);
-    // Exactly one error — the linker's unresolved-reference error. No custom
+    const errors = await errorsIn(`process p { user Foo goto Missing }`);
+    // Exactly one error, the linker's unresolved-reference error. No custom
     // validator fires on top of it.
     expect(errors).toHaveLength(1);
     expect(errors[0]!.message).toContain('Missing');
   });
 
   test('a resolved goto produces no error', async () => {
-    const { diagnostics } = await validate(`process p { user Foo goto Foo }`);
-    expect(bySeverity(diagnostics, SEVERITY_ERROR)).toHaveLength(0);
+    expect(await errorsIn(`process p { user Foo goto Foo }`)).toHaveLength(0);
   });
 
   test('a goto resolving to a service task with a topic binding produces no error', async () => {
@@ -470,8 +463,7 @@ process p {
 
 describe('Validation — structural', () => {
   test('a process with an empty body produces an error', async () => {
-    const { diagnostics } = await validate(`process empty { }`);
-    const errors = diagnosticsFor(diagnostics, 'no flow steps');
+    const errors = await diagnose(`process empty { }`, 'no flow steps');
     expect(errors).toHaveLength(1);
     expect(errors[0]!.severity).toBe(SEVERITY_ERROR);
   });
@@ -500,20 +492,16 @@ describe('Validation — structural', () => {
 
 describe('Validation — reserved synthesised-id name', () => {
   test('a start event named with a Gateway_*_split pattern is exactly one error', async () => {
-    const { diagnostics } = await validate(
-      `process p { start Gateway_foo_split }`,
-    );
-    const errors = bySeverity(diagnostics, SEVERITY_ERROR);
+    const errors = await errorsIn(`process p { start Gateway_foo_split }`);
     expect(errors).toHaveLength(1);
     expect(errors[0]!.message).toContain('Gateway_foo_split');
     expect(errors[0]!.message).toContain('reserved');
   });
 
   test('a user task named with a Gateway_*_join pattern is exactly one error', async () => {
-    const { diagnostics } = await validate(
+    const errors = await errorsIn(
       `process p { user Gateway_invoice-approval_2_join }`,
     );
-    const errors = bySeverity(diagnostics, SEVERITY_ERROR);
     expect(errors).toHaveLength(1);
     expect(errors[0]!.message).toContain('Gateway_invoice-approval_2_join');
   });
@@ -530,23 +518,17 @@ describe('Validation — reserved synthesised-id name', () => {
   });
 
   test('a Gateway_ name derived from an underscore-prefixed process id is exactly one error', async () => {
-    // Process `_p` synthesises gateway ids like `Gateway__p_split` — the
+    // Process `_p` synthesises gateway ids like `Gateway__p_split`, where the
     // segment after `Gateway_` starts with an underscore, which the pattern
     // must still catch.
-    const { diagnostics } = await validate(
-      `process _p { user Gateway__p_split }`,
-    );
-    const errors = bySeverity(diagnostics, SEVERITY_ERROR);
+    const errors = await errorsIn(`process _p { user Gateway__p_split }`);
     expect(errors).toHaveLength(1);
     expect(errors[0]!.message).toContain('Gateway__p_split');
     expect(errors[0]!.message).toContain('reserved');
   });
 
   test('a user task named with a Gateway_*_loop pattern is exactly one error', async () => {
-    const { diagnostics } = await validate(
-      `process p { user Gateway_p_1_loop }`,
-    );
-    const errors = bySeverity(diagnostics, SEVERITY_ERROR);
+    const errors = await errorsIn(`process p { user Gateway_p_1_loop }`);
     expect(errors).toHaveLength(1);
     expect(errors[0]!.message).toContain('Gateway_p_1_loop');
   });
@@ -555,18 +537,16 @@ describe('Validation — reserved synthesised-id name', () => {
     // Only the two-segment form matches synthesised flow ids (Flow_<src>_<tgt>,
     // Flow_<gatewayId>_default). Single-segment names like Flow_Control cannot
     // collide with a SequenceFlow.id and are therefore NOT reserved.
-    const { diagnostics } = await validate(`process p { start Flow_A_B }`);
-    const errors = bySeverity(diagnostics, SEVERITY_ERROR);
+    const errors = await errorsIn(`process p { start Flow_A_B }`);
     expect(errors).toHaveLength(1);
     expect(errors[0]!.message).toContain('Flow_A_B');
   });
 
   test('a single-segment Flow_Control name is accepted (no diagnostic)', async () => {
-    // Flow_Control has only one trailing segment — it cannot match the synthesised
-    // Flow_<src>_<tgt> shape and therefore must NOT be rejected.
-    const { diagnostics } = await validate(`process p { user Flow_Control }`);
-    const reservedErrors = diagnosticsFor(
-      diagnostics,
+    // Flow_Control has only one trailing segment, so it cannot match the
+    // synthesised Flow_<src>_<tgt> shape and must NOT be rejected.
+    const reservedErrors = await diagnose(
+      `process p { user Flow_Control }`,
       'reserved synthesised-id',
     );
     expect(reservedErrors).toHaveLength(0);
@@ -575,43 +555,37 @@ describe('Validation — reserved synthesised-id name', () => {
   test('a single-segment Flow_State name is accepted (no diagnostic)', async () => {
     // Same rationale as Flow_Control: single-segment names are outside the
     // reserved id-shaped pattern and must be accepted.
-    const { diagnostics } = await validate(`process p { user Flow_State }`);
-    const reservedErrors = diagnosticsFor(
-      diagnostics,
+    const reservedErrors = await diagnose(
+      `process p { user Flow_State }`,
       'reserved synthesised-id',
     );
     expect(reservedErrors).toHaveLength(0);
   });
 
   test('an end event named with a StartEvent_ prefix is exactly one error', async () => {
-    const { diagnostics } = await validate(`process p { end StartEvent_p }`);
-    const errors = bySeverity(diagnostics, SEVERITY_ERROR);
+    const errors = await errorsIn(`process p { end StartEvent_p }`);
     expect(errors).toHaveLength(1);
     expect(errors[0]!.message).toContain('StartEvent_p');
   });
 
   test('a user task named with an EndEvent_ prefix is exactly one error', async () => {
-    const { diagnostics } = await validate(`process p { user EndEvent_p }`);
-    const errors = bySeverity(diagnostics, SEVERITY_ERROR);
+    const errors = await errorsIn(`process p { user EndEvent_p }`);
     expect(errors).toHaveLength(1);
     expect(errors[0]!.message).toContain('EndEvent_p');
   });
 
   test('a user task named with a Boundary_X_error pattern is exactly one error', async () => {
-    const { diagnostics } = await validate(
-      `process p { user Boundary_X_error }`,
-    );
-    const errors = bySeverity(diagnostics, SEVERITY_ERROR);
+    const errors = await errorsIn(`process p { user Boundary_X_error }`);
     expect(errors).toHaveLength(1);
     expect(errors[0]!.message).toContain('Boundary_X_error');
     expect(errors[0]!.message).toContain('reserved');
   });
 
   test('normal names including Gateway-prefixed ones without suffix produce no error', async () => {
-    // GatewayCheck does not end in _split|join|fork|loop → not reserved.
-    // MyFlow_Thing → lacks the Flow_ prefix (starts with My).
-    // Flow_Control, Flow_State → single-segment; cannot match Flow_<src>_<tgt>.
-    // StartEventHandler → lacks StartEvent_ prefix (no trailing underscore anchor).
+    // GatewayCheck does not end in _split|join|fork|loop, so it is not reserved.
+    // MyFlow_Thing lacks the Flow_ prefix (starts with My).
+    // Flow_Control, Flow_State are single-segment; cannot match Flow_<src>_<tgt>.
+    // StartEventHandler lacks the StartEvent_ prefix (no trailing underscore).
     const cases = [
       `process p { user GatewayCheck }`,
       `process p { user MyFlow_Thing }`,
@@ -757,16 +731,15 @@ process p {
 
 describe('Validation — duplicate variable name', () => {
   test('two `var` declarations with the same name is exactly one error naming it', async () => {
-    const { diagnostics } = await validate(`
+    const errors = await diagnose(
+      `
 process p {
   var total: number
   var total: string
   start S
   end E
 }
-`);
-    const errors = diagnosticsFor(
-      diagnostics,
+`,
       "Variable 'total' is already declared",
     );
     expect(errors).toHaveLength(1);
@@ -806,7 +779,7 @@ process p {
 
   test('a `label = …` declaration next to an inline process label is exactly one error', async () => {
     // The inline label counts as the first occurrence: astToIr prefers it and
-    // silently drops the `label = "…"` attribute, so the attribute is flagged.
+    // drops the `label = "..."` attribute, so the attribute is flagged.
     const { diagnostics } = await validate(`
 process P "A" {
   label = "B"
@@ -989,7 +962,7 @@ process p {
 
 describe('Validation — goto into a parallel branch', () => {
   test('a goto from outside jumping into a parallel branch is exactly one error', async () => {
-    const { diagnostics } = await validate(`
+    const errors = await errorsIn(`
 process p {
   parallel {
     { user A }
@@ -998,14 +971,13 @@ process p {
   goto A
 }
 `);
-    const errors = bySeverity(diagnostics, SEVERITY_ERROR);
     expect(errors).toHaveLength(1);
     expect(errors[0]!.message).toContain('A');
     expect(errors[0]!.message.toLowerCase()).toContain('branch');
   });
 
   test('a goto from a sibling branch into another branch is exactly one error', async () => {
-    const { diagnostics } = await validate(`
+    const errors = await errorsIn(`
 process p {
   parallel {
     { user A goto B }
@@ -1013,7 +985,6 @@ process p {
   }
 }
 `);
-    const errors = bySeverity(diagnostics, SEVERITY_ERROR);
     expect(errors).toHaveLength(1);
     expect(errors[0]!.message).toContain('B');
     expect(errors[0]!.message.toLowerCase()).toContain('branch');
@@ -1067,10 +1038,9 @@ process p {
   });
 
   test('a form field type outside string/number/boolean/date is an error', async () => {
-    const { diagnostics } = await validate(
+    const errors = await errorsIn(
       `process p { start Begin { form { blob: json "Blob" } } }`,
     );
-    const errors = bySeverity(diagnostics, SEVERITY_ERROR);
     expect(errors).toHaveLength(1);
     expect(errors[0]!.message).toContain('which a form cannot use');
   });
@@ -1367,7 +1337,7 @@ process p {
 
   // The unreachable subprocess itself is flagged once; the check short-circuits
   // before recursing into its nested steps, so no per-nested-step warnings pile
-  // up. (The nested-body recursion itself is pinned by the sibling test above.)
+  // up.
   test('an unreachable subprocess in the parent body warns once for the subprocess, not once per nested step', async () => {
     const { diagnostics } = await validate(`
 process p {
@@ -1394,10 +1364,10 @@ describe('Validation — call activity valid programs', () => {
   });
 
   test('a full-featured call (every attribute and mapping shape) is diagnostic-free', async () => {
-    // Mirrors the parser's canonical fixture; `amount`/`tax`/`vipFlag` are the
-    // caller-scope variables the `in` mappings read, so they must be declared
-    // here. `confirmed` (the `out shipped = confirmed` source) is a
-    // callee-scope reference and deliberately left undeclared.
+    // `amount`/`tax`/`vipFlag` are the caller-scope variables the `in` mappings
+    // read, so they must be declared here. `confirmed`, the source of
+    // `out shipped = confirmed`, is a callee-scope reference and is left
+    // undeclared on purpose.
     const { diagnostics } = await validate(`
 process p {
   var amount: number
@@ -1501,11 +1471,8 @@ describe('Validation — call activity binding/version', () => {
   });
 
   test('`binding` and `version` together is exactly one mutual-exclusion error', async () => {
-    const { diagnostics } = await validate(
+    const errors = await diagnose(
       `process p { call X { process = "p" binding = deployment version = 2 } }`,
-    );
-    const errors = diagnosticsFor(
-      diagnostics,
       "combine 'binding' and 'version'",
     );
     expect(errors).toHaveLength(1);
@@ -1569,11 +1536,10 @@ describe('Validation — call activity callee-scope exemption', () => {
   });
 
   test('an `out` mapping source nested inside an operator is exempt from the type-mismatch check', async () => {
-    // `calleeVar` happens to share a name with a caller-declared `string`
-    // variable, and the source is nested two levels deep (inside a `Logical`
-    // node, itself the mapping's source) — this only stays diagnostic-free
-    // when the exemption walks the full container chain (`getContainerOfType`)
-    // rather than checking only the mapping's direct `source` node.
+    // `calleeVar` shares a name with a caller-declared `string` variable, and
+    // the source sits two levels deep inside a `Logical` node. That stays
+    // diagnostic-free only when the exemption walks the full container chain
+    // rather than checking the mapping's direct `source` node alone.
     const { diagnostics } = await validate(`
 process p {
   var calleeVar: string
@@ -2159,17 +2125,15 @@ process p {
 
 describe('Validation — trigger payload matrix: violations', () => {
   test('a name-less `on message` is exactly one diagnostic about the message name', async () => {
-    const { diagnostics } = await validate(
-      `process p { on message { user A } }`,
-    );
-    expect(diagnosticsFor(diagnostics, "message's name")).toHaveLength(1);
+    expect(
+      await diagnose(`process p { on message { user A } }`, "message's name"),
+    ).toHaveLength(1);
   });
 
   test('a name-less `on signal` is exactly one diagnostic about the message name', async () => {
-    const { diagnostics } = await validate(
-      `process p { on signal { user A } }`,
-    );
-    expect(diagnosticsFor(diagnostics, "message's name")).toHaveLength(1);
+    expect(
+      await diagnose(`process p { on signal { user A } }`, "message's name"),
+    ).toHaveLength(1);
   });
 
   test('a payload-less `on timer` is exactly one diagnostic about reading the time', async () => {
@@ -2320,22 +2284,14 @@ process p {
   });
 });
 
-// ── Boundary host dimension ──────────────────────────────────────────────────
+// ── Boundary host dimension ─────────────────────────────────────────────────
 //
-// A hosted handler (`on <Host>: <trigger> { … }`) compiles to a
-// `bpmn:boundaryEvent` instead of an event sub-process. The scope provider
-// already restricts a resolvable `host` to a named step of the handler's own
-// container, so an unresolved host never reaches these checks — it stays the
-// linker's "does not resolve"/boundary-crossing diagnostic, exactly like an
-// unresolved `goto` (see 'Validation — goto reference' above). Two illegal-host
-// shapes are therefore never exercised below at all: a `goto` and an
-// `if`/`while`/`parallel` construct carry no `name` at all, so
-// `host=[Statement:ID]` can never spell one; a host naming a step inside a
-// host-less handler's body is excluded by the scope's nesting isolation (see
-// `scoping.test.ts`'s "a host inside a host-less handler body does not
-// resolve") and so never reaches the validator either. Only the resolvable
-// illegal kinds — a start/end event and a named throw/emit — are exercised
-// here.
+// A hosted handler (`on <Host>: <trigger> { ... }`) compiles to a
+// `bpmn:boundaryEvent` instead of an event sub-process. An unresolved host
+// never reaches these checks: the scope provider restricts a resolvable `host`
+// to a named step of the handler's own container, so it stays a linker
+// diagnostic. Only the resolvable illegal kinds, a start/end event and a named
+// throw/emit, are exercised here.
 
 describe('Validation — boundary host: compensation has no attached form', () => {
   test('`on <host>: compensation` is the host-forbidden error, naming the undo block', async () => {
@@ -2369,14 +2325,13 @@ process p {
 
 describe('Validation — boundary host: must be an activity', () => {
   test('a host naming a start event is exactly one "must attach to an activity" error', async () => {
-    const { diagnostics } = await validate(`
+    const errors = await diagnose(
+      `
 process p {
   start S
   on S: error "X" { user A }
 }
-`);
-    const errors = diagnosticsFor(
-      diagnostics,
+`,
       'can only attach to an activity',
     );
     expect(errors).toHaveLength(1);
@@ -2384,15 +2339,14 @@ process p {
   });
 
   test('a host naming an emit statement names it as an emit', async () => {
-    const { diagnostics } = await validate(`
+    const errors = await diagnose(
+      `
 process p {
   user A
   emit signal Sig "S"
   on Sig: error "X" { user B }
 }
-`);
-    const errors = diagnosticsFor(
-      diagnostics,
+`,
       'can only attach to an activity',
     );
     expect(errors).toHaveLength(1);
@@ -2400,15 +2354,14 @@ process p {
   });
 
   test('a host naming an end event is exactly one "must attach to an activity" error', async () => {
-    const { diagnostics } = await validate(`
+    const errors = await diagnose(
+      `
 process p {
   start S
   end E
   on E: error "X" { user A }
 }
-`);
-    const errors = diagnosticsFor(
-      diagnostics,
+`,
       'can only attach to an activity',
     );
     expect(errors).toHaveLength(1);
@@ -2416,14 +2369,13 @@ process p {
   });
 
   test('a host naming a named throw statement is exactly one "must attach to an activity" error', async () => {
-    const { diagnostics } = await validate(`
+    const errors = await diagnose(
+      `
 process p {
   throw error Foo "PAYMENT_FAILED"
   on Foo: escalation { user A }
 }
-`);
-    const errors = diagnosticsFor(
-      diagnostics,
+`,
       'can only attach to an activity',
     );
     expect(errors).toHaveLength(1);
@@ -2463,14 +2415,13 @@ ${FENCE}
 
 describe('Validation — boundary host: escalation host restriction', () => {
   test('an escalation on a service task is exactly one restriction error', async () => {
-    const { diagnostics } = await validate(`
+    const errors = await diagnose(
+      `
 process p {
   service Pack { class = "x.Y" }
   on Pack: escalation { user A }
 }
-`);
-    const errors = diagnosticsFor(
-      diagnostics,
+`,
       'can only attach to a subprocess, a call, or a user task',
     );
     expect(errors).toHaveLength(1);
@@ -2479,16 +2430,15 @@ process p {
 
   test('an escalation on a script task is exactly one restriction error', async () => {
     const FENCE = '`' + '`' + '`';
-    const { diagnostics } = await validate(`
+    const errors = await diagnose(
+      `
 process p {
   script Pack ${FENCE}js
 x = 1
 ${FENCE}
   on Pack: escalation { user A }
 }
-`);
-    const errors = diagnosticsFor(
-      diagnostics,
+`,
       'can only attach to a subprocess, a call, or a user task',
     );
     expect(errors).toHaveLength(1);
@@ -2595,7 +2545,7 @@ process p {
 
   test('a handler nested inside a hosted handler body still collides with the outer one', async () => {
     // Both lower into the process container as a boundary event on `A` with
-    // the same message subscription — the nesting is syntactic only.
+    // the same message subscription; the nesting is syntactic only.
     const { diagnostics } = await validate(`
 process p {
   user A
@@ -2641,11 +2591,10 @@ process p {
   });
 
   test('`on error … alongside` still fires the pre-existing interrupting-only message when hosted', async () => {
-    const { diagnostics } = await validate(`
+    const errors = await diagnose(
+      `
 process p { user Pack on Pack: error "X" alongside { user A } }
-`);
-    const errors = diagnosticsFor(
-      diagnostics,
+`,
       'only available for escalations',
     );
     expect(errors).toHaveLength(1);
@@ -2900,17 +2849,16 @@ describe('Validation — throw/emit code-required shift', () => {
     expect(diagnosticsFor(diagnostics, 'throw escalation "CODE"')).toHaveLength(
       1,
     );
-    // The old catch-all-by-omission phrasing stays on `on` only.
+    // The catch-all-by-omission phrasing belongs to `on` only.
     expect(
       diagnosticsFor(diagnostics, 'omit the string entirely'),
     ).toHaveLength(0);
   });
 
   test('`throw compensation "X"` is the nothing-to-name message', async () => {
-    const { diagnostics } = await validate(
-      `process p { throw compensation "X" }`,
-    );
-    expect(diagnosticsFor(diagnostics, 'nothing to name')).toHaveLength(1);
+    expect(
+      await diagnose(`process p { throw compensation "X" }`, 'nothing to name'),
+    ).toHaveLength(1);
   });
 
   test('`throw compensation` in a valid context is diagnostic-free', async () => {
@@ -2959,20 +2907,17 @@ describe('Validation — compensation did-you-mean', () => {
 
 describe('Validation — await trigger: accepted catch kinds', () => {
   test('`await message "M"` validates with zero error diagnostics', async () => {
-    const { diagnostics } = await validate(`process p { await message "M" }`);
-    expect(bySeverity(diagnostics, SEVERITY_ERROR)).toHaveLength(0);
+    expect(await errorsIn(`process p { await message "M" }`)).toHaveLength(0);
   });
 
   test('`await timer after "PT1H"` validates with zero error diagnostics', async () => {
-    const { diagnostics } = await validate(
-      `process p { await timer after "PT1H" }`,
-    );
-    expect(bySeverity(diagnostics, SEVERITY_ERROR)).toHaveLength(0);
+    expect(
+      await errorsIn(`process p { await timer after "PT1H" }`),
+    ).toHaveLength(0);
   });
 
   test('`await signal "S"` validates with zero error diagnostics', async () => {
-    const { diagnostics } = await validate(`process p { await signal "S" }`);
-    expect(bySeverity(diagnostics, SEVERITY_ERROR)).toHaveLength(0);
+    expect(await errorsIn(`process p { await signal "S" }`)).toHaveLength(0);
   });
 
   test('`await condition (x > 1)` validates with zero error diagnostics', async () => {
@@ -2988,8 +2933,7 @@ process p {
 
 describe('Validation — await trigger: rejects non-catchable triggers', () => {
   test('`await error "E"` names the legal catch triggers and the throw/emit alternative', async () => {
-    const { diagnostics } = await validate(`process p { await error "E" }`);
-    const errors = bySeverity(diagnostics, SEVERITY_ERROR);
+    const errors = await errorsIn(`process p { await error "E" }`);
     expect(errors).toHaveLength(1);
     expect(errors[0]!.message).toContain('message');
     expect(errors[0]!.message).toContain('timer');
@@ -2999,17 +2943,13 @@ describe('Validation — await trigger: rejects non-catchable triggers', () => {
   });
 
   test('`await escalation "E"` names the legal catch triggers and the throw/emit alternative', async () => {
-    const { diagnostics } = await validate(
-      `process p { await escalation "E" }`,
-    );
-    const errors = bySeverity(diagnostics, SEVERITY_ERROR);
+    const errors = await errorsIn(`process p { await escalation "E" }`);
     expect(errors).toHaveLength(1);
     expect(errors[0]!.message).toContain('emit');
   });
 
   test('`await compensation` names the legal catch triggers and the undo-block alternative', async () => {
-    const { diagnostics } = await validate(`process p { await compensation }`);
-    const errors = bySeverity(diagnostics, SEVERITY_ERROR);
+    const errors = await errorsIn(`process p { await compensation }`);
     expect(errors).toHaveLength(1);
     expect(errors[0]!.message).toContain('undo block');
   });
@@ -3017,10 +2957,7 @@ describe('Validation — await trigger: rejects non-catchable triggers', () => {
 
 describe('Validation — await trigger: rejects unknown words', () => {
   test('`await frobnicate "x"` is an options-naming diagnostic', async () => {
-    const { diagnostics } = await validate(
-      `process p { await frobnicate "x" }`,
-    );
-    const errors = bySeverity(diagnostics, SEVERITY_ERROR);
+    const errors = await errorsIn(`process p { await frobnicate "x" }`);
     expect(errors).toHaveLength(1);
     expect(errors[0]!.message).toContain('message');
     expect(errors[0]!.message).toContain('condition');
@@ -3060,15 +2997,14 @@ describe('Validation — await trigger: rejects payload on the wrong shape', () 
   });
 
   test('a condition expression on `await message` is a condition-forbidden diagnostic', async () => {
-    const { diagnostics } = await validate(`
+    expect(
+      await diagnose(
+        `
 process p {
   var x: number
   await message "M" (x > 1)
 }
-`);
-    expect(
-      diagnosticsFor(
-        diagnostics,
+`,
         "Only 'await condition' takes a condition expression",
       ),
     ).toHaveLength(1);
@@ -3085,16 +3021,31 @@ process p {
   });
 
   test('an unknown timer particle on `await timer` names the legal particles', async () => {
-    const { diagnostics } = await validate(
-      `process p { await timer foo "PT1H" }`,
-    );
-    const errors = bySeverity(diagnostics, SEVERITY_ERROR);
+    const errors = await errorsIn(`process p { await timer foo "PT1H" }`);
     expect(errors).toHaveLength(1);
     expect(errors[0]!.message).toContain('after');
     expect(errors[0]!.message).toContain('at');
     expect(errors[0]!.message).toContain('every');
   });
 });
+
+/** Validate `source` and return the diagnostics whose message contains `needle`. */
+async function diagnose(source: string, needle: string) {
+  const { diagnostics } = await validate(source);
+  return diagnosticsFor(diagnostics, needle);
+}
+
+/** Validate `source` and return its error diagnostics. */
+async function errorsIn(source: string) {
+  const { diagnostics } = await validate(source);
+  return bySeverity(diagnostics, SEVERITY_ERROR);
+}
+
+/** Validate `source` and return its warning diagnostics. */
+async function warningsIn(source: string) {
+  const { diagnostics } = await validate(source);
+  return bySeverity(diagnostics, SEVERITY_WARNING);
+}
 
 /** All diagnostics of the given LSP severity (1 = Error, 2 = Warning). */
 function bySeverity(

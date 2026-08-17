@@ -14,11 +14,11 @@ import type { BpmnProcess } from '@bpmn-script/transform';
  * The reachability relation between the real (non-gateway) flow nodes, with
  * every gateway contracted to a transparent routing point.
  *
- * For each real node `r`, walk forward across any number of gateways and
- * record `r -> t` for every real node `t` first reached. That collapses the
- * gateway scaffolding (splits, joins, phantom joins) which differs between an
- * imported graph and its re-desugared counterpart, leaving the authored-node
- * connectivity — the quantity a lossless round-trip preserves.
+ * For each real node `r`, walk forward across any number of gateways and record
+ * `r -> t` for every real node `t` first reached. That collapses the gateway
+ * scaffolding which differs between an imported graph and its re-desugared
+ * counterpart, leaving the authored-node connectivity a lossless round-trip
+ * preserves.
  *
  * @param ir The process to measure.
  * @returns Sorted `source->target` pairs over real nodes only.

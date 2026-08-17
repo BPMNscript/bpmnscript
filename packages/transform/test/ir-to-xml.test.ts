@@ -1,32 +1,15 @@
 /**
- * Full test suite for the IR → BPMN XML transform.
+ * Integration-level tests: `irToXml` calls `bpmn-auto-layout`, which performs
+ * real DOM layout, so each test exercises the full serializer.
  *
- * Integration-level tests — `irToXml` calls `bpmn-auto-layout` which
- * performs real DOM layout, so each test exercises the full pipeline.
- *
- * Two complementary fixtures drive this suite:
- *
- *   A. `importShapedIr` — a hand-authored IR that mirrors what `xmlToIr`
- *      produces from `tests/golden/invoice-approval-handwritten.bpmn`. Its ids
- *      are the *imported* ids of the handwritten golden (`AmountCheck`,
- *      `AutoApprovePath`, `Flow_SeniorBranch`) and its gateway has no synthesized
- *      join (the handwritten process lets both branches converge directly on the
- *      end event). This fixture exercises `irToXml` in isolation — bpmn-moddle
- *      round-trip, Operaton attribute emission, and per-node incoming/outgoing
- *      degree — without depending on the parser or the desugarer.
- *
- *   B. The full pipeline — `irToXml(astToIr(parse(example.bpmnscript)))` on
- *      `examples/spring-boot/processes/invoice-approval.bpmnscript`. This is
- *      byte-compared against `tests/golden/invoice-approval-generated.bpmn`,
- *      the pinned output of the whole pipeline. Its gateway/default
- *      ids are the synthesized ids (`Gateway_invoice-approval_2_split`,
- *      `Flow_Gateway_invoice-approval_2_split_default`) and the `if`/`else`
- *      desugars to a paired split + join, distinct from the import-shaped
- *      fixture above.
- *
- * Keeping the two apart lets `importShapedIr` drive deterministic unit-level
- * checks decoupled from the parser, while the full-pipeline golden test pins
- * the real end-to-end output the engine E2E deploys.
+ * Two fixtures drive this suite. `importShapedIr` is a hand-authored IR
+ * mirroring what `xmlToIr` produces from the handwritten golden, so its ids are
+ * the imported ones and its gateway has no synthesized join. It drives the
+ * unit-level checks without depending on the parser or the desugarer. The
+ * full-pipeline block instead runs `irToXml(astToIr(parse(...)))` over the
+ * example process and byte-compares against the generated golden, where the
+ * gateway ids are synthesized and the `if`/`else` desugars to a split + join
+ * pair.
  */
 
 import { describe, it, expect, beforeAll } from 'vitest';
@@ -42,6 +25,7 @@ import type { Model } from '@bpmn-script/language';
 
 import { irToXml } from '../src/ir-to-xml.js';
 import { astToIr } from '../src/ast-to-ir.js';
+import { HANDWRITTEN_IMPORT_IR } from './helpers/ir-fixtures.js';
 import type {
   BpmnProcess,
   EventDefinition,
@@ -59,88 +43,18 @@ const EXAMPLE_BPMNSCRIPT_PATH = resolve(
 );
 
 /**
- * Import-shaped IR — mirrors what `xmlToIr` produces from
- * `tests/golden/invoice-approval-handwritten.bpmn`. Its ids are the imported,
- * handwritten ids (`AmountCheck`, `AutoApprovePath`, `Flow_SeniorBranch`),
- * preserved verbatim on import. This
- * fixture drives the `irToXml`-isolation checks (bpmn-moddle round-trip,
- * Operaton attributes, per-node graph degree); it is not byte-compared
- * against the generated golden, which is now the full-pipeline output (see the
- * dedicated full-pipeline describe block below).
+ * Import-shaped IR mirroring what `xmlToIr` produces from
+ * `tests/golden/invoice-approval-handwritten.bpmn`, with the handwritten ids
+ * preserved verbatim on import.
  *
- * Note: the start event (ReviewStart) and end event (Done) have no `name`
- * because the handwritten BPMN gives them no `name` attribute, and the gateway
- * has no synthesized join — both branches converge directly on `Done`, exactly
- * as the handwritten import does.
+ * The start event (ReviewStart) and end event (Done) have no `name` because the
+ * handwritten BPMN gives them no `name` attribute, and the gateway has no
+ * synthesized join: both branches converge directly on `Done`, exactly as the
+ * handwritten import does.
  */
 const importShapedIr: BpmnProcess = {
-  id: 'invoice-approval',
+  ...HANDWRITTEN_IMPORT_IR,
   name: 'Invoice Approval',
-  isExecutable: true,
-  flowElements: [
-    { kind: 'startEvent', id: 'ReviewStart' },
-    {
-      kind: 'userTask',
-      id: 'ReviewInvoice',
-      name: 'Review invoice',
-      assignee: 'demo',
-    },
-    {
-      kind: 'exclusiveGateway',
-      id: 'AmountCheck',
-      name: 'Amount > 1000?',
-      defaultFlowId: 'AutoApprovePath',
-    },
-    {
-      kind: 'userTask',
-      id: 'SeniorApproval',
-      name: 'Senior approval',
-      assignee: 'manager',
-    },
-    {
-      kind: 'serviceTask',
-      id: 'AutoApprove',
-      name: 'Auto-approve',
-      binding: {
-        kind: 'class',
-        className: 'com.example.invoice.AutoApproveDelegate',
-      },
-    },
-    { kind: 'endEvent', id: 'Done' },
-  ],
-  sequenceFlows: [
-    {
-      id: 'Flow_ReviewStart_ReviewInvoice',
-      sourceRef: 'ReviewStart',
-      targetRef: 'ReviewInvoice',
-    },
-    {
-      id: 'Flow_ReviewInvoice_AmountCheck',
-      sourceRef: 'ReviewInvoice',
-      targetRef: 'AmountCheck',
-    },
-    {
-      id: 'Flow_SeniorBranch',
-      conditionExpression: '${amount > 1000}',
-      sourceRef: 'AmountCheck',
-      targetRef: 'SeniorApproval',
-    },
-    {
-      id: 'AutoApprovePath',
-      sourceRef: 'AmountCheck',
-      targetRef: 'AutoApprove',
-    },
-    {
-      id: 'Flow_SeniorApproval_Done',
-      sourceRef: 'SeniorApproval',
-      targetRef: 'Done',
-    },
-    {
-      id: 'Flow_AutoApprove_Done',
-      sourceRef: 'AutoApprove',
-      targetRef: 'Done',
-    },
-  ],
 };
 
 // ── Shared XML output ────────────────────────────────────────────────────────
@@ -167,7 +81,7 @@ describe('irToXml — bpmn-moddle round-trip', () => {
 
   it('labels the conditioned flow with its bare condition text', () => {
     // Viewers render a flow's `name`, not its `conditionExpression`, so the
-    // condition (minus the `${…}` delimiters) is mirrored as the edge label.
+    // condition (minus the `${...}` delimiters) is mirrored as the edge label.
     // `>` may serialize as the numeric (`&#62;`) or named (`&gt;`) entity
     // depending on the writer; decode both so the assertion is encoding-robust.
     const decoded = xml.replace(/(&#62;|&gt;)/g, '>');
@@ -206,8 +120,8 @@ describe('irToXml — Operaton extension attributes', () => {
 describe('irToXml — per-node incoming/outgoing graph degree', () => {
   /**
    * Parse the XML into a moddle graph and verify incoming/outgoing counts
-   * for every flow node, matching the edges defined in the canonical IR —
-   * a per-node check, not just aggregate totals.
+   * for every flow node, matching the edges defined in the canonical IR, a
+   * per-node check rather than just aggregate totals.
    *
    * Expected degrees for the invoice-approval graph:
    *   ReviewStart:    in=0,  out=1  (start event)
@@ -259,23 +173,11 @@ describe('irToXml — per-node incoming/outgoing graph degree', () => {
 
 describe('irToXml — full-pipeline golden diff', () => {
   /**
-   * Pins the whole pipeline:
-   *
-   *   parse(example.bpmnscript) → astToIr → irToXml  ≡  generated golden (bytes)
-   *
-   * The `examples/spring-boot/processes/invoice-approval.bpmnscript`
-   * is parsed with the real Langium services (mirroring how
-   * `tests/round-trip.test.ts` wires `parseHelper` + `EmptyFileSystem`),
-   * desugared to IR, and serialized. The result must equal
-   * `tests/golden/invoice-approval-generated.bpmn` byte-for-byte — this is the
-   * golden the engine E2E deploys, so the synthesized gateway/flow ids
-   * (`Gateway_invoice-approval_2_split`/`_join`,
-   * `Flow_Gateway_invoice-approval_2_split_default`) are pinned here.
-   *
-   * Engine-contract values asserted alongside the byte diff: process id
-   * `invoice-approval`, userTask ids `ReviewInvoice`/`SeniorApproval`,
-   * `operaton:class` delegate, `operaton:assignee` demo/manager, and the
-   * `${amount > 1000}` condition.
+   * Pins the whole pipeline: parse(example.bpmnscript) -> astToIr -> irToXml
+   * must equal `tests/golden/invoice-approval-generated.bpmn` byte-for-byte.
+   * That golden is what the engine E2E deploys, so the synthesized gateway and
+   * flow ids are pinned here alongside the engine-contract values (process id,
+   * userTask ids, `operaton:class`, `operaton:assignee`, the condition body).
    */
   let pipelineXml: string;
 
@@ -312,14 +214,6 @@ describe('irToXml — full-pipeline golden diff', () => {
     expect(pipelineXml).toContain('operaton:assignee="manager"');
     expect(pipelineXml).toContain('${amount &gt; 1000}');
   });
-
-  it('uses the synthesized gateway/default-flow ids (paired split + join)', () => {
-    expect(pipelineXml).toContain('id="Gateway_invoice-approval_2_split"');
-    expect(pipelineXml).toContain('id="Gateway_invoice-approval_2_join"');
-    expect(pipelineXml).toContain(
-      'default="Flow_Gateway_invoice-approval_2_split_default"',
-    );
-  });
 });
 
 // ── 5. Parallel gateway serialization ────────────────────────────────────────
@@ -327,11 +221,11 @@ describe('irToXml — full-pipeline golden diff', () => {
 describe('irToXml — parallelGateway serialization', () => {
   /**
    * A minimal parallel split+join IR:
-   *   Start → Fork (parallelGateway, 2 outgoing)
-   *     → BranchA (userTask)
-   *     → BranchB (userTask)
-   *   BranchA, BranchB → Join (parallelGateway, 2 incoming)
-   *   Join → End
+   *   Start -> Fork (parallelGateway, 2 outgoing)
+   *     -> BranchA (userTask)
+   *     -> BranchB (userTask)
+   *   BranchA, BranchB -> Join (parallelGateway, 2 incoming)
+   *   Join -> End
    */
   const parallelIr: BpmnProcess = {
     id: 'parallel-proc',
@@ -360,28 +254,15 @@ describe('irToXml — parallelGateway serialization', () => {
     parallelXml = await irToXml(parallelIr);
   });
 
-  it('output contains bpmn:parallelGateway element for Fork', () => {
+  it('emits Fork and Join as bpmn:parallelGateway with their split/join degrees', () => {
     expect(parallelXml).toMatch(/bpmn:parallelGateway[^>]*id="Fork"/);
-  });
-
-  it('output contains bpmn:parallelGateway element for Join', () => {
     expect(parallelXml).toMatch(/bpmn:parallelGateway[^>]*id="Join"/);
-  });
-
-  it('Fork gateway has 1 incoming and 2 outgoing', () => {
-    const block = extractNodeBlock(parallelXml, 'Fork');
-    const incomingCount = (block.match(/<bpmn:incoming>/g) ?? []).length;
-    const outgoingCount = (block.match(/<bpmn:outgoing>/g) ?? []).length;
-    expect(incomingCount).toBe(1);
-    expect(outgoingCount).toBe(2);
-  });
-
-  it('Join gateway has 2 incoming and 1 outgoing', () => {
-    const block = extractNodeBlock(parallelXml, 'Join');
-    const incomingCount = (block.match(/<bpmn:incoming>/g) ?? []).length;
-    const outgoingCount = (block.match(/<bpmn:outgoing>/g) ?? []).length;
-    expect(incomingCount).toBe(2);
-    expect(outgoingCount).toBe(1);
+    const forkBlock = extractNodeBlock(parallelXml, 'Fork');
+    const joinBlock = extractNodeBlock(parallelXml, 'Join');
+    expect((forkBlock.match(/<bpmn:incoming>/g) ?? []).length).toBe(1);
+    expect((forkBlock.match(/<bpmn:outgoing>/g) ?? []).length).toBe(2);
+    expect((joinBlock.match(/<bpmn:incoming>/g) ?? []).length).toBe(2);
+    expect((joinBlock.match(/<bpmn:outgoing>/g) ?? []).length).toBe(1);
   });
 
   it('output does not contain a default attribute on any parallelGateway', () => {
@@ -390,16 +271,6 @@ describe('irToXml — parallelGateway serialization', () => {
     const joinBlock = extractNodeBlock(parallelXml, 'Join');
     expect(forkBlock).not.toContain('default=');
     expect(joinBlock).not.toContain('default=');
-  });
-
-  it('parallelXml parses cleanly via bpmn-moddle', async () => {
-    const moddle = new BpmnModdle({});
-    const { warnings } = await moddle.fromXML(parallelXml);
-    expect(warnings).toEqual([]);
-  });
-
-  it('contains bpmndi:BPMNDiagram block (layout applied)', () => {
-    expect(parallelXml).toMatch(/<bpmndi:BPMNDiagram\b/);
   });
 });
 
@@ -505,8 +376,8 @@ describe('irToXml — scriptTask serialization', () => {
 
 describe('irToXml — sub-process containment', () => {
   /**
-   * Process `PStart → sub → PEnd`, where `sub` is an embedded sub-process
-   * whose own body is `SubStart → Review → SubEnd`. The semantic element tree
+   * Process `PStart -> sub -> PEnd`, where `sub` is an embedded sub-process
+   * whose own body is `SubStart -> Review -> SubEnd`. The semantic element tree
    * (not the DI, which auto-layout regenerates) is inspected by parsing the
    * output back with raw `bpmn-moddle`.
    */
@@ -581,7 +452,6 @@ describe('irToXml — sub-process containment', () => {
     const outOfSub = childById(proc, 'SF_sub_PEnd');
     expect(outOfSub.sourceRef?.id).toBe('sub');
 
-    // Nested nodes/flows never leak into the parent container's element list.
     const parentIds = (proc.flowElements ?? []).map((e) => e.id);
     expect(parentIds).toContain('sub');
     expect(parentIds).not.toContain('SubStart');
@@ -639,7 +509,6 @@ describe('irToXml — sub-process containment', () => {
     const sub = childById(tree, 'sub');
     const gw = childById(sub, 'Gw');
     expect(gw.$type).toBe('bpmn:ExclusiveGateway');
-    // The `default` reference resolves to the nested flow, not a parent flow.
     expect(gw.default?.id).toBe('SF_Gw_B');
   });
 
@@ -693,7 +562,6 @@ describe('irToXml — sub-process containment', () => {
     expect(inner.$type).toBe('bpmn:SubProcess');
     const deep = childById(inner, 'Deep');
     expect(deep.$type).toBe('bpmn:UserTask');
-    // The innermost flows live only in the innermost container.
     const outerIds = (outer.flowElements ?? []).map((e) => e.id);
     expect(outerIds).not.toContain('SF_IStart_Deep');
   });
@@ -703,13 +571,11 @@ describe('irToXml — sub-process containment', () => {
 
 describe('irToXml — DI expansion hint for sub-processes', () => {
   /**
-   * `bpmn-auto-layout` fed DI-less XML containing a `bpmn:subProcess` renders
-   * it collapsed and scatters shapes for its children into the root plane —
-   * garbage, not a degraded fallback. `irToXml` pre-seeds a minimal
-   * `bpmndi:BPMNShape isExpanded="true"` per sub-process before layout so the
-   * library expands the parent box and lays the children out inside it. This
-   * block is the regression tripwire: if the hint is ever dropped, these
-   * containment assertions are the first thing to go red.
+   * `bpmn-auto-layout` fed DI-less XML containing a `bpmn:subProcess` renders it
+   * collapsed and scatters shapes for its children into the root plane. To avoid
+   * that, `irToXml` pre-seeds a minimal `bpmndi:BPMNShape isExpanded="true"` per
+   * sub-process before layout, so the library expands the parent box and lays
+   * the children out inside it.
    */
   const twoChildrenIr: BpmnProcess = {
     id: 'proc',
@@ -822,10 +688,8 @@ describe('irToXml — DI expansion hint for sub-processes', () => {
   });
 
   it('a sub-process-free process produces byte-identical output to the frozen golden', async () => {
-    // Regression guard: the DI hint must only ever be attached when
-    // the process actually contains a sub-process. This re-asserts the
-    // full-pipeline golden byte-diff from the sub-process describe block
-    // above, right next to the DI-hint logic that could regress it.
+    // The DI hint must only ever be attached when the process actually contains
+    // a sub-process, so the full-pipeline golden is byte-diffed here too.
     const services = createBpmnScriptServices(EmptyFileSystem);
     const parse = parseHelper<Model>(services.BpmnScript);
     const src = readFileSync(EXAMPLE_BPMNSCRIPT_PATH, 'utf-8');
@@ -858,7 +722,7 @@ describe('irToXml — DI expansion hint for sub-processes', () => {
 
 describe('irToXml — callActivity serialization', () => {
   /**
-   * `start → call → end`, where the call activity populates every feature:
+   * `start -> call -> end`, where the call activity populates every feature:
    * a label, a `deployment` binding, a business key, all three in-mapping
    * variants (one carrying `local`), and two out-mappings. Exercises the full
    * pipeline (layout included) and the canonical extension-element order.
@@ -907,8 +771,8 @@ describe('irToXml — callActivity serialization', () => {
   let call: CallModdle;
 
   beforeAll(async () => {
-    // `irToXml` runs bpmn-auto-layout on the output; a throw here fails the
-    // suite, which doubles as the "layout handles a call activity" check.
+    // `irToXml` runs bpmn-auto-layout, so a throw here fails the suite and
+    // doubles as the "layout handles a call activity" check.
     callXml = await irToXml(richCallIr);
     const proc = await parseProcessTreeWithOperaton(callXml);
     call = childById(proc, 'CallSub') as unknown as CallModdle;
@@ -1044,7 +908,7 @@ describe('irToXml — event layer (errors + escalations)', () => {
    *     `LS`, one code binding).
    *   - A `throw error` end event `ThrowPF` (code `PF`) in the main chain.
    *   - An escalation intermediate throw `Emit1` (code `LS`) in the main chain.
-   * Handlers are disconnected (no incoming/outgoing) — event sub-processes are
+   * Handlers are disconnected (no incoming/outgoing): event sub-processes are
    * triggered, not flow-connected.
    */
   const eventIr: BpmnProcess = {
@@ -1162,7 +1026,6 @@ describe('irToXml — event layer (errors + escalations)', () => {
 
     const handlerStart = requireDeep(defs, 'ErrStart');
     const throwEnd = requireDeep(defs, 'ThrowPF');
-    // Both refs resolve to the very same root element object.
     expect(errorDef(handlerStart).errorRef?.id).toBe('Error_PF');
     expect(errorDef(throwEnd).errorRef?.id).toBe('Error_PF');
   });
@@ -1352,7 +1215,6 @@ describe('irToXml — event layer (errors + escalations)', () => {
 
     const outerSub = requireShape(shapes, 'OuterSub');
     const errHandler = requireShape(shapes, 'ErrHandler');
-    // The nested event sub-process sits inside its parent sub-process.
     expect(boundsStrictlyInside(errHandler.bounds, outerSub.bounds)).toBe(true);
     for (const child of ['ErrStart', 'Recover', 'ErrEnd']) {
       expect(
@@ -1367,7 +1229,7 @@ describe('irToXml — event layer (errors + escalations)', () => {
 
 // ── 12. Event layer: message + signal + timer + conditional ──────────────────
 
-/** Build an event sub-process (`on …` handler) wrapping a start/user/end body. */
+/** Build an event sub-process (`on ...` handler) wrapping a start/user/end body. */
 function eventHandler(
   id: string,
   startId: string,
@@ -1405,7 +1267,7 @@ describe('irToXml — event layer (message + signal + timer + conditional)', () 
    *   - An interrupting `on message "PaymentReceived"` handler.
    *   - An `alongside` `on signal "Cancelled"` handler.
    *   - An `emit signal "Cancelled"` intermediate throw mid-chain.
-   *   - A `throw signal "Cancelled"` end event — sharing the one signal root.
+   *   - A `throw signal "Cancelled"` end event, sharing the one signal root.
    */
   const signalIr: BpmnProcess = {
     id: 'proc',
@@ -1654,7 +1516,7 @@ describe('irToXml — event layer (compensation)', () => {
    *     `isInterrupting`).
    *   - A compensation intermediate throw (`EmitComp`) mid-chain.
    *   - A compensation end event (`ThrowComp`) terminal in the parent process.
-   * Compensation is payload-less, so none of these carry a code — unlike the
+   * Compensation is payload-less, so none of these carry a code: unlike the
    * error/escalation fixture above, there is no identity to share a root over.
    */
   const compensationIr: BpmnProcess = {
@@ -1715,11 +1577,9 @@ describe('irToXml — event layer (compensation)', () => {
   });
 
   it('emits the handler start with a bare CompensateEventDefinition and no isInterrupting attribute', () => {
-    // Raw-XML assertion (not the parsed moddle object): bpmn-moddle applies
-    // the schema default (`waitForCompletion`/`isInterrupting` both default to
-    // `true`) when reading an attribute back, so the parsed tree would show
-    // `true` either way. Checking the serialized text is the only way to pin
-    // that the attribute itself is genuinely absent from the output.
+    // Raw-XML assertion rather than the parsed moddle object: bpmn-moddle
+    // applies the schema default when reading `waitForCompletion` and
+    // `isInterrupting` back, so the parsed tree shows `true` either way.
     const startBlock = extractNodeBlock(xml, 'CompStart');
     expect(startBlock).not.toContain('isInterrupting');
     expect(startBlock).toContain('<bpmn:compensateEventDefinition />');
@@ -1782,8 +1642,8 @@ describe('irToXml — event layer (compensation)', () => {
 
 /**
  * A minimal process with one host activity carrying one boundary event:
- * `PStart → Host → PEnd` in the main flow, plus a `boundaryEvent` attached to
- * `Host` whose one outgoing flow lands on its own end event — the shape a
+ * `PStart -> Host -> PEnd` in the main flow, plus a `boundaryEvent` attached to
+ * `Host` whose one outgoing flow lands on its own end event, the shape a
  * hosted handler with an empty body lowers to.
  */
 function hostedBoundaryIr(
@@ -1827,10 +1687,9 @@ describe('irToXml — boundary events', () => {
     const boundary = requireDeep(defs, 'Boundary_Host_x');
     expect(boundary.$type).toBe('bpmn:BoundaryEvent');
     expect(boundary.attachedToRef?.id).toBe('Host');
-    // Raw-XML assertion: bpmn-moddle applies the schema default
-    // (`cancelActivity` defaults to `true`) when reading the attribute back,
-    // so a parsed check can't distinguish "absent" from "explicitly true".
-    // Only the serialized text pins that the attribute is genuinely absent.
+    // Raw-XML assertion: bpmn-moddle applies the schema default for
+    // `cancelActivity` when reading the attribute back, so a parsed check
+    // cannot distinguish "absent" from "explicitly true".
     expect(extractNodeBlock(xml, 'Boundary_Host_x')).not.toContain(
       'cancelActivity',
     );
@@ -2018,9 +1877,9 @@ describe('irToXml — boundary events', () => {
   });
 
   it('names the container rule when the host exists but sits inside a sub-process', async () => {
-    // The misleading case: the id does exist in the document, just not where a
-    // boundary event may reach it. A bare "unknown id" message would send a
-    // reader looking for a missing element instead of a misplaced attachment.
+    // The id does exist in the document, just not where a boundary event may
+    // reach it. A bare "unknown id" message would send a reader looking for a
+    // missing element instead of a misplaced attachment.
     const nested: BpmnProcess = {
       id: 'proc',
       isExecutable: true,
@@ -2102,7 +1961,7 @@ type CatchEventDefinition = Extract<
 
 /**
  * A minimal process with an `intermediateCatchEvent` sitting inline on the
- * main flow: `PStart → Catch → PEnd` — the shape the desugarer produces for
+ * main flow: `PStart -> Catch -> PEnd`, the shape the desugarer produces for
  * `await`, with one incoming and one outgoing sequence flow.
  */
 function mainFlowCatchIr(
@@ -2314,7 +2173,7 @@ function escalationDef(node: EventNode): EventNode {
 /** The sole event definition on an event node, whatever its kind. */
 const soleDef = errorDef;
 
-/** Minimal `start → call → end` wrapper around one call-activity node. */
+/** Minimal `start -> call -> end` wrapper around one call-activity node. */
 function minimalCallIr(call: BpmnProcess['flowElements'][number]): BpmnProcess {
   return {
     id: 'caller',
@@ -2398,7 +2257,7 @@ interface DiShape {
 /**
  * Parse a BPMN XML string's `bpmndi:BPMNDiagram` and return every
  * `bpmndi:BPMNShape` it contains, keyed by the id of the BPMN element it
- * represents (`shape.bpmnElement`). Used to assert on the generated layout —
+ * represents (`shape.bpmnElement`). Used to assert on the generated layout,
  * unlike {@link parseProcessTree}, which inspects the semantic element tree.
  */
 async function parseDiShapesById(

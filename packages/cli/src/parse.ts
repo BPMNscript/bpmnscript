@@ -1,7 +1,7 @@
 /**
  * `bpmns parse` action.
  *
- * Drives the BPMN XML → DSL pipeline:
+ * Drives the BPMN XML -> DSL pipeline:
  *
  *   .bpmn  ──read file──►  XML string
  *          ──xmlToIr──►  IR
@@ -9,14 +9,14 @@
  *          ──write to disk──►  .bpmnscript file
  *
  * Exit codes:
- *   0  — success (non-fatal import warnings, if any, are printed to stderr
+ *   0  - success (non-fatal import warnings, if any, are printed to stderr
  *         but do not change the exit code)
- *   1  — unsupported BPMN construct (any UnsupportedConstructError subclass:
+ *   1  - unsupported BPMN construct (any UnsupportedConstructError subclass:
  *         UnsupportedServiceTaskFormError, UnsupportedElementError,
  *         UnsupportedEventDefinitionError, UnsupportedEventFeatureError,
  *         UnsupportedLoopCharacteristicsError, UnsupportedCollaborationError,
  *         UnsupportedCallActivityError)
- *   2  — I/O errors (file not found, cannot write output)
+ *   2  - I/O errors (file not found, cannot write output)
  */
 
 import chalk from 'chalk';
@@ -71,7 +71,7 @@ export async function parseAction(
     process.exit(2);
   }
 
-  // ── 4. XML → IR ──────────────────────────────────────────────────────────
+  // ── 4. XML -> IR ─────────────────────────────────────────────────────────
   let ir;
   let warnings: ImportWarning[];
   try {
@@ -117,7 +117,7 @@ export async function parseAction(
     process.exit(2);
   }
 
-  // ── 5. IR → DSL ──────────────────────────────────────────────────────────
+  // ── 5. IR -> DSL ─────────────────────────────────────────────────────────
   let dsl: string;
   try {
     dsl = irToDsl(ir);
@@ -153,11 +153,9 @@ export async function parseAction(
   }
 
   // An edge the decompiler could not express leaves a marker comment in the
-  // output, naming the element the edge led into. Ordinary BPMN reaches this —
-  // a loop whose condition sits on the back-edge is the common case — so the
-  // warning has to be loud: that edge is gone from the decompiled model and
-  // only a human can put the control flow back. The output is still written
-  // (the marker keeps it parseable) and the exit code is unchanged.
+  // output. The output is still written (the marker keeps it parseable) and the
+  // exit code is unchanged, so the dropped edge has to be warned about: only a
+  // human can put that control flow back.
   if (dsl.includes(UNSTRUCTURED_MARKER)) {
     console.error(
       chalk.yellow(

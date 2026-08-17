@@ -1,14 +1,11 @@
 /**
- * Focused unit coverage for the boundary-event re-key in `normalizeIr`.
- *
- * The round-trip suites are this helper's primary coverage (see the module
- * docstring on `normalize-ir.ts`); this file exists only because the re-key
- * has a genuinely non-obvious failure mode worth pinning directly: two
- * boundary handlers on one host that share a trigger kind but differ in
- * payload (`on Pack: error "A"` vs. `on Pack: error "B"`) both base to
- * `Boundary_Pack_error`, and moddle may present them in a different order on
- * import than the author wrote them. A re-key that ignored the payload would
- * silently collapse the two into one canonical id and mask that reordering.
+ * Focused coverage for the boundary-event re-key in `normalizeIr`, whose failure
+ * mode the round-trip suites cover only indirectly: two boundary handlers on one
+ * host that share a trigger kind but differ in payload (`on Pack: error "A"` and
+ * `on Pack: error "B"`) both base to `Boundary_Pack_error`, and moddle may
+ * present them on import in a different order than the author wrote them. A
+ * re-key that ignored the payload would collapse the two into one canonical id
+ * and mask that reordering.
  */
 import { describe, it, expect } from 'vitest';
 import { normalizeIr } from './normalize-ir.js';
@@ -18,7 +15,6 @@ import type {
   SequenceFlow,
 } from '@bpmn-script/transform';
 
-/** Minimal process shell: a root container with the given elements/flows. */
 function process(
   flowElements: FlowElement[],
   sequenceFlows: SequenceFlow[],
@@ -28,10 +24,10 @@ function process(
 
 describe('normalizeIr — boundary-event re-key', () => {
   it('keeps two same-host same-trigger boundary handlers distinct by payload, regardless of authored order', () => {
-    // Two handlers on one host with different error codes: NOT duplicates
+    // Two handlers on one host with different error codes are not duplicates
     // under the validator's (host, trigger, code) key, yet both base to
-    // `Boundary_Pack_error`. Reversing their order (simulating moddle's
-    // import ordering) must still produce the same normalized result.
+    // `Boundary_Pack_error`. Reversing their order, as moddle may on import,
+    // must still produce the same normalized result.
     const forward = process(
       [
         { kind: 'userTask', id: 'Pack' },
@@ -85,7 +81,7 @@ describe('normalizeIr — boundary-event re-key', () => {
 
     expect(normalizedForward).toEqual(normalizedReversed);
 
-    // The two handlers must NOT collapse to one canonical id.
+    // The two handlers must not collapse to one canonical id.
     const boundaryIds = normalizedForward.flowElements
       .filter((fe) => fe.kind === 'boundaryEvent')
       .map((fe) => fe.id);
@@ -124,9 +120,8 @@ describe('normalizeIr — boundary-event re-key', () => {
     const flow = normalized.sequenceFlows[0];
 
     expect(boundary).toBeDefined();
-    // The raw id must have been re-keyed away from the hand-authored one...
     expect(boundary?.id).not.toBe('Timeout_Boundary');
-    // ...and the outgoing flow's sourceRef must follow it exactly.
+    // The outgoing flow's sourceRef follows the re-keyed boundary id.
     expect(flow.sourceRef).toBe(boundary?.id);
     // attachedToRef is an authored host id and is never re-keyed.
     expect(
@@ -207,10 +202,9 @@ describe('normalizeIr — boundary-event re-key', () => {
   });
 
   it('leaves every end event untouched, including one named after a boundary event', () => {
-    // The printer emits a terminal end under its literal id, so the id is
-    // authored again on the way back and needs no canonical mapping. An end
-    // whose name echoes a re-keyed boundary must therefore still survive as
-    // written.
+    // The printer emits a terminal end under its literal id, so it is authored
+    // again on the way back and needs no canonical mapping, even when its name
+    // echoes a re-keyed boundary.
     const ir = process(
       [
         { kind: 'userTask', id: 'Review' },

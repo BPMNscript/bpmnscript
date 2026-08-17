@@ -1,37 +1,16 @@
 /**
  * Boundary-explanation linker for `goto` and for an `on` handler's host.
  *
- * The container-scoped `goto` resolution ({@link BpmnScriptScopeProvider})
- * means a `goto` whose target lies in a different flow container — the
- * process instead of a sub-process, another sub-process, a nested one, or an
- * `on` handler body (in either direction) — is *unresolved*. Langium's stock
- * linker message for that case, "Could not resolve reference to Statement
- * named 'X'.", reads as "X doesn't exist" when X *does* exist, just across a
- * container boundary — the most likely authoring mistake with the new
- * construct, and inline IDE errors are a core value of the DSL.
+ * Both references are container-scoped, so naming a step that lives in another
+ * flow container fails to resolve and Langium's stock message, "Could not
+ * resolve reference to Statement named 'X'.", reads as "X doesn't exist" when X
+ * does exist. This linker replaces that message with a boundary explanation
+ * whenever the name is found elsewhere in the enclosing process; every other
+ * case delegates to `super`.
  *
- * This linker overrides {@link DefaultLinker.createLinkingError}, the single
- * hook every unresolved-reference path in `DefaultLinker` already funnels
- * through, and *replaces* the generic message with a boundary explanation
- * when the goto's target name exists elsewhere in the enclosing process — one
- * message replacing another is exactly one diagnostic, by construction. Every
- * other case (the name exists nowhere, or the reference is not a `goto`
- * target) delegates to `super`, so the generic message stays byte-identical.
- *
- * A handler's `host` reference is container-scoped for the same BPMN reason and
- * runs into the same failure mode: an author names the step to attach to, that
- * step exists but lives in a different container, and the stock message claims
- * it does not exist. The same substitution applies, with the attachment rule as
- * the trailing sentence instead of the sequence-flow one — an attached event is
- * a flow element of the container holding the step it attaches to, so a step
- * anywhere else is not attachable no matter how the handler is written.
- *
- * A validator rule cannot do this instead: `checkGotoStatement` only sees a
- * `goto` once its `target` is *resolved* (it reads `goto.target.ref`, guarded
- * by `if (target)`), so a validator addressing the unresolved case would
- * either never fire (guarded, same as today) or read `target.ref` unguarded
- * and stack a second diagnostic on top of the linker's — the double-error
- * trap this design sidesteps by replacing rather than adding.
+ * Replacing rather than adding keeps it at one diagnostic. A validator could
+ * not do the job anyway: it only ever sees a `goto` whose target already
+ * resolved.
  */
 
 import {
@@ -72,12 +51,9 @@ import {
 } from './bpmn-script-scope-provider.js';
 
 /**
- * The concrete `Statement` subtypes that carry a `name` and are therefore
- * valid `goto` targets — mirrors the validator's `NamedStatement` set:
- * `SubProcess` and `CallActivity` (their own names are goto targets too), and
- * `ThrowStatement`/`EmitStatement`, whose `name` is *optional* (synthesised
- * when omitted), so an unnamed throw/emit is skipped by the `name` guard below
- * and is never a goto target.
+ * The `Statement` subtypes that carry a `name` and are therefore valid `goto`
+ * targets. A `ThrowStatement`/`EmitStatement` name is optional (synthesised
+ * when omitted), so an unnamed one is never a target.
  */
 type NamedStatement =
   | StartEvent
@@ -105,10 +81,8 @@ function isNamedStatement(node: AstNode): node is NamedStatement {
 }
 
 /**
- * The first named statement in `process` (any container, any nesting depth)
- * whose name is `name`, or `undefined` if none exists. First match wins —
- * duplicate names are themselves a validator error, so this never needs to
- * disambiguate.
+ * The first named statement in `process` with this name, at any container or
+ * nesting depth. First match wins: duplicate names are a validator error.
  */
 function findNamedStatement(
   process: AstNode,
@@ -122,28 +96,21 @@ function findNamedStatement(
   return undefined;
 }
 
-/**
- * The handler's header as an author would write it — `on <trigger>` for a
- * catch-all, `on <trigger> "<code>"` for a coded one — used in place of a
- * name, since a handler has none.
- */
+/** The handler's header as an author would write it, used in place of a name. */
 function handlerHeader(handler: OnHandler): string {
   return handler.code
     ? `on ${handler.trigger} "${handler.code}"`
     : `on ${handler.trigger}`;
 }
 
-/**
- * A handler referred to by its header: `the 'on error "X"' handler` for a
- * coded one, `an 'on error' handler` for a catch-all.
- */
+/** A handler referred to by its header: `the 'on error "X"' handler`. */
 function handlerPhrase(handler: OnHandler): string {
   const article = handler.code ? 'the' : 'an';
   return `${article} '${handlerHeader(handler)}' handler`;
 }
 
 /** Whether crossing this location involves an event-handler boundary rather
- * than (only) a sub-process one — decides the trailing boundary sentence. */
+ * than only a sub-process one, which decides the trailing boundary sentence. */
 interface Location {
   phrase: string;
   crossesHandler: boolean;
@@ -151,17 +118,12 @@ interface Location {
 
 /**
  * Describe where `target` lives relative to `sourceContainer`, the flow
- * container the unresolved reference itself sits in. Only called once the
- * caller has already established the two containers differ (the scope provider
- * would have resolved a same-container target), so exactly one of the branches
- * below applies: the target is inside some sub-process or handler body
- * (neither of which can be `sourceContainer`, since that would have resolved),
- * or the target sits at process level while the reference is inside a
- * sub-process or a handler body.
+ * container the unresolved reference sits in. Only called once the two
+ * containers are known to differ, so exactly one branch applies.
  *
  * A handler carrying a host is never reported here: it is transparent to the
- * container walk, so it is neither a container a target can sit inside of nor
- * one a reference can sit inside of.
+ * container walk, so it is neither a container a target can sit in nor one a
+ * reference can sit in.
  */
 function locateTarget(
   target: NamedStatement,
@@ -195,9 +157,8 @@ function locateTarget(
 }
 
 /**
- * `DefaultLinker` subclass that upgrades the unresolved-`goto`-target and
- * unresolved-handler-host messages to a boundary explanation (see module
- * docstring).
+ * Upgrades the unresolved-`goto`-target and unresolved-handler-host messages to
+ * a boundary explanation.
  */
 export class BpmnScriptLinker extends DefaultLinker {
   override createLinkingError(

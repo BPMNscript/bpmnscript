@@ -1,8 +1,8 @@
-// The BPMNscript grammar — code-like structured statements.
+// The BPMNscript grammar: code-like structured statements.
 //
 // A process body is a sequence of statements that execute top-to-bottom
 // (implicit sequence flow); control flow is expressed with `if`/`else if`/
-// `else`, `while`, `do … while`, `parallel { { } { } }`, and `goto <id>`.
+// `else`, `while`, `do while`, `parallel { { } { } }`, and `goto <id>`.
 // `start`/`end` are explicit-allowed but implicit by default (the desugarer
 // synthesises them). There is no flat node/edge surface and no `gateway`
 // keyword: gateways are derived from the structured control-flow constructs.
@@ -12,7 +12,7 @@
 //   - Typed-per-element attribute blocks, modelled as a *list* of attribute
 //     nodes so a validator can detect duplicate keys from the AST.
 //   - A JUEL-subset expression sub-language parsed to a real AST (parser
-//     rules, never a terminal), with a quoted "${…}" raw-string fallback.
+//     rules, never a terminal), with a quoted "${...}" raw-string fallback.
 //   - Optional typed `var name: type` declarations at process scope.
 //
 // Naming convention: the AST property `name`
@@ -23,7 +23,7 @@
 // (a quoted string after the id).
 //
 // Reserved words (cannot be used as a bare expression identifier; use the
-// quoted "${…}" raw-string fallback if a variable must be named like one):
+// quoted "${...}" raw-string fallback if a variable must be named like one):
 //   process, var, start, end, user, service, script, subprocess,
 //   if, else, while, do, parallel, goto, label, assignee, formKey, class,
 //   expression, delegate, topic, form,
@@ -35,16 +35,11 @@
 // expression position and parse to `VarRef` as expected (e.g. `status`,
 // `order.type`, `items[0]`).
 //
-// `error`, `escalation`, `message`, `signal`, `timer`, `condition`, and
-// `compensation` (the trigger kinds an `on`/`throw`/`emit` names), `code` and
-// the other catch-binding field names, and the timer particles
-// `after`/`at`/`every` are
-// deliberately NOT on this list: they lex as plain `ID` and are validated in
-// position rather than reserved as keywords — so `var message: string`,
-// `if (code == "x")`, `var timer: number`, `if (after > 2)`, and a step
-// named `every` all stay legal everywhere else (see
-// `OnHandler`/`EventBinding`/`ThrowStatement`/`EmitStatement`/`ErrorDecl`
-// below).
+// The trigger kinds (`error`, `escalation`, `message`, `signal`, `timer`,
+// `condition`, `compensation`), the catch-binding field names, and the timer
+// particles `after`/`at`/`every` are deliberately NOT on this list: they lex as
+// plain `ID` and are validated in position instead, so `var message: string`
+// and `if (after > 2)` stay legal.
 
 grammar BpmnScript
 
@@ -52,7 +47,7 @@ entry Model:
     (processes+=Process)*;
 
 // A process: `process <id> "<label>"? { <header> <statements> }`. The header
-// carries process-scope declarations (the optional `label = "…"` attribute and
+// carries process-scope declarations (the optional `label` attribute and
 // any `var` declarations); the remaining statements form the implicit block
 // body. Declarations are gathered into `decls`, executable statements into
 // `body`, so the desugarer and the validator can address them independently.
@@ -97,7 +92,7 @@ Statement:
 Block:
     '{' statements+=Statement* '}';
 
-// StartEvent with an optional attribute block. Only a `form { … }` block is
+// StartEvent with an optional attribute block. Only a `form` block is
 // meaningful here (a start event has no assignee/class); the validator rejects
 // bare attributes on `start`. The block lets an author declare the process's
 // start variables as Tasklist form fields.
@@ -115,16 +110,15 @@ UserTask:
     'user' name=ID (label=STRING)? AttributeBlock?;
 
 // A service task binds to exactly one of four execution forms: `class`, a
-// JUEL `expression`, a `delegate` expression, or a `topic` — the last of
-// these delegates the work to an external worker that polls the engine for
-// that topic instead of the engine invoking code directly, and emits
-// operaton:type="external" alongside operaton:topic. All four share this one
-// statement and AttributeBlock shape; the validator requires exactly one.
+// JUEL `expression`, a `delegate` expression, or a `topic`. The last delegates
+// the work to an external worker that polls the engine for that topic instead
+// of the engine invoking code directly. All four share this one statement and
+// AttributeBlock shape; the validator requires exactly one.
 ServiceTask:
     'service' name=ID (label=STRING)? AttributeBlock?;
 
 // A script task with an inline body written as a markdown-style fenced block
-// opened by a language tag (```js … ```). The whole fenced block is captured
+// opened by a language tag. The whole fenced block is captured
 // verbatim in `body`; the language tag and script text are extracted
 // downstream. Emits a bpmn:scriptTask.
 ScriptTask:
@@ -132,7 +126,7 @@ ScriptTask:
 
 // fragment: a brace-delimited body block. Reused verbatim by StartEvent,
 // UserTask, and ServiceTask. It holds a mix of `<key> = <value>` attributes and
-// `form { … }` blocks in any order. Which members are legal per element kind is
+// `form` blocks in any order. Which members are legal per element kind is
 // enforced by the validator, not the grammar, so the one fragment serves all
 // three (a start event allows only a form; a service task allows no form).
 fragment AttributeBlock:
@@ -163,13 +157,13 @@ Attribute:
 // datatype rule means the grammar accepts any key on any element; the validator
 // restricts `assignee`/`formKey` to `user` and `class` to `service`.
 // `process`/`binding`/`version`/`businessKey` are the `call` attribute keys
-// (`process` reuses the existing `process`-block keyword token — no new
-// reserved word for it); the validator restricts them to `call`.
+// (`process` reuses the existing `process`-block keyword token, so no new
+// reserved word); the validator restricts them to `call`.
 AttrKey returns string:
     'assignee' | 'formKey' | 'class' | 'expression' | 'delegate' | 'topic'
     | 'process' | 'binding' | 'version' | 'businessKey';
 
-// if / else if / else → exclusive gateway (desugared by `astToIr`).
+// if / else if / else -> exclusive gateway (desugared by `astToIr`).
 IfStatement:
     'if' '(' condition=Expr ')' then=Block
     (elseIfs+=ElseIf)*
@@ -178,216 +172,127 @@ IfStatement:
 ElseIf:
     'else' 'if' '(' condition=Expr ')' body=Block;
 
-// Pre-test loop → XOR gateway + back-edge (never standardLoopCharacteristics).
+// Pre-test loop -> XOR gateway + back-edge (never standardLoopCharacteristics).
 WhileStatement:
     'while' '(' condition=Expr ')' body=Block;
 
-// Post-test loop → body runs first, then the conditioned back-edge.
+// Post-test loop -> body runs first, then the conditioned back-edge.
 DoWhileStatement:
     'do' body=Block 'while' '(' condition=Expr ')';
 
-// parallel { { … } { … } } → AND fork/join. Each branch is a brace `Block`
-// nested directly inside the outer `parallel { … }`; at least two branches are
-// required (the first `Block` then one-or-more further `Block`s). The
-// inclusive-gateway variant is not yet supported.
+// parallel -> AND fork/join. Each branch is a brace `Block` nested directly
+// inside the outer `parallel` block; at least two branches are required (the
+// first `Block` then one-or-more further `Block`s). The inclusive-gateway
+// variant is not yet supported.
 ParallelStatement:
     'parallel' '{' branches+=Block (branches+=Block)+ '}';
 
-// goto <id> → explicit jump to any targetable statement, keyed on `name`.
+// goto <id> -> explicit jump to any targetable statement, keyed on `name`.
 GotoStatement:
     'goto' target=[Statement:ID];
 
 // A nested flow container: `subprocess <id> "<label>"? { <statements> }`. The
 // body reuses `Block` verbatim, so `start`/`end` parse inside it exactly like
 // at process scope (the desugarer synthesises them when absent and honours
-// them when written). `name` is the goto-target key per the file's naming
-// convention above, so a sequence flow targeting the sub-process by name
-// resolves through the default NameProvider with no extra grammar machinery.
+// them when written).
 SubProcess:
     'subprocess' name=ID (label=STRING)? body=Block;
 
-// A call to another process by id: `call <id> "<label>"? { <body> }`. The
-// brace body mixes `<key> = <value>` attributes (see `AttrKey` above for the
-// `process`/`binding`/`version`/`businessKey` keys legal here) with `in`/`out`
-// variable mappings in any order, so it deliberately defines its own inline
-// body instead of reusing the `AttributeBlock` fragment: `AttributeBlock` also
-// admits a `form` block, which is meaningless on a call, and has no place to
-// carry mappings at all. `name` is the goto-target key per the file's naming
-// convention above, so a sequence flow into the call resolves through the
-// default NameProvider like every other `Statement`. Which attribute keys are
-// actually required (e.g. that `process` must be present) and whether the
-// mapping list is well-formed is the validator's job, not the grammar's — the
-// parser accepts any combination, including an empty body.
+// A call to another process by id: `call <id> "<label>"? { <body> }`. The brace
+// body mixes attributes with `in`/`out` variable mappings in any order, so it
+// defines its own inline body rather than reusing the `AttributeBlock`
+// fragment: that fragment admits a `form` block, meaningless on a call, and has
+// no place to carry mappings. The parser accepts any combination, including an
+// empty body; which keys are required is the validator's job.
 CallActivity:
     'call' name=ID (label=STRING)? '{' (attrs+=Attribute | mappings+=VariableMapping)* '}';
 
 // One variable-mapping entry inside a `call` body, read like a function call at
-// the process boundary: `in` carries a value INTO the called process (an
-// argument), `out` carries a value back OUT to the caller (a return value). As
-// with every `=` in this grammar, the left side is always the receiving name in
-// the receiving scope — for `in` that is a variable of the called process, for
-// `out` a variable of the caller. `source` is optional: shorthand `in x` /
-// `out x` copies a variable under the same name (`target` doubles as the
-// implied source when `source` is absent). `all='*'` copies every variable
-// instead of naming one (`in *` / `out *`). A `local` mapping reads from /
-// writes to variables that belong to the call step itself rather than to the
-// whole process — rarely needed when authoring, kept chiefly so diagrams that
-// use step-local variables import faithfully. The `*` keyword reuses the
-// existing multiplication token from the expression sub-language below — no
-// lexer change. Mapping well-formedness (e.g. `*` combined with `target`, or a
-// `target` unknown in either scope) is validated downstream, not here.
+// the process boundary: `in` carries a value into the called process, `out`
+// carries one back to the caller. As with every `=` in this grammar, the left
+// side is the receiving name in the receiving scope. Omitting `source` copies a
+// variable under the same name, and `all='*'` copies every variable instead of
+// naming one. A `local` mapping reads and writes variables belonging to the
+// call step itself rather than the whole process, which matters chiefly so
+// diagrams using step-local variables import faithfully. The `*` keyword
+// reuses the multiplication token from the expression sub-language below, so no
+// lexer change. Mapping well-formedness is validated downstream, not here.
 VariableMapping:
     direction=('in'|'out') (local?='local')? (all?='*' | target=ID ('=' source=Expr)?);
 
-// ── on / throw / emit — the DSL's try/catch ─────────────────────────────────
+// ── on / throw / emit: the DSL's try/catch ──────────────────────────────────
 //
-// `on <trigger>` is a catch block for one event kind: reads exactly like
-// `catch (Exception e) { … }`, sitting at the end of the body it guards (a
-// convention the validator enforces, not the grammar — see the file's
-// per-rule notes below). `throw` always ends its path, like `throw` in every
-// programming language; `emit` fires the event and keeps going — the one
-// distinction between the two verbs, uniform across every event kind this
-// DSL knows about. An `error … message …` declaration exists only for a code
-// whose thrown message text needs recording once, at the process header.
+// `on <trigger>` is a catch block for one event kind, sitting at the end of
+// the body it guards. `throw` always ends its path; `emit` fires the event and
+// keeps going. An `error` declaration records, once at the process header, the
+// message text a thrown error of that code carries.
 //
-// `trigger` (`error`/`escalation`/`message`/`signal`/`timer`/`condition`),
-// each binding's `field` (`code`/`message`), the timer `particle`
-// (`after`/`at`/`every`), and the declaration's `kind`/`field` all lex as
-// plain `ID` rather than reserved keywords: they are among the most common
-// variable names a Java-background author reaches for, so reserving them
-// would make `var message: string` a parse error. Word legality at each of
-// these positions — is `trigger` one of the known kinds? is `field` one of
-// the known bindings? is `particle` one of the known timer forms? — is
-// validated in position, exactly like every other semantic rule in this
-// grammar that the parser itself stays silent about.
-
 // A handler body reuses `Block` verbatim, so `start`/`end` and every other
-// statement — including a nested `on` — parse inside it for free. The
-// payload after `trigger` and the content of the parenthesized slot are
-// shaped per trigger kind; the grammar accepts any combination (the parser
-// stays silent about which shape actually belongs to which trigger — the
-// validator polices that pairing), but the payload matrix each trigger is
-// meant to carry is:
-//   - `error` / `escalation` — an optional code and optional parenthesized
-//     bindings, e.g. `on error "PAYMENT_FAILED" (code c, message m) { … }`.
-//     Each binding pairs a field with the process variable it fills,
-//     written as a declaration (`field variable`) mirroring
-//     `catch (ExceptionType name)` rather than an assignment. An omitted
-//     code means "catch any" of that trigger kind.
-//   - `message` / `signal` — a required name and no parenthesized slot,
-//     e.g. `on message "Invoice Received" { … }`. `message` reads like the
-//     process's inbox: it runs when something outside the model delivers a
-//     message carrying that name. `signal` is a broadcast channel: every
-//     listener anywhere that names the same signal wakes up — unlike an
-//     escalation, whose reach stops at the boundary of its own scope.
-//   - `timer` — a particle (`after`/`at`/`every`) followed by a time
-//     string in the same slot the code otherwise occupies, e.g.
-//     `on timer after "PT1H" { … }`. `after` reads as "if this scope is
-//     still running after this much time", `at` as "at this point in
-//     time", and `every` as "on this repeating schedule" — the clock
-//     starts when the surrounding scope starts.
-//   - `condition` — no code or particle; instead the parenthesized slot
-//     holds an expression that reads exactly like an `if` condition, e.g.
-//     `on condition (amount > 100) { … }`. It is checked once when the
-//     scope starts and again whenever a variable changes.
-// The parenthesized slot therefore holds EITHER a binding list OR a
-// condition expression, never both, decided purely by the shape of its
-// content: a binding is always `field variable` — two adjacent
-// identifiers — while the expression sub-language never places two
-// identifiers next to each other (every operator level needs an operator
-// token in between, and an accessor starts with `.`/`[`), so the parser
-// tells the two apart from the second token onward without any extra
-// keyword. `alongside` marks a non-interrupting handler: the guarded
-// scope's main flow keeps running alongside this catch block instead of
-// being interrupted by it.
+// statement, a nested `on` included, parse inside it for free. The grammar
+// accepts any payload with any trigger; which shapes actually pair is the
+// validator's job.
 //
-// The optional `host` slot names the single step the handler attaches to —
-// `on Review: timer after "PT2H" { … }` catches only while `Review` itself is
-// running, instead of guarding the whole surrounding body the way a host-less
-// handler does. The reference is resolved against the handler's own container
-// by the scope provider, and which steps may legally carry a handler is a
-// validator concern, as everywhere else in this grammar.
+// The parenthesized slot holds either a binding list or a condition
+// expression, never both, decided purely by the shape of its content: a
+// binding is always two adjacent identifiers (`field variable`), while the
+// expression sub-language never places two identifiers next to each other
+// (every operator level needs an operator token between them, and an accessor
+// starts with `.`/`[`). The parser therefore tells the two apart from the
+// second token onward without an extra keyword.
 //
-// The separator has to be a colon, and cannot be omitted: `on Pack error "X"`
-// and `on timer after "X"` are both `ID ID STRING` at the token level, because
-// the trigger words and timer particles all lex as plain identifiers. Nothing
-// in the token *types* separates a host from a trigger, so no amount of
-// lookahead can tell the two forms apart — only the words themselves would,
-// and reserving them is exactly what this grammar deliberately avoids. The
-// colon decides at token 2, before either interpretation has to be committed
-// to.
+// The optional `host` slot names the single step the handler attaches to, so
+// `on Review: timer after "PT2H"` catches only while `Review` is running
+// instead of guarding the whole surrounding body. The separator has to be a
+// colon and cannot be omitted: `on Pack error "X"` and `on timer after "X"`
+// are both `ID ID STRING` at the token level, since trigger words and timer
+// particles lex as plain identifiers. Nothing in the token types separates a
+// host from a trigger, so no amount of lookahead can tell the forms apart;
+// the colon decides at token 2.
 OnHandler:
     'on' (host=[Statement:ID] ':')? trigger=ID
     (code=STRING | particle=ID time=(STRING | RAW_TEMPLATE))?
     ('(' (bindings+=EventBinding (',' bindings+=EventBinding)* | condition=Expr) ')')?
     (alongside?='alongside')? body=Block;
 
-// One catch-parameter binding inside an `on (…)` list — see `OnHandler`.
+// One catch-parameter binding inside an `on` parenthesized list. It is written
+// as a declaration (`field variable`) mirroring `catch (ExceptionType name)`,
+// not as an assignment.
 EventBinding:
     field=ID variable=ID;
 
-// `throw <trigger> <name>? "<code>"?` — always terminal: this path ends here,
-// exactly like `throw` in every programming language. `name` is the optional
-// goto-target id (synthesized when omitted, like every other targetable
-// statement). `code` names the error/escalation/signal being thrown; every
-// trigger but `compensation` needs one to say which error/escalation/signal it
-// is. `compensation` — the undo block for a subprocess's already-completed
-// work — names nothing, so it carries no code at all. One token of lookahead
-// is all a parser needs to place each optional member: `ID` predicts `name`,
-// `STRING` predicts `code`, and anything else ends the statement (every
-// statement in this grammar is keyword-led, so a following statement can
-// never be swallowed as `name`).
+// `throw <trigger> <name>? "<code>"?`, always terminal: this path ends here.
+// `name` is the optional goto-target id, synthesized when omitted. `code`
+// names the error, escalation, or signal being thrown. One token of lookahead
+// places each optional member: `ID` predicts `name`, `STRING` predicts `code`,
+// and anything else ends the statement (every statement in this grammar is
+// keyword-led, so a following statement can never be swallowed as `name`).
 ThrowStatement:
     'throw' trigger=ID (name=ID)? (code=STRING)?;
 
-// `emit <trigger> <name>? "<code>"?` — fires the event and keeps going; the
-// one difference from `throw` above. `code` names the escalation/signal being
-// emitted; `compensation` — the undo block — names nothing, so it carries
-// none, same as `throw compensation` above. Which trigger kinds actually have
-// a continuing (non-terminal) form in BPMN is the validator's concern, not
-// the grammar's.
+// `emit <trigger> <name>? "<code>"?` fires the event and keeps going, the one
+// difference from `throw` above. Which trigger kinds have a continuing form in
+// BPMN is the validator's concern, not the grammar's.
 EmitStatement:
     'emit' trigger=ID (name=ID)? (code=STRING)?;
 
-// `await <trigger> <payload>` — a blocking wait on the main flow: the token
-// pauses here until the named trigger fires, then continues to the next
-// statement, unlike `on` (a scope-wide guard racing the block it wraps) and
-// unlike `throw`/`emit` (which fire outward instead of waiting). Only
-// message, timer, signal, and condition are awaitable inline; error,
-// escalation, and compensation are raised with `throw`/`emit` and never
-// caught this way — the grammar stays silent about which trigger words are
-// legal here (the validator polices that, as everywhere else in this file),
-// but the shape below only has room for the four awaitable payloads.
+// `await <trigger> <payload>` blocks the main flow: the token pauses here
+// until the named trigger fires, then continues to the next statement. The
+// payload shape per trigger mirrors `OnHandler`'s.
 //
-// There is no name slot: the goto-target id is always synthesized (see
-// `makeIntermediateCatchEventId`), because a trial `name=ID` slot collided
-// with the timer particle at the token level — `await timer after "PT1H"`
-// and a hypothetical `await MyWait timer` are both `ID ID ID/STRING`, so the
-// parser cannot commit to which `ID` after `trigger` is the name and which
-// is the particle without a keyword to tell them apart, and reserving
-// `after`/`at`/`every` was rejected for the same reason the `on` particles
-// stay soft (see the file header). Dropping the name slot removes the
-// ambiguity entirely, mirroring how `emit`/`throw` already leave positional
-// events unnamed.
-//
-// The payload shape per trigger mirrors `OnHandler`'s: `message`/`signal`
-// take a required name string (`await message "Invoice Received"`), `timer`
-// takes a particle (`after`/`at`/`every`) followed by a time string in the
-// same slot (`await timer after "PT1H"`), and `condition` takes a
-// parenthesized expression read exactly like an `if` condition
-// (`await condition (amount > 100)`).
+// There is no name slot; the goto-target id is always synthesized. A `name=ID`
+// slot would collide with the timer particle at the token level, since
+// `await timer after "PT1H"` and `await <name> timer` are both `ID ID
+// ID/STRING`, and the parser cannot tell which `ID` after `trigger` is which
+// without a keyword to separate them.
 IntermediateCatchEvent:
     'await' trigger=ID
     (code=STRING | particle=ID time=(STRING | RAW_TEMPLATE))?
     ('(' condition=Expr ')')?;
 
-// `<kind> "<code>" <field> "<text>"` — a process-header declaration, written
+// `<kind> "<code>" <field> "<text>"`, a process-header declaration written
 // alongside `var` declarations, for the one piece of event data usage alone
 // cannot express: the message text a thrown error of this code carries.
-// Only ever needed for a code whose `throw`/`on` sites should carry that
-// text; `kind` and `field` are the same soft-word ID convention as above
-// (written as `error … message …` for the one declaration this grammar
-// currently has).
+// `kind` and `field` follow the same soft-word ID convention as above.
 ErrorDecl:
     kind=ID code=STRING field=ID message=STRING;
 
@@ -398,8 +303,8 @@ ErrorDecl:
 // not an opaque string. Binary operators use Langium's
 // left-associative tree-rewriting idiom `{infer X.left=current}` so a chain
 // such as `a + b + c` builds a left-leaning tree rather than overwriting
-// `left`/`right`. Precedence climbs ternary → logical-or → logical-and →
-// equality → relational → additive → multiplicative → unary → primary.
+// `left`/`right`. Precedence climbs ternary -> logical-or -> logical-and ->
+// equality -> relational -> additive -> multiplicative -> unary -> primary.
 //
 // Each precedence level infers its OWN node type (`Logical`, `Equality`,
 // `Relational`, `Additive`, `Multiplicative`) rather than a single shared
@@ -412,7 +317,7 @@ Expr:
     Ternary;
 
 // Ternary `c ? t : f`. When no `?` follows, the node collapses to the
-// underlying Or expression (no wrapper node) — Langium emits the inner type.
+// underlying Or expression (no wrapper node): Langium emits the inner type.
 Ternary infers Expr:
     LogicalOr ({infer Ternary.condition=current} '?' whenTrue=LogicalOr ':' whenFalse=LogicalOr)?;
 
@@ -477,7 +382,7 @@ Accessor:
 Paren:
     '(' inner=Expr ')';
 
-// Quoted "${…}" raw-string fallback. Valid anywhere an Expr is, this is the
+// Quoted "${...}" raw-string fallback. Valid anywhere an Expr is, this is the
 // escape hatch for expressions outside the JUEL subset (method/bean calls,
 // JUEL functions) and for variables that collide with reserved keywords. The
 // renderer emits `raw` verbatim.
@@ -502,26 +407,26 @@ terminal ID: /[_a-zA-Z]\w*(-\w+)*/;
 terminal DECIMAL returns number: /[0-9]+\.[0-9]+/;
 terminal INT returns number: /[0-9]+/;
 
-// FENCED_SCRIPT: a whole markdown-style fenced block opened by a language tag,
-// e.g. ```js\n…\n```. The match spans the opening fence and tag, the verbatim
-// body, and the closing fence — the tag/body split happens downstream, so the
-// body stays opaque and code-like text such as `if (a) { }` is never lexed as
-// DSL. `[\s\S]` matches across newlines without relying on a dotall flag; `*?`
-// is non-greedy so the match ends at the FIRST closing ``` fence. Backtick is a
-// fresh delimiter that cannot overlap the quote-delimited STRING / RAW_TEMPLATE
-// terminals, so this declaration's position relative to them is immaterial; it
-// sits here with the other content terminals for readability.
-// This terminal has no delimiter between the tag and the body — a same-line
-// fence such as ```jsfoo``` is captured as one unbroken letter run with an
-// empty body, so the downstream split (`splitFencedScript`) must derive the
-// boundary itself from the leading letter run and the newline that follows it.
+// FENCED_SCRIPT: a whole markdown-style fenced block opened by a language tag.
+// The match spans the opening fence and tag, the verbatim body, and the closing
+// fence, with the tag/body split happening downstream, so the body stays opaque
+// and code-like text such as `if (a) { }` is never lexed as DSL. `[\s\S]`
+// matches across newlines without relying on a dotall flag; `*?` is non-greedy
+// so the match ends at the FIRST closing fence. Backtick is a fresh delimiter
+// that cannot overlap the quote-delimited STRING / RAW_TEMPLATE terminals, so
+// this declaration's position relative to them is immaterial.
+//
+// There is no delimiter between the tag and the body: a same-line fence is
+// captured as one unbroken letter run with an empty body, so the downstream
+// split must derive the boundary itself from the leading letter run and the
+// newline that follows it.
 
 terminal FENCED_SCRIPT: /```[a-zA-Z]+[\s\S]*?```/;
 
-// RAW_TEMPLATE: a quoted string whose body begins with `${` — the raw-expression
-// fallback. Declared BEFORE STRING so a `"${…}"` body is lexed as RAW_TEMPLATE
-// (→ RawExpr) rather than a plain STRING (→ LiteralString). The two regexes
-// overlap on `"${…}"` input, so declaration order is what breaks the tie.
+// RAW_TEMPLATE: a quoted string whose body begins with `${`, the raw-expression
+// fallback. Declared BEFORE STRING so such a body is lexed as RAW_TEMPLATE
+// (-> RawExpr) rather than a plain STRING (-> LiteralString). The two regexes
+// overlap on that input, so declaration order is what breaks the tie.
 terminal RAW_TEMPLATE: /"\$\{(\\.|[^"\\])*"|'\$\{(\\.|[^'\\])*'/;
 
 terminal STRING: /"(\\.|[^"\\])*"|'(\\.|[^'\\])*'/;

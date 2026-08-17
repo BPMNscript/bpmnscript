@@ -1,7 +1,7 @@
 /**
  * `bpmns build` action.
  *
- * Drives the full DSL → BPMN XML pipeline:
+ * Drives the full DSL -> BPMN XML pipeline:
  *
  *   .bpmnscript  ──Langium parse──►  AST
  *                ──structural validate──►  (errors reported)
@@ -10,9 +10,9 @@
  *                ──write to disk──►  .bpmn file
  *
  * Exit codes:
- *   0  — success
- *   1  — validation errors (Langium diagnostics)
- *   2  — I/O errors (file not found, cannot write output)
+ *   0  - success
+ *   1  - validation errors (Langium diagnostics)
+ *   2  - I/O errors (file not found, cannot write output)
  */
 
 import {
@@ -113,7 +113,7 @@ export async function buildAction(
 
   const ast = document.parseResult?.value as Model;
 
-  // ── 4. AST → IR ──────────────────────────────────────────────────────────
+  // ── 4. AST -> IR ─────────────────────────────────────────────────────────
   let ir;
   try {
     ir = astToIr(ast);
@@ -126,7 +126,7 @@ export async function buildAction(
     process.exit(1);
   }
 
-  // ── 5. IR → BPMN XML ─────────────────────────────────────────────────────
+  // ── 5. IR -> BPMN XML ────────────────────────────────────────────────────
   let xml;
   try {
     xml = await irToXml(ir, {

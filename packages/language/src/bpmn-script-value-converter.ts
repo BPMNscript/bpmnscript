@@ -1,22 +1,15 @@
 /**
  * Normalizes `OnHandler.time` so a timer's time string has the same shape
- * regardless of which grammar alternative produced it.
+ * whichever grammar alternative produced it.
  *
- * `time=(STRING | RAW_TEMPLATE)` lets an author write a plain duration/date/
- * cycle string (`after "PT1H"`) or an EL template (`after "${dueDate}"`) in
- * the same position. Langium's {@link DefaultValueConverter} only auto-
- * unquotes a match by rule name for `STRING` (and `INT`/`ID`) — a
- * `RAW_TEMPLATE` match is returned verbatim, quotes included, because the
- * grammar's other use of that terminal (`RawExpr.raw`) deliberately keeps its
- * quotes for `expression-render.ts` to strip. Left alone, the two `time`
- * alternatives would therefore disagree on shape: `PT1H` vs `"${dueDate}"`.
- *
- * This converter unquotes `RAW_TEMPLATE` exactly where it fills `time` (found
- * by walking up from the matched CST node to its enclosing grammar
- * `Assignment` and checking its `feature` name), so `after "${dueDate}"`
- * yields `${dueDate}` — the same normalized shape a `STRING` alternative
- * would yield for its content. Every other `RAW_TEMPLATE` match (`RawExpr.raw`)
- * is untouched.
+ * `time=(STRING | RAW_TEMPLATE)` accepts a plain duration/date/cycle string
+ * (`after "PT1H"`) or an EL template (`after "${dueDate}"`). Langium's
+ * `DefaultValueConverter` auto-unquotes by rule name for `STRING` but returns a
+ * `RAW_TEMPLATE` match verbatim, quotes included, because the terminal's other
+ * use (`RawExpr.raw`) needs its quotes kept for `expression-render.ts` to
+ * strip. Left alone the two alternatives would disagree: `PT1H` vs
+ * `"${dueDate}"`. Unquoting `RAW_TEMPLATE` only where it fills `time` leaves
+ * every `RawExpr.raw` match untouched.
  */
 
 import {

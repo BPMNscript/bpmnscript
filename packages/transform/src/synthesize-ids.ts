@@ -1,12 +1,12 @@
 /**
  * Deterministic synthesized-id utility for BPMNscript.
  *
- * Pure functions — no I/O, no globals, no traversal-order-dependent counters.
+ * Pure functions: no I/O, no globals, no traversal-order-dependent counters.
  * Every id is derived exclusively from the structural coordinates passed in.
  *
- * These templates change only in lockstep with their consumers — `ast-to-ir.ts`,
- * `ir-to-dsl.ts`, and the round-trip normalizer (`tests/helpers/normalize-ir.ts`)
- * — because decompile round-trip id stability depends on reproducing them exactly.
+ * These templates change only in lockstep with their consumers (`ast-to-ir.ts`,
+ * `ir-to-dsl.ts`, and the round-trip normalizer `tests/helpers/normalize-ir.ts`)
+ * because decompile round-trip id stability depends on reproducing them exactly.
  *
  * Template                          Produced by           Example
  * ──────────────────────────────────────────────────────────────────────────
@@ -29,35 +29,29 @@
  * Boundary_<hostId>_<trigger>_2     makeBoundaryEventId   (second occurrence of same pair)
  * ──────────────────────────────────────────────────────────────────────────
  *
- * `Throw_<X>` (an unnamed `throw`/`emit` at coordinate `<X>`), `EventSubProcess_<X>`
- * (an `on` handler at coordinate `<X>`), and `Catch_<X>` (an `await` at coordinate
- * `<X>`) are **positional** — the coordinate is the statement's unique static
- * position, so they are collision-free by construction and take no `taken` set.
- * The validator reserves the anchored `Throw_`/`EventSubProcess_`/`Catch_`
- * prefixes so an author-chosen name can never occupy one.
+ * `Throw_<X>`, `EventSubProcess_<X>`, and `Catch_<X>` are positional: `<X>` is
+ * the statement's unique static position, so they are collision-free by
+ * construction and take no `taken` set. The validator reserves those prefixes
+ * so an author-chosen name can never occupy one.
  *
- * `Boundary_<hostId>_<trigger>` (a hosted `on <Host>: <trigger>` handler) is
- * **host-derived**, not positional, and takes a `taken` set like the implicit
- * start/end constructors: the host id and the trigger word are both authored
- * text that survives a round-trip verbatim, so the id stays put no matter
- * where the decompiler places the handler in its container's statement list —
- * a positional coordinate would drift the moment the printer reorders
- * handlers to the end of the body, exactly the instability `normalizeIr`
- * already canonicalizes away for event sub-processes. Two boundaries sharing
- * one host and trigger (e.g. two `timer` boundaries, which carry no engine
- * subscription key and so are not rejected as duplicates) collide on the base
- * id and are told apart by the numeric suffix.
+ * `Boundary_<hostId>_<trigger>` is host-derived rather than positional, and so
+ * takes a `taken` set. Host id and trigger are both authored text that survives
+ * a round-trip verbatim, keeping the id put wherever the decompiler places the
+ * handler in its container's statement list; a positional coordinate would
+ * drift as soon as the printer moves handlers to the end of the body. Two
+ * boundaries sharing one host and trigger (two `timer` boundaries, say) collide
+ * on the base id and are told apart by the numeric suffix.
  *
  * Collision resolution (used internally and exposed as `resolveCollision`):
- *   - If the base id is not in the taken set → return it unchanged.
- *   - Otherwise try `<base>_2`, `<base>_3`, … until a free slot is found.
+ *   - If the base id is not in the taken set, return it unchanged.
+ *   - Otherwise try `<base>_2`, `<base>_3`, ... until a free slot is found.
  *   - `makeSequenceFlowId`, `makeStartEventId`, and `makeEndEventId` add the
  *     returned id to the taken set themselves; a caller using
  *     `resolveCollision` directly must record the returned id itself.
  */
 
 // ---------------------------------------------------------------------------
-// Gateway / flow id constructors — pure string templates over the enclosing
+// Gateway / flow id constructors: pure string templates over the enclosing
 // compound statement's id (see the table above).
 // ---------------------------------------------------------------------------
 
@@ -68,7 +62,7 @@ export function makeGatewaySplitId(enclosingId: string): string {
 
 /**
  * Convergence gateway: `Gateway_<enclosingId>_join`. Shared by the XOR join
- * (after `if`/`else`) and the AND join (after `parallel`) — either way there
+ * (after `if`/`else`) and the AND join (after `parallel`); either way there
  * is exactly one convergence point per enclosing construct id.
  */
 export function makeGatewayJoinId(enclosingId: string): string {
@@ -92,7 +86,7 @@ export function makeDefaultFlowId(gatewayId: string): string {
 
 /**
  * Id for a plain sequence flow between two elements:
- * `Flow_<sourceId>_<targetId>`, with `_2`/`_3`/… suffixes for repeated
+ * `Flow_<sourceId>_<targetId>`, with `_2`/`_3`/... suffixes for repeated
  * occurrences of the same pair. Adds the returned id to `taken`.
  */
 export function makeSequenceFlowId(
@@ -130,7 +124,7 @@ export function makeStartEventId(
 /**
  * Id for an implicit end event synthesized when the source omits `end`:
  * `EndEvent_<processId>`. Multiple implicit ends are allowed; duplicates
- * receive numeric suffixes (`_2`, `_3`, …). Adds the returned id to `taken`.
+ * receive numeric suffixes (`_2`, `_3`, ...). Adds the returned id to `taken`.
  */
 export function makeEndEventId(processId: string, taken: Set<string>): string {
   const base = `EndEvent_${processId}`;
@@ -140,49 +134,41 @@ export function makeEndEventId(processId: string, taken: Set<string>): string {
 }
 
 // ---------------------------------------------------------------------------
-// Event id constructors — positional, collision-free by construction
+// Event id constructors: positional, collision-free by construction
 // ---------------------------------------------------------------------------
 
 /**
- * Id for an unnamed `throw` (typed end event) or `emit` (intermediate throw
- * event) at structural coordinate `<X>`: `Throw_<X>`. `<X>` is the statement's
- * enclosing-block coordinate joined with its index, so the id is unique by
- * position and needs no collision resolution. An author-chosen name on the
- * `throw`/`emit` is used verbatim instead of this template.
+ * `Throw_<X>` for an unnamed `throw` (typed end event) or `emit` (intermediate
+ * throw event). `<X>` is the enclosing-block coordinate joined with the
+ * statement index, so the id is unique by position. An author-chosen name is
+ * used verbatim instead of this template.
  */
 export function makeThrowEventId(x: string): string {
   return `Throw_${x}`;
 }
 
 /**
- * Id for an `on` handler — an event sub-process — at structural coordinate
- * `<X>`: `EventSubProcess_<X>`. A handler is a single-block compound indexed
- * like any statement, so its coordinate is unique by position and the id needs
- * no collision resolution. The handler body's implicit start/end seed from this
- * id (`StartEvent_<id>` / `EndEvent_<id>`, the container-id rule).
+ * `EventSubProcess_<X>` for an `on` handler at structural coordinate `<X>`. The
+ * handler body's implicit start/end seed from this id (`StartEvent_<id>` /
+ * `EndEvent_<id>`), following the container-id rule.
  */
 export function makeEventSubProcessId(x: string): string {
   return `EventSubProcess_${x}`;
 }
 
 /**
- * Id for an `await` (intermediate catch event) at structural coordinate
- * `<X>`: `Catch_<X>`. Positional like `makeThrowEventId`, whose mirror this
- * is: `await` carries no authored name — a trial `name=ID` slot collided
- * with the timer particle at the token level, so the surface deliberately
- * has no name to prefer over the synthesized id — so the coordinate is
- * unique by position and the id needs no collision resolution.
+ * `Catch_<X>` for an `await` (intermediate catch event). Positional like
+ * `makeThrowEventId`; `await` carries no authored name, so there is nothing to
+ * prefer over the synthesized id.
  */
 export function makeIntermediateCatchEventId(x: string): string {
   return `Catch_${x}`;
 }
 
 /**
- * Id for a boundary event — a hosted `on <Host>: <trigger>` handler attached
- * to an activity: `Boundary_<hostId>_<trigger>`. Unlike `Throw_<X>` /
- * `EventSubProcess_<X>`, this id is host-derived rather than positional (see
- * the template table above for why); it therefore needs collision resolution
- * like the implicit start/end constructors. Adds the returned id to `taken`.
+ * `Boundary_<hostId>_<trigger>` for a hosted `on <Host>: <trigger>` handler
+ * attached to an activity. Host-derived rather than positional (see the header
+ * for why), so it needs collision resolution. Adds the returned id to `taken`.
  */
 export function makeBoundaryEventId(
   hostId: string,
@@ -200,8 +186,8 @@ export function makeBoundaryEventId(
 // ---------------------------------------------------------------------------
 
 /**
- * Return the first id in the sequence `base`, `base_2`, `base_3`, … that is
- * not present in `taken`. Does not mutate `taken` — the caller records the
+ * Return the first id in the sequence `base`, `base_2`, `base_3`, ... that is
+ * not present in `taken`. Does not mutate `taken`; the caller records the
  * returned id if needed.
  */
 export function resolveCollision(base: string, taken: Set<string>): string {

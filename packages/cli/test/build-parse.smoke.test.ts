@@ -5,9 +5,9 @@
  * using real files, real Langium services, and real transforms. No mocks.
  *
  * Test matrix:
- *  1. buildAction(invoice-approval.bpmnscript) → .bpmn file; xmlToIr of the
+ *  1. buildAction(invoice-approval.bpmnscript) -> .bpmn file; xmlToIr of the
  *     output does not throw; process key is `invoice-approval`.
- *  2. parseAction(invoice-approval-generated.bpmn) → .bpmnscript file;
+ *  2. parseAction(invoice-approval-generated.bpmn) -> .bpmnscript file;
  *     re-parsing yields zero errors.
  *  3. Severity-gating regression:
  *     a. A source with an undeclared-variable WARNING builds successfully.
@@ -25,7 +25,7 @@
  *   `buildAction` / `parseAction` call `process.exit()` directly. To avoid
  *   terminating the test process, we spy on `process.exit` and replace it with
  *   a throwing stub. We restore the original after each test. `vi.spyOn` with
- *   `mockImplementation` is the correct mechanism here — the spy records the
+ *   `mockImplementation` is the correct mechanism here: the spy records the
  *   exit code so we can assert on it.
  */
 
@@ -185,7 +185,7 @@ describe('parseAction smoke', () => {
 });
 
 /**
- * A BPMN process whose only supported subset is start → user task → end, but
+ * A BPMN process whose only supported subset is start -> user task -> end, but
  * the task carries a dropped Operaton extension attribute (`asyncBefore`,
  * beyond the supported assignee/formKey/class set) and the process defines a
  * lane. Both are non-semantic drops: `xmlToIr` warns instead of refusing.
@@ -230,7 +230,7 @@ describe('parseAction — import-warning surfacing', () => {
       // Success path: process.exit must never be called; exit code stays 0.
       expect(exitSpy).not.toHaveBeenCalled();
 
-      // The parse still succeeds — the output file is written.
+      // The parse still succeeds, so the output file is written.
       expect(fs.existsSync(outDsl)).toBe(true);
 
       const stderrOutput = errorSpy.mock.calls
@@ -249,12 +249,11 @@ describe('parseAction — import-warning surfacing', () => {
 });
 
 /**
- * A parallel fork with a back-edge into it (`B → Fork`): structurally valid
- * BPMN that `xmlToIr` imports, but not expressible as a nested `parallel { … }`.
+ * A parallel fork with a back-edge into it (`B -> Fork`): structurally valid
+ * BPMN that `xmlToIr` imports, but not expressible as a nested `parallel { ... }`.
  * By the time the back-arrival is realized the fork's out-edges are consumed, so
  * the decompiler leaves the hand-repair marker comment rather than a `goto` into
- * the fork. Only hand-built / hostile input produces this; the compiler never
- * emits it.
+ * the fork. Only hand-built input produces this; the compiler never emits it.
  */
 const UNSTRUCTURED_FORK_BPMN = `<?xml version="1.0" encoding="UTF-8"?>
 <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
@@ -289,16 +288,13 @@ describe('parseAction — unstructured-region hand-repair warning', () => {
 
       await parseAction(srcFile, { output: outDsl });
 
-      // Success path: the marker is a signal, not a failure — exit stays 0.
       expect(exitSpy).not.toHaveBeenCalled();
 
-      // The file is still written (the marker keeps the output parseable).
       expect(fs.existsSync(outDsl)).toBe(true);
       expect(fs.readFileSync(outDsl, 'utf-8')).toContain(
         '// unstructured region: hand-repair required',
       );
 
-      // The yellow hand-repair warning is surfaced on stderr.
       const stderrOutput = errorSpy.mock.calls
         .map((call) => String(call[0]))
         .join('\n');
@@ -308,7 +304,7 @@ describe('parseAction — unstructured-region hand-repair warning', () => {
   });
 });
 
-/** A start event with a timer definition — refused via UnsupportedEventDefinitionError. */
+/** A start event with a timer definition, refused via UnsupportedEventDefinitionError. */
 const TIMER_START_BPMN = `<?xml version="1.0" encoding="UTF-8"?>
 <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
                   targetNamespace="http://test">
@@ -414,7 +410,6 @@ describe('severity-gating regression', () => {
       // The output file must be written.
       expect(fs.existsSync(outBpmn)).toBe(true);
 
-      // The undeclared-variable warning is surfaced on stderr, non-fatally.
       const stderrOutput = errorSpy.mock.calls
         .map((call) => String(call[0]))
         .join('\n');

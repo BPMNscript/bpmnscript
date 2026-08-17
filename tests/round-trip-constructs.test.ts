@@ -244,17 +244,17 @@ describe('parallel round-trip (parallelGateway fork/join ⇒ parallel { { } { } 
 // ===========================================================================
 // Goto-degradation (the data-loss path).
 //
-// Import the unstructured cross-branching fixture → `irToDsl` falls back to
-// `goto` for the edges it cannot fold → re-parse → re-desugar. Every edge in
-// this fixture has a `goto` form, so the full set of connections between
-// authored nodes survives, across a SECOND round-trip too. The edges that have
-// no form at all — a jump into a gateway that still chooses, and a surplus
-// out-edge — are covered in `goto-fallback.round-trip.test.ts`.
+// Import the unstructured cross-branching fixture, let `irToDsl` fall back to
+// `goto` for the edges it cannot fold, then re-parse and re-desugar. Every edge
+// in this fixture has a `goto` form, so the full set of connections between
+// authored nodes survives, across a second round-trip too. The edges that have
+// no form at all, a jump into a gateway that still chooses and a surplus
+// out-edge, are covered by the goto-fallback suite.
 // ===========================================================================
 
 describe('goto-degradation preserves the edges that have a goto form', () => {
   let irImport: BpmnProcess; // from xmlToIr(unstructured.bpmn)
-  let degradedDsl: string; // irToDsl(irImport) — contains goto(s)
+  let degradedDsl: string; // irToDsl(irImport), contains goto(s)
   let irReDesugared: BpmnProcess; // astToIr(parse(degradedDsl))
   let irSecondRound: BpmnProcess; // astToIr(parse(irToDsl(irReDesugared)))
 
