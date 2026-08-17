@@ -1,7 +1,7 @@
 /**
  * `bpmns parse` action.
  *
- * Drives the BPMN XML → DSL pipeline:
+ * Drives the BPMN XML -> DSL pipeline:
  *
  *   .bpmn  ──read file──►  XML string
  *          ──xmlToIr──►  IR
@@ -9,13 +9,14 @@
  *          ──write to disk──►  .bpmnscript file
  *
  * Exit codes:
- *   0  — success (non-fatal import warnings, if any, are printed to stderr
+ *   0  - success (non-fatal import warnings, if any, are printed to stderr
  *         but do not change the exit code)
- *   1  — unsupported BPMN construct (any UnsupportedConstructError subclass:
+ *   1  - unsupported BPMN construct (any UnsupportedConstructError subclass:
  *         UnsupportedServiceTaskFormError, UnsupportedElementError,
- *         UnsupportedEventDefinitionError, UnsupportedLoopCharacteristicsError,
- *         UnsupportedCollaborationError)
- *   2  — I/O errors (file not found, cannot write output)
+ *         UnsupportedEventDefinitionError, UnsupportedEventFeatureError,
+ *         UnsupportedLoopCharacteristicsError, UnsupportedCollaborationError,
+ *         UnsupportedCallActivityError)
+ *   2  - I/O errors (file not found, cannot write output)
  */
 
 import chalk from 'chalk';
@@ -26,6 +27,7 @@ import * as path from 'node:path';
 import {
   xmlToIr,
   irToDsl,
+  UNSTRUCTURED_MARKER,
   UnsupportedConstructError,
   UnsupportedServiceTaskFormError,
   UnsupportedElementError,
@@ -69,7 +71,7 @@ export async function parseAction(
     process.exit(2);
   }
 
-  // ── 4. XML → IR ──────────────────────────────────────────────────────────
+  // ── 4. XML -> IR ─────────────────────────────────────────────────────────
   let ir;
   let warnings: ImportWarning[];
   try {
@@ -80,7 +82,9 @@ export async function parseAction(
         chalk.red(
           `Error: unsupported service task form in ${fileName}:\n` +
             `  Service task '${err.serviceTaskId}' uses '${err.construct}'.\n` +
-            '  Only operaton:class (or the deprecated camunda:class alias) is supported.',
+            '  Supported forms are a Java class (operaton:class, or the deprecated ' +
+            'camunda:class alias), an expression, a delegate expression, or an ' +
+            'external task topic.',
         ),
       );
       process.exit(1);
@@ -113,7 +117,7 @@ export async function parseAction(
     process.exit(2);
   }
 
-  // ── 5. IR → DSL ──────────────────────────────────────────────────────────
+  // ── 5. IR -> DSL ─────────────────────────────────────────────────────────
   let dsl: string;
   try {
     dsl = irToDsl(ir);
@@ -146,5 +150,17 @@ export async function parseAction(
   // Warnings go to stderr and do not change the exit code.
   for (const w of warnings) {
     console.error(chalk.yellow(`Warning: ${w.message}`));
+  }
+
+  // An edge the decompiler could not express leaves a marker comment in the
+  // output. The output is still written (the marker keeps it parseable) and the
+  // exit code is unchanged, so the dropped edge has to be warned about: only a
+  // human can put that control flow back.
+  if (dsl.includes(UNSTRUCTURED_MARKER)) {
+    console.error(
+      chalk.yellow(
+        'Warning: the decompiled model contains an unstructured region that needs hand-repair (see the marker comment). At least one sequence flow could not be expressed and was dropped.',
+      ),
+    );
   }
 }

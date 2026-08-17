@@ -74,6 +74,89 @@
       ]
     },
     {
+      "name": "CallActivityLike",
+      "extends": ["bpmn:CallActivity"],
+      "properties": [
+        {
+          "name": "calledElementBinding",
+          "isAttr": true,
+          "type": "String"
+        },
+        {
+          "name": "calledElementVersion",
+          "isAttr": true,
+          "type": "String"
+        }
+      ]
+    },
+    {
+      "name": "In",
+      "superClass": ["Element"],
+      "properties": [
+        {
+          "name": "source",
+          "isAttr": true,
+          "type": "String"
+        },
+        {
+          "name": "sourceExpression",
+          "isAttr": true,
+          "type": "String"
+        },
+        {
+          "name": "variables",
+          "isAttr": true,
+          "type": "String"
+        },
+        {
+          "name": "target",
+          "isAttr": true,
+          "type": "String"
+        },
+        {
+          "name": "businessKey",
+          "isAttr": true,
+          "type": "String"
+        },
+        {
+          "name": "local",
+          "isAttr": true,
+          "type": "Boolean"
+        }
+      ]
+    },
+    {
+      "name": "Out",
+      "superClass": ["Element"],
+      "properties": [
+        {
+          "name": "source",
+          "isAttr": true,
+          "type": "String"
+        },
+        {
+          "name": "sourceExpression",
+          "isAttr": true,
+          "type": "String"
+        },
+        {
+          "name": "variables",
+          "isAttr": true,
+          "type": "String"
+        },
+        {
+          "name": "target",
+          "isAttr": true,
+          "type": "String"
+        },
+        {
+          "name": "local",
+          "isAttr": true,
+          "type": "Boolean"
+        }
+      ]
+    },
+    {
       "name": "FormData",
       "superClass": ["Element"],
       "properties": [
@@ -205,6 +288,47 @@
         },
         {
           "name": "delegateExpression",
+          "isAttr": true,
+          "type": "String"
+        }
+      ]
+    },
+    {
+      "name": "ErrorEventDefinition",
+      "isAbstract": true,
+      "extends": ["bpmn:ErrorEventDefinition"],
+      "properties": [
+        {
+          "name": "errorCodeVariable",
+          "isAttr": true,
+          "type": "String"
+        },
+        {
+          "name": "errorMessageVariable",
+          "isAttr": true,
+          "type": "String"
+        }
+      ]
+    },
+    {
+      "name": "EscalationEventDefinition",
+      "isAbstract": true,
+      "extends": ["bpmn:EscalationEventDefinition"],
+      "properties": [
+        {
+          "name": "escalationCodeVariable",
+          "isAttr": true,
+          "type": "String"
+        }
+      ]
+    },
+    {
+      "name": "Error",
+      "isAbstract": true,
+      "extends": ["bpmn:Error"],
+      "properties": [
+        {
+          "name": "errorMessage",
           "isAttr": true,
           "type": "String"
         }

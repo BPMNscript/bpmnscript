@@ -1,0 +1,108 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI" xmlns:dc="http://www.omg.org/spec/DD/20100524/DC" xmlns:di="http://www.omg.org/spec/DD/20100524/DI" xmlns:operaton="http://operaton.org/schema/1.0/bpmn" id="Definitions_order-processing" targetNamespace="http://bpmnscript.io/processes" exporter="BPMNscript" exporterVersion="0.0.0">
+  <bpmn:process id="order-processing" name="Order Processing" isExecutable="true" operaton:historyTimeToLive="P30D">
+    <bpmn:startEvent id="OrderReceived">
+      <bpmn:outgoing>Flow_OrderReceived_ReviewOrder</bpmn:outgoing>
+    </bpmn:startEvent>
+    <bpmn:userTask id="ReviewOrder" name="Review the order" operaton:assignee="demo">
+      <bpmn:incoming>Flow_OrderReceived_ReviewOrder</bpmn:incoming>
+      <bpmn:outgoing>Flow_ReviewOrder_Catch_order-processing_2</bpmn:outgoing>
+    </bpmn:userTask>
+    <bpmn:intermediateCatchEvent id="Catch_order-processing_2">
+      <bpmn:incoming>Flow_ReviewOrder_Catch_order-processing_2</bpmn:incoming>
+      <bpmn:outgoing>Flow_Catch_order-processing_2_Catch_order-processing_3</bpmn:outgoing>
+      <bpmn:messageEventDefinition messageRef="Message_PaymentConfirmed" />
+    </bpmn:intermediateCatchEvent>
+    <bpmn:intermediateCatchEvent id="Catch_order-processing_3">
+      <bpmn:incoming>Flow_Catch_order-processing_2_Catch_order-processing_3</bpmn:incoming>
+      <bpmn:outgoing>Flow_Catch_order-processing_3_Catch_order-processing_4</bpmn:outgoing>
+      <bpmn:timerEventDefinition>
+        <bpmn:timeDuration xsi:type="bpmn:tFormalExpression">PT1H</bpmn:timeDuration>
+      </bpmn:timerEventDefinition>
+    </bpmn:intermediateCatchEvent>
+    <bpmn:intermediateCatchEvent id="Catch_order-processing_4">
+      <bpmn:incoming>Flow_Catch_order-processing_3_Catch_order-processing_4</bpmn:incoming>
+      <bpmn:outgoing>Flow_Catch_order-processing_4_Catch_order-processing_5</bpmn:outgoing>
+      <bpmn:signalEventDefinition signalRef="Signal_StockReplenished" />
+    </bpmn:intermediateCatchEvent>
+    <bpmn:intermediateCatchEvent id="Catch_order-processing_5">
+      <bpmn:incoming>Flow_Catch_order-processing_4_Catch_order-processing_5</bpmn:incoming>
+      <bpmn:outgoing>Flow_Catch_order-processing_5_DispatchOrder</bpmn:outgoing>
+      <bpmn:conditionalEventDefinition>
+        <bpmn:condition xsi:type="bpmn:tFormalExpression">${amount &gt; 100}</bpmn:condition>
+      </bpmn:conditionalEventDefinition>
+    </bpmn:intermediateCatchEvent>
+    <bpmn:serviceTask id="DispatchOrder" name="Dispatch the order" operaton:class="com.example.orders.DispatchDelegate">
+      <bpmn:incoming>Flow_Catch_order-processing_5_DispatchOrder</bpmn:incoming>
+      <bpmn:outgoing>Flow_DispatchOrder_OrderDispatched</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:endEvent id="OrderDispatched">
+      <bpmn:incoming>Flow_DispatchOrder_OrderDispatched</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:sequenceFlow id="Flow_OrderReceived_ReviewOrder" sourceRef="OrderReceived" targetRef="ReviewOrder" />
+    <bpmn:sequenceFlow id="Flow_ReviewOrder_Catch_order-processing_2" sourceRef="ReviewOrder" targetRef="Catch_order-processing_2" />
+    <bpmn:sequenceFlow id="Flow_Catch_order-processing_2_Catch_order-processing_3" sourceRef="Catch_order-processing_2" targetRef="Catch_order-processing_3" />
+    <bpmn:sequenceFlow id="Flow_Catch_order-processing_3_Catch_order-processing_4" sourceRef="Catch_order-processing_3" targetRef="Catch_order-processing_4" />
+    <bpmn:sequenceFlow id="Flow_Catch_order-processing_4_Catch_order-processing_5" sourceRef="Catch_order-processing_4" targetRef="Catch_order-processing_5" />
+    <bpmn:sequenceFlow id="Flow_Catch_order-processing_5_DispatchOrder" sourceRef="Catch_order-processing_5" targetRef="DispatchOrder" />
+    <bpmn:sequenceFlow id="Flow_DispatchOrder_OrderDispatched" sourceRef="DispatchOrder" targetRef="OrderDispatched" />
+  </bpmn:process>
+  <bpmn:message id="Message_PaymentConfirmed" name="PaymentConfirmed" />
+  <bpmn:signal id="Signal_StockReplenished" name="StockReplenished" />
+  <bpmndi:BPMNDiagram id="BPMNDiagram_order-processing">
+    <bpmndi:BPMNPlane id="BPMNPlane_order-processing" bpmnElement="order-processing">
+      <bpmndi:BPMNShape id="OrderReceived_di" bpmnElement="OrderReceived">
+        <dc:Bounds x="57" y="52" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="ReviewOrder_di" bpmnElement="ReviewOrder">
+        <dc:Bounds x="175" y="30" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Catch_order-processing_2_di" bpmnElement="Catch_order-processing_2">
+        <dc:Bounds x="357" y="52" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Catch_order-processing_3_di" bpmnElement="Catch_order-processing_3">
+        <dc:Bounds x="507" y="52" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Catch_order-processing_4_di" bpmnElement="Catch_order-processing_4">
+        <dc:Bounds x="657" y="52" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Catch_order-processing_5_di" bpmnElement="Catch_order-processing_5">
+        <dc:Bounds x="807" y="52" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="DispatchOrder_di" bpmnElement="DispatchOrder">
+        <dc:Bounds x="925" y="30" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="OrderDispatched_di" bpmnElement="OrderDispatched">
+        <dc:Bounds x="1107" y="52" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_OrderReceived_ReviewOrder_di" bpmnElement="Flow_OrderReceived_ReviewOrder">
+        <di:waypoint x="93" y="70" />
+        <di:waypoint x="175" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ReviewOrder_Catch_order-processing_2_di" bpmnElement="Flow_ReviewOrder_Catch_order-processing_2">
+        <di:waypoint x="275" y="70" />
+        <di:waypoint x="357" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Catch_order-processing_2_Catch_order-processing_3_di" bpmnElement="Flow_Catch_order-processing_2_Catch_order-processing_3">
+        <di:waypoint x="393" y="70" />
+        <di:waypoint x="507" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Catch_order-processing_3_Catch_order-processing_4_di" bpmnElement="Flow_Catch_order-processing_3_Catch_order-processing_4">
+        <di:waypoint x="543" y="70" />
+        <di:waypoint x="657" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Catch_order-processing_4_Catch_order-processing_5_di" bpmnElement="Flow_Catch_order-processing_4_Catch_order-processing_5">
+        <di:waypoint x="693" y="70" />
+        <di:waypoint x="807" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Catch_order-processing_5_DispatchOrder_di" bpmnElement="Flow_Catch_order-processing_5_DispatchOrder">
+        <di:waypoint x="843" y="70" />
+        <di:waypoint x="925" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_DispatchOrder_OrderDispatched_di" bpmnElement="Flow_DispatchOrder_OrderDispatched">
+        <di:waypoint x="1025" y="70" />
+        <di:waypoint x="1107" y="70" />
+      </bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>

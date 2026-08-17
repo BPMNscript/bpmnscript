@@ -1,7 +1,7 @@
 /**
  * Cross-stage round-trip smoke for the executable task bindings and inline
- * script task: service `expression`, service `delegate`, `external`, and
- * `script`.
+ * script task: service `expression`, service `delegate`, service `topic`,
+ * and `script`.
  *
  * Each single-stage transform (desugar, generate, decompile, print) already
  * has its own focused tests. What none of them catches on its own is a
@@ -29,7 +29,7 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 
 import { EmptyFileSystem } from 'langium';
-import { parseHelper } from 'langium/test';
+import { parseHelper, validationHelper } from 'langium/test';
 import { createBpmnScriptServices } from '@bpmn-script/language';
 import type { Model } from '@bpmn-script/language';
 
@@ -55,10 +55,10 @@ const SERVICE_DELEGATE_SRC =
   '  end Done\n' +
   '}\n';
 
-const EXTERNAL_TASK_SRC =
+const SERVICE_TOPIC_SRC =
   'process shipment-label {\n' +
   '  start OrderPlaced\n' +
-  '  external PrintLabel { topic = "print-label" }\n' +
+  '  service PrintLabel { topic = "print-label" }\n' +
   '  end Done\n' +
   '}\n';
 
@@ -77,10 +77,12 @@ const SCRIPT_TASK_SRC =
 // ---------------------------------------------------------------------------
 
 let parse: ReturnType<typeof parseHelper<Model>>;
+let validate: ReturnType<typeof validationHelper<Model>>;
 
 beforeAll(() => {
   const services = createBpmnScriptServices(EmptyFileSystem);
   parse = parseHelper<Model>(services.BpmnScript);
+  validate = validationHelper<Model>(services.BpmnScript);
 });
 
 /**
@@ -214,17 +216,17 @@ describe('round-trip: service task with a `delegate` binding (delegateExpression
 });
 
 // ===========================================================================
-// `external` task.
+// service `topic` binding, the external-worker form.
 // ===========================================================================
 
-describe('round-trip: `external` task with a `topic`', () => {
+describe('round-trip: service task with a `topic` binding', () => {
   let irInitial: BpmnProcess;
   let xml: string;
   let irImported: BpmnProcess;
   let reemittedDsl: string;
 
   beforeAll(async () => {
-    irInitial = astToIr(await parseToAst(EXTERNAL_TASK_SRC));
+    irInitial = astToIr(await parseToAst(SERVICE_TOPIC_SRC));
     xml = await irToXml(irInitial);
     ({ ir: irImported } = await xmlToIr(xml));
     reemittedDsl = irToDsl(irImported);
@@ -249,8 +251,8 @@ describe('round-trip: `external` task with a `topic`', () => {
     });
   });
 
-  it('re-emits `external … { topic = "…" }` and re-parses with zero errors', async () => {
-    expect(reemittedDsl).toContain('external PrintLabel');
+  it('re-emits `service … { topic = "…" }` and re-parses with zero errors', async () => {
+    expect(reemittedDsl).toContain('service PrintLabel');
     expect(reemittedDsl).toContain('topic = "print-label"');
     const document = await parse(reemittedDsl);
     expect(document.parseResult.parserErrors).toHaveLength(0);
@@ -301,5 +303,10 @@ describe('round-trip: `script` task with a fenced body', () => {
     );
     const document = await parse(reemittedDsl);
     expect(document.parseResult.parserErrors).toHaveLength(0);
+  });
+
+  it('the decompiled DSL recompiles without validation errors', async () => {
+    const { diagnostics } = await validate(reemittedDsl);
+    expect(diagnostics.filter((d) => d.severity === 1)).toEqual([]);
   });
 });

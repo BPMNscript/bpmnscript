@@ -1,0 +1,129 @@
+// Boundary-event round-trip fixture: one parcel-dispatch narrative that
+// exercises attached handlers end to end, across every host kind a boundary can
+// attach to.
+//
+// A parcel order is checked for a deliverable address, packed, costed, paid
+// for, labelled, booked onto a carrier, and handed to the driver. Nine things
+// can interrupt a running step along the way, each written as an
+// `on <host>: <trigger>` handler attached to the step it can hit:
+//
+//   - the address check can be settled externally — an `AddressVerified`
+//     message from the address service ends the check and rejoins the main flow
+//     at packing (`goto PackGoods`);
+//   - the same check can drag on, so a four-hour timer nudges the clerk
+//     `alongside` a check that stays open;
+//   - packing fails when the carrier rejects the address: the escape chain has
+//     the address corrected, notifies the insurance desk when the declared
+//     parcel value warrants it (`if`), and records the fix;
+//   - packing also flags an oversized parcel, which arranges a freight
+//     forwarder `alongside` the packing that keeps running;
+//   - the shipping calculation can run long, so a one-hour timer nudges the
+//     delay desk `alongside` a `script` task that keeps computing;
+//   - the postage charge can be declined by the gateway, so an interrupting
+//     error boundary on a `class`-bound service task routes to a manual review;
+//   - the label print can be pre-empted by an expedite request from the
+//     warehouse, so an interrupting message boundary on a `topic`-bound service
+//     task — the delegated-to-an-external-worker binding — reroutes to an
+//     expedited shipment;
+//   - a `CarrierStrike` signal cancels the carrier booking so an alternate
+//     carrier is booked instead;
+//   - the ramp scales report an overweight parcel during the hand-over, which
+//     calls a forklift `alongside` a hand-over that stays open.
+//
+// One process-wide handler guards the whole run: the same `CarrierStrike`
+// signal is recorded centrally wherever the process happens to be, so a
+// host-less handler is pinned to coexist with the attached ones and both signal
+// sites are pinned to share one root.
+//
+// The `if` and condition variables are declared on the start form so they
+// survive an import-and-back round-trip, the escalation is emitted under an
+// explicit id so its printed id re-parses cleanly, and every label differs from
+// the name humanised from its id. See README.md.
+
+process parcel-dispatch {
+  error "ADDRESS_REJECTED" message "The carrier rejected the delivery address"
+  error "PAYMENT_DECLINED" message "The payment gateway declined the charge"
+
+  start ParcelOrdered {
+    form {
+      weight: number "Parcel weight in kilograms"
+      parcelValue: number "Declared parcel value"
+    }
+  }
+
+  user CheckAddress "Check the delivery address" { assignee = "demo" }
+
+  subprocess PackGoods "Pack the goods" {
+    start PackStart
+    service PickItems "Pick the items from the shelves" { class = "com.example.dispatch.PickDelegate" }
+    emit escalation Oversized "OVERSIZED_PARCEL"
+    service SealParcel "Seal the parcel" { class = "com.example.dispatch.SealDelegate" }
+    end PackDone
+  }
+
+  script ComputeShipping "Compute the shipping cost" ```groovy
+def shippingCost = weight * 2.5
+execution.setVariable("shippingCost", shippingCost)
+```
+
+  service ChargePostage "Charge the postage" { class = "com.example.dispatch.PostageDelegate" }
+
+  service PrintLabel "Print the shipping label" { topic = "print-label" }
+
+  call BookCarrier "Book the carrier" {
+    process = "carrier-booking"
+    in weight
+    out trackingCode
+  }
+
+  user HandOverParcel "Hand the parcel to the driver" { assignee = "demo" }
+
+  end ParcelDispatched
+
+  on CheckAddress: message "AddressVerified" {
+    service MarkAddressVerified "Record the external address verification" { class = "com.example.dispatch.VerifyDelegate" }
+    goto PackGoods
+  }
+
+  on CheckAddress: timer after "PT4H" alongside {
+    service SendAddressReminder "Remind the clerk about the address" { class = "com.example.dispatch.ReminderDelegate" }
+  }
+
+  on PackGoods: error "ADDRESS_REJECTED" (code c, message m) {
+    user CorrectAddress "Correct the delivery address" { assignee = "demo" }
+    if (parcelValue > 500) {
+      service NotifyInsuranceDesk "Notify the insurance desk" { class = "com.example.dispatch.InsuranceDelegate" }
+    }
+    service RecordAddressFix "Record the corrected address" { class = "com.example.dispatch.RecordFixDelegate" }
+  }
+
+  on PackGoods: escalation "OVERSIZED_PARCEL" (code e) alongside {
+    user ArrangeFreight "Arrange a freight forwarder" { assignee = "manager" }
+  }
+
+  on ComputeShipping: timer after "PT1H" alongside {
+    service NotifyShippingDelay "Notify the shipping delay desk" { class = "com.example.dispatch.DelayDelegate" }
+  }
+
+  on ChargePostage: error "PAYMENT_DECLINED" {
+    user ReviewPayment "Review the declined payment" { assignee = "demo" }
+  }
+
+  on PrintLabel: message "ExpediteRequested" {
+    service ExpediteShipment "Expedite the shipment" { class = "com.example.dispatch.ExpediteDelegate" }
+  }
+
+  on BookCarrier: signal "CarrierStrike" {
+    service BookAlternateCarrier "Book an alternate carrier" { class = "com.example.dispatch.AlternateCarrierDelegate" }
+  }
+
+  on HandOverParcel: condition (weight > 30) alongside {
+    service CallForklift "Call a forklift to the ramp" { class = "com.example.dispatch.ForkliftDelegate" }
+  }
+
+  on signal "CarrierStrike" alongside {
+    start StrikeNoted
+    service RecordCarrierStrike "Record the carrier strike" { class = "com.example.dispatch.StrikeLogDelegate" }
+    end StrikeRecorded
+  }
+}

@@ -1,0 +1,81 @@
+// Event-layer round-trip fixture: one order-fulfilment narrative that exercises
+// the DSL's message, signal, timer, and conditional triggers end to end.
+//
+//   - an `on message "…"` handler at process level (the process's inbox);
+//   - a `subprocess` owning three handlers at once: a reminder
+//     `on timer after "…" alongside`, an `on condition (…) alongside` watchdog
+//     whose condition reads a declared form variable, and an interrupting
+//     `on timer at "…"` purge, so the duration and date timer forms sit side by
+//     side on one container;
+//   - an `on signal "…"` handler, plus an `emit signal Notify "…"` (broadcast and
+//     keep going, goto-targeted) and a terminal `throw signal Announce "…"`
+//     (broadcast and end this path) of the SAME signal name, so all three share
+//     one root;
+//   - a `var timer: string` read in a service expression, pinning that the timer
+//     particle words coexist with same-named variables.
+//
+// The condition variable is declared on the start form so it survives an
+// import-and-back round-trip. Every handler opens with an explicit trigger
+// `start` and closes with an explicit `end`, and every throw/emit is explicitly
+// named so its printed id re-parses cleanly. See README.md.
+
+process order-fulfilment {
+  var timer: string
+
+  start OrderPlaced {
+    form {
+      priority: number "Order priority"
+      stockLevel: number "Available stock"
+    }
+  }
+
+  user ReviewOrder "Review the order" { assignee = "demo" }
+  service ScheduleReminder "Schedule the reminder" { expression = "${reminderService.schedule(timer)}" }
+
+  subprocess FulfilOrder "Fulfil the order" {
+    start FulfilStart
+    service ReserveStock "Reserve the stock" { class = "com.example.orders.ReserveStockDelegate" }
+    service PackParcel "Pack the parcel" { class = "com.example.orders.PackParcelDelegate" }
+    end FulfilDone
+
+    on timer after "PT2H" alongside {
+      start RemindStart
+      user ChaseWarehouse "Chase the warehouse" { assignee = "demo" }
+      end RemindDone
+    }
+    on condition (stockLevel < 5) alongside {
+      start LowStockStart
+      service ReorderStock "Reorder the stock" { class = "com.example.orders.ReorderDelegate" }
+      end LowStockDone
+    }
+    on timer at "2026-08-01T09:00:00" {
+      start PurgeStart
+      service PurgeDraft "Purge the draft" { class = "com.example.orders.PurgeDelegate" }
+      end PurgeDone
+    }
+  }
+
+  service ShipParcel "Ship the parcel" { class = "com.example.orders.ShipDelegate" }
+
+  if (priority > 5) {
+    service ExpediteDispatch "Expedite the dispatch" { class = "com.example.orders.ExpediteDelegate" }
+    goto Notify
+  } else {
+    service StandardDispatch "Dispatch normally" { class = "com.example.orders.DispatchDelegate" }
+  }
+
+  emit signal Notify "OrderFulfilled"
+
+  throw signal Announce "OrderFulfilled"
+
+  on message "OrderCancelled" {
+    start CancelledStart
+    service RollbackOrder "Roll back the order" { class = "com.example.orders.RollbackDelegate" }
+    end CancelledDone
+  }
+  on signal "OrderFulfilled" alongside {
+    start FulfilledStart
+    user ArchiveOrder "Archive the order manually" { assignee = "demo" }
+    end FulfilledDone
+  }
+}

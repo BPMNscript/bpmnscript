@@ -1,8 +1,8 @@
 /**
  * Public API of the `@bpmn-script/transform` package.
  *
- * All transforms are exported here: IR types, IR → XML, XML → IR,
- * AST → IR, and IR → DSL.
+ * All transforms are exported here: IR types, IR -> XML, XML -> IR,
+ * AST -> IR, and IR -> DSL.
  *
  * Note on `bpmn-auto-layout` version: this package depends on
  * `bpmn-auto-layout@^1.2.0` rather than `0.3.x`.
@@ -13,6 +13,7 @@
  */
 
 export type {
+  FlowContainer,
   BpmnProcess,
   FlowElement,
   StartEvent,
@@ -22,7 +23,15 @@ export type {
   ScriptTask,
   ExclusiveGateway,
   ParallelGateway,
+  SubProcess,
+  CallActivity,
+  CalledElementBinding,
+  CallVariableMapping,
   SequenceFlow,
+  EventDefinition,
+  IntermediateThrowEvent,
+  IntermediateCatchEvent,
+  BoundaryEvent,
 } from './ir/types.js';
 
 export {
@@ -34,6 +43,7 @@ export {
   makeSequenceFlowId,
   makeStartEventId,
   makeEndEventId,
+  makeBoundaryEventId,
   resolveCollision,
 } from './synthesize-ids.js';
 
@@ -47,27 +57,13 @@ export {
   UnsupportedConstructError,
   UnsupportedElementError,
   UnsupportedServiceTaskFormError,
+  UnsupportedFormFieldTypeError,
   UnsupportedEventDefinitionError,
+  UnsupportedEventFeatureError,
   UnsupportedLoopCharacteristicsError,
   UnsupportedCollaborationError,
+  UnsupportedCallActivityError,
 } from './errors.js';
 
 export { astToIr } from './ast-to-ir.js';
-export { irToDsl } from './ir-to-dsl.js';
-
-/**
- * Runtime-visible list of all IR type names exported from this package.
- * Useful for introspection and validates that the module loaded correctly.
- */
-export const IR_TYPE_NAMES = [
-  'BpmnProcess',
-  'FlowElement',
-  'StartEvent',
-  'EndEvent',
-  'UserTask',
-  'ServiceTask',
-  'ScriptTask',
-  'ExclusiveGateway',
-  'ParallelGateway',
-  'SequenceFlow',
-] as const;
+export { irToDsl, UNSTRUCTURED_MARKER } from './ir-to-dsl.js';

@@ -1,0 +1,84 @@
+// Compensation round-trip fixture: one trip-booking saga that exercises the
+// undo layer end to end, alongside an error and an escalation handler
+// (cross-kind interplay).
+//
+//   - two `subprocess`es each owning an `on compensation` undo block — the
+//     flight booking reverses in one step, the hotel booking reverses with an
+//     `if` (undo logic beyond a single step) reading a declared form variable;
+//   - an `error … message` declaration and a process-level `on error` handler
+//     whose body raises a named `emit compensation Undo` (undo the completed
+//     bookings) and then keeps going to notify the traveller — pinning that an
+//     `emit` continues its path;
+//   - a matching `emit escalation Overspend` in the main flow and a process-level
+//     `on escalation` handler that gives up: it records the abandonment and ends
+//     the path with a named `throw compensation CancelAll` (undo everything, end);
+//   - a `var compensation: number` read in a service expression, pinning that the
+//     compensation particle word coexists with a same-named variable.
+//
+// The undo `if` reads `seats`, declared on the start form so it survives an
+// import-and-back round-trip. Every handler opens with an explicit trigger
+// `start`, and every throw/emit is explicitly named so its printed id re-parses
+// as an authored name rather than a reserved coordinate. See README.md.
+
+process trip-booking {
+  error "BOOKING_FAILED" message "The trip booking could not be completed"
+  var compensation: number
+
+  start TripRequested {
+    form {
+      seats: number "Number of travellers"
+      budget: number "Traveller budget"
+    }
+  }
+
+  user ReviewRequest "Review the trip request" { assignee = "demo" }
+  service ReserveBudget "Reserve the compensation budget" { expression = "${ledgerService.reserve(compensation)}" }
+
+  subprocess BookFlight "Book the flight" {
+    start FlightStart
+    service ReserveSeats "Reserve the flight seats" { class = "com.example.trip.ReserveSeatsDelegate" }
+    end FlightBooked
+
+    on compensation {
+      start CancelFlightStart
+      service ReleaseSeats "Release the flight seats" { class = "com.example.trip.ReleaseSeatsDelegate" }
+      end CancelFlightDone
+    }
+  }
+
+  subprocess BookHotel "Book the hotel" {
+    start HotelStart
+    service ReserveRoom "Reserve the hotel room" { class = "com.example.trip.ReserveRoomDelegate" }
+    end HotelBooked
+
+    on compensation {
+      start CancelHotelStart
+      if (seats > 1) {
+        service RefundGroupDeposit "Refund the group deposit" { class = "com.example.trip.RefundDepositDelegate" }
+      }
+      service ReleaseRoom "Release the hotel room" { class = "com.example.trip.ReleaseRoomDelegate" }
+      end CancelHotelDone
+    }
+  }
+
+  service ConfirmItinerary "Confirm the itinerary" { class = "com.example.trip.ConfirmDelegate" }
+
+  if (budget < 500) {
+    emit escalation Overspend "BUDGET_EXCEEDED"
+  }
+
+  service FinaliseBooking "Finalise the booking" { class = "com.example.trip.FinaliseDelegate" }
+  end TripConfirmed
+
+  on error "BOOKING_FAILED" (code c, message m) {
+    start CaughtBooking
+    emit compensation Undo
+    user NotifyTraveller "Notify the traveller" { assignee = "demo" }
+    end BookingHandled
+  }
+  on escalation "BUDGET_EXCEEDED" (code v) {
+    start CaughtOverspend
+    service RecordAbandonment "Record the abandoned trip" { class = "com.example.trip.RecordAbandonmentDelegate" }
+    throw compensation CancelAll
+  }
+}

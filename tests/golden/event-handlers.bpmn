@@ -1,0 +1,349 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI" xmlns:dc="http://www.omg.org/spec/DD/20100524/DC" xmlns:di="http://www.omg.org/spec/DD/20100524/DI" xmlns:operaton="http://operaton.org/schema/1.0/bpmn" id="Definitions_order-processing" targetNamespace="http://bpmnscript.io/processes" exporter="BPMNscript" exporterVersion="0.0.0">
+  <bpmn:process id="order-processing" name="Order Processing" isExecutable="true" operaton:historyTimeToLive="P30D">
+    <bpmn:startEvent id="OrderReceived">
+      <bpmn:extensionElements>
+        <operaton:formData>
+          <operaton:formField id="amount" label="Order amount" type="long" />
+          <operaton:formField id="message" label="Gateway message" type="string" />
+        </operaton:formData>
+      </bpmn:extensionElements>
+      <bpmn:outgoing>Flow_OrderReceived_CheckStock</bpmn:outgoing>
+    </bpmn:startEvent>
+    <bpmn:userTask id="CheckStock" name="Verify stock levels" operaton:assignee="demo">
+      <bpmn:incoming>Flow_OrderReceived_CheckStock</bpmn:incoming>
+      <bpmn:outgoing>Flow_CheckStock_ProcessPayment</bpmn:outgoing>
+    </bpmn:userTask>
+    <bpmn:subProcess id="ProcessPayment" name="Settle the payment">
+      <bpmn:incoming>Flow_CheckStock_ProcessPayment</bpmn:incoming>
+      <bpmn:outgoing>Flow_ProcessPayment_ShipOrder</bpmn:outgoing>
+      <bpmn:startEvent id="PaymentStart">
+        <bpmn:outgoing>Flow_PaymentStart_ChargeCard</bpmn:outgoing>
+      </bpmn:startEvent>
+      <bpmn:serviceTask id="ChargeCard" name="Charge the card" operaton:class="com.example.orders.ChargeCardDelegate">
+        <bpmn:incoming>Flow_PaymentStart_ChargeCard</bpmn:incoming>
+        <bpmn:outgoing>Flow_ChargeCard_Gateway_order-processing_2_2_split</bpmn:outgoing>
+      </bpmn:serviceTask>
+      <bpmn:exclusiveGateway id="Gateway_order-processing_2_2_split" default="Flow_Gateway_order-processing_2_2_split_default">
+        <bpmn:incoming>Flow_ChargeCard_Gateway_order-processing_2_2_split</bpmn:incoming>
+        <bpmn:outgoing>Flow_Gateway_order-processing_2_2_split_PaymentFailed</bpmn:outgoing>
+        <bpmn:outgoing>Flow_Gateway_order-processing_2_2_split_default</bpmn:outgoing>
+      </bpmn:exclusiveGateway>
+      <bpmn:exclusiveGateway id="Gateway_order-processing_2_2_join">
+        <bpmn:incoming>Flow_Gateway_order-processing_2_2_split_default</bpmn:incoming>
+        <bpmn:outgoing>Flow_Gateway_order-processing_2_2_join_AuthorizeFunds</bpmn:outgoing>
+      </bpmn:exclusiveGateway>
+      <bpmn:endEvent id="PaymentFailed">
+        <bpmn:incoming>Flow_Gateway_order-processing_2_2_split_PaymentFailed</bpmn:incoming>
+        <bpmn:errorEventDefinition errorRef="Error_PAYMENT_DECLINED" />
+      </bpmn:endEvent>
+      <bpmn:serviceTask id="AuthorizeFunds" name="Authorize the funds" operaton:class="com.example.orders.AuthorizeDelegate">
+        <bpmn:incoming>Flow_Gateway_order-processing_2_2_join_AuthorizeFunds</bpmn:incoming>
+        <bpmn:outgoing>Flow_AuthorizeFunds_Throw_order-processing_2_4</bpmn:outgoing>
+      </bpmn:serviceTask>
+      <bpmn:intermediateThrowEvent id="Throw_order-processing_2_4">
+        <bpmn:incoming>Flow_AuthorizeFunds_Throw_order-processing_2_4</bpmn:incoming>
+        <bpmn:outgoing>Flow_Throw_order-processing_2_4_ConfirmOrder</bpmn:outgoing>
+        <bpmn:escalationEventDefinition escalationRef="Escalation_MANUAL_REVIEW" />
+      </bpmn:intermediateThrowEvent>
+      <bpmn:serviceTask id="ConfirmOrder" name="Confirm the order" operaton:class="com.example.orders.ConfirmDelegate">
+        <bpmn:incoming>Flow_Throw_order-processing_2_4_ConfirmOrder</bpmn:incoming>
+        <bpmn:outgoing>Flow_ConfirmOrder_PaymentDone</bpmn:outgoing>
+      </bpmn:serviceTask>
+      <bpmn:endEvent id="PaymentDone">
+        <bpmn:incoming>Flow_ConfirmOrder_PaymentDone</bpmn:incoming>
+      </bpmn:endEvent>
+      <bpmn:subProcess id="EventSubProcess_order-processing_2_7" triggeredByEvent="true">
+        <bpmn:startEvent id="CaughtPayment">
+          <bpmn:outgoing>Flow_CaughtPayment_NotifyCustomer</bpmn:outgoing>
+          <bpmn:errorEventDefinition errorRef="Error_PAYMENT_DECLINED" operaton:errorCodeVariable="c" operaton:errorMessageVariable="m" />
+        </bpmn:startEvent>
+        <bpmn:userTask id="NotifyCustomer" name="Notify the customer" operaton:assignee="demo">
+          <bpmn:incoming>Flow_CaughtPayment_NotifyCustomer</bpmn:incoming>
+          <bpmn:outgoing>Flow_NotifyCustomer_PaymentHandled</bpmn:outgoing>
+        </bpmn:userTask>
+        <bpmn:endEvent id="PaymentHandled">
+          <bpmn:incoming>Flow_NotifyCustomer_PaymentHandled</bpmn:incoming>
+        </bpmn:endEvent>
+        <bpmn:sequenceFlow id="Flow_CaughtPayment_NotifyCustomer" sourceRef="CaughtPayment" targetRef="NotifyCustomer" />
+        <bpmn:sequenceFlow id="Flow_NotifyCustomer_PaymentHandled" sourceRef="NotifyCustomer" targetRef="PaymentHandled" />
+      </bpmn:subProcess>
+      <bpmn:sequenceFlow id="Flow_PaymentStart_ChargeCard" sourceRef="PaymentStart" targetRef="ChargeCard" />
+      <bpmn:sequenceFlow id="Flow_Gateway_order-processing_2_2_split_PaymentFailed" name="message == &#34;declined&#34;" sourceRef="Gateway_order-processing_2_2_split" targetRef="PaymentFailed">
+        <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">${message == "declined"}</bpmn:conditionExpression>
+      </bpmn:sequenceFlow>
+      <bpmn:sequenceFlow id="Flow_Gateway_order-processing_2_2_split_default" sourceRef="Gateway_order-processing_2_2_split" targetRef="Gateway_order-processing_2_2_join" />
+      <bpmn:sequenceFlow id="Flow_ChargeCard_Gateway_order-processing_2_2_split" sourceRef="ChargeCard" targetRef="Gateway_order-processing_2_2_split" />
+      <bpmn:sequenceFlow id="Flow_Gateway_order-processing_2_2_join_AuthorizeFunds" sourceRef="Gateway_order-processing_2_2_join" targetRef="AuthorizeFunds" />
+      <bpmn:sequenceFlow id="Flow_AuthorizeFunds_Throw_order-processing_2_4" sourceRef="AuthorizeFunds" targetRef="Throw_order-processing_2_4" />
+      <bpmn:sequenceFlow id="Flow_Throw_order-processing_2_4_ConfirmOrder" sourceRef="Throw_order-processing_2_4" targetRef="ConfirmOrder" />
+      <bpmn:sequenceFlow id="Flow_ConfirmOrder_PaymentDone" sourceRef="ConfirmOrder" targetRef="PaymentDone" />
+    </bpmn:subProcess>
+    <bpmn:serviceTask id="ShipOrder" name="Dispatch the order" operaton:class="com.example.orders.ShipDelegate">
+      <bpmn:incoming>Flow_ProcessPayment_ShipOrder</bpmn:incoming>
+      <bpmn:outgoing>Flow_ShipOrder_Gateway_order-processing_4_split</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:exclusiveGateway id="Gateway_order-processing_4_split" default="Flow_Gateway_order-processing_4_split_default">
+      <bpmn:incoming>Flow_ShipOrder_Gateway_order-processing_4_split</bpmn:incoming>
+      <bpmn:outgoing>Flow_Gateway_order-processing_4_split_FlagForReview</bpmn:outgoing>
+      <bpmn:outgoing>Flow_Gateway_order-processing_4_split_default</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+    <bpmn:exclusiveGateway id="Gateway_order-processing_4_join">
+      <bpmn:incoming>Flow_Gateway_order-processing_4_split_default</bpmn:incoming>
+      <bpmn:outgoing>Flow_Gateway_order-processing_4_join_SettleAccounts</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+    <bpmn:serviceTask id="SettleAccounts" name="Settle the ledger" operaton:class="com.example.orders.LedgerDelegate">
+      <bpmn:incoming>Flow_Gateway_order-processing_4_join_SettleAccounts</bpmn:incoming>
+      <bpmn:outgoing>Flow_SettleAccounts_OrderCompleted</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:endEvent id="OrderCompleted">
+      <bpmn:incoming>Flow_SettleAccounts_OrderCompleted</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:intermediateThrowEvent id="FlagForReview">
+      <bpmn:incoming>Flow_Gateway_order-processing_4_split_FlagForReview</bpmn:incoming>
+      <bpmn:outgoing>Flow_FlagForReview_Throw_order-processing_8</bpmn:outgoing>
+      <bpmn:escalationEventDefinition escalationRef="Escalation_MANUAL_REVIEW" />
+    </bpmn:intermediateThrowEvent>
+    <bpmn:endEvent id="Throw_order-processing_8">
+      <bpmn:incoming>Flow_FlagForReview_Throw_order-processing_8</bpmn:incoming>
+      <bpmn:escalationEventDefinition escalationRef="Escalation_ORDER_ABANDONED" />
+    </bpmn:endEvent>
+    <bpmn:subProcess id="EventSubProcess_order-processing_9" triggeredByEvent="true">
+      <bpmn:startEvent id="CaughtReview" isInterrupting="false">
+        <bpmn:outgoing>Flow_CaughtReview_ReviewOrder</bpmn:outgoing>
+        <bpmn:escalationEventDefinition escalationRef="Escalation_MANUAL_REVIEW" operaton:escalationCodeVariable="v" />
+      </bpmn:startEvent>
+      <bpmn:userTask id="ReviewOrder" name="Review the order manually" operaton:assignee="demo">
+        <bpmn:incoming>Flow_CaughtReview_ReviewOrder</bpmn:incoming>
+        <bpmn:outgoing>Flow_ReviewOrder_ReviewHandled</bpmn:outgoing>
+      </bpmn:userTask>
+      <bpmn:endEvent id="ReviewHandled">
+        <bpmn:incoming>Flow_ReviewOrder_ReviewHandled</bpmn:incoming>
+      </bpmn:endEvent>
+      <bpmn:sequenceFlow id="Flow_CaughtReview_ReviewOrder" sourceRef="CaughtReview" targetRef="ReviewOrder" />
+      <bpmn:sequenceFlow id="Flow_ReviewOrder_ReviewHandled" sourceRef="ReviewOrder" targetRef="ReviewHandled" />
+    </bpmn:subProcess>
+    <bpmn:subProcess id="EventSubProcess_order-processing_10" triggeredByEvent="true">
+      <bpmn:startEvent id="CaughtAny">
+        <bpmn:outgoing>Flow_CaughtAny_RecordFailure</bpmn:outgoing>
+        <bpmn:errorEventDefinition />
+      </bpmn:startEvent>
+      <bpmn:serviceTask id="RecordFailure" name="Record the failure" operaton:class="com.example.orders.RecordFailureDelegate">
+        <bpmn:incoming>Flow_CaughtAny_RecordFailure</bpmn:incoming>
+        <bpmn:outgoing>Flow_RecordFailure_FailureHandled</bpmn:outgoing>
+      </bpmn:serviceTask>
+      <bpmn:endEvent id="FailureHandled">
+        <bpmn:incoming>Flow_RecordFailure_FailureHandled</bpmn:incoming>
+      </bpmn:endEvent>
+      <bpmn:sequenceFlow id="Flow_CaughtAny_RecordFailure" sourceRef="CaughtAny" targetRef="RecordFailure" />
+      <bpmn:sequenceFlow id="Flow_RecordFailure_FailureHandled" sourceRef="RecordFailure" targetRef="FailureHandled" />
+    </bpmn:subProcess>
+    <bpmn:sequenceFlow id="Flow_OrderReceived_CheckStock" sourceRef="OrderReceived" targetRef="CheckStock" />
+    <bpmn:sequenceFlow id="Flow_CheckStock_ProcessPayment" sourceRef="CheckStock" targetRef="ProcessPayment" />
+    <bpmn:sequenceFlow id="Flow_ProcessPayment_ShipOrder" sourceRef="ProcessPayment" targetRef="ShipOrder" />
+    <bpmn:sequenceFlow id="Flow_Gateway_order-processing_4_split_FlagForReview" name="amount &#62; 1000" sourceRef="Gateway_order-processing_4_split" targetRef="FlagForReview">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">${amount &gt; 1000}</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="Flow_Gateway_order-processing_4_split_default" sourceRef="Gateway_order-processing_4_split" targetRef="Gateway_order-processing_4_join" />
+    <bpmn:sequenceFlow id="Flow_ShipOrder_Gateway_order-processing_4_split" sourceRef="ShipOrder" targetRef="Gateway_order-processing_4_split" />
+    <bpmn:sequenceFlow id="Flow_Gateway_order-processing_4_join_SettleAccounts" sourceRef="Gateway_order-processing_4_join" targetRef="SettleAccounts" />
+    <bpmn:sequenceFlow id="Flow_SettleAccounts_OrderCompleted" sourceRef="SettleAccounts" targetRef="OrderCompleted" />
+    <bpmn:sequenceFlow id="Flow_FlagForReview_Throw_order-processing_8" sourceRef="FlagForReview" targetRef="Throw_order-processing_8" />
+  </bpmn:process>
+  <bpmn:error id="Error_PAYMENT_DECLINED" name="PAYMENT_DECLINED" errorCode="PAYMENT_DECLINED" operaton:errorMessage="The payment was declined by the bank" />
+  <bpmn:escalation id="Escalation_MANUAL_REVIEW" name="MANUAL_REVIEW" escalationCode="MANUAL_REVIEW" />
+  <bpmn:escalation id="Escalation_ORDER_ABANDONED" name="ORDER_ABANDONED" escalationCode="ORDER_ABANDONED" />
+  <bpmndi:BPMNDiagram id="BPMNDiagram_order-processing">
+    <bpmndi:BPMNPlane id="BPMNPlane_order-processing" bpmnElement="order-processing">
+      <bpmndi:BPMNShape id="OrderReceived_di" bpmnElement="OrderReceived">
+        <dc:Bounds x="57" y="52" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="CheckStock_di" bpmnElement="CheckStock">
+        <dc:Bounds x="625" y="30" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="ProcessPayment_di" bpmnElement="ProcessPayment" isExpanded="true">
+        <dc:Bounds x="775" y="30" width="1900" height="500" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="ShipOrder_di" bpmnElement="ShipOrder">
+        <dc:Bounds x="2725" y="30" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_order-processing_4_split_di" bpmnElement="Gateway_order-processing_4_split" isMarkerVisible="true">
+        <dc:Bounds x="2900" y="45" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="FlagForReview_di" bpmnElement="FlagForReview">
+        <dc:Bounds x="3057" y="52" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Throw_order-processing_8_di" bpmnElement="Throw_order-processing_8">
+        <dc:Bounds x="3207" y="52" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_order-processing_4_join_di" bpmnElement="Gateway_order-processing_4_join" isMarkerVisible="true">
+        <dc:Bounds x="3350" y="45" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="SettleAccounts_di" bpmnElement="SettleAccounts">
+        <dc:Bounds x="3475" y="30" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="OrderCompleted_di" bpmnElement="OrderCompleted">
+        <dc:Bounds x="3657" y="52" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="EventSubProcess_order-processing_9_di" bpmnElement="EventSubProcess_order-processing_9" isExpanded="true">
+        <dc:Bounds x="25" y="590" width="550" height="220" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="EventSubProcess_order-processing_10_di" bpmnElement="EventSubProcess_order-processing_10" isExpanded="true">
+        <dc:Bounds x="25" y="870" width="550" height="220" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_OrderReceived_CheckStock_di" bpmnElement="Flow_OrderReceived_CheckStock">
+        <di:waypoint x="93" y="70" />
+        <di:waypoint x="625" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_CheckStock_ProcessPayment_di" bpmnElement="Flow_CheckStock_ProcessPayment">
+        <di:waypoint x="725" y="70" />
+        <di:waypoint x="775" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ProcessPayment_ShipOrder_di" bpmnElement="Flow_ProcessPayment_ShipOrder">
+        <di:waypoint x="2675" y="70" />
+        <di:waypoint x="2725" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ShipOrder_Gateway_order-processing_4_split_di" bpmnElement="Flow_ShipOrder_Gateway_order-processing_4_split">
+        <di:waypoint x="2825" y="70" />
+        <di:waypoint x="2900" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Gateway_order-processing_4_split_FlagForReview_di" bpmnElement="Flow_Gateway_order-processing_4_split_FlagForReview">
+        <di:waypoint x="2950" y="70" />
+        <di:waypoint x="3057" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Gateway_order-processing_4_split_default_di" bpmnElement="Flow_Gateway_order-processing_4_split_default">
+        <di:waypoint x="2925" y="95" />
+        <di:waypoint x="2925" y="140" />
+        <di:waypoint x="3375" y="140" />
+        <di:waypoint x="3375" y="95" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_FlagForReview_Throw_order-processing_8_di" bpmnElement="Flow_FlagForReview_Throw_order-processing_8">
+        <di:waypoint x="3093" y="70" />
+        <di:waypoint x="3207" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Gateway_order-processing_4_join_SettleAccounts_di" bpmnElement="Flow_Gateway_order-processing_4_join_SettleAccounts">
+        <di:waypoint x="3400" y="70" />
+        <di:waypoint x="3475" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_SettleAccounts_OrderCompleted_di" bpmnElement="Flow_SettleAccounts_OrderCompleted">
+        <di:waypoint x="3575" y="70" />
+        <di:waypoint x="3657" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNShape id="CaughtAny_di" bpmnElement="CaughtAny">
+        <dc:Bounds x="132" y="962" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="RecordFailure_di" bpmnElement="RecordFailure">
+        <dc:Bounds x="250" y="940" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="FailureHandled_di" bpmnElement="FailureHandled">
+        <dc:Bounds x="432" y="962" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_CaughtAny_RecordFailure_di" bpmnElement="Flow_CaughtAny_RecordFailure">
+        <di:waypoint x="168" y="980" />
+        <di:waypoint x="250" y="980" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_RecordFailure_FailureHandled_di" bpmnElement="Flow_RecordFailure_FailureHandled">
+        <di:waypoint x="350" y="980" />
+        <di:waypoint x="432" y="980" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNShape id="CaughtReview_di" bpmnElement="CaughtReview">
+        <dc:Bounds x="132" y="682" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="ReviewOrder_di" bpmnElement="ReviewOrder">
+        <dc:Bounds x="250" y="660" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="ReviewHandled_di" bpmnElement="ReviewHandled">
+        <dc:Bounds x="432" y="682" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_CaughtReview_ReviewOrder_di" bpmnElement="Flow_CaughtReview_ReviewOrder">
+        <di:waypoint x="168" y="700" />
+        <di:waypoint x="250" y="700" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ReviewOrder_ReviewHandled_di" bpmnElement="Flow_ReviewOrder_ReviewHandled">
+        <di:waypoint x="350" y="700" />
+        <di:waypoint x="432" y="700" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNShape id="PaymentStart_di" bpmnElement="PaymentStart">
+        <dc:Bounds x="882" y="122" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="ChargeCard_di" bpmnElement="ChargeCard">
+        <dc:Bounds x="1450" y="100" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_order-processing_2_2_split_di" bpmnElement="Gateway_order-processing_2_2_split" isMarkerVisible="true">
+        <dc:Bounds x="1625" y="115" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="PaymentFailed_di" bpmnElement="PaymentFailed">
+        <dc:Bounds x="1782" y="122" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_order-processing_2_2_join_di" bpmnElement="Gateway_order-processing_2_2_join" isMarkerVisible="true">
+        <dc:Bounds x="1925" y="115" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="AuthorizeFunds_di" bpmnElement="AuthorizeFunds">
+        <dc:Bounds x="2050" y="100" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Throw_order-processing_2_4_di" bpmnElement="Throw_order-processing_2_4">
+        <dc:Bounds x="2232" y="122" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="ConfirmOrder_di" bpmnElement="ConfirmOrder">
+        <dc:Bounds x="2350" y="100" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="PaymentDone_di" bpmnElement="PaymentDone">
+        <dc:Bounds x="2532" y="122" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="EventSubProcess_order-processing_2_7_di" bpmnElement="EventSubProcess_order-processing_2_7" isExpanded="true">
+        <dc:Bounds x="850" y="240" width="550" height="220" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_PaymentStart_ChargeCard_di" bpmnElement="Flow_PaymentStart_ChargeCard">
+        <di:waypoint x="918" y="140" />
+        <di:waypoint x="1450" y="140" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ChargeCard_Gateway_order-processing_2_2_split_di" bpmnElement="Flow_ChargeCard_Gateway_order-processing_2_2_split">
+        <di:waypoint x="1550" y="140" />
+        <di:waypoint x="1625" y="140" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Gateway_order-processing_2_2_split_PaymentFailed_di" bpmnElement="Flow_Gateway_order-processing_2_2_split_PaymentFailed">
+        <di:waypoint x="1675" y="140" />
+        <di:waypoint x="1782" y="140" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Gateway_order-processing_2_2_split_default_di" bpmnElement="Flow_Gateway_order-processing_2_2_split_default">
+        <di:waypoint x="1650" y="165" />
+        <di:waypoint x="1650" y="140" />
+        <di:waypoint x="1950" y="140" />
+        <di:waypoint x="1950" y="165" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Gateway_order-processing_2_2_join_AuthorizeFunds_di" bpmnElement="Flow_Gateway_order-processing_2_2_join_AuthorizeFunds">
+        <di:waypoint x="1975" y="140" />
+        <di:waypoint x="2050" y="140" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_AuthorizeFunds_Throw_order-processing_2_4_di" bpmnElement="Flow_AuthorizeFunds_Throw_order-processing_2_4">
+        <di:waypoint x="2150" y="140" />
+        <di:waypoint x="2232" y="140" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Throw_order-processing_2_4_ConfirmOrder_di" bpmnElement="Flow_Throw_order-processing_2_4_ConfirmOrder">
+        <di:waypoint x="2268" y="140" />
+        <di:waypoint x="2350" y="140" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ConfirmOrder_PaymentDone_di" bpmnElement="Flow_ConfirmOrder_PaymentDone">
+        <di:waypoint x="2450" y="140" />
+        <di:waypoint x="2532" y="140" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNShape id="CaughtPayment_di" bpmnElement="CaughtPayment">
+        <dc:Bounds x="957" y="332" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="NotifyCustomer_di" bpmnElement="NotifyCustomer">
+        <dc:Bounds x="1075" y="310" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="PaymentHandled_di" bpmnElement="PaymentHandled">
+        <dc:Bounds x="1257" y="332" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_CaughtPayment_NotifyCustomer_di" bpmnElement="Flow_CaughtPayment_NotifyCustomer">
+        <di:waypoint x="993" y="350" />
+        <di:waypoint x="1075" y="350" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_NotifyCustomer_PaymentHandled_di" bpmnElement="Flow_NotifyCustomer_PaymentHandled">
+        <di:waypoint x="1175" y="350" />
+        <di:waypoint x="1257" y="350" />
+      </bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>

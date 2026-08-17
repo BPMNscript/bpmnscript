@@ -1,22 +1,24 @@
 /**
- * CFG analysis utility — dominators, post-dominators, and back-edges.
+ * CFG analysis utility: dominators, post-dominators, and back-edges.
  *
  * This is pure graph machinery with **no DSL knowledge**. It builds a
- * control-flow graph (CFG) from a {@link BpmnProcess} (nodes = flow
+ * control-flow graph (CFG) from a {@link FlowContainer} (nodes = flow
  * elements, edges = sequence flows), then answers the dominance and
  * back-edge queries the restructuring `irToDsl` pattern catalogue
- * needs to recognize structured regions.
+ * needs to recognize structured regions. It reads only a container's
+ * `flowElements`/`sequenceFlows`, so it runs identically on a whole process
+ * or on a single sub-process body.
  *
  * ## What the catalogue gets
  * - `immediateDominator(n)` / `immediatePostDominator(n)`
- * - `dominates(a, b)` / `postDominates(a, b)` (reflexive — a node
+ * - `dominates(a, b)` / `postDominates(a, b)` (reflexive: a node
  *   dominates itself)
- * - `backEdges()` — every edge `u → v` where `v` dominates `u`
- * - `outgoing(n)` / `incoming(n)` — raw adjacency
+ * - `backEdges()`: every edge `u -> v` where `v` dominates `u`
+ * - `outgoing(n)` / `incoming(n)`: raw adjacency
  *
  * ## Gateway agnosticism
  * The CFG layer does **not** care whether a node is an exclusive or a
- * parallel gateway — a diamond of `parallelGateway`s yields exactly the
+ * parallel gateway: a diamond of `parallelGateway`s yields exactly the
  * same dominator / post-dominator relations as the same shape built from
  * `exclusiveGateway`s. The `irToDsl` pattern catalogue is the only layer that
  * distinguishes the two.
@@ -24,10 +26,19 @@
  * ## Virtual entry / exit (single-source, single-sink)
  * Dominator analysis needs a single root; post-dominator analysis needs a
  * single sink. We synthesize:
- * - {@link VIRTUAL_ENTRY}: edges to every start event, and — defensively —
- *   to every real node that has no real predecessor (so a hand-built IR
- *   with no `startEvent` still has a root). Unreachable nodes are
- *   deliberately **not** wired to the entry; see "Unreachable nodes".
+ * - {@link VIRTUAL_ENTRY}: edges to every start event, to every boundary
+ *   event, and, defensively, to every other real node that has no real
+ *   predecessor (so a hand-built IR with no `startEvent` still has a root).
+ *   A boundary event has no incoming sequence flow by construction: its
+ *   token appears when its host activity is running and the trigger fires,
+ *   never by traversing a flow edge. Without this wiring its whole escape
+ *   chain would be unreachable and nothing in it could be recognized as an
+ *   `if`/`while`. The accepted trade-off: a node reachable from both the
+ *   main flow and an escape chain has only the virtual entry (their nearest
+ *   common ancestor) as its immediate dominator, so a structured region
+ *   whose join a boundary chain jumps into degrades to `goto`s on decompile.
+ *   Unreachable nodes are deliberately **not** wired to the entry; see
+ *   "Unreachable nodes".
  * - {@link VIRTUAL_EXIT}: an edge from every end event, and from every real
  *   node with no real successor, so multi-exit processes have one sink and
  *   the sink post-dominates every real end.
@@ -39,15 +50,17 @@
  * for post-dominators.
  *
  * ## Unreachable nodes (degenerate but possible in hand-built IR)
- * A node with no path from the virtual entry has **no** immediate dominator
- * — `immediateDominator(n)` returns `undefined`, and it neither dominates
- * nor is dominated by anything. All queries stay **total**: every helper
- * returns a defined value (never throws) for unknown ids, unreachable
- * nodes, and the virtual sentinels alike. Symmetrically, a node that cannot
- * reach the virtual exit has no immediate post-dominator.
+ * A node with no path from the virtual entry has **no** immediate dominator:
+ * `immediateDominator(n)` returns `undefined`, and it neither dominates nor
+ * is dominated by anything. All queries stay **total**: every helper returns
+ * a defined value (never throws) for unknown ids, unreachable nodes, and the
+ * virtual sentinels alike. Symmetrically, a node that cannot reach the
+ * virtual exit has no immediate post-dominator. A `boundaryEvent` is always
+ * wired to the virtual entry, so only the nodes inside a malformed escape
+ * chain can be unreachable.
  */
 
-import type { BpmnProcess, SequenceFlow } from './ir/types.js';
+import type { FlowContainer, SequenceFlow } from './ir/types.js';
 
 /** The synthetic single source over all start events. */
 export const VIRTUAL_ENTRY = '__cfg_entry__';
@@ -87,7 +100,7 @@ export interface CfgAnalysis {
   postDominates(a: string, b: string): boolean;
 
   /**
-   * Every edge `u → v` where `v` dominates `u`. Each entry is the original
+   * Every edge `u -> v` where `v` dominates `u`. Each entry is the original
    * {@link SequenceFlow}. Edges touching the virtual sentinels are never
    * back-edges (they carry no real flow id). Returned in stable input
    * order.
@@ -102,11 +115,11 @@ export interface CfgAnalysis {
 }
 
 /**
- * Build the CFG and dominator / post-dominator trees for `process` and
- * return the query surface. Pure — no I/O, no mutation of the input.
+ * Build the CFG and dominator / post-dominator trees for `container` and
+ * return the query surface. Pure: no I/O, no mutation of the input.
  */
-export function analyzeCfg(process: BpmnProcess): CfgAnalysis {
-  const graph = buildGraph(process);
+export function analyzeCfg(container: FlowContainer): CfgAnalysis {
+  const graph = buildGraph(container);
 
   // Forward dominators: rooted at the virtual entry.
   const idom = computeIdom(graph.succ, graph.pred, VIRTUAL_ENTRY);
@@ -127,9 +140,9 @@ export function analyzeCfg(process: BpmnProcess): CfgAnalysis {
     dominates,
     postDominates,
     backEdges() {
-      // A back-edge is u → v where v dominates u. Only real flows qualify:
+      // A back-edge is u -> v where v dominates u. Only real flows qualify:
       // the sentinel edges have no SequenceFlow and never loop.
-      return process.sequenceFlows.filter((f) =>
+      return container.sequenceFlows.filter((f) =>
         dominates(f.targetRef, f.sourceRef),
       );
     },
@@ -149,9 +162,9 @@ export function analyzeCfg(process: BpmnProcess): CfgAnalysis {
 interface Graph {
   /** All node ids, including the two virtual sentinels. */
   nodes: string[];
-  /** id → successor ids (insertion-ordered, de-duplicated). */
+  /** id -> successor ids (insertion-ordered, de-duplicated). */
   succ: Map<string, string[]>;
-  /** id → predecessor ids (insertion-ordered, de-duplicated). */
+  /** id -> predecessor ids (insertion-ordered, de-duplicated). */
   pred: Map<string, string[]>;
 }
 
@@ -159,14 +172,14 @@ interface Graph {
  * Derive the adjacency graph from the IR, wiring in the virtual entry and
  * exit. Multi-edges between the same pair are preserved in `pred`/`succ`
  * only once (dominance is set-based, so duplicates add nothing) but the raw
- * {@link SequenceFlow} list — used for back-edge detection — keeps every
+ * {@link SequenceFlow} list, used for back-edge detection, keeps every
  * original edge.
  */
-function buildGraph(process: BpmnProcess): Graph {
+function buildGraph(container: FlowContainer): Graph {
   const succ = new Map<string, string[]>();
   const pred = new Map<string, string[]>();
 
-  const nodeIds = process.flowElements.map((e) => e.id);
+  const nodeIds = container.flowElements.map((e) => e.id);
   const realNodes = new Set(nodeIds);
 
   const ensure = (id: string) => {
@@ -187,36 +200,41 @@ function buildGraph(process: BpmnProcess): Graph {
 
   // Real edges. Skip flows referencing unknown ids so a malformed IR
   // cannot throw here.
-  for (const f of process.sequenceFlows) {
+  for (const f of container.sequenceFlows) {
     if (!realNodes.has(f.sourceRef) || !realNodes.has(f.targetRef)) continue;
     addEdge(f.sourceRef, f.targetRef);
   }
 
-  // Wire the ENTRY to every start event. A `startEvent` is the canonical
-  // process source. If the IR has NO start event at all (degenerate, but
-  // possible in a hand-built fixture) we fall back to wiring every node
-  // that has no real predecessor, so the forward analysis still has a root.
+  // Wire the ENTRY to every start event, and to every boundary event. A
+  // `boundaryEvent` is a second, independent entry: its token appears when
+  // the host activity is running and the trigger fires, never by traversing
+  // a sequence flow into it, so it is wired unconditionally rather than
+  // folded into the no-start fallback below. That fallback stays keyed on
+  // the absence of a *start* event, since a boundary event's presence says
+  // nothing about whether the main flow has its own entry.
   //
-  // Deliberately we do NOT wire an arbitrary no-predecessor *non-start* node
-  // to the entry when a start event exists: such a node is genuinely
-  // **unreachable** from the process entry, and the dominance queries must
-  // reflect that (it has no immediate dominator). See the module docs.
-  const hasAnyStart = process.flowElements.some((e) => e.kind === 'startEvent');
-  for (const el of process.flowElements) {
+  // A no-predecessor node that is neither a start nor a boundary event is
+  // deliberately left unwired when a start event exists: it is genuinely
+  // unreachable from the process entry, and the dominance queries must
+  // reflect that. See the module docs.
+  const hasAnyStart = container.flowElements.some(
+    (e) => e.kind === 'startEvent',
+  );
+  for (const el of container.flowElements) {
     const hasRealPred = pred.get(el.id)!.length > 0;
-    if (el.kind === 'startEvent') {
+    if (el.kind === 'startEvent' || el.kind === 'boundaryEvent') {
       addEdge(VIRTUAL_ENTRY, el.id);
     } else if (!hasAnyStart && !hasRealPred) {
       addEdge(VIRTUAL_ENTRY, el.id);
     }
   }
 
-  // Wire every end event — and, defensively, every node with no real
-  // successor — to the EXIT. A no-successor node would otherwise be a sink
+  // Wire every end event, and defensively every node with no real
+  // successor, to the EXIT. A no-successor node would otherwise be a sink
   // the post-dominator analysis could not see, so even orphaned/unreachable
   // nodes drain to the exit; this keeps the post-dominator tree well-formed
   // and the virtual sink the post-dominator of every real end.
-  for (const el of process.flowElements) {
+  for (const el of container.flowElements) {
     const hasRealSucc = succ.get(el.id)!.length > 0;
     if (el.kind === 'endEvent' || !hasRealSucc) addEdge(el.id, VIRTUAL_EXIT);
   }
@@ -235,10 +253,10 @@ function buildGraph(process: BpmnProcess): Graph {
  *
  * The returned map contains an entry for every node **reachable** from
  * `root`. The root maps to `undefined` (it has no dominator); unreachable
- * nodes are absent — callers treat "absent" as "no immediate dominator".
+ * nodes are absent, and callers treat "absent" as "no immediate dominator".
  *
- * @param succ  id → successors (the direction the analysis flows)
- * @param pred  id → predecessors (used to combine dominator sets)
+ * @param succ  id -> successors (the direction the analysis flows)
+ * @param pred  id -> predecessors (used to combine dominator sets)
  * @param root  the single source the tree is rooted at
  */
 function computeIdom(
@@ -352,7 +370,7 @@ function reversePostorder(root: string, succ: Map<string, string[]>): string[] {
  * Build a reflexive dominance predicate from an immediate-dominator map.
  * `dominates(a, b)` walks `b` up its idom chain to the root; if `a` is on
  * that chain, `a` dominates `b`. Reflexive (`dominates(x, x) === true` for
- * reachable `x`) and total (unknown / unreachable nodes → `false`).
+ * reachable `x`) and total (unknown / unreachable nodes give `false`).
  */
 function makeDominanceQuery(
   idom: Map<string, string | undefined>,
