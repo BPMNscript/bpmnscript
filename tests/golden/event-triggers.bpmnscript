@@ -1,17 +1,16 @@
 // Event-layer round-trip fixture: one order-fulfilment narrative that exercises
-// the DSL's message, signal, timer, and conditional triggers end to end,
-// alongside an error handler (cross-kind interplay).
+// the DSL's message, signal, timer, and conditional triggers end to end.
 //
 //   - an `on message "…"` handler at process level (the process's inbox);
-//   - a `subprocess` owning a reminder `on timer after "…" alongside` handler and
-//     an `on condition (…) alongside` watchdog whose condition reads a declared
-//     form variable;
+//   - a `subprocess` owning three handlers at once: a reminder
+//     `on timer after "…" alongside`, an `on condition (…) alongside` watchdog
+//     whose condition reads a declared form variable, and an interrupting
+//     `on timer at "…"` purge, so the duration and date timer forms sit side by
+//     side on one container;
 //   - an `on signal "…"` handler, plus an `emit signal Notify "…"` (broadcast and
 //     keep going, goto-targeted) and a terminal `throw signal Announce "…"`
 //     (broadcast and end this path) of the SAME signal name, so all three share
 //     one root;
-//   - an `at` timer on a second container;
-//   - one `on error "…" (code c, message m)` handler with both catch bindings;
 //   - a `var timer: string` read in a service expression, pinning that the timer
 //     particle words coexist with same-named variables.
 //
@@ -21,7 +20,6 @@
 // named so its printed id re-parses cleanly. See README.md.
 
 process order-fulfilment {
-  error "STOCK_UNAVAILABLE" message "The requested item is out of stock"
   var timer: string
 
   start OrderPlaced {
@@ -50,6 +48,11 @@ process order-fulfilment {
       service ReorderStock "Reorder the stock" { class = "com.example.orders.ReorderDelegate" }
       end LowStockDone
     }
+    on timer at "2026-08-01T09:00:00" {
+      start PurgeStart
+      service PurgeDraft "Purge the draft" { class = "com.example.orders.PurgeDelegate" }
+      end PurgeDone
+    }
   }
 
   service ShipParcel "Ship the parcel" { class = "com.example.orders.ShipDelegate" }
@@ -63,18 +66,6 @@ process order-fulfilment {
 
   emit signal Notify "OrderFulfilled"
 
-  subprocess ArchiveStage "Archive the order" {
-    start ArchiveStart
-    service WriteArchive "Write the archive record" { class = "com.example.orders.ArchiveDelegate" }
-    end ArchiveDone
-
-    on timer at "2026-08-01T09:00:00" {
-      start PurgeStart
-      service PurgeDraft "Purge the draft" { class = "com.example.orders.PurgeDelegate" }
-      end PurgeDone
-    }
-  }
-
   throw signal Announce "OrderFulfilled"
 
   on message "OrderCancelled" {
@@ -86,10 +77,5 @@ process order-fulfilment {
     start FulfilledStart
     user ArchiveOrder "Archive the order manually" { assignee = "demo" }
     end FulfilledDone
-  }
-  on error "STOCK_UNAVAILABLE" (code c, message m) {
-    start StockErrStart
-    user ContactCustomer "Contact the customer" { assignee = "demo" }
-    end StockErrDone
   }
 }

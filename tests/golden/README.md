@@ -5,20 +5,19 @@ Known-good files checked into the repo, so a test can compare its output against
 Most fixtures here come in pairs: a `.bpmnscript` source and the `.bpmn` the full pipeline produces from it, frozen.
 A few stand alone as inputs for one direction only.
 
-| Fixture                                 | Covers                                                        |
-| --------------------------------------- | ------------------------------------------------------------- |
-| `invoice-approval-handwritten.bpmn`     | Import of a realistic modeler file                            |
-| `invoice-approval-generated.bpmn`       | The full compile pipeline, frozen                             |
-| `bad-service-task-no-binding.bpmn`      | The import refusal path                                       |
-| `structured-control-flow.bpmnscript`    | Round-trip idempotence for `if`, `while`, and `parallel`      |
-| `nested-subprocess.{bpmnscript,bpmn}`   | Embedded sub-process round trip                               |
-| `event-handlers.{bpmnscript,bpmn}`      | The error and escalation layer                                |
-| `event-triggers.{bpmnscript,bpmn}`      | The message, signal, timer, and conditional triggers          |
-| `compensation.{bpmnscript,bpmn}`        | The compensation (undo-block) layer                           |
-| `boundary-events.{bpmnscript,bpmn}`     | Handlers attached to a host activity                          |
-| `boundary-task-hosts.{bpmnscript,bpmn}` | A boundary on a script task and on a topic-bound service task |
-| `intermediate-catch.{bpmnscript,bpmn}`  | `await` across all four catchable triggers                    |
-| `unstructured-goto.bpmn`                | The `goto` degradation path on import                         |
+| Fixture                                | Covers                                                            |
+| -------------------------------------- | ----------------------------------------------------------------- |
+| `invoice-approval-handwritten.bpmn`    | Import of a realistic modeler file                                |
+| `invoice-approval-generated.bpmn`      | The full compile pipeline, frozen                                 |
+| `bad-service-task-no-binding.bpmn`     | The import refusal path                                           |
+| `structured-control-flow.bpmnscript`   | Round-trip idempotence for `if`, `while`, and `parallel`          |
+| `nested-subprocess.{bpmnscript,bpmn}`  | Embedded sub-process round trip                                   |
+| `event-handlers.{bpmnscript,bpmn}`     | The error and escalation layer                                    |
+| `event-triggers.{bpmnscript,bpmn}`     | The message, signal, timer, and conditional triggers              |
+| `compensation.{bpmnscript,bpmn}`       | The compensation (undo-block) layer                               |
+| `boundary-events.{bpmnscript,bpmn}`    | Handlers attached to a host activity, every trigger and host kind |
+| `intermediate-catch.{bpmnscript,bpmn}` | `await` across all four catchable triggers                        |
+| `unstructured-goto.bpmn`               | The `goto` degradation path on import                             |
 
 The three invoice-approval files all describe the same process (review, then a gateway on `amount > 1000`, then senior approval or auto-approve) but come from different sources and pull the tests in different directions.
 
@@ -90,7 +89,7 @@ Contract: the deduped roots (one per code, the error root carrying its message),
 
 ## `event-triggers.{bpmnscript,bpmn}`
 
-An order-fulfilment narrative exercising the remaining trigger set in one program: a process-level `on message "OrderCancelled"` handler; a `subprocess` owning a non-interrupting `on timer after "PT2H" alongside` reminder and a non-interrupting `on condition (stockLevel < 5) alongside` watchdog reading a declared form variable; an `on signal "OrderFulfilled" alongside` handler together with a continuing `emit signal Notify "OrderFulfilled"` and a terminal `throw signal Announce "OrderFulfilled"` of the same name; an `at` timer on a second sub-process; an `on error "STOCK_UNAVAILABLE" (code c, message m)` handler with both catch bindings, for the cross-kind interplay; and a `var timer: string` read in a service expression, pinning that the timer particle words coexist with same-named variables.
+An order-fulfilment narrative exercising the remaining trigger set in one program: a process-level `on message "OrderCancelled"` handler; a `subprocess` owning a non-interrupting `on timer after "PT2H" alongside` reminder and a non-interrupting `on condition (stockLevel < 5) alongside` watchdog reading a declared form variable; an `on signal "OrderFulfilled" alongside` handler together with a continuing `emit signal Notify "OrderFulfilled"` and a terminal `throw signal Announce "OrderFulfilled"` of the same name; an `at` timer on the same sub-process, so one container carries three handlers; and a `var timer: string` read in a service expression, pinning that the timer particle words coexist with same-named variables.
 The condition variable is declared on the start form so it survives an import-and-back round trip, and every throw and emit is explicitly named so its printed id re-parses cleanly.
 
 Contract: the deduped name-keyed roots and their order, the shared `signalRef`, `isInterrupting="false"` on the `alongside` handlers, the single time-child per timer, each handler shape inside its parent's bounds, and every authored id.
@@ -104,18 +103,10 @@ Contract: the absence of any compensation root, the bare compensate definitions,
 
 ## `boundary-events.{bpmnscript,bpmn}`
 
-A parcel-dispatch narrative exercising the whole attached-handler surface in one program: all six boundary-capable triggers; interrupting and non-interrupting attachment wherever Operaton permits both; a boundary on a `subprocess` host whose escalation is raised by an `emit escalation` one container down, and one on a `call` host; two hosts carrying two boundaries each, so the layout library has to distribute the attachers along the host's lower edge; an escape chain that rejoins the main flow through `goto`; an escape chain containing an `if`/`else`; and two host-less handlers, a signal and a message, coexisting with all of them in the same container.
+A parcel-dispatch narrative exercising the whole attached-handler surface in one program: all six boundary-capable triggers; interrupting and non-interrupting attachment wherever Operaton permits both; every host kind a token can sit at, a `user` task, a `class`-bound and a `topic`-bound `service` task, a `script` task, a `subprocess` whose escalation is raised by an `emit escalation` one container down, and a `call`; two hosts carrying two boundaries each, so the layout library has to distribute the attachers along the host's lower edge; an escape chain that rejoins the main flow through `goto`; an escape chain containing an `if`; and a host-less signal handler coexisting with all of them in the same container.
 The `if` and condition variables are declared on the start form so they survive an import-and-back round trip, the escalation is emitted under an explicit id so its printed id re-parses cleanly, and every label differs from the name humanised from its id.
 
 Contract: every `attachedToRef`, `cancelActivity="false"` on each `alongside` boundary, the shared `signalRef` and `escalationRef`, each boundary shape centred on its host's bottom edge, and every authored id.
-
-## `boundary-task-hosts.{bpmnscript,bpmn}`
-
-The one service-task binding no other golden exercises: `topic`, the external-worker form, carrying a boundary handler alongside a script task carrying its own.
-The source is a checkout narrative (charge the card, compute the shipping cost, print the label) where a card decline raises an interrupting `on ChargeCard: error "PAYMENT_DECLINED"` boundary routing to manual review, a slow shipping calculation raises a non-interrupting `on ComputeShipping: timer after "PT1H"` boundary that notifies the delay desk while the calculation keeps running, and a warehouse expedite request raises an interrupting `on PrintLabel: message "ExpediteRequested"` boundary rerouting to an expedited shipment.
-Each escape chain ends on its own implicit end.
-
-Contract: the three `attachedToRef`s, `cancelActivity="false"` on the timer boundary, and the two roots.
 
 ## `intermediate-catch.{bpmnscript,bpmn}`
 

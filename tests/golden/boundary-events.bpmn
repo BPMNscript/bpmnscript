@@ -17,7 +17,7 @@
     <bpmn:subProcess id="PackGoods" name="Pack the goods">
       <bpmn:incoming>Flow_CheckAddress_PackGoods</bpmn:incoming>
       <bpmn:incoming>Flow_MarkAddressVerified_PackGoods</bpmn:incoming>
-      <bpmn:outgoing>Flow_PackGoods_BookCarrier</bpmn:outgoing>
+      <bpmn:outgoing>Flow_PackGoods_ComputeShipping</bpmn:outgoing>
       <bpmn:startEvent id="PackStart">
         <bpmn:outgoing>Flow_PackStart_PickItems</bpmn:outgoing>
       </bpmn:startEvent>
@@ -42,12 +42,27 @@
       <bpmn:sequenceFlow id="Flow_Oversized_SealParcel" sourceRef="Oversized" targetRef="SealParcel" />
       <bpmn:sequenceFlow id="Flow_SealParcel_PackDone" sourceRef="SealParcel" targetRef="PackDone" />
     </bpmn:subProcess>
+    <bpmn:scriptTask id="ComputeShipping" name="Compute the shipping cost" scriptFormat="groovy">
+      <bpmn:incoming>Flow_PackGoods_ComputeShipping</bpmn:incoming>
+      <bpmn:outgoing>Flow_ComputeShipping_ChargePostage</bpmn:outgoing>
+      <bpmn:script>def shippingCost = weight * 2.5
+execution.setVariable("shippingCost", shippingCost)
+</bpmn:script>
+    </bpmn:scriptTask>
+    <bpmn:serviceTask id="ChargePostage" name="Charge the postage" operaton:class="com.example.dispatch.PostageDelegate">
+      <bpmn:incoming>Flow_ComputeShipping_ChargePostage</bpmn:incoming>
+      <bpmn:outgoing>Flow_ChargePostage_PrintLabel</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:serviceTask id="PrintLabel" name="Print the shipping label" operaton:type="external" operaton:topic="print-label">
+      <bpmn:incoming>Flow_ChargePostage_PrintLabel</bpmn:incoming>
+      <bpmn:outgoing>Flow_PrintLabel_BookCarrier</bpmn:outgoing>
+    </bpmn:serviceTask>
     <bpmn:callActivity id="BookCarrier" name="Book the carrier" calledElement="carrier-booking">
       <bpmn:extensionElements>
         <operaton:in source="weight" target="weight" />
         <operaton:out source="trackingCode" target="trackingCode" />
       </bpmn:extensionElements>
-      <bpmn:incoming>Flow_PackGoods_BookCarrier</bpmn:incoming>
+      <bpmn:incoming>Flow_PrintLabel_BookCarrier</bpmn:incoming>
       <bpmn:outgoing>Flow_BookCarrier_HandOverParcel</bpmn:outgoing>
     </bpmn:callActivity>
     <bpmn:userTask id="HandOverParcel" name="Hand the parcel to the driver" operaton:assignee="demo">
@@ -84,28 +99,24 @@
     </bpmn:boundaryEvent>
     <bpmn:userTask id="CorrectAddress" name="Correct the delivery address" operaton:assignee="demo">
       <bpmn:incoming>Flow_Boundary_PackGoods_error_CorrectAddress</bpmn:incoming>
-      <bpmn:outgoing>Flow_CorrectAddress_Gateway_parcel-dispatch_8_1_split</bpmn:outgoing>
+      <bpmn:outgoing>Flow_CorrectAddress_Gateway_parcel-dispatch_11_1_split</bpmn:outgoing>
     </bpmn:userTask>
-    <bpmn:exclusiveGateway id="Gateway_parcel-dispatch_8_1_split" default="Flow_Gateway_parcel-dispatch_8_1_split_default">
-      <bpmn:incoming>Flow_CorrectAddress_Gateway_parcel-dispatch_8_1_split</bpmn:incoming>
-      <bpmn:outgoing>Flow_Gateway_parcel-dispatch_8_1_split_NotifyInsuranceDesk</bpmn:outgoing>
-      <bpmn:outgoing>Flow_Gateway_parcel-dispatch_8_1_split_default</bpmn:outgoing>
+    <bpmn:exclusiveGateway id="Gateway_parcel-dispatch_11_1_split" default="Flow_Gateway_parcel-dispatch_11_1_split_default">
+      <bpmn:incoming>Flow_CorrectAddress_Gateway_parcel-dispatch_11_1_split</bpmn:incoming>
+      <bpmn:outgoing>Flow_Gateway_parcel-dispatch_11_1_split_NotifyInsuranceDesk</bpmn:outgoing>
+      <bpmn:outgoing>Flow_Gateway_parcel-dispatch_11_1_split_default</bpmn:outgoing>
     </bpmn:exclusiveGateway>
-    <bpmn:exclusiveGateway id="Gateway_parcel-dispatch_8_1_join">
-      <bpmn:incoming>Flow_NotifyInsuranceDesk_Gateway_parcel-dispatch_8_1_join</bpmn:incoming>
-      <bpmn:incoming>Flow_NotifyStandardDesk_Gateway_parcel-dispatch_8_1_join</bpmn:incoming>
-      <bpmn:outgoing>Flow_Gateway_parcel-dispatch_8_1_join_RecordAddressFix</bpmn:outgoing>
+    <bpmn:exclusiveGateway id="Gateway_parcel-dispatch_11_1_join">
+      <bpmn:incoming>Flow_NotifyInsuranceDesk_Gateway_parcel-dispatch_11_1_join</bpmn:incoming>
+      <bpmn:incoming>Flow_Gateway_parcel-dispatch_11_1_split_default</bpmn:incoming>
+      <bpmn:outgoing>Flow_Gateway_parcel-dispatch_11_1_join_RecordAddressFix</bpmn:outgoing>
     </bpmn:exclusiveGateway>
     <bpmn:serviceTask id="NotifyInsuranceDesk" name="Notify the insurance desk" operaton:class="com.example.dispatch.InsuranceDelegate">
-      <bpmn:incoming>Flow_Gateway_parcel-dispatch_8_1_split_NotifyInsuranceDesk</bpmn:incoming>
-      <bpmn:outgoing>Flow_NotifyInsuranceDesk_Gateway_parcel-dispatch_8_1_join</bpmn:outgoing>
-    </bpmn:serviceTask>
-    <bpmn:serviceTask id="NotifyStandardDesk" name="Notify the standard desk" operaton:class="com.example.dispatch.StandardDeskDelegate">
-      <bpmn:incoming>Flow_Gateway_parcel-dispatch_8_1_split_default</bpmn:incoming>
-      <bpmn:outgoing>Flow_NotifyStandardDesk_Gateway_parcel-dispatch_8_1_join</bpmn:outgoing>
+      <bpmn:incoming>Flow_Gateway_parcel-dispatch_11_1_split_NotifyInsuranceDesk</bpmn:incoming>
+      <bpmn:outgoing>Flow_NotifyInsuranceDesk_Gateway_parcel-dispatch_11_1_join</bpmn:outgoing>
     </bpmn:serviceTask>
     <bpmn:serviceTask id="RecordAddressFix" name="Record the corrected address" operaton:class="com.example.dispatch.RecordFixDelegate">
-      <bpmn:incoming>Flow_Gateway_parcel-dispatch_8_1_join_RecordAddressFix</bpmn:incoming>
+      <bpmn:incoming>Flow_Gateway_parcel-dispatch_11_1_join_RecordAddressFix</bpmn:incoming>
       <bpmn:outgoing>Flow_RecordAddressFix_EndEvent_Boundary_PackGoods_error</bpmn:outgoing>
     </bpmn:serviceTask>
     <bpmn:endEvent id="EndEvent_Boundary_PackGoods_error">
@@ -121,6 +132,41 @@
     </bpmn:userTask>
     <bpmn:endEvent id="EndEvent_Boundary_PackGoods_escalation">
       <bpmn:incoming>Flow_ArrangeFreight_EndEvent_Boundary_PackGoods_escalation</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:boundaryEvent id="Boundary_ComputeShipping_timer" cancelActivity="false" attachedToRef="ComputeShipping">
+      <bpmn:outgoing>Flow_Boundary_ComputeShipping_timer_NotifyShippingDelay</bpmn:outgoing>
+      <bpmn:timerEventDefinition>
+        <bpmn:timeDuration xsi:type="bpmn:tFormalExpression">PT1H</bpmn:timeDuration>
+      </bpmn:timerEventDefinition>
+    </bpmn:boundaryEvent>
+    <bpmn:serviceTask id="NotifyShippingDelay" name="Notify the shipping delay desk" operaton:class="com.example.dispatch.DelayDelegate">
+      <bpmn:incoming>Flow_Boundary_ComputeShipping_timer_NotifyShippingDelay</bpmn:incoming>
+      <bpmn:outgoing>Flow_NotifyShippingDelay_EndEvent_Boundary_ComputeShipping_timer</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:endEvent id="EndEvent_Boundary_ComputeShipping_timer">
+      <bpmn:incoming>Flow_NotifyShippingDelay_EndEvent_Boundary_ComputeShipping_timer</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:boundaryEvent id="Boundary_ChargePostage_error" attachedToRef="ChargePostage">
+      <bpmn:outgoing>Flow_Boundary_ChargePostage_error_ReviewPayment</bpmn:outgoing>
+      <bpmn:errorEventDefinition errorRef="Error_PAYMENT_DECLINED" />
+    </bpmn:boundaryEvent>
+    <bpmn:userTask id="ReviewPayment" name="Review the declined payment" operaton:assignee="demo">
+      <bpmn:incoming>Flow_Boundary_ChargePostage_error_ReviewPayment</bpmn:incoming>
+      <bpmn:outgoing>Flow_ReviewPayment_EndEvent_Boundary_ChargePostage_error</bpmn:outgoing>
+    </bpmn:userTask>
+    <bpmn:endEvent id="EndEvent_Boundary_ChargePostage_error">
+      <bpmn:incoming>Flow_ReviewPayment_EndEvent_Boundary_ChargePostage_error</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:boundaryEvent id="Boundary_PrintLabel_message" attachedToRef="PrintLabel">
+      <bpmn:outgoing>Flow_Boundary_PrintLabel_message_ExpediteShipment</bpmn:outgoing>
+      <bpmn:messageEventDefinition messageRef="Message_ExpediteRequested" />
+    </bpmn:boundaryEvent>
+    <bpmn:serviceTask id="ExpediteShipment" name="Expedite the shipment" operaton:class="com.example.dispatch.ExpediteDelegate">
+      <bpmn:incoming>Flow_Boundary_PrintLabel_message_ExpediteShipment</bpmn:incoming>
+      <bpmn:outgoing>Flow_ExpediteShipment_EndEvent_Boundary_PrintLabel_message</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:endEvent id="EndEvent_Boundary_PrintLabel_message">
+      <bpmn:incoming>Flow_ExpediteShipment_EndEvent_Boundary_PrintLabel_message</bpmn:incoming>
     </bpmn:endEvent>
     <bpmn:boundaryEvent id="Boundary_BookCarrier_signal" attachedToRef="BookCarrier">
       <bpmn:outgoing>Flow_Boundary_BookCarrier_signal_BookAlternateCarrier</bpmn:outgoing>
@@ -146,7 +192,7 @@
     <bpmn:endEvent id="EndEvent_Boundary_HandOverParcel_condition">
       <bpmn:incoming>Flow_CallForklift_EndEvent_Boundary_HandOverParcel_condition</bpmn:incoming>
     </bpmn:endEvent>
-    <bpmn:subProcess id="EventSubProcess_parcel-dispatch_12" triggeredByEvent="true">
+    <bpmn:subProcess id="EventSubProcess_parcel-dispatch_18" triggeredByEvent="true">
       <bpmn:startEvent id="StrikeNoted" isInterrupting="false">
         <bpmn:outgoing>Flow_StrikeNoted_RecordCarrierStrike</bpmn:outgoing>
         <bpmn:signalEventDefinition signalRef="Signal_CarrierStrike" />
@@ -161,51 +207,45 @@
       <bpmn:sequenceFlow id="Flow_StrikeNoted_RecordCarrierStrike" sourceRef="StrikeNoted" targetRef="RecordCarrierStrike" />
       <bpmn:sequenceFlow id="Flow_RecordCarrierStrike_StrikeRecorded" sourceRef="RecordCarrierStrike" targetRef="StrikeRecorded" />
     </bpmn:subProcess>
-    <bpmn:subProcess id="EventSubProcess_parcel-dispatch_13" triggeredByEvent="true">
-      <bpmn:startEvent id="CancelReceived">
-        <bpmn:outgoing>Flow_CancelReceived_RollBackDispatch</bpmn:outgoing>
-        <bpmn:messageEventDefinition messageRef="Message_DispatchCancelled" />
-      </bpmn:startEvent>
-      <bpmn:serviceTask id="RollBackDispatch" name="Roll back the dispatch" operaton:class="com.example.dispatch.RollbackDelegate">
-        <bpmn:incoming>Flow_CancelReceived_RollBackDispatch</bpmn:incoming>
-        <bpmn:outgoing>Flow_RollBackDispatch_CancelHandled</bpmn:outgoing>
-      </bpmn:serviceTask>
-      <bpmn:endEvent id="CancelHandled">
-        <bpmn:incoming>Flow_RollBackDispatch_CancelHandled</bpmn:incoming>
-      </bpmn:endEvent>
-      <bpmn:sequenceFlow id="Flow_CancelReceived_RollBackDispatch" sourceRef="CancelReceived" targetRef="RollBackDispatch" />
-      <bpmn:sequenceFlow id="Flow_RollBackDispatch_CancelHandled" sourceRef="RollBackDispatch" targetRef="CancelHandled" />
-    </bpmn:subProcess>
     <bpmn:sequenceFlow id="Flow_ParcelOrdered_CheckAddress" sourceRef="ParcelOrdered" targetRef="CheckAddress" />
     <bpmn:sequenceFlow id="Flow_CheckAddress_PackGoods" sourceRef="CheckAddress" targetRef="PackGoods" />
-    <bpmn:sequenceFlow id="Flow_PackGoods_BookCarrier" sourceRef="PackGoods" targetRef="BookCarrier" />
+    <bpmn:sequenceFlow id="Flow_PackGoods_ComputeShipping" sourceRef="PackGoods" targetRef="ComputeShipping" />
+    <bpmn:sequenceFlow id="Flow_ComputeShipping_ChargePostage" sourceRef="ComputeShipping" targetRef="ChargePostage" />
+    <bpmn:sequenceFlow id="Flow_ChargePostage_PrintLabel" sourceRef="ChargePostage" targetRef="PrintLabel" />
+    <bpmn:sequenceFlow id="Flow_PrintLabel_BookCarrier" sourceRef="PrintLabel" targetRef="BookCarrier" />
     <bpmn:sequenceFlow id="Flow_BookCarrier_HandOverParcel" sourceRef="BookCarrier" targetRef="HandOverParcel" />
     <bpmn:sequenceFlow id="Flow_HandOverParcel_ParcelDispatched" sourceRef="HandOverParcel" targetRef="ParcelDispatched" />
     <bpmn:sequenceFlow id="Flow_MarkAddressVerified_PackGoods" sourceRef="MarkAddressVerified" targetRef="PackGoods" />
     <bpmn:sequenceFlow id="Flow_Boundary_CheckAddress_message_MarkAddressVerified" sourceRef="Boundary_CheckAddress_message" targetRef="MarkAddressVerified" />
     <bpmn:sequenceFlow id="Flow_Boundary_CheckAddress_timer_SendAddressReminder" sourceRef="Boundary_CheckAddress_timer" targetRef="SendAddressReminder" />
     <bpmn:sequenceFlow id="Flow_SendAddressReminder_EndEvent_Boundary_CheckAddress_timer" sourceRef="SendAddressReminder" targetRef="EndEvent_Boundary_CheckAddress_timer" />
-    <bpmn:sequenceFlow id="Flow_Gateway_parcel-dispatch_8_1_split_NotifyInsuranceDesk" name="parcelValue &#62; 500" sourceRef="Gateway_parcel-dispatch_8_1_split" targetRef="NotifyInsuranceDesk">
+    <bpmn:sequenceFlow id="Flow_Gateway_parcel-dispatch_11_1_split_NotifyInsuranceDesk" name="parcelValue &#62; 500" sourceRef="Gateway_parcel-dispatch_11_1_split" targetRef="NotifyInsuranceDesk">
       <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">${parcelValue &gt; 500}</bpmn:conditionExpression>
     </bpmn:sequenceFlow>
-    <bpmn:sequenceFlow id="Flow_NotifyInsuranceDesk_Gateway_parcel-dispatch_8_1_join" sourceRef="NotifyInsuranceDesk" targetRef="Gateway_parcel-dispatch_8_1_join" />
-    <bpmn:sequenceFlow id="Flow_Gateway_parcel-dispatch_8_1_split_default" sourceRef="Gateway_parcel-dispatch_8_1_split" targetRef="NotifyStandardDesk" />
-    <bpmn:sequenceFlow id="Flow_NotifyStandardDesk_Gateway_parcel-dispatch_8_1_join" sourceRef="NotifyStandardDesk" targetRef="Gateway_parcel-dispatch_8_1_join" />
-    <bpmn:sequenceFlow id="Flow_CorrectAddress_Gateway_parcel-dispatch_8_1_split" sourceRef="CorrectAddress" targetRef="Gateway_parcel-dispatch_8_1_split" />
-    <bpmn:sequenceFlow id="Flow_Gateway_parcel-dispatch_8_1_join_RecordAddressFix" sourceRef="Gateway_parcel-dispatch_8_1_join" targetRef="RecordAddressFix" />
+    <bpmn:sequenceFlow id="Flow_NotifyInsuranceDesk_Gateway_parcel-dispatch_11_1_join" sourceRef="NotifyInsuranceDesk" targetRef="Gateway_parcel-dispatch_11_1_join" />
+    <bpmn:sequenceFlow id="Flow_Gateway_parcel-dispatch_11_1_split_default" sourceRef="Gateway_parcel-dispatch_11_1_split" targetRef="Gateway_parcel-dispatch_11_1_join" />
+    <bpmn:sequenceFlow id="Flow_CorrectAddress_Gateway_parcel-dispatch_11_1_split" sourceRef="CorrectAddress" targetRef="Gateway_parcel-dispatch_11_1_split" />
+    <bpmn:sequenceFlow id="Flow_Gateway_parcel-dispatch_11_1_join_RecordAddressFix" sourceRef="Gateway_parcel-dispatch_11_1_join" targetRef="RecordAddressFix" />
     <bpmn:sequenceFlow id="Flow_Boundary_PackGoods_error_CorrectAddress" sourceRef="Boundary_PackGoods_error" targetRef="CorrectAddress" />
     <bpmn:sequenceFlow id="Flow_RecordAddressFix_EndEvent_Boundary_PackGoods_error" sourceRef="RecordAddressFix" targetRef="EndEvent_Boundary_PackGoods_error" />
     <bpmn:sequenceFlow id="Flow_Boundary_PackGoods_escalation_ArrangeFreight" sourceRef="Boundary_PackGoods_escalation" targetRef="ArrangeFreight" />
     <bpmn:sequenceFlow id="Flow_ArrangeFreight_EndEvent_Boundary_PackGoods_escalation" sourceRef="ArrangeFreight" targetRef="EndEvent_Boundary_PackGoods_escalation" />
+    <bpmn:sequenceFlow id="Flow_Boundary_ComputeShipping_timer_NotifyShippingDelay" sourceRef="Boundary_ComputeShipping_timer" targetRef="NotifyShippingDelay" />
+    <bpmn:sequenceFlow id="Flow_NotifyShippingDelay_EndEvent_Boundary_ComputeShipping_timer" sourceRef="NotifyShippingDelay" targetRef="EndEvent_Boundary_ComputeShipping_timer" />
+    <bpmn:sequenceFlow id="Flow_Boundary_ChargePostage_error_ReviewPayment" sourceRef="Boundary_ChargePostage_error" targetRef="ReviewPayment" />
+    <bpmn:sequenceFlow id="Flow_ReviewPayment_EndEvent_Boundary_ChargePostage_error" sourceRef="ReviewPayment" targetRef="EndEvent_Boundary_ChargePostage_error" />
+    <bpmn:sequenceFlow id="Flow_Boundary_PrintLabel_message_ExpediteShipment" sourceRef="Boundary_PrintLabel_message" targetRef="ExpediteShipment" />
+    <bpmn:sequenceFlow id="Flow_ExpediteShipment_EndEvent_Boundary_PrintLabel_message" sourceRef="ExpediteShipment" targetRef="EndEvent_Boundary_PrintLabel_message" />
     <bpmn:sequenceFlow id="Flow_Boundary_BookCarrier_signal_BookAlternateCarrier" sourceRef="Boundary_BookCarrier_signal" targetRef="BookAlternateCarrier" />
     <bpmn:sequenceFlow id="Flow_BookAlternateCarrier_EndEvent_Boundary_BookCarrier_signal" sourceRef="BookAlternateCarrier" targetRef="EndEvent_Boundary_BookCarrier_signal" />
     <bpmn:sequenceFlow id="Flow_Boundary_HandOverParcel_condition_CallForklift" sourceRef="Boundary_HandOverParcel_condition" targetRef="CallForklift" />
     <bpmn:sequenceFlow id="Flow_CallForklift_EndEvent_Boundary_HandOverParcel_condition" sourceRef="CallForklift" targetRef="EndEvent_Boundary_HandOverParcel_condition" />
   </bpmn:process>
   <bpmn:error id="Error_ADDRESS_REJECTED" name="ADDRESS_REJECTED" errorCode="ADDRESS_REJECTED" operaton:errorMessage="The carrier rejected the delivery address" />
+  <bpmn:error id="Error_PAYMENT_DECLINED" name="PAYMENT_DECLINED" errorCode="PAYMENT_DECLINED" operaton:errorMessage="The payment gateway declined the charge" />
   <bpmn:escalation id="Escalation_OVERSIZED_PARCEL" name="OVERSIZED_PARCEL" escalationCode="OVERSIZED_PARCEL" />
   <bpmn:message id="Message_AddressVerified" name="AddressVerified" />
-  <bpmn:message id="Message_DispatchCancelled" name="DispatchCancelled" />
+  <bpmn:message id="Message_ExpediteRequested" name="ExpediteRequested" />
   <bpmn:signal id="Signal_CarrierStrike" name="CarrierStrike" />
   <bpmndi:BPMNDiagram id="BPMNDiagram_parcel-dispatch">
     <bpmndi:BPMNPlane id="BPMNPlane_parcel-dispatch" bpmnElement="parcel-dispatch">
@@ -230,74 +270,104 @@
       <bpmndi:BPMNShape id="Boundary_PackGoods_escalation_di" bpmnElement="Boundary_PackGoods_escalation">
         <dc:Bounds x="1473.6666666666665" y="232" width="36" height="36" />
       </bpmndi:BPMNShape>
-      <bpmndi:BPMNShape id="BookCarrier_di" bpmnElement="BookCarrier">
+      <bpmndi:BPMNShape id="ComputeShipping_di" bpmnElement="ComputeShipping">
         <dc:Bounds x="1825" y="30" width="100" height="80" />
       </bpmndi:BPMNShape>
-      <bpmndi:BPMNShape id="Boundary_BookCarrier_signal_di" bpmnElement="Boundary_BookCarrier_signal">
+      <bpmndi:BPMNShape id="Boundary_ComputeShipping_timer_di" bpmnElement="Boundary_ComputeShipping_timer">
         <dc:Bounds x="1857" y="92" width="36" height="36" />
       </bpmndi:BPMNShape>
-      <bpmndi:BPMNShape id="HandOverParcel_di" bpmnElement="HandOverParcel">
+      <bpmndi:BPMNShape id="ChargePostage_di" bpmnElement="ChargePostage">
         <dc:Bounds x="1975" y="30" width="100" height="80" />
       </bpmndi:BPMNShape>
-      <bpmndi:BPMNShape id="Boundary_HandOverParcel_condition_di" bpmnElement="Boundary_HandOverParcel_condition">
+      <bpmndi:BPMNShape id="Boundary_ChargePostage_error_di" bpmnElement="Boundary_ChargePostage_error">
         <dc:Bounds x="2007" y="92" width="36" height="36" />
       </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="PrintLabel_di" bpmnElement="PrintLabel">
+        <dc:Bounds x="2125" y="30" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Boundary_PrintLabel_message_di" bpmnElement="Boundary_PrintLabel_message">
+        <dc:Bounds x="2157" y="92" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="BookCarrier_di" bpmnElement="BookCarrier">
+        <dc:Bounds x="2275" y="30" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Boundary_BookCarrier_signal_di" bpmnElement="Boundary_BookCarrier_signal">
+        <dc:Bounds x="2307" y="92" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="HandOverParcel_di" bpmnElement="HandOverParcel">
+        <dc:Bounds x="2425" y="30" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Boundary_HandOverParcel_condition_di" bpmnElement="Boundary_HandOverParcel_condition">
+        <dc:Bounds x="2457" y="92" width="36" height="36" />
+      </bpmndi:BPMNShape>
       <bpmndi:BPMNShape id="ParcelDispatched_di" bpmnElement="ParcelDispatched">
-        <dc:Bounds x="2157" y="52" width="36" height="36" />
+        <dc:Bounds x="2607" y="52" width="36" height="36" />
       </bpmndi:BPMNShape>
       <bpmndi:BPMNShape id="CallForklift_di" bpmnElement="CallForklift">
-        <dc:Bounds x="2125" y="310" width="100" height="80" />
+        <dc:Bounds x="2575" y="310" width="100" height="80" />
       </bpmndi:BPMNShape>
       <bpmndi:BPMNShape id="EndEvent_Boundary_HandOverParcel_condition_di" bpmnElement="EndEvent_Boundary_HandOverParcel_condition">
-        <dc:Bounds x="2307" y="332" width="36" height="36" />
+        <dc:Bounds x="2757" y="332" width="36" height="36" />
       </bpmndi:BPMNShape>
       <bpmndi:BPMNShape id="BookAlternateCarrier_di" bpmnElement="BookAlternateCarrier">
-        <dc:Bounds x="1975" y="450" width="100" height="80" />
+        <dc:Bounds x="2425" y="450" width="100" height="80" />
       </bpmndi:BPMNShape>
       <bpmndi:BPMNShape id="EndEvent_Boundary_BookCarrier_signal_di" bpmnElement="EndEvent_Boundary_BookCarrier_signal">
-        <dc:Bounds x="2157" y="472" width="36" height="36" />
+        <dc:Bounds x="2607" y="472" width="36" height="36" />
       </bpmndi:BPMNShape>
-      <bpmndi:BPMNShape id="ArrangeFreight_di" bpmnElement="ArrangeFreight">
-        <dc:Bounds x="1825" y="590" width="100" height="80" />
+      <bpmndi:BPMNShape id="ExpediteShipment_di" bpmnElement="ExpediteShipment">
+        <dc:Bounds x="2275" y="590" width="100" height="80" />
       </bpmndi:BPMNShape>
-      <bpmndi:BPMNShape id="EndEvent_Boundary_PackGoods_escalation_di" bpmnElement="EndEvent_Boundary_PackGoods_escalation">
-        <dc:Bounds x="2007" y="612" width="36" height="36" />
+      <bpmndi:BPMNShape id="EndEvent_Boundary_PrintLabel_message_di" bpmnElement="EndEvent_Boundary_PrintLabel_message">
+        <dc:Bounds x="2457" y="612" width="36" height="36" />
       </bpmndi:BPMNShape>
-      <bpmndi:BPMNShape id="CorrectAddress_di" bpmnElement="CorrectAddress">
-        <dc:Bounds x="1825" y="730" width="100" height="80" />
-      </bpmndi:BPMNShape>
-      <bpmndi:BPMNShape id="Gateway_parcel-dispatch_8_1_split_di" bpmnElement="Gateway_parcel-dispatch_8_1_split" isMarkerVisible="true">
-        <dc:Bounds x="2000" y="745" width="50" height="50" />
-      </bpmndi:BPMNShape>
-      <bpmndi:BPMNShape id="NotifyInsuranceDesk_di" bpmnElement="NotifyInsuranceDesk">
+      <bpmndi:BPMNShape id="ReviewPayment_di" bpmnElement="ReviewPayment">
         <dc:Bounds x="2125" y="730" width="100" height="80" />
       </bpmndi:BPMNShape>
-      <bpmndi:BPMNShape id="Gateway_parcel-dispatch_8_1_join_di" bpmnElement="Gateway_parcel-dispatch_8_1_join" isMarkerVisible="true">
-        <dc:Bounds x="2300" y="745" width="50" height="50" />
+      <bpmndi:BPMNShape id="EndEvent_Boundary_ChargePostage_error_di" bpmnElement="EndEvent_Boundary_ChargePostage_error">
+        <dc:Bounds x="2307" y="752" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="NotifyShippingDelay_di" bpmnElement="NotifyShippingDelay">
+        <dc:Bounds x="1975" y="870" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="EndEvent_Boundary_ComputeShipping_timer_di" bpmnElement="EndEvent_Boundary_ComputeShipping_timer">
+        <dc:Bounds x="2157" y="892" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="ArrangeFreight_di" bpmnElement="ArrangeFreight">
+        <dc:Bounds x="1825" y="1010" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="EndEvent_Boundary_PackGoods_escalation_di" bpmnElement="EndEvent_Boundary_PackGoods_escalation">
+        <dc:Bounds x="2007" y="1032" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="CorrectAddress_di" bpmnElement="CorrectAddress">
+        <dc:Bounds x="1825" y="1150" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_parcel-dispatch_11_1_split_di" bpmnElement="Gateway_parcel-dispatch_11_1_split" isMarkerVisible="true">
+        <dc:Bounds x="2000" y="1165" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="NotifyInsuranceDesk_di" bpmnElement="NotifyInsuranceDesk">
+        <dc:Bounds x="2125" y="1150" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_parcel-dispatch_11_1_join_di" bpmnElement="Gateway_parcel-dispatch_11_1_join" isMarkerVisible="true">
+        <dc:Bounds x="2300" y="1165" width="50" height="50" />
       </bpmndi:BPMNShape>
       <bpmndi:BPMNShape id="RecordAddressFix_di" bpmnElement="RecordAddressFix">
-        <dc:Bounds x="2425" y="730" width="100" height="80" />
+        <dc:Bounds x="2425" y="1150" width="100" height="80" />
       </bpmndi:BPMNShape>
       <bpmndi:BPMNShape id="EndEvent_Boundary_PackGoods_error_di" bpmnElement="EndEvent_Boundary_PackGoods_error">
-        <dc:Bounds x="2607" y="752" width="36" height="36" />
+        <dc:Bounds x="2607" y="1172" width="36" height="36" />
       </bpmndi:BPMNShape>
       <bpmndi:BPMNShape id="SendAddressReminder_di" bpmnElement="SendAddressReminder">
-        <dc:Bounds x="775" y="870" width="100" height="80" />
+        <dc:Bounds x="775" y="1290" width="100" height="80" />
       </bpmndi:BPMNShape>
       <bpmndi:BPMNShape id="EndEvent_Boundary_CheckAddress_timer_di" bpmnElement="EndEvent_Boundary_CheckAddress_timer">
-        <dc:Bounds x="957" y="892" width="36" height="36" />
+        <dc:Bounds x="957" y="1312" width="36" height="36" />
       </bpmndi:BPMNShape>
-      <bpmndi:BPMNShape id="NotifyStandardDesk_di" bpmnElement="NotifyStandardDesk">
-        <dc:Bounds x="2125" y="870" width="100" height="80" />
-      </bpmndi:BPMNShape>
-      <bpmndi:BPMNShape id="EventSubProcess_parcel-dispatch_12_di" bpmnElement="EventSubProcess_parcel-dispatch_12" isExpanded="true">
-        <dc:Bounds x="25" y="1010" width="550" height="220" />
+      <bpmndi:BPMNShape id="EventSubProcess_parcel-dispatch_18_di" bpmnElement="EventSubProcess_parcel-dispatch_18" isExpanded="true">
+        <dc:Bounds x="25" y="1430" width="550" height="220" />
       </bpmndi:BPMNShape>
       <bpmndi:BPMNShape id="MarkAddressVerified_di" bpmnElement="MarkAddressVerified">
-        <dc:Bounds x="775" y="1010" width="100" height="80" />
-      </bpmndi:BPMNShape>
-      <bpmndi:BPMNShape id="EventSubProcess_parcel-dispatch_13_di" bpmnElement="EventSubProcess_parcel-dispatch_13" isExpanded="true">
-        <dc:Bounds x="25" y="1290" width="550" height="220" />
+        <dc:Bounds x="775" y="1430" width="100" height="80" />
       </bpmndi:BPMNShape>
       <bpmndi:BPMNEdge id="Flow_ParcelOrdered_CheckAddress_di" bpmnElement="Flow_ParcelOrdered_CheckAddress">
         <di:waypoint x="93" y="70" />
@@ -309,133 +379,151 @@
       </bpmndi:BPMNEdge>
       <bpmndi:BPMNEdge id="Flow_Boundary_CheckAddress_message_MarkAddressVerified_di" bpmnElement="Flow_Boundary_CheckAddress_message_MarkAddressVerified">
         <di:waypoint x="658.3333333333334" y="128" />
-        <di:waypoint x="658.3333333333334" y="1050" />
-        <di:waypoint x="775" y="1050" />
+        <di:waypoint x="658.3333333333334" y="1470" />
+        <di:waypoint x="775" y="1470" />
       </bpmndi:BPMNEdge>
       <bpmndi:BPMNEdge id="Flow_Boundary_CheckAddress_timer_SendAddressReminder_di" bpmnElement="Flow_Boundary_CheckAddress_timer_SendAddressReminder">
         <di:waypoint x="691.6666666666666" y="128" />
-        <di:waypoint x="691.6666666666666" y="910" />
-        <di:waypoint x="775" y="910" />
+        <di:waypoint x="691.6666666666666" y="1330" />
+        <di:waypoint x="775" y="1330" />
       </bpmndi:BPMNEdge>
-      <bpmndi:BPMNEdge id="Flow_PackGoods_BookCarrier_di" bpmnElement="Flow_PackGoods_BookCarrier">
+      <bpmndi:BPMNEdge id="Flow_PackGoods_ComputeShipping_di" bpmnElement="Flow_PackGoods_ComputeShipping">
         <di:waypoint x="1775" y="70" />
         <di:waypoint x="1825" y="70" />
       </bpmndi:BPMNEdge>
       <bpmndi:BPMNEdge id="Flow_Boundary_PackGoods_error_CorrectAddress_di" bpmnElement="Flow_Boundary_PackGoods_error_CorrectAddress">
         <di:waypoint x="1208.3333333333333" y="268" />
-        <di:waypoint x="1208.3333333333333" y="770" />
-        <di:waypoint x="1825" y="770" />
+        <di:waypoint x="1208.3333333333333" y="1190" />
+        <di:waypoint x="1825" y="1190" />
       </bpmndi:BPMNEdge>
       <bpmndi:BPMNEdge id="Flow_Boundary_PackGoods_escalation_ArrangeFreight_di" bpmnElement="Flow_Boundary_PackGoods_escalation_ArrangeFreight">
         <di:waypoint x="1491.6666666666665" y="268" />
-        <di:waypoint x="1491.6666666666665" y="630" />
-        <di:waypoint x="1825" y="630" />
+        <di:waypoint x="1491.6666666666665" y="1050" />
+        <di:waypoint x="1825" y="1050" />
       </bpmndi:BPMNEdge>
-      <bpmndi:BPMNEdge id="Flow_BookCarrier_HandOverParcel_di" bpmnElement="Flow_BookCarrier_HandOverParcel">
+      <bpmndi:BPMNEdge id="Flow_ComputeShipping_ChargePostage_di" bpmnElement="Flow_ComputeShipping_ChargePostage">
         <di:waypoint x="1925" y="70" />
         <di:waypoint x="1975" y="70" />
       </bpmndi:BPMNEdge>
-      <bpmndi:BPMNEdge id="Flow_Boundary_BookCarrier_signal_BookAlternateCarrier_di" bpmnElement="Flow_Boundary_BookCarrier_signal_BookAlternateCarrier">
+      <bpmndi:BPMNEdge id="Flow_Boundary_ComputeShipping_timer_NotifyShippingDelay_di" bpmnElement="Flow_Boundary_ComputeShipping_timer_NotifyShippingDelay">
         <di:waypoint x="1875" y="128" />
-        <di:waypoint x="1875" y="490" />
-        <di:waypoint x="1975" y="490" />
+        <di:waypoint x="1875" y="910" />
+        <di:waypoint x="1975" y="910" />
       </bpmndi:BPMNEdge>
-      <bpmndi:BPMNEdge id="Flow_HandOverParcel_ParcelDispatched_di" bpmnElement="Flow_HandOverParcel_ParcelDispatched">
+      <bpmndi:BPMNEdge id="Flow_ChargePostage_PrintLabel_di" bpmnElement="Flow_ChargePostage_PrintLabel">
         <di:waypoint x="2075" y="70" />
-        <di:waypoint x="2157" y="70" />
+        <di:waypoint x="2125" y="70" />
       </bpmndi:BPMNEdge>
-      <bpmndi:BPMNEdge id="Flow_Boundary_HandOverParcel_condition_CallForklift_di" bpmnElement="Flow_Boundary_HandOverParcel_condition_CallForklift">
+      <bpmndi:BPMNEdge id="Flow_Boundary_ChargePostage_error_ReviewPayment_di" bpmnElement="Flow_Boundary_ChargePostage_error_ReviewPayment">
         <di:waypoint x="2025" y="128" />
-        <di:waypoint x="2025" y="350" />
-        <di:waypoint x="2125" y="350" />
-      </bpmndi:BPMNEdge>
-      <bpmndi:BPMNEdge id="Flow_CallForklift_EndEvent_Boundary_HandOverParcel_condition_di" bpmnElement="Flow_CallForklift_EndEvent_Boundary_HandOverParcel_condition">
-        <di:waypoint x="2225" y="350" />
-        <di:waypoint x="2307" y="350" />
-      </bpmndi:BPMNEdge>
-      <bpmndi:BPMNEdge id="Flow_BookAlternateCarrier_EndEvent_Boundary_BookCarrier_signal_di" bpmnElement="Flow_BookAlternateCarrier_EndEvent_Boundary_BookCarrier_signal">
-        <di:waypoint x="2075" y="490" />
-        <di:waypoint x="2157" y="490" />
-      </bpmndi:BPMNEdge>
-      <bpmndi:BPMNEdge id="Flow_ArrangeFreight_EndEvent_Boundary_PackGoods_escalation_di" bpmnElement="Flow_ArrangeFreight_EndEvent_Boundary_PackGoods_escalation">
-        <di:waypoint x="1925" y="630" />
-        <di:waypoint x="2007" y="630" />
-      </bpmndi:BPMNEdge>
-      <bpmndi:BPMNEdge id="Flow_CorrectAddress_Gateway_parcel-dispatch_8_1_split_di" bpmnElement="Flow_CorrectAddress_Gateway_parcel-dispatch_8_1_split">
-        <di:waypoint x="1925" y="770" />
-        <di:waypoint x="2000" y="770" />
-      </bpmndi:BPMNEdge>
-      <bpmndi:BPMNEdge id="Flow_Gateway_parcel-dispatch_8_1_split_NotifyInsuranceDesk_di" bpmnElement="Flow_Gateway_parcel-dispatch_8_1_split_NotifyInsuranceDesk">
-        <di:waypoint x="2050" y="770" />
+        <di:waypoint x="2025" y="770" />
         <di:waypoint x="2125" y="770" />
       </bpmndi:BPMNEdge>
-      <bpmndi:BPMNEdge id="Flow_Gateway_parcel-dispatch_8_1_split_default_di" bpmnElement="Flow_Gateway_parcel-dispatch_8_1_split_default">
-        <di:waypoint x="2025" y="795" />
-        <di:waypoint x="2025" y="910" />
-        <di:waypoint x="2125" y="910" />
+      <bpmndi:BPMNEdge id="Flow_PrintLabel_BookCarrier_di" bpmnElement="Flow_PrintLabel_BookCarrier">
+        <di:waypoint x="2225" y="70" />
+        <di:waypoint x="2275" y="70" />
       </bpmndi:BPMNEdge>
-      <bpmndi:BPMNEdge id="Flow_NotifyInsuranceDesk_Gateway_parcel-dispatch_8_1_join_di" bpmnElement="Flow_NotifyInsuranceDesk_Gateway_parcel-dispatch_8_1_join">
+      <bpmndi:BPMNEdge id="Flow_Boundary_PrintLabel_message_ExpediteShipment_di" bpmnElement="Flow_Boundary_PrintLabel_message_ExpediteShipment">
+        <di:waypoint x="2175" y="128" />
+        <di:waypoint x="2175" y="630" />
+        <di:waypoint x="2275" y="630" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_BookCarrier_HandOverParcel_di" bpmnElement="Flow_BookCarrier_HandOverParcel">
+        <di:waypoint x="2375" y="70" />
+        <di:waypoint x="2425" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Boundary_BookCarrier_signal_BookAlternateCarrier_di" bpmnElement="Flow_Boundary_BookCarrier_signal_BookAlternateCarrier">
+        <di:waypoint x="2325" y="128" />
+        <di:waypoint x="2325" y="490" />
+        <di:waypoint x="2425" y="490" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_HandOverParcel_ParcelDispatched_di" bpmnElement="Flow_HandOverParcel_ParcelDispatched">
+        <di:waypoint x="2525" y="70" />
+        <di:waypoint x="2607" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Boundary_HandOverParcel_condition_CallForklift_di" bpmnElement="Flow_Boundary_HandOverParcel_condition_CallForklift">
+        <di:waypoint x="2475" y="128" />
+        <di:waypoint x="2475" y="350" />
+        <di:waypoint x="2575" y="350" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_CallForklift_EndEvent_Boundary_HandOverParcel_condition_di" bpmnElement="Flow_CallForklift_EndEvent_Boundary_HandOverParcel_condition">
+        <di:waypoint x="2675" y="350" />
+        <di:waypoint x="2757" y="350" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_BookAlternateCarrier_EndEvent_Boundary_BookCarrier_signal_di" bpmnElement="Flow_BookAlternateCarrier_EndEvent_Boundary_BookCarrier_signal">
+        <di:waypoint x="2525" y="490" />
+        <di:waypoint x="2607" y="490" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ExpediteShipment_EndEvent_Boundary_PrintLabel_message_di" bpmnElement="Flow_ExpediteShipment_EndEvent_Boundary_PrintLabel_message">
+        <di:waypoint x="2375" y="630" />
+        <di:waypoint x="2457" y="630" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ReviewPayment_EndEvent_Boundary_ChargePostage_error_di" bpmnElement="Flow_ReviewPayment_EndEvent_Boundary_ChargePostage_error">
         <di:waypoint x="2225" y="770" />
-        <di:waypoint x="2300" y="770" />
+        <di:waypoint x="2307" y="770" />
       </bpmndi:BPMNEdge>
-      <bpmndi:BPMNEdge id="Flow_Gateway_parcel-dispatch_8_1_join_RecordAddressFix_di" bpmnElement="Flow_Gateway_parcel-dispatch_8_1_join_RecordAddressFix">
-        <di:waypoint x="2350" y="770" />
-        <di:waypoint x="2425" y="770" />
+      <bpmndi:BPMNEdge id="Flow_NotifyShippingDelay_EndEvent_Boundary_ComputeShipping_timer_di" bpmnElement="Flow_NotifyShippingDelay_EndEvent_Boundary_ComputeShipping_timer">
+        <di:waypoint x="2075" y="910" />
+        <di:waypoint x="2157" y="910" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ArrangeFreight_EndEvent_Boundary_PackGoods_escalation_di" bpmnElement="Flow_ArrangeFreight_EndEvent_Boundary_PackGoods_escalation">
+        <di:waypoint x="1925" y="1050" />
+        <di:waypoint x="2007" y="1050" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_CorrectAddress_Gateway_parcel-dispatch_11_1_split_di" bpmnElement="Flow_CorrectAddress_Gateway_parcel-dispatch_11_1_split">
+        <di:waypoint x="1925" y="1190" />
+        <di:waypoint x="2000" y="1190" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Gateway_parcel-dispatch_11_1_split_NotifyInsuranceDesk_di" bpmnElement="Flow_Gateway_parcel-dispatch_11_1_split_NotifyInsuranceDesk">
+        <di:waypoint x="2050" y="1190" />
+        <di:waypoint x="2125" y="1190" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Gateway_parcel-dispatch_11_1_split_default_di" bpmnElement="Flow_Gateway_parcel-dispatch_11_1_split_default">
+        <di:waypoint x="2025" y="1215" />
+        <di:waypoint x="2025" y="1260" />
+        <di:waypoint x="2325" y="1260" />
+        <di:waypoint x="2325" y="1215" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_NotifyInsuranceDesk_Gateway_parcel-dispatch_11_1_join_di" bpmnElement="Flow_NotifyInsuranceDesk_Gateway_parcel-dispatch_11_1_join">
+        <di:waypoint x="2225" y="1190" />
+        <di:waypoint x="2300" y="1190" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Gateway_parcel-dispatch_11_1_join_RecordAddressFix_di" bpmnElement="Flow_Gateway_parcel-dispatch_11_1_join_RecordAddressFix">
+        <di:waypoint x="2350" y="1190" />
+        <di:waypoint x="2425" y="1190" />
       </bpmndi:BPMNEdge>
       <bpmndi:BPMNEdge id="Flow_RecordAddressFix_EndEvent_Boundary_PackGoods_error_di" bpmnElement="Flow_RecordAddressFix_EndEvent_Boundary_PackGoods_error">
-        <di:waypoint x="2525" y="770" />
-        <di:waypoint x="2607" y="770" />
+        <di:waypoint x="2525" y="1190" />
+        <di:waypoint x="2607" y="1190" />
       </bpmndi:BPMNEdge>
       <bpmndi:BPMNEdge id="Flow_SendAddressReminder_EndEvent_Boundary_CheckAddress_timer_di" bpmnElement="Flow_SendAddressReminder_EndEvent_Boundary_CheckAddress_timer">
-        <di:waypoint x="875" y="910" />
-        <di:waypoint x="957" y="910" />
-      </bpmndi:BPMNEdge>
-      <bpmndi:BPMNEdge id="Flow_NotifyStandardDesk_Gateway_parcel-dispatch_8_1_join_di" bpmnElement="Flow_NotifyStandardDesk_Gateway_parcel-dispatch_8_1_join">
-        <di:waypoint x="2225" y="910" />
-        <di:waypoint x="2325" y="910" />
-        <di:waypoint x="2325" y="795" />
+        <di:waypoint x="875" y="1330" />
+        <di:waypoint x="957" y="1330" />
       </bpmndi:BPMNEdge>
       <bpmndi:BPMNEdge id="Flow_MarkAddressVerified_PackGoods_di" bpmnElement="Flow_MarkAddressVerified_PackGoods">
-        <di:waypoint x="875" y="1050" />
-        <di:waypoint x="900" y="1050" />
+        <di:waypoint x="875" y="1470" />
+        <di:waypoint x="900" y="1470" />
         <di:waypoint x="900" y="210" />
         <di:waypoint x="1275" y="210" />
         <di:waypoint x="1275" y="140" />
         <di:waypoint x="925" y="140" />
       </bpmndi:BPMNEdge>
-      <bpmndi:BPMNShape id="CancelReceived_di" bpmnElement="CancelReceived">
-        <dc:Bounds x="132" y="1382" width="36" height="36" />
-      </bpmndi:BPMNShape>
-      <bpmndi:BPMNShape id="RollBackDispatch_di" bpmnElement="RollBackDispatch">
-        <dc:Bounds x="250" y="1360" width="100" height="80" />
-      </bpmndi:BPMNShape>
-      <bpmndi:BPMNShape id="CancelHandled_di" bpmnElement="CancelHandled">
-        <dc:Bounds x="432" y="1382" width="36" height="36" />
-      </bpmndi:BPMNShape>
-      <bpmndi:BPMNEdge id="Flow_CancelReceived_RollBackDispatch_di" bpmnElement="Flow_CancelReceived_RollBackDispatch">
-        <di:waypoint x="168" y="1400" />
-        <di:waypoint x="250" y="1400" />
-      </bpmndi:BPMNEdge>
-      <bpmndi:BPMNEdge id="Flow_RollBackDispatch_CancelHandled_di" bpmnElement="Flow_RollBackDispatch_CancelHandled">
-        <di:waypoint x="350" y="1400" />
-        <di:waypoint x="432" y="1400" />
-      </bpmndi:BPMNEdge>
       <bpmndi:BPMNShape id="StrikeNoted_di" bpmnElement="StrikeNoted">
-        <dc:Bounds x="132" y="1102" width="36" height="36" />
+        <dc:Bounds x="132" y="1522" width="36" height="36" />
       </bpmndi:BPMNShape>
       <bpmndi:BPMNShape id="RecordCarrierStrike_di" bpmnElement="RecordCarrierStrike">
-        <dc:Bounds x="250" y="1080" width="100" height="80" />
+        <dc:Bounds x="250" y="1500" width="100" height="80" />
       </bpmndi:BPMNShape>
       <bpmndi:BPMNShape id="StrikeRecorded_di" bpmnElement="StrikeRecorded">
-        <dc:Bounds x="432" y="1102" width="36" height="36" />
+        <dc:Bounds x="432" y="1522" width="36" height="36" />
       </bpmndi:BPMNShape>
       <bpmndi:BPMNEdge id="Flow_StrikeNoted_RecordCarrierStrike_di" bpmnElement="Flow_StrikeNoted_RecordCarrierStrike">
-        <di:waypoint x="168" y="1120" />
-        <di:waypoint x="250" y="1120" />
+        <di:waypoint x="168" y="1540" />
+        <di:waypoint x="250" y="1540" />
       </bpmndi:BPMNEdge>
       <bpmndi:BPMNEdge id="Flow_RecordCarrierStrike_StrikeRecorded_di" bpmnElement="Flow_RecordCarrierStrike_StrikeRecorded">
-        <di:waypoint x="350" y="1120" />
-        <di:waypoint x="432" y="1120" />
+        <di:waypoint x="350" y="1540" />
+        <di:waypoint x="432" y="1540" />
       </bpmndi:BPMNEdge>
       <bpmndi:BPMNShape id="PackStart_di" bpmnElement="PackStart">
         <dc:Bounds x="1032" y="122" width="36" height="36" />

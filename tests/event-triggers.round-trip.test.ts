@@ -5,13 +5,13 @@
  * `irToXml`. No Docker and no engine.
  *
  * One order-fulfilment narrative exercises a process-level `on message` handler,
- * a `subprocess` owning a non-interrupting timer reminder and a non-interrupting
- * `on condition` watchdog reading a declared form variable, an `on signal`
- * handler together with an `emit signal` and a terminal `throw signal` of the
- * same name (so all three share one `bpmn:Signal`), an `at` timer on a second
- * sub-process, an `on error` handler with both catch bindings, and a
- * `var timer: string` read in a service expression, pinning that the timer
- * particle words coexist with same-named variables.
+ * a `subprocess` owning three handlers at once (a non-interrupting timer
+ * reminder, a non-interrupting `on condition` watchdog reading a declared form
+ * variable, and an interrupting `at` timer, so both timer forms sit on one
+ * container), an `on signal` handler together with an `emit signal` and a
+ * terminal `throw signal` of the same name (so all three share one
+ * `bpmn:Signal`), and a `var timer: string` read in a service expression,
+ * pinning that the timer particle words coexist with same-named variables.
  *
  * The frozen `.bpmn` is a diff tripwire: drift in it is a defect, not a reason
  * to regenerate.
@@ -260,10 +260,9 @@ describe('root sharing on the frozen .bpmn', () => {
     expect(signalRefOf(rt.frozenXml, 'Announce')).toBe(signalId);
   });
 
-  it('there is exactly one root per distinct message, signal, and error name', () => {
+  it('there is exactly one root per distinct message and signal name', () => {
     expect(rt.frozenXml.match(/<bpmn:message id="[^"]+"/g)).toHaveLength(1);
     expect(rt.frozenXml.match(/<bpmn:signal id="[^"]+"/g)).toHaveLength(1);
-    expect(rt.frozenXml.match(/<bpmn:error id="[^"]+"/g)).toHaveLength(1);
   });
 });
 

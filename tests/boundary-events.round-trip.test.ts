@@ -5,10 +5,11 @@
  * and no engine.
  *
  * One parcel-dispatch narrative exercises all six boundary-capable triggers,
- * interrupting and non-interrupting attachment, a boundary on a `subprocess`
- * host and one on a `call` host, two boundaries sharing one host, an escape
- * chain that rejoins the main flow through `goto`, an `if`/`else` inside an
- * escape chain, and two host-less handlers alongside all of it.
+ * interrupting and non-interrupting attachment, every host kind a boundary can
+ * attach to (`user`, `subprocess`, `call`, `script`, a `class`-bound `service`
+ * and a `topic`-bound one), two boundaries sharing one host, an escape chain
+ * that rejoins the main flow through `goto`, an `if` inside an escape chain,
+ * and a host-less handler alongside all of it.
  *
  * The frozen `.bpmn` is a diff tripwire: drift in it is a defect, not a reason
  * to regenerate.
@@ -81,17 +82,21 @@ function attachmentSignatures(container: FlowContainer): string[] {
 }
 
 /**
- * The six boundary events the fixture authors. Frozen here so a hop that drops
- * a host, flips `cancelActivity`, or loses a trigger payload fails with a
- * readable diff rather than a deep-equality dump.
+ * The nine boundary events the fixture authors, covering every host kind a
+ * boundary can attach to. Frozen here so a hop that drops a host, flips
+ * `cancelActivity`, or loses a trigger payload fails with a readable diff rather
+ * than a deep-equality dump.
  */
 const EXPECTED_ATTACHMENTS = [
   'BookCarrier signal CarrierStrike interrupting',
+  'ChargePostage error PAYMENT_DECLINED interrupting',
   'CheckAddress message AddressVerified interrupting',
   'CheckAddress timer duration PT4H alongside',
+  'ComputeShipping timer duration PT1H alongside',
   'HandOverParcel conditional ${weight > 30} alongside',
   'PackGoods error ADDRESS_REJECTED interrupting',
   'PackGoods escalation OVERSIZED_PARCEL alongside',
+  'PrintLabel message ExpediteRequested interrupting',
 ].sort();
 
 /**
@@ -135,7 +140,7 @@ function definitionRefOf(
   xml: string,
   element: 'boundaryEvent' | 'startEvent' | 'intermediateThrowEvent',
   elementId: string,
-  definition: 'signal' | 'escalation',
+  definition: 'signal' | 'escalation' | 'error' | 'message',
 ): string | undefined {
   const block = new RegExp(
     `<bpmn:${element} id="${elementId}"[^>]*>([\\s\\S]*?)</bpmn:${element}>`,
@@ -235,6 +240,9 @@ describe('idempotence: DSL → IR₁ → XML → IR₂ → DSL′ → IR₃', ()
   it('the authored ids survive verbatim at their correct container depth', () => {
     expect(kindOf(rt.ir3, 'CheckAddress')).toBe('userTask');
     expect(kindOf(rt.ir3, 'PackGoods')).toBe('subProcess');
+    expect(kindOf(rt.ir3, 'ComputeShipping')).toBe('scriptTask');
+    expect(kindOf(rt.ir3, 'ChargePostage')).toBe('serviceTask');
+    expect(kindOf(rt.ir3, 'PrintLabel')).toBe('serviceTask');
     expect(kindOf(rt.ir3, 'BookCarrier')).toBe('callActivity');
     expect(kindOf(rt.ir3, 'HandOverParcel')).toBe('userTask');
     // The escalation is emitted one container down, inside the sub-process the
@@ -266,12 +274,27 @@ describe('idempotence: DSL → IR₁ → XML → IR₂ → DSL′ → IR₃', ()
     expect(rejoin?.targetRef).toBe('PackGoods');
   });
 
-  it('the if/else inside an escape chain comes back as an if/else, not as gotos', () => {
+  it('the if inside an escape chain comes back as an if, not as gotos', () => {
     // The boundary event is wired to the CFG's virtual entry, so its escape
     // chain is reachable and the split inside it has an immediate dominator;
     // without that the restructurer could only degrade the branch into jumps.
     expect(rt.dslPrime).toContain('if (parcelValue > 500) {');
-    expect(rt.dslPrime).toContain('} else {');
+  });
+});
+
+describe('golden generation: the pipeline output matches the frozen .bpmn', () => {
+  it('each task host carries its boundary event, pinned by attachedToRef', () => {
+    // A boundary attaches to a `script` task and to both service-task bindings,
+    // the `class` delegate and the `topic` external worker.
+    expect(rt.generatedXml).toContain(
+      '<bpmn:boundaryEvent id="Boundary_ComputeShipping_timer" cancelActivity="false" attachedToRef="ComputeShipping">',
+    );
+    expect(rt.generatedXml).toContain(
+      '<bpmn:boundaryEvent id="Boundary_ChargePostage_error" attachedToRef="ChargePostage">',
+    );
+    expect(rt.generatedXml).toContain(
+      '<bpmn:boundaryEvent id="Boundary_PrintLabel_message" attachedToRef="PrintLabel">',
+    );
   });
 });
 
@@ -297,6 +320,13 @@ describe('DI attachment on the generated .bpmn', () => {
     assertAttachedToHost(bounds, 'HandOverParcel', [
       'Boundary_HandOverParcel_condition',
     ]);
+    assertAttachedToHost(bounds, 'ComputeShipping', [
+      'Boundary_ComputeShipping_timer',
+    ]);
+    assertAttachedToHost(bounds, 'ChargePostage', [
+      'Boundary_ChargePostage_error',
+    ]);
+    assertAttachedToHost(bounds, 'PrintLabel', ['Boundary_PrintLabel_message']);
   });
 
   it('the sub-process host carries its boundaries on the expanded box, not a task-sized one', () => {
@@ -360,6 +390,44 @@ describe('root sharing on the frozen .bpmn', () => {
         'escalation',
       ),
     ).toBe(rootId);
+  });
+
+  it('the error a boundary catches gets a root carrying its declared message', () => {
+    const roots = [
+      ...rt.frozenXml.matchAll(
+        /<bpmn:error id="([^"]+)"[^>]*errorCode="PAYMENT_DECLINED"[^>]*operaton:errorMessage="([^"]+)"/g,
+      ),
+    ];
+    expect(roots).toHaveLength(1);
+    const [, rootId, message] = roots[0]!;
+    expect(message).toBe('The payment gateway declined the charge');
+
+    expect(
+      definitionRefOf(
+        rt.frozenXml,
+        'boundaryEvent',
+        'Boundary_ChargePostage_error',
+        'error',
+      ),
+    ).toBe(rootId);
+  });
+
+  it('the message a boundary correlates on gets its own bpmn:Message root', () => {
+    const roots = [
+      ...rt.frozenXml.matchAll(
+        /<bpmn:message id="([^"]+)" name="ExpediteRequested"/g,
+      ),
+    ];
+    expect(roots).toHaveLength(1);
+
+    expect(
+      definitionRefOf(
+        rt.frozenXml,
+        'boundaryEvent',
+        'Boundary_PrintLabel_message',
+        'message',
+      ),
+    ).toBe(roots[0]![1]);
   });
 });
 
