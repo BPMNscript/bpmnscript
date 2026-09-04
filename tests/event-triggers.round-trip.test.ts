@@ -3,21 +3,19 @@
 // synthesized join, and every throw and emit is named, so the printer emits the
 // authored id instead of a `Throw_<coord>` one that trips the reserved-name check.
 
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect } from 'vitest';
 
-import { xmlToIr, irToDsl, astToIr } from '@bpmn-script/transform';
-import type {
-  BpmnProcess,
-  EventDefinition,
-  FlowContainer,
-  ImportWarning,
-} from '@bpmn-script/transform';
+import type { EventDefinition, FlowContainer } from '@bpmn-script/transform';
 
-import { normalizeIr } from './helpers/normalize-ir.js';
-import { describeDiContainment } from './helpers/di-bounds.js';
+import {
+  describeDiContainment,
+  describeSingleDiagram,
+} from './helpers/di-bounds.js';
+import { describeImportFirst } from './helpers/import-first.js';
 import {
   definitionOf,
   handlerTriggerDef,
+  handlerTriggerDefs,
   kindOf,
   subProcess,
 } from './helpers/ir-query.js';
@@ -31,18 +29,9 @@ const rt = roundTripFixture('event-triggers', {
 });
 
 function timerExpressions(container: FlowContainer): string[] {
-  const out: string[] = [];
-  for (const fe of container.flowElements) {
-    if (fe.kind !== 'subProcess') continue;
-    if (fe.triggeredByEvent === true) {
-      const start = fe.flowElements.find((e) => e.kind === 'startEvent');
-      const def =
-        start?.kind === 'startEvent' ? start.eventDefinition : undefined;
-      if (def?.kind === 'timer') out.push(def.expression);
-    }
-    out.push(...timerExpressions(fe));
-  }
-  return out.sort();
+  return handlerTriggerDefs(container)
+    .flatMap((def) => (def?.kind === 'timer' ? [def.expression] : []))
+    .sort();
 }
 
 // Handwritten import-first. Two `bpmn:Signal` roots share a name but are
@@ -152,13 +141,8 @@ describe("idempotence: DSL -> IR1 -> XML -> IR2 -> DSL' -> IR3", () => {
   });
 });
 
-describe('DI containment on the generated .bpmn', () => {
-  it('exactly one bpmndi:BPMNDiagram is emitted', () => {
-    expect(rt.generatedXml.match(/<bpmndi:BPMNDiagram\b/g)).toHaveLength(1);
-  });
-});
+describeSingleDiagram(rt);
 
-// Named so the walk cannot pass on a tree with nothing nested in it.
 describeDiContainment(
   rt,
   () => {
@@ -193,43 +177,21 @@ describe('root sharing on the frozen .bpmn', () => {
   });
 });
 
-describe('import-first: a handwritten .bpmn with two same-name signals round-trips', () => {
-  let firstImport: BpmnProcess;
-  let firstWarnings: ImportWarning[];
-  let reDesugared: BpmnProcess;
-  let importDsl: string;
-
-  beforeAll(async () => {
-    const imported = await xmlToIr(IMPORT_FIRST_BPMN);
-    firstImport = imported.ir;
-    firstWarnings = imported.warnings;
-    importDsl = irToDsl(firstImport);
-    reDesugared = astToIr(await rt.parseToAst(importDsl));
-  });
-
-  it('imports warning-free (the two same-name signal roots collapse silently)', () => {
-    expect(firstWarnings).toEqual([]);
-  });
-
-  it('recovers each trigger payload into the DSL surface', () => {
-    expect(importDsl).toContain('emit signal Broadcast "ParcelDispatched"');
-    expect(importDsl).toContain('throw signal Done "ParcelDispatched"');
-    expect(importDsl).toContain('on timer at "2026-09-01T08:00:00" {');
-    expect(importDsl).toContain('on condition (stockLevel < 5) {');
-  });
-
-  it('both broadcasts resolve to the one collapsed signal name', () => {
-    expect(definitionOf(firstImport, 'Broadcast')).toEqual({
-      kind: 'signal',
-      signalName: 'ParcelDispatched',
+describeImportFirst(
+  'a handwritten .bpmn with two same-name signals round-trips',
+  IMPORT_FIRST_BPMN,
+  (first) => {
+    it('recovers each trigger payload into the DSL surface', () => {
+      expect(first.dsl).toContain('emit signal Broadcast "ParcelDispatched"');
+      expect(first.dsl).toContain('throw signal Done "ParcelDispatched"');
+      expect(first.dsl).toContain('on timer at "2026-09-01T08:00:00" {');
+      expect(first.dsl).toContain('on condition (stockLevel < 5) {');
     });
-    expect(definitionOf(firstImport, 'Done')).toEqual({
-      kind: 'signal',
-      signalName: 'ParcelDispatched',
-    });
-  });
 
-  it('the hand-named handlers are re-keyed so the re-desugared IR matches the import', () => {
-    expect(normalizeIr(reDesugared)).toEqual(normalizeIr(firstImport));
-  });
-});
+    it('both broadcasts resolve to the one collapsed signal name', () => {
+      const collapsed = { kind: 'signal', signalName: 'ParcelDispatched' };
+      expect(definitionOf(first.ir, 'Broadcast')).toEqual(collapsed);
+      expect(definitionOf(first.ir, 'Done')).toEqual(collapsed);
+    });
+  },
+);

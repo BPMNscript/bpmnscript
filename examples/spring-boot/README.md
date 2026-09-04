@@ -140,7 +140,7 @@ In Cockpit, open the live diagram of a running instance to watch the token sit o
 
 ### Variant: Kopp 2009
 
-`loan-approval-kopp` is the parallel-rating variant from Kopp et al. (2009), the same paper in the thesis bibliography.
+`loan-approval-kopp` is the parallel-rating variant of that process, following Kopp et al. (2009).
 The request is rated in parallel by two external bureaus and one internal service, and a low internal rating additionally routes through a human "Manual risk assessment".
 It accepts when both external bureaus rate low, or when the internal rating is low and the assessor agrees (`assessorRes = low`).
 Its delegates live in `src/main/java/com/example/loan/kopp/`.

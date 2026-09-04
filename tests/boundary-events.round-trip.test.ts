@@ -1,20 +1,18 @@
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect } from 'vitest';
 
 import { Diagnostic } from 'vscode-languageserver-types';
 
-import { xmlToIr, irToDsl, astToIr } from '@bpmn-script/transform';
-import type {
-  BpmnProcess,
-  FlowContainer,
-  FlowElement,
-  ImportWarning,
-} from '@bpmn-script/transform';
+import type { FlowContainer, FlowElement } from '@bpmn-script/transform';
 
-import { normalizeIr } from './helpers/normalize-ir.js';
-import { parseShapeBounds, boundsOf } from './helpers/di-bounds.js';
+import {
+  boundsOf,
+  describeSingleDiagram,
+  parseShapeBounds,
+} from './helpers/di-bounds.js';
 import type { Bounds } from './helpers/di-bounds.js';
+import { describeImportFirst } from './helpers/import-first.js';
 import { kindOf, subProcess } from './helpers/ir-query.js';
-import { definitionRefOf } from './helpers/xml-query.js';
+import { definitionRefOf, errorRoots } from './helpers/xml-query.js';
 import { roundTripFixture } from './helpers/round-trip-fixture.js';
 
 const rt = roundTripFixture('boundary-events', {
@@ -241,11 +239,9 @@ describe('golden generation: the pipeline output matches the frozen .bpmn', () =
   });
 });
 
-describe('DI attachment on the generated .bpmn', () => {
-  it('exactly one bpmndi:BPMNDiagram is emitted', () => {
-    expect(rt.generatedXml.match(/<bpmndi:BPMNDiagram\b/g)).toHaveLength(1);
-  });
+describeSingleDiagram(rt);
 
+describe('DI attachment on the generated .bpmn', () => {
   it('every boundary shape sits centered and half-overlapping on its host edge', () => {
     const bounds = parseShapeBounds(rt.generatedXml);
 
@@ -323,13 +319,9 @@ describe('root sharing on the frozen .bpmn', () => {
   });
 
   it('the error a boundary catches gets a root carrying its declared message', () => {
-    const roots = [
-      ...rt.frozenXml.matchAll(
-        /<bpmn:error id="([^"]+)"[^>]*errorCode="PAYMENT_DECLINED"[^>]*operaton:errorMessage="([^"]+)"/g,
-      ),
-    ];
+    const roots = errorRoots(rt.frozenXml, 'PAYMENT_DECLINED');
     expect(roots).toHaveLength(1);
-    const [, rootId, message] = roots[0]!;
+    const { id: rootId, message } = roots[0]!;
     expect(message).toBe('The payment gateway declined the charge');
 
     expect(
@@ -351,60 +343,41 @@ describe('root sharing on the frozen .bpmn', () => {
   });
 });
 
-describe('import-first: a handwritten .bpmn with hand-named boundary ids round-trips', () => {
-  let firstImport: BpmnProcess;
-  let firstWarnings: ImportWarning[];
-  let reDesugared: BpmnProcess;
-  let importDsl: string;
+describeImportFirst(
+  'a handwritten .bpmn with hand-named boundary ids round-trips',
+  IMPORT_FIRST_BPMN,
+  (first) => {
+    it('prints each boundary as an attached handler naming its host', () => {
+      expect(first.dsl).toContain('on InspectCrate: error "TORN_BOX" {');
+      expect(first.dsl).toContain('on InspectCrate: error "MISSING_ITEM" {');
+      expect(first.dsl).toContain(
+        'on StoreCrate: timer after "PT1H" alongside {',
+      );
+    });
 
-  beforeAll(async () => {
-    const imported = await xmlToIr(IMPORT_FIRST_BPMN);
-    firstImport = imported.ir;
-    firstWarnings = imported.warnings;
-    importDsl = irToDsl(firstImport);
-    reDesugared = astToIr(await rt.parseToAst(importDsl));
-  });
+    it('re-synthesizes the host-derived ids, suffixing the second of the colliding pair', () => {
+      // Which of the two colliding boundaries owns the `_2` suffix follows from
+      // print order, not from anything either boundary carries.
+      expect(boundaryEvents(first.ir).map((b) => b.id)).toEqual([
+        'BoxTorn',
+        'ItemMissing',
+        'CrateOverdue',
+      ]);
+      expect(boundaryEvents(first.reDesugared).map((b) => b.id)).toEqual([
+        'Boundary_InspectCrate_error',
+        'Boundary_InspectCrate_error_2',
+        'Boundary_StoreCrate_timer',
+      ]);
+    });
 
-  it('imports warning-free', () => {
-    expect(firstWarnings).toEqual([]);
-  });
-
-  it('prints each boundary as an attached handler naming its host', () => {
-    expect(importDsl).toContain('on InspectCrate: error "TORN_BOX" {');
-    expect(importDsl).toContain('on InspectCrate: error "MISSING_ITEM" {');
-    expect(importDsl).toContain(
-      'on StoreCrate: timer after "PT1H" alongside {',
-    );
-  });
-
-  it('re-synthesizes the host-derived ids, suffixing the second of the colliding pair', () => {
-    // Which of the two colliding boundaries owns the `_2` suffix follows from
-    // print order, not from anything either boundary carries.
-    expect(boundaryEvents(firstImport).map((b) => b.id)).toEqual([
-      'BoxTorn',
-      'ItemMissing',
-      'CrateOverdue',
-    ]);
-    expect(boundaryEvents(reDesugared).map((b) => b.id)).toEqual([
-      'Boundary_InspectCrate_error',
-      'Boundary_InspectCrate_error_2',
-      'Boundary_StoreCrate_timer',
-    ]);
-  });
-
-  it('keeps every host, trigger payload, and cancelActivity paired correctly', () => {
-    const expected = [
-      'InspectCrate error MISSING_ITEM interrupting',
-      'InspectCrate error TORN_BOX interrupting',
-      'StoreCrate timer duration PT1H alongside',
-    ];
-    expect(attachmentSignatures(firstImport)).toEqual(expected);
-    expect(attachmentSignatures(reDesugared)).toEqual(expected);
-  });
-
-  it('the hand-named boundaries are re-keyed so the re-desugared IR matches the import', () => {
-    // The two halves share no boundary id at all; the structural re-key
-    // collapses both onto one signature per boundary.
-    expect(normalizeIr(reDesugared)).toEqual(normalizeIr(firstImport));
-  });
-});
+    it('keeps every host, trigger payload, and cancelActivity paired correctly', () => {
+      const expected = [
+        'InspectCrate error MISSING_ITEM interrupting',
+        'InspectCrate error TORN_BOX interrupting',
+        'StoreCrate timer duration PT1H alongside',
+      ];
+      expect(attachmentSignatures(first.ir)).toEqual(expected);
+      expect(attachmentSignatures(first.reDesugared)).toEqual(expected);
+    });
+  },
+);

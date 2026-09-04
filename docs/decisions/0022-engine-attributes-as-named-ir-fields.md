@@ -36,7 +36,7 @@ Each setting becomes an optional field on the IR node that owns it, named for wh
 `asyncBefore`, `asyncAfter`, and `exclusive` are stored only when they diverge from the engine's off/off/on defaults, and flow-node settings group into one mixin interface while input/output groups into a second, both as tagged unions so an illegal combination is unrepresentable.
 The naming rule from ADR-0006 still applies at the boundary: values are stored under plain names, and `irToXml` adds the `operaton:` prefix at the one point where it builds the moddle element.
 
-A gateway synthesized from an `if`, `while`, or `parallel` has no textual identity to hang an attribute on (ADR-0010), so no engine attribute can be authored on one.
+A gateway synthesized from an `if`, `while`, `do...while`, `parallel`, or a multi-branch `await` has no textual identity to hang an attribute on (ADR-0010), so no engine attribute can be authored on one.
 An `operaton:asyncBefore` found on a gateway during import stays in the `extensionAttribute` warning bucket, a scoped limit of the block-structured surface (ADR-0008) rather than an oversight.
 
 ### Consequences
@@ -57,7 +57,7 @@ An `operaton:asyncBefore` found on a gateway during import stays in the `extensi
 ### A generic extension bag keyed by qualified attribute name
 
 - Good, because a map filled from import and written back verbatim would carry every Operaton attribute at once, including ones nobody has looked at.
-- Bad, because the DSL surface it implies is untyped: any key would compile, and a typo would produce an attribute the engine silently ignores.
+- Bad, because the DSL surface it implies is untyped: any key would compile, and a typo would produce an attribute the engine never reads and never complains about.
 
 ### Openly `operaton:`-prefixed field names
 

@@ -12,7 +12,7 @@ import {
   irToDsl,
   UnsupportedConstructError,
 } from '@bpmn-script/transform';
-import type { ImportWarning } from '@bpmn-script/transform';
+import type { ImportWarning, PrintWarning } from '@bpmn-script/transform';
 
 // Positions are 0-based, LSP convention.
 export interface ConvDiagnostic {
@@ -31,7 +31,7 @@ export type CompileResult =
   | { ok: false; kind: 'error'; message: string };
 
 export type DecompileResult =
-  | { ok: true; output: string; warnings: ImportWarning[] }
+  | { ok: true; output: string; warnings: (ImportWarning | PrintWarning)[] }
   | { ok: false; kind: 'unsupported'; message: string }
   | { ok: false; kind: 'error'; message: string };
 
@@ -130,9 +130,10 @@ export async function decompileBpmnToDsl(
     };
   }
 
-  let output;
+  let output: string;
+  let printWarnings: PrintWarning[];
   try {
-    output = irToDsl(ir);
+    ({ source: output, warnings: printWarnings } = irToDsl(ir));
   } catch (err) {
     return {
       ok: false,
@@ -141,7 +142,7 @@ export async function decompileBpmnToDsl(
     };
   }
 
-  return { ok: true, output, warnings };
+  return { ok: true, output, warnings: [...warnings, ...printWarnings] };
 }
 
 // Duplicated from `packages/cli/src/util.ts` rather than imported: importing it

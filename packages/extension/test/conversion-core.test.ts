@@ -1,4 +1,8 @@
-import { describe, it, expect, beforeAll } from 'vitest';
+// The editor-independent half of the conversion commands: what each direction
+// makes of a given input. `conversion.test.ts` covers what the VS Code adapter
+// then shows the author.
+
+import { describe, expect, test, beforeAll } from 'vitest';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -15,6 +19,7 @@ import {
   decompileBpmnToDsl,
   swapExtension,
 } from '../src/extension/conversion-core.js';
+import type { ConvDiagnostic } from '../src/extension/conversion-core.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -46,91 +51,94 @@ for (const [label, p] of [
   }
 }
 
-describe('compileDslToBpmn: invoice-approval golden fixture', () => {
-  it('compiles to ok:true; output contains bpmn:definitions; re-imports via xmlToIr with process id invoice-approval', async () => {
-    const source = fs.readFileSync(INVOICE_APPROVAL_SRC, 'utf-8');
+let parse: ReturnType<typeof parseHelper<Model>>;
 
-    const result = await compileDslToBpmn(
-      source,
-      'invoice-approval.bpmnscript',
-      '0.0.1',
-    );
-
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-
-    expect(result.output).toContain('bpmn:definitions');
-
-    const { ir } = await xmlToIr(result.output);
-    expect(ir.id).toBe('invoice-approval');
-  });
+beforeAll(() => {
+  const services = createBpmnScriptServices(EmptyFileSystem);
+  parse = parseHelper<Model>(services.BpmnScript);
 });
 
-describe('compileDslToBpmn: type-mismatch validation error', () => {
-  it('returns ok:false, kind:validation, diagnostics.length >= 1, each with 0-based line and non-empty message', async () => {
-    // String `name` in a numeric comparison: a severity-1 diagnostic.
-    const source = `process p {
-  var name: string
-  if (name > 1000) { user A }
+/** Every substring must appear, so a message that stops naming one fails. */
+function expectMentions(text: string, mentions: readonly string[]): void {
+  for (const mention of mentions) {
+    expect(text, `expected to find "${mention}" in: ${text}`).toContain(
+      mention,
+    );
+  }
 }
-`;
 
+/**
+ * A diagnostic minus its wording: the positions, the severity and the source
+ * text are this module's own mapping, the sentence belongs to the validator.
+ */
+type DiagnosticPosition = Omit<ConvDiagnostic, 'message'>;
+
+type CompileOutcome =
+  | { ok: true; reimportsAs: string }
+  | { ok: false; kind: 'validation'; diagnostics: DiagnosticPosition[] };
+
+type CompileRow = readonly [
+  title: string,
+  source: string,
+  expected: CompileOutcome,
+];
+
+describe('compileDslToBpmn', () => {
+  test.each<CompileRow>([
+    [
+      'the invoice-approval example compiles to BPMN that imports back under its own id',
+      fs.readFileSync(INVOICE_APPROVAL_SRC, 'utf-8'),
+      { ok: true, reimportsAs: 'invoice-approval' },
+    ],
+    [
+      // String `name` in a numeric comparison: a severity-1 diagnostic.
+      'a type mismatch blocks the compile and reports the comparison it rejected',
+      `process p {\n  var name: string\n  if (name > 1000) { user A }\n}\n`,
+      {
+        ok: false,
+        kind: 'validation',
+        diagnostics: [
+          {
+            // 0-based, LSP convention.
+            line: 2,
+            character: 6,
+            endLine: 2,
+            endCharacter: 17,
+            severity: 1,
+            text: 'name > 1000',
+          },
+        ],
+      },
+    ],
+    [
+      // Uses `amount` without declaring it: severity 2, which must not block.
+      'an undeclared variable is only a warning, so the source still compiles',
+      `process p { if (amount > 1000) { user A } }`,
+      { ok: true, reimportsAs: 'p' },
+    ],
+  ])('%s', async (_title, source, expected) => {
     const result = await compileDslToBpmn(source, 'test.bpmnscript', '0.0.1');
 
-    expect(result.ok).toBe(false);
+    expect(result.ok).toBe(expected.ok);
+    if (expected.ok) {
+      if (!result.ok) return;
+      expect(result.output).toContain('bpmn:definitions');
+      expect((await xmlToIr(result.output)).ir.id).toBe(expected.reimportsAs);
+      return;
+    }
+
     if (result.ok) return;
-
-    expect(result.kind).toBe('validation');
+    expect(result.kind).toBe(expected.kind);
+    // The union type alone does not stop the adapter writing result.output if a
+    // kind check goes missing, so assert the field is absent.
+    expect('output' in result).toBe(false);
     if (result.kind !== 'validation') return;
-
-    expect(result.diagnostics.length).toBeGreaterThanOrEqual(1);
-
-    for (const d of result.diagnostics) {
-      // 0-based, LSP convention.
-      expect(d.line).toBeGreaterThanOrEqual(0);
-      expect(d.message.length).toBeGreaterThan(0);
-      expect(d.severity).toBe(1);
-    }
-  });
-});
-
-describe('compileDslToBpmn: undeclared-variable warning does not block', () => {
-  it('returns ok:true for a source whose only diagnostic is an undeclared-variable warning', async () => {
-    // Uses `amount` without declaring it: severity 2, which must not block.
-    const source = `process p { if (amount > 1000) { user A } }`;
-
-    const result = await compileDslToBpmn(source, 'test.bpmnscript', '0.0.1');
-
-    expect(result.ok).toBe(true);
-    if (result.ok) {
-      expect(result.output.length).toBeGreaterThan(0);
-    }
-  });
-});
-
-describe('decompileBpmnToDsl: invoice-approval-generated golden fixture', () => {
-  let parse: ReturnType<typeof parseHelper<Model>>;
-
-  beforeAll(() => {
-    const services = createBpmnScriptServices(EmptyFileSystem);
-    parse = parseHelper<Model>(services.BpmnScript);
-  });
-
-  it('returns ok:true; output re-parses through Langium with zero parser errors', async () => {
-    const xml = fs.readFileSync(GOLDEN_GENERATED_BPMN, 'utf-8');
-
-    const result = await decompileBpmnToDsl(
-      xml,
-      'invoice-approval-generated.bpmn',
+    expect(
+      result.diagnostics.map(({ message: _message, ...position }) => position),
+    ).toEqual(expected.diagnostics);
+    expect(result.diagnostics.map((d) => d.message.length > 0)).toEqual(
+      expected.diagnostics.map(() => true),
     );
-
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-
-    const doc = await parse(result.output);
-    expect(doc.parseResult.parserErrors).toHaveLength(0);
-
-    expect(result.warnings).toEqual([]);
   });
 });
 
@@ -158,51 +166,6 @@ const LANE_AND_ASYNC_ATTR_BPMN = `<?xml version="1.0" encoding="UTF-8"?>
   </bpmn:process>
 </bpmn:definitions>`;
 
-describe('decompileBpmnToDsl: surfaces import warnings for dropped content', () => {
-  it('returns ok:true with populated warnings naming the dropped attribute, the lane, and their element ids', async () => {
-    const result = await decompileBpmnToDsl(
-      LANE_AND_ASYNC_ATTR_BPMN,
-      'warns.bpmn',
-    );
-
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-
-    expect(result.warnings.length).toBeGreaterThanOrEqual(2);
-
-    const attrWarning = result.warnings.find(
-      (w) => w.category === 'extensionAttribute',
-    );
-    expect(attrWarning).toBeDefined();
-    expect(attrWarning?.message).toContain('formRef');
-    expect(attrWarning?.elementId).toBe('AsyncTask');
-
-    const laneWarning = result.warnings.find((w) => w.category === 'lane');
-    expect(laneWarning).toBeDefined();
-    expect(laneWarning?.elementId).toBe('Lane_Ops');
-  });
-});
-
-describe('decompileBpmnToDsl: bad-service-task-no-binding.bpmn', () => {
-  it('returns ok:false, kind:unsupported; message mentions the missing execution discriminator and BadService_1', async () => {
-    const xml = fs.readFileSync(BAD_SERVICE_TASK_BPMN, 'utf-8');
-
-    const result = await decompileBpmnToDsl(
-      xml,
-      'bad-service-task-no-binding.bpmn',
-    );
-
-    expect(result.ok).toBe(false);
-    if (result.ok) return;
-
-    expect(result.kind).toBe('unsupported');
-    if (result.kind !== 'unsupported') return;
-
-    expect(result.message).toContain('BadService_1');
-    expect(result.message).toContain('no execution discriminator');
-  });
-});
-
 const CONDITIONAL_START_BPMN = `<?xml version="1.0" encoding="UTF-8"?>
 <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
                   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
@@ -218,34 +181,91 @@ const CONDITIONAL_START_BPMN = `<?xml version="1.0" encoding="UTF-8"?>
   </bpmn:process>
 </bpmn:definitions>`;
 
-describe('decompileBpmnToDsl: conditional-start.bpmn (new refusal subclass)', () => {
-  it('returns ok:false, kind:unsupported; message mentions the conditional trigger and ConditionalStart', async () => {
-    const result = await decompileBpmnToDsl(
+type DecompileOutcome =
+  | {
+      ok: true;
+      /** Every warning, as [element id, category], in the order reported. */
+      warnings: (readonly [string, string])[];
+      mentions: string[];
+    }
+  | { ok: false; kind: 'unsupported'; mentions: string[] };
+
+type DecompileRow = readonly [
+  title: string,
+  xml: string,
+  expected: DecompileOutcome,
+];
+
+describe('decompileBpmnToDsl', () => {
+  test.each<DecompileRow>([
+    [
+      'a BPMN this tool generated comes back with nothing to report',
+      fs.readFileSync(GOLDEN_GENERATED_BPMN, 'utf-8'),
+      { ok: true, warnings: [], mentions: [] },
+    ],
+    [
+      'a lane and an unsupported engine attribute are dropped with a warning each, naming the element they came off',
+      LANE_AND_ASYNC_ATTR_BPMN,
+      {
+        ok: true,
+        warnings: [
+          ['Lane_Ops', 'lane'],
+          ['AsyncTask', 'extensionAttribute'],
+        ],
+        mentions: ['formRef'],
+      },
+    ],
+    [
+      'a service task with no execution form is refused, naming the task and what it lacks',
+      fs.readFileSync(BAD_SERVICE_TASK_BPMN, 'utf-8'),
+      {
+        ok: false,
+        kind: 'unsupported',
+        mentions: ['BadService_1', 'no execution discriminator'],
+      },
+    ],
+    [
+      'a conditional start event is refused, naming the event and its trigger',
       CONDITIONAL_START_BPMN,
-      'conditional-start.bpmn',
-    );
+      {
+        ok: false,
+        kind: 'unsupported',
+        mentions: ['ConditionalStart', 'conditional'],
+      },
+    ],
+  ])('%s', async (_title, xml, expected) => {
+    const result = await decompileBpmnToDsl(xml, 'input.bpmn');
 
-    expect(result.ok).toBe(false);
+    expect(result.ok).toBe(expected.ok);
+    if (expected.ok) {
+      if (!result.ok) return;
+      expect(result.warnings.map((w) => [w.elementId, w.category])).toEqual(
+        expected.warnings,
+      );
+      expectMentions(
+        result.warnings.map((w) => w.message).join('\n'),
+        expected.mentions,
+      );
+      // Whatever it accepts, it must hand back a script Langium accepts.
+      const doc = await parse(result.output);
+      expect(doc.parseResult.parserErrors).toHaveLength(0);
+      return;
+    }
+
     if (result.ok) return;
-
-    expect(result.kind).toBe('unsupported');
-    if (result.kind !== 'unsupported') return;
-
-    expect(result.message).toContain('ConditionalStart');
-    expect(result.message).toContain('conditional');
+    expect(result.kind).toBe(expected.kind);
+    expectMentions(result.message, expected.mentions);
   });
 });
 
 describe('swapExtension', () => {
-  it('strips the final extension and appends the new one, preserving dotted basenames', () => {
-    expect(swapExtension('/a/b/my.invoice.bpmnscript', '.bpmn')).toBe(
-      '/a/b/my.invoice.bpmn',
-    );
-  });
-
-  it('swaps .bpmn to .bpmnscript', () => {
-    expect(swapExtension('/a/b/x.bpmn', '.bpmnscript')).toBe(
-      '/a/b/x.bpmnscript',
-    );
-  });
+  test.each([
+    ['/a/b/my.invoice.bpmnscript', '.bpmn', '/a/b/my.invoice.bpmn'],
+    ['/a/b/x.bpmn', '.bpmnscript', '/a/b/x.bpmnscript'],
+  ] as const)(
+    'only the final extension of %s is replaced by %s',
+    (input, newExt, expected) => {
+      expect(swapExtension(input, newExt)).toBe(expected);
+    },
+  );
 });

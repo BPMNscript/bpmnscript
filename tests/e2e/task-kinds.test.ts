@@ -15,6 +15,7 @@ import {
   isRunning,
   waitFor,
   waitForTaskId,
+  waitUntilFinished,
 } from '../helpers/engine-rest.js';
 
 const PROCESS_KEY = 'task-kinds';
@@ -91,12 +92,7 @@ describe.skipIf(SKIP)('E2E: task kinds on Spring Boot Operaton', () => {
       await waitForTaskId(fixture, processInstanceId, 'ConfirmDelivery'),
     );
 
-    expect(
-      await waitFor(
-        () => isRunning(fixture, processInstanceId),
-        (running) => !running,
-      ),
-    ).toBe(false);
+    expect(await waitUntilFinished(fixture, processInstanceId)).toBe(true);
     expect(
       await activityIdsIncluding(fixture, processInstanceId, 'OrderClosed'),
     ).toContain('OrderClosed');

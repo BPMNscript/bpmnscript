@@ -105,18 +105,16 @@ function buildGraph(container: FlowContainer): Graph {
     if (!ins.includes(from)) ins.push(from);
   };
 
-  // Skip flows referencing unknown ids so a malformed IR cannot throw here.
+  // A malformed IR must not throw here.
   for (const f of container.sequenceFlows) {
     if (!realNodes.has(f.sourceRef) || !realNodes.has(f.targetRef)) continue;
     addEdge(f.sourceRef, f.targetRef);
   }
 
   // A boundary event is a second, independent entry: its token appears when
-  // the host is running and the trigger fires, never along a sequence flow.
-  // So it is wired unconditionally, not folded into the no-start fallback,
-  // which stays keyed on the absence of a start event. A no-predecessor node
-  // that is neither is left unwired when a start exists: it really is
-  // unreachable, and the dominance queries must say so.
+  // the trigger fires, never along a sequence flow, so it is wired
+  // unconditionally rather than folded into the no-start fallback. Any other
+  // node without a predecessor stays unwired: it really is unreachable.
   const hasAnyStart = container.flowElements.some(
     (e) => e.kind === 'startEvent',
   );
@@ -165,7 +163,6 @@ function computeIdom(
     for (const node of rpo) {
       if (node === root) continue;
 
-      // Intersect all already-processed predecessors.
       let newIdom: string | undefined;
       for (const p of pred.get(node) ?? []) {
         if (!order.has(p)) continue; // predecessor not reachable from root

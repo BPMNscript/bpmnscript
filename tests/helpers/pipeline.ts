@@ -12,6 +12,12 @@ const services = createBpmnScriptServices(EmptyFileSystem);
 export const parse = parseHelper<Model>(services.BpmnScript);
 export const validate = validationHelper<Model>(services.BpmnScript);
 
+// For suites that assert printed source; the warnings channel is covered where
+// it lives.
+export function printDsl(ir: BpmnProcess): string {
+  return irToDsl(ir).source;
+}
+
 // Throws rather than returning: a round-tripped source that will not re-parse
 // is itself a round-trip failure and must abort the test.
 export async function parseToAst(source: string): Promise<Model> {
@@ -40,7 +46,7 @@ export async function roundTrip(source: string): Promise<RoundTripRun> {
   const ir1 = astToIr(await parseToAst(source));
   const xml = await irToXml(ir1);
   const { ir: ir2, warnings } = await xmlToIr(xml);
-  const dsl = irToDsl(ir2);
+  const dsl = printDsl(ir2);
   return { ir1, xml, warnings, ir2, dsl, ir3: astToIr(await parseToAst(dsl)) };
 }
 

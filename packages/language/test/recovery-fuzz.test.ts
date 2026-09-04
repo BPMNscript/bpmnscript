@@ -27,8 +27,14 @@ import { withTextMessages } from './helpers/diagnostics.js';
 const SEED = 0x5eed;
 const MUTANTS = 2000;
 
-/** Generous against the measured ~0.4ms per mutant, so the knob is the limit. */
-const TIMEOUT_MS = MUTANTS * 5;
+/**
+ * A mutant costs about 0.5ms on an idle machine, but a first run on a cold
+ * cache and a contended CPU has been seen at fifteen times that. The budget is
+ * therefore sized against the contended figure, not the warm one, and is only
+ * meant to catch a runaway: a raised `MUTANTS` or validation that stopped being
+ * linear in the input.
+ */
+const TIMEOUT_MS = MUTANTS * 30;
 
 const FENCE = '`' + '`' + '`';
 

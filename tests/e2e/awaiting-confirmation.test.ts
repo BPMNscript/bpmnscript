@@ -18,6 +18,7 @@ import {
   historicActivities,
   isRunning,
   waitFor,
+  waitUntilFinished,
 } from '../helpers/engine-rest.js';
 
 const PROCESS_KEY = 'awaiting-confirmation';
@@ -62,12 +63,7 @@ describe.skipIf(SKIP)('E2E: await message on Spring Boot Operaton', () => {
 
     await correlateMessage(fixture, MESSAGE_NAME, processInstanceId);
 
-    expect(
-      await waitFor(
-        () => isRunning(fixture, processInstanceId),
-        (running) => !running,
-      ),
-    ).toBe(false);
+    expect(await waitUntilFinished(fixture, processInstanceId)).toBe(true);
 
     const activitiesAfter = await historicActivities(
       fixture,

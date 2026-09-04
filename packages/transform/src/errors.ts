@@ -9,8 +9,9 @@
 
 /**
  * Base for every refusal, so a consumer can classify the whole family with one
- * `instanceof`. Subclasses declare their fields with `declare` so nothing
- * overwrites what `Object.assign` wrote after `super()`.
+ * `instanceof`. Subclasses declare their fields with `declare` so the class
+ * field initializers cannot overwrite what `Object.assign` wrote after
+ * `super()`.
  */
 export abstract class UnsupportedConstructError extends Error {
   constructor(message: string, detail: Record<string, unknown>) {
@@ -45,8 +46,9 @@ export class UnsupportedServiceTaskFormError extends UnsupportedConstructError {
 }
 
 /**
- * An `operaton:formField` type outside the four the DSL maps (`string`, `long`,
- * `boolean`, `date`), which would otherwise narrow the field's input semantics.
+ * An `operaton:formField` type outside the four the DSL maps: `string`, `long`,
+ * `boolean` and `date`, `long` being the Operaton spelling of the DSL's
+ * `number`.
  */
 export class UnsupportedFormFieldTypeError extends UnsupportedConstructError {
   declare readonly elementId: string;
@@ -82,8 +84,9 @@ export class UnsupportedElementError extends UnsupportedConstructError {
         'Only start/end events, throws, emits, boundary events, event ' +
         'handlers, plain tasks, user tasks, service tasks, send tasks, ' +
         'receive tasks, business rule tasks, script tasks, exclusive ' +
-        'gateways, parallel gateways, embedded subprocesses, attempt ' +
-        'blocks, call activities, and sequence flows are supported.',
+        'gateways, parallel gateways, inclusive gateways, event-based ' +
+        'gateways, embedded subprocesses, attempt blocks, call activities, ' +
+        'and sequence flows are supported.',
       { qname, elementId },
     );
   }

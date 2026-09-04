@@ -31,31 +31,46 @@ How should `irToDsl` identify which subgraphs can be expressed as `if`/`while`/`
 
 Chosen option: "Dominator/post-dominator analysis with a fixed pattern catalog and `goto` fallback".
 Dominator analysis gives a mechanically checkable criterion for each structured construct, and most edges the catalog cannot fold degrade to `goto`.
-Two kinds have no `goto` form at all.
+A statement with more than one route out prints as an `if` chain, because a statement is one position with one way on and a jump written beside the fall-through would end the block, cutting off the chain that fall-through carries.
+Every route gets a form: a condition heads its branch, and a route carrying none heads a branch as `true`, takes the chain's `else`, or runs straight into the join as the chain's fall-through.
+Heading that last route instead would put a `true` over an empty branch and leave the rest of the chain unreachable.
+Where a split degrades instead, its routes leave as jumps, and each jump takes a branch of such a chain, since a jump ends its block and a second one written beside the first could never run.
+Some edges have no `goto` form at all.
 An edge arriving at a gateway that still chooses between branches cannot be named, because a `goto` names a statement and a gateway has none, so the jump is only expressible through the gateway's successor and only while the routing has a single outcome.
-A surplus out-edge cannot be placed, because a statement carries exactly one fall-through and a jump written beside it would cut that fall-through off.
-Such an edge is dropped, a marker comment is printed where it would have gone naming the element it led into, and the CLI reports the marker as a warning.
+An edge whose target the printer elides cannot be named either, the elided element leaving no statement behind for a jump to spell.
+Such an edge is dropped, a marker comment is printed where it would have gone naming the element it led into, and `irToDsl` reports the drop on a warnings channel of its own.
+The marker comment stays in the printed source, where it is the reader's pointer to the place needing repair.
 
 The pattern catalog:
 
 - XOR split with a post-dominating join -> `if`/`else if`/`else`
-- Back-edge from body-exit to a dominating XOR head -> `while` (unconditioned back-edge) or `do...while` (conditioned back-edge)
+- Statement with more than one route out -> the same `if` chain, a conditioned route heading a branch and an unconditioned route running straight into the join taken as the chain's fall-through
+- Unconditioned back-edge from a body exit to the XOR head dominating it -> `while`, the loop condition read from the head's edge into the body
+- Conditioned back-edge from an XOR head to the body entry dominating it -> `do...while`, the loop condition read from the back-edge itself
 - AND fork with a matching AND join -> `parallel { { } { } }`
-- Every other edge -> `goto <targetId>`, or a dropped-edge marker when the edge has neither a name nor a position
+- OR fork with a matching OR join -> the same `parallel` block with each conditioned branch headed by its condition, and the fallback flow heading a branch as `else`.
+  A fallback that runs straight into the join is left out where enough branches remain to fill the block, and prints as an empty `else` where dropping it would leave too few.
+- Event-based gateway whose every outgoing flow reaches an intermediate catch event -> `await { ... }` with one branch per catch, continuing at the exclusive merge the branches share when they have one
+- Every other edge -> `goto <targetId>`, or a dropped-edge marker where the edge has no name to jump to
+
+A gateway a pattern folds is never printed, which is what keeps the round trip idempotent.
 
 ### Consequences
 
 - Good, because the algorithm terminates and produces parseable DSL for every IR (total over the supported scope)
 - Good, because AND fork/join pairs are recovered as `parallel` blocks without special-casing the decompiler
 - Good, because the CFG analysis (`cfg-analysis.ts`) is a pure, stateless utility with its own test suite, so it can be audited independently of the emitter
+- Good, because the restructurer reports what it drops instead of leaving the caller to find it, including where the drop changes what a recompiled document runs.
+  A fallback re-derived on an imported OR fork that named none is one such report: Operaton's `InclusiveGatewayActivityBehavior` throws a stuck execution when every branch of such a fork carries a condition and none of them holds, while the printed block falls through, so a document recompiled from that script runs on where the model would have stopped.
+  A split whose branches the catalog cannot fold is reported too, its edges written as jumps, and a jump ends the path it sits on where the split opened several.
 - Neutral, because RPST would recover more structured patterns (for example nested switch-like gotos) but is left for later, once the scope justifies the added machinery
 - Bad, because topology-based back-edge disambiguation (while versus do-while) requires checking the `conditionExpression` field, not just graph shape
-- Bad, because the decompiler always produces parseable source but not always source that validates, and not every edge survives: a loop whose condition sits on the back-edge is ordinary BPMN that no pattern matches, and its back-edge is lost with a marker rather than reproduced
-- Bad, because a surplus out-edge that is written as a `goto` ends the chain it sits in, so the statements after it can fail the unreachable-statement check
+- Bad, because the decompiler always produces parseable source but not always source that validates, and not every edge survives
+- Bad, because a statement whose own routes split prints as an `if` chain, which takes one route where the model takes every route it can at once, so what a recompiled document runs changes; the print hop reports it
 
 ### Confirmation
 
-`irToDsl` is verified total by the unit test suite (`packages/transform/test/`): every test input produces a string and never throws.
+`irToDsl` is verified total by the unit test suite (`packages/transform/test/`): every test input produces source and its warnings, and never throws.
 The goto-degradation path is confirmed by `tests/golden/unstructured-goto.bpmn` in `tests/round-trip-constructs.test.ts`.
 
 ## More Information

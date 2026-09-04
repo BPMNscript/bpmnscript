@@ -11,6 +11,9 @@ export type {
   ReceiveTask,
   ExclusiveGateway,
   ParallelGateway,
+  InclusiveGateway,
+  EventBasedGateway,
+  Gateway,
   SubProcess,
   CallActivity,
   VersionBinding,
@@ -31,10 +34,13 @@ export type {
   TaskListener,
 } from './ir/types.js';
 
+export { isGateway, gatewayDefaultFlowId } from './ir/types.js';
+
 export {
   makeGatewaySplitId,
   makeGatewayJoinId,
   makeGatewayForkId,
+  makeGatewayRaceId,
   makeGatewayLoopId,
   makeDefaultFlowId,
   makeSequenceFlowId,
@@ -65,3 +71,4 @@ export {
 
 export { astToIr } from './ast-to-ir.js';
 export { irToDsl, UNSTRUCTURED_MARKER } from './ir-to-dsl.js';
+export type { PrintWarning, PrintWarningCategory } from './ir-to-dsl.js';

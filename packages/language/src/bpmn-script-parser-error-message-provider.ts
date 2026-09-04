@@ -3,12 +3,11 @@
  * `class`, `if`, ...) written where the parser expects a plain identifier gets
  * a message naming the word and pointing at the quoted `"${...}"` raw-string
  * fallback. Two Chevrotain paths reach that mistake, so both are overridden:
- * `buildMismatchTokenMessage` where the grammar expects exactly `ID` (a step
- * name), and `buildNoViableAltMessage` in expression position, where `ID` is
- * one alternative among several. A slot whose alternatives are all keywords and
- * no `ID` (a variable or form-field type) takes neither path, so it gets its
- * own message naming the words it does take. Every message here stays free of
- * BPMN vocabulary (ADR-0013).
+ * `buildMismatchTokenMessage` where the grammar expects exactly `ID`, and
+ * `buildNoViableAltMessage` where `ID` is one alternative among several. A slot
+ * whose alternatives are all keywords takes neither path and gets its own
+ * message naming the words it does take. Every message here stays free of BPMN
+ * vocabulary (ADR-0013).
  *
  * This only enriches the message Chevrotain already built; it cannot suppress
  * or restructure error recovery, nor change which token positions are legal.
@@ -26,25 +25,19 @@ const ID_TOKEN_NAME = 'ID';
 /**
  * A `var` declaration is legal only in the process header, so anywhere else the
  * parser has finished the statement list and reports "expecting `}`, found
- * `var`". That exact pair is the misplacement, distinct from `var` used as a
- * name, which expects `ID` and takes the reserved-word path.
+ * `var`". `var` used as a name expects `ID` and takes the reserved-word path.
  */
 const CLOSE_BRACE_TOKEN_NAME = '}';
 const VAR_KEYWORD_TOKEN_NAME = 'var';
 
-/**
- * A repeat clause is part of the statements that take one, so after any other
- * statement the parser has finished the statement list and reports the same
- * "expecting `}`" a misplaced `var` gets.
- */
+/** After a statement that takes no repeat clause, the same "expecting `}`". */
 const FOR_KEYWORD_TOKEN_NAME = 'for';
 
 /**
  * Two declarations start with a plain `ID` rather than a keyword (`error "CODE"
  * message "..."` and `<key> = <value>`), so a mistyped statement keyword in the
- * header region (`usr Review`) starts neither. The parser then has no viable
- * `ProcessDecl` alternative and reports the raw expected-token list, which says
- * nothing about what the author got wrong.
+ * header region starts neither and Chevrotain falls back to the raw
+ * expected-token list, which says nothing about the actual mistake.
  */
 const PROCESS_DECL_RULE_NAME = 'ProcessDecl';
 
@@ -60,10 +53,7 @@ function bareRuleName(ruleName: string): string {
   return ruleName.replace(/\u200b+$/, '');
 }
 
-/**
- * Derived from the base method signatures so the exact Chevrotain field shapes
- * are reused without naming the transitive `chevrotain` package.
- */
+/** Off the base signatures, so the transitive `chevrotain` package is unnamed. */
 type MismatchTokenOptions = Parameters<
   LangiumParserErrorMessageProvider['buildMismatchTokenMessage']
 >[0];
@@ -157,9 +147,9 @@ export class BpmnScriptParserErrorMessageProvider extends LangiumParserErrorMess
 
   /**
    * The keywords a slot admits, in grammar order, when every alternative is one
-   * keyword and nothing else. `undefined` anywhere else, so a slot that also
-   * takes an identifier, a literal, or a longer phrase keeps Chevrotain's own
-   * message rather than being described as a closed set of words.
+   * keyword and nothing else. `undefined` anywhere else, so a slot also taking
+   * an identifier, a literal, or a longer phrase keeps Chevrotain's message
+   * rather than being described as a closed set of words.
    */
   private keywordAlternatives(
     expectedPathsPerAlt: NoViableAltOptions['expectedPathsPerAlt'],

@@ -1,6 +1,12 @@
 // Regex rather than a parser: the tests workspace declares no moddle dependency.
-// The block regex closes on a back-reference to its own tag, so several catch
-// sites in one document are read independently.
+
+/** Every id carried by a `<bpmn:<tag>>` open tag, in document order. */
+export function idsOfTag(xml: string, tag: string): string[] {
+  return [...xml.matchAll(new RegExp(`<bpmn:${tag} id="([^"]+)"`, 'g'))].map(
+    (m) => m[1]!,
+  );
+}
+
 /** Every `bpmn:message` root in the document, in document order. */
 export function messageRoots(xml: string): { id: string; name: string }[] {
   return [...xml.matchAll(/<bpmn:message id="([^"]+)" name="([^"]+)"/g)].map(
@@ -8,6 +14,20 @@ export function messageRoots(xml: string): { id: string; name: string }[] {
   );
 }
 
+/** Every `bpmn:error` root carrying `errorCode`, with the message it declares. */
+export function errorRoots(
+  xml: string,
+  errorCode: string,
+): { id: string; message: string }[] {
+  const pattern = new RegExp(
+    `<bpmn:error id="([^"]+)"[^>]*errorCode="${errorCode}"[^>]*operaton:errorMessage="([^"]+)"`,
+    'g',
+  );
+  return [...xml.matchAll(pattern)].map((m) => ({ id: m[1]!, message: m[2]! }));
+}
+
+// The block regex closes on a back-reference to its own tag, so several catch
+// sites in one document are read independently.
 export function definitionRefOf(
   xml: string,
   elementId: string,

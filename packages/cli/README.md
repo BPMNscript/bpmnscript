@@ -29,6 +29,8 @@ bpmns parse invoice-approval.bpmn -o invoice-approval.bpmnscript
 
 Exit codes are `0` for success, `1` for validation or parse errors, `2` for I/O errors.
 Both directions report non-fatal warnings on stderr without changing the exit code, so an undeclared variable reference on compile, or a dropped Operaton extension attribute or lane on import, is warned about but still produces a file.
+`parse` reports what the print hop could not carry into the script as well: some of those warnings bear on what a recompiled document runs, and some on whether the script builds back at all, so read them before running `build` on the output.
+The roundtripping section of the root [README](../../README.md#roundtripping-bpmn-xml---bpmnscript) walks through both hops.
 A BPMN construct the DSL cannot express is the exception: `parse` exits `1` with a message naming the construct and writes nothing.
 
 The package is not meant to be imported programmatically.

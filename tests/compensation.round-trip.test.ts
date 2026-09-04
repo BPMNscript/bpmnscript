@@ -5,17 +5,15 @@
 // survive the round trip, but its only reference sits inside an opaque service
 // expression the validator never parses.
 
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect } from 'vitest';
 
-import { xmlToIr, irToDsl, astToIr } from '@bpmn-script/transform';
-import type {
-  BpmnProcess,
-  EventDefinition,
-  ImportWarning,
-} from '@bpmn-script/transform';
+import type { EventDefinition } from '@bpmn-script/transform';
 
-import { normalizeIr } from './helpers/normalize-ir.js';
-import { describeDiContainment } from './helpers/di-bounds.js';
+import {
+  describeDiContainment,
+  describeSingleDiagram,
+} from './helpers/di-bounds.js';
+import { describeImportFirst } from './helpers/import-first.js';
 import {
   definitionOf,
   elementById,
@@ -114,13 +112,8 @@ describe("idempotence: DSL -> IR1 -> XML -> IR2 -> DSL' -> IR3", () => {
   });
 });
 
-describe('DI containment on the generated .bpmn', () => {
-  it('exactly one bpmndi:BPMNDiagram is emitted', () => {
-    expect(rt.generatedXml.match(/<bpmndi:BPMNDiagram\b/g)).toHaveLength(1);
-  });
-});
+describeSingleDiagram(rt);
 
-// Named so the walk cannot pass on a tree with nothing nested in it.
 describeDiContainment(
   rt,
   () =>
@@ -177,41 +170,22 @@ describe('compensation shape pins on the frozen .bpmn', () => {
   });
 });
 
-describe('import-first: a handwritten .bpmn with an undo block round-trips', () => {
-  let firstImport: BpmnProcess;
-  let firstWarnings: ImportWarning[];
-  let reDesugared: BpmnProcess;
-  let importDsl: string;
-
-  beforeAll(async () => {
-    const imported = await xmlToIr(IMPORT_FIRST_BPMN);
-    firstImport = imported.ir;
-    firstWarnings = imported.warnings;
-    importDsl = irToDsl(firstImport);
-    reDesugared = astToIr(await rt.parseToAst(importDsl));
-  });
-
-  it('imports warning-free (the explicit waitForCompletion="true" is accepted)', () => {
-    expect(firstWarnings).toEqual([]);
-  });
-
-  it('recovers each compensation surface into the DSL', () => {
-    expect(importDsl).toContain('subprocess Pick "Pick the whole order" {');
-    expect(importDsl).toContain('on compensation {');
-    expect(importDsl).toContain('emit compensation Raise');
-    expect(importDsl).toContain('throw compensation GiveUp');
-  });
-
-  it('the emit and throw resolve to the payload-less compensation kind', () => {
-    expect(definitionOf(firstImport, 'Raise')).toEqual({
-      kind: 'compensation',
+describeImportFirst(
+  'a handwritten .bpmn with an undo block round-trips',
+  IMPORT_FIRST_BPMN,
+  (first) => {
+    it('recovers each compensation surface into the DSL', () => {
+      expect(first.dsl).toContain('subprocess Pick "Pick the whole order" {');
+      expect(first.dsl).toContain('on compensation {');
+      expect(first.dsl).toContain('emit compensation Raise');
+      expect(first.dsl).toContain('throw compensation GiveUp');
     });
-    expect(definitionOf(firstImport, 'GiveUp')).toEqual({
-      kind: 'compensation',
-    });
-  });
 
-  it('the hand-named undo block is re-keyed so the re-desugared IR matches the import', () => {
-    expect(normalizeIr(reDesugared)).toEqual(normalizeIr(firstImport));
-  });
-});
+    it('the emit and throw resolve to the payload-less compensation kind', () => {
+      expect(definitionOf(first.ir, 'Raise')).toEqual({ kind: 'compensation' });
+      expect(definitionOf(first.ir, 'GiveUp')).toEqual({
+        kind: 'compensation',
+      });
+    });
+  },
+);

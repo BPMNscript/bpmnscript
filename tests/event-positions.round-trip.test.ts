@@ -5,10 +5,8 @@
 
 import { describe, it, expect } from 'vitest';
 
-import type { BpmnProcess, FlowElement } from '@bpmn-script/transform';
-
 import { describeNoOverlappingShapes } from './helpers/di-bounds.js';
-import { elementById, theOnly } from './helpers/ir-query.js';
+import { endEvent, theOnly } from './helpers/ir-query.js';
 import { definitionRefOf, messageRoots } from './helpers/xml-query.js';
 import { roundTripFixture } from './helpers/round-trip-fixture.js';
 
@@ -17,17 +15,6 @@ const rt = roundTripFixture('event-positions', {
   importPath: true,
   recompile: 'clean',
 });
-
-function endEvent(
-  container: BpmnProcess,
-  id: string,
-): Extract<FlowElement, { kind: 'endEvent' }> {
-  const found = elementById(container, id);
-  if (found.kind !== 'endEvent') {
-    throw new Error(`expected '${id}' to be an end event, found ${found.kind}`);
-  }
-  return found;
-}
 
 describe("idempotence: golden .bpmn -> IR2 -> DSL' -> IR3", () => {
   it('the message start keeps its correlation name at every hop', () => {

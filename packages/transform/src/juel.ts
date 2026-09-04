@@ -30,7 +30,8 @@
  * The surface form is shared with `renderExpression` in `@bpmn-script/language`:
  * double-quoted strings, spaced operators, `.prop`/`[idx]` accessors, author
  * parentheses preserved. That makes `parseJuel(renderExpression(x))` idempotent
- * on the subset.
+ * on the subset, which is what keeps a round trip from re-wrapping a body it
+ * already printed bare.
  */
 
 export type JuelNode =
@@ -129,10 +130,10 @@ function stripWrapper(body: string): string | undefined {
 }
 
 /**
- * Only fills the `text` of a raw result. Never affects classification. It sees
- * a body with no wrapper or with an unclosed one, so it drops only the opening
- * delimiter: taking a closing brace it never opened corrupts the text
- * {@link renderRawFallback} then re-wraps.
+ * Only fills the `text` of a raw result, never the classification. It sees a
+ * body with no wrapper or with an unclosed one, so it drops the opening
+ * delimiter alone: taking a closing brace it never opened would corrupt the
+ * text {@link renderRawFallback} re-wraps.
  */
 function stripWrapperLenient(body: string): string {
   const trimmed = body.trim();
@@ -469,9 +470,8 @@ class Parser {
 class ParseError extends Error {}
 
 /**
- * Bare DSL surface text, no `${...}` wrapper. Matches the canonical form of
- * `renderExpressionInner` in `@bpmn-script/language`, which is what makes
- * `parseJuel(renderExpression(x))` idempotent on the subset.
+ * Bare DSL surface text, no `${...}` wrapper, in the canonical form the module
+ * header describes.
  */
 function renderNode(node: JuelNode): string {
   switch (node.kind) {

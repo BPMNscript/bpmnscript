@@ -5,26 +5,23 @@
 //
 // A subProcess's flows never cross its boundary, so every step here runs per
 // container at every depth.
+//
+// Gateways are re-keyed by structural position, not by the synthesized-id
+// regex, because the handwritten counterpart is hand-named. Task and event ids
+// are never re-keyed: they have to survive the round trip verbatim.
 
-import type {
-  BpmnProcess,
-  EventDefinition,
-  ExclusiveGateway,
-  FlowContainer,
-  FlowElement,
-  ParallelGateway,
-  SequenceFlow,
+import {
+  gatewayDefaultFlowId,
+  isGateway,
+  type BpmnProcess,
+  type EventDefinition,
+  type FlowContainer,
+  type FlowElement,
+  type SequenceFlow,
 } from '@bpmn-script/transform';
 
 // The synthesized join family: XOR after `if/else`, AND after `parallel`.
 const SYNTHESIZED_JOIN_ID = /^Gateway_.+_join$/;
-
-// Gateways are re-keyed by structural position, not by the synthesized-id
-// regex, because the handwritten counterpart is hand-named. Task and event ids
-// are never re-keyed: they have to survive the round trip verbatim.
-function isGateway(fe: FlowElement): fe is ExclusiveGateway | ParallelGateway {
-  return fe.kind === 'exclusiveGateway' || fe.kind === 'parallelGateway';
-}
 
 export function normalizeIr(ir: BpmnProcess): BpmnProcess {
   return normalizeContainer(ir);
@@ -67,14 +64,15 @@ function normalizeContainer<T extends FlowContainer>(container: T): T {
       const { name: _name, ...withoutName } = fe;
 
       // `defaultFlowId` points at a flow that is itself re-keyed below.
-      if (fe.kind === 'exclusiveGateway' && fe.defaultFlowId !== undefined) {
+      const declaredDefault = gatewayDefaultFlowId(fe);
+      if (declaredDefault !== undefined) {
         const target = inlined.sequenceFlows.find(
-          (sf) => sf.id === fe.defaultFlowId,
+          (sf) => sf.id === declaredDefault,
         );
         const defaultFlowId =
           target !== undefined
             ? canonicalFlowKey(target, canonicalId)
-            : fe.defaultFlowId;
+            : declaredDefault;
         return { ...withoutName, id, defaultFlowId };
       }
       return { ...withoutName, id };

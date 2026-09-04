@@ -36,49 +36,35 @@ import { parseJuel, renderRawFallback } from '../src/juel.js';
 // ---------------------------------------------------------------------------
 
 describe('parseJuel: structured classification', () => {
-  it('renders a structured comparison as a bare unquoted expression', () => {
-    const r = parseJuel('${amount > 1000}');
-    expect(renderRawFallback(r)).toBe('amount > 1000');
-  });
-
-  it('classifies dotted property access as structured', () => {
-    expect(parseJuel('${order.total}').kind).toBe('structured');
-    expect(renderRawFallback(parseJuel('${order.total}'))).toBe('order.total');
-  });
-
-  it('classifies numeric index access as structured', () => {
-    expect(parseJuel('${items[0]}').kind).toBe('structured');
-    expect(renderRawFallback(parseJuel('${items[0]}'))).toBe('items[0]');
-  });
-
-  it('classifies string-key index access as structured', () => {
-    expect(parseJuel("${map['k']}").kind).toBe('structured');
-    // String literals canonicalize to double quotes (matches renderExpression).
-    expect(renderRawFallback(parseJuel("${map['k']}"))).toBe('map["k"]');
-  });
-
   it.each([
-    '${true}',
-    '${false}',
-    '${null}',
-    '${42}',
-    '${3.14}',
-    '${"hello"}',
-    '${!done}',
-    '${-balance}',
-    '${a + b * c}',
-    '${(a + b) * c}',
-    '${a && b || c}',
-    '${x == 5}',
-    '${x != 5}',
-    '${a <= b}',
-    '${a >= b}',
-    '${total % 2}',
-    '${ready ? a : b}',
-    '${order.items[0].price}',
-    '${flag-name}',
-  ])('classifies %s as structured', (body) => {
-    expect(parseJuel(body).kind).toBe('structured');
+    ['${amount > 1000}', 'amount > 1000'],
+    ['${order.total}', 'order.total'],
+    ['${items[0]}', 'items[0]'],
+    // String literals canonicalize to double quotes (matches renderExpression).
+    ["${map['k']}", 'map["k"]'],
+    ['${true}', 'true'],
+    ['${false}', 'false'],
+    ['${null}', 'null'],
+    ['${42}', '42'],
+    ['${3.14}', '3.14'],
+    ['${"hello"}', '"hello"'],
+    ['${!done}', '!done'],
+    ['${-balance}', '-balance'],
+    ['${a + b * c}', 'a + b * c'],
+    ['${(a + b) * c}', '(a + b) * c'],
+    ['${a && b || c}', 'a && b || c'],
+    ['${x == 5}', 'x == 5'],
+    ['${x != 5}', 'x != 5'],
+    ['${a <= b}', 'a <= b'],
+    ['${a >= b}', 'a >= b'],
+    ['${total % 2}', 'total % 2'],
+    ['${ready ? a : b}', 'ready ? a : b'],
+    ['${order.items[0].price}', 'order.items[0].price'],
+    ['${flag-name}', 'flag-name'],
+  ])('classifies %s as structured, rendered bare as %s', (body, surface) => {
+    const r = parseJuel(body);
+    expect(r.kind).toBe('structured');
+    expect(renderRawFallback(r)).toBe(surface);
   });
 });
 
@@ -88,15 +74,12 @@ describe('parseJuel: raw fallback classification', () => {
     expect(renderRawFallback(r)).toBe('"${myBean.check()}"');
   });
 
-  it('classifies a JUEL function call as raw', () => {
-    expect(parseJuel('${fn:size(list)}').kind).toBe('raw');
-  });
-
   it.each([
     '${execution.getVariable("x")}',
     '${obj.method().chained()}',
     '${a.b.c()}',
     '${size(list)}',
+    '${fn:size(list)}',
     '${ns:fn(x, y)}',
   ])('classifies %s as raw', (body) => {
     expect(parseJuel(body).kind).toBe('raw');

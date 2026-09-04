@@ -1,15 +1,8 @@
 /**
- * Integration-level tests: `irToXml` calls `bpmn-auto-layout`, which performs
- * real DOM layout, so each test exercises the full serializer.
- *
- * Two fixtures drive this suite. `importShapedIr` is a hand-authored IR
- * mirroring what `xmlToIr` produces from the handwritten golden, so its ids are
- * the imported ones and its gateway has no synthesized join. It drives the
- * unit-level checks without depending on the parser or the desugarer. The
- * full-pipeline block instead runs `irToXml(astToIr(parse(...)))` over the
- * example process and byte-compares against the generated golden, where the
- * gateway ids are synthesized and the `if`/`else` desugars to a split + join
- * pair.
+ * `irToXml` calls `bpmn-auto-layout`, which performs real DOM layout, so every
+ * test here exercises the full serializer. The shared `xml` is serialized from
+ * an import-shaped IR, which depends on neither the parser nor the desugarer;
+ * the golden diff runs the whole `parse -> astToIr -> irToXml` pipeline.
  */
 
 import { describe, it, expect, beforeAll } from 'vitest';
@@ -71,16 +64,7 @@ const EXAMPLE_BPMNSCRIPT_PATH = resolve(
   '../../../examples/spring-boot/processes/invoice-approval.bpmnscript',
 );
 
-/**
- * Import-shaped IR mirroring what `xmlToIr` produces from
- * `tests/golden/invoice-approval-handwritten.bpmn`, with the handwritten ids
- * preserved verbatim on import.
- *
- * The start event (ReviewStart) and end event (Done) have no `name` because the
- * handwritten BPMN gives them no `name` attribute, and the gateway has no
- * synthesized join: both branches converge directly on `Done`, exactly as the
- * handwritten import does.
- */
+/** The handwritten golden as imported, whose name import derives and drops. */
 const importShapedIr: BpmnProcess = {
   ...HANDWRITTEN_IMPORT_IR,
   name: 'Invoice Approval',
@@ -94,13 +78,9 @@ beforeAll(async () => {
   xml = await irToXml(importShapedIr);
 });
 
-// ── 1. Parses cleanly via bpmn-moddle ────────────────────────────────────────
-
 describe('irToXml: bpmn-moddle round-trip', () => {
   it('irToXml(importShapedIr) parses cleanly via bpmn-moddle.fromXML', async () => {
-    const moddle = new BpmnModdle({});
-    const { warnings } = await moddle.fromXML(xml);
-    expect(warnings).toEqual([]);
+    await expectNoModdleWarnings(xml);
   });
 
   it('labels the conditioned flow with its bare condition text', () => {
@@ -112,8 +92,6 @@ describe('irToXml: bpmn-moddle round-trip', () => {
     expect(decoded).toContain('name="amount > 1000"');
   });
 });
-
-// ── 2. Expected Operaton attributes ──────────────────────────────────────────
 
 describe('irToXml: Operaton extension attributes', () => {
   it.each([
@@ -130,60 +108,33 @@ describe('irToXml: Operaton extension attributes', () => {
   });
 });
 
-// ── 3. Per-node incoming/outgoing count ──────────────────────────────────────
-
 describe('irToXml: per-node incoming/outgoing graph degree', () => {
-  /**
-   * Parse the XML into a moddle graph and verify incoming/outgoing counts
-   * for every flow node, matching the edges defined in the canonical IR, a
-   * per-node check rather than just aggregate totals.
-   *
-   * Expected degrees for the invoice-approval graph:
-   *   ReviewStart:    in=0,  out=1  (start event)
-   *   ReviewInvoice:  in=1,  out=1
-   *   AmountCheck:    in=1,  out=2  (gateway: 2 outgoing branches)
-   *   SeniorApproval: in=1,  out=1
-   *   AutoApprove:    in=1,  out=1
-   *   Done:           in=2,  out=0  (end event)
-   */
-
-  interface NodeDegree {
-    in: number;
-    out: number;
-  }
-  const EXPECTED_DEGREES: Record<string, NodeDegree> = {
-    ReviewStart: { in: 0, out: 1 },
-    ReviewInvoice: { in: 1, out: 1 },
-    AmountCheck: { in: 1, out: 2 },
-    SeniorApproval: { in: 1, out: 1 },
-    AutoApprove: { in: 1, out: 1 },
-    Done: { in: 2, out: 0 },
-  };
-
-  for (const [nodeId, expected] of Object.entries(EXPECTED_DEGREES)) {
-    it(`${nodeId}: incoming=${expected.in}, outgoing=${expected.out}`, () => {
-      // Count <bpmn:incoming> children by scanning the XML block for the
-      // element's id and then its immediate children.
-      const nodeBlock = extractNodeBlock(xml, nodeId);
-      const incomingCount = (nodeBlock.match(/<bpmn:incoming>/g) ?? []).length;
-      const outgoingCount = (nodeBlock.match(/<bpmn:outgoing>/g) ?? []).length;
-
-      expect(incomingCount).toBe(expected.in);
-      expect(outgoingCount).toBe(expected.out);
+  it('gives every node the incoming/outgoing children its IR edges call for', () => {
+    // MIWG requires the children and bpmn-moddle does not derive them, so the
+    // degree of every node is checked rather than the document-wide total.
+    const degrees = Object.fromEntries(
+      [
+        'ReviewStart',
+        'ReviewInvoice',
+        'AmountCheck',
+        'SeniorApproval',
+        'AutoApprove',
+        'Done',
+      ].map((id) => [id, degreeOf(xml, id)]),
+    );
+    expect(degrees).toEqual({
+      ReviewStart: { in: 0, out: 1 },
+      ReviewInvoice: { in: 1, out: 1 },
+      // The gateway's two branches, converging on the one end event.
+      AmountCheck: { in: 1, out: 2 },
+      SeniorApproval: { in: 1, out: 1 },
+      AutoApprove: { in: 1, out: 1 },
+      Done: { in: 2, out: 0 },
     });
-  }
+  });
 });
 
-// ── 4. Full-pipeline golden diff ─────────────────────────────────────────────
-
 describe('irToXml: full-pipeline golden diff', () => {
-  /**
-   * Pins the whole pipeline: parse(example.bpmnscript) -> astToIr -> irToXml
-   * must equal `tests/golden/invoice-approval-generated.bpmn` byte-for-byte.
-   * That golden is what the engine E2E deploys, so the synthesized gateway and
-   * flow ids are pinned here alongside the engine-contract values (process id,
-   * userTask ids, `operaton:class`, `operaton:assignee`, the condition body).
-   */
   let pipelineXml: string;
 
   beforeAll(async () => {
@@ -204,36 +155,16 @@ describe('irToXml: full-pipeline golden diff', () => {
   });
 
   it('irToXml(astToIr(parse(example))) matches the generated golden byte-for-byte', () => {
-    // The example process holds no sub-process, so this also pins that the DI
-    // expansion hint is attached only when one is actually present.
+    // The golden is what the engine E2E deploys, so this pins the whole engine
+    // contract at once: process id, task ids, delegate, assignees, condition.
+    // The example holds no sub-process, so it also pins that the DI expansion
+    // hint is attached only when one is actually present.
     const goldenXml = readFileSync(GOLDEN_GENERATED_PATH, 'utf-8');
     expect(pipelineXml).toBe(goldenXml);
   });
-
-  it('preserves the engine contract (process id, task ids, delegate, assignees, condition)', () => {
-    expect(pipelineXml).toContain('<bpmn:process id="invoice-approval"');
-    expect(pipelineXml).toContain('id="ReviewInvoice"');
-    expect(pipelineXml).toContain('id="SeniorApproval"');
-    expect(pipelineXml).toContain(
-      'operaton:class="com.example.invoice.AutoApproveDelegate"',
-    );
-    expect(pipelineXml).toContain('operaton:assignee="demo"');
-    expect(pipelineXml).toContain('operaton:assignee="manager"');
-    expect(pipelineXml).toContain('${amount &gt; 1000}');
-  });
 });
 
-// ── 5. Parallel gateway serialization ────────────────────────────────────────
-
 describe('irToXml: parallelGateway serialization', () => {
-  /**
-   * A minimal parallel split+join IR:
-   *   Start -> Fork (parallelGateway, 2 outgoing)
-   *     -> BranchA (userTask)
-   *     -> BranchB (userTask)
-   *   BranchA, BranchB -> Join (parallelGateway, 2 incoming)
-   *   Join -> End
-   */
   const parallelIr: BpmnProcess = processIr(
     'parallel-proc',
     [
@@ -260,27 +191,157 @@ describe('irToXml: parallelGateway serialization', () => {
     parallelXml = await irToXml(parallelIr);
   });
 
-  it('emits Fork and Join as bpmn:parallelGateway with their split/join degrees', () => {
+  it('emits Fork and Join as bpmn:parallelGateway with their split/join degrees and no default', () => {
     expect(parallelXml).toMatch(/bpmn:parallelGateway[^>]*id="Fork"/);
     expect(parallelXml).toMatch(/bpmn:parallelGateway[^>]*id="Join"/);
-    const forkBlock = extractNodeBlock(parallelXml, 'Fork');
-    const joinBlock = extractNodeBlock(parallelXml, 'Join');
-    expect((forkBlock.match(/<bpmn:incoming>/g) ?? []).length).toBe(1);
-    expect((forkBlock.match(/<bpmn:outgoing>/g) ?? []).length).toBe(2);
-    expect((joinBlock.match(/<bpmn:incoming>/g) ?? []).length).toBe(2);
-    expect((joinBlock.match(/<bpmn:outgoing>/g) ?? []).length).toBe(1);
-  });
-
-  it('output does not contain a default attribute on any parallelGateway', () => {
-    // Extract all parallelGateway blocks and check none have default=
-    const forkBlock = extractNodeBlock(parallelXml, 'Fork');
-    const joinBlock = extractNodeBlock(parallelXml, 'Join');
-    expect(forkBlock).not.toContain('default=');
-    expect(joinBlock).not.toContain('default=');
+    expect(degreeOf(parallelXml, 'Fork')).toEqual({ in: 1, out: 2 });
+    expect(degreeOf(parallelXml, 'Join')).toEqual({ in: 2, out: 1 });
+    expect(extractNodeBlock(parallelXml, 'Fork')).not.toContain('default=');
+    expect(extractNodeBlock(parallelXml, 'Join')).not.toContain('default=');
   });
 });
 
-// ── 6. serviceTask binding variants ──────────────────────────────────────────
+describe('irToXml: inclusive and event-based gateway serialization', () => {
+  /** An inclusive fork with a default, an inclusive merge without, and a race. */
+  const gatewaysIr: BpmnProcess = processIr(
+    'gateways-proc',
+    [
+      { kind: 'startEvent', id: 'Start' },
+      {
+        kind: 'inclusiveGateway',
+        id: 'Fork',
+        name: 'Any that apply',
+        defaultFlowId: 'F_Fork_C',
+      },
+      { kind: 'userTask', id: 'A' },
+      { kind: 'userTask', id: 'B' },
+      { kind: 'userTask', id: 'C' },
+      { kind: 'inclusiveGateway', id: 'Merge' },
+      { kind: 'eventBasedGateway', id: 'Race', name: 'First of' },
+      typedEvent(
+        'intermediateCatchEvent',
+        'Wait1',
+        timerDef('duration', 'PT5M'),
+      ),
+      typedEvent('intermediateCatchEvent', 'Wait2', messageDef('Cancelled')),
+      { kind: 'exclusiveGateway', id: 'Settle' },
+      { kind: 'endEvent', id: 'End' },
+    ],
+    [
+      { id: 'F_Start_Fork', sourceRef: 'Start', targetRef: 'Fork' },
+      {
+        id: 'F_Fork_A',
+        sourceRef: 'Fork',
+        targetRef: 'A',
+        conditionExpression: '${a}',
+      },
+      {
+        id: 'F_Fork_B',
+        sourceRef: 'Fork',
+        targetRef: 'B',
+        conditionExpression: '${b}',
+      },
+      { id: 'F_Fork_C', sourceRef: 'Fork', targetRef: 'C' },
+      { id: 'F_A_Merge', sourceRef: 'A', targetRef: 'Merge' },
+      { id: 'F_B_Merge', sourceRef: 'B', targetRef: 'Merge' },
+      { id: 'F_C_Merge', sourceRef: 'C', targetRef: 'Merge' },
+      { id: 'F_Merge_Race', sourceRef: 'Merge', targetRef: 'Race' },
+      { id: 'F_Race_1', sourceRef: 'Race', targetRef: 'Wait1' },
+      { id: 'F_Race_2', sourceRef: 'Race', targetRef: 'Wait2' },
+      { id: 'F_1_Settle', sourceRef: 'Wait1', targetRef: 'Settle' },
+      { id: 'F_2_Settle', sourceRef: 'Wait2', targetRef: 'Settle' },
+      { id: 'F_Settle_End', sourceRef: 'Settle', targetRef: 'End' },
+    ],
+  );
+
+  let gatewaysXml: string;
+
+  beforeAll(async () => {
+    gatewaysXml = await irToXml(gatewaysIr);
+  });
+
+  it('emits both tags under their own ids and names, with the default only where the IR carries one', () => {
+    expect(gatewaysXml).toMatch(/<bpmn:inclusiveGateway[^>]*id="Fork"/);
+    expect(gatewaysXml).toMatch(/<bpmn:inclusiveGateway[^>]*id="Merge"/);
+    expect(gatewaysXml).toMatch(/<bpmn:eventBasedGateway[^>]*id="Race"/);
+
+    const fork = extractNodeBlock(gatewaysXml, 'Fork');
+    const merge = extractNodeBlock(gatewaysXml, 'Merge');
+    const race = extractNodeBlock(gatewaysXml, 'Race');
+
+    expect(fork).toContain('name="Any that apply"');
+    expect(race).toContain('name="First of"');
+    expect(fork).toContain('default="F_Fork_C"');
+    // A synthesized id must not be humanized into a label.
+    expect(merge).not.toContain('name=');
+    expect(merge).not.toContain('default=');
+    expect(race).not.toContain('default=');
+
+    expect(degreeOf(gatewaysXml, 'Fork').out).toBe(3);
+    expect(degreeOf(gatewaysXml, 'Merge').in).toBe(3);
+    expect(degreeOf(gatewaysXml, 'Race').out).toBe(2);
+  });
+
+  it('writes no engine attribute on either kind, even when the IR literal carries the fields an activity would', async () => {
+    // Neither gateway type declares the engine settings, so the fields only
+    // reach the serializer through a cast: what is pinned here is that the
+    // serializer refuses them by kind rather than by the IR shape.
+    const withEngineFields = processIr('engine-on-gateway', [
+      {
+        kind: 'inclusiveGateway',
+        id: 'Fork',
+        asyncBefore: true,
+        asyncAfter: true,
+        exclusive: false,
+        jobPriority: '50',
+        executionListeners: [
+          { event: 'start', binding: classBinding('com.example.L') },
+        ],
+      },
+      {
+        kind: 'eventBasedGateway',
+        id: 'Race',
+        asyncBefore: true,
+        executionListeners: [
+          { event: 'start', binding: classBinding('com.example.L') },
+        ],
+      },
+    ] as unknown as FlowElement[]);
+
+    const xmlOut = await irToXml(withEngineFields);
+    for (const id of ['Fork', 'Race']) {
+      const block = extractNodeBlock(xmlOut, id);
+      expect(block).not.toContain('operaton:');
+      expect(block).not.toContain('extensionElements');
+    }
+  });
+
+  it('names the offending gateway kind when a declared default flow is missing', async () => {
+    const danglingDefault = processIr('dangling-default', [
+      { kind: 'inclusiveGateway', id: 'Fork', defaultFlowId: 'F_absent' },
+    ]);
+
+    await expect(irToXml(danglingDefault)).rejects.toThrow(
+      /inclusiveGateway "Fork" declares default flow "F_absent"/,
+    );
+  });
+
+  it('lays out every shape and every edge, and re-reads through moddle without a warning', async () => {
+    await expectNoModdleWarnings(gatewaysXml);
+
+    const shapes = await parseDiShapesById(gatewaysXml);
+    for (const node of gatewaysIr.flowElements) {
+      const bounds = requireShape(shapes, node.id).bounds;
+      expect(bounds.width).toBeGreaterThan(0);
+      expect(bounds.height).toBeGreaterThan(0);
+    }
+    // Every sequence flow keeps its edge: the two new kinds route like a
+    // parallel gateway as far as the layout is concerned.
+    expect((gatewaysXml.match(/<bpmndi:BPMNEdge/g) ?? []).length).toBe(
+      gatewaysIr.sequenceFlows.length,
+    );
+  });
+});
 
 describe('irToXml: serviceTask binding variants', () => {
   it.each([
@@ -309,8 +370,6 @@ describe('irToXml: serviceTask binding variants', () => {
   });
 });
 
-// ── 7. scriptTask serialization ──────────────────────────────────────────────
-
 describe('irToXml: scriptTask serialization', () => {
   const scriptIr: BpmnProcess = around(
     scriptTask(
@@ -326,25 +385,18 @@ describe('irToXml: scriptTask serialization', () => {
     scriptXml = await irToXml(scriptIr);
   });
 
-  it('emits a bpmn:scriptTask element with scriptFormat="javascript"', () => {
+  it('emits a bpmn:scriptTask carrying its format, the body text surviving inside it', () => {
     expect(scriptXml).toMatch(
       /<bpmn:scriptTask[^>]*id="Compute"[^>]*scriptFormat="javascript"/,
     );
-  });
-
-  it('the script body text survives inside the element', () => {
     expect(scriptXml).toContain('var total = amount * 2;');
     expect(scriptXml).toContain('return total;');
   });
 
   it('parses cleanly via bpmn-moddle', async () => {
-    const moddle = new BpmnModdle({});
-    const { warnings } = await moddle.fromXML(scriptXml);
-    expect(warnings).toEqual([]);
+    await expectNoModdleWarnings(scriptXml);
   });
 });
-
-// ── 8. Sub-process containment ───────────────────────────────────────────────
 
 /** `PStart -> Outer(OStart -> Inner(IStart -> Deep -> IEnd) -> OEnd) -> PEnd`. */
 const twoLevelIr: BpmnProcess = chained([
@@ -362,12 +414,8 @@ const twoLevelIr: BpmnProcess = chained([
 ]);
 
 describe('irToXml: sub-process containment', () => {
-  /**
-   * Process `PStart -> sub -> PEnd`, where `sub` is an embedded sub-process
-   * whose own body is `SubStart -> Review -> SubEnd`. The semantic element tree
-   * (not the DI, which auto-layout regenerates) is inspected by parsing the
-   * output back with raw `bpmn-moddle`.
-   */
+  // Inspected as the semantic element tree, not the DI, which the layout
+  // regenerates: the output is parsed back with raw `bpmn-moddle`.
   const nestedIr: BpmnProcess = chained([
     { kind: 'startEvent', id: 'PStart' },
     chainedSub('sub', [
@@ -386,25 +434,27 @@ describe('irToXml: sub-process containment', () => {
     proc = await parseProcessTree(nestedXml);
   });
 
-  it('emits a bpmn:SubProcess holding its three children and two nested flows', () => {
+  it('emits a bpmn:SubProcess holding its own children and flows, the parent holding neither', () => {
     const sub = childById(proc, 'sub');
     expect(sub.$type).toBe('bpmn:SubProcess');
-    const childTypes = (sub.flowElements ?? []).map((e) => e.$type);
-    expect(childTypes).toContain('bpmn:StartEvent');
-    expect(childTypes).toContain('bpmn:UserTask');
-    expect(childTypes).toContain('bpmn:EndEvent');
-    const nestedFlows = (sub.flowElements ?? []).filter(
-      (e) => e.$type === 'bpmn:SequenceFlow',
-    );
-    expect(nestedFlows.map((f) => f.id).sort()).toEqual([
-      'SF_Review_SubEnd',
-      'SF_SubStart_Review',
+    expect(structureOf(sub)).toEqual([
+      'bpmn:StartEvent SubStart',
+      'bpmn:UserTask Review',
+      'bpmn:EndEvent SubEnd',
+      'bpmn:SequenceFlow SF_SubStart_Review',
+      'bpmn:SequenceFlow SF_Review_SubEnd',
+    ]);
+    expect(structureOf(proc)).toEqual([
+      'bpmn:StartEvent PStart',
+      'bpmn:SubProcess sub',
+      'bpmn:EndEvent PEnd',
+      'bpmn:SequenceFlow SF_PStart_sub',
+      'bpmn:SequenceFlow SF_sub_PEnd',
     ]);
   });
 
   it('wires nested children incoming/outgoing to the nested flows', () => {
-    const sub = childById(proc, 'sub');
-    const review = childById(sub, 'Review');
+    const review = childById(childById(proc, 'sub'), 'Review');
     expect((review.incoming ?? []).map((f) => f.id)).toEqual([
       'SF_SubStart_Review',
     ]);
@@ -413,22 +463,13 @@ describe('irToXml: sub-process containment', () => {
     ]);
   });
 
-  it('routes parent-level flows to the sub-process element and keeps nested flows nested', () => {
-    const intoSub = childById(proc, 'SF_PStart_sub');
-    expect(intoSub.targetRef?.id).toBe('sub');
-    const outOfSub = childById(proc, 'SF_sub_PEnd');
-    expect(outOfSub.sourceRef?.id).toBe('sub');
-
-    const parentIds = (proc.flowElements ?? []).map((e) => e.id);
-    expect(parentIds).toContain('sub');
-    expect(parentIds).not.toContain('SubStart');
-    expect(parentIds).not.toContain('SF_SubStart_Review');
+  it('routes the parent-level flows to the sub-process element itself', () => {
+    expect(childById(proc, 'SF_PStart_sub').targetRef?.id).toBe('sub');
+    expect(childById(proc, 'SF_sub_PEnd').sourceRef?.id).toBe('sub');
   });
 
   it('parses cleanly via bpmn-moddle', async () => {
-    const moddle = new BpmnModdle({});
-    const { warnings } = await moddle.fromXML(nestedXml);
-    expect(warnings).toEqual([]);
+    await expectNoModdleWarnings(nestedXml);
   });
 
   it('wires a nested exclusive gateway default to the nested flow', async () => {
@@ -475,16 +516,10 @@ describe('irToXml: sub-process containment', () => {
   });
 });
 
-// ── 9. DI expansion hint for sub-processes ───────────────────────────────────
-
 describe('irToXml: DI expansion hint for sub-processes', () => {
-  /**
-   * `bpmn-auto-layout` fed DI-less XML containing a `bpmn:subProcess` renders it
-   * collapsed and scatters shapes for its children into the root plane. To avoid
-   * that, `irToXml` pre-seeds a minimal `bpmndi:BPMNShape isExpanded="true"` per
-   * sub-process before layout, so the library expands the parent box and lays
-   * the children out inside it.
-   */
+  // Fed DI-less XML holding a sub-process, `bpmn-auto-layout` renders it
+  // collapsed and scatters the children across the root plane, so `irToXml`
+  // pre-seeds a `bpmndi:BPMNShape isExpanded="true"` per sub-process.
   const twoChildrenIr: BpmnProcess = chained([
     { kind: 'startEvent', id: 'PStart' },
     chainedSub('sub', [
@@ -496,8 +531,11 @@ describe('irToXml: DI expansion hint for sub-processes', () => {
     { kind: 'endEvent', id: 'PEnd' },
   ]);
 
-  it('every nested child shape falls strictly inside its parent sub-process shape', async () => {
+  it('lays every nested child strictly inside its parent, under one diagram', async () => {
     const xml = await irToXml(twoChildrenIr);
+    // The layout-generated diagram replaces the seeded stub rather than
+    // joining it.
+    expect((xml.match(/<bpmndi:BPMNDiagram\b/g) ?? []).length).toBe(1);
     const shapes = await parseDiShapesById(xml);
     expectInside(shapes, 'sub', ['SubStart', 'ReviewA', 'ReviewB', 'SubEnd']);
   });
@@ -507,12 +545,6 @@ describe('irToXml: DI expansion hint for sub-processes', () => {
     const shapes = await parseDiShapesById(xml);
     expectInside(shapes, 'Outer', ['Inner']);
     expectInside(shapes, 'Inner', ['IStart', 'Deep', 'IEnd']);
-  });
-
-  it('emits exactly one bpmndi:BPMNDiagram (the layout-generated one replaces the stub)', async () => {
-    const xml = await irToXml(twoChildrenIr);
-    const diagramCount = (xml.match(/<bpmndi:BPMNDiagram\b/g) ?? []).length;
-    expect(diagramCount).toBe(1);
   });
 
   it('an empty sub-process body does not throw', async () => {
@@ -525,15 +557,8 @@ describe('irToXml: DI expansion hint for sub-processes', () => {
   });
 });
 
-// ── 10. callActivity serialization ───────────────────────────────────────────
-
 describe('irToXml: callActivity serialization', () => {
-  /**
-   * `start -> call -> end`, where the call activity populates every feature:
-   * a label, a `deployment` binding, a business key, all three in-mapping
-   * variants (one carrying `local`), and two out-mappings. Exercises the full
-   * pipeline (layout included) and the canonical extension-element order.
-   */
+  /** A call activity populating every feature it has, in one node. */
   const richCallIr: BpmnProcess = {
     id: 'caller',
     name: 'Caller',
@@ -585,55 +610,35 @@ describe('irToXml: callActivity serialization', () => {
     call = childById(proc, 'CallSub');
   });
 
-  it('emits a bpmn:CallActivity carrying calledElement and the deployment binding', () => {
+  it('emits a bpmn:CallActivity carrying its name, calledElement and the deployment binding', () => {
     expect(call.$type).toBe('bpmn:CallActivity');
+    expect(call.name).toBe('Call sub');
     expect(call.calledElement).toBe('sub-process');
     expect(call.calledElementBinding).toBe('deployment');
     // A non-version binding never emits a version attribute.
     expect(call.calledElementVersion).toBeUndefined();
   });
 
-  it('emits extension-element children in canonical order with exact attributes', () => {
-    const values = call.extensionElements?.values ?? [];
-    // businessKey `in`, then 3 in-mappings, then 2 out-mappings.
-    expect(values.map((v) => v.$type)).toEqual([
-      'operaton:In',
-      'operaton:In',
-      'operaton:In',
-      'operaton:In',
-      'operaton:Out',
-      'operaton:Out',
+  it('emits the business key, then the in-mappings, then the out-mappings, each with its own attributes', () => {
+    // Whole-mapping equality rather than per-field checks: `local` has to be
+    // absent everywhere but the one mapping that sets it, and only an exact
+    // projection catches it appearing anywhere else.
+    expect(
+      (call.extensionElements?.values ?? []).map((v) => [
+        v.$type,
+        mappingAttrs(v),
+      ]),
+    ).toEqual([
+      ['operaton:In', { businessKey: '${execution.processBusinessKey}' }],
+      ['operaton:In', { variables: 'all' }],
+      ['operaton:In', { source: 'amount', target: 'amount' }],
+      [
+        'operaton:In',
+        { sourceExpression: '${total * 2}', target: 'doubled', local: true },
+      ],
+      ['operaton:Out', { source: 'result', target: 'outcome' }],
+      ['operaton:Out', { sourceExpression: '${status}', target: 'final' }],
     ]);
-
-    // (1) business key
-    expect(values[0]).toMatchObject({
-      businessKey: '${execution.processBusinessKey}',
-    });
-    // (2) in-mappings in IR order
-    expect(values[1]).toMatchObject({ variables: 'all' });
-    expect(values[2]).toMatchObject({ source: 'amount', target: 'amount' });
-    expect(values[3]).toMatchObject({
-      sourceExpression: '${total * 2}',
-      target: 'doubled',
-      local: true,
-    });
-    // (3) out-mappings in IR order
-    expect(values[4]).toMatchObject({ source: 'result', target: 'outcome' });
-    expect(values[5]).toMatchObject({
-      sourceExpression: '${status}',
-      target: 'final',
-    });
-  });
-
-  it('serializes `local` only on the mapping where it is set', () => {
-    const values = call.extensionElements?.values ?? [];
-    // Only the expression in-mapping (index 3) carries local.
-    expect(values[0]?.local).toBeUndefined();
-    expect(values[1]?.local).toBeUndefined();
-    expect(values[2]?.local).toBeUndefined();
-    expect(values[3]?.local).toBe(true);
-    expect(values[4]?.local).toBeUndefined();
-    expect(values[5]?.local).toBeUndefined();
   });
 
   it('wires the call activity with incoming/outgoing like any activity', () => {
@@ -645,8 +650,7 @@ describe('irToXml: callActivity serialization', () => {
   });
 
   it('parses cleanly via bpmn-moddle carrying the extension', async () => {
-    const { warnings } = await operatonModdle().fromXML(callXml);
-    expect(warnings).toEqual([]);
+    await expectNoModdleWarnings(callXml);
   });
 
   it('emits both calledElementBinding and calledElementVersion for a version binding', async () => {
@@ -662,48 +666,29 @@ describe('irToXml: callActivity serialization', () => {
     expect(c.calledElementVersion).toBe('7');
   });
 
-  it('emits neither binding attribute when no binding is present', async () => {
+  it('emits neither binding attribute nor an extensionElements wrapper for a minimal call', async () => {
     const ir = minimalCallIr(callActivity('CallSub', 'sub'));
     const proc = await parseProcessTreeWithOperaton(await irToXml(ir));
     const c = childById(proc, 'CallSub');
     expect(c.calledElementBinding).toBeUndefined();
     expect(c.calledElementVersion).toBeUndefined();
-  });
-
-  it('emits no extensionElements for a minimal call (calledElement only)', async () => {
-    const ir = minimalCallIr(callActivity('CallSub', 'sub'));
-    const proc = await parseProcessTreeWithOperaton(await irToXml(ir));
-    const c = childById(proc, 'CallSub');
     expect(c.extensionElements).toBeUndefined();
   });
 
   it('derives a humanized name for an unnamed call activity', async () => {
     const ir = minimalCallIr(callActivity('ProcessPayment', 'sub'));
     const proc = await parseProcessTreeWithOperaton(await irToXml(ir));
-    const c = childById(proc, 'ProcessPayment');
     // The excluded-name path does not apply to activities: the id humanizes.
-    expect(c.name).toBe('Process Payment');
-  });
-
-  it('keeps an explicit name verbatim', () => {
-    expect(call.name).toBe('Call sub');
+    expect(childById(proc, 'ProcessPayment').name).toBe('Process Payment');
   });
 });
 
-// ── 11. Event layer: errors + escalations ────────────────────────────────────
-
 describe('irToXml: event layer (errors + escalations)', () => {
   /**
-   * A process exercising the whole event surface at once:
-   *   - `errorMessages` declaring the message for code `PF`.
-   *   - A normal sub-process `OuterSub` whose body is start/user/end, and which
-   *     *contains* an interrupting error handler `ErrHandler` (event
-   *     sub-process, code `PF`, both catch bindings).
-   *   - An `alongside` escalation handler `EscHandler` at process level (code
-   *     `LS`, one code binding).
-   *   - A `throw error` end event `ThrowPF` (code `PF`) in the main chain.
-   *   - An escalation intermediate throw `Emit1` (code `LS`) in the main chain.
-   * Handlers are disconnected (no incoming/outgoing): event sub-processes are
+   * The whole error/escalation surface at once: a declared error message, an
+   * interrupting error handler inside a sub-process, an `alongside` escalation
+   * handler beside the main chain, and a throw and an emit of the same two
+   * codes. Handlers carry no incoming or outgoing flow: an event sub-process is
    * triggered, not flow-connected.
    */
   const eventIr: BpmnProcess = {
@@ -859,47 +844,51 @@ describe('irToXml: event layer (errors + escalations)', () => {
     expect(errors[0]!.id).toBe('Error_DUP');
   });
 
-  it('sanitizes a root id from a code with non-id characters', async () => {
-    const ir: BpmnProcess = minimalProcess(
-      [
-        { kind: 'startEvent', id: 'S' },
-        typedEvent('endEvent', 'T', errorDef('NEEDS REVIEW!')),
-      ],
-      [{ id: 'SF_S_T', sourceRef: 'S', targetRef: 'T' }],
-    );
-    const d = await parseDefinitionsWithOperaton(await irToXml(ir));
-    const errors = rootsOfType(d, 'bpmn:Error');
+  /** The one `bpmn:Error` root of `S -> [occupied ->] T`, where T throws `def`. */
+  const soleErrorRoot = async (
+    def: EventDefinition,
+    occupied?: string,
+  ): Promise<Moddle> => {
+    const thrown = typedEvent('endEvent', 'T', def);
+    const ir =
+      occupied === undefined
+        ? minimalProcess(
+            [{ kind: 'startEvent', id: 'S' }, thrown],
+            [edge('S', 'T', { id: 'SF_S_T' })],
+          )
+        : minimalProcess(
+            [
+              { kind: 'startEvent', id: 'S' },
+              { kind: 'userTask', id: occupied },
+              thrown,
+            ],
+            [
+              edge('S', occupied, { id: 'SF_S_X' }),
+              edge(occupied, 'T', { id: 'SF_X_T' }),
+            ],
+          );
+    const errors = rootsOfType(await defsOf(ir), 'bpmn:Error');
     expect(errors).toHaveLength(1);
-    expect(errors[0]!.id).toBe('Error_NEEDS_REVIEW_');
-    // The name is the code verbatim (unsanitized).
-    expect(errors[0]!.errorCode).toBe('NEEDS REVIEW!');
+    return errors[0]!;
+  };
+
+  it('sanitizes a root id from a code with non-id characters, keeping the code verbatim', async () => {
+    const root = await soleErrorRoot(errorDef('NEEDS REVIEW!'));
+    expect(root.id).toBe('Error_NEEDS_REVIEW_');
+    expect(root.errorCode).toBe('NEEDS REVIEW!');
   });
 
-  it('suffixes a root id that would collide with an existing element id', async () => {
-    // A user task literally named `Error_Boom` occupies that id, so the root
-    // for code `Boom` must move to `Error_Boom_2`.
-    const ir: BpmnProcess = minimalProcess(
-      [
-        { kind: 'startEvent', id: 'S' },
-        { kind: 'userTask', id: 'Error_Boom' },
-        typedEvent('endEvent', 'T', errorDef('Boom')),
-      ],
-      [
-        { id: 'SF_S_X', sourceRef: 'S', targetRef: 'Error_Boom' },
-        { id: 'SF_X_T', sourceRef: 'Error_Boom', targetRef: 'T' },
-      ],
+  it('suffixes a root id that a flow element already holds', async () => {
+    expect((await soleErrorRoot(errorDef('Boom'), 'Error_Boom')).id).toBe(
+      'Error_Boom_2',
     );
-    const d = await parseDefinitionsWithOperaton(await irToXml(ir));
-    const errors = rootsOfType(d, 'bpmn:Error');
-    expect(errors).toHaveLength(1);
-    expect(errors[0]!.id).toBe('Error_Boom_2');
   });
 
   it('lays event sub-processes out with children strictly inside their handler box', async () => {
-    const shapes = await parseDiShapesById(await irToXml(eventIr));
-    // Exactly one diagram: the layout-generated one replaces the stubs.
     const xml = await irToXml(eventIr);
+    // Exactly one diagram: the layout-generated one replaces the stubs.
     expect((xml.match(/<bpmndi:BPMNDiagram\b/g) ?? []).length).toBe(1);
+    const shapes = await parseDiShapesById(xml);
 
     expectInside(shapes, 'EscHandler', ['EscStart', 'Notify', 'EscEnd']);
     expectInside(shapes, 'OuterSub', ['ErrHandler']);
@@ -907,16 +896,8 @@ describe('irToXml: event layer (errors + escalations)', () => {
   });
 });
 
-// ── 12. Event layer: message + signal + timer + conditional ──────────────────
-
 describe('irToXml: event layer (message + signal + timer + conditional)', () => {
-  /**
-   * A process exercising message/signal handlers plus both signal throw forms:
-   *   - An interrupting `on message "PaymentReceived"` handler.
-   *   - An `alongside` `on signal "Cancelled"` handler.
-   *   - An `emit signal "Cancelled"` intermediate throw mid-chain.
-   *   - A `throw signal "Cancelled"` end event, sharing the one signal root.
-   */
+  /** A message handler, an alongside signal handler, and both signal throws. */
   const signalIr: BpmnProcess = processIr(
     'proc',
     [
@@ -1009,9 +990,7 @@ describe('irToXml: event layer (message + signal + timer + conditional)', () => 
     expect(handlerStart.signalRef?.id).toBe('Signal_Cancelled');
     expect(emit.signalRef?.id).toBe('Signal_Cancelled');
     expect(throwEnd.signalRef?.id).toBe('Signal_Cancelled');
-  });
-
-  it('marks the alongside signal handler start non-interrupting', () => {
+    // The handler is an `alongside` one, so its start does not interrupt.
     expect(requireDeep(defs, 'SigStart').isInterrupting).toBe(false);
   });
 
@@ -1106,20 +1085,14 @@ describe('irToXml: event layer (message + signal + timer + conditional)', () => 
   it('suffixes a synthesized signal root id that collides with an existing element id', async () => {
     // A user task literally named `Signal_Ping` occupies that id, so the root
     // for signal `Ping` must move to `Signal_Ping_2`.
-    const ir: BpmnProcess = minimalProcess(
-      [
+    const d = await defsOf(
+      chained([
         { kind: 'startEvent', id: 'S' },
         { kind: 'userTask', id: 'Signal_Ping' },
         typedEvent('intermediateThrowEvent', 'Emit', signalDef('Ping')),
         { kind: 'endEvent', id: 'E' },
-      ],
-      [
-        { id: 'SF_S_X', sourceRef: 'S', targetRef: 'Signal_Ping' },
-        { id: 'SF_X_Emit', sourceRef: 'Signal_Ping', targetRef: 'Emit' },
-        { id: 'SF_Emit_E', sourceRef: 'Emit', targetRef: 'E' },
-      ],
+      ]),
     );
-    const d = await parseDefinitionsWithOperaton(await irToXml(ir));
     const signals = rootsOfType(d, 'bpmn:Signal');
     expect(signals).toHaveLength(1);
     expect(signals[0]!.id).toBe('Signal_Ping_2');
@@ -1127,19 +1100,11 @@ describe('irToXml: event layer (message + signal + timer + conditional)', () => 
   });
 });
 
-// ── 13. Event layer: compensation ────────────────────────────────────────────
-
 describe('irToXml: event layer (compensation)', () => {
   /**
-   * A process exercising the whole compensation surface at once:
-   *   - `OuterSub`, a normal sub-process with an interior start/user/end chain,
-   *     containing a compensation handler (`CompHandler`, an event
-   *     sub-process whose start carries `{ kind: 'compensation' }`, no
-   *     `isInterrupting`).
-   *   - A compensation intermediate throw (`EmitComp`) mid-chain.
-   *   - A compensation end event (`ThrowComp`) terminal in the parent process.
-   * Compensation is payload-less, so none of these carry a code: unlike the
-   * error/escalation fixture above, there is no identity to share a root over.
+   * A compensation handler inside a sub-process, plus a compensation emit and
+   * throw in the parent. Compensation is payload-less, so unlike the
+   * error/escalation fixture there is no identity to share a root over.
    */
   const compensationIr: BpmnProcess = processIr(
     'proc',
@@ -1231,13 +1196,9 @@ describe('irToXml: event layer (compensation)', () => {
   });
 });
 
-// ── 14. Boundary events ───────────────────────────────────────────────────────
-
 /**
- * A minimal process with one host activity carrying one boundary event:
- * `PStart -> Host -> PEnd` in the main flow, plus a `boundaryEvent` attached to
- * `Host` whose one outgoing flow lands on its own end event, the shape a
- * hosted handler with an empty body lowers to.
+ * `PStart -> Host -> PEnd`, with a boundary event on `Host` running to its own
+ * end: the shape a hosted handler with an empty body lowers to.
  */
 function hostedBoundaryIr(
   eventDefinition: EventDefinition,
@@ -1282,6 +1243,11 @@ describe('irToXml: boundary events', () => {
     // A boundary event carries no humanized name: its id is synthesized, so a
     // derived label would be noise in the diagram and churn in the goldens.
     expect(boundary.name).toBeUndefined();
+    // It is reached by being attached, never by a flow.
+    expect(boundary.incoming ?? []).toHaveLength(0);
+    expect((boundary.outgoing ?? []).map((flow) => flow.id)).toEqual([
+      'SF_Boundary_BoundaryEnd',
+    ]);
   });
 
   it('emits cancelActivity="false" for a non-interrupting (alongside) boundary', async () => {
@@ -1314,15 +1280,6 @@ describe('irToXml: boundary events', () => {
     },
   );
 
-  it('carries an outgoing sequence flow and no incoming', async () => {
-    const defs = await defsOf(hostedBoundaryIr(messageDef('Ping')));
-    const boundary = requireDeep(defs, 'Boundary_Host_x');
-    expect(boundary.incoming ?? []).toHaveLength(0);
-    expect((boundary.outgoing ?? []).map((f) => f.id)).toEqual([
-      'SF_Boundary_BoundaryEnd',
-    ]);
-  });
-
   it('serializes two boundary events attached to one host', async () => {
     const ir: BpmnProcess = processIr(
       'proc',
@@ -1346,13 +1303,12 @@ describe('irToXml: boundary events', () => {
         edge('Boundary_Host_timer', 'TimerEnd', { id: 'SF_TimerB_TimerEnd' }),
       ],
     );
-    const defs = await parseDefinitionsWithOperaton(await irToXml(ir));
-    const errBoundary = requireDeep(defs, 'Boundary_Host_error');
-    const timerBoundary = requireDeep(defs, 'Boundary_Host_timer');
-    expect(errBoundary.$type).toBe('bpmn:BoundaryEvent');
-    expect(timerBoundary.$type).toBe('bpmn:BoundaryEvent');
-    expect(errBoundary.attachedToRef?.id).toBe('Host');
-    expect(timerBoundary.attachedToRef?.id).toBe('Host');
+    const defs = await defsOf(ir);
+    for (const id of ['Boundary_Host_error', 'Boundary_Host_timer']) {
+      const boundary = requireDeep(defs, id);
+      expect(boundary.$type).toBe('bpmn:BoundaryEvent');
+      expect(boundary.attachedToRef?.id).toBe('Host');
+    }
   });
 
   it('serializes a boundary event on a sub-process host with exactly one bpmndi:BPMNDiagram', async () => {
@@ -1388,38 +1344,15 @@ describe('irToXml: boundary events', () => {
     expect(boundary.attachedToRef?.id).toBe('HostSub');
   });
 
-  it('throws when a boundary event references an unknown host', async () => {
-    const ir = hostedBoundaryIr(messageDef('Ping'));
-    const broken: BpmnProcess = {
-      ...ir,
-      flowElements: ir.flowElements.map((el) =>
-        el.kind === 'boundaryEvent' ? { ...el, attachedToRef: 'Ghost' } : el,
-      ),
-    };
-    await expect(irToXml(broken)).rejects.toThrow(
-      'BoundaryEvent "Boundary_Host_x" is attached to "Ghost", which is not a flow element of this container.',
-    );
-  });
-
-  it('names the container rule when the host exists but sits inside a sub-process', async () => {
-    // The id does exist in the document, just not where a boundary event may
-    // reach it. A bare "unknown id" message would send a reader looking for a
-    // missing element instead of a misplaced attachment.
-    const nested: BpmnProcess = processIr(
-      'proc',
-      [
-        { kind: 'startEvent', id: 'PStart' },
-        chainedSub('Sub', [{ kind: 'userTask', id: 'Host' }]),
-        { kind: 'endEvent', id: 'PEnd' },
-        boundaryEvent('Boundary_Host_x', 'Host', messageDef('Ping')),
-      ],
-      [
-        { id: 'SF_PStart_Sub', sourceRef: 'PStart', targetRef: 'Sub' },
-        { id: 'SF_Sub_PEnd', sourceRef: 'Sub', targetRef: 'PEnd' },
-      ],
-    );
-    await expect(irToXml(nested)).rejects.toThrow(
-      'BoundaryEvent "Boundary_Host_x" is attached to "Host", which is not a flow element of this container.',
+  // The second host id does exist in the document, just not where a boundary
+  // event may reach it, so the message names the container rule: a bare
+  // "unknown id" would send a reader looking for a missing element.
+  it.each([
+    ['is nowhere in the document', ghostHostIr(), 'Ghost'],
+    ['sits inside a sub-process', hostInSubProcessIr(), 'Host'],
+  ])('refuses a boundary event whose host %s', async (_title, ir, host) => {
+    await expect(irToXml(ir)).rejects.toThrow(
+      `BoundaryEvent "Boundary_Host_x" is attached to "${host}", which is not a flow element of this container.`,
     );
   });
 
@@ -1454,19 +1387,41 @@ describe('irToXml: boundary events', () => {
   });
 });
 
-// ── 15. Intermediate catch events ─────────────────────────────────────────────
-
 /** The event definitions an `intermediateCatchEvent` node may carry. */
 type CatchEventDefinition = Extract<
   EventDefinition,
   { kind: 'message' | 'signal' | 'timer' | 'conditional' }
 >;
 
-/**
- * A minimal process with an `intermediateCatchEvent` sitting inline on the
- * main flow: `PStart -> Catch -> PEnd`, the shape the desugarer produces for
- * `await`, with one incoming and one outgoing sequence flow.
- */
+/** {@link hostedBoundaryIr} with the attachment pointing at an absent node. */
+function ghostHostIr(): BpmnProcess {
+  const ir = hostedBoundaryIr(messageDef('Ping'));
+  return {
+    ...ir,
+    flowElements: ir.flowElements.map((el) =>
+      el.kind === 'boundaryEvent' ? { ...el, attachedToRef: 'Ghost' } : el,
+    ),
+  };
+}
+
+/** A boundary event whose host is a real node, but one container deeper. */
+function hostInSubProcessIr(): BpmnProcess {
+  return processIr(
+    'proc',
+    [
+      { kind: 'startEvent', id: 'PStart' },
+      chainedSub('Sub', [{ kind: 'userTask', id: 'Host' }]),
+      { kind: 'endEvent', id: 'PEnd' },
+      boundaryEvent('Boundary_Host_x', 'Host', messageDef('Ping')),
+    ],
+    [
+      { id: 'SF_PStart_Sub', sourceRef: 'PStart', targetRef: 'Sub' },
+      { id: 'SF_Sub_PEnd', sourceRef: 'Sub', targetRef: 'PEnd' },
+    ],
+  );
+}
+
+/** `PStart -> Catch -> PEnd`, the shape the desugarer produces for `await`. */
 function mainFlowCatchIr(
   eventDefinition: CatchEventDefinition,
   id = 'Catch_x',
@@ -1510,28 +1465,27 @@ describe('irToXml: intermediate catch events', () => {
   });
 
   it.each<
-    [string, CatchEventDefinition, 'timeDuration' | 'timeDate' | 'timeCycle']
+    ['timeDuration' | 'timeDate' | 'timeCycle', CatchEventDefinition, string]
   >([
-    ['duration', timerDef('duration', 'PT1H'), 'timeDuration'],
-    ['date', timerDef('date', '${dueDate}'), 'timeDate'],
-    ['cycle', timerDef('cycle', 'R/PT10M'), 'timeCycle'],
+    ['timeDuration', timerDef('duration', 'PT1H'), 'PT1H'],
+    ['timeDate', timerDef('date', '${dueDate}'), '${dueDate}'],
+    ['timeCycle', timerDef('cycle', 'R/PT10M'), 'R/PT10M'],
   ])(
-    'emits a TimerEventDefinition with the matching %s child',
-    async (_label, eventDefinition, child) => {
+    'emits a TimerEventDefinition carrying its %s child and no other',
+    async (child, eventDefinition, body) => {
       const defs = await defsOf(mainFlowCatchIr(eventDefinition));
       const def = soleDef(requireDeep(defs, 'Catch_x'));
       expect(def.$type).toBe('bpmn:TimerEventDefinition');
-      expect(eventDefinition.kind).toBe('timer');
-      const expression =
-        eventDefinition.kind === 'timer' ? eventDefinition.expression : '';
-      expect(def[child]?.body).toBe(expression);
-
-      const others = (
-        ['timeDuration', 'timeDate', 'timeCycle'] as const
-      ).filter((c) => c !== child);
-      for (const other of others) {
-        expect(def[other]).toBeUndefined();
-      }
+      expect({
+        timeDuration: def.timeDuration?.body,
+        timeDate: def.timeDate?.body,
+        timeCycle: def.timeCycle?.body,
+      }).toEqual({
+        timeDuration: undefined,
+        timeDate: undefined,
+        timeCycle: undefined,
+        [child]: body,
+      });
     },
   );
 
@@ -1560,8 +1514,6 @@ describe('irToXml: intermediate catch events', () => {
   });
 });
 
-// ── 16. Engine attributes and extension-element assembly ─────────────────────
-
 /**
  * Parse a document with the Operaton extension registered and return one flow
  * node of its process, with the Operaton settings resolved as typed properties.
@@ -1571,13 +1523,7 @@ async function engineNode(xmlStr: string, id: string): Promise<Moddle> {
   return childById(proc, id);
 }
 
-/**
- * `Start -> Review -> Auto -> Calc -> End`, spreading the flat engine settings
- * over five node kinds: an async-after start, a fully assigned user task
- * carrying both a form and a retry cycle, a service task with a result
- * variable, a script task with its own retry cycle, and an end event carrying
- * nothing at all.
- */
+/** The flat engine settings spread over five node kinds, one carrying none. */
 const engineSettingsIr: BpmnProcess = {
   id: 'engine-settings',
   isExecutable: true,
@@ -1807,15 +1753,11 @@ describe('irToXml: flat engine attributes', () => {
   });
 });
 
-// ── 17. Input/output parameters and listeners ────────────────────────────────
-
 /**
- * One user task carrying every nested group at once: a form, input parameters
- * in all four value forms (with a map nested inside a list and a list nested
- * inside that map's entry), an output parameter, both execution-listener
- * events, three of the four listener bindings plus a `timeout` listener with
- * its timer, and a retry cycle. Written as a single fixture so the assembler's
- * emission order is observable on one wrapper.
+ * One user task carrying every nested group at once, so the assembler's
+ * emission order is observable on a single wrapper: a form, all four input
+ * value forms (nested two deep), an output parameter, both listener kinds
+ * including a `timeout` one, and a retry cycle.
  */
 const nestedGroupsIr: BpmnProcess = {
   id: 'nested-groups',
@@ -1895,34 +1837,39 @@ const nestedGroupsIr: BpmnProcess = {
   ],
 };
 
+let nestedGroupsXml: string;
+/** The one extension block of {@link nestedGroupsIr}, as raw serialized text. */
+let nestedGroupsBlock: string;
+
+beforeAll(async () => {
+  nestedGroupsXml = await irToXml(nestedGroupsIr);
+  nestedGroupsBlock = extensionBlock(nestedGroupsXml);
+});
+
 describe('irToXml: input/output parameters', () => {
-  let block: string;
-
-  beforeAll(async () => {
-    block = extensionBlock(await irToXml(nestedGroupsIr));
-  });
-
   it('emits one operaton:inputOutput holding every value form, in IR order', () => {
-    expect(block).toMatch(
+    expect(nestedGroupsBlock).toMatch(
       /<operaton:inputOutput>[\s\S]*<operaton:inputParameter[\s\S]*<operaton:outputParameter[\s\S]*<\/operaton:inputOutput>/,
     );
-    expect(block.match(/<operaton:inputOutput\b/g)).toHaveLength(1);
+    expect(nestedGroupsBlock.match(/<operaton:inputOutput\b/g)).toHaveLength(1);
     expect(
       [
-        ...block.matchAll(/<operaton:(?:in|out)putParameter name="([^"]+)"/g),
+        ...nestedGroupsBlock.matchAll(
+          /<operaton:(?:in|out)putParameter name="([^"]+)"/g,
+        ),
       ].map((m) => m[1]),
     ).toEqual(['plain', 'scripted', 'nested', 'result']);
 
     // A text value is body text and no child element.
-    expect(parameterContent(block, 'plain').trim()).toBe('hello');
+    expect(parameterContent(nestedGroupsBlock, 'plain').trim()).toBe('hello');
 
     // A script value is an operaton:script child carrying its format.
-    expect(parameterContent(block, 'scripted')).toMatch(
+    expect(parameterContent(nestedGroupsBlock, 'scripted')).toMatch(
       /^\s*<operaton:script scriptFormat="groovy">\s*a \+ b\s*<\/operaton:script>\s*$/,
     );
 
     // A list of a text and a map, with a list nested inside that map.
-    expect(parameterContent(block, 'nested')).toMatch(
+    expect(parameterContent(nestedGroupsBlock, 'nested')).toMatch(
       new RegExp(
         [
           '^\\s*<operaton:list>',
@@ -1941,41 +1888,35 @@ describe('irToXml: input/output parameters', () => {
     );
 
     // A map value is operaton:entry children keyed by their IR key.
-    expect(parameterContent(block, 'result')).toMatch(
+    expect(parameterContent(nestedGroupsBlock, 'result')).toMatch(
       /^\s*<operaton:map>\s*<operaton:entry key="code">\s*200\s*<\/operaton:entry>\s*<\/operaton:map>\s*$/,
     );
   });
 });
 
 describe('irToXml: listeners', () => {
-  let block: string;
-
-  beforeAll(async () => {
-    block = extensionBlock(await irToXml(nestedGroupsIr));
-  });
-
   it('writes every binding form with its attributes unprefixed on the namespaced element', () => {
     // The element itself is `operaton:`-qualified, so its own attributes carry
     // no prefix. A prefixed one here parses as a foreign attribute the engine
     // ignores, which is why this asserts on the serialized text.
-    for (const listener of listenerTags(block)) {
+    for (const listener of listenerTags(nestedGroupsBlock)) {
       expect(listener).not.toMatch(/\soperaton:/);
     }
-    expect(block).toMatch(
+    expect(nestedGroupsBlock).toMatch(
       /<operaton:executionListener event="start" class="com\.example\.Enter"\s*\/>/,
     );
-    expect(block).toMatch(
+    expect(nestedGroupsBlock).toMatch(
       /<operaton:taskListener event="create" expression="\$\{audit\.log\(\)\}"\s*\/>/,
     );
-    expect(block).toMatch(
+    expect(nestedGroupsBlock).toMatch(
       /<operaton:taskListener event="timeout" delegateExpression="\$\{escalate\}"\s*>/,
     );
-    expect(block).toMatch(
+    expect(nestedGroupsBlock).toMatch(
       /<operaton:executionListener event="end">\s*<operaton:script scriptFormat="javascript">\s*log\(1\);\s*<\/operaton:script>\s*<\/operaton:executionListener>/,
     );
 
     // A timeout task listener also carries its timer as a bpmn child.
-    expect(block).toMatch(
+    expect(nestedGroupsBlock).toMatch(
       /<operaton:taskListener event="timeout"[^>]*>\s*<bpmn:timerEventDefinition>\s*<bpmn:timeDuration[^>]*>\s*PT2H\s*<\/bpmn:timeDuration>\s*<\/bpmn:timerEventDefinition>\s*<\/operaton:taskListener>/,
     );
   });
@@ -1983,10 +1924,9 @@ describe('irToXml: listeners', () => {
 
 describe('irToXml: extension-element assembly order', () => {
   it('emits every group a user task carries under one wrapper in canonical order', async () => {
-    const nestedXml = await irToXml(nestedGroupsIr);
-    expect(nestedXml.match(/<bpmn:extensionElements/g)).toHaveLength(1);
+    expect(nestedGroupsXml.match(/<bpmn:extensionElements/g)).toHaveLength(1);
 
-    const review = await engineNode(nestedXml, 'Review');
+    const review = await engineNode(nestedGroupsXml, 'Review');
     expect(review.extensionElements?.values.map((v) => v.$type)).toEqual([
       'operaton:InputOutput',
       'operaton:FormData',
@@ -2045,8 +1985,6 @@ describe('irToXml: extension-element assembly order', () => {
   });
 });
 
-// ── 18. Task kinds: task, receiveTask, and the service-task-like tags ─────────
-
 /** One of each new kind, wired `Start -> Step -> Wait -> Notify -> Rate -> End`. */
 const taskKindsIr: BpmnProcess = chained([
   { kind: 'startEvent', id: 'Start' },
@@ -2095,12 +2033,25 @@ describe('irToXml: task kinds', () => {
     expect(wait.messageRef?.id).toBe('Message_OrderPaid');
   });
 
-  it('emits a send task as bpmn:sendTask carrying its binding attribute', () => {
-    expect(requireDeep(defs, 'Notify').$type).toBe('bpmn:SendTask');
-    expect(extractNodeBlock(taskKindsXml, 'Notify')).toContain(
-      'operaton:class="com.example.Notify"',
-    );
-  });
+  it.each([
+    ['send', '<bpmn:sendTask'],
+    ['businessRule', '<bpmn:businessRuleTask'],
+  ] as const)(
+    'writes a %s task under its own tag, binding code the way a service task does',
+    async (element, tag) => {
+      const xml = await irToXml(
+        around({
+          kind: 'serviceTask',
+          id: 'T',
+          element,
+          binding: classBinding('com.example.Run'),
+        }),
+      );
+      const block = extractNodeBlock(xml, 'T');
+      expect(block).toContain(tag);
+      expect(block).toContain('operaton:class="com.example.Run"');
+    },
+  );
 
   it('emits a decision binding as four DMN attributes on a bpmn:businessRuleTask', () => {
     const rate = extractNodeBlock(taskKindsXml, 'Rate');
@@ -2113,22 +2064,7 @@ describe('irToXml: task kinds', () => {
   });
 
   it('re-reads through the Operaton descriptor with no moddle warnings', async () => {
-    const { warnings } = await operatonModdle().fromXML(taskKindsXml);
-    expect(warnings).toEqual([]);
-  });
-
-  it('binds code on a business rule task the same way a service task does', async () => {
-    const xml = await irToXml(
-      around({
-        kind: 'serviceTask',
-        id: 'Rate',
-        element: 'businessRule',
-        binding: classBinding('com.example.Rate'),
-      }),
-    );
-    const rate = extractNodeBlock(xml, 'Rate');
-    expect(rate).toContain('<bpmn:businessRuleTask');
-    expect(rate).toContain('operaton:class="com.example.Rate"');
+    await expectNoModdleWarnings(taskKindsXml);
   });
 
   it('shares one bpmn:Message root between a receive task and an await of the same name', async () => {
@@ -2162,8 +2098,6 @@ describe('irToXml: task kinds', () => {
     expect(rootsOfType(nameless, 'bpmn:Message')).toHaveLength(0);
   });
 });
-
-// ── 19. Multi-instance loop characteristics ───────────────────────────
 
 /** The loop every kind in the parameterized fixture carries. */
 const OVER_LINES: LoopCharacteristics = {
@@ -2238,8 +2172,7 @@ describe('irToXml: multi-instance loop characteristics', () => {
   });
 
   it('re-reads through the Operaton descriptor with no moddle warnings', async () => {
-    const { warnings } = await operatonModdle().fromXML(repeatedXml);
-    expect(warnings).toEqual([]);
+    await expectNoModdleWarnings(repeatedXml);
   });
 
   it('writes a collection and its element variable, and no isSequential', async () => {
@@ -2311,14 +2244,10 @@ describe('irToXml: multi-instance loop characteristics', () => {
   });
 });
 
-// ── 20. Blocks that can be given up, and the cancel definition ───────────────
-
 /**
- * `PStart -> Book -> PEnd`, where `Book` holds
- * `TxStart -> Charge -> Settle -> GiveUp` and `GiveUp` gives the block up. A
- * cancel boundary on `Book` carries the escape path to its own end. `Settle`
- * is a container in its own right, so the block is one the expansion hint has
- * to descend into rather than a flat one.
+ * `PStart -> Book -> PEnd`, where the block `Book` ends in a cancel and carries
+ * a cancel boundary. Its body holds a sub-process of its own, so the expansion
+ * hint has to descend rather than stop at the block.
  */
 function giveUpIr(element?: 'transaction'): BpmnProcess {
   return processIr(
@@ -2367,9 +2296,7 @@ describe('irToXml: blocks that can be given up', () => {
     expect(plain.$type).toBe('bpmn:SubProcess');
     expect(giveUpXml).toContain('<bpmn:transaction id="Book"');
 
-    const structure = (block: Moddle): string[] =>
-      (block.flowElements ?? []).map((e) => `${e.$type} ${e.id}`);
-    expect(structure(transaction)).toEqual(structure(plain));
+    expect(structureOf(transaction)).toEqual(structureOf(plain));
   });
 
   it('emits a cancel definition on the end inside the block and on the boundary attached to it', async () => {
@@ -2383,8 +2310,7 @@ describe('irToXml: blocks that can be given up', () => {
   });
 
   it('re-reads through the Operaton descriptor with no moddle warnings', async () => {
-    const { warnings } = await operatonModdle().fromXML(giveUpXml);
-    expect(warnings).toEqual([]);
+    await expectNoModdleWarnings(giveUpXml);
   });
 
   it('lays every child of the block out inside the block, nested block included', async () => {
@@ -2414,6 +2340,45 @@ describe('irToXml: blocks that can be given up', () => {
 });
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
+
+/**
+ * Re-read a document with the Operaton extension registered and assert it came
+ * back clean. Registering the extension is the stricter read: an `operaton:`
+ * name the descriptor does not declare warns instead of falling into `$attrs`.
+ */
+async function expectNoModdleWarnings(xmlStr: string): Promise<void> {
+  const { warnings } = await operatonModdle().fromXML(xmlStr);
+  expect(warnings).toEqual([]);
+}
+
+/** Every attribute an `operaton:in`/`operaton:out` mapping can carry, if set. */
+function mappingAttrs(mapping: Moddle): Record<string, unknown> {
+  const keys = [
+    'businessKey',
+    'variables',
+    'source',
+    'sourceExpression',
+    'target',
+    'local',
+  ] as const;
+  return Object.fromEntries(
+    keys.filter((k) => mapping[k] !== undefined).map((k) => [k, mapping[k]]),
+  );
+}
+
+/** A container's children as `<type> <id>`, in document order. */
+function structureOf(container: Moddle): string[] {
+  return (container.flowElements ?? []).map((e) => `${e.$type} ${e.id}`);
+}
+
+/** The `<bpmn:incoming>`/`<bpmn:outgoing>` child count of one flow node. */
+function degreeOf(xmlStr: string, id: string): { in: number; out: number } {
+  const block = extractNodeBlock(xmlStr, id);
+  return {
+    in: (block.match(/<bpmn:incoming>/g) ?? []).length,
+    out: (block.match(/<bpmn:outgoing>/g) ?? []).length,
+  };
+}
 
 /**
  * The sole `<bpmn:extensionElements>` block of a document, as raw serialized
@@ -2713,15 +2678,10 @@ function childById(container: Moddle, id: string): Moddle {
 }
 
 /**
- * Extract the XML block for a flow node element by its BPMN id. Works for
- * both self-closing and non-self-closing elements, returning the text from
- * the opening tag up to and including its closing tag (or the self-close `/>`)
- * so that we can count `<bpmn:incoming>` / `<bpmn:outgoing>` children within
- * the block without accidentally counting those of sibling elements.
- *
- * The approach is regex-based (good enough for our formatted output): we find
- * the first occurrence of `id="<nodeId>"` inside any `<bpmn:*` opening tag,
- * then scan forward for the matching closing tag.
+ * The serialized text of one flow node, from its opening tag to its closing tag
+ * or self-close, so a child count never picks up a sibling's. Found by scanning
+ * for `id="<nodeId>"` and walking out to the tag boundaries, which holds for
+ * the formatted output the writer produces.
  */
 function extractNodeBlock(xml: string, nodeId: string): string {
   // Find the start of the tag that carries `id="<nodeId>"`.

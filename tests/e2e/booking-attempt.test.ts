@@ -11,9 +11,9 @@ import {
   activeTaskKeys,
   activityIdsIncluding,
   historicActivities,
-  isRunning,
   waitFor,
   waitForTaskId,
+  waitUntilFinished,
 } from '../helpers/engine-rest.js';
 
 const PROCESS_KEY = 'booking-attempt';
@@ -156,12 +156,7 @@ describe.skipIf(SKIP)(
           'BookingCancelled',
         ),
       ).toContain('BookingCancelled');
-      expect(
-        await waitFor(
-          () => isRunning(fixture, processInstanceId),
-          (running) => !running,
-        ),
-      ).toBe(false);
+      expect(await waitUntilFinished(fixture, processInstanceId)).toBe(true);
     }, 60_000);
   },
 );

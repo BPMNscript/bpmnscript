@@ -141,7 +141,7 @@ That last result is what shows an implementation-free message throw deploys and 
 
 ## More Information
 
-Extended by ADR-0026 (task kinds on the authoring surface), which retires the message-throw implementation refusal above: Operaton reads that implementation off the `bpmn:messageEventDefinition`, so the same attributes on the event itself are inert.
+ADR-0026 (task kinds on the authoring surface) supersedes the message-throw implementation refusal recorded above: Operaton reads that implementation off the `bpmn:messageEventDefinition`, so the same attributes on the event itself are inert.
 
 Related decisions: ADR-0016 (soft trigger words and the `throw`/`emit` terminality rule).
 ADR-0017 (the payload surfaces the three start triggers reuse, including the timer particle mapping).

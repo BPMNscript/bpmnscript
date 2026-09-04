@@ -7,7 +7,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { xmlToIr, irToDsl, astToIr } from '@bpmn-script/transform';
+import { xmlToIr, astToIr } from '@bpmn-script/transform';
 import type {
   BpmnProcess,
   FlowContainer,
@@ -20,6 +20,7 @@ import { idsOf, subProcess as findSubProcess } from './helpers/ir-query.js';
 import {
   parse,
   parseToAst,
+  printDsl,
   roundTrip,
   roundTripOf,
   validate,
@@ -365,7 +366,7 @@ describe('round-trip: import-first, with interleaved mappings and the camunda: b
     const first = await xmlToIr(HANDWRITTEN_BPMN);
     irFirstImport = first.ir;
     importWarnings = first.warnings;
-    dsl = irToDsl(irFirstImport);
+    dsl = printDsl(irFirstImport);
     irSecondImport = astToIr(await parseToAst(dsl));
   });
 

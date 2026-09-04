@@ -1,4 +1,4 @@
-import type { BpmnProcess } from '@bpmn-script/transform';
+import { isGateway, type BpmnProcess } from '@bpmn-script/transform';
 
 // Gateways are synthesized scaffolding and get fresh ids on every re-desugar,
 // so the raw flow-endpoint sets of an imported graph and its round-tripped
@@ -6,11 +6,8 @@ import type { BpmnProcess } from '@bpmn-script/transform';
 // to a transparent routing point leaves the authored-node connectivity, which a
 // lossless round trip does preserve. Returns sorted `source->target` pairs.
 export function realNodeReachability(ir: BpmnProcess): string[] {
-  const isGateway = new Map<string, boolean>(
-    ir.flowElements.map((fe) => [
-      fe.id,
-      fe.kind === 'exclusiveGateway' || fe.kind === 'parallelGateway',
-    ]),
+  const gatewayById = new Map<string, boolean>(
+    ir.flowElements.map((fe) => [fe.id, isGateway(fe)]),
   );
 
   const outgoing = new Map<string, string[]>();
@@ -23,14 +20,14 @@ export function realNodeReachability(ir: BpmnProcess): string[] {
 
   const pairs = new Set<string>();
   for (const node of ir.flowElements) {
-    if (isGateway.get(node.id)) continue;
+    if (gatewayById.get(node.id)) continue;
     const seen = new Set<string>();
     const stack = [...(outgoing.get(node.id) ?? [])];
     while (stack.length > 0) {
       const next = stack.pop()!;
       if (seen.has(next)) continue;
       seen.add(next);
-      if (isGateway.get(next)) {
+      if (gatewayById.get(next)) {
         for (const t of outgoing.get(next) ?? []) stack.push(t);
       } else {
         pairs.add(`${node.id}->${next}`);

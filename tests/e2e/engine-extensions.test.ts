@@ -19,6 +19,7 @@ import {
   historicActivities,
   isRunning,
   waitFor,
+  waitUntilFinished,
 } from '../helpers/engine-rest.js';
 
 const PROCESS_KEY = 'engine-extensions';
@@ -211,13 +212,9 @@ describe.skipIf(SKIP)(
 
       await fixture.completeTask(taskId);
 
-      expect(
-        await waitFor(
-          () => isRunning(fixture, processInstanceId),
-          (running) => !running,
-          30_000,
-        ),
-      ).toBe(false);
+      expect(await waitUntilFinished(fixture, processInstanceId, 30_000)).toBe(
+        true,
+      );
 
       const ranActivities = (
         await historicActivities(fixture, processInstanceId)
@@ -265,13 +262,9 @@ describe.skipIf(SKIP)(
 
       await setJobDefinitionSuspended(jobDefinition.id, false);
 
-      expect(
-        await waitFor(
-          () => isRunning(fixture, processInstanceId),
-          (running) => !running,
-          30_000,
-        ),
-      ).toBe(false);
+      expect(await waitUntilFinished(fixture, processInstanceId, 30_000)).toBe(
+        true,
+      );
 
       const afterActivation = (
         await historicActivities(fixture, processInstanceId)

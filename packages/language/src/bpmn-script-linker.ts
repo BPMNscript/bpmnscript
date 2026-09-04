@@ -1,8 +1,7 @@
 /**
  * Boundary-explanation linker for `goto` and for an `on` handler's host: where
  * the name exists elsewhere in the process, Langium's stock "Could not resolve
- * reference" is replaced by a message naming the boundary that was crossed.
- * Replacing rather than adding keeps it at one diagnostic, and a validator
+ * reference" is replaced by a message naming the boundary crossed. A validator
  * could not do the job: it only ever sees a `goto` that already resolved.
  */
 
@@ -42,9 +41,8 @@ function findNamedStatement(
 }
 
 /**
- * `undefined` when error recovery left the trigger empty. The enrichment names
- * the boundary it crossed, so with nothing to name it stands down and the
- * stock unresolved-reference message runs instead.
+ * `undefined` when error recovery left the trigger empty: with no boundary to
+ * name, the stock unresolved-reference message runs instead.
  */
 function handlerPhrase(handler: OnHandler): string | undefined {
   if (handler.trigger === undefined) return undefined;
@@ -63,9 +61,9 @@ interface Location {
 }
 
 /**
- * Where `target` lives relative to `sourceContainer`. Only called once the two
- * containers are known to differ, so exactly one branch applies. A handler
- * carrying a host is never reported: it is transparent to the container walk.
+ * Where `target` lives relative to `sourceContainer`, called once the two are
+ * known to differ. A handler carrying a host is never reported: the container
+ * walk passes through it.
  */
 function locateTarget(
   target: NamedStatement,

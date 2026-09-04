@@ -199,6 +199,21 @@ export async function waitFor<T>(
   return value;
 }
 
+// Polls until the instance has left the runtime. The caller asserts on the
+// answer, so an instance that never finishes fails rather than hangs.
+export async function waitUntilFinished(
+  fixture: FixtureAdapter,
+  processInstanceId: string,
+  timeoutMs?: number,
+): Promise<boolean> {
+  const running = await waitFor(
+    () => isRunning(fixture, processInstanceId),
+    (stillRunning) => !stillRunning,
+    timeoutMs,
+  );
+  return !running;
+}
+
 export async function waitForTasks(
   fixture: FixtureAdapter,
   processInstanceId: string,

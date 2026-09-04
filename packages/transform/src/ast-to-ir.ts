@@ -9,10 +9,10 @@
  * traversal counter, so re-running this on `irToDsl` output yields identical
  * ids. See ADR 0010, Use Deterministic Structural Ids for Synthesized BPMN
  * Elements. Two things the ADR leaves open: an `on` handler owns a single
- * block, so like a loop body it needs no segment and its enclosing coordinate
- * is its own `<X>`; and a sub-process body is rooted at that coordinate rather
- * than at the sub-process's name, because gateway ids skip `resolveCollision`
- * and a sub-process named like a coordinate could otherwise duplicate one.
+ * block, so like a loop body its enclosing coordinate is its own `<X>`; and a
+ * sub-process body is rooted at that coordinate rather than at the
+ * sub-process's name, because gateway ids skip `resolveCollision` and a
+ * sub-process named like a coordinate could otherwise duplicate one.
  *
  * The desugarer is total: it never throws on a program the validator rejects.
  */
@@ -31,6 +31,7 @@ import {
   isWhileStatement,
   isDoWhileStatement,
   isParallelStatement,
+  isRaceStatement,
   isGotoStatement,
   isSubProcess,
   isCallActivity,
@@ -48,14 +49,20 @@ import {
   isMapLiteral,
   isScriptLiteral,
   renderExpression,
+  formatPlainWordList,
   SCRIPT_FORMAT_ALIASES,
   splitFencedScript,
   CATCH_TRIGGERS,
+  DECISION_RESULT_MAPPINGS,
   EMIT_TRIGGERS,
   END_TRIGGERS,
+  EXECUTION_LISTENER_EVENTS,
+  FORM_FIELD_TYPES,
   ON_TRIGGERS,
   START_TRIGGERS,
+  TASK_LISTENER_EVENTS,
   THROW_TRIGGERS,
+  TIMER_PARTICLE_BY_KIND,
 } from '@bpmn-script/language';
 import type {
   Model,
@@ -76,6 +83,8 @@ import type {
   WhileStatement,
   DoWhileStatement,
   ParallelStatement,
+  RaceStatement,
+  RaceBranch,
   GotoStatement,
   SubProcess as AstSubProcess,
   CallActivity as AstCallActivity,
@@ -116,6 +125,7 @@ import {
   makeGatewaySplitId,
   makeGatewayJoinId,
   makeGatewayForkId,
+  makeGatewayRaceId,
   makeGatewayLoopId,
   makeDefaultFlowId,
   makeSequenceFlowId,
@@ -125,6 +135,7 @@ import {
   makeEventSubProcessId,
   makeBoundaryEventId,
   makeIntermediateCatchEventId,
+  resolveCollision,
 } from './synthesize-ids.js';
 
 /**
@@ -360,6 +371,9 @@ function lowerStatement(
   if (isParallelStatement(stmt)) {
     return lowerParallel(builder, stmt, `${coord}_${index}`);
   }
+  if (isRaceStatement(stmt)) {
+    return lowerRace(builder, stmt, `${coord}_${index}`);
+  }
   if (isGotoStatement(stmt)) {
     return lowerGoto(stmt);
   }
@@ -400,9 +414,9 @@ function lowerStartEvent(builder: Builder, stmt: AstStartEvent): Frontier {
 
 /**
  * The word a position admits, or `undefined` for one it does not. The literal
- * return type is what makes every dispatch below carry an arm for each word
- * its vocabulary lists, so a word cannot be admitted here and then lowered as
- * something else.
+ * return type is what makes every dispatch below carry an arm per word its
+ * vocabulary lists, so a word cannot be admitted here and lowered as something
+ * else.
  */
 function admittedTrigger<W extends string>(
   vocabulary: readonly W[],
@@ -454,7 +468,7 @@ function lowerEndEvent(builder: Builder, stmt: AstEndEvent): Frontier {
 
 /**
  * A user task is the one element with a human lifecycle, so its listener list
- * splits two ways: task events into `taskListeners` here, `start`/`end` into
+ * splits two ways: task events into `taskListeners`, `start`/`end` into
  * `executionListeners` with every other element's.
  */
 function lowerUserTask(builder: Builder, stmt: AstUserTask): Frontier {
@@ -487,14 +501,6 @@ function lowerUserTask(builder: Builder, stmt: AstUserTask): Frontier {
   return { entry: stmt.name, exit: stmt.name };
 }
 
-/** DSL form-field types that map to an Operaton `operaton:formField`. */
-const FORM_FIELD_TYPES = new Set<string>([
-  'string',
-  'number',
-  'boolean',
-  'date',
-]);
-
 function lowerFormFields(
   node: AstStartEvent | AstUserTask,
 ): FormField[] | undefined {
@@ -513,12 +519,13 @@ function lowerFormFields(
 }
 
 function toFormFieldType(type: string): FormFieldType {
-  if (FORM_FIELD_TYPES.has(type)) {
-    return type as FormFieldType;
+  const mapped = FORM_FIELD_TYPES.find((t) => t === type);
+  if (mapped === undefined) {
+    throw new Error(
+      `astToIr: unsupported form field type '${type}' (expected string, number, boolean, or date).`,
+    );
   }
-  throw new Error(
-    `astToIr: unsupported form field type '${type}' (expected string, number, boolean, or date).`,
-  );
+  return mapped;
 }
 
 /** Literals yield their bare value; anything else falls back to its `${...}` body, evaluated as EL. */
@@ -601,7 +608,6 @@ function writtenBinding(attrs: Attribute[]): ServiceTaskBinding | undefined {
   return topic === undefined ? undefined : { kind: 'external', topic };
 }
 
-/** A step the engine records and passes straight through: no binding, no result. */
 function lowerGenericTask(builder: Builder, stmt: AstGenericTask): Frontier {
   builder.flowElements.push({
     kind: 'task',
@@ -614,7 +620,6 @@ function lowerGenericTask(builder: Builder, stmt: AstGenericTask): Frontier {
   return { entry: stmt.name, exit: stmt.name };
 }
 
-/** A send task binds exactly as a service task does; only the tag it serializes to differs. */
 function lowerSendTask(builder: Builder, stmt: AstSendTask): Frontier {
   return lowerServiceTaskLike(
     builder,
@@ -673,18 +678,11 @@ function businessRuleBinding(attrs: Attribute[]): ServiceTaskBinding {
   };
 }
 
-const DECISION_RESULT_MAPPINGS = [
-  'singleEntry',
-  'singleResult',
-  'collectEntries',
-  'resultList',
-] as const;
-
 function toDecisionResultMapping(mapping: string) {
   const mapped = DECISION_RESULT_MAPPINGS.find((m) => m === mapping);
   if (mapped === undefined) {
     throw new Error(
-      `astToIr: unsupported decision result mapping '${mapping}' (expected singleEntry, singleResult, collectEntries, or resultList).`,
+      `astToIr: unsupported decision result mapping '${mapping}' (expected ${formatPlainWordList(DECISION_RESULT_MAPPINGS)}).`,
     );
   }
   return mapped;
@@ -722,7 +720,7 @@ function lowerIf(builder: Builder, stmt: IfStatement, x: string): Frontier {
   const joinId = makeGatewayJoinId(x);
 
   // Reserved up-front so it is stable regardless of branch count.
-  const defaultFlowId = makeDefaultFlowId(splitId);
+  const defaultFlowId = reserveDefaultFlowId(builder, splitId);
 
   builder.flowElements.push({
     kind: 'exclusiveGateway',
@@ -731,49 +729,76 @@ function lowerIf(builder: Builder, stmt: IfStatement, x: string): Frontier {
   });
   builder.flowElements.push({ kind: 'exclusiveGateway', id: joinId });
 
-  lowerConditionedBranches(builder, stmt, x, splitId, joinId);
-
-  // The trailing `else`, or an implicit fall-through, is the default flow.
-  if (stmt.elseBlock !== undefined) {
-    const elseBranch = lowerBlock(builder, stmt.elseBlock, `${x}_e`);
-    if (elseBranch.entry !== null) {
-      addFlow(builder, splitId, elseBranch.entry, undefined, defaultFlowId);
-    } else {
-      addFlow(builder, splitId, joinId, undefined, defaultFlowId);
-    }
-    joinContinuation(builder, elseBranch, joinId);
-  } else {
-    addFlow(builder, splitId, joinId, undefined, defaultFlowId);
-  }
+  lowerForkBranches(
+    builder,
+    [
+      {
+        block: stmt.then,
+        coord: `${x}_t`,
+        condition: renderExpression(stmt.condition),
+      },
+      ...stmt.elseIfs.map((ei, i) => ({
+        block: ei.body,
+        coord: `${x}_e${i}`,
+        condition: renderExpression(ei.condition),
+      })),
+      // The trailing `else` is the default flow and never carries a condition.
+      ...(stmt.elseBlock !== undefined
+        ? [{ block: stmt.elseBlock, coord: `${x}_e`, flowId: defaultFlowId }]
+        : []),
+    ],
+    splitId,
+    joinId,
+    defaultFlowId,
+  );
 
   return { entry: splitId, exit: pruneUnreachableJoin(builder, joinId) };
 }
 
-/** An empty conditioned branch routes its condition straight to the join. */
-function lowerConditionedBranches(
-  builder: Builder,
-  stmt: IfStatement,
-  x: string,
-  splitId: string,
-  joinId: string,
-): void {
-  const conditioned: { condition: string; block: Block; seg: string }[] = [
-    { condition: renderExpression(stmt.condition), block: stmt.then, seg: 't' },
-    ...stmt.elseIfs.map((ei, i) => ({
-      condition: renderExpression(ei.condition),
-      block: ei.body,
-      seg: `e${i}`,
-    })),
-  ];
+/** One branch of a fork: its body, that body's coordinate, and its incoming flow. */
+interface ForkBranch {
+  block: Block;
+  coord: string;
+  /** Rendered condition on the flow into the branch; absent means unconditioned. */
+  condition?: string;
+  /** Forces the flow's id, marking this branch as the gateway's default. */
+  flowId?: string;
+}
 
-  for (const { condition, block, seg } of conditioned) {
-    const branch = lowerBlock(builder, block, `${x}_${seg}`);
-    if (branch.entry !== null) {
-      addFlow(builder, splitId, branch.entry, condition);
-    } else {
-      addFlow(builder, splitId, joinId, condition);
-    }
-    joinContinuation(builder, branch, joinId);
+/**
+ * Lower every branch of a fork and rejoin it. An empty branch routes its flow
+ * straight to the join, and a branch that terminates gets no continuation out
+ * of it.
+ *
+ * `defaultFlowId` is the id the fork reserved for its default flow. When no
+ * branch claimed it, the fallback runs from the fork to the join: a split whose
+ * every branch is conditioned would otherwise have nowhere to go when none of
+ * them holds.
+ */
+function lowerForkBranches(
+  builder: Builder,
+  branches: ForkBranch[],
+  sourceId: string,
+  joinId: string,
+  defaultFlowId?: string,
+): void {
+  for (const branch of branches) {
+    const lowered = lowerBlock(builder, branch.block, branch.coord);
+    addFlow(
+      builder,
+      sourceId,
+      lowered.entry ?? joinId,
+      branch.condition,
+      branch.flowId,
+    );
+    joinContinuation(builder, lowered, joinId);
+  }
+
+  if (
+    defaultFlowId !== undefined &&
+    !branches.some((branch) => branch.flowId === defaultFlowId)
+  ) {
+    addFlow(builder, sourceId, joinId, undefined, defaultFlowId);
   }
 }
 
@@ -788,7 +813,7 @@ function lowerWhile(
   x: string,
 ): Frontier {
   const loopId = makeGatewayLoopId(x);
-  const defaultFlowId = makeDefaultFlowId(loopId);
+  const defaultFlowId = reserveDefaultFlowId(builder, loopId);
 
   builder.flowElements.push({
     kind: 'exclusiveGateway',
@@ -822,7 +847,7 @@ function lowerDoWhile(
   x: string,
 ): Frontier {
   const loopId = makeGatewayLoopId(x);
-  const defaultFlowId = makeDefaultFlowId(loopId);
+  const defaultFlowId = reserveDefaultFlowId(builder, loopId);
 
   const condition = renderExpression(stmt.condition);
   const body = lowerBlock(builder, stmt.body, x);
@@ -846,9 +871,21 @@ function lowerDoWhile(
 }
 
 /**
- * Lower `parallel { { A } { B } ... }` to an AND fork/join pair; the join is
- * pruned when every branch terminates. No condition is emitted on a
- * fork-outgoing flow, Operaton ignoring one there.
+ * Lower `parallel { { A } { B } ... }` to a fork/join pair; the join is pruned
+ * when every branch terminates.
+ *
+ * A condition on any branch makes both gateways inclusive: every branch whose
+ * condition holds runs, and the join waits for exactly those. With no condition
+ * anywhere the pair is an AND fork/join, Operaton ignoring a condition there.
+ * An `else` branch alone does not make the split inclusive: under inclusive
+ * semantics the unconditioned siblings always run, so the fallback would be
+ * dead.
+ *
+ * The inclusive fork always gets a default flow, stamped exactly as `if` stamps
+ * its own: onto the `else` branch when one is written, otherwise straight to
+ * the join. A gateway whose every branch is conditioned and that carries no
+ * default deploys and runs, then throws a stuck execution in Operaton the first
+ * time no condition holds.
  */
 function lowerParallel(
   builder: Builder,
@@ -857,21 +894,79 @@ function lowerParallel(
 ): Frontier {
   const forkId = makeGatewayForkId(x);
   const joinId = makeGatewayJoinId(x);
+  const inclusive = stmt.branches.some((b) => b.condition !== undefined);
 
-  builder.flowElements.push({ kind: 'parallelGateway', id: forkId });
-  builder.flowElements.push({ kind: 'parallelGateway', id: joinId });
+  // Reserved only where a fallback is named: an AND split pushes no flow under
+  // the id, so claiming it would move an authored collider off it for nothing.
+  let defaultFlowId: string | undefined;
+  if (inclusive) {
+    defaultFlowId = reserveDefaultFlowId(builder, forkId);
+    builder.flowElements.push({
+      kind: 'inclusiveGateway',
+      id: forkId,
+      defaultFlowId,
+    });
+    builder.flowElements.push({ kind: 'inclusiveGateway', id: joinId });
+  } else {
+    builder.flowElements.push({ kind: 'parallelGateway', id: forkId });
+    builder.flowElements.push({ kind: 'parallelGateway', id: joinId });
+  }
 
-  stmt.branches.forEach((branch, branchIndex) => {
-    const lowered = lowerBlock(builder, branch, `${x}_b${branchIndex}`);
-    if (lowered.entry !== null) {
-      addFlow(builder, forkId, lowered.entry);
-    } else {
-      addFlow(builder, forkId, joinId);
-    }
+  // Only the first `else` carries the default flow; a second one lowers as a
+  // plain branch, so invalid input still has one deterministic lowering.
+  const defaultIndex = inclusive
+    ? stmt.branches.findIndex((b) => b.otherwise)
+    : -1;
+
+  const branches = stmt.branches.map((branch, i): ForkBranch => ({
+    block: branch.body,
+    coord: `${x}_b${i}`,
+    ...(branch.condition !== undefined
+      ? { condition: renderExpression(branch.condition) }
+      : {}),
+    ...(i === defaultIndex ? { flowId: defaultFlowId } : {}),
+  }));
+
+  lowerForkBranches(builder, branches, forkId, joinId, defaultFlowId);
+
+  return { entry: forkId, exit: pruneUnreachableJoin(builder, joinId) };
+}
+
+/**
+ * Lower `await { <trigger> { A } <trigger> { B } ... }` to an event-based
+ * gateway, one intermediate catch event per branch, and an exclusive join. The
+ * first branch to fire cancels the rest, so exactly one ever runs and the merge
+ * is a plain XOR join rather than a synchronizing one.
+ *
+ * No flow out of the gateway carries a condition: Operaton builds no transition
+ * for one and routes through the event scope instead, so a condition there
+ * would be content nothing reads. A branch's settings block lands on its catch
+ * event, which is where the engine's wait state actually is.
+ */
+function lowerRace(builder: Builder, stmt: RaceStatement, x: string): Frontier {
+  const raceId = makeGatewayRaceId(x);
+  const joinId = makeGatewayJoinId(x);
+
+  builder.flowElements.push({ kind: 'eventBasedGateway', id: raceId });
+  builder.flowElements.push({ kind: 'exclusiveGateway', id: joinId });
+
+  stmt.branches.forEach((branch, i) => {
+    const coord = `${x}_b${i}`;
+    const catchId = makeIntermediateCatchEventId(coord);
+    builder.flowElements.push({
+      kind: 'intermediateCatchEvent',
+      id: catchId,
+      eventDefinition: catchEventDefinition(branch),
+      ...readEngineAttributes(branch),
+    });
+    addFlow(builder, raceId, catchId);
+
+    const lowered = lowerBlock(builder, branch.body, coord);
+    addFlow(builder, catchId, lowered.entry ?? joinId);
     joinContinuation(builder, lowered, joinId);
   });
 
-  return { entry: forkId, exit: pruneUnreachableJoin(builder, joinId) };
+  return { entry: raceId, exit: pruneUnreachableJoin(builder, joinId) };
 }
 
 /**
@@ -961,14 +1056,13 @@ function lowerOnHandler(
  * There is no wrapping container. The body's statements become siblings of the
  * main flow, so a `goto` crosses between the two in either direction, the only
  * way an escape chain can rejoin. The chain runs boundary -> body -> its own
- * end event, seeded from the boundary event id so the main flow's
- * `EndEvent_<containerId>` keeps its number whatever handlers the container has.
+ * end event, seeded from the boundary event id so the main flow's end keeps its
+ * number whatever handlers the container has.
  *
- * Element order is a constraint. `bpmn-auto-layout` positions an attached event
+ * Element order is a constraint: `bpmn-auto-layout` positions an attached event
  * from `attachedTo.di.bounds`, so the host shape has to exist before the
- * attacher is laid out. The boundary node is pushed when the handler statement
- * is reached, and a handler always follows its host in the statement list, so
- * the host always precedes it in `flowElements`.
+ * attacher is laid out. A handler always follows its host in the statement
+ * list, so the host always precedes it in `flowElements`.
  */
 function lowerBoundaryHandler(
   builder: Builder,
@@ -1075,15 +1169,17 @@ function handlerEventDefinition(stmt: OnHandler): EventDefinition {
   }
 }
 
-/** Falls back to `duration`, which is what a bare `on timer "PT1H"` with no particle needs. */
+/**
+ * The vocabulary's particle table read backwards. Falls back to `duration`,
+ * which is what a bare `on timer "PT1H"` with no particle needs.
+ */
 function timerParticleKind(
   particle: string | undefined,
 ): 'duration' | 'date' | 'cycle' {
-  if (particle === 'at') {
-    return 'date';
-  }
-  if (particle === 'every') {
-    return 'cycle';
+  for (const [kind, word] of Object.entries(TIMER_PARTICLE_BY_KIND)) {
+    if (word === particle) {
+      return kind as 'duration' | 'date' | 'cycle';
+    }
   }
   return 'duration';
 }
@@ -1127,7 +1223,6 @@ function thrownMessageBinding(
   return binding === undefined ? {} : { binding };
 }
 
-/** Lower an `emit` to an intermediate throw event. */
 function lowerEmit(
   builder: Builder,
   stmt: EmitStatement,
@@ -1220,7 +1315,7 @@ function throwEventDefinition(stmt: ThrowStatement): EventDefinition {
  * position does not admit falls back to the always-true conditional.
  */
 function catchEventDefinition(
-  stmt: IntermediateCatchEvent,
+  stmt: IntermediateCatchEvent | RaceBranch,
 ): Extract<
   EventDefinition,
   { kind: 'message' | 'signal' | 'timer' | 'conditional' }
@@ -1303,8 +1398,7 @@ function lowerCallActivity(builder: Builder, stmt: AstCallActivity): Frontier {
 }
 
 /**
- * A {@link VersionBinding} read off `binding`/`version`, the inverse of
- * `renderCallActivity`'s member pair in `ir-to-dsl.ts`. Shared by a call
+ * A {@link VersionBinding} read off `binding`/`version`, shared by a call
  * activity's `calledElement` pin and a decision step's decision table pin.
  * `version` wins whenever present, even alongside a stray `binding`: the two
  * together are a validator error, so the desugarer picks the one BPMN can use.
@@ -1491,20 +1585,6 @@ function readEngineAttributes(owner: EngineAttributeOwner): EngineAttributes {
   });
 }
 
-const EXECUTION_LISTENER_EVENTS: readonly ExecutionListener['event'][] = [
-  'start',
-  'end',
-];
-
-const TASK_LISTENER_EVENTS: readonly TaskListener['event'][] = [
-  'create',
-  'assign',
-  'complete',
-  'update',
-  'delete',
-  'timeout',
-];
-
 /**
  * The `on start`/`on end` callbacks, in source order. The event word, not the
  * element, splits execution from task listeners, so a task event on an element
@@ -1617,8 +1697,24 @@ function boolAttrValue(attrs: Attribute[], key: string): boolean | undefined {
 }
 
 /**
+ * Claim the id a gateway holds back for its default flow, before any branch is
+ * lowered. Without the claim a statement named `default` takes the same string
+ * for its own incoming flow, since that flow is `Flow_<gateway>_<statement>`,
+ * and the document ends up with two flows under one id, which BPMN forbids.
+ * Every shape that holds an id back for a flow it has not pushed yet comes
+ * through here.
+ */
+function reserveDefaultFlowId(builder: Builder, gatewayId: string): string {
+  const id = resolveCollision(makeDefaultFlowId(gatewayId), builder.taken);
+  builder.taken.add(id);
+  return id;
+}
+
+/**
  * Emit a sequence flow. `forcedId` creates it with that exact id, for a
  * gateway's reserved default flow and a `while` loop's reserved default exit.
+ * Every such id comes from {@link reserveDefaultFlowId}, which already claimed
+ * it, so nothing else can be holding it by the time the flow is pushed.
  */
 function addFlow(
   builder: Builder,
@@ -1628,14 +1724,7 @@ function addFlow(
   forcedId?: string,
 ): void {
   const id =
-    forcedId !== undefined
-      ? forcedId
-      : makeSequenceFlowId(sourceRef, targetRef, builder.taken);
-  // Register a forced id in the collision set so a later synthesized flow with
-  // the same source/target pair gets a `_2` suffix rather than colliding.
-  if (forcedId !== undefined) {
-    builder.taken.add(forcedId);
-  }
+    forcedId ?? makeSequenceFlowId(sourceRef, targetRef, builder.taken);
 
   builder.sequenceFlows.push({
     id,
@@ -1696,8 +1785,8 @@ function collectNamedIds(process: Process): Set<string> {
         if (stmt.elseBlock) visit(stmt.elseBlock.statements);
       } else if (isWhileStatement(stmt) || isDoWhileStatement(stmt)) {
         visit(stmt.body.statements);
-      } else if (isParallelStatement(stmt)) {
-        for (const branch of stmt.branches) visit(branch.statements);
+      } else if (isParallelStatement(stmt) || isRaceStatement(stmt)) {
+        for (const branch of stmt.branches) visit(branch.body.statements);
       } else if (isSubProcess(stmt)) {
         // A sub-process name is itself a document id (a goto target).
         taken.add(stmt.name);
