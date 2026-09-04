@@ -1,241 +1,237 @@
 /**
- * Error classes raised by the transform package.
+ * Refusals raised by `xmlToIr`.
  *
- * Co-located in a dedicated module so that consumers (CLI, tests, other
- * transforms) can `import { UnsupportedElementError } from
- * '@bpmn-script/transform'` without pulling in the parser.
- *
- * ## Import contract
- *
- * `xmlToIr` never silently discards content it cannot represent. Content the
- * IR cannot express is **refused**: a subclass of {@link
- * UnsupportedConstructError} is thrown before any IR is produced, so the
- * caller can surface a loud, actionable diagnostic. Refused content:
- *
- * - event definitions on start/end events (timer, message, signal, error,
- *   terminate, …) → {@link UnsupportedEventDefinitionError};
- * - loop characteristics on a task (multi-instance or standard loop) →
- *   {@link UnsupportedLoopCharacteristicsError};
- * - collaborations, i.e. pools and message flows →
- *   {@link UnsupportedCollaborationError};
- * - unsupported flow-element kinds (sub-process, call activity,
- *   intermediate events, …) → {@link UnsupportedElementError};
- * - service tasks whose execution form the IR cannot represent (a bare task
- *   with no discriminator, or an external type without a topic) →
- *   {@link UnsupportedServiceTaskFormError};
- * - form fields whose type is not `string`/`long`/`boolean`/`date` →
- *   {@link UnsupportedFormFieldTypeError}.
- *
- * Content the IR does not carry but that causes **no semantic loss** is
- * **dropped with a warning** rather than refused — see the `warnings`
- * channel returned by `xmlToIr` (extra Operaton/camunda extension attributes
- * and extension elements beyond `assignee`/`formKey`/`class`, and lanes).
- *
- * All refusal errors share the abstract base {@link UnsupportedConstructError}
- * so a consumer can classify the whole family with a single `instanceof`
- * check while still special-casing individual subclasses where a tailored
- * message is wanted.
+ * Content the IR cannot express is refused before any IR is produced. Content
+ * the IR does not carry but that costs no semantics is dropped with a warning
+ * instead, on the `warnings` channel `xmlToIr` returns.
+ * `packages/transform/README.md` tabulates which construct lands where.
  */
 
 /**
- * Abstract base for every "this construct cannot be represented in the IR"
- * refusal. It carries no fields of its own — each subclass adds the metadata
- * relevant to its construct. Its purpose is classification: a consumer can
- * `catch`/`instanceof UnsupportedConstructError` to treat any refusal as a
- * single "unsupported construct" outcome, rather than enumerating every
- * concrete subclass.
+ * Base for every refusal, so a consumer can classify the whole family with one
+ * `instanceof`. Subclasses declare their fields with `declare` so nothing
+ * overwrites what `Object.assign` wrote after `super()`.
  */
-export abstract class UnsupportedConstructError extends Error {}
+export abstract class UnsupportedConstructError extends Error {
+  constructor(message: string, detail: Record<string, unknown>) {
+    super(message);
+    this.name = new.target.name;
+    Object.assign(this, detail);
+  }
+}
 
-/**
- * Thrown by {@link xmlToIr} when a BPMN service task carries no execution
- * form the IR can represent.
- *
- * The representable forms are a Java class (`operaton:class`, or the
- * deprecated `camunda:class` alias), an `operaton:expression`, an
- * `operaton:delegateExpression`, and an external task —
- * `operaton:type="external"` paired with an `operaton:topic`. A task with
- * none of these, or an external type missing its topic, is refused on import
- * so semantic loss is impossible.
- *
- * The error message names the offending construct so callers can surface
- * a useful diagnostic to the user.
- */
+/** A service task with no execution form, or an external type missing its topic. */
 export class UnsupportedServiceTaskFormError extends UnsupportedConstructError {
-  /** The BPMN id of the service task that triggered the error. */
-  readonly serviceTaskId: string;
-  /**
-   * A description of the unrepresentable form (e.g.
-   * `operaton:type="external" without an operaton:topic`), or the string
-   * `"no execution discriminator"` when the task carries no execution form
-   * at all.
-   */
-  readonly construct: string;
+  declare readonly serviceTaskId: string;
+  declare readonly construct: string;
 
   constructor(serviceTaskId: string, construct: string) {
     super(
       `Service task '${serviceTaskId}' uses unsupported execution form: ${construct}. ` +
         'Supported forms are a Java class, an expression, a delegate expression, ' +
         'or an external task topic.',
+      { serviceTaskId, construct },
     );
-    this.name = 'UnsupportedServiceTaskFormError';
-    this.serviceTaskId = serviceTaskId;
-    this.construct = construct;
   }
 }
 
 /**
- * Thrown by {@link xmlToIr} when an `operaton:formField` uses a `type` the DSL
- * cannot express. The DSL form types `string`, `number`, `boolean`, and `date`
- * map to the Operaton `string`, `long`, `boolean`, and `date` field types. Any
- * other field type (`double`, `enum`, a custom type, or none) is refused so the
- * field's input semantics are not silently narrowed.
+ * An `operaton:formField` type outside the four the DSL maps (`string`, `long`,
+ * `boolean`, `date`), which would otherwise narrow the field's input semantics.
  */
 export class UnsupportedFormFieldTypeError extends UnsupportedConstructError {
-  /** The BPMN id of the element carrying the form field. */
-  readonly elementId: string;
-  /** The `id` of the offending form field. */
-  readonly fieldId: string;
-  /** The unsupported `operaton:formField` `type` value. */
-  readonly fieldType: string;
+  declare readonly elementId: string;
+  declare readonly fieldId: string;
+  declare readonly fieldType: string;
 
   constructor(elementId: string, fieldId: string, fieldType: string) {
     super(
       `The form field '${fieldId}' on '${elementId}' has type '${fieldType}', ` +
         'which this tool cannot import. Supported form field types are ' +
         'string, long, boolean, and date.',
+      { elementId, fieldId, fieldType },
     );
-    this.name = 'UnsupportedFormFieldTypeError';
-    this.elementId = elementId;
-    this.fieldId = fieldId;
-    this.fieldType = fieldType;
   }
 }
 
 /**
- * Thrown by {@link xmlToIr} when the input BPMN contains a flow element
- * kind that lies outside the supported subset.
- *
- * The supported subset is `bpmn:startEvent`, `bpmn:endEvent`,
- * `bpmn:userTask`, `bpmn:serviceTask`, `bpmn:scriptTask`,
- * `bpmn:exclusiveGateway`, `bpmn:parallelGateway`, and `bpmn:sequenceFlow`.
- * Anything else (`bpmn:intermediateCatchEvent`, `bpmn:subProcess`,
- * `bpmn:callActivity`, etc.) raises this error so unsupported workflows
- * fail loudly at import.
+ * A flow element kind outside the supported subset, such as `bpmn:transaction`
+ * or `bpmn:adHocSubProcess`. A supported kind carrying an unrepresentable shape
+ * refuses via {@link UnsupportedEventFeatureError} or
+ * {@link UnsupportedEventDefinitionError} instead.
  */
 export class UnsupportedElementError extends UnsupportedConstructError {
-  /** The fully-qualified BPMN type name, e.g. `bpmn:ParallelGateway`. */
-  readonly qname: string;
-  /** The BPMN `id` of the offending element, when available. */
-  readonly elementId?: string;
+  /** Fully-qualified BPMN type name, e.g. `bpmn:ParallelGateway`. */
+  declare readonly qname: string;
+  declare readonly elementId?: string;
 
   constructor(qname: string, elementId?: string) {
     super(
       `The BPMN element ${qname}` +
         (elementId ? ` (id='${elementId}')` : '') +
         ' is a kind that this tool cannot import. ' +
-        'Only start/end events, user tasks, service tasks, script tasks, ' +
-        'exclusive gateways, parallel gateways, and sequence flows are supported.',
+        'Only start/end events, throws, emits, boundary events, event ' +
+        'handlers, user tasks, service tasks, script tasks, exclusive ' +
+        'gateways, parallel gateways, embedded sub-processes, call ' +
+        'activities, and sequence flows are supported.',
+      { qname, elementId },
     );
-    this.name = 'UnsupportedElementError';
-    this.qname = qname;
-    this.elementId = elementId;
+  }
+}
+
+/** A call activity the engine could not resolve: `detail` names the shape. */
+export class UnsupportedCallActivityError extends UnsupportedConstructError {
+  declare readonly elementId: string;
+  declare readonly detail: string;
+
+  constructor(elementId: string, detail: string) {
+    super(
+      `The call activity '${elementId}' cannot be imported: ${detail}. ` +
+        'Supported call activities name a calledElement, an optional ' +
+        'latest/deployment/version binding, a businessKey, and in/out ' +
+        'mappings using source+target, sourceExpression+target, or ' +
+        'variables="all".',
+      { elementId, detail },
+    );
   }
 }
 
 /**
- * Thrown by {@link xmlToIr} when a start or end event carries an event
- * definition (timer, message, signal, error, terminate, …). The IR models
- * only plain start and end events, so the trigger/result semantics of a
- * defined event cannot be represented and must not be silently dropped.
+ * An event definition kind this tool does not import at that position. The
+ * right kind in the wrong shape (an error throw with no code, a timer with no
+ * time child) refuses via {@link UnsupportedEventFeatureError} instead.
  */
 export class UnsupportedEventDefinitionError extends UnsupportedConstructError {
-  /** The BPMN `id` of the offending start/end event. */
-  readonly elementId: string;
-  /** Whether the offending event is a start event or an end event. */
-  readonly eventKind: 'start' | 'end';
-  /**
-   * The moddle `$type` of the first event definition found, e.g.
-   * `bpmn:TimerEventDefinition` or `bpmn:MessageEventDefinition`.
-   */
-  readonly definitionType: string;
+  declare readonly elementId: string;
+  declare readonly eventKind:
+    'start' | 'end' | 'intermediate throw' | 'intermediate catch' | 'boundary';
+  /** Moddle `$type`, e.g. `bpmn:TerminateEventDefinition`. */
+  declare readonly definitionType: string;
 
   constructor(
     elementId: string,
-    eventKind: 'start' | 'end',
+    eventKind:
+      | 'start'
+      | 'end'
+      | 'intermediate throw'
+      | 'intermediate catch'
+      | 'boundary',
     definitionType: string,
   ) {
     super(
       `The ${eventKind} event '${elementId}' carries a ${friendlyEventDefinition(definitionType)} ` +
         `definition (${definitionType}) that this tool cannot import. ` +
-        'Only plain start and end events are supported.',
+        supportedKindsMessage(eventKind),
+      { elementId, eventKind, definitionType },
     );
-    this.name = 'UnsupportedEventDefinitionError';
-    this.elementId = elementId;
-    this.eventKind = eventKind;
-    this.definitionType = definitionType;
   }
 }
 
 /**
- * Thrown by {@link xmlToIr} when a task carries loop characteristics —
- * either a multi-instance marker or a standard loop. The IR models tasks
- * that run exactly once, so repetition semantics cannot be represented.
+ * A supported event definition kind shaped in a way the DSL surface cannot
+ * express. `detail` names the shape.
  */
+export class UnsupportedEventFeatureError extends UnsupportedConstructError {
+  declare readonly elementId: string;
+  declare readonly detail: string;
+
+  constructor(elementId: string, detail: string) {
+    super(
+      `The event construct at '${elementId}' cannot be imported: ${detail}. ` +
+        'Event handlers catch one error, escalation, message, signal, timer, ' +
+        'conditional, or compensation trigger on their single start event; ' +
+        'throws and emits carry the code or name their kind requires, and ' +
+        'compensation carries neither.',
+      { elementId, detail },
+    );
+  }
+}
+
+/** Loop characteristics: the IR models elements that run exactly once. */
 export class UnsupportedLoopCharacteristicsError extends UnsupportedConstructError {
-  /** The BPMN `id` of the offending task. */
-  readonly elementId: string;
-  /**
-   * The moddle `$type` of the loop characteristics, e.g.
-   * `bpmn:MultiInstanceLoopCharacteristics` or
-   * `bpmn:StandardLoopCharacteristics`.
-   */
-  readonly loopType: string;
+  declare readonly elementId: string;
+  /** Moddle `$type`, e.g. `bpmn:MultiInstanceLoopCharacteristics`. */
+  declare readonly loopType: string;
 
   constructor(elementId: string, loopType: string) {
     super(
-      `The task '${elementId}' repeats (${friendlyLoopType(loopType)}: ${loopType}), ` +
-        'which this tool cannot import. Only tasks that run once are supported.',
+      `The element '${elementId}' repeats (${friendlyLoopType(loopType)}: ${loopType}), ` +
+        'which this tool cannot import. Only elements that run once are supported.',
+      { elementId, loopType },
     );
-    this.name = 'UnsupportedLoopCharacteristicsError';
-    this.elementId = elementId;
-    this.loopType = loopType;
   }
 }
 
-/**
- * Thrown by {@link xmlToIr} when the document describes a collaboration —
- * multiple participants (pools) and/or message flows between them. The IR
- * models a single standalone process, so collaboration structure cannot be
- * represented.
- */
+/** Pools or message flows: the IR models a single standalone process. */
 export class UnsupportedCollaborationError extends UnsupportedConstructError {
-  /** A human-readable description of the collaboration content found. */
-  readonly detail: string;
+  declare readonly detail: string;
 
   constructor(detail: string) {
     super(
       `The file contains ${detail}, which this tool cannot import. ` +
         'Only a single standalone process (no pools or message flows) is supported.',
+      { detail },
     );
-    this.name = 'UnsupportedCollaborationError';
-    this.detail = detail;
   }
 }
 
 /**
- * Turn a moddle event-definition `$type` (e.g. `bpmn:TimerEventDefinition`)
- * into a plain lower-case word (`timer`) for the error message, so the
- * refusal reads naturally without leaning on the fully-qualified type.
+ * Operaton extension content the IR's discriminated unions cannot represent.
+ * `detail` names the shape; the message states the rule it broke.
  */
+export class UnsupportedExtensionFormError extends UnsupportedConstructError {
+  declare readonly elementId: string;
+  declare readonly detail: string;
+
+  constructor(elementId: string, detail: string) {
+    super(
+      `The Operaton extension content on '${elementId}' cannot be imported: ${detail}. ` +
+        'An input/output parameter or map entry carries body text or exactly ' +
+        'one nested value, never both or two, and is always named; a script ' +
+        'value declares a scriptFormat and carries inline code, never an ' +
+        'external resource; a listener names exactly one binding and an event ' +
+        'its position accepts; and a timeout task listener carries exactly one ' +
+        'timer, which no other task listener event carries.',
+      { elementId, detail },
+    );
+  }
+}
+
+/** `bpmn:TimerEventDefinition` -> `timer`. */
 function friendlyEventDefinition(definitionType: string): string {
   const local = definitionType.replace(/^.*:/, '');
   return local.replace(/EventDefinition$/, '').toLowerCase() || 'special';
 }
 
 /**
- * Turn a moddle loop-characteristics `$type` into a plain description.
+ * Compensation is absent from the boundary sentence because a boundary
+ * compensation trigger refuses earlier, via {@link UnsupportedEventFeatureError}.
  */
+function supportedKindsMessage(
+  eventKind:
+    'start' | 'end' | 'intermediate throw' | 'intermediate catch' | 'boundary',
+): string {
+  switch (eventKind) {
+    case 'start':
+      return (
+        "A plain start event carries no definition; an event handler's " +
+        'start supports error, escalation, message, signal, timer, ' +
+        'conditional, or compensation.'
+      );
+    case 'end':
+      return 'A typed end event supports error, escalation, signal, or compensation.';
+    case 'intermediate throw':
+      return 'An emit supports escalation, signal, or compensation.';
+    case 'intermediate catch':
+      return 'An await supports message, timer, signal, or conditional.';
+    case 'boundary':
+      return (
+        'A boundary event supports error, escalation, message, signal, ' +
+        'timer, or conditional.'
+      );
+  }
+}
+
 function friendlyLoopType(loopType: string): string {
   if (loopType.includes('MultiInstance')) return 'multi-instance';
   if (loopType.includes('StandardLoop')) return 'standard loop';

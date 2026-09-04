@@ -1,0 +1,22 @@
+// Purchasing — starts a purchase request and delegates the invoice sign-off
+// to the existing `invoice-approval` process (see invoice-approval.bpmnscript)
+// through a `call` activity, passing the order amount in and reading the
+// auto-approval flag (set by that process when the invoice clears without a
+// senior sign-off) back out. Deploy alongside invoice-approval.bpmnscript so
+// the engine can resolve the call by process id.
+
+process purchasing {
+  start OrderPlaced {
+    form {
+      amount: number "Order amount"
+    }
+  }
+
+  call ReviewInvoice "Review invoice approval" {
+    process = "invoice-approval"
+    in amount
+    out autoApproved
+  }
+
+  end OrderReviewed
+}

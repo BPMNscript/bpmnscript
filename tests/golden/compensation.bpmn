@@ -1,0 +1,413 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI" xmlns:dc="http://www.omg.org/spec/DD/20100524/DC" xmlns:di="http://www.omg.org/spec/DD/20100524/DI" xmlns:operaton="http://operaton.org/schema/1.0/bpmn" id="Definitions_trip-booking" targetNamespace="http://bpmnscript.io/processes" exporter="BPMNscript" exporterVersion="0.0.0">
+  <bpmn:process id="trip-booking" name="Trip Booking" isExecutable="true" operaton:historyTimeToLive="P30D">
+    <bpmn:startEvent id="TripRequested">
+      <bpmn:extensionElements>
+        <operaton:formData>
+          <operaton:formField id="seats" label="Number of travellers" type="long" />
+          <operaton:formField id="budget" label="Traveller budget" type="long" />
+        </operaton:formData>
+      </bpmn:extensionElements>
+      <bpmn:outgoing>Flow_TripRequested_ReviewRequest</bpmn:outgoing>
+    </bpmn:startEvent>
+    <bpmn:userTask id="ReviewRequest" name="Review the trip request" operaton:assignee="demo">
+      <bpmn:incoming>Flow_TripRequested_ReviewRequest</bpmn:incoming>
+      <bpmn:outgoing>Flow_ReviewRequest_ReserveBudget</bpmn:outgoing>
+    </bpmn:userTask>
+    <bpmn:serviceTask id="ReserveBudget" name="Reserve the compensation budget" operaton:expression="${ledgerService.reserve(compensation)}">
+      <bpmn:incoming>Flow_ReviewRequest_ReserveBudget</bpmn:incoming>
+      <bpmn:outgoing>Flow_ReserveBudget_BookFlight</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:subProcess id="BookFlight" name="Book the flight">
+      <bpmn:incoming>Flow_ReserveBudget_BookFlight</bpmn:incoming>
+      <bpmn:outgoing>Flow_BookFlight_BookHotel</bpmn:outgoing>
+      <bpmn:startEvent id="FlightStart">
+        <bpmn:outgoing>Flow_FlightStart_ReserveSeats</bpmn:outgoing>
+      </bpmn:startEvent>
+      <bpmn:serviceTask id="ReserveSeats" name="Reserve the flight seats" operaton:class="com.example.trip.ReserveSeatsDelegate">
+        <bpmn:incoming>Flow_FlightStart_ReserveSeats</bpmn:incoming>
+        <bpmn:outgoing>Flow_ReserveSeats_FlightBooked</bpmn:outgoing>
+      </bpmn:serviceTask>
+      <bpmn:endEvent id="FlightBooked">
+        <bpmn:incoming>Flow_ReserveSeats_FlightBooked</bpmn:incoming>
+      </bpmn:endEvent>
+      <bpmn:subProcess id="EventSubProcess_trip-booking_3_3" triggeredByEvent="true">
+        <bpmn:startEvent id="CancelFlightStart">
+          <bpmn:outgoing>Flow_CancelFlightStart_ReleaseSeats</bpmn:outgoing>
+          <bpmn:compensateEventDefinition />
+        </bpmn:startEvent>
+        <bpmn:serviceTask id="ReleaseSeats" name="Release the flight seats" operaton:class="com.example.trip.ReleaseSeatsDelegate">
+          <bpmn:incoming>Flow_CancelFlightStart_ReleaseSeats</bpmn:incoming>
+          <bpmn:outgoing>Flow_ReleaseSeats_CancelFlightDone</bpmn:outgoing>
+        </bpmn:serviceTask>
+        <bpmn:endEvent id="CancelFlightDone">
+          <bpmn:incoming>Flow_ReleaseSeats_CancelFlightDone</bpmn:incoming>
+        </bpmn:endEvent>
+        <bpmn:sequenceFlow id="Flow_CancelFlightStart_ReleaseSeats" sourceRef="CancelFlightStart" targetRef="ReleaseSeats" />
+        <bpmn:sequenceFlow id="Flow_ReleaseSeats_CancelFlightDone" sourceRef="ReleaseSeats" targetRef="CancelFlightDone" />
+      </bpmn:subProcess>
+      <bpmn:sequenceFlow id="Flow_FlightStart_ReserveSeats" sourceRef="FlightStart" targetRef="ReserveSeats" />
+      <bpmn:sequenceFlow id="Flow_ReserveSeats_FlightBooked" sourceRef="ReserveSeats" targetRef="FlightBooked" />
+    </bpmn:subProcess>
+    <bpmn:subProcess id="BookHotel" name="Book the hotel">
+      <bpmn:incoming>Flow_BookFlight_BookHotel</bpmn:incoming>
+      <bpmn:outgoing>Flow_BookHotel_ConfirmItinerary</bpmn:outgoing>
+      <bpmn:startEvent id="HotelStart">
+        <bpmn:outgoing>Flow_HotelStart_ReserveRoom</bpmn:outgoing>
+      </bpmn:startEvent>
+      <bpmn:serviceTask id="ReserveRoom" name="Reserve the hotel room" operaton:class="com.example.trip.ReserveRoomDelegate">
+        <bpmn:incoming>Flow_HotelStart_ReserveRoom</bpmn:incoming>
+        <bpmn:outgoing>Flow_ReserveRoom_HotelBooked</bpmn:outgoing>
+      </bpmn:serviceTask>
+      <bpmn:endEvent id="HotelBooked">
+        <bpmn:incoming>Flow_ReserveRoom_HotelBooked</bpmn:incoming>
+      </bpmn:endEvent>
+      <bpmn:subProcess id="EventSubProcess_trip-booking_4_3" triggeredByEvent="true">
+        <bpmn:startEvent id="CancelHotelStart">
+          <bpmn:outgoing>Flow_CancelHotelStart_Gateway_trip-booking_4_3_1_split</bpmn:outgoing>
+          <bpmn:compensateEventDefinition />
+        </bpmn:startEvent>
+        <bpmn:exclusiveGateway id="Gateway_trip-booking_4_3_1_split" default="Flow_Gateway_trip-booking_4_3_1_split_default">
+          <bpmn:incoming>Flow_CancelHotelStart_Gateway_trip-booking_4_3_1_split</bpmn:incoming>
+          <bpmn:outgoing>Flow_Gateway_trip-booking_4_3_1_split_RefundGroupDeposit</bpmn:outgoing>
+          <bpmn:outgoing>Flow_Gateway_trip-booking_4_3_1_split_default</bpmn:outgoing>
+        </bpmn:exclusiveGateway>
+        <bpmn:exclusiveGateway id="Gateway_trip-booking_4_3_1_join">
+          <bpmn:incoming>Flow_RefundGroupDeposit_Gateway_trip-booking_4_3_1_join</bpmn:incoming>
+          <bpmn:incoming>Flow_Gateway_trip-booking_4_3_1_split_default</bpmn:incoming>
+          <bpmn:outgoing>Flow_Gateway_trip-booking_4_3_1_join_ReleaseRoom</bpmn:outgoing>
+        </bpmn:exclusiveGateway>
+        <bpmn:serviceTask id="RefundGroupDeposit" name="Refund the group deposit" operaton:class="com.example.trip.RefundDepositDelegate">
+          <bpmn:incoming>Flow_Gateway_trip-booking_4_3_1_split_RefundGroupDeposit</bpmn:incoming>
+          <bpmn:outgoing>Flow_RefundGroupDeposit_Gateway_trip-booking_4_3_1_join</bpmn:outgoing>
+        </bpmn:serviceTask>
+        <bpmn:serviceTask id="ReleaseRoom" name="Release the hotel room" operaton:class="com.example.trip.ReleaseRoomDelegate">
+          <bpmn:incoming>Flow_Gateway_trip-booking_4_3_1_join_ReleaseRoom</bpmn:incoming>
+          <bpmn:outgoing>Flow_ReleaseRoom_CancelHotelDone</bpmn:outgoing>
+        </bpmn:serviceTask>
+        <bpmn:endEvent id="CancelHotelDone">
+          <bpmn:incoming>Flow_ReleaseRoom_CancelHotelDone</bpmn:incoming>
+        </bpmn:endEvent>
+        <bpmn:sequenceFlow id="Flow_Gateway_trip-booking_4_3_1_split_RefundGroupDeposit" name="seats &#62; 1" sourceRef="Gateway_trip-booking_4_3_1_split" targetRef="RefundGroupDeposit">
+          <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">${seats &gt; 1}</bpmn:conditionExpression>
+        </bpmn:sequenceFlow>
+        <bpmn:sequenceFlow id="Flow_RefundGroupDeposit_Gateway_trip-booking_4_3_1_join" sourceRef="RefundGroupDeposit" targetRef="Gateway_trip-booking_4_3_1_join" />
+        <bpmn:sequenceFlow id="Flow_Gateway_trip-booking_4_3_1_split_default" sourceRef="Gateway_trip-booking_4_3_1_split" targetRef="Gateway_trip-booking_4_3_1_join" />
+        <bpmn:sequenceFlow id="Flow_CancelHotelStart_Gateway_trip-booking_4_3_1_split" sourceRef="CancelHotelStart" targetRef="Gateway_trip-booking_4_3_1_split" />
+        <bpmn:sequenceFlow id="Flow_Gateway_trip-booking_4_3_1_join_ReleaseRoom" sourceRef="Gateway_trip-booking_4_3_1_join" targetRef="ReleaseRoom" />
+        <bpmn:sequenceFlow id="Flow_ReleaseRoom_CancelHotelDone" sourceRef="ReleaseRoom" targetRef="CancelHotelDone" />
+      </bpmn:subProcess>
+      <bpmn:sequenceFlow id="Flow_HotelStart_ReserveRoom" sourceRef="HotelStart" targetRef="ReserveRoom" />
+      <bpmn:sequenceFlow id="Flow_ReserveRoom_HotelBooked" sourceRef="ReserveRoom" targetRef="HotelBooked" />
+    </bpmn:subProcess>
+    <bpmn:serviceTask id="ConfirmItinerary" name="Confirm the itinerary" operaton:class="com.example.trip.ConfirmDelegate">
+      <bpmn:incoming>Flow_BookHotel_ConfirmItinerary</bpmn:incoming>
+      <bpmn:outgoing>Flow_ConfirmItinerary_Gateway_trip-booking_6_split</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:exclusiveGateway id="Gateway_trip-booking_6_split" default="Flow_Gateway_trip-booking_6_split_default">
+      <bpmn:incoming>Flow_ConfirmItinerary_Gateway_trip-booking_6_split</bpmn:incoming>
+      <bpmn:outgoing>Flow_Gateway_trip-booking_6_split_Overspend</bpmn:outgoing>
+      <bpmn:outgoing>Flow_Gateway_trip-booking_6_split_default</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+    <bpmn:exclusiveGateway id="Gateway_trip-booking_6_join">
+      <bpmn:incoming>Flow_Overspend_Gateway_trip-booking_6_join</bpmn:incoming>
+      <bpmn:incoming>Flow_Gateway_trip-booking_6_split_default</bpmn:incoming>
+      <bpmn:outgoing>Flow_Gateway_trip-booking_6_join_FinaliseBooking</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+    <bpmn:intermediateThrowEvent id="Overspend">
+      <bpmn:incoming>Flow_Gateway_trip-booking_6_split_Overspend</bpmn:incoming>
+      <bpmn:outgoing>Flow_Overspend_Gateway_trip-booking_6_join</bpmn:outgoing>
+      <bpmn:escalationEventDefinition escalationRef="Escalation_BUDGET_EXCEEDED" />
+    </bpmn:intermediateThrowEvent>
+    <bpmn:serviceTask id="FinaliseBooking" name="Finalise the booking" operaton:class="com.example.trip.FinaliseDelegate">
+      <bpmn:incoming>Flow_Gateway_trip-booking_6_join_FinaliseBooking</bpmn:incoming>
+      <bpmn:outgoing>Flow_FinaliseBooking_TripConfirmed</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:endEvent id="TripConfirmed">
+      <bpmn:incoming>Flow_FinaliseBooking_TripConfirmed</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:subProcess id="EventSubProcess_trip-booking_9" triggeredByEvent="true">
+      <bpmn:startEvent id="CaughtBooking">
+        <bpmn:outgoing>Flow_CaughtBooking_Undo</bpmn:outgoing>
+        <bpmn:errorEventDefinition errorRef="Error_BOOKING_FAILED" operaton:errorCodeVariable="c" operaton:errorMessageVariable="m" />
+      </bpmn:startEvent>
+      <bpmn:intermediateThrowEvent id="Undo">
+        <bpmn:incoming>Flow_CaughtBooking_Undo</bpmn:incoming>
+        <bpmn:outgoing>Flow_Undo_NotifyTraveller</bpmn:outgoing>
+        <bpmn:compensateEventDefinition />
+      </bpmn:intermediateThrowEvent>
+      <bpmn:userTask id="NotifyTraveller" name="Notify the traveller" operaton:assignee="demo">
+        <bpmn:incoming>Flow_Undo_NotifyTraveller</bpmn:incoming>
+        <bpmn:outgoing>Flow_NotifyTraveller_BookingHandled</bpmn:outgoing>
+      </bpmn:userTask>
+      <bpmn:endEvent id="BookingHandled">
+        <bpmn:incoming>Flow_NotifyTraveller_BookingHandled</bpmn:incoming>
+      </bpmn:endEvent>
+      <bpmn:sequenceFlow id="Flow_CaughtBooking_Undo" sourceRef="CaughtBooking" targetRef="Undo" />
+      <bpmn:sequenceFlow id="Flow_Undo_NotifyTraveller" sourceRef="Undo" targetRef="NotifyTraveller" />
+      <bpmn:sequenceFlow id="Flow_NotifyTraveller_BookingHandled" sourceRef="NotifyTraveller" targetRef="BookingHandled" />
+    </bpmn:subProcess>
+    <bpmn:subProcess id="EventSubProcess_trip-booking_10" triggeredByEvent="true">
+      <bpmn:startEvent id="CaughtOverspend">
+        <bpmn:outgoing>Flow_CaughtOverspend_RecordAbandonment</bpmn:outgoing>
+        <bpmn:escalationEventDefinition escalationRef="Escalation_BUDGET_EXCEEDED" operaton:escalationCodeVariable="v" />
+      </bpmn:startEvent>
+      <bpmn:serviceTask id="RecordAbandonment" name="Record the abandoned trip" operaton:class="com.example.trip.RecordAbandonmentDelegate">
+        <bpmn:incoming>Flow_CaughtOverspend_RecordAbandonment</bpmn:incoming>
+        <bpmn:outgoing>Flow_RecordAbandonment_CancelAll</bpmn:outgoing>
+      </bpmn:serviceTask>
+      <bpmn:endEvent id="CancelAll">
+        <bpmn:incoming>Flow_RecordAbandonment_CancelAll</bpmn:incoming>
+        <bpmn:compensateEventDefinition />
+      </bpmn:endEvent>
+      <bpmn:sequenceFlow id="Flow_CaughtOverspend_RecordAbandonment" sourceRef="CaughtOverspend" targetRef="RecordAbandonment" />
+      <bpmn:sequenceFlow id="Flow_RecordAbandonment_CancelAll" sourceRef="RecordAbandonment" targetRef="CancelAll" />
+    </bpmn:subProcess>
+    <bpmn:sequenceFlow id="Flow_TripRequested_ReviewRequest" sourceRef="TripRequested" targetRef="ReviewRequest" />
+    <bpmn:sequenceFlow id="Flow_ReviewRequest_ReserveBudget" sourceRef="ReviewRequest" targetRef="ReserveBudget" />
+    <bpmn:sequenceFlow id="Flow_ReserveBudget_BookFlight" sourceRef="ReserveBudget" targetRef="BookFlight" />
+    <bpmn:sequenceFlow id="Flow_BookFlight_BookHotel" sourceRef="BookFlight" targetRef="BookHotel" />
+    <bpmn:sequenceFlow id="Flow_BookHotel_ConfirmItinerary" sourceRef="BookHotel" targetRef="ConfirmItinerary" />
+    <bpmn:sequenceFlow id="Flow_Gateway_trip-booking_6_split_Overspend" name="budget &#60; 500" sourceRef="Gateway_trip-booking_6_split" targetRef="Overspend">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">${budget &lt; 500}</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="Flow_Overspend_Gateway_trip-booking_6_join" sourceRef="Overspend" targetRef="Gateway_trip-booking_6_join" />
+    <bpmn:sequenceFlow id="Flow_Gateway_trip-booking_6_split_default" sourceRef="Gateway_trip-booking_6_split" targetRef="Gateway_trip-booking_6_join" />
+    <bpmn:sequenceFlow id="Flow_ConfirmItinerary_Gateway_trip-booking_6_split" sourceRef="ConfirmItinerary" targetRef="Gateway_trip-booking_6_split" />
+    <bpmn:sequenceFlow id="Flow_Gateway_trip-booking_6_join_FinaliseBooking" sourceRef="Gateway_trip-booking_6_join" targetRef="FinaliseBooking" />
+    <bpmn:sequenceFlow id="Flow_FinaliseBooking_TripConfirmed" sourceRef="FinaliseBooking" targetRef="TripConfirmed" />
+  </bpmn:process>
+  <bpmn:error id="Error_BOOKING_FAILED" name="BOOKING_FAILED" errorCode="BOOKING_FAILED" operaton:errorMessage="The trip booking could not be completed" />
+  <bpmn:escalation id="Escalation_BUDGET_EXCEEDED" name="BUDGET_EXCEEDED" escalationCode="BUDGET_EXCEEDED" />
+  <bpmndi:BPMNDiagram id="BPMNDiagram_trip-booking">
+    <bpmndi:BPMNPlane id="BPMNPlane_trip-booking" bpmnElement="trip-booking">
+      <bpmndi:BPMNShape id="TripRequested_di" bpmnElement="TripRequested">
+        <dc:Bounds x="57" y="52" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="ReviewRequest_di" bpmnElement="ReviewRequest">
+        <dc:Bounds x="775" y="30" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="ReserveBudget_di" bpmnElement="ReserveBudget">
+        <dc:Bounds x="925" y="30" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="BookFlight_di" bpmnElement="BookFlight" isExpanded="true">
+        <dc:Bounds x="1075" y="30" width="1000" height="500" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="BookHotel_di" bpmnElement="BookHotel" isExpanded="true">
+        <dc:Bounds x="2125" y="30" width="1450" height="500" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="ConfirmItinerary_di" bpmnElement="ConfirmItinerary">
+        <dc:Bounds x="3625" y="30" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_trip-booking_6_split_di" bpmnElement="Gateway_trip-booking_6_split" isMarkerVisible="true">
+        <dc:Bounds x="3800" y="45" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Overspend_di" bpmnElement="Overspend">
+        <dc:Bounds x="3957" y="52" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_trip-booking_6_join_di" bpmnElement="Gateway_trip-booking_6_join" isMarkerVisible="true">
+        <dc:Bounds x="4100" y="45" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="FinaliseBooking_di" bpmnElement="FinaliseBooking">
+        <dc:Bounds x="4225" y="30" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="TripConfirmed_di" bpmnElement="TripConfirmed">
+        <dc:Bounds x="4407" y="52" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="EventSubProcess_trip-booking_9_di" bpmnElement="EventSubProcess_trip-booking_9" isExpanded="true">
+        <dc:Bounds x="25" y="590" width="700" height="220" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="EventSubProcess_trip-booking_10_di" bpmnElement="EventSubProcess_trip-booking_10" isExpanded="true">
+        <dc:Bounds x="25" y="870" width="550" height="220" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_TripRequested_ReviewRequest_di" bpmnElement="Flow_TripRequested_ReviewRequest">
+        <di:waypoint x="93" y="70" />
+        <di:waypoint x="775" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ReviewRequest_ReserveBudget_di" bpmnElement="Flow_ReviewRequest_ReserveBudget">
+        <di:waypoint x="875" y="70" />
+        <di:waypoint x="925" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ReserveBudget_BookFlight_di" bpmnElement="Flow_ReserveBudget_BookFlight">
+        <di:waypoint x="1025" y="70" />
+        <di:waypoint x="1075" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_BookFlight_BookHotel_di" bpmnElement="Flow_BookFlight_BookHotel">
+        <di:waypoint x="2075" y="70" />
+        <di:waypoint x="2125" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_BookHotel_ConfirmItinerary_di" bpmnElement="Flow_BookHotel_ConfirmItinerary">
+        <di:waypoint x="3575" y="70" />
+        <di:waypoint x="3625" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ConfirmItinerary_Gateway_trip-booking_6_split_di" bpmnElement="Flow_ConfirmItinerary_Gateway_trip-booking_6_split">
+        <di:waypoint x="3725" y="70" />
+        <di:waypoint x="3800" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Gateway_trip-booking_6_split_Overspend_di" bpmnElement="Flow_Gateway_trip-booking_6_split_Overspend">
+        <di:waypoint x="3850" y="70" />
+        <di:waypoint x="3957" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Gateway_trip-booking_6_split_default_di" bpmnElement="Flow_Gateway_trip-booking_6_split_default">
+        <di:waypoint x="3825" y="95" />
+        <di:waypoint x="3825" y="140" />
+        <di:waypoint x="4125" y="140" />
+        <di:waypoint x="4125" y="95" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Overspend_Gateway_trip-booking_6_join_di" bpmnElement="Flow_Overspend_Gateway_trip-booking_6_join">
+        <di:waypoint x="3993" y="70" />
+        <di:waypoint x="4100" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Gateway_trip-booking_6_join_FinaliseBooking_di" bpmnElement="Flow_Gateway_trip-booking_6_join_FinaliseBooking">
+        <di:waypoint x="4150" y="70" />
+        <di:waypoint x="4225" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_FinaliseBooking_TripConfirmed_di" bpmnElement="Flow_FinaliseBooking_TripConfirmed">
+        <di:waypoint x="4325" y="70" />
+        <di:waypoint x="4407" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNShape id="CaughtOverspend_di" bpmnElement="CaughtOverspend">
+        <dc:Bounds x="132" y="962" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="RecordAbandonment_di" bpmnElement="RecordAbandonment">
+        <dc:Bounds x="250" y="940" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="CancelAll_di" bpmnElement="CancelAll">
+        <dc:Bounds x="432" y="962" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_CaughtOverspend_RecordAbandonment_di" bpmnElement="Flow_CaughtOverspend_RecordAbandonment">
+        <di:waypoint x="168" y="980" />
+        <di:waypoint x="250" y="980" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_RecordAbandonment_CancelAll_di" bpmnElement="Flow_RecordAbandonment_CancelAll">
+        <di:waypoint x="350" y="980" />
+        <di:waypoint x="432" y="980" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNShape id="CaughtBooking_di" bpmnElement="CaughtBooking">
+        <dc:Bounds x="132" y="682" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Undo_di" bpmnElement="Undo">
+        <dc:Bounds x="282" y="682" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="NotifyTraveller_di" bpmnElement="NotifyTraveller">
+        <dc:Bounds x="400" y="660" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="BookingHandled_di" bpmnElement="BookingHandled">
+        <dc:Bounds x="582" y="682" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_CaughtBooking_Undo_di" bpmnElement="Flow_CaughtBooking_Undo">
+        <di:waypoint x="168" y="700" />
+        <di:waypoint x="282" y="700" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Undo_NotifyTraveller_di" bpmnElement="Flow_Undo_NotifyTraveller">
+        <di:waypoint x="318" y="700" />
+        <di:waypoint x="400" y="700" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_NotifyTraveller_BookingHandled_di" bpmnElement="Flow_NotifyTraveller_BookingHandled">
+        <di:waypoint x="500" y="700" />
+        <di:waypoint x="582" y="700" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNShape id="HotelStart_di" bpmnElement="HotelStart">
+        <dc:Bounds x="2232" y="122" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="ReserveRoom_di" bpmnElement="ReserveRoom">
+        <dc:Bounds x="3250" y="100" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="HotelBooked_di" bpmnElement="HotelBooked">
+        <dc:Bounds x="3432" y="122" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="EventSubProcess_trip-booking_4_3_di" bpmnElement="EventSubProcess_trip-booking_4_3" isExpanded="true">
+        <dc:Bounds x="2200" y="240" width="1000" height="220" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_HotelStart_ReserveRoom_di" bpmnElement="Flow_HotelStart_ReserveRoom">
+        <di:waypoint x="2268" y="140" />
+        <di:waypoint x="3250" y="140" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ReserveRoom_HotelBooked_di" bpmnElement="Flow_ReserveRoom_HotelBooked">
+        <di:waypoint x="3350" y="140" />
+        <di:waypoint x="3432" y="140" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNShape id="FlightStart_di" bpmnElement="FlightStart">
+        <dc:Bounds x="1182" y="122" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="ReserveSeats_di" bpmnElement="ReserveSeats">
+        <dc:Bounds x="1750" y="100" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="FlightBooked_di" bpmnElement="FlightBooked">
+        <dc:Bounds x="1932" y="122" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="EventSubProcess_trip-booking_3_3_di" bpmnElement="EventSubProcess_trip-booking_3_3" isExpanded="true">
+        <dc:Bounds x="1150" y="240" width="550" height="220" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_FlightStart_ReserveSeats_di" bpmnElement="Flow_FlightStart_ReserveSeats">
+        <di:waypoint x="1218" y="140" />
+        <di:waypoint x="1750" y="140" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ReserveSeats_FlightBooked_di" bpmnElement="Flow_ReserveSeats_FlightBooked">
+        <di:waypoint x="1850" y="140" />
+        <di:waypoint x="1932" y="140" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNShape id="CancelHotelStart_di" bpmnElement="CancelHotelStart">
+        <dc:Bounds x="2307" y="332" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_trip-booking_4_3_1_split_di" bpmnElement="Gateway_trip-booking_4_3_1_split" isMarkerVisible="true">
+        <dc:Bounds x="2450" y="325" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="RefundGroupDeposit_di" bpmnElement="RefundGroupDeposit">
+        <dc:Bounds x="2575" y="310" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_trip-booking_4_3_1_join_di" bpmnElement="Gateway_trip-booking_4_3_1_join" isMarkerVisible="true">
+        <dc:Bounds x="2750" y="325" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="ReleaseRoom_di" bpmnElement="ReleaseRoom">
+        <dc:Bounds x="2875" y="310" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="CancelHotelDone_di" bpmnElement="CancelHotelDone">
+        <dc:Bounds x="3057" y="332" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_CancelHotelStart_Gateway_trip-booking_4_3_1_split_di" bpmnElement="Flow_CancelHotelStart_Gateway_trip-booking_4_3_1_split">
+        <di:waypoint x="2343" y="350" />
+        <di:waypoint x="2450" y="350" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Gateway_trip-booking_4_3_1_split_RefundGroupDeposit_di" bpmnElement="Flow_Gateway_trip-booking_4_3_1_split_RefundGroupDeposit">
+        <di:waypoint x="2500" y="350" />
+        <di:waypoint x="2575" y="350" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Gateway_trip-booking_4_3_1_split_default_di" bpmnElement="Flow_Gateway_trip-booking_4_3_1_split_default">
+        <di:waypoint x="2475" y="375" />
+        <di:waypoint x="2475" y="140" />
+        <di:waypoint x="2775" y="140" />
+        <di:waypoint x="2775" y="375" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_RefundGroupDeposit_Gateway_trip-booking_4_3_1_join_di" bpmnElement="Flow_RefundGroupDeposit_Gateway_trip-booking_4_3_1_join">
+        <di:waypoint x="2675" y="350" />
+        <di:waypoint x="2750" y="350" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Gateway_trip-booking_4_3_1_join_ReleaseRoom_di" bpmnElement="Flow_Gateway_trip-booking_4_3_1_join_ReleaseRoom">
+        <di:waypoint x="2800" y="350" />
+        <di:waypoint x="2875" y="350" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ReleaseRoom_CancelHotelDone_di" bpmnElement="Flow_ReleaseRoom_CancelHotelDone">
+        <di:waypoint x="2975" y="350" />
+        <di:waypoint x="3057" y="350" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNShape id="CancelFlightStart_di" bpmnElement="CancelFlightStart">
+        <dc:Bounds x="1257" y="332" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="ReleaseSeats_di" bpmnElement="ReleaseSeats">
+        <dc:Bounds x="1375" y="310" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="CancelFlightDone_di" bpmnElement="CancelFlightDone">
+        <dc:Bounds x="1557" y="332" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_CancelFlightStart_ReleaseSeats_di" bpmnElement="Flow_CancelFlightStart_ReleaseSeats">
+        <di:waypoint x="1293" y="350" />
+        <di:waypoint x="1375" y="350" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ReleaseSeats_CancelFlightDone_di" bpmnElement="Flow_ReleaseSeats_CancelFlightDone">
+        <di:waypoint x="1475" y="350" />
+        <di:waypoint x="1557" y="350" />
+      </bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>

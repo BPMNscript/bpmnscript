@@ -1,174 +1,180 @@
 /**
- * Restructuring IR → DSL emitter.
+ * Restructuring IR -> DSL, the inverse of `astToIr`: a flat, BPMN-shaped
+ * {@link BpmnProcess} back into source that re-parses and re-desugars to an
+ * equivalent IR.
  *
- * The inverse of the desugaring `astToIr`: it turns the **flat,
- * BPMN-shaped** {@link BpmnProcess} IR back into **structured** source —
- * `if`/`else if`/`else`, `while`, `do … while`, `parallel { { } { } }`,
- * explicit `start`/`end`, and `goto` — that re-parses through the grammar
- * and re-desugars to an equivalent IR.
+ * Structure comes from the dominator analysis in `cfg-analysis.ts` matched
+ * against a fixed pattern catalogue; whatever it cannot fold degrades to
+ * `goto`. See ADR 0009, Use Dominator/Post-Dominator Analysis for IR-to-DSL
+ * Restructuring, for the catalogue, the totality guarantee, and the edges that
+ * have no `goto` form and leave an {@link UNSTRUCTURED_MARKER}.
  *
- * ## How it works
- * Structure is recovered from a **dominator / post-dominator** analysis
- * (`cfg-analysis.ts`) against a **fixed pattern catalogue**:
- *
- *   - **If / else-if / else** — an `exclusiveGateway` split `G` with ≥2
- *     outgoing flows and a join `J` such that `J` post-dominates `G` and `G`
- *     dominates `J`. Conditioned out-flows become `if` / `else if` branches
- *     (condition recovered via {@link parseJuel}); the default (unconditioned)
- *     out-flow becomes the trailing `else`. Branch bodies are the sub-regions
- *     between each branch target and `J`. The split/join gateways are
- *     **elided** — there is no `gateway` keyword.
- *   - **While / do-while** — a **back-edge** touching an `exclusiveGateway`
- *     loop head `L`. If the back-edge points *to* `L` (test-before-body, with a
- *     conditioned forward flow into the body and an unconditioned default exit)
- *     → `while`. If the back-edge *leaves* `L` into the body (test-after-body)
- *     → `do { } while`. The loop gateway is elided.
- *   - **Parallel (AND)** — a `parallelGateway` fork `F` and join `J` where `J`
- *     post-dominates `F`, `F` dominates `J`, and the branches are
- *     single-entry/single-exit. → `parallel { { } { } }`. Both gateways elided.
- *   - **Sequence** — a linear single-in / single-out chain → consecutive
- *     statements with implicit top-to-bottom flow.
- *
- * ## Failure contract
- * Every well-formed IR input produces valid source; unstructurable regions
- * degrade to `goto`. Each flow node is emitted exactly once (at its natural
- * position, labelled by its id, which is always a valid jump target per the
- * grammar). Edges are tracked in a consumed-set; whatever is left after
- * structured emission is flushed as `goto`s, so no edge is dropped.
- *
- * ## Synthesized-id elision (what makes DSL → IR → DSL idempotent)
- * The desugarer creates deterministic gateway ids
- * (`Gateway_<X>_split|join|fork|loop`). When a gateway fits its
- * pattern it is collapsed into the structured construct and never printed as a
- * statement — exactly mirroring desugaring, so re-desugaring the emitted source
- * reproduces the same gateway ids.
- *
- * Output conventions: 2-space indent, LF line endings, trailing newline. String
- * values (labels, `assignee`, `formKey`, `class`) are double-quoted. Conditions
- * are rendered via {@link renderRawFallback} (bare DSL when in the JUEL subset,
- * quoted `"${…}"` when raw).
+ * Every gateway a pattern matches is elided, which is what makes DSL -> IR ->
+ * DSL idempotent: the desugarer derives gateway ids from structural
+ * coordinates, so one that never prints is re-synthesized under the same id.
  */
 
 import type {
   BpmnProcess,
+  CallVariableMapping,
+  CodeBinding,
+  EngineAttributes,
+  EventDefinition,
+  FlowContainer,
   FlowElement,
   FormField,
   FormFieldType,
+  IoMapped,
+  IoValue,
+  ListenerBinding,
   SequenceFlow,
+  SettingsCarrier,
 } from './ir/types.js';
 import { analyzeCfg, type CfgAnalysis } from './cfg-analysis.js';
 import { parseJuel, renderRawFallback } from './juel.js';
 
 const INDENT = '  ';
 
-/**
- * Render an IR process as a structured `.bpmnscript` source string.
- *
- * @param process The IR process to restructure and pretty-print.
- * @returns A UTF-8 `.bpmnscript` source string with a trailing newline.
- */
 export function irToDsl(process: BpmnProcess): string {
   const emitter = new Emitter(process);
   const body = emitter.emit();
 
+  const declarations: string[] = [];
+  if (process.versionTag !== undefined) {
+    declarations.push(`${INDENT}versionTag = ${quote(process.versionTag)}`);
+  }
+  for (const m of process.errorMessages ?? []) {
+    declarations.push(
+      `${INDENT}error ${quote(m.code)} message ${quote(m.message)}`,
+    );
+  }
+
   const header = buildProcessHeader(process);
-  const lines = [header, ...body.map((l) => INDENT + l), '}'];
+  const lines = [header, ...declarations, ...body.map((l) => INDENT + l), '}'];
   return lines.join('\n') + '\n';
 }
 
-// ---------------------------------------------------------------------------
-// Emitter
-// ---------------------------------------------------------------------------
-
 /**
- * Stateful restructuring pass over one process. Holds the CFG analysis, the
- * element/flow lookup tables, and the "consumed" bookkeeping (which nodes have
- * been emitted, which edges have been realized as structured flow) that the
- * `goto` fallback relies on.
+ * One per container. A sub-process's body lives in the child container's
+ * arrays, so the parent's CFG never sees inside it and treats the sub-process
+ * as one opaque node. Cross-container edges cannot exist, so no region spans
+ * two containers.
  */
 class Emitter {
   private readonly cfg: CfgAnalysis;
   private readonly byId = new Map<string, FlowElement>();
-  /** Outgoing flows per source id, in IR order. */
-  private readonly out = new Map<string, SequenceFlow[]>();
-  /** Nodes already emitted (a node is printed exactly once). */
+  /** In IR order, which is what keeps emission deterministic. */
+  private readonly outgoingBySource = new Map<string, SequenceFlow[]>();
   private readonly emittedNodes = new Set<string>();
-  /** Flow ids already realized as structured flow (not needing a goto). */
   private readonly consumedFlows = new Set<string>();
 
-  constructor(private readonly process: BpmnProcess) {
-    this.cfg = analyzeCfg(process);
-    for (const el of process.flowElements) {
-      // Duplicate element ids would silently overwrite the lookup table and
-      // corrupt the structured walk. The desugarer guarantees unique
-      // ids via collision resolution, so a duplicate here means malformed IR —
-      // fail loudly rather than emit a wrong process.
+  constructor(private readonly container: FlowContainer) {
+    this.cfg = analyzeCfg(container);
+    for (const el of container.flowElements) {
+      // A duplicate would corrupt the walk. The desugarer resolves collisions,
+      // so one here means malformed IR.
       if (this.byId.has(el.id)) {
         throw new Error(
-          `irToDsl: duplicate flow element id '${el.id}' in process '${process.id}'.`,
+          `irToDsl: duplicate flow element id '${el.id}' in container '${container.id}'.`,
         );
       }
       this.byId.set(el.id, el);
     }
-    for (const f of process.sequenceFlows) {
-      const list = this.out.get(f.sourceRef) ?? [];
+    for (const f of container.sequenceFlows) {
+      const list = this.outgoingBySource.get(f.sourceRef) ?? [];
       list.push(f);
-      this.out.set(f.sourceRef, list);
+      this.outgoingBySource.set(f.sourceRef, list);
     }
   }
 
   /**
-   * Emit the whole process body as a list of (un-indented) statement lines.
-   * The order is: structured emission from each start event, then any node
-   * still unemitted (unreachable / orphaned graph fragments), then a final
-   * sweep that flushes every flow edge not realized structurally as a `goto`.
+   * The order of the first three passes is a constraint. A boundary escape
+   * chain is never reached from a start event, so walking it before the orphan
+   * sweep stops that sweep printing the chain as detached top-level statements,
+   * and walking it after the structured pass makes a chain rejoining the main
+   * flow degrade to a `goto`, its targets being emitted already.
    */
   emit(): string[] {
     const lines: string[] = [];
 
-    // 1. Emit from each start event in IR order. A start event roots a
-    //    reachable region; the recursive walk emits the structured form.
-    for (const el of this.process.flowElements) {
+    // 1. Structured emission from each start event.
+    for (const el of this.container.flowElements) {
       if (el.kind === 'startEvent' && !this.emittedNodes.has(el.id)) {
         this.emitFrom(el.id, undefined, lines, 0);
       }
     }
 
-    // 2. Emit any node not yet reached (orphaned fragments in a hand-built /
-    //    irreducible IR). Each becomes its own little chain so no node is lost.
-    for (const el of this.process.flowElements) {
+    // 2. Boundary handlers, held back because the surface requires a handler
+    //    block to follow the body it guards.
+    const boundaryLines: string[] = [];
+    for (const el of this.container.flowElements) {
+      if (isBoundary(el) && !this.emittedNodes.has(el.id)) {
+        this.emitBoundaryHandler(el, boundaryLines, 0);
+      }
+    }
+
+    // 3. Orphaned fragments.
+    for (const el of this.container.flowElements) {
+      if (isHandler(el) || isBoundary(el)) continue;
       if (!this.emittedNodes.has(el.id)) {
         this.emitFrom(el.id, undefined, lines, 0);
       }
     }
 
-    // 3. Final sweep: any flow edge not consumed by a structured region is
-    //    emitted as an explicit `goto` from the (already-emitted) source.
-    //    Placed at the end of the body — a `goto` statement may appear
-    //    anywhere and references the target by id.
-    for (const f of this.process.sequenceFlows) {
+    // 4. Final goto sweep.
+    for (const f of this.container.sequenceFlows) {
       if (!this.consumedFlows.has(f.id)) {
         this.consumedFlows.add(f.id);
-        lines.push(`goto ${f.targetRef}`);
+        this.pushGoto(f.targetRef, lines);
+      }
+    }
+
+    // 5. Trailing handler group: boundary blocks, then event sub-processes.
+    for (const l of boundaryLines) lines.push(l);
+    for (const el of this.container.flowElements) {
+      if (isHandler(el) && !this.emittedNodes.has(el.id)) {
+        this.emitHandler(el, lines);
       }
     }
 
     return lines;
   }
 
+  /** A handler carries no flow edges, so there is no fall-through continuation. */
+  private emitHandler(
+    handler: Extract<FlowElement, { kind: 'subProcess' }>,
+    lines: string[],
+  ): void {
+    this.emittedNodes.add(handler.id);
+    lines.push(buildOnHeader(handler));
+    for (const l of new Emitter(handler).emit()) lines.push(INDENT + l);
+    lines.push('}');
+  }
+
   /**
-   * Emit a linear chain of statements starting at `node`, following implicit
-   * fall-through flow, until reaching `stop` (exclusive), a terminal, or a node
-   * that cannot be reached structurally (which degrades to a `goto`).
-   *
-   * @param node   The node to emit next (its id).
-   * @param stop   The region boundary: stop *before* emitting this node, and
-   *               consume the edge into it. `undefined` means "until terminal".
-   * @param lines  Output accumulator (un-indented; the caller indents blocks).
-   * @param depth  Block-nesting depth; a hard cap guards against unbounded
-   *               recursion on a pathological IR (every well-formed graph
-   *               terminates well below it, since `emittedNodes` prevents
-   *               re-entry).
+   * A boundary body is not a separate container: its nodes live in this
+   * container's arrays and share `emittedNodes`/`consumedFlows` with the main
+   * flow, so a rejoining chain degrades to a `goto` through the ordinary
+   * machinery. `depth` is the caller's, so a chain reached through a flow edge
+   * keeps spending the same {@link MAX_NESTING_DEPTH} budget.
+   */
+  private emitBoundaryHandler(
+    boundary: Extract<FlowElement, { kind: 'boundaryEvent' }>,
+    lines: string[],
+    depth: number,
+  ): void {
+    this.emittedNodes.add(boundary.id);
+    lines.push(buildBoundaryHeader(boundary));
+    const body: string[] = [];
+    const next = this.followLinear(boundary.id, undefined, body, depth);
+    if (next !== STOP) this.emitFrom(next, undefined, body, depth);
+    for (const l of body) lines.push(INDENT + l);
+    lines.push('}');
+  }
+
+  /**
+   * Follows fall-through flow until `stop` (exclusive), a terminal, or a node
+   * unreachable structurally, which degrades to a `goto`.
    */
   private emitFrom(
     node: string | undefined,
@@ -177,19 +183,16 @@ class Emitter {
     depth: number,
   ): void {
     if (depth > MAX_NESTING_DEPTH) {
-      // Refuse to recurse further; flush the arrival as a goto rather than
-      // overflowing the stack on a pathological graph.
-      if (node !== undefined) lines.push(`goto ${node}`);
+      // Flush the arrival as a goto rather than overflowing the stack.
+      if (node !== undefined) this.pushGoto(node, lines);
       return;
     }
     let current = node;
-    // The chain length is bounded by the node count; the guard is belt-and-
-    // braces against a malformed IR producing an unexpected cycle.
+    // Bounded by the node count, against a malformed IR cycle.
     let guard = this.byId.size + 1;
     while (current !== undefined && current !== stop && guard-- > 0) {
       if (this.emittedNodes.has(current)) {
-        // Already emitted elsewhere — realize the arrival as a goto and stop.
-        lines.push(`goto ${current}`);
+        this.pushGoto(current, lines);
         return;
       }
       const next = this.emitNode(current, stop, lines, depth);
@@ -198,11 +201,7 @@ class Emitter {
     }
   }
 
-  /**
-   * Emit a single node and return the id of the next node in the fall-through
-   * chain, or {@link STOP} when the chain ends here (terminal, region boundary,
-   * or a structured construct that already emitted its own continuation).
-   */
+  /** Returns the next id in the fall-through chain, or {@link STOP}. */
   private emitNode(
     id: string,
     stop: string | undefined,
@@ -212,20 +211,15 @@ class Emitter {
     const el = this.byId.get(id);
     if (el === undefined) return STOP;
 
-    // A do-while body entry is reached on fall-through *before* its loop
-    // gateway, so it must be recognized here (at the body entry) and wrapped in
-    // a `do { }` block — otherwise the body node would be emitted ahead of the
-    // loop and the block would degrade to a `goto`.
+    // A do-while body entry is reached before its loop gateway, so it has to be
+    // recognized here or the body prints ahead of the loop and degrades.
     const doWhile = this.tryDoWhileEntry(id, stop, lines, depth);
     if (doWhile !== undefined) return doWhile;
 
-    // Gateways have no statement form; they exist only as desugared
-    // structure and are handled exhaustively (so every out-edge is captured by
-    // a construct or a goto — gateways cannot rely on the final goto sweep
-    // because they have no source statement to jump *from*).
+    // A gateway has no statement form to jump from, so it cannot rely on the
+    // final sweep: every out-edge is captured here, by a construct or a goto.
     if (el.kind === 'exclusiveGateway') {
-      // A loop head (while) is recognized before the if-chain so it is not
-      // mistaken for an XOR split.
+      // Recognized before the if-chain so it is not mistaken for an XOR split.
       const loop = this.tryWhile(el, stop, lines, depth);
       if (loop !== undefined) return loop;
       return this.emitExclusiveGateway(el, stop, lines, depth);
@@ -234,58 +228,62 @@ class Emitter {
       return this.emitParallelGateway(el, stop, lines, depth);
     }
 
-    // A script task's fenced body is opaque, multi-line text reproduced
-    // byte-for-byte. It cannot be a single indented statement line — its body
-    // must not be re-indented as DSL — so it is emitted here as its own line
-    // group: the opening fence (a normal DSL line the caller indents) followed
-    // by the verbatim body and closing fence. Otherwise it walks like any plain
-    // fall-through node.
+    // A fenced body is opaque multi-line text, so it prints as a line group.
     if (el.kind === 'scriptTask') {
       this.emittedNodes.add(id);
       lines.push(renderScriptTask(el));
       return this.followLinear(id, stop, lines, depth);
     }
 
-    // Plain task / event: emit the statement, then follow its sole fall-through
-    // edge. A plain node has at most one outgoing flow in well-formed BPMN; any
-    // extra out-edge (a malformed multi-out task) degrades to a `goto`.
+    if (el.kind === 'subProcess') {
+      // An event sub-process prints in the trailing handler pass. Reaching one
+      // through a flow edge means malformed IR, so print it here and stop.
+      if (el.triggeredByEvent === true) {
+        this.emitHandler(el, lines);
+        return STOP;
+      }
+      this.emittedNodes.add(id);
+      lines.push(
+        `subprocess ${id}${labelSuffix(el.name)}${attrBlock(settingsMembers(el))} {`,
+      );
+      for (const l of new Emitter(el).emit()) lines.push(INDENT + l);
+      lines.push('}');
+      return this.followLinear(id, stop, lines, depth);
+    }
+
+    // Not reached by flow either. The plain-node case below would emit nothing
+    // and lose the element, so a malformed inbound edge prints its block here.
+    if (isBoundary(el)) {
+      this.emitBoundaryHandler(el, lines, depth);
+      return STOP;
+    }
+
     this.emittedNodes.add(id);
     const stmt = this.renderStatement(el);
     if (stmt !== undefined) lines.push(stmt);
     return this.followLinear(id, stop, lines, depth);
   }
 
-  /**
-   * Follow the single fall-through edge out of a plain node. Emits a `goto` for
-   * every out-edge that cannot be realized as structured fall-through and
-   * returns {@link STOP}; on a clean single fall-through returns the next id.
-   */
+  /** A `goto` for every out-edge that cannot be structured fall-through. */
   private followLinear(
     id: string,
     stop: string | undefined,
     lines: string[],
     depth: number,
   ): string | typeof STOP {
-    const outs = (this.out.get(id) ?? []).filter(
+    const outs = (this.outgoingBySource.get(id) ?? []).filter(
       (f) => !this.consumedFlows.has(f.id),
     );
-    if (outs.length === 0) return STOP; // terminal (end event / sink)
+    if (outs.length === 0) return STOP;
 
     if (outs.length === 1) {
       const f = outs[0]!;
       this.consumedFlows.add(f.id);
-      if (f.targetRef === stop) return STOP; // reached the region boundary
-      if (this.emittedNodes.has(f.targetRef)) {
-        // Target already lives elsewhere — jump to it.
-        lines.push(`goto ${f.targetRef}`);
-        return STOP;
-      }
-      return f.targetRef; // clean fall-through
+      return this.continueAt(f.targetRef, stop, lines);
     }
 
-    // More than one unconsumed out-edge on a plain node (an unrecognized
-    // gateway, or a node with extra cross-edges): the first un-emitted target
-    // continues the chain; the rest become gotos.
+    // A statement has room for exactly one fall-through, so the first
+    // un-emitted target continues the chain and the rest are surplus.
     let cont: string | typeof STOP = STOP;
     for (const f of outs) {
       this.consumedFlows.add(f.id);
@@ -296,32 +294,16 @@ class Emitter {
       ) {
         cont = f.targetRef;
       } else {
-        lines.push(`goto ${f.targetRef}`);
+        this.pushSurplusEdge(f.targetRef, lines);
       }
     }
     return cont;
   }
 
-  // ── If / else-if / else (and XOR degradation) ───────────────────────────────
-
   /**
-   * Emit an exclusive gateway exhaustively, capturing every one of the
-   * gateway's out-edges: an exclusive gateway has no
-   * statement form, so its edges must all be realized through an `if` construct
-   * (re-synthesizing the gateway on the way back) — they cannot survive the
-   * final goto sweep, which relies on a source statement to jump from.
-   *
-   * - **2+ out-edges:** an `if` / `else if` / `else` chain. Conditioned flows
-   *   become `if` / `else if` branches; the single unconditioned flow becomes
-   *   the trailing `else`. When the gateway has a clean post-dominating join
-   *   (`J` post-dominates `split`, `split` dominates `J`, and every branch
-   *   target is the join or split-dominated) the branch bodies are the full
-   *   sub-regions up to `J` and the chain continues after `J`. Otherwise the
-   *   gateway is **unstructured**: each branch body is a single `goto target`,
-   *   preserving every conditioned/default edge without losing any.
-   * - **1 out-edge:** a degenerate pass-through gateway — emit nothing and fall
-   *   through to its single successor.
-   * - **0 out-edges:** a sink — stop.
+   * Given a clean post-dominating join, the branch bodies are the full
+   * sub-regions up to it; without one, each body is a single `goto target`, so
+   * every edge still survives.
    */
   private emitExclusiveGateway(
     split: Extract<FlowElement, { kind: 'exclusiveGateway' }>,
@@ -330,145 +312,117 @@ class Emitter {
     depth: number,
   ): string | typeof STOP {
     this.emittedNodes.add(split.id);
-    const outs = (this.out.get(split.id) ?? []).filter(
+    const outs = (this.outgoingBySource.get(split.id) ?? []).filter(
       (f) => !this.consumedFlows.has(f.id),
     );
 
     if (outs.length === 0) return STOP;
     if (outs.length === 1) {
-      // Degenerate single-out gateway: transparent. Follow its one edge.
+      // Degenerate single-out gateway: transparent.
       const f = outs[0]!;
       this.consumedFlows.add(f.id);
-      if (f.targetRef === stop) return STOP;
-      if (this.emittedNodes.has(f.targetRef)) {
-        lines.push(`goto ${f.targetRef}`);
-        return STOP;
-      }
-      return f.targetRef;
+      return this.continueAt(f.targetRef, stop, lines);
     }
 
-    // Partition: conditioned out-flows are if/else-if branches; the first
-    // unconditioned flow is the default → trailing else. Desugared IR has at
-    // most one unconditioned flow; hand-built or imported IR may carry more.
+    // Desugared IR has at most one unconditioned flow. Imported IR may carry more.
     const conditioned = outs.filter((f) => f.conditionExpression !== undefined);
     const unconditioned = outs.filter(
       (f) => f.conditionExpression === undefined,
     );
 
-    // Determine whether this is a clean structured if (a real post-dominating
-    // join that the split dominates, with every branch staying in-region).
-    const join = this.cleanIfJoin(split.id, outs);
+    const join =
+      this.cleanJoin(split.id, outs) ?? this.guardClauseContinuation(outs);
 
-    // Consume every out-edge now — the gateway is fully accounted for.
     for (const f of outs) this.consumedFlows.add(f.id);
 
     if (conditioned.length === 0) {
-      this.emitUnconditionedXorDegradation(unconditioned, join, lines, depth);
+      this.emitUnconditionedXorDegradation(
+        unconditioned,
+        join,
+        split.id,
+        lines,
+        depth,
+      );
     } else {
       this.emitConditionedIfChain(
         conditioned,
         unconditioned,
         join,
+        split.id,
         lines,
         depth,
       );
     }
 
-    // Continue the outer chain after the (elided) join, or stop when the
-    // gateway was unstructured (every branch jumped away via goto).
-    return join !== undefined
-      ? this.continueAfterJoin(join, stop, lines)
-      : STOP;
+    // Stop when the gateway was unstructured and every branch jumped away.
+    return join !== undefined ? this.continueAt(join, stop, lines) : STOP;
   }
 
   /**
-   * Degenerate XOR with **no conditioned flow** (every out-edge unconditioned).
-   * A chained `if (true) { } else { } else { }` is NOT valid DSL — an `if` has
-   * at most one `else`. In practice a desugared XOR split always carries ≥1
-   * conditioned flow, so this path only guards hand-built IR. We degrade it to a
-   * valid form: the first out-edge becomes `if (true) { … }`, the second
-   * (if any) its single `else { … }`, and every remaining out-edge is preserved
-   * as a bare `goto target` after the structure so no edge is lost.
+   * A chained `if (true) {} else {} else {}` is not valid DSL, so the third and
+   * later out-edges become bare `goto`s. Only hand-built IR reaches here.
    */
   private emitUnconditionedXorDegradation(
     unconditioned: SequenceFlow[],
     join: string | undefined,
+    splitId: string,
     lines: string[],
     depth: number,
   ): void {
+    // `first` exists: outs.length >= 2 with no conditioned flow.
     const [first, second, ...rest] = unconditioned;
-    // `first` always exists here (outs.length >= 2 ⇒ unconditioned.length >= 2).
     lines.push('if (true) {');
-    this.emitIfBranch(first!.targetRef, join, lines, depth);
+    this.emitIfBranch(first!.targetRef, join, splitId, lines, depth);
     if (second !== undefined) {
       lines.push('} else {');
-      this.emitIfBranch(second!.targetRef, join, lines, depth);
+      this.emitIfBranch(second!.targetRef, join, splitId, lines, depth);
     }
     lines.push('}');
-    // Extra (3rd+) unconditioned edges have no structured surface form; emit
-    // each as a goto so the edge survives the round-trip.
+    // No structured form and no position: the chain continues from the join,
+    // which a jump written here would cut off.
     for (const f of rest) {
-      lines.push(`goto ${f.targetRef}`);
+      this.pushSurplusEdge(f.targetRef, lines);
     }
   }
 
   /**
-   * Emit the normal conditioned `if` / `else if` chain with an optional trailing
-   * `else` from the first unconditioned flow. Conditioned flows become the
-   * `if` / `else if` branches; the first unconditioned flow (if any, and not
-   * routing straight to the join) becomes the `else` body. Any further
-   * unconditioned flow (hand-built/imported IR only — an `if` has at most one
-   * `else`) is preserved as a bare `goto` after the structure, the same
-   * degradation the all-unconditioned path uses: the edge is re-anchored at
-   * the join, the closest form the DSL can express.
+   * An `if` has at most one `else`, so a second unconditioned flow, which only
+   * hand-built IR carries, is preserved as a bare `goto`.
    */
   private emitConditionedIfChain(
     conditioned: SequenceFlow[],
     unconditioned: SequenceFlow[],
     join: string | undefined,
+    splitId: string,
     lines: string[],
     depth: number,
   ): void {
-    // Emit the conditioned branches as `if` / `else if`.
     conditioned.forEach((f, i) => {
       const keyword = i === 0 ? 'if' : '} else if';
       lines.push(`${keyword} (${renderCondition(f)}) {`);
-      this.emitIfBranch(f.targetRef, join, lines, depth);
+      this.emitIfBranch(f.targetRef, join, splitId, lines, depth);
     });
 
-    // Trailing `else` from the first unconditioned flow (if any).
     const [elseFlow, ...surplus] = unconditioned;
     if (elseFlow === undefined || elseFlow.targetRef === join) {
-      // No default, or the default goes straight to the join: no else body.
       lines.push('}');
     } else {
       lines.push('} else {');
-      this.emitIfBranch(elseFlow.targetRef, join, lines, depth);
+      this.emitIfBranch(elseFlow.targetRef, join, splitId, lines, depth);
       lines.push('}');
     }
 
-    // Surplus unconditioned edges have no structured surface form; emit each
-    // as a goto so the edge survives (mirrors emitUnconditionedXorDegradation).
     for (const f of surplus) {
       if (f.targetRef === join) continue; // duplicate of the implicit fall-through
-      lines.push(`goto ${f.targetRef}`);
+      this.pushSurplusEdge(f.targetRef, lines);
     }
   }
 
   /**
-   * Compute the clean if-pattern join for `split`, or `undefined` when the
-   * gateway is unstructured.
-   *
-   * The join is the immediate post-dominator `J`; it qualifies iff it is a real
-   * node, `J` post-dominates `split`, `split` dominates `J`, and **every**
-   * branch target is either `J` itself or strictly dominated by `split` (so the
-   * branch region belongs to this gateway and re-enters at `J`). Otherwise the
-   * branches cross out of the region and there is no clean join.
+   * The checks below establish that the branch region belongs to this gateway
+   * and re-enters at the join. `undefined` means the gateway is unstructured.
    */
-  private cleanIfJoin(
-    splitId: string,
-    outs: SequenceFlow[],
-  ): string | undefined {
+  private cleanJoin(splitId: string, outs: SequenceFlow[]): string | undefined {
     const join = this.cfg.immediatePostDominator(splitId);
     if (join === undefined || !this.byId.has(join)) return undefined;
     if (!this.cfg.postDominates(join, splitId)) return undefined;
@@ -481,51 +435,69 @@ class Emitter {
   }
 
   /**
-   * Emit one branch body of an `if` construct, indented one level.
-   *
-   * The per-branch decision (walk vs `goto`) is independent of whether the
-   * whole `if` has a clean join, because branches can mix: one may flow back to
-   * the join while another `goto`s away (e.g. an `if (a) { goto Done } else
-   * { … }` where the then-branch escapes to the process end).
-   *
-   * - **`join` undefined** (unstructured gateway): the branch is a single
-   *   `goto entry`, preserving the gateway's conditioned/default edge.
-   * - **`entry === join`**: empty body (the default flows straight to the join).
-   * - **`entry` flows back to `join`** (`join` post-dominates `entry` and the
-   *   entry is not already emitted): walk the sub-region from `entry` to `join`.
-   * - **otherwise** (the branch target escapes the region — it is already
-   *   emitted, or does not reach the join): a single `goto entry`, so the edge
-   *   to that target is preserved without stealing post-join nodes.
+   * A guard clause has no clean join: one branch terminates while the else-less
+   * default carries the main flow. Treating that default as the continuation
+   * prints it after the `if` instead of as a bare `goto` at the split.
+   */
+  private guardClauseContinuation(outs: SequenceFlow[]): string | undefined {
+    const unconditioned = outs.filter(
+      (f) => f.conditionExpression === undefined,
+    );
+    return unconditioned.length === 1 ? unconditioned[0]!.targetRef : undefined;
+  }
+
+  /**
+   * Walk or `goto` is decided per branch, since branches mix: one can flow back
+   * to the join while another jumps away.
    */
   private emitIfBranch(
     entry: string,
     join: string | undefined,
+    splitId: string,
     lines: string[],
     depth: number,
   ): void {
     const body: string[] = [];
     if (join === undefined) {
-      body.push(`goto ${entry}`);
+      this.pushGoto(entry, body);
     } else if (entry === join) {
-      // Empty branch (default → join): no body.
+      // Empty branch (default -> join): no body.
     } else if (
       !this.emittedNodes.has(entry) &&
-      this.cfg.postDominates(join, entry)
+      this.branchStaysInRegion(entry, join, splitId)
     ) {
       this.emitFrom(entry, join, body, depth + 1);
     } else {
-      // The branch target escapes the [split, join) region: preserve the edge
-      // as a goto rather than walking nodes that belong after the join.
-      body.push(`goto ${entry}`);
+      // The target escapes the [split, join) region: preserve the edge as a goto.
+      this.pushGoto(entry, body);
     }
     for (const l of body) lines.push(INDENT + l);
   }
 
   /**
-   * Emit a branch body bounded by `join`, indented one level (loops/parallel
-   * always have a clean in-region body). Walks the sub-region from `entry` up
-   * to `join`.
+   * Whether the entry sits inside `[split, join)` and can be walked inline.
+   *
+   * Two shapes qualify. An ordinary body that re-merges, so `join`
+   * post-dominates `entry`. And a guard clause whose entry is a synthesized
+   * terminal the split owns and that terminates before the join: an end has no
+   * continuation to relocate, prints the same statement in either scope, and is
+   * reached only through this split. An authored entry stays a `goto`, keeping
+   * its chain at its authored scope so its coordinate-derived id survives the
+   * round trip.
    */
+  private branchStaysInRegion(
+    entry: string,
+    join: string,
+    splitId: string,
+  ): boolean {
+    if (this.cfg.postDominates(join, entry)) return true;
+    return (
+      isSynthesizedTerminalId(entry) &&
+      this.cfg.dominates(splitId, entry) &&
+      !this.cfg.dominates(join, entry)
+    );
+  }
+
   private emitBranch(
     entry: string,
     join: string,
@@ -539,16 +511,7 @@ class Emitter {
     for (const l of body) lines.push(INDENT + l);
   }
 
-  // ── While ───────────────────────────────────────────────────────────────────
-
-  /**
-   * Recognize and emit a pre-test `while (c) { body }` whose head is the
-   * exclusive gateway `loop`. The loop head is reached on fall-through, has a
-   * conditioned forward flow into the body, an unconditioned default flow to the
-   * exit, and a **back-edge pointing to it** (the body returns to the head).
-   * Returns the post-loop continuation id, or `undefined` when no `while`
-   * pattern matches (e.g. the gateway is an `if` split, not a loop).
-   */
+  /** The post-loop continuation, or `undefined` when the pattern misses. */
   private tryWhile(
     loop: FlowElement,
     stop: string | undefined,
@@ -557,9 +520,8 @@ class Emitter {
   ): string | typeof STOP | undefined {
     if (loop.kind !== 'exclusiveGateway') return undefined;
 
-    // The `while` back-edge is the body's *unconditioned* fall-through return
-    // into the head; requiring it unconditioned mirrors `tryDoWhileEntry`'s
-    // conditioned-back-edge requirement, so the two never both fire.
+    // Unconditioned mirrors `tryDoWhileEntry`'s conditioned requirement, so the
+    // two patterns never both fire.
     const backEdge = this.cfg
       .backEdges()
       .filter((f) => !this.consumedFlows.has(f.id))
@@ -568,51 +530,35 @@ class Emitter {
       );
     if (backEdge === undefined) return undefined;
 
-    const outs = (this.out.get(loop.id) ?? []).filter(
+    const outs = (this.outgoingBySource.get(loop.id) ?? []).filter(
       (f) => !this.consumedFlows.has(f.id),
     );
     const cond = outs.find((f) => f.conditionExpression !== undefined);
     const exit = outs.find((f) => f.conditionExpression === undefined);
-    if (cond === undefined) return undefined; // no conditioned body edge
+    if (cond === undefined) return undefined;
 
-    // Commit: elide the loop gateway, consume its edges + the back-edge.
     this.emittedNodes.add(loop.id);
     this.consumedFlows.add(cond.id);
     this.consumedFlows.add(backEdge.id);
     if (exit !== undefined) this.consumedFlows.add(exit.id);
 
     lines.push(`while (${renderCondition(cond)}) {`);
-    // Body runs from the conditioned target back to the loop head; the back-edge
-    // into `loop` is already consumed, so the body walk stops at the head.
+    // The back-edge is consumed, so the body walk stops at the head.
     this.emitBranch(cond.targetRef, loop.id, lines, depth);
     lines.push('}');
 
-    return this.continueAfterLoopExit(exit, stop, lines);
+    return exit === undefined
+      ? STOP
+      : this.continueAt(exit.targetRef, stop, lines);
   }
 
-  // ── Do-while ─────────────────────────────────────────────────────────────────
-
   /**
-   * Recognize a post-test `do { body } while (c)` *at the body entry node*.
-   *
-   * In a do-while the body runs before the loop test, so the body entry is the
-   * first node reached on fall-through and must be wrapped in a `do { }` block
-   * here (before it would otherwise be emitted as a plain statement). The
-   * pattern: the loop gateway `L` (an exclusive gateway) has an **outgoing,
-   * conditioned back-edge** `L → node` (the conditioned re-entry into the body)
-   * and an unconditioned exit edge; `node` dominates `L` (every path to `L`
-   * enters through the body).
-   *
-   * The back-edge being **conditioned** is the distinguisher from a pre-test
-   * `while`: a `while` head also sits inside a back-edge (`bodyExit → head`),
-   * but that return edge is *unconditioned* and the head is its *target*, not
-   * its source. Requiring the back-edge to leave `L` carrying the condition
-   * keeps `tryDoWhileEntry` from firing on a `while` head that contains nested
-   * structure (whose inner join → head back-edge is unconditioned).
-   *
-   * @param node The candidate body-entry node id (reached on fall-through).
-   * @returns The post-loop continuation id when a do-while is emitted, else
-   *          `undefined` (the caller emits `node` as a plain statement).
+   * Post-test `do { body } while (c)`, recognized at the body entry because the
+   * body runs before the test and would otherwise print as a plain statement.
+   * The pattern: an exclusive gateway `L` with a conditioned back-edge
+   * `L -> node` and an unconditioned exit, where `node` dominates `L`. The
+   * conditioned back-edge is what tells this from a pre-test `while`, which
+   * would otherwise match here through its inner join-to-head edge.
    */
   private tryDoWhileEntry(
     node: string,
@@ -620,8 +566,6 @@ class Emitter {
     lines: string[],
     depth: number,
   ): string | typeof STOP | undefined {
-    // Find a *conditioned* back-edge whose target is `node` and whose source is
-    // an exclusive gateway loop head dominated by `node` (the post-test gateway).
     const backEdge = this.cfg
       .backEdges()
       .filter((f) => !this.consumedFlows.has(f.id))
@@ -637,62 +581,32 @@ class Emitter {
     if (backEdge === undefined) return undefined;
 
     const loopId = backEdge.sourceRef;
-    const outs = (this.out.get(loopId) ?? []).filter(
+    const outs = (this.outgoingBySource.get(loopId) ?? []).filter(
       (f) => !this.consumedFlows.has(f.id),
     );
-    // The back-edge carries the loop condition; the other out-edge is the exit.
+    // The back-edge carries the loop condition, the other out-edge the exit.
     const cond = backEdge;
     const exit = outs.find(
       (f) => f.id !== backEdge.id && f.conditionExpression === undefined,
     );
 
-    // Commit: elide the loop gateway, consume its edges.
     this.emittedNodes.add(loopId);
     this.consumedFlows.add(cond.id);
     if (exit !== undefined) this.consumedFlows.add(exit.id);
 
     lines.push('do {');
-    // Body runs from the entry node up to the loop gateway (its only real
-    // successor inside the loop). The walk stops at `loopId`, which is elided.
     this.emitBranch(node, loopId, lines, depth);
     lines.push(`} while (${renderCondition(cond)})`);
 
-    return this.continueAfterLoopExit(exit, stop, lines);
+    return exit === undefined
+      ? STOP
+      : this.continueAt(exit.targetRef, stop, lines);
   }
 
   /**
-   * Continue the chain after a loop's unconditioned exit edge. Mirrors
-   * `followLinear`: stop at the region boundary, jump to an already-emitted
-   * target, or fall through to a fresh node.
-   */
-  private continueAfterLoopExit(
-    exit: SequenceFlow | undefined,
-    stop: string | undefined,
-    lines: string[],
-  ): string | typeof STOP {
-    if (exit === undefined) return STOP;
-    if (exit.targetRef === stop) return STOP;
-    if (this.emittedNodes.has(exit.targetRef)) {
-      lines.push(`goto ${exit.targetRef}`);
-      return STOP;
-    }
-    return exit.targetRef;
-  }
-
-  // ── Parallel (and AND degradation) ──────────────────────────────────────────
-
-  /**
-   * Emit a parallel gateway exhaustively (as for exclusive gateways:
-   * a parallel gateway has no statement form, so every out-edge must be
-   * captured by a construct or a goto, never the final sweep).
-   *
-   * - **Clean fork** (2+ out-edges, parallel-gateway post-dominating join that
-   *   the fork dominates): `parallel { { } { } }`; both gateways elided.
-   * - **Unstructured fork** (no clean parallel join): degrade to one `goto` per
-   *   out-edge, preserving every fork edge.
-   * - **1 out-edge** (a join arriving here, or a degenerate fork): transparent
-   *   pass-through.
-   * - **0 out-edges:** sink — stop.
+   * A clean fork prints `parallel { { } { } }` with both gateways elided. A
+   * branch terminating before the join still prints that way, resuming after
+   * the join the survivors share ({@link recoveredParallelJoin}).
    */
   private emitParallelGateway(
     fork: Extract<FlowElement, { kind: 'parallelGateway' }>,
@@ -701,45 +615,33 @@ class Emitter {
     depth: number,
   ): string | typeof STOP {
     this.emittedNodes.add(fork.id);
-    const outs = (this.out.get(fork.id) ?? []).filter(
+    const outs = (this.outgoingBySource.get(fork.id) ?? []).filter(
       (f) => !this.consumedFlows.has(f.id),
     );
 
     if (outs.length === 0) return STOP;
     if (outs.length === 1) {
-      // A join gateway reached on fall-through, or a degenerate fork: transparent.
       const f = outs[0]!;
       this.consumedFlows.add(f.id);
-      if (f.targetRef === stop) return STOP;
-      if (this.emittedNodes.has(f.targetRef)) {
-        lines.push(`goto ${f.targetRef}`);
-        return STOP;
-      }
-      return f.targetRef;
+      return this.continueAt(f.targetRef, stop, lines);
     }
 
-    const join = this.cleanParallelJoin(fork.id, outs);
+    const join =
+      this.cleanParallelJoin(fork.id, outs) ??
+      this.recoveredParallelJoin(fork.id, outs);
 
-    // Consume every fork out-edge now — the fork is fully accounted for.
     for (const f of outs) this.consumedFlows.add(f.id);
 
     if (join === undefined) {
-      // Unstructured AND split: preserve every edge as a goto.
-      for (const f of outs) lines.push(`goto ${f.targetRef}`);
+      for (const f of outs) this.pushGoto(f.targetRef, lines);
       return STOP;
     }
 
-    // Clean fork/join. Emit each branch up to the join. The branch→join edges
-    // are consumed by the bounded branch walks (they stop *at* the join); the
-    // join itself is then continued *from* (a 1-out parallel join is a
-    // transparent pass-through in `emitNode`, reproducing the desugarer's
-    // elision), so it is neither pre-elided nor double-consumed here.
+    // The join is continued from, never pre-elided: a one-out parallel join is
+    // a transparent pass-through in `emitNode`.
     lines.push('parallel {');
     outs.forEach((f) => {
-      // Each branch is its own brace block nested inside `parallel { … }`.
-      // `emitBranch` already prefixes one INDENT to the branch body; wrap it in
-      // `{ … }` (at one INDENT) and re-indent the body by a further INDENT so it
-      // sits two levels below `parallel {`.
+      // `emitBranch` prefixes one INDENT; wrap and re-indent for `parallel {`.
       const branchLines: string[] = [];
       this.emitBranch(f.targetRef, join, branchLines, depth);
       lines.push(INDENT + '{');
@@ -748,92 +650,191 @@ class Emitter {
     });
     lines.push('}');
 
-    return this.continueAfterJoin(join, stop, lines);
+    return this.continueAt(join, stop, lines);
   }
 
-  /**
-   * Compute the clean AND fork/join for `fork`, or `undefined` when the fork is
-   * unstructured. The join is the immediate post-dominator and must be a real
-   * **parallel** gateway that post-dominates the fork, that the fork dominates,
-   * and every branch target must be the join or fork-dominated.
-   */
+  /** Narrowed to a real `parallelGateway`, which tells an AND merge from an XOR one. */
   private cleanParallelJoin(
     forkId: string,
     outs: SequenceFlow[],
   ): string | undefined {
-    const join = this.cfg.immediatePostDominator(forkId);
-    if (join === undefined || !this.byId.has(join)) return undefined;
-    if (this.byId.get(join)?.kind !== 'parallelGateway') return undefined;
-    if (!this.cfg.postDominates(join, forkId)) return undefined;
-    if (!this.cfg.dominates(forkId, join)) return undefined;
-    for (const f of outs) {
-      if (f.targetRef === join) continue;
-      if (!this.cfg.dominates(forkId, f.targetRef)) return undefined;
-    }
-    return join;
+    const join = this.cleanJoin(forkId, outs);
+    if (join === undefined) return undefined;
+    return this.byId.get(join)?.kind === 'parallelGateway' ? join : undefined;
   }
 
-  // ── Shared continuation / fallback helpers ──────────────────────────────────
+  /**
+   * When a branch terminates at a `throw` or `end` the fork has no clean
+   * post-dominator, but the survivors still reconverge at a real
+   * `parallelGateway`. Each branch contributes, nearest first, the
+   * fork-dominated parallel gateways on its post-dominator chain. Parallel
+   * branches share no node before reconverging, so the first candidate common
+   * to every chain is the join, and the nearest keeps the continuation at this
+   * fork rather than a sibling's nested `parallel`. The `cur !== forkId` guard
+   * rejects a back-edge fork that post-dominates itself.
+   */
+  private recoveredParallelJoin(
+    forkId: string,
+    outs: SequenceFlow[],
+  ): string | undefined {
+    const survivorChains: string[][] = [];
+    for (const f of outs) {
+      const chain: string[] = [];
+      let cur = this.cfg.immediatePostDominator(f.targetRef);
+      const seen = new Set<string>();
+      while (cur !== undefined && !seen.has(cur)) {
+        seen.add(cur);
+        if (
+          cur !== forkId &&
+          this.byId.get(cur)?.kind === 'parallelGateway' &&
+          this.cfg.dominates(forkId, cur)
+        ) {
+          chain.push(cur);
+        }
+        cur = this.cfg.immediatePostDominator(cur);
+      }
+      if (chain.length > 0) survivorChains.push(chain);
+    }
+    if (survivorChains.length === 0) return undefined;
+
+    const [first, ...rest] = survivorChains;
+    for (const cand of first!) {
+      if (rest.every((chain) => chain.includes(cand))) return cand;
+    }
+    return undefined;
+  }
 
   /**
-   * Continue the outer chain *from* the merge node `join` after an `if` /
-   * `parallel` construct's branches have been emitted.
-   *
-   * The merge node is **not** elided here. Returning it as the next node lets
-   * the main walk emit it on the next step:
-   *   - A synthesized join gateway (`Gateway_<X>_join`) has exactly one
-   *     remaining out-edge once the branch→join edges are consumed, so
-   *     `emitNode` treats it as a transparent pass-through and prints nothing —
-   *     reproducing the desugarer's elision exactly.
-   *   - A **real** node that happens to be the post-dominating merge point (a
-   *     task two branches both flow into) is emitted as its normal statement, so
-   *     no node is dropped.
-   *
-   * Returns {@link STOP} only when the merge coincides with the region boundary
-   * `stop` or has already been emitted (a back-merge), in which case a `goto`
-   * realizes the arrival.
+   * The arrival rule every fall-through follows. Returning a merge node does
+   * not elide it: a synthesized join gateway has one remaining out-edge once
+   * the branch edges are consumed, so `emitNode` passes through it and prints
+   * nothing, reproducing the desugarer's elision, while a real node that
+   * happens to be the merge point prints its normal statement.
    */
-  private continueAfterJoin(
-    join: string,
+  private continueAt(
+    target: string,
     stop: string | undefined,
     lines: string[],
   ): string | typeof STOP {
-    if (join === stop) return STOP;
-    if (this.emittedNodes.has(join)) {
-      lines.push(`goto ${join}`);
+    if (target === stop) return STOP;
+    if (this.emittedNodes.has(target)) {
+      this.pushGoto(target, lines);
       return STOP;
     }
-    return join;
+    return target;
   }
 
-  // ── Statement rendering ─────────────────────────────────────────────────────
+  /**
+   * The single jump site every other routes through, so "a `goto` never names a
+   * gateway" holds in one place. A jump into a gateway that still has a choice
+   * cannot be named at all, so that edge is dropped and marked.
+   */
+  private pushGoto(target: string, lines: string[]): void {
+    const real = this.forwardToRealTarget(target, new Set());
+    lines.push(real !== undefined ? `goto ${real}` : droppedEdgeMarker(target));
+  }
 
   /**
-   * Render a flow element as its statement line, or `undefined` when the
-   * element has no statement form (the gateways, which only exist as
-   * desugared structure and are elided when recognized — an unrecognized
-   * gateway prints nothing and its edges become gotos).
+   * A second or later edge leaving a position that already has a fall-through.
+   * The jump ends the enclosing chain when re-desugared, costing that
+   * fall-through, so it is written only when it is the only thing keeping its
+   * target attached. Hence the resolution below runs without the consumed-edge
+   * fallback {@link forwardToRealTarget} allows elsewhere: an already-reachable
+   * target buys nothing, so the edge is dropped and marked.
    */
+  private pushSurplusEdge(target: string, lines: string[]): void {
+    const real = this.forwardToRealTarget(target, new Set(), false);
+    lines.push(real !== undefined ? `goto ${real}` : droppedEdgeMarker(target));
+  }
+
+  /**
+   * The first node with a statement form, the only kind a `goto` can name. A
+   * jump into a gateway re-runs its routing, so it means the same as a jump at
+   * the successor whenever that routing has one outcome. The walk crosses the
+   * single unrealized out-edge, and once all are realized, the sole out-edge of
+   * a gateway that never had a choice: consumption records that an edge printed
+   * as structured flow, not that it stopped existing.
+   *
+   * `undefined` for a routing with more than one outcome, a revisited gateway,
+   * or a node the emitter drops on print, whose `goto` would parse but never
+   * resolve. An unknown id is named verbatim, being a dangling IR reference.
+   */
+  private forwardToRealTarget(
+    target: string,
+    seen: Set<string>,
+    acrossConsumed = true,
+  ): string | undefined {
+    const el = this.byId.get(target);
+    if (el === undefined) return target;
+    if (el.kind !== 'exclusiveGateway' && el.kind !== 'parallelGateway') {
+      return isElidedOnPrint(el) ? undefined : target;
+    }
+    if (seen.has(target)) return undefined;
+    seen.add(target);
+    const outs = this.outgoingBySource.get(target) ?? [];
+    const unconsumed = outs.filter((f) => !this.consumedFlows.has(f.id));
+    let forward: SequenceFlow | undefined;
+    if (unconsumed.length === 1) forward = unconsumed[0];
+    else if (acrossConsumed && outs.length === 1) forward = outs[0];
+    if (forward === undefined) return undefined;
+    return this.forwardToRealTarget(forward.targetRef, seen, acrossConsumed);
+  }
+
+  /** `undefined` when the element has no statement form. */
   private renderStatement(el: FlowElement): string | undefined {
     switch (el.kind) {
       case 'startEvent':
+        // A start's definition surfaces through its `on` header, never here.
         return renderStartEvent(el);
-      case 'endEvent':
-        return `end ${el.id}${labelSuffix(el.name)}`;
+      case 'endEvent': {
+        // An elided plain end prints nothing. A typed end is a `throw`, which
+        // prints either way and only drops a synthesized name token.
+        const block = attrBlock(startOrEndMembers(el));
+        if (el.eventDefinition === undefined) {
+          return isElidedOnPrint(el)
+            ? undefined
+            : `end ${el.id}${labelSuffix(el.name)}${block}`;
+        }
+        return renderThrow(el.id, el.eventDefinition, block);
+      }
+      case 'intermediateThrowEvent': {
+        // Only escalation, signal, and compensation are emittable: an error
+        // aborts its path (`throw error`) and the rest have no throw surface.
+        const def = el.eventDefinition;
+        const block = attrBlock(settingsMembers(el));
+        switch (def.kind) {
+          case 'escalation':
+            return `emit escalation${throwNameSuffix(el.id)}${quotedCode(def.escalationCode)}${block}`;
+          case 'signal':
+            return `emit signal${throwNameSuffix(el.id)} ${quote(def.signalName)}${block}`;
+          case 'compensation':
+            return `emit compensation${throwNameSuffix(el.id)}${block}`;
+          default:
+            throw new Error(
+              `irToDsl: intermediate throw '${el.id}' carries a ${def.kind} definition; only escalation, signal, or compensation can be emitted.`,
+            );
+        }
+      }
+      case 'intermediateCatchEvent':
+        // `await` has no name slot, so the line is trigger, payload, block.
+        return `await ${renderTriggerHead(el.eventDefinition)}${attrBlock(settingsMembers(el))}`;
       case 'userTask':
         return renderUserTask(el);
       case 'serviceTask':
         return renderServiceTask(el);
+      case 'callActivity':
+        return renderCallActivity(el);
+      // These print as a line group in `emitNode`/`emitBoundaryHandler`, and are
+      // listed so the type checker still catches a new kind.
       case 'scriptTask':
-        // A script task has no single-line form: its opaque fenced body is
-        // emitted as a multi-line group in `emitNode`, which never reaches this
-        // switch for a scriptTask. Listed for exhaustiveness so a new kind is
-        // caught by the type checker.
+        return undefined;
+      case 'subProcess':
+        return undefined;
+      case 'boundaryEvent':
         return undefined;
       case 'exclusiveGateway':
       case 'parallelGateway':
-        // No statement form. An unrecognized gateway emits nothing; its
-        // edges are flushed as gotos by `followLinear` / the final sweep.
+        // An unrecognized gateway emits nothing; its edges become gotos.
         return undefined;
       default: {
         const exhaustive: never = el;
@@ -845,21 +846,22 @@ class Emitter {
   }
 }
 
-/** Sentinel returned by node emission to mean "the chain ends here". */
 const STOP = Symbol('stop');
 
 /**
- * Hard cap on block-nesting depth. Well-formed graphs nest far below this
- * (each construct consumes nodes, and `emittedNodes` prevents re-entry); a
- * pathological IR is degraded to a `goto` rather than overflowing the stack.
+ * Printed where an edge the emitter can neither name nor place would have gone,
+ * instead of fabricating a target. The CLI turns it into a warning.
  */
+export const UNSTRUCTURED_MARKER =
+  '// unstructured region: hand-repair required';
+
+function droppedEdgeMarker(target: string): string {
+  return `${UNSTRUCTURED_MARKER} (dropped edge into ${target})`;
+}
+
+/** A pathological IR degrades to a `goto` rather than overflowing the stack. */
 const MAX_NESTING_DEPTH = 1000;
 
-// ---------------------------------------------------------------------------
-// Pure rendering helpers
-// ---------------------------------------------------------------------------
-
-/** Build the `process <id> "<label>"? {` opening line. */
 function buildProcessHeader(process: BpmnProcess): string {
   if (process.name !== undefined) {
     return `process ${process.id} ${quote(process.name)} {`;
@@ -867,37 +869,363 @@ function buildProcessHeader(process: BpmnProcess): string {
   return `process ${process.id} {`;
 }
 
-/** Render a `start <id> "<label>"? { form { … } }` statement. */
-function renderStartEvent(
-  el: Extract<FlowElement, { kind: 'startEvent' }>,
-): string {
-  const members =
-    el.formFields !== undefined ? [renderFormBlock(el.formFields)] : [];
-  return `start ${el.id}${labelSuffix(el.name)}${attrBlock(members)}`;
+/** Handlers carry no flow edges and print at the end of their container's body. */
+function isHandler(
+  el: FlowElement,
+): el is Extract<FlowElement, { kind: 'subProcess' }> {
+  return el.kind === 'subProcess' && el.triggeredByEvent === true;
 }
 
-/** Render a `user <id> "<label>"? { … }` statement with its attribute block. */
+/** A boundary event has outgoing but no incoming flow, so a dedicated pass prints it. */
+function isBoundary(
+  el: FlowElement,
+): el is Extract<FlowElement, { kind: 'boundaryEvent' }> {
+  return el.kind === 'boundaryEvent';
+}
+
+/**
+ * Whether the id is absent from the printed form, leaving a `goto` nothing to
+ * resolve against.
+ */
+function isElidedOnPrint(el: FlowElement): boolean {
+  switch (el.kind) {
+    case 'startEvent':
+      // A synthesized start with an empty block prints no statement at all.
+      return isSynthesizedTerminalId(el.id) && !carriesPrintableContent(el);
+    case 'endEvent':
+      // A typed end spells its id through `throwNameSuffix`, which drops a
+      // synthesized one but still prints the statement.
+      if (!isSynthesizedTerminalId(el.id)) return false;
+      return el.eventDefinition !== undefined || !carriesPrintableContent(el);
+    case 'intermediateThrowEvent':
+      // Spells the id through `throwNameSuffix`, which drops a synthesized one.
+      return isSynthesizedTerminalId(el.id);
+    case 'intermediateCatchEvent':
+      // `await <trigger>` has no name slot in the grammar.
+      return true;
+    case 'boundaryEvent':
+      // Prints as `on <attachedToRef>: <trigger>`, keyed on the host.
+      return true;
+    case 'subProcess':
+      // An event sub-process prints as an `on` header, an ordinary one its id.
+      return el.triggeredByEvent === true;
+    case 'userTask':
+    case 'serviceTask':
+    case 'callActivity':
+    case 'scriptTask':
+      return false;
+    case 'exclusiveGateway':
+    case 'parallelGateway':
+      // Callers forward past a gateway rather than ask, so this arm is unreachable.
+      return true;
+    default: {
+      const exhaustive: never = el;
+      throw new Error(
+        `irToDsl: unhandled FlowElement kind: ${JSON.stringify(exhaustive)}`,
+      );
+    }
+  }
+}
+
+/**
+ * A synthesized start or end has no authored name and the grammar's `name=ID`
+ * is mandatory, so it is dropped whole unless its block carries content. Both
+ * {@link isElidedOnPrint} and the renderers read this one answer: a new reason
+ * to print reaching one but not the other would leave a jump naming a statement
+ * that never gets emitted.
+ */
+function carriesPrintableContent(
+  el: Extract<FlowElement, { kind: 'startEvent' | 'endEvent' }>,
+): boolean {
+  return startOrEndMembers(el).length > 0;
+}
+
+/** Settings members first, then the form block: the order every statement follows. */
+function startOrEndMembers(
+  el: Extract<FlowElement, { kind: 'startEvent' | 'endEvent' }>,
+): string[] {
+  const members = settingsMembers(el);
+  if (el.kind === 'startEvent' && el.formFields !== undefined) {
+    members.push(renderFormBlock(el.formFields));
+  }
+  return members;
+}
+
+/** In print order. A kind-specific member is placed around this list. */
+function settingsMembers(el: SettingsCarrier): string[] {
+  return [...engineAttrs(el), ...ioParameters(el), ...listenerMembers(el)];
+}
+
+/** Fixed order, so the block stays stable across runs. */
+function engineAttrs(el: EngineAttributes): string[] {
+  const attrs: string[] = [];
+  if (el.asyncBefore === true) attrs.push('asyncBefore = true');
+  if (el.asyncAfter === true) attrs.push('asyncAfter = true');
+  if (el.exclusive === false) attrs.push('exclusive = false');
+  if (el.jobPriority !== undefined) {
+    attrs.push(`jobPriority = ${renderNumericValue(el.jobPriority)}`);
+  }
+  if (el.retryCycle !== undefined) {
+    attrs.push(`retryCycle = ${quote(el.retryCycle)}`);
+  }
+  return attrs;
+}
+
+/** Inputs before outputs, each in IR order, which the engine evaluates in. */
+function ioParameters(el: IoMapped): string[] {
+  const members: string[] = [];
+  for (const param of el.inputParameters ?? []) {
+    members.push(`input ${param.name} = ${renderIoValue(param.value)}`);
+  }
+  for (const param of el.outputParameters ?? []) {
+    members.push(`output ${param.name} = ${renderIoValue(param.value)}`);
+  }
+  return members;
+}
+
+/**
+ * Text takes the quoting every string-valued attribute uses, so a `${...}` body
+ * re-parses as a raw expression. A map key always quotes, since the bare
+ * spelling is an identifier token and a key reading as a keyword would not lex.
+ */
+function renderIoValue(value: IoValue): string {
+  switch (value.kind) {
+    case 'text':
+      return quote(value.text);
+    case 'list':
+      return `[${value.items.map((item) => renderIoValue(item)).join(', ')}]`;
+    case 'map': {
+      const entries = value.entries.map(
+        (entry) => `${quote(entry.key)}: ${renderIoValue(entry.value)}`,
+      );
+      return entries.length === 0 ? '{}' : `{ ${entries.join(', ')} }`;
+    }
+    case 'script':
+      return renderFence(value.format, value.code);
+    default: {
+      const exhaustive: never = value;
+      throw new Error(
+        `irToDsl: unhandled io value kind: ${JSON.stringify(exhaustive)}`,
+      );
+    }
+  }
+}
+
+/**
+ * Execution listeners before lifecycle listeners. The two event vocabularies
+ * are disjoint, so the event word alone tells them apart on the way back in.
+ */
+function listenerMembers(el: SettingsCarrier): string[] {
+  const members = (el.executionListeners ?? []).map((listener) =>
+    renderListener(listener.event, listener.binding),
+  );
+  for (const listener of el.taskListeners ?? []) {
+    members.push(
+      renderListener(listener.event, listener.binding, listener.timer),
+    );
+  }
+  return members;
+}
+
+function renderListener(
+  event: string,
+  binding: ListenerBinding,
+  timer?: Extract<EventDefinition, { kind: 'timer' }>,
+): string {
+  const clause =
+    timer !== undefined
+      ? ` ${TIMER_PARTICLE[timer.timerKind]} ${quote(timer.expression)}`
+      : '';
+  const body =
+    binding.kind === 'script'
+      ? renderFence(binding.format, binding.code)
+      : `{ ${renderCodeBinding(binding)} }`;
+  return `on ${event}${clause} ${body}`;
+}
+
+/**
+ * `delegate` is the DSL alias for `operaton:delegateExpression`. An expression
+ * quotes verbatim, its `${...}` wrapper being part of the value.
+ */
+function renderCodeBinding(binding: CodeBinding): string {
+  switch (binding.kind) {
+    case 'class':
+      return `class = ${quote(binding.className)}`;
+    case 'expression':
+      return `expression = ${quote(binding.expression)}`;
+    case 'delegateExpression':
+      return `delegate = ${quote(binding.expression)}`;
+    default: {
+      const exhaustive: never = binding;
+      throw new Error(
+        `irToDsl: unhandled code binding kind: ${JSON.stringify(exhaustive)}`,
+      );
+    }
+  }
+}
+
+/**
+ * The closing fence sits directly after `code` with no injected newline: the
+ * split on the way in strips only the newline after the language tag, so a
+ * newline added here would be re-absorbed into the body on re-parse. The result
+ * carries its own newlines, so a statement holding one is a line group.
+ */
+function renderFence(format: string, code: string): string {
+  return `\`\`\`${format}\n${code}\`\`\``;
+}
+
+/**
+ * The validator rejects these prefixes in authored source, so an id carrying
+ * one here is synthesized.
+ */
+function isSynthesizedTerminalId(id: string): boolean {
+  return (
+    id.startsWith('StartEvent_') ||
+    id.startsWith('EndEvent_') ||
+    id.startsWith('Throw_')
+  );
+}
+
+/**
+ * Omitted for a synthesized id: the forward compiler re-derives the same
+ * `Throw_...` from the statement's coordinate, so dropping it is lossless.
+ */
+function throwNameSuffix(id: string): string {
+  return isSynthesizedTerminalId(id) ? '' : ` ${id}`;
+}
+
+/** An authored id prints so it survives as a goto target. */
+function renderThrow(id: string, def: EventDefinition, block: string): string {
+  switch (def.kind) {
+    case 'error':
+      return `throw error${throwNameSuffix(id)}${quotedCode(def.errorCode)}${block}`;
+    case 'escalation':
+      return `throw escalation${throwNameSuffix(id)}${quotedCode(def.escalationCode)}${block}`;
+    case 'signal':
+      return `throw signal${throwNameSuffix(id)} ${quote(def.signalName)}${block}`;
+    case 'compensation':
+      return `throw compensation${throwNameSuffix(id)}${block}`;
+    default:
+      throw new Error(
+        `irToDsl: end event '${id}' carries a ${def.kind} definition; only error, escalation, signal, or compensation can be thrown.`,
+      );
+  }
+}
+
+/** Engine attributes come off the sub-process: the start is elided on print. */
+function buildOnHeader(
+  handler: Extract<FlowElement, { kind: 'subProcess' }>,
+): string {
+  const start = handler.flowElements.find(
+    (e): e is Extract<FlowElement, { kind: 'startEvent' }> =>
+      e.kind === 'startEvent',
+  );
+  if (start === undefined || start.eventDefinition === undefined) {
+    throw new Error(
+      `irToDsl: event sub-process '${handler.id}' has no trigger start event.`,
+    );
+  }
+  const alongside = start.isInterrupting === false ? ' alongside' : '';
+  const block = attrBlock(settingsMembers(handler));
+  return `on ${renderTriggerHead(start.eventDefinition)}${alongside}${block} {`;
+}
+
+/** `attachedToRef` prints verbatim; refusing a bad host belongs to validation. */
+function buildBoundaryHeader(
+  boundary: Extract<FlowElement, { kind: 'boundaryEvent' }>,
+): string {
+  const alongside = boundary.cancelActivity === false ? ' alongside' : '';
+  const block = attrBlock(settingsMembers(boundary));
+  return `on ${boundary.attachedToRef}: ${renderTriggerHead(boundary.eventDefinition)}${alongside}${block} {`;
+}
+
+const TIMER_PARTICLE: Record<
+  Extract<EventDefinition, { kind: 'timer' }>['timerKind'],
+  string
+> = { duration: 'after', date: 'at', cycle: 'every' };
+
+/** Everything between `on ` and the ` alongside`/`{` suffix; compensation has no payload. */
+function renderTriggerHead(def: EventDefinition): string {
+  switch (def.kind) {
+    case 'error':
+      return `error${quotedCode(def.errorCode)}${buildEventBindings(def)}`;
+    case 'escalation':
+      return `escalation${quotedCode(def.escalationCode)}${buildEventBindings(def)}`;
+    case 'compensation':
+      return 'compensation';
+    case 'message':
+      return `message ${quote(def.messageName)}`;
+    case 'signal':
+      return `signal ${quote(def.signalName)}`;
+    case 'timer':
+      return `timer ${TIMER_PARTICLE[def.timerKind]} ${quote(def.expression)}`;
+    case 'conditional':
+      return `condition (${renderRawCondition(def.condition)})`;
+    default: {
+      const exhaustive: never = def;
+      throw new Error(
+        `irToDsl: unhandled EventDefinition kind: ${JSON.stringify(exhaustive)}`,
+      );
+    }
+  }
+}
+
+/** ` (code x, message y)`. Only an error carries a message binding. */
+function buildEventBindings(
+  def: Extract<EventDefinition, { kind: 'error' | 'escalation' }>,
+): string {
+  const parts: string[] = [];
+  if (def.codeVariable !== undefined) parts.push(`code ${def.codeVariable}`);
+  if (def.kind === 'error' && def.messageVariable !== undefined) {
+    parts.push(`message ${def.messageVariable}`);
+  }
+  return parts.length > 0 ? ` (${parts.join(', ')})` : '';
+}
+
+/** ` "<code>"` suffix, or empty when the code is absent (catch-all). */
+function quotedCode(code: string | undefined): string {
+  return code !== undefined ? ` ${quote(code)}` : '';
+}
+
+/** `name=ID` is mandatory, so an elided start is dropped whole and re-derived. */
+function renderStartEvent(
+  el: Extract<FlowElement, { kind: 'startEvent' }>,
+): string | undefined {
+  if (isElidedOnPrint(el)) return undefined;
+  return `start ${el.id}${labelSuffix(el.name)}${attrBlock(startOrEndMembers(el))}`;
+}
+
+/** Assignment attributes, then the settings members, then the form block. */
 function renderUserTask(
   el: Extract<FlowElement, { kind: 'userTask' }>,
 ): string {
   const attrs: string[] = [];
-  if (el.assignee !== undefined) attrs.push(`assignee = ${quote(el.assignee)}`);
-  if (el.formKey !== undefined) attrs.push(`formKey = ${quote(el.formKey)}`);
+  for (const [key, render] of USER_TASK_MEMBERS) {
+    const value = el[key];
+    if (value !== undefined) attrs.push(`${key} = ${render(value)}`);
+  }
+  attrs.push(...settingsMembers(el));
   if (el.formFields !== undefined) attrs.push(renderFormBlock(el.formFields));
   return `user ${el.id}${labelSuffix(el.name)}${attrBlock(attrs)}`;
 }
 
-/**
- * Render a `form { <field>* }` block inline. Fields are whitespace-separated,
- * which the grammar's `fields+=FormField*` accepts, so the whole block stays on
- * one line (the emitter indents statements per-line, so a statement string must
- * not contain newlines).
- */
+/** In print order. The IR field name is also the DSL keyword. */
+const USER_TASK_MEMBERS = [
+  ['assignee', quote],
+  ['formKey', quote],
+  ['candidateGroups', quote],
+  ['candidateUsers', quote],
+  ['dueDate', quote],
+  ['followUpDate', quote],
+  ['priority', renderNumericValue],
+] as const;
+
+/** One line, which `fields+=FormField*` accepts: a statement holds no newlines. */
 function renderFormBlock(formFields: FormField[]): string {
   return `form { ${formFields.map(renderFormField).join(' ')} }`;
 }
 
-/** Render one form field: `<id>: <type> "<label>"? (= <default>)?`. */
+/** `<id>: <type> "<label>"? (= <default>)?`. */
 function renderFormField(field: FormField): string {
   const label = field.label !== undefined ? ` ${quote(field.label)}` : '';
   const def =
@@ -907,11 +1235,7 @@ function renderFormField(field: FormField): string {
   return `${field.id}: ${field.type}${label}${def}`;
 }
 
-/**
- * Render a form field's default value as a DSL expression. `string`/`date`
- * defaults are quoted; `number`/`boolean` defaults are bare literals; an EL
- * expression (`${…}`) is quoted as the raw fallback form regardless of type.
- */
+/** `string` and `date` quote, `number` and `boolean` print bare, EL always quotes. */
 function renderFormDefault(value: string, type: FormFieldType): string {
   if (value.startsWith('${')) {
     return quote(value);
@@ -919,37 +1243,20 @@ function renderFormDefault(value: string, type: FormFieldType): string {
   return type === 'number' || type === 'boolean' ? value : quote(value);
 }
 
-/**
- * Render a service task's statement line, choosing the surface form from its
- * binding:
- *
- *   - `class`              → `service <id> "<label>"? { class = "…" }`
- *   - `expression`         → `service <id> "<label>"? { expression = "${…}" }`
- *   - `delegateExpression` → `service <id> "<label>"? { delegate = "${…}" }`
- *   - `external`           → `external <id> "<label>"? { topic = "…" }`
- *
- * The `delegate` keyword is the friendly DSL alias for
- * `operaton:delegateExpression`; the alias is applied here, so the XML-level
- * name never surfaces in the source. Expression/delegate values are quoted
- * verbatim (the `${…}` wrapper is part of the value), re-parsing as a raw
- * expression. An `external` binding switches the keyword to `external` and its
- * one attribute to `topic`.
- */
+/** Binding, then result variable, then the shared settings members. */
 function renderServiceTask(
   el: Extract<FlowElement, { kind: 'serviceTask' }>,
 ): string {
   const binding = el.binding;
-  const head = (keyword: string, attr: string): string =>
-    `${keyword} ${el.id}${labelSuffix(el.name)}${attrBlock([attr])}`;
+  const head = (attr: string): string =>
+    `service ${el.id}${labelSuffix(el.name)}${attrBlock([attr, ...resultVariableAttr(el), ...settingsMembers(el)])}`;
   switch (binding.kind) {
     case 'class':
-      return head('service', `class = ${quote(binding.className)}`);
     case 'expression':
-      return head('service', `expression = ${quote(binding.expression)}`);
     case 'delegateExpression':
-      return head('service', `delegate = ${quote(binding.expression)}`);
+      return head(renderCodeBinding(binding));
     case 'external':
-      return head('external', `topic = ${quote(binding.topic)}`);
+      return head(`topic = ${quote(binding.topic)}`);
     default: {
       const exhaustive: never = binding;
       throw new Error(
@@ -959,59 +1266,120 @@ function renderServiceTask(
   }
 }
 
-/**
- * Render a `script <id> "<label>"? ```<format> … ``` ` fenced block.
- *
- * The opening `script … ```<format>` is an ordinary DSL line (the caller
- * indents it). The body and closing fence follow verbatim and are **opaque** —
- * the script content is reproduced byte-for-byte, never re-indented as if it
- * were DSL — so the returned value carries its own newlines rather than being a
- * single statement line.
- *
- * The closing fence is placed **directly after** `code` with no injected
- * newline: the desugarer's fence split strips only the single newline after the
- * language tag and keeps the rest of the block verbatim, so any newline emitted
- * before the closing fence would be re-absorbed into the body on re-parse. A
- * `code` that already ends in a newline therefore lands its closing fence on its
- * own line; one that does not keeps the fence on the final body line — either
- * way the body round-trips unchanged.
- */
+/** Fixed member order. A pinned version prints `version = <v>` and no `binding`. */
+function renderCallActivity(
+  el: Extract<FlowElement, { kind: 'callActivity' }>,
+): string {
+  const members: string[] = [`process = ${quote(el.calledElement)}`];
+
+  if (el.binding !== undefined) {
+    switch (el.binding.kind) {
+      case 'latest':
+        members.push('binding = latest');
+        break;
+      case 'deployment':
+        members.push('binding = deployment');
+        break;
+      case 'version':
+        members.push(`version = ${renderNumericValue(el.binding.version)}`);
+        break;
+      default: {
+        const exhaustive: never = el.binding;
+        throw new Error(
+          `irToDsl: unhandled call binding kind: ${JSON.stringify(exhaustive)}`,
+        );
+      }
+    }
+  }
+
+  if (el.businessKey !== undefined) {
+    members.push(`businessKey = ${quote(el.businessKey)}`);
+  }
+
+  members.push(...settingsMembers(el));
+
+  for (const mapping of el.inMappings ?? []) {
+    members.push(renderCallMapping('in', mapping));
+  }
+  for (const mapping of el.outMappings ?? []) {
+    members.push(renderCallMapping('out', mapping));
+  }
+
+  return `call ${el.id}${labelSuffix(el.name)}${attrBlock(members)}`;
+}
+
+/** All-digit prints bare; anything else quotes, so it re-parses as an expression. */
+function renderNumericValue(value: string): string {
+  return /^[0-9]+$/.test(value) ? value : quote(value);
+}
+
+function resultVariableAttr(el: { resultVariable?: string }): string[] {
+  return el.resultVariable !== undefined
+    ? [`resultVariable = ${quote(el.resultVariable)}`]
+    : [];
+}
+
+/** An `expression` always quotes, so a `${...}` never re-desugars to a `variable`. */
+function renderCallMapping(
+  keyword: 'in' | 'out',
+  mapping: CallVariableMapping,
+): string {
+  const localPrefix = mapping.local === true ? 'local ' : '';
+  let body: string;
+  switch (mapping.kind) {
+    case 'all':
+      body = '*';
+      break;
+    case 'variable':
+      body =
+        mapping.source === mapping.target
+          ? mapping.target
+          : `${mapping.target} = ${mapping.source}`;
+      break;
+    case 'expression':
+      body = `${mapping.target} = ${quote(mapping.sourceExpression)}`;
+      break;
+    default: {
+      const exhaustive: never = mapping;
+      throw new Error(
+        `irToDsl: unhandled call mapping kind: ${JSON.stringify(exhaustive)}`,
+      );
+    }
+  }
+  return `${keyword} ${localPrefix}${body}`;
+}
+
+/** Carries its own newlines: only the opening line is the caller's to indent. */
 function renderScriptTask(
   el: Extract<FlowElement, { kind: 'scriptTask' }>,
 ): string {
-  return `script ${el.id}${labelSuffix(el.name)} \`\`\`${el.format}\n${el.code}\`\`\``;
+  const block = attrBlock([...resultVariableAttr(el), ...settingsMembers(el)]);
+  return `script ${el.id}${labelSuffix(el.name)}${block} ${renderFence(el.format, el.code)}`;
 }
 
-/** ` "<label>"` suffix, or empty when no label. */
 function labelSuffix(name: string | undefined): string {
   return name !== undefined ? ` ${quote(name)}` : '';
 }
 
 /**
- * Render an inline attribute block ` { a = "x" b = "y" }`, or empty when there
- * are no attributes. The block stays on one line — the grammar's `(a | b)*`
- * accepts whitespace-separated attributes.
+ * ` { a = "x" b = "y" }` on one line, which the grammar's `(a | b)*` accepts.
+ * A fenced member is the exception: its newlines are part of its token.
  */
 function attrBlock(attrs: string[]): string {
   if (attrs.length === 0) return '';
   return ` { ${attrs.join(' ')} }`;
 }
 
-/**
- * Recover a flow's condition as DSL surface text. The IR carries the raw `${…}`
- * body; {@link parseJuel} decides whether it fits the JUEL subset (→ bare
- * unquoted DSL) or must fall back to the quoted `"${…}"` raw form
- * ({@link renderRawFallback}).
- */
 function renderCondition(flow: SequenceFlow): string {
-  const body = flow.conditionExpression ?? '';
+  return renderRawCondition(flow.conditionExpression ?? '');
+}
+
+/** {@link parseJuel} decides between bare DSL and the quoted raw form. */
+function renderRawCondition(body: string): string {
   return renderRawFallback(parseJuel(body));
 }
 
-/**
- * Wrap a string value in double-quotes, backslash-escaping inner double-quotes
- * and backslashes to match the grammar's STRING terminal.
- */
+/** Escapes inner quotes and backslashes to match the STRING terminal. */
 function quote(value: string): string {
   return `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
 }

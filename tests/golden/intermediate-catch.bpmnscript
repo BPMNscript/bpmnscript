@@ -1,0 +1,19 @@
+// Intermediate-catch round-trip fixture: a single main flow that awaits all
+// four catchable triggers in order, so the golden covers every payload shape
+// (message name, timer particle + time, signal name, and a parenthesized
+// condition) at once.
+
+process order-processing {
+  var amount: number
+
+  start OrderReceived
+  user ReviewOrder "Review the order" { assignee = "demo" }
+
+  await message "PaymentConfirmed"
+  await timer after "PT1H"
+  await signal "StockReplenished"
+  await condition (amount > 100)
+
+  service DispatchOrder "Dispatch the order" { class = "com.example.orders.DispatchDelegate" }
+  end OrderDispatched
+}

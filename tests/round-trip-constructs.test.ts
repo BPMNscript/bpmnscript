@@ -1,204 +1,60 @@
-/**
- * Whole-feature E2E: construct round-trip idempotence + goto-degradation.
- *
- * This is the dedicated end-to-end test that exercises the whole feature as a
- * *user* would — authoring source, building it to BPMN, importing it back, and
- * restructuring it — over real infrastructure: real Langium parse, real
- * `bpmn-moddle` (via `irToXml`/`xmlToIr`), real `bpmn-auto-layout` (invoked
- * inside `irToXml`), and real fixture files. There is NO Docker and NO engine
- * here; the "real infrastructure" is the unmocked transform chain and the
- * on-disk golden fixtures.
- *
- * It complements `tests/round-trip.test.ts` (which imports a handwritten golden
- * with hand-named ids) by driving the structured constructs — `if`/`else`,
- * `while`, `parallel`, and `goto` — through the full pipeline
- *
- *   DSL → IR → XML → IR → DSL → IR
- *
- * Five cases:
- *
- *   1. Structured idempotence (happy path) — `invoice-approval.bpmnscript`.
- *   2. Loop round-trip — the `while` of `structured-control-flow.bpmnscript`.
- *   3. Parallel round-trip — the `parallel { { } { } }` of the same fixture.
- *   4. Goto-degradation (totality) — the unstructured `unstructured-goto.bpmn`.
- *   5. Expression fallback — a bean method-call condition (raw `${…}`).
- *
- * Normalization comes from the shared `helpers/normalize-ir.ts`.
- *
- * The goto-degradation case compares connectivity, not raw flow endpoints: the
- * original fixture has hand-named gateways (`RouteA`/`RouteB`), whereas
- * re-desugaring synthesizes fresh deterministic gateway ids and grows phantom
- * XOR joins for the `if`s whose branches are pure `goto`s. Those phantom joins
- * have zero incoming flows, so `normalizeIr`'s pass-through-join inliner (which
- * requires ≥1 incoming) leaves them in place. The compared invariant is the
- * reachability relation between the real (non-gateway) nodes, with the
- * synthesized gateway routing contracted away — see {@link realNodeReachability}.
- */
-
 import { describe, it, expect, beforeAll } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { EmptyFileSystem } from 'langium';
-import { parseHelper } from 'langium/test';
-import { createBpmnScriptServices } from '@bpmn-script/language';
-import type { Model } from '@bpmn-script/language';
-
-import { xmlToIr, irToDsl, astToIr, irToXml } from '@bpmn-script/transform';
+import { xmlToIr, irToDsl, astToIr } from '@bpmn-script/transform';
 import type { BpmnProcess } from '@bpmn-script/transform';
 
 import { normalizeIr } from './helpers/normalize-ir.js';
-
-// ---------------------------------------------------------------------------
-// File-path resolution (mirrors round-trip.test.ts).
-// ---------------------------------------------------------------------------
+import { realNodeReachability } from './helpers/real-node-reachability.js';
+import { parse, parseToAst, roundTripOf } from './helpers/pipeline.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-/** The `invoice-approval` example. */
 const INVOICE_DSL_PATH = resolve(
   __dirname,
   '../examples/spring-boot/processes/invoice-approval.bpmnscript',
 );
 
-/** The single-process fixture exercising if/else + while + parallel. */
 const STRUCTURED_DSL_PATH = resolve(
   __dirname,
   'golden/structured-control-flow.bpmnscript',
 );
 
-/** The intentionally unstructured cross-branching fixture. */
 const UNSTRUCTURED_BPMN_PATH = resolve(
   __dirname,
   'golden/unstructured-goto.bpmn',
 );
 
-// ---------------------------------------------------------------------------
-// Langium parse helper — one shared instance for the whole suite.
-// ---------------------------------------------------------------------------
-
-let parse: ReturnType<typeof parseHelper<Model>>;
-
-beforeAll(() => {
-  const services = createBpmnScriptServices(EmptyFileSystem);
-  parse = parseHelper<Model>(services.BpmnScript);
-});
-
-/**
- * Parse DSL source into a checked AST. Throws (failing the test) if the
- * source has any parser error — a round-tripped source that does not re-parse
- * is itself a round-trip failure, so it must abort the test, never be swallowed.
- */
-async function parseToAst(source: string) {
-  const document = await parse(source);
-  const errors = document.parseResult.parserErrors;
-  if (errors.length > 0) {
-    throw new Error(
-      'Parser errors in round-tripped DSL:\n' +
-        errors.map((e) => e.message).join('\n'),
-    );
-  }
-  return document.parseResult.value;
-}
-
-/**
- * The reachability relation between the REAL (non-gateway) flow nodes, with
- * every gateway contracted to a transparent routing point.
- *
- * For each real node `r`, we walk forward across any number of gateways and
- * record `r -> t` for every real node `t` first reached. This collapses the
- * synthesized gateway scaffolding (splits, joins, phantom joins) that differs
- * between an imported graph and its re-desugared counterpart, leaving exactly
- * the authored-node connectivity — the quantity that must be preserved for the
- * round-trip to be lossless (totality, scenario 4).
- */
-function realNodeReachability(ir: BpmnProcess): string[] {
-  const isGateway = new Map<string, boolean>(
-    ir.flowElements.map((fe) => [
-      fe.id,
-      fe.kind === 'exclusiveGateway' || fe.kind === 'parallelGateway',
-    ]),
-  );
-
-  const outgoing = new Map<string, string[]>();
-  for (const sf of ir.sequenceFlows) {
-    (
-      outgoing.get(sf.sourceRef) ??
-      outgoing.set(sf.sourceRef, []).get(sf.sourceRef)!
-    ).push(sf.targetRef);
-  }
-
-  const pairs = new Set<string>();
-  for (const node of ir.flowElements) {
-    if (isGateway.get(node.id)) continue; // start from real nodes only
-    const seen = new Set<string>();
-    const stack = [...(outgoing.get(node.id) ?? [])];
-    while (stack.length > 0) {
-      const next = stack.pop()!;
-      if (seen.has(next)) continue;
-      seen.add(next);
-      if (isGateway.get(next)) {
-        // Transparent: walk through the gateway to its successors.
-        for (const t of outgoing.get(next) ?? []) stack.push(t);
-      } else {
-        pairs.add(`${node.id}->${next}`);
-      }
-    }
-  }
-  return [...pairs].sort();
-}
-
-// ===========================================================================
-// Structured idempotence (happy path).
-//
-//   invoice-approval.bpmnscript → astToIr (ir1)
-//     → irToXml → xmlToIr → irToDsl (dsl1)
-//     → parse → astToIr (irFinal) → irToDsl (dsl2)
-//
-// The first IR and the final IR are equal up to documented id normalization,
-// and dsl1 / dsl2 are byte-identical (deterministic synthesized ids).
-// ===========================================================================
-
 describe('structured idempotence (invoice-approval, if/else)', () => {
-  let irInitial: BpmnProcess;
-  let irFinal: BpmnProcess;
-  let dsl1: string;
+  const run = roundTripOf(readFileSync(INVOICE_DSL_PATH, 'utf-8'));
   let dsl2: string;
 
-  beforeAll(async () => {
-    const source = readFileSync(INVOICE_DSL_PATH, 'utf-8');
-
-    irInitial = astToIr(await parseToAst(source));
-
-    const xml = await irToXml(irInitial);
-    const { ir: irImported } = await xmlToIr(xml);
-    dsl1 = irToDsl(irImported);
-
-    irFinal = astToIr(await parseToAst(dsl1));
-    dsl2 = irToDsl(irFinal);
+  beforeAll(() => {
+    dsl2 = irToDsl(run.ir3);
   });
 
   it('final IR equals initial IR up to documented id normalization', () => {
-    expect(normalizeIr(irFinal)).toEqual(normalizeIr(irInitial));
+    expect(normalizeIr(run.ir3)).toEqual(normalizeIr(run.ir1));
   });
 
   it('re-emitted DSL is byte-identical to the first emitted DSL', () => {
-    // Deterministic structural ids make the structured emission byte-stable, so
-    // a second irToDsl over the re-desugared IR reproduces dsl1 exactly.
-    expect(dsl2).toBe(dsl1);
+    // Deterministic structural ids make the emission byte-stable, so a second
+    // irToDsl over the re-desugared IR reproduces the first exactly.
+    expect(dsl2).toBe(run.dsl);
   });
 
   it('the emitted DSL is structured syntax (if/else, no gateway/edge form)', () => {
-    expect(dsl1).toContain('process invoice-approval');
-    expect(dsl1).toContain('if (amount > 1000)');
-    expect(dsl1).toContain('else');
-    expect(dsl1).not.toContain('gateway');
-    expect(dsl1).not.toContain('->');
+    expect(run.dsl).toContain('process invoice-approval');
+    expect(run.dsl).toContain('if (amount > 1000)');
+    expect(run.dsl).toContain('else');
+    expect(run.dsl).not.toContain('gateway');
+    expect(run.dsl).not.toContain('->');
   });
 
   it('the if-condition survives as a conditional flow in the final IR', () => {
-    const conditional = irFinal.sequenceFlows.find(
+    const conditional = run.ir3.sequenceFlows.find(
       (sf) => sf.conditionExpression !== undefined,
     );
     expect(conditional).toBeDefined();
@@ -206,118 +62,75 @@ describe('structured idempotence (invoice-approval, if/else)', () => {
   });
 });
 
-// ===========================================================================
-// Loop round-trip (`while`).
-//
-// The `while (retries < 3)` branch of structured-control-flow.bpmnscript
-// survives DSL → XML → DSL reconstructed as `while`, with NO
-// `standardLoopCharacteristics` anywhere in the XML and no `goto` fallback.
-// ===========================================================================
-
 describe('loop round-trip (while ⇒ conditioned back-edge, never standardLoopCharacteristics)', () => {
-  let xml: string;
-  let reemittedDsl: string;
-
-  beforeAll(async () => {
-    const source = readFileSync(STRUCTURED_DSL_PATH, 'utf-8');
-    const ir = astToIr(await parseToAst(source));
-    xml = await irToXml(ir);
-    const { ir: imported } = await xmlToIr(xml);
-    reemittedDsl = irToDsl(imported);
-  });
+  const run = roundTripOf(readFileSync(STRUCTURED_DSL_PATH, 'utf-8'));
 
   it('the BPMN XML contains no standardLoopCharacteristics', () => {
-    // A `while` desugars to an exclusiveGateway with a conditioned back-edge,
-    // never to a loop-marker task.
-    expect(xml).not.toContain('standardLoopCharacteristics');
+    // A `while` desugars to a conditioned back-edge, not a loop-marker task.
+    expect(run.xml).not.toContain('standardLoopCharacteristics');
   });
 
   it('the re-emitted DSL reconstructs the loop as `while`, with no goto', () => {
-    expect(reemittedDsl).toMatch(/\bwhile\s*\(/);
-    expect(reemittedDsl).toContain('while (retries < 3)');
-    expect(reemittedDsl).not.toContain('goto');
+    expect(run.dsl).toMatch(/\bwhile\s*\(/);
+    expect(run.dsl).toContain('while (retries < 3)');
+    expect(run.dsl).not.toContain('goto');
   });
 
   it('the loop body task survives the round-trip verbatim', () => {
-    expect(reemittedDsl).toContain(
+    expect(run.dsl).toContain(
       'service RetryFetch "Retry fetch" { class = "com.example.flow.RetryFetchDelegate" }',
     );
   });
 });
 
-// ===========================================================================
-// Parallel round-trip (`parallel { { } { } }`).
-//
-// The parallel branch survives the full loop with a `bpmn:parallelGateway`
-// fork+join pair in the XML and `parallel` reconstructed in the re-emitted DSL.
-// ===========================================================================
-
 describe('parallel round-trip (parallelGateway fork/join ⇒ parallel { { } { } })', () => {
-  let xml: string;
-  let reemittedDsl: string;
-
-  beforeAll(async () => {
-    const source = readFileSync(STRUCTURED_DSL_PATH, 'utf-8');
-    const ir = astToIr(await parseToAst(source));
-    xml = await irToXml(ir);
-    const { ir: imported } = await xmlToIr(xml);
-    reemittedDsl = irToDsl(imported);
-  });
+  const run = roundTripOf(readFileSync(STRUCTURED_DSL_PATH, 'utf-8'));
 
   it('the BPMN XML contains a parallelGateway fork and join (two parallelGateways)', () => {
-    expect(xml).toContain('bpmn:parallelGateway');
-    const forkJoin = xml.match(/<bpmn:parallelGateway\b/g) ?? [];
+    expect(run.xml).toContain('bpmn:parallelGateway');
+    const forkJoin = run.xml.match(/<bpmn:parallelGateway\b/g) ?? [];
     expect(forkJoin.length).toBe(2); // exactly one fork + one join
   });
 
   it('the re-emitted DSL reconstructs the nested `parallel { { } { } }` construct', () => {
-    expect(reemittedDsl).toMatch(/\bparallel\s*\{/);
-    // Branches are nested brace blocks, not `and`-separated.
-    expect(reemittedDsl).not.toContain('} and {');
-    expect(reemittedDsl).not.toMatch(/\band\b/);
+    expect(run.dsl).toMatch(/\bparallel\s*\{/);
+    expect(run.dsl).not.toContain('} and {');
+    expect(run.dsl).not.toMatch(/\band\b/);
   });
 
   it('both parallel branch tasks survive the round-trip verbatim', () => {
-    expect(reemittedDsl).toContain(
+    expect(run.dsl).toContain(
       'user NotifyOwner "Notify owner" { assignee = "demo" }',
     );
-    expect(reemittedDsl).toContain(
+    expect(run.dsl).toContain(
       'service AuditLog "Write audit log" { class = "com.example.flow.AuditLogDelegate" }',
     );
   });
 });
 
-// ===========================================================================
-// Goto-degradation (the totality / data-loss path).
-//
-// Import the unstructured cross-branching fixture → `irToDsl` falls back to
-// `goto` for the edges it cannot fold → re-parse → re-desugar. The full set of
-// connections between authored nodes must be preserved, with no exception and
-// no lost edge, across a SECOND round-trip too.
-// ===========================================================================
-
-describe('goto-degradation preserves the full edge set (totality)', () => {
+// Every edge in this fixture has a `goto` form, so the whole set of connections
+// between authored nodes survives, over a second round trip too. Edges with no
+// form at all belong to the goto-fallback suite.
+describe('goto-degradation preserves the edges that have a goto form', () => {
   let irImport: BpmnProcess; // from xmlToIr(unstructured.bpmn)
-  let degradedDsl: string; // irToDsl(irImport) — contains goto(s)
+  let degradedDsl: string; // irToDsl(irImport), contains goto(s)
   let irReDesugared: BpmnProcess; // astToIr(parse(degradedDsl))
   let irSecondRound: BpmnProcess; // astToIr(parse(irToDsl(irReDesugared)))
 
   beforeAll(async () => {
     const xml = readFileSync(UNSTRUCTURED_BPMN_PATH, 'utf-8');
 
-    // xmlToIr must read an irreducible graph without throwing.
     ({ ir: irImport } = await xmlToIr(xml));
     degradedDsl = irToDsl(irImport);
     irReDesugared = astToIr(await parseToAst(degradedDsl));
 
-    // A second full round-trip — must be just as total.
     const dsl2 = irToDsl(irReDesugared);
     irSecondRound = astToIr(await parseToAst(dsl2));
   });
 
   it('importing the unstructured fixture and re-emitting never throws', () => {
-    // The beforeAll already exercised the whole chain; reaching here is the
-    // assertion. We additionally pin the import shape so this is not vacuous.
+    // The beforeAll ran the whole chain, so reaching here is most of the
+    // assertion. Pinning the import shape keeps it from being vacuous.
     expect(irImport.id).toBe('unstructured-goto');
     expect(irImport.sequenceFlows.length).toBeGreaterThan(0);
   });
@@ -334,11 +147,10 @@ describe('goto-degradation preserves the full edge set (totality)', () => {
   });
 
   it('the real-node reachability is identical after the round-trip', () => {
-    // The raw flow-endpoint set cannot match byte-for-byte: the import has
-    // hand-named gateways (RouteA/RouteB), whereas re-desugaring synthesizes
-    // fresh deterministic gateway ids and grows phantom XOR joins for the
-    // `if`s whose branches are pure `goto`s. Compare the connectivity between
-    // the real authored nodes, with gateway routing contracted away, instead.
+    // Raw flow endpoints cannot match: the import has hand-named gateways
+    // (RouteA/RouteB) while re-desugaring synthesizes fresh ids and grows XOR
+    // joins for the `if`s whose branches are pure `goto`s. Compare authored-node
+    // connectivity with gateway routing contracted away instead.
     expect(realNodeReachability(irReDesugared)).toEqual(
       realNodeReachability(irImport),
     );
@@ -351,13 +163,10 @@ describe('goto-degradation preserves the full edge set (totality)', () => {
   });
 
   it('the fixture conditions survive the goto-degradation round-trip', () => {
-    // Real-node reachability is condition-agnostic: a silently-stripped
-    // `conditionExpression` on a surviving edge would NOT change the reachable
-    // set and would pass the reachability checks above. Pin the conditions
-    // explicitly. The fixture carries `${route == 'A'}` and `${retry == true}`;
-    // the round-trip canonicalizes the single-quoted string literal to double
-    // quotes (`'A'` → `"A"`), so the expected re-desugared set is the canonical
-    // form. Both conditions must still be present after the goto degradation.
+    // Reachability is condition-agnostic: a `conditionExpression` stripped off a
+    // surviving edge passes every check above, so pin the conditions too. The
+    // round trip canonicalizes the fixture's single-quoted literal to double
+    // quotes, hence the shifted spelling in the expected set.
     const reConditions = irReDesugared.sequenceFlows
       .map((f) => f.conditionExpression)
       .filter((c): c is string => c !== undefined)
@@ -368,7 +177,6 @@ describe('goto-degradation preserves the full edge set (totality)', () => {
   });
 
   it('every authored node from the import is still present after re-desugaring', () => {
-    // Totality at the node level: no real (non-gateway) node is dropped.
     const realIds = (ir: BpmnProcess) =>
       ir.flowElements
         .filter(
@@ -381,8 +189,8 @@ describe('goto-degradation preserves the full edge set (totality)', () => {
   });
 
   it('the meaningfulness guard: a dropped edge would make reachability differ', () => {
-    // Removing one import flow changes the relation, so the reachability
-    // equality above is load-bearing (not a vacuous always-true compare).
+    // Removing one import flow changes the relation, so the equality above is
+    // load-bearing rather than always-true.
     const corrupt: BpmnProcess = {
       ...irImport,
       sequenceFlows: irImport.sequenceFlows.slice(1),
@@ -393,17 +201,10 @@ describe('goto-degradation preserves the full edge set (totality)', () => {
   });
 });
 
-// ===========================================================================
-// Expression fallback round-trip (bean method call).
-//
-// A condition using a bean method call (`${myBean.check()}`) is outside the
-// JUEL native subset (the trailing `()` leaves tokens unconsumed → raw
-// fallback). It must survive DSL → XML → DSL as the SAME quoted raw form,
-// without being mis-parsed into a structured subset expression.
-// ===========================================================================
-
+// A bean method call is outside the JUEL native subset: the trailing `()`
+// leaves tokens unconsumed, so it takes the raw fallback and has to survive the
+// round trip as the same quoted raw form.
 describe('bean-call condition stays quoted-raw end-to-end', () => {
-  // Authored inline rather than as a new fixture file.
   const BEAN_DSL = [
     'process bean-cond "Bean Cond" {',
     '  start S',
@@ -417,42 +218,24 @@ describe('bean-call condition stays quoted-raw end-to-end', () => {
     '',
   ].join('\n');
 
-  let irInitial: BpmnProcess;
-  let irImported: BpmnProcess;
-  let reemittedDsl: string;
+  const run = roundTripOf(BEAN_DSL);
 
-  beforeAll(async () => {
-    irInitial = astToIr(await parseToAst(BEAN_DSL));
-    const xml = await irToXml(irInitial);
-    ({ ir: irImported } = await xmlToIr(xml));
-    reemittedDsl = irToDsl(irImported);
-  });
+  const condition = (ir: BpmnProcess) =>
+    ir.sequenceFlows.find((sf) => sf.conditionExpression !== undefined)
+      ?.conditionExpression;
 
   it('the bean call is preserved verbatim in the IR condition expression', () => {
-    const initialCond = irInitial.sequenceFlows.find(
-      (sf) => sf.conditionExpression !== undefined,
-    );
-    expect(initialCond?.conditionExpression).toBe('${myBean.check()}');
-
-    const importedCond = irImported.sequenceFlows.find(
-      (sf) => sf.conditionExpression !== undefined,
-    );
-    expect(importedCond?.conditionExpression).toBe('${myBean.check()}');
+    expect(condition(run.ir1)).toBe('${myBean.check()}');
+    expect(condition(run.ir2)).toBe('${myBean.check()}');
   });
 
   it('the re-emitted DSL keeps the condition as the quoted raw `"${…}"` form', () => {
-    // Quoted-raw: NOT unquoted into a structured subset expression.
-    expect(reemittedDsl).toContain('if ("${myBean.check()}")');
-    // Negative guard: the bare (unquoted) form must NOT appear, which would
-    // signal a spurious parse-into-subset.
-    expect(reemittedDsl).not.toContain('if (myBean.check())');
+    expect(run.dsl).toContain('if ("${myBean.check()}")');
+    // The bare (unquoted) form would signal a spurious parse-into-subset.
+    expect(run.dsl).not.toContain('if (myBean.check())');
   });
 
-  it('the re-emitted DSL re-parses, and re-desugars to the same raw condition', async () => {
-    const reIr = astToIr(await parseToAst(reemittedDsl));
-    const cond = reIr.sequenceFlows.find(
-      (sf) => sf.conditionExpression !== undefined,
-    );
-    expect(cond?.conditionExpression).toBe('${myBean.check()}');
+  it('the re-emitted DSL re-parses, and re-desugars to the same raw condition', () => {
+    expect(condition(run.ir3)).toBe('${myBean.check()}');
   });
 });

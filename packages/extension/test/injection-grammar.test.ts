@@ -1,21 +1,7 @@
-/**
- * Structural + regex-behaviour checks for the fenced-script injection grammar.
- *
- * The injection grammar makes a `script X ```lang … ``` ` fenced body colorize
- * with the embedded language's grammar, the way a markdown fenced code block
- * does. The load-bearing questions this file pins down without a full TextMate
- * engine:
- *   1. the grammar is registered so VS Code injects it into `source.bpmn-script`;
- *   2. each opening fence tag routes to the right embedded scope
- *      (`meta.embedded.block.<lang>` + `source.<lang>`);
- *   3. an unrecognised tag (and `feel`, which has no installed grammar) falls
- *      back to a plain block — no embedded include, never an error.
- *
- * The `begin`/`end` patterns use only regex constructs that behave identically
- * in JS `RegExp` and Oniguruma (literal backticks, alternation, `\s`, `$`,
- * character classes), so running them here faithfully models the tokenizer's
- * first-match-wins routing across the ordered pattern list.
- */
+// These tests run the grammar's begin/end patterns through JS RegExp instead of
+// a TextMate engine. That only holds because the patterns stick to constructs
+// JS and Oniguruma agree on: literal backticks, alternation, \s, $, character
+// classes. Add an Oniguruma-only construct and this file stops modelling VS Code.
 
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
@@ -42,7 +28,6 @@ const pkg = JSON.parse(
   readFileSync(path.join(EXTENSION_DIR, 'package.json'), 'utf8'),
 );
 
-/** Resolve `{ include: '#name' }` entries in `patterns` to their rules, in order. */
 function orderedBlocks(): Array<{ name: string; rule: any }> {
   return injection.patterns.map((p: { include: string }) => {
     const name = p.include.replace(/^#/, '');
@@ -50,7 +35,7 @@ function orderedBlocks(): Array<{ name: string; rule: any }> {
   });
 }
 
-/** Model TextMate first-match-wins: the first block whose `begin` matches wins. */
+// Models TextMate first-match-wins over the ordered pattern list.
 function matchFence(line: string): { name: string; rule: any } | undefined {
   return orderedBlocks().find(({ rule }) => new RegExp(rule.begin).test(line));
 }
@@ -74,7 +59,6 @@ describe('fenced-script injection grammar', () => {
     expect(pkg.scripts['build:prepare']).toContain(
       './syntaxes/bpmn-script.injection.tmLanguage.json',
     );
-    // build:prepare has run — the copy exists next to the base grammar.
     expect(() =>
       readFileSync(
         path.join(
@@ -86,8 +70,8 @@ describe('fenced-script injection grammar', () => {
     ).not.toThrow();
   });
 
-  // Every accepted tag → its canonical embedded scope. `feel` and any tag
-  // without an installed grammar are intentionally absent here (see fallback).
+  // `feel` and any other tag with no installed grammar belong in the fallback
+  // table below, not here.
   it.each([
     ['js', 'meta.embedded.block.javascript', 'source.js'],
     ['javascript', 'meta.embedded.block.javascript', 'source.js'],
@@ -115,9 +99,7 @@ describe('fenced-script injection grammar', () => {
   );
 
   it('a bare closing fence starts no block and matches an end pattern', () => {
-    // No opening block matches a tag-less fence…
     expect(matchFence('```')).toBeUndefined();
-    // …but every block closes on it.
     for (const { rule } of orderedBlocks()) {
       expect(new RegExp(rule.end).test('```')).toBe(true);
     }

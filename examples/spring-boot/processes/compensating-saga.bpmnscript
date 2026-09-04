@@ -1,0 +1,37 @@
+// Seat-booking saga with a runnable compensation trigger. A subprocess
+// reserves a seat and owns an `on compensation` undo block that releases it;
+// once the reservation completes, a service task charges the customer's card
+// through the same conditional delegate `charge-with-recovery` uses. Started
+// with `failCharge` set, the charge raises the process's declared error, the
+// process-level `on error` handler runs as an event-subprocess, and its
+// `emit compensation` should unwind the completed reservation.
+//
+// The service tasks point at the generic delegate
+// examples/spring-boot/src/main/java/com/example/demo/LogDelegate.java and
+// the conditional
+// examples/spring-boot/src/main/java/com/example/demo/FailingChargeDelegate.java,
+// so this process deploys and runs on the demo profile without additional
+// Java classes.
+
+process compensating-saga {
+  error "CHARGE_FAILED" message "The payment charge could not be completed"
+
+  start BookingStarted
+
+  subprocess ReserveSeat "Reserve the seat" {
+    service ReserveSeatTask "Reserve the seat" { class = "com.example.demo.LogDelegate" }
+
+    on compensation {
+      service ReleaseSeat "Release the seat" { class = "com.example.demo.LogDelegate" }
+    }
+  }
+
+  service ChargeCard "Charge the customer's card" { class = "com.example.demo.FailingChargeDelegate" }
+
+  end BookingConfirmed
+
+  on error "CHARGE_FAILED" {
+    emit compensation CompensationTriggered
+    end CompensationHandled
+  }
+}

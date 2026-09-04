@@ -1,0 +1,21 @@
+// Awaiting Confirmation — a request goes out to an external system and the
+// process blocks at an intermediate message catch until that system
+// correlates a confirmation back. There is no user task in between: the
+// token simply sits at the `await`, which is the property the deployment
+// test drives directly over the REST API.
+//
+// The service tasks point at the generic delegate
+// examples/spring-boot/src/main/java/com/example/demo/LogDelegate.java, so this
+// process deploys and runs on the demo profile without additional Java classes.
+
+process awaiting-confirmation {
+  start RequestSubmitted
+
+  service SubmitRequest "Submit the request" { class = "com.example.demo.LogDelegate" }
+
+  await message "ConfirmationReceived"
+
+  service FinalizeRequest "Finalize the request" { class = "com.example.demo.LogDelegate" }
+
+  end RequestCompleted
+}

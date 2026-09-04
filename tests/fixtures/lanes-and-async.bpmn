@@ -26,6 +26,11 @@
         name="Review request"
         operaton:assignee="demo"
         operaton:asyncBefore="true">
+      <bpmn:extensionElements>
+        <operaton:properties>
+          <operaton:property name="reviewChannel" value="email" />
+        </operaton:properties>
+      </bpmn:extensionElements>
       <bpmn:incoming>Flow_ReviewStart_ReviewRequest</bpmn:incoming>
       <bpmn:outgoing>Flow_ReviewRequest_ReviewDone</bpmn:outgoing>
     </bpmn:userTask>

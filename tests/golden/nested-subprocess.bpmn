@@ -1,0 +1,256 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI" xmlns:dc="http://www.omg.org/spec/DD/20100524/DC" xmlns:di="http://www.omg.org/spec/DD/20100524/DI" xmlns:operaton="http://operaton.org/schema/1.0/bpmn" id="Definitions_order-fulfillment" targetNamespace="http://bpmnscript.io/processes" exporter="BPMNscript" exporterVersion="0.0.0">
+  <bpmn:process id="order-fulfillment" name="Order Fulfillment" isExecutable="true" operaton:historyTimeToLive="P30D">
+    <bpmn:startEvent id="OrderReceived">
+      <bpmn:outgoing>Flow_OrderReceived_RecordOrder</bpmn:outgoing>
+    </bpmn:startEvent>
+    <bpmn:userTask id="RecordOrder" name="Record order" operaton:assignee="demo">
+      <bpmn:incoming>Flow_OrderReceived_RecordOrder</bpmn:incoming>
+      <bpmn:outgoing>Flow_RecordOrder_Payment</bpmn:outgoing>
+    </bpmn:userTask>
+    <bpmn:subProcess id="Payment" name="Handle payment">
+      <bpmn:incoming>Flow_RecordOrder_Payment</bpmn:incoming>
+      <bpmn:outgoing>Flow_Payment_Fulfillment</bpmn:outgoing>
+      <bpmn:startEvent id="StartEvent_Payment">
+        <bpmn:outgoing>Flow_StartEvent_Payment_Gateway_order-fulfillment_2_0_split</bpmn:outgoing>
+      </bpmn:startEvent>
+      <bpmn:exclusiveGateway id="Gateway_order-fulfillment_2_0_split" default="Flow_Gateway_order-fulfillment_2_0_split_default">
+        <bpmn:incoming>Flow_StartEvent_Payment_Gateway_order-fulfillment_2_0_split</bpmn:incoming>
+        <bpmn:outgoing>Flow_Gateway_order-fulfillment_2_0_split_ManualReview</bpmn:outgoing>
+        <bpmn:outgoing>Flow_Gateway_order-fulfillment_2_0_split_default</bpmn:outgoing>
+      </bpmn:exclusiveGateway>
+      <bpmn:exclusiveGateway id="Gateway_order-fulfillment_2_0_join">
+        <bpmn:incoming>Flow_ManualReview_Gateway_order-fulfillment_2_0_join</bpmn:incoming>
+        <bpmn:incoming>Flow_AutoCharge_Gateway_order-fulfillment_2_0_join</bpmn:incoming>
+        <bpmn:outgoing>Flow_Gateway_order-fulfillment_2_0_join_EndEvent_Payment</bpmn:outgoing>
+      </bpmn:exclusiveGateway>
+      <bpmn:userTask id="ManualReview" name="Manual review" operaton:assignee="manager">
+        <bpmn:incoming>Flow_Gateway_order-fulfillment_2_0_split_ManualReview</bpmn:incoming>
+        <bpmn:outgoing>Flow_ManualReview_Gateway_order-fulfillment_2_0_join</bpmn:outgoing>
+      </bpmn:userTask>
+      <bpmn:serviceTask id="AutoCharge" name="Auto-charge card" operaton:class="com.example.demo.LogDelegate">
+        <bpmn:incoming>Flow_Gateway_order-fulfillment_2_0_split_default</bpmn:incoming>
+        <bpmn:outgoing>Flow_AutoCharge_Gateway_order-fulfillment_2_0_join</bpmn:outgoing>
+      </bpmn:serviceTask>
+      <bpmn:endEvent id="EndEvent_Payment">
+        <bpmn:incoming>Flow_Gateway_order-fulfillment_2_0_join_EndEvent_Payment</bpmn:incoming>
+      </bpmn:endEvent>
+      <bpmn:sequenceFlow id="Flow_Gateway_order-fulfillment_2_0_split_ManualReview" name="amount &#62; 1000" sourceRef="Gateway_order-fulfillment_2_0_split" targetRef="ManualReview">
+        <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">${amount &gt; 1000}</bpmn:conditionExpression>
+      </bpmn:sequenceFlow>
+      <bpmn:sequenceFlow id="Flow_ManualReview_Gateway_order-fulfillment_2_0_join" sourceRef="ManualReview" targetRef="Gateway_order-fulfillment_2_0_join" />
+      <bpmn:sequenceFlow id="Flow_Gateway_order-fulfillment_2_0_split_default" sourceRef="Gateway_order-fulfillment_2_0_split" targetRef="AutoCharge" />
+      <bpmn:sequenceFlow id="Flow_AutoCharge_Gateway_order-fulfillment_2_0_join" sourceRef="AutoCharge" targetRef="Gateway_order-fulfillment_2_0_join" />
+      <bpmn:sequenceFlow id="Flow_StartEvent_Payment_Gateway_order-fulfillment_2_0_split" sourceRef="StartEvent_Payment" targetRef="Gateway_order-fulfillment_2_0_split" />
+      <bpmn:sequenceFlow id="Flow_Gateway_order-fulfillment_2_0_join_EndEvent_Payment" sourceRef="Gateway_order-fulfillment_2_0_join" targetRef="EndEvent_Payment" />
+    </bpmn:subProcess>
+    <bpmn:subProcess id="Fulfillment" name="Fulfill the order">
+      <bpmn:incoming>Flow_Payment_Fulfillment</bpmn:incoming>
+      <bpmn:outgoing>Flow_Fulfillment_CloseOrder</bpmn:outgoing>
+      <bpmn:startEvent id="FulfillmentStart">
+        <bpmn:outgoing>Flow_FulfillmentStart_Gateway_order-fulfillment_3_1_loop</bpmn:outgoing>
+      </bpmn:startEvent>
+      <bpmn:exclusiveGateway id="Gateway_order-fulfillment_3_1_loop" default="Flow_Gateway_order-fulfillment_3_1_loop_default">
+        <bpmn:incoming>Flow_ReserveStock_Gateway_order-fulfillment_3_1_loop</bpmn:incoming>
+        <bpmn:incoming>Flow_FulfillmentStart_Gateway_order-fulfillment_3_1_loop</bpmn:incoming>
+        <bpmn:outgoing>Flow_Gateway_order-fulfillment_3_1_loop_ReserveStock</bpmn:outgoing>
+        <bpmn:outgoing>Flow_Gateway_order-fulfillment_3_1_loop_default</bpmn:outgoing>
+      </bpmn:exclusiveGateway>
+      <bpmn:serviceTask id="ReserveStock" name="Reserve stock" operaton:class="com.example.demo.LogDelegate">
+        <bpmn:incoming>Flow_Gateway_order-fulfillment_3_1_loop_ReserveStock</bpmn:incoming>
+        <bpmn:outgoing>Flow_ReserveStock_Gateway_order-fulfillment_3_1_loop</bpmn:outgoing>
+      </bpmn:serviceTask>
+      <bpmn:subProcess id="Shipping" name="Ship the parcel">
+        <bpmn:incoming>Flow_Gateway_order-fulfillment_3_1_loop_default</bpmn:incoming>
+        <bpmn:outgoing>Flow_Shipping_FulfillmentDone</bpmn:outgoing>
+        <bpmn:startEvent id="StartEvent_Shipping">
+          <bpmn:outgoing>Flow_StartEvent_Shipping_PackParcel</bpmn:outgoing>
+        </bpmn:startEvent>
+        <bpmn:userTask id="PackParcel" name="Pack parcel" operaton:assignee="demo">
+          <bpmn:incoming>Flow_StartEvent_Shipping_PackParcel</bpmn:incoming>
+          <bpmn:outgoing>Flow_PackParcel_DispatchParcel</bpmn:outgoing>
+        </bpmn:userTask>
+        <bpmn:serviceTask id="DispatchParcel" name="Dispatch parcel" operaton:class="com.example.demo.LogDelegate">
+          <bpmn:incoming>Flow_PackParcel_DispatchParcel</bpmn:incoming>
+          <bpmn:outgoing>Flow_DispatchParcel_EndEvent_Shipping</bpmn:outgoing>
+        </bpmn:serviceTask>
+        <bpmn:endEvent id="EndEvent_Shipping">
+          <bpmn:incoming>Flow_DispatchParcel_EndEvent_Shipping</bpmn:incoming>
+        </bpmn:endEvent>
+        <bpmn:sequenceFlow id="Flow_PackParcel_DispatchParcel" sourceRef="PackParcel" targetRef="DispatchParcel" />
+        <bpmn:sequenceFlow id="Flow_StartEvent_Shipping_PackParcel" sourceRef="StartEvent_Shipping" targetRef="PackParcel" />
+        <bpmn:sequenceFlow id="Flow_DispatchParcel_EndEvent_Shipping" sourceRef="DispatchParcel" targetRef="EndEvent_Shipping" />
+      </bpmn:subProcess>
+      <bpmn:endEvent id="FulfillmentDone">
+        <bpmn:incoming>Flow_Shipping_FulfillmentDone</bpmn:incoming>
+      </bpmn:endEvent>
+      <bpmn:sequenceFlow id="Flow_Gateway_order-fulfillment_3_1_loop_ReserveStock" name="retries &#60; 3" sourceRef="Gateway_order-fulfillment_3_1_loop" targetRef="ReserveStock">
+        <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">${retries &lt; 3}</bpmn:conditionExpression>
+      </bpmn:sequenceFlow>
+      <bpmn:sequenceFlow id="Flow_ReserveStock_Gateway_order-fulfillment_3_1_loop" sourceRef="ReserveStock" targetRef="Gateway_order-fulfillment_3_1_loop" />
+      <bpmn:sequenceFlow id="Flow_FulfillmentStart_Gateway_order-fulfillment_3_1_loop" sourceRef="FulfillmentStart" targetRef="Gateway_order-fulfillment_3_1_loop" />
+      <bpmn:sequenceFlow id="Flow_Gateway_order-fulfillment_3_1_loop_default" sourceRef="Gateway_order-fulfillment_3_1_loop" targetRef="Shipping" />
+      <bpmn:sequenceFlow id="Flow_Shipping_FulfillmentDone" sourceRef="Shipping" targetRef="FulfillmentDone" />
+    </bpmn:subProcess>
+    <bpmn:userTask id="CloseOrder" name="Close order" operaton:assignee="demo">
+      <bpmn:incoming>Flow_Fulfillment_CloseOrder</bpmn:incoming>
+      <bpmn:outgoing>Flow_CloseOrder_OrderClosed</bpmn:outgoing>
+    </bpmn:userTask>
+    <bpmn:endEvent id="OrderClosed">
+      <bpmn:incoming>Flow_CloseOrder_OrderClosed</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:sequenceFlow id="Flow_OrderReceived_RecordOrder" sourceRef="OrderReceived" targetRef="RecordOrder" />
+    <bpmn:sequenceFlow id="Flow_RecordOrder_Payment" sourceRef="RecordOrder" targetRef="Payment" />
+    <bpmn:sequenceFlow id="Flow_Payment_Fulfillment" sourceRef="Payment" targetRef="Fulfillment" />
+    <bpmn:sequenceFlow id="Flow_Fulfillment_CloseOrder" sourceRef="Fulfillment" targetRef="CloseOrder" />
+    <bpmn:sequenceFlow id="Flow_CloseOrder_OrderClosed" sourceRef="CloseOrder" targetRef="OrderClosed" />
+  </bpmn:process>
+  <bpmndi:BPMNDiagram id="BPMNDiagram_order-fulfillment">
+    <bpmndi:BPMNPlane id="BPMNPlane_order-fulfillment" bpmnElement="order-fulfillment">
+      <bpmndi:BPMNShape id="OrderReceived_di" bpmnElement="OrderReceived">
+        <dc:Bounds x="57" y="52" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="RecordOrder_di" bpmnElement="RecordOrder">
+        <dc:Bounds x="175" y="30" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Payment_di" bpmnElement="Payment" isExpanded="true">
+        <dc:Bounds x="325" y="30" width="850" height="360" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Fulfillment_di" bpmnElement="Fulfillment" isExpanded="true">
+        <dc:Bounds x="1225" y="30" width="1300" height="500" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="CloseOrder_di" bpmnElement="CloseOrder">
+        <dc:Bounds x="2575" y="30" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="OrderClosed_di" bpmnElement="OrderClosed">
+        <dc:Bounds x="2757" y="52" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_OrderReceived_RecordOrder_di" bpmnElement="Flow_OrderReceived_RecordOrder">
+        <di:waypoint x="93" y="70" />
+        <di:waypoint x="175" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_RecordOrder_Payment_di" bpmnElement="Flow_RecordOrder_Payment">
+        <di:waypoint x="275" y="70" />
+        <di:waypoint x="325" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Payment_Fulfillment_di" bpmnElement="Flow_Payment_Fulfillment">
+        <di:waypoint x="1175" y="70" />
+        <di:waypoint x="1225" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Fulfillment_CloseOrder_di" bpmnElement="Flow_Fulfillment_CloseOrder">
+        <di:waypoint x="2525" y="70" />
+        <di:waypoint x="2575" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_CloseOrder_OrderClosed_di" bpmnElement="Flow_CloseOrder_OrderClosed">
+        <di:waypoint x="2675" y="70" />
+        <di:waypoint x="2757" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNShape id="FulfillmentStart_di" bpmnElement="FulfillmentStart">
+        <dc:Bounds x="1332" y="122" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_order-fulfillment_3_1_loop_di" bpmnElement="Gateway_order-fulfillment_3_1_loop" isMarkerVisible="true">
+        <dc:Bounds x="1475" y="115" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="ReserveStock_di" bpmnElement="ReserveStock">
+        <dc:Bounds x="1600" y="100" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shipping_di" bpmnElement="Shipping" isExpanded="true">
+        <dc:Bounds x="1600" y="240" width="700" height="220" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="FulfillmentDone_di" bpmnElement="FulfillmentDone">
+        <dc:Bounds x="2382" y="262" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_FulfillmentStart_Gateway_order-fulfillment_3_1_loop_di" bpmnElement="Flow_FulfillmentStart_Gateway_order-fulfillment_3_1_loop">
+        <di:waypoint x="1368" y="140" />
+        <di:waypoint x="1475" y="140" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Gateway_order-fulfillment_3_1_loop_ReserveStock_di" bpmnElement="Flow_Gateway_order-fulfillment_3_1_loop_ReserveStock">
+        <di:waypoint x="1525" y="140" />
+        <di:waypoint x="1600" y="140" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Gateway_order-fulfillment_3_1_loop_default_di" bpmnElement="Flow_Gateway_order-fulfillment_3_1_loop_default">
+        <di:waypoint x="1500" y="165" />
+        <di:waypoint x="1500" y="350" />
+        <di:waypoint x="1600" y="350" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ReserveStock_Gateway_order-fulfillment_3_1_loop_di" bpmnElement="Flow_ReserveStock_Gateway_order-fulfillment_3_1_loop">
+        <di:waypoint x="1650" y="180" />
+        <di:waypoint x="1650" y="140" />
+        <di:waypoint x="1500" y="140" />
+        <di:waypoint x="1500" y="165" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Shipping_FulfillmentDone_di" bpmnElement="Flow_Shipping_FulfillmentDone">
+        <di:waypoint x="2300" y="280" />
+        <di:waypoint x="2382" y="280" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNShape id="StartEvent_Payment_di" bpmnElement="StartEvent_Payment">
+        <dc:Bounds x="432" y="122" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_order-fulfillment_2_0_split_di" bpmnElement="Gateway_order-fulfillment_2_0_split" isMarkerVisible="true">
+        <dc:Bounds x="575" y="115" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="ManualReview_di" bpmnElement="ManualReview">
+        <dc:Bounds x="700" y="100" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_order-fulfillment_2_0_join_di" bpmnElement="Gateway_order-fulfillment_2_0_join" isMarkerVisible="true">
+        <dc:Bounds x="875" y="115" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="EndEvent_Payment_di" bpmnElement="EndEvent_Payment">
+        <dc:Bounds x="1032" y="122" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="AutoCharge_di" bpmnElement="AutoCharge">
+        <dc:Bounds x="700" y="240" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_StartEvent_Payment_Gateway_order-fulfillment_2_0_split_di" bpmnElement="Flow_StartEvent_Payment_Gateway_order-fulfillment_2_0_split">
+        <di:waypoint x="468" y="140" />
+        <di:waypoint x="575" y="140" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Gateway_order-fulfillment_2_0_split_ManualReview_di" bpmnElement="Flow_Gateway_order-fulfillment_2_0_split_ManualReview">
+        <di:waypoint x="625" y="140" />
+        <di:waypoint x="700" y="140" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Gateway_order-fulfillment_2_0_split_default_di" bpmnElement="Flow_Gateway_order-fulfillment_2_0_split_default">
+        <di:waypoint x="600" y="165" />
+        <di:waypoint x="600" y="280" />
+        <di:waypoint x="700" y="280" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ManualReview_Gateway_order-fulfillment_2_0_join_di" bpmnElement="Flow_ManualReview_Gateway_order-fulfillment_2_0_join">
+        <di:waypoint x="800" y="140" />
+        <di:waypoint x="875" y="140" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Gateway_order-fulfillment_2_0_join_EndEvent_Payment_di" bpmnElement="Flow_Gateway_order-fulfillment_2_0_join_EndEvent_Payment">
+        <di:waypoint x="925" y="140" />
+        <di:waypoint x="1032" y="140" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_AutoCharge_Gateway_order-fulfillment_2_0_join_di" bpmnElement="Flow_AutoCharge_Gateway_order-fulfillment_2_0_join">
+        <di:waypoint x="800" y="280" />
+        <di:waypoint x="900" y="280" />
+        <di:waypoint x="900" y="165" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNShape id="StartEvent_Shipping_di" bpmnElement="StartEvent_Shipping">
+        <dc:Bounds x="1707" y="332" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="PackParcel_di" bpmnElement="PackParcel">
+        <dc:Bounds x="1825" y="310" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="DispatchParcel_di" bpmnElement="DispatchParcel">
+        <dc:Bounds x="1975" y="310" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="EndEvent_Shipping_di" bpmnElement="EndEvent_Shipping">
+        <dc:Bounds x="2157" y="332" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_StartEvent_Shipping_PackParcel_di" bpmnElement="Flow_StartEvent_Shipping_PackParcel">
+        <di:waypoint x="1743" y="350" />
+        <di:waypoint x="1825" y="350" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_PackParcel_DispatchParcel_di" bpmnElement="Flow_PackParcel_DispatchParcel">
+        <di:waypoint x="1925" y="350" />
+        <di:waypoint x="1975" y="350" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_DispatchParcel_EndEvent_Shipping_di" bpmnElement="Flow_DispatchParcel_EndEvent_Shipping">
+        <di:waypoint x="2075" y="350" />
+        <di:waypoint x="2157" y="350" />
+      </bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>

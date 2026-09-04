@@ -1,0 +1,30 @@
+// Card charge with an error-boundary recovery path. The charge is a service
+// task bound to a delegate that conditionally fails; an interrupting error
+// boundary on that task catches the failure and routes to a review task
+// instead of letting the process fail outright. Started with the
+// `failCharge` process variable set, the charge fails and the review task
+// opens; started without it, the charge succeeds and the process confirms
+// normally.
+//
+// The confirmation step points at the generic delegate
+// examples/spring-boot/src/main/java/com/example/demo/LogDelegate.java; the
+// charge step points at
+// examples/spring-boot/src/main/java/com/example/demo/FailingChargeDelegate.java,
+// so this process deploys and runs on the demo profile without additional
+// Java classes.
+
+process charge-with-recovery {
+  error "CHARGE_FAILED" message "The payment charge could not be completed"
+
+  start OrderReceived
+
+  service ChargeCard "Charge the customer's card" { class = "com.example.demo.FailingChargeDelegate" }
+  service ConfirmCharge "Confirm the charge" { class = "com.example.demo.LogDelegate" }
+
+  end OrderCharged
+
+  on ChargeCard: error "CHARGE_FAILED" (code c, message m) {
+    user ReviewFailedCharge "Review the failed charge" { assignee = "demo" }
+    end ChargeFailedHandled
+  }
+}

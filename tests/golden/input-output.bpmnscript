@@ -1,0 +1,61 @@
+process expense-reimbursement {
+  start ClaimSubmitted {
+    form {
+      travelDays: number "Days spent travelling"
+      claimTotal: number "Total claimed, in euro"
+    }
+  }
+
+  user ReviewReceipts "Review the submitted receipts" {
+    assignee = "demo"
+    input receiptHint = "Match every receipt against the trip dates"
+    input escalationDesk = "expenses-l2"
+    output reviewNote = "${reviewComment}"
+  }
+
+  service RateAllowance "Rate the daily allowance" {
+    class = "com.example.expenses.AllowanceDelegate"
+    input allowanceRule = ```groovy
+def rate = travelDays > 5 ? 40 : 55
+execution.setVariable("dailyRate", rate)
+```
+    output dailyRate = "${dailyRate}"
+  }
+
+  script ConvertAllowance "Convert the allowance to the claim currency" {
+    input conversionRate = "${euroRate}"
+    output allowanceInEuro = ```groovy
+allowanceBase * conversionRate
+```
+  } ```groovy
+def base = dailyRate * travelDays
+execution.setVariable("allowanceBase", base)
+```
+
+  subprocess AuditClaim "Audit the claim" {
+    output auditVerdict = "${auditOutcome}"
+    input auditChecks = [{ "field": "receipts", "rule": "present" }, { "field": "mileage", "rule": "within-policy" }]
+  } {
+    start AuditStart
+    service MatchPolicy "Match the claim against the travel policy" { class = "com.example.expenses.PolicyDelegate" }
+    end AuditDone
+  }
+
+  call PayOut "Pay the reimbursement" {
+    process = "payment-run"
+    input payoutChannel = "sepa"
+    in claimTotal
+    out paymentReference
+    output payoutReceipt = { "start": "${payoutStart}", "lines": ["principal", "vat"] }
+  }
+
+  end ClaimSettled
+
+  on message "ClaimRecalled" {
+    input recallReason = "${recallText}"
+  } {
+    start RecallNoted
+    service RecordRecall "Record the recalled claim" { class = "com.example.expenses.RecallDelegate" }
+    end RecallRecorded
+  }
+}

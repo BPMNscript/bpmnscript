@@ -30,7 +30,7 @@ Which language workbench should be used to implement the DSL infrastructure?
 
 ## Decision Outcome
 
-Chosen option: "Langium", because it is the only workbench that natively targets VS Code with TypeScript, generates an LSP server and VS Code extension from a grammar definition, and supports browser deployment for a future playground -- all within a timeline-feasible learning curve.
+Chosen option: "Langium", because it is the only workbench that natively targets VS Code with TypeScript, generates an LSP server and VS Code extension from a grammar definition, and supports browser deployment for a future playground, all within a timeline-feasible learning curve.
 
 ### Consequences
 
@@ -50,7 +50,7 @@ Chosen option: "Langium", because it is the only workbench that natively targets
 <https://langium.org/>
 
 - Good, because it generates a full LSP server and VS Code extension from a single grammar file
-- Good, because it uses TypeScript throughout -- the same language for grammar processing, validation, code generation, and the VS Code extension
+- Good, because it uses TypeScript throughout: the same language for grammar processing, validation, code generation, and the VS Code extension
 - Good, because it natively supports browser deployment via web workers and Monaco Editor
 - Good, because it provides built-in scoping, cross-reference resolution, and validation infrastructure
 - Good, because it is actively developed (v4.2, February 2026) with TypeFox as primary maintainer
@@ -102,13 +102,14 @@ Chosen option: "Langium", because it is the only workbench that natively targets
 
 - Good, because it is backed by JetBrains and actively maintained
 - Good, because language composition is trivial in a projectional editor
-- Bad, because it is a projectional editor, not a textual DSL workbench -- files are stored as XML, not human-readable text
+- Bad, because it is a projectional editor rather than a textual DSL workbench, storing files as XML instead of human-readable text
 - Bad, because it has no VS Code support and no LSP integration
 - Bad, because it is architecturally incompatible with the thesis goal of a textual DSL
 
 ## More Information
 
-Twelve workbenches were evaluated in total. Beyond the five listed above, Spoofax, Rascal, Racket, Neverlang, textX, Chevrotain, and Kotlin+ANTLR+lsp4j were assessed and excluded for reasons including: lack of production-ready VS Code support, abandoned IDE tooling, architectural mismatch (S-expression syntax, projectional editing), or infeasible learning curves for a 15-week timeline.
+Twelve workbenches were evaluated in total.
+Beyond the five listed above, Spoofax, Rascal, Racket, Neverlang, textX, Chevrotain, and Kotlin+ANTLR+lsp4j were assessed and excluded for reasons including: lack of production-ready VS Code support, abandoned IDE tooling, architectural mismatch (S-expression syntax, projectional editing), or infeasible learning curves for a 15-week timeline.
 
 Key references:
 

@@ -19,6 +19,7 @@
     "clean": "shx rm -fr *.tsbuildinfo out",
     "build": "tsc -p tsconfig.json",
     "build:clean": "npm run clean && npm run build",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run"
   },
   "dependencies": {
@@ -28,6 +29,6 @@
     "commander": "^15.0.0"
   },
   "devDependencies": {
-    "vitest": "^4.1.10"
+    "vitest": "^4.1.11"
   }
 }

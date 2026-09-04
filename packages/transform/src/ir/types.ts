@@ -1,48 +1,38 @@
 /**
- * Intermediate Representation (IR) for BPMNscript: a small, statically typed
- * graph of flow elements and sequence flows.
+ * Intermediate Representation for BPMNscript: a statically typed graph of flow
+ * elements and sequence flows, shared by all four transforms. Field names carry
+ * no vendor prefix; the IR -> XML transform applies `operaton:` and anything
+ * that varies only at serialization. Each field below names what it maps to.
  *
- * Per ADR 0006 the IR is the single hinge between all transforms. The compile
- * (`astToIr`, `irToXml`) and decompile (`xmlToIr`, `irToDsl`) directions both
- * meet here, so the round-trip is one shared model rather than two independent
- * converters. Sitting between Langium's block-structured AST and moddle's
- * serialization-bound object model, it gives gateway synthesis and structural
- * recovery a clean graph to operate on.
- *
- * The project targets Operaton, so the IR carries the semantics Operaton
- * executes under field names that carry no vendor prefix. Vendor-specific
- * concerns that vary only at serialization (e.g. `operaton:historyTimeToLive`)
- * are not fields here; they are attached by the IR → XML transform.
+ * See ADR 0006, Use an Intermediate Representation between the AST and BPMN XML.
  */
 
 /**
- * The root IR node. Represents a single executable BPMN process.
- *
- * `isExecutable` is always `true` — the DSL targets Operaton, which
- * requires executable processes.
- *
- * `operaton:historyTimeToLive` is emitted as `"P30D"` at serialization
- * and is therefore intentionally absent from the IR.
+ * Sequence flows never cross a container boundary, so a parent can treat a
+ * nested container as one opaque activity node.
  */
-export interface BpmnProcess {
-  /** The BPMN `id` attribute. Must be unique within the definitions. */
+export interface FlowContainer {
+  /** BPMN `id`, unique across the whole definitions document. */
   id: string;
-  /** The human-readable process name (`name` attribute). */
-  name?: string;
-  /** Always `true`. */
-  isExecutable: true;
-  /** All flow nodes (start events, end events, tasks, gateways). */
   flowElements: FlowElement[];
-  /** All sequence flows connecting the flow elements. */
   sequenceFlows: SequenceFlow[];
 }
 
-/**
- * Discriminated union of all supported flow-element kinds.
- *
- * The `kind` discriminant is the single source of truth for narrowing
- * the union in switch/if chains across the codebase.
- */
+export interface BpmnProcess extends FlowContainer {
+  name?: string;
+  /** Always `true`; Operaton runs only executable processes. */
+  isExecutable: true;
+  /** `operaton:versionTag`, distinct from the engine's deployment version. */
+  versionTag?: string;
+  /**
+   * `operaton:errorMessage` on the synthesized `bpmn:Error`, in declaration
+   * order. Stored rather than derived from usage because two throws of one code
+   * share a root element, and a declared code emits its root even when unused.
+   * See ADR 0016, Derive Event Root Elements From Usage.
+   */
+  errorMessages?: { code: string; message: string }[];
+}
+
 export type FlowElement =
   | StartEvent
   | EndEvent
@@ -50,162 +40,333 @@ export type FlowElement =
   | ServiceTask
   | ScriptTask
   | ExclusiveGateway
-  | ParallelGateway;
+  | ParallelGateway
+  | SubProcess
+  | CallActivity
+  | IntermediateThrowEvent
+  | IntermediateCatchEvent
+  | BoundaryEvent;
 
-/**
- * The type of a {@link FormField}, in DSL-level (vendor-neutral) spelling.
- * Mapped to the Operaton `operaton:formField` `type` at serialization
- * (`number` becomes `long`) and back again on import.
- */
+/** Vendor-neutral spelling; `number` becomes the Operaton `long` at export. */
 export type FormFieldType = 'string' | 'number' | 'boolean' | 'date';
 
-/**
- * A form field rendered by Operaton Tasklist, serialized as an
- * `<operaton:formField>` inside the owning element's `<operaton:formData>`
- * extension element.
- *
- * `id` is both the field id and the process variable the field binds, so a
- * form field doubles as the declaration of where that variable comes from.
- */
+/** An `<operaton:formField>` inside the owning element's `<operaton:formData>`. */
 export interface FormField {
-  /** `operaton:formField id` — also the bound process-variable name. */
+  /** `operaton:formField id`, also the process variable the field binds. */
   id: string;
-  /** DSL-level field type; mapped to the Operaton `type` at serialization. */
   type: FormFieldType;
-  /** `operaton:formField label` — the human-readable label. */
+  /** `operaton:formField label`. */
   label?: string;
-  /** `operaton:formField defaultValue` — optional default, carried as text. */
+  /** `operaton:formField defaultValue`, carried as text. */
   defaultValue?: string;
 }
 
 /**
- * A BPMN `startEvent` node.
+ * The payload of a catch or a throw. On a catch the code selects what the
+ * handler catches and the bindings name the process variables the caught code
+ * and text fill; on a throw the code says what is thrown and the engine ignores
+ * the bindings. The type mirrors what BPMN can represent, not where each field
+ * is meaningful: the validator and the import contract enforce that bindings
+ * appear only on a catch and that a throw resolves to a non-empty code.
  *
- * `formFields`, when present, become an `operaton:formData` block so Tasklist
- * renders a start form.
+ * See ADR 0016, Derive Event Root Elements From Usage, and ADR 0017, Event
+ * Trigger Payloads.
  */
-export interface StartEvent {
-  kind: 'startEvent';
-  id: string;
-  name?: string;
-  formFields?: FormField[];
+export type EventDefinition =
+  | {
+      kind: 'error';
+      /** Absent on a catch means catch-all. */
+      errorCode?: string;
+      /** `operaton:errorCodeVariable`. */
+      codeVariable?: string;
+      /** `operaton:errorMessageVariable`. */
+      messageVariable?: string;
+    }
+  | {
+      kind: 'escalation';
+      /** Absent on a catch means catch-all. */
+      escalationCode?: string;
+      /** `operaton:escalationCodeVariable`. BPMN has no escalation message. */
+      codeVariable?: string;
+    }
+  | {
+      /**
+       * Payload-less: BPMN compensation carries no code and no `activityRef`.
+       * `waitForCompletion` stays unmodeled because the moddle schema defaults
+       * it to `true` and the engine supports no other value.
+       */
+      kind: 'compensation';
+    }
+  | {
+      kind: 'message';
+      /** Correlation identity, and the dedupe key: one name, one root element. */
+      messageName: string;
+    }
+  | {
+      kind: 'signal';
+      /** Broadcast identity and dedupe key, global unlike an escalation. */
+      signalName: string;
+    }
+  | {
+      kind: 'timer';
+      /** Maps 1:1 to the `timeDuration`/`timeDate`/`timeCycle` BPMN forms. */
+      timerKind: 'duration' | 'date' | 'cycle';
+      /** ISO-8601 or EL, verbatim. The clock starts with the surrounding scope. */
+      expression: string;
+    }
+  | {
+      kind: 'conditional';
+      /** Raw `${...}` body, re-checked whenever a variable changes. */
+      condition: string;
+    };
+
+/**
+ * Mixed into every event and activity kind but not the gateways, which
+ * `if`/`while`/`parallel` synthesize, leaving nowhere on the DSL surface to
+ * author one. Each field is stored only in the non-default direction, so
+ * `asyncBefore="false"` and `exclusive="true"` reproduce by omission. See ADR
+ * 0022, Carry Operaton Engine Attributes as Named IR Fields.
+ */
+export interface EngineAttributes {
+  /** `operaton:asyncBefore`. */
+  asyncBefore?: true;
+  /** `operaton:asyncAfter`. */
+  asyncAfter?: true;
+  /** `operaton:exclusive`. */
+  exclusive?: false;
+  /** `operaton:jobPriority`, an integer or EL, verbatim. */
+  jobPriority?: string;
+  /** The `operaton:failedJobRetryTimeCycle` element body, verbatim. */
+  retryCycle?: string;
+  /** `operaton:executionListener` children, in emission order. */
+  executionListeners?: ExecutionListener[];
 }
 
-/** A BPMN `endEvent` node. */
-export interface EndEvent {
-  kind: 'endEvent';
-  id: string;
-  name?: string;
+export function engineAttributes(found: {
+  asyncBefore: boolean | undefined;
+  asyncAfter: boolean | undefined;
+  exclusive: boolean | undefined;
+  jobPriority: string | undefined;
+  retryCycle: string | undefined;
+  executionListeners: ExecutionListener[] | undefined;
+}): EngineAttributes {
+  return {
+    ...(found.asyncBefore === true ? { asyncBefore: true } : {}),
+    ...(found.asyncAfter === true ? { asyncAfter: true } : {}),
+    ...(found.exclusive === false ? { exclusive: false } : {}),
+    ...(found.jobPriority === undefined
+      ? {}
+      : { jobPriority: found.jobPriority }),
+    ...(found.retryCycle === undefined ? {} : { retryCycle: found.retryCycle }),
+    ...(found.executionListeners === undefined
+      ? {}
+      : { executionListeners: found.executionListeners }),
+  };
+}
+
+/** An `operaton:inputOutput` block: read on entry, written on exit. */
+export interface IoMapped {
+  inputParameters?: IoParameter[];
+  outputParameters?: IoParameter[];
+}
+
+/** An empty direction is left out, so no `operaton:inputOutput` block is emitted. */
+export function ioMapped(
+  inputParameters: IoParameter[],
+  outputParameters: IoParameter[],
+): IoMapped {
+  return {
+    ...(inputParameters.length > 0 ? { inputParameters } : {}),
+    ...(outputParameters.length > 0 ? { outputParameters } : {}),
+  };
+}
+
+export type SettingsCarrier = EngineAttributes &
+  IoMapped & { taskListeners?: TaskListener[] };
+
+/** One `operaton:inputParameter` or `operaton:outputParameter`. */
+export interface IoParameter {
+  name: string;
+  value: IoValue;
 }
 
 /**
- * A BPMN `userTask` node.
- *
- * Optional Operaton extensions:
- * - `assignee` maps to `operaton:assignee`.
- * - `formKey` maps to `operaton:formKey`.
- * - `formFields` map to an `operaton:formData` block.
+ * The four forms Operaton's `operaton:inputOutput` schema allows. Tagging on
+ * `kind` makes a value carrying two of them unrepresentable, which is the shape
+ * {@link UnsupportedExtensionFormError} refuses on import.
  */
-export interface UserTask {
-  kind: 'userTask';
-  id: string;
-  name?: string;
-  /** `operaton:assignee` — the user or group responsible for this task. */
-  assignee?: string;
-  /** `operaton:formKey` — the embedded form key. */
-  formKey?: string;
-  /** `operaton:formData` fields Tasklist renders for this task. */
-  formFields?: FormField[];
-}
+export type IoValue =
+  | {
+      kind: 'text';
+      /** Verbatim body text of the parameter, `operaton:entry`, or `operaton:value`. */
+      text: string;
+    }
+  | ScriptValue
+  | {
+      kind: 'list';
+      /** `operaton:list` children, in document order. */
+      items: IoValue[];
+    }
+  | {
+      kind: 'map';
+      /** One `operaton:entry` per element, `key` its attribute. */
+      entries: { key: string; value: IoValue }[];
+    };
 
-/**
- * The four ways a {@link ServiceTask} is bound to executable behavior.
- *
- * Exactly one binding applies per service task. Tagging the union on
- * `kind` makes "more than one binding" unrepresentable at the type level,
- * rather than pushing the invariant into a runtime check across several
- * optional fields, and keeps every consumer's `switch (binding.kind)`
- * exhaustive when a new binding is added.
- */
-export type ServiceTaskBinding =
+/** An inline `operaton:script`, in both positions it appears in. */
+export type ScriptValue = {
+  kind: 'script';
+  /** `operaton:script scriptFormat`. */
+  format: string;
+  /** The `operaton:script` body text. */
+  code: string;
+};
+
+export type CodeBinding =
   | {
       kind: 'class';
-      /** Fully-qualified Java class name (`operaton:class`). */
+      /** `operaton:class`, fully qualified. */
       className: string;
     }
   | {
       kind: 'expression';
-      /** Raw JUEL expression text, verbatim (`operaton:expression`). */
+      /** `operaton:expression`, raw JUEL text. */
       expression: string;
     }
   | {
       kind: 'delegateExpression';
-      /** Raw JUEL expression text, verbatim (`operaton:delegateExpression`). */
+      /** `operaton:delegateExpression`, raw JUEL text. */
       expression: string;
-    }
+    };
+
+/** A listener adds the inline script a service task has no form for. */
+export type ListenerBinding = CodeBinding | ScriptValue;
+
+/** An `operaton:executionListener`, fired on entering or leaving execution. */
+export interface ExecutionListener {
+  event: 'start' | 'end';
+  binding: ListenerBinding;
+}
+
+/** An `operaton:taskListener`, fired at a point in the task's human lifecycle. */
+export interface TaskListener {
+  event: 'create' | 'assign' | 'complete' | 'update' | 'delete' | 'timeout';
+  binding: ListenerBinding;
+  /** Required when `event` is `'timeout'`, absent otherwise. */
+  timer?: Extract<EventDefinition, { kind: 'timer' }>;
+}
+
+export interface StartEvent extends EngineAttributes {
+  kind: 'startEvent';
+  id: string;
+  name?: string;
+  /** `operaton:formData` fields, so Tasklist renders a start form. */
+  formFields?: FormField[];
+  /** The caught trigger, when this start opens an event sub-process. */
+  eventDefinition?: EventDefinition;
+  /** Stored only for a non-interrupting (`alongside`) start; BPMN defaults to on. */
+  isInterrupting?: false;
+}
+
+export interface EndEvent extends EngineAttributes {
+  kind: 'endEvent';
+  id: string;
+  name?: string;
+  /** Present when this end is a typed throw, which raises the code and ends the path. */
+  eventDefinition?: EventDefinition;
+}
+
+/**
+ * The DSL's `emit`: fires and lets flow continue. Only an escalation is
+ * emittable, BPMN having no intermediate error throw. `emit` has no label slot.
+ */
+export interface IntermediateThrowEvent extends EngineAttributes {
+  kind: 'intermediateThrowEvent';
+  id: string;
+  eventDefinition: EventDefinition;
+}
+
+/**
+ * The DSL's `await`: the token pauses until the trigger fires. Error,
+ * escalation, and compensation are raised with `throw`/`emit` and never caught
+ * inline, hence the narrowing. `await` has no label slot, so the id is always
+ * synthesized.
+ */
+export interface IntermediateCatchEvent extends EngineAttributes {
+  kind: 'intermediateCatchEvent';
+  id: string;
+  eventDefinition: Extract<
+    EventDefinition,
+    { kind: 'message' | 'signal' | 'timer' | 'conditional' }
+  >;
+}
+
+export interface UserTask extends EngineAttributes, IoMapped {
+  kind: 'userTask';
+  id: string;
+  name?: string;
+  /** `operaton:assignee`. */
+  assignee?: string;
+  /** `operaton:formKey`. */
+  formKey?: string;
+  /** `operaton:formData` fields Tasklist renders. */
+  formFields?: FormField[];
+  /** `operaton:candidateGroups`, verbatim: comma-separated text or EL. */
+  candidateGroups?: string;
+  /** `operaton:candidateUsers`, verbatim. */
+  candidateUsers?: string;
+  /** `operaton:dueDate`, verbatim: ISO-8601 or EL. */
+  dueDate?: string;
+  /** `operaton:followUpDate`, verbatim: ISO-8601 or EL. */
+  followUpDate?: string;
+  /** `operaton:priority`, verbatim: an integer or EL. */
+  priority?: string;
+  /** `operaton:taskListener` children, in emission order. */
+  taskListeners?: TaskListener[];
+}
+
+/** A service task adds the external topic a listener has no form for. */
+export type ServiceTaskBinding =
+  | CodeBinding
   | {
       kind: 'external';
-      /** External task topic name (`operaton:topic`, with `operaton:type="external"`). */
+      /** `operaton:topic`, paired with `operaton:type="external"`. */
       topic: string;
     };
 
-/**
- * A BPMN `serviceTask` node.
- *
- * `binding` carries exactly one of the four execution forms Operaton
- * supports: a Java class delegate, a JUEL expression, a delegate
- * expression, or an external task topic.
- */
-export interface ServiceTask {
+export interface ServiceTask extends EngineAttributes, IoMapped {
   kind: 'serviceTask';
   id: string;
   name?: string;
-  /** The execution form and its associated value. */
   binding: ServiceTaskBinding;
+  /** `operaton:resultVariable`, filled with the binding's return value. */
+  resultVariable?: string;
 }
 
-/**
- * A BPMN `scriptTask` node.
- *
- * `format` is the canonical Operaton `scriptFormat` value (e.g.
- * `"javascript"`, `"groovy"`); `code` is the raw script body as it
- * appears inside the `<bpmn:script>` element, verbatim.
- */
-export interface ScriptTask {
+export interface ScriptTask extends EngineAttributes, IoMapped {
   kind: 'scriptTask';
   id: string;
   name?: string;
-  /** Canonical Operaton `scriptFormat` (e.g. `"javascript"`, `"groovy"`). */
+  /** Canonical Operaton `scriptFormat`, e.g. `"javascript"`, `"groovy"`. */
   format: string;
-  /** Raw script body, verbatim. */
+  /** The `<bpmn:script>` body, verbatim. */
   code: string;
+  /** `operaton:resultVariable`, filled with the script's result. */
+  resultVariable?: string;
 }
 
-/**
- * A BPMN `exclusiveGateway` (XOR gateway).
- *
- * `defaultFlowId` is the `id` of the {@link SequenceFlow} that is taken
- * when no other condition matches. Corresponds to the BPMN `default`
- * attribute on the gateway element.
- */
+/** Carries no {@link EngineAttributes}, for the reason that interface gives. */
 export interface ExclusiveGateway {
   kind: 'exclusiveGateway';
   id: string;
   name?: string;
-  /**
-   * The `id` of the default {@link SequenceFlow}.
-   * When absent, the gateway has no explicit default path.
-   */
+  /** The BPMN `default` attribute: the flow taken when no condition matches. */
   defaultFlowId?: string;
 }
 
 /**
- * A BPMN `parallelGateway` (AND gateway).
- *
- * Used as both a fork (split into concurrent branches) and a join
- * (synchronize all incoming branches). Every outgoing flow is taken
- * unconditionally, so outgoing flows carry no conditions and there is
- * no `default` field.
+ * Fork and join both. Every outgoing flow is taken, so there are no conditions
+ * and no default. Carries no {@link EngineAttributes} either.
  */
 export interface ParallelGateway {
   kind: 'parallelGateway';
@@ -213,24 +374,74 @@ export interface ParallelGateway {
   name?: string;
 }
 
+/** An activity that is itself a container; the parent wires flow to it by `id`. */
+export interface SubProcess extends FlowContainer, EngineAttributes, IoMapped {
+  kind: 'subProcess';
+  name?: string;
+  /** The event sub-process an `on` lowers to, fired by its start event's trigger. */
+  triggeredByEvent?: true;
+}
+
+export type CalledElementBinding =
+  | { kind: 'latest' }
+  | { kind: 'deployment' }
+  | { kind: 'version'; version: string };
+
 /**
- * A BPMN `sequenceFlow` connecting two flow elements.
- *
- * `sourceRef` and `targetRef` hold the **ids** of the connected elements,
- * not object references, to keep the IR serializable and acyclic.
- *
- * `conditionExpression` carries the raw expression body as it will appear
- * inside a `<bpmn:formalExpression>` element (e.g. `${amount > 1000}`).
+ * `target` always names the receiving side: the variable created in the callee
+ * for an in-mapping, back in the caller for an out-mapping. `local` restricts
+ * the mapping to the activity's local scope and is only ever `true`.
  */
+export type CallVariableMapping =
+  | { kind: 'all'; local?: true }
+  | { kind: 'variable'; source: string; target: string; local?: true }
+  | {
+      kind: 'expression';
+      sourceExpression: string;
+      target: string;
+      local?: true;
+    };
+
+/**
+ * A leaf, not a {@link FlowContainer}: the callee's body lives in its own
+ * definition. Extension children serialize in one order so the round trip is
+ * stable: `businessKey`, then `inMappings`, then `outMappings`.
+ */
+export interface CallActivity extends EngineAttributes, IoMapped {
+  kind: 'callActivity';
+  id: string;
+  name?: string;
+  /** `bpmn:calledElement`, the id of the invoked process. */
+  calledElement: string;
+  /** Absent means the engine default, latest. */
+  binding?: CalledElementBinding;
+  /** `operaton:in businessKey`, propagated to the callee. */
+  businessKey?: string;
+  inMappings?: CallVariableMapping[];
+  outMappings?: CallVariableMapping[];
+}
+
+/**
+ * The only flow element with outgoing flow but no incoming: a token appears
+ * here when the host is running and the trigger fires, so `cfg-analysis.ts`
+ * wires it to the container's virtual entry.
+ */
+export interface BoundaryEvent extends EngineAttributes {
+  kind: 'boundaryEvent';
+  id: string;
+  /** Host activity, which BPMN requires to be in this same container. */
+  attachedToRef: string;
+  /** Never compensation, which BPMN attaches through a `bpmn:association`. */
+  eventDefinition: EventDefinition;
+  /** Non-interrupting (`alongside`) only. Never with an `error` definition. */
+  cancelActivity?: false;
+}
+
 export interface SequenceFlow {
   id: string;
-  /** Id of the source {@link FlowElement}. */
+  /** Ids rather than object references keep the IR serializable and acyclic. */
   sourceRef: string;
-  /** Id of the target {@link FlowElement}. */
   targetRef: string;
-  /**
-   * Raw expression body for conditional flows.
-   * Example: `"${amount > 1000}"`.
-   */
+  /** The `<bpmn:formalExpression>` body, e.g. `"${amount > 1000}"`. */
   conditionExpression?: string;
 }

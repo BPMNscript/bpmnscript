@@ -1,34 +1,3 @@
-/**
- * Smoke tests for the CLI `build` and `parse` actions.
- *
- * These are integration tests: they exercise the full pipeline end-to-end
- * using real files, real Langium services, and real transforms. No mocks.
- *
- * Test matrix:
- *  1. buildAction(invoice-approval.bpmnscript) → .bpmn file; xmlToIr of the
- *     output does not throw; process key is `invoice-approval`.
- *  2. parseAction(invoice-approval-generated.bpmn) → .bpmnscript file;
- *     re-parsing yields zero errors.
- *  3. Severity-gating regression:
- *     a. A source with an undeclared-variable WARNING builds successfully.
- *     b. A source with a type-mismatch ERROR fails the build.
- *  4. tmLanguage copy: extension/syntaxes/ matches language/syntaxes/ and
- *     the extension's `build:prepare` script performs the copy.
- *  5. Import-warning surfacing: parsing a BPMN with dropped non-semantic
- *     content (extension attribute + lane) prints warning text and the
- *     owning element id to stderr, and does not fail (no process.exit call).
- *  6. Refusal classification: parsing a BPMN with a refused construct (a
- *     timer start event) exits with code 1 and prints an actionable message
- *     naming the offending element; no output file is written.
- *
- * NOTE on process.exit interception:
- *   `buildAction` / `parseAction` call `process.exit()` directly. To avoid
- *   terminating the test process, we spy on `process.exit` and replace it with
- *   a throwing stub. We restore the original after each test. `vi.spyOn` with
- *   `mockImplementation` is the correct mechanism here — the spy records the
- *   exit code so we can assert on it.
- */
-
 import { describe, it, expect, beforeAll, afterEach, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as fsp from 'node:fs/promises';
@@ -46,14 +15,9 @@ import { xmlToIr } from '@bpmn-script/transform';
 import { buildAction } from '../src/build.js';
 import { parseAction } from '../src/parse.js';
 
-// ---------------------------------------------------------------------------
-// Path resolution
-// ---------------------------------------------------------------------------
-
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-/** Root of the bpmnscript monorepo (four levels up from packages/cli/test/). */
 const REPO_ROOT = path.resolve(__dirname, '../../..');
 
 const INVOICE_APPROVAL_SRC = path.resolve(
@@ -76,11 +40,6 @@ const EXTENSION_TMLANGUAGE = path.resolve(
   'packages/extension/syntaxes/bpmn-script.tmLanguage.json',
 );
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-/** Sentinel error thrown by the mocked process.exit() stub. */
 class ExitCalled extends Error {
   constructor(public readonly code: number) {
     super(`process.exit(${code}) was called`);
@@ -88,10 +47,8 @@ class ExitCalled extends Error {
   }
 }
 
-/**
- * Spy on `process.exit` and throw `ExitCalled` instead of terminating.
- * Returns the spy so the caller can inspect `.mock.calls`.
- */
+// Throws so the action stops where process.exit() would have. A no-op mock
+// would let it fall through and keep running.
 function spyOnExit() {
   return vi
     .spyOn(process, 'exit')
@@ -100,11 +57,6 @@ function spyOnExit() {
     });
 }
 
-/**
- * Run `fn` inside a temporary directory, cleaning up afterwards.
- *
- * @param fn  Receives the absolute path to the temp directory.
- */
 async function withTempDir<T>(fn: (dir: string) => Promise<T>): Promise<T> {
   const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'bpmns-smoke-'));
   try {
@@ -124,16 +76,12 @@ describe('buildAction smoke', () => {
       const outBpmn = path.join(dir, 'invoice-approval.bpmn');
       const exitSpy = spyOnExit();
 
-      // buildAction should succeed (no exit call expected).
       await buildAction(INVOICE_APPROVAL_SRC, { output: outBpmn });
 
-      // Verify process.exit was NOT called.
       expect(exitSpy).not.toHaveBeenCalled();
 
-      // Output file must exist.
       expect(fs.existsSync(outBpmn)).toBe(true);
 
-      // Output must be valid BPMN that xmlToIr can import without throwing.
       const xml = fs.readFileSync(outBpmn, 'utf-8');
       let ir;
       try {
@@ -144,7 +92,6 @@ describe('buildAction smoke', () => {
         );
       }
 
-      // Process key must match the one the E2E uses to start the process.
       expect(ir.id).toBe('invoice-approval');
     });
   });
@@ -167,16 +114,12 @@ describe('parseAction smoke', () => {
       const outDsl = path.join(dir, 'invoice-approval.bpmnscript');
       const exitSpy = spyOnExit();
 
-      // parseAction should succeed (no exit call expected).
       await parseAction(GOLDEN_GENERATED_BPMN, { output: outDsl });
 
-      // Verify process.exit was NOT called.
       expect(exitSpy).not.toHaveBeenCalled();
 
-      // Output file must exist.
       expect(fs.existsSync(outDsl)).toBe(true);
 
-      // Re-parse the emitted DSL via Langium; expect zero parser errors.
       const dsl = fs.readFileSync(outDsl, 'utf-8');
       const doc = await parse(dsl);
       expect(doc.parseResult.parserErrors).toHaveLength(0);
@@ -184,12 +127,8 @@ describe('parseAction smoke', () => {
   });
 });
 
-/**
- * A BPMN process whose only supported subset is start → user task → end, but
- * the task carries a dropped Operaton extension attribute (`asyncBefore`,
- * beyond the supported assignee/formKey/class set) and the process defines a
- * lane. Both are non-semantic drops: `xmlToIr` warns instead of refusing.
- */
+// `formRef` and the lane are both dropped without loss of behaviour, so
+// `xmlToIr` warns instead of refusing.
 const LANE_AND_ASYNC_ATTR_BPMN = `<?xml version="1.0" encoding="UTF-8"?>
 <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
                   xmlns:operaton="http://operaton.org/schema/1.0/bpmn"
@@ -204,7 +143,8 @@ const LANE_AND_ASYNC_ATTR_BPMN = `<?xml version="1.0" encoding="UTF-8"?>
     </bpmn:laneSet>
     <bpmn:startEvent id="S" />
     <bpmn:userTask id="AsyncTask" name="Async Task"
-                   operaton:assignee="alice" operaton:asyncBefore="true" />
+                   operaton:assignee="alice" operaton:asyncBefore="true"
+                   operaton:formRef="review-form" />
     <bpmn:endEvent id="E" />
     <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="AsyncTask" />
     <bpmn:sequenceFlow id="F2" sourceRef="AsyncTask" targetRef="E" />
@@ -227,28 +167,74 @@ describe('parseAction — import-warning surfacing', () => {
 
       await parseAction(srcFile, { output: outDsl });
 
-      // Success path: process.exit must never be called; exit code stays 0.
       expect(exitSpy).not.toHaveBeenCalled();
 
-      // The parse still succeeds — the output file is written.
       expect(fs.existsSync(outDsl)).toBe(true);
 
       const stderrOutput = errorSpy.mock.calls
         .map((call) => String(call[0]))
         .join('\n');
 
-      // The extension-attribute warning names the concrete attribute and its
-      // owning element id.
-      expect(stderrOutput).toContain('asyncBefore');
+      expect(stderrOutput).toContain('formRef');
       expect(stderrOutput).toContain('AsyncTask');
 
-      // The lane warning names its element id.
       expect(stderrOutput).toContain('Lane_Ops');
     });
   });
 });
 
-/** A start event with a timer definition — refused via UnsupportedEventDefinitionError. */
+// Back-edge into a parallel fork (`B -> Fork`). The fork's out-edges are already
+// consumed when the back-arrival is reached, so the decompiler emits the
+// hand-repair marker instead of a `goto`. Only hand-built BPMN gets here.
+const UNSTRUCTURED_FORK_BPMN = `<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  targetNamespace="http://test">
+  <bpmn:process id="unstructured" isExecutable="true">
+    <bpmn:startEvent id="S" />
+    <bpmn:parallelGateway id="Fork" />
+    <bpmn:userTask id="A" name="A" />
+    <bpmn:userTask id="B" name="B" />
+    <bpmn:endEvent id="E" />
+    <bpmn:sequenceFlow id="F0" sourceRef="S" targetRef="Fork" />
+    <bpmn:sequenceFlow id="F1" sourceRef="Fork" targetRef="A" />
+    <bpmn:sequenceFlow id="F2" sourceRef="Fork" targetRef="B" />
+    <bpmn:sequenceFlow id="F3" sourceRef="A" targetRef="E" />
+    <bpmn:sequenceFlow id="F4" sourceRef="B" targetRef="Fork" />
+  </bpmn:process>
+</bpmn:definitions>`;
+
+describe('parseAction — unstructured-region hand-repair warning', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('a marker-containing decompile prints the hand-repair warning to stderr, exits 0, and still writes the file', async () => {
+    await withTempDir(async (dir) => {
+      const srcFile = path.join(dir, 'unstructured.bpmn');
+      const outDsl = path.join(dir, 'unstructured.bpmnscript');
+      fs.writeFileSync(srcFile, UNSTRUCTURED_FORK_BPMN, 'utf-8');
+
+      const exitSpy = spyOnExit();
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+      await parseAction(srcFile, { output: outDsl });
+
+      expect(exitSpy).not.toHaveBeenCalled();
+
+      expect(fs.existsSync(outDsl)).toBe(true);
+      expect(fs.readFileSync(outDsl, 'utf-8')).toContain(
+        '// unstructured region: hand-repair required',
+      );
+
+      const stderrOutput = errorSpy.mock.calls
+        .map((call) => String(call[0]))
+        .join('\n');
+      expect(stderrOutput).toContain('unstructured region');
+      expect(stderrOutput).toContain('hand-repair');
+    });
+  });
+});
+
 const TIMER_START_BPMN = `<?xml version="1.0" encoding="UTF-8"?>
 <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
                   targetNamespace="http://test">
@@ -281,10 +267,9 @@ describe('parseAction — refused-construct classification', () => {
         parseAction(srcFile, { output: outDsl }),
       ).rejects.toBeInstanceOf(ExitCalled);
 
-      // Exit code 1 = unsupported construct, not 2 (I/O/generic).
+      // 1 means unsupported construct; 2 would mean I/O or generic failure.
       expect(exitSpy).toHaveBeenCalledWith(1);
 
-      // No partial output written.
       expect(fs.existsSync(outDsl)).toBe(false);
 
       const stderrOutput = errorSpy.mock.calls
@@ -296,11 +281,7 @@ describe('parseAction — refused-construct classification', () => {
   });
 });
 
-/**
- * A minimal valid BPMNscript that uses `amount` without declaring it.
- * The validator emits an undeclared-variable WARNING (severity 2).
- * `build.ts` must NOT treat this as a build failure.
- */
+// Uses `amount` without declaring it: severity 2.
 const WARNING_ONLY_SOURCE = `process warning-only {
   start S
   if (amount > 1000) {
@@ -312,11 +293,7 @@ const WARNING_ONLY_SOURCE = `process warning-only {
 }
 `;
 
-/**
- * A minimal BPMNscript that declares `amount` as `string` and uses it in a
- * numeric comparison. The validator emits a type-mismatch ERROR (severity 1).
- * `build.ts` MUST exit with code 1.
- */
+// Declares `amount` as string, then compares it numerically: severity 1.
 const TYPE_MISMATCH_SOURCE = `process type-mismatch {
   var amount: string
   start S
@@ -335,41 +312,41 @@ describe('severity-gating regression', () => {
 
   it('warning-only source (undeclared variable) builds successfully (exit 0 path)', async () => {
     await withTempDir(async (dir) => {
-      // Write the fixture source to a temp file with the correct extension.
       const srcFile = path.join(dir, 'warning-only.bpmnscript');
       const outBpmn = path.join(dir, 'warning-only.bpmn');
       fs.writeFileSync(srcFile, WARNING_ONLY_SOURCE, 'utf-8');
 
       const exitSpy = spyOnExit();
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
-      // Must NOT throw (no ExitCalled), because the warning does not fail.
       await expect(
         buildAction(srcFile, { output: outBpmn }),
       ).resolves.toBeUndefined();
 
-      // process.exit must NOT have been called at all.
       expect(exitSpy).not.toHaveBeenCalled();
 
-      // The output file must be written.
       expect(fs.existsSync(outBpmn)).toBe(true);
+
+      const stderrOutput = errorSpy.mock.calls
+        .map((call) => String(call[0]))
+        .join('\n');
+      expect(stderrOutput).toContain('amount');
+      expect(stderrOutput).toContain('not declared');
     });
   });
 
   it('type-mismatch error source fails the build (exit 1 path)', async () => {
     await withTempDir(async (dir) => {
-      // Write the fixture source to a temp file with the correct extension.
       const srcFile = path.join(dir, 'type-mismatch.bpmnscript');
       const outBpmn = path.join(dir, 'type-mismatch.bpmn');
       fs.writeFileSync(srcFile, TYPE_MISMATCH_SOURCE, 'utf-8');
 
       const exitSpy = spyOnExit();
 
-      // The action must call process.exit(1), which our spy converts to ExitCalled.
       await expect(
         buildAction(srcFile, { output: outBpmn }),
       ).rejects.toBeInstanceOf(ExitCalled);
 
-      // Assert exit code is 1 (validation error), not 2 (I/O error).
       expect(exitSpy).toHaveBeenCalledWith(1);
     });
   });
@@ -377,7 +354,6 @@ describe('severity-gating regression', () => {
 
 describe('tmLanguage extension sync', () => {
   it('extension/syntaxes/ tmLanguage.json matches language/syntaxes/ (not stale)', () => {
-    // Both files must exist.
     expect(
       fs.existsSync(LANGUAGE_TMLANGUAGE),
       `language tmLanguage not found at ${LANGUAGE_TMLANGUAGE}`,
@@ -404,7 +380,6 @@ describe('tmLanguage extension sync', () => {
 
     const preparescript = pkg.scripts?.['build:prepare'] ?? '';
 
-    // Must reference both the source (language/syntaxes) and destination (./syntaxes/).
     expect(
       preparescript,
       'build:prepare must mention language/syntaxes',
@@ -413,7 +388,6 @@ describe('tmLanguage extension sync', () => {
       'syntaxes',
     );
 
-    // Must be a cp command (shx cp or cp).
     expect(preparescript, 'build:prepare must perform a file copy').toMatch(
       /\bcp\b/,
     );

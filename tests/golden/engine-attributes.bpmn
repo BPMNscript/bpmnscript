@@ -1,0 +1,335 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI" xmlns:dc="http://www.omg.org/spec/DD/20100524/DC" xmlns:di="http://www.omg.org/spec/DD/20100524/DI" xmlns:operaton="http://operaton.org/schema/1.0/bpmn" id="Definitions_claim-settlement" targetNamespace="http://bpmnscript.io/processes" exporter="BPMNscript" exporterVersion="0.0.0">
+  <bpmn:process id="claim-settlement" name="Motor claim settlement" isExecutable="true" operaton:historyTimeToLive="P30D" operaton:versionTag="3.1.0">
+    <bpmn:startEvent id="ClaimFiled" name="Claim filed" operaton:asyncAfter="true">
+      <bpmn:extensionElements>
+        <operaton:formData>
+          <operaton:formField id="claimAmount" label="Claimed amount in euros" type="long" />
+          <operaton:formField id="openQuestions" label="Questions still open with the claimant" type="long" />
+        </operaton:formData>
+      </bpmn:extensionElements>
+      <bpmn:outgoing>Flow_ClaimFiled_TriageClaim</bpmn:outgoing>
+    </bpmn:startEvent>
+    <bpmn:userTask id="TriageClaim" name="Triage the claim" operaton:asyncBefore="true" operaton:assignee="demo" operaton:candidateUsers="demo,manager" operaton:candidateGroups="adjusters" operaton:priority="75" operaton:formKey="embedded:app:forms/claim-triage.html">
+      <bpmn:incoming>Flow_ClaimFiled_TriageClaim</bpmn:incoming>
+      <bpmn:outgoing>Flow_TriageClaim_Gateway_claim-settlement_2_loop</bpmn:outgoing>
+    </bpmn:userTask>
+    <bpmn:exclusiveGateway id="Gateway_claim-settlement_2_loop" default="Flow_Gateway_claim-settlement_2_loop_default">
+      <bpmn:incoming>Flow_AskClaimant_Gateway_claim-settlement_2_loop</bpmn:incoming>
+      <bpmn:incoming>Flow_TriageClaim_Gateway_claim-settlement_2_loop</bpmn:incoming>
+      <bpmn:outgoing>Flow_Gateway_claim-settlement_2_loop_AskClaimant</bpmn:outgoing>
+      <bpmn:outgoing>Flow_Gateway_claim-settlement_2_loop_default</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+    <bpmn:userTask id="AskClaimant" name="Ask the claimant for one missing detail" operaton:assignee="demo">
+      <bpmn:incoming>Flow_Gateway_claim-settlement_2_loop_AskClaimant</bpmn:incoming>
+      <bpmn:outgoing>Flow_AskClaimant_Gateway_claim-settlement_2_loop</bpmn:outgoing>
+    </bpmn:userTask>
+    <bpmn:subProcess id="InspectVehicle" name="Inspect the vehicle" operaton:asyncBefore="true" operaton:exclusive="false">
+      <bpmn:incoming>Flow_Gateway_claim-settlement_2_loop_default</bpmn:incoming>
+      <bpmn:outgoing>Flow_InspectVehicle_Catch_claim-settlement_4</bpmn:outgoing>
+      <bpmn:startEvent id="InspectionOrdered">
+        <bpmn:outgoing>Flow_InspectionOrdered_Gateway_claim-settlement_3_1_fork</bpmn:outgoing>
+      </bpmn:startEvent>
+      <bpmn:parallelGateway id="Gateway_claim-settlement_3_1_fork">
+        <bpmn:incoming>Flow_InspectionOrdered_Gateway_claim-settlement_3_1_fork</bpmn:incoming>
+        <bpmn:outgoing>Flow_Gateway_claim-settlement_3_1_fork_AssessBodywork</bpmn:outgoing>
+        <bpmn:outgoing>Flow_Gateway_claim-settlement_3_1_fork_GradeMechanics</bpmn:outgoing>
+      </bpmn:parallelGateway>
+      <bpmn:parallelGateway id="Gateway_claim-settlement_3_1_join">
+        <bpmn:incoming>Flow_AssessBodywork_Gateway_claim-settlement_3_1_join</bpmn:incoming>
+        <bpmn:incoming>Flow_GradeMechanics_Gateway_claim-settlement_3_1_join</bpmn:incoming>
+        <bpmn:outgoing>Flow_Gateway_claim-settlement_3_1_join_InspectionReported</bpmn:outgoing>
+      </bpmn:parallelGateway>
+      <bpmn:serviceTask id="AssessBodywork" name="Assess the bodywork" operaton:asyncBefore="true" operaton:class="com.example.claims.BodyworkDelegate" operaton:resultVariable="bodyworkReport">
+        <bpmn:extensionElements>
+          <operaton:failedJobRetryTimeCycle>R3/PT5M</operaton:failedJobRetryTimeCycle>
+        </bpmn:extensionElements>
+        <bpmn:incoming>Flow_Gateway_claim-settlement_3_1_fork_AssessBodywork</bpmn:incoming>
+        <bpmn:outgoing>Flow_AssessBodywork_Gateway_claim-settlement_3_1_join</bpmn:outgoing>
+      </bpmn:serviceTask>
+      <bpmn:scriptTask id="GradeMechanics" name="Grade the mechanical damage" scriptFormat="groovy" operaton:asyncBefore="true" operaton:jobPriority="80" operaton:resultVariable="mechanicsGrade">
+        <bpmn:incoming>Flow_Gateway_claim-settlement_3_1_fork_GradeMechanics</bpmn:incoming>
+        <bpmn:outgoing>Flow_GradeMechanics_Gateway_claim-settlement_3_1_join</bpmn:outgoing>
+        <bpmn:script>def grade = claimAmount &gt; 5000 ? "major" : "minor"
+execution.setVariable("mechanicsGrade", grade)
+</bpmn:script>
+      </bpmn:scriptTask>
+      <bpmn:endEvent id="InspectionReported">
+        <bpmn:incoming>Flow_Gateway_claim-settlement_3_1_join_InspectionReported</bpmn:incoming>
+      </bpmn:endEvent>
+      <bpmn:sequenceFlow id="Flow_Gateway_claim-settlement_3_1_fork_AssessBodywork" sourceRef="Gateway_claim-settlement_3_1_fork" targetRef="AssessBodywork" />
+      <bpmn:sequenceFlow id="Flow_AssessBodywork_Gateway_claim-settlement_3_1_join" sourceRef="AssessBodywork" targetRef="Gateway_claim-settlement_3_1_join" />
+      <bpmn:sequenceFlow id="Flow_Gateway_claim-settlement_3_1_fork_GradeMechanics" sourceRef="Gateway_claim-settlement_3_1_fork" targetRef="GradeMechanics" />
+      <bpmn:sequenceFlow id="Flow_GradeMechanics_Gateway_claim-settlement_3_1_join" sourceRef="GradeMechanics" targetRef="Gateway_claim-settlement_3_1_join" />
+      <bpmn:sequenceFlow id="Flow_InspectionOrdered_Gateway_claim-settlement_3_1_fork" sourceRef="InspectionOrdered" targetRef="Gateway_claim-settlement_3_1_fork" />
+      <bpmn:sequenceFlow id="Flow_Gateway_claim-settlement_3_1_join_InspectionReported" sourceRef="Gateway_claim-settlement_3_1_join" targetRef="InspectionReported" />
+    </bpmn:subProcess>
+    <bpmn:intermediateCatchEvent id="Catch_claim-settlement_4" operaton:asyncBefore="true">
+      <bpmn:incoming>Flow_InspectVehicle_Catch_claim-settlement_4</bpmn:incoming>
+      <bpmn:outgoing>Flow_Catch_claim-settlement_4_OrderRepair</bpmn:outgoing>
+      <bpmn:messageEventDefinition messageRef="Message_RepairQuoteReceived" />
+    </bpmn:intermediateCatchEvent>
+    <bpmn:callActivity id="OrderRepair" name="Order the repair" calledElement="repair-order" operaton:asyncAfter="true">
+      <bpmn:extensionElements>
+        <operaton:in source="claimAmount" target="claimAmount" />
+        <operaton:out source="repairCost" target="repairCost" />
+        <operaton:failedJobRetryTimeCycle>R5/PT10M</operaton:failedJobRetryTimeCycle>
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_Catch_claim-settlement_4_OrderRepair</bpmn:incoming>
+      <bpmn:outgoing>Flow_OrderRepair_Gateway_claim-settlement_6_split</bpmn:outgoing>
+    </bpmn:callActivity>
+    <bpmn:exclusiveGateway id="Gateway_claim-settlement_6_split" default="Flow_Gateway_claim-settlement_6_split_default">
+      <bpmn:incoming>Flow_OrderRepair_Gateway_claim-settlement_6_split</bpmn:incoming>
+      <bpmn:outgoing>Flow_Gateway_claim-settlement_6_split_PayoutReviewNeeded</bpmn:outgoing>
+      <bpmn:outgoing>Flow_Gateway_claim-settlement_6_split_default</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+    <bpmn:exclusiveGateway id="Gateway_claim-settlement_6_join">
+      <bpmn:incoming>Flow_PayoutReviewNeeded_Gateway_claim-settlement_6_join</bpmn:incoming>
+      <bpmn:incoming>Flow_Gateway_claim-settlement_6_split_default</bpmn:incoming>
+      <bpmn:outgoing>Flow_Gateway_claim-settlement_6_join_ApprovePayout</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+    <bpmn:intermediateThrowEvent id="PayoutReviewNeeded" operaton:asyncAfter="true" operaton:jobPriority="40">
+      <bpmn:incoming>Flow_Gateway_claim-settlement_6_split_PayoutReviewNeeded</bpmn:incoming>
+      <bpmn:outgoing>Flow_PayoutReviewNeeded_Gateway_claim-settlement_6_join</bpmn:outgoing>
+      <bpmn:escalationEventDefinition escalationRef="Escalation_PAYOUT_REVIEW" />
+    </bpmn:intermediateThrowEvent>
+    <bpmn:userTask id="ApprovePayout" name="Approve the payout" operaton:assignee="manager">
+      <bpmn:incoming>Flow_Gateway_claim-settlement_6_join_ApprovePayout</bpmn:incoming>
+      <bpmn:outgoing>Flow_ApprovePayout_ClaimSettled</bpmn:outgoing>
+    </bpmn:userTask>
+    <bpmn:endEvent id="ClaimSettled" name="Claim settled" operaton:asyncBefore="true">
+      <bpmn:incoming>Flow_ApprovePayout_ClaimSettled</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:boundaryEvent id="Boundary_ApprovePayout_timer" cancelActivity="false" attachedToRef="ApprovePayout" operaton:asyncAfter="true" operaton:exclusive="false">
+      <bpmn:outgoing>Flow_Boundary_ApprovePayout_timer_NudgeApprover</bpmn:outgoing>
+      <bpmn:timerEventDefinition>
+        <bpmn:timeDuration xsi:type="bpmn:tFormalExpression">PT8H</bpmn:timeDuration>
+      </bpmn:timerEventDefinition>
+    </bpmn:boundaryEvent>
+    <bpmn:serviceTask id="NudgeApprover" name="Nudge the approver" operaton:class="com.example.claims.NudgeDelegate">
+      <bpmn:incoming>Flow_Boundary_ApprovePayout_timer_NudgeApprover</bpmn:incoming>
+      <bpmn:outgoing>Flow_NudgeApprover_EndEvent_Boundary_ApprovePayout_timer</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:endEvent id="EndEvent_Boundary_ApprovePayout_timer">
+      <bpmn:incoming>Flow_NudgeApprover_EndEvent_Boundary_ApprovePayout_timer</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:subProcess id="EventSubProcess_claim-settlement_10" triggeredByEvent="true" operaton:asyncBefore="true" operaton:jobPriority="60">
+      <bpmn:extensionElements>
+        <operaton:failedJobRetryTimeCycle>R2/PT30S</operaton:failedJobRetryTimeCycle>
+      </bpmn:extensionElements>
+      <bpmn:startEvent id="ReviewRequested" isInterrupting="false">
+        <bpmn:outgoing>Flow_ReviewRequested_ReviewLargePayout</bpmn:outgoing>
+        <bpmn:escalationEventDefinition escalationRef="Escalation_PAYOUT_REVIEW" />
+      </bpmn:startEvent>
+      <bpmn:userTask id="ReviewLargePayout" name="Review the large payout" operaton:assignee="manager">
+        <bpmn:incoming>Flow_ReviewRequested_ReviewLargePayout</bpmn:incoming>
+        <bpmn:outgoing>Flow_ReviewLargePayout_ReviewRecorded</bpmn:outgoing>
+      </bpmn:userTask>
+      <bpmn:endEvent id="ReviewRecorded">
+        <bpmn:incoming>Flow_ReviewLargePayout_ReviewRecorded</bpmn:incoming>
+      </bpmn:endEvent>
+      <bpmn:sequenceFlow id="Flow_ReviewRequested_ReviewLargePayout" sourceRef="ReviewRequested" targetRef="ReviewLargePayout" />
+      <bpmn:sequenceFlow id="Flow_ReviewLargePayout_ReviewRecorded" sourceRef="ReviewLargePayout" targetRef="ReviewRecorded" />
+    </bpmn:subProcess>
+    <bpmn:sequenceFlow id="Flow_ClaimFiled_TriageClaim" sourceRef="ClaimFiled" targetRef="TriageClaim" />
+    <bpmn:sequenceFlow id="Flow_Gateway_claim-settlement_2_loop_AskClaimant" name="openQuestions &#62; 0" sourceRef="Gateway_claim-settlement_2_loop" targetRef="AskClaimant">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">${openQuestions &gt; 0}</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="Flow_AskClaimant_Gateway_claim-settlement_2_loop" sourceRef="AskClaimant" targetRef="Gateway_claim-settlement_2_loop" />
+    <bpmn:sequenceFlow id="Flow_TriageClaim_Gateway_claim-settlement_2_loop" sourceRef="TriageClaim" targetRef="Gateway_claim-settlement_2_loop" />
+    <bpmn:sequenceFlow id="Flow_Gateway_claim-settlement_2_loop_default" sourceRef="Gateway_claim-settlement_2_loop" targetRef="InspectVehicle" />
+    <bpmn:sequenceFlow id="Flow_InspectVehicle_Catch_claim-settlement_4" sourceRef="InspectVehicle" targetRef="Catch_claim-settlement_4" />
+    <bpmn:sequenceFlow id="Flow_Catch_claim-settlement_4_OrderRepair" sourceRef="Catch_claim-settlement_4" targetRef="OrderRepair" />
+    <bpmn:sequenceFlow id="Flow_Gateway_claim-settlement_6_split_PayoutReviewNeeded" name="claimAmount &#62; 10000" sourceRef="Gateway_claim-settlement_6_split" targetRef="PayoutReviewNeeded">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">${claimAmount &gt; 10000}</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="Flow_PayoutReviewNeeded_Gateway_claim-settlement_6_join" sourceRef="PayoutReviewNeeded" targetRef="Gateway_claim-settlement_6_join" />
+    <bpmn:sequenceFlow id="Flow_Gateway_claim-settlement_6_split_default" sourceRef="Gateway_claim-settlement_6_split" targetRef="Gateway_claim-settlement_6_join" />
+    <bpmn:sequenceFlow id="Flow_OrderRepair_Gateway_claim-settlement_6_split" sourceRef="OrderRepair" targetRef="Gateway_claim-settlement_6_split" />
+    <bpmn:sequenceFlow id="Flow_Gateway_claim-settlement_6_join_ApprovePayout" sourceRef="Gateway_claim-settlement_6_join" targetRef="ApprovePayout" />
+    <bpmn:sequenceFlow id="Flow_ApprovePayout_ClaimSettled" sourceRef="ApprovePayout" targetRef="ClaimSettled" />
+    <bpmn:sequenceFlow id="Flow_Boundary_ApprovePayout_timer_NudgeApprover" sourceRef="Boundary_ApprovePayout_timer" targetRef="NudgeApprover" />
+    <bpmn:sequenceFlow id="Flow_NudgeApprover_EndEvent_Boundary_ApprovePayout_timer" sourceRef="NudgeApprover" targetRef="EndEvent_Boundary_ApprovePayout_timer" />
+  </bpmn:process>
+  <bpmn:escalation id="Escalation_PAYOUT_REVIEW" name="PAYOUT_REVIEW" escalationCode="PAYOUT_REVIEW" />
+  <bpmn:message id="Message_RepairQuoteReceived" name="RepairQuoteReceived" />
+  <bpmndi:BPMNDiagram id="BPMNDiagram_claim-settlement">
+    <bpmndi:BPMNPlane id="BPMNPlane_claim-settlement" bpmnElement="claim-settlement">
+      <bpmndi:BPMNShape id="ClaimFiled_di" bpmnElement="ClaimFiled">
+        <dc:Bounds x="57" y="52" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="TriageClaim_di" bpmnElement="TriageClaim">
+        <dc:Bounds x="625" y="30" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_claim-settlement_2_loop_di" bpmnElement="Gateway_claim-settlement_2_loop" isMarkerVisible="true">
+        <dc:Bounds x="800" y="45" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="AskClaimant_di" bpmnElement="AskClaimant">
+        <dc:Bounds x="925" y="30" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="EventSubProcess_claim-settlement_10_di" bpmnElement="EventSubProcess_claim-settlement_10" isExpanded="true">
+        <dc:Bounds x="25" y="170" width="550" height="220" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="InspectVehicle_di" bpmnElement="InspectVehicle" isExpanded="true">
+        <dc:Bounds x="925" y="170" width="850" height="360" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Catch_claim-settlement_4_di" bpmnElement="Catch_claim-settlement_4">
+        <dc:Bounds x="1857" y="192" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="OrderRepair_di" bpmnElement="OrderRepair">
+        <dc:Bounds x="1975" y="170" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_claim-settlement_6_split_di" bpmnElement="Gateway_claim-settlement_6_split" isMarkerVisible="true">
+        <dc:Bounds x="2150" y="185" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="PayoutReviewNeeded_di" bpmnElement="PayoutReviewNeeded">
+        <dc:Bounds x="2307" y="192" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_claim-settlement_6_join_di" bpmnElement="Gateway_claim-settlement_6_join" isMarkerVisible="true">
+        <dc:Bounds x="2450" y="185" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="ApprovePayout_di" bpmnElement="ApprovePayout">
+        <dc:Bounds x="2575" y="170" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Boundary_ApprovePayout_timer_di" bpmnElement="Boundary_ApprovePayout_timer">
+        <dc:Bounds x="2607" y="232" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="ClaimSettled_di" bpmnElement="ClaimSettled">
+        <dc:Bounds x="2757" y="192" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="NudgeApprover_di" bpmnElement="NudgeApprover">
+        <dc:Bounds x="2725" y="590" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="EndEvent_Boundary_ApprovePayout_timer_di" bpmnElement="EndEvent_Boundary_ApprovePayout_timer">
+        <dc:Bounds x="2907" y="612" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_ClaimFiled_TriageClaim_di" bpmnElement="Flow_ClaimFiled_TriageClaim">
+        <di:waypoint x="93" y="70" />
+        <di:waypoint x="625" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_TriageClaim_Gateway_claim-settlement_2_loop_di" bpmnElement="Flow_TriageClaim_Gateway_claim-settlement_2_loop">
+        <di:waypoint x="725" y="70" />
+        <di:waypoint x="800" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Gateway_claim-settlement_2_loop_AskClaimant_di" bpmnElement="Flow_Gateway_claim-settlement_2_loop_AskClaimant">
+        <di:waypoint x="850" y="70" />
+        <di:waypoint x="925" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Gateway_claim-settlement_2_loop_default_di" bpmnElement="Flow_Gateway_claim-settlement_2_loop_default">
+        <di:waypoint x="825" y="95" />
+        <di:waypoint x="825" y="350" />
+        <di:waypoint x="925" y="350" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_AskClaimant_Gateway_claim-settlement_2_loop_di" bpmnElement="Flow_AskClaimant_Gateway_claim-settlement_2_loop">
+        <di:waypoint x="975" y="110" />
+        <di:waypoint x="975" y="140" />
+        <di:waypoint x="825" y="140" />
+        <di:waypoint x="825" y="95" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_InspectVehicle_Catch_claim-settlement_4_di" bpmnElement="Flow_InspectVehicle_Catch_claim-settlement_4">
+        <di:waypoint x="1775" y="210" />
+        <di:waypoint x="1857" y="210" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Catch_claim-settlement_4_OrderRepair_di" bpmnElement="Flow_Catch_claim-settlement_4_OrderRepair">
+        <di:waypoint x="1893" y="210" />
+        <di:waypoint x="1975" y="210" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_OrderRepair_Gateway_claim-settlement_6_split_di" bpmnElement="Flow_OrderRepair_Gateway_claim-settlement_6_split">
+        <di:waypoint x="2075" y="210" />
+        <di:waypoint x="2150" y="210" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Gateway_claim-settlement_6_split_PayoutReviewNeeded_di" bpmnElement="Flow_Gateway_claim-settlement_6_split_PayoutReviewNeeded">
+        <di:waypoint x="2200" y="210" />
+        <di:waypoint x="2307" y="210" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Gateway_claim-settlement_6_split_default_di" bpmnElement="Flow_Gateway_claim-settlement_6_split_default">
+        <di:waypoint x="2175" y="235" />
+        <di:waypoint x="2175" y="280" />
+        <di:waypoint x="2475" y="280" />
+        <di:waypoint x="2475" y="235" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_PayoutReviewNeeded_Gateway_claim-settlement_6_join_di" bpmnElement="Flow_PayoutReviewNeeded_Gateway_claim-settlement_6_join">
+        <di:waypoint x="2343" y="210" />
+        <di:waypoint x="2450" y="210" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Gateway_claim-settlement_6_join_ApprovePayout_di" bpmnElement="Flow_Gateway_claim-settlement_6_join_ApprovePayout">
+        <di:waypoint x="2500" y="210" />
+        <di:waypoint x="2575" y="210" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ApprovePayout_ClaimSettled_di" bpmnElement="Flow_ApprovePayout_ClaimSettled">
+        <di:waypoint x="2675" y="210" />
+        <di:waypoint x="2757" y="210" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Boundary_ApprovePayout_timer_NudgeApprover_di" bpmnElement="Flow_Boundary_ApprovePayout_timer_NudgeApprover">
+        <di:waypoint x="2625" y="268" />
+        <di:waypoint x="2625" y="630" />
+        <di:waypoint x="2725" y="630" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_NudgeApprover_EndEvent_Boundary_ApprovePayout_timer_di" bpmnElement="Flow_NudgeApprover_EndEvent_Boundary_ApprovePayout_timer">
+        <di:waypoint x="2825" y="630" />
+        <di:waypoint x="2907" y="630" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNShape id="ReviewRequested_di" bpmnElement="ReviewRequested">
+        <dc:Bounds x="132" y="262" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="ReviewLargePayout_di" bpmnElement="ReviewLargePayout">
+        <dc:Bounds x="250" y="240" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="ReviewRecorded_di" bpmnElement="ReviewRecorded">
+        <dc:Bounds x="432" y="262" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_ReviewRequested_ReviewLargePayout_di" bpmnElement="Flow_ReviewRequested_ReviewLargePayout">
+        <di:waypoint x="168" y="280" />
+        <di:waypoint x="250" y="280" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ReviewLargePayout_ReviewRecorded_di" bpmnElement="Flow_ReviewLargePayout_ReviewRecorded">
+        <di:waypoint x="350" y="280" />
+        <di:waypoint x="432" y="280" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNShape id="InspectionOrdered_di" bpmnElement="InspectionOrdered">
+        <dc:Bounds x="1032" y="262" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_claim-settlement_3_1_fork_di" bpmnElement="Gateway_claim-settlement_3_1_fork">
+        <dc:Bounds x="1175" y="255" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="AssessBodywork_di" bpmnElement="AssessBodywork">
+        <dc:Bounds x="1300" y="240" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_claim-settlement_3_1_join_di" bpmnElement="Gateway_claim-settlement_3_1_join">
+        <dc:Bounds x="1475" y="255" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="InspectionReported_di" bpmnElement="InspectionReported">
+        <dc:Bounds x="1632" y="262" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="GradeMechanics_di" bpmnElement="GradeMechanics">
+        <dc:Bounds x="1300" y="380" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_InspectionOrdered_Gateway_claim-settlement_3_1_fork_di" bpmnElement="Flow_InspectionOrdered_Gateway_claim-settlement_3_1_fork">
+        <di:waypoint x="1068" y="280" />
+        <di:waypoint x="1175" y="280" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Gateway_claim-settlement_3_1_fork_AssessBodywork_di" bpmnElement="Flow_Gateway_claim-settlement_3_1_fork_AssessBodywork">
+        <di:waypoint x="1225" y="280" />
+        <di:waypoint x="1300" y="280" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Gateway_claim-settlement_3_1_fork_GradeMechanics_di" bpmnElement="Flow_Gateway_claim-settlement_3_1_fork_GradeMechanics">
+        <di:waypoint x="1200" y="305" />
+        <di:waypoint x="1200" y="420" />
+        <di:waypoint x="1300" y="420" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_AssessBodywork_Gateway_claim-settlement_3_1_join_di" bpmnElement="Flow_AssessBodywork_Gateway_claim-settlement_3_1_join">
+        <di:waypoint x="1400" y="280" />
+        <di:waypoint x="1475" y="280" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Gateway_claim-settlement_3_1_join_InspectionReported_di" bpmnElement="Flow_Gateway_claim-settlement_3_1_join_InspectionReported">
+        <di:waypoint x="1525" y="280" />
+        <di:waypoint x="1632" y="280" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_GradeMechanics_Gateway_claim-settlement_3_1_join_di" bpmnElement="Flow_GradeMechanics_Gateway_claim-settlement_3_1_join">
+        <di:waypoint x="1400" y="420" />
+        <di:waypoint x="1500" y="420" />
+        <di:waypoint x="1500" y="305" />
+      </bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>

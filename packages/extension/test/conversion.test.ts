@@ -1,21 +1,10 @@
-/**
- * Unit tests for the VS Code adapter layer in `conversion.ts`.
- *
- * `vscode` is not an installed npm package — it is injected by the VS Code
- * extension host at runtime — so it is mocked here with the minimal surface
- * the adapter touches. `conversion-core.ts` is mocked too, so each test
- * drives a canned `CompileResult`/`DecompileResult` and asserts only on the
- * composed notification string the adapter builds around it: the
- * single-filename-prefix contract documented on `compileCommand` and
- * `decompileCommand`.
- */
+// `vscode` is injected by the extension host, not installed from npm, so it
+// has to be mocked with the surface the adapter touches.
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-// `vi.mock` factories are hoisted above the rest of the module, so the mock
-// functions referenced inside must be created through `vi.hoisted` — a plain
-// top-level `const` would still be in its temporal dead zone when the
-// factory below runs.
+// vi.mock factories are hoisted above the module body, so a plain top-level
+// const would still be in its temporal dead zone here. vi.hoisted is required.
 const mocks = vi.hoisted(() => ({
   showWarningMessage: vi.fn(),
   showErrorMessage: vi.fn(),
@@ -62,8 +51,8 @@ vi.mock('vscode', () => {
       fs: {
         readFile: vi.fn().mockResolvedValue(new Uint8Array()),
         writeFile: vi.fn().mockResolvedValue(undefined),
-        // Rejects so `confirmOverwrite` takes the "target does not exist,
-        // no confirmation needed" branch in every test below.
+        // Rejecting sends confirmOverwrite down its "nothing to overwrite"
+        // branch, so no test below hits the modal.
         stat: vi.fn().mockRejectedValue(new Error('ENOENT')),
       },
     },
@@ -87,7 +76,6 @@ import {
   decompileCommand,
 } from '../src/extension/conversion.js';
 
-/** A `DiagnosticCollection` stub — only `set`/`delete` are ever called. */
 function fakeDiagnosticCollection(): vscode.DiagnosticCollection {
   return {
     set: vi.fn(),
@@ -95,7 +83,6 @@ function fakeDiagnosticCollection(): vscode.DiagnosticCollection {
   } as unknown as vscode.DiagnosticCollection;
 }
 
-/** Count of occurrences of `needle` in `haystack`. */
 function occurrences(haystack: string, needle: string): number {
   return haystack.split(needle).length - 1;
 }
@@ -113,7 +100,7 @@ describe('decompileCommand — composed notification strings', () => {
         {
           elementId: 'Task1',
           category: 'extensionAttribute',
-          message: "The 'assignee' setting on 'Task1' was not imported",
+          message: "The 'formRef' setting on 'Task1' was not imported",
         },
       ],
     });
@@ -125,11 +112,11 @@ describe('decompileCommand — composed notification strings', () => {
     const message = mocks.showWarningMessage.mock.calls[0]?.[0] as string;
     expect(message).toBe(
       'BPMNscript: "example.bpmn" dropped 1 item(s) during decompile: ' +
-        "The 'assignee' setting on 'Task1' was not imported",
+        "The 'formRef' setting on 'Task1' was not imported",
     );
     expect(occurrences(message, 'example.bpmn')).toBe(1);
-    // The core message is the single source of the element id — no
-    // adapter-side "Task1:" prefix doubling it.
+    // The core message is the only source of the element id; the adapter must
+    // not prepend its own copy.
     expect(occurrences(message, 'Task1')).toBe(1);
   });
 
@@ -179,7 +166,6 @@ describe('compileCommand — composed notification strings', () => {
     const handler = compileCommand(diagnostics, '0.0.1');
     await handler(vscode.Uri.file('/tmp/example.bpmnscript'));
 
-    // Stale diagnostics are cleared before the fresh set is applied.
     expect(diagnostics.delete).toHaveBeenCalledTimes(1);
     expect(diagnostics.set).toHaveBeenCalledTimes(1);
 
@@ -200,7 +186,7 @@ describe('compileCommand — composed notification strings', () => {
     const handler = compileCommand(diagnostics, '0.0.1');
     await handler(vscode.Uri.file('/tmp/example.bpmnscript'));
 
-    // Even an unexpected failure clears stale diagnostics for the file.
+    // Stale diagnostics go even on the unexpected-failure path.
     expect(diagnostics.delete).toHaveBeenCalledTimes(1);
 
     expect(mocks.showErrorMessage).toHaveBeenCalledTimes(1);

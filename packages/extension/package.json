@@ -100,18 +100,19 @@
     "build:post": "npm run build:prepare && node esbuild.mjs",
     "build:clean": "npm run clean && npm run build",
     "watch": "npm run build:prepare && concurrently -n tsc,esbuild -c blue,yellow \"tsc -b tsconfig.json --watch\" \"node esbuild.mjs --watch\"",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run"
   },
   "dependencies": {
     "@bpmn-script/language": "0.0.1",
     "@bpmn-script/transform": "0.0.1",
-    "vscode-languageclient": "~10.1.0"
+    "vscode-languageclient": "~10.1.1"
   },
   "devDependencies": {
-    "@types/vscode": "~1.125.0",
-    "concurrently": "^10.0.4",
-    "esbuild": "~0.28.1",
-    "vitest": "^4.1.10"
+    "@types/vscode": "~1.134.0",
+    "concurrently": "^10.0.5",
+    "esbuild": "~0.28.2",
+    "vitest": "^4.1.11"
   },
   "vsce": {
     "dependencies": false

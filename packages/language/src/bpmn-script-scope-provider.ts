@@ -1,62 +1,140 @@
 /**
- * Process-scoped cross-reference resolution for `goto`.
+ * Container-scoped resolution for `goto` and for an `on` handler's host: both
+ * see every named step of their own flow container at any nesting depth and
+ * nothing outside it. Every other cross-reference keeps Langium's default.
  *
- * A `goto target=[Statement:ID]` may only jump to a step *within the same
- * process*. Langium's stock scope provider makes a named step visible only to
- * references whose own container chain passes through that step's block (classic
- * block-lexical visibility), which is wrong for `goto` in two ways:
+ * Langium's stock block-lexical visibility is wrong for `goto` twice over: a
+ * step nested in a `parallel`/`if`/`while` block would be invisible to a `goto`
+ * outside it even though the jump is legal, and nothing would stop a jump into
+ * a different container. BPMN forbids a sequence flow from crossing a
+ * sub-process boundary, an event handler included, so a cross-boundary `goto`
+ * must fail to resolve; `bpmn-script-linker.ts` turns that into a boundary
+ * explanation.
  *
- *   1. A step nested inside a `parallel`/`if`/`while` block is invisible to a
- *      `goto` positioned outside that block, so a legitimate whole-process jump
- *      target cannot resolve at all — and the "goto into a parallel branch"
- *      validator can never see a resolved target to flag.
- *   2. Nothing structurally guarantees a `goto` cannot reach into a *different*
- *      process should the global index ever start exporting step names.
- *
- * This provider replaces the scope for the `goto` target reference with the set
- * of every named step in the *enclosing process*, regardless of block nesting,
- * and with no global fall-through. A `goto` therefore resolves to any step of
- * its own process and to nothing outside it. Every other cross-reference keeps
- * Langium's default scope.
- *
- * The `NameProvider` still keys on the AST `name` property (see the grammar's
- * naming-convention comment); this provider only *narrows the candidate set*, it
- * does not change the key — so no custom `NameProvider` is needed.
+ * The host candidate set stays at "the named steps of this container" rather
+ * than narrowing to activities, so a host naming a step that cannot carry an
+ * attached event still resolves and the validator can say what it is.
  */
 
 import {
   AstUtils,
   DefaultScopeProvider,
+  type AstNode,
   type ReferenceInfo,
   type Scope,
 } from 'langium';
-import { isGotoStatement, isProcess } from './generated/ast.js';
+import {
+  isCallActivity,
+  isEmitStatement,
+  isEndEvent,
+  isGotoStatement,
+  isOnHandler,
+  isProcess,
+  isScriptTask,
+  isServiceTask,
+  isStartEvent,
+  isSubProcess,
+  isThrowStatement,
+  isUserTask,
+  type CallActivity,
+  type EmitStatement,
+  type EndEvent,
+  type OnHandler,
+  type Process,
+  type ScriptTask,
+  type ServiceTask,
+  type StartEvent,
+  type SubProcess,
+  type ThrowStatement,
+  type UserTask,
+} from './generated/ast.js';
 
 /**
- * Restricts `goto` resolution to the enclosing process; delegates every other
- * cross-reference to {@link DefaultScopeProvider}.
+ * The `Statement` subtypes carrying a `name`, so the valid `goto` targets and
+ * handler hosts. A `throw`/`emit` name is optional (the id is synthesised when
+ * omitted), so an unnamed one is neither referenceable nor able to collide.
  */
+export type NamedStatement =
+  | StartEvent
+  | EndEvent
+  | UserTask
+  | ServiceTask
+  | ScriptTask
+  | SubProcess
+  | CallActivity
+  | (ThrowStatement & { name: string })
+  | (EmitStatement & { name: string });
+
+export function isNamedStatement(node: AstNode): node is NamedStatement {
+  return (
+    isStartEvent(node) ||
+    isEndEvent(node) ||
+    isUserTask(node) ||
+    isServiceTask(node) ||
+    isScriptTask(node) ||
+    isSubProcess(node) ||
+    isCallActivity(node) ||
+    ((isThrowStatement(node) || isEmitStatement(node)) &&
+      node.name !== undefined)
+  );
+}
+
+/** A handler body counts as a full BPMN container for every container-scoped rule. */
+export type FlowContainer = Process | SubProcess | OnHandler;
+
+export function isFlowContainer(node: AstNode): node is FlowContainer {
+  return isProcess(node) || isSubProcess(node) || isOnHandler(node);
+}
+
+/**
+ * The flow container `node` lives in. The walk starts at `node.$container` so a
+ * node that is itself a container, as a `SubProcess` statement is, does not
+ * short-circuit it. A handler carrying a host is skipped rather than returned:
+ * its body compiles into the container its host lives in, so its steps and the
+ * surrounding main flow share one sequence-flow scope.
+ */
+export function enclosingFlowContainer(
+  node: AstNode,
+): FlowContainer | undefined {
+  let container = AstUtils.getContainerOfType(node.$container, isFlowContainer);
+  while (container && isOnHandler(container) && container.host !== undefined) {
+    container = AstUtils.getContainerOfType(
+      container.$container,
+      isFlowContainer,
+    );
+  }
+  return container;
+}
+
+function isContainerScoped(context: ReferenceInfo): boolean {
+  return (
+    (isGotoStatement(context.container) && context.property === 'target') ||
+    (isOnHandler(context.container) && context.property === 'host')
+  );
+}
+
 export class BpmnScriptScopeProvider extends DefaultScopeProvider {
-  /**
-   * @param context The cross-reference for which a scope is requested.
-   * @returns For the `goto` target reference, the named steps of the enclosing
-   *   process (any nesting depth, no outer scope); otherwise the default scope.
-   */
   override getScope(context: ReferenceInfo): Scope {
-    // Only the `goto` target reference is process-scoped; delegate the rest.
-    if (isGotoStatement(context.container) && context.property === 'target') {
-      const process = AstUtils.getContainerOfType(context.container, isProcess);
-      if (process) {
-        // The reference type is `Statement`; keep only the named descendants
-        // that are goto-targetable (its `Statement` subtypes), so process-scope
-        // declarations such as `var` (which also carry a `name`) never pollute
-        // the goto scope. `createScopeForNodes` drops the ones without a name.
+    if (isContainerScoped(context)) {
+      // From the reference's container, not the node itself: for a handler
+      // host the referencing node IS a container candidate, and a scope taken
+      // from it would offer the handler's own body instead of the host's.
+      const container = enclosingFlowContainer(context.container);
+      if (container) {
+        // The reference type is `Statement`; keep only the referenceable named
+        // subtypes so process-scope declarations such as `var`, which also
+        // carry a `name`, never pollute the scope.
         const referenceType = this.reflection.getReferenceType(context);
-        const targets = AstUtils.streamAllContents(process).filter((node) =>
-          this.reflection.isSubtype(node.$type, referenceType),
+        const targets = AstUtils.streamAllContents(container).filter(
+          (node) =>
+            this.reflection.isSubtype(node.$type, referenceType) &&
+            // A candidate counts only where this container is its own nearest
+            // one, isolating a nested `subprocess` or host-less handler body. A
+            // step in a hosted handler's body passes: it lowers inline.
+            enclosingFlowContainer(node) === container,
         );
-        // No outer scope: a goto sees only its own process's steps, so a step of
-        // any other process is unreachable by construction.
+        // No outer scope: an ancestor container, a sibling container, or
+        // another process entirely is unreachable by construction.
         return this.createScopeForNodes(targets);
       }
     }

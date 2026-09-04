@@ -22,9 +22,16 @@ import type {
   FlowElement,
   SequenceFlow,
 } from '../src/ir/types.js';
+import {
+  boundaryEvent,
+  errorDef,
+  messageDef,
+  signalDef,
+  typedEvent,
+} from './helpers/ir-fixtures.js';
 
 // ---------------------------------------------------------------------------
-// Tiny fixture helpers — keep the graphs readable.
+// Tiny fixture helpers: keep the graphs readable.
 // ---------------------------------------------------------------------------
 
 function start(id: string): FlowElement {
@@ -50,12 +57,7 @@ function process(
   flowElements: FlowElement[],
   sequenceFlows: SequenceFlow[],
 ): BpmnProcess {
-  return {
-    id: 'P',
-    isExecutable: true,
-    flowElements,
-    sequenceFlows,
-  };
+  return { id: 'P', isExecutable: true, flowElements, sequenceFlows };
 }
 
 // ---------------------------------------------------------------------------
@@ -127,7 +129,7 @@ describe('diamond (exclusive gateways)', () => {
 });
 
 // ---------------------------------------------------------------------------
-// 2. Parallel diamond — IDENTICAL relations (gateway-agnostic proof).
+// 2. Parallel diamond: IDENTICAL relations (gateway-agnostic proof).
 // ---------------------------------------------------------------------------
 
 describe('diamond (parallel gateways) — gateway agnostic', () => {
@@ -164,11 +166,11 @@ describe('diamond (parallel gateways) — gateway agnostic', () => {
 // ---------------------------------------------------------------------------
 // 3. Pre-test loop.
 //
-//   start → head
-//   head → body   (conditioned entry)
-//   head → exit   (default out)
-//   body → head   (back-edge)
-//   exit → end
+//   start -> head
+//   head -> body   (conditioned entry)
+//   head -> exit   (default out)
+//   body -> head   (back-edge)
+//   exit -> end
 // ---------------------------------------------------------------------------
 
 describe('pre-test loop', () => {
@@ -206,7 +208,7 @@ describe('pre-test loop', () => {
 });
 
 // ---------------------------------------------------------------------------
-// 4. Multi-exit process — virtual sink post-dominates all real ends.
+// 4. Multi-exit process: virtual sink post-dominates all real ends.
 // ---------------------------------------------------------------------------
 
 describe('multi-exit process', () => {
@@ -237,17 +239,17 @@ describe('multi-exit process', () => {
 });
 
 // ---------------------------------------------------------------------------
-// 5. Irreducible / unstructured graph — no false back-edge, queries total.
+// 5. Irreducible / unstructured graph: no false back-edge, queries total.
 //
 // Two entries into a 2-node loop region create irreducibility:
-//   start → A
-//   start → B
-//   A → B
-//   B → A      (the genuine cycle)
-//   A → end
-//   B → end
+//   start -> A
+//   start -> B
+//   A -> B
+//   B -> A      (the genuine cycle)
+//   A -> end
+//   B -> end
 //
-// A→B and B→A form a cycle with two external entries (start→A, start→B):
+// A->B and B->A form a cycle with two external entries (start->A, start->B):
 // neither A nor B dominates the other, so the cycle is irreducible.
 // A loop-back to a non-dominating header must NOT be reported as a back-edge.
 // ---------------------------------------------------------------------------
@@ -287,7 +289,7 @@ describe('irreducible / unstructured graph', () => {
 });
 
 // ---------------------------------------------------------------------------
-// 6. Unreachable nodes — degenerate but possible in hand-built IR.
+// 6. Unreachable nodes: degenerate but possible in hand-built IR.
 //
 // `orphan` has no path from the start; queries must stay total.
 // ---------------------------------------------------------------------------
@@ -365,17 +367,17 @@ describe('adjacency queries and totality', () => {
 });
 
 // ---------------------------------------------------------------------------
-// 8. Two-loop process — `backEdges()` preserves the `sequenceFlows` input order.
+// 8. Two-loop process: `backEdges()` preserves the `sequenceFlows` input order.
 //
 // Two sequential pre-test loops:
-//   start → head1
-//   head1 → body1 → head1   (loop 1 back-edge)
-//   head1 → head2
-//   head2 → body2 → head2   (loop 2 back-edge)
-//   head2 → end
+//   start -> head1
+//   head1 -> body1 -> head1   (loop 1 back-edge)
+//   head1 -> head2
+//   head2 -> body2 -> head2   (loop 2 back-edge)
+//   head2 -> end
 //
-// The two back-edges are deliberately listed in `sequenceFlows` in the order
-// [body2→head2, body1→head1] — i.e. NOT topological / discovery order. Because
+// The two back-edges are deliberately listed in `sequenceFlows` as
+// [body2->head2, body1->head1], NOT topological / discovery order. Because
 // `backEdges()` is a stable filter over `sequenceFlows`, it must echo that exact
 // input order. A reorder (e.g. driven by RPO traversal) would fail this.
 // ---------------------------------------------------------------------------
@@ -412,10 +414,236 @@ describe('two-loop process — backEdges preserves input order', () => {
 
   it('returns the back-edges in `sequenceFlows` input order, not topological order', () => {
     const back = cfg.backEdges();
-    // The array lists body2→head2 first, so it must come out first.
+    // The array lists body2->head2 first, so it must come out first.
     expect(back.map((f) => [f.sourceRef, f.targetRef])).toEqual([
       ['body2', 'head2'],
       ['body1', 'head1'],
     ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 9. Boundary event as a second CFG entry.
+//
+// A boundary event has outgoing edges but never an incoming sequence flow: a
+// token appears there directly from its host activity, not by traversing a
+// flow. It must be wired to the virtual entry unconditionally, like a start
+// event, or its whole escape chain has no immediate dominator.
+// ---------------------------------------------------------------------------
+
+describe('boundary event as a second CFG entry', () => {
+  const escapeChainCfg = analyzeCfg(
+    process(
+      [
+        start('start'),
+        task('main'),
+        end('end'),
+        boundaryEvent('Boundary_main_error', 'main', errorDef()),
+        task('escapeA'),
+        end('escapeEnd'),
+      ],
+      [
+        flow('start', 'main'),
+        flow('main', 'end'),
+        flow('Boundary_main_error', 'escapeA'),
+        flow('escapeA', 'escapeEnd'),
+      ],
+    ),
+  );
+
+  it("the escape chain's first node is immediately dominated by the boundary event", () => {
+    expect(escapeChainCfg.immediateDominator('escapeA')).toBe(
+      'Boundary_main_error',
+    );
+  });
+
+  it('the boundary event itself is immediately dominated by the virtual entry', () => {
+    expect(escapeChainCfg.immediateDominator('Boundary_main_error')).toBe(
+      VIRTUAL_ENTRY,
+    );
+  });
+
+  it('an if/else inside an escape chain gets a clean post-dominating join', () => {
+    const proc = process(
+      [
+        start('start'),
+        task('main'),
+        end('end'),
+        boundaryEvent('Boundary_main_error', 'main', errorDef()),
+        xor('splitB'),
+        task('branchA'),
+        task('branchB'),
+        xor('joinB'),
+        end('endB'),
+      ],
+      [
+        flow('start', 'main'),
+        flow('main', 'end'),
+        flow('Boundary_main_error', 'splitB'),
+        flow('splitB', 'branchA'),
+        flow('splitB', 'branchB'),
+        flow('branchA', 'joinB'),
+        flow('branchB', 'joinB'),
+        flow('joinB', 'endB'),
+      ],
+    );
+    const cfg = analyzeCfg(proc);
+
+    expect(cfg.immediateDominator('joinB')).toBe('splitB');
+    expect(cfg.immediatePostDominator('splitB')).toBe('joinB');
+  });
+
+  it('a node reached from both the main flow and an escape chain loses its tight idom (accepted trade-off)', () => {
+    // `shared` is reachable both by the ordinary flow (start -> main -> shared)
+    // and from the boundary event's escape chain (Boundary_main_error ->
+    // shared), so only the virtual entry dominates it. That is the accepted
+    // consequence of wiring a boundary event to the entry: an `if`/`else`
+    // whose join a boundary chain jumps into degrades to `goto`s on decompile,
+    // because the region genuinely is not dominated by its split.
+    const proc = process(
+      [
+        start('start'),
+        task('main'),
+        boundaryEvent('Boundary_main_error', 'main', errorDef()),
+        task('shared'),
+        end('end'),
+      ],
+      [
+        flow('start', 'main'),
+        flow('main', 'shared'),
+        flow('Boundary_main_error', 'shared'),
+        flow('shared', 'end'),
+      ],
+    );
+    const cfg = analyzeCfg(proc);
+
+    expect(cfg.immediateDominator('shared')).toBe(VIRTUAL_ENTRY);
+    expect(cfg.dominates('main', 'shared')).toBe(false);
+    expect(cfg.dominates('Boundary_main_error', 'shared')).toBe(false);
+  });
+
+  it('a back-edge inside an escape chain is still detected', () => {
+    const proc = process(
+      [
+        start('start'),
+        task('main'),
+        end('end'),
+        boundaryEvent('Boundary_main_error', 'main', errorDef()),
+        xor('head2'),
+        task('body2'),
+        end('escEnd'),
+      ],
+      [
+        flow('start', 'main'),
+        flow('main', 'end'),
+        flow('Boundary_main_error', 'head2'),
+        flow('head2', 'body2'),
+        flow('body2', 'head2'),
+        flow('head2', 'escEnd'),
+      ],
+    );
+    const cfg = analyzeCfg(proc);
+
+    const back = cfg.backEdges();
+    expect(back).toHaveLength(1);
+    expect(back[0].sourceRef).toBe('body2');
+    expect(back[0].targetRef).toBe('head2');
+    expect(cfg.dominates('head2', 'body2')).toBe(true);
+  });
+
+  it('a container with no boundary events produces the identical analysis as today', () => {
+    // The diamond fixture from the first describe block above. With no
+    // `boundaryEvent` node present the entry wiring condition never fires.
+    const proc = process(
+      [
+        start('start'),
+        xor('split'),
+        task('A'),
+        task('B'),
+        xor('join'),
+        end('end'),
+      ],
+      [
+        flow('start', 'split'),
+        flow('split', 'A'),
+        flow('split', 'B'),
+        flow('A', 'join'),
+        flow('B', 'join'),
+        flow('join', 'end'),
+      ],
+    );
+    const cfg = analyzeCfg(proc);
+
+    expect(cfg.immediateDominator('join')).toBe('split');
+    expect(cfg.immediatePostDominator('split')).toBe('join');
+    expect(cfg.backEdges()).toEqual([]);
+  });
+
+  it('a container with no start event roots both its boundary event and its main flow', () => {
+    // The boundary arm is unconditional, the no-predecessor fallback is keyed
+    // on the absence of a start event. Both fire here, and folding them would
+    // leave `main`, a no-predecessor non-boundary node, on the wrong one.
+    const proc = process(
+      [
+        task('main'),
+        boundaryEvent('B', 'main', errorDef()),
+        task('esc'),
+        end('e'),
+      ],
+      [flow('B', 'esc'), flow('esc', 'e')],
+    );
+    const cfg = analyzeCfg(proc);
+
+    expect(cfg.immediateDominator('B')).toBe(VIRTUAL_ENTRY);
+    expect(cfg.immediateDominator('main')).toBe(VIRTUAL_ENTRY);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 10. Intermediate catch event: the topological twin of an intermediate throw.
+//
+// Neither wires to VIRTUAL_ENTRY/VIRTUAL_EXIT (that is reserved for
+// start/boundary and end events); both are plain one-in/one-out main-flow
+// nodes, so a catch in a given position must restructure identically to a
+// throw in that same position.
+// ---------------------------------------------------------------------------
+
+describe('intermediate catch event — CFG no-op (twin of an intermediate throw)', () => {
+  /** `start -> task -> node -> end`, where `node` is the element under test. */
+  function containerWith(node: FlowElement) {
+    return process(
+      [start('start'), task('task'), node, end('end')],
+      [flow('start', 'task'), flow('task', node.id), flow(node.id, 'end')],
+    );
+  }
+
+  const catchCfg = analyzeCfg(
+    containerWith(
+      typedEvent('intermediateCatchEvent', 'node', messageDef('M')),
+    ),
+  );
+  const throwCfg = analyzeCfg(
+    containerWith(typedEvent('intermediateThrowEvent', 'node', signalDef('S'))),
+  );
+
+  it('gives the catch a normal immediate dominator — its predecessor on the main flow, not the virtual entry', () => {
+    expect(catchCfg.immediateDominator('node')).toBe('task');
+    expect(catchCfg.immediateDominator('node')).not.toBe(VIRTUAL_ENTRY);
+  });
+
+  it('produces no back-edge / degradation', () => {
+    expect(catchCfg.backEdges()).toEqual([]);
+  });
+
+  it('restructures exactly like an intermediate throw in the same position', () => {
+    expect(catchCfg.immediateDominator('node')).toBe(
+      throwCfg.immediateDominator('node'),
+    );
+    expect(catchCfg.immediatePostDominator('task')).toBe(
+      throwCfg.immediatePostDominator('task'),
+    );
+    expect(catchCfg.dominates('node', 'end')).toBe(
+      throwCfg.dominates('node', 'end'),
+    );
   });
 });
