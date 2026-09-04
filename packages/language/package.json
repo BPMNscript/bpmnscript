@@ -37,10 +37,10 @@
   },
   "dependencies": {
     "langium": "^4.3.1",
-    "vscode-languageserver-types": "^3.18.0"
+    "vscode-languageserver-types": "^3.18.3"
   },
   "devDependencies": {
     "langium-cli": "^4.3.0",
-    "vitest": "^4.1.10"
+    "vitest": "^4.1.11"
   }
 }
