@@ -6,8 +6,9 @@ export function definitionRefOf(
   elementId: string,
   definition: 'error' | 'escalation' | 'message' | 'signal',
 ): string | undefined {
+  const id = elementId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const block = new RegExp(
-    `<bpmn:(\\w+Event) id="${elementId}"[^>]*>([\\s\\S]*?)</bpmn:\\1>`,
+    `<bpmn:(\\w+Event)[^>]*?\\sid="${id}"[^>]*>([\\s\\S]*?)</bpmn:\\1>`,
   ).exec(xml);
   if (block === null) return undefined;
   return new RegExp(
