@@ -1,0 +1,450 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI" xmlns:dc="http://www.omg.org/spec/DD/20100524/DC" xmlns:di="http://www.omg.org/spec/DD/20100524/DI" xmlns:operaton="http://operaton.org/schema/1.0/bpmn" id="Definitions_order-handling" targetNamespace="http://bpmnscript.io/processes" exporter="BPMNscript" exporterVersion="0.0.0">
+  <bpmn:process id="order-handling" name="Order Handling" isExecutable="true" operaton:historyTimeToLive="P30D">
+    <bpmn:startEvent id="OrderPlaced">
+      <bpmn:extensionElements>
+        <operaton:formData>
+          <operaton:formField id="orderValue" label="Order value in euros" type="long" />
+          <operaton:formField id="overseas" label="Whether the parcel leaves the country" type="boolean" />
+          <operaton:formField id="stockShort" label="Whether a line is short of stock" type="boolean" />
+        </operaton:formData>
+      </bpmn:extensionElements>
+      <bpmn:outgoing>Flow_OrderPlaced_CheckOrder</bpmn:outgoing>
+    </bpmn:startEvent>
+    <bpmn:userTask id="CheckOrder" name="Check the order against the customer record" operaton:assignee="demo">
+      <bpmn:incoming>Flow_OrderPlaced_CheckOrder</bpmn:incoming>
+      <bpmn:outgoing>Flow_CheckOrder_Gateway_order-handling_2_fork</bpmn:outgoing>
+    </bpmn:userTask>
+    <bpmn:inclusiveGateway id="Gateway_order-handling_2_fork" default="Flow_Gateway_order-handling_2_fork_default">
+      <bpmn:incoming>Flow_CheckOrder_Gateway_order-handling_2_fork</bpmn:incoming>
+      <bpmn:outgoing>Flow_Gateway_order-handling_2_fork_AuditOrder</bpmn:outgoing>
+      <bpmn:outgoing>Flow_Gateway_order-handling_2_fork_ReserveStock</bpmn:outgoing>
+      <bpmn:outgoing>Flow_Gateway_order-handling_2_fork_default</bpmn:outgoing>
+    </bpmn:inclusiveGateway>
+    <bpmn:inclusiveGateway id="Gateway_order-handling_2_join">
+      <bpmn:incoming>Flow_AuditOrder_Gateway_order-handling_2_join</bpmn:incoming>
+      <bpmn:incoming>Flow_ReserveStock_Gateway_order-handling_2_join</bpmn:incoming>
+      <bpmn:incoming>Flow_TriageOrder_Gateway_order-handling_2_join</bpmn:incoming>
+      <bpmn:outgoing>Flow_Gateway_order-handling_2_join_Gateway_order-handling_3_fork</bpmn:outgoing>
+    </bpmn:inclusiveGateway>
+    <bpmn:userTask id="AuditOrder" name="Audit the high-value order" operaton:assignee="manager">
+      <bpmn:incoming>Flow_Gateway_order-handling_2_fork_AuditOrder</bpmn:incoming>
+      <bpmn:outgoing>Flow_AuditOrder_Gateway_order-handling_2_join</bpmn:outgoing>
+    </bpmn:userTask>
+    <bpmn:serviceTask id="ReserveStock" name="Reserve the ordered stock" operaton:class="com.example.orders.ReserveStockDelegate">
+      <bpmn:incoming>Flow_Gateway_order-handling_2_fork_ReserveStock</bpmn:incoming>
+      <bpmn:outgoing>Flow_ReserveStock_Gateway_order-handling_2_join</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:userTask id="TriageOrder" name="Triage the order by hand" operaton:assignee="demo">
+      <bpmn:incoming>Flow_Gateway_order-handling_2_fork_default</bpmn:incoming>
+      <bpmn:outgoing>Flow_TriageOrder_Gateway_order-handling_2_join</bpmn:outgoing>
+    </bpmn:userTask>
+    <bpmn:inclusiveGateway id="Gateway_order-handling_3_fork" default="Flow_Gateway_order-handling_3_fork_default">
+      <bpmn:incoming>Flow_Gateway_order-handling_2_join_Gateway_order-handling_3_fork</bpmn:incoming>
+      <bpmn:outgoing>Flow_Gateway_order-handling_3_fork_PrepareCustoms</bpmn:outgoing>
+      <bpmn:outgoing>Flow_Gateway_order-handling_3_fork_PrintLabel</bpmn:outgoing>
+      <bpmn:outgoing>Flow_Gateway_order-handling_3_fork_default</bpmn:outgoing>
+    </bpmn:inclusiveGateway>
+    <bpmn:inclusiveGateway id="Gateway_order-handling_3_join">
+      <bpmn:incoming>Flow_PrepareCustoms_Gateway_order-handling_3_join</bpmn:incoming>
+      <bpmn:incoming>Flow_PrintLabel_Gateway_order-handling_3_join</bpmn:incoming>
+      <bpmn:incoming>Flow_Gateway_order-handling_3_fork_default</bpmn:incoming>
+      <bpmn:outgoing>Flow_Gateway_order-handling_3_join_Gateway_order-handling_4_fork</bpmn:outgoing>
+    </bpmn:inclusiveGateway>
+    <bpmn:serviceTask id="PrepareCustoms" name="Prepare the customs paperwork" operaton:class="com.example.orders.CustomsDelegate">
+      <bpmn:incoming>Flow_Gateway_order-handling_3_fork_PrepareCustoms</bpmn:incoming>
+      <bpmn:outgoing>Flow_PrepareCustoms_Gateway_order-handling_3_join</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:serviceTask id="PrintLabel" name="Print the shipping label" operaton:class="com.example.orders.LabelDelegate">
+      <bpmn:incoming>Flow_Gateway_order-handling_3_fork_PrintLabel</bpmn:incoming>
+      <bpmn:outgoing>Flow_PrintLabel_Gateway_order-handling_3_join</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:parallelGateway id="Gateway_order-handling_4_fork">
+      <bpmn:incoming>Flow_Gateway_order-handling_3_join_Gateway_order-handling_4_fork</bpmn:incoming>
+      <bpmn:outgoing>Flow_Gateway_order-handling_4_fork_ChargeCard</bpmn:outgoing>
+      <bpmn:outgoing>Flow_Gateway_order-handling_4_fork_NotifyWarehouse</bpmn:outgoing>
+    </bpmn:parallelGateway>
+    <bpmn:parallelGateway id="Gateway_order-handling_4_join">
+      <bpmn:incoming>Flow_ChargeCard_Gateway_order-handling_4_join</bpmn:incoming>
+      <bpmn:incoming>Flow_NotifyWarehouse_Gateway_order-handling_4_join</bpmn:incoming>
+      <bpmn:outgoing>Flow_Gateway_order-handling_4_join_Gateway_order-handling_5_race</bpmn:outgoing>
+    </bpmn:parallelGateway>
+    <bpmn:serviceTask id="ChargeCard" name="Charge the customer card" operaton:class="com.example.orders.ChargeDelegate">
+      <bpmn:incoming>Flow_Gateway_order-handling_4_fork_ChargeCard</bpmn:incoming>
+      <bpmn:outgoing>Flow_ChargeCard_Gateway_order-handling_4_join</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:serviceTask id="NotifyWarehouse" name="Tell the warehouse the order is coming" operaton:class="com.example.orders.NotifyDelegate">
+      <bpmn:incoming>Flow_Gateway_order-handling_4_fork_NotifyWarehouse</bpmn:incoming>
+      <bpmn:outgoing>Flow_NotifyWarehouse_Gateway_order-handling_4_join</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:eventBasedGateway id="Gateway_order-handling_5_race">
+      <bpmn:incoming>Flow_Gateway_order-handling_4_join_Gateway_order-handling_5_race</bpmn:incoming>
+      <bpmn:outgoing>Flow_Gateway_order-handling_5_race_Catch_order-handling_5_b0</bpmn:outgoing>
+      <bpmn:outgoing>Flow_Gateway_order-handling_5_race_Catch_order-handling_5_b1</bpmn:outgoing>
+    </bpmn:eventBasedGateway>
+    <bpmn:exclusiveGateway id="Gateway_order-handling_5_join">
+      <bpmn:incoming>Flow_RecordPayment_Gateway_order-handling_5_join</bpmn:incoming>
+      <bpmn:incoming>Flow_ChasePayment_Gateway_order-handling_5_join</bpmn:incoming>
+      <bpmn:outgoing>Flow_Gateway_order-handling_5_join_Gateway_order-handling_6_race</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+    <bpmn:intermediateCatchEvent id="Catch_order-handling_5_b0">
+      <bpmn:incoming>Flow_Gateway_order-handling_5_race_Catch_order-handling_5_b0</bpmn:incoming>
+      <bpmn:outgoing>Flow_Catch_order-handling_5_b0_RecordPayment</bpmn:outgoing>
+      <bpmn:messageEventDefinition messageRef="Message_PaymentReceived" />
+    </bpmn:intermediateCatchEvent>
+    <bpmn:serviceTask id="RecordPayment" name="Record the settled payment" operaton:class="com.example.orders.RecordPaymentDelegate">
+      <bpmn:incoming>Flow_Catch_order-handling_5_b0_RecordPayment</bpmn:incoming>
+      <bpmn:outgoing>Flow_RecordPayment_Gateway_order-handling_5_join</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:intermediateCatchEvent id="Catch_order-handling_5_b1" operaton:asyncBefore="true">
+      <bpmn:incoming>Flow_Gateway_order-handling_5_race_Catch_order-handling_5_b1</bpmn:incoming>
+      <bpmn:outgoing>Flow_Catch_order-handling_5_b1_ChasePayment</bpmn:outgoing>
+      <bpmn:timerEventDefinition>
+        <bpmn:timeDuration xsi:type="bpmn:tFormalExpression">P3D</bpmn:timeDuration>
+      </bpmn:timerEventDefinition>
+    </bpmn:intermediateCatchEvent>
+    <bpmn:userTask id="ChasePayment" name="Chase the outstanding payment" operaton:assignee="demo">
+      <bpmn:incoming>Flow_Catch_order-handling_5_b1_ChasePayment</bpmn:incoming>
+      <bpmn:outgoing>Flow_ChasePayment_Gateway_order-handling_5_join</bpmn:outgoing>
+    </bpmn:userTask>
+    <bpmn:eventBasedGateway id="Gateway_order-handling_6_race">
+      <bpmn:incoming>Flow_Gateway_order-handling_5_join_Gateway_order-handling_6_race</bpmn:incoming>
+      <bpmn:outgoing>Flow_Gateway_order-handling_6_race_Catch_order-handling_6_b0</bpmn:outgoing>
+      <bpmn:outgoing>Flow_Gateway_order-handling_6_race_Catch_order-handling_6_b1</bpmn:outgoing>
+    </bpmn:eventBasedGateway>
+    <bpmn:exclusiveGateway id="Gateway_order-handling_6_join">
+      <bpmn:incoming>Flow_ReleaseOrder_Gateway_order-handling_6_join</bpmn:incoming>
+      <bpmn:incoming>Flow_SourceStock_Gateway_order-handling_6_join</bpmn:incoming>
+      <bpmn:outgoing>Flow_Gateway_order-handling_6_join_Catch_order-handling_7</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+    <bpmn:intermediateCatchEvent id="Catch_order-handling_6_b0">
+      <bpmn:incoming>Flow_Gateway_order-handling_6_race_Catch_order-handling_6_b0</bpmn:incoming>
+      <bpmn:outgoing>Flow_Catch_order-handling_6_b0_ReleaseOrder</bpmn:outgoing>
+      <bpmn:signalEventDefinition signalRef="Signal_StockArrived" />
+    </bpmn:intermediateCatchEvent>
+    <bpmn:serviceTask id="ReleaseOrder" name="Release the order to picking" operaton:class="com.example.orders.ReleaseDelegate">
+      <bpmn:incoming>Flow_Catch_order-handling_6_b0_ReleaseOrder</bpmn:incoming>
+      <bpmn:outgoing>Flow_ReleaseOrder_Gateway_order-handling_6_join</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:intermediateCatchEvent id="Catch_order-handling_6_b1">
+      <bpmn:incoming>Flow_Gateway_order-handling_6_race_Catch_order-handling_6_b1</bpmn:incoming>
+      <bpmn:outgoing>Flow_Catch_order-handling_6_b1_SourceStock</bpmn:outgoing>
+      <bpmn:conditionalEventDefinition>
+        <bpmn:condition xsi:type="bpmn:tFormalExpression">${stockShort}</bpmn:condition>
+      </bpmn:conditionalEventDefinition>
+    </bpmn:intermediateCatchEvent>
+    <bpmn:userTask id="SourceStock" name="Source the missing stock by hand" operaton:assignee="demo">
+      <bpmn:incoming>Flow_Catch_order-handling_6_b1_SourceStock</bpmn:incoming>
+      <bpmn:outgoing>Flow_SourceStock_Gateway_order-handling_6_join</bpmn:outgoing>
+    </bpmn:userTask>
+    <bpmn:intermediateCatchEvent id="Catch_order-handling_7">
+      <bpmn:incoming>Flow_Gateway_order-handling_6_join_Catch_order-handling_7</bpmn:incoming>
+      <bpmn:outgoing>Flow_Catch_order-handling_7_DispatchOrder</bpmn:outgoing>
+      <bpmn:messageEventDefinition messageRef="Message_CarrierBooked" />
+    </bpmn:intermediateCatchEvent>
+    <bpmn:serviceTask id="DispatchOrder" name="Hand the parcel to the carrier" operaton:class="com.example.orders.DispatchDelegate">
+      <bpmn:incoming>Flow_Catch_order-handling_7_DispatchOrder</bpmn:incoming>
+      <bpmn:outgoing>Flow_DispatchOrder_OrderDispatched</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:endEvent id="OrderDispatched">
+      <bpmn:incoming>Flow_DispatchOrder_OrderDispatched</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:sequenceFlow id="Flow_OrderPlaced_CheckOrder" sourceRef="OrderPlaced" targetRef="CheckOrder" />
+    <bpmn:sequenceFlow id="Flow_Gateway_order-handling_2_fork_AuditOrder" name="orderValue &#62; 10000" sourceRef="Gateway_order-handling_2_fork" targetRef="AuditOrder">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">${orderValue &gt; 10000}</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="Flow_AuditOrder_Gateway_order-handling_2_join" sourceRef="AuditOrder" targetRef="Gateway_order-handling_2_join" />
+    <bpmn:sequenceFlow id="Flow_Gateway_order-handling_2_fork_ReserveStock" name="!stockShort" sourceRef="Gateway_order-handling_2_fork" targetRef="ReserveStock">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">${!stockShort}</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="Flow_ReserveStock_Gateway_order-handling_2_join" sourceRef="ReserveStock" targetRef="Gateway_order-handling_2_join" />
+    <bpmn:sequenceFlow id="Flow_Gateway_order-handling_2_fork_default" sourceRef="Gateway_order-handling_2_fork" targetRef="TriageOrder" />
+    <bpmn:sequenceFlow id="Flow_TriageOrder_Gateway_order-handling_2_join" sourceRef="TriageOrder" targetRef="Gateway_order-handling_2_join" />
+    <bpmn:sequenceFlow id="Flow_CheckOrder_Gateway_order-handling_2_fork" sourceRef="CheckOrder" targetRef="Gateway_order-handling_2_fork" />
+    <bpmn:sequenceFlow id="Flow_Gateway_order-handling_3_fork_PrepareCustoms" name="overseas" sourceRef="Gateway_order-handling_3_fork" targetRef="PrepareCustoms">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">${overseas}</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="Flow_PrepareCustoms_Gateway_order-handling_3_join" sourceRef="PrepareCustoms" targetRef="Gateway_order-handling_3_join" />
+    <bpmn:sequenceFlow id="Flow_Gateway_order-handling_3_fork_PrintLabel" sourceRef="Gateway_order-handling_3_fork" targetRef="PrintLabel" />
+    <bpmn:sequenceFlow id="Flow_PrintLabel_Gateway_order-handling_3_join" sourceRef="PrintLabel" targetRef="Gateway_order-handling_3_join" />
+    <bpmn:sequenceFlow id="Flow_Gateway_order-handling_3_fork_default" sourceRef="Gateway_order-handling_3_fork" targetRef="Gateway_order-handling_3_join" />
+    <bpmn:sequenceFlow id="Flow_Gateway_order-handling_2_join_Gateway_order-handling_3_fork" sourceRef="Gateway_order-handling_2_join" targetRef="Gateway_order-handling_3_fork" />
+    <bpmn:sequenceFlow id="Flow_Gateway_order-handling_4_fork_ChargeCard" sourceRef="Gateway_order-handling_4_fork" targetRef="ChargeCard" />
+    <bpmn:sequenceFlow id="Flow_ChargeCard_Gateway_order-handling_4_join" sourceRef="ChargeCard" targetRef="Gateway_order-handling_4_join" />
+    <bpmn:sequenceFlow id="Flow_Gateway_order-handling_4_fork_NotifyWarehouse" sourceRef="Gateway_order-handling_4_fork" targetRef="NotifyWarehouse" />
+    <bpmn:sequenceFlow id="Flow_NotifyWarehouse_Gateway_order-handling_4_join" sourceRef="NotifyWarehouse" targetRef="Gateway_order-handling_4_join" />
+    <bpmn:sequenceFlow id="Flow_Gateway_order-handling_3_join_Gateway_order-handling_4_fork" sourceRef="Gateway_order-handling_3_join" targetRef="Gateway_order-handling_4_fork" />
+    <bpmn:sequenceFlow id="Flow_Gateway_order-handling_5_race_Catch_order-handling_5_b0" sourceRef="Gateway_order-handling_5_race" targetRef="Catch_order-handling_5_b0" />
+    <bpmn:sequenceFlow id="Flow_Catch_order-handling_5_b0_RecordPayment" sourceRef="Catch_order-handling_5_b0" targetRef="RecordPayment" />
+    <bpmn:sequenceFlow id="Flow_RecordPayment_Gateway_order-handling_5_join" sourceRef="RecordPayment" targetRef="Gateway_order-handling_5_join" />
+    <bpmn:sequenceFlow id="Flow_Gateway_order-handling_5_race_Catch_order-handling_5_b1" sourceRef="Gateway_order-handling_5_race" targetRef="Catch_order-handling_5_b1" />
+    <bpmn:sequenceFlow id="Flow_Catch_order-handling_5_b1_ChasePayment" sourceRef="Catch_order-handling_5_b1" targetRef="ChasePayment" />
+    <bpmn:sequenceFlow id="Flow_ChasePayment_Gateway_order-handling_5_join" sourceRef="ChasePayment" targetRef="Gateway_order-handling_5_join" />
+    <bpmn:sequenceFlow id="Flow_Gateway_order-handling_4_join_Gateway_order-handling_5_race" sourceRef="Gateway_order-handling_4_join" targetRef="Gateway_order-handling_5_race" />
+    <bpmn:sequenceFlow id="Flow_Gateway_order-handling_6_race_Catch_order-handling_6_b0" sourceRef="Gateway_order-handling_6_race" targetRef="Catch_order-handling_6_b0" />
+    <bpmn:sequenceFlow id="Flow_Catch_order-handling_6_b0_ReleaseOrder" sourceRef="Catch_order-handling_6_b0" targetRef="ReleaseOrder" />
+    <bpmn:sequenceFlow id="Flow_ReleaseOrder_Gateway_order-handling_6_join" sourceRef="ReleaseOrder" targetRef="Gateway_order-handling_6_join" />
+    <bpmn:sequenceFlow id="Flow_Gateway_order-handling_6_race_Catch_order-handling_6_b1" sourceRef="Gateway_order-handling_6_race" targetRef="Catch_order-handling_6_b1" />
+    <bpmn:sequenceFlow id="Flow_Catch_order-handling_6_b1_SourceStock" sourceRef="Catch_order-handling_6_b1" targetRef="SourceStock" />
+    <bpmn:sequenceFlow id="Flow_SourceStock_Gateway_order-handling_6_join" sourceRef="SourceStock" targetRef="Gateway_order-handling_6_join" />
+    <bpmn:sequenceFlow id="Flow_Gateway_order-handling_5_join_Gateway_order-handling_6_race" sourceRef="Gateway_order-handling_5_join" targetRef="Gateway_order-handling_6_race" />
+    <bpmn:sequenceFlow id="Flow_Gateway_order-handling_6_join_Catch_order-handling_7" sourceRef="Gateway_order-handling_6_join" targetRef="Catch_order-handling_7" />
+    <bpmn:sequenceFlow id="Flow_Catch_order-handling_7_DispatchOrder" sourceRef="Catch_order-handling_7" targetRef="DispatchOrder" />
+    <bpmn:sequenceFlow id="Flow_DispatchOrder_OrderDispatched" sourceRef="DispatchOrder" targetRef="OrderDispatched" />
+  </bpmn:process>
+  <bpmn:message id="Message_PaymentReceived" name="PaymentReceived" />
+  <bpmn:message id="Message_CarrierBooked" name="CarrierBooked" />
+  <bpmn:signal id="Signal_StockArrived" name="StockArrived" />
+  <bpmndi:BPMNDiagram id="BPMNDiagram_order-handling">
+    <bpmndi:BPMNPlane id="BPMNPlane_order-handling" bpmnElement="order-handling">
+      <bpmndi:BPMNShape id="OrderPlaced_di" bpmnElement="OrderPlaced">
+        <dc:Bounds x="57" y="52" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="CheckOrder_di" bpmnElement="CheckOrder">
+        <dc:Bounds x="175" y="30" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_order-handling_2_fork_di" bpmnElement="Gateway_order-handling_2_fork">
+        <dc:Bounds x="350" y="45" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="AuditOrder_di" bpmnElement="AuditOrder">
+        <dc:Bounds x="475" y="30" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_order-handling_2_join_di" bpmnElement="Gateway_order-handling_2_join">
+        <dc:Bounds x="650" y="45" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_order-handling_3_fork_di" bpmnElement="Gateway_order-handling_3_fork">
+        <dc:Bounds x="800" y="45" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="PrepareCustoms_di" bpmnElement="PrepareCustoms">
+        <dc:Bounds x="925" y="30" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_order-handling_3_join_di" bpmnElement="Gateway_order-handling_3_join">
+        <dc:Bounds x="1100" y="45" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_order-handling_4_fork_di" bpmnElement="Gateway_order-handling_4_fork">
+        <dc:Bounds x="1250" y="45" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="ChargeCard_di" bpmnElement="ChargeCard">
+        <dc:Bounds x="1375" y="30" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_order-handling_4_join_di" bpmnElement="Gateway_order-handling_4_join">
+        <dc:Bounds x="1550" y="45" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_order-handling_5_race_di" bpmnElement="Gateway_order-handling_5_race">
+        <dc:Bounds x="1700" y="45" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Catch_order-handling_5_b0_di" bpmnElement="Catch_order-handling_5_b0">
+        <dc:Bounds x="1857" y="52" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="RecordPayment_di" bpmnElement="RecordPayment">
+        <dc:Bounds x="1975" y="30" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_order-handling_5_join_di" bpmnElement="Gateway_order-handling_5_join" isMarkerVisible="true">
+        <dc:Bounds x="2150" y="45" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_order-handling_6_race_di" bpmnElement="Gateway_order-handling_6_race">
+        <dc:Bounds x="2300" y="45" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Catch_order-handling_6_b0_di" bpmnElement="Catch_order-handling_6_b0">
+        <dc:Bounds x="2457" y="52" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="ReleaseOrder_di" bpmnElement="ReleaseOrder">
+        <dc:Bounds x="2575" y="30" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_order-handling_6_join_di" bpmnElement="Gateway_order-handling_6_join" isMarkerVisible="true">
+        <dc:Bounds x="2750" y="45" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Catch_order-handling_7_di" bpmnElement="Catch_order-handling_7">
+        <dc:Bounds x="2907" y="52" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="DispatchOrder_di" bpmnElement="DispatchOrder">
+        <dc:Bounds x="3025" y="30" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="OrderDispatched_di" bpmnElement="OrderDispatched">
+        <dc:Bounds x="3207" y="52" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="ReserveStock_di" bpmnElement="ReserveStock">
+        <dc:Bounds x="475" y="170" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="PrintLabel_di" bpmnElement="PrintLabel">
+        <dc:Bounds x="925" y="170" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="NotifyWarehouse_di" bpmnElement="NotifyWarehouse">
+        <dc:Bounds x="1375" y="170" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Catch_order-handling_5_b1_di" bpmnElement="Catch_order-handling_5_b1">
+        <dc:Bounds x="1857" y="192" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="ChasePayment_di" bpmnElement="ChasePayment">
+        <dc:Bounds x="1975" y="170" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Catch_order-handling_6_b1_di" bpmnElement="Catch_order-handling_6_b1">
+        <dc:Bounds x="2457" y="192" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="SourceStock_di" bpmnElement="SourceStock">
+        <dc:Bounds x="2575" y="170" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="TriageOrder_di" bpmnElement="TriageOrder">
+        <dc:Bounds x="475" y="310" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_OrderPlaced_CheckOrder_di" bpmnElement="Flow_OrderPlaced_CheckOrder">
+        <di:waypoint x="93" y="70" />
+        <di:waypoint x="175" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_CheckOrder_Gateway_order-handling_2_fork_di" bpmnElement="Flow_CheckOrder_Gateway_order-handling_2_fork">
+        <di:waypoint x="275" y="70" />
+        <di:waypoint x="350" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Gateway_order-handling_2_fork_AuditOrder_di" bpmnElement="Flow_Gateway_order-handling_2_fork_AuditOrder">
+        <di:waypoint x="400" y="70" />
+        <di:waypoint x="475" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Gateway_order-handling_2_fork_ReserveStock_di" bpmnElement="Flow_Gateway_order-handling_2_fork_ReserveStock">
+        <di:waypoint x="375" y="95" />
+        <di:waypoint x="375" y="210" />
+        <di:waypoint x="475" y="210" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Gateway_order-handling_2_fork_default_di" bpmnElement="Flow_Gateway_order-handling_2_fork_default">
+        <di:waypoint x="375" y="95" />
+        <di:waypoint x="375" y="350" />
+        <di:waypoint x="475" y="350" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_AuditOrder_Gateway_order-handling_2_join_di" bpmnElement="Flow_AuditOrder_Gateway_order-handling_2_join">
+        <di:waypoint x="575" y="70" />
+        <di:waypoint x="650" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Gateway_order-handling_2_join_Gateway_order-handling_3_fork_di" bpmnElement="Flow_Gateway_order-handling_2_join_Gateway_order-handling_3_fork">
+        <di:waypoint x="700" y="70" />
+        <di:waypoint x="800" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Gateway_order-handling_3_fork_PrepareCustoms_di" bpmnElement="Flow_Gateway_order-handling_3_fork_PrepareCustoms">
+        <di:waypoint x="850" y="70" />
+        <di:waypoint x="925" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Gateway_order-handling_3_fork_PrintLabel_di" bpmnElement="Flow_Gateway_order-handling_3_fork_PrintLabel">
+        <di:waypoint x="825" y="95" />
+        <di:waypoint x="825" y="210" />
+        <di:waypoint x="925" y="210" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Gateway_order-handling_3_fork_default_di" bpmnElement="Flow_Gateway_order-handling_3_fork_default">
+        <di:waypoint x="825" y="95" />
+        <di:waypoint x="825" y="140" />
+        <di:waypoint x="1125" y="140" />
+        <di:waypoint x="1125" y="95" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_PrepareCustoms_Gateway_order-handling_3_join_di" bpmnElement="Flow_PrepareCustoms_Gateway_order-handling_3_join">
+        <di:waypoint x="1025" y="70" />
+        <di:waypoint x="1100" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Gateway_order-handling_3_join_Gateway_order-handling_4_fork_di" bpmnElement="Flow_Gateway_order-handling_3_join_Gateway_order-handling_4_fork">
+        <di:waypoint x="1150" y="70" />
+        <di:waypoint x="1250" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Gateway_order-handling_4_fork_ChargeCard_di" bpmnElement="Flow_Gateway_order-handling_4_fork_ChargeCard">
+        <di:waypoint x="1300" y="70" />
+        <di:waypoint x="1375" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Gateway_order-handling_4_fork_NotifyWarehouse_di" bpmnElement="Flow_Gateway_order-handling_4_fork_NotifyWarehouse">
+        <di:waypoint x="1275" y="95" />
+        <di:waypoint x="1275" y="210" />
+        <di:waypoint x="1375" y="210" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ChargeCard_Gateway_order-handling_4_join_di" bpmnElement="Flow_ChargeCard_Gateway_order-handling_4_join">
+        <di:waypoint x="1475" y="70" />
+        <di:waypoint x="1550" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Gateway_order-handling_4_join_Gateway_order-handling_5_race_di" bpmnElement="Flow_Gateway_order-handling_4_join_Gateway_order-handling_5_race">
+        <di:waypoint x="1600" y="70" />
+        <di:waypoint x="1700" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Gateway_order-handling_5_race_Catch_order-handling_5_b0_di" bpmnElement="Flow_Gateway_order-handling_5_race_Catch_order-handling_5_b0">
+        <di:waypoint x="1750" y="70" />
+        <di:waypoint x="1857" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Gateway_order-handling_5_race_Catch_order-handling_5_b1_di" bpmnElement="Flow_Gateway_order-handling_5_race_Catch_order-handling_5_b1">
+        <di:waypoint x="1725" y="95" />
+        <di:waypoint x="1725" y="210" />
+        <di:waypoint x="1857" y="210" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Catch_order-handling_5_b0_RecordPayment_di" bpmnElement="Flow_Catch_order-handling_5_b0_RecordPayment">
+        <di:waypoint x="1893" y="70" />
+        <di:waypoint x="1975" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_RecordPayment_Gateway_order-handling_5_join_di" bpmnElement="Flow_RecordPayment_Gateway_order-handling_5_join">
+        <di:waypoint x="2075" y="70" />
+        <di:waypoint x="2150" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Gateway_order-handling_5_join_Gateway_order-handling_6_race_di" bpmnElement="Flow_Gateway_order-handling_5_join_Gateway_order-handling_6_race">
+        <di:waypoint x="2200" y="70" />
+        <di:waypoint x="2300" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Gateway_order-handling_6_race_Catch_order-handling_6_b0_di" bpmnElement="Flow_Gateway_order-handling_6_race_Catch_order-handling_6_b0">
+        <di:waypoint x="2350" y="70" />
+        <di:waypoint x="2457" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Gateway_order-handling_6_race_Catch_order-handling_6_b1_di" bpmnElement="Flow_Gateway_order-handling_6_race_Catch_order-handling_6_b1">
+        <di:waypoint x="2325" y="95" />
+        <di:waypoint x="2325" y="210" />
+        <di:waypoint x="2457" y="210" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Catch_order-handling_6_b0_ReleaseOrder_di" bpmnElement="Flow_Catch_order-handling_6_b0_ReleaseOrder">
+        <di:waypoint x="2493" y="70" />
+        <di:waypoint x="2575" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ReleaseOrder_Gateway_order-handling_6_join_di" bpmnElement="Flow_ReleaseOrder_Gateway_order-handling_6_join">
+        <di:waypoint x="2675" y="70" />
+        <di:waypoint x="2750" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Gateway_order-handling_6_join_Catch_order-handling_7_di" bpmnElement="Flow_Gateway_order-handling_6_join_Catch_order-handling_7">
+        <di:waypoint x="2800" y="70" />
+        <di:waypoint x="2907" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Catch_order-handling_7_DispatchOrder_di" bpmnElement="Flow_Catch_order-handling_7_DispatchOrder">
+        <di:waypoint x="2943" y="70" />
+        <di:waypoint x="3025" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_DispatchOrder_OrderDispatched_di" bpmnElement="Flow_DispatchOrder_OrderDispatched">
+        <di:waypoint x="3125" y="70" />
+        <di:waypoint x="3207" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ReserveStock_Gateway_order-handling_2_join_di" bpmnElement="Flow_ReserveStock_Gateway_order-handling_2_join">
+        <di:waypoint x="575" y="210" />
+        <di:waypoint x="675" y="210" />
+        <di:waypoint x="675" y="95" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_PrintLabel_Gateway_order-handling_3_join_di" bpmnElement="Flow_PrintLabel_Gateway_order-handling_3_join">
+        <di:waypoint x="1025" y="210" />
+        <di:waypoint x="1125" y="210" />
+        <di:waypoint x="1125" y="95" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_NotifyWarehouse_Gateway_order-handling_4_join_di" bpmnElement="Flow_NotifyWarehouse_Gateway_order-handling_4_join">
+        <di:waypoint x="1475" y="210" />
+        <di:waypoint x="1575" y="210" />
+        <di:waypoint x="1575" y="95" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Catch_order-handling_5_b1_ChasePayment_di" bpmnElement="Flow_Catch_order-handling_5_b1_ChasePayment">
+        <di:waypoint x="1893" y="210" />
+        <di:waypoint x="1975" y="210" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ChasePayment_Gateway_order-handling_5_join_di" bpmnElement="Flow_ChasePayment_Gateway_order-handling_5_join">
+        <di:waypoint x="2075" y="210" />
+        <di:waypoint x="2175" y="210" />
+        <di:waypoint x="2175" y="95" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Catch_order-handling_6_b1_SourceStock_di" bpmnElement="Flow_Catch_order-handling_6_b1_SourceStock">
+        <di:waypoint x="2493" y="210" />
+        <di:waypoint x="2575" y="210" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_SourceStock_Gateway_order-handling_6_join_di" bpmnElement="Flow_SourceStock_Gateway_order-handling_6_join">
+        <di:waypoint x="2675" y="210" />
+        <di:waypoint x="2775" y="210" />
+        <di:waypoint x="2775" y="95" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_TriageOrder_Gateway_order-handling_2_join_di" bpmnElement="Flow_TriageOrder_Gateway_order-handling_2_join">
+        <di:waypoint x="575" y="350" />
+        <di:waypoint x="675" y="350" />
+        <di:waypoint x="675" y="95" />
+      </bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>

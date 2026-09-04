@@ -139,7 +139,7 @@ describe('xmlToIr: form fields round-trip through XML', () => {
 describe('irToDsl: form fields round-trip back to a form block', () => {
   it('re-emits form blocks that re-desugar to the same fields', async () => {
     const original = await ir(SOURCE);
-    const dsl = irToDsl(original);
+    const dsl = irToDsl(original).source;
 
     expect(dsl).toContain('form {');
     expect(dsl).toContain('amount: number "Loan amount"');

@@ -147,9 +147,14 @@ export function decompileCommand(
       );
 
       if (result.warnings.length > 0) {
-        const details = result.warnings.map((w) => w.message).join('; ');
+        // Each entry leads with its element id, as `bpmns parse` does: several
+        // messages describe the route on from a step without naming it, and
+        // two of those read as one line repeated when the id is left off.
+        const details = result.warnings
+          .map((w) => `${w.elementId}: ${w.message}`)
+          .join('; ');
         void vscode.window.showWarningMessage(
-          `BPMNscript: "${sourceFileName}" dropped ${result.warnings.length} item(s) during decompile: ${details}`,
+          `BPMNscript: "${sourceFileName}" reported ${result.warnings.length} item(s) during decompile: ${details}`,
         );
       }
 

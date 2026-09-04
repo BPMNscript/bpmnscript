@@ -6,6 +6,7 @@
  *   Gateway_<X>_join          XOR join gateway for an `if` statement with id X
  *   Gateway_<X>_fork          AND fork (parallel) gateway for a `parallel` block X
  *   Gateway_<X>_join          AND join (parallel) gateway for a `parallel` block X
+ *   Gateway_<X>_race          Event-based gateway for a multi-branch `await` X
  *   Gateway_<X>_loop          XOR loop-head gateway for a `while` statement X
  *   Flow_<gatewayId>_default  Default (else-branch) flow out of a gateway
  *   Flow_<sourceId>_<targetId>  Sequence flow (plain); duplicate pairs get _2, _3, ...
@@ -17,11 +18,13 @@
  */
 
 import { describe, expect, it } from 'vitest';
+import { isReservedName } from '@bpmn-script/language';
 import {
   makeGatewaySplitId,
   makeGatewayJoinId,
   makeGatewayForkId,
   makeGatewayLoopId,
+  makeGatewayRaceId,
   makeDefaultFlowId,
   makeSequenceFlowId,
   makeStartEventId,
@@ -57,7 +60,8 @@ describe('determinism', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Structural stability: templates match the exact documented forms
+// Structural stability: templates match the exact documented forms, and every
+// form is one the validator reserves
 // ---------------------------------------------------------------------------
 
 describe('structural stability', () => {
@@ -68,6 +72,8 @@ describe('structural stability', () => {
     ['Gateway_OuterIf_join', () => makeGatewayJoinId('OuterIf')],
     ['Gateway_Step1_fork', () => makeGatewayForkId('Step1')],
     ['Gateway_ParallelBlock_fork', () => makeGatewayForkId('ParallelBlock')],
+    ['Gateway_p_3_race', () => makeGatewayRaceId('p_3')],
+    ['Gateway_OrderWait_race', () => makeGatewayRaceId('OrderWait')],
     ['Gateway_MyWhile_loop', () => makeGatewayLoopId('MyWhile')],
     ['Gateway_RetryLoop_loop', () => makeGatewayLoopId('RetryLoop')],
     [
@@ -138,13 +144,12 @@ describe('structural stability', () => {
         ),
     ],
   ] as const)('%s', (expected, make) => {
-    expect(make()).toBe(expected);
-  });
-
-  it("makeIntermediateCatchEventId's prefix matches the validator's reserved pattern, so an authored id can never collide", () => {
-    // The validator's `RESERVED_ID_PATTERNS` list is a private module
-    // constant, so its `/^Catch_/` entry is mirrored here as a literal.
-    expect(makeIntermediateCatchEventId('p_2')).toMatch(/^Catch_/);
+    const id = make();
+    expect(id).toBe(expected);
+    // An authored name matching a synthesized id is refused, from a pattern
+    // list the validator spells itself. Its package cannot import these
+    // templates, so this row is what keeps the two lists the same set.
+    expect(isReservedName(id)).toBe(true);
   });
 
   it('the positional throw/handler/catch templates take no taken set (no collision resolution)', () => {
@@ -167,22 +172,13 @@ describe('structural stability', () => {
 // ---------------------------------------------------------------------------
 
 describe('resolveCollision', () => {
-  it('returns input unchanged when not in taken set', () => {
-    expect(resolveCollision('A', new Set())).toBe('A');
-    expect(resolveCollision('A', new Set(['B', 'C']))).toBe('A');
-  });
-
-  it("appends _2 when base is taken: {'A'} + 'A' -> 'A_2'", () => {
-    expect(resolveCollision('A', new Set(['A']))).toBe('A_2');
-  });
-
-  it("appends _3 when base and _2 are taken: {'A','A_2'} + 'A' -> 'A_3'", () => {
-    expect(resolveCollision('A', new Set(['A', 'A_2']))).toBe('A_3');
-  });
-
-  it('keeps incrementing until a free slot is found', () => {
-    const taken = new Set(['X', 'X_2', 'X_3', 'X_4']);
-    expect(resolveCollision('X', taken)).toBe('X_5');
+  // The _2/_3 increments themselves are proven through a real caller by the
+  // `makeSequenceFlowId` block below.
+  it.each([
+    ['A', ['B', 'C'], 'A'],
+    ['X', ['X', 'X_2', 'X_3', 'X_4'], 'X_5'],
+  ] as const)('%s against %j resolves to %s', (base, taken, expected) => {
+    expect(resolveCollision(base, new Set(taken))).toBe(expected);
   });
 
   it('does not mutate the taken set', () => {

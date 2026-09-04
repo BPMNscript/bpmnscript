@@ -25,7 +25,7 @@ And how is a token that appears directly at a boundary event, without ever trave
 - Operaton's own parser (`BpmnParse.parseBoundaryEvents`) is the actual authority on which triggers, and which host shapes, a boundary event may legally carry; a surface stricter than the engine owes a reason.
 - The restructuring analysis (ADR-0009) already commits to being total over every valid IR.
   A boundary event is the IR's first flow-element shape with outgoing edges but no incoming ones, a shape the analysis has never had to reason about, so the decision has to say explicitly what that shape means for reachability and dominance, not leave it implicit.
-- The honest import contract (ADR-0014) and the compensation decision (ADR-0018) both carry commitments this feature must not quietly invalidate: no silent mangling on import, and compensation stays a subprocess undo block rather than gaining a second attachment mechanism.
+- The honest import contract (ADR-0014) and the compensation decision (ADR-0018) both carry commitments this feature must not invalidate: no silent mangling on import, and compensation stays a subprocess undo block rather than gaining a second attachment mechanism.
 
 ## Considered Options
 

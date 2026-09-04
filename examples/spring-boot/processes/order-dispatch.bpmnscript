@@ -1,0 +1,52 @@
+// Order dispatch: an inclusive fork whose branches are picked by the order
+// amount, then a race between an outside confirmation and a chase timer.
+//
+// The fork carries three branches. A large order is audited, any order with a
+// positive amount is recorded, and the `else` branch catches the orders no
+// condition claims. Both conditioned branches can hold at once, so the number
+// of tasks the fork opens, and the join's willingness to wait for exactly
+// those branches, follow from the amount the instance starts with. Both
+// branches are conditioned on purpose: an unconditioned branch of an inclusive
+// fork is always taken, which would leave the fallback nothing to pick up.
+//
+// The `await` block is a race: the engine subscribes to the message and parks
+// the timer job at the same moment, and the first of the two to fire cancels
+// the other. Exactly one of `Handover` and `ChaseCarrier` can ever be offered.
+//
+// Every step is a user task, so the process needs no Java class of its own and
+// every state it reaches is observable over the REST API.
+
+process order-dispatch "Order dispatch" {
+  var amount: number
+
+  start OrderReceived "Order received" {
+    form {
+      amount: number "Order amount"
+    }
+  }
+
+  parallel {
+    if (amount > 10000) {
+      user Audit "Audit the large order" { assignee = "manager" }
+    }
+    if (amount > 0) {
+      user Record "Record the order" { assignee = "demo" }
+    }
+    else {
+      user Triage "Triage the order by hand" { assignee = "demo" }
+    }
+  }
+
+  await {
+    message "DispatchConfirmed" {
+      user Handover "Hand the shipment to the carrier" { assignee = "demo" }
+    }
+    timer after "PT30M" {
+      user ChaseCarrier "Chase the carrier" { assignee = "demo" }
+    }
+  }
+
+  user CloseOrder "Close the order" { assignee = "demo" }
+
+  end OrderDispatched "Order dispatched"
+}

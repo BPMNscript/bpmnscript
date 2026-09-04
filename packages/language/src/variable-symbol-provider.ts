@@ -1,7 +1,6 @@
 /**
- * Variables live in a flat process scope with position-independent visibility:
- * a `var` declared anywhere in a process is visible from every expression in
- * it, whatever the source order.
+ * Variables live in a flat process scope: a `var` declared anywhere is visible
+ * from every expression in the process, whatever the source order.
  */
 
 import { AstUtils, type AstNode } from 'langium';
@@ -36,7 +35,7 @@ interface RepeatSlots {
 /**
  * Whether `node` carries a repeat clause. Only the count and the collection
  * decide it: `sequential` is `false` on every repeatable statement, written or
- * not, so its value says nothing about whether a clause was written at all.
+ * not, so its value says nothing about whether a clause was written.
  */
 export function isRepeated(node: AstNode): node is AstNode & RepeatSlots {
   return (
@@ -47,9 +46,8 @@ export function isRepeated(node: AstNode): node is AstNode & RepeatSlots {
 
 /**
  * The variables Operaton sets around a repeated step: three counters on the
- * repetition as a whole and `loopCounter` on each run of it
- * (`MultiInstanceActivityBehavior`). They exist without being declared, so a
- * process that repeats anything gets them in scope.
+ * repetition and `loopCounter` on each run (`MultiInstanceActivityBehavior`).
+ * They exist undeclared, so a process that repeats anything gets them in scope.
  */
 const LOOP_VARIABLES = [
   'nrOfInstances',
@@ -91,9 +89,8 @@ export class DefaultVariableSymbolProvider implements VariableSymbolProvider {
         }
       }
     }
-    // Seeded last, so an author who declares one of these names keeps its type.
-    // A parameter mapping and a bound element both hold whatever was mapped or
-    // collected, so their type is open.
+    // Seeded last, so an author who declares one of these names keeps its
+    // type. Both hold whatever was mapped or collected, so their type is open.
     const seedOpen = (name: string | undefined): void => {
       if (name !== undefined && !table.has(name)) {
         table.set(name, { name, type: 'any' });

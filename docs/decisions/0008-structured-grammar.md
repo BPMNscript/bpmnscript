@@ -44,8 +44,10 @@ Conditions become a real expression AST, which is what makes type-check diagnost
 
 ### Confirmation
 
-The construct round-trip idempotence test (`tests/round-trip-constructs.test.ts`) verifies that every structured construct (`if`/`else`, `while`, `parallel`) survives `astToIr -> irToXml -> xmlToIr -> irToDsl` without losing structure.
+The construct round-trip idempotence test (`tests/round-trip-constructs.test.ts`) verifies that `if`/`else`, `while` and `parallel` survive `astToIr -> irToXml -> xmlToIr -> irToDsl` without losing structure.
+The conditioned `parallel` branch and the multi-branch `await` survive the same four hops in the frozen pair `tests/golden/branch-and-race.bpmnscript` and the BPMN generated from it.
 The goto-degradation path is exercised by `tests/golden/unstructured-goto.bpmn` in the same suite.
+Neither the conditioned branch nor the multi-branch `await` spent a reserved word, so the grammar header's claim that there is no `gateway` keyword and that every gateway is derived from a control-flow construct holds word for word.
 
 ## More Information
 

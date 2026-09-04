@@ -3,12 +3,17 @@ import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { xmlToIr, irToDsl, astToIr } from '@bpmn-script/transform';
+import { xmlToIr, astToIr, isGateway } from '@bpmn-script/transform';
 import type { BpmnProcess } from '@bpmn-script/transform';
 
 import { normalizeIr } from './helpers/normalize-ir.js';
 import { realNodeReachability } from './helpers/real-node-reachability.js';
-import { parse, parseToAst, roundTripOf } from './helpers/pipeline.js';
+import {
+  parse,
+  parseToAst,
+  printDsl,
+  roundTripOf,
+} from './helpers/pipeline.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -32,7 +37,7 @@ describe('structured idempotence (invoice-approval, if/else)', () => {
   let dsl2: string;
 
   beforeAll(() => {
-    dsl2 = irToDsl(run.ir3);
+    dsl2 = printDsl(run.ir3);
   });
 
   it('final IR equals initial IR up to documented id normalization', () => {
@@ -113,18 +118,18 @@ describe('parallel round-trip (parallelGateway fork/join => parallel { { } { } }
 // form at all belong to the goto-fallback suite.
 describe('goto-degradation preserves the edges that have a goto form', () => {
   let irImport: BpmnProcess; // from xmlToIr(unstructured.bpmn)
-  let degradedDsl: string; // irToDsl(irImport), contains goto(s)
+  let degradedDsl: string; // printDsl(irImport), contains goto(s)
   let irReDesugared: BpmnProcess; // astToIr(parse(degradedDsl))
-  let irSecondRound: BpmnProcess; // astToIr(parse(irToDsl(irReDesugared)))
+  let irSecondRound: BpmnProcess; // astToIr(parse(printDsl(irReDesugared)))
 
   beforeAll(async () => {
     const xml = readFileSync(UNSTRUCTURED_BPMN_PATH, 'utf-8');
 
     ({ ir: irImport } = await xmlToIr(xml));
-    degradedDsl = irToDsl(irImport);
+    degradedDsl = printDsl(irImport);
     irReDesugared = astToIr(await parseToAst(degradedDsl));
 
-    const dsl2 = irToDsl(irReDesugared);
+    const dsl2 = printDsl(irReDesugared);
     irSecondRound = astToIr(await parseToAst(dsl2));
   });
 
@@ -179,10 +184,7 @@ describe('goto-degradation preserves the edges that have a goto form', () => {
   it('every authored node from the import is still present after re-desugaring', () => {
     const realIds = (ir: BpmnProcess) =>
       ir.flowElements
-        .filter(
-          (fe) =>
-            fe.kind !== 'exclusiveGateway' && fe.kind !== 'parallelGateway',
-        )
+        .filter((fe) => !isGateway(fe))
         .map((fe) => fe.id)
         .sort();
     expect(realIds(irReDesugared)).toEqual(realIds(irImport));

@@ -3,24 +3,22 @@
 // prints inside the `if` and the continuation resumes after it, so no jump ever
 // targets the `if`'s synthesized join.
 
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect } from 'vitest';
 
-import { xmlToIr, irToDsl, astToIr } from '@bpmn-script/transform';
-import type {
-  BpmnProcess,
-  EventDefinition,
-  ImportWarning,
-} from '@bpmn-script/transform';
+import type { EventDefinition } from '@bpmn-script/transform';
 
-import { normalizeIr } from './helpers/normalize-ir.js';
-import { describeDiContainment } from './helpers/di-bounds.js';
+import {
+  describeDiContainment,
+  describeSingleDiagram,
+} from './helpers/di-bounds.js';
+import { describeImportFirst } from './helpers/import-first.js';
 import {
   definitionOf,
   handlerTriggerDef,
   kindOf,
   subProcess,
 } from './helpers/ir-query.js';
-import { definitionRefOf } from './helpers/xml-query.js';
+import { definitionRefOf, errorRoots } from './helpers/xml-query.js';
 import { roundTripFixture } from './helpers/round-trip-fixture.js';
 
 const rt = roundTripFixture('event-handlers', {
@@ -111,13 +109,8 @@ describe("idempotence: DSL -> IR1 -> XML -> IR2 -> DSL' -> IR3", () => {
   });
 });
 
-describe('DI containment on the generated .bpmn', () => {
-  it('exactly one bpmndi:BPMNDiagram is emitted', () => {
-    expect(rt.generatedXml.match(/<bpmndi:BPMNDiagram\b/g)).toHaveLength(1);
-  });
-});
+describeSingleDiagram(rt);
 
-// Named so the walk cannot pass on a tree with nothing nested in it.
 describeDiContainment(
   rt,
   () => {
@@ -132,13 +125,9 @@ describeDiContainment(
 
 describe('root sharing on the frozen .bpmn', () => {
   it('the throw error end event and the on error handler share one bpmn:Error carrying the message', () => {
-    const roots = [
-      ...rt.frozenXml.matchAll(
-        /<bpmn:error id="([^"]+)"[^>]*errorCode="PAYMENT_DECLINED"[^>]*operaton:errorMessage="([^"]+)"/g,
-      ),
-    ];
+    const roots = errorRoots(rt.frozenXml, 'PAYMENT_DECLINED');
     expect(roots).toHaveLength(1);
-    const [, rootId, message] = roots[0]!;
+    const { id: rootId, message } = roots[0]!;
     expect(message).toBe('The payment was declined by the bank');
 
     expect(definitionRefOf(rt.frozenXml, 'PaymentFailed', 'error')).toBe(
@@ -150,33 +139,16 @@ describe('root sharing on the frozen .bpmn', () => {
   });
 });
 
-describe('import-first: a handwritten .bpmn with camunda: aliases round-trips', () => {
-  let firstImport: BpmnProcess;
-  let firstWarnings: ImportWarning[];
-  let reDesugared: BpmnProcess;
-  let importDsl: string;
-
-  beforeAll(async () => {
-    const imported = await xmlToIr(IMPORT_FIRST_BPMN);
-    firstImport = imported.ir;
-    firstWarnings = imported.warnings;
-    importDsl = irToDsl(firstImport);
-    reDesugared = astToIr(await rt.parseToAst(importDsl));
-  });
-
-  it('imports warning-free', () => {
-    expect(firstWarnings).toEqual([]);
-  });
-
-  it('normalizes the camunda: error message and binding aliases into the DSL', () => {
-    // `code` doubles as an ordinary variable name in the catch parameter.
-    expect(importDsl).toContain('error "BOOM" message "It went boom"');
-    expect(importDsl).toContain('on error "BOOM" (code code, message text) {');
-  });
-
-  it('the hand-named handler is re-keyed so the re-desugared IR matches the import', () => {
-    // The hand-named event sub-process has no surface id and is re-synthesized,
-    // so the structural re-key collapses the two ids.
-    expect(normalizeIr(reDesugared)).toEqual(normalizeIr(firstImport));
-  });
-});
+describeImportFirst(
+  'a handwritten .bpmn with camunda: aliases round-trips',
+  IMPORT_FIRST_BPMN,
+  (first) => {
+    it('normalizes the camunda: error message and binding aliases into the DSL', () => {
+      // `code` doubles as an ordinary variable name in the catch parameter.
+      expect(first.dsl).toContain('error "BOOM" message "It went boom"');
+      expect(first.dsl).toContain(
+        'on error "BOOM" (code code, message text) {',
+      );
+    });
+  },
+);

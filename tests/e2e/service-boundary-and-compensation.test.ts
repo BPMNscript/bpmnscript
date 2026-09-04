@@ -20,9 +20,8 @@ import {
   activeTaskKeys,
   activityIdsIncluding,
   historicActivities,
-  isRunning,
-  waitFor,
   waitForTaskId,
+  waitUntilFinished,
 } from '../helpers/engine-rest.js';
 
 const CHARGE_PROCESS_KEY = 'charge-with-recovery';
@@ -77,12 +76,7 @@ describe.skipIf(SKIP)(
           await waitForTaskId(fixture, processInstanceId, 'ReviewFailedCharge'),
         );
 
-        expect(
-          await waitFor(
-            () => isRunning(fixture, processInstanceId),
-            (running) => !running,
-          ),
-        ).toBe(false);
+        expect(await waitUntilFinished(fixture, processInstanceId)).toBe(true);
       }, 60_000);
 
       it('runs the charge through to the normal end when the failure condition is off', async () => {
@@ -106,12 +100,7 @@ describe.skipIf(SKIP)(
         ).find((a) => a.activityId === 'ChargeCard');
         expect(chargeCard?.canceled).toBe(false);
 
-        expect(
-          await waitFor(
-            () => isRunning(fixture, processInstanceId),
-            (running) => !running,
-          ),
-        ).toBe(false);
+        expect(await waitUntilFinished(fixture, processInstanceId)).toBe(true);
       }, 60_000);
     });
 
@@ -135,12 +124,7 @@ describe.skipIf(SKIP)(
         expect(activityIds).toContain('CompensationTriggered');
         expect(activityIds).toContain('ReleaseSeat');
 
-        expect(
-          await waitFor(
-            () => isRunning(fixture, processInstanceId),
-            (running) => !running,
-          ),
-        ).toBe(false);
+        expect(await waitUntilFinished(fixture, processInstanceId)).toBe(true);
       }, 60_000);
     });
   },

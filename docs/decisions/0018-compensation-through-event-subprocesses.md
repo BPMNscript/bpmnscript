@@ -61,7 +61,7 @@ A single task that needs an undo path becomes a named unit of work with its own 
 
 - Good, because a saga (several steps, each undoable, unwound in reverse when a later step fails) round-trips through the DSL and executes on the engine using only constructs the surface already has: `subprocess`, `on`, `throw`, `emit`.
 - Good, because compensation reuses the same verb pair, the same catch-block reading, and the same container rule every other trigger kind already follows; there is nothing new to learn beyond "undo block" and "no code."
-- Good, because an import carrying the boundary-event pattern, a targeted throw, or `waitForCompletion="false"` refuses loudly instead of silently reproducing a different execution than the one the imported document actually specifies.
+- Good, because an import carrying the boundary-event pattern, a targeted throw, or `waitForCompletion="false"` refuses outright, rather than reporting nothing and reproducing a different execution than the one the imported document actually specifies.
 - Bad, because an author porting an existing BPMN model that already uses boundary compensation events must restructure it, pulling the compensated activity and its handler into a `subprocess`, rather than have the importer translate the pattern automatically.
 - Bad, because per-activity compensation on many independent steps means one small `subprocess` wrapper per step; the surface trades a second attachment mechanism for a per-step wrapping requirement instead.
 - Neutral, because compensation's ordering (reverse of execution), invocation count, and the variable snapshot an undo block sees are entirely engine behavior.

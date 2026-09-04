@@ -24,6 +24,7 @@ A few stand alone as inputs for one direction only.
 | `task-kinds.{bpmnscript,bpmn}`         | The generic, send, receive, and decision task kinds           |
 | `repetition.{bpmnscript,bpmn}`         | Every form of the repeat clause                               |
 | `transactions.{bpmnscript,bpmn}`       | A block of work that can be given up, and the cancel pair     |
+| `branch-and-race.{bpmnscript,bpmn}`    | The splits that weigh their branches, and the race of waits   |
 | `unstructured-goto.bpmn`               | The `goto` degradation path on import                         |
 
 The three invoice-approval files all describe the same process (review, then a gateway on `amount > 1000`, then senior approval or auto-approve) but come from different sources and pull the tests in different directions.
@@ -74,7 +75,7 @@ A BPMNscript source, not BPMN XML, exercising every structured control-flow cons
 It's the input for the construct round-trip idempotence check (BPMNscript to IR to XML to IR to DSL to IR), where each construct desugars to a clean, restructurable gateway shape and survives the full trip:
 
 - `if (priority > 5) { ... } else { ... }` becomes an exclusive-gateway split and join pair (`Gateway_structured-control-flow_2_split` and `..._2_join`).
-- `while (retries < 3) { ... }` becomes an exclusive loop gateway (`Gateway_structured-control-flow_3_loop`) with a conditioned back-edge, never `standardLoopCharacteristics`.
+- `while (retries < 3) { ... }` becomes an exclusive loop gateway (`Gateway_structured-control-flow_3_loop`) whose condition sits on the flow into the body and whose back-edge carries none, never `standardLoopCharacteristics`.
 - `parallel { { ... } { ... } }` becomes a parallel-gateway fork and join pair (`Gateway_structured-control-flow_4_fork` and `..._4_join`).
 
 Every flow node carries an explicit id so the round trip can assert authored ids survive, and synthesized ids follow the frozen scheme (`Gateway_<coord>_split|join|loop|fork`, `Flow_<gateway>_default`).
@@ -116,13 +117,18 @@ Contract: every `attachedToRef`, `cancelActivity="false"` on each `alongside` bo
 
 ## `intermediate-catch.{bpmnscript,bpmn}`
 
-A single main flow awaiting all four catchable triggers back to back, between a review task and a dispatch task, so the golden covers every payload shape (a message name, a timer duration, a signal name, and a rendered boolean expression) in one artifact:
+A single main flow awaiting all four catchable triggers back to back, between a review task and a dispatch task, so the golden covers every payload shape (a message name, a timer duration, a signal name, and a rendered boolean expression) in one artifact.
+The stretch that does it, with the declaration its condition reads:
 
 ```bpmnscript
-await message "PaymentConfirmed"
-await timer after "PT1H"
-await signal "StockReplenished"
-await condition (amount > 100)
+process order-processing {
+  var amount: number
+
+  await message "PaymentConfirmed"
+  await timer after "PT1H"
+  await signal "StockReplenished"
+  await condition (amount > 100)
+}
 ```
 
 Contract: the four event definitions, their order, and the absence of any `name` attribute on a catch.
@@ -194,11 +200,25 @@ An `on BookAndPay: error` handler sits on the same block, so the artifact pins t
 A second `attempt` block repeats over the seat rows, sets `asyncBefore`, and mentions cancel nowhere, so a block nothing gives up is frozen beside the one that is; it sits inside an ordinary `subprocess`, which nests the two heads inside one another both ways round.
 The guard variable is declared on the start form and the collection the repeat clause names bare is declared in the header, so both survive an import-and-back round trip.
 
-The `attempt` head serializes to `bpmn:transaction` and `subprocess` to `bpmn:subProcess`.
-Operaton runs a `bpmn:transaction` through the same behavior class it gives an ordinary embedded sub-process, so nothing about the block is atomic and nothing rolls back on its own; what the second tag buys is that the engine then accepts a cancel end directly inside the block and a cancel boundary on it, and refuses to deploy either anywhere else.
-A cancel end runs the undo blocks of the finished steps of its own block first, in reverse order of completion, and only when that is done does the run appear at the block's cancel handler.
-
 Contract: the `attempt` blocks on `bpmn:transaction` and the ordinary ones on `bpmn:subProcess`; the `bpmn:cancelEventDefinition` on an end event inside the transaction and on a boundary event whose `attachedToRef` names that transaction, both of them bare; the error boundary on the same host; the `triggeredByEvent` undo block nested inside the block a cancel end gives up; `bpmn:multiInstanceLoopCharacteristics` and `operaton:asyncBefore` written on the second transaction tag; every nested shape inside its parent's bounds with both boundary shapes centered on the host's lower edge; and every authored id.
+
+## `branch-and-race.{bpmnscript,bpmn}`
+
+An order-handling narrative carrying every shape a `parallel` block takes and both forms of `await`.
+The first `parallel` closes with an `else`, and every sibling of that `else` carries a condition, because a branch carrying none always runs and would leave the fallback nothing to pick up.
+The second drops the `else` and leaves a branch unheaded; the third heads nothing at all.
+A condition on any branch makes the fork and the join `bpmn:inclusiveGateway`, so the first two blocks freeze one such pair each, while the third stays the `bpmn:parallelGateway` pair a `parallel` has always produced.
+An inclusive fork always names a default flow, because a gateway whose every branch is conditioned and which names none deploys, runs, and then throws a stuck execution the first time no condition holds.
+Where the block writes an `else` that default points at the branch, and where it does not it runs straight to the join, which is the one flow the source never shows and the decompiler leaves out again.
+Both races open on `await {`: the first weighs a settled payment against a three-day timer whose branch carries `asyncBefore`, the second the restocking signal against a condition on the order, so all four triggers a branch can wait on sit in one artifact.
+A plain `await` follows the two, so both forms of the keyword are frozen side by side.
+
+A race lowers to a `bpmn:eventBasedGateway`, one `bpmn:intermediateCatchEvent` per branch, and a `bpmn:exclusiveGateway` merge, since the first branch to fire cancels the rest and exactly one of them ever runs.
+No flow out of that gateway carries a condition: Operaton builds no transition for one and routes through the event scope instead, so a condition there would be content nothing reads.
+The gateway, its catch events, and the merge are all elided on print, each of them recovered from the `await` block the branches spell out, and a branch's settings are written back on the catch event the engine waits at.
+Every condition reads a field of the start form rather than a `var`, so the declaration comes back out of the XML on the way in.
+
+Contract: two `bpmn:inclusiveGateway` pairs and one `bpmn:parallelGateway` pair, each a `_fork` and a `_join`; exactly two `default` attributes, one naming the flow into the `else` branch and one the flow into the join; one `bpmn:eventBasedGateway` per race, each with one unconditioned flow per catch event and an exclusive merge; and every authored id.
 
 ## `unstructured-goto.bpmn`
 

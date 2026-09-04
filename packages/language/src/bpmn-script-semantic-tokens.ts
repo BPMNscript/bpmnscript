@@ -1,17 +1,14 @@
 /**
- * Semantic-token highlighting for the soft words. `error`, `escalation`,
- * `code`, `message`, `terminate`, the attribute keys, the parameter
- * directions, and the listener events all lex as plain `ID` so that
- * `var message: string` still parses. The generated TextMate grammar is a
- * regex over token text and cannot tell `on error` from `var error: string`,
- * or an attribute `priority` from the variable in `if (priority > 5)`.
- * Semantic tokens are computed from the parsed AST, so a soft word highlights
- * exactly where the grammar gave it that meaning, and VS Code's default themes
- * render a semantic `keyword` like a lexical one.
+ * Semantic-token highlighting for the soft words. They lex as plain `ID` so that
+ * `var message: string` still parses, and the generated TextMate grammar, a
+ * regex over token text, cannot tell `on error` from `var error: string` or an
+ * attribute `priority` from the variable in `if (priority > 5)`. Semantic
+ * tokens are computed from the parsed AST, so a soft word highlights exactly
+ * where the grammar gave it that meaning, and VS Code's default themes render a
+ * semantic `keyword` like a lexical one.
  *
- * The trigger positions covered are `on`, `throw`, `emit`, `await`, and the
- * start and end events. `OnHandler.host` is excluded: it is a cross-reference
- * to the activity the handler attaches to, not a trigger word.
+ * `OnHandler.host` is excluded: it is a cross-reference to the activity the
+ * handler attaches to, not a trigger word.
  */
 
 import type { AstNode } from 'langium';
@@ -31,6 +28,7 @@ import {
   isListener,
   isOnHandler,
   isProcessAttribute,
+  isRaceBranch,
   isStartEvent,
   isThrowStatement,
 } from './generated/ast.js';
@@ -48,11 +46,14 @@ export class BpmnScriptSemanticTokenProvider extends AbstractSemanticTokenProvid
       isOnHandler(node) ||
       isThrowStatement(node) ||
       isEmitStatement(node) ||
-      isIntermediateCatchEvent(node)
+      isIntermediateCatchEvent(node) ||
+      isRaceBranch(node)
     ) {
       keyword('trigger');
       if (
-        (isOnHandler(node) || isIntermediateCatchEvent(node)) &&
+        (isOnHandler(node) ||
+          isIntermediateCatchEvent(node) ||
+          isRaceBranch(node)) &&
         node.particle
       ) {
         keyword('particle');

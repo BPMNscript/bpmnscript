@@ -80,6 +80,15 @@ export function describeNoOverlappingShapes(rt: RoundTrip): void {
   });
 }
 
+/** DI is emitted once for the whole document, not once per container. */
+export function describeSingleDiagram(rt: RoundTrip): void {
+  describe('DI on the generated .bpmn', () => {
+    it('exactly one bpmndi:BPMNDiagram is emitted', () => {
+      expect(rt.generatedXml.match(/<bpmndi:BPMNDiagram\b/g)).toHaveLength(1);
+    });
+  });
+}
+
 function strictlyInside(child: Bounds, parent: Bounds): boolean {
   return (
     child.x > parent.x &&

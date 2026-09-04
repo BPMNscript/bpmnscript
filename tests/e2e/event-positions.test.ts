@@ -19,12 +19,12 @@ import {
   executeJob,
   historicActivities,
   historicInstances,
-  isRunning,
   jobsOf,
   startByMessage,
   waitFor,
   waitForTaskId,
   waitForTaskKeys,
+  waitUntilFinished,
 } from '../helpers/engine-rest.js';
 
 describe.skipIf(SKIP)('E2E: start, end and throw triggers on Operaton', () => {
@@ -88,12 +88,7 @@ describe.skipIf(SKIP)('E2E: start, end and throw triggers on Operaton', () => {
     );
     expect(activityIds).toContain('NotifyWarehouse');
 
-    expect(
-      await waitFor(
-        () => isRunning(fixture, processInstanceId),
-        (running) => !running,
-      ),
-    ).toBe(false);
+    expect(await waitUntilFinished(fixture, processInstanceId)).toBe(true);
   }, 60_000);
 
   it('signal start: a broadcast starts an instance with both parallel tasks active', async () => {
@@ -120,12 +115,7 @@ describe.skipIf(SKIP)('E2E: start, end and throw triggers on Operaton', () => {
     );
     expect(activityIds).not.toContain('Restocked');
 
-    expect(
-      await waitFor(
-        () => isRunning(fixture, processInstanceId),
-        (running) => !running,
-      ),
-    ).toBe(false);
+    expect(await waitUntilFinished(fixture, processInstanceId)).toBe(true);
     expect(await fixture.getActiveTasks(processInstanceId)).toEqual([]);
 
     const reorder = (await historicActivities(fixture, processInstanceId)).find(

@@ -21,7 +21,6 @@ import { Diagnostic, DiagnosticSeverity } from 'vscode-languageserver-types';
 
 import {
   xmlToIr,
-  irToDsl,
   astToIr,
   irToXml,
   UNSTRUCTURED_MARKER,
@@ -29,7 +28,7 @@ import {
 import type { BpmnProcess } from '@bpmn-script/transform';
 
 import { realNodeReachability } from './helpers/real-node-reachability.js';
-import { parse } from './helpers/pipeline.js';
+import { parse, printDsl } from './helpers/pipeline.js';
 
 // Validation, not just parsing: a `goto` naming an elided node parses fine and
 // fails only once the reference is linked, and a `goto` written ahead of a
@@ -59,7 +58,7 @@ async function parseToAst(source: string) {
 // that fails to validate fails a test rather than the whole suite's setup.
 async function emit(ir: BpmnProcess) {
   const { ir: imported, warnings } = await xmlToIr(await irToXml(ir));
-  return { imported, warnings, dsl: irToDsl(imported) };
+  return { imported, warnings, dsl: printDsl(imported) };
 }
 
 const flow = (id: string, from: string, to: string, condition?: string) => ({
@@ -200,13 +199,16 @@ describe('surplus out-edge on a plain node keeps the fall-through', () => {
     ({ dsl } = await emit(SURPLUS_EDGE_ON_TASK));
   });
 
-  it('emits no jump beside the fall-through', () => {
-    // A `goto` here would end the chain and leave everything after it with no
-    // incoming flow.
-    expect(dsl).not.toContain('goto');
-    expect(dsl).toContain(
-      `${UNSTRUCTURED_MARKER} (dropped edge into Gateway_H_join)`,
-    );
+  it('gives both routes a branch rather than a jump beside the fall-through', () => {
+    // A bare `goto` beside the fall-through would end the chain and leave
+    // everything after it with no incoming flow. Both routes head a branch
+    // instead, so the second route keeps its edge and the first keeps its
+    // chain. The back edge names `T1` because the join it runs into has one
+    // way out, and that is the step it leads to.
+    expect(dsl).toContain('if (true) {');
+    expect(dsl).toContain('goto Cont');
+    expect(dsl).toContain('goto T1');
+    expect(dsl).not.toContain(UNSTRUCTURED_MARKER);
   });
 
   it('keeps the rest of the process reachable and valid', async () => {
@@ -235,7 +237,7 @@ describe('a goto never names a node the emitter elides', () => {
         flow('f4', 'T1', 'Gateway_E_join'),
       ],
     };
-    const dsl = irToDsl(ir);
+    const dsl = printDsl(ir);
     expect(dsl).not.toMatch(/goto EndEvent_/);
     await expect(parseToAst(dsl)).resolves.toBeDefined();
   });
@@ -268,7 +270,7 @@ describe('a goto never names a node the emitter elides', () => {
     const { ir: imported, warnings } = await xmlToIr(await irToXml(ir));
     expect(warnings).toHaveLength(0);
 
-    const dsl = irToDsl(imported);
+    const dsl = printDsl(imported);
     expect(dsl).not.toContain('goto Catch_1');
     expect(dsl).toContain(`${UNSTRUCTURED_MARKER} (dropped edge into Catch_1)`);
     await expect(parseToAst(dsl)).resolves.toBeDefined();
@@ -306,7 +308,7 @@ describe('shapes that structure cleanly stay structured', () => {
         flow('f10', 'Gateway_O_join', 'End_1'),
       ],
     };
-    expect(irToDsl(ir)).toBe(
+    expect(printDsl(ir)).toBe(
       [
         'process NestedIf {',
         '  start Start_1',
@@ -352,7 +354,7 @@ describe('shapes that structure cleanly stay structured', () => {
         flow('f9', 'Gateway_B_join', 'End_1'),
       ],
     };
-    expect(irToDsl(ir)).toBe(
+    expect(printDsl(ir)).toBe(
       [
         'process SiblingIfs {',
         '  start Start_1',

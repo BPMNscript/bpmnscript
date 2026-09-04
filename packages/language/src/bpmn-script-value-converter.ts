@@ -1,12 +1,10 @@
 /**
- * Normalizes `OnHandler.time` so a timer's string has one shape whichever
- * grammar alternative produced it. `time=(STRING | RAW_TEMPLATE)` takes a plain
- * duration (`after "PT1H"`) or an EL template (`after "${dueDate}"`). Langium's
- * `DefaultValueConverter` auto-unquotes `STRING` but returns `RAW_TEMPLATE`
- * verbatim, quotes included, because the terminal's other use (`RawExpr.raw`)
- * needs them kept for `expression-render.ts` to strip. Left alone the two
- * alternatives would disagree: `PT1H` vs `"${dueDate}"`. Unquoting
- * `RAW_TEMPLATE` only where it fills `time` leaves every `RawExpr.raw` alone.
+ * Normalizes `OnHandler.time`, which `time=(STRING | RAW_TEMPLATE)` fills with
+ * a plain duration (`after "PT1H"`) or an EL template (`after "${dueDate}"`).
+ * Langium's `DefaultValueConverter` auto-unquotes `STRING` but returns
+ * `RAW_TEMPLATE` verbatim, quotes included, because the terminal's other use
+ * (`RawExpr.raw`) needs them kept for `expression-render.ts` to strip, so left
+ * alone the two alternatives disagree: `PT1H` vs `"${dueDate}"`.
  */
 
 import {

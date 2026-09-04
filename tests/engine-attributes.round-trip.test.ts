@@ -4,6 +4,7 @@
 
 import { describe, it, expect } from 'vitest';
 
+import { isGateway } from '@bpmn-script/transform';
 import type { EngineAttributes, FlowElement } from '@bpmn-script/transform';
 
 import { roundTripFixture } from './helpers/round-trip-fixture.js';
@@ -96,9 +97,7 @@ describe('the frozen engine-attribute contract', () => {
 describe('a synthesized gateway carries no engine attribute', () => {
   it('neither gateway kind holds one, at any container depth or hop', () => {
     for (const [label, ir] of rt.hops) {
-      const gateways = allElements(ir).filter(
-        (fe) => fe.kind === 'exclusiveGateway' || fe.kind === 'parallelGateway',
-      );
+      const gateways = allElements(ir).filter(isGateway);
       expect(
         new Set(gateways.map((gw) => gw.kind)),
         `both gateway kinds must be present in ${label}`,

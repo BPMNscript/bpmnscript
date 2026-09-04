@@ -7,12 +7,18 @@ import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { xmlToIr, irToDsl, astToIr, irToXml } from '@bpmn-script/transform';
+import {
+  xmlToIr,
+  astToIr,
+  irToXml,
+  gatewayDefaultFlowId,
+  isGateway,
+} from '@bpmn-script/transform';
 import type { BpmnProcess } from '@bpmn-script/transform';
 
 import { normalizeIr } from './helpers/normalize-ir.js';
 import { theOnly } from './helpers/ir-query.js';
-import { parse, parseToAst } from './helpers/pipeline.js';
+import { parse, parseToAst, printDsl } from './helpers/pipeline.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -27,7 +33,7 @@ let dslSource: string;
 
 beforeAll(async () => {
   ({ ir: ir1 } = await xmlToIr(readFileSync(HANDWRITTEN_BPMN_PATH, 'utf-8')));
-  dslSource = irToDsl(ir1);
+  dslSource = printDsl(ir1);
   const xml2 = await irToXml(astToIr(await parseToAst(dslSource)));
   ({ ir: ir3 } = await xmlToIr(xml2));
 });
@@ -89,7 +95,7 @@ describe('Round-trip equivalence: BPMN -> IR -> DSL -> IR -> XML -> IR', () => {
     const gw = theOnly(
       ir3,
       'exclusiveGateway',
-      (g) => g.defaultFlowId !== undefined,
+      (g) => gatewayDefaultFlowId(g) !== undefined,
     );
     expect(gw.defaultFlowId).toMatch(/_default$/);
 
@@ -155,14 +161,14 @@ describe('normalizeIr preserves structural differences', () => {
   it('stripping the split gateway default flow makes the comparison FAIL', () => {
     // A gateway's default flow is structure, so normalizeIr must not erase it.
     const splitGw = ir3.flowElements.find(
-      (fe) => fe.kind === 'exclusiveGateway' && fe.defaultFlowId !== undefined,
+      (fe) => isGateway(fe) && gatewayDefaultFlowId(fe) !== undefined,
     );
     expect(splitGw).toBeDefined();
 
     const stripped: BpmnProcess = {
       ...ir3,
       flowElements: ir3.flowElements.map((fe) =>
-        fe.kind === 'exclusiveGateway' && fe.defaultFlowId !== undefined
+        isGateway(fe) && gatewayDefaultFlowId(fe) !== undefined
           ? { kind: fe.kind, id: fe.id, name: fe.name }
           : fe,
       ),

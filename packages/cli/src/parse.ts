@@ -6,12 +6,11 @@ import * as path from 'node:path';
 import {
   xmlToIr,
   irToDsl,
-  UNSTRUCTURED_MARKER,
   UnsupportedConstructError,
   UnsupportedServiceTaskFormError,
   UnsupportedElementError,
 } from '@bpmn-script/transform';
-import type { ImportWarning } from '@bpmn-script/transform';
+import type { ImportWarning, PrintWarning } from '@bpmn-script/transform';
 import { resolveOutputPath } from './util.js';
 
 export type ParseOptions = {
@@ -87,8 +86,9 @@ export async function parseAction(
   }
 
   let dsl: string;
+  let printWarnings: PrintWarning[];
   try {
-    dsl = irToDsl(ir);
+    ({ source: dsl, warnings: printWarnings } = irToDsl(ir));
   } catch (err) {
     console.error(
       chalk.red(
@@ -113,15 +113,10 @@ export async function parseAction(
 
   console.log(chalk.green(`Parsed: ${outPath}`));
 
-  for (const w of warnings) {
-    console.error(chalk.yellow(`Warning: ${w.message}`));
-  }
-
-  if (dsl.includes(UNSTRUCTURED_MARKER)) {
-    console.error(
-      chalk.yellow(
-        'Warning: the decompiled model contains an unstructured region that needs hand-repair (see the marker comment). At least one sequence flow could not be expressed and was dropped.',
-      ),
-    );
+  // The id leads: several messages describe the route on from a step without
+  // naming it, and two such warnings are otherwise the same line twice. The id
+  // is also a token the reader can search for in the script just written.
+  for (const w of [...warnings, ...printWarnings]) {
+    console.error(chalk.yellow(`Warning: ${w.elementId}: ${w.message}`));
   }
 }

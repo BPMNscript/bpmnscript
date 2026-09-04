@@ -17,10 +17,9 @@ import {
   activityIdsIncluding,
   correlateMessage,
   historicActivities,
-  isRunning,
-  waitFor,
   waitForTaskId,
   waitForTaskKeys,
+  waitUntilFinished,
 } from '../helpers/engine-rest.js';
 
 const PROCESS_KEY = 'order-handling';
@@ -64,12 +63,7 @@ describe.skipIf(SKIP)('E2E: boundary events on Spring Boot Operaton', () => {
     await fixture.completeTask(
       await waitForTaskId(fixture, processInstanceId, 'ReviewLargePayment'),
     );
-    expect(
-      await waitFor(
-        () => isRunning(fixture, processInstanceId),
-        (running) => !running,
-      ),
-    ).toBe(false);
+    expect(await waitUntilFinished(fixture, processInstanceId)).toBe(true);
   }, 60_000);
 
   // `cancelActivity="true"` is the default, written without `alongside`: the
@@ -156,11 +150,6 @@ describe.skipIf(SKIP)('E2E: boundary events on Spring Boot Operaton', () => {
     await fixture.completeTask(
       await waitForTaskId(fixture, processInstanceId, 'ReviewLargePayment'),
     );
-    expect(
-      await waitFor(
-        () => isRunning(fixture, processInstanceId),
-        (running) => !running,
-      ),
-    ).toBe(false);
+    expect(await waitUntilFinished(fixture, processInstanceId)).toBe(true);
   }, 60_000);
 });

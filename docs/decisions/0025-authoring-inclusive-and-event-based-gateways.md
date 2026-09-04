@@ -11,21 +11,21 @@ decision-makers: Marlon Kranz
 Every BPMN element the language has taken on so far had a construct to hang off.
 `bpmn:inclusiveGateway` and `bpmn:eventBasedGateway` have nothing to attach to, because under ADR-0008 no author ever writes a gateway.
 The desugarer synthesizes every gateway from block structure, and the decompiler elides every one it matches.
-That elision is what makes the round trip idempotent, and the grammar states the premise in its own header (`packages/language/src/bpmn-script.langium:7-8`).
-Both kinds are refused on import today (`packages/transform/src/xml-to-ir.ts:758`).
+That elision is what makes the round trip idempotent, and the grammar states the premise in its own header (`packages/language/src/bpmn-script.langium`).
+Both kinds are refused on import today (`mapContainerChildren`, `packages/transform/src/xml-to-ir.ts`).
 
 So the question is not which keyword spells "inclusive gateway".
 It is whether block structure can express the intent well enough that the compiler still picks the element.
-A gateway's `name` survives XML to IR to XML, then dies at the print hop, where no gateway has a statement form to carry it (`tests/helpers/normalize-ir.ts:65-67`).
+A gateway's `name` survives XML to IR to XML, then dies at the print hop, where no gateway has a statement form to carry it (`normalizeContainer`, `tests/helpers/normalize-ir.ts`).
 
 ## Decision Drivers
 
 - ADR-0013 binds two rules: a keyword names what the user means rather than the BPMN element, and the compiler must not require what it can infer.
 - Gateway elision is what ADR-0009's decompiler relies on for idempotence.
   A gateway with textual identity gains an authored id and stops round-tripping under ADR-0010's positional scheme.
-- Operaton does not police the two kinds equally: an inclusive gateway gets no structural validation, an event-based gateway five separate restrictions.
+- Operaton does not police the two kinds equally: an inclusive gateway gets no structural validation, an event-based gateway a list of them.
 - Trigger words are soft identifiers by design (ADR-0016), so a rule proves nothing until a live parser accepts it.
-- ADR-0014's contract covers `xmlToIr` only, and `irToDsl` returns a bare `string` (`packages/transform/src/ir-to-dsl.ts:38`).
+- ADR-0014's contract covers `xmlToIr` only, and `irToDsl` returns a bare `string` (`packages/transform/src/ir-to-dsl.ts`).
   A drop on the way out has no channel to be reported through.
 
 ## Considered Options
@@ -53,36 +53,44 @@ Every form below parsed with zero ambiguity warnings in a live Langium parser wi
 A branch of a `parallel` block may be headed by `if (condition)`, by `else`, or by nothing at all.
 The compiler picks the element: no condition anywhere means `bpmn:parallelGateway`, and a condition on any branch means `bpmn:inclusiveGateway` on the fork and the join.
 
-```
-parallel {
-  if (amount > 10000) { user Audit }
-  { service RecordReceipt }
-  else { user ManualTriage }
+```bpmnscript
+process expense-approval {
+  var amount: number
+  var repeatCustomer: boolean
+
+  parallel {
+    if (amount > 10000) { user Audit }
+    if (repeatCustomer) { service RecordReceipt { topic = "receipts" } }
+    else { user ManualTriage }
+  }
 }
 ```
 
 Operaton takes every non-default flow that has no condition or a true one (`InclusiveGatewayActivityBehavior.java:64-68`), and adds the default only when that set comes out empty (lines 71-83).
 The default flow is always emitted and never asked for.
-With an `else` it points at that branch; without one it goes straight to the join, the rule `lowerIf` already applies at the same position (`packages/transform/src/ast-to-ir.ts:594`).
+With an `else` it points at that branch; without one it goes straight to the join, the rule `lowerIf` already applies at the same position (`packages/transform/src/ast-to-ir.ts`).
 That is a lowering rule rather than a validator rule because `parseInclusiveGateway` validates nothing (`BpmnParse.java:2105-2117`).
 An all-conditional gateway without a default deploys, runs, then throws a stuck execution when nothing matches (`InclusiveGatewayActivityBehavior.java:71-75`).
+A branch carrying no condition is in the taken set every time, which is why an `else` written beside one is rejected: the set never comes out empty and the fallback behind the `else` never runs.
 
 The race is a multi-branch `await`.
 `await` already means the token stops here until this resolves, and a race is that meaning over a set.
 
-```
-await {
-  message "PaymentReceived" { service ShipOrder }
-  timer after "P3D" { user ChaseCustomer }
+```bpmnscript
+process order-shipping {
+  await {
+    message "PaymentReceived" { service ShipOrder { topic = "shipping" } }
+    timer after "P3D" { user ChaseCustomer }
+  }
 }
 ```
 
 A branch is a trigger header in the payload grammar `on` and `await` share, an optional settings block, then the body.
-Two branches are the minimum, enforced by the grammar as `ParallelStatement` already does (`bpmn-script.langium:278-279`).
+Two branches are the minimum, enforced by the grammar as `ParallelStatement` already does (`bpmn-script.langium`).
 The triggers are the four `await` already takes, which is also everything Operaton accepts in this position (`BpmnParse.java:1549-1594`).
-Reusing the word costs nothing, because `await {` cannot parse today (`bpmn-script.langium:380-383`).
+Reusing the word costs nothing, because `await {` cannot parse today: the `IntermediateCatchEvent` shape takes a trigger word after the keyword (`bpmn-script.langium`).
 
-The race falls through to a synthesized exclusive join, reusing `if`'s join and its pruning when every branch terminates (`ast-to-ir.ts:597`).
+The race falls through to a synthesized exclusive join, reusing `if`'s join and its pruning when every branch terminates (`pruneUnreachableJoin`, `ast-to-ir.ts`).
 Operaton gives every catch event behind an event-based gateway the start behavior `CANCEL_EVENT_SCOPE` (`BpmnParse.java:1564-1566`), so exactly one branch of a race ever runs.
 
 An inclusive pair reuses `Gateway_<X>_fork` and `Gateway_<X>_join` unchanged, since exactly one `parallel` statement sits at any structural coordinate.
@@ -90,7 +98,7 @@ The race adds one template, `Gateway_<X>_race`, whose segment word joins the res
 
 Neither `if`, `while`, `parallel`, nor either new form gains a label slot, and the reason is structural.
 One construct lowers to two gateways, so a single slot carries at most half of what an imported document may hold.
-Instead `irToDsl` gains a warnings channel and reports the dropped label, along with everything else the print hop drops.
+Instead `irToDsl` gains a warnings channel, and the dropped label is one of the reports it carries; which reports the print hop makes and what each one costs is `PrintWarningCategory` and the warnings built beside it in `packages/transform/src/ir-to-dsl.ts`.
 Its signature moves from `string` to a result carrying source and warnings, as ADR-0014 did to `xmlToIr`, since a channel a caller can skip is a silent drop.
 
 This extends the structured surface rather than breaching it.
@@ -98,18 +106,24 @@ Every gateway is still derived from block structure, none is written, and none i
 
 Both gateways move from a blanket refusal to a carry.
 An inclusive gateway carries with no exceptions, reading `name` and `default`, because Operaton refuses nothing about it.
-An event-based gateway carries with three refusals, each a shape Operaton's own parser rejects by name:
+An event-based gateway carries, refusing three shapes, each following a refusal in Operaton's own parser:
 
 - an outgoing flow whose target is not a `bpmn:intermediateCatchEvent` (`BpmnParse.java:2162`)
-- a downstream catch carrying a link definition (`BpmnParse.java:1583-1585`)
-- a downstream catch with an incoming sequence flow other than the one from the gateway (`BpmnParse.java:4371-4377`), which no script can author
+- a downstream catch carrying a link definition (`BpmnParse.java:1583-1585`), which `mapIntermediateCatchEvent` turns away wherever a link appears, so the gateway needs no rule of its own for it
+- a downstream catch reached by more than one path (`BpmnParse.java:4371-4377`), counted over every path in
+
+The last is wider than the engine's rule: Operaton lets a path through where it leaves an event-based gateway, so it takes a catch reached only by such paths, and this refuses that too.
+Neither that shape nor the one Operaton refuses is authorable, so the extra width costs no script anything.
+
+`parseEventBasedGateway` rejects `operaton:asyncAfter` on the gateway itself as well.
+That one needs no refusal here, because no author writes a gateway and so nothing can put the setting on one; a document that carries it imports with the drop reported.
 
 ### Consequences
 
 - Good, because both gateways stay synthesized and elided, so idempotence, the id scheme, and the control-flow analysis need no new rule and no new IR flag.
 - Good, because neither construct spends a reserved word; reserving `race` would take `var race: string` and `user race` out of the language.
 - Bad, because a conditioned `parallel` reads as one construct but compiles to either of two BPMN elements, so a BPMN-literate reader must read every branch.
-- Bad, because `irToDsl` changes its return shape, touching every call site, for a diagnostic that is cosmetic in every case it reports.
+- Bad, because `irToDsl` changes its return shape, touching every call site, and the drop that motivated it costs the reader a gateway's name rather than anything the process does.
 - Bad, because the label comes back on a BPMN-to-BPMN pass but never on a BPMN-to-DSL one, so a decompiled and recompiled document loses every gateway label.
 - Bad, because a conditional branch of a race can win without waiting (`EventBasedGatewayActivityBehavior.java:30-46`), which no part of the surface shows.
 - Bad, because an inclusive fork closed on an exclusive merge, the common hand-drawn shape, degrades to `goto`s a reader repairs by hand.
@@ -118,7 +132,7 @@ An event-based gateway carries with three refusals, each a shape Operaton's own 
 
 Parser tests pin a `parallel` block mixing an `if` branch, a plain branch and an `else` branch, and a plain branch opening with a nested `if`/`else`.
 `await { ... }` parses as a race while `await timer after "PT1H"` still parses as a single catch.
-Validation tests pin the four-trigger scope, the two-branch minimum as a parse failure, and an `else` branch with no conditioned sibling.
+Validation tests pin the four-trigger scope, the two-branch minimum as a parse failure, a second `else` branch on one statement, an `else` branch with no conditioned sibling, and an `else` branch beside a sibling carrying no condition.
 Transform tests pin element selection, the default-flow rule, the race's join and its pruning, the inclusive carry, and each refusal by name.
 They also pin elision of both new pairs and the dropped-label warning reaching the caller.
 Golden fixtures assert IR idempotence after normalization and that the decompiled source recompiles cleanly.
@@ -135,7 +149,7 @@ A Docker-gated end-to-end test shows the losing race branch canceled and the inc
 - A distinct keyword could not be confused with anything, but it costs the language a name authors may want.
 - A synthesized exclusive join with fall-through reuses `if`'s join and cannot duplicate a token, at the cost of a join that sees one.
 - Self-contained branches rejoining by `goto` would match a hosted `on` handler, but would force a `goto` for the common timeout case.
-- No label slot with the drop reported keeps every gateway elided and reports every other print-side drop, at the cost of a signature change.
+- No label slot with the drop reported keeps every gateway elided and puts the label on the same channel as the print hop's other reports, at the cost of a signature change.
 - A label slot is the only way a label survives a full BPMN to DSL to BPMN round trip, but a labeled gateway is an authored gateway.
 - Leaving the drop silent costs nothing, and it is the one thing ADR-0014's contract exists to prevent.
 - A `gateway` keyword or a flat node-and-edge form would express every gateway shape, but a gateway that prints re-parses with an authored id.

@@ -79,6 +79,10 @@ function describeFlowElement(fe: FlowElement): string {
       return 'xor';
     case 'parallelGateway':
       return 'parallel';
+    case 'inclusiveGateway':
+      return 'or';
+    case 'eventBasedGateway':
+      return 'race';
     case 'subProcess':
       return 'subProcess';
     case 'callActivity':
@@ -217,6 +221,12 @@ describe('IR discriminated unions: exhaustive switch guards', () => {
     expect(describeFlowElement(gateway('Gw_xor'))).toBe('xor');
     expect(describeFlowElement({ kind: 'parallelGateway', id: 'Gw_3' })).toBe(
       'parallel',
+    );
+    expect(describeFlowElement({ kind: 'inclusiveGateway', id: 'Gw_4' })).toBe(
+      'or',
+    );
+    expect(describeFlowElement({ kind: 'eventBasedGateway', id: 'Gw_5' })).toBe(
+      'race',
     );
     expect(
       describeFlowElement({

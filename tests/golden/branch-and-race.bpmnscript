@@ -1,0 +1,92 @@
+// Round-trip fixture for the two splits that weigh their branches at run time:
+// one order-handling narrative carrying every `parallel` shape and both forms
+// of `await`.
+//
+// An order is checked, prepared, paid for and handed to a carrier:
+//
+//   - the first `parallel` runs the checks that apply. A high-value order is
+//     audited, an order with every line in stock has that stock reserved, and
+//     the `else` branch triages by hand when neither condition held. That
+//     fallback is a branch of its own, so the fork's default flow points at it.
+//     Every sibling of an `else` carries a condition, because a branch without
+//     one is always taken and would leave the fallback nothing to pick up;
+//   - the second `parallel` leaves the fallback out. Customs paperwork is
+//     prepared only for an overseas parcel and the label is always printed, so
+//     the default flow runs straight to the join and the source never shows it;
+//   - the third `parallel` weighs nothing, so both branches always run and the
+//     pair stays an AND fork and join;
+//   - the first `await` block races the settled payment against a three-day
+//     timer, with the timer branch setting asyncBefore, so a race branch is
+//     frozen carrying settings of its own;
+//   - the second races the restocking signal against a condition on the order,
+//     which puts all four triggers a race branch can open on into one artifact;
+//   - a plain `await` then waits for the carrier alone, so the two forms of the
+//     keyword sit side by side.
+//
+// Every condition reads a field of the start form rather than a `var`, so the
+// declaration comes back out of the XML on the way in. See README.md.
+
+process order-handling {
+  start OrderPlaced {
+    form {
+      orderValue: number "Order value in euros"
+      overseas: boolean "Whether the parcel leaves the country"
+      stockShort: boolean "Whether a line is short of stock"
+    }
+  }
+
+  user CheckOrder "Check the order against the customer record" { assignee = "demo" }
+
+  parallel {
+    if (orderValue > 10000) {
+      user AuditOrder "Audit the high-value order" { assignee = "manager" }
+    }
+    if (!stockShort) {
+      service ReserveStock "Reserve the ordered stock" { class = "com.example.orders.ReserveStockDelegate" }
+    }
+    else {
+      user TriageOrder "Triage the order by hand" { assignee = "demo" }
+    }
+  }
+
+  parallel {
+    if (overseas) {
+      service PrepareCustoms "Prepare the customs paperwork" { class = "com.example.orders.CustomsDelegate" }
+    }
+    {
+      service PrintLabel "Print the shipping label" { class = "com.example.orders.LabelDelegate" }
+    }
+  }
+
+  parallel {
+    {
+      service ChargeCard "Charge the customer card" { class = "com.example.orders.ChargeDelegate" }
+    }
+    {
+      service NotifyWarehouse "Tell the warehouse the order is coming" { class = "com.example.orders.NotifyDelegate" }
+    }
+  }
+
+  await {
+    message "PaymentReceived" {
+      service RecordPayment "Record the settled payment" { class = "com.example.orders.RecordPaymentDelegate" }
+    }
+    timer after "P3D" { asyncBefore = true } {
+      user ChasePayment "Chase the outstanding payment" { assignee = "demo" }
+    }
+  }
+
+  await {
+    signal "StockArrived" {
+      service ReleaseOrder "Release the order to picking" { class = "com.example.orders.ReleaseDelegate" }
+    }
+    condition (stockShort) {
+      user SourceStock "Source the missing stock by hand" { assignee = "demo" }
+    }
+  }
+
+  await message "CarrierBooked"
+
+  service DispatchOrder "Hand the parcel to the carrier" { class = "com.example.orders.DispatchDelegate" }
+  end OrderDispatched
+}

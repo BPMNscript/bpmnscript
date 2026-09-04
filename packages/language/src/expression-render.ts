@@ -1,8 +1,7 @@
 /**
  * Renders a parsed JUEL-subset expression AST back to its canonical `${...}`
- * body string. It lives in `packages/language` so it carries no `transform`
- * dependency: `astToIr` imports it to turn an `if`/`while` condition into the
- * body stored verbatim in the IR.
+ * body string. It lives here rather than in `transform` so it carries no
+ * dependency on that package; `astToIr` imports it the other way round.
  */
 
 import type { Expr, Accessor } from './generated/ast.js';
@@ -24,10 +23,7 @@ import {
   isVarRef,
 } from './generated/ast.js';
 
-/**
- * A {@link RawExpr} body is returned verbatim, already a complete `${...}` body
- * or an author-supplied quoted form. Every other node renders wrapped.
- */
+/** A {@link RawExpr} body is already a complete one and comes back verbatim. */
 export function renderExpression(node: Expr): string {
   if (isRawExpr(node)) {
     return unquoteRaw(node.raw);
@@ -36,9 +32,9 @@ export function renderExpression(node: Expr): string {
 }
 
 /**
- * The inner text without the `${...}` wrapper, used recursively and by callers
- * that own the wrapper. Parentheses are emitted only where the author wrote
- * them: a faithful structural render, not a minimal-parenthesization printer.
+ * The inner text without the `${...}` wrapper. Parentheses are emitted only
+ * where the author wrote them: a faithful structural render, not a
+ * minimal-parenthesization printer.
  */
 export function renderExpressionInner(node: Expr): string {
   if (isRawExpr(node)) {
@@ -74,9 +70,8 @@ export function renderExpressionInner(node: Expr): string {
     return String(node.value);
   }
   if (isLiteralString(node)) {
-    // The lexer stripped the author's quotes, so re-quote and re-escape. This
-    // matches `renderNode` in `@bpmn-script/transform`'s `juel.ts`, keeping
-    // `parseJuel(renderExpression(x))` idempotent.
+    // The lexer stripped the author's quotes. Re-quoting the way `juel.ts` in
+    // `@bpmn-script/transform` does keeps a parse of this output idempotent.
     return `"${node.value.replace(/"/g, '\\"')}"`;
   }
   if (isLiteralBool(node) || isLiteralNull(node)) {
@@ -103,9 +98,8 @@ function renderAccessor(accessor: Accessor): string {
 }
 
 /**
- * The RAW_TEMPLATE terminal keeps the author's surrounding `"` or `'` (Langium
- * only auto-unquotes the default STRING terminal), so a `RawExpr.raw` of
- * `"${bean.x()}"` becomes `${bean.x()}`. An unquoted body passes through.
+ * Langium auto-unquotes only the default STRING terminal, so RAW_TEMPLATE keeps
+ * the author's surrounding `"` or `'`. An unquoted body passes through.
  */
 function unquoteRaw(raw: string): string {
   if (raw.length >= 2) {

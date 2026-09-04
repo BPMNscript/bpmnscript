@@ -10,11 +10,11 @@ import { fileURLToPath } from 'node:url';
 
 import type { Model } from '@bpmn-script/language';
 
-import { xmlToIr, irToDsl, astToIr, irToXml } from '@bpmn-script/transform';
+import { xmlToIr, astToIr, irToXml } from '@bpmn-script/transform';
 import type { BpmnProcess } from '@bpmn-script/transform';
 
 import { normalizeIr } from './normalize-ir.js';
-import { parse, parseToAst, validate } from './pipeline.js';
+import { parse, parseToAst, printDsl, validate } from './pipeline.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -92,7 +92,7 @@ export function roundTripFixture(
     ({ ir: rt.ir2 } = await xmlToIr(
       options.dslPrimeFrom === 'frozen' ? rt.frozenXml : rt.generatedXml,
     ));
-    rt.dslPrime = irToDsl(rt.ir2);
+    rt.dslPrime = printDsl(rt.ir2);
     rt.ir3 = astToIr(await parseToAst(rt.dslPrime));
     rt.hops = [
       ['IR1', rt.ir1],
@@ -103,7 +103,7 @@ export function roundTripFixture(
     if (options.importPath === true) {
       const imported = await xmlToIr(rt.frozenXml);
       rt.importWarnings = imported.warnings;
-      rt.irFromImport = astToIr(await parseToAst(irToDsl(imported.ir)));
+      rt.irFromImport = astToIr(await parseToAst(printDsl(imported.ir)));
     }
   });
 

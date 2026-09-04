@@ -19,10 +19,10 @@ It imports `createBpmnScriptServices` from `@bpmn-script/language` and answers t
 
 The conversion layer splits along the VS Code boundary.
 `conversion-core.ts` is a pure, `vscode`-free module driving the `compileDslToBpmn` and `decompileBpmnToDsl` pipelines, and it holds the decisions: severity gating (warnings don't block a compile), error classification, unsupported-element handling.
-A successful decompile also returns `warnings`, the non-semantic content that `xmlToIr` dropped rather than importing.
+A successful decompile also returns `warnings`, what `xmlToIr` reported on the way in and `irToDsl` on the way out, in one list.
 Because nothing here touches `vscode`, it's testable under vitest with no editor host.
 `conversion.ts` is the adapter around it: it resolves the source URI (an argument, otherwise the active editor), reads the text (preferring an unsaved in-memory document), calls the core, maps validation errors into the Problems panel through a `DiagnosticCollection`, asks before overwriting an existing output file, writes the result next to the source with the extension swapped, and opens it.
-A BPMN construct the transform refuses surfaces as an error notification and no file is written; any `warnings` surface as one aggregated notification listing what was dropped.
+A BPMN construct the transform refuses surfaces as an error notification and no file is written; any `warnings` surface as one aggregated notification listing what the two hops reported.
 
 `sidebar-view-provider.ts` implements `WebviewViewProvider` for the "Convert" view in the "BPMNscript" activity-bar container.
 The webview (`media/sidebar.{html,css,js}`) posts `{type:'compile'|'decompile'|'open'|'pick', uri}` messages that the provider dispatches to those same commands, so the sidebar and the palette behave identically.

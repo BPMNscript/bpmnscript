@@ -7,24 +7,20 @@ import {
 } from '../src/util.js';
 
 describe('resolveOutputPath', () => {
-  it('derives the output path by swapping the extension when no override is given', () => {
-    const input = path.resolve('/work/invoice-approval.bpmnscript');
-    expect(resolveOutputPath(input, '.bpmn')).toBe(
-      path.resolve('/work/invoice-approval.bpmn'),
-    );
-  });
-
-  it('replaces only the final extension on dotted basenames', () => {
-    const input = path.resolve('/work/my.invoice.bpmnscript');
-    expect(resolveOutputPath(input, '.bpmn')).toBe(
-      path.resolve('/work/my.invoice.bpmn'),
-    );
-  });
-
-  it('uses the override path verbatim (resolved from cwd) when provided', () => {
-    const input = path.resolve('/work/invoice-approval.bpmnscript');
-    expect(resolveOutputPath(input, '.bpmn', 'out/custom.bpmn')).toBe(
-      path.resolve('out/custom.bpmn'),
+  it.each([
+    // No override: the default extension replaces the input's own.
+    [
+      '/work/invoice-approval.bpmnscript',
+      undefined,
+      '/work/invoice-approval.bpmn',
+    ],
+    // Only the final extension goes, so a dotted basename survives.
+    ['/work/my.invoice.bpmnscript', undefined, '/work/my.invoice.bpmn'],
+    // An override is taken verbatim, resolved from cwd.
+    ['/work/invoice-approval.bpmnscript', 'out/custom.bpmn', 'out/custom.bpmn'],
+  ] as const)('%s + %s -> %s', (input, override, expected) => {
+    expect(resolveOutputPath(path.resolve(input), '.bpmn', override)).toBe(
+      path.resolve(expected),
     );
   });
 });
@@ -35,19 +31,11 @@ describe('diagnosticMessage', () => {
     end: { line: 0, character: 4 },
   };
 
-  it('reads a plain-text message as it stands', () => {
-    expect(diagnosticMessage({ range: RANGE, message: 'no such step' })).toBe(
-      'no such step',
-    );
-  });
-
-  it('reads a markup message as its text, not as an object', () => {
-    expect(
-      diagnosticMessage({
-        range: RANGE,
-        message: { kind: 'markdown', value: 'no such step' },
-      }),
-    ).toBe('no such step');
+  it.each([
+    ['plain text', 'no such step'],
+    ['markup', { kind: 'markdown', value: 'no such step' }],
+  ] as const)('reads a %s message as its text', (_kind, message) => {
+    expect(diagnosticMessage({ range: RANGE, message })).toBe('no such step');
   });
 });
 

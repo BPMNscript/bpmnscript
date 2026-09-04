@@ -2,12 +2,17 @@
  * Deterministic ids for BPMN elements the DSL does not name.
  *
  * Every template here is frozen by ADR 0010, Use Deterministic Structural Ids
- * for Synthesized BPMN Elements. `ast-to-ir.ts`, `ir-to-dsl.ts` and the
- * round-trip normalizer all reproduce these strings verbatim, so a changed
- * template breaks decompile round-trip stability. Templates whose base can
- * collide with an author-chosen name take a `taken` set and claim their result
- * in it; the positional ones are unique by construction.
+ * for Synthesized BPMN Elements: the printer recognizes an id it minted by the
+ * template that minted it, so a changed template breaks round-trip stability.
+ * Templates whose base can collide with an author-chosen name take a `taken`
+ * set and claim their result in it; the positional ones are unique by
+ * construction.
  */
+
+/** The prefixes the printer matches on to tell a minted id from an authored one. */
+export const START_EVENT_PREFIX = 'StartEvent_';
+export const END_EVENT_PREFIX = 'EndEvent_';
+export const THROW_EVENT_PREFIX = 'Throw_';
 
 export function makeGatewaySplitId(enclosingId: string): string {
   return `Gateway_${enclosingId}_split`;
@@ -20,6 +25,11 @@ export function makeGatewayJoinId(enclosingId: string): string {
 
 export function makeGatewayForkId(enclosingId: string): string {
   return `Gateway_${enclosingId}_fork`;
+}
+
+/** Names the event-based fork a multi-branch wait lowers to. */
+export function makeGatewayRaceId(enclosingId: string): string {
+  return `Gateway_${enclosingId}_race`;
 }
 
 export function makeGatewayLoopId(enclosingId: string): string {
@@ -42,15 +52,15 @@ export function makeStartEventId(
   processId: string,
   taken: Set<string>,
 ): string {
-  return claimId(`StartEvent_${processId}`, taken);
+  return claimId(`${START_EVENT_PREFIX}${processId}`, taken);
 }
 
 export function makeEndEventId(processId: string, taken: Set<string>): string {
-  return claimId(`EndEvent_${processId}`, taken);
+  return claimId(`${END_EVENT_PREFIX}${processId}`, taken);
 }
 
 export function makeThrowEventId(coordinate: string): string {
-  return `Throw_${coordinate}`;
+  return `${THROW_EVENT_PREFIX}${coordinate}`;
 }
 
 export function makeEventSubProcessId(coordinate: string): string {
@@ -63,8 +73,8 @@ export function makeIntermediateCatchEventId(coordinate: string): string {
 
 /**
  * Host-derived rather than positional, so the id stays put when the decompiler
- * moves handlers to the end of their container's body. Two boundaries sharing
- * a host and trigger collide on the base id and need the numeric suffix.
+ * moves handlers to the end of their container's body. Two boundaries sharing a
+ * host and trigger collide on the base id and need the numeric suffix.
  */
 export function makeBoundaryEventId(
   hostId: string,

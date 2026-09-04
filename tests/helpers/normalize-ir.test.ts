@@ -4,6 +4,7 @@
 // the payload would collapse them and mask the reordering.
 import { describe, it, expect } from 'vitest';
 import { normalizeIr } from './normalize-ir.js';
+import { gatewayDefaultFlowId, isGateway } from '@bpmn-script/transform';
 import type {
   BpmnProcess,
   FlowElement,
@@ -160,9 +161,7 @@ describe('normalizeIr: boundary-event re-key', () => {
       [],
     );
 
-    const ids = normalizeIr(ir)
-      .flowElements.filter((fe) => fe.kind === 'boundaryEvent')
-      .map((fe) => fe.id);
+    const ids = boundaryIds(ir);
     expect(new Set(ids).size).toBe(2);
     // A positional suffix would mean the two signatures had collided.
     for (const id of ids) expect(id).not.toContain('#');
@@ -190,5 +189,78 @@ describe('normalizeIr: boundary-event re-key', () => {
     const ir = process([{ kind: 'userTask', id: 'Solo' }], []);
 
     expect(normalizeIr(ir)).toEqual(ir);
+  });
+});
+
+describe('normalizeIr: gateway re-key', () => {
+  it('gives two structurally identical inclusive forks one canonical id, and re-keys the default flow with them', () => {
+    // Same shape, different authored ids: the fork, the join and every flow
+    // between them must canonicalize equal, `defaultFlowId` included.
+    const shape = (fork: string, join: string, dflt: string): BpmnProcess =>
+      process(
+        [
+          { kind: 'inclusiveGateway', id: fork, defaultFlowId: dflt },
+          { kind: 'userTask', id: 'Review' },
+          { kind: 'userTask', id: 'Skip' },
+          { kind: 'inclusiveGateway', id: join },
+        ],
+        [
+          {
+            id: 'Flow_1',
+            sourceRef: fork,
+            targetRef: 'Review',
+            conditionExpression: '${big}',
+          },
+          { id: dflt, sourceRef: fork, targetRef: 'Skip' },
+          { id: 'Flow_3', sourceRef: 'Review', targetRef: join },
+          { id: 'Flow_4', sourceRef: 'Skip', targetRef: join },
+        ],
+      );
+
+    const authored = normalizeIr(shape('Any', 'AllDone', 'ToSkip'));
+    const synthesized = normalizeIr(
+      shape(
+        'Gateway_p_0_fork',
+        'Gateway_p_0_join',
+        'Flow_Gateway_p_0_fork_default',
+      ),
+    );
+
+    expect(authored).toEqual(synthesized);
+    const defaultOf = (ir: BpmnProcess): string | undefined =>
+      ir.flowElements
+        .filter(isGateway)
+        .map(gatewayDefaultFlowId)
+        .find((id) => id !== undefined);
+    expect(defaultOf(authored)).not.toBe('ToSkip');
+    expect(
+      authored.sequenceFlows.some((sf) => sf.id === defaultOf(authored)),
+    ).toBe(true);
+  });
+
+  it('re-keys an event-based gateway by its position, the way the other three kinds are re-keyed', () => {
+    const race = (id: string): BpmnProcess =>
+      process(
+        [
+          { kind: 'eventBasedGateway', id },
+          {
+            kind: 'intermediateCatchEvent',
+            id: 'Wait',
+            eventDefinition: TIMER_PT2H,
+          },
+          { kind: 'userTask', id: 'Escalate' },
+        ],
+        [
+          { id: 'Flow_1', sourceRef: 'Escalate', targetRef: id },
+          { id: 'Flow_2', sourceRef: id, targetRef: 'Wait' },
+        ],
+      );
+
+    const authored = normalizeIr(race('FirstOf'));
+    expect(normalizeIr(race('Gateway_p_1_race'))).toEqual(authored);
+    const gateway = authored.flowElements.find(
+      (fe) => fe.kind === 'eventBasedGateway',
+    );
+    expect(gateway?.id).toContain('Gateway_eventBasedGateway_');
   });
 });

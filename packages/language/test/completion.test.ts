@@ -24,16 +24,6 @@ import {
 } from '@bpmn-script/language';
 import { BLOCK_HOSTS, caretInBlock } from './helpers/block-hosts.js';
 
-/** Every trigger word an `on` handler accepts, save the payload-less one. */
-const TRIGGERS = [
-  'error',
-  'escalation',
-  'message',
-  'signal',
-  'timer',
-  'condition',
-];
-
 let services: BpmnScriptServices;
 
 beforeAll(() => {
@@ -64,18 +54,6 @@ async function completionItems(
   return result?.items ?? [];
 }
 
-/** The completion item labeled `label` at the given caret position. */
-async function itemAt(
-  text: string,
-  line: number,
-  character: number,
-  label: string,
-) {
-  return (await completionItems(text, line, character)).find(
-    (i) => i.label === label,
-  );
-}
-
 async function labelsAt(
   text: string,
   line: number,
@@ -85,23 +63,25 @@ async function labelsAt(
 }
 
 /** The text an LSP client would actually insert (textEdit wins over insertText). */
-function inserted(item: CompletionItem): string | undefined {
+function inserted(item: CompletionItem): string {
   if (item.textEdit && 'newText' in item.textEdit) {
     return item.textEdit.newText;
   }
-  return item.insertText;
+  return item.insertText ?? item.label;
 }
 
 /**
  * The text an editor leaves behind when a snippet is accepted and every tab
  * stop is tabbed past: choices collapse to their first option, defaults to
- * their default, bare stops to nothing.
+ * their default, bare stops to nothing, and a `\$` escape to the EL `$` it
+ * stands for.
  */
 function accepted(item: CompletionItem): string {
-  return inserted(item)!
+  return inserted(item)
     .replace(/\$\{\d+\|([^,|]*)[^|]*\|\}/g, '$1')
     .replace(/\$\{\d+:([^}]*)\}/g, '$1')
-    .replace(/\$\d+/g, '');
+    .replace(/\$\d+/g, '')
+    .replace(/\\\$/g, '$');
 }
 
 let parseCounter = 0;
@@ -123,412 +103,633 @@ async function parseErrors(text: string): Promise<string[]> {
   return [...lexerErrors, ...parserErrors].map((e) => e.message);
 }
 
-describe('the parse helper', () => {
-  test('reports a lexer error, not only a parser one', async () => {
+/** A program with `|` marking the caret, split into text and position. */
+function caretAt(program: string) {
+  const offset = program.indexOf('|');
+  const lines = program.slice(0, offset).split('\n');
+  return {
+    text: program.slice(0, offset) + program.slice(offset + 1),
+    line: lines.length - 1,
+    character: lines[lines.length - 1]!.length,
+  };
+}
+
+/**
+ * One offered completion, as `[label, detail, inserted text]`, with the kind
+ * where it is neither of the two the harness derives: an item that inserts more
+ * than its label is a `Snippet` and one that inserts its label is a `Keyword`,
+ * so only a cross-reference row spells its own.
+ */
+type Item = readonly [
+  label: string,
+  detail: string,
+  insertText: string,
+  kind?: CompletionItemKind,
+];
+
+const CONSTRUCT = 'BPMNscript construct';
+const SETTING = 'BPMNscript setting';
+const EVENT_WORD = 'BPMNscript event word';
+const LISTENER_EVENT = 'BPMNscript listener event';
+/** Langium's own caption for a keyword it completes with no help from us. */
+const KEYWORD = 'Keyword';
+
+const TIMER: Item = [
+  'timer',
+  'a scheduled or relative deadline',
+  'timer after "${1:PT1H}"',
+];
+const CONDITION: Item = [
+  'condition',
+  'a data-change watchdog',
+  'condition ($1)',
+];
+const PARTICLES: Item[] = [
+  ['after', 'a duration relative to when this scope starts', 'after'],
+  ['at', 'a fixed point in time', 'at'],
+  ['every', 'a repeating schedule', 'every'],
+];
+
+/** Every statement a body position opens, in the order they are offered. */
+const STATEMENTS: Item[] = [
+  ['start', CONSTRUCT, 'start ${1:name}'],
+  ['end', CONSTRUCT, 'end ${1:name}'],
+  ['user', CONSTRUCT, 'user ${1:id} {\n\tassignee = "${2:user}"\n}'],
+  [
+    'service',
+    CONSTRUCT,
+    'service ${1:id} {\n\tclass = "${2:com.example.Delegate}"\n}',
+  ],
+  [
+    'script',
+    CONSTRUCT,
+    'script ${1:id} ```${2|javascript,groovy,python,ruby,feel|}\n\t$0\n```',
+  ],
+  ['step', CONSTRUCT, 'step ${1:id}'],
+  [
+    'send',
+    CONSTRUCT,
+    'send ${1:id} {\n\tclass = "${2:com.example.Delegate}"\n}',
+  ],
+  [
+    'receive',
+    CONSTRUCT,
+    'receive ${1:id} {\n\tmessage = "${2:MessageName}"\n}',
+  ],
+  [
+    'decide',
+    CONSTRUCT,
+    'decide ${1:id} {\n\tdecision = "${2:decision-key}"\n}',
+  ],
+  ['if', CONSTRUCT, 'if (${1:condition}) {\n\t$0\n}'],
+  ['while', CONSTRUCT, 'while (${1:condition}) {\n\t$0\n}'],
+  ['do', CONSTRUCT, 'do {\n\t$1\n} while (${2:condition})'],
+  ['parallel', CONSTRUCT, 'parallel {\n\t{\n\t\t$1\n\t}\n\t{\n\t\t$2\n\t}\n}'],
+  [
+    'parallel if',
+    CONSTRUCT,
+    'parallel {\n\tif (${1:condition}) {\n\t\t$2\n\t}\n\telse {\n\t\t$3\n\t}\n}',
+  ],
+  ['goto', KEYWORD, 'goto'],
+  ['attempt', CONSTRUCT, 'attempt ${1:id} {\n\t$0\n}'],
+  ['subprocess', CONSTRUCT, 'subprocess ${1:id} {\n\t$0\n}'],
+  [
+    'call',
+    'call another process like a function',
+    'call ${1:id} {\n\tprocess = "${2:process-id}"\n\tin ${3:input}\n\tout ${4:result}\n}',
+  ],
+  [
+    'on',
+    CONSTRUCT,
+    'on ${1|error,escalation,message,signal|} "${2:CODE}" {\n\t$0\n}',
+  ],
+  [
+    'throw',
+    CONSTRUCT,
+    'throw ${1|error,escalation,message,signal|} "${2:CODE}"',
+  ],
+  ['emit', CONSTRUCT, 'emit ${1|escalation,message,signal|} "${2:CODE}"'],
+  ['await', CONSTRUCT, 'await ${1|message,signal|} "${2:CODE}"'],
+  [
+    'await any',
+    CONSTRUCT,
+    'await {\n\t${1|message,signal|} "${2:CODE}" {\n\t\t$3\n\t}\n\t${4|message,signal|} "${5:CODE}" {\n\t\t$6\n\t}\n}',
+  ],
+];
+
+/** The process-scope declarations, offered alongside the statements. */
+const HEADER_DECLS: Item[] = [
+  ['label', CONSTRUCT, 'label = "${1:label}"'],
+  [
+    'var',
+    CONSTRUCT,
+    'var ${1:name}: ${2|string,number,boolean,date,json,any|}',
+  ],
+  ['versionTag', SETTING, 'versionTag = "${1:1.0.0}"'],
+];
+
+const PROCESS_BODY: Item[] = [...HEADER_DECLS, ...STATEMENTS];
+
+const REPEAT_FORMS: Item[] = [
+  [
+    'for each',
+    'how often the preceding step runs',
+    'for each ${1:item} in ${2:collection}',
+  ],
+  ['for', 'how often the preceding step runs', 'for ${1:3}'],
+];
+
+const ON_TRIGGERS: Item[] = [
+  ['error', EVENT_WORD, 'error'],
+  ['escalation', EVENT_WORD, 'escalation'],
+  ['message', EVENT_WORD, 'message'],
+  ['signal', EVENT_WORD, 'signal'],
+  TIMER,
+  CONDITION,
+  ['compensation', 'the undo block of this subprocess', 'compensation'],
+  ['cancel', EVENT_WORD, 'cancel'],
+];
+
+const CATCH_TRIGGERS: Item[] = [
+  ['message', EVENT_WORD, 'message'],
+  TIMER,
+  ['signal', EVENT_WORD, 'signal'],
+  CONDITION,
+];
+
+const ENGINE_SETTINGS: Item[] = [
+  ['asyncBefore', SETTING, 'asyncBefore = ${1|true,false|}'],
+  ['asyncAfter', SETTING, 'asyncAfter = ${1|true,false|}'],
+  ['exclusive', SETTING, 'exclusive = ${1|false,true|}'],
+  ['jobPriority', SETTING, 'jobPriority = ${1:50}'],
+  ['retryCycle', SETTING, 'retryCycle = "${1:R3/PT10M}"'],
+];
+
+const PARAMETERS: Item[] = [
+  ['input', 'a value handed to this step', 'input ${1:name} = ${2:value}'],
+  ['output', 'a value this step hands back', 'output ${1:name} = ${2:value}'],
+];
+
+const LISTENER_KEYWORD: Item = [
+  'on',
+  'run code when this step reaches a lifecycle point',
+  'on ${1|start,end|} {\n\tclass = "${2:com.example.Listener}"\n}',
+];
+
+/** The members every block-bearing element carries after its own keys. */
+const BLOCK_MEMBERS: Item[] = [
+  ['form', KEYWORD, 'form'],
+  ...PARAMETERS,
+  LISTENER_KEYWORD,
+];
+
+/** The three ways a listener binds; also the whole listener binding block. */
+const BINDINGS: Item[] = [
+  ['class', SETTING, 'class = "${1:com.example.Delegate}"'],
+  ['expression', SETTING, 'expression = "${1:\\${bean.method(execution)}}"'],
+  ['delegate', SETTING, 'delegate = "${1:\\${beanName}}"'],
+];
+
+const TOPIC: Item = ['topic', SETTING, 'topic = "${1:topic-name}"'];
+const RESULT_VARIABLE: Item = [
+  'resultVariable',
+  SETTING,
+  'resultVariable = "${1:result}"',
+];
+const BINDING: Item = ['binding', SETTING, 'binding = ${1|latest,deployment|}'];
+const VERSION: Item = ['version', SETTING, 'version = ${1:1}'];
+
+const USER_BLOCK: Item[] = [
+  ['assignee', SETTING, 'assignee = "${1:user}"'],
+  ['formKey', SETTING, 'formKey = "${1:form-key}"'],
+  ['candidateGroups', SETTING, 'candidateGroups = "${1:group}"'],
+  ['candidateUsers', SETTING, 'candidateUsers = "${1:user}"'],
+  ['dueDate', SETTING, 'dueDate = "${1:\\${dateTime().plusDays(3)}}"'],
+  [
+    'followUpDate',
+    SETTING,
+    'followUpDate = "${1:\\${dateTime().plusDays(1)}}"',
+  ],
+  ['priority', SETTING, 'priority = ${1:50}'],
+  ...ENGINE_SETTINGS,
+  ...BLOCK_MEMBERS,
+];
+
+const SERVICE_BLOCK: Item[] = [
+  ...BINDINGS,
+  TOPIC,
+  RESULT_VARIABLE,
+  ...ENGINE_SETTINGS,
+  ...BLOCK_MEMBERS,
+];
+
+const CALL_BLOCK: Item[] = [
+  ['process', SETTING, 'process = "${1:process-id}"'],
+  BINDING,
+  VERSION,
+  [
+    'businessKey',
+    SETTING,
+    'businessKey = "${1:\\${execution.processBusinessKey}}"',
+  ],
+  ...ENGINE_SETTINGS,
+  ['in', KEYWORD, 'in'],
+  ['out', KEYWORD, 'out'],
+  ...PARAMETERS,
+  LISTENER_KEYWORD,
+];
+
+const RECEIVE_BLOCK: Item[] = [
+  ['message', SETTING, 'message = "${1:MessageName}"'],
+  ...ENGINE_SETTINGS,
+  ...BLOCK_MEMBERS,
+];
+
+const DECIDE_BLOCK: Item[] = [
+  ...BINDINGS,
+  TOPIC,
+  ['decision', SETTING, 'decision = "${1:decision-key}"'],
+  BINDING,
+  VERSION,
+  [
+    'mapDecisionResult',
+    SETTING,
+    'mapDecisionResult = ${1|singleEntry,singleResult,collectEntries,resultList|}',
+  ],
+  RESULT_VARIABLE,
+  ...ENGINE_SETTINGS,
+  ...BLOCK_MEMBERS,
+];
+
+/** A host-less handler lowers to an event sub-process, so it takes parameters. */
+const HANDLER_BLOCK: Item[] = [...ENGINE_SETTINGS, ...BLOCK_MEMBERS];
+
+const listenerEvent = (event: string): Item => [
+  event,
+  LISTENER_EVENT,
+  `${event} {\n\tclass = "\${1:com.example.Listener}"\n}`,
+];
+
+const EXECUTION_EVENTS: Item[] = [listenerEvent('start'), listenerEvent('end')];
+
+const TASK_EVENTS: Item[] = [
+  ...EXECUTION_EVENTS,
+  listenerEvent('create'),
+  listenerEvent('assign'),
+  listenerEvent('complete'),
+  listenerEvent('update'),
+  listenerEvent('delete'),
+  [
+    'timeout',
+    LISTENER_EVENT,
+    'timeout after "${1:PT1H}" {\n\tclass = "${2:com.example.Listener}"\n}',
+  ],
+];
+
+describe('the completions offered at a caret', () => {
+  test.each<readonly [string, string, Item[]]>([
+    [
+      'an empty process body offers the header declarations and every statement',
+      'process p {\n  |\n}',
+      PROCESS_BODY,
+    ],
+    [
+      'the process header still offers its declarations after a var declaration',
+      'process p {\n  var x: string\n  |\n}',
+      PROCESS_BODY,
+    ],
+    [
+      'a body position after a finished statement offers the statements again',
+      'process p {\n  emit signal "S"\n  |\n}',
+      STATEMENTS,
+    ],
+    [
+      'the caret after a statement name offers both repeat-clause forms',
+      'process p {\n  user U |\n}',
+      [...REPEAT_FORMS, ...STATEMENTS],
+    ],
+    [
+      'the top level offers only `process`',
+      'pro|',
+      [['process', CONSTRUCT, 'process ${1:name} {\n\t$0\n}']],
+    ],
+    [
+      'the `on` trigger position offers the words a handler catches',
+      'process p {\n  on |\n}',
+      ON_TRIGGERS,
+    ],
+    [
+      'the `throw` trigger position offers the words a throw ends on',
+      'process p {\n  throw |\n}',
+      [
+        ['error', EVENT_WORD, 'error'],
+        ['escalation', EVENT_WORD, 'escalation'],
+        ['message', EVENT_WORD, 'message'],
+        ['signal', EVENT_WORD, 'signal'],
+        [
+          'compensation',
+          "undo this scope's completed work, then end this path",
+          'compensation',
+        ],
+      ],
+    ],
+    [
+      'the `emit` trigger position withholds `error`, which always ends its path',
+      'process p {\n  emit |\n}',
+      [
+        ['escalation', EVENT_WORD, 'escalation'],
+        ['message', EVENT_WORD, 'message'],
+        ['signal', EVENT_WORD, 'signal'],
+        [
+          'compensation',
+          "undo this scope's completed work, then continue",
+          'compensation',
+        ],
+      ],
+    ],
+    [
+      'the binding-list position offers the catchable event fields',
+      'process p {\n  on error "X" (|\n}',
+      [
+        ['code', EVENT_WORD, 'code'],
+        ['message', EVENT_WORD, 'message'],
+        ['true', KEYWORD, 'true'],
+        ['false', KEYWORD, 'false'],
+        ['null', KEYWORD, 'null'],
+      ],
+    ],
+    [
+      'the particle position on a handler timer offers the three particles',
+      'process p {\n  on timer |\n}',
+      [...PARTICLES, ['alongside', KEYWORD, 'alongside']],
+    ],
+    [
+      'the `await` trigger position offers only the triggers something can fire',
+      'process p {\n  await |\n}',
+      CATCH_TRIGGERS,
+    ],
+    [
+      'a race branch header offers the same triggers a bare await does',
+      'process p {\n  await { |\n}',
+      CATCH_TRIGGERS,
+    ],
+    [
+      'the particle position in a race branch offers the three particles',
+      'process p {\n  await { timer |\n}',
+      PARTICLES,
+    ],
+    [
+      'the particle position on an awaited timer offers the particles and the statements',
+      'process p {\n  await timer |\n}',
+      [...PARTICLES, ...STATEMENTS],
+    ],
+    [
+      'the start trigger position offers the kinds a process can start on',
+      'process p {\n  start S |\n  user A\n  end E \n}',
+      [
+        ['message', EVENT_WORD, 'message'],
+        ['signal', EVENT_WORD, 'signal'],
+        TIMER,
+        ...STATEMENTS,
+      ],
+    ],
+    [
+      'the end trigger position offers the two words an end carries and no other',
+      'process p {\n  start S \n  user A\n  end E |\n}',
+      [
+        ['terminate', 'stop every running path in this scope', 'terminate'],
+        ['cancel', 'give up the surrounding attempt block', 'cancel'],
+        ...STATEMENTS,
+      ],
+    ],
+    [
+      'the particle position on a timer start offers the particles and the statements',
+      'process p {\n  start S timer |\n  user A\n}',
+      [...PARTICLES, ...STATEMENTS],
+    ],
+    // `Decoy` (another process) and `Inner` (a nested subprocess body) are both
+    // named statements the scope must keep out.
+    [
+      "the host position offers the container's activities and nothing from another scope",
+      'process p {\n  user Review\n  service Ship\n  subprocess Sub {\n    user Inner\n  }\n  on |\n}\nprocess q { user Decoy }',
+      [
+        ['Review', 'UserTask', 'Review', CompletionItemKind.Reference],
+        ['Ship', 'ServiceTask', 'Ship', CompletionItemKind.Reference],
+        ['Sub', 'SubProcess', 'Sub', CompletionItemKind.Reference],
+        ...ON_TRIGGERS,
+      ],
+    ],
+    [
+      'the position after the colon offers the triggers the host-less position does',
+      'process p {\n  user Review\n  on Review: |\n}',
+      ON_TRIGGERS,
+    ],
+    [
+      'a user block offers the user-task keys and none of the service ones',
+      'process p {\n  user T {\n    |\n  }\n}',
+      USER_BLOCK,
+    ],
+    [
+      'a user block offers its whole member set after an attribute',
+      'process p {\n  user T {\n    assignee = "demo"\n    |\n  }\n}',
+      USER_BLOCK,
+    ],
+    [
+      'a user block offers its whole member set after a form block',
+      'process p {\n  user T {\n    form {\n      amount: number\n    }\n    |\n  }\n}',
+      USER_BLOCK,
+    ],
+    [
+      'a user block offers its whole member set after an io parameter',
+      'process p {\n  user T {\n    input x = 1\n    |\n  }\n}',
+      USER_BLOCK,
+    ],
+    // A closed listener block must not capture the caret that follows it.
+    [
+      'a user block offers its whole member set after a closed listener',
+      'process p {\n  user T {\n    on create {\n      class = "com.example.L"\n    }\n    |\n  }\n}',
+      USER_BLOCK,
+    ],
+    [
+      'an unclosed user block still offers the keys of the element it belongs to',
+      'process p {\n  user T {\n    |',
+      USER_BLOCK,
+    ],
+    [
+      'a service block offers the binding keys and none of the user-task ones',
+      'process p {\n  service S {\n    |\n  }\n}',
+      SERVICE_BLOCK,
+    ],
+    [
+      'a service block offers the binding keys after a preceding attribute',
+      'process p {\n  service S {\n    class = "com.example.D"\n    |\n  }\n}',
+      SERVICE_BLOCK,
+    ],
+    [
+      'a call block offers the call keys, `process` among them, exactly once',
+      'process p {\n  call C {\n    |\n  }\n}',
+      CALL_BLOCK,
+    ],
+    [
+      'a call block offers the call keys after a preceding attribute',
+      'process p {\n  call C {\n    binding = latest\n    |\n  }\n}',
+      CALL_BLOCK,
+    ],
+    [
+      'a receive block offers the message key',
+      'process p {\n  receive R {\n    |\n  }\n}',
+      RECEIVE_BLOCK,
+    ],
+    [
+      'a decide block offers the decision keys alongside the binding ones',
+      'process p {\n  decide D {\n    |\n  }\n}',
+      DECIDE_BLOCK,
+    ],
+    [
+      'a host-less handler block offers parameters, which a boundary event has none of',
+      'process p {\n  start S\n  on error {\n    asyncBefore = true\n    |\n  } {\n    end Failed\n  }\n}',
+      HANDLER_BLOCK,
+    ],
+    [
+      'a listener binding block offers the three ways a listener binds',
+      'process p {\n  user T {\n    on create {\n      |\n    }\n  }\n}',
+      BINDINGS,
+    ],
+    [
+      'a listener binding block offers them after a preceding binding too',
+      'process p {\n  user T {\n    on create {\n      class = "com.example.L"\n      |\n    }\n  }\n}',
+      BINDINGS,
+    ],
+    [
+      'an unclosed listener binding block offers them as well',
+      'process p {\n  user T {\n    on create {\n      |',
+      BINDINGS,
+    ],
+    [
+      'a user block offers the task listener events as well as the execution ones',
+      'process p {\n  user T {\n    on |\n  }\n}',
+      TASK_EVENTS,
+    ],
+    [
+      'a user block offers the task listener events after a preceding attribute',
+      'process p {\n  user T {\n    assignee = "demo"\n    on |\n  }\n}',
+      TASK_EVENTS,
+    ],
+    [
+      'a service block offers only the execution listener events',
+      'process p {\n  service S {\n    on |\n  }\n}',
+      EXECUTION_EVENTS,
+    ],
+    [
+      'the VarType slot keeps plain keyword completions, not snippets',
+      'process p {\n  var x: |\n}',
+      [
+        ['string', KEYWORD, 'string'],
+        ['number', KEYWORD, 'number'],
+        ['boolean', KEYWORD, 'boolean'],
+        ['date', KEYWORD, 'date'],
+        ['json', KEYWORD, 'json'],
+        ['any', KEYWORD, 'any'],
+      ],
+    ],
+    [
+      'a map key inside a parameter value is left to the default completion',
+      'process p {\n  user T {\n    input x = {\n      |\n    }\n  }\n}',
+      [],
+    ],
+  ])('%s', async (_title, program, expected) => {
+    const { text, line, character } = caretAt(program);
+    const items = await completionItems(text, line, character);
+    expect(items.map((i) => [i.label, i.detail, inserted(i)])).toEqual(
+      expected.map(([label, detail, insert]) => [label, detail, insert]),
+    );
+    for (const [index, item] of items.entries()) {
+      // An item that inserts more than its own label has to say it is a
+      // snippet, or the editor writes the placeholders out literally. One that
+      // inserts its label carries the kind its row names, a keyword unless the
+      // row says otherwise.
+      const scaffolds = inserted(item) !== item.label;
+      expect(item.insertTextFormat === InsertTextFormat.Snippet).toBe(
+        scaffolds,
+      );
+      expect(item.kind).toBe(
+        scaffolds
+          ? CompletionItemKind.Snippet
+          : (expected[index]![3] ?? CompletionItemKind.Keyword),
+      );
+    }
+  });
+});
+
+/** The rows of `items` that scaffold something, with the program they land in. */
+function scaffolds(
+  where: string,
+  items: Item[],
+  program: (accepted: string) => string,
+): Array<readonly [string, string, (accepted: string) => string]> {
+  return items
+    .filter(([label, , insertText]) => insertText !== label)
+    .map(([label]) => [`\`${label}\` in ${where}`, label, program] as const);
+}
+
+describe('a scaffold parses once accepted', () => {
+  test('the parse helper reports a lexer error, not only a parser one', async () => {
     expect(await parseErrors('process p {\n  @@@\n}')).not.toEqual([]);
   });
-});
-
-describe('structural keyword snippets', () => {
-  test('`process` is offered as a snippet that scaffolds a brace body', async () => {
-    const process = await itemAt('pro', 0, 3, 'process');
-    expect(process).toBeDefined();
-    expect(process!.insertTextFormat).toBe(InsertTextFormat.Snippet);
-    const text = inserted(process!)!;
-    expect(text).toContain('{');
-    expect(text).toContain('}');
-    expect(text).toContain('${1:name}');
-  });
 
   test.each([
-    ['if', ['(', '{']],
-    ['service', ['class =']],
-    ['script', ['```', '${2|javascript,groovy,python,ruby,feel|}']],
-    ['subprocess', ['${1:id}', '{', '}']],
-    ['attempt', ['${1:id}', '{', '}']],
-    ['step', ['${1:id}']],
-    ['send', ['${1:id}', 'class =']],
-    ['receive', ['${1:id}', 'message =']],
-    ['decide', ['${1:id}', 'decision =']],
-  ])(
-    '`%s` scaffolds its whole construct as one snippet',
-    async (keyword, parts) => {
-      const item = await itemAt('process p {\n  \n}', 1, 2, keyword);
-      expect(item?.insertTextFormat).toBe(InsertTextFormat.Snippet);
-      for (const part of parts) expect(inserted(item!)).toContain(part);
-    },
-  );
-
-  test('`parallel` scaffolds two branch blocks', async () => {
-    const item = await itemAt('process p {\n  \n}', 1, 2, 'parallel');
-    expect(item?.insertTextFormat).toBe(InsertTextFormat.Snippet);
-    expect(inserted(item!)).toMatch(
-      /\{[\s\S]*\{[\s\S]*\}[\s\S]*\{[\s\S]*\}[\s\S]*\}/,
+    ...scaffolds(
+      'a process body',
+      PROCESS_BODY,
+      (body) => `process p {\n${body}\n}`,
+    ),
+    ...scaffolds(
+      'the position after a step name',
+      REPEAT_FORMS,
+      (clause) => `process p {\n  user U ${clause}\n}`,
+    ),
+    ...scaffolds(
+      'a user block',
+      USER_BLOCK,
+      (member) => `process p {\n  user T {\n${member}\n  }\n}`,
+    ),
+    ...scaffolds(
+      'a service block',
+      SERVICE_BLOCK,
+      (member) => `process p {\n  service S {\n${member}\n  }\n}`,
+    ),
+    ...scaffolds(
+      'a call block',
+      CALL_BLOCK,
+      (member) => `process p {\n  call C {\n${member}\n  }\n}`,
+    ),
+    ...scaffolds(
+      'a decide block',
+      DECIDE_BLOCK,
+      (member) => `process p {\n  decide D {\n${member}\n  }\n}`,
+    ),
+    ...scaffolds(
+      'a listener binding block',
+      BINDINGS,
+      (binding) =>
+        `process p {\n  user T {\n    on create {\n${binding}\n    }\n  }\n}`,
+    ),
+    ...scaffolds(
+      'the listener event position',
+      TASK_EVENTS,
+      (listener) => `process p {\n  user T {\n    on ${listener}\n  }\n}`,
+    ),
+  ])('%s', async (_title, label, program) => {
+    const { text, line, character } = caretAt(program('|'));
+    const item = (await completionItems(text, line, character)).find(
+      (i) => i.label === label,
     );
-  });
-
-  // The `\$` escape must survive into the inserted text, or an EL default such
-  // as `${beanName}` reads as an empty snippet placeholder instead of literal EL.
-  test.each([
-    ['service s', 'topic', ['topic =']],
-    ['service s', 'delegate', ['delegate =', '${beanName}']],
-    ['service s', 'expression', ['expression =', '${bean.method(execution)}']],
-    ['call C', 'binding', ['binding =', '${1|latest,deployment|}']],
-    [
-      'call C',
-      'businessKey',
-      ['businessKey =', '${execution.processBusinessKey}'],
-    ],
-    ['receive R', 'message', ['message =']],
-    ['decide D', 'decision', ['decision =']],
-    [
-      'decide D',
-      'mapDecisionResult',
-      ['mapDecisionResult =', '${1|singleEntry,singleResult'],
-    ],
-  ])('a `%s` block offers `%s` as a snippet', async (head, label, parts) => {
-    const item = (
-      await completionItems(`process p {\n  ${head} {\n    \n  }\n}`, 2, 4)
-    ).find((i) => i.label === label);
-    expect(item?.insertTextFormat).toBe(InsertTextFormat.Snippet);
-    for (const part of parts) expect(inserted(item!)).toContain(part);
-  });
-
-  test('the full body keyword set is still offered', async () => {
-    const labels = await labelsAt('process p {\n  \n}', 1, 2);
-    expect(labels).toEqual(
-      expect.arrayContaining([
-        'start',
-        'end',
-        'user',
-        'service',
-        'step',
-        'send',
-        'receive',
-        'decide',
-        'if',
-        'while',
-        'do',
-        'parallel',
-        'subprocess',
-        'attempt',
-        'goto',
-      ]),
-    );
-  });
-
-  test('`call` is offered as a snippet that scaffolds `process`/`in`/`out`', async () => {
-    const item = await itemAt('process p {\n  \n}', 1, 2, 'call');
-    expect(item?.insertTextFormat).toBe(InsertTextFormat.Snippet);
-    const text = inserted(item!)!;
-    expect(text).toContain('process =');
-    expect(text).toContain('in ');
-    expect(text).toContain('out ');
-    // The detail reads as the function-call analogy, not BPMN vocabulary.
-    expect(item!.detail).toMatch(/function/i);
-  });
-
-  test('the caret after a statement name offers both repeat-clause forms', async () => {
-    const text = 'process p {\n  user U \n}';
-    const caret = [1, 9] as const;
-    expect(await labelsAt(text, ...caret)).toEqual(
-      expect.arrayContaining(['for each', 'for']),
-    );
-
-    const collection = await itemAt(text, ...caret, 'for each');
-    expect(collection?.insertTextFormat).toBe(InsertTextFormat.Snippet);
-    expect(inserted(collection!)).toBe('for each ${1:item} in ${2:collection}');
-
-    const count = await itemAt(text, ...caret, 'for');
-    expect(count?.insertTextFormat).toBe(InsertTextFormat.Snippet);
-    expect(inserted(count!)).toBe('for ${1:3}');
-
-    for (const item of [collection!, count!]) {
-      expect(
-        await parseErrors(`process p {\n  user U ${accepted(item)}\n}`),
-      ).toEqual([]);
-    }
-  });
-
-  // The caption is keyed on the keyword, so every form a keyword opens gets it.
-  test('both repeat-clause forms carry the caption written for the keyword', async () => {
-    const text = 'process p {\n  user U \n}';
-    for (const label of ['for each', 'for']) {
-      const item = await itemAt(text, 1, 9, label);
-      expect(item?.detail).toBe('how often the preceding step runs');
-    }
+    expect(item).toBeDefined();
+    expect(await parseErrors(program(accepted(item!)))).toEqual([]);
   });
 });
 
-describe('event-layer structure snippets', () => {
-  test.each([
-    ['on', ['${1|error,escalation,message,signal|}', '{', '}']],
-    ['throw', ['${1|error,escalation,message,signal|}']],
-    ['emit', ['${1|escalation,message,signal|}']],
-  ])(
-    '`%s` scaffolds its trigger choice as one snippet',
-    async (keyword, parts) => {
-      const item = await itemAt('process p {\n  \n}', 1, 2, keyword);
-      expect(item?.insertTextFormat).toBe(InsertTextFormat.Snippet);
-      for (const part of parts) expect(inserted(item!)).toContain(part);
-    },
-  );
-
-  test('`on` after a preceding statement still scaffolds the handler, and it parses when accepted', async () => {
-    const item = await itemAt(
-      'process p {\n  emit signal "S"\n  \n}',
-      2,
-      2,
-      'on',
-    );
-    expect(item?.insertTextFormat).toBe(InsertTextFormat.Snippet);
-    expect(inserted(item!)).toContain('${1|error,escalation,message,signal|}');
-    const body = accepted(item!).replace(/\n/g, '\n  ');
-    expect(
-      await parseErrors(`process p {\n  emit signal "S"\n  ${body}\n}`),
-    ).toEqual([]);
-  });
-});
-
-describe('event-layer ID-position completion (soft trigger/field words)', () => {
-  test.each([
-    ['  on ', TRIGGERS, []],
-    ['  throw ', ['error', 'escalation', 'message', 'signal'], []],
-    ['  emit ', ['escalation', 'message', 'signal'], ['error']],
-    ['  on error "X" (', ['code', 'message'], []],
-    ['  on timer ', ['after', 'at', 'every'], []],
-  ])(
-    '`%s` offers exactly the words legal there',
-    async (line, offered, withheld) => {
-      const labels = await labelsAt(`process p {\n${line}\n}`, 1, line.length);
-      expect(labels).toEqual(expect.arrayContaining(offered));
-      for (const word of withheld) expect(labels).not.toContain(word);
-    },
-  );
-
-  test.each([
-    ['timer', 'after "${1:PT1H}"'],
-    ['condition', 'condition ($1)'],
-  ])(
-    'accepting `%s` at the `on` trigger position inserts its scaffold',
-    async (label, scaffold) => {
-      const line = '  on ';
-      const item = (
-        await completionItems(`process p {\n${line}\n}`, 1, line.length)
-      ).find((i) => i.label === label);
-      expect(item?.insertTextFormat).toBe(InsertTextFormat.Snippet);
-      expect(inserted(item!)).toContain(scaffold);
-    },
-  );
-
-  test.each([
-    ['  on ', 'undo block of this subprocess'],
-    ['  throw ', 'then end this path'],
-    ['  emit ', 'then continue'],
-  ])(
-    '`compensation` is offered after `%s`, detailed for that verb',
-    async (line, detail) => {
-      const item = await itemAt(
-        `process p {\n${line}\n}`,
-        1,
-        line.length,
-        'compensation',
-      );
-      expect(item?.kind).toBe(CompletionItemKind.Keyword);
-      expect(item!.detail).toContain(detail);
-    },
-  );
-
-  test('the `on` keyword snippet choice list offers the four coded triggers, not `compensation`', async () => {
-    const item = await itemAt('process p {\n  \n}', 1, 2, 'on');
-    expect(inserted(item!)).toContain('${1|error,escalation,message,signal|}');
-    expect(inserted(item!)).not.toContain('compensation');
-  });
-});
-
-describe('event-layer ID-position completion (await trigger words)', () => {
-  test.each([
-    [
-      '  await ',
-      ['message', 'timer', 'signal', 'condition'],
-      ['error', 'escalation', 'compensation'],
-    ],
-    ['  await timer ', ['after', 'at', 'every'], []],
-  ])(
-    '`%s` offers exactly the words legal there',
-    async (line, offered, withheld) => {
-      const labels = await labelsAt(`process p {\n${line}\n}`, 1, line.length);
-      expect(labels).toEqual(expect.arrayContaining(offered));
-      for (const word of withheld) expect(labels).not.toContain(word);
-    },
-  );
-});
-
-// The caret sits in a body that already holds statements around it, so the
-// completion has to resolve the start/end node it follows rather than the
-// enclosing process it would fall back to in an empty body.
-describe('event-layer ID-position completion (start and end trigger words)', () => {
-  const PROGRAM = 'process p {\n  start S \n  user A\n  end E \n}';
-  const START_CARET = '  start S '.length;
-  const END_CARET = '  end E '.length;
-
-  test('the start trigger position offers the kinds a process can start on', async () => {
-    const labels = await labelsAt(PROGRAM, 1, START_CARET);
-    expect(labels).toEqual(
-      expect.arrayContaining(['message', 'signal', 'timer']),
-    );
-    for (const word of [
-      'error',
-      'escalation',
-      'compensation',
-      'condition',
-      'terminate',
-      'cancel',
-    ]) {
-      expect(labels).not.toContain(word);
-    }
-  });
-
-  test('the end trigger position offers the two words an end carries and no other', async () => {
-    const labels = await labelsAt(PROGRAM, 3, END_CARET);
-    expect(labels).toEqual(expect.arrayContaining(['terminate', 'cancel']));
-    for (const word of [
-      'error',
-      'escalation',
-      'message',
-      'signal',
-      'timer',
-      'condition',
-      'compensation',
-    ]) {
-      expect(labels).not.toContain(word);
-    }
-  });
-
-  test('`terminate` is captioned with what it stops', async () => {
-    const item = await itemAt(PROGRAM, 3, END_CARET, 'terminate');
-    expect(item?.kind).toBe(CompletionItemKind.Keyword);
-    expect(item!.detail).toBe('stop every running path in this scope');
-  });
-
-  test('`cancel` is captioned with the block it gives up', async () => {
-    const item = await itemAt(PROGRAM, 3, END_CARET, 'cancel');
-    expect(item?.kind).toBe(CompletionItemKind.Keyword);
-    expect(item!.detail).toBe('give up the surrounding attempt block');
-  });
-
-  test('accepting `timer` at the start trigger position inserts its scaffold', async () => {
-    const item = await itemAt(PROGRAM, 1, START_CARET, 'timer');
-    expect(item?.insertTextFormat).toBe(InsertTextFormat.Snippet);
-    expect(inserted(item!)).toContain('after "${1:PT1H}"');
-  });
-
-  test('the particle position on a timer start offers the three particles', async () => {
-    const line = '  start S timer ';
-    const labels = await labelsAt(
-      `process p {\n${line}\n  user A\n}`,
-      1,
-      line.length,
-    );
-    expect(labels).toEqual(expect.arrayContaining(['after', 'at', 'every']));
-  });
-});
-
-describe('the host slot on a handler attached to an activity', () => {
-  test("the host position offers the container's activity names and nothing from another scope", async () => {
-    // `Decoy` (another process) and `Inner` (a nested subprocess body) are both
-    // named statements the scope must keep out. A presence-only assertion would
-    // pass even if every named step in the file leaked in.
-    const text =
-      'process p {\n  user Review\n  service Ship\n  subprocess Sub {\n    user Inner\n  }\n  on \n}\nprocess q { user Decoy }';
-    // Line 6 is `  on `, right after the keyword: the host slot.
-    const labels = await labelsAt(text, 6, '  on '.length);
-    expect(labels).toEqual(expect.arrayContaining(['Review', 'Ship']));
-    expect(labels).not.toContain('Decoy');
-    expect(labels).not.toContain('Inner');
-  });
-
-  test('the position after the colon offers the seven trigger items, exactly as the host-less position does', async () => {
-    const text = 'process p {\n  user Review\n  on Review: \n}';
-    const line = '  on Review: ';
-    const labels = await labelsAt(text, 2, line.length);
-    expect(labels).toEqual(
-      expect.arrayContaining([
-        'error',
-        'escalation',
-        'message',
-        'signal',
-        'timer',
-        'condition',
-        'compensation',
-      ]),
-    );
-  });
-
-  test('accepting `timer` after the colon still inserts the particle scaffold', async () => {
-    const text = 'process p {\n  user Review\n  on Review: \n}';
-    const line = '  on Review: ';
-    const item = await itemAt(text, 2, line.length, 'timer');
-    expect(item?.insertTextFormat).toBe(InsertTextFormat.Snippet);
-    expect(inserted(item!)).toContain('after "${1:PT1H}"');
-  });
-});
-
-describe('attribute-key completion is narrowed to the element kind', () => {
-  /** The labels offered inside `<head> { │ }`. */
-  async function keysInBlock(head: string): Promise<string[]> {
-    const text = `process p {\n  ${head} {\n    \n  }\n}`;
-    return labelsAt(text, 2, 4);
-  }
-
-  test('a user block offers the user-task keys and none of the service ones', async () => {
-    const labels = await keysInBlock('user T');
-    expect(labels).toEqual(
-      expect.arrayContaining([
-        'assignee',
-        'formKey',
-        'candidateGroups',
-        'candidateUsers',
-        'dueDate',
-        'followUpDate',
-        'priority',
-      ]),
-    );
-    expect(labels).not.toContain('class');
-    expect(labels).not.toContain('topic');
-    expect(labels).not.toContain('businessKey');
-  });
-
-  test('a service block offers the binding keys and none of the user-task ones', async () => {
-    const labels = await keysInBlock('service S');
-    expect(labels).toEqual(
-      expect.arrayContaining([
-        'class',
-        'expression',
-        'delegate',
-        'topic',
-        'resultVariable',
-      ]),
-    );
-    expect(labels).not.toContain('assignee');
-    expect(labels).not.toContain('candidateGroups');
-  });
-
-  test('a call block offers the call keys, `process` among them, exactly once', async () => {
-    const items = await completionItems(
-      'process p {\n  call C {\n    \n  }\n}',
-      2,
-      4,
-    );
-    const labels = items.map((i) => i.label);
-    expect(labels).toEqual(
-      expect.arrayContaining(['process', 'binding', 'version', 'businessKey']),
-    );
-    const processItems = items.filter((i) => i.label === 'process');
-    expect(processItems).toHaveLength(1);
-    expect(inserted(processItems[0]!)).toContain('process =');
-  });
-
+describe('a settings block is narrowed to the element it belongs to', () => {
   test.each(BLOCK_HOSTS)(
     'the engine settings are offered inside the block of %s',
     async (_kind, _description, program) => {
@@ -561,266 +762,9 @@ describe('attribute-key completion is narrowed to the element kind', () => {
         4,
       );
       const offered = items
-        .filter((i) => i.detail === 'BPMNscript setting')
+        .filter((i) => i.detail === SETTING)
         .map((i) => i.label);
       expect(new Set(offered)).toEqual(rule.keys);
     },
   );
-
-  test('the process header offers `versionTag`', async () => {
-    const labels = await labelsAt('process p {\n  \n}', 1, 2);
-    expect(labels).toContain('versionTag');
-  });
-});
-
-describe('settings completion at a caret after a preceding member', () => {
-  /**
-   * The labels offered on the blank line following `member` inside
-   * `<head> { ... }`, which is where an author stands once the first entry of a
-   * block is typed. At that caret the node under the cursor is the preceding
-   * member, not the block's element, so every offer here depends on the element
-   * being resolved through it.
-   */
-  async function labelsAfter(head: string, member: string): Promise<string[]> {
-    const lines = member.split('\n');
-    const body = lines.map((line) => `    ${line}`).join('\n');
-    return labelsAt(
-      `process p {\n  ${head} {\n${body}\n    \n  }\n}`,
-      2 + lines.length,
-      4,
-    );
-  }
-
-  const USER_TASK_KEYS = [
-    'assignee',
-    'formKey',
-    'candidateGroups',
-    'candidateUsers',
-    'dueDate',
-    'followUpDate',
-    'priority',
-    'asyncBefore',
-    'asyncAfter',
-    'exclusive',
-    'jobPriority',
-    'retryCycle',
-  ];
-
-  test.each([
-    ['an attribute', 'assignee = "demo"'],
-    ['a form block', 'form {\n  amount: number\n}'],
-    ['an io parameter', 'input x = 1'],
-    ['a closed listener', 'on create {\n  class = "com.example.L"\n}'],
-  ])(
-    'a user block offers its whole member set after %s',
-    async (_kind, member) => {
-      const labels = await labelsAfter('user T', member);
-      expect(labels).toEqual(
-        expect.arrayContaining([
-          ...USER_TASK_KEYS,
-          'form',
-          'input',
-          'output',
-          'on',
-        ]),
-      );
-      // A closed listener block must not capture the caret that follows it,
-      // and the `process` keyword `AttrKey` carries must not stand in for the
-      // key set.
-      expect(labels).not.toContain('class');
-      expect(labels).not.toContain('process');
-    },
-  );
-
-  test('a service block offers the binding keys after a preceding attribute', async () => {
-    const labels = await labelsAfter('service S', 'class = "com.example.D"');
-    expect(labels).toEqual(
-      expect.arrayContaining([
-        'class',
-        'expression',
-        'delegate',
-        'topic',
-        'resultVariable',
-        'asyncBefore',
-        'form',
-        'input',
-        'output',
-        'on',
-      ]),
-    );
-    expect(labels).not.toContain('assignee');
-  });
-
-  test('a call block offers the call keys after a preceding attribute, `process` among them as the key', async () => {
-    const items = await completionItems(
-      'process p {\n  call C {\n    binding = latest\n    \n  }\n}',
-      3,
-      4,
-    );
-    const labels = items.map((i) => i.label);
-    expect(labels).toEqual(
-      expect.arrayContaining([
-        'process',
-        'binding',
-        'version',
-        'businessKey',
-        'asyncBefore',
-        'input',
-        'output',
-        'in',
-        'out',
-        'on',
-      ]),
-    );
-    expect(labels).not.toContain('assignee');
-    const processItems = items.filter((i) => i.label === 'process');
-    expect(processItems).toHaveLength(1);
-    expect(inserted(processItems[0]!)).toContain('process =');
-  });
-
-  test('a listener binding block offers the binding keys, empty or after a preceding one', async () => {
-    const afterOne = await labelsAt(
-      'process p {\n  user T {\n    on create {\n      class = "com.example.L"\n      \n    }\n  }\n}',
-      4,
-      6,
-    );
-    expect(afterOne).toEqual(
-      expect.arrayContaining(['class', 'expression', 'delegate']),
-    );
-    expect(afterOne).not.toContain('assignee');
-
-    const empty = await labelsAt(
-      'process p {\n  user T {\n    on create {\n      \n    }\n  }\n}',
-      3,
-      6,
-    );
-    expect(empty).toEqual(
-      expect.arrayContaining(['class', 'expression', 'delegate']),
-    );
-  });
-
-  test('the process header offers `versionTag` after a preceding declaration', async () => {
-    const labels = await labelsAt('process p {\n  var x: string\n  \n}', 2, 2);
-    expect(labels).toEqual(
-      expect.arrayContaining(['versionTag', 'label', 'var', 'user', 'if']),
-    );
-    expect(labels).not.toContain('process');
-  });
-
-  test('a user block offers the task listener events after a preceding attribute', async () => {
-    const line = '    on ';
-    const labels = await labelsAt(
-      `process p {\n  user T {\n    assignee = "demo"\n${line}\n  }\n}`,
-      3,
-      line.length,
-    );
-    expect(labels).toEqual(
-      expect.arrayContaining(['start', 'end', 'create', 'timeout']),
-    );
-  });
-
-  test('an unclosed block still offers the keys of the element it belongs to', async () => {
-    expect(await labelsAt('process p {\n  user T {\n    ', 2, 4)).toEqual(
-      expect.arrayContaining(['assignee', 'asyncBefore']),
-    );
-    expect(
-      await labelsAt('process p {\n  user T {\n    on create {\n      ', 3, 6),
-    ).toEqual(expect.arrayContaining(['class', 'expression', 'delegate']));
-  });
-
-  test('a map key inside a parameter value is left to the default completion', async () => {
-    const labels = await labelsAt(
-      'process p {\n  user T {\n    input x = {\n      \n    }\n  }\n}',
-      3,
-      6,
-    );
-    expect(labels).not.toContain('assignee');
-    expect(labels).not.toContain('asyncBefore');
-    expect(labels).not.toContain('versionTag');
-  });
-});
-
-describe('parameter and listener completion inside a block', () => {
-  test('`input` and `output` are offered where parameters are legal', async () => {
-    const items = await completionItems(
-      'process p {\n  service S {\n    \n  }\n}',
-      2,
-      4,
-    );
-    const labels = items.map((i) => i.label);
-    expect(labels).toEqual(expect.arrayContaining(['input', 'output']));
-    const input = items.find((i) => i.label === 'input');
-    expect(input?.insertTextFormat).toBe(InsertTextFormat.Snippet);
-    expect(inserted(input!)).toContain('input ');
-  });
-
-  test('a host-less `on` handler offers `input` and `output`', async () => {
-    // The handler lowers to an event sub-process, which carries parameters;
-    // the hosted form lowers to a boundary event, which does not.
-    const labels = await labelsAt(
-      'process p {\n  start S\n  on error {\n    asyncBefore = true\n    \n  } {\n    end Failed\n  }\n}',
-      4,
-      4,
-    );
-    expect(labels).toEqual(expect.arrayContaining(['input', 'output']));
-  });
-
-  test('a user block offers the task listener events as well as the execution ones', async () => {
-    const line = '    on ';
-    const labels = await labelsAt(
-      `process p {\n  user T {\n${line}\n  }\n}`,
-      2,
-      line.length,
-    );
-    expect(labels).toEqual(
-      expect.arrayContaining([
-        'start',
-        'end',
-        'create',
-        'assign',
-        'complete',
-        'update',
-        'delete',
-        'timeout',
-      ]),
-    );
-  });
-
-  test('a service block offers only the execution listener events', async () => {
-    const line = '    on ';
-    const labels = await labelsAt(
-      `process p {\n  service S {\n${line}\n  }\n}`,
-      2,
-      line.length,
-    );
-    expect(labels).toEqual(expect.arrayContaining(['start', 'end']));
-    expect(labels).not.toContain('create');
-    expect(labels).not.toContain('timeout');
-  });
-
-  test('`on` inside a user block scaffolds a listener binding, and it parses when accepted', async () => {
-    const item = await itemAt(
-      'process p {\n  user T {\n    \n  }\n}',
-      2,
-      4,
-      'on',
-    );
-    expect(item?.insertTextFormat).toBe(InsertTextFormat.Snippet);
-    const text = inserted(item!)!;
-    expect(text).toContain('${1|start,end|}');
-    expect(text).toContain('class =');
-    const body = accepted(item!).replace(/\n/g, '\n    ');
-    expect(
-      await parseErrors(`process p {\n  user T {\n    ${body}\n  }\n}`),
-    ).toEqual([]);
-  });
-});
-
-describe('non-structural keywords fall through', () => {
-  test('`VarType` literals stay plain keyword completions, not snippets', async () => {
-    // After `var x:` the grammar expects a VarType; those keywords are not snippets.
-    const string = await itemAt('process p {\n  var x: \n}', 1, 9, 'string');
-    expect(string).toBeDefined();
-    expect(string!.insertTextFormat).not.toBe(InsertTextFormat.Snippet);
-  });
 });

@@ -45,6 +45,17 @@ export function elementById(container: FlowContainer, id: string): FlowElement {
   return found;
 }
 
+export function endEvent(
+  container: FlowContainer,
+  id: string,
+): Extract<FlowElement, { kind: 'endEvent' }> {
+  const found = elementById(container, id);
+  if (found.kind !== 'endEvent') {
+    throw new Error(`expected '${id}' to be an end event, found ${found.kind}`);
+  }
+  return found;
+}
+
 // Searched at any depth, so a throw or emit inside an `on` handler body counts.
 export function definitionOf(
   container: FlowContainer,
@@ -58,23 +69,28 @@ export function definitionOf(
 }
 
 // A handler's trigger sits on the start event of the event sub-process it
-// lowers to, so match on what it catches, never on the synthesized id.
+// lowers to, so match on what it catches, never on the synthesized id. Every
+// event sub-process at any depth contributes, an unset trigger included.
+export function handlerTriggerDefs(
+  container: FlowContainer,
+): (EventDefinition | undefined)[] {
+  return container.flowElements.flatMap((fe) => {
+    if (fe.kind !== 'subProcess') return [];
+    const nested = handlerTriggerDefs(fe);
+    if (fe.triggeredByEvent !== true) return nested;
+    const start = fe.flowElements.find((e) => e.kind === 'startEvent');
+    return [
+      start?.kind === 'startEvent' ? start.eventDefinition : undefined,
+      ...nested,
+    ];
+  });
+}
+
 export function handlerTriggerDef(
   container: FlowContainer,
   match: (def: EventDefinition | undefined) => boolean,
 ): EventDefinition | undefined {
-  for (const fe of container.flowElements) {
-    if (fe.kind !== 'subProcess') continue;
-    if (fe.triggeredByEvent === true) {
-      const start = fe.flowElements.find((e) => e.kind === 'startEvent');
-      const def =
-        start?.kind === 'startEvent' ? start.eventDefinition : undefined;
-      if (match(def)) return def;
-    }
-    const nested = handlerTriggerDef(fe, match);
-    if (nested !== undefined) return nested;
-  }
-  return undefined;
+  return handlerTriggerDefs(container).find(match);
 }
 
 // Locating a node by what it is, not by id, is what lets a suite pin a carrier

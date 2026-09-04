@@ -1,14 +1,13 @@
 import { describe, it, expect } from 'vitest';
 
-import type { BpmnProcess, FlowElement } from '@bpmn-script/transform';
-
 import {
   boundsOf,
   describeDiContainment,
   describeNoOverlappingShapes,
   parseShapeBounds,
 } from './helpers/di-bounds.js';
-import { elementById, subProcess, theOnly } from './helpers/ir-query.js';
+import { endEvent, subProcess, theOnly } from './helpers/ir-query.js';
+import { idsOfTag } from './helpers/xml-query.js';
 import { roundTripFixture } from './helpers/round-trip-fixture.js';
 
 const rt = roundTripFixture('transactions', {
@@ -16,13 +15,6 @@ const rt = roundTripFixture('transactions', {
   importPath: true,
   recompile: 'clean',
 });
-
-/** Every id carried by a `<bpmn:<tag>>` open tag, in document order. */
-function idsOfTag(xml: string, tag: string): string[] {
-  return [...xml.matchAll(new RegExp(`<bpmn:${tag} id="([^"]+)"`, 'g'))].map(
-    (m) => m[1]!,
-  );
-}
 
 // Neither block nests another of its own tag, so a lazy match to the first
 // closing tag reads exactly one block.
@@ -35,17 +27,6 @@ function blockOf(xml: string, tag: string, id: string): string {
     `no <bpmn:${tag}> '${id}' in the frozen artifact`,
   ).not.toBeNull();
   return found![0];
-}
-
-function endEvent(
-  container: BpmnProcess,
-  id: string,
-): Extract<FlowElement, { kind: 'endEvent' }> {
-  const found = elementById(container, id);
-  if (found.kind !== 'endEvent') {
-    throw new Error(`expected '${id}' to be an end event, found ${found.kind}`);
-  }
-  return found;
 }
 
 describe("idempotence: golden .bpmn -> IR2 -> DSL' -> IR3", () => {

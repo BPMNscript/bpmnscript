@@ -11,35 +11,48 @@ import {
 } from 'vscode-languageserver-types';
 import {
   attributeBlockRuleOf,
+  CALL_BINDING_VALUES,
   CATCH_TRIGGERS,
+  DECISION_RESULT_MAPPINGS,
   EMIT_TRIGGERS,
   END_TRIGGERS,
   ENGINE_KEYS,
   EVENT_BINDING_FIELDS,
+  EXECUTION_LISTENER_EVENTS,
   IO_DIRECTIONS,
   LISTENER_BINDING_KEYS,
   listenerEventsFor,
+  namesACode,
   ON_TRIGGERS,
   PROCESS_HEADER_KEYS,
+  SCRIPT_FORMAT_ALIASES,
   START_TRIGGERS,
   THROW_TRIGGERS,
   TIMER_PARTICLES,
 } from './vocabulary.js';
 
-/** One shape a structural keyword opens, with the label it is offered under. */
 interface StructureForm {
   readonly label: string;
   readonly insertText: string;
 }
+
+const SCRIPT_LANGUAGES = [
+  ...new Set(Object.values(SCRIPT_FORMAT_ALIASES)),
+].join(',');
+
+/** The words of `triggers` a `"CODE"` scaffold can offer, as a snippet choice list. */
+const codeChoices = (triggers: readonly string[]): string =>
+  triggers.filter(namesACode).join(',');
+
+const CATCH_CODE_CHOICES = codeChoices(CATCH_TRIGGERS);
 
 /**
  * Snippet bodies for the structural keywords, keyed by keyword text. Accepting
  * one scaffolds the whole construct so the caret lands inside the body, where
  * the next completions are already offered. Placeholders are LSP snippet
  * syntax: `$1` tab stops, `$0` final caret, `${n:default}`, `${n|a,b|}`
- * choices. A keyword absent here falls through to the default bare-keyword
- * completion. A keyword opening more than one construct lists a form per
- * shape, each offered under its own label.
+ * choices. A keyword absent here keeps the default bare-keyword completion, and
+ * one opening several constructs lists a form per shape.
  */
 const STRUCTURE_SNIPPETS: Readonly<
   Record<string, string | readonly StructureForm[]>
@@ -55,24 +68,45 @@ const STRUCTURE_SNIPPETS: Readonly<
   send: 'send ${1:id} {\n\tclass = "${2:com.example.Delegate}"\n}',
   receive: 'receive ${1:id} {\n\tmessage = "${2:MessageName}"\n}',
   decide: 'decide ${1:id} {\n\tdecision = "${2:decision-key}"\n}',
-  script:
-    'script ${1:id} ```${2|javascript,groovy,python,ruby,feel|}\n\t$0\n```',
+  script: 'script ${1:id} ```${2|' + SCRIPT_LANGUAGES + '|}\n\t$0\n```',
   if: 'if (${1:condition}) {\n\t$0\n}',
   while: 'while (${1:condition}) {\n\t$0\n}',
   do: 'do {\n\t$1\n} while (${2:condition})',
-  parallel: 'parallel {\n\t{\n\t\t$1\n\t}\n\t{\n\t\t$2\n\t}\n}',
+  parallel: [
+    {
+      label: 'parallel',
+      insertText: 'parallel {\n\t{\n\t\t$1\n\t}\n\t{\n\t\t$2\n\t}\n}',
+    },
+    {
+      label: 'parallel if',
+      insertText:
+        'parallel {\n\tif (${1:condition}) {\n\t\t$2\n\t}\n\telse {\n\t\t$3\n\t}\n}',
+    },
+  ],
   subprocess: 'subprocess ${1:id} {\n\t$0\n}',
   attempt: 'attempt ${1:id} {\n\t$0\n}',
-  // Only the triggers taking a plain `"CODE"` string appear in these choices:
-  // `timer`, `condition`, and `compensation` read a different payload and are
-  // offered at the bare ID position instead. The host is a cross-reference, so
-  // no hosted variant is scaffolded.
-  on: 'on ${1|error,escalation,message,signal|} "${2:CODE}" {\n\t$0\n}',
-  throw: 'throw ${1|error,escalation,message,signal|} "${2:CODE}"',
-  // `emit` has no continuing form for `error` (an error always ends its path).
-  emit: 'emit ${1|escalation,message,signal|} "${2:CODE}"',
-  // `await` never catches error/escalation/compensation; those are thrown.
-  await: 'await ${1|message,signal|} "${2:CODE}"',
+  // A trigger reading another payload is offered at the bare ID position
+  // instead. The host is a cross-reference, so no hosted variant is scaffolded.
+  on: 'on ${1|' + codeChoices(ON_TRIGGERS) + '|} "${2:CODE}" {\n\t$0\n}',
+  throw: 'throw ${1|' + codeChoices(THROW_TRIGGERS) + '|} "${2:CODE}"',
+  emit: 'emit ${1|' + codeChoices(EMIT_TRIGGERS) + '|} "${2:CODE}"',
+  // The second form waits on several triggers at once and continues down the
+  // one that fires first.
+  await: [
+    {
+      label: 'await',
+      insertText: 'await ${1|' + CATCH_CODE_CHOICES + '|} "${2:CODE}"',
+    },
+    {
+      label: 'await any',
+      insertText:
+        'await {\n\t${1|' +
+        CATCH_CODE_CHOICES +
+        '|} "${2:CODE}" {\n\t\t$3\n\t}\n\t${4|' +
+        CATCH_CODE_CHOICES +
+        '|} "${5:CODE}" {\n\t\t$6\n\t}\n}',
+    },
+  ],
   call: 'call ${1:id} {\n\tprocess = "${2:process-id}"\n\tin ${3:input}\n\tout ${4:result}\n}',
   // Offered at the position after a statement's name, not as a setting.
   for: [
@@ -84,8 +118,7 @@ const STRUCTURE_SNIPPETS: Readonly<
 /**
  * Snippet bodies for the settings a brace block can hold. These lex as plain
  * identifiers, so the default completion offers nothing for them. The `\$`
- * escapes keep an EL `${...}` literal instead of opening a nested placeholder;
- * only the tab stop's own `${n: ... }` wrapper is live.
+ * escapes keep an EL `${...}` literal instead of opening a nested placeholder.
  */
 const SETTING_SNIPPETS: Readonly<Record<string, string>> = {
   asyncBefore: 'asyncBefore = ${1|true,false|}',
@@ -106,11 +139,11 @@ const SETTING_SNIPPETS: Readonly<Record<string, string>> = {
   topic: 'topic = "${1:topic-name}"',
   decision: 'decision = "${1:decision-key}"',
   mapDecisionResult:
-    'mapDecisionResult = ${1|singleEntry,singleResult,collectEntries,resultList|}',
+    'mapDecisionResult = ${1|' + DECISION_RESULT_MAPPINGS.join(',') + '|}',
   message: 'message = "${1:MessageName}"',
   resultVariable: 'resultVariable = "${1:result}"',
   process: 'process = "${1:process-id}"',
-  binding: 'binding = ${1|latest,deployment|}',
+  binding: 'binding = ${1|' + CALL_BINDING_VALUES.join(',') + '|}',
   version: 'version = ${1:1}',
   businessKey: 'businessKey = "${1:\\${execution.processBusinessKey}}"',
   versionTag: 'versionTag = "${1:1.0.0}"',
@@ -128,9 +161,9 @@ function settingKeysFor(node: AstNode): readonly string[] | undefined {
 }
 
 /**
- * The grammar rule `node` belongs to. Where one word is written by two rules,
- * the rule tells the constructs apart; the AST node cannot, because at a caret
- * following a finished construct it is that construct, not the enclosing one.
+ * The grammar rule `node` belongs to. Where one word is written by two rules
+ * the rule tells them apart and the AST node cannot, because at a caret after a
+ * finished construct the node is that construct, not the enclosing one.
  */
 function ruleNameOf(node: AstNode): string | undefined {
   return AstUtils.getContainerOfType(node, GrammarAST.isParserRule)?.name;
@@ -141,10 +174,10 @@ const SETTING_KEY_RULE = 'AttrKey';
 
 /**
  * The element whose settings block holds the caret. The node at the caret is
- * that element only while the block is empty; after a member is written it is
- * the preceding member's own leaf. A member already closed above the caret ends
- * before it and is passed over, while a block whose closing brace is not typed
- * yet encloses nothing, so there the innermost element stands in.
+ * that element only while the block is empty; afterwards it is the preceding
+ * member's leaf. A member already closed above the caret is passed over, and a
+ * block whose closing brace is not typed yet encloses nothing, so there the
+ * innermost element stands in.
  */
 function owningElement(context: CompletionContext): AstNode | undefined {
   let innermost: AstNode | undefined;
@@ -202,6 +235,7 @@ const STATEMENT_TRIGGERS: Readonly<
     },
   },
   IntermediateCatchEvent: { words: CATCH_TRIGGERS },
+  RaceBranch: { words: CATCH_TRIGGERS },
   StartEvent: { words: START_TRIGGERS },
   EndEvent: {
     words: END_TRIGGERS,
@@ -212,11 +246,7 @@ const STATEMENT_TRIGGERS: Readonly<
   },
 };
 
-/**
- * Captions that replace the default `'BPMNscript construct'` one, keyed by
- * keyword text like {@link STRUCTURE_SNIPPETS}, so every form a keyword opens
- * carries the same one.
- */
+/** Captions replacing the default one, keyed as {@link STRUCTURE_SNIPPETS} is. */
 const STRUCTURE_DETAILS: Readonly<Record<string, string>> = {
   call: 'call another process like a function',
   for: 'how often the preceding step runs',
@@ -224,25 +254,23 @@ const STRUCTURE_DETAILS: Readonly<Record<string, string>> = {
 
 /**
  * Snippet completions for the structural keywords and for the soft words the
- * grammar leaves as plain identifiers. Every other completion keeps Langium's
- * default behavior.
+ * grammar leaves as plain identifiers; everything else keeps Langium's default.
  */
 export class BpmnScriptCompletionProvider extends DefaultCompletionProvider {
   /**
    * Offers items for the soft words at the `trigger`, `particle`, `field`,
-   * `key`, `direction`, and `event` positions. They lex as plain `ID`s, so the
-   * default completion offers nothing there.
-   *
-   * `OnHandler.host` is absent because it is a real cross-reference: the
-   * inherited `completionForCrossReference` already offers it, narrowed by
-   * `BpmnScriptScopeProvider`.
+   * `key`, `direction`, and `event` positions, which lex as plain `ID`s.
+   * `OnHandler.host` is absent because it is a real cross-reference, already
+   * offered by the inherited `completionForCrossReference`.
    */
   protected override completionFor(
     context: CompletionContext,
     next: NextFeature,
     acceptor: CompletionAcceptor,
   ): MaybePromise<void> {
-    const nodeType = context.node?.$type;
+    // The node under the caret stays the shared rule while a keyword still
+    // opens more than one shape, so the next feature decides first.
+    const nodeType = next.type ?? context.node?.$type;
     const owner = owningElement(context);
     if (
       next.property === 'key' &&
@@ -284,6 +312,7 @@ export class BpmnScriptCompletionProvider extends DefaultCompletionProvider {
       next.property === 'particle' &&
       (nodeType === 'OnHandler' ||
         nodeType === 'IntermediateCatchEvent' ||
+        nodeType === 'RaceBranch' ||
         nodeType === 'StartEvent')
     ) {
       this.acceptParticleWords(context, acceptor);
@@ -418,7 +447,9 @@ export class BpmnScriptCompletionProvider extends DefaultCompletionProvider {
         kind: CompletionItemKind.Snippet,
         detail: 'run code when this step reaches a lifecycle point',
         insertText:
-          'on ${1|start,end|} {\n\tclass = "${2:com.example.Listener}"\n}',
+          'on ${1|' +
+          EXECUTION_LISTENER_EVENTS.join(',') +
+          '|} {\n\tclass = "${2:com.example.Listener}"\n}',
         insertTextFormat: InsertTextFormat.Snippet,
         sortText: '1',
       });

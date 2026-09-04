@@ -2,17 +2,24 @@
  * Intermediate Representation for BPMNscript: a statically typed graph of flow
  * elements and sequence flows, shared by all four transforms. Field names carry
  * no vendor prefix; the IR -> XML transform applies `operaton:` and anything
- * that varies only at serialization. Each field below names what it maps to.
+ * that varies only at serialization.
  *
  * See ADR 0006, Use an Intermediate Representation between the AST and BPMN XML.
  */
+
+import type {
+  DECISION_RESULT_MAPPINGS,
+  EXECUTION_LISTENER_EVENTS,
+  FORM_FIELD_TYPES,
+  TASK_LISTENER_EVENTS,
+} from '@bpmn-script/language';
 
 /**
  * Sequence flows never cross a container boundary, so a parent can treat a
  * nested container as one opaque activity node.
  */
 export interface FlowContainer {
-  /** BPMN `id`, unique across the whole definitions document. */
+  /** Unique across the whole definitions document, as an XML ID must be. */
   id: string;
   flowElements: FlowElement[];
   sequenceFlows: SequenceFlow[];
@@ -22,13 +29,12 @@ export interface BpmnProcess extends FlowContainer {
   name?: string;
   /** Always `true`; Operaton runs only executable processes. */
   isExecutable: true;
-  /** `operaton:versionTag`, distinct from the engine's deployment version. */
+  /** Distinct from the engine's deployment version. */
   versionTag?: string;
   /**
-   * `operaton:errorMessage` on the synthesized `bpmn:Error`, in declaration
-   * order. Stored rather than derived from usage because two throws of one code
-   * share a root element, and a declared code emits its root even when unused.
-   * See ADR 0016, Derive Event Root Elements From Usage.
+   * In declaration order. Stored rather than derived from usage because two
+   * throws of one code share a root element, and a declared code emits its root
+   * even when unused. See ADR 0016, Derive Event Root Elements From Usage.
    */
   errorMessages?: { code: string; message: string }[];
 }
@@ -43,23 +49,108 @@ export type FlowElement =
   | ReceiveTask
   | ExclusiveGateway
   | ParallelGateway
+  | InclusiveGateway
+  | EventBasedGateway
   | SubProcess
   | CallActivity
   | IntermediateThrowEvent
   | IntermediateCatchEvent
   | BoundaryEvent;
 
-/** Vendor-neutral spelling; `number` becomes the Operaton `long` at export. */
-export type FormFieldType = 'string' | 'number' | 'boolean' | 'date';
+/** Every flow element of `container`, and of the sub-processes nested in it. */
+export function* eachElement(container: FlowContainer): Generator<FlowElement> {
+  for (const el of container.flowElements) {
+    yield el;
+    if (el.kind === 'subProcess') yield* eachElement(el);
+  }
+}
+
+/**
+ * Depth-first, in first-appearance order. Every position contributes equally,
+ * so a message caught by an `await` and one caught by a handler share a root.
+ */
+function collectEventDefinitions(container: FlowContainer): EventDefinition[] {
+  const defs: EventDefinition[] = [];
+  for (const el of eachElement(container)) {
+    switch (el.kind) {
+      case 'startEvent':
+      case 'endEvent':
+        if (el.eventDefinition !== undefined) defs.push(el.eventDefinition);
+        break;
+      case 'intermediateThrowEvent':
+      case 'intermediateCatchEvent':
+      case 'boundaryEvent':
+        defs.push(el.eventDefinition);
+        break;
+      case 'receiveTask':
+        // A receive task names its message on the element itself, and shares
+        // one root with every other use of that name.
+        if (el.messageName !== undefined) {
+          defs.push({ kind: 'message', messageName: el.messageName });
+        }
+        break;
+      default:
+        break;
+    }
+  }
+  return defs;
+}
+
+/** The identities a document-level root element is derived from, or checked against. */
+export interface EventIdentities {
+  errorCodes: Set<string>;
+  escalationCodes: Set<string>;
+  messageNames: Set<string>;
+  signalNames: Set<string>;
+}
+
+/**
+ * The codes and names the IR references, in first-appearance order. Read by
+ * both XML directions, so the roots one synthesizes are exactly the roots the
+ * other counts as referenced. A catch-all (no code) contributes none.
+ */
+export function eventIdentities(container: FlowContainer): EventIdentities {
+  const identities: EventIdentities = {
+    errorCodes: new Set(),
+    escalationCodes: new Set(),
+    messageNames: new Set(),
+    signalNames: new Set(),
+  };
+  for (const def of collectEventDefinitions(container)) {
+    switch (def.kind) {
+      case 'error':
+        if (def.errorCode !== undefined) {
+          identities.errorCodes.add(def.errorCode);
+        }
+        break;
+      case 'escalation':
+        if (def.escalationCode !== undefined) {
+          identities.escalationCodes.add(def.escalationCode);
+        }
+        break;
+      case 'message':
+        identities.messageNames.add(def.messageName);
+        break;
+      case 'signal':
+        identities.signalNames.add(def.signalName);
+        break;
+      default:
+        // Compensation, timer, and conditional need no document-level element.
+        break;
+    }
+  }
+  return identities;
+}
+
+export type FormFieldType = (typeof FORM_FIELD_TYPES)[number];
 
 /** An `<operaton:formField>` inside the owning element's `<operaton:formData>`. */
 export interface FormField {
-  /** `operaton:formField id`, also the process variable the field binds. */
+  /** Also the process variable the field binds. */
   id: string;
   type: FormFieldType;
-  /** `operaton:formField label`. */
   label?: string;
-  /** `operaton:formField defaultValue`, carried as text. */
+  /** Carried as text whatever the field's type. */
   defaultValue?: string;
 }
 
@@ -101,18 +192,17 @@ export type EventDefinition =
     }
   | {
       /**
-       * Payload-free: BPMN's terminate definition carries nothing. It ends
-       * every running path of its scope at once rather than raising something,
-       * which is why the surface spells it on an `end` statement instead of a
-       * `throw`.
+       * Payload-free. It ends every running path of its scope at once rather
+       * than raising something, which is why the surface spells it on an `end`
+       * statement instead of a `throw`.
        */
       kind: 'terminate';
     }
   | {
       /**
-       * Payload-free: BPMN's cancel definition carries nothing. It gives up
-       * the block it ends rather than raising something, which is why the
-       * surface spells it on an `end` statement and catches it on the block.
+       * Payload-free. It gives up the block it ends rather than raising
+       * something, which is why the surface spells it on an `end` statement and
+       * catches it on the block.
        */
       kind: 'cancel';
     }
@@ -147,17 +237,14 @@ export type EventDefinition =
  * 0022, Carry Operaton Engine Attributes as Named IR Fields.
  */
 export interface EngineAttributes {
-  /** `operaton:asyncBefore`. */
   asyncBefore?: true;
-  /** `operaton:asyncAfter`. */
   asyncAfter?: true;
-  /** `operaton:exclusive`. */
   exclusive?: false;
-  /** `operaton:jobPriority`, an integer or EL, verbatim. */
+  /** An integer or EL, verbatim. */
   jobPriority?: string;
   /** The `operaton:failedJobRetryTimeCycle` element body, verbatim. */
   retryCycle?: string;
-  /** `operaton:executionListener` children, in emission order. */
+  /** In emission order. */
   executionListeners?: ExecutionListener[];
 }
 
@@ -206,15 +293,18 @@ export function ioMapped(
  * runs while each run still sees its element.
  */
 export interface LoopCharacteristics {
-  /** `bpmn:loopCardinality`: a literal count, or an expression that yields one. */
+  /** A literal count, or an expression that yields one. */
   cardinality?: string;
-  /** `operaton:collection`: a variable name, or an expression when it carries `${`. */
+  /** A variable name, or an expression when it carries `${`. */
   collection?: string;
-  /** `operaton:elementVariable`: the name each run sees its own element under. */
+  /** The name each run sees its own element under. */
   elementVariable?: string;
-  /** `bpmn:completionCondition`: the remaining runs are dropped once this holds. */
+  /** The remaining runs are dropped once this holds. */
   completionCondition?: string;
-  /** `isSequential`. Absent means the runs happen at once, which is the engine default. */
+  /**
+   * Serialized as `isSequential`. Absent means the runs happen at once, which
+   * is the engine default.
+   */
   sequential?: true;
 }
 
@@ -268,26 +358,24 @@ export type IoValue =
 /** An inline `operaton:script`, in both positions it appears in. */
 export type ScriptValue = {
   kind: 'script';
-  /** `operaton:script scriptFormat`. */
   format: string;
-  /** The `operaton:script` body text. */
   code: string;
 };
 
 export type CodeBinding =
   | {
       kind: 'class';
-      /** `operaton:class`, fully qualified. */
+      /** Fully qualified. */
       className: string;
     }
   | {
       kind: 'expression';
-      /** `operaton:expression`, raw JUEL text. */
+      /** Raw JUEL text. */
       expression: string;
     }
   | {
       kind: 'delegateExpression';
-      /** `operaton:delegateExpression`, raw JUEL text. */
+      /** Raw JUEL text. */
       expression: string;
     };
 
@@ -296,13 +384,13 @@ export type ListenerBinding = CodeBinding | ScriptValue;
 
 /** An `operaton:executionListener`, fired on entering or leaving execution. */
 export interface ExecutionListener {
-  event: 'start' | 'end';
+  event: (typeof EXECUTION_LISTENER_EVENTS)[number];
   binding: ListenerBinding;
 }
 
 /** An `operaton:taskListener`, fired at a point in the task's human lifecycle. */
 export interface TaskListener {
-  event: 'create' | 'assign' | 'complete' | 'update' | 'delete' | 'timeout';
+  event: (typeof TASK_LISTENER_EVENTS)[number];
   binding: ListenerBinding;
   /** Required when `event` is `'timeout'`, absent otherwise. */
   timer?: Extract<EventDefinition, { kind: 'timer' }>;
@@ -365,25 +453,25 @@ export interface UserTask extends EngineAttributes, IoMapped, Repeatable {
   kind: 'userTask';
   id: string;
   name?: string;
-  /** `operaton:assignee`. */
   assignee?: string;
-  /** `operaton:formKey`. */
   formKey?: string;
   /** `operaton:formData` fields Tasklist renders. */
   formFields?: FormField[];
-  /** `operaton:candidateGroups`, verbatim: comma-separated text or EL. */
+  /** Verbatim: comma-separated text or EL. */
   candidateGroups?: string;
-  /** `operaton:candidateUsers`, verbatim. */
+  /** Verbatim: comma-separated text or EL. */
   candidateUsers?: string;
-  /** `operaton:dueDate`, verbatim: ISO-8601 or EL. */
+  /** Verbatim: ISO-8601 or EL. */
   dueDate?: string;
-  /** `operaton:followUpDate`, verbatim: ISO-8601 or EL. */
+  /** Verbatim: ISO-8601 or EL. */
   followUpDate?: string;
-  /** `operaton:priority`, verbatim: an integer or EL. */
+  /** Verbatim: an integer or EL. */
   priority?: string;
-  /** `operaton:taskListener` children, in emission order. */
+  /** In emission order. */
   taskListeners?: TaskListener[];
 }
+
+export type DecisionResultMapping = (typeof DECISION_RESULT_MAPPINGS)[number];
 
 /**
  * A service task adds the external topic a listener has no form for, and a
@@ -393,18 +481,17 @@ export type ServiceTaskBinding =
   | CodeBinding
   | {
       kind: 'external';
-      /** `operaton:topic`, paired with `operaton:type="external"`. */
+      /** Paired with `operaton:type="external"`. */
       topic: string;
     }
   | {
       kind: 'decision';
-      /** `operaton:decisionRef`, the deployed decision's key. */
+      /** The deployed decision's key. */
       decisionRef: string;
       /** `operaton:decisionRefBinding` and `operaton:decisionRefVersion`. */
       binding?: VersionBinding;
-      /** `operaton:mapDecisionResult`: what `resultVariable` ends up holding. */
-      mapDecisionResult?:
-        'singleEntry' | 'singleResult' | 'collectEntries' | 'resultList';
+      /** What `resultVariable` ends up holding. */
+      mapDecisionResult?: DecisionResultMapping;
     };
 
 export interface ServiceTask extends EngineAttributes, IoMapped, Repeatable {
@@ -412,7 +499,7 @@ export interface ServiceTask extends EngineAttributes, IoMapped, Repeatable {
   id: string;
   name?: string;
   binding: ServiceTaskBinding;
-  /** `operaton:resultVariable`, filled with the binding's return value. */
+  /** Filled with the binding's return value. */
   resultVariable?: string;
   /**
    * Which tag this serializes to; absent is a service task. Operaton runs all
@@ -433,7 +520,7 @@ export interface ScriptTask extends EngineAttributes, IoMapped, Repeatable {
   format: string;
   /** The `<bpmn:script>` body, verbatim. */
   code: string;
-  /** `operaton:resultVariable`, filled with the script's result. */
+  /** Filled with the script's result. */
   resultVariable?: string;
 }
 
@@ -473,6 +560,73 @@ export interface ParallelGateway {
   kind: 'parallelGateway';
   id: string;
   name?: string;
+}
+
+/**
+ * A fork that takes every branch whose condition holds, and the merge that
+ * waits for exactly those. Carries no {@link EngineAttributes} either.
+ */
+export interface InclusiveGateway {
+  kind: 'inclusiveGateway';
+  id: string;
+  name?: string;
+  /** The BPMN `default` attribute: the flow taken when no condition matches. */
+  defaultFlowId?: string;
+}
+
+/**
+ * A fork whose branches each begin with a wait; the first to resolve cancels
+ * the rest. Every outgoing flow is unconditioned, so there is no default.
+ */
+export interface EventBasedGateway {
+  kind: 'eventBasedGateway';
+  id: string;
+  name?: string;
+}
+
+/**
+ * Routing rather than work: a fork, a merge or a loop head, never a step.
+ *
+ * Membership is the `Gateway` suffix on the kind, the only discriminator every
+ * BPMN gateway spelling shares. A kind spelled without it would drop out of
+ * this alias, out of the map below, and out of every site reading either, all
+ * at once and without a compile error.
+ */
+export type Gateway = Extract<FlowElement, { kind: `${string}Gateway` }>;
+
+/**
+ * Every kind {@link Gateway} admits, so a new one stops the build here rather
+ * than slipping past a site that spells the kinds by hand.
+ */
+const GATEWAY_KINDS: Record<Gateway['kind'], true> = {
+  exclusiveGateway: true,
+  parallelGateway: true,
+  inclusiveGateway: true,
+  eventBasedGateway: true,
+};
+
+export function isGateway(el: FlowElement): el is Gateway {
+  return el.kind in GATEWAY_KINDS;
+}
+
+/**
+ * The flow a gateway takes when no condition matches, and `undefined` for a
+ * kind that has no such flow. Every kind answers, so a gateway that gains a
+ * default cannot lose it on the way out.
+ */
+export function gatewayDefaultFlowId(gateway: Gateway): string | undefined {
+  switch (gateway.kind) {
+    case 'exclusiveGateway':
+    case 'inclusiveGateway':
+      return gateway.defaultFlowId;
+    case 'parallelGateway':
+    case 'eventBasedGateway':
+      return undefined;
+    default: {
+      const exhaustive: never = gateway;
+      throw new Error(`Unhandled gateway kind: ${JSON.stringify(exhaustive)}`);
+    }
+  }
 }
 
 /** An activity that is itself a container; the parent wires flow to it by `id`. */
@@ -522,7 +676,7 @@ export interface CallActivity extends EngineAttributes, IoMapped, Repeatable {
   kind: 'callActivity';
   id: string;
   name?: string;
-  /** `bpmn:calledElement`, the id of the invoked process. */
+  /** The id of the invoked process. */
   calledElement: string;
   /** Absent means the engine default, latest. */
   binding?: VersionBinding;

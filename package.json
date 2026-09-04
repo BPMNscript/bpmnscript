@@ -11,8 +11,8 @@
     "build:clean": "npm run clean && npm run build",
     "langium:generate": "npm run --workspace packages/language langium:generate",
     "langium:watch": "npm run --workspace packages/language langium:watch",
-    "format": "prettier --write packages tests",
-    "format:check": "prettier --check packages tests",
+    "format": "prettier --write packages tests docs examples \"*.md\"",
+    "format:check": "prettier --check packages tests docs examples \"*.md\"",
     "lint": "eslint packages tests",
     "test": "npm run test --workspaces --if-present"
   },
