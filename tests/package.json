@@ -19,7 +19,5 @@
     "testcontainers": "^12.1.0",
     "vitest": "^4.1.11",
     "vscode-languageserver-types": "^3.18.0"
-  },
-  "dependencies": {},
-  "peerDependencies": {}
+  }
 }

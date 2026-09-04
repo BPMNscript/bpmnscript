@@ -116,6 +116,5 @@
   },
   "vsce": {
     "dependencies": false
-  },
-  "peerDependencies": {}
+  }
 }
