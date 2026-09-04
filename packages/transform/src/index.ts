@@ -1,17 +1,3 @@
-/**
- * Public API of the `@bpmn-script/transform` package.
- *
- * All transforms are exported here: IR types, IR -> XML, XML -> IR,
- * AST -> IR, and IR -> DSL.
- *
- * Note on `bpmn-auto-layout` version: this package depends on
- * `bpmn-auto-layout@^1.2.0` rather than `0.3.x`.
- * `bpmn-auto-layout@0.3.x` pulls `bpmn-moddle@^8`, which conflicts with
- * our hard-locked `bpmn-moddle@^10`. Version 1.x uses `bpmn-moddle@^10`
- * and exposes a flat `layoutProcess(xml)` named export (instead of the
- * `new BpmnAutoLayout().layoutProcess(xml)` constructor API of 0.x).
- */
-
 export type {
   FlowContainer,
   BpmnProcess,
@@ -32,6 +18,13 @@ export type {
   IntermediateThrowEvent,
   IntermediateCatchEvent,
   BoundaryEvent,
+  EngineAttributes,
+  IoMapped,
+  IoParameter,
+  IoValue,
+  ListenerBinding,
+  ExecutionListener,
+  TaskListener,
 } from './ir/types.js';
 
 export {
@@ -63,6 +56,7 @@ export {
   UnsupportedLoopCharacteristicsError,
   UnsupportedCollaborationError,
   UnsupportedCallActivityError,
+  UnsupportedExtensionFormError,
 } from './errors.js';
 
 export { astToIr } from './ast-to-ir.js';

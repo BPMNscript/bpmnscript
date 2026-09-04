@@ -1,26 +1,7 @@
-/**
- * End-to-end round-trip for the event layer (error and escalation) over the
- * unmocked transform chain: real Langium parse and validation, real
- * `bpmn-moddle` via `irToXml`/`xmlToIr`, and real `bpmn-auto-layout` inside
- * `irToXml`. No Docker and no engine.
- *
- * One order-processing narrative exercises an `error ... message` declaration, a
- * payment `subprocess` that throws inside an `if`, escalates mid-chain, and owns
- * an interrupting `on error` handler with both catch bindings, a process-level
- * non-interrupting `on escalation` handler, a catch-all `on error` handler, a
- * terminal `throw escalation`, explicit ids on a throw and an emit with a `goto`
- * targeting the named emit, and a process variable named `message` used in a
- * condition, pinning that the contextual event words coexist with same-named
- * variables.
- *
- * The frozen `.bpmn` is a diff tripwire: drift in it is a defect, not a reason
- * to regenerate.
- *
- * The guard clause the fixture exercises (a `throw` branch inside an `if` whose
- * enclosing flow continues past it) is recovered structurally: the terminal
- * prints inside the `if` and the continuation resumes after it, so no jump ever
- * targets the `if`'s synthesized join gateway.
- */
+// The guard clause the fixture exercises, a `throw` branch inside an `if` whose
+// enclosing flow continues past it, is recovered structurally: the terminal
+// prints inside the `if` and the continuation resumes after it, so no jump ever
+// targets the `if`'s synthesized join.
 
 import { describe, it, expect, beforeAll } from 'vitest';
 
@@ -28,15 +9,18 @@ import { xmlToIr, irToDsl, astToIr } from '@bpmn-script/transform';
 import type {
   BpmnProcess,
   EventDefinition,
-  FlowContainer,
+  ImportWarning,
 } from '@bpmn-script/transform';
 
 import { normalizeIr } from './helpers/normalize-ir.js';
+import { describeDiContainment } from './helpers/di-bounds.js';
 import {
-  parseShapeBounds,
-  assertShapeContainment,
-} from './helpers/di-bounds.js';
-import { kindOf, subProcess } from './helpers/ir-query.js';
+  definitionOf,
+  handlerTriggerDef,
+  kindOf,
+  subProcess,
+} from './helpers/ir-query.js';
+import { definitionRefOf } from './helpers/xml-query.js';
 import { roundTripFixture } from './helpers/round-trip-fixture.js';
 
 const rt = roundTripFixture('event-handlers', {
@@ -45,59 +29,9 @@ const rt = roundTripFixture('event-handlers', {
   recompile: 'errors',
 });
 
-/**
- * The event definition on the trigger start of the first event-handler
- * sub-process, at any container depth, whose definition satisfies `match`.
- * Recurses into plain sub-processes so a nested handler is reachable.
- */
-function handlerTriggerDef(
-  container: FlowContainer,
-  match: (def: EventDefinition | undefined) => boolean,
-): EventDefinition | undefined {
-  for (const fe of container.flowElements) {
-    if (fe.kind !== 'subProcess') continue;
-    if (fe.triggeredByEvent === true) {
-      const start = fe.flowElements.find((e) => e.kind === 'startEvent');
-      const def =
-        start?.kind === 'startEvent' ? start.eventDefinition : undefined;
-      if (match(def)) return def;
-    }
-    const nested = handlerTriggerDef(fe, match);
-    if (nested !== undefined) return nested;
-  }
-  return undefined;
-}
-
-function definitionOf(
-  container: FlowContainer,
-  id: string,
-): EventDefinition | undefined {
-  const fe = container.flowElements.find((e) => e.id === id);
-  if (fe?.kind === 'endEvent' || fe?.kind === 'intermediateThrowEvent') {
-    return fe.eventDefinition;
-  }
-  return undefined;
-}
-
-/**
- * The `errorRef` on the `bpmn:errorEventDefinition` inside the named start or
- * end event, scoped to that element block so the two sites are read separately.
- */
-function errorRefOf(xml: string, elementId: string): string | undefined {
-  const block = new RegExp(
-    `<bpmn:(?:start|end)Event id="${elementId}"[^>]*>([\\s\\S]*?)</bpmn:(?:start|end)Event>`,
-  ).exec(xml);
-  if (block === null) return undefined;
-  return /<bpmn:errorEventDefinition\b[^>]*\berrorRef="([^"]+)"/.exec(
-    block[1]!,
-  )?.[1];
-}
-
-/**
- * A handwritten import-first fixture: a hand-named event sub-process, `camunda:`
- * aliases for the error root message and the catch bindings, and labels that
- * differ from the name humanised from each id, so the importer keeps them.
- */
+// Handwritten import-first, with `camunda:` aliases for the error root message
+// and the catch bindings, and labels that differ from the name humanised from
+// each id, so the importer keeps them.
 const IMPORT_FIRST_BPMN = `<?xml version="1.0" encoding="UTF-8"?>
 <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:camunda="http://camunda.org/schema/1.0/bpmn" xmlns:operaton="http://operaton.org/schema/1.0/bpmn" id="Definitions_import_first" targetNamespace="http://bpmn.io/schema/bpmn">
   <bpmn:error id="Error_Boom" name="BOOM" errorCode="BOOM" camunda:errorMessage="It went boom" />
@@ -134,7 +68,6 @@ const IMPORT_FIRST_BPMN = `<?xml version="1.0" encoding="UTF-8"?>
 
 describe('idempotence: DSL → IR₁ → XML → IR₂ → DSL′ → IR₃', () => {
   it('the authored throw and emit ids survive verbatim at their correct depth', () => {
-    // The throw lives one container down, in the payment sub-process.
     const payment = subProcess(rt.ir3, 'ProcessPayment');
     expect(kindOf(payment, 'PaymentFailed')).toBe('endEvent');
     expect(kindOf(rt.ir3, 'FlagForReview')).toBe('intermediateThrowEvent');
@@ -182,27 +115,20 @@ describe('DI containment on the generated .bpmn', () => {
   it('exactly one bpmndi:BPMNDiagram is emitted', () => {
     expect(rt.generatedXml.match(/<bpmndi:BPMNDiagram\b/g)).toHaveLength(1);
   });
+});
 
-  it('every handler shape (and its children) lies strictly inside its parent bounds', () => {
-    // An event sub-process is a disconnected node, so the layout library only
-    // places its box and children inside the parent when the `isExpanded="true"`
-    // stub `irToXml` emits is present. Removing that stub fails this assertion.
-    const bounds = parseShapeBounds(rt.generatedXml);
-
-    // Guard against a vacuous pass: the handler shapes must actually be present.
-    const payment = subProcess(rt.ir1, 'ProcessPayment');
-    const handlerIds = payment.flowElements
-      .filter((fe) => fe.kind === 'subProcess')
+// Named so the walk cannot pass on a tree with nothing nested in it.
+describeDiContainment(
+  rt,
+  () => {
+    const handlerIds = subProcess(rt.ir1, 'ProcessPayment')
+      .flowElements.filter((fe) => fe.kind === 'subProcess')
       .map((fe) => fe.id);
     expect(handlerIds.length).toBeGreaterThan(0);
-    for (const id of [...handlerIds, 'CaughtPayment', 'NotifyCustomer']) {
-      expect(bounds.has(id), `missing BPMNShape for ${id}`).toBe(true);
-    }
-
-    // Walk the IR so parent-child membership is authoritative at every depth.
-    assertShapeContainment(rt.ir1, bounds, true);
-  });
-});
+    return [...handlerIds, 'CaughtPayment', 'NotifyCustomer'];
+  },
+  'generated',
+);
 
 describe('root sharing on the frozen .bpmn', () => {
   it('the throw error end event and the on error handler share one bpmn:Error carrying the message', () => {
@@ -215,14 +141,18 @@ describe('root sharing on the frozen .bpmn', () => {
     const [, rootId, message] = roots[0]!;
     expect(message).toBe('The payment was declined by the bank');
 
-    expect(errorRefOf(rt.frozenXml, 'PaymentFailed')).toBe(rootId);
-    expect(errorRefOf(rt.frozenXml, 'CaughtPayment')).toBe(rootId);
+    expect(definitionRefOf(rt.frozenXml, 'PaymentFailed', 'error')).toBe(
+      rootId,
+    );
+    expect(definitionRefOf(rt.frozenXml, 'CaughtPayment', 'error')).toBe(
+      rootId,
+    );
   });
 });
 
 describe('import-first: a handwritten .bpmn with camunda: aliases round-trips', () => {
   let firstImport: BpmnProcess;
-  let firstWarnings: string[];
+  let firstWarnings: ImportWarning[];
   let reDesugared: BpmnProcess;
   let importDsl: string;
 
@@ -245,8 +175,8 @@ describe('import-first: a handwritten .bpmn with camunda: aliases round-trips', 
   });
 
   it('the hand-named handler is re-keyed so the re-desugared IR matches the import', () => {
-    // The hand-named event sub-process has no surface id and is re-synthesised
-    // on re-desugaring, so the structural re-key collapses the two ids.
+    // The hand-named event sub-process has no surface id and is re-synthesised,
+    // so the structural re-key collapses the two ids.
     expect(normalizeIr(reDesugared)).toEqual(normalizeIr(firstImport));
   });
 });

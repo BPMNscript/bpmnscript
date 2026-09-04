@@ -1,27 +1,9 @@
-/**
- * End-to-end round-trip for the compensation (undo-block) event layer over the
- * unmocked transform chain: real Langium parse and validation, real
- * `bpmn-moddle` via `irToXml`/`xmlToIr`, and real `bpmn-auto-layout` inside
- * `irToXml`. No Docker and no engine.
- *
- * One trip-booking saga exercises two `subprocess`es each owning an
- * `on compensation` undo block (one reversing in a single step, one through an
- * `if` over a declared form variable), an `on error` handler that raises a named
- * `emit compensation` and keeps going, an `on escalation` handler that ends its
- * path with a named `throw compensation`, and a `var compensation: number` read
- * in a service expression, pinning that the particle word coexists with a
- * same-named variable.
- *
- * The frozen `.bpmn` is a diff tripwire: drift in it is a defect, not a reason
- * to regenerate.
- *
- * Why the restructured DSL stays validator-clean: every throw and emit is
- * explicitly named, so the printer emits the authored id rather than a
- * `Throw_<coord>` id that would trip the reserved-name check, and the guards
- * read variables declared on the start form, so they survive the XML round-trip.
- * The `var compensation` declaration vanishes on that round-trip, but its only
- * reference sits inside an opaque service expression the validator never parses.
- */
+// Why the restructured DSL stays validator-clean: every throw and emit is
+// named, so the printer emits the authored id instead of a `Throw_<coord>` one
+// that would trip the reserved-name check, and the guards read variables
+// declared on the start form. The `var compensation` declaration does not
+// survive the round trip, but its only reference sits inside an opaque service
+// expression the validator never parses.
 
 import { describe, it, expect, beforeAll } from 'vitest';
 
@@ -29,16 +11,17 @@ import { xmlToIr, irToDsl, astToIr } from '@bpmn-script/transform';
 import type {
   BpmnProcess,
   EventDefinition,
-  FlowContainer,
-  FlowElement,
+  ImportWarning,
 } from '@bpmn-script/transform';
 
 import { normalizeIr } from './helpers/normalize-ir.js';
+import { describeDiContainment } from './helpers/di-bounds.js';
 import {
-  parseShapeBounds,
-  assertShapeContainment,
-} from './helpers/di-bounds.js';
-import { subProcess } from './helpers/ir-query.js';
+  definitionOf,
+  elementById,
+  handlerTriggerDef,
+  subProcess,
+} from './helpers/ir-query.js';
 import { roundTripFixture } from './helpers/round-trip-fixture.js';
 
 const rt = roundTripFixture('compensation', {
@@ -47,77 +30,17 @@ const rt = roundTripFixture('compensation', {
   recompile: 'clean',
 });
 
-/**
- * The event definition on the trigger start of the first event-handler
- * sub-process, at any container depth, whose definition satisfies `match`.
- * Recurses into plain sub-processes so a nested handler is reachable.
- */
-function findHandlerDef(
-  container: FlowContainer,
-  match: (def: EventDefinition | undefined) => boolean,
-): EventDefinition | undefined {
-  for (const fe of container.flowElements) {
-    if (fe.kind !== 'subProcess') continue;
-    if (fe.triggeredByEvent === true) {
-      const start = fe.flowElements.find((e) => e.kind === 'startEvent');
-      const def =
-        start?.kind === 'startEvent' ? start.eventDefinition : undefined;
-      if (match(def)) return def;
-    }
-    const nested = findHandlerDef(fe, match);
-    if (nested !== undefined) return nested;
-  }
-  return undefined;
-}
-
-function findDeep(
-  container: FlowContainer,
-  id: string,
-): FlowElement | undefined {
-  for (const fe of container.flowElements) {
-    if (fe.id === id) return fe;
-    if (fe.kind === 'subProcess') {
-      const nested = findDeep(fe, id);
-      if (nested !== undefined) return nested;
-    }
-  }
-  return undefined;
-}
-
-/**
- * The event definition of the flow element with the given id, searched at any
- * depth so a throw or emit inside an `on` handler body is reachable.
- */
-function definitionOf(
-  container: FlowContainer,
-  id: string,
-): EventDefinition | undefined {
-  const fe = findDeep(container, id);
-  if (fe?.kind === 'endEvent' || fe?.kind === 'intermediateThrowEvent') {
-    return fe.eventDefinition;
-  }
-  return undefined;
-}
-
 const isCompensation = (def: EventDefinition | undefined): boolean =>
   def?.kind === 'compensation';
 
-/**
- * The opening tag of the named `bpmn:startEvent` in the frozen XML, up to the
- * first `>`, so a test can read whether `isInterrupting` is present.
- */
 function startEventOpenTag(xml: string, id: string): string | undefined {
   return new RegExp(`<bpmn:startEvent id="${id}"[^>]*>`).exec(xml)?.[0];
 }
 
-/**
- * A handwritten import-first fixture: a hand-named compensation event
- * sub-process hosted by its plain sub-process, an `emit`-style compensation
- * intermediate throw, and a compensation end event whose definition carries an
- * explicit `waitForCompletion="true"` (the moddle default, accepted on import
- * and then dropped as unmodeled). Every task label differs from the name
- * humanised from its id, so the importer keeps it.
- */
+// Handwritten import-first. The compensation end event carries an explicit
+// `waitForCompletion="true"`, the moddle default, accepted on import and then
+// dropped as unmodeled. Every task label differs from the name humanised from
+// its id, so the importer keeps it.
 const IMPORT_FIRST_BPMN = `<?xml version="1.0" encoding="UTF-8"?>
 <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:operaton="http://operaton.org/schema/1.0/bpmn" id="Definitions_import_first_compensation" targetNamespace="http://bpmn.io/schema/bpmn">
   <bpmn:process id="warehouse-fulfilment" name="Warehouse Fulfilment" isExecutable="true">
@@ -172,10 +95,9 @@ const IMPORT_FIRST_BPMN = `<?xml version="1.0" encoding="UTF-8"?>
 
 describe('idempotence: DSL → IR₁ → XML → IR₂ → DSL′ → IR₃', () => {
   it('the authored emit and throw ids survive verbatim through their handlers', () => {
-    // `emit compensation` is a continuing undo request (an intermediate throw);
-    // `throw compensation` undoes and ends its path (a typed end event).
-    expect(findDeep(rt.ir3, 'Undo')?.kind).toBe('intermediateThrowEvent');
-    expect(findDeep(rt.ir3, 'CancelAll')?.kind).toBe('endEvent');
+    // `emit compensation` continues the path, `throw compensation` ends it.
+    expect(elementById(rt.ir3, 'Undo').kind).toBe('intermediateThrowEvent');
+    expect(elementById(rt.ir3, 'CancelAll').kind).toBe('endEvent');
     expect(definitionOf(rt.ir3, 'Undo')).toEqual({ kind: 'compensation' });
     expect(definitionOf(rt.ir3, 'CancelAll')).toEqual({ kind: 'compensation' });
   });
@@ -183,7 +105,7 @@ describe('idempotence: DSL → IR₁ → XML → IR₂ → DSL′ → IR₃', ()
   it('both undo-block handler starts carry a compensation trigger at every hop', () => {
     for (const ir of [rt.ir1, rt.ir2, rt.ir3]) {
       for (const host of ['BookFlight', 'BookHotel']) {
-        const def = findHandlerDef(subProcess(ir, host), isCompensation);
+        const def = handlerTriggerDef(subProcess(ir, host), isCompensation);
         expect(def, `undo block missing in ${host} at a hop`).toEqual({
           kind: 'compensation',
         });
@@ -196,28 +118,23 @@ describe('DI containment on the generated .bpmn', () => {
   it('exactly one bpmndi:BPMNDiagram is emitted', () => {
     expect(rt.generatedXml.match(/<bpmndi:BPMNDiagram\b/g)).toHaveLength(1);
   });
+});
 
-  it('every handler shape (and its children) lies strictly inside its parent bounds', () => {
-    const bounds = parseShapeBounds(rt.generatedXml);
-
-    // Guard against a vacuous pass: each booking sub-process must actually own a
-    // triggeredByEvent undo block that falls inside its shape.
-    for (const host of ['BookFlight', 'BookHotel']) {
+// Named so the walk cannot pass on a tree with nothing nested in it.
+describeDiContainment(
+  rt,
+  () =>
+    ['BookFlight', 'BookHotel'].flatMap((host) => {
       const handlerIds = subProcess(rt.ir1, host)
         .flowElements.filter(
           (fe) => fe.kind === 'subProcess' && fe.triggeredByEvent === true,
         )
         .map((fe) => fe.id);
       expect(handlerIds.length).toBeGreaterThan(0);
-      for (const id of handlerIds) {
-        expect(bounds.has(id), `missing BPMNShape for ${id}`).toBe(true);
-      }
-    }
-
-    // Walk the IR so parent-child membership is authoritative at every depth.
-    assertShapeContainment(rt.ir1, bounds, true);
-  });
-});
+      return handlerIds;
+    }),
+  'generated',
+);
 
 describe('compensation shape pins on the frozen .bpmn', () => {
   it('emits no compensation root element (only the error and escalation roots exist)', () => {
@@ -228,8 +145,6 @@ describe('compensation shape pins on the frozen .bpmn', () => {
   });
 
   it('every bpmn:compensateEventDefinition is attribute-less', () => {
-    // Two undo-block trigger starts, one `emit` intermediate throw, and one
-    // `throw` end event, all four bare.
     const all =
       rt.frozenXml.match(/<bpmn:compensateEventDefinition\b[^>]*>/g) ?? [];
     expect(all).toHaveLength(4);
@@ -240,7 +155,7 @@ describe('compensation shape pins on the frozen .bpmn', () => {
 
   it('each undo block is a triggeredByEvent sub-process whose start is interrupting', () => {
     // Compensation always interrupts, so the serializer drops the default and
-    // the trigger start stores no interrupting flag.
+    // the trigger start carries no interrupting flag.
     for (const host of ['BookFlight', 'BookHotel']) {
       const handler = subProcess(rt.ir1, host).flowElements.find(
         (fe) => fe.kind === 'subProcess' && fe.triggeredByEvent === true,
@@ -264,7 +179,7 @@ describe('compensation shape pins on the frozen .bpmn', () => {
 
 describe('import-first: a handwritten .bpmn with an undo block round-trips', () => {
   let firstImport: BpmnProcess;
-  let firstWarnings: string[];
+  let firstWarnings: ImportWarning[];
   let reDesugared: BpmnProcess;
   let importDsl: string;
 

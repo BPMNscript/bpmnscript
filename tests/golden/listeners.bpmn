@@ -1,0 +1,158 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI" xmlns:dc="http://www.omg.org/spec/DD/20100524/DC" xmlns:di="http://www.omg.org/spec/DD/20100524/DI" xmlns:operaton="http://operaton.org/schema/1.0/bpmn" id="Definitions_claim-settlement" targetNamespace="http://bpmnscript.io/processes" exporter="BPMNscript" exporterVersion="0.0.0">
+  <bpmn:process id="claim-settlement" name="Claim Settlement" isExecutable="true" operaton:historyTimeToLive="P30D">
+    <bpmn:startEvent id="ClaimFiled">
+      <bpmn:outgoing>Flow_ClaimFiled_ValidateClaim</bpmn:outgoing>
+    </bpmn:startEvent>
+    <bpmn:serviceTask id="ValidateClaim" name="Validate the claim" operaton:class="com.example.claims.ValidateClaimDelegate">
+      <bpmn:extensionElements>
+        <operaton:executionListener event="start" class="com.example.claims.OpenAuditTrail" />
+        <operaton:executionListener event="end" expression="${auditTrail.close(execution)}" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_ClaimFiled_ValidateClaim</bpmn:incoming>
+      <bpmn:outgoing>Flow_ValidateClaim_AssessDamage</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:subProcess id="AssessDamage" name="Assess the damage">
+      <bpmn:extensionElements>
+        <operaton:executionListener event="start" delegateExpression="${assessmentTracker}" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_ValidateClaim_AssessDamage</bpmn:incoming>
+      <bpmn:outgoing>Flow_AssessDamage_PaySettlement</bpmn:outgoing>
+      <bpmn:startEvent id="AssessmentOpened">
+        <bpmn:outgoing>Flow_AssessmentOpened_InspectVehicle</bpmn:outgoing>
+      </bpmn:startEvent>
+      <bpmn:userTask id="InspectVehicle" name="Inspect the vehicle" operaton:assignee="demo" operaton:candidateGroups="assessors">
+        <bpmn:extensionElements>
+          <operaton:taskListener event="create" class="com.example.claims.NotifyAssessor" />
+          <operaton:taskListener event="assign" expression="${assessorRoster.record(task)}" />
+          <operaton:taskListener event="complete" delegateExpression="${assessmentRecorder}" />
+          <operaton:taskListener event="update">
+            <operaton:script scriptFormat="javascript">task.setVariable("assessmentRevised", true);
+</operaton:script>
+          </operaton:taskListener>
+          <operaton:taskListener event="delete" class="com.example.claims.ReleaseAssessor" />
+          <operaton:taskListener event="timeout" delegateExpression="${assessmentEscalation}">
+            <bpmn:timerEventDefinition>
+              <bpmn:timeDuration xsi:type="bpmn:tFormalExpression">PT8H</bpmn:timeDuration>
+            </bpmn:timerEventDefinition>
+          </operaton:taskListener>
+        </bpmn:extensionElements>
+        <bpmn:incoming>Flow_AssessmentOpened_InspectVehicle</bpmn:incoming>
+        <bpmn:outgoing>Flow_InspectVehicle_AssessmentClosed</bpmn:outgoing>
+      </bpmn:userTask>
+      <bpmn:endEvent id="AssessmentClosed">
+        <bpmn:incoming>Flow_InspectVehicle_AssessmentClosed</bpmn:incoming>
+      </bpmn:endEvent>
+      <bpmn:sequenceFlow id="Flow_AssessmentOpened_InspectVehicle" sourceRef="AssessmentOpened" targetRef="InspectVehicle" />
+      <bpmn:sequenceFlow id="Flow_InspectVehicle_AssessmentClosed" sourceRef="InspectVehicle" targetRef="AssessmentClosed" />
+    </bpmn:subProcess>
+    <bpmn:serviceTask id="PaySettlement" name="Pay the settlement" operaton:class="com.example.claims.PaySettlementDelegate">
+      <bpmn:incoming>Flow_AssessDamage_PaySettlement</bpmn:incoming>
+      <bpmn:outgoing>Flow_PaySettlement_ClaimSettled</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:endEvent id="ClaimSettled">
+      <bpmn:extensionElements>
+        <operaton:executionListener event="end" class="com.example.claims.ArchiveClaim" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_PaySettlement_ClaimSettled</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:subProcess id="EventSubProcess_claim-settlement_5" triggeredByEvent="true">
+      <bpmn:extensionElements>
+        <operaton:inputOutput>
+          <operaton:inputParameter name="withdrawnBy">${initiator}</operaton:inputParameter>
+        </operaton:inputOutput>
+        <operaton:executionListener event="start" class="com.example.claims.LogWithdrawal" />
+      </bpmn:extensionElements>
+      <bpmn:startEvent id="WithdrawalOpened">
+        <bpmn:outgoing>Flow_WithdrawalOpened_CancelSettlement</bpmn:outgoing>
+        <bpmn:messageEventDefinition messageRef="Message_ClaimWithdrawn" />
+      </bpmn:startEvent>
+      <bpmn:serviceTask id="CancelSettlement" name="Cancel the settlement" operaton:class="com.example.claims.CancelSettlementDelegate">
+        <bpmn:incoming>Flow_WithdrawalOpened_CancelSettlement</bpmn:incoming>
+        <bpmn:outgoing>Flow_CancelSettlement_WithdrawalClosed</bpmn:outgoing>
+      </bpmn:serviceTask>
+      <bpmn:endEvent id="WithdrawalClosed">
+        <bpmn:incoming>Flow_CancelSettlement_WithdrawalClosed</bpmn:incoming>
+      </bpmn:endEvent>
+      <bpmn:sequenceFlow id="Flow_WithdrawalOpened_CancelSettlement" sourceRef="WithdrawalOpened" targetRef="CancelSettlement" />
+      <bpmn:sequenceFlow id="Flow_CancelSettlement_WithdrawalClosed" sourceRef="CancelSettlement" targetRef="WithdrawalClosed" />
+    </bpmn:subProcess>
+    <bpmn:sequenceFlow id="Flow_ClaimFiled_ValidateClaim" sourceRef="ClaimFiled" targetRef="ValidateClaim" />
+    <bpmn:sequenceFlow id="Flow_ValidateClaim_AssessDamage" sourceRef="ValidateClaim" targetRef="AssessDamage" />
+    <bpmn:sequenceFlow id="Flow_AssessDamage_PaySettlement" sourceRef="AssessDamage" targetRef="PaySettlement" />
+    <bpmn:sequenceFlow id="Flow_PaySettlement_ClaimSettled" sourceRef="PaySettlement" targetRef="ClaimSettled" />
+  </bpmn:process>
+  <bpmn:message id="Message_ClaimWithdrawn" name="ClaimWithdrawn" />
+  <bpmndi:BPMNDiagram id="BPMNDiagram_claim-settlement">
+    <bpmndi:BPMNPlane id="BPMNPlane_claim-settlement" bpmnElement="claim-settlement">
+      <bpmndi:BPMNShape id="ClaimFiled_di" bpmnElement="ClaimFiled">
+        <dc:Bounds x="57" y="52" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="ValidateClaim_di" bpmnElement="ValidateClaim">
+        <dc:Bounds x="625" y="30" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="AssessDamage_di" bpmnElement="AssessDamage" isExpanded="true">
+        <dc:Bounds x="775" y="30" width="550" height="220" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="PaySettlement_di" bpmnElement="PaySettlement">
+        <dc:Bounds x="1375" y="30" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="ClaimSettled_di" bpmnElement="ClaimSettled">
+        <dc:Bounds x="1557" y="52" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="EventSubProcess_claim-settlement_5_di" bpmnElement="EventSubProcess_claim-settlement_5" isExpanded="true">
+        <dc:Bounds x="25" y="310" width="550" height="220" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_ClaimFiled_ValidateClaim_di" bpmnElement="Flow_ClaimFiled_ValidateClaim">
+        <di:waypoint x="93" y="70" />
+        <di:waypoint x="625" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ValidateClaim_AssessDamage_di" bpmnElement="Flow_ValidateClaim_AssessDamage">
+        <di:waypoint x="725" y="70" />
+        <di:waypoint x="775" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_AssessDamage_PaySettlement_di" bpmnElement="Flow_AssessDamage_PaySettlement">
+        <di:waypoint x="1325" y="70" />
+        <di:waypoint x="1375" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_PaySettlement_ClaimSettled_di" bpmnElement="Flow_PaySettlement_ClaimSettled">
+        <di:waypoint x="1475" y="70" />
+        <di:waypoint x="1557" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNShape id="WithdrawalOpened_di" bpmnElement="WithdrawalOpened">
+        <dc:Bounds x="132" y="402" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="CancelSettlement_di" bpmnElement="CancelSettlement">
+        <dc:Bounds x="250" y="380" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="WithdrawalClosed_di" bpmnElement="WithdrawalClosed">
+        <dc:Bounds x="432" y="402" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_WithdrawalOpened_CancelSettlement_di" bpmnElement="Flow_WithdrawalOpened_CancelSettlement">
+        <di:waypoint x="168" y="420" />
+        <di:waypoint x="250" y="420" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_CancelSettlement_WithdrawalClosed_di" bpmnElement="Flow_CancelSettlement_WithdrawalClosed">
+        <di:waypoint x="350" y="420" />
+        <di:waypoint x="432" y="420" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNShape id="AssessmentOpened_di" bpmnElement="AssessmentOpened">
+        <dc:Bounds x="882" y="122" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="InspectVehicle_di" bpmnElement="InspectVehicle">
+        <dc:Bounds x="1000" y="100" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="AssessmentClosed_di" bpmnElement="AssessmentClosed">
+        <dc:Bounds x="1182" y="122" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_AssessmentOpened_InspectVehicle_di" bpmnElement="Flow_AssessmentOpened_InspectVehicle">
+        <di:waypoint x="918" y="140" />
+        <di:waypoint x="1000" y="140" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_InspectVehicle_AssessmentClosed_di" bpmnElement="Flow_InspectVehicle_AssessmentClosed">
+        <di:waypoint x="1100" y="140" />
+        <di:waypoint x="1182" y="140" />
+      </bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>

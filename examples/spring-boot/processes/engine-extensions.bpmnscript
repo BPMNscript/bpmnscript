@@ -1,0 +1,29 @@
+process engine-extensions "Engine extension surface" {
+  start ExtensionsRequested
+
+  service RecordMarkers "Record the lifecycle markers" {
+    class = "com.example.demo.LogDelegate"
+    on start { class = "com.example.demo.RecordingExecutionListener" }
+    on end { class = "com.example.demo.RecordingExecutionListener" }
+  }
+
+  service EchoParameters "Echo the mapped parameters" {
+    expression = "${reviewerHint}/${routing.desk}/${routing.priority}"
+    resultVariable = "parameterEcho"
+    input reviewerHint = "match every receipt against the trip dates"
+    input routing = { "desk": "expenses-l2", "priority": "high" }
+    output mappedDesk = "${routing.desk}"
+  }
+
+  user ConfirmMarkers "Confirm the recorded markers" {
+    assignee = "demo"
+    on create { class = "com.example.demo.RecordingTaskListener" }
+  }
+
+  service SettleExtensions "Settle behind the transaction boundary" {
+    class = "com.example.demo.LogDelegate"
+    asyncBefore = true
+  }
+
+  end ExtensionsRecorded
+}

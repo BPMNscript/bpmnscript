@@ -1,22 +1,6 @@
 /**
- * Validation test suite for the BPMNscript AST.
- *
- * Fourteen validator families are exercised:
- *   - undeclared-variable WARNING (severity 2),
- *   - type-mismatch ERROR (severity 1),
- *   - duplicate attribute-key ERROR,
- *   - allowed attribute keys per element kind ERROR,
- *   - exactly-one service-task binding discriminator (`class`/`expression`/`delegate`/`topic`),
- *   - script-task fence (language tag, non-empty body),
- *   - the unresolved-`goto` regression (linker owns it; no validator double-report),
- *   - structural empty-process-body WARNING,
- *   - reserved synthesised-id name ERROR,
- *   - duplicate process name ERROR,
- *   - duplicate variable name ERROR,
- *   - duplicate process label ERROR,
- *   - duplicate statement name (goto-ambiguity) ERROR,
- *   - empty-block WARNING (if/else-if/else/while/do-while/parallel branch),
- *   - goto-into-parallel-branch-from-outside ERROR.
+ * Validation test suite for the BPMNscript AST. Each validator family has its
+ * own `describe` below.
  *
  * A call activity is checked like a function call at the process boundary: a
  * required `process` (the callee), an optional `binding`/`version` pinning
@@ -25,9 +9,8 @@
  * direction. An `out` mapping's source is evaluated in the called process, so
  * it is exempt from the caller's undeclared-variable and type-mismatch checks.
  *
- * Diagnostics are produced through Langium's `validationHelper`, which parses,
- * links and runs the registered validation checks, returning the merged
- * diagnostic list. Severity follows the LSP convention: `1 = Error`,
+ * Diagnostics come from Langium's `validationHelper`, which parses, links, and
+ * runs the registered checks. Severity follows the LSP convention: `1 = Error`,
  * `2 = Warning`.
  */
 
@@ -36,6 +19,13 @@ import { EmptyFileSystem } from 'langium';
 import { validationHelper, type ValidationResult } from 'langium/test';
 import type { Model } from '@bpmn-script/language';
 import { createBpmnScriptServices } from '@bpmn-script/language';
+import {
+  BLOCK_HOSTS,
+  ENGINE_SETTINGS,
+  FENCE,
+  FORM_HOSTS,
+  PARAMETER_HOSTS,
+} from './helpers/block-hosts.js';
 
 const SEVERITY_ERROR = 1;
 const SEVERITY_WARNING = 2;
@@ -99,8 +89,11 @@ process p {
   });
 
   test('an undeclared bare identifier as an assignee value is exactly one warning', async () => {
-    // A bare identifier in `assignee` renders as a `${var}` JUEL expression, so
-    // it is a real variable reference and must be checked like any other.
+    // A bare identifier in `assignee` emits the bare text rather than a
+    // `${var}` expression, so what makes it a variable reference is the
+    // author's intent, not the rendering: a literal user id is written in
+    // quotes, which leaves a bareword reading as a variable holding the user
+    // to assign.
     const warnings = await warningsIn(
       `process p { user T { assignee = someUndeclared } }`,
     );
@@ -3026,6 +3019,509 @@ process p {
     expect(errors[0]!.message).toContain('after');
     expect(errors[0]!.message).toContain('at');
     expect(errors[0]!.message).toContain('every');
+  });
+});
+
+// ── Attribute blocks: engine settings, own keys, parameters, listeners ──────
+
+describe('Validation — engine settings on every attribute block', () => {
+  test.each(BLOCK_HOSTS)(
+    'the engine settings are accepted on %s',
+    async (_kind, _description, program) => {
+      expect(await errorsIn(program(ENGINE_SETTINGS))).toHaveLength(0);
+    },
+  );
+
+  test.each(BLOCK_HOSTS)(
+    'an unknown key on %s is exactly one error naming the element kind',
+    async (_kind, description, program) => {
+      const errors = await errorsIn(program('wibble = 1'));
+      expect(errors).toHaveLength(1);
+      expect(errors[0]!.message).toBe(
+        `Attribute 'wibble' is not valid on ${description}.`,
+      );
+    },
+  );
+});
+
+describe('Validation — element-owned attribute keys', () => {
+  test.each([
+    [
+      'a user task',
+      `process p { user U { assignee = "demo" formKey = "f" candidateGroups = "approvers" candidateUsers = "ada" dueDate = "2026-09-01T09:00:00" followUpDate = "2026-08-30T09:00:00" priority = 10 } }`,
+    ],
+    [
+      'a service task',
+      `process p { service V { class = com.example.X resultVariable = "outcome" } }`,
+    ],
+    [
+      'a script task',
+      `process p { script T { resultVariable = "total" } ${FENCE}js\n1 + 1\n${FENCE} }`,
+    ],
+    [
+      'a version-pinned call',
+      `process p { call C { process = "q" version = 1 businessKey = "k" } }`,
+    ],
+    [
+      'a binding-pinned call',
+      `process p { call C { process = "q" binding = latest } }`,
+    ],
+  ])('%s accepts the keys it owns', async (_kind, program) => {
+    expect(await errorsIn(program)).toHaveLength(0);
+  });
+
+  test.each([
+    ['resultVariable', `process p { user U { resultVariable = "r" } }`],
+    ['businessKey', `process p { user U { businessKey = "k" } }`],
+    ['assignee', `process p { subprocess S { assignee = "a" } { user U } }`],
+    ['topic', `process p { start S end E { topic = "t" } }`],
+  ])(
+    "'%s' on an element that does not own it is an allowed-key error",
+    async (key, program) => {
+      const { diagnostics } = await validate(program);
+      const errors = diagnosticsFor(diagnostics, 'is not valid on');
+      expect(errors).toHaveLength(1);
+      expect(errors[0]!.message).toContain(key);
+    },
+  );
+
+  test('a service task keeps its exactly-one-binding rule now that other keys share the block', async () => {
+    // `resultVariable` and the engine settings are legal but bind nothing, so a
+    // block holding only those is still a service task with no binding.
+    const errors = await errorsIn(
+      `process p { service V { resultVariable = "r" asyncBefore = true } }`,
+    );
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.message).toContain("must declare a 'class'");
+  });
+
+  // `call` is absent from both lists: its body has no `form` member at all, so
+  // a form written there is a parse error rather than this diagnostic.
+  test.each(
+    BLOCK_HOSTS.filter(([kind]) => !FORM_HOSTS.has(kind) && kind !== 'call'),
+  )(
+    'a form block on %s is exactly one error naming the element kind',
+    async (_kind, description, program) => {
+      const errors = await errorsIn(program('form { a: number }'));
+      expect(errors).toHaveLength(1);
+      expect(errors[0]!.message).toBe(
+        `${description[0]!.toUpperCase()}${description.slice(1)} cannot declare a 'form' block; ` +
+          'forms belong on start events and user tasks.',
+      );
+    },
+  );
+
+  test.each(BLOCK_HOSTS.filter(([kind]) => FORM_HOSTS.has(kind)))(
+    'a form block is accepted on %s',
+    async (_kind, _description, program) => {
+      expect(await errorsIn(program('form { a: number }'))).toHaveLength(0);
+    },
+  );
+});
+
+// ── Input/output parameters ─────────────────────────────────────────────────
+
+/** The diagnostic an empty map-entry key produces, at any nesting depth. */
+const EMPTY_MAP_KEY_ERROR =
+  "A map entry's key cannot be empty; name the key its value is looked up by.";
+
+describe('Validation — input/output parameters', () => {
+  test.each(BLOCK_HOSTS.filter(([kind]) => PARAMETER_HOSTS.has(kind)))(
+    'input and output parameters are accepted on %s',
+    async (_kind, _description, program) => {
+      expect(
+        await errorsIn(program('input a = 1 output b = "two"')),
+      ).toHaveLength(0);
+    },
+  );
+
+  test.each(BLOCK_HOSTS.filter(([kind]) => !PARAMETER_HOSTS.has(kind)))(
+    'a parameter on %s is exactly one error naming the element kind',
+    async (_kind, description, program) => {
+      const errors = await errorsIn(program('input a = 1'));
+      expect(errors).toHaveLength(1);
+      expect(errors[0]!.message).toBe(
+        `${description[0]!.toUpperCase()}${description.slice(1)} cannot declare an 'input' or 'output' parameter; ` +
+          'parameters belong on a user task, a service task, a script task, ' +
+          "a subprocess, a call, and an 'on' handler with no host.",
+      );
+    },
+  );
+
+  test('an unrecognised direction word names the two legal ones', async () => {
+    const errors = await errorsIn(`process p { user U { inp a = 1 } }`);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.message).toBe(
+      "Unknown parameter direction 'inp'; write 'input' or 'output'.",
+    );
+  });
+
+  test('a repeated name within one direction is exactly one error', async () => {
+    const errors = await errorsIn(
+      `process p { user U { input a = 1 input a = 2 } }`,
+    );
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.message).toBe("Duplicate 'input' parameter 'a'.");
+  });
+
+  test('the two directions are independent namespaces', async () => {
+    expect(
+      await errorsIn(`process p { user U { input a = 1 output a = 2 } }`),
+    ).toHaveLength(0);
+  });
+
+  test('a list, a map, and an inline script are accepted as parameter values', async () => {
+    expect(
+      await errorsIn(
+        `process p { service V { topic = "t" input items = [1, 2] input rows = { k: "v" } input computed = ${FENCE}groovy\n1 + 1\n${FENCE} } }`,
+      ),
+    ).toHaveLength(0);
+  });
+
+  test('an empty map key is exactly one error saying what to write', async () => {
+    const errors = await errorsIn(
+      `process p { user U { input m = { "": "empty" } } }`,
+    );
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.message).toBe(EMPTY_MAP_KEY_ERROR);
+  });
+
+  test('an empty map key is reached through a nested list and map', async () => {
+    const errors = await errorsIn(
+      `process p { user U { input m = { rows: [{ cells: { "": 1 } }] } } }`,
+    );
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.message).toBe(EMPTY_MAP_KEY_ERROR);
+  });
+
+  test('a key holding a quote, a brace, a newline, or non-ASCII text is accepted', async () => {
+    expect(
+      await errorsIn(
+        `process p { user U { input m = { "say \\"hi\\"": 1, "{ braces }": 2, "two
+lines": 3, "Grüße 日本": 4 } } }`,
+      ),
+    ).toHaveLength(0);
+  });
+});
+
+// ── Listeners ───────────────────────────────────────────────────────────────
+
+describe('Validation — listeners', () => {
+  test.each(BLOCK_HOSTS)(
+    'an execution listener is accepted on %s',
+    async (_kind, _description, program) => {
+      expect(
+        await errorsIn(program('on start { class = "com.example.L" }')),
+      ).toHaveLength(0);
+    },
+  );
+
+  test('every task-listener event is accepted on a user task', async () => {
+    expect(
+      await errorsIn(`
+process p {
+  user U {
+    on create { class = "com.example.A" }
+    on assign { expression = "\${bean.assign(task)}" }
+    on complete { delegate = "\${listenerBean}" }
+    on update ${FENCE}groovy
+    log(task)
+    ${FENCE}
+    on delete { class = "com.example.D" }
+    on timeout after "PT8H" { class = "com.example.T" }
+  }
+}
+`),
+    ).toHaveLength(0);
+  });
+
+  test('a task-listener event on a service task says only a user task has one', async () => {
+    const errors = await errorsIn(
+      `process p { service V { topic = "t" on create { class = "com.example.C" } } }`,
+    );
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.message).toBe(
+      "'on create' is a task listener, which only a user task has; " +
+        "a service task takes 'start' or 'end'.",
+    );
+  });
+
+  test('an unknown event word lists both sets on a user task', async () => {
+    const errors = await errorsIn(
+      `process p { user U { on wibble { class = "com.example.C" } } }`,
+    );
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.message).toBe(
+      "Unknown listener event 'wibble'; write 'start', 'end', 'create', " +
+        "'assign', 'complete', 'update', 'delete', or 'timeout'.",
+    );
+  });
+
+  test('an unknown event word lists only the execution events elsewhere', async () => {
+    const errors = await errorsIn(
+      `process p { subprocess S { on wibble { class = "com.example.C" } } { user U } }`,
+    );
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.message).toBe(
+      "Unknown listener event 'wibble'; write 'start' or 'end'.",
+    );
+  });
+
+  test('a listener with no binding is exactly one error', async () => {
+    const errors = await errorsIn(`process p { user U { on start { } } }`);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.message).toBe(
+      "The 'on start' listener must declare a 'class', 'expression', or " +
+        "'delegate' attribute, or a fenced script body.",
+    );
+  });
+
+  test('a listener with two bindings is exactly one error naming both', async () => {
+    const errors = await errorsIn(
+      `process p { user U { on start { class = "com.example.C" delegate = "\${bean}" } } }`,
+    );
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.message).toContain('more than one binding');
+    expect(errors[0]!.message).toContain('class, delegate');
+  });
+
+  test('a key that binds nothing is rejected inside a listener block', async () => {
+    const { diagnostics } = await validate(
+      `process p { user U { on start { topic = "t" } } }`,
+    );
+    const errors = diagnosticsFor(diagnostics, 'is not valid on');
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.message).toBe(
+      "Attribute 'topic' is not valid on a listener.",
+    );
+  });
+
+  test('a timeout listener without a timer asks for the particle clause', async () => {
+    const errors = await errorsIn(
+      `process p { user U { on timeout { class = "com.example.T" } } }`,
+    );
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.message).toContain('A timer needs to know how to read');
+  });
+
+  test('a timer on any other event is exactly one error', async () => {
+    const errors = await errorsIn(
+      `process p { user U { on create after "PT1H" { class = "com.example.C" } } }`,
+    );
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.message).toBe("Only 'on timeout' takes a particle.");
+  });
+
+  test('an unknown particle on a timeout listener names the legal ones', async () => {
+    const errors = await errorsIn(
+      `process p { user U { on timeout whenever "PT1H" { class = "com.example.T" } } }`,
+    );
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.message).toBe(
+      "Unknown timer particle 'whenever'; write 'after', 'at', or 'every'.",
+    );
+  });
+
+  test('a repeated event on one element is exactly one error', async () => {
+    const errors = await errorsIn(
+      `process p { user U { on start { class = "com.example.A" } on start { class = "com.example.B" } } }`,
+    );
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.message).toBe("Duplicate 'on start' listener.");
+  });
+
+  test("a script binding follows the script task's fence rules", async () => {
+    const unsupported = await errorsIn(
+      `process p { user U { on start ${FENCE}php\necho 1;\n${FENCE} } }`,
+    );
+    expect(unsupported).toHaveLength(1);
+    expect(unsupported[0]!.message).toContain(
+      "The 'on start' listener has an unsupported language tag 'php'.",
+    );
+
+    const empty = await errorsIn(
+      `process p { user U { on start ${FENCE}groovy\n${FENCE} } }`,
+    );
+    expect(empty).toHaveLength(1);
+    expect(empty[0]!.message).toBe(
+      "The 'on start' listener has an empty script body.",
+    );
+  });
+});
+
+// ── Process-header attributes ───────────────────────────────────────────────
+
+describe('Validation — process header attributes', () => {
+  test('any other key in the header is exactly one error', async () => {
+    const errors = await errorsIn(`process p { wibble = "x" start S }`);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.message).toBe(
+      "Attribute 'wibble' is not valid on a process header.",
+    );
+  });
+
+  test('an engine setting is rejected in the header', async () => {
+    const errors = await errorsIn(`process p { asyncBefore = true start S }`);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.message).toContain('asyncBefore');
+  });
+
+  test('a repeated header key is exactly one error', async () => {
+    const errors = await errorsIn(
+      `process p { versionTag = "1.0.0" versionTag = "2.0.0" start S }`,
+    );
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.message).toBe("Duplicate attribute 'versionTag'.");
+  });
+});
+
+// ── Barewords in engine-side attribute values ───────────────────────────────
+
+describe('Validation — barewords in engine-side attribute values', () => {
+  test.each([
+    ['candidateGroups', `process p { user U { candidateGroups = approvers } }`],
+    ['candidateUsers', `process p { user U { candidateUsers = approvers } }`],
+    ['dueDate', `process p { user U { dueDate = approvers } }`],
+    ['followUpDate', `process p { user U { followUpDate = approvers } }`],
+    ['retryCycle', `process p { user U { retryCycle = approvers } }`],
+    [
+      'resultVariable',
+      `process p { service V { topic = "t" resultVariable = approvers } }`,
+    ],
+  ])(
+    "a bareword in '%s' lowers to a literal, so it is not a variable reference",
+    async (_key, program) => {
+      const { diagnostics } = await validate(program);
+      expect(diagnosticsFor(diagnostics, 'is not declared')).toHaveLength(0);
+    },
+  );
+
+  test('a bareword identity id stays clean, since the engine uses it as written', async () => {
+    // The id reaches Operaton verbatim and resolves, so the quoted spelling is
+    // a convention rather than the only working form.
+    for (const key of ['candidateGroups', 'candidateUsers']) {
+      expect(
+        await errorsIn(`process p { user U { ${key} = approvers } }`),
+        key,
+      ).toEqual([]);
+    }
+  });
+
+  test.each([
+    ['priority', `process p { user U { priority = deadline } }`],
+    ['jobPriority', `process p { user U { jobPriority = deadline } }`],
+    [
+      'businessKey',
+      `process p { call C { process = "q" businessKey = deadline } }`,
+    ],
+  ])(
+    "a bareword in '%s' lowers to an expression, so it warns when undeclared",
+    async (_key, program) => {
+      const warnings = await warningsIn(program);
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]!.message).toContain("Variable 'deadline'");
+    },
+  );
+});
+
+// ── Attribute value shapes ──────────────────────────────────────────────────
+
+describe('Validation — attribute value shapes', () => {
+  const BOOLEAN_KEYS = ['asyncBefore', 'asyncAfter', 'exclusive'] as const;
+
+  test('a boolean attribute accepts either unquoted boolean', async () => {
+    for (const key of BOOLEAN_KEYS) {
+      expect(
+        await errorsIn(`process p { user U { ${key} = true } }`),
+        key,
+      ).toEqual([]);
+      expect(
+        await errorsIn(`process p { user U { ${key} = false } }`),
+        key,
+      ).toEqual([]);
+    }
+  });
+
+  test.each(BOOLEAN_KEYS)(
+    'a quoted boolean in %s is one error naming the unquoted form',
+    async (key) => {
+      const errors = await errorsIn(`process p { user U { ${key} = "true" } }`);
+      expect(errors).toHaveLength(1);
+      expect(errors[0]!.message).toBe(
+        `Attribute '${key}' takes an unquoted boolean; ` +
+          `write '${key} = true' or '${key} = false'.`,
+      );
+    },
+  );
+
+  test.each([
+    ['a number', `process p { user U { asyncBefore = 1 } }`],
+    ['a bareword', `process p { user U { asyncBefore = flag } }`],
+    ['an expression', `process p { user U { asyncBefore = "\${flag}" } }`],
+  ])(
+    '%s in a boolean attribute is one error, since the lowering drops it',
+    async (_shape, program) => {
+      const errors = await errorsIn(program);
+      expect(errors).toHaveLength(1);
+      expect(errors[0]!.message).toContain('takes an unquoted boolean');
+    },
+  );
+
+  /** The same value written into every attribute that takes engine-side text. */
+  const textKeyPrograms = (
+    value: string,
+  ): ReadonlyArray<[key: string, program: string]> => [
+    ['versionTag', `process p { versionTag = ${value} start S }`],
+    ['retryCycle', `process p { user U { retryCycle = ${value} } }`],
+    ['dueDate', `process p { user U { dueDate = ${value} } }`],
+    ['followUpDate', `process p { user U { followUpDate = ${value} } }`],
+  ];
+
+  test.each(textKeyPrograms('"text"'))(
+    '%s accepts a quoted string',
+    async (_key, program) => {
+      expect(await errorsIn(program)).toEqual([]);
+    },
+  );
+
+  test.each(textKeyPrograms('"${supplied}"'))(
+    '%s accepts a raw expression',
+    async (_key, program) => {
+      expect(await errorsIn(program)).toEqual([]);
+    },
+  );
+
+  test.each(textKeyPrograms('3'))(
+    'a number in %s is one error asking for quotes',
+    async (key, program) => {
+      const errors = await errorsIn(program);
+      expect(errors).toHaveLength(1);
+      expect(errors[0]!.message).toBe(
+        `Attribute '${key}' takes a quoted string or a "\${...}" expression; ` +
+          'put the value in quotes.',
+      );
+    },
+  );
+
+  test.each(textKeyPrograms('deadline'))(
+    'a bareword in %s is one error asking for quotes',
+    async (_key, program) => {
+      const errors = await errorsIn(program);
+      expect(errors).toHaveLength(1);
+      expect(errors[0]!.message).toContain('put the value in quotes');
+    },
+  );
+
+  test('an expression in a numeric attribute carries no value-shape rule', async () => {
+    expect(
+      await errorsIn(`process p { user U { jobPriority = "\${weight}" } }`),
+    ).toEqual([]);
+  });
+
+  test('a key the element does not own is reported once, not twice', async () => {
+    const errors = await errorsIn(`process p { start S { dueDate = 3 } }`);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.message).toContain('is not valid on');
   });
 });
 

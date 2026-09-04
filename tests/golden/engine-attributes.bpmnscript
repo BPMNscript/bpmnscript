@@ -1,0 +1,90 @@
+process claim-settlement "Motor claim settlement" {
+  versionTag = "3.1.0"
+
+  start ClaimFiled "Claim filed" {
+    asyncAfter = true
+    form {
+      claimAmount: number "Claimed amount in euros"
+      openQuestions: number "Questions still open with the claimant"
+    }
+  }
+
+  user TriageClaim "Triage the claim" {
+    assignee = "demo"
+    formKey = "embedded:app:forms/claim-triage.html"
+    candidateGroups = "adjusters"
+    candidateUsers = "demo,manager"
+    priority = 75
+    asyncBefore = true
+  }
+
+  while (openQuestions > 0) {
+    user AskClaimant "Ask the claimant for one missing detail" { assignee = "demo" }
+  }
+
+  subprocess InspectVehicle "Inspect the vehicle" {
+    asyncBefore = true
+    exclusive = false
+  } {
+    start InspectionOrdered
+    parallel {
+      {
+        service AssessBodywork "Assess the bodywork" {
+          class = "com.example.claims.BodyworkDelegate"
+          resultVariable = "bodyworkReport"
+          asyncBefore = true
+          retryCycle = "R3/PT5M"
+        }
+      }
+      {
+        script GradeMechanics "Grade the mechanical damage" {
+          resultVariable = "mechanicsGrade"
+          asyncBefore = true
+          jobPriority = 80
+        } ```groovy
+def grade = claimAmount > 5000 ? "major" : "minor"
+execution.setVariable("mechanicsGrade", grade)
+```
+      }
+    }
+    end InspectionReported
+  }
+
+  await message "RepairQuoteReceived" { asyncBefore = true }
+
+  call OrderRepair "Order the repair" {
+    process = "repair-order"
+    asyncAfter = true
+    retryCycle = "R5/PT10M"
+    in claimAmount
+    out repairCost
+  }
+
+  if (claimAmount > 10000) {
+    emit escalation PayoutReviewNeeded "PAYOUT_REVIEW" {
+      asyncAfter = true
+      jobPriority = 40
+    }
+  }
+
+  user ApprovePayout "Approve the payout" { assignee = "manager" }
+
+  end ClaimSettled "Claim settled" { asyncBefore = true }
+
+  on ApprovePayout: timer after "PT8H" alongside {
+    asyncAfter = true
+    exclusive = false
+  } {
+    service NudgeApprover "Nudge the approver" { class = "com.example.claims.NudgeDelegate" }
+  }
+
+  on escalation "PAYOUT_REVIEW" alongside {
+    asyncBefore = true
+    jobPriority = 60
+    retryCycle = "R2/PT30S"
+  } {
+    start ReviewRequested
+    user ReviewLargePayout "Review the large payout" { assignee = "manager" }
+    end ReviewRecorded
+  }
+}

@@ -1,35 +1,21 @@
-/**
- * An error boundary on a service task, and a non-gating observation of
- * compensation triggered from inside a process-level error handler, both driven
- * on a running Operaton engine.
- *
- * Static checking cannot show that an interrupting error boundary on a service
- * task really catches a `BpmnError` thrown by that task's delegate, cancels the
- * host, and moves the token onto the escape path, nor whether a `compensate all`
- * thrown from inside an error-handling event-subprocess reaches a sibling
- * subprocess's completed undo block. Only a real engine decides either, so this
- * suite builds both examples with the real `bpmns` CLI, boots Operaton via
- * testcontainers, deploys both in one container boot, and drives them over the
- * REST API. Each path is steered by a boolean process variable read by the
- * shared conditional delegate, never by waiting on a clock or correlating a
- * message.
- *
- * The whole file is Docker-gated and skipped when `SKIP_DOCKER_TESTS=true`; the
- * always-on health assertions for both examples live in a separate suite.
- *
- * The compensation observation never hard-asserts whether the undo step ran:
- * that fact is suspected, not proven, so a negative outcome must not fail the
- * suite. It is surfaced as one greppable `console.warn` line instead.
- */
+// Only a real engine decides whether an interrupting error boundary on a
+// service task catches the `BpmnError` its delegate throws, cancels the host,
+// and moves the token onto the escape path. Each path is steered by a boolean
+// process variable the shared conditional delegate reads, never by a clock or a
+// correlated message.
+//
+// The compensation half never hard-asserts whether the undo step ran: that fact
+// is suspected, not proven, so it is printed as one greppable console.warn
+// rather than failing the suite.
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { execFileSync } from 'node:child_process';
-import { mkdirSync } from 'node:fs';
-import * as path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
-import { startFixture } from '../fixtures/index.js';
 import type { FixtureAdapter } from '../fixtures/index.js';
+import {
+  deployExamples,
+  ENGINE_BOOT_TIMEOUT_MS,
+  SKIP_DOCKER as SKIP,
+} from '../helpers/e2e-fixture.js';
 import {
   activeTaskKeys,
   historicActivities,
@@ -37,29 +23,8 @@ import {
   waitFor,
 } from '../helpers/engine-rest.js';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
-const SKIP = process.env.SKIP_DOCKER_TESTS === 'true';
-
-const CHARGE_DSL_PATH = path.resolve(
-  __dirname,
-  '../../examples/spring-boot/processes/charge-with-recovery.bpmnscript',
-);
-const CHARGE_XML_OUT_PATH = path.resolve(
-  __dirname,
-  '../../out/charge-with-recovery.bpmn',
-);
 const CHARGE_PROCESS_KEY = 'charge-with-recovery';
 
-const COMPENSATION_DSL_PATH = path.resolve(
-  __dirname,
-  '../../examples/spring-boot/processes/compensating-saga.bpmnscript',
-);
-const COMPENSATION_XML_OUT_PATH = path.resolve(
-  __dirname,
-  '../../out/compensating-saga.bpmn',
-);
 const COMPENSATION_PROCESS_KEY = 'compensating-saga';
 
 describe.skipIf(SKIP)(
@@ -96,50 +61,21 @@ describe.skipIf(SKIP)(
       return match!.id;
     }
 
-    // The 300 s timeout accommodates a cold image build plus Spring Boot startup.
+    // Both examples are deployed into one container boot.
     beforeAll(async () => {
-      mkdirSync(path.dirname(CHARGE_XML_OUT_PATH), { recursive: true });
-
-      execFileSync(
-        'npx',
-        ['bpmns', 'build', CHARGE_DSL_PATH, '-o', CHARGE_XML_OUT_PATH],
-        { stdio: 'inherit' },
+      fixture = await deployExamples(
+        CHARGE_PROCESS_KEY,
+        COMPENSATION_PROCESS_KEY,
       );
-      execFileSync(
-        'npx',
-        [
-          'bpmns',
-          'build',
-          COMPENSATION_DSL_PATH,
-          '-o',
-          COMPENSATION_XML_OUT_PATH,
-        ],
-        { stdio: 'inherit' },
-      );
-
-      fixture = await startFixture('spring-boot');
-
-      const chargeDeployment = await fixture.deploy(
-        CHARGE_XML_OUT_PATH,
-        'charge-with-recovery-test',
-      );
-      expect(chargeDeployment.deploymentId).toBeTruthy();
-
-      const compensationDeployment = await fixture.deploy(
-        COMPENSATION_XML_OUT_PATH,
-        'compensating-saga-test',
-      );
-      expect(compensationDeployment.deploymentId).toBeTruthy();
-    }, 300_000);
+    }, ENGINE_BOOT_TIMEOUT_MS);
 
     afterAll(async () => {
       await fixture?.stop();
     });
 
     describe('error boundary on the charge service task', () => {
-      // A misconfigured boundary would surface as an unhandled exception (an
-      // HTTP 500 from `startProcess`), so passing here is itself proof the catch
-      // worked, not merely that the process deployed.
+      // A misconfigured boundary surfaces as an HTTP 500 from startProcess, so
+      // getting this far already proves the catch worked.
       it('catches the delegate error, cancels the host, and completes through the escape task', async () => {
         const { processInstanceId } = await fixture.startProcess(
           CHARGE_PROCESS_KEY,
@@ -205,10 +141,9 @@ describe.skipIf(SKIP)(
     });
 
     describe('compensation observation (non-gating)', () => {
-      // Whether the `compensate all` the error handler emits reaches the
-      // sibling subprocess's completed undo block is the suspected fact under
-      // observation. The setup around it is hard-asserted; the outcome is only
-      // printed.
+      // Whether the error handler's `compensate all` reaches the sibling
+      // subprocess's completed undo block is the suspected fact. The setup is
+      // hard-asserted; the outcome is only printed.
       it('reports whether the undo step ran after the error handler emits compensation', async () => {
         const { processInstanceId } = await fixture.startProcess(
           COMPENSATION_PROCESS_KEY,

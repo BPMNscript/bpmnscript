@@ -1,20 +1,3 @@
-/**
- * End-to-end round-trip for attached (boundary) handlers over the unmocked
- * transform chain: real Langium parse and validation, real `bpmn-moddle` via
- * `irToXml`/`xmlToIr`, and real `bpmn-auto-layout` inside `irToXml`. No Docker
- * and no engine.
- *
- * One parcel-dispatch narrative exercises all six boundary-capable triggers,
- * interrupting and non-interrupting attachment, every host kind a boundary can
- * attach to (`user`, `subprocess`, `call`, `script`, a `class`-bound `service`
- * and a `topic`-bound one), two boundaries sharing one host, an escape chain
- * that rejoins the main flow through `goto`, an `if` inside an escape chain,
- * and a host-less handler alongside all of it.
- *
- * The frozen `.bpmn` is a diff tripwire: drift in it is a defect, not a reason
- * to regenerate.
- */
-
 import { describe, it, expect, beforeAll } from 'vitest';
 
 import { xmlToIr, irToDsl, astToIr } from '@bpmn-script/transform';
@@ -22,12 +5,14 @@ import type {
   BpmnProcess,
   FlowContainer,
   FlowElement,
+  ImportWarning,
 } from '@bpmn-script/transform';
 
 import { normalizeIr } from './helpers/normalize-ir.js';
 import { parseShapeBounds, boundsOf } from './helpers/di-bounds.js';
 import type { Bounds } from './helpers/di-bounds.js';
 import { kindOf, subProcess } from './helpers/ir-query.js';
+import { definitionRefOf } from './helpers/xml-query.js';
 import { roundTripFixture } from './helpers/round-trip-fixture.js';
 
 const rt = roundTripFixture('boundary-events', {
@@ -35,11 +20,8 @@ const rt = roundTripFixture('boundary-events', {
   recompile: 'errors',
 });
 
-/**
- * The diagnostic the validator raises when a handler block is not the last
- * thing in its body. The decompiler prints handlers in a trailing group, so its
- * output must never produce this message: source that does cannot be re-opened.
- */
+// The decompiler prints handlers in a trailing group, so its output must never
+// raise this. Source that does cannot be re-opened.
 const HANDLER_PLACEMENT_DIAGNOSTIC =
   'Event handlers read like catch blocks: move it after the last step of this body.';
 
@@ -51,11 +33,7 @@ function boundaryEvents(container: FlowContainer): BoundaryEvent[] {
   );
 }
 
-/**
- * Everything about a boundary event that is not its id: host, trigger kind,
- * caught payload, and whether it cancels its host. Comparing these across hops
- * stays blind to the id, whose positional suffix is not a structural fact.
- */
+// Everything but the id, whose positional suffix is not a structural fact.
 function attachmentSignature(boundary: BoundaryEvent): string {
   const def = boundary.eventDefinition;
   const payload =
@@ -81,12 +59,7 @@ function attachmentSignatures(container: FlowContainer): string[] {
   return boundaryEvents(container).map(attachmentSignature).sort();
 }
 
-/**
- * The nine boundary events the fixture authors, covering every host kind a
- * boundary can attach to. Frozen here so a hop that drops a host, flips
- * `cancelActivity`, or loses a trigger payload fails with a readable diff rather
- * than a deep-equality dump.
- */
+// One per host kind a boundary can attach to.
 const EXPECTED_ATTACHMENTS = [
   'BookCarrier signal CarrierStrike interrupting',
   'ChargePostage error PAYMENT_DECLINED interrupting',
@@ -99,13 +72,10 @@ const EXPECTED_ATTACHMENTS = [
   'PrintLabel message ExpediteRequested interrupting',
 ].sort();
 
-/**
- * Assert every attacher of one host sits centred on that host's bottom edge and
- * distributed evenly along it: `n` attachers land at `x + width * i/(n+1)` for
- * `i` in `1..n`, the placement `bpmn-auto-layout` computes for `attachedToRef`
- * children. Asserting against the host's own bounds means the check cannot pass
- * by finding a shape somewhere else on the canvas.
- */
+// bpmn-auto-layout places `attachedToRef` children on the host's bottom edge,
+// spread evenly: `n` attachers land at `x + width * i/(n+1)` for i in 1..n.
+// Measuring against the host's own bounds stops a shape elsewhere on the canvas
+// satisfying the check.
 function assertAttachedToHost(
   bounds: Map<string, Bounds>,
   hostId: string,
@@ -131,34 +101,10 @@ function assertAttachedToHost(
   });
 }
 
-/**
- * The `<kind>Ref` attribute on the single event definition inside the named
- * boundary/start event of the frozen XML. Scopes to the element block so two
- * catch sites are read independently.
- */
-function definitionRefOf(
-  xml: string,
-  element: 'boundaryEvent' | 'startEvent' | 'intermediateThrowEvent',
-  elementId: string,
-  definition: 'signal' | 'escalation' | 'error' | 'message',
-): string | undefined {
-  const block = new RegExp(
-    `<bpmn:${element} id="${elementId}"[^>]*>([\\s\\S]*?)</bpmn:${element}>`,
-  ).exec(xml);
-  if (block === null) return undefined;
-  return new RegExp(
-    `<bpmn:${definition}EventDefinition\\b[^>]*\\b${definition}Ref="([^"]+)"`,
-  ).exec(block[1]!)?.[1];
-}
-
-/**
- * A handwritten import-first fixture: canonical namespaces, MIWG
- * `<bpmn:incoming>`/`<bpmn:outgoing>` children, and hand-named boundary events
- * whose ids match nothing the host-derived id template would produce. Two of
- * them share the host `InspectCrate` and the trigger kind `error` and differ
- * only in the code they catch, so re-synthesising their ids necessarily
- * collides and hands one of them the positional `_2` suffix.
- */
+// Handwritten import-first: MIWG `<bpmn:incoming>`/`<bpmn:outgoing>` children
+// and hand-named boundary ids matching nothing the id template would produce.
+// Two share the host `InspectCrate` and the trigger kind `error`, so
+// re-synthesis necessarily collides and hands one of them the `_2` suffix.
 const IMPORT_FIRST_BPMN = `<?xml version="1.0" encoding="UTF-8"?>
 <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:operaton="http://operaton.org/schema/1.0/bpmn" id="Definitions_crate_handover" targetNamespace="http://bpmn.io/schema/bpmn">
   <bpmn:error id="Error_Torn" name="TORN_BOX" errorCode="TORN_BOX" />
@@ -227,10 +173,9 @@ const IMPORT_FIRST_BPMN = `<?xml version="1.0" encoding="UTF-8"?>
 
 describe('idempotence: DSL → IR₁ → XML → IR₂ → DSL′ → IR₃', () => {
   it('every handler block in DSL′ trails the body it guards', async () => {
-    // A boundary handler is walked early (its escape chain has to be claimed
-    // before the orphan sweep mistakes it for a detached fragment) but must be
-    // printed in the trailing handler group; printing it in place emits source
-    // the validator rejects.
+    // A boundary handler is walked early, so the orphan sweep does not mistake
+    // its escape chain for a detached fragment, yet it must print in the
+    // trailing group: printed in place it emits source the validator rejects.
     const { diagnostics } = await rt.validate(rt.dslPrime);
     expect(
       diagnostics.filter((d) => d.message === HANDLER_PLACEMENT_DIAGNOSTIC),
@@ -253,11 +198,7 @@ describe('idempotence: DSL → IR₁ → XML → IR₂ → DSL′ → IR₃', ()
   });
 
   it("each boundary's host, trigger, payload, and cancelActivity survive at every hop", () => {
-    for (const [label, ir] of [
-      ['IR₁', rt.ir1],
-      ['IR₂', rt.ir2],
-      ['IR₃', rt.ir3],
-    ] as const) {
+    for (const [label, ir] of rt.hops) {
       expect(
         attachmentSignatures(ir),
         `attachments differ in ${label}`,
@@ -284,8 +225,6 @@ describe('idempotence: DSL → IR₁ → XML → IR₂ → DSL′ → IR₃', ()
 
 describe('golden generation: the pipeline output matches the frozen .bpmn', () => {
   it('each task host carries its boundary event, pinned by attachedToRef', () => {
-    // A boundary attaches to a `script` task and to both service-task bindings,
-    // the `class` delegate and the `topic` external worker.
     expect(rt.generatedXml).toContain(
       '<bpmn:boundaryEvent id="Boundary_ComputeShipping_timer" cancelActivity="false" attachedToRef="ComputeShipping">',
     );
@@ -357,16 +296,9 @@ describe('root sharing on the frozen .bpmn', () => {
     const rootId = roots[0]![1];
 
     expect(
-      definitionRefOf(
-        rt.frozenXml,
-        'boundaryEvent',
-        'Boundary_BookCarrier_signal',
-        'signal',
-      ),
+      definitionRefOf(rt.frozenXml, 'Boundary_BookCarrier_signal', 'signal'),
     ).toBe(rootId);
-    expect(
-      definitionRefOf(rt.frozenXml, 'startEvent', 'StrikeNoted', 'signal'),
-    ).toBe(rootId);
+    expect(definitionRefOf(rt.frozenXml, 'StrikeNoted', 'signal')).toBe(rootId);
   });
 
   it('the escalation thrown inside the sub-process and the one caught on its boundary share one bpmn:Escalation', () => {
@@ -374,18 +306,12 @@ describe('root sharing on the frozen .bpmn', () => {
     expect(roots).toHaveLength(1);
     const rootId = roots[0]![1];
 
+    expect(definitionRefOf(rt.frozenXml, 'Oversized', 'escalation')).toBe(
+      rootId,
+    );
     expect(
       definitionRefOf(
         rt.frozenXml,
-        'intermediateThrowEvent',
-        'Oversized',
-        'escalation',
-      ),
-    ).toBe(rootId);
-    expect(
-      definitionRefOf(
-        rt.frozenXml,
-        'boundaryEvent',
         'Boundary_PackGoods_escalation',
         'escalation',
       ),
@@ -403,12 +329,7 @@ describe('root sharing on the frozen .bpmn', () => {
     expect(message).toBe('The payment gateway declined the charge');
 
     expect(
-      definitionRefOf(
-        rt.frozenXml,
-        'boundaryEvent',
-        'Boundary_ChargePostage_error',
-        'error',
-      ),
+      definitionRefOf(rt.frozenXml, 'Boundary_ChargePostage_error', 'error'),
     ).toBe(rootId);
   });
 
@@ -421,19 +342,14 @@ describe('root sharing on the frozen .bpmn', () => {
     expect(roots).toHaveLength(1);
 
     expect(
-      definitionRefOf(
-        rt.frozenXml,
-        'boundaryEvent',
-        'Boundary_PrintLabel_message',
-        'message',
-      ),
+      definitionRefOf(rt.frozenXml, 'Boundary_PrintLabel_message', 'message'),
     ).toBe(roots[0]![1]);
   });
 });
 
 describe('import-first: a handwritten .bpmn with hand-named boundary ids round-trips', () => {
   let firstImport: BpmnProcess;
-  let firstWarnings: string[];
+  let firstWarnings: ImportWarning[];
   let reDesugared: BpmnProcess;
   let importDsl: string;
 

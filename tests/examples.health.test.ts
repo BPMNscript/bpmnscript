@@ -1,29 +1,16 @@
-/**
- * Health check for every deployable example under
- * `examples/spring-boot/processes/`.
- *
- * The sweep is directory-driven rather than a hand-kept list, so a new example
- * is covered the moment it is added: every one of them must open
- * validator-clean, the same bar the IDE holds an author to.
- *
- * A handful of examples are also the only place a construct's desugared or
- * emitted shape is pinned without a golden fixture, so those keep a block of
- * their own below. The runtime properties they demonstrate (a token parking at
- * a catch, a boundary cancelling its host) need a real engine and are proven by
- * the Docker-gated e2e suites.
- */
+// Directory-driven rather than a hand-kept list, so a new example is covered the
+// moment it lands. A few examples are also the only place a construct's
+// desugared shape is pinned without a golden fixture, so those keep a block of
+// their own below.
 
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import { readdirSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { EmptyFileSystem } from 'langium';
-import { parseHelper, validationHelper } from 'langium/test';
-import { createBpmnScriptServices } from '@bpmn-script/language';
-import type { Model } from '@bpmn-script/language';
-
 import { astToIr, irToXml } from '@bpmn-script/transform';
+
+import { parse, validate } from './helpers/pipeline.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -41,16 +28,6 @@ if (EXAMPLES.length === 0) {
 const sourceOf = (file: string): string =>
   readFileSync(resolve(PROCESSES_DIR, `${file}.bpmnscript`), 'utf-8');
 
-let parse: ReturnType<typeof parseHelper<Model>>;
-let validate: ReturnType<typeof validationHelper<Model>>;
-
-beforeAll(() => {
-  const services = createBpmnScriptServices(EmptyFileSystem);
-  parse = parseHelper<Model>(services.BpmnScript);
-  validate = validationHelper<Model>(services.BpmnScript);
-});
-
-/** The compiled BPMN XML of one example, failing on any parser error. */
 async function compile(file: string): Promise<string> {
   const document = await parse(sourceOf(file));
   expect(document.parseResult.parserErrors).toEqual([]);
@@ -66,10 +43,9 @@ describe('every deployable example', () => {
   });
 });
 
-describe('the awaiting-confirmation deployable example', () => {
-  it('desugars the await into an intermediateCatchEvent node carrying the message definition', async () => {
-    // Desugaring is what decides what an `await` lowers to, so XML inspection
-    // alone would miss it.
+describe('construct shapes pinned only by a deployable example', () => {
+  it('awaiting-confirmation desugars the await into an intermediateCatchEvent carrying the message definition', async () => {
+    // Desugaring decides what an `await` lowers to, so XML alone would miss it.
     const document = await parse(sourceOf('awaiting-confirmation'));
     expect(document.parseResult.parserErrors).toEqual([]);
 
@@ -87,12 +63,9 @@ describe('the awaiting-confirmation deployable example', () => {
       },
     });
   });
-});
 
-describe('the order-handling deployable example', () => {
-  it('compiles to BPMN XML with the expected attached boundary events', async () => {
-    // The sub-process containment demo doubles as the boundary-event
-    // walkthrough, and has no golden fixture of its own.
+  it('order-handling compiles to BPMN XML with the expected attached boundary events', async () => {
+    // Doubles as the boundary-event walkthrough; no golden fixture of its own.
     const xml = await compile('order-handling');
 
     expect(xml).toContain(
@@ -111,22 +84,16 @@ describe('the order-handling deployable example', () => {
       '<bpmn:boundaryEvent id="Boundary_Payment_escalation" cancelActivity="false" attachedToRef="Payment">',
     );
   });
-});
 
-describe('the charge-with-recovery deployable example', () => {
-  it('compiles to BPMN XML with an interrupting error boundary on the charge service task', async () => {
+  it('charge-with-recovery compiles with an interrupting error boundary on the charge service task', async () => {
     const xml = await compile('charge-with-recovery');
 
     expect(xml).toContain(
       '<bpmn:boundaryEvent id="Boundary_ChargeCard_error" attachedToRef="ChargeCard">',
     );
   });
-});
 
-describe('the compensating-saga deployable example', () => {
-  it('compiles to BPMN XML with the undo handler wired over the compensable subprocess', async () => {
-    // A completed compensable subprocess unwound from inside a process-level
-    // error handler.
+  it('compensating-saga compiles with the undo handler wired over the compensable subprocess', async () => {
     const xml = await compile('compensating-saga');
 
     expect(xml).toContain(

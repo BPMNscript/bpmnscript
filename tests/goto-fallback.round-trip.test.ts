@@ -1,35 +1,23 @@
-/**
- * The `goto` fallback, where `irToDsl` sends every edge the structured
- * catalogue could not fold into a construct.
- *
- * A `goto` names a statement. Gateways have no statement form, so an edge
- * arriving at one is expressible only through the gateway's successor, and
- * only while the gateway's routing has a single outcome. Two shapes sit either
- * side of that line, and both are ordinary BPMN rather than hand-built
- * hostility:
- *
- *   - A loop whose head is a pass-through join. The join has one successor, so
- *     the back-edge is expressible, even though the structured walk has already
- *     consumed the join's out-edge by the time the back-edge is resolved.
- *     Consumption records that an edge was printed, not that it stopped
- *     existing.
- *   - A loop whose condition sits on the back-edge instead of on the forward
- *     edge into the body. No loop pattern matches it, so its head gateway is
- *     emitted as an `if`, and the back-edge is left pointing at a gateway that
- *     still chooses between two branches. Nothing names that, so the edge is
- *     dropped and the marker records where.
- *
- * The rest of the file pins the shapes that already structure cleanly, so a
- * change to the fallback cannot quietly turn a `while` into a jump.
- */
+// A `goto` names a statement, and gateways have no statement form, so an edge
+// into a gateway is expressible only through the gateway's successor and only
+// while the gateway's routing has a single outcome. Two ordinary BPMN shapes
+// sit either side of that line:
+//
+//   - A loop headed by a pass-through join. One successor, so the back-edge is
+//     expressible even though the structured walk already consumed the join's
+//     out-edge. Consumption records that an edge was printed, not that it
+//     stopped existing.
+//   - A loop with the condition on the back-edge. No loop pattern matches, so
+//     the head gateway prints as an `if` and the back-edge still points at a
+//     two-way gateway. Nothing names that, so the edge is dropped and the
+//     marker records where.
+//
+// The rest of the file pins the shapes that structure cleanly, so a change to
+// the fallback cannot turn a `while` into a jump unnoticed.
 
 import { describe, it, expect, beforeAll } from 'vitest';
 
-import { EmptyFileSystem } from 'langium';
 import { DiagnosticSeverity } from 'vscode-languageserver-types';
-import { parseHelper } from 'langium/test';
-import { createBpmnScriptServices } from '@bpmn-script/language';
-import type { Model } from '@bpmn-script/language';
 
 import {
   xmlToIr,
@@ -41,24 +29,11 @@ import {
 import type { BpmnProcess } from '@bpmn-script/transform';
 
 import { realNodeReachability } from './helpers/real-node-reachability.js';
+import { parse } from './helpers/pipeline.js';
 
-let parse: ReturnType<typeof parseHelper<Model>>;
-
-beforeAll(() => {
-  const services = createBpmnScriptServices(EmptyFileSystem);
-  parse = parseHelper<Model>(services.BpmnScript);
-});
-
-/**
- * Parse emitted DSL and run the validator, failing the test on a parser error
- * or on any diagnostic of severity Error.
- *
- * Validation is the part that matters here. A `goto` naming a node the emitter
- * elides parses without complaint and only fails when the reference is linked,
- * and a `goto` written ahead of a statement leaves that statement unreachable,
- * which is also a validator finding rather than a syntax one. Checking parser
- * errors alone would miss both.
- */
+// Validation, not just parsing: a `goto` naming an elided node parses fine and
+// fails only once the reference is linked, and a `goto` written ahead of a
+// statement leaves that statement unreachable. Both are validator findings.
 async function parseToAst(source: string) {
   const document = await parse(source, { validation: true });
   const errors = document.parseResult.parserErrors;
@@ -78,6 +53,13 @@ async function parseToAst(source: string) {
     );
   }
   return document.parseResult.value;
+}
+
+// Emission only. Re-desugaring belongs in the test that needs it, so a model
+// that fails to validate fails a test rather than the whole suite's setup.
+async function emit(ir: BpmnProcess) {
+  const { ir: imported, warnings } = await xmlToIr(await irToXml(ir));
+  return { imported, warnings, dsl: irToDsl(imported) };
 }
 
 const flow = (id: string, from: string, to: string, condition?: string) => ({
@@ -113,17 +95,11 @@ describe('back-edge into a pass-through join whose out-edge is already consumed'
   let warnings: Awaited<ReturnType<typeof xmlToIr>>['warnings'];
   let dsl: string;
 
-  // Only the emission runs here. Re-desugaring belongs inside the test that
-  // needs it, so a model that fails to validate reports as a failing test
-  // rather than a suite that never ran.
   beforeAll(async () => {
-    const xml = await irToXml(JOIN_HEADED_LOOP);
-    ({ ir: imported, warnings } = await xmlToIr(xml));
-    dsl = irToDsl(imported);
+    ({ imported, warnings, dsl } = await emit(JOIN_HEADED_LOOP));
   });
 
   it('imports through the XML path with no warnings', () => {
-    // Nothing about this model is lossy on the way in; the IR is faithful.
     expect(warnings).toHaveLength(0);
     expect(imported.sequenceFlows).toHaveLength(6);
   });
@@ -136,8 +112,7 @@ describe('back-edge into a pass-through join whose out-edge is already consumed'
   });
 
   it('preserves the real-node reachability across the round-trip', async () => {
-    // The loop edge T2 -> T1 is the one at stake: resolving the jump through
-    // the consumed join is what keeps it.
+    // The edge at stake: resolving the jump through the consumed join keeps it.
     const reDesugared = astToIr(await parseToAst(dsl));
     expect(realNodeReachability(reDesugared)).toEqual(
       realNodeReachability(imported),
@@ -169,9 +144,7 @@ describe('loop condition on the back-edge (no expressible jump target)', () => {
   let dsl: string;
 
   beforeAll(async () => {
-    const xml = await irToXml(BACK_EDGE_CONDITION_LOOP);
-    ({ ir: imported, warnings } = await xmlToIr(xml));
-    dsl = irToDsl(imported);
+    ({ imported, warnings, dsl } = await emit(BACK_EDGE_CONDITION_LOOP));
   });
 
   it('imports the conditioned back-edge faithfully and without warnings', () => {
@@ -184,7 +157,6 @@ describe('loop condition on the back-edge (no expressible jump target)', () => {
   });
 
   it('marks the dropped edge and names the element it led into', () => {
-    // Without the name the reader has to search the model for the damage.
     expect(dsl).toContain(UNSTRUCTURED_MARKER);
     expect(dsl).toContain(
       `${UNSTRUCTURED_MARKER} (dropped edge into Gateway_L_loop)`,
@@ -224,13 +196,8 @@ const SURPLUS_EDGE_ON_TASK: BpmnProcess = {
 describe('surplus out-edge on a plain node keeps the fall-through', () => {
   let dsl: string;
 
-  // Only the emission runs here. Re-desugaring belongs inside the test that
-  // needs it, so a model that fails to validate reports as a failing test
-  // rather than a suite that never ran.
   beforeAll(async () => {
-    const xml = await irToXml(SURPLUS_EDGE_ON_TASK);
-    const { ir: imported } = await xmlToIr(xml);
-    dsl = irToDsl(imported);
+    ({ dsl } = await emit(SURPLUS_EDGE_ON_TASK));
   });
 
   it('emits no jump beside the fall-through', () => {
@@ -243,8 +210,6 @@ describe('surplus out-edge on a plain node keeps the fall-through', () => {
   });
 
   it('keeps the rest of the process reachable and valid', async () => {
-    // parseToAst rejects an unreachable-statement diagnostic, and the
-    // reachability check pins the edges.
     const reach = realNodeReachability(astToIr(await parseToAst(dsl)));
     expect(reach).toContain('T1->Cont');
     expect(reach).toContain('Cont->Later');
@@ -272,7 +237,6 @@ describe('a goto never names a node the emitter elides', () => {
     };
     const dsl = irToDsl(ir);
     expect(dsl).not.toMatch(/goto EndEvent_/);
-    // Source that links is the point; parseToAst fails on a broken reference.
     await expect(parseToAst(dsl)).resolves.toBeDefined();
   });
 
@@ -302,7 +266,6 @@ describe('a goto never names a node the emitter elides', () => {
       ],
     };
     const { ir: imported, warnings } = await xmlToIr(await irToXml(ir));
-    // Ordinary BPMN: the import has nothing to complain about.
     expect(warnings).toHaveLength(0);
 
     const dsl = irToDsl(imported);

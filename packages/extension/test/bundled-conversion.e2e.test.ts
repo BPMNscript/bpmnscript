@@ -1,19 +1,5 @@
-/**
- * Bundled extension E2E and integration tests.
- *
- * Confirms the production esbuild shim (import.meta.url) and the real
- * operaton-moddle.json both work inside a CJS bundle: a tiny verify entry is
- * bundled with the same sharedBuildOptions as the production extension and
- * spawned under plain node — no VS Code host needed.
- *
- * Also exercises the conversion-core API directly against real repo
- * fixtures, including a disk-write round-trip (temp dir), Langium re-parse,
- * error-gating, and unsupported-construct rejection.
- *
- * Build-order requirement: run `npm run build` (language + transform +
- * extension) before this suite. The conversion-core, esbuild.mjs, and the
- * verify entry all consume compiled out/ directories.
- */
+// Run `npm run build` before this suite: it consumes the compiled out/
+// directories of language, transform, and extension.
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import * as fs from 'node:fs';
@@ -29,26 +15,20 @@ import { createBpmnScriptServices } from '@bpmn-script/language';
 import type { Model } from '@bpmn-script/language';
 import { xmlToIr } from '@bpmn-script/transform';
 
-// @ts-ignore — esbuild.mjs is a plain JS module; types are inferred at runtime.
+// @ts-ignore esbuild.mjs is a plain JS module with no type declarations.
 import { sharedBuildOptions, assetCopyPlugin } from '../esbuild.mjs';
 import {
   compileDslToBpmn,
   decompileBpmnToDsl,
 } from '../src/extension/conversion-core.js';
 
-// ---------------------------------------------------------------------------
-// Path resolution — mirrors cli/test/build-parse.smoke.test.ts convention.
-// Vitest transforms TS in place, so import.meta.url resolves to the source
-// file, not any compiled output directory.
-// ---------------------------------------------------------------------------
-
+// Vitest transforms TS in place, so import.meta.url resolves to this source
+// file, not to any out/ directory.
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-/** Three levels up from packages/extension/test/ → monorepo root. */
 const REPO_ROOT = path.resolve(__dirname, '../../..');
 
-/** packages/extension/ */
 const EXT_DIR = path.resolve(__dirname, '..');
 
 const GOLDEN_GENERATED_BPMN = path.resolve(
@@ -66,7 +46,6 @@ const INVOICE_APPROVAL_SRC = path.resolve(
   'examples/spring-boot/processes/invoice-approval.bpmnscript',
 );
 
-// Fail loudly at module load if fixtures are missing — surface path errors early.
 for (const [label, p] of [
   ['invoice-approval-generated.bpmn', GOLDEN_GENERATED_BPMN],
   ['bad-service-task-no-binding.bpmn', BAD_SERVICE_TASK_BPMN],
@@ -77,18 +56,12 @@ for (const [label, p] of [
   }
 }
 
-// A tiny entry is bundled with the SAME esbuild options as the production
-// extension (sharedBuildOptions + assetCopyPlugin). The outfile lands in
-// out/extension/ so the import.meta.url shim resolves beside the real
-// operaton-moddle.json, exercising the shim and the asset copy together at
-// runtime.
-
 describe('bundled asset resolution and transform under the shim', () => {
-  // Unique filenames per run to avoid collisions when suites run in parallel.
+  // Unique per run: parallel suites would otherwise collide on these paths.
   const runId = `${process.pid}-${Date.now()}`;
   const verifyEntryFile = path.join(os.tmpdir(), `verify-entry-${runId}.js`);
-  // Absolute path under out/extension/ so the assetCopyPlugin lands
-  // operaton-moddle.json beside this file regardless of cwd.
+  // Under out/extension/ so assetCopyPlugin lands operaton-moddle.json beside
+  // it whatever the cwd, which is what the import.meta.url shim then resolves.
   const verifyOutfile = path.resolve(
     EXT_DIR,
     'out',
@@ -97,7 +70,6 @@ describe('bundled asset resolution and transform under the shim', () => {
   );
 
   beforeAll(async () => {
-    // Assert the production extension build ran; operaton-moddle.json must be present.
     const moddlePath = path.resolve(
       EXT_DIR,
       'out',
@@ -111,8 +83,7 @@ describe('bundled asset resolution and transform under the shim', () => {
       );
     }
 
-    // Write a tiny verify entry: xmlToIr then irToXml exercised inside the bundle.
-    // Top-level await is wrapped in an async IIFE for safe CJS output.
+    // The async IIFE keeps top-level await out of the CJS output.
     const entrySource = [
       "import { xmlToIr, irToXml } from '@bpmn-script/transform';",
       "import { readFileSync } from 'node:fs';",
@@ -128,14 +99,8 @@ describe('bundled asset resolution and transform under the shim', () => {
 
     fs.writeFileSync(verifyEntryFile, entrySource, 'utf-8');
 
-    // Bundle with the identical configuration as the production extension.
-    // Single source of truth: sharedBuildOptions contains the import.meta.url
-    // shim (see esbuild.mjs); assetCopyPlugin copies operaton-moddle.json
-    // beside the bundle's outfile.
-    //
-    // nodePaths provides the repo-root node_modules to esbuild so that
-    // @bpmn-script/transform is resolvable when the entry file lives in /tmp/.
-    // Without it, esbuild's package-resolution walk from /tmp/ finds nothing.
+    // nodePaths is required: the entry lives in /tmp/, so esbuild's resolution
+    // walk finds no node_modules and cannot resolve @bpmn-script/transform.
     await esbuild.build({
       ...sharedBuildOptions,
       entryPoints: [verifyEntryFile],
@@ -143,11 +108,11 @@ describe('bundled asset resolution and transform under the shim', () => {
       nodePaths: [path.resolve(REPO_ROOT, 'node_modules')],
       plugins: [assetCopyPlugin],
     });
-  }, 60_000 /* esbuild bundling budget */);
+  }, 60_000);
 
   afterAll(() => {
-    // Clean up: temp entry file and verify bundle. The real operaton-moddle.json
-    // in out/extension/ is not touched (it was produced by the production build).
+    // Only the two per-run files; out/extension/operaton-moddle.json belongs to
+    // the production build and must survive.
     if (fs.existsSync(verifyEntryFile)) fs.unlinkSync(verifyEntryFile);
     if (fs.existsSync(verifyOutfile)) fs.unlinkSync(verifyOutfile);
   });
@@ -161,9 +126,6 @@ describe('bundled asset resolution and transform under the shim', () => {
         `verify bundle missing at ${verifyOutfile} — esbuild step failed`,
       ).toBe(true);
 
-      // Spawn node on the bundled file with the golden BPMN as the argument;
-      // the import.meta.url shim must resolve to out/extension/ so the
-      // transform's operaton-moddle.json lookup succeeds.
       const result = spawnSync(
         process.execPath,
         [verifyOutfile, GOLDEN_GENERATED_BPMN],
@@ -177,17 +139,11 @@ describe('bundled asset resolution and transform under the shim', () => {
 
       const { stdout } = result;
 
-      // The process id confirms xmlToIr parsed the BPMN correctly inside the bundle.
       expect(stdout).toContain('PROCESS_ID:invoice-approval');
-
-      // bpmn:definitions confirms irToXml (including bpmn-auto-layout) produced output.
       expect(stdout).toContain('bpmn:definitions');
     },
   );
 });
-
-// compileDslToBpmn produces a BPMN XML string; it is written to a temp dir
-// (mirroring what the VS Code adapter does); xmlToIr re-imports it from disk.
 
 describe('DSL to BPMN journey with disk write round-trip', () => {
   let tmpDir: string;
@@ -197,7 +153,6 @@ describe('DSL to BPMN journey with disk write round-trip', () => {
   });
 
   afterAll(() => {
-    // Remove all files produced in tmpDir, then the dir itself.
     for (const f of fs.readdirSync(tmpDir)) {
       fs.unlinkSync(path.join(tmpDir, f));
     }
@@ -219,11 +174,9 @@ describe('DSL to BPMN journey with disk write round-trip', () => {
       expect(result.ok).toBe(true);
       if (!result.ok) return;
 
-      // Write the compiled output to the temp dir — the same step the adapter performs.
       const outFile = path.join(tmpDir, 'invoice-approval.bpmn');
       fs.writeFileSync(outFile, result.output, 'utf-8');
 
-      // Re-read and re-import from disk to close the round-trip loop.
       const xml = fs.readFileSync(outFile, 'utf-8');
       const { ir } = await xmlToIr(xml);
 
@@ -260,15 +213,12 @@ describe('decompile journey — BPMN to DSL with Langium re-parse', () => {
   );
 });
 
-// A bug in severity gating would silently emit invalid BPMN. This check
-// confirms that a source with an error-level diagnostic produces no output.
-
 describe('validation gate — type-mismatch error blocks output', () => {
   it(
     'returns kind:validation and produces no output for a type-mismatch source',
     { timeout: 30_000 },
     async () => {
-      // `name` is declared as string but compared with a number — type-mismatch ERROR.
+      // String `name` in a numeric comparison: a severity-1 diagnostic.
       const source = `process p {
   var name: string
   if (name > 1000) { user A }
@@ -282,9 +232,8 @@ describe('validation gate — type-mismatch error blocks output', () => {
 
       expect(result.kind).toBe('validation');
 
-      // Explicitly assert no output was produced — the type system alone
-      // doesn't guarantee this; the adapter could still write result.output
-      // if the kind check were missing.
+      // The union type alone does not stop the adapter writing result.output
+      // if a kind check goes missing, so assert the field is absent.
       expect('output' in result).toBe(false);
 
       if (result.kind === 'validation') {

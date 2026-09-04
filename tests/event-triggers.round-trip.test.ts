@@ -1,27 +1,7 @@
-/**
- * End-to-end round-trip for the message, signal, timer, and conditional event
- * triggers over the unmocked transform chain: real Langium parse and validation,
- * real `bpmn-moddle` via `irToXml`/`xmlToIr`, and real `bpmn-auto-layout` inside
- * `irToXml`. No Docker and no engine.
- *
- * One order-fulfilment narrative exercises a process-level `on message` handler,
- * a `subprocess` owning three handlers at once (a non-interrupting timer
- * reminder, a non-interrupting `on condition` watchdog reading a declared form
- * variable, and an interrupting `at` timer, so both timer forms sit on one
- * container), an `on signal` handler together with an `emit signal` and a
- * terminal `throw signal` of the same name (so all three share one
- * `bpmn:Signal`), and a `var timer: string` read in a service expression,
- * pinning that the timer particle words coexist with same-named variables.
- *
- * The frozen `.bpmn` is a diff tripwire: drift in it is a defect, not a reason
- * to regenerate.
- *
- * Why the restructured DSL is asserted validator-clean here: this fixture avoids
- * the early-exit-inside-`if` shape that degrades a jump into a goto onto an
- * unnamed synthesised join, and every throw and emit is explicitly named, so the
- * printer emits the authored id rather than a `Throw_<coord>` id that would trip
- * the reserved-name check.
- */
+// Why the restructured DSL is asserted validator-clean: the fixture avoids the
+// early-exit-inside-`if` shape that degrades a jump into a goto onto an unnamed
+// synthesised join, and every throw and emit is named, so the printer emits the
+// authored id instead of a `Throw_<coord>` one that trips the reserved-name check.
 
 import { describe, it, expect, beforeAll } from 'vitest';
 
@@ -30,14 +10,18 @@ import type {
   BpmnProcess,
   EventDefinition,
   FlowContainer,
+  ImportWarning,
 } from '@bpmn-script/transform';
 
 import { normalizeIr } from './helpers/normalize-ir.js';
+import { describeDiContainment } from './helpers/di-bounds.js';
 import {
-  parseShapeBounds,
-  assertShapeContainment,
-} from './helpers/di-bounds.js';
-import { kindOf, subProcess } from './helpers/ir-query.js';
+  definitionOf,
+  handlerTriggerDef,
+  kindOf,
+  subProcess,
+} from './helpers/ir-query.js';
+import { definitionRefOf } from './helpers/xml-query.js';
 import { roundTripFixture } from './helpers/round-trip-fixture.js';
 
 const rt = roundTripFixture('event-triggers', {
@@ -46,33 +30,6 @@ const rt = roundTripFixture('event-triggers', {
   recompile: 'clean',
 });
 
-/**
- * The event definition on the trigger start of the first event-handler
- * sub-process, at any container depth, whose definition satisfies `match`.
- * Recurses into plain sub-processes so a nested handler is reachable.
- */
-function findHandlerDef(
-  container: FlowContainer,
-  match: (def: EventDefinition | undefined) => boolean,
-): EventDefinition | undefined {
-  for (const fe of container.flowElements) {
-    if (fe.kind !== 'subProcess') continue;
-    if (fe.triggeredByEvent === true) {
-      const start = fe.flowElements.find((e) => e.kind === 'startEvent');
-      const def =
-        start?.kind === 'startEvent' ? start.eventDefinition : undefined;
-      if (match(def)) return def;
-    }
-    const nested = findHandlerDef(fe, match);
-    if (nested !== undefined) return nested;
-  }
-  return undefined;
-}
-
-/**
- * Every timer expression carried by a handler trigger start anywhere in the
- * containment tree, sorted, so a hop that alters one is visible.
- */
 function timerExpressions(container: FlowContainer): string[] {
   const out: string[] = [];
   for (const fe of container.flowElements) {
@@ -88,38 +45,10 @@ function timerExpressions(container: FlowContainer): string[] {
   return out.sort();
 }
 
-function definitionOf(
-  container: FlowContainer,
-  id: string,
-): EventDefinition | undefined {
-  const fe = container.flowElements.find((e) => e.id === id);
-  if (fe?.kind === 'endEvent' || fe?.kind === 'intermediateThrowEvent') {
-    return fe.eventDefinition;
-  }
-  return undefined;
-}
-
-/**
- * The `signalRef` on the `bpmn:signalEventDefinition` inside the named event,
- * scoped to that element block so the three broadcast sites are read separately.
- */
-function signalRefOf(xml: string, elementId: string): string | undefined {
-  const block = new RegExp(
-    `<bpmn:(?:start|end|intermediateThrow)Event id="${elementId}"[^>]*>([\\s\\S]*?)</bpmn:(?:start|end|intermediateThrow)Event>`,
-  ).exec(xml);
-  if (block === null) return undefined;
-  return /<bpmn:signalEventDefinition\b[^>]*\bsignalRef="([^"]+)"/.exec(
-    block[1]!,
-  )?.[1];
-}
-
-/**
- * A handwritten import-first fixture: two hand-named event sub-processes (one
- * conditional, one date timer) and two `bpmn:Signal` roots that share a name but
- * are referenced by different elements, one by the intermediate throw and one by
- * the end event. Every task label differs from the name humanised from its id,
- * so the importer keeps it.
- */
+// Handwritten import-first. Two `bpmn:Signal` roots share a name but are
+// referenced by different elements, one by the intermediate throw and one by the
+// end event. Every task label differs from the name humanised from its id, so
+// the importer keeps it.
 const IMPORT_FIRST_BPMN = `<?xml version="1.0" encoding="UTF-8"?>
 <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:operaton="http://operaton.org/schema/1.0/bpmn" id="Definitions_import_first_triggers" targetNamespace="http://bpmn.io/schema/bpmn">
   <bpmn:signal id="Signal_Sent_A" name="ParcelDispatched" />
@@ -183,7 +112,7 @@ const IMPORT_FIRST_BPMN = `<?xml version="1.0" encoding="UTF-8"?>
 
 describe('idempotence: DSL → IR₁ → XML → IR₂ → DSL′ → IR₃', () => {
   it('the authored throw and emit ids survive verbatim at process level', () => {
-    // `emit signal` is a continuing broadcast, `throw signal` a terminal one.
+    // `emit signal` continues the path, `throw signal` ends it.
     expect(kindOf(rt.ir3, 'Notify')).toBe('intermediateThrowEvent');
     expect(kindOf(rt.ir3, 'Announce')).toBe('endEvent');
     expect(definitionOf(rt.ir3, 'Notify')).toEqual({
@@ -200,7 +129,10 @@ describe('idempotence: DSL → IR₁ → XML → IR₂ → DSL′ → IR₃', ()
     const isConditional = (def: EventDefinition | undefined): boolean =>
       def?.kind === 'conditional';
     for (const ir of [rt.ir1, rt.ir2, rt.ir3]) {
-      const def = findHandlerDef(subProcess(ir, 'FulfilOrder'), isConditional);
+      const def = handlerTriggerDef(
+        subProcess(ir, 'FulfilOrder'),
+        isConditional,
+      );
       expect(def, 'conditional handler missing in a hop').toBeDefined();
       if (def?.kind === 'conditional') {
         expect(def.condition).toBe('${stockLevel < 5}');
@@ -215,7 +147,7 @@ describe('idempotence: DSL → IR₁ → XML → IR₂ → DSL′ → IR₃', ()
   });
 
   it('the message handler keeps its correlation name', () => {
-    const def = findHandlerDef(rt.ir3, (d) => d?.kind === 'message');
+    const def = handlerTriggerDef(rt.ir3, (d) => d?.kind === 'message');
     expect(def).toEqual({ kind: 'message', messageName: 'OrderCancelled' });
   });
 });
@@ -224,27 +156,20 @@ describe('DI containment on the generated .bpmn', () => {
   it('exactly one bpmndi:BPMNDiagram is emitted', () => {
     expect(rt.generatedXml.match(/<bpmndi:BPMNDiagram\b/g)).toHaveLength(1);
   });
+});
 
-  it('every handler shape (and its children) lies strictly inside its parent bounds', () => {
-    // An event sub-process is a disconnected node, so the layout library only
-    // places its box and children inside the parent when the `isExpanded="true"`
-    // stub `irToXml` emits is present. Removing that stub fails this assertion.
-    const bounds = parseShapeBounds(rt.generatedXml);
-
-    // Guard against a vacuous pass: the nested handlers must be present.
-    const fulfil = subProcess(rt.ir1, 'FulfilOrder');
-    const handlerIds = fulfil.flowElements
-      .filter((fe) => fe.kind === 'subProcess')
+// Named so the walk cannot pass on a tree with nothing nested in it.
+describeDiContainment(
+  rt,
+  () => {
+    const handlerIds = subProcess(rt.ir1, 'FulfilOrder')
+      .flowElements.filter((fe) => fe.kind === 'subProcess')
       .map((fe) => fe.id);
     expect(handlerIds.length).toBeGreaterThan(0);
-    for (const id of handlerIds) {
-      expect(bounds.has(id), `missing BPMNShape for ${id}`).toBe(true);
-    }
-
-    // Walk the IR so parent-child membership is authoritative at every depth.
-    assertShapeContainment(rt.ir1, bounds, true);
-  });
-});
+    return handlerIds;
+  },
+  'generated',
+);
 
 describe('root sharing on the frozen .bpmn', () => {
   it('the on signal handler, the emit, and the throw share one bpmn:Signal', () => {
@@ -255,9 +180,11 @@ describe('root sharing on the frozen .bpmn', () => {
     const [, signalId, signalName] = signals[0]!;
     expect(signalName).toBe('OrderFulfilled');
 
-    expect(signalRefOf(rt.frozenXml, 'FulfilledStart')).toBe(signalId);
-    expect(signalRefOf(rt.frozenXml, 'Notify')).toBe(signalId);
-    expect(signalRefOf(rt.frozenXml, 'Announce')).toBe(signalId);
+    expect(definitionRefOf(rt.frozenXml, 'FulfilledStart', 'signal')).toBe(
+      signalId,
+    );
+    expect(definitionRefOf(rt.frozenXml, 'Notify', 'signal')).toBe(signalId);
+    expect(definitionRefOf(rt.frozenXml, 'Announce', 'signal')).toBe(signalId);
   });
 
   it('there is exactly one root per distinct message and signal name', () => {
@@ -268,7 +195,7 @@ describe('root sharing on the frozen .bpmn', () => {
 
 describe('import-first: a handwritten .bpmn with two same-name signals round-trips', () => {
   let firstImport: BpmnProcess;
-  let firstWarnings: string[];
+  let firstWarnings: ImportWarning[];
   let reDesugared: BpmnProcess;
   let importDsl: string;
 

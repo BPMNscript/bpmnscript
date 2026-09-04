@@ -1,33 +1,25 @@
 /**
- * Parsing test suite for the BPMNscript grammar.
+ * Parsing test suite for the BPMNscript grammar, driven in isolation through
+ * Langium's `parseHelper`.
  *
- * The surface is code-like: a `process` body is a sequence of statements
- * executed top-to-bottom (implicit sequence flow); control flow is `if`/
- * `else if`/`else`, `while`, `do ... while`, `parallel { { } { } }`, and
- * `goto <id>`. Conditions and attribute values are an embedded JUEL-subset
- * expression sub-language parsed to a real AST (never an opaque string).
- *
- * These tests drive the grammar in isolation with Langium's `parseHelper`
- * (and the shared document builder where cross-reference linking must run,
- * e.g. `goto`). They cover the grammar surface plus the Langium-4 edge cases
- * (keyword-vs-ID in expression position, cross-reference scoping for goto,
- * parser-rule expressions, attribute-key vs identifier disambiguation,
- * duplicate attribute keys visible in the AST).
- *
- * Validation-level checks (undeclared variables, duplicate-key *errors*,
- * type mismatches) live in the validator suite.
+ * Beyond the grammar surface these pin the edge cases Langium 4 makes easy to
+ * get wrong: keyword versus ID in expression position, parser-rule expressions,
+ * attribute-key versus identifier disambiguation, and duplicate attribute keys
+ * reaching the AST. Whether a duplicate key is an error is the validator
+ * suite's question, not this one's; where a `goto` may resolve to is the
+ * scoping suite's.
  */
 
 import { beforeAll, describe, expect, test } from 'vitest';
-import { EmptyFileSystem, type LangiumDocument } from 'langium';
+import { EmptyFileSystem } from 'langium';
 import { parseHelper } from 'langium/test';
+import { FENCE } from './helpers/block-hosts.js';
+import { formatParseFailure } from './helpers/parse-failure.js';
 import type {
   Model,
   IfStatement,
   WhileStatement,
-  DoWhileStatement,
   ParallelStatement,
-  GotoStatement,
   StartEvent,
   EndEvent,
   UserTask,
@@ -47,12 +39,16 @@ import type {
   EmitStatement,
   ErrorDecl,
   IntermediateCatchEvent,
+  ProcessAttribute,
 } from '@bpmn-script/language';
 import {
   createBpmnScriptServices,
   isModel,
   renderExpression,
 } from '@bpmn-script/language';
+
+/** The one property every AST node exposes, enough to assert a node's kind. */
+type AstLike = { $type: string };
 
 let services: ReturnType<typeof createBpmnScriptServices>;
 let parse: ReturnType<typeof parseHelper<Model>>;
@@ -204,17 +200,12 @@ process p {
 // ── while and do ... while ───────────────────────────────────────────────
 
 describe('Parsing — loops', () => {
-  test('while parses into a WhileStatement', async () => {
-    const source = `process p { while (rejected) { user R } }`;
-    const st = await statementAt<WhileStatement>(source);
-    expect(st.$type).toBe('WhileStatement');
-    expect(st.body.statements).toHaveLength(1);
-  });
-
-  test('do … while parses into a DoWhileStatement', async () => {
-    const source = `process p { do { user R } while (again) }`;
-    const st = await statementAt<DoWhileStatement>(source);
-    expect(st.$type).toBe('DoWhileStatement');
+  test.each([
+    ['while (rejected) { user R }', 'WhileStatement'],
+    ['do { user R } while (again)', 'DoWhileStatement'],
+  ])('`%s` parses into a %s with a one-statement body', async (loop, type) => {
+    const st = await statementAt<WhileStatement>(`process p { ${loop} }`);
+    expect(st.$type).toBe(type);
     expect(st.body.statements).toHaveLength(1);
   });
 });
@@ -416,18 +407,17 @@ describe('Parsing — call activity', () => {
     expect(call.name).toBe('X');
   });
 
-  test('the newly reserved mapping/attribute keywords are rejected as bare identifiers in expression position', async () => {
-    for (const word of [
-      'call',
-      'in',
-      'out',
-      'local',
-      'binding',
-      'version',
-      'businessKey',
-    ]) {
+  test('the call and mapping keywords are rejected as bare identifiers in expression position', async () => {
+    for (const word of ['call', 'in', 'out', 'local']) {
       const document = await parse(`process p { if (${word} > 2) { user A } }`);
       expect(document.parseResult.parserErrors.length).toBeGreaterThan(0);
+    }
+  });
+
+  test('the call attribute words are ordinary identifiers in expression position', async () => {
+    for (const word of ['binding', 'version', 'businessKey']) {
+      const cond = await parseCondition(`${word} > 2`);
+      expect(cond.$type).toBe('Relational');
     }
   });
 
@@ -740,13 +730,16 @@ describe('Parsing — throw / emit', () => {
 });
 
 describe('Parsing — await (intermediate catch)', () => {
-  test('await message takes a required name string', async () => {
+  test.each([
+    ['message', 'Invoice Received'],
+    ['signal', 'Ready'],
+  ])('`await %s` takes a required name string', async (trigger, code) => {
     const catchEvent = await statementAt<IntermediateCatchEvent>(
-      `process p { await message "Invoice Received" }`,
+      `process p { await ${trigger} "${code}" }`,
     );
     expect(catchEvent.$type).toBe('IntermediateCatchEvent');
-    expect(catchEvent.trigger).toBe('message');
-    expect(catchEvent.code).toBe('Invoice Received');
+    expect(catchEvent.trigger).toBe(trigger);
+    expect(catchEvent.code).toBe(code);
     expect(catchEvent.particle).toBeUndefined();
     expect(catchEvent.time).toBeUndefined();
     expect(catchEvent.condition).toBeUndefined();
@@ -772,14 +765,6 @@ describe('Parsing — await (intermediate catch)', () => {
     );
     expect(everyEvent.particle).toBe('every');
     expect(everyEvent.time).toBe('R/PT10M');
-  });
-
-  test('await signal takes a required name string', async () => {
-    const catchEvent = await statementAt<IntermediateCatchEvent>(
-      `process p { await signal "Ready" }`,
-    );
-    expect(catchEvent.trigger).toBe('signal');
-    expect(catchEvent.code).toBe('Ready');
   });
 
   test('await condition takes a parenthesized expression, the same AST an if condition parses to', async () => {
@@ -1091,44 +1076,6 @@ describe('Parsing — header typo guidance', () => {
   });
 });
 
-// ── goto cross-reference resolution ──────────────────────────────────────
-
-describe('Parsing — goto', () => {
-  test('goto resolves to a statement with the matching name', async () => {
-    const source = `process p { user Foo goto Foo }`;
-    const document = await parse(source, { validation: true });
-    expect(formatParseFailure(document)).toBeUndefined();
-
-    const goto = document.parseResult.value.processes[0]!
-      .body[1] as GotoStatement;
-    expect(goto.$type).toBe('GotoStatement');
-    expect(goto.target.ref).toBeDefined();
-    // The cross-reference target is the `Statement` union; only leaf statements
-    // (here, the `user Foo` task) carry `name`, so narrow before reading it.
-    expect((goto.target.ref as UserTask).name).toBe('Foo');
-
-    // A resolved goto produces no diagnostics.
-    const linkerErrors = (document.diagnostics ?? []).filter(
-      (d) => d.severity === 1,
-    );
-    expect(linkerErrors).toHaveLength(0);
-  });
-
-  test('goto to an unknown target produces exactly one linker error', async () => {
-    // The linker owns unresolved references; no custom validator double-reports.
-    const source = `process p { user Foo goto Missing }`;
-    const document = await parse(source, { validation: true });
-    // No parser errors: the grammar accepts any ID here.
-    expect(document.parseResult.parserErrors).toHaveLength(0);
-
-    const linkerErrors = (document.diagnostics ?? []).filter(
-      (d) => d.severity === 1,
-    );
-    expect(linkerErrors).toHaveLength(1);
-    expect(linkerErrors[0]!.message).toContain('Missing');
-  });
-});
-
 // ── Expression sub-language parses to a real AST ─────────────────────────
 
 describe('Parsing — expression AST', () => {
@@ -1257,6 +1204,390 @@ describe('Parsing — attribute blocks', () => {
   });
 });
 
+// ── Attribute keys are soft words ────────────────────────────────────────
+
+describe('Parsing — attribute keys stay plain identifiers', () => {
+  test('a step, a variable, and a goto target may be spelled like an attribute key', async () => {
+    const document = await parseModel(`process p {
+  var class: string
+  user priority
+  service input { class = "com.acme.X" }
+  user output
+  goto priority
+}`);
+    const process = document.processes[0]!;
+    expect((process.decls[0] as VarDecl).name).toBe('class');
+    expect(process.body.map((s) => (s as UserTask).name)).toEqual([
+      'priority',
+      'input',
+      'output',
+      undefined,
+    ]);
+    expect(process.body[3]!.$type).toBe('GotoStatement');
+  });
+
+  test('an attribute-key word is an ordinary identifier in expression position', async () => {
+    const cond = await parseCondition(`priority > 5`);
+    expect(cond.$type).toBe('Relational');
+    expect((cond as Relational).left.$type).toBe('VarRef');
+  });
+
+  test('`process` is still accepted as the call attribute key', async () => {
+    const call = await statementAt<CallActivity>(
+      `process p { call C { process = "x" } }`,
+    );
+    expect(call.attrs).toHaveLength(1);
+    expect(call.attrs[0]!.key).toBe('process');
+    expect((call.attrs[0]!.value as { value: string }).value).toBe('x');
+  });
+
+  test('an unknown attribute key parses; key legality is the validator’s job', async () => {
+    const ut = await statementAt<UserTask>(
+      `process p { user T { wibble = 1 } }`,
+    );
+    expect(ut.attrs[0]!.key).toBe('wibble');
+  });
+
+  test('a bare `binding = version` parses as a value reference', async () => {
+    const call = await statementAt<CallActivity>(
+      `process p { call C { process = "x" binding = version } }`,
+    );
+    expect(call.attrs[1]!.key).toBe('binding');
+    expect(call.attrs[1]!.value.$type).toBe('VarRef');
+    expect((call.attrs[1]!.value as VarRef).name).toBe('version');
+  });
+});
+
+// ── The attribute block sits before the body ─────────────────────────────
+
+describe('Parsing — attribute block before the body', () => {
+  test('an end event carries an attribute block', async () => {
+    const end = await statementAt<EndEvent>(
+      `process p { end E { asyncBefore = true } }`,
+    );
+    expect(end.$type).toBe('EndEvent');
+    expect(end.attrs[0]!.key).toBe('asyncBefore');
+  });
+
+  test('a script task carries an attribute block before its fence', async () => {
+    const script = await statementAt<ScriptTask>(`process p {
+  script S { resultVariable = "total" } ${FENCE}js
+x = 1
+${FENCE}
+}`);
+    expect(script.$type).toBe('ScriptTask');
+    expect(script.attrs[0]!.key).toBe('resultVariable');
+    expect(script.body).toContain('x = 1');
+  });
+
+  // A lone block is the body, never the attributes.
+  test.each([
+    [
+      '{ asyncBefore = true } { user U { assignee = "demo" } }',
+      ['asyncBefore'],
+      ['UserTask'],
+    ],
+    ['{ } { user U }', [], ['UserTask']],
+    ['{ user U }', [], ['UserTask']],
+    ['{ }', [], []],
+  ])(
+    '`subprocess S %s` splits its attribute block from its body',
+    async (tail, keys, bodyTypes) => {
+      const sub = await statementAt<SubProcess>(
+        `process p { subprocess S ${tail} }`,
+      );
+      expect(sub.attrs.map((a) => a.key)).toEqual(keys);
+      expect(sub.body.statements.map((s) => s.$type)).toEqual(bodyTypes);
+    },
+  );
+
+  test('a handler carries an attribute block before its body', async () => {
+    const handler = await statementAt<OnHandler>(
+      `process p { on error "E" { asyncBefore = true } { user U } }`,
+    );
+    expect(handler.trigger).toBe('error');
+    expect(handler.attrs[0]!.key).toBe('asyncBefore');
+    expect(handler.body.statements[0]!.$type).toBe('UserTask');
+  });
+
+  test('a hosted alongside handler carries an attribute block before its body', async () => {
+    const handler = await statementAt<OnHandler>(
+      `process p { user R on R: timer after "PT1H" alongside { asyncBefore = true } { user U } }`,
+      1,
+    );
+    expect(handler.alongside).toBe(true);
+    expect(handler.particle).toBe('after');
+    expect(handler.attrs[0]!.key).toBe('asyncBefore');
+    expect(handler.body.statements).toHaveLength(1);
+  });
+
+  test('throw, emit, and await carry a trailing attribute block', async () => {
+    const document = await parseModel(`process p {
+  throw error "X" { asyncBefore = true }
+  emit signal Sig { asyncAfter = true }
+  await message "M" { exclusive = false }
+}`);
+    const [thrown, emitted, awaited] = document.processes[0]!.body as [
+      ThrowStatement,
+      EmitStatement,
+      IntermediateCatchEvent,
+    ];
+    expect(thrown.attrs[0]!.key).toBe('asyncBefore');
+    expect(emitted.attrs[0]!.key).toBe('asyncAfter');
+    expect(awaited.attrs[0]!.key).toBe('exclusive');
+  });
+
+  test('a statement following a trailing attribute block still parses', async () => {
+    const emitThenSub = await parseModel(
+      `process p { emit signal Sig subprocess S { user A } }`,
+    );
+    expect(emitThenSub.processes[0]!.body.map((s) => s.$type)).toEqual([
+      'EmitStatement',
+      'SubProcess',
+    ]);
+
+    const awaitThenSub = await parseModel(
+      `process p { await message subprocess S { user A } }`,
+    );
+    expect(awaitThenSub.processes[0]!.body.map((s) => s.$type)).toEqual([
+      'IntermediateCatchEvent',
+      'SubProcess',
+    ]);
+
+    const parallelEnds = await statementAt<ParallelStatement>(
+      `process p { parallel { { end A } { end B } } }`,
+    );
+    expect(parallelEnds.branches).toHaveLength(2);
+    expect(parallelEnds.branches[0]!.statements[0]!.$type).toBe('EndEvent');
+    expect(parallelEnds.branches[1]!.statements[0]!.$type).toBe('EndEvent');
+  });
+});
+
+// ── Input/output parameters ──────────────────────────────────────────────
+
+describe('Parsing — input/output parameters', () => {
+  test('a task carries directed, named parameter entries', async () => {
+    const ut = await statementAt<UserTask>(
+      `process p { user T { input a = 1 output b = "x" } }`,
+    );
+    expect(ut.params.map((p) => [p.direction, p.name])).toEqual([
+      ['input', 'a'],
+      ['output', 'b'],
+    ]);
+    expect(ut.params[0]!.value.$type).toBe('LiteralInt');
+    expect(ut.params[1]!.value.$type).toBe('LiteralString');
+  });
+
+  test('a list value keeps its items in order', async () => {
+    const st = await statementAt<ServiceTask>(
+      `process p { service S { input a = [1, 2] } }`,
+    );
+    const list = st.params[0]!.value as { $type: string; items: AstLike[] };
+    expect(list.$type).toBe('ListLiteral');
+    expect(list.items.map((i) => i.$type)).toEqual([
+      'LiteralInt',
+      'LiteralInt',
+    ]);
+  });
+
+  test('a map value keeps its keyed entries', async () => {
+    const st = await statementAt<ServiceTask>(
+      `process p { service S { input a = { k: 1 } } }`,
+    );
+    const map = st.params[0]!.value as {
+      $type: string;
+      entries: { key: string; value: AstLike }[];
+    };
+    expect(map.$type).toBe('MapLiteral');
+    expect(map.entries[0]!.key).toBe('k');
+    expect(map.entries[0]!.value.$type).toBe('LiteralInt');
+  });
+
+  test('lists and maps nest inside one another', async () => {
+    const st = await statementAt<ServiceTask>(
+      `process p { service S { input a = [{ k: 1 }, { k: [2, 3] }] } }`,
+    );
+    const list = st.params[0]!.value as { items: AstLike[] };
+    expect(list.items.map((i) => i.$type)).toEqual([
+      'MapLiteral',
+      'MapLiteral',
+    ]);
+    const second = list.items[1] as { entries: { value: AstLike }[] };
+    expect(second.entries[0]!.value.$type).toBe('ListLiteral');
+  });
+
+  test('an empty list and an empty map parse', async () => {
+    const st = await statementAt<ServiceTask>(
+      `process p { service S { input a = [] output b = { } } }`,
+    );
+    expect((st.params[0]!.value as { items: AstLike[] }).items).toHaveLength(0);
+    expect(
+      (st.params[1]!.value as { entries: AstLike[] }).entries,
+    ).toHaveLength(0);
+  });
+
+  test('a quoted map key carries its bare text', async () => {
+    const st = await statementAt<ServiceTask>(
+      `process p { service S { input a = { "k-1": 1 } } }`,
+    );
+    const map = st.params[0]!.value as { entries: { key: string }[] };
+    expect(map.entries[0]!.key).toBe('k-1');
+  });
+
+  test('a fenced script is a parameter value', async () => {
+    const st = await statementAt<ServiceTask>(`process p {
+  service S { input a = ${FENCE}groovy
+1 + 1
+${FENCE} }
+}`);
+    const script = st.params[0]!.value as { $type: string; body: string };
+    expect(script.$type).toBe('ScriptLiteral');
+    expect(script.body).toContain('1 + 1');
+  });
+
+  test('a trailing comma in a list or a map is rejected', async () => {
+    const list = await parse(`process p { service S { input a = [1, ] } }`);
+    expect(list.parseResult.parserErrors.length).toBeGreaterThan(0);
+    const map = await parse(`process p { service S { input a = { k: 1, } } }`);
+    expect(map.parseResult.parserErrors.length).toBeGreaterThan(0);
+  });
+
+  test('a call activity carries variable mappings and parameters together', async () => {
+    const call = await statementAt<CallActivity>(
+      `process p { call C { process = "p" in a input b = 1 } }`,
+    );
+    expect(call.attrs[0]!.key).toBe('process');
+    expect(call.mappings[0]!.direction).toBe('in');
+    expect(call.mappings[0]!.target).toBe('a');
+    expect(call.params[0]!.direction).toBe('input');
+    expect(call.params[0]!.name).toBe('b');
+  });
+});
+
+// ── Listeners ────────────────────────────────────────────────────────────
+
+describe('Parsing — listeners', () => {
+  test('a task listener binds by class', async () => {
+    const ut = await statementAt<UserTask>(
+      `process p { user T { on create { class = "com.acme.L" } } }`,
+    );
+    expect(ut.listeners).toHaveLength(1);
+    expect(ut.listeners[0]!.event).toBe('create');
+    expect(ut.listeners[0]!.attrs[0]!.key).toBe('class');
+  });
+
+  test('the start and end statement keywords are usable as listener events', async () => {
+    const st = await statementAt<ServiceTask>(
+      `process p { service S { on start { class = "A" } on end { expression = "\${b.m()}" } } }`,
+    );
+    expect(st.listeners.map((l) => l.event)).toEqual(['start', 'end']);
+    expect(st.listeners[1]!.attrs[0]!.value.$type).toBe('RawExpr');
+  });
+
+  test('a timeout listener carries a timer particle and its time', async () => {
+    const ut = await statementAt<UserTask>(
+      `process p { user T { on timeout after "PT1H" { class = "X" } } }`,
+    );
+    expect(ut.listeners[0]!.event).toBe('timeout');
+    expect(ut.listeners[0]!.particle).toBe('after');
+    expect(ut.listeners[0]!.time).toBe('PT1H');
+  });
+
+  test('a listener binds by an inline fenced script', async () => {
+    const ut = await statementAt<UserTask>(`process p {
+  user T { on end ${FENCE}groovy
+execution.setVariable("x", 1)
+${FENCE} }
+}`);
+    expect(ut.listeners[0]!.event).toBe('end');
+    expect(ut.listeners[0]!.script).toContain('setVariable');
+    expect(ut.listeners[0]!.attrs).toHaveLength(0);
+  });
+
+  test('a listener sits in the attribute block before a subprocess body', async () => {
+    const sub = await statementAt<SubProcess>(
+      `process p { subprocess S { on start { class = "X" } } { user U } }`,
+    );
+    expect(sub.listeners[0]!.event).toBe('start');
+    expect(sub.body.statements[0]!.$type).toBe('UserTask');
+  });
+
+  test('a listener rides an end event and a call activity', async () => {
+    const document = await parseModel(`process p {
+  call C { process = "q" on start { class = "X" } }
+  end E { on end { delegate = "\${bean}" } }
+}`);
+    const call = document.processes[0]!.body[0] as CallActivity;
+    expect(call.listeners[0]!.event).toBe('start');
+    const end = document.processes[0]!.body[1] as EndEvent;
+    expect(end.listeners[0]!.attrs[0]!.key).toBe('delegate');
+  });
+
+  test('scalars, a form block, parameters, and listeners mix in one block', async () => {
+    const ut = await statementAt<UserTask>(`process p {
+  user T {
+    assignee = "demo"
+    form { ok: boolean "OK?" }
+    input a = 1
+    on create { class = "com.acme.L" }
+    exclusive = false
+  }
+}`);
+    expect(ut.attrs.map((a) => a.key)).toEqual(['assignee', 'exclusive']);
+    expect(ut.forms).toHaveLength(1);
+    expect(ut.params).toHaveLength(1);
+    expect(ut.listeners).toHaveLength(1);
+  });
+
+  test('an on handler still nests inside a subprocess body and another handler body', async () => {
+    const sub = await statementAt<SubProcess>(
+      `process p { subprocess S { on error "X" { } } }`,
+    );
+    expect(sub.attrs).toHaveLength(0);
+    expect(sub.listeners).toHaveLength(0);
+    expect(sub.body.statements[0]!.$type).toBe('OnHandler');
+
+    const outer = await statementAt<OnHandler>(
+      `process p { on error "X" { on escalation "Y" { } } }`,
+    );
+    expect(outer.body.statements[0]!.$type).toBe('OnHandler');
+  });
+});
+
+// ── Process-header attributes ────────────────────────────────────────────
+
+describe('Parsing — process header attributes', () => {
+  test('a header attribute parses before and after a var declaration', async () => {
+    const before = await parseModel(`process p "Lbl" {
+  versionTag = "1.4"
+  var amount: number
+  label = "Other"
+  error "PF" message "Payment failed"
+  start S
+}`);
+    const decls = before.processes[0]!.decls;
+    expect(decls.map((d) => d.$type)).toEqual([
+      'ProcessAttribute',
+      'VarDecl',
+      'ProcessLabel',
+      'ErrorDecl',
+    ]);
+    const attribute = decls[0] as ProcessAttribute;
+    expect(attribute.key).toBe('versionTag');
+    expect((attribute.value as { value: string }).value).toBe('1.4');
+
+    const after = await parseModel(`process p {
+  var amount: number
+  versionTag = "2"
+  start S
+}`);
+    expect(after.processes[0]!.decls.map((d) => d.$type)).toEqual([
+      'VarDecl',
+      'ProcessAttribute',
+    ]);
+  });
+});
+
 // ── var-declaration placement ─────────────────────────────────────────────
 
 describe('Parsing — var placement', () => {
@@ -1277,50 +1608,32 @@ describe('Parsing — var placement', () => {
 // ── renderExpression round-trip ──────────────────────────────────────────
 
 describe('renderExpression', () => {
-  test('round-trips `amount > 1000` to `${amount > 1000}`', async () => {
-    const cond = await parseCondition(`amount > 1000`);
-    expect(renderExpression(cond)).toBe('${amount > 1000}');
-  });
-
-  test('renders a RawExpr to its verbatim body (quotes stripped)', async () => {
-    const cond = await parseCondition(`"\${bean.method()}"`);
-    expect(renderExpression(cond)).toBe('${bean.method()}');
-  });
-
-  test('renders nested logical / relational / accessor expressions', async () => {
-    const cond = await parseCondition(
-      `order.total > 1000 && items[0] == status`,
-    );
-    expect(renderExpression(cond)).toBe(
+  // The RawExpr row is the one that strips the author's surrounding quotes.
+  test.each([
+    ['amount > 1000', '${amount > 1000}'],
+    ['"${bean.method()}"', '${bean.method()}'],
+    [
+      'order.total > 1000 && items[0] == status',
       '${order.total > 1000 && items[0] == status}',
-    );
-  });
-
-  test('renders a ternary', async () => {
-    const cond = await parseCondition(`flag ? a : b`);
-    expect(renderExpression(cond)).toBe('${flag ? a : b}');
+    ],
+    ['flag ? a : b', '${flag ? a : b}'],
+  ])('renders `%s` as `%s`', async (source, rendered) => {
+    expect(renderExpression(await parseCondition(source))).toBe(rendered);
   });
 });
 
 // ── Service bindings, fenced script tasks ────────────────────────────────
 
 describe('Parsing — service bindings, script', () => {
-  // A triple-backtick fence, assembled without a literal fence in the test
-  // source so it can be interpolated into JS template-literal DSL fixtures.
-  const FENCE = '`' + '`' + '`';
-
-  test('service with an expression binding parses; the value is a raw ${…} template', async () => {
-    const source = `process p { service S { expression = "\${bean.method(execution)}" } }`;
-    const st = await statementAt<ServiceTask>(source);
+  test.each([
+    ['expression', '${bean.method(execution)}'],
+    ['delegate', '${beanName}'],
+  ])('a %s binding parses; the value is a raw template', async (key, value) => {
+    const st = await statementAt<ServiceTask>(
+      `process p { service S { ${key} = "${value}" } }`,
+    );
     expect(st.$type).toBe('ServiceTask');
-    expect(st.attrs[0]!.key).toBe('expression');
-    expect(st.attrs[0]!.value.$type).toBe('RawExpr');
-  });
-
-  test('service with a delegate binding parses; the value is a raw ${…} template', async () => {
-    const source = `process p { service S { delegate = "\${beanName}" } }`;
-    const st = await statementAt<ServiceTask>(source);
-    expect(st.attrs[0]!.key).toBe('delegate');
+    expect(st.attrs[0]!.key).toBe(key);
     expect(st.attrs[0]!.value.$type).toBe('RawExpr');
   });
 
@@ -1448,31 +1761,4 @@ async function parseModel(source: string): Promise<Model> {
  */
 async function statementAt<T>(source: string, index = 0): Promise<T> {
   return (await parseModel(source)).processes[0]!.body[index] as T;
-}
-
-/**
- * Format any parse failure in `document` into a single human-readable string,
- * or `undefined` when the document parses cleanly. Lexer errors are checked
- * first because they fire before the parser and would otherwise be masked.
- */
-function formatParseFailure(document: LangiumDocument): string | undefined {
-  if (document.parseResult.lexerErrors.length) {
-    return (
-      'Lexer errors:\n  ' +
-      document.parseResult.lexerErrors.map((e) => e.message).join('\n  ')
-    );
-  }
-  if (document.parseResult.parserErrors.length) {
-    return (
-      'Parser errors:\n  ' +
-      document.parseResult.parserErrors.map((e) => e.message).join('\n  ')
-    );
-  }
-  if (document.parseResult.value === undefined) {
-    return "ParseResult is 'undefined'.";
-  }
-  if (!isModel(document.parseResult.value)) {
-    return `Root AST object is a ${document.parseResult.value.$type}, expected a 'Model'.`;
-  }
-  return undefined;
 }

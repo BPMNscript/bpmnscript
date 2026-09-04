@@ -10,15 +10,15 @@
  */
 
 import { beforeAll, describe, expect, test } from 'vitest';
-import { EmptyFileSystem, type LangiumDocument } from 'langium';
+import { EmptyFileSystem } from 'langium';
 import { parseHelper } from 'langium/test';
 import type { Model, Process, VarType } from '@bpmn-script/language';
 import {
   createBpmnScriptServices,
   DefaultVariableSymbolProvider,
-  isModel,
   type VariableSymbolProvider,
 } from '@bpmn-script/language';
+import { formatParseFailure } from './helpers/parse-failure.js';
 
 let services: ReturnType<typeof createBpmnScriptServices>;
 let parse: ReturnType<typeof parseHelper<Model>>;
@@ -95,24 +95,4 @@ async function parseProcess(source: string): Promise<Process> {
     throw new Error(`source failed to parse:\n${failure}`);
   }
   return document.parseResult.value.processes[0]!;
-}
-
-/** Format any parse failure into a string, or `undefined` when clean. */
-function formatParseFailure(document: LangiumDocument): string | undefined {
-  if (document.parseResult.lexerErrors.length) {
-    return (
-      'Lexer errors:\n  ' +
-      document.parseResult.lexerErrors.map((e) => e.message).join('\n  ')
-    );
-  }
-  if (document.parseResult.parserErrors.length) {
-    return (
-      'Parser errors:\n  ' +
-      document.parseResult.parserErrors.map((e) => e.message).join('\n  ')
-    );
-  }
-  if (!isModel(document.parseResult.value)) {
-    return `Root AST is a ${document.parseResult.value.$type}, expected a Model.`;
-  }
-  return undefined;
 }

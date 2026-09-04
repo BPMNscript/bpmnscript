@@ -1,7 +1,3 @@
-/**
- * Tests for `packages/cli/src/util.ts`.
- */
-
 import { describe, it, expect } from 'vitest';
 import * as path from 'node:path';
 import { resolveOutputPath, CLI_VERSION } from '../src/util.js';

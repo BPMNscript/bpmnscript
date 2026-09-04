@@ -1,35 +1,20 @@
-/**
- * The scaffolding every golden pair suite shares: Langium wiring, the pipeline
- * run over one `tests/golden/<name>.bpmnscript` fixture and its frozen
- * `<name>.bpmn`, and the handful of assertions that mean the same thing in all
- * of them.
- *
- * The pipeline is
- *
- *   fixture.bpmnscript -> astToIr (IR₁) -> irToXml -> xmlToIr (IR₂)
- *                      -> irToDsl (DSL′) -> astToIr (IR₃)
- *
- * `roundTripFixture` registers the shared blocks and hands back a live handle
- * the calling suite reads in its own `it` bodies. The suites are not uniform, so
- * every place they genuinely differ is an option rather than something quietly
- * dropped: see {@link RoundTripOptions}. A suite that needs an extra assertion
- * inside a shared block re-opens that `describe` in its own file.
- */
+// The shared blocks every golden-pair suite registers, listed under "What the
+// pair tests do" in tests/golden/README.md. Suites differ only through
+// RoundTripOptions; one needing an extra assertion re-opens the describe in its
+// own file.
 
 import { describe, it, expect, beforeAll } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { EmptyFileSystem } from 'langium';
-import { parseHelper, validationHelper } from 'langium/test';
-import { createBpmnScriptServices } from '@bpmn-script/language';
 import type { Model } from '@bpmn-script/language';
 
 import { xmlToIr, irToDsl, astToIr, irToXml } from '@bpmn-script/transform';
 import type { BpmnProcess } from '@bpmn-script/transform';
 
 import { normalizeIr } from './normalize-ir.js';
+import { parse, parseToAst, validate } from './pipeline.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -37,106 +22,54 @@ const GOLDEN_DIR = resolve(__dirname, '../golden');
 const EXAMPLES_DIR = resolve(__dirname, '../../examples/spring-boot/processes');
 
 export interface RoundTripOptions {
-  /**
-   * Basename of a deployable example under `examples/spring-boot/processes/`,
-   * asserted validator-clean alongside the fixture. Only some constructs have
-   * a matching deployable example.
-   */
+  // Basename under examples/spring-boot/processes/, asserted validator-clean
+  // alongside the fixture. Not every construct has one.
   example?: string;
 
-  /**
-   * Which XML the decompiled `DSL′` is read back out of. `'generated'` runs
-   * `irToXml` output straight through; `'frozen'` re-reads the golden `.bpmn`
-   * from disk, so a suite that only proves the frozen artifact decompiles is
-   * driven by the file rather than by the generator.
-   */
+  // Where DSL′ is read back out of. 'frozen' re-reads the golden .bpmn from
+  // disk, so the suite is driven by the file rather than by the generator.
   dslPrimeFrom?: 'generated' | 'frozen';
 
-  /**
-   * Register the import-path block: the frozen artifact imports without
-   * warnings and re-desugars normalized-equal to `IR₁`. Suites whose frozen
-   * artifact is not the input to a second decompile leave it off.
-   */
+  // Registers the import-path block: the frozen artifact imports warning-free
+  // and re-desugars normalized-equal to IR₁.
   importPath?: boolean;
 
-  /**
-   * How strictly `DSL′` validation is asserted, and where.
-   *
-   *   - `'errors'`: error-severity diagnostics only, inside the idempotence
-   *     block. A fixture whose decompiled form legitimately raises warnings.
-   *   - `'clean'`: every diagnostic, inside the idempotence block. Only for
-   *     fixtures that name every throw and emit, so nothing synthesises an id
-   *     the reserved-name check rejects.
-   *   - `'errors-standalone'`: error-severity diagnostics only, in a
-   *     `recompile-validity` block of its own.
-   */
+  // How strictly DSL′ validation is asserted, and where. 'clean' checks every
+  // diagnostic and only fits fixtures that name every throw and emit, so
+  // nothing synthesises an id the reserved-name check rejects; 'errors' checks
+  // error severity only, for fixtures whose decompiled form does warn.
+  // 'errors-standalone' is 'errors' in a block of its own.
   recompile: 'errors' | 'clean' | 'errors-standalone';
 
-  /**
-   * Overrides the derived `[describe, it]` titles of the block asserting the
-   * authored fixture opens validator-clean.
-   */
   validatorCleanTitles?: [describeTitle: string, itTitle: string];
 }
 
 export interface RoundTrip {
-  parse: ReturnType<typeof parseHelper<Model>>;
-  validate: ReturnType<typeof validationHelper<Model>>;
-  /**
-   * Parse DSL source into a checked AST, throwing on any parser error. A
-   * round-tripped source that does not re-parse is itself a round-trip failure.
-   */
+  parse: typeof parse;
+  validate: typeof validate;
   parseToAst: (source: string) => Promise<Model>;
 
-  /** The authored `tests/golden/<name>.bpmnscript`. */
   fixtureSrc: string;
-  /** The frozen `tests/golden/<name>.bpmn`. */
   frozenXml: string;
-  /** `irToXml(astToIr(parse(fixture)))`. */
   generatedXml: string;
-  /** `astToIr(parse(fixture))`. */
+  // ir1 = astToIr(parse(fixture)); ir2 = xmlToIr(...) per dslPrimeFrom;
+  // ir3 = re-desugared from DSL′.
   ir1: BpmnProcess;
-  /** `xmlToIr(...)`, per `dslPrimeFrom`. */
   ir2: BpmnProcess;
-  /** Re-desugared after DSL -> XML -> DSL′. */
   ir3: BpmnProcess;
-  /** The restructured DSL after one XML round-trip. */
+  hops: readonly (readonly [label: string, ir: BpmnProcess])[];
   dslPrime: string;
-  /** Warnings from `xmlToIr(frozen)`; only filled when `importPath` is on. */
+  // The next two are only filled when `importPath` is on.
   importWarnings: Awaited<ReturnType<typeof xmlToIr>>['warnings'];
-  /** `xmlToIr(frozen).ir` -> DSL -> re-desugared; only when `importPath` is on. */
   irFromImport: BpmnProcess;
 }
 
-/**
- * Wire up the pipeline for one golden pair and register the shared assertions.
- *
- * @param name - Basename shared by `<name>.bpmnscript` and `<name>.bpmn` under
- *   `tests/golden/`.
- * @param options - Where the suites diverge; see {@link RoundTripOptions}.
- * @returns A handle whose fields are filled by the registered `beforeAll`, so
- *   they are only readable from inside an `it` body.
- */
+// `name` is the basename the `.bpmnscript` and `.bpmn` share. The returned
+// handle is filled by a beforeAll, so read it only from inside an `it` body.
 export function roundTripFixture(
   name: string,
   options: RoundTripOptions,
 ): RoundTrip {
-  const services = createBpmnScriptServices(EmptyFileSystem);
-  const parse = parseHelper<Model>(services.BpmnScript);
-  const validate = validationHelper<Model>(services.BpmnScript);
-
-  async function parseToAst(source: string): Promise<Model> {
-    const document = await parse(source);
-    const errors = document.parseResult.parserErrors;
-    if (errors.length > 0) {
-      throw new Error(
-        'Parser errors in round-tripped DSL:\n' +
-          errors.map((e) => e.message).join('\n'),
-      );
-    }
-    return document.parseResult.value;
-  }
-
   const rt = { parse, validate, parseToAst } as RoundTrip;
   let exampleSrc: string;
 
@@ -161,6 +94,11 @@ export function roundTripFixture(
     ));
     rt.dslPrime = irToDsl(rt.ir2);
     rt.ir3 = astToIr(await parseToAst(rt.dslPrime));
+    rt.hops = [
+      ['IR₁', rt.ir1],
+      ['IR₂', rt.ir2],
+      ['IR₃', rt.ir3],
+    ];
 
     if (options.importPath === true) {
       const imported = await xmlToIr(rt.frozenXml);

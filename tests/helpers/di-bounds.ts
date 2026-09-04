@@ -1,14 +1,8 @@
-/**
- * Reading BPMN DI shape geometry out of generated XML, for the round-trip
- * suites that assert where `bpmn-auto-layout` put things.
- *
- * The suites keep their own DI assertions; only the geometry plumbing they all
- * need lives here.
- */
-
-import { expect } from 'vitest';
+import { describe, it, expect } from 'vitest';
 
 import type { FlowContainer } from '@bpmn-script/transform';
+
+import type { RoundTrip } from './round-trip-fixture.js';
 
 export interface Bounds {
   x: number;
@@ -17,10 +11,7 @@ export interface Bounds {
   height: number;
 }
 
-/**
- * Bounds per `bpmnElement` id, read with a scoped regex because the tests
- * workspace declares no moddle dependency.
- */
+// Regex rather than a parser: the tests workspace declares no moddle dependency.
 export function parseShapeBounds(xml: string): Map<string, Bounds> {
   const shape =
     /<bpmndi:BPMNShape\b[^>]*\bbpmnElement="([^"]+)"[^>]*>\s*<dc:Bounds x="([-\d.]+)" y="([-\d.]+)" width="([-\d.]+)" height="([-\d.]+)"/g;
@@ -36,7 +27,6 @@ export function parseShapeBounds(xml: string): Map<string, Bounds> {
   return bounds;
 }
 
-/** The bounds of one shape, failing the test when the shape is missing. */
 export function boundsOf(bounds: Map<string, Bounds>, id: string): Bounds {
   const found = bounds.get(id);
   expect(found, `missing BPMNShape for ${id}`).toBeDefined();
@@ -52,12 +42,9 @@ function strictlyInside(child: Bounds, parent: Bounds): boolean {
   );
 }
 
-/**
- * Assert every direct child shape of every sub-process lies strictly inside that
- * sub-process's own shape, recursively. The root process has no shape, so its
- * direct children are unbounded; the recursion still descends into them.
- */
-export function assertShapeContainment(
+// The root process has no shape, so its direct children are unbounded. The
+// recursion still descends into them.
+function assertShapeContainment(
   container: FlowContainer,
   bounds: Map<string, Bounds>,
   isRoot: boolean,
@@ -82,4 +69,33 @@ export function assertShapeContainment(
       assertShapeContainment(fe, bounds, false);
     }
   }
+}
+
+// An event sub-process is a disconnected node, so the layout library only
+// places its box and its children inside the parent when the `isExpanded="true"`
+// stub irToXml emits is present. Removing that stub fails this block.
+//
+// `requiredIds` stops the walk passing because the interesting containers are
+// absent; pass a thunk when the ids come from the IR, which is readable only
+// after the pipeline has run.
+export function describeDiContainment(
+  rt: RoundTrip,
+  requiredIds: readonly string[] | (() => readonly string[]) = [],
+  source: 'generated' | 'frozen' = 'frozen',
+): void {
+  describe(`DI containment on the ${source} .bpmn`, () => {
+    it('every child shape lies strictly inside its parent sub-process bounds', () => {
+      const bounds = parseShapeBounds(
+        source === 'frozen' ? rt.frozenXml : rt.generatedXml,
+      );
+
+      const ids =
+        typeof requiredIds === 'function' ? requiredIds() : requiredIds;
+      for (const id of ids) {
+        expect(bounds.has(id), `missing BPMNShape for ${id}`).toBe(true);
+      }
+
+      assertShapeContainment(rt.ir1, bounds, true);
+    });
+  });
 }
