@@ -1,33 +1,19 @@
 /**
- * Scoping + reserved-word-guidance test suite for BPMNscript.
+ * Scoping and reserved-word guidance, driven through the real parser and linker
+ * (`parseHelper`, with `{ validation: true }` where linking must run).
  *
- * Four concerns are exercised here, all driven through the real parser/linker
- * pipeline (`parseHelper`, with `{ validation: true }` where cross-reference
- * linking must run):
+ * A `goto` resolves only within its nearest enclosing container, the `process`,
+ * `subprocess`, or `on` handler body it directly sits in, and a `subprocess`
+ * statement is itself a target by name. A cross-boundary `goto` fails to
+ * resolve, and the custom linker replaces the stock "Could not resolve
+ * reference" message with a boundary explanation rather than adding to it, so
+ * exactly one diagnostic is emitted. A handler has no name of its own, so it is
+ * named in that message by its header.
  *
- *   - **Process-scoped `goto`** (custom `ScopeProvider`): a `goto` resolves to
- *     any named step of its *own* process, including one nested inside a
- *     `parallel`/`if`/`while` block, and to no step of any *other* process.
- *   - **Container-scoped `goto`** (same `ScopeProvider`, narrowed further): a
- *     `goto` resolves only within its nearest enclosing container, the
- *     `process`, `subprocess`, or `on` handler body it directly sits in. A
- *     `subprocess` statement is itself a valid target by name. A cross-boundary
- *     `goto` fails to resolve and the custom `BpmnScriptLinker` replaces the
- *     stock "Could not resolve reference" message with a boundary explanation,
- *     replacing rather than adding, so exactly one diagnostic is emitted. A
- *     handler is named in that message by its header (trigger + code), since it
- *     has no name of its own.
- *   - **Container-scoped host resolution** (same provider and linker): an `on`
- *     handler that names a host activity attaches to it, so the host must be a
- *     step of the handler's own container, with no global fall-through. Such a
- *     handler lowers inline into its host's container rather than into one of
- *     its own, so its body is transparent to the container walk: a `goto`
- *     crosses between the handler body and the main flow in both directions,
- *     while a host-less handler nested inside it stays a boundary of its own.
- *   - **Reserved-word guidance** (custom `ParserErrorMessageProvider`): a
- *     reserved keyword used as a bare identifier yields a parse error that names
- *     the word and points to the quoted `"${...}"` raw-string fallback, instead
- *     of a raw Chevrotain "expected ID" / "no viable alternative" message.
+ * A hosted handler lowers inline into its host's container rather than into one
+ * of its own, which makes its body transparent to the container walk: a `goto`
+ * crosses between the handler body and the main flow in both directions, while
+ * a host-less handler nested inside it stays a boundary of its own.
  *
  * Diagnostic severity follows the LSP convention: `1 = Error`, `2 = Warning`.
  */
@@ -224,15 +210,10 @@ process p {
 }
 `);
 
-    const errors = errorsOf(document);
-    // Exactly one diagnostic on the document: the linker replaces the
-    // message rather than a validator stacking a second one on top.
-    expect(errors).toHaveLength(1);
-    expect(errors[0]!.message).toContain("'Inner'");
-    expect(errors[0]!.message).toContain("subprocess 'Sub'");
-    expect(errors[0]!.message.toLowerCase()).toContain(
-      'cross a sub-process boundary',
-    );
+    const message = soleErrorMessage(document);
+    expect(message).toContain("'Inner'");
+    expect(message).toContain("subprocess 'Sub'");
+    expect(message.toLowerCase()).toContain('cross a sub-process boundary');
   });
 
   test('boundary message names the sub-process the goto is inside, when the target is outside it (one diagnostic)', async () => {
@@ -245,13 +226,10 @@ process p {
 }
 `);
 
-    const errors = errorsOf(document);
-    expect(errors).toHaveLength(1);
-    expect(errors[0]!.message).toContain("'Outer'");
-    expect(errors[0]!.message).toContain("subprocess 'Sub'");
-    expect(errors[0]!.message.toLowerCase()).toContain(
-      'cross a sub-process boundary',
-    );
+    const message = soleErrorMessage(document);
+    expect(message).toContain("'Outer'");
+    expect(message).toContain("subprocess 'Sub'");
+    expect(message.toLowerCase()).toContain('cross a sub-process boundary');
   });
 
   test('a goto to a name that exists nowhere yields the unchanged generic message (one diagnostic)', async () => {
@@ -265,9 +243,8 @@ process p {
 `);
     expect(findGoto(document.parseResult.value).target.ref).toBeUndefined();
 
-    const errors = errorsOf(document);
-    expect(errors).toHaveLength(1);
-    expect(errors[0]!.message).toBe(
+    const message = soleErrorMessage(document);
+    expect(message).toBe(
       "Could not resolve reference to Statement named 'Missing'.",
     );
   });
@@ -326,15 +303,10 @@ process p {
     const goto = findGoto(document.parseResult.value);
     expect(goto.target.ref).toBeUndefined();
 
-    const errors = errorsOf(document);
-    expect(errors).toHaveLength(1);
-    expect(errors[0]!.message).toContain("'Outer'");
-    expect(errors[0]!.message).toContain(
-      `the 'on error "PAYMENT_FAILED"' handler`,
-    );
-    expect(errors[0]!.message.toLowerCase()).toContain(
-      'cross an event handler boundary',
-    );
+    const message = soleErrorMessage(document);
+    expect(message).toContain("'Outer'");
+    expect(message).toContain(`the 'on error "PAYMENT_FAILED"' handler`);
+    expect(message.toLowerCase()).toContain('cross an event handler boundary');
   });
 
   test('an outer handler goto cannot resolve a step inside a nested (inner) handler', async () => {
@@ -361,18 +333,11 @@ process p {
 }
 `);
 
-    const errors = errorsOf(document);
-    expect(errors).toHaveLength(1);
-    expect(errors[0]!.message).toContain("'Inner'");
-    expect(errors[0]!.message).toContain(
-      `the 'on error "PAYMENT_FAILED"' handler`,
-    );
-    expect(errors[0]!.message.toLowerCase()).toContain(
-      'cross an event handler boundary',
-    );
-    expect(errors[0]!.message.toLowerCase()).not.toContain(
-      'sub-process boundary',
-    );
+    const message = soleErrorMessage(document);
+    expect(message).toContain("'Inner'");
+    expect(message).toContain(`the 'on error "PAYMENT_FAILED"' handler`);
+    expect(message.toLowerCase()).toContain('cross an event handler boundary');
+    expect(message.toLowerCase()).not.toContain('sub-process boundary');
   });
 
   test('boundary message names a catch-all handler without quoting a code', async () => {
@@ -385,9 +350,8 @@ process p {
 }
 `);
 
-    const errors = errorsOf(document);
-    expect(errors).toHaveLength(1);
-    expect(errors[0]!.message).toContain(`an 'on error' handler`);
+    const message = soleErrorMessage(document);
+    expect(message).toContain(`an 'on error' handler`);
   });
 
   test('boundary message names the handler the goto is inside, when the target is outside it (one diagnostic)', async () => {
@@ -400,15 +364,10 @@ process p {
 }
 `);
 
-    const errors = errorsOf(document);
-    expect(errors).toHaveLength(1);
-    expect(errors[0]!.message).toContain("'Outer'");
-    expect(errors[0]!.message).toContain(
-      `the 'on escalation "LOW_STOCK"' handler`,
-    );
-    expect(errors[0]!.message.toLowerCase()).toContain(
-      'cross an event handler boundary',
-    );
+    const message = soleErrorMessage(document);
+    expect(message).toContain("'Outer'");
+    expect(message).toContain(`the 'on escalation "LOW_STOCK"' handler`);
+    expect(message.toLowerCase()).toContain('cross an event handler boundary');
   });
 
   test('a goto to a name that exists nowhere yields the unchanged generic message (one diagnostic)', async () => {
@@ -422,9 +381,8 @@ process p {
 `);
     expect(findGoto(document.parseResult.value).target.ref).toBeUndefined();
 
-    const errors = errorsOf(document);
-    expect(errors).toHaveLength(1);
-    expect(errors[0]!.message).toBe(
+    const message = soleErrorMessage(document);
+    expect(message).toBe(
       "Could not resolve reference to Statement named 'Missing'.",
     );
   });
@@ -445,14 +403,9 @@ process p {
 `);
     expect(findGoto(document.parseResult.value).target.ref).toBeUndefined();
 
-    const boundaryErrors = errorsOf(document).filter((d) =>
-      d.message.includes("'Inner'"),
-    );
-    expect(boundaryErrors).toHaveLength(1);
-    expect(boundaryErrors[0]!.message).toContain(`an 'on timer' handler`);
-    expect(boundaryErrors[0]!.message.toLowerCase()).toContain(
-      'cross an event handler boundary',
-    );
+    const message = soleErrorMessage(document, "'Inner'");
+    expect(message).toContain(`an 'on timer' handler`);
+    expect(message.toLowerCase()).toContain('cross an event handler boundary');
   });
 
   test('a goto inside an `on message` handler resolves a sibling step of the same body', async () => {
@@ -502,15 +455,10 @@ process p {
 `);
     expect(findGoto(document.parseResult.value).target.ref).toBeUndefined();
 
-    const errors = errorsOf(document);
-    expect(errors).toHaveLength(1);
-    expect(errors[0]!.message).toContain("'Failed'");
-    expect(errors[0]!.message).toContain(
-      `the 'on error "PAYMENT_FAILED"' handler`,
-    );
-    expect(errors[0]!.message.toLowerCase()).toContain(
-      'cross an event handler boundary',
-    );
+    const message = soleErrorMessage(document);
+    expect(message).toContain("'Failed'");
+    expect(message).toContain(`the 'on error "PAYMENT_FAILED"' handler`);
+    expect(message.toLowerCase()).toContain('cross an event handler boundary');
   });
 });
 
@@ -637,11 +585,8 @@ process p {
       findHostedHandler(document.parseResult.value).host!.ref,
     ).toBeUndefined();
 
-    const errors = errorsOf(document).filter((d) =>
-      d.message.includes("'Outer'"),
-    );
-    expect(errors).toHaveLength(1);
-    expect(errors[0]!.message).toContain("subprocess 'Sub'");
+    const message = soleErrorMessage(document, "'Outer'");
+    expect(message).toContain("subprocess 'Sub'");
   });
 
   test('a cross-container host gets the boundary message, not the generic one', async () => {
@@ -654,15 +599,12 @@ process p {
 }
 `);
 
-    const errors = errorsOf(document).filter((d) =>
-      d.message.includes("'Inner'"),
-    );
-    expect(errors).toHaveLength(1);
-    expect(errors[0]!.message).toContain("subprocess 'Sub'");
-    expect(errors[0]!.message.toLowerCase()).toContain(
+    const message = soleErrorMessage(document, "'Inner'");
+    expect(message).toContain("subprocess 'Sub'");
+    expect(message.toLowerCase()).toContain(
       'a boundary event attaches to an activity in its own scope',
     );
-    expect(errors[0]!.message).not.toContain('Could not resolve reference');
+    expect(message).not.toContain('Could not resolve reference');
   });
 
   test('a host that names nothing anywhere keeps the unchanged generic message', async () => {
@@ -673,11 +615,8 @@ process p {
 }
 `);
 
-    const errors = errorsOf(document).filter((d) =>
-      d.message.includes('Missing'),
-    );
-    expect(errors).toHaveLength(1);
-    expect(errors[0]!.message).toBe(
+    const message = soleErrorMessage(document, 'Missing');
+    expect(message).toBe(
       "Could not resolve reference to Statement named 'Missing'.",
     );
   });
@@ -732,11 +671,8 @@ process p {
     const goto = findGoto(document.parseResult.value);
     expect(goto.target.ref).toBeUndefined();
 
-    const errors = errorsOf(document).filter((d) =>
-      d.message.includes("'Outer'"),
-    );
-    expect(errors).toHaveLength(1);
-    expect(errors[0]!.message).toContain("subprocess 'Sub'");
+    const message = soleErrorMessage(document, "'Outer'");
+    expect(message).toContain("subprocess 'Sub'");
   });
 
   test('a host-less handler nested in a hosted handler body is still its own container', async () => {
@@ -771,13 +707,10 @@ process p {
 `);
     expect(findGoto(document.parseResult.value).target.ref).toBeUndefined();
 
-    const errors = errorsOf(document);
-    expect(errors).toHaveLength(1);
-    expect(errors[0]!.message).toContain("'Inner'");
-    expect(errors[0]!.message).toContain(`an 'on compensation' handler`);
-    expect(errors[0]!.message.toLowerCase()).toContain(
-      'cross an event handler boundary',
-    );
+    const message = soleErrorMessage(document);
+    expect(message).toContain("'Inner'");
+    expect(message).toContain(`an 'on compensation' handler`);
+    expect(message.toLowerCase()).toContain('cross an event handler boundary');
   });
 
   test('a goto inside an `on compensation` handler resolves a sibling step of the same body', async () => {
@@ -881,6 +814,22 @@ function findHostedHandler(model: Model): OnHandler {
     throw new Error('Test fixture must contain exactly one hosted handler.');
   }
   return handler;
+}
+
+/**
+ * The message of the one error diagnostic on `document`, optionally narrowed to
+ * the diagnostics naming `subject`. Exactly one is asserted: the linker
+ * replaces the stock message rather than a validator stacking a second on top.
+ */
+function soleErrorMessage(
+  document: Parameters<typeof errorsOf>[0],
+  subject?: string,
+): string {
+  const errors = errorsOf(document).filter(
+    (d) => subject === undefined || d.message.includes(subject),
+  );
+  expect(errors).toHaveLength(1);
+  return errors[0]!.message;
 }
 
 /** All error-severity diagnostics of a built document. */

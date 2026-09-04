@@ -22,6 +22,13 @@ import type {
   FlowElement,
   SequenceFlow,
 } from '../src/ir/types.js';
+import {
+  boundaryEvent,
+  errorDef,
+  messageDef,
+  signalDef,
+  typedEvent,
+} from './helpers/ir-fixtures.js';
 
 // ---------------------------------------------------------------------------
 // Tiny fixture helpers: keep the graphs readable.
@@ -42,14 +49,6 @@ function xor(id: string, defaultFlowId?: string): FlowElement {
 function and(id: string): FlowElement {
   return { kind: 'parallelGateway', id };
 }
-function boundary(id: string, attachedToRef: string): FlowElement {
-  return {
-    kind: 'boundaryEvent',
-    id,
-    attachedToRef,
-    eventDefinition: { kind: 'error' },
-  };
-}
 function flow(sourceRef: string, targetRef: string): SequenceFlow {
   return { id: `Flow_${sourceRef}_${targetRef}`, sourceRef, targetRef };
 }
@@ -58,12 +57,7 @@ function process(
   flowElements: FlowElement[],
   sequenceFlows: SequenceFlow[],
 ): BpmnProcess {
-  return {
-    id: 'P',
-    isExecutable: true,
-    flowElements,
-    sequenceFlows,
-  };
+  return { id: 'P', isExecutable: true, flowElements, sequenceFlows };
 }
 
 // ---------------------------------------------------------------------------
@@ -444,7 +438,7 @@ describe('boundary event as a second CFG entry', () => {
         start('start'),
         task('main'),
         end('end'),
-        boundary('Boundary_main_error', 'main'),
+        boundaryEvent('Boundary_main_error', 'main', errorDef()),
         task('escapeA'),
         end('escapeEnd'),
       ],
@@ -475,7 +469,7 @@ describe('boundary event as a second CFG entry', () => {
         start('start'),
         task('main'),
         end('end'),
-        boundary('Boundary_main_error', 'main'),
+        boundaryEvent('Boundary_main_error', 'main', errorDef()),
         xor('splitB'),
         task('branchA'),
         task('branchB'),
@@ -510,7 +504,7 @@ describe('boundary event as a second CFG entry', () => {
       [
         start('start'),
         task('main'),
-        boundary('Boundary_main_error', 'main'),
+        boundaryEvent('Boundary_main_error', 'main', errorDef()),
         task('shared'),
         end('end'),
       ],
@@ -534,7 +528,7 @@ describe('boundary event as a second CFG entry', () => {
         start('start'),
         task('main'),
         end('end'),
-        boundary('Boundary_main_error', 'main'),
+        boundaryEvent('Boundary_main_error', 'main', errorDef()),
         xor('head2'),
         task('body2'),
         end('escEnd'),
@@ -590,7 +584,12 @@ describe('boundary event as a second CFG entry', () => {
     // on the absence of a start event. Both fire here, and folding them would
     // leave `main`, a no-predecessor non-boundary node, on the wrong one.
     const proc = process(
-      [task('main'), boundary('B', 'main'), task('esc'), end('e')],
+      [
+        task('main'),
+        boundaryEvent('B', 'main', errorDef()),
+        task('esc'),
+        end('e'),
+      ],
       [flow('B', 'esc'), flow('esc', 'e')],
     );
     const cfg = analyzeCfg(proc);
@@ -619,18 +618,12 @@ describe('intermediate catch event — CFG no-op (twin of an intermediate throw)
   }
 
   const catchCfg = analyzeCfg(
-    containerWith({
-      kind: 'intermediateCatchEvent',
-      id: 'node',
-      eventDefinition: { kind: 'message', messageName: 'M' },
-    }),
+    containerWith(
+      typedEvent('intermediateCatchEvent', 'node', messageDef('M')),
+    ),
   );
   const throwCfg = analyzeCfg(
-    containerWith({
-      kind: 'intermediateThrowEvent',
-      id: 'node',
-      eventDefinition: { kind: 'signal', signalName: 'S' },
-    }),
+    containerWith(typedEvent('intermediateThrowEvent', 'node', signalDef('S'))),
   );
 
   it('gives the catch a normal immediate dominator — its predecessor on the main flow, not the virtual entry', () => {

@@ -1,17 +1,3 @@
-/**
- * BPMNscript CLI entry point.
- *
- * Exposes two subcommands:
- *
- *   bpmns build <file.bpmnscript> [-o <out.bpmn>]
- *     DSL → BPMN XML pipeline.
- *     Exit 0 on success, 1 on validation errors, 2 on I/O errors.
- *
- *   bpmns parse <file.bpmn> [-o <out.bpmnscript>]
- *     BPMN XML → DSL pipeline.
- *     Exit 0 on success, 1 on unsupported constructs, 2 on I/O errors.
- */
-
 import { Command } from 'commander';
 
 import { buildAction } from './build.js';
@@ -26,7 +12,6 @@ export default function (): void {
     .version(CLI_VERSION)
     .description('BPMNscript — compile and decompile BPMN processes');
 
-  // ── build ─────────────────────────────────────────────────────────────────
   program
     .command('build')
     .argument('<file>', 'path to the .bpmnscript source file')
@@ -37,7 +22,6 @@ export default function (): void {
     .description('Compile a .bpmnscript source file to BPMN 2.0 XML')
     .action(buildAction);
 
-  // ── parse ─────────────────────────────────────────────────────────────────
   program
     .command('parse')
     .argument('<file>', 'path to the .bpmn file')

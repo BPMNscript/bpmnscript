@@ -1,35 +1,29 @@
-/**
- * End-to-end round-trip for the `call` activity (a leaf `bpmn:CallActivity`
- * invoking another process by id, with a version-resolution binding, a business
- * key, and `in`/`out` variable mappings).
- *
- * Single-stage unit tests cannot catch a field-name or ordering disagreement
- * between stages, such as the generator writing `operaton:in`/`operaton:out` in
- * one order and the importer reconstructing another. This file drives the
- * construct through the full, unmocked pipeline over real Langium parsing and
- * validation, real `bpmn-moddle`, and real `bpmn-auto-layout` inside `irToXml`.
- * No Docker and no engine.
- */
+// Single-stage tests cannot catch a field-name or ordering disagreement between
+// stages, such as the generator writing operaton:in/out in one order and the
+// importer reconstructing another. This runs the whole pipeline instead.
 
 import { describe, it, expect, beforeAll } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { EmptyFileSystem } from 'langium';
-import { parseHelper, validationHelper } from 'langium/test';
-import { createBpmnScriptServices } from '@bpmn-script/language';
-import type { Model } from '@bpmn-script/language';
-
-import { xmlToIr, irToDsl, astToIr, irToXml } from '@bpmn-script/transform';
+import { xmlToIr, irToDsl, astToIr } from '@bpmn-script/transform';
 import type {
   BpmnProcess,
   FlowContainer,
   CallActivity,
+  ImportWarning,
 } from '@bpmn-script/transform';
 
 import { normalizeIr } from './helpers/normalize-ir.js';
 import { idsOf, subProcess as findSubProcess } from './helpers/ir-query.js';
+import {
+  parse,
+  parseToAst,
+  roundTrip,
+  roundTripOf,
+  validate,
+} from './helpers/pipeline.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -37,31 +31,6 @@ const PURCHASING_EXAMPLE_PATH = resolve(
   __dirname,
   '../examples/spring-boot/processes/purchasing.bpmnscript',
 );
-
-let parse: ReturnType<typeof parseHelper<Model>>;
-let validate: ReturnType<typeof validationHelper<Model>>;
-
-beforeAll(() => {
-  const services = createBpmnScriptServices(EmptyFileSystem);
-  parse = parseHelper<Model>(services.BpmnScript);
-  validate = validationHelper<Model>(services.BpmnScript);
-});
-
-/**
- * Parse DSL source into a checked AST, throwing on any parser error. A
- * round-tripped source that does not re-parse is itself a round-trip failure.
- */
-async function parseToAst(source: string) {
-  const document = await parse(source);
-  const errors = document.parseResult.parserErrors;
-  if (errors.length > 0) {
-    throw new Error(
-      'Parser errors in round-tripped DSL:\n' +
-        errors.map((e) => e.message).join('\n'),
-    );
-  }
-  return document.parseResult.value;
-}
 
 function findCallActivity(container: FlowContainer, id: string): CallActivity {
   const el = container.flowElements.find(
@@ -87,20 +56,10 @@ describe('round-trip: minimal call (process only)', () => {
     '',
   ].join('\n');
 
-  let irInitial: BpmnProcess;
-  let xml: string;
-  let irImported: BpmnProcess;
-  let reemittedDsl: string;
-
-  beforeAll(async () => {
-    irInitial = astToIr(await parseToAst(MINIMAL_CALL_SRC));
-    xml = await irToXml(irInitial);
-    ({ ir: irImported } = await xmlToIr(xml));
-    reemittedDsl = irToDsl(irImported);
-  });
+  const run = roundTripOf(MINIMAL_CALL_SRC);
 
   it('desugars to a callActivity carrying only calledElement', () => {
-    const call = findCallActivity(irInitial, 'InvokeSub');
+    const call = findCallActivity(run.ir1, 'InvokeSub');
     expect(call.calledElement).toBe('invoice-approval');
     expect(call.binding).toBeUndefined();
     expect(call.businessKey).toBeUndefined();
@@ -109,17 +68,17 @@ describe('round-trip: minimal call (process only)', () => {
   });
 
   it('generates calledElement and NO binding attributes and NO extensionElements', () => {
-    expect(xml).toContain('calledElement="invoice-approval"');
-    expect(xml).not.toContain('calledElementBinding');
-    expect(xml).not.toContain('calledElementVersion');
-    expect(xml).not.toContain('extensionElements');
+    expect(run.xml).toContain('calledElement="invoice-approval"');
+    expect(run.xml).not.toContain('calledElementBinding');
+    expect(run.xml).not.toContain('calledElementVersion');
+    expect(run.xml).not.toContain('extensionElements');
   });
 
   it('re-emits the same one-attribute call and re-parses with zero errors', async () => {
-    expect(reemittedDsl).toContain(
+    expect(run.dsl).toContain(
       'call InvokeSub { process = "invoice-approval" }',
     );
-    const document = await parse(reemittedDsl);
+    const document = await parse(run.dsl);
     expect(document.parseResult.parserErrors).toHaveLength(0);
   });
 });
@@ -137,35 +96,25 @@ describe('round-trip: call activity — deployment binding', () => {
     '',
   ].join('\n');
 
-  let irInitial: BpmnProcess;
-  let xml: string;
-  let irImported: BpmnProcess;
-  let reemittedDsl: string;
-
-  beforeAll(async () => {
-    irInitial = astToIr(await parseToAst(DEPLOYMENT_BINDING_SRC));
-    xml = await irToXml(irInitial);
-    ({ ir: irImported } = await xmlToIr(xml));
-    reemittedDsl = irToDsl(irImported);
-  });
+  const run = roundTripOf(DEPLOYMENT_BINDING_SRC);
 
   it('desugars `binding = deployment` to { kind: "deployment" }', () => {
-    expect(findCallActivity(irInitial, 'InvokeSub').binding).toEqual({
+    expect(findCallActivity(run.ir1, 'InvokeSub').binding).toEqual({
       kind: 'deployment',
     });
   });
 
   it('generates operaton:calledElementBinding="deployment" and no version attribute', () => {
-    expect(xml).toContain('operaton:calledElementBinding="deployment"');
-    expect(xml).not.toContain('calledElementVersion');
+    expect(run.xml).toContain('operaton:calledElementBinding="deployment"');
+    expect(run.xml).not.toContain('calledElementVersion');
   });
 
   it('re-imports to the same binding and re-emits `binding = deployment`', async () => {
-    expect(findCallActivity(irImported, 'InvokeSub').binding).toEqual({
+    expect(findCallActivity(run.ir2, 'InvokeSub').binding).toEqual({
       kind: 'deployment',
     });
-    expect(reemittedDsl).toContain('binding = deployment');
-    const document = await parse(reemittedDsl);
+    expect(run.dsl).toContain('binding = deployment');
+    const document = await parse(run.dsl);
     expect(document.parseResult.parserErrors).toHaveLength(0);
   });
 });
@@ -183,45 +132,34 @@ describe('round-trip: call activity — pinned version', () => {
     '',
   ].join('\n');
 
-  let irInitial: BpmnProcess;
-  let xml: string;
-  let irImported: BpmnProcess;
-  let reemittedDsl: string;
-
-  beforeAll(async () => {
-    irInitial = astToIr(await parseToAst(PINNED_VERSION_SRC));
-    xml = await irToXml(irInitial);
-    ({ ir: irImported } = await xmlToIr(xml));
-    reemittedDsl = irToDsl(irImported);
-  });
+  const run = roundTripOf(PINNED_VERSION_SRC);
 
   it('desugars `version = 3` to { kind: "version", version: "3" }', () => {
-    expect(findCallActivity(irInitial, 'InvokeSub').binding).toEqual({
+    expect(findCallActivity(run.ir1, 'InvokeSub').binding).toEqual({
       kind: 'version',
       version: '3',
     });
   });
 
   it('generates calledElementBinding="version" and calledElementVersion="3"', () => {
-    expect(xml).toContain('operaton:calledElementBinding="version"');
-    expect(xml).toContain('operaton:calledElementVersion="3"');
+    expect(run.xml).toContain('operaton:calledElementBinding="version"');
+    expect(run.xml).toContain('operaton:calledElementVersion="3"');
   });
 
   it('re-imports to the same binding and re-emits `version = 3`', async () => {
-    expect(findCallActivity(irImported, 'InvokeSub').binding).toEqual({
+    expect(findCallActivity(run.ir2, 'InvokeSub').binding).toEqual({
       kind: 'version',
       version: '3',
     });
-    expect(reemittedDsl).toContain('version = 3');
-    const document = await parse(reemittedDsl);
+    expect(run.dsl).toContain('version = 3');
+    const document = await parse(run.dsl);
     expect(document.parseResult.parserErrors).toHaveLength(0);
   });
 });
 
 describe('round-trip: call activity — businessKey and every mapping shape', () => {
-  // `in` sources are checked by the validator against caller scope, so they are
-  // declared below; `out` sources are evaluated in the called process and are
-  // not.
+  // The validator checks `in` sources against caller scope, so they are declared
+  // below. `out` sources are evaluated in the called process and are not.
   const FULL_FEATURED_SRC = [
     'process call-full-featured {',
     '  var a: number',
@@ -265,41 +203,25 @@ describe('round-trip: call activity — businessKey and every mapping shape', ()
     ],
   };
 
-  let irInitial: BpmnProcess;
-  let xml: string;
-  let importWarnings: string[];
-  let irImported: BpmnProcess;
-  let dslPrime: string;
-  let irSecondRound: BpmnProcess;
-
-  beforeAll(async () => {
-    irInitial = astToIr(await parseToAst(FULL_FEATURED_SRC));
-    xml = await irToXml(irInitial);
-    const imported = await xmlToIr(xml);
-    importWarnings = imported.warnings;
-    irImported = imported.ir;
-
-    dslPrime = irToDsl(irImported);
-    irSecondRound = astToIr(await parseToAst(dslPrime));
-  });
+  const run = roundTripOf(FULL_FEATURED_SRC);
 
   it('desugars to the expected call node (businessKey + every mapping shape)', () => {
-    expect(findCallActivity(irInitial, 'InvokeSub')).toEqual(EXPECTED_CALL);
+    expect(findCallActivity(run.ir1, 'InvokeSub')).toEqual(EXPECTED_CALL);
   });
 
   it('imports with zero warnings, and the call node survives verbatim', () => {
-    expect(importWarnings).toEqual([]);
-    expect(findCallActivity(irImported, 'InvokeSub')).toEqual(
-      findCallActivity(irInitial, 'InvokeSub'),
+    expect(run.warnings).toEqual([]);
+    expect(findCallActivity(run.ir2, 'InvokeSub')).toEqual(
+      findCallActivity(run.ir1, 'InvokeSub'),
     );
   });
 
   it('a second round-trip (DSL′ → IR₃) is normalized-equal to the first', () => {
-    expect(normalizeIr(irSecondRound)).toEqual(normalizeIr(irInitial));
+    expect(normalizeIr(run.ir3)).toEqual(normalizeIr(run.ir1));
   });
 
   it('the decompiled DSL recompiles without validation errors', async () => {
-    const { diagnostics } = await validate(dslPrime);
+    const { diagnostics } = await validate(run.dsl);
     expect(diagnostics.filter((d) => d.severity === 1)).toEqual([]);
   });
 });
@@ -319,22 +241,10 @@ describe('round-trip: call activity nested inside a subprocess', () => {
     '',
   ].join('\n');
 
-  let irInitial: BpmnProcess;
-  let xml: string;
-  let irImported: BpmnProcess;
-  let dslPrime: string;
-  let irSecondRound: BpmnProcess;
-
-  beforeAll(async () => {
-    irInitial = astToIr(await parseToAst(NESTED_CALL_SRC));
-    xml = await irToXml(irInitial);
-    ({ ir: irImported } = await xmlToIr(xml));
-    dslPrime = irToDsl(irImported);
-    irSecondRound = astToIr(await parseToAst(dslPrime));
-  });
+  const run = roundTripOf(NESTED_CALL_SRC);
 
   it('the call sits in the nested Payment container, never in the parent, at every hop', () => {
-    for (const ir of [irInitial, irImported, irSecondRound]) {
+    for (const ir of [run.ir1, run.ir2, run.ir3]) {
       expect(idsOf(ir).has('ChargeCustomer')).toBe(false);
       const payment = findSubProcess(ir, 'Payment');
       const call = findCallActivity(payment, 'ChargeCustomer');
@@ -343,9 +253,9 @@ describe('round-trip: call activity nested inside a subprocess', () => {
   });
 
   it('the re-emitted DSL reconstructs the nested `subprocess { call … }` shape and re-parses cleanly', async () => {
-    expect(dslPrime).toContain('subprocess Payment "Handle payment" {');
-    expect(dslPrime).toContain('call ChargeCustomer');
-    const document = await parse(dslPrime);
+    expect(run.dsl).toContain('subprocess Payment "Handle payment" {');
+    expect(run.dsl).toContain('call ChargeCustomer');
+    const document = await parse(run.dsl);
     expect(document.parseResult.parserErrors).toHaveLength(0);
   });
 });
@@ -368,19 +278,7 @@ describe('round-trip: goto targeting a call activity', () => {
     '',
   ].join('\n');
 
-  let irInitial: BpmnProcess;
-  let xml: string;
-  let irImported: BpmnProcess;
-  let dslPrime: string;
-  let irSecondRound: BpmnProcess;
-
-  beforeAll(async () => {
-    irInitial = astToIr(await parseToAst(GOTO_CALL_SRC));
-    xml = await irToXml(irInitial);
-    ({ ir: irImported } = await xmlToIr(xml));
-    dslPrime = irToDsl(irImported);
-    irSecondRound = astToIr(await parseToAst(dslPrime));
-  });
+  const run = roundTripOf(GOTO_CALL_SRC);
 
   it('the fixture opens validator-clean (no diagnostics)', async () => {
     const { diagnostics } = await validate(GOTO_CALL_SRC);
@@ -388,7 +286,7 @@ describe('round-trip: goto targeting a call activity', () => {
   });
 
   it('both the goto branch and the fallthrough converge on the call node', () => {
-    for (const ir of [irInitial, irImported]) {
+    for (const ir of [run.ir1, run.ir2]) {
       expect(findCallActivity(ir, 'Invoke').calledElement).toBe(
         'invoice-approval',
       );
@@ -398,23 +296,22 @@ describe('round-trip: goto targeting a call activity', () => {
   });
 
   it('a second round-trip (DSL′ → IR₃) is normalized-equal to the first, and re-parses with zero errors', async () => {
-    // `irToDsl` reconstructs the goto/fallthrough convergence as a structured
-    // `if`/`else` rather than replaying the literal `goto`, and re-desugaring
-    // that form grows a synthesized pass-through join, so the comparison goes
-    // through `normalizeIr` rather than a raw flow-endpoint diff.
-    expect(findCallActivity(irSecondRound, 'Invoke').calledElement).toBe(
+    // irToDsl reconstructs the goto/fallthrough convergence as `if`/`else`
+    // rather than replaying the literal `goto`, and re-desugaring that grows a
+    // pass-through join, so compare through normalizeIr.
+    expect(findCallActivity(run.ir3, 'Invoke').calledElement).toBe(
       'invoice-approval',
     );
-    expect(normalizeIr(irSecondRound)).toEqual(normalizeIr(irInitial));
+    expect(normalizeIr(run.ir3)).toEqual(normalizeIr(run.ir1));
 
-    const document = await parse(dslPrime);
+    const document = await parse(run.dsl);
     expect(document.parseResult.parserErrors).toHaveLength(0);
   });
 });
 
 describe('round-trip: import-first — interleaved mappings and the camunda: binding alias', () => {
-  // The call's `name` deliberately differs from the name humanised from its id,
-  // so it is kept as a genuine label rather than dropped as derivable.
+  // The `name` differs from the name humanised from the id, so it survives as a
+  // real label instead of being dropped as derivable.
   const HANDWRITTEN_BPMN = `<?xml version="1.0" encoding="UTF-8"?>
 <bpmn:definitions
     xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
@@ -460,7 +357,7 @@ describe('round-trip: import-first — interleaved mappings and the camunda: bin
 </bpmn:definitions>`;
 
   let irFirstImport: BpmnProcess;
-  let importWarnings: string[];
+  let importWarnings: ImportWarning[];
   let dsl: string;
   let irSecondImport: BpmnProcess;
 
@@ -525,17 +422,14 @@ describe('example: purchasing.bpmnscript calls the invoice-approval example by i
   });
 
   it('round-trips end to end and resolves the real invoice-approval example by id', async () => {
-    const ir = astToIr(await parseToAst(source));
-    const call = findCallActivity(ir, 'ReviewInvoice');
-    expect(call.calledElement).toBe('invoice-approval');
+    const run = await roundTrip(source);
+    expect(findCallActivity(run.ir1, 'ReviewInvoice').calledElement).toBe(
+      'invoice-approval',
+    );
+    expect(run.xml).toContain('calledElement="invoice-approval"');
+    expect(run.warnings).toEqual([]);
 
-    const xml = await irToXml(ir);
-    expect(xml).toContain('calledElement="invoice-approval"');
-
-    const { ir: irImported, warnings } = await xmlToIr(xml);
-    expect(warnings).toEqual([]);
-    const reemittedDsl = irToDsl(irImported);
-    const document = await parse(reemittedDsl);
+    const document = await parse(run.dsl);
     expect(document.parseResult.parserErrors).toHaveLength(0);
   });
 });

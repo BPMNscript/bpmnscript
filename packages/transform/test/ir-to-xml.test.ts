@@ -25,7 +25,35 @@ import type { Model } from '@bpmn-script/language';
 
 import { irToXml } from '../src/ir-to-xml.js';
 import { astToIr } from '../src/ast-to-ir.js';
-import { HANDWRITTEN_IMPORT_IR } from './helpers/ir-fixtures.js';
+import {
+  around,
+  boundaryEvent,
+  callActivity,
+  chained,
+  chainedSub,
+  classBinding,
+  conditionDef,
+  delegateBinding,
+  edge,
+  errorDef,
+  escalationDef,
+  eventHandler,
+  exprBinding,
+  externalBinding,
+  flowChain,
+  gateway,
+  HANDWRITTEN_IMPORT_IR,
+  ioParam,
+  messageDef,
+  minimalProcess,
+  processIr,
+  scriptTask,
+  signalDef,
+  textValue,
+  timerDef,
+  triggeredSub,
+  typedEvent,
+} from './helpers/ir-fixtures.js';
 import type {
   BpmnProcess,
   EventDefinition,
@@ -74,11 +102,6 @@ describe('irToXml — bpmn-moddle round-trip', () => {
     expect(warnings).toEqual([]);
   });
 
-  it('output is a non-empty string', () => {
-    expect(typeof xml).toBe('string');
-    expect(xml.length).toBeGreaterThan(0);
-  });
-
   it('labels the conditioned flow with its bare condition text', () => {
     // Viewers render a flow's `name`, not its `conditionExpression`, so the
     // condition (minus the `${...}` delimiters) is mirrored as the edge label.
@@ -92,22 +115,13 @@ describe('irToXml — bpmn-moddle round-trip', () => {
 // ── 2. Expected Operaton attributes ──────────────────────────────────────────
 
 describe('irToXml — Operaton extension attributes', () => {
-  it('contains operaton:assignee="demo"', () => {
-    expect(xml).toContain('operaton:assignee="demo"');
-  });
-
-  it('contains operaton:assignee="manager"', () => {
-    expect(xml).toContain('operaton:assignee="manager"');
-  });
-
-  it('contains operaton:class="com.example.invoice.AutoApproveDelegate"', () => {
-    expect(xml).toContain(
-      'operaton:class="com.example.invoice.AutoApproveDelegate"',
-    );
-  });
-
-  it('contains operaton:historyTimeToLive="P30D"', () => {
-    expect(xml).toContain('operaton:historyTimeToLive="P30D"');
+  it.each([
+    'operaton:assignee="demo"',
+    'operaton:assignee="manager"',
+    'operaton:class="com.example.invoice.AutoApproveDelegate"',
+    'operaton:historyTimeToLive="P30D"',
+  ])('contains %s', (attribute) => {
+    expect(xml).toContain(attribute);
   });
 
   it('emits the bpmndi:BPMNDiagram block', () => {
@@ -157,16 +171,6 @@ describe('irToXml — per-node incoming/outgoing graph degree', () => {
       expect(outgoingCount).toBe(expected.out);
     });
   }
-
-  it('total incoming across all nodes equals number of sequence flows (6)', () => {
-    const totalIncoming = (xml.match(/<bpmn:incoming>/g) ?? []).length;
-    expect(totalIncoming).toBe(6);
-  });
-
-  it('total outgoing across all nodes equals number of sequence flows (6)', () => {
-    const totalOutgoing = (xml.match(/<bpmn:outgoing>/g) ?? []).length;
-    expect(totalOutgoing).toBe(6);
-  });
 });
 
 // ── 4. Full-pipeline golden diff ─────────────────────────────────────────────
@@ -199,6 +203,8 @@ describe('irToXml — full-pipeline golden diff', () => {
   });
 
   it('irToXml(astToIr(parse(example))) matches the generated golden byte-for-byte', () => {
+    // The example process holds no sub-process, so this also pins that the DI
+    // expansion hint is attached only when one is actually present.
     const goldenXml = readFileSync(GOLDEN_GENERATED_PATH, 'utf-8');
     expect(pipelineXml).toBe(goldenXml);
   });
@@ -227,10 +233,9 @@ describe('irToXml — parallelGateway serialization', () => {
    *   BranchA, BranchB -> Join (parallelGateway, 2 incoming)
    *   Join -> End
    */
-  const parallelIr: BpmnProcess = {
-    id: 'parallel-proc',
-    isExecutable: true,
-    flowElements: [
+  const parallelIr: BpmnProcess = processIr(
+    'parallel-proc',
+    [
       { kind: 'startEvent', id: 'Start' },
       { kind: 'parallelGateway', id: 'Fork', name: 'Fork' },
       { kind: 'userTask', id: 'BranchA', name: 'Branch A' },
@@ -238,7 +243,7 @@ describe('irToXml — parallelGateway serialization', () => {
       { kind: 'parallelGateway', id: 'Join', name: 'Join' },
       { kind: 'endEvent', id: 'End' },
     ],
-    sequenceFlows: [
+    [
       { id: 'F_Start_Fork', sourceRef: 'Start', targetRef: 'Fork' },
       { id: 'F_Fork_A', sourceRef: 'Fork', targetRef: 'BranchA' },
       { id: 'F_Fork_B', sourceRef: 'Fork', targetRef: 'BranchB' },
@@ -246,7 +251,7 @@ describe('irToXml — parallelGateway serialization', () => {
       { id: 'F_B_Join', sourceRef: 'BranchB', targetRef: 'Join' },
       { id: 'F_Join_End', sourceRef: 'Join', targetRef: 'End' },
     ],
-  };
+  );
 
   let parallelXml: string;
 
@@ -277,76 +282,42 @@ describe('irToXml — parallelGateway serialization', () => {
 // ── 6. serviceTask binding variants ──────────────────────────────────────────
 
 describe('irToXml — serviceTask binding variants', () => {
-  /** Minimal single-task IR, parameterised over the service task's binding. */
-  function singleServiceTaskIr(binding: BpmnProcess['flowElements'][number]) {
-    return {
-      id: 'binding-proc',
-      isExecutable: true,
-      flowElements: [
-        { kind: 'startEvent', id: 'Start' },
-        binding,
-        { kind: 'endEvent', id: 'End' },
-      ],
-      sequenceFlows: [
-        { id: 'F_Start_Task', sourceRef: 'Start', targetRef: 'Task' },
-        { id: 'F_Task_End', sourceRef: 'Task', targetRef: 'End' },
-      ],
-    } satisfies BpmnProcess;
-  }
-
-  it('expression binding emits operaton:expression', async () => {
-    const ir = singleServiceTaskIr({
-      kind: 'serviceTask',
-      id: 'Task',
-      binding: { kind: 'expression', expression: '${bean.method(execution)}' },
-    });
-    const out = await irToXml(ir);
-    expect(out).toContain('operaton:expression="${bean.method(execution)}"');
-  });
-
-  it('delegateExpression binding emits operaton:delegateExpression', async () => {
-    const ir = singleServiceTaskIr({
-      kind: 'serviceTask',
-      id: 'Task',
-      binding: { kind: 'delegateExpression', expression: '${myDelegate}' },
-    });
-    const out = await irToXml(ir);
-    expect(out).toContain('operaton:delegateExpression="${myDelegate}"');
-  });
-
-  it('external binding emits operaton:type="external" and operaton:topic', async () => {
-    const ir = singleServiceTaskIr({
-      kind: 'serviceTask',
-      id: 'Task',
-      binding: { kind: 'external', topic: 'shipping' },
-    });
-    const out = await irToXml(ir);
-    expect(out).toContain('operaton:type="external"');
-    expect(out).toContain('operaton:topic="shipping"');
+  it.each([
+    [
+      'expression binding emits operaton:expression',
+      exprBinding('${bean.method(execution)}'),
+      ['operaton:expression="${bean.method(execution)}"'],
+    ],
+    [
+      'delegateExpression binding emits operaton:delegateExpression',
+      delegateBinding('${myDelegate}'),
+      ['operaton:delegateExpression="${myDelegate}"'],
+    ],
+    [
+      'external binding emits operaton:type="external" and operaton:topic',
+      externalBinding('shipping'),
+      ['operaton:type="external"', 'operaton:topic="shipping"'],
+    ],
+  ] as const)('%s', async (_title, binding, expected) => {
+    const out = await irToXml(
+      around({ kind: 'serviceTask', id: 'Task', binding }),
+    );
+    for (const attribute of expected) {
+      expect(out).toContain(attribute);
+    }
   });
 });
 
 // ── 7. scriptTask serialization ──────────────────────────────────────────────
 
 describe('irToXml — scriptTask serialization', () => {
-  const scriptIr: BpmnProcess = {
-    id: 'script-proc',
-    isExecutable: true,
-    flowElements: [
-      { kind: 'startEvent', id: 'Start' },
-      {
-        kind: 'scriptTask',
-        id: 'Compute',
-        format: 'javascript',
-        code: 'var total = amount * 2;\nreturn total;',
-      },
-      { kind: 'endEvent', id: 'End' },
-    ],
-    sequenceFlows: [
-      { id: 'F_Start_Compute', sourceRef: 'Start', targetRef: 'Compute' },
-      { id: 'F_Compute_End', sourceRef: 'Compute', targetRef: 'End' },
-    ],
-  };
+  const scriptIr: BpmnProcess = around(
+    scriptTask(
+      'Compute',
+      'javascript',
+      'var total = amount * 2;\nreturn total;',
+    ),
+  );
 
   let scriptXml: string;
 
@@ -374,6 +345,21 @@ describe('irToXml — scriptTask serialization', () => {
 
 // ── 8. Sub-process containment ───────────────────────────────────────────────
 
+/** `PStart -> Outer(OStart -> Inner(IStart -> Deep -> IEnd) -> OEnd) -> PEnd`. */
+const twoLevelIr: BpmnProcess = chained([
+  { kind: 'startEvent', id: 'PStart' },
+  chainedSub('Outer', [
+    { kind: 'startEvent', id: 'OStart' },
+    chainedSub('Inner', [
+      { kind: 'startEvent', id: 'IStart' },
+      { kind: 'userTask', id: 'Deep' },
+      { kind: 'endEvent', id: 'IEnd' },
+    ]),
+    { kind: 'endEvent', id: 'OEnd' },
+  ]),
+  { kind: 'endEvent', id: 'PEnd' },
+]);
+
 describe('irToXml — sub-process containment', () => {
   /**
    * Process `PStart -> sub -> PEnd`, where `sub` is an embedded sub-process
@@ -381,37 +367,17 @@ describe('irToXml — sub-process containment', () => {
    * (not the DI, which auto-layout regenerates) is inspected by parsing the
    * output back with raw `bpmn-moddle`.
    */
-  const nestedIr: BpmnProcess = {
-    id: 'proc',
-    isExecutable: true,
-    flowElements: [
-      { kind: 'startEvent', id: 'PStart' },
-      {
-        kind: 'subProcess',
-        id: 'sub',
-        flowElements: [
-          { kind: 'startEvent', id: 'SubStart' },
-          { kind: 'userTask', id: 'Review', name: 'Review', assignee: 'demo' },
-          { kind: 'endEvent', id: 'SubEnd' },
-        ],
-        sequenceFlows: [
-          {
-            id: 'SF_SubStart_Review',
-            sourceRef: 'SubStart',
-            targetRef: 'Review',
-          },
-          { id: 'SF_Review_SubEnd', sourceRef: 'Review', targetRef: 'SubEnd' },
-        ],
-      },
-      { kind: 'endEvent', id: 'PEnd' },
-    ],
-    sequenceFlows: [
-      { id: 'SF_PStart_sub', sourceRef: 'PStart', targetRef: 'sub' },
-      { id: 'SF_sub_PEnd', sourceRef: 'sub', targetRef: 'PEnd' },
-    ],
-  };
+  const nestedIr: BpmnProcess = chained([
+    { kind: 'startEvent', id: 'PStart' },
+    chainedSub('sub', [
+      { kind: 'startEvent', id: 'SubStart' },
+      { kind: 'userTask', id: 'Review', name: 'Review', assignee: 'demo' },
+      { kind: 'endEvent', id: 'SubEnd' },
+    ]),
+    { kind: 'endEvent', id: 'PEnd' },
+  ]);
 
-  let proc: ModdleTree;
+  let proc: Moddle;
   let nestedXml: string;
 
   beforeAll(async () => {
@@ -465,45 +431,28 @@ describe('irToXml — sub-process containment', () => {
   });
 
   it('wires a nested exclusive gateway default to the nested flow', async () => {
-    const gatewayIr: BpmnProcess = {
-      id: 'proc',
-      isExecutable: true,
-      flowElements: [
-        { kind: 'startEvent', id: 'PStart' },
-        {
-          kind: 'subProcess',
-          id: 'sub',
-          flowElements: [
-            { kind: 'startEvent', id: 'SubStart' },
-            {
-              kind: 'exclusiveGateway',
-              id: 'Gw',
-              defaultFlowId: 'SF_Gw_B',
-            },
-            { kind: 'userTask', id: 'A' },
-            { kind: 'userTask', id: 'B' },
-            { kind: 'endEvent', id: 'SubEnd' },
-          ],
-          sequenceFlows: [
-            { id: 'SF_SubStart_Gw', sourceRef: 'SubStart', targetRef: 'Gw' },
-            {
-              id: 'SF_Gw_A',
-              conditionExpression: '${ok}',
-              sourceRef: 'Gw',
-              targetRef: 'A',
-            },
-            { id: 'SF_Gw_B', sourceRef: 'Gw', targetRef: 'B' },
-            { id: 'SF_A_End', sourceRef: 'A', targetRef: 'SubEnd' },
-            { id: 'SF_B_End', sourceRef: 'B', targetRef: 'SubEnd' },
-          ],
-        },
-        { kind: 'endEvent', id: 'PEnd' },
-      ],
-      sequenceFlows: [
-        { id: 'SF_PStart_sub', sourceRef: 'PStart', targetRef: 'sub' },
-        { id: 'SF_sub_PEnd', sourceRef: 'sub', targetRef: 'PEnd' },
-      ],
-    };
+    const gatewayIr: BpmnProcess = chained([
+      { kind: 'startEvent', id: 'PStart' },
+      {
+        kind: 'subProcess',
+        id: 'sub',
+        flowElements: [
+          { kind: 'startEvent', id: 'SubStart' },
+          gateway('Gw', 'SF_Gw_B'),
+          { kind: 'userTask', id: 'A' },
+          { kind: 'userTask', id: 'B' },
+          { kind: 'endEvent', id: 'SubEnd' },
+        ],
+        sequenceFlows: [
+          { id: 'SF_SubStart_Gw', sourceRef: 'SubStart', targetRef: 'Gw' },
+          edge('Gw', 'A', { id: 'SF_Gw_A', condition: '${ok}' }),
+          { id: 'SF_Gw_B', sourceRef: 'Gw', targetRef: 'B' },
+          { id: 'SF_A_End', sourceRef: 'A', targetRef: 'SubEnd' },
+          { id: 'SF_B_End', sourceRef: 'B', targetRef: 'SubEnd' },
+        ],
+      },
+      { kind: 'endEvent', id: 'PEnd' },
+    ]);
 
     const tree = await parseProcessTree(await irToXml(gatewayIr));
     const sub = childById(tree, 'sub');
@@ -513,48 +462,6 @@ describe('irToXml — sub-process containment', () => {
   });
 
   it('serializes two-level nesting recursively', async () => {
-    const twoLevelIr: BpmnProcess = {
-      id: 'proc',
-      isExecutable: true,
-      flowElements: [
-        { kind: 'startEvent', id: 'PStart' },
-        {
-          kind: 'subProcess',
-          id: 'Outer',
-          flowElements: [
-            { kind: 'startEvent', id: 'OStart' },
-            {
-              kind: 'subProcess',
-              id: 'Inner',
-              flowElements: [
-                { kind: 'startEvent', id: 'IStart' },
-                { kind: 'userTask', id: 'Deep' },
-                { kind: 'endEvent', id: 'IEnd' },
-              ],
-              sequenceFlows: [
-                {
-                  id: 'SF_IStart_Deep',
-                  sourceRef: 'IStart',
-                  targetRef: 'Deep',
-                },
-                { id: 'SF_Deep_IEnd', sourceRef: 'Deep', targetRef: 'IEnd' },
-              ],
-            },
-            { kind: 'endEvent', id: 'OEnd' },
-          ],
-          sequenceFlows: [
-            { id: 'SF_OStart_Inner', sourceRef: 'OStart', targetRef: 'Inner' },
-            { id: 'SF_Inner_OEnd', sourceRef: 'Inner', targetRef: 'OEnd' },
-          ],
-        },
-        { kind: 'endEvent', id: 'PEnd' },
-      ],
-      sequenceFlows: [
-        { id: 'SF_PStart_Outer', sourceRef: 'PStart', targetRef: 'Outer' },
-        { id: 'SF_Outer_PEnd', sourceRef: 'Outer', targetRef: 'PEnd' },
-      ],
-    };
-
     const tree = await parseProcessTree(await irToXml(twoLevelIr));
     const outer = childById(tree, 'Outer');
     expect(outer.$type).toBe('bpmn:SubProcess');
@@ -577,108 +484,28 @@ describe('irToXml — DI expansion hint for sub-processes', () => {
    * sub-process before layout, so the library expands the parent box and lays
    * the children out inside it.
    */
-  const twoChildrenIr: BpmnProcess = {
-    id: 'proc',
-    isExecutable: true,
-    flowElements: [
-      { kind: 'startEvent', id: 'PStart' },
-      {
-        kind: 'subProcess',
-        id: 'sub',
-        flowElements: [
-          { kind: 'startEvent', id: 'SubStart' },
-          { kind: 'userTask', id: 'ReviewA', name: 'Review A' },
-          { kind: 'userTask', id: 'ReviewB', name: 'Review B' },
-          { kind: 'endEvent', id: 'SubEnd' },
-        ],
-        sequenceFlows: [
-          {
-            id: 'SF_SubStart_ReviewA',
-            sourceRef: 'SubStart',
-            targetRef: 'ReviewA',
-          },
-          {
-            id: 'SF_ReviewA_ReviewB',
-            sourceRef: 'ReviewA',
-            targetRef: 'ReviewB',
-          },
-          {
-            id: 'SF_ReviewB_SubEnd',
-            sourceRef: 'ReviewB',
-            targetRef: 'SubEnd',
-          },
-        ],
-      },
-      { kind: 'endEvent', id: 'PEnd' },
-    ],
-    sequenceFlows: [
-      { id: 'SF_PStart_sub', sourceRef: 'PStart', targetRef: 'sub' },
-      { id: 'SF_sub_PEnd', sourceRef: 'sub', targetRef: 'PEnd' },
-    ],
-  };
+  const twoChildrenIr: BpmnProcess = chained([
+    { kind: 'startEvent', id: 'PStart' },
+    chainedSub('sub', [
+      { kind: 'startEvent', id: 'SubStart' },
+      { kind: 'userTask', id: 'ReviewA', name: 'Review A' },
+      { kind: 'userTask', id: 'ReviewB', name: 'Review B' },
+      { kind: 'endEvent', id: 'SubEnd' },
+    ]),
+    { kind: 'endEvent', id: 'PEnd' },
+  ]);
 
   it('every nested child shape falls strictly inside its parent sub-process shape', async () => {
     const xml = await irToXml(twoChildrenIr);
     const shapes = await parseDiShapesById(xml);
-    const parent = requireShape(shapes, 'sub');
-    for (const childId of ['SubStart', 'ReviewA', 'ReviewB', 'SubEnd']) {
-      const child = requireShape(shapes, childId);
-      expect(boundsStrictlyInside(child.bounds, parent.bounds)).toBe(true);
-    }
+    expectInside(shapes, 'sub', ['SubStart', 'ReviewA', 'ReviewB', 'SubEnd']);
   });
 
   it('two-level nesting: inner sub-process sits inside the outer, inner children inside the inner', async () => {
-    const twoLevelIr: BpmnProcess = {
-      id: 'proc',
-      isExecutable: true,
-      flowElements: [
-        { kind: 'startEvent', id: 'PStart' },
-        {
-          kind: 'subProcess',
-          id: 'Outer',
-          flowElements: [
-            { kind: 'startEvent', id: 'OStart' },
-            {
-              kind: 'subProcess',
-              id: 'Inner',
-              flowElements: [
-                { kind: 'startEvent', id: 'IStart' },
-                { kind: 'userTask', id: 'Deep' },
-                { kind: 'endEvent', id: 'IEnd' },
-              ],
-              sequenceFlows: [
-                {
-                  id: 'SF_IStart_Deep',
-                  sourceRef: 'IStart',
-                  targetRef: 'Deep',
-                },
-                { id: 'SF_Deep_IEnd', sourceRef: 'Deep', targetRef: 'IEnd' },
-              ],
-            },
-            { kind: 'endEvent', id: 'OEnd' },
-          ],
-          sequenceFlows: [
-            { id: 'SF_OStart_Inner', sourceRef: 'OStart', targetRef: 'Inner' },
-            { id: 'SF_Inner_OEnd', sourceRef: 'Inner', targetRef: 'OEnd' },
-          ],
-        },
-        { kind: 'endEvent', id: 'PEnd' },
-      ],
-      sequenceFlows: [
-        { id: 'SF_PStart_Outer', sourceRef: 'PStart', targetRef: 'Outer' },
-        { id: 'SF_Outer_PEnd', sourceRef: 'Outer', targetRef: 'PEnd' },
-      ],
-    };
-
     const xml = await irToXml(twoLevelIr);
     const shapes = await parseDiShapesById(xml);
-    const outer = requireShape(shapes, 'Outer');
-    const inner = requireShape(shapes, 'Inner');
-    expect(boundsStrictlyInside(inner.bounds, outer.bounds)).toBe(true);
-    for (const childId of ['IStart', 'Deep', 'IEnd']) {
-      const child = requireShape(shapes, childId);
-      expect(boundsStrictlyInside(child.bounds, inner.bounds)).toBe(true);
-    }
+    expectInside(shapes, 'Outer', ['Inner']);
+    expectInside(shapes, 'Inner', ['IStart', 'Deep', 'IEnd']);
   });
 
   it('emits exactly one bpmndi:BPMNDiagram (the layout-generated one replaces the stub)', async () => {
@@ -687,33 +514,12 @@ describe('irToXml — DI expansion hint for sub-processes', () => {
     expect(diagramCount).toBe(1);
   });
 
-  it('a sub-process-free process produces byte-identical output to the frozen golden', async () => {
-    // The DI hint must only ever be attached when the process actually contains
-    // a sub-process, so the full-pipeline golden is byte-diffed here too.
-    const services = createBpmnScriptServices(EmptyFileSystem);
-    const parse = parseHelper<Model>(services.BpmnScript);
-    const src = readFileSync(EXAMPLE_BPMNSCRIPT_PATH, 'utf-8');
-    const document = await parse(src);
-    const ir = astToIr(document.parseResult.value);
-    const generatedXml = await irToXml(ir);
-    const goldenXml = readFileSync(GOLDEN_GENERATED_PATH, 'utf-8');
-    expect(generatedXml).toBe(goldenXml);
-  });
-
   it('an empty sub-process body does not throw', async () => {
-    const emptySubIr: BpmnProcess = {
-      id: 'proc',
-      isExecutable: true,
-      flowElements: [
-        { kind: 'startEvent', id: 'PStart' },
-        { kind: 'subProcess', id: 'sub', flowElements: [], sequenceFlows: [] },
-        { kind: 'endEvent', id: 'PEnd' },
-      ],
-      sequenceFlows: [
-        { id: 'SF_PStart_sub', sourceRef: 'PStart', targetRef: 'sub' },
-        { id: 'SF_sub_PEnd', sourceRef: 'sub', targetRef: 'PEnd' },
-      ],
-    };
+    const emptySubIr: BpmnProcess = chained([
+      { kind: 'startEvent', id: 'PStart' },
+      chainedSub('sub', []),
+      { kind: 'endEvent', id: 'PEnd' },
+    ]);
     await expect(irToXml(emptySubIr)).resolves.not.toThrow();
   });
 });
@@ -768,14 +574,14 @@ describe('irToXml — callActivity serialization', () => {
   };
 
   let callXml: string;
-  let call: CallModdle;
+  let call: Moddle;
 
   beforeAll(async () => {
     // `irToXml` runs bpmn-auto-layout, so a throw here fails the suite and
     // doubles as the "layout handles a call activity" check.
     callXml = await irToXml(richCallIr);
     const proc = await parseProcessTreeWithOperaton(callXml);
-    call = childById(proc, 'CallSub') as unknown as CallModdle;
+    call = childById(proc, 'CallSub');
   });
 
   it('emits a bpmn:CallActivity carrying calledElement and the deployment binding', () => {
@@ -850,42 +656,30 @@ describe('irToXml — callActivity serialization', () => {
       binding: { kind: 'version', version: '7' },
     });
     const proc = await parseProcessTreeWithOperaton(await irToXml(ir));
-    const c = childById(proc, 'CallSub') as unknown as CallModdle;
+    const c = childById(proc, 'CallSub');
     expect(c.calledElementBinding).toBe('version');
     expect(c.calledElementVersion).toBe('7');
   });
 
   it('emits neither binding attribute when no binding is present', async () => {
-    const ir = minimalCallIr({
-      kind: 'callActivity',
-      id: 'CallSub',
-      calledElement: 'sub',
-    });
+    const ir = minimalCallIr(callActivity('CallSub', 'sub'));
     const proc = await parseProcessTreeWithOperaton(await irToXml(ir));
-    const c = childById(proc, 'CallSub') as unknown as CallModdle;
+    const c = childById(proc, 'CallSub');
     expect(c.calledElementBinding).toBeUndefined();
     expect(c.calledElementVersion).toBeUndefined();
   });
 
   it('emits no extensionElements for a minimal call (calledElement only)', async () => {
-    const ir = minimalCallIr({
-      kind: 'callActivity',
-      id: 'CallSub',
-      calledElement: 'sub',
-    });
+    const ir = minimalCallIr(callActivity('CallSub', 'sub'));
     const proc = await parseProcessTreeWithOperaton(await irToXml(ir));
-    const c = childById(proc, 'CallSub') as unknown as CallModdle;
+    const c = childById(proc, 'CallSub');
     expect(c.extensionElements).toBeUndefined();
   });
 
   it('derives a humanized name for an unnamed call activity', async () => {
-    const ir = minimalCallIr({
-      kind: 'callActivity',
-      id: 'ProcessPayment',
-      calledElement: 'sub',
-    });
+    const ir = minimalCallIr(callActivity('ProcessPayment', 'sub'));
     const proc = await parseProcessTreeWithOperaton(await irToXml(ir));
-    const c = childById(proc, 'ProcessPayment') as unknown as CallModdle;
+    const c = childById(proc, 'ProcessPayment');
     // The excluded-name path does not apply to activities: the id humanizes.
     expect(c.name).toBe('Process Payment');
   });
@@ -912,105 +706,52 @@ describe('irToXml — event layer (errors + escalations)', () => {
    * triggered, not flow-connected.
    */
   const eventIr: BpmnProcess = {
-    id: 'proc',
-    isExecutable: true,
+    ...chained(
+      [
+        { kind: 'startEvent', id: 'PStart' },
+        chainedSub(
+          'OuterSub',
+          [
+            { kind: 'startEvent', id: 'OSubStart' },
+            { kind: 'userTask', id: 'OWork', assignee: 'demo' },
+            { kind: 'endEvent', id: 'OSubEnd' },
+          ],
+          {
+            unwired: [
+              triggeredSub('ErrHandler', [
+                typedEvent(
+                  'startEvent',
+                  'ErrStart',
+                  errorDef('PF', { codeVariable: 'c', messageVariable: 'm' }),
+                ),
+                { kind: 'userTask', id: 'Recover' },
+                { kind: 'endEvent', id: 'ErrEnd' },
+              ]),
+            ],
+          },
+        ),
+        typedEvent('intermediateThrowEvent', 'Emit1', escalationDef('LS')),
+        typedEvent('endEvent', 'ThrowPF', errorDef('PF')),
+      ],
+      {
+        unwired: [
+          triggeredSub('EscHandler', [
+            typedEvent(
+              'startEvent',
+              'EscStart',
+              escalationDef('LS', 'v'),
+              false,
+            ),
+            { kind: 'userTask', id: 'Notify' },
+            { kind: 'endEvent', id: 'EscEnd' },
+          ]),
+        ],
+      },
+    ),
     errorMessages: [{ code: 'PF', message: 'boom' }],
-    flowElements: [
-      { kind: 'startEvent', id: 'PStart' },
-      {
-        kind: 'subProcess',
-        id: 'OuterSub',
-        flowElements: [
-          { kind: 'startEvent', id: 'OSubStart' },
-          { kind: 'userTask', id: 'OWork', assignee: 'demo' },
-          { kind: 'endEvent', id: 'OSubEnd' },
-          {
-            kind: 'subProcess',
-            id: 'ErrHandler',
-            triggeredByEvent: true,
-            flowElements: [
-              {
-                kind: 'startEvent',
-                id: 'ErrStart',
-                eventDefinition: {
-                  kind: 'error',
-                  errorCode: 'PF',
-                  codeVariable: 'c',
-                  messageVariable: 'm',
-                },
-              },
-              { kind: 'userTask', id: 'Recover' },
-              { kind: 'endEvent', id: 'ErrEnd' },
-            ],
-            sequenceFlows: [
-              {
-                id: 'SF_ErrStart_Recover',
-                sourceRef: 'ErrStart',
-                targetRef: 'Recover',
-              },
-              {
-                id: 'SF_Recover_ErrEnd',
-                sourceRef: 'Recover',
-                targetRef: 'ErrEnd',
-              },
-            ],
-          },
-        ],
-        sequenceFlows: [
-          {
-            id: 'SF_OSubStart_OWork',
-            sourceRef: 'OSubStart',
-            targetRef: 'OWork',
-          },
-          { id: 'SF_OWork_OSubEnd', sourceRef: 'OWork', targetRef: 'OSubEnd' },
-        ],
-      },
-      {
-        kind: 'intermediateThrowEvent',
-        id: 'Emit1',
-        eventDefinition: { kind: 'escalation', escalationCode: 'LS' },
-      },
-      {
-        kind: 'endEvent',
-        id: 'ThrowPF',
-        eventDefinition: { kind: 'error', errorCode: 'PF' },
-      },
-      {
-        kind: 'subProcess',
-        id: 'EscHandler',
-        triggeredByEvent: true,
-        flowElements: [
-          {
-            kind: 'startEvent',
-            id: 'EscStart',
-            isInterrupting: false,
-            eventDefinition: {
-              kind: 'escalation',
-              escalationCode: 'LS',
-              codeVariable: 'v',
-            },
-          },
-          { kind: 'userTask', id: 'Notify' },
-          { kind: 'endEvent', id: 'EscEnd' },
-        ],
-        sequenceFlows: [
-          {
-            id: 'SF_EscStart_Notify',
-            sourceRef: 'EscStart',
-            targetRef: 'Notify',
-          },
-          { id: 'SF_Notify_EscEnd', sourceRef: 'Notify', targetRef: 'EscEnd' },
-        ],
-      },
-    ],
-    sequenceFlows: [
-      { id: 'SF_PStart_OuterSub', sourceRef: 'PStart', targetRef: 'OuterSub' },
-      { id: 'SF_OuterSub_Emit1', sourceRef: 'OuterSub', targetRef: 'Emit1' },
-      { id: 'SF_Emit1_ThrowPF', sourceRef: 'Emit1', targetRef: 'ThrowPF' },
-    ],
   };
 
-  let defs: EventNode;
+  let defs: Moddle;
 
   beforeAll(async () => {
     defs = await parseDefinitionsWithOperaton(await irToXml(eventIr));
@@ -1026,8 +767,8 @@ describe('irToXml — event layer (errors + escalations)', () => {
 
     const handlerStart = requireDeep(defs, 'ErrStart');
     const throwEnd = requireDeep(defs, 'ThrowPF');
-    expect(errorDef(handlerStart).errorRef?.id).toBe('Error_PF');
-    expect(errorDef(throwEnd).errorRef?.id).toBe('Error_PF');
+    expect(soleDef(handlerStart).errorRef?.id).toBe('Error_PF');
+    expect(soleDef(throwEnd).errorRef?.id).toBe('Error_PF');
   });
 
   it('synthesizes exactly one bpmn:Escalation root, shared by the handler and the emit', () => {
@@ -1039,8 +780,8 @@ describe('irToXml — event layer (errors + escalations)', () => {
 
     const handlerStart = requireDeep(defs, 'EscStart');
     const emit = requireDeep(defs, 'Emit1');
-    expect(escalationDef(handlerStart).escalationRef?.id).toBe('Escalation_LS');
-    expect(escalationDef(emit).escalationRef?.id).toBe('Escalation_LS');
+    expect(soleDef(handlerStart).escalationRef?.id).toBe('Escalation_LS');
+    expect(soleDef(emit).escalationRef?.id).toBe('Escalation_LS');
   });
 
   it('orders rootElements as [process, ...errors, ...escalations]', () => {
@@ -1053,7 +794,7 @@ describe('irToXml — event layer (errors + escalations)', () => {
     expect(handler.$type).toBe('bpmn:SubProcess');
     expect(handler.triggeredByEvent).toBe(true);
 
-    const def = errorDef(requireDeep(defs, 'ErrStart'));
+    const def = soleDef(requireDeep(defs, 'ErrStart'));
     expect(def.$type).toBe('bpmn:ErrorEventDefinition');
     expect(def.errorCodeVariable).toBe('c');
     expect(def.errorMessageVariable).toBe('m');
@@ -1062,7 +803,7 @@ describe('irToXml — event layer (errors + escalations)', () => {
   it('marks the alongside escalation handler start non-interrupting with its code binding', () => {
     const start = requireDeep(defs, 'EscStart');
     expect(start.isInterrupting).toBe(false);
-    const def = escalationDef(start);
+    const def = soleDef(start);
     expect(def.$type).toBe('bpmn:EscalationEventDefinition');
     expect(def.escalationCodeVariable).toBe('v');
   });
@@ -1079,70 +820,38 @@ describe('irToXml — event layer (errors + escalations)', () => {
   });
 
   it('catch-all handler emits no errorRef and no root when the code is unused elsewhere', async () => {
-    const catchAllIr: BpmnProcess = {
-      id: 'p',
-      isExecutable: true,
-      flowElements: [
+    const catchAllIr: BpmnProcess = minimalProcess(
+      [
         { kind: 'startEvent', id: 'S' },
         { kind: 'endEvent', id: 'E' },
-        {
-          kind: 'subProcess',
-          id: 'AnyErr',
-          triggeredByEvent: true,
-          flowElements: [
-            {
-              kind: 'startEvent',
-              id: 'AnyStart',
-              eventDefinition: { kind: 'error' },
-            },
-            { kind: 'userTask', id: 'Log' },
-            { kind: 'endEvent', id: 'AnyEnd' },
-          ],
-          sequenceFlows: [
-            { id: 'SF_AnyStart_Log', sourceRef: 'AnyStart', targetRef: 'Log' },
-            { id: 'SF_Log_AnyEnd', sourceRef: 'Log', targetRef: 'AnyEnd' },
-          ],
-        },
+        triggeredSub('AnyErr', [
+          typedEvent('startEvent', 'AnyStart', errorDef()),
+          { kind: 'userTask', id: 'Log' },
+          { kind: 'endEvent', id: 'AnyEnd' },
+        ]),
       ],
-      sequenceFlows: [{ id: 'SF_S_E', sourceRef: 'S', targetRef: 'E' }],
-    };
+      [{ id: 'SF_S_E', sourceRef: 'S', targetRef: 'E' }],
+    );
     const d = await parseDefinitionsWithOperaton(await irToXml(catchAllIr));
     expect(rootsOfType(d, 'bpmn:Error')).toHaveLength(0);
-    expect(errorDef(requireDeep(d, 'AnyStart')).errorRef).toBeUndefined();
+    expect(soleDef(requireDeep(d, 'AnyStart')).errorRef).toBeUndefined();
   });
 
   it('shares one root across two handlers and a throw of the same code', async () => {
-    const handler = (id: string): FlowElement => ({
-      kind: 'subProcess',
-      id,
-      triggeredByEvent: true,
-      flowElements: [
-        {
-          kind: 'startEvent',
-          id: `${id}_S`,
-          eventDefinition: { kind: 'error', errorCode: 'DUP' },
-        },
+    const handler = (id: string): FlowElement =>
+      triggeredSub(id, [
+        typedEvent('startEvent', `${id}_S`, errorDef('DUP')),
         { kind: 'endEvent', id: `${id}_E` },
-      ],
-      sequenceFlows: [
-        { id: `SF_${id}`, sourceRef: `${id}_S`, targetRef: `${id}_E` },
-      ],
-    });
-    const sharedIr: BpmnProcess = {
-      id: 'p',
-      isExecutable: true,
-      flowElements: [
+      ]);
+    const sharedIr: BpmnProcess = minimalProcess(
+      [
         { kind: 'startEvent', id: 'S' },
-        {
-          kind: 'endEvent',
-          id: 'T',
-          eventDefinition: { kind: 'error', errorCode: 'DUP' },
-        },
+        typedEvent('endEvent', 'T', errorDef('DUP')),
         handler('H1'),
         handler('H2'),
       ],
-      sequenceFlows: [{ id: 'SF_S_T', sourceRef: 'S', targetRef: 'T' }],
-    };
+      [{ id: 'SF_S_T', sourceRef: 'S', targetRef: 'T' }],
+    );
     const d = await parseDefinitionsWithOperaton(await irToXml(sharedIr));
     const errors = rootsOfType(d, 'bpmn:Error');
     expect(errors).toHaveLength(1);
@@ -1150,19 +859,13 @@ describe('irToXml — event layer (errors + escalations)', () => {
   });
 
   it('sanitizes a root id from a code with non-id characters', async () => {
-    const ir: BpmnProcess = {
-      id: 'p',
-      isExecutable: true,
-      flowElements: [
+    const ir: BpmnProcess = minimalProcess(
+      [
         { kind: 'startEvent', id: 'S' },
-        {
-          kind: 'endEvent',
-          id: 'T',
-          eventDefinition: { kind: 'error', errorCode: 'NEEDS REVIEW!' },
-        },
+        typedEvent('endEvent', 'T', errorDef('NEEDS REVIEW!')),
       ],
-      sequenceFlows: [{ id: 'SF_S_T', sourceRef: 'S', targetRef: 'T' }],
-    };
+      [{ id: 'SF_S_T', sourceRef: 'S', targetRef: 'T' }],
+    );
     const d = await parseDefinitionsWithOperaton(await irToXml(ir));
     const errors = rootsOfType(d, 'bpmn:Error');
     expect(errors).toHaveLength(1);
@@ -1174,23 +877,17 @@ describe('irToXml — event layer (errors + escalations)', () => {
   it('suffixes a root id that would collide with an existing element id', async () => {
     // A user task literally named `Error_Boom` occupies that id, so the root
     // for code `Boom` must move to `Error_Boom_2`.
-    const ir: BpmnProcess = {
-      id: 'p',
-      isExecutable: true,
-      flowElements: [
+    const ir: BpmnProcess = minimalProcess(
+      [
         { kind: 'startEvent', id: 'S' },
         { kind: 'userTask', id: 'Error_Boom' },
-        {
-          kind: 'endEvent',
-          id: 'T',
-          eventDefinition: { kind: 'error', errorCode: 'Boom' },
-        },
+        typedEvent('endEvent', 'T', errorDef('Boom')),
       ],
-      sequenceFlows: [
+      [
         { id: 'SF_S_X', sourceRef: 'S', targetRef: 'Error_Boom' },
         { id: 'SF_X_T', sourceRef: 'Error_Boom', targetRef: 'T' },
       ],
-    };
+    );
     const d = await parseDefinitionsWithOperaton(await irToXml(ir));
     const errors = rootsOfType(d, 'bpmn:Error');
     expect(errors).toHaveLength(1);
@@ -1203,63 +900,13 @@ describe('irToXml — event layer (errors + escalations)', () => {
     const xml = await irToXml(eventIr);
     expect((xml.match(/<bpmndi:BPMNDiagram\b/g) ?? []).length).toBe(1);
 
-    const escHandler = requireShape(shapes, 'EscHandler');
-    for (const child of ['EscStart', 'Notify', 'EscEnd']) {
-      expect(
-        boundsStrictlyInside(
-          requireShape(shapes, child).bounds,
-          escHandler.bounds,
-        ),
-      ).toBe(true);
-    }
-
-    const outerSub = requireShape(shapes, 'OuterSub');
-    const errHandler = requireShape(shapes, 'ErrHandler');
-    expect(boundsStrictlyInside(errHandler.bounds, outerSub.bounds)).toBe(true);
-    for (const child of ['ErrStart', 'Recover', 'ErrEnd']) {
-      expect(
-        boundsStrictlyInside(
-          requireShape(shapes, child).bounds,
-          errHandler.bounds,
-        ),
-      ).toBe(true);
-    }
+    expectInside(shapes, 'EscHandler', ['EscStart', 'Notify', 'EscEnd']);
+    expectInside(shapes, 'OuterSub', ['ErrHandler']);
+    expectInside(shapes, 'ErrHandler', ['ErrStart', 'Recover', 'ErrEnd']);
   });
 });
 
 // ── 12. Event layer: message + signal + timer + conditional ──────────────────
-
-/** Build an event sub-process (`on ...` handler) wrapping a start/user/end body. */
-function eventHandler(
-  id: string,
-  startId: string,
-  def: EventDefinition,
-  isInterrupting?: false,
-): FlowElement {
-  const start: FlowElement =
-    isInterrupting === false
-      ? {
-          kind: 'startEvent',
-          id: startId,
-          isInterrupting,
-          eventDefinition: def,
-        }
-      : { kind: 'startEvent', id: startId, eventDefinition: def };
-  return {
-    kind: 'subProcess',
-    id,
-    triggeredByEvent: true,
-    flowElements: [
-      start,
-      { kind: 'userTask', id: `${id}_Work` },
-      { kind: 'endEvent', id: `${id}_End` },
-    ],
-    sequenceFlows: [
-      { id: `SF_${id}_a`, sourceRef: startId, targetRef: `${id}_Work` },
-      { id: `SF_${id}_b`, sourceRef: `${id}_Work`, targetRef: `${id}_End` },
-    ],
-  };
-}
 
 describe('irToXml — event layer (message + signal + timer + conditional)', () => {
   /**
@@ -1269,43 +916,22 @@ describe('irToXml — event layer (message + signal + timer + conditional)', () 
    *   - An `emit signal "Cancelled"` intermediate throw mid-chain.
    *   - A `throw signal "Cancelled"` end event, sharing the one signal root.
    */
-  const signalIr: BpmnProcess = {
-    id: 'proc',
-    isExecutable: true,
-    flowElements: [
+  const signalIr: BpmnProcess = processIr(
+    'proc',
+    [
       { kind: 'startEvent', id: 'PStart' },
-      eventHandler('MsgHandler', 'MsgStart', {
-        kind: 'message',
-        messageName: 'PaymentReceived',
-      }),
-      eventHandler(
-        'SigHandler',
-        'SigStart',
-        { kind: 'signal', signalName: 'Cancelled' },
-        false,
-      ),
-      {
-        kind: 'intermediateThrowEvent',
-        id: 'EmitSig',
-        eventDefinition: { kind: 'signal', signalName: 'Cancelled' },
-      },
-      {
-        kind: 'endEvent',
-        id: 'ThrowSig',
-        eventDefinition: { kind: 'signal', signalName: 'Cancelled' },
-      },
+      eventHandler('MsgHandler', 'MsgStart', messageDef('PaymentReceived')),
+      eventHandler('SigHandler', 'SigStart', signalDef('Cancelled'), false),
+      typedEvent('intermediateThrowEvent', 'EmitSig', signalDef('Cancelled')),
+      typedEvent('endEvent', 'ThrowSig', signalDef('Cancelled')),
     ],
-    sequenceFlows: [
+    [
       { id: 'SF_PStart_EmitSig', sourceRef: 'PStart', targetRef: 'EmitSig' },
-      {
-        id: 'SF_EmitSig_ThrowSig',
-        sourceRef: 'EmitSig',
-        targetRef: 'ThrowSig',
-      },
+      edge('EmitSig', 'ThrowSig', { id: 'SF_EmitSig_ThrowSig' }),
     ],
-  };
+  );
 
-  let defs: EventNode;
+  let defs: Moddle;
 
   beforeAll(async () => {
     defs = await parseDefinitionsWithOperaton(await irToXml(signalIr));
@@ -1353,50 +979,31 @@ describe('irToXml — event layer (message + signal + timer + conditional)', () 
     const xml = await irToXml(signalIr);
     expect((xml.match(/<bpmndi:BPMNDiagram\b/g) ?? []).length).toBe(1);
     const shapes = await parseDiShapesById(xml);
-    for (const [handler, children] of [
-      ['MsgHandler', ['MsgStart', 'MsgHandler_Work', 'MsgHandler_End']],
-      ['SigHandler', ['SigStart', 'SigHandler_Work', 'SigHandler_End']],
-    ] as const) {
-      const box = requireShape(shapes, handler);
-      for (const child of children) {
-        expect(
-          boundsStrictlyInside(requireShape(shapes, child).bounds, box.bounds),
-        ).toBe(true);
-      }
-    }
+    expectInside(shapes, 'MsgHandler', [
+      'MsgStart',
+      'MsgHandler_Work',
+      'MsgHandler_End',
+    ]);
+    expectInside(shapes, 'SigHandler', [
+      'SigStart',
+      'SigHandler_Work',
+      'SigHandler_End',
+    ]);
   });
 
   it('emits one FormalExpression child per timer kind with the verbatim body, and no roots', async () => {
-    const timerIr: BpmnProcess = {
-      id: 'proc',
-      isExecutable: true,
-      flowElements: [
+    const timerIr: BpmnProcess = processIr(
+      'proc',
+      [
         { kind: 'startEvent', id: 'PStart' },
         { kind: 'endEvent', id: 'PEnd' },
-        eventHandler('AfterH', 'AfterStart', {
-          kind: 'timer',
-          timerKind: 'duration',
-          expression: 'PT1H',
-        }),
-        eventHandler('AtH', 'AtStart', {
-          kind: 'timer',
-          timerKind: 'date',
-          expression: '${dueDate}',
-        }),
-        eventHandler('EveryH', 'EveryStart', {
-          kind: 'timer',
-          timerKind: 'cycle',
-          expression: 'R/PT10M',
-        }),
-        eventHandler('CondH', 'CondStart', {
-          kind: 'conditional',
-          condition: '${amount > 100}',
-        }),
+        eventHandler('AfterH', 'AfterStart', timerDef('duration', 'PT1H')),
+        eventHandler('AtH', 'AtStart', timerDef('date', '${dueDate}')),
+        eventHandler('EveryH', 'EveryStart', timerDef('cycle', 'R/PT10M')),
+        eventHandler('CondH', 'CondStart', conditionDef('${amount > 100}')),
       ],
-      sequenceFlows: [
-        { id: 'SF_PStart_PEnd', sourceRef: 'PStart', targetRef: 'PEnd' },
-      ],
-    };
+      [{ id: 'SF_PStart_PEnd', sourceRef: 'PStart', targetRef: 'PEnd' }],
+    );
     const d = await parseDefinitionsWithOperaton(await irToXml(timerIr));
 
     const after = soleDef(requireDeep(d, 'AfterStart'));
@@ -1422,45 +1029,21 @@ describe('irToXml — event layer (message + signal + timer + conditional)', () 
   });
 
   it('orders mixed roots [process, ...errors, ...escalations, ...messages, ...signals] and sanitizes the message name', async () => {
-    const mixedIr: BpmnProcess = {
-      id: 'proc',
-      isExecutable: true,
-      flowElements: [
+    const mixedIr: BpmnProcess = processIr(
+      'proc',
+      [
         { kind: 'startEvent', id: 'S' },
-        {
-          kind: 'intermediateThrowEvent',
-          id: 'EmitEsc',
-          eventDefinition: { kind: 'escalation', escalationCode: 'LS' },
-        },
-        {
-          kind: 'intermediateThrowEvent',
-          id: 'EmitSig',
-          eventDefinition: { kind: 'signal', signalName: 'Cancelled' },
-        },
-        {
-          kind: 'endEvent',
-          id: 'ThrowErr',
-          eventDefinition: { kind: 'error', errorCode: 'PF' },
-        },
-        eventHandler('MsgHandler', 'MsgStart', {
-          kind: 'message',
-          messageName: 'Order received!',
-        }),
+        typedEvent('intermediateThrowEvent', 'EmitEsc', escalationDef('LS')),
+        typedEvent('intermediateThrowEvent', 'EmitSig', signalDef('Cancelled')),
+        typedEvent('endEvent', 'ThrowErr', errorDef('PF')),
+        eventHandler('MsgHandler', 'MsgStart', messageDef('Order received!')),
       ],
-      sequenceFlows: [
+      [
         { id: 'SF_S_EmitEsc', sourceRef: 'S', targetRef: 'EmitEsc' },
-        {
-          id: 'SF_EmitEsc_EmitSig',
-          sourceRef: 'EmitEsc',
-          targetRef: 'EmitSig',
-        },
-        {
-          id: 'SF_EmitSig_ThrowErr',
-          sourceRef: 'EmitSig',
-          targetRef: 'ThrowErr',
-        },
+        edge('EmitEsc', 'EmitSig', { id: 'SF_EmitEsc_EmitSig' }),
+        edge('EmitSig', 'ThrowErr', { id: 'SF_EmitSig_ThrowErr' }),
       ],
-    };
+    );
     const d = await parseDefinitionsWithOperaton(await irToXml(mixedIr));
     expect(d.rootElements.map((r) => r.$type)).toEqual([
       'bpmn:Process',
@@ -1478,25 +1061,19 @@ describe('irToXml — event layer (message + signal + timer + conditional)', () 
   it('suffixes a synthesized signal root id that collides with an existing element id', async () => {
     // A user task literally named `Signal_Ping` occupies that id, so the root
     // for signal `Ping` must move to `Signal_Ping_2`.
-    const ir: BpmnProcess = {
-      id: 'p',
-      isExecutable: true,
-      flowElements: [
+    const ir: BpmnProcess = minimalProcess(
+      [
         { kind: 'startEvent', id: 'S' },
         { kind: 'userTask', id: 'Signal_Ping' },
-        {
-          kind: 'intermediateThrowEvent',
-          id: 'Emit',
-          eventDefinition: { kind: 'signal', signalName: 'Ping' },
-        },
+        typedEvent('intermediateThrowEvent', 'Emit', signalDef('Ping')),
         { kind: 'endEvent', id: 'E' },
       ],
-      sequenceFlows: [
+      [
         { id: 'SF_S_X', sourceRef: 'S', targetRef: 'Signal_Ping' },
         { id: 'SF_X_Emit', sourceRef: 'Signal_Ping', targetRef: 'Emit' },
         { id: 'SF_Emit_E', sourceRef: 'Emit', targetRef: 'E' },
       ],
-    };
+    );
     const d = await parseDefinitionsWithOperaton(await irToXml(ir));
     const signals = rootsOfType(d, 'bpmn:Signal');
     expect(signals).toHaveLength(1);
@@ -1519,56 +1096,36 @@ describe('irToXml — event layer (compensation)', () => {
    * Compensation is payload-less, so none of these carry a code: unlike the
    * error/escalation fixture above, there is no identity to share a root over.
    */
-  const compensationIr: BpmnProcess = {
-    id: 'proc',
-    isExecutable: true,
-    flowElements: [
+  const compensationIr: BpmnProcess = processIr(
+    'proc',
+    [
       { kind: 'startEvent', id: 'PStart' },
-      {
-        kind: 'subProcess',
-        id: 'OuterSub',
-        flowElements: [
+      chainedSub(
+        'OuterSub',
+        [
           { kind: 'startEvent', id: 'OSubStart' },
           { kind: 'userTask', id: 'OWork', assignee: 'demo' },
           { kind: 'endEvent', id: 'OSubEnd' },
-          eventHandler('CompHandler', 'CompStart', { kind: 'compensation' }),
         ],
-        sequenceFlows: [
-          {
-            id: 'SF_OSubStart_OWork',
-            sourceRef: 'OSubStart',
-            targetRef: 'OWork',
-          },
-          { id: 'SF_OWork_OSubEnd', sourceRef: 'OWork', targetRef: 'OSubEnd' },
-        ],
-      },
-      {
-        kind: 'intermediateThrowEvent',
-        id: 'EmitComp',
-        eventDefinition: { kind: 'compensation' },
-      },
-      {
-        kind: 'endEvent',
-        id: 'ThrowComp',
-        eventDefinition: { kind: 'compensation' },
-      },
+        {
+          unwired: [
+            eventHandler('CompHandler', 'CompStart', { kind: 'compensation' }),
+          ],
+        },
+      ),
+      typedEvent('intermediateThrowEvent', 'EmitComp', {
+        kind: 'compensation',
+      }),
+      typedEvent('endEvent', 'ThrowComp', { kind: 'compensation' }),
     ],
-    sequenceFlows: [
+    [
       { id: 'SF_PStart_OuterSub', sourceRef: 'PStart', targetRef: 'OuterSub' },
-      {
-        id: 'SF_OuterSub_EmitComp',
-        sourceRef: 'OuterSub',
-        targetRef: 'EmitComp',
-      },
-      {
-        id: 'SF_EmitComp_ThrowComp',
-        sourceRef: 'EmitComp',
-        targetRef: 'ThrowComp',
-      },
+      edge('OuterSub', 'EmitComp', { id: 'SF_OuterSub_EmitComp' }),
+      edge('EmitComp', 'ThrowComp', { id: 'SF_EmitComp_ThrowComp' }),
     ],
-  };
+  );
 
-  let defs: EventNode;
+  let defs: Moddle;
   let xml: string;
 
   beforeAll(async () => {
@@ -1605,10 +1162,7 @@ describe('irToXml — event layer (compensation)', () => {
       ...compensationIr,
       flowElements: [
         ...compensationIr.flowElements,
-        eventHandler('ErrHandler', 'ErrStart', {
-          kind: 'error',
-          errorCode: 'PF',
-        }),
+        eventHandler('ErrHandler', 'ErrStart', errorDef('PF')),
       ],
     };
     const d = await parseDefinitionsWithOperaton(await irToXml(mixedIr));
@@ -1623,18 +1177,12 @@ describe('irToXml — event layer (compensation)', () => {
     expect((xml.match(/<bpmndi:BPMNDiagram\b/g) ?? []).length).toBe(1);
     const shapes = await parseDiShapesById(xml);
 
-    const outerSub = requireShape(shapes, 'OuterSub');
-    const handler = requireShape(shapes, 'CompHandler');
-    expect(boundsStrictlyInside(handler.bounds, outerSub.bounds)).toBe(true);
-
-    for (const child of ['CompStart', 'CompHandler_Work', 'CompHandler_End']) {
-      expect(
-        boundsStrictlyInside(
-          requireShape(shapes, child).bounds,
-          handler.bounds,
-        ),
-      ).toBe(true);
-    }
+    expectInside(shapes, 'OuterSub', ['CompHandler']);
+    expectInside(shapes, 'CompHandler', [
+      'CompStart',
+      'CompHandler_Work',
+      'CompHandler_End',
+    ]);
   });
 });
 
@@ -1650,10 +1198,9 @@ function hostedBoundaryIr(
   eventDefinition: EventDefinition,
   cancelActivity?: false,
 ): BpmnProcess {
-  return {
-    id: 'proc',
-    isExecutable: true,
-    flowElements: [
+  return processIr(
+    'proc',
+    [
       { kind: 'startEvent', id: 'PStart' },
       { kind: 'userTask', id: 'Host' },
       { kind: 'endEvent', id: 'PEnd' },
@@ -1666,23 +1213,17 @@ function hostedBoundaryIr(
       },
       { kind: 'endEvent', id: 'BoundaryEnd' },
     ],
-    sequenceFlows: [
+    [
       { id: 'SF_PStart_Host', sourceRef: 'PStart', targetRef: 'Host' },
       { id: 'SF_Host_PEnd', sourceRef: 'Host', targetRef: 'PEnd' },
-      {
-        id: 'SF_Boundary_BoundaryEnd',
-        sourceRef: 'Boundary_Host_x',
-        targetRef: 'BoundaryEnd',
-      },
+      edge('Boundary_Host_x', 'BoundaryEnd', { id: 'SF_Boundary_BoundaryEnd' }),
     ],
-  };
+  );
 }
 
 describe('irToXml — boundary events', () => {
   it('emits a bpmn:BoundaryEvent attached to its host with no cancelActivity attribute when interrupting', async () => {
-    const xml = await irToXml(
-      hostedBoundaryIr({ kind: 'message', messageName: 'Ping' }),
-    );
+    const xml = await irToXml(hostedBoundaryIr(messageDef('Ping')));
     const defs = await parseDefinitionsWithOperaton(xml);
     const boundary = requireDeep(defs, 'Boundary_Host_x');
     expect(boundary.$type).toBe('bpmn:BoundaryEvent');
@@ -1699,9 +1240,7 @@ describe('irToXml — boundary events', () => {
   });
 
   it('emits cancelActivity="false" for a non-interrupting (alongside) boundary', async () => {
-    const xml = await irToXml(
-      hostedBoundaryIr({ kind: 'message', messageName: 'Ping' }, false),
-    );
+    const xml = await irToXml(hostedBoundaryIr(messageDef('Ping'), false));
     const defs = await parseDefinitionsWithOperaton(xml);
     expect(requireDeep(defs, 'Boundary_Host_x').cancelActivity).toBe(false);
     expect(extractNodeBlock(xml, 'Boundary_Host_x')).toContain(
@@ -1710,38 +1249,20 @@ describe('irToXml — boundary events', () => {
   });
 
   it.each<[string, EventDefinition, string]>([
-    ['error', { kind: 'error', errorCode: 'PF' }, 'bpmn:ErrorEventDefinition'],
-    [
-      'escalation',
-      { kind: 'escalation', escalationCode: 'LS' },
-      'bpmn:EscalationEventDefinition',
-    ],
-    [
-      'message',
-      { kind: 'message', messageName: 'Ping' },
-      'bpmn:MessageEventDefinition',
-    ],
-    [
-      'signal',
-      { kind: 'signal', signalName: 'Cancelled' },
-      'bpmn:SignalEventDefinition',
-    ],
-    [
-      'timer',
-      { kind: 'timer', timerKind: 'duration', expression: 'PT1H' },
-      'bpmn:TimerEventDefinition',
-    ],
+    ['error', errorDef('PF'), 'bpmn:ErrorEventDefinition'],
+    ['escalation', escalationDef('LS'), 'bpmn:EscalationEventDefinition'],
+    ['message', messageDef('Ping'), 'bpmn:MessageEventDefinition'],
+    ['signal', signalDef('Cancelled'), 'bpmn:SignalEventDefinition'],
+    ['timer', timerDef('duration', 'PT1H'), 'bpmn:TimerEventDefinition'],
     [
       'conditional',
-      { kind: 'conditional', condition: '${amount > 100}' },
+      conditionDef('${amount > 100}'),
       'bpmn:ConditionalEventDefinition',
     ],
   ])(
     'carries the %s event definition child',
     async (_label, def, expectedType) => {
-      const defs = await parseDefinitionsWithOperaton(
-        await irToXml(hostedBoundaryIr(def)),
-      );
+      const defs = await defsOf(hostedBoundaryIr(def));
       expect(soleDef(requireDeep(defs, 'Boundary_Host_x')).$type).toBe(
         expectedType,
       );
@@ -1749,9 +1270,7 @@ describe('irToXml — boundary events', () => {
   );
 
   it('carries an outgoing sequence flow and no incoming', async () => {
-    const defs = await parseDefinitionsWithOperaton(
-      await irToXml(hostedBoundaryIr({ kind: 'message', messageName: 'Ping' })),
-    );
+    const defs = await defsOf(hostedBoundaryIr(messageDef('Ping')));
     const boundary = requireDeep(defs, 'Boundary_Host_x');
     expect(boundary.incoming ?? []).toHaveLength(0);
     expect((boundary.outgoing ?? []).map((f) => f.id)).toEqual([
@@ -1760,47 +1279,28 @@ describe('irToXml — boundary events', () => {
   });
 
   it('serializes two boundary events attached to one host', async () => {
-    const ir: BpmnProcess = {
-      id: 'proc',
-      isExecutable: true,
-      flowElements: [
+    const ir: BpmnProcess = processIr(
+      'proc',
+      [
         { kind: 'startEvent', id: 'PStart' },
         { kind: 'userTask', id: 'Host' },
         { kind: 'endEvent', id: 'PEnd' },
-        {
-          kind: 'boundaryEvent',
-          id: 'Boundary_Host_error',
-          attachedToRef: 'Host',
-          eventDefinition: { kind: 'error', errorCode: 'PF' },
-        },
+        boundaryEvent('Boundary_Host_error', 'Host', errorDef('PF')),
         { kind: 'endEvent', id: 'ErrEnd' },
-        {
-          kind: 'boundaryEvent',
-          id: 'Boundary_Host_timer',
-          attachedToRef: 'Host',
-          eventDefinition: {
-            kind: 'timer',
-            timerKind: 'duration',
-            expression: 'PT1H',
-          },
-        },
+        boundaryEvent(
+          'Boundary_Host_timer',
+          'Host',
+          timerDef('duration', 'PT1H'),
+        ),
         { kind: 'endEvent', id: 'TimerEnd' },
       ],
-      sequenceFlows: [
+      [
         { id: 'SF_PStart_Host', sourceRef: 'PStart', targetRef: 'Host' },
         { id: 'SF_Host_PEnd', sourceRef: 'Host', targetRef: 'PEnd' },
-        {
-          id: 'SF_ErrB_ErrEnd',
-          sourceRef: 'Boundary_Host_error',
-          targetRef: 'ErrEnd',
-        },
-        {
-          id: 'SF_TimerB_TimerEnd',
-          sourceRef: 'Boundary_Host_timer',
-          targetRef: 'TimerEnd',
-        },
+        edge('Boundary_Host_error', 'ErrEnd', { id: 'SF_ErrB_ErrEnd' }),
+        edge('Boundary_Host_timer', 'TimerEnd', { id: 'SF_TimerB_TimerEnd' }),
       ],
-    };
+    );
     const defs = await parseDefinitionsWithOperaton(await irToXml(ir));
     const errBoundary = requireDeep(defs, 'Boundary_Host_error');
     const timerBoundary = requireDeep(defs, 'Boundary_Host_timer');
@@ -1811,51 +1311,31 @@ describe('irToXml — boundary events', () => {
   });
 
   it('serializes a boundary event on a sub-process host with exactly one bpmndi:BPMNDiagram', async () => {
-    const ir: BpmnProcess = {
-      id: 'proc',
-      isExecutable: true,
-      flowElements: [
+    const ir: BpmnProcess = processIr(
+      'proc',
+      [
         { kind: 'startEvent', id: 'PStart' },
-        {
-          kind: 'subProcess',
-          id: 'HostSub',
-          flowElements: [
-            { kind: 'startEvent', id: 'SubStart' },
-            { kind: 'userTask', id: 'SubWork' },
-            { kind: 'endEvent', id: 'SubEnd' },
-          ],
-          sequenceFlows: [
-            {
-              id: 'SF_SubStart_SubWork',
-              sourceRef: 'SubStart',
-              targetRef: 'SubWork',
-            },
-            {
-              id: 'SF_SubWork_SubEnd',
-              sourceRef: 'SubWork',
-              targetRef: 'SubEnd',
-            },
-          ],
-        },
+        chainedSub('HostSub', [
+          { kind: 'startEvent', id: 'SubStart' },
+          { kind: 'userTask', id: 'SubWork' },
+          { kind: 'endEvent', id: 'SubEnd' },
+        ]),
         { kind: 'endEvent', id: 'PEnd' },
-        {
-          kind: 'boundaryEvent',
-          id: 'Boundary_HostSub_escalation',
-          attachedToRef: 'HostSub',
-          eventDefinition: { kind: 'escalation', escalationCode: 'LS' },
-        },
+        boundaryEvent(
+          'Boundary_HostSub_escalation',
+          'HostSub',
+          escalationDef('LS'),
+        ),
         { kind: 'endEvent', id: 'EscEnd' },
       ],
-      sequenceFlows: [
+      [
         { id: 'SF_PStart_HostSub', sourceRef: 'PStart', targetRef: 'HostSub' },
         { id: 'SF_HostSub_PEnd', sourceRef: 'HostSub', targetRef: 'PEnd' },
-        {
+        edge('Boundary_HostSub_escalation', 'EscEnd', {
           id: 'SF_Boundary_EscEnd',
-          sourceRef: 'Boundary_HostSub_escalation',
-          targetRef: 'EscEnd',
-        },
+        }),
       ],
-    };
+    );
     const xml = await irToXml(ir);
     expect((xml.match(/<bpmndi:BPMNDiagram\b/g) ?? []).length).toBe(1);
     const defs = await parseDefinitionsWithOperaton(xml);
@@ -1864,7 +1344,7 @@ describe('irToXml — boundary events', () => {
   });
 
   it('throws when a boundary event references an unknown host', async () => {
-    const ir = hostedBoundaryIr({ kind: 'message', messageName: 'Ping' });
+    const ir = hostedBoundaryIr(messageDef('Ping'));
     const broken: BpmnProcess = {
       ...ir,
       flowElements: ir.flowElements.map((el) =>
@@ -1880,65 +1360,43 @@ describe('irToXml — boundary events', () => {
     // The id does exist in the document, just not where a boundary event may
     // reach it. A bare "unknown id" message would send a reader looking for a
     // missing element instead of a misplaced attachment.
-    const nested: BpmnProcess = {
-      id: 'proc',
-      isExecutable: true,
-      flowElements: [
+    const nested: BpmnProcess = processIr(
+      'proc',
+      [
         { kind: 'startEvent', id: 'PStart' },
-        {
-          kind: 'subProcess',
-          id: 'Sub',
-          flowElements: [{ kind: 'userTask', id: 'Host' }],
-          sequenceFlows: [],
-        },
+        chainedSub('Sub', [{ kind: 'userTask', id: 'Host' }]),
         { kind: 'endEvent', id: 'PEnd' },
-        {
-          kind: 'boundaryEvent',
-          id: 'Boundary_Host_x',
-          attachedToRef: 'Host',
-          eventDefinition: { kind: 'message', messageName: 'Ping' },
-        },
+        boundaryEvent('Boundary_Host_x', 'Host', messageDef('Ping')),
       ],
-      sequenceFlows: [
+      [
         { id: 'SF_PStart_Sub', sourceRef: 'PStart', targetRef: 'Sub' },
         { id: 'SF_Sub_PEnd', sourceRef: 'Sub', targetRef: 'PEnd' },
       ],
-    };
+    );
     await expect(irToXml(nested)).rejects.toThrow(
       'BoundaryEvent "Boundary_Host_x" is attached to "Host", which is not a flow element of this container.',
     );
   });
 
   it('shares one root across a message caught by a boundary event and by a host-less handler', async () => {
-    const ir: BpmnProcess = {
-      id: 'proc',
-      isExecutable: true,
-      flowElements: [
+    const ir: BpmnProcess = processIr(
+      'proc',
+      [
         { kind: 'startEvent', id: 'PStart' },
         { kind: 'userTask', id: 'Host' },
         { kind: 'endEvent', id: 'PEnd' },
-        {
-          kind: 'boundaryEvent',
-          id: 'Boundary_Host_message',
-          attachedToRef: 'Host',
-          eventDefinition: { kind: 'message', messageName: 'Shared' },
-        },
+        boundaryEvent('Boundary_Host_message', 'Host', messageDef('Shared')),
         { kind: 'endEvent', id: 'BoundaryEnd' },
-        eventHandler('MsgHandler', 'MsgStart', {
-          kind: 'message',
-          messageName: 'Shared',
-        }),
+        eventHandler('MsgHandler', 'MsgStart', messageDef('Shared')),
       ],
-      sequenceFlows: [
+      [
         { id: 'SF_PStart_Host', sourceRef: 'PStart', targetRef: 'Host' },
         { id: 'SF_Host_PEnd', sourceRef: 'Host', targetRef: 'PEnd' },
-        {
+        edge('Boundary_Host_message', 'BoundaryEnd', {
           id: 'SF_Boundary_BoundaryEnd',
-          sourceRef: 'Boundary_Host_message',
-          targetRef: 'BoundaryEnd',
-        },
+        }),
       ],
-    };
+    );
     const defs = await parseDefinitionsWithOperaton(await irToXml(ir));
     const messages = rootsOfType(defs, 'bpmn:Message');
     expect(messages).toHaveLength(1);
@@ -1968,27 +1426,23 @@ function mainFlowCatchIr(
   eventDefinition: CatchEventDefinition,
   id = 'Catch_x',
 ): BpmnProcess {
-  return {
-    id: 'proc',
-    isExecutable: true,
-    flowElements: [
+  return processIr(
+    'proc',
+    [
       { kind: 'startEvent', id: 'PStart' },
       { kind: 'intermediateCatchEvent', id, eventDefinition },
       { kind: 'endEvent', id: 'PEnd' },
     ],
-    sequenceFlows: [
+    [
       { id: 'SF_PStart_Catch', sourceRef: 'PStart', targetRef: id },
       { id: 'SF_Catch_PEnd', sourceRef: id, targetRef: 'PEnd' },
     ],
-  };
+  );
 }
 
 describe('irToXml — intermediate catch events', () => {
   it('emits a bpmn:IntermediateCatchEvent with a MessageEventDefinition referencing a derived Message root, wired with incoming and outgoing', async () => {
-    const ir = mainFlowCatchIr({
-      kind: 'message',
-      messageName: 'Invoice Received',
-    });
+    const ir = mainFlowCatchIr(messageDef('Invoice Received'));
     const defs = await parseDefinitionsWithOperaton(await irToXml(ir));
     const catchNode = requireDeep(defs, 'Catch_x');
     expect(catchNode.$type).toBe('bpmn:IntermediateCatchEvent');
@@ -2013,27 +1467,13 @@ describe('irToXml — intermediate catch events', () => {
   it.each<
     [string, CatchEventDefinition, 'timeDuration' | 'timeDate' | 'timeCycle']
   >([
-    [
-      'duration',
-      { kind: 'timer', timerKind: 'duration', expression: 'PT1H' },
-      'timeDuration',
-    ],
-    [
-      'date',
-      { kind: 'timer', timerKind: 'date', expression: '${dueDate}' },
-      'timeDate',
-    ],
-    [
-      'cycle',
-      { kind: 'timer', timerKind: 'cycle', expression: 'R/PT10M' },
-      'timeCycle',
-    ],
+    ['duration', timerDef('duration', 'PT1H'), 'timeDuration'],
+    ['date', timerDef('date', '${dueDate}'), 'timeDate'],
+    ['cycle', timerDef('cycle', 'R/PT10M'), 'timeCycle'],
   ])(
     'emits a TimerEventDefinition with the matching %s child',
     async (_label, eventDefinition, child) => {
-      const defs = await parseDefinitionsWithOperaton(
-        await irToXml(mainFlowCatchIr(eventDefinition)),
-      );
+      const defs = await defsOf(mainFlowCatchIr(eventDefinition));
       const def = soleDef(requireDeep(defs, 'Catch_x'));
       expect(def.$type).toBe('bpmn:TimerEventDefinition');
       expect(eventDefinition.kind).toBe('timer');
@@ -2051,9 +1491,7 @@ describe('irToXml — intermediate catch events', () => {
   );
 
   it('emits a SignalEventDefinition referencing a derived Signal root', async () => {
-    const defs = await parseDefinitionsWithOperaton(
-      await irToXml(mainFlowCatchIr({ kind: 'signal', signalName: 'Ready' })),
-    );
+    const defs = await defsOf(mainFlowCatchIr(signalDef('Ready')));
     const def = soleDef(requireDeep(defs, 'Catch_x'));
     expect(def.$type).toBe('bpmn:SignalEventDefinition');
 
@@ -2065,52 +1503,539 @@ describe('irToXml — intermediate catch events', () => {
   });
 
   it('emits a ConditionalEventDefinition whose condition body is the raw expression', async () => {
-    const defs = await parseDefinitionsWithOperaton(
-      await irToXml(
-        mainFlowCatchIr({ kind: 'conditional', condition: '${amount > 100}' }),
-      ),
-    );
+    const defs = await defsOf(mainFlowCatchIr(conditionDef('${amount > 100}')));
     const def = soleDef(requireDeep(defs, 'Catch_x'));
     expect(def.$type).toBe('bpmn:ConditionalEventDefinition');
     expect(def.condition?.body).toBe('${amount > 100}');
   });
 
   it('stamps no name attribute on the catch element — the await surface carries no label slot', async () => {
-    const defs = await parseDefinitionsWithOperaton(
-      await irToXml(mainFlowCatchIr({ kind: 'message', messageName: 'Ping' })),
-    );
+    const defs = await defsOf(mainFlowCatchIr(messageDef('Ping')));
     expect(requireDeep(defs, 'Catch_x').name).toBeUndefined();
+  });
+});
+
+// ── 16. Engine attributes and extension-element assembly ─────────────────────
+
+/**
+ * Parse a document with the Operaton extension registered and return one flow
+ * node of its process, with the Operaton settings resolved as typed properties.
+ */
+async function engineNode(xmlStr: string, id: string): Promise<Moddle> {
+  const proc = await parseProcessTreeWithOperaton(xmlStr);
+  return childById(proc, id);
+}
+
+/**
+ * `Start -> Review -> Auto -> Calc -> End`, spreading the flat engine settings
+ * over five node kinds: an async-after start, a fully assigned user task
+ * carrying both a form and a retry cycle, a service task with a result
+ * variable, a script task with its own retry cycle, and an end event carrying
+ * nothing at all.
+ */
+const engineSettingsIr: BpmnProcess = {
+  id: 'engine-settings',
+  isExecutable: true,
+  versionTag: '1.4.2',
+  flowElements: [
+    { kind: 'startEvent', id: 'Start', asyncAfter: true, jobPriority: '50' },
+    {
+      kind: 'userTask',
+      id: 'Review',
+      assignee: 'demo',
+      formKey: 'embedded:app:forms/review.html',
+      candidateUsers: 'ann,bob',
+      candidateGroups: 'reviewers',
+      dueDate: '${dateTime().plusDays(2)}',
+      followUpDate: '2026-01-31T12:00:00',
+      priority: '75',
+      asyncBefore: true,
+      exclusive: false,
+      formFields: [{ id: 'amount', type: 'number', label: 'Amount' }],
+      retryCycle: 'R3/PT5M',
+    },
+    {
+      kind: 'serviceTask',
+      id: 'Auto',
+      binding: classBinding('com.example.Auto'),
+      resultVariable: 'outcome',
+    },
+    {
+      kind: 'scriptTask',
+      id: 'Calc',
+      format: 'javascript',
+      code: 'total = 1;',
+      resultVariable: 'total',
+      retryCycle: 'R3/PT10M',
+    },
+    { kind: 'endEvent', id: 'End' },
+  ],
+  sequenceFlows: flowChain('Start', 'Review', 'Auto', 'Calc', 'End'),
+};
+
+describe('irToXml — flat engine attributes', () => {
+  let engineXml: string;
+  let engineProc: Moddle;
+
+  beforeAll(async () => {
+    engineXml = await irToXml(engineSettingsIr);
+    engineProc = await parseProcessTreeWithOperaton(engineXml);
+  });
+
+  /** One flow node of the engine-settings process, with its Operaton props. */
+  const node = (id: string): Moddle => childById(engineProc, id);
+
+  it('writes operaton:versionTag on the process alongside historyTimeToLive', () => {
+    const openingTag = engineXml.match(/<bpmn:process[^>]*>/)?.[0] ?? '';
+    expect(openingTag).toContain('operaton:versionTag="1.4.2"');
+    expect(openingTag).toContain('operaton:historyTimeToLive="P30D"');
+  });
+
+  it('writes the async continuation settings the IR carries, and nothing else', () => {
+    const start = extractNodeBlock(engineXml, 'Start');
+    expect(start).toContain('operaton:asyncAfter="true"');
+    expect(start).toContain('operaton:jobPriority="50"');
+    // Omitted in the IR, so absent from the XML: the engine default applies.
+    expect(start).not.toContain('operaton:asyncBefore');
+    expect(start).not.toContain('operaton:exclusive');
+
+    const review = extractNodeBlock(engineXml, 'Review');
+    expect(review).toContain('operaton:asyncBefore="true"');
+    expect(review).toContain('operaton:exclusive="false"');
+    expect(review).not.toContain('operaton:asyncAfter');
+  });
+
+  it('writes every user-task assignment attribute under the operaton prefix', () => {
+    const review = extractNodeBlock(engineXml, 'Review');
+    expect(review).toContain('operaton:assignee="demo"');
+    expect(review).toContain(
+      'operaton:formKey="embedded:app:forms/review.html"',
+    );
+    expect(review).toContain('operaton:candidateUsers="ann,bob"');
+    expect(review).toContain('operaton:candidateGroups="reviewers"');
+    expect(review).toContain('operaton:followUpDate="2026-01-31T12:00:00"');
+    expect(review).toContain('operaton:priority="75"');
+    expect(review).toMatch(
+      /operaton:dueDate="\$\{dateTime\(\)\.plusDays\(2\)\}"/,
+    );
+  });
+
+  it('writes operaton:resultVariable on both the service task and the script task', () => {
+    expect(extractNodeBlock(engineXml, 'Auto')).toContain(
+      'operaton:resultVariable="outcome"',
+    );
+    expect(extractNodeBlock(engineXml, 'Calc')).toContain(
+      'operaton:resultVariable="total"',
+    );
+    expect(node('Auto').resultVariable).toBe('outcome');
+    expect(node('Calc').resultVariable).toBe('total');
+  });
+
+  it('emits the retry cycle as an extension element, never as an attribute', () => {
+    expect(engineXml).toMatch(
+      /<operaton:failedJobRetryTimeCycle>\s*R3\/PT10M\s*<\/operaton:failedJobRetryTimeCycle>/,
+    );
+    expect(engineXml).not.toMatch(/failedJobRetryTimeCycle="/);
+    expect(node('Calc').extensionElements?.values).toEqual([
+      expect.objectContaining({
+        $type: 'operaton:FailedJobRetryTimeCycle',
+        body: 'R3/PT10M',
+      }),
+    ]);
+  });
+
+  it('keeps a user task’s form data and its retry cycle under one wrapper', () => {
+    expect(
+      node('Review').extensionElements?.values.map((v) => v.$type),
+    ).toEqual(['operaton:FormData', 'operaton:FailedJobRetryTimeCycle']);
+  });
+
+  it('emits no extensionElements wrapper for a node that contributes no children', () => {
+    expect(node('End').extensionElements).toBeUndefined();
+    expect(node('Start').extensionElements).toBeUndefined();
+    expect(node('Auto').extensionElements).toBeUndefined();
+    // Exactly two wrappers in the whole document: the user task and the script
+    // task. Every other node contributes nothing and so opens none.
+    expect(engineXml.match(/<bpmn:extensionElements/g)).toHaveLength(2);
+  });
+
+  it('keeps a call activity’s mappings and its retry cycle under one wrapper', async () => {
+    const callXml = await irToXml(
+      minimalCallIr({
+        kind: 'callActivity',
+        id: 'CallSub',
+        calledElement: 'sub-process',
+        businessKey: '${execution.processBusinessKey}',
+        inMappings: [{ kind: 'variable', source: 'amount', target: 'amount' }],
+        outMappings: [{ kind: 'all' }],
+        retryCycle: 'R5/PT1M',
+      }),
+    );
+    const call = await engineNode(callXml, 'CallSub');
+    expect(call.extensionElements?.values.map((v) => v.$type)).toEqual([
+      'operaton:In',
+      'operaton:In',
+      'operaton:Out',
+      'operaton:FailedJobRetryTimeCycle',
+    ]);
+  });
+
+  it('carries the settings on the structural kinds too: a sub-process and a boundary event', async () => {
+    const nestedXml = await irToXml({
+      id: 'nested',
+      isExecutable: true,
+      flowElements: [
+        { kind: 'startEvent', id: 'PStart' },
+        {
+          ...chainedSub('Sub', [
+            { kind: 'startEvent', id: 'SubStart' },
+            { kind: 'endEvent', id: 'SubEnd' },
+          ]),
+          asyncBefore: true,
+          retryCycle: 'R2/PT30S',
+        },
+        { kind: 'endEvent', id: 'PEnd' },
+        {
+          kind: 'boundaryEvent',
+          id: 'Boundary_Sub_timer',
+          attachedToRef: 'Sub',
+          eventDefinition: {
+            kind: 'timer',
+            timerKind: 'duration',
+            expression: 'PT1H',
+          },
+          asyncAfter: true,
+        },
+        { kind: 'endEvent', id: 'BoundaryEnd' },
+      ],
+      sequenceFlows: [
+        { id: 'SF_PStart_Sub', sourceRef: 'PStart', targetRef: 'Sub' },
+        { id: 'SF_Sub_PEnd', sourceRef: 'Sub', targetRef: 'PEnd' },
+        edge('Boundary_Sub_timer', 'BoundaryEnd', {
+          id: 'SF_Boundary_BoundaryEnd',
+        }),
+      ],
+    });
+    expect(extractNodeBlock(nestedXml, 'Sub')).toContain(
+      'operaton:asyncBefore="true"',
+    );
+    expect(nestedXml).toMatch(
+      /<operaton:failedJobRetryTimeCycle>\s*R2\/PT30S\s*<\/operaton:failedJobRetryTimeCycle>/,
+    );
+    expect(extractNodeBlock(nestedXml, 'Boundary_Sub_timer')).toContain(
+      'operaton:asyncAfter="true"',
+    );
+  });
+
+  it('writes neither attribute nor extension child for engine fields cast onto a gateway', async () => {
+    // The IR keeps engine fields off both gateway kinds, so no honest fixture
+    // can reach the runtime guard that skips them. The cast supplies the shape
+    // the type forbids, which is the only way to observe the guard working.
+    const gatewayXml = await irToXml(
+      minimalProcess(
+        [
+          { kind: 'startEvent', id: 'S' },
+          {
+            kind: 'exclusiveGateway',
+            id: 'G',
+            asyncBefore: true,
+            asyncAfter: true,
+            exclusive: false,
+            jobPriority: '30',
+            retryCycle: 'R3/PT1M',
+            executionListeners: [
+              { event: 'start', binding: { kind: 'class', className: 'x.L' } },
+            ],
+          } as unknown as FlowElement,
+          { kind: 'endEvent', id: 'E' },
+        ],
+        [
+          { id: 'F1', sourceRef: 'S', targetRef: 'G' },
+          { id: 'F2', sourceRef: 'G', targetRef: 'E' },
+        ],
+      ),
+    );
+
+    const block = extractNodeBlock(gatewayXml, 'G');
+    expect(block).not.toContain('operaton:');
+    expect(block).not.toContain('extensionElements');
+  });
+});
+
+// ── 17. Input/output parameters and listeners ────────────────────────────────
+
+/**
+ * One user task carrying every nested group at once: a form, input parameters
+ * in all four value forms (with a map nested inside a list and a list nested
+ * inside that map's entry), an output parameter, both execution-listener
+ * events, three of the four listener bindings plus a `timeout` listener with
+ * its timer, and a retry cycle. Written as a single fixture so the assembler's
+ * emission order is observable on one wrapper.
+ */
+const nestedGroupsIr: BpmnProcess = {
+  id: 'nested-groups',
+  isExecutable: true,
+  flowElements: [
+    { kind: 'startEvent', id: 'Start' },
+    {
+      kind: 'userTask',
+      id: 'Review',
+      formFields: [{ id: 'amount', type: 'number' }],
+      inputParameters: [
+        { name: 'plain', value: { kind: 'text', text: 'hello' } },
+        {
+          name: 'scripted',
+          value: { kind: 'script', format: 'groovy', code: 'a + b' },
+        },
+        {
+          name: 'nested',
+          value: {
+            kind: 'list',
+            items: [
+              { kind: 'text', text: 'first' },
+              {
+                kind: 'map',
+                entries: [
+                  { key: 'inner', value: { kind: 'text', text: 'x' } },
+                  {
+                    key: 'deeper',
+                    value: {
+                      kind: 'list',
+                      items: [{ kind: 'text', text: 'z' }],
+                    },
+                  },
+                ],
+              },
+            ],
+          },
+        },
+      ],
+      outputParameters: [
+        {
+          name: 'result',
+          value: {
+            kind: 'map',
+            entries: [{ key: 'code', value: { kind: 'text', text: '200' } }],
+          },
+        },
+      ],
+      executionListeners: [
+        {
+          event: 'start',
+          binding: { kind: 'class', className: 'com.example.Enter' },
+        },
+        {
+          event: 'end',
+          binding: { kind: 'script', format: 'javascript', code: 'log(1);' },
+        },
+      ],
+      taskListeners: [
+        {
+          event: 'create',
+          binding: { kind: 'expression', expression: '${audit.log()}' },
+        },
+        {
+          event: 'timeout',
+          binding: { kind: 'delegateExpression', expression: '${escalate}' },
+          timer: { kind: 'timer', timerKind: 'duration', expression: 'PT2H' },
+        },
+      ],
+      retryCycle: 'R3/PT5M',
+    },
+    { kind: 'endEvent', id: 'End' },
+  ],
+  sequenceFlows: [
+    { id: 'F1', sourceRef: 'Start', targetRef: 'Review' },
+    { id: 'F2', sourceRef: 'Review', targetRef: 'End' },
+  ],
+};
+
+describe('irToXml — input/output parameters', () => {
+  let block: string;
+
+  beforeAll(async () => {
+    block = extensionBlock(await irToXml(nestedGroupsIr));
+  });
+
+  it('emits one operaton:inputOutput holding every value form, in IR order', () => {
+    expect(block).toMatch(
+      /<operaton:inputOutput>[\s\S]*<operaton:inputParameter[\s\S]*<operaton:outputParameter[\s\S]*<\/operaton:inputOutput>/,
+    );
+    expect(block.match(/<operaton:inputOutput\b/g)).toHaveLength(1);
+    expect(
+      [
+        ...block.matchAll(/<operaton:(?:in|out)putParameter name="([^"]+)"/g),
+      ].map((m) => m[1]),
+    ).toEqual(['plain', 'scripted', 'nested', 'result']);
+
+    // A text value is body text and no child element.
+    expect(parameterContent(block, 'plain').trim()).toBe('hello');
+
+    // A script value is an operaton:script child carrying its format.
+    expect(parameterContent(block, 'scripted')).toMatch(
+      /^\s*<operaton:script scriptFormat="groovy">\s*a \+ b\s*<\/operaton:script>\s*$/,
+    );
+
+    // A list of a text and a map, with a list nested inside that map.
+    expect(parameterContent(block, 'nested')).toMatch(
+      new RegExp(
+        [
+          '^\\s*<operaton:list>',
+          '<operaton:value>\\s*first\\s*</operaton:value>',
+          '<operaton:map>',
+          '<operaton:entry key="inner">\\s*x\\s*</operaton:entry>',
+          '<operaton:entry key="deeper">',
+          '<operaton:list>',
+          '<operaton:value>\\s*z\\s*</operaton:value>',
+          '</operaton:list>',
+          '</operaton:entry>',
+          '</operaton:map>',
+          '</operaton:list>\\s*$',
+        ].join('\\s*'),
+      ),
+    );
+
+    // A map value is operaton:entry children keyed by their IR key.
+    expect(parameterContent(block, 'result')).toMatch(
+      /^\s*<operaton:map>\s*<operaton:entry key="code">\s*200\s*<\/operaton:entry>\s*<\/operaton:map>\s*$/,
+    );
+  });
+});
+
+describe('irToXml — listeners', () => {
+  let block: string;
+
+  beforeAll(async () => {
+    block = extensionBlock(await irToXml(nestedGroupsIr));
+  });
+
+  it('writes every binding form with its attributes unprefixed on the namespaced element', () => {
+    // The element itself is `operaton:`-qualified, so its own attributes carry
+    // no prefix. A prefixed one here parses as a foreign attribute the engine
+    // ignores, which is why this asserts on the serialized text.
+    for (const listener of listenerTags(block)) {
+      expect(listener).not.toMatch(/\soperaton:/);
+    }
+    expect(block).toMatch(
+      /<operaton:executionListener event="start" class="com\.example\.Enter"\s*\/>/,
+    );
+    expect(block).toMatch(
+      /<operaton:taskListener event="create" expression="\$\{audit\.log\(\)\}"\s*\/>/,
+    );
+    expect(block).toMatch(
+      /<operaton:taskListener event="timeout" delegateExpression="\$\{escalate\}"\s*>/,
+    );
+    expect(block).toMatch(
+      /<operaton:executionListener event="end">\s*<operaton:script scriptFormat="javascript">\s*log\(1\);\s*<\/operaton:script>\s*<\/operaton:executionListener>/,
+    );
+
+    // A timeout task listener also carries its timer as a bpmn child.
+    expect(block).toMatch(
+      /<operaton:taskListener event="timeout"[^>]*>\s*<bpmn:timerEventDefinition>\s*<bpmn:timeDuration[^>]*>\s*PT2H\s*<\/bpmn:timeDuration>\s*<\/bpmn:timerEventDefinition>\s*<\/operaton:taskListener>/,
+    );
+  });
+});
+
+describe('irToXml — extension-element assembly order', () => {
+  it('emits every group a user task carries under one wrapper in canonical order', async () => {
+    const nestedXml = await irToXml(nestedGroupsIr);
+    expect(nestedXml.match(/<bpmn:extensionElements/g)).toHaveLength(1);
+
+    const review = await engineNode(nestedXml, 'Review');
+    expect(review.extensionElements?.values.map((v) => v.$type)).toEqual([
+      'operaton:InputOutput',
+      'operaton:FormData',
+      'operaton:ExecutionListener',
+      'operaton:ExecutionListener',
+      'operaton:TaskListener',
+      'operaton:TaskListener',
+      'operaton:FailedJobRetryTimeCycle',
+    ]);
+  });
+
+  it('places a call activity’s io block before its mappings and its retry cycle last', async () => {
+    const callXml = await irToXml(
+      minimalCallIr({
+        kind: 'callActivity',
+        id: 'CallSub',
+        calledElement: 'sub-process',
+        inputParameters: [ioParam('amount', textValue('${total}'))],
+        inMappings: [{ kind: 'all' }],
+        executionListeners: [
+          { event: 'start', binding: classBinding('com.example.Enter') },
+        ],
+        retryCycle: 'R5/PT1M',
+      }),
+    );
+    const call = await engineNode(callXml, 'CallSub');
+    expect(call.extensionElements?.values.map((v) => v.$type)).toEqual([
+      'operaton:InputOutput',
+      'operaton:In',
+      'operaton:ExecutionListener',
+      'operaton:FailedJobRetryTimeCycle',
+    ]);
+  });
+
+  it('emits nothing but the io block for a node carrying only parameters', async () => {
+    const soloXml = await irToXml(
+      processIr(
+        'io-only',
+        [
+          { kind: 'startEvent', id: 'Start' },
+          {
+            kind: 'serviceTask',
+            id: 'Fetch',
+            binding: externalBinding('fetch'),
+            outputParameters: [ioParam('body', textValue('${response}'))],
+          },
+          { kind: 'endEvent', id: 'End' },
+        ],
+        flowChain('Start', 'Fetch', 'End'),
+      ),
+    );
+    expect(soloXml.match(/<bpmn:extensionElements/g)).toHaveLength(1);
+    expect(extensionBlock(soloXml)).toMatch(
+      /^<bpmn:extensionElements>\s*<operaton:inputOutput>\s*<operaton:outputParameter name="body">\s*\$\{response\}\s*<\/operaton:outputParameter>\s*<\/operaton:inputOutput>\s*<\/bpmn:extensionElements>$/,
+    );
   });
 });
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-/** A parsed moddle node navigated for the event layer (roots, refs, defs). */
-interface EventNode {
-  $type: string;
-  id?: string;
-  name?: string;
-  errorCode?: string;
-  escalationCode?: string;
-  errorMessage?: string;
-  isInterrupting?: boolean;
-  triggeredByEvent?: boolean;
-  flowElements?: EventNode[];
-  eventDefinitions?: EventNode[];
-  incoming?: Array<{ id: string }>;
-  outgoing?: Array<{ id: string }>;
-  errorRef?: { id: string };
-  escalationRef?: { id: string };
-  messageRef?: { id: string; name?: string };
-  signalRef?: { id: string; name?: string };
-  condition?: { $type: string; body?: string };
-  timeDuration?: { $type: string; body?: string };
-  timeDate?: { $type: string; body?: string };
-  timeCycle?: { $type: string; body?: string };
-  errorCodeVariable?: string;
-  errorMessageVariable?: string;
-  escalationCodeVariable?: string;
-  rootElements: EventNode[];
+/**
+ * The sole `<bpmn:extensionElements>` block of a document, as raw serialized
+ * text. Assertions on namespace prefixes have to read the text: the parsed
+ * moddle object model reports a property whether or not its prefix was written
+ * the way the engine expects.
+ */
+function extensionBlock(xmlStr: string): string {
+  const closeTag = '</bpmn:extensionElements>';
+  const open = xmlStr.indexOf('<bpmn:extensionElements>');
+  const close = xmlStr.indexOf(closeTag);
+  if (open === -1 || close === -1) {
+    throw new Error('No <bpmn:extensionElements> block in the output.');
+  }
+  return xmlStr.slice(open, close + closeTag.length);
+}
+
+/** The serialized content of one named input or output parameter. */
+function parameterContent(block: string, name: string): string {
+  const match = block.match(
+    new RegExp(
+      `<operaton:(in|out)putParameter name="${name}">([\\s\\S]*?)</operaton:\\1putParameter>`,
+    ),
+  );
+  if (match === null) {
+    throw new Error(`No parameter named "${name}" in the extension block.`);
+  }
+  return match[2]!;
+}
+
+/** Every listener opening tag in a block, as raw text (attributes included). */
+function listenerTags(block: string): string[] {
+  return [...block.matchAll(/<operaton:(?:execution|task)Listener[^>]*>/g)].map(
+    (m) => m[0],
+  );
 }
 
 /**
@@ -2119,35 +2044,30 @@ interface EventNode {
  * `flowElements`) and the Operaton-namespaced event attributes resolve to typed
  * properties.
  */
-async function parseDefinitionsWithOperaton(
-  xmlStr: string,
-): Promise<EventNode> {
+async function parseDefinitionsWithOperaton(xmlStr: string): Promise<Moddle> {
   const { rootElement } = await operatonModdle().fromXML(xmlStr);
-  return rootElement as unknown as EventNode;
+  return rootElement;
 }
 
+/** Serialize an IR and parse the definitions back, Operaton registered. */
+const defsOf = async (ir: BpmnProcess): Promise<Moddle> =>
+  parseDefinitionsWithOperaton(await irToXml(ir));
+
 /** Every root element of a given `$type` (e.g. `bpmn:Error`). */
-function rootsOfType(defs: EventNode, $type: string): EventNode[] {
+function rootsOfType(defs: Moddle, $type: string): Moddle[] {
   return defs.rootElements.filter((r) => r.$type === $type);
 }
 
-/** The single `bpmn:Process` root. */
-function processRoot(defs: EventNode): EventNode {
-  const proc = defs.rootElements.find((r) => r.$type === 'bpmn:Process');
-  if (proc === undefined) throw new Error('No bpmn:Process root found.');
-  return proc;
-}
-
 /** Recursively locate a flow node by id anywhere under the process, or throw. */
-function requireDeep(defs: EventNode, id: string): EventNode {
-  const found = deepFind(processRoot(defs), id);
+function requireDeep(defs: Moddle, id: string): Moddle {
+  const found = deepFind(processOf(defs), id);
   if (found === undefined) {
     throw new Error(`Flow node id="${id}" not found in the process tree.`);
   }
   return found;
 }
 
-function deepFind(container: EventNode, id: string): EventNode | undefined {
+function deepFind(container: Moddle, id: string): Moddle | undefined {
   for (const el of container.flowElements ?? []) {
     if (el.id === id) return el;
     const nested = deepFind(el, id);
@@ -2156,8 +2076,8 @@ function deepFind(container: EventNode, id: string): EventNode | undefined {
   return undefined;
 }
 
-/** The sole `bpmn:ErrorEventDefinition` on an event node. */
-function errorDef(node: EventNode): EventNode {
+/** The sole event definition on an event node, whatever its kind. */
+function soleDef(node: Moddle): Moddle {
   const def = (node.eventDefinitions ?? [])[0];
   if (def === undefined) {
     throw new Error(`Node id="${node.id}" carries no event definition.`);
@@ -2165,51 +2085,20 @@ function errorDef(node: EventNode): EventNode {
   return def;
 }
 
-/** The sole `bpmn:EscalationEventDefinition` on an event node. */
-function escalationDef(node: EventNode): EventNode {
-  return errorDef(node);
-}
-
-/** The sole event definition on an event node, whatever its kind. */
-const soleDef = errorDef;
-
 /** Minimal `start -> call -> end` wrapper around one call-activity node. */
 function minimalCallIr(call: BpmnProcess['flowElements'][number]): BpmnProcess {
-  return {
-    id: 'caller',
-    isExecutable: true,
-    flowElements: [
+  return processIr(
+    'caller',
+    [
       { kind: 'startEvent', id: 'Start' },
       call,
       { kind: 'endEvent', id: 'End' },
     ],
-    sequenceFlows: [
+    [
       { id: 'F_Start_Call', sourceRef: 'Start', targetRef: call.id },
       { id: 'F_Call_End', sourceRef: call.id, targetRef: 'End' },
     ],
-  } satisfies BpmnProcess;
-}
-
-/** A parsed `bpmn:CallActivity` with the Operaton extension attributes/children. */
-interface CallModdle {
-  $type: string;
-  name?: string;
-  calledElement?: string;
-  calledElementBinding?: string;
-  calledElementVersion?: string;
-  incoming?: Array<{ id: string }>;
-  outgoing?: Array<{ id: string }>;
-  extensionElements?: {
-    values: Array<{
-      $type: string;
-      source?: string;
-      sourceExpression?: string;
-      variables?: string;
-      target?: string;
-      businessKey?: string;
-      local?: boolean;
-    }>;
-  };
+  ) satisfies BpmnProcess;
 }
 
 /** The Operaton moddle extension descriptor, read from source (as `irToXml` does). */
@@ -2227,17 +2116,9 @@ function operatonModdle(): InstanceType<typeof BpmnModdle> {
  * `operaton:in`/`operaton:out` children and `operaton:calledElement*`
  * attributes resolve to typed properties rather than raw XML.
  */
-async function parseProcessTreeWithOperaton(
-  xmlStr: string,
-): Promise<ModdleTree> {
+async function parseProcessTreeWithOperaton(xmlStr: string): Promise<Moddle> {
   const { rootElement } = await operatonModdle().fromXML(xmlStr);
-  const roots = (rootElement as unknown as { rootElements: ModdleTree[] })
-    .rootElements;
-  const proc = roots.find((e) => e.$type === 'bpmn:Process');
-  if (proc === undefined) {
-    throw new Error('No bpmn:Process found in parsed output.');
-  }
-  return proc;
+  return processOf(rootElement);
 }
 
 /** A DI shape's bounds, as parsed from `dc:Bounds`. */
@@ -2303,6 +2184,20 @@ function requireShape(
   return shape;
 }
 
+/** Every named child shape lies strictly inside the parent's shape. */
+function expectInside(
+  shapes: Map<string, DiShape>,
+  parentId: string,
+  childIds: string[],
+): void {
+  const parent = requireShape(shapes, parentId);
+  for (const childId of childIds) {
+    expect(
+      boundsStrictlyInside(requireShape(shapes, childId).bounds, parent.bounds),
+    ).toBe(true);
+  }
+}
+
 /** Whether `inner` is fully, strictly contained within `outer` (no touching edges). */
 function boundsStrictlyInside(inner: DiBounds, outer: DiBounds): boolean {
   return (
@@ -2313,16 +2208,76 @@ function boundsStrictlyInside(inner: DiBounds, outer: DiBounds): boolean {
   );
 }
 
-/** A parsed moddle element, navigated structurally rather than by regex. */
-interface ModdleTree {
+/**
+ * A parsed moddle node: the `bpmn:Definitions` root, a flow node, an event
+ * definition, or an extension-element child. One façade over the untyped
+ * moddle graph, so a test navigates references and reads Operaton-namespaced
+ * settings as typed properties instead of casting at every hop.
+ */
+interface Moddle {
   $type: string;
-  id: string;
-  flowElements?: ModdleTree[];
-  incoming?: ModdleTree[];
-  outgoing?: ModdleTree[];
-  sourceRef?: ModdleTree;
-  targetRef?: ModdleTree;
-  default?: ModdleTree;
+  id?: string;
+  name?: string;
+  body?: string;
+  rootElements: Moddle[];
+  flowElements?: Moddle[];
+  eventDefinitions?: Moddle[];
+  extensionElements?: { values: Moddle[] };
+  incoming?: Moddle[];
+  outgoing?: Moddle[];
+  sourceRef?: Moddle;
+  targetRef?: Moddle;
+  default?: Moddle;
+  attachedToRef?: Moddle;
+  errorRef?: Moddle;
+  escalationRef?: Moddle;
+  messageRef?: Moddle;
+  signalRef?: Moddle;
+  condition?: Moddle;
+  timeDuration?: Moddle;
+  timeDate?: Moddle;
+  timeCycle?: Moddle;
+  errorCode?: string;
+  errorMessage?: string;
+  errorCodeVariable?: string;
+  errorMessageVariable?: string;
+  escalationCode?: string;
+  escalationCodeVariable?: string;
+  isInterrupting?: boolean;
+  cancelActivity?: boolean;
+  triggeredByEvent?: boolean;
+  versionTag?: string;
+  asyncBefore?: boolean;
+  asyncAfter?: boolean;
+  exclusive?: boolean;
+  jobPriority?: string;
+  assignee?: string;
+  formKey?: string;
+  candidateUsers?: string;
+  candidateGroups?: string;
+  dueDate?: string;
+  followUpDate?: string;
+  priority?: string;
+  resultVariable?: string;
+  calledElement?: string;
+  calledElementBinding?: string;
+  calledElementVersion?: string;
+  source?: string;
+  sourceExpression?: string;
+  variables?: string;
+  target?: string;
+  businessKey?: string;
+  local?: boolean;
+}
+
+/** The root `bpmn:Process` of a parsed `bpmn:Definitions`, or throw. */
+function processOf(rootElement: unknown): Moddle {
+  const { rootElements } = rootElement as { rootElements: Moddle[] };
+  const proc = rootElements.find((e) => e.$type === 'bpmn:Process');
+  if (proc === undefined) {
+    throw new Error('No bpmn:Process found in parsed output.');
+  }
+  return proc;
 }
 
 /**
@@ -2330,20 +2285,13 @@ interface ModdleTree {
  * `bpmn:Process` element as a navigable tree. Used to inspect the semantic
  * element structure (nesting, references) without asserting on DI shapes.
  */
-async function parseProcessTree(xmlStr: string): Promise<ModdleTree> {
-  const moddle = new BpmnModdle({});
-  const { rootElement } = await moddle.fromXML(xmlStr);
-  const roots = (rootElement as unknown as { rootElements: ModdleTree[] })
-    .rootElements;
-  const proc = roots.find((e) => e.$type === 'bpmn:Process');
-  if (proc === undefined) {
-    throw new Error('No bpmn:Process found in parsed output.');
-  }
-  return proc;
+async function parseProcessTree(xmlStr: string): Promise<Moddle> {
+  const { rootElement } = await new BpmnModdle({}).fromXML(xmlStr);
+  return processOf(rootElement);
 }
 
 /** Find a direct child flow element (node or flow) of a container by id. */
-function childById(container: ModdleTree, id: string): ModdleTree {
+function childById(container: Moddle, id: string): Moddle {
   const found = (container.flowElements ?? []).find((e) => e.id === id);
   if (found === undefined) {
     throw new Error(`Child id="${id}" not found in ${container.$type}.`);

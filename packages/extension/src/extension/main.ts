@@ -14,7 +14,6 @@ import { SidebarViewProvider } from './sidebar-view-provider.js';
 
 let client: LanguageClient;
 
-// This function is called when the extension is activated.
 export async function activate(
   context: vscode.ExtensionContext,
 ): Promise<void> {
@@ -22,12 +21,10 @@ export async function activate(
     vscode.languages.createDiagnosticCollection('bpmnscript');
   context.subscriptions.push(convDiagnostics);
 
-  // Read the extension version once; stamped into generated BPMN as exporterVersion.
   const extensionVersion = String(
     (context.extension.packageJSON as { version?: string }).version ?? '0.0.1',
   );
 
-  // `decompile` is reused by the file-picker command below.
   const decompile = decompileCommand(convDiagnostics);
   context.subscriptions.push(
     vscode.commands.registerCommand(
@@ -41,7 +38,6 @@ export async function activate(
     ),
   );
 
-  // Kept in scope so the active-editor listener below can call provider.refresh().
   const provider = new SidebarViewProvider(context.extensionUri);
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(
@@ -51,18 +47,16 @@ export async function activate(
     ),
   );
 
-  // Keeps the sidebar in sync when the user switches editor tabs.
   context.subscriptions.push(
     vscode.window.onDidChangeActiveTextEditor(() => void provider.refresh()),
   );
 
-  // Safe to call before resolveWebviewView — refresh() is a no-op until the view is resolved.
+  // Safe before resolveWebviewView: refresh() no-ops until the view exists.
   void provider.refresh();
 
   client = await startLanguageClient(context);
 }
 
-// This function is called when the extension is deactivated.
 export function deactivate(): Promise<void> | undefined {
   if (client) {
     return client.stop();
@@ -76,9 +70,6 @@ async function startLanguageClient(
   const serverModule = context.asAbsolutePath(
     path.join('out', 'language', 'main.cjs'),
   );
-  // The debug options for the server
-  // --inspect=6009: runs the server in Node's Inspector mode so VS Code can attach to the server for debugging.
-  // By setting `process.env.DEBUG_BREAK` to a truthy value, the language server will wait until a debugger is attached.
   const debugOptions = {
     execArgv: [
       '--nolazy',
@@ -86,8 +77,6 @@ async function startLanguageClient(
     ],
   };
 
-  // If the extension is launched in debug mode then the debug server options are used
-  // Otherwise the run options are used
   const serverOptions: ServerOptions = {
     run: { module: serverModule, transport: TransportKind.ipc },
     debug: {
@@ -97,12 +86,10 @@ async function startLanguageClient(
     },
   };
 
-  // Options to control the language client
   const clientOptions: LanguageClientOptions = {
     documentSelector: [{ scheme: '*', language: 'bpmn-script' }],
   };
 
-  // Create the language client and start the client.
   const client = new LanguageClient(
     'bpmn-script',
     'BpmnScript',
@@ -110,7 +97,6 @@ async function startLanguageClient(
     clientOptions,
   );
 
-  // Start the client. This will also launch the server
   await client.start();
   return client;
 }

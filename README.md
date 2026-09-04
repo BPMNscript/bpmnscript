@@ -113,6 +113,14 @@ Every step carries an id (`user ReviewInvoice`), which is what `goto` and bounda
 | `on Host: <kind> { }`          | catch an event only while `Host` runs                 | boundary event                 |
 | `await <kind> …`               | stop here until the event arrives                     | intermediate catch event       |
 | `throw` / `emit <kind>`        | raise an event, ending the path or continuing         | throw event                    |
+| `asyncBefore = true`           | engine settings: async, exclusive, priority, retries  | `operaton:` attribute/element  |
+| `input x = "..."`              | data into a step's execution, and `output` back out   | `operaton:inputOutput`         |
+| `on create { class = "..." }`  | code on a step's lifecycle, not a caught event        | execution / task listener      |
+
+The last three rows are attribute-block members rather than statements, written inside a step's `{ }` alongside a `versionTag` on the process header itself.
+Not every step takes every one.
+Every step whose `{ }` is a settings block takes the engine settings and the `on start`/`on end` execution listeners; `input`/`output` parameters are legal on user, service and script tasks, subprocesses, calls, and a host-less `on` handler; the task-listener events such as `on create` on a user task alone.
+The listener row reuses `on` positionally instead of opening a new event sub-process; only the enclosing block tells the two apart ([ADR-0023](docs/decisions/0023-listeners-on-the-attribute-block.md)).
 
 Refer to [packages/language/README.md](packages/language/README.md) for the full and up to date language specification.
 
@@ -200,14 +208,32 @@ process booking-saga {
 
 Book the hotel after the flight, then fail: the seat gets released, and the traveller gets told.
 
-Every example on this page is a real file from [examples/spring-boot/processes/](examples/spring-boot/processes/), along with some others. The end-to-end suite deploys them to an Operaton engine for testing on language changes.
+The invoice-approval and order-handling programs above are files from [examples/spring-boot/processes/](examples/spring-boot/processes/), the second with one boundary handler left out; the compensation one is written for this page, and `compensating-saga.bpmnscript` is its deployable counterpart.
+The end-to-end suite deploys several of that directory's processes to an Operaton engine and asserts what the engine does with them.
 
 ## Roundtripping BPMN XML -> BPMNscript
 
 BPMN is a much larger language than this DSL, so a `.bpmn` file can hold elements unsupported in `.bpmnscript` and the decompiler will emit warnings for those:
 
 - A construct the DSL cannot express (a collaboration, loop characteristics, a compensation boundary event, an event definition the language doesn't model) is refused with an error.
-- Content the intermediate representation doesn't carry but that changes nothing semantically (extra Operaton extension attributes, lanes) is dropped with a warning naming each item.
+- Content the intermediate representation doesn't carry (a lane, a text annotation, an `operaton:field` value injection, an extension element in a foreign vendor namespace, an engine attribute found on a gateway) is dropped with a warning naming each item.
+  Elements are covered: the diagram interchange data aside, whatever the importer cannot carry is named by its tag and its id, or leaves with the dropped construct holding it.
+  The exceptions are attributes it does not read: one in a foreign vendor namespace written directly on a BPMN element, which is an editor's own bookkeeping, and a BPMN attribute outside the set the importer reads, such as a sequence flow's `name` or a process's `processType` ([packages/transform/README.md](packages/transform/README.md#the-import-contract)).
+  `isExecutable="false"` is the one attribute that warns: the IR holds an executable process and nothing else, so the import is executable whatever the source said.
+
+`camunda:` is not one of those foreign namespaces.
+The importer reads a `camunda:` extension attribute under its local name the way Operaton does, so `camunda:assignee` imports exactly as `operaton:assignee` does and `camunda:formRef` drops exactly as `operaton:formRef` does.
+The alias covers attributes only, so a `camunda:` extension element drops whole.
+
+The engine settings a modeler tunes import warning-free.
+Async continuation, exclusivity, job priority and the retry cycle round-trip on any event or activity.
+`operaton:inputOutput` round-trips on an activity, in all four value forms: a scalar, an inline script, a list, and a map ([ADR-0022](docs/decisions/0022-engine-attributes-as-named-ir-fields.md)).
+Execution listeners round-trip on any event or activity too, task listeners on a user task, each in all four binding forms ([ADR-0023](docs/decisions/0023-listeners-on-the-attribute-block.md)).
+
+Some placements stay out of reach, each reported as a drop rather than carried.
+An engine setting on a gateway that `if`, `while`, `do...while`, or `parallel` synthesizes has no textual identity to author it on.
+An execution listener on the `bpmn:process` element has nowhere to sit: the process header takes a `versionTag` and no other setting.
+An `operaton:inputOutput` block on an event goes the same way, because input and output variables bind into an activity's own execution scope.
 
 The reasoning is in [ADR-0014](docs/decisions/0014-honest-bpmn-import-contract.md). The short version: a round trip that silently changes the model/workflow is worse than one that refuses to run.
 
@@ -236,6 +262,7 @@ flowchart LR
 A source file is parsed into an AST, converted into the IR (a small set of plain TypeScript objects in `packages/transform/src/ir/types.ts` that describe a process without reference to any specific engine), and written out from there. Compiling is `.bpmnscript` -> AST -> IR -> `.bpmn`; decompiling is `.bpmn` -> IR -> `.bpmnscript`.
 
 The IR stays vendor-neutral. Operaton-specific attributes (`operaton:class`, `operaton:assignee`, and so on) are added only at the final XML-serialization step through a local [moddle extension](packages/transform/src/operaton-moddle.json), which keeps the engine's specifics out of the core data model. See [ADR-0006](docs/decisions/0006-engine-agnostic-intermediate-representation.md).
+The same rule covers the engine's execution settings, input/output parameters, and lifecycle listeners: each is a plain-named IR field, and `operaton:` is applied only where `irToXml` builds the moddle element ([ADR-0022](docs/decisions/0022-engine-attributes-as-named-ir-fields.md), [ADR-0023](docs/decisions/0023-listeners-on-the-attribute-block.md)).
 
 | Library                                                         | Role                                                |
 | --------------------------------------------------------------- | --------------------------------------------------- |

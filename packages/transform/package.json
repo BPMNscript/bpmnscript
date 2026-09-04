@@ -31,6 +31,7 @@
     "build": "tsc -p tsconfig.json && shx cp src/operaton-moddle.json out/",
     "build:post": "shx cp src/operaton-moddle.json out/",
     "build:clean": "npm run clean && npm run build",
+    "typecheck": "tsc -p tsconfig.test.json",
     "test": "vitest run"
   },
   "dependencies": {

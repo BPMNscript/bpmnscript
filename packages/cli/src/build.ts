@@ -1,20 +1,3 @@
-/**
- * `bpmns build` action.
- *
- * Drives the full DSL -> BPMN XML pipeline:
- *
- *   .bpmnscript  ──Langium parse──►  AST
- *                ──structural validate──►  (errors reported)
- *                ──astToIr──►  IR
- *                ──irToXml──►  BPMN 2.0 XML string
- *                ──write to disk──►  .bpmn file
- *
- * Exit codes:
- *   0  - success
- *   1  - validation errors (Langium diagnostics)
- *   2  - I/O errors (file not found, cannot write output)
- */
-
 import {
   createBpmnScriptServices,
   BpmnScriptLanguageMetaData,
@@ -34,17 +17,13 @@ export type BuildOptions = {
   output?: string;
 };
 
-/**
- * Execute the `build` subcommand.
- *
- * @param fileName  Path to the `.bpmnscript` source file (relative or absolute).
- * @param opts      Command options. `opts.output` overrides the default output path.
- */
+const SEVERITY_ERROR = 1;
+const SEVERITY_WARNING = 2;
+
 export async function buildAction(
   fileName: string,
   opts: BuildOptions,
 ): Promise<void> {
-  // ── 1. Validate the input file exists ────────────────────────────────────
   const resolvedInput = path.resolve(fileName);
 
   if (!fsSync.existsSync(resolvedInput)) {
@@ -62,10 +41,8 @@ export async function buildAction(
     );
   }
 
-  // ── 2. Determine output path ──────────────────────────────────────────────
   const outPath = resolveOutputPath(resolvedInput, '.bpmn', opts.output);
 
-  // ── 3. Langium parse, structural validation, and diagnostics ──────────────
   const services = createBpmnScriptServices(NodeFileSystem).BpmnScript;
 
   let document;
@@ -86,7 +63,9 @@ export async function buildAction(
     process.exit(2);
   }
 
-  const errors = (document.diagnostics ?? []).filter((d) => d.severity === 1);
+  const errors = (document.diagnostics ?? []).filter(
+    (d) => d.severity === SEVERITY_ERROR,
+  );
   if (errors.length > 0) {
     console.error(chalk.red('Validation errors:'));
     for (const diag of errors) {
@@ -100,9 +79,9 @@ export async function buildAction(
     process.exit(1);
   }
 
-  // Remaining diagnostics (severity 2) are non-fatal warnings: surface them
-  // on stderr but do not change the exit code.
-  const warnings = (document.diagnostics ?? []).filter((d) => d.severity === 2);
+  const warnings = (document.diagnostics ?? []).filter(
+    (d) => d.severity === SEVERITY_WARNING,
+  );
   for (const diag of warnings) {
     console.error(
       chalk.yellow(
@@ -113,7 +92,6 @@ export async function buildAction(
 
   const ast = document.parseResult?.value as Model;
 
-  // ── 4. AST -> IR ─────────────────────────────────────────────────────────
   let ir;
   try {
     ir = astToIr(ast);
@@ -126,7 +104,6 @@ export async function buildAction(
     process.exit(1);
   }
 
-  // ── 5. IR -> BPMN XML ────────────────────────────────────────────────────
   let xml;
   try {
     xml = await irToXml(ir, {
@@ -142,7 +119,6 @@ export async function buildAction(
     process.exit(1);
   }
 
-  // ── 6. Write output ───────────────────────────────────────────────────────
   try {
     const outDir = path.dirname(outPath);
     await fs.mkdir(outDir, { recursive: true });

@@ -1,27 +1,17 @@
-/**
- * The `await message` intermediate catch on a running engine.
- *
- * Static checking can only show that the compiled BPMN looks right, a
- * `bpmn:IntermediateCatchEvent` with the right event definition. It cannot show
- * the property that makes `await` a wait: a real engine parks the token there
- * until the message arrives rather than falling straight through. This suite
- * builds the example with the real `bpmns` CLI, boots Operaton via
- * testcontainers, and proves over REST that the instance is blocked at the catch
- * (still running, with an active message event subscription) before correlating
- * the message and watching it run to completion.
- *
- * The whole file is Docker-gated and skipped when `SKIP_DOCKER_TESTS=true`; the
- * always-on health assertions for the example live in a separate suite.
- */
+// A compiled document cannot show the property that makes `await` a wait: that
+// a real engine parks the token there until the message arrives instead of
+// falling through. So this proves over REST that the instance is blocked at the
+// catch, still running with an active message subscription, before correlating
+// the message and watching it finish.
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { execFileSync } from 'node:child_process';
-import { mkdirSync } from 'node:fs';
-import * as path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
-import { startFixture } from '../fixtures/index.js';
 import type { FixtureAdapter } from '../fixtures/index.js';
+import {
+  deployExamples,
+  ENGINE_BOOT_TIMEOUT_MS,
+  SKIP_DOCKER as SKIP,
+} from '../helpers/e2e-fixture.js';
 import {
   correlateMessage,
   eventSubscriptions,
@@ -30,21 +20,6 @@ import {
   waitFor,
 } from '../helpers/engine-rest.js';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
-const SKIP = process.env.SKIP_DOCKER_TESTS === 'true';
-
-const DSL_PATH = path.resolve(
-  __dirname,
-  '../../examples/spring-boot/processes/awaiting-confirmation.bpmnscript',
-);
-
-const XML_OUT_PATH = path.resolve(
-  __dirname,
-  '../../out/awaiting-confirmation.bpmn',
-);
-
 const PROCESS_KEY = 'awaiting-confirmation';
 
 const MESSAGE_NAME = 'ConfirmationReceived';
@@ -52,22 +27,9 @@ const MESSAGE_NAME = 'ConfirmationReceived';
 describe.skipIf(SKIP)('E2E: await message on Spring Boot Operaton', () => {
   let fixture: FixtureAdapter;
 
-  // The 300 s timeout accommodates a cold image build plus Spring Boot startup.
   beforeAll(async () => {
-    mkdirSync(path.dirname(XML_OUT_PATH), { recursive: true });
-
-    execFileSync('npx', ['bpmns', 'build', DSL_PATH, '-o', XML_OUT_PATH], {
-      stdio: 'inherit',
-    });
-
-    fixture = await startFixture('spring-boot');
-
-    const { deploymentId } = await fixture.deploy(
-      XML_OUT_PATH,
-      'awaiting-confirmation-test',
-    );
-    expect(deploymentId).toBeTruthy();
-  }, 300_000);
+    fixture = await deployExamples('awaiting-confirmation');
+  }, ENGINE_BOOT_TIMEOUT_MS);
 
   afterAll(async () => {
     await fixture?.stop();

@@ -1,17 +1,9 @@
-/**
- * Ambient type declarations for the upstream `bpmn-moddle` and
- * `bpmn-auto-layout` packages, neither of which ship `.d.ts` files.
- *
- * We deliberately type these loosely — the IR is the only typed contract
- * in this layer; everything below is dynamic moddle-element soup.
- */
+/** `bpmn-moddle` and `bpmn-auto-layout` ship no `.d.ts` files of their own. */
 
 declare module 'bpmn-moddle' {
-  // The shape of an in-memory moddle element. Properties are dynamic;
-  // moddle attaches them as own properties keyed by the property `name`
-  // in each `*-moddle.json` schema entry. Typed as `any` deliberately —
-  // the IR types in `./ir/types.ts` are the only typed contract in this
-  // package; everything below this boundary is dynamic moddle soup.
+  // Moddle attaches properties dynamically, keyed by the `name` in each
+  // `*-moddle.json` schema entry, so `any` is the honest type here. The IR in
+  // `./ir/types.ts` is the only typed contract in this package.
   export type ModdleElement = any;
 
   export interface BpmnModdleInstance {
@@ -43,9 +35,6 @@ declare module 'bpmn-moddle' {
 }
 
 declare module 'bpmn-auto-layout' {
-  /**
-   * Lay out a BPMN 2.0 XML string, injecting `bpmndi:` diagram-interchange
-   * elements. Returns a new XML string with DI present.
-   */
+  /** Returns the XML with `bpmndi:` diagram-interchange elements injected. */
   export function layoutProcess(xml: string): Promise<string>;
 }

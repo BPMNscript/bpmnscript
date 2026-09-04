@@ -17,7 +17,7 @@ The package also owns the base VS Code TextMate grammar (`syntaxes/bpmn-script.t
 
 One `process` block per file.
 Steps run top to bottom, so sequence flow is never written out, and control flow uses structured statements instead.
-Optional `var` declarations go in the process header, before the body.
+Optional `var` declarations go in the process header, before the body, alongside `versionTag = "<value>"`, which labels the deployed process definition.
 
 ```bpmnscript
 process invoice-approval {
@@ -42,7 +42,7 @@ The BPMN `name` is derived from that id (`ReviewInvoice` becomes "Review Invoice
 | Statement                   | BPMN element                   | Notes                                                                   |
 | --------------------------- | ------------------------------ | ----------------------------------------------------------------------- |
 | `start X` / `end X`         | start event / end event        |                                                                         |
-| `user X { }`                | user task                      | attributes `assignee`, `formKey`                                        |
+| `user X { }`                | user task                      | assignment and form attributes, see below                               |
 | `service X { }`             | service task                   | exactly one binding attribute, see below                                |
 | `script X` + a fenced body  | script task                    | fence tag picks the language, see below                                 |
 | `if` / `else if` / `else`   | exclusive gateway              |                                                                         |
@@ -57,10 +57,79 @@ The BPMN `name` is derived from that id (`ReviewInvoice` becomes "Review Invoice
 | `await <kind> ...`          | intermediate catch event       | see [Awaiting an event inline](#awaiting-an-event-inline)               |
 | `throw` / `emit <kind>`     | throw event                    | see [The event layer](#the-event-layer)                                 |
 
+Every statement in that table that takes a settings block also takes the engine settings and an execution listener, and most of them take input and output parameters as well.
+The braces the table shows on `while`, `do`, `parallel`, `subprocess`, and `on` are bodies rather than settings blocks.
+
+#### Attribute keys per element
+
+The grammar accepts any key in any settings block and the validator decides which ones that element has, so an unknown key is a diagnostic naming the element rather than a parse error.
+Five engine execution settings are legal wherever a settings block is, and each element kind adds the keys it owns on top.
+
+| Element                                                      | Keys beyond the engine settings                                                                   |
+| ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------- |
+| `start`, `end`, `throw`, `emit`, `await`, `on`, `subprocess` | none                                                                                              |
+| `user`                                                       | `assignee`, `formKey`, `candidateGroups`, `candidateUsers`, `dueDate`, `followUpDate`, `priority` |
+| `service`                                                    | `class`, `expression`, `delegate`, `topic`, `resultVariable`                                      |
+| `script`                                                     | `resultVariable`                                                                                  |
+| `call`                                                       | `process`, `binding`, `version`, `businessKey`                                                    |
+| process header                                               | `versionTag`, and nothing else                                                                    |
+
+The engine settings are `asyncBefore` and `asyncAfter`, which put a transaction boundary before or after the step, `exclusive`, which says whether the engine may run the step's jobs beside other jobs of the same instance, `jobPriority`, which orders those jobs in the queue, and `retryCycle`, the ISO cycle a failed job is retried on.
+The gateways that `if`, `while`, `do`, and `parallel` synthesize have no settings block, so no engine setting can be written on one.
+
 #### Service tasks
 
 A `service` task takes exactly one of four binding attributes.
 `class` is a Java delegate class name, `expression` maps to `operaton:expression`, `delegate` is the friendlier spelling of `operaton:delegateExpression`, and `topic` hands the work to an external worker through `operaton:type="external"` and `operaton:topic`.
+`resultVariable` names the process variable the invocation's return value is stored in, and is not itself a binding.
+
+#### Input and output parameters
+
+A `user`, `service`, or `script` task, a `subprocess`, a `call`, and an `on` handler with no host map data across the step's boundary with `input <name> = <value>` and `output <name> = <value>`, which become `operaton:inputParameter` and `operaton:outputParameter` entries in the step's `operaton:inputOutput` block.
+A host-less handler takes them because it lowers to an event sub-process; a hosted `on <Host>:` handler lowers to a boundary event, which carries none.
+A value is an ordinary expression, a `[ ... ]` list, a `{ key: value }` map, or a fenced script that computes it, and lists and maps nest freely.
+Entries keep the order they were written in, and a name may repeat across the two directions but not within one.
+
+```bpmnscript
+process order-shipping {
+  service Ship {
+    topic = "shipping"
+    input address = { street: "${street}", city: "${city}" }
+    input labels = ["express", "fragile"]
+    output tracking = "${trackingId}"
+  }
+}
+```
+
+#### Listeners
+
+A settings block also holds listeners, written with `on <event>` and the thing to run.
+An execution listener fires when the element starts or ends and is legal wherever a settings block is.
+A task listener fires on a step in a user task's lifecycle and is legal on a `user` task alone.
+
+| Listener kind     | Events                                                        |
+| ----------------- | ------------------------------------------------------------- |
+| execution         | `start`, `end`                                                |
+| task, `user` only | `create`, `assign`, `complete`, `update`, `delete`, `timeout` |
+
+A listener runs exactly one thing: `class`, `expression`, or `delegate` in its own block, or a fenced script whose opening tag names the language.
+That is the same choice a service task binding makes, without the external `topic`.
+`on timeout` carries the timer that says when it runs, written with the same `after`, `at`, and `every` particles a timer event uses, and no other event takes one.
+
+````bpmnscript
+process claim-review {
+  user Review {
+    assignee = "demo"
+    on start { class = "com.example.AuditListener" }
+    on complete ```groovy
+    log.info(task.id)
+    ```
+    on timeout after "PT8H" { delegate = "${escalationHandler}" }
+  }
+}
+````
+
+An `on` between the braces of a settings block is a listener; an `on` at statement position is a caught BPMN event, and the two never overlap.
 
 #### Script tasks
 
@@ -169,10 +238,14 @@ An `on` handler races its trigger against the rest of the guarded body and fires
 Four trigger kinds can be awaited: `message`, `timer`, `signal`, and `condition`, using the same payload surfaces `on` and a boundary event already use.
 
 ```bpmnscript
-await message "Invoice Received"
-await timer after "PT1H"
-await signal "Ready"
-await condition (amount > 100)
+process invoice-intake {
+  var amount: number
+
+  await message "Invoice Received"
+  await timer after "PT1H"
+  await signal "Ready"
+  await condition (amount > 100)
+}
 ```
 
 `error`, `escalation`, and `compensation` have no awaited form.
@@ -203,6 +276,9 @@ The categories it covers:
 
 - Variables: an undeclared reference (warning), a type mismatch against the declared `var`, a name declared twice.
 - Tasks: a duplicate attribute key, a `service` task without exactly one binding attribute, a `script` task with an unsupported fence tag or an empty or unterminated body.
+- Attribute blocks: a key the element does not own, a value in a shape its lowering cannot read (a quoted `asyncBefore`, an unquoted `versionTag`), a `form` block on an element that renders none, and a process header carrying anything but `versionTag`.
+- Parameters: a direction word other than `input` or `output`, a parameter on an element that carries none, and a name repeated within one direction.
+- Listeners: an event word the element does not have, a binding count other than one, a missing timer on `on timeout` or a timer on any other event, a repeated event on one element, and the same fence rules a `script` body follows.
 - Structure: an empty process, subprocess, or handler body, an empty branch or loop body (warning), an unreachable statement, an explicit `start` anywhere but first in its container, and a `goto` reaching into a `parallel` branch from outside it.
 - Names: a reused process name, step name, or `label`, and the reserved `Boundary_` prefix.
 - Call activities: a missing `process`, an unknown `binding` value, `binding` and `version` together, and duplicate `in` or `out` mappings.
@@ -272,7 +348,9 @@ npm test
 | `src/bpmn-script-scope-provider.ts`                | Resolves `goto` targets and a hosted handler's `host` within the enclosing container only |
 | `src/bpmn-script-linker.ts`                        | Replaces an unresolved `goto` or `host` message with a boundary explanation               |
 | `src/bpmn-script-parser-error-message-provider.ts` | Guidance for a reserved word used as an identifier                                        |
-| `src/bpmn-script-completion.ts`                    | Snippet completions for structural keywords (`process`, `user`, `if`, ...)                |
+| `src/bpmn-script-completion.ts`                    | Snippet completions for the structural keywords and for what a settings block holds       |
+| `src/bpmn-script-semantic-tokens.ts`               | Highlights the soft words (trigger, attribute key, parameter direction, listener event)   |
+| `src/bpmn-script-value-converter.ts`               | Unquotes a timer's `"${...}"` time so both `time` alternatives carry the same shape       |
 | `src/bpmn-script-module.ts`                        | Langium dependency injection wiring                                                       |
 | `src/expression-render.ts`                         | `renderExpression(astNode): string`, serializing a parsed expression AST to `${...}` text |
 | `src/variable-symbol-provider.ts`                  | `VariableSymbolProvider`, collecting `var` declarations into a `VariableTable`            |

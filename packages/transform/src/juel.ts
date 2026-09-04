@@ -1,48 +1,37 @@
 /**
- * Standalone JUEL-subset expression parser, classifier, and DSL serializer
- * (transform side).
+ * Parser, classifier, and DSL serializer for the JUEL subset, on the import
+ * path. It decides whether a raw `${...}` body fits the subset and can print as
+ * clean unquoted DSL, or has to fall back to the quoted `"${...}"` raw form.
  *
- * On the **import** path, `xmlToIr` reads raw `${…}` expression bodies
- * out of BPMN XML; `irToDsl` renders them back to BPMNscript surface
- * syntax. This module is the hinge between the two: it decides whether a body
- * fits the JUEL native subset — and can therefore be emitted as clean
- * unquoted DSL — or must fall back to the quoted `"${…}"` raw form.
- * {@link parseJuel} never throws on arbitrary input.
+ * The subset boundary is the Langium expression sub-grammar in
+ * `packages/language/src/bpmn-script.langium`, whose precedence the
+ * recursive-descent parser below reproduces. A test cross-checks this ladder
+ * against the real grammar, so the two cannot drift:
  *
- * The subset boundary is fixed by the Langium expression sub-grammar
- * (`packages/language/src/bpmn-script.langium`):
+ *   ternary          c ? t : f
+ *   logical          ||  &&
+ *   equality         ==  !=
+ *   relational       <=  >=  <  >
+ *   additive         +  -
+ *   multiplicative   *  /  %
+ *   unary            !x  -x
+ *   primary          int | decimal | string | bool | null
+ *                    | varRef (id with `.prop` / `[expr]` accessors)
+ *                    | ( expr )
  *
- *   ternary  →  c ? t : f
- *   logical  →  ||  &&
- *   equality →  ==  !=
- *   relational → <=  >=  <  >
- *   additive →  +  -
- *   multiplicative → *  /  %
- *   unary    →  !x  -x
- *   primary  →  int | decimal | string | bool | null
- *            |  varRef (id with `.prop` / `[expr]` accessors)
- *            |  ( expr )
+ * A method or bean call (`x.foo()`), a JUEL function (`fn:size(x)`), or a
+ * malformed body is classified raw.
  *
- * Anything beyond this — method/bean calls (`x.foo()`), JUEL functions
- * (`fn:size(x)`), parenthesised call syntax, or any malformed body — is
- * classified **raw**. The hand-rolled recursive-descent parser below mirrors
- * the grammar's precedence and accept/reject set exactly; the test suite
- * cross-checks parity against the real Langium grammar so the two cannot drift.
+ * Hand-rolled rather than re-invoking Langium: a synchronous, dependency-free
+ * parser keeps `xmlToIr` and `irToDsl` off the language package's async parse
+ * machinery on the hot import path.
  *
- * Why hand-rolled rather than re-invoking the Langium parser: the subset is
- * small and fixed, and a
- * dependency-free synchronous parser keeps `xmlToIr`/`irToDsl` free of the
- * language package's async parse machinery on the hot import path. Subset
- * parity is guaranteed by an explicit cross-check test, not by sharing code.
- *
- * Canonical surface form (shared with `renderExpression` in
- * `@bpmn-script/language`): string literals print with double quotes; operators
- * are spaced (`a > b`); accessors are `.prop` / `[idx]`; author parentheses are
- * preserved. This shared notion makes `parseJuel(renderExpression(x))`
- * idempotent on the subset.
+ * The surface form is shared with `renderExpression` in `@bpmn-script/language`:
+ * double-quoted strings, spaced operators, `.prop`/`[idx]` accessors, author
+ * parentheses preserved. That makes `parseJuel(renderExpression(x))` idempotent
+ * on the subset.
  */
 
-/** A parsed expression node within the JUEL native subset. */
 export type JuelNode =
   | { kind: 'int'; value: number }
   | { kind: 'decimal'; value: number }
@@ -60,10 +49,8 @@ export type JuelNode =
     }
   | { kind: 'paren'; inner: JuelNode };
 
-/** A property (`.prop`) or index (`[expr]`) accessor on a variable reference. */
 export type Accessor = { prop: string } | { index: JuelNode };
 
-/** Binary operators across all five precedence levels of the subset. */
 export type BinaryOp =
   | '||'
   | '&&'
@@ -79,34 +66,14 @@ export type BinaryOp =
   | '/'
   | '%';
 
-/**
- * The outcome of {@link parseJuel}: either a structured subset AST, or a raw
- * fallback carrying the verbatim inner body (without the `${…}` wrapper).
- */
+/** A raw `text` is the verbatim inner body, without the `${...}` wrapper. */
 export type ExprResult =
   { kind: 'structured'; expr: JuelNode } | { kind: 'raw'; text: string };
 
-// ---------------------------------------------------------------------------
-// Public API
-// ---------------------------------------------------------------------------
-
-/**
- * Parse a BPMN `${…}` expression body against the JUEL native subset.
- *
- * Strips a single leading `${` and trailing `}`, then attempts to parse the
- * inner text as a subset expression. On success returns
- * `{ kind: 'structured', expr }`; on any failure — a body that does not match
- * the `${…}` shape, contains method/bean calls, JUEL functions, or is otherwise
- * unparseable — returns `{ kind: 'raw', text }` with the verbatim inner body.
- * This function never throws.
- *
- * @param body A BPMN expression body, e.g. `${amount > 1000}`.
- * @returns A structured or raw {@link ExprResult}.
- */
+/** Never throws: anything outside the subset comes back as a raw result. */
 export function parseJuel(body: string): ExprResult {
   const inner = stripWrapper(body);
   if (inner === undefined) {
-    // Not a `${…}` body — fall back to the verbatim (best-effort) inner text.
     return { kind: 'raw', text: stripWrapperLenient(body) };
   }
   try {
@@ -116,28 +83,21 @@ export function parseJuel(body: string): ExprResult {
     }
     const parser = new Parser(tokens);
     const expr = parser.parseExpr();
-    // The parse must consume the entire token stream; trailing tokens (such as
-    // the `()` of a method call) mean the body is outside the subset.
+    // Trailing tokens, such as the `()` of a method call, put the body outside
+    // the subset, so the parse has to consume the whole stream.
     if (!parser.atEnd()) {
       return { kind: 'raw', text: inner };
     }
     return { kind: 'structured', expr };
   } catch {
-    // Any parse error → raw.
     return { kind: 'raw', text: inner };
   }
 }
 
 /**
- * Render an {@link ExprResult} to its DSL surface string.
- *
- * Structured results render as a bare, unquoted expression (`amount > 1000`).
- * Raw results render as the quoted `"${…}"` fallback so the original body
- * survives round-trip verbatim. This is the form `irToDsl` writes into
- * a condition or attribute position.
- *
- * @param result A parsed {@link ExprResult}.
- * @returns The DSL surface string.
+ * The DSL surface string `irToDsl` writes into a condition or attribute:
+ * `amount > 1000` when structured, the quoted `"${...}"` fallback when raw, so
+ * an out-of-subset body survives the round trip verbatim.
  */
 export function renderRawFallback(result: ExprResult): string {
   if (result.kind === 'raw') {
@@ -146,16 +106,7 @@ export function renderRawFallback(result: ExprResult): string {
   return renderNode(result.expr);
 }
 
-// ---------------------------------------------------------------------------
-// `${…}` wrapper handling
-// ---------------------------------------------------------------------------
-
-/**
- * Strip exactly one leading `${` and one trailing `}` from a body.
- *
- * Returns the inner text on success, or `undefined` when the body does not have
- * the `${…}` shape (so the caller can route it to the raw fallback).
- */
+/** `undefined` when the body is not `${...}`-shaped, routing it to the fallback. */
 function stripWrapper(body: string): string | undefined {
   const trimmed = body.trim();
   if (
@@ -168,11 +119,7 @@ function stripWrapper(body: string): string | undefined {
   return undefined;
 }
 
-/**
- * Best-effort inner-text extraction for a body that failed {@link stripWrapper}.
- * Used only to populate the `text` of a raw result, so the value is informative
- * even for a malformed body; it never affects classification.
- */
+/** Only fills the `text` of a raw result. Never affects classification. */
 function stripWrapperLenient(body: string): string {
   const trimmed = body.trim();
   let s = trimmed;
@@ -185,39 +132,30 @@ function stripWrapperLenient(body: string): string {
   return s;
 }
 
-// ---------------------------------------------------------------------------
-// Lexer
-// ---------------------------------------------------------------------------
-
 type TokenType =
   'int' | 'decimal' | 'string' | 'id' | 'bool' | 'null' | 'op' | 'punct';
 
 interface Token {
   type: TokenType;
-  /** Raw text for `op`/`punct`; the decoded value for literals/identifiers. */
+  /** Raw text for `op` and `punct`, the decoded value otherwise. */
   value: string;
-  /** For string tokens: the decoded (unescaped) string content. */
+  /** String tokens only: the unescaped content. */
   stringValue?: string;
 }
 
-// Multi-character operators must be tried before their single-character
-// prefixes (e.g. `<=` before `<`, `&&` before a lone `&`).
+// Tried before their single-character prefixes: `<=` before `<`.
 const MULTI_CHAR_OPS = ['||', '&&', '==', '!=', '<=', '>='];
 const SINGLE_CHAR_OPS = ['<', '>', '+', '-', '*', '/', '%', '!', '?', ':'];
 const PUNCT = ['(', ')', '[', ']', '.'];
 
 const ID_START = /[_a-zA-Z]/;
-// Matches the grammar's ID terminal: /[_a-zA-Z]\w*(-\w+)*/ — word chars with
-// internal hyphen groups (a hyphen must be followed by at least one word char).
+// The grammar's ID terminal: word chars with internal hyphen groups, where a
+// hyphen must be followed by at least one word char.
 const ID_REGEX = /^[_a-zA-Z]\w*(?:-\w+)*/;
 const DECIMAL_REGEX = /^[0-9]+\.[0-9]+/;
 const INT_REGEX = /^[0-9]+/;
 
-/**
- * Tokenize the inner expression text. Returns the token list, or `undefined`
- * when an illegal character or an unterminated string is encountered (which
- * routes the body to the raw fallback).
- */
+/** `undefined` on an illegal character or an unterminated string. */
 function tokenize(input: string): Token[] | undefined {
   const tokens: Token[] = [];
   let i = 0;
@@ -226,7 +164,6 @@ function tokenize(input: string): Token[] | undefined {
   while (i < n) {
     const ch = input[i];
 
-    // Whitespace.
     if (
       ch === ' ' ||
       ch === '\t' ||
@@ -239,19 +176,18 @@ function tokenize(input: string): Token[] | undefined {
       continue;
     }
 
-    // String literal (single or double quoted), with backslash escapes — this
-    // mirrors the grammar's STRING terminal /"(\\.|[^"\\])*"/ (and `'…'`).
+    // Mirrors the grammar's STRING terminal, single or double quoted.
     if (ch === '"' || ch === "'") {
       const lit = readString(input, i, ch);
       if (lit === undefined) {
-        return undefined; // unterminated string → raw
+        return undefined;
       }
       tokens.push({ type: 'string', value: lit.raw, stringValue: lit.value });
       i = lit.end;
       continue;
     }
 
-    // Numbers: DECIMAL before INT (longer match wins, as in the grammar lexer).
+    // DECIMAL before INT: longer match wins, as in the grammar lexer.
     const rest = input.slice(i);
     const dec = DECIMAL_REGEX.exec(rest);
     if (dec) {
@@ -266,7 +202,6 @@ function tokenize(input: string): Token[] | undefined {
       continue;
     }
 
-    // Identifiers / keyword-literals.
     if (ID_START.test(ch)) {
       const idMatch = ID_REGEX.exec(rest);
       // ID_REGEX is anchored and ch is an id-start char, so this always matches.
@@ -282,7 +217,6 @@ function tokenize(input: string): Token[] | undefined {
       continue;
     }
 
-    // Multi-char operators.
     const two = input.slice(i, i + 2);
     if (MULTI_CHAR_OPS.includes(two)) {
       tokens.push({ type: 'op', value: two });
@@ -290,33 +224,26 @@ function tokenize(input: string): Token[] | undefined {
       continue;
     }
 
-    // Single-char operators.
     if (SINGLE_CHAR_OPS.includes(ch)) {
       tokens.push({ type: 'op', value: ch });
       i++;
       continue;
     }
 
-    // Punctuation (accessors / parens).
     if (PUNCT.includes(ch)) {
       tokens.push({ type: 'punct', value: ch });
       i++;
       continue;
     }
 
-    // Anything else (e.g. `@`, `:` outside of ternary handled above, `,`) is
-    // outside the subset → raw.
+    // `@`, `,` and anything else are outside the subset.
     return undefined;
   }
 
   return tokens;
 }
 
-/**
- * Read a quoted string literal starting at `start` (the opening quote `quote`).
- * Returns the raw lexeme, the decoded value, and the index just past the
- * closing quote — or `undefined` when the string is unterminated.
- */
+/** `end` is the index just past the closing quote. `undefined` if unterminated. */
 function readString(
   input: string,
   start: number,
@@ -327,7 +254,7 @@ function readString(
   while (i < input.length) {
     const ch = input[i];
     if (ch === '\\') {
-      // Backslash escape: keep the next char literally (matches /\\./).
+      // Backslash escape: the next char is kept literally.
       if (i + 1 >= input.length) {
         return undefined;
       }
@@ -341,38 +268,27 @@ function readString(
     value += ch;
     i++;
   }
-  return undefined; // no closing quote
+  return undefined;
 }
 
-// ---------------------------------------------------------------------------
-// Recursive-descent parser
-// ---------------------------------------------------------------------------
-
 /**
- * A recursive-descent parser over the JUEL subset token stream. Precedence
- * climbs ternary → logical-or → logical-and → equality → relational → additive
- * → multiplicative → unary → primary, exactly matching the grammar. Binary
- * levels are left-associative.
- *
- * On any structural error a {@link ParseError} is thrown, which {@link parseJuel}
- * catches and converts to a raw result.
+ * Climbs the precedence ladder in the module header. Binary levels are
+ * left-associative. A structural error throws {@link ParseError}, which
+ * {@link parseJuel} turns into a raw result.
  */
 class Parser {
   private pos = 0;
 
   constructor(private readonly tokens: Token[]) {}
 
-  /** True when the whole token stream has been consumed. */
   atEnd(): boolean {
     return this.pos >= this.tokens.length;
   }
 
-  /** Parse a full expression (entry point). */
   parseExpr(): JuelNode {
     return this.parseTernary();
   }
 
-  // ── ternary ───────────────────────────────────────────────────────────────
   private parseTernary(): JuelNode {
     const condition = this.parseLogicalOr();
     if (this.matchOp('?')) {
@@ -384,7 +300,6 @@ class Parser {
     return condition;
   }
 
-  // ── binary levels (left-associative) ───────────────────────────────────────
   private parseLogicalOr(): JuelNode {
     return this.parseBinaryLevel(['||'], () => this.parseLogicalAnd());
   }
@@ -398,8 +313,6 @@ class Parser {
   }
 
   private parseRelational(): JuelNode {
-    // Grammar order is `<= >= < >`; longer operators are already lexed as a
-    // single token, so the set membership check below is order-independent.
     return this.parseBinaryLevel(['<=', '>=', '<', '>'], () =>
       this.parseAdditive(),
     );
@@ -413,10 +326,7 @@ class Parser {
     return this.parseBinaryLevel(['*', '/', '%'], () => this.parseUnary());
   }
 
-  /**
-   * Parse a left-associative binary level: `operand (op operand)*` where `op`
-   * is any of `ops`. Shared by all five precedence levels.
-   */
+  /** `operand (op operand)*`, shared by every binary level. */
   private parseBinaryLevel(ops: BinaryOp[], operand: () => JuelNode): JuelNode {
     let left = operand();
     for (;;) {
@@ -431,7 +341,6 @@ class Parser {
     }
   }
 
-  // ── unary ──────────────────────────────────────────────────────────────────
   private parseUnary(): JuelNode {
     const op = this.peekOp();
     if (op === '!' || op === '-') {
@@ -442,7 +351,6 @@ class Parser {
     return this.parsePrimary();
   }
 
-  // ── primary ─────────────────────────────────────────────────────────────────
   private parsePrimary(): JuelNode {
     const tok = this.peek();
     if (tok === undefined) {
@@ -480,7 +388,7 @@ class Parser {
     }
   }
 
-  /** Parse `id (.prop | [expr])*`. */
+  /** `id (.prop | [expr])*`. */
   private parseVarRef(): JuelNode {
     const idTok = this.advance();
     const accessors: Accessor[] = [];
@@ -508,7 +416,6 @@ class Parser {
     return { kind: 'varRef', name: idTok.value, accessors };
   }
 
-  // ── token helpers ───────────────────────────────────────────────────────────
   private peek(): Token | undefined {
     return this.tokens[this.pos];
   }
@@ -522,13 +429,11 @@ class Parser {
     return tok;
   }
 
-  /** Return the current operator lexeme, or undefined if not an operator. */
   private peekOp(): string | undefined {
     const tok = this.tokens[this.pos];
     return tok?.type === 'op' ? tok.value : undefined;
   }
 
-  /** Consume the current token iff it is the operator `op`. */
   private matchOp(op: string): boolean {
     if (this.peekOp() === op) {
       this.pos++;
@@ -553,17 +458,13 @@ class Parser {
   }
 }
 
-/** Internal control-flow signal for an out-of-subset / malformed parse. */
+/** Control-flow signal for an out-of-subset or malformed parse. */
 class ParseError extends Error {}
 
-// ---------------------------------------------------------------------------
-// Surface renderer (mirrors `renderExpressionInner` in @bpmn-script/language)
-// ---------------------------------------------------------------------------
-
 /**
- * Render a {@link JuelNode} to its bare DSL surface text (no `${…}` wrapper).
- * The output matches the grammar's `renderExpressionInner` canonical form so
- * that `parseJuel(renderExpression(x))` is idempotent on the subset.
+ * Bare DSL surface text, no `${...}` wrapper. Matches the canonical form of
+ * `renderExpressionInner` in `@bpmn-script/language`, which is what makes
+ * `parseJuel(renderExpression(x))` idempotent on the subset.
  */
 function renderNode(node: JuelNode): string {
   switch (node.kind) {
@@ -571,7 +472,7 @@ function renderNode(node: JuelNode): string {
     case 'decimal':
       return String(node.value);
     case 'string':
-      // Canonical form uses double quotes (re-escaping any embedded quote).
+      // Canonical form is double-quoted, so an embedded quote is re-escaped.
       return `"${node.value.replace(/"/g, '\\"')}"`;
     case 'bool':
       return node.value;
@@ -594,7 +495,6 @@ function renderNode(node: JuelNode): string {
   }
 }
 
-/** Render a single accessor (`.prop` or `[index]`). */
 function renderAccessor(accessor: Accessor): string {
   if ('prop' in accessor) {
     return `.${accessor.prop}`;

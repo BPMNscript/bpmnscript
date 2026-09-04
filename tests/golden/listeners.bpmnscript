@@ -1,0 +1,43 @@
+process claim-settlement {
+  start ClaimFiled
+
+  service ValidateClaim "Validate the claim" {
+    class = "com.example.claims.ValidateClaimDelegate"
+    on start { class = "com.example.claims.OpenAuditTrail" }
+    on end { expression = "${auditTrail.close(execution)}" }
+  }
+
+  subprocess AssessDamage "Assess the damage" {
+    on start { delegate = "${assessmentTracker}" }
+  } {
+    start AssessmentOpened
+    user InspectVehicle "Inspect the vehicle" {
+      assignee = "demo"
+      candidateGroups = "assessors"
+      on create { class = "com.example.claims.NotifyAssessor" }
+      on assign { expression = "${assessorRoster.record(task)}" }
+      on complete { delegate = "${assessmentRecorder}" }
+      on update ```javascript
+task.setVariable("assessmentRevised", true);
+```
+      on delete { class = "com.example.claims.ReleaseAssessor" }
+      on timeout after "PT8H" { delegate = "${assessmentEscalation}" }
+    }
+    end AssessmentClosed
+  }
+
+  service PaySettlement "Pay the settlement" { class = "com.example.claims.PaySettlementDelegate" }
+
+  end ClaimSettled {
+    on end { class = "com.example.claims.ArchiveClaim" }
+  }
+
+  on message "ClaimWithdrawn" {
+    input withdrawnBy = "${initiator}"
+    on start { class = "com.example.claims.LogWithdrawal" }
+  } {
+    start WithdrawalOpened
+    service CancelSettlement "Cancel the settlement" { class = "com.example.claims.CancelSettlementDelegate" }
+    end WithdrawalClosed
+  }
+}

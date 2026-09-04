@@ -1,25 +1,8 @@
-/**
- * End-to-end round-trip for embedded sub-processes over the unmocked transform
- * chain: real Langium parse and validation, real `bpmn-moddle` via
- * `irToXml`/`xmlToIr`, and real `bpmn-auto-layout` inside `irToXml`. No Docker
- * and no engine.
- *
- * The fixture nests a sub-process with an implicit start and end around an
- * `if`/`else`, a labelled sub-process with an explicit start and end around a
- * `while`, and a two-level nested sub-process.
- *
- * The frozen `.bpmn` is a diff tripwire: drift in it is a defect, not a reason
- * to regenerate.
- */
-
 import { describe, it, expect } from 'vitest';
 
 import type { FlowContainer } from '@bpmn-script/transform';
 
-import {
-  parseShapeBounds,
-  assertShapeContainment,
-} from './helpers/di-bounds.js';
+import { describeDiContainment } from './helpers/di-bounds.js';
 import { kindOf, idsOf, subProcess } from './helpers/ir-query.js';
 import { roundTripFixture } from './helpers/round-trip-fixture.js';
 
@@ -32,11 +15,8 @@ const rt = roundTripFixture('nested-subprocess', {
   ],
 });
 
-/**
- * Assert no sequence flow in `container` references an element outside the
- * container's own flow-element set, the invariant that lets a parent treat a
- * sub-process as one opaque activity. Recurses into nested containers.
- */
+// No sequence flow may reference an element outside its own container. That
+// invariant is what lets a parent treat a sub-process as one opaque activity.
 function assertNoBoundaryCrossingFlows(container: FlowContainer): void {
   const own = idsOf(container);
   for (const flow of container.sequenceFlows) {
@@ -73,7 +53,6 @@ describe('idempotence: DSL → IR₁ → XML → IR₂ → DSL′ → IR₃', ()
     expect(kindOf(rt.ir3, 'CloseOrder')).toBe('userTask');
     expect(kindOf(rt.ir3, 'OrderClosed')).toBe('endEvent');
 
-    // The Payment tasks live one level down, not in the parent.
     const payment = subProcess(rt.ir3, 'Payment');
     expect(kindOf(payment, 'ManualReview')).toBe('userTask');
     expect(kindOf(payment, 'AutoCharge')).toBe('serviceTask');
@@ -92,19 +71,8 @@ describe('idempotence: DSL → IR₁ → XML → IR₂ → DSL′ → IR₃', ()
   });
 });
 
-describe('DI containment on the frozen .bpmn', () => {
-  it('every nested child shape lies strictly inside its parent sub-process bounds', () => {
-    const bounds = parseShapeBounds(rt.frozenXml);
-
-    // Guard against a vacuous pass: the nested shapes must actually be present.
-    for (const id of ['Payment', 'Fulfillment', 'Shipping', 'PackParcel']) {
-      expect(bounds.has(id), `missing BPMNShape for ${id}`).toBe(true);
-    }
-
-    // Walk the IR so parent-child membership is authoritative at every depth.
-    assertShapeContainment(rt.ir1, bounds, true);
-  });
-});
+// The nested shapes are named so the walk cannot pass on an empty tree.
+describeDiContainment(rt, ['Payment', 'Fulfillment', 'Shipping', 'PackParcel']);
 
 describe('structure: IR₁ pins the containment shape', () => {
   it('the parent chain threads start → RecordOrder → Payment → Fulfillment → CloseOrder → end', () => {

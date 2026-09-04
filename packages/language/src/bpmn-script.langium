@@ -25,9 +25,8 @@
 // Reserved words (cannot be used as a bare expression identifier; use the
 // quoted "${...}" raw-string fallback if a variable must be named like one):
 //   process, var, start, end, user, service, script, subprocess,
-//   if, else, while, do, parallel, goto, label, assignee, formKey, class,
-//   expression, delegate, topic, form,
-//   call, in, out, local, binding, version, businessKey,
+//   if, else, while, do, parallel, goto, label, form,
+//   call, in, out, local,
 //   on, throw, emit, alongside, await,
 //   string, number, boolean, date, json, any,
 //   true, false, null.
@@ -36,10 +35,12 @@
 // `order.type`, `items[0]`).
 //
 // The trigger kinds (`error`, `escalation`, `message`, `signal`, `timer`,
-// `condition`, `compensation`), the catch-binding field names, and the timer
-// particles `after`/`at`/`every` are deliberately NOT on this list: they lex as
-// plain `ID` and are validated in position instead, so `var message: string`
-// and `if (after > 2)` stay legal.
+// `condition`, `compensation`), the catch-binding field names, the timer
+// particles `after`/`at`/`every`, the attribute keys, the parameter direction
+// words, and the listener event words are deliberately NOT on this list: they
+// lex as plain `ID` and are validated in position instead, so `var message:
+// string`, `if (after > 2)`, and `if (priority > 5)` stay legal, and a step may
+// be named after any business concept.
 
 grammar BpmnScript
 
@@ -58,15 +59,24 @@ Process:
     '}';
 
 // Process-scope declarations: the process-level label attribute, typed
-// `var` declarations, and thrown-message declarations for error codes. Kept
-// separate from executable statements.
+// `var` declarations, thrown-message declarations for error codes, and the
+// process-level settings written as `<key> = <value>`. Kept separate from
+// executable statements.
 ProcessDecl:
-    ProcessLabel | VarDecl | ErrorDecl;
+    ProcessLabel | VarDecl | ErrorDecl | ProcessAttribute;
 
 // Process-level label attribute, e.g. `label = "Invoice Approval"`. Stored as
 // its own node so the validator can flag a duplicate `label`.
 ProcessLabel:
     'label' '=' value=STRING;
+
+// A process-level setting written like an element attribute, e.g.
+// `versionTag = "1.4"`. `label` keeps its own rule above, so the validator
+// restricts this key set to the settings that belong on the process element.
+// `ID '='` separates it from `ErrorDecl` (`ID STRING …`) at the second token,
+// and every statement is keyword-led, so a declaration can never swallow one.
+ProcessAttribute:
+    key=AttrKey '=' value=Expr;
 
 // Typed variable declaration. Parsed here; validated by the validator.
 // `VarType` is aligned with Operaton variable types.
@@ -100,7 +110,7 @@ StartEvent:
     'start' name=ID (label=STRING)? AttributeBlock?;
 
 EndEvent:
-    'end' name=ID (label=STRING)?;
+    'end' name=ID (label=STRING)? AttributeBlock?;
 
 // UserTask with an optional typed attribute block. Attributes are modelled as a
 // *list* of `Attribute` nodes (not named assignments) so duplicate keys remain
@@ -122,15 +132,21 @@ ServiceTask:
 // verbatim in `body`; the language tag and script text are extracted
 // downstream. Emits a bpmn:scriptTask.
 ScriptTask:
-    'script' name=ID (label=STRING)? body=FENCED_SCRIPT;
+    'script' name=ID (label=STRING)? AttributeBlock? body=FENCED_SCRIPT;
 
-// fragment: a brace-delimited body block. Reused verbatim by StartEvent,
-// UserTask, and ServiceTask. It holds a mix of `<key> = <value>` attributes and
-// `form` blocks in any order. Which members are legal per element kind is
-// enforced by the validator, not the grammar, so the one fragment serves all
-// three (a start event allows only a form; a service task allows no form).
+// fragment: a brace-delimited settings block, reused by every statement that
+// takes one. It holds a mix of `<key> = <value>` attributes, `form` blocks,
+// `input`/`output` parameters, and lifecycle listeners, in any order. Which
+// members are legal per element kind is enforced by the validator, not the
+// grammar, so the one fragment serves them all (a start event allows only a
+// form and the engine settings; a service task allows no form).
+//
+// On a statement that also has a body, the block comes BEFORE the body. The two
+// never collide: no statement starts with a plain identifier, so an identifier
+// after the opening brace can only be a settings member, and the empty block
+// `{ }` is told apart from an empty body by the brace that follows it.
 fragment AttributeBlock:
-    '{' (attrs+=Attribute | forms+=FormBlock)* '}';
+    '{' (attrs+=Attribute | forms+=FormBlock | params+=IoParameter | listeners+=Listener)* '}';
 
 // A form declaration: `form { <field>* }`. Maps to `operaton:formData` so
 // Operaton Tasklist renders a labeled input per field. Modelled as a list on the
@@ -146,22 +162,86 @@ FormBlock:
 FormField:
     id=ID ':' type=VarType (label=STRING)? ('=' defaultValue=Expr)?;
 
-// A single attribute entry: `<key> = <expression>`. `key` is a fixed keyword,
-// `value` is a full expression (so `assignee = "demo"` stores a RawExpr/literal
-// and `class = com.example.X` stores a VarRef-shaped value). Duplicate keys are
+// A single attribute entry: `<key> = <expression>`. `value` is a full
+// expression (so `assignee = "demo"` stores a RawExpr/literal and
+// `class = com.example.X` stores a VarRef-shaped value). Duplicate keys are
 // accepted by the parser and flagged by the validator.
 Attribute:
     key=AttrKey '=' value=Expr;
 
-// Attribute keys are the union across all element kinds. Keeping them in one
-// datatype rule means the grammar accepts any key on any element; the validator
-// restricts `assignee`/`formKey` to `user` and `class` to `service`.
-// `process`/`binding`/`version`/`businessKey` are the `call` attribute keys
-// (`process` reuses the existing `process`-block keyword token, so no new
-// reserved word); the validator restricts them to `call`.
+// An attribute key is a soft word: it lexes as a plain `ID` and is checked in
+// position by the validator, which knows the key set of each element kind. That
+// keeps every attribute name available as a step name, a variable name, and a
+// bare identifier in expression position, so `if (priority > 5)` and
+// `user class { … }` stay legal, and an unknown key gets a validation message
+// naming the element instead of a lexer complaint.
+//
+// `process` is listed explicitly because the `process` block heading makes it a
+// keyword token that never lexes as `ID`; without the literal, `call C { process
+// = "x" }` would fail at the `=`.
 AttrKey returns string:
-    'assignee' | 'formKey' | 'class' | 'expression' | 'delegate' | 'topic'
-    | 'process' | 'binding' | 'version' | 'businessKey';
+    ID | 'process';
+
+// One `input`/`output` parameter entry: `<direction> <name> = <value>`.
+// `direction` is a soft word for the same reason an attribute key is, so a step
+// may still be named `input`. Two adjacent identifiers separate a parameter from
+// an attribute (`<key> =`) at the second token.
+//
+// The value language is wider than an attribute's: a parameter may carry a
+// nested list or map structure, or an inline script, none of which an
+// expression can express.
+IoParameter:
+    direction=ID name=ID '=' value=IoValue;
+
+// A parameter value: an ordinary expression, a nested structure, or an inline
+// script. `[` and `{` uniquely predict a list and a map, since no expression
+// starts with either, so `items[0]` on the right of a parameter still parses as
+// an accessor.
+IoValue:
+    Expr | ListLiteral | MapLiteral | ScriptLiteral;
+
+// An ordered list of values, `[a, b]`. A trailing comma is rejected.
+ListLiteral:
+    '[' (items+=IoValue (',' items+=IoValue)*)? ']';
+
+// A keyed map of values, `{ k: v, "other key": w }`. A trailing comma is
+// rejected.
+MapLiteral:
+    '{' (entries+=MapEntry (',' entries+=MapEntry)*)? '}';
+
+MapEntry:
+    key=MapKey ':' value=IoValue;
+
+// A map key is a bare word or a quoted string; the quoted form carries keys that
+// are not identifier-shaped.
+MapKey returns string:
+    ID | STRING;
+
+// An inline script as a parameter value, written with the same fenced block a
+// script task uses, so the language tag travels with the code.
+ScriptLiteral:
+    body=FENCED_SCRIPT;
+
+// An engine lifecycle callback registered on the enclosing element:
+// `on <event> { <binding> }` or `on <event> ```<lang> … ``` . A `timeout`
+// callback additionally carries a timer clause, written with the same particle
+// syntax a timer event uses.
+//
+// This reuses the `on` word from the statement layer: at statement position `on`
+// catches a BPMN event and opens a handler body, inside a settings block it
+// registers a callback. The binding block is spelled out here rather than
+// reusing the `AttributeBlock` fragment, so a callback cannot nest a form, a
+// parameter, or another callback.
+Listener:
+    'on' event=ListenerEvent
+    (particle=ID time=(STRING | RAW_TEMPLATE))?
+    (script=FENCED_SCRIPT | '{' attrs+=Attribute* '}');
+
+// The event word is soft, as every position-checked word in this grammar is.
+// `start` and `end` are named explicitly because the statements of the same name
+// make them keyword tokens that never lex as `ID`.
+ListenerEvent returns string:
+    ID | 'start' | 'end';
 
 // if / else if / else -> exclusive gateway (desugared by `astToIr`).
 IfStatement:
@@ -194,18 +274,20 @@ GotoStatement:
 // A nested flow container: `subprocess <id> "<label>"? { <statements> }`. The
 // body reuses `Block` verbatim, so `start`/`end` parse inside it exactly like
 // at process scope (the desugarer synthesises them when absent and honours
-// them when written).
+// them when written). An optional settings block precedes the body.
 SubProcess:
-    'subprocess' name=ID (label=STRING)? body=Block;
+    'subprocess' name=ID (label=STRING)? AttributeBlock? body=Block;
 
 // A call to another process by id: `call <id> "<label>"? { <body> }`. The brace
-// body mixes attributes with `in`/`out` variable mappings in any order, so it
-// defines its own inline body rather than reusing the `AttributeBlock`
-// fragment: that fragment admits a `form` block, meaningless on a call, and has
-// no place to carry mappings. The parser accepts any combination, including an
-// empty body; which keys are required is the validator's job.
+// body mixes attributes, `in`/`out` variable mappings, `input`/`output`
+// parameters, and listeners in any order, so it defines its own inline body
+// rather than reusing the `AttributeBlock` fragment: that fragment admits a
+// `form` block, meaningless on a call, and has no place to carry mappings.
+// `in`/`out` are keyword tokens while `input`/`output` lex as identifiers, so
+// the two member kinds never collide. The parser accepts any combination,
+// including an empty body; which keys are required is the validator's job.
 CallActivity:
-    'call' name=ID (label=STRING)? '{' (attrs+=Attribute | mappings+=VariableMapping)* '}';
+    'call' name=ID (label=STRING)? '{' (attrs+=Attribute | mappings+=VariableMapping | params+=IoParameter | listeners+=Listener)* '}';
 
 // One variable-mapping entry inside a `call` body, read like a function call at
 // the process boundary: `in` carries a value into the called process, `out`
@@ -252,7 +334,7 @@ OnHandler:
     'on' (host=[Statement:ID] ':')? trigger=ID
     (code=STRING | particle=ID time=(STRING | RAW_TEMPLATE))?
     ('(' (bindings+=EventBinding (',' bindings+=EventBinding)* | condition=Expr) ')')?
-    (alongside?='alongside')? body=Block;
+    (alongside?='alongside')? AttributeBlock? body=Block;
 
 // One catch-parameter binding inside an `on` parenthesized list. It is written
 // as a declaration (`field variable`) mirroring `catch (ExceptionType name)`,
@@ -267,13 +349,13 @@ EventBinding:
 // and anything else ends the statement (every statement in this grammar is
 // keyword-led, so a following statement can never be swallowed as `name`).
 ThrowStatement:
-    'throw' trigger=ID (name=ID)? (code=STRING)?;
+    'throw' trigger=ID (name=ID)? (code=STRING)? AttributeBlock?;
 
 // `emit <trigger> <name>? "<code>"?` fires the event and keeps going, the one
 // difference from `throw` above. Which trigger kinds have a continuing form in
 // BPMN is the validator's concern, not the grammar's.
 EmitStatement:
-    'emit' trigger=ID (name=ID)? (code=STRING)?;
+    'emit' trigger=ID (name=ID)? (code=STRING)? AttributeBlock?;
 
 // `await <trigger> <payload>` blocks the main flow: the token pauses here
 // until the named trigger fires, then continues to the next statement. The
@@ -287,7 +369,7 @@ EmitStatement:
 IntermediateCatchEvent:
     'await' trigger=ID
     (code=STRING | particle=ID time=(STRING | RAW_TEMPLATE))?
-    ('(' condition=Expr ')')?;
+    ('(' condition=Expr ')')? AttributeBlock?;
 
 // `<kind> "<code>" <field> "<text>"`, a process-header declaration written
 // alongside `var` declarations, for the one piece of event data usage alone

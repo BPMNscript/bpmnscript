@@ -1,18 +1,3 @@
-/**
- * End-to-end tests for the CLI's decompile behaviour: `xmlToIr` / `irToDsl`
- * and the `parseAction`/`buildAction` entry points, driven against real BPMN
- * fixtures on disk with no mocks of the transform and no Docker.
- *
- * Covers: decompiling a BPMN with non-semantic drops (a lane, a dropped
- * Operaton extension attribute) and surfacing both as warnings with element
- * ids, via `xmlToIr` directly and via `parseAction`'s stderr output; refusing
- * a BPMN with an unsupported construct (a timer start event) with exit code 1
- * and no partial output file; round-tripping the decompiled DSL back through
- * `buildAction` without validation errors; and whole-process validator
- * diagnostics (duplicate process name, `goto` into a `parallel` branch from
- * outside) for count, severity, and jargon-free wording.
- */
-
 import { describe, it, expect, beforeAll, afterEach, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as fsp from 'node:fs/promises';
@@ -35,14 +20,9 @@ import {
 import { buildAction } from '../src/build.js';
 import { parseAction } from '../src/parse.js';
 
-// ---------------------------------------------------------------------------
-// Path resolution
-// ---------------------------------------------------------------------------
-
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-/** Root of the bpmnscript monorepo (three levels up from packages/cli/test/). */
 const REPO_ROOT = path.resolve(__dirname, '../../..');
 
 const LANES_AND_ASYNC_BPMN = path.resolve(
@@ -55,7 +35,7 @@ const TIMER_START_BPMN = path.resolve(
   'tests/fixtures/timer-start.bpmn',
 );
 
-/** BPMN vocabulary the DSL author never sees (ADR-0013). */
+// BPMN vocabulary the DSL author never sees (ADR-0013).
 const FORBIDDEN_JARGON = ['flow node', 'gateway', 'token', 'sequence flow'];
 
 function assertNoForbiddenJargon(text: string): void {
@@ -68,11 +48,6 @@ function assertNoForbiddenJargon(text: string): void {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Helpers (self-contained — mirrors packages/cli/test/build-parse.smoke.test.ts)
-// ---------------------------------------------------------------------------
-
-/** Sentinel error thrown by the mocked process.exit() stub. */
 class ExitCalled extends Error {
   constructor(public readonly code: number) {
     super(`process.exit(${code}) was called`);
@@ -80,10 +55,8 @@ class ExitCalled extends Error {
   }
 }
 
-/**
- * Spy on `process.exit` and throw `ExitCalled` instead of terminating.
- * Returns the spy so the caller can inspect `.mock.calls`.
- */
+// Throws so the action stops where process.exit() would have. A no-op mock
+// would let it fall through and keep running.
 function spyOnExit() {
   return vi
     .spyOn(process, 'exit')
@@ -92,11 +65,6 @@ function spyOnExit() {
     });
 }
 
-/**
- * Run `fn` inside a temporary directory, cleaning up afterwards.
- *
- * @param fn Receives the absolute path to the temp directory.
- */
 async function withTempDir<T>(fn: (dir: string) => Promise<T>): Promise<T> {
   const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'bpmns-decompile-e2e-'));
   try {
@@ -105,10 +73,6 @@ async function withTempDir<T>(fn: (dir: string) => Promise<T>): Promise<T> {
     await fsp.rm(dir, { recursive: true, force: true });
   }
 }
-
-// ---------------------------------------------------------------------------
-// Shared Langium services (built once — expensive)
-// ---------------------------------------------------------------------------
 
 let parse: ReturnType<typeof parseHelper<Model>>;
 let validate: ReturnType<typeof validationHelper<Model>>;
@@ -119,21 +83,15 @@ beforeAll(() => {
   validate = validationHelper<Model>(services.BpmnScript);
 });
 
-// ---------------------------------------------------------------------------
-// 1. Warning path (happy): lanes + dropped extension attribute
-// ---------------------------------------------------------------------------
-
 describe('decompile contract — warning path (lanes + dropped extension attribute)', () => {
   afterEach(() => {
     vi.restoreAllMocks();
   });
 
-  it('xmlToIr decompiles the lanes-and-async fixture into the supported subset and surfaces one lane warning + one extension-attribute warning naming both dropped items and their element ids', async () => {
+  it('xmlToIr decompiles the lanes-and-async fixture into the supported subset, keeps the engine setting the IR carries, and surfaces one lane warning + one extension warning naming the one genuinely dropped item', async () => {
     const xml = fs.readFileSync(LANES_AND_ASYNC_BPMN, 'utf-8');
     const { ir, warnings } = await xmlToIr(xml);
 
-    // The pre-existing happy-path subset (start → user task → end) is
-    // preserved alongside the new drop logic.
     expect(ir.id).toBe('lanes-and-async');
     expect(ir.flowElements.map((fe) => fe.kind)).toEqual([
       'startEvent',
@@ -142,8 +100,8 @@ describe('decompile contract — warning path (lanes + dropped extension attribu
     ]);
     const task = ir.flowElements.find((fe) => fe.kind === 'userTask');
     expect(task?.kind === 'userTask' && task.assignee).toBe('demo');
+    expect(task?.kind === 'userTask' && task.asyncBefore).toBe(true);
 
-    // Both non-semantic drops are surfaced — never silently.
     expect(warnings).toHaveLength(2);
     const laneWarning = warnings.find((w) => w.category === 'lane');
     expect(laneWarning?.elementId).toBe('Lane_Ops');
@@ -151,8 +109,10 @@ describe('decompile contract — warning path (lanes + dropped extension attribu
     const attrWarning = warnings.find(
       (w) => w.category === 'extensionAttribute',
     );
-    expect(attrWarning?.elementId).toBe('ReviewRequest');
-    expect(attrWarning?.message).toContain('asyncBefore');
+    // moddle cannot tie an undeclared operaton: element to a step, so the
+    // warning lands on the process rather than on the task that carries it.
+    expect(attrWarning?.elementId).toBe('lanes-and-async');
+    expect(attrWarning?.message).toContain('operaton:properties');
   });
 
   it('parseAction on the lanes-and-async fixture writes the .bpmnscript file and prints both warnings to stderr without changing the exit code', async () => {
@@ -163,7 +123,6 @@ describe('decompile contract — warning path (lanes + dropped extension attribu
 
       await parseAction(LANES_AND_ASYNC_BPMN, { output: outDsl });
 
-      // Success path: process.exit must never be called (exit code stays 0).
       expect(exitSpy).not.toHaveBeenCalled();
       expect(fs.existsSync(outDsl)).toBe(true);
 
@@ -171,8 +130,7 @@ describe('decompile contract — warning path (lanes + dropped extension attribu
         .map((call) => String(call[0]))
         .join('\n');
       expect(stderrOutput).toContain('Lane_Ops');
-      expect(stderrOutput).toContain('asyncBefore');
-      expect(stderrOutput).toContain('ReviewRequest');
+      expect(stderrOutput).toContain('operaton:properties');
 
       const dsl = fs.readFileSync(outDsl, 'utf-8');
       expect(dsl).toContain('process lanes-and-async');
@@ -183,10 +141,6 @@ describe('decompile contract — warning path (lanes + dropped extension attribu
     });
   });
 });
-
-// ---------------------------------------------------------------------------
-// 2. Refusal path (error): timer start event
-// ---------------------------------------------------------------------------
 
 describe('decompile contract — refusal path (timer start event)', () => {
   afterEach(() => {
@@ -225,9 +179,8 @@ describe('decompile contract — refusal path (timer start event)', () => {
         parseAction(TIMER_START_BPMN, { output: outDsl }),
       ).rejects.toBeInstanceOf(ExitCalled);
 
-      // Exit code 1 = unsupported construct, not 2 (I/O/generic).
+      // 1 means unsupported construct; 2 would mean I/O or generic failure.
       expect(exitSpy).toHaveBeenCalledWith(1);
-      // No partial DSL is ever written.
       expect(fs.existsSync(outDsl)).toBe(false);
 
       const stderrOutput = errorSpy.mock.calls
@@ -239,10 +192,6 @@ describe('decompile contract — refusal path (timer start event)', () => {
     });
   });
 });
-
-// ---------------------------------------------------------------------------
-// 3. Integration: decompiled output re-parses and re-compiles cleanly
-// ---------------------------------------------------------------------------
 
 describe('decompile contract — integration: decompiled DSL round-trips through the compile pipeline', () => {
   afterEach(() => {
@@ -273,25 +222,16 @@ describe('decompile contract — integration: decompiled DSL round-trips through
 
       const exitSpy = spyOnExit();
 
-      // buildAction runs the exact parse → validate → astToIr → irToXml
-      // pipeline that compileDslToBpmn (packages/extension) wraps. No
-      // validation error means no process.exit call.
       await buildAction(srcFile, { output: outBpmn });
       expect(exitSpy).not.toHaveBeenCalled();
       expect(fs.existsSync(outBpmn)).toBe(true);
 
-      // Full round-trip sanity: the rebuilt BPMN re-imports without throwing
-      // and keeps the same process id.
       const rebuiltXml = fs.readFileSync(outBpmn, 'utf-8');
       const { ir: rebuiltIr } = await xmlToIr(rebuiltXml);
       expect(rebuiltIr.id).toBe('lanes-and-async');
     });
   });
 });
-
-// ---------------------------------------------------------------------------
-// 4. Language integrity: multiple validator checks in one document
-// ---------------------------------------------------------------------------
 
 describe('decompile contract — language integrity: extra process + goto into a parallel branch', () => {
   it('a document tripping both checks yields exactly those two errors, each an error severity, with jargon-free wording', async () => {
@@ -312,7 +252,6 @@ process Second {
     const { document, diagnostics } = await validate(source);
     expect(document.parseResult.parserErrors).toHaveLength(0);
 
-    // Exactly two diagnostics: no double-reporting, no stray warnings.
     expect(diagnostics).toHaveLength(2);
     for (const d of diagnostics) {
       expect(d.severity).toBe(1);

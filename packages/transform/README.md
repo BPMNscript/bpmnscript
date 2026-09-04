@@ -24,8 +24,8 @@ The four solid arrows are this package; the dotted one is the parser from `@bpmn
 `astToIr` turns the parsed DSL into IR, `irToXml` writes deployable BPMN XML and runs auto-layout for the diagram coordinates, `xmlToIr` reads an existing BPMN file back into IR, and `irToDsl` prints IR as `.bpmnscript` text.
 Compiling is `astToIr` then `irToXml`; decompiling is `xmlToIr` then `irToDsl`.
 
-The IR carries no Operaton-specific fields.
-Engine details (the `operaton:` attributes, the 30-day history setting) are attached inside `irToXml` alone, which keeps the data model in the middle vendor-neutral.
+The IR names the engine settings it carries without a vendor prefix, and the `operaton:` prefix itself is applied inside `irToXml` alone.
+Details the IR does not model at all, such as the 30-day history setting, are attached there too.
 
 ## IR shape
 
@@ -37,6 +37,7 @@ interface BpmnProcess {
   id: string;
   name?: string;
   isExecutable: true; // always true (executable process)
+  versionTag?: string; // operaton:versionTag, an author-supplied version label
   flowElements: FlowElement[];
   sequenceFlows: SequenceFlow[];
   errorMessages?: { code: string; message: string }[]; // declared thrown-error message texts, keyed by code
@@ -45,9 +46,9 @@ interface BpmnProcess {
 type FlowElement =
   | StartEvent // kind: 'startEvent'  (+eventDefinition? on an event-handler start)
   | EndEvent // kind: 'endEvent'  (+eventDefinition? for a typed throw end)
-  | UserTask // kind: 'userTask'  (+assignee?, +formKey?)
-  | ServiceTask // kind: 'serviceTask' (+binding: class | expression | delegateExpression | external)
-  | ScriptTask // kind: 'scriptTask' (+format, +code)
+  | UserTask // kind: 'userTask'  (+assignee?, +formKey?, +candidateGroups?/candidateUsers?/dueDate?/followUpDate?/priority?)
+  | ServiceTask // kind: 'serviceTask' (+binding: class | expression | delegateExpression | external, +resultVariable?)
+  | ScriptTask // kind: 'scriptTask' (+format, +code, +resultVariable?)
   | ExclusiveGateway // kind: 'exclusiveGateway' (+defaultFlowId?)
   | ParallelGateway // kind: 'parallelGateway'
   | SubProcess // kind: 'subProcess'  (a nested FlowContainer; may host an on-compensation undo block)
@@ -63,6 +64,15 @@ interface SequenceFlow {
   conditionExpression?: string; // e.g. "${amount > 1000}"
 }
 ```
+
+Every event and activity kind above also carries the flat engine settings Operaton reads off a flow node: `asyncBefore`, `asyncAfter`, `exclusive`, `jobPriority`, and `retryCycle` (the `operaton:failedJobRetryTimeCycle` element body), plus `executionListeners`.
+Only non-default values are stored, so `asyncBefore` and `asyncAfter` are `true` or absent and `exclusive` is `false` or absent.
+The two gateways carry none of them: an `if`, `while`, or `parallel` synthesizes its gateways as structural coordinates with no textual identity, so there is nowhere to author an engine setting for one ([ADR-0022](../../docs/decisions/0022-engine-attributes-as-named-ir-fields.md)).
+
+The five activity kinds additionally carry `inputParameters` and `outputParameters`, the `operaton:inputOutput` block in declaration order.
+An `IoParameter` is a name and one `IoValue`, tagged `text`, `script`, `list`, or `map`, so a value carrying two forms at once is unrepresentable rather than checked at runtime.
+A `UserTask` also carries `taskListeners`, whose events are the six points of a task's human lifecycle; `timeout` is the one that carries a timer.
+An `ExecutionListener` and a `TaskListener` carry exactly one binding, tagged `class`, `expression`, `delegateExpression`, or `script`, the first three being the same three a service task binds by and the fourth an inline script where a service task has the external topic.
 
 A `ServiceTask` binds to exactly one execution form, tagged by `binding.kind`: `class` (a Java delegate class, `operaton:class`), `expression`, `delegateExpression` (the DSL spells this one `delegate`), or `external` (`operaton:type="external"` plus `operaton:topic`, written `service X { topic = "..." }`).
 The tagged union makes "more than one binding" unrepresentable at the type level and keeps every `switch (binding.kind)` exhaustive.
@@ -89,7 +99,7 @@ import { astToIr, irToXml, xmlToIr, irToDsl } from '@bpmn-script/transform';
 
 const ir: BpmnProcess = astToIr(langiumAstModel); // sync
 const xml: string = await irToXml(ir); // async; adds bpmndi: layout data
-const { ir, warnings } = await xmlToIr(xmlString); // async; discards DI, may throw
+const { ir: imported, warnings } = await xmlToIr(xmlString); // async; discards DI, may throw
 const dsl: string = irToDsl(ir); // sync
 ```
 
@@ -97,11 +107,23 @@ const dsl: string = irToDsl(ir); // sync
 
 ## The import contract
 
-`xmlToIr` never discards content without saying so.
+`xmlToIr` never discards an element without saying so.
 What it cannot represent falls into two buckets, and the reasoning is in [ADR-0014](../../docs/decisions/0014-honest-bpmn-import-contract.md).
 
 Content the IR cannot express at all is refused: `xmlToIr` throws a subclass of `UnsupportedConstructError` before producing any IR, so there is no partial output.
-Content the IR does not carry but whose absence changes nothing about what the process executes (an extra Operaton extension attribute, a lane) comes back through the `warnings` array instead.
+Content the IR does not carry (an extra Operaton extension attribute, a lane, a text annotation) comes back through the `warnings` array instead.
+
+The diagram interchange data aside ([ADR-0003](../../docs/decisions/0003-auto-layout-for-diagram-interchange.md)), no element is dropped in silence.
+Every BPMN element and every extension element `xmlToIr` cannot carry is reported, named by the tag the document spells and by its own id, and attributed to the element it sat on.
+A construct is reported whole, so a dropped `bpmn:ioSpecification` names itself rather than each data input inside it.
+The lane structure goes the same way, reported lane by lane, with anything hung on a lane or a lane set leaving with it.
+
+What is dropped without a warning is an attribute `xmlToIr` does not read, and it comes in two shapes.
+One is an attribute in a foreign namespace written directly on a mapped BPMN element, which is where an editor parks its own bookkeeping.
+The same attribute on an Operaton extension element the IR reads is reported, a whole foreign-namespace extension element is reported too, and an attribute written in no namespace at all that BPMN does not declare is reported as well, since no editor writes there.
+The other is a BPMN attribute outside the set this surface reads: a sequence flow's `name`, a process's `processType` or `isClosed`, a `startQuantity`, and the `language` on a condition expression.
+Each of those is content left out.
+The one attribute whose import changes what the document says, `isExecutable="false"`, is reported instead of left for the reader to notice.
 
 ### Refusals
 
@@ -118,10 +140,11 @@ Every class below extends `UnsupportedConstructError`, so catching that one clas
 | `UnsupportedEventFeatureError`        | An event of the right kind in a shape the surface cannot express          |
 | `UnsupportedLoopCharacteristicsError` | Multi-instance or standard loop characteristics; IR elements run once     |
 | `UnsupportedCollaborationError`       | A collaboration, meaning pools or message flows; the IR holds one process |
+| `UnsupportedExtensionFormError`       | An input/output value or a listener in a shape this surface cannot write  |
 
 ### Import warnings
 
-`xmlToIr` returns `{ ir, warnings }`, and each `ImportWarning` names something dropped that does not change what the process executes.
+`xmlToIr` returns `{ ir, warnings }`, and each `ImportWarning` names one dropped construct, none of which changes what the process executes but for the resource assignment described below.
 `warnings` is `[]` for input that round-trips cleanly.
 
 ```ts
@@ -132,26 +155,40 @@ interface ImportWarning {
     | 'lane'
     | 'label'
     | 'unreferencedRoot'
-    | 'documentation';
+    | 'documentation'
+    | 'unmappedConstruct';
   message: string; // names the concrete dropped construct
 }
 ```
 
-`extensionAttribute` covers an Operaton or camunda extension beyond the supported `assignee`, `formKey`, and `class`, such as `operaton:asyncBefore` or an `operaton:inputOutput` block.
+`extensionAttribute` covers an Operaton or camunda extension the IR does not read off the element carrying it: an `operaton:field`, whose injected value has no IR surface, an `operaton:` element the moddle extension does not declare, a foreign vendor namespace, and an attribute with no IR field at all such as `operaton:formRef`.
+The question is asked per owner kind, so an engine setting on a gateway, an `operaton:formData` on a service task, and an `operaton:inputOutput` on an event are reported too: no IR node reads them there.
+It is asked again of every extension child the IR does read, so an unread attribute there is reported rather than leaving with the element that imports: an `operaton:taskListener`'s `id`, which Operaton addresses a timeout listener's job by, an undeclared `operaton:` or foreign-namespace attribute on a listener or an input/output parameter, and the `id`/`name` decoration on an `operaton:value` list item.
+A second `operaton:inputOutput`, `operaton:formData`, or `operaton:failedJobRetryTimeCycle` on one element is reported here as well, since Operaton reads one of each and the first is kept.
 Attribution is exact wherever moddle ties the content to its owning element; the few undeclared `operaton:` elements it cannot pin down are reported once against the process id instead, coarser but still reported.
 On a call activity, `variableMappingClass`, `variableMappingDelegateExpression`, and `calledElementTenantId` are execution-affecting rather than cosmetic, so they are refused instead of warned about.
+An input/output value or a listener the surface cannot write is refused for the same reason: dropping a value form, a second listener firing at the same event, or a second parameter binding the same name would change what the process runs.
 
-`lane` covers a `bpmn:Lane`.
+`lane` covers a `bpmn:Lane`, one warning per lane, a lane nested in a `bpmn:childLaneSet` included.
 The flat IR has no lane concept, so every step lands in one process and the assignment goes.
 
 `label` covers a distinct `name` on an event handler, a typed end event, an intermediate throw, an intermediate catch, or a boundary event.
 Those read from their trigger and code, so a differing label has nowhere to render.
 
 `unreferencedRoot` covers a `bpmn:Error`, `bpmn:Escalation`, `bpmn:Message`, or `bpmn:Signal` root that no event definition references.
+An error root whose declared message the IR keeps in `errorMessages` is the exception, since that message is carried and the root is re-emitted from it.
 
 `documentation` covers `bpmn:documentation` on any mapped element, one warning per element.
 The IR has no documentation surface, so the text is dropped rather than kept.
 Carrying documentation through both transform directions is a real future feature, not yet built.
+
+`unmappedConstruct` covers BPMN content no reader on this transform reads, one warning per construct.
+On an element it touches: an artifact on a process or sub-process (a `bpmn:textAnnotation`, its `bpmn:association`, a `bpmn:group`), a `bpmn:ioSpecification`, a `bpmn:property`, a data association, a `bpmn:auditing` or `bpmn:monitoring` block, and a resource assignment such as a `bpmn:potentialOwner`.
+The resource assignment is the one item on that list the engine would have executed, since it names who may claim the task; this surface writes assignment as `operaton:assignee` and `candidateGroups` instead, so the drop is reported rather than carried.
+Beside the process: a root element other than the error, escalation, message, and signal roots the events resolve against, such as a `bpmn:category`, a `bpmn:dataStore`, a `bpmn:itemDefinition`, or a `bpmn:interface`.
+The category also covers an attribute written without a namespace that BPMN does not declare, attributed to the element carrying it.
+Last, it covers `isExecutable="false"` on the process, the one warning that reports a changed value rather than a dropped construct: the IR holds an executable process and nothing else, so the import and the file written back from it are both executable and an engine will run what the source document held back.
+An absent `isExecutable` needs no warning, an engine reading that as executable too.
 
 ## Build and test
 

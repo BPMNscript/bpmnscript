@@ -17,6 +17,9 @@ A few stand alone as inputs for one direction only.
 | `compensation.{bpmnscript,bpmn}`       | The compensation (undo-block) layer                               |
 | `boundary-events.{bpmnscript,bpmn}`    | Handlers attached to a host activity, every trigger and host kind |
 | `intermediate-catch.{bpmnscript,bpmn}` | `await` across all four catchable triggers                        |
+| `engine-attributes.{bpmnscript,bpmn}`  | The flat engine settings, on every kind that can carry one        |
+| `input-output.{bpmnscript,bpmn}`       | `operaton:inputOutput` in all four value forms                    |
+| `listeners.{bpmnscript,bpmn}`          | The execution-listener and task-listener surface                  |
 | `unstructured-goto.bpmn`               | The `goto` degradation path on import                             |
 
 The three invoice-approval files all describe the same process (review, then a gateway on `amount > 1000`, then senior approval or auto-approve) but come from different sources and pull the tests in different directions.
@@ -35,10 +38,10 @@ Everything each section below calls a contract must stay exactly as it is.
 
 ## What the pair tests do
 
-Each pair has a round-trip test at `tests/<name>.round-trip.test.ts`, and they all do the same four things: reproduce the pipeline and compare byte-for-byte against the frozen `.bpmn`, round-trip the source through XML and back asserting IR equivalence through `tests/helpers/normalize-ir.ts`, import the frozen `.bpmn` warning-free, and assert nested shapes' DI bounds fall inside their parent's (the `isExpanded` hint from `irToXml`, without which a disconnected event sub-process leaks into the root plane).
-Per-fixture extras, such as which root elements must be shared or whether the restructured DSL is asserted validator-clean, live in the test file.
-
-The sections below describe what each source exercises and what must not move when the frozen output is regenerated.
+Each pair has a round-trip test at `tests/<name>.round-trip.test.ts`, and `tests/helpers/round-trip-fixture.ts` registers what they share: reproduce the pipeline and compare byte-for-byte against the frozen `.bpmn`, round-trip the source through XML and back asserting IR equivalence through `tests/helpers/normalize-ir.ts`, re-parse and re-validate the restructured DSL, and open the authored fixture validator-clean.
+Every pair but `intermediate-catch` also asserts that the frozen `.bpmn` imports without a single warning and re-desugars back to the IR the fixture compiled to.
+The DI assertion is each suite's own, since what the layout has to get right differs: nested shapes inside their parent's bounds wherever a fixture nests (the `isExpanded` hint from `irToXml`, without which a disconnected event sub-process leaks into the root plane), and a boundary shape centred on its host's lower edge in `boundary-events`.
+Per-fixture extras, such as which root elements must be shared or how strictly the restructured DSL is validated, live in the test file.
 
 ## `invoice-approval-handwritten.bpmn`
 
@@ -60,7 +63,6 @@ Contract: the process id `invoice-approval`, the userTask ids `ReviewInvoice` an
 
 A minimal one-process file whose single `<bpmn:serviceTask>` carries no execution binding: no `operaton:class`, `operaton:expression`, `operaton:delegateExpression`, and no external `operaton:type` and `operaton:topic` pair.
 A service task with no execution form cannot be represented, so this is the negative-path fixture: `xmlToIr` must reject it with `UnsupportedServiceTaskFormError`, and `bpmns parse` must exit non-zero.
-It's an input to be rejected, not a file meant to be deployed.
 
 ## `structured-control-flow.bpmnscript`
 
@@ -120,6 +122,36 @@ await condition (amount > 100)
 ```
 
 Contract: the four event definitions, their order, and the absence of any `name` attribute on a catch.
+
+## `engine-attributes.{bpmnscript,bpmn}`
+
+A motor-claim settlement narrative carrying the flat engine settings, the ones whose value is a single scalar, on every element kind that has a surface to write one on.
+`versionTag` sits on the process header, and `asyncBefore`, `asyncAfter`, `exclusive`, `jobPriority`, and `retryCycle` are spread across a start, an end, a user task, a service task, a script task, a subprocess, a call, an `await`, an `emit`, and both handler forms.
+Five of the seven keys a user task owns (`assignee`, `formKey`, `candidateGroups`, `candidateUsers`, `priority`) sit together on one task, and `resultVariable` on both a service and a script task.
+
+Both handler forms are here so the placement rule is pinned in the artifact rather than only in prose.
+A hosted `on ApprovePayout: timer` writes its settings on the boundary event it lowers to, and a host-less `on escalation` writes them on the event sub-process rather than on the trigger start event nested inside it.
+That start event's own block belongs to the `start` statement written inside the handler body, and a synthesized start prints no statement at all, so a setting stored there could have nowhere to go.
+A `while`, an `if`, and a `parallel` put five synthesized gateways in the same artifact, none of which carries a setting: a gateway id is a structural coordinate with no name an author writes, so a setting found on a gateway during import stays a reported drop.
+Every named node carries an explicit id, and the frozen artifact imports without a single warning, which is what makes that drop report meaningful.
+
+Contract: the `(node id, attribute, value)` table in `tests/engine-attributes.round-trip.test.ts`, the `3.1.0` version tag on the process, and the absence of any engine setting on a gateway and on the event sub-process's trigger start event.
+
+## `input-output.{bpmnscript,bpmn}`
+
+A process exercising the `operaton:inputOutput` block in all four value forms, a scalar, an inline script, a list, and a map, on every carrier kind that holds one: a user task, a service task, a script task, a subprocess, a call, and an `on message` handler.
+The scalar and the inline script each appear in both directions; as a parameter's own value the list is only ever an input and the map only ever an output, and each of the two structured forms nests inside the other.
+The call carries its own `in`/`out` variable mappings beside its parameters, so one artifact pins the two mechanisms as distinct: a variable mapping crosses the process boundary into the callee, a parameter binds a value into the activity's own execution scope.
+
+Contract: the parameter names and their declaration order per direction, each value's form, the `scriptFormat` on each inline script, and the call's variable mappings serialized beside the `operaton:inputOutput` block rather than inside it.
+
+## `listeners.{bpmnscript,bpmn}`
+
+A process registering execution listeners on a service task, a subprocess, an end event, and an `on message` handler, and all six task-listener events, `create`, `assign`, `complete`, `update`, `delete`, and `timeout`, on one user task.
+The service task carries both execution events, `start` and `end`; the other three carry one of the two each.
+All four bindings appear, a Java class, a JUEL expression, a delegate expression, and an inline fenced script, and the `timeout` listener carries the timer clause a caught timer event spells the same way.
+
+Contract: the `operaton:executionListener` and `operaton:taskListener` children in their authored order, the event word on each, the single binding each carries, the `scriptFormat` on the inline script, and the timer child under the `timeout` listener.
 
 ## `unstructured-goto.bpmn`
 

@@ -1,10 +1,5 @@
-/**
- * Unit tests for the sidebar webview view provider's dispose behaviour.
- *
- * `vscode` is injected by the extension host at runtime, so it is mocked
- * with the minimal surface the provider touches. The webview view itself is
- * a hand-rolled fake so the test can fire its `onDidDispose` callback.
- */
+// `vscode` is injected by the extension host, not installed from npm, so it is
+// mocked. The fake view exists to fire onDidDispose on demand.
 
 import { describe, expect, it, vi } from 'vitest';
 import * as path from 'node:path';
@@ -24,7 +19,7 @@ vi.mock('vscode', () => ({
 
 import { SidebarViewProvider } from '../src/extension/sidebar-view-provider.js';
 
-/** Root of packages/extension — media/sidebar.html is read from disk. */
+// _buildHtml reads media/sidebar.html from this directory.
 const EXTENSION_DIR = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   '..',
@@ -58,14 +53,12 @@ describe('SidebarViewProvider — dispose behaviour', () => {
 
     provider.resolveWebviewView(view as never, {} as never, {} as never);
 
-    // While the view is alive, refresh posts state to the webview.
     await provider.refresh();
     expect(webview.postMessage).toHaveBeenCalledTimes(1);
 
     fireDispose();
     webview.postMessage.mockClear();
 
-    // After dispose, refresh must not touch the (now disposed) webview.
     await expect(provider.refresh()).resolves.toBeUndefined();
     expect(webview.postMessage).not.toHaveBeenCalled();
   });

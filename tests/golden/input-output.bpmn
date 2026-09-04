@@ -1,0 +1,226 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI" xmlns:dc="http://www.omg.org/spec/DD/20100524/DC" xmlns:di="http://www.omg.org/spec/DD/20100524/DI" xmlns:operaton="http://operaton.org/schema/1.0/bpmn" id="Definitions_expense-reimbursement" targetNamespace="http://bpmnscript.io/processes" exporter="BPMNscript" exporterVersion="0.0.0">
+  <bpmn:process id="expense-reimbursement" name="Expense Reimbursement" isExecutable="true" operaton:historyTimeToLive="P30D">
+    <bpmn:startEvent id="ClaimSubmitted">
+      <bpmn:extensionElements>
+        <operaton:formData>
+          <operaton:formField id="travelDays" label="Days spent travelling" type="long" />
+          <operaton:formField id="claimTotal" label="Total claimed, in euro" type="long" />
+        </operaton:formData>
+      </bpmn:extensionElements>
+      <bpmn:outgoing>Flow_ClaimSubmitted_ReviewReceipts</bpmn:outgoing>
+    </bpmn:startEvent>
+    <bpmn:userTask id="ReviewReceipts" name="Review the submitted receipts" operaton:assignee="demo">
+      <bpmn:extensionElements>
+        <operaton:inputOutput>
+          <operaton:inputParameter name="receiptHint">Match every receipt against the trip dates</operaton:inputParameter>
+          <operaton:inputParameter name="escalationDesk">expenses-l2</operaton:inputParameter>
+          <operaton:outputParameter name="reviewNote">${reviewComment}</operaton:outputParameter>
+        </operaton:inputOutput>
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_ClaimSubmitted_ReviewReceipts</bpmn:incoming>
+      <bpmn:outgoing>Flow_ReviewReceipts_RateAllowance</bpmn:outgoing>
+    </bpmn:userTask>
+    <bpmn:serviceTask id="RateAllowance" name="Rate the daily allowance" operaton:class="com.example.expenses.AllowanceDelegate">
+      <bpmn:extensionElements>
+        <operaton:inputOutput>
+          <operaton:inputParameter name="allowanceRule">
+            <operaton:script scriptFormat="groovy">def rate = travelDays &gt; 5 ? 40 : 55
+execution.setVariable("dailyRate", rate)
+</operaton:script>
+          </operaton:inputParameter>
+          <operaton:outputParameter name="dailyRate">${dailyRate}</operaton:outputParameter>
+        </operaton:inputOutput>
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_ReviewReceipts_RateAllowance</bpmn:incoming>
+      <bpmn:outgoing>Flow_RateAllowance_ConvertAllowance</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:scriptTask id="ConvertAllowance" name="Convert the allowance to the claim currency" scriptFormat="groovy">
+      <bpmn:extensionElements>
+        <operaton:inputOutput>
+          <operaton:inputParameter name="conversionRate">${euroRate}</operaton:inputParameter>
+          <operaton:outputParameter name="allowanceInEuro">
+            <operaton:script scriptFormat="groovy">allowanceBase * conversionRate
+</operaton:script>
+          </operaton:outputParameter>
+        </operaton:inputOutput>
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_RateAllowance_ConvertAllowance</bpmn:incoming>
+      <bpmn:outgoing>Flow_ConvertAllowance_AuditClaim</bpmn:outgoing>
+      <bpmn:script>def base = dailyRate * travelDays
+execution.setVariable("allowanceBase", base)
+</bpmn:script>
+    </bpmn:scriptTask>
+    <bpmn:subProcess id="AuditClaim" name="Audit the claim">
+      <bpmn:extensionElements>
+        <operaton:inputOutput>
+          <operaton:inputParameter name="auditChecks">
+            <operaton:list>
+              <operaton:map>
+                <operaton:entry key="field">receipts</operaton:entry>
+                <operaton:entry key="rule">present</operaton:entry>
+              </operaton:map>
+              <operaton:map>
+                <operaton:entry key="field">mileage</operaton:entry>
+                <operaton:entry key="rule">within-policy</operaton:entry>
+              </operaton:map>
+            </operaton:list>
+          </operaton:inputParameter>
+          <operaton:outputParameter name="auditVerdict">${auditOutcome}</operaton:outputParameter>
+        </operaton:inputOutput>
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_ConvertAllowance_AuditClaim</bpmn:incoming>
+      <bpmn:outgoing>Flow_AuditClaim_PayOut</bpmn:outgoing>
+      <bpmn:startEvent id="AuditStart">
+        <bpmn:outgoing>Flow_AuditStart_MatchPolicy</bpmn:outgoing>
+      </bpmn:startEvent>
+      <bpmn:serviceTask id="MatchPolicy" name="Match the claim against the travel policy" operaton:class="com.example.expenses.PolicyDelegate">
+        <bpmn:incoming>Flow_AuditStart_MatchPolicy</bpmn:incoming>
+        <bpmn:outgoing>Flow_MatchPolicy_AuditDone</bpmn:outgoing>
+      </bpmn:serviceTask>
+      <bpmn:endEvent id="AuditDone">
+        <bpmn:incoming>Flow_MatchPolicy_AuditDone</bpmn:incoming>
+      </bpmn:endEvent>
+      <bpmn:sequenceFlow id="Flow_AuditStart_MatchPolicy" sourceRef="AuditStart" targetRef="MatchPolicy" />
+      <bpmn:sequenceFlow id="Flow_MatchPolicy_AuditDone" sourceRef="MatchPolicy" targetRef="AuditDone" />
+    </bpmn:subProcess>
+    <bpmn:callActivity id="PayOut" name="Pay the reimbursement" calledElement="payment-run">
+      <bpmn:extensionElements>
+        <operaton:inputOutput>
+          <operaton:inputParameter name="payoutChannel">sepa</operaton:inputParameter>
+          <operaton:outputParameter name="payoutReceipt">
+            <operaton:map>
+              <operaton:entry key="start">${payoutStart}</operaton:entry>
+              <operaton:entry key="lines">
+                <operaton:list>
+                  <operaton:value>principal</operaton:value>
+                  <operaton:value>vat</operaton:value>
+                </operaton:list>
+              </operaton:entry>
+            </operaton:map>
+          </operaton:outputParameter>
+        </operaton:inputOutput>
+        <operaton:in source="claimTotal" target="claimTotal" />
+        <operaton:out source="paymentReference" target="paymentReference" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_AuditClaim_PayOut</bpmn:incoming>
+      <bpmn:outgoing>Flow_PayOut_ClaimSettled</bpmn:outgoing>
+    </bpmn:callActivity>
+    <bpmn:endEvent id="ClaimSettled">
+      <bpmn:incoming>Flow_PayOut_ClaimSettled</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:subProcess id="EventSubProcess_expense-reimbursement_7" triggeredByEvent="true">
+      <bpmn:extensionElements>
+        <operaton:inputOutput>
+          <operaton:inputParameter name="recallReason">${recallText}</operaton:inputParameter>
+        </operaton:inputOutput>
+      </bpmn:extensionElements>
+      <bpmn:startEvent id="RecallNoted">
+        <bpmn:outgoing>Flow_RecallNoted_RecordRecall</bpmn:outgoing>
+        <bpmn:messageEventDefinition messageRef="Message_ClaimRecalled" />
+      </bpmn:startEvent>
+      <bpmn:serviceTask id="RecordRecall" name="Record the recalled claim" operaton:class="com.example.expenses.RecallDelegate">
+        <bpmn:incoming>Flow_RecallNoted_RecordRecall</bpmn:incoming>
+        <bpmn:outgoing>Flow_RecordRecall_RecallRecorded</bpmn:outgoing>
+      </bpmn:serviceTask>
+      <bpmn:endEvent id="RecallRecorded">
+        <bpmn:incoming>Flow_RecordRecall_RecallRecorded</bpmn:incoming>
+      </bpmn:endEvent>
+      <bpmn:sequenceFlow id="Flow_RecallNoted_RecordRecall" sourceRef="RecallNoted" targetRef="RecordRecall" />
+      <bpmn:sequenceFlow id="Flow_RecordRecall_RecallRecorded" sourceRef="RecordRecall" targetRef="RecallRecorded" />
+    </bpmn:subProcess>
+    <bpmn:sequenceFlow id="Flow_ClaimSubmitted_ReviewReceipts" sourceRef="ClaimSubmitted" targetRef="ReviewReceipts" />
+    <bpmn:sequenceFlow id="Flow_ReviewReceipts_RateAllowance" sourceRef="ReviewReceipts" targetRef="RateAllowance" />
+    <bpmn:sequenceFlow id="Flow_RateAllowance_ConvertAllowance" sourceRef="RateAllowance" targetRef="ConvertAllowance" />
+    <bpmn:sequenceFlow id="Flow_ConvertAllowance_AuditClaim" sourceRef="ConvertAllowance" targetRef="AuditClaim" />
+    <bpmn:sequenceFlow id="Flow_AuditClaim_PayOut" sourceRef="AuditClaim" targetRef="PayOut" />
+    <bpmn:sequenceFlow id="Flow_PayOut_ClaimSettled" sourceRef="PayOut" targetRef="ClaimSettled" />
+  </bpmn:process>
+  <bpmn:message id="Message_ClaimRecalled" name="ClaimRecalled" />
+  <bpmndi:BPMNDiagram id="BPMNDiagram_expense-reimbursement">
+    <bpmndi:BPMNPlane id="BPMNPlane_expense-reimbursement" bpmnElement="expense-reimbursement">
+      <bpmndi:BPMNShape id="ClaimSubmitted_di" bpmnElement="ClaimSubmitted">
+        <dc:Bounds x="57" y="52" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="ReviewReceipts_di" bpmnElement="ReviewReceipts">
+        <dc:Bounds x="625" y="30" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="RateAllowance_di" bpmnElement="RateAllowance">
+        <dc:Bounds x="775" y="30" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="ConvertAllowance_di" bpmnElement="ConvertAllowance">
+        <dc:Bounds x="925" y="30" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="AuditClaim_di" bpmnElement="AuditClaim" isExpanded="true">
+        <dc:Bounds x="1075" y="30" width="550" height="220" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="PayOut_di" bpmnElement="PayOut">
+        <dc:Bounds x="1675" y="30" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="ClaimSettled_di" bpmnElement="ClaimSettled">
+        <dc:Bounds x="1857" y="52" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="EventSubProcess_expense-reimbursement_7_di" bpmnElement="EventSubProcess_expense-reimbursement_7" isExpanded="true">
+        <dc:Bounds x="25" y="310" width="550" height="220" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_ClaimSubmitted_ReviewReceipts_di" bpmnElement="Flow_ClaimSubmitted_ReviewReceipts">
+        <di:waypoint x="93" y="70" />
+        <di:waypoint x="625" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ReviewReceipts_RateAllowance_di" bpmnElement="Flow_ReviewReceipts_RateAllowance">
+        <di:waypoint x="725" y="70" />
+        <di:waypoint x="775" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_RateAllowance_ConvertAllowance_di" bpmnElement="Flow_RateAllowance_ConvertAllowance">
+        <di:waypoint x="875" y="70" />
+        <di:waypoint x="925" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ConvertAllowance_AuditClaim_di" bpmnElement="Flow_ConvertAllowance_AuditClaim">
+        <di:waypoint x="1025" y="70" />
+        <di:waypoint x="1075" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_AuditClaim_PayOut_di" bpmnElement="Flow_AuditClaim_PayOut">
+        <di:waypoint x="1625" y="70" />
+        <di:waypoint x="1675" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_PayOut_ClaimSettled_di" bpmnElement="Flow_PayOut_ClaimSettled">
+        <di:waypoint x="1775" y="70" />
+        <di:waypoint x="1857" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNShape id="RecallNoted_di" bpmnElement="RecallNoted">
+        <dc:Bounds x="132" y="402" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="RecordRecall_di" bpmnElement="RecordRecall">
+        <dc:Bounds x="250" y="380" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="RecallRecorded_di" bpmnElement="RecallRecorded">
+        <dc:Bounds x="432" y="402" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_RecallNoted_RecordRecall_di" bpmnElement="Flow_RecallNoted_RecordRecall">
+        <di:waypoint x="168" y="420" />
+        <di:waypoint x="250" y="420" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_RecordRecall_RecallRecorded_di" bpmnElement="Flow_RecordRecall_RecallRecorded">
+        <di:waypoint x="350" y="420" />
+        <di:waypoint x="432" y="420" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNShape id="AuditStart_di" bpmnElement="AuditStart">
+        <dc:Bounds x="1182" y="122" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="MatchPolicy_di" bpmnElement="MatchPolicy">
+        <dc:Bounds x="1300" y="100" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="AuditDone_di" bpmnElement="AuditDone">
+        <dc:Bounds x="1482" y="122" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_AuditStart_MatchPolicy_di" bpmnElement="Flow_AuditStart_MatchPolicy">
+        <di:waypoint x="1218" y="140" />
+        <di:waypoint x="1300" y="140" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_MatchPolicy_AuditDone_di" bpmnElement="Flow_MatchPolicy_AuditDone">
+        <di:waypoint x="1400" y="140" />
+        <di:waypoint x="1482" y="140" />
+      </bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>

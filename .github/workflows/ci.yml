@@ -41,5 +41,11 @@ jobs:
           cache: npm
 
       - run: npm ci
+      # Cross-workspace imports resolve through each package's declarations.
+      - run: npm run build
+
+      - name: Typecheck test sources
+        run: npm run typecheck --workspaces --if-present
+
       - run: npm run lint
       - run: npm run format:check

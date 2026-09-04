@@ -1,27 +1,17 @@
-/**
- * Boundary events on a running engine.
- *
- * Static checking cannot show the runtime property that separates the two
- * attachment modes: an interrupting boundary event destroys the token sitting in
- * its host activity, a non-interrupting one leaves it alone. Only a real engine
- * decides that, so this suite builds the example with the real `bpmns` CLI,
- * boots Operaton via testcontainers, deploys it once, and runs each path on its
- * own instance. Both boundaries under test are driven by correlating a message
- * over REST, never by waiting on a clock; the process also carries a `PT4H`
- * timer boundary, which stays dormant for the whole run.
- *
- * The whole file is Docker-gated and skipped when `SKIP_DOCKER_TESTS=true`; the
- * always-on health assertions for the example live in a separate suite.
- */
+// The runtime property separating the two attachment modes is engine-only: an
+// interrupting boundary destroys the token sitting in its host activity, a
+// non-interrupting one leaves it alone. Each path runs on its own instance and
+// is driven by correlating a message over REST, never by waiting on a clock.
+// The process also carries a PT4H timer boundary that stays dormant throughout.
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { execFileSync } from 'node:child_process';
-import { mkdirSync } from 'node:fs';
-import * as path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
-import { startFixture } from '../fixtures/index.js';
 import type { FixtureAdapter } from '../fixtures/index.js';
+import {
+  deployExamples,
+  ENGINE_BOOT_TIMEOUT_MS,
+  SKIP_DOCKER as SKIP,
+} from '../helpers/e2e-fixture.js';
 import {
   activeTaskKeys,
   correlateMessage,
@@ -29,18 +19,6 @@ import {
   isRunning,
   waitFor,
 } from '../helpers/engine-rest.js';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
-const SKIP = process.env.SKIP_DOCKER_TESTS === 'true';
-
-const DSL_PATH = path.resolve(
-  __dirname,
-  '../../examples/spring-boot/processes/order-handling.bpmnscript',
-);
-
-const XML_OUT_PATH = path.resolve(__dirname, '../../out/order-handling.bpmn');
 
 const PROCESS_KEY = 'order-handling';
 
@@ -87,22 +65,9 @@ describe.skipIf(SKIP)('E2E: boundary events on Spring Boot Operaton', () => {
     return activities.map((a) => a.activityId);
   }
 
-  // The 300 s timeout accommodates a cold image build plus Spring Boot startup.
   beforeAll(async () => {
-    mkdirSync(path.dirname(XML_OUT_PATH), { recursive: true });
-
-    execFileSync('npx', ['bpmns', 'build', DSL_PATH, '-o', XML_OUT_PATH], {
-      stdio: 'inherit',
-    });
-
-    fixture = await startFixture('spring-boot');
-
-    const { deploymentId } = await fixture.deploy(
-      XML_OUT_PATH,
-      'boundary-events-test',
-    );
-    expect(deploymentId).toBeTruthy();
-  }, 300_000);
+    fixture = await deployExamples('order-handling');
+  }, ENGINE_BOOT_TIMEOUT_MS);
 
   afterAll(async () => {
     await fixture?.stop();
@@ -192,7 +157,6 @@ describe.skipIf(SKIP)('E2E: boundary events on Spring Boot Operaton', () => {
     );
     expect(stillWaiting).toContain('ReviewOrder');
 
-    // The surviving token still drives the main flow when it completes.
     await fixture.completeTask(await taskId(processInstanceId, 'ReviewOrder'));
     expect(
       await activityIdsIncluding(processInstanceId, 'OrderShipped'),

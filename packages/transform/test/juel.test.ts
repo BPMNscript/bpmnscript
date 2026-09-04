@@ -36,11 +36,6 @@ import { parseJuel, renderRawFallback } from '../src/juel.js';
 // ---------------------------------------------------------------------------
 
 describe('parseJuel — structured classification', () => {
-  it('classifies a relational comparison as structured', () => {
-    const r = parseJuel('${amount > 1000}');
-    expect(r.kind).toBe('structured');
-  });
-
   it('renders a structured comparison as a bare unquoted expression', () => {
     const r = parseJuel('${amount > 1000}');
     expect(renderRawFallback(r)).toBe('amount > 1000');
@@ -88,11 +83,6 @@ describe('parseJuel — structured classification', () => {
 });
 
 describe('parseJuel — raw fallback classification', () => {
-  it('classifies a bean method call as raw', () => {
-    const r = parseJuel('${myBean.check()}');
-    expect(r.kind).toBe('raw');
-  });
-
   it('renders a raw result as the quoted "${…}" fallback', () => {
     const r = parseJuel('${myBean.check()}');
     expect(renderRawFallback(r)).toBe('"${myBean.check()}"');

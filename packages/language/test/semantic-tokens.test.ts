@@ -51,32 +51,16 @@ function expectNoTokenAt(
 }
 
 describe('trigger words on OnHandler/ThrowStatement/EmitStatement', () => {
-  test('`on error` highlights the trigger word as a keyword token', async () => {
-    const result = await highlight(`
-process p {
-  on <|error|> "X" { }
-}
-`);
-    expectKeywordAt(result);
-  });
-
-  test('`throw escalation "C"` highlights the trigger word', async () => {
-    const result = await highlight(`
-process p {
-  throw <|escalation|> "C"
-}
-`);
-    expectKeywordAt(result);
-  });
-
-  test('`emit escalation "C"` highlights the trigger word', async () => {
-    const result = await highlight(`
-process p {
-  emit <|escalation|> "C"
-}
-`);
-    expectKeywordAt(result);
-  });
+  test.each([
+    'on <|error|> "X" { }',
+    'throw <|escalation|> "C"',
+    'emit <|escalation|> "C"',
+  ])(
+    '`%s` highlights the trigger word as a keyword token',
+    async (statement) => {
+      expectKeywordAt(await highlight(`process p {\n  ${statement}\n}\n`));
+    },
+  );
 });
 
 describe('binding fields on EventBinding', () => {
@@ -177,23 +161,12 @@ process p {
 });
 
 describe('trigger word on compensation (on/throw/emit)', () => {
-  test('`on compensation { }` highlights the trigger word as a keyword token', async () => {
-    const result = await highlight(`
-process p {
-  on <|compensation|> { }
-}
-`);
-    expectKeywordAt(result);
-  });
-
-  test('`throw compensation` highlights the trigger word', async () => {
-    const result = await highlight(`
-process p {
-  throw <|compensation|>
-}
-`);
-    expectKeywordAt(result);
-  });
+  test.each(['on <|compensation|> { }', 'throw <|compensation|>'])(
+    '`%s` highlights the trigger word as a keyword token',
+    async (statement) => {
+      expectKeywordAt(await highlight(`process p {\n  ${statement}\n}\n`));
+    },
+  );
 
   test('`emit compensation Undo` highlights the trigger word, not the name id', async () => {
     const result = await highlight(`
@@ -220,44 +193,74 @@ process p {
   });
 });
 
+describe('attribute keys, parameter directions, and listener events', () => {
+  test.each([
+    'user T { <|assignee|> = "<|demo|>" }',
+    'service S { <|input|> <|amount|> = 1 }',
+    'user T { on timeout <|after|> "<|PT1H|>" { class = "com.acme.L" } }',
+  ])(
+    '`%s` highlights the key word, not the word beside it',
+    async (statement) => {
+      const result = await highlight(`process p {\n  ${statement}\n}\n`);
+      expectKeywordAt(result, 0);
+      expectNoTokenAt(result, 1);
+    },
+  );
+
+  test('a process-header setting highlights its key', async () => {
+    const result = await highlight(`
+process p {
+  <|versionTag|> = "1.4"
+}
+`);
+    expectKeywordAt(result);
+  });
+
+  test('a listener event and its binding key both highlight', async () => {
+    const result = await highlight(`
+process p {
+  user T { on <|create|> { <|class|> = "com.acme.L" } }
+}
+`);
+    expectKeywordAt(result, 0);
+    expectKeywordAt(result, 1);
+  });
+});
+
 describe('negative: the same words used as ordinary identifiers stay plain', () => {
-  test('`var message: string` carries no token on `message`', async () => {
-    const result = await highlight(`
+  test.each(['priority', 'message', 'compensation', 'after'])(
+    '`var %s` carries no token on the name',
+    async (word) => {
+      expectNoTokenAt(
+        await highlight(`
 process p {
-  var <|message|>: string
+  var <|${word}|>: string
 }
-`);
-    expectNoTokenAt(result);
-  });
+`),
+      );
+    },
+  );
 
-  test('`if (code == "x")` carries no token on `code`', async () => {
-    const result = await highlight(`
+  test.each(['priority', 'code', 'compensation'])(
+    '`if (%s ...)` carries no token on the operand',
+    async (word) => {
+      expectNoTokenAt(
+        await highlight(`
 process p {
-  var code: string
-  if (<|code|> == "x") {
+  var ${word}: string
+  if (<|${word}|> == "x") {
     end Done
   }
 }
-`);
-    expectNoTokenAt(result);
-  });
+`),
+      );
+    },
+  );
 
-  test('`var compensation: number` carries no token on `compensation`', async () => {
+  test('`user input` carries no token on the step name', async () => {
     const result = await highlight(`
 process p {
-  var <|compensation|>: number
-}
-`);
-    expectNoTokenAt(result);
-  });
-
-  test('`if (compensation > 0)` carries no token on `compensation`', async () => {
-    const result = await highlight(`
-process p {
-  var compensation: number
-  if (<|compensation|> > 0) {
-    end Done
-  }
+  user <|input|>
 }
 `);
     expectNoTokenAt(result);
