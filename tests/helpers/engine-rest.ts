@@ -10,7 +10,7 @@ export async function assertOk(
   if (!response.ok) {
     const body = await response.text().catch(() => '<unreadable>');
     throw new Error(
-      `Operaton REST error [${context}]: HTTP ${response.status} — ${body}`,
+      `Operaton REST error [${context}]: HTTP ${response.status}: ${body}`,
     );
   }
 }
@@ -36,6 +36,91 @@ export async function correlateMessage(
     body: JSON.stringify({ messageName, processInstanceId }),
   });
   await assertOk(response, `correlateMessage(${messageName})`);
+}
+
+// A message with no instance to aim at starts one: the engine matches it
+// against the message start events of every deployed definition.
+// `resultEnabled` is what makes the response name the instance it created.
+export async function startByMessage(
+  fixture: FixtureAdapter,
+  messageName: string,
+): Promise<string> {
+  const response = await fetch(fixture.restBaseUrl() + '/engine-rest/message', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ messageName, resultEnabled: true }),
+  });
+  await assertOk(response, `startByMessage(${messageName})`);
+  const results = (await response.json()) as Array<{
+    processInstance: { id: string };
+  }>;
+  const id = results[0]?.processInstance?.id;
+  if (id === undefined) {
+    throw new Error(`no instance started by message '${messageName}'`);
+  }
+  return id;
+}
+
+// Broadcast to every subscription in the engine, which is what a signal start
+// event subscribes to at deployment.
+export async function broadcastSignal(
+  fixture: FixtureAdapter,
+  name: string,
+): Promise<void> {
+  const response = await fetch(fixture.restBaseUrl() + '/engine-rest/signal', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name }),
+  });
+  await assertOk(response, `broadcastSignal(${name})`);
+}
+
+export interface EngineJob {
+  id: string;
+  processDefinitionKey: string;
+}
+
+// A timer start event parks a job at deployment, with no instance behind it.
+export async function jobsOf(
+  fixture: FixtureAdapter,
+  processDefinitionKey: string,
+): Promise<EngineJob[]> {
+  return engineGet<EngineJob[]>(
+    fixture,
+    `/engine-rest/job?processDefinitionKey=${encodeURIComponent(processDefinitionKey)}`,
+    `jobsOf(${processDefinitionKey})`,
+  );
+}
+
+export async function executeJob(
+  fixture: FixtureAdapter,
+  jobId: string,
+): Promise<void> {
+  const response = await fetch(
+    `${fixture.restBaseUrl()}/engine-rest/job/${encodeURIComponent(jobId)}/execute`,
+    { method: 'POST' },
+  );
+  await assertOk(response, `executeJob(${jobId})`);
+}
+
+export interface HistoricProcessInstance {
+  id: string;
+  processDefinitionKey: string;
+  endTime: string | null;
+}
+
+// Running and finished alike, which is how an instance nothing points at is
+// found: a broadcast signal and a fired timer job both create one without
+// naming it in their response.
+export async function historicInstances(
+  fixture: FixtureAdapter,
+  processDefinitionKey: string,
+): Promise<HistoricProcessInstance[]> {
+  return engineGet<HistoricProcessInstance[]>(
+    fixture,
+    `/engine-rest/history/process-instance?processDefinitionKey=${encodeURIComponent(processDefinitionKey)}`,
+    `historicInstances(${processDefinitionKey})`,
+  );
 }
 
 export interface HistoricActivityInstance {
@@ -131,4 +216,49 @@ export function activeTaskKeys(
   tasks: Array<{ taskDefinitionKey: string }>,
 ): string[] {
   return tasks.map((task) => task.taskDefinitionKey).sort();
+}
+
+// The sorted definition keys of whatever is active once the predicate holds,
+// for asserting which tasks a branch opened rather than acting on one of them.
+export async function waitForTaskKeys(
+  fixture: FixtureAdapter,
+  processInstanceId: string,
+  predicate: (keys: string[]) => boolean,
+): Promise<string[]> {
+  const tasks = await waitForTasks(fixture, processInstanceId, (t) =>
+    predicate(activeTaskKeys(t)),
+  );
+  return activeTaskKeys(tasks);
+}
+
+// The runtime id of an active task, which completing one needs: the definition
+// key names the modeled activity, the id names this instance's token.
+export async function waitForTaskId(
+  fixture: FixtureAdapter,
+  processInstanceId: string,
+  definitionKey: string,
+): Promise<string> {
+  const tasks = await waitForTasks(fixture, processInstanceId, (t) =>
+    t.some((task) => task.taskDefinitionKey === definitionKey),
+  );
+  const match = tasks.find((task) => task.taskDefinitionKey === definitionKey);
+  if (match === undefined) {
+    throw new Error(
+      `no active task '${definitionKey}' in instance ${processInstanceId}`,
+    );
+  }
+  return match.id;
+}
+
+// Every activity the instance has visited, once the named one is among them.
+export async function activityIdsIncluding(
+  fixture: FixtureAdapter,
+  processInstanceId: string,
+  activityId: string,
+): Promise<string[]> {
+  const activities = await waitFor(
+    () => historicActivities(fixture, processInstanceId),
+    (list) => list.some((a) => a.activityId === activityId),
+  );
+  return activities.map((a) => a.activityId);
 }

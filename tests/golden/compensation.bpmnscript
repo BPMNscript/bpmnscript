@@ -2,12 +2,12 @@
 // undo layer end to end, alongside an error and an escalation handler
 // (cross-kind interplay).
 //
-//   - two `subprocess`es each owning an `on compensation` undo block — the
+//   - two `subprocess`es each owning an `on compensation` undo block: the
 //     flight booking reverses in one step, the hotel booking reverses with an
 //     `if` (undo logic beyond a single step) reading a declared form variable;
-//   - an `error … message` declaration and a process-level `on error` handler
+//   - an `error ... message` declaration and a process-level `on error` handler
 //     whose body raises a named `emit compensation Undo` (undo the completed
-//     bookings) and then keeps going to notify the traveller — pinning that an
+//     bookings) and then keeps going to notify the traveler, pinning that an
 //     `emit` continues its path;
 //   - a matching `emit escalation Overspend` in the main flow and a process-level
 //     `on escalation` handler that gives up: it records the abandonment and ends

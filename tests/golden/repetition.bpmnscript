@@ -1,0 +1,52 @@
+// Repetition round-trip fixture: an order-fulfilment process whose stages each
+// run once per item they are handed, so one program carries every form of the
+// repeat clause:
+//
+//   - a bound collection on a user task;
+//   - an expression collection on a service task, run sequentially and stopped
+//     early by an until condition;
+//   - a bare count on a service task;
+//   - a count and a collection together on a step;
+//   - an unbound collection on a receive;
+//   - a bound collection on a call;
+//   - a bound collection on a script task, the one head that carries the clause
+//     before both a settings block and a fenced body;
+//   - a bound collection on a subprocess that also sets asyncBefore, which
+//     applies to the repetition as a whole rather than to each run of it.
+//
+// Every collection variable is declared so the fixture opens validator-clean.
+
+process order-fulfilment {
+  var approvers: any
+  var order: any
+  var lines: any
+  var batches: any
+  var regions: any
+  var parcels: any
+
+  start OrderReceived
+
+  user ApproveLines "Approve the order lines" for each approver in approvers { assignee = "demo" }
+
+  service ReserveStock "Reserve the stock" for each line in "${order.lines}" sequentially until (nrOfCompletedInstances >= 2) {
+    class = "com.example.orders.ReserveStockDelegate"
+  }
+
+  service WarmPricing "Warm the pricing cache" for 3 { class = "com.example.orders.WarmPricingDelegate" }
+
+  step RecordLine "Record each line" for 2 each line in lines
+
+  receive AwaitBatch "Wait for each batch" for each in batches
+
+  call RegionalReport "Run the regional report" for each region in regions { process = "regional-report" }
+
+  script LabelParcel "Label each parcel" for each parcel in parcels { resultVariable = "parcelLabel" } ```javascript
+"LBL-" + loopCounter;
+```
+
+  subprocess DispatchParcels "Dispatch each parcel" for each parcel in parcels sequentially { asyncBefore = true } {
+    service HandToCarrier "Hand the parcel to the carrier" { class = "com.example.orders.HandToCarrierDelegate" }
+  }
+
+  end OrderFulfilled
+}

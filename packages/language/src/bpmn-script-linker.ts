@@ -41,15 +41,19 @@ function findNamedStatement(
   return undefined;
 }
 
-function handlerHeader(handler: OnHandler): string {
-  return handler.code
+/**
+ * `undefined` when error recovery left the trigger empty. The enrichment names
+ * the boundary it crossed, so with nothing to name it stands down and the
+ * stock unresolved-reference message runs instead.
+ */
+function handlerPhrase(handler: OnHandler): string | undefined {
+  if (handler.trigger === undefined) return undefined;
+
+  const header = handler.code
     ? `on ${handler.trigger} "${handler.code}"`
     : `on ${handler.trigger}`;
-}
-
-function handlerPhrase(handler: OnHandler): string {
   const article = handler.code ? 'the' : 'an';
-  return `${article} '${handlerHeader(handler)}' handler`;
+  return `${article} '${header}' handler`;
 }
 
 /** `crossesHandler` picks the trailing boundary sentence. */
@@ -66,32 +70,39 @@ interface Location {
 function locateTarget(
   target: NamedStatement,
   sourceContainer: FlowContainer,
-): Location {
+): Location | undefined {
   const targetContainer = enclosingFlowContainer(target);
   if (targetContainer && isSubProcess(targetContainer)) {
-    return {
-      phrase: `inside subprocess '${targetContainer.name}'`,
-      crossesHandler: false,
-    };
+    return subprocessLocation(targetContainer.name, 'inside');
   }
   if (targetContainer && isOnHandler(targetContainer)) {
-    return {
-      phrase: `inside ${handlerPhrase(targetContainer)}`,
-      crossesHandler: true,
-    };
+    return handlerLocation(targetContainer, 'inside');
   }
   // The target lives at process level; since it did not resolve, the
-  // reference itself must be inside a sub-process or a handler body.
+  // reference itself must be inside a subprocess or a handler body.
   if (isOnHandler(sourceContainer)) {
-    return {
-      phrase: `outside ${handlerPhrase(sourceContainer)}`,
-      crossesHandler: true,
-    };
+    return handlerLocation(sourceContainer, 'outside');
   }
-  return {
-    phrase: `outside subprocess '${sourceContainer.name}'`,
-    crossesHandler: false,
-  };
+  return subprocessLocation(sourceContainer.name, 'outside');
+}
+
+function subprocessLocation(
+  name: string | undefined,
+  side: 'inside' | 'outside',
+): Location | undefined {
+  return name === undefined
+    ? undefined
+    : { phrase: `${side} subprocess '${name}'`, crossesHandler: false };
+}
+
+function handlerLocation(
+  handler: OnHandler,
+  side: 'inside' | 'outside',
+): Location | undefined {
+  const phrase = handlerPhrase(handler);
+  return phrase === undefined
+    ? undefined
+    : { phrase: `${side} ${phrase}`, crossesHandler: true };
 }
 
 export class BpmnScriptLinker extends DefaultLinker {
@@ -109,16 +120,17 @@ export class BpmnScriptLinker extends DefaultLinker {
         ? findNamedStatement(process, refInfo.reference.$refText)
         : undefined;
       const sourceContainer = enclosingFlowContainer(source);
-      if (target && sourceContainer) {
-        const { phrase, crossesHandler } = locateTarget(
-          target,
-          sourceContainer,
-        );
+      const located =
+        target && sourceContainer
+          ? locateTarget(target, sourceContainer)
+          : undefined;
+      if (located) {
+        const { phrase, crossesHandler } = located;
         const boundary = isHost
           ? `a boundary event attaches to an activity in its own scope.`
           : crossesHandler
             ? `a goto cannot cross an event handler boundary: an event handler's steps run only when its event fires.`
-            : `a goto cannot cross a sub-process boundary.`;
+            : `a goto cannot cross a subprocess boundary.`;
         return {
           info: refInfo,
           message: `'${refInfo.reference.$refText}' is ${phrase}; ${boundary}`,

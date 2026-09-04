@@ -41,14 +41,17 @@ import type {
   ListenerBinding,
   ScriptValue,
   SequenceFlow,
+  ServiceTaskBinding,
   TaskListener,
+  VersionBinding,
 } from './ir/types.js';
+import { repeats } from './ir/types.js';
 
 /** Opaque to Operaton; it never has to resolve. */
 const TARGET_NAMESPACE = 'http://bpmnscript.io/processes';
 
 /**
- * `operaton:historyTimeToLive` on every process, not parameterised at the IR
+ * `operaton:historyTimeToLive` on every process, not parameterized at the IR
  * level. Exported so the importer can pass a document carrying exactly this
  * value without a warning: re-export reproduces it.
  */
@@ -290,6 +293,11 @@ function collectEventDefinitions(container: FlowContainer): EventDefinition[] {
       case 'boundaryEvent':
         defs.push(el.eventDefinition);
         break;
+      case 'receiveTask':
+        if (el.messageName !== undefined) {
+          defs.push({ kind: 'message', messageName: el.messageName });
+        }
+        break;
       case 'subProcess':
         defs.push(...collectEventDefinitions(el));
         break;
@@ -309,11 +317,49 @@ function collectElementIds(container: FlowContainer, into: Set<string>): void {
   for (const flow of container.sequenceFlows) into.add(flow.id);
 }
 
-/** No code means no `errorRef`/`escalationRef`: a ref-less definition catches any. */
+/** The attributes Operaton reads an execution binding off, whatever carries it. */
+function serviceTaskBindingAttrs(
+  binding: ServiceTaskBinding,
+): Record<string, unknown> {
+  switch (binding.kind) {
+    case 'class':
+      return { 'operaton:class': binding.className };
+    case 'expression':
+      return { 'operaton:expression': binding.expression };
+    case 'delegateExpression':
+      return { 'operaton:delegateExpression': binding.expression };
+    case 'external':
+      return { 'operaton:type': 'external', 'operaton:topic': binding.topic };
+    case 'decision':
+      return {
+        'operaton:decisionRef': binding.decisionRef,
+        ...(binding.binding === undefined
+          ? {}
+          : versionBindingAttrs('operaton:decisionRef', binding.binding)),
+        ...(binding.mapDecisionResult === undefined
+          ? {}
+          : { 'operaton:mapDecisionResult': binding.mapDecisionResult }),
+      };
+    default: {
+      const exhaustive: never = binding;
+      throw new Error(
+        `Unhandled ServiceTaskBinding kind: ${JSON.stringify(exhaustive)}`,
+      );
+    }
+  }
+}
+
+/**
+ * No code means no `errorRef`/`escalationRef`: a ref-less definition catches any.
+ *
+ * @param binding The implementation of a thrown message, which Operaton reads
+ * off the definition rather than off the event.
+ */
 function buildEventDefinition(
   moddle: BpmnModdleInstance,
   def: EventDefinition,
   roots: RootElementIndex,
+  binding?: ServiceTaskBinding,
 ): ModdleElement {
   switch (def.kind) {
     case 'error': {
@@ -342,6 +388,7 @@ function buildEventDefinition(
     case 'message':
       return moddle.create('bpmn:MessageEventDefinition', {
         messageRef: roots.messageByName.get(def.messageName),
+        ...(binding === undefined ? {} : serviceTaskBindingAttrs(binding)),
       });
     case 'signal':
       return moddle.create('bpmn:SignalEventDefinition', {
@@ -364,6 +411,11 @@ function buildEventDefinition(
           body: def.condition,
         }),
       });
+    case 'terminate':
+      return moddle.create('bpmn:TerminateEventDefinition', {});
+    case 'cancel':
+      // Cancel carries nothing either: the block it gives up is its own scope.
+      return moddle.create('bpmn:CancelEventDefinition', {});
     default: {
       const exhaustive: never = def;
       throw new Error(
@@ -378,10 +430,11 @@ function eventDefinitionAttrs(
   moddle: BpmnModdleInstance,
   def: EventDefinition | undefined,
   roots: RootElementIndex,
+  binding?: ServiceTaskBinding,
 ): Record<string, unknown> {
   return def === undefined
     ? {}
-    : { eventDefinitions: [buildEventDefinition(moddle, def, roots)] };
+    : { eventDefinitions: [buildEventDefinition(moddle, def, roots, binding)] };
 }
 
 const TIMER_KIND_TO_CHILD: Record<
@@ -400,6 +453,8 @@ const TIMER_KIND_TO_CHILD: Record<
  * `isExpanded` off a pre-existing `bpmndi:BPMNShape` and propagates it before
  * laying out, recomputing any bounds given here, and finds that shape through
  * an id-keyed index, so each shape needs an `id` nothing references back.
+ * A `bpmn:Transaction` needs the same hint: the library recognizes it as a
+ * sub-process through the schema, but the collector below compares tag names.
  * See ADR 0015.
  */
 function buildSubProcessExpansionHint(
@@ -434,7 +489,7 @@ function buildSubProcessExpansionHint(
 function collectSubProcessElements(container: ModdleElement): ModdleElement[] {
   const result: ModdleElement[] = [];
   for (const element of container.flowElements ?? []) {
-    if (element.$type === 'bpmn:SubProcess') {
+    if (SUB_PROCESS_LIKE_TAGS.has(element.$type)) {
       result.push(element);
       result.push(...collectSubProcessElements(element));
     }
@@ -490,6 +545,7 @@ function createFlowNode(
     id: node.id,
     ...(name === undefined ? {} : { name }),
     ...engineSettingAttrs(moddle, node, roots),
+    ...loopCharacteristicsAttrs(moddle, node),
   };
 
   switch (node.kind) {
@@ -508,13 +564,23 @@ function createFlowNode(
     case 'endEvent':
       return moddle.create('bpmn:EndEvent', {
         ...baseAttrs,
-        ...eventDefinitionAttrs(moddle, node.eventDefinition, roots),
+        ...eventDefinitionAttrs(
+          moddle,
+          node.eventDefinition,
+          roots,
+          node.binding,
+        ),
       });
 
     case 'intermediateThrowEvent':
       return moddle.create('bpmn:IntermediateThrowEvent', {
         ...baseAttrs,
-        ...eventDefinitionAttrs(moddle, node.eventDefinition, roots),
+        ...eventDefinitionAttrs(
+          moddle,
+          node.eventDefinition,
+          roots,
+          node.binding,
+        ),
       });
 
     case 'intermediateCatchEvent':
@@ -545,33 +611,29 @@ function createFlowNode(
       return moddle.create('bpmn:UserTask', attrs);
     }
 
+    case 'task':
+      return moddle.create('bpmn:Task', baseAttrs);
+
+    case 'receiveTask':
+      return moddle.create('bpmn:ReceiveTask', {
+        ...baseAttrs,
+        ...(node.messageName === undefined
+          ? {}
+          : { messageRef: roots.messageByName.get(node.messageName) }),
+      });
+
     case 'serviceTask': {
-      const attrs: Record<string, unknown> = { ...baseAttrs };
-      switch (node.binding.kind) {
-        case 'class':
-          attrs['operaton:class'] = node.binding.className;
-          break;
-        case 'expression':
-          attrs['operaton:expression'] = node.binding.expression;
-          break;
-        case 'delegateExpression':
-          attrs['operaton:delegateExpression'] = node.binding.expression;
-          break;
-        case 'external':
-          attrs['operaton:type'] = 'external';
-          attrs['operaton:topic'] = node.binding.topic;
-          break;
-        default: {
-          const exhaustive: never = node.binding;
-          throw new Error(
-            `Unhandled ServiceTaskBinding kind: ${JSON.stringify(exhaustive)}`,
-          );
-        }
-      }
+      const attrs: Record<string, unknown> = {
+        ...baseAttrs,
+        ...serviceTaskBindingAttrs(node.binding),
+      };
       if (node.resultVariable !== undefined) {
         attrs['operaton:resultVariable'] = node.resultVariable;
       }
-      return moddle.create('bpmn:ServiceTask', attrs);
+      return moddle.create(
+        SERVICE_TASK_LIKE_TAG[node.element ?? 'service'],
+        attrs,
+      );
     }
 
     case 'scriptTask': {
@@ -601,7 +663,10 @@ function createFlowNode(
       if (node.triggeredByEvent === true) {
         attrs.triggeredByEvent = true;
       }
-      return moddle.create('bpmn:SubProcess', attrs);
+      return moddle.create(
+        SUB_PROCESS_LIKE_TAG[node.element ?? 'embedded'],
+        attrs,
+      );
     }
 
     case 'callActivity': {
@@ -610,10 +675,10 @@ function createFlowNode(
         calledElement: node.calledElement,
       };
       if (node.binding !== undefined) {
-        attrs['operaton:calledElementBinding'] = node.binding.kind;
-        if (node.binding.kind === 'version') {
-          attrs['operaton:calledElementVersion'] = node.binding.version;
-        }
+        Object.assign(
+          attrs,
+          versionBindingAttrs('operaton:calledElement', node.binding),
+        );
       }
       // The business key and the mappings are extension children, already
       // placed by `buildExtensionElements`.
@@ -627,6 +692,46 @@ function createFlowNode(
       );
     }
   }
+}
+
+/**
+ * The tag each `element` serializes to. Operaton parses the three alike for a
+ * class, expression, delegate expression, or external topic binding; a business
+ * rule task naming an `operaton:decisionRef` takes its own path, and this map
+ * covers that form as well.
+ */
+const SERVICE_TASK_LIKE_TAG = {
+  service: 'bpmn:ServiceTask',
+  send: 'bpmn:SendTask',
+  businessRule: 'bpmn:BusinessRuleTask',
+} as const;
+
+/**
+ * The tag each `element` serializes to. Operaton runs a transaction through the
+ * very behavior class it gives an ordinary sub-process; the tag buys only that
+ * the engine accepts a cancel end inside the block and a cancel boundary on it.
+ */
+const SUB_PROCESS_LIKE_TAG = {
+  embedded: 'bpmn:SubProcess',
+  transaction: 'bpmn:Transaction',
+} as const;
+
+/** The container tags {@link collectSubProcessElements} descends into. */
+const SUB_PROCESS_LIKE_TAGS = new Set<string>(
+  Object.values(SUB_PROCESS_LIKE_TAG),
+);
+
+/** `<prefix>Binding`, plus `<prefix>Version` when the version is pinned. */
+function versionBindingAttrs(
+  prefix: string,
+  binding: VersionBinding,
+): Record<string, unknown> {
+  return {
+    [`${prefix}Binding`]: binding.kind,
+    ...(binding.kind === 'version'
+      ? { [`${prefix}Version`]: binding.version }
+      : {}),
+  };
 }
 
 /**
@@ -653,6 +758,49 @@ function flowNodeName(node: FlowElement): string | undefined {
     default:
       return node.name ?? humanize(node.id);
   }
+}
+
+/**
+ * The `bpmn:multiInstanceLoopCharacteristics` child of a repeated activity, and
+ * nothing for a node that {@link repeats} answers no for. Operaton reads it
+ * before the tag dispatch, so the same child serves every activity kind alike.
+ */
+function loopCharacteristicsAttrs(
+  moddle: BpmnModdleInstance,
+  node: FlowElement,
+): Record<string, unknown> {
+  if (!('loop' in node) || !repeats(node.loop)) {
+    return {};
+  }
+  const loop = node.loop;
+  const attrs: Record<string, unknown> = {};
+  // The engine runs the instances at once unless told otherwise, and the
+  // serializer drops that default rather than writing `isSequential="false"`.
+  if (loop.sequential === true) {
+    attrs.isSequential = true;
+  }
+  if (loop.collection !== undefined) {
+    attrs['operaton:collection'] = loop.collection;
+  }
+  if (loop.elementVariable !== undefined) {
+    attrs['operaton:elementVariable'] = loop.elementVariable;
+  }
+  if (loop.cardinality !== undefined) {
+    attrs.loopCardinality = moddle.create('bpmn:FormalExpression', {
+      body: loop.cardinality,
+    });
+  }
+  if (loop.completionCondition !== undefined) {
+    attrs.completionCondition = moddle.create('bpmn:FormalExpression', {
+      body: loop.completionCondition,
+    });
+  }
+  return {
+    loopCharacteristics: moddle.create(
+      'bpmn:MultiInstanceLoopCharacteristics',
+      attrs,
+    ),
+  };
 }
 
 /** Nothing for the two gateways, which carry no engine settings. */

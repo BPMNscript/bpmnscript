@@ -1,0 +1,19 @@
+// A broadcast starts the process and two branches run at once. Finishing the
+// escalation reaches a terminate end, which stops every path, including the
+// reorder task still sitting in the task list.
+
+process stock-alert {
+  start StockRunningLow "Stock is running low" signal "StockRunningLow"
+
+  parallel {
+    {
+      user ReorderStock "Reorder the stock" { assignee = "demo" }
+    }
+    {
+      user EscalateToBuyer "Escalate to the buyer" { assignee = "demo" }
+      end OrderAbandoned "Abandon every path" terminate
+    }
+  }
+
+  end Restocked "Stock restored"
+}

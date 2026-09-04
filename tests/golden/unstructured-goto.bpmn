@@ -11,7 +11,7 @@
     exporter="Operaton Modeler"
     exporterVersion="5.0.0">
 
-  <!-- Intentionally unstructured: RouteA and RouteB cross-branch with no shared join — see README.md. -->
+  <!-- Intentionally unstructured: RouteA and RouteB cross-branch with no shared join; see README.md. -->
   <bpmn:process id="unstructured-goto" name="Unstructured Goto" isExecutable="true" operaton:historyTimeToLive="P30D">
     <bpmn:startEvent id="Start">
       <bpmn:outgoing>Flow_Start_Intake</bpmn:outgoing>

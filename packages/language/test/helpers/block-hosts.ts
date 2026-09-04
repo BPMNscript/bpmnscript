@@ -38,10 +38,27 @@ export const BLOCK_HOSTS: ReadonlyArray<
     'a script task',
     (c) => `process p { script T { ${c} } ${FENCE}js\nwork()\n${FENCE} }`,
   ],
+  ['step', 'a step', (c) => `process p { step T { ${c} } }`],
+  [
+    'send',
+    'a send task',
+    (c) => `process p { send N { class = "com.example.Send" ${c} } }`,
+  ],
+  ['receive', 'a receive task', (c) => `process p { receive R { ${c} } }`],
+  [
+    'decide',
+    'a decision step',
+    (c) => `process p { decide D { decision = "riskRating" ${c} } }`,
+  ],
   [
     'subprocess',
     'a subprocess',
     (c) => `process p { subprocess S { ${c} } { user U } }`,
+  ],
+  [
+    'attempt',
+    'an attempt block',
+    (c) => `process p { attempt S { ${c} } { user U } }`,
   ],
   ['call', 'a call', (c) => `process p { call C { process = "q" ${c} } }`],
   [
@@ -80,7 +97,12 @@ export const PARAMETER_HOSTS = new Set([
   'user',
   'service',
   'script',
+  'step',
+  'send',
+  'receive',
+  'decide',
   'subprocess',
+  'attempt',
   'call',
   'on',
 ]);

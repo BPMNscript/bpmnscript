@@ -1,6 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import * as path from 'node:path';
-import { resolveOutputPath, CLI_VERSION } from '../src/util.js';
+import {
+  diagnosticMessage,
+  resolveOutputPath,
+  CLI_VERSION,
+} from '../src/util.js';
 
 describe('resolveOutputPath', () => {
   it('derives the output path by swapping the extension when no override is given', () => {
@@ -22,6 +26,28 @@ describe('resolveOutputPath', () => {
     expect(resolveOutputPath(input, '.bpmn', 'out/custom.bpmn')).toBe(
       path.resolve('out/custom.bpmn'),
     );
+  });
+});
+
+describe('diagnosticMessage', () => {
+  const RANGE = {
+    start: { line: 0, character: 0 },
+    end: { line: 0, character: 4 },
+  };
+
+  it('reads a plain-text message as it stands', () => {
+    expect(diagnosticMessage({ range: RANGE, message: 'no such step' })).toBe(
+      'no such step',
+    );
+  });
+
+  it('reads a markup message as its text, not as an object', () => {
+    expect(
+      diagnosticMessage({
+        range: RANGE,
+        message: { kind: 'markdown', value: 'no such step' },
+      }),
+    ).toBe('no such step');
   });
 });
 

@@ -38,8 +38,10 @@ Chosen option: "Compensation handlers exist only as a subprocess's `on compensat
 The handler.
 A subprocess's undo steps are written directly in its body as `on compensation { ... }`, the steps that reverse whatever that subprocess already finished doing.
 `on compensation` lowers to a `bpmn:subProcess triggeredByEvent="true"` nested inside the `bpmn:subProcess` it undoes, whose start event carries a `compensateEventDefinition`; there is at most one per subprocess, matching the engine's own restriction.
-It runs only when something later throws compensation, and only for a subprocess instance that actually completed, since an instance that never finished has nothing to undo.
-Because a compensation event sub-process only exists inside an embedded sub-process, the construct is only legal directly inside a `subprocess` body; a process cannot compensate itself, so `on compensation` at process level is rejected rather than approximated.
+It runs when compensation reaches the subprocess, and only for a subprocess instance that actually completed, since an instance that never finished has nothing to undo.
+Compensation reaches it by two routes: `throw compensation` or `emit compensation` in an enclosing scope, and a cancel end that gives up an enclosing `attempt` block.
+Operaton's `CancelEndEventActivityBehavior` throws the compensation itself on that second route, before handing the run to that block's cancel handler.
+Because a compensation event sub-process only exists inside an embedded sub-process, the construct is only legal directly inside a `subprocess` body or an `attempt` body; a process cannot compensate itself, so `on compensation` at process level is rejected rather than approximated.
 
 The throw.
 Compensation joins `throw`/`emit` on the same terms every other trigger kind already established (ADR-0016): `throw compensation` ends the current path after undoing the nearest enclosing scope's completed work, `emit compensation` undoes it and continues.
@@ -69,7 +71,10 @@ A single task that needs an undo path becomes a named unit of work with its own 
 
 Round-trip coverage in `packages/transform/test` pins a subprocess with an `on compensation` block lowering to a nested `triggeredByEvent` sub-process with exactly one `compensateEventDefinition`-carrying start event, and `throw compensation`/`emit compensation` lowering to a compensation end event and a compensation intermediate throw respectively, both without an `activityRef`.
 Refusal coverage in the same suite pins a boundary compensation event, an `activityRef`-targeted throw, `waitForCompletion="false"`, and an `isForCompensation` activity each producing a distinct refusal rather than a silently altered import.
-`packages/language/test/validating.test.ts` pins the container rule: `on compensation` directly inside a `subprocess` body validates, the same block at process level or inside an `if`/`while`/`parallel` branch is rejected, and a second `on compensation` block in one subprocess is rejected as a duplicate.
+`packages/language/test/validating.test.ts` pins the container rule: an undo block directly inside a `subprocess` body validates and so does one directly inside an `attempt` body, the same block at process level, inside another handler's body, or inside an `if` branch is rejected, and a second undo block in one `subprocess` or one `attempt` is rejected as a duplicate.
+Two suites under `tests/e2e/` deploy to a real Operaton and confirm that an undo block executes on a running engine rather than only lowering to the right shape.
+`service-boundary-and-compensation.test.ts` covers the route this decision defines: the `emit compensation` a process-level error handler raises reaches the undo block of a subprocess that had already completed, releasing the seat it reserved.
+`booking-attempt.test.ts` covers the route ADR-0028 adds: a completed subprocess's undo steps run once the `attempt` block around it is given up.
 
 ## Pros and Cons of the Options
 
@@ -105,3 +110,5 @@ ADR-0016 (the `throw`/`emit` terminality rule and the soft-word design, both of 
 ADR-0017 (the trigger-payload design, under which compensation is the one trigger kind whose payload is empty, since it has no code, name, or condition to carry).
 
 Extended by ADR-0019 (boundary events attached to an activity), which adds the attachment axis for six other trigger kinds while leaving this decision intact: compensation is still reachable only as a subprocess undo block, and a compensation boundary event is still refused on import.
+
+Extended by ADR-0028 (work that can be given up), which adds a second route into these same undo blocks: a cancel end gives up the block around them, and the engine throws the compensation itself, with no `throw compensation` written anywhere in the source.

@@ -1,11 +1,11 @@
 // Event-layer round-trip fixture: one order-processing narrative that exercises
 // the DSL's try/catch surface end to end.
 //
-//   - an `error … message` declaration carrying the thrown message text;
+//   - an `error ... message` declaration carrying the thrown message text;
 //   - a payment `subprocess` that throws (`throw error` inside an `if`),
 //     escalates mid-chain (`emit escalation`), and owns an interrupting
 //     `on error` handler binding both the code and the message;
-//   - a process-level non-interrupting `on escalation … (code v) alongside`
+//   - a process-level non-interrupting `on escalation ... (code v) alongside`
 //     handler for the escalation both escalation sites raise;
 //   - a catch-all `on error` handler for any error the process does not name;
 //   - a terminal `throw escalation`;
@@ -18,7 +18,7 @@
 // condition variables are declared on the start form so they survive an
 // import-and-back round-trip. Every handler opens with an explicit trigger
 // `start` and closes with an explicit `end`, and every label differs from the
-// name humanised from its id, so authored ids and labels survive at their
+// name humanized from its id, so authored ids and labels survive at their
 // correct container depth. See README.md.
 
 process order-processing {

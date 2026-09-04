@@ -1,6 +1,6 @@
 {
   "name": "vscode-bpmnscript",
-  "description": "VS Code extension for BPMNscript — bundles the Langium language server",
+  "description": "VS Code extension for BPMNscript, bundling the Langium language server",
   "version": "0.0.1",
   "displayName": "bpmnscript",
   "type": "module",
@@ -100,19 +100,19 @@
     "build:post": "npm run build:prepare && node esbuild.mjs",
     "build:clean": "npm run clean && npm run build",
     "watch": "npm run build:prepare && concurrently -n tsc,esbuild -c blue,yellow \"tsc -b tsconfig.json --watch\" \"node esbuild.mjs --watch\"",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "typecheck": "tsc -b tsconfig.test.json",
     "test": "vitest run"
   },
   "dependencies": {
     "@bpmn-script/language": "0.0.1",
     "@bpmn-script/transform": "0.0.1",
-    "vscode-languageclient": "~10.1.1"
+    "vscode-languageclient": "~10.1.0"
   },
   "devDependencies": {
-    "@types/vscode": "~1.134.0",
-    "concurrently": "^10.0.5",
-    "esbuild": "~0.28.2",
-    "vitest": "^4.1.11"
+    "@types/vscode": "~1.125.0",
+    "concurrently": "^10.0.3",
+    "esbuild": "~0.28.1",
+    "vitest": "^4.1.10"
   },
   "vsce": {
     "dependencies": false

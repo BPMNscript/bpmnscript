@@ -1,10 +1,10 @@
-// Invoice Approval — the canonical BPMNscript example, deployed by the
+// Invoice Approval: the canonical BPMNscript example, deployed by the
 // spring-boot end-to-end test. This is also the file the README and the docs
 // use to show what the language looks like.
 //
 // The service task's class name below must stay in sync with the Java delegate at
-// examples/spring-boot/src/main/java/com/example/invoice/AutoApproveDelegate.java —
-// that is the class Operaton loads and runs when the auto-approve branch fires.
+// examples/spring-boot/src/main/java/com/example/invoice/AutoApproveDelegate.java.
+// That is the class Operaton loads and runs when the auto-approve branch fires.
 
 process invoice-approval {
   start ReviewStart {

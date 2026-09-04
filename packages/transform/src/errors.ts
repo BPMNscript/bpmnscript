@@ -20,17 +20,26 @@ export abstract class UnsupportedConstructError extends Error {
   }
 }
 
-/** A service task with no execution form, or an external type missing its topic. */
+/**
+ * A task with no execution form, or an external type missing its topic.
+ * Operaton applies the same mandatory-discriminator rule to every tag it runs
+ * through its service-task factory, so `subject` names which one refused.
+ */
 export class UnsupportedServiceTaskFormError extends UnsupportedConstructError {
   declare readonly serviceTaskId: string;
   declare readonly construct: string;
+  declare readonly subject: string;
 
-  constructor(serviceTaskId: string, construct: string) {
+  constructor(
+    serviceTaskId: string,
+    construct: string,
+    subject = 'Service task',
+  ) {
     super(
-      `Service task '${serviceTaskId}' uses unsupported execution form: ${construct}. ` +
+      `${subject} '${serviceTaskId}' uses unsupported execution form: ${construct}. ` +
         'Supported forms are a Java class, an expression, a delegate expression, ' +
-        'or an external task topic.',
-      { serviceTaskId, construct },
+        'an external task topic, or, on a business rule task, a decision reference.',
+      { serviceTaskId, construct, subject },
     );
   }
 }
@@ -55,9 +64,9 @@ export class UnsupportedFormFieldTypeError extends UnsupportedConstructError {
 }
 
 /**
- * A flow element kind outside the supported subset, such as `bpmn:transaction`
- * or `bpmn:adHocSubProcess`. A supported kind carrying an unrepresentable shape
- * refuses via {@link UnsupportedEventFeatureError} or
+ * A flow element kind outside the supported subset, such as
+ * `bpmn:adHocSubProcess` or `bpmn:manualTask`. A supported kind carrying an
+ * unrepresentable shape refuses via {@link UnsupportedEventFeatureError} or
  * {@link UnsupportedEventDefinitionError} instead.
  */
 export class UnsupportedElementError extends UnsupportedConstructError {
@@ -71,9 +80,10 @@ export class UnsupportedElementError extends UnsupportedConstructError {
         (elementId ? ` (id='${elementId}')` : '') +
         ' is a kind that this tool cannot import. ' +
         'Only start/end events, throws, emits, boundary events, event ' +
-        'handlers, user tasks, service tasks, script tasks, exclusive ' +
-        'gateways, parallel gateways, embedded sub-processes, call ' +
-        'activities, and sequence flows are supported.',
+        'handlers, plain tasks, user tasks, service tasks, send tasks, ' +
+        'receive tasks, business rule tasks, script tasks, exclusive ' +
+        'gateways, parallel gateways, embedded subprocesses, attempt ' +
+        'blocks, call activities, and sequence flows are supported.',
       { qname, elementId },
     );
   }
@@ -127,38 +137,52 @@ export class UnsupportedEventDefinitionError extends UnsupportedConstructError {
   }
 }
 
+/** The default closing sentence: what a handler, a throw, and an emit accept. */
+const EVENT_SURFACE_NOTE =
+  'Event handlers catch one error, escalation, message, signal, timer, ' +
+  'conditional, or compensation trigger on their single start event; ' +
+  'throws and emits carry the code or name their kind requires, and ' +
+  'compensation carries neither.';
+
 /**
  * A supported event definition kind shaped in a way the DSL surface cannot
- * express. `detail` names the shape.
+ * express. `detail` names the shape; the sentence after it says what to write
+ * instead. A refusal outside the handler/throw/emit surface passes its own
+ * `remedy`, so the reader is told the move that fixes the document rather than
+ * a rule that does not describe it.
  */
 export class UnsupportedEventFeatureError extends UnsupportedConstructError {
   declare readonly elementId: string;
   declare readonly detail: string;
 
-  constructor(elementId: string, detail: string) {
+  constructor(
+    elementId: string,
+    detail: string,
+    remedy: string = EVENT_SURFACE_NOTE,
+  ) {
     super(
-      `The event construct at '${elementId}' cannot be imported: ${detail}. ` +
-        'Event handlers catch one error, escalation, message, signal, timer, ' +
-        'conditional, or compensation trigger on their single start event; ' +
-        'throws and emits carry the code or name their kind requires, and ' +
-        'compensation carries neither.',
+      `The event construct at '${elementId}' cannot be imported: ${detail}. ${remedy}`,
       { elementId, detail },
     );
   }
 }
 
-/** Loop characteristics: the IR models elements that run exactly once. */
+/**
+ * A repetition the surface cannot express, or one the engine itself refuses to
+ * deploy. `detail` names which of the two, and why.
+ */
 export class UnsupportedLoopCharacteristicsError extends UnsupportedConstructError {
   declare readonly elementId: string;
   /** Moddle `$type`, e.g. `bpmn:MultiInstanceLoopCharacteristics`. */
   declare readonly loopType: string;
+  declare readonly detail: string;
 
-  constructor(elementId: string, loopType: string) {
-    super(
-      `The element '${elementId}' repeats (${friendlyLoopType(loopType)}: ${loopType}), ` +
-        'which this tool cannot import. Only elements that run once are supported.',
-      { elementId, loopType },
-    );
+  constructor(elementId: string, loopType: string, detail: string) {
+    super(`The repetition on '${elementId}' cannot be imported: ${detail}.`, {
+      elementId,
+      loopType,
+      detail,
+    });
   }
 }
 
@@ -214,26 +238,25 @@ function supportedKindsMessage(
   switch (eventKind) {
     case 'start':
       return (
-        "A plain start event carries no definition; an event handler's " +
-        'start supports error, escalation, message, signal, timer, ' +
-        'conditional, or compensation.'
+        "A plain start event carries no definition; a process's start " +
+        "supports message, signal, or timer, and an event handler's start " +
+        'supports error, escalation, message, signal, timer, conditional, ' +
+        'or compensation.'
       );
     case 'end':
-      return 'A typed end event supports error, escalation, signal, or compensation.';
+      return (
+        'A typed end event supports terminate, error, escalation, message, ' +
+        'signal, or compensation, plus cancel inside a block that can be ' +
+        'given up.'
+      );
     case 'intermediate throw':
-      return 'An emit supports escalation, signal, or compensation.';
+      return 'An emit supports escalation, message, signal, or compensation.';
     case 'intermediate catch':
       return 'An await supports message, timer, signal, or conditional.';
     case 'boundary':
       return (
         'A boundary event supports error, escalation, message, signal, ' +
-        'timer, or conditional.'
+        'timer, or conditional, plus cancel on a block that can be given up.'
       );
   }
-}
-
-function friendlyLoopType(loopType: string): string {
-  if (loopType.includes('MultiInstance')) return 'multi-instance';
-  if (loopType.includes('StandardLoop')) return 'standard loop';
-  return 'loop';
 }

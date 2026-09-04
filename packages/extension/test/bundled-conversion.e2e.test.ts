@@ -123,7 +123,7 @@ describe('bundled asset resolution and transform under the shim', () => {
     () => {
       expect(
         fs.existsSync(verifyOutfile),
-        `verify bundle missing at ${verifyOutfile} — esbuild step failed`,
+        `verify bundle missing at ${verifyOutfile}: esbuild step failed`,
       ).toBe(true);
 
       const result = spawnSync(
@@ -185,7 +185,7 @@ describe('DSL to BPMN journey with disk write round-trip', () => {
   );
 });
 
-describe('decompile journey — BPMN to DSL with Langium re-parse', () => {
+describe('decompile journey: BPMN to DSL with Langium re-parse', () => {
   let parse: ReturnType<typeof parseHelper<Model>>;
 
   beforeAll(() => {
@@ -213,7 +213,7 @@ describe('decompile journey — BPMN to DSL with Langium re-parse', () => {
   );
 });
 
-describe('validation gate — type-mismatch error blocks output', () => {
+describe('validation gate: type-mismatch error blocks output', () => {
   it(
     'returns kind:validation and produces no output for a type-mismatch source',
     { timeout: 30_000 },
@@ -243,7 +243,7 @@ describe('validation gate — type-mismatch error blocks output', () => {
   );
 });
 
-describe('unsupported-construct gate — bad-service-task-no-binding.bpmn', () => {
+describe('unsupported-construct gate: bad-service-task-no-binding.bpmn', () => {
   it(
     'returns kind:unsupported for a BPMN whose service task carries no execution discriminator',
     { timeout: 30_000 },

@@ -4,12 +4,12 @@
 // (implicit sequence flow); control flow is expressed with `if`/`else if`/
 // `else`, `while`, `do while`, `parallel { { } { } }`, and `goto <id>`.
 // `start`/`end` are explicit-allowed but implicit by default (the desugarer
-// synthesises them). There is no flat node/edge surface and no `gateway`
+// synthesizes them). There is no flat node/edge surface and no `gateway`
 // keyword: gateways are derived from the structured control-flow constructs.
 //
 // Design:
 //   - Keyword + braces statements with implicit flow.
-//   - Typed-per-element attribute blocks, modelled as a *list* of attribute
+//   - Typed-per-element attribute blocks, modeled as a *list* of attribute
 //     nodes so a validator can detect duplicate keys from the AST.
 //   - A JUEL-subset expression sub-language parsed to a real AST (parser
 //     rules, never a terminal), with a quoted "${...}" raw-string fallback.
@@ -25,9 +25,11 @@
 // Reserved words (cannot be used as a bare expression identifier; use the
 // quoted "${...}" raw-string fallback if a variable must be named like one):
 //   process, var, start, end, user, service, script, subprocess,
+//   step, send, receive, decide,
 //   if, else, while, do, parallel, goto, label, form,
 //   call, in, out, local,
 //   on, throw, emit, alongside, await,
+//   for, each, sequentially, until,
 //   string, number, boolean, date, json, any,
 //   true, false, null.
 // JUEL identifiers that do NOT collide with this set lex as plain `ID` in
@@ -35,12 +37,22 @@
 // `order.type`, `items[0]`).
 //
 // The trigger kinds (`error`, `escalation`, `message`, `signal`, `timer`,
-// `condition`, `compensation`), the catch-binding field names, the timer
+// `condition`, `compensation`, `terminate`), the catch-binding field names, the timer
 // particles `after`/`at`/`every`, the attribute keys, the parameter direction
 // words, and the listener event words are deliberately NOT on this list: they
 // lex as plain `ID` and are validated in position instead, so `var message:
 // string`, `if (after > 2)`, and `if (priority > 5)` stay legal, and a step may
 // be named after any business concept.
+//
+// `step`/`send`/`receive`/`decide` are hard for a different reason than the
+// trigger words above: a soft statement keyword would let `step` after
+// `start S` be swallowed as `start`'s trigger instead of opening its own
+// statement, so these four stay hard like every other statement-opening word.
+//
+// `for`/`each`/`sequentially`/`until` are hard for a related reason: the
+// repeat clause opens in a position no other construct occupies, between a
+// statement's optional label and its optional settings block, so only a
+// keyword can announce that a clause has started.
 
 grammar BpmnScript
 
@@ -73,7 +85,7 @@ ProcessLabel:
 // A process-level setting written like an element attribute, e.g.
 // `versionTag = "1.4"`. `label` keeps its own rule above, so the validator
 // restricts this key set to the settings that belong on the process element.
-// `ID '='` separates it from `ErrorDecl` (`ID STRING …`) at the second token,
+// `ID '='` separates it from `ErrorDecl` (`ID STRING ...`) at the second token,
 // and every statement is keyword-led, so a declaration can never swallow one.
 ProcessAttribute:
     key=AttrKey '=' value=Expr;
@@ -92,6 +104,7 @@ VarType returns string:
 Statement:
       StartEvent | EndEvent
     | UserTask | ServiceTask | ScriptTask
+    | GenericTask | SendTask | ReceiveTask | BusinessRuleTask
     | IfStatement | WhileStatement | DoWhileStatement
     | ParallelStatement | GotoStatement | SubProcess | CallActivity
     | OnHandler | ThrowStatement | EmitStatement | IntermediateCatchEvent;
@@ -102,22 +115,33 @@ Statement:
 Block:
     '{' statements+=Statement* '}';
 
-// StartEvent with an optional attribute block. Only a `form` block is
-// meaningful here (a start event has no assignee/class); the validator rejects
-// bare attributes on `start`. The block lets an author declare the process's
-// start variables as Tasklist form fields.
+// StartEvent with an optional trigger clause and attribute block. The trigger
+// clause is the one `on` and `await` already use: a soft trigger word followed
+// by a message or signal name, or by a timer particle and its time. Only the
+// process's own start carries one; a subprocess start and an event-handler
+// start are entered by their container, and the validator rejects a trigger
+// there. `name=ID` is mandatory and comes first, so the second token decides
+// everything: a STRING there is the label, an ID is the trigger, and `{` opens
+// the settings block. Every statement is keyword-led, so a following statement
+// can never be swallowed as a trigger.
 StartEvent:
-    'start' name=ID (label=STRING)? AttributeBlock?;
+    'start' name=ID (label=STRING)?
+    (trigger=ID (code=STRING | particle=ID time=(STRING | RAW_TEMPLATE))?)?
+    AttributeBlock?;
 
+// EndEvent with the same clause narrowed to a word and an optional code.
+// `terminate` and `cancel` are the words this position takes; the code slot
+// exists so a kind that belongs on `throw` still parses and earns a validator
+// message instead of a parse error.
 EndEvent:
-    'end' name=ID (label=STRING)? AttributeBlock?;
+    'end' name=ID (label=STRING)? (trigger=ID (code=STRING)?)? AttributeBlock?;
 
-// UserTask with an optional typed attribute block. Attributes are modelled as a
+// UserTask with an optional typed attribute block. Attributes are modeled as a
 // *list* of `Attribute` nodes (not named assignments) so duplicate keys remain
 // visible in the AST. The duplicate-key validator reads `attrs` and flags
 // repeated keys.
 UserTask:
-    'user' name=ID (label=STRING)? AttributeBlock?;
+    'user' name=ID (label=STRING)? RepeatClause? AttributeBlock?;
 
 // A service task binds to exactly one of four execution forms: `class`, a
 // JUEL `expression`, a `delegate` expression, or a `topic`. The last delegates
@@ -125,14 +149,34 @@ UserTask:
 // of the engine invoking code directly. All four share this one statement and
 // AttributeBlock shape; the validator requires exactly one.
 ServiceTask:
-    'service' name=ID (label=STRING)? AttributeBlock?;
+    'service' name=ID (label=STRING)? RepeatClause? AttributeBlock?;
+
+// A step the engine records and passes straight through; the work happens
+// outside it.
+GenericTask:
+    'step' name=ID (label=STRING)? RepeatClause? AttributeBlock?;
+
+// An activity that sends something out. It binds exactly as a service task
+// does, because the engine runs it the same way.
+SendTask:
+    'send' name=ID (label=STRING)? RepeatClause? AttributeBlock?;
+
+// An activity that waits for a named message, or for the engine to be told to
+// continue when no name is given.
+ReceiveTask:
+    'receive' name=ID (label=STRING)? RepeatClause? AttributeBlock?;
+
+// An activity answered by a decision table, or bound like a service task when
+// it is not.
+BusinessRuleTask:
+    'decide' name=ID (label=STRING)? RepeatClause? AttributeBlock?;
 
 // A script task with an inline body written as a markdown-style fenced block
 // opened by a language tag. The whole fenced block is captured
 // verbatim in `body`; the language tag and script text are extracted
 // downstream. Emits a bpmn:scriptTask.
 ScriptTask:
-    'script' name=ID (label=STRING)? AttributeBlock? body=FENCED_SCRIPT;
+    'script' name=ID (label=STRING)? RepeatClause? AttributeBlock? body=FENCED_SCRIPT;
 
 // fragment: a brace-delimited settings block, reused by every statement that
 // takes one. It holds a mix of `<key> = <value>` attributes, `form` blocks,
@@ -147,6 +191,25 @@ ScriptTask:
 // `{ }` is told apart from an empty body by the brace that follows it.
 fragment AttributeBlock:
     '{' (attrs+=Attribute | forms+=FormBlock | params+=IoParameter | listeners+=Listener)* '}';
+
+// How many times an activity runs. `for each line in lines` runs it once per
+// element, binding each element to `line`; `for 3` runs it a fixed number of
+// times; writing both lets the count drive the runs while each still sees its
+// element. The element name is optional, for a collection that drives the count
+// and nothing else. Instances run at once unless `sequentially` says otherwise,
+// and `until` stops the remaining ones early once its condition holds.
+//
+// `for` is hard for the same reason every statement keyword is, and `each`,
+// `sequentially` and `until` with it: the clause sits between a statement's
+// optional label and its optional settings block, so nothing but a keyword can
+// tell the parser a clause has started. `in` is already hard.
+fragment RepeatClause:
+    'for' (
+        cardinality=Expr ('each' (element=ID)? 'in' collection=Expr)?
+      | 'each' (element=ID)? 'in' collection=Expr
+    )
+    (sequential?='sequentially')?
+    ('until' '(' completion=Expr ')')?;
 
 // A form declaration: `form { <field>* }`. Maps to `operaton:formData` so
 // Operaton Tasklist renders a labeled input per field. Modelled as a list on the
@@ -173,7 +236,7 @@ Attribute:
 // position by the validator, which knows the key set of each element kind. That
 // keeps every attribute name available as a step name, a variable name, and a
 // bare identifier in expression position, so `if (priority > 5)` and
-// `user class { … }` stay legal, and an unknown key gets a validation message
+// `user class { ... }` stay legal, and an unknown key gets a validation message
 // naming the element instead of a lexer complaint.
 //
 // `process` is listed explicitly because the `process` block heading makes it a
@@ -223,7 +286,7 @@ ScriptLiteral:
     body=FENCED_SCRIPT;
 
 // An engine lifecycle callback registered on the enclosing element:
-// `on <event> { <binding> }` or `on <event> ```<lang> … ``` . A `timeout`
+// `on <event> { <binding> }` or `on <event> ```<lang> ... ``` . A `timeout`
 // callback additionally carries a timer clause, written with the same particle
 // syntax a timer event uses.
 //
@@ -273,10 +336,16 @@ GotoStatement:
 
 // A nested flow container: `subprocess <id> "<label>"? { <statements> }`. The
 // body reuses `Block` verbatim, so `start`/`end` parse inside it exactly like
-// at process scope (the desugarer synthesises them when absent and honours
+// at process scope (the desugarer synthesizes them when absent and honors
 // them when written). An optional settings block precedes the body.
+//
+// `attempt` is the same container marked as a block of work that may be given
+// up. It serializes to `bpmn:transaction`, the only tag under which Operaton
+// accepts a `cancel` end or a `cancel` handler; Operaton's `BpmnParse` gives
+// that tag the same behavior class as an embedded sub-process, so nothing
+// rolls back on its own and the two heads share one rule and one node type.
 SubProcess:
-    'subprocess' name=ID (label=STRING)? AttributeBlock? body=Block;
+    (transactional?='attempt' | 'subprocess') name=ID (label=STRING)? RepeatClause? AttributeBlock? body=Block;
 
 // A call to another process by id: `call <id> "<label>"? { <body> }`. The brace
 // body mixes attributes, `in`/`out` variable mappings, `input`/`output`
@@ -287,7 +356,7 @@ SubProcess:
 // the two member kinds never collide. The parser accepts any combination,
 // including an empty body; which keys are required is the validator's job.
 CallActivity:
-    'call' name=ID (label=STRING)? '{' (attrs+=Attribute | mappings+=VariableMapping | params+=IoParameter | listeners+=Listener)* '}';
+    'call' name=ID (label=STRING)? RepeatClause? '{' (attrs+=Attribute | mappings+=VariableMapping | params+=IoParameter | listeners+=Listener)* '}';
 
 // One variable-mapping entry inside a `call` body, read like a function call at
 // the process boundary: `in` carries a value into the called process, `out`

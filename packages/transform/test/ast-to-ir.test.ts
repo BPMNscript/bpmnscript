@@ -33,7 +33,9 @@ import type {
   FlowContainer,
   FlowElement,
   IoValue,
+  LoopCharacteristics,
   ParallelGateway,
+  Repeatable,
   SequenceFlow,
   SubProcess,
 } from '../src/ir/types.js';
@@ -111,7 +113,7 @@ function flow(
 
 // ── 1. Implicit sequence + implicit start/end ────────────────────────────────
 
-describe('astToIr — implicit sequence and implicit start/end', () => {
+describe('astToIr: implicit sequence and implicit start/end', () => {
   const SOURCE = `process P { user A user B }`;
 
   it('synthesizes start, A, B, synthesized end with chained flows', async () => {
@@ -146,7 +148,7 @@ describe('astToIr — implicit sequence and implicit start/end', () => {
     expect(result.isExecutable).toBe(true);
   });
 
-  it('start → A → B → end is fully connected', async () => {
+  it('start -> A -> B -> end is fully connected', async () => {
     const result = await ir(SOURCE);
     const start = only(result, 'startEvent');
     const end = only(result, 'endEvent');
@@ -201,7 +203,7 @@ describe('astToIr — implicit sequence and implicit start/end', () => {
 
 // ── 2. if / else -> XOR split + join ─────────────────────────────────────────
 
-describe('astToIr — if/else exclusive gateway', () => {
+describe('astToIr: if/else exclusive gateway', () => {
   const SOURCE = `process P {
   if (amount > 1000) { user S } else { service A { class = "com.example.X" } }
 }`;
@@ -284,7 +286,7 @@ describe('astToIr — if/else exclusive gateway', () => {
     );
   });
 
-  it('keeps the split→join default flow when there is no else (never pruned)', async () => {
+  it('keeps the split->join default flow when there is no else (never pruned)', async () => {
     const result = await ir(`process P { if (c) { end A } }`);
     const splitId = makeGatewaySplitId('P_0');
     const joinId = makeGatewayJoinId('P_0');
@@ -295,7 +297,7 @@ describe('astToIr — if/else exclusive gateway', () => {
 
 // ── 3. else-if chain -> conditioned split flows + one default ────────────────
 
-describe('astToIr — else-if chain', () => {
+describe('astToIr: else-if chain', () => {
   const SOURCE = `process P {
   if (a > 1) { user X }
   else if (a > 2) { user Y }
@@ -331,7 +333,7 @@ describe('astToIr — else-if chain', () => {
 
 // ── 4. while -> pre-test XOR loop + back-edge ────────────────────────────────
 
-describe('astToIr — while loop', () => {
+describe('astToIr: while loop', () => {
   const SOURCE = `process P { user Pre while (rejected) { user R } user Post }`;
 
   it('emits a loop XOR gateway with conditioned body entry and default exit', async () => {
@@ -392,7 +394,7 @@ describe('astToIr — while loop', () => {
 
 // ── 5. do ... while -> post-test XOR loop ────────────────────────────────────
 
-describe('astToIr — do-while loop', () => {
+describe('astToIr: do-while loop', () => {
   const SOURCE = `process P { do { user R } while (rejected) }`;
 
   it('runs the body first, then a conditioned back-edge and default exit', async () => {
@@ -425,7 +427,7 @@ describe('astToIr — do-while loop', () => {
 
 // ── 6. parallel -> fork/join parallelGateway pair ────────────────────────────
 
-describe('astToIr — parallel fork/join', () => {
+describe('astToIr: parallel fork/join', () => {
   const SOURCE = `process P { parallel { { user A } { user B } } }`;
 
   it('emits a fork and a join parallelGateway with unconditioned flows', async () => {
@@ -466,7 +468,7 @@ describe('astToIr — parallel fork/join', () => {
 
 // ── 7. goto -> raw sequence flow to the target node ──────────────────────────
 
-describe('astToIr — goto', () => {
+describe('astToIr: goto', () => {
   it('emits a sequence flow to the node named Foo', async () => {
     const result = await ir(`process P { user A goto Foo user Foo end Done }`);
     // The implicit flow out of A lands on the goto target Foo.
@@ -510,7 +512,7 @@ describe('astToIr — goto', () => {
 
 // ── 8. Synthesized-id determinism guard ──────────────────────────────────────
 
-describe('astToIr — synthesized id determinism', () => {
+describe('astToIr: synthesized id determinism', () => {
   it('if split/join ids match the id templates for the structural coord', async () => {
     const result = await ir(`process P { if (x) { user A } }`);
     const ids = result.flowElements.map((fe) => fe.id);
@@ -547,7 +549,7 @@ describe('astToIr — synthesized id determinism', () => {
 
 // ── 9. Attribute mapping ─────────────────────────────────────────────────────
 
-describe('astToIr — attribute mapping', () => {
+describe('astToIr: attribute mapping', () => {
   it('maps user assignee/formKey and service class to IR fields', async () => {
     const result = await ir(`process P {
       user T "Task" { assignee = "demo" formKey = "embedded:form" }
@@ -585,7 +587,7 @@ describe('astToIr — attribute mapping', () => {
     expect(result.name).toBe('My Process');
   });
 
-  it('carries a header label = "…" declaration to the IR name', async () => {
+  it('carries a header label = "..." declaration to the IR name', async () => {
     const result = await ir(`process P { label = "Header Label" user A }`);
     expect(result.name).toBe('Header Label');
   });
@@ -608,20 +610,20 @@ describe('astToIr — attribute mapping', () => {
 
 // ── 9b. Service task binding variants (expression / delegate) ───────────────
 
-describe('astToIr — service task binding variants', () => {
+describe('astToIr: service task binding variants', () => {
   it.each([
     [
-      'maps `expression = "${…}"` to binding {kind:"expression"}, the raw ${…} carried verbatim',
+      'maps `expression = "${...}"` to binding {kind:"expression"}, the raw ${...} carried verbatim',
       'expression = "${bean.method(execution)}"',
       exprBinding('${bean.method(execution)}'),
     ],
     [
-      'maps `delegate = "${…}"` to binding {kind:"delegateExpression"} (friendly alias)',
+      'maps `delegate = "${...}"` to binding {kind:"delegateExpression"} (friendly alias)',
       'delegate = "${beanName}"',
       delegateBinding('${beanName}'),
     ],
     [
-      'wraps a bareword `delegate = chargeService` (no quotes) in ${…} rather than stripping it',
+      'wraps a bareword `delegate = chargeService` (no quotes) in ${...} rather than stripping it',
       'delegate = chargeService',
       delegateBinding('${chargeService}'),
     ],
@@ -629,7 +631,7 @@ describe('astToIr — service task binding variants', () => {
       // Unlike `class`, whose dotted-bareword value is a plain Java path and
       // gets the ${...} wrapper stripped, `expression`/`delegate` must keep the
       // wrapper so Operaton evaluates the value as EL, not a literal string.
-      'wraps a dotted-VarRef `expression = svc.status` (no quotes) in ${…} rather than stripping it',
+      'wraps a dotted-VarRef `expression = svc.status` (no quotes) in ${...} rather than stripping it',
       'expression = svc.status',
       exprBinding('${svc.status}'),
     ],
@@ -641,7 +643,7 @@ describe('astToIr — service task binding variants', () => {
 
 // ── 9c. Service task's `topic` binding (the external-worker form) ───────────
 
-describe('astToIr — service task topic binding', () => {
+describe('astToIr: service task topic binding', () => {
   it('maps `service ship { topic = "shipping" }` to a serviceTask with binding {kind:"external"}', async () => {
     const result = await ir(
       'process P { service ship { topic = "shipping" } }',
@@ -653,7 +655,7 @@ describe('astToIr — service task topic binding', () => {
 
 // ── 9d. Script task (fenced body -> format + code) ───────────────────────────
 
-describe('astToIr — script task', () => {
+describe('astToIr: script task', () => {
   it.each([
     [
       'maps a fenced ```js``` script to scriptTask{format:"javascript", code:<inner body>}',
@@ -672,7 +674,7 @@ describe('astToIr — script task', () => {
 
 // ── 9e. goto reserves + resolves a topic-bound service/script name ──────────
 
-describe('astToIr — topic-bound service/script names are goto-targetable', () => {
+describe('astToIr: topic-bound service/script names are goto-targetable', () => {
   it('a topic-bound service task name reserves the collision seed and resolves a goto to it', async () => {
     const result = await ir(
       'process P { user A goto Ship service Ship { topic = "shipping" } }',
@@ -696,9 +698,142 @@ describe('astToIr — topic-bound service/script names are goto-targetable', () 
   });
 });
 
+// ── 9f. Task-kind lowering (step / send / receive / decide) ─────────────────
+
+describe('astToIr: task-kind lowering (step/send/receive/decide)', () => {
+  it('step S "Label" lowers to a task node with no other key', async () => {
+    const result = await ir('process P { step S "Label" }');
+    expect(only(result, 'task')).toEqual({
+      kind: 'task',
+      id: 'S',
+      name: 'Label',
+    });
+  });
+
+  it('send binds exactly as a service task does, tagged element: "send"', async () => {
+    const classed = await ir(
+      'process P { send N { class = "com.example.Send" } }',
+    );
+    expect(only(classed, 'serviceTask')).toEqual({
+      kind: 'serviceTask',
+      id: 'N',
+      binding: classBinding('com.example.Send'),
+      element: 'send',
+    });
+
+    const external = await ir('process P { send N { topic = "t" } }');
+    expect(only(external, 'serviceTask').binding).toEqual(externalBinding('t'));
+  });
+
+  it('receive with a message key lowers with messageName; with none, no messageName key at all', async () => {
+    const named = await ir('process P { receive R { message = "OrderPaid" } }');
+    expect(only(named, 'receiveTask')).toEqual({
+      kind: 'receiveTask',
+      id: 'R',
+      messageName: 'OrderPaid',
+    });
+
+    const unnamed = only(await ir('process P { receive R }'), 'receiveTask');
+    expect(unnamed).toEqual({ kind: 'receiveTask', id: 'R' });
+    expect('messageName' in unnamed).toBe(false);
+  });
+
+  /** The binding a `decide D { decision = "riskRating" <member> }` lowers to. */
+  const decideBinding = async (member: string) =>
+    only(
+      await ir(`process P { decide D { decision = "riskRating" ${member} } }`),
+      'serviceTask',
+    ).binding;
+
+  it('decide with a decision key lowers to element: "businessRule" with a decision binding', async () => {
+    const result = await ir(
+      'process P { decide D { decision = "riskRating" } }',
+    );
+    expect(only(result, 'serviceTask')).toEqual({
+      kind: 'serviceTask',
+      id: 'D',
+      binding: { kind: 'decision', decisionRef: 'riskRating' },
+      element: 'businessRule',
+    });
+  });
+
+  it('binding = latest and version = 3 each lower to the matching VersionBinding', async () => {
+    expect(await decideBinding('binding = latest')).toEqual({
+      kind: 'decision',
+      decisionRef: 'riskRating',
+      binding: { kind: 'latest' },
+    });
+    expect(await decideBinding('version = 3')).toEqual({
+      kind: 'decision',
+      decisionRef: 'riskRating',
+      binding: { kind: 'version', version: '3' },
+    });
+  });
+
+  it('decide falling through to a class binding when no decision key is written', async () => {
+    const result = await ir('process P { decide D { class = "c" } }');
+    expect(only(result, 'serviceTask')).toEqual({
+      kind: 'serviceTask',
+      id: 'D',
+      binding: classBinding('c'),
+      element: 'businessRule',
+    });
+  });
+
+  it('mapDecisionResult lowers verbatim', async () => {
+    expect(await decideBinding('mapDecisionResult = singleEntry')).toEqual({
+      kind: 'decision',
+      decisionRef: 'riskRating',
+      mapDecisionResult: 'singleEntry',
+    });
+  });
+
+  /** Each new keyword with the binding its statement requires, if any. */
+  const taskKinds = [
+    ['step', ''],
+    ['send', 'class = "c"'],
+    ['receive', ''],
+    ['decide', 'decision = "d"'],
+  ];
+
+  it.each(taskKinds)(
+    '%s carries input/output parameters and engine settings into the IR',
+    async (keyword, binding) => {
+      const result = await ir(
+        `process P { ${keyword} X { ${binding} input a = "x" output b = "y" asyncBefore = true jobPriority = 5 } }`,
+      );
+      const el = byId(result, 'X') as {
+        inputParameters?: unknown;
+        outputParameters?: unknown;
+        asyncBefore?: boolean;
+        jobPriority?: string;
+      };
+      expect(el.inputParameters).toEqual([
+        { name: 'a', value: textValue('x') },
+      ]);
+      expect(el.outputParameters).toEqual([
+        { name: 'b', value: textValue('y') },
+      ]);
+      expect(el.asyncBefore).toBe(true);
+      expect(el.jobPriority).toBe('5');
+    },
+  );
+
+  it.each(taskKinds)(
+    'a %s named like a synthesized end event reserves the collision seed (gateway ids stay purely positional)',
+    async (keyword, binding) => {
+      // Gateway ids never consult `taken` (see the module comment); what
+      // `collectNamedIds` guards is the implicit start/end ids, which do.
+      await expectCollidedEnd(
+        `process P { ${keyword} EndEvent_P { ${binding} } }`,
+      );
+    },
+  );
+});
+
 // ── 10. Empty model throws ───────────────────────────────────────────────────
 
-describe('astToIr — empty model error', () => {
+describe('astToIr: empty model error', () => {
   it('throws when the model contains no process definitions', async () => {
     const doc = await parse('');
     expect(() => astToIr(doc.parseResult.value)).toThrow(
@@ -709,7 +844,7 @@ describe('astToIr — empty model error', () => {
 
 // ── 11. Sibling-branch coordinate collision (regression) ─────────────────────
 
-describe('astToIr — sibling-branch coordinate uniqueness', () => {
+describe('astToIr: sibling-branch coordinate uniqueness', () => {
   it('nested compounds in `then` vs `else` get distinct gateway ids', async () => {
     // A nested compound at index 0 of `then` and one at index 0 of `else` must
     // not collide: each branch contributes its own coordinate segment.
@@ -764,7 +899,7 @@ describe('astToIr — sibling-branch coordinate uniqueness', () => {
 
 // ── 12. All-element-ids-unique invariant across every desugar fixture ────────
 
-describe('astToIr — all synthesized ids are globally unique (property check)', () => {
+describe('astToIr: all synthesized ids are globally unique (property check)', () => {
   // Every representative desugaring shape from the suite above. If any pair of
   // synthesized gateway/event ids collides, the resulting IR is malformed.
   const FIXTURES: { name: string; source: string }[] = [
@@ -828,7 +963,7 @@ describe('astToIr — all synthesized ids are globally unique (property check)',
 
 // ── 13. Sub-process lowering (nested builder) ────────────────────────────────
 
-describe('astToIr — sub-process lowering', () => {
+describe('astToIr: sub-process lowering', () => {
   it('lowers a sub-process into its own container with implicit start/end', async () => {
     const result = await ir(
       `process p { subprocess S { user A { assignee = "x" } } }`,
@@ -862,7 +997,7 @@ describe('astToIr — sub-process lowering', () => {
     }
   });
 
-  it('honours explicit start/end inside the body (no synthesized events)', async () => {
+  it('honors explicit start/end inside the body (no synthesized events)', async () => {
     const result = await ir(
       `process p { subprocess S { start In user A { assignee = "x" } end Out } }`,
     );
@@ -965,11 +1100,53 @@ describe('astToIr — sub-process lowering', () => {
     const all = allElementIdsDeep(result);
     expect(new Set(all).size).toBe(all.length);
   });
+
+  it('tags a block written with the attempt head, and only that head', async () => {
+    const result = await ir(
+      `process p { attempt B { user A { assignee = "x" } } subprocess S { } }`,
+    );
+    expect(subProcess(result, 'B').element).toBe('transaction');
+    expect('element' in subProcess(result, 'S')).toBe(false);
+  });
+
+  it('lowers everything but the tag identically under both heads', async () => {
+    const tail =
+      '"Try to book and pay" for 2 { asyncBefore = true } { user A { assignee = "x" } }';
+    const attempted = subProcess(
+      await ir(`process p { attempt B ${tail} }`),
+      'B',
+    );
+    const plain = subProcess(
+      await ir(`process p { subprocess B ${tail} }`),
+      'B',
+    );
+    expect(attempted).toEqual({ ...plain, element: 'transaction' });
+  });
+
+  it('keeps the tag clear of the repeat clause loop variable', async () => {
+    const block = subProcess(
+      await ir(`process p { attempt B for each line in lines { step Q } }`),
+      'B',
+    );
+    expect(block.element).toBe('transaction');
+    expect(block.loop?.elementVariable).toBe('line');
+  });
+
+  it('tags each block by its own head when they nest', async () => {
+    const result = await ir(
+      `process p { attempt Outer { subprocess Inner { attempt Deep { } } } }`,
+    );
+    const outer = subProcess(result, 'Outer');
+    const inner = subProcess(outer, 'Inner');
+    expect(outer.element).toBe('transaction');
+    expect('element' in inner).toBe(false);
+    expect(subProcess(inner, 'Deep').element).toBe('transaction');
+  });
 });
 
 // ── 14. Call activity lowering ───────────────────────────────────────────────
 
-describe('astToIr — call activity lowering', () => {
+describe('astToIr: call activity lowering', () => {
   it('lowers a minimal call into the parent chain with no optional fields', async () => {
     const result = await ir(`process p { call F { process = "fulfilment" } }`);
 
@@ -1125,7 +1302,7 @@ describe('astToIr — call activity lowering', () => {
 
 // ── 15. Event handlers (`on`): out-of-chain event sub-processes ──────────────
 
-describe('astToIr — on-handler lowering', () => {
+describe('astToIr: on-handler lowering', () => {
   it('lowers a handler outside the sequence chain (flows go around it)', async () => {
     const result = await afterA(
       'on error "PF" { service R { class = "x.R" } }',
@@ -1186,7 +1363,7 @@ describe('astToIr — on-handler lowering', () => {
     expect(start.eventDefinition).toEqual(errorDef());
   });
 
-  it('honours an explicit start as the trigger-carrying start (id + label kept)', async () => {
+  it('honors an explicit start as the trigger-carrying start (id + label kept)', async () => {
     const result = await ir(
       `process p {
         on error "PF" { start In "Caught" service R { class = "x.R" } }
@@ -1238,7 +1415,7 @@ describe('astToIr — on-handler lowering', () => {
     expect(new Set(all).size).toBe(all.length);
   });
 
-  it('synthesizes start(def) → flow → end for an empty handler body', async () => {
+  it('synthesizes start(def) -> flow -> end for an empty handler body', async () => {
     const result = await ir(`process p { on error "PF" { } }`);
     const handlerId = makeEventSubProcessId('p_0');
     const handler = subProcess(result, handlerId);
@@ -1254,7 +1431,7 @@ describe('astToIr — on-handler lowering', () => {
 
 // ── 15b. Hosted handlers (`on <Host>:`): inline boundary events ──────────────
 
-describe('astToIr — hosted-handler lowering', () => {
+describe('astToIr: hosted-handler lowering', () => {
   it('emits a boundary event attached to the host, with the body inline in the same container', async () => {
     const result = await afterA(
       'on A: error "PF" { service R { class = "x.R" } }',
@@ -1303,6 +1480,16 @@ describe('astToIr — hosted-handler lowering', () => {
     expect(boundary.eventDefinition).toEqual(timerDef('duration', 'PT2H'));
   });
 
+  it('lowers a cancel handler on a block to a cancel event definition', async () => {
+    const result = await ir(
+      `process p { start S attempt B { user A end X cancel } on B: cancel { user H } end E }`,
+    );
+    const boundary = only(result, 'boundaryEvent');
+    expect(boundary.id).toBe(makeBoundaryEventId('B', 'cancel', new Set()));
+    expect(boundary.attachedToRef).toBe('B');
+    expect(boundary.eventDefinition).toEqual({ kind: 'cancel' });
+  });
+
   it('resolves a goto out of the body onto a main-flow node as a real flow', async () => {
     const result = await afterA(
       `        service B { class = "x.B" }
@@ -1321,7 +1508,7 @@ describe('astToIr — hosted-handler lowering', () => {
     );
   });
 
-  it('still yields boundary → end for an empty body', async () => {
+  it('still yields boundary -> end for an empty body', async () => {
     const result = await afterA('on A: error "PF" { }');
     const boundaryId = makeBoundaryEventId('A', 'error', new Set());
     const endId = makeEndEventId(boundaryId, new Set());
@@ -1453,7 +1640,7 @@ const throwChain = (statement: string): Promise<BpmnProcess> =>
     `,
   );
 
-describe('astToIr — throw/emit lowering', () => {
+describe('astToIr: throw/emit lowering', () => {
   it.each([
     [
       'lowers `throw` to a typed end event with no fall-through',
@@ -1478,7 +1665,7 @@ describe('astToIr — throw/emit lowering', () => {
     expect(byId(result, 'B')).toBeDefined();
   });
 
-  it('honours an explicit id on a throw', async () => {
+  it('honors an explicit id on a throw', async () => {
     const result = await ir(`process p { throw escalation Failed "X" }`);
     expect(byId(result, 'Failed').kind).toBe('endEvent');
     expect(definitionOf(result, 'Failed')).toEqual(escalationDef('X'));
@@ -1505,15 +1692,32 @@ describe('astToIr — throw/emit lowering', () => {
     expect(flow(result, emitId, 'B')).toBeDefined();
   });
 
-  it('honours an explicit id on an emit', async () => {
+  it('honors an explicit id on an emit', async () => {
     const result = await ir(`process p { emit escalation Ping "LS" }`);
     expect(byId(result, 'Ping').kind).toBe('intermediateThrowEvent');
+  });
+
+  it('lowers the implementation a thrown or emitted message carries', async () => {
+    const thrown = await ir(
+      `process p { throw message Sent "Ack" { class = "com.example.Send" } }`,
+    );
+    expect(bindingOf(thrown, 'Sent')).toEqual(classBinding('com.example.Send'));
+
+    const emitted = await ir(
+      `process p { emit message Ping "Ack" { topic = "send-ack" } }`,
+    );
+    expect(bindingOf(emitted, 'Ping')).toEqual(externalBinding('send-ack'));
+  });
+
+  it('lowers a message throw with no implementation with no binding key', async () => {
+    const result = await ir(`process p { throw message Sent "Ack" }`);
+    expect(Object.keys(byId(result, 'Sent'))).not.toContain('binding');
   });
 });
 
 // ── 17. Error-message declarations ───────────────────────────────────────────
 
-describe('astToIr — error-message declarations', () => {
+describe('astToIr: error-message declarations', () => {
   it('collects declarations in order', async () => {
     const result = await ir(
       `process p {
@@ -1547,7 +1751,7 @@ describe('astToIr — error-message declarations', () => {
 
 // ── 18. Totality under mis-placed / unknown-word constructs ──────────────────
 
-describe('astToIr — handler/throw/emit totality', () => {
+describe('astToIr: handler/throw/emit totality', () => {
   it('keeps the chain intact around a mid-body handler', async () => {
     const result = await afterA(
       `        on error "X" { service R { class = "x.R" } }
@@ -1604,7 +1808,7 @@ describe('astToIr — handler/throw/emit totality', () => {
 
 // ── 19. message / signal handler triggers ────────────────────────────────────
 
-describe('astToIr — message/signal handler triggers', () => {
+describe('astToIr: message/signal handler triggers', () => {
   it('lowers `on message` to a message event definition; the chain bypasses the handler', async () => {
     const result = await afterA(
       `        on message "PaymentReceived" { service R { class = "x.R" } }
@@ -1616,7 +1820,7 @@ describe('astToIr — message/signal handler triggers', () => {
     expect(flow(result, 'A', 'B')).toBeDefined();
   });
 
-  it('lowers `on signal … alongside` to a signal event definition with isInterrupting false', async () => {
+  it('lowers `on signal ... alongside` to a signal event definition with isInterrupting false', async () => {
     const result = await ir(`process p { on signal "X" alongside { } }`);
     const start = handlerStart(result, 'p_0');
     expect(start.eventDefinition).toEqual(signalDef('X'));
@@ -1626,9 +1830,9 @@ describe('astToIr — message/signal handler triggers', () => {
 
 // ── 20. timer / condition handler triggers ───────────────────────────────────
 
-describe('astToIr — timer and condition handler triggers', () => {
+describe('astToIr: timer and condition handler triggers', () => {
   // Each timer particle maps to its BPMN timerKind with the expression carried
-  // verbatim; a parsed condition renders to its ${…} body and a raw template
+  // verbatim; a parsed condition renders to its ${...} body and a raw template
   // survives untouched.
   it.each([
     [`process p { on timer after "PT1H" { } }`, timerDef('duration', 'PT1H')],
@@ -1658,7 +1862,7 @@ describe('astToIr — timer and condition handler triggers', () => {
 
 // ── 22. Totality of the new triggers ─────────────────────────────────────────
 
-describe('astToIr — new-trigger totality', () => {
+describe('astToIr: new-trigger totality', () => {
   // Every under-specified handler lowers without throwing; bindings on a
   // message handler are ignored, and an unknown trigger carrying a
   // particle/time payload falls back to a bare error definition.
@@ -1677,7 +1881,7 @@ describe('astToIr — new-trigger totality', () => {
 
   // throw/emit stay total for trigger words outside their new special case.
   it.each([
-    [`process p { emit message "X" }`, escalationDef('X')],
+    [`process p { emit message "X" }`, messageDef('X')],
     [`process p { throw timer "X" }`, errorDef('X')],
   ])('%s', async (source, expected) => {
     expect(definitionOf(await ir(source), makeThrowEventId('p_0'))).toEqual(
@@ -1688,7 +1892,7 @@ describe('astToIr — new-trigger totality', () => {
 
 // ── 23. New-trigger composition (nested coordinates) ─────────────────────────
 
-describe('astToIr — new-trigger composition (nested coordinates)', () => {
+describe('astToIr: new-trigger composition (nested coordinates)', () => {
   it('a timer handler inside a subprocess roots its coordinate at the subprocess body', async () => {
     const result = await ir(
       `process p {
@@ -1718,7 +1922,7 @@ describe('astToIr — new-trigger composition (nested coordinates)', () => {
 
 // ── 24. compensation trigger ─────────────────────────────────────────────────
 
-describe('astToIr — compensation handler lowering', () => {
+describe('astToIr: compensation handler lowering', () => {
   it('lowers a compensation handler out of the sequence chain inside a subprocess', async () => {
     const result = await ir(
       `process p {
@@ -1745,7 +1949,7 @@ describe('astToIr — compensation handler lowering', () => {
     expect(start.isInterrupting).toBeUndefined();
   });
 
-  it('honours an explicit start as the trigger-carrying start', async () => {
+  it('honors an explicit start as the trigger-carrying start', async () => {
     const result = await ir(
       `process p {
         on compensation { start In "Undo" service R { class = "x.R" } }
@@ -1763,7 +1967,7 @@ describe('astToIr — compensation handler lowering', () => {
     expect(start.eventDefinition).toEqual({ kind: 'compensation' });
   });
 
-  it('synthesizes start(def) → flow → end for an empty handler body (validator owns placement)', async () => {
+  it('synthesizes start(def) -> flow -> end for an empty handler body (validator owns placement)', async () => {
     const result = await ir(`process p { on compensation { } }`);
     const handlerId = makeEventSubProcessId('p_0');
     const handler = subProcess(result, handlerId);
@@ -1787,7 +1991,7 @@ describe('astToIr — compensation handler lowering', () => {
   });
 });
 
-describe('astToIr — compensation throw/emit lowering', () => {
+describe('astToIr: compensation throw/emit lowering', () => {
   it('lowers `throw compensation` to a typed end event with no fall-through', async () => {
     const result = await throwChain('throw compensation');
     const throwId = makeThrowEventId('p_1');
@@ -1852,7 +2056,7 @@ describe('astToIr — compensation throw/emit lowering', () => {
   });
 });
 
-describe('astToIr — compensation coordinate composition', () => {
+describe('astToIr: compensation coordinate composition', () => {
   it('composes coordinates when a compensation handler and an if are siblings inside a subprocess', async () => {
     const result = await ir(
       `process p {
@@ -1876,7 +2080,7 @@ describe('astToIr — compensation coordinate composition', () => {
 
 // ── 25. await -> intermediate catch lowering ─────────────────────────────────
 
-describe('astToIr — await intermediate catch lowering', () => {
+describe('astToIr: await intermediate catch lowering', () => {
   it('lowers `await message` to an intermediate catch wired into the chain', async () => {
     const result = await throwChain('await message "M"');
     const catchId = makeIntermediateCatchEventId('p_1');
@@ -1925,7 +2129,7 @@ describe('astToIr — await intermediate catch lowering', () => {
 
 // ── 26. Engine attributes reach every attrs-bearing statement kind ──────────
 
-describe('astToIr — engine attributes (asyncBefore/asyncAfter/exclusive/jobPriority/retryCycle)', () => {
+describe('astToIr: engine attributes (asyncBefore/asyncAfter/exclusive/jobPriority/retryCycle)', () => {
   const ENGINE_MEMBERS =
     'asyncBefore = true asyncAfter = true exclusive = false jobPriority = 50 retryCycle = "PT5M"';
   const ENGINE_BLOCK = `{ ${ENGINE_MEMBERS} }`;
@@ -2000,7 +2204,7 @@ describe('astToIr — engine attributes (asyncBefore/asyncAfter/exclusive/jobPri
 
 // ── 26b. Every optional field is absent, not empty, when unauthored ─────────
 
-describe('astToIr — an unauthored optional field is absent, never empty', () => {
+describe('astToIr: an unauthored optional field is absent, never empty', () => {
   it('writes no assignment attribute, no parameter list, no listener list, no resultVariable', async () => {
     const result = await ir(
       'process p { user T service Sv { class = "x.S" } script Sc { } ```js\nx = 1;\n``` }',
@@ -2022,7 +2226,7 @@ describe('astToIr — an unauthored optional field is absent, never empty', () =
 
 // ── 27. Boolean engine flags store only their non-default value ─────────────
 
-describe('astToIr — boolean engine flags store only their non-default value', () => {
+describe('astToIr: boolean engine flags store only their non-default value', () => {
   it.each([
     ['asyncBefore', true],
     ['asyncAfter', true],
@@ -2045,7 +2249,7 @@ describe('astToIr — boolean engine flags store only their non-default value', 
 
 // ── 28. jobPriority/priority numeric-or-EL reading ───────────────────────────
 
-describe('astToIr — jobPriority/priority numeric-or-EL reading', () => {
+describe('astToIr: jobPriority/priority numeric-or-EL reading', () => {
   it('reads an int literal, a string literal and a ${...} template as bare text', async () => {
     const jobPriority = async (written: string) =>
       only(
@@ -2067,7 +2271,7 @@ describe('astToIr — jobPriority/priority numeric-or-EL reading', () => {
 
 // ── 29. User task assignment attributes and service/script resultVariable ───
 
-describe('astToIr — user task assignment attributes', () => {
+describe('astToIr: user task assignment attributes', () => {
   it('maps candidateGroups/candidateUsers/dueDate/followUpDate/priority verbatim', async () => {
     const result = await ir(
       `process p { user T {
@@ -2087,7 +2291,7 @@ describe('astToIr — user task assignment attributes', () => {
   });
 });
 
-describe('astToIr — resultVariable on service/script tasks', () => {
+describe('astToIr: resultVariable on service/script tasks', () => {
   it('maps a resultVariable on both the service task and the script task', async () => {
     const result = await ir(
       'process p { service Sv { class = "x.S" resultVariable = "outcome" } script Sc { resultVariable = "total" } ```js\nx = 1;\n``` }',
@@ -2099,7 +2303,7 @@ describe('astToIr — resultVariable on service/script tasks', () => {
 
 // ── 30. Process versionTag header declaration ────────────────────────────────
 
-describe('astToIr — process versionTag', () => {
+describe('astToIr: process versionTag', () => {
   it('omits versionTag when the header carries none', async () => {
     const result = await ir('process p { user A }');
     expect(result.versionTag).toBeUndefined();
@@ -2123,7 +2327,7 @@ describe('astToIr — process versionTag', () => {
 
 // ── 31. Engine attributes on `on` handlers, placed by host slot ─────────────
 
-describe('astToIr — engine attributes on `on` handlers, placed by host slot', () => {
+describe('astToIr: engine attributes on `on` handlers, placed by host slot', () => {
   it("places a host-less handler's engine attributes on the event sub-process node, never on its trigger start event", async () => {
     const result = await afterA(
       'on error "PF" { asyncBefore = true jobPriority = 50 } { service R { class = "x.R" } }',
@@ -2167,7 +2371,7 @@ describe('astToIr — engine attributes on `on` handlers, placed by host slot', 
 
 // ── 32. Input/output parameter value forms ───────────────────────────────────
 
-describe('astToIr — input/output parameter value forms', () => {
+describe('astToIr: input/output parameter value forms', () => {
   /** The single input parameter of the process's only user task. */
   async function firstInput(source: string) {
     const result = await ir(source);
@@ -2229,7 +2433,7 @@ describe('astToIr — input/output parameter value forms', () => {
 
 // ── 33. Parameter partition, ordering, and hosts ─────────────────────────────
 
-describe('astToIr — input/output parameter partition and ordering', () => {
+describe('astToIr: input/output parameter partition and ordering', () => {
   it('partitions by direction, preserving each direction relative source order', async () => {
     const result = await ir(
       `process p { user T {
@@ -2283,7 +2487,7 @@ describe('astToIr — input/output parameter partition and ordering', () => {
 
 // ── 34. Execution listeners ──────────────────────────────────────────────────
 
-describe('astToIr — execution listeners', () => {
+describe('astToIr: execution listeners', () => {
   /** The single execution listener of the process's only service task. */
   async function firstListener(source: string) {
     const result = await ir(source);
@@ -2394,7 +2598,7 @@ describe('astToIr — execution listeners', () => {
 
 // ── 35. Task listeners ───────────────────────────────────────────────────────
 
-describe('astToIr — task listeners', () => {
+describe('astToIr: task listeners', () => {
   it('splits the task lifecycle events off the execution listeners', async () => {
     const result = await ir(
       `process p { user T {
@@ -2493,11 +2697,228 @@ describe('astToIr — task listeners', () => {
   });
 });
 
+// ── 36. Start/end triggers and message throw/emit ────────────────────────────
+
+describe('astToIr: start/end triggers and message throw/emit', () => {
+  it('lowers a message start to a message event definition', async () => {
+    const result = await ir(`process p { start S message "OrderReceived" }`);
+    expect(only(result, 'startEvent').eventDefinition).toEqual(
+      messageDef('OrderReceived'),
+    );
+  });
+
+  it('lowers a signal start to a signal event definition', async () => {
+    const result = await ir(`process p { start S signal "Fired" }`);
+    expect(only(result, 'startEvent').eventDefinition).toEqual(
+      signalDef('Fired'),
+    );
+  });
+
+  it.each([
+    [`start S timer after "PT1H"`, timerDef('duration', 'PT1H')],
+    [
+      `start S timer at "2026-08-01T09:00:00"`,
+      timerDef('date', '2026-08-01T09:00:00'),
+    ],
+    [`start S timer every "R/PT10M"`, timerDef('cycle', 'R/PT10M')],
+  ])('lowers a timer start: %s', async (statement, expected) => {
+    const result = await ir(`process p { ${statement} }`);
+    expect(only(result, 'startEvent').eventDefinition).toEqual(expected);
+  });
+
+  it('keeps a start label beside its trigger', async () => {
+    const result = await ir(`process p { start S "Scheduled" message "M" }`);
+    const start = only(result, 'startEvent');
+    expect(start.name).toBe('Scheduled');
+    expect(start.eventDefinition).toEqual(messageDef('M'));
+  });
+
+  it('lowers a plain start with no eventDefinition key', async () => {
+    const result = await ir(`process p { start S user A end E }`);
+    expect(Object.keys(only(result, 'startEvent'))).not.toContain(
+      'eventDefinition',
+    );
+  });
+
+  it('lowers a start trigger it does not take with no eventDefinition key', async () => {
+    const result = await ir(`process p { start S condition user A end E }`);
+    expect(Object.keys(only(result, 'startEvent'))).not.toContain(
+      'eventDefinition',
+    );
+  });
+
+  it('lowers a terminate end to a terminate event definition', async () => {
+    const result = await ir(`process p { start S user A end E terminate }`);
+    expect(only(result, 'endEvent').eventDefinition).toEqual({
+      kind: 'terminate',
+    });
+  });
+
+  it('keeps a terminate end label', async () => {
+    const result = await ir(
+      `process p { start S user A end E "All stop" terminate }`,
+    );
+    const end = only(result, 'endEvent');
+    expect(end.name).toBe('All stop');
+    expect(end.eventDefinition).toEqual({ kind: 'terminate' });
+  });
+
+  it('lowers a cancel end to a cancel event definition, keeping its label', async () => {
+    const block = subProcess(
+      await ir(
+        `process p { attempt B { end E "Give up the booking" cancel } }`,
+      ),
+      'B',
+    );
+    const end = only(block, 'endEvent');
+    expect(end.name).toBe('Give up the booking');
+    expect(end.eventDefinition).toEqual({ kind: 'cancel' });
+  });
+
+  it('lowers an end trigger it does not carry with no eventDefinition key', async () => {
+    const result = await ir(
+      `process p { start S user A end E escalation "Late" }`,
+    );
+    expect(Object.keys(only(result, 'endEvent'))).not.toContain(
+      'eventDefinition',
+    );
+  });
+
+  it('lowers a plain end with no eventDefinition key', async () => {
+    const result = await ir(`process p { start S user A end E }`);
+    expect(Object.keys(only(result, 'endEvent'))).not.toContain(
+      'eventDefinition',
+    );
+  });
+
+  it('lowers `throw message` to a typed end event carrying the id', async () => {
+    const result = await throwChain('throw message Sent "Ack"');
+    expect(byId(result, 'Sent').kind).toBe('endEvent');
+    expect(definitionOf(result, 'Sent')).toEqual(messageDef('Ack'));
+  });
+
+  it('keeps a start trigger alongside its form fields', async () => {
+    const result = await ir(
+      `process p { start S message "M" { form { amount: number } } }`,
+    );
+    const start = only(result, 'startEvent');
+    expect(start.eventDefinition).toEqual(messageDef('M'));
+    expect(start.formFields).toEqual([{ id: 'amount', type: 'number' }]);
+  });
+});
+
+// ── 37. Repeat clause lowering ───────────────────────────────────────────────
+
+describe('astToIr: repeat clause', () => {
+  /** The loop of the one activity a statement lowers to, named `X` throughout. */
+  const loopOf = async (
+    statement: string,
+  ): Promise<LoopCharacteristics | undefined> =>
+    (byId(await ir(`process P { ${statement} }`), 'X') as Repeatable).loop;
+
+  it('a bound element variable and its collection lower to those two keys and no other', async () => {
+    expect(await loopOf('user X for each line in lines')).toEqual({
+      collection: 'lines',
+      elementVariable: 'line',
+    });
+  });
+
+  it('an unbound collection lowers with no elementVariable key at all', async () => {
+    const loop = await loopOf('user X for each in lines');
+    expect(loop).toEqual({ collection: 'lines' });
+    expect('elementVariable' in loop!).toBe(false);
+  });
+
+  // A bare name and a quoted name both name a variable to Operaton; every other
+  // spelling has to become an expression or it names a variable nobody declared.
+  it.each([
+    ['a bare name stays a name', 'for each line in lines', 'lines'],
+    [
+      'a quoted name stays a name',
+      'for each line in "order.lines"',
+      'order.lines',
+    ],
+    [
+      'an accessor becomes an expression',
+      'for each line in order.lines',
+      '${order.lines}',
+    ],
+    [
+      'a raw body stays an expression',
+      'for each line in "${order.lines}"',
+      '${order.lines}',
+    ],
+  ])('%s', async (_title, clause, collection) => {
+    expect((await loopOf(`user X ${clause}`))?.collection).toBe(collection);
+  });
+
+  // Only a whole number prints bare again, so only a whole number may lower
+  // bare: a decimal has no fixed point, and a quoted count is a JUEL string
+  // literal rather than the plain text an attribute value would carry.
+  it.each([
+    ['a literal count emits its digits', 'for 3', '3'],
+    ['a decimal is wrapped', 'for 3.5', '${3.5}'],
+    ['a quoted count is wrapped', 'for "order.lines"', '${"order.lines"}'],
+    ['a raw body emits its expression', 'for "${n}"', '${n}'],
+    ['anything else is wrapped', 'for (n)', '${(n)}'],
+  ])('%s', async (_title, clause, cardinality) => {
+    expect((await loopOf(`user X ${clause}`))?.cardinality).toBe(cardinality);
+  });
+
+  it('a count and a collection together lower to both', async () => {
+    expect(await loopOf('step X for 2 each line in lines')).toEqual({
+      cardinality: '2',
+      collection: 'lines',
+      elementVariable: 'line',
+    });
+  });
+
+  it('sequentially lowers to sequential: true and its absence leaves the key out', async () => {
+    expect(await loopOf('user X for 2 sequentially')).toEqual({
+      cardinality: '2',
+      sequential: true,
+    });
+    expect('sequential' in (await loopOf('user X for 2'))!).toBe(false);
+  });
+
+  it('until lowers to the completion condition as an expression body', async () => {
+    expect(
+      await loopOf('user X for 2 until (nrOfCompletedInstances >= 2)'),
+    ).toEqual({
+      cardinality: '2',
+      completionCondition: '${nrOfCompletedInstances >= 2}',
+    });
+  });
+
+  it.each([
+    ['user', 'user X for 2'],
+    ['service', 'service X for 2 { class = "c" }'],
+    ['script', 'script X for 2 ```js\nx = 1;\n```'],
+    ['step', 'step X for 2'],
+    ['send', 'send X for 2 { class = "c" }'],
+    ['receive', 'receive X for 2'],
+    ['decide', 'decide X for 2 { decision = "d" }'],
+    ['subprocess', 'subprocess X for 2 { step Q }'],
+    ['call', 'call X for 2 { process = "p" }'],
+  ])('a repeated %s carries the loop into the IR', async (_kind, statement) => {
+    expect(await loopOf(statement)).toEqual({ cardinality: '2' });
+  });
+
+  it('a statement with no clause lowers with no loop key at all', async () => {
+    expect('loop' in byId(await ir('process P { user X }'), 'X')).toBe(false);
+  });
+});
+
 // ── Local helpers ────────────────────────────────────────────────────────────
 
 /** The event definition carried by the flow element with the given id. */
 function definitionOf(container: FlowContainer, id: string): unknown {
   return (byId(container, id) as { eventDefinition?: unknown }).eventDefinition;
+}
+
+/** The execution binding carried by the flow element with the given id. */
+function bindingOf(container: FlowContainer, id: string): unknown {
+  return (byId(container, id) as { binding?: unknown }).binding;
 }
 
 /** Stable sort an array of objects by their `id` field for set comparison. */

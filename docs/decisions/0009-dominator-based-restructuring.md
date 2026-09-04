@@ -23,20 +23,20 @@ How should `irToDsl` identify which subgraphs can be expressed as `if`/`while`/`
 
 ## Considered Options
 
-- Dominator/post-dominator analysis with a fixed pattern catalogue and `goto` fallback
+- Dominator/post-dominator analysis with a fixed pattern catalog and `goto` fallback
 - RPST (Refined Program Structure Tree) decomposition
 - Ad-hoc recursive pattern matching without formal CFG analysis
 
 ## Decision Outcome
 
-Chosen option: "Dominator/post-dominator analysis with a fixed pattern catalogue and `goto` fallback".
-Dominator analysis gives a mechanically checkable criterion for each structured construct, and most edges the catalogue cannot fold degrade to `goto`.
+Chosen option: "Dominator/post-dominator analysis with a fixed pattern catalog and `goto` fallback".
+Dominator analysis gives a mechanically checkable criterion for each structured construct, and most edges the catalog cannot fold degrade to `goto`.
 Two kinds have no `goto` form at all.
 An edge arriving at a gateway that still chooses between branches cannot be named, because a `goto` names a statement and a gateway has none, so the jump is only expressible through the gateway's successor and only while the routing has a single outcome.
 A surplus out-edge cannot be placed, because a statement carries exactly one fall-through and a jump written beside it would cut that fall-through off.
 Such an edge is dropped, a marker comment is printed where it would have gone naming the element it led into, and the CLI reports the marker as a warning.
 
-The pattern catalogue:
+The pattern catalog:
 
 - XOR split with a post-dominating join -> `if`/`else if`/`else`
 - Back-edge from body-exit to a dominating XOR head -> `while` (unconditioned back-edge) or `do...while` (conditioned back-edge)
@@ -64,4 +64,4 @@ The CFG analysis utility lives at `packages/transform/src/cfg-analysis.ts` and e
 `VIRTUAL_ENTRY` and `VIRTUAL_EXIT` constants give the dominator algorithm a unique single entry and exit.
 
 RPST decomposition is left for later.
-It would recover more structured patterns, but the dominator-based catalogue with a `goto` fallback already covers the current scope, so the added machinery is not yet justified.
+It would recover more structured patterns, but the dominator-based catalog with a `goto` fallback already covers the current scope, so the added machinery is not yet justified.

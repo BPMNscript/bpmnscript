@@ -1,4 +1,4 @@
-// Purchasing — starts a purchase request and delegates the invoice sign-off
+// Purchasing: starts a purchase request and delegates the invoice sign-off
 // to the existing `invoice-approval` process (see invoice-approval.bpmnscript)
 // through a `call` activity, passing the order amount in and reading the
 // auto-approval flag (set by that process when the invoice clears without a

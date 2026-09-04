@@ -19,7 +19,7 @@ SRC_DIR="processes"
 OUT_DIR="src/main/resources/processes"
 
 if [[ ! -f "$CLI" ]]; then
-  echo "error: CLI not found at $CLI — run 'npm run build' from the repo root first." >&2
+  echo "error: CLI not found at $CLI; run 'npm run build' from the repo root first." >&2
   exit 1
 fi
 

@@ -74,7 +74,12 @@
     },
     {
       "name": "ServiceTaskLike",
-      "extends": ["bpmn:ServiceTask"],
+      "extends": [
+        "bpmn:ServiceTask",
+        "bpmn:SendTask",
+        "bpmn:BusinessRuleTask",
+        "bpmn:MessageEventDefinition"
+      ],
       "properties": [
         {
           "name": "class",
@@ -109,6 +114,32 @@
       ]
     },
     {
+      "name": "DmnCapable",
+      "extends": ["bpmn:BusinessRuleTask"],
+      "properties": [
+        {
+          "name": "decisionRef",
+          "isAttr": true,
+          "type": "String"
+        },
+        {
+          "name": "decisionRefBinding",
+          "isAttr": true,
+          "type": "String"
+        },
+        {
+          "name": "decisionRefVersion",
+          "isAttr": true,
+          "type": "String"
+        },
+        {
+          "name": "mapDecisionResult",
+          "isAttr": true,
+          "type": "String"
+        }
+      ]
+    },
+    {
       "name": "CallActivityLike",
       "extends": ["bpmn:CallActivity"],
       "properties": [
@@ -119,6 +150,23 @@
         },
         {
           "name": "calledElementVersion",
+          "isAttr": true,
+          "type": "String"
+        }
+      ]
+    },
+    {
+      "name": "Collectable",
+      "isAbstract": true,
+      "extends": ["bpmn:MultiInstanceLoopCharacteristics"],
+      "properties": [
+        {
+          "name": "collection",
+          "isAttr": true,
+          "type": "String"
+        },
+        {
+          "name": "elementVariable",
           "isAttr": true,
           "type": "String"
         }
@@ -363,6 +411,20 @@
           "name": "eventDefinitions",
           "type": "bpmn:TimerEventDefinition",
           "isMany": true
+        }
+      ]
+    },
+    {
+      "name": "Connector",
+      "superClass": ["Element"],
+      "properties": [
+        {
+          "name": "connectorId",
+          "type": "String"
+        },
+        {
+          "name": "inputOutput",
+          "type": "InputOutput"
         }
       ]
     },

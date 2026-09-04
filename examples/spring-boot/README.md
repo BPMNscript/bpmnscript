@@ -39,12 +39,17 @@ docker stop bpmnscript-invoice && docker rm bpmnscript-invoice
 
 ## REST endpoints the testcontainers harness uses
 
+The deployment and lifecycle calls the fixture adapter makes:
+
 | Method | Path                                              | Purpose                                                          |
 | ------ | ------------------------------------------------- | ---------------------------------------------------------------- |
 | `GET`  | `/engine-rest/engine`                             | Health check; returns 200 with `[{"name":"default"}]` when ready |
 | `POST` | `/engine-rest/deployment/create`                  | Deploy a BPMN XML file (multipart/form-data)                     |
 | `POST` | `/engine-rest/process-definition/key/{key}/start` | Start a process instance by definition key                       |
 | `GET`  | `/engine-rest/task?processInstanceId={id}`        | List active user tasks for a process instance                    |
+| `POST` | `/engine-rest/task/{id}/complete`                 | Complete a user task, optionally setting variables               |
+
+The assertions reach further into the same API through `tests/helpers/engine-rest.ts`: message correlation and signal broadcast, event subscriptions, a process instance's liveness, jobs, and the two history endpoints.
 
 ## Admin credentials
 
@@ -154,7 +159,7 @@ Some telling inputs:
 
 1. Write a `.bpmnscript` and drop it in [`processes/`](processes).
 2. For a service task that only needs to run and continue, point it at the generic delegate: `service DoThing "Do thing" { class = "com.example.demo.LogDelegate" }`.
-   For real behaviour, such as setting variables or branching, add a `JavaDelegate` under `src/main/java/` and reference its class instead; the [`com.example.loan`](src/main/java/com/example/loan) delegates are the model.
+   For real behavior, such as setting variables or branching, add a `JavaDelegate` under `src/main/java/` and reference its class instead; the [`com.example.loan`](src/main/java/com/example/loan) delegates are the model.
 3. Recompile (step 2) and restart the engine (step 3), and the new process shows up in Cockpit and Tasklist.
 
 ## Configuration notes

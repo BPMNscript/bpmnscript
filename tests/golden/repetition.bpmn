@@ -1,0 +1,167 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI" xmlns:dc="http://www.omg.org/spec/DD/20100524/DC" xmlns:di="http://www.omg.org/spec/DD/20100524/DI" xmlns:operaton="http://operaton.org/schema/1.0/bpmn" id="Definitions_order-fulfilment" targetNamespace="http://bpmnscript.io/processes" exporter="BPMNscript" exporterVersion="0.0.0">
+  <bpmn:process id="order-fulfilment" name="Order Fulfilment" isExecutable="true" operaton:historyTimeToLive="P30D">
+    <bpmn:startEvent id="OrderReceived">
+      <bpmn:outgoing>Flow_OrderReceived_ApproveLines</bpmn:outgoing>
+    </bpmn:startEvent>
+    <bpmn:userTask id="ApproveLines" name="Approve the order lines" operaton:assignee="demo">
+      <bpmn:incoming>Flow_OrderReceived_ApproveLines</bpmn:incoming>
+      <bpmn:outgoing>Flow_ApproveLines_ReserveStock</bpmn:outgoing>
+      <bpmn:multiInstanceLoopCharacteristics operaton:collection="approvers" operaton:elementVariable="approver" />
+    </bpmn:userTask>
+    <bpmn:serviceTask id="ReserveStock" name="Reserve the stock" operaton:class="com.example.orders.ReserveStockDelegate">
+      <bpmn:incoming>Flow_ApproveLines_ReserveStock</bpmn:incoming>
+      <bpmn:outgoing>Flow_ReserveStock_WarmPricing</bpmn:outgoing>
+      <bpmn:multiInstanceLoopCharacteristics isSequential="true" operaton:collection="${order.lines}" operaton:elementVariable="line">
+        <bpmn:completionCondition xsi:type="bpmn:tFormalExpression">${nrOfCompletedInstances &gt;= 2}</bpmn:completionCondition>
+      </bpmn:multiInstanceLoopCharacteristics>
+    </bpmn:serviceTask>
+    <bpmn:serviceTask id="WarmPricing" name="Warm the pricing cache" operaton:class="com.example.orders.WarmPricingDelegate">
+      <bpmn:incoming>Flow_ReserveStock_WarmPricing</bpmn:incoming>
+      <bpmn:outgoing>Flow_WarmPricing_RecordLine</bpmn:outgoing>
+      <bpmn:multiInstanceLoopCharacteristics>
+        <bpmn:loopCardinality xsi:type="bpmn:tFormalExpression">3</bpmn:loopCardinality>
+      </bpmn:multiInstanceLoopCharacteristics>
+    </bpmn:serviceTask>
+    <bpmn:task id="RecordLine" name="Record each line">
+      <bpmn:incoming>Flow_WarmPricing_RecordLine</bpmn:incoming>
+      <bpmn:outgoing>Flow_RecordLine_AwaitBatch</bpmn:outgoing>
+      <bpmn:multiInstanceLoopCharacteristics operaton:collection="lines" operaton:elementVariable="line">
+        <bpmn:loopCardinality xsi:type="bpmn:tFormalExpression">2</bpmn:loopCardinality>
+      </bpmn:multiInstanceLoopCharacteristics>
+    </bpmn:task>
+    <bpmn:receiveTask id="AwaitBatch" name="Wait for each batch">
+      <bpmn:incoming>Flow_RecordLine_AwaitBatch</bpmn:incoming>
+      <bpmn:outgoing>Flow_AwaitBatch_RegionalReport</bpmn:outgoing>
+      <bpmn:multiInstanceLoopCharacteristics operaton:collection="batches" />
+    </bpmn:receiveTask>
+    <bpmn:callActivity id="RegionalReport" name="Run the regional report" calledElement="regional-report">
+      <bpmn:incoming>Flow_AwaitBatch_RegionalReport</bpmn:incoming>
+      <bpmn:outgoing>Flow_RegionalReport_LabelParcel</bpmn:outgoing>
+      <bpmn:multiInstanceLoopCharacteristics operaton:collection="regions" operaton:elementVariable="region" />
+    </bpmn:callActivity>
+    <bpmn:scriptTask id="LabelParcel" name="Label each parcel" scriptFormat="javascript" operaton:resultVariable="parcelLabel">
+      <bpmn:incoming>Flow_RegionalReport_LabelParcel</bpmn:incoming>
+      <bpmn:outgoing>Flow_LabelParcel_DispatchParcels</bpmn:outgoing>
+      <bpmn:multiInstanceLoopCharacteristics operaton:collection="parcels" operaton:elementVariable="parcel" />
+      <bpmn:script>"LBL-" + loopCounter;
+</bpmn:script>
+    </bpmn:scriptTask>
+    <bpmn:subProcess id="DispatchParcels" name="Dispatch each parcel" operaton:asyncBefore="true">
+      <bpmn:incoming>Flow_LabelParcel_DispatchParcels</bpmn:incoming>
+      <bpmn:outgoing>Flow_DispatchParcels_OrderFulfilled</bpmn:outgoing>
+      <bpmn:multiInstanceLoopCharacteristics isSequential="true" operaton:collection="parcels" operaton:elementVariable="parcel" />
+      <bpmn:startEvent id="StartEvent_DispatchParcels">
+        <bpmn:outgoing>Flow_StartEvent_DispatchParcels_HandToCarrier</bpmn:outgoing>
+      </bpmn:startEvent>
+      <bpmn:serviceTask id="HandToCarrier" name="Hand the parcel to the carrier" operaton:class="com.example.orders.HandToCarrierDelegate">
+        <bpmn:incoming>Flow_StartEvent_DispatchParcels_HandToCarrier</bpmn:incoming>
+        <bpmn:outgoing>Flow_HandToCarrier_EndEvent_DispatchParcels</bpmn:outgoing>
+      </bpmn:serviceTask>
+      <bpmn:endEvent id="EndEvent_DispatchParcels">
+        <bpmn:incoming>Flow_HandToCarrier_EndEvent_DispatchParcels</bpmn:incoming>
+      </bpmn:endEvent>
+      <bpmn:sequenceFlow id="Flow_StartEvent_DispatchParcels_HandToCarrier" sourceRef="StartEvent_DispatchParcels" targetRef="HandToCarrier" />
+      <bpmn:sequenceFlow id="Flow_HandToCarrier_EndEvent_DispatchParcels" sourceRef="HandToCarrier" targetRef="EndEvent_DispatchParcels" />
+    </bpmn:subProcess>
+    <bpmn:endEvent id="OrderFulfilled">
+      <bpmn:incoming>Flow_DispatchParcels_OrderFulfilled</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:sequenceFlow id="Flow_OrderReceived_ApproveLines" sourceRef="OrderReceived" targetRef="ApproveLines" />
+    <bpmn:sequenceFlow id="Flow_ApproveLines_ReserveStock" sourceRef="ApproveLines" targetRef="ReserveStock" />
+    <bpmn:sequenceFlow id="Flow_ReserveStock_WarmPricing" sourceRef="ReserveStock" targetRef="WarmPricing" />
+    <bpmn:sequenceFlow id="Flow_WarmPricing_RecordLine" sourceRef="WarmPricing" targetRef="RecordLine" />
+    <bpmn:sequenceFlow id="Flow_RecordLine_AwaitBatch" sourceRef="RecordLine" targetRef="AwaitBatch" />
+    <bpmn:sequenceFlow id="Flow_AwaitBatch_RegionalReport" sourceRef="AwaitBatch" targetRef="RegionalReport" />
+    <bpmn:sequenceFlow id="Flow_RegionalReport_LabelParcel" sourceRef="RegionalReport" targetRef="LabelParcel" />
+    <bpmn:sequenceFlow id="Flow_LabelParcel_DispatchParcels" sourceRef="LabelParcel" targetRef="DispatchParcels" />
+    <bpmn:sequenceFlow id="Flow_DispatchParcels_OrderFulfilled" sourceRef="DispatchParcels" targetRef="OrderFulfilled" />
+  </bpmn:process>
+  <bpmndi:BPMNDiagram id="BPMNDiagram_order-fulfilment">
+    <bpmndi:BPMNPlane id="BPMNPlane_order-fulfilment" bpmnElement="order-fulfilment">
+      <bpmndi:BPMNShape id="OrderReceived_di" bpmnElement="OrderReceived">
+        <dc:Bounds x="57" y="52" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="ApproveLines_di" bpmnElement="ApproveLines">
+        <dc:Bounds x="175" y="30" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="ReserveStock_di" bpmnElement="ReserveStock">
+        <dc:Bounds x="325" y="30" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="WarmPricing_di" bpmnElement="WarmPricing">
+        <dc:Bounds x="475" y="30" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="RecordLine_di" bpmnElement="RecordLine">
+        <dc:Bounds x="625" y="30" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="AwaitBatch_di" bpmnElement="AwaitBatch">
+        <dc:Bounds x="775" y="30" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="RegionalReport_di" bpmnElement="RegionalReport">
+        <dc:Bounds x="925" y="30" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="LabelParcel_di" bpmnElement="LabelParcel">
+        <dc:Bounds x="1075" y="30" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="DispatchParcels_di" bpmnElement="DispatchParcels" isExpanded="true">
+        <dc:Bounds x="1225" y="30" width="550" height="220" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="OrderFulfilled_di" bpmnElement="OrderFulfilled">
+        <dc:Bounds x="1857" y="52" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_OrderReceived_ApproveLines_di" bpmnElement="Flow_OrderReceived_ApproveLines">
+        <di:waypoint x="93" y="70" />
+        <di:waypoint x="175" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ApproveLines_ReserveStock_di" bpmnElement="Flow_ApproveLines_ReserveStock">
+        <di:waypoint x="275" y="70" />
+        <di:waypoint x="325" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ReserveStock_WarmPricing_di" bpmnElement="Flow_ReserveStock_WarmPricing">
+        <di:waypoint x="425" y="70" />
+        <di:waypoint x="475" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_WarmPricing_RecordLine_di" bpmnElement="Flow_WarmPricing_RecordLine">
+        <di:waypoint x="575" y="70" />
+        <di:waypoint x="625" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_RecordLine_AwaitBatch_di" bpmnElement="Flow_RecordLine_AwaitBatch">
+        <di:waypoint x="725" y="70" />
+        <di:waypoint x="775" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_AwaitBatch_RegionalReport_di" bpmnElement="Flow_AwaitBatch_RegionalReport">
+        <di:waypoint x="875" y="70" />
+        <di:waypoint x="925" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_RegionalReport_LabelParcel_di" bpmnElement="Flow_RegionalReport_LabelParcel">
+        <di:waypoint x="1025" y="70" />
+        <di:waypoint x="1075" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_LabelParcel_DispatchParcels_di" bpmnElement="Flow_LabelParcel_DispatchParcels">
+        <di:waypoint x="1175" y="70" />
+        <di:waypoint x="1225" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_DispatchParcels_OrderFulfilled_di" bpmnElement="Flow_DispatchParcels_OrderFulfilled">
+        <di:waypoint x="1775" y="70" />
+        <di:waypoint x="1857" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNShape id="StartEvent_DispatchParcels_di" bpmnElement="StartEvent_DispatchParcels">
+        <dc:Bounds x="1332" y="122" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="HandToCarrier_di" bpmnElement="HandToCarrier">
+        <dc:Bounds x="1450" y="100" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="EndEvent_DispatchParcels_di" bpmnElement="EndEvent_DispatchParcels">
+        <dc:Bounds x="1632" y="122" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_StartEvent_DispatchParcels_HandToCarrier_di" bpmnElement="Flow_StartEvent_DispatchParcels_HandToCarrier">
+        <di:waypoint x="1368" y="140" />
+        <di:waypoint x="1450" y="140" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_HandToCarrier_EndEvent_DispatchParcels_di" bpmnElement="Flow_HandToCarrier_EndEvent_DispatchParcels">
+        <di:waypoint x="1550" y="140" />
+        <di:waypoint x="1632" y="140" />
+      </bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>

@@ -19,16 +19,17 @@
     "clean": "shx rm -fr *.tsbuildinfo out",
     "build": "tsc -p tsconfig.json",
     "build:clean": "npm run clean && npm run build",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "typecheck": "tsc -b tsconfig.test.json",
     "test": "vitest run"
   },
   "dependencies": {
     "@bpmn-script/transform": "*",
     "@bpmn-script/language": "0.0.1",
     "chalk": "^5.3.0",
-    "commander": "^15.0.0"
+    "commander": "^15.0.0",
+    "langium": "^4.3.1"
   },
   "devDependencies": {
-    "vitest": "^4.1.11"
+    "vitest": "^4.1.10"
   }
 }

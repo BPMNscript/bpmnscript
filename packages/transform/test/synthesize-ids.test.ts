@@ -172,11 +172,11 @@ describe('resolveCollision', () => {
     expect(resolveCollision('A', new Set(['B', 'C']))).toBe('A');
   });
 
-  it("appends _2 when base is taken: {'A'} + 'A' → 'A_2'", () => {
+  it("appends _2 when base is taken: {'A'} + 'A' -> 'A_2'", () => {
     expect(resolveCollision('A', new Set(['A']))).toBe('A_2');
   });
 
-  it("appends _3 when base and _2 are taken: {'A','A_2'} + 'A' → 'A_3'", () => {
+  it("appends _3 when base and _2 are taken: {'A','A_2'} + 'A' -> 'A_3'", () => {
     expect(resolveCollision('A', new Set(['A', 'A_2']))).toBe('A_3');
   });
 
@@ -197,7 +197,7 @@ describe('resolveCollision', () => {
 // Plain sequence-flow convention (regression guard for the collision rule)
 // ---------------------------------------------------------------------------
 
-describe('makeSequenceFlowId — plain sequence-flow convention', () => {
+describe('makeSequenceFlowId: plain sequence-flow convention', () => {
   it('first occurrence: Flow_<src>_<tgt>', () => {
     const taken = new Set<string>();
     expect(makeSequenceFlowId('ReviewInvoice', 'AmountCheck', taken)).toBe(

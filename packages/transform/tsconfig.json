@@ -4,5 +4,6 @@
     "rootDir": "src",
     "outDir": "out"
   },
+  "references": [{ "path": "../language/tsconfig.src.json" }],
   "include": ["src/**/*.ts"]
 }

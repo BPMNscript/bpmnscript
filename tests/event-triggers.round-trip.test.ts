@@ -1,6 +1,6 @@
 // Why the restructured DSL is asserted validator-clean: the fixture avoids the
 // early-exit-inside-`if` shape that degrades a jump into a goto onto an unnamed
-// synthesised join, and every throw and emit is named, so the printer emits the
+// synthesized join, and every throw and emit is named, so the printer emits the
 // authored id instead of a `Throw_<coord>` one that trips the reserved-name check.
 
 import { describe, it, expect, beforeAll } from 'vitest';
@@ -47,7 +47,7 @@ function timerExpressions(container: FlowContainer): string[] {
 
 // Handwritten import-first. Two `bpmn:Signal` roots share a name but are
 // referenced by different elements, one by the intermediate throw and one by the
-// end event. Every task label differs from the name humanised from its id, so
+// end event. Every task label differs from the name humanized from its id, so
 // the importer keeps it.
 const IMPORT_FIRST_BPMN = `<?xml version="1.0" encoding="UTF-8"?>
 <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:operaton="http://operaton.org/schema/1.0/bpmn" id="Definitions_import_first_triggers" targetNamespace="http://bpmn.io/schema/bpmn">
@@ -110,7 +110,7 @@ const IMPORT_FIRST_BPMN = `<?xml version="1.0" encoding="UTF-8"?>
   </bpmn:process>
 </bpmn:definitions>`;
 
-describe('idempotence: DSL → IR₁ → XML → IR₂ → DSL′ → IR₃', () => {
+describe("idempotence: DSL -> IR1 -> XML -> IR2 -> DSL' -> IR3", () => {
   it('the authored throw and emit ids survive verbatim at process level', () => {
     // `emit signal` continues the path, `throw signal` ends it.
     expect(kindOf(rt.ir3, 'Notify')).toBe('intermediateThrowEvent');

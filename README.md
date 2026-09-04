@@ -2,13 +2,17 @@
 
 Write executable business processes as text, compile to BPMN 2.0 XML, and read existing BPMN files back as text.
 
-> **Status:** a bachelor's thesis project, pre-release. It is not published to npm or the VS Code Marketplace yet, so everything below builds from source.
+> **Status:** a bachelor's thesis project, pre-release.
+> It is not published to npm or the VS Code Marketplace yet, so everything below builds from source.
 
 ## What it is
 
-BPMN 2.0 is the standard for describing a business workflow as a diagram of tasks, gateways, and events. A process engine such as [Operaton](https://operaton.org/) loads that diagram and runs it: assigning the human steps to people, calling the automated ones, waiting on timers and incoming messages. The diagram is stored as XML, and the XML is what actually gets deployed.
+BPMN 2.0 is the standard for describing a business workflow as a diagram of tasks, gateways, and events.
+A process engine such as [Operaton](https://operaton.org/) loads that diagram and runs it: assigning the human steps to people, calling the automated ones, waiting on timers and incoming messages.
+The diagram is stored as XML, and the XML is what actually gets deployed.
 
-Usually you draw it in a graphical modeler. BPMNscript gives BPMN it a textual representation:
+Usually you draw it in a graphical modeler.
+BPMNscript gives BPMN a textual representation:
 
 ```bpmnscript
 process invoice-approval {
@@ -33,8 +37,9 @@ After compiling this you get a valid BPMN 2.0 file that visualizes the workflow 
 
 Developers who'd rather work in a text editor than a diagram canvas, and who want processes to integrate in their existing code workflows like git repositories and diffs, autocompletion and compile-time error checking.
 
-You don't need to know BPMN to read or write it. The keywords are expressive on their own and not necessarily mirror the BPMN element behind it.
-It also abstracts all the modelling friction: you describe a valid workflow, and the tool will automatically generate the visual representation.
+You don't need to know BPMN to read or write it.
+The keywords are expressive on their own and do not necessarily mirror the BPMN element behind it.
+It also abstracts all the modeling friction: you describe a valid workflow, and the tool will automatically generate the visual representation.
 There is no need to manually draw lines, align items or redo the entire diagram because you changed one item and the layout doesn't make sense anymore.
 
 ## Installing
@@ -56,11 +61,13 @@ To check it worked:
 npm test
 ```
 
-The test run includes end-to-end tests that boot a real Operaton engine in Docker via [testcontainers](https://testcontainers.com/), so it needs a running Docker daemon. Without one, set `SKIP_DOCKER_TESTS=true` to skip them (CI does this automatically).
+The test run includes end-to-end tests that boot a real Operaton engine in Docker via [testcontainers](https://testcontainers.com/), so it needs a running Docker daemon.
+Without one, set `SKIP_DOCKER_TESTS=true` to skip them (CI does this automatically).
 
 ## Using the CLI
 
-The `bpmns` command has two subcommands. After a build, run it with `npx`:
+The `bpmns` command has two subcommands.
+After a build, run it with `npx`:
 
 ```sh
 # Compile .bpmnscript to BPMN 2.0 XML, next to the source file
@@ -73,11 +80,13 @@ npx bpmns build invoice-approval.bpmnscript -o out/invoice-approval.bpmn
 npx bpmns parse invoice-approval.bpmn -o invoice-approval.bpmnscript
 ```
 
-Exit codes are `0` for success, `1` for validation or parse errors, `2` for I/O errors. Both directions print non-fatal warnings to stderr without changing the exit code, so an undeclared variable reference on compile, or a dropped lane on import is warned about but still produces a file.
+Exit codes are `0` for success, `1` for validation or parse errors, `2` for I/O errors.
+Both directions print non-fatal warnings to stderr without changing the exit code, so an undeclared variable reference on compile, or a dropped lane on import is warned about but still produces a file.
 
 ## Using the VS Code extension
 
-Press <kbd>F5</kbd> from the repo root. VS Code opens a second window with the extension loaded, where `.bpmnscript` files get:
+Press <kbd>F5</kbd> from the repo root.
+VS Code opens a second window with the extension loaded, where `.bpmnscript` files get:
 
 - syntax highlighting, including inside a `script` task's fenced body, which is highlighted in its own language
 - autocompletion and hover, from the same grammar that drives the compiler
@@ -85,42 +94,56 @@ Press <kbd>F5</kbd> from the repo root. VS Code opens a second window with the e
 - a **Convert** panel in the sidebar: compile the open file, jump to its counterpart when one exists, or pick a `.bpmn` from disk to decompile
 
 Compiling and decompiling are the same two operations as `bpmns build` and `bpmns parse` above, without leaving the editor.
-Both are in the command palette too, under "BPMNscript". See [packages/extension/README.md](packages/extension/README.md) for how the pieces fit together.
+Both are in the command palette too, under "BPMNscript".
+See [packages/extension/README.md](packages/extension/README.md) for how the pieces fit together.
 
 ## The language
 
 One `process` block per file.
 Steps run top to bottom, so you never write a sequence flow; control flow is expressed with the structured statements you'd expect from a programming language.
 Every step carries an id (`user ReviewInvoice`), which is what `goto` and boundary events refer to, and which becomes the BPMN element's name (`ReviewInvoice` -> "Review Invoice") unless you give it a quoted label instead.
+"Step" is used two ways below: as the general word for any activity in the table, the way this paragraph uses it, and as `step`, one specific row naming an activity with nothing bound to it.
 
-| BPMNscript                     | What it means                                         | BPMN element                   |
-| ------------------------------ | ----------------------------------------------------- | ------------------------------ |
-| `process X { }`                | the bpmn process, one per file                        | `bpmn:process`                 |
-| `var x: number`                | declare a variable so its uses get type-checked       | none; authoring-time only      |
-| `start X` / `end X`            | where the flow begins and ends                        | start / end event              |
-| `form { x: number "Label" }`   | part of start element, pre-fills variables            | form fields on the start event |
-| `user X { assignee = "..." }`  | a step a person performs                              | user task                      |
-| `service X { class = "..." }`  | a step the system performs, in the engine             | service task                   |
-| `service X { topic = "..." }`  | a step an external worker picks up by topic           | service task, external type    |
-| `script X` + a fenced body     | an inline script, in JS, Groovy, Python, Ruby or FEEL | script task                    |
-| `if` / `else if` / `else`      | a decision                                            | exclusive gateway              |
-| `while` / `do … while`         | a loop                                                | exclusive gateway loop         |
-| `parallel { { } { } }`         | branches that run at the same time                    | parallel gateway fork and join |
-| `subprocess X { }`             | a group of steps as one unit                          | embedded sub-process           |
-| `call X { process = "other" }` | start another process and wait for it                 | call activity                  |
-| `goto X`                       | jump to a named step in the same container            | sequence flow                  |
-| `on <kind> { }`                | catch an event anywhere in this body                  | event sub-process              |
-| `on Host: <kind> { }`          | catch an event only while `Host` runs                 | boundary event                 |
-| `await <kind> …`               | stop here until the event arrives                     | intermediate catch event       |
-| `throw` / `emit <kind>`        | raise an event, ending the path or continuing         | throw event                    |
-| `asyncBefore = true`           | engine settings: async, exclusive, priority, retries  | `operaton:` attribute/element  |
-| `input x = "..."`              | data into a step's execution, and `output` back out   | `operaton:inputOutput`         |
-| `on create { class = "..." }`  | code on a step's lifecycle, not a caught event        | execution / task listener      |
+| BPMNscript                      | What it means                                         | BPMN element                   |
+| ------------------------------- | ----------------------------------------------------- | ------------------------------ |
+| `process X { }`                 | the bpmn process, one per file                        | `bpmn:process`                 |
+| `var x: number`                 | declare a variable so its uses get type-checked       | none; authoring-time only      |
+| `start X` / `end X`             | where the flow begins and ends                        | start / end event              |
+| `start X <kind> ...`            | start when an event arrives                           | start event with a trigger     |
+| `end X terminate`               | stop every running path                               | terminate end event            |
+| `end X cancel`                  | give up the block of steps around this end            | cancel end event               |
+| `form { x: number "Label" }`    | part of start element, pre-fills variables            | form fields on the start event |
+| `user X { assignee = "..." }`   | a step a person performs                              | user task                      |
+| `service X { class = "..." }`   | a step the system performs, in the engine             | service task                   |
+| `service X { topic = "..." }`   | a step an external worker picks up by topic           | service task, external type    |
+| `script X` + a fenced body      | an inline script, in JS, Groovy, Python, Ruby or FEEL | script task                    |
+| `step X`                        | a step nothing in the engine automates                | task                           |
+| `send X { class = "..." }`      | a step that sends something out                       | send task                      |
+| `receive X { message = "..." }` | wait here until that message arrives                  | receive task                   |
+| `decide X { decision = "..." }` | a step a decision table answers                       | business rule task             |
+| `if` / `else if` / `else`       | a decision                                            | exclusive gateway              |
+| `while` / `do ... while`        | a loop                                                | exclusive gateway loop         |
+| `parallel { { } { } }`          | branches that run at the same time                    | parallel gateway fork and join |
+| `subprocess X { }`              | a group of steps as one unit                          | embedded sub-process           |
+| `attempt X { }`                 | a group of steps that can be given up as one          | transaction sub-process        |
+| `call X { process = "other" }`  | start another process and wait for it                 | call activity                  |
+| `goto X`                        | jump to a named step in the same container            | sequence flow                  |
+| `on <kind> { }`                 | catch an event anywhere in this body                  | event sub-process              |
+| `on Host: <kind> { }`           | catch an event only while `Host` runs                 | boundary event                 |
+| `await <kind> ...`              | stop here until the event arrives                     | intermediate catch event       |
+| `throw` / `emit <kind>`         | raise an event, ending the path or continuing         | throw event                    |
+| `for each x in c`               | run a step once per item, or a set number of times    | multi-instance marker          |
+| `asyncBefore = true`            | engine settings: async, exclusive, priority, retries  | `operaton:` attribute/element  |
+| `input x = "..."`               | data into a step's execution, and `output` back out   | `operaton:inputOutput`         |
+| `on create { class = "..." }`   | code on a step's lifecycle, not a caught event        | execution / task listener      |
 
-The last three rows are attribute-block members rather than statements, written inside a step's `{ }` alongside a `versionTag` on the process header itself.
-Not every step takes every one.
-Every step whose `{ }` is a settings block takes the engine settings and the `on start`/`on end` execution listeners; `input`/`output` parameters are legal on user, service and script tasks, subprocesses, calls, and a host-less `on` handler; the task-listener events such as `on create` on a user task alone.
+The `for` row is a modifier rather than a statement: every activity in the table takes it between the id and the settings block, meaning `user`, `service`, `script`, `step`, `send`, `receive`, `decide`, `subprocess`, `attempt`, and `call`.
+The last three rows are attribute-block members rather than statements, written inside an element's `{ }` alongside a `versionTag` on the process header itself.
+Not every element takes every one.
+Every element whose `{ }` is a settings block takes the engine settings and the `on start`/`on end` execution listeners; `input`/`output` parameters are legal on `user`, `service`, `script`, `step`, `send`, `receive` and `decide` tasks, subprocesses, `attempt` blocks, calls, and a host-less `on` handler; the task-listener events such as `on create` on a user task alone.
 The listener row reuses `on` positionally instead of opening a new event sub-process; only the enclosing block tells the two apart ([ADR-0023](docs/decisions/0023-listeners-on-the-attribute-block.md)).
+The `attempt` head and the `cancel` end are one construct: the end gives up the block it sits in, `on <block>: cancel` beside the block catches it, and the block's finished steps that carry an undo block are undone in between.
+An `attempt` block that mentions `cancel` nowhere is an ordinary block of work.
 
 Refer to [packages/language/README.md](packages/language/README.md) for the full and up to date language specification.
 
@@ -128,9 +151,11 @@ Refer to [packages/language/README.md](packages/language/README.md) for the full
 
 The event layer reads like try/catch.
 A handler written at the end of a body catches an event raised anywhere inside it, `throw` ends the current path the way `throw` does in Java, and `emit` fires the event and carries on.
-Seven trigger kinds share that surface: error, escalation, message, signal, timer, condition, and compensation.
+Seven trigger kinds open a handler at the end of a body: error, escalation, message, signal, timer, condition, and compensation.
+A process can also be started by a message, a signal, or a timer, the same three words with their usual payloads, and can end every running path at once with a `terminate` end.
 
-A handler can also attach to one step instead of the whole body, which is where `on Host: kind` comes in. This process reviews an order, takes payment in a sub-process, and hangs four different escapes off those two activities:
+A handler can also attach to one step instead of the whole body, which is where `on Host: kind` comes in.
+This process reviews an order, takes payment in a sub-process, and hangs four different escapes off those two activities:
 
 ```bpmnscript
 process order-handling {
@@ -167,11 +192,14 @@ process order-handling {
 }
 ```
 
-`alongside` is the difference between interrupting the step and running beside it. The four-hour timer nudges the reviewer while review stays open; the `AutoApproved` message cancels the review outright and jumps to payment. The declined-card error kills the payment sub-process and hands the customer to an agent, while the large-payment escalation pulls in a manager without stopping the capture.
+`alongside` is the difference between interrupting the step and running beside it.
+The four-hour timer nudges the reviewer while review stays open; the `AutoApproved` message cancels the review outright and jumps to payment.
+The declined-card error kills the payment sub-process and hands the customer to an agent, while the large-payment escalation pulls in a manager without stopping the capture.
 
 ### Compensation
 
-A `subprocess` can carry an `on compensation` block: the steps that undo whatever it already did. When something later fails, the completed units unwind newest first.
+A `subprocess` can carry an `on compensation` block: the steps that undo whatever it already did.
+When something later fails, the completed units unwind newest first.
 
 ```bpmnscript
 process booking-saga {
@@ -201,12 +229,12 @@ process booking-saga {
 
   on error "BOOKING_FAILED" {
     emit compensation Undo
-    user NotifyTraveller "Notify the traveller" { assignee = "demo" }
+    user NotifyTraveler "Notify the traveler" { assignee = "demo" }
   }
 }
 ```
 
-Book the hotel after the flight, then fail: the seat gets released, and the traveller gets told.
+Book the hotel after the flight, then fail: the seat gets released, and the traveler gets told.
 
 The invoice-approval and order-handling programs above are files from [examples/spring-boot/processes/](examples/spring-boot/processes/), the second with one boundary handler left out; the compensation one is written for this page, and `compensating-saga.bpmnscript` is its deployable counterpart.
 The end-to-end suite deploys several of that directory's processes to an Operaton engine and asserts what the engine does with them.
@@ -215,7 +243,7 @@ The end-to-end suite deploys several of that directory's processes to an Operato
 
 BPMN is a much larger language than this DSL, so a `.bpmn` file can hold elements unsupported in `.bpmnscript` and the decompiler will emit warnings for those:
 
-- A construct the DSL cannot express (a collaboration, loop characteristics, a compensation boundary event, an event definition the language doesn't model) is refused with an error.
+- A construct the DSL cannot express (a collaboration, a standard loop, a compensation boundary event, an event definition the language doesn't model) is refused with an error.
 - Content the intermediate representation doesn't carry (a lane, a text annotation, an `operaton:field` value injection, an extension element in a foreign vendor namespace, an engine attribute found on a gateway) is dropped with a warning naming each item.
   Elements are covered: the diagram interchange data aside, whatever the importer cannot carry is named by its tag and its id, or leaves with the dropped construct holding it.
   The exceptions are attributes it does not read: one in a foreign vendor namespace written directly on a BPMN element, which is an editor's own bookkeeping, and a BPMN attribute outside the set the importer reads, such as a sequence flow's `name` or a process's `processType` ([packages/transform/README.md](packages/transform/README.md#the-import-contract)).
@@ -229,21 +257,29 @@ The engine settings a modeler tunes import warning-free.
 Async continuation, exclusivity, job priority and the retry cycle round-trip on any event or activity.
 `operaton:inputOutput` round-trips on an activity, in all four value forms: a scalar, an inline script, a list, and a map ([ADR-0022](docs/decisions/0022-engine-attributes-as-named-ir-fields.md)).
 Execution listeners round-trip on any event or activity too, task listeners on a user task, each in all four binding forms ([ADR-0023](docs/decisions/0023-listeners-on-the-attribute-block.md)).
+A step's repetition round-trips as well, whether the document names its collection and its element variable in the BPMN spelling or the `operaton:` one.
+What stays refused there is an async or retry setting written on the repetition element itself, which makes one job per run, where the surface can only say one job around the whole repetition, and an `operaton:outputParameter` on a repeated step, which Operaton refuses to deploy at all.
+Refused as well is a repetition this surface cannot write back unchanged: a count that is neither a whole number nor an expression, or an element name that is not a plain identifier.
+So is one Operaton itself rejects: setting neither a count nor a collection, leaving the count empty, or naming an element variable with no collection to take it from.
+An `operaton:jobPriority` on the repetition element is reported as a drop instead: Operaton reads a job priority off the step and never off the repetition, so leaving it out changes nothing the process does.
 
 Some placements stay out of reach, each reported as a drop rather than carried.
 An engine setting on a gateway that `if`, `while`, `do...while`, or `parallel` synthesizes has no textual identity to author it on.
 An execution listener on the `bpmn:process` element has nowhere to sit: the process header takes a `versionTag` and no other setting.
 An `operaton:inputOutput` block on an event goes the same way, because input and output variables bind into an activity's own execution scope.
 
-The reasoning is in [ADR-0014](docs/decisions/0014-honest-bpmn-import-contract.md). The short version: a round trip that silently changes the model/workflow is worse than one that refuses to run.
+The reasoning is in [ADR-0014](docs/decisions/0014-honest-bpmn-import-contract.md).
+The short version: a round trip that changes the model/workflow without warning is worse than one that refuses to run.
 
 ## Running a process on a real engine
 
-[examples/spring-boot/](examples/spring-boot/) is a working Operaton 2.1.0 + Spring Boot deployment with Java delegates for the service tasks. Its [README](examples/spring-boot/README.md) walks through compiling the processes, starting the engine, opening Cockpit and Tasklist, and stepping through a loan approval example process by hand.
+[examples/spring-boot/](examples/spring-boot/) is a working Operaton 2.1.0 + Spring Boot deployment with Java delegates for the service tasks.
+Its [README](examples/spring-boot/README.md) walks through compiling the processes, starting the engine, opening Cockpit and Tasklist, and stepping through a loan approval example process by hand.
 
 ## Architecture
 
-Both directions route through a shared intermediate representation. Each transform only has to know how to convert to or from the IR, never to every other format directly.
+Both directions route through a shared intermediate representation.
+Each transform only has to know how to convert to or from the IR, never to every other format directly.
 
 ```mermaid
 flowchart LR
@@ -259,9 +295,12 @@ flowchart LR
     IR -- irToDsl --> SRC
 ```
 
-A source file is parsed into an AST, converted into the IR (a small set of plain TypeScript objects in `packages/transform/src/ir/types.ts` that describe a process without reference to any specific engine), and written out from there. Compiling is `.bpmnscript` -> AST -> IR -> `.bpmn`; decompiling is `.bpmn` -> IR -> `.bpmnscript`.
+A source file is parsed into an AST, converted into the IR (a small set of plain TypeScript objects in `packages/transform/src/ir/types.ts` that describe a process without reference to any specific engine), and written out from there.
+Compiling is `.bpmnscript` -> AST -> IR -> `.bpmn`; decompiling is `.bpmn` -> IR -> `.bpmnscript`.
 
-The IR stays vendor-neutral. Operaton-specific attributes (`operaton:class`, `operaton:assignee`, and so on) are added only at the final XML-serialization step through a local [moddle extension](packages/transform/src/operaton-moddle.json), which keeps the engine's specifics out of the core data model. See [ADR-0006](docs/decisions/0006-engine-agnostic-intermediate-representation.md).
+The IR stays vendor-neutral.
+Operaton-specific attributes (`operaton:class`, `operaton:assignee`, and so on) are added only at the final XML-serialization step through a local [moddle extension](packages/transform/src/operaton-moddle.json), which keeps the engine's specifics out of the core data model.
+See [ADR-0006](docs/decisions/0006-engine-agnostic-intermediate-representation.md).
 The same rule covers the engine's execution settings, input/output parameters, and lifecycle listeners: each is a plain-named IR field, and `operaton:` is applied only where `irToXml` builds the moddle element ([ADR-0022](docs/decisions/0022-engine-attributes-as-named-ir-fields.md), [ADR-0023](docs/decisions/0023-listeners-on-the-attribute-block.md)).
 
 | Library                                                         | Role                                                |
@@ -287,9 +326,11 @@ docs/
 
 ## Project status
 
-BPMNscript is being built as a bachelor's thesis at [University of Hamburg](https://www.uni-hamburg.de/), supervised by Dr. Oliver Kopp. The thesis asks whether a textual DSL can be a practical alternative to graphical BPMN editors for developers who prefer working in code.
+BPMNscript is being built as a bachelor's thesis at [University of Hamburg](https://www.uni-hamburg.de/), supervised by Dr. Oliver Kopp.
+The thesis asks whether a textual DSL can be a practical alternative to graphical BPMN editors for developers who prefer working in code.
 
-Design decisions are written up as [Markdown ADRs](docs/decisions/) using [MADR 4.0.0](https://adr.github.io/madr/); they're the best place to find out why something is the way it is. Shared vocabulary is collected in [docs/glossary.md](docs/glossary.md).
+Design decisions are written up as [Markdown ADRs](docs/decisions/) using [MADR 4.0.0](https://adr.github.io/madr/); they're the best place to find out why something is the way it is.
+Shared vocabulary is collected in [docs/glossary.md](docs/glossary.md).
 
 ## Contributing
 

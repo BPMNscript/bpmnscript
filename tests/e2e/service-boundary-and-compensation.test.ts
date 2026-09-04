@@ -4,9 +4,9 @@
 // process variable the shared conditional delegate reads, never by a clock or a
 // correlated message.
 //
-// The compensation half never hard-asserts whether the undo step ran: that fact
-// is suspected, not proven, so it is printed as one greppable console.warn
-// rather than failing the suite.
+// The compensation half covers the other route into the undo machinery: an
+// `emit compensation` raised by the process-level error handler has to reach
+// the undo block of a subprocess that already completed.
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 
@@ -18,9 +18,11 @@ import {
 } from '../helpers/e2e-fixture.js';
 import {
   activeTaskKeys,
+  activityIdsIncluding,
   historicActivities,
   isRunning,
   waitFor,
+  waitForTaskId,
 } from '../helpers/engine-rest.js';
 
 const CHARGE_PROCESS_KEY = 'charge-with-recovery';
@@ -31,35 +33,6 @@ describe.skipIf(SKIP)(
   'E2E: error-boundary and compensation examples on Spring Boot Operaton',
   () => {
     let fixture: FixtureAdapter;
-
-    async function activityIdsIncluding(
-      processInstanceId: string,
-      activityId: string,
-    ): Promise<string[]> {
-      const activities = await waitFor(
-        () => historicActivities(fixture, processInstanceId),
-        (list) => list.some((a) => a.activityId === activityId),
-      );
-      return activities.map((a) => a.activityId);
-    }
-
-    async function taskId(
-      processInstanceId: string,
-      definitionKey: string,
-    ): Promise<string> {
-      const tasks = await waitFor(
-        () => fixture.getActiveTasks(processInstanceId),
-        (t) => t.some((task) => task.taskDefinitionKey === definitionKey),
-      );
-      const match = tasks.find(
-        (task) => task.taskDefinitionKey === definitionKey,
-      );
-      expect(
-        match,
-        `no active task '${definitionKey}' in instance ${processInstanceId}`,
-      ).toBeDefined();
-      return match!.id;
-    }
 
     // Both examples are deployed into one container boot.
     beforeAll(async () => {
@@ -83,6 +56,7 @@ describe.skipIf(SKIP)(
         );
 
         const activityIds = await activityIdsIncluding(
+          fixture,
           processInstanceId,
           'Boundary_ChargeCard_error',
         );
@@ -100,7 +74,7 @@ describe.skipIf(SKIP)(
         expect(stillActive).toContain('ReviewFailedCharge');
 
         await fixture.completeTask(
-          await taskId(processInstanceId, 'ReviewFailedCharge'),
+          await waitForTaskId(fixture, processInstanceId, 'ReviewFailedCharge'),
         );
 
         expect(
@@ -118,6 +92,7 @@ describe.skipIf(SKIP)(
         );
 
         const activityIds = await activityIdsIncluding(
+          fixture,
           processInstanceId,
           'OrderCharged',
         );
@@ -140,24 +115,25 @@ describe.skipIf(SKIP)(
       }, 60_000);
     });
 
-    describe('compensation observation (non-gating)', () => {
-      // Whether the error handler's `compensate all` reaches the sibling
-      // subprocess's completed undo block is the suspected fact. The setup is
-      // hard-asserted; the outcome is only printed.
-      it('reports whether the undo step ran after the error handler emits compensation', async () => {
+    describe('compensation raised by the error handler', () => {
+      // The undo block belongs to a subprocess that completed before the charge
+      // failed, so reaching it means the emit crossed a container boundary and
+      // found a step already behind the token.
+      it('runs the completed subprocess undo block when the error handler emits compensation', async () => {
         const { processInstanceId } = await fixture.startProcess(
           COMPENSATION_PROCESS_KEY,
           { failCharge: true },
         );
 
-        // Setup soundness, gating.
         const activityIds = await activityIdsIncluding(
+          fixture,
           processInstanceId,
-          'CompensationTriggered',
+          'ReleaseSeat',
         );
         expect(activityIds).toContain('ReserveSeatTask');
         expect(activityIds).toContain('ChargeCard');
         expect(activityIds).toContain('CompensationTriggered');
+        expect(activityIds).toContain('ReleaseSeat');
 
         expect(
           await waitFor(
@@ -165,18 +141,6 @@ describe.skipIf(SKIP)(
             (running) => !running,
           ),
         ).toBe(false);
-
-        // The suspected fact: observed, never asserted.
-        const finalActivities = await historicActivities(
-          fixture,
-          processInstanceId,
-        );
-        const compensationRan = finalActivities.some(
-          (a) => a.activityId === 'ReleaseSeat',
-        );
-        console.warn(
-          `compensation-observation: undo handler ran = ${compensationRan}`,
-        );
       }, 60_000);
     });
   },

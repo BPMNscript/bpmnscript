@@ -83,7 +83,7 @@ describe('round-trip: minimal call (process only)', () => {
   });
 });
 
-describe('round-trip: call activity — deployment binding', () => {
+describe('round-trip: call activity with a deployment binding', () => {
   const DEPLOYMENT_BINDING_SRC = [
     'process call-deployment-binding {',
     '  start Start',
@@ -119,7 +119,7 @@ describe('round-trip: call activity — deployment binding', () => {
   });
 });
 
-describe('round-trip: call activity — pinned version', () => {
+describe('round-trip: call activity with a pinned version', () => {
   const PINNED_VERSION_SRC = [
     'process call-pinned-version {',
     '  start Start',
@@ -157,7 +157,7 @@ describe('round-trip: call activity — pinned version', () => {
   });
 });
 
-describe('round-trip: call activity — businessKey and every mapping shape', () => {
+describe('round-trip: call activity with businessKey and every mapping shape', () => {
   // The validator checks `in` sources against caller scope, so they are declared
   // below. `out` sources are evaluated in the called process and are not.
   const FULL_FEATURED_SRC = [
@@ -216,7 +216,7 @@ describe('round-trip: call activity — businessKey and every mapping shape', ()
     );
   });
 
-  it('a second round-trip (DSL′ → IR₃) is normalized-equal to the first', () => {
+  it("a second round-trip (DSL' -> IR3) is normalized-equal to the first", () => {
     expect(normalizeIr(run.ir3)).toEqual(normalizeIr(run.ir1));
   });
 
@@ -252,7 +252,7 @@ describe('round-trip: call activity nested inside a subprocess', () => {
     }
   });
 
-  it('the re-emitted DSL reconstructs the nested `subprocess { call … }` shape and re-parses cleanly', async () => {
+  it('the re-emitted DSL reconstructs the nested `subprocess { call ... }` shape and re-parses cleanly', async () => {
     expect(run.dsl).toContain('subprocess Payment "Handle payment" {');
     expect(run.dsl).toContain('call ChargeCustomer');
     const document = await parse(run.dsl);
@@ -295,7 +295,7 @@ describe('round-trip: goto targeting a call activity', () => {
     }
   });
 
-  it('a second round-trip (DSL′ → IR₃) is normalized-equal to the first, and re-parses with zero errors', async () => {
+  it("a second round-trip (DSL' -> IR3) is normalized-equal to the first, and re-parses with zero errors", async () => {
     // irToDsl reconstructs the goto/fallthrough convergence as `if`/`else`
     // rather than replaying the literal `goto`, and re-desugaring that grows a
     // pass-through join, so compare through normalizeIr.
@@ -309,8 +309,8 @@ describe('round-trip: goto targeting a call activity', () => {
   });
 });
 
-describe('round-trip: import-first — interleaved mappings and the camunda: binding alias', () => {
-  // The `name` differs from the name humanised from the id, so it survives as a
+describe('round-trip: import-first, with interleaved mappings and the camunda: binding alias', () => {
+  // The `name` differs from the name humanized from the id, so it survives as a
   // real label instead of being dropped as derivable.
   const HANDWRITTEN_BPMN = `<?xml version="1.0" encoding="UTF-8"?>
 <bpmn:definitions

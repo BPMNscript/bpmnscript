@@ -1,7 +1,7 @@
 // These tests run the grammar's begin/end patterns through JS RegExp instead of
 // a TextMate engine. That only holds because the patterns stick to constructs
 // JS and Oniguruma agree on: literal backticks, alternation, \s, $, character
-// classes. Add an Oniguruma-only construct and this file stops modelling VS Code.
+// classes. Add an Oniguruma-only construct and this file stops modeling VS Code.
 
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';

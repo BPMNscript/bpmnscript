@@ -1,0 +1,16 @@
+// An empty batch: the one repetition count that is not a count of runs. The
+// engine resolves the cardinality on entering the loop, so a count of zero
+// leaves the loop without ever running the step inside it and the token walks
+// straight to the end. Nothing is logged and no run of the step is recorded.
+//
+// The logging step points at the generic delegate
+// examples/spring-boot/src/main/java/com/example/demo/LogDelegate.java, so this
+// process deploys and runs on the demo profile without additional Java classes.
+
+process empty-batch "Empty batch" {
+  start BatchOpened
+
+  service LogEntry "Log the entry" for 0 { class = "com.example.demo.LogDelegate" }
+
+  end BatchClosed
+}

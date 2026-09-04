@@ -32,14 +32,15 @@
     "build:clean": "npm run clean && npm run build",
     "langium:generate": "langium generate",
     "langium:watch": "langium generate --watch",
+    "typecheck": "tsc -b tsconfig.test.json",
     "test": "vitest run"
   },
   "dependencies": {
     "langium": "^4.3.1",
-    "vscode-languageserver-types": "^3.18.3"
+    "vscode-languageserver-types": "^3.18.0"
   },
   "devDependencies": {
     "langium-cli": "^4.3.0",
-    "vitest": "^4.1.11"
+    "vitest": "^4.1.10"
   }
 }

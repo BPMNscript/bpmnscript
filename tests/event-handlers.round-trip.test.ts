@@ -30,7 +30,7 @@ const rt = roundTripFixture('event-handlers', {
 });
 
 // Handwritten import-first, with `camunda:` aliases for the error root message
-// and the catch bindings, and labels that differ from the name humanised from
+// and the catch bindings, and labels that differ from the name humanized from
 // each id, so the importer keeps them.
 const IMPORT_FIRST_BPMN = `<?xml version="1.0" encoding="UTF-8"?>
 <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:camunda="http://camunda.org/schema/1.0/bpmn" xmlns:operaton="http://operaton.org/schema/1.0/bpmn" id="Definitions_import_first" targetNamespace="http://bpmn.io/schema/bpmn">
@@ -66,7 +66,7 @@ const IMPORT_FIRST_BPMN = `<?xml version="1.0" encoding="UTF-8"?>
   </bpmn:process>
 </bpmn:definitions>`;
 
-describe('idempotence: DSL → IR₁ → XML → IR₂ → DSL′ → IR₃', () => {
+describe("idempotence: DSL -> IR1 -> XML -> IR2 -> DSL' -> IR3", () => {
   it('the authored throw and emit ids survive verbatim at their correct depth', () => {
     const payment = subProcess(rt.ir3, 'ProcessPayment');
     expect(kindOf(payment, 'PaymentFailed')).toBe('endEvent');
@@ -175,7 +175,7 @@ describe('import-first: a handwritten .bpmn with camunda: aliases round-trips', 
   });
 
   it('the hand-named handler is re-keyed so the re-desugared IR matches the import', () => {
-    // The hand-named event sub-process has no surface id and is re-synthesised,
+    // The hand-named event sub-process has no surface id and is re-synthesized,
     // so the structural re-key collapses the two ids.
     expect(normalizeIr(reDesugared)).toEqual(normalizeIr(firstImport));
   });

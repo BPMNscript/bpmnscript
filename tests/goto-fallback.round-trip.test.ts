@@ -17,7 +17,7 @@
 
 import { describe, it, expect, beforeAll } from 'vitest';
 
-import { DiagnosticSeverity } from 'vscode-languageserver-types';
+import { Diagnostic, DiagnosticSeverity } from 'vscode-languageserver-types';
 
 import {
   xmlToIr,
@@ -49,7 +49,7 @@ async function parseToAst(source: string) {
   if (problems.length > 0) {
     throw new Error(
       'Validation errors in emitted DSL:\n' +
-        problems.map((d) => d.message).join('\n'),
+        problems.map((d) => Diagnostic.getMessageString(d)).join('\n'),
     );
   }
   return document.parseResult.value;

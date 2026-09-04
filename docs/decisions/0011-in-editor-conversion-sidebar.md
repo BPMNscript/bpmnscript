@@ -47,7 +47,7 @@ The architecture is a two-layer split: a pure core (`conversion-core.ts`, no `vs
 The core contains all interesting logic (severity gating, error classification, unsupported-element handling) and is unit-testable under vitest.
 The adapter owns only VS Code I/O: URI resolution, file reads and writes, `DiagnosticCollection` updates, overwrite confirmation, and opening the result.
 The commands (`bpmnscript.compile`, `bpmnscript.decompile`, and `bpmnscript.openAndDecompile`, which picks a BPMN file and runs the decompile handler on it) are the single execution path.
-The sidebar and the command palette call the same commands with a URI argument, so behaviour is identical across entry points.
+The sidebar and the command palette call the same commands with a URI argument, so behavior is identical across entry points.
 
 The bundling fix is an esbuild CJS shim plus an `onEnd` asset copy, keeping the transform package unmodified.
 In `esbuild.mjs`:

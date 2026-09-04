@@ -26,17 +26,17 @@ export interface RoundTripOptions {
   // alongside the fixture. Not every construct has one.
   example?: string;
 
-  // Where DSL′ is read back out of. 'frozen' re-reads the golden .bpmn from
+  // Where DSL' is read back out of. 'frozen' re-reads the golden .bpmn from
   // disk, so the suite is driven by the file rather than by the generator.
   dslPrimeFrom?: 'generated' | 'frozen';
 
   // Registers the import-path block: the frozen artifact imports warning-free
-  // and re-desugars normalized-equal to IR₁.
+  // and re-desugars normalized-equal to IR1.
   importPath?: boolean;
 
-  // How strictly DSL′ validation is asserted, and where. 'clean' checks every
+  // How strictly DSL' validation is asserted, and where. 'clean' checks every
   // diagnostic and only fits fixtures that name every throw and emit, so
-  // nothing synthesises an id the reserved-name check rejects; 'errors' checks
+  // nothing synthesizes an id the reserved-name check rejects; 'errors' checks
   // error severity only, for fixtures whose decompiled form does warn.
   // 'errors-standalone' is 'errors' in a block of its own.
   recompile: 'errors' | 'clean' | 'errors-standalone';
@@ -53,7 +53,7 @@ export interface RoundTrip {
   frozenXml: string;
   generatedXml: string;
   // ir1 = astToIr(parse(fixture)); ir2 = xmlToIr(...) per dslPrimeFrom;
-  // ir3 = re-desugared from DSL′.
+  // ir3 = re-desugared from DSL'.
   ir1: BpmnProcess;
   ir2: BpmnProcess;
   ir3: BpmnProcess;
@@ -95,9 +95,9 @@ export function roundTripFixture(
     rt.dslPrime = irToDsl(rt.ir2);
     rt.ir3 = astToIr(await parseToAst(rt.dslPrime));
     rt.hops = [
-      ['IR₁', rt.ir1],
-      ['IR₂', rt.ir2],
-      ['IR₃', rt.ir3],
+      ['IR1', rt.ir1],
+      ['IR2', rt.ir2],
+      ['IR3', rt.ir3],
     ];
 
     if (options.importPath === true) {
@@ -115,15 +115,15 @@ export function roundTripFixture(
 
   const idempotenceTitle =
     options.dslPrimeFrom === 'frozen'
-      ? 'idempotence: golden .bpmn → IR₂ → DSL′ → IR₃'
-      : 'idempotence: DSL → IR₁ → XML → IR₂ → DSL′ → IR₃';
+      ? "idempotence: golden .bpmn -> IR2 -> DSL' -> IR3"
+      : "idempotence: DSL -> IR1 -> XML -> IR2 -> DSL' -> IR3";
 
   describe(idempotenceTitle, () => {
-    it('normalizeIr(IR₁) equals normalizeIr(IR₃)', () => {
+    it('normalizeIr(IR1) equals normalizeIr(IR3)', () => {
       expect(normalizeIr(rt.ir3)).toEqual(normalizeIr(rt.ir1));
     });
 
-    it('the restructured DSL′ re-parses with zero parser errors', async () => {
+    it("the restructured DSL' re-parses with zero parser errors", async () => {
       const document = await parse(rt.dslPrime);
       expect(document.parseResult.parserErrors).toHaveLength(0);
     });
@@ -136,7 +136,7 @@ export function roundTripFixture(
     }
 
     if (options.recompile === 'clean') {
-      it('the restructured DSL′ is validator-clean (named throws re-parse cleanly)', async () => {
+      it("the restructured DSL' is validator-clean (named throws re-parse cleanly)", async () => {
         const { diagnostics } = await validate(rt.dslPrime);
         expect(diagnostics).toEqual([]);
       });
@@ -144,8 +144,8 @@ export function roundTripFixture(
   });
 
   if (options.recompile === 'errors-standalone') {
-    describe('recompile-validity: the decompiled DSL′ recompiles clean', () => {
-      it('the decompiled DSL′ validates with zero error diagnostics', async () => {
+    describe("recompile-validity: the decompiled DSL' recompiles clean", () => {
+      it("the decompiled DSL' validates with zero error diagnostics", async () => {
         const { diagnostics } = await validate(rt.dslPrime);
         expect(diagnostics.filter((d) => d.severity === 1)).toEqual([]);
       });
@@ -158,7 +158,7 @@ export function roundTripFixture(
         expect(rt.importWarnings).toEqual([]);
       });
 
-      it('imported → DSL → re-desugared IR is normalized-equal to IR₁', () => {
+      it('imported -> DSL -> re-desugared IR is normalized-equal to IR1', () => {
         expect(normalizeIr(rt.irFromImport)).toEqual(normalizeIr(rt.ir1));
       });
     });

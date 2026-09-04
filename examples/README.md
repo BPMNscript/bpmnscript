@@ -10,7 +10,7 @@ Two more are planned and have no fixture yet: an Operaton REST engine with exter
 The fixture runs Operaton 2.1.0 embedded in a Spring Boot 4.0.6 application on Java 17, exposing the Operaton REST API on port 8080.
 It's packaged as a Docker image so the integration test harness can start and stop it programmatically.
 
-Sixteen DSL sources live under `spring-boot/processes/`, one per construct or construct combination.
+Twenty-three DSL sources live under `spring-boot/processes/`, one per construct or construct combination.
 Running `bpmns build` on any of them produces the deployable `.bpmn`.
 
 | Source                  | Covers                                                                     |
@@ -31,15 +31,23 @@ Running `bpmns build` on any of them produces the deployable `.bpmn`.
 | `charge-with-recovery`  | An error boundary on a service task host                                   |
 | `compensating-saga`     | Compensation raised from a process-level error handler                     |
 | `engine-extensions`     | Listeners, input and output parameters, and an async continuation          |
+| `order-intake`          | A message start, a message intermediate throw, and a message end           |
+| `stock-alert`           | A signal start and a terminate end                                         |
+| `scheduled-audit`       | A timer start, fired by hand through the job API rather than the clock     |
+| `task-kinds`            | The four task kinds: `step`, `send`, `decide`, and a named `receive`       |
+| `batch-approval`        | Repetition by count and by collection, in order and in parallel            |
+| `empty-batch`           | A repetition count of zero, which leaves the step without running it       |
+| `booking-attempt`       | A block given up from inside, its undo block, and its cancel handler       |
 
 [Running processes on Operaton](spring-boot/README.md#running-processes-on-operaton-demo) is a hands-on tour of the two loan-approval processes.
 
 ### Testcontainers harness
 
-Eight E2E test files in `tests/e2e/` use [testcontainers-node](https://testcontainers.com/) to start the Docker image, deploy compiled BPMN over the Operaton REST API, start instances, and assert engine behaviour: `invoice-approval`, `parallel-approval`, `loan-approval`, `loan-approval-kopp`, `boundary-events` (over `order-handling`), `awaiting-confirmation`, `engine-extensions`, and `service-boundary-and-compensation` (over `charge-with-recovery` and `compensating-saga` in one container boot).
+Twelve E2E test files in `tests/e2e/` use [testcontainers-node](https://testcontainers.com/) to start the Docker image, deploy compiled BPMN over the Operaton REST API, start instances, and assert engine behavior: `invoice-approval`, `parallel-approval`, `loan-approval`, `loan-approval-kopp`, `boundary-events` (over `order-handling`), `awaiting-confirmation`, `engine-extensions`, `service-boundary-and-compensation` (over `charge-with-recovery` and `compensating-saga` in one container boot), `event-positions` (over `order-intake`, `stock-alert`, and `scheduled-audit` in one container boot), `task-kinds`, `repetition` (over `batch-approval` and `empty-batch` in one container boot), and `booking-attempt`.
 The remaining fixtures are demo-only.
 
-The compensation half of the last one is deliberately soft: it hard-asserts that the failure and its `on error` handler run, then observes whether `emit compensation` reaches the completed subprocess's undo block on the live engine, reporting that as a greppable log line rather than a pass or fail.
+The compensation half of `service-boundary-and-compensation` asserts that the `emit compensation` its `on error` handler raises reaches the undo block of the subprocess that completed before the charge failed.
+`booking-attempt` asserts the same machinery on the other route into it: when the block is given up, the engine must have run the undo block of the step that had already finished before the cancel handler opens.
 
 Docker tests run by default and are skipped only when `SKIP_DOCKER_TESTS=true`, which is what CI sets.
 

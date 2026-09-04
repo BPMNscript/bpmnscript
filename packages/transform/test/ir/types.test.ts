@@ -23,6 +23,8 @@ import type {
   UserTask,
   ServiceTask,
   ScriptTask,
+  Task,
+  ReceiveTask,
   SubProcess,
   CallActivity,
   ExclusiveGateway,
@@ -69,6 +71,10 @@ function describeFlowElement(fe: FlowElement): string {
       return 'service';
     case 'scriptTask':
       return 'script';
+    case 'task':
+      return 'task';
+    case 'receiveTask':
+      return 'receive';
     case 'exclusiveGateway':
       return 'xor';
     case 'parallelGateway':
@@ -104,6 +110,8 @@ function describeBinding(binding: ServiceTaskBinding): string {
       return `delegateExpression:${binding.expression}`;
     case 'external':
       return `external:${binding.topic}`;
+    case 'decision':
+      return `decision:${binding.decisionRef}`;
     default: {
       const _: never = binding;
       throw new Error(`Unhandled binding kind: ${JSON.stringify(_)}`);
@@ -166,6 +174,10 @@ function describeDefinition(def: EventDefinition): string {
       return 'escalation';
     case 'compensation':
       return 'compensation';
+    case 'terminate':
+      return 'terminate';
+    case 'cancel':
+      return 'cancel';
     case 'message':
       return `message:${def.messageName}`;
     case 'signal':
@@ -181,7 +193,7 @@ function describeDefinition(def: EventDefinition): string {
   }
 }
 
-describe('IR discriminated unions — exhaustive switch guards', () => {
+describe('IR discriminated unions: exhaustive switch guards', () => {
   it('the exhaustive switch handles every FlowElement variant', () => {
     expect(describeFlowElement({ kind: 'startEvent', id: 'Start_1' })).toBe(
       'start',
@@ -198,6 +210,10 @@ describe('IR discriminated unions — exhaustive switch guards', () => {
     expect(
       describeFlowElement(scriptTask('Task_3', 'javascript', 'x = 1;')),
     ).toBe('script');
+    expect(describeFlowElement({ kind: 'task', id: 'Task_4' })).toBe('task');
+    expect(describeFlowElement({ kind: 'receiveTask', id: 'Task_5' })).toBe(
+      'receive',
+    );
     expect(describeFlowElement(gateway('Gw_xor'))).toBe('xor');
     expect(describeFlowElement({ kind: 'parallelGateway', id: 'Gw_3' })).toBe(
       'parallel',
@@ -243,12 +259,17 @@ describe('IR discriminated unions — exhaustive switch guards', () => {
     expect(describeBinding(externalBinding('shipping'))).toBe(
       'external:shipping',
     );
+    expect(
+      describeBinding({ kind: 'decision', decisionRef: 'riskRating' }),
+    ).toBe('decision:riskRating');
   });
 
   it('the exhaustive switch handles every EventDefinition variant', () => {
     expect(describeDefinition(errorDef('PF'))).toBe('error');
     expect(describeDefinition(escalationDef('LS'))).toBe('escalation');
     expect(describeDefinition({ kind: 'compensation' })).toBe('compensation');
+    expect(describeDefinition({ kind: 'terminate' })).toBe('terminate');
+    expect(describeDefinition({ kind: 'cancel' })).toBe('cancel');
     expect(describeDefinition(messageDef('PaymentReceived'))).toBe(
       'message:PaymentReceived',
     );
@@ -326,6 +347,8 @@ const TYPE_TABLE: [
   UserTask,
   ServiceTask,
   ScriptTask,
+  Task,
+  ReceiveTask,
   SubProcess,
   CallActivity,
   BpmnProcess,
@@ -385,6 +408,19 @@ const TYPE_TABLE: [
     format: 'javascript',
     code: 'x = 1;',
     resultVariable: 'x',
+    outputParameters: [ioParam('x', textValue('${x}'))],
+    ...ENGINE_ATTRIBUTES,
+  },
+  {
+    kind: 'task',
+    id: 'TK',
+    inputParameters: [ioParam('x', textValue('1'))],
+    ...ENGINE_ATTRIBUTES,
+  },
+  {
+    kind: 'receiveTask',
+    id: 'RC',
+    messageName: 'OrderPaid',
     outputParameters: [ioParam('x', textValue('${x}'))],
     ...ENGINE_ATTRIBUTES,
   },

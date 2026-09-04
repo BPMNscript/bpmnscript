@@ -10,7 +10,7 @@ export default function (): void {
   program
     .name('bpmns')
     .version(CLI_VERSION)
-    .description('BPMNscript — compile and decompile BPMN processes');
+    .description('BPMNscript: compile and decompile BPMN processes');
 
   program
     .command('build')

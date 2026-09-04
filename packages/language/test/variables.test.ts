@@ -2,7 +2,7 @@
  * Tests for the {@link VariableSymbolProvider} service.
  *
  * The provider turns a `Process` AST into a flat, position-independent variable
- * table (declared variable names → their Operaton-aligned types) that the
+ * table (declared variable names -> their Operaton-aligned types) that the
  * validators consult.
  *
  * The tests parse a process with `parseHelper` (no validation needed) and

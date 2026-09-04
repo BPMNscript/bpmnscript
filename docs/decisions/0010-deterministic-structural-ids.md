@@ -70,6 +70,8 @@ Single-segment names such as `Flow_Control` stay legal, because synthesized flow
 - Neutral, because the structural coordinate is longer than a UUID, making gateway ids verbose in deep nesting, mitigated by the fact that deeply nested processes are rare in the current scope
 - Bad, because renaming a process id or reordering top-level statements changes all synthesized ids in that process, which breaks deployed BPMN definitions.
   That is a concern for production use and acceptable for a DSL-authoring workflow where recompile is expected to replace the definition.
+- Bad, because an imported element whose own id matches one of the reserved patterns cannot be spelled back into a script, so the start or end carrying it is left out of the printed source and its label comes back as an import warning instead.
+  This is the status quo rather than a change in behavior, and resolving it would mean either narrowing the reserved patterns or renaming such an element on decompile.
 
 ### Confirmation
 

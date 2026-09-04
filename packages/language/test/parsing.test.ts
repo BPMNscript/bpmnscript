@@ -25,10 +25,15 @@ import type {
   UserTask,
   ServiceTask,
   ScriptTask,
+  GenericTask,
+  SendTask,
+  ReceiveTask,
+  BusinessRuleTask,
   SubProcess,
   CallActivity,
   Relational,
   Additive,
+  LiteralInt,
   VarRef,
   Ternary,
   RawExpr,
@@ -50,6 +55,18 @@ import {
 /** The one property every AST node exposes, enough to assert a node's kind. */
 type AstLike = { $type: string };
 
+/** Every statement the repeat clause attaches to. */
+type Repeatable =
+  | UserTask
+  | ServiceTask
+  | ScriptTask
+  | GenericTask
+  | SendTask
+  | ReceiveTask
+  | BusinessRuleTask
+  | SubProcess
+  | CallActivity;
+
 let services: ReturnType<typeof createBpmnScriptServices>;
 let parse: ReturnType<typeof parseHelper<Model>>;
 
@@ -60,7 +77,7 @@ beforeAll(() => {
 
 // ── Structured process parses zero-error ─────────────────────────────────
 
-describe('Parsing — structured process', () => {
+describe('Parsing - structured process', () => {
   test('a full structured process parses with zero lexer/parser errors', async () => {
     const source = `
 process invoice "Invoice Approval" {
@@ -96,7 +113,7 @@ process invoice "Invoice Approval" {
 
 // ── Implicit sequence ordering ───────────────────────────────────────────
 
-describe('Parsing — implicit sequence', () => {
+describe('Parsing - implicit sequence', () => {
   test('three bare statements parse into three Statements in source order', async () => {
     const source = `process p { user A user B user C }`;
     const document = await parseModel(source);
@@ -108,7 +125,7 @@ describe('Parsing — implicit sequence', () => {
       'UserTask',
       'UserTask',
     ]);
-    // Order is preserved: the desugarer (not the grammar) materialises the
+    // Order is preserved: the desugarer (not the grammar) materializes the
     // implicit flows A->B->C from this order.
     expect(body.map((s) => (s as UserTask).name)).toEqual(['A', 'B', 'C']);
   });
@@ -171,7 +188,7 @@ process p {
 
 // ── if / else if / else ──────────────────────────────────────────────────
 
-describe('Parsing — if / else if / else', () => {
+describe('Parsing - if / else if / else', () => {
   test('an if with two else-ifs and an else populates elseIfs and elseBlock', async () => {
     const source = `
 process p {
@@ -199,7 +216,7 @@ process p {
 
 // ── while and do ... while ───────────────────────────────────────────────
 
-describe('Parsing — loops', () => {
+describe('Parsing - loops', () => {
   test.each([
     ['while (rejected) { user R }', 'WhileStatement'],
     ['do { user R } while (again)', 'DoWhileStatement'],
@@ -212,7 +229,7 @@ describe('Parsing — loops', () => {
 
 // ── parallel { { } { } } ──────────────────────────────────────────────────
 
-describe('Parsing — parallel', () => {
+describe('Parsing - parallel', () => {
   test('parallel with two branches parses into a ParallelStatement', async () => {
     const source = `process p { parallel { { user A } { user B } } }`;
     const st = await statementAt<ParallelStatement>(source);
@@ -237,7 +254,7 @@ describe('Parsing — parallel', () => {
 
 // ── subprocess ────────────────────────────────────────────────────────────
 
-describe('Parsing — subprocess', () => {
+describe('Parsing - subprocess', () => {
   test('a labeled subprocess parses into a SubProcess with a body statement', async () => {
     const source = `process p { subprocess Handle "Handle order" { user Review { assignee = "demo" } } }`;
     const sub = await statementAt<SubProcess>(source);
@@ -291,9 +308,79 @@ describe('Parsing — subprocess', () => {
   });
 });
 
+// ── attempt ───────────────────────────────────────────────────────────────
+//
+// `attempt` is the second head on the same `SubProcess` rule: the node type and
+// every slot after the keyword are shared with `subprocess`, and only the
+// `transactional` flag tells the two heads apart.
+
+describe('Parsing - attempt', () => {
+  test('both heads parse to a SubProcess and only the flag tells them apart', async () => {
+    const attempt = await statementAt<SubProcess>(
+      `process p { attempt A { } }`,
+    );
+    expect(attempt.$type).toBe('SubProcess');
+    expect(attempt.name).toBe('A');
+    expect(attempt.transactional).toBe(true);
+
+    const sub = await statementAt<SubProcess>(`process p { subprocess A { } }`);
+    expect(sub.$type).toBe('SubProcess');
+    expect(sub.name).toBe('A');
+    expect(sub.transactional).toBeFalsy();
+  });
+
+  test('the head takes a label, a repeat clause, a settings block and a body', async () => {
+    const attempt = await statementAt<SubProcess>(
+      `process p { attempt A "Book and pay" for each line in lines { asyncBefore = true } { user U } }`,
+    );
+    expect(attempt.transactional).toBe(true);
+    expect(attempt.label).toBe('Book and pay');
+    expect(attempt.element).toBe('line');
+    expect((attempt.collection as VarRef).name).toBe('lines');
+    expect(attempt.attrs.map((a) => a.key)).toEqual(['asyncBefore']);
+    expect(attempt.body.statements.map((s) => s.$type)).toEqual(['UserTask']);
+  });
+
+  test('an attempt nests in a subprocess body, in another attempt and in a handler body', async () => {
+    const outer = await statementAt<SubProcess>(
+      `process p { subprocess S { attempt A { attempt B { user U } } } }`,
+    );
+    expect(outer.transactional).toBeFalsy();
+    const nested = outer.body.statements[0] as SubProcess;
+    expect(nested.transactional).toBe(true);
+    const innermost = nested.body.statements[0] as SubProcess;
+    expect(innermost.name).toBe('B');
+    expect(innermost.transactional).toBe(true);
+
+    const handler = await statementAt<OnHandler>(
+      `process p { on error "E" { attempt A { user U } } }`,
+    );
+    expect((handler.body.statements[0] as SubProcess).transactional).toBe(true);
+  });
+
+  test('attempt is reserved: it names neither a step nor a variable', async () => {
+    const named = await parse(`process p { user attempt }`);
+    expect(named.parseResult.parserErrors.length).toBeGreaterThan(0);
+
+    const declared = await parse(`process p { var attempt: string }`);
+    expect(declared.parseResult.parserErrors.length).toBeGreaterThan(0);
+  });
+
+  test('the body after the head parses as its own statements, in order', async () => {
+    const attempt = await statementAt<SubProcess>(
+      `process p { attempt A { user U end E } }`,
+    );
+    expect(attempt.body.statements.map((s) => s.$type)).toEqual([
+      'UserTask',
+      'EndEvent',
+    ]);
+    expect((attempt.body.statements[1] as EndEvent).name).toBe('E');
+  });
+});
+
 // ── call activity ─────────────────────────────────────────────────────────
 
-describe('Parsing — call activity', () => {
+describe('Parsing - call activity', () => {
   test('a full call activity parses: attrs and every mapping shape', async () => {
     const source = `process p { call Fulfilment "Fulfil order" {
   process = "fulfilment-process"
@@ -336,8 +423,8 @@ describe('Parsing — call activity', () => {
     // Shorthand `in orderId` names only the target; no explicit source is
     // parsed (the target doubles as the implied source downstream).
     expect(shorthand!.direction).toBe('in');
-    expect(shorthand!.all).toBeFalsy();
-    expect(shorthand!.local).toBeFalsy();
+    expect(shorthand!.all).toBe(false);
+    expect(shorthand!.local).toBe(false);
     expect(shorthand!.target).toBe('orderId');
     expect(shorthand!.source).toBeUndefined();
 
@@ -353,7 +440,7 @@ describe('Parsing — call activity', () => {
     expect((local!.source as VarRef).name).toBe('vipFlag');
 
     expect(outShort!.direction).toBe('out');
-    expect(outShort!.local).toBeFalsy();
+    expect(outShort!.local).toBe(false);
     expect(outShort!.target).toBe('shipmentId');
     expect(outShort!.source).toBeUndefined();
 
@@ -384,7 +471,7 @@ describe('Parsing — call activity', () => {
     expect(call.mappings).toHaveLength(0);
   });
 
-  test('an empty call body parses — a missing `process` is a validator concern, not a parse error', async () => {
+  test('an empty call body parses; a missing `process` is a validator concern, not a parse error', async () => {
     const source = `process p { call X { } }`;
     const call = await statementAt<CallActivity>(source);
     expect(call.attrs).toHaveLength(0);
@@ -429,7 +516,7 @@ describe('Parsing — call activity', () => {
 
 // ── on handlers, throw / emit, error declaration ─────────────────────────
 
-describe('Parsing — on handlers', () => {
+describe('Parsing - on handlers', () => {
   test('a full interrupting handler parses: trigger, code, two bindings, one body statement', async () => {
     const source = `process p {
   on error "PAYMENT_FAILED" (code c, message m) { service R { class = "x.Y" } }
@@ -445,7 +532,7 @@ describe('Parsing — on handlers', () => {
     expect(handler.bindings[1]!.variable).toBe('m');
     expect(handler.body.statements).toHaveLength(1);
     expect(handler.body.statements[0]!.$type).toBe('ServiceTask');
-    expect(handler.alongside).toBeFalsy();
+    expect(handler.alongside).toBe(false);
     // Regression pin for the paren alternation: two adjacent
     // identifiers commit to a binding list, never a condition.
     expect(handler.condition).toBeUndefined();
@@ -492,7 +579,7 @@ describe('Parsing — on handlers', () => {
   });
 });
 
-describe('Parsing — on timer handlers', () => {
+describe('Parsing - on timer handlers', () => {
   test('the three particles each carry their own time string', async () => {
     const afterHandler = await statementAt<OnHandler>(
       `process p { on timer after "PT1H" { } }`,
@@ -529,7 +616,7 @@ describe('Parsing — on timer handlers', () => {
   });
 });
 
-describe('Parsing — on condition handlers', () => {
+describe('Parsing - on condition handlers', () => {
   test('a relational condition parses to a Relational Expr with no bindings', async () => {
     const handler = await statementAt<OnHandler>(
       `process p { on condition (amount > 100) { } }`,
@@ -565,7 +652,7 @@ describe('Parsing — on condition handlers', () => {
   });
 });
 
-describe('Parsing — hosted on handlers', () => {
+describe('Parsing - hosted on handlers', () => {
   test('each trigger takes a host, and the host is never mistaken for the trigger', async () => {
     // Both the host and the trigger are bare `ID`s, so every trigger has to be
     // pinned individually: the word before the colon is the host, the word
@@ -614,7 +701,7 @@ describe('Parsing — hosted on handlers', () => {
     expect(handler.bindings[0]!.field).toBe('code');
     expect(handler.bindings[1]!.variable).toBe('m');
     expect(handler.body.statements).toHaveLength(1);
-    expect(handler.alongside).toBeFalsy();
+    expect(handler.alongside).toBe(false);
   });
 
   test('a hosted handler takes a parenthesized condition, and alongside after it', async () => {
@@ -652,7 +739,7 @@ describe('Parsing — hosted on handlers', () => {
   });
 });
 
-describe('Parsing — throw / emit', () => {
+describe('Parsing - throw / emit', () => {
   test('throw error / throw escalation parse as terminal statements carrying a code', async () => {
     const throwErrorSt = await statementAt<ThrowStatement>(
       `process p { throw error "C" }`,
@@ -677,7 +764,7 @@ describe('Parsing — throw / emit', () => {
     expect(namedSt.code).toBe('C');
   });
 
-  test('throw signal and emit signal parse under the existing rules — no grammar change needed', async () => {
+  test('throw signal and emit signal parse under the existing rules without a grammar change', async () => {
     const throwBareSt = await statementAt<ThrowStatement>(
       `process p { throw signal "S" }`,
     );
@@ -707,7 +794,7 @@ describe('Parsing — throw / emit', () => {
     expect(emitNamedSt.code).toBe('S');
   });
 
-  test('emit escalation parses with and without an explicit id — one-token lookahead disambiguates', async () => {
+  test('emit escalation parses with and without an explicit id; one-token lookahead disambiguates', async () => {
     const bareSt = await statementAt<EmitStatement>(
       `process p { emit escalation "C" }`,
     );
@@ -723,13 +810,13 @@ describe('Parsing — throw / emit', () => {
     expect(namedSt.code).toBe('C');
   });
 
-  test('emit error parses at the grammar level — the impossible verb/kind pair is the validator’s job', async () => {
+  test("emit error parses at the grammar level; the impossible verb/kind pair is the validator's job", async () => {
     const st = await statementAt<EmitStatement>(`process p { emit error "C" }`);
     expect(st.trigger).toBe('error');
   });
 });
 
-describe('Parsing — await (intermediate catch)', () => {
+describe('Parsing - await (intermediate catch)', () => {
   test.each([
     ['message', 'Invoice Received'],
     ['signal', 'Ready'],
@@ -745,7 +832,7 @@ describe('Parsing — await (intermediate catch)', () => {
     expect(catchEvent.condition).toBeUndefined();
   });
 
-  test('await timer keeps its particle and time — the particle is never swallowed as a name', async () => {
+  test('await timer keeps its particle and time; the particle is never swallowed as a name', async () => {
     const afterEvent = await statementAt<IntermediateCatchEvent>(
       `process p { await timer after "PT1H" }`,
     );
@@ -790,6 +877,75 @@ describe('Parsing — await (intermediate catch)', () => {
   });
 });
 
+describe('Parsing - start and end trigger clauses', () => {
+  test.each([
+    ['after', 'PT1H'],
+    ['at', '2026-08-01T09:00:00'],
+    ['every', 'R/PT10M'],
+  ])(
+    '`start S timer %s` keeps its particle and time in their own slots',
+    async (particle, time) => {
+      const start = await statementAt<StartEvent>(
+        `process p { start S timer ${particle} "${time}" }`,
+      );
+      expect(start.$type).toBe('StartEvent');
+      expect(start.trigger).toBe('timer');
+      expect(start.particle).toBe(particle);
+      expect(start.time).toBe(time);
+      expect(start.label).toBeUndefined();
+      expect(start.code).toBeUndefined();
+    },
+  );
+
+  test('a label before the trigger fills the label slot, not the trigger one', async () => {
+    const start = await statementAt<StartEvent>(
+      `process p { start S "Scheduled" message "M" }`,
+    );
+    expect(start.label).toBe('Scheduled');
+    expect(start.trigger).toBe('message');
+    expect(start.code).toBe('M');
+    expect(start.particle).toBeUndefined();
+    expect(start.time).toBeUndefined();
+  });
+
+  test('`end E "All stop" terminate` carries a label and no code', async () => {
+    const end = await statementAt<EndEvent>(
+      `process p { end E "All stop" terminate }`,
+    );
+    expect(end.$type).toBe('EndEvent');
+    expect(end.label).toBe('All stop');
+    expect(end.trigger).toBe('terminate');
+    expect(end.code).toBeUndefined();
+  });
+
+  test('a template time on a start reaches the `time` slot unquoted', async () => {
+    const start = await statementAt<StartEvent>(
+      'process p { start S timer after "${deadline}" }',
+    );
+    expect(start.particle).toBe('after');
+    expect(start.time).toBe('${deadline}');
+  });
+
+  test('a triggered start does not swallow the statement following it', async () => {
+    const model = await parseModel(`
+process p {
+  start S timer after "PT1H"
+  user U
+  end E terminate
+}
+`);
+    const body = model.processes[0]!.body;
+    expect(body.map((s) => s.$type)).toEqual([
+      'StartEvent',
+      'UserTask',
+      'EndEvent',
+    ]);
+    expect((body[0] as StartEvent).time).toBe('PT1H');
+    expect((body[1] as UserTask).name).toBe('U');
+    expect((body[2] as EndEvent).trigger).toBe('terminate');
+  });
+});
+
 // ── compensation: the code is optional on throw / emit ───────────────────
 //
 // Compensation undoes a subprocess's already-completed work rather than naming
@@ -797,7 +953,7 @@ describe('Parsing — await (intermediate catch)', () => {
 // is therefore optional on both `ThrowStatement` and `EmitStatement`, which
 // makes it optional for every other trigger too. Word and payload legality per
 // trigger stays the validator's job, not the parser's.
-describe('Parsing — compensation (optional throw/emit code)', () => {
+describe('Parsing - compensation (optional throw/emit code)', () => {
   test('a bare `throw compensation` / `emit compensation` carries no name and no code', async () => {
     const thrownSt = await statementAt<ThrowStatement>(
       `process p { throw compensation }`,
@@ -846,7 +1002,7 @@ describe('Parsing — compensation (optional throw/emit code)', () => {
     expect(emittedSt.code).toBe('S');
   });
 
-  test('a code-less throw/emit now parses for every trigger, not just compensation — word legality is the validator’s job', async () => {
+  test("a code-less throw/emit now parses for every trigger, not just compensation; word legality is the validator's job", async () => {
     const throwError = await parseModel(`process p { throw error }`);
     expect(
       (throwError.processes[0]!.body[0] as ThrowStatement).code,
@@ -883,10 +1039,10 @@ describe('Parsing — compensation (optional throw/emit code)', () => {
     expect(handler.particle).toBeUndefined();
     expect(handler.bindings).toHaveLength(0);
     expect(handler.condition).toBeUndefined();
-    expect(handler.alongside).toBeFalsy();
+    expect(handler.alongside).toBe(false);
   });
 
-  test('`on compensation "X" { }` and `on compensation alongside { }` also parse — the validator rejects them later', async () => {
+  test('`on compensation "X" { }` and `on compensation alongside { }` also parse; the validator rejects them later', async () => {
     const withCodeHandler = await statementAt<OnHandler>(
       `process p { on compensation "X" { } }`,
     );
@@ -913,7 +1069,7 @@ describe('Parsing — compensation (optional throw/emit code)', () => {
   });
 });
 
-describe('Parsing — error declaration', () => {
+describe('Parsing - error declaration', () => {
   test('`error "C" message "M"` parses as a process declaration alongside var decls', async () => {
     const source = `
 process p {
@@ -934,7 +1090,7 @@ process p {
   });
 });
 
-describe('Parsing — handler / throw / emit nesting', () => {
+describe('Parsing - handler / throw / emit nesting', () => {
   test('an on handler nests inside a subprocess body', async () => {
     const source = `process p { subprocess S { on error "X" { } } }`;
     const sub = await statementAt<SubProcess>(source);
@@ -963,7 +1119,7 @@ describe('Parsing — handler / throw / emit nesting', () => {
   });
 });
 
-describe('Parsing — soft event words stay plain identifiers', () => {
+describe('Parsing - soft event words stay plain identifiers', () => {
   test('error/escalation/code/message are usable as ordinary var/task names and identifiers', async () => {
     await parseModel(`process p { var message: string start S end E }`);
 
@@ -978,7 +1134,7 @@ describe('Parsing — soft event words stay plain identifiers', () => {
     );
   });
 
-  test('an unknown trigger word and an unknown binding field still parse — word legality is the validator’s job', async () => {
+  test("an unknown trigger word and an unknown binding field still parse; word legality is the validator's job", async () => {
     await parseModel(`process p { on banana "X" { } }`);
 
     await parseModel(`process p { on error "X" (coed c) { } }`);
@@ -1000,7 +1156,7 @@ describe('Parsing — soft event words stay plain identifiers', () => {
     await parseModel(`process p { var condition: boolean start S end E }`);
   });
 
-  test('nonsense trigger/payload pairings parse — word and payload legality are the validator’s job', async () => {
+  test("nonsense trigger/payload pairings parse; word and payload legality are the validator's job", async () => {
     const errorWithParticleHandler = await statementAt<OnHandler>(
       `process p { on error after "x" { } }`,
     );
@@ -1040,16 +1196,16 @@ describe('Parsing — soft event words stay plain identifiers', () => {
   });
 });
 
-describe('Parsing — header typo guidance', () => {
+describe('Parsing - header typo guidance', () => {
   test('a mistyped statement keyword in the header region gives the declaration-or-step message', async () => {
     const document = await parse(`process p { usr Review { } }`);
     const messages = document.parseResult.parserErrors.map((e) => e.message);
-    expect(
-      messages.some(
-        (m) => m.includes("'usr'") && m.toLowerCase().includes('error'),
-      ),
-    ).toBe(true);
-    expect(document.parseResult.parserErrors.length).toBeGreaterThan(0);
+    expect(messages).toContain(
+      "'usr' is neither a known declaration nor a step keyword. " +
+        "A declaration starting with a plain word is either a setting ('<key> = <value>') " +
+        `or 'error "CODE" message "..."'; every step starts with a keyword such as ` +
+        "'start', 'user', 'service', 'if', 'on', 'throw', 'emit', ...",
+    );
   });
 
   // `ErrorDecl` has two STRING positions (`code`, `message`). When the second
@@ -1078,7 +1234,7 @@ describe('Parsing — header typo guidance', () => {
 
 // ── Expression sub-language parses to a real AST ─────────────────────────
 
-describe('Parsing — expression AST', () => {
+describe('Parsing - expression AST', () => {
   test('`amount > 1000` parses to a Relational node (not a string)', async () => {
     const cond = await parseCondition(`amount > 1000`);
     expect(cond.$type).toBe('Relational');
@@ -1148,7 +1304,7 @@ describe('Parsing — expression AST', () => {
 
 // ── Attribute blocks ─────────────────────────────────────────────────────
 
-describe('Parsing — attribute blocks', () => {
+describe('Parsing - attribute blocks', () => {
   test('a user task attribute value is a LiteralString, not a RawExpr', async () => {
     const source = `process p { user T "Review" { assignee = "demo" } }`;
     const ut = await statementAt<UserTask>(source);
@@ -1206,7 +1362,7 @@ describe('Parsing — attribute blocks', () => {
 
 // ── Attribute keys are soft words ────────────────────────────────────────
 
-describe('Parsing — attribute keys stay plain identifiers', () => {
+describe('Parsing - attribute keys stay plain identifiers', () => {
   test('a step, a variable, and a goto target may be spelled like an attribute key', async () => {
     const document = await parseModel(`process p {
   var class: string
@@ -1241,7 +1397,7 @@ describe('Parsing — attribute keys stay plain identifiers', () => {
     expect((call.attrs[0]!.value as { value: string }).value).toBe('x');
   });
 
-  test('an unknown attribute key parses; key legality is the validator’s job', async () => {
+  test("an unknown attribute key parses; key legality is the validator's job", async () => {
     const ut = await statementAt<UserTask>(
       `process p { user T { wibble = 1 } }`,
     );
@@ -1260,7 +1416,7 @@ describe('Parsing — attribute keys stay plain identifiers', () => {
 
 // ── The attribute block sits before the body ─────────────────────────────
 
-describe('Parsing — attribute block before the body', () => {
+describe('Parsing - attribute block before the body', () => {
   test('an end event carries an attribute block', async () => {
     const end = await statementAt<EndEvent>(
       `process p { end E { asyncBefore = true } }`,
@@ -1365,7 +1521,7 @@ ${FENCE}
 
 // ── Input/output parameters ──────────────────────────────────────────────
 
-describe('Parsing — input/output parameters', () => {
+describe('Parsing - input/output parameters', () => {
   test('a task carries directed, named parameter entries', async () => {
     const ut = await statementAt<UserTask>(
       `process p { user T { input a = 1 output b = "x" } }`,
@@ -1412,7 +1568,9 @@ describe('Parsing — input/output parameters', () => {
       'MapLiteral',
       'MapLiteral',
     ]);
-    const second = list.items[1] as { entries: { value: AstLike }[] };
+    const second = list.items[1] as AstLike & {
+      entries: { value: AstLike }[];
+    };
     expect(second.entries[0]!.value.$type).toBe('ListLiteral');
   });
 
@@ -1466,7 +1624,7 @@ ${FENCE} }
 
 // ── Listeners ────────────────────────────────────────────────────────────
 
-describe('Parsing — listeners', () => {
+describe('Parsing - listeners', () => {
   test('a task listener binds by class', async () => {
     const ut = await statementAt<UserTask>(
       `process p { user T { on create { class = "com.acme.L" } } }`,
@@ -1556,7 +1714,7 @@ ${FENCE} }
 
 // ── Process-header attributes ────────────────────────────────────────────
 
-describe('Parsing — process header attributes', () => {
+describe('Parsing - process header attributes', () => {
   test('a header attribute parses before and after a var declaration', async () => {
     const before = await parseModel(`process p "Lbl" {
   versionTag = "1.4"
@@ -1590,18 +1748,88 @@ describe('Parsing — process header attributes', () => {
 
 // ── var-declaration placement ─────────────────────────────────────────────
 
-describe('Parsing — var placement', () => {
+describe('Parsing - var placement', () => {
   test("a 'var' after the first statement gives placement guidance", async () => {
     const document = await parse(`process p {
   start Begin
   var amount: number
 }`);
     const messages = document.parseResult.parserErrors.map((e) => e.message);
-    expect(
-      messages.some((m) => m.includes('must come before the first step')),
-    ).toBe(true);
+    expect(messages).toContain(
+      "A variable declaration ('var ...') must come before the first step in " +
+        'the process, with the other declarations. Move it above the first ' +
+        'statement.',
+    );
     // The confusing raw "Expecting token of type '}'" is not surfaced.
     expect(messages.some((m) => /Expecting token of type/.test(m))).toBe(false);
+  });
+});
+
+// ── repeat-clause placement ───────────────────────────────────────────────
+
+describe('Parsing - repeat-clause placement', () => {
+  test.each([
+    ['a start', `start S for each line in lines`],
+    ['an end', `end E for 3`],
+    ['a goto', `start S goto S for 3`],
+    ['a throw', `throw error "E" for 3`],
+  ])(
+    'a clause on %s says where the clause belongs instead of naming a brace',
+    async (_where, statement) => {
+      const document = await parse(
+        `process p {\n  var lines: json\n  ${statement}\n}`,
+      );
+      expect(document.parseResult.parserErrors.map((e) => e.message)).toEqual([
+        "A repeat clause ('for ...') attaches to the step that repeats. " +
+          'The statement before it does not take one; move the clause onto ' +
+          'the step that should.',
+      ]);
+    },
+  );
+});
+
+// ── keyword-alternation slot guidance ────────────────────────────────────
+
+describe('Parsing - a slot that takes a fixed set of words', () => {
+  const typeSlotMessage = (word: string) =>
+    `'${word}' is not a word this position takes; write 'string', 'number', ` +
+    `'boolean', 'date', 'json', or 'any'.`;
+
+  test.each([
+    ['a `var` declaration', 'process p {\n  var amount: WORD\n  start S\n}'],
+    [
+      'a form field',
+      'process p {\n  start S\n  user U { form { amount: WORD } }\n}',
+    ],
+  ])(
+    'a reserved word in the type slot of %s names the types it takes',
+    async (_where, template) => {
+      const document = await parse(template.replace('WORD', 'while'));
+      const messages = document.parseResult.parserErrors.map((e) => e.message);
+      expect(messages).toContain(typeSlotMessage('while'));
+      expect(messages.some((m) => /possible Token sequences/.test(m))).toBe(
+        false,
+      );
+    },
+  );
+
+  test('an ordinary word in the type slot gets the same guidance', async () => {
+    const document = await parse(
+      'process p {\n  var amount: text\n  start S\n}',
+    );
+    expect(document.parseResult.parserErrors.map((e) => e.message)).toContain(
+      typeSlotMessage('text'),
+    );
+  });
+
+  // Nothing about a non-word token is a "word this position takes", so the
+  // guidance stands aside and Chevrotain's own message survives.
+  test('a quoted string in the type slot keeps the stock message', async () => {
+    const document = await parse(
+      'process p {\n  var amount: "text"\n  start S\n}',
+    );
+    const messages = document.parseResult.parserErrors.map((e) => e.message);
+    expect(messages.some((m) => /possible Token sequences/.test(m))).toBe(true);
   });
 });
 
@@ -1624,7 +1852,7 @@ describe('renderExpression', () => {
 
 // ── Service bindings, fenced script tasks ────────────────────────────────
 
-describe('Parsing — service bindings, script', () => {
+describe('Parsing - service bindings, script', () => {
   test.each([
     ['expression', '${bean.method(execution)}'],
     ['delegate', '${beanName}'],
@@ -1693,7 +1921,7 @@ ${FENCE}
 
   // The backtick fence is a fresh delimiter with no overlap against the
   // quote-delimited STRING / RAW_TEMPLATE terminals.
-  test('a fenced script coexists with a class bareword and a raw template — no lex ambiguity', async () => {
+  test('a fenced script coexists with a class bareword and a raw template without lex ambiguity', async () => {
     const source = `process p {
   service Auto { class = com.acme.X }
   user Review { assignee = "\${bean.pick()}" }
@@ -1709,7 +1937,7 @@ ${FENCE}
       'ScriptTask',
     ]);
     // The class value is a bareword path (VarRef), the assignee a "${...}" raw
-    // template (RawExpr); neither is disturbed by the neighbouring fence.
+    // template (RawExpr); neither is disturbed by the neighboring fence.
     expect((body[0] as ServiceTask).attrs[0]!.value.$type).toBe('VarRef');
     expect((body[1] as UserTask).attrs[0]!.value.$type).toBe('RawExpr');
   });
@@ -1726,6 +1954,218 @@ ${FENCE}
     expect(body).toHaveLength(1);
     expect(body[0]!.$type).toBe('ScriptTask');
     expect((body[0] as ScriptTask).body).toContain('if (a) { }');
+  });
+});
+
+describe('Parsing - task kinds (step / send / receive / decide)', () => {
+  type TaskKind = GenericTask | SendTask | ReceiveTask | BusinessRuleTask;
+
+  const kinds: Array<[keyword: string, type: string]> = [
+    ['step', 'GenericTask'],
+    ['send', 'SendTask'],
+    ['receive', 'ReceiveTask'],
+    ['decide', 'BusinessRuleTask'],
+  ];
+
+  test.each(kinds)(
+    '`%s` parses with name set and label unset',
+    async (keyword, type) => {
+      const statement = await statementAt<TaskKind>(
+        `process p { ${keyword} X }`,
+      );
+      expect(statement.$type).toBe(type);
+      expect(statement.name).toBe('X');
+      expect(statement.label).toBeUndefined();
+    },
+  );
+
+  test.each(kinds)(
+    '`%s` with a quoted label parses with label set',
+    async (keyword, type) => {
+      const statement = await statementAt<TaskKind>(
+        `process p { ${keyword} X "Label" }`,
+      );
+      expect(statement.$type).toBe(type);
+      expect(statement.name).toBe('X');
+      expect(statement.label).toBe('Label');
+    },
+  );
+
+  test('`decide D "Rate" { decision = "riskRating" binding = latest }` parses with both attribute keys in order', async () => {
+    const decide = await statementAt<BusinessRuleTask>(
+      `process p { decide D "Rate" { decision = "riskRating" binding = latest } }`,
+    );
+    expect(decide.$type).toBe('BusinessRuleTask');
+    expect(decide.name).toBe('D');
+    expect(decide.label).toBe('Rate');
+    expect(decide.attrs.map((a) => a.key)).toEqual(['decision', 'binding']);
+  });
+
+  test.each(kinds)(
+    "`%s` after `start S` opens its own statement rather than filling the start's trigger slot",
+    async (keyword, type) => {
+      const document = await parseModel(
+        `process p { start S ${keyword} X user U end E }`,
+      );
+      const body = document.processes[0]!.body;
+      expect(body.map((s) => s.$type)).toEqual([
+        'StartEvent',
+        type,
+        'UserTask',
+        'EndEvent',
+      ]);
+    },
+  );
+});
+
+describe('Parsing - repeat clause', () => {
+  // Every row carries a settings block, so both tests below see the clause
+  // survive one. `script` and `subprocess` are the two rules where it sits
+  // between the clause and a further brace-opened body: the only shape a
+  // lookahead ambiguity could surface in.
+  const SET = '{ asyncBefore = true }';
+
+  /** Every statement the clause attaches to, with whatever body follows it. */
+  const REPEATABLE: Array<
+    [keyword: string, type: string, program: (clause: string) => string]
+  > = [
+    ['user', 'UserTask', (c) => `process p { user U ${c} ${SET} }`],
+    ['service', 'ServiceTask', (c) => `process p { service V ${c} ${SET} }`],
+    [
+      'script',
+      'ScriptTask',
+      (c) => `process p { script T ${c} ${SET} ${FENCE}js\nwork()\n${FENCE} }`,
+    ],
+    ['step', 'GenericTask', (c) => `process p { step T ${c} ${SET} }`],
+    ['send', 'SendTask', (c) => `process p { send N ${c} ${SET} }`],
+    ['receive', 'ReceiveTask', (c) => `process p { receive R ${c} ${SET} }`],
+    ['decide', 'BusinessRuleTask', (c) => `process p { decide D ${c} ${SET} }`],
+    [
+      'subprocess',
+      'SubProcess',
+      (c) => `process p { subprocess S ${c} ${SET} { user U } }`,
+    ],
+    [
+      'call',
+      'CallActivity',
+      (c) => `process p { call C ${c} { process = "q" asyncBefore = true } }`,
+    ],
+  ];
+
+  test('`for each line in lines` binds the element and the collection and leaves the rest unset', async () => {
+    const task = await statementAt<Repeatable>(
+      `process p { user U for each line in lines }`,
+    );
+    expect(task.element).toBe('line');
+    expect((task.collection as VarRef).name).toBe('lines');
+    expect(task.cardinality).toBeUndefined();
+    expect(task.sequential).toBe(false);
+    expect(task.completion).toBeUndefined();
+  });
+
+  test('`for each in lines` takes the collection with no element name', async () => {
+    const task = await statementAt<Repeatable>(
+      `process p { user U for each in lines }`,
+    );
+    expect(task.element).toBeUndefined();
+    expect((task.collection as VarRef).name).toBe('lines');
+  });
+
+  test('a count runs alone or alongside a collection', async () => {
+    const counted = await statementAt<Repeatable>(`process p { user U for 3 }`);
+    expect((counted.cardinality as LiteralInt).value).toBe(3);
+    expect(counted.collection).toBeUndefined();
+    expect(counted.element).toBeUndefined();
+
+    const both = await statementAt<Repeatable>(
+      `process p { user U for 2 each line in lines }`,
+    );
+    expect((both.cardinality as LiteralInt).value).toBe(2);
+    expect(both.element).toBe('line');
+    expect((both.collection as VarRef).name).toBe('lines');
+  });
+
+  test('`sequentially` is set only when written', async () => {
+    const marked = await statementAt<Repeatable>(
+      `process p { user U for each line in lines sequentially }`,
+    );
+    expect(marked.sequential).toBe(true);
+
+    const unmarked = await statementAt<Repeatable>(
+      `process p { user U for each line in lines }`,
+    );
+    expect(unmarked.sequential).toBe(false);
+  });
+
+  test('`until (...)` parses to an expression AST, the same one an if condition parses to', async () => {
+    const task = await statementAt<Repeatable>(
+      `process p { user U for each line in lines until (nrOfCompletedInstances >= 2) }`,
+    );
+    expect(task.completion?.$type).toBe('Relational');
+    expect((task.completion as Relational).op).toBe('>=');
+  });
+
+  test('a label, the clause and a settings block parse together in that order', async () => {
+    const task = await statementAt<UserTask>(
+      `process p { user U "Label" for each line in "\${order.lines}" sequentially until (done) { assignee = "demo" } }`,
+    );
+    expect(task.label).toBe('Label');
+    expect(task.element).toBe('line');
+    expect(task.collection?.$type).toBe('RawExpr');
+    expect((task.collection as RawExpr).raw).toContain('order.lines');
+    expect(task.sequential).toBe(true);
+    expect((task.completion as VarRef).name).toBe('done');
+    expect(task.attrs.map((a) => a.key)).toEqual(['assignee']);
+  });
+
+  test.each(REPEATABLE)(
+    '`%s` carries every part of the clause',
+    async (_keyword, type, program) => {
+      const task = await statementAt<Repeatable>(
+        program('for 2 each line in lines sequentially until (done)'),
+      );
+      expect(task.$type).toBe(type);
+      expect((task.cardinality as LiteralInt).value).toBe(2);
+      expect(task.element).toBe('line');
+      expect((task.collection as VarRef).name).toBe('lines');
+      expect(task.sequential).toBe(true);
+      expect((task.completion as VarRef).name).toBe('done');
+      expect(task.attrs.map((a) => a.key)).toContain('asyncBefore');
+    },
+  );
+
+  test.each(REPEATABLE)(
+    '`%s` without the clause leaves every slot unset',
+    async (_keyword, type, program) => {
+      const task = await statementAt<Repeatable>(program(''));
+      expect(task.$type).toBe(type);
+      expect(task.cardinality).toBeUndefined();
+      expect(task.element).toBeUndefined();
+      expect(task.collection).toBeUndefined();
+      expect(task.sequential).toBe(false);
+      expect(task.completion).toBeUndefined();
+      expect(task.attrs.map((a) => a.key)).toContain('asyncBefore');
+    },
+  );
+
+  test('a start event takes no clause, and the clause on the next statement is not swallowed', async () => {
+    const rejected = await parse(
+      `process p { start S for each line in lines user U end E }`,
+    );
+    expect(rejected.parseResult.parserErrors.map((e) => e.message)).toEqual([
+      "A repeat clause ('for ...') attaches to the step that repeats. " +
+        'The statement before it does not take one; move the clause onto ' +
+        'the step that should.',
+    ]);
+
+    const accepted = await parseModel(
+      `process p { start S user U for each line in lines end E }`,
+    );
+    expect(accepted.processes[0]!.body.map((s) => s.$type)).toEqual([
+      'StartEvent',
+      'UserTask',
+      'EndEvent',
+    ]);
   });
 });
 

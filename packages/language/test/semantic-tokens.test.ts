@@ -92,7 +92,7 @@ process p {
     expectKeywordAt(result);
   });
 
-  test('`on condition (…)` highlights the trigger word, not the condition variable', async () => {
+  test('`on condition (...)` highlights the trigger word, not the condition variable', async () => {
     const result = await highlight(`
 process p {
   on <|condition|> (<|amount|> > 100) { }
@@ -145,6 +145,62 @@ process p {
 `);
     expectKeywordAt(result, 0);
     expectKeywordAt(result, 1);
+  });
+});
+
+describe('trigger word and particle on a start and end event', () => {
+  test('`start S message "M"` highlights the trigger word, not the start name', async () => {
+    const result = await highlight(`
+process p {
+  start <|S|> <|message|> "M"
+  user A
+}
+`);
+    expectNoTokenAt(result, 0);
+    expectKeywordAt(result, 1);
+  });
+
+  test('`start S timer after "PT1H"` highlights both the trigger word and the particle', async () => {
+    const result = await highlight(`
+process p {
+  start S <|timer|> <|after|> "PT1H"
+  user A
+}
+`);
+    expectKeywordAt(result, 0);
+    expectKeywordAt(result, 1);
+  });
+
+  test('`end E terminate` highlights the trigger word', async () => {
+    const result = await highlight(`
+process p {
+  start S
+  user A
+  end E <|terminate|>
+}
+`);
+    expectKeywordAt(result);
+  });
+
+  test('a plain `start`/`end` with no trigger carries no token on its name', async () => {
+    const result = await highlight(`
+process p {
+  start <|S|>
+  end <|E|>
+}
+`);
+    expectNoTokenAt(result, 0);
+    expectNoTokenAt(result, 1);
+  });
+
+  test('`var terminate: string` carries no token on the name', async () => {
+    const result = await highlight(`
+process p {
+  var <|terminate|>: string
+  end Done terminate
+}
+`);
+    expectNoTokenAt(result);
   });
 });
 

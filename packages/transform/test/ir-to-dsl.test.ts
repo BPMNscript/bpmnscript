@@ -14,11 +14,14 @@ import type { Model } from '@bpmn-script/language';
 
 import { irToDsl, UNSTRUCTURED_MARKER } from '../src/ir-to-dsl.js';
 import { astToIr } from '../src/ast-to-ir.js';
+import { xmlToIr } from '../src/xml-to-ir.js';
+import { bpmnDoc } from './helpers/bpmn-doc.js';
 import {
   around,
   boundaryEvent,
   callActivity,
   chained,
+  chainedSub,
   classBinding,
   conditionDef,
   delegateBinding,
@@ -52,6 +55,7 @@ import type {
   EventDefinition,
   FlowElement,
   IntermediateCatchEvent,
+  LoopCharacteristics,
   SequenceFlow,
 } from '../src/ir/types.js';
 
@@ -275,22 +279,22 @@ const INVOICE_IR: BpmnProcess = {
 // 1. Structured restructuring: each construct emits its surface form.
 // ---------------------------------------------------------------------------
 
-describe('irToDsl — structured restructuring', () => {
-  it('restructures a desugared if/else IR to `if (…) { } else { }` (no `gateway`)', async () => {
+describe('irToDsl: structured restructuring', () => {
+  it('restructures a desugared if/else IR to `if (...) { } else { }` (no `gateway`)', async () => {
     const dsl = irToDsl(IF_ELSE_IR);
     expect(dsl).toContain('if (amount > 1000) {');
     expect(dsl).toContain('} else {');
     expect(hasGatewayKeyword(dsl)).toBe(false);
   });
 
-  it('restructures a desugared while IR to `while (…) { }` with no `goto`', () => {
+  it('restructures a desugared while IR to `while (...) { }` with no `goto`', () => {
     const dsl = irToDsl(WHILE_IR);
     expect(dsl).toContain('while (count < 10) {');
     expect(hasGoto(dsl)).toBe(false);
     expect(hasGatewayKeyword(dsl)).toBe(false);
   });
 
-  it('restructures a desugared do-while IR to `do { } while (…)`', () => {
+  it('restructures a desugared do-while IR to `do { } while (...)`', () => {
     const dsl = irToDsl(DO_WHILE_IR);
     expect(dsl).toContain('do {');
     expect(dsl).toContain('} while (count < 10)');
@@ -342,7 +346,7 @@ describe('irToDsl — structured restructuring', () => {
 // 2. Local idempotence: re-parse + re-desugar equals input up to id norm.
 // ---------------------------------------------------------------------------
 
-describe('irToDsl — local idempotence (re-desugar equivalence)', () => {
+describe('irToDsl: local idempotence (re-desugar equivalence)', () => {
   it.each([
     ['if/else round-trips to an equivalent IR', IF_ELSE_IR],
     ['while round-trips to an equivalent IR (back-edge consumed)', WHILE_IR],
@@ -388,11 +392,11 @@ describe('irToDsl — local idempotence (re-desugar equivalence)', () => {
 // 3. Goto degradation: unstructured / irreducible graphs stay parseable.
 // ---------------------------------------------------------------------------
 
-describe('irToDsl — goto degradation (every edge with a form keeps it)', () => {
+describe('irToDsl: goto degradation (every edge with a form keeps it)', () => {
   /**
    * Hand-built unstructured IR: two XOR gateways whose branches cross so no
    * single post-dominating join exists (`G2` re-enters `A`, which `G1` also
-   * targets). The contract: ≥1 `goto`, valid source, and every real-node
+   * targets). The contract: >=1 `goto`, valid source, and every real-node
    * connection preserved on re-desugar.
    */
   const IRREDUCIBLE_IR: BpmnProcess = minimalProcess(
@@ -422,7 +426,7 @@ describe('irToDsl — goto degradation (every edge with a form keeps it)', () =>
     await reDesugar(dsl);
   });
 
-  it('loses no edge — real-node connectivity is preserved on re-desugar', async () => {
+  it('loses no edge: real-node connectivity is preserved on re-desugar', async () => {
     const dsl = irToDsl(IRREDUCIBLE_IR);
     const ir2 = await reDesugar(dsl);
     expect(realReachability(ir2)).toEqual(realReachability(IRREDUCIBLE_IR));
@@ -430,7 +434,7 @@ describe('irToDsl — goto degradation (every edge with a form keeps it)', () =>
 
   /**
    * Hand-built IR with an all-unconditioned XOR split carrying 3 out-flows. This
-   * is unreachable via the desugaring pipeline (a desugared XOR always has ≥1
+   * is unreachable via the desugaring pipeline (a desugared XOR always has >=1
    * conditioned flow), but the emitter must still be total. A naive emit would
    * produce an invalid chained `if (true) { } else { } else { }`; the degraded
    * form caps the structure at one `if (true)` / `else` pair and routes every
@@ -458,7 +462,7 @@ describe('irToDsl — goto degradation (every edge with a form keeps it)', () =>
     ],
   );
 
-  it('degrades an all-unconditioned 3-way XOR to valid source (no chained else, ≥1 goto)', async () => {
+  it('degrades an all-unconditioned 3-way XOR to valid source (no chained else, >=1 goto)', async () => {
     const dsl = irToDsl(ALL_UNCONDITIONED_3WAY);
     // Totality: the source must re-parse cleanly despite the invalid input shape.
     const ir2 = await reDesugar(dsl);
@@ -576,7 +580,7 @@ describe('irToDsl — goto degradation (every edge with a form keeps it)', () =>
 // 4. Multiple / named end events survive as explicit `end` statements.
 // ---------------------------------------------------------------------------
 
-describe('irToDsl — multiple and named ends', () => {
+describe('irToDsl: multiple and named ends', () => {
   /** Desugared XOR split routing to two distinct named ends (no join). */
   const TWO_ENDS_IR: BpmnProcess = minimalProcess(
     [
@@ -617,7 +621,7 @@ describe('irToDsl — multiple and named ends', () => {
 // 5. Output formatting conventions.
 // ---------------------------------------------------------------------------
 
-describe('irToDsl — output conventions', () => {
+describe('irToDsl: output conventions', () => {
   it('uses 2-space indentation for nested blocks', () => {
     const dsl = irToDsl(IF_ELSE_IR);
     // The conditioned branch body (a user task) is indented two levels.
@@ -629,16 +633,16 @@ describe('irToDsl — output conventions', () => {
 // 6. Service-task bindings and fenced script tasks.
 // ---------------------------------------------------------------------------
 
-describe('irToDsl — service-task bindings', () => {
+describe('irToDsl: service-task bindings', () => {
   it.each([
     [
-      'renders a class binding as `service X { class = "…" }` (byte-unchanged)',
+      'renders a class binding as `service X { class = "..." }` (byte-unchanged)',
       serviceTask('Charge', classBinding('com.example.Charge')),
       'service Charge { class = "com.example.Charge" }',
       undefined,
     ],
     [
-      'keeps a labelled class binding identical to the historical output (regression)',
+      'keeps a labeled class binding identical to the historical output (regression)',
       {
         kind: 'serviceTask',
         id: 'AutoApprove',
@@ -649,7 +653,7 @@ describe('irToDsl — service-task bindings', () => {
       undefined,
     ],
     [
-      'renders an expression binding as `service X { expression = "${…}" }`',
+      'renders an expression binding as `service X { expression = "${...}" }`',
       serviceTask('Calc', exprBinding('${greeter.hello(execution)}')),
       'service Calc { expression = "${greeter.hello(execution)}" }',
       undefined,
@@ -662,7 +666,7 @@ describe('irToDsl — service-task bindings', () => {
       'delegateExpression',
     ],
     [
-      'renders an external binding as `service X { topic = "…" }`',
+      'renders an external binding as `service X { topic = "..." }`',
       serviceTask('Notify', externalBinding('notifications')),
       'service Notify { topic = "notifications" }',
       // An external binding keeps the `service` keyword, never `external`.
@@ -716,8 +720,83 @@ describe('irToDsl — service-task bindings', () => {
   });
 });
 
-describe('irToDsl — fenced script task', () => {
-  it('emits a fenced `script X ```<format> … ``` ` block (open tag, body, close)', () => {
+describe('irToDsl: task kinds', () => {
+  /** Statement lines, indentation stripped, so a match is the whole statement. */
+  const statements = (ir: BpmnProcess): string[] =>
+    irToDsl(ir)
+      .split('\n')
+      .map((line) => line.trim());
+
+  it.each([
+    [
+      'a plain task prints as a step statement',
+      { kind: 'task', id: 'Draft' },
+      'step Draft',
+      'step Draft "Draft it"',
+    ],
+    [
+      'a receive task names its message in the block',
+      { kind: 'receiveTask', id: 'Wait', messageName: 'OrderPaid' },
+      'receive Wait { message = "OrderPaid" }',
+      'receive Wait "Draft it" { message = "OrderPaid" }',
+    ],
+    [
+      'a send element prints under the send keyword',
+      {
+        kind: 'serviceTask',
+        id: 'Notify',
+        element: 'send',
+        binding: classBinding('com.example.Notify'),
+      },
+      'send Notify { class = "com.example.Notify" }',
+      'send Notify "Draft it" { class = "com.example.Notify" }',
+    ],
+    [
+      'a businessRule element prints under the decide keyword',
+      {
+        kind: 'serviceTask',
+        id: 'Rate',
+        element: 'businessRule',
+        binding: { kind: 'decision', decisionRef: 'riskRating' },
+      },
+      'decide Rate { decision = "riskRating" }',
+      'decide Rate "Draft it" { decision = "riskRating" }',
+    ],
+  ] as const)('%s', (_title, node, nameless, labeled) => {
+    expect(statements(around(node))).toContain(nameless);
+    expect(statements(around({ ...node, name: 'Draft it' }))).toContain(
+      labeled,
+    );
+  });
+
+  it('prints a receive task with no message name as a bare statement', () => {
+    expect(statements(around({ kind: 'receiveTask', id: 'Wait' }))).toContain(
+      'receive Wait',
+    );
+  });
+
+  it('prints a decision binding decision, version pin, mapping, result variable', () => {
+    const rate = around({
+      kind: 'serviceTask',
+      id: 'Rate',
+      element: 'businessRule',
+      binding: {
+        kind: 'decision',
+        decisionRef: 'riskRating',
+        binding: { kind: 'latest' },
+        mapDecisionResult: 'singleEntry',
+      },
+      resultVariable: 'risk',
+    });
+    expect(statements(rate)).toContain(
+      'decide Rate { decision = "riskRating" binding = latest ' +
+        'mapDecisionResult = singleEntry resultVariable = "risk" }',
+    );
+  });
+});
+
+describe('irToDsl: fenced script task', () => {
+  it('emits a fenced `script X ```<format> ... ``` ` block (open tag, body, close)', () => {
     const code = 'var x = 1;\nexecution.setVariable("x", x);';
     const dsl = irToDsl(
       around({ kind: 'scriptTask', id: 'Compute', format: 'javascript', code }),
@@ -766,7 +845,7 @@ describe('irToDsl — fenced script task', () => {
 // IR-literal-driven tests assert the emitted text instead of re-parsing.
 // ---------------------------------------------------------------------------
 
-describe('irToDsl — sub-process emission', () => {
+describe('irToDsl: sub-process emission', () => {
   /** `PStart -> Before -> sub(SubStart -> Work -> SubEnd) -> After -> PEnd`. */
   const NESTED_IR: BpmnProcess = processIr(
     'proc',
@@ -797,7 +876,7 @@ describe('irToDsl — sub-process emission', () => {
     ],
   );
 
-  it('prints `subprocess sub { … }` with the body indented one level', () => {
+  it('prints `subprocess sub { ... }` with the body indented one level', () => {
     const dsl = irToDsl(NESTED_IR);
     expect(dsl).toContain('\n  subprocess sub {\n');
     expect(dsl).toContain('\n    start SubStart');
@@ -912,7 +991,7 @@ describe('irToDsl — sub-process emission', () => {
 // member order, mapping shorthand, version print contract), not a re-parse.
 // ---------------------------------------------------------------------------
 
-describe('irToDsl — call activity', () => {
+describe('irToDsl: call activity', () => {
   it('prints the full single-line form in canonical member order with shorthand', () => {
     const dsl = irToDsl(
       around({
@@ -1061,7 +1140,7 @@ const handlerWithIf = (eventDefinition: EventDefinition): BpmnProcess =>
     [{ id: 'F', sourceRef: 'S', targetRef: 'E' }],
   );
 
-describe('irToDsl — event layer', () => {
+describe('irToDsl: event layer', () => {
   it('prints declarations, throws, emits, and trailing handlers in order', () => {
     const ir: BpmnProcess = {
       ...chained(
@@ -1148,7 +1227,7 @@ describe('irToDsl — event layer', () => {
 // Event layer: message / signal / timer / conditional triggers and signal throws.
 // ---------------------------------------------------------------------------
 
-describe('irToDsl — event layer (message / signal / timer / conditional)', () => {
+describe('irToDsl: event layer (message / signal / timer / conditional)', () => {
   it('prints message/signal headers, the signal emit/throw, and trailing handlers', () => {
     const ir: BpmnProcess = processIr(
       'proc',
@@ -1227,15 +1306,76 @@ describe('irToDsl — event layer (message / signal / timer / conditional)', () 
     expect(irToDsl(ir)).toContain(header);
   });
 
+  it('prints a message end as a throw, spelling an authored id and dropping a synthesized one', async () => {
+    const named = minimalProcess(
+      [
+        { kind: 'startEvent', id: 'S' },
+        typedEvent('endEvent', 'Ack', messageDef('Ack')),
+      ],
+      [{ id: 'F', sourceRef: 'S', targetRef: 'Ack' }],
+    );
+    expect(await printed(named)).toContain('throw message Ack "Ack"');
+
+    const synthesized = minimalProcess(
+      [
+        { kind: 'startEvent', id: 'S' },
+        typedEvent('endEvent', 'Throw_p_1', messageDef('Ack')),
+      ],
+      [{ id: 'F', sourceRef: 'S', targetRef: 'Throw_p_1' }],
+    );
+    const dsl = await printed(synthesized);
+    expect(dsl).toContain('throw message "Ack"');
+    expect(dsl).not.toContain('Throw_');
+  });
+
+  it('prints a message intermediate throw as an emit, spelling an authored id and dropping a synthesized one', async () => {
+    const named = await printed(
+      around(typedEvent('intermediateThrowEvent', 'Notify', messageDef('Ack'))),
+    );
+    expect(named).toContain('emit message Notify "Ack"');
+
+    const synthesized = await printed(
+      around(
+        typedEvent('intermediateThrowEvent', 'Throw_p_2', messageDef('Ack')),
+      ),
+    );
+    expect(synthesized).toContain('emit message "Ack"');
+    expect(synthesized).not.toContain('Throw_');
+  });
+
+  it('prints the implementation a thrown or emitted message carries', async () => {
+    const thrown = minimalProcess(
+      [
+        { kind: 'startEvent', id: 'S' },
+        {
+          ...typedEvent('endEvent', 'Sent', messageDef('Ack')),
+          binding: classBinding('com.example.Send'),
+        },
+      ],
+      [{ id: 'F', sourceRef: 'S', targetRef: 'Sent' }],
+    );
+    expect(await printed(thrown)).toContain(
+      'throw message Sent "Ack" { class = "com.example.Send" }',
+    );
+
+    const emitted = around({
+      ...typedEvent('intermediateThrowEvent', 'Ping', messageDef('Ack')),
+      binding: externalBinding('send-ack'),
+    });
+    expect(await printed(emitted)).toContain(
+      'emit message Ping "Ack" { topic = "send-ack" }',
+    );
+  });
+
   it('refuses a throw-side event carrying a non-throwable definition', () => {
     const badEnd: BpmnProcess = minimalProcess(
       [
         { kind: 'startEvent', id: 'S' },
-        typedEvent('endEvent', 'Bad', messageDef('X')),
+        typedEvent('endEvent', 'Bad', conditionDef('${true}')),
       ],
       [{ id: 'F', sourceRef: 'S', targetRef: 'Bad' }],
     );
-    expect(() => irToDsl(badEnd)).toThrow(/message/);
+    expect(() => irToDsl(badEnd)).toThrow(/conditional/);
 
     const badEmit: BpmnProcess = minimalProcess(
       [
@@ -1254,11 +1394,268 @@ describe('irToDsl — event layer (message / signal / timer / conditional)', () 
 });
 
 // ---------------------------------------------------------------------------
+// Event layer: a top-level start's own trigger, which has nowhere else to
+// print, versus an event sub-process's start, whose trigger prints in the
+// `on` header instead. And the terminate end, which prints on `end` rather
+// than through `renderThrow`.
+// ---------------------------------------------------------------------------
+
+describe('irToDsl: triggered start events', () => {
+  const startWith = (def: EventDefinition): BpmnProcess =>
+    minimalProcess(
+      [
+        { kind: 'startEvent', id: 'S', eventDefinition: def },
+        { kind: 'endEvent', id: 'E' },
+      ],
+      [{ id: 'F', sourceRef: 'S', targetRef: 'E' }],
+    );
+
+  it.each([
+    ['message', messageDef('OrderReceived'), 'start S message "OrderReceived"'],
+    ['signal', signalDef('Cancelled'), 'start S signal "Cancelled"'],
+    ['timer after', timerDef('duration', 'PT1H'), 'start S timer after "PT1H"'],
+    [
+      'timer at',
+      timerDef('date', '2026-08-01T09:00:00'),
+      'start S timer at "2026-08-01T09:00:00"',
+    ],
+    [
+      'timer every',
+      timerDef('cycle', 'R/PT10M'),
+      'start S timer every "R/PT10M"',
+    ],
+  ])(
+    'prints a top-level start carrying a %s trigger',
+    async (_title, def, expected) => {
+      expect(await printed(startWith(def))).toContain(expected);
+    },
+  );
+
+  it('prints the label before the trigger', async () => {
+    const ir = minimalProcess(
+      [
+        {
+          kind: 'startEvent',
+          id: 'S',
+          name: 'Order in',
+          eventDefinition: messageDef('OrderReceived'),
+        },
+        { kind: 'endEvent', id: 'E' },
+      ],
+      [{ id: 'F', sourceRef: 'S', targetRef: 'E' }],
+    );
+    expect(await printed(ir)).toContain(
+      'start S "Order in" message "OrderReceived"',
+    );
+  });
+
+  it('prints a triggered start whole even under a synthesized StartEvent_ id', async () => {
+    const ir = minimalProcess(
+      [
+        {
+          kind: 'startEvent',
+          id: 'StartEvent_p',
+          eventDefinition: messageDef('OrderReceived'),
+        },
+        { kind: 'endEvent', id: 'E' },
+      ],
+      [{ id: 'F', sourceRef: 'StartEvent_p', targetRef: 'E' }],
+    );
+    expect(await printed(ir)).toContain(
+      'start StartEvent_p message "OrderReceived"',
+    );
+  });
+});
+
+describe('irToDsl: event sub-process start-trigger suppression', () => {
+  it("prints the trigger once, in the on header, never on the handler's own start; a synthesized start prints nothing", async () => {
+    const ir = minimalProcess(
+      [
+        { kind: 'startEvent', id: 'S' },
+        { kind: 'endEvent', id: 'E' },
+        eventHandler('OnMsg', 'MsgStart', messageDef('PaymentReceived')),
+        {
+          kind: 'subProcess',
+          id: 'OnSig',
+          triggeredByEvent: true,
+          flowElements: [
+            typedEvent(
+              'startEvent',
+              'StartEvent_OnSig',
+              signalDef('Cancelled'),
+            ),
+            { kind: 'endEvent', id: 'SigEnd' },
+          ],
+          sequenceFlows: [
+            {
+              id: 'SF_OnSig',
+              sourceRef: 'StartEvent_OnSig',
+              targetRef: 'SigEnd',
+            },
+          ],
+        },
+      ],
+      [{ id: 'F', sourceRef: 'S', targetRef: 'E' }],
+    );
+    const dsl = await printed(ir);
+    expect(dsl).toContain(
+      '  on message "PaymentReceived" {\n    start MsgStart\n',
+    );
+    expect(dsl).not.toContain('start MsgStart message');
+    expect(dsl).not.toContain('StartEvent_OnSig');
+    expect(dsl).toContain('  on signal "Cancelled" {\n    end SigEnd\n  }\n');
+    // The trigger appears exactly once: in the `on` header, never on the start.
+    expect(dsl.split('message "PaymentReceived"')).toHaveLength(2);
+    expect(dsl.split('signal "Cancelled"')).toHaveLength(2);
+  });
+});
+
+describe('irToDsl: terminate end event', () => {
+  it('prints a terminate end, with a label when named', async () => {
+    const plain = minimalProcess(
+      [
+        { kind: 'startEvent', id: 'S' },
+        typedEvent('endEvent', 'Stop', { kind: 'terminate' }),
+      ],
+      [{ id: 'F', sourceRef: 'S', targetRef: 'Stop' }],
+    );
+    expect(await printed(plain)).toContain('end Stop terminate');
+
+    const labeled = minimalProcess(
+      [
+        { kind: 'startEvent', id: 'S' },
+        {
+          kind: 'endEvent',
+          id: 'Stop',
+          name: 'All stop',
+          eventDefinition: { kind: 'terminate' },
+        },
+      ],
+      [{ id: 'F', sourceRef: 'S', targetRef: 'Stop' }],
+    );
+    expect(await printed(labeled)).toContain('end Stop "All stop" terminate');
+  });
+
+  it('prints a synthesized terminate end with no block rather than dropping it', async () => {
+    const ir = minimalProcess(
+      [
+        { kind: 'startEvent', id: 'S' },
+        typedEvent('endEvent', 'EndEvent_p', { kind: 'terminate' }),
+      ],
+      [{ id: 'F', sourceRef: 'S', targetRef: 'EndEvent_p' }],
+    );
+    expect(await printed(ir)).toContain('end EndEvent_p terminate');
+  });
+
+  it('keeps the terminate and its label across an imported end event round trip', async () => {
+    const ir = processIr(
+      'proc',
+      [
+        { kind: 'startEvent', id: 'S' },
+        {
+          kind: 'endEvent',
+          id: 'EndEvent_1',
+          name: 'Abandon all',
+          eventDefinition: { kind: 'terminate' },
+        },
+      ],
+      [{ id: 'F', sourceRef: 'S', targetRef: 'EndEvent_1' }],
+    );
+    const dsl = await printed(ir);
+    expect(dsl).toContain('end EndEvent_1 "Abandon all" terminate');
+
+    const ends = (await reDesugar(dsl)).flowElements.filter(
+      (el) => el.kind === 'endEvent',
+    );
+    expect(ends).toEqual([
+      {
+        kind: 'endEvent',
+        id: 'EndEvent_1',
+        name: 'Abandon all',
+        eventDefinition: { kind: 'terminate' },
+      },
+    ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Blocks that can be given up: the `attempt` head, the cancel end that gives
+// the block up, and the handler that catches it.
+// ---------------------------------------------------------------------------
+
+describe('irToDsl: blocks that can be given up', () => {
+  /** The block under test, wired `St -> Book -> En` by {@link around}. */
+  const book = (element?: 'transaction'): FlowElement => ({
+    ...chainedSub('Book', [{ kind: 'userTask', id: 'Charge' }]),
+    name: 'Book and pay',
+    asyncBefore: true,
+    loop: { collection: 'lines', elementVariable: 'line' },
+    ...(element === undefined ? {} : { element }),
+  });
+
+  it('prints the block that can be given up under its own head, and a plain one under `subprocess`', async () => {
+    expect(await printed(around(book('transaction')))).toContain(
+      'attempt Book "Book and pay" for each line in lines { asyncBefore = true } {\n',
+    );
+    expect(await printed(around(book()))).toContain(
+      'subprocess Book "Book and pay" for each line in lines { asyncBefore = true } {\n',
+    );
+  });
+
+  it('prints a cancel end with its label, and a synthesized one rather than dropping it', async () => {
+    const labeled = minimalProcess(
+      [
+        { kind: 'startEvent', id: 'S' },
+        {
+          kind: 'endEvent',
+          id: 'GiveUp',
+          name: 'Give up the booking',
+          eventDefinition: { kind: 'cancel' },
+        },
+      ],
+      [{ id: 'F', sourceRef: 'S', targetRef: 'GiveUp' }],
+    );
+    expect(await printed(labeled)).toContain(
+      'end GiveUp "Give up the booking" cancel',
+    );
+
+    const synthesized = minimalProcess(
+      [
+        { kind: 'startEvent', id: 'S' },
+        typedEvent('endEvent', 'EndEvent_p', { kind: 'cancel' }),
+      ],
+      [{ id: 'F', sourceRef: 'S', targetRef: 'EndEvent_p' }],
+    );
+    expect(await printed(synthesized)).toContain('end EndEvent_p cancel');
+  });
+
+  it('prints the handler that catches the block being given up', async () => {
+    const ir = minimalProcess(
+      [
+        { kind: 'startEvent', id: 'St' },
+        book('transaction'),
+        { kind: 'endEvent', id: 'En' },
+        boundaryEvent('Boundary_Book_cancel', 'Book', { kind: 'cancel' }),
+        { kind: 'endEvent', id: 'Escaped' },
+      ],
+      [
+        edge('St', 'Book', { id: 'f0' }),
+        edge('Book', 'En', { id: 'f1' }),
+        edge('Boundary_Book_cancel', 'Escaped', { id: 'f2' }),
+      ],
+    );
+    const dsl = await printed(ir);
+    expect(dsl).toContain('  on Book: cancel {\n');
+    expect(dsl).toContain('    end Escaped\n');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Event layer: intermediate catch (`await`), a blocking one-in/one-out node
 // inline on the main flow, printed with no id token (it has no name slot).
 // ---------------------------------------------------------------------------
 
-describe('irToDsl — event layer (intermediate catch / await)', () => {
+describe('irToDsl: event layer (intermediate catch / await)', () => {
   /** A `start -> task -> catch -> task -> end` body: the catch is on the main flow. */
   function catchBody(
     def: IntermediateCatchEvent['eventDefinition'],
@@ -1276,7 +1673,7 @@ describe('irToDsl — event layer (intermediate catch / await)', () => {
     );
   }
 
-  it('prints "await message …" inline between the surrounding steps, with no id token', () => {
+  it('prints "await message ..." inline between the surrounding steps, with no id token', () => {
     const dsl = irToDsl(catchBody(messageDef('M')));
     expect(dsl).toBe(
       [
@@ -1295,17 +1692,17 @@ describe('irToDsl — event layer (intermediate catch / await)', () => {
 
   it.each([
     [
-      'prints "await timer after …" for a duration timer catch',
+      'prints "await timer after ..." for a duration timer catch',
       timerDef('duration', 'PT1H'),
       '  await timer after "PT1H"\n',
     ],
     [
-      'prints "await signal …" for a signal catch',
+      'prints "await signal ..." for a signal catch',
       signalDef('S'),
       '  await signal "S"\n',
     ],
     [
-      'prints "await condition (…)" for a conditional catch, bare DSL in the JUEL subset',
+      'prints "await condition (...)" for a conditional catch, bare DSL in the JUEL subset',
       conditionDef('${amount > 100}'),
       '  await condition (amount > 100)\n',
     ],
@@ -1320,7 +1717,7 @@ describe('irToDsl — event layer (intermediate catch / await)', () => {
 // Event layer: compensation (payload-less catch + throw + emit).
 // ---------------------------------------------------------------------------
 
-describe('irToDsl — event layer (compensation)', () => {
+describe('irToDsl: event layer (compensation)', () => {
   /**
    * A process exercising the whole compensation surface: `emit compensation`
    * mid-chain, a terminal `throw compensation`, and a trailing `on
@@ -1407,7 +1804,7 @@ describe('irToDsl — event layer (compensation)', () => {
 // degrade to a `goto`.
 // ---------------------------------------------------------------------------
 
-describe('irToDsl — boundary events', () => {
+describe('irToDsl: boundary events', () => {
   /**
    * `start S -> user <host> -> end E`, flows F1 and F2, with `rest` and
    * `flows` appended verbatim: the boundary event, its escape chain, and
@@ -1762,7 +2159,7 @@ describe('irToDsl — boundary events', () => {
 // dropped from the name slot (throw/emit) instead.
 // ---------------------------------------------------------------------------
 
-describe('irToDsl — synthesized terminal omission', () => {
+describe('irToDsl: synthesized terminal omission', () => {
   /** A synthesized implicit start/end pair wrapping a sibling container that
    * carries its own authored start/end. */
   const IMPLICIT_TERMINALS_IR: BpmnProcess = minimalProcess(
@@ -1826,13 +2223,61 @@ describe('irToDsl — synthesized terminal omission', () => {
     );
     expect(namedThrow).toContain('throw error PaymentFailed "PF"');
   });
+
+  // `StartEvent_1` is the id a modeler mints, so a labeled start drawn in one
+  // arrives under a synthesized-shaped id rather than an authored one. Printing
+  // it would write a name the validator rejects, so the statement is left out
+  // and the label it carried is reported at import instead.
+  it('reports the label a synthesized start and end take with them, and prints neither', async () => {
+    const { ir, warnings } = await xmlToIr(bpmnDoc`
+    <bpmn:startEvent id="StartEvent_1" name="Order Received" />
+    <bpmn:userTask id="Approve" />
+    <bpmn:endEvent id="EndEvent_1" name="Order Filed" />
+    <bpmn:sequenceFlow id="F1" sourceRef="StartEvent_1" targetRef="Approve" />
+    <bpmn:sequenceFlow id="F2" sourceRef="Approve" targetRef="EndEvent_1" />`);
+    expect(warnings.map((w) => [w.category, w.elementId])).toEqual([
+      ['label', 'StartEvent_1'],
+      ['label', 'EndEvent_1'],
+    ]);
+    expect(warnings[0]?.message).toContain('Order Received');
+    expect(warnings[1]?.message).toContain('Order Filed');
+
+    const dsl = irToDsl(ir);
+    expect(dsl).not.toContain('StartEvent_1');
+    expect(dsl).not.toContain('EndEvent_1');
+    expect(dsl).not.toContain('Order Received');
+    expect(dsl).not.toContain('Order Filed');
+  });
+
+  // The trigger moves into the `on` header, so nothing else holds the start
+  // inside a handler body either.
+  it("reports the label an event handler's synthesized trigger start takes with it", async () => {
+    const { ir, warnings } = await xmlToIr(bpmnDoc`
+    <bpmn:startEvent id="S" />
+    <bpmn:subProcess id="Handler" triggeredByEvent="true">
+      <bpmn:startEvent id="StartEvent_9" name="Restock Heard">
+        <bpmn:errorEventDefinition />
+      </bpmn:startEvent>
+    </bpmn:subProcess>
+    <bpmn:endEvent id="E" />
+    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="E" />`);
+    expect(warnings.map((w) => [w.category, w.elementId])).toEqual([
+      ['label', 'StartEvent_9'],
+    ]);
+    expect(warnings[0]?.message).toContain('Restock Heard');
+
+    const dsl = irToDsl(ir);
+    expect(dsl).toContain('on error {');
+    expect(dsl).not.toContain('StartEvent_9');
+    expect(dsl).not.toContain('Restock Heard');
+  });
 });
 
 // ---------------------------------------------------------------------------
 // Guard-clause continuation + the never-goto-a-gateway invariant.
 // ---------------------------------------------------------------------------
 
-describe('irToDsl — guard-clause continuation', () => {
+describe('irToDsl: guard-clause continuation', () => {
   it('recovers a throw-guard `if` with the continuation at the body level and no gateway token', async () => {
     // `if (c) { throw }` with no else: the then-branch terminates, the default
     // continues the main flow. There is no clean post-dominating join, so the
@@ -1901,7 +2346,7 @@ describe('irToDsl — guard-clause continuation', () => {
   });
 });
 
-describe('irToDsl — never emit a goto to a gateway', () => {
+describe('irToDsl: never emit a goto to a gateway', () => {
   /**
    * A multi-out real node whose second out-edge lands on a one-out pass-through
    * gateway `Gateway_p_9_join -> R`. The second arrival is realized as a goto;
@@ -1967,8 +2412,8 @@ describe('irToDsl — never emit a goto to a gateway', () => {
   });
 });
 
-describe('irToDsl — parallel-fork recovery (terminating branch)', () => {
-  it('recovers an asymmetric fork as `parallel { … }` with the throw inline and the continuation after', async () => {
+describe('irToDsl: parallel-fork recovery (terminating branch)', () => {
+  it('recovers an asymmetric fork as `parallel { ... }` with the throw inline and the continuation after', async () => {
     // A `parallel` where one branch terminates (`throw`) and the other flows on
     // to the join. The fork's immediate post-dominator is the virtual exit, so
     // there is no clean parallel join and the fork must be recovered
@@ -2081,7 +2526,7 @@ describe('irToDsl — parallel-fork recovery (terminating branch)', () => {
 // printability rule the elision sites share.
 // ---------------------------------------------------------------------------
 
-describe('irToDsl — engine attributes', () => {
+describe('irToDsl: engine attributes', () => {
   /**
    * One of every statement kind that has an attribute block, each carrying at
    * least one engine attribute, plus a boundary handler whose escape chain is a
@@ -2296,19 +2741,26 @@ describe('irToDsl — engine attributes', () => {
    * prints is exactly the question the shared printability predicate answers, so
    * a jump can never name a statement the emitter skipped.
    */
-  const surplusEdgeIr = (attrs: { asyncBefore?: true }): BpmnProcess =>
-    minimalProcess(
+  const surplusEdgeIr = (end: {
+    id?: string;
+    name?: string;
+    asyncBefore?: true;
+    eventDefinition?: EventDefinition;
+  }): BpmnProcess => {
+    const { id = 'EndEvent_p', ...attrs } = end;
+    return minimalProcess(
       [
         { kind: 'startEvent', id: 'S' },
         { kind: 'userTask', id: 'A' },
-        { kind: 'endEvent', id: 'EndEvent_p', ...attrs },
+        { kind: 'endEvent', id, ...attrs },
       ],
       [
         { id: 'F1', sourceRef: 'S', targetRef: 'A' },
-        { id: 'F2', sourceRef: 'S', targetRef: 'EndEvent_p' },
-        { id: 'F3', sourceRef: 'A', targetRef: 'EndEvent_p' },
+        { id: 'F2', sourceRef: 'S', targetRef: id },
+        { id: 'F3', sourceRef: 'A', targetRef: id },
       ],
     );
+  };
 
   it('prints a synthesized end carrying an engine attribute so a jump resolves, and elides one carrying nothing', async () => {
     const dsl = await printed(surplusEdgeIr({ asyncBefore: true }));
@@ -2324,6 +2776,15 @@ describe('irToDsl — engine attributes', () => {
     expect(elided).toContain(UNSTRUCTURED_MARKER);
   });
 
+  it('prints a synthesized terminate end, which cannot be re-derived, so a jump resolves', async () => {
+    const dsl = await printed(
+      surplusEdgeIr({ eventDefinition: { kind: 'terminate' } }),
+    );
+    expect(dsl).toContain('end EndEvent_p terminate');
+    expect(dsl).toContain('goto EndEvent_p');
+    expect(dsl).not.toContain(UNSTRUCTURED_MARKER);
+  });
+
   /**
    * A back edge to the start event: the loop cannot be recognized as a `while`,
    * so the edge is written as a jump when the start has a printed statement to
@@ -2331,14 +2792,20 @@ describe('irToDsl — engine attributes', () => {
    * start prints is the same shared question, asked on the other side of the
    * predicate.
    */
-  const backEdgeIr = (attrs: { asyncBefore?: true }): BpmnProcess =>
-    minimalProcess(
+  const backEdgeIr = (start: {
+    id?: string;
+    name?: string;
+    asyncBefore?: true;
+  }): BpmnProcess => {
+    const { id = 'StartEvent_p', ...attrs } = start;
+    return minimalProcess(
       [
-        { kind: 'startEvent', id: 'StartEvent_p', ...attrs },
+        { kind: 'startEvent', id, ...attrs },
         { kind: 'userTask', id: 'A' },
       ],
-      flowChain('StartEvent_p', 'A', 'StartEvent_p'),
+      flowChain(id, 'A', id),
     );
+  };
 
   it('prints a synthesized start carrying an engine attribute so a jump resolves, and elides one carrying nothing', async () => {
     const dsl = await printed(backEdgeIr({ asyncBefore: true }));
@@ -2353,9 +2820,37 @@ describe('irToDsl — engine attributes', () => {
     expect(elided).not.toContain('goto StartEvent_p');
     expect(elided).toContain(UNSTRUCTURED_MARKER);
   });
+
+  // A label is not printable content: the id would have to print to carry one,
+  // and a synthesized id is a name the validator rejects.
+  it('elides a synthesized start and end carrying only a label, dropping the jump with them', async () => {
+    const start = await printed(backEdgeIr({ name: 'Order Received' }));
+    expect(start).not.toContain('start StartEvent_p');
+    expect(start).not.toContain('Order Received');
+    expect(start).toContain(UNSTRUCTURED_MARKER);
+
+    const end = await printed(surplusEdgeIr({ name: 'Order Filed' }));
+    expect(end).not.toContain('end EndEvent_p');
+    expect(end).not.toContain('Order Filed');
+    expect(end).toContain(UNSTRUCTURED_MARKER);
+  });
+
+  // Each synthesized-id template belongs to one kind, so an imported id shaped
+  // like another kind's is an authored name and has to survive the round trip.
+  it("prints an id carrying another kind's synthesized prefix, which is authored here", async () => {
+    const end = await printed(surplusEdgeIr({ id: 'StartEvent_p' }));
+    expect(end).toContain('end StartEvent_p');
+    expect(end).toContain('goto StartEvent_p');
+    expect(end).not.toContain(UNSTRUCTURED_MARKER);
+
+    const start = await printed(backEdgeIr({ id: 'EndEvent_p' }));
+    expect(start).toContain('start EndEvent_p');
+    expect(start).toContain('goto EndEvent_p');
+    expect(start).not.toContain(UNSTRUCTURED_MARKER);
+  });
 });
 
-describe('irToDsl — input/output parameters', () => {
+describe('irToDsl: input/output parameters', () => {
   it('prints every value form, inputs before outputs, in IR order', async () => {
     const dsl = await printed(
       around({
@@ -2480,7 +2975,7 @@ describe('irToDsl — input/output parameters', () => {
   });
 });
 
-describe('irToDsl — listeners', () => {
+describe('irToDsl: listeners', () => {
   it('prints each binding form, execution listeners before task listeners', async () => {
     const dsl = await printed(
       around({
@@ -2641,5 +3136,242 @@ describe('irToDsl — listeners', () => {
         'on complete { class = "com.example.Done" } ' +
         'form { amount: number } }',
     );
+  });
+});
+
+describe('irToDsl: repeated activities', () => {
+  const OVER_LINES: LoopCharacteristics = {
+    collection: 'lines',
+    elementVariable: 'line',
+  };
+
+  /** The kinds that carry a loop; anything else here is a compile error. */
+  type RepeatableElement = Extract<
+    FlowElement,
+    {
+      kind:
+        | 'task'
+        | 'userTask'
+        | 'serviceTask'
+        | 'scriptTask'
+        | 'receiveTask'
+        | 'subProcess'
+        | 'callActivity';
+    }
+  >;
+
+  /** Print one repeated element, wired `S -> el -> E`, with its settings block. */
+  const printRepeated = (
+    el: RepeatableElement,
+    loop: LoopCharacteristics,
+  ): string => irToDsl(around({ ...el, asyncBefore: true, loop }));
+
+  /** Every kind that can repeat, with the head and the tail its clause sits between. */
+  const KINDS = [
+    [
+      { kind: 'task', id: 'Record', name: 'Record it' },
+      'step Record "Record it"',
+      ' { asyncBefore = true }',
+    ],
+    [
+      { kind: 'userTask', id: 'Approve', name: 'Approve it' },
+      'user Approve "Approve it"',
+      ' { asyncBefore = true }',
+    ],
+    [
+      {
+        kind: 'serviceTask',
+        id: 'Notify',
+        name: 'Notify them',
+        element: 'send',
+        binding: classBinding('com.example.Notify'),
+      },
+      'send Notify "Notify them"',
+      ' { class = "com.example.Notify" asyncBefore = true }',
+    ],
+    [
+      {
+        kind: 'scriptTask',
+        id: 'Compute',
+        name: 'Compute it',
+        format: 'javascript',
+        code: 'x = 1',
+      },
+      'script Compute "Compute it"',
+      ' { asyncBefore = true } ```javascript',
+    ],
+    [
+      {
+        kind: 'receiveTask',
+        id: 'Wait',
+        name: 'Wait for it',
+        messageName: 'OrderPaid',
+      },
+      'receive Wait "Wait for it"',
+      ' { message = "OrderPaid" asyncBefore = true }',
+    ],
+    [
+      {
+        ...chainedSub('Fulfil', [
+          {
+            kind: 'serviceTask',
+            id: 'Pick',
+            binding: classBinding('com.example.Pick'),
+          },
+        ]),
+        name: 'Fulfil it',
+      },
+      'subprocess Fulfil "Fulfil it"',
+      ' { asyncBefore = true } {',
+    ],
+    [
+      {
+        kind: 'callActivity',
+        id: 'Regional',
+        name: 'Run it',
+        calledElement: 'regional-report',
+      },
+      'call Regional "Run it"',
+      ' { process = "regional-report" asyncBefore = true }',
+    ],
+  ] as const satisfies ReadonlyArray<
+    readonly [RepeatableElement, string, string]
+  >;
+
+  it.each(KINDS)(
+    'prints the clause between the label and the block of %#',
+    (el, head, tail) => {
+      expect(printRepeated(el, OVER_LINES)).toContain(
+        `${head} for each line in lines${tail}`,
+      );
+    },
+  );
+
+  it.each(KINDS)(
+    'leaves %# untouched when it carries no loop',
+    (el, head, tail) => {
+      expect(irToDsl(around({ ...el, asyncBefore: true }))).toContain(
+        `${head}${tail}`,
+      );
+    },
+  );
+
+  it.each([
+    [
+      { collection: 'lines', elementVariable: 'line' },
+      'for each line in lines',
+    ],
+    [{ collection: 'lines' }, 'for each in lines'],
+    [
+      { collection: '${order.lines}', elementVariable: 'line' },
+      'for each line in "${order.lines}"',
+    ],
+    [{ cardinality: '3' }, 'for 3'],
+    [{ cardinality: '${n}' }, 'for n'],
+    [{ cardinality: '#{lineCount}' }, 'for lineCount'],
+    [{ cardinality: '${a} #{b}' }, 'for "${a} #{b}"'],
+    [
+      { cardinality: '3', collection: 'lines', elementVariable: 'line' },
+      'for 3 each line in lines',
+    ],
+    [
+      { collection: 'lines', elementVariable: 'line', sequential: true },
+      'for each line in lines sequentially',
+    ],
+    [
+      {
+        collection: 'lines',
+        elementVariable: 'line',
+        sequential: true,
+        completionCondition: '${nrOfCompletedInstances >= 2}',
+      },
+      'for each line in lines sequentially until (nrOfCompletedInstances >= 2)',
+    ],
+  ] as const satisfies ReadonlyArray<readonly [LoopCharacteristics, string]>)(
+    'prints %j as `%s`',
+    (loop, clause) => {
+      expect(printRepeated({ kind: 'task', id: 'Record' }, loop)).toContain(
+        `step Record ${clause} { asyncBefore = true }`,
+      );
+    },
+  );
+
+  it('declares every bare collection once, at any depth', () => {
+    const dsl = irToDsl(
+      minimalProcess(
+        [
+          { kind: 'startEvent', id: 'S' },
+          { kind: 'task', id: 'Record', loop: OVER_LINES },
+          { kind: 'task', id: 'Price', loop: OVER_LINES },
+          chainedSub('Fulfil', [
+            {
+              kind: 'task',
+              id: 'Pick',
+              loop: { collection: 'parcels', elementVariable: 'parcel' },
+            },
+          ]),
+          { kind: 'endEvent', id: 'E' },
+        ],
+        flowChain('S', 'Record', 'Price', 'Fulfil', 'E'),
+      ),
+    );
+    expect(dsl).toContain(
+      'process p {\n  var lines: any\n  var parcels: any\n',
+    );
+    expect(dsl.match(/var lines: any/g)).toHaveLength(1);
+  });
+
+  it('declares neither the element it binds nor a collection expression', () => {
+    const dsl = irToDsl(
+      around({
+        kind: 'task',
+        id: 'Record',
+        loop: { collection: '${order.lines}', elementVariable: 'line' },
+      }),
+    );
+    expect(dsl).not.toContain('var ');
+  });
+
+  it('leaves a collection a form field already types undeclared', () => {
+    const dsl = irToDsl(
+      minimalProcess(
+        [
+          {
+            kind: 'startEvent',
+            id: 'S',
+            formFields: [{ id: 'lines', type: 'string' }],
+          },
+          { kind: 'task', id: 'Record', loop: OVER_LINES },
+          { kind: 'endEvent', id: 'E' },
+        ],
+        flowChain('S', 'Record', 'E'),
+      ),
+    );
+    expect(dsl).toContain('form { lines: string }');
+    expect(dsl).not.toContain('var lines');
+  });
+
+  it('leaves a collection a catch binding already types undeclared', () => {
+    const dsl = irToDsl(
+      minimalProcess(
+        [
+          { kind: 'startEvent', id: 'S' },
+          { kind: 'task', id: 'Record', loop: { collection: 'c' } },
+          { kind: 'task', id: 'Note', loop: { collection: 'm' } },
+          { kind: 'task', id: 'Escalate', loop: { collection: 'x' } },
+          { kind: 'endEvent', id: 'E' },
+          eventHandler(
+            'H',
+            'HS',
+            errorDef('BOOM', { codeVariable: 'c', messageVariable: 'm' }),
+          ),
+          eventHandler('G', 'GS', escalationDef('OVER', 'x')),
+        ],
+        flowChain('S', 'Record', 'Note', 'Escalate', 'E'),
+      ),
+    );
+    expect(dsl).toContain('on error "BOOM" (code c, message m)');
+    expect(dsl).toContain('on escalation "OVER" (code x)');
+    expect(dsl).not.toContain('var ');
   });
 });

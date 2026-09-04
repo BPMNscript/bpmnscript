@@ -1,4 +1,4 @@
-// Awaiting Confirmation — a request goes out to an external system and the
+// Awaiting Confirmation: a request goes out to an external system and the
 // process blocks at an intermediate message catch until that system
 // correlates a confirmation back. There is no user task in between: the
 // token simply sits at the `await`, which is the property the deployment

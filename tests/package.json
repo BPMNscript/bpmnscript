@@ -8,14 +8,16 @@
     "node": ">=22.0.0"
   },
   "scripts": {
-    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "clean": "shx rm -fr *.tsbuildinfo out",
+    "typecheck": "tsc -b tsconfig.json",
     "test": "vitest run"
   },
   "devDependencies": {
     "@bpmn-script/language": "0.0.1",
     "@bpmn-script/transform": "0.0.1",
     "langium": "^4.3.1",
-    "testcontainers": "^12.1.0",
-    "vitest": "^4.1.11"
+    "testcontainers": "^12.0.4",
+    "vitest": "^4.1.10",
+    "vscode-languageserver-types": "^3.18.0"
   }
 }

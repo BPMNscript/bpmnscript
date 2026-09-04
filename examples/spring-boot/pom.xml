@@ -16,7 +16,7 @@
   <artifactId>bpmnscript-invoice</artifactId>
   <version>1.0.0-SNAPSHOT</version>
   <packaging>jar</packaging>
-  <name>BPMNscript Invoice Example — Spring Boot + Operaton</name>
+  <name>BPMNscript Invoice Example: Spring Boot + Operaton</name>
 
   <properties>
     <java.version>17</java.version>

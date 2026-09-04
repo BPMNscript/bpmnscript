@@ -1,5 +1,5 @@
 /**
- * Pins the behaviour of `operaton-moddle.json` directly against a real
+ * Pins the behavior of `operaton-moddle.json` directly against a real
  * `BpmnModdle` instance, with no `xmlToIr`/`irToXml` involved. Three traps
  * this descriptor exists to close:
  *
@@ -351,7 +351,7 @@ describe('a parameter carrying both body text and a nested definition keeps both
 });
 
 describe('per-element attribution of a dropped extension child', () => {
-  it('a declared child materialises, an undeclared one produces exactly one warning naming it', async () => {
+  it('a declared child materializes, an undeclared one produces exactly one warning naming it', async () => {
     const fixture = `${XML_HEADER}
   <bpmn:process id="P">
     <bpmn:serviceTask id="T">

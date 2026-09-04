@@ -108,7 +108,7 @@ const EXPECTED_PARAMETERS: Record<string, string[]> = {
   [RECALL_HANDLER_ID]: ['input recallReason = "${recallText}"'],
 };
 
-describe('idempotence: DSL → IR₁ → XML → IR₂ → DSL′ → IR₃', () => {
+describe("idempotence: DSL -> IR1 -> XML -> IR2 -> DSL' -> IR3", () => {
   it('every parameter keeps its direction, name, and value shape, in order, at every hop', () => {
     for (const [label, ir] of rt.hops) {
       expect(parameterSignatures(ir), `parameters differ in ${label}`).toEqual(

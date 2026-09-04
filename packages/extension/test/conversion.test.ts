@@ -87,7 +87,7 @@ function occurrences(haystack: string, needle: string): number {
   return haystack.split(needle).length - 1;
 }
 
-describe('decompileCommand — composed notification strings', () => {
+describe('decompileCommand: composed notification strings', () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
@@ -140,7 +140,7 @@ describe('decompileCommand — composed notification strings', () => {
   });
 });
 
-describe('compileCommand — composed notification strings', () => {
+describe('compileCommand: composed notification strings', () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });

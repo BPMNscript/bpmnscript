@@ -46,7 +46,7 @@ for (const [label, p] of [
   }
 }
 
-describe('compileDslToBpmn — invoice-approval golden fixture', () => {
+describe('compileDslToBpmn: invoice-approval golden fixture', () => {
   it('compiles to ok:true; output contains bpmn:definitions; re-imports via xmlToIr with process id invoice-approval', async () => {
     const source = fs.readFileSync(INVOICE_APPROVAL_SRC, 'utf-8');
 
@@ -66,7 +66,7 @@ describe('compileDslToBpmn — invoice-approval golden fixture', () => {
   });
 });
 
-describe('compileDslToBpmn — type-mismatch validation error', () => {
+describe('compileDslToBpmn: type-mismatch validation error', () => {
   it('returns ok:false, kind:validation, diagnostics.length >= 1, each with 0-based line and non-empty message', async () => {
     // String `name` in a numeric comparison: a severity-1 diagnostic.
     const source = `process p {
@@ -94,7 +94,7 @@ describe('compileDslToBpmn — type-mismatch validation error', () => {
   });
 });
 
-describe('compileDslToBpmn — undeclared-variable warning does not block', () => {
+describe('compileDslToBpmn: undeclared-variable warning does not block', () => {
   it('returns ok:true for a source whose only diagnostic is an undeclared-variable warning', async () => {
     // Uses `amount` without declaring it: severity 2, which must not block.
     const source = `process p { if (amount > 1000) { user A } }`;
@@ -108,7 +108,7 @@ describe('compileDslToBpmn — undeclared-variable warning does not block', () =
   });
 });
 
-describe('decompileBpmnToDsl — invoice-approval-generated golden fixture', () => {
+describe('decompileBpmnToDsl: invoice-approval-generated golden fixture', () => {
   let parse: ReturnType<typeof parseHelper<Model>>;
 
   beforeAll(() => {
@@ -134,7 +134,7 @@ describe('decompileBpmnToDsl — invoice-approval-generated golden fixture', () 
   });
 });
 
-// `formRef` and the lane are both dropped without loss of behaviour, so
+// `formRef` and the lane are both dropped without loss of behavior, so
 // `xmlToIr` warns instead of refusing.
 const LANE_AND_ASYNC_ATTR_BPMN = `<?xml version="1.0" encoding="UTF-8"?>
 <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
@@ -158,7 +158,7 @@ const LANE_AND_ASYNC_ATTR_BPMN = `<?xml version="1.0" encoding="UTF-8"?>
   </bpmn:process>
 </bpmn:definitions>`;
 
-describe('decompileBpmnToDsl — surfaces import warnings for dropped content', () => {
+describe('decompileBpmnToDsl: surfaces import warnings for dropped content', () => {
   it('returns ok:true with populated warnings naming the dropped attribute, the lane, and their element ids', async () => {
     const result = await decompileBpmnToDsl(
       LANE_AND_ASYNC_ATTR_BPMN,
@@ -183,7 +183,7 @@ describe('decompileBpmnToDsl — surfaces import warnings for dropped content', 
   });
 });
 
-describe('decompileBpmnToDsl — bad-service-task-no-binding.bpmn', () => {
+describe('decompileBpmnToDsl: bad-service-task-no-binding.bpmn', () => {
   it('returns ok:false, kind:unsupported; message mentions the missing execution discriminator and BadService_1', async () => {
     const xml = fs.readFileSync(BAD_SERVICE_TASK_BPMN, 'utf-8');
 
@@ -203,25 +203,26 @@ describe('decompileBpmnToDsl — bad-service-task-no-binding.bpmn', () => {
   });
 });
 
-const TIMER_START_BPMN = `<?xml version="1.0" encoding="UTF-8"?>
+const CONDITIONAL_START_BPMN = `<?xml version="1.0" encoding="UTF-8"?>
 <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
                   targetNamespace="http://test">
-  <bpmn:process id="timer" isExecutable="true">
-    <bpmn:startEvent id="TimerStart">
-      <bpmn:timerEventDefinition id="td">
-        <bpmn:timeDuration>PT1H</bpmn:timeDuration>
-      </bpmn:timerEventDefinition>
+  <bpmn:process id="conditional" isExecutable="true">
+    <bpmn:startEvent id="ConditionalStart">
+      <bpmn:conditionalEventDefinition id="cd">
+        <bpmn:condition xsi:type="bpmn:tFormalExpression">\${stockLevel &lt; 5}</bpmn:condition>
+      </bpmn:conditionalEventDefinition>
     </bpmn:startEvent>
     <bpmn:endEvent id="E" />
-    <bpmn:sequenceFlow id="F1" sourceRef="TimerStart" targetRef="E" />
+    <bpmn:sequenceFlow id="F1" sourceRef="ConditionalStart" targetRef="E" />
   </bpmn:process>
 </bpmn:definitions>`;
 
-describe('decompileBpmnToDsl — timer-start.bpmn (new refusal subclass)', () => {
-  it('returns ok:false, kind:unsupported; message mentions the timer trigger and TimerStart', async () => {
+describe('decompileBpmnToDsl: conditional-start.bpmn (new refusal subclass)', () => {
+  it('returns ok:false, kind:unsupported; message mentions the conditional trigger and ConditionalStart', async () => {
     const result = await decompileBpmnToDsl(
-      TIMER_START_BPMN,
-      'timer-start.bpmn',
+      CONDITIONAL_START_BPMN,
+      'conditional-start.bpmn',
     );
 
     expect(result.ok).toBe(false);
@@ -230,8 +231,8 @@ describe('decompileBpmnToDsl — timer-start.bpmn (new refusal subclass)', () =>
     expect(result.kind).toBe('unsupported');
     if (result.kind !== 'unsupported') return;
 
-    expect(result.message).toContain('TimerStart');
-    expect(result.message).toContain('timer');
+    expect(result.message).toContain('ConditionalStart');
+    expect(result.message).toContain('conditional');
   });
 });
 

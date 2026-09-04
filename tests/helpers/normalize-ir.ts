@@ -164,7 +164,7 @@ function gatewaySignature(
   return `Gateway_${fe.kind}_[in:${incoming.join(',')}]_[out:${outgoing.join(',')}]`;
 }
 
-// An `on` handler's sub-process id is a synthesised coordinate that moves when
+// An `on` handler's sub-process id is a synthesized coordinate that moves when
 // a round trip re-orders the container's statements, so key it off the trigger
 // start event instead. Two handlers with the same signature are a validator
 // error, so they cannot reach here from a valid program.
@@ -219,6 +219,13 @@ function definitionPayloadKey(def: EventDefinition | undefined): string {
       // The validator allows one undo block per container, so a constant here
       // cannot collide.
       return '<compensation>';
+    case 'terminate':
+      // Payload-free and at most one per container, so a constant cannot collide.
+      return '<terminate>';
+    case 'cancel':
+      // Payload-free, and the engine takes at most one cancel handler per
+      // block, so a constant cannot collide either.
+      return '<cancel>';
     default: {
       const exhaustive: never = def;
       return JSON.stringify(exhaustive);

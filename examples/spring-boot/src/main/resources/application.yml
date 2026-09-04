@@ -8,7 +8,7 @@ operaton.bpm:
     password: demo
     firstName: Demo
 
-  # History level — "audit" (= Operaton's HISTORY_DEFAULT constant) records task and
+  # History level: "audit" (= Operaton's HISTORY_DEFAULT constant) records task and
   # variable events needed by the E2E harness. Valid values: none | activity | audit | full | auto.
   history-level: audit
 

@@ -2,7 +2,7 @@
 // shipping steps are grouped into a `subprocess`; if a step fails it raises the
 // PAYMENT_FAILED error, which the interrupting `on error` handler catches to
 // cancel the order. A slow warehouse emits the SLOW_FULFILLMENT escalation,
-// which the non-interrupting `alongside` handler picks up — a supervisor is
+// which the non-interrupting `alongside` handler picks up; a supervisor is
 // notified while the main flow keeps running.
 //
 // The service tasks point at the generic delegate
