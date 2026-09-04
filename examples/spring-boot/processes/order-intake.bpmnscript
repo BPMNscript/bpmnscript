@@ -1,0 +1,14 @@
+// The order arrives as a correlated message rather than from a caller, the
+// warehouse is told mid-flow, and the acknowledgment ends the path. Neither
+// thrown message carries an implementation, so the engine passes the token
+// straight through both.
+
+process order-intake {
+  start OrderReceived "An order arrives" message "OrderReceived"
+
+  user ConfirmOrder "Confirm the order" { assignee = "demo" }
+
+  emit message NotifyWarehouse "WarehouseNotified"
+
+  throw message OrderAcknowledged "OrderAcknowledged"
+}

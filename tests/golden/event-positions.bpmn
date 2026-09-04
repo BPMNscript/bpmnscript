@@ -1,0 +1,125 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI" xmlns:dc="http://www.omg.org/spec/DD/20100524/DC" xmlns:di="http://www.omg.org/spec/DD/20100524/DI" xmlns:operaton="http://operaton.org/schema/1.0/bpmn" id="Definitions_order-dispatch" targetNamespace="http://bpmnscript.io/processes" exporter="BPMNscript" exporterVersion="0.0.0">
+  <bpmn:process id="order-dispatch" name="Order Dispatch" isExecutable="true" operaton:historyTimeToLive="P30D">
+    <bpmn:startEvent id="OrderReceived" name="An order arrives">
+      <bpmn:extensionElements>
+        <operaton:formData>
+          <operaton:formField id="amount" label="Order amount" type="long" />
+        </operaton:formData>
+      </bpmn:extensionElements>
+      <bpmn:outgoing>Flow_OrderReceived_ConfirmOrder</bpmn:outgoing>
+      <bpmn:messageEventDefinition messageRef="Message_OrderReceived" />
+    </bpmn:startEvent>
+    <bpmn:userTask id="ConfirmOrder" name="Confirm the order" operaton:assignee="demo">
+      <bpmn:incoming>Flow_OrderReceived_ConfirmOrder</bpmn:incoming>
+      <bpmn:outgoing>Flow_ConfirmOrder_NotifyWarehouse</bpmn:outgoing>
+    </bpmn:userTask>
+    <bpmn:intermediateThrowEvent id="NotifyWarehouse">
+      <bpmn:incoming>Flow_ConfirmOrder_NotifyWarehouse</bpmn:incoming>
+      <bpmn:outgoing>Flow_NotifyWarehouse_Gateway_order-dispatch_3_split</bpmn:outgoing>
+      <bpmn:messageEventDefinition messageRef="Message_WarehouseNotified" />
+    </bpmn:intermediateThrowEvent>
+    <bpmn:exclusiveGateway id="Gateway_order-dispatch_3_split" default="Flow_Gateway_order-dispatch_3_split_default">
+      <bpmn:incoming>Flow_NotifyWarehouse_Gateway_order-dispatch_3_split</bpmn:incoming>
+      <bpmn:outgoing>Flow_Gateway_order-dispatch_3_split_EscalateOrder</bpmn:outgoing>
+      <bpmn:outgoing>Flow_Gateway_order-dispatch_3_split_default</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+    <bpmn:exclusiveGateway id="Gateway_order-dispatch_3_join">
+      <bpmn:incoming>Flow_DispatchOrder_Gateway_order-dispatch_3_join</bpmn:incoming>
+      <bpmn:outgoing>Flow_Gateway_order-dispatch_3_join_OrderAcknowledged</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+    <bpmn:serviceTask id="EscalateOrder" name="Escalate the order" operaton:class="com.example.orders.EscalateDelegate">
+      <bpmn:incoming>Flow_Gateway_order-dispatch_3_split_EscalateOrder</bpmn:incoming>
+      <bpmn:outgoing>Flow_EscalateOrder_OrderAbandoned</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:endEvent id="OrderAbandoned" name="Abandon every path">
+      <bpmn:incoming>Flow_EscalateOrder_OrderAbandoned</bpmn:incoming>
+      <bpmn:terminateEventDefinition />
+    </bpmn:endEvent>
+    <bpmn:serviceTask id="DispatchOrder" name="Dispatch the order" operaton:class="com.example.orders.DispatchDelegate">
+      <bpmn:incoming>Flow_Gateway_order-dispatch_3_split_default</bpmn:incoming>
+      <bpmn:outgoing>Flow_DispatchOrder_Gateway_order-dispatch_3_join</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:endEvent id="OrderAcknowledged">
+      <bpmn:incoming>Flow_Gateway_order-dispatch_3_join_OrderAcknowledged</bpmn:incoming>
+      <bpmn:messageEventDefinition messageRef="Message_OrderAcknowledged" />
+    </bpmn:endEvent>
+    <bpmn:sequenceFlow id="Flow_OrderReceived_ConfirmOrder" sourceRef="OrderReceived" targetRef="ConfirmOrder" />
+    <bpmn:sequenceFlow id="Flow_ConfirmOrder_NotifyWarehouse" sourceRef="ConfirmOrder" targetRef="NotifyWarehouse" />
+    <bpmn:sequenceFlow id="Flow_EscalateOrder_OrderAbandoned" sourceRef="EscalateOrder" targetRef="OrderAbandoned" />
+    <bpmn:sequenceFlow id="Flow_Gateway_order-dispatch_3_split_EscalateOrder" name="amount &#62; 1000" sourceRef="Gateway_order-dispatch_3_split" targetRef="EscalateOrder">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">${amount &gt; 1000}</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="Flow_Gateway_order-dispatch_3_split_default" sourceRef="Gateway_order-dispatch_3_split" targetRef="DispatchOrder" />
+    <bpmn:sequenceFlow id="Flow_DispatchOrder_Gateway_order-dispatch_3_join" sourceRef="DispatchOrder" targetRef="Gateway_order-dispatch_3_join" />
+    <bpmn:sequenceFlow id="Flow_NotifyWarehouse_Gateway_order-dispatch_3_split" sourceRef="NotifyWarehouse" targetRef="Gateway_order-dispatch_3_split" />
+    <bpmn:sequenceFlow id="Flow_Gateway_order-dispatch_3_join_OrderAcknowledged" sourceRef="Gateway_order-dispatch_3_join" targetRef="OrderAcknowledged" />
+  </bpmn:process>
+  <bpmn:message id="Message_OrderReceived" name="OrderReceived" />
+  <bpmn:message id="Message_WarehouseNotified" name="WarehouseNotified" />
+  <bpmn:message id="Message_OrderAcknowledged" name="OrderAcknowledged" />
+  <bpmndi:BPMNDiagram id="BPMNDiagram_order-dispatch">
+    <bpmndi:BPMNPlane id="BPMNPlane_order-dispatch" bpmnElement="order-dispatch">
+      <bpmndi:BPMNShape id="OrderReceived_di" bpmnElement="OrderReceived">
+        <dc:Bounds x="57" y="52" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="ConfirmOrder_di" bpmnElement="ConfirmOrder">
+        <dc:Bounds x="175" y="30" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="NotifyWarehouse_di" bpmnElement="NotifyWarehouse">
+        <dc:Bounds x="357" y="52" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_order-dispatch_3_split_di" bpmnElement="Gateway_order-dispatch_3_split" isMarkerVisible="true">
+        <dc:Bounds x="500" y="45" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="EscalateOrder_di" bpmnElement="EscalateOrder">
+        <dc:Bounds x="625" y="30" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="OrderAbandoned_di" bpmnElement="OrderAbandoned">
+        <dc:Bounds x="807" y="52" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="DispatchOrder_di" bpmnElement="DispatchOrder">
+        <dc:Bounds x="625" y="170" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_order-dispatch_3_join_di" bpmnElement="Gateway_order-dispatch_3_join" isMarkerVisible="true">
+        <dc:Bounds x="800" y="185" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="OrderAcknowledged_di" bpmnElement="OrderAcknowledged">
+        <dc:Bounds x="957" y="192" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_OrderReceived_ConfirmOrder_di" bpmnElement="Flow_OrderReceived_ConfirmOrder">
+        <di:waypoint x="93" y="70" />
+        <di:waypoint x="175" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ConfirmOrder_NotifyWarehouse_di" bpmnElement="Flow_ConfirmOrder_NotifyWarehouse">
+        <di:waypoint x="275" y="70" />
+        <di:waypoint x="357" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_NotifyWarehouse_Gateway_order-dispatch_3_split_di" bpmnElement="Flow_NotifyWarehouse_Gateway_order-dispatch_3_split">
+        <di:waypoint x="393" y="70" />
+        <di:waypoint x="500" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Gateway_order-dispatch_3_split_EscalateOrder_di" bpmnElement="Flow_Gateway_order-dispatch_3_split_EscalateOrder">
+        <di:waypoint x="550" y="70" />
+        <di:waypoint x="625" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Gateway_order-dispatch_3_split_default_di" bpmnElement="Flow_Gateway_order-dispatch_3_split_default">
+        <di:waypoint x="525" y="95" />
+        <di:waypoint x="525" y="210" />
+        <di:waypoint x="625" y="210" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_EscalateOrder_OrderAbandoned_di" bpmnElement="Flow_EscalateOrder_OrderAbandoned">
+        <di:waypoint x="725" y="70" />
+        <di:waypoint x="807" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_DispatchOrder_Gateway_order-dispatch_3_join_di" bpmnElement="Flow_DispatchOrder_Gateway_order-dispatch_3_join">
+        <di:waypoint x="725" y="210" />
+        <di:waypoint x="800" y="210" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Gateway_order-dispatch_3_join_OrderAcknowledged_di" bpmnElement="Flow_Gateway_order-dispatch_3_join_OrderAcknowledged">
+        <di:waypoint x="850" y="210" />
+        <di:waypoint x="957" y="210" />
+      </bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>

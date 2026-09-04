@@ -19,7 +19,7 @@
  */
 
 import { beforeAll, describe, expect, test } from 'vitest';
-import { AstUtils, EmptyFileSystem } from 'langium';
+import { AstUtils, EmptyFileSystem, type LangiumDocument } from 'langium';
 import { parseHelper } from 'langium/test';
 import type {
   GotoStatement,
@@ -28,7 +28,15 @@ import type {
   SubProcess,
   UserTask,
 } from '@bpmn-script/language';
-import { createBpmnScriptServices, isProcess } from '@bpmn-script/language';
+import {
+  createBpmnScriptServices,
+  isProcess,
+  reservedWordsOf,
+} from '@bpmn-script/language';
+import {
+  withTextMessages,
+  type TextDiagnostic,
+} from './helpers/diagnostics.js';
 
 const SEVERITY_ERROR = 1;
 
@@ -42,7 +50,7 @@ beforeAll(() => {
 
 // ── Process-scoped goto resolution ──────────────────────────────────────────
 
-describe('Scoping — process-scoped goto', () => {
+describe('Scoping - process-scoped goto', () => {
   test('a same-process goto to a top-level step still resolves', async () => {
     const document = await parse(`process p { user Foo goto Foo }`, {
       validation: true,
@@ -122,7 +130,7 @@ process b { user Dup }
 
 // ── Container-scoped goto across a subprocess boundary ──────────────────────
 
-describe('Scoping — container-scoped goto (subprocess boundary)', () => {
+describe('Scoping - container-scoped goto (subprocess boundary)', () => {
   test('a parent-body goto cannot resolve a step inside a sub-process, but the same name resolves from inside it', async () => {
     const fromOutside = await link(`
 process p {
@@ -213,7 +221,7 @@ process p {
     const message = soleErrorMessage(document);
     expect(message).toContain("'Inner'");
     expect(message).toContain("subprocess 'Sub'");
-    expect(message.toLowerCase()).toContain('cross a sub-process boundary');
+    expect(message.toLowerCase()).toContain('cross a subprocess boundary');
   });
 
   test('boundary message names the sub-process the goto is inside, when the target is outside it (one diagnostic)', async () => {
@@ -229,7 +237,7 @@ process p {
     const message = soleErrorMessage(document);
     expect(message).toContain("'Outer'");
     expect(message).toContain("subprocess 'Sub'");
-    expect(message.toLowerCase()).toContain('cross a sub-process boundary');
+    expect(message.toLowerCase()).toContain('cross a subprocess boundary');
   });
 
   test('a goto to a name that exists nowhere yields the unchanged generic message (one diagnostic)', async () => {
@@ -252,7 +260,7 @@ process p {
 
 // ── Container-scoped goto across an event-handler boundary ─────────────────
 
-describe('Scoping — container-scoped goto (event-handler boundary)', () => {
+describe('Scoping - container-scoped goto (event-handler boundary)', () => {
   test('a container-body goto cannot resolve a step inside a handler, but the same name resolves from inside it', async () => {
     const fromOutside = await link(`
 process p {
@@ -337,7 +345,7 @@ process p {
     expect(message).toContain("'Inner'");
     expect(message).toContain(`the 'on error "PAYMENT_FAILED"' handler`);
     expect(message.toLowerCase()).toContain('cross an event handler boundary');
-    expect(message.toLowerCase()).not.toContain('sub-process boundary');
+    expect(message.toLowerCase()).not.toContain('subprocess boundary');
   });
 
   test('boundary message names a catch-all handler without quoting a code', async () => {
@@ -464,8 +472,8 @@ process p {
 
 // ── Container-scoped host resolution for a hosted handler ──────────────────
 
-describe('Scoping — hosted handler host reference', () => {
-  test('a host resolves to an activity of the handler’s own container', async () => {
+describe('Scoping - hosted handler host reference', () => {
+  test("a host resolves to an activity of the handler's own container", async () => {
     const document = await link(`
 process p {
   user Review
@@ -537,7 +545,7 @@ process b {
     ).toBeUndefined();
   });
 
-  test('a host resolves against the handler’s container, not the handler’s own body', async () => {
+  test("a host resolves against the handler's container, not the handler's own body", async () => {
     // A handler is itself a container node, so a scope seeded from the handler
     // rather than from the container around it comes out empty under the
     // transparency rule, leaving the host unresolved.
@@ -555,7 +563,7 @@ process p {
     expect(handler.host!.ref).toBe(process.body[0]);
   });
 
-  test('a host inside a sub-process resolves to that sub-process’s own step', async () => {
+  test("a host inside a sub-process resolves to that sub-process's own step", async () => {
     const document = await link(`
 process p {
   user Outer
@@ -624,7 +632,7 @@ process p {
 
 // ── goto across a hosted handler body (transparent container) ──────────────
 
-describe('Scoping — goto through a hosted handler body', () => {
+describe('Scoping - goto through a hosted handler body', () => {
   test('a goto inside a hosted handler body resolves a main-flow step', async () => {
     // A hosted handler lowers inline into its host's container, so its body's
     // steps and the main flow share one container and one sequence-flow scope.
@@ -693,7 +701,7 @@ process p {
 
 // ── Container-scoped goto across a compensation handler boundary ───────────
 
-describe('Scoping — container-scoped goto (compensation handler boundary)', () => {
+describe('Scoping - container-scoped goto (compensation handler boundary)', () => {
   test('a subprocess-body goto cannot resolve a step inside its `on compensation` handler; the boundary message names it by its code-less header (one diagnostic)', async () => {
     const document = await link(`
 process p {
@@ -744,7 +752,7 @@ process p {
 
 // ── Reserved-word guidance ──────────────────────────────────────────────────
 
-describe('Scoping — reserved-word guidance', () => {
+describe('Scoping - reserved-word guidance', () => {
   test('a reserved word in expression position points to the raw-string fallback', async () => {
     // A reserved word inside a condition is a Chevrotain
     // no-viable-alternative error; the provider enriches it either way.
@@ -776,6 +784,16 @@ describe('Scoping — reserved-word guidance', () => {
       `process p { if (status > deadline) { user A } }`,
     );
     expect(document.parseResult.parserErrors).toHaveLength(0);
+  });
+
+  test('the reserved-word set holds the grammar keywords and none of its operators', () => {
+    const words = reservedWordsOf(services.BpmnScript.Grammar);
+    // The words the guidance above fires on, and the ones no author could
+    // mistake for a name.
+    expect(words.has('date')).toBe(true);
+    expect(words.has('process')).toBe(true);
+    expect(words.has('&&')).toBe(false);
+    expect(words.has('{')).toBe(false);
   });
 });
 
@@ -821,10 +839,7 @@ function findHostedHandler(model: Model): OnHandler {
  * the diagnostics naming `subject`. Exactly one is asserted: the linker
  * replaces the stock message rather than a validator stacking a second on top.
  */
-function soleErrorMessage(
-  document: Parameters<typeof errorsOf>[0],
-  subject?: string,
-): string {
+function soleErrorMessage(document: LangiumDocument, subject?: string): string {
   const errors = errorsOf(document).filter(
     (d) => subject === undefined || d.message.includes(subject),
   );
@@ -833,10 +848,8 @@ function soleErrorMessage(
 }
 
 /** All error-severity diagnostics of a built document. */
-function errorsOf(document: {
-  diagnostics?: Array<{ severity?: number; message: string }>;
-}) {
-  return (document.diagnostics ?? []).filter(
+function errorsOf(document: LangiumDocument): TextDiagnostic[] {
+  return withTextMessages(document.diagnostics ?? []).filter(
     (d) => d.severity === SEVERITY_ERROR,
   );
 }

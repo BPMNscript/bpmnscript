@@ -75,7 +75,7 @@ function listenerSignatures(container: FlowContainer): string[] {
   return signatures;
 }
 
-describe('idempotence: DSL → IR₁ → XML → IR₂ → DSL′ → IR₃', () => {
+describe("idempotence: DSL -> IR1 -> XML -> IR2 -> DSL' -> IR3", () => {
   it('every listener keeps its carrier, event, and binding at every hop', () => {
     for (const [label, ir] of rt.hops) {
       expect(listenerSignatures(ir), `listeners differ in ${label}`).toEqual(

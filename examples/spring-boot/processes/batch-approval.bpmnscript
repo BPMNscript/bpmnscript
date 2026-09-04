@@ -1,0 +1,33 @@
+// Batch approval: one process whose steps repeat, laid out so each form of
+// repetition is observable over the REST API. Three approvals are offered at
+// once, three sign-offs come one after another, a spot check stops as soon as
+// two of its three runs are in, the log step runs its count out, and a review
+// sub-process runs its task once per line of the list it maps in.
+//
+// The logging step points at the generic delegate
+// examples/spring-boot/src/main/java/com/example/demo/LogDelegate.java, so this
+// process deploys and runs on the demo profile without additional Java classes.
+
+process batch-approval "Batch approval" {
+  start BatchReceived
+
+  user CollectApprovals "Approve the batch" for 3 { assignee = "demo" }
+
+  user SignOff "Sign the batch off" for 3 sequentially { assignee = "demo" }
+
+  user SpotCheck "Spot-check the entries" for 3 sequentially until (nrOfCompletedInstances >= 2) {
+    assignee = "demo"
+  }
+
+  service LogEntry "Log the entry" for 4 { class = "com.example.demo.LogDelegate" }
+
+  subprocess ReviewLines "Review the lines" {
+    input lines = ["ann", "bob", "cal"]
+  } {
+    user ReviewLine "Review one line" for each line in lines { assignee = "demo" }
+  }
+
+  user CloseBatch "Close the batch" { assignee = "demo" }
+
+  end BatchClosed
+}

@@ -62,7 +62,7 @@ describe('structured idempotence (invoice-approval, if/else)', () => {
   });
 });
 
-describe('loop round-trip (while ⇒ conditioned back-edge, never standardLoopCharacteristics)', () => {
+describe('loop round-trip (while => conditioned back-edge, never standardLoopCharacteristics)', () => {
   const run = roundTripOf(readFileSync(STRUCTURED_DSL_PATH, 'utf-8'));
 
   it('the BPMN XML contains no standardLoopCharacteristics', () => {
@@ -83,7 +83,7 @@ describe('loop round-trip (while ⇒ conditioned back-edge, never standardLoopCh
   });
 });
 
-describe('parallel round-trip (parallelGateway fork/join ⇒ parallel { { } { } })', () => {
+describe('parallel round-trip (parallelGateway fork/join => parallel { { } { } })', () => {
   const run = roundTripOf(readFileSync(STRUCTURED_DSL_PATH, 'utf-8'));
 
   it('the BPMN XML contains a parallelGateway fork and join (two parallelGateways)', () => {
@@ -229,7 +229,7 @@ describe('bean-call condition stays quoted-raw end-to-end', () => {
     expect(condition(run.ir2)).toBe('${myBean.check()}');
   });
 
-  it('the re-emitted DSL keeps the condition as the quoted raw `"${…}"` form', () => {
+  it('the re-emitted DSL keeps the condition as the quoted raw `"${...}"` form', () => {
     expect(run.dsl).toContain('if ("${myBean.check()}")');
     // The bare (unquoted) form would signal a spurious parse-into-subset.
     expect(run.dsl).not.toContain('if (myBean.check())');

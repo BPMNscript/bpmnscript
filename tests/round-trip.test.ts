@@ -1,5 +1,5 @@
-// invoice-approval-handwritten.bpmn -> IR₁ -> DSL -> AST -> IR₂ -> XML₂ -> IR₃.
-// IR₃ has to be semantically equal to IR₁, but hand-named ids meet synthesized
+// invoice-approval-handwritten.bpmn -> IR1 -> DSL -> AST -> IR2 -> XML2 -> IR3.
+// IR3 has to be semantically equal to IR1, but hand-named ids meet synthesized
 // ones, so both go through helpers/normalize-ir.ts first.
 
 import { describe, it, expect, beforeAll } from 'vitest';
@@ -32,7 +32,7 @@ beforeAll(async () => {
   ({ ir: ir3 } = await xmlToIr(xml2));
 });
 
-describe('Round-trip equivalence: BPMN → IR → DSL → IR → XML → IR', () => {
+describe('Round-trip equivalence: BPMN -> IR -> DSL -> IR -> XML -> IR', () => {
   it('ir1 and ir3 are semantically equivalent after normalization', () => {
     expect(normalizeIr(ir3)).toEqual(normalizeIr(ir1));
   });
@@ -84,7 +84,7 @@ describe('Round-trip equivalence: BPMN → IR → DSL → IR → XML → IR', ()
 
   it('gateway has a synthesized default flow that points at the AutoApprove branch', () => {
     // The language has no edge-id syntax, so the hand-named `AutoApprovePath`
-    // comes back as `Flow_<gatewayId>_default`. Assert the behaviour, not the
+    // comes back as `Flow_<gatewayId>_default`. Assert the behavior, not the
     // literal id.
     const gw = theOnly(
       ir3,

@@ -11,7 +11,7 @@ import * as fsSync from 'node:fs';
 import * as path from 'node:path';
 
 import { astToIr, irToXml } from '@bpmn-script/transform';
-import { CLI_VERSION, resolveOutputPath } from './util.js';
+import { CLI_VERSION, diagnosticMessage, resolveOutputPath } from './util.js';
 
 export type BuildOptions = {
   output?: string;
@@ -71,7 +71,7 @@ export async function buildAction(
     for (const diag of errors) {
       console.error(
         chalk.red(
-          `  line ${diag.range.start.line + 1}: ${diag.message}` +
+          `  line ${diag.range.start.line + 1}: ${diagnosticMessage(diag)}` +
             ` [${document.textDocument.getText(diag.range)}]`,
         ),
       );
@@ -85,7 +85,7 @@ export async function buildAction(
   for (const diag of warnings) {
     console.error(
       chalk.yellow(
-        `Warning: line ${diag.range.start.line + 1}: ${diag.message}`,
+        `Warning: line ${diag.range.start.line + 1}: ${diagnosticMessage(diag)}`,
       ),
     );
   }

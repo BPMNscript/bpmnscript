@@ -2,7 +2,7 @@
  * Dominators, post-dominators, and back-edges over a {@link FlowContainer}'s
  * `flowElements` and `sequenceFlows`. Pure graph machinery with no DSL
  * knowledge, so it runs the same on a whole process or one sub-process body;
- * `irToDsl`'s pattern catalogue consumes it to recognize structured regions.
+ * `irToDsl`'s pattern catalog consumes it to recognize structured regions.
  *
  * ADR 0009, Use Dominator/Post-Dominator Analysis for IR-to-DSL Restructuring,
  * names the query set.

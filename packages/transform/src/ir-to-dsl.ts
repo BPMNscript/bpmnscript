@@ -4,9 +4,9 @@
  * equivalent IR.
  *
  * Structure comes from the dominator analysis in `cfg-analysis.ts` matched
- * against a fixed pattern catalogue; whatever it cannot fold degrades to
+ * against a fixed pattern catalog; whatever it cannot fold degrades to
  * `goto`. See ADR 0009, Use Dominator/Post-Dominator Analysis for IR-to-DSL
- * Restructuring, for the catalogue, the totality guarantee, and the edges that
+ * Restructuring, for the catalog, the totality guarantee, and the edges that
  * have no `goto` form and leave an {@link UNSTRUCTURED_MARKER}.
  *
  * Every gateway a pattern matches is elided, which is what makes DSL -> IR ->
@@ -14,6 +14,7 @@
  * coordinates, so one that never prints is re-synthesized under the same id.
  */
 
+import { END_TRIGGERS } from '@bpmn-script/language';
 import type {
   BpmnProcess,
   CallVariableMapping,
@@ -27,9 +28,13 @@ import type {
   IoMapped,
   IoValue,
   ListenerBinding,
+  Repeatable,
   SequenceFlow,
+  ServiceTaskBinding,
   SettingsCarrier,
+  VersionBinding,
 } from './ir/types.js';
+import { repeats } from './ir/types.js';
 import { analyzeCfg, type CfgAnalysis } from './cfg-analysis.js';
 import { parseJuel, renderRawFallback } from './juel.js';
 
@@ -48,6 +53,7 @@ export function irToDsl(process: BpmnProcess): string {
       `${INDENT}error ${quote(m.code)} message ${quote(m.message)}`,
     );
   }
+  declarations.push(...collectionDecls(process));
 
   const header = buildProcessHeader(process);
   const lines = [header, ...declarations, ...body.map((l) => INDENT + l), '}'];
@@ -68,7 +74,14 @@ class Emitter {
   private readonly emittedNodes = new Set<string>();
   private readonly consumedFlows = new Set<string>();
 
-  constructor(private readonly container: FlowContainer) {
+  constructor(
+    private readonly container: FlowContainer,
+    /**
+     * An event sub-process's start prints its trigger in the `on` header, so
+     * the start statement inside the body prints without one.
+     */
+    private readonly startTriggerSuppressed = false,
+  ) {
     this.cfg = analyzeCfg(container);
     for (const el of container.flowElements) {
       // A duplicate would corrupt the walk. The desugarer resolves collisions,
@@ -147,7 +160,7 @@ class Emitter {
   ): void {
     this.emittedNodes.add(handler.id);
     lines.push(buildOnHeader(handler));
-    for (const l of new Emitter(handler).emit()) lines.push(INDENT + l);
+    for (const l of new Emitter(handler, true).emit()) lines.push(INDENT + l);
     lines.push('}');
   }
 
@@ -243,8 +256,9 @@ class Emitter {
         return STOP;
       }
       this.emittedNodes.add(id);
+      const head = el.element === 'transaction' ? 'attempt' : 'subprocess';
       lines.push(
-        `subprocess ${id}${labelSuffix(el.name)}${attrBlock(settingsMembers(el))} {`,
+        `${head} ${id}${labelSuffix(el.name)}${repeatClause(el)}${attrBlock(settingsMembers(el))} {`,
       );
       for (const l of new Emitter(el).emit()) lines.push(INDENT + l);
       lines.push('}');
@@ -491,8 +505,10 @@ class Emitter {
     splitId: string,
   ): boolean {
     if (this.cfg.postDominates(join, entry)) return true;
+    const el = this.byId.get(entry);
     return (
-      isSynthesizedTerminalId(entry) &&
+      el !== undefined &&
+      isSynthesizedTerminalId(entry, el.kind) &&
       this.cfg.dominates(splitId, entry) &&
       !this.cfg.dominates(join, entry)
     );
@@ -784,34 +800,41 @@ class Emitter {
   private renderStatement(el: FlowElement): string | undefined {
     switch (el.kind) {
       case 'startEvent':
-        // A start's definition surfaces through its `on` header, never here.
-        return renderStartEvent(el);
+        return renderStartEvent(el, this.startTriggerSuppressed);
       case 'endEvent': {
-        // An elided plain end prints nothing. A typed end is a `throw`, which
-        // prints either way and only drops a synthesized name token.
-        const block = attrBlock(startOrEndMembers(el));
-        if (el.eventDefinition === undefined) {
-          return isElidedOnPrint(el)
-            ? undefined
-            : `end ${el.id}${labelSuffix(el.name)}${block}`;
+        const members = startOrEndMembers(el);
+        const definition = el.eventDefinition;
+        if (definition === undefined || isEndCarried(definition)) {
+          if (isElidedOnPrint(el)) return undefined;
+          const head = definition === undefined ? '' : ` ${definition.kind}`;
+          return `end ${el.id}${labelSuffix(el.name)}${head}${attrBlock(members)}`;
         }
-        return renderThrow(el.id, el.eventDefinition, block);
+        return renderThrow(
+          el,
+          definition,
+          attrBlock([...throwBindingMembers(el), ...members]),
+        );
       }
       case 'intermediateThrowEvent': {
-        // Only escalation, signal, and compensation are emittable: an error
-        // aborts its path (`throw error`) and the rest have no throw surface.
+        // Only escalation, signal, message, and compensation are emittable: an
+        // error aborts its path (`throw error`) and the rest have no throw surface.
         const def = el.eventDefinition;
-        const block = attrBlock(settingsMembers(el));
+        const block = attrBlock([
+          ...throwBindingMembers(el),
+          ...settingsMembers(el),
+        ]);
         switch (def.kind) {
           case 'escalation':
-            return `emit escalation${throwNameSuffix(el.id)}${quotedCode(def.escalationCode)}${block}`;
+            return `emit escalation${throwNameSuffix(el)}${quotedCode(def.escalationCode)}${block}`;
           case 'signal':
-            return `emit signal${throwNameSuffix(el.id)} ${quote(def.signalName)}${block}`;
+            return `emit signal${throwNameSuffix(el)} ${quote(def.signalName)}${block}`;
+          case 'message':
+            return `emit message${throwNameSuffix(el)} ${quote(def.messageName)}${block}`;
           case 'compensation':
-            return `emit compensation${throwNameSuffix(el.id)}${block}`;
+            return `emit compensation${throwNameSuffix(el)}${block}`;
           default:
             throw new Error(
-              `irToDsl: intermediate throw '${el.id}' carries a ${def.kind} definition; only escalation, signal, or compensation can be emitted.`,
+              `irToDsl: intermediate throw '${el.id}' carries a ${def.kind} definition; only escalation, signal, message, or compensation can be emitted.`,
             );
         }
       }
@@ -822,6 +845,10 @@ class Emitter {
         return renderUserTask(el);
       case 'serviceTask':
         return renderServiceTask(el);
+      case 'task':
+        return `step ${el.id}${labelSuffix(el.name)}${repeatClause(el)}${attrBlock(settingsMembers(el))}`;
+      case 'receiveTask':
+        return renderReceiveTask(el);
       case 'callActivity':
         return renderCallActivity(el);
       // These print as a line group in `emitNode`/`emitBoundaryHandler`, and are
@@ -884,22 +911,49 @@ function isBoundary(
 }
 
 /**
- * Whether the id is absent from the printed form, leaving a `goto` nothing to
- * resolve against.
+ * The definitions an `end` statement spells in its own head rather than
+ * raising, one per word the surface takes there. Both keep the label a `throw`
+ * would drop, and the word each prints is its kind.
  */
-function isElidedOnPrint(el: FlowElement): boolean {
+const END_CARRIED_KINDS = new Set<EventDefinition['kind']>(END_TRIGGERS);
+
+/** Read by the print and by the elision, so the two cannot drift. */
+function isEndCarried(def: EventDefinition): boolean {
+  return END_CARRIED_KINDS.has(def.kind);
+}
+
+/**
+ * Whether the id is absent from the printed form, leaving a `goto` nothing to
+ * resolve against. `xmlToIr` asks the same question to report the label an
+ * elided start or end takes with it, so the two answers cannot drift apart.
+ */
+export function isElidedOnPrint(
+  el: FlowElement,
+  startTriggerSuppressed = false,
+): boolean {
   switch (el.kind) {
     case 'startEvent':
-      // A synthesized start with an empty block prints no statement at all.
-      return isSynthesizedTerminalId(el.id) && !carriesPrintableContent(el);
+      // A trigger has nowhere else to print, so a start carrying one always
+      // prints. Inside an event sub-process the trigger prints in the `on`
+      // header instead, and the emitter suppresses it here.
+      if (el.eventDefinition !== undefined && !startTriggerSuppressed) {
+        return false;
+      }
+      return (
+        isSynthesizedTerminalId(el.id, el.kind) && !carriesPrintableContent(el)
+      );
     case 'endEvent':
-      // A typed end spells its id through `throwNameSuffix`, which drops a
-      // synthesized one but still prints the statement.
-      if (!isSynthesizedTerminalId(el.id)) return false;
-      return el.eventDefinition !== undefined || !carriesPrintableContent(el);
+      if (!isSynthesizedTerminalId(el.id, el.kind)) return false;
+      // Dropping a plain end is lossless because the forward compiler
+      // re-derives an equivalent one at the same position; a definition the
+      // `end` statement carries it cannot re-derive, so that always prints,
+      // and `end`'s mandatory `name=ID` means the synthesized id prints too.
+      if (el.eventDefinition === undefined) return !carriesPrintableContent(el);
+      // Every other definition prints as a `throw`, which drops a synthesized name.
+      return !isEndCarried(el.eventDefinition);
     case 'intermediateThrowEvent':
       // Spells the id through `throwNameSuffix`, which drops a synthesized one.
-      return isSynthesizedTerminalId(el.id);
+      return isSynthesizedTerminalId(el.id, el.kind);
     case 'intermediateCatchEvent':
       // `await <trigger>` has no name slot in the grammar.
       return true;
@@ -913,6 +967,8 @@ function isElidedOnPrint(el: FlowElement): boolean {
     case 'serviceTask':
     case 'callActivity':
     case 'scriptTask':
+    case 'task':
+    case 'receiveTask':
       return false;
     case 'exclusiveGateway':
     case 'parallelGateway':
@@ -933,6 +989,9 @@ function isElidedOnPrint(el: FlowElement): boolean {
  * {@link isElidedOnPrint} and the renderers read this one answer: a new reason
  * to print reaching one but not the other would leave a jump naming a statement
  * that never gets emitted.
+ *
+ * A label is not such a reason: printing the id to carry one writes a name the
+ * validator rejects, so the label is reported as an import warning instead.
  */
 function carriesPrintableContent(
   el: Extract<FlowElement, { kind: 'startEvent' | 'endEvent' }>,
@@ -1076,38 +1135,57 @@ function renderFence(format: string, code: string): string {
 
 /**
  * The validator rejects these prefixes in authored source, so an id carrying
- * one here is synthesized.
+ * the one its own kind is minted with is synthesized. An id carrying another
+ * kind's template is an authored name and has to keep printing. An end answers
+ * to `Throw_` as well, because `throw` lowers to an end event.
  */
-function isSynthesizedTerminalId(id: string): boolean {
-  return (
-    id.startsWith('StartEvent_') ||
-    id.startsWith('EndEvent_') ||
-    id.startsWith('Throw_')
-  );
+function isSynthesizedTerminalId(
+  id: string,
+  kind: FlowElement['kind'],
+): boolean {
+  switch (kind) {
+    case 'startEvent':
+      return id.startsWith('StartEvent_');
+    case 'endEvent':
+      return id.startsWith('EndEvent_') || id.startsWith('Throw_');
+    case 'intermediateThrowEvent':
+      return id.startsWith('Throw_');
+    default:
+      return false;
+  }
 }
 
 /**
  * Omitted for a synthesized id: the forward compiler re-derives the same
  * `Throw_...` from the statement's coordinate, so dropping it is lossless.
  */
-function throwNameSuffix(id: string): string {
-  return isSynthesizedTerminalId(id) ? '' : ` ${id}`;
+function throwNameSuffix(
+  el: Extract<FlowElement, { kind: 'endEvent' | 'intermediateThrowEvent' }>,
+): string {
+  return isSynthesizedTerminalId(el.id, el.kind) ? '' : ` ${el.id}`;
 }
 
 /** An authored id prints so it survives as a goto target. */
-function renderThrow(id: string, def: EventDefinition, block: string): string {
+function renderThrow(
+  el: Extract<FlowElement, { kind: 'endEvent' }>,
+  def: EventDefinition,
+  block: string,
+): string {
+  const name = throwNameSuffix(el);
   switch (def.kind) {
     case 'error':
-      return `throw error${throwNameSuffix(id)}${quotedCode(def.errorCode)}${block}`;
+      return `throw error${name}${quotedCode(def.errorCode)}${block}`;
     case 'escalation':
-      return `throw escalation${throwNameSuffix(id)}${quotedCode(def.escalationCode)}${block}`;
+      return `throw escalation${name}${quotedCode(def.escalationCode)}${block}`;
     case 'signal':
-      return `throw signal${throwNameSuffix(id)} ${quote(def.signalName)}${block}`;
+      return `throw signal${name} ${quote(def.signalName)}${block}`;
+    case 'message':
+      return `throw message${name} ${quote(def.messageName)}${block}`;
     case 'compensation':
-      return `throw compensation${throwNameSuffix(id)}${block}`;
+      return `throw compensation${name}${block}`;
     default:
       throw new Error(
-        `irToDsl: end event '${id}' carries a ${def.kind} definition; only error, escalation, signal, or compensation can be thrown.`,
+        `irToDsl: end event '${el.id}' carries a ${def.kind} definition; only error, escalation, signal, message, or compensation can be thrown.`,
       );
   }
 }
@@ -1122,7 +1200,7 @@ function buildOnHeader(
   );
   if (start === undefined || start.eventDefinition === undefined) {
     throw new Error(
-      `irToDsl: event sub-process '${handler.id}' has no trigger start event.`,
+      `irToDsl: event subprocess '${handler.id}' has no trigger start event.`,
     );
   }
   const alongside = start.isInterrupting === false ? ' alongside' : '';
@@ -1161,6 +1239,12 @@ function renderTriggerHead(def: EventDefinition): string {
       return `timer ${TIMER_PARTICLE[def.timerKind]} ${quote(def.expression)}`;
     case 'conditional':
       return `condition (${renderRawCondition(def.condition)})`;
+    case 'cancel':
+      return 'cancel';
+    case 'terminate':
+      throw new Error(
+        'irToDsl: a terminate definition has no trigger head; it prints on the end statement.',
+      );
     default: {
       const exhaustive: never = def;
       throw new Error(
@@ -1190,9 +1274,14 @@ function quotedCode(code: string | undefined): string {
 /** `name=ID` is mandatory, so an elided start is dropped whole and re-derived. */
 function renderStartEvent(
   el: Extract<FlowElement, { kind: 'startEvent' }>,
+  startTriggerSuppressed: boolean,
 ): string | undefined {
-  if (isElidedOnPrint(el)) return undefined;
-  return `start ${el.id}${labelSuffix(el.name)}${attrBlock(startOrEndMembers(el))}`;
+  if (isElidedOnPrint(el, startTriggerSuppressed)) return undefined;
+  const trigger =
+    el.eventDefinition === undefined || startTriggerSuppressed
+      ? ''
+      : ` ${renderTriggerHead(el.eventDefinition)}`;
+  return `start ${el.id}${labelSuffix(el.name)}${trigger}${attrBlock(startOrEndMembers(el))}`;
 }
 
 /** Assignment attributes, then the settings members, then the form block. */
@@ -1206,7 +1295,7 @@ function renderUserTask(
   }
   attrs.push(...settingsMembers(el));
   if (el.formFields !== undefined) attrs.push(renderFormBlock(el.formFields));
-  return `user ${el.id}${labelSuffix(el.name)}${attrBlock(attrs)}`;
+  return `user ${el.id}${labelSuffix(el.name)}${repeatClause(el)}${attrBlock(attrs)}`;
 }
 
 /** In print order. The IR field name is also the DSL keyword. */
@@ -1243,20 +1332,56 @@ function renderFormDefault(value: string, type: FormFieldType): string {
   return type === 'number' || type === 'boolean' ? value : quote(value);
 }
 
-/** Binding, then result variable, then the shared settings members. */
+/** The message leads the block, so the wait reads before its settings. */
+function renderReceiveTask(
+  el: Extract<FlowElement, { kind: 'receiveTask' }>,
+): string {
+  const members = [
+    ...(el.messageName === undefined
+      ? []
+      : [`message = ${quote(el.messageName)}`]),
+    ...settingsMembers(el),
+  ];
+  return `receive ${el.id}${labelSuffix(el.name)}${repeatClause(el)}${attrBlock(members)}`;
+}
+
+const SERVICE_TASK_LIKE_KEYWORD = {
+  service: 'service',
+  send: 'send',
+  businessRule: 'decide',
+} as const;
+
 function renderServiceTask(
   el: Extract<FlowElement, { kind: 'serviceTask' }>,
 ): string {
-  const binding = el.binding;
-  const head = (attr: string): string =>
-    `service ${el.id}${labelSuffix(el.name)}${attrBlock([attr, ...resultVariableAttr(el), ...settingsMembers(el)])}`;
+  const keyword = SERVICE_TASK_LIKE_KEYWORD[el.element ?? 'service'];
+  const members = [
+    ...bindingMembers(el.binding),
+    ...resultVariableAttr(el),
+    ...settingsMembers(el),
+  ];
+  return `${keyword} ${el.id}${labelSuffix(el.name)}${repeatClause(el)}${attrBlock(members)}`;
+}
+
+/** The block members spelling out an execution binding, whatever carries it. */
+function bindingMembers(binding: ServiceTaskBinding): string[] {
   switch (binding.kind) {
     case 'class':
     case 'expression':
     case 'delegateExpression':
-      return head(renderCodeBinding(binding));
+      return [renderCodeBinding(binding)];
     case 'external':
-      return head(`topic = ${quote(binding.topic)}`);
+      return [`topic = ${quote(binding.topic)}`];
+    case 'decision':
+      return [
+        `decision = ${quote(binding.decisionRef)}`,
+        ...(binding.binding === undefined
+          ? []
+          : [versionBindingMember(binding.binding)]),
+        ...(binding.mapDecisionResult === undefined
+          ? []
+          : [`mapDecisionResult = ${binding.mapDecisionResult}`]),
+      ];
     default: {
       const exhaustive: never = binding;
       throw new Error(
@@ -1266,30 +1391,36 @@ function renderServiceTask(
   }
 }
 
-/** Fixed member order. A pinned version prints `version = <v>` and no `binding`. */
+/** The implementation of a thrown message; every other throw carries none. */
+function throwBindingMembers(el: { binding?: ServiceTaskBinding }): string[] {
+  return el.binding === undefined ? [] : bindingMembers(el.binding);
+}
+
+/** A pinned version prints `version = <v>` and no `binding`. */
+function versionBindingMember(binding: VersionBinding): string {
+  switch (binding.kind) {
+    case 'latest':
+    case 'deployment':
+      return `binding = ${binding.kind}`;
+    case 'version':
+      return `version = ${renderNumericValue(binding.version)}`;
+    default: {
+      const exhaustive: never = binding;
+      throw new Error(
+        `irToDsl: unhandled version binding kind: ${JSON.stringify(exhaustive)}`,
+      );
+    }
+  }
+}
+
+/** Fixed member order. */
 function renderCallActivity(
   el: Extract<FlowElement, { kind: 'callActivity' }>,
 ): string {
   const members: string[] = [`process = ${quote(el.calledElement)}`];
 
   if (el.binding !== undefined) {
-    switch (el.binding.kind) {
-      case 'latest':
-        members.push('binding = latest');
-        break;
-      case 'deployment':
-        members.push('binding = deployment');
-        break;
-      case 'version':
-        members.push(`version = ${renderNumericValue(el.binding.version)}`);
-        break;
-      default: {
-        const exhaustive: never = el.binding;
-        throw new Error(
-          `irToDsl: unhandled call binding kind: ${JSON.stringify(exhaustive)}`,
-        );
-      }
-    }
+    members.push(versionBindingMember(el.binding));
   }
 
   if (el.businessKey !== undefined) {
@@ -1305,7 +1436,7 @@ function renderCallActivity(
     members.push(renderCallMapping('out', mapping));
   }
 
-  return `call ${el.id}${labelSuffix(el.name)}${attrBlock(members)}`;
+  return `call ${el.id}${labelSuffix(el.name)}${repeatClause(el)}${attrBlock(members)}`;
 }
 
 /** All-digit prints bare; anything else quotes, so it re-parses as an expression. */
@@ -1354,7 +1485,7 @@ function renderScriptTask(
   el: Extract<FlowElement, { kind: 'scriptTask' }>,
 ): string {
   const block = attrBlock([...resultVariableAttr(el), ...settingsMembers(el)]);
-  return `script ${el.id}${labelSuffix(el.name)}${block} ${renderFence(el.format, el.code)}`;
+  return `script ${el.id}${labelSuffix(el.name)}${repeatClause(el)}${block} ${renderFence(el.format, el.code)}`;
 }
 
 function labelSuffix(name: string | undefined): string {
@@ -1368,6 +1499,95 @@ function labelSuffix(name: string | undefined): string {
 function attrBlock(attrs: string[]): string {
   if (attrs.length === 0) return '';
   return ` { ${attrs.join(' ')} }`;
+}
+
+/** A literal count prints bare; anything else is an expression. */
+export const BARE_CARDINALITY = /^\d+$/;
+
+/** A plain name is the collection variable itself; anything else is an expression. */
+const BARE_COLLECTION = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+/**
+ * The grammar's `ID` terminal. The clause writes the name each run sees bare
+ * and has no other form for it, so this is also the test the import direction
+ * refuses by.
+ */
+export const BARE_ELEMENT_VARIABLE = /^[_a-zA-Z]\w*(-\w+)*$/;
+
+/** Every flow element of `container`, and of the sub-processes nested in it. */
+function* eachElement(container: FlowContainer): Generator<FlowElement> {
+  for (const el of container.flowElements) {
+    yield el;
+    if (el.kind === 'subProcess') yield* eachElement(el);
+  }
+}
+
+/**
+ * A `var` line per collection a printed clause names bare, in first-appearance
+ * order. Operaton reads a bare `operaton:collection` as the name of a process
+ * variable, so a program that iterates one without declaring it reads a
+ * variable it never declares; a quoted name and a `${...}` body print as
+ * strings and name nothing. The type is `any` because a repetition says a
+ * variable is iterated and nothing more, which is also why the element it binds
+ * needs no line of its own. A form field or a catch binding of the same name
+ * types it already, and every declaration of one name has to agree on the type,
+ * so a second line would be an error rather than a duplicate.
+ */
+function collectionDecls(process: BpmnProcess): string[] {
+  const collections = new Set<string>();
+  const typed = new Set<string>();
+  for (const el of eachElement(process)) {
+    if ('formFields' in el) {
+      for (const field of el.formFields ?? []) typed.add(field.id);
+    }
+    const def = 'eventDefinition' in el ? el.eventDefinition : undefined;
+    if (def?.kind === 'error' || def?.kind === 'escalation') {
+      if (def.codeVariable !== undefined) typed.add(def.codeVariable);
+      if ('messageVariable' in def && def.messageVariable !== undefined) {
+        typed.add(def.messageVariable);
+      }
+    }
+    const collection = 'loop' in el ? el.loop?.collection : undefined;
+    if (collection !== undefined && BARE_COLLECTION.test(collection)) {
+      collections.add(collection);
+    }
+  }
+  return [...collections]
+    .filter((name) => !typed.has(name))
+    .map((name) => `${INDENT}var ${name}: any`);
+}
+
+/**
+ * The repeat clause of an activity, with a leading space, or the empty string
+ * when it runs once. A collection spelled as a plain name prints bare and
+ * anything else quotes, because Operaton reads a bare `operaton:collection` as
+ * the name of a variable and only a `${...}` body as an expression.
+ */
+function repeatClause(el: Repeatable): string {
+  const loop = el.loop;
+  if (!repeats(loop)) return '';
+
+  const parts: string[] = [];
+  if (loop.cardinality !== undefined) {
+    parts.push(
+      BARE_CARDINALITY.test(loop.cardinality)
+        ? loop.cardinality
+        : renderRawCondition(loop.cardinality),
+    );
+  }
+  if (loop.collection !== undefined) {
+    const element =
+      loop.elementVariable === undefined ? '' : `${loop.elementVariable} `;
+    const collection = BARE_COLLECTION.test(loop.collection)
+      ? loop.collection
+      : quote(loop.collection);
+    parts.push(`each ${element}in ${collection}`);
+  }
+  if (loop.sequential === true) parts.push('sequentially');
+  if (loop.completionCondition !== undefined) {
+    parts.push(`until (${renderRawCondition(loop.completionCondition)})`);
+  }
+  return ` for ${parts.join(' ')}`;
 }
 
 function renderCondition(flow: SequenceFlow): string {

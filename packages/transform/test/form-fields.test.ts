@@ -1,15 +1,15 @@
 /**
  * Form-field support across the whole pipeline.
  *
- * A `form { … }` block on a `start` event or `user` task becomes an
+ * A `form { ... }` block on a `start` event or `user` task becomes an
  * `operaton:formData` extension element so Operaton Tasklist renders a labeled
  * form. These tests pin every transform in both directions:
- *   - `astToIr`  — the AST form block lowers to IR `formFields`.
- *   - `irToXml`  — IR form fields serialize to `operaton:formData`/`formField`,
+ *   - `astToIr`: the AST form block lowers to IR `formFields`.
+ *   - `irToXml`: IR form fields serialize to `operaton:formData`/`formField`,
  *                  mapping the DSL `number` type to Operaton `long`.
- *   - `xmlToIr`  — the extension element is read back (no spurious drop warning),
+ *   - `xmlToIr`: the extension element is read back (no spurious drop warning),
  *                  mapping `long` to `number`; an unmappable type is refused.
- *   - `irToDsl`  — form fields round-trip back to a `form { … }` block.
+ *   - `irToDsl`: form fields round-trip back to a `form { ... }` block.
  */
 
 import { beforeAll, describe, expect, it } from 'vitest';
@@ -102,7 +102,7 @@ describe('irToXml: form fields serialize to operaton:formData', () => {
 
     expect(xml).toContain('operaton:formData');
     expect(xml).toContain('operaton:formField');
-    // number → long, boolean stays boolean.
+    // number -> long, boolean stays boolean.
     expect(xml).toMatch(/id="amount"[^>]*type="long"/);
     expect(xml).toMatch(/id="creditScore"[^>]*type="long"/);
     expect(xml).toMatch(/id="approved"[^>]*type="boolean"/);
@@ -113,7 +113,7 @@ describe('irToXml: form fields serialize to operaton:formData', () => {
 });
 
 describe('xmlToIr: form fields round-trip through XML', () => {
-  it('recovers form fields (long → number) with no drop warning', async () => {
+  it('recovers form fields (long -> number) with no drop warning', async () => {
     const original = await ir(SOURCE);
     const xml = await irToXml(original);
     const { ir: reimported, warnings } = await xmlToIr(xml);

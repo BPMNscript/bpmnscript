@@ -34,7 +34,7 @@ Chosen option: "Two-tier contract: refuse constructs that change execution seman
 Refused constructs throw a subclass of `UnsupportedConstructError` before any IR is produced, so there is never a partial IR, and the refusals include:
 
 - an event definition of a kind the event's position does not accept -> `UnsupportedEventDefinitionError`
-- loop characteristics on a task, a sub-process, or a call activity -> `UnsupportedLoopCharacteristicsError`
+- a repetition the engine refuses to deploy or never dispatches on, one this tool cannot write back unchanged, and any repetition on an event handler -> `UnsupportedLoopCharacteristicsError`
 - a collaboration (pools/message flows) -> `UnsupportedCollaborationError`
 - an unsupported flow-element kind (pre-existing) -> `UnsupportedElementError`
 - an unsupported service-task execution form (pre-existing) -> `UnsupportedServiceTaskFormError`
@@ -47,7 +47,7 @@ Warned constructs are returned in a `warnings: ImportWarning[]` array alongside 
 - an Operaton or camunda extension attribute or element whose content the IR does not read.
   The boundary is drawn per owner kind rather than by a list of names, so `operaton:assignee` is data on a user task and a reported drop on a service task.
 - lanes
-- a `name` on an event handler, a boundary event, a throw, an emit, or an await, since none of those has a label slot in this tool's surface
+- a `name` on an event handler, a boundary event, a throw, an emit, or an await, since none of those has a label slot in this tool's surface; and a `name` on a start or an end whose id carries a synthesized-id prefix, which no script can spell back, so the statement that would have carried the label is left out whole
 - a `bpmn:Error`, `bpmn:Escalation`, `bpmn:Message`, or `bpmn:Signal` root that nothing in the imported process references, except an error root whose declared message the IR keeps regardless
 - `bpmn:documentation` on any element
 - BPMN content on an element the transform touches that no reader reads: an artifact on a process or a sub-process (a `bpmn:textAnnotation`, its `bpmn:association`, a `bpmn:group`), a `bpmn:ioSpecification`, a `bpmn:property`, a data association, a `bpmn:auditing` or `bpmn:monitoring` block, and a resource assignment such as a `bpmn:potentialOwner`

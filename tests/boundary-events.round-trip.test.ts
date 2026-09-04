@@ -1,5 +1,7 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 
+import { Diagnostic } from 'vscode-languageserver-types';
+
 import { xmlToIr, irToDsl, astToIr } from '@bpmn-script/transform';
 import type {
   BpmnProcess,
@@ -89,7 +91,7 @@ function assertAttachedToHost(
   attachers.forEach(({ id, box }, index) => {
     expect(
       box.y + box.height / 2,
-      `${id} is not centred on the bottom edge of ${hostId}`,
+      `${id} is not centered on the bottom edge of ${hostId}`,
     ).toBeCloseTo(host.y + host.height, 3);
     expect(
       box.x + box.width / 2,
@@ -171,14 +173,16 @@ const IMPORT_FIRST_BPMN = `<?xml version="1.0" encoding="UTF-8"?>
   </bpmn:process>
 </bpmn:definitions>`;
 
-describe('idempotence: DSL → IR₁ → XML → IR₂ → DSL′ → IR₃', () => {
-  it('every handler block in DSL′ trails the body it guards', async () => {
+describe("idempotence: DSL -> IR1 -> XML -> IR2 -> DSL' -> IR3", () => {
+  it("every handler block in DSL' trails the body it guards", async () => {
     // A boundary handler is walked early, so the orphan sweep does not mistake
     // its escape chain for a detached fragment, yet it must print in the
     // trailing group: printed in place it emits source the validator rejects.
     const { diagnostics } = await rt.validate(rt.dslPrime);
     expect(
-      diagnostics.filter((d) => d.message === HANDLER_PLACEMENT_DIAGNOSTIC),
+      diagnostics.filter(
+        (d) => Diagnostic.getMessageString(d) === HANDLER_PLACEMENT_DIAGNOSTIC,
+      ),
     ).toEqual([]);
   });
 
@@ -242,7 +246,7 @@ describe('DI attachment on the generated .bpmn', () => {
     expect(rt.generatedXml.match(/<bpmndi:BPMNDiagram\b/g)).toHaveLength(1);
   });
 
-  it('every boundary shape sits centred and half-overlapping on its host edge', () => {
+  it('every boundary shape sits centered and half-overlapping on its host edge', () => {
     const bounds = parseShapeBounds(rt.generatedXml);
 
     assertAttachedToHost(bounds, 'CheckAddress', [
@@ -373,7 +377,7 @@ describe('import-first: a handwritten .bpmn with hand-named boundary ids round-t
     );
   });
 
-  it('re-synthesises the host-derived ids, suffixing the second of the colliding pair', () => {
+  it('re-synthesizes the host-derived ids, suffixing the second of the colliding pair', () => {
     // Which of the two colliding boundaries owns the `_2` suffix follows from
     // print order, not from anything either boundary carries.
     expect(boundaryEvents(firstImport).map((b) => b.id)).toEqual([

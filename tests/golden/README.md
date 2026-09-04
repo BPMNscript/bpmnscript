@@ -5,22 +5,26 @@ Known-good files checked into the repo, so a test can compare its output against
 Most fixtures here come in pairs: a `.bpmnscript` source and the `.bpmn` the full pipeline produces from it, frozen.
 A few stand alone as inputs for one direction only.
 
-| Fixture                                | Covers                                                            |
-| -------------------------------------- | ----------------------------------------------------------------- |
-| `invoice-approval-handwritten.bpmn`    | Import of a realistic modeler file                                |
-| `invoice-approval-generated.bpmn`      | The full compile pipeline, frozen                                 |
-| `bad-service-task-no-binding.bpmn`     | The import refusal path                                           |
-| `structured-control-flow.bpmnscript`   | Round-trip idempotence for `if`, `while`, and `parallel`          |
-| `nested-subprocess.{bpmnscript,bpmn}`  | Embedded sub-process round trip                                   |
-| `event-handlers.{bpmnscript,bpmn}`     | The error and escalation layer                                    |
-| `event-triggers.{bpmnscript,bpmn}`     | The message, signal, timer, and conditional triggers              |
-| `compensation.{bpmnscript,bpmn}`       | The compensation (undo-block) layer                               |
-| `boundary-events.{bpmnscript,bpmn}`    | Handlers attached to a host activity, every trigger and host kind |
-| `intermediate-catch.{bpmnscript,bpmn}` | `await` across all four catchable triggers                        |
-| `engine-attributes.{bpmnscript,bpmn}`  | The flat engine settings, on every kind that can carry one        |
-| `input-output.{bpmnscript,bpmn}`       | `operaton:inputOutput` in all four value forms                    |
-| `listeners.{bpmnscript,bpmn}`          | The execution-listener and task-listener surface                  |
-| `unstructured-goto.bpmn`               | The `goto` degradation path on import                             |
+| Fixture                                | Covers                                                        |
+| -------------------------------------- | ------------------------------------------------------------- |
+| `invoice-approval-handwritten.bpmn`    | Import of a realistic modeler file                            |
+| `invoice-approval-generated.bpmn`      | The full compile pipeline, frozen                             |
+| `bad-service-task-no-binding.bpmn`     | The import refusal path                                       |
+| `structured-control-flow.bpmnscript`   | Round-trip idempotence for `if`, `while`, and `parallel`      |
+| `nested-subprocess.{bpmnscript,bpmn}`  | Embedded sub-process round trip                               |
+| `event-handlers.{bpmnscript,bpmn}`     | The error and escalation layer                                |
+| `event-triggers.{bpmnscript,bpmn}`     | The message, signal, timer, and conditional triggers          |
+| `compensation.{bpmnscript,bpmn}`       | The compensation (undo-block) layer                           |
+| `boundary-events.{bpmnscript,bpmn}`    | Host-attached handlers, every boundary trigger but `cancel`   |
+| `intermediate-catch.{bpmnscript,bpmn}` | `await` across all four catchable triggers                    |
+| `engine-attributes.{bpmnscript,bpmn}`  | The flat engine settings, on events, activities, and handlers |
+| `input-output.{bpmnscript,bpmn}`       | `operaton:inputOutput` in all four value forms                |
+| `listeners.{bpmnscript,bpmn}`          | The execution-listener and task-listener surface              |
+| `event-positions.{bpmnscript,bpmn}`    | A message start, `emit`/`throw message`, and a terminate end  |
+| `task-kinds.{bpmnscript,bpmn}`         | The generic, send, receive, and decision task kinds           |
+| `repetition.{bpmnscript,bpmn}`         | Every form of the repeat clause                               |
+| `transactions.{bpmnscript,bpmn}`       | A block of work that can be given up, and the cancel pair     |
+| `unstructured-goto.bpmn`               | The `goto` degradation path on import                         |
 
 The three invoice-approval files all describe the same process (review, then a gateway on `amount > 1000`, then senior approval or auto-approve) but come from different sources and pull the tests in different directions.
 
@@ -40,7 +44,7 @@ Everything each section below calls a contract must stay exactly as it is.
 
 Each pair has a round-trip test at `tests/<name>.round-trip.test.ts`, and `tests/helpers/round-trip-fixture.ts` registers what they share: reproduce the pipeline and compare byte-for-byte against the frozen `.bpmn`, round-trip the source through XML and back asserting IR equivalence through `tests/helpers/normalize-ir.ts`, re-parse and re-validate the restructured DSL, and open the authored fixture validator-clean.
 Every pair but `intermediate-catch` also asserts that the frozen `.bpmn` imports without a single warning and re-desugars back to the IR the fixture compiled to.
-The DI assertion is each suite's own, since what the layout has to get right differs: nested shapes inside their parent's bounds wherever a fixture nests (the `isExpanded` hint from `irToXml`, without which a disconnected event sub-process leaks into the root plane), and a boundary shape centred on its host's lower edge in `boundary-events`.
+The DI assertion is each suite's own, since what the layout has to get right differs: nested shapes inside their parent's bounds wherever a fixture nests (the `isExpanded` hint from `irToXml`, without which a disconnected event sub-process leaks into the root plane), and a boundary shape centered on its host's lower edge in `boundary-events`.
 Per-fixture extras, such as which root elements must be shared or how strictly the restructured DSL is validated, live in the test file.
 
 ## `invoice-approval-handwritten.bpmn`
@@ -77,7 +81,7 @@ Every flow node carries an explicit id so the round trip can assert authored ids
 
 ## `nested-subprocess.{bpmnscript,bpmn}`
 
-An order-fulfillment process grouping its stages into `subprocess` blocks: one with an implicit start and end wrapping an `if`/`else`, a labelled one with an explicit start and end wrapping a `while`, and a two-level nested one.
+An order-fulfillment process grouping its stages into `subprocess` blocks: one with an implicit start and end wrapping an `if`/`else`, a labeled one with an explicit start and end wrapping a `while`, and a two-level nested one.
 Every named node carries an explicit id so the round trip can assert authored ids survive at their correct container depth.
 
 Contract: `isExpanded="true"` on each sub-process, nested children inside their parent's bounds, and the authored ids.
@@ -98,17 +102,17 @@ Contract: the deduped name-keyed roots and their order, the shared `signalRef`, 
 
 ## `compensation.{bpmnscript,bpmn}`
 
-A trip-booking saga exercising the whole undo surface in one program: two sub-processes each owning an `on compensation` undo block (the flight reverses in one step, the hotel through an `if` reading a declared form variable, so the undo logic is more than a single step); an `error ... message` declaration and a process-level `on error` handler whose body raises a named `emit compensation Undo` and then continues to notify the traveller; a matching `emit escalation Overspend` in the main flow and a process-level `on escalation` handler that gives up, recording the abandonment and ending its path with a named `throw compensation CancelAll`, for the cross-kind interplay; and a `var compensation: number` read in a service expression, pinning that the compensation word coexists with a same-named variable.
+A trip-booking saga exercising the whole undo surface in one program: two sub-processes each owning an `on compensation` undo block (the flight reverses in one step, the hotel through an `if` reading a declared form variable, so the undo logic is more than a single step); an `error ... message` declaration and a process-level `on error` handler whose body raises a named `emit compensation Undo` and then continues to notify the traveler; a matching `emit escalation Overspend` in the main flow and a process-level `on escalation` handler that gives up, recording the abandonment and ending its path with a named `throw compensation CancelAll`, for the cross-kind interplay; and a `var compensation: number` read in a service expression, pinning that the compensation word coexists with a same-named variable.
 The `if` variables `seats` and `budget` are declared on the start form so they survive an import-and-back round trip, and every throw and emit is explicitly named so its printed id re-parses cleanly.
 
 Contract: the absence of any compensation root, the bare compensate definitions, the `triggeredByEvent` undo blocks with interrupting starts, each undo-block shape inside its host's bounds, and every authored id.
 
 ## `boundary-events.{bpmnscript,bpmn}`
 
-A parcel-dispatch narrative exercising the whole attached-handler surface in one program: all six boundary-capable triggers; interrupting and non-interrupting attachment wherever Operaton permits both; every host kind a token can sit at, a `user` task, a `class`-bound and a `topic`-bound `service` task, a `script` task, a `subprocess` whose escalation is raised by an `emit escalation` one container down, and a `call`; two hosts carrying two boundaries each, so the layout library has to distribute the attachers along the host's lower edge; an escape chain that rejoins the main flow through `goto`; an escape chain containing an `if`; and a host-less signal handler coexisting with all of them in the same container.
-The `if` and condition variables are declared on the start form so they survive an import-and-back round trip, the escalation is emitted under an explicit id so its printed id re-parses cleanly, and every label differs from the name humanised from its id.
+A parcel-dispatch narrative exercising the whole attached-handler surface in one program: six of the seven boundary triggers, all but `cancel`, which attaches to an `attempt` block alone and is frozen in the `transactions` pair; interrupting and non-interrupting attachment wherever Operaton permits both; five host kinds, a `user` task, a `class`-bound and a `topic`-bound `service` task, a `script` task, a `subprocess` whose escalation is raised by an `emit escalation` one container down, and a `call`; two hosts carrying two boundaries each, so the layout library has to distribute the attachers along the host's lower edge; an escape chain that rejoins the main flow through `goto`; an escape chain containing an `if`; and a host-less signal handler coexisting with all of them in the same container.
+The `if` and condition variables are declared on the start form so they survive an import-and-back round trip, the escalation is emitted under an explicit id so its printed id re-parses cleanly, and every label differs from the name humanized from its id.
 
-Contract: every `attachedToRef`, `cancelActivity="false"` on each `alongside` boundary, the shared `signalRef` and `escalationRef`, each boundary shape centred on its host's bottom edge, and every authored id.
+Contract: every `attachedToRef`, `cancelActivity="false"` on each `alongside` boundary, the shared `signalRef` and `escalationRef`, each boundary shape centered on its host's bottom edge, and every authored id.
 
 ## `intermediate-catch.{bpmnscript,bpmn}`
 
@@ -125,7 +129,7 @@ Contract: the four event definitions, their order, and the absence of any `name`
 
 ## `engine-attributes.{bpmnscript,bpmn}`
 
-A motor-claim settlement narrative carrying the flat engine settings, the ones whose value is a single scalar, on every element kind that has a surface to write one on.
+A motor-claim settlement narrative carrying the flat engine settings, the ones whose value is a single scalar.
 `versionTag` sits on the process header, and `asyncBefore`, `asyncAfter`, `exclusive`, `jobPriority`, and `retryCycle` are spread across a start, an end, a user task, a service task, a script task, a subprocess, a call, an `await`, an `emit`, and both handler forms.
 Five of the seven keys a user task owns (`assignee`, `formKey`, `candidateGroups`, `candidateUsers`, `priority`) sit together on one task, and `resultVariable` on both a service and a script task.
 
@@ -139,7 +143,7 @@ Contract: the `(node id, attribute, value)` table in `tests/engine-attributes.ro
 
 ## `input-output.{bpmnscript,bpmn}`
 
-A process exercising the `operaton:inputOutput` block in all four value forms, a scalar, an inline script, a list, and a map, on every carrier kind that holds one: a user task, a service task, a script task, a subprocess, a call, and an `on message` handler.
+A process exercising the `operaton:inputOutput` block in all four value forms, a scalar, an inline script, a list, and a map, on a user task, a service task, a script task, a subprocess, a call, and an `on message` handler.
 The scalar and the inline script each appear in both directions; as a parameter's own value the list is only ever an input and the map only ever an output, and each of the two structured forms nests inside the other.
 The call carries its own `in`/`out` variable mappings beside its parameters, so one artifact pins the two mechanisms as distinct: a variable mapping crosses the process boundary into the callee, a parameter binds a value into the activity's own execution scope.
 
@@ -153,6 +157,49 @@ All four bindings appear, a Java class, a JUEL expression, a delegate expression
 
 Contract: the `operaton:executionListener` and `operaton:taskListener` children in their authored order, the event word on each, the single binding each carries, the `scriptFormat` on the inline script, and the timer child under the `timeout` listener.
 
+## `event-positions.{bpmnscript,bpmn}`
+
+An order-dispatch narrative carrying a trigger in the three positions outside a handler in one program: a `start OrderReceived ... message "OrderReceived"`, so the process is entered by a correlated message rather than by a caller while its start form still renders; an `emit message NotifyWarehouse "WarehouseNotified"` and a terminal `throw message OrderAcknowledged "OrderAcknowledged"`, the continuing and the terminal form of one verb pair; and an `end OrderAbandoned "Abandon every path" terminate` in one branch of an `if`, beside the message end the other branch falls through to.
+The three message names are all distinct, so this artifact pins one derived root per name, where `event-triggers` pins the opposite case of several references collapsing onto one root.
+The condition variable is declared on the start form so it survives an import-and-back round trip, and every throw and emit is explicitly named so its printed id re-parses cleanly.
+A terminate ends its branch, so the restructured DSL prints that branch as a `goto` onto the named service task instead of as an `if`/`else`; the IR is the same either way, which is what the idempotence block asserts.
+
+Contract: one `bpmn:Message` root per distinct name in first-appearance order (`OrderReceived`, `WarehouseNotified`, `OrderAcknowledged`), the `messageRef` on the start event beside its `operaton:formData`, the `messageRef` on `NotifyWarehouse` and `OrderAcknowledged` with no implementation attribute so Operaton parses them as a none throw and a none end and sends nothing until a send surface exists, the bare `bpmn:terminateEventDefinition` on `OrderAbandoned` with its `name` attribute kept, an import of the frozen artifact that reports no warning at all and so none about that end event's label, and every authored id.
+
+## `task-kinds.{bpmnscript,bpmn}`
+
+An order-settlement narrative carrying the four activity statements the engine routes through a tag of their own.
+A `step` the engine records and passes straight through, a `send` bound to a Java class, a `receive` naming the message it waits for beside a second naming none, and three `decide` steps covering both bindings a decision step takes.
+`RateRisk` pins a decision table with `binding = latest` and maps its result into a `resultVariable`, `ChooseCarrier` falls through to a code binding, and `PriceShipping` pins `version = 3`, so the two version forms and the result mapping sit in one artifact.
+An `emit message` carrying a class sits mid-flow, so a message throw the path continues past is frozen beside the one that ends the path.
+The closing `throw message` carries a class, so the message end names the code that publishes it instead of parsing as a none end.
+That message end and the receive task name the same message, which is what makes the derived root one shared root rather than one per kind; the emit names a second and derives a root of its own.
+
+Contract: a `bpmn:task`, a `bpmn:sendTask`, two `bpmn:receiveTask`, three `bpmn:businessRuleTask`, and one `bpmn:intermediateThrowEvent` element; two `bpmn:Message` roots, `PaymentSettled` ahead of `PickingSlotReady`, the first referenced by both the receive task's `messageRef` and the message end's, with no `messageRef` at all on the receive task that names no message; the four DMN attributes `operaton:decisionRef`, `operaton:decisionRefBinding`, `operaton:decisionRefVersion`, and `operaton:mapDecisionResult`; the `operaton:class` on the intermediate throw's and on the message end's `bpmn:messageEventDefinition`; and every authored id.
+
+## `repetition.{bpmnscript,bpmn}`
+
+An order-fulfilment narrative whose stages each run once per item they are handed, so one artifact carries every form of the repeat clause on seven of the ten activity tags that take one.
+A user task repeats over a bound collection; a service task over a collection expression, sequentially, stopped early by an `until` condition; a second service task over a bare count; a step over a count and a collection together; a receive over a collection it binds no element of; a call over a bound collection; a script task whose clause is written ahead of both its settings block and its fenced body; and a sub-process that repeats sequentially, sets `asyncBefore`, and wraps one ordinary service task.
+`asyncBefore` on a repeated statement makes one job for the repetition as a whole rather than one per run of it, which is the only async a clause can express.
+Every collection variable is declared in the process header, and the decompiler writes a declaration back for each collection a clause names bare, since a bare `operaton:collection` is the name of a process variable the engine requires to exist.
+
+Contract: one `bpmn:multiInstanceLoopCharacteristics` under each of `bpmn:userTask`, both `bpmn:serviceTask`, `bpmn:task`, `bpmn:receiveTask`, `bpmn:callActivity`, `bpmn:scriptTask`, and `bpmn:subProcess`, written ahead of the script body and of a sub-process's own children; `isSequential="true"` on the two statements that wrote `sequentially` and the attribute absent everywhere else, because the engine runs the instances at once unless told otherwise; one `bpmn:loopCardinality` carrying a count alone and one carrying a count beside a collection, which the engine accepts together; one `bpmn:completionCondition`; `operaton:elementVariable` absent on the one collection that binds no element; and `operaton:collection="${order.lines}"` keeping its `${}` where the author wrote an expression while `operaton:collection="approvers"` stays bare where the author named a variable, since Operaton reads a bare value as a variable name and only a `${...}` body as an expression.
+
+## `transactions.{bpmnscript,bpmn}`
+
+A seat-booking narrative whose holding and paying are one block of work that can be given up as a unit.
+`attempt BookAndPay` holds the seats through an ordinary `subprocess` owning an `on compensation` undo block, charges the card, and issues the tickets; a guard on the declined charge ends that path with `end BookingAbandoned "Give up the booking" cancel`, and `on BookAndPay: cancel` catches it.
+An `on BookAndPay: error` handler sits on the same block, so the artifact pins that a block taking a cancel handler still takes the handlers it always took.
+A second `attempt` block repeats over the seat rows, sets `asyncBefore`, and mentions cancel nowhere, so a block nothing gives up is frozen beside the one that is; it sits inside an ordinary `subprocess`, which nests the two heads inside one another both ways round.
+The guard variable is declared on the start form and the collection the repeat clause names bare is declared in the header, so both survive an import-and-back round trip.
+
+The `attempt` head serializes to `bpmn:transaction` and `subprocess` to `bpmn:subProcess`.
+Operaton runs a `bpmn:transaction` through the same behavior class it gives an ordinary embedded sub-process, so nothing about the block is atomic and nothing rolls back on its own; what the second tag buys is that the engine then accepts a cancel end directly inside the block and a cancel boundary on it, and refuses to deploy either anywhere else.
+A cancel end runs the undo blocks of the finished steps of its own block first, in reverse order of completion, and only when that is done does the run appear at the block's cancel handler.
+
+Contract: the `attempt` blocks on `bpmn:transaction` and the ordinary ones on `bpmn:subProcess`; the `bpmn:cancelEventDefinition` on an end event inside the transaction and on a boundary event whose `attachedToRef` names that transaction, both of them bare; the error boundary on the same host; the `triggeredByEvent` undo block nested inside the block a cancel end gives up; `bpmn:multiInstanceLoopCharacteristics` and `operaton:asyncBefore` written on the second transaction tag; every nested shape inside its parent's bounds with both boundary shapes centered on the host's lower edge; and every authored id.
+
 ## `unstructured-goto.bpmn`
 
 A deliberately unstructured BPMN file.
@@ -161,4 +208,4 @@ That's the classic irreducible shape no structured `if` or `while` can express, 
 
 This is the input for the goto-degradation import path.
 `xmlToIr` must read it without throwing, since every element kind is supported and every sequence flow resolves, and the restructuring `irToDsl` must fall back to `goto` for the edges it cannot fold into a structured block.
-The file is a realistic modeler artefact, with MIWG `<bpmn:incoming>` and `<bpmn:outgoing>` children, `operaton:` extensions, and a `<bpmndi:BPMNDiagram>` block with hand-picked coordinates; `xmlToIr` discards all DI data, so only the semantic graph reaches the IR.
+The file is a realistic modeler artifact, with MIWG `<bpmn:incoming>` and `<bpmn:outgoing>` children, `operaton:` extensions, and a `<bpmndi:BPMNDiagram>` block with hand-picked coordinates; `xmlToIr` discards all DI data, so only the semantic graph reaches the IR.

@@ -1,0 +1,126 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI" xmlns:dc="http://www.omg.org/spec/DD/20100524/DC" xmlns:di="http://www.omg.org/spec/DD/20100524/DI" xmlns:operaton="http://operaton.org/schema/1.0/bpmn" id="Definitions_order-settlement" targetNamespace="http://bpmnscript.io/processes" exporter="BPMNscript" exporterVersion="0.0.0">
+  <bpmn:process id="order-settlement" name="Order Settlement" isExecutable="true" operaton:historyTimeToLive="P30D">
+    <bpmn:startEvent id="OrderReceived">
+      <bpmn:outgoing>Flow_OrderReceived_RecordOrder</bpmn:outgoing>
+    </bpmn:startEvent>
+    <bpmn:task id="RecordOrder" name="Record the order">
+      <bpmn:incoming>Flow_OrderReceived_RecordOrder</bpmn:incoming>
+      <bpmn:outgoing>Flow_RecordOrder_NotifyWarehouse</bpmn:outgoing>
+    </bpmn:task>
+    <bpmn:sendTask id="NotifyWarehouse" name="Tell the warehouse" operaton:class="com.example.orders.NotifyWarehouseDelegate">
+      <bpmn:incoming>Flow_RecordOrder_NotifyWarehouse</bpmn:incoming>
+      <bpmn:outgoing>Flow_NotifyWarehouse_AwaitSettlement</bpmn:outgoing>
+    </bpmn:sendTask>
+    <bpmn:receiveTask id="AwaitSettlement" name="Wait for the payment" messageRef="Message_PaymentSettled">
+      <bpmn:incoming>Flow_NotifyWarehouse_AwaitSettlement</bpmn:incoming>
+      <bpmn:outgoing>Flow_AwaitSettlement_AwaitPickingSlot</bpmn:outgoing>
+    </bpmn:receiveTask>
+    <bpmn:receiveTask id="AwaitPickingSlot" name="Wait for a picking slot">
+      <bpmn:incoming>Flow_AwaitSettlement_AwaitPickingSlot</bpmn:incoming>
+      <bpmn:outgoing>Flow_AwaitPickingSlot_ConfirmPicking</bpmn:outgoing>
+    </bpmn:receiveTask>
+    <bpmn:intermediateThrowEvent id="ConfirmPicking">
+      <bpmn:incoming>Flow_AwaitPickingSlot_ConfirmPicking</bpmn:incoming>
+      <bpmn:outgoing>Flow_ConfirmPicking_RateRisk</bpmn:outgoing>
+      <bpmn:messageEventDefinition messageRef="Message_PickingSlotReady" operaton:class="com.example.orders.ConfirmPickingDelegate" />
+    </bpmn:intermediateThrowEvent>
+    <bpmn:businessRuleTask id="RateRisk" name="Rate the order risk" operaton:resultVariable="risk" operaton:decisionRef="riskRating" operaton:decisionRefBinding="latest" operaton:mapDecisionResult="singleEntry">
+      <bpmn:incoming>Flow_ConfirmPicking_RateRisk</bpmn:incoming>
+      <bpmn:outgoing>Flow_RateRisk_ChooseCarrier</bpmn:outgoing>
+    </bpmn:businessRuleTask>
+    <bpmn:businessRuleTask id="ChooseCarrier" name="Choose a carrier" operaton:class="com.example.orders.ChooseCarrierDelegate">
+      <bpmn:incoming>Flow_RateRisk_ChooseCarrier</bpmn:incoming>
+      <bpmn:outgoing>Flow_ChooseCarrier_PriceShipping</bpmn:outgoing>
+    </bpmn:businessRuleTask>
+    <bpmn:businessRuleTask id="PriceShipping" name="Price the shipping" operaton:decisionRef="shippingTariff" operaton:decisionRefBinding="version" operaton:decisionRefVersion="3">
+      <bpmn:incoming>Flow_ChooseCarrier_PriceShipping</bpmn:incoming>
+      <bpmn:outgoing>Flow_PriceShipping_ForwardSettlement</bpmn:outgoing>
+    </bpmn:businessRuleTask>
+    <bpmn:endEvent id="ForwardSettlement">
+      <bpmn:incoming>Flow_PriceShipping_ForwardSettlement</bpmn:incoming>
+      <bpmn:messageEventDefinition messageRef="Message_PaymentSettled" operaton:class="com.example.orders.PublishSettlementDelegate" />
+    </bpmn:endEvent>
+    <bpmn:sequenceFlow id="Flow_OrderReceived_RecordOrder" sourceRef="OrderReceived" targetRef="RecordOrder" />
+    <bpmn:sequenceFlow id="Flow_RecordOrder_NotifyWarehouse" sourceRef="RecordOrder" targetRef="NotifyWarehouse" />
+    <bpmn:sequenceFlow id="Flow_NotifyWarehouse_AwaitSettlement" sourceRef="NotifyWarehouse" targetRef="AwaitSettlement" />
+    <bpmn:sequenceFlow id="Flow_AwaitSettlement_AwaitPickingSlot" sourceRef="AwaitSettlement" targetRef="AwaitPickingSlot" />
+    <bpmn:sequenceFlow id="Flow_AwaitPickingSlot_ConfirmPicking" sourceRef="AwaitPickingSlot" targetRef="ConfirmPicking" />
+    <bpmn:sequenceFlow id="Flow_ConfirmPicking_RateRisk" sourceRef="ConfirmPicking" targetRef="RateRisk" />
+    <bpmn:sequenceFlow id="Flow_RateRisk_ChooseCarrier" sourceRef="RateRisk" targetRef="ChooseCarrier" />
+    <bpmn:sequenceFlow id="Flow_ChooseCarrier_PriceShipping" sourceRef="ChooseCarrier" targetRef="PriceShipping" />
+    <bpmn:sequenceFlow id="Flow_PriceShipping_ForwardSettlement" sourceRef="PriceShipping" targetRef="ForwardSettlement" />
+  </bpmn:process>
+  <bpmn:message id="Message_PaymentSettled" name="PaymentSettled" />
+  <bpmn:message id="Message_PickingSlotReady" name="PickingSlotReady" />
+  <bpmndi:BPMNDiagram id="BPMNDiagram_order-settlement">
+    <bpmndi:BPMNPlane id="BPMNPlane_order-settlement" bpmnElement="order-settlement">
+      <bpmndi:BPMNShape id="OrderReceived_di" bpmnElement="OrderReceived">
+        <dc:Bounds x="57" y="52" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="RecordOrder_di" bpmnElement="RecordOrder">
+        <dc:Bounds x="175" y="30" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="NotifyWarehouse_di" bpmnElement="NotifyWarehouse">
+        <dc:Bounds x="325" y="30" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="AwaitSettlement_di" bpmnElement="AwaitSettlement">
+        <dc:Bounds x="475" y="30" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="AwaitPickingSlot_di" bpmnElement="AwaitPickingSlot">
+        <dc:Bounds x="625" y="30" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="ConfirmPicking_di" bpmnElement="ConfirmPicking">
+        <dc:Bounds x="807" y="52" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="RateRisk_di" bpmnElement="RateRisk">
+        <dc:Bounds x="925" y="30" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="ChooseCarrier_di" bpmnElement="ChooseCarrier">
+        <dc:Bounds x="1075" y="30" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="PriceShipping_di" bpmnElement="PriceShipping">
+        <dc:Bounds x="1225" y="30" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="ForwardSettlement_di" bpmnElement="ForwardSettlement">
+        <dc:Bounds x="1407" y="52" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_OrderReceived_RecordOrder_di" bpmnElement="Flow_OrderReceived_RecordOrder">
+        <di:waypoint x="93" y="70" />
+        <di:waypoint x="175" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_RecordOrder_NotifyWarehouse_di" bpmnElement="Flow_RecordOrder_NotifyWarehouse">
+        <di:waypoint x="275" y="70" />
+        <di:waypoint x="325" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_NotifyWarehouse_AwaitSettlement_di" bpmnElement="Flow_NotifyWarehouse_AwaitSettlement">
+        <di:waypoint x="425" y="70" />
+        <di:waypoint x="475" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_AwaitSettlement_AwaitPickingSlot_di" bpmnElement="Flow_AwaitSettlement_AwaitPickingSlot">
+        <di:waypoint x="575" y="70" />
+        <di:waypoint x="625" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_AwaitPickingSlot_ConfirmPicking_di" bpmnElement="Flow_AwaitPickingSlot_ConfirmPicking">
+        <di:waypoint x="725" y="70" />
+        <di:waypoint x="807" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ConfirmPicking_RateRisk_di" bpmnElement="Flow_ConfirmPicking_RateRisk">
+        <di:waypoint x="843" y="70" />
+        <di:waypoint x="925" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_RateRisk_ChooseCarrier_di" bpmnElement="Flow_RateRisk_ChooseCarrier">
+        <di:waypoint x="1025" y="70" />
+        <di:waypoint x="1075" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ChooseCarrier_PriceShipping_di" bpmnElement="Flow_ChooseCarrier_PriceShipping">
+        <di:waypoint x="1175" y="70" />
+        <di:waypoint x="1225" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_PriceShipping_ForwardSettlement_di" bpmnElement="Flow_PriceShipping_ForwardSettlement">
+        <di:waypoint x="1325" y="70" />
+        <di:waypoint x="1407" y="70" />
+      </bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>

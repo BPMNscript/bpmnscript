@@ -4,8 +4,18 @@
     "rootDir": ".",
     "outDir": "out",
     "module": "esnext",
-    "moduleResolution": "bundler"
+    "moduleResolution": "bundler",
+    "noEmit": true
   },
-  "include": ["fixtures/**/*.ts", "helpers/**/*.ts", "**/*.test.ts"],
+  "references": [
+    { "path": "../packages/language/tsconfig.src.json" },
+    { "path": "../packages/transform/tsconfig.json" }
+  ],
+  "include": [
+    "fixtures/**/*.ts",
+    "helpers/**/*.ts",
+    "vitest.config.ts",
+    "**/*.test.ts"
+  ],
   "exclude": ["out/**", "node_modules/**"]
 }

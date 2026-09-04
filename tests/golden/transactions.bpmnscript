@@ -1,0 +1,88 @@
+// Round-trip fixture for work that can be given up as a unit: one seat-booking
+// narrative carrying the `attempt` head, the cancel end that gives such a block
+// up, and the handler that catches it.
+//
+// A traveler asks for seats, a clerk reviews the request, and the seats are
+// then held and paid for as one block of work:
+//
+//   - `attempt BookAndPay` holds the seats, charges the card and issues the
+//     tickets. Holding the seats is an ordinary `subprocess` owning an
+//     `on compensation` undo block, so the block has finished work to undo when
+//     it is given up;
+//   - a guard on the declined charge ends that path with
+//     `end BookingAbandoned "Give up the booking" cancel`, which undoes every
+//     finished step of the block that carries an undo block and only then hands
+//     the run to the block's cancel handler;
+//   - `on BookAndPay: cancel` apologizes to the traveler and ends the run
+//     there, and an `on BookAndPay: error` handler sits beside it, so the same
+//     block still takes the triggers it always took;
+//   - `attempt AssignSeatRows` gives up nothing at all. It repeats over the seat
+//     rows and sets asyncBefore, so a block that never mentions cancel is frozen
+//     beside the one that does, and it sits inside an ordinary `subprocess`, so
+//     the two heads are frozen nested each way round.
+//
+// The guard variable is declared on the start form and the collection the
+// repeat clause names bare is declared in the header, so both survive an
+// import-and-back round trip. See README.md.
+
+process seat-booking {
+  error "PAYMENT_UNAVAILABLE" message "The payment provider could not be reached"
+
+  var seatRows: any
+
+  start BookingRequested {
+    form {
+      chargeDeclined: boolean "Whether the card issuer declined the charge"
+    }
+  }
+
+  user ReviewRequest "Review the seat request" { assignee = "demo" }
+
+  attempt BookAndPay "Try to book and pay for the seats" {
+    start BookingOpened
+
+    subprocess HoldSeats "Hold the seats" {
+      start HoldOpened
+      service ReserveSeats "Take the seats off sale" { class = "com.example.booking.ReserveSeatsDelegate" }
+      end SeatsHeld
+
+      on compensation {
+        start ReleaseOpened
+        service ReleaseSeats "Put the seats back on sale" { class = "com.example.booking.ReleaseSeatsDelegate" }
+        end SeatsReleased
+      }
+    }
+
+    service ChargeCard "Charge the travel card" { class = "com.example.booking.ChargeCardDelegate" }
+
+    if (chargeDeclined) {
+      end BookingAbandoned "Give up the booking" cancel
+    }
+
+    service IssueTickets "Issue the boarding tickets" { class = "com.example.booking.IssueTicketsDelegate" }
+    end BookingSecured
+  }
+
+  subprocess PrepareDeparture "Prepare the departure list" {
+    start DepartureOpened
+
+    attempt AssignSeatRows "Spread the party across rows" for each row in seatRows sequentially { asyncBefore = true } {
+      service AssignRow "Assign one row of seats" { class = "com.example.booking.AssignRowDelegate" }
+    }
+
+    end DeparturePrepared
+  }
+
+  user ConfirmBooking "Confirm the seats with the traveler" { assignee = "demo" }
+  end BookingComplete
+
+  on BookAndPay: cancel {
+    user ApologizeToTraveler "Apologize and confirm the seats were released" { assignee = "demo" }
+    end BookingCancelled
+  }
+
+  on BookAndPay: error "PAYMENT_UNAVAILABLE" (code c, message m) {
+    service RecordProviderOutage "Record the payment outage" { class = "com.example.booking.RecordOutageDelegate" }
+    end BookingHalted
+  }
+}

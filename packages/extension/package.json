@@ -1,6 +1,6 @@
 {
   "name": "vscode-bpmnscript",
-  "description": "VS Code extension for BPMNscript — bundles the Langium language server",
+  "description": "VS Code extension for BPMNscript, bundling the Langium language server",
   "version": "0.0.1",
   "displayName": "bpmnscript",
   "type": "module",
@@ -52,7 +52,7 @@
       },
       {
         "command": "bpmnscript.openAndDecompile",
-        "title": "Open a BPMN file and convert it…",
+        "title": "Open a BPMN file and convert it\u2026",
         "category": "BPMNscript"
       }
     ],
@@ -100,7 +100,7 @@
     "build:post": "npm run build:prepare && node esbuild.mjs",
     "build:clean": "npm run clean && npm run build",
     "watch": "npm run build:prepare && concurrently -n tsc,esbuild -c blue,yellow \"tsc -b tsconfig.json --watch\" \"node esbuild.mjs --watch\"",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "typecheck": "tsc -b tsconfig.test.json",
     "test": "vitest run"
   },
   "dependencies": {

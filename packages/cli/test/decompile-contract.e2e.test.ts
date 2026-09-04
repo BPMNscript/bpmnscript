@@ -19,6 +19,7 @@ import {
 
 import { buildAction } from '../src/build.js';
 import { parseAction } from '../src/parse.js';
+import { diagnosticMessage } from '../src/util.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -30,10 +31,25 @@ const LANES_AND_ASYNC_BPMN = path.resolve(
   'tests/fixtures/lanes-and-async.bpmn',
 );
 
-const TIMER_START_BPMN = path.resolve(
+const CONDITIONAL_START_BPMN = path.resolve(
   REPO_ROOT,
-  'tests/fixtures/timer-start.bpmn',
+  'tests/fixtures/conditional-start.bpmn',
 );
+
+// `StartEvent_1`/`EndEvent_1` are what a modeler mints for a start and an end
+// drawn without a name of their own, and the shape the desugarer reserves for
+// the ids it generates, so a script cannot spell either one back.
+const GENERATED_ID_LABELS_BPMN = `<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" targetNamespace="http://test">
+  <bpmn:process id="generated-id-labels" isExecutable="true">
+    <bpmn:startEvent id="StartEvent_1" name="Order received" />
+    <bpmn:userTask id="Approve" />
+    <bpmn:endEvent id="EndEvent_1" name="Order filed" />
+    <bpmn:sequenceFlow id="F1" sourceRef="StartEvent_1" targetRef="Approve" />
+    <bpmn:sequenceFlow id="F2" sourceRef="Approve" targetRef="EndEvent_1" />
+  </bpmn:process>
+</bpmn:definitions>
+`;
 
 // BPMN vocabulary the DSL author never sees (ADR-0013).
 const FORBIDDEN_JARGON = ['flow node', 'gateway', 'token', 'sequence flow'];
@@ -83,7 +99,7 @@ beforeAll(() => {
   validate = validationHelper<Model>(services.BpmnScript);
 });
 
-describe('decompile contract — warning path (lanes + dropped extension attribute)', () => {
+describe('decompile contract: warning path (lanes + dropped extension attribute)', () => {
   afterEach(() => {
     vi.restoreAllMocks();
   });
@@ -142,13 +158,13 @@ describe('decompile contract — warning path (lanes + dropped extension attribu
   });
 });
 
-describe('decompile contract — refusal path (timer start event)', () => {
+describe('decompile contract: refusal path (conditional start event)', () => {
   afterEach(() => {
     vi.restoreAllMocks();
   });
 
-  it('xmlToIr refuses the timer-start fixture with UnsupportedEventDefinitionError (extends UnsupportedConstructError) naming the offending start event, with no BPMN jargon', async () => {
-    const xml = fs.readFileSync(TIMER_START_BPMN, 'utf-8');
+  it('xmlToIr refuses the conditional-start fixture with UnsupportedEventDefinitionError (extends UnsupportedConstructError) naming the offending start event, with no BPMN jargon', async () => {
+    const xml = fs.readFileSync(CONDITIONAL_START_BPMN, 'utf-8');
 
     await expect(xmlToIr(xml)).rejects.toBeInstanceOf(
       UnsupportedEventDefinitionError,
@@ -162,21 +178,21 @@ describe('decompile contract — refusal path (timer start event)', () => {
       const e = err as UnsupportedEventDefinitionError;
       expect(e.elementId).toBe('ScheduledStart');
       expect(e.eventKind).toBe('start');
-      expect(e.definitionType).toBe('bpmn:TimerEventDefinition');
+      expect(e.definitionType).toBe('bpmn:ConditionalEventDefinition');
       expect(e.message).toContain('ScheduledStart');
-      expect(e.message.toLowerCase()).toContain('timer');
+      expect(e.message.toLowerCase()).toContain('conditional');
       assertNoForbiddenJargon(e.message);
     }
   });
 
-  it('parseAction on the timer-start fixture exits 1, writes no output file, and prints an actionable message naming the offending element', async () => {
+  it('parseAction on the conditional-start fixture exits 1, writes no output file, and prints an actionable message naming the offending element', async () => {
     await withTempDir(async (dir) => {
-      const outDsl = path.join(dir, 'timer-start.bpmnscript');
+      const outDsl = path.join(dir, 'conditional-start.bpmnscript');
       const exitSpy = spyOnExit();
       const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
       await expect(
-        parseAction(TIMER_START_BPMN, { output: outDsl }),
+        parseAction(CONDITIONAL_START_BPMN, { output: outDsl }),
       ).rejects.toBeInstanceOf(ExitCalled);
 
       // 1 means unsupported construct; 2 would mean I/O or generic failure.
@@ -187,13 +203,13 @@ describe('decompile contract — refusal path (timer start event)', () => {
         .map((call) => String(call[0]))
         .join('\n');
       expect(stderrOutput).toContain('ScheduledStart');
-      expect(stderrOutput.toLowerCase()).toContain('timer');
+      expect(stderrOutput.toLowerCase()).toContain('conditional');
       assertNoForbiddenJargon(stderrOutput);
     });
   });
 });
 
-describe('decompile contract — integration: decompiled DSL round-trips through the compile pipeline', () => {
+describe('decompile contract: integration: decompiled DSL round-trips through the compile pipeline', () => {
   afterEach(() => {
     vi.restoreAllMocks();
   });
@@ -208,6 +224,26 @@ describe('decompile contract — integration: decompiled DSL round-trips through
 
     const { diagnostics } = await validate(dsl);
     expect(diagnostics).toHaveLength(0);
+  });
+
+  it('the DSL produced from a diagram whose labeled start and end carry generated-shaped ids re-parses with zero diagnostics, and each dropped label is warned about', async () => {
+    const { ir, warnings } = await xmlToIr(GENERATED_ID_LABELS_BPMN);
+    const dsl = irToDsl(ir);
+
+    const document = await parse(dsl, { validation: true });
+    expect(document.parseResult.parserErrors).toHaveLength(0);
+
+    const { diagnostics } = await validate(dsl);
+    expect(diagnostics).toHaveLength(0);
+
+    const labelWarnings = warnings.filter((w) => w.category === 'label');
+    expect(labelWarnings.map((w) => w.elementId)).toEqual([
+      'StartEvent_1',
+      'EndEvent_1',
+    ]);
+    expect(labelWarnings[0]?.message).toContain('Order received');
+    expect(labelWarnings[1]?.message).toContain('Order filed');
+    for (const w of labelWarnings) assertNoForbiddenJargon(w.message);
   });
 
   it("the DSL produced from the lanes-and-async fixture re-compiles via buildAction (compileDslToBpmn's own pipeline) without validation errors, and the rebuilt BPMN re-imports cleanly", async () => {
@@ -233,7 +269,7 @@ describe('decompile contract — integration: decompiled DSL round-trips through
   });
 });
 
-describe('decompile contract — language integrity: extra process + goto into a parallel branch', () => {
+describe('decompile contract: language integrity: extra process + goto into a parallel branch', () => {
   it('a document tripping both checks yields exactly those two errors, each an error severity, with jargon-free wording', async () => {
     const source = `
 process Flow {
@@ -255,17 +291,19 @@ process Second {
     expect(diagnostics).toHaveLength(2);
     for (const d of diagnostics) {
       expect(d.severity).toBe(1);
-      assertNoForbiddenJargon(d.message);
+      assertNoForbiddenJargon(diagnosticMessage(d));
     }
 
     const extraProcess = diagnostics.find((d) =>
-      d.message.includes('Only one process is supported'),
+      diagnosticMessage(d).includes('Only one process is supported'),
     );
     expect(extraProcess).toBeDefined();
 
     const gotoIntoParallel = diagnostics.find((d) =>
-      d.message.toLowerCase().includes('branch'),
+      diagnosticMessage(d).toLowerCase().includes('branch'),
     );
-    expect(gotoIntoParallel?.message).toContain('A');
+    expect(gotoIntoParallel && diagnosticMessage(gotoIntoParallel)).toContain(
+      'A',
+    );
   });
 });

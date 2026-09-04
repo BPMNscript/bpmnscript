@@ -4,9 +4,9 @@
  * The module is pure graph machinery with no DSL knowledge: it builds a
  * control-flow graph from a {@link BpmnProcess}, computes dominators and
  * post-dominators (Cooper-Harvey-Kennedy iterative), and answers the
- * dominance / back-edge queries the restructuring pattern catalogue needs.
+ * dominance / back-edge queries the restructuring pattern catalog needs.
  *
- * These tests are the behavioral contract for that catalogue.
+ * These tests are the behavioral contract for that catalog.
  * They deliberately exercise BOTH gateway kinds on the same shape to
  * prove the analysis is gateway-agnostic.
  */
@@ -132,7 +132,7 @@ describe('diamond (exclusive gateways)', () => {
 // 2. Parallel diamond: IDENTICAL relations (gateway-agnostic proof).
 // ---------------------------------------------------------------------------
 
-describe('diamond (parallel gateways) — gateway agnostic', () => {
+describe('diamond (parallel gateways): gateway agnostic', () => {
   const proc = process(
     [
       start('start'),
@@ -186,7 +186,7 @@ describe('pre-test loop', () => {
   );
   const cfg = analyzeCfg(proc);
 
-  it('detects exactly the body→head back-edge', () => {
+  it('detects exactly the body->head back-edge', () => {
     const back = cfg.backEdges();
     expect(back).toHaveLength(1);
     expect(back[0].sourceRef).toBe('body');
@@ -382,7 +382,7 @@ describe('adjacency queries and totality', () => {
 // input order. A reorder (e.g. driven by RPO traversal) would fail this.
 // ---------------------------------------------------------------------------
 
-describe('two-loop process — backEdges preserves input order', () => {
+describe('two-loop process: backEdges preserves input order', () => {
   const proc = process(
     [
       start('start'),
@@ -608,7 +608,7 @@ describe('boundary event as a second CFG entry', () => {
 // throw in that same position.
 // ---------------------------------------------------------------------------
 
-describe('intermediate catch event — CFG no-op (twin of an intermediate throw)', () => {
+describe('intermediate catch event: CFG no-op (twin of an intermediate throw)', () => {
   /** `start -> task -> node -> end`, where `node` is the element under test. */
   function containerWith(node: FlowElement) {
     return process(
@@ -626,7 +626,7 @@ describe('intermediate catch event — CFG no-op (twin of an intermediate throw)
     containerWith(typedEvent('intermediateThrowEvent', 'node', signalDef('S'))),
   );
 
-  it('gives the catch a normal immediate dominator — its predecessor on the main flow, not the virtual entry', () => {
+  it('gives the catch a normal immediate dominator: its predecessor on the main flow, not the virtual entry', () => {
     expect(catchCfg.immediateDominator('node')).toBe('task');
     expect(catchCfg.immediateDominator('node')).not.toBe(VIRTUAL_ENTRY);
   });

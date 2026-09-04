@@ -89,7 +89,7 @@ export function compileCommand(
       await vscode.window.showTextDocument(outputUri);
 
       void vscode.window.showInformationMessage(
-        `BPMNscript: Compiled "${sourceFileName}" → "${path.basename(outputPath)}"`,
+        `BPMNscript: Compiled "${sourceFileName}" -> "${path.basename(outputPath)}"`,
       );
 
       return outputUri;
@@ -143,7 +143,7 @@ export function decompileCommand(
       await vscode.window.showTextDocument(outputUri);
 
       void vscode.window.showInformationMessage(
-        `BPMNscript: Decompiled "${sourceFileName}" → "${path.basename(outputPath)}"`,
+        `BPMNscript: Decompiled "${sourceFileName}" -> "${path.basename(outputPath)}"`,
       );
 
       if (result.warnings.length > 0) {

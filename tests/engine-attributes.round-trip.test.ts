@@ -1,5 +1,5 @@
 // None of these settings changes control flow, so what this suite catches is a
-// value that stops travelling in one of the four directions while the rest of
+// value that stops traveling in one of the four directions while the rest of
 // the process looks unchanged.
 
 import { describe, it, expect } from 'vitest';

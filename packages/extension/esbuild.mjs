@@ -41,7 +41,7 @@ function padZeroes(i) {
  *   join(moduleDir, 'operaton-moddle.json') → out/extension/operaton-moddle.json
  *
  * Exported so that verify/test bundles can include it and get the same copy
- * behaviour without duplicating the path logic.
+ * behavior without duplicating the path logic.
  */
 export const assetCopyPlugin = {
   name: 'asset-copy',
@@ -67,7 +67,7 @@ export const assetCopyPlugin = {
 };
 
 /**
- * Shared esbuild options — exported so that any verify/test bundle uses the
+ * Shared esbuild options, exported so that any verify/test bundle uses the
  * identical configuration as the production extension bundle. In particular:
  *
  *   define + banner: needed because @bpmn-script/transform reads

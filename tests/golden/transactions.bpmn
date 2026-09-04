@@ -1,0 +1,359 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI" xmlns:dc="http://www.omg.org/spec/DD/20100524/DC" xmlns:di="http://www.omg.org/spec/DD/20100524/DI" xmlns:operaton="http://operaton.org/schema/1.0/bpmn" id="Definitions_seat-booking" targetNamespace="http://bpmnscript.io/processes" exporter="BPMNscript" exporterVersion="0.0.0">
+  <bpmn:process id="seat-booking" name="Seat Booking" isExecutable="true" operaton:historyTimeToLive="P30D">
+    <bpmn:startEvent id="BookingRequested">
+      <bpmn:extensionElements>
+        <operaton:formData>
+          <operaton:formField id="chargeDeclined" label="Whether the card issuer declined the charge" type="boolean" />
+        </operaton:formData>
+      </bpmn:extensionElements>
+      <bpmn:outgoing>Flow_BookingRequested_ReviewRequest</bpmn:outgoing>
+    </bpmn:startEvent>
+    <bpmn:userTask id="ReviewRequest" name="Review the seat request" operaton:assignee="demo">
+      <bpmn:incoming>Flow_BookingRequested_ReviewRequest</bpmn:incoming>
+      <bpmn:outgoing>Flow_ReviewRequest_BookAndPay</bpmn:outgoing>
+    </bpmn:userTask>
+    <bpmn:transaction id="BookAndPay" name="Try to book and pay for the seats">
+      <bpmn:incoming>Flow_ReviewRequest_BookAndPay</bpmn:incoming>
+      <bpmn:outgoing>Flow_BookAndPay_PrepareDeparture</bpmn:outgoing>
+      <bpmn:startEvent id="BookingOpened">
+        <bpmn:outgoing>Flow_BookingOpened_HoldSeats</bpmn:outgoing>
+      </bpmn:startEvent>
+      <bpmn:subProcess id="HoldSeats" name="Hold the seats">
+        <bpmn:incoming>Flow_BookingOpened_HoldSeats</bpmn:incoming>
+        <bpmn:outgoing>Flow_HoldSeats_ChargeCard</bpmn:outgoing>
+        <bpmn:startEvent id="HoldOpened">
+          <bpmn:outgoing>Flow_HoldOpened_ReserveSeats</bpmn:outgoing>
+        </bpmn:startEvent>
+        <bpmn:serviceTask id="ReserveSeats" name="Take the seats off sale" operaton:class="com.example.booking.ReserveSeatsDelegate">
+          <bpmn:incoming>Flow_HoldOpened_ReserveSeats</bpmn:incoming>
+          <bpmn:outgoing>Flow_ReserveSeats_SeatsHeld</bpmn:outgoing>
+        </bpmn:serviceTask>
+        <bpmn:endEvent id="SeatsHeld">
+          <bpmn:incoming>Flow_ReserveSeats_SeatsHeld</bpmn:incoming>
+        </bpmn:endEvent>
+        <bpmn:subProcess id="EventSubProcess_seat-booking_2_1_3" triggeredByEvent="true">
+          <bpmn:startEvent id="ReleaseOpened">
+            <bpmn:outgoing>Flow_ReleaseOpened_ReleaseSeats</bpmn:outgoing>
+            <bpmn:compensateEventDefinition />
+          </bpmn:startEvent>
+          <bpmn:serviceTask id="ReleaseSeats" name="Put the seats back on sale" operaton:class="com.example.booking.ReleaseSeatsDelegate">
+            <bpmn:incoming>Flow_ReleaseOpened_ReleaseSeats</bpmn:incoming>
+            <bpmn:outgoing>Flow_ReleaseSeats_SeatsReleased</bpmn:outgoing>
+          </bpmn:serviceTask>
+          <bpmn:endEvent id="SeatsReleased">
+            <bpmn:incoming>Flow_ReleaseSeats_SeatsReleased</bpmn:incoming>
+          </bpmn:endEvent>
+          <bpmn:sequenceFlow id="Flow_ReleaseOpened_ReleaseSeats" sourceRef="ReleaseOpened" targetRef="ReleaseSeats" />
+          <bpmn:sequenceFlow id="Flow_ReleaseSeats_SeatsReleased" sourceRef="ReleaseSeats" targetRef="SeatsReleased" />
+        </bpmn:subProcess>
+        <bpmn:sequenceFlow id="Flow_HoldOpened_ReserveSeats" sourceRef="HoldOpened" targetRef="ReserveSeats" />
+        <bpmn:sequenceFlow id="Flow_ReserveSeats_SeatsHeld" sourceRef="ReserveSeats" targetRef="SeatsHeld" />
+      </bpmn:subProcess>
+      <bpmn:serviceTask id="ChargeCard" name="Charge the travel card" operaton:class="com.example.booking.ChargeCardDelegate">
+        <bpmn:incoming>Flow_HoldSeats_ChargeCard</bpmn:incoming>
+        <bpmn:outgoing>Flow_ChargeCard_Gateway_seat-booking_2_3_split</bpmn:outgoing>
+      </bpmn:serviceTask>
+      <bpmn:exclusiveGateway id="Gateway_seat-booking_2_3_split" default="Flow_Gateway_seat-booking_2_3_split_default">
+        <bpmn:incoming>Flow_ChargeCard_Gateway_seat-booking_2_3_split</bpmn:incoming>
+        <bpmn:outgoing>Flow_Gateway_seat-booking_2_3_split_BookingAbandoned</bpmn:outgoing>
+        <bpmn:outgoing>Flow_Gateway_seat-booking_2_3_split_default</bpmn:outgoing>
+      </bpmn:exclusiveGateway>
+      <bpmn:exclusiveGateway id="Gateway_seat-booking_2_3_join">
+        <bpmn:incoming>Flow_Gateway_seat-booking_2_3_split_default</bpmn:incoming>
+        <bpmn:outgoing>Flow_Gateway_seat-booking_2_3_join_IssueTickets</bpmn:outgoing>
+      </bpmn:exclusiveGateway>
+      <bpmn:endEvent id="BookingAbandoned" name="Give up the booking">
+        <bpmn:incoming>Flow_Gateway_seat-booking_2_3_split_BookingAbandoned</bpmn:incoming>
+        <bpmn:cancelEventDefinition />
+      </bpmn:endEvent>
+      <bpmn:serviceTask id="IssueTickets" name="Issue the boarding tickets" operaton:class="com.example.booking.IssueTicketsDelegate">
+        <bpmn:incoming>Flow_Gateway_seat-booking_2_3_join_IssueTickets</bpmn:incoming>
+        <bpmn:outgoing>Flow_IssueTickets_BookingSecured</bpmn:outgoing>
+      </bpmn:serviceTask>
+      <bpmn:endEvent id="BookingSecured">
+        <bpmn:incoming>Flow_IssueTickets_BookingSecured</bpmn:incoming>
+      </bpmn:endEvent>
+      <bpmn:sequenceFlow id="Flow_BookingOpened_HoldSeats" sourceRef="BookingOpened" targetRef="HoldSeats" />
+      <bpmn:sequenceFlow id="Flow_HoldSeats_ChargeCard" sourceRef="HoldSeats" targetRef="ChargeCard" />
+      <bpmn:sequenceFlow id="Flow_Gateway_seat-booking_2_3_split_BookingAbandoned" name="chargeDeclined" sourceRef="Gateway_seat-booking_2_3_split" targetRef="BookingAbandoned">
+        <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">${chargeDeclined}</bpmn:conditionExpression>
+      </bpmn:sequenceFlow>
+      <bpmn:sequenceFlow id="Flow_Gateway_seat-booking_2_3_split_default" sourceRef="Gateway_seat-booking_2_3_split" targetRef="Gateway_seat-booking_2_3_join" />
+      <bpmn:sequenceFlow id="Flow_ChargeCard_Gateway_seat-booking_2_3_split" sourceRef="ChargeCard" targetRef="Gateway_seat-booking_2_3_split" />
+      <bpmn:sequenceFlow id="Flow_Gateway_seat-booking_2_3_join_IssueTickets" sourceRef="Gateway_seat-booking_2_3_join" targetRef="IssueTickets" />
+      <bpmn:sequenceFlow id="Flow_IssueTickets_BookingSecured" sourceRef="IssueTickets" targetRef="BookingSecured" />
+    </bpmn:transaction>
+    <bpmn:subProcess id="PrepareDeparture" name="Prepare the departure list">
+      <bpmn:incoming>Flow_BookAndPay_PrepareDeparture</bpmn:incoming>
+      <bpmn:outgoing>Flow_PrepareDeparture_ConfirmBooking</bpmn:outgoing>
+      <bpmn:startEvent id="DepartureOpened">
+        <bpmn:outgoing>Flow_DepartureOpened_AssignSeatRows</bpmn:outgoing>
+      </bpmn:startEvent>
+      <bpmn:transaction id="AssignSeatRows" name="Spread the party across rows" operaton:asyncBefore="true">
+        <bpmn:incoming>Flow_DepartureOpened_AssignSeatRows</bpmn:incoming>
+        <bpmn:outgoing>Flow_AssignSeatRows_DeparturePrepared</bpmn:outgoing>
+        <bpmn:multiInstanceLoopCharacteristics isSequential="true" operaton:collection="seatRows" operaton:elementVariable="row" />
+        <bpmn:startEvent id="StartEvent_AssignSeatRows">
+          <bpmn:outgoing>Flow_StartEvent_AssignSeatRows_AssignRow</bpmn:outgoing>
+        </bpmn:startEvent>
+        <bpmn:serviceTask id="AssignRow" name="Assign one row of seats" operaton:class="com.example.booking.AssignRowDelegate">
+          <bpmn:incoming>Flow_StartEvent_AssignSeatRows_AssignRow</bpmn:incoming>
+          <bpmn:outgoing>Flow_AssignRow_EndEvent_AssignSeatRows</bpmn:outgoing>
+        </bpmn:serviceTask>
+        <bpmn:endEvent id="EndEvent_AssignSeatRows">
+          <bpmn:incoming>Flow_AssignRow_EndEvent_AssignSeatRows</bpmn:incoming>
+        </bpmn:endEvent>
+        <bpmn:sequenceFlow id="Flow_StartEvent_AssignSeatRows_AssignRow" sourceRef="StartEvent_AssignSeatRows" targetRef="AssignRow" />
+        <bpmn:sequenceFlow id="Flow_AssignRow_EndEvent_AssignSeatRows" sourceRef="AssignRow" targetRef="EndEvent_AssignSeatRows" />
+      </bpmn:transaction>
+      <bpmn:endEvent id="DeparturePrepared">
+        <bpmn:incoming>Flow_AssignSeatRows_DeparturePrepared</bpmn:incoming>
+      </bpmn:endEvent>
+      <bpmn:sequenceFlow id="Flow_DepartureOpened_AssignSeatRows" sourceRef="DepartureOpened" targetRef="AssignSeatRows" />
+      <bpmn:sequenceFlow id="Flow_AssignSeatRows_DeparturePrepared" sourceRef="AssignSeatRows" targetRef="DeparturePrepared" />
+    </bpmn:subProcess>
+    <bpmn:userTask id="ConfirmBooking" name="Confirm the seats with the traveler" operaton:assignee="demo">
+      <bpmn:incoming>Flow_PrepareDeparture_ConfirmBooking</bpmn:incoming>
+      <bpmn:outgoing>Flow_ConfirmBooking_BookingComplete</bpmn:outgoing>
+    </bpmn:userTask>
+    <bpmn:endEvent id="BookingComplete">
+      <bpmn:incoming>Flow_ConfirmBooking_BookingComplete</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:boundaryEvent id="Boundary_BookAndPay_cancel" attachedToRef="BookAndPay">
+      <bpmn:outgoing>Flow_Boundary_BookAndPay_cancel_ApologizeToTraveler</bpmn:outgoing>
+      <bpmn:cancelEventDefinition />
+    </bpmn:boundaryEvent>
+    <bpmn:userTask id="ApologizeToTraveler" name="Apologize and confirm the seats were released" operaton:assignee="demo">
+      <bpmn:incoming>Flow_Boundary_BookAndPay_cancel_ApologizeToTraveler</bpmn:incoming>
+      <bpmn:outgoing>Flow_ApologizeToTraveler_BookingCancelled</bpmn:outgoing>
+    </bpmn:userTask>
+    <bpmn:endEvent id="BookingCancelled">
+      <bpmn:incoming>Flow_ApologizeToTraveler_BookingCancelled</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:boundaryEvent id="Boundary_BookAndPay_error" attachedToRef="BookAndPay">
+      <bpmn:outgoing>Flow_Boundary_BookAndPay_error_RecordProviderOutage</bpmn:outgoing>
+      <bpmn:errorEventDefinition errorRef="Error_PAYMENT_UNAVAILABLE" operaton:errorCodeVariable="c" operaton:errorMessageVariable="m" />
+    </bpmn:boundaryEvent>
+    <bpmn:serviceTask id="RecordProviderOutage" name="Record the payment outage" operaton:class="com.example.booking.RecordOutageDelegate">
+      <bpmn:incoming>Flow_Boundary_BookAndPay_error_RecordProviderOutage</bpmn:incoming>
+      <bpmn:outgoing>Flow_RecordProviderOutage_BookingHalted</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:endEvent id="BookingHalted">
+      <bpmn:incoming>Flow_RecordProviderOutage_BookingHalted</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:sequenceFlow id="Flow_BookingRequested_ReviewRequest" sourceRef="BookingRequested" targetRef="ReviewRequest" />
+    <bpmn:sequenceFlow id="Flow_ReviewRequest_BookAndPay" sourceRef="ReviewRequest" targetRef="BookAndPay" />
+    <bpmn:sequenceFlow id="Flow_BookAndPay_PrepareDeparture" sourceRef="BookAndPay" targetRef="PrepareDeparture" />
+    <bpmn:sequenceFlow id="Flow_PrepareDeparture_ConfirmBooking" sourceRef="PrepareDeparture" targetRef="ConfirmBooking" />
+    <bpmn:sequenceFlow id="Flow_ConfirmBooking_BookingComplete" sourceRef="ConfirmBooking" targetRef="BookingComplete" />
+    <bpmn:sequenceFlow id="Flow_ApologizeToTraveler_BookingCancelled" sourceRef="ApologizeToTraveler" targetRef="BookingCancelled" />
+    <bpmn:sequenceFlow id="Flow_Boundary_BookAndPay_cancel_ApologizeToTraveler" sourceRef="Boundary_BookAndPay_cancel" targetRef="ApologizeToTraveler" />
+    <bpmn:sequenceFlow id="Flow_RecordProviderOutage_BookingHalted" sourceRef="RecordProviderOutage" targetRef="BookingHalted" />
+    <bpmn:sequenceFlow id="Flow_Boundary_BookAndPay_error_RecordProviderOutage" sourceRef="Boundary_BookAndPay_error" targetRef="RecordProviderOutage" />
+  </bpmn:process>
+  <bpmn:error id="Error_PAYMENT_UNAVAILABLE" name="PAYMENT_UNAVAILABLE" errorCode="PAYMENT_UNAVAILABLE" operaton:errorMessage="The payment provider could not be reached" />
+  <bpmndi:BPMNDiagram id="BPMNDiagram_seat-booking">
+    <bpmndi:BPMNPlane id="BPMNPlane_seat-booking" bpmnElement="seat-booking">
+      <bpmndi:BPMNShape id="BookingRequested_di" bpmnElement="BookingRequested">
+        <dc:Bounds x="57" y="52" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="ReviewRequest_di" bpmnElement="ReviewRequest">
+        <dc:Bounds x="175" y="30" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="BookAndPay_di" bpmnElement="BookAndPay" isExpanded="true">
+        <dc:Bounds x="325" y="30" width="2200" height="640" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Boundary_BookAndPay_cancel_di" bpmnElement="Boundary_BookAndPay_cancel">
+        <dc:Bounds x="1040.3333333333335" y="652" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Boundary_BookAndPay_error_di" bpmnElement="Boundary_BookAndPay_error">
+        <dc:Bounds x="1773.6666666666667" y="652" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="PrepareDeparture_di" bpmnElement="PrepareDeparture" isExpanded="true">
+        <dc:Bounds x="2575" y="30" width="1000" height="360" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="ConfirmBooking_di" bpmnElement="ConfirmBooking">
+        <dc:Bounds x="3625" y="30" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="BookingComplete_di" bpmnElement="BookingComplete">
+        <dc:Bounds x="3807" y="52" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="RecordProviderOutage_di" bpmnElement="RecordProviderOutage">
+        <dc:Bounds x="2575" y="730" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="BookingHalted_di" bpmnElement="BookingHalted">
+        <dc:Bounds x="3657" y="752" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="ApologizeToTraveler_di" bpmnElement="ApologizeToTraveler">
+        <dc:Bounds x="2575" y="870" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="BookingCancelled_di" bpmnElement="BookingCancelled">
+        <dc:Bounds x="3657" y="892" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_BookingRequested_ReviewRequest_di" bpmnElement="Flow_BookingRequested_ReviewRequest">
+        <di:waypoint x="93" y="70" />
+        <di:waypoint x="175" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ReviewRequest_BookAndPay_di" bpmnElement="Flow_ReviewRequest_BookAndPay">
+        <di:waypoint x="275" y="70" />
+        <di:waypoint x="325" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_BookAndPay_PrepareDeparture_di" bpmnElement="Flow_BookAndPay_PrepareDeparture">
+        <di:waypoint x="2525" y="70" />
+        <di:waypoint x="2575" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Boundary_BookAndPay_cancel_ApologizeToTraveler_di" bpmnElement="Flow_Boundary_BookAndPay_cancel_ApologizeToTraveler">
+        <di:waypoint x="1058.3333333333335" y="688" />
+        <di:waypoint x="1058.3333333333335" y="910" />
+        <di:waypoint x="2575" y="910" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Boundary_BookAndPay_error_RecordProviderOutage_di" bpmnElement="Flow_Boundary_BookAndPay_error_RecordProviderOutage">
+        <di:waypoint x="1791.6666666666667" y="688" />
+        <di:waypoint x="1791.6666666666667" y="770" />
+        <di:waypoint x="2575" y="770" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_PrepareDeparture_ConfirmBooking_di" bpmnElement="Flow_PrepareDeparture_ConfirmBooking">
+        <di:waypoint x="3575" y="70" />
+        <di:waypoint x="3625" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ConfirmBooking_BookingComplete_di" bpmnElement="Flow_ConfirmBooking_BookingComplete">
+        <di:waypoint x="3725" y="70" />
+        <di:waypoint x="3807" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_RecordProviderOutage_BookingHalted_di" bpmnElement="Flow_RecordProviderOutage_BookingHalted">
+        <di:waypoint x="2675" y="770" />
+        <di:waypoint x="3657" y="770" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ApologizeToTraveler_BookingCancelled_di" bpmnElement="Flow_ApologizeToTraveler_BookingCancelled">
+        <di:waypoint x="2675" y="910" />
+        <di:waypoint x="3657" y="910" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNShape id="DepartureOpened_di" bpmnElement="DepartureOpened">
+        <dc:Bounds x="2682" y="122" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="AssignSeatRows_di" bpmnElement="AssignSeatRows" isExpanded="true">
+        <dc:Bounds x="2800" y="100" width="550" height="220" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="DeparturePrepared_di" bpmnElement="DeparturePrepared">
+        <dc:Bounds x="3432" y="122" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_DepartureOpened_AssignSeatRows_di" bpmnElement="Flow_DepartureOpened_AssignSeatRows">
+        <di:waypoint x="2718" y="140" />
+        <di:waypoint x="2800" y="140" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_AssignSeatRows_DeparturePrepared_di" bpmnElement="Flow_AssignSeatRows_DeparturePrepared">
+        <di:waypoint x="3350" y="140" />
+        <di:waypoint x="3432" y="140" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNShape id="BookingOpened_di" bpmnElement="BookingOpened">
+        <dc:Bounds x="432" y="122" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="HoldSeats_di" bpmnElement="HoldSeats" isExpanded="true">
+        <dc:Bounds x="550" y="100" width="1000" height="500" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="ChargeCard_di" bpmnElement="ChargeCard">
+        <dc:Bounds x="1600" y="100" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_seat-booking_2_3_split_di" bpmnElement="Gateway_seat-booking_2_3_split" isMarkerVisible="true">
+        <dc:Bounds x="1775" y="115" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="BookingAbandoned_di" bpmnElement="BookingAbandoned">
+        <dc:Bounds x="1932" y="122" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_seat-booking_2_3_join_di" bpmnElement="Gateway_seat-booking_2_3_join" isMarkerVisible="true">
+        <dc:Bounds x="2075" y="115" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="IssueTickets_di" bpmnElement="IssueTickets">
+        <dc:Bounds x="2200" y="100" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="BookingSecured_di" bpmnElement="BookingSecured">
+        <dc:Bounds x="2382" y="122" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_BookingOpened_HoldSeats_di" bpmnElement="Flow_BookingOpened_HoldSeats">
+        <di:waypoint x="468" y="140" />
+        <di:waypoint x="550" y="140" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_HoldSeats_ChargeCard_di" bpmnElement="Flow_HoldSeats_ChargeCard">
+        <di:waypoint x="1550" y="140" />
+        <di:waypoint x="1600" y="140" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ChargeCard_Gateway_seat-booking_2_3_split_di" bpmnElement="Flow_ChargeCard_Gateway_seat-booking_2_3_split">
+        <di:waypoint x="1700" y="140" />
+        <di:waypoint x="1775" y="140" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Gateway_seat-booking_2_3_split_BookingAbandoned_di" bpmnElement="Flow_Gateway_seat-booking_2_3_split_BookingAbandoned">
+        <di:waypoint x="1825" y="140" />
+        <di:waypoint x="1932" y="140" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Gateway_seat-booking_2_3_split_default_di" bpmnElement="Flow_Gateway_seat-booking_2_3_split_default">
+        <di:waypoint x="1800" y="165" />
+        <di:waypoint x="1800" y="140" />
+        <di:waypoint x="2100" y="140" />
+        <di:waypoint x="2100" y="165" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Gateway_seat-booking_2_3_join_IssueTickets_di" bpmnElement="Flow_Gateway_seat-booking_2_3_join_IssueTickets">
+        <di:waypoint x="2125" y="140" />
+        <di:waypoint x="2200" y="140" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_IssueTickets_BookingSecured_di" bpmnElement="Flow_IssueTickets_BookingSecured">
+        <di:waypoint x="2300" y="140" />
+        <di:waypoint x="2382" y="140" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNShape id="StartEvent_AssignSeatRows_di" bpmnElement="StartEvent_AssignSeatRows">
+        <dc:Bounds x="2907" y="192" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="AssignRow_di" bpmnElement="AssignRow">
+        <dc:Bounds x="3025" y="170" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="EndEvent_AssignSeatRows_di" bpmnElement="EndEvent_AssignSeatRows">
+        <dc:Bounds x="3207" y="192" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_StartEvent_AssignSeatRows_AssignRow_di" bpmnElement="Flow_StartEvent_AssignSeatRows_AssignRow">
+        <di:waypoint x="2943" y="210" />
+        <di:waypoint x="3025" y="210" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_AssignRow_EndEvent_AssignSeatRows_di" bpmnElement="Flow_AssignRow_EndEvent_AssignSeatRows">
+        <di:waypoint x="3125" y="210" />
+        <di:waypoint x="3207" y="210" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNShape id="HoldOpened_di" bpmnElement="HoldOpened">
+        <dc:Bounds x="657" y="192" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="ReserveSeats_di" bpmnElement="ReserveSeats">
+        <dc:Bounds x="1225" y="170" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="SeatsHeld_di" bpmnElement="SeatsHeld">
+        <dc:Bounds x="1407" y="192" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="EventSubProcess_seat-booking_2_1_3_di" bpmnElement="EventSubProcess_seat-booking_2_1_3" isExpanded="true">
+        <dc:Bounds x="625" y="310" width="550" height="220" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_HoldOpened_ReserveSeats_di" bpmnElement="Flow_HoldOpened_ReserveSeats">
+        <di:waypoint x="693" y="210" />
+        <di:waypoint x="1225" y="210" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ReserveSeats_SeatsHeld_di" bpmnElement="Flow_ReserveSeats_SeatsHeld">
+        <di:waypoint x="1325" y="210" />
+        <di:waypoint x="1407" y="210" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNShape id="ReleaseOpened_di" bpmnElement="ReleaseOpened">
+        <dc:Bounds x="732" y="402" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="ReleaseSeats_di" bpmnElement="ReleaseSeats">
+        <dc:Bounds x="850" y="380" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="SeatsReleased_di" bpmnElement="SeatsReleased">
+        <dc:Bounds x="1032" y="402" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_ReleaseOpened_ReleaseSeats_di" bpmnElement="Flow_ReleaseOpened_ReleaseSeats">
+        <di:waypoint x="768" y="420" />
+        <di:waypoint x="850" y="420" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ReleaseSeats_SeatsReleased_di" bpmnElement="Flow_ReleaseSeats_SeatsReleased">
+        <di:waypoint x="950" y="420" />
+        <di:waypoint x="1032" y="420" />
+      </bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>

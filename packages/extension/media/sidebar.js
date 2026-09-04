@@ -5,14 +5,14 @@
  * extension host exclusively via postMessage (no DOM event handlers in HTML).
  *
  * Message protocol (host → webview):
- *   {type:'state', activeFile}  — active-file state push
+ *   {type:'state', activeFile}  - active-file state push
  *
  * Message protocol (webview → host):
- *   {type:'ready'}            — page loaded; request current state
- *   {type:'compile', uri}     — run bpmnscript.compile on this URI
- *   {type:'decompile', uri}   — run bpmnscript.decompile on this URI
- *   {type:'open', uri}        — open this URI in the editor (counterpart jump)
- *   {type:'pick'}             — open a .bpmn file picker and decompile it
+ *   {type:'ready'}            - page loaded; request current state
+ *   {type:'compile', uri}     - run bpmnscript.compile on this URI
+ *   {type:'decompile', uri}   - run bpmnscript.decompile on this URI
+ *   {type:'open', uri}        - open this URI in the editor (counterpart jump)
+ *   {type:'pick'}             - open a .bpmn file picker and decompile it
  */
 (function () {
   'use strict';
@@ -102,7 +102,7 @@
   function renderPickPanel() {
     const panel = document.getElementById('pick-panel');
     if (!panel) return;
-    if (panel.firstChild) return; // static — render once.
+    if (panel.firstChild) return; // static - render once.
 
     const pickBtn = document.createElement('button');
     pickBtn.className = 'action secondary';

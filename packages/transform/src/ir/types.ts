@@ -39,6 +39,8 @@ export type FlowElement =
   | UserTask
   | ServiceTask
   | ScriptTask
+  | Task
+  | ReceiveTask
   | ExclusiveGateway
   | ParallelGateway
   | SubProcess
@@ -96,6 +98,23 @@ export type EventDefinition =
        * it to `true` and the engine supports no other value.
        */
       kind: 'compensation';
+    }
+  | {
+      /**
+       * Payload-free: BPMN's terminate definition carries nothing. It ends
+       * every running path of its scope at once rather than raising something,
+       * which is why the surface spells it on an `end` statement instead of a
+       * `throw`.
+       */
+      kind: 'terminate';
+    }
+  | {
+      /**
+       * Payload-free: BPMN's cancel definition carries nothing. It gives up
+       * the block it ends rather than raising something, which is why the
+       * surface spells it on an `end` statement and catches it on the block.
+       */
+      kind: 'cancel';
     }
   | {
       kind: 'message';
@@ -181,6 +200,39 @@ export function ioMapped(
   };
 }
 
+/**
+ * How many times an activity runs, and what each run sees. At least one of
+ * `cardinality` and `collection` is present: with both, the count drives the
+ * runs while each run still sees its element.
+ */
+export interface LoopCharacteristics {
+  /** `bpmn:loopCardinality`: a literal count, or an expression that yields one. */
+  cardinality?: string;
+  /** `operaton:collection`: a variable name, or an expression when it carries `${`. */
+  collection?: string;
+  /** `operaton:elementVariable`: the name each run sees its own element under. */
+  elementVariable?: string;
+  /** `bpmn:completionCondition`: the remaining runs are dropped once this holds. */
+  completionCondition?: string;
+  /** `isSequential`. Absent means the runs happen at once, which is the engine default. */
+  sequential?: true;
+}
+
+/** Every activity may repeat; no event and no gateway may. */
+export interface Repeatable {
+  loop?: LoopCharacteristics;
+}
+
+/**
+ * The invariant above, as a check both write-out directions read, so neither
+ * can decide on its own what a loop with nothing to repeat over means.
+ */
+export function repeats(
+  loop: LoopCharacteristics | undefined,
+): loop is LoopCharacteristics {
+  return loop?.cardinality !== undefined || loop?.collection !== undefined;
+}
+
 export type SettingsCarrier = EngineAttributes &
   IoMapped & { taskListeners?: TaskListener[] };
 
@@ -262,7 +314,7 @@ export interface StartEvent extends EngineAttributes {
   name?: string;
   /** `operaton:formData` fields, so Tasklist renders a start form. */
   formFields?: FormField[];
-  /** The caught trigger, when this start opens an event sub-process. */
+  /** The trigger this start waits on, whether the process's or a handler's. */
   eventDefinition?: EventDefinition;
   /** Stored only for a non-interrupting (`alongside`) start; BPMN defaults to on. */
   isInterrupting?: false;
@@ -272,18 +324,26 @@ export interface EndEvent extends EngineAttributes {
   kind: 'endEvent';
   id: string;
   name?: string;
-  /** Present when this end is a typed throw, which raises the code and ends the path. */
+  /** Present when this end is a typed throw or a terminate. */
   eventDefinition?: EventDefinition;
+  /**
+   * What the engine runs to really send a thrown message; without it the throw
+   * records and ends. Only a message definition carries one, and it serializes
+   * onto that definition rather than onto the event.
+   */
+  binding?: ServiceTaskBinding;
 }
 
 /**
- * The DSL's `emit`: fires and lets flow continue. Only an escalation is
- * emittable, BPMN having no intermediate error throw. `emit` has no label slot.
+ * The DSL's `emit`: fires and lets flow continue. An error has no emittable
+ * form, since raising one always ends its path. `emit` has no label slot.
  */
 export interface IntermediateThrowEvent extends EngineAttributes {
   kind: 'intermediateThrowEvent';
   id: string;
   eventDefinition: EventDefinition;
+  /** The implementation {@link EndEvent.binding} describes, on the emitting side. */
+  binding?: ServiceTaskBinding;
 }
 
 /**
@@ -301,7 +361,7 @@ export interface IntermediateCatchEvent extends EngineAttributes {
   >;
 }
 
-export interface UserTask extends EngineAttributes, IoMapped {
+export interface UserTask extends EngineAttributes, IoMapped, Repeatable {
   kind: 'userTask';
   id: string;
   name?: string;
@@ -325,25 +385,47 @@ export interface UserTask extends EngineAttributes, IoMapped {
   taskListeners?: TaskListener[];
 }
 
-/** A service task adds the external topic a listener has no form for. */
+/**
+ * A service task adds the external topic a listener has no form for, and a
+ * business rule task the deployed decision it evaluates.
+ */
 export type ServiceTaskBinding =
   | CodeBinding
   | {
       kind: 'external';
       /** `operaton:topic`, paired with `operaton:type="external"`. */
       topic: string;
+    }
+  | {
+      kind: 'decision';
+      /** `operaton:decisionRef`, the deployed decision's key. */
+      decisionRef: string;
+      /** `operaton:decisionRefBinding` and `operaton:decisionRefVersion`. */
+      binding?: VersionBinding;
+      /** `operaton:mapDecisionResult`: what `resultVariable` ends up holding. */
+      mapDecisionResult?:
+        'singleEntry' | 'singleResult' | 'collectEntries' | 'resultList';
     };
 
-export interface ServiceTask extends EngineAttributes, IoMapped {
+export interface ServiceTask extends EngineAttributes, IoMapped, Repeatable {
   kind: 'serviceTask';
   id: string;
   name?: string;
   binding: ServiceTaskBinding;
   /** `operaton:resultVariable`, filled with the binding's return value. */
   resultVariable?: string;
+  /**
+   * Which tag this serializes to; absent is a service task. Operaton runs all
+   * three through `parseServiceTaskLike` when the tag carries a class,
+   * expression, delegate expression, or external topic binding, so they share
+   * this node. A business rule task naming an `operaton:decisionRef` goes to
+   * `parseDmnBusinessRuleTask` instead, and that binding is legal on that tag
+   * alone.
+   */
+  element?: 'send' | 'businessRule';
 }
 
-export interface ScriptTask extends EngineAttributes, IoMapped {
+export interface ScriptTask extends EngineAttributes, IoMapped, Repeatable {
   kind: 'scriptTask';
   id: string;
   name?: string;
@@ -353,6 +435,25 @@ export interface ScriptTask extends EngineAttributes, IoMapped {
   code: string;
   /** `operaton:resultVariable`, filled with the script's result. */
   resultVariable?: string;
+}
+
+/** A step the engine records and leaves at once; the work happens outside it. */
+export interface Task extends EngineAttributes, IoMapped, Repeatable {
+  kind: 'task';
+  id: string;
+  name?: string;
+}
+
+/**
+ * A wait state. With no `messageName` the engine continues it through its own
+ * API rather than a correlation.
+ */
+export interface ReceiveTask extends EngineAttributes, IoMapped, Repeatable {
+  kind: 'receiveTask';
+  id: string;
+  name?: string;
+  /** `messageRef`, and the dedupe key: one name, one root element. */
+  messageName?: string;
 }
 
 /** Carries no {@link EngineAttributes}, for the reason that interface gives. */
@@ -375,14 +476,24 @@ export interface ParallelGateway {
 }
 
 /** An activity that is itself a container; the parent wires flow to it by `id`. */
-export interface SubProcess extends FlowContainer, EngineAttributes, IoMapped {
+export interface SubProcess
+  extends FlowContainer, EngineAttributes, IoMapped, Repeatable {
   kind: 'subProcess';
   name?: string;
   /** The event sub-process an `on` lowers to, fired by its start event's trigger. */
   triggeredByEvent?: true;
+  /**
+   * Which tag this serializes to; absent is an embedded sub-process. Operaton
+   * runs a transaction through the very behavior class it gives an ordinary
+   * sub-process, so nothing about the block is atomic and nothing rolls back;
+   * what the tag buys is that the engine then accepts a cancel end inside the
+   * block and a cancel boundary on it.
+   */
+  element?: 'transaction';
 }
 
-export type CalledElementBinding =
+/** Which deployed version a call activity or a decision task resolves to. */
+export type VersionBinding =
   | { kind: 'latest' }
   | { kind: 'deployment' }
   | { kind: 'version'; version: string };
@@ -407,14 +518,14 @@ export type CallVariableMapping =
  * definition. Extension children serialize in one order so the round trip is
  * stable: `businessKey`, then `inMappings`, then `outMappings`.
  */
-export interface CallActivity extends EngineAttributes, IoMapped {
+export interface CallActivity extends EngineAttributes, IoMapped, Repeatable {
   kind: 'callActivity';
   id: string;
   name?: string;
   /** `bpmn:calledElement`, the id of the invoked process. */
   calledElement: string;
   /** Absent means the engine default, latest. */
-  binding?: CalledElementBinding;
+  binding?: VersionBinding;
   /** `operaton:in businessKey`, propagated to the callee. */
   businessKey?: string;
   inMappings?: CallVariableMapping[];

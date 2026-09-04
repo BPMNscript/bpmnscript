@@ -1,4 +1,4 @@
-// Exercises if/else, while, and parallel in a single process — see README.md.
+// Exercises if/else, while, and parallel in a single process; see README.md.
 
 process structured-control-flow {
   start Begin

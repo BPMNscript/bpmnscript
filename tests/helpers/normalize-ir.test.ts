@@ -47,7 +47,7 @@ const TIMER_PT2H = {
   expression: 'PT2H',
 } as const;
 
-describe('normalizeIr — boundary-event re-key', () => {
+describe('normalizeIr: boundary-event re-key', () => {
   it('keeps two same-host same-trigger boundary handlers distinct by payload, regardless of authored order', () => {
     const forward = process(
       [

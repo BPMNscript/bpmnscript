@@ -127,7 +127,7 @@ describe('parseAction smoke', () => {
   });
 });
 
-// `formRef` and the lane are both dropped without loss of behaviour, so
+// `formRef` and the lane are both dropped without loss of behavior, so
 // `xmlToIr` warns instead of refusing.
 const LANE_AND_ASYNC_ATTR_BPMN = `<?xml version="1.0" encoding="UTF-8"?>
 <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
@@ -151,7 +151,7 @@ const LANE_AND_ASYNC_ATTR_BPMN = `<?xml version="1.0" encoding="UTF-8"?>
   </bpmn:process>
 </bpmn:definitions>`;
 
-describe('parseAction — import-warning surfacing', () => {
+describe('parseAction: import-warning surfacing', () => {
   afterEach(() => {
     vi.restoreAllMocks();
   });
@@ -203,7 +203,7 @@ const UNSTRUCTURED_FORK_BPMN = `<?xml version="1.0" encoding="UTF-8"?>
   </bpmn:process>
 </bpmn:definitions>`;
 
-describe('parseAction — unstructured-region hand-repair warning', () => {
+describe('parseAction: unstructured-region hand-repair warning', () => {
   afterEach(() => {
     vi.restoreAllMocks();
   });
@@ -235,30 +235,31 @@ describe('parseAction — unstructured-region hand-repair warning', () => {
   });
 });
 
-const TIMER_START_BPMN = `<?xml version="1.0" encoding="UTF-8"?>
+const CONDITIONAL_START_BPMN = `<?xml version="1.0" encoding="UTF-8"?>
 <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
                   targetNamespace="http://test">
-  <bpmn:process id="timer" isExecutable="true">
-    <bpmn:startEvent id="TimerStart">
-      <bpmn:timerEventDefinition id="td">
-        <bpmn:timeDuration>PT1H</bpmn:timeDuration>
-      </bpmn:timerEventDefinition>
+  <bpmn:process id="conditional" isExecutable="true">
+    <bpmn:startEvent id="ConditionalStart">
+      <bpmn:conditionalEventDefinition id="cd">
+        <bpmn:condition xsi:type="bpmn:tFormalExpression">\${stockLevel &lt; 5}</bpmn:condition>
+      </bpmn:conditionalEventDefinition>
     </bpmn:startEvent>
     <bpmn:endEvent id="E" />
-    <bpmn:sequenceFlow id="F1" sourceRef="TimerStart" targetRef="E" />
+    <bpmn:sequenceFlow id="F1" sourceRef="ConditionalStart" targetRef="E" />
   </bpmn:process>
 </bpmn:definitions>`;
 
-describe('parseAction — refused-construct classification', () => {
+describe('parseAction: refused-construct classification', () => {
   afterEach(() => {
     vi.restoreAllMocks();
   });
 
-  it('a timer start event refuses loudly with exit code 1, an actionable message, and no output file', async () => {
+  it('a conditional start event refuses loudly with exit code 1, an actionable message, and no output file', async () => {
     await withTempDir(async (dir) => {
-      const srcFile = path.join(dir, 'timer.bpmn');
-      const outDsl = path.join(dir, 'timer.bpmnscript');
-      fs.writeFileSync(srcFile, TIMER_START_BPMN, 'utf-8');
+      const srcFile = path.join(dir, 'conditional.bpmn');
+      const outDsl = path.join(dir, 'conditional.bpmnscript');
+      fs.writeFileSync(srcFile, CONDITIONAL_START_BPMN, 'utf-8');
 
       const exitSpy = spyOnExit();
       const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -275,8 +276,8 @@ describe('parseAction — refused-construct classification', () => {
       const stderrOutput = errorSpy.mock.calls
         .map((call) => String(call[0]))
         .join('\n');
-      expect(stderrOutput).toContain('TimerStart');
-      expect(stderrOutput).toContain('timer');
+      expect(stderrOutput).toContain('ConditionalStart');
+      expect(stderrOutput).toContain('conditional');
     });
   });
 });

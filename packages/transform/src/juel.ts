@@ -1,7 +1,8 @@
 /**
  * Parser, classifier, and DSL serializer for the JUEL subset, on the import
- * path. It decides whether a raw `${...}` body fits the subset and can print as
- * clean unquoted DSL, or has to fall back to the quoted `"${...}"` raw form.
+ * path. It decides whether a raw `${...}` or `#{...}` body fits the subset and
+ * can print as clean unquoted DSL, or has to fall back to the quoted `"${...}"`
+ * raw form.
  *
  * The subset boundary is the Langium expression sub-grammar in
  * `packages/language/src/bpmn-script.langium`, whose precedence the
@@ -66,7 +67,7 @@ export type BinaryOp =
   | '/'
   | '%';
 
-/** A raw `text` is the verbatim inner body, without the `${...}` wrapper. */
+/** A raw `text` is the verbatim inner body, without the wrapper it came in. */
 export type ExprResult =
   { kind: 'structured'; expr: JuelNode } | { kind: 'raw'; text: string };
 
@@ -97,7 +98,8 @@ export function parseJuel(body: string): ExprResult {
 /**
  * The DSL surface string `irToDsl` writes into a condition or attribute:
  * `amount > 1000` when structured, the quoted `"${...}"` fallback when raw, so
- * an out-of-subset body survives the round trip verbatim.
+ * an out-of-subset body survives the round trip with its text intact, rewrapped
+ * as `${...}`.
  */
 export function renderRawFallback(result: ExprResult): string {
   if (result.kind === 'raw') {
@@ -106,11 +108,18 @@ export function renderRawFallback(result: ExprResult): string {
   return renderNode(result.expr);
 }
 
-/** `undefined` when the body is not `${...}`-shaped, routing it to the fallback. */
+/**
+ * Either delimiter opens an EL body, and Operaton evaluates one written with
+ * either the same way, so a `#{...}` body reads in here and prints back out
+ * through the `${...}` surface the DSL has a form for.
+ */
+const OPEN_WRAPPER = /^[$#]\{/;
+
+/** `undefined` when the body carries no closed wrapper, routing it to the fallback. */
 function stripWrapper(body: string): string | undefined {
   const trimmed = body.trim();
   if (
-    trimmed.startsWith('${') &&
+    OPEN_WRAPPER.test(trimmed) &&
     trimmed.endsWith('}') &&
     trimmed.length >= 3
   ) {
@@ -119,17 +128,15 @@ function stripWrapper(body: string): string | undefined {
   return undefined;
 }
 
-/** Only fills the `text` of a raw result. Never affects classification. */
+/**
+ * Only fills the `text` of a raw result. Never affects classification. It sees
+ * a body with no wrapper or with an unclosed one, so it drops only the opening
+ * delimiter: taking a closing brace it never opened corrupts the text
+ * {@link renderRawFallback} then re-wraps.
+ */
 function stripWrapperLenient(body: string): string {
   const trimmed = body.trim();
-  let s = trimmed;
-  if (s.startsWith('${')) {
-    s = s.slice(2);
-  }
-  if (s.endsWith('}')) {
-    s = s.slice(0, -1);
-  }
-  return s;
+  return OPEN_WRAPPER.test(trimmed) ? trimmed.slice(2) : trimmed;
 }
 
 type TokenType =

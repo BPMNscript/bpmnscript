@@ -39,7 +39,7 @@ function startEventOpenTag(xml: string, id: string): string | undefined {
 
 // Handwritten import-first. The compensation end event carries an explicit
 // `waitForCompletion="true"`, the moddle default, accepted on import and then
-// dropped as unmodeled. Every task label differs from the name humanised from
+// dropped as unmodeled. Every task label differs from the name humanized from
 // its id, so the importer keeps it.
 const IMPORT_FIRST_BPMN = `<?xml version="1.0" encoding="UTF-8"?>
 <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:operaton="http://operaton.org/schema/1.0/bpmn" id="Definitions_import_first_compensation" targetNamespace="http://bpmn.io/schema/bpmn">
@@ -93,7 +93,7 @@ const IMPORT_FIRST_BPMN = `<?xml version="1.0" encoding="UTF-8"?>
   </bpmn:process>
 </bpmn:definitions>`;
 
-describe('idempotence: DSL → IR₁ → XML → IR₂ → DSL′ → IR₃', () => {
+describe("idempotence: DSL -> IR1 -> XML -> IR2 -> DSL' -> IR3", () => {
   it('the authored emit and throw ids survive verbatim through their handlers', () => {
     // `emit compensation` continues the path, `throw compensation` ends it.
     expect(elementById(rt.ir3, 'Undo').kind).toBe('intermediateThrowEvent');

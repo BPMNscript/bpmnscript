@@ -38,10 +38,31 @@ const SCRIPT_TASK_SRC =
   '  end Done\n' +
   '}\n';
 
+const TIMER_START_SRC =
+  'process nightly-audit {\n' +
+  '  start AuditWindowOpens "The audit window opens" timer at "2099-01-01T00:00:00"\n' +
+  '  user ReviewAudit { assignee = "demo" }\n' +
+  '  end AuditFiled\n' +
+  '}\n';
+
+const SIGNAL_START_SRC =
+  'process stock-watch {\n' +
+  '  start StockRunningLow signal "StockRunningLow"\n' +
+  '  user ReorderStock { assignee = "demo" }\n' +
+  '  end Restocked\n' +
+  '}\n';
+
+const TERMINATE_END_SRC =
+  'process order-abandon {\n' +
+  '  start OrderPlaced\n' +
+  '  user ReviewOrder { assignee = "demo" }\n' +
+  '  end OrderAbandoned "Abandon every path" terminate\n' +
+  '}\n';
+
 describe('round-trip: service task with an `expression` binding', () => {
   const run = roundTripOf(SERVICE_EXPRESSION_SRC);
 
-  it('desugars to an `expression` binding carrying the raw ${…} text', () => {
+  it('desugars to an `expression` binding carrying the raw ${...} text', () => {
     const binding = theOnly(run.ir1, 'serviceTask').binding;
     expect(binding).toEqual({
       kind: 'expression',
@@ -62,7 +83,7 @@ describe('round-trip: service task with an `expression` binding', () => {
     });
   });
 
-  it('re-emits `expression = "${…}"` and re-parses with zero errors', async () => {
+  it('re-emits `expression = "${...}"` and re-parses with zero errors', async () => {
     expect(run.dsl).toContain('expression = "${shippingBean.quote(order)}"');
     const document = await parse(run.dsl);
     expect(document.parseResult.parserErrors).toHaveLength(0);
@@ -72,7 +93,7 @@ describe('round-trip: service task with an `expression` binding', () => {
 describe('round-trip: service task with a `delegate` binding (delegateExpression alias)', () => {
   const run = roundTripOf(SERVICE_DELEGATE_SRC);
 
-  it('desugars `delegate = "${…}"` to a `delegateExpression` binding', () => {
+  it('desugars `delegate = "${...}"` to a `delegateExpression` binding', () => {
     expect(theOnly(run.ir1, 'serviceTask').binding).toEqual({
       kind: 'delegateExpression',
       expression: '${chargeService}',
@@ -125,7 +146,7 @@ describe('round-trip: service task with a `topic` binding', () => {
     });
   });
 
-  it('re-emits `service … { topic = "…" }` and re-parses with zero errors', async () => {
+  it('re-emits `service ... { topic = "..." }` and re-parses with zero errors', async () => {
     expect(run.dsl).toContain('service PrintLabel');
     expect(run.dsl).toContain('topic = "print-label"');
     const document = await parse(run.dsl);
@@ -157,7 +178,7 @@ describe('round-trip: `script` task with a fenced body', () => {
     expect(scriptTask.code).toBe(EXPECTED_CODE);
   });
 
-  it('re-emits a fenced `script … ```javascript … ``` ` block and re-parses with zero errors', async () => {
+  it('re-emits a fenced `script ... ```javascript ... ``` ` block and re-parses with zero errors', async () => {
     expect(run.dsl).toContain(
       `script ComputeDiscount \`\`\`javascript\n${EXPECTED_CODE}\`\`\``,
     );
@@ -168,5 +189,101 @@ describe('round-trip: `script` task with a fenced body', () => {
   it('the decompiled DSL recompiles without validation errors', async () => {
     const { diagnostics } = await validate(run.dsl);
     expect(diagnostics.filter((d) => d.severity === 1)).toEqual([]);
+  });
+});
+
+describe('round-trip: process start event with a timer trigger', () => {
+  const run = roundTripOf(TIMER_START_SRC);
+
+  it('desugars to a timer trigger on the start event', () => {
+    const start = theOnly(run.ir1, 'startEvent');
+    expect(start.eventDefinition).toEqual({
+      kind: 'timer',
+      timerKind: 'date',
+      expression: '2099-01-01T00:00:00',
+    });
+  });
+
+  it('generates a `bpmn:timeDate` element carrying the date', () => {
+    expect(run.xml).toContain('<bpmn:timeDate');
+    expect(run.xml).toContain('2099-01-01T00:00:00');
+  });
+
+  it('re-imports to the same timer trigger', () => {
+    const start = theOnly(run.ir2, 'startEvent');
+    expect(start.eventDefinition).toEqual({
+      kind: 'timer',
+      timerKind: 'date',
+      expression: '2099-01-01T00:00:00',
+    });
+  });
+
+  it('re-emits the trigger head on `start` and re-parses with zero errors', async () => {
+    expect(run.dsl).toContain(
+      'start AuditWindowOpens "The audit window opens" timer at "2099-01-01T00:00:00"',
+    );
+    const document = await parse(run.dsl);
+    expect(document.parseResult.parserErrors).toHaveLength(0);
+  });
+});
+
+describe('round-trip: process start event with a signal trigger', () => {
+  const run = roundTripOf(SIGNAL_START_SRC);
+
+  it('desugars to a signal trigger on the start event', () => {
+    const start = theOnly(run.ir1, 'startEvent');
+    expect(start.eventDefinition).toEqual({
+      kind: 'signal',
+      signalName: 'StockRunningLow',
+    });
+  });
+
+  it('generates one `bpmn:signal` root and a `signalRef` on the start event', () => {
+    expect(run.xml.match(/<bpmn:signal /g)).toHaveLength(1);
+    expect(run.xml).toContain('signalRef=');
+  });
+
+  it('re-imports to the same signal trigger', () => {
+    const start = theOnly(run.ir2, 'startEvent');
+    expect(start.eventDefinition).toEqual({
+      kind: 'signal',
+      signalName: 'StockRunningLow',
+    });
+  });
+
+  it('re-emits the trigger head on `start` and re-parses with zero errors', async () => {
+    expect(run.dsl).toContain('start StockRunningLow signal "StockRunningLow"');
+    const document = await parse(run.dsl);
+    expect(document.parseResult.parserErrors).toHaveLength(0);
+  });
+});
+
+describe('round-trip: `end ... terminate`', () => {
+  const run = roundTripOf(TERMINATE_END_SRC);
+
+  it('desugars to a terminate end event that keeps its label', () => {
+    const end = theOnly(run.ir1, 'endEvent');
+    expect(end.eventDefinition).toEqual({ kind: 'terminate' });
+    expect(end.name).toBe('Abandon every path');
+  });
+
+  it('generates `bpmn:terminateEventDefinition` and keeps the label as the `name` attribute', () => {
+    expect(run.xml).toContain('<bpmn:terminateEventDefinition');
+    expect(run.xml).toContain('name="Abandon every path"');
+  });
+
+  it('re-imports to the same terminate end event with no label warning', () => {
+    const end = theOnly(run.ir2, 'endEvent');
+    expect(end.eventDefinition).toEqual({ kind: 'terminate' });
+    expect(end.name).toBe('Abandon every path');
+    expect(run.warnings.filter((w) => w.category === 'label')).toEqual([]);
+  });
+
+  it('re-emits `end ... terminate`, never eliding it, and re-parses with zero errors', async () => {
+    expect(run.dsl).toContain(
+      'end OrderAbandoned "Abandon every path" terminate',
+    );
+    const document = await parse(run.dsl);
+    expect(document.parseResult.parserErrors).toHaveLength(0);
   });
 });

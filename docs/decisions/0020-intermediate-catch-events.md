@@ -87,7 +87,8 @@ They are also the only four kinds this language treats as something a token can 
 Error and escalation are always thrown by `throw`/`emit` and always reacted to by a racing `on` handler (ADR-0016); nothing about either one is a value a linear flow blocks on and then continues past, the way a message correlation or a timer's clock is.
 Letting `await` also claim them would mean two independent constructs, a handler and an await, both plausibly "catching" the same trigger, with no rule for which one actually fires when it arrives.
 Compensation has exactly one meaning in this language: the undo block a subprocess declares with `on compensation` (ADR-0018), invoked only by the engine's own compensation machinery, never something with an independent arrival a token waits for.
-Cancel needs a transaction sub-process, a BPMN construct this language does not surface at all, the same ground ADR-0019 already excludes it for boundary events.
+Cancel is excluded because BPMN gives it no position an `await` could occupy: a transaction sub-process's boundary catches one, and an end event inside that sub-process raises it.
+ADR-0028 surfaces that container as the `attempt` block and admits both of those positions there, neither of them the pass-through step on the main flow an `await` compiles to.
 Link is BPMN's own off-page connector, built for splitting one diagram across pages; this language's `goto` already does the job of naming a jump inside one textual source, so link would duplicate an existing mechanism for a diagramming problem a single `.bpmnscript` file never has.
 A catch carrying more than one event definition, or `parallelMultiple="true"`, waiting on several triggers on one element at once, is a different modeling shape from the one-trigger-per-`await` grammar this rule commits to, and nothing in the surface's design calls for it.
 
@@ -108,13 +109,15 @@ Both claims are confirmed by dedicated regression cases rather than left as an a
 - Good, because the four-trigger scope matches `readCatchEventDefinition` exactly, so import gains an honest refusal for exactly the forms it cannot represent instead of either a blanket refusal or a silent drop.
 - Bad, because an author can never give a specific `await` a name to `goto`.
   The only way to reach one is to write it inline where it belongs, and a hand-drawn diagram's stray edge into one prints as a hand-repair marker rather than a resolvable jump, the same limit every other unnameable synthesized id already carries.
-- Bad, because error, escalation, and compensation stay permanently unreachable from `await` even on a hand-crafted document where the shape looks unremarkable to a reader who does not already know BPMN restricts a plain intermediate catch element to a smaller set of event kinds than a boundary event or an event sub-process's start accepts.
+- Bad, because error, escalation, compensation, and cancel stay permanently unreachable from `await` even on a hand-crafted document where the shape looks unremarkable to a reader who does not already know BPMN restricts a plain intermediate catch element to a smaller set of event kinds than a boundary event or an event sub-process's start accepts.
 
 ### Confirmation
 
 `packages/language/test/parsing.test.ts` pins the `await` disambiguation directly: each of `await message "..."`, `await timer after/at/every "..."`, `await signal "..."`, and `await condition (...)` parses to the field shape its trigger implies, with the timer case pinning that the particle survives as `particle`, not swallowed into a name.
 A soft-word survival pin confirms `var await` fails to parse, proving the reservation, while `var message: string` and a step named `every` still parse clean.
-`packages/language/test/validating.test.ts` pins the four-trigger acceptance and the named-diagnostic rejection of `await error`/`await escalation`/`await compensation` and of each trigger's missing payload.
+`packages/language/test/validating.test.ts` pins the four-trigger acceptance and each trigger's missing payload, alongside the rejection of `await error`, `await escalation`, and `await compensation`, matched on the substrings that name the four legal words and the shape each of those kinds takes instead.
+`await cancel` is refused there too, matched against its whole message, which points at the `end <name> cancel` that gives an `attempt` block up and the `on <block>: cancel` that catches it.
+The refusal of an unknown word after `await` is matched whole as well, so the four accepted kinds and the place each refused kind is written instead are fixed in one string.
 `packages/transform/test/ast-to-ir.test.ts` pins the four lowering cases and that two catches in one body receive distinct `Catch_<coord>` ids.
 `packages/transform/test/ir-to-xml.test.ts` pins the four emitted `*EventDefinition` shapes and that no `name` attribute is stamped on the element.
 `packages/transform/test/xml-to-ir.test.ts` pins the four mapped shapes and the refusal of an unsupported trigger, of multiple definitions on one element, and of conditional narrowing attributes inherited from ADR-0017.
@@ -152,7 +155,8 @@ A Docker-gated end-to-end test deploys an example awaiting a message mid-flow, c
 - Good, because it would need no exclusion list and no refusal diagnostics for the excluded forms.
 - Bad, because error, escalation, and compensation have no "something to wait for" meaning in this language's model.
   They are always thrown and always handled by a racing `on`, and letting `await` also claim them creates two constructs that both plausibly catch the same trigger, with no rule for which one runs.
-- Bad, because cancel needs a transaction sub-process this language does not model, and link duplicates a job `goto` already does for a diagramming problem a single text file never has.
+- Bad, because BPMN admits no cancel on a plain intermediate catch at all, only on a transaction sub-process's boundary and on the end event that gives that sub-process up, and link duplicates a job `goto` already does for a diagramming problem a single text file never has.
+  ADR-0028 surfaces that sub-process as the `attempt` block, where a cancel is written `end <name> cancel` inside the block and caught by `on <block>: cancel` beside it, positions no `await` on the main flow could have taken.
 
 ## More Information
 
@@ -163,3 +167,5 @@ ADR-0019 (boundary events, the source of the live-parser ambiguity-check method 
 ADR-0014 (the honest import contract that `bpmn:intermediateCatchEvent` now follows instead of a blanket refusal).
 ADR-0009 (the dominator-based restructuring analysis the catch needs no new entry-wiring case for, being an ordinary node reached by a normal incoming edge).
 ADR-0010 (the structural-coordinate id scheme `Catch_<coord>` follows, and the re-keying rule that already excludes task and event ids, so the catch's id needs no new normalizer case either).
+
+Extended by ADR-0028 (work that can be given up), which surfaces the transaction sub-process as the `attempt` block and gives cancel the two positions BPMN does allow it, leaving this decision's four-trigger scope where it stands: a cancel is written on the end that gives a block up and caught beside that block, never awaited.

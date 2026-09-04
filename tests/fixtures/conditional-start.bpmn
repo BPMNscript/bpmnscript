@@ -1,18 +1,19 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <bpmn:definitions
     xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
-    id="Definitions_TimerStart"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    id="Definitions_ConditionalStart"
     targetNamespace="http://bpmn.io/schema/bpmn"
     exporter="Operaton Modeler"
     exporterVersion="5.0.0">
 
-  <bpmn:process id="timer-start" name="Timer Start" isExecutable="true">
+  <bpmn:process id="conditional-start" name="Conditional Start" isExecutable="true">
 
     <bpmn:startEvent id="ScheduledStart">
       <bpmn:outgoing>Flow_ScheduledStart_Notify</bpmn:outgoing>
-      <bpmn:timerEventDefinition id="TimerDef_1">
-        <bpmn:timeDuration>PT1H</bpmn:timeDuration>
-      </bpmn:timerEventDefinition>
+      <bpmn:conditionalEventDefinition id="CondDef_1">
+        <bpmn:condition xsi:type="bpmn:tFormalExpression">${stockLevel &lt; 5}</bpmn:condition>
+      </bpmn:conditionalEventDefinition>
     </bpmn:startEvent>
 
     <bpmn:userTask id="Notify" name="Notify team">

@@ -11,9 +11,11 @@ import type {
   Attribute,
   Block,
   BpmnScriptAstType,
+  BusinessRuleTask,
   CallActivity,
   DoWhileStatement,
   EmitStatement,
+  EndEvent,
   ErrorDecl,
   Expr,
   FormBlock,
@@ -32,6 +34,7 @@ import type {
   ProcessAttribute,
   Relational,
   ScriptTask,
+  SendTask,
   ServiceTask,
   StartEvent,
   Statement,
@@ -44,12 +47,13 @@ import {
   isAdditive,
   isAttribute,
   isBlock,
+  isBusinessRuleTask,
   isCallActivity,
   isDoWhileStatement,
-  isEmitStatement,
   isEndEvent,
   isErrorDecl,
   isExpr,
+  isGenericTask,
   isGotoStatement,
   isIfStatement,
   isLiteralBool,
@@ -63,8 +67,10 @@ import {
   isProcessAttribute,
   isProcessLabel,
   isRawExpr,
+  isReceiveTask,
   isRelational,
   isScriptTask,
+  isSendTask,
   isServiceTask,
   isStartEvent,
   isSubProcess,
@@ -77,12 +83,17 @@ import {
 } from './generated/ast.js';
 import type { BpmnScriptServices } from './bpmn-script-module.js';
 import {
+  ATTEMPT_BLOCK_RULE,
   ATTRIBUTE_BLOCK_RULES,
   attributeBlockRuleOf,
+  BUSINESS_RULE_BINDING_KEYS,
   CATCH_TRIGGERS,
+  DECISION_RESULT_MAPPINGS,
   EMIT_TRIGGERS,
+  END_TRIGGERS,
   EVENT_BINDING_FIELDS,
   EXECUTION_LISTENER_EVENTS,
+  formatWordList,
   IO_DIRECTIONS,
   LISTENER_BINDING_KEYS,
   listenerEventsFor,
@@ -91,6 +102,7 @@ import {
   SCRIPT_FORMAT_ALIASES,
   SERVICE_TASK_BINDING_KEYS,
   splitFencedScript,
+  START_TRIGGERS,
   TASK_LISTENER_EVENTS,
   THROW_TRIGGERS,
   TIMER_PARTICLES,
@@ -102,7 +114,10 @@ import {
   isNamedStatement,
   type NamedStatement,
 } from './bpmn-script-scope-provider.js';
-import type { VariableSymbolProvider } from './variable-symbol-provider.js';
+import {
+  isRepeated,
+  type VariableSymbolProvider,
+} from './variable-symbol-provider.js';
 
 export function registerValidationChecks(services: BpmnScriptServices) {
   const registry = services.validation.ValidationRegistry;
@@ -111,10 +126,14 @@ export function registerValidationChecks(services: BpmnScriptServices) {
     Model: validator.checkModel,
     Process: validator.checkProcess,
     StartEvent: validator.checkStartEvent,
-    EndEvent: validator.checkAttributeOwner,
+    EndEvent: validator.checkEndEvent,
     UserTask: validator.checkAttributeOwner,
     ServiceTask: validator.checkServiceTaskAttributes,
     ScriptTask: validator.checkScriptTask,
+    GenericTask: validator.checkAttributeOwner,
+    SendTask: validator.checkSendTask,
+    ReceiveTask: validator.checkAttributeOwner,
+    BusinessRuleTask: validator.checkBusinessRuleTask,
     IfStatement: validator.checkIfStatement,
     WhileStatement: validator.checkWhileStatement,
     DoWhileStatement: validator.checkDoWhileStatement,
@@ -134,6 +153,9 @@ const CALL_BINDING_VALUES: ReadonlySet<string> = new Set([
   'latest',
   'deployment',
 ]);
+
+/** The two elements naming a deployed artifact they pin a version of. */
+type VersionPinnedElement = CallActivity | BusinessRuleTask;
 
 /**
  * Attribute keys whose value names something outside process-variable scope (a
@@ -158,6 +180,7 @@ const NON_VARIABLE_ATTR_KEYS: ReadonlySet<string> = new Set([
   'process',
   'binding',
   'version',
+  'mapDecisionResult',
   'candidateGroups',
   'candidateUsers',
   'dueDate',
@@ -197,22 +220,32 @@ interface TriggerPayloadRule {
    * `bpmn:association`/`isForCompensation` as the subprocess's undo block.
    */
   readonly boundary: boolean;
+  /**
+   * Whether the trigger may open a handler that names no host, which lowers to
+   * an event sub-process. `false` only for `cancel`: nothing opens on a cancel,
+   * so it is caught on the block it gives up.
+   */
+  readonly hostless: boolean;
 }
 
 /**
  * An error always interrupts, so it has no `alongside`. `message`/`signal` are
  * name-keyed subscriptions, so the name is required. `compensation` reverses
- * finished work: nothing to catch by name, no flow to run alongside.
+ * finished work: nothing to catch by name, no flow to run alongside. `cancel`
+ * mirrors `compensation`: legal only on a host, where compensation is legal
+ * only without one.
+ *
+ * The `satisfies` clause is what forces a row per word in {@link ON_TRIGGERS};
+ * the annotation keeps the lookup readable for a trigger word of any origin.
  */
-const TRIGGER_PAYLOAD: Readonly<
-  Record<(typeof ON_TRIGGERS)[number], TriggerPayloadRule>
-> = {
+const TRIGGER_PAYLOAD: Readonly<Record<string, TriggerPayloadRule>> = {
   error: {
     code: 'optional',
     timer: false,
     parens: 'bindings',
     alongside: false,
     boundary: true,
+    hostless: true,
   },
   escalation: {
     code: 'optional',
@@ -220,6 +253,7 @@ const TRIGGER_PAYLOAD: Readonly<
     parens: 'bindings',
     alongside: true,
     boundary: true,
+    hostless: true,
   },
   message: {
     code: 'required',
@@ -227,6 +261,7 @@ const TRIGGER_PAYLOAD: Readonly<
     parens: 'forbidden',
     alongside: true,
     boundary: true,
+    hostless: true,
   },
   signal: {
     code: 'required',
@@ -234,6 +269,7 @@ const TRIGGER_PAYLOAD: Readonly<
     parens: 'forbidden',
     alongside: true,
     boundary: true,
+    hostless: true,
   },
   timer: {
     code: 'forbidden',
@@ -241,6 +277,7 @@ const TRIGGER_PAYLOAD: Readonly<
     parens: 'forbidden',
     alongside: true,
     boundary: true,
+    hostless: true,
   },
   condition: {
     code: 'forbidden',
@@ -248,6 +285,7 @@ const TRIGGER_PAYLOAD: Readonly<
     parens: 'condition',
     alongside: true,
     boundary: true,
+    hostless: true,
   },
   compensation: {
     code: 'forbidden',
@@ -255,11 +293,24 @@ const TRIGGER_PAYLOAD: Readonly<
     parens: 'forbidden',
     alongside: false,
     boundary: false,
+    hostless: true,
   },
-};
+  cancel: {
+    code: 'forbidden',
+    timer: false,
+    parens: 'forbidden',
+    alongside: false,
+    boundary: true,
+    hostless: false,
+  },
+} satisfies Record<(typeof ON_TRIGGERS)[number], TriggerPayloadRule>;
 
 const ON_TRIGGERS_SET: ReadonlySet<string> = new Set(ON_TRIGGERS);
+const END_TRIGGERS_SET: ReadonlySet<string> = new Set(END_TRIGGERS);
 const CATCH_TRIGGERS_SET: ReadonlySet<string> = new Set(CATCH_TRIGGERS);
+const START_TRIGGERS_SET: ReadonlySet<string> = new Set(START_TRIGGERS);
+const THROW_TRIGGERS_SET: ReadonlySet<string> = new Set(THROW_TRIGGERS);
+const EMIT_TRIGGERS_SET: ReadonlySet<string> = new Set(EMIT_TRIGGERS);
 const TIMER_PARTICLE_SET: ReadonlySet<string> = new Set(TIMER_PARTICLES);
 const EVENT_BINDING_FIELD_SET: ReadonlySet<string> = new Set(
   EVENT_BINDING_FIELDS,
@@ -271,25 +322,36 @@ const LISTENER_BINDING_KEY_SET: ReadonlySet<string> = new Set(
 const PROCESS_HEADER_KEY_SET: ReadonlySet<string> = new Set(
   PROCESS_HEADER_KEYS,
 );
+const DECISION_RESULT_MAPPING_SET: ReadonlySet<string> = new Set(
+  DECISION_RESULT_MAPPINGS,
+);
 const SUPPORTED_SCRIPT_TAGS: ReadonlySet<string> = new Set(
   Object.keys(SCRIPT_FORMAT_ALIASES),
 );
 
 /**
  * Read off the block rules so the message cannot name a set the checks do not
- * enforce. The host-less `on` handler has no row, hence the appended clause.
+ * enforce. The `attempt` block shares its AST type with `subprocess` and so has
+ * no row of its own to read; the host-less `on` handler shares one with the
+ * hosted form, whose noun would not say which of the two takes parameters,
+ * hence the appended clause.
  */
-const PARAMETER_HOSTS_MESSAGE = `parameters belong on ${Object.values(
-  ATTRIBUTE_BLOCK_RULES,
-)
+const PARAMETER_HOSTS_MESSAGE = `parameters belong on ${[
+  ...Object.values(ATTRIBUTE_BLOCK_RULES),
+  ATTEMPT_BLOCK_RULE,
+]
   .filter((rule) => rule.parameters)
   .map((rule) => rule.description)
   .join(', ')}, and an 'on' handler with no host.`;
 
+const REPEATED_OUTPUT_MESSAGE =
+  "A repeated step cannot map an 'output' parameter: the engine refuses to " +
+  'deploy it. Move the mapping to a step after the repetition.';
+
 const LISTENER_PARTICLE_ONLY_MESSAGE = "Only 'on timeout' takes a particle.";
 
 const MESSAGELESS_NAME_MESSAGE =
-  "A message handler needs the message's name — the engine matches messages by name.";
+  "A message handler needs the message's name: the engine matches messages by name.";
 
 const TIMER_PAYLOAD_MESSAGE =
   `A timer needs to know how to read the time: write 'after "PT1H"', ` +
@@ -299,7 +361,7 @@ const CONDITION_REQUIRED_MESSAGE =
   "A condition handler needs its condition: 'on condition (amount > 100)'.";
 
 const CONDITION_NO_CODE_MESSAGE =
-  "A condition handler takes no code string — write the condition in parentheses: 'on condition (amount > 100)'.";
+  "A condition handler takes no code string; write the condition in parentheses: 'on condition (amount > 100)'.";
 
 const CONDITION_ONLY_MESSAGE =
   "Only 'on condition' takes a condition expression.";
@@ -310,44 +372,109 @@ const COMPENSATE_TYPO_MESSAGE =
   "Unknown event kind 'compensate'; write 'compensation'.";
 
 const CATCH_NAME_REQUIRED_MESSAGE =
-  "An awaited message needs the message's name — the engine matches messages by name.";
+  "An awaited message needs the message's name: the engine matches messages by name.";
 
 const CATCH_CONDITION_REQUIRED_MESSAGE =
   "An awaited condition needs its condition: 'await condition (amount > 100)'.";
 
 const CATCH_CONDITION_NO_CODE_MESSAGE =
-  "An awaited condition takes no code string — write the condition in parentheses: 'await condition (amount > 100)'.";
+  "An awaited condition takes no code string; write the condition in parentheses: 'await condition (amount > 100)'.";
 
 const CATCH_CONDITION_ONLY_MESSAGE =
   "Only 'await condition' takes a condition expression.";
 
 const CATCH_PARTICLE_ONLY_MESSAGE = "Only 'await timer' takes a particle.";
 
-const MESSAGE_NOTHING_TO_SEND_MESSAGE =
-  "A message reaches this process from outside — there is nothing to send; write a message handler with 'on message'.";
+const START_TRIGGER_IN_HANDLER_MESSAGE =
+  "The start of an event-handler body carries no trigger; the handler's own " +
+  "'on <kind>' is what it catches.";
+
+const START_CONDITION_MESSAGE =
+  'A process cannot start on a condition in this tool; a start event supports ' +
+  'message, signal, or timer.';
+
+const START_PARTICLE_ONLY_MESSAGE = 'Only a timer start takes a particle.';
+
+const END_TRIGGERS_MESSAGE =
+  "An end event carries 'terminate', which stops every running path in this " +
+  `scope, or 'cancel', which gives up the 'attempt' block it sits in.`;
+
+const END_TIMER_MESSAGE =
+  'A timer cannot end a process; a timer is something a process waits on. ' +
+  `Write 'await timer after "PT1H"' to pause the flow here, ` +
+  `'on timer after "PT1H"' to react while the surrounding steps run, or ` +
+  `'on <step>: timer after "PT1H"' to watch only while that step runs. ` +
+  END_TRIGGERS_MESSAGE;
+
+const END_CONDITION_MESSAGE =
+  'A condition cannot end a process; a condition is something a process ' +
+  `waits on. Write 'await condition (amount > 100)' to pause the flow ` +
+  `here, 'on condition (amount > 100)' to react while the surrounding ` +
+  `steps run, or 'on <step>: condition (amount > 100)' to watch only ` +
+  'while that step runs. ' +
+  END_TRIGGERS_MESSAGE;
+
+/** Neither end word names anything, and each says so in its own terms. */
+const END_TRIGGER_NO_CODE_MESSAGES: Readonly<Record<string, string>> = {
+  terminate:
+    'Terminate names nothing: it stops every running path in this scope; ' +
+    'omit the string.',
+  cancel:
+    'Cancel names nothing: it gives up the block this end sits in; omit the ' +
+    'string.',
+} satisfies Record<(typeof END_TRIGGERS)[number], string>;
+
+const CANCEL_END_PLACEMENT_MESSAGE =
+  "A cancel end belongs directly inside an 'attempt' block: it gives that " +
+  'block up, and the engine refuses one anywhere else. Wrap the steps to ' +
+  `give up in 'attempt <name> { ... }', or end this path with a plain 'end'.`;
+
+const CANCEL_HOSTLESS_MESSAGE =
+  "A cancel is caught on the block it gives up; write 'on <block>: cancel'. " +
+  'A handler with no host opens on its own trigger, and nothing opens on a ' +
+  'cancel.';
+
+const CANCEL_ALONGSIDE_MESSAGE =
+  'Giving a block up ends every step still running inside it, so there is ' +
+  "nothing left to run alongside; remove 'alongside'.";
+
+const CANCEL_NO_CODE_MESSAGE =
+  'A cancel handler catches nothing by name: it runs when its block is ' +
+  'given up; omit the string.';
+
+const CANCEL_NOT_RAISED_MESSAGE =
+  'A cancel is not raised: it is how a block gives itself up; write ' +
+  `'end <name> cancel' inside the 'attempt' block.`;
+
+/** The awaiting author wants the catch surface too, which no thrower asks for. */
+const CANCEL_NOT_AWAITED_MESSAGE =
+  'A cancel is not awaited: it is how a block gives itself up; write ' +
+  `'end <name> cancel' inside the 'attempt' block, and ` +
+  `'on <block>: cancel' beside the block to say what happens then.`;
 
 const COMPENSATION_NO_CODE_MESSAGE =
-  "Compensation has no code or name — 'on compensation { }' is the undo block for this subprocess; omit the string.";
+  "Compensation has no code or name: 'on compensation { }' is the undo block " +
+  'of the subprocess or attempt block it sits in; omit the string.';
 
 const COMPENSATION_BINDINGS_MESSAGE =
-  "'(code c)' bindings belong to error and escalation handlers — compensation carries no values.";
+  "'(code c)' bindings belong to error and escalation handlers; compensation carries no values.";
 
 const COMPENSATION_ALONGSIDE_MESSAGE =
-  'The work an undo block reverses has already finished — there is no ' +
+  'The work an undo block reverses has already finished, so there is no ' +
   "running flow to run alongside; remove 'alongside'.";
 
 const COMPENSATION_PLACEMENT_MESSAGE =
-  "An undo block belongs directly inside the 'subprocess' whose work it " +
-  'undoes — a process cannot undo itself.';
+  "An undo block belongs directly inside the 'subprocess' or 'attempt' whose " +
+  'work it undoes: a process cannot undo itself.';
 
 const COMPENSATION_DUPLICATE_MESSAGE =
-  'A subprocess has one undo block — merge the steps.';
+  'A subprocess or an attempt block has one undo block; merge the steps.';
 
 const COMPENSATION_HOST_MESSAGE =
-  "Compensation cannot attach to a host — it undoes a subprocess's " +
+  "Compensation cannot attach to a host: it undoes a subprocess's " +
   'already-completed work through its own undo block, not through a ' +
-  "boundary event; remove the host and write 'on compensation { … }' " +
-  'directly inside the subprocess it reverses.';
+  "boundary event; remove the host and write 'on compensation { ... }' " +
+  'directly inside the subprocess or attempt block it reverses.';
 
 /** `json`/`any` have no `operaton:formField` representation. */
 const FORM_FIELD_TYPES: ReadonlySet<string> = new Set([
@@ -358,7 +485,7 @@ const FORM_FIELD_TYPES: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * Ids the `astToIr` desugarer synthesises; an author-chosen statement name
+ * Ids the `astToIr` desugarer synthesizes; an author-chosen statement name
  * matching one produces duplicate-id IR. ADR-0010 (Deterministic Structural
  * Ids) has the templates and why the single-segment `Flow_` shape stays legal.
  * Gateway ids bypass the desugarer's collision guard entirely; `Boundary_`
@@ -409,30 +536,27 @@ function collectGotoTargetNames(process: Process): Set<string> {
   return new Set(
     AstUtils.streamAst(process)
       .filter(isGotoStatement)
-      .map((goto) => goto.target.$refText)
+      .map((goto) => goto.target?.$refText ?? '')
       .filter((name) => name.length > 0),
   );
 }
 
 function statementName(stmt: Statement): string | undefined {
-  if (
-    isStartEvent(stmt) ||
-    isEndEvent(stmt) ||
-    isUserTask(stmt) ||
-    isServiceTask(stmt) ||
-    isScriptTask(stmt) ||
-    isSubProcess(stmt) ||
-    isCallActivity(stmt)
-  ) {
-    return stmt.name;
-  }
-  if (isThrowStatement(stmt) || isEmitStatement(stmt)) {
-    return stmt.name;
-  }
-  return undefined;
+  return isNamedStatement(stmt) ? stmt.name : undefined;
 }
 
-function childBlocks(stmt: Statement): Block[] {
+/**
+ * Parser error recovery leaves a mandatory slot empty, so a `Block` and a name
+ * are both `undefined`-capable however the generated types declare them. A
+ * `Block` is read either through here or behind a guard of its own, and a
+ * check whose message would print a missing name stands down: the parse error
+ * already named the mistake.
+ */
+function blockStatements(block: Block | undefined): Statement[] {
+  return block?.statements ?? [];
+}
+
+function childBlocks(stmt: Statement): Array<Block | undefined> {
   if (isIfStatement(stmt)) {
     return [
       stmt.then,
@@ -470,13 +594,17 @@ function statementTerminates(stmt: Statement): boolean {
   }
   if (isIfStatement(stmt) && stmt.elseBlock !== undefined) {
     return (
-      blockTerminates(stmt.then.statements) &&
-      stmt.elseIfs.every((elseIf) => blockTerminates(elseIf.body.statements)) &&
-      blockTerminates(stmt.elseBlock.statements)
+      blockTerminates(blockStatements(stmt.then)) &&
+      stmt.elseIfs.every((elseIf) =>
+        blockTerminates(blockStatements(elseIf.body)),
+      ) &&
+      blockTerminates(blockStatements(stmt.elseBlock))
     );
   }
   if (isParallelStatement(stmt)) {
-    return stmt.branches.every((branch) => blockTerminates(branch.statements));
+    return stmt.branches.every((branch) =>
+      blockTerminates(blockStatements(branch)),
+    );
   }
   return false;
 }
@@ -487,15 +615,29 @@ function blockTerminates(statements: Statement[]): boolean {
   );
 }
 
+/**
+ * A composite duplicate key. `undefined` when any part was left unparsed, so a
+ * template literal cannot stringify a missing slot into a key that collides
+ * with itself.
+ */
+function duplicateKey(
+  ...parts: ReadonlyArray<string | undefined>
+): string | undefined {
+  return parts.includes(undefined) ? undefined : parts.join(':');
+}
+
 /** Seed `seen` with keys that count as present before the first item. */
 function forEachDuplicate<T>(
   items: Iterable<T>,
-  key: (item: T) => string,
+  key: (item: T) => string | undefined,
   onDuplicate: (item: T) => void,
   seen: Set<string> = new Set(),
 ): void {
   for (const item of items) {
     const k = key(item);
+    if (k === undefined) {
+      continue;
+    }
     if (seen.has(k)) {
       onDuplicate(item);
     } else {
@@ -543,7 +685,7 @@ export class BpmnScriptValidator {
     accept: ValidationAcceptor,
   ): void {
     for (const node of AstUtils.streamAst(process)) {
-      if (!isStartEvent(node)) continue;
+      if (!isStartEvent(node) || node.name === undefined) continue;
       if (node === process.body[0]) continue;
       const container = node.$container;
       if (isBlock(container) && container.statements[0] === node) {
@@ -559,7 +701,7 @@ export class BpmnScriptValidator {
       }
       accept(
         'error',
-        `'start ${node.name}' must be the first statement of its process, subprocess, or event-handler body. ` +
+        `'start ${node.name}' must be the first statement of its process, subprocess, attempt block, or event-handler body. ` +
           'A start event cannot have incoming flows.',
         { node, property: 'name' },
       );
@@ -568,7 +710,7 @@ export class BpmnScriptValidator {
 
   /** Every check that needs the whole process at once; the symbol table is built once. */
   checkProcess = (process: Process, accept: ValidationAcceptor): void => {
-    if (hasNoFlowStep(process.body)) {
+    if (process.name !== undefined && hasNoFlowStep(process.body)) {
       accept(
         'error',
         `Process '${process.name}' has no flow steps: a process needs at least one step on its main flow (handlers alone do not start a process).`,
@@ -618,7 +760,7 @@ export class BpmnScriptValidator {
       for (const stmt of statements) {
         if (isOnHandler(stmt)) {
           for (const block of childBlocks(stmt)) {
-            scan(block.statements);
+            scan(blockStatements(block));
           }
           continue;
         }
@@ -632,13 +774,13 @@ export class BpmnScriptValidator {
             'This step can never run: an earlier `end`, `throw`, `goto`, or ' +
               'an all-terminating `if`/`parallel` in the same block always ' +
               'ends or redirects the flow before reaching it, so this step ' +
-              'would lower to a disconnected node with no incoming flow — ' +
-              'invalid BPMN.',
+              'would lower to a disconnected node with no incoming flow, ' +
+              'which is invalid BPMN.',
             { node: stmt },
           );
         } else {
           for (const block of childBlocks(stmt)) {
-            scan(block.statements);
+            scan(blockStatements(block));
           }
         }
         if (statementTerminates(stmt)) {
@@ -660,14 +802,21 @@ export class BpmnScriptValidator {
     accept: ValidationAcceptor,
   ): void {
     const declaredType = new Map<string, VarType>();
+    // An unparsed name or type would seed `undefined` into the table, which
+    // both prints as a name and hides the next genuine disagreement.
     for (const decl of process.decls) {
-      if (isVarDecl(decl)) {
+      if (
+        isVarDecl(decl) &&
+        decl.name !== undefined &&
+        decl.type !== undefined
+      ) {
         declaredType.set(decl.name, decl.type);
       }
     }
     for (const node of AstUtils.streamAst(process)) {
       if (isOnHandler(node)) {
         for (const binding of node.bindings) {
+          if (binding.variable === undefined) continue;
           const prior = declaredType.get(binding.variable);
           if (prior === undefined) {
             declaredType.set(binding.variable, 'string');
@@ -684,6 +833,7 @@ export class BpmnScriptValidator {
       if (!isStartEvent(node) && !isUserTask(node)) continue;
       for (const form of node.forms) {
         for (const field of form.fields) {
+          if (field.id === undefined || field.type === undefined) continue;
           const prior = declaredType.get(field.id);
           if (prior === undefined) {
             declaredType.set(field.id, field.type);
@@ -708,10 +858,10 @@ export class BpmnScriptValidator {
       if (isReservedName(node.name)) {
         accept(
           'error',
-          `Statement name '${node.name}' matches a reserved synthesised-id pattern. ` +
-            `Prefixes 'Gateway_…_(split|join|fork|loop)', 'Flow_', 'StartEvent_', ` +
-            `'EndEvent_', 'Throw_', 'EventSubProcess_', and 'Boundary_' are reserved ` +
-            `for ids generated by the BPMNscript desugarer.`,
+          `Statement name '${node.name}' matches a reserved synthesized-id pattern. ` +
+            `Prefixes 'Gateway_..._(split|join|fork|loop)', 'Flow_', 'StartEvent_', ` +
+            `'EndEvent_', 'Throw_', 'EventSubProcess_', 'Boundary_', and 'Catch_' ` +
+            `are reserved for ids generated by the BPMNscript desugarer.`,
           { node, property: 'name' },
         );
       }
@@ -723,6 +873,8 @@ export class BpmnScriptValidator {
     process: Process,
     accept: ValidationAcceptor,
   ): void {
+    if (process.name === undefined) return;
+
     forEachDuplicate(
       process.decls.filter(isVarDecl),
       (decl) => decl.name,
@@ -763,13 +915,15 @@ export class BpmnScriptValidator {
     process: Process,
     accept: ValidationAcceptor,
   ): void {
+    if (process.name === undefined) return;
+
     forEachDuplicate(
       process.decls.filter(isProcessLabel),
       () => 'label',
       (decl) =>
         accept(
           'error',
-          `Process '${process.name}' already has a label declared; a second 'label = …' is not allowed.`,
+          `Process '${process.name}' already has a label declared; a second 'label = ...' is not allowed.`,
           { node: decl, property: 'value' },
         ),
       new Set(process.label !== undefined ? ['label'] : []),
@@ -782,6 +936,8 @@ export class BpmnScriptValidator {
     named: NamedStatement[],
     accept: ValidationAcceptor,
   ): void {
+    if (process.name === undefined) return;
+
     forEachDuplicate(
       named,
       (node) => node.name,
@@ -877,19 +1033,124 @@ export class BpmnScriptValidator {
     }
   }
 
-  /** A handler-body start carries the event definition, not form semantics. */
   checkStartEvent = (start: StartEvent, accept: ValidationAcceptor): void => {
     this.checkAttributeBlock(start, accept);
 
     const container = start.$container;
+    // A handler-body start reads the event's data through the handler's own
+    // bindings, so it has no form semantics of its own.
     if (isBlock(container) && isOnHandler(container.$container)) {
       for (const form of start.forms) {
         accept(
           'error',
-          `The start of an event-handler body has no form; the event's data is bound by the handler's own '(…)' bindings, not by a form.`,
+          `The start of an event-handler body has no form; the event's data is bound by the handler's own '(...)' bindings, not by a form.`,
           { node: form },
         );
       }
+    }
+
+    if (start.trigger === undefined) return;
+
+    if (isBlock(container)) {
+      const host = container.$container;
+      if (isSubProcess(host) || isOnHandler(host)) {
+        accept(
+          'error',
+          isSubProcess(host)
+            ? startTriggerInBlockMessage(host)
+            : START_TRIGGER_IN_HANDLER_MESSAGE,
+          { node: start, property: 'trigger' },
+        );
+        return;
+      }
+    }
+
+    if (!START_TRIGGERS_SET.has(start.trigger)) {
+      accept('error', startTriggerMessage(start.trigger), {
+        node: start,
+        property: 'trigger',
+      });
+      return;
+    }
+
+    this.checkStartPayload(start, TRIGGER_PAYLOAD[start.trigger]!, accept);
+  };
+
+  /**
+   * Mirrors {@link checkCatchPayload}. A start gets no timer shape warnings:
+   * a repeating start is a legitimate schedule, not a one-shot mistake.
+   */
+  private checkStartPayload(
+    start: StartEvent,
+    rule: TriggerPayloadRule,
+    accept: ValidationAcceptor,
+  ): void {
+    if (rule.code === 'required' && !start.code) {
+      accept('error', startNameRequiredMessage(start.trigger!), {
+        node: start,
+        property: 'trigger',
+      });
+    }
+
+    if (
+      start.trigger === 'message' &&
+      start.code !== undefined &&
+      EXPRESSION_IN_NAME.test(start.code)
+    ) {
+      accept('error', startMessageExpressionMessage(start.code), {
+        node: start,
+        property: 'code',
+      });
+    }
+
+    if (rule.timer) {
+      if (!start.particle || !start.time) {
+        accept('error', TIMER_PAYLOAD_MESSAGE, {
+          node: start,
+          property: 'trigger',
+        });
+      } else {
+        this.checkTimerParticleWord(start, start.particle, accept);
+      }
+    } else if (start.particle !== undefined) {
+      accept('error', START_PARTICLE_ONLY_MESSAGE, {
+        node: start,
+        property: 'particle',
+      });
+    }
+  }
+
+  checkEndEvent = (end: EndEvent, accept: ValidationAcceptor): void => {
+    this.checkAttributeBlock(end, accept);
+
+    if (end.trigger === undefined) return;
+
+    if (!END_TRIGGERS_SET.has(end.trigger)) {
+      accept('error', endTriggerMessage(end.trigger), {
+        node: end,
+        property: 'trigger',
+      });
+      return;
+    }
+
+    // The scope the engine reads is the enclosing container, so a cancel end
+    // in an `if` branch of the block still ends the block.
+    if (
+      end.trigger === 'cancel' &&
+      !isAttemptBlock(enclosingFlowContainer(end))
+    ) {
+      accept('error', CANCEL_END_PLACEMENT_MESSAGE, {
+        node: end,
+        property: 'trigger',
+      });
+      return;
+    }
+
+    if (end.code !== undefined) {
+      accept('error', END_TRIGGER_NO_CODE_MESSAGES[end.trigger], {
+        node: end,
+        property: 'code',
+      });
     }
   };
 
@@ -905,6 +1166,7 @@ export class BpmnScriptValidator {
     accept: ValidationAcceptor,
   ): void => {
     this.checkAttributeBlock(task, accept);
+    if (task.name === undefined) return;
 
     this.checkExactlyOneBinding(
       task.attrs,
@@ -915,8 +1177,67 @@ export class BpmnScriptValidator {
     );
   };
 
+  /** The engine runs a send task the way it runs a service task, so it binds the same way. */
+  checkSendTask = (task: SendTask, accept: ValidationAcceptor): void => {
+    this.checkAttributeBlock(task, accept);
+    if (task.name === undefined) return;
+
+    this.checkExactlyOneBinding(
+      task.attrs,
+      SERVICE_TASK_BINDING_KEYS,
+      `Send task '${task.name}'`,
+      { node: task, property: 'name' },
+      accept,
+    );
+  };
+
+  /**
+   * A decision step binds to a decision table or, failing that, to code. Its
+   * `binding`/`version` pinning is the call activity's rule, shared verbatim,
+   * and `mapDecisionResult` picks what the decision leaves in `resultVariable`.
+   */
+  checkBusinessRuleTask = (
+    task: BusinessRuleTask,
+    accept: ValidationAcceptor,
+  ): void => {
+    this.checkAttributeBlock(task, accept);
+
+    if (task.name !== undefined) {
+      this.checkExactlyOneBinding(
+        task.attrs,
+        BUSINESS_RULE_BINDING_KEYS,
+        `Decision step '${task.name}'`,
+        { node: task, property: 'name' },
+        accept,
+      );
+    }
+    this.checkBindingAttribute(task, accept);
+    this.checkBindingVersionExclusion(task, 'A decision step', accept);
+    this.checkDecisionResultMapping(task, accept);
+  };
+
+  private checkDecisionResultMapping(
+    task: BusinessRuleTask,
+    accept: ValidationAcceptor,
+  ): void {
+    const attr = task.attrs.find((a) => a.key === 'mapDecisionResult');
+    if (!attr) {
+      return;
+    }
+    const value = bindingValueText(attr.value);
+    if (value !== undefined && DECISION_RESULT_MAPPING_SET.has(value)) {
+      return;
+    }
+    accept(
+      'error',
+      `Attribute 'mapDecisionResult' must be ${formatWordList(DECISION_RESULT_MAPPINGS)}.`,
+      { node: attr, property: 'value' },
+    );
+  }
+
   checkScriptTask = (task: ScriptTask, accept: ValidationAcceptor): void => {
     this.checkAttributeBlock(task, accept);
+    if (task.name === undefined) return;
 
     if (task.body === undefined) {
       // An unterminated fence never lexes as FENCED_SCRIPT, so the parser
@@ -925,7 +1246,7 @@ export class BpmnScriptValidator {
       accept(
         'error',
         `Script task '${task.name}' has a malformed or unterminated fenced ` +
-          'script body; a script must be a closed ```<lang> … ``` block.',
+          'script body; a script must be a closed ```<lang> ... ``` block.',
         { node: task, property: 'name' },
       );
       return;
@@ -967,7 +1288,7 @@ export class BpmnScriptValidator {
           }),
       );
       for (const field of form.fields) {
-        if (!FORM_FIELD_TYPES.has(field.type)) {
+        if (field.type !== undefined && !FORM_FIELD_TYPES.has(field.type)) {
           accept(
             'error',
             `Form field '${field.id}' has type '${field.type}', which a form cannot use. Use string, number, boolean, or date.`,
@@ -1020,22 +1341,15 @@ export class BpmnScriptValidator {
     accept: ValidationAcceptor,
     alternative = '',
   ): void {
-    const bindingKeys = new Set(
-      attrs.map((attr) => attr.key).filter((key) => keys.includes(key)),
-    );
-    if (bindingKeys.size === 0) {
+    if (bindingKeysOf(attrs, keys).length === 0) {
       accept(
         'error',
         `${subject} must declare a ${formatWordList(keys)} attribute${alternative}.`,
         target,
       );
-    } else if (bindingKeys.size > 1) {
-      accept(
-        'error',
-        `${subject} declares more than one binding (${[...bindingKeys].join(', ')}); exactly one of ${formatWordList(keys)} is allowed.`,
-        target,
-      );
+      return;
     }
+    checkAtMostOneBinding(attrs, keys, subject, target, accept);
   }
 
   private checkDuplicateKeys(
@@ -1162,7 +1476,7 @@ export class BpmnScriptValidator {
 
     forEachDuplicate(
       directed,
-      (param) => `${param.direction}:${param.name}`,
+      (param) => duplicateKey(param.direction, param.name),
       (param) =>
         accept(
           'error',
@@ -1171,8 +1485,38 @@ export class BpmnScriptValidator {
         ),
     );
 
+    this.checkRepeatedOutput(owner, directed, accept);
+
     for (const param of directed) {
       this.checkMapKeys(param.value, accept);
+    }
+  }
+
+  /**
+   * The one authoring rule a repeat clause carries. Operaton rejects the
+   * deployment outright (`BpmnParse.checkActivityOutputParameterSupported`),
+   * so the mapping is an error rather than a warning, reported once however
+   * many mappings the block holds.
+   *
+   * The clause needs no further rule, and any reader looking for one is
+   * looking in vain: the grammar already admits a clause only with a count, a
+   * collection, or both; an element name only inside `each ... in ...`; and
+   * `until` only as part of a clause.
+   */
+  private checkRepeatedOutput(
+    owner: AttributeOwner,
+    directed: readonly IoParameter[],
+    accept: ValidationAcceptor,
+  ): void {
+    if (!isRepeated(owner)) {
+      return;
+    }
+    const mapping = directed.find((param) => param.direction === 'output');
+    if (mapping) {
+      accept('error', REPEATED_OUTPUT_MESSAGE, {
+        node: mapping,
+        property: 'direction',
+      });
     }
   }
 
@@ -1180,9 +1524,14 @@ export class BpmnScriptValidator {
    * A map value may hold a list holding another map, so the walk reaches an
    * entry at any depth. A keyless entry compiles to unimportable XML.
    */
-  private checkMapKeys(value: IoValue, accept: ValidationAcceptor): void {
+  private checkMapKeys(
+    value: IoValue | undefined,
+    accept: ValidationAcceptor,
+  ): void {
+    if (value === undefined) return;
+
     for (const node of AstUtils.streamAst(value)) {
-      if (isMapEntry(node) && node.key.length === 0) {
+      if (isMapEntry(node) && node.key !== undefined && node.key.length === 0) {
         accept(
           'error',
           `A map entry's key cannot be empty; name the key its value is looked up by.`,
@@ -1192,24 +1541,24 @@ export class BpmnScriptValidator {
     }
   }
 
-  /** An unrecognised event word stops that listener's own checks: one mistake, one diagnostic. */
+  /** An unrecognized event word stops that listener's own checks: one mistake, one diagnostic. */
   private checkListeners(
     owner: AttributeOwner,
     rule: AttributeBlockRule,
     accept: ValidationAcceptor,
   ): void {
-    const recognised: Listener[] = [];
+    const recognized: Listener[] = [];
     for (const listener of owner.listeners) {
       if (!this.checkListenerEvent(listener, rule, accept)) {
         continue;
       }
-      recognised.push(listener);
+      recognized.push(listener);
       this.checkListenerTimer(listener, accept);
       this.checkListenerBinding(listener, accept);
     }
 
     forEachDuplicate(
-      recognised,
+      recognized,
       (listener) => listener.event,
       (listener) =>
         accept('error', `Duplicate 'on ${listener.event}' listener.`, {
@@ -1225,6 +1574,8 @@ export class BpmnScriptValidator {
     rule: AttributeBlockRule,
     accept: ValidationAcceptor,
   ): boolean {
+    if (listener.event === undefined) return false;
+
     if (EXECUTION_LISTENER_EVENTS.includes(listener.event)) {
       return true;
     }
@@ -1337,14 +1688,42 @@ export class BpmnScriptValidator {
   checkSubProcess = (stmt: SubProcess, accept: ValidationAcceptor): void => {
     this.checkAttributeBlock(stmt, accept);
 
-    if (hasNoFlowStep(stmt.body.statements)) {
+    if (stmt.name !== undefined && hasNoFlowStep(blockStatements(stmt.body))) {
+      const kind = describeStatementKind(stmt);
       accept(
         'error',
-        `Subprocess '${stmt.name}' has no flow steps: a subprocess needs at least one step on its main flow (handlers alone do not start it).`,
+        `${capitalize(kind)} named '${stmt.name}' has no flow steps: ${kind} needs at least one step on its main flow (handlers alone do not start it).`,
         { node: stmt, property: 'name' },
       );
     }
+
+    this.checkCancelPair(stmt, accept);
   };
+
+  /**
+   * A cancel end and the handler that catches it are written apart, and each
+   * half is inert without the other: the engine deploys either alone and then
+   * stops at the first token that reaches the end, or never enters the handler.
+   * Both halves are read from the block, so one check reports both.
+   */
+  private checkCancelPair(block: SubProcess, accept: ValidationAcceptor): void {
+    if (!block.transactional || block.name === undefined) return;
+
+    const handler = cancelHandlerFor(block);
+    if (hasCancelEndInScope(block)) {
+      if (handler === undefined) {
+        accept('warning', cancelEndWithoutHandlerMessage(block.name), {
+          node: block,
+          property: 'name',
+        });
+      }
+    } else if (handler !== undefined) {
+      accept('warning', cancelHandlerWithoutEndMessage(block.name), {
+        node: handler,
+        property: 'trigger',
+      });
+    }
+  }
 
   checkParallelStatement = (
     stmt: ParallelStatement,
@@ -1360,10 +1739,13 @@ export class BpmnScriptValidator {
   };
 
   private warnIfEmptyBlock(
-    block: Block,
+    block: Block | undefined,
     message: string,
     accept: ValidationAcceptor,
   ): void {
+    if (block === undefined) {
+      return;
+    }
     if (block.statements.length === 0) {
       accept('warning', message, { node: block, property: 'statements' });
     }
@@ -1378,7 +1760,7 @@ export class BpmnScriptValidator {
     goto: GotoStatement,
     accept: ValidationAcceptor,
   ): void => {
-    const target = goto.target.ref;
+    const target = goto.target?.ref;
     if (!target) {
       return;
     }
@@ -1399,8 +1781,8 @@ export class BpmnScriptValidator {
   ): void => {
     this.checkAttributeBlock(call, accept);
     this.checkCallProcessAttribute(call, accept);
-    this.checkCallBindingAttribute(call, accept);
-    this.checkCallBindingVersionExclusion(call, accept);
+    this.checkBindingAttribute(call, accept);
+    this.checkBindingVersionExclusion(call, 'A call', accept);
     this.checkCallMappingDuplicates(call, accept);
   };
 
@@ -1434,12 +1816,15 @@ export class BpmnScriptValidator {
    * `binding = version` reaches here in either spelling: bare `version` parses
    * as a variable reference and quoted as a string, and
    * {@link bindingValueText} reads the same text out of both.
+   *
+   * @param owner A call or a decision step; both pin a deployed version the
+   * same way, so both read the same two attributes.
    */
-  private checkCallBindingAttribute(
-    call: CallActivity,
+  private checkBindingAttribute(
+    owner: VersionPinnedElement,
     accept: ValidationAcceptor,
   ): void {
-    const bindingAttr = call.attrs.find((a) => a.key === 'binding');
+    const bindingAttr = owner.attrs.find((a) => a.key === 'binding');
     if (!bindingAttr) {
       return;
     }
@@ -1461,18 +1846,23 @@ export class BpmnScriptValidator {
     });
   }
 
-  /** Both pin which deployed version starts, so declaring both is one error. */
-  private checkCallBindingVersionExclusion(
-    call: CallActivity,
+  /**
+   * Both pin which deployed version runs, so declaring both is one error.
+   *
+   * @param subject The message's leading noun phrase (`'A call'`).
+   */
+  private checkBindingVersionExclusion(
+    owner: VersionPinnedElement,
+    subject: string,
     accept: ValidationAcceptor,
   ): void {
-    const hasBinding = call.attrs.some((a) => a.key === 'binding');
-    const hasVersion = call.attrs.some((a) => a.key === 'version');
+    const hasBinding = owner.attrs.some((a) => a.key === 'binding');
+    const hasVersion = owner.attrs.some((a) => a.key === 'version');
     if (hasBinding && hasVersion) {
       accept(
         'error',
-        `A call cannot combine 'binding' and 'version'; use 'version = <number>' to pin a specific version, or 'binding = latest'/'binding = deployment' for the other modes.`,
-        { node: call, property: 'name' },
+        `${subject} cannot combine 'binding' and 'version'; use 'version = <number>' to pin a specific version, or 'binding = latest'/'binding = deployment' for the other modes.`,
+        { node: owner, property: 'name' },
       );
     }
   }
@@ -1487,7 +1877,8 @@ export class BpmnScriptValidator {
   ): void {
     forEachDuplicate(
       call.mappings,
-      (mapping) => `${mapping.direction}:${mapping.all ? '*' : mapping.target}`,
+      (mapping) =>
+        duplicateKey(mapping.direction, mapping.all ? '*' : mapping.target),
       (mapping) =>
         accept(
           'error',
@@ -1509,6 +1900,8 @@ export class BpmnScriptValidator {
   checkOnHandler = (handler: OnHandler, accept: ValidationAcceptor): void => {
     this.checkAttributeBlock(handler, accept);
 
+    if (handler.trigger === undefined) return;
+
     if (!ON_TRIGGERS_SET.has(handler.trigger)) {
       accept('error', onTriggerMessage(handler.trigger), {
         node: handler,
@@ -1525,13 +1918,10 @@ export class BpmnScriptValidator {
     this.checkHandlerHost(handler, rule, accept);
 
     if (handler.alongside && !rule.alongside) {
-      accept(
-        'error',
-        handler.trigger === 'compensation'
-          ? COMPENSATION_ALONGSIDE_MESSAGE
-          : "An error always interrupts: the handler takes over from the failed scope; 'alongside' is only available for escalations.",
-        { node: handler, property: 'alongside' },
-      );
+      accept('error', alongsideMessage(handler.trigger), {
+        node: handler,
+        property: 'alongside',
+      });
     }
 
     this.checkHandlerPayload(handler, rule, accept);
@@ -1577,6 +1967,11 @@ export class BpmnScriptValidator {
         node: handler,
         property: 'code',
       });
+    } else if (handler.trigger === 'cancel' && handler.code !== undefined) {
+      accept('error', CANCEL_NO_CODE_MESSAGE, {
+        node: handler,
+        property: 'code',
+      });
     }
 
     if (rule.timer) {
@@ -1608,7 +2003,7 @@ export class BpmnScriptValidator {
           'error',
           handler.trigger === 'compensation'
             ? COMPENSATION_BINDINGS_MESSAGE
-            : `'(code c)' bindings belong to error and escalation handlers — a ${handler.trigger} carries no code.`,
+            : `'(code c)' bindings belong to error and escalation handlers; a ${handler.trigger} carries no code.`,
           { node: binding, property: 'field' },
         );
       }
@@ -1627,7 +2022,7 @@ export class BpmnScriptValidator {
    * is legal, so callers can skip particle-dependent follow-ups.
    */
   private checkTimerParticleWord(
-    node: OnHandler | IntermediateCatchEvent | Listener,
+    node: OnHandler | IntermediateCatchEvent | Listener | StartEvent,
     particle: string,
     accept: ValidationAcceptor,
   ): boolean {
@@ -1674,7 +2069,7 @@ export class BpmnScriptValidator {
     if (particle === 'every' && !handler.alongside) {
       accept(
         'warning',
-        'A repeating timer that interrupts its scope fires at most once — ' +
+        'A repeating timer that interrupts its scope fires at most once: ' +
           "add 'alongside' to let it repeat, or use 'after'.",
         { node: handler, property: 'particle' },
       );
@@ -1708,7 +2103,7 @@ export class BpmnScriptValidator {
     }
     accept(
       'error',
-      'An event handler belongs directly in a process or subprocess body — it handles events for that whole scope, not for a single branch.',
+      'An event handler belongs directly in the body of a process, a subprocess, an attempt block, or another event handler: it handles events for that whole scope, not for a single branch.',
       { node: handler },
     );
   }
@@ -1773,8 +2168,9 @@ export class BpmnScriptValidator {
    * the handler's own body is circular: the scope provider offers those steps
    * as candidates, but such a step only runs after the boundary event has
    * fired, so the engine would deploy a path nothing can take. An `escalation`
-   * boundary is restricted further, to a `subprocess`, a `call`, or a `user`
-   * task, Operaton's own restriction in `BpmnParse.parseBoundaryEvents`.
+   * boundary is restricted further, to a `subprocess` under either head, a
+   * `call`, or a `user` task, and a `cancel` handler to an `attempt` block,
+   * both Operaton's own restrictions in `BpmnParse`.
    */
   private checkHandlerHost(
     handler: OnHandler,
@@ -1782,6 +2178,12 @@ export class BpmnScriptValidator {
     accept: ValidationAcceptor,
   ): void {
     if (handler.host === undefined) {
+      if (!rule.hostless) {
+        accept('error', CANCEL_HOSTLESS_MESSAGE, {
+          node: handler,
+          property: 'trigger',
+        });
+      }
       return;
     }
     if (!rule.boundary) {
@@ -1815,6 +2217,14 @@ export class BpmnScriptValidator {
 
     if (handler.trigger === 'escalation' && !isEscalationLegalHost(host)) {
       accept('error', escalationHostMessage(host), {
+        node: handler,
+        property: 'host',
+      });
+      return;
+    }
+
+    if (handler.trigger === 'cancel' && !isAttemptBlock(host)) {
+      accept('error', cancelHostMessage(host), {
         node: handler,
         property: 'host',
       });
@@ -1852,7 +2262,11 @@ export class BpmnScriptValidator {
       forEachDuplicate(
         siblings,
         (handler) =>
-          `${handlerHostKey(handler)}:${handler.trigger}:${handler.code ?? ''}`,
+          duplicateKey(
+            handlerHostKey(handler),
+            handler.trigger,
+            handler.code ?? '',
+          ),
         (handler) =>
           accept(
             'error',
@@ -1871,7 +2285,9 @@ export class BpmnScriptValidator {
   ): void => {
     this.checkAttributeBlock(stmt, accept);
 
-    if (!THROW_TRIGGERS.includes(stmt.trigger)) {
+    if (stmt.trigger === undefined) return;
+
+    if (!THROW_TRIGGERS_SET.has(stmt.trigger)) {
       accept('error', throwTriggerMessage(stmt.trigger), {
         node: stmt,
         property: 'trigger',
@@ -1879,6 +2295,7 @@ export class BpmnScriptValidator {
       return;
     }
     checkThrowEmitCode(stmt, 'A thrown', 'throw', accept);
+    checkThrowEmitBinding(stmt, 'a thrown', accept);
   };
 
   checkEmitStatement = (
@@ -1887,7 +2304,9 @@ export class BpmnScriptValidator {
   ): void => {
     this.checkAttributeBlock(stmt, accept);
 
-    if (!EMIT_TRIGGERS.includes(stmt.trigger)) {
+    if (stmt.trigger === undefined) return;
+
+    if (!EMIT_TRIGGERS_SET.has(stmt.trigger)) {
       accept('error', emitTriggerMessage(stmt.trigger), {
         node: stmt,
         property: 'trigger',
@@ -1895,6 +2314,7 @@ export class BpmnScriptValidator {
       return;
     }
     checkThrowEmitCode(stmt, 'An emitted', 'emit', accept);
+    checkThrowEmitBinding(stmt, 'an emitted', accept);
   };
 
   /** The grammar carries no host, bindings, `alongside`, or body on this node. */
@@ -1903,6 +2323,8 @@ export class BpmnScriptValidator {
     accept: ValidationAcceptor,
   ): void => {
     this.checkAttributeBlock(catchEvent, accept);
+
+    if (catchEvent.trigger === undefined) return;
 
     if (!CATCH_TRIGGERS_SET.has(catchEvent.trigger)) {
       accept('error', catchTriggerMessage(catchEvent.trigger), {
@@ -1983,6 +2405,16 @@ export class BpmnScriptValidator {
     const decls = process.decls.filter(isErrorDecl);
     const wellFormed: ErrorDecl[] = [];
     for (const decl of decls) {
+      // `field` reaches a message, `code` and `message` a `.length` and the
+      // duplicate key, so one empty slot stands the whole declaration down.
+      if (
+        decl.kind === undefined ||
+        decl.field === undefined ||
+        decl.code === undefined ||
+        decl.message === undefined
+      ) {
+        continue;
+      }
       if (decl.kind !== 'error') {
         accept(
           'error',
@@ -2022,7 +2454,7 @@ export class BpmnScriptValidator {
       (decl) =>
         accept(
           'error',
-          `Error code '${decl.code}' already has a message declared; a second 'error "${decl.code}" message …' is not allowed.`,
+          `Error code '${decl.code}' already has a message declared; a second 'error "${decl.code}" message ...' is not allowed.`,
           { node: decl, property: 'code' },
         ),
     );
@@ -2035,14 +2467,6 @@ function collectExpressions(process: Process): Expr[] {
 
 function isReservedName(name: string): boolean {
   return RESERVED_ID_PATTERNS.some((re) => re.test(name));
-}
-
-/** A quoted English "or" clause: `'a'`, `'b'`, or `'c'`. */
-function formatWordList(words: readonly string[]): string {
-  const quoted = words.map((w) => `'${w}'`);
-  if (quoted.length === 1) return quoted[0]!;
-  if (quoted.length === 2) return `${quoted[0]} or ${quoted[1]}`;
-  return `${quoted.slice(0, -1).join(', ')}, or ${quoted[quoted.length - 1]}`;
 }
 
 function capitalize(text: string): string {
@@ -2091,34 +2515,117 @@ function onTriggerMessage(word: string): string {
   return unknownTriggerMessage(word, ON_TRIGGERS);
 }
 
-function throwTriggerMessage(word: string): string {
-  if (word === 'message') {
-    return MESSAGE_NOTHING_TO_SEND_MESSAGE;
+function startTriggerMessage(word: string): string {
+  if (word === 'error' || word === 'escalation') {
+    return (
+      `A process cannot start on an ${word}: the engine ignores the trigger ` +
+      'and starts the process as if none were written. Catch it with ' +
+      `'on ${word}' inside the scope that raises it.`
+    );
   }
+  if (word === 'compensation') {
+    return (
+      "A process cannot start on compensation: it undoes a subprocess's " +
+      "completed work, so it belongs in an 'on compensation' block inside " +
+      'that subprocess.'
+    );
+  }
+  if (word === 'condition' || word === 'conditional') {
+    return START_CONDITION_MESSAGE;
+  }
+  return `Unknown event kind '${word}'; a start event supports ${formatWordList(START_TRIGGERS)}.`;
+}
+
+/** Only the triggers that interrupt by nature reach this; each says why. */
+function alongsideMessage(trigger: string): string {
+  if (trigger === 'compensation') return COMPENSATION_ALONGSIDE_MESSAGE;
+  if (trigger === 'cancel') return CANCEL_ALONGSIDE_MESSAGE;
+  return (
+    'An error always interrupts: the handler takes over from the failed ' +
+    "scope; 'alongside' is only available for escalations."
+  );
+}
+
+function endTriggerMessage(word: string): string {
+  if (THROW_TRIGGERS_SET.has(word)) {
+    const article = /^[aeiou]/.test(word) ? 'An' : 'A';
+    return (
+      `${article} ${word} is raised with 'throw', not on an end: write ` +
+      `'throw ${word}' in place of this end. ` +
+      END_TRIGGERS_MESSAGE
+    );
+  }
+  if (word === 'timer') {
+    return END_TIMER_MESSAGE;
+  }
+  if (word === 'condition' || word === 'conditional') {
+    return END_CONDITION_MESSAGE;
+  }
+  return (
+    `Unknown event kind '${word}'. ${END_TRIGGERS_MESSAGE} Every other kind ` +
+    "is raised with 'throw'."
+  );
+}
+
+function startNameRequiredMessage(trigger: string): string {
+  return (
+    `A ${trigger} start needs the ${trigger}'s name: the engine matches ` +
+    `${trigger}s by name.`
+  );
+}
+
+/**
+ * `RAW_TEMPLATE` is anchored at the opening quote, so only a name that *opens*
+ * with `${` lexes as an expression; every other placement, and the whole `#{`
+ * spelling, arrives here as a plain name.
+ */
+const EXPRESSION_IN_NAME = /\$\{|#\{/;
+
+function startMessageExpressionMessage(name: string): string {
+  return (
+    `A message start name cannot contain an expression ("${name}"): the ` +
+    'engine rejects one there, because a process that has not started yet ' +
+    'has no variables to evaluate it against. Give the start a fixed name; ' +
+    "an expression belongs on an 'on message' handler or an 'await message', " +
+    'which run once the process has variables.'
+  );
+}
+
+function throwTriggerMessage(word: string): string {
   if (word === 'compensate') {
     return COMPENSATE_TYPO_MESSAGE;
+  }
+  if (word === 'cancel') {
+    return CANCEL_NOT_RAISED_MESSAGE;
   }
   return unknownTriggerMessage(word, THROW_TRIGGERS);
 }
 
 function emitTriggerMessage(word: string): string {
   if (word === 'error') {
-    return "An error always aborts its path — write 'throw error'.";
-  }
-  if (word === 'message') {
-    return MESSAGE_NOTHING_TO_SEND_MESSAGE;
+    return "An error always aborts its path; write 'throw error'.";
   }
   if (word === 'compensate') {
     return COMPENSATE_TYPO_MESSAGE;
+  }
+  if (word === 'cancel') {
+    return CANCEL_NOT_RAISED_MESSAGE;
   }
   return unknownTriggerMessage(word, EMIT_TRIGGERS);
 }
 
 function catchTriggerMessage(word: string): string {
+  if (word === 'compensate') {
+    return COMPENSATE_TYPO_MESSAGE;
+  }
+  if (word === 'cancel') {
+    return CANCEL_NOT_AWAITED_MESSAGE;
+  }
   return (
     `Unknown event kind '${word}'; intermediate catch supports ${formatWordList(CATCH_TRIGGERS)}. ` +
-    "Errors and escalations are raised with 'throw'/'emit', and compensation " +
-    "is a subprocess's undo block, so none of them can be awaited inline."
+    "An error or an escalation is raised with 'throw'/'emit', compensation " +
+    "is a subprocess's undo block, and a cancel is written on the end that " +
+    `gives up an 'attempt' block.`
   );
 }
 
@@ -2128,45 +2635,119 @@ function isActivityStatement(stmt: Statement): boolean {
     isUserTask(stmt) ||
     isServiceTask(stmt) ||
     isScriptTask(stmt) ||
+    isGenericTask(stmt) ||
+    isSendTask(stmt) ||
+    isReceiveTask(stmt) ||
+    isBusinessRuleTask(stmt) ||
     isSubProcess(stmt) ||
     isCallActivity(stmt)
   );
 }
 
 /**
- * Operaton restricts an `escalation` boundary to these three, narrower than
- * every other boundary trigger. Read from `BpmnParse.parseBoundaryEvents`.
+ * Operaton gates an `escalation` boundary on a subprocess scope, a call
+ * activity, or a user task, and both the `subprocess` and the `attempt` head
+ * are subprocess scopes, so the predicate admits four surface kinds. Read from
+ * `BpmnParse.parseBoundaryEvents`.
  */
 function isEscalationLegalHost(stmt: Statement): boolean {
   return isSubProcess(stmt) || isCallActivity(stmt) || isUserTask(stmt);
 }
 
-/** Only a node carrying a `name` can resolve, so the fallback just keeps this total. */
+/** A block written with the `attempt` head: the only one a cancel may give up. */
+function isAttemptBlock(node: AstNode | undefined): node is SubProcess {
+  return node !== undefined && isSubProcess(node) && node.transactional;
+}
+
+/**
+ * Whether a cancel end ends `block` itself. The enclosing container is the
+ * scope the engine reads, so an end in an `if` branch of the block counts and
+ * one in a nested block does not.
+ */
+function hasCancelEndInScope(block: SubProcess): boolean {
+  for (const node of AstUtils.streamAst(block)) {
+    if (
+      isEndEvent(node) &&
+      node.trigger === 'cancel' &&
+      enclosingFlowContainer(node) === block
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/** The handler catching `block` being given up, from the container it sits in. */
+function cancelHandlerFor(block: SubProcess): OnHandler | undefined {
+  const container = enclosingFlowContainer(block);
+  if (container === undefined) return undefined;
+  for (const node of AstUtils.streamAst(container)) {
+    if (
+      isOnHandler(node) &&
+      node.trigger === 'cancel' &&
+      node.host?.ref === block
+    ) {
+      return node;
+    }
+  }
+  return undefined;
+}
+
+function cancelHostMessage(host: Statement): string {
+  return (
+    `A cancel handler can only attach to an 'attempt' block: it catches ` +
+    `that block being given up; '${targetStatementName(host)}' is ${describeStatementKind(host)}.`
+  );
+}
+
+function cancelEndWithoutHandlerMessage(name: string): string {
+  return (
+    `'${name}' gives itself up but nothing catches it: the engine stops with ` +
+    `an error the first time that end is reached. Write 'on ${name}: cancel ` +
+    `{ ... }' beside the block to say what happens then.`
+  );
+}
+
+function cancelHandlerWithoutEndMessage(name: string): string {
+  return (
+    `Nothing inside '${name}' gives it up, so this handler never runs: write ` +
+    `'end <name> cancel' on the path that should give the block up, or ` +
+    'remove the handler.'
+  );
+}
+
+/**
+ * The noun phrase the diagnostics name a statement by, taken from the one table
+ * that already spells every element kind out, so an `attempt` block is named
+ * for the head its author wrote rather than for the rule it shares. The
+ * fallback covers the statements with no row, which no diagnostic reaches.
+ */
 function describeStatementKind(stmt: Statement): string {
-  if (isStartEvent(stmt)) return 'a start event';
-  if (isEndEvent(stmt)) return 'an end event';
-  if (isUserTask(stmt)) return 'a user task';
-  if (isServiceTask(stmt)) return 'a service task';
-  if (isScriptTask(stmt)) return 'a script task';
-  if (isSubProcess(stmt)) return 'a subprocess';
-  if (isCallActivity(stmt)) return 'a call';
-  if (isThrowStatement(stmt)) return 'a throw statement';
-  if (isEmitStatement(stmt)) return 'an emit statement';
-  return 'not an activity';
+  return attributeBlockRuleOf(stmt)?.description ?? 'not an activity';
+}
+
+function startTriggerInBlockMessage(block: SubProcess): string {
+  const kind = describeStatementKind(block);
+  return (
+    `Only the process's own start carries a trigger: ${kind} is entered ` +
+    'from the step before it, so its start has none. Put the trigger on an ' +
+    "'on' handler inside the block if it should react to an event."
+  );
 }
 
 function illegalHostMessage(host: Statement): string {
   return (
-    'A boundary event can only attach to an activity — a user, service, ' +
-    `or script task, a subprocess, or a call; '${targetStatementName(host)}' is ` +
-    `${describeStatementKind(host)}.`
+    'A boundary event can only attach to an activity: a user, service, ' +
+    `script, send, or receive task, a step, a decision step, a subprocess, ` +
+    `an attempt block, or a call; '${targetStatementName(host)}' is ${describeStatementKind(host)}.`
   );
 }
 
 function escalationHostMessage(host: Statement): string {
   return (
-    'An escalation boundary can only attach to a subprocess, a call, or a ' +
-    `user task; '${targetStatementName(host)}' is ${describeStatementKind(host)}.`
+    'An escalation boundary can only attach to a subprocess, an attempt ' +
+    `block, a call, or a user task; '${targetStatementName(host)}' is ` +
+    `${describeStatementKind(host)}.`
   );
 }
 
@@ -2219,6 +2800,74 @@ function checkEmptyCode(
   }
 }
 
+/** The distinct binding keys written in an attribute block, in document order. */
+function bindingKeysOf(
+  attrs: readonly Attribute[],
+  keys: readonly string[],
+): string[] {
+  return [
+    ...new Set(
+      attrs.map((attr) => attr.key).filter((key) => keys.includes(key)),
+    ),
+  ];
+}
+
+/** @param subject The message's leading noun phrase (`"Service task 'total'"`). */
+function checkAtMostOneBinding(
+  attrs: readonly Attribute[],
+  keys: readonly string[],
+  subject: string,
+  target: { node: AstNode; property: string },
+  accept: ValidationAcceptor,
+): void {
+  const written = bindingKeysOf(attrs, keys);
+  if (written.length > 1) {
+    accept(
+      'error',
+      `${subject} declares more than one binding (${written.join(', ')}); exactly one of ${formatWordList(keys)} is allowed.`,
+      target,
+    );
+  }
+}
+
+/**
+ * An implementation is what makes the engine really send a thrown message, so
+ * no other kind has one to run. A message thrown without one is legal and
+ * common, which is why only a second binding is an error here.
+ *
+ * @param subject The leading noun phrase (`'a thrown'`/`'an emitted'`).
+ */
+function checkThrowEmitBinding(
+  stmt: ThrowStatement | EmitStatement,
+  subject: 'a thrown' | 'an emitted',
+  accept: ValidationAcceptor,
+): void {
+  const written = bindingKeysOf(stmt.attrs, SERVICE_TASK_BINDING_KEYS);
+  if (written.length === 0) return;
+
+  if (stmt.trigger !== 'message') {
+    for (const attr of stmt.attrs) {
+      if (!written.includes(attr.key)) continue;
+      accept(
+        'error',
+        `Attribute '${attr.key}' is not valid on ${subject} ${stmt.trigger}; ` +
+          'an implementation is what makes the engine really send a message, ' +
+          'so only a message carries one.',
+        { node: attr, property: 'key' },
+      );
+    }
+    return;
+  }
+
+  checkAtMostOneBinding(
+    stmt.attrs,
+    SERVICE_TASK_BINDING_KEYS,
+    capitalize(`${subject} ${stmt.trigger}`),
+    { node: stmt, property: 'trigger' },
+    accept,
+  );
+}
+
 /**
  * Every trigger but `compensation` must name the code it throws, so an omitted
  * and an empty code string are the same mistake: there is no catch-all on the
@@ -2237,7 +2886,7 @@ function checkThrowEmitCode(
     if (stmt.code !== undefined) {
       accept(
         'error',
-        'Compensation undoes completed work — there is nothing to name; ' +
+        'Compensation undoes completed work: there is nothing to name; ' +
           `write '${keyword} compensation'.`,
         { node: stmt, property: 'code' },
       );

@@ -64,7 +64,7 @@ async function completionItems(
   return result?.items ?? [];
 }
 
-/** The completion item labelled `label` at the given caret position. */
+/** The completion item labeled `label` at the given caret position. */
 async function itemAt(
   text: string,
   line: number,
@@ -145,6 +145,11 @@ describe('structural keyword snippets', () => {
     ['service', ['class =']],
     ['script', ['```', '${2|javascript,groovy,python,ruby,feel|}']],
     ['subprocess', ['${1:id}', '{', '}']],
+    ['attempt', ['${1:id}', '{', '}']],
+    ['step', ['${1:id}']],
+    ['send', ['${1:id}', 'class =']],
+    ['receive', ['${1:id}', 'message =']],
+    ['decide', ['${1:id}', 'decision =']],
   ])(
     '`%s` scaffolds its whole construct as one snippet',
     async (keyword, parts) => {
@@ -174,6 +179,13 @@ describe('structural keyword snippets', () => {
       'businessKey',
       ['businessKey =', '${execution.processBusinessKey}'],
     ],
+    ['receive R', 'message', ['message =']],
+    ['decide D', 'decision', ['decision =']],
+    [
+      'decide D',
+      'mapDecisionResult',
+      ['mapDecisionResult =', '${1|singleEntry,singleResult'],
+    ],
   ])('a `%s` block offers `%s` as a snippet', async (head, label, parts) => {
     const item = (
       await completionItems(`process p {\n  ${head} {\n    \n  }\n}`, 2, 4)
@@ -190,11 +202,16 @@ describe('structural keyword snippets', () => {
         'end',
         'user',
         'service',
+        'step',
+        'send',
+        'receive',
+        'decide',
         'if',
         'while',
         'do',
         'parallel',
         'subprocess',
+        'attempt',
         'goto',
       ]),
     );
@@ -210,13 +227,44 @@ describe('structural keyword snippets', () => {
     // The detail reads as the function-call analogy, not BPMN vocabulary.
     expect(item!.detail).toMatch(/function/i);
   });
+
+  test('the caret after a statement name offers both repeat-clause forms', async () => {
+    const text = 'process p {\n  user U \n}';
+    const caret = [1, 9] as const;
+    expect(await labelsAt(text, ...caret)).toEqual(
+      expect.arrayContaining(['for each', 'for']),
+    );
+
+    const collection = await itemAt(text, ...caret, 'for each');
+    expect(collection?.insertTextFormat).toBe(InsertTextFormat.Snippet);
+    expect(inserted(collection!)).toBe('for each ${1:item} in ${2:collection}');
+
+    const count = await itemAt(text, ...caret, 'for');
+    expect(count?.insertTextFormat).toBe(InsertTextFormat.Snippet);
+    expect(inserted(count!)).toBe('for ${1:3}');
+
+    for (const item of [collection!, count!]) {
+      expect(
+        await parseErrors(`process p {\n  user U ${accepted(item)}\n}`),
+      ).toEqual([]);
+    }
+  });
+
+  // The caption is keyed on the keyword, so every form a keyword opens gets it.
+  test('both repeat-clause forms carry the caption written for the keyword', async () => {
+    const text = 'process p {\n  user U \n}';
+    for (const label of ['for each', 'for']) {
+      const item = await itemAt(text, 1, 9, label);
+      expect(item?.detail).toBe('how often the preceding step runs');
+    }
+  });
 });
 
 describe('event-layer structure snippets', () => {
   test.each([
     ['on', ['${1|error,escalation,message,signal|}', '{', '}']],
-    ['throw', ['${1|error,escalation,signal|}']],
-    ['emit', ['${1|escalation,signal|}']],
+    ['throw', ['${1|error,escalation,message,signal|}']],
+    ['emit', ['${1|escalation,message,signal|}']],
   ])(
     '`%s` scaffolds its trigger choice as one snippet',
     async (keyword, parts) => {
@@ -245,8 +293,8 @@ describe('event-layer structure snippets', () => {
 describe('event-layer ID-position completion (soft trigger/field words)', () => {
   test.each([
     ['  on ', TRIGGERS, []],
-    ['  throw ', ['error', 'escalation', 'signal'], []],
-    ['  emit ', ['escalation', 'signal'], ['error']],
+    ['  throw ', ['error', 'escalation', 'message', 'signal'], []],
+    ['  emit ', ['escalation', 'message', 'signal'], ['error']],
     ['  on error "X" (', ['code', 'message'], []],
     ['  on timer ', ['after', 'at', 'every'], []],
   ])(
@@ -314,6 +362,76 @@ describe('event-layer ID-position completion (await trigger words)', () => {
       for (const word of withheld) expect(labels).not.toContain(word);
     },
   );
+});
+
+// The caret sits in a body that already holds statements around it, so the
+// completion has to resolve the start/end node it follows rather than the
+// enclosing process it would fall back to in an empty body.
+describe('event-layer ID-position completion (start and end trigger words)', () => {
+  const PROGRAM = 'process p {\n  start S \n  user A\n  end E \n}';
+  const START_CARET = '  start S '.length;
+  const END_CARET = '  end E '.length;
+
+  test('the start trigger position offers the kinds a process can start on', async () => {
+    const labels = await labelsAt(PROGRAM, 1, START_CARET);
+    expect(labels).toEqual(
+      expect.arrayContaining(['message', 'signal', 'timer']),
+    );
+    for (const word of [
+      'error',
+      'escalation',
+      'compensation',
+      'condition',
+      'terminate',
+      'cancel',
+    ]) {
+      expect(labels).not.toContain(word);
+    }
+  });
+
+  test('the end trigger position offers the two words an end carries and no other', async () => {
+    const labels = await labelsAt(PROGRAM, 3, END_CARET);
+    expect(labels).toEqual(expect.arrayContaining(['terminate', 'cancel']));
+    for (const word of [
+      'error',
+      'escalation',
+      'message',
+      'signal',
+      'timer',
+      'condition',
+      'compensation',
+    ]) {
+      expect(labels).not.toContain(word);
+    }
+  });
+
+  test('`terminate` is captioned with what it stops', async () => {
+    const item = await itemAt(PROGRAM, 3, END_CARET, 'terminate');
+    expect(item?.kind).toBe(CompletionItemKind.Keyword);
+    expect(item!.detail).toBe('stop every running path in this scope');
+  });
+
+  test('`cancel` is captioned with the block it gives up', async () => {
+    const item = await itemAt(PROGRAM, 3, END_CARET, 'cancel');
+    expect(item?.kind).toBe(CompletionItemKind.Keyword);
+    expect(item!.detail).toBe('give up the surrounding attempt block');
+  });
+
+  test('accepting `timer` at the start trigger position inserts its scaffold', async () => {
+    const item = await itemAt(PROGRAM, 1, START_CARET, 'timer');
+    expect(item?.insertTextFormat).toBe(InsertTextFormat.Snippet);
+    expect(inserted(item!)).toContain('after "${1:PT1H}"');
+  });
+
+  test('the particle position on a timer start offers the three particles', async () => {
+    const line = '  start S timer ';
+    const labels = await labelsAt(
+      `process p {\n${line}\n  user A\n}`,
+      1,
+      line.length,
+    );
+    expect(labels).toEqual(expect.arrayContaining(['after', 'at', 'every']));
+  });
 });
 
 describe('the host slot on a handler attached to an activity', () => {
@@ -430,17 +548,24 @@ describe('attribute-key completion is narrowed to the element kind', () => {
     },
   );
 
-  test('completion offers exactly the attribute keys the validator accepts', async () => {
-    const items = await completionItems(
-      'process p {\n  user T {\n    \n  }\n}',
-      2,
-      4,
-    );
-    const offered = items
-      .filter((i) => i.detail === 'BPMNscript setting')
-      .map((i) => i.label);
-    expect(new Set(offered)).toEqual(ATTRIBUTE_BLOCK_RULES.UserTask.keys);
-  });
+  test.each([
+    ['user T', ATTRIBUTE_BLOCK_RULES.UserTask],
+    ['decide D', ATTRIBUTE_BLOCK_RULES.BusinessRuleTask],
+    ['receive R', ATTRIBUTE_BLOCK_RULES.ReceiveTask],
+  ])(
+    'a `%s` block offers exactly the attribute keys the validator accepts',
+    async (head, rule) => {
+      const items = await completionItems(
+        `process p {\n  ${head} {\n    \n  }\n}`,
+        2,
+        4,
+      );
+      const offered = items
+        .filter((i) => i.detail === 'BPMNscript setting')
+        .map((i) => i.label);
+      expect(new Set(offered)).toEqual(rule.keys);
+    },
+  );
 
   test('the process header offers `versionTag`', async () => {
     const labels = await labelsAt('process p {\n  \n}', 1, 2);

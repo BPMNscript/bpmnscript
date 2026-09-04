@@ -1,0 +1,37 @@
+// Event-position round-trip fixture: one order-dispatch narrative carrying
+// three event positions at once.
+//
+//   - a message start event, so the process is entered by a correlated message
+//     rather than by a caller, and its `bpmn:Message` root is derived from the
+//     name written on the `start` statement;
+//   - `emit message` and `throw message`, the continuing and the terminal form
+//     of the pair `signal`, `escalation`, and `compensation` also span, each
+//     deriving a root of its own name;
+//   - `end ... terminate` in one branch of an `if`, beside the message end the
+//     other branch falls through to, so a terminate end and a message end sit
+//     in one artifact.
+//
+// The condition variable is declared on the start form so it survives an
+// import-and-back round-trip, and every throw and emit is explicitly named so
+// its printed id re-parses cleanly. See README.md.
+
+process order-dispatch {
+  start OrderReceived "An order arrives" message "OrderReceived" {
+    form {
+      amount: number "Order amount"
+    }
+  }
+
+  user ConfirmOrder "Confirm the order" { assignee = "demo" }
+
+  emit message NotifyWarehouse "WarehouseNotified"
+
+  if (amount > 1000) {
+    service EscalateOrder "Escalate the order" { class = "com.example.orders.EscalateDelegate" }
+    end OrderAbandoned "Abandon every path" terminate
+  } else {
+    service DispatchOrder "Dispatch the order" { class = "com.example.orders.DispatchDelegate" }
+  }
+
+  throw message OrderAcknowledged "OrderAcknowledged"
+}

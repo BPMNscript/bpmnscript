@@ -7,7 +7,7 @@
  * step nested in a `parallel`/`if`/`while` block would be invisible to a `goto`
  * outside it even though the jump is legal, and nothing would stop a jump into
  * a different container. BPMN forbids a sequence flow from crossing a
- * sub-process boundary, an event handler included, so a cross-boundary `goto`
+ * subprocess boundary, an event handler included, so a cross-boundary `goto`
  * must fail to resolve; `bpmn-script-linker.ts` turns that into a boundary
  * explanation.
  *
@@ -24,24 +24,32 @@ import {
   type Scope,
 } from 'langium';
 import {
+  isBusinessRuleTask,
   isCallActivity,
   isEmitStatement,
   isEndEvent,
+  isGenericTask,
   isGotoStatement,
   isOnHandler,
   isProcess,
+  isReceiveTask,
   isScriptTask,
+  isSendTask,
   isServiceTask,
   isStartEvent,
   isSubProcess,
   isThrowStatement,
   isUserTask,
+  type BusinessRuleTask,
   type CallActivity,
   type EmitStatement,
   type EndEvent,
+  type GenericTask,
   type OnHandler,
   type Process,
+  type ReceiveTask,
   type ScriptTask,
+  type SendTask,
   type ServiceTask,
   type StartEvent,
   type SubProcess,
@@ -51,7 +59,7 @@ import {
 
 /**
  * The `Statement` subtypes carrying a `name`, so the valid `goto` targets and
- * handler hosts. A `throw`/`emit` name is optional (the id is synthesised when
+ * handler hosts. A `throw`/`emit` name is optional (the id is synthesized when
  * omitted), so an unnamed one is neither referenceable nor able to collide.
  */
 export type NamedStatement =
@@ -60,6 +68,10 @@ export type NamedStatement =
   | UserTask
   | ServiceTask
   | ScriptTask
+  | GenericTask
+  | SendTask
+  | ReceiveTask
+  | BusinessRuleTask
   | SubProcess
   | CallActivity
   | (ThrowStatement & { name: string })
@@ -72,6 +84,10 @@ export function isNamedStatement(node: AstNode): node is NamedStatement {
     isUserTask(node) ||
     isServiceTask(node) ||
     isScriptTask(node) ||
+    isGenericTask(node) ||
+    isSendTask(node) ||
+    isReceiveTask(node) ||
+    isBusinessRuleTask(node) ||
     isSubProcess(node) ||
     isCallActivity(node) ||
     ((isThrowStatement(node) || isEmitStatement(node)) &&

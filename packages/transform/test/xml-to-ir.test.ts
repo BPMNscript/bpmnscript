@@ -62,6 +62,7 @@ import {
   triggeredSub,
   typedEvent,
 } from './helpers/ir-fixtures.js';
+import type { XmlTag } from './helpers/bpmn-doc.js';
 import {
   bpmnDefs,
   bpmnDoc,
@@ -91,6 +92,13 @@ const extensionWarnings = (warnings: ImportWarning[]): ImportWarning[] =>
 /** Only the warnings reporting BPMN content the transform does not map. */
 const unmappedWarnings = (warnings: ImportWarning[]): ImportWarning[] =>
   warnings.filter((w) => w.category === 'unmappedConstruct');
+
+/** The whole refusal an activity excluded from normal flow draws. */
+const IS_FOR_COMPENSATION_DETAIL =
+  'isForCompensation="true" marks this activity as excluded from normal ' +
+  'flow: the boundary-event compensation-handler pattern, which this tool ' +
+  'cannot import; wrap the steps in their own subprocess and target it with ' +
+  '"on compensation" instead';
 
 /**
  * Assert that exactly one warning was raised, and that it names the element and
@@ -132,7 +140,7 @@ ${body}
 
 // ── 1. Canonical handwritten file -> canonical IR ────────────────────────────
 
-describe('xmlToIr — canonical handwritten file', () => {
+describe('xmlToIr: canonical handwritten file', () => {
   it('parsing the canonical handwritten file yields the canonical IR (deep equality)', async () => {
     const { ir } = await xmlToIr(HANDWRITTEN_XML);
     expect(ir).toEqual(HANDWRITTEN_IMPORT_IR);
@@ -168,7 +176,7 @@ describe('xmlToIr — canonical handwritten file', () => {
 
 // ── 2. camunda: prefix yields the same IR ───────────────────────────────────
 
-describe('xmlToIr — camunda: prefix alias', () => {
+describe('xmlToIr: camunda: prefix alias', () => {
   it('parsing the same file with camunda: prefixes yields the same IR', async () => {
     // Simulate a file exported by Camunda 7: the namespace declaration and
     // every attribute occurrence carry the deprecated prefix.
@@ -197,7 +205,7 @@ describe('xmlToIr — camunda: prefix alias', () => {
 
 // ── 3. Service task execution forms import to their bindings ─────────────────
 
-describe('xmlToIr — service task binding forms', () => {
+describe('xmlToIr: service task binding forms', () => {
   const importServiceTask = (attrs: string, doc = operatonDoc) =>
     importOnly(oneNodeDoc('serviceTask', { attrs, doc }), 'serviceTask');
 
@@ -242,11 +250,119 @@ describe('xmlToIr — service task binding forms', () => {
       xmlToIr(oneNodeDoc('serviceTask', { attrs: 'operaton:type="external"' })),
     ).rejects.toBeInstanceOf(UnsupportedServiceTaskFormError);
   });
+
+  it.each([
+    'operaton:class="com.example.Svc"',
+    'operaton:expression="${someBean.execute(execution)}"',
+    'operaton:delegateExpression="${myDelegate}"',
+    'operaton:type="external" operaton:topic="shipping"',
+  ])('a lone %s imports with no warning', async (attrs) => {
+    const { warnings } = await importServiceTask(attrs);
+    expect(warnings).toEqual([]);
+  });
+
+  it.each([
+    [
+      'a topic beside a class names no worker the engine reaches',
+      'operaton:class="com.example.Svc" operaton:topic="shipping"',
+      classBinding('com.example.Svc'),
+      "The 'topic' setting on 'T' has no effect alongside operaton:class and was not imported.",
+    ],
+    [
+      'an expression beside a class is never reached',
+      'operaton:class="com.example.Svc" operaton:expression="${someBean.execute(execution)}"',
+      classBinding('com.example.Svc'),
+      "The 'expression' setting on 'T' has no effect alongside operaton:class and was not imported.",
+    ],
+    [
+      'a delegateExpression outranks an expression, as it does in the engine',
+      'operaton:expression="${someBean.execute(execution)}" operaton:delegateExpression="${myDelegate}"',
+      delegateBinding('${myDelegate}'),
+      "The 'expression' setting on 'T' has no effect alongside operaton:delegateExpression and was not imported.",
+    ],
+    [
+      'an external type outranks every code attribute, as it does in the engine',
+      'operaton:class="com.example.Svc" operaton:type="external" operaton:topic="shipping"',
+      externalBinding('shipping'),
+      "The 'class' setting on 'T' has no effect alongside operaton:type=\"external\" and was not imported.",
+    ],
+  ] as const)(
+    'the binding the engine resolves wins and the rest are reported: %s',
+    async (_title, attrs, binding, message) => {
+      const { node, warnings } = await importServiceTask(attrs);
+      expect(node.binding).toEqual(binding);
+      expect(warnings.map((w) => w.message)).toEqual([message]);
+    },
+  );
+
+  it.each(['sendTask', 'businessRuleTask'] as const)(
+    'a bpmn:%s reports the passed-over attribute the same way',
+    async (tag) => {
+      const { node, warnings } = await importOnly(
+        oneNodeDoc(tag, {
+          attrs: 'operaton:class="com.example.Svc" operaton:topic="shipping"',
+        }),
+        'serviceTask',
+      );
+      expect(node.binding).toEqual(classBinding('com.example.Svc'));
+      expect(warnings.map((w) => w.message)).toEqual([
+        "The 'topic' setting on 'T' has no effect alongside operaton:class and was not imported.",
+      ]);
+    },
+  );
+
+  it('an operaton:type this surface cannot carry refuses rather than falling back to the class', async () => {
+    const e = await expectRefusal<UnsupportedServiceTaskFormError>(
+      xmlToIr(
+        oneNodeDoc('serviceTask', {
+          attrs: 'operaton:class="com.example.Svc" operaton:type="mail"',
+        }),
+      ),
+      UnsupportedServiceTaskFormError,
+    );
+    expect(e.construct).toBe(
+      'operaton:type="mail", which Operaton resolves ahead of the ' +
+        'operaton:class alongside it',
+    );
+  });
+
+  it('the refusal names every code attribute the type shadows', async () => {
+    const e = await expectRefusal<UnsupportedServiceTaskFormError>(
+      xmlToIr(
+        oneNodeDoc('serviceTask', {
+          attrs:
+            'operaton:class="com.example.Svc" operaton:delegateExpression="${d}" operaton:type="External"',
+        }),
+      ),
+      UnsupportedServiceTaskFormError,
+    );
+    expect(e.construct).toBe(
+      'operaton:type="External" without an operaton:topic, which Operaton ' +
+        'resolves ahead of the operaton:class and operaton:delegateExpression ' +
+        'alongside it',
+    );
+  });
+
+  it('a task naming nothing at all is refused with no shadowing clause', async () => {
+    const e = await expectRefusal<UnsupportedServiceTaskFormError>(
+      xmlToIr(oneNodeDoc('serviceTask', { attrs: 'name="Bare"' })),
+      UnsupportedServiceTaskFormError,
+    );
+    expect(e.construct).toBe('no execution discriminator');
+  });
+
+  it('operaton:type="External" runs the external worker, as it does in the engine', async () => {
+    const { node, warnings } = await importServiceTask(
+      'operaton:type="External" operaton:topic="shipping"',
+    );
+    expect(node.binding).toEqual(externalBinding('shipping'));
+    expect(warnings).toEqual([]);
+  });
 });
 
 // ── 4. bpmn:parallelGateway is supported ─────────────────────────────────────
 
-describe('xmlToIr — parallel gateway support', () => {
+describe('xmlToIr: parallel gateway support', () => {
   const parallelGatewayXml = oneNodeDoc('parallelGateway', {
     id: 'PG',
     doc: bpmnDoc,
@@ -267,7 +383,7 @@ describe('xmlToIr — parallel gateway support', () => {
 
 // ── 4b. Parallel split+join ──────────────────────────────────────────────────
 
-describe('xmlToIr — parallel split+join (fork + join)', () => {
+describe('xmlToIr: parallel split+join (fork + join)', () => {
   /**
    * Parallel split+join shape:
    *   Start -> Fork (parallelGateway, 2 outgoing)
@@ -329,7 +445,7 @@ describe('xmlToIr — parallel split+join (fork + join)', () => {
 
 // ── 4c. Script task imports to a scriptTask IR ───────────────────────────────
 
-describe('xmlToIr — script task support', () => {
+describe('xmlToIr: script task support', () => {
   const scriptTaskDoc = (body: string, attrs = '') =>
     oneNodeDoc('scriptTask', {
       id: 'ST',
@@ -359,20 +475,24 @@ describe('xmlToIr — script task support', () => {
 
 // ── 4d. UnsupportedElementError for genuinely unsupported kinds ───────────────
 
-describe('xmlToIr — unsupported element (still refused kinds)', () => {
+describe('xmlToIr: unsupported element (still refused kinds)', () => {
   it.each([
-    [
-      'bpmn:transaction',
-      'transaction',
-      `<bpmn:startEvent id="TxStart" />
-      <bpmn:endEvent id="TxEnd" />
-      <bpmn:sequenceFlow id="TxF" sourceRef="TxStart" targetRef="TxEnd" />`,
-    ],
-    ['bpmn:adHocSubProcess', 'adHocSubProcess', '<bpmn:userTask id="A" />'],
-  ])('%s raises UnsupportedElementError', async (_title, tag, children) => {
-    await expect(
+    ['bpmn:AdHocSubProcess', 'adHocSubProcess', '<bpmn:userTask id="A" />'],
+    ['bpmn:InclusiveGateway', 'inclusiveGateway', ''],
+  ])('%s raises UnsupportedElementError', async (qname, tag, children) => {
+    const e = await expectRefusal<UnsupportedElementError>(
       xmlToIr(oneNodeDoc(tag, { children, doc: bpmnDoc })),
-    ).rejects.toBeInstanceOf(UnsupportedElementError);
+      UnsupportedElementError,
+    );
+    expect(e.qname).toBe(qname);
+    expect(e.elementId).toBe('T');
+    expect(e.message).toContain(
+      'Only start/end events, throws, emits, boundary events, event ' +
+        'handlers, plain tasks, user tasks, service tasks, send tasks, ' +
+        'receive tasks, business rule tasks, script tasks, exclusive ' +
+        'gateways, parallel gateways, embedded subprocesses, attempt ' +
+        'blocks, call activities, and sequence flows are supported.',
+    );
   });
 
   it('bpmn:callActivity is imported, not refused (see the "callActivity import" suite below)', async () => {
@@ -388,7 +508,7 @@ describe('xmlToIr — unsupported element (still refused kinds)', () => {
 
 // ── 5. Multi-process definitions raise a clear error ────────────────────────
 
-describe('xmlToIr — multi-process error', () => {
+describe('xmlToIr: multi-process error', () => {
   it('XML with two bpmn:process elements raises a clear multi-process error', async () => {
     const xml = bpmnDefs`  <bpmn:process id="p1" isExecutable="true">
     <bpmn:startEvent id="S1" />
@@ -407,7 +527,7 @@ describe('xmlToIr — multi-process error', () => {
 
 // ── 6. Bare service task (no discriminator) is refused ──────────────────────
 
-describe('xmlToIr — bare service task', () => {
+describe('xmlToIr: bare service task', () => {
   const bareServiceTaskXml = (attrs = '') =>
     oneNodeDoc('serviceTask', { id: 'BareSvc', attrs, doc: bpmnDoc });
 
@@ -424,11 +544,22 @@ describe('xmlToIr — bare service task', () => {
     );
     expect(err.message).toContain('no execution discriminator');
   });
+
+  it('the bare service task error lists the decision reference alongside the code forms', async () => {
+    const err = await expectRefusal(
+      xmlToIr(bareServiceTaskXml()),
+      UnsupportedServiceTaskFormError,
+    );
+    expect(err.message).toContain(
+      'Supported forms are a Java class, an expression, a delegate expression, ' +
+        'an external task topic, or, on a business rule task, a decision reference.',
+    );
+  });
 });
 
 // ── 7. DI nodes are dropped from IR ─────────────────────────────────────────
 
-describe('xmlToIr — DI nodes dropped', () => {
+describe('xmlToIr: DI nodes dropped', () => {
   it('bpmndi:*, dc:*, di:* content does not appear in IR flowElements', async () => {
     // The handwritten file has a full <bpmndi:BPMNDiagram> block; none of
     // it should surface in the IR's flowElements array.
@@ -457,7 +588,7 @@ describe('xmlToIr — DI nodes dropped', () => {
 
 // ── 8. incoming/outgoing children are dropped from IR ───────────────────────
 
-describe('xmlToIr — incoming/outgoing children dropped', () => {
+describe('xmlToIr: incoming/outgoing children dropped', () => {
   // The IR types declare no `incoming`/`outgoing` fields, so the runtime
   // objects are inspected through an `unknown` cast rather than by narrowing.
   const wiring = (node: object): Record<string, unknown> =>
@@ -485,54 +616,673 @@ describe('xmlToIr — incoming/outgoing children dropped', () => {
   });
 });
 
-// ── 9. Refusals: event definitions on start/end events ──────────────────────
+// ── 9. Triggers on start, end, and intermediate throw events ────────────────
 
-describe('xmlToIr — refuses event definitions on start/end events', () => {
-  const timerStartXml = bpmnDoc`    <bpmn:startEvent id="TimerStart">
-      <bpmn:timerEventDefinition id="td">
-        <bpmn:timeDuration>PT1H</bpmn:timeDuration>
-      </bpmn:timerEventDefinition>
+describe('xmlToIr: start, end, and emit triggers', () => {
+  const MESSAGE_ROOT =
+    '  <bpmn:message id="Message_1" name="OrderReceived" />\n';
+  const SIGNAL_ROOT = '  <bpmn:signal id="Signal_1" name="StockLow" />\n';
+  const MESSAGE_DEF =
+    '<bpmn:messageEventDefinition id="md" messageRef="Message_1" />';
+
+  interface EventXmlOptions {
+    /** Extra attributes on the event's opening tag. */
+    attrs?: string;
+    /** Root-level declarations before the process. */
+    roots?: string;
+    /** The `<bpmn:definitions>` wrapper. */
+    defs?: typeof bpmnDefs;
+  }
+
+  /** `TStart -> E`, where the start carries the given trigger definition. */
+  const startTriggerXml = (
+    definition: string,
+    { attrs = '', roots = '', defs = bpmnDefs }: EventXmlOptions = {},
+  ): string =>
+    defs`${roots}  <bpmn:process id="p" isExecutable="true">
+    <bpmn:startEvent id="TStart" ${attrs}>
+      ${definition}
     </bpmn:startEvent>
     <bpmn:endEvent id="E" />
-    <bpmn:sequenceFlow id="F1" sourceRef="TimerStart" targetRef="E" />`;
+    <bpmn:sequenceFlow id="F1" sourceRef="TStart" targetRef="E" />
+  </bpmn:process>`;
 
-  const terminateEndXml = bpmnDoc`    <bpmn:startEvent id="S" />
-    <bpmn:endEvent id="TerminateEnd">
-      <bpmn:terminateEventDefinition id="te" />
+  /** `S -> Typed`, where the end carries the given definition. */
+  const endTriggerXml = (
+    definition: string,
+    { attrs = '', roots = '', defs = bpmnDefs }: EventXmlOptions = {},
+  ): string =>
+    defs`${roots}  <bpmn:process id="p" isExecutable="true">
+    <bpmn:startEvent id="S" />
+    <bpmn:endEvent id="Typed" ${attrs}>
+      ${definition}
     </bpmn:endEvent>
-    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="TerminateEnd" />`;
+    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="Typed" />
+  </bpmn:process>`;
 
-  it('a start event with a timer definition throws UnsupportedEventDefinitionError', async () => {
-    await expect(xmlToIr(timerStartXml)).rejects.toBeInstanceOf(
-      UnsupportedEventDefinitionError,
+  /** `S -> Emit1 -> E`, where the throw carries the given definition. */
+  const emitXml = (
+    definition: string,
+    { attrs = '', roots = '', defs = bpmnDefs }: EventXmlOptions = {},
+  ): string =>
+    defs`${roots}  <bpmn:process id="p" isExecutable="true">
+    <bpmn:startEvent id="S" />
+    <bpmn:intermediateThrowEvent id="Emit1" ${attrs}>
+      ${definition}
+    </bpmn:intermediateThrowEvent>
+    <bpmn:endEvent id="E" />
+    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="Emit1" />
+    <bpmn:sequenceFlow id="F2" sourceRef="Emit1" targetRef="E" />
+  </bpmn:process>`;
+
+  describe('a start carries message, signal, or timer', () => {
+    it.each([
+      ['timeDuration', 'PT1H', 'duration'],
+      ['timeDate', '2026-08-01T09:00:00Z', 'date'],
+      ['timeCycle', 'R/PT10M', 'cycle'],
+    ] as const)(
+      'a %s timer start imports as that timer kind, verbatim',
+      async (child, expression, timerKind) => {
+        const { node, warnings } = await importById(
+          startTriggerXml(
+            `<bpmn:timerEventDefinition id="td">
+        <bpmn:${child}>${expression}</bpmn:${child}>
+      </bpmn:timerEventDefinition>`,
+          ),
+          'TStart',
+          'startEvent',
+        );
+        expect(node.eventDefinition).toEqual(timerDef(timerKind, expression));
+        expect(warnings).toEqual([]);
+      },
+    );
+
+    it('a message start imports the name of the message root it references', async () => {
+      const { node, warnings } = await importById(
+        startTriggerXml(MESSAGE_DEF, { roots: MESSAGE_ROOT }),
+        'TStart',
+        'startEvent',
+      );
+      expect(node.eventDefinition).toEqual(messageDef('OrderReceived'));
+      expect(warnings).toEqual([]);
+    });
+
+    it('a signal start imports the name of the signal root it references', async () => {
+      const { node, warnings } = await importById(
+        startTriggerXml(
+          '<bpmn:signalEventDefinition id="sd" signalRef="Signal_1" />',
+          { roots: SIGNAL_ROOT },
+        ),
+        'TStart',
+        'startEvent',
+      );
+      expect(node.eventDefinition).toEqual(signalDef('StockLow'));
+      expect(warnings).toEqual([]);
+    });
+
+    it('a triggered start keeps its form fields alongside the trigger', async () => {
+      const { node } = await importById(
+        startTriggerXml(
+          `${MESSAGE_DEF}
+      <bpmn:extensionElements>
+        <operaton:formData>
+          <operaton:formField id="amount" type="long" />
+        </operaton:formData>
+      </bpmn:extensionElements>`,
+          { roots: MESSAGE_ROOT, defs: operatonDefs },
+        ),
+        'TStart',
+        'startEvent',
+      );
+      expect(node.eventDefinition).toEqual(messageDef('OrderReceived'));
+      expect(node.formFields).toEqual([{ id: 'amount', type: 'number' }]);
+    });
+  });
+
+  describe('a start refuses every other trigger', () => {
+    it.each([
+      ['errorEventDefinition', 'an error', "Catch it with 'on error'"],
+      [
+        'escalationEventDefinition',
+        'an escalation',
+        "Catch it with 'on escalation'",
+      ],
+      [
+        'compensateEventDefinition',
+        'compensation',
+        "belongs in an 'on compensation' block",
+      ],
+    ])(
+      'a start on %s refuses: Operaton would ignore the trigger',
+      async (tag, subject, remedy) => {
+        const e = await expectRefusal<UnsupportedEventFeatureError>(
+          xmlToIr(startTriggerXml(`<bpmn:${tag} id="d" />`)),
+          UnsupportedEventFeatureError,
+          `a process cannot start on ${subject}; Operaton ignores the ` +
+            'trigger and starts the process as if none were written, so ' +
+            'importing it would write back a document the engine runs ' +
+            'differently from what it says',
+        );
+        expect(e.elementId).toBe('TStart');
+        expect(e.message).toContain(remedy);
+        expect(e.message).not.toContain('Event handlers catch one');
+      },
+    );
+
+    it('a conditional start refuses as an unsupported definition kind', async () => {
+      const e = await expectRefusal<UnsupportedEventDefinitionError>(
+        xmlToIr(
+          startTriggerXml(`<bpmn:conditionalEventDefinition id="cd">
+        <bpmn:condition>\${stockLevel &lt; 5}</bpmn:condition>
+      </bpmn:conditionalEventDefinition>`),
+        ),
+        UnsupportedEventDefinitionError,
+      );
+      expect(e.elementId).toBe('TStart');
+      expect(e.eventKind).toBe('start');
+      expect(e.definitionType).toBe('bpmn:ConditionalEventDefinition');
+    });
+
+    it('a start carrying two event definitions refuses, naming the count', async () => {
+      const e = await expectRefusal<UnsupportedEventFeatureError>(
+        xmlToIr(
+          startTriggerXml(
+            `<bpmn:messageEventDefinition id="md" messageRef="Message_1" />
+      <bpmn:signalEventDefinition id="sd" signalRef="Signal_1" />`,
+            { roots: MESSAGE_ROOT + SIGNAL_ROOT },
+          ),
+        ),
+        UnsupportedEventFeatureError,
+        'a start carries 2 event definitions: only a single message, ' +
+          'signal, or timer trigger is supported',
+      );
+      expect(e.elementId).toBe('TStart');
+    });
+
+    it('a message start whose message name embeds an expression refuses', async () => {
+      const e = await expectRefusal<UnsupportedEventFeatureError>(
+        xmlToIr(
+          startTriggerXml(MESSAGE_DEF, {
+            roots: '  <bpmn:message id="Message_1" name="Order-${type}" />\n',
+          }),
+        ),
+        UnsupportedEventFeatureError,
+        'a message start event\'s message name "Order-${type}" is an ' +
+          'expression; Operaton rejects an expression there, because a ' +
+          'process that has not started yet has no variables to evaluate it ' +
+          'against',
+      );
+      expect(e.elementId).toBe('TStart');
+      expect(e.message).toContain('Give the message a fixed name');
+      expect(e.message).not.toContain('Event handlers catch one');
+    });
+  });
+
+  describe('one start per container', () => {
+    it('a process with two start events refuses, naming the count', async () => {
+      const e = await expectRefusal<UnsupportedEventFeatureError>(
+        xmlToIr(bpmnDoc`    <bpmn:startEvent id="S1" />
+    <bpmn:startEvent id="S2" />
+    <bpmn:endEvent id="E" />
+    <bpmn:sequenceFlow id="F1" sourceRef="S1" targetRef="E" />`),
+        UnsupportedEventFeatureError,
+        'it has 2 start events; this tool writes one entry point per ' +
+          'process or subprocess, so a second start has nowhere to go',
+      );
+      expect(e.elementId).toBe('p');
+      expect(e.message).toContain('Leave one start');
+      expect(e.message).not.toContain('Event handlers catch one');
+    });
+
+    it('a plain sub-process with two start events refuses, attributed to it', async () => {
+      const e = await expectRefusal<UnsupportedEventFeatureError>(
+        xmlToIr(bpmnDoc`    <bpmn:startEvent id="S" />
+    <bpmn:subProcess id="Sub">
+      <bpmn:startEvent id="S1" />
+      <bpmn:startEvent id="S2" />
+      <bpmn:endEvent id="SubEnd" />
+      <bpmn:sequenceFlow id="SF1" sourceRef="S1" targetRef="SubEnd" />
+    </bpmn:subProcess>
+    <bpmn:endEvent id="E" />
+    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="Sub" />
+    <bpmn:sequenceFlow id="F2" sourceRef="Sub" targetRef="E" />`),
+        UnsupportedEventFeatureError,
+        'it has 2 start events; this tool writes one entry point per ' +
+          'process or subprocess, so a second start has nowhere to go',
+      );
+      expect(e.elementId).toBe('Sub');
+    });
+  });
+
+  describe('an end carries terminate or a thrown message', () => {
+    it('a terminate end imports as a terminate and keeps its label', async () => {
+      const { node, warnings } = await importById(
+        endTriggerXml('<bpmn:terminateEventDefinition id="te" />', {
+          attrs: 'name="All Stop"',
+        }),
+        'Typed',
+        'endEvent',
+      );
+      expect(node.eventDefinition).toEqual({ kind: 'terminate' });
+      expect(node.name).toBe('All Stop');
+      expect(warnings).toEqual([]);
+    });
+
+    it('an unread setting on a terminate definition warns rather than vanishing', async () => {
+      const { warnings } = await xmlToIr(
+        endTriggerXml(
+          '<bpmn:terminateEventDefinition id="te" operaton:asyncBefore="true" />',
+          { defs: operatonDefs },
+        ),
+      );
+      expectOneWarning(extensionWarnings(warnings), {
+        elementId: 'Typed',
+        message: 'asyncBefore',
+      });
+    });
+
+    it('an undeclared attribute on a terminate definition warns rather than vanishing', async () => {
+      const { warnings } = await xmlToIr(
+        endTriggerXml('<bpmn:terminateEventDefinition id="te" foo="1" />'),
+      );
+      expectOneWarning(unmappedWarnings(warnings), {
+        elementId: 'Typed',
+        message: 'foo',
+      });
+    });
+
+    it('a message end imports the name of the message root it references', async () => {
+      const { node, warnings } = await importById(
+        endTriggerXml(MESSAGE_DEF, { roots: MESSAGE_ROOT }),
+        'Typed',
+        'endEvent',
+      );
+      expect(node.eventDefinition).toEqual(messageDef('OrderReceived'));
+      expect(warnings).toEqual([]);
+    });
+
+    it('a genuine label on a message end warns: a throw has no label slot', async () => {
+      const { node, warnings } = await importById(
+        endTriggerXml(MESSAGE_DEF, {
+          attrs: 'name="Tell The Warehouse"',
+          roots: MESSAGE_ROOT,
+        }),
+        'Typed',
+        'endEvent',
+      );
+      expect('name' in node).toBe(false);
+      expectOneWarning(
+        warnings.filter((w) => w.category === 'label'),
+        { elementId: 'Typed', message: 'Tell The Warehouse' },
+      );
+    });
+
+    it('a message end with no messageRef refuses: nothing names it', async () => {
+      await expectRefusal(
+        xmlToIr(endTriggerXml('<bpmn:messageEventDefinition id="md" />')),
+        UnsupportedEventFeatureError,
+        'a message definition must reference a bpmn:Message root with a ' +
+          'non-empty name',
+      );
+    });
+  });
+
+  describe('a thrown message carries its send implementation', () => {
+    /** The implementation sits on the definition, which is where the engine reads it. */
+    const implementedMessageDef = (attrs: string): string =>
+      `<bpmn:messageEventDefinition id="md" messageRef="Message_1" ${attrs} />`;
+
+    /** The element form of the same send, under the given prefix. */
+    const connectorMessageDef = (prefix: string): string =>
+      `<bpmn:messageEventDefinition id="md" messageRef="Message_1">
+        <bpmn:extensionElements>
+          <${prefix}:connector>
+            <${prefix}:connectorId>http-connector</${prefix}:connectorId>
+            <${prefix}:inputOutput>
+              <${prefix}:inputParameter name="url">http://warehouse</${prefix}:inputParameter>
+            </${prefix}:inputOutput>
+          </${prefix}:connector>
+        </bpmn:extensionElements>
+      </bpmn:messageEventDefinition>`;
+
+    it.each([
+      ['class="com.example.Send"', classBinding('com.example.Send')],
+      [
+        'expression="${sender.send(order)}"',
+        exprBinding('${sender.send(order)}'),
+      ],
+      ['delegateExpression="${senderBean}"', delegateBinding('${senderBean}')],
+      [
+        'type="external" operaton:topic="send-ack"',
+        externalBinding('send-ack'),
+      ],
+    ])(
+      'operaton:%s on a message end imports as the binding it names',
+      async (attrs, expected) => {
+        const { node, warnings } = await importById(
+          endTriggerXml(implementedMessageDef(`operaton:${attrs}`), {
+            roots: MESSAGE_ROOT,
+            defs: operatonDefs,
+          }),
+          'Typed',
+          'endEvent',
+        );
+        expect(node.binding).toEqual(expected);
+        expect(warnings).toEqual([]);
+      },
+    );
+
+    it('the deprecated camunda: prefix of the same attribute reads alike', async () => {
+      const { node, warnings } = await importById(
+        endTriggerXml(
+          implementedMessageDef('camunda:class="com.example.Send"'),
+          { roots: MESSAGE_ROOT, defs: camundaDefs },
+        ),
+        'Typed',
+        'endEvent',
+      );
+      expect(node.binding).toEqual(classBinding('com.example.Send'));
+      expect(warnings).toEqual([]);
+    });
+
+    it('a message emit carries the implementation too', async () => {
+      const { node, warnings } = await importById(
+        emitXml(
+          implementedMessageDef('operaton:delegateExpression="${sender}"'),
+          { roots: MESSAGE_ROOT, defs: operatonDefs },
+        ),
+        'Emit1',
+        'intermediateThrowEvent',
+      );
+      expect(node.binding).toEqual(delegateBinding('${sender}'));
+      expect(warnings).toEqual([]);
+    });
+
+    it('a message end with no implementation imports with no binding at all', async () => {
+      const { node } = await importById(
+        endTriggerXml(MESSAGE_DEF, { roots: MESSAGE_ROOT }),
+        'Typed',
+        'endEvent',
+      );
+      expect('binding' in node).toBe(false);
+    });
+
+    it('an external type with no topic refuses: the send names no worker', async () => {
+      const e = await expectRefusal<UnsupportedServiceTaskFormError>(
+        xmlToIr(
+          endTriggerXml(implementedMessageDef('operaton:type="external"'), {
+            roots: MESSAGE_ROOT,
+            defs: operatonDefs,
+          }),
+        ),
+        UnsupportedServiceTaskFormError,
+      );
+      expect(e.subject).toBe('Thrown message');
+      expect(e.construct).toBe(
+        'operaton:type="external" without an operaton:topic',
+      );
+    });
+
+    it('an external type on the definition outranks a class, which is reported', async () => {
+      const { node, warnings } = await importById(
+        endTriggerXml(
+          implementedMessageDef(
+            'operaton:class="com.example.Send" operaton:type="external" operaton:topic="send-ack"',
+          ),
+          { roots: MESSAGE_ROOT, defs: operatonDefs },
+        ),
+        'Typed',
+        'endEvent',
+      );
+      expect(node.binding).toEqual(externalBinding('send-ack'));
+      expect(warnings.map((w) => w.message)).toEqual([
+        "The 'class' setting on 'Typed' has no effect alongside operaton:type=\"external\" and was not imported.",
+      ]);
+    });
+
+    it('a topic with no external type warns: nothing names the worker', async () => {
+      const { node, warnings } = await importById(
+        endTriggerXml(implementedMessageDef('operaton:topic="send-ack"'), {
+          roots: MESSAGE_ROOT,
+          defs: operatonDefs,
+        }),
+        'Typed',
+        'endEvent',
+      );
+      expect('binding' in node).toBe(false);
+      expectOneWarning(extensionWarnings(warnings), {
+        elementId: 'Typed',
+        message:
+          "The 'topic' setting on 'Typed' only takes effect alongside " +
+          'operaton:type="external"; on its own it names no external worker ' +
+          'and was not imported.',
+      });
+    });
+
+    it('a connector on the definition refuses: the same send, in element form', async () => {
+      const e = await expectRefusal<UnsupportedEventFeatureError>(
+        xmlToIr(
+          endTriggerXml(connectorMessageDef('operaton'), {
+            roots: MESSAGE_ROOT,
+            defs: operatonDefs,
+          }),
+        ),
+        UnsupportedEventFeatureError,
+        'a thrown message carries a connector; that is what makes the ' +
+          'engine really send it, and this surface has no place to keep it',
+      );
+      expect(e.elementId).toBe('Typed');
+    });
+
+    it('the deprecated camunda: prefix of the connector refuses alike, on an emit', async () => {
+      const e = await expectRefusal<UnsupportedEventFeatureError>(
+        xmlToIr(
+          emitXml(connectorMessageDef('camunda'), {
+            roots: MESSAGE_ROOT,
+            defs: camundaDefs,
+          }),
+        ),
+        UnsupportedEventFeatureError,
+        'a thrown message carries a connector; that is what makes the ' +
+          'engine really send it, and this surface has no place to keep it',
+      );
+      expect(e.elementId).toBe('Emit1');
+    });
+
+    it('the same setting on the event itself warns: the engine reads it off the definition', async () => {
+      const { node, warnings } = await importById(
+        endTriggerXml(MESSAGE_DEF, {
+          attrs: 'operaton:class="com.example.Send"',
+          roots: MESSAGE_ROOT,
+          defs: operatonDefs,
+        }),
+        'Typed',
+        'endEvent',
+      );
+      expect('binding' in node).toBe(false);
+      expectOneWarning(extensionWarnings(warnings), {
+        elementId: 'Typed',
+        message: "The 'operaton:class' setting on 'Typed' was not imported",
+      });
+    });
+
+    it('an implementation on a caught message warns: only a throw sends one', async () => {
+      const { warnings } = await xmlToIr(
+        startTriggerXml(
+          implementedMessageDef('operaton:class="com.example.Send"'),
+          { roots: MESSAGE_ROOT, defs: operatonDefs },
+        ),
+      );
+      expectOneWarning(extensionWarnings(warnings), {
+        elementId: 'TStart',
+        message: "The 'class' setting on 'TStart' only takes effect on a throw",
+      });
+    });
+
+    it('a connector on a signal end still warns, attributed to the event itself', async () => {
+      const { warnings } = await xmlToIr(
+        endTriggerXml(
+          `<bpmn:extensionElements>
+        <operaton:connector>
+          <operaton:connectorId>http-connector</operaton:connectorId>
+        </operaton:connector>
+      </bpmn:extensionElements>
+      <bpmn:signalEventDefinition id="sd" signalRef="Signal_1" />`,
+          { roots: SIGNAL_ROOT, defs: operatonDefs },
+        ),
+      );
+      expectOneWarning(extensionWarnings(warnings), {
+        elementId: 'Typed',
+        message: 'operaton:Connector',
+      });
+    });
+  });
+
+  describe('a name that starts with an expression refuses everywhere', () => {
+    const EXPR_MESSAGE_ROOT =
+      '  <bpmn:message id="Message_1" name="${orderType}" />\n';
+    const EXPR_SIGNAL_ROOT =
+      '  <bpmn:signal id="Signal_1" name="${topic}" />\n';
+    const SIGNAL_DEF =
+      '<bpmn:signalEventDefinition id="sd" signalRef="Signal_1" />';
+
+    /** The whole refusal an expression-leading message name draws. */
+    const MESSAGE_EXPR_DETAIL =
+      'a message name that starts with an expression ("${orderType}") ' +
+      'cannot be written back: this tool writes the name in quotes, and a ' +
+      'quoted name opening with "${" reads as an expression rather than as ' +
+      "a name; give the message a fixed name, which the process's own start " +
+      'needs in any case; anywhere else the same expression reads back ' +
+      'written as "#{...}"';
+
+    /** The same for a signal, whose remedy has no process-start exception. */
+    const SIGNAL_EXPR_DETAIL =
+      'a signal name that starts with an expression ("${topic}") cannot be ' +
+      'written back: this tool writes the name in quotes, and a quoted ' +
+      'name opening with "${" reads as an expression rather than as a name; ' +
+      'give the signal a fixed name, or write the same expression as ' +
+      '"#{...}"';
+
+    it.each([
+      [
+        'a message end',
+        endTriggerXml(MESSAGE_DEF, { roots: EXPR_MESSAGE_ROOT }),
+        'Typed',
+        MESSAGE_EXPR_DETAIL,
+      ],
+      [
+        'a message emit',
+        emitXml(MESSAGE_DEF, { roots: EXPR_MESSAGE_ROOT }),
+        'Emit1',
+        MESSAGE_EXPR_DETAIL,
+      ],
+      [
+        'a signal end',
+        endTriggerXml(SIGNAL_DEF, { roots: EXPR_SIGNAL_ROOT }),
+        'Typed',
+        SIGNAL_EXPR_DETAIL,
+      ],
+      [
+        'a message start',
+        startTriggerXml(MESSAGE_DEF, { roots: EXPR_MESSAGE_ROOT }),
+        'TStart',
+        MESSAGE_EXPR_DETAIL,
+      ],
+      [
+        'a message handler start',
+        handlerDoc(MESSAGE_DEF, { roots: EXPR_MESSAGE_ROOT, body: '' }),
+        'HStart',
+        MESSAGE_EXPR_DETAIL,
+      ],
+    ])(
+      '%s refuses: the name would not read back as a name',
+      async (_case, xml, elementId, detail) => {
+        const e = await expectRefusal<UnsupportedEventFeatureError>(
+          xmlToIr(xml),
+          UnsupportedEventFeatureError,
+          detail,
+        );
+        expect(e.elementId).toBe(elementId);
+      },
+    );
+
+    it('the "#{...}" remedy is offered to a message with the process start excepted, since a process start refuses an expression outright', async () => {
+      const e = await expectRefusal<UnsupportedEventFeatureError>(
+        xmlToIr(startTriggerXml(MESSAGE_DEF, { roots: EXPR_MESSAGE_ROOT })),
+        UnsupportedEventFeatureError,
+        MESSAGE_EXPR_DETAIL,
+      );
+      expect(e.elementId).toBe('TStart');
+    });
+
+    it('a message handler start named "${orderType}" is refused with the same remedy: a handler start is not the process\'s own start', async () => {
+      const e = await expectRefusal<UnsupportedEventFeatureError>(
+        xmlToIr(handlerDoc(MESSAGE_DEF, { roots: EXPR_MESSAGE_ROOT })),
+        UnsupportedEventFeatureError,
+        MESSAGE_EXPR_DETAIL,
+      );
+      expect(e.elementId).toBe('HStart');
+    });
+
+    it('a message handler start named with the "#{...}" spelling imports: the remedy applies there', async () => {
+      const { ir, warnings } = await xmlToIr(
+        handlerDoc(MESSAGE_DEF, {
+          roots: '  <bpmn:message id="Message_1" name="#{orderType}" />\n',
+        }),
+      );
+      expect(warnings).toEqual([]);
+      const start = byId(subProcess(ir, 'Handler'), 'HStart');
+      expect(start.kind === 'startEvent' && start.eventDefinition).toEqual(
+        messageDef('#{orderType}'),
+      );
+    });
+
+    it('the "#{...}" remedy is offered to a signal unqualified: a signal start takes an expression name', async () => {
+      await expectRefusal(
+        xmlToIr(startTriggerXml(SIGNAL_DEF, { roots: EXPR_SIGNAL_ROOT })),
+        UnsupportedEventFeatureError,
+        SIGNAL_EXPR_DETAIL,
+      );
+    });
+
+    it('a signal start named with the "#{...}" spelling imports', async () => {
+      const { node } = await importById(
+        startTriggerXml(SIGNAL_DEF, {
+          roots: '  <bpmn:signal id="Signal_1" name="#{topic}" />\n',
+        }),
+        'TStart',
+        'startEvent',
+      );
+      expect(node.eventDefinition).toEqual({
+        kind: 'signal',
+        signalName: '#{topic}',
+      });
+    });
+
+    it.each(['Order-${orderType}', '#{orderType}'])(
+      'a message end named %s imports: it reads back as the name it is',
+      async (name) => {
+        const { node, warnings } = await importById(
+          endTriggerXml(MESSAGE_DEF, {
+            roots: `  <bpmn:message id="Message_1" name="${name}" />\n`,
+          }),
+          'Typed',
+          'endEvent',
+        );
+        expect(node.eventDefinition).toEqual(messageDef(name));
+        expect(warnings).toEqual([]);
+      },
     );
   });
 
-  it('the start-event refusal extends UnsupportedConstructError and names the element + trigger', async () => {
-    const e = await expectRefusal<UnsupportedEventDefinitionError>(
-      xmlToIr(timerStartXml),
-      UnsupportedConstructError,
+  it('a message emit imports the name of the message root it references', async () => {
+    const { node, warnings } = await importById(
+      emitXml(MESSAGE_DEF, { roots: MESSAGE_ROOT }),
+      'Emit1',
+      'intermediateThrowEvent',
     );
-    expect(e.elementId).toBe('TimerStart');
-    expect(e.eventKind).toBe('start');
-    expect(e.definitionType).toBe('bpmn:TimerEventDefinition');
-    expect(e.message).toContain('TimerStart');
-  });
-
-  it('an end event with a terminate definition throws UnsupportedEventDefinitionError', async () => {
-    await expect(xmlToIr(terminateEndXml)).rejects.toBeInstanceOf(
-      UnsupportedEventDefinitionError,
-    );
-  });
-
-  it('the end-event refusal reports eventKind "end" and extends UnsupportedConstructError', async () => {
-    const e = await expectRefusal<UnsupportedEventDefinitionError>(
-      xmlToIr(terminateEndXml),
-      UnsupportedConstructError,
-    );
-    expect(e.elementId).toBe('TerminateEnd');
-    expect(e.eventKind).toBe('end');
-    expect(e.definitionType).toBe('bpmn:TerminateEventDefinition');
+    expect(node.eventDefinition).toEqual(messageDef('OrderReceived'));
+    expect(warnings).toEqual([]);
   });
 
   it.each(['startEvent', 'endEvent'] as const)(
@@ -548,54 +1298,505 @@ describe('xmlToIr — refuses event definitions on start/end events', () => {
   );
 });
 
-// ── 9b. Refusals: loop characteristics on tasks ─────────────────────────────
+// ── 9b. Repetition: multi-instance loop characteristics ─────────────────────
 
-describe('xmlToIr — refuses loop characteristics on tasks', () => {
-  const multiInstanceXml = oneNodeDoc('userTask', {
-    id: 'LoopTask',
-    attrs: 'name="Loop Task"',
-    children: '<bpmn:multiInstanceLoopCharacteristics isSequential="false" />',
-    doc: bpmnDoc,
-  });
+describe('xmlToIr: imports a repetition', () => {
+  /** `<bpmn:multiInstanceLoopCharacteristics>` with the given attributes and children. */
+  const repeat = (attrs = '', children = ''): string =>
+    `<bpmn:multiInstanceLoopCharacteristics ${attrs}>${children}</bpmn:multiInstanceLoopCharacteristics>`;
 
-  const standardLoopXml = oneNodeDoc('serviceTask', {
-    id: 'RepeatSvc',
-    attrs: 'operaton:class="com.example.Svc"',
-    children: '<bpmn:standardLoopCharacteristics />',
-  });
+  /** `S -> userTask -> E` where the task repeats. */
+  const repeatedTaskDoc = (attrs = '', children = ''): string =>
+    oneNodeDoc('userTask', { children: repeat(attrs, children) });
 
-  it.each([multiInstanceXml, standardLoopXml])(
-    'a task with loop characteristics throws UnsupportedLoopCharacteristicsError',
-    async (xml) => {
-      await expect(xmlToIr(xml)).rejects.toBeInstanceOf(
-        UnsupportedLoopCharacteristicsError,
+  /** Every tag that can repeat, and the IR kind it imports as. */
+  const REPEATABLE_TAGS = [
+    ['userTask', 'userTask', ''],
+    ['task', 'task', ''],
+    ['serviceTask', 'serviceTask', 'operaton:class="com.example.Svc"'],
+    ['sendTask', 'serviceTask', 'operaton:class="com.example.Send"'],
+    ['businessRuleTask', 'serviceTask', 'operaton:decisionRef="riskRating"'],
+    ['receiveTask', 'receiveTask', ''],
+    ['scriptTask', 'scriptTask', 'scriptFormat="groovy"'],
+    ['subProcess', 'subProcess', ''],
+    ['callActivity', 'callActivity', 'calledElement="sub-process"'],
+  ] as const;
+
+  it.each(REPEATABLE_TAGS)(
+    'bpmn:%s imports its repetition, reporting nothing as dropped',
+    async (tag, kind, attrs) => {
+      const { node, warnings } = await importOnly(
+        oneNodeDoc(tag, {
+          attrs,
+          children: repeat(
+            'operaton:collection="lines" operaton:elementVariable="line"',
+          ),
+        }),
+        kind,
       );
+      expect(node.loop).toEqual({
+        collection: 'lines',
+        elementVariable: 'line',
+      });
+      expect(warnings).toEqual([]);
     },
   );
 
-  it('the multi-instance refusal extends UnsupportedConstructError and names the task', async () => {
-    const e = await expectRefusal<UnsupportedLoopCharacteristicsError>(
-      xmlToIr(multiInstanceXml),
-      UnsupportedConstructError,
+  it.each([
+    ['isSequential="true"', { sequential: true }],
+    ['isSequential="false"', {}],
+    ['', {}],
+  ])(
+    '%s imports the runs as sequential only when true',
+    async (attr, extra) => {
+      const { node } = await importOnly(
+        repeatedTaskDoc(`operaton:collection="lines" ${attr}`),
+        'userTask',
+      );
+      expect(node.loop).toEqual({ collection: 'lines', ...extra });
+    },
+  );
+
+  it.each([
+    ['3', 0],
+    ['${lineCount}', 0],
+    // The rewrap this one is reported for is pinned by its own suite.
+    ['#{lineCount}', 1],
+  ] as const)(
+    'a bpmn:loopCardinality of %s alone imports as the count',
+    async (body, warned) => {
+      const { node, warnings } = await importOnly(
+        repeatedTaskDoc(
+          '',
+          `<bpmn:loopCardinality>${body}</bpmn:loopCardinality>`,
+        ),
+        'userTask',
+      );
+      expect(node.loop).toEqual({ cardinality: body });
+      expect(warnings).toHaveLength(warned);
+    },
+  );
+
+  it('a count, a collection and a completion condition import together', async () => {
+    const { node, warnings } = await importOnly(
+      repeatedTaskDoc(
+        'operaton:collection="${order.lines}" operaton:elementVariable="line" isSequential="true"',
+        `<bpmn:loopCardinality>3</bpmn:loopCardinality>
+        <bpmn:completionCondition>\${nrOfCompletedInstances >= 2}</bpmn:completionCondition>`,
+      ),
+      'userTask',
     );
-    expect(e.elementId).toBe('LoopTask');
-    expect(e.loopType).toBe('bpmn:MultiInstanceLoopCharacteristics');
-    expect(e.message).toContain('LoopTask');
+    expect(node.loop).toEqual({
+      cardinality: '3',
+      collection: '${order.lines}',
+      elementVariable: 'line',
+      completionCondition: '${nrOfCompletedInstances >= 2}',
+      sequential: true,
+    });
+    expect(warnings).toEqual([]);
   });
 
-  it('the standard-loop refusal reports the standard-loop loopType', async () => {
+  it('a bpmn:loopDataInputRef naming a process variable imports as the collection', async () => {
+    const { node, warnings } = await importOnly(
+      repeatedTaskDoc(
+        '',
+        `<bpmn:loopDataInputRef>assigneeList</bpmn:loopDataInputRef>
+        <bpmn:inputDataItem name="assignee" />`,
+      ),
+      'userTask',
+    );
+    expect(node.loop).toEqual({
+      collection: 'assigneeList',
+      elementVariable: 'assignee',
+    });
+    expect(warnings).toEqual([]);
+  });
+
+  // A reference naming an element in the document resolves, and moddle answers
+  // with that element; the fixture declares one so both paths stay covered.
+  const dataDoc = (attrs: string, children: string): string =>
+    oneNodeDoc('userTask', {
+      children: `<bpmn:property id="lines" name="lines" />${repeat(attrs, children)}`,
+    });
+
+  it('a bpmn:loopDataInputRef imports as the collection', async () => {
+    const { node } = await importById(
+      dataDoc('', '<bpmn:loopDataInputRef>lines</bpmn:loopDataInputRef>'),
+      'T',
+      'userTask',
+    );
+    expect(node.loop).toEqual({ collection: 'lines' });
+  });
+
+  it('a bpmn:loopDataInputRef shadows operaton:collection, and the drop is reported', async () => {
+    const { node, warnings } = await importById(
+      dataDoc(
+        'operaton:collection="items"',
+        '<bpmn:loopDataInputRef>lines</bpmn:loopDataInputRef>',
+      ),
+      'T',
+      'userTask',
+    );
+    expect(node.loop).toEqual({ collection: 'lines' });
+    expect(warnings.map((w) => w.message)).toContainEqual(
+      expect.stringContaining(
+        "Both bpmn:loopDataInputRef and operaton:collection name the collection on 'T'; " +
+          "Operaton reads bpmn:loopDataInputRef second, so 'lines' was imported and 'items' was dropped.",
+      ),
+    );
+  });
+
+  // Every shape the grammar's ID terminal takes, the hyphen form included: the
+  // refusal beside it must not narrow what the clause can already write.
+  it.each(['line', '_line', 'l1', 'line-item'])(
+    'an element variable spelled %s imports as written',
+    async (name) => {
+      const { node, warnings } = await importOnly(
+        repeatedTaskDoc(
+          `operaton:collection="lines" operaton:elementVariable="${name}"`,
+        ),
+        'userTask',
+      );
+      expect(node.loop).toEqual({
+        collection: 'lines',
+        elementVariable: name,
+      });
+      expect(warnings).toEqual([]);
+    },
+  );
+
+  it('a bpmn:inputDataItem name imports as the element variable', async () => {
+    const { node, warnings } = await importOnly(
+      repeatedTaskDoc(
+        'operaton:collection="lines"',
+        '<bpmn:inputDataItem id="Item" name="line" />',
+      ),
+      'userTask',
+    );
+    expect(node.loop).toEqual({ collection: 'lines', elementVariable: 'line' });
+    expect(warnings).toEqual([]);
+  });
+
+  it('a bpmn:inputDataItem shadows operaton:elementVariable, and the drop is reported', async () => {
+    const { node, warnings } = await importOnly(
+      repeatedTaskDoc(
+        'operaton:collection="lines" operaton:elementVariable="item"',
+        '<bpmn:inputDataItem id="Item" name="line" />',
+      ),
+      'userTask',
+    );
+    expect(node.loop).toEqual({ collection: 'lines', elementVariable: 'line' });
+    expectOneWarning(warnings, {
+      elementId: 'T',
+      category: 'extensionAttribute',
+      message:
+        "Both bpmn:inputDataItem and operaton:elementVariable name what each run sees on 'T'; " +
+        "Operaton reads bpmn:inputDataItem second, so 'line' was imported and 'item' was dropped.",
+    });
+  });
+
+  const IO_BLOCK = extensionElements(
+    `        <operaton:inputOutput>
+          <operaton:outputParameter name="result">ok</operaton:outputParameter>
+        </operaton:inputOutput>`,
+  );
+
+  const countRefusalDetail = (body: string): string =>
+    `its bpmn:loopCardinality is "${body}", which this tool cannot write back out unchanged; it ` +
+    'writes a count as a plain whole number or as an expression, and this body is neither';
+
+  const perRunJobDetail = (setting: string): string =>
+    `it carries 'operaton:${setting}' on the repetition itself, which gives every run a job of ` +
+    'its own; the same setting on the step makes one job around the whole repetition, and this ' +
+    "tool's surface can only say the second";
+
+  const elementNameRefusalDetail = (name: string): string =>
+    `it names ${JSON.stringify(name)} for each run to see, which this tool cannot write back ` +
+    'out unchanged; it writes that name as a plain identifier, and this name is not one';
+
+  it.each([
+    [
+      'neither a count nor a collection',
+      repeatedTaskDoc(),
+      'it sets neither a number of runs nor a collection to run over, and Operaton refuses to deploy that',
+    ],
+    [
+      'an empty bpmn:loopCardinality',
+      repeatedTaskDoc('', '<bpmn:loopCardinality />'),
+      'its bpmn:loopCardinality is empty, so Operaton has no number of runs to read',
+    ],
+    [
+      'a bpmn:loopCardinality that is neither a whole number nor an expression',
+      repeatedTaskDoc(
+        '',
+        '<bpmn:loopCardinality>order.lines</bpmn:loopCardinality>',
+      ),
+      countRefusalDetail('order.lines'),
+    ],
+    [
+      'a fractional bpmn:loopCardinality',
+      repeatedTaskDoc('', '<bpmn:loopCardinality>3.5</bpmn:loopCardinality>'),
+      countRefusalDetail('3.5'),
+    ],
+    [
+      'a negative bpmn:loopCardinality',
+      repeatedTaskDoc('', '<bpmn:loopCardinality>-1</bpmn:loopCardinality>'),
+      countRefusalDetail('-1'),
+    ],
+    [
+      'a bpmn:loopCardinality carrying a leading plus',
+      repeatedTaskDoc('', '<bpmn:loopCardinality>+3</bpmn:loopCardinality>'),
+      countRefusalDetail('+3'),
+    ],
+    [
+      'an element variable with no collection',
+      repeatedTaskDoc(
+        'operaton:elementVariable="line"',
+        '<bpmn:loopCardinality>3</bpmn:loopCardinality>',
+      ),
+      "it names 'line' for each run to see but no collection to take it from, and Operaton refuses to deploy that",
+    ],
+    [
+      'operaton:asyncBefore on the repetition itself',
+      repeatedTaskDoc(
+        'operaton:collection="lines" operaton:asyncBefore="true"',
+      ),
+      perRunJobDetail('asyncBefore'),
+    ],
+    [
+      'operaton:asyncAfter on the repetition itself',
+      repeatedTaskDoc('operaton:collection="lines" operaton:asyncAfter="true"'),
+      perRunJobDetail('asyncAfter'),
+    ],
+    [
+      'operaton:exclusive on the repetition itself',
+      repeatedTaskDoc('operaton:collection="lines" operaton:exclusive="true"'),
+      perRunJobDetail('exclusive'),
+    ],
+    [
+      'an operaton:failedJobRetryTimeCycle on the repetition itself',
+      repeatedTaskDoc(
+        'operaton:collection="lines"',
+        extensionElements(
+          '        <operaton:failedJobRetryTimeCycle>R3/PT1M</operaton:failedJobRetryTimeCycle>',
+        ),
+      ),
+      perRunJobDetail('failedJobRetryTimeCycle'),
+    ],
+    [
+      'an operaton:elementVariable outside the identifier the clause writes',
+      repeatedTaskDoc(
+        'operaton:collection="lines" operaton:elementVariable="größe"',
+      ),
+      elementNameRefusalDetail('größe'),
+    ],
+    [
+      'a bpmn:inputDataItem name outside the identifier the clause writes',
+      repeatedTaskDoc(
+        'operaton:collection="lines"',
+        '<bpmn:inputDataItem id="Item" name="my var" />',
+      ),
+      elementNameRefusalDetail('my var'),
+    ],
+    [
+      'an operaton:outputParameter on a repeated step',
+      oneNodeDoc('userTask', {
+        children: `${IO_BLOCK}${repeat('operaton:collection="lines"')}`,
+      }),
+      "it maps an 'operaton:outputParameter', which Operaton refuses to deploy on a repeated step",
+    ],
+  ])('%s is refused', async (_title, xml, detail) => {
     const e = await expectRefusal<UnsupportedLoopCharacteristicsError>(
-      xmlToIr(standardLoopXml),
+      xmlToIr(xml),
       UnsupportedLoopCharacteristicsError,
+      detail,
+    );
+    expect(e.elementId).toBe('T');
+    expect(e.loopType).toBe('bpmn:MultiInstanceLoopCharacteristics');
+    expect(e.message).toBe(
+      `The repetition on 'T' cannot be imported: ${detail}.`,
+    );
+  });
+
+  it('bpmn:standardLoopCharacteristics is refused, naming that Operaton runs the step once', async () => {
+    const e = await expectRefusal<UnsupportedLoopCharacteristicsError>(
+      xmlToIr(
+        oneNodeDoc('serviceTask', {
+          id: 'RepeatSvc',
+          attrs: 'operaton:class="com.example.Svc"',
+          children: '<bpmn:standardLoopCharacteristics />',
+        }),
+      ),
+      UnsupportedConstructError,
+      'Operaton does not run a bpmn:standardLoopCharacteristics at all: it deploys the step and ' +
+        'runs it once, so importing this would hand back a script saying the step repeats when it ' +
+        'does not',
     );
     expect(e.elementId).toBe('RepeatSvc');
     expect(e.loopType).toBe('bpmn:StandardLoopCharacteristics');
   });
+
+  it('an event handler carrying a repetition is refused', async () => {
+    await expectRefusal<UnsupportedLoopCharacteristicsError>(
+      xmlToIr(
+        handlerDoc('<bpmn:signalEventDefinition id="SigDef" />', {
+          startAttrs: 'name="Escalate"',
+        }).replace(
+          '<bpmn:subProcess id="Handler" triggeredByEvent="true">',
+          '<bpmn:subProcess id="Handler" triggeredByEvent="true">\n      ' +
+            repeat('', '<bpmn:loopCardinality>2</bpmn:loopCardinality>'),
+        ),
+      ),
+      UnsupportedLoopCharacteristicsError,
+      'an event handler is entered by its trigger, so it cannot be repeated',
+    );
+  });
+
+  it.each([
+    [
+      'a bpmn:loopDataOutputRef',
+      '',
+      '<bpmn:loopDataOutputRef>results</bpmn:loopDataOutputRef>',
+      'The bpmn:loopDataOutputRef on the repetition',
+    ],
+    [
+      'a bpmn:loopDataOutputRef naming an element in the document',
+      '',
+      '<bpmn:loopDataOutputRef>S</bpmn:loopDataOutputRef>',
+      'The bpmn:loopDataOutputRef on the repetition',
+    ],
+    [
+      'a bpmn:outputDataItem',
+      '',
+      '<bpmn:outputDataItem id="Item" name="result" />',
+      "A bpmn:outputDataItem 'Item' on 'T' was not imported",
+    ],
+    [
+      'a bpmn:complexBehaviorDefinition',
+      '',
+      '<bpmn:complexBehaviorDefinition id="CBD" />',
+      "A bpmn:complexBehaviorDefinition 'CBD' on 'T' was not imported",
+    ],
+    [
+      'behavior="One"',
+      'behavior="One"',
+      '',
+      'The behavior="One" on the repetition',
+    ],
+    [
+      'a oneBehaviorEventRef',
+      'oneBehaviorEventRef="throwIt"',
+      '',
+      'The bpmn:oneBehaviorEventRef on the repetition',
+    ],
+    [
+      'a noneBehaviorEventRef',
+      'noneBehaviorEventRef="skipIt"',
+      '',
+      'The bpmn:noneBehaviorEventRef on the repetition',
+    ],
+    [
+      'an operaton:jobPriority',
+      'operaton:jobPriority="10"',
+      '',
+      "The operaton:jobPriority on the repetition of 'T' was not imported: " +
+        'Operaton does not read it, so the imported process runs the same.',
+    ],
+    [
+      'an attribute BPMN does not declare',
+      'bogus="x"',
+      '',
+      "The 'bogus' attribute on 'T' is not declared by BPMN",
+    ],
+  ])(
+    '%s on the repetition is reported as dropped',
+    async (_title, attrs, children, message) => {
+      const { warnings } = await importOnly(
+        repeatedTaskDoc(`operaton:collection="lines" ${attrs}`, children),
+        'userTask',
+      );
+      expectOneWarning(warnings, {
+        elementId: 'T',
+        category: 'unmappedConstruct',
+        message,
+      });
+    },
+  );
+});
+
+// ── 9b'. An expression body written with the other delimiter ────────────────
+
+describe('xmlToIr: a #{...} expression body is rewrapped, and says so', () => {
+  const loopDoc = (children: string): string =>
+    oneNodeDoc('userTask', {
+      children: `<bpmn:multiInstanceLoopCharacteristics operaton:collection="lines">${children}</bpmn:multiInstanceLoopCharacteristics>`,
+    });
+
+  const rewrapped = (slot: string, id: string): string =>
+    `The ${slot} on '${id}' is written with "#{...}", which this surface has ` +
+    'no form for: its text is written back inside "${...}", which Operaton ' +
+    'evaluates identically.';
+
+  it.each([
+    [
+      'a loop cardinality',
+      loopDoc('<bpmn:loopCardinality>#{lineCount}</bpmn:loopCardinality>'),
+      rewrapped('bpmn:loopCardinality', 'T'),
+    ],
+    [
+      'a completion condition',
+      loopDoc('<bpmn:completionCondition>#{done}</bpmn:completionCondition>'),
+      rewrapped('bpmn:completionCondition', 'T'),
+    ],
+    [
+      'a sequence flow condition',
+      bpmnDoc`    <bpmn:startEvent id="S" />
+    <bpmn:exclusiveGateway id="X" />
+    <bpmn:userTask id="T" />
+    <bpmn:endEvent id="E" />
+    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="X" />
+    <bpmn:sequenceFlow id="F2" sourceRef="X" targetRef="T">
+      <bpmn:conditionExpression>#{amount &gt; 1000}</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="F3" sourceRef="X" targetRef="E" />
+    <bpmn:sequenceFlow id="F4" sourceRef="T" targetRef="E" />`,
+      rewrapped('bpmn:conditionExpression', 'F2'),
+    ],
+    [
+      'a conditional trigger',
+      oneNodeDoc('intermediateCatchEvent', {
+        children: `<bpmn:conditionalEventDefinition id="cd">
+        <bpmn:condition>#{stock &lt; 5}</bpmn:condition>
+      </bpmn:conditionalEventDefinition>`,
+        doc: bpmnDoc,
+      }),
+      rewrapped('bpmn:condition', 'T'),
+    ],
+  ] as const)('%s reports the rewrap', async (_title, xml, message) => {
+    const { warnings } = await xmlToIr(xml);
+    expect(warnings.map((w) => w.message)).toEqual([message]);
+    expect(warnings.map((w) => w.category)).toEqual(['unmappedConstruct']);
+  });
+
+  // Only a leading `#{` is rewritten: a `#{` later in the body leaves the
+  // parse outside the subset, and the raw path returns it character for
+  // character. Widening the test to `contains` reports a body nothing changed.
+  it.each(['${lineCount}', '${a} #{b}'])(
+    'a body opening with ${ imports verbatim and reports nothing: %s',
+    async (body) => {
+      const { node, warnings } = await importOnly(
+        loopDoc(`<bpmn:loopCardinality>${body}</bpmn:loopCardinality>`),
+        'userTask',
+      );
+      expect(node.loop).toEqual({ collection: 'lines', cardinality: body });
+      expect(warnings).toEqual([]);
+    },
+  );
 });
 
 // ── 9c. Refusals: collaboration (pools / message flows) ─────────────────────
 
-describe('xmlToIr — refuses collaborations (pools / message flows)', () => {
+describe('xmlToIr: refuses collaborations (pools / message flows)', () => {
   const collaborationXml = bpmnDefs`  <bpmn:collaboration id="Collab">
     <bpmn:participant id="Pool1" name="Sales" processRef="p" />
     <bpmn:participant id="Pool2" name="Customer" />
@@ -623,7 +1824,7 @@ describe('xmlToIr — refuses collaborations (pools / message flows)', () => {
 
 // ── 10. Warnings: dropped extension attributes and lanes ────────────────────
 
-describe('xmlToIr — warns for dropped extension attributes', () => {
+describe('xmlToIr: warns for dropped extension attributes', () => {
   const formRefXml = oneNodeDoc('userTask', {
     id: 'FormRefTask',
     attrs:
@@ -693,7 +1894,7 @@ describe('xmlToIr — warns for dropped extension attributes', () => {
   });
 });
 
-describe('xmlToIr — warns for dropped lanes', () => {
+describe('xmlToIr: warns for dropped lanes', () => {
   const lanesXml = bpmnDoc`    <bpmn:laneSet id="LS1">
       <bpmn:lane id="Lane_Sales" name="Sales">
         <bpmn:flowNodeRef>S</bpmn:flowNodeRef>
@@ -753,10 +1954,10 @@ describe('xmlToIr — warns for dropped lanes', () => {
 
 // ── 11. Warnings: dropped extension elements ────────────────────────────────
 
-describe('xmlToIr — warns for dropped extension elements', () => {
+describe('xmlToIr: warns for dropped extension elements', () => {
   // `operaton:properties` is in the registered namespace but undeclared, so a
   // task carrying one keeps its drop attributable only through the residual
-  // path; `operaton:field` is declared, materialises against its owning
+  // path; `operaton:field` is declared, materializes against its owning
   // element, and is genuinely not carried, which is what a per-element
   // extension-element drop looks like.
   const droppingSvcXml = oneNodeDoc('serviceTask', {
@@ -785,7 +1986,7 @@ describe('xmlToIr — warns for dropped extension elements', () => {
 // ── 11b. Regression: a clean empty <extensionElements/> is not flagged
 // when another element in the same document carries a real drop. ────────────
 
-describe('xmlToIr — empty extensionElements is not flagged (regression)', () => {
+describe('xmlToIr: empty extensionElements is not flagged (regression)', () => {
   /**
    * One document, two elements: a user task with a genuinely empty
    * `<bpmn:extensionElements/>` (a stray stub modelers leave behind) and a
@@ -831,7 +2032,7 @@ describe('xmlToIr — empty extensionElements is not flagged (regression)', () =
 // ── 11c. Foreign-namespace (camunda:) extension elements are attributed
 // precisely per element (moddle keeps them as generic values). ──────────────
 
-describe('xmlToIr — foreign-namespace extension elements are per-element', () => {
+describe('xmlToIr: foreign-namespace extension elements are per-element', () => {
   it('names a camunda: extension element against its owning task', async () => {
     const xml = oneNodeDoc('serviceTask', {
       id: 'CamSvc',
@@ -852,7 +2053,7 @@ describe('xmlToIr — foreign-namespace extension elements are per-element', () 
 // ── 11d. Undeclared operaton:* extension elements are reported once, not lost
 // and not fanned out across clean elements. ─────────────────────────────────
 
-describe('xmlToIr — undeclared operaton extension element residual', () => {
+describe('xmlToIr: undeclared operaton extension element residual', () => {
   const residualXml = operatonDoc`    <bpmn:startEvent id="S" />
     <bpmn:userTask id="CleanTask" name="Clean Task">
       <bpmn:extensionElements/>
@@ -882,11 +2083,34 @@ describe('xmlToIr — undeclared operaton extension element residual', () => {
     // residual drops moddle cannot tie to a specific step.
     expect(extWarnings[0].elementId).toBe('p');
   });
+
+  it('reports extension content on a referenced root element, attributed to the root', async () => {
+    const { warnings } = await xmlToIr(
+      operatonDefs`  <bpmn:message id="Message_1" name="OrderReceived">
+    <bpmn:extensionElements>
+      <operaton:inputOutput>
+        <operaton:inputParameter name="url">http://x</operaton:inputParameter>
+      </operaton:inputOutput>
+    </bpmn:extensionElements>
+  </bpmn:message>
+  <bpmn:process id="p" isExecutable="true">
+    <bpmn:startEvent id="S">
+      <bpmn:messageEventDefinition id="md" messageRef="Message_1" />
+    </bpmn:startEvent>
+    <bpmn:endEvent id="E" />
+    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="E" />
+  </bpmn:process>`,
+    );
+    expectOneWarning(extensionWarnings(warnings), {
+      elementId: 'Message_1',
+      message: 'operaton:InputOutput',
+    });
+  });
 });
 
 // ── 11e. bpmn:documentation is warned-and-dropped, per owning element ───────
 
-describe('xmlToIr — warns for dropped documentation', () => {
+describe('xmlToIr: warns for dropped documentation', () => {
   const documentationXml = operatonDoc`    <bpmn:documentation>This process handles onboarding.</bpmn:documentation>
     <bpmn:startEvent id="S" />
     <bpmn:userTask id="DocTask" name="Review the application" operaton:assignee="alice">
@@ -932,7 +2156,7 @@ describe('xmlToIr — warns for dropped documentation', () => {
 
 // ── 11f. BPMN content the IR does not map is reported, per construct ────────
 
-describe('xmlToIr — warns for unmapped BPMN content', () => {
+describe('xmlToIr: warns for unmapped BPMN content', () => {
   it('reports a text annotation, an association, and a group against their container', async () => {
     const xml = bpmnDoc`    <bpmn:startEvent id="S" />
     <bpmn:endEvent id="E" />
@@ -1111,7 +2335,7 @@ describe('xmlToIr — warns for unmapped BPMN content', () => {
 
 // ── 12. Embedded bpmn:subProcess imports recursively ─────────────────────────
 
-describe('xmlToIr — embedded sub-process imports recursively', () => {
+describe('xmlToIr: embedded sub-process imports recursively', () => {
   const subProcessDoc = (children: string, attrs = '', doc = bpmnDoc) =>
     oneNodeDoc('subProcess', { id: 'Sub', attrs, children, doc });
 
@@ -1160,7 +2384,7 @@ describe('xmlToIr — embedded sub-process imports recursively', () => {
     expect(ir.sequenceFlows.map((f) => f.id)).toEqual(['F1', 'F2']);
   });
 
-  it('an event sub-process (triggeredByEvent="true") is imported, not refused — see the "event layer import" suite below', async () => {
+  it('an event sub-process (triggeredByEvent="true") is imported, not refused: see the "event layer import" suite below', async () => {
     const xml = operatonDefs`  <bpmn:error id="Error_PF" errorCode="PF" />
   <bpmn:process id="p" isExecutable="true">
     <bpmn:startEvent id="S" />
@@ -1181,17 +2405,20 @@ describe('xmlToIr — embedded sub-process imports recursively', () => {
     ).toBe(true);
   });
 
-  it('refuses a sub-process with multiInstanceLoopCharacteristics', async () => {
+  it('imports a repeated sub-process, keeping its body', async () => {
     const xml = subProcessDoc(
-      `<bpmn:multiInstanceLoopCharacteristics isSequential="false" />
+      `<bpmn:multiInstanceLoopCharacteristics isSequential="true">
+        <bpmn:loopCardinality>2</bpmn:loopCardinality>
+      </bpmn:multiInstanceLoopCharacteristics>
       <bpmn:startEvent id="SubStart" />
       <bpmn:endEvent id="SubEnd" />
       <bpmn:sequenceFlow id="SF1" sourceRef="SubStart" targetRef="SubEnd" />`,
     );
 
-    await expect(xmlToIr(xml)).rejects.toBeInstanceOf(
-      UnsupportedLoopCharacteristicsError,
-    );
+    const { node, warnings } = await importOnly(xml, 'subProcess');
+    expect(node.loop).toEqual({ cardinality: '2', sequential: true });
+    expect(node.flowElements).toHaveLength(2);
+    expect(warnings).toEqual([]);
   });
 
   it('warns for an unsupported extension attribute on a task nested inside a sub-process', async () => {
@@ -1212,7 +2439,7 @@ describe('xmlToIr — embedded sub-process imports recursively', () => {
     expect(w?.elementId).toBe('InnerTask');
   });
 
-  it('refuses an event definition on a start event nested inside a sub-process', async () => {
+  it('refuses a trigger on a start event nested inside a sub-process', async () => {
     const xml = subProcessDoc(
       `<bpmn:startEvent id="SubStart">
         <bpmn:timerEventDefinition />
@@ -1221,9 +2448,16 @@ describe('xmlToIr — embedded sub-process imports recursively', () => {
       <bpmn:sequenceFlow id="SF1" sourceRef="SubStart" targetRef="SubEnd" />`,
     );
 
-    await expect(xmlToIr(xml)).rejects.toBeInstanceOf(
-      UnsupportedEventDefinitionError,
+    const e = await expectRefusal<UnsupportedEventFeatureError>(
+      xmlToIr(xml),
+      UnsupportedEventFeatureError,
+      'a subprocess cannot start on a trigger: Operaton rejects one there ' +
+        'when it parses the file; a subprocess is entered from the ' +
+        'surrounding process, not by an event of its own',
     );
+    expect(e.elementId).toBe('SubStart');
+    expect(e.message).toContain("Put the trigger on an 'on' handler");
+    expect(e.message).not.toContain('Event handlers catch one');
   });
 
   it('imports two-level nesting recursively', async () => {
@@ -1262,7 +2496,7 @@ describe('xmlToIr — embedded sub-process imports recursively', () => {
 
 // ── 13. callActivity import ──────────────────────────────────────────────────
 
-describe('xmlToIr — callActivity import', () => {
+describe('xmlToIr: callActivity import', () => {
   const callDoc = (attrs = '', children = '', doc = operatonDoc) =>
     oneNodeDoc('callActivity', {
       id: 'CallSub',
@@ -1317,24 +2551,24 @@ describe('xmlToIr — callActivity import', () => {
   const importCall = (attrs: string) =>
     importOnly(callXmlWithBindingAttrs(attrs), 'callActivity');
 
-  it('no binding attributes → the IR binding is absent', async () => {
+  it('no binding attributes -> the IR binding is absent', async () => {
     const { node } = await importCall('');
     expect('binding' in node).toBe(false);
   });
 
   it.each([
     [
-      'calledElementBinding="latest" → { kind: "latest" }',
+      'calledElementBinding="latest" -> { kind: "latest" }',
       'operaton:calledElementBinding="latest"',
       { kind: 'latest' },
     ],
     [
-      'calledElementBinding="deployment" → { kind: "deployment" }',
+      'calledElementBinding="deployment" -> { kind: "deployment" }',
       'operaton:calledElementBinding="deployment"',
       { kind: 'deployment' },
     ],
     [
-      'calledElementBinding="version" with calledElementVersion → { kind: "version", version }',
+      'calledElementBinding="version" with calledElementVersion -> { kind: "version", version }',
       'operaton:calledElementBinding="version" operaton:calledElementVersion="7"',
       { kind: 'version', version: '7' },
     ],
@@ -1416,47 +2650,52 @@ describe('xmlToIr — callActivity import', () => {
     [
       'an operaton:in with both source and sourceExpression is refused, naming the shape',
       '<operaton:in source="a" sourceExpression="${b}" target="c" />',
-      /source.*sourceExpression/i,
+      'an operaton:in carries both source and sourceExpression',
     ],
     [
       'an operaton:in with source but no target is refused, naming the shape',
       '<operaton:in source="a" />',
-      /source without a target/i,
+      'an operaton:in carries source without a target',
     ],
     [
       'an operaton:in with variables="foo" is refused, naming the shape',
       '<operaton:in variables="foo" />',
-      /variables="foo"/,
+      'an operaton:in carries variables="foo", which this tool cannot import (only variables="all" is supported)',
     ],
     [
       'a businessKey In combined with a target is refused, naming the shape',
       '<operaton:in businessKey="${execution.processBusinessKey}" target="x" />',
-      /businessKey/i,
+      'an operaton:in businessKey is combined with source/sourceExpression/target/variables/local',
     ],
     [
       'two businessKey Ins are refused, naming the shape',
       '<operaton:in businessKey="${a}" /><operaton:in businessKey="${b}" />',
-      /more than one/i,
+      'more than one operaton:in businessKey is set',
     ],
     [
       'an empty operaton:in with no recognized attribute is refused',
       '<operaton:in />',
-      /none of the recognized shapes/i,
+      'an operaton:in carries none of the recognized shapes (source+target, sourceExpression+target, variables="all", or businessKey)',
     ],
     [
       'an operaton:in with sourceExpression but no target is refused, naming the shape',
       '<operaton:in sourceExpression="${a}" />',
-      /sourceExpression without a target/i,
+      'an operaton:in carries sourceExpression without a target',
     ],
     [
       'an operaton:in with variables="all" combined with source/target is refused, naming the shape',
       '<operaton:in variables="all" source="a" target="b" />',
-      /variables="all" combined with/i,
+      'an operaton:in carries variables="all" combined with source/sourceExpression/target',
     ],
     [
       'a businessKey In combined with variables is refused, naming the shape',
       '<operaton:in businessKey="${a}" variables="all" />',
-      /businessKey.*variables/i,
+      'an operaton:in businessKey is combined with source/sourceExpression/target/variables/local',
+    ],
+    [
+      'an operaton:out with source but no target is refused, naming the out tag',
+      '<operaton:out source="a" />',
+      'an operaton:out carries source without a target',
     ],
   ] as const)('%s', async (_title, extension, detail) => {
     await expectRefusal(
@@ -1521,16 +2760,18 @@ describe('xmlToIr — callActivity import', () => {
     expect(inner.calledElement).toBe('sub-process');
   });
 
-  it('a call activity with multiInstanceLoopCharacteristics is refused', async () => {
+  it('a call activity with multiInstanceLoopCharacteristics imports its repetition', async () => {
     const xml = callDoc(
       '',
-      '<bpmn:multiInstanceLoopCharacteristics isSequential="false" />',
+      `<bpmn:multiInstanceLoopCharacteristics>
+        <bpmn:loopCardinality>2</bpmn:loopCardinality>
+      </bpmn:multiInstanceLoopCharacteristics>`,
       bpmnDoc,
     );
 
-    await expect(xmlToIr(xml)).rejects.toBeInstanceOf(
-      UnsupportedLoopCharacteristicsError,
-    );
+    const { node, warnings } = await importOnly(xml, 'callActivity');
+    expect(node.loop).toEqual({ cardinality: '2' });
+    expect(warnings).toEqual([]);
   });
 
   // ── readDerivableName symmetry ────────────────────────────────────────────
@@ -1561,7 +2802,7 @@ describe('xmlToIr — callActivity import', () => {
 
 // ── 14. Event layer import: handlers, throws, emits, roots ──────────────────
 
-describe('xmlToIr — event layer import', () => {
+describe('xmlToIr: event layer import', () => {
   // ── 14a. Full positive import (mirrors the ir-to-xml event-layer fixture) ─
 
   const fullEventXml = dualDefs`  <bpmn:error id="Error_PF" name="PF" errorCode="PF" operaton:errorMessage="boom" />
@@ -1847,7 +3088,23 @@ describe('xmlToIr — event layer import', () => {
       });
     });
 
-    it('operaton:errorCodeVariable on an error end event (throw side) warns — it has no effect there', async () => {
+    it('a genuine label on an event handler start is kept, not dropped', async () => {
+      const { ir, warnings } = await xmlToIr(
+        bpmnDoc`    <bpmn:startEvent id="S" />
+    <bpmn:subProcess id="Handler" triggeredByEvent="true">
+      <bpmn:startEvent id="HandlerStart" name="Cancelled">
+        <bpmn:errorEventDefinition />
+      </bpmn:startEvent>
+    </bpmn:subProcess>
+    <bpmn:endEvent id="E" />
+    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="E" />`,
+      );
+      const start = byId(subProcess(ir, 'Handler'), 'HandlerStart');
+      expect(start.kind === 'startEvent' && start.name).toBe('Cancelled');
+      expect(warnings.filter((w) => w.category === 'label')).toEqual([]);
+    });
+
+    it('operaton:errorCodeVariable on an error end event (throw side) warns: it has no effect there', async () => {
       const { ir, warnings } = await xmlToIr(
         typedEndXml(
           '',
@@ -1977,18 +3234,21 @@ describe('xmlToIr — event layer import', () => {
     <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="E" />
   </bpmn:process>`;
 
-    const e = await expectRefusal<UnsupportedEventDefinitionError>(
+    const e = await expectRefusal<UnsupportedEventFeatureError>(
       xmlToIr(xml),
-      UnsupportedEventDefinitionError,
+      UnsupportedEventFeatureError,
+      'a process cannot start on an error; Operaton ignores the trigger ' +
+        'and starts the process as if none were written, so importing it ' +
+        'would write back a document the engine runs differently from what ' +
+        'it says',
     );
-    expect(e.eventKind).toBe('start');
-    expect(e.definitionType).toBe('bpmn:ErrorEventDefinition');
+    expect(e.elementId).toBe('S');
   });
 });
 
 // ── 15. Message/signal/timer/conditional import ─────────────────────────────
 
-describe('xmlToIr — message/signal/timer/conditional import', () => {
+describe('xmlToIr: message/signal/timer/conditional import', () => {
   // ── 15a. Full positive import ───────────────────────────────────────────
 
   const fullNewKindsXml = bpmnDefs`  <bpmn:message id="Message_Pay" name="PaymentReceived" />
@@ -2080,7 +3340,8 @@ describe('xmlToIr — message/signal/timer/conditional import', () => {
       [
         'a ref-less message definition',
         handlerDoc('<bpmn:messageEventDefinition id="d" />', { body: '' }),
-        'message',
+        'a message definition must reference a bpmn:Message root with a ' +
+          'non-empty name',
       ],
       [
         'a signal ref to a nameless root',
@@ -2088,12 +3349,14 @@ describe('xmlToIr — message/signal/timer/conditional import', () => {
           '<bpmn:signalEventDefinition id="d" signalRef="Signal_NoName" />',
           { roots: '  <bpmn:signal id="Signal_NoName" />\n', body: '' },
         ),
-        'signal',
+        'a signal definition must reference a bpmn:Signal root with a ' +
+          'non-empty name',
       ],
       [
         'a timer definition with zero time children',
         handlerDoc('<bpmn:timerEventDefinition id="d" />', { body: '' }),
-        'timer',
+        'a timer definition must carry exactly one of ' +
+          'timeDuration/timeDate/timeCycle (found 0)',
       ],
       [
         'a timer definition with two time children',
@@ -2104,7 +3367,8 @@ describe('xmlToIr — message/signal/timer/conditional import', () => {
         </bpmn:timerEventDefinition>`,
           { body: '' },
         ),
-        'timer',
+        'a timer definition must carry exactly one of ' +
+          'timeDuration/timeDate/timeCycle (found 2)',
       ],
       [
         'a timer definition with an empty body',
@@ -2114,12 +3378,13 @@ describe('xmlToIr — message/signal/timer/conditional import', () => {
         </bpmn:timerEventDefinition>`,
           { body: '' },
         ),
-        'timer',
+        "a timer definition's timeDuration has an empty body",
       ],
       [
         'a conditional definition without a condition child',
         handlerDoc('<bpmn:conditionalEventDefinition id="d" />', { body: '' }),
-        'conditional',
+        'a conditional definition must carry a condition with a non-empty ' +
+          'body',
       ],
       [
         'operaton:variableName on a conditional definition',
@@ -2129,7 +3394,8 @@ describe('xmlToIr — message/signal/timer/conditional import', () => {
         </bpmn:conditionalEventDefinition>`,
           { body: '', defs: operatonDefs },
         ),
-        'variableName',
+        "a conditional definition's operaton:variableName narrows when the " +
+          'condition is (re-)evaluated, which this tool cannot represent',
       ],
       [
         'camunda:variableEvents on a conditional definition',
@@ -2139,7 +3405,8 @@ describe('xmlToIr — message/signal/timer/conditional import', () => {
         </bpmn:conditionalEventDefinition>`,
           { body: '', defs: camundaDefs },
         ),
-        'variableEvents',
+        "a conditional definition's camunda:variableEvents narrows when the " +
+          'condition is (re-)evaluated, which this tool cannot represent',
       ],
     ] as const)(
       '%s refuses with UnsupportedEventFeatureError naming the form',
@@ -2150,16 +3417,19 @@ describe('xmlToIr — message/signal/timer/conditional import', () => {
 
     it.each([
       [
-        'a message definition on an end event',
+        'a link definition on an end event',
         rootedDoc(
-          '  <bpmn:message id="Message_X" name="X" />\n',
+          '',
           `    <bpmn:endEvent id="E">
-      <bpmn:messageEventDefinition messageRef="Message_X" />
+      <bpmn:linkEventDefinition name="Resume" />
     </bpmn:endEvent>
     <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="E" />`,
         ),
         'end',
-        'bpmn:MessageEventDefinition',
+        'bpmn:LinkEventDefinition',
+        'A typed end event supports terminate, error, escalation, message, ' +
+          'signal, or compensation, plus cancel inside a block that can be ' +
+          'given up.',
       ],
       [
         'a conditional definition on an intermediate throw',
@@ -2172,16 +3442,18 @@ describe('xmlToIr — message/signal/timer/conditional import', () => {
         }),
         'intermediate throw',
         'bpmn:ConditionalEventDefinition',
+        'An emit supports escalation, message, signal, or compensation.',
       ],
     ] as const)(
-      '%s refuses with UnsupportedEventDefinitionError',
-      async (_title, xml, eventKind, definitionType) => {
+      '%s refuses with UnsupportedEventDefinitionError naming what the position does take',
+      async (_title, xml, eventKind, definitionType, supported) => {
         const e = await expectRefusal<UnsupportedEventDefinitionError>(
           xmlToIr(xml),
           UnsupportedEventDefinitionError,
         );
         expect(e.eventKind).toBe(eventKind);
         expect(e.definitionType).toBe(definitionType);
+        expect(e.message).toContain(supported);
       },
     );
   });
@@ -2275,7 +3547,8 @@ describe('xmlToIr — message/signal/timer/conditional import', () => {
     await expectRefusal(
       xmlToIr(xml),
       UnsupportedEventFeatureError,
-      'variableName',
+      "a conditional definition's camunda:variableName narrows when the " +
+        'condition is (re-)evaluated, which this tool cannot represent',
     );
   });
 
@@ -2326,7 +3599,7 @@ describe('xmlToIr — message/signal/timer/conditional import', () => {
 
 // ── 16. Compensation import ──────────────────────────────────────────────────
 
-describe('xmlToIr — compensation import', () => {
+describe('xmlToIr: compensation import', () => {
   // ── 16a. Full positive import ────────────────────────────────────────────
 
   const compensationXml = bpmnDoc`    <bpmn:startEvent id="PStart" />
@@ -2445,7 +3718,9 @@ describe('xmlToIr — compensation import', () => {
           `<bpmn:userTask id="ReserveRoom" />
       ${undoHandler('', 'activityRef="ReserveRoom"')}`,
         ),
-        'activityRef',
+        'a compensation definition targets one activity by reference ' +
+          '(activityRef="ReserveRoom"); this tool always addresses the ' +
+          'enclosing scope and cannot target a single activity',
       ],
       [
         'an activityRef on a compensation end-event definition',
@@ -2458,7 +3733,9 @@ describe('xmlToIr — compensation import', () => {
     <bpmn:sequenceFlow id="Flow_S_T" sourceRef="S" targetRef="T" />
     <bpmn:sequenceFlow id="Flow_T_ThrowUndo" sourceRef="T" targetRef="ThrowUndo" />`,
         ),
-        'activityRef',
+        'a compensation definition targets one activity by reference ' +
+          '(activityRef="T"); this tool always addresses the enclosing ' +
+          'scope and cannot target a single activity',
       ],
       [
         'waitForCompletion="false" on an intermediate throw',
@@ -2468,7 +3745,9 @@ describe('xmlToIr — compensation import', () => {
           children:
             '<bpmn:compensateEventDefinition id="d" waitForCompletion="false" />',
         }),
-        'waitForCompletion',
+        'a compensation definition sets waitForCompletion="false"; this ' +
+          'tool only imports the default (wait for the compensation to ' +
+          'complete) behavior',
       ],
       [
         'waitForCompletion="false" on an end event',
@@ -2479,12 +3758,16 @@ describe('xmlToIr — compensation import', () => {
     </bpmn:endEvent>
     <bpmn:sequenceFlow id="Flow_S_ThrowUndo" sourceRef="S" targetRef="ThrowUndo" />`,
         ),
-        'waitForCompletion',
+        'a compensation definition sets waitForCompletion="false"; this ' +
+          'tool only imports the default (wait for the compensation to ' +
+          'complete) behavior',
       ],
       [
         'isInterrupting="false" on a compensation handler start',
         bookingDoc(undoHandler('isInterrupting="false"')),
-        'non-interrupting',
+        'a compensation handler cannot be non-interrupting ' +
+          '(isInterrupting="false"); BPMN requires a compensation trigger ' +
+          'to interrupt its scope',
       ],
     ] as const)(
       '%s refuses with UnsupportedEventFeatureError naming the feature',
@@ -2515,7 +3798,7 @@ describe('xmlToIr — compensation import', () => {
     </bpmn:subProcess>
     <bpmn:endEvent id="PEnd" />
     <bpmn:sequenceFlow id="F1" sourceRef="PStart" targetRef="PEnd" />`,
-        'another event sub-process',
+        'another event subprocess',
       ],
     ] as const)(
       '%s refuses with UnsupportedEventFeatureError naming the host',
@@ -2556,7 +3839,7 @@ describe('xmlToIr — compensation import', () => {
         const e = await expectRefusal<UnsupportedEventFeatureError>(
           xmlToIr(xml),
           UnsupportedEventFeatureError,
-          'isForCompensation',
+          IS_FOR_COMPENSATION_DETAIL,
         );
         expect(e.elementId).toBe(elementId);
       },
@@ -2624,7 +3907,7 @@ describe('xmlToIr — compensation import', () => {
 
 // ── 17. Boundary event import ────────────────────────────────────────────────
 
-describe('xmlToIr — boundary event import', () => {
+describe('xmlToIr: boundary event import', () => {
   // ── 17a. Full positive import: six triggers, cancelActivity, escalation host ─
 
   const boundaryXml = bpmnDefs`  <bpmn:error id="Error_Oops" errorCode="OOPS" />
@@ -2767,13 +4050,25 @@ ${extraFlows}    <bpmn:sequenceFlow id="F1" sourceRef="PStart" targetRef="Review
     <bpmn:sequenceFlow id="F2" sourceRef="Review" targetRef="PEnd" />`;
 
   describe('refusals', () => {
+    /**
+     * The whole refusal an attachedToRef that names nothing attachable draws.
+     * It enumerates every host noun, so pinning it whole pins that list.
+     */
+    const unattachableDetail = (ref: string): string =>
+      `attachedToRef "${ref}" does not name a plain task, user task, ` +
+      'service task, send task, business rule task, receive task, script ' +
+      'task, subprocess, attempt block, or call activity that is itself a ' +
+      'flow element of this same container; a boundary event can only ' +
+      'attach to an activity alongside it';
+
     it.each([
       [
         'a missing attachedToRef',
         reviewBoundaryDoc(`<bpmn:boundaryEvent id="Orphan">
       ${TIMER_1H}
     </bpmn:boundaryEvent>`),
-        'attachedToRef',
+        'a boundary event has no attachedToRef; BPMN requires every ' +
+          'boundary event to attach to an activity in its own container',
         'Orphan',
       ],
       [
@@ -2785,7 +4080,8 @@ ${extraFlows}    <bpmn:sequenceFlow id="F1" sourceRef="PStart" targetRef="Review
     </bpmn:boundaryEvent>`,
           '    <bpmn:sequenceFlow id="F0" sourceRef="PStart" targetRef="Boundary_Review_timer" />\n',
         ),
-        'incoming',
+        'a boundary event carries an incoming sequence flow; it is ' +
+          'triggered by its own event, not by an incoming flow',
         'Boundary_Review_timer',
       ],
       [
@@ -2802,7 +4098,9 @@ ${extraFlows}    <bpmn:sequenceFlow id="F1" sourceRef="PStart" targetRef="Review
           '',
           operatonDoc,
         ),
-        'inputOutput',
+        'a boundary event carries an operaton:inputOutput mapping; ' +
+          'Operaton forbids input/output variable mappings on a boundary ' +
+          'event',
         'Boundary_Review_timer',
       ],
       [
@@ -2810,7 +4108,9 @@ ${extraFlows}    <bpmn:sequenceFlow id="F1" sourceRef="PStart" targetRef="Review
         reviewBoundaryDoc(`<bpmn:boundaryEvent id="Boundary_Review_error" attachedToRef="Review" cancelActivity="false">
       <bpmn:errorEventDefinition id="ErrDef" />
     </bpmn:boundaryEvent>`),
-        'cancelActivity',
+        'an error boundary event cannot be non-interrupting ' +
+          '(cancelActivity="false"); BPMN gives an error boundary no ' +
+          'non-interrupting form',
         'Boundary_Review_error',
       ],
       [
@@ -2829,7 +4129,7 @@ ${extraFlows}    <bpmn:sequenceFlow id="F1" sourceRef="PStart" targetRef="Review
     <bpmn:endEvent id="PEnd" />
     <bpmn:sequenceFlow id="F1" sourceRef="PStart" targetRef="Elsewhere" />
     <bpmn:sequenceFlow id="F2" sourceRef="Elsewhere" targetRef="PEnd" />`,
-        'attachedToRef',
+        unattachableDetail('Other'),
         'Boundary_Other_timer',
       ],
       [
@@ -2852,7 +4152,7 @@ ${extraFlows}    <bpmn:sequenceFlow id="F1" sourceRef="PStart" targetRef="Review
     <bpmn:sequenceFlow id="F1" sourceRef="PStart" targetRef="Outer" />
     <bpmn:sequenceFlow id="F2" sourceRef="Outer" targetRef="Wrap" />
     <bpmn:sequenceFlow id="F3" sourceRef="Wrap" targetRef="PEnd" />`,
-        'attachedToRef',
+        unattachableDetail('Outer'),
         'Boundary_Outer_timer',
       ],
       [
@@ -2865,7 +4165,7 @@ ${extraFlows}    <bpmn:sequenceFlow id="F1" sourceRef="PStart" targetRef="Review
     <bpmn:endEvent id="PEnd" />
     <bpmn:sequenceFlow id="F1" sourceRef="PStart" targetRef="Choose" />
     <bpmn:sequenceFlow id="F2" sourceRef="Choose" targetRef="PEnd" />`,
-        'attachedToRef',
+        unattachableDetail('Choose'),
         'Boundary_Choose_timer',
       ],
       [
@@ -2884,7 +4184,7 @@ ${extraFlows}    <bpmn:sequenceFlow id="F1" sourceRef="PStart" targetRef="Review
     <bpmn:boundaryEvent id="Boundary_Handler_timer" attachedToRef="Handler">
       ${TIMER_1H}
     </bpmn:boundaryEvent>`),
-        'attachedToRef',
+        unattachableDetail('Handler'),
         'Boundary_Handler_timer',
       ],
       [
@@ -2898,7 +4198,8 @@ ${extraFlows}    <bpmn:sequenceFlow id="F1" sourceRef="PStart" targetRef="Review
     </bpmn:boundaryEvent>`,
           '    <bpmn:sequenceFlow id="F0" sourceRef="PStart" targetRef="Boundary_Review_timer" />\n',
         ),
-        'incoming',
+        'a boundary event carries an incoming sequence flow; it is ' +
+          'triggered by its own event, not by an incoming flow',
         'Boundary_Review_timer',
       ],
     ] as const)(
@@ -2913,17 +4214,44 @@ ${extraFlows}    <bpmn:sequenceFlow id="F1" sourceRef="PStart" targetRef="Review
       },
     );
 
-    it('a trigger definition kind outside the six supported refuses with UnsupportedEventDefinitionError naming the boundary position', async () => {
+    it('the host refusal enumerates every kind a boundary may attach to', async () => {
+      const e = await expectRefusal<UnsupportedEventFeatureError>(
+        xmlToIr(
+          bpmnDoc`    <bpmn:startEvent id="PStart" />
+    <bpmn:exclusiveGateway id="Choose" />
+    <bpmn:boundaryEvent id="Boundary_Choose_timer" attachedToRef="Choose">
+      ${TIMER_1H}
+    </bpmn:boundaryEvent>
+    <bpmn:endEvent id="PEnd" />
+    <bpmn:sequenceFlow id="F1" sourceRef="PStart" targetRef="Choose" />
+    <bpmn:sequenceFlow id="F2" sourceRef="Choose" targetRef="PEnd" />`,
+        ),
+        UnsupportedEventFeatureError,
+      );
+      expect(e.detail).toBe(
+        'attachedToRef "Choose" does not name a plain task, user task, ' +
+          'service task, send task, business rule task, receive task, script ' +
+          'task, subprocess, attempt block, or call activity that is itself a ' +
+          'flow element of this same container; a boundary event can only ' +
+          'attach to an activity alongside it',
+      );
+    });
+
+    it('a trigger definition kind the boundary position does not take refuses with UnsupportedEventDefinitionError naming it', async () => {
       const e = await expectRefusal<UnsupportedEventDefinitionError>(
         xmlToIr(
-          reviewBoundaryDoc(`<bpmn:boundaryEvent id="Boundary_Review_cancel" attachedToRef="Review">
-      <bpmn:cancelEventDefinition id="CancelDef" />
+          reviewBoundaryDoc(`<bpmn:boundaryEvent id="Boundary_Review_link" attachedToRef="Review">
+      <bpmn:linkEventDefinition id="LinkDef" name="Resume" />
     </bpmn:boundaryEvent>`),
         ),
         UnsupportedEventDefinitionError,
       );
       expect(e.eventKind).toBe('boundary');
-      expect(e.definitionType).toBe('bpmn:CancelEventDefinition');
+      expect(e.definitionType).toBe('bpmn:LinkEventDefinition');
+      expect(e.message).toContain(
+        'A boundary event supports error, escalation, message, signal, ' +
+          'timer, or conditional, plus cancel on a block that can be given up.',
+      );
     });
 
     it('an escalation boundary on a service task refuses with UnsupportedEventFeatureError naming the legal host kinds', async () => {
@@ -2941,9 +4269,11 @@ ${extraFlows}    <bpmn:sequenceFlow id="F1" sourceRef="PStart" targetRef="Review
         UnsupportedEventFeatureError,
       );
       expect(e.elementId).toBe('Boundary_Ship_escalation');
-      expect(e.detail).toContain('sub-process');
-      expect(e.detail).toContain('call activity');
-      expect(e.detail).toContain('user task');
+      expect(e.detail).toBe(
+        'an escalation boundary event attaches to "Ship", a service task; ' +
+          'Operaton only allows an escalation boundary on a subprocess, a ' +
+          'call activity, or a user task',
+      );
     });
   });
 
@@ -2989,7 +4319,7 @@ ${extraFlows}    <bpmn:sequenceFlow id="F1" sourceRef="PStart" targetRef="Review
 
 // ── 18. Intermediate catch event import ──────────────────────────────────────
 
-describe('xmlToIr — intermediate catch event import', () => {
+describe('xmlToIr: intermediate catch event import', () => {
   // ── 18a. Map: the four supported triggers, on the main flow ────────────────
 
   it('imports message, timer (duration/date/cycle), signal, and conditional catches into the exact expected IR, incoming/outgoing preserved, warnings: []', async () => {
@@ -3112,35 +4442,50 @@ describe('xmlToIr — intermediate catch event import', () => {
     });
 
   describe('refuses an unsupported trigger', () => {
+    /**
+     * The whole refusal a trigger no await admits draws. It enumerates where
+     * each refused trigger does have a surface, so pinning it whole pins that.
+     */
+    const unawaitableDetail = (tag: string): string =>
+      `an await cannot carry a bpmn:${tag}: only message, timer, signal, ` +
+      'or conditional triggers can be awaited inline; error and escalation ' +
+      'are caught by an event handler and raised with throw/emit, ' +
+      'compensation is undone by a subprocess block, a link has no surface, ' +
+      'and a cancel is written on the end that gives up an attempt block';
+
     it.each([
       [
         'link',
         '<bpmn:linkEventDefinition id="d" name="X" />',
-        'LinkEventDefinition',
+        unawaitableDetail('LinkEventDefinition'),
       ],
-      ['error', '<bpmn:errorEventDefinition id="d" />', 'ErrorEventDefinition'],
+      [
+        'error',
+        '<bpmn:errorEventDefinition id="d" />',
+        unawaitableDetail('ErrorEventDefinition'),
+      ],
       [
         'escalation',
         '<bpmn:escalationEventDefinition id="d" />',
-        'EscalationEventDefinition',
+        unawaitableDetail('EscalationEventDefinition'),
       ],
       [
         'compensation',
         '<bpmn:compensateEventDefinition id="d" />',
-        'CompensateEventDefinition',
+        unawaitableDetail('CompensateEventDefinition'),
       ],
       [
         'cancel',
         '<bpmn:cancelEventDefinition id="d" />',
-        'CancelEventDefinition',
+        unawaitableDetail('CancelEventDefinition'),
       ],
     ] as const)(
       'a %s trigger refuses with UnsupportedEventFeatureError naming the form',
-      async (_label, definitionXml, expectedTypeName) => {
+      async (_label, definitionXml, detail) => {
         const e = await expectRefusal<UnsupportedEventFeatureError>(
           xmlToIr(unsupportedTriggerXml(definitionXml)),
           UnsupportedEventFeatureError,
-          expectedTypeName,
+          detail,
         );
         expect(e.elementId).toBe('Wait');
       },
@@ -3171,7 +4516,8 @@ ${definitions}
       </bpmn:timerEventDefinition>
       <bpmn:signalEventDefinition id="d2" signalRef="Signal_Ping" />`,
         ),
-        '2 event definitions',
+        'an await carries 2 event definitions: only a single message, ' +
+          'timer, signal, or conditional trigger can be awaited',
       ],
       [
         'parallelMultiple="true"',
@@ -3179,12 +4525,15 @@ ${definitions}
           'parallelMultiple="true"',
           '      <bpmn:signalEventDefinition id="d" signalRef="Signal_Ping" />',
         ),
-        'parallelMultiple',
+        'an await with parallelMultiple="true" waits for several triggers ' +
+          'together; only a single message, timer, signal, or conditional ' +
+          'trigger can be awaited',
       ],
       [
         'a "none" catch with zero event definitions',
         oneNodeDoc('intermediateCatchEvent', { id: 'Wait', doc: bpmnDoc }),
-        'none',
+        'an await with no event definition (a "none" intermediate catch) ' +
+          'waits for nothing this tool can represent',
       ],
       [
         // Narrowing inherited from the shared catch-definition read.
@@ -3195,7 +4544,8 @@ ${definitions}
       </bpmn:conditionalEventDefinition>`,
           operatonDoc,
         ),
-        'variableName',
+        "a conditional definition's operaton:variableName narrows when the " +
+          'condition is (re-)evaluated, which this tool cannot represent',
       ],
     ] as const)(
       '%s refuses with UnsupportedEventFeatureError naming the form',
@@ -3208,7 +4558,7 @@ ${definitions}
 
 // ── 19. Flat engine settings import as named IR fields ───────────────────────
 
-describe('xmlToIr — flat engine settings on a user task', () => {
+describe('xmlToIr: flat engine settings on a user task', () => {
   const importUserTask = (attrs: string, children = '') =>
     importOnly(oneNodeDoc('userTask', { attrs, children }), 'userTask');
 
@@ -3260,7 +4610,7 @@ describe('xmlToIr — flat engine settings on a user task', () => {
     expect(warnings).toEqual([]);
   });
 });
-describe('xmlToIr — flat engine settings honour the camunda: alias', () => {
+describe('xmlToIr: flat engine settings honor the camunda: alias', () => {
   const importUserTask = (attrs: string) =>
     importOnly(oneNodeDoc('userTask', { attrs, doc: dualDoc }), 'userTask');
 
@@ -3288,7 +4638,7 @@ describe('xmlToIr — flat engine settings honour the camunda: alias', () => {
   });
 });
 
-describe('xmlToIr — flat engine settings on every carrying node kind', () => {
+describe('xmlToIr: flat engine settings on every carrying node kind', () => {
   const everyKindXml = operatonDefs`  <bpmn:escalation id="Escalation_Up" escalationCode="UP" />
   <bpmn:process id="p" isExecutable="true" operaton:versionTag="1.4">
     <bpmn:startEvent id="Start" operaton:asyncBefore="true" />
@@ -3389,7 +4739,7 @@ describe('xmlToIr — flat engine settings on every carrying node kind', () => {
 // ── 19b. The drop sweep is owner-aware: content is consumed only where it is
 // actually read, and reported everywhere else. ───────────────────────────────
 
-describe('xmlToIr — engine settings on a gateway stay a reported drop', () => {
+describe('xmlToIr: engine settings on a gateway stay a reported drop', () => {
   const gatewayXml = (attrs: string, children = ''): string =>
     oneNodeDoc('exclusiveGateway', { id: 'G', attrs, children });
 
@@ -3426,7 +4776,7 @@ describe('xmlToIr — engine settings on a gateway stay a reported drop', () => 
   });
 });
 
-describe('xmlToIr — content is consumed only on the owner kind that reads it', () => {
+describe('xmlToIr: content is consumed only on the owner kind that reads it', () => {
   const serviceTaskXml = (attrs: string, children = ''): string =>
     oneNodeDoc('serviceTask', {
       id: 'Svc',
@@ -3520,7 +4870,7 @@ const importUserTaskWith = (children: string) =>
 const ioBlock = (params: string): string =>
   `        <operaton:inputOutput>\n${params}\n        </operaton:inputOutput>`;
 
-describe('xmlToIr — input/output parameters', () => {
+describe('xmlToIr: input/output parameters', () => {
   it('each of the four value forms imports, in declaration order', async () => {
     const { node: task, warnings } = await importServiceTask(
       ioBlock(`          <operaton:inputParameter name="plain">bar</operaton:inputParameter>
@@ -3665,7 +5015,7 @@ ${io}
 
 // ── 21. Execution and task listeners import as IR listener records ───────────
 
-describe('xmlToIr — execution listeners', () => {
+describe('xmlToIr: execution listeners', () => {
   it('each of the four bindings imports, in emission order', async () => {
     const { node: task, warnings } = await importServiceTask(
       `        <operaton:executionListener event="start" class="com.example.L" />
@@ -3751,7 +5101,7 @@ ${listener}
   });
 });
 
-describe('xmlToIr — task listeners', () => {
+describe('xmlToIr: task listeners', () => {
   it('the five non-timeout events import in emission order', async () => {
     const { node: task, warnings } = await importUserTaskWith(
       `        <operaton:taskListener event="create" class="com.example.C" />
@@ -3843,7 +5193,7 @@ describe('xmlToIr — task listeners', () => {
   });
 });
 
-describe('xmlToIr — a consumed extension child reports its own unread attributes', () => {
+describe('xmlToIr: a consumed extension child reports its own unread attributes', () => {
   it('an operaton:value carrying a modeler id or name reports that drop', async () => {
     const { node: task, warnings } = await importServiceTask(
       ioBlock(`          <operaton:inputParameter name="x">
@@ -3931,7 +5281,7 @@ describe('xmlToIr — a consumed extension child reports its own unread attribut
 
 // ── 22. Content that is still dropped is dropped precisely, never silently ───
 
-describe('xmlToIr — operaton:field is reported per field', () => {
+describe('xmlToIr: operaton:field is reported per field', () => {
   it('a field on a step names the field and refuses nothing', async () => {
     const { node: task, warnings } = await importServiceTask(
       `        <operaton:field name="greeting" stringValue="hello" />`,
@@ -3981,7 +5331,7 @@ describe('xmlToIr — operaton:field is reported per field', () => {
   });
 });
 
-describe('xmlToIr — a repeated extension block keeps the first and reports the rest', () => {
+describe('xmlToIr: a repeated extension block keeps the first and reports the rest', () => {
   it('a second operaton:failedJobRetryTimeCycle warns and the first is kept', async () => {
     const { node: task, warnings } = await importServiceTask(
       `        <operaton:failedJobRetryTimeCycle>R3/PT10M</operaton:failedJobRetryTimeCycle>
@@ -4019,7 +5369,7 @@ ${ioBlock('          <operaton:inputParameter name="dropped">2</operaton:inputPa
   });
 });
 
-describe('xmlToIr — form data on an event handler trigger start', () => {
+describe('xmlToIr: form data on an event handler trigger start', () => {
   it('is read onto the trigger start event rather than dropped', async () => {
     const xml = handlerDoc(
       `<bpmn:extensionElements>
@@ -4056,7 +5406,7 @@ describe('xmlToIr — form data on an event handler trigger start', () => {
  * `operaton:entry` both parse to something plausible with no warning at all,
  * and no reader could tell.
  */
-describe('xmlToIr — the extension-form refusal matrix', () => {
+describe('xmlToIr: the extension-form refusal matrix', () => {
   const refuse = (
     children: string,
     detail: RegExp | string,
@@ -4115,19 +5465,26 @@ describe('xmlToIr — the extension-form refusal matrix', () => {
       children: ioBlock(`          <operaton:inputParameter name="x">
             <operaton:script>1 + 1</operaton:script>
           </operaton:inputParameter>`),
-      detail: 'has no scriptFormat',
+      detail:
+        "the operaton:script in operaton:inputParameter 'x' has no " +
+        'scriptFormat, so there is no language to evaluate its body in',
     },
     {
       case: '10. a listener carrying no binding at all',
       host: refuse,
       children: `        <operaton:executionListener event="start" />`,
-      detail: 'carries no binding',
+      detail:
+        'an operaton:executionListener carries no binding: one of class, ' +
+        'expression, delegateExpression, or an operaton:script child is ' +
+        'what it runs',
     },
     {
       case: '11. a listener with no event',
       host: refuse,
       children: `        <operaton:executionListener class="com.example.L" />`,
-      detail: 'operaton:executionListener has no event',
+      detail:
+        'an operaton:executionListener has no event, so there is no point ' +
+        'in the lifecycle for it to fire at',
     },
     {
       case: '12. an execution listener whose event is neither start nor end',
@@ -4146,7 +5503,9 @@ describe('xmlToIr — the extension-form refusal matrix', () => {
       case: '14. a timeout task listener with no timer',
       host: refuseOnUserTask,
       children: `        <operaton:taskListener event="timeout" class="com.example.L" />`,
-      detail: 'carries no bpmn:timerEventDefinition',
+      detail:
+        'an operaton:taskListener with event="timeout" carries no ' +
+        'bpmn:timerEventDefinition, so nothing would ever fire it',
     },
     {
       case: '15. a task listener carrying a timer on any other event',
@@ -4167,21 +5526,20 @@ describe('xmlToIr — the extension-form refusal matrix', () => {
       ioBlock(
         `          <operaton:inputParameter name="x">text<operaton:list /></operaton:inputParameter>`,
       ),
-      'both body text and a nested',
+      "operaton:inputParameter 'x' carries both body text and a nested " +
+        '<operaton:List> value, and a value is one or the other',
     );
     expect(err.elementId).toBe('Svc');
-    expect(err.detail).toContain("operaton:inputParameter 'x'");
   });
 
   it('2. a parameter carrying two nested values', async () => {
-    const err = await refuse(
+    await refuse(
       ioBlock(
         `          <operaton:inputParameter name="x"><operaton:list /><operaton:map /></operaton:inputParameter>`,
       ),
-      '2 nested values',
+      "operaton:inputParameter 'x' carries 2 nested values (operaton:List, " +
+        'operaton:Map), and a value is one',
     );
-    expect(err.detail).toContain('operaton:List');
-    expect(err.detail).toContain('operaton:Map');
   });
 
   it('5. a parameter with no name, or a map entry with no key', async () => {
@@ -4189,13 +5547,15 @@ describe('xmlToIr — the extension-form refusal matrix', () => {
       ioBlock(
         `          <operaton:inputParameter>text</operaton:inputParameter>`,
       ),
-      'operaton:inputParameter has no name',
+      'an operaton:inputParameter has no name, so there is nothing to bind ' +
+        'its value to',
     );
     await refuse(
       ioBlock(
         `          <operaton:outputParameter>text</operaton:outputParameter>`,
       ),
-      'operaton:outputParameter has no name',
+      'an operaton:outputParameter has no name, so there is nothing to ' +
+        'bind its value to',
     );
     await refuse(
       ioBlock(`          <operaton:inputParameter name="x">
@@ -4208,42 +5568,41 @@ describe('xmlToIr — the extension-form refusal matrix', () => {
   });
 
   it('8. an operaton:entry inside an operaton:list', async () => {
-    const err = await refuse(
+    await refuse(
       ioBlock(`          <operaton:inputParameter name="x">
             <operaton:list>
               <operaton:entry key="k">v</operaton:entry>
             </operaton:list>
           </operaton:inputParameter>`),
-      'operaton:Entry',
+      "an operaton:list in operaton:inputParameter 'x' carries a " +
+        '<operaton:Entry>; a list holds values, and an entry belongs in an ' +
+        'operaton:map',
     );
-    expect(err.detail).toMatch(/operaton:list/);
-    expect(err.detail).toMatch(/operaton:map/);
   });
 
   it('8b. an operaton:entry where a parameter value belongs', async () => {
-    const err = await refuse(
+    await refuse(
       ioBlock(
         `          <operaton:inputParameter name="x"><operaton:entry key="k">v</operaton:entry></operaton:inputParameter>`,
       ),
-      'operaton:Entry',
+      "operaton:inputParameter 'x' carries a <operaton:Entry> where a value " +
+        'belongs; an entry belongs in an operaton:map',
     );
-    expect(err.detail).toContain("operaton:inputParameter 'x'");
-    expect(err.detail).toMatch(/where a value belongs/);
   });
 
   it('9. a listener carrying more than one binding', async () => {
-    const err = await refuse(
+    await refuse(
       `        <operaton:executionListener event="start" class="C" expression="\${e}" />`,
-      '2 bindings',
+      'an operaton:executionListener carries 2 bindings (class, ' +
+        'expression), and a listener names exactly one',
     );
-    expect(err.detail).toContain('class');
-    expect(err.detail).toContain('expression');
 
     await refuse(
       `        <operaton:executionListener event="start" class="C">
           <operaton:script scriptFormat="groovy">1</operaton:script>
         </operaton:executionListener>`,
-      '2 bindings',
+      'an operaton:executionListener carries 2 bindings (class, an ' +
+        'operaton:script child), and a listener names exactly one',
     );
   });
 
@@ -4275,5 +5634,671 @@ describe('xmlToIr — the extension-form refusal matrix', () => {
     );
     expect(task.inputParameters).toEqual([ioParam('x', textValue('1'))]);
     expect(task.outputParameters).toEqual([ioParam('x', textValue('2'))]);
+  });
+});
+
+// ── 24. The four task kinds import to their IR nodes ─────────────────────────
+
+describe('xmlToIr: task kinds', () => {
+  /**
+   * Each tag, the IR kind it imports as, the least it needs to bind, and the
+   * noun a boundary-host refusal names it with.
+   */
+  const KINDS = [
+    ['task', 'task', '', 'plain task'],
+    [
+      'sendTask',
+      'serviceTask',
+      'operaton:class="com.example.Send"',
+      'send task',
+    ],
+    ['receiveTask', 'receiveTask', '', 'receive task'],
+    [
+      'businessRuleTask',
+      'serviceTask',
+      'operaton:decisionRef="riskRating"',
+      'business rule task',
+    ],
+  ] as const;
+
+  const ORDER_PAID_ROOT =
+    '  <bpmn:message id="Msg_OrderPaid" name="OrderPaid" />\n';
+
+  /** `S -> receiveTask -> E`, beside the roots the task may reference. */
+  const receiveDoc = (attrs: string, roots = ''): string =>
+    operatonDefs`${roots}  <bpmn:process id="p" isExecutable="true">
+    <bpmn:startEvent id="S" />
+    <bpmn:receiveTask id="T" ${attrs} />
+    <bpmn:endEvent id="E" />
+    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="T" />
+    <bpmn:sequenceFlow id="F2" sourceRef="T" targetRef="E" />
+  </bpmn:process>`;
+
+  /** `S -> node -> E` with one boundary event attached to the node. */
+  const boundaryDoc = (tag: string, attrs: string, definition: string) =>
+    operatonDoc`    <bpmn:startEvent id="S" />
+    <bpmn:${tag} id="T" ${attrs} />
+    <bpmn:boundaryEvent id="B" attachedToRef="T">
+      ${definition}
+    </bpmn:boundaryEvent>
+    <bpmn:endEvent id="E" />
+    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="T" />
+    <bpmn:sequenceFlow id="F2" sourceRef="T" targetRef="E" />`;
+
+  const TIMER_1H = `<bpmn:timerEventDefinition id="TimerDef">
+        <bpmn:timeDuration>PT1H</bpmn:timeDuration>
+      </bpmn:timerEventDefinition>`;
+
+  it.each(KINDS)(
+    'bpmn:%s imports as a %s carrying its name and engine settings',
+    async (tag, kind, binding) => {
+      const { node, warnings } = await importOnly(
+        oneNodeDoc(tag, {
+          attrs:
+            `name="Handle It" ${binding} ` +
+            'operaton:asyncBefore="true" operaton:jobPriority="5"',
+        }),
+        kind,
+      );
+      expect(warnings).toEqual([]);
+      expect(node.id).toBe('T');
+      expect(node.name).toBe('Handle It');
+      expect(node.asyncBefore).toBe(true);
+      expect(node.jobPriority).toBe('5');
+    },
+  );
+
+  it('a send task imports as a service task node tagged as a send', async () => {
+    const { node } = await importOnly(
+      oneNodeDoc('sendTask', { attrs: 'operaton:class="com.example.Send"' }),
+      'serviceTask',
+    );
+    expect(node.element).toBe('send');
+    expect(node.binding).toEqual(classBinding('com.example.Send'));
+  });
+
+  it('a send task with no binding refuses as a send task, not as a service task', async () => {
+    const e = await expectRefusal<UnsupportedServiceTaskFormError>(
+      xmlToIr(oneNodeDoc('sendTask')),
+      UnsupportedServiceTaskFormError,
+    );
+    expect(e.subject).toBe('Send task');
+    expect(e.message).toContain(
+      "Send task 'T' uses unsupported execution form",
+    );
+  });
+
+  it('a business rule task imports the whole decision binding', async () => {
+    const { node, warnings } = await importOnly(
+      oneNodeDoc('businessRuleTask', {
+        attrs:
+          'operaton:decisionRef="riskRating" ' +
+          'operaton:decisionRefBinding="version" ' +
+          'operaton:decisionRefVersion="3" ' +
+          'operaton:mapDecisionResult="singleEntry" ' +
+          'operaton:resultVariable="risk"',
+      }),
+      'serviceTask',
+    );
+    expect(warnings).toEqual([]);
+    expect(node.element).toBe('businessRule');
+    expect(node.binding).toEqual({
+      kind: 'decision',
+      decisionRef: 'riskRating',
+      binding: { kind: 'version', version: '3' },
+      mapDecisionResult: 'singleEntry',
+    });
+    expect(node.resultVariable).toBe('risk');
+  });
+
+  it('a business rule task bound to code imports that binding instead', async () => {
+    const { node } = await importOnly(
+      oneNodeDoc('businessRuleTask', {
+        attrs: 'operaton:class="com.example.Rate"',
+      }),
+      'serviceTask',
+    );
+    expect(node.element).toBe('businessRule');
+    expect(node.binding).toEqual(classBinding('com.example.Rate'));
+  });
+
+  it('a code-bound business rule task warns about the decision settings it drops', async () => {
+    const { warnings } = await importOnly(
+      oneNodeDoc('businessRuleTask', {
+        attrs:
+          'operaton:class="com.example.Rate" ' +
+          'operaton:decisionRefBinding="latest" ' +
+          'operaton:decisionRefVersion="3" ' +
+          'operaton:mapDecisionResult="singleEntry"',
+      }),
+      'serviceTask',
+    );
+    expect(warnings.map((w) => w.message)).toEqual([
+      "The 'decisionRefBinding' setting on 'T' has no effect without an operaton:decisionRef and was not imported.",
+      "The 'decisionRefVersion' setting on 'T' has no effect without an operaton:decisionRef and was not imported.",
+      "The 'mapDecisionResult' setting on 'T' has no effect without an operaton:decisionRef and was not imported.",
+    ]);
+  });
+
+  it('a decision-bound business rule task warns about the implementation it drops', async () => {
+    const { node, warnings } = await importOnly(
+      oneNodeDoc('businessRuleTask', {
+        attrs:
+          'operaton:decisionRef="riskRating" ' +
+          'operaton:class="com.example.Rate" ' +
+          'operaton:type="external" operaton:topic="rate"',
+      }),
+      'serviceTask',
+    );
+    expect(node.binding).toEqual({
+      kind: 'decision',
+      decisionRef: 'riskRating',
+    });
+    expect(warnings.map((w) => w.message)).toEqual([
+      "The 'class' setting on 'T' has no effect alongside an operaton:decisionRef and was not imported.",
+      "The 'type' setting on 'T' has no effect alongside an operaton:decisionRef and was not imported.",
+      "The 'topic' setting on 'T' has no effect alongside an operaton:decisionRef and was not imported.",
+    ]);
+  });
+
+  it.each([
+    [
+      'a mapDecisionResult outside the four Operaton accepts',
+      'operaton:mapDecisionResult="firstEntry"',
+      'operaton:mapDecisionResult="firstEntry", which is not a way of ' +
+        'filling the result variable this tool can represent',
+    ],
+    [
+      'decisionRefBinding="version" without a decisionRefVersion',
+      'operaton:decisionRefBinding="version"',
+      'decisionRefBinding="version" is set without a decisionRefVersion, so ' +
+        'the engine cannot resolve which version to use',
+    ],
+    [
+      'an unrecognized decisionRefBinding',
+      'operaton:decisionRefBinding="versionTag"',
+      'decisionRefBinding="versionTag" is not a binding this tool can represent',
+    ],
+  ])(
+    'a business rule task with %s refuses rather than importing without it',
+    async (_title, attrs, construct) => {
+      const e = await expectRefusal<UnsupportedServiceTaskFormError>(
+        xmlToIr(
+          oneNodeDoc('businessRuleTask', {
+            attrs: `operaton:decisionRef="d" ${attrs}`,
+          }),
+        ),
+        UnsupportedServiceTaskFormError,
+      );
+      expect(e.construct).toBe(construct);
+    },
+  );
+
+  it('a receive task with a messageRef imports the message name', async () => {
+    const { node, warnings } = await importOnly(
+      receiveDoc('messageRef="Msg_OrderPaid"', ORDER_PAID_ROOT),
+      'receiveTask',
+    );
+    expect(node.messageName).toBe('OrderPaid');
+    expect(warnings).toEqual([]);
+  });
+
+  it('a receive task with no messageRef imports as a wait state, with no message name and no warning', async () => {
+    const { node, warnings } = await importOnly(receiveDoc(''), 'receiveTask');
+    expect(node).not.toHaveProperty('messageName');
+    expect(warnings).toEqual([]);
+  });
+
+  it('a bpmn:message root used only by a receive task is not reported as unreferenced', async () => {
+    const { warnings } = await xmlToIr(
+      receiveDoc('messageRef="Msg_OrderPaid"', ORDER_PAID_ROOT),
+    );
+    expect(warnings.filter((w) => w.category === 'unreferencedRoot')).toEqual(
+      [],
+    );
+  });
+
+  it.each(KINDS)(
+    'isForCompensation="true" on a bpmn:%s refuses rather than importing into normal flow',
+    async (tag, _kind, binding) => {
+      const e = await expectRefusal<UnsupportedEventFeatureError>(
+        xmlToIr(
+          oneNodeDoc(tag, { attrs: `isForCompensation="true" ${binding}` }),
+        ),
+        UnsupportedEventFeatureError,
+        IS_FOR_COMPENSATION_DETAIL,
+      );
+      expect(e.elementId).toBe('T');
+    },
+  );
+
+  it.each(KINDS)(
+    'a timer boundary event attaches to a bpmn:%s',
+    async (tag, _kind, binding) => {
+      const { ir, warnings } = await xmlToIr(
+        boundaryDoc(tag, binding, TIMER_1H),
+      );
+      expect(only(ir, 'boundaryEvent').attachedToRef).toBe('T');
+      expect(warnings).toEqual([]);
+    },
+  );
+
+  it.each(KINDS)(
+    'an escalation boundary event on a bpmn:%s still refuses',
+    async (tag, _kind, binding, noun) => {
+      await expectRefusal<UnsupportedEventFeatureError>(
+        xmlToIr(
+          boundaryDoc(
+            tag,
+            binding,
+            '<bpmn:escalationEventDefinition id="EscDef" />',
+          ),
+        ),
+        UnsupportedEventFeatureError,
+        `an escalation boundary event attaches to "T", a ${noun}; ` +
+          'Operaton only allows an escalation boundary on a subprocess, a ' +
+          'call activity, or a user task',
+      );
+    },
+  );
+
+  it.each(KINDS)(
+    'multi-instance loop characteristics on a bpmn:%s import as a repetition',
+    async (tag, kind, binding) => {
+      const { node, warnings } = await importOnly(
+        oneNodeDoc(tag, {
+          attrs: binding,
+          children:
+            '<bpmn:multiInstanceLoopCharacteristics operaton:collection="lines" />',
+        }),
+        kind,
+      );
+      expect(node.loop).toEqual({ collection: 'lines' });
+      expect(warnings).toEqual([]);
+    },
+  );
+
+  it('bpmn:manualTask stays refused, and the refusal names the four kinds among the supported ones', async () => {
+    const e = await expectRefusal<UnsupportedElementError>(
+      xmlToIr(oneNodeDoc('manualTask', { doc: bpmnDoc })),
+      UnsupportedElementError,
+    );
+    expect(e.qname).toBe('bpmn:ManualTask');
+    expect(e.message).toContain(
+      'plain tasks, user tasks, service tasks, send tasks, receive tasks, ' +
+        'business rule tasks, script tasks',
+    );
+  });
+
+  it('a document holding all four kinds imports with no warnings at all', async () => {
+    const ioBlock = (name: string, value: string) =>
+      `
+      <bpmn:extensionElements>
+        <operaton:inputOutput>
+          <operaton:inputParameter name="${name}">${value}</operaton:inputParameter>
+        </operaton:inputOutput>
+      </bpmn:extensionElements>
+    `;
+    const xml = operatonDefs`${ORDER_PAID_ROOT}  <bpmn:process id="p" isExecutable="true">
+    <bpmn:startEvent id="S" />
+    <bpmn:task id="Record" operaton:asyncBefore="true">${ioBlock('note', 'recorded')}</bpmn:task>
+    <bpmn:sendTask id="Notify" operaton:type="external" operaton:topic="mail" operaton:resultVariable="sent">${ioBlock('to', 'ops@example.com')}</bpmn:sendTask>
+    <bpmn:receiveTask id="AwaitPayment" messageRef="Msg_OrderPaid" operaton:asyncAfter="true">${ioBlock('reference', 'INV-1')}</bpmn:receiveTask>
+    <bpmn:businessRuleTask id="Rate" operaton:decisionRef="riskRating" operaton:decisionRefBinding="latest" operaton:mapDecisionResult="singleEntry" operaton:resultVariable="risk">${ioBlock('applicant', 'acme')}</bpmn:businessRuleTask>
+    <bpmn:endEvent id="E" />
+    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="Record" />
+    <bpmn:sequenceFlow id="F2" sourceRef="Record" targetRef="Notify" />
+    <bpmn:sequenceFlow id="F3" sourceRef="Notify" targetRef="AwaitPayment" />
+    <bpmn:sequenceFlow id="F4" sourceRef="AwaitPayment" targetRef="Rate" />
+    <bpmn:sequenceFlow id="F5" sourceRef="Rate" targetRef="E" />
+  </bpmn:process>`;
+
+    const { ir, warnings } = await xmlToIr(xml);
+    expect(warnings).toEqual([]);
+    expect(ir.flowElements.map((fe) => fe.kind)).toEqual([
+      'startEvent',
+      'task',
+      'serviceTask',
+      'receiveTask',
+      'serviceTask',
+      'endEvent',
+    ]);
+    expect(only(ir, 'task').inputParameters).toEqual([
+      ioParam('note', textValue('recorded')),
+    ]);
+  });
+});
+
+// ── 25. A block that can be given up, and the cancel pair ────────────────────
+
+describe('xmlToIr: a block that can be given up', () => {
+  /** The closing sentence {@link UnsupportedEventFeatureError} appends by default. */
+  const EVENT_SURFACE_NOTE =
+    'Event handlers catch one error, escalation, message, signal, timer, ' +
+    'conditional, or compensation trigger on their single start event; ' +
+    'throws and emits carry the code or name their kind requires, and ' +
+    'compensation carries neither.';
+
+  const BLOCK_BODY = `      <bpmn:userTask id="Charge" />
+      <bpmn:endEvent id="Booked" />
+      <bpmn:sequenceFlow id="BF1" sourceRef="BStart" targetRef="Charge" />
+      <bpmn:sequenceFlow id="BF2" sourceRef="Charge" targetRef="Booked" />
+`;
+
+  const CANCEL_END = `      <bpmn:endEvent id="GiveUp" name="Give up the booking">
+        <bpmn:cancelEventDefinition id="GiveUpDef" />
+      </bpmn:endEvent>
+`;
+
+  const cancelBoundary = (id = 'Boundary_Book_cancel', attrs = ''): string =>
+    `    <bpmn:boundaryEvent id="${id}" attachedToRef="Book" ${attrs}>
+      <bpmn:cancelEventDefinition id="${id}_Def" />
+    </bpmn:boundaryEvent>
+`;
+
+  interface BlockOptions {
+    /** The tag the block is written with. Defaults to `transaction`. */
+    tag?: string;
+    /** Extra attributes on the block's opening tag. */
+    attrs?: string;
+    /** The block's body, written after its start event. */
+    body?: string;
+    /** Content written in the process beside the block. */
+    beside?: string;
+    /** The `<bpmn:definitions>` wrapper. Defaults to {@link operatonDoc}. */
+    doc?: XmlTag;
+  }
+
+  /** `S -> Book -> E`, where `Book` is the block and `beside` sits alongside it. */
+  const blockDoc = ({
+    tag = 'transaction',
+    attrs = '',
+    body = BLOCK_BODY,
+    beside = '',
+    doc: wrapper = operatonDoc,
+  }: BlockOptions = {}): string =>
+    wrapper`    <bpmn:startEvent id="S" />
+    <bpmn:${tag} id="Book" ${attrs}>
+      <bpmn:startEvent id="BStart" />
+${body}    </bpmn:${tag}>
+${beside}    <bpmn:endEvent id="E" />
+    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="Book" />
+    <bpmn:sequenceFlow id="F2" sourceRef="Book" targetRef="E" />`;
+
+  /** The pair: a cancel end inside the block and a cancel boundary on it. */
+  const pairedDoc = (options: BlockOptions = {}): string =>
+    blockDoc({
+      body: BLOCK_BODY + CANCEL_END,
+      beside: cancelBoundary(),
+      ...options,
+    });
+
+  it('imports as a subprocess naming the tag it serializes to, with the children a plain one gets', async () => {
+    const { ir: given } = await xmlToIr(blockDoc());
+    const { ir: plain } = await xmlToIr(blockDoc({ tag: 'subProcess' }));
+
+    expect(subProcess(given, 'Book')).toEqual({
+      ...subProcess(plain, 'Book'),
+      element: 'transaction',
+    });
+    expect(subProcess(plain, 'Book')).not.toHaveProperty('element');
+  });
+
+  it('imports the cancel pair: the end keeps its label, the boundary keeps its host', async () => {
+    const { ir, warnings } = await xmlToIr(pairedDoc());
+
+    expect(byId(subProcess(ir, 'Book'), 'GiveUp')).toEqual({
+      kind: 'endEvent',
+      id: 'GiveUp',
+      name: 'Give up the booking',
+      eventDefinition: { kind: 'cancel' },
+    });
+    expect(byId(ir, 'Boundary_Book_cancel')).toEqual({
+      kind: 'boundaryEvent',
+      id: 'Boundary_Book_cancel',
+      attachedToRef: 'Book',
+      eventDefinition: { kind: 'cancel' },
+    });
+    expect(warnings).toEqual([]);
+  });
+
+  it.each([
+    [
+      'a plain subprocess',
+      blockDoc({ tag: 'subProcess', body: BLOCK_BODY + CANCEL_END }),
+    ],
+    [
+      'an event handler',
+      handlerDoc('<bpmn:errorEventDefinition id="HDef" />', {
+        body: `      <bpmn:endEvent id="GiveUp" name="Give up the booking">
+        <bpmn:cancelEventDefinition id="GiveUpDef" />
+      </bpmn:endEvent>
+      <bpmn:sequenceFlow id="SF1" sourceRef="HStart" targetRef="GiveUp" />
+`,
+      }),
+    ],
+    [
+      'the process itself',
+      bpmnDoc`    <bpmn:startEvent id="S" />
+    <bpmn:endEvent id="GiveUp" name="Give up the booking">
+      <bpmn:cancelEventDefinition id="GiveUpDef" />
+    </bpmn:endEvent>
+    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="GiveUp" />`,
+    ],
+  ])('a cancel end directly inside %s refuses', async (_where, xml) => {
+    const e = await expectRefusal<UnsupportedEventFeatureError>(
+      xmlToIr(xml),
+      UnsupportedEventFeatureError,
+    );
+    expect(e.elementId).toBe('GiveUp');
+    expect(e.message).toBe(
+      "The event construct at 'GiveUp' cannot be imported: an end event " +
+        'carries a cancel definition outside a block that can be given up; ' +
+        'Operaton only accepts one directly inside a <bpmn:transaction>, and ' +
+        'refuses to deploy the file otherwise. Move the end inside a ' +
+        '<bpmn:transaction>, or take the cancel definition off it.',
+    );
+  });
+
+  it.each([
+    [
+      'a user task',
+      'user task',
+      operatonDoc`    <bpmn:startEvent id="S" />
+    <bpmn:userTask id="Book" />
+${cancelBoundary()}    <bpmn:endEvent id="E" />
+    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="Book" />
+    <bpmn:sequenceFlow id="F2" sourceRef="Book" targetRef="E" />`,
+    ],
+    [
+      'a plain subprocess',
+      'subprocess',
+      blockDoc({ tag: 'subProcess', beside: cancelBoundary() }),
+    ],
+  ])(
+    'a cancel boundary on %s refuses, naming the host',
+    async (_title, noun, xml) => {
+      const e = await expectRefusal<UnsupportedEventFeatureError>(
+        xmlToIr(xml),
+        UnsupportedEventFeatureError,
+      );
+      expect(e.elementId).toBe('Boundary_Book_cancel');
+      expect(e.message).toBe(
+        "The event construct at 'Boundary_Book_cancel' cannot be imported: a " +
+          `cancel boundary event attaches to "Book", a ${noun}; Operaton ` +
+          'only allows a cancel boundary on a <bpmn:transaction>, and refuses ' +
+          'to deploy the file otherwise. Attach it to a <bpmn:transaction>, ' +
+          'or take the cancel definition off it.',
+      );
+    },
+  );
+
+  it('a second cancel boundary on the same block refuses', async () => {
+    const e = await expectRefusal<UnsupportedEventFeatureError>(
+      xmlToIr(
+        pairedDoc({
+          beside: cancelBoundary() + cancelBoundary('Boundary_Book_cancel2'),
+        }),
+      ),
+      UnsupportedEventFeatureError,
+    );
+    expect(e.elementId).toBe('Boundary_Book_cancel2');
+    expect(e.message).toBe(
+      "The event construct at 'Boundary_Book_cancel2' cannot be imported: a " +
+        'second cancel boundary event attaches to "Book"; Operaton allows ' +
+        'one cancel boundary per block and refuses to deploy a file with two. ' +
+        'Leave one cancel boundary event on the block.',
+    );
+  });
+
+  it('a cancel definition on an event handler start refuses as a kind that position does not take', async () => {
+    const e = await expectRefusal<UnsupportedEventDefinitionError>(
+      xmlToIr(handlerDoc('<bpmn:cancelEventDefinition id="HDef" />')),
+      UnsupportedEventDefinitionError,
+    );
+    expect(e.eventKind).toBe('start');
+    expect(e.definitionType).toBe('bpmn:CancelEventDefinition');
+  });
+
+  it('a non-interrupting cancel boundary refuses', async () => {
+    const e = await expectRefusal<UnsupportedEventFeatureError>(
+      xmlToIr(
+        pairedDoc({
+          beside: cancelBoundary(
+            'Boundary_Book_cancel',
+            'cancelActivity="false"',
+          ),
+        }),
+      ),
+      UnsupportedEventFeatureError,
+    );
+    expect(e.message).toBe(
+      "The event construct at 'Boundary_Book_cancel' cannot be imported: a " +
+        'cancel boundary event cannot be non-interrupting ' +
+        '(cancelActivity="false"); Operaton deploys it and lets what ' +
+        'follows the boundary run beside the block instead of taking over ' +
+        `from it, which this surface cannot write back. ${EVENT_SURFACE_NOTE}`,
+    );
+  });
+
+  it('a cancel end with no cancel boundary on its block warns, naming the runtime failure', async () => {
+    const { warnings } = await xmlToIr(
+      blockDoc({ body: BLOCK_BODY + CANCEL_END }),
+    );
+    expectOneWarning(warnings, {
+      elementId: 'Book',
+      category: 'unmappedConstruct',
+      message:
+        "The block 'Book' holds an end event that gives it up, with no " +
+        'cancel boundary event attached to it: Operaton deploys the file and ' +
+        'then stops with an error the first time that end is reached. Write ' +
+        "'on Book: cancel { ... }' beside the block to catch it.",
+    });
+  });
+
+  it('a cancel boundary on a block that never gives itself up warns, naming the unreachable path', async () => {
+    const { warnings } = await xmlToIr(blockDoc({ beside: cancelBoundary() }));
+    expectOneWarning(warnings, {
+      elementId: 'Boundary_Book_cancel',
+      category: 'unmappedConstruct',
+      message:
+        "The cancel boundary event on 'Book' was imported, but nothing " +
+        'inside the block gives it up, so what follows the boundary can ' +
+        'never run.',
+    });
+  });
+
+  it.each([
+    [
+      'method',
+      'method="##Store"',
+      'Operaton reads it on a <bpmn:transaction> not at all',
+    ],
+    [
+      'protocol',
+      'protocol="two-phase"',
+      'Operaton reads it on a <bpmn:transaction> not at all',
+    ],
+    [
+      'triggeredByEvent',
+      'triggeredByEvent="true"',
+      'Operaton ignores it on a <bpmn:transaction> and runs the block as an ' +
+        'ordinary step of the surrounding flow',
+    ],
+  ])(
+    '%s on the block warns exactly once and is dropped',
+    async (name, attrs, reason) => {
+      const { ir, warnings } = await xmlToIr(blockDoc({ attrs }));
+      expect(subProcess(ir, 'Book')).not.toHaveProperty(name);
+      expectOneWarning(warnings, {
+        elementId: 'Book',
+        category: 'unmappedConstruct',
+        message:
+          `The '${name}' attribute on 'Book' was not imported: ${reason}, so ` +
+          'the imported block runs exactly as the source document does.',
+      });
+    },
+  );
+
+  it('a block writing none of the three warns about nothing', async () => {
+    const { warnings } = await xmlToIr(blockDoc());
+    expect(warnings).toEqual([]);
+  });
+
+  it('isForCompensation="true" on the block still refuses', async () => {
+    const e = await expectRefusal<UnsupportedEventFeatureError>(
+      xmlToIr(blockDoc({ attrs: 'isForCompensation="true"' })),
+      UnsupportedEventFeatureError,
+      IS_FOR_COMPENSATION_DETAIL,
+    );
+    expect(e.elementId).toBe('Book');
+  });
+
+  it('an undo handler directly inside the block imports, while one at process level still refuses', async () => {
+    const undoHandler = `      <bpmn:subProcess id="UndoCharge" triggeredByEvent="true">
+        <bpmn:startEvent id="UndoStart">
+          <bpmn:compensateEventDefinition id="UndoStartDef" />
+        </bpmn:startEvent>
+        <bpmn:userTask id="RefundCard" />
+        <bpmn:sequenceFlow id="UF1" sourceRef="UndoStart" targetRef="RefundCard" />
+      </bpmn:subProcess>
+`;
+    const { ir, warnings } = await xmlToIr(
+      blockDoc({ body: BLOCK_BODY + undoHandler }),
+    );
+    expect(
+      subProcess(subProcess(ir, 'Book'), 'UndoCharge').triggeredByEvent,
+    ).toBe(true);
+    expect(warnings).toEqual([]);
+
+    const e = await expectRefusal<UnsupportedEventFeatureError>(
+      xmlToIr(blockDoc({ beside: undoHandler })),
+      UnsupportedEventFeatureError,
+    );
+    expect(e.detail).toBe(
+      'a compensation handler must be hosted directly by the block whose ' +
+        'completed work it undoes, not by the process; move it inside that ' +
+        'block',
+    );
+  });
+
+  it('engine settings, an input/output mapping and a repetition on the block import with no warnings', async () => {
+    const { ir, warnings } = await xmlToIr(
+      blockDoc({
+        attrs: 'operaton:asyncBefore="true"',
+        body: `      <bpmn:multiInstanceLoopCharacteristics operaton:collection="seats" />
+      <bpmn:extensionElements>
+        <operaton:inputOutput>
+          <operaton:inputParameter name="seat">1A</operaton:inputParameter>
+        </operaton:inputOutput>
+      </bpmn:extensionElements>
+${BLOCK_BODY}`,
+      }),
+    );
+    const block = subProcess(ir, 'Book');
+    expect(block.asyncBefore).toBe(true);
+    expect(block.inputParameters).toEqual([ioParam('seat', textValue('1A'))]);
+    expect(block.loop).toEqual({ collection: 'seats' });
+    expect(warnings).toEqual([]);
   });
 });

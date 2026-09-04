@@ -50,11 +50,12 @@ export async function parseAction(
     if (err instanceof UnsupportedServiceTaskFormError) {
       console.error(
         chalk.red(
-          `Error: unsupported service task form in ${fileName}:\n` +
-            `  Service task '${err.serviceTaskId}' uses '${err.construct}'.\n` +
-            '  Supported forms are a Java class (operaton:class, or the deprecated ' +
-            'camunda:class alias), an expression, a delegate expression, or an ' +
-            'external task topic.',
+          `Error: unsupported ${err.subject.toLowerCase()} form in ${fileName}:\n` +
+            `  ${err.message}\n` +
+            '  The attributes are operaton:class (or the deprecated camunda:class ' +
+            'alias), operaton:expression, operaton:delegateExpression, ' +
+            'operaton:type="external" with operaton:topic, and ' +
+            'operaton:decisionRef.',
         ),
       );
       process.exit(1);

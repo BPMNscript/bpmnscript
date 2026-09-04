@@ -34,8 +34,8 @@ function assertNoBoundaryCrossingFlows(container: FlowContainer): void {
   }
 }
 
-describe('idempotence: DSL → IR₁ → XML → IR₂ → DSL′ → IR₃', () => {
-  it('the restructured DSL′ reconstructs both sub-processes as `subprocess` blocks', () => {
+describe("idempotence: DSL -> IR1 -> XML -> IR2 -> DSL' -> IR3", () => {
+  it("the restructured DSL' reconstructs both sub-processes as `subprocess` blocks", () => {
     expect(rt.dslPrime).toContain('subprocess Payment "Handle payment" {');
     expect(rt.dslPrime).toContain(
       'subprocess Fulfillment "Fulfill the order" {',
@@ -74,8 +74,8 @@ describe('idempotence: DSL → IR₁ → XML → IR₂ → DSL′ → IR₃', ()
 // The nested shapes are named so the walk cannot pass on an empty tree.
 describeDiContainment(rt, ['Payment', 'Fulfillment', 'Shipping', 'PackParcel']);
 
-describe('structure: IR₁ pins the containment shape', () => {
-  it('the parent chain threads start → RecordOrder → Payment → Fulfillment → CloseOrder → end', () => {
+describe('structure: IR1 pins the containment shape', () => {
+  it('the parent chain threads start -> RecordOrder -> Payment -> Fulfillment -> CloseOrder -> end', () => {
     const edge = (source: string) =>
       rt.ir1.sequenceFlows.find((f) => f.sourceRef === source)?.targetRef;
     expect(edge('OrderReceived')).toBe('RecordOrder');

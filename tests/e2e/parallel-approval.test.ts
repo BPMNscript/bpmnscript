@@ -1,4 +1,4 @@
-// What separates an AND gateway from an XOR one is runtime behaviour no compiled
+// What separates an AND gateway from an XOR one is runtime behavior no compiled
 // document shows: the fork makes both branches active at once and the join holds
 // the token until both complete. The always-on guard below checks the fork/join
 // pair in the IR when Docker is skipped.

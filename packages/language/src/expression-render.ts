@@ -38,7 +38,7 @@ export function renderExpression(node: Expr): string {
 /**
  * The inner text without the `${...}` wrapper, used recursively and by callers
  * that own the wrapper. Parentheses are emitted only where the author wrote
- * them: a faithful structural render, not a minimal-parenthesisation printer.
+ * them: a faithful structural render, not a minimal-parenthesization printer.
  */
 export function renderExpressionInner(node: Expr): string {
   if (isRawExpr(node)) {

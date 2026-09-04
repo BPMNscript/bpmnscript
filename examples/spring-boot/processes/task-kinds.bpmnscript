@@ -1,0 +1,34 @@
+// Task kinds: one process carrying the four activity statements that are not a
+// user, service or script task, laid out so each one's engine behavior is
+// observable over the REST API. The `step` is a plain activity the engine
+// automates nothing for and walks straight past; the `send` and the `decide`
+// each invoke their binding and hand the token on; the `receive` is a wait
+// state that only a correlated message releases; the `user` task afterwards
+// makes the released instance visible.
+//
+// The send and decision steps point at the generic delegate
+// examples/spring-boot/src/main/java/com/example/demo/LogDelegate.java. The
+// decision step binds to code rather than a decision table so the process
+// deploys and runs on the demo profile with no DMN artifact.
+
+process task-kinds "Task kinds" {
+  start OrderPlaced
+
+  step RecordIntent "Record the intent"
+
+  send NotifyWarehouse "Notify the warehouse" {
+    class = "com.example.demo.LogDelegate"
+  }
+
+  decide RateOrder "Rate the order" {
+    class = "com.example.demo.LogDelegate"
+  }
+
+  receive AwaitShipment "Wait for the shipment notice" {
+    message = "ShipmentDispatched"
+  }
+
+  user ConfirmDelivery "Confirm the delivery" { assignee = "demo" }
+
+  end OrderClosed
+}

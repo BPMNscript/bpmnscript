@@ -1,0 +1,41 @@
+// Task-kind round-trip fixture: one order-settlement narrative that exercises
+// the four activity statements the engine routes through its own tags.
+//
+//   - a `step` the engine records and passes straight through;
+//   - a `send` bound to code, so the send tag carries an implementation;
+//   - a `receive` naming the message it waits for, and a second naming none,
+//     the two forms the receive tag takes;
+//   - an `emit message` carrying an implementation mid-flow, so a message throw
+//     the path continues past sits beside the one that ends it;
+//   - three `decide` steps: a decision table pinned to the latest version with
+//     a result mapping, a code binding standing in for a table, and a decision
+//     table pinned to a numbered version;
+//   - a terminal `throw message` carrying an implementation, so the message end
+//     names the code that publishes it.
+//
+// The receive task and the message end name the same message, so the artifact
+// pins one derived root shared across the two kinds rather than one each; the
+// emit names a second and derives a root of its own.
+process order-settlement {
+  start OrderReceived
+
+  step RecordOrder "Record the order"
+
+  send NotifyWarehouse "Tell the warehouse" { class = "com.example.orders.NotifyWarehouseDelegate" }
+
+  receive AwaitSettlement "Wait for the payment" { message = "PaymentSettled" }
+  receive AwaitPickingSlot "Wait for a picking slot"
+
+  emit message ConfirmPicking "PickingSlotReady" { class = "com.example.orders.ConfirmPickingDelegate" }
+
+  decide RateRisk "Rate the order risk" {
+    decision = "riskRating"
+    binding = latest
+    mapDecisionResult = singleEntry
+    resultVariable = "risk"
+  }
+  decide ChooseCarrier "Choose a carrier" { class = "com.example.orders.ChooseCarrierDelegate" }
+  decide PriceShipping "Price the shipping" { decision = "shippingTariff" version = 3 }
+
+  throw message ForwardSettlement "PaymentSettled" { class = "com.example.orders.PublishSettlementDelegate" }
+}

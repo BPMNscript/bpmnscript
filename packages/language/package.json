@@ -32,6 +32,7 @@
     "build:clean": "npm run clean && npm run build",
     "langium:generate": "langium generate",
     "langium:watch": "langium generate --watch",
+    "typecheck": "tsc -b tsconfig.test.json",
     "test": "vitest run"
   },
   "dependencies": {

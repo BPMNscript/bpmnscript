@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 
-import type { FlowContainer } from '@bpmn-script/transform';
+import type { FlowContainer, FlowElement } from '@bpmn-script/transform';
 
 import type { RoundTrip } from './round-trip-fixture.js';
 
@@ -31,6 +31,53 @@ export function boundsOf(bounds: Map<string, Bounds>, id: string): Bounds {
   const found = bounds.get(id);
   expect(found, `missing BPMNShape for ${id}`).toBeDefined();
   return found!;
+}
+
+function overlaps(a: Bounds, b: Bounds): boolean {
+  return (
+    a.x < b.x + b.width &&
+    b.x < a.x + a.width &&
+    a.y < b.y + b.height &&
+    b.y < a.y + a.height
+  );
+}
+
+// A boundary shape is centered on the lower edge of the host it watches, so that
+// one pair overlaps by design.
+function sitsOnTheEdgeOf(attacher: FlowElement, host: FlowElement): boolean {
+  return (
+    attacher.kind === 'boundaryEvent' && attacher.attachedToRef === host.id
+  );
+}
+
+/**
+ * A flat plane's own containment check: every flow node of the root container
+ * has a shape, and no two of them share space, apart from a boundary event and
+ * the host it watches.
+ */
+export function describeNoOverlappingShapes(rt: RoundTrip): void {
+  describe('DI layout on the frozen .bpmn', () => {
+    it('every flow node has a shape and only a boundary and its own host overlap', () => {
+      const bounds = parseShapeBounds(rt.frozenXml);
+      const shapes = rt.ir1.flowElements.map(
+        (fe) => [fe, boundsOf(bounds, fe.id)] as const,
+      );
+
+      for (let i = 0; i < shapes.length; i++) {
+        for (let j = i + 1; j < shapes.length; j++) {
+          const [aEl, a] = shapes[i]!;
+          const [bEl, b] = shapes[j]!;
+          if (sitsOnTheEdgeOf(aEl, bEl) || sitsOnTheEdgeOf(bEl, aEl)) {
+            continue;
+          }
+          expect(
+            overlaps(a, b),
+            `${aEl.id} ${JSON.stringify(a)} overlaps ${bEl.id} ${JSON.stringify(b)}`,
+          ).toBe(false);
+        }
+      }
+    });
+  });
 }
 
 function strictlyInside(child: Bounds, parent: Bounds): boolean {

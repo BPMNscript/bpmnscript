@@ -8,10 +8,10 @@
  * `operaton:` winning when both are set. Extension elements get no alias.
  */
 
+import { END_TRIGGERS } from '@bpmn-script/language';
 import type {
   BoundaryEvent,
   BpmnProcess,
-  CalledElementBinding,
   CallActivity,
   CallVariableMapping,
   EndEvent,
@@ -28,7 +28,9 @@ import type {
   IoParameter,
   IoValue,
   ListenerBinding,
+  LoopCharacteristics,
   ParallelGateway,
+  ReceiveTask,
   ScriptTask,
   ScriptValue,
   SequenceFlow,
@@ -36,8 +38,10 @@ import type {
   ServiceTaskBinding,
   StartEvent,
   SubProcess,
+  Task,
   TaskListener,
   UserTask,
+  VersionBinding,
 } from './ir/types.js';
 import { engineAttributes, ioMapped } from './ir/types.js';
 
@@ -53,6 +57,11 @@ import {
   UnsupportedServiceTaskFormError,
 } from './errors.js';
 import { humanize } from './humanize.js';
+import {
+  BARE_CARDINALITY,
+  BARE_ELEMENT_VARIABLE,
+  isElidedOnPrint,
+} from './ir-to-dsl.js';
 import { createModdle, HISTORY_TIME_TO_LIVE } from './ir-to-xml.js';
 
 export type ImportWarningCategory =
@@ -81,19 +90,61 @@ const ENGINE_ATTRIBUTE_OWNERS = [
   'bpmn:IntermediateThrowEvent',
   'bpmn:IntermediateCatchEvent',
   'bpmn:BoundaryEvent',
+  'bpmn:Task',
   'bpmn:UserTask',
   'bpmn:ServiceTask',
+  'bpmn:SendTask',
+  'bpmn:ReceiveTask',
+  'bpmn:BusinessRuleTask',
   'bpmn:ScriptTask',
   'bpmn:SubProcess',
+  'bpmn:Transaction',
   'bpmn:CallActivity',
 ] as const;
 
 const IO_MAPPED_OWNERS = [
+  'bpmn:Task',
   'bpmn:UserTask',
   'bpmn:ServiceTask',
+  'bpmn:SendTask',
+  'bpmn:ReceiveTask',
+  'bpmn:BusinessRuleTask',
   'bpmn:ScriptTask',
   'bpmn:SubProcess',
+  'bpmn:Transaction',
   'bpmn:CallActivity',
+] as const;
+
+/**
+ * The three tags Operaton runs through `parseServiceTaskLike` when they carry a
+ * class, expression, delegate expression, or external topic binding, so they
+ * take the same implementation attributes. A business rule task naming an
+ * `operaton:decisionRef` goes to `parseDmnBusinessRuleTask` instead, which is
+ * why `decisionRef` and its modifiers are listed for that tag alone below.
+ */
+const SERVICE_TASK_LIKE_OWNERS = [
+  'bpmn:ServiceTask',
+  'bpmn:SendTask',
+  'bpmn:BusinessRuleTask',
+] as const;
+
+/**
+ * A thrown message runs the same implementation, off its definition. The catch
+ * side carries the same element type and honors none of it, which is what
+ * {@link warnCatchSideImplementationAttrs} reports.
+ */
+const IMPLEMENTATION_OWNERS = [
+  ...SERVICE_TASK_LIKE_OWNERS,
+  'bpmn:MessageEventDefinition',
+] as const;
+
+/** The extension attributes that name an implementation. */
+const IMPLEMENTATION_ATTRS = [
+  'class',
+  'expression',
+  'delegateExpression',
+  'type',
+  'topic',
 ] as const;
 
 function consumptionTable(
@@ -109,14 +160,20 @@ function consumptionTable(
  * user task and unread decoration on a service task.
  *
  * The three `*Variable` names sit on an event definition, shared by the catch
- * and the throw side, and the engine honours them on the catch side only, so
- * {@link warnThrowSideBindingAttrs} reports the throw-side drop.
+ * and the throw side, and the engine honors them on the catch side only, so
+ * {@link warnThrowSideBindingAttrs} reports the throw-side drop. `jobPriority`
+ * is listed against the repetition element for the same reason: Operaton reads
+ * none there, so {@link sweepRepetition} reports that drop with its reason
+ * instead of the generic sentence.
  */
 const CONSUMED_EXTENSION_ATTRS = consumptionTable([
   ['asyncBefore', ENGINE_ATTRIBUTE_OWNERS],
   ['asyncAfter', ENGINE_ATTRIBUTE_OWNERS],
   ['exclusive', ENGINE_ATTRIBUTE_OWNERS],
-  ['jobPriority', ENGINE_ATTRIBUTE_OWNERS],
+  [
+    'jobPriority',
+    [...ENGINE_ATTRIBUTE_OWNERS, 'bpmn:MultiInstanceLoopCharacteristics'],
+  ],
   ['assignee', ['bpmn:UserTask']],
   ['formKey', ['bpmn:UserTask']],
   ['candidateGroups', ['bpmn:UserTask']],
@@ -124,14 +181,20 @@ const CONSUMED_EXTENSION_ATTRS = consumptionTable([
   ['dueDate', ['bpmn:UserTask']],
   ['followUpDate', ['bpmn:UserTask']],
   ['priority', ['bpmn:UserTask']],
-  ['class', ['bpmn:ServiceTask']],
-  ['expression', ['bpmn:ServiceTask']],
-  ['delegateExpression', ['bpmn:ServiceTask']],
-  ['type', ['bpmn:ServiceTask']],
-  ['topic', ['bpmn:ServiceTask']],
-  ['resultVariable', ['bpmn:ServiceTask', 'bpmn:ScriptTask']],
+  ['class', IMPLEMENTATION_OWNERS],
+  ['expression', IMPLEMENTATION_OWNERS],
+  ['delegateExpression', IMPLEMENTATION_OWNERS],
+  ['type', IMPLEMENTATION_OWNERS],
+  ['topic', IMPLEMENTATION_OWNERS],
+  ['resultVariable', [...SERVICE_TASK_LIKE_OWNERS, 'bpmn:ScriptTask']],
+  ['decisionRef', ['bpmn:BusinessRuleTask']],
+  ['decisionRefBinding', ['bpmn:BusinessRuleTask']],
+  ['decisionRefVersion', ['bpmn:BusinessRuleTask']],
+  ['mapDecisionResult', ['bpmn:BusinessRuleTask']],
   ['calledElementBinding', ['bpmn:CallActivity']],
   ['calledElementVersion', ['bpmn:CallActivity']],
+  ['collection', ['bpmn:MultiInstanceLoopCharacteristics']],
+  ['elementVariable', ['bpmn:MultiInstanceLoopCharacteristics']],
   ['versionTag', ['bpmn:Process']],
   ['errorCodeVariable', ['bpmn:ErrorEventDefinition']],
   ['errorMessageVariable', ['bpmn:ErrorEventDefinition']],
@@ -266,6 +329,33 @@ interface ModdlePropertyDescriptor {
 }
 
 /**
+ * The text of a reference moddle could not resolve, per element and property.
+ * moddle types a reference `xsd:IDREF` and drops one naming no element in the
+ * document, but Operaton reads some of them as a variable name, so the text is
+ * kept here for the readers that need it. Keyed by the parsed element, so two
+ * documents in flight at once cannot see each other's.
+ */
+const UNRESOLVED_REFS = new WeakMap<ModdleElement, Map<string, string>>();
+
+function recordUnresolvedRefs(moddleWarnings: unknown): void {
+  for (const warning of (moddleWarnings as ModdleWarning[] | undefined) ?? []) {
+    const { message, element, property, value } = warning;
+    if (message?.startsWith('unresolved reference') !== true) continue;
+    if (element === undefined || property === undefined) continue;
+    if (value === undefined) continue;
+    const byProperty =
+      UNRESOLVED_REFS.get(element) ?? new Map<string, string>();
+    byProperty.set(property, value);
+    UNRESOLVED_REFS.set(element, byProperty);
+  }
+}
+
+/** The text a dropped `bpmn:` reference was written with, which Operaton reads as a name. */
+function unresolvedRef(el: ModdleElement, name: string): string | undefined {
+  return UNRESOLVED_REFS.get(el)?.get(`bpmn:${name}`);
+}
+
+/**
  * Parse a BPMN 2.0 XML document into the IR. Throws when the XML is malformed,
  * has no `bpmn:Process`, or has more than one.
  */
@@ -276,7 +366,7 @@ export async function xmlToIr(
 
   // moddle records "unparsable content" only for elements in the registered
   // `operaton:` namespace whose type the extension does not declare. Declared
-  // operaton and foreign-namespace elements materialise as values instead.
+  // operaton and foreign-namespace elements materialize as values instead.
   const { rootElement, warnings: moddleWarnings } = await moddle.fromXML(xml);
 
   const root = rootElement as ModdleElement;
@@ -299,7 +389,7 @@ export async function xmlToIr(
   const processes = rootElements.filter((e) => e.$type === 'bpmn:Process');
   if (processes.length === 0) {
     throw new Error(
-      'BPMN document contains no <bpmn:process> root element — nothing to import.',
+      'BPMN document contains no <bpmn:process> root element: nothing to import.',
     );
   }
   if (processes.length > 1) {
@@ -308,6 +398,8 @@ export async function xmlToIr(
         `(found ${processes.length} <bpmn:process> elements).`,
     );
   }
+
+  recordUnresolvedRefs(moddleWarnings);
 
   const warnings: ImportWarning[] = [];
   const mappedProcess = mapProcess(processes[0], warnings);
@@ -337,7 +429,7 @@ export async function xmlToIr(
   const documentId = root.id ?? ir.id;
   collectExtensionDrops(root, documentId, warnings);
   collectUnmappedBpmnDrops(root, documentId, warnings);
-  collectUnmappedRootDrops(rootElements, ir.id, warnings);
+  collectRootDrops(rootElements, ir.id, warnings);
 
   // Undeclared `operaton:` elements surface only as document-level moddle
   // warnings, so they are attributed to the process.
@@ -415,6 +507,11 @@ function collectReferencedCodes(process: BpmnProcess): {
         messageNames.add(def.messageName);
       } else if (def?.kind === 'signal') {
         signalNames.add(def.signalName);
+      }
+      // A receive task names its message on the element itself, and shares one
+      // root with every other use of that name.
+      if (el.kind === 'receiveTask' && el.messageName !== undefined) {
+        messageNames.add(el.messageName);
       }
       if (el.kind === 'subProcess') visit(el.flowElements);
     }
@@ -541,6 +638,13 @@ function warnUnreferencedNamedRoot(
 /** A `bpmn-moddle` parse warning; only its `message` is read. */
 interface ModdleWarning {
   readonly message?: string;
+  /**
+   * An `unresolved reference` warning carries the element that held it, the
+   * property it was written on (`bpmn:loopDataInputRef`), and its text.
+   */
+  readonly element?: ModdleElement;
+  readonly property?: string;
+  readonly value?: string;
 }
 
 /**
@@ -623,31 +727,58 @@ function mapProcess(
 
 /**
  * Which container hosts the element being mapped, threaded down so
- * {@link mapEventSubProcessStart} can check a compensation handler's host
- * without moddle's `$parent`. BPMN requires that handler to sit directly inside
- * the sub-process it compensates, so only `'subProcess'` passes there.
+ * {@link mapEventSubProcessStart} can check a compensation handler's host and
+ * {@link mapEndEvent} a cancel end's, neither of which has moddle's `$parent`.
+ * An undo handler sits directly inside the block whose work it undoes, and a
+ * cancel end directly inside a block that can be given up.
  */
-type ContainerHostKind = 'process' | 'subProcess' | 'eventSubProcess';
+type ContainerHostKind =
+  'process' | 'subProcess' | 'transaction' | 'eventSubProcess';
 
 function mapContainer(
   el: ModdleElement,
   warnings: ImportWarning[],
   hostKind: ContainerHostKind,
 ): { flowElements: FlowElement[]; sequenceFlows: SequenceFlow[] } {
+  refuseMultipleStartEvents(el);
   return mapContainerChildren(
     el,
     warnings,
-    (startEl) => mapStartEvent(startEl, warnings),
+    (startEl) => mapStartEvent(startEl, warnings, hostKind),
     hostKind,
   );
 }
 
+/**
+ * One entry point per container. The surface writes a start as the first
+ * statement of its body, so a second start would decompile to a statement the
+ * validator rejects. An event handler's single-start rule is checked separately
+ * in {@link mapEventSubProcess}.
+ */
+function refuseMultipleStartEvents(el: ModdleElement): void {
+  const children = (el.get('flowElements') as ModdleElement[]) ?? [];
+  const starts = children.filter((c) => c.$type === 'bpmn:StartEvent');
+  if (starts.length > 1) {
+    throw new UnsupportedEventFeatureError(
+      requireId(el),
+      `it has ${starts.length} start events; this tool writes one entry ` +
+        'point per process or subprocess, so a second start has nowhere to go',
+      'Leave one start and connect the steps that followed the others onto it.',
+    );
+  }
+}
+
 /** The `Activity` subtypes this tool maps: the only kinds that carry `isForCompensation`. */
 const ACTIVITY_TYPES: ReadonlySet<string> = new Set([
+  'bpmn:Task',
   'bpmn:UserTask',
   'bpmn:ServiceTask',
+  'bpmn:SendTask',
+  'bpmn:ReceiveTask',
+  'bpmn:BusinessRuleTask',
   'bpmn:ScriptTask',
   'bpmn:SubProcess',
+  'bpmn:Transaction',
   'bpmn:CallActivity',
 ]);
 
@@ -657,8 +788,8 @@ function refuseIfForCompensation(child: ModdleElement): void {
   throw new UnsupportedEventFeatureError(
     child.id ?? '(unknown)',
     'isForCompensation="true" marks this activity as excluded from normal ' +
-      'flow — the boundary-event compensation-handler pattern, which this ' +
-      'tool cannot import; wrap the steps in their own sub-process and ' +
+      'flow: the boundary-event compensation-handler pattern, which this ' +
+      'tool cannot import; wrap the steps in their own subprocess and ' +
       'target it with "on compensation" instead',
   );
 }
@@ -681,13 +812,22 @@ function mapContainerChildren(
   const children = (el.get('flowElements') as ModdleElement[]) ?? [];
   for (const child of children) {
     refuseIfForCompensation(child);
+    const mappedAt = flowElements.length;
     switch (child.$type) {
-      case 'bpmn:StartEvent':
-        flowElements.push(mapStart(child));
+      case 'bpmn:StartEvent': {
+        // Every start and end passes through here, and only here is it known
+        // whether a start's trigger moves into an `on` header.
+        const start = mapStart(child);
+        warnElidedLabel(start, hostKind === 'eventSubProcess', warnings);
+        flowElements.push(start);
         break;
-      case 'bpmn:EndEvent':
-        flowElements.push(mapEndEvent(child, warnings));
+      }
+      case 'bpmn:EndEvent': {
+        const end = mapEndEvent(child, warnings, hostKind);
+        warnElidedLabel(end, false, warnings);
+        flowElements.push(end);
         break;
+      }
       case 'bpmn:IntermediateThrowEvent':
         flowElements.push(mapIntermediateThrowEvent(child, warnings));
         break;
@@ -697,11 +837,23 @@ function mapContainerChildren(
       case 'bpmn:BoundaryEvent':
         flowElements.push(mapBoundaryEvent(child, warnings));
         break;
+      case 'bpmn:Task':
+        flowElements.push(mapTask(child, warnings));
+        break;
       case 'bpmn:UserTask':
         flowElements.push(mapUserTask(child, warnings));
         break;
       case 'bpmn:ServiceTask':
         flowElements.push(mapServiceTask(child, warnings));
+        break;
+      case 'bpmn:SendTask':
+        flowElements.push(mapServiceTask(child, warnings, 'send'));
+        break;
+      case 'bpmn:BusinessRuleTask':
+        flowElements.push(mapServiceTask(child, warnings, 'businessRule'));
+        break;
+      case 'bpmn:ReceiveTask':
+        flowElements.push(mapReceiveTask(child, warnings));
         break;
       case 'bpmn:ScriptTask':
         flowElements.push(mapScriptTask(child, warnings));
@@ -719,39 +871,149 @@ function mapContainerChildren(
             : mapSubProcess(child, warnings),
         );
         break;
+      // Operaton reads triggeredByEvent on this tag not at all, so it never
+      // opens an event handler: warnIgnoredTransactionAttrs reports the drop.
+      case 'bpmn:Transaction':
+        flowElements.push(mapSubProcess(child, warnings, 'transaction'));
+        break;
       case 'bpmn:CallActivity':
         flowElements.push(mapCallActivity(child, warnings));
         break;
       case 'bpmn:SequenceFlow':
-        sequenceFlows.push(mapSequenceFlow(child));
+        sequenceFlows.push(mapSequenceFlow(child, warnings));
         break;
       default:
         throw new UnsupportedElementError(child.$type, child.id);
     }
+    attachRepetition(flowElements, mappedAt, child, warnings);
     if (child.id !== undefined) {
       collectExtensionDrops(child, child.id, warnings);
       collectUnmappedBpmnDrops(child, child.id, warnings);
     }
   }
 
-  checkBoundaryEventHosts(flowElements, sequenceFlows);
+  checkBoundaryEventHosts(flowElements, sequenceFlows, warnings);
   return { flowElements, sequenceFlows };
 }
 
-const BOUNDARY_HOST_KINDS: ReadonlySet<FlowElement['kind']> = new Set([
+/** The kinds that can repeat: every activity, and nothing else. */
+const REPEATABLE_KINDS = [
+  'task',
   'userTask',
   'serviceTask',
+  'receiveTask',
   'scriptTask',
   'subProcess',
   'callActivity',
-]);
+] as const;
+
+type RepeatableElement = Extract<
+  FlowElement,
+  { kind: (typeof REPEATABLE_KINDS)[number] }
+>;
+
+function isRepeatable(node: FlowElement): node is RepeatableElement {
+  return (REPEATABLE_KINDS as readonly string[]).includes(node.kind);
+}
+
+/**
+ * Read the repetition off the child the dispatch just mapped, at `index` in
+ * `flowElements`. Operaton reads it before its own tag dispatch and wraps
+ * whatever that produces, so reading it here rather than in each mapper keeps
+ * every repeatable tag on one reader. A sequence flow pushed nothing, and a
+ * kind that cannot repeat is left alone.
+ */
+function attachRepetition(
+  flowElements: FlowElement[],
+  index: number,
+  child: ModdleElement,
+  warnings: ImportWarning[],
+): void {
+  const mapped = flowElements[index];
+  if (mapped === undefined || !isRepeatable(mapped)) return;
+  const loop = readLoopCharacteristics(child, mapped.id, warnings);
+  if (loop === undefined) return;
+  flowElements[index] = { ...mapped, loop };
+}
+
+/**
+ * The kinds a boundary event may attach to, each with the noun the refusals
+ * spell it with. The keys are the only list of those kinds, so a kind cannot
+ * reach the check without a noun to be named by.
+ */
+const BOUNDARY_HOST_NOUNS = {
+  task: 'plain task',
+  userTask: 'user task',
+  serviceTask: 'service task',
+  receiveTask: 'receive task',
+  scriptTask: 'script task',
+  subProcess: 'subprocess',
+  callActivity: 'call activity',
+} as const satisfies Partial<Record<FlowElement['kind'], string>>;
+
+type BoundaryHostKind = keyof typeof BOUNDARY_HOST_NOUNS;
+type BoundaryHost = Extract<FlowElement, { kind: BoundaryHostKind }>;
+
+const isBoundaryHost = (el: FlowElement): el is BoundaryHost =>
+  Object.hasOwn(BOUNDARY_HOST_NOUNS, el.kind);
+
+/** One IR kind covers three tags, so `element` decides which noun a host takes. */
+const SERVICE_TASK_LIKE_NOUNS = {
+  send: 'send task',
+  businessRule: 'business rule task',
+} as const;
+
+/** The same for the container kind, whose second tag the surface writes `attempt`. */
+const SUB_PROCESS_NOUNS = {
+  transaction: 'attempt block',
+} as const;
+
+function boundaryHostNoun(host: BoundaryHost): string {
+  if (host.kind === 'serviceTask' && host.element !== undefined) {
+    return SERVICE_TASK_LIKE_NOUNS[host.element];
+  }
+  if (host.kind === 'subProcess' && host.element !== undefined) {
+    return SUB_PROCESS_NOUNS[host.element];
+  }
+  return BOUNDARY_HOST_NOUNS[host.kind];
+}
+
+/** `a`, `a and b`, `a, b, or c`: an enumeration in the prose of a diagnostic. */
+function joinList(items: readonly string[], conjunction: 'and' | 'or'): string {
+  const rest = items.slice(0, -1);
+  const last = items.slice(-1).join('');
+  if (rest.length === 0) return last;
+  const comma = rest.length > 1 ? ',' : '';
+  return `${rest.join(', ')}${comma} ${conjunction} ${last}`;
+}
+
+/**
+ * Every noun a host can be named by, for the refusal that enumerates them. Both
+ * maps feed it, so adding a kind to either widens the sentence with it and the
+ * two cannot come apart.
+ */
+const BOUNDARY_HOST_NOUN_LIST = Object.entries(BOUNDARY_HOST_NOUNS).flatMap(
+  ([kind, noun]) => {
+    if (kind === 'serviceTask') {
+      return [noun, ...Object.values(SERVICE_TASK_LIKE_NOUNS)];
+    }
+    if (kind === 'subProcess') {
+      return [noun, ...Object.values(SUB_PROCESS_NOUNS)];
+    }
+    return [noun];
+  },
+);
 
 /**
  * The subset an escalation boundary may attach to, per Operaton's own
  * `BpmnParse.parseBoundaryEvents`: a service or script task is excluded.
  */
-const ESCALATION_BOUNDARY_HOST_KINDS: ReadonlySet<FlowElement['kind']> =
-  new Set(['subProcess', 'callActivity', 'userTask']);
+const ESCALATION_BOUNDARY_HOST_KINDS: ReadonlySet<BoundaryHostKind> =
+  new Set<BoundaryHostKind>(['subProcess', 'callActivity', 'userTask']);
+
+/** A block the surface writes with the `attempt` head: the only cancel host. */
+const givesUpItsWork = (el: FlowElement): el is SubProcess =>
+  el.kind === 'subProcess' && el.element === 'transaction';
 
 /**
  * Validate every boundary event against the other elements of its own
@@ -767,14 +1029,15 @@ const ESCALATION_BOUNDARY_HOST_KINDS: ReadonlySet<FlowElement['kind']> =
 function checkBoundaryEventHosts(
   flowElements: FlowElement[],
   sequenceFlows: SequenceFlow[],
+  warnings: ImportWarning[],
 ): void {
-  const activityById = new Map<string, FlowElement>();
+  const activityById = new Map<string, BoundaryHost>();
   for (const el of flowElements) {
-    // An event sub-process is written as a bare `on <trigger> { ... }` with no
+    // An event subprocess is written as a bare `on <trigger> { ... }` with no
     // authored id, so a boundary event on one could only print against a
     // synthesized id. Left out of the map, it hits the refusal below.
     if (
-      BOUNDARY_HOST_KINDS.has(el.kind) &&
+      isBoundaryHost(el) &&
       !(el.kind === 'subProcess' && el.triggeredByEvent === true)
     ) {
       activityById.set(el.id, el);
@@ -788,7 +1051,7 @@ function checkBoundaryEventHosts(
     if (!boundaryIds.has(sf.targetRef)) continue;
     throw new UnsupportedEventFeatureError(
       sf.targetRef,
-      'a boundary event carries an incoming sequence flow — it is ' +
+      'a boundary event carries an incoming sequence flow; it is ' +
         'triggered by its own event, not by an incoming flow',
     );
   }
@@ -800,10 +1063,10 @@ function checkBoundaryEventHosts(
     if (host === undefined) {
       throw new UnsupportedEventFeatureError(
         el.id,
-        `attachedToRef "${el.attachedToRef}" does not name a user task, ` +
-          'service task, script task, sub-process, or call activity that is ' +
-          'itself a flow element of this same container — a boundary event ' +
-          'can only attach to an activity alongside it',
+        `attachedToRef "${el.attachedToRef}" does not name a ` +
+          `${joinList(BOUNDARY_HOST_NOUN_LIST, 'or')} that is itself a flow ` +
+          'element of this same container; a boundary event can only attach ' +
+          'to an activity alongside it',
       );
     }
     if (
@@ -813,40 +1076,159 @@ function checkBoundaryEventHosts(
       throw new UnsupportedEventFeatureError(
         el.id,
         `an escalation boundary event attaches to "${el.attachedToRef}", a ` +
-          `${host.kind} — Operaton only allows an escalation boundary on a ` +
-          'sub-process, a call activity, or a user task',
+          `${boundaryHostNoun(host)}; Operaton only allows an escalation ` +
+          `boundary on ${joinList(
+            [...ESCALATION_BOUNDARY_HOST_KINDS].map(
+              (kind) => `a ${BOUNDARY_HOST_NOUNS[kind]}`,
+            ),
+            'or',
+          )}`,
       );
+    }
+    if (el.eventDefinition.kind === 'cancel' && !givesUpItsWork(host)) {
+      throw new UnsupportedEventFeatureError(
+        el.id,
+        `a cancel boundary event attaches to "${el.attachedToRef}", a ` +
+          `${boundaryHostNoun(host)}; Operaton only allows a cancel ` +
+          'boundary on a <bpmn:transaction>, and refuses to deploy the file ' +
+          'otherwise',
+        'Attach it to a <bpmn:transaction>, or take the cancel definition off it.',
+      );
+    }
+  }
+
+  checkCancelPairing(flowElements, warnings);
+}
+
+/**
+ * The cancel end inside a block and the cancel handler on it are one construct:
+ * parsing the handler is what wires the two together, and nothing but that end
+ * ever reaches the handler. Operaton takes one handler per block and refuses a
+ * file with two; either half alone deploys and then goes wrong at run time, so
+ * a lone half warns rather than refusing.
+ */
+function checkCancelPairing(
+  flowElements: FlowElement[],
+  warnings: ImportWarning[],
+): void {
+  const boundaryByHost = new Map<string, string>();
+  for (const el of flowElements) {
+    if (el.kind !== 'boundaryEvent') continue;
+    if (el.eventDefinition.kind !== 'cancel') continue;
+    if (boundaryByHost.has(el.attachedToRef)) {
+      throw new UnsupportedEventFeatureError(
+        el.id,
+        `a second cancel boundary event attaches to "${el.attachedToRef}"; ` +
+          'Operaton allows one cancel boundary per block and refuses to ' +
+          'deploy a file with two',
+        'Leave one cancel boundary event on the block.',
+      );
+    }
+    boundaryByHost.set(el.attachedToRef, el.id);
+  }
+
+  for (const el of flowElements) {
+    if (!givesUpItsWork(el)) continue;
+    const boundaryId = boundaryByHost.get(el.id);
+    const givenUp = el.flowElements.some(
+      (child) =>
+        child.kind === 'endEvent' && child.eventDefinition?.kind === 'cancel',
+    );
+    if (givenUp && boundaryId === undefined) {
+      warnings.push({
+        elementId: el.id,
+        category: 'unmappedConstruct',
+        message:
+          `The block '${el.id}' holds an end event that gives it up, with ` +
+          'no cancel boundary event attached to it: Operaton deploys the ' +
+          'file and then stops with an error the first time that end is ' +
+          `reached. Write 'on ${el.id}: cancel { ... }' beside the block to ` +
+          'catch it.',
+      });
+    }
+    if (!givenUp && boundaryId !== undefined) {
+      warnings.push({
+        elementId: boundaryId,
+        category: 'unmappedConstruct',
+        message:
+          `The cancel boundary event on '${el.id}' was imported, but ` +
+          'nothing inside the block gives it up, so what follows the ' +
+          'boundary can never run.',
+      });
     }
   }
 }
 
 /**
- * Map a plain `bpmn:SubProcess`. `bpmn:Transaction` and `bpmn:AdHocSubProcess`
- * carry their own `$type`s and hit the default refusal arm instead.
+ * Map a `bpmn:SubProcess` or a `bpmn:Transaction`, which differ only in the tag
+ * they serialize back to: Operaton runs both through the same behavior class,
+ * and what the second tag buys is that the engine then accepts a cancel end
+ * inside the block and a cancel boundary on it. `bpmn:AdHocSubProcess` carries
+ * its own `$type` and hits the default refusal arm instead.
  */
 function mapSubProcess(
   el: ModdleElement,
   warnings: ImportWarning[],
+  element?: 'transaction',
 ): SubProcess {
   const id = requireId(el);
-  refuseLoopCharacteristics(el, id);
   collectLaneDrops(el, id, warnings);
+  if (element === 'transaction') warnIgnoredTransactionAttrs(el, id, warnings);
   const name = readDerivableName(el, id);
   const { flowElements, sequenceFlows } = mapContainer(
     el,
     warnings,
-    'subProcess',
+    element ?? 'subProcess',
   );
 
   return {
     kind: 'subProcess',
     id,
     ...(name === undefined ? {} : { name }),
+    ...(element === undefined ? {} : { element }),
     ...readEngineAttributes(el, id, warnings),
     ...readIoMapping(el, id, warnings),
     flowElements,
     sequenceFlows,
   };
+}
+
+/**
+ * The BPMN attributes a `<bpmn:transaction>` declares that Operaton reads
+ * nothing of. `parseTransaction` reads no attribute of its own and sets the
+ * triggered-by-event property to false whatever the document says, so all three
+ * are dropped without changing what runs. Neither generic sweep can see them:
+ * all three are BPMN-declared, so they never reach `$attrs`, and the
+ * declared-attribute sweep looks at `operaton:` attributes alone.
+ */
+const IGNORED_TRANSACTION_ATTRS: ReadonlyMap<string, string> = new Map([
+  ['method', 'Operaton reads it on a <bpmn:transaction> not at all'],
+  ['protocol', 'Operaton reads it on a <bpmn:transaction> not at all'],
+  [
+    'triggeredByEvent',
+    'Operaton ignores it on a <bpmn:transaction> and runs the block as an ' +
+      'ordinary step of the surrounding flow',
+  ],
+]);
+
+function warnIgnoredTransactionAttrs(
+  el: ModdleElement,
+  id: string,
+  warnings: ImportWarning[],
+): void {
+  for (const [name, reason] of IGNORED_TRANSACTION_ATTRS) {
+    // An absent attribute reads back as undefined, or as the moddle default
+    // false, and neither is content the document wrote.
+    const value: unknown = el.get(name);
+    if (value === undefined || value === false) continue;
+    warnings.push({
+      elementId: id,
+      category: 'unmappedConstruct',
+      message:
+        `The '${name}' attribute on '${id}' was not imported: ${reason}, so ` +
+        'the imported block runs exactly as the source document does.',
+    });
+  }
 }
 
 function mapEventSubProcess(
@@ -862,7 +1244,7 @@ function mapEventSubProcess(
   if (incoming.length > 0 || outgoing.length > 0) {
     throw new UnsupportedEventFeatureError(
       id,
-      'an event handler carries incoming or outgoing sequence flows — it ' +
+      'an event handler carries incoming or outgoing sequence flows; it ' +
         'is triggered by its caught event, not wired into the surrounding flow',
     );
   }
@@ -921,13 +1303,20 @@ function mapEventSubProcessStart(
     'start',
   );
 
-  if (eventDefinition.kind === 'compensation' && hostKind !== 'subProcess') {
+  // Operaton's compensation-handler lookup asks only whether the handler is a
+  // subprocess scope triggered by an event, never what tag the block it
+  // compensates carries, so both container heads may host one.
+  if (
+    eventDefinition.kind === 'compensation' &&
+    hostKind !== 'subProcess' &&
+    hostKind !== 'transaction'
+  ) {
     throw new UnsupportedEventFeatureError(
       handlerId,
-      'a compensation handler must be hosted directly by the plain ' +
-        `sub-process it compensates, not by ${
-          hostKind === 'process' ? 'the process' : 'another event sub-process'
-        } — move it into the sub-process it compensates`,
+      'a compensation handler must be hosted directly by the block whose ' +
+        `completed work it undoes, not by ${
+          hostKind === 'process' ? 'the process' : 'another event subprocess'
+        }; move it inside that block`,
     );
   }
 
@@ -941,24 +1330,49 @@ function mapEventSubProcessStart(
     throw new UnsupportedEventFeatureError(
       handlerId,
       eventDefinition.kind === 'error'
-        ? 'an error handler cannot be non-interrupting (isInterrupting="false") ' +
-            '— BPMN requires an error trigger to interrupt its scope'
+        ? 'an error handler cannot be non-interrupting (isInterrupting="false")' +
+            '; BPMN requires an error trigger to interrupt its scope'
         : 'a compensation handler cannot be non-interrupting ' +
-            '(isInterrupting="false") — BPMN requires a compensation trigger ' +
+            '(isInterrupting="false"); BPMN requires a compensation trigger ' +
             'to interrupt its scope',
     );
   }
 
+  // Unlike a boundary event or a throw, the start statement under an `on`
+  // header has a label slot, so the label is carried here rather than
+  // dropped at import; warnElidedLabel reports it if the statement turns
+  // out not to print.
+  const name = readDerivableName(startEl, id);
   const formFields = readFormFields(startEl, id, warnings);
   return {
     kind: 'startEvent',
     id,
+    ...(name === undefined ? {} : { name }),
     eventDefinition,
     ...(isInterrupting === false ? { isInterrupting: false } : {}),
     ...(formFields === undefined ? {} : { formFields }),
     ...readEngineAttributes(startEl, id, warnings),
   };
 }
+
+/**
+ * The trigger kinds a `cancelActivity="false"` boundary refuses on, each with
+ * why. Every other kind a boundary takes has a non-interrupting form, which
+ * this surface writes as `alongside`.
+ */
+const NON_INTERRUPTING_REFUSALS: Partial<
+  Record<EventDefinition['kind'], string>
+> = {
+  error:
+    'an error boundary event cannot be non-interrupting ' +
+    '(cancelActivity="false"); BPMN gives an error boundary no ' +
+    'non-interrupting form',
+  cancel:
+    'a cancel boundary event cannot be non-interrupting ' +
+    '(cancelActivity="false"); Operaton deploys it and lets what follows ' +
+    'the boundary run beside the block instead of taking over from it, ' +
+    'which this surface cannot write back',
+};
 
 /**
  * Map a `bpmn:BoundaryEvent`. `attachedToRef` resolves to the host element
@@ -975,7 +1389,7 @@ function mapBoundaryEvent(
   if (hostEl === undefined) {
     throw new UnsupportedEventFeatureError(
       id,
-      'a boundary event has no attachedToRef — BPMN requires every ' +
+      'a boundary event has no attachedToRef; BPMN requires every ' +
         'boundary event to attach to an activity in its own container',
     );
   }
@@ -984,7 +1398,7 @@ function mapBoundaryEvent(
   if (incoming.length > 0) {
     throw new UnsupportedEventFeatureError(
       id,
-      'a boundary event carries an incoming sequence flow — it is ' +
+      'a boundary event carries an incoming sequence flow; it is ' +
         'triggered by its own event, not by an incoming flow',
     );
   }
@@ -1003,10 +1417,10 @@ function mapBoundaryEvent(
   if (defEl.$type === 'bpmn:CompensateEventDefinition') {
     throw new UnsupportedEventFeatureError(
       id,
-      'a compensation boundary event is not imported — BPMN attaches ' +
+      'a compensation boundary event is not imported: BPMN attaches ' +
         'compensation through isForCompensation and a bpmn:association on ' +
         'the activity being compensated, not a boundary event; wrap the ' +
-        'steps in their own sub-process and target it with "on compensation" instead',
+        'steps in their own subprocess and target it with "on compensation" instead',
     );
   }
 
@@ -1019,13 +1433,9 @@ function mapBoundaryEvent(
   warnGenuineLabel(el, id, 'a boundary event', warnings);
 
   const cancelActivity = el.get('cancelActivity') === false ? false : undefined;
-  if (cancelActivity === false && eventDefinition.kind === 'error') {
-    throw new UnsupportedEventFeatureError(
-      id,
-      'an error boundary event cannot be non-interrupting ' +
-        '(cancelActivity="false") — BPMN gives an error boundary no ' +
-        'non-interrupting form',
-    );
+  const nonInterrupting = NON_INTERRUPTING_REFUSALS[eventDefinition.kind];
+  if (cancelActivity === false && nonInterrupting !== undefined) {
+    throw new UnsupportedEventFeatureError(id, nonInterrupting);
   }
 
   return {
@@ -1043,7 +1453,7 @@ function refuseBoundaryInputOutput(el: ModdleElement, id: string): void {
   if (values.some((value) => value.$type === 'operaton:InputOutput')) {
     throw new UnsupportedEventFeatureError(
       id,
-      'a boundary event carries an operaton:inputOutput mapping — Operaton ' +
+      'a boundary event carries an operaton:inputOutput mapping; Operaton ' +
         'forbids input/output variable mappings on a boundary event',
     );
   }
@@ -1062,6 +1472,7 @@ function readCatchEventDefinition(
 ): EventDefinition {
   collectExtensionDrops(defEl, ownerId, warnings);
   collectUnmappedBpmnDrops(defEl, ownerId, warnings);
+  warnCatchSideImplementationAttrs(defEl, ownerId, warnings);
 
   if (defEl.$type === 'bpmn:ErrorEventDefinition') {
     const ref = getEl(defEl, 'errorRef');
@@ -1108,13 +1519,19 @@ function readCatchEventDefinition(
   if (defEl.$type === 'bpmn:ConditionalEventDefinition') {
     return {
       kind: 'conditional',
-      condition: readConditionalDefinition(defEl, ownerId),
+      condition: readConditionalDefinition(defEl, ownerId, warnings),
     };
   }
 
   if (defEl.$type === 'bpmn:CompensateEventDefinition') {
     refuseUnsupportedCompensateFeatures(defEl, ownerId);
     return { kind: 'compensation' };
+  }
+
+  // The boundary is the only catch position for it: BPMN has no cancel start
+  // event, and Operaton refuses a cancel intermediate catch outright.
+  if (defEl.$type === 'bpmn:CancelEventDefinition' && position === 'boundary') {
+    return { kind: 'cancel' };
   }
 
   throw new UnsupportedEventDefinitionError(ownerId, position, defEl.$type);
@@ -1134,18 +1551,25 @@ function refuseUnsupportedCompensateFeatures(
     throw new UnsupportedEventFeatureError(
       ownerId,
       'a compensation definition targets one activity by reference ' +
-        `(activityRef="${activityRef.id ?? '(unknown)'}") — this tool always ` +
+        `(activityRef="${activityRef.id ?? '(unknown)'}"); this tool always ` +
         'addresses the enclosing scope and cannot target a single activity',
     );
   }
   if (defEl.get('waitForCompletion') === false) {
     throw new UnsupportedEventFeatureError(
       ownerId,
-      'a compensation definition sets waitForCompletion="false" — this tool ' +
+      'a compensation definition sets waitForCompletion="false"; this tool ' +
         'only imports the default (wait for the compensation to complete) behavior',
     );
   }
 }
+
+/**
+ * `RAW_TEMPLATE` is declared before `STRING` in the grammar, so a quoted body
+ * opening with `${` lexes as a raw expression where a name is expected. An
+ * expression later in the name, and the `#{...}` spelling, both read back whole.
+ */
+const LEADING_EXPRESSION = /^\$\{/;
 
 function resolveNamedRootRef(
   defEl: ModdleElement,
@@ -1160,6 +1584,20 @@ function resolveNamedRootRef(
     throw new UnsupportedEventFeatureError(
       ownerId,
       `a ${label} definition must reference a ${rootKind} root with a non-empty name`,
+    );
+  }
+  if (LEADING_EXPRESSION.test(name)) {
+    const expressionRemedy =
+      label === 'message'
+        ? ", which the process's own start needs in any case; anywhere " +
+          'else the same expression reads back written as "#{...}"'
+        : ', or write the same expression as "#{...}"';
+    throw new UnsupportedEventFeatureError(
+      ownerId,
+      `a ${label} name that starts with an expression ("${name}") cannot be ` +
+        'written back: this tool writes the name in quotes, and a quoted ' +
+        'name opening with "${" reads as an expression rather than as a ' +
+        `name; give the ${label} a fixed name${expressionRemedy}`,
     );
   }
   return name;
@@ -1220,6 +1658,7 @@ const CONDITIONAL_NARROWING_ATTRS: readonly string[] = [
 function readConditionalDefinition(
   defEl: ModdleElement,
   ownerId: string,
+  warnings: ImportWarning[],
 ): string {
   const attrs = defEl.$attrs ?? {};
   for (const localName of CONDITIONAL_NARROWING_ATTRS) {
@@ -1242,13 +1681,14 @@ function readConditionalDefinition(
       'a conditional definition must carry a condition with a non-empty body',
     );
   }
+  noteRewrappedExpression(condition, ownerId, 'bpmn:condition', warnings);
   return condition;
 }
 
 /**
- * Resolve one event definition on the THROW side. Binding attributes have no
- * effect on a throw, but {@link CONSUMED_EXTENSION_ATTRS} lists them against
- * the definition type, which is the same on both sides, so
+ * Resolve one event definition on the THROW side. The catch parameter
+ * attributes have no effect on a throw, but {@link CONSUMED_EXTENSION_ATTRS}
+ * lists them against the definition type, which is the same on both sides, so
  * {@link warnThrowSideBindingAttrs} reports them instead of the generic sweep.
  */
 function readThrowEventDefinition(
@@ -1270,6 +1710,13 @@ function readThrowEventDefinition(
       );
     }
     return { kind: 'error', errorCode };
+  }
+
+  if (defEl.$type === 'bpmn:MessageEventDefinition') {
+    return {
+      kind: 'message',
+      messageName: resolveNamedRootRef(defEl, 'messageRef', ownerId, 'message'),
+    };
   }
 
   if (defEl.$type === 'bpmn:SignalEventDefinition') {
@@ -1322,6 +1769,54 @@ function warnThrowSideBindingAttrs(
   }
 }
 
+/**
+ * The mirror of {@link warnThrowSideBindingAttrs}: an implementation on a
+ * message definition is what sends the message, which only a throw does, so the
+ * catch side reads the same names and imports none of them.
+ */
+function warnCatchSideImplementationAttrs(
+  defEl: ModdleElement,
+  ownerId: string,
+  warnings: ImportWarning[],
+): void {
+  if (defEl.$type !== 'bpmn:MessageEventDefinition') return;
+  for (const name of IMPLEMENTATION_ATTRS) {
+    if (readNamespacedAttr(defEl, name) === undefined) continue;
+    warnings.push({
+      elementId: ownerId,
+      category: 'extensionAttribute',
+      message:
+        `The '${name}' setting on '${ownerId}' only takes effect on a throw ` +
+        "('throw message' or 'emit message'); it has no effect on a catch and " +
+        'was not imported.',
+    });
+  }
+}
+
+/**
+ * Report the label of a start or end the printer writes no statement for. The
+ * printer's own predicate decides, so a label that does survive is never
+ * reported, and one that stops surviving is never reported silently.
+ */
+function warnElidedLabel(
+  el: StartEvent | EndEvent,
+  startTriggerSuppressed: boolean,
+  warnings: ImportWarning[],
+): void {
+  if (el.name === undefined) return;
+  if (!isElidedOnPrint(el, startTriggerSuppressed)) return;
+  const statement = el.kind === 'startEvent' ? 'start' : 'end';
+  warnings.push({
+    elementId: el.id,
+    category: 'label',
+    message:
+      `The label '${el.name}' on '${el.id}' was not written to the script: ` +
+      `'${el.id}' is the kind of name this tool generates for itself, which ` +
+      `a script cannot repeat, so this ${statement} is left out entirely and ` +
+      'its label with it. Rename it in the diagram to keep the label.',
+  });
+}
+
 function warnGenuineLabel(
   el: ModdleElement,
   id: string,
@@ -1344,19 +1839,24 @@ function mapCallActivity(
   warnings: ImportWarning[],
 ): CallActivity {
   const id = requireId(el);
-  refuseLoopCharacteristics(el, id);
   const name = readDerivableName(el, id);
 
   const calledElement = readString(el, 'calledElement');
   if (calledElement === undefined) {
     throw new UnsupportedCallActivityError(
       id,
-      'it has no calledElement — there is nothing for the engine to invoke',
+      'it has no calledElement; there is nothing for the engine to invoke',
     );
   }
   refuseExecutionAffectingCallActivityAttrs(el, id);
 
-  const binding = readCalledElementBinding(el, id, warnings);
+  const binding = readVersionBinding(
+    el,
+    id,
+    'calledElement',
+    (detail) => new UnsupportedCallActivityError(id, detail),
+    warnings,
+  );
   const { businessKey, inMappings, outMappings } = readCallMappings(el, id);
 
   return {
@@ -1390,38 +1890,41 @@ const EXECUTION_AFFECTING_CALL_ATTRS: readonly (readonly [string, string])[] = [
   [
     'variableMappingClass',
     'it sets variableMappingClass, which replaces the operaton:in/operaton:out ' +
-      'mapping with a Java delegate — importing it would pass no variables ' +
+      'mapping with a Java delegate; importing it would pass no variables ' +
       'into or out of the called process',
   ],
   [
     'variableMappingDelegateExpression',
     'it sets variableMappingDelegateExpression, which replaces the ' +
-      'operaton:in/operaton:out mapping with a delegate expression — ' +
+      'operaton:in/operaton:out mapping with a delegate expression; ' +
       'importing it would pass no variables into or out of the called process',
   ],
   [
     'calledElementTenantId',
     'it sets calledElementTenantId, which pins the tenant the engine ' +
-      'resolves the called process against — dropping it would change ' +
+      'resolves the called process against; dropping it would change ' +
       'which process is invoked',
   ],
 ];
 
 /**
- * Resolve a call activity's version binding. The generic sweep cannot tell a
- * meaningful `calledElementVersion` from a dangling one (set while the binding
- * is absent or not `"version"`, where Operaton ignores it), so it is reported
- * here.
+ * Resolve the `<prefix>Binding`/`<prefix>Version` pair a call activity and a
+ * decision reference both pin their version with, the inverse of
+ * `ir-to-xml.ts`'s `versionBindingAttrs`. The generic sweep cannot tell a
+ * meaningful version from a dangling one (set while the binding is absent or
+ * not `"version"`, where Operaton ignores it), so it is reported here.
  */
-function readCalledElementBinding(
+function readVersionBinding(
   el: ModdleElement,
   id: string,
+  prefix: 'calledElement' | 'decisionRef',
+  refusal: (detail: string) => Error,
   warnings: ImportWarning[],
-): CalledElementBinding | undefined {
-  const bindingValue = readNamespacedAttr(el, 'calledElementBinding');
-  const version = readNamespacedAttr(el, 'calledElementVersion');
+): VersionBinding | undefined {
+  const bindingValue = readNamespacedAttr(el, `${prefix}Binding`);
+  const version = readNamespacedAttr(el, `${prefix}Version`);
 
-  let binding: CalledElementBinding | undefined;
+  let binding: VersionBinding | undefined;
   switch (bindingValue) {
     case undefined:
       binding = undefined;
@@ -1434,19 +1937,16 @@ function readCalledElementBinding(
       break;
     case 'version':
       if (version === undefined) {
-        throw new UnsupportedCallActivityError(
-          id,
-          'calledElementBinding="version" is set without a ' +
-            'calledElementVersion, so the engine cannot resolve which ' +
-            'version to call',
+        throw refusal(
+          `${prefix}Binding="version" is set without a ${prefix}Version, so ` +
+            'the engine cannot resolve which version to use',
         );
       }
       binding = { kind: 'version', version };
       break;
     default:
-      throw new UnsupportedCallActivityError(
-        id,
-        `calledElementBinding="${bindingValue}" is not a binding this tool can represent`,
+      throw refusal(
+        `${prefix}Binding="${bindingValue}" is not a binding this tool can represent`,
       );
   }
 
@@ -1455,8 +1955,8 @@ function readCalledElementBinding(
       elementId: id,
       category: 'extensionAttribute',
       message:
-        `The 'calledElementVersion' setting on '${id}' has no effect ` +
-        'without calledElementBinding="version" and was not imported.',
+        `The '${prefix}Version' setting on '${id}' has no effect without ` +
+        `${prefix}Binding="version" and was not imported.`,
     });
   }
 
@@ -1531,7 +2031,7 @@ function readCallVariableMapping(
   if (source !== undefined && sourceExpression !== undefined) {
     throw new UnsupportedCallActivityError(
       ownerId,
-      `a ${tag} carries both source and sourceExpression`,
+      `an ${tag} carries both source and sourceExpression`,
     );
   }
 
@@ -1539,7 +2039,7 @@ function readCallVariableMapping(
     if (variables !== 'all') {
       throw new UnsupportedCallActivityError(
         ownerId,
-        `a ${tag} carries variables="${variables}", which this tool cannot ` +
+        `an ${tag} carries variables="${variables}", which this tool cannot ` +
           'import (only variables="all" is supported)',
       );
     }
@@ -1550,7 +2050,7 @@ function readCallVariableMapping(
     ) {
       throw new UnsupportedCallActivityError(
         ownerId,
-        `a ${tag} carries variables="all" combined with ` +
+        `an ${tag} carries variables="all" combined with ` +
           'source/sourceExpression/target',
       );
     }
@@ -1561,7 +2061,7 @@ function readCallVariableMapping(
     if (target === undefined) {
       throw new UnsupportedCallActivityError(
         ownerId,
-        `a ${tag} carries source without a target`,
+        `an ${tag} carries source without a target`,
       );
     }
     return {
@@ -1576,7 +2076,7 @@ function readCallVariableMapping(
     if (target === undefined) {
       throw new UnsupportedCallActivityError(
         ownerId,
-        `a ${tag} carries sourceExpression without a target`,
+        `an ${tag} carries sourceExpression without a target`,
       );
     }
     return {
@@ -1589,7 +2089,7 @@ function readCallVariableMapping(
 
   throw new UnsupportedCallActivityError(
     ownerId,
-    `a ${tag} carries none of the recognized shapes (source+target, ` +
+    `an ${tag} carries none of the recognized shapes (source+target, ` +
       'sourceExpression+target, variables="all", or businessKey)',
   );
 }
@@ -1638,11 +2138,12 @@ function warnLaneSetDrops(
  * Every other BPMN child is content nothing reads, reported by
  * {@link collectUnmappedBpmnDrops}. Read but not mapped one-to-one:
  * `documentation` and `extensionElements` by {@link collectExtensionDrops},
- * `laneSets` by {@link collectLaneDrops}, `loopCharacteristics` refused by
- * {@link refuseLoopCharacteristics}, `rootElements` walked by {@link xmlToIr},
- * and `diagrams` is the DI data.
+ * `laneSets` by {@link collectLaneDrops}, `loopCharacteristics` and the four
+ * children of it named here by {@link readLoopCharacteristics}, `rootElements`
+ * walked by {@link xmlToIr}, and `diagrams` is the DI data.
  */
 const READ_BPMN_CHILDREN: ReadonlySet<string> = new Set([
+  'completionCondition',
   'condition',
   'conditionExpression',
   'diagrams',
@@ -1650,8 +2151,11 @@ const READ_BPMN_CHILDREN: ReadonlySet<string> = new Set([
   'eventDefinitions',
   'extensionElements',
   'flowElements',
+  'inputDataItem',
   'laneSets',
+  'loopCardinality',
   'loopCharacteristics',
+  'loopDataInputRef',
   'rootElements',
   'script',
   'timeCycle',
@@ -1714,13 +2218,23 @@ const HANDLED_ROOT_KINDS: ReadonlySet<string> = new Set([
   'bpmn:Signal',
 ]);
 
-function collectUnmappedRootDrops(
+/**
+ * Report the root elements the IR does not model, and the extension content
+ * parked on the ones it does. The process is swept as it is mapped, so only the
+ * error, escalation, message, and signal roots are swept here.
+ */
+function collectRootDrops(
   rootElements: ModdleElement[],
   processId: string,
   warnings: ImportWarning[],
 ): void {
   for (const root of rootElements) {
-    if (HANDLED_ROOT_KINDS.has(root.$type)) continue;
+    if (HANDLED_ROOT_KINDS.has(root.$type)) {
+      if (root.$type !== 'bpmn:Process') {
+        collectExtensionDrops(root, root.id ?? processId, warnings);
+      }
+      continue;
+    }
     warnings.push({
       elementId: root.id ?? processId,
       category: 'unmappedConstruct',
@@ -1775,7 +2289,7 @@ function warnUnreadPrefixedAttrs(
 }
 
 /**
- * Report the materialised `<bpmn:extensionElements>` children that
+ * Report the materialized `<bpmn:extensionElements>` children that
  * {@link CONSUMED_EXTENSION_ELEMENTS} does not list for this owner kind. An
  * undeclared `operaton:` element leaves no value behind and is reported against
  * the document by {@link collectUnparsableResidualDrops} instead.
@@ -1925,7 +2439,7 @@ function xmlTagOf(type: string): string {
 }
 
 /**
- * The elements moddle materialised under `el`. A property declared as an
+ * The elements moddle materialized under `el`. A property declared as an
  * element but typed as a string (an `operaton:field`'s body) holds none.
  */
 function childElements(el: ModdleElement): ModdleElement[] {
@@ -1942,13 +2456,37 @@ function childElements(el: ModdleElement): ModdleElement[] {
   return children;
 }
 
-/** Map a `bpmn:StartEvent`, refusing any event definition: plain starts only. */
+/** `${...}` and `#{...}` both name an EL expression; Operaton accepts either syntax. */
+const EXPRESSION_BODY = /\$\{|#\{/;
+
+/** The opening this surface has no form for; only a leading one is rewritten. */
+const DEFERRED_OPEN = /^\s*#\{/;
+
+function noteRewrappedExpression(
+  body: string | undefined,
+  ownerId: string,
+  slot: string,
+  warnings: ImportWarning[],
+): void {
+  if (body === undefined || !DEFERRED_OPEN.test(body)) return;
+  warnings.push({
+    elementId: ownerId,
+    category: 'unmappedConstruct',
+    message:
+      `The ${slot} on '${ownerId}' is written with "#{...}", which this ` +
+      'surface has no form for: its text is written back inside "${...}", ' +
+      'which Operaton evaluates identically.',
+  });
+}
+
+/** Message, signal, and timer only. See {@link readStartTrigger}. */
 function mapStartEvent(
   el: ModdleElement,
   warnings: ImportWarning[],
+  hostKind: ContainerHostKind,
 ): StartEvent {
   const id = requireId(el);
-  refuseEventDefinitions(el, id);
+  const eventDefinition = readStartTrigger(el, id, warnings, hostKind);
   const name = readDerivableName(el, id);
   const formFields = readFormFields(el, id, warnings);
   return {
@@ -1956,11 +2494,134 @@ function mapStartEvent(
     id,
     ...(name === undefined ? {} : { name }),
     ...(formFields === undefined ? {} : { formFields }),
+    ...(eventDefinition === undefined ? {} : { eventDefinition }),
     ...readEngineAttributes(el, id, warnings),
   };
 }
 
-function mapEndEvent(el: ModdleElement, warnings: ImportWarning[]): EndEvent {
+/**
+ * The subjects Operaton parses off a start event but never acts on, each with
+ * the move that catches it instead. The remedies match what the validator says
+ * at the same position, so authoring and importing read alike.
+ */
+const IGNORED_START_SUBJECTS: ReadonlyMap<
+  string,
+  { subject: string; remedy: string }
+> = new Map([
+  [
+    'bpmn:ErrorEventDefinition',
+    {
+      subject: 'an error',
+      remedy: "Catch it with 'on error' inside the scope that raises it.",
+    },
+  ],
+  [
+    'bpmn:EscalationEventDefinition',
+    {
+      subject: 'an escalation',
+      remedy: "Catch it with 'on escalation' inside the scope that raises it.",
+    },
+  ],
+  [
+    'bpmn:CompensateEventDefinition',
+    {
+      subject: 'compensation',
+      remedy:
+        "Compensation undoes a subprocess's completed work, so it belongs " +
+        "in an 'on compensation' block inside that subprocess.",
+    },
+  ],
+]);
+
+/**
+ * The trigger on a container's own start event. An event handler's start is
+ * entered through {@link mapEventSubProcessStart}, which requires one
+ * definition and takes a wider set of kinds.
+ */
+function readStartTrigger(
+  el: ModdleElement,
+  id: string,
+  warnings: ImportWarning[],
+  hostKind: ContainerHostKind,
+): EventDefinition | undefined {
+  const defs = eventDefinitionsOf(el);
+  if (defs.length === 0) return undefined;
+  if (hostKind !== 'process') {
+    throw new UnsupportedEventFeatureError(
+      id,
+      'a subprocess cannot start on a trigger: Operaton rejects one there ' +
+        'when it parses the file; a subprocess is entered from the ' +
+        'surrounding process, not by an event of its own',
+      "Put the trigger on an 'on' handler inside the subprocess if it should " +
+        'react to an event.',
+    );
+  }
+  refuseMultipleEventDefinitions(
+    id,
+    defs,
+    'a start',
+    'message, signal, or timer trigger is supported',
+  );
+
+  const [defEl] = defs;
+  const ignored = IGNORED_START_SUBJECTS.get(defEl.$type);
+  if (ignored !== undefined) {
+    throw new UnsupportedEventFeatureError(
+      id,
+      `a process cannot start on ${ignored.subject}; Operaton ignores the ` +
+        'trigger and starts the process as if none were written, so ' +
+        'importing it would write back a document the engine runs ' +
+        'differently from what it says',
+      ignored.remedy,
+    );
+  }
+  if (
+    defEl.$type !== 'bpmn:MessageEventDefinition' &&
+    defEl.$type !== 'bpmn:SignalEventDefinition' &&
+    defEl.$type !== 'bpmn:TimerEventDefinition'
+  ) {
+    throw new UnsupportedEventDefinitionError(id, 'start', defEl.$type);
+  }
+
+  const definition = readCatchEventDefinition(defEl, id, warnings, 'start');
+  if (
+    definition.kind === 'message' &&
+    EXPRESSION_BODY.test(definition.messageName)
+  ) {
+    throw new UnsupportedEventFeatureError(
+      id,
+      `a message start event's message name "${definition.messageName}" is ` +
+        'an expression; Operaton rejects an expression there, because a ' +
+        'process that has not started yet has no variables to evaluate it ' +
+        'against',
+      'Give the message a fixed name.',
+    );
+  }
+  return definition;
+}
+
+/**
+ * The tag each end-carried definition is written with. Both keep the end's
+ * label, because both print on the statement itself instead of as a throw,
+ * which has no label slot.
+ */
+const END_CARRIED_TAGS = {
+  terminate: 'bpmn:TerminateEventDefinition',
+  cancel: 'bpmn:CancelEventDefinition',
+} satisfies Record<(typeof END_TRIGGERS)[number], string>;
+
+/** The kind a definition tag imports as, or `undefined` for a raised one. */
+function endCarriedKind(
+  tag: string,
+): (typeof END_TRIGGERS)[number] | undefined {
+  return END_TRIGGERS.find((kind) => END_CARRIED_TAGS[kind] === tag);
+}
+
+function mapEndEvent(
+  el: ModdleElement,
+  warnings: ImportWarning[],
+  hostKind: ContainerHostKind,
+): EndEvent {
   const id = requireId(el);
   const defs = eventDefinitionsOf(el);
 
@@ -1977,13 +2638,38 @@ function mapEndEvent(el: ModdleElement, warnings: ImportWarning[]): EndEvent {
     id,
     defs,
     'a throw',
-    'error, escalation, signal, or compensation is supported',
+    'terminate, cancel, error, escalation, message, signal, or compensation ' +
+      'is supported',
   );
 
   const [defEl] = defs;
+  const carried = endCarriedKind(defEl.$type);
+  if (carried !== undefined) {
+    if (carried === 'cancel' && hostKind !== 'transaction') {
+      throw new UnsupportedEventFeatureError(
+        id,
+        'an end event carries a cancel definition outside a block that can ' +
+          'be given up; Operaton only accepts one directly inside a ' +
+          '<bpmn:transaction>, and refuses to deploy the file otherwise',
+        'Move the end inside a <bpmn:transaction>, or take the cancel ' +
+          'definition off it.',
+      );
+    }
+    collectExtensionDrops(defEl, id, warnings);
+    collectUnmappedBpmnDrops(defEl, id, warnings);
+    const name = readDerivableName(el, id);
+    return {
+      kind: 'endEvent',
+      id,
+      ...(name === undefined ? {} : { name }),
+      eventDefinition: { kind: carried },
+      ...readEngineAttributes(el, id, warnings),
+    };
+  }
   if (
     defEl.$type !== 'bpmn:ErrorEventDefinition' &&
     defEl.$type !== 'bpmn:EscalationEventDefinition' &&
+    defEl.$type !== 'bpmn:MessageEventDefinition' &&
     defEl.$type !== 'bpmn:SignalEventDefinition' &&
     defEl.$type !== 'bpmn:CompensateEventDefinition'
   ) {
@@ -1997,6 +2683,7 @@ function mapEndEvent(el: ModdleElement, warnings: ImportWarning[]): EndEvent {
     kind: 'endEvent',
     id,
     eventDefinition,
+    ...readThrownMessageBinding(defEl, id, warnings),
     ...readEngineAttributes(el, id, warnings),
   };
 }
@@ -2019,19 +2706,20 @@ function mapIntermediateThrowEvent(
     id,
     defs,
     'an emit',
-    'escalation, signal, or compensation is supported',
+    'escalation, message, signal, or compensation is supported',
   );
 
   const [defEl] = defs;
   if (defEl.$type === 'bpmn:ErrorEventDefinition') {
     throw new UnsupportedEventFeatureError(
       id,
-      'an emit cannot carry an error — BPMN has no intermediate error ' +
+      'an emit cannot carry an error: BPMN has no intermediate error ' +
         'throw; write "throw error" to end the path instead',
     );
   }
   if (
     defEl.$type !== 'bpmn:EscalationEventDefinition' &&
+    defEl.$type !== 'bpmn:MessageEventDefinition' &&
     defEl.$type !== 'bpmn:SignalEventDefinition' &&
     defEl.$type !== 'bpmn:CompensateEventDefinition'
   ) {
@@ -2049,8 +2737,63 @@ function mapIntermediateThrowEvent(
     kind: 'intermediateThrowEvent',
     id,
     eventDefinition,
+    ...readThrownMessageBinding(defEl, id, warnings),
     ...readEngineAttributes(el, id, warnings),
   };
+}
+
+/** The connector child under either prefix: `operaton:` is declared, `camunda:` arrives raw. */
+const CONNECTOR_TYPES: ReadonlySet<string> = new Set([
+  'operaton:Connector',
+  'camunda:connector',
+]);
+
+/**
+ * What makes Operaton really send a thrown message: the same implementation a
+ * service task runs, written on the definition rather than on the event. A
+ * message thrown without one records and continues, so a definition naming
+ * none is imported as it stands, though a lone `topic` warns: the engine
+ * reaches an external worker only with `type="external"` beside it. A
+ * connector is that implementation in element form, which this surface has no
+ * place to keep, so it refuses rather than turning the send into a no-op.
+ */
+function readThrownMessageBinding(
+  defEl: ModdleElement,
+  id: string,
+  warnings: ImportWarning[],
+): { binding?: ServiceTaskBinding } {
+  if (defEl.$type !== 'bpmn:MessageEventDefinition') return {};
+
+  if (
+    extensionValues(defEl).some((value) => CONNECTOR_TYPES.has(value.$type))
+  ) {
+    throw new UnsupportedEventFeatureError(
+      id,
+      'a thrown message carries a connector; that is what makes the engine ' +
+        'really send it, and this surface has no place to keep it',
+    );
+  }
+
+  const binding = readCodeOrExternalBinding(defEl, id, warnings);
+  if (binding !== undefined) return { binding };
+  if (readNamespacedAttr(defEl, 'type') !== undefined) {
+    throw new UnsupportedServiceTaskFormError(
+      id,
+      detectUnsupportedServiceTaskForm(defEl),
+      'Thrown message',
+    );
+  }
+  if (readNamespacedAttr(defEl, 'topic') !== undefined) {
+    warnings.push({
+      elementId: id,
+      category: 'extensionAttribute',
+      message:
+        `The 'topic' setting on '${id}' only takes effect alongside ` +
+        'operaton:type="external"; on its own it names no external worker ' +
+        'and was not imported.',
+    });
+  }
+  return {};
 }
 
 function mapIntermediateCatchEvent(
@@ -2063,7 +2806,7 @@ function mapIntermediateCatchEvent(
     throw new UnsupportedEventFeatureError(
       id,
       'an await with parallelMultiple="true" waits for several triggers ' +
-        'together — only a single message, timer, signal, or conditional ' +
+        'together; only a single message, timer, signal, or conditional ' +
         'trigger can be awaited',
     );
   }
@@ -2093,11 +2836,12 @@ function mapIntermediateCatchEvent(
   ) {
     throw new UnsupportedEventFeatureError(
       id,
-      `an await cannot carry a ${defEl.$type} — only message, timer, ` +
+      `an await cannot carry a ${defEl.$type}: only message, timer, ` +
         'signal, or conditional triggers can be awaited inline; error and ' +
         'escalation are caught by an event handler and raised with ' +
-        'throw/emit, compensation is undone by a sub-process block, and ' +
-        'link and cancel triggers have no surface',
+        'throw/emit, compensation is undone by a subprocess block, a link ' +
+        'has no surface, and a cancel is written on the end that gives up ' +
+        'an attempt block',
     );
   }
 
@@ -2119,28 +2863,322 @@ function mapIntermediateCatchEvent(
   };
 }
 
-/**
- * Refuse any event definition on an ordinary container's start event. An event
- * handler's start goes through {@link mapEventSubProcessStart}, which requires one.
- */
-function refuseEventDefinitions(el: ModdleElement, id: string): void {
-  const defs = eventDefinitionsOf(el);
-  if (defs.length > 0) {
-    throw new UnsupportedEventDefinitionError(id, 'start', defs[0].$type);
-  }
-}
-
-/** Refuse loop characteristics: the IR models elements that run exactly once. */
+/** An event handler is entered by its trigger, so a repetition around one says nothing. */
 function refuseLoopCharacteristics(el: ModdleElement, id: string): void {
   const loop = getEl(el, 'loopCharacteristics');
   if (loop !== undefined) {
-    throw new UnsupportedLoopCharacteristicsError(id, loop.$type);
+    throw new UnsupportedLoopCharacteristicsError(
+      id,
+      loop.$type,
+      'an event handler is entered by its trigger, so it cannot be repeated',
+    );
   }
+}
+
+const MULTI_INSTANCE = 'bpmn:MultiInstanceLoopCharacteristics';
+
+/**
+ * How often a step runs, or `undefined` for one that runs once.
+ *
+ * Operaton reads `operaton:collection` and then `bpmn:loopDataInputRef` into
+ * one field, and `operaton:elementVariable` and then `bpmn:inputDataItem/@name`
+ * into another, the second spelling of each pair overwriting the first. Both
+ * pairs therefore import into one field here too, with a warning naming what
+ * was shadowed. What the engine refuses to deploy is refused here as well,
+ * rather than imported into a process that cannot start.
+ */
+function readLoopCharacteristics(
+  el: ModdleElement,
+  id: string,
+  warnings: ImportWarning[],
+): LoopCharacteristics | undefined {
+  const loopEl = getEl(el, 'loopCharacteristics');
+  if (loopEl === undefined) return undefined;
+  if (loopEl.$type !== MULTI_INSTANCE) {
+    throw new UnsupportedLoopCharacteristicsError(
+      id,
+      loopEl.$type,
+      'Operaton does not run a bpmn:standardLoopCharacteristics at all: it ' +
+        'deploys the step and runs it once, so importing this would hand ' +
+        'back a script saying the step repeats when it does not',
+    );
+  }
+  refusePerRunJobSettings(loopEl, id);
+  refuseOutputParameters(el, id);
+
+  const cardinality = readCardinality(loopEl, id, warnings);
+  const collection = readCollection(loopEl, id, warnings);
+  const elementVariable = readElementVariable(loopEl, id, warnings);
+  if (cardinality === undefined && collection === undefined) {
+    throw new UnsupportedLoopCharacteristicsError(
+      id,
+      MULTI_INSTANCE,
+      'it sets neither a number of runs nor a collection to run over, and ' +
+        'Operaton refuses to deploy that',
+    );
+  }
+  if (elementVariable !== undefined && collection === undefined) {
+    throw new UnsupportedLoopCharacteristicsError(
+      id,
+      MULTI_INSTANCE,
+      `it names '${elementVariable}' for each run to see but no collection ` +
+        'to take it from, and Operaton refuses to deploy that',
+    );
+  }
+  sweepRepetition(loopEl, id, warnings);
+
+  const conditionEl = getEl(loopEl, 'completionCondition');
+  const completionCondition =
+    conditionEl === undefined ? undefined : readString(conditionEl, 'body');
+  noteRewrappedExpression(
+    completionCondition,
+    id,
+    'bpmn:completionCondition',
+    warnings,
+  );
+  return {
+    ...(cardinality === undefined ? {} : { cardinality }),
+    ...(collection === undefined ? {} : { collection }),
+    ...(elementVariable === undefined ? {} : { elementVariable }),
+    ...(completionCondition === undefined ? {} : { completionCondition }),
+    // Absent means the runs happen at once, which is the engine default.
+    ...(loopEl.get('isSequential') === true ? { sequential: true } : {}),
+  };
+}
+
+function readCardinality(
+  loopEl: ModdleElement,
+  id: string,
+  warnings: ImportWarning[],
+): string | undefined {
+  const cardinalityEl = getEl(loopEl, 'loopCardinality');
+  if (cardinalityEl === undefined) return undefined;
+  const cardinality = readString(cardinalityEl, 'body');
+  if (cardinality === undefined) {
+    throw new UnsupportedLoopCharacteristicsError(
+      id,
+      MULTI_INSTANCE,
+      'its bpmn:loopCardinality is empty, so Operaton has no number of runs to read',
+    );
+  }
+  // A body outside these two forms comes back out as something else: a
+  // literal the printer has no bare form for is re-wrapped as an expression,
+  // which is a different document. {@link BARE_CARDINALITY} is the printer's
+  // own test, so the two directions cannot drift apart.
+  if (
+    !BARE_CARDINALITY.test(cardinality) &&
+    !EXPRESSION_BODY.test(cardinality)
+  ) {
+    throw new UnsupportedLoopCharacteristicsError(
+      id,
+      MULTI_INSTANCE,
+      `its bpmn:loopCardinality is ${JSON.stringify(cardinality)}, which ` +
+        'this tool cannot write back out unchanged; it writes a count as a ' +
+        'plain whole number or as an expression, and this body is neither',
+    );
+  }
+  noteRewrappedExpression(cardinality, id, 'bpmn:loopCardinality', warnings);
+  return cardinality;
+}
+
+/**
+ * Operaton reads the text of `bpmn:loopDataInputRef` as the name of the
+ * collection variable, so a document naming a process variable rather than an
+ * element in the document is the engine's own canonical spelling. moddle
+ * resolves the slot as an id reference, answering with the element when the
+ * text names one and dropping it otherwise, so the dropped text is read back
+ * from what the parse reported.
+ */
+function readCollection(
+  loopEl: ModdleElement,
+  id: string,
+  warnings: ImportWarning[],
+): string | undefined {
+  const setting = readNamespacedAttr(loopEl, 'collection');
+  const referenced =
+    getEl(loopEl, 'loopDataInputRef')?.id ??
+    unresolvedRef(loopEl, 'loopDataInputRef');
+  if (setting !== undefined && referenced !== undefined) {
+    warnShadowedRepetitionField(warnings, id, {
+      winner: 'bpmn:loopDataInputRef',
+      loser: 'operaton:collection',
+      names: 'the collection',
+      kept: referenced,
+      dropped: setting,
+    });
+  }
+  return referenced ?? setting;
+}
+
+function readElementVariable(
+  loopEl: ModdleElement,
+  id: string,
+  warnings: ImportWarning[],
+): string | undefined {
+  const setting = readNamespacedAttr(loopEl, 'elementVariable');
+  const dataItem = getEl(loopEl, 'inputDataItem');
+  const itemName =
+    dataItem === undefined ? undefined : readString(dataItem, 'name');
+  if (setting !== undefined && itemName !== undefined) {
+    warnShadowedRepetitionField(warnings, id, {
+      winner: 'bpmn:inputDataItem',
+      loser: 'operaton:elementVariable',
+      names: 'what each run sees',
+      kept: itemName,
+      dropped: setting,
+    });
+  }
+  const elementVariable = itemName ?? setting;
+  // A name outside the printer's one form comes back out as something the
+  // language cannot parse. {@link BARE_ELEMENT_VARIABLE} is that form, so the
+  // two directions cannot drift apart.
+  if (
+    elementVariable !== undefined &&
+    !BARE_ELEMENT_VARIABLE.test(elementVariable)
+  ) {
+    throw new UnsupportedLoopCharacteristicsError(
+      id,
+      MULTI_INSTANCE,
+      `it names ${JSON.stringify(elementVariable)} for each run to see, ` +
+        'which this tool cannot write back out unchanged; it writes that ' +
+        'name as a plain identifier, and this name is not one',
+    );
+  }
+  return elementVariable;
+}
+
+function warnShadowedRepetitionField(
+  warnings: ImportWarning[],
+  id: string,
+  shadow: {
+    winner: string;
+    loser: string;
+    names: string;
+    kept: string;
+    dropped: string;
+  },
+): void {
+  warnings.push({
+    elementId: id,
+    category: 'extensionAttribute',
+    message:
+      `Both ${shadow.winner} and ${shadow.loser} name ${shadow.names} on ` +
+      `'${id}'; Operaton reads ${shadow.winner} second, so ` +
+      `'${shadow.kept}' was imported and '${shadow.dropped}' was dropped.`,
+  });
+}
+
+/**
+ * The async settings that mean one job per run rather than one around the whole
+ * repetition: Operaton hands the repetition element to
+ * `parseAsynchronousContinuation`, which reads exactly these three onto the run.
+ */
+const PER_RUN_JOB_ATTRS = ['asyncBefore', 'asyncAfter', 'exclusive'] as const;
+
+/**
+ * Refuse the job settings written on the repetition itself. The same names on
+ * the step are ordinary settings this tool imports, so the message says which
+ * of the two the document wrote.
+ */
+function refusePerRunJobSettings(loopEl: ModdleElement, id: string): void {
+  const attr = PER_RUN_JOB_ATTRS.find(
+    (name) => readNamespacedAttr(loopEl, name) !== undefined,
+  );
+  const setting =
+    attr ??
+    (extensionValues(loopEl).some(
+      (value) => value.$type === 'operaton:FailedJobRetryTimeCycle',
+    )
+      ? 'failedJobRetryTimeCycle'
+      : undefined);
+  if (setting === undefined) return;
+  throw new UnsupportedLoopCharacteristicsError(
+    id,
+    MULTI_INSTANCE,
+    `it carries 'operaton:${setting}' on the repetition itself, which gives ` +
+      'every run a job of its own; the same setting on the step makes one ' +
+      "job around the whole repetition, and this tool's surface can only " +
+      'say the second',
+  );
+}
+
+/** Operaton refuses to deploy an output mapping on a step that repeats. */
+function refuseOutputParameters(el: ModdleElement, id: string): void {
+  const io = extensionValues(el).find(
+    (value) => value.$type === 'operaton:InputOutput',
+  );
+  const outputs =
+    (io?.get('outputParameters') as ModdleElement[] | undefined) ?? [];
+  if (outputs.length > 0) {
+    throw new UnsupportedLoopCharacteristicsError(
+      id,
+      MULTI_INSTANCE,
+      "it maps an 'operaton:outputParameter', which Operaton refuses to " +
+        'deploy on a repeated step',
+    );
+  }
+}
+
+/** The repetition content Operaton parses and then never reads. */
+const IGNORED_REPETITION_REFS = [
+  'loopDataOutputRef',
+  'oneBehaviorEventRef',
+  'noneBehaviorEventRef',
+] as const;
+
+/**
+ * Report what the repetition carries and nothing reads. The generic sweeps see
+ * its plain children and its undeclared attributes; the three references, the
+ * `behavior` attribute and `operaton:jobPriority` are named by hand, because
+ * one sweep skips a reference by design, the other looks only at `operaton:`
+ * attributes, and the generic sentence for a setting would read as this tool's
+ * limitation rather than as a setting the engine never reads. A reference is
+ * reported whether it resolved or not: moddle drops one naming no element, and
+ * dropping it is exactly what has to be reported.
+ */
+function sweepRepetition(
+  loopEl: ModdleElement,
+  id: string,
+  warnings: ImportWarning[],
+): void {
+  collectUnmappedBpmnDrops(loopEl, id, warnings);
+  collectExtensionDrops(loopEl, id, warnings);
+  for (const name of IGNORED_REPETITION_REFS) {
+    if (
+      getEl(loopEl, name) !== undefined ||
+      unresolvedRef(loopEl, name) !== undefined
+    ) {
+      warnRepetitionContentIgnored(warnings, id, `bpmn:${name}`);
+    }
+  }
+  const behavior = readString(loopEl, 'behavior');
+  if (behavior !== undefined && behavior !== 'All') {
+    warnRepetitionContentIgnored(warnings, id, `behavior="${behavior}"`);
+  }
+  // Operaton reads a job priority in `createActivityOnScope`, off the step, and
+  // the repetition's own scope is never built there, so the setting written
+  // here reaches no job.
+  if (readNamespacedAttr(loopEl, 'jobPriority') !== undefined) {
+    warnRepetitionContentIgnored(warnings, id, 'operaton:jobPriority');
+  }
+}
+
+function warnRepetitionContentIgnored(
+  warnings: ImportWarning[],
+  id: string,
+  construct: string,
+): void {
+  warnings.push({
+    elementId: id,
+    category: 'unmappedConstruct',
+    message:
+      `The ${construct} on the repetition of '${id}' was not imported: ` +
+      'Operaton does not read it, so the imported process runs the same.',
+  });
 }
 
 function mapUserTask(el: ModdleElement, warnings: ImportWarning[]): UserTask {
   const id = requireId(el);
-  refuseLoopCharacteristics(el, id);
   const name = readDerivableName(el, id);
   const assignee = readNamespacedAttr(el, 'assignee');
   const formKey = readNamespacedAttr(el, 'formKey');
@@ -2170,58 +3208,293 @@ function mapUserTask(el: ModdleElement, warnings: ImportWarning[]): UserTask {
   };
 }
 
+function mapTask(el: ModdleElement, warnings: ImportWarning[]): Task {
+  const id = requireId(el);
+  const name = readDerivableName(el, id);
+  return {
+    kind: 'task',
+    id,
+    ...(name === undefined ? {} : { name }),
+    ...readEngineAttributes(el, id, warnings),
+    ...readIoMapping(el, id, warnings),
+  };
+}
+
+function mapReceiveTask(
+  el: ModdleElement,
+  warnings: ImportWarning[],
+): ReceiveTask {
+  const id = requireId(el);
+  const name = readDerivableName(el, id);
+  // A missing messageRef is a wait state the engine continues through its own
+  // API rather than a correlation, so it is imported rather than refused.
+  const messageName =
+    getEl(el, 'messageRef') === undefined
+      ? undefined
+      : resolveNamedRootRef(el, 'messageRef', id, 'message');
+  return {
+    kind: 'receiveTask',
+    id,
+    ...(name === undefined ? {} : { name }),
+    ...(messageName === undefined ? {} : { messageName }),
+    ...readEngineAttributes(el, id, warnings),
+    ...readIoMapping(el, id, warnings),
+  };
+}
+
+/**
+ * The three tags Operaton runs through `parseServiceTaskLike` when they carry a
+ * class, expression, delegate expression, or external topic binding; a business
+ * rule task naming an `operaton:decisionRef` goes to `parseDmnBusinessRuleTask`
+ * instead. `element` is the tag that was read, and names the subject of a
+ * refusal; absent is a plain service task.
+ */
 function mapServiceTask(
   el: ModdleElement,
   warnings: ImportWarning[],
+  element?: ServiceTask['element'],
 ): ServiceTask {
   const id = requireId(el);
-  refuseLoopCharacteristics(el, id);
   const name = readDerivableName(el, id);
   const resultVariable = readNamespacedAttr(el, 'resultVariable');
   return {
     kind: 'serviceTask',
     id,
     ...(name === undefined ? {} : { name }),
-    binding: readServiceTaskBinding(el, id),
+    binding: readServiceTaskBinding(el, id, element, warnings),
     ...(resultVariable === undefined ? {} : { resultVariable }),
+    ...(element === undefined ? {} : { element }),
     ...readEngineAttributes(el, id, warnings),
     ...readIoMapping(el, id, warnings),
   };
 }
 
+/** The noun a refusal leads with, per tag. */
+const SERVICE_TASK_LIKE_SUBJECT = {
+  service: 'Service task',
+  send: 'Send task',
+  businessRule: 'Business rule task',
+} as const;
+
+/** What `operaton:mapDecisionResult` may hold: one entry, one row, one column, or every row. */
+const DECISION_RESULT_MAPPINGS = [
+  'singleEntry',
+  'singleResult',
+  'collectEntries',
+  'resultList',
+] as const;
+
 function readServiceTaskBinding(
   el: ModdleElement,
   id: string,
+  element: ServiceTask['element'],
+  warnings: ImportWarning[],
 ): ServiceTaskBinding {
-  const className = readNamespacedAttr(el, 'class');
-  if (className !== undefined) return { kind: 'class', className };
+  const subject = SERVICE_TASK_LIKE_SUBJECT[element ?? 'service'];
+  const refusal = (construct: string): Error =>
+    new UnsupportedServiceTaskFormError(id, construct, subject);
 
-  const expression = readNamespacedAttr(el, 'expression');
-  if (expression !== undefined) return { kind: 'expression', expression };
+  // The decision reference is the engine's discriminator, so it is read before
+  // the code forms a business rule task may otherwise fall back to.
+  if (element === 'businessRule') {
+    const decision = readDecisionBinding(el, id, refusal, warnings);
+    if (decision !== undefined) return decision;
+  }
+
+  const binding = readCodeOrExternalBinding(el, id, warnings);
+  if (binding !== undefined) return binding;
+
+  throw refusal(detectUnsupportedServiceTaskForm(el));
+}
+
+/**
+ * The implementation Operaton resolves, in `parseServiceTaskLike`'s order:
+ * `operaton:type` outranks every code attribute, then `class`, then
+ * `delegateExpression`, then `expression`. A `type` this surface cannot carry
+ * returns `undefined` rather than falling back to a code attribute the engine
+ * would never reach, and so does an element naming no implementation at all;
+ * the caller reads either as a refusal or as a legal absence.
+ */
+function readCodeOrExternalBinding(
+  el: ModdleElement,
+  id: string,
+  warnings: ImportWarning[],
+): ServiceTaskBinding | undefined {
+  const resolve = (
+    winner: string,
+    consumed: readonly string[],
+    binding: ServiceTaskBinding,
+  ): ServiceTaskBinding => {
+    warnShadowedImplementation(
+      el,
+      id,
+      `operaton:${winner}`,
+      consumed,
+      warnings,
+    );
+    return binding;
+  };
+
+  const type = readNamespacedAttr(el, 'type');
+  const topic = readNamespacedAttr(el, 'topic');
+  if (type !== undefined) {
+    if (!isExternalType(type) || topic === undefined) return undefined;
+    return resolve(`type="${type}"`, ['type', 'topic'], {
+      kind: 'external',
+      topic,
+    });
+  }
+
+  const className = readNamespacedAttr(el, 'class');
+  if (className !== undefined) {
+    return resolve('class', ['class'], { kind: 'class', className });
+  }
 
   const delegate = readNamespacedAttr(el, 'delegateExpression');
   if (delegate !== undefined) {
-    return { kind: 'delegateExpression', expression: delegate };
+    return resolve('delegateExpression', ['delegateExpression'], {
+      kind: 'delegateExpression',
+      expression: delegate,
+    });
   }
 
-  const topic = readNamespacedAttr(el, 'topic');
-  if (readNamespacedAttr(el, 'type') === 'external' && topic !== undefined) {
-    return { kind: 'external', topic };
+  const expression = readNamespacedAttr(el, 'expression');
+  if (expression !== undefined) {
+    return resolve('expression', ['expression'], {
+      kind: 'expression',
+      expression,
+    });
   }
 
-  throw new UnsupportedServiceTaskFormError(
-    id,
-    detectUnsupportedServiceTaskForm(el),
-  );
+  return undefined;
 }
 
+/** `undefined` when no decision is named, so the task falls back to a code binding. */
+function readDecisionBinding(
+  el: ModdleElement,
+  id: string,
+  refusal: (detail: string) => Error,
+  warnings: ImportWarning[],
+): Extract<ServiceTaskBinding, { kind: 'decision' }> | undefined {
+  const decisionRef = readNamespacedAttr(el, 'decisionRef');
+  if (decisionRef === undefined) {
+    warnDanglingDecisionModifiers(el, id, warnings);
+    return undefined;
+  }
+  warnShadowedImplementation(el, id, 'an operaton:decisionRef', [], warnings);
+
+  const mapping = readNamespacedAttr(el, 'mapDecisionResult');
+  const mapDecisionResult = DECISION_RESULT_MAPPINGS.find((m) => m === mapping);
+  if (mapping !== undefined && mapDecisionResult === undefined) {
+    throw refusal(
+      `operaton:mapDecisionResult="${mapping}", which is not a way of ` +
+        'filling the result variable this tool can represent',
+    );
+  }
+
+  const binding = readVersionBinding(el, id, 'decisionRef', refusal, warnings);
+  return {
+    kind: 'decision',
+    decisionRef,
+    ...(binding === undefined ? {} : { binding }),
+    ...(mapDecisionResult === undefined ? {} : { mapDecisionResult }),
+  };
+}
+
+/**
+ * The three settings only a named decision gives meaning to. The consumption
+ * table marks them read on every business rule task, so a code-bound one has to
+ * report them here or they leave with no warning at all. Operaton ignores them
+ * there too.
+ */
+const DECISION_MODIFIER_ATTRS = [
+  'decisionRefBinding',
+  'decisionRefVersion',
+  'mapDecisionResult',
+] as const;
+
+function warnDanglingDecisionModifiers(
+  el: ModdleElement,
+  id: string,
+  warnings: ImportWarning[],
+): void {
+  for (const attr of DECISION_MODIFIER_ATTRS) {
+    if (readNamespacedAttr(el, attr) === undefined) continue;
+    warnings.push({
+      elementId: id,
+      category: 'extensionAttribute',
+      message:
+        `The '${attr}' setting on '${id}' has no effect without an ` +
+        'operaton:decisionRef and was not imported.',
+    });
+  }
+}
+
+/**
+ * Every implementation attribute `winner` leaves unread, named against it.
+ * Operaton passes over the same ones: `parseServiceTaskLike` stops at the first
+ * it resolves, and a named decision goes to `parseDmnBusinessRuleTask`, which
+ * runs no implementation at all. The consumption table marks all five read on
+ * these tags, so they leave with a warning here or with none at all. `consumed`
+ * names what `winner` itself read.
+ */
+function warnShadowedImplementation(
+  el: ModdleElement,
+  id: string,
+  winner: string,
+  consumed: readonly string[],
+  warnings: ImportWarning[],
+): void {
+  for (const attr of IMPLEMENTATION_ATTRS) {
+    if (consumed.includes(attr)) continue;
+    if (readNamespacedAttr(el, attr) === undefined) continue;
+    warnings.push({
+      elementId: id,
+      category: 'extensionAttribute',
+      message:
+        `The '${attr}' setting on '${id}' has no effect alongside ${winner} ` +
+        'and was not imported.',
+    });
+  }
+}
+
+/** Operaton compares the type with `equalsIgnoreCase`, so the spelling is free. */
+function isExternalType(type: string): boolean {
+  return type.toLowerCase() === 'external';
+}
+
+/**
+ * The implementation attributes that carry code, in the order
+ * {@link readCodeOrExternalBinding} resolves them. `type` and `topic` name the
+ * external worker rather than code, so they are not among them.
+ */
+const CODE_ATTRS = [
+  'class',
+  'delegateExpression',
+  'expression',
+] as const satisfies readonly (typeof IMPLEMENTATION_ATTRS)[number][];
+
+/**
+ * What is wrong with the element, for the refusal. A code attribute alongside
+ * an `operaton:type` is named too: it is a supported form the engine was never
+ * going to reach, so a refusal listing the supported forms without it reads as
+ * if the document had none.
+ */
 function detectUnsupportedServiceTaskForm(el: ModdleElement): string {
   const type = readNamespacedAttr(el, 'type');
-  if (type === 'external') {
-    return 'operaton:type="external" without an operaton:topic';
-  }
-  if (type !== undefined) return `operaton:type="${type}"`;
-  return 'no execution discriminator';
+  if (type === undefined) return 'no execution discriminator';
+
+  const named = isExternalType(type)
+    ? `operaton:type="${type}" without an operaton:topic`
+    : `operaton:type="${type}"`;
+  const shadowed = CODE_ATTRS.filter(
+    (attr) => readNamespacedAttr(el, attr) !== undefined,
+  ).map((attr) => `operaton:${attr}`);
+  if (shadowed.length === 0) return named;
+  return (
+    `${named}, which Operaton resolves ahead of the ` +
+    `${joinList(shadowed, 'and')} alongside it`
+  );
 }
 
 function mapScriptTask(
@@ -2229,7 +3502,6 @@ function mapScriptTask(
   warnings: ImportWarning[],
 ): ScriptTask {
   const id = requireId(el);
-  refuseLoopCharacteristics(el, id);
   const name = readDerivableName(el, id);
   const format = readString(el, 'scriptFormat') ?? '';
   const body = el.get('script');
@@ -2271,7 +3543,10 @@ function mapParallelGateway(el: ModdleElement): ParallelGateway {
   };
 }
 
-function mapSequenceFlow(el: ModdleElement): SequenceFlow {
+function mapSequenceFlow(
+  el: ModdleElement,
+  warnings: ImportWarning[],
+): SequenceFlow {
   const id = requireId(el);
 
   const sourceRef = requireFlowEndpoint(el, 'sourceRef', id);
@@ -2283,6 +3558,12 @@ function mapSequenceFlow(el: ModdleElement): SequenceFlow {
     expressionEl !== undefined
       ? ((expressionEl.get('body') as string | undefined) ?? undefined)
       : undefined;
+  noteRewrappedExpression(
+    conditionExpression,
+    id,
+    'bpmn:conditionExpression',
+    warnings,
+  );
 
   return {
     id,
@@ -2315,7 +3596,7 @@ function refuseMultipleEventDefinitions(
   if (defs.length > 1) {
     throw new UnsupportedEventFeatureError(
       id,
-      `${subject} carries ${defs.length} event definitions — only a single ` +
+      `${subject} carries ${defs.length} event definitions: only a single ` +
         allowed,
     );
   }

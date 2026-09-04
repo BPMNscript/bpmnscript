@@ -3,15 +3,15 @@
  * (`src/juel.ts`).
  *
  * This module is the import-side mirror of the language package's
- * expression sub-grammar. On import, `xmlToIr` reads raw `${…}`
+ * expression sub-grammar. On import, `xmlToIr` reads raw `${...}`
  * bodies out of BPMN XML and hands them to `parseJuel`; `irToDsl`
  * then renders the result back to DSL surface syntax. The contract:
  *
- *   - A body inside the JUEL subset → a structured result, rendered as a
+ *   - A body inside the JUEL subset -> a structured result, rendered as a
  *     bare unquoted expression (`amount > 1000`).
  *   - A body outside the subset (method/bean calls, JUEL functions, or anything
- *     unparseable) → a `{ kind: 'raw' }` result, rendered as the quoted
- *     `"${…}"` fallback. `parseJuel` never throws.
+ *     unparseable) -> a `{ kind: 'raw' }` result, rendered as the quoted
+ *     `"${...}"` fallback. `parseJuel` never throws.
  *
  * The subset boundary is fixed by the grammar; the final two suites
  * (`idempotence with the grammar renderer` and `subset parity with the real
@@ -35,7 +35,7 @@ import { parseJuel, renderRawFallback } from '../src/juel.js';
 // Structured-vs-raw classification
 // ---------------------------------------------------------------------------
 
-describe('parseJuel — structured classification', () => {
+describe('parseJuel: structured classification', () => {
   it('renders a structured comparison as a bare unquoted expression', () => {
     const r = parseJuel('${amount > 1000}');
     expect(renderRawFallback(r)).toBe('amount > 1000');
@@ -82,8 +82,8 @@ describe('parseJuel — structured classification', () => {
   });
 });
 
-describe('parseJuel — raw fallback classification', () => {
-  it('renders a raw result as the quoted "${…}" fallback', () => {
+describe('parseJuel: raw fallback classification', () => {
+  it('renders a raw result as the quoted "${...}" fallback', () => {
     const r = parseJuel('${myBean.check()}');
     expect(renderRawFallback(r)).toBe('"${myBean.check()}"');
   });
@@ -112,10 +112,30 @@ describe('parseJuel — raw fallback classification', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Totality — parseJuel must never throw, malformed input always yields raw
+// The `#{...}` spelling: Operaton accepts either delimiter, the DSL writes `${`
 // ---------------------------------------------------------------------------
 
-describe('parseJuel — totality (never throws)', () => {
+describe('parseJuel: the #{...} delimiter', () => {
+  it('classifies an in-subset #{...} body as structured', () => {
+    expect(parseJuel('#{lineCount}').kind).toBe('structured');
+  });
+
+  it('renders an in-subset #{...} body as the same bare expression', () => {
+    expect(renderRawFallback(parseJuel('#{lineCount}'))).toBe('lineCount');
+  });
+
+  it('renders an out-of-subset #{...} body as the ${...} fallback', () => {
+    expect(renderRawFallback(parseJuel('#{myBean.check()}'))).toBe(
+      '"${myBean.check()}"',
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Totality: parseJuel must never throw, malformed input always yields raw
+// ---------------------------------------------------------------------------
+
+describe('parseJuel: totality (never throws)', () => {
   const malformed = [
     '${',
     '${}',
@@ -170,12 +190,12 @@ beforeAll(() => {
 });
 
 /**
- * Classify a `${…}` body via the real grammar: returns 'structured' if the
+ * Classify a `${...}` body via the real grammar: returns 'structured' if the
  * inner body parses cleanly to a non-RawExpr condition node, else 'raw'.
  */
 async function grammarClassify(body: string): Promise<'structured' | 'raw'> {
-  // Strip the ${…} wrapper to get the inner expression, then embed it as an
-  // `if` condition — the only statement position where a bare Expr appears.
+  // Strip the ${...} wrapper to get the inner expression, then embed it as an
+  // `if` condition: the only statement position where a bare Expr appears.
   const inner = body.replace(/^\$\{/, '').replace(/\}$/, '');
   const doc = await parse(`process P { if (${inner}) { } }`);
   if (doc.parseResult.parserErrors.length > 0) {
@@ -191,7 +211,7 @@ async function grammarClassify(body: string): Promise<'structured' | 'raw'> {
 }
 
 // ---------------------------------------------------------------------------
-// Idempotence with the grammar renderer: a structured AST → renderExpression →
+// Idempotence with the grammar renderer: a structured AST -> renderExpression ->
 // parseJuel must round-trip back to the same surface form (shared canonical
 // notion). We drive the structured AST from the real grammar so the inputs are
 // guaranteed to be in-subset.
@@ -227,7 +247,7 @@ describe('idempotence with the grammar renderExpression', () => {
       expect(stmt.$type).toBe('IfStatement');
       const cond = (stmt as { condition: Expr }).condition;
 
-      // Grammar's canonical ${…} body for this AST.
+      // Grammar's canonical ${...} body for this AST.
       const canonical = renderExpression(cond);
 
       // parseJuel must accept the grammar's canonical body as structured and

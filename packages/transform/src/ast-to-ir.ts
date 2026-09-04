@@ -1,10 +1,10 @@
 /**
  * Desugaring AST -> IR. Lowers the Langium AST into the flat, BPMN-shaped
  * {@link BpmnProcess}: control-flow keywords become gateways and sequence
- * flows, implicit flow and implicit start/end events are materialised, and
+ * flows, implicit flow and implicit start/end events are materialized, and
  * conditions render to `${...}` bodies.
  *
- * Every synthesised id comes from `./synthesize-ids.js`, seeded by a structural
+ * Every synthesized id comes from `./synthesize-ids.js`, seeded by a structural
  * coordinate `<X>`: the statement's static position in the block tree, never a
  * traversal counter, so re-running this on `irToDsl` output yields identical
  * ids. See ADR 0010, Use Deterministic Structural Ids for Synthesized BPMN
@@ -23,6 +23,10 @@ import {
   isUserTask,
   isServiceTask,
   isScriptTask,
+  isGenericTask,
+  isSendTask,
+  isReceiveTask,
+  isBusinessRuleTask,
   isIfStatement,
   isWhileStatement,
   isDoWhileStatement,
@@ -46,6 +50,12 @@ import {
   renderExpression,
   SCRIPT_FORMAT_ALIASES,
   splitFencedScript,
+  CATCH_TRIGGERS,
+  EMIT_TRIGGERS,
+  END_TRIGGERS,
+  ON_TRIGGERS,
+  START_TRIGGERS,
+  THROW_TRIGGERS,
 } from '@bpmn-script/language';
 import type {
   Model,
@@ -58,6 +68,10 @@ import type {
   UserTask as AstUserTask,
   ServiceTask as AstServiceTask,
   ScriptTask as AstScriptTask,
+  GenericTask as AstGenericTask,
+  SendTask as AstSendTask,
+  ReceiveTask as AstReceiveTask,
+  BusinessRuleTask as AstBusinessRuleTask,
   IfStatement,
   WhileStatement,
   DoWhileStatement,
@@ -77,7 +91,6 @@ import type {
 } from '@bpmn-script/language';
 import type {
   BpmnProcess,
-  CalledElementBinding,
   CallVariableMapping,
   CodeBinding,
   EngineAttributes,
@@ -89,11 +102,14 @@ import type {
   IoMapped,
   IoParameter,
   IoValue,
+  Repeatable,
   SequenceFlow as IrSequenceFlow,
   ListenerBinding,
+  ServiceTask as IrServiceTask,
   ServiceTaskBinding,
   StartEvent as IrStartEvent,
   TaskListener,
+  VersionBinding,
 } from './ir/types.js';
 import { engineAttributes, ioMapped } from './ir/types.js';
 import {
@@ -131,7 +147,7 @@ interface Frontier {
 /**
  * Mutable accumulator threaded through the walk. Each flow container gets its
  * own `flowElements`/`sequenceFlows`, but one `taken` set is shared document-
- * wide, pre-seeded with every named element id, so a synthesised id never
+ * wide, pre-seeded with every named element id, so a synthesized id never
  * clashes with an author-chosen name. BPMN requires that (`id` is an XML ID).
  */
 interface Builder {
@@ -219,7 +235,7 @@ function lowerContainerBody(
     if (!lastIsExplicitEnd) {
       const endId = makeEndEventId(containerId, builder.taken);
       builder.flowElements.push({ kind: 'endEvent', id: endId });
-      // Honour a reserved exit-flow id, e.g. a `while` loop's default exit.
+      // Honor a reserved exit-flow id, e.g. a `while` loop's default exit.
       addFlow(builder, body.exit, endId, undefined, body.exitFlowId);
     }
   } else if (body.entry === null) {
@@ -278,7 +294,7 @@ function lowerBlockStatements(
     lastFrontier = frontier;
   });
 
-  // Propagate the trailing `exitFlowId` so the block's own exit flow honours a
+  // Propagate the trailing `exitFlowId` so the block's own exit flow honors a
   // reserved default-flow id when the block ends in a `while`.
   return {
     entry,
@@ -316,6 +332,18 @@ function lowerStatement(
   }
   if (isServiceTask(stmt)) {
     return lowerServiceTask(builder, stmt);
+  }
+  if (isGenericTask(stmt)) {
+    return lowerGenericTask(builder, stmt);
+  }
+  if (isSendTask(stmt)) {
+    return lowerSendTask(builder, stmt);
+  }
+  if (isReceiveTask(stmt)) {
+    return lowerReceiveTask(builder, stmt);
+  }
+  if (isBusinessRuleTask(stmt)) {
+    return lowerBusinessRuleTask(builder, stmt);
   }
   if (isScriptTask(stmt)) {
     return lowerScriptTask(builder, stmt);
@@ -358,21 +386,67 @@ function lowerStatement(
 
 function lowerStartEvent(builder: Builder, stmt: AstStartEvent): Frontier {
   const formFields = lowerFormFields(stmt);
+  const eventDefinition = startEventDefinition(stmt);
   builder.flowElements.push({
     kind: 'startEvent',
     id: stmt.name,
     ...(stmt.label !== undefined ? { name: stmt.label } : {}),
     ...(formFields !== undefined ? { formFields } : {}),
+    ...(eventDefinition !== undefined ? { eventDefinition } : {}),
     ...readEngineAttributes(stmt),
   });
   return { entry: stmt.name, exit: stmt.name };
 }
 
+/**
+ * The word a position admits, or `undefined` for one it does not. The literal
+ * return type is what makes every dispatch below carry an arm for each word
+ * its vocabulary lists, so a word cannot be admitted here and then lowered as
+ * something else.
+ */
+function admittedTrigger<W extends string>(
+  vocabulary: readonly W[],
+  written: string | undefined,
+): W | undefined {
+  return written === undefined
+    ? undefined
+    : vocabulary.find((word) => word === written);
+}
+
+/**
+ * The trigger a top-level start carries. A word outside the start vocabulary
+ * lowers to nothing, which is where `start S condition` goes: the validator
+ * rejects a condition at this position, and a conditional start is outside
+ * what this surface emits.
+ */
+function startEventDefinition(
+  stmt: AstStartEvent,
+): EventDefinition | undefined {
+  const trigger = admittedTrigger(START_TRIGGERS, stmt.trigger);
+  return trigger === undefined
+    ? undefined
+    : namedTriggerDefinition(trigger, stmt);
+}
+
+/**
+ * The definition an `end` head's trigger lowers to. Both end-carried words are
+ * payload-free, so the word is the kind; any other word lowers to no
+ * definition, leaving the validator to report it.
+ */
+function endEventDefinition(
+  trigger: string | undefined,
+): EventDefinition | undefined {
+  const kind = admittedTrigger(END_TRIGGERS, trigger);
+  return kind === undefined ? undefined : { kind };
+}
+
 function lowerEndEvent(builder: Builder, stmt: AstEndEvent): Frontier {
+  const eventDefinition = endEventDefinition(stmt.trigger);
   builder.flowElements.push({
     kind: 'endEvent',
     id: stmt.name,
     ...(stmt.label !== undefined ? { name: stmt.label } : {}),
+    ...(eventDefinition !== undefined ? { eventDefinition } : {}),
     ...readEngineAttributes(stmt),
   });
   return { entry: stmt.name, exit: null };
@@ -406,6 +480,7 @@ function lowerUserTask(builder: Builder, stmt: AstUserTask): Frontier {
     ...(followUpDate !== undefined ? { followUpDate } : {}),
     ...(priority !== undefined ? { priority } : {}),
     ...(taskListeners !== undefined ? { taskListeners } : {}),
+    ...readLoop(stmt),
     ...readIoParameters(stmt.params),
     ...readEngineAttributes(stmt),
   });
@@ -460,18 +535,30 @@ function renderFormDefault(expr: Expr): string {
   return renderExpression(expr);
 }
 
-function lowerServiceTask(builder: Builder, stmt: AstServiceTask): Frontier {
+/** The one node the three tags share; `element` picks the tag, absent is a service task. */
+function lowerServiceTaskLike(
+  builder: Builder,
+  stmt: AstServiceTask | AstSendTask | AstBusinessRuleTask,
+  binding: ServiceTaskBinding,
+  element?: IrServiceTask['element'],
+): Frontier {
   const resultVariable = attrValue(stmt.attrs, 'resultVariable');
   builder.flowElements.push({
     kind: 'serviceTask',
     id: stmt.name,
     ...(stmt.label !== undefined ? { name: stmt.label } : {}),
-    binding: serviceTaskBinding(stmt.attrs),
+    binding,
     ...(resultVariable !== undefined ? { resultVariable } : {}),
+    ...(element !== undefined ? { element } : {}),
+    ...readLoop(stmt),
     ...readIoParameters(stmt.params),
     ...readEngineAttributes(stmt),
   });
   return { entry: stmt.name, exit: stmt.name };
+}
+
+function lowerServiceTask(builder: Builder, stmt: AstServiceTask): Frontier {
+  return lowerServiceTaskLike(builder, stmt, serviceTaskBinding(stmt.attrs));
 }
 
 /**
@@ -501,15 +588,106 @@ const NO_BINDING: CodeBinding = { kind: 'class', className: '' };
 
 /** The three code forms first, then `topic`, which emits `operaton:type="external"`. */
 function serviceTaskBinding(attrs: Attribute[]): ServiceTaskBinding {
+  return writtenBinding(attrs) ?? NO_BINDING;
+}
+
+/** `undefined` where a binding is optional and the block names none. */
+function writtenBinding(attrs: Attribute[]): ServiceTaskBinding | undefined {
   const code = codeBinding(attrs);
   if (code !== undefined) {
     return code;
   }
   const topic = attrValue(attrs, 'topic');
-  if (topic !== undefined) {
-    return { kind: 'external', topic };
+  return topic === undefined ? undefined : { kind: 'external', topic };
+}
+
+/** A step the engine records and passes straight through: no binding, no result. */
+function lowerGenericTask(builder: Builder, stmt: AstGenericTask): Frontier {
+  builder.flowElements.push({
+    kind: 'task',
+    id: stmt.name,
+    ...(stmt.label !== undefined ? { name: stmt.label } : {}),
+    ...readLoop(stmt),
+    ...readIoParameters(stmt.params),
+    ...readEngineAttributes(stmt),
+  });
+  return { entry: stmt.name, exit: stmt.name };
+}
+
+/** A send task binds exactly as a service task does; only the tag it serializes to differs. */
+function lowerSendTask(builder: Builder, stmt: AstSendTask): Frontier {
+  return lowerServiceTaskLike(
+    builder,
+    stmt,
+    serviceTaskBinding(stmt.attrs),
+    'send',
+  );
+}
+
+/** No `message` key lowers to no `messageName` at all, not `undefined`: a genuine wait with no correlation. */
+function lowerReceiveTask(builder: Builder, stmt: AstReceiveTask): Frontier {
+  const messageName = attrValue(stmt.attrs, 'message');
+  builder.flowElements.push({
+    kind: 'receiveTask',
+    id: stmt.name,
+    ...(stmt.label !== undefined ? { name: stmt.label } : {}),
+    ...(messageName !== undefined ? { messageName } : {}),
+    ...readLoop(stmt),
+    ...readIoParameters(stmt.params),
+    ...readEngineAttributes(stmt),
+  });
+  return { entry: stmt.name, exit: stmt.name };
+}
+
+function lowerBusinessRuleTask(
+  builder: Builder,
+  stmt: AstBusinessRuleTask,
+): Frontier {
+  return lowerServiceTaskLike(
+    builder,
+    stmt,
+    businessRuleBinding(stmt.attrs),
+    'businessRule',
+  );
+}
+
+/**
+ * `decision` names a decision table and takes {@link versionBinding} and
+ * `mapDecisionResult` alongside it; with no `decision` key the block falls
+ * through to the same code/topic forms a service task reads.
+ */
+function businessRuleBinding(attrs: Attribute[]): ServiceTaskBinding {
+  const decisionRef = attrValue(attrs, 'decision');
+  if (decisionRef === undefined) {
+    return serviceTaskBinding(attrs);
   }
-  return NO_BINDING;
+  const binding = versionBinding(attrs);
+  const mapping = attrValue(attrs, 'mapDecisionResult');
+  const mapDecisionResult =
+    mapping === undefined ? undefined : toDecisionResultMapping(mapping);
+  return {
+    kind: 'decision',
+    decisionRef,
+    ...(binding !== undefined ? { binding } : {}),
+    ...(mapDecisionResult !== undefined ? { mapDecisionResult } : {}),
+  };
+}
+
+const DECISION_RESULT_MAPPINGS = [
+  'singleEntry',
+  'singleResult',
+  'collectEntries',
+  'resultList',
+] as const;
+
+function toDecisionResultMapping(mapping: string) {
+  const mapped = DECISION_RESULT_MAPPINGS.find((m) => m === mapping);
+  if (mapped === undefined) {
+    throw new Error(
+      `astToIr: unsupported decision result mapping '${mapping}' (expected singleEntry, singleResult, collectEntries, or resultList).`,
+    );
+  }
+  return mapped;
 }
 
 /** An unrecognized language tag is carried through as-is; the validator rejects it first. */
@@ -523,6 +701,7 @@ function lowerScriptTask(builder: Builder, stmt: AstScriptTask): Frontier {
     format: SCRIPT_FORMAT_ALIASES[tag] ?? tag,
     code,
     ...(resultVariable !== undefined ? { resultVariable } : {}),
+    ...readLoop(stmt),
     ...readIoParameters(stmt.params),
     ...readEngineAttributes(stmt),
   });
@@ -696,10 +875,13 @@ function lowerParallel(
 }
 
 /**
- * Lower a `subprocess` into a nested flow container: its own
+ * Lower a `subprocess` or an `attempt` into a nested flow container: its own
  * `flowElements`/`sequenceFlows`, the parent's `taken` set. Implicit start/end
  * are seeded from the sub-process name, mirroring the top level's process id.
  * The container is one opaque activity node, so `entry === exit === name`.
+ *
+ * The two heads lower alike apart from the tag: an `attempt` carries the one
+ * the engine needs before it accepts a cancel end inside the block.
  */
 function lowerSubProcess(
   builder: Builder,
@@ -717,8 +899,10 @@ function lowerSubProcess(
     kind: 'subProcess',
     id: stmt.name,
     ...(stmt.label !== undefined ? { name: stmt.label } : {}),
+    ...(stmt.transactional ? { element: 'transaction' as const } : {}),
     flowElements: nested.flowElements,
     sequenceFlows: nested.sequenceFlows,
+    ...readLoop(stmt),
     ...readIoParameters(stmt.params),
     ...readEngineAttributes(stmt),
   });
@@ -820,7 +1004,7 @@ function lowerBoundaryHandler(
   if (exit !== null) {
     const endId = makeEndEventId(id, builder.taken);
     builder.flowElements.push({ kind: 'endEvent', id: endId });
-    // Honour a reserved exit-flow id, as a container body does.
+    // Honor a reserved exit-flow id, as a container body does.
     addFlow(builder, exit, endId, undefined, body.exitFlowId);
   }
 }
@@ -845,35 +1029,50 @@ function ensureHandlerStart(nested: Builder, id: string): IrStartEvent {
 }
 
 /**
- * Build the caught {@link EventDefinition} for an `on` handler. An unrecognized
- * trigger word falls back to error, fields with nowhere to go (a code on
- * `compensation`, bindings on `message`/`signal`) are dropped, and a missing
- * code is catch-all.
+ * Build the caught {@link EventDefinition} for an `on` handler. Fields with
+ * nowhere to go (a code on `compensation` or `cancel`, bindings on
+ * `message`/`signal`) are dropped, and a missing code is catch-all. A word the
+ * handler position does not admit falls back to error, which is the kind its
+ * validator message speaks of.
  */
 function handlerEventDefinition(stmt: OnHandler): EventDefinition {
-  if (stmt.trigger === 'escalation') {
-    const codeVariable = bindingVariable(stmt, 'code');
-    return {
-      kind: 'escalation',
-      ...(stmt.code !== undefined ? { escalationCode: stmt.code } : {}),
-      ...(codeVariable !== undefined ? { codeVariable } : {}),
-    };
+  const trigger = admittedTrigger(ON_TRIGGERS, stmt.trigger);
+  switch (trigger) {
+    case 'message':
+    case 'signal':
+    case 'timer':
+    case 'condition':
+      return namedTriggerDefinition(trigger, stmt);
+    case 'escalation': {
+      const codeVariable = bindingVariable(stmt, 'code');
+      return {
+        kind: 'escalation',
+        ...(stmt.code !== undefined ? { escalationCode: stmt.code } : {}),
+        ...(codeVariable !== undefined ? { codeVariable } : {}),
+      };
+    }
+    case 'compensation':
+      return { kind: 'compensation' };
+    case 'cancel':
+      return { kind: 'cancel' };
+    case 'error':
+    case undefined: {
+      const codeVariable = bindingVariable(stmt, 'code');
+      const messageVariable = bindingVariable(stmt, 'message');
+      return {
+        kind: 'error',
+        ...(stmt.code !== undefined ? { errorCode: stmt.code } : {}),
+        ...(codeVariable !== undefined ? { codeVariable } : {}),
+        ...(messageVariable !== undefined ? { messageVariable } : {}),
+      };
+    }
+    default: {
+      const exhaustive: never = trigger;
+      throw new Error(
+        `astToIr: unhandled handler trigger: ${JSON.stringify(exhaustive)}`,
+      );
+    }
   }
-  if (stmt.trigger === 'compensation') {
-    return { kind: 'compensation' };
-  }
-  const named = namedTriggerDefinition(stmt);
-  if (named !== undefined) {
-    return named;
-  }
-  const codeVariable = bindingVariable(stmt, 'code');
-  const messageVariable = bindingVariable(stmt, 'message');
-  return {
-    kind: 'error',
-    ...(stmt.code !== undefined ? { errorCode: stmt.code } : {}),
-    ...(codeVariable !== undefined ? { codeVariable } : {}),
-    ...(messageVariable !== undefined ? { messageVariable } : {}),
-  };
 }
 
 /** Falls back to `duration`, which is what a bare `on timer "PT1H"` with no particle needs. */
@@ -901,20 +1100,34 @@ function lowerThrow(
   index: number,
 ): Frontier {
   const id = stmt.name ?? makeThrowEventId(`${coord}_${index}`);
+  const eventDefinition = throwEventDefinition(stmt);
   builder.flowElements.push({
     kind: 'endEvent',
     id,
-    eventDefinition: throwEventDefinition(stmt),
+    eventDefinition,
+    ...thrownMessageBinding(eventDefinition, stmt.attrs),
     ...readEngineAttributes(stmt),
   });
   return { entry: id, exit: null };
 }
 
 /**
- * Lower an `emit` to an intermediate throw event. BPMN has no intermediate
- * error throw, so every trigger word other than `signal`/`compensation` lowers
- * as an escalation and the validator points the author at `throw error`.
+ * The implementation that makes the engine really send the message. The
+ * validator holds the binding keys to the `message` trigger, so nothing else
+ * reaches a binding here.
  */
+function thrownMessageBinding(
+  def: EventDefinition,
+  attrs: Attribute[],
+): { binding?: ServiceTaskBinding } {
+  if (def.kind !== 'message') {
+    return {};
+  }
+  const binding = writtenBinding(attrs);
+  return binding === undefined ? {} : { binding };
+}
+
+/** Lower an `emit` to an intermediate throw event. */
 function lowerEmit(
   builder: Builder,
   stmt: EmitStatement,
@@ -922,18 +1135,41 @@ function lowerEmit(
   index: number,
 ): Frontier {
   const id = stmt.name ?? makeThrowEventId(`${coord}_${index}`);
+  const eventDefinition = emitEventDefinition(stmt);
   builder.flowElements.push({
     kind: 'intermediateThrowEvent',
     id,
-    eventDefinition:
-      stmt.trigger === 'signal'
-        ? { kind: 'signal', signalName: stmt.code ?? '' }
-        : stmt.trigger === 'compensation'
-          ? { kind: 'compensation' }
-          : { kind: 'escalation', escalationCode: stmt.code },
+    eventDefinition,
+    ...thrownMessageBinding(eventDefinition, stmt.attrs),
     ...readEngineAttributes(stmt),
   });
   return { entry: id, exit: id };
+}
+
+/**
+ * BPMN has no intermediate error throw, so a word the emit position does not
+ * admit lowers as an escalation and the validator points the author at
+ * `throw error`.
+ */
+function emitEventDefinition(stmt: EmitStatement): EventDefinition {
+  const trigger = admittedTrigger(EMIT_TRIGGERS, stmt.trigger);
+  switch (trigger) {
+    case 'message':
+      return { kind: 'message', messageName: stmt.code ?? '' };
+    case 'signal':
+      return { kind: 'signal', signalName: stmt.code ?? '' };
+    case 'compensation':
+      return { kind: 'compensation' };
+    case 'escalation':
+    case undefined:
+      return { kind: 'escalation', escalationCode: stmt.code };
+    default: {
+      const exhaustive: never = trigger;
+      throw new Error(
+        `astToIr: unhandled emit trigger: ${JSON.stringify(exhaustive)}`,
+      );
+    }
+  }
 }
 
 /** The `await` surface carries no name slot, so the id is always `Catch_<coord>_<index>`. */
@@ -953,25 +1189,35 @@ function lowerIntermediateCatch(
   return { entry: id, exit: id };
 }
 
-/** Every trigger word other than `escalation`/`compensation`/`signal` maps to `error`. */
+/** A word the throw position does not admit maps to `error`. */
 function throwEventDefinition(stmt: ThrowStatement): EventDefinition {
-  if (stmt.trigger === 'escalation') {
-    return { kind: 'escalation', escalationCode: stmt.code };
+  const trigger = admittedTrigger(THROW_TRIGGERS, stmt.trigger);
+  switch (trigger) {
+    case 'escalation':
+      return { kind: 'escalation', escalationCode: stmt.code };
+    case 'compensation':
+      return { kind: 'compensation' };
+    case 'signal':
+      return { kind: 'signal', signalName: stmt.code ?? '' };
+    case 'message':
+      return { kind: 'message', messageName: stmt.code ?? '' };
+    case 'error':
+    case undefined:
+      return { kind: 'error', errorCode: stmt.code };
+    default: {
+      const exhaustive: never = trigger;
+      throw new Error(
+        `astToIr: unhandled throw trigger: ${JSON.stringify(exhaustive)}`,
+      );
+    }
   }
-  if (stmt.trigger === 'compensation') {
-    return { kind: 'compensation' };
-  }
-  if (stmt.trigger === 'signal') {
-    return { kind: 'signal', signalName: stmt.code ?? '' };
-  }
-  return { kind: 'error', errorCode: stmt.code };
 }
 
 /**
  * The caught {@link EventDefinition} for an `await`, narrowed to message,
  * signal, timer, and conditional: error, escalation, and compensation are
- * raised with `throw`/`emit` and never awaited inline. Any other word falls
- * back to the always-true conditional.
+ * raised with `throw`/`emit` and never awaited inline. A word the await
+ * position does not admit falls back to the always-true conditional.
  */
 function catchEventDefinition(
   stmt: IntermediateCatchEvent,
@@ -979,60 +1225,64 @@ function catchEventDefinition(
   EventDefinition,
   { kind: 'message' | 'signal' | 'timer' | 'conditional' }
 > {
-  return (
-    namedTriggerDefinition(stmt) ?? {
-      kind: 'conditional',
-      condition: '${true}',
-    }
-  );
+  const trigger = admittedTrigger(CATCH_TRIGGERS, stmt.trigger);
+  return trigger === undefined
+    ? { kind: 'conditional', condition: '${true}' }
+    : namedTriggerDefinition(trigger, stmt);
 }
+
+/** The trigger words that mean the same thing in every position that takes them. */
+type NamedTrigger = 'message' | 'signal' | 'timer' | 'condition';
 
 /**
  * The {@link EventDefinition} for the four trigger words that mean the same
  * thing wherever they are written. A bare `on timer "PT1H"` with no particle
  * parses its time text into `code`, hence the expression fallback.
  */
-function namedTriggerDefinition(stmt: {
-  trigger: string;
-  code?: string;
-  particle?: string;
-  time?: string;
-  condition?: Expr;
-}):
-  | Extract<
-      EventDefinition,
-      { kind: 'message' | 'signal' | 'timer' | 'conditional' }
-    >
-  | undefined {
-  if (stmt.trigger === 'message') {
-    return { kind: 'message', messageName: stmt.code ?? '' };
+function namedTriggerDefinition(
+  trigger: NamedTrigger,
+  stmt: {
+    code?: string;
+    particle?: string;
+    time?: string;
+    condition?: Expr;
+  },
+): Extract<
+  EventDefinition,
+  { kind: 'message' | 'signal' | 'timer' | 'conditional' }
+> {
+  switch (trigger) {
+    case 'message':
+      return { kind: 'message', messageName: stmt.code ?? '' };
+    case 'signal':
+      return { kind: 'signal', signalName: stmt.code ?? '' };
+    case 'timer':
+      return {
+        kind: 'timer',
+        timerKind: timerParticleKind(stmt.particle),
+        expression: stmt.time ?? stmt.code ?? '',
+      };
+    case 'condition':
+      return {
+        kind: 'conditional',
+        condition:
+          stmt.condition !== undefined
+            ? renderExpression(stmt.condition)
+            : '${true}',
+      };
+    default: {
+      const exhaustive: never = trigger;
+      throw new Error(
+        `astToIr: unhandled named trigger: ${JSON.stringify(exhaustive)}`,
+      );
+    }
   }
-  if (stmt.trigger === 'signal') {
-    return { kind: 'signal', signalName: stmt.code ?? '' };
-  }
-  if (stmt.trigger === 'timer') {
-    return {
-      kind: 'timer',
-      timerKind: timerParticleKind(stmt.particle),
-      expression: stmt.time ?? stmt.code ?? '',
-    };
-  }
-  if (stmt.trigger === 'condition') {
-    return {
-      kind: 'conditional',
-      condition:
-        stmt.condition !== undefined
-          ? renderExpression(stmt.condition)
-          : '${true}',
-    };
-  }
-  return undefined;
 }
 
 /** `calledElement` falls back to `''` when the `process` attribute is absent. */
 function lowerCallActivity(builder: Builder, stmt: AstCallActivity): Frontier {
   const calledElement = attrValue(stmt.attrs, 'process') ?? '';
-  const binding = callActivityBinding(stmt.attrs);
+  const binding = versionBinding(stmt.attrs);
   const businessKey = rawExpressionAttrValue(stmt.attrs, 'businessKey');
   const { inMappings, outMappings } = lowerCallMappings(stmt.mappings);
 
@@ -1045,6 +1295,7 @@ function lowerCallActivity(builder: Builder, stmt: AstCallActivity): Frontier {
     ...(businessKey !== undefined ? { businessKey } : {}),
     ...(inMappings.length > 0 ? { inMappings } : {}),
     ...(outMappings.length > 0 ? { outMappings } : {}),
+    ...readLoop(stmt),
     ...readIoParameters(stmt.params),
     ...readEngineAttributes(stmt),
   });
@@ -1052,15 +1303,14 @@ function lowerCallActivity(builder: Builder, stmt: AstCallActivity): Frontier {
 }
 
 /**
- * A call activity's {@link CalledElementBinding}, the inverse of
- * `renderCallActivity` in `ir-to-dsl.ts`. `version` wins whenever present, even
- * alongside a stray `binding`: the two together are a validator error, so the
- * desugarer picks the one BPMN can use. A `binding` resolves only for a bare
- * `latest` or `deployment`.
+ * A {@link VersionBinding} read off `binding`/`version`, the inverse of
+ * `renderCallActivity`'s member pair in `ir-to-dsl.ts`. Shared by a call
+ * activity's `calledElement` pin and a decision step's decision table pin.
+ * `version` wins whenever present, even alongside a stray `binding`: the two
+ * together are a validator error, so the desugarer picks the one BPMN can use.
+ * A `binding` resolves only for a bare `latest` or `deployment`.
  */
-function callActivityBinding(
-  attrs: Attribute[],
-): CalledElementBinding | undefined {
+function versionBinding(attrs: Attribute[]): VersionBinding | undefined {
   const versionAttr = attrs.find((a) => a.key === 'version');
   if (versionAttr !== undefined) {
     return { kind: 'version', version: numericOrElValue(versionAttr.value) };
@@ -1154,6 +1404,72 @@ function lowerGoto(stmt: GotoStatement): Frontier {
   // not resolve it, which keeps the desugarer total over unresolved gotos.
   const targetId = stmt.target.$refText;
   return { entry: targetId, exit: null };
+}
+
+/** Structural, as {@link EngineAttributeOwner} is: the nine statements that take a repeat clause. */
+interface RepeatOwner {
+  cardinality?: Expr;
+  collection?: Expr;
+  element?: string;
+  completion?: Expr;
+  sequential: boolean;
+}
+
+/**
+ * The repeat clause of a statement, as the key it contributes: a statement
+ * carrying none spreads nothing at all. A clause always sets a count, a
+ * collection or both, which is what tells it apart from an absent one:
+ * `sequential` is a plain boolean the parser leaves `false` either way.
+ */
+function readLoop(stmt: RepeatOwner): Repeatable {
+  if (stmt.cardinality === undefined && stmt.collection === undefined) {
+    return {};
+  }
+  return {
+    loop: {
+      ...(stmt.cardinality !== undefined
+        ? { cardinality: loopCardinality(stmt.cardinality) }
+        : {}),
+      ...(stmt.collection !== undefined
+        ? { collection: loopCollection(stmt.collection) }
+        : {}),
+      ...(stmt.element !== undefined ? { elementVariable: stmt.element } : {}),
+      ...(stmt.completion !== undefined
+        ? { completionCondition: renderExpression(stmt.completion) }
+        : {}),
+      // Parallel is the engine default, so only the marked form is stored.
+      ...(stmt.sequential ? { sequential: true as const } : {}),
+    },
+  };
+}
+
+/**
+ * A whole number is the one count that goes into the attribute bare: Operaton
+ * parses a plain `loopCardinality` body as an integer and evaluates anything
+ * else as EL, so a decimal has to be wrapped to yield a number at all.
+ */
+function loopCardinality(expr: Expr): string {
+  if (isLiteralInt(expr)) {
+    return String(expr.value);
+  }
+  return renderExpression(expr);
+}
+
+/**
+ * Operaton reads `operaton:collection` as the name of a variable unless the
+ * text carries `${`, so only the two spellings that mean a name emit one: a
+ * bare identifier, and a quoted string for a name an identifier cannot spell.
+ * An accessor such as `order.lines` names no variable that exists and has to
+ * become an expression or the process cannot run.
+ */
+function loopCollection(expr: Expr): string {
+  if (isVarRef(expr) && expr.accessors.length === 0) {
+    return expr.name;
+  }
+  if (isLiteralString(expr)) {
+    return expr.value;
+  }
+  return renderExpression(expr);
 }
 
 /** Structural rather than a union of statement types, so either kind of carrier reads the same. */
@@ -1315,7 +1631,7 @@ function addFlow(
     forcedId !== undefined
       ? forcedId
       : makeSequenceFlowId(sourceRef, targetRef, builder.taken);
-  // Register a forced id in the collision set so a later synthesised flow with
+  // Register a forced id in the collision set so a later synthesized flow with
   // the same source/target pair gets a `_2` suffix rather than colliding.
   if (forcedId !== undefined) {
     builder.taken.add(forcedId);
@@ -1329,7 +1645,7 @@ function addFlow(
   });
 }
 
-/** Honours a reserved `exitFlowId`; a branch that terminated gets no continuation. */
+/** Honors a reserved `exitFlowId`; a branch that terminated gets no continuation. */
 function joinContinuation(
   builder: Builder,
   branch: Frontier,
@@ -1356,7 +1672,7 @@ function pruneUnreachableJoin(builder: Builder, joinId: string): string | null {
   return null;
 }
 
-/** Seeds the collision set, so a synthesised id never clashes with a named element. */
+/** Seeds the collision set, so a synthesized id never clashes with a named element. */
 function collectNamedIds(process: Process): Set<string> {
   const taken = new Set<string>();
   const visit = (statements: Statement[]): void => {
@@ -1367,6 +1683,10 @@ function collectNamedIds(process: Process): Set<string> {
         isUserTask(stmt) ||
         isServiceTask(stmt) ||
         isScriptTask(stmt) ||
+        isGenericTask(stmt) ||
+        isSendTask(stmt) ||
+        isReceiveTask(stmt) ||
+        isBusinessRuleTask(stmt) ||
         isCallActivity(stmt)
       ) {
         taken.add(stmt.name);

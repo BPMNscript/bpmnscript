@@ -354,7 +354,7 @@ export const eventSubProcess = (
  * The start event (ReviewStart) and end event (Done) have no `name` because the
  * handwritten BPMN gives them no `name` attribute, and the gateway has no
  * synthesized join: both branches converge directly on `Done`. The process
- * `name` is absent for the same reason — "Invoice Approval" is exactly
+ * `name` is absent for the same reason: "Invoice Approval" is exactly
  * `humanize("invoice-approval")`, so import treats it as derivable and drops
  * it. Fixtures that need the name back spread it in:
  * `{ ...HANDWRITTEN_IMPORT_IR, name: 'Invoice Approval' }`.

@@ -4,7 +4,7 @@
 //
 //   - explicit top-level start/end and plain tasks before and after the nesting;
 //   - a sub-process with an IMPLICIT start/end wrapping an if/else;
-//   - a labelled sub-process with an EXPLICIT start/end wrapping a while loop;
+//   - a labeled sub-process with an EXPLICIT start/end wrapping a while loop;
 //   - a two-level nested sub-process (a sub-process inside that sub-process).
 //
 // Every named node carries an explicit id so the round-trip can assert authored

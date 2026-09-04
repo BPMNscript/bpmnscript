@@ -14,7 +14,7 @@ Giving `on` an optional host turns it into this second attachment form without i
 
 Four questions have to be settled together, because each interacts with a decision already recorded for the host-less handler.
 How is a host spelled without colliding with a handler shape that already exists (`on timer after "PT2H"`)?
-Which of BPMN's seven catchable triggers does Operaton actually accept as boundary events, and what happens to the two it does not?
+Which of the language's eight catchable triggers may attach as a boundary event, and what happens to the two this decision does not admit?
 What does a hosted handler's body compile to, given that the host-less form's meaning must stay exactly what ADR-0016 already fixed it to be?
 And how is a token that appears directly at a boundary event, without ever traversing the main flow, represented in the dominator-based restructuring analysis (ADR-0009) that turns flat IR back into structured DSL?
 
@@ -22,7 +22,7 @@ And how is a token that appears directly at a boundary event, without ever trave
 
 - The grammar already commits every trigger word to being a soft identifier (ADR-0016), so a new syntax slot cannot recover disambiguation from the trigger word's token type, only from structure the grammar itself contributes at parse time.
 - The host-less `on` handler's meaning, an event sub-process, is exercised by existing golden fixtures and must not move: a hosted handler is a new attachment form layered next to it, not a replacement for it.
-- Operaton's own parser (`BpmnParse.parseBoundaryEvents`) is the actual authority on which triggers, and which host shapes, a boundary event may legally carry; the surface should refuse exactly what the engine would refuse, no more and no less.
+- Operaton's own parser (`BpmnParse.parseBoundaryEvents`) is the actual authority on which triggers, and which host shapes, a boundary event may legally carry; a surface stricter than the engine owes a reason.
 - The restructuring analysis (ADR-0009) already commits to being total over every valid IR.
   A boundary event is the IR's first flow-element shape with outgoing edges but no incoming ones, a shape the analysis has never had to reason about, so the decision has to say explicitly what that shape means for reachability and dominance, not leave it implicit.
 - The honest import contract (ADR-0014) and the compensation decision (ADR-0018) both carry commitments this feature must not quietly invalidate: no silent mangling on import, and compensation stays a subprocess undo block rather than gaining a second attachment mechanism.
@@ -37,8 +37,8 @@ For the host separator:
 
 For the trigger scope:
 
-- All seven of the language's catchable triggers as boundary events
-- The six Operaton's own parser actually supports
+- All eight of the language's catchable triggers as boundary events
+- Every trigger but compensation and cancel
 - A smaller hand-picked subset
 
 For the body shape:
@@ -69,7 +69,7 @@ The ambiguity sits in the token text, not the token type, so no amount of lookah
 Only the words themselves would, and reserving them as keywords is exactly what ADR-0016 already ruled out.
 The colon resolves the ambiguity at the second token, before either reading has to be committed to: plain two-token lookahead already suffices, well inside what Langium's default parser handles without any special grammar annotation.
 
-Rejected, having been worked through directly: promoting the seven trigger words to real keywords and then re-admitting them as ordinary identifiers through a data-type escape hatch, so `var message: string` keeps parsing.
+Rejected, having been worked through directly: promoting the eight trigger words to real keywords and then re-admitting them as ordinary identifiers through a data-type escape hatch, so `var message: string` keeps parsing.
 This alternative does work, but at a cost disproportionate to what the colon buys for free.
 Every site in the grammar that currently accepts a soft trigger word as an identifier would need a parallel keyword-or-identifier rule, some two dozen individual grammar productions, which reopens the soft-trigger-word decision ADR-0016 already closed for reasons unrelated to boundary events.
 It also does not fully remove the ambiguity: the grammar generator still reports a residual ambiguous alternative between the keyword-led host form and the timer form, resolved by picking whichever alternative the generator orders first and reported only as a warning on the build's stderr, a resolution an author has no visibility into and that a future grammar edit could silently invert.
@@ -79,12 +79,14 @@ Also rejected: a postfix host clause, `on error "X" at Pack`, which reuses the w
 The six-trigger scope.
 Message, timer, signal, and conditional boundary events are interrupting or non-interrupting (`alongside`) on any activity.
 Error is always interrupting, on any activity, reusing the same `alongside: false` restriction already enforced for a host-less error handler rather than adding a boundary-specific rule.
-Escalation is interrupting or non-interrupting but only on a subprocess, a call, or a user task.
-All six restrictions are read directly from Operaton's own boundary-event parsing rather than invented: the surface refuses exactly what the engine would refuse.
+Escalation is interrupting or non-interrupting but only on a subprocess, an `attempt` block, a call, or a user task.
+Operaton gates that boundary on `attachedActivity.isSubProcessScope()`, and `parseTransaction` sets that flag exactly as `parseSubProcess` does, so an `attempt` block hosts an escalation on the same terms an ordinary block does.
+These restrictions are read from Operaton's own boundary-event parsing rather than invented, so every boundary event the surface admits is one the engine deploys; where the surface is stricter than the engine, as it is for error's cancellation mode and for compensation, this decision says why.
 
-Compensation and cancel are excluded, on the same grounds ADR-0018 already established for compensation generally: BPMN attaches compensation through a `bpmn:association` and an `isForCompensation` activity, a different attachment mechanism entirely, and cancel needs a transaction sub-process, a construct this language does not surface.
+Compensation is excluded on the grounds ADR-0018 already established for it generally: BPMN attaches compensation through a `bpmn:association` and an `isForCompensation` activity, a different attachment mechanism entirely.
 This exclusion preserves ADR-0018's decision rather than superseding it, since `on compensation` remains only a subprocess's own undo block, never a boundary form.
 It also keeps the import-side `refuseIfForCompensation` guard honest for exactly the reason ADR-0018 gives it: an activity marked `isForCompensation` still can never run, because a `bpmn:BoundaryEvent` carrying a `compensateEventDefinition` is refused on import just as it always was, now as one specific refusal inside a boundary event's own import path rather than as a blanket "no boundary events at all" rule.
+Cancel is excluded from these six because Operaton allows a cancel boundary on a transaction alone; ADR-0028 surfaces that container as the `attempt` block and admits one there.
 
 The self-contained body.
 A hosted handler's body lowers inline into the same container as its host, with no wrapping sub-process, as a boundary event followed by the body's own statement chain, terminating in the chain's own implicit end event.
@@ -135,8 +137,9 @@ The round-trip normalizer compensates on the comparison side instead: its canoni
 ### Consequences
 
 - Good, because the colon resolves the host/trigger ambiguity with no reserved word, no residual parser-generator warning, and no change to ADR-0016's soft-trigger-word design.
-- Good, because the six-trigger scope refuses exactly what Operaton's own parser refuses, so a validator error always predicts a real deployment failure rather than being either too permissive or too conservative relative to the engine.
-- Good, because excluding compensation and cancel costs nothing new to build: the existing `on compensation` undo block already covers the granularity a boundary compensation event would have reached, and the import-side refusal that keeps `isForCompensation` honest needed no new mechanism, only a new call site for the existing one.
+- Good, because the six-trigger scope admits only what Operaton's own parser accepts, so a boundary event the validator passes always deploys.
+  The converse does not hold: a compensation boundary is refused on ADR-0018's attachment-mechanism grounds rather than on an engine refusal, and Operaton would deploy the document that refusal rejects.
+- Good, because excluding compensation costs nothing new to build: the existing `on compensation` undo block already covers the granularity a boundary compensation event would have reached, and the import-side refusal that keeps `isForCompensation` honest needed no new mechanism, only a new call site for the existing one.
 - Good, because the self-contained body is uniform across interrupting and non-interrupting boundaries, so there is exactly one rule to learn ("the body ends where it ends; rejoin with `goto`") instead of one rule per cancellation mode.
 - Good, because wiring a boundary event to the virtual entry makes every escape chain's own internal control flow, including a nested `if`/`else`, restructurable on exactly the same terms as the main flow, rather than falling back to `goto`s for a construct that has nothing irregular about it on its own.
 - Good, because a host-derived id survives every reordering the decompiler's trailing-position rule performs, without adding a new re-key rule to the round-trip normalizer for the generation direction.
@@ -175,7 +178,7 @@ The frozen `tests/golden/boundary-events.bpmn` fixture and its round-trip suite 
 - Good, because it reads left-to-right as "catch this, at this activity," which some authors may find more natural than naming the host first.
 - Bad, because `at` already belongs to the timer particle clause (`on timer at "2026-08-01T09:00:00"`), recreating the same word-level collision the colon exists to avoid, in a different position.
 
-### All seven catchable triggers as boundary events
+### All eight of the language's catchable triggers as boundary events
 
 - Good, because it would need no per-trigger row distinguishing boundary-legal triggers from the rest.
 - Bad, because it would let the surface author a `bpmn:BoundaryEvent` carrying a `compensateEventDefinition`, a document Operaton's own parser does not treat as an ordinary boundary attachment and that this language deliberately keeps expressed only as a subprocess undo block (ADR-0018).
@@ -213,4 +216,6 @@ ADR-0018 (compensation through event sub-processes, whose decision this one's ex
 ADR-0009 (dominator/post-dominator restructuring, the analysis this decision's CFG-entry wiring extends, and the reason a boundary event's dominance trade-off is described as a correct property of the graph rather than a defect in the restructurer).
 ADR-0010 (deterministic structural ids, the collision-resolution convention a host-derived boundary id reuses, and the contrast against the positional scheme this decision deliberately does not reuse).
 ADR-0013 (the target audience and no-boilerplate rule, the reason a hosted handler reuses the existing `on`/`throw`/`emit` vocabulary rather than introducing a distinct construct for a boundary attachment).
-ADR-0014 (the honest import contract, under which a `bpmn:BoundaryEvent` now imports for six of its seven trigger kinds, refusing the seventh, the shapes Operaton's own parser would itself reject, and any host outside this same container, rather than mangling any of them into an approximation).
+ADR-0014 (the honest import contract, under which a `bpmn:BoundaryEvent` imports every trigger this decision admits, refusing a compensation boundary and any host outside this same container rather than mangling either into an approximation).
+
+Extended by ADR-0028 (work that can be given up), which adds `cancel` to this attachment axis on the one host kind that can catch it, the `attempt` block.

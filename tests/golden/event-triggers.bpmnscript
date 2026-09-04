@@ -1,14 +1,15 @@
 // Event-layer round-trip fixture: one order-fulfilment narrative that exercises
 // the DSL's message, signal, timer, and conditional triggers end to end.
 //
-//   - an `on message "…"` handler at process level (the process's inbox);
+//   - an `on message "..."` handler at process level (the process's inbox);
 //   - a `subprocess` owning three handlers at once: a reminder
-//     `on timer after "…" alongside`, an `on condition (…) alongside` watchdog
-//     whose condition reads a declared form variable, and an interrupting
-//     `on timer at "…"` purge, so the duration and date timer forms sit side by
-//     side on one container;
-//   - an `on signal "…"` handler, plus an `emit signal Notify "…"` (broadcast and
-//     keep going, goto-targeted) and a terminal `throw signal Announce "…"`
+//     `on timer after "..." alongside`, an `on condition (...) alongside`
+//     watchdog whose condition reads a declared form variable, and an
+//     interrupting `on timer at "..."` purge, so the duration and date timer
+//     forms sit side by side on one container;
+//   - an `on signal "..."` handler, plus an `emit signal Notify "..."`
+//     (broadcast and keep going, goto-targeted) and a terminal
+//     `throw signal Announce "..."`
 //     (broadcast and end this path) of the SAME signal name, so all three share
 //     one root;
 //   - a `var timer: string` read in a service expression, pinning that the timer

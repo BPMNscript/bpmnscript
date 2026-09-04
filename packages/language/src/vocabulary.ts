@@ -2,23 +2,66 @@
  * The words BPMNscript accepts and where each one is legal. The grammar takes
  * any word in these positions; the validator rejects one out of place and the
  * completion provider offers the ones that fit, both from these tables.
+ *
+ * Every trigger list is a literal tuple. A table or a dispatch keyed by one of
+ * them therefore either carries an entry for every word or fails to compile,
+ * which is what keeps a word from being admitted here and then handled
+ * nowhere.
  */
 
-import type { AstNode } from 'langium';
-import { isOnHandler } from './generated/ast.js';
+import type { AstNode, Grammar } from 'langium';
+import { AstUtils, GrammarAST } from 'langium';
+import { isOnHandler, isSubProcess } from './generated/ast.js';
 import type {
+  BusinessRuleTask,
   CallActivity,
   EmitStatement,
   EndEvent,
+  GenericTask,
   IntermediateCatchEvent,
   OnHandler,
+  ReceiveTask,
   ScriptTask,
+  SendTask,
   ServiceTask,
   StartEvent,
   SubProcess,
   ThrowStatement,
   UserTask,
 } from './generated/ast.js';
+
+const RESERVED_WORDS_BY_GRAMMAR = new WeakMap<Grammar, ReadonlySet<string>>();
+
+/**
+ * The keywords that cannot be written where a plain name belongs, read out of
+ * the grammar itself so the set stays correct as keywords change. A keyword's
+ * lexer token is named after its literal value, so these strings match a token
+ * type name as well as the source text. Operators (`&&`, `+`, `{`) are
+ * excluded: they cannot be mistaken for a name. Memoized per grammar, since
+ * every caller passes the one the services were built from.
+ */
+export function reservedWordsOf(grammar: Grammar): ReadonlySet<string> {
+  let words = RESERVED_WORDS_BY_GRAMMAR.get(grammar);
+  if (!words) {
+    const found = new Set<string>();
+    for (const node of AstUtils.streamAllContents(grammar)) {
+      if (GrammarAST.isKeyword(node) && /^[A-Za-z_]/.test(node.value)) {
+        found.add(node.value);
+      }
+    }
+    words = found;
+    RESERVED_WORDS_BY_GRAMMAR.set(grammar, words);
+  }
+  return words;
+}
+
+/** A quoted English "or" clause: `'a'`, `'b'`, or `'c'`. */
+export function formatWordList(words: readonly string[]): string {
+  const quoted = words.map((w) => `'${w}'`);
+  if (quoted.length === 1) return quoted[0]!;
+  if (quoted.length === 2) return `${quoted[0]} or ${quoted[1]}`;
+  return `${quoted.slice(0, -1).join(', ')}, or ${quoted[quoted.length - 1]}`;
+}
 
 /** The engine execution settings Operaton reads off any flow node. */
 export const ENGINE_KEYS: readonly string[] = [
@@ -38,6 +81,24 @@ export const SERVICE_TASK_BINDING_KEYS: readonly string[] = [
   'expression',
   'delegate',
   'topic',
+];
+
+/**
+ * A decision step binds either to a decision table or, like a service task, to
+ * code. The engine requires one of them, and treats a decision key as the
+ * discriminator when both are written.
+ */
+export const BUSINESS_RULE_BINDING_KEYS: readonly string[] = [
+  ...SERVICE_TASK_BINDING_KEYS,
+  'decision',
+];
+
+/** What lands in `resultVariable`: one entry, one row, one column, or every row. */
+export const DECISION_RESULT_MAPPINGS: readonly string[] = [
+  'singleEntry',
+  'singleResult',
+  'collectEntries',
+  'resultList',
 ];
 
 /**
@@ -74,10 +135,12 @@ export const TASK_LISTENER_EVENTS: readonly string[] = [
 
 /**
  * Soft trigger words: they lex as plain `ID`s rather than keywords, so an
- * unrecognised one is a validator diagnostic, not a parse error. The order is
- * the order diagnostics list them in.
+ * unrecognized one is a validator diagnostic, not a parse error. The order is
+ * the order diagnostics list them in. The literal type is what makes the
+ * validator's payload table carry a row for every word, since a word without
+ * one would leave its payload rules unenforced.
  */
-export const ON_TRIGGERS: readonly string[] = [
+export const ON_TRIGGERS = [
   'error',
   'escalation',
   'message',
@@ -85,38 +148,59 @@ export const ON_TRIGGERS: readonly string[] = [
   'timer',
   'condition',
   'compensation',
-];
+  'cancel',
+] as const;
 
 /**
- * Every kind with a terminal form. A message arrives through the engine's
- * correlation API, a timer fires off the clock, and a condition off data, so
- * none of them has anything to throw.
+ * Every kind with a terminal form. A timer fires off the clock and a condition
+ * off data, so neither has anything to throw. A cancel is not thrown either:
+ * it is written on the end that gives up an `attempt` block.
  */
-export const THROW_TRIGGERS: readonly string[] = [
+export const THROW_TRIGGERS = [
   'error',
   'escalation',
+  'message',
   'signal',
   'compensation',
-];
+] as const;
 
 /** Every kind with a continuing form; an error always ends its path. */
-export const EMIT_TRIGGERS: readonly string[] = [
+export const EMIT_TRIGGERS = [
   'escalation',
+  'message',
   'signal',
   'compensation',
-];
+] as const;
 
 /**
  * The kinds with a blocking inline catch form. Error and escalation are raised
- * outward with `throw`/`emit`, and compensation runs through a subprocess's own
- * `on compensation` body, so none of the three can be awaited.
+ * outward with `throw`/`emit`, compensation runs through a subprocess's own
+ * `on compensation` body, and a cancel is caught by `on <block>: cancel`, so
+ * none of them can be awaited.
  */
-export const CATCH_TRIGGERS: readonly string[] = [
+export const CATCH_TRIGGERS = [
   'message',
   'timer',
   'signal',
   'condition',
-];
+] as const;
+
+/**
+ * The three triggers Operaton starts a process on. It ignores an error,
+ * escalation, or compensation trigger there and starts the process as if none
+ * were written, so those stay off this list rather than emitting XML the engine
+ * disregards.
+ */
+export const START_TRIGGERS = ['message', 'signal', 'timer'] as const;
+
+/**
+ * The two kinds an end event carries rather than raises. A terminate stops
+ * every running path of its scope at once; a cancel gives up the `attempt`
+ * block it sits in and hands the flow to that block's handler. Every other
+ * kind is written with `throw`. The literal type is what makes the validator's
+ * message table carry a row for every word.
+ */
+export const END_TRIGGERS = ['terminate', 'cancel'] as const;
 
 /**
  * Fence-tag aliases and the canonical Operaton `scriptFormat` they normalize
@@ -162,6 +246,10 @@ export type AttributeOwner =
   | UserTask
   | ServiceTask
   | ScriptTask
+  | GenericTask
+  | SendTask
+  | ReceiveTask
+  | BusinessRuleTask
   | SubProcess
   | CallActivity
   | OnHandler
@@ -237,6 +325,40 @@ export const ATTRIBUTE_BLOCK_RULES: Readonly<
     parameters: true,
     taskListeners: false,
   }),
+  GenericTask: withKeys({
+    description: 'a step',
+    own: [],
+    forms: false,
+    parameters: true,
+    taskListeners: false,
+  }),
+  SendTask: withKeys({
+    description: 'a send task',
+    own: [...SERVICE_TASK_BINDING_KEYS, 'resultVariable'],
+    forms: false,
+    parameters: true,
+    taskListeners: false,
+  }),
+  ReceiveTask: withKeys({
+    description: 'a receive task',
+    own: ['message'],
+    forms: false,
+    parameters: true,
+    taskListeners: false,
+  }),
+  BusinessRuleTask: withKeys({
+    description: 'a decision step',
+    own: [
+      ...BUSINESS_RULE_BINDING_KEYS,
+      'binding',
+      'version',
+      'mapDecisionResult',
+      'resultVariable',
+    ],
+    forms: false,
+    parameters: true,
+    taskListeners: false,
+  }),
   SubProcess: withKeys({
     description: 'a subprocess',
     own: [],
@@ -258,16 +380,18 @@ export const ATTRIBUTE_BLOCK_RULES: Readonly<
     parameters: false,
     taskListeners: false,
   }),
+  // The binding keys carry the implementation that makes the engine really
+  // send a thrown message; the validator holds them to the `message` trigger.
   ThrowStatement: withKeys({
     description: 'a throw statement',
-    own: [],
+    own: [...SERVICE_TASK_BINDING_KEYS],
     forms: false,
     parameters: false,
     taskListeners: false,
   }),
   EmitStatement: withKeys({
     description: 'an emit statement',
-    own: [],
+    own: [...SERVICE_TASK_BINDING_KEYS],
     forms: false,
     parameters: false,
     taskListeners: false,
@@ -298,6 +422,18 @@ export function listenerEventsFor(rule: AttributeBlockRule): readonly string[] {
     : EXECUTION_LISTENER_EVENTS;
 }
 
+/**
+ * The `attempt` head takes the same block as `subprocess`, so only the noun the
+ * diagnostics name it by differs. It stays out of {@link ATTRIBUTE_BLOCK_RULES}
+ * because the map is keyed by AST type and the two heads share one, so a
+ * diagnostic enumerating the kinds a block setting is legal on has to add it
+ * back alongside the map's own rows.
+ */
+export const ATTEMPT_BLOCK_RULE: AttributeBlockRule = {
+  ...ATTRIBUTE_BLOCK_RULES.SubProcess,
+  description: 'an attempt block',
+};
+
 export function attributeBlockRuleOf(
   node: AstNode,
 ): AttributeBlockRule | undefined {
@@ -306,6 +442,9 @@ export function attributeBlockRuleOf(
   const rule = rules[node.$type];
   if (rule && isOnHandler(node) && node.host === undefined) {
     return EVENT_SUB_PROCESS_RULE;
+  }
+  if (rule && isSubProcess(node) && node.transactional) {
+    return ATTEMPT_BLOCK_RULE;
   }
   return rule;
 }

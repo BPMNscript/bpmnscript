@@ -1,4 +1,4 @@
-# Stage 1 — Build
+# Stage 1: Build
 FROM maven:3.9-eclipse-temurin-17 AS build
 
 WORKDIR /workspace
@@ -11,7 +11,7 @@ RUN mvn dependency:go-offline --no-transfer-progress
 COPY src ./src
 RUN mvn package -DskipTests --no-transfer-progress
 
-# Stage 2 — Runtime
+# Stage 2: Runtime
 # Lean JRE-only image; the fat jar carries everything it needs.
 FROM eclipse-temurin:17-jre
 

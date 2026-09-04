@@ -47,7 +47,7 @@ const EXPECTED_TRIGGERS = [
   'condition ${amount > 100}',
 ];
 
-describe('idempotence: golden .bpmn → IR₂ → DSL′ → IR₃', () => {
+describe("idempotence: golden .bpmn -> IR2 -> DSL' -> IR3", () => {
   it('every catch keeps its trigger and payload, in order, at every hop', () => {
     for (const [label, ir] of rt.hops) {
       expect(triggerSignatures(ir), `triggers differ in ${label}`).toEqual(

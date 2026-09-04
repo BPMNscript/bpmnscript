@@ -1,7 +1,7 @@
-// Order handling with a timer reminder and a message handler. The fulfilment
+// Order handling with a timer reminder and a message handler. The fulfillment
 // steps are grouped into a `subprocess`; while they run, a non-interrupting
 // `on timer after "PT1H" alongside` handler fires an hour in to chase the
-// warehouse without stopping the main flow — the reminder pattern. A process-
+// warehouse without stopping the main flow (the reminder pattern). A process-
 // level `on message "OrderCancelled"` handler catches a cancellation the engine
 // correlates from outside and rolls the order back.
 //

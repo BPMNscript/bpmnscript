@@ -44,7 +44,7 @@ function fakeWebviewView() {
   return { view, webview, fireDispose: () => disposeCallback?.() };
 }
 
-describe('SidebarViewProvider — dispose behaviour', () => {
+describe('SidebarViewProvider: dispose behavior', () => {
   it('refresh() after the view is disposed is a no-op instead of posting to a dead webview', async () => {
     const provider = new SidebarViewProvider({
       fsPath: EXTENSION_DIR,

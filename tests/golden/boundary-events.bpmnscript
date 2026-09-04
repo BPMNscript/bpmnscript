@@ -3,11 +3,11 @@
 // attach to.
 //
 // A parcel order is checked for a deliverable address, packed, costed, paid
-// for, labelled, booked onto a carrier, and handed to the driver. Nine things
+// for, labeled, booked onto a carrier, and handed to the driver. Nine things
 // can interrupt a running step along the way, each written as an
 // `on <host>: <trigger>` handler attached to the step it can hit:
 //
-//   - the address check can be settled externally — an `AddressVerified`
+//   - the address check can be settled externally: an `AddressVerified`
 //     message from the address service ends the check and rejoins the main flow
 //     at packing (`goto PackGoods`);
 //   - the same check can drag on, so a four-hour timer nudges the clerk
@@ -23,7 +23,7 @@
 //     error boundary on a `class`-bound service task routes to a manual review;
 //   - the label print can be pre-empted by an expedite request from the
 //     warehouse, so an interrupting message boundary on a `topic`-bound service
-//     task — the delegated-to-an-external-worker binding — reroutes to an
+//     task (the delegated-to-an-external-worker binding) reroutes to an
 //     expedited shipment;
 //   - a `CarrierStrike` signal cancels the carrier booking so an alternate
 //     carrier is booked instead;
@@ -38,7 +38,7 @@
 // The `if` and condition variables are declared on the start form so they
 // survive an import-and-back round-trip, the escalation is emitted under an
 // explicit id so its printed id re-parses cleanly, and every label differs from
-// the name humanised from its id. See README.md.
+// the name humanized from its id. See README.md.
 
 process parcel-dispatch {
   error "ADDRESS_REJECTED" message "The carrier rejected the delivery address"

@@ -1,7 +1,7 @@
 /**
- * Unit tests for {@link humanize} — the id → human-readable BPMN `name`
- * derivation. The table doubles as the contract: the IR → XML serializer
- * derives a `name` with this function, and the XML → IR importer drops any
+ * Unit tests for {@link humanize}: the id -> human-readable BPMN `name`
+ * derivation. The table doubles as the contract: the IR -> XML serializer
+ * derives a `name` with this function, and the XML -> IR importer drops any
  * `name` equal to it, so the exact mapping must stay stable.
  */
 import { describe, expect, it } from 'vitest';
