@@ -67,32 +67,27 @@ describe('Semantic tokens - soft event words', () => {
   test.each<Row>([
     [
       'the trigger word of an `on` handler is a keyword',
-      'on <|error|> "X" { }',
+      'on <|error|>("X") { }',
       [KEYWORD],
     ],
     [
       'the trigger word of a `throw` is a keyword',
-      'throw <|escalation|> "C"',
+      'throw <|escalation|>("C")',
       [KEYWORD],
     ],
     [
       'the trigger word of an `emit` is a keyword',
-      'emit <|escalation|> "C"',
+      'emit <|escalation|>("C")',
       [KEYWORD],
     ],
     [
-      'the field words of an error binding are keywords',
-      'on error "X" (<|code|> c, <|message|> m) { }',
-      [KEYWORD, KEYWORD],
-    ],
-    [
-      'the variables an error binding introduces are not',
-      'on error "X" (code <|c|>, message <|m|>) { }',
-      [PLAIN, PLAIN],
+      'a catch binding highlights its field word, not the variable it introduces',
+      'on error("X", <|code|>: <|c|>) { }',
+      [KEYWORD, PLAIN],
     ],
     [
       'a message handler highlights its trigger word',
-      'on <|message|> "X" { }',
+      'on <|message|>("X") { }',
       [KEYWORD],
     ],
     [
@@ -101,37 +96,27 @@ describe('Semantic tokens - soft event words', () => {
       [KEYWORD, PLAIN],
     ],
     [
-      'a timer handler highlights both the trigger word and the particle',
-      'on <|timer|> <|after|> "PT1H" { }',
-      [KEYWORD, KEYWORD],
-    ],
-    [
       'a timer particle in an expression is a plain operand',
       'var after: number\n  if (<|after|> > 2) {\n    end Done\n  }',
       [PLAIN],
     ],
     [
-      'an awaited timer highlights both the trigger word and the particle',
-      'await <|timer|> <|after|> "PT1H"',
-      [KEYWORD, KEYWORD],
+      'an awaited event highlights its trigger word, not the time it carries',
+      'await <|timer|>("<|PT1H|>")',
+      [KEYWORD, PLAIN],
     ],
     [
-      'every branch header of a race highlights its trigger word and particle',
+      'every branch header of a race highlights its trigger word',
       `await {
-    <|message|> "M" { user A }
-    <|timer|> <|after|> "PT1H" { user B }
+    <|message|>("M") { user A }
+    <|timer|>("PT1H") { user B }
   }`,
-      [KEYWORD, KEYWORD, KEYWORD],
+      [KEYWORD, KEYWORD],
     ],
     [
       'a start event highlights its trigger word, not its name',
-      'start <|S|> <|message|> "M"\n  user A',
+      'start <|S|> <|message|>("M")\n  user A',
       [PLAIN, KEYWORD],
-    ],
-    [
-      'a timer start highlights both the trigger word and the particle',
-      'start S <|timer|> <|after|> "PT1H"\n  user A',
-      [KEYWORD, KEYWORD],
     ],
     [
       'a terminating end highlights its trigger word',
@@ -149,9 +134,14 @@ describe('Semantic tokens - soft event words', () => {
       [PLAIN],
     ],
     [
-      'an error declaration highlights both its kind and its field word',
-      '<|error|> "X" <|message|> "m"',
+      'a declaration highlights both its kind and the key of its message',
+      '<|error|> X(<|message|>: "m")',
       [KEYWORD, KEYWORD],
+    ],
+    [
+      'a code declaration highlights its kind, not the name it declares',
+      '<|escalation|> <|MANUAL_REVIEW|>',
+      [KEYWORD, PLAIN],
     ],
     [
       'a compensation handler highlights its trigger word',
@@ -169,13 +159,13 @@ describe('Semantic tokens - soft event words', () => {
       [KEYWORD, PLAIN],
     ],
     [
-      'a handler attached to an activity highlights the trigger and particle, not the host',
-      'user Review\n  on <|Review|>: <|timer|> <|after|> "PT2H" { }',
-      [PLAIN, KEYWORD, KEYWORD],
+      'a handler attached to an activity highlights the trigger, not the host',
+      'user Review\n  on <|Review|>: <|timer|>("PT2H") { }',
+      [PLAIN, KEYWORD],
     ],
     [
-      'an attribute key is a keyword, its value is not',
-      'user T { <|assignee|> = "<|demo|>" }',
+      'a setting key is a keyword, its value is not',
+      'user T(<|assignee|>: "<|demo|>")',
       [KEYWORD, PLAIN],
     ],
     [
@@ -185,17 +175,12 @@ describe('Semantic tokens - soft event words', () => {
     ],
     [
       'a timeout particle is a keyword, the duration it takes is not',
-      'user T { on timeout <|after|> "<|PT1H|>" { class = "com.acme.L" } }',
+      'user T { on timeout <|after|> "<|PT1H|>" (class: "com.acme.L") }',
       [KEYWORD, PLAIN],
     ],
     [
-      'a process-header setting highlights its key',
-      '<|versionTag|> = "1.4"',
-      [KEYWORD],
-    ],
-    [
       'a listener event and its binding key are both keywords',
-      'user T { on <|create|> { <|class|> = "com.acme.L" } }',
+      'user T { on <|create|>(<|class|>: "com.acme.L") }',
       [KEYWORD, KEYWORD],
     ],
     ['a step named after a soft word stays plain', 'user <|input|>', [PLAIN]],

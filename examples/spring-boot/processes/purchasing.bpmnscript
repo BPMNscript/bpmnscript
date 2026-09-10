@@ -12,8 +12,7 @@ process purchasing {
     }
   }
 
-  call ReviewInvoice "Review invoice approval" {
-    process = "invoice-approval"
+  call ReviewInvoice(label: "Review invoice approval", process: "invoice-approval") {
     in amount
     out autoApproved
   }

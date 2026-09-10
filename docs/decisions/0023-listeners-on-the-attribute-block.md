@@ -15,10 +15,10 @@ Each listener names its event and exactly one binding, a class, an expression, a
 That is the same exactly-one rule a service task binding already carries (ADR-0021).
 
 BPMNscript already uses `on` to catch a BPMN event.
-`on error "E409" { ... }` guards a block (ADR-0016), and a boundary form docks that catch onto one activity (ADR-0019).
+`on error(E409) { ... }` guards a block (ADR-0016), and a boundary form docks that catch onto one activity (ADR-0019).
 A listener is not a caught event.
 It never appears in the diagram, and it fires on the element's own lifecycle rather than on something the process throws.
-Writing it as `on create { class = "..." }` spells that lifecycle callback with the same word a catch uses, so one word now covers two ideas.
+Writing it as `on create(class: "...")` spells that lifecycle callback with the same word a catch uses, so one word now covers two ideas.
 
 This decision settles whether the listener surface earns its own keyword or reuses `on` and accepts that ambiguity.
 A host-less handler also lowers to two BPMN elements, so a second question follows: which one carries the engine attributes written on it?
@@ -43,9 +43,9 @@ The alternative buys its clarity with a permanently reserved word.
 The event word is a soft word, like a trigger word.
 `create`, `assign`, `complete`, `update`, `delete`, and `timeout` lex as identifiers, and the validator checks each against the element kind it was written on.
 `start` and `end` lex as statement keywords instead, so the grammar names those two as the listener event position's exceptions.
-A `timeout` listener writes its timer with the same particle clause as `on timer` and `await timer`, for example `on timeout after "PT8H" { delegate = "${escalationHandler}" }`.
-Its binding block holds `class`, `expression`, or `delegate` under the same exactly-one rule a service task binding carries.
-It can replace that block with a fenced script tagged with a language instead, exactly as a script task's body is written.
+A `timeout` listener carries a timer of its own, written as an `after`, `at`, or `every` particle and a time, for example `on timeout after "PT8H"(delegate: "${escalationHandler}")`.
+Its parens hold `class`, `expression`, or `delegate` under the same exactly-one rule a service task binding carries.
+It can replace them with a fenced script tagged with a language instead, exactly as a script task's body is written.
 An `on` clause becomes an execution listener or a task listener by its event word alone, since the two event sets never overlap.
 On a user task, `on end` registers an execution listener and `on complete` registers a task listener, so the surface never has to spell the distinction the XML draws between `operaton:executionListener` and `operaton:taskListener`.
 
@@ -58,7 +58,7 @@ A host-less handler lowers to two elements instead, a `bpmn:subProcess` and a ne
 - Good, because no word is reserved.
 - Good, because the timer clause, the script block, and the three binding keys are reused as they stand.
   Highlighting, completion, and the binding diagnostic extend to listeners for free.
-- Good, because the binding block is its own inline block, not the shared attribute-block fragment.
+- Good, because a listener's binding is a list of its own rather than the members every other element carries.
   A listener cannot nest a form, a parameter, or another listener.
 - Bad, because a reader must check the enclosing context to know which `on` they are looking at: inside a task's braces it is a callback, at statement position it is a catch.
 

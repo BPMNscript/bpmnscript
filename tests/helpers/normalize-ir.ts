@@ -182,7 +182,7 @@ function eventSubProcessSignature(fe: FlowElement): string | undefined {
   return `EventSubProcess_[trigger:${kind}]_[code:${code}]_[${interrupting}]`;
 }
 
-// `on Pack: error "A"` and `on Pack: error "B"` both base to
+// `on Pack: error(A)` and `on Pack: error(B)` both base to
 // `Boundary_Pack_error`, and the `_2` suffix that separates them is stable when
 // generating but not on import, because moddle may present the children in
 // either order. Keying on host plus trigger payload sidesteps that.

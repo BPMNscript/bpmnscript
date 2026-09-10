@@ -35,58 +35,58 @@ process order-handling {
     }
   }
 
-  user CheckOrder "Check the order against the customer record" { assignee = "demo" }
+  user CheckOrder(label: "Check the order against the customer record", assignee: "demo")
 
   parallel {
     if (orderValue > 10000) {
-      user AuditOrder "Audit the high-value order" { assignee = "manager" }
+      user AuditOrder(label: "Audit the high-value order", assignee: "manager")
     }
     if (!stockShort) {
-      service ReserveStock "Reserve the ordered stock" { class = "com.example.orders.ReserveStockDelegate" }
+      service ReserveStock(label: "Reserve the ordered stock", class: "com.example.orders.ReserveStockDelegate")
     }
     else {
-      user TriageOrder "Triage the order by hand" { assignee = "demo" }
+      user TriageOrder(label: "Triage the order by hand", assignee: "demo")
     }
   }
 
   parallel {
     if (overseas) {
-      service PrepareCustoms "Prepare the customs paperwork" { class = "com.example.orders.CustomsDelegate" }
+      service PrepareCustoms(label: "Prepare the customs paperwork", class: "com.example.orders.CustomsDelegate")
     }
     {
-      service PrintLabel "Print the shipping label" { class = "com.example.orders.LabelDelegate" }
+      service PrintLabel(label: "Print the shipping label", class: "com.example.orders.LabelDelegate")
     }
   }
 
   parallel {
     {
-      service ChargeCard "Charge the customer card" { class = "com.example.orders.ChargeDelegate" }
+      service ChargeCard(label: "Charge the customer card", class: "com.example.orders.ChargeDelegate")
     }
     {
-      service NotifyWarehouse "Tell the warehouse the order is coming" { class = "com.example.orders.NotifyDelegate" }
+      service NotifyWarehouse(label: "Tell the warehouse the order is coming", class: "com.example.orders.NotifyDelegate")
     }
   }
 
   await {
-    message "PaymentReceived" {
-      service RecordPayment "Record the settled payment" { class = "com.example.orders.RecordPaymentDelegate" }
+    message("PaymentReceived") {
+      service RecordPayment(label: "Record the settled payment", class: "com.example.orders.RecordPaymentDelegate")
     }
-    timer after "P3D" { asyncBefore = true } {
-      user ChasePayment "Chase the outstanding payment" { assignee = "demo" }
+    timer("P3D", asyncBefore: true) {
+      user ChasePayment(label: "Chase the outstanding payment", assignee: "demo")
     }
   }
 
   await {
-    signal "StockArrived" {
-      service ReleaseOrder "Release the order to picking" { class = "com.example.orders.ReleaseDelegate" }
+    signal("StockArrived") {
+      service ReleaseOrder(label: "Release the order to picking", class: "com.example.orders.ReleaseDelegate")
     }
-    condition (stockShort) {
-      user SourceStock "Source the missing stock by hand" { assignee = "demo" }
+    condition(stockShort) {
+      user SourceStock(label: "Source the missing stock by hand", assignee: "demo")
     }
   }
 
-  await message "CarrierBooked"
+  await message("CarrierBooked")
 
-  service DispatchOrder "Hand the parcel to the carrier" { class = "com.example.orders.DispatchDelegate" }
+  service DispatchOrder(label: "Hand the parcel to the carrier", class: "com.example.orders.DispatchDelegate")
   end OrderDispatched
 }

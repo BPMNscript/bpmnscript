@@ -16,22 +16,22 @@
 // its printed id re-parses cleanly. See README.md.
 
 process order-dispatch {
-  start OrderReceived "An order arrives" message "OrderReceived" {
+  start OrderReceived message("OrderReceived", label: "An order arrives") {
     form {
       amount: number "Order amount"
     }
   }
 
-  user ConfirmOrder "Confirm the order" { assignee = "demo" }
+  user ConfirmOrder(label: "Confirm the order", assignee: "demo")
 
-  emit message NotifyWarehouse "WarehouseNotified"
+  emit message NotifyWarehouse("WarehouseNotified")
 
   if (amount > 1000) {
-    service EscalateOrder "Escalate the order" { class = "com.example.orders.EscalateDelegate" }
-    end OrderAbandoned "Abandon every path" terminate
+    service EscalateOrder(label: "Escalate the order", class: "com.example.orders.EscalateDelegate")
+    end OrderAbandoned terminate(label: "Abandon every path")
   } else {
-    service DispatchOrder "Dispatch the order" { class = "com.example.orders.DispatchDelegate" }
+    service DispatchOrder(label: "Dispatch the order", class: "com.example.orders.DispatchDelegate")
   }
 
-  throw message OrderAcknowledged "OrderAcknowledged"
+  throw message OrderAcknowledged("OrderAcknowledged")
 }

@@ -175,7 +175,9 @@ describeImportFirst(
   IMPORT_FIRST_BPMN,
   (first) => {
     it('recovers each compensation surface into the DSL', () => {
-      expect(first.dsl).toContain('subprocess Pick "Pick the whole order" {');
+      expect(first.dsl).toContain(
+        'subprocess Pick(label: "Pick the whole order") {',
+      );
       expect(first.dsl).toContain('on compensation {');
       expect(first.dsl).toContain('emit compensation Raise');
       expect(first.dsl).toContain('throw compensation GiveUp');

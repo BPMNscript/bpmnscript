@@ -1,7 +1,9 @@
 /**
  * Container-scoped resolution for `goto` and for an `on` handler's host: both
  * see every named step of their own flow container at any nesting depth and
- * nothing outside it. Every other cross-reference keeps Langium's default.
+ * nothing outside it. A code reference sees the enclosing process's
+ * declarations of its own kind in a code position and nothing at all anywhere
+ * else.
  *
  * Langium's stock block-lexical visibility is wrong for `goto` twice over: a
  * step nested in a `parallel`/`if`/`while` block would be invisible to a legal
@@ -13,18 +15,28 @@
  * The host candidates stay at "the named steps of this container" rather than
  * narrowing to activities, so a host naming a step that cannot carry an
  * attached event still resolves and the validator can say what it is.
+ *
+ * Langium's precomputed scopes are deliberately not consulted for a code
+ * reference. They would offer every declaration of the process from every
+ * expression in it, which resolves `if (PAYMENT_DECLINED)` to the declaration
+ * of that code and offers every code as a completion wherever an expression is
+ * legal. Both are invisible in a green suite, so the scope is built here from
+ * the code position outward instead.
  */
 
 import {
   AstUtils,
   DefaultScopeProvider,
+  EMPTY_SCOPE,
   type AstNode,
   type ReferenceInfo,
   type Scope,
 } from 'langium';
+import { codeTriggerOf } from './paren-items.js';
 import {
   isBusinessRuleTask,
   isCallActivity,
+  isCodeDecl,
   isEmitStatement,
   isEndEvent,
   isGenericTask,
@@ -39,6 +51,7 @@ import {
   isSubProcess,
   isThrowStatement,
   isUserTask,
+  isVarRef,
   type BusinessRuleTask,
   type CallActivity,
   type EmitStatement,
@@ -129,6 +142,22 @@ function isContainerScoped(context: ReferenceInfo): boolean {
 
 export class BpmnScriptScopeProvider extends DefaultScopeProvider {
   override getScope(context: ReferenceInfo): Scope {
+    if (isVarRef(context.container)) {
+      const trigger = codeTriggerOf(context.container);
+      if (trigger === undefined) return EMPTY_SCOPE;
+      const process = AstUtils.getContainerOfType(context.container, isProcess);
+      // No outer scope: a declaration of another process, or of the other
+      // kind, is out of reach. An error and an escalation are separate event
+      // definitions even under one code, so `escalation(X)` naming an error
+      // has to fail rather than reach the XML as a second root.
+      return process
+        ? this.createScopeForNodes(
+            process.decls.filter(
+              (decl) => isCodeDecl(decl) && decl.kind === trigger,
+            ),
+          )
+        : EMPTY_SCOPE;
+    }
     if (isContainerScoped(context)) {
       // From the reference's container, not the node itself: a handler naming
       // a host is a container, and a scope taken from it would offer the

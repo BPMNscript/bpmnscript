@@ -18,7 +18,11 @@ import {
   type LangiumCoreServices,
 } from 'langium';
 
-import { formatWordList, reservedWordsOf } from './vocabulary.js';
+import {
+  DECLARED_CODE_TRIGGERS,
+  formatWordList,
+  reservedWordsOf,
+} from './vocabulary.js';
 
 const ID_TOKEN_NAME = 'ID';
 
@@ -34,12 +38,15 @@ const VAR_KEYWORD_TOKEN_NAME = 'var';
 const FOR_KEYWORD_TOKEN_NAME = 'for';
 
 /**
- * Two declarations start with a plain `ID` rather than a keyword (`error "CODE"
- * message "..."` and `<key> = <value>`), so a mistyped statement keyword in the
- * header region starts neither and Chevrotain falls back to the raw
- * expected-token list, which says nothing about the actual mistake.
+ * A code declaration is the one header declaration opening with a plain `ID`,
+ * so a mistyped statement keyword in the header region is parsed as one and
+ * fails at its name slot, where Chevrotain's raw expected-token list says
+ * nothing about the actual mistake. A word that really does open a declaration
+ * is excluded, so `error "PF"` still blames the text where the name belongs. A
+ * mistyped kind *followed by a name* parses whole and never reaches here; the
+ * validator names its kind instead.
  */
-const PROCESS_DECL_RULE_NAME = 'ProcessDecl';
+const CODE_DECL_RULE_NAME = 'CodeDecl';
 
 /** A token whose image could have been meant as a word rather than punctuation or a literal. */
 const WORD_SHAPED = /^[A-Za-z_]/;
@@ -79,11 +86,17 @@ export class BpmnScriptParserErrorMessageProvider extends LangiumParserErrorMess
         return this.repeatClausePlacementMessage();
       }
     }
-    if (
-      expected.name === ID_TOKEN_NAME &&
-      this.isReservedWord(actual.tokenType.name)
-    ) {
-      return this.reservedWordMessage(actual.image);
+    if (expected.name === ID_TOKEN_NAME) {
+      if (this.isReservedWord(actual.tokenType.name)) {
+        return this.reservedWordMessage(actual.image);
+      }
+      const word = options.previous.image;
+      if (
+        bareRuleName(options.ruleName) === CODE_DECL_RULE_NAME &&
+        !DECLARED_CODE_TRIGGERS.has(word)
+      ) {
+        return this.declarationOrStepMessage(word);
+      }
     }
     return super.buildMismatchTokenMessage(options);
   }
@@ -107,21 +120,15 @@ export class BpmnScriptParserErrorMessageProvider extends LangiumParserErrorMess
   private declarationOrStepMessage(word: string): string {
     return (
       `'${word}' is neither a known declaration nor a step keyword. ` +
-      'A declaration starting with a plain word is either a setting ' +
-      `('<key> = <value>') or 'error "CODE" message "..."'; every step starts ` +
-      "with a keyword such as 'start', 'user', 'service', 'if', 'on', 'throw', 'emit', ..."
+      'A declaration starting with a plain word is ' +
+      `${formatWordList([...DECLARED_CODE_TRIGGERS])} followed by the name it ` +
+      'declares; every step starts with a keyword such as ' +
+      "'start', 'user', 'service', 'if', 'on', 'throw', 'emit', ..."
     );
   }
 
   override buildNoViableAltMessage(options: NoViableAltOptions): string {
     const actual = options.actual[0];
-    if (
-      actual &&
-      bareRuleName(options.ruleName) === PROCESS_DECL_RULE_NAME &&
-      actual.tokenType.name === ID_TOKEN_NAME
-    ) {
-      return this.declarationOrStepMessage(actual.image);
-    }
     if (
       actual &&
       this.isReservedWord(actual.tokenType.name) &&

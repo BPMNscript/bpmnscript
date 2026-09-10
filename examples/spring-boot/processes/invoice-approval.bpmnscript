@@ -12,11 +12,11 @@ process invoice-approval {
       amount: number "Invoice amount"
     }
   }
-  user ReviewInvoice { assignee = "demo" }
+  user ReviewInvoice(assignee: "demo")
   if (amount > 1000) {
-    user SeniorApproval { assignee = "manager" }
+    user SeniorApproval(assignee: "manager")
   } else {
-    service AutoApprove { class = "com.example.invoice.AutoApproveDelegate" }
+    service AutoApprove(class: "com.example.invoice.AutoApproveDelegate")
   }
   end Done
 }

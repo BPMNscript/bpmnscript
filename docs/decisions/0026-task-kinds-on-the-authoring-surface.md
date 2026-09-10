@@ -25,8 +25,8 @@ Which four words, where do their payloads sit, and how many IR kinds do four tag
 
 - `step`, `send`, `receive`, and `decide` as the four words
 - `task`, `notify`, `expect`, and `rule`
-- The message name and the decision key in positional slots after the label
-- The message name and the decision key in the settings block
+- The message name and the decision key in positional slots after the id
+- The message name and the decision key as settings
 - One IR node for the three service-task-like tags
 - One IR kind per tag
 - A receive task with no message name in scope
@@ -34,7 +34,7 @@ Which four words, where do their payloads sit, and how many IR kinds do four tag
 
 ## Decision Outcome
 
-Chosen options: `step`, `send`, `receive`, and `decide`, every payload in the settings block, one IR node for the three service-task-like tags, and the nameless receive task in scope.
+Chosen options: `step`, `send`, `receive`, and `decide`, every payload in the settings, one IR node for the three service-task-like tags, and the nameless receive task in scope.
 
 Sharing a word with the BPMN tag is not what ADR-0013 forbids.
 `user`, `service`, and `script` already do it, and each is legal because the word means something to a reader who has never seen BPMN.
@@ -47,20 +47,20 @@ No existing file uses any of the four, and the four rules built into a live Lang
 `decide` sits close to `if`, which is a decision in the same vocabulary.
 It is accepted because the two never compete for a position: `if` takes a condition and opens branches, and `decide` is a leaf activity naming a decision table.
 
-Every payload sits in the settings block rather than in a slot after the label, as in `receive AwaitSettlement "Wait for the payment" { message = "PaymentSettled" }`.
-A label and a message name are both quoted strings in the same slot, so `receive R "X"` has no reading that position can settle.
-The block also brings reuse, since `call` already names its target there, and `binding` and `version` already carry the rule a decision step needs.
+Every payload sits in the settings rather than in a positional slot, as in `receive AwaitSettlement(label: "Wait for the payment", message: "PaymentSettled")`.
+A label and a message name are both quoted strings, so an unkeyed one has no reading that position can settle.
+The settings also bring reuse, since `call` already names its target there, and `binding` and `version` already carry the rule a decision step needs.
 
 One IR node covers `bpmn:serviceTask`, `bpmn:sendTask`, and `bpmn:businessRuleTask`.
 Operaton's `BpmnParse` runs all three through `parseServiceTaskLike` when the tag carries a `class`, `expression`, `delegate`, or `topic` binding, so they share one node and an optional discriminator picks the tag.
 A business rule task naming an `operaton:decisionRef` goes to Operaton's `parseDmnBusinessRuleTask` instead, and the `decision` binding that form carries is the one variant `service` and `send` refuse.
-A send task therefore has no message semantics of its own: the engine gives it none, and `send X { class = "..." }` is what makes it send anything.
+A send task therefore has no message semantics of its own: the engine gives it none, and `send X(class: "...")` is what makes it send anything.
 
-A receive task with no message name is in scope in both directions, with no refusal and no warning, as in `receive AwaitPickingSlot "Wait for a picking slot"`.
+A receive task with no message name is in scope in both directions, with no refusal and no warning, as in `receive AwaitPickingSlot(label: "Wait for a picking slot")`.
 Operaton's `parseReceiveTask` subscribes a receive task to a message only when `messageRef` is present, so a nameless one is a wait state the engine's signal API continues.
 A named one derives its `bpmn:Message` root through the collector ADR-0016 already uses, so it shares that root with an `await message` of the same name.
 
-A decision step pins its table with `binding = latest`, `binding = deployment`, or `version = 3`, the call activity's surface reused down to the validator rule and the IR type.
+A decision step pins its table with `binding: latest`, `binding: deployment`, or `version: 3`, the call activity's surface reused down to the validator rule and the IR type.
 
 ### Consequences
 

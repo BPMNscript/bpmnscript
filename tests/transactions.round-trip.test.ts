@@ -105,18 +105,21 @@ describe("idempotence: golden .bpmn -> IR2 -> DSL' -> IR3", () => {
 
   it("the decompiled DSL' writes every head and trigger back in the surface spelling", () => {
     expect(rt.dslPrime).toContain(
-      'attempt BookAndPay "Try to book and pay for the seats" {',
+      'attempt BookAndPay(label: "Try to book and pay for the seats") {',
     );
     expect(rt.dslPrime).toContain(
-      'attempt AssignSeatRows "Spread the party across rows" for each row in seatRows sequentially { asyncBefore = true } {',
+      'attempt AssignSeatRows for each row in seatRows sequentially(' +
+        'label: "Spread the party across rows", asyncBefore: true) {',
     );
-    expect(rt.dslPrime).toContain('subprocess HoldSeats "Hold the seats" {');
     expect(rt.dslPrime).toContain(
-      'end BookingAbandoned "Give up the booking" cancel',
+      'subprocess HoldSeats(label: "Hold the seats") {',
+    );
+    expect(rt.dslPrime).toContain(
+      'end BookingAbandoned cancel(label: "Give up the booking")',
     );
     expect(rt.dslPrime).toContain('on BookAndPay: cancel {');
     expect(rt.dslPrime).toContain(
-      'on BookAndPay: error "PAYMENT_UNAVAILABLE" (code c, message m) {',
+      'on BookAndPay: error(PAYMENT_UNAVAILABLE, code: c, message: m) {',
     );
   });
 });

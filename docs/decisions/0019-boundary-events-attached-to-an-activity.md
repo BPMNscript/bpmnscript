@@ -13,7 +13,7 @@ BPMN has a second, narrower attachment for the same catch vocabulary: a `bpmn:bo
 Giving `on` an optional host turns it into this second attachment form without introducing a competing keyword or a second handler construct.
 
 Four questions have to be settled together, because each interacts with a decision already recorded for the host-less handler.
-How is a host spelled without colliding with a handler shape that already exists (`on timer after "PT2H"`)?
+How is a host spelled without colliding with a handler shape that already exists (`on timer("PT2H")`)?
 Which of the language's eight catchable triggers may attach as a boundary event, and what happens to the two this decision does not admit?
 What does a hosted handler's body compile to, given that the host-less form's meaning must stay exactly what ADR-0016 already fixed it to be?
 And how is a token that appears directly at a boundary event, without ever traversing the main flow, represented in the dominator-based restructuring analysis (ADR-0009) that turns flat IR back into structured DSL?
@@ -31,9 +31,9 @@ And how is a token that appears directly at a boundary event, without ever trave
 
 For the host separator:
 
-- A colon between host and trigger (`on Pack: error "X"`)
-- A bare space (`on Pack error "X"`)
-- A postfix clause (`on error "X" at Pack`)
+- A colon between host and trigger (`on Pack: error(X)`)
+- A bare space (`on Pack error(X)`)
+- A postfix clause (`on error(X) at Pack`)
 
 For the trigger scope:
 
@@ -63,9 +63,9 @@ For the id scheme:
 Five related decisions, chosen together because each keeps the same host-less meaning intact wherever the new attachment form does not have to touch it, and spends new syntax, a new reserved word, or a new pass only where an alternative would either misparse an existing form, mangle an import, or leave an escape chain permanently unreadable by the restructurer.
 
 The colon separator.
-A hosted handler is written `on Pack: error "X" { ... }`: the host name, a colon, then the trigger exactly as a host-less handler already writes it.
-The bare form originally proposed, `on Pack error "X"`, is provably ambiguous with a handler that already parses today, `on timer after "PT1H"`: both are, at the token level, `ID ID STRING`, because every trigger word and every timer particle lexes as a plain identifier by deliberate design (ADR-0016) rather than as a grammar keyword.
-The ambiguity sits in the token text, not the token type, so no amount of lookahead over token types can tell `Pack error` (host, trigger) apart from `timer after` (trigger, particle).
+A hosted handler is written `on Pack: error(X) { ... }`: the host name, a colon, then the trigger exactly as a host-less handler already writes it.
+The bare form originally proposed, `on Pack error(X)`, is ambiguous with a handler that already parses today: a host-less handler carrying a code and a hosted handler carrying none both read as `on` followed by two identifiers, because every trigger word lexes as a plain identifier by deliberate design (ADR-0016) rather than as a grammar keyword.
+The ambiguity sits in the token text, not the token type, so no amount of lookahead over token types can tell a host from the trigger that follows it.
 Only the words themselves would, and reserving them as keywords is exactly what ADR-0016 already ruled out.
 The colon resolves the ambiguity at the second token, before either reading has to be committed to: plain two-token lookahead already suffices, well inside what Langium's default parser handles without any special grammar annotation.
 
@@ -74,7 +74,7 @@ This alternative does work, but at a cost disproportionate to what the colon buy
 Every site in the grammar that currently accepts a soft trigger word as an identifier would need a parallel keyword-or-identifier rule, some two dozen individual grammar productions, which reopens the soft-trigger-word decision ADR-0016 already closed for reasons unrelated to boundary events.
 It also does not fully remove the ambiguity: the grammar generator still reports a residual ambiguous alternative between the keyword-led host form and the timer form, resolved by picking whichever alternative the generator orders first and reported only as a warning on the build's stderr, a resolution an author has no visibility into and that a future grammar edit could silently invert.
 The colon leaves no such residual: it is a structural token the grammar decides on unambiguously, not a policy the generator applies silently.
-Also rejected: a postfix host clause, `on error "X" at Pack`, which reuses the word `at` that a timer's particle clause already claims (`on timer at "2026-08-01T09:00:00"`), reopening the exact kind of two-reading collision the colon exists to avoid, just moved to a different position in the handler.
+Also rejected: a postfix host clause, `on error(X) at Pack`, which reuses the word `at` that a timer's date key already claims (`on timer(at: "2026-08-01T09:00:00")`), reopening the exact kind of two-reading collision the colon exists to avoid, just moved to a different position in the handler.
 
 The six-trigger scope.
 Message, timer, signal, and conditional boundary events are interrupting or non-interrupting (`alongside`) on any activity.
@@ -128,7 +128,7 @@ Both halves of this id, the host's authored name and the trigger word, are text 
 A positional id would drift the moment that reordering happened, exactly the instability the existing `normalizeIr` re-key already has to canonicalize away for event sub-processes; a host-derived id needs no equivalent re-key for the generation direction at all.
 
 The one case this id scheme does not fully disambiguate is two boundary handlers sharing a host and a trigger but differing in code.
-`on Pack: error "A"` and `on Pack: error "B"` are legal, non-duplicate handlers under the validator's `(host, trigger, code)` key, yet both base to the identical `Boundary_Pack_error` before collision suffixing runs, so which one keeps the bare id and which one receives the `_2` suffix is positional rather than derived from either code.
+`on Pack: error(A)` and `on Pack: error(B)` are legal, non-duplicate handlers under the validator's `(host, trigger, code)` key, yet both base to the identical `Boundary_Pack_error` before collision suffixing runs, so which one keeps the bare id and which one receives the `_2` suffix is positional rather than derived from either code.
 This is stable in the generation direction, since lowering assigns suffixes in statement order, the decompiler reprints handlers in that same order, and re-lowering reproduces it.
 It is exposed on import, though, where a hand-written or externally modeled document may present the two boundary events in whatever order the tool that wrote them chose.
 Folding the code into the base id was rejected: no other id constructor in this scheme sanitizes arbitrary author-supplied text into an id fragment, and doing so here would still need a numeric suffix for the case where two boundaries share every distinguishing property outright (two `timer` boundaries on one host, which carry no engine subscription key and so are never rejected as duplicates).
@@ -151,7 +151,7 @@ The round-trip normalizer compensates on the comparison side instead: its canoni
 
 ### Confirmation
 
-`packages/language/test/parsing.test.ts` pins the colon's disambiguation directly: `on Review: timer after "PT2H"` parses with `host` set to `'Review'`, `trigger` set to `'timer'`, and `particle` set to `'after'`, never confusing the host with the trigger.
+`packages/language/test/parsing.test.ts` pins the colon's disambiguation directly: `on Review: timer("PT2H")` parses with `host` set to `'Review'` and `trigger` set to `'timer'`, never confusing the host with the trigger.
 `packages/language/test/scoping.test.ts` pins the transparency rule in both directions (`goto` from inside a hosted body reaching the main flow and back), and `packages/transform/test/ast-to-ir.test.ts` pins the promotion consequence: a host-less handler written inside a hosted body lowers into the outer container.
 `packages/language/test/validating.test.ts` pins the six-trigger scope, the escalation host restriction, and the compensation-has-no-host refusal, each with an exact-message assertion.
 `packages/transform/test/cfg-analysis.test.ts` pins the virtual-entry wiring and the accepted dominance trade-off as an explicit regression case, not an incidental property.
@@ -164,7 +164,7 @@ The frozen `tests/golden/boundary-events.bpmn` fixture and its round-trip suite 
 ### The colon separator
 
 - Good, because it resolves the ambiguity at the second token, requiring no lookahead beyond what the parser generator already performs by default.
-- Good, because it leaves every trigger word and timer particle a soft identifier, touching none of ADR-0016's design.
+- Good, because it leaves every trigger word a soft identifier, touching none of ADR-0016's design.
 - Bad, because it is one more character an author has to remember relative to the originally proposed bare form, for a distinction the bare form cannot actually make.
 
 ### Promoting trigger words to keywords, admitted back as identifiers by type
@@ -173,10 +173,10 @@ The frozen `tests/golden/boundary-events.bpmn` fixture and its round-trip suite 
 - Bad, because it touches roughly two dozen individual grammar productions rather than one, reversing ADR-0016's soft-word design for the sites it touches.
 - Bad, because the ambiguity is not actually removed, only resolved by the parser generator's own alternative-ordering rule, reported solely as a build-time warning and invisible to anyone not reading the build log line by line.
 
-### A postfix host clause (`on error "X" at Pack`)
+### A postfix host clause (`on error(X) at Pack`)
 
 - Good, because it reads left-to-right as "catch this, at this activity," which some authors may find more natural than naming the host first.
-- Bad, because `at` already belongs to the timer particle clause (`on timer at "2026-08-01T09:00:00"`), recreating the same word-level collision the colon exists to avoid, in a different position.
+- Bad, because `at` already belongs to a timer's date key (`on timer(at: "2026-08-01T09:00:00")`), recreating the same word-level collision the colon exists to avoid, in a different position.
 
 ### All eight of the language's catchable triggers as boundary events
 

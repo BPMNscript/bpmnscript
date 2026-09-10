@@ -9,10 +9,12 @@ import {
   CompletionItemKind,
   InsertTextFormat,
 } from 'vscode-languageserver-types';
+import { isOnHandler } from './generated/ast.js';
 import {
   attributeBlockRuleOf,
   CALL_BINDING_VALUES,
   CATCH_TRIGGERS,
+  DECLARED_CODE_TRIGGERS,
   DECISION_RESULT_MAPPINGS,
   EMIT_TRIGGERS,
   END_TRIGGERS,
@@ -28,7 +30,8 @@ import {
   SCRIPT_FORMAT_ALIASES,
   START_TRIGGERS,
   THROW_TRIGGERS,
-  TIMER_PARTICLES,
+  TIMER_PARTICLE_BY_KIND,
+  TRIGGER_PAYLOAD,
 } from './vocabulary.js';
 
 interface StructureForm {
@@ -40,11 +43,22 @@ const SCRIPT_LANGUAGES = [
   ...new Set(Object.values(SCRIPT_FORMAT_ALIASES)),
 ].join(',');
 
-/** The words of `triggers` a `"CODE"` scaffold can offer, as a snippet choice list. */
-const codeChoices = (triggers: readonly string[]): string =>
-  triggers.filter(namesACode).join(',');
+/**
+ * The words of `triggers` whose payload is a declared name, as a snippet choice
+ * list. Their scaffold writes the name bare, so it reads as the cross-reference
+ * it is.
+ */
+const declaredCodeChoices = (triggers: readonly string[]): string =>
+  triggers.filter((word) => DECLARED_CODE_TRIGGERS.has(word)).join(',');
 
-const CATCH_CODE_CHOICES = codeChoices(CATCH_TRIGGERS);
+/**
+ * The words whose payload is the name the engine keys a subscription by. It
+ * declares nothing, so the scaffold quotes it.
+ */
+const subscriptionChoices = (triggers: readonly string[]): string =>
+  triggers
+    .filter((word) => namesACode(word) && !DECLARED_CODE_TRIGGERS.has(word))
+    .join(',');
 
 /**
  * Snippet bodies for the structural keywords, keyed by keyword text. Accepting
@@ -59,15 +73,14 @@ const STRUCTURE_SNIPPETS: Readonly<
 > = {
   process: 'process ${1:name} {\n\t$0\n}',
   var: 'var ${1:name}: ${2|string,number,boolean,date,json,any|}',
-  label: 'label = "${1:label}"',
   start: 'start ${1:name}',
   end: 'end ${1:name}',
-  user: 'user ${1:id} {\n\tassignee = "${2:user}"\n}',
-  service: 'service ${1:id} {\n\tclass = "${2:com.example.Delegate}"\n}',
+  user: 'user ${1:id}(assignee: "${2:user}")',
+  service: 'service ${1:id}(class: "${2:com.example.Delegate}")',
   step: 'step ${1:id}',
-  send: 'send ${1:id} {\n\tclass = "${2:com.example.Delegate}"\n}',
-  receive: 'receive ${1:id} {\n\tmessage = "${2:MessageName}"\n}',
-  decide: 'decide ${1:id} {\n\tdecision = "${2:decision-key}"\n}',
+  send: 'send ${1:id}(class: "${2:com.example.Delegate}")',
+  receive: 'receive ${1:id}(message: "${2:MessageName}")',
+  decide: 'decide ${1:id}(decision: "${2:decision-key}")',
   script: 'script ${1:id} ```${2|' + SCRIPT_LANGUAGES + '|}\n\t$0\n```',
   if: 'if (${1:condition}) {\n\t$0\n}',
   while: 'while (${1:condition}) {\n\t$0\n}',
@@ -85,29 +98,70 @@ const STRUCTURE_SNIPPETS: Readonly<
   ],
   subprocess: 'subprocess ${1:id} {\n\t$0\n}',
   attempt: 'attempt ${1:id} {\n\t$0\n}',
-  // A trigger reading another payload is offered at the bare ID position
-  // instead. The host is a cross-reference, so no hosted variant is scaffolded.
-  on: 'on ${1|' + codeChoices(ON_TRIGGERS) + '|} "${2:CODE}" {\n\t$0\n}',
-  throw: 'throw ${1|' + codeChoices(THROW_TRIGGERS) + '|} "${2:CODE}"',
-  emit: 'emit ${1|' + codeChoices(EMIT_TRIGGERS) + '|} "${2:CODE}"',
+  // Each event word takes one of two payloads, so each keyword lists a form per
+  // payload: a code names a declaration in the process header, a subscription
+  // carries its own quoted name. A trigger reading a timer or a condition
+  // instead is offered at the bare ID position. The host is a cross-reference,
+  // so no hosted variant is scaffolded.
+  on: [
+    {
+      label: 'on',
+      insertText:
+        'on ${1|' +
+        declaredCodeChoices(ON_TRIGGERS) +
+        '|}(${2:CODE}) {\n\t$0\n}',
+    },
+    {
+      label: 'on message',
+      insertText:
+        'on ${1|' +
+        subscriptionChoices(ON_TRIGGERS) +
+        '|}("${2:NAME}") {\n\t$0\n}',
+    },
+  ],
+  throw: [
+    {
+      label: 'throw',
+      insertText:
+        'throw ${1|' + declaredCodeChoices(THROW_TRIGGERS) + '|}(${2:CODE})',
+    },
+    {
+      label: 'throw message',
+      insertText:
+        'throw ${1|' + subscriptionChoices(THROW_TRIGGERS) + '|}("${2:NAME}")',
+    },
+  ],
+  emit: [
+    {
+      label: 'emit',
+      insertText:
+        'emit ${1|' + declaredCodeChoices(EMIT_TRIGGERS) + '|}(${2:CODE})',
+    },
+    {
+      label: 'emit message',
+      insertText:
+        'emit ${1|' + subscriptionChoices(EMIT_TRIGGERS) + '|}("${2:NAME}")',
+    },
+  ],
   // The second form waits on several triggers at once and continues down the
   // one that fires first.
   await: [
     {
       label: 'await',
-      insertText: 'await ${1|' + CATCH_CODE_CHOICES + '|} "${2:CODE}"',
+      insertText:
+        'await ${1|' + subscriptionChoices(CATCH_TRIGGERS) + '|}("${2:NAME}")',
     },
     {
       label: 'await any',
       insertText:
         'await {\n\t${1|' +
-        CATCH_CODE_CHOICES +
-        '|} "${2:CODE}" {\n\t\t$3\n\t}\n\t${4|' +
-        CATCH_CODE_CHOICES +
-        '|} "${5:CODE}" {\n\t\t$6\n\t}\n}',
+        subscriptionChoices(CATCH_TRIGGERS) +
+        '|}("${2:NAME}") {\n\t\t$3\n\t}\n\t${4|' +
+        subscriptionChoices(CATCH_TRIGGERS) +
+        '|}("${5:OTHER}") {\n\t\t$6\n\t}\n}',
     },
   ],
-  call: 'call ${1:id} {\n\tprocess = "${2:process-id}"\n\tin ${3:input}\n\tout ${4:result}\n}',
+  call: 'call ${1:id}(process: "${2:process-id}") {\n\tin ${3:input}\n\tout ${4:result}\n}',
   // Offered at the position after a statement's name, not as a setting.
   for: [
     { label: 'for each', insertText: 'for each ${1:item} in ${2:collection}' },
@@ -116,48 +170,108 @@ const STRUCTURE_SNIPPETS: Readonly<
 };
 
 /**
- * Snippet bodies for the settings a brace block can hold. These lex as plain
- * identifiers, so the default completion offers nothing for them. The `\$`
- * escapes keep an EL `${...}` literal instead of opening a nested placeholder.
+ * Snippet bodies for the settings an element's parens can hold. These lex as
+ * plain identifiers, so the default completion offers nothing for them. The
+ * `\$` escapes keep an EL `${...}` literal instead of opening a nested
+ * placeholder.
  */
 const SETTING_SNIPPETS: Readonly<Record<string, string>> = {
-  asyncBefore: 'asyncBefore = ${1|true,false|}',
-  asyncAfter: 'asyncAfter = ${1|true,false|}',
-  exclusive: 'exclusive = ${1|false,true|}',
-  jobPriority: 'jobPriority = ${1:50}',
-  retryCycle: 'retryCycle = "${1:R3/PT10M}"',
-  assignee: 'assignee = "${1:user}"',
-  formKey: 'formKey = "${1:form-key}"',
-  candidateGroups: 'candidateGroups = "${1:group}"',
-  candidateUsers: 'candidateUsers = "${1:user}"',
-  dueDate: 'dueDate = "${1:\\${dateTime().plusDays(3)}}"',
-  followUpDate: 'followUpDate = "${1:\\${dateTime().plusDays(1)}}"',
-  priority: 'priority = ${1:50}',
-  class: 'class = "${1:com.example.Delegate}"',
-  expression: 'expression = "${1:\\${bean.method(execution)}}"',
-  delegate: 'delegate = "${1:\\${beanName}}"',
-  topic: 'topic = "${1:topic-name}"',
-  decision: 'decision = "${1:decision-key}"',
+  label: 'label: "${1:label}"',
+  asyncBefore: 'asyncBefore: ${1|true,false|}',
+  asyncAfter: 'asyncAfter: ${1|true,false|}',
+  exclusive: 'exclusive: ${1|false,true|}',
+  jobPriority: 'jobPriority: ${1:50}',
+  retryCycle: 'retryCycle: "${1:R3/PT10M}"',
+  assignee: 'assignee: "${1:user}"',
+  formKey: 'formKey: "${1:form-key}"',
+  candidateGroups: 'candidateGroups: "${1:group}"',
+  candidateUsers: 'candidateUsers: "${1:user}"',
+  dueDate: 'dueDate: "${1:\\${dateTime().plusDays(3)}}"',
+  followUpDate: 'followUpDate: "${1:\\${dateTime().plusDays(1)}}"',
+  priority: 'priority: ${1:50}',
+  class: 'class: "${1:com.example.Delegate}"',
+  expression: 'expression: "${1:\\${bean.method(execution)}}"',
+  delegate: 'delegate: "${1:\\${beanName}}"',
+  topic: 'topic: "${1:topic-name}"',
+  decision: 'decision: "${1:decision-key}"',
   mapDecisionResult:
-    'mapDecisionResult = ${1|' + DECISION_RESULT_MAPPINGS.join(',') + '|}',
-  message: 'message = "${1:MessageName}"',
-  resultVariable: 'resultVariable = "${1:result}"',
-  process: 'process = "${1:process-id}"',
-  binding: 'binding = ${1|' + CALL_BINDING_VALUES.join(',') + '|}',
-  version: 'version = ${1:1}',
-  businessKey: 'businessKey = "${1:\\${execution.processBusinessKey}}"',
-  versionTag: 'versionTag = "${1:1.0.0}"',
+    'mapDecisionResult: ${1|' + DECISION_RESULT_MAPPINGS.join(',') + '|}',
+  message: 'message: "${1:MessageName}"',
+  resultVariable: 'resultVariable: "${1:result}"',
+  process: 'process: "${1:process-id}"',
+  binding: 'binding: ${1|' + CALL_BINDING_VALUES.join(',') + '|}',
+  version: 'version: ${1:1}',
+  businessKey: 'businessKey: "${1:\\${execution.processBusinessKey}}"',
+  versionTag: 'versionTag: "${1:1.0.0}"',
 };
 
-function settingKeysFor(node: AstNode): readonly string[] | undefined {
+/**
+ * A handler binds what the event it caught carries to variables of its own, so
+ * the value is a name the handler introduces rather than one it looks up. The
+ * same word means something else as a setting: `message` on a receive task
+ * names the subscription the engine waits on.
+ */
+const CATCH_BINDING_SNIPPETS: Readonly<Record<string, string>> = {
+  code: 'code: ${1:code}',
+  message: 'message: ${1:message}',
+};
+
+const settingForms = (keys: readonly string[]): StructureForm[] =>
+  keys.map((key) => ({ label: key, insertText: SETTING_SNIPPETS[key] }));
+
+/**
+ * The keys naming a timer's date and cycle. A duration is the bare payload the
+ * trigger word's own snippet already scaffolds, so it is not offered again.
+ */
+const TIMER_KEY_SNIPPETS: Readonly<Record<string, string>> = {
+  [TIMER_PARTICLE_BY_KIND.date]: `${TIMER_PARTICLE_BY_KIND.date}: "\${1:2026-08-01T09:00:00}"`,
+  [TIMER_PARTICLE_BY_KIND.cycle]: `${TIMER_PARTICLE_BY_KIND.cycle}: "\${1:R/PT10M}"`,
+};
+
+/** The keys a timer trigger takes, wherever one is written. */
+function timerKeyForms(node: AstNode): StructureForm[] {
+  if (!('trigger' in node) || node.trigger !== 'timer') return [];
+  return Object.entries(TIMER_KEY_SNIPPETS).map(([label, insertText]) => ({
+    label,
+    insertText,
+  }));
+}
+
+/** The bindings a handler catching an error or an escalation takes. */
+function catchBindingForms(node: AstNode): StructureForm[] {
+  if (
+    !isOnHandler(node) ||
+    TRIGGER_PAYLOAD[node.trigger]?.parens !== 'bindings'
+  )
+    return [];
+  return EVENT_BINDING_FIELDS.map((field) => ({
+    label: field,
+    insertText: CATCH_BINDING_SNIPPETS[field],
+  }));
+}
+
+/**
+ * The settings the parens of `node` take, in the order they are offered, or
+ * `undefined` where `node` is not an element. The keys come from the element's
+ * own row, so a kind that takes no label is offered none; a listener carries a
+ * list of its own, being a callback on the element rather than one of its
+ * settings.
+ */
+function settingFormsFor(node: AstNode): StructureForm[] | undefined {
   if (node.$type === 'Process') {
-    return PROCESS_HEADER_KEYS;
+    return settingForms(PROCESS_HEADER_KEYS);
   }
   if (node.$type === 'Listener') {
-    return LISTENER_BINDING_KEYS;
+    return settingForms(LISTENER_BINDING_KEYS);
   }
   const rule = attributeBlockRuleOf(node);
-  return rule && [...rule.own, ...ENGINE_KEYS];
+  return (
+    rule && [
+      ...timerKeyForms(node),
+      ...catchBindingForms(node),
+      ...settingForms([...rule.own, ...ENGINE_KEYS]),
+    ]
+  );
 }
 
 /**
@@ -170,13 +284,16 @@ function ruleNameOf(node: AstNode): string | undefined {
 }
 
 /** A `MapKey` in a parameter value assigns `key` too, and takes the author's own keys. */
-const SETTING_KEY_RULE = 'AttrKey';
+const SETTING_KEY_RULE = 'ParenKey';
+
+/** The rules whose keywords are a setting key or a flag, never a construct. */
+const SETTING_WORD_RULES = [SETTING_KEY_RULE, 'FlagWord'];
 
 /**
- * The element whose settings block holds the caret. The node at the caret is
- * that element only while the block is empty; afterwards it is the preceding
- * member's leaf. A member already closed above the caret is passed over, and a
- * block whose closing brace is not typed yet encloses nothing, so there the
+ * The element whose settings hold the caret. The node at the caret is that
+ * element only while the parens are empty; afterwards it is the preceding
+ * item's leaf. An item already closed above the caret is passed over, and
+ * parens whose closing token is not typed yet enclose nothing, so there the
  * innermost element stands in.
  */
 function owningElement(context: CompletionContext): AstNode | undefined {
@@ -186,7 +303,7 @@ function owningElement(context: CompletionContext): AstNode | undefined {
     node;
     node = node.$container
   ) {
-    if (settingKeysFor(node) === undefined) {
+    if (settingFormsFor(node) === undefined) {
       continue;
     }
     if ((node.$cstNode?.end ?? 0) > context.offset) {
@@ -197,15 +314,22 @@ function owningElement(context: CompletionContext): AstNode | undefined {
   return innermost;
 }
 
-/** Scaffolds for the trigger words reading something other than a plain `"CODE"`. */
+/**
+ * Scaffolds for the trigger words whose payload is neither a name nor a code.
+ * A timer reads a bare duration, which is the common case; a fixed date or a
+ * repeating cycle is written as an `at` or `every` setting instead.
+ */
 const TRIGGER_PAYLOAD_SNIPPETS: Readonly<
   Record<string, { insertText: string; detail: string }>
 > = {
   timer: {
-    insertText: 'timer after "${1:PT1H}"',
+    insertText: 'timer("${1:PT1H}")',
     detail: 'a scheduled or relative deadline',
   },
-  condition: { insertText: 'condition ($1)', detail: 'a data-change watchdog' },
+  condition: {
+    insertText: 'condition(${1:amount > 100})',
+    detail: 'a data-change watchdog',
+  },
 };
 
 /** The trigger words each statement takes, with the captions a word earns. */
@@ -258,8 +382,8 @@ const STRUCTURE_DETAILS: Readonly<Record<string, string>> = {
  */
 export class BpmnScriptCompletionProvider extends DefaultCompletionProvider {
   /**
-   * Offers items for the soft words at the `trigger`, `particle`, `field`,
-   * `key`, `direction`, and `event` positions, which lex as plain `ID`s.
+   * Offers items for the soft words at the `trigger`, `particle`, `key`,
+   * `direction`, and `event` positions, which lex as plain `ID`s.
    * `OnHandler.host` is absent because it is a real cross-reference, already
    * offered by the inherited `completionForCrossReference`.
    */
@@ -277,9 +401,9 @@ export class BpmnScriptCompletionProvider extends DefaultCompletionProvider {
       ruleNameOf(next.feature) === SETTING_KEY_RULE &&
       owner
     ) {
-      const keys = settingKeysFor(owner);
-      if (keys) {
-        this.acceptSettingSnippets(context, acceptor, keys);
+      const forms = settingFormsFor(owner);
+      if (forms) {
+        this.acceptSettingSnippets(context, acceptor, forms);
         return;
       }
     }
@@ -308,23 +432,6 @@ export class BpmnScriptCompletionProvider extends DefaultCompletionProvider {
         return;
       }
     }
-    if (
-      next.property === 'particle' &&
-      (nodeType === 'OnHandler' ||
-        nodeType === 'IntermediateCatchEvent' ||
-        nodeType === 'RaceBranch' ||
-        nodeType === 'StartEvent')
-    ) {
-      this.acceptParticleWords(context, acceptor);
-      return;
-    }
-    if (
-      next.property === 'field' &&
-      (nodeType === 'OnHandler' || nodeType === 'EventBinding')
-    ) {
-      this.acceptEventWords(context, acceptor, EVENT_BINDING_FIELDS);
-      return;
-    }
     return super.completionFor(context, next, acceptor);
   }
 
@@ -351,37 +458,17 @@ export class BpmnScriptCompletionProvider extends DefaultCompletionProvider {
     }
   }
 
-  private static readonly PARTICLE_DETAILS: Readonly<Record<string, string>> = {
-    after: 'a duration relative to when this scope starts',
-    at: 'a fixed point in time',
-    every: 'a repeating schedule',
-  };
-
-  private acceptParticleWords(
-    context: CompletionContext,
-    acceptor: CompletionAcceptor,
-  ): void {
-    for (const word of TIMER_PARTICLES) {
-      acceptor(context, {
-        label: word,
-        kind: CompletionItemKind.Keyword,
-        detail: BpmnScriptCompletionProvider.PARTICLE_DETAILS[word],
-        sortText: '1',
-      });
-    }
-  }
-
   private acceptSettingSnippets(
     context: CompletionContext,
     acceptor: CompletionAcceptor,
-    keys: readonly string[],
+    forms: readonly StructureForm[],
   ): void {
-    for (const key of keys) {
+    for (const form of forms) {
       acceptor(context, {
-        label: key,
+        label: form.label,
         kind: CompletionItemKind.Snippet,
         detail: 'BPMNscript setting',
-        insertText: SETTING_SNIPPETS[key],
+        insertText: form.insertText,
         insertTextFormat: InsertTextFormat.Snippet,
         sortText: '1',
       });
@@ -411,7 +498,7 @@ export class BpmnScriptCompletionProvider extends DefaultCompletionProvider {
     }
   }
 
-  /** Each event scaffolds its binding block and, for `timeout`, the timer clause. */
+  /** Each event scaffolds its binding and, for `timeout`, the timer clause. */
   private acceptListenerEvents(
     context: CompletionContext,
     acceptor: CompletionAcceptor,
@@ -423,13 +510,15 @@ export class BpmnScriptCompletionProvider extends DefaultCompletionProvider {
       return;
     }
     for (const event of listenerEventsFor(rule)) {
+      // A listener's timer clause is written before its settings, so the two
+      // tab stops swap places on `timeout`.
       const timer = event === 'timeout' ? ' after "${1:PT1H}"' : '';
       const binding = event === 'timeout' ? '${2:' : '${1:';
       acceptor(context, {
         label: event,
         kind: CompletionItemKind.Snippet,
         detail: 'BPMNscript listener event',
-        insertText: `${event}${timer} {\n\tclass = "${binding}com.example.Listener}"\n}`,
+        insertText: `${event}${timer}(class: "${binding}com.example.Listener}")`,
         insertTextFormat: InsertTextFormat.Snippet,
         sortText: '1',
       });
@@ -449,10 +538,16 @@ export class BpmnScriptCompletionProvider extends DefaultCompletionProvider {
         insertText:
           'on ${1|' +
           EXECUTION_LISTENER_EVENTS.join(',') +
-          '|} {\n\tclass = "${2:com.example.Listener}"\n}',
+          '|}(class: "${2:com.example.Listener}")',
         insertTextFormat: InsertTextFormat.Snippet,
         sortText: '1',
       });
+      return;
+    }
+    // A keyword in a setting position names a key or a flag, never the start of
+    // a construct. Which of them belongs to the element is answered from its own
+    // vocabulary above, so the grammar's raw alternatives are dropped here.
+    if (SETTING_WORD_RULES.includes(ruleNameOf(keyword) ?? '')) {
       return;
     }
     const snippet = STRUCTURE_SNIPPETS[keyword.value];

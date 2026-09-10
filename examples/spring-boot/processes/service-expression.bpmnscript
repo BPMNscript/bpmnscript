@@ -8,6 +8,6 @@ process shipping-quote {
       order: string "Order reference"
     }
   }
-  service QuoteShipping { expression = "${shippingBean.quote(order)}" }
+  service QuoteShipping(expression: "${shippingBean.quote(order)}")
   end Done
 }

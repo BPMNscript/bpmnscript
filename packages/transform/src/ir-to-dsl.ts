@@ -41,11 +41,13 @@ import type {
 } from './ir/types.js';
 import {
   eachElement,
+  eventIdentities,
   gatewayDefaultFlowId,
   isGateway,
   repeats,
 } from './ir/types.js';
 import {
+  claimDeclarationName,
   END_EVENT_PREFIX,
   START_EVENT_PREFIX,
   THROW_EVENT_PREFIX,
@@ -53,7 +55,22 @@ import {
 import { analyzeCfg, type CfgAnalysis } from './cfg-analysis.js';
 import { parseJuel, renderRawFallback } from './juel.js';
 
-const INDENT = '  ';
+/** Reused by `xml-to-ir.ts` to dedent a preview built by wrapping a fragment in a throwaway process. */
+export const INDENT = '  ';
+
+/**
+ * The lines one construct prints on. A fenced body keeps its newlines inside a
+ * single entry: the text between the fences is the script itself, and an
+ * enclosing block indents whole entries, so splitting one would rewrite the
+ * code it holds.
+ */
+type Lines = string[];
+
+/** Built by {@link codeDeclarations}: the name a raised code is written under, per kind. */
+interface CodeNames {
+  error: Map<string, string>;
+  escalation: Map<string, string>;
+}
 
 export type PrintWarningCategory =
   | 'label'
@@ -84,19 +101,14 @@ export function irToDsl(process: BpmnProcess): {
   warnGatewayLabels(process, warnings);
   warnRefusedStatements(process, warnings);
 
-  const emitter = new Emitter(process, warnings);
+  const codes = codeDeclarations(process);
+  const emitter = new Emitter(process, warnings, codes.names);
   const body = emitter.emit();
 
-  const declarations: string[] = [];
-  if (process.versionTag !== undefined) {
-    declarations.push(`${INDENT}versionTag = ${quote(process.versionTag)}`);
-  }
-  for (const m of process.errorMessages ?? []) {
-    declarations.push(
-      `${INDENT}error ${quote(m.code)} message ${quote(m.message)}`,
-    );
-  }
-  declarations.push(...collectionDecls(process));
+  const declarations = [
+    ...codes.lines.map((line) => INDENT + line),
+    ...collectionDecls(process),
+  ];
 
   const header = buildProcessHeader(process);
   const lines = [header, ...declarations, ...body.map((l) => INDENT + l), '}'];
@@ -184,6 +196,8 @@ class Emitter {
     private readonly container: FlowContainer,
     /** Shared with every nested container, so one process yields one report. */
     private readonly warnings: PrintWarning[],
+    /** The header's declarations, which every use site in the body refers to by name. */
+    private readonly codeNames: CodeNames,
     /**
      * An event sub-process's start prints its trigger in the `on` header, so
      * the start statement inside the body prints without one.
@@ -277,8 +291,13 @@ class Emitter {
     lines: string[],
   ): void {
     this.emittedNodes.add(handler.id);
-    lines.push(buildOnHeader(handler));
-    for (const l of new Emitter(handler, this.warnings, true).emit())
+    lines.push(...buildOnHeader(handler, this.codeNames));
+    for (const l of new Emitter(
+      handler,
+      this.warnings,
+      this.codeNames,
+      true,
+    ).emit())
       lines.push(INDENT + l);
     lines.push('}');
   }
@@ -296,7 +315,7 @@ class Emitter {
     depth: number,
   ): void {
     this.emittedNodes.add(boundary.id);
-    lines.push(buildBoundaryHeader(boundary));
+    lines.push(...buildBoundaryHeader(boundary, this.codeNames));
     const body: string[] = [];
     const next = this.followLinear(boundary.id, undefined, body, depth);
     if (next !== STOP) this.emitFrom(next, undefined, body, depth);
@@ -366,7 +385,7 @@ class Emitter {
     // A fenced body is opaque multi-line text, so it prints as a line group.
     if (el.kind === 'scriptTask') {
       this.emittedNodes.add(id);
-      lines.push(renderScriptTask(el));
+      lines.push(...renderScriptTask(el));
       return this.followLinear(id, stop, lines, depth);
     }
 
@@ -380,9 +399,13 @@ class Emitter {
       this.emittedNodes.add(id);
       const head = el.element === 'transaction' ? 'attempt' : 'subprocess';
       lines.push(
-        `${head} ${id}${labelSuffix(el.name)}${repeatClause(el)}${attrBlock(settingsMembers(el))} {`,
+        ...bodyHeader(
+          `${head} ${id}${repeatClause(el)}`,
+          [...labelSetting(el.name), ...engineSettings(el)],
+          structuredMembers(el),
+        ),
       );
-      for (const l of new Emitter(el, this.warnings).emit())
+      for (const l of new Emitter(el, this.warnings, this.codeNames).emit())
         lines.push(INDENT + l);
       lines.push('}');
       return this.followLinear(id, stop, lines, depth);
@@ -397,7 +420,7 @@ class Emitter {
 
     this.emittedNodes.add(id);
     const stmt = this.renderStatement(el);
-    if (stmt !== undefined) lines.push(stmt);
+    if (stmt !== undefined) lines.push(...stmt);
     return this.followLinear(id, stop, lines, depth);
   }
 
@@ -1070,8 +1093,13 @@ class Emitter {
         this.consume(body);
         this.emitBranch(body.targetRef, join, branchLines, depth);
       }
-      const head = `${renderTriggerHead(el.eventDefinition)}${attrBlock(settingsMembers(el))}`;
-      lines.push(`${INDENT}${head} {`);
+      const trigger = renderTrigger(el.eventDefinition, this.codeNames);
+      const head = bodyHeader(
+        trigger.head,
+        [...trigger.items, ...engineSettings(el)],
+        structuredMembers(el),
+      );
+      for (const l of head) lines.push(INDENT + l);
       for (const l of branchLines) lines.push(INDENT + l);
       lines.push(INDENT + '}');
     }
@@ -1228,56 +1256,76 @@ class Emitter {
   }
 
   /** `undefined` when the element has no statement form. */
-  private renderStatement(el: FlowElement): string | undefined {
+  private renderStatement(el: FlowElement): Lines | undefined {
     switch (el.kind) {
       case 'startEvent':
-        return renderStartEvent(el, this.startTriggerSuppressed);
+        return renderStartEvent(
+          el,
+          this.startTriggerSuppressed,
+          this.codeNames,
+        );
       case 'endEvent': {
         const members = startOrEndMembers(el);
         const definition = el.eventDefinition;
         if (definition === undefined || isEndCarried(definition)) {
           if (isElidedOnPrint(el)) return undefined;
           const head = definition === undefined ? '' : ` ${definition.kind}`;
-          return `end ${el.id}${labelSuffix(el.name)}${head}${attrBlock(members)}`;
+          return bracketed(
+            `end ${el.id}${head}`,
+            [...labelSetting(el.name), ...engineSettings(el)],
+            members,
+          );
         }
         return renderThrow(
           el,
           definition,
-          attrBlock([...throwBindingMembers(el), ...members]),
+          [...throwBindingSettings(el), ...engineSettings(el)],
+          members,
+          this.codeNames,
         );
       }
       case 'intermediateThrowEvent': {
         // Only escalation, signal, message, and compensation are emittable: an
         // error aborts its path (`throw error`) and the rest have no throw surface.
         const def = el.eventDefinition;
-        const block = attrBlock([
-          ...throwBindingMembers(el),
-          ...settingsMembers(el),
-        ]);
+        const settings = [...throwBindingSettings(el), ...engineSettings(el)];
         switch (def.kind) {
           case 'escalation':
-            return `emit escalation${throwNameSuffix(el)}${quotedCode(def.escalationCode)}${block}`;
           case 'signal':
-            return `emit signal${throwNameSuffix(el)} ${quote(def.signalName)}${block}`;
           case 'message':
-            return `emit message${throwNameSuffix(el)} ${quote(def.messageName)}${block}`;
-          case 'compensation':
-            return `emit compensation${throwNameSuffix(el)}${block}`;
+          case 'compensation': {
+            const trigger = renderTrigger(def, this.codeNames);
+            return bracketed(
+              `emit ${trigger.head}${throwNameSuffix(el)}`,
+              [...trigger.items, ...settings],
+              structuredMembers(el),
+            );
+          }
           default:
             throw new Error(
               `irToDsl: intermediate throw '${el.id}' carries a ${def.kind} definition; only escalation, signal, message, or compensation can be emitted.`,
             );
         }
       }
-      case 'intermediateCatchEvent':
-        // `await` has no name slot, so the line is trigger, payload, block.
-        return `await ${renderTriggerHead(el.eventDefinition)}${attrBlock(settingsMembers(el))}`;
+      case 'intermediateCatchEvent': {
+        // `await` has no name slot, so the line is trigger, payload, settings.
+        const trigger = renderTrigger(el.eventDefinition, this.codeNames);
+        return bracketed(
+          `await ${trigger.head}`,
+          [...trigger.items, ...engineSettings(el)],
+          structuredMembers(el),
+        );
+      }
       case 'userTask':
         return renderUserTask(el);
       case 'serviceTask':
         return renderServiceTask(el);
       case 'task':
-        return `step ${el.id}${labelSuffix(el.name)}${repeatClause(el)}${attrBlock(settingsMembers(el))}`;
+        return bracketed(
+          `step ${el.id}${repeatClause(el)}`,
+          [...labelSetting(el.name), ...engineSettings(el)],
+          structuredMembers(el),
+        );
       case 'receiveTask':
         return renderReceiveTask(el);
       case 'callActivity':
@@ -1543,10 +1591,14 @@ function deadFallbackWarning(forkId: string): PrintWarning {
 const MAX_NESTING_DEPTH = 1000;
 
 function buildProcessHeader(process: BpmnProcess): string {
+  const settings: string[] = [];
   if (process.name !== undefined) {
-    return `process ${process.id} ${quote(process.name)} {`;
+    settings.push(setting('label', quote(process.name)));
   }
-  return `process ${process.id} {`;
+  if (process.versionTag !== undefined) {
+    settings.push(setting('versionTag', quote(process.versionTag)));
+  }
+  return `process ${process.id}${parens(settings)} {`;
 }
 
 /** Handlers carry no flow edges and print at the end of their container's body. */
@@ -1651,48 +1703,48 @@ export function isElidedOnPrint(
 function carriesPrintableContent(
   el: Extract<FlowElement, { kind: 'startEvent' | 'endEvent' }>,
 ): boolean {
-  return startOrEndMembers(el).length > 0;
+  return engineSettings(el).length > 0 || startOrEndMembers(el).length > 0;
 }
 
-/** Settings members first, then the form block: the order every statement follows. */
+/** The form block leads the members every element shares. */
 function startOrEndMembers(
   el: Extract<FlowElement, { kind: 'startEvent' | 'endEvent' }>,
-): string[] {
-  const members = settingsMembers(el);
-  if (el.kind === 'startEvent' && el.formFields !== undefined) {
-    members.push(renderFormBlock(el.formFields));
-  }
-  return members;
+): Lines[] {
+  const form =
+    el.kind === 'startEvent' && el.formFields !== undefined
+      ? [renderFormBlock(el.formFields)]
+      : [];
+  return [...form, ...structuredMembers(el)];
 }
 
 /** In print order. A kind-specific member is placed around this list. */
-function settingsMembers(el: SettingsCarrier): string[] {
-  return [...engineAttrs(el), ...ioParameters(el), ...listenerMembers(el)];
+function structuredMembers(el: SettingsCarrier): Lines[] {
+  return [...ioParameters(el), ...listenerMembers(el)];
 }
 
-/** Fixed order, so the block stays stable across runs. */
-function engineAttrs(el: EngineAttributes): string[] {
-  const attrs: string[] = [];
-  if (el.asyncBefore === true) attrs.push('asyncBefore = true');
-  if (el.asyncAfter === true) attrs.push('asyncAfter = true');
-  if (el.exclusive === false) attrs.push('exclusive = false');
+/** Fixed order, so the parens stay stable across runs. */
+function engineSettings(el: EngineAttributes): string[] {
+  const settings: string[] = [];
+  if (el.asyncBefore === true) settings.push(setting('asyncBefore', 'true'));
+  if (el.asyncAfter === true) settings.push(setting('asyncAfter', 'true'));
+  if (el.exclusive === false) settings.push(setting('exclusive', 'false'));
   if (el.jobPriority !== undefined) {
-    attrs.push(`jobPriority = ${renderNumericValue(el.jobPriority)}`);
+    settings.push(setting('jobPriority', renderNumericValue(el.jobPriority)));
   }
   if (el.retryCycle !== undefined) {
-    attrs.push(`retryCycle = ${quote(el.retryCycle)}`);
+    settings.push(setting('retryCycle', quote(el.retryCycle)));
   }
-  return attrs;
+  return settings;
 }
 
 /** Inputs before outputs, each in IR order, which the engine evaluates in. */
-function ioParameters(el: IoMapped): string[] {
-  const members: string[] = [];
+function ioParameters(el: IoMapped): Lines[] {
+  const members: Lines[] = [];
   for (const param of el.inputParameters ?? []) {
-    members.push(`input ${param.name} = ${renderIoValue(param.value)}`);
+    members.push([`input ${param.name} = ${renderIoValue(param.value)}`]);
   }
   for (const param of el.outputParameters ?? []) {
-    members.push(`output ${param.name} = ${renderIoValue(param.value)}`);
+    members.push([`output ${param.name} = ${renderIoValue(param.value)}`]);
   }
   return members;
 }
@@ -1729,7 +1781,7 @@ function renderIoValue(value: IoValue): string {
  * Execution listeners before lifecycle listeners. The two event vocabularies
  * are disjoint, so the event word alone tells them apart on the way back in.
  */
-function listenerMembers(el: SettingsCarrier): string[] {
+function listenerMembers(el: SettingsCarrier): Lines[] {
   const members = (el.executionListeners ?? []).map((listener) =>
     renderListener(listener.event, listener.binding),
   );
@@ -1741,20 +1793,20 @@ function listenerMembers(el: SettingsCarrier): string[] {
   return members;
 }
 
+/** A script binding is the one that keeps a body, its fence being where the code goes. */
 function renderListener(
   event: string,
   binding: ListenerBinding,
   timer?: Extract<EventDefinition, { kind: 'timer' }>,
-): string {
+): Lines {
   const clause =
     timer !== undefined
       ? ` ${TIMER_PARTICLE[timer.timerKind]} ${quote(timer.expression)}`
       : '';
-  const body =
-    binding.kind === 'script'
-      ? renderFence(binding.format, binding.code)
-      : `{ ${renderCodeBinding(binding)} }`;
-  return `on ${event}${clause} ${body}`;
+  const head = `on ${event}${clause}`;
+  return binding.kind === 'script'
+    ? [`${head} ${renderFence(binding.format, binding.code)}`]
+    : [head + parens([renderCodeBinding(binding)])];
 }
 
 /**
@@ -1764,11 +1816,11 @@ function renderListener(
 function renderCodeBinding(binding: CodeBinding): string {
   switch (binding.kind) {
     case 'class':
-      return `class = ${quote(binding.className)}`;
+      return setting('class', quote(binding.className));
     case 'expression':
-      return `expression = ${quote(binding.expression)}`;
+      return setting('expression', quote(binding.expression));
     case 'delegateExpression':
-      return `delegate = ${quote(binding.expression)}`;
+      return setting('delegate', quote(binding.expression));
     default: {
       const exhaustive: never = binding;
       throw new Error(
@@ -1826,20 +1878,23 @@ function throwNameSuffix(
 function renderThrow(
   el: Extract<FlowElement, { kind: 'endEvent' }>,
   def: EventDefinition,
-  block: string,
-): string {
-  const name = throwNameSuffix(el);
+  settings: string[],
+  members: Lines[],
+  names: CodeNames,
+): Lines {
   switch (def.kind) {
     case 'error':
-      return `throw error${name}${quotedCode(def.errorCode)}${block}`;
     case 'escalation':
-      return `throw escalation${name}${quotedCode(def.escalationCode)}${block}`;
     case 'signal':
-      return `throw signal${name} ${quote(def.signalName)}${block}`;
     case 'message':
-      return `throw message${name} ${quote(def.messageName)}${block}`;
-    case 'compensation':
-      return `throw compensation${name}${block}`;
+    case 'compensation': {
+      const trigger = renderTrigger(def, names);
+      return bracketed(
+        `throw ${trigger.head}${throwNameSuffix(el)}`,
+        [...trigger.items, ...settings],
+        members,
+      );
+    }
     default:
       throw new Error(
         `irToDsl: end event '${el.id}' carries a ${def.kind} definition; only error, escalation, signal, message, or compensation can be thrown.`,
@@ -1850,7 +1905,8 @@ function renderThrow(
 /** Engine attributes come off the sub-process: the start is elided on print. */
 function buildOnHeader(
   handler: Extract<FlowElement, { kind: 'subProcess' }>,
-): string {
+  names: CodeNames,
+): Lines {
   const start = handler.flowElements.find(
     (e): e is Extract<FlowElement, { kind: 'startEvent' }> =>
       e.kind === 'startEvent',
@@ -1860,18 +1916,33 @@ function buildOnHeader(
       `irToDsl: event subprocess '${handler.id}' has no trigger start event.`,
     );
   }
-  const alongside = start.isInterrupting === false ? ' alongside' : '';
-  const block = attrBlock(settingsMembers(handler));
-  return `on ${renderTriggerHead(start.eventDefinition)}${alongside}${block} {`;
+  const trigger = renderTrigger(start.eventDefinition, names);
+  return bodyHeader(
+    `on ${trigger.head}`,
+    [
+      ...trigger.items,
+      ...engineSettings(handler),
+      ...alongsideFlag(start.isInterrupting === false),
+    ],
+    structuredMembers(handler),
+  );
 }
 
 /** `attachedToRef` prints verbatim; refusing a bad host belongs to validation. */
 function buildBoundaryHeader(
   boundary: Extract<FlowElement, { kind: 'boundaryEvent' }>,
-): string {
-  const alongside = boundary.cancelActivity === false ? ' alongside' : '';
-  const block = attrBlock(settingsMembers(boundary));
-  return `on ${boundary.attachedToRef}: ${renderTriggerHead(boundary.eventDefinition)}${alongside}${block} {`;
+  names: CodeNames,
+): Lines {
+  const trigger = renderTrigger(boundary.eventDefinition, names);
+  return bodyHeader(
+    `on ${boundary.attachedToRef}: ${trigger.head}`,
+    [
+      ...trigger.items,
+      ...engineSettings(boundary),
+      ...alongsideFlag(boundary.cancelActivity === false),
+    ],
+    structuredMembers(boundary),
+  );
 }
 
 /** The vocabulary's table, narrowed so a new IR timer kind without a word fails to compile. */
@@ -1880,25 +1951,52 @@ const TIMER_PARTICLE: Record<
   string
 > = TIMER_PARTICLE_BY_KIND;
 
-/** Everything between `on ` and the ` alongside`/`{` suffix; compensation has no payload. */
-function renderTriggerHead(def: EventDefinition): string {
+/**
+ * The trigger clause: the word it opens on, and the items its parens lead with.
+ * The payload leads them, so a name, a code and a duration are written the same
+ * way wherever a trigger is; a catch binding follows as a setting naming the
+ * variable the event data lands in, and the element's own settings after that.
+ * A condition prints unquoted, being an expression rather than text.
+ */
+function renderTrigger(
+  def: EventDefinition,
+  names: CodeNames,
+): {
+  head: string;
+  items: string[];
+} {
   switch (def.kind) {
     case 'error':
-      return `error${quotedCode(def.errorCode)}${buildEventBindings(def)}`;
+      return {
+        head: 'error',
+        items: [
+          ...codeItem(names.error, def.errorCode),
+          ...eventBindingSettings(def),
+        ],
+      };
     case 'escalation':
-      return `escalation${quotedCode(def.escalationCode)}${buildEventBindings(def)}`;
+      return {
+        head: 'escalation',
+        items: [
+          ...codeItem(names.escalation, def.escalationCode),
+          ...eventBindingSettings(def),
+        ],
+      };
     case 'compensation':
-      return 'compensation';
+      return { head: 'compensation', items: [] };
     case 'message':
-      return `message ${quote(def.messageName)}`;
+      return { head: 'message', items: payloadItem(def.messageName) };
     case 'signal':
-      return `signal ${quote(def.signalName)}`;
+      return { head: 'signal', items: payloadItem(def.signalName) };
     case 'timer':
-      return `timer ${TIMER_PARTICLE[def.timerKind]} ${quote(def.expression)}`;
+      return renderTimerTrigger(def);
     case 'conditional':
-      return `condition (${renderRawCondition(def.condition)})`;
+      return {
+        head: 'condition',
+        items: [renderRawCondition(def.condition)],
+      };
     case 'cancel':
-      return 'cancel';
+      return { head: 'cancel', items: [] };
     case 'terminate':
       throw new Error(
         'irToDsl: a terminate definition has no trigger head; it prints on the end statement.',
@@ -1912,52 +2010,98 @@ function renderTriggerHead(def: EventDefinition): string {
   }
 }
 
-/** ` (code x, message y)`. Only an error carries a message binding. */
-function buildEventBindings(
-  def: Extract<EventDefinition, { kind: 'error' | 'escalation' }>,
-): string {
-  const parts: string[] = [];
-  if (def.codeVariable !== undefined) parts.push(`code ${def.codeVariable}`);
-  if (def.kind === 'error' && def.messageVariable !== undefined) {
-    parts.push(`message ${def.messageVariable}`);
-  }
-  return parts.length > 0 ? ` (${parts.join(', ')})` : '';
+/** Absent for a catch-all, which names no code and so carries no payload. */
+function payloadItem(code: string | undefined): string[] {
+  return code === undefined ? [] : [quote(code)];
 }
 
-/** ` "<code>"` suffix, or empty when the code is absent (catch-all). */
-function quotedCode(code: string | undefined): string {
-  return code !== undefined ? ` ${quote(code)}` : '';
+/**
+ * A code is written as the name of the declaration carrying it, which is what
+ * lets `error OrderFailed(code: "order.failed")` be raised by a word. Absent
+ * for a catch-all, as {@link payloadItem} is.
+ */
+function codeItem(
+  names: ReadonlyMap<string, string>,
+  code: string | undefined,
+): string[] {
+  return code === undefined ? [] : [names.get(code) ?? code];
+}
+
+/**
+ * A duration is the payload a timer writes bare; a date and a cycle take the
+ * particle naming them as their key.
+ */
+function renderTimerTrigger(def: Extract<EventDefinition, { kind: 'timer' }>): {
+  head: string;
+  items: string[];
+} {
+  const particle = TIMER_PARTICLE[def.timerKind];
+  const time = quote(def.expression);
+  return {
+    head: 'timer',
+    items: [def.timerKind === 'duration' ? time : setting(particle, time)],
+  };
+}
+
+/** `code: x, message: y`. Only an error carries a message binding. */
+function eventBindingSettings(
+  def: Extract<EventDefinition, { kind: 'error' | 'escalation' }>,
+): string[] {
+  const parts: string[] = [];
+  if (def.codeVariable !== undefined) {
+    parts.push(setting('code', def.codeVariable));
+  }
+  if (def.kind === 'error' && def.messageVariable !== undefined) {
+    parts.push(setting('message', def.messageVariable));
+  }
+  return parts;
+}
+
+/**
+ * The flag saying a handler leaves its scope running. A flag is bare and closes
+ * the parens, after the payload and the settings.
+ */
+function alongsideFlag(nonInterrupting: boolean): string[] {
+  return nonInterrupting ? ['alongside'] : [];
 }
 
 /** `name=ID` is mandatory, so an elided start is dropped whole and re-derived. */
 function renderStartEvent(
   el: Extract<FlowElement, { kind: 'startEvent' }>,
   startTriggerSuppressed: boolean,
-): string | undefined {
+  names: CodeNames,
+): Lines | undefined {
   if (isElidedOnPrint(el, startTriggerSuppressed)) return undefined;
   const trigger =
     el.eventDefinition === undefined || startTriggerSuppressed
-      ? ''
-      : ` ${renderTriggerHead(el.eventDefinition)}`;
-  return `start ${el.id}${labelSuffix(el.name)}${trigger}${attrBlock(startOrEndMembers(el))}`;
+      ? { head: '', items: [] }
+      : renderTrigger(el.eventDefinition, names);
+  const head = trigger.head === '' ? '' : ` ${trigger.head}`;
+  return bracketed(
+    `start ${el.id}${head}`,
+    [...trigger.items, ...labelSetting(el.name), ...engineSettings(el)],
+    startOrEndMembers(el),
+  );
 }
 
-/** Assignment attributes, then the settings members, then the form block. */
-function renderUserTask(
-  el: Extract<FlowElement, { kind: 'userTask' }>,
-): string {
-  const attrs: string[] = [];
-  for (const [key, render] of USER_TASK_MEMBERS) {
+/** The label leads the assignment settings, and the form block leads the members. */
+function renderUserTask(el: Extract<FlowElement, { kind: 'userTask' }>): Lines {
+  const settings = labelSetting(el.name);
+  for (const [key, render] of USER_TASK_SETTINGS) {
     const value = el[key];
-    if (value !== undefined) attrs.push(`${key} = ${render(value)}`);
+    if (value !== undefined) settings.push(setting(key, render(value)));
   }
-  attrs.push(...settingsMembers(el));
-  if (el.formFields !== undefined) attrs.push(renderFormBlock(el.formFields));
-  return `user ${el.id}${labelSuffix(el.name)}${repeatClause(el)}${attrBlock(attrs)}`;
+  settings.push(...engineSettings(el));
+  const form =
+    el.formFields === undefined ? [] : [renderFormBlock(el.formFields)];
+  return bracketed(`user ${el.id}${repeatClause(el)}`, settings, [
+    ...form,
+    ...structuredMembers(el),
+  ]);
 }
 
 /** In print order. The IR field name is also the DSL keyword. */
-const USER_TASK_MEMBERS = [
+const USER_TASK_SETTINGS = [
   ['assignee', quote],
   ['formKey', quote],
   ['candidateGroups', quote],
@@ -1967,9 +2111,16 @@ const USER_TASK_MEMBERS = [
   ['priority', renderNumericValue],
 ] as const;
 
-/** One line, which `fields+=FormField*` accepts: a statement holds no newlines. */
-function renderFormBlock(formFields: FormField[]): string {
-  return `form { ${formFields.map(renderFormField).join(' ')} }`;
+/**
+ * One field per line: a form is a member list, so it prints as a block of its
+ * own. The braces are written even with no fields, `form` alone being no rule.
+ */
+function renderFormBlock(formFields: FormField[]): Lines {
+  return [
+    'form {',
+    ...formFields.map((field) => INDENT + renderFormField(field)),
+    '}',
+  ];
 }
 
 /** `<id>: <type> "<label>"? (= <default>)?`. */
@@ -1990,17 +2141,22 @@ function renderFormDefault(value: string, type: FormFieldType): string {
   return type === 'number' || type === 'boolean' ? value : quote(value);
 }
 
-/** The message leads the block, so the wait reads before its settings. */
+/** The message leads the engine settings, so the wait reads before them. */
 function renderReceiveTask(
   el: Extract<FlowElement, { kind: 'receiveTask' }>,
-): string {
-  const members = [
+): Lines {
+  const settings = [
+    ...labelSetting(el.name),
     ...(el.messageName === undefined
       ? []
-      : [`message = ${quote(el.messageName)}`]),
-    ...settingsMembers(el),
+      : [setting('message', quote(el.messageName))]),
+    ...engineSettings(el),
   ];
-  return `receive ${el.id}${labelSuffix(el.name)}${repeatClause(el)}${attrBlock(members)}`;
+  return bracketed(
+    `receive ${el.id}${repeatClause(el)}`,
+    settings,
+    structuredMembers(el),
+  );
 }
 
 const SERVICE_TASK_LIKE_KEYWORD = {
@@ -2011,34 +2167,39 @@ const SERVICE_TASK_LIKE_KEYWORD = {
 
 function renderServiceTask(
   el: Extract<FlowElement, { kind: 'serviceTask' }>,
-): string {
+): Lines {
   const keyword = SERVICE_TASK_LIKE_KEYWORD[el.element ?? 'service'];
-  const members = [
-    ...bindingMembers(el.binding),
-    ...resultVariableAttr(el),
-    ...settingsMembers(el),
+  const settings = [
+    ...labelSetting(el.name),
+    ...bindingSettings(el.binding),
+    ...resultVariableSetting(el),
+    ...engineSettings(el),
   ];
-  return `${keyword} ${el.id}${labelSuffix(el.name)}${repeatClause(el)}${attrBlock(members)}`;
+  return bracketed(
+    `${keyword} ${el.id}${repeatClause(el)}`,
+    settings,
+    structuredMembers(el),
+  );
 }
 
-/** The block members spelling out an execution binding, whatever carries it. */
-function bindingMembers(binding: ServiceTaskBinding): string[] {
+/** The settings spelling out an execution binding, whatever carries it. */
+function bindingSettings(binding: ServiceTaskBinding): string[] {
   switch (binding.kind) {
     case 'class':
     case 'expression':
     case 'delegateExpression':
       return [renderCodeBinding(binding)];
     case 'external':
-      return [`topic = ${quote(binding.topic)}`];
+      return [setting('topic', quote(binding.topic))];
     case 'decision':
       return [
-        `decision = ${quote(binding.decisionRef)}`,
+        setting('decision', quote(binding.decisionRef)),
         ...(binding.binding === undefined
           ? []
-          : [versionBindingMember(binding.binding)]),
+          : [versionBindingSetting(binding.binding)]),
         ...(binding.mapDecisionResult === undefined
           ? []
-          : [`mapDecisionResult = ${binding.mapDecisionResult}`]),
+          : [setting('mapDecisionResult', binding.mapDecisionResult)]),
       ];
     default: {
       const exhaustive: never = binding;
@@ -2050,18 +2211,18 @@ function bindingMembers(binding: ServiceTaskBinding): string[] {
 }
 
 /** The implementation of a thrown message; every other throw carries none. */
-function throwBindingMembers(el: { binding?: ServiceTaskBinding }): string[] {
-  return el.binding === undefined ? [] : bindingMembers(el.binding);
+function throwBindingSettings(el: { binding?: ServiceTaskBinding }): string[] {
+  return el.binding === undefined ? [] : bindingSettings(el.binding);
 }
 
-/** A pinned version prints `version = <v>` and no `binding`. */
-function versionBindingMember(binding: VersionBinding): string {
+/** A pinned version prints `version: <v>` and no `binding`. */
+function versionBindingSetting(binding: VersionBinding): string {
   switch (binding.kind) {
     case 'latest':
     case 'deployment':
-      return `binding = ${binding.kind}`;
+      return setting('binding', binding.kind);
     case 'version':
-      return `version = ${renderNumericValue(binding.version)}`;
+      return setting('version', renderNumericValue(binding.version));
     default: {
       const exhaustive: never = binding;
       throw new Error(
@@ -2071,30 +2232,34 @@ function versionBindingMember(binding: VersionBinding): string {
   }
 }
 
-/** Fixed member order. */
+/** Fixed order: the settings, then the members, the mappings last. */
 function renderCallActivity(
   el: Extract<FlowElement, { kind: 'callActivity' }>,
-): string {
-  const members: string[] = [`process = ${quote(el.calledElement)}`];
+): Lines {
+  const settings: string[] = [
+    ...labelSetting(el.name),
+    setting('process', quote(el.calledElement)),
+  ];
 
   if (el.binding !== undefined) {
-    members.push(versionBindingMember(el.binding));
+    settings.push(versionBindingSetting(el.binding));
   }
 
   if (el.businessKey !== undefined) {
-    members.push(`businessKey = ${quote(el.businessKey)}`);
+    settings.push(setting('businessKey', quote(el.businessKey)));
   }
 
-  members.push(...settingsMembers(el));
+  settings.push(...engineSettings(el));
 
+  const members: Lines[] = [...structuredMembers(el)];
   for (const mapping of el.inMappings ?? []) {
-    members.push(renderCallMapping('in', mapping));
+    members.push([renderCallMapping('in', mapping)]);
   }
   for (const mapping of el.outMappings ?? []) {
-    members.push(renderCallMapping('out', mapping));
+    members.push([renderCallMapping('out', mapping)]);
   }
 
-  return `call ${el.id}${labelSuffix(el.name)}${repeatClause(el)}${attrBlock(members)}`;
+  return bracketed(`call ${el.id}${repeatClause(el)}`, settings, members);
 }
 
 /** All-digit prints bare; anything else quotes, so it re-parses as an expression. */
@@ -2102,9 +2267,9 @@ function renderNumericValue(value: string): string {
   return /^[0-9]+$/.test(value) ? value : quote(value);
 }
 
-function resultVariableAttr(el: { resultVariable?: string }): string[] {
+function resultVariableSetting(el: { resultVariable?: string }): string[] {
   return el.resultVariable !== undefined
-    ? [`resultVariable = ${quote(el.resultVariable)}`]
+    ? [setting('resultVariable', quote(el.resultVariable))]
     : [];
 }
 
@@ -2138,25 +2303,61 @@ function renderCallMapping(
   return `${keyword} ${localPrefix}${body}`;
 }
 
-/** Carries its own newlines: only the opening line is the caller's to indent. */
+/** The fence closes the statement, so it goes on the last line the members leave. */
 function renderScriptTask(
   el: Extract<FlowElement, { kind: 'scriptTask' }>,
-): string {
-  const block = attrBlock([...resultVariableAttr(el), ...settingsMembers(el)]);
-  return `script ${el.id}${labelSuffix(el.name)}${repeatClause(el)}${block} ${renderFence(el.format, el.code)}`;
+): Lines {
+  const settings = [
+    ...labelSetting(el.name),
+    ...resultVariableSetting(el),
+    ...engineSettings(el),
+  ];
+  const lines = bracketed(
+    `script ${el.id}${repeatClause(el)}`,
+    settings,
+    structuredMembers(el),
+  );
+  lines[lines.length - 1] += ` ${renderFence(el.format, el.code)}`;
+  return lines;
 }
 
-function labelSuffix(name: string | undefined): string {
-  return name !== undefined ? ` ${quote(name)}` : '';
+/** The label is a setting, and leads the keyed ones wherever an element carries it. */
+function labelSetting(name: string | undefined): string[] {
+  return name === undefined ? [] : [setting('label', quote(name))];
+}
+
+/** The one spelling a setting takes; a payload and a flag are written without a key. */
+function setting(key: string, value: string): string {
+  return `${key}: ${value}`;
 }
 
 /**
- * ` { a = "x" b = "y" }` on one line, which the grammar's `(a | b)*` accepts.
- * A fenced member is the exception: its newlines are part of its token.
+ * `verb Id(a: "x") { members }`: the parens hold the scalar settings describing
+ * the element, the braces hold the members with structure of their own, and a
+ * bracket with nothing to hold is not written.
  */
-function attrBlock(attrs: string[]): string {
-  if (attrs.length === 0) return '';
-  return ` { ${attrs.join(' ')} }`;
+function bracketed(head: string, settings: string[], members: Lines[]): Lines {
+  return withMembers(head + parens(settings), members);
+}
+
+/**
+ * The same head for a construct whose flow follows, so its last line is the one
+ * the body opens on.
+ */
+function bodyHeader(head: string, settings: string[], members: Lines[]): Lines {
+  const lines = withMembers(head + parens(settings), members);
+  lines[lines.length - 1] += ' {';
+  return lines;
+}
+
+/** One member per line inside the braces, or no braces at all. */
+function withMembers(head: string, members: Lines[]): Lines {
+  if (members.length === 0) return [head];
+  return [`${head} {`, ...members.flat().map((line) => INDENT + line), '}'];
+}
+
+function parens(settings: string[]): string {
+  return settings.length === 0 ? '' : `(${settings.join(', ')})`;
 }
 
 /** A literal count prints bare; anything else is an expression. */
@@ -2171,6 +2372,54 @@ const BARE_COLLECTION = /^[A-Za-z_][A-Za-z0-9_]*$/;
  * refuses by.
  */
 export const BARE_ELEMENT_VARIABLE = /^[_a-zA-Z]\w*(-\w+)*$/;
+
+/**
+ * The name every code is raised by, one map per kind because the two are
+ * declared separately, and the header lines that give each code that name.
+ *
+ * A code nothing declares still gets a declaration, exactly as `irToXml` still
+ * gives it a root: a use site is a bare name and a name with nothing to resolve
+ * to is an error, so a hand-built IR would otherwise print source that does not
+ * compile. Names are claimed across both kinds at once, since a use site
+ * resolves in one scope holding all of them.
+ */
+function codeDeclarations(process: BpmnProcess): {
+  lines: string[];
+  names: CodeNames;
+} {
+  const names: CodeNames = { error: new Map(), escalation: new Map() };
+  const lines: string[] = [];
+  const taken = new Set<string>();
+
+  const declare = (
+    kind: 'error' | 'escalation',
+    decl: { name?: string; code: string; message?: string },
+  ): void => {
+    const name = claimDeclarationName(decl.code, taken, decl.name);
+    names[kind].set(decl.code, name);
+    lines.push(
+      `${kind} ${name}` +
+        parens([
+          ...(decl.code === name ? [] : [setting('code', quote(decl.code))]),
+          ...(decl.message === undefined
+            ? []
+            : [setting('message', quote(decl.message))]),
+        ]),
+    );
+  };
+
+  for (const decl of process.errorDecls ?? []) declare('error', decl);
+  for (const decl of process.escalationDecls ?? []) declare('escalation', decl);
+
+  const { errorCodes, escalationCodes } = eventIdentities(process);
+  for (const code of errorCodes) {
+    if (!names.error.has(code)) declare('error', { code });
+  }
+  for (const code of escalationCodes) {
+    if (!names.escalation.has(code)) declare('escalation', { code });
+  }
+  return { lines, names };
+}
 
 /**
  * A `var` line per collection a printed clause names bare, in first-appearance

@@ -3,9 +3,9 @@
 // hand and the assertion never depends on wall time.
 
 process scheduled-audit {
-  start AuditWindowOpens "The audit window opens" timer at "2099-01-01T00:00:00"
+  start AuditWindowOpens timer(at: "2099-01-01T00:00:00", label: "The audit window opens")
 
-  user ReviewAudit "Review the audit" { assignee = "demo" }
+  user ReviewAudit(label: "Review the audit", assignee: "demo")
 
-  end AuditFiled "Audit filed"
+  end AuditFiled(label: "Audit filed")
 }

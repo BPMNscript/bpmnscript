@@ -24,7 +24,7 @@ What does the container head say, where may a cancel sit, and which shapes does 
 
 - `attempt` as a second head on the existing sub-process rule
 - `transaction` as the head, the BPMN element name
-- A settings key on an ordinary block, `subprocess X { transaction = true }`
+- A settings key on an ordinary block, `subprocess X(transaction: true)`
 - A grammar rule of its own, with the second AST type that comes with it
 - `cancel` carried on the `end` statement the way `terminate` is, against `throw cancel`
 - A host-less `on cancel` handler
@@ -43,7 +43,7 @@ It also promises what the engine does not deliver: Operaton's `BpmnParse.parseTr
 Nothing is atomic and no transaction protocol runs: the tag buys the engine's acceptance of the two cancel positions, and nothing rolls back except what the author's own undo blocks reverse.
 `attempt` says what the author means, which is to run this block of work and, if it is given up, undo what it finished.
 
-A settings key fails the same test `sequential = true` failed in ADR-0027, since a boolean named after the element is that element wearing a DSL hat.
+A settings key fails the same test `sequential: true` failed in ADR-0027, since a boolean named after the element is that element wearing a DSL hat.
 A rule of its own loses on cost: the AST node stays `SubProcess`, so the scope provider, the linker, and every rule keyed on a sub-process reach the new head untouched.
 `attempt` is a hard keyword, so the name is lost everywhere in a file, while `cancel` stays a soft word that still lexes as an ordinary identifier.
 

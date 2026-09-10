@@ -11,18 +11,22 @@
  */
 
 import { beforeAll, describe, expect, test } from 'vitest';
-import { EmptyFileSystem, URI } from 'langium';
+import { EmptyFileSystem, URI, type LangiumDocument } from 'langium';
 import {
   type CompletionItem,
   CompletionItemKind,
   InsertTextFormat,
+  DiagnosticSeverity,
 } from 'vscode-languageserver-types';
 import {
+  ATTEMPT_BLOCK_RULE,
   ATTRIBUTE_BLOCK_RULES,
   type BpmnScriptServices,
   createBpmnScriptServices,
+  ENGINE_KEYS,
 } from '@bpmn-script/language';
-import { BLOCK_HOSTS, caretInBlock } from './helpers/block-hosts.js';
+import { BLOCK_HOSTS, caretInSlot } from './helpers/block-hosts.js';
+import { withTextMessages } from './helpers/diagnostics.js';
 
 let services: BpmnScriptServices;
 
@@ -73,18 +77,42 @@ function inserted(item: CompletionItem): string {
 /**
  * The text an editor leaves behind when a snippet is accepted and every tab
  * stop is tabbed past: choices collapse to their first option, defaults to
- * their default, bare stops to nothing, and a `\$` escape to the EL `$` it
+ * their default, bare stops to `fillStop`, and a `\$` escape to the EL `$` it
  * stands for.
  */
-function accepted(item: CompletionItem): string {
+function accepted(
+  item: CompletionItem,
+  fillStop: (stop: string) => string = () => '',
+): string {
   return inserted(item)
     .replace(/\$\{\d+\|([^,|]*)[^|]*\|\}/g, '$1')
     .replace(/\$\{\d+:([^}]*)\}/g, '$1')
-    .replace(/\$\d+/g, '')
+    .replace(/\$(\d+)/g, (_, stop: string) => fillStop(stop))
     .replace(/\\\$/g, '$');
 }
 
+/**
+ * The same text with a step typed into every bare tab stop, which is what the
+ * author does next: each one opens a body, and a container is only complete
+ * once something runs in it. The stop's number keeps the steps apart, so two
+ * branches of one scaffold do not collide on a name.
+ */
+const typedInto = (stop: string) => `user Step${stop}`;
+
 let parseCounter = 0;
+
+async function build(text: string, validation: boolean) {
+  const uri = URI.parse(`file:///parse-${parseCounter++}.bpmnscript`);
+  const document = services.shared.workspace.LangiumDocumentFactory.fromString(
+    text,
+    uri,
+  );
+  services.shared.workspace.LangiumDocuments.addDocument(document);
+  await services.shared.workspace.DocumentBuilder.build([document], {
+    validation,
+  });
+  return document;
+}
 
 /**
  * The lexer and parser errors `text` produces, so a scaffold can be checked as
@@ -92,15 +120,22 @@ let parseCounter = 0;
  * so parser errors alone would report a rejected input as clean.
  */
 async function parseErrors(text: string): Promise<string[]> {
-  const uri = URI.parse(`file:///parse-${parseCounter++}.bpmnscript`);
-  const document = services.shared.workspace.LangiumDocumentFactory.fromString(
-    text,
-    uri,
+  const { parseResult } = await build(text, false);
+  return [...parseResult.lexerErrors, ...parseResult.parserErrors].map(
+    (e) => e.message,
   );
-  services.shared.workspace.LangiumDocuments.addDocument(document);
-  await services.shared.workspace.DocumentBuilder.build([document]);
-  const { lexerErrors, parserErrors } = document.parseResult;
-  return [...lexerErrors, ...parserErrors].map((e) => e.message);
+}
+
+/**
+ * The errors `text` raises once validated. Warnings are left out: a scaffold
+ * writes an example value naming a variable the author has yet to declare, and
+ * saying so is the editor doing its job rather than a defect in the scaffold.
+ */
+async function validationErrors(text: string): Promise<string[]> {
+  const document: LangiumDocument = await build(text, true);
+  return withTextMessages(document.diagnostics ?? [])
+    .filter((d) => d.severity === DiagnosticSeverity.Error)
+    .map((d) => d.message);
 }
 
 /** A program with `|` marking the caret, split into text and position. */
@@ -134,53 +169,50 @@ const LISTENER_EVENT = 'BPMNscript listener event';
 /** Langium's own caption for a keyword it completes with no help from us. */
 const KEYWORD = 'Keyword';
 
+/**
+ * The words every settings position also offers: an unkeyed item there is an
+ * event payload or a condition, which is an expression like any other.
+ */
+const LITERALS: Item[] = [
+  ['true', KEYWORD, 'true'],
+  ['false', KEYWORD, 'false'],
+  ['null', KEYWORD, 'null'],
+];
+
 const TIMER: Item = [
   'timer',
   'a scheduled or relative deadline',
-  'timer after "${1:PT1H}"',
+  'timer("${1:PT1H}")',
 ];
 const CONDITION: Item = [
   'condition',
   'a data-change watchdog',
-  'condition ($1)',
+  'condition(${1:amount > 100})',
 ];
-const PARTICLES: Item[] = [
-  ['after', 'a duration relative to when this scope starts', 'after'],
-  ['at', 'a fixed point in time', 'at'],
-  ['every', 'a repeating schedule', 'every'],
+/** A duration is the bare payload the `timer` snippet already scaffolds. */
+const TIMER_KEYS: Item[] = [
+  ['at', SETTING, 'at: "${1:2026-08-01T09:00:00}"'],
+  ['every', SETTING, 'every: "${1:R/PT10M}"'],
 ];
+
+/** Opens the flow, so it belongs above the first step rather than after one. */
+const START: Item = ['start', CONSTRUCT, 'start ${1:name}'];
 
 /** Every statement a body position opens, in the order they are offered. */
 const STATEMENTS: Item[] = [
-  ['start', CONSTRUCT, 'start ${1:name}'],
+  START,
   ['end', CONSTRUCT, 'end ${1:name}'],
-  ['user', CONSTRUCT, 'user ${1:id} {\n\tassignee = "${2:user}"\n}'],
-  [
-    'service',
-    CONSTRUCT,
-    'service ${1:id} {\n\tclass = "${2:com.example.Delegate}"\n}',
-  ],
+  ['user', CONSTRUCT, 'user ${1:id}(assignee: "${2:user}")'],
+  ['service', CONSTRUCT, 'service ${1:id}(class: "${2:com.example.Delegate}")'],
   [
     'script',
     CONSTRUCT,
     'script ${1:id} ```${2|javascript,groovy,python,ruby,feel|}\n\t$0\n```',
   ],
   ['step', CONSTRUCT, 'step ${1:id}'],
-  [
-    'send',
-    CONSTRUCT,
-    'send ${1:id} {\n\tclass = "${2:com.example.Delegate}"\n}',
-  ],
-  [
-    'receive',
-    CONSTRUCT,
-    'receive ${1:id} {\n\tmessage = "${2:MessageName}"\n}',
-  ],
-  [
-    'decide',
-    CONSTRUCT,
-    'decide ${1:id} {\n\tdecision = "${2:decision-key}"\n}',
-  ],
+  ['send', CONSTRUCT, 'send ${1:id}(class: "${2:com.example.Delegate}")'],
+  ['receive', CONSTRUCT, 'receive ${1:id}(message: "${2:MessageName}")'],
+  ['decide', CONSTRUCT, 'decide ${1:id}(decision: "${2:decision-key}")'],
   ['if', CONSTRUCT, 'if (${1:condition}) {\n\t$0\n}'],
   ['while', CONSTRUCT, 'while (${1:condition}) {\n\t$0\n}'],
   ['do', CONSTRUCT, 'do {\n\t$1\n} while (${2:condition})'],
@@ -196,36 +228,32 @@ const STATEMENTS: Item[] = [
   [
     'call',
     'call another process like a function',
-    'call ${1:id} {\n\tprocess = "${2:process-id}"\n\tin ${3:input}\n\tout ${4:result}\n}',
+    'call ${1:id}(process: "${2:process-id}") {\n\tin ${3:input}\n\tout ${4:result}\n}',
   ],
-  [
-    'on',
-    CONSTRUCT,
-    'on ${1|error,escalation,message,signal|} "${2:CODE}" {\n\t$0\n}',
-  ],
-  [
-    'throw',
-    CONSTRUCT,
-    'throw ${1|error,escalation,message,signal|} "${2:CODE}"',
-  ],
-  ['emit', CONSTRUCT, 'emit ${1|escalation,message,signal|} "${2:CODE}"'],
-  ['await', CONSTRUCT, 'await ${1|message,signal|} "${2:CODE}"'],
+  ['on', CONSTRUCT, 'on ${1|error,escalation|}(${2:CODE}) {\n\t$0\n}'],
+  ['on message', CONSTRUCT, 'on ${1|message,signal|}("${2:NAME}") {\n\t$0\n}'],
+  ['throw', CONSTRUCT, 'throw ${1|error,escalation|}(${2:CODE})'],
+  ['throw message', CONSTRUCT, 'throw ${1|message,signal|}("${2:NAME}")'],
+  ['emit', CONSTRUCT, 'emit ${1|escalation|}(${2:CODE})'],
+  ['emit message', CONSTRUCT, 'emit ${1|message,signal|}("${2:NAME}")'],
+  ['await', CONSTRUCT, 'await ${1|message,signal|}("${2:NAME}")'],
   [
     'await any',
     CONSTRUCT,
-    'await {\n\t${1|message,signal|} "${2:CODE}" {\n\t\t$3\n\t}\n\t${4|message,signal|} "${5:CODE}" {\n\t\t$6\n\t}\n}',
+    'await {\n\t${1|message,signal|}("${2:NAME}") {\n\t\t$3\n\t}\n\t${4|message,signal|}("${5:OTHER}") {\n\t\t$6\n\t}\n}',
   ],
 ];
 
-/** The process-scope declarations, offered alongside the statements. */
+/**
+ * The process-scope declarations, offered alongside the statements. A label is
+ * a setting on the process head rather than a declaration, so it is not here.
+ */
 const HEADER_DECLS: Item[] = [
-  ['label', CONSTRUCT, 'label = "${1:label}"'],
   [
     'var',
     CONSTRUCT,
     'var ${1:name}: ${2|string,number,boolean,date,json,any|}',
   ],
-  ['versionTag', SETTING, 'versionTag = "${1:1.0.0}"'],
 ];
 
 const PROCESS_BODY: Item[] = [...HEADER_DECLS, ...STATEMENTS];
@@ -257,12 +285,14 @@ const CATCH_TRIGGERS: Item[] = [
   CONDITION,
 ];
 
+const LABEL: Item = ['label', SETTING, 'label: "${1:label}"'];
+
 const ENGINE_SETTINGS: Item[] = [
-  ['asyncBefore', SETTING, 'asyncBefore = ${1|true,false|}'],
-  ['asyncAfter', SETTING, 'asyncAfter = ${1|true,false|}'],
-  ['exclusive', SETTING, 'exclusive = ${1|false,true|}'],
-  ['jobPriority', SETTING, 'jobPriority = ${1:50}'],
-  ['retryCycle', SETTING, 'retryCycle = "${1:R3/PT10M}"'],
+  ['asyncBefore', SETTING, 'asyncBefore: ${1|true,false|}'],
+  ['asyncAfter', SETTING, 'asyncAfter: ${1|true,false|}'],
+  ['exclusive', SETTING, 'exclusive: ${1|false,true|}'],
+  ['jobPriority', SETTING, 'jobPriority: ${1:50}'],
+  ['retryCycle', SETTING, 'retryCycle: "${1:R3/PT10M}"'],
 ];
 
 const PARAMETERS: Item[] = [
@@ -273,101 +303,119 @@ const PARAMETERS: Item[] = [
 const LISTENER_KEYWORD: Item = [
   'on',
   'run code when this step reaches a lifecycle point',
-  'on ${1|start,end|} {\n\tclass = "${2:com.example.Listener}"\n}',
+  'on ${1|start,end|}(class: "${2:com.example.Listener}")',
 ];
 
-/** The members every block-bearing element carries after its own keys. */
+/** What the brace block of an element holds, its settings having moved out. */
 const BLOCK_MEMBERS: Item[] = [
   ['form', KEYWORD, 'form'],
   ...PARAMETERS,
   LISTENER_KEYWORD,
 ];
 
-/** The three ways a listener binds; also the whole listener binding block. */
+/**
+ * The first brace block of an element that also takes a body is ambiguous while
+ * it is still open: no member commits it to being the member block, so a
+ * statement stays possible and both sets are offered.
+ */
+const BLOCK_OR_BODY: Item[] = [...STATEMENTS, ...PARAMETERS];
+
+/** The three ways a listener binds; also the whole listener parens. */
 const BINDINGS: Item[] = [
-  ['class', SETTING, 'class = "${1:com.example.Delegate}"'],
-  ['expression', SETTING, 'expression = "${1:\\${bean.method(execution)}}"'],
-  ['delegate', SETTING, 'delegate = "${1:\\${beanName}}"'],
+  ['class', SETTING, 'class: "${1:com.example.Delegate}"'],
+  ['expression', SETTING, 'expression: "${1:\\${bean.method(execution)}}"'],
+  ['delegate', SETTING, 'delegate: "${1:\\${beanName}}"'],
 ];
 
-const TOPIC: Item = ['topic', SETTING, 'topic = "${1:topic-name}"'];
+const TOPIC: Item = ['topic', SETTING, 'topic: "${1:topic-name}"'];
 const RESULT_VARIABLE: Item = [
   'resultVariable',
   SETTING,
-  'resultVariable = "${1:result}"',
+  'resultVariable: "${1:result}"',
 ];
-const BINDING: Item = ['binding', SETTING, 'binding = ${1|latest,deployment|}'];
-const VERSION: Item = ['version', SETTING, 'version = ${1:1}'];
+const BINDING: Item = ['binding', SETTING, 'binding: ${1|latest,deployment|}'];
+const VERSION: Item = ['version', SETTING, 'version: ${1:1}'];
 
-const USER_BLOCK: Item[] = [
-  ['assignee', SETTING, 'assignee = "${1:user}"'],
-  ['formKey', SETTING, 'formKey = "${1:form-key}"'],
-  ['candidateGroups', SETTING, 'candidateGroups = "${1:group}"'],
-  ['candidateUsers', SETTING, 'candidateUsers = "${1:user}"'],
-  ['dueDate', SETTING, 'dueDate = "${1:\\${dateTime().plusDays(3)}}"'],
-  [
-    'followUpDate',
-    SETTING,
-    'followUpDate = "${1:\\${dateTime().plusDays(1)}}"',
-  ],
-  ['priority', SETTING, 'priority = ${1:50}'],
+const USER_PARENS: Item[] = [
+  LABEL,
+  ['assignee', SETTING, 'assignee: "${1:user}"'],
+  ['formKey', SETTING, 'formKey: "${1:form-key}"'],
+  ['candidateGroups', SETTING, 'candidateGroups: "${1:group}"'],
+  ['candidateUsers', SETTING, 'candidateUsers: "${1:user}"'],
+  ['dueDate', SETTING, 'dueDate: "${1:\\${dateTime().plusDays(3)}}"'],
+  ['followUpDate', SETTING, 'followUpDate: "${1:\\${dateTime().plusDays(1)}}"'],
+  ['priority', SETTING, 'priority: ${1:50}'],
   ...ENGINE_SETTINGS,
-  ...BLOCK_MEMBERS,
+  ...LITERALS,
 ];
 
-const SERVICE_BLOCK: Item[] = [
+const SERVICE_PARENS: Item[] = [
+  LABEL,
   ...BINDINGS,
   TOPIC,
   RESULT_VARIABLE,
   ...ENGINE_SETTINGS,
-  ...BLOCK_MEMBERS,
+  ...LITERALS,
 ];
 
-const CALL_BLOCK: Item[] = [
-  ['process', SETTING, 'process = "${1:process-id}"'],
+const CALL_PARENS: Item[] = [
+  LABEL,
+  ['process', SETTING, 'process: "${1:process-id}"'],
   BINDING,
   VERSION,
   [
     'businessKey',
     SETTING,
-    'businessKey = "${1:\\${execution.processBusinessKey}}"',
+    'businessKey: "${1:\\${execution.processBusinessKey}}"',
   ],
   ...ENGINE_SETTINGS,
-  ['in', KEYWORD, 'in'],
-  ['out', KEYWORD, 'out'],
-  ...PARAMETERS,
-  LISTENER_KEYWORD,
+  ...LITERALS,
 ];
 
-const RECEIVE_BLOCK: Item[] = [
-  ['message', SETTING, 'message = "${1:MessageName}"'],
+const RECEIVE_PARENS: Item[] = [
+  LABEL,
+  ['message', SETTING, 'message: "${1:MessageName}"'],
   ...ENGINE_SETTINGS,
-  ...BLOCK_MEMBERS,
+  ...LITERALS,
 ];
 
-const DECIDE_BLOCK: Item[] = [
+const DECIDE_PARENS: Item[] = [
+  LABEL,
   ...BINDINGS,
   TOPIC,
-  ['decision', SETTING, 'decision = "${1:decision-key}"'],
+  ['decision', SETTING, 'decision: "${1:decision-key}"'],
   BINDING,
   VERSION,
   [
     'mapDecisionResult',
     SETTING,
-    'mapDecisionResult = ${1|singleEntry,singleResult,collectEntries,resultList|}',
+    'mapDecisionResult: ${1|singleEntry,singleResult,collectEntries,resultList|}',
   ],
   RESULT_VARIABLE,
   ...ENGINE_SETTINGS,
-  ...BLOCK_MEMBERS,
+  ...LITERALS,
 ];
 
-/** A host-less handler lowers to an event sub-process, so it takes parameters. */
-const HANDLER_BLOCK: Item[] = [...ENGINE_SETTINGS, ...BLOCK_MEMBERS];
+/** A handler catching an error or an escalation binds what the event carries. */
+const HANDLER_PARENS: Item[] = [
+  ['code', SETTING, 'code: ${1:code}'],
+  ['message', SETTING, 'message: ${1:message}'],
+  ...ENGINE_SETTINGS,
+  ...LITERALS,
+];
+
+const PROCESS_PARENS: Item[] = [
+  LABEL,
+  ['versionTag', SETTING, 'versionTag: "${1:1.0.0}"'],
+  ...LITERALS,
+];
+
+const LISTENER_PARENS: Item[] = [...BINDINGS, ...LITERALS];
 
 const listenerEvent = (event: string): Item => [
   event,
   LISTENER_EVENT,
-  `${event} {\n\tclass = "\${1:com.example.Listener}"\n}`,
+  `${event}(class: "\${1:com.example.Listener}")`,
 ];
 
 const EXECUTION_EVENTS: Item[] = [listenerEvent('start'), listenerEvent('end')];
@@ -382,7 +430,7 @@ const TASK_EVENTS: Item[] = [
   [
     'timeout',
     LISTENER_EVENT,
-    'timeout after "${1:PT1H}" {\n\tclass = "${2:com.example.Listener}"\n}',
+    'timeout after "${1:PT1H}"(class: "${2:com.example.Listener}")',
   ],
 ];
 
@@ -400,7 +448,7 @@ describe('the completions offered at a caret', () => {
     ],
     [
       'a body position after a finished statement offers the statements again',
-      'process p {\n  emit signal "S"\n  |\n}',
+      'process p {\n  emit signal("S")\n  |\n}',
       STATEMENTS,
     ],
     [
@@ -448,20 +496,14 @@ describe('the completions offered at a caret', () => {
       ],
     ],
     [
-      'the binding-list position offers the catchable event fields',
-      'process p {\n  on error "X" (|\n}',
-      [
-        ['code', EVENT_WORD, 'code'],
-        ['message', EVENT_WORD, 'message'],
-        ['true', KEYWORD, 'true'],
-        ['false', KEYWORD, 'false'],
-        ['null', KEYWORD, 'null'],
-      ],
+      'the parens of a handler offer the bindings of the event it catches',
+      'process p {\n  start S\n  on error(|) {\n    end Failed\n  }\n}',
+      HANDLER_PARENS,
     ],
     [
-      'the particle position on a handler timer offers the three particles',
-      'process p {\n  on timer |\n}',
-      [...PARTICLES, ['alongside', KEYWORD, 'alongside']],
+      'the parens of a timer handler offer the keys naming a date and a cycle',
+      'process p {\n  on timer(|) {\n    end Late\n  }\n}',
+      [...TIMER_KEYS, ...ENGINE_SETTINGS, ...LITERALS],
     ],
     [
       'the `await` trigger position offers only the triggers something can fire',
@@ -472,16 +514,6 @@ describe('the completions offered at a caret', () => {
       'a race branch header offers the same triggers a bare await does',
       'process p {\n  await { |\n}',
       CATCH_TRIGGERS,
-    ],
-    [
-      'the particle position in a race branch offers the three particles',
-      'process p {\n  await { timer |\n}',
-      PARTICLES,
-    ],
-    [
-      'the particle position on an awaited timer offers the particles and the statements',
-      'process p {\n  await timer |\n}',
-      [...PARTICLES, ...STATEMENTS],
     ],
     [
       'the start trigger position offers the kinds a process can start on',
@@ -502,11 +534,6 @@ describe('the completions offered at a caret', () => {
         ...STATEMENTS,
       ],
     ],
-    [
-      'the particle position on a timer start offers the particles and the statements',
-      'process p {\n  start S timer |\n  user A\n}',
-      [...PARTICLES, ...STATEMENTS],
-    ],
     // `Decoy` (another process) and `Inner` (a nested subprocess body) are both
     // named statements the scope must keep out.
     [
@@ -525,85 +552,95 @@ describe('the completions offered at a caret', () => {
       ON_TRIGGERS,
     ],
     [
-      'a user block offers the user-task keys and none of the service ones',
-      'process p {\n  user T {\n    |\n  }\n}',
-      USER_BLOCK,
+      'a user task offers the user-task settings and none of the service ones',
+      'process p {\n  user T(|)\n}',
+      USER_PARENS,
     ],
     [
-      'a user block offers its whole member set after an attribute',
-      'process p {\n  user T {\n    assignee = "demo"\n    |\n  }\n}',
-      USER_BLOCK,
+      'a user task offers its whole settings list after a preceding setting',
+      'process p {\n  user T(assignee: "demo", |)\n}',
+      USER_PARENS,
+    ],
+    [
+      'unclosed parens still offer the settings of the element they belong to',
+      'process p {\n  user T(|',
+      USER_PARENS,
+    ],
+    [
+      'the process parens offer the two settings a process header takes',
+      'process p(|) {\n  user T\n}',
+      PROCESS_PARENS,
+    ],
+    [
+      'a service task offers the binding settings and none of the user-task ones',
+      'process p {\n  service S(|)\n}',
+      SERVICE_PARENS,
+    ],
+    [
+      'a call offers the call settings, `process` among them, exactly once',
+      'process p {\n  call C(|)\n}',
+      CALL_PARENS,
+    ],
+    [
+      'a receive task offers the message setting',
+      'process p {\n  receive R(|)\n}',
+      RECEIVE_PARENS,
+    ],
+    [
+      'a decision step offers the decision settings alongside the binding ones',
+      'process p {\n  decide D(|)\n}',
+      DECIDE_PARENS,
+    ],
+    [
+      'a user block offers its members, the settings having moved to the parens',
+      'process p {\n  user T {\n    |\n  }\n}',
+      BLOCK_MEMBERS,
     ],
     [
       'a user block offers its whole member set after a form block',
       'process p {\n  user T {\n    form {\n      amount: number\n    }\n    |\n  }\n}',
-      USER_BLOCK,
+      BLOCK_MEMBERS,
     ],
     [
       'a user block offers its whole member set after an io parameter',
       'process p {\n  user T {\n    input x = 1\n    |\n  }\n}',
-      USER_BLOCK,
+      BLOCK_MEMBERS,
     ],
-    // A closed listener block must not capture the caret that follows it.
+    // A closed listener must not capture the caret that follows it.
     [
       'a user block offers its whole member set after a closed listener',
-      'process p {\n  user T {\n    on create {\n      class = "com.example.L"\n    }\n    |\n  }\n}',
-      USER_BLOCK,
+      'process p {\n  user T {\n    on create(class: "com.example.L")\n    |\n  }\n}',
+      BLOCK_MEMBERS,
     ],
     [
-      'an unclosed user block still offers the keys of the element it belongs to',
+      'an unclosed user block still offers the members of the element it belongs to',
       'process p {\n  user T {\n    |',
-      USER_BLOCK,
-    ],
-    [
-      'a service block offers the binding keys and none of the user-task ones',
-      'process p {\n  service S {\n    |\n  }\n}',
-      SERVICE_BLOCK,
-    ],
-    [
-      'a service block offers the binding keys after a preceding attribute',
-      'process p {\n  service S {\n    class = "com.example.D"\n    |\n  }\n}',
-      SERVICE_BLOCK,
-    ],
-    [
-      'a call block offers the call keys, `process` among them, exactly once',
-      'process p {\n  call C {\n    |\n  }\n}',
-      CALL_BLOCK,
-    ],
-    [
-      'a call block offers the call keys after a preceding attribute',
-      'process p {\n  call C {\n    binding = latest\n    |\n  }\n}',
-      CALL_BLOCK,
-    ],
-    [
-      'a receive block offers the message key',
-      'process p {\n  receive R {\n    |\n  }\n}',
-      RECEIVE_BLOCK,
-    ],
-    [
-      'a decide block offers the decision keys alongside the binding ones',
-      'process p {\n  decide D {\n    |\n  }\n}',
-      DECIDE_BLOCK,
+      BLOCK_MEMBERS,
     ],
     [
       'a host-less handler block offers parameters, which a boundary event has none of',
-      'process p {\n  start S\n  on error {\n    asyncBefore = true\n    |\n  } {\n    end Failed\n  }\n}',
-      HANDLER_BLOCK,
+      'process p {\n  start S\n  on error {\n    input x = 1\n    |\n  } {\n    end Failed\n  }\n}',
+      BLOCK_OR_BODY,
     ],
     [
-      'a listener binding block offers the three ways a listener binds',
-      'process p {\n  user T {\n    on create {\n      |\n    }\n  }\n}',
-      BINDINGS,
+      'a hosted handler lowers to a boundary event, so its block offers no parameter',
+      'process p {\n  user U\n  on U: error {\n    |\n  } {\n    end Failed\n  }\n}',
+      STATEMENTS,
     ],
     [
-      'a listener binding block offers them after a preceding binding too',
-      'process p {\n  user T {\n    on create {\n      class = "com.example.L"\n      |\n    }\n  }\n}',
-      BINDINGS,
+      'a listener offers the three ways a listener binds',
+      'process p {\n  user T {\n    on create(|)\n  }\n}',
+      LISTENER_PARENS,
     ],
     [
-      'an unclosed listener binding block offers them as well',
-      'process p {\n  user T {\n    on create {\n      |',
-      BINDINGS,
+      'a listener offers them after a preceding binding too',
+      'process p {\n  user T {\n    on create(class: "com.example.L", |)\n  }\n}',
+      LISTENER_PARENS,
+    ],
+    [
+      'an unclosed listener offers them as well',
+      'process p {\n  user T {\n    on create(|',
+      LISTENER_PARENS,
     ],
     [
       'a user block offers the task listener events as well as the execution ones',
@@ -611,8 +648,8 @@ describe('the completions offered at a caret', () => {
       TASK_EVENTS,
     ],
     [
-      'a user block offers the task listener events after a preceding attribute',
-      'process p {\n  user T {\n    assignee = "demo"\n    on |\n  }\n}',
+      'a user block offers the task listener events after a preceding member',
+      'process p {\n  user T {\n    input x = 1\n    on |\n  }\n}',
       TASK_EVENTS,
     ],
     [
@@ -630,6 +667,25 @@ describe('the completions offered at a caret', () => {
         ['date', KEYWORD, 'date'],
         ['json', KEYWORD, 'json'],
         ['any', KEYWORD, 'any'],
+      ],
+    ],
+    // Every identifier in an expression is a reference to a code declaration,
+    // so the scope is what keeps the declared codes out of this list.
+    [
+      'an expression position offers no code declaration, only the literal words',
+      'process p {\n  error PAYMENT_DECLINED(message: "x")\n  if (|) {\n    user A\n  }\n}',
+      LITERALS,
+    ],
+    [
+      'a code position offers the declared codes of its own kind and nothing else',
+      'process p {\n  error PAYMENT_DECLINED(message: "x")\n  escalation PAYMENT_REVIEW\n  throw error(PAY|)\n}',
+      [
+        [
+          'PAYMENT_DECLINED',
+          'CodeDecl',
+          'PAYMENT_DECLINED',
+          CompletionItemKind.Reference,
+        ],
       ],
     ],
     [
@@ -672,16 +728,49 @@ function scaffolds(
     .map(([label]) => [`\`${label}\` in ${where}`, label, program] as const);
 }
 
-describe('a scaffold parses once accepted', () => {
+/**
+ * A setting the element it belongs to cannot do without. Each is offered
+ * alongside the rest, so a host that already writes one would collide with the
+ * row under test: they are checked in a host that writes none instead.
+ */
+const REQUIRED_BINDINGS = new Set([
+  'class',
+  'expression',
+  'delegate',
+  'topic',
+  'decision',
+  'process',
+]);
+
+const binds = ([label]: Item) => REQUIRED_BINDINGS.has(label);
+
+/**
+ * The declaration a statement scaffold needs in the header. Every scaffold
+ * writes its code as the same placeholder name, and a code reaches only the
+ * declarations of its own kind, so which kind is declared follows the
+ * statement.
+ */
+const declarationNaming = (statement: string): string =>
+  statement.includes('escalation')
+    ? 'escalation CODE'
+    : 'error CODE(message: "m")';
+
+describe('a scaffold parses and validates once accepted', () => {
   test('the parse helper reports a lexer error, not only a parser one', async () => {
     expect(await parseErrors('process p {\n  @@@\n}')).not.toEqual([]);
   });
 
   test.each([
     ...scaffolds(
+      'a process header',
+      [...HEADER_DECLS, START],
+      (decl) => `process p {\n${decl}\n  user Anchor\n}`,
+    ),
+    ...scaffolds(
       'a process body',
-      PROCESS_BODY,
-      (body) => `process p {\n${body}\n}`,
+      STATEMENTS.filter((item) => item !== START),
+      (statement) =>
+        `process p {\n  ${declarationNaming(statement)}\n  user Anchor\n${statement}\n}`,
     ),
     ...scaffolds(
       'the position after a step name',
@@ -689,35 +778,83 @@ describe('a scaffold parses once accepted', () => {
       (clause) => `process p {\n  user U ${clause}\n}`,
     ),
     ...scaffolds(
+      'the parens of a user task',
+      USER_PARENS,
+      (setting) => `process p {\n  user T(${setting})\n}`,
+    ),
+    ...scaffolds(
+      'the parens of a receive task',
+      RECEIVE_PARENS,
+      (setting) => `process p {\n  receive R(${setting})\n}`,
+    ),
+    ...scaffolds(
+      'the parens of a service task',
+      SERVICE_PARENS.filter((item) => !binds(item)),
+      (setting) =>
+        `process p {\n  service S(class: "com.example.D", ${setting})\n}`,
+    ),
+    ...scaffolds(
+      'the parens of a service task',
+      SERVICE_PARENS.filter(binds),
+      (binding) => `process p {\n  service S(${binding})\n}`,
+    ),
+    ...scaffolds(
+      'the parens of a decision step',
+      DECIDE_PARENS.filter((item) => !binds(item)),
+      (setting) =>
+        `process p {\n  decide D(decision: "riskRating", ${setting})\n}`,
+    ),
+    ...scaffolds(
+      'the parens of a decision step',
+      DECIDE_PARENS.filter(binds),
+      (binding) => `process p {\n  decide D(${binding})\n}`,
+    ),
+    ...scaffolds(
+      'the parens of a call',
+      CALL_PARENS.filter((item) => !binds(item)),
+      (setting) => `process p {\n  call C(process: "q", ${setting})\n}`,
+    ),
+    ...scaffolds(
+      'the parens of a call',
+      CALL_PARENS.filter(binds),
+      (binding) => `process p {\n  call C(${binding})\n}`,
+    ),
+    ...scaffolds(
+      'the parens of a handler',
+      HANDLER_PARENS,
+      (setting) =>
+        `process p {\n  start S\n  on error(${setting}) {\n    user Caught\n  }\n}`,
+    ),
+    ...scaffolds(
+      'the parens of a process',
+      PROCESS_PARENS,
+      (setting) => `process p(${setting}) {\n  user U\n}`,
+    ),
+    ...scaffolds(
       'a user block',
-      USER_BLOCK,
+      BLOCK_MEMBERS,
       (member) => `process p {\n  user T {\n${member}\n  }\n}`,
     ),
     ...scaffolds(
-      'a service block',
-      SERVICE_BLOCK,
-      (member) => `process p {\n  service S {\n${member}\n  }\n}`,
-    ),
-    ...scaffolds(
-      'a call block',
-      CALL_BLOCK,
-      (member) => `process p {\n  call C {\n${member}\n  }\n}`,
-    ),
-    ...scaffolds(
-      'a decide block',
-      DECIDE_BLOCK,
-      (member) => `process p {\n  decide D {\n${member}\n  }\n}`,
-    ),
-    ...scaffolds(
-      'a listener binding block',
-      BINDINGS,
-      (binding) =>
-        `process p {\n  user T {\n    on create {\n${binding}\n    }\n  }\n}`,
+      'the parens of a listener',
+      LISTENER_PARENS,
+      (binding) => `process p {\n  user T {\n    on create(${binding})\n  }\n}`,
     ),
     ...scaffolds(
       'the listener event position',
       TASK_EVENTS,
       (listener) => `process p {\n  user T {\n    on ${listener}\n  }\n}`,
+    ),
+    ...scaffolds(
+      'the trigger position of a handler',
+      ON_TRIGGERS,
+      (trigger) =>
+        `process p {\n  user U\n  on U: ${trigger} {\n    user Caught\n  }\n}`,
+    ),
+    ...scaffolds(
+      'the trigger position of an await',
+      CATCH_TRIGGERS,
+      (trigger) => `process p {\n  user U\n  await ${trigger}\n}`,
     ),
   ])('%s', async (_title, label, program) => {
     const { text, line, character } = caretAt(program('|'));
@@ -726,45 +863,34 @@ describe('a scaffold parses once accepted', () => {
     );
     expect(item).toBeDefined();
     expect(await parseErrors(program(accepted(item!)))).toEqual([]);
+    expect(await validationErrors(program(accepted(item!, typedInto)))).toEqual(
+      [],
+    );
   });
 });
 
-describe('a settings block is narrowed to the element it belongs to', () => {
-  test.each(BLOCK_HOSTS)(
-    'the engine settings are offered inside the block of %s',
-    async (_kind, _description, program) => {
-      const { text, line, character } = caretInBlock(
-        program,
-        'asyncBefore = true ',
-      );
-      expect(await labelsAt(text, line, character)).toEqual(
-        expect.arrayContaining([
-          'asyncBefore',
-          'asyncAfter',
-          'exclusive',
-          'jobPriority',
-          'retryCycle',
-        ]),
-      );
-    },
-  );
+/** Keyed by description, which is the noun phrase a host row spells as well. */
+const RULE_BY_DESCRIPTION = new Map(
+  [...Object.values(ATTRIBUTE_BLOCK_RULES), ATTEMPT_BLOCK_RULE].map((rule) => [
+    rule.description,
+    rule,
+  ]),
+);
 
-  test.each([
-    ['user T', ATTRIBUTE_BLOCK_RULES.UserTask],
-    ['decide D', ATTRIBUTE_BLOCK_RULES.BusinessRuleTask],
-    ['receive R', ATTRIBUTE_BLOCK_RULES.ReceiveTask],
-  ])(
-    'a `%s` block offers exactly the attribute keys the validator accepts',
-    async (head, rule) => {
-      const items = await completionItems(
-        `process p {\n  ${head} {\n    \n  }\n}`,
-        2,
-        4,
+describe('an element offers exactly the settings it takes', () => {
+  test.each(BLOCK_HOSTS)(
+    'the parens of %s offer the keys the validator accepts there',
+    async (_kind, description, _members, settings) => {
+      const rule = RULE_BY_DESCRIPTION.get(description)!;
+      const { text, line, character } = caretInSlot(
+        settings,
+        'asyncBefore: true, ',
       );
-      const offered = items
-        .filter((i) => i.detail === SETTING)
-        .map((i) => i.label);
-      expect(new Set(offered)).toEqual(rule.keys);
+      expect(await labelsAt(text, line, character)).toEqual([
+        ...rule.own,
+        ...ENGINE_KEYS,
+        ...LITERALS.map(([label]) => label),
+      ]);
     },
   );
 });

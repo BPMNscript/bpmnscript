@@ -11,10 +11,10 @@ process parallel-approval {
   start ParallelStart
   parallel {
     {
-      user ApproveA "Approve branch A" { assignee = "demo" }
+      user ApproveA(label: "Approve branch A", assignee: "demo")
     }
     {
-      user ApproveB "Approve branch B" { assignee = "manager" }
+      user ApproveB(label: "Approve branch B", assignee: "manager")
     }
   }
   end ParallelEnd

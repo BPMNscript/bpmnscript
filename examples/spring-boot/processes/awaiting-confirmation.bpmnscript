@@ -11,11 +11,11 @@
 process awaiting-confirmation {
   start RequestSubmitted
 
-  service SubmitRequest "Submit the request" { class = "com.example.demo.LogDelegate" }
+  service SubmitRequest(label: "Submit the request", class: "com.example.demo.LogDelegate")
 
-  await message "ConfirmationReceived"
+  await message("ConfirmationReceived")
 
-  service FinalizeRequest "Finalize the request" { class = "com.example.demo.LogDelegate" }
+  service FinalizeRequest(label: "Finalize the request", class: "com.example.demo.LogDelegate")
 
   end RequestCompleted
 }

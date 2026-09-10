@@ -17,40 +17,41 @@
 // process deploys and runs on the demo profile without additional Java classes.
 
 process order-handling {
-  error "PAYMENT_DECLINED" message "The card could not be charged"
+  error PAYMENT_DECLINED(message: "The card could not be charged")
+  escalation LARGE_PAYMENT_FLAGGED
 
   start OrderPlaced
 
-  user ReviewOrder "Review order" { assignee = "demo" }
+  user ReviewOrder(label: "Review order", assignee: "demo")
 
-  subprocess Payment "Process payment" {
-    service AuthorizePayment "Authorize payment" { class = "com.example.demo.LogDelegate" }
-    emit escalation "LARGE_PAYMENT_FLAGGED"
-    service CapturePayment "Capture payment" { class = "com.example.demo.LogDelegate" }
+  subprocess Payment(label: "Process payment") {
+    service AuthorizePayment(label: "Authorize payment", class: "com.example.demo.LogDelegate")
+    emit escalation(LARGE_PAYMENT_FLAGGED)
+    service CapturePayment(label: "Capture payment", class: "com.example.demo.LogDelegate")
   }
 
-  service ShipOrder "Ship order" { class = "com.example.demo.LogDelegate" }
+  service ShipOrder(label: "Ship order", class: "com.example.demo.LogDelegate")
 
   end OrderShipped
 
-  on ReviewOrder: timer after "PT4H" alongside {
-    service SendReviewReminder "Send a review reminder" { class = "com.example.demo.LogDelegate" }
+  on ReviewOrder: timer("PT4H", alongside) {
+    service SendReviewReminder(label: "Send a review reminder", class: "com.example.demo.LogDelegate")
   }
 
-  on ReviewOrder: message "AutoApproved" {
-    service MarkAutoApproved "Mark the order auto-approved" { class = "com.example.demo.LogDelegate" }
+  on ReviewOrder: message("AutoApproved") {
+    service MarkAutoApproved(label: "Mark the order auto-approved", class: "com.example.demo.LogDelegate")
     goto Payment
   }
 
-  on ReviewOrder: message "SupervisorPing" alongside {
-    service RecordReviewStatus "Note the review status for the supervisor" { class = "com.example.demo.LogDelegate" }
+  on ReviewOrder: message("SupervisorPing", alongside) {
+    service RecordReviewStatus(label: "Note the review status for the supervisor", class: "com.example.demo.LogDelegate")
   }
 
-  on Payment: error "PAYMENT_DECLINED" (code c, message m) {
-    user ContactCustomer "Contact the customer about the decline" { assignee = "demo" }
+  on Payment: error(PAYMENT_DECLINED, code: c, message: m) {
+    user ContactCustomer(label: "Contact the customer about the decline", assignee: "demo")
   }
 
-  on Payment: escalation "LARGE_PAYMENT_FLAGGED" alongside {
-    user ReviewLargePayment "Review the large payment" { assignee = "manager" }
+  on Payment: escalation(LARGE_PAYMENT_FLAGGED, alongside) {
+    user ReviewLargePayment(label: "Review the large payment", assignee: "manager")
   }
 }

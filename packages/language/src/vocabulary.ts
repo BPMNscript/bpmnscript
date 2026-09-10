@@ -115,8 +115,8 @@ export const LISTENER_BINDING_KEYS: readonly string[] = [
 /** How a call or a decision step pins which deployed version the engine runs. */
 export const CALL_BINDING_VALUES: readonly string[] = ['latest', 'deployment'];
 
-/** The only key a process header carries; `label` has a declaration of its own. */
-export const PROCESS_HEADER_KEYS: readonly string[] = ['versionTag'];
+/** A process header carries its label and the version tag it deploys under. */
+export const PROCESS_HEADER_KEYS: readonly string[] = ['label', 'versionTag'];
 
 export const IO_DIRECTIONS: readonly string[] = ['input', 'output'];
 
@@ -140,7 +140,7 @@ export const TIMER_PARTICLES: readonly string[] = Object.values(
 
 export const EVENT_BINDING_FIELDS: readonly string[] = ['code', 'message'];
 
-/** Legal on every element with an attribute block, since each lowers to a flow node. */
+/** Legal on every element with a member block, since each lowers to a flow node. */
 export const EXECUTION_LISTENER_EVENTS = ['start', 'end'] as const;
 
 /** Legal on a user task alone; `timeout` is the one carrying a timer clause. */
@@ -320,6 +320,19 @@ export const TRIGGER_PAYLOAD: Readonly<Record<string, TriggerPayloadRule>> = {
 } satisfies Record<(typeof ON_TRIGGERS)[number], TriggerPayloadRule>;
 
 /**
+ * The triggers whose payload refers to a declaration rather than carrying a
+ * name of its own: `throw error(OUT_OF_STOCK)` names a code declared in the
+ * process header, while `message("OrderReceived")` names the subscription the
+ * engine keys on and declares nothing. This is the pair a bare word in the
+ * parens is resolved as a cross-reference under, and {@link namesACode} is the
+ * wider question, taking `message` and `signal` too.
+ */
+export const DECLARED_CODE_TRIGGERS: ReadonlySet<string> = new Set([
+  'error',
+  'escalation',
+]);
+
+/**
  * Whether the trigger names a code, as opposed to reading a timer, a condition,
  * or nothing at all. The completion snippets that scaffold a `"CODE"` string
  * offer exactly the words of their statement that pass.
@@ -363,7 +376,7 @@ export function splitFencedScript(raw: string): { tag: string; code: string } {
   return { tag, code };
 }
 
-/** Each carries `attrs`, `params`, and `listeners`; all but `call` also carry `forms`. */
+/** Each carries `items`, `params`, and `listeners`; all but `call` also carry `forms`. */
 export type AttributeOwner =
   | StartEvent
   | EndEvent
@@ -385,10 +398,21 @@ export type AttributeOwner =
 export interface AttributeBlockRule {
   /** The element kind as a noun phrase with article, for diagnostics. */
   readonly description: string;
-  /** The keys this kind owns, in the order they are offered. */
+  /**
+   * The keys this kind owns, in the order they are offered. `label` is one of
+   * them wherever the element lowers to a BPMN node carrying a `name`; a
+   * handler, a `throw`/`emit`, and an `await` have no name slot, so a label
+   * written there is an unknown key rather than a dropped one.
+   */
   readonly own: readonly string[];
   /** {@link own} and the engine settings together, for membership tests. */
   readonly keys: ReadonlySet<string>;
+  /**
+   * The bare words legal in the parens. Every flag word lexes as a flag
+   * wherever parens are written, being a keyword elsewhere in the grammar, so a
+   * kind that takes none still needs the empty row to refuse them.
+   */
+  readonly flags: readonly string[];
   readonly forms: boolean;
   readonly parameters: boolean;
   readonly taskListeners: boolean;
@@ -408,14 +432,16 @@ export const ATTRIBUTE_BLOCK_RULES: Readonly<
 > = {
   StartEvent: withKeys({
     description: 'a start event',
-    own: [],
+    own: ['label'],
+    flags: [],
     forms: true,
     parameters: false,
     taskListeners: false,
   }),
   EndEvent: withKeys({
     description: 'an end event',
-    own: [],
+    own: ['label'],
+    flags: [],
     forms: false,
     parameters: false,
     taskListeners: false,
@@ -423,6 +449,7 @@ export const ATTRIBUTE_BLOCK_RULES: Readonly<
   UserTask: withKeys({
     description: 'a user task',
     own: [
+      'label',
       'assignee',
       'formKey',
       'candidateGroups',
@@ -431,41 +458,47 @@ export const ATTRIBUTE_BLOCK_RULES: Readonly<
       'followUpDate',
       'priority',
     ],
+    flags: [],
     forms: true,
     parameters: true,
     taskListeners: true,
   }),
   ServiceTask: withKeys({
     description: 'a service task',
-    own: [...SERVICE_TASK_BINDING_KEYS, 'resultVariable'],
+    own: ['label', ...SERVICE_TASK_BINDING_KEYS, 'resultVariable'],
+    flags: [],
     forms: false,
     parameters: true,
     taskListeners: false,
   }),
   ScriptTask: withKeys({
     description: 'a script task',
-    own: ['resultVariable'],
+    own: ['label', 'resultVariable'],
+    flags: [],
     forms: false,
     parameters: true,
     taskListeners: false,
   }),
   GenericTask: withKeys({
     description: 'a step',
-    own: [],
+    own: ['label'],
+    flags: [],
     forms: false,
     parameters: true,
     taskListeners: false,
   }),
   SendTask: withKeys({
     description: 'a send task',
-    own: [...SERVICE_TASK_BINDING_KEYS, 'resultVariable'],
+    own: ['label', ...SERVICE_TASK_BINDING_KEYS, 'resultVariable'],
+    flags: [],
     forms: false,
     parameters: true,
     taskListeners: false,
   }),
   ReceiveTask: withKeys({
     description: 'a receive task',
-    own: ['message'],
+    own: ['label', 'message'],
+    flags: [],
     forms: false,
     parameters: true,
     taskListeners: false,
@@ -473,26 +506,30 @@ export const ATTRIBUTE_BLOCK_RULES: Readonly<
   BusinessRuleTask: withKeys({
     description: 'a decision step',
     own: [
+      'label',
       ...BUSINESS_RULE_BINDING_KEYS,
       'binding',
       'version',
       'mapDecisionResult',
       'resultVariable',
     ],
+    flags: [],
     forms: false,
     parameters: true,
     taskListeners: false,
   }),
   SubProcess: withKeys({
     description: 'a subprocess',
-    own: [],
+    own: ['label'],
+    flags: [],
     forms: false,
     parameters: true,
     taskListeners: false,
   }),
   CallActivity: withKeys({
     description: 'a call',
-    own: ['process', 'binding', 'version', 'businessKey'],
+    own: ['label', 'process', 'binding', 'version', 'businessKey'],
+    flags: [],
     forms: false,
     parameters: true,
     taskListeners: false,
@@ -500,6 +537,7 @@ export const ATTRIBUTE_BLOCK_RULES: Readonly<
   OnHandler: withKeys({
     description: 'an event handler',
     own: [],
+    flags: ['alongside'],
     forms: false,
     parameters: false,
     taskListeners: false,
@@ -509,6 +547,7 @@ export const ATTRIBUTE_BLOCK_RULES: Readonly<
   ThrowStatement: withKeys({
     description: 'a throw statement',
     own: [...SERVICE_TASK_BINDING_KEYS],
+    flags: [],
     forms: false,
     parameters: false,
     taskListeners: false,
@@ -516,6 +555,7 @@ export const ATTRIBUTE_BLOCK_RULES: Readonly<
   EmitStatement: withKeys({
     description: 'an emit statement',
     own: [...SERVICE_TASK_BINDING_KEYS],
+    flags: [],
     forms: false,
     parameters: false,
     taskListeners: false,
@@ -523,6 +563,7 @@ export const ATTRIBUTE_BLOCK_RULES: Readonly<
   IntermediateCatchEvent: withKeys({
     description: 'an awaited event',
     own: [],
+    flags: [],
     forms: false,
     parameters: false,
     taskListeners: false,
@@ -531,6 +572,7 @@ export const ATTRIBUTE_BLOCK_RULES: Readonly<
   RaceBranch: withKeys({
     description: 'a branch of an await block',
     own: [],
+    flags: [],
     forms: false,
     parameters: false,
     taskListeners: false,

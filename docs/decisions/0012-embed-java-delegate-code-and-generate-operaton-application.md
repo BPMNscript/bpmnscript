@@ -12,7 +12,7 @@ consulted: thesis supervisor
 The thesis supervisor proposed a deploy feature: write the body of a `JavaDelegate`'s `execute` method directly in the `.bpmnscript` file, generate the complete Java class from it, scaffold the surrounding Operaton application (build configuration, Spring Boot wiring, resources), and generate tests for the result.
 
 Today the toolchain stops at BPMN XML.
-`bpmns build` compiles a `.bpmnscript` file to a `.bpmn` file, `bpmns parse` decompiles it back, and `service X { class = "..." }` carries only a class-name string (emitted as `operaton:class`).
+`bpmns build` compiles a `.bpmnscript` file to a `.bpmn` file, `bpmns parse` decompiles it back, and `service X(class: "...")` carries only a class-name string (emitted as `operaton:class`).
 Delegate classes are hand-written in a separate host application, as in `examples/spring-boot/`.
 
 Should the compiler's output boundary move from BPMN XML to a complete, runnable Operaton application?
@@ -45,7 +45,7 @@ The scaffold's maintenance cost alone puts it outside the thesis scope.
 - Good, because the existing round-trip guarantees are unchanged; no lossy construct enters the language.
 - Good, because the DSL and IR stay free of host-language code per ADR-0006.
 - Good, because a future deploy command stays a thin REST client, the mechanics the E2E test adapters (`tests/fixtures/adapters/`) already exercise.
-- Bad, because delegates are written and kept in sync by hand; the `class = "..."` string is not checked against any Java source, so a mismatch surfaces only at engine runtime.
+- Bad, because delegates are written and kept in sync by hand; the `class: "..."` string is not checked against any Java source, so a mismatch surfaces only at engine runtime.
 - Bad, because the one-file authoring experience the proposal aimed for is not available.
 
 ## More Information

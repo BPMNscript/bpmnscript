@@ -8,26 +8,24 @@
 // examples/spring-boot/src/main/java/com/example/demo/LogDelegate.java, so this
 // process deploys and runs on the demo profile without additional Java classes.
 
-process batch-approval "Batch approval" {
+process batch-approval(label: "Batch approval") {
   start BatchReceived
 
-  user CollectApprovals "Approve the batch" for 3 { assignee = "demo" }
+  user CollectApprovals for 3(label: "Approve the batch", assignee: "demo")
 
-  user SignOff "Sign the batch off" for 3 sequentially { assignee = "demo" }
+  user SignOff for 3 sequentially(label: "Sign the batch off", assignee: "demo")
 
-  user SpotCheck "Spot-check the entries" for 3 sequentially until (nrOfCompletedInstances >= 2) {
-    assignee = "demo"
-  }
+  user SpotCheck for 3 sequentially until (nrOfCompletedInstances >= 2)(label: "Spot-check the entries", assignee: "demo")
 
-  service LogEntry "Log the entry" for 4 { class = "com.example.demo.LogDelegate" }
+  service LogEntry for 4(label: "Log the entry", class: "com.example.demo.LogDelegate")
 
-  subprocess ReviewLines "Review the lines" {
+  subprocess ReviewLines(label: "Review the lines") {
     input lines = ["ann", "bob", "cal"]
   } {
-    user ReviewLine "Review one line" for each line in lines { assignee = "demo" }
+    user ReviewLine for each line in lines(label: "Review one line", assignee: "demo")
   }
 
-  user CloseBatch "Close the batch" { assignee = "demo" }
+  user CloseBatch(label: "Close the batch", assignee: "demo")
 
   end BatchClosed
 }

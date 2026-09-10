@@ -37,6 +37,7 @@
   "dependencies": {
     "bpmn-moddle": "^10.2.0",
     "bpmn-auto-layout": "^1.2.0",
+    "saxen": "^11.1.0",
     "@bpmn-script/language": "*"
   },
   "devDependencies": {

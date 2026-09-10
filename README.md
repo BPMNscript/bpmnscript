@@ -21,11 +21,11 @@ process invoice-approval {
       amount: number "Invoice amount"
     }
   }
-  user ReviewInvoice { assignee = "demo" }
+  user ReviewInvoice(assignee: "demo")
   if (amount > 1000) {
-    user SeniorApproval { assignee = "manager" }
+    user SeniorApproval(assignee: "manager")
   } else {
-    service AutoApprove { class = "com.example.invoice.AutoApproveDelegate" }
+    service AutoApprove(class: "com.example.invoice.AutoApproveDelegate")
   }
   end Done
 }
@@ -100,46 +100,48 @@ See [packages/extension/README.md](packages/extension/README.md) for how the pie
 
 One `process` block per file.
 Steps run top to bottom, so you never write a sequence flow; control flow is expressed with the structured statements you'd expect from a programming language.
-Every step carries an id (`user ReviewInvoice`), which is what `goto` and boundary events refer to, and which becomes the BPMN element's name (`ReviewInvoice` -> "Review Invoice") unless you give it a quoted label instead.
+Every step carries an id (`user ReviewInvoice`), which is what `goto` and boundary events refer to, and which becomes the BPMN element's name (`ReviewInvoice` -> "Review Invoice") unless a `label` setting gives one instead.
+The event statements `on`, `throw`, `emit` and `await` are the exception: their id is a jump target only, so they carry no name in the diagram and take no `label`.
 
-| BPMNscript                                | What it means                                                               | BPMN element                                                  |
-| ----------------------------------------- | --------------------------------------------------------------------------- | ------------------------------------------------------------- |
-| `process X { }`                           | the bpmn process, one per file                                              | `bpmn:process`                                                |
-| `var x: number`                           | declare a variable so its uses get type-checked                             | none; authoring-time only                                     |
-| `start X` / `end X`                       | where the flow begins and ends                                              | start / end event                                             |
-| `start X <kind> ...`                      | start when an event arrives                                                 | start event with a trigger                                    |
-| `end X terminate`                         | stop every running path                                                     | terminate end event                                           |
-| `end X cancel`                            | give up the block of steps around this end                                  | cancel end event                                              |
-| `form { x: number "Label" }`              | part of start element, pre-fills variables                                  | form fields on the start event                                |
-| `user X { assignee = "..." }`             | a step a person performs                                                    | user task                                                     |
-| `service X { class = "..." }`             | a step the system performs, in the engine                                   | service task                                                  |
-| `service X { topic = "..." }`             | a step an external worker picks up by topic                                 | service task, external type                                   |
-| `script X` + a fenced body                | an inline script, in JS, Groovy, Python, Ruby or FEEL                       | script task                                                   |
-| `step X`                                  | a step nothing in the engine automates                                      | task                                                          |
-| `send X { class = "..." }`                | a step that sends something out                                             | send task                                                     |
-| `receive X { message = "..." }`           | wait here until that message arrives                                        | receive task                                                  |
-| `decide X { decision = "..." }`           | a step a decision table answers                                             | business rule task                                            |
-| `if` / `else if` / `else`                 | a decision                                                                  | exclusive gateway                                             |
-| `while` / `do ... while`                  | a loop                                                                      | exclusive gateway loop                                        |
-| `parallel { { } { } }`                    | branches that run at the same time                                          | parallel gateway fork and join                                |
-| `parallel { if (c) { } else { } }`        | the branches whose condition holds run, or the `else` branch when none does | inclusive gateway fork and join                               |
-| `subprocess X { }`                        | a group of steps as one unit                                                | embedded sub-process                                          |
-| `attempt X { }`                           | a group of steps that can be given up as one                                | transaction sub-process                                       |
-| `call X { process = "other" }`            | start another process and wait for it                                       | call activity                                                 |
-| `goto X`                                  | jump to a named step in the same container                                  | sequence flow                                                 |
-| `on <kind> { }`                           | catch an event anywhere in this body                                        | event sub-process                                             |
-| `on Host: <kind> { }`                     | catch an event only while `Host` runs                                       | boundary event                                                |
-| `await <kind> ...`                        | stop here until the event arrives                                           | intermediate catch event                                      |
-| `await { <kind> ... { } <kind> ... { } }` | wait on several triggers, continue down whichever fires first               | event-based gateway, a catch event per branch, exclusive join |
-| `throw` / `emit <kind>`                   | raise an event, ending the path or continuing                               | throw event                                                   |
-| `for each x in c`                         | run a step once per item, or a set number of times                          | multi-instance marker                                         |
-| `asyncBefore = true`                      | engine settings: async, exclusive, priority, retries                        | `operaton:` attribute/element                                 |
-| `input x = "..."`                         | data into a step's execution, and `output` back out                         | `operaton:inputOutput`                                        |
-| `on create { class = "..." }`             | code on a step's lifecycle, not a caught event                              | execution / task listener                                     |
+| BPMNscript                                  | What it means                                                               | BPMN element                                                  |
+| ------------------------------------------- | --------------------------------------------------------------------------- | ------------------------------------------------------------- |
+| `process X { }`                             | the bpmn process, one per file                                              | `bpmn:process`                                                |
+| `var x: number`                             | declare a variable so its uses get type-checked                             | none; authoring-time only                                     |
+| `start X` / `end X`                         | where the flow begins and ends                                              | start / end event                                             |
+| `start X <kind>(...)`                       | start when an event arrives                                                 | start event with a trigger                                    |
+| `end X terminate`                           | stop every running path                                                     | terminate end event                                           |
+| `end X cancel`                              | give up the block of steps around this end                                  | cancel end event                                              |
+| `form { x: number "Label" }`                | part of start element, pre-fills variables                                  | form fields on the start event                                |
+| `user X(assignee: "...")`                   | a step a person performs                                                    | user task                                                     |
+| `service X(class: "...")`                   | a step the system performs, in the engine                                   | service task                                                  |
+| `service X(topic: "...")`                   | a step an external worker picks up by topic                                 | service task, external type                                   |
+| `script X` + a fenced body                  | an inline script, in JS, Groovy, Python, Ruby or FEEL                       | script task                                                   |
+| `step X`                                    | a step nothing in the engine automates                                      | task                                                          |
+| `send X(class: "...")`                      | a step that sends something out                                             | send task                                                     |
+| `receive X(message: "...")`                 | wait here until that message arrives                                        | receive task                                                  |
+| `decide X(decision: "...")`                 | a step a decision table answers                                             | business rule task                                            |
+| `if` / `else if` / `else`                   | a decision                                                                  | exclusive gateway                                             |
+| `while` / `do ... while`                    | a loop                                                                      | exclusive gateway loop                                        |
+| `parallel { { } { } }`                      | branches that run at the same time                                          | parallel gateway fork and join                                |
+| `parallel { if (c) { } else { } }`          | the branches whose condition holds run, or the `else` branch when none does | inclusive gateway fork and join                               |
+| `subprocess X { }`                          | a group of steps as one unit                                                | embedded sub-process                                          |
+| `attempt X { }`                             | a group of steps that can be given up as one                                | transaction sub-process                                       |
+| `call X(process: "other")`                  | start another process and wait for it                                       | call activity                                                 |
+| `goto X`                                    | jump to a named step in the same container                                  | sequence flow                                                 |
+| `on <kind> { }`                             | catch an event anywhere in this body                                        | event sub-process                                             |
+| `on Host: <kind> { }`                       | catch an event only while `Host` runs                                       | boundary event                                                |
+| `await <kind>(...)`                         | stop here until the event arrives                                           | intermediate catch event                                      |
+| `await { <kind>(...) { } <kind>(...) { } }` | wait on several triggers, continue down whichever fires first               | event-based gateway, a catch event per branch, exclusive join |
+| `throw` / `emit <kind>`                     | raise an event, ending the path or continuing                               | throw event                                                   |
+| `for each x in c`                           | run a step once per item, or a set number of times                          | multi-instance marker                                         |
+| `asyncBefore: true`                         | engine settings: async, exclusive, priority, retries                        | `operaton:` attribute/element                                 |
+| `input x = "..."`                           | data into a step's execution, and `output` back out                         | `operaton:inputOutput`                                        |
+| `on create(class: "...")`                   | code on a step's lifecycle, not a caught event                              | execution / task listener                                     |
 
-The `for` row is a modifier rather than a statement: every activity in the table takes it between the id and the settings block, meaning `user`, `service`, `script`, `step`, `send`, `receive`, `decide`, `subprocess`, `attempt`, and `call`.
-The last three rows are attribute-block members rather than statements, written inside an element's `{ }` alongside a `versionTag` on the process header itself, and not every element takes every one.
-The listener row reuses `on` positionally instead of opening a new event sub-process; only the enclosing block tells the two apart ([ADR-0023](docs/decisions/0023-listeners-on-the-attribute-block.md)).
+The `for` row is a modifier rather than a statement: every activity in the table takes it between the id and the parens, meaning `user`, `service`, `script`, `step`, `send`, `receive`, `decide`, `subprocess`, `attempt`, and `call`.
+The last three rows are members of an element rather than statements: an engine setting joins the rest in the `( )`, a parameter and a listener go in the `{ }`, and not every element takes every one.
+A `versionTag` on the process header itself is written with the other process declarations.
+The listener row reuses `on` instead of opening a new event sub-process; the body block a handler always carries and a listener never does is what tells the two apart ([ADR-0023](docs/decisions/0023-listeners-on-the-attribute-block.md)).
 The `attempt` head and the `cancel` end are one construct: the end gives up the block it sits in, `on <block>: cancel` beside the block catches it, and the block's finished steps that carry an undo block are undone in between.
 
 [packages/language/README.md](packages/language/README.md) is the full specification: which keys each element takes, which elements take parameters and listeners, and what a conditioned `parallel` branch compiles to.
@@ -150,41 +152,43 @@ The event layer reads like try/catch.
 A handler written at the end of a body catches an event raised anywhere inside it, `throw` ends the current path the way `throw` does in Java, and `emit` fires the event and carries on.
 Every trigger kind but `cancel` opens such a handler, `cancel` being caught on the block it gives up; the table in [packages/language/README.md](packages/language/README.md#the-event-layer) gives each kind with its payload.
 A message, a signal, or a timer can also start a process, carrying the same payload it does as a handler, and a `terminate` end stops every running path at once.
+An error or escalation code is declared in the process header, beside the `var` declarations, and named at every throw, emit, and catch site.
 
 A handler can also attach to one step instead of the whole body, which is where `on Host: kind` comes in.
 This process reviews an order, takes payment in a sub-process, and hangs four different escapes off those two activities:
 
 ```bpmnscript
 process order-handling {
-  error "PAYMENT_DECLINED" message "The card could not be charged"
+  error PAYMENT_DECLINED(message: "The card could not be charged")
+  escalation LARGE_PAYMENT_FLAGGED
 
   start OrderPlaced
-  user ReviewOrder "Review order" { assignee = "demo" }
+  user ReviewOrder(label: "Review order", assignee: "demo")
 
-  subprocess Payment "Process payment" {
-    service AuthorizePayment "Authorize payment" { class = "com.example.demo.LogDelegate" }
-    emit escalation "LARGE_PAYMENT_FLAGGED"
-    service CapturePayment "Capture payment" { class = "com.example.demo.LogDelegate" }
+  subprocess Payment(label: "Process payment") {
+    service AuthorizePayment(label: "Authorize payment", class: "com.example.demo.LogDelegate")
+    emit escalation(LARGE_PAYMENT_FLAGGED)
+    service CapturePayment(label: "Capture payment", class: "com.example.demo.LogDelegate")
   }
 
-  service ShipOrder "Ship order" { class = "com.example.demo.LogDelegate" }
+  service ShipOrder(label: "Ship order", class: "com.example.demo.LogDelegate")
   end OrderShipped
 
-  on ReviewOrder: timer after "PT4H" alongside {
-    service SendReviewReminder "Send a review reminder" { class = "com.example.demo.LogDelegate" }
+  on ReviewOrder: timer("PT4H", alongside) {
+    service SendReviewReminder(label: "Send a review reminder", class: "com.example.demo.LogDelegate")
   }
 
-  on ReviewOrder: message "AutoApproved" {
-    service MarkAutoApproved "Mark the order auto-approved" { class = "com.example.demo.LogDelegate" }
+  on ReviewOrder: message("AutoApproved") {
+    service MarkAutoApproved(label: "Mark the order auto-approved", class: "com.example.demo.LogDelegate")
     goto Payment
   }
 
-  on Payment: error "PAYMENT_DECLINED" (code c, message m) {
-    user ContactCustomer "Contact the customer about the decline" { assignee = "demo" }
+  on Payment: error(PAYMENT_DECLINED, code: c, message: m) {
+    user ContactCustomer(label: "Contact the customer about the decline", assignee: "demo")
   }
 
-  on Payment: escalation "LARGE_PAYMENT_FLAGGED" alongside {
-    user ReviewLargePayment "Review the large payment" { assignee = "manager" }
+  on Payment: escalation(LARGE_PAYMENT_FLAGGED, alongside) {
+    user ReviewLargePayment(label: "Review the large payment", assignee: "manager")
   }
 }
 ```
@@ -200,33 +204,33 @@ When something later fails, the completed units unwind newest first.
 
 ```bpmnscript
 process booking-saga {
-  error "BOOKING_FAILED" message "A booking step could not be completed"
+  error BOOKING_FAILED(message: "A booking step could not be completed")
 
   start TripRequested
-  user ReviewTrip "Review the trip" { assignee = "demo" }
+  user ReviewTrip(label: "Review the trip", assignee: "demo")
 
-  subprocess BookFlight "Book the flight" {
-    service ReserveSeat "Reserve the seat" { class = "com.example.demo.LogDelegate" }
+  subprocess BookFlight(label: "Book the flight") {
+    service ReserveSeat(label: "Reserve the seat", class: "com.example.demo.LogDelegate")
 
     on compensation {
-      service ReleaseSeat "Release the seat" { class = "com.example.demo.LogDelegate" }
+      service ReleaseSeat(label: "Release the seat", class: "com.example.demo.LogDelegate")
     }
   }
 
-  subprocess BookHotel "Book the hotel" {
-    service ReserveRoom "Reserve the room" { class = "com.example.demo.LogDelegate" }
+  subprocess BookHotel(label: "Book the hotel") {
+    service ReserveRoom(label: "Reserve the room", class: "com.example.demo.LogDelegate")
 
     on compensation {
-      service ReleaseRoom "Release the room" { class = "com.example.demo.LogDelegate" }
+      service ReleaseRoom(label: "Release the room", class: "com.example.demo.LogDelegate")
     }
   }
 
-  service ConfirmTrip "Confirm the trip" { class = "com.example.demo.LogDelegate" }
+  service ConfirmTrip(label: "Confirm the trip", class: "com.example.demo.LogDelegate")
   end TripConfirmed
 
-  on error "BOOKING_FAILED" {
+  on error(BOOKING_FAILED) {
     emit compensation Undo
-    user NotifyTraveler "Notify the traveler" { assignee = "demo" }
+    user NotifyTraveler(label: "Notify the traveler", assignee: "demo")
   }
 }
 ```
@@ -241,8 +245,8 @@ The end-to-end suite deploys several of that directory's processes to an Operato
 BPMN is a much larger language than this DSL, so a `.bpmn` file can hold more than a `.bpmnscript` has a form for.
 A decompile deals with that in three ways.
 
-- A construct the DSL cannot express (a collaboration, a standard loop, a compensation boundary event, an event definition the language doesn't model) is refused with an error and nothing is written.
-- Content the intermediate representation doesn't carry (a lane, a text annotation, an `operaton:field` value injection, an engine attribute found on a gateway) is dropped with a warning naming each item, and so is an `isExecutable="false"`, which imports as executable whatever the source said.
+- A construct the DSL cannot express (a collaboration, an ad hoc subprocess, a compensation boundary event, an event definition the language doesn't model) is refused with an error and nothing is written.
+- Content the intermediate representation doesn't carry (a lane, a text annotation, an `operaton:field` value injection, an engine attribute found on a gateway, a manual task, a standard loop, a data object) is dropped with a warning naming each item, and so is an `isExecutable="false"`, which imports as executable whatever the source said.
   The exceptions are attributes the importer doesn't read.
 - What the print hop cannot carry into the script is warned about too, and those warnings are the ones to read before building the output.
   A gateway's name merely drops, since the script derives its splits and merges from block structure and no statement is left to carry one.

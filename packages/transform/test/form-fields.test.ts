@@ -53,15 +53,14 @@ function userOf(process: BpmnProcess): UserTask {
   return u as UserTask;
 }
 
-const SOURCE = `process loan "Loan" {
+const SOURCE = `process loan(label: "Loan") {
   start RequestReceived {
     form {
       amount: number "Loan amount"
       creditScore: number "Credit score" = 700
     }
   }
-  user Approve "Approve loan" {
-    assignee = "demo"
+  user Approve(label: "Approve loan", assignee: "demo") {
     form { approved: boolean "Approve the loan?" = false }
   }
 }`;

@@ -1,5 +1,6 @@
 /**
- * Deterministic ids for BPMN elements the DSL does not name.
+ * Deterministic ids for BPMN elements the DSL does not name, and the names
+ * error and escalation declarations are written with.
  *
  * Every template here is frozen by ADR 0010, Use Deterministic Structural Ids
  * for Synthesized BPMN Elements: the printer recognizes an id it minted by the
@@ -8,6 +9,8 @@
  * set and claim their result in it; the positional ones are unique by
  * construction.
  */
+
+import { BpmnScriptGrammar, reservedWordsOf } from '@bpmn-script/language';
 
 /** The prefixes the printer matches on to tell a minted id from an authored one. */
 export const START_EVENT_PREFIX = 'StartEvent_';
@@ -88,6 +91,43 @@ function claimId(base: string, taken: Set<string>): string {
   const id = resolveCollision(base, taken);
   taken.add(id);
   return id;
+}
+
+/** Mirrors the `ID` terminal, which is the only shape a declaration name has. */
+const ID_SHAPED = /^[_a-zA-Z]\w*(-\w+)*$/;
+
+function isWritableName(word: string): boolean {
+  return (
+    ID_SHAPED.test(word) && !reservedWordsOf(BpmnScriptGrammar()).has(word)
+  );
+}
+
+/**
+ * The name an error or escalation declaration is written with: `preferred`
+ * where a declaration could carry it, otherwise one minted from the code. The
+ * result is claimed in `taken`, since two codes differing only in punctuation
+ * mint the same name and one name written twice leaves every use site
+ * ambiguous.
+ */
+export function claimDeclarationName(
+  code: string,
+  taken: Set<string>,
+  preferred?: string,
+): string {
+  const base =
+    preferred !== undefined && isWritableName(preferred)
+      ? preferred
+      : mintDeclarationName(code);
+  return claimId(base, taken);
+}
+
+/** A code a name cannot spell keeps its word characters and loses the rest. */
+function mintDeclarationName(code: string): string {
+  const sanitized = isWritableName(code) ? code : code.replace(/\W/g, '_');
+  // A keyword lexes as itself rather than as an `ID`, and a word opening on a
+  // digit does not lex as one at all, so neither can name a declaration. An
+  // underscore fixes both, and no keyword carries one.
+  return isWritableName(sanitized) ? sanitized : `_${sanitized}`;
 }
 
 /** First free id in `base`, `base_2`, `base_3`, ... Does not mutate `taken`. */

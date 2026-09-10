@@ -102,11 +102,11 @@ describe("idempotence: golden .bpmn -> IR2 -> DSL' -> IR3", () => {
     expect(rt.dslPrime).toContain('else {');
     expect(rt.dslPrime).toContain('if (overseas) {');
     expect(rt.dslPrime.match(/await \{/g)).toHaveLength(2);
-    expect(rt.dslPrime).toContain('message "PaymentReceived" {');
-    expect(rt.dslPrime).toContain('timer after "P3D" { asyncBefore = true } {');
-    expect(rt.dslPrime).toContain('signal "StockArrived" {');
-    expect(rt.dslPrime).toContain('condition (stockShort) {');
-    expect(rt.dslPrime).toContain('await message "CarrierBooked"');
+    expect(rt.dslPrime).toContain('message("PaymentReceived") {');
+    expect(rt.dslPrime).toContain('timer("P3D", asyncBefore: true) {');
+    expect(rt.dslPrime).toContain('signal("StockArrived") {');
+    expect(rt.dslPrime).toContain('condition(stockShort) {');
+    expect(rt.dslPrime).toContain('await message("CarrierBooked")');
   });
 
   it("every edge folds into a block, so DSL' jumps nowhere", () => {

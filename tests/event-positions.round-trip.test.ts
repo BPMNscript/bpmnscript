@@ -40,16 +40,16 @@ describe("idempotence: golden .bpmn -> IR2 -> DSL' -> IR3", () => {
 
   it("the decompiled DSL' writes each position back on its own statement", () => {
     expect(rt.dslPrime).toContain(
-      'start OrderReceived "An order arrives" message "OrderReceived"',
+      'start OrderReceived message("OrderReceived", label: "An order arrives")',
     );
     expect(rt.dslPrime).toContain(
-      'emit message NotifyWarehouse "WarehouseNotified"',
+      'emit message NotifyWarehouse("WarehouseNotified")',
     );
     expect(rt.dslPrime).toContain(
-      'end OrderAbandoned "Abandon every path" terminate',
+      'end OrderAbandoned terminate(label: "Abandon every path")',
     );
     expect(rt.dslPrime).toContain(
-      'throw message OrderAcknowledged "OrderAcknowledged"',
+      'throw message OrderAcknowledged("OrderAcknowledged")',
     );
   });
 });

@@ -16,10 +16,10 @@
 // Every step is a user task, so the process needs no Java class of its own and
 // every state it reaches is observable over the REST API.
 
-process order-dispatch "Order dispatch" {
+process order-dispatch(label: "Order dispatch") {
   var amount: number
 
-  start OrderReceived "Order received" {
+  start OrderReceived(label: "Order received") {
     form {
       amount: number "Order amount"
     }
@@ -27,26 +27,26 @@ process order-dispatch "Order dispatch" {
 
   parallel {
     if (amount > 10000) {
-      user Audit "Audit the large order" { assignee = "manager" }
+      user Audit(label: "Audit the large order", assignee: "manager")
     }
     if (amount > 0) {
-      user Record "Record the order" { assignee = "demo" }
+      user Record(label: "Record the order", assignee: "demo")
     }
     else {
-      user Triage "Triage the order by hand" { assignee = "demo" }
+      user Triage(label: "Triage the order by hand", assignee: "demo")
     }
   }
 
   await {
-    message "DispatchConfirmed" {
-      user Handover "Hand the shipment to the carrier" { assignee = "demo" }
+    message("DispatchConfirmed") {
+      user Handover(label: "Hand the shipment to the carrier", assignee: "demo")
     }
-    timer after "PT30M" {
-      user ChaseCarrier "Chase the carrier" { assignee = "demo" }
+    timer("PT30M") {
+      user ChaseCarrier(label: "Chase the carrier", assignee: "demo")
     }
   }
 
-  user CloseOrder "Close the order" { assignee = "demo" }
+  user CloseOrder(label: "Close the order", assignee: "demo")
 
-  end OrderDispatched "Order dispatched"
+  end OrderDispatched(label: "Order dispatched")
 }

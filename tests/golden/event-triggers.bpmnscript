@@ -1,19 +1,19 @@
 // Event-layer round-trip fixture: one order-fulfilment narrative that exercises
 // the DSL's message, signal, timer, and conditional triggers end to end.
 //
-//   - an `on message "..."` handler at process level (the process's inbox);
+//   - an `on message("...")` handler at process level (the process's inbox);
 //   - a `subprocess` owning three handlers at once: a reminder
-//     `on timer after "..." alongside`, an `on condition (...) alongside`
+//     `on timer("...", alongside)`, an `on condition(..., alongside)`
 //     watchdog whose condition reads a declared form variable, and an
-//     interrupting `on timer at "..."` purge, so the duration and date timer
+//     interrupting `on timer(at: "...")` purge, so the duration and date timer
 //     forms sit side by side on one container;
-//   - an `on signal "..."` handler, plus an `emit signal Notify "..."`
+//   - an `on signal("...")` handler, plus an `emit signal Notify("...")`
 //     (broadcast and keep going, goto-targeted) and a terminal
-//     `throw signal Announce "..."`
+//     `throw signal Announce("...")`
 //     (broadcast and end this path) of the SAME signal name, so all three share
 //     one root;
 //   - a `var timer: string` read in a service expression, pinning that the timer
-//     particle words coexist with same-named variables.
+//     trigger word coexists with a same-named variable.
 //
 // The condition variable is declared on the start form so it survives an
 // import-and-back round-trip. Every handler opens with an explicit trigger
@@ -30,53 +30,53 @@ process order-fulfilment {
     }
   }
 
-  user ReviewOrder "Review the order" { assignee = "demo" }
-  service ScheduleReminder "Schedule the reminder" { expression = "${reminderService.schedule(timer)}" }
+  user ReviewOrder(label: "Review the order", assignee: "demo")
+  service ScheduleReminder(label: "Schedule the reminder", expression: "${reminderService.schedule(timer)}")
 
-  subprocess FulfilOrder "Fulfil the order" {
+  subprocess FulfilOrder(label: "Fulfil the order") {
     start FulfilStart
-    service ReserveStock "Reserve the stock" { class = "com.example.orders.ReserveStockDelegate" }
-    service PackParcel "Pack the parcel" { class = "com.example.orders.PackParcelDelegate" }
+    service ReserveStock(label: "Reserve the stock", class: "com.example.orders.ReserveStockDelegate")
+    service PackParcel(label: "Pack the parcel", class: "com.example.orders.PackParcelDelegate")
     end FulfilDone
 
-    on timer after "PT2H" alongside {
+    on timer("PT2H", alongside) {
       start RemindStart
-      user ChaseWarehouse "Chase the warehouse" { assignee = "demo" }
+      user ChaseWarehouse(label: "Chase the warehouse", assignee: "demo")
       end RemindDone
     }
-    on condition (stockLevel < 5) alongside {
+    on condition(stockLevel < 5, alongside) {
       start LowStockStart
-      service ReorderStock "Reorder the stock" { class = "com.example.orders.ReorderDelegate" }
+      service ReorderStock(label: "Reorder the stock", class: "com.example.orders.ReorderDelegate")
       end LowStockDone
     }
-    on timer at "2026-08-01T09:00:00" {
+    on timer(at: "2026-08-01T09:00:00") {
       start PurgeStart
-      service PurgeDraft "Purge the draft" { class = "com.example.orders.PurgeDelegate" }
+      service PurgeDraft(label: "Purge the draft", class: "com.example.orders.PurgeDelegate")
       end PurgeDone
     }
   }
 
-  service ShipParcel "Ship the parcel" { class = "com.example.orders.ShipDelegate" }
+  service ShipParcel(label: "Ship the parcel", class: "com.example.orders.ShipDelegate")
 
   if (priority > 5) {
-    service ExpediteDispatch "Expedite the dispatch" { class = "com.example.orders.ExpediteDelegate" }
+    service ExpediteDispatch(label: "Expedite the dispatch", class: "com.example.orders.ExpediteDelegate")
     goto Notify
   } else {
-    service StandardDispatch "Dispatch normally" { class = "com.example.orders.DispatchDelegate" }
+    service StandardDispatch(label: "Dispatch normally", class: "com.example.orders.DispatchDelegate")
   }
 
-  emit signal Notify "OrderFulfilled"
+  emit signal Notify("OrderFulfilled")
 
-  throw signal Announce "OrderFulfilled"
+  throw signal Announce("OrderFulfilled")
 
-  on message "OrderCancelled" {
+  on message("OrderCancelled") {
     start CancelledStart
-    service RollbackOrder "Roll back the order" { class = "com.example.orders.RollbackDelegate" }
+    service RollbackOrder(label: "Roll back the order", class: "com.example.orders.RollbackDelegate")
     end CancelledDone
   }
-  on signal "OrderFulfilled" alongside {
+  on signal("OrderFulfilled", alongside) {
     start FulfilledStart
-    user ArchiveOrder "Archive the order manually" { assignee = "demo" }
+    user ArchiveOrder(label: "Archive the order manually", assignee: "demo")
     end FulfilledDone
   }
 }

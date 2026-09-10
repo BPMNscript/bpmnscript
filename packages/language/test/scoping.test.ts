@@ -20,6 +20,13 @@
  * complete list pins what each reference reaches, the exact boundary wording,
  * and that nothing stacks a second diagnostic on a replaced one. Diagnostic
  * severity follows the LSP convention: `1 = Error`, `2 = Warning`.
+ *
+ * A code reference is the third kind and asks the same question the other way
+ * round: every identifier in every expression is one, so what separates a code
+ * from a variable is the scope it is resolved in. {@link codeResolutionsOf}
+ * therefore reads every identifier and every diagnostic of either severity, so
+ * a scope reaching further than a code position shows up as a resolved
+ * identifier where a warning belongs.
  */
 
 import { beforeAll, describe, expect, test } from 'vitest';
@@ -37,7 +44,8 @@ import {
   isOnHandler,
   isProcess,
   isSubProcess,
-  reservedWordsOf,
+  isVarRef,
+  payloadTextOf,
 } from '@bpmn-script/language';
 import { withTextMessages } from './helpers/diagnostics.js';
 
@@ -60,13 +68,14 @@ type Row = readonly [
 
 /**
  * The handler as its source header reads, since a handler has no name to be
- * identified by: `on <host>: <trigger> "<code>"`, each part where written.
+ * identified by: `on <host>: <trigger>(<payload>)`, each part where written.
  */
 function headerOf(handler: OnHandler): string {
   const head = handler.host
     ? `on ${handler.host.$refText}: ${handler.trigger}`
     : `on ${handler.trigger}`;
-  return handler.code ? `${head} "${handler.code}"` : head;
+  const code = payloadTextOf(handler.items);
+  return code ? `${head}(${code})` : head;
 }
 
 /**
@@ -123,6 +132,44 @@ async function checkRow(
   expected: readonly string[],
 ): Promise<void> {
   expect(await resolutionsOf(source)).toEqual(expected);
+}
+
+/**
+ * Every identifier of `source` in document order with what it resolves to,
+ * then every diagnostic of either severity. Warnings are in because the
+ * undeclared-variable one is what an identifier outside a code position has to
+ * keep producing.
+ */
+async function codeResolutionsOf(source: string): Promise<string[]> {
+  const document = await parse(source, { validation: true });
+  expect(document.parseResult.parserErrors.map((e) => e.message)).toEqual([]);
+
+  const lines: string[] = [];
+  for (const node of AstUtils.streamAst(document.parseResult.value)) {
+    if (isVarRef(node)) {
+      lines.push(`${node.ref.$refText} -> ${targetOf(node.ref)}`);
+    }
+  }
+  for (const diagnostic of withTextMessages(document.diagnostics ?? [])) {
+    const severity =
+      diagnostic.severity === SEVERITY_ERROR ? 'error' : 'warning';
+    lines.push(`${severity}: ${diagnostic.message}`);
+  }
+  return lines;
+}
+
+/** The body the code-resolution table runs. */
+async function checkCodeRow(
+  _title: string,
+  source: string,
+  expected: readonly string[],
+): Promise<void> {
+  expect(await codeResolutionsOf(source)).toEqual(expected);
+}
+
+/** The warning an identifier that names no variable still earns. */
+function undeclaredVariable(name: string): string {
+  return `warning: Variable '${name}' is not declared. Add 'var ${name}: <type>' to the process.`;
 }
 
 /** The trailing sentence of a boundary explanation, by the boundary crossed. */
@@ -237,46 +284,46 @@ describe('Scoping - container-scoped goto (event-handler boundary)', () => {
   test.each<Row>([
     [
       'a goto outside a handler does not reach a step inside it',
-      `process p { goto Inner on error "PAYMENT_FAILED" { user Inner } }`,
+      `process p { error PAYMENT_FAILED goto Inner on error(PAYMENT_FAILED) { user Inner } }`,
       [
         'goto Inner -> unresolved',
         boundary(
           'Inner',
-          `inside the 'on error "PAYMENT_FAILED"' handler`,
+          `inside the 'on error(PAYMENT_FAILED)' handler`,
           'handler',
         ),
       ],
     ],
     [
       'a goto inside a handler reaches a step of that handler body',
-      `process p { user Main on error "PAYMENT_FAILED" { user Inner goto Inner } }`,
-      ['goto Inner -> p/on error "PAYMENT_FAILED"/Inner:UserTask'],
+      `process p { error PAYMENT_FAILED user Main on error(PAYMENT_FAILED) { user Inner goto Inner } }`,
+      ['goto Inner -> p/on error(PAYMENT_FAILED)/Inner:UserTask'],
     ],
     [
       'a goto inside a handler reaches a sibling step nested in an if block',
-      `process p { user Main on error "PAYMENT_FAILED" { if (true) { user Deep } goto Deep } }`,
-      ['goto Deep -> p/on error "PAYMENT_FAILED"/Deep:UserTask'],
+      `process p { error PAYMENT_FAILED user Main on error(PAYMENT_FAILED) { if (true) { user Deep } goto Deep } }`,
+      ['goto Deep -> p/on error(PAYMENT_FAILED)/Deep:UserTask'],
     ],
     [
       'a goto inside a handler does not reach a step of the enclosing body',
-      `process p { user Outer on error "PAYMENT_FAILED" { goto Outer } }`,
+      `process p { error PAYMENT_FAILED user Outer on error(PAYMENT_FAILED) { goto Outer } }`,
       [
         'goto Outer -> unresolved',
         boundary(
           'Outer',
-          `outside the 'on error "PAYMENT_FAILED"' handler`,
+          `outside the 'on error(PAYMENT_FAILED)' handler`,
           'handler',
         ),
       ],
     ],
     [
       'a goto in an outer handler does not reach a step of a nested one',
-      `process p { user Main on error "Outer" { goto Deep on escalation "Inner" { user Deep } } }`,
+      `process p { error Outer escalation Inner user Main on error(Outer) { goto Deep on escalation(Inner) { user Deep } } }`,
       [
         'goto Deep -> unresolved',
         boundary(
           'Deep',
-          `inside the 'on escalation "Inner"' handler`,
+          `inside the 'on escalation(Inner)' handler`,
           'handler',
         ),
       ],
@@ -291,24 +338,24 @@ describe('Scoping - container-scoped goto (event-handler boundary)', () => {
     ],
     [
       'the handler the goto sits in is named where the target is outside it',
-      `process p { user Outer on escalation "LOW_STOCK" { goto Outer } }`,
+      `process p { escalation LOW_STOCK user Outer on escalation(LOW_STOCK) { goto Outer } }`,
       [
         'goto Outer -> unresolved',
         boundary(
           'Outer',
-          `outside the 'on escalation "LOW_STOCK"' handler`,
+          `outside the 'on escalation(LOW_STOCK)' handler`,
           'handler',
         ),
       ],
     ],
     [
       'a goto to a name nowhere in the process keeps the stock message',
-      `process p { goto Missing on error "PAYMENT_FAILED" { user Inner } }`,
+      `process p { error PAYMENT_FAILED goto Missing on error(PAYMENT_FAILED) { user Inner } }`,
       ['goto Missing -> unresolved', stockError('Missing')],
     ],
     [
       'an `on timer` handler is named by its code-less header',
-      `process p { goto Inner on timer after "PT1H" { user Inner } }`,
+      `process p { goto Inner on timer(at: "2026-08-01T09:00:00") { user Inner } }`,
       [
         'goto Inner -> unresolved',
         boundary('Inner', `inside an 'on timer' handler`, 'handler'),
@@ -316,12 +363,12 @@ describe('Scoping - container-scoped goto (event-handler boundary)', () => {
     ],
     [
       'a goto inside an `on message` handler reaches a step of that handler body',
-      `process p { user Main on message "Invoice Received" { user Inner goto Inner } }`,
-      ['goto Inner -> p/on message "Invoice Received"/Inner:UserTask'],
+      `process p { user Main on message("Invoice Received") { user Inner goto Inner } }`,
+      ['goto Inner -> p/on message(Invoice Received)/Inner:UserTask'],
     ],
     [
       'a goto reaches a named throw and a named emit of its own container',
-      `process p { goto Failed goto Ping throw error Failed "PAYMENT_FAILED" emit escalation Ping "LOW_STOCK" }`,
+      `process p { error PAYMENT_FAILED escalation LOW_STOCK goto Failed goto Ping throw error Failed(PAYMENT_FAILED) emit escalation Ping(LOW_STOCK) }`,
       [
         'goto Failed -> p/Failed:ThrowStatement',
         'goto Ping -> p/Ping:EmitStatement',
@@ -330,12 +377,12 @@ describe('Scoping - container-scoped goto (event-handler boundary)', () => {
     ],
     [
       'a goto to a named throw inside a handler is a boundary crossing, not a missing name',
-      `process p { goto Failed on error "PAYMENT_FAILED" { throw error Failed "PAYMENT_FAILED" } }`,
+      `process p { error PAYMENT_FAILED goto Failed on error(PAYMENT_FAILED) { throw error Failed(PAYMENT_FAILED) } }`,
       [
         'goto Failed -> unresolved',
         boundary(
           'Failed',
-          `inside the 'on error "PAYMENT_FAILED"' handler`,
+          `inside the 'on error(PAYMENT_FAILED)' handler`,
           'handler',
         ),
       ],
@@ -347,17 +394,17 @@ describe('Scoping - hosted handler host reference', () => {
   test.each<Row>([
     [
       "a host reaches an activity of the handler's own container",
-      `process p { user Review on Review: timer after "PT2H" { } }`,
+      `process p { user Review on Review: timer("PT2H") { } }`,
       ['host Review -> p/Review:UserTask'],
     ],
     [
       'a host reaches an activity nested in an if block of that container',
-      `process p { if (true) { user Deep } on Deep: message "Cancelled" { } }`,
+      `process p { if (true) { user Deep } on Deep: message("Cancelled") { } }`,
       ['host Deep -> p/Deep:UserTask'],
     ],
     [
       'a host does not reach into a sibling subprocess',
-      `process p { subprocess Sub { user Inner } on Inner: error "X" { } }`,
+      `process p { error X subprocess Sub { user Inner } on Inner: error(X) { } }`,
       [
         'host Inner -> unresolved',
         boundary('Inner', `inside subprocess 'Sub'`, 'host'),
@@ -365,30 +412,30 @@ describe('Scoping - hosted handler host reference', () => {
     ],
     [
       'a host does not reach into a host-less handler body',
-      `process p { user Review on error "X" { user Inner } on Inner: message "Cancelled" { } }`,
+      `process p { error X user Review on error(X) { user Inner } on Inner: message("Cancelled") { } }`,
       [
         'host Inner -> unresolved',
-        boundary('Inner', `inside the 'on error "X"' handler`, 'host'),
+        boundary('Inner', `inside the 'on error(X)' handler`, 'host'),
       ],
     ],
     [
       'a host does not reach an activity of another process',
-      `process a { user Review on Only: signal "Cancelled" { } } process b { user Only }`,
+      `process a { user Review on Only: signal("Cancelled") { } } process b { user Only }`,
       ['host Only -> unresolved', stockError('Only'), MULTI_PROCESS],
     ],
     [
       "a host reads the handler's container, not the handler's own body",
-      `process p { user Review on Review: error "X" { user Review2 } }`,
+      `process p { error X user Review on Review: error(X) { user Review2 } }`,
       ['host Review -> p/Review:UserTask'],
     ],
     [
       "a host inside a subprocess reaches that subprocess's own step",
-      `process p { user Outer subprocess Sub { user Review on Review: error "X" { } } }`,
+      `process p { error X user Outer subprocess Sub { user Review on Review: error(X) { } } }`,
       ['host Review -> p/Sub/Review:UserTask'],
     ],
     [
       'a host inside a subprocess does not reach a step of the enclosing process',
-      `process p { user Outer subprocess Sub { user Review on Outer: error "X" { } } }`,
+      `process p { error X user Outer subprocess Sub { user Review on Outer: error(X) { } } }`,
       [
         'host Outer -> unresolved',
         boundary('Outer', `outside subprocess 'Sub'`, 'host'),
@@ -396,7 +443,7 @@ describe('Scoping - hosted handler host reference', () => {
     ],
     [
       'a host naming nothing anywhere keeps the stock message',
-      `process p { user Review on Missing: error "X" { } }`,
+      `process p { error X user Review on Missing: error(X) { } }`,
       ['host Missing -> unresolved', stockError('Missing')],
     ],
   ])('%s', checkRow);
@@ -406,20 +453,20 @@ describe('Scoping - goto through a hosted handler body', () => {
   test.each<Row>([
     [
       'a goto inside a hosted handler body reaches a main-flow step',
-      `process p { user Review user Next on Review: error "X" { goto Next } }`,
+      `process p { error X user Review user Next on Review: error(X) { goto Next } }`,
       ['host Review -> p/Review:UserTask', 'goto Next -> p/Next:UserTask'],
     ],
     [
       'a main-flow goto reaches a step inside a hosted handler body',
-      `process p { user Review goto Fix on Review: error "X" { user Fix } }`,
+      `process p { error X user Review goto Fix on Review: error(X) { user Fix } }`,
       [
-        'goto Fix -> p/on Review: error "X"/Fix:UserTask',
+        'goto Fix -> p/on Review: error(X)/Fix:UserTask',
         'host Review -> p/Review:UserTask',
       ],
     ],
     [
       'a hosted handler body inside a subprocess stays isolated from the process body',
-      `process p { user Outer subprocess Sub { user Review on Review: error "X" { goto Outer } } }`,
+      `process p { error X user Outer subprocess Sub { user Review on Review: error(X) { goto Outer } } }`,
       [
         'host Review -> p/Sub/Review:UserTask',
         'goto Outer -> unresolved',
@@ -428,11 +475,11 @@ describe('Scoping - goto through a hosted handler body', () => {
     ],
     [
       'a host-less handler nested in a hosted handler body is still its own container',
-      `process p { user Review on Review: error "X" { goto Inner on escalation "Y" { user Inner } } }`,
+      `process p { error X escalation Y user Review on Review: error(X) { goto Inner on escalation(Y) { user Inner } } }`,
       [
         'host Review -> p/Review:UserTask',
         'goto Inner -> unresolved',
-        boundary('Inner', `inside the 'on escalation "Y"' handler`, 'handler'),
+        boundary('Inner', `inside the 'on escalation(Y)' handler`, 'handler'),
       ],
     ],
   ])('%s', checkRow);
@@ -459,6 +506,77 @@ describe('Scoping - container-scoped goto (compensation handler boundary)', () =
       ['goto Undo -> p/Sub/Undo:ThrowStatement'],
     ],
   ])('%s', checkRow);
+});
+
+describe('Scoping - code declarations reached from a code position', () => {
+  test.each<Row>([
+    [
+      'a thrown code resolves to the declaration of that name',
+      `process p { error OUT_OF_STOCK(message: "Out of stock") user Pack throw error(OUT_OF_STOCK) }`,
+      ['OUT_OF_STOCK -> p/OUT_OF_STOCK:CodeDecl'],
+    ],
+    [
+      'an emitted escalation code resolves the same way',
+      `process p { escalation MANUAL_REVIEW user Pack emit escalation(MANUAL_REVIEW) }`,
+      ['MANUAL_REVIEW -> p/MANUAL_REVIEW:CodeDecl'],
+    ],
+    [
+      'a caught code resolves from a boundary handler',
+      `process p { error OUT_OF_STOCK(message: "Out of stock") user Pack on Pack: error(OUT_OF_STOCK) { user F } }`,
+      ['OUT_OF_STOCK -> p/OUT_OF_STOCK:CodeDecl'],
+    ],
+    [
+      'a code position naming nothing declared says how to declare it',
+      `process p { user Pack throw error(NOPE) }`,
+      [
+        'NOPE -> unresolved',
+        `error: 'NOPE' is not declared. Add 'error NOPE' to the process.`,
+      ],
+    ],
+    [
+      'the missing declaration is named with the trigger word it was written under',
+      `process p { user Pack emit escalation(NOPE) }`,
+      [
+        'NOPE -> unresolved',
+        `error: 'NOPE' is not declared. Add 'escalation NOPE' to the process.`,
+      ],
+    ],
+    [
+      'a code position does not reach a declaration of another kind',
+      `process p { error CODE(message: "m") user A emit escalation(CODE) user B }`,
+      [
+        'CODE -> unresolved',
+        `error: 'CODE' is declared as an error, not an escalation.`,
+      ],
+    ],
+    [
+      'a code position does not reach a declaration of another process',
+      `process a { error X(message: "x") user U } process b { user V throw error(X) }`,
+      [
+        'X -> unresolved',
+        `error: 'X' is not declared. Add 'error X' to the process.`,
+        MULTI_PROCESS,
+      ],
+    ],
+    [
+      'an expression position does not reach a declared code, and still warns as an undeclared variable',
+      `process p { error PAYMENT_DECLINED(message: "x") user A if (PAYMENT_DECLINED) { user B } }`,
+      [
+        'PAYMENT_DECLINED -> unresolved',
+        undeclaredVariable('PAYMENT_DECLINED'),
+      ],
+    ],
+    [
+      'a declared variable in an expression position resolves to no declaration and raises nothing',
+      `process p { var amount: number user A if (amount > 100) { user B } }`,
+      ['amount -> unresolved'],
+    ],
+    [
+      'a condition payload is an expression, not a code, whichever way it is written',
+      `process p { var ready: boolean user Check on Check: condition(ready) { user B } }`,
+      ['ready -> unresolved'],
+    ],
+  ])('%s', checkCodeRow);
 });
 
 describe('Scoping - reserved-word guidance', () => {
@@ -491,15 +609,5 @@ describe('Scoping - reserved-word guidance', () => {
     expect(document.parseResult.parserErrors.map((e) => e.message)).toEqual(
       expected,
     );
-  });
-
-  test('the reserved-word set holds the grammar keywords and none of its operators', () => {
-    const words = reservedWordsOf(services.BpmnScript.Grammar);
-    // The words the guidance above fires on, and the ones no author could
-    // mistake for a name.
-    expect(words.has('date')).toBe(true);
-    expect(words.has('process')).toBe(true);
-    expect(words.has('&&')).toBe(false);
-    expect(words.has('{')).toBe(false);
   });
 });

@@ -15,28 +15,28 @@ process order-fulfillment {
   var retries: number
 
   start OrderReceived
-  user RecordOrder "Record order" { assignee = "demo" }
+  user RecordOrder(label: "Record order", assignee: "demo")
 
-  subprocess Payment "Handle payment" {
+  subprocess Payment(label: "Handle payment") {
     if (amount > 1000) {
-      user ManualReview "Manual review" { assignee = "manager" }
+      user ManualReview(label: "Manual review", assignee: "manager")
     } else {
-      service AutoCharge "Auto-charge card" { class = "com.example.demo.LogDelegate" }
+      service AutoCharge(label: "Auto-charge card", class: "com.example.demo.LogDelegate")
     }
   }
 
-  subprocess Fulfillment "Fulfill the order" {
+  subprocess Fulfillment(label: "Fulfill the order") {
     start FulfillmentStart
     while (retries < 3) {
-      service ReserveStock "Reserve stock" { class = "com.example.demo.LogDelegate" }
+      service ReserveStock(label: "Reserve stock", class: "com.example.demo.LogDelegate")
     }
-    subprocess Shipping "Ship the parcel" {
-      user PackParcel "Pack parcel" { assignee = "demo" }
-      service DispatchParcel "Dispatch parcel" { class = "com.example.demo.LogDelegate" }
+    subprocess Shipping(label: "Ship the parcel") {
+      user PackParcel(label: "Pack parcel", assignee: "demo")
+      service DispatchParcel(label: "Dispatch parcel", class: "com.example.demo.LogDelegate")
     }
     end FulfillmentDone
   }
 
-  user CloseOrder "Close order" { assignee = "demo" }
+  user CloseOrder(label: "Close order", assignee: "demo")
   end OrderClosed
 }

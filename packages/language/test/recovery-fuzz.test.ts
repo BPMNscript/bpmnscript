@@ -53,23 +53,23 @@ const FENCE = '`' + '`' + '`';
  * mutants reach those walks with one half of each colliding pair torn up.
  */
 const CORPUS = [
-  `process p { error "c" message "m" start S end E }`,
-  `process p { var a: number start S user U "L" { assignee = "x" form { a: number } } end E }`,
-  `process p { start S message "M" script K ${FENCE}js\nwork()\n${FENCE} end E terminate }`,
-  `process p { start S user U on error "E" (code as c) { step T } end E }`,
-  `process p { start S call C "L" { process = "q" in x out y } end E }`,
+  `process p { error E(code: "c", message: "m") start S throw error(E) }`,
+  `process p { var a: number start S user U(label: "L", assignee: "x") { form { a: number } } end E }`,
+  `process p { start S message("M") script K ${FENCE}js\nwork()\n${FENCE} end E terminate }`,
+  `process p { error E start S user U on error(E, code: c) { step T } end E }`,
+  `process p { start S call C(label: "L", process: "q") { in x out y } end E }`,
   `process p { var ls: json start S user U for 2 each l in ls sequentially until (a > 1) end E }`,
-  `process p { start S throw escalation "E" }`,
-  `process p { start S emit signal "S" await timer at "t" end E }`,
-  `process p { start S user U { on start { class = "C" } input a = [1] output b = { k: "v" } } end E }`,
+  `process p { escalation E start S throw escalation(E) }`,
+  `process p { start S emit signal("S") await timer(at: "t") end E }`,
+  `process p { start S user U { on start(class: "C") input a = [1] output b = { k: "v" } } end E }`,
   `process p { start S subprocess B { user U } goto U end E }`,
   `process p { start S subprocess B { goto Fin } user U end Fin }`,
   `process p { start S on error { step T } goto T end E }`,
-  `process p { start S user U on error "E" { goto Fin } end Fin }`,
+  `process p { error E start S user U on error(E) { goto Fin } end Fin }`,
   `process p { start S if (a > 1) { user U } else { goto Fin } while (b) { step T } end Fin }`,
-  `process p { start S parallel { { user U } { service V { topic = "t" } } } end E }`,
-  `process p { start S send N { class = "C" } receive R { message = "M" } decide D { decision = "d" } end E }`,
-  `process p "L" { label = "x" var a: number var a: number start S user U user U end E }`,
+  `process p { start S parallel { { user U } { service V(topic: "t") } } end E }`,
+  `process p { start S send N(class: "C") receive R(message: "M") decide D(decision: "d") end E }`,
+  `process p(label: "x", label: "y") { var a: number var a: number start S user U user U end E }`,
 ];
 
 /**

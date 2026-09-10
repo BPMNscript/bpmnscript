@@ -49,9 +49,7 @@ describe('round-trip: minimal call (process only)', () => {
   const MINIMAL_CALL_SRC = [
     'process minimal-call {',
     '  start Start',
-    '  call InvokeSub {',
-    '    process = "invoice-approval"',
-    '  }',
+    '  call InvokeSub(process: "invoice-approval")',
     '  end End',
     '}',
     '',
@@ -76,9 +74,7 @@ describe('round-trip: minimal call (process only)', () => {
   });
 
   it('re-emits the same one-attribute call and re-parses with zero errors', async () => {
-    expect(run.dsl).toContain(
-      'call InvokeSub { process = "invoice-approval" }',
-    );
+    expect(run.dsl).toContain('call InvokeSub(process: "invoice-approval")');
     const document = await parse(run.dsl);
     expect(document.parseResult.parserErrors).toHaveLength(0);
   });
@@ -88,10 +84,7 @@ describe('round-trip: call activity with a deployment binding', () => {
   const DEPLOYMENT_BINDING_SRC = [
     'process call-deployment-binding {',
     '  start Start',
-    '  call InvokeSub {',
-    '    process = "invoice-approval"',
-    '    binding = deployment',
-    '  }',
+    '  call InvokeSub(process: "invoice-approval", binding: deployment)',
     '  end End',
     '}',
     '',
@@ -99,7 +92,7 @@ describe('round-trip: call activity with a deployment binding', () => {
 
   const run = roundTripOf(DEPLOYMENT_BINDING_SRC);
 
-  it('desugars `binding = deployment` to { kind: "deployment" }', () => {
+  it('desugars `binding: deployment` to { kind: "deployment" }', () => {
     expect(findCallActivity(run.ir1, 'InvokeSub').binding).toEqual({
       kind: 'deployment',
     });
@@ -110,11 +103,11 @@ describe('round-trip: call activity with a deployment binding', () => {
     expect(run.xml).not.toContain('calledElementVersion');
   });
 
-  it('re-imports to the same binding and re-emits `binding = deployment`', async () => {
+  it('re-imports to the same binding and re-emits `binding: deployment`', async () => {
     expect(findCallActivity(run.ir2, 'InvokeSub').binding).toEqual({
       kind: 'deployment',
     });
-    expect(run.dsl).toContain('binding = deployment');
+    expect(run.dsl).toContain('binding: deployment');
     const document = await parse(run.dsl);
     expect(document.parseResult.parserErrors).toHaveLength(0);
   });
@@ -124,10 +117,7 @@ describe('round-trip: call activity with a pinned version', () => {
   const PINNED_VERSION_SRC = [
     'process call-pinned-version {',
     '  start Start',
-    '  call InvokeSub {',
-    '    process = "invoice-approval"',
-    '    version = 3',
-    '  }',
+    '  call InvokeSub(process: "invoice-approval", version: 3)',
     '  end End',
     '}',
     '',
@@ -152,7 +142,7 @@ describe('round-trip: call activity with a pinned version', () => {
       kind: 'version',
       version: '3',
     });
-    expect(run.dsl).toContain('version = 3');
+    expect(run.dsl).toContain('version: 3');
     const document = await parse(run.dsl);
     expect(document.parseResult.parserErrors).toHaveLength(0);
   });
@@ -168,10 +158,11 @@ describe('round-trip: call activity with businessKey and every mapping shape', (
     '  var w: string',
     '',
     '  start Start',
-    '  call InvokeSub {',
-    '    process = "invoice-approval"',
-    '    binding = latest',
-    '    businessKey = "${orderId}"',
+    '  call InvokeSub(',
+    '    process: "invoice-approval",',
+    '    binding: latest,',
+    '    businessKey: "${orderId}"',
+    '  ) {',
     '    in *',
     '    in x',
     '    in t = a + b',
@@ -231,9 +222,8 @@ describe('round-trip: call activity nested inside a subprocess', () => {
   const NESTED_CALL_SRC = [
     'process call-in-subprocess {',
     '  start Start',
-    '  subprocess Payment "Handle payment" {',
-    '    call ChargeCustomer {',
-    '      process = "invoice-approval"',
+    '  subprocess Payment(label: "Handle payment") {',
+    '    call ChargeCustomer(process: "invoice-approval") {',
     '      in *',
     '    }',
     '  }',
@@ -254,7 +244,7 @@ describe('round-trip: call activity nested inside a subprocess', () => {
   });
 
   it('the re-emitted DSL reconstructs the nested `subprocess { call ... }` shape and re-parses cleanly', async () => {
-    expect(run.dsl).toContain('subprocess Payment "Handle payment" {');
+    expect(run.dsl).toContain('subprocess Payment(label: "Handle payment") {');
     expect(run.dsl).toContain('call ChargeCustomer');
     const document = await parse(run.dsl);
     expect(document.parseResult.parserErrors).toHaveLength(0);
@@ -270,10 +260,8 @@ describe('round-trip: goto targeting a call activity', () => {
     '  if (flag) {',
     '    goto Invoke',
     '  }',
-    '  user Prep "Prepare" { assignee = "demo" }',
-    '  call Invoke {',
-    '    process = "invoice-approval"',
-    '  }',
+    '  user Prep(label: "Prepare", assignee: "demo")',
+    '  call Invoke(process: "invoice-approval")',
     '  end End',
     '}',
     '',
@@ -396,16 +384,16 @@ describe('round-trip: import-first, with interleaved mappings and the camunda: b
     expect(normalizeIr(irSecondImport)).toEqual(normalizeIr(irFirstImport));
   });
 
-  it('the emitted DSL line canonically reorders (all `in`s, then all `out`s) and keeps the alias-normalized binding', () => {
+  it('the emitted call canonically reorders (all `in`s, then all `out`s) and keeps the alias-normalized binding', () => {
     expect(dsl).toContain(
-      'call ReviewApprovalCall "Get invoice sign-off" { ' +
-        'process = "invoice-approval" ' +
-        'binding = deployment ' +
-        'businessKey = "${orderId}" ' +
-        'in invoiceAmount = amount ' +
-        'in doubledAmount = "${amount * 2}" ' +
-        'out wasApproved = approved ' +
-        'out approvedFlag = "${approved ? 1 : 0}" }',
+      'call ReviewApprovalCall(label: "Get invoice sign-off", ' +
+        'process: "invoice-approval", binding: deployment, ' +
+        'businessKey: "${orderId}") {\n' +
+        '    in invoiceAmount = amount\n' +
+        '    in doubledAmount = "${amount * 2}"\n' +
+        '    out wasApproved = approved\n' +
+        '    out approvedFlag = "${approved ? 1 : 0}"\n' +
+        '  }',
     );
   });
 });

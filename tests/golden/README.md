@@ -89,21 +89,21 @@ Contract: `isExpanded="true"` on each sub-process, nested children inside their 
 
 ## `event-handlers.{bpmnscript,bpmn}`
 
-An order-processing narrative exercising the whole try/catch surface in one program: an `error ... message` declaration; a payment `subprocess` that throws inside an `if`, escalates mid-chain with `emit escalation`, and owns an interrupting `on error` handler with both catch bindings; a process-level non-interrupting `on escalation ... alongside` handler; a catch-all `on error` handler; a terminal `throw escalation`; explicit ids on a throw and an emit with a `goto` targeting the named emit; and a process variable called `message` used in a condition, so the contextual event words coexist with same-named variables.
+An order-processing narrative exercising the whole try/catch surface in one program: an `error` declaration carrying a message; a second whose code is not a word a name can spell, so the code sits on the declaration as a setting and the handler still refers to it by name; a third nothing raises or catches, which reaches the `.bpmn` as a root of its own; a payment `subprocess` that throws inside an `if`, escalates mid-chain with `emit escalation`, and owns an interrupting `on error` handler with both catch bindings; a process-level non-interrupting `on escalation ... alongside` handler; a catch-all `on error` handler; a terminal `throw escalation`; explicit ids on a throw and an emit with a `goto` targeting the named emit; and a process variable called `message` used in a condition, so the contextual event words coexist with same-named variables.
 The condition variables are declared on the start form so they survive an import-and-back round trip, and each handler opens with an explicit trigger `start` and closes with an explicit `end`.
 
-Contract: the deduped roots (one per code, the error root carrying its message), the shared `errorRef` and `escalationRef`, `isInterrupting="false"` on the `alongside` handler, each handler shape inside its parent's bounds, and every authored id.
+Contract: the deduped roots (one per declared code, each carrying its declared name and each error root its message), the shared `errorRef` and `escalationRef`, `isInterrupting="false"` on the `alongside` handler, each handler shape inside its parent's bounds, and every authored id.
 
 ## `event-triggers.{bpmnscript,bpmn}`
 
-An order-fulfilment narrative exercising the remaining trigger set in one program: a process-level `on message "OrderCancelled"` handler; a `subprocess` owning a non-interrupting `on timer after "PT2H" alongside` reminder and a non-interrupting `on condition (stockLevel < 5) alongside` watchdog reading a declared form variable; an `on signal "OrderFulfilled" alongside` handler together with a continuing `emit signal Notify "OrderFulfilled"` and a terminal `throw signal Announce "OrderFulfilled"` of the same name; an `at` timer on the same sub-process, so one container carries three handlers; and a `var timer: string` read in a service expression, pinning that the timer particle words coexist with same-named variables.
+An order-fulfilment narrative exercising the remaining trigger set in one program: a process-level `on message("OrderCancelled")` handler; a `subprocess` owning a non-interrupting `on timer("PT2H", alongside)` reminder and a non-interrupting `on condition(stockLevel < 5, alongside)` watchdog reading a declared form variable; an `on signal("OrderFulfilled", alongside)` handler together with a continuing `emit signal Notify("OrderFulfilled")` and a terminal `throw signal Announce("OrderFulfilled")` of the same name; an `on timer(at: "...")` purge on the same sub-process, so one container carries three handlers; and a `var timer: string` read in a service expression, pinning that the timer trigger word coexists with a same-named variable.
 The condition variable is declared on the start form so it survives an import-and-back round trip, and every throw and emit is explicitly named so its printed id re-parses cleanly.
 
 Contract: the deduped name-keyed roots and their order, the shared `signalRef`, `isInterrupting="false"` on the `alongside` handlers, the single time-child per timer, each handler shape inside its parent's bounds, and every authored id.
 
 ## `compensation.{bpmnscript,bpmn}`
 
-A trip-booking saga exercising the whole undo surface in one program: two sub-processes each owning an `on compensation` undo block (the flight reverses in one step, the hotel through an `if` reading a declared form variable, so the undo logic is more than a single step); an `error ... message` declaration and a process-level `on error` handler whose body raises a named `emit compensation Undo` and then continues to notify the traveler; a matching `emit escalation Overspend` in the main flow and a process-level `on escalation` handler that gives up, recording the abandonment and ending its path with a named `throw compensation CancelAll`, for the cross-kind interplay; and a `var compensation: number` read in a service expression, pinning that the compensation word coexists with a same-named variable.
+A trip-booking saga exercising the whole undo surface in one program: two sub-processes each owning an `on compensation` undo block (the flight reverses in one step, the hotel through an `if` reading a declared form variable, so the undo logic is more than a single step); an `error` declaration carrying a message and a process-level `on error` handler whose body raises a named `emit compensation Undo` and then continues to notify the traveler; a matching `emit escalation Overspend` in the main flow and a process-level `on escalation` handler that gives up, recording the abandonment and ending its path with a named `throw compensation CancelAll`, for the cross-kind interplay; and a `var compensation: number` read in a service expression, pinning that the compensation word coexists with a same-named variable.
 The `if` variables `seats` and `budget` are declared on the start form so they survive an import-and-back round trip, and every throw and emit is explicitly named so its printed id re-parses cleanly.
 
 Contract: the absence of any compensation root, the bare compensate definitions, the `triggeredByEvent` undo blocks with interrupting starts, each undo-block shape inside its host's bounds, and every authored id.
@@ -124,10 +124,10 @@ The stretch that does it, with the declaration its condition reads:
 process order-processing {
   var amount: number
 
-  await message "PaymentConfirmed"
-  await timer after "PT1H"
-  await signal "StockReplenished"
-  await condition (amount > 100)
+  await message("PaymentConfirmed")
+  await timer("PT1H")
+  await signal("StockReplenished")
+  await condition(amount > 100)
 }
 ```
 
@@ -165,7 +165,7 @@ Contract: the `operaton:executionListener` and `operaton:taskListener` children 
 
 ## `event-positions.{bpmnscript,bpmn}`
 
-An order-dispatch narrative carrying a trigger in the three positions outside a handler in one program: a `start OrderReceived ... message "OrderReceived"`, so the process is entered by a correlated message rather than by a caller while its start form still renders; an `emit message NotifyWarehouse "WarehouseNotified"` and a terminal `throw message OrderAcknowledged "OrderAcknowledged"`, the continuing and the terminal form of one verb pair; and an `end OrderAbandoned "Abandon every path" terminate` in one branch of an `if`, beside the message end the other branch falls through to.
+An order-dispatch narrative carrying a trigger in the three positions outside a handler in one program: a `start OrderReceived message("OrderReceived", ...)`, so the process is entered by a correlated message rather than by a caller while its start form still renders; an `emit message NotifyWarehouse("WarehouseNotified")` and a terminal `throw message OrderAcknowledged("OrderAcknowledged")`, the continuing and the terminal form of one verb pair; and an `end OrderAbandoned terminate(label: "Abandon every path")` in one branch of an `if`, beside the message end the other branch falls through to.
 The three message names are all distinct, so this artifact pins one derived root per name, where `event-triggers` pins the opposite case of several references collapsing onto one root.
 The condition variable is declared on the start form so it survives an import-and-back round trip, and every throw and emit is explicitly named so its printed id re-parses cleanly.
 A terminate ends its branch, so the restructured DSL prints that branch as a `goto` onto the named service task instead of as an `if`/`else`; the IR is the same either way, which is what the idempotence block asserts.
@@ -186,7 +186,7 @@ Contract: a `bpmn:task`, a `bpmn:sendTask`, two `bpmn:receiveTask`, three `bpmn:
 ## `repetition.{bpmnscript,bpmn}`
 
 An order-fulfilment narrative whose stages each run once per item they are handed, so one artifact carries every form of the repeat clause on seven of the ten activity tags that take one.
-A user task repeats over a bound collection; a service task over a collection expression, sequentially, stopped early by an `until` condition; a second service task over a bare count; a step over a count and a collection together; a receive over a collection it binds no element of; a call over a bound collection; a script task whose clause is written ahead of both its settings block and its fenced body; and a sub-process that repeats sequentially, sets `asyncBefore`, and wraps one ordinary service task.
+A user task repeats over a bound collection; a service task over a collection expression, sequentially, stopped early by an `until` condition; a second service task over a bare count; a step over a count and a collection together; a receive over a collection it binds no element of; a call over a bound collection; a script task whose clause is written ahead of both its settings and its fenced body; and a sub-process that repeats sequentially, sets `asyncBefore`, and wraps one ordinary service task.
 `asyncBefore` on a repeated statement makes one job for the repetition as a whole rather than one per run of it, which is the only async a clause can express.
 Every collection variable is declared in the process header, and the decompiler writes a declaration back for each collection a clause names bare, since a bare `operaton:collection` is the name of a process variable the engine requires to exist.
 
@@ -195,7 +195,7 @@ Contract: one `bpmn:multiInstanceLoopCharacteristics` under each of `bpmn:userTa
 ## `transactions.{bpmnscript,bpmn}`
 
 A seat-booking narrative whose holding and paying are one block of work that can be given up as a unit.
-`attempt BookAndPay` holds the seats through an ordinary `subprocess` owning an `on compensation` undo block, charges the card, and issues the tickets; a guard on the declined charge ends that path with `end BookingAbandoned "Give up the booking" cancel`, and `on BookAndPay: cancel` catches it.
+`attempt BookAndPay` holds the seats through an ordinary `subprocess` owning an `on compensation` undo block, charges the card, and issues the tickets; a guard on the declined charge ends that path with `end BookingAbandoned cancel(label: "Give up the booking")`, and `on BookAndPay: cancel` catches it.
 An `on BookAndPay: error` handler sits on the same block, so the artifact pins that a block taking a cancel handler still takes the handlers it always took.
 A second `attempt` block repeats over the seat rows, sets `asyncBefore`, and mentions cancel nowhere, so a block nothing gives up is frozen beside the one that is; it sits inside an ordinary `subprocess`, which nests the two heads inside one another both ways round.
 The guard variable is declared on the start form and the collection the repeat clause names bare is declared in the header, so both survive an import-and-back round trip.

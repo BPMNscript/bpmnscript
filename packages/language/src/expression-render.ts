@@ -64,7 +64,7 @@ export function renderExpressionInner(node: Expr): string {
     return `(${renderExpressionInner(node.inner)})`;
   }
   if (isVarRef(node)) {
-    return node.name + node.accessors.map(renderAccessor).join('');
+    return node.ref.$refText + node.accessors.map(renderAccessor).join('');
   }
   if (isLiteralInt(node) || isLiteralDecimal(node)) {
     return String(node.value);
@@ -101,7 +101,7 @@ function renderAccessor(accessor: Accessor): string {
  * Langium auto-unquotes only the default STRING terminal, so RAW_TEMPLATE keeps
  * the author's surrounding `"` or `'`. An unquoted body passes through.
  */
-function unquoteRaw(raw: string): string {
+export function unquoteRaw(raw: string): string {
   if (raw.length >= 2) {
     const first = raw[0];
     const last = raw[raw.length - 1];

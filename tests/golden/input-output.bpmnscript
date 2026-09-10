@@ -6,15 +6,13 @@ process expense-reimbursement {
     }
   }
 
-  user ReviewReceipts "Review the submitted receipts" {
-    assignee = "demo"
+  user ReviewReceipts(label: "Review the submitted receipts", assignee: "demo") {
     input receiptHint = "Match every receipt against the trip dates"
     input escalationDesk = "expenses-l2"
     output reviewNote = "${reviewComment}"
   }
 
-  service RateAllowance "Rate the daily allowance" {
-    class = "com.example.expenses.AllowanceDelegate"
+  service RateAllowance(label: "Rate the daily allowance", class: "com.example.expenses.AllowanceDelegate") {
     input allowanceRule = ```groovy
 def rate = travelDays > 5 ? 40 : 55
 execution.setVariable("dailyRate", rate)
@@ -22,7 +20,7 @@ execution.setVariable("dailyRate", rate)
     output dailyRate = "${dailyRate}"
   }
 
-  script ConvertAllowance "Convert the allowance to the claim currency" {
+  script ConvertAllowance(label: "Convert the allowance to the claim currency") {
     input conversionRate = "${euroRate}"
     output allowanceInEuro = ```groovy
 allowanceBase * conversionRate
@@ -32,17 +30,16 @@ def base = dailyRate * travelDays
 execution.setVariable("allowanceBase", base)
 ```
 
-  subprocess AuditClaim "Audit the claim" {
+  subprocess AuditClaim(label: "Audit the claim") {
     output auditVerdict = "${auditOutcome}"
     input auditChecks = [{ "field": "receipts", "rule": "present" }, { "field": "mileage", "rule": "within-policy" }]
   } {
     start AuditStart
-    service MatchPolicy "Match the claim against the travel policy" { class = "com.example.expenses.PolicyDelegate" }
+    service MatchPolicy(label: "Match the claim against the travel policy", class: "com.example.expenses.PolicyDelegate")
     end AuditDone
   }
 
-  call PayOut "Pay the reimbursement" {
-    process = "payment-run"
+  call PayOut(label: "Pay the reimbursement", process: "payment-run") {
     input payoutChannel = "sepa"
     in claimTotal
     out paymentReference
@@ -51,11 +48,11 @@ execution.setVariable("allowanceBase", base)
 
   end ClaimSettled
 
-  on message "ClaimRecalled" {
+  on message("ClaimRecalled") {
     input recallReason = "${recallText}"
   } {
     start RecallNoted
-    service RecordRecall "Record the recalled claim" { class = "com.example.expenses.RecallDelegate" }
+    service RecordRecall(label: "Record the recalled claim", class: "com.example.expenses.RecallDelegate")
     end RecallRecorded
   }
 }

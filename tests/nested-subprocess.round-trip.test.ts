@@ -36,11 +36,15 @@ function assertNoBoundaryCrossingFlows(container: FlowContainer): void {
 
 describe("idempotence: DSL -> IR1 -> XML -> IR2 -> DSL' -> IR3", () => {
   it("the restructured DSL' reconstructs both sub-processes as `subprocess` blocks", () => {
-    expect(rt.dslPrime).toContain('subprocess Payment "Handle payment" {');
     expect(rt.dslPrime).toContain(
-      'subprocess Fulfillment "Fulfill the order" {',
+      'subprocess Payment(label: "Handle payment") {',
     );
-    expect(rt.dslPrime).toContain('subprocess Shipping "Ship the parcel" {');
+    expect(rt.dslPrime).toContain(
+      'subprocess Fulfillment(label: "Fulfill the order") {',
+    );
+    expect(rt.dslPrime).toContain(
+      'subprocess Shipping(label: "Ship the parcel") {',
+    );
     expect(rt.dslPrime).toContain('if (amount > 1000)');
     expect(rt.dslPrime).toContain('while (retries < 3)');
   });

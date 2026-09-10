@@ -1,8 +1,8 @@
 /**
  * Semantic-token highlighting for the soft words. They lex as plain `ID` so that
  * `var message: string` still parses, and the generated TextMate grammar, a
- * regex over token text, cannot tell `on error` from `var error: string` or an
- * attribute `priority` from the variable in `if (priority > 5)`. Semantic
+ * regex over token text, cannot tell `on error` from `var error: string` or a
+ * setting `priority` from the variable in `if (priority > 5)`. Semantic
  * tokens are computed from the parsed AST, so a soft word highlights exactly
  * where the grammar gave it that meaning, and VS Code's default themes render a
  * semantic `keyword` like a lexical one.
@@ -18,17 +18,15 @@ import {
 } from 'langium/lsp';
 import { SemanticTokenTypes } from 'vscode-languageserver-types';
 import {
-  isAttribute,
+  isCodeDecl,
   isEmitStatement,
   isEndEvent,
-  isErrorDecl,
-  isEventBinding,
   isIntermediateCatchEvent,
   isIoParameter,
   isListener,
   isOnHandler,
-  isProcessAttribute,
   isRaceBranch,
+  isSetting,
   isStartEvent,
   isThrowStatement,
 } from './generated/ast.js';
@@ -50,27 +48,13 @@ export class BpmnScriptSemanticTokenProvider extends AbstractSemanticTokenProvid
       isRaceBranch(node)
     ) {
       keyword('trigger');
-      if (
-        (isOnHandler(node) ||
-          isIntermediateCatchEvent(node) ||
-          isRaceBranch(node)) &&
-        node.particle
-      ) {
-        keyword('particle');
-      }
     } else if (isStartEvent(node) || isEndEvent(node)) {
       if (node.trigger) {
         keyword('trigger');
       }
-      if (isStartEvent(node) && node.particle) {
-        keyword('particle');
-      }
-    } else if (isEventBinding(node)) {
-      keyword('field');
-    } else if (isErrorDecl(node)) {
+    } else if (isCodeDecl(node)) {
       keyword('kind');
-      keyword('field');
-    } else if (isAttribute(node) || isProcessAttribute(node)) {
+    } else if (isSetting(node)) {
       keyword('key');
     } else if (isIoParameter(node)) {
       keyword('direction');

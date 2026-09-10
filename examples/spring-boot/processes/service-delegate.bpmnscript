@@ -3,6 +3,6 @@
 
 process payment-charge {
   start OrderPlaced
-  service ChargeCustomer { delegate = "${chargeService}" }
+  service ChargeCustomer(delegate: "${chargeService}")
   end Done
 }

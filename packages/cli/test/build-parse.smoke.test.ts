@@ -173,7 +173,7 @@ describe('bpmns parse', () => {
 const WARNING_ONLY_SOURCE = `process warning-only {
   start S
   if (amount > 1000) {
-    service DoSomething { class = "com.example.Delegate" }
+    service DoSomething(class: "com.example.Delegate")
   } else {
     end A
   }

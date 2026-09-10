@@ -14,23 +14,23 @@
 // Java classes.
 
 process compensating-saga {
-  error "CHARGE_FAILED" message "The payment charge could not be completed"
+  error CHARGE_FAILED(message: "The payment charge could not be completed")
 
   start BookingStarted
 
-  subprocess ReserveSeat "Reserve the seat" {
-    service ReserveSeatTask "Reserve the seat" { class = "com.example.demo.LogDelegate" }
+  subprocess ReserveSeat(label: "Reserve the seat") {
+    service ReserveSeatTask(label: "Reserve the seat", class: "com.example.demo.LogDelegate")
 
     on compensation {
-      service ReleaseSeat "Release the seat" { class = "com.example.demo.LogDelegate" }
+      service ReleaseSeat(label: "Release the seat", class: "com.example.demo.LogDelegate")
     }
   }
 
-  service ChargeCard "Charge the customer's card" { class = "com.example.demo.FailingChargeDelegate" }
+  service ChargeCard(label: "Charge the customer's card", class: "com.example.demo.FailingChargeDelegate")
 
   end BookingConfirmed
 
-  on error "CHARGE_FAILED" {
+  on error(CHARGE_FAILED) {
     emit compensation CompensationTriggered
     end CompensationHandled
   }
