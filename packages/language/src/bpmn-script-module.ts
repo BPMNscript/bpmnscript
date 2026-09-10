@@ -20,6 +20,7 @@ import {
   type VariableSymbolProvider,
 } from './variable-symbol-provider.js';
 import { BpmnScriptCompletionProvider } from './bpmn-script-completion.js';
+import { BpmnScriptDocumentValidator } from './bpmn-script-document-validator.js';
 import { BpmnScriptScopeProvider } from './bpmn-script-scope-provider.js';
 import { BpmnScriptLinker } from './bpmn-script-linker.js';
 import { BpmnScriptParserErrorMessageProvider } from './bpmn-script-parser-error-message-provider.js';
@@ -54,6 +55,7 @@ export const BpmnScriptModule: Module<
   },
   validation: {
     BpmnScriptValidator: (services) => new BpmnScriptValidator(services),
+    DocumentValidator: (services) => new BpmnScriptDocumentValidator(services),
   },
   lsp: {
     CompletionProvider: (services) =>

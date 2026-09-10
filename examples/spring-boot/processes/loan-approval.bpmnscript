@@ -1,10 +1,10 @@
-process loan-approval "Loan Approval" {
+process loan-approval(label: "Loan Approval") {
   var amount: number
   var creditScore: number
   var risk: string
   var approved: boolean
 
-  start RequestReceived "Loan request received" {
+  start RequestReceived(label: "Loan request received") {
     form {
       amount: number "Loan amount"
       creditScore: number "Credit score"
@@ -13,20 +13,15 @@ process loan-approval "Loan Approval" {
 
   // Small loans are screened by an automated risk assessment.
   if (amount < 10000) {
-    service AssessRisk "Assess risk" {
-      class = "com.example.loan.RiskAssessmentDelegate"
-    }
+    service AssessRisk(label: "Assess risk", class: "com.example.loan.RiskAssessmentDelegate")
   }
 
   // A low-risk small loan is approved automatically; everything else
   // (large loans, or small loans that are not low-risk) needs a human decision.
   if (amount < 10000 && risk == "low") {
-    service AutoApprove "Auto-approve" {
-      class = "com.example.loan.AutoApproveDelegate"
-    }
+    service AutoApprove(label: "Auto-approve", class: "com.example.loan.AutoApproveDelegate")
   } else {
-    user Approve "Approve loan" {
-      assignee = "demo"
+    user Approve(label: "Approve loan", assignee: "demo") {
       form {
         approved: boolean "Approve the loan?"
       }
@@ -34,14 +29,10 @@ process loan-approval "Loan Approval" {
   }
 
   if (approved == true) {
-    service NotifyAccepted "Notify accepted" {
-      class = "com.example.loan.AcceptDelegate"
-    }
+    service NotifyAccepted(label: "Notify accepted", class: "com.example.loan.AcceptDelegate")
   } else {
-    service NotifyRejected "Notify rejected" {
-      class = "com.example.loan.RejectDelegate"
-    }
+    service NotifyRejected(label: "Notify rejected", class: "com.example.loan.RejectDelegate")
   }
 
-  end Done "Loan request handled"
+  end Done(label: "Loan request handled")
 }

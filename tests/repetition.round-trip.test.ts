@@ -100,15 +100,22 @@ describe('multi-instance placement on the frozen .bpmn', () => {
 
 describe("idempotence: golden .bpmn -> IR2 -> DSL' -> IR3", () => {
   it.each([
-    'user ApproveLines "Approve the order lines" for each approver in approvers',
-    'service ReserveStock "Reserve the stock" for each line in "${order.lines}" ' +
-      'sequentially until (nrOfCompletedInstances >= 2)',
-    'service WarmPricing "Warm the pricing cache" for 3',
-    'step RecordLine "Record each line" for 2 each line in lines',
-    'receive AwaitBatch "Wait for each batch" for each in batches',
-    'call RegionalReport "Run the regional report" for each region in regions',
-    'script LabelParcel "Label each parcel" for each parcel in parcels',
-    'subprocess DispatchParcels "Dispatch each parcel" for each parcel in parcels sequentially',
+    'user ApproveLines for each approver in approvers(' +
+      'label: "Approve the order lines", assignee: "demo")',
+    'service ReserveStock for each line in "${order.lines}" ' +
+      'sequentially until (nrOfCompletedInstances >= 2)(' +
+      'label: "Reserve the stock", ' +
+      'class: "com.example.orders.ReserveStockDelegate")',
+    'service WarmPricing for 3(label: "Warm the pricing cache", ' +
+      'class: "com.example.orders.WarmPricingDelegate")',
+    'step RecordLine for 2 each line in lines(label: "Record each line")',
+    'receive AwaitBatch for each in batches(label: "Wait for each batch")',
+    'call RegionalReport for each region in regions(' +
+      'label: "Run the regional report", process: "regional-report")',
+    'script LabelParcel for each parcel in parcels(' +
+      'label: "Label each parcel", resultVariable: "parcelLabel")',
+    'subprocess DispatchParcels for each parcel in parcels sequentially(' +
+      'label: "Dispatch each parcel", asyncBefore: true)',
   ])("the decompiled DSL' writes back `%s`", (clause) => {
     expect(rt.dslPrime).toContain(clause);
   });

@@ -2,7 +2,12 @@
  * Boundary-explanation linker for `goto` and for an `on` handler's host: where
  * the name exists elsewhere in the process, Langium's stock "Could not resolve
  * reference" is replaced by a message naming the boundary crossed. A validator
- * could not do the job: it only ever sees a `goto` that already resolved.
+ * could not do the job: it only ever sees a `goto` that already resolved. An
+ * undeclared code is reworded here for the same reason.
+ *
+ * Rewording is all a linker can do. `doLink` stores the error on the reference
+ * and lists the reference either way, so whether the error becomes a diagnostic
+ * is decided in `bpmn-script-document-validator.ts`.
  */
 
 import {
@@ -14,6 +19,7 @@ import {
   type ReferenceInfo,
 } from 'langium';
 import {
+  isCodeDecl,
   isGotoStatement,
   isOnHandler,
   isProcess,
@@ -26,6 +32,7 @@ import {
   type FlowContainer,
   type NamedStatement,
 } from './bpmn-script-scope-provider.js';
+import { codeTriggerOf, payloadTextOf } from './paren-items.js';
 
 /** First match wins: duplicate names are a validator error. */
 function findNamedStatement(
@@ -47,11 +54,22 @@ function findNamedStatement(
 function handlerPhrase(handler: OnHandler): string | undefined {
   if (handler.trigger === undefined) return undefined;
 
-  const header = handler.code
-    ? `on ${handler.trigger} "${handler.code}"`
+  const code = payloadTextOf(handler.items);
+  const header = code
+    ? `on ${handler.trigger}(${code})`
     : `on ${handler.trigger}`;
-  const article = handler.code ? 'the' : 'an';
+  const article = code ? 'the' : 'an';
   return `${article} '${header}' handler`;
+}
+
+/**
+ * The kind a declaration of `name` in the enclosing process was written under,
+ * or `undefined` where the process declares no such name.
+ */
+function declaredCodeKind(source: AstNode, name: string): string | undefined {
+  const process = AstUtils.getContainerOfType(source, isProcess);
+  const decls = process?.decls.filter(isCodeDecl) ?? [];
+  return decls.find((decl) => decl.name === name)?.kind;
 }
 
 /** `crossesHandler` picks the trailing boundary sentence. */
@@ -109,6 +127,20 @@ export class BpmnScriptLinker extends DefaultLinker {
     targetDescription?: AstNodeDescription,
   ): LinkingError {
     const source = refInfo.container;
+    const codeTrigger = codeTriggerOf(source);
+    if (codeTrigger !== undefined) {
+      const name = refInfo.reference.$refText;
+      // The scope holds this kind's declarations only, so a name declared
+      // under the other kind arrives here unresolved. Saying it is undeclared
+      // would be false, and advising a second declaration of that name would
+      // walk the author into the duplicate-name error.
+      const declaredKind = declaredCodeKind(source, name);
+      const message =
+        declaredKind === undefined
+          ? `'${name}' is not declared. Add '${codeTrigger} ${name}' to the process.`
+          : `'${name}' is declared as an ${declaredKind}, not an ${codeTrigger}.`;
+      return { info: refInfo, message };
+    }
     const isHost = isOnHandler(source) && refInfo.property === 'host';
     const isGotoTarget =
       isGotoStatement(source) && refInfo.property === 'target';

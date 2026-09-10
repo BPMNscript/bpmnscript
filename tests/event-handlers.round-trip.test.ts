@@ -71,12 +71,29 @@ describe("idempotence: DSL -> IR1 -> XML -> IR2 -> DSL' -> IR3", () => {
     expect(kindOf(rt.ir3, 'FlagForReview')).toBe('intermediateThrowEvent');
   });
 
-  it('the errorMessages entry survives the round-trip', () => {
-    expect(rt.ir3.errorMessages).toEqual([
+  it('the error and escalation declarations survive the round-trip', () => {
+    expect(rt.ir3.errorDecls).toEqual([
       {
+        name: 'PAYMENT_DECLINED',
         code: 'PAYMENT_DECLINED',
         message: 'The payment was declined by the bank',
       },
+      // A name apart from its code, and a declaration nothing raises or
+      // catches: both come back only if the root carries them.
+      {
+        name: 'GatewayTimeout',
+        code: 'gateway.timeout',
+        message: 'The payment gateway did not answer',
+      },
+      {
+        name: 'STOCK_UNAVAILABLE',
+        code: 'STOCK_UNAVAILABLE',
+        message: 'The warehouse cannot fulfil the order',
+      },
+    ]);
+    expect(rt.ir3.escalationDecls).toEqual([
+      { name: 'MANUAL_REVIEW', code: 'MANUAL_REVIEW' },
+      { name: 'ORDER_ABANDONED', code: 'ORDER_ABANDONED' },
     ]);
   });
 
@@ -145,9 +162,9 @@ describeImportFirst(
   (first) => {
     it('normalizes the camunda: error message and binding aliases into the DSL', () => {
       // `code` doubles as an ordinary variable name in the catch parameter.
-      expect(first.dsl).toContain('error "BOOM" message "It went boom"');
+      expect(first.dsl).toContain('error BOOM(message: "It went boom")');
       expect(first.dsl).toContain(
-        'on error "BOOM" (code code, message text) {',
+        'on error(BOOM, code: code, message: text) {',
       );
     });
   },

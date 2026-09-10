@@ -171,9 +171,11 @@ interface RootElementIndex {
 
 /**
  * Derive the `bpmn:Error`/`bpmn:Escalation`/`bpmn:Message`/`bpmn:Signal` roots
- * from usage: the IR carries codes and names inline and models no roots. Any
- * `errorMessages` code not yet seen follows, so a declared code emits its root
- * even when unused.
+ * from usage: the IR carries codes and names inline and models no roots. A
+ * declared code not yet seen follows, so a declaration emits its root even when
+ * nothing raises it, and a code with no declaration still emits one, so a
+ * hand-built IR produces a document the engine can run. The root's `name` is
+ * the declared name, which is the code itself wherever a name can spell it.
  */
 function synthesizeRootElements(
   moddle: BpmnModdleInstance,
@@ -181,10 +183,14 @@ function synthesizeRootElements(
 ): RootElementIndex {
   const { errorCodes, escalationCodes, messageNames, signalNames } =
     eventIdentities(process);
-  const messageByCode = new Map(
-    (process.errorMessages ?? []).map((m) => [m.code, m.message]),
+  const errorDecls = new Map(
+    (process.errorDecls ?? []).map((d) => [d.code, d]),
   );
-  for (const code of messageByCode.keys()) errorCodes.add(code);
+  const escalationDecls = new Map(
+    (process.escalationDecls ?? []).map((d) => [d.code, d]),
+  );
+  for (const code of errorDecls.keys()) errorCodes.add(code);
+  for (const code of escalationDecls.keys()) escalationCodes.add(code);
 
   // Seeded with every id already in the document so a root id shadows nothing.
   const taken = new Set<string>();
@@ -194,9 +200,15 @@ function synthesizeRootElements(
   for (const code of errorCodes) {
     const id = resolveCollision(sanitizeRootId('Error_', code), taken);
     taken.add(id);
-    const attrs: Record<string, unknown> = { id, name: code, errorCode: code };
-    const message = messageByCode.get(code);
-    if (message !== undefined) attrs['operaton:errorMessage'] = message;
+    const decl = errorDecls.get(code);
+    const attrs: Record<string, unknown> = {
+      id,
+      name: decl?.name ?? code,
+      errorCode: code,
+    };
+    if (decl?.message !== undefined) {
+      attrs['operaton:errorMessage'] = decl.message;
+    }
     errorByCode.set(code, moddle.create('bpmn:Error', attrs));
   }
 
@@ -208,7 +220,7 @@ function synthesizeRootElements(
       code,
       moddle.create('bpmn:Escalation', {
         id,
-        name: code,
+        name: escalationDecls.get(code)?.name ?? code,
         escalationCode: code,
       }),
     );

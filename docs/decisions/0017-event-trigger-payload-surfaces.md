@@ -66,7 +66,7 @@ The parser tells the two apart by looking at the second token after the opening 
 Whether a given trigger is allowed to use bindings, a condition, or neither is exactly the kind of position rule the validator already owns for every other soft word.
 
 Rejected: a binding-marker keyword, freeing the bare parentheses for a condition by writing bindings after a marker such as `as (...)`.
-It spends a new reserved word to solve a collision that structural lookahead already dissolves for free, and it breaks the parameter-list reading (`on error "X" (code c, message m)`, read like `catch (Exception e)`) that motivated the binding shape in the first place.
+It spends a new reserved word to solve a collision that structural lookahead already dissolves for free, and it breaks the parameter-list reading (`on error(X, code: c, message: m)`, read like `catch (Exception e)`) that motivated the binding shape in the first place.
 Rejected: a string-wrapped condition, written as a quoted literal instead of a real expression.
 It reads worse than the language's own `if (...)`, and it throws away everything a real expression AST buys, including undeclared-variable checking, type checking, symbol participation, and precise highlighting, turning the condition into opaque text the rest of the toolchain cannot see inside.
 Rejected: reserving `condition` as a keyword to dispatch the parens explicitly.
@@ -95,12 +95,15 @@ A message or signal root carries exactly one piece of information the engine car
 Because the name is both the only data and the natural key, the root is fully derivable from wherever the name is used, whether a handler, a throw, or an emit, with no separate declaration form and no new field on the process's structure.
 Every use of the same name, anywhere in the document, resolves to the same root.
 
-This differs from the error root's message-text declaration.
-An error's thrown message is per-code data that usage alone cannot supply, since two throw sites sharing a code might disagree on wording, so it has exactly one declared place to live.
-Message and signal have no equivalent, because nothing about a name's use is ambiguous or needs reconciling, so no declaration form is introduced for them.
+This differs from the error and escalation declarations ADR-0030 settles.
+A code is declared in the process header and named at each of its sites, which gives it a cross-reference and gives its thrown message one place to live, since two throw sites sharing a code might disagree on wording.
+A message or signal name has neither need: the name is the root's only data and is also its key, so nothing about a use is ambiguous or needs reconciling, and no declaration form is introduced for one.
+The payload shapes read that split directly.
+An error or escalation payload is a bare name resolving to a declaration, while a message, a signal and a timer carry quoted text, a condition carries an expression, and compensation and cancel carry nothing.
 
 Rejected: an explicit root declaration mirroring the error message declaration.
 It would generalize a mechanism that exists only because the error message text has no other source, to two triggers for which usage already supplies every property in full, which is pure boilerplate with no expressive gain.
+ADR-0030 reverses that reasoning for codes on a tooling argument that would apply to a message and a signal name too; extending it to them is a decision of its own and is not taken here.
 
 ### Consequences
 
@@ -115,6 +118,7 @@ It would generalize a mechanism that exists only because the error message text 
 ## More Information
 
 Extended by ADR-0018 (compensation), the one trigger kind whose payload is empty, slotting into the same `on`/`throw`/`emit` surface this decision shapes without a new reserved word.
+Amended by ADR-0030, which makes an error or escalation payload a declared name and leaves message and signal names derived from usage.
 
 Related decisions: ADR-0013 (the target audience and the no-boilerplate rule, the reason message and signal get no declaration form, and the reason the conditional narrowing attributes stay off the surface until an author actually needs them).
 ADR-0014 (the honest import contract, the reason conditional narrowing attributes are refused on import rather than dropped, and the model this decision follows for treating a semantics-bearing drop as a refusal).

@@ -67,6 +67,7 @@ export {
   UnsupportedCollaborationError,
   UnsupportedCallActivityError,
   UnsupportedExtensionFormError,
+  UnsupportedConditionExpressionError,
 } from './errors.js';
 
 export { astToIr } from './ast-to-ir.js';

@@ -29,9 +29,9 @@ The specification is more permissive at the start position than the engine is, i
 
 ## Considered Options
 
-- `throw message "Name"` and `emit message "Name"` for the message end and the message intermediate throw
-- `end E message "Name"`, the message end as a clause on the end statement
-- `end <id> <label>? terminate` for the terminate end event
+- `throw message("Name")` and `emit message("Name")` for the message end and the message intermediate throw
+- `end E message("Name")`, the message end as a clause on the end statement
+- `end <id> terminate(label: "...")` for the terminate end event
 - `throw terminate`
 - Message, signal, and timer as the triggers a start event carries
 - Every trigger the specification allows on a start event, adding error, escalation, compensation, and conditional
@@ -40,14 +40,14 @@ The specification is more permissive at the start position than the engine is, i
 
 ## Decision Outcome
 
-Chosen options: `throw message "Name"` and `emit message "Name"` for the message end and the message intermediate throw.
-`end <id> <label>? terminate` for the terminate end.
+Chosen options: `throw message("Name")` and `emit message("Name")` for the message end and the message intermediate throw.
+`end <id> terminate(label: "...")` for the terminate end.
 Message, signal, and timer as the triggers a start event carries.
 A process's own start event as the only position that may carry one.
 The terminate is the one place here where the option costing no grammar was not taken.
-`end` has the label slot a diagram's terminate node needs, and `throw` has none.
+`end` carries the label a diagram's terminate node needs, and `throw` drops one.
 
-`end E message "Name"` still parses, deliberately.
+`end E message("Name")` still parses, deliberately.
 A kind belonging on `throw` earns a validator message naming the statement to write, instead of a parse error (`endTriggerMessage`).
 The validator refuses the two illegal start positions the same way, each with its own wording (`checkStartEvent`, `packages/language/src/bpmn-script-validator.ts`).
 
@@ -60,7 +60,7 @@ A modeler document carrying two of them is refused by name and by count (`refuse
 
 Neither clause needs a new reserved word.
 `name=ID` is mandatory and comes first in both the `StartEvent` and `EndEvent` rules (`packages/language/src/bpmn-script.langium`).
-The second token therefore decides everything: a `STRING` is the label, an `ID` the trigger, and a `{` the settings block.
+The second token therefore decides everything: an `ID` is the trigger, a `(` the settings, and a `{` the members.
 Nothing else can appear there, because every statement in this grammar is keyword-led.
 Both rules were built into a live Langium parser with Chevrotain's self-analysis on.
 The generator reported no ambiguity.
@@ -78,7 +78,7 @@ A message start refuses both spellings, because Operaton rejects an expression a
   One IR shape keeps one printed form.
 - Good, because the three start triggers reuse the payload surfaces and name-keyed roots ADR-0017 already built.
   The set stops where the engine stops, so an import either runs as it reads or refuses and names the element that stopped it.
-- Bad, because a thrown message carrying a send implementation refuses on import rather than importing without it (`refuseMessageThrowImplementation`).
+- Bad, because a thrown message carrying a send implementation refuses on import rather than importing without it.
   `operaton:class`, `expression`, `delegateExpression`, `type`, `topic`, and an `<operaton:connector>` child are what make the engine really send the message.
   Dropping one would turn a real send into a no-op.
 - Bad, because a terminate end always prints, even when its id was synthesized (`isElidedOnPrint`, `packages/transform/src/ir-to-dsl.ts`).
@@ -102,24 +102,24 @@ That last result is what shows an implementation-free message throw deploys and 
 
 ## Pros and Cons of the Options
 
-### `throw message "Name"` and `emit message "Name"`
+### `throw message("Name")` and `emit message("Name")`
 
 - Good, because both statements already parse a trigger word, an optional name, and a quoted code, so it needs no grammar.
 - Bad, because an id matching the synthesized shape drops off a printed throw, so a `goto` cannot target a nameless message end.
 
-### `end E message "Name"`
+### `end E message("Name")`
 
 - Bad, because one IR shape would carry two printed forms, and the printer would have to choose per kind.
 
-### `end <id> <label>? terminate`
+### `end <id> terminate(label: "...")`
 
-- Good, because `end` has the label slot, so a diagram's terminate node keeps its caption through a round trip.
+- Good, because `end` carries a label, so a diagram's terminate node keeps its caption through a round trip.
 - Good, because it says what the element does, which is to end rather than to raise.
 
 ### `throw terminate`
 
 - Bad, because `throw` means raise this event and end this path, and a terminate raises nothing and ends every path.
-- Bad, because `throw` has no label slot, so importing a labeled terminate would warn about a caption a diagram carries.
+- Bad, because `throw` drops a label, so importing a labeled terminate would warn about a caption a diagram carries.
 
 ### Message, signal, and timer on a start
 
@@ -144,7 +144,7 @@ That last result is what shows an implementation-free message throw deploys and 
 ADR-0026 (task kinds on the authoring surface) supersedes the message-throw implementation refusal recorded above: Operaton reads that implementation off the `bpmn:messageEventDefinition`, so the same attributes on the event itself are inert.
 
 Related decisions: ADR-0016 (soft trigger words and the `throw`/`emit` terminality rule).
-ADR-0017 (the payload surfaces the three start triggers reuse, including the timer particle mapping).
+ADR-0017 (the payload surfaces the three start triggers reuse, including the timer mapping).
 ADR-0014 (the honest import contract behind every refusal here).
 ADR-0013 (the reason a start trigger is a clause rather than a declaration).
 ADR-0020 (the live-parser ambiguity check and the rejected `await <name> <trigger>` shape).

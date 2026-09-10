@@ -32,11 +32,18 @@ export interface BpmnProcess extends FlowContainer {
   /** Distinct from the engine's deployment version. */
   versionTag?: string;
   /**
-   * In declaration order. Stored rather than derived from usage because two
-   * throws of one code share a root element, and a declared code emits its root
-   * even when unused. See ADR 0016, Derive Event Root Elements From Usage.
+   * Every error code the process raises, catches, or declares, in canonical
+   * order: codes something uses in first-use order, then the rest in
+   * declaration order. Stored rather than derived from usage because two throws
+   * of one code share a root element, a declared code emits its root even when
+   * unused, and the message text usage alone cannot recover. `name` is the
+   * identifier a use site refers to, which is the code itself unless the code
+   * cannot be spelled as one. See ADR 0016, Derive Event Root Elements From
+   * Usage.
    */
-  errorMessages?: { code: string; message: string }[];
+  errorDecls?: { name: string; code: string; message?: string }[];
+  /** As {@link BpmnProcess.errorDecls}; BPMN gives an escalation no message. */
+  escalationDecls?: { name: string; code: string }[];
 }
 
 export type FlowElement =

@@ -5,6 +5,7 @@
 
 import { AstUtils, type AstNode } from 'langium';
 import type { Process, VarType } from './generated/ast.js';
+import { caughtBindingsOf } from './paren-items.js';
 import {
   isIoParameter,
   isOnHandler,
@@ -80,12 +81,13 @@ export class DefaultVariableSymbolProvider implements VariableSymbolProvider {
     // A catch binding declares a `string`: the code or message text it caught.
     for (const node of AstUtils.streamAst(process)) {
       if (!isOnHandler(node)) continue;
-      for (const binding of node.bindings) {
-        if (!table.has(binding.variable)) {
-          table.set(binding.variable, {
-            name: binding.variable,
-            type: 'string',
-          });
+      for (const binding of caughtBindingsOf(node.items)) {
+        // A setting whose value is not a plain name reads a variable rather
+        // than declaring one, so it seeds nothing.
+        const { variable } = binding;
+        if (variable === undefined) continue;
+        if (!table.has(variable)) {
+          table.set(variable, { name: variable, type: 'string' });
         }
       }
     }

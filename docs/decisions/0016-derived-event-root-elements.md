@@ -55,23 +55,28 @@ Root elements are derived, not modeled.
 `irToXml` walks the whole IR once, collects every distinct error and escalation code in use on a catching start event, a throwing end event, or an intermediate throw, anywhere in the document, and synthesizes one `bpmn:Error` or `bpmn:Escalation` root per distinct code.
 Every event definition carrying that code is wired to the same root through `errorRef`/`escalationRef`.
 A definition without a code (catch-all) gets no ref and contributes no root, because BPMN itself treats a ref-less catch as "any error", so there is nothing for it to point at.
-Root ids are sanitized from the code and de-collided against the rest of the document; the root's `name` is the code, verbatim.
+Root ids are sanitized from the code and de-collided against the rest of the document; the root's `name` is the name the code is declared under (ADR-0030), which is the code itself wherever an identifier can spell it.
 
 The one exception is the message text an error carries when thrown.
 `operaton:errorMessage` lives on the root, not on the throw statement, because two throw sites sharing a code share one root, and the message cannot live at the throw site without a mechanism to reconcile disagreeing copies.
-The surface exposes this as a process-header declaration, `error "CODE" message "..."`, read into `BpmnProcess.errorMessages` and stamped onto the synthesized root at export; import reads the message back off the root.
+The surface exposes this as a process-header declaration, `error CODE(message: "...")`, read into `BpmnProcess.errorDecls` and stamped onto the synthesized root at export; import reads the message back off the root.
 It is the one piece of root-element data the IR stores explicitly, because it is the one property usage alone cannot determine: nothing about using a code says what its message reads.
 
 An imported document whose two roots share a code but disagree on the message is refused, not merged.
 Collapsing them would change what a throw carries at runtime, which is the same reasoning ADR-0014 already applies to any drop that would alter execution semantics.
 
+ADR-0030 amends this on one point: the declaration form generalizes from the message text to the code itself, so every error and escalation code is declared and every use site names the declaration.
+The inference argument this decision rests on holds on its own terms and is not withdrawn.
+What outweighs it is an argument this decision does not weigh: a declaration is what gives a code a cross-reference, and a cross-reference is what gives it jump-to-definition, find-references and rename, which for a textual DSL is the contribution rather than a convenience.
+Derivation itself is untouched, since `irToXml` still walks usage to build the roots and a declaration only adds one for a code nothing raises.
+
 Throw and emit decide terminality by keyword, not position.
-`throw error "C"` always compiles to an end event; `emit escalation "C"` always compiles to an intermediate throw that falls through to whatever follows it.
+`throw error(C)` always compiles to an end event; `emit escalation(C)` always compiles to an intermediate throw that falls through to whatever follows it.
 The distinction lives in the keyword, not in where the statement sits inside its block.
 
 A single verb whose compiled form depends on being last in its block looks appealing, one fewer keyword, but it does not survive the round trip.
 Take an IR shape the importer must be able to reproduce: a branch that fires an escalation and rejoins the main flow, `split -> A -> escalation-intermediate-throw -> join`.
-Printed inside its branch block, that statement is the last statement of the block, `{ A  <emit-form> "C" }`, simply because the branch has nothing after it, not because the event ends anything.
+Printed inside its branch block, that statement is the last statement of the block, `{ A  <emit-form>(C) }`, simply because the branch has nothing after it, not because the event ends anything.
 A position-decided desugarer reads "last in block" and turns the statement back into an escalation end event on the way in, which drops the join edge the original graph had.
 The same printed text would then mean two different graphs depending on information the text itself does not carry, which is exactly what round-trip fidelity rules out.
 
@@ -102,6 +107,7 @@ This also pre-pays the next event kinds: `message`/`signal` become validated tri
 ### Consequences
 
 - Good, because using a code never requires declaring it first: a handler, a throw, and a catch-all can all reference the same code without any one of them being the "first" to establish it.
+  ADR-0030 gives this consequence up in exchange for the cross-reference, so a code is declared once and named at every site that raises or catches it.
 - Good, because every user of one code shares exactly one root element, so a code's message text has exactly one place to live, never several that could disagree.
 - Good, because two disagreeing imports of the same code are refused rather than silently reconciled, keeping ADR-0014's "no silent semantic loss" claim intact for this construct too.
 - Good, because `throw`/`emit` terminality is a property of the word printed, readable without looking at what follows in the block, and it matches the reading every reader already brings from exception handling elsewhere.
@@ -116,7 +122,7 @@ This also pre-pays the next event kinds: `message`/`signal` become validated tri
 
 `packages/transform/test/ir-to-xml.test.ts` asserts the derivation directly: a document using one code from a handler, a throw, and a catch-all handler produces exactly one root element referenced by every coded use and none by the catch-all, with dedicated cases for id sanitization and collision suffixing.
 `packages/transform/test/ast-to-ir.test.ts` and `ir-to-dsl.test.ts` pin the branch-tail counterexample as a round-trip case: an intermediate escalation throw as the last statement of a branch block prints as `emit` and re-imports as the same intermediate throw, never an end event.
-`packages/language/test/validating.test.ts` pins the soft-word behavior: `var message: string`, `if (code == "x")`, and a task named `error` all parse and validate cleanly, while an unrecognized trigger word or binding field produces the options-naming diagnostic rather than a silent pass-through.
+`packages/language/test/validating.test.ts` pins the soft-word behavior: `var message: string`, `if (code == "x")`, and a task named `error` all parse and validate cleanly, while an unrecognized trigger word produces the options-naming diagnostic and a misspelled binding field is reported as a setting the handler does not take, rather than a silent pass-through.
 
 ## Pros and Cons of the Options
 
@@ -130,11 +136,14 @@ Every event definition would reference an explicit IR-level root object instead 
 
 ### Explicit declarations for every code
 
-Every error and escalation code would need a header declaration before use, generalizing how the `error ... message ...` declaration already works for message text.
+Every error and escalation code would need a header declaration before use, generalizing how the `error CODE(message: "...")` declaration already works for message text.
 
 - Good, because it removes all derivation logic: a code is either declared or using it is a compile error, symmetrical and simple to check.
 - Bad, because it demands decl-versus-usage redundancy for no expressive gain.
   Dedup-by-code already makes usage-derived synthesis lossless for every property except the message text, which is precisely why that one property gets a declaration instead of the rule being generalized to all of them.
+
+ADR-0030 takes this option after all, on a gain measured in editor behaviour rather than in expressiveness.
+The redundancy is real and is what buys the cross-reference, so the argument above is answered rather than refuted.
 
 ### Position-decided throw terminality
 
@@ -154,8 +163,9 @@ A single verb whose compiled form depends on whether a successor statement follo
 
 Extended by ADR-0017 (message/signal/timer/conditional payloads) and ADR-0018 (compensation), the later event kinds that reuse this decision's `throw`/`emit` terminality rule and soft-word design without adding a reserved word.
 Extended also by ADR-0019 (boundary events), whose colon separator exists precisely so the trigger words stay soft.
+Amended by ADR-0030, which generalizes the message-text declaration to the code itself so that a code carries a cross-reference.
 
-Related decisions: ADR-0006 (the IR as the shared model, where vendor- or serialization-only data such as `operaton:historyTimeToLive` attaches at the IR-to-XML boundary rather than living in the IR; `errorMessages` is the one exception, and it is an exception because it cannot be derived from usage, not because the boundary rule was relaxed).
+Related decisions: ADR-0006 (the IR as the shared model, where vendor- or serialization-only data such as `operaton:historyTimeToLive` attaches at the IR-to-XML boundary rather than living in the IR; `errorDecls` and `escalationDecls` are the one exception, and they are an exception because they cannot be derived from usage, not because the boundary rule was relaxed).
 ADR-0010 (deterministic structural ids, whose sanitize-then-suffix collision rule synthesized root ids follow).
 ADR-0013 (the audience this design serves: no BPMN-document bookkeeping, no required syntax the compiler could supply itself).
 ADR-0014 (the honest import contract, under which disagreeing root definitions for one code are refused rather than merged, for the same reason a semantically significant drop is refused rather than warned).

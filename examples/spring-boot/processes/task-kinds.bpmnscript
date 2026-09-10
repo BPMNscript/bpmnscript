@@ -11,24 +11,18 @@
 // decision step binds to code rather than a decision table so the process
 // deploys and runs on the demo profile with no DMN artifact.
 
-process task-kinds "Task kinds" {
+process task-kinds(label: "Task kinds") {
   start OrderPlaced
 
-  step RecordIntent "Record the intent"
+  step RecordIntent(label: "Record the intent")
 
-  send NotifyWarehouse "Notify the warehouse" {
-    class = "com.example.demo.LogDelegate"
-  }
+  send NotifyWarehouse(label: "Notify the warehouse", class: "com.example.demo.LogDelegate")
 
-  decide RateOrder "Rate the order" {
-    class = "com.example.demo.LogDelegate"
-  }
+  decide RateOrder(label: "Rate the order", class: "com.example.demo.LogDelegate")
 
-  receive AwaitShipment "Wait for the shipment notice" {
-    message = "ShipmentDispatched"
-  }
+  receive AwaitShipment(label: "Wait for the shipment notice", message: "ShipmentDispatched")
 
-  user ConfirmDelivery "Confirm the delivery" { assignee = "demo" }
+  user ConfirmDelivery(label: "Confirm the delivery", assignee: "demo")
 
   end OrderClosed
 }

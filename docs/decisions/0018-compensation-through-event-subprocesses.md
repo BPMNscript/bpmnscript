@@ -51,6 +51,7 @@ Neither carries a code, because compensation has no name to correlate against, u
 What is refused, not modeled.
 Boundary compensation events, `activityRef`-targeted throws, `waitForCompletion="false"`, and `isForCompensation` activities are all refused on import under the same contract ADR-0014 already established for constructs the DSL cannot express without changing what the process does.
 None of the four is silently dropped or approximated by the nearest `on compensation` equivalent; an import encountering any of them stops with a diagnostic naming the construct.
+When the boundary event and the `isForCompensation` activity are paired through a `bpmn:association`, the diagnostic also names the compensated activity, the boundary event, and the handler, and prints the `subprocess`/`on compensation` rewrite an author would write by hand.
 
 Per-activity undo.
 BPMN's boundary-event form exists chiefly to compensate a single activity rather than a whole embedded sub-process.

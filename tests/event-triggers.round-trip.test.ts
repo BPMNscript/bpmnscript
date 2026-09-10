@@ -182,10 +182,10 @@ describeImportFirst(
   IMPORT_FIRST_BPMN,
   (first) => {
     it('recovers each trigger payload into the DSL surface', () => {
-      expect(first.dsl).toContain('emit signal Broadcast "ParcelDispatched"');
-      expect(first.dsl).toContain('throw signal Done "ParcelDispatched"');
-      expect(first.dsl).toContain('on timer at "2026-09-01T08:00:00" {');
-      expect(first.dsl).toContain('on condition (stockLevel < 5) {');
+      expect(first.dsl).toContain('emit signal Broadcast("ParcelDispatched")');
+      expect(first.dsl).toContain('throw signal Done("ParcelDispatched")');
+      expect(first.dsl).toContain('on timer(at: "2026-09-01T08:00:00") {');
+      expect(first.dsl).toContain('on condition(stockLevel < 5) {');
     });
 
     it('both broadcasts resolve to the one collapsed signal name', () => {

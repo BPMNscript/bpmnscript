@@ -158,7 +158,7 @@ Some telling inputs:
 ### Add your own process
 
 1. Write a `.bpmnscript` and drop it in [`processes/`](processes).
-2. For a service task that only needs to run and continue, point it at the generic delegate: `service DoThing "Do thing" { class = "com.example.demo.LogDelegate" }`.
+2. For a service task that only needs to run and continue, point it at the generic delegate: `service DoThing(label: "Do thing", class: "com.example.demo.LogDelegate")`.
    For real behavior, such as setting variables or branching, add a `JavaDelegate` under `src/main/java/` and reference its class instead; the [`com.example.loan`](src/main/java/com/example/loan) delegates are the model.
 3. Recompile (step 2) and restart the engine (step 3), and the new process shows up in Cockpit and Tasklist.
 

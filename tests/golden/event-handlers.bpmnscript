@@ -1,11 +1,15 @@
 // Event-layer round-trip fixture: one order-processing narrative that exercises
 // the DSL's try/catch surface end to end.
 //
-//   - an `error ... message` declaration carrying the thrown message text;
+//   - an `error` declaration carrying the thrown message text;
+//   - an `error` declaration whose code is not a word a name can spell, so it
+//     carries an explicit `code` and its handler refers to it by name;
+//   - an `error` declaration nothing raises or catches, which still reaches the
+//     .bpmn as a root carrying its message;
 //   - a payment `subprocess` that throws (`throw error` inside an `if`),
 //     escalates mid-chain (`emit escalation`), and owns an interrupting
 //     `on error` handler binding both the code and the message;
-//   - a process-level non-interrupting `on escalation ... (code v) alongside`
+//   - a process-level non-interrupting `on escalation(..., code: v, alongside)`
 //     handler for the escalation both escalation sites raise;
 //   - a catch-all `on error` handler for any error the process does not name;
 //   - a terminal `throw escalation`;
@@ -22,7 +26,11 @@
 // correct container depth. See README.md.
 
 process order-processing {
-  error "PAYMENT_DECLINED" message "The payment was declined by the bank"
+  error PAYMENT_DECLINED(message: "The payment was declined by the bank")
+  error GatewayTimeout(code: "gateway.timeout", message: "The payment gateway did not answer")
+  error STOCK_UNAVAILABLE(message: "The warehouse cannot fulfil the order")
+  escalation MANUAL_REVIEW
+  escalation ORDER_ABANDONED
 
   start OrderReceived {
     form {
@@ -30,47 +38,52 @@ process order-processing {
       message: string "Gateway message"
     }
   }
-  user CheckStock "Verify stock levels" { assignee = "demo" }
+  user CheckStock(label: "Verify stock levels", assignee: "demo")
 
-  subprocess ProcessPayment "Settle the payment" {
+  subprocess ProcessPayment(label: "Settle the payment") {
     start PaymentStart
-    service ChargeCard "Charge the card" { class = "com.example.orders.ChargeCardDelegate" }
+    service ChargeCard(label: "Charge the card", class: "com.example.orders.ChargeCardDelegate")
 
     if (message == "declined") {
-      throw error PaymentFailed "PAYMENT_DECLINED"
+      throw error PaymentFailed(PAYMENT_DECLINED)
     }
 
-    service AuthorizeFunds "Authorize the funds" { class = "com.example.orders.AuthorizeDelegate" }
-    emit escalation "MANUAL_REVIEW"
-    service ConfirmOrder "Confirm the order" { class = "com.example.orders.ConfirmDelegate" }
+    service AuthorizeFunds(label: "Authorize the funds", class: "com.example.orders.AuthorizeDelegate")
+    emit escalation(MANUAL_REVIEW)
+    service ConfirmOrder(label: "Confirm the order", class: "com.example.orders.ConfirmDelegate")
     end PaymentDone
 
-    on error "PAYMENT_DECLINED" (code c, message m) {
+    on error(PAYMENT_DECLINED, code: c, message: m) {
       start CaughtPayment
-      user NotifyCustomer "Notify the customer" { assignee = "demo" }
+      user NotifyCustomer(label: "Notify the customer", assignee: "demo")
       end PaymentHandled
     }
   }
 
-  service ShipOrder "Dispatch the order" { class = "com.example.orders.ShipDelegate" }
+  service ShipOrder(label: "Dispatch the order", class: "com.example.orders.ShipDelegate")
 
   if (amount > 1000) {
     goto FlagForReview
   }
-  service SettleAccounts "Settle the ledger" { class = "com.example.orders.LedgerDelegate" }
+  service SettleAccounts(label: "Settle the ledger", class: "com.example.orders.LedgerDelegate")
   end OrderCompleted
 
-  emit escalation FlagForReview "MANUAL_REVIEW"
-  throw escalation "ORDER_ABANDONED"
+  emit escalation FlagForReview(MANUAL_REVIEW)
+  throw escalation(ORDER_ABANDONED)
 
-  on escalation "MANUAL_REVIEW" (code v) alongside {
+  on escalation(MANUAL_REVIEW, code: v, alongside) {
     start CaughtReview
-    user ReviewOrder "Review the order manually" { assignee = "demo" }
+    user ReviewOrder(label: "Review the order manually", assignee: "demo")
     end ReviewHandled
+  }
+  on error(GatewayTimeout) {
+    start CaughtTimeout
+    service RetryCharge(label: "Retry the charge against the gateway", class: "com.example.orders.RetryChargeDelegate")
+    end TimeoutHandled
   }
   on error {
     start CaughtAny
-    service RecordFailure "Record the failure" { class = "com.example.orders.RecordFailureDelegate" }
+    service RecordFailure(label: "Record the failure", class: "com.example.orders.RecordFailureDelegate")
     end FailureHandled
   }
 }

@@ -10,24 +10,25 @@
 // process deploys and runs on the demo profile without additional Java classes.
 
 process order-recovery {
-  error "PAYMENT_FAILED" message "The card could not be charged"
+  error PAYMENT_FAILED(message: "The card could not be charged")
+  escalation SLOW_FULFILLMENT
 
   start OrderPlaced
-  user ReviewOrder "Review order" { assignee = "demo" }
+  user ReviewOrder(label: "Review order", assignee: "demo")
 
-  subprocess Fulfilment "Fulfil the order" {
-    service ChargePayment "Charge payment" { class = "com.example.demo.LogDelegate" }
-    emit escalation "SLOW_FULFILLMENT"
-    service ShipParcel "Ship the parcel" { class = "com.example.demo.LogDelegate" }
+  subprocess Fulfilment(label: "Fulfil the order") {
+    service ChargePayment(label: "Charge payment", class: "com.example.demo.LogDelegate")
+    emit escalation(SLOW_FULFILLMENT)
+    service ShipParcel(label: "Ship the parcel", class: "com.example.demo.LogDelegate")
 
-    on error "PAYMENT_FAILED" {
-      service CancelOrder "Cancel the order" { class = "com.example.demo.LogDelegate" }
+    on error(PAYMENT_FAILED) {
+      service CancelOrder(label: "Cancel the order", class: "com.example.demo.LogDelegate")
     }
   }
 
   end OrderComplete
 
-  on escalation "SLOW_FULFILLMENT" alongside {
-    user NotifySupervisor "Notify supervisor" { assignee = "manager" }
+  on escalation(SLOW_FULFILLMENT, alongside) {
+    user NotifySupervisor(label: "Notify supervisor", assignee: "manager")
   }
 }

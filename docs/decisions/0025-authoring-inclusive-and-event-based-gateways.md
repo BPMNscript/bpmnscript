@@ -60,7 +60,7 @@ process expense-approval {
 
   parallel {
     if (amount > 10000) { user Audit }
-    if (repeatCustomer) { service RecordReceipt { topic = "receipts" } }
+    if (repeatCustomer) { service RecordReceipt(topic: "receipts") }
     else { user ManualTriage }
   }
 }
@@ -79,13 +79,13 @@ The race is a multi-branch `await`.
 ```bpmnscript
 process order-shipping {
   await {
-    message "PaymentReceived" { service ShipOrder { topic = "shipping" } }
-    timer after "P3D" { user ChaseCustomer }
+    message("PaymentReceived") { service ShipOrder(topic: "shipping") }
+    timer("P3D") { user ChaseCustomer }
   }
 }
 ```
 
-A branch is a trigger header in the payload grammar `on` and `await` share, an optional settings block, then the body.
+A branch is a trigger header in the payload grammar `on` and `await` share, its settings, then the body.
 Two branches are the minimum, enforced by the grammar as `ParallelStatement` already does (`bpmn-script.langium`).
 The triggers are the four `await` already takes, which is also everything Operaton accepts in this position (`BpmnParse.java:1549-1594`).
 Reusing the word costs nothing, because `await {` cannot parse today: the `IntermediateCatchEvent` shape takes a trigger word after the keyword (`bpmn-script.langium`).
@@ -131,7 +131,7 @@ That one needs no refusal here, because no author writes a gateway and so nothin
 ### Confirmation
 
 Parser tests pin a `parallel` block mixing an `if` branch, a plain branch and an `else` branch, and a plain branch opening with a nested `if`/`else`.
-`await { ... }` parses as a race while `await timer after "PT1H"` still parses as a single catch.
+`await { ... }` parses as a race while `await timer("PT1H")` still parses as a single catch.
 Validation tests pin the four-trigger scope, the two-branch minimum as a parse failure, a second `else` branch on one statement, an `else` branch with no conditioned sibling, and an `else` branch beside a sibling carrying no condition.
 Transform tests pin element selection, the default-flow rule, the race's join and its pruning, the inclusive carry, and each refusal by name.
 They also pin elision of both new pairs and the dropped-label warning reaching the caller.

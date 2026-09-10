@@ -153,7 +153,7 @@ describe('decompile contract: what `bpmns parse` does with the same fixtures', (
           'process lanes-and-async',
           'start ReviewStart',
           'user ReviewRequest',
-          'assignee = "demo"',
+          'assignee: "demo"',
           'end ReviewDone',
         ],
       },

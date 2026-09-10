@@ -14,17 +14,17 @@
 // Java classes.
 
 process charge-with-recovery {
-  error "CHARGE_FAILED" message "The payment charge could not be completed"
+  error CHARGE_FAILED(message: "The payment charge could not be completed")
 
   start OrderReceived
 
-  service ChargeCard "Charge the customer's card" { class = "com.example.demo.FailingChargeDelegate" }
-  service ConfirmCharge "Confirm the charge" { class = "com.example.demo.LogDelegate" }
+  service ChargeCard(label: "Charge the customer's card", class: "com.example.demo.FailingChargeDelegate")
+  service ConfirmCharge(label: "Confirm the charge", class: "com.example.demo.LogDelegate")
 
   end OrderCharged
 
-  on ChargeCard: error "CHARGE_FAILED" (code c, message m) {
-    user ReviewFailedCharge "Review the failed charge" { assignee = "demo" }
+  on ChargeCard: error(CHARGE_FAILED, code: c, message: m) {
+    user ReviewFailedCharge(label: "Review the failed charge", assignee: "demo")
     end ChargeFailedHandled
   }
 }

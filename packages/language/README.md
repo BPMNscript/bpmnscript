@@ -24,53 +24,53 @@ process invoice-approval {
   var amount: number
 
   start ReviewStart
-  user ReviewInvoice { assignee = "demo" }
+  user ReviewInvoice(assignee: "demo")
   if (amount > 1000) {
-    user SeniorApproval { assignee = "manager" }
+    user SeniorApproval(assignee: "manager")
   } else {
-    service AutoApprove { class = "com.example.AutoApproveDelegate" }
+    service AutoApprove(class: "com.example.AutoApproveDelegate")
   }
   end Done
 }
 ```
 
 Every targetable statement carries an explicit id, which is what `goto` and boundary events refer to.
-The BPMN `name` is derived from that id (`ReviewInvoice` becomes "Review Invoice") unless a quoted label follows it: `user ReviewInvoice "Review invoice"`.
+The BPMN `name` is derived from that id (`ReviewInvoice` becomes "Review Invoice") unless a `label` setting gives one instead: `user ReviewInvoice(label: "Review invoice")`.
 
 ### Statements
 
-| Statement                                 | BPMN element                                                              | Notes                                                                                                              |
-| ----------------------------------------- | ------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| `start X` / `end X`                       | start event / end event                                                   | a trigger on either, see [Starting on an event](#starting-on-an-event) and [Ending every path](#ending-every-path) |
-| `user X { }`                              | user task                                                                 | assignment and form attributes, see below                                                                          |
-| `service X { }`                           | service task                                                              | exactly one binding attribute, see below                                                                           |
-| `script X` + a fenced body                | script task                                                               | fence tag picks the language, see below                                                                            |
-| `step X { }`                              | task                                                                      | no binding of its own                                                                                              |
-| `send X { }`                              | send task                                                                 | binds like a service task, see below                                                                               |
-| `receive X { }`                           | receive task                                                              | waits for a message, or for the engine, see below                                                                  |
-| `decide X { }`                            | business rule task                                                        | binds to a decision table, or like a service task, see below                                                       |
-| `if` / `else if` / `else`                 | exclusive gateway                                                         |                                                                                                                    |
-| `while (cond) { }`                        | exclusive gateway loop                                                    |                                                                                                                    |
-| `do { } while (cond)`                     | exclusive gateway loop                                                    |                                                                                                                    |
-| `parallel { { } { } }`                    | parallel gateway fork and join, or inclusive when a branch is conditioned | see [Conditioning a parallel branch](#conditioning-a-parallel-branch)                                              |
-| `subprocess X "label"? { }`               | embedded sub-process                                                      | a nested container, see below                                                                                      |
-| `attempt X "label"? { }`                  | transaction sub-process                                                   | the same container, for work that can be given up, see [Giving a block of work up](#giving-a-block-of-work-up)     |
-| `call X "label"? { }`                     | call activity                                                             | starts another process, see below                                                                                  |
-| `goto X`                                  | sequence flow                                                             | targets a step in the same container                                                                               |
-| `on <kind> { }`                           | event sub-process                                                         | see [The event layer](#the-event-layer)                                                                            |
-| `on Host: <kind> { }`                     | boundary event                                                            | see [Attaching a handler to one step](#attaching-a-handler-to-one-step)                                            |
-| `await <kind> ...`                        | intermediate catch event                                                  | see [Awaiting an event inline](#awaiting-an-event-inline)                                                          |
-| `await { <kind> ... { } <kind> ... { } }` | event-based gateway, a catch event per branch, exclusive join             | see [Waiting on several triggers at once](#waiting-on-several-triggers-at-once)                                    |
-| `throw` / `emit <kind>`                   | throw event                                                               | see [The event layer](#the-event-layer)                                                                            |
+| Statement                                   | BPMN element                                                              | Notes                                                                                                              |
+| ------------------------------------------- | ------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| `start X` / `end X`                         | start event / end event                                                   | a trigger on either, see [Starting on an event](#starting-on-an-event) and [Ending every path](#ending-every-path) |
+| `user X(...)`                               | user task                                                                 | assignment and form attributes, see below                                                                          |
+| `service X(...)`                            | service task                                                              | exactly one binding attribute, see below                                                                           |
+| `script X` + a fenced body                  | script task                                                               | fence tag picks the language, see below                                                                            |
+| `step X(...)`                               | task                                                                      | no binding of its own                                                                                              |
+| `send X(...)`                               | send task                                                                 | binds like a service task, see below                                                                               |
+| `receive X(...)`                            | receive task                                                              | waits for a message, or for the engine, see below                                                                  |
+| `decide X(...)`                             | business rule task                                                        | binds to a decision table, or like a service task, see below                                                       |
+| `if` / `else if` / `else`                   | exclusive gateway                                                         |                                                                                                                    |
+| `while (cond) { }`                          | exclusive gateway loop                                                    |                                                                                                                    |
+| `do { } while (cond)`                       | exclusive gateway loop                                                    |                                                                                                                    |
+| `parallel { { } { } }`                      | parallel gateway fork and join, or inclusive when a branch is conditioned | see [Conditioning a parallel branch](#conditioning-a-parallel-branch)                                              |
+| `subprocess X(...) { }`                     | embedded sub-process                                                      | a nested container, see below                                                                                      |
+| `attempt X(...) { }`                        | transaction sub-process                                                   | the same container, for work that can be given up, see [Giving a block of work up](#giving-a-block-of-work-up)     |
+| `call X(...) { }`                           | call activity                                                             | starts another process, see below                                                                                  |
+| `goto X`                                    | sequence flow                                                             | targets a step in the same container                                                                               |
+| `on <kind> { }`                             | event sub-process                                                         | see [The event layer](#the-event-layer)                                                                            |
+| `on Host: <kind> { }`                       | boundary event                                                            | see [Attaching a handler to one step](#attaching-a-handler-to-one-step)                                            |
+| `await <kind>(...)`                         | intermediate catch event                                                  | see [Awaiting an event inline](#awaiting-an-event-inline)                                                          |
+| `await { <kind>(...) { } <kind>(...) { } }` | event-based gateway, a catch event per branch, exclusive join             | see [Waiting on several triggers at once](#waiting-on-several-triggers-at-once)                                    |
+| `throw` / `emit <kind>`                     | throw event                                                               | see [The event layer](#the-event-layer)                                                                            |
 
-Every statement in that table that takes a settings block also takes the engine settings and an execution listener, and most of them take input and output parameters as well.
+Every statement in that table that takes settings of its own also takes the engine settings and an execution listener, and most of them take input and output parameters as well.
 The ten that map to an activity also take a repetition clause, see [Repetition](#repetition).
-The braces the table shows on `while`, `do`, `parallel`, `subprocess`, `attempt`, `on`, and a multi-branch `await` are bodies rather than settings blocks.
+A brace holds what has internal structure: the body of a `while`, `do`, `parallel`, `subprocess`, `attempt`, `on`, or multi-branch `await`, and the form fields, parameters, listeners, and call mappings an element carries.
 
 #### Attribute keys per element
 
-The grammar accepts any key in any settings block and the validator decides which ones that element has, so an unknown key is a diagnostic naming the element rather than a parse error.
-Five engine execution settings are legal wherever a settings block is, and each element kind adds the keys it owns on top.
+The grammar accepts any key in any element's parens and the validator decides which ones that element has, so an unknown key is a diagnostic naming the element rather than a parse error.
+Five engine execution settings are legal on every element that takes settings, `label` is legal on all of them too, and each element kind adds the keys it owns on top.
 
 | Element                                                | Keys beyond the engine settings                                                                                     |
 | ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------- |
@@ -87,7 +87,7 @@ Five engine execution settings are legal wherever a settings block is, and each 
 | process header                                         | `versionTag`, and nothing else                                                                                      |
 
 The engine settings are `asyncBefore` and `asyncAfter`, which put a transaction boundary before or after the step, `exclusive`, which says whether the engine may run the step's jobs beside other jobs of the same instance, `jobPriority`, which orders those jobs in the queue, and `retryCycle`, the ISO cycle a failed job is retried on.
-The gateways that `if`, `while`, `do...while`, `parallel`, and a multi-branch `await` synthesize have no settings block, so no engine setting can be written on one.
+The gateways that `if`, `while`, `do...while`, `parallel`, and a multi-branch `await` synthesize have no settings of their own, so no engine setting can be written on one.
 
 #### Service tasks
 
@@ -105,7 +105,7 @@ A `receive` task with `message` set waits for a message of that name, released b
 With no `message` key it still waits, but names nothing to correlate on: only the engine's own signal API can move the token past it.
 
 A `decide` task answers a decision table when `decision` names one.
-`binding = latest` or `binding = deployment` pins the deployed version the same way a `call` does, `version = <n>` pins a specific one, and `mapDecisionResult` picks what lands in `resultVariable`: `singleEntry`, `singleResult`, `collectEntries`, or `resultList`.
+`binding: latest` or `binding: deployment` pins the deployed version the same way a `call` does, `version: <n>` pins a specific one, and `mapDecisionResult` picks what lands in `resultVariable`: `singleEntry`, `singleResult`, `collectEntries`, or `resultList`.
 With no `decision` key it falls back to the same four binding attributes a `service` task takes, serialized as a `bpmn:businessRuleTask` instead of a `bpmn:serviceTask`.
 
 #### Input and output parameters
@@ -117,8 +117,7 @@ Entries keep the order they were written in, and a name may repeat across the tw
 
 ```bpmnscript
 process order-shipping {
-  service Ship {
-    topic = "shipping"
+  service Ship(topic: "shipping") {
     input address = { street: "${street}", city: "${city}" }
     input labels = ["express", "fragile"]
     output tracking = "${trackingId}"
@@ -128,8 +127,8 @@ process order-shipping {
 
 #### Listeners
 
-A settings block also holds listeners, written with `on <event>` and the thing to run.
-An execution listener fires when the element starts or ends and is legal wherever a settings block is.
+An element's braces also hold listeners, written with `on <event>` and the thing to run.
+An execution listener fires when the element starts or ends and is legal on every element that takes settings.
 A task listener fires on a step in a user task's lifecycle and is legal on a `user` task alone.
 
 | Listener kind     | Events                                                        |
@@ -137,24 +136,23 @@ A task listener fires on a step in a user task's lifecycle and is legal on a `us
 | execution         | `start`, `end`                                                |
 | task, `user` only | `create`, `assign`, `complete`, `update`, `delete`, `timeout` |
 
-A listener runs exactly one thing: `class`, `expression`, or `delegate` in its own block, or a fenced script whose opening tag names the language.
+A listener runs exactly one thing: `class`, `expression`, or `delegate` in its own parens, or a fenced script whose opening tag names the language.
 That is the same choice a service task binding makes, without the external `topic`.
-`on timeout` carries the timer that says when it runs, written with the same `after`, `at`, and `every` particles a timer event uses, and no other event takes one.
+`on timeout` carries the timer that says when it runs, written as an `after`, `at`, or `every` particle and a time, and no other event takes one.
 
 ````bpmnscript
 process claim-review {
-  user Review {
-    assignee = "demo"
-    on start { class = "com.example.AuditListener" }
+  user Review(assignee: "demo") {
+    on start(class: "com.example.AuditListener")
     on complete ```groovy
     log.info(task.id)
     ```
-    on timeout after "PT8H" { delegate = "${escalationHandler}" }
+    on timeout after "PT8H"(delegate: "${escalationHandler}")
   }
 }
 ````
 
-An `on` between the braces of a settings block is a listener; an `on` at statement position is a caught BPMN event, and the two never overlap.
+An `on` inside an element's braces is a listener; an `on` at statement position is a caught BPMN event, told apart by the body block a handler always carries and a listener never does.
 
 #### Script tasks
 
@@ -169,17 +167,17 @@ The same statement takes a second head, `attempt`, for a block of work that can 
 #### Call activities
 
 A `call` reads like a function call at the process boundary.
-`process = "<id>"` names the process to start, an `in` mapping is an argument passed into it, and an `out` mapping is a value read back.
+`process: "<id>"` names the process to start, an `in` mapping is an argument passed into it, and an `out` mapping is a value read back.
 `in *` and `out *` copy every variable rather than naming one.
-`version = <number>` pins a deployed version of the called process, while `binding = latest` and `binding = deployment` select the other two resolution modes, and the two are mutually exclusive.
-`businessKey = "<value>"` sets the started instance's business key.
+`version: <number>` pins a deployed version of the called process, while `binding: latest` and `binding: deployment` select the other two resolution modes, and the two are mutually exclusive.
+`businessKey: "<value>"` sets the started instance's business key.
 
 A `local` mapping (`in local x = y`) reads from or writes to variables belonging to the call step itself rather than to the whole process.
 It's rare when authoring, and exists mainly so diagrams that use step-local variables import faithfully.
 
 #### Repetition
 
-A `for` clause after a statement's id and optional label, ahead of its settings block, says how often the step runs.
+A `for` clause after a statement's id, ahead of its parens, says how often the step runs.
 It is legal on `user`, `service`, `script`, `step`, `send`, `receive`, `decide`, `subprocess`, `attempt`, and `call`, and compiles to `bpmn:multiInstanceLoopCharacteristics`.
 `for`, `each`, `sequentially`, and `until` are reserved, so none of the four doubles as a plain name elsewhere in a process.
 
@@ -207,16 +205,15 @@ process invoice-batch {
   var invoices: any
 
   start BatchOpened
-  user ApproveInvoice "Approve the invoice" for each invoice in invoices sequentially until (nrOfCompletedInstances >= 3) {
-    assignee = "demo"
+  user ApproveInvoice for each invoice in invoices sequentially until (nrOfCompletedInstances >= 3)(label: "Approve the invoice", assignee: "demo") {
     input reference = "${loopCounter}"
   }
-  service ArchiveBatch "Archive the batch" for 3 { class = "com.example.invoices.ArchiveDelegate" }
+  service ArchiveBatch for 3(label: "Archive the batch", class: "com.example.invoices.ArchiveDelegate")
   end BatchClosed
 }
 ```
 
-`asyncBefore` in a repeated step's settings block puts one job around the whole repetition rather than one job per run.
+`asyncBefore` in a repeated step's settings puts one job around the whole repetition rather than one job per run.
 One job per run is a setting on the multi-instance element itself, which this surface has nowhere to write.
 
 A repeated step cannot map an `output` parameter, because Operaton refuses to deploy that combination outright.
@@ -245,10 +242,10 @@ process expense-approval {
 
   parallel {
     if (amount > 10000) {
-      user AuditReview { assignee = "auditor" }
+      user AuditReview(assignee: "auditor")
     }
     else {
-      user SkipAudit { assignee = "clerk" }
+      user SkipAudit(assignee: "clerk")
     }
   }
 
@@ -262,11 +259,11 @@ A second `else` branch on one statement is rejected, and so is an `else` on a st
 ### The event layer
 
 The event layer reads like try/catch.
-An `on <kind> { }` handler is a catch block, sitting at the end of the body it guards, the way a catch block sits after its try body: `on error "PAYMENT_FAILED" { ... }`.
+An `on <kind> { }` handler is a catch block, sitting at the end of the body it guards, the way a catch block sits after its try body: `on error(PAYMENT_FAILED) { ... }`.
 That body is a process, a `subprocess` or `attempt` block, or another handler's body, since BPMN lets one event sub-process nest inside another.
 
-A parenthesized list after the code is the caught value, the `e` in `catch (Exception e)`.
-It pairs a binding field (`code`, and for `error` also `message`) with the process variable that receives it: `on error "PAYMENT_FAILED" (code c, message m) { ... }`.
+A binding beside the code in the parens is the caught value, the `e` in `catch (Exception e)`.
+It pairs a binding field (`code`, and for `error` also `message`) with the process variable that receives it: `on error(PAYMENT_FAILED, code: c, message: m) { ... }`.
 Omitting the code, as in `on error { }`, catches any event of that kind.
 
 `alongside` marks a handler non-interrupting, so the guarded scope's main flow keeps running beside it.
@@ -274,21 +271,23 @@ Omitting the code, as in `on error { }`, catches any event of that kind.
 Two verbs raise an event, and the distinction holds across every kind.
 `throw <kind>` ends the current path right there, exactly like `throw` in a programming language, and `emit <kind>` fires the event and keeps going.
 
-A process-header declaration, `error "CODE" message "text"`, records the message text a thrown error of that code carries at runtime.
-It sits with the `var` declarations at the top of the body, and is only needed for a code whose throw and catch sites should carry that text.
+Every error and escalation code is a declaration in the process header, `error CODE(message: "text")` or `escalation CODE`, that every throw, emit, and catch site names.
+The declarations sit with the `var` declarations at the top of the body.
+`message:` is the text a thrown error of that code carries at runtime; BPMN gives an escalation none.
+A code that is not identifier-shaped goes on its declaration as `code: "..."`, so the use site is a bare name in every case.
 
 Eight trigger kinds open an `on` handler:
 
-| Trigger        | Payload                                       | `alongside`?                       | `throw` (ends the path)      | `emit` (continues)           |
-| -------------- | --------------------------------------------- | ---------------------------------- | ---------------------------- | ---------------------------- |
-| `error`        | code, optional `(code c, message m)` bindings | no, an error always interrupts     | `throw error "CODE"`         | none, an error ends its path |
-| `escalation`   | code, optional `(code c)` binding             | yes                                | `throw escalation "CODE"`    | `emit escalation "CODE"`     |
-| `message`      | a name                                        | yes                                | `throw message "Name"`       | `emit message "Name"`        |
-| `signal`       | a name                                        | yes                                | `throw signal "Name"`        | `emit signal "Name"`         |
-| `timer`        | a particle (`after`/`at`/`every`) and a time  | yes                                | none, it fires off the clock | none                         |
-| `condition`    | a `(condition)` expression                    | yes                                | none, it fires off data      | none                         |
-| `compensation` | none                                          | no, its scope has already finished | `throw compensation`         | `emit compensation`          |
-| `cancel`       | none                                          | no, the block stops either way     | none, an `end` carries it    | none                         |
+| Trigger        | Payload                                                       | `alongside`?                       | `throw` (ends the path)      | `emit` (continues)           |
+| -------------- | ------------------------------------------------------------- | ---------------------------------- | ---------------------------- | ---------------------------- |
+| `error`        | a declared code, optional `code: c` and `message: m` bindings | no, an error always interrupts     | `throw error(CODE)`          | none, an error ends its path |
+| `escalation`   | a declared code, optional `code: c` binding                   | yes                                | `throw escalation(CODE)`     | `emit escalation(CODE)`      |
+| `message`      | a name                                                        | yes                                | `throw message("Name")`      | `emit message("Name")`       |
+| `signal`       | a name                                                        | yes                                | `throw signal("Name")`       | `emit signal("Name")`        |
+| `timer`        | a duration, or an `at` or `every` key and a time              | yes                                | none, it fires off the clock | none                         |
+| `condition`    | a condition expression                                        | yes                                | none, it fires off data      | none                         |
+| `compensation` | none                                                          | no, its scope has already finished | `throw compensation`         | `emit compensation`          |
+| `cancel`       | none                                                          | no, the block stops either way     | none, an `end` carries it    | none                         |
 
 `timer` and `condition` are handler-only: nothing in the process raises them.
 `cancel` is carried on an `end` statement rather than raised by a verb, and it is the one kind with no host-less handler, since it is caught on the block it gives up.
@@ -301,20 +300,20 @@ Reading each kind:
   An escalation may interrupt or, with `alongside`, run beside the main flow, and only ever travels up within its own guarded scope.
 - `message` is both received and sent.
   The handler and a message start event receive one by correlation, the engine's own mechanism, so either needs only the name.
-  `emit message "Name"` and `throw message "Name"` send one.
-  A settings block carrying `class`, `expression`, `delegate`, or `topic` is what makes the engine send it, the same four bindings a `service` task takes.
+  `emit message("Name")` and `throw message("Name")` send one.
+  A `class`, `expression`, `delegate`, or `topic` setting is what makes the engine send it, the same four bindings a `service` task takes.
   Without one the event delivers nothing.
 - `signal` is a broadcast channel.
-  `emit signal "Name"` notifies every listener anywhere waiting on that name and continues; `throw signal "Name"` broadcasts the same way and ends this path.
+  `emit signal("Name")` notifies every listener anywhere waiting on that name and continues; `throw signal("Name")` broadcasts the same way and ends this path.
   Its reach is wider than an escalation's.
-- `timer` picks its BPMN form from the particle: `after "PT1H"` is a duration, `at "2026-08-01T09:00:00"` a fixed moment, `every "R/PT10M"` a repeating cycle.
+- `timer` picks its BPMN form from what the parens carry: a bare `"PT1H"` is a duration, `at: "2026-08-01T09:00:00"` a fixed moment, `every: "R/PT10M"` a repeating cycle.
   The clock starts when the guarded scope starts.
   An interrupting `every` fires once, because the first firing ends the scope it's timing; `alongside` lets it keep firing.
 - `condition` reads like `if`: the expression is checked when the guarded scope starts, and again whenever a variable it reads changes.
 - `compensation` is a subprocess's undo block, the steps that reverse whatever the subprocess already finished.
   It runs when compensation reaches the subprocess, and only for an instance that actually completed, since one that never finished has nothing to undo.
   Two routes send it there: a `throw compensation` or `emit compensation` in an enclosing scope, and a cancel end giving up an `attempt` block the subprocess sits in.
-  It carries no code, name, condition, or particle, there is at most one per subprocess, and it sits directly inside the `subprocess` or `attempt` body it undoes.
+  It carries no code, name, condition, or timer, there is at most one per subprocess, and it sits directly inside the `subprocess` or `attempt` body it undoes.
   A process has no completed enclosing scope to reverse, so `on compensation` at process level is rejected.
   `throw compensation` undoes the nearest enclosing scope's completed work newest first and ends the path; `emit compensation` runs the same undo, waits for it, and continues.
 - `cancel` gives up a whole block of work written with `attempt`.
@@ -323,10 +322,10 @@ Reading each kind:
 ### Attaching a handler to one step
 
 Every trigger but `compensation` can name a single host step instead of guarding a whole body, and `cancel` is the one that has to.
-`on <Host>: <trigger> ... { }` attaches the handler to `<Host>` as a `bpmn:boundaryEvent`, catching only while that one step runs, so `on ReviewInvoice: timer after "PT2H" { ... }` reads "if reviewing the invoice takes longer than two hours, do this instead" rather than "at any point in the process".
+`on <Host>: <trigger>(...) { }` attaches the handler to `<Host>` as a `bpmn:boundaryEvent`, catching only while that one step runs, so `on ReviewInvoice: timer("PT2H") { ... }` reads "if reviewing the invoice takes longer than two hours, do this instead" rather than "at any point in the process".
 
 The colon is what separates a host from a bare trigger.
-Trigger words and timer particles are ordinary identifiers rather than keywords (see below), so `on Pack error "X"` and `on timer after "X"` would otherwise both parse as two identifiers and a string; the colon settles which reading applies.
+Trigger words are ordinary identifiers rather than keywords (see below), so a host-less handler carrying a code and a hosted handler carrying none would otherwise both read as `on` followed by two identifiers; the colon settles which reading applies at the second token.
 
 A host has to be a step an engine token can be running at: a `user`, `service`, `script`, `send`, or `receive` task, a `step`, a `decide` step, a `subprocess`, an `attempt` block, or a `call`.
 A `start` or `end` event, a `goto`, a `throw` or `emit`, and another handler are all rejected.
@@ -348,8 +347,8 @@ Operaton does not carry compensation across the separate process instance a `cal
 
 ### Awaiting an event inline
 
-`await <trigger> <payload>` is a statement on the main flow rather than a catch block, and it blocks instead of firing.
-Written where any other step would go, as in `await message "Invoice Received"`, the token stops there until the trigger fires and then falls through to whatever follows, exactly like a `bpmn:intermediateCatchEvent`.
+`await <trigger>(<payload>)` is a statement on the main flow rather than a catch block, and it blocks instead of firing.
+Written where any other step would go, as in `await message("Invoice Received")`, the token stops there until the trigger fires and then falls through to whatever follows, exactly like a `bpmn:intermediateCatchEvent`.
 An `on` handler races its trigger against the rest of the guarded body and fires only if the trigger wins; a plain `await` sets nothing against its trigger and blocks until it fires.
 [`await` with several branches](#waiting-on-several-triggers-at-once) races its own branches against each other instead.
 
@@ -359,10 +358,10 @@ Four trigger kinds can be awaited: `message`, `timer`, `signal`, and `condition`
 process invoice-intake {
   var amount: number
 
-  await message "Invoice Received"
-  await timer after "PT1H"
-  await signal "Ready"
-  await condition (amount > 100)
+  await message("Invoice Received")
+  await timer("PT1H")
+  await signal("Ready")
+  await condition(amount > 100)
 }
 ```
 
@@ -376,17 +375,17 @@ Its id is always synthesized (`Catch_<coord>`), never authored, because there is
 ### Waiting on several triggers at once
 
 `await { ... }` with two or more branches compiles to a `bpmn:eventBasedGateway` with one `bpmn:intermediateCatchEvent` per branch, waiting on every trigger at once and continuing down whichever fires first.
-Two branches are the minimum; write a single `await <trigger> <payload>` instead when there is only one.
-Each branch opens the same way a plain `await` does: one of the same four trigger kinds, an optional settings block, then a body the plain form has no place for.
+Two branches are the minimum; write a single `await <trigger>(<payload>)` instead when there is only one.
+Each branch opens the same way a plain `await` does: one of the same four trigger kinds, its payload and settings, then a body the plain form has no place for.
 
 ```bpmnscript
 process order-fulfillment {
   await {
-    message "PaymentReceived" {
-      service ShipOrder { class = "com.example.orders.ShipOrder" }
+    message("PaymentReceived") {
+      service ShipOrder(class: "com.example.orders.ShipOrder")
     }
-    timer after "P3D" {
-      user ChaseCustomer { assignee = "collections" }
+    timer("P3D") {
+      user ChaseCustomer(assignee: "collections")
     }
   }
 }
@@ -402,40 +401,40 @@ A process's own start may carry a trigger, the same clause `on` and `await` alre
 
 ```bpmnscript
 process order-intake {
-  start OrderReceived "An order arrives" message "OrderReceived"
+  start OrderReceived message("OrderReceived", label: "An order arrives")
 
-  user ConfirmOrder "Confirm the order" { assignee = "demo" }
+  user ConfirmOrder(label: "Confirm the order", assignee: "demo")
 
-  emit message NotifyWarehouse "WarehouseNotified"
+  emit message NotifyWarehouse("WarehouseNotified")
 
-  throw message OrderAcknowledged "OrderAcknowledged"
+  throw message OrderAcknowledged("OrderAcknowledged")
 }
 ```
 
-Three words are legal there: `message`, `signal`, and `timer`, each with the payload it already carries elsewhere, a name for the first two and a particle and a time for the third.
+Three words are legal there: `message`, `signal`, and `timer`, each with the payload it already carries elsewhere, a name for the first two and a duration or an `at` or `every` key for the third.
 A subprocess start and an event-handler start take none, because both are entered by their container rather than by an event of their own; the validator rejects a trigger written on either.
 
 Writing `error`, `escalation`, or `compensation` on a process start is rejected too, for a different reason: Operaton's own start-event parser does not branch on those three, so the engine ignores the trigger and starts the process exactly as if none were written, and this surface refuses to compile XML the engine would disregard.
 
 ### Ending every path
 
-`end <name> "<label>"? terminate` stops every running path of its own scope at once, rather than raising something another handler could catch, which is why it sits on `end` instead of on `throw` and why it keeps the label slot a diagram's terminate node deserves, where a throw drops the label.
+`end <name> terminate` stops every running path of its own scope at once, rather than raising something another handler could catch, which is why it sits on `end` instead of on `throw` and why it keeps the label a diagram's terminate node deserves, where a throw drops the label.
 
 ```bpmnscript
 process stock-alert {
-  start StockRunningLow "Stock is running low" signal "StockRunningLow"
+  start StockRunningLow signal("StockRunningLow", label: "Stock is running low")
 
   parallel {
     {
-      user ReorderStock "Reorder the stock" { assignee = "demo" }
+      user ReorderStock(label: "Reorder the stock", assignee: "demo")
     }
     {
-      user EscalateToBuyer "Escalate to the buyer" { assignee = "demo" }
-      end OrderAbandoned "Abandon every path" terminate
+      user EscalateToBuyer(label: "Escalate to the buyer", assignee: "demo")
+      end OrderAbandoned terminate(label: "Abandon every path")
     }
   }
 
-  end Restocked "Stock restored"
+  end Restocked(label: "Stock restored")
 }
 ```
 
@@ -445,7 +444,7 @@ A branch that reaches `terminate` never rejoins the fork it came from, so the jo
 ### Giving a block of work up
 
 `attempt X { }` is a block of work that can be given up as a unit.
-It is the `subprocess` statement under a second head, so it nests, takes a label, a repeat clause, a settings block, and every handler a subprocess takes.
+It is the `subprocess` statement under a second head, so it nests, takes a label, a repeat clause, settings, and every handler a subprocess takes.
 Three pieces make one construct: the block, an `end <name> cancel` inside it that gives the block up, and an `on <block>: cancel { }` beside it that says what happens next.
 Neither cancel piece is usable without the block.
 
@@ -460,29 +459,29 @@ process seat-booking {
 
   start BookingRequested
 
-  attempt BookAndPay "Try to book and pay for the seat" {
-    subprocess HoldSeat "Hold the seat" {
-      service HoldSeatTask { class = "com.example.booking.HoldSeat" }
+  attempt BookAndPay(label: "Try to book and pay for the seat") {
+    subprocess HoldSeat(label: "Hold the seat") {
+      service HoldSeatTask(class: "com.example.booking.HoldSeat")
 
       on compensation {
-        service ReleaseSeat { class = "com.example.booking.ReleaseSeat" }
+        service ReleaseSeat(class: "com.example.booking.ReleaseSeat")
       }
     }
 
-    service ChargeCard { class = "com.example.booking.ChargeCard" }
+    service ChargeCard(class: "com.example.booking.ChargeCard")
 
     if (chargeDeclined) {
-      end BookingAbandoned "Give up the booking" cancel
+      end BookingAbandoned cancel(label: "Give up the booking")
     }
 
-    service IssueTicket { class = "com.example.booking.IssueTicket" }
+    service IssueTicket(class: "com.example.booking.IssueTicket")
   }
 
-  user ConfirmBooking "Confirm the booking" { assignee = "demo" }
+  user ConfirmBooking(label: "Confirm the booking", assignee: "demo")
   end BookingComplete
 
   on BookAndPay: cancel {
-    user ApologizeToCustomer "Apologize to the customer" { assignee = "demo" }
+    user ApologizeToCustomer(label: "Apologize to the customer", assignee: "demo")
     end BookingCancelled
   }
 }
@@ -514,7 +513,7 @@ The editor still highlights and completes them, but only in the positions where 
 
 Condition expressions are parsed as a real AST over the JUEL native subset: integer, decimal, string, boolean, and null literals; variable references with dot-property and index accessors; unary `!` and `-`; binary arithmetic and comparison; logical `&&` and `||`; the ternary `? :`; and parentheses.
 Anything outside that subset uses the quoted raw fallback, `"${...}"`.
-`on condition (...)` reuses the same grammar, so a variable read inside it goes through the same undeclared-variable and type checks as one read inside an `if`.
+`on condition(...)` reuses the same grammar, so a variable read inside it goes through the same undeclared-variable and type checks as one read inside an `if`.
 
 ## Diagnostics
 
@@ -523,7 +522,7 @@ The categories it covers:
 
 - Variables: an undeclared reference (warning), a type mismatch against the declared `var`, a name declared twice.
 - Tasks: a duplicate attribute key, a `service`, `send`, or `decide` task without exactly one binding attribute, a `mapDecisionResult` outside the four result mappings, a `script` task with an unsupported fence tag or an empty or unterminated body.
-- Attribute blocks: a key the element does not own, a value in a shape its lowering cannot read (a quoted `asyncBefore`, an unquoted `versionTag`), a `form` block on an element that renders none, and a process header carrying anything but `versionTag`.
+- Settings: a key the element does not own, a value in a shape its lowering cannot read (a quoted `asyncBefore`, an unquoted `versionTag`), a `form` block on an element that renders none, and a process header carrying anything but `versionTag`.
 - Parameters: a direction word other than `input` or `output`, a parameter on an element that carries none, a name repeated within one direction, and an `output` mapping on a repeated step.
 - Listeners: an event word the element does not have, a binding count other than one, a missing timer on `on timeout` or a timer on any other event, a repeated event on one element, and the same fence rules a `script` body follows.
 - Structure: an empty process, subprocess, or handler body, an empty branch or loop body (warning), an unreachable statement, an explicit `start` anywhere but first in its container, a `goto` reaching into a `parallel` or `await` branch from outside it, a second `else` branch on a `parallel` statement, an `else` branch with no conditioned sibling, and an `else` branch beside a sibling carrying no condition.
@@ -552,7 +551,7 @@ A cross-boundary `goto` or an out-of-scope `host` fails to resolve, and a custom
 
 ```text
 'X' is inside subprocess 'Y'; a goto cannot cross a sub-process boundary.
-'X' is inside the 'on error "PAYMENT_FAILED"' handler; a goto cannot cross an event handler boundary: an event handler's steps run only when its event fires.
+'X' is inside the 'on error(PAYMENT_FAILED)' handler; a goto cannot cross an event handler boundary: an event handler's steps run only when its event fires.
 'X' is outside subprocess 'Y'; a boundary event attaches to an activity in its own scope.
 ```
 
@@ -598,7 +597,7 @@ npm test
 | `src/bpmn-script-scope-provider.ts`                | Resolves `goto` targets and a hosted handler's `host` within the enclosing container only            |
 | `src/bpmn-script-linker.ts`                        | Replaces an unresolved `goto` or `host` message with a boundary explanation                          |
 | `src/bpmn-script-parser-error-message-provider.ts` | Guidance for a reserved word used as an identifier                                                   |
-| `src/bpmn-script-completion.ts`                    | Snippet completions for the structural keywords and for what a settings block holds                  |
+| `src/bpmn-script-completion.ts`                    | Snippet completions for the structural keywords and for the settings an element holds                |
 | `src/bpmn-script-semantic-tokens.ts`               | Highlights the soft words (trigger, attribute key, parameter direction, listener event)              |
 | `src/bpmn-script-value-converter.ts`               | Unquotes a timer's `"${...}"` time so both `time` alternatives carry the same shape                  |
 | `src/bpmn-script-module.ts`                        | Langium dependency injection wiring                                                                  |

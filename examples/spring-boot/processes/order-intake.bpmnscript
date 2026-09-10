@@ -4,11 +4,11 @@
 // straight through both.
 
 process order-intake {
-  start OrderReceived "An order arrives" message "OrderReceived"
+  start OrderReceived message("OrderReceived", label: "An order arrives")
 
-  user ConfirmOrder "Confirm the order" { assignee = "demo" }
+  user ConfirmOrder(label: "Confirm the order", assignee: "demo")
 
-  emit message NotifyWarehouse "WarehouseNotified"
+  emit message NotifyWarehouse("WarehouseNotified")
 
-  throw message OrderAcknowledged "OrderAcknowledged"
+  throw message OrderAcknowledged("OrderAcknowledged")
 }

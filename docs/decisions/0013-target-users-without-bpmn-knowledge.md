@@ -10,7 +10,7 @@ decision-makers: Marlon Kranz, Oliver Kopp
 
 ADR-0008 gave BPMNscript a structured, code-like surface aimed at developers who prefer working in code.
 It left two questions open: how much BPMN literacy the language may assume, and how much required syntax is acceptable.
-Keywords, attribute blocks, and event declarations could still presuppose familiarity with BPMN's element types and vocabulary, and the grammar could still demand explicit text where the compiler could supply a default.
+Keywords, settings, and event declarations could still presuppose familiarity with BPMN's element types and vocabulary, and the grammar could still demand explicit text where the compiler could supply a default.
 
 How much BPMN knowledge may the language assume, and how much required syntax (boilerplate) is acceptable?
 

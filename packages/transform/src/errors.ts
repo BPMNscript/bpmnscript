@@ -67,7 +67,7 @@ export class UnsupportedFormFieldTypeError extends UnsupportedConstructError {
 
 /**
  * A flow element kind outside the supported subset, such as
- * `bpmn:adHocSubProcess` or `bpmn:manualTask`. A supported kind carrying an
+ * `bpmn:adHocSubProcess` or `bpmn:complexGateway`. A supported kind carrying an
  * unrepresentable shape refuses via {@link UnsupportedEventFeatureError} or
  * {@link UnsupportedEventDefinitionError} instead.
  */
@@ -219,6 +219,29 @@ export class UnsupportedExtensionFormError extends UnsupportedConstructError {
         'external resource; a listener names exactly one binding and an event ' +
         'its position accepts; and a timeout task listener carries exactly one ' +
         'timer, which no other task listener event carries.',
+      { elementId, detail },
+    );
+  }
+}
+
+/**
+ * A condition Operaton evaluates outside UEL: a sequence flow's
+ * `bpmn:conditionExpression`, or a conditional event definition's
+ * `bpmn:condition`. Both reach Operaton's `parseConditionExpression`, so
+ * `detail` names the same shape either way, a `language` attribute: Operaton
+ * builds a `ScriptCondition` from it and runs the body in that language,
+ * never as the UEL expression this tool writes.
+ */
+export class UnsupportedConditionExpressionError extends UnsupportedConstructError {
+  declare readonly elementId: string;
+  declare readonly detail: string;
+
+  constructor(elementId: string, detail: string) {
+    super(
+      `The condition on '${elementId}' cannot be imported: ${detail}. This ` +
+        'tool writes a condition as an expression Operaton evaluates as ' +
+        'UEL, and a condition Operaton hands to a script engine has no ' +
+        'spelling here.',
       { elementId, detail },
     );
   }

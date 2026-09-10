@@ -138,12 +138,12 @@ const MODEL_REFUSAL = {
   cancelOutsideAttempt:
     "A cancel end belongs directly inside an 'attempt' block",
   undoOutsideBlock: 'An undo block belongs directly inside the',
-  undoAlongside: 'there is no running flow to run alongside',
   hostOutsideContainer:
     "Could not resolve reference to Statement named 'Elsewhere'",
   orphanStep: 'This step can never run',
   duplicateTimeout: "Duplicate 'on timeout' listener",
   deadElse: 'could never run',
+  undoAlongside: 'there is no running flow to run alongside',
 } as const;
 
 /**
@@ -318,10 +318,10 @@ const PARALLEL_SOURCE =
   '  start S\n' +
   '  parallel {\n' +
   '    {\n' +
-  '      user X "X"\n' +
+  '      user X(label: "X")\n' +
   '    }\n' +
   '    {\n' +
-  '      service Y { class = "com.example.Y" }\n' +
+  '      service Y(class: "com.example.Y")\n' +
   '    }\n' +
   '  }\n' +
   '  end E\n' +
@@ -341,11 +341,11 @@ const INVOICE_IR: BpmnProcess = {
 const IF_ELSE_SOURCE =
   'process p {\n' +
   '  start S\n' +
-  '  user A "A task"\n' +
+  '  user A(label: "A task")\n' +
   '  if (amount > 1000) {\n' +
-  '    user B "B task"\n' +
+  '    user B(label: "B task")\n' +
   '  } else {\n' +
-  '    service C { class = "com.example.C" }\n' +
+  '    service C(class: "com.example.C")\n' +
   '  }\n' +
   '  end E\n' +
   '}\n';
@@ -366,7 +366,7 @@ describe('irToDsl: structured restructuring', () => {
       'process p {\n' +
         '  start S\n' +
         '  while (count < 10) {\n' +
-        '    user W "Work"\n' +
+        '    user W(label: "Work")\n' +
         '  }\n' +
         '  end E\n' +
         '}\n',
@@ -377,7 +377,7 @@ describe('irToDsl: structured restructuring', () => {
       'process p {\n' +
         '  start S\n' +
         '  do {\n' +
-        '    user W "Work"\n' +
+        '    user W(label: "Work")\n' +
         '  } while (count < 10)\n' +
         '  end E\n' +
         '}\n',
@@ -390,13 +390,13 @@ describe('irToDsl: structured restructuring', () => {
     [
       'restructures the canonical invoice import to if/else under a labeled process header',
       INVOICE_IR,
-      'process invoice-approval "Invoice Approval" {\n' +
+      'process invoice-approval(label: "Invoice Approval") {\n' +
         '  start ReviewStart\n' +
-        '  user ReviewInvoice "Review invoice" { assignee = "demo" }\n' +
+        '  user ReviewInvoice(label: "Review invoice", assignee: "demo")\n' +
         '  if (amount > 1000) {\n' +
-        '    user SeniorApproval "Senior approval" { assignee = "manager" }\n' +
+        '    user SeniorApproval(label: "Senior approval", assignee: "manager")\n' +
         '  } else {\n' +
-        '    service AutoApprove "Auto-approve" { class = "com.example.invoice.AutoApproveDelegate" }\n' +
+        '    service AutoApprove(label: "Auto-approve", class: "com.example.invoice.AutoApproveDelegate")\n' +
         '  }\n' +
         '  end Done\n' +
         '}\n',
@@ -596,8 +596,8 @@ describe('irToDsl: multiple and named ends', () => {
 
   it('emits both named ends as explicit `end` statements, losing neither end connection', async () => {
     const dsl = await printed(TWO_ENDS_IR);
-    expect(dsl).toContain('end Approved "Approved"');
-    expect(dsl).toContain('end Rejected "Rejected"');
+    expect(dsl).toContain('end Approved(label: "Approved")');
+    expect(dsl).toContain('end Rejected(label: "Rejected")');
 
     const ir = await reDesugar(dsl);
     const ends = ir.flowElements
@@ -612,43 +612,43 @@ describe('irToDsl: multiple and named ends', () => {
 describe('irToDsl: service-task bindings', () => {
   it.each([
     [
-      'renders a class binding as `service X { class = "..." }` (byte-unchanged)',
+      'renders a class binding as `service X(class: "...")`',
       serviceTask('Charge', classBinding('com.example.Charge')),
-      'service Charge { class = "com.example.Charge" }',
+      'service Charge(class: "com.example.Charge")',
       undefined,
       'class',
     ],
     [
-      'keeps a labeled class binding identical to the historical output (regression)',
+      'keeps a labeled class binding on one line, the label leading',
       {
         kind: 'serviceTask',
         id: 'AutoApprove',
         name: 'Auto-approve',
         binding: classBinding('com.example.invoice.AutoApproveDelegate'),
       },
-      'service AutoApprove "Auto-approve" { class = "com.example.invoice.AutoApproveDelegate" }',
+      'service AutoApprove(label: "Auto-approve", class: "com.example.invoice.AutoApproveDelegate")',
       undefined,
       'class',
     ],
     [
-      'renders an expression binding as `service X { expression = "${...}" }`',
+      'renders an expression binding as `service X(expression: "${...}")`',
       serviceTask('Calc', exprBinding('${greeter.hello(execution)}')),
-      'service Calc { expression = "${greeter.hello(execution)}" }',
+      'service Calc(expression: "${greeter.hello(execution)}")',
       undefined,
       'expression',
     ],
     [
       'renders a delegateExpression binding with the `delegate` alias',
       serviceTask('Ship', delegateBinding('${shipDelegate}')),
-      'service Ship { delegate = "${shipDelegate}" }',
+      'service Ship(delegate: "${shipDelegate}")',
       // The XML-level `delegateExpression` name never surfaces in the source.
       'delegateExpression',
       'delegateExpression',
     ],
     [
-      'renders an external binding as `service X { topic = "..." }`',
+      'renders an external binding as `service X(topic: "...")`',
       serviceTask('Notify', externalBinding('notifications')),
-      'service Notify { topic = "notifications" }',
+      'service Notify(topic: "notifications")',
       // An external binding keeps the `service` keyword, never `external`.
       'external Notify',
       'external',
@@ -676,13 +676,13 @@ describe('irToDsl: task kinds', () => {
       'a plain task prints as a step statement',
       { kind: 'task', id: 'Draft' },
       'step Draft',
-      'step Draft "Draft it"',
+      'step Draft(label: "Draft it")',
     ],
     [
-      'a receive task names its message in the block',
+      'a receive task names its message in the parens',
       { kind: 'receiveTask', id: 'Wait', messageName: 'OrderPaid' },
-      'receive Wait { message = "OrderPaid" }',
-      'receive Wait "Draft it" { message = "OrderPaid" }',
+      'receive Wait(message: "OrderPaid")',
+      'receive Wait(label: "Draft it", message: "OrderPaid")',
     ],
     [
       'a send element prints under the send keyword',
@@ -692,8 +692,8 @@ describe('irToDsl: task kinds', () => {
         element: 'send',
         binding: classBinding('com.example.Notify'),
       },
-      'send Notify { class = "com.example.Notify" }',
-      'send Notify "Draft it" { class = "com.example.Notify" }',
+      'send Notify(class: "com.example.Notify")',
+      'send Notify(label: "Draft it", class: "com.example.Notify")',
     ],
     [
       'a businessRule element prints under the decide keyword',
@@ -703,8 +703,8 @@ describe('irToDsl: task kinds', () => {
         element: 'businessRule',
         binding: { kind: 'decision', decisionRef: 'riskRating' },
       },
-      'decide Rate { decision = "riskRating" }',
-      'decide Rate "Draft it" { decision = "riskRating" }',
+      'decide Rate(decision: "riskRating")',
+      'decide Rate(label: "Draft it", decision: "riskRating")',
     ],
   ] as const)('%s', async (_title, node, nameless, labeled) => {
     expect(await statements(around(node))).toContain(nameless);
@@ -732,9 +732,9 @@ describe('irToDsl: task kinds', () => {
       },
       resultVariable: 'risk',
     });
-    expect(await statements(rate)).toContain(
-      'decide Rate { decision = "riskRating" binding = latest ' +
-        'mapDecisionResult = singleEntry resultVariable = "risk" }',
+    expect(await printed(rate)).toContain(
+      'decide Rate(decision: "riskRating", binding: latest, ' +
+        'mapDecisionResult: singleEntry, resultVariable: "risk")',
     );
   });
 });
@@ -762,7 +762,7 @@ describe('irToDsl: fenced script task', () => {
         ...scriptTask('Compute', 'javascript', 'x = 1'),
         name: 'Compute totals',
       },
-      'script Compute "Compute totals" ```javascript',
+      'script Compute(label: "Compute totals") ```javascript',
     ],
   ])('%s', async (_title, node, expected) => {
     expect(await printed(around(node))).toContain(expected);
@@ -816,7 +816,7 @@ describe('irToDsl: sub-process emission', () => {
         '  user Before\n' +
         '  subprocess sub {\n' +
         '    start SubStart\n' +
-        '    user Work { assignee = "demo" }\n' +
+        '    user Work(assignee: "demo")\n' +
         '    end SubEnd\n' +
         '  }\n' +
         '  user After\n' +
@@ -885,12 +885,12 @@ describe('irToDsl: sub-process emission', () => {
         ...chainedSub('Sub', [{ kind: 'userTask', id: 'Do' }]),
         name: 'Handle order',
       },
-      'subprocess Sub "Handle order" {',
+      'subprocess Sub(label: "Handle order") {',
     ],
     [
       'prints an empty named sub-process body as an opening brace immediately followed by a closing one',
       { ...chainedSub('Sub', []), name: 'Handle order' },
-      '  subprocess Sub "Handle order" {\n  }\n',
+      '  subprocess Sub(label: "Handle order") {\n  }\n',
     ],
     [
       'prints an unnamed empty sub-process body without a label',
@@ -903,7 +903,7 @@ describe('irToDsl: sub-process emission', () => {
 });
 
 describe('irToDsl: call activity', () => {
-  it('prints the full single-line form in canonical member order with shorthand', async () => {
+  it('prints every setting and every member in canonical order, shorthand mappings included', async () => {
     const dsl = await printed(
       around({
         kind: 'callActivity',
@@ -937,36 +937,42 @@ describe('irToDsl: call activity', () => {
       }),
     );
     expect(dsl).toContain(
-      'call CallSub "Call sub" { process = "sub-process" binding = deployment ' +
-        'businessKey = "${execution.processBusinessKey}" ' +
-        'in * in amount in y = x in local doubled = "${total * 2}" ' +
-        'out outcome = result out final = "${status}" out local * }',
+      '  call CallSub(label: "Call sub", process: "sub-process", ' +
+        'binding: deployment, businessKey: "${execution.processBusinessKey}") {\n' +
+        '    in *\n' +
+        '    in amount\n' +
+        '    in y = x\n' +
+        '    in local doubled = "${total * 2}"\n' +
+        '    out outcome = result\n' +
+        '    out final = "${status}"\n' +
+        '    out local *\n' +
+        '  }',
     );
   });
 
   it.each([
     [
-      'prints a minimal call as `call X { process = "p" }`',
+      'prints a minimal call as `call X(process: "p")`',
       undefined,
-      'call X { process = "p" }',
+      'call X(process: "p")',
       undefined,
     ],
     [
       'prints `binding = latest` for a latest binding',
       { kind: 'latest' },
-      'call X { process = "p" binding = latest }',
+      'call X(process: "p", binding: latest)',
       undefined,
     ],
     [
       'prints only `version = 3` for a numeric version binding (no `binding` key)',
       { kind: 'version', version: '3' },
-      'call X { process = "p" version = 3 }',
+      'call X(process: "p", version: 3)',
       'binding =',
     ],
     [
       'prints a non-numeric version quoted verbatim',
       { kind: 'version', version: '${v}' },
-      'call X { process = "p" version = "${v}" }',
+      'call X(process: "p", version: "${v}")',
       undefined,
     ],
   ] as const)('%s', (_title, binding, printed, absent) => {
@@ -997,7 +1003,7 @@ describe('irToDsl: call activity', () => {
       'process p {\n' +
         '  start S\n' +
         '  user Before\n' +
-        '  call Mid { process = "sub" }\n' +
+        '  call Mid(process: "sub")\n' +
         '  user After\n' +
         '  end E\n' +
         '}\n',
@@ -1074,26 +1080,65 @@ describe('irToDsl: event layer', () => {
           ],
         },
       ),
-      errorMessages: [{ code: 'PF', message: 'boom' }],
+      errorDecls: [{ name: 'PF', code: 'PF', message: 'boom' }],
     };
 
     expect(await printed(ir)).toBe(
       [
         'process proc {',
-        '  error "PF" message "boom"',
+        '  error PF(message: "boom")',
+        '  escalation LS',
         '  start PStart',
         '  user Work',
-        '  emit escalation Ping "LS"',
-        '  throw error Boom "PF"',
-        '  on error "PF" (code c, message m) {',
+        '  emit escalation Ping(LS)',
+        '  throw error Boom(PF)',
+        '  on error(PF, code: c, message: m) {',
         '    start PFStart',
         '    user Recover',
         '    end PFEnd',
         '  }',
-        '  on escalation "LS" (code v) alongside {',
+        '  on escalation(LS, code: v, alongside) {',
         '    start LSStart',
         '    user Note',
         '    end LSEnd',
+        '  }',
+        '}',
+        '',
+      ].join('\n'),
+    );
+  });
+
+  it('declares every code in the header and raises each one by name', async () => {
+    const ir = await reDesugar(
+      [
+        'process p {',
+        '  error OUT_OF_STOCK(message: "Out of stock")',
+        '  error OrderFailed(code: "order.failed")',
+        '  escalation MANUAL_REVIEW',
+        '  user Pack',
+        '  throw error(OrderFailed)',
+        '  on Pack: error(OUT_OF_STOCK, code: c) { user Restock }',
+        '  on Pack: error { user Escalate }',
+        '}',
+      ].join('\n'),
+    );
+
+    // Whole source rather than the header alone: a declaration is only right if
+    // the name it claims is the one every use site raises, and `printed`
+    // compiles the result, so a name with nothing to resolve to fails here too.
+    expect(await printed(ir)).toBe(
+      [
+        'process p {',
+        '  error OrderFailed(code: "order.failed")',
+        '  error OUT_OF_STOCK(message: "Out of stock")',
+        '  escalation MANUAL_REVIEW',
+        '  user Pack',
+        '  throw error(OrderFailed)',
+        '  on Pack: error(OUT_OF_STOCK, code: c) {',
+        '    user Restock',
+        '  }',
+        '  on Pack: error {',
+        '    user Escalate',
         '  }',
         '}',
         '',
@@ -1110,14 +1155,14 @@ describe('irToDsl: event layer', () => {
       [{ id: 'F', sourceRef: 'S', targetRef: 'Esc' }],
     );
     const dsl = await printed(ir);
-    expect(dsl).toContain('throw escalation Esc "X"');
+    expect(dsl).toContain('throw escalation Esc(X)');
     expect(dsl).not.toContain('end Esc');
   });
 
   // An undo block only belongs inside the block whose work it undoes, so the
   // process-level fixture draws that refusal from the model it was built from.
   it.each([
-    ['error', errorDef('C'), '\n  on error "C" {\n', undefined],
+    ['error', errorDef('C'), '\n  on error(C) {\n', undefined],
     [
       'compensation',
       { kind: 'compensation' } as EventDefinition,
@@ -1156,10 +1201,10 @@ describe('irToDsl: event layer (message / signal / timer / conditional)', () => 
       ],
     );
     const dsl = await printed(ir);
-    expect(dsl).toContain('  emit signal EmitSig "Cancelled"\n');
-    expect(dsl).toContain('  throw signal ThrowSig "Cancelled"\n');
-    expect(dsl).toContain('  on message "PaymentReceived" {\n');
-    expect(dsl).toContain('  on signal "Cancelled" alongside {\n');
+    expect(dsl).toContain('  emit signal EmitSig("Cancelled")\n');
+    expect(dsl).toContain('  throw signal ThrowSig("Cancelled")\n');
+    expect(dsl).toContain('  on message("PaymentReceived") {\n');
+    expect(dsl).toContain('  on signal("Cancelled", alongside) {\n');
     // Handlers print last: both headers follow the throw.
     expect(dsl.indexOf('on message')).toBeGreaterThan(
       dsl.indexOf('throw signal'),
@@ -1184,31 +1229,31 @@ describe('irToDsl: event layer (message / signal / timer / conditional)', () => 
     [
       'a duration timer as `after`',
       timerDef('duration', 'PT1H'),
-      '  on timer after "PT1H" {\n',
+      '  on timer("PT1H") {\n',
       undefined,
     ],
     [
       'a date timer as `at`',
       timerDef('date', '2026-08-01T09:00:00'),
-      '  on timer at "2026-08-01T09:00:00" {\n',
+      '  on timer(at: "2026-08-01T09:00:00") {\n',
       undefined,
     ],
     [
       'a repeating timer as `every`, alongside for a non-interrupting handler',
       timerDef('cycle', 'R/PT10M'),
-      '  on timer every "R/PT10M" alongside {\n',
+      '  on timer(every: "R/PT10M", alongside) {\n',
       false,
     ],
     [
       'a condition in the expression subset as bare DSL',
       conditionDef('${amount > 100}'),
-      '  on condition (amount > 100) {\n',
+      '  on condition(amount > 100) {\n',
       undefined,
     ],
     [
       'a condition out of the subset as a quoted raw fallback',
       conditionDef('${bean.check()}'),
-      '  on condition ("${bean.check()}") {\n',
+      '  on condition("${bean.check()}") {\n',
       undefined,
     ],
   ] as const)(
@@ -1231,7 +1276,7 @@ describe('irToDsl: event layer (message / signal / timer / conditional)', () => 
       [{ id: 'F', sourceRef: 'S', targetRef: 'Sent' }],
     );
     expect(await printed(thrown)).toContain(
-      'throw message Sent "Ack" { class = "com.example.Send" }',
+      'throw message Sent("Ack", class: "com.example.Send")',
     );
 
     const emitted = around({
@@ -1239,7 +1284,7 @@ describe('irToDsl: event layer (message / signal / timer / conditional)', () => 
       binding: externalBinding('send-ack'),
     });
     expect(await printed(emitted)).toContain(
-      'emit message Ping "Ack" { topic = "send-ack" }',
+      'emit message Ping("Ack", topic: "send-ack")',
     );
   });
 
@@ -1283,18 +1328,22 @@ describe('irToDsl: triggered start events', () => {
     );
 
   it.each([
-    ['message', messageDef('OrderReceived'), 'start S message "OrderReceived"'],
-    ['signal', signalDef('Cancelled'), 'start S signal "Cancelled"'],
-    ['timer after', timerDef('duration', 'PT1H'), 'start S timer after "PT1H"'],
+    [
+      'message',
+      messageDef('OrderReceived'),
+      'start S message("OrderReceived")',
+    ],
+    ['signal', signalDef('Cancelled'), 'start S signal("Cancelled")'],
+    ['timer after', timerDef('duration', 'PT1H'), 'start S timer("PT1H")'],
     [
       'timer at',
       timerDef('date', '2026-08-01T09:00:00'),
-      'start S timer at "2026-08-01T09:00:00"',
+      'start S timer(at: "2026-08-01T09:00:00")',
     ],
     [
       'timer every',
       timerDef('cycle', 'R/PT10M'),
-      'start S timer every "R/PT10M"',
+      'start S timer(every: "R/PT10M")',
     ],
   ])(
     'prints a top-level start carrying a %s trigger',
@@ -1303,7 +1352,7 @@ describe('irToDsl: triggered start events', () => {
     },
   );
 
-  it('prints the label before the trigger', async () => {
+  it('prints the label as a setting beside the trigger', async () => {
     const ir = minimalProcess(
       [
         {
@@ -1317,7 +1366,7 @@ describe('irToDsl: triggered start events', () => {
       [{ id: 'F', sourceRef: 'S', targetRef: 'E' }],
     );
     expect(await printed(ir)).toContain(
-      'start S "Order in" message "OrderReceived"',
+      'start S message("OrderReceived", label: "Order in")',
     );
   });
 
@@ -1334,7 +1383,7 @@ describe('irToDsl: triggered start events', () => {
       [{ id: 'F', sourceRef: 'StartEvent_p', targetRef: 'E' }],
     );
     expect(await printed(ir, 'reservedId')).toContain(
-      'start StartEvent_p message "OrderReceived"',
+      'start StartEvent_p message("OrderReceived")',
     );
   });
 });
@@ -1355,14 +1404,14 @@ describe('irToDsl: event sub-process start-trigger suppression', () => {
     );
     const dsl = await printed(ir);
     expect(dsl).toContain(
-      '  on message "PaymentReceived" {\n    start MsgStart\n',
+      '  on message("PaymentReceived") {\n    start MsgStart\n',
     );
     expect(dsl).not.toContain('start MsgStart message');
     expect(dsl).not.toContain('StartEvent_OnSig');
-    expect(dsl).toContain('  on signal "Cancelled" {\n    end SigEnd\n  }\n');
+    expect(dsl).toContain('  on signal("Cancelled") {\n    end SigEnd\n  }\n');
     // The trigger appears exactly once: in the `on` header, never on the start.
-    expect(dsl.split('message "PaymentReceived"')).toHaveLength(2);
-    expect(dsl.split('signal "Cancelled"')).toHaveLength(2);
+    expect(dsl.split('message("PaymentReceived")')).toHaveLength(2);
+    expect(dsl.split('signal("Cancelled")')).toHaveLength(2);
   });
 });
 
@@ -1383,7 +1432,7 @@ describe('irToDsl: ends spelling their own word', () => {
         name: 'All stop',
       },
       [],
-      'end Stop "All stop" terminate',
+      'end Stop terminate(label: "All stop")',
     ],
     [
       'a synthesized terminate end, rather than dropping it',
@@ -1398,7 +1447,7 @@ describe('irToDsl: ends spelling their own word', () => {
         name: 'Give up the booking',
       },
       ['cancelOutsideAttempt'],
-      'end GiveUp "Give up the booking" cancel',
+      'end GiveUp cancel(label: "Give up the booking")',
     ],
     [
       'a synthesized cancel end, rather than dropping it',
@@ -1425,7 +1474,7 @@ describe('irToDsl: ends spelling their own word', () => {
       [{ id: 'F', sourceRef: 'S', targetRef: 'EndEvent_1' }],
     );
     const dsl = await printed(ir, 'reservedId');
-    expect(dsl).toContain('end EndEvent_1 "Abandon all" terminate');
+    expect(dsl).toContain('end EndEvent_1 terminate(label: "Abandon all")');
 
     const ends = (await reDesugar(dsl)).flowElements.filter(
       (el) => el.kind === 'endEvent',
@@ -1453,10 +1502,10 @@ describe('irToDsl: blocks that can be given up', () => {
 
   it('prints the block that can be given up under its own head, and a plain one under `subprocess`', async () => {
     expect(await printed(around(book('transaction')))).toContain(
-      'attempt Book "Book and pay" for each line in lines { asyncBefore = true } {\n',
+      'attempt Book for each line in lines(label: "Book and pay", asyncBefore: true) {\n',
     );
     expect(await printed(around(book()))).toContain(
-      'subprocess Book "Book and pay" for each line in lines { asyncBefore = true } {\n',
+      'subprocess Book for each line in lines(label: "Book and pay", asyncBefore: true) {\n',
     );
   });
 
@@ -1502,17 +1551,17 @@ describe('irToDsl: event layer (intermediate catch / await)', () => {
   // The whole source per row, so the missing id token is asserted too: a catch
   // has no name slot, and `Catch_1` appears nowhere.
   it.each([
-    ['a message catch', messageDef('M'), '  await message "M"\n'],
+    ['a message catch', messageDef('M'), '  await message("M")\n'],
     [
       'a duration timer catch',
       timerDef('duration', 'PT1H'),
-      '  await timer after "PT1H"\n',
+      '  await timer("PT1H")\n',
     ],
-    ['a signal catch', signalDef('S'), '  await signal "S"\n'],
+    ['a signal catch', signalDef('S'), '  await signal("S")\n'],
     [
       'a conditional catch, bare DSL in the expression subset',
       conditionDef('${amount > 100}'),
-      '  await condition (amount > 100)\n',
+      '  await condition(amount > 100)\n',
     ],
   ] as const)(
     'prints %s inline between the surrounding steps',
@@ -1585,7 +1634,7 @@ describe('irToDsl: event layer (compensation)', () => {
       [{ id: 'F', sourceRef: 'S', targetRef: 'E' }],
     );
     expect(await printed(ir, 'undoOutsideBlock', 'undoAlongside')).toContain(
-      '  on compensation alongside {\n',
+      '  on compensation(alongside) {\n',
     );
   });
 });
@@ -1644,7 +1693,7 @@ describe('irToDsl: boundary events', () => {
         '  start S',
         '  user Review',
         '  end E',
-        '  on Review: timer after "PT2H" {',
+        '  on Review: timer("PT2H") {',
         '    user Escalate',
         '    end Timeout',
         '  }',
@@ -1674,7 +1723,7 @@ describe('irToDsl: boundary events', () => {
         edge('Boundary_Pack_message', 'Notify', { id: 'F3' }),
         edge('Notify', 'Nudged', { id: 'F4' }),
       ],
-      ['  on Pack: message "Nudge" alongside {\n', '    end Nudged\n'],
+      ['  on Pack: message("Nudge", alongside) {\n', '    end Nudged\n'],
       [],
     ],
     [
@@ -1688,7 +1737,7 @@ describe('irToDsl: boundary events', () => {
         ),
       ],
       [],
-      ['  on Review: timer every "R/PT1H" {\n  }\n'],
+      ['  on Review: timer(every: "R/PT1H") {\n  }\n'],
       [],
     ],
     [
@@ -1702,7 +1751,7 @@ describe('irToDsl: boundary events', () => {
         ),
       ],
       [],
-      ['  on Elsewhere: message "M" {\n  }\n'],
+      ['  on Elsewhere: message("M") {\n  }\n'],
       // The host the model names is nowhere for the compiler to resolve.
       ['hostOutsideContainer'],
     ],
@@ -1730,7 +1779,7 @@ describe('irToDsl: boundary events', () => {
       ],
     );
     const dsl = await printed(ir);
-    expect(dsl).toContain('  on Fetch: error "GONE" {\n');
+    expect(dsl).toContain('  on Fetch: error(GONE) {\n');
     expect(dsl).toContain('    user Retry\n');
     expect(dsl).toContain('    goto Ship\n');
     expect(dsl.match(/^ *user Ship$/gm)).toHaveLength(1);
@@ -1757,7 +1806,7 @@ describe('irToDsl: boundary events', () => {
       ],
     );
     const dsl = await printed(ir);
-    expect(dsl).toContain('  on Review: signal "Abort" {\n');
+    expect(dsl).toContain('  on Review: signal("Abort") {\n');
     expect(dsl).toContain('    if (paid) {\n');
     expect(dsl).toContain('    } else {\n');
     expect(hasGoto(dsl)).toBe(false);
@@ -1787,8 +1836,8 @@ describe('irToDsl: boundary events', () => {
       ],
     );
     const dsl = await printed(ir);
-    const timer = dsl.indexOf('on Review: timer after "PT2H" {');
-    const escalation = dsl.indexOf('on Review: escalation "LOUD" (code c) {');
+    const timer = dsl.indexOf('on Review: timer("PT2H") {');
+    const escalation = dsl.indexOf('on Review: escalation(LOUD, code: c) {');
     expect(timer).toBeGreaterThan(-1);
     expect(escalation).toBeGreaterThan(timer);
     // Each boundary prints exactly one header: neither the escape-chain walk
@@ -1799,13 +1848,14 @@ describe('irToDsl: boundary events', () => {
   it('keeps the handler block trailing when the body also flushes sweep gotos', async () => {
     const source = [
       'process p {',
+      '  error X',
       '  var r: string',
       '  user Intake',
       '  if (r == "A") { goto Alpha } else { goto Beta }',
       '  user Alpha',
       '  user Beta',
       '  end E',
-      '  on Intake: error "X" { user Fix }',
+      '  on Intake: error(X) { user Fix }',
       '}',
       '',
     ].join('\n');
@@ -1815,7 +1865,7 @@ describe('irToDsl: boundary events', () => {
     const dsl = irToDsl(astToIr(doc.parseResult.value));
     // A handler reads like a catch block: no ordinary statement, and in
     // particular no swept `goto`, may follow it.
-    expect(dsl.indexOf('on Intake: error "X" {')).toBeGreaterThan(
+    expect(dsl.indexOf('on Intake: error(X) {')).toBeGreaterThan(
       dsl.lastIndexOf('goto '),
     );
     // Re-opening the emitted source must raise no handler-placement error.
@@ -1841,7 +1891,7 @@ describe('irToDsl: boundary events', () => {
       [{ id: 'F3', sourceRef: 'Boundary_Review_error', targetRef: 'Fix' }],
     );
     const dsl = await printed(ir, 'orphanStep');
-    expect(dsl.indexOf('on Review: error "X" {')).toBeGreaterThan(
+    expect(dsl.indexOf('on Review: error(X) {')).toBeGreaterThan(
       dsl.indexOf('user Stranded'),
     );
   });
@@ -1857,7 +1907,7 @@ describe('irToDsl: boundary events', () => {
       flowChain('S', 'A', 'Boundary_A_error', 'Fix'),
     );
     const dsl = await printed(ir);
-    expect(dsl).toContain('on A: error "X" {');
+    expect(dsl).toContain('on A: error(X) {');
     expect(dsl).toContain('user Fix');
     // Printed at its arrival point and nowhere else: the boundary pass must
     // find it already emitted.
@@ -1883,7 +1933,7 @@ describe('irToDsl: boundary events', () => {
     );
     const dsl = await printed(ir);
     expect(dsl.indexOf('on Review: timer')).toBeGreaterThan(-1);
-    expect(dsl.indexOf('on error "PF" {')).toBeGreaterThan(
+    expect(dsl.indexOf('on error(PF) {')).toBeGreaterThan(
       dsl.indexOf('on Review: timer'),
     );
   });
@@ -1916,7 +1966,7 @@ describe('irToDsl: boundary events', () => {
       ],
       flowChain('S', 'Inner', 'E'),
     );
-    expect(await printed(ir)).toContain('    on Check: condition (stale) {\n');
+    expect(await printed(ir)).toContain('    on Check: condition(stale) {\n');
   });
 
   it('leaves a container without boundary events printing exactly as before', () => {
@@ -1974,49 +2024,49 @@ describe('irToDsl: synthesized terminal omission', () => {
       'endEvent',
       'Ack',
       messageDef('Ack'),
-      'throw message Ack "Ack"',
+      'throw message Ack("Ack")',
     ],
     [
       'a synthesized message end',
       'endEvent',
       'Throw_p_1',
       messageDef('Ack'),
-      'throw message "Ack"',
+      'throw message("Ack")',
     ],
     [
       'an authored error end',
       'endEvent',
       'PaymentFailed',
       errorDef('PF'),
-      'throw error PaymentFailed "PF"',
+      'throw error PaymentFailed(PF)',
     ],
     [
       'a synthesized escalation end',
       'endEvent',
       'Throw_p_1',
       escalationDef('ESC'),
-      'throw escalation "ESC"',
+      'throw escalation(ESC)',
     ],
     [
       'an authored message emit',
       'intermediateThrowEvent',
       'Notify',
       messageDef('Ack'),
-      'emit message Notify "Ack"',
+      'emit message Notify("Ack")',
     ],
     [
       'a synthesized message emit',
       'intermediateThrowEvent',
       'Throw_p_2',
       messageDef('Ack'),
-      'emit message "Ack"',
+      'emit message("Ack")',
     ],
     [
       'a synthesized signal emit',
       'intermediateThrowEvent',
       'Throw_p_2',
       signalDef('Ping'),
-      'emit signal "Ping"',
+      'emit signal("Ping")',
     ],
   ] as const)('prints %s', async (_title, kind, id, def, expected) => {
     const node = typedEvent(kind, id, def);
@@ -2082,12 +2132,13 @@ describe('irToDsl: guard-clause continuation', () => {
     // continues the main flow. There is no clean post-dominating join, so the
     // fallback consumes the sole default edge as the continuation.
     const ir = await reDesugar(`process p {
+  error BOOM
   start S
-  service Pre { class = "x.Pre" }
+  service Pre(class: "x.Pre")
   if (amount > 1000) {
-    throw error "BOOM"
+    throw error(BOOM)
   }
-  service Post { class = "x.Post" }
+  service Post(class: "x.Post")
   end Done
 }
 `);
@@ -2099,7 +2150,7 @@ describe('irToDsl: guard-clause continuation', () => {
     expect(dsl).not.toContain('Gateway_');
 
     // The guard's terminal prints inline, not as a jump to the throw node.
-    expect(dsl).toContain('throw error "BOOM"');
+    expect(dsl).toContain('throw error(BOOM)');
     expect(dsl).not.toContain('goto Throw_');
 
     // The continuation prints AFTER the `if`, at the container body level, not
@@ -2116,13 +2167,14 @@ describe('irToDsl: guard-clause continuation', () => {
     // `while (...) { A; if (d) { throw }; B }`: the guard's terminal branch must
     // not push `B` out of the loop.
     const ir = await reDesugar(`process p {
+  error X
   start S
   while (retries < 3) {
-    service A { class = "x.A" }
+    service A(class: "x.A")
     if (retries < 1) {
-      throw error "X"
+      throw error(X)
     }
-    service B { class = "x.B" }
+    service B(class: "x.B")
   }
   end Done
 }
@@ -2314,11 +2366,11 @@ describe('irToDsl: parallel-fork recovery (terminating branch)', () => {
     // there is no clean parallel join and the fork must be recovered
     // structurally rather than degrading to raw gotos.
     const ir = await reDesugar(`process p {
-  error "BOOM" message "it broke"
+  error BOOM(message: "it broke")
   start Begin
   parallel {
-    { service A "a" { class = "x.A" } }
-    { throw error "BOOM" }
+    { service A(label: "a", class: "x.A") }
+    { throw error(BOOM) }
   }
   end Finish
 }
@@ -2328,8 +2380,8 @@ describe('irToDsl: parallel-fork recovery (terminating branch)', () => {
     expect(dsl).toContain('parallel {');
     // Both branch bodies print inline; the terminating branch prints its throw
     // in place, never as a jump to the (un-nameable) synthesized throw node.
-    expect(dsl).toContain('service A "a" { class = "x.A" }');
-    expect(dsl).toContain('throw error "BOOM"');
+    expect(dsl).toContain('service A(label: "a", class: "x.A")');
+    expect(dsl).toContain('throw error(BOOM)');
 
     expect(hasGoto(dsl)).toBe(false);
     expect(dsl).not.toContain('goto Throw_');
@@ -2353,22 +2405,22 @@ describe('irToDsl: parallel-fork recovery (terminating branch)', () => {
     // first survivor's inner join, which would drift it into a sibling branch
     // and make the round-trip non-idempotent.
     const ir = await reDesugar(`process p {
-  error "BOOM" message "it broke"
+  error BOOM(message: "it broke")
   start Begin
   parallel {
     {
       parallel {
-        { service A "a" { class = "x.A" } }
-        { service B "b" { class = "x.B" } }
+        { service A(label: "a", class: "x.A") }
+        { service B(label: "b", class: "x.B") }
       }
     }
     {
       parallel {
-        { service C "c" { class = "x.C" } }
-        { service D "d" { class = "x.D" } }
+        { service C(label: "c", class: "x.C") }
+        { service D(label: "d", class: "x.D") }
       }
     }
-    { throw error "BOOM" }
+    { throw error(BOOM) }
   }
   end Finish
 }
@@ -2385,8 +2437,8 @@ describe('irToDsl: parallel-fork recovery (terminating branch)', () => {
 
 describe('irToDsl: engine attributes', () => {
   /**
-   * One of every statement kind that has an attribute block, each carrying at
-   * least one engine attribute, plus a boundary handler whose escape chain is a
+   * One of every statement kind that carries engine settings, each carrying at
+   * least one, plus a boundary handler whose escape chain is a
    * typed throw and a host-less handler.
    */
   const ENGINE_IR: BpmnProcess = {
@@ -2492,39 +2544,46 @@ describe('irToDsl: engine attributes', () => {
     ],
   };
 
-  it('renders a block on every statement kind that has one, in a fixed member order', async () => {
+  it('renders the parens on every statement kind that takes them, in a fixed setting order', async () => {
     const dsl = await printed(ENGINE_IR, 'reservedId');
-    expect(dsl).toContain('start S { asyncAfter = true }');
+    expect(dsl).toContain('start S(asyncAfter: true)');
     expect(dsl).toContain(
-      'user U "Review" { assignee = "ana" formKey = "embedded:app:forms/r.html" ' +
-        'candidateGroups = "ops" candidateUsers = "ana,bo" dueDate = "${due}" ' +
-        'followUpDate = "P1D" priority = 20 asyncBefore = true exclusive = false ' +
-        'jobPriority = 50 retryCycle = "R3/PT10M" form { amount: number } }',
+      'user U(label: "Review", assignee: "ana", ' +
+        'formKey: "embedded:app:forms/r.html", candidateGroups: "ops", ' +
+        'candidateUsers: "ana,bo", dueDate: "${due}", followUpDate: "P1D", ' +
+        'priority: 20, asyncBefore: true, exclusive: false, jobPriority: 50, ' +
+        'retryCycle: "R3/PT10M") {\n' +
+        '    form {\n' +
+        '      amount: number\n' +
+        '    }\n' +
+        '  }',
     );
     expect(dsl).toContain(
-      'service V { class = "com.example.C" resultVariable = "res" asyncBefore = true }',
+      'service V(class: "com.example.C", resultVariable: "res", asyncBefore: true)',
     );
     expect(dsl).toContain(
-      'script Sc { resultVariable = "out" asyncAfter = true } ```javascript',
+      'script Sc(resultVariable: "out", asyncAfter: true) ```javascript',
     );
     expect(dsl).toContain(
-      'call C { process = "other" businessKey = "bk" asyncBefore = true in * }',
+      'call C(process: "other", businessKey: "bk", asyncBefore: true) {\n' +
+        '    in *\n' +
+        '  }',
     );
-    expect(dsl).toContain('subprocess Sub { asyncBefore = true } {');
-    expect(dsl).toContain('await timer after "PT1H" { asyncBefore = true }');
-    expect(dsl).toContain('emit escalation "ESC" { exclusive = false }');
-    expect(dsl).toContain('end E { asyncBefore = true }');
-    expect(dsl).toContain('throw error Failed "PF" { asyncAfter = true }');
+    expect(dsl).toContain('subprocess Sub(asyncBefore: true) {');
+    expect(dsl).toContain('await timer("PT1H", asyncBefore: true)');
+    expect(dsl).toContain('emit escalation(ESC, exclusive: false)');
+    expect(dsl).toContain('end E(asyncBefore: true)');
+    expect(dsl).toContain('throw error Failed(PF, asyncAfter: true)');
 
-    // Both handler headers put the block before the body brace.
-    expect(dsl).toContain('on U: error "BOOM" { asyncBefore = true } {');
-    expect(dsl).toContain('on escalation "ESC" { asyncBefore = true } {');
+    // Both handler headers carry their settings before the body brace.
+    expect(dsl).toContain('on U: error(BOOM, asyncBefore: true) {');
+    expect(dsl).toContain('on escalation(ESC, asyncBefore: true) {');
 
-    // versionTag is a process-header declaration rather than a member.
-    expect(dsl).toContain('\n  versionTag = "3.1"\n');
+    // The process carries its own settings the way every element does.
+    expect(dsl).toContain('versionTag: "3.1"');
   });
 
-  it('prints no block at all for a node carrying no engine attributes', async () => {
+  it('prints neither parens nor braces for a node carrying no engine attributes', async () => {
     const dsl = await printed(
       minimalProcess(
         [
@@ -2543,9 +2602,10 @@ describe('irToDsl: engine attributes', () => {
       ),
     );
     expect(dsl).not.toContain('{ }');
+    expect(dsl).not.toContain('()');
     expect(dsl).toContain('\n  start S\n');
     expect(dsl).toContain('\n  user U\n');
-    expect(dsl).toContain('\n  await signal "Ping"\n');
+    expect(dsl).toContain('\n  await signal("Ping")\n');
     expect(dsl).toContain('\n  end E\n');
     expect(dsl).toContain('\n  subprocess Sub {\n');
   });
@@ -2562,8 +2622,8 @@ describe('irToDsl: engine attributes', () => {
         flowChain('S', 'A', 'B', 'E'),
       ),
     );
-    expect(dsl).toContain('user A { asyncBefore = true asyncAfter = true }');
-    expect(dsl).toContain('user B { exclusive = false }');
+    expect(dsl).toContain('user A(asyncBefore: true, asyncAfter: true)');
+    expect(dsl).toContain('user B(exclusive: false)');
     expect(dsl).not.toContain('"true"');
     expect(dsl).not.toContain('"false"');
   });
@@ -2585,9 +2645,9 @@ describe('irToDsl: engine attributes', () => {
         flowChain('S', 'A', 'B', 'E'),
       ),
     );
-    expect(dsl).toContain('user A { priority = 7 jobPriority = 50 }');
+    expect(dsl).toContain('user A(priority: 7, jobPriority: 50)');
     expect(dsl).toContain(
-      'user B { priority = "${p}" jobPriority = "${order.rush}" }',
+      'user B(priority: "${p}", jobPriority: "${order.rush}")',
     );
   });
 });
@@ -2650,7 +2710,7 @@ describe('irToDsl: whether a synthesized terminal prints', () => {
       'an engine attribute on an end',
       'end',
       { asyncBefore: true },
-      'end EndEvent_p { asyncBefore = true }',
+      'end EndEvent_p(asyncBefore: true)',
       ['reservedId'],
     ],
     [
@@ -2664,7 +2724,7 @@ describe('irToDsl: whether a synthesized terminal prints', () => {
       'a listener on an end',
       'end',
       { executionListeners: DONE_LISTENERS },
-      'end EndEvent_p { on end { class = "com.example.Done" } }',
+      'end EndEvent_p {\n    on end(class: "com.example.Done")\n  }',
       ['reservedId'],
     ],
     [
@@ -2686,7 +2746,7 @@ describe('irToDsl: whether a synthesized terminal prints', () => {
       'an engine attribute on a start',
       'start',
       { asyncBefore: true },
-      'start StartEvent_p { asyncBefore = true }',
+      'start StartEvent_p(asyncBefore: true)',
       ['reservedId'],
     ],
     [
@@ -2744,9 +2804,13 @@ describe('irToDsl: input/output parameters', () => {
       }),
     );
     expect(dsl).toContain(
-      'service V { topic = "charge" input plain = "ready" ' +
-        'input expr = "${order.id}" input items = [] ' +
-        'output code = "200" output blank = {} }',
+      'service V(topic: "charge") {\n' +
+        '    input plain = "ready"\n' +
+        '    input expr = "${order.id}"\n' +
+        '    input items = []\n' +
+        '    output code = "200"\n' +
+        '    output blank = {}\n' +
+        '  }',
     );
   });
 
@@ -2779,8 +2843,10 @@ describe('irToDsl: input/output parameters', () => {
       }),
     );
     expect(dsl).toContain(
-      'user U { input rows = ["a", { "k": "v", "end": "z" }] ' +
-        'input lookup = { "ids": ["x"], "with space": "w" } }',
+      'user U {\n' +
+        '    input rows = ["a", { "k": "v", "end": "z" }]\n' +
+        '    input lookup = { "ids": ["x"], "with space": "w" }\n' +
+        '  }',
     );
   });
 
@@ -2794,10 +2860,12 @@ describe('irToDsl: input/output parameters', () => {
         ],
       }),
     );
-    expect(dsl).toContain('user U { input total = ```groovy\nsum(a, b)\n``` }');
+    expect(dsl).toContain(
+      'user U {\n    input total = ```groovy\nsum(a, b)\n```\n  }',
+    );
   });
 
-  it('keeps a script task readable with a fenced value in its block', async () => {
+  it('keeps a script task readable with a fenced value among its members', async () => {
     const dsl = await printed(
       around({
         kind: 'scriptTask',
@@ -2808,11 +2876,13 @@ describe('irToDsl: input/output parameters', () => {
       }),
     );
     expect(dsl).toContain(
-      'script Sc { input seed = ```groovy\nseed()\n``` } ```javascript\nx = 1;\n```',
+      'script Sc {\n' +
+        '    input seed = ```groovy\nseed()\n```\n' +
+        '  } ```javascript\nx = 1;\n```',
     );
   });
 
-  it('prints the block before the body on a sub-process and before the mappings on a call', async () => {
+  it('prints the members before the body on a sub-process and before the mappings on a call', async () => {
     const dsl = await printed(
       minimalProcess(
         [
@@ -2839,13 +2909,19 @@ describe('irToDsl: input/output parameters', () => {
         flowChain('S', 'Sub', 'C', 'E'),
       ),
     );
-    // An empty map ending the block puts `{}` `}` `{` in a row, the sequence the
-    // body brace has to be told apart from.
+    // An empty map ending the members puts `{}` `}` `{` in a row, the sequence
+    // the body brace has to be told apart from.
     expect(dsl).toContain(
-      'subprocess Sub { input seed = "1" input extra = {} } {',
+      'subprocess Sub {\n' +
+        '    input seed = "1"\n' +
+        '    input extra = {}\n' +
+        '  } {',
     );
     expect(dsl).toContain(
-      'call C { process = "other" output total = "${sum}" in * }',
+      'call C(process: "other") {\n' +
+        '    output total = "${sum}"\n' +
+        '    in *\n' +
+        '  }',
     );
   });
 });
@@ -2866,9 +2942,11 @@ describe('irToDsl: listeners', () => {
       }),
     );
     expect(dsl).toContain(
-      'user U { on start { class = "com.example.Enter" } ' +
-        'on end { expression = "${audit.log()}" } ' +
-        'on create { delegate = "${assignHook}" } }',
+      'user U {\n' +
+        '    on start(class: "com.example.Enter")\n' +
+        '    on end(expression: "${audit.log()}")\n' +
+        '    on create(delegate: "${assignHook}")\n' +
+        '  }',
     );
   });
 
@@ -2884,9 +2962,11 @@ describe('irToDsl: listeners', () => {
       }),
     );
     expect(dsl).toContain(
-      'service V { class = "com.example.C" on end ```groovy\n' +
+      'service V(class: "com.example.C") {\n' +
+        '    on end ```groovy\n' +
         "println 'bye'\n" +
-        '``` }',
+        '```\n' +
+        '  }',
     );
   });
 
@@ -2913,8 +2993,10 @@ describe('irToDsl: listeners', () => {
       'duplicateTimeout',
     );
     expect(dsl).toContain(
-      'user U { on timeout after "PT1H" { class = "com.example.T" } ' +
-        'on timeout at "${deadline}" { class = "com.example.D" } }',
+      'user U {\n' +
+        '    on timeout after "PT1H"(class: "com.example.T")\n' +
+        '    on timeout at "${deadline}"(class: "com.example.D")\n' +
+        '  }',
     );
   });
 
@@ -2949,14 +3031,14 @@ describe('irToDsl: listeners', () => {
       ),
     );
     expect(dsl).toContain(
-      'await signal "Ping" { on start { class = "com.example.W" } }',
+      'await signal("Ping") {\n    on start(class: "com.example.W")\n  }',
     );
     expect(dsl).toContain(
-      'on escalation "ESC" { on end { class = "com.example.H" } } {',
+      'on escalation(ESC) {\n    on end(class: "com.example.H")\n  } {',
     );
   });
 
-  it('prints scalars, parameters, listeners, and the form block in one fixed order', async () => {
+  it('prints the settings in the parens and the form, the parameters and the listeners in the braces, in one fixed order', async () => {
     const dsl = await printed(
       around({
         kind: 'userTask',
@@ -2976,11 +3058,15 @@ describe('irToDsl: listeners', () => {
       }),
     );
     expect(dsl).toContain(
-      'user U "Review" { assignee = "ana" asyncBefore = true ' +
-        'input seed = "1" output note = "${n}" ' +
-        'on start { class = "com.example.Enter" } ' +
-        'on complete { class = "com.example.Done" } ' +
-        'form { amount: number } }',
+      'user U(label: "Review", assignee: "ana", asyncBefore: true) {\n' +
+        '    form {\n' +
+        '      amount: number\n' +
+        '    }\n' +
+        '    input seed = "1"\n' +
+        '    output note = "${n}"\n' +
+        '    on start(class: "com.example.Enter")\n' +
+        '    on complete(class: "com.example.Done")\n' +
+        '  }',
     );
   });
 });
@@ -3006,23 +3092,25 @@ describe('irToDsl: repeated activities', () => {
     }
   >;
 
-  /** Print one repeated element, wired `S -> el -> E`, with its settings block. */
+  /** Print one repeated element, wired `S -> el -> E`, with its settings. */
   const printRepeated = (
     el: RepeatableElement,
     loop: LoopCharacteristics,
   ): string => irToDsl(around({ ...el, asyncBefore: true, loop }));
 
-  /** Every kind that can repeat, with the head and the tail its clause sits between. */
+  /** Every kind that can repeat: the head its clause follows, its settings, and what closes the statement. */
   const KINDS = [
     [
       { kind: 'task', id: 'Record', name: 'Record it' },
-      'step Record "Record it"',
-      ' { asyncBefore = true }',
+      'step Record',
+      'label: "Record it", asyncBefore: true',
+      '',
     ],
     [
       { kind: 'userTask', id: 'Approve', name: 'Approve it' },
-      'user Approve "Approve it"',
-      ' { asyncBefore = true }',
+      'user Approve',
+      'label: "Approve it", asyncBefore: true',
+      '',
     ],
     [
       {
@@ -3032,8 +3120,9 @@ describe('irToDsl: repeated activities', () => {
         element: 'send',
         binding: classBinding('com.example.Notify'),
       },
-      'send Notify "Notify them"',
-      ' { class = "com.example.Notify" asyncBefore = true }',
+      'send Notify',
+      'label: "Notify them", class: "com.example.Notify", asyncBefore: true',
+      '',
     ],
     [
       {
@@ -3043,8 +3132,9 @@ describe('irToDsl: repeated activities', () => {
         format: 'javascript',
         code: 'x = 1',
       },
-      'script Compute "Compute it"',
-      ' { asyncBefore = true } ```javascript',
+      'script Compute',
+      'label: "Compute it", asyncBefore: true',
+      ' ```javascript',
     ],
     [
       {
@@ -3053,8 +3143,9 @@ describe('irToDsl: repeated activities', () => {
         name: 'Wait for it',
         messageName: 'OrderPaid',
       },
-      'receive Wait "Wait for it"',
-      ' { message = "OrderPaid" asyncBefore = true }',
+      'receive Wait',
+      'label: "Wait for it", message: "OrderPaid", asyncBefore: true',
+      '',
     ],
     [
       {
@@ -3067,8 +3158,9 @@ describe('irToDsl: repeated activities', () => {
         ]),
         name: 'Fulfil it',
       },
-      'subprocess Fulfil "Fulfil it"',
-      ' { asyncBefore = true } {',
+      'subprocess Fulfil',
+      'label: "Fulfil it", asyncBefore: true',
+      ' {',
     ],
     [
       {
@@ -3077,27 +3169,28 @@ describe('irToDsl: repeated activities', () => {
         name: 'Run it',
         calledElement: 'regional-report',
       },
-      'call Regional "Run it"',
-      ' { process = "regional-report" asyncBefore = true }',
+      'call Regional',
+      'label: "Run it", process: "regional-report", asyncBefore: true',
+      '',
     ],
   ] as const satisfies ReadonlyArray<
-    readonly [RepeatableElement, string, string]
+    readonly [RepeatableElement, string, string, string]
   >;
 
   it.each(KINDS)(
-    'prints the clause between the label and the block of %#',
-    (el, head, tail) => {
+    'prints the clause between the name and the settings of %#',
+    (el, head, settings, tail) => {
       expect(printRepeated(el, OVER_LINES)).toContain(
-        `${head} for each line in lines${tail}`,
+        `${head} for each line in lines(${settings})${tail}`,
       );
     },
   );
 
   it.each(KINDS)(
     'leaves %# untouched when it carries no loop',
-    (el, head, tail) => {
+    (el, head, settings, tail) => {
       expect(irToDsl(around({ ...el, asyncBefore: true }))).toContain(
-        `${head}${tail}`,
+        `${head}(${settings})${tail}`,
       );
     },
   );
@@ -3137,7 +3230,7 @@ describe('irToDsl: repeated activities', () => {
     'prints %j as `%s`',
     (loop, clause) => {
       expect(printRepeated({ kind: 'task', id: 'Record' }, loop)).toContain(
-        `step Record ${clause} { asyncBefore = true }`,
+        `step Record ${clause}(asyncBefore: true)`,
       );
     },
   );
@@ -3192,7 +3285,7 @@ describe('irToDsl: repeated activities', () => {
         ],
         flowChain('S', 'Record', 'E'),
       ),
-      ['form { lines: string }'],
+      ['form {\n      lines: string\n    }'],
       ['var lines'],
       0,
     ],
@@ -3214,7 +3307,7 @@ describe('irToDsl: repeated activities', () => {
         ],
         flowChain('S', 'Record', 'Note', 'Escalate', 'E'),
       ),
-      ['on error "BOOM" (code c, message m)', 'on escalation "OVER" (code x)'],
+      ['on error(BOOM, code: c, message: m)', 'on escalation(OVER, code: x)'],
       ['var '],
       0,
     ],
@@ -4363,11 +4456,12 @@ describe('irToDsl: a split left with nowhere to go when no condition holds', () 
     // whether it carries a condition or not, so the guard clause still prints
     // as one instead of degrading to a pair of jumps.
     const ir = await reDesugar(`process p {
+  error BOOM
   start S
   if (amount > 1000) {
-    throw error "BOOM"
+    throw error(BOOM)
   }
-  service Post { class = "x.Post" }
+  service Post(class: "x.Post")
   end Done
 }
 `);
@@ -4639,7 +4733,7 @@ describe('irToDsl: a condition on a branch of a fork that weighs none', () => {
   });
 });
 
-/** Desugared `await { message "Paid" { user Ship } timer after "P3D" { user Chase } }`. */
+/** Desugared `await { message("Paid") { user Ship } timer("P3D") { user Chase } }`. */
 const RACE_IR: BpmnProcess = minimalProcess(
   [
     { kind: 'startEvent', id: 'S' },
@@ -4675,10 +4769,10 @@ describe('irToDsl: race', () => {
       'process p {\n' +
         '  start S\n' +
         '  await {\n' +
-        '    message "Paid" {\n' +
+        '    message("Paid") {\n' +
         '      user Ship\n' +
         '    }\n' +
-        '    timer after "P3D" {\n' +
+        '    timer("P3D") {\n' +
         '      user Chase\n' +
         '    }\n' +
         '  }\n' +
@@ -4729,7 +4823,7 @@ describe('irToDsl: race', () => {
     expectReports(warnings, ['droppedFlowCondition', 'Catch_p_1_b0']);
   });
 
-  it('writes a branch settings block between the header and the body, and an empty body for a branch that only waits', async () => {
+  it('writes the branch settings in the header parens, and an empty body for a branch that only waits', async () => {
     const ir = minimalProcess(
       [
         { kind: 'startEvent', id: 'S' },
@@ -4767,9 +4861,9 @@ describe('irToDsl: race', () => {
       'process p {\n' +
         '  start S\n' +
         '  await {\n' +
-        '    message "Paid" { asyncBefore = true } {\n' +
+        '    message("Paid", asyncBefore: true) {\n' +
         '    }\n' +
-        '    timer after "P3D" {\n' +
+        '    timer("P3D") {\n' +
         '      user Chase\n' +
         '    }\n' +
         '  }\n' +
@@ -4811,10 +4905,10 @@ describe('irToDsl: race', () => {
       'process p {\n' +
         '  start S\n' +
         '  await {\n' +
-        '    message "Paid" {\n' +
+        '    message("Paid") {\n' +
         '      end Done\n' +
         '    }\n' +
-        '    timer after "P3D" {\n' +
+        '    timer("P3D") {\n' +
         '      end Expired\n' +
         '    }\n' +
         '  }\n' +
@@ -4858,7 +4952,7 @@ describe('irToDsl: race', () => {
       ['droppedEdge', 'Catch_p_1_b0'],
     );
     // The wait itself is still printed, so its own chain survives.
-    expect(source).toContain('await message "Paid"');
+    expect(source).toContain('await message("Paid")');
   });
 });
 

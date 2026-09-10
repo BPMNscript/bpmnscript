@@ -734,7 +734,7 @@ describe('irToXml: event layer (errors + escalations)', () => {
         ],
       },
     ),
-    errorMessages: [{ code: 'PF', message: 'boom' }],
+    errorDecls: [{ name: 'PF', code: 'PF', message: 'boom' }],
   };
 
   let defs: Moddle;
@@ -773,6 +773,52 @@ describe('irToXml: event layer (errors + escalations)', () => {
   it('orders rootElements as [process, ...errors, ...escalations]', () => {
     const types = defs.rootElements.map((r) => r.$type);
     expect(types).toEqual(['bpmn:Process', 'bpmn:Error', 'bpmn:Escalation']);
+  });
+
+  it('emits a root per declaration, named by the declaration and keyed by its code, for codes nothing raises', async () => {
+    const declaredIr: BpmnProcess = {
+      ...minimalProcess(
+        [
+          { kind: 'startEvent', id: 'S' },
+          { kind: 'endEvent', id: 'E' },
+        ],
+        [{ id: 'SF_S_E', sourceRef: 'S', targetRef: 'E' }],
+      ),
+      errorDecls: [
+        { name: 'OrderFailed', code: 'order.failed', message: 'gone' },
+      ],
+      escalationDecls: [{ name: 'ManualReview', code: 'MANUAL_REVIEW' }],
+    };
+    const d = await parseDefinitionsWithOperaton(await irToXml(declaredIr));
+
+    expect(
+      rootsOfType(d, 'bpmn:Error').map((r) => ({
+        id: r.id,
+        name: r.name,
+        errorCode: r.errorCode,
+        errorMessage: r.errorMessage,
+      })),
+    ).toEqual([
+      {
+        id: 'Error_order.failed',
+        name: 'OrderFailed',
+        errorCode: 'order.failed',
+        errorMessage: 'gone',
+      },
+    ]);
+    expect(
+      rootsOfType(d, 'bpmn:Escalation').map((r) => ({
+        id: r.id,
+        name: r.name,
+        escalationCode: r.escalationCode,
+      })),
+    ).toEqual([
+      {
+        id: 'Escalation_MANUAL_REVIEW',
+        name: 'ManualReview',
+        escalationCode: 'MANUAL_REVIEW',
+      },
+    ]);
   });
 
   it('flags the error handler triggeredByEvent and stamps the catch bindings on its start', () => {

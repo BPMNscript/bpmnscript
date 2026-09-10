@@ -10,21 +10,21 @@ import { parse, roundTripOf, validate } from './helpers/pipeline.js';
 const SERVICE_EXPRESSION_SRC =
   'process shipping-quote {\n' +
   '  start OrderPlaced\n' +
-  '  service QuoteShipping { expression = "${shippingBean.quote(order)}" }\n' +
+  '  service QuoteShipping(expression: "${shippingBean.quote(order)}")\n' +
   '  end Done\n' +
   '}\n';
 
 const SERVICE_DELEGATE_SRC =
   'process payment-charge {\n' +
   '  start OrderPlaced\n' +
-  '  service ChargeCustomer { delegate = "${chargeService}" }\n' +
+  '  service ChargeCustomer(delegate: "${chargeService}")\n' +
   '  end Done\n' +
   '}\n';
 
 const SERVICE_TOPIC_SRC =
   'process shipment-label {\n' +
   '  start OrderPlaced\n' +
-  '  service PrintLabel { topic = "print-label" }\n' +
+  '  service PrintLabel(topic: "print-label")\n' +
   '  end Done\n' +
   '}\n';
 
@@ -40,23 +40,23 @@ const SCRIPT_TASK_SRC =
 
 const TIMER_START_SRC =
   'process nightly-audit {\n' +
-  '  start AuditWindowOpens "The audit window opens" timer at "2099-01-01T00:00:00"\n' +
-  '  user ReviewAudit { assignee = "demo" }\n' +
+  '  start AuditWindowOpens timer(at: "2099-01-01T00:00:00", label: "The audit window opens")\n' +
+  '  user ReviewAudit(assignee: "demo")\n' +
   '  end AuditFiled\n' +
   '}\n';
 
 const SIGNAL_START_SRC =
   'process stock-watch {\n' +
-  '  start StockRunningLow signal "StockRunningLow"\n' +
-  '  user ReorderStock { assignee = "demo" }\n' +
+  '  start StockRunningLow signal("StockRunningLow")\n' +
+  '  user ReorderStock(assignee: "demo")\n' +
   '  end Restocked\n' +
   '}\n';
 
 const TERMINATE_END_SRC =
   'process order-abandon {\n' +
   '  start OrderPlaced\n' +
-  '  user ReviewOrder { assignee = "demo" }\n' +
-  '  end OrderAbandoned "Abandon every path" terminate\n' +
+  '  user ReviewOrder(assignee: "demo")\n' +
+  '  end OrderAbandoned terminate(label: "Abandon every path")\n' +
   '}\n';
 
 describe('round-trip: service task with an `expression` binding', () => {
@@ -84,7 +84,7 @@ describe('round-trip: service task with an `expression` binding', () => {
   });
 
   it('re-emits `expression = "${...}"` and re-parses with zero errors', async () => {
-    expect(run.dsl).toContain('expression = "${shippingBean.quote(order)}"');
+    expect(run.dsl).toContain('expression: "${shippingBean.quote(order)}"');
     const document = await parse(run.dsl);
     expect(document.parseResult.parserErrors).toHaveLength(0);
   });
@@ -112,7 +112,7 @@ describe('round-trip: service task with a `delegate` binding (delegateExpression
       kind: 'delegateExpression',
       expression: '${chargeService}',
     });
-    expect(run.dsl).toContain('delegate = "${chargeService}"');
+    expect(run.dsl).toContain('delegate: "${chargeService}"');
     expect(run.dsl).not.toContain('delegateExpression');
   });
 
@@ -146,9 +146,9 @@ describe('round-trip: service task with a `topic` binding', () => {
     });
   });
 
-  it('re-emits `service ... { topic = "..." }` and re-parses with zero errors', async () => {
+  it('re-emits `service ...(topic: "...")` and re-parses with zero errors', async () => {
     expect(run.dsl).toContain('service PrintLabel');
-    expect(run.dsl).toContain('topic = "print-label"');
+    expect(run.dsl).toContain('topic: "print-label"');
     const document = await parse(run.dsl);
     expect(document.parseResult.parserErrors).toHaveLength(0);
   });
@@ -220,7 +220,8 @@ describe('round-trip: process start event with a timer trigger', () => {
 
   it('re-emits the trigger head on `start` and re-parses with zero errors', async () => {
     expect(run.dsl).toContain(
-      'start AuditWindowOpens "The audit window opens" timer at "2099-01-01T00:00:00"',
+      'start AuditWindowOpens timer(at: "2099-01-01T00:00:00", ' +
+        'label: "The audit window opens")',
     );
     const document = await parse(run.dsl);
     expect(document.parseResult.parserErrors).toHaveLength(0);
@@ -252,7 +253,9 @@ describe('round-trip: process start event with a signal trigger', () => {
   });
 
   it('re-emits the trigger head on `start` and re-parses with zero errors', async () => {
-    expect(run.dsl).toContain('start StockRunningLow signal "StockRunningLow"');
+    expect(run.dsl).toContain(
+      'start StockRunningLow signal("StockRunningLow")',
+    );
     const document = await parse(run.dsl);
     expect(document.parseResult.parserErrors).toHaveLength(0);
   });
@@ -281,7 +284,7 @@ describe('round-trip: `end ... terminate`', () => {
 
   it('re-emits `end ... terminate`, never eliding it, and re-parses with zero errors', async () => {
     expect(run.dsl).toContain(
-      'end OrderAbandoned "Abandon every path" terminate',
+      'end OrderAbandoned terminate(label: "Abandon every path")',
     );
     const document = await parse(run.dsl);
     expect(document.parseResult.parserErrors).toHaveLength(0);

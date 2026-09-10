@@ -6,15 +6,14 @@ import {
 } from 'langium';
 import type {
   Additive,
-  Attribute,
   Block,
   BpmnScriptAstType,
   BusinessRuleTask,
   CallActivity,
+  CodeDecl,
   DoWhileStatement,
   EmitStatement,
   EndEvent,
-  ErrorDecl,
   Expr,
   FormBlock,
   GotoStatement,
@@ -28,14 +27,16 @@ import type {
   Multiplicative,
   OnHandler,
   ParallelStatement,
+  ParenItem,
+  ParenValue,
   Process,
-  ProcessAttribute,
   RaceBranch,
   RaceStatement,
   Relational,
   ScriptTask,
   SendTask,
   ServiceTask,
+  Setting,
   StartEvent,
   Statement,
   SubProcess,
@@ -44,18 +45,36 @@ import type {
   WhileStatement,
 } from './generated/ast.js';
 import {
+  caughtBindingsOf,
+  codeTriggerOf,
+  configuredSettingsOf,
+  declaredCodeOf,
+  flagOf,
+  flagsOf,
+  hasExpressionPayload,
+  hasFlag,
+  hasQuotedPayload,
+  isCodePosition,
+  nameTriggerOf,
+  payloadItemOf,
+  payloadTextOf,
+  settingsOf,
+  timerParticleOf,
+  timerPayloadOf,
+  type TimerPayload,
+} from './paren-items.js';
+import {
   isAdditive,
-  isAttribute,
+  isSetting,
   isBlock,
   isCallActivity,
+  isCodeDecl,
   isDoWhileStatement,
   isEmitStatement,
   isEndEvent,
-  isErrorDecl,
   isExpr,
   isGotoStatement,
   isIfStatement,
-  isListener,
   isLiteralBool,
   isLiteralString,
   isLogical,
@@ -65,8 +84,6 @@ import {
   isParallelBranch,
   isParallelStatement,
   isProcess,
-  isProcessAttribute,
-  isProcessLabel,
   isRaceBranch,
   isRaceStatement,
   isRawExpr,
@@ -81,6 +98,7 @@ import {
   isVarRef,
   isWhileStatement,
 } from './generated/ast.js';
+import { renderExpressionInner } from './expression-render.js';
 import type { BpmnScriptServices } from './bpmn-script-module.js';
 import {
   ATTEMPT_BLOCK_RULE,
@@ -89,6 +107,7 @@ import {
   BUSINESS_RULE_BINDING_KEYS,
   CALL_BINDING_VALUES,
   CATCH_TRIGGERS,
+  DECLARED_CODE_TRIGGERS,
   DECISION_RESULT_MAPPINGS,
   EMIT_TRIGGERS,
   END_TRIGGERS,
@@ -151,6 +170,7 @@ export function registerValidationChecks(services: BpmnScriptServices) {
     ThrowStatement: validator.checkThrowStatement,
     EmitStatement: validator.checkEmitStatement,
     IntermediateCatchEvent: validator.checkIntermediateCatchEvent,
+    ParenValue: validator.checkParenValue,
   };
   registry.register(checks, validator);
 }
@@ -272,15 +292,29 @@ function nameRequiredMessage(subject: string, kind: string): string {
   return `${subject} needs the ${kind}'s name: the engine matches ${kind}s by name.`;
 }
 
+const TIMER_PAYLOAD_PREFIX =
+  'A timer needs to know how to read the time: write ';
+
 const TIMER_PAYLOAD_MESSAGE =
-  `A timer needs to know how to read the time: write 'after "PT1H"', ` +
-  `'at "2026-08-01T09:00:00"', or 'every "R/PT10M"'.`;
+  TIMER_PAYLOAD_PREFIX +
+  `'timer("PT1H")', 'timer(at: "2026-08-01T09:00:00")', or ` +
+  `'timer(every: "R/PT10M")'.`;
+
+/** A listener writes the clause after its event word, so it needs its own wording. */
+const LISTENER_TIMER_PAYLOAD_MESSAGE =
+  TIMER_PAYLOAD_PREFIX +
+  `'after "PT1H"', 'at "2026-08-01T09:00:00"', or 'every "R/PT10M"'.`;
 
 const CONDITION_REQUIRED_MESSAGE =
-  "A condition handler needs its condition: 'on condition (amount > 100)'.";
+  "A condition handler needs its condition: 'on condition(amount > 100)'.";
 
 const CONDITION_NO_CODE_MESSAGE =
-  "A condition handler takes no code string; write the condition in parentheses: 'on condition (amount > 100)'.";
+  "A condition handler takes no code string; write the condition itself: 'on condition(amount > 100)'.";
+
+const SECOND_PAREN_VALUE_MESSAGE =
+  'The parens carry one unkeyed value, the payload; a second one names ' +
+  "nothing and never reaches the engine. Write it as a 'key: value' setting, " +
+  'or remove it.';
 
 const CONDITION_ONLY_MESSAGE =
   "Only 'on condition' takes a condition expression.";
@@ -289,10 +323,10 @@ const COMPENSATE_TYPO_MESSAGE =
   "Unknown event kind 'compensate'; write 'compensation'.";
 
 const CATCH_CONDITION_REQUIRED_MESSAGE =
-  "An awaited condition needs its condition: 'await condition (amount > 100)'.";
+  "An awaited condition needs its condition: 'await condition(amount > 100)'.";
 
 const CATCH_CONDITION_NO_CODE_MESSAGE =
-  "An awaited condition takes no code string; write the condition in parentheses: 'await condition (amount > 100)'.";
+  "An awaited condition takes no code string; write the condition itself: 'await condition(amount > 100)'.";
 
 const CATCH_CONDITION_ONLY_MESSAGE =
   "Only 'await condition' takes a condition expression.";
@@ -326,26 +360,26 @@ const END_TRIGGERS_MESSAGE =
 
 const END_TIMER_MESSAGE =
   'A timer cannot end a process; a timer is something a process waits on. ' +
-  `Write 'await timer after "PT1H"' to pause the flow here, ` +
-  `'on timer after "PT1H"' to react while the surrounding steps run, or ` +
-  `'on <step>: timer after "PT1H"' to watch only while that step runs. ` +
+  `Write 'await timer("PT1H")' to pause the flow here, ` +
+  `'on timer("PT1H")' to react while the surrounding steps run, or ` +
+  `'on <step>: timer("PT1H")' to watch only while that step runs. ` +
   END_TRIGGERS_MESSAGE;
 
 const END_CONDITION_MESSAGE =
   'A condition cannot end a process; a condition is something a process ' +
-  `waits on. Write 'await condition (amount > 100)' to pause the flow ` +
-  `here, 'on condition (amount > 100)' to react while the surrounding ` +
-  `steps run, or 'on <step>: condition (amount > 100)' to watch only ` +
+  `waits on. Write 'await condition(amount > 100)' to pause the flow ` +
+  `here, 'on condition(amount > 100)' to react while the surrounding ` +
+  `steps run, or 'on <step>: condition(amount > 100)' to watch only ` +
   'while that step runs. ' +
   END_TRIGGERS_MESSAGE;
 
 const END_TRIGGER_NO_CODE_MESSAGES: Readonly<Record<string, string>> = {
   terminate:
     'Terminate names nothing: it stops every running path in this scope; ' +
-    'omit the string.',
+    'leave the payload out.',
   cancel:
-    'Cancel names nothing: it gives up the block this end sits in; omit the ' +
-    'string.',
+    'Cancel names nothing: it gives up the block this end sits in; leave the ' +
+    'payload out.',
 } satisfies Record<(typeof END_TRIGGERS)[number], string>;
 
 const CANCEL_END_PLACEMENT_MESSAGE =
@@ -362,9 +396,14 @@ const CANCEL_ALONGSIDE_MESSAGE =
   'Giving a block up ends every step still running inside it, so there is ' +
   "nothing left to run alongside; remove 'alongside'.";
 
+/** On `on`, catch-all is the omitted payload, so an empty code is a mistake. */
+const EMPTY_CODE_MESSAGE =
+  'An empty code ("") is not a catch-all; to catch every error, leave the ' +
+  'payload out entirely.';
+
 const CANCEL_NO_CODE_MESSAGE =
   'A cancel handler catches nothing by name: it runs when its block is ' +
-  'given up; omit the string.';
+  'given up; leave the payload out.';
 
 const CANCEL_NOT_RAISED_MESSAGE =
   'A cancel is not raised: it is how a block gives itself up; write ' +
@@ -378,10 +417,10 @@ const CANCEL_NOT_AWAITED_MESSAGE =
 
 const COMPENSATION_NO_CODE_MESSAGE =
   "Compensation has no code or name: 'on compensation { }' is the undo block " +
-  'of the subprocess or attempt block it sits in; omit the string.';
+  'of the subprocess or attempt block it sits in; leave the payload out.';
 
 const COMPENSATION_BINDINGS_MESSAGE =
-  "'(code c)' bindings belong to error and escalation handlers; compensation carries no values.";
+  "'(code: c)' bindings belong to error and escalation handlers; compensation carries no values.";
 
 const COMPENSATION_ALONGSIDE_MESSAGE =
   'The work an undo block reverses has already finished, so there is no ' +
@@ -399,6 +438,14 @@ const COMPENSATION_HOST_MESSAGE =
   'already-completed work through its own undo block, not through a ' +
   "boundary event; remove the host and write 'on compensation { ... }' " +
   'directly inside the subprocess or attempt block it reverses.';
+
+const ESCALATION_NO_MESSAGE_MESSAGE =
+  'An escalation carries a code but no message.';
+
+/** What a header declaration writes inside its parens, both kinds together. */
+const DECLARATION_SETTINGS_ONLY_MESSAGE =
+  `A declaration's parens take only ${formatWordList(EVENT_BINDING_FIELDS)} ` +
+  "settings, written 'key: value'.";
 
 /**
  * Ids the `astToIr` desugarer synthesizes; an author-chosen statement name
@@ -671,12 +718,11 @@ export class BpmnScriptValidator {
 
     this.checkDuplicateVarDecls(process, accept);
     this.checkProcessAttributes(process, accept);
-    this.checkDuplicateProcessLabel(process, accept);
     this.checkDuplicateStatementNames(process, named, accept);
     this.checkFormVariableAgreement(process, accept);
     this.checkUnreachableStatements(process, accept);
     this.checkHandlerDuplicates(process, accept);
-    this.checkErrorDecls(process, accept);
+    this.checkCodeDecls(process, accept);
   };
 
   /**
@@ -754,7 +800,7 @@ export class BpmnScriptValidator {
     }
     for (const node of AstUtils.streamAst(process)) {
       if (isOnHandler(node)) {
-        for (const binding of node.bindings) {
+        for (const binding of caughtBindingsOf(node.items)) {
           if (binding.variable === undefined) continue;
           const prior = declaredType.get(binding.variable);
           if (prior === undefined) {
@@ -763,7 +809,7 @@ export class BpmnScriptValidator {
             accept(
               'error',
               `Catch-binding variable '${binding.variable}' is typed 'string', but '${binding.variable}' is already declared as '${prior}'; the types must agree.`,
-              { node: binding, property: 'variable' },
+              { node: binding.node, property: 'value' },
             );
           }
         }
@@ -827,43 +873,20 @@ export class BpmnScriptValidator {
 
   /**
    * The engine execution settings are per-flow-node and have no process-wide
-   * form, leaving `versionTag`. `label` never reaches this check: it is a
-   * keyword of its own rule and never lexes as an attribute key, which keeps
-   * {@link checkDuplicateProcessLabel} the single owner of the label rules.
+   * form, leaving the label and `versionTag`.
    */
   private checkProcessAttributes(
     process: Process,
     accept: ValidationAcceptor,
   ): void {
+    this.checkDuplicateKeys(settingsOf(process.items), accept);
     this.checkAttributeKeys(
-      process.decls.filter(isProcessAttribute),
+      configuredSettingsOf(process),
       PROCESS_HEADER_KEY_SET,
       'a process header',
       accept,
     );
-  }
-
-  /**
-   * The inline label counts as the first occurrence: the desugarer prefers it
-   * and drops any `label` attribute, so a second one is dead text.
-   */
-  private checkDuplicateProcessLabel(
-    process: Process,
-    accept: ValidationAcceptor,
-  ): void {
-    if (process.name === undefined) return;
-
-    forEachDuplicate(
-      process.decls.filter(isProcessLabel),
-      () => 'label',
-      (decl) =>
-        accept(
-          'error',
-          `Process '${process.name}' already has a label declared; a second 'label = ...' is not allowed.`,
-          { node: decl, property: 'value' },
-        ),
-      new Set(process.label !== undefined ? ['label'] : []),
-    );
+    this.checkFlags(process.items, [], 'a process header', accept);
   }
 
   /** A step name repeated anywhere in the process makes `goto <name>` ambiguous. */
@@ -906,13 +929,49 @@ export class BpmnScriptValidator {
     // Only the direct value position is exempt; a nested VarRef is checked.
     const container = expr.$container;
     const isNonVariableAttrValue =
-      isAttribute(container) && NON_VARIABLE_ATTR_KEYS.has(container.key);
-    if (isVarRef(expr) && !isNonVariableAttrValue && !symbols.has(expr.name)) {
-      accept(
-        'warning',
-        `Variable '${expr.name}' is not declared. Add 'var ${expr.name}: <type>' to the process.`,
-        { node: expr, property: 'name' },
-      );
+      isSetting(container) && NON_VARIABLE_ATTR_KEYS.has(container.key);
+    // A code position is exempt for the same reason `NON_VARIABLE_ATTR_KEYS`
+    // is: the word names something other than a variable there, and an
+    // undeclared code already has a diagnostic of its own from the linker.
+    // A declaration's parens hold the text a code and its message are made of,
+    // so a bare word there is a missing pair of quotes or an item that does not
+    // belong, both of which {@link BpmnScriptValidator.checkCodeDecls} reports.
+    const isDeclarationItem = isCodeDecl(container.$container);
+    if (isVarRef(expr)) {
+      // A name position is exempt from the warning for the same reason a code
+      // position is: the word names something other than a variable there, and
+      // the message below is the one the author needs.
+      const nameTrigger = nameTriggerOf(expr);
+      if (nameTrigger !== undefined) {
+        accept(
+          'error',
+          barewordNameMessage(nameTrigger, renderExpressionInner(expr)),
+          { node: expr, property: 'ref' },
+        );
+      } else if (
+        !isNonVariableAttrValue &&
+        !isDeclarationItem &&
+        !isCodePosition(expr) &&
+        !symbols.has(expr.ref.$refText)
+      ) {
+        accept(
+          'warning',
+          `Variable '${expr.ref.$refText}' is not declared. Add 'var ${expr.ref.$refText}: <type>' to the process.`,
+          { node: expr, property: 'ref' },
+        );
+      }
+    }
+
+    // The grammar cannot refuse this: a payload is one `Expr` slot, and
+    // `message("OrderReceived")` needs the string literal it also admits here.
+    if (isLiteralString(expr) && expr.value.length > 0) {
+      const codeTrigger = codeTriggerOf(expr);
+      if (codeTrigger !== undefined) {
+        accept('error', quotedCodeMessage(codeTrigger, expr.value), {
+          node: expr,
+          property: 'value',
+        });
+      }
     }
 
     if (isRelational(expr)) {
@@ -954,14 +1013,14 @@ export class BpmnScriptValidator {
       if (!isVarRef(operand)) {
         continue;
       }
-      const type = symbols.get(operand.name)?.type;
+      const type = symbols.get(operand.ref.$refText)?.type;
       if (type === undefined) {
         continue; // Undeclared: handled by the warning, not a type error.
       }
       if (!allowed.has(type)) {
         accept(
           'error',
-          `Variable '${operand.name}' of type '${type}' cannot be used in ${context} (operator '${node.op}').`,
+          `Variable '${operand.ref.$refText}' of type '${type}' cannot be used in ${context} (operator '${node.op}').`,
           { node, property: side },
         );
       }
@@ -1018,7 +1077,8 @@ export class BpmnScriptValidator {
     rule: TriggerPayloadRule,
     accept: ValidationAcceptor,
   ): void {
-    if (rule.code === 'required' && !start.code) {
+    const name = payloadTextOf(start.items);
+    if (rule.code === 'required' && !name) {
       accept(
         'error',
         nameRequiredMessage(`A ${start.trigger} start`, start.trigger!),
@@ -1028,12 +1088,12 @@ export class BpmnScriptValidator {
 
     if (
       start.trigger === 'message' &&
-      start.code !== undefined &&
-      EXPRESSION_IN_NAME.test(start.code)
+      name !== undefined &&
+      EXPRESSION_IN_NAME.test(name)
     ) {
-      accept('error', startMessageExpressionMessage(start.code), {
-        node: start,
-        property: 'code',
+      accept('error', startMessageExpressionMessage(name), {
+        node: payloadItemOf(start.items)!,
+        property: 'value',
       });
     }
 
@@ -1071,10 +1131,10 @@ export class BpmnScriptValidator {
       return;
     }
 
-    if (end.code !== undefined) {
+    if (payloadTextOf(end.items) !== undefined) {
       accept('error', END_TRIGGER_NO_CODE_MESSAGES[end.trigger], {
-        node: end,
-        property: 'code',
+        node: payloadItemOf(end.items)!,
+        property: 'value',
       });
     }
   };
@@ -1095,7 +1155,7 @@ export class BpmnScriptValidator {
     if (task.name === undefined) return;
 
     this.checkExactlyOneBinding(
-      task.attrs,
+      settingsOf(task.items),
       SERVICE_TASK_BINDING_KEYS,
       `${isServiceTask(task) ? 'Service' : 'Send'} task '${task.name}'`,
       { node: task, property: 'name' },
@@ -1111,7 +1171,7 @@ export class BpmnScriptValidator {
 
     if (task.name !== undefined) {
       this.checkExactlyOneBinding(
-        task.attrs,
+        settingsOf(task.items),
         BUSINESS_RULE_BINDING_KEYS,
         `Decision step '${task.name}'`,
         { node: task, property: 'name' },
@@ -1127,7 +1187,9 @@ export class BpmnScriptValidator {
     task: BusinessRuleTask,
     accept: ValidationAcceptor,
   ): void {
-    const attr = task.attrs.find((a) => a.key === 'mapDecisionResult');
+    const attr = settingsOf(task.items).find(
+      (a) => a.key === 'mapDecisionResult',
+    );
     if (!attr) {
       return;
     }
@@ -1137,7 +1199,7 @@ export class BpmnScriptValidator {
     }
     accept(
       'error',
-      `Attribute 'mapDecisionResult' must be ${formatWordList(DECISION_RESULT_MAPPINGS)}.`,
+      `Setting 'mapDecisionResult' must be ${formatWordList(DECISION_RESULT_MAPPINGS)}.`,
       { node: attr, property: 'value' },
     );
   }
@@ -1218,14 +1280,19 @@ export class BpmnScriptValidator {
     }
   }
 
-  /** @param description Noun phrase with article, e.g. `'a user task'`. */
+  /**
+   * The engine settings alone. A duplicate is the caller's to check, over every
+   * setting the parens hold rather than these: a second `label` is as much a
+   * duplicate as a second `assignee`, and a structural key never reaches here.
+   *
+   * @param description Noun phrase with article, e.g. `'a user task'`.
+   */
   private checkAttributeKeys(
-    attrs: readonly (Attribute | ProcessAttribute)[],
+    attrs: readonly Setting[],
     allowed: ReadonlySet<string>,
     description: string,
     accept: ValidationAcceptor,
   ): void {
-    this.checkDuplicateKeys(attrs, accept);
     this.checkAllowedKeys(attrs, allowed, description, accept);
     this.checkAttributeValues(attrs, allowed, accept);
   }
@@ -1238,7 +1305,7 @@ export class BpmnScriptValidator {
    * @param alternative Appended to the names-none message only.
    */
   private checkExactlyOneBinding(
-    attrs: readonly Attribute[],
+    attrs: readonly Setting[],
     keys: readonly string[],
     subject: string,
     target: { node: AstNode; property: string },
@@ -1248,7 +1315,7 @@ export class BpmnScriptValidator {
     if (bindingKeysOf(attrs, keys).length === 0) {
       accept(
         'error',
-        `${subject} must declare a ${formatWordList(keys)} attribute${alternative}.`,
+        `${subject} must declare a ${formatWordList(keys)} setting${alternative}.`,
         target,
       );
       return;
@@ -1257,22 +1324,45 @@ export class BpmnScriptValidator {
   }
 
   private checkDuplicateKeys(
-    attrs: readonly (Attribute | ProcessAttribute)[],
+    attrs: readonly Setting[],
     accept: ValidationAcceptor,
   ): void {
     forEachDuplicate(
       attrs,
       (attr) => attr.key,
       (attr) =>
-        accept('error', `Duplicate attribute '${attr.key}'.`, {
+        accept('error', `Duplicate setting '${attr.key}'.`, {
           node: attr,
           property: 'key',
         }),
     );
   }
 
+  /**
+   * A bare word in the parens is a flag. `sequentially` and `local` reach here
+   * rather than the parser because they are keywords elsewhere in the grammar
+   * and so lex inside any parens; without this they would be accepted and
+   * lower to nothing.
+   *
+   * @param description Noun phrase with article, e.g. `'a user task'`.
+   */
+  private checkFlags(
+    items: ParenItem[],
+    legal: readonly string[],
+    description: string,
+    accept: ValidationAcceptor,
+  ): void {
+    for (const flag of flagsOf(items)) {
+      if (legal.includes(flag.flag)) continue;
+      accept('error', `Flag '${flag.flag}' is not valid on ${description}.`, {
+        node: flag,
+        property: 'flag',
+      });
+    }
+  }
+
   private checkAllowedKeys(
-    attrs: readonly (Attribute | ProcessAttribute)[],
+    attrs: readonly Setting[],
     allowed: ReadonlySet<string>,
     description: string,
     accept: ValidationAcceptor,
@@ -1281,7 +1371,7 @@ export class BpmnScriptValidator {
       if (!allowed.has(attr.key)) {
         accept(
           'error',
-          `Attribute '${attr.key}' is not valid on ${description}.`,
+          `Setting '${attr.key}' is not valid on ${description}.`,
           {
             node: attr,
             property: 'key',
@@ -1293,13 +1383,13 @@ export class BpmnScriptValidator {
 
   /**
    * A boolean flag and an engine-side text field each accept one shape and drop
-   * the rest without a trace: `asyncBefore = "true"` emits no
+   * the rest without a trace: `asyncBefore: "true"` emits no
    * `operaton:asyncBefore` at all, so the step runs with the setting off, and
    * `versionTag = 3` is that slip in reverse. A key this element does not own
    * is already an allowed-key error from {@link checkAllowedKeys}.
    */
   private checkAttributeValues(
-    attrs: readonly (Attribute | ProcessAttribute)[],
+    attrs: readonly Setting[],
     allowed: ReadonlySet<string>,
     accept: ValidationAcceptor,
   ): void {
@@ -1310,8 +1400,8 @@ export class BpmnScriptValidator {
       if (BOOLEAN_ATTR_KEYS.has(attr.key) && !isLiteralBool(attr.value)) {
         accept(
           'error',
-          `Attribute '${attr.key}' takes an unquoted boolean; ` +
-            `write '${attr.key} = true' or '${attr.key} = false'.`,
+          `Setting '${attr.key}' takes an unquoted boolean; ` +
+            `write '${attr.key}: true' or '${attr.key}: false'.`,
           { node: attr, property: 'value' },
         );
       } else if (
@@ -1321,7 +1411,7 @@ export class BpmnScriptValidator {
       ) {
         accept(
           'error',
-          `Attribute '${attr.key}' takes a quoted string or a "\${...}" ` +
+          `Setting '${attr.key}' takes a quoted string or a "\${...}" ` +
             'expression; put the value in quotes.',
           { node: attr, property: 'value' },
         );
@@ -1334,7 +1424,14 @@ export class BpmnScriptValidator {
     accept: ValidationAcceptor,
   ): void {
     const rule = attributeBlockRuleOf(owner)!;
-    this.checkAttributeKeys(owner.attrs, rule.keys, rule.description, accept);
+    this.checkDuplicateKeys(settingsOf(owner.items), accept);
+    this.checkAttributeKeys(
+      configuredSettingsOf(owner),
+      rule.keys,
+      rule.description,
+      accept,
+    );
+    this.checkFlags(owner.items, rule.flags, rule.description, accept);
     // A `call` block has no `forms` member at all.
     if ('forms' in owner) {
       if (rule.forms) {
@@ -1450,14 +1547,7 @@ export class BpmnScriptValidator {
         continue;
       }
       recognized.push(listener);
-      // `timeout` is the one listener event with no lifecycle transition to
-      // fire on, so it is the one that needs a time of its own.
-      this.checkTimerClause(
-        listener,
-        listener.event === 'timeout',
-        particleOnlyMessage("'on timeout'"),
-        accept,
-      );
+      this.checkListenerTimer(listener, accept);
       this.checkListenerBinding(listener, accept);
     }
 
@@ -1518,13 +1608,14 @@ export class BpmnScriptValidator {
     }
 
     this.checkAttributeKeys(
-      listener.attrs,
+      settingsOf(listener.items),
       LISTENER_BINDING_KEY_SET,
       'a listener',
       accept,
     );
+    this.checkFlags(listener.items, [], 'a listener', accept);
     this.checkExactlyOneBinding(
-      listener.attrs,
+      settingsOf(listener.items),
       LISTENER_BINDING_KEYS,
       `The 'on ${listener.event}' listener`,
       { node: listener, property: 'event' },
@@ -1724,11 +1815,11 @@ export class BpmnScriptValidator {
     call: CallActivity,
     accept: ValidationAcceptor,
   ): void {
-    const processAttr = call.attrs.find((a) => a.key === 'process');
+    const processAttr = settingsOf(call.items).find((a) => a.key === 'process');
     if (!processAttr) {
       accept(
         'error',
-        `A call must name the process it starts: add process = "<id>".`,
+        `A call must name the process it starts: add process: "<id>".`,
         { node: call, property: 'name' },
       );
       return;
@@ -1739,14 +1830,14 @@ export class BpmnScriptValidator {
     ) {
       accept(
         'error',
-        `A call's 'process' attribute cannot be empty; name the process to start.`,
+        `A call's 'process' setting cannot be empty; name the process to start.`,
         { node: processAttr, property: 'value' },
       );
     }
   }
 
   /**
-   * `binding = version` reaches here in either spelling: bare `version` parses
+   * `binding: version` reaches here in either spelling: bare `version` parses
    * as a variable reference and quoted as a string, and
    * {@link bindingValueText} reads the same text out of both.
    */
@@ -1754,7 +1845,9 @@ export class BpmnScriptValidator {
     owner: VersionPinnedElement,
     accept: ValidationAcceptor,
   ): void {
-    const bindingAttr = owner.attrs.find((a) => a.key === 'binding');
+    const bindingAttr = settingsOf(owner.items).find(
+      (a) => a.key === 'binding',
+    );
     if (!bindingAttr) {
       return;
     }
@@ -1765,14 +1858,14 @@ export class BpmnScriptValidator {
     if (value === 'version') {
       accept(
         'error',
-        `Write 'version = <number>' instead of 'binding = version'.`,
+        `Write 'version: <number>' instead of 'binding: version'.`,
         { node: bindingAttr, property: 'value' },
       );
       return;
     }
     accept(
       'error',
-      `Attribute 'binding' must be ${formatWordList(CALL_BINDING_VALUES)}.`,
+      `Setting 'binding' must be ${formatWordList(CALL_BINDING_VALUES)}.`,
       { node: bindingAttr, property: 'value' },
     );
   }
@@ -1787,12 +1880,12 @@ export class BpmnScriptValidator {
     subject: string,
     accept: ValidationAcceptor,
   ): void {
-    const hasBinding = owner.attrs.some((a) => a.key === 'binding');
-    const hasVersion = owner.attrs.some((a) => a.key === 'version');
+    const hasBinding = settingsOf(owner.items).some((a) => a.key === 'binding');
+    const hasVersion = settingsOf(owner.items).some((a) => a.key === 'version');
     if (hasBinding && hasVersion) {
       accept(
         'error',
-        `${subject} cannot combine 'binding' and 'version'; use 'version = <number>' to pin a specific version, or 'binding = latest'/'binding = deployment' for the other modes.`,
+        `${subject} cannot combine 'binding' and 'version'; use 'version: <number>' to pin a specific version, or 'binding: latest'/'binding: deployment' for the other modes.`,
         { node: owner, property: 'name' },
       );
     }
@@ -1847,10 +1940,11 @@ export class BpmnScriptValidator {
 
     this.checkHandlerHost(handler, rule, accept);
 
-    if (handler.alongside && !rule.alongside) {
+    const alongside = flagOf(handler.items, 'alongside');
+    if (alongside !== undefined && !rule.alongside) {
       accept('error', alongsideMessage(handler.trigger), {
-        node: handler,
-        property: 'alongside',
+        node: alongside,
+        property: 'flag',
       });
     }
 
@@ -1873,34 +1967,36 @@ export class BpmnScriptValidator {
     rule: TriggerPayloadRule,
     accept: ValidationAcceptor,
   ): void {
+    const code = payloadTextOf(handler.items);
+    const payload = payloadItemOf(handler.items);
     if (rule.code === 'required') {
-      if (!handler.code) {
+      if (!code) {
         accept('error', nameRequiredMessage('A message handler', 'message'), {
           node: handler,
           property: 'trigger',
         });
       }
     } else if (rule.code === 'optional') {
-      checkEmptyCode(handler.code, handler, accept);
-    } else if (handler.trigger === 'condition' && handler.code !== undefined) {
-      // Timer's forbidden code folds into the timer branch below, so
-      // `on timer "PT1H"` reads as a missing particle, not a stray code.
-      accept('error', CONDITION_NO_CODE_MESSAGE, {
-        node: handler,
-        property: 'code',
-      });
+      checkEmptyCode(code, handler.items, accept);
     } else if (
-      handler.trigger === 'compensation' &&
-      handler.code !== undefined
+      handler.trigger === 'condition' &&
+      hasQuotedPayload(handler.items)
     ) {
-      accept('error', COMPENSATION_NO_CODE_MESSAGE, {
-        node: handler,
-        property: 'code',
+      // Timer's forbidden payload folds into the timer branch below, so
+      // `on timer("banana")` reads as an unreadable time, not a stray code.
+      accept('error', CONDITION_NO_CODE_MESSAGE, {
+        node: payload!,
+        property: 'value',
       });
-    } else if (handler.trigger === 'cancel' && handler.code !== undefined) {
+    } else if (handler.trigger === 'compensation' && code !== undefined) {
+      accept('error', COMPENSATION_NO_CODE_MESSAGE, {
+        node: payload!,
+        property: 'value',
+      });
+    } else if (handler.trigger === 'cancel' && code !== undefined) {
       accept('error', CANCEL_NO_CODE_MESSAGE, {
-        node: handler,
-        property: 'code',
+        node: payload!,
+        property: 'value',
       });
     }
 
@@ -1911,102 +2007,110 @@ export class BpmnScriptValidator {
       accept,
     );
 
+    const handlerBindings = caughtBindingsOf(handler.items);
     if (rule.parens === 'condition') {
-      if (handler.condition === undefined) {
+      if (payload === undefined) {
         accept('error', CONDITION_REQUIRED_MESSAGE, {
           node: handler,
           property: 'trigger',
         });
       }
-    } else if (rule.parens === 'forbidden' && handler.bindings.length > 0) {
-      for (const binding of handler.bindings) {
+    } else if (rule.parens === 'forbidden' && handlerBindings.length > 0) {
+      for (const binding of handlerBindings) {
         accept(
           'error',
           handler.trigger === 'compensation'
             ? COMPENSATION_BINDINGS_MESSAGE
-            : `'(code c)' bindings belong to error and escalation handlers; a ${handler.trigger} carries no code.`,
-          { node: binding, property: 'field' },
+            : `'(code: c)' bindings belong to error and escalation handlers; a ${handler.trigger} carries no code.`,
+          { node: binding.node, property: 'key' },
         );
       }
     }
 
-    if (handler.trigger !== 'condition' && handler.condition !== undefined) {
+    if (
+      handler.trigger !== 'condition' &&
+      hasExpressionPayload(handler.items)
+    ) {
       accept('error', CONDITION_ONLY_MESSAGE, {
-        node: handler,
-        property: 'condition',
+        node: payload!,
+        property: 'value',
       });
     }
   }
 
   /**
-   * The `particle`/`time` clause, wherever a header can carry one. The slot
-   * naming the kind is `event` on a listener and `trigger` everywhere else, so
-   * a missing clause reports on the word the author actually wrote. Only a
-   * handler gets the shape warnings: elsewhere a repeating or oddly spelled
-   * schedule is a legitimate choice rather than a slip worth guessing at.
+   * The timer a trigger's parens carry: a duration written bare, a date or a
+   * cycle under its key. Only a handler gets the shape warnings: elsewhere a
+   * repeating or oddly spelled schedule is a legitimate choice rather than a
+   * slip worth guessing at.
    *
-   * @param particleOnly The message for a particle where the kind takes none.
+   * @param particleOnly The message for a keyed time where the kind takes none.
    */
   private checkTimerClause(
-    node: CatchHeader | OnHandler | Listener | StartEvent,
+    node: CatchHeader | OnHandler | StartEvent,
     required: boolean,
     particleOnly: string,
     accept: ValidationAcceptor,
   ): void {
     if (!required) {
-      if (node.particle !== undefined) {
-        accept('error', particleOnly, { node, property: 'particle' });
+      const keyed = timerParticleOf(node.items);
+      if (keyed !== undefined) {
+        accept('error', particleOnly, { node: keyed.node, property: 'key' });
       }
       return;
     }
-    if (!node.particle || !node.time) {
-      if (isListener(node)) {
-        accept('error', TIMER_PAYLOAD_MESSAGE, { node, property: 'event' });
-      } else {
-        accept('error', TIMER_PAYLOAD_MESSAGE, { node, property: 'trigger' });
-      }
+    const timer = timerPayloadOf(node.items);
+    if (timer === undefined) {
+      accept('error', TIMER_PAYLOAD_MESSAGE, { node, property: 'trigger' });
     } else if (isOnHandler(node)) {
-      this.checkTimerParticle(node, accept);
-    } else {
-      this.checkTimerParticleWord(node, node.particle, accept);
+      this.checkTimerShape(node, timer, accept);
     }
   }
 
   /**
-   * All three grammar rules accept any ID as the particle. Returns whether it
-   * was legal, so callers can skip particle-dependent follow-ups.
+   * A listener is the one header whose timer is not in the parens: `timeout`
+   * has no lifecycle transition to fire on, so it writes the particle and the
+   * time after the event word.
    */
-  private checkTimerParticleWord(
-    node: CatchHeader | OnHandler | Listener | StartEvent,
-    particle: string,
+  private checkListenerTimer(
+    listener: Listener,
     accept: ValidationAcceptor,
-  ): boolean {
-    if (!TIMER_PARTICLE_SET.has(particle)) {
+  ): void {
+    const particle = listener.particle;
+    if (listener.event !== 'timeout') {
+      if (particle !== undefined) {
+        accept('error', particleOnlyMessage("'on timeout'"), {
+          node: listener,
+          property: 'particle',
+        });
+      }
+      return;
+    }
+    if (particle === undefined) {
+      accept('error', LISTENER_TIMER_PAYLOAD_MESSAGE, {
+        node: listener,
+        property: 'event',
+      });
+    } else if (!TIMER_PARTICLE_SET.has(particle)) {
       accept(
         'error',
         `Unknown timer particle '${particle}'; write ${formatWordList(TIMER_PARTICLES)}.`,
-        { node, property: 'particle' },
+        { node: listener, property: 'particle' },
       );
-      return false;
     }
-    return true;
   }
 
   /** The shape checks are warnings because they guess at intent from the spelling. */
-  private checkTimerParticle(
+  private checkTimerShape(
     handler: OnHandler,
+    timer: TimerPayload,
     accept: ValidationAcceptor,
   ): void {
-    const particle = handler.particle!;
-    const time = handler.time!;
-    if (!this.checkTimerParticleWord(handler, particle, accept)) {
-      return;
-    }
-
+    const { particle, time } = timer;
     if (particle === 'after' && !time.startsWith('P') && !time.includes('${')) {
       accept('warning', "'after' expects a duration such as PT1H.", {
-        node: handler,
-        property: 'time',
+        node: timer.node,
+        property: 'value',
       });
     } else if (
       particle === 'at' &&
@@ -2016,17 +2120,17 @@ export class BpmnScriptValidator {
       accept(
         'warning',
         "'at' expects a point in time such as 2026-08-01T09:00:00.",
-        { node: handler, property: 'time' },
+        { node: timer.node, property: 'value' },
       );
     }
     // `every` gets no shape check: cycles and cron are too varied to police.
 
-    if (particle === 'every' && !handler.alongside) {
+    if (particle === 'every' && !hasFlag(handler.items, 'alongside')) {
       accept(
         'warning',
         'A repeating timer that interrupts its scope fires at most once: ' +
-          "add 'alongside' to let it repeat, or use 'after'.",
-        { node: handler, property: 'particle' },
+          "add 'alongside' to let it repeat, or give it a duration instead.",
+        { node: timer.node },
       );
     }
   }
@@ -2081,35 +2185,28 @@ export class BpmnScriptValidator {
     }
   }
 
-  /** Duplicates are keyed on the literal field text, legal word or not. */
+  /**
+   * A field written twice is a repeated key, which the duplicate-key check
+   * already reports; only what the binding means is left here.
+   */
   private checkHandlerBindings(
     handler: OnHandler,
     accept: ValidationAcceptor,
   ): void {
-    forEachDuplicate(
-      handler.bindings,
-      (binding) => binding.field,
-      (binding) =>
-        accept('error', `Duplicate catch-binding field '${binding.field}'.`, {
-          node: binding,
-          property: 'field',
-        }),
-    );
-
-    for (const binding of handler.bindings) {
-      if (!EVENT_BINDING_FIELD_SET.has(binding.field)) {
+    for (const binding of caughtBindingsOf(handler.items)) {
+      if (binding.field === 'message' && handler.trigger === 'escalation') {
+        accept('error', ESCALATION_NO_MESSAGE_MESSAGE, {
+          node: binding.node,
+          property: 'key',
+        });
+      } else if (binding.variable === undefined) {
+        // `code: "X"` reads as a setting rather than a binding, so the handler
+        // compiles with nothing bound and a body reading the variable finds none.
         accept(
           'error',
-          `Unknown catch-binding field '${binding.field}'; write ${formatWordList(EVENT_BINDING_FIELDS)}.`,
-          { node: binding, property: 'field' },
+          `A catch binding names the variable the caught ${binding.field} lands in, not a value: write '${binding.field}: <name>'.`,
+          { node: binding.node, property: 'value' },
         );
-        continue;
-      }
-      if (binding.field === 'message' && handler.trigger === 'escalation') {
-        accept('error', 'An escalation carries a code but no message.', {
-          node: binding,
-          property: 'field',
-        });
       }
     }
   }
@@ -2213,7 +2310,7 @@ export class BpmnScriptValidator {
           duplicateKey(
             handlerHostKey(handler),
             handler.trigger,
-            handler.code ?? '',
+            payloadTextOf(handler.items) ?? '',
           ),
         (handler) =>
           accept(
@@ -2265,13 +2362,24 @@ export class BpmnScriptValidator {
     checkThrowEmitBinding(stmt, 'an emitted', accept);
   };
 
-  /** The grammar carries no host, bindings, `alongside`, or body on this node. */
+  /** No host and no body: an awaited event is a step in the flow, not a scope. */
   checkIntermediateCatchEvent = (
     catchEvent: IntermediateCatchEvent,
     accept: ValidationAcceptor,
   ): void => {
     this.checkAttributeBlock(catchEvent, accept);
     this.checkCatchTrigger(catchEvent, accept);
+  };
+
+  /**
+   * One check for every element, since the parens are one fragment: an unkeyed
+   * value is the payload slot, and the readers all take the first, so a second
+   * would be dropped without a word.
+   */
+  checkParenValue = (value: ParenValue, accept: ValidationAcceptor): void => {
+    if (payloadItemOf(value.$container.items) !== value) {
+      accept('error', SECOND_PAREN_VALUE_MESSAGE, { node: value });
+    }
   };
 
   private checkCatchTrigger(
@@ -2302,7 +2410,7 @@ export class BpmnScriptValidator {
     accept: ValidationAcceptor,
   ): void {
     if (rule.code === 'required') {
-      if (!catchEvent.code) {
+      if (!payloadTextOf(catchEvent.items)) {
         accept('error', nameRequiredMessage('An awaited message', 'message'), {
           node: catchEvent,
           property: 'trigger',
@@ -2310,13 +2418,11 @@ export class BpmnScriptValidator {
       }
     } else if (
       catchEvent.trigger === 'condition' &&
-      catchEvent.code !== undefined
+      hasQuotedPayload(catchEvent.items)
     ) {
-      // Timer's forbidden code folds into the timer branch below, so
-      // `await timer "PT1H"` reads as a missing particle, not a stray code.
       accept('error', CATCH_CONDITION_NO_CODE_MESSAGE, {
-        node: catchEvent,
-        property: 'code',
+        node: payloadItemOf(catchEvent.items)!,
+        property: 'value',
       });
     }
 
@@ -2327,7 +2433,8 @@ export class BpmnScriptValidator {
       accept,
     );
 
-    if (rule.parens === 'condition' && catchEvent.condition === undefined) {
+    const catchCondition = payloadItemOf(catchEvent.items);
+    if (rule.parens === 'condition' && catchCondition === undefined) {
       accept('error', CATCH_CONDITION_REQUIRED_MESSAGE, {
         node: catchEvent,
         property: 'trigger',
@@ -2336,73 +2443,120 @@ export class BpmnScriptValidator {
 
     if (
       catchEvent.trigger !== 'condition' &&
-      catchEvent.condition !== undefined
+      hasExpressionPayload(catchEvent.items)
     ) {
       accept('error', CATCH_CONDITION_ONLY_MESSAGE, {
-        node: catchEvent,
-        property: 'condition',
+        node: catchCondition!,
+        property: 'value',
       });
     }
   }
 
-  /** A second message for the same code is conflicting text rather than a merge. */
-  private checkErrorDecls(process: Process, accept: ValidationAcceptor): void {
-    const decls = process.decls.filter(isErrorDecl);
-    const wellFormed: ErrorDecl[] = [];
-    for (const decl of decls) {
-      // Every slot below is read, so one unparsed one stands the whole
-      // declaration down.
-      if (
-        decl.kind === undefined ||
-        decl.field === undefined ||
-        decl.code === undefined ||
-        decl.message === undefined
-      ) {
+  /**
+   * The header declarations a use site names. Two of one name leave a
+   * reference no way to say which it means; two of one code lower to a single
+   * event definition, so the second name would come back as the first. Codes
+   * are keyed per kind: an error and an escalation are separate definitions and
+   * share nothing by carrying one code.
+   *
+   * A name a step also uses stays legal. A reference resolves by type, so the
+   * two never compete, and reserving every declared name would take the word
+   * from the author for nothing.
+   */
+  private checkCodeDecls(process: Process, accept: ValidationAcceptor): void {
+    const declaredNames = new Set<string>();
+    const codeOwners = new Map<string, CodeDecl>();
+
+    for (const decl of process.decls.filter(isCodeDecl)) {
+      if (decl.kind === undefined || decl.name === undefined) continue;
+
+      if (!DECLARED_CODE_TRIGGERS.has(decl.kind)) {
+        accept('error', unknownDeclarationKindMessage(decl.kind), {
+          node: decl,
+          property: 'kind',
+        });
         continue;
       }
-      if (decl.kind !== 'error') {
+
+      this.checkCodeDeclSettings(decl, accept);
+
+      // A repeated name is reported once, on the second declaration, as every
+      // other duplicate check here does. Its code is still checked below: two
+      // declarations can repeat a name and still collide with a third on a
+      // `code` setting neither of them shares with the other.
+      if (declaredNames.has(decl.name)) {
         accept(
           'error',
-          `Unknown declaration kind '${decl.kind}'; write 'error'.`,
-          {
-            node: decl,
-            property: 'kind',
-          },
+          `'${decl.name}' is already declared in this process; '${decl.kind}(${decl.name})' would be ambiguous.`,
+          { node: decl, property: 'name' },
         );
+      } else {
+        declaredNames.add(decl.name);
+      }
+
+      const code = declaredCodeOf(decl);
+      if (code === undefined) continue;
+      const owner = codeOwners.get(`${decl.kind}:${code}`);
+      if (owner === undefined) {
+        codeOwners.set(`${decl.kind}:${code}`, decl);
         continue;
       }
-      if (decl.field !== 'message') {
-        accept(
-          'error',
-          `Unknown declaration field '${decl.field}'; write 'message'.`,
-          { node: decl, property: 'field' },
-        );
-        continue;
-      }
-      if (decl.code.length === 0) {
-        accept('error', "An error declaration's code cannot be empty.", {
-          node: decl,
-          property: 'code',
-        });
-      }
-      if (decl.message.length === 0) {
-        accept('error', "An error declaration's message cannot be empty.", {
-          node: decl,
-          property: 'message',
-        });
-      }
-      wellFormed.push(decl);
+      // A repeated name repeats the code it stands for, and that is the same
+      // mistake said twice. A code shared with some other declaration is a
+      // second mistake and is reported even when the name repeats as well.
+      if (owner.name === decl.name) continue;
+      accept(
+        'error',
+        `${capitalize(decl.kind)} code '${code}' is already declared by '${owner.name}'; two declarations cannot share a code.`,
+        { node: decl, property: 'name' },
+      );
     }
-    forEachDuplicate(
-      wellFormed,
-      (decl) => decl.code,
-      (decl) =>
+  }
+
+  /**
+   * A declaration says what an event is rather than how the engine runs it, so
+   * its parens take the two event fields and none of the engine settings.
+   */
+  private checkCodeDeclSettings(
+    decl: CodeDecl,
+    accept: ValidationAcceptor,
+  ): void {
+    const settings = settingsOf(decl.items);
+    this.checkDuplicateKeys(settings, accept);
+    this.checkAttributeKeys(
+      settings,
+      EVENT_BINDING_FIELD_SET,
+      `an ${decl.kind} declaration`,
+      accept,
+    );
+
+    for (const item of decl.items) {
+      if (!isSetting(item)) {
+        accept('error', DECLARATION_SETTINGS_ONLY_MESSAGE, { node: item });
+      }
+    }
+
+    for (const setting of settings) {
+      if (!EVENT_BINDING_FIELD_SET.has(setting.key)) continue;
+      if (setting.key === 'message' && decl.kind === 'escalation') {
+        accept('error', ESCALATION_NO_MESSAGE_MESSAGE, {
+          node: setting,
+          property: 'key',
+        });
+      } else if (!isLiteralString(setting.value)) {
         accept(
           'error',
-          `Error code '${decl.code}' already has a message declared; a second 'error "${decl.code}" message ...' is not allowed.`,
-          { node: decl, property: 'code' },
-        ),
-    );
+          `An ${decl.kind} declaration's ${setting.key} must be a quoted string.`,
+          { node: setting, property: 'value' },
+        );
+      } else if (setting.value.value.length === 0) {
+        accept(
+          'error',
+          `An ${decl.kind} declaration's ${setting.key} cannot be empty.`,
+          { node: setting, property: 'value' },
+        );
+      }
+    }
   }
 }
 
@@ -2445,8 +2599,54 @@ function checkFencedScript(
   }
 }
 
+/** The shape a `name=ID` slot takes, so a code spelled that way can be declared under itself. */
+const DECLARABLE_NAME = /^[_a-zA-Z]\w*(-\w+)*$/;
+
+/**
+ * A code names a declaration rather than carrying its own text, so quoted text
+ * in a code position is a missing declaration. Text a `name=ID` slot could hold
+ * is offered as the name itself; anything else needs a name of the author's
+ * choosing and keeps the text as the declaration's `code`.
+ */
+function quotedCodeMessage(trigger: string, text: string): string {
+  const spellable = DECLARABLE_NAME.test(text);
+  const declaration = spellable
+    ? `${trigger} ${text}`
+    : `${trigger} <NAME>(code: ${JSON.stringify(text)})`;
+  const use = spellable ? text : '<NAME>';
+  return (
+    `An ${trigger} code is a declared name, not quoted text. ` +
+    `Declare '${declaration}' in the process header and write '${trigger}(${use})'.`
+  );
+}
+
+/**
+ * The mirror of {@link quotedCodeMessage}: a message or signal name is the text
+ * the engine correlates a subscription on, so it carries its own text rather
+ * than referring to a declaration.
+ */
+function barewordNameMessage(trigger: string, text: string): string {
+  return (
+    `A ${trigger} name is the text the engine subscribes with, not a declared ` +
+    `name. Write '${trigger}("${text}")'.`
+  );
+}
+
 function unknownTriggerMessage(word: string, legal: readonly string[]): string {
   return `Unknown event kind '${word}'; write ${formatWordList(legal)}.`;
+}
+
+/**
+ * A declaration and a step both open with a word, so a mistyped step keyword
+ * followed by a name parses as a declaration and lands here rather than at the
+ * parser's declaration-or-step guidance. The message names both readings.
+ */
+function unknownDeclarationKindMessage(word: string): string {
+  return (
+    `Unknown declaration kind '${word}'; write ` +
+    `${formatWordList([...DECLARED_CODE_TRIGGERS])}, or a step keyword if a ` +
+    'step was meant.'
+  );
 }
 
 function onTriggerMessage(word: string): string {
@@ -2708,33 +2908,30 @@ function handlerHostKey(handler: OnHandler): string {
 }
 
 function handlerDuplicateMessage(handler: OnHandler): string {
+  const code = payloadTextOf(handler.items);
   const caught =
-    handler.code !== undefined
-      ? `code '${handler.code}'`
-      : 'every event of this kind';
+    code !== undefined ? `code '${code}'` : 'every event of this kind';
   const hostKey = handlerHostKey(handler);
   const scope = hostKey ? `attached to '${hostKey}'` : 'in this scope';
   return `Another 'on ${handler.trigger}' handler ${scope} already catches ${caught}; a duplicate catch is ambiguous to the engine.`;
 }
 
-/** On `on`, catch-all is the omitted string, so an empty one is a mistake. */
 function checkEmptyCode(
   code: string | undefined,
-  node: AstNode,
+  items: ParenItem[],
   accept: ValidationAcceptor,
 ): void {
   if (code !== undefined && code.length === 0) {
-    accept(
-      'error',
-      'An empty code ("") is not a catch-all; to catch every error, omit the string entirely.',
-      { node, property: 'code' },
-    );
+    accept('error', EMPTY_CODE_MESSAGE, {
+      node: payloadItemOf(items)!,
+      property: 'value',
+    });
   }
 }
 
-/** The distinct binding keys written in an attribute block, in document order. */
+/** The distinct binding keys written on an element, in document order. */
 function bindingKeysOf(
-  attrs: readonly Attribute[],
+  attrs: readonly Setting[],
   keys: readonly string[],
 ): string[] {
   return [
@@ -2746,7 +2943,7 @@ function bindingKeysOf(
 
 /** @param subject The message's leading noun phrase (`"Service task 'total'"`). */
 function checkAtMostOneBinding(
-  attrs: readonly Attribute[],
+  attrs: readonly Setting[],
   keys: readonly string[],
   subject: string,
   target: { node: AstNode; property: string },
@@ -2773,15 +2970,18 @@ function checkThrowEmitBinding(
   subject: 'a thrown' | 'an emitted',
   accept: ValidationAcceptor,
 ): void {
-  const written = bindingKeysOf(stmt.attrs, SERVICE_TASK_BINDING_KEYS);
+  const written = bindingKeysOf(
+    settingsOf(stmt.items),
+    SERVICE_TASK_BINDING_KEYS,
+  );
   if (written.length === 0) return;
 
   if (stmt.trigger !== 'message') {
-    for (const attr of stmt.attrs) {
+    for (const attr of settingsOf(stmt.items)) {
       if (!written.includes(attr.key)) continue;
       accept(
         'error',
-        `Attribute '${attr.key}' is not valid on ${subject} ${stmt.trigger}; ` +
+        `Setting '${attr.key}' is not valid on ${subject} ${stmt.trigger}; ` +
           'an implementation is what makes the engine really send a message, ' +
           'so only a message carries one.',
         { node: attr, property: 'key' },
@@ -2791,7 +2991,7 @@ function checkThrowEmitBinding(
   }
 
   checkAtMostOneBinding(
-    stmt.attrs,
+    settingsOf(stmt.items),
     SERVICE_TASK_BINDING_KEYS,
     capitalize(`${subject} ${stmt.trigger}`),
     { node: stmt, property: 'trigger' },
@@ -2812,22 +3012,26 @@ function checkThrowEmitCode(
   keyword: 'throw' | 'emit',
   accept: ValidationAcceptor,
 ): void {
+  const code = payloadTextOf(stmt.items);
   if (stmt.trigger === 'compensation') {
-    if (stmt.code !== undefined) {
+    if (code !== undefined) {
       accept(
         'error',
         'Compensation undoes completed work: there is nothing to name; ' +
           `write '${keyword} compensation'.`,
-        { node: stmt, property: 'code' },
+        { node: payloadItemOf(stmt.items)!, property: 'value' },
       );
     }
     return;
   }
-  const message = `${subject} ${stmt.trigger} names its code: '${keyword} ${stmt.trigger} "CODE"'.`;
-  if (stmt.code === undefined) {
+  const message = `${subject} ${stmt.trigger} names its code: '${keyword} ${stmt.trigger}(<CODE>)'.`;
+  if (code === undefined) {
     accept('error', message, { node: stmt, property: 'trigger' });
-  } else if (stmt.code.length === 0) {
-    accept('error', message, { node: stmt, property: 'code' });
+  } else if (code.length === 0) {
+    accept('error', message, {
+      node: payloadItemOf(stmt.items)!,
+      property: 'value',
+    });
   }
 }
 
@@ -2838,7 +3042,7 @@ function statementListOf(handler: OnHandler): Statement[] {
 
 function bindingValueText(expr: Expr): string | undefined {
   if (isVarRef(expr)) {
-    return expr.name;
+    return expr.ref.$refText;
   }
   if (isLiteralString(expr)) {
     return expr.value;

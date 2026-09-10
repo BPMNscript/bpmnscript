@@ -83,7 +83,8 @@ describe('loop round-trip (while => conditioned back-edge, never standardLoopCha
 
   it('the loop body task survives the round-trip verbatim', () => {
     expect(run.dsl).toContain(
-      'service RetryFetch "Retry fetch" { class = "com.example.flow.RetryFetchDelegate" }',
+      'service RetryFetch(label: "Retry fetch", ' +
+        'class: "com.example.flow.RetryFetchDelegate")',
     );
   });
 });
@@ -105,10 +106,11 @@ describe('parallel round-trip (parallelGateway fork/join => parallel { { } { } }
 
   it('both parallel branch tasks survive the round-trip verbatim', () => {
     expect(run.dsl).toContain(
-      'user NotifyOwner "Notify owner" { assignee = "demo" }',
+      'user NotifyOwner(label: "Notify owner", assignee: "demo")',
     );
     expect(run.dsl).toContain(
-      'service AuditLog "Write audit log" { class = "com.example.flow.AuditLogDelegate" }',
+      'service AuditLog(label: "Write audit log", ' +
+        'class: "com.example.flow.AuditLogDelegate")',
     );
   });
 });
@@ -208,12 +210,12 @@ describe('goto-degradation preserves the edges that have a goto form', () => {
 // round trip as the same quoted raw form.
 describe('bean-call condition stays quoted-raw end-to-end', () => {
   const BEAN_DSL = [
-    'process bean-cond "Bean Cond" {',
+    'process bean-cond(label: "Bean Cond") {',
     '  start S',
     '  if ("${myBean.check()}") {',
-    '    user Approve "Approve" { assignee = "demo" }',
+    '    user Approve(label: "Approve", assignee: "demo")',
     '  } else {',
-    '    user Reject "Reject" { assignee = "demo" }',
+    '    user Reject(label: "Reject", assignee: "demo")',
     '  }',
     '  end E',
     '}',

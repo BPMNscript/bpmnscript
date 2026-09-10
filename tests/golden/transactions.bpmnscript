@@ -10,9 +10,9 @@
 //     `on compensation` undo block, so the block has finished work to undo when
 //     it is given up;
 //   - a guard on the declined charge ends that path with
-//     `end BookingAbandoned "Give up the booking" cancel`, which undoes every
-//     finished step of the block that carries an undo block and only then hands
-//     the run to the block's cancel handler;
+//     `end BookingAbandoned cancel(label: "Give up the booking")`, which undoes
+//     every finished step of the block that carries an undo block and only then
+//     hands the run to the block's cancel handler;
 //   - `on BookAndPay: cancel` apologizes to the traveler and ends the run
 //     there, and an `on BookAndPay: error` handler sits beside it, so the same
 //     block still takes the triggers it always took;
@@ -26,7 +26,7 @@
 // import-and-back round trip. See README.md.
 
 process seat-booking {
-  error "PAYMENT_UNAVAILABLE" message "The payment provider could not be reached"
+  error PAYMENT_UNAVAILABLE(message: "The payment provider could not be reached")
 
   var seatRows: any
 
@@ -36,53 +36,53 @@ process seat-booking {
     }
   }
 
-  user ReviewRequest "Review the seat request" { assignee = "demo" }
+  user ReviewRequest(label: "Review the seat request", assignee: "demo")
 
-  attempt BookAndPay "Try to book and pay for the seats" {
+  attempt BookAndPay(label: "Try to book and pay for the seats") {
     start BookingOpened
 
-    subprocess HoldSeats "Hold the seats" {
+    subprocess HoldSeats(label: "Hold the seats") {
       start HoldOpened
-      service ReserveSeats "Take the seats off sale" { class = "com.example.booking.ReserveSeatsDelegate" }
+      service ReserveSeats(label: "Take the seats off sale", class: "com.example.booking.ReserveSeatsDelegate")
       end SeatsHeld
 
       on compensation {
         start ReleaseOpened
-        service ReleaseSeats "Put the seats back on sale" { class = "com.example.booking.ReleaseSeatsDelegate" }
+        service ReleaseSeats(label: "Put the seats back on sale", class: "com.example.booking.ReleaseSeatsDelegate")
         end SeatsReleased
       }
     }
 
-    service ChargeCard "Charge the travel card" { class = "com.example.booking.ChargeCardDelegate" }
+    service ChargeCard(label: "Charge the travel card", class: "com.example.booking.ChargeCardDelegate")
 
     if (chargeDeclined) {
-      end BookingAbandoned "Give up the booking" cancel
+      end BookingAbandoned cancel(label: "Give up the booking")
     }
 
-    service IssueTickets "Issue the boarding tickets" { class = "com.example.booking.IssueTicketsDelegate" }
+    service IssueTickets(label: "Issue the boarding tickets", class: "com.example.booking.IssueTicketsDelegate")
     end BookingSecured
   }
 
-  subprocess PrepareDeparture "Prepare the departure list" {
+  subprocess PrepareDeparture(label: "Prepare the departure list") {
     start DepartureOpened
 
-    attempt AssignSeatRows "Spread the party across rows" for each row in seatRows sequentially { asyncBefore = true } {
-      service AssignRow "Assign one row of seats" { class = "com.example.booking.AssignRowDelegate" }
+    attempt AssignSeatRows for each row in seatRows sequentially(label: "Spread the party across rows", asyncBefore: true) {
+      service AssignRow(label: "Assign one row of seats", class: "com.example.booking.AssignRowDelegate")
     }
 
     end DeparturePrepared
   }
 
-  user ConfirmBooking "Confirm the seats with the traveler" { assignee = "demo" }
+  user ConfirmBooking(label: "Confirm the seats with the traveler", assignee: "demo")
   end BookingComplete
 
   on BookAndPay: cancel {
-    user ApologizeToTraveler "Apologize and confirm the seats were released" { assignee = "demo" }
+    user ApologizeToTraveler(label: "Apologize and confirm the seats were released", assignee: "demo")
     end BookingCancelled
   }
 
-  on BookAndPay: error "PAYMENT_UNAVAILABLE" (code c, message m) {
-    service RecordProviderOutage "Record the payment outage" { class = "com.example.booking.RecordOutageDelegate" }
+  on BookAndPay: error(PAYMENT_UNAVAILABLE, code: c, message: m) {
+    service RecordProviderOutage(label: "Record the payment outage", class: "com.example.booking.RecordOutageDelegate")
     end BookingHalted
   }
 }

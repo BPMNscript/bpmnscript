@@ -39,7 +39,7 @@ import {
   isThrowStatement,
   isEmitStatement,
   isIntermediateCatchEvent,
-  isErrorDecl,
+  isCodeDecl,
   isLiteralString,
   isLiteralBool,
   isLiteralInt,
@@ -60,6 +60,13 @@ import {
   FORM_FIELD_TYPES,
   ON_TRIGGERS,
   START_TRIGGERS,
+  caughtBindingsOf,
+  declaredCodeOf,
+  settingsOf,
+  hasFlag,
+  payloadTextOf,
+  timerPayloadOf,
+  payloadItemOf,
   TASK_LISTENER_EVENTS,
   THROW_TRIGGERS,
   TIMER_PARTICLE_BY_KIND,
@@ -93,7 +100,7 @@ import type {
   EmitStatement,
   IntermediateCatchEvent,
   VariableMapping,
-  Attribute,
+  ParenItem,
   IoParameter as AstIoParameter,
   IoValue as AstIoValue,
   Listener as AstListener,
@@ -120,7 +127,7 @@ import type {
   TaskListener,
   VersionBinding,
 } from './ir/types.js';
-import { engineAttributes, ioMapped } from './ir/types.js';
+import { engineAttributes, eventIdentities, ioMapped } from './ir/types.js';
 import {
   makeGatewaySplitId,
   makeGatewayJoinId,
@@ -135,6 +142,7 @@ import {
   makeEventSubProcessId,
   makeBoundaryEventId,
   makeIntermediateCatchEventId,
+  claimDeclarationName,
   resolveCollision,
 } from './synthesize-ids.js';
 
@@ -183,9 +191,18 @@ export function astToIr(model: Model): BpmnProcess {
   // Both the top-level coordinate and the implicit-event seed are the process id.
   lowerContainerBody(builder, process.body, process.name, process.name);
 
-  const label = processLabel(process);
-  const versionTag = processVersionTag(process);
-  const errorMessages = collectErrorMessages(process);
+  const label = processSetting(process, 'label');
+  const versionTag = processSetting(process, 'versionTag');
+  const { errorCodes, escalationCodes } = eventIdentities({
+    id: process.name,
+    flowElements: builder.flowElements,
+    sequenceFlows: builder.sequenceFlows,
+  });
+  const { errorDecls, escalationDecls } = collectCodeDecls(
+    process,
+    errorCodes,
+    escalationCodes,
+  );
 
   return {
     id: process.name,
@@ -194,27 +211,81 @@ export function astToIr(model: Model): BpmnProcess {
     ...(versionTag !== undefined ? { versionTag } : {}),
     flowElements: builder.flowElements,
     sequenceFlows: builder.sequenceFlows,
-    ...(errorMessages.length > 0 ? { errorMessages } : {}),
+    ...(errorDecls.length > 0 ? { errorDecls } : {}),
+    ...(escalationDecls.length > 0 ? { escalationDecls } : {}),
   };
 }
 
+/** What a header declaration says about one code, before it is ordered. */
+interface DeclaredCode {
+  name?: string;
+  code: string;
+  message?: string;
+}
+
 /**
- * The header `error "CODE" message "..."` declarations, in order. The message
- * text is the one root-element datum usage alone cannot recover: two throws of
- * a code share one root. A duplicate code keeps the first.
+ * The process header's error and escalation declarations plus one for every
+ * code only a throw, an emit, or a catch names, canonically ordered: every code
+ * something uses, in first-use order, then every declared code nothing uses, in
+ * source order. `irToXml` emits roots in that order and `xmlToIr` reads them
+ * back in document order, so matching it here is what makes both lists survive
+ * a round trip whatever order the author declared in.
+ *
+ * A code no declaration names still gets one, because a use site refers to a
+ * declaration by name and the name has to come from somewhere. The message text
+ * is the one root-element datum usage alone cannot recover: two throws of a
+ * code share one root. A duplicate code keeps the first declaration.
  */
-function collectErrorMessages(
+function collectCodeDecls(
   process: Process,
-): { code: string; message: string }[] {
-  const messages: { code: string; message: string }[] = [];
-  const seen = new Set<string>();
+  usedErrorCodes: ReadonlySet<string>,
+  usedEscalationCodes: ReadonlySet<string>,
+): {
+  errorDecls: { name: string; code: string; message?: string }[];
+  escalationDecls: { name: string; code: string }[];
+} {
+  const errors = new Map<string, DeclaredCode>();
+  const escalations = new Map<string, DeclaredCode>();
   for (const decl of process.decls) {
-    if (isErrorDecl(decl) && !seen.has(decl.code)) {
-      seen.add(decl.code);
-      messages.push({ code: decl.code, message: decl.message });
-    }
+    if (!isCodeDecl(decl)) continue;
+    const into =
+      decl.kind === 'error'
+        ? errors
+        : decl.kind === 'escalation'
+          ? escalations
+          : undefined;
+    const code = declaredCodeOf(decl);
+    if (into === undefined || code === undefined || into.has(code)) continue;
+    into.set(code, {
+      name: decl.name,
+      code,
+      message: attrValue(settingsOf(decl.items), 'message'),
+    });
   }
-  return messages;
+
+  const canonical = (
+    used: ReadonlySet<string>,
+    from: Map<string, DeclaredCode>,
+  ): DeclaredCode[] => [
+    ...[...used].map((code) => from.get(code) ?? { code }),
+    ...[...from.values()].filter((d) => !used.has(d.code)),
+  ];
+
+  // One namespace across both lists: an error and an escalation declaration
+  // share the scope a use site resolves in, so a name taken by one is taken.
+  const taken = new Set<string>();
+  const errorDecls = canonical(usedErrorCodes, errors).map((d) => ({
+    name: claimDeclarationName(d.code, taken, d.name),
+    code: d.code,
+    ...(d.message !== undefined ? { message: d.message } : {}),
+  }));
+  const escalationDecls = canonical(usedEscalationCodes, escalations).map(
+    (d) => ({
+      name: claimDeclarationName(d.code, taken, d.name),
+      code: d.code,
+    }),
+  );
+  return { errorDecls, escalationDecls };
 }
 
 /**
@@ -404,7 +475,7 @@ function lowerStartEvent(builder: Builder, stmt: AstStartEvent): Frontier {
   builder.flowElements.push({
     kind: 'startEvent',
     id: stmt.name,
-    ...(stmt.label !== undefined ? { name: stmt.label } : {}),
+    ...labelName(stmt),
     ...(formFields !== undefined ? { formFields } : {}),
     ...(eventDefinition !== undefined ? { eventDefinition } : {}),
     ...readEngineAttributes(stmt),
@@ -459,7 +530,7 @@ function lowerEndEvent(builder: Builder, stmt: AstEndEvent): Frontier {
   builder.flowElements.push({
     kind: 'endEvent',
     id: stmt.name,
-    ...(stmt.label !== undefined ? { name: stmt.label } : {}),
+    ...labelName(stmt),
     ...(eventDefinition !== undefined ? { eventDefinition } : {}),
     ...readEngineAttributes(stmt),
   });
@@ -472,19 +543,19 @@ function lowerEndEvent(builder: Builder, stmt: AstEndEvent): Frontier {
  * `executionListeners` with every other element's.
  */
 function lowerUserTask(builder: Builder, stmt: AstUserTask): Frontier {
-  const assignee = attrValue(stmt.attrs, 'assignee');
-  const formKey = attrValue(stmt.attrs, 'formKey');
+  const assignee = attrValue(settingsOf(stmt.items), 'assignee');
+  const formKey = attrValue(settingsOf(stmt.items), 'formKey');
   const formFields = lowerFormFields(stmt);
-  const candidateGroups = attrValue(stmt.attrs, 'candidateGroups');
-  const candidateUsers = attrValue(stmt.attrs, 'candidateUsers');
-  const dueDate = attrValue(stmt.attrs, 'dueDate');
-  const followUpDate = attrValue(stmt.attrs, 'followUpDate');
-  const priority = numericOrElAttrValue(stmt.attrs, 'priority');
+  const candidateGroups = attrValue(settingsOf(stmt.items), 'candidateGroups');
+  const candidateUsers = attrValue(settingsOf(stmt.items), 'candidateUsers');
+  const dueDate = attrValue(settingsOf(stmt.items), 'dueDate');
+  const followUpDate = attrValue(settingsOf(stmt.items), 'followUpDate');
+  const priority = numericOrElAttrValue(settingsOf(stmt.items), 'priority');
   const taskListeners = readTaskListeners(stmt.listeners);
   builder.flowElements.push({
     kind: 'userTask',
     id: stmt.name,
-    ...(stmt.label !== undefined ? { name: stmt.label } : {}),
+    ...labelName(stmt),
     ...(assignee !== undefined ? { assignee } : {}),
     ...(formKey !== undefined ? { formKey } : {}),
     ...(formFields !== undefined ? { formFields } : {}),
@@ -549,11 +620,11 @@ function lowerServiceTaskLike(
   binding: ServiceTaskBinding,
   element?: IrServiceTask['element'],
 ): Frontier {
-  const resultVariable = attrValue(stmt.attrs, 'resultVariable');
+  const resultVariable = attrValue(settingsOf(stmt.items), 'resultVariable');
   builder.flowElements.push({
     kind: 'serviceTask',
     id: stmt.name,
-    ...(stmt.label !== undefined ? { name: stmt.label } : {}),
+    ...labelName(stmt),
     binding,
     ...(resultVariable !== undefined ? { resultVariable } : {}),
     ...(element !== undefined ? { element } : {}),
@@ -565,7 +636,11 @@ function lowerServiceTaskLike(
 }
 
 function lowerServiceTask(builder: Builder, stmt: AstServiceTask): Frontier {
-  return lowerServiceTaskLike(builder, stmt, serviceTaskBinding(stmt.attrs));
+  return lowerServiceTaskLike(
+    builder,
+    stmt,
+    serviceTaskBinding(settingsOf(stmt.items)),
+  );
 }
 
 /**
@@ -574,7 +649,7 @@ function lowerServiceTask(builder: Builder, stmt: AstServiceTask): Frontier {
  * which strips the `${...}` wrapper so a bareword stays a dotted Java path; the
  * other two keep it, that text being what Operaton evaluates as EL.
  */
-function codeBinding(attrs: Attribute[]): CodeBinding | undefined {
+function codeBinding(attrs: KeyValueAttr[]): CodeBinding | undefined {
   const className = attrValue(attrs, 'class');
   if (className !== undefined) {
     return { kind: 'class', className };
@@ -594,12 +669,12 @@ function codeBinding(attrs: Attribute[]): CodeBinding | undefined {
 const NO_BINDING: CodeBinding = { kind: 'class', className: '' };
 
 /** The three code forms first, then `topic`, which emits `operaton:type="external"`. */
-function serviceTaskBinding(attrs: Attribute[]): ServiceTaskBinding {
+function serviceTaskBinding(attrs: KeyValueAttr[]): ServiceTaskBinding {
   return writtenBinding(attrs) ?? NO_BINDING;
 }
 
 /** `undefined` where a binding is optional and the block names none. */
-function writtenBinding(attrs: Attribute[]): ServiceTaskBinding | undefined {
+function writtenBinding(attrs: KeyValueAttr[]): ServiceTaskBinding | undefined {
   const code = codeBinding(attrs);
   if (code !== undefined) {
     return code;
@@ -612,7 +687,7 @@ function lowerGenericTask(builder: Builder, stmt: AstGenericTask): Frontier {
   builder.flowElements.push({
     kind: 'task',
     id: stmt.name,
-    ...(stmt.label !== undefined ? { name: stmt.label } : {}),
+    ...labelName(stmt),
     ...readLoop(stmt),
     ...readIoParameters(stmt.params),
     ...readEngineAttributes(stmt),
@@ -624,18 +699,18 @@ function lowerSendTask(builder: Builder, stmt: AstSendTask): Frontier {
   return lowerServiceTaskLike(
     builder,
     stmt,
-    serviceTaskBinding(stmt.attrs),
+    serviceTaskBinding(settingsOf(stmt.items)),
     'send',
   );
 }
 
 /** No `message` key lowers to no `messageName` at all, not `undefined`: a genuine wait with no correlation. */
 function lowerReceiveTask(builder: Builder, stmt: AstReceiveTask): Frontier {
-  const messageName = attrValue(stmt.attrs, 'message');
+  const messageName = attrValue(settingsOf(stmt.items), 'message');
   builder.flowElements.push({
     kind: 'receiveTask',
     id: stmt.name,
-    ...(stmt.label !== undefined ? { name: stmt.label } : {}),
+    ...labelName(stmt),
     ...(messageName !== undefined ? { messageName } : {}),
     ...readLoop(stmt),
     ...readIoParameters(stmt.params),
@@ -651,7 +726,7 @@ function lowerBusinessRuleTask(
   return lowerServiceTaskLike(
     builder,
     stmt,
-    businessRuleBinding(stmt.attrs),
+    businessRuleBinding(settingsOf(stmt.items)),
     'businessRule',
   );
 }
@@ -661,7 +736,7 @@ function lowerBusinessRuleTask(
  * `mapDecisionResult` alongside it; with no `decision` key the block falls
  * through to the same code/topic forms a service task reads.
  */
-function businessRuleBinding(attrs: Attribute[]): ServiceTaskBinding {
+function businessRuleBinding(attrs: KeyValueAttr[]): ServiceTaskBinding {
   const decisionRef = attrValue(attrs, 'decision');
   if (decisionRef === undefined) {
     return serviceTaskBinding(attrs);
@@ -691,11 +766,11 @@ function toDecisionResultMapping(mapping: string) {
 /** An unrecognized language tag is carried through as-is; the validator rejects it first. */
 function lowerScriptTask(builder: Builder, stmt: AstScriptTask): Frontier {
   const { tag, code } = splitFencedScript(stmt.body);
-  const resultVariable = attrValue(stmt.attrs, 'resultVariable');
+  const resultVariable = attrValue(settingsOf(stmt.items), 'resultVariable');
   builder.flowElements.push({
     kind: 'scriptTask',
     id: stmt.name,
-    ...(stmt.label !== undefined ? { name: stmt.label } : {}),
+    ...labelName(stmt),
     format: SCRIPT_FORMAT_ALIASES[tag] ?? tag,
     code,
     ...(resultVariable !== undefined ? { resultVariable } : {}),
@@ -940,7 +1015,7 @@ function lowerParallel(
  *
  * No flow out of the gateway carries a condition: Operaton builds no transition
  * for one and routes through the event scope instead, so a condition there
- * would be content nothing reads. A branch's settings block lands on its catch
+ * would be content nothing reads. A branch's own settings land on its catch
  * event, which is where the engine's wait state actually is.
  */
 function lowerRace(builder: Builder, stmt: RaceStatement, x: string): Frontier {
@@ -993,7 +1068,7 @@ function lowerSubProcess(
   builder.flowElements.push({
     kind: 'subProcess',
     id: stmt.name,
-    ...(stmt.label !== undefined ? { name: stmt.label } : {}),
+    ...labelName(stmt),
     ...(stmt.transactional ? { element: 'transaction' as const } : {}),
     flowElements: nested.flowElements,
     sequenceFlows: nested.sequenceFlows,
@@ -1011,7 +1086,7 @@ function lowerSubProcess(
  * is also invalid BPMN without its trigger start, so an empty body still gets
  * start -> flow -> end for {@link ensureHandlerStart} to attach the trigger to.
  *
- * The handler's attribute block lands on this sub-process node, never on the
+ * The handler's own settings land on this sub-process node, never on the
  * trigger start it wraps: that start is elided on print, so anything stored
  * there would be unrecoverable on the way back.
  */
@@ -1033,7 +1108,7 @@ function lowerOnHandler(
 
   const start = ensureHandlerStart(nested, id);
   start.eventDefinition = handlerEventDefinition(stmt);
-  if (stmt.alongside) {
+  if (hasFlag(stmt.items, 'alongside')) {
     start.isInterrupting = false;
   }
 
@@ -1077,7 +1152,7 @@ function lowerBoundaryHandler(
     id,
     attachedToRef: hostId,
     eventDefinition: handlerEventDefinition(stmt),
-    ...(stmt.alongside ? { cancelActivity: false } : {}),
+    ...(hasFlag(stmt.items, 'alongside') ? { cancelActivity: false } : {}),
     ...readEngineAttributes(stmt),
   });
 
@@ -1139,9 +1214,10 @@ function handlerEventDefinition(stmt: OnHandler): EventDefinition {
       return namedTriggerDefinition(trigger, stmt);
     case 'escalation': {
       const codeVariable = bindingVariable(stmt, 'code');
+      const code = raisedCodeOf(stmt.items);
       return {
         kind: 'escalation',
-        ...(stmt.code !== undefined ? { escalationCode: stmt.code } : {}),
+        ...(code !== undefined ? { escalationCode: code } : {}),
         ...(codeVariable !== undefined ? { codeVariable } : {}),
       };
     }
@@ -1153,9 +1229,10 @@ function handlerEventDefinition(stmt: OnHandler): EventDefinition {
     case undefined: {
       const codeVariable = bindingVariable(stmt, 'code');
       const messageVariable = bindingVariable(stmt, 'message');
+      const code = raisedCodeOf(stmt.items);
       return {
         kind: 'error',
-        ...(stmt.code !== undefined ? { errorCode: stmt.code } : {}),
+        ...(code !== undefined ? { errorCode: code } : {}),
         ...(codeVariable !== undefined ? { codeVariable } : {}),
         ...(messageVariable !== undefined ? { messageVariable } : {}),
       };
@@ -1171,7 +1248,7 @@ function handlerEventDefinition(stmt: OnHandler): EventDefinition {
 
 /**
  * The vocabulary's particle table read backwards. Falls back to `duration`,
- * which is what a bare `on timer "PT1H"` with no particle needs.
+ * which is what a timer with no readable time lands on.
  */
 function timerParticleKind(
   particle: string | undefined,
@@ -1185,7 +1262,7 @@ function timerParticleKind(
 }
 
 function bindingVariable(stmt: OnHandler, field: string): string | undefined {
-  return stmt.bindings.find((b) => b.field === field)?.variable;
+  return caughtBindingsOf(stmt.items).find((b) => b.field === field)?.variable;
 }
 
 /** The id is the authored `name` when present, else the positional `Throw_<coord>_<index>`. */
@@ -1201,7 +1278,7 @@ function lowerThrow(
     kind: 'endEvent',
     id,
     eventDefinition,
-    ...thrownMessageBinding(eventDefinition, stmt.attrs),
+    ...thrownMessageBinding(eventDefinition, settingsOf(stmt.items)),
     ...readEngineAttributes(stmt),
   });
   return { entry: id, exit: null };
@@ -1214,7 +1291,7 @@ function lowerThrow(
  */
 function thrownMessageBinding(
   def: EventDefinition,
-  attrs: Attribute[],
+  attrs: KeyValueAttr[],
 ): { binding?: ServiceTaskBinding } {
   if (def.kind !== 'message') {
     return {};
@@ -1235,7 +1312,7 @@ function lowerEmit(
     kind: 'intermediateThrowEvent',
     id,
     eventDefinition,
-    ...thrownMessageBinding(eventDefinition, stmt.attrs),
+    ...thrownMessageBinding(eventDefinition, settingsOf(stmt.items)),
     ...readEngineAttributes(stmt),
   });
   return { entry: id, exit: id };
@@ -1248,16 +1325,17 @@ function lowerEmit(
  */
 function emitEventDefinition(stmt: EmitStatement): EventDefinition {
   const trigger = admittedTrigger(EMIT_TRIGGERS, stmt.trigger);
+  const code = raisedCodeOf(stmt.items);
   switch (trigger) {
     case 'message':
-      return { kind: 'message', messageName: stmt.code ?? '' };
+      return { kind: 'message', messageName: code ?? '' };
     case 'signal':
-      return { kind: 'signal', signalName: stmt.code ?? '' };
+      return { kind: 'signal', signalName: code ?? '' };
     case 'compensation':
       return { kind: 'compensation' };
     case 'escalation':
     case undefined:
-      return { kind: 'escalation', escalationCode: stmt.code };
+      return { kind: 'escalation', escalationCode: code };
     default: {
       const exhaustive: never = trigger;
       throw new Error(
@@ -1287,18 +1365,19 @@ function lowerIntermediateCatch(
 /** A word the throw position does not admit maps to `error`. */
 function throwEventDefinition(stmt: ThrowStatement): EventDefinition {
   const trigger = admittedTrigger(THROW_TRIGGERS, stmt.trigger);
+  const code = raisedCodeOf(stmt.items);
   switch (trigger) {
     case 'escalation':
-      return { kind: 'escalation', escalationCode: stmt.code };
+      return { kind: 'escalation', escalationCode: code };
     case 'compensation':
       return { kind: 'compensation' };
     case 'signal':
-      return { kind: 'signal', signalName: stmt.code ?? '' };
+      return { kind: 'signal', signalName: code ?? '' };
     case 'message':
-      return { kind: 'message', messageName: stmt.code ?? '' };
+      return { kind: 'message', messageName: code ?? '' };
     case 'error':
     case undefined:
-      return { kind: 'error', errorCode: stmt.code };
+      return { kind: 'error', errorCode: code };
     default: {
       const exhaustive: never = trigger;
       throw new Error(
@@ -1326,45 +1405,55 @@ function catchEventDefinition(
     : namedTriggerDefinition(trigger, stmt);
 }
 
+/**
+ * The code a payload raises. A bare word names a declaration, which keys by its
+ * own `code` setting, so `error OrderFailed(code: "order.failed")` reaches the
+ * engine as `order.failed` however its use sites spell it. Only a code position
+ * resolves, so a bare word anywhere else falls back to the text written.
+ */
+function raisedCodeOf(items: ParenItem[]): string | undefined {
+  const payload = payloadItemOf(items)?.value;
+  const declaration =
+    payload !== undefined && isVarRef(payload) ? payload.ref.ref : undefined;
+  return declaration !== undefined
+    ? declaredCodeOf(declaration)
+    : payloadTextOf(items);
+}
+
 /** The trigger words that mean the same thing in every position that takes them. */
 type NamedTrigger = 'message' | 'signal' | 'timer' | 'condition';
 
 /**
  * The {@link EventDefinition} for the four trigger words that mean the same
- * thing wherever they are written. A bare `on timer "PT1H"` with no particle
- * parses its time text into `code`, hence the expression fallback.
+ * thing wherever they are written.
  */
 function namedTriggerDefinition(
   trigger: NamedTrigger,
-  stmt: {
-    code?: string;
-    particle?: string;
-    time?: string;
-    condition?: Expr;
-  },
+  stmt: { items: ParenItem[] },
 ): Extract<
   EventDefinition,
   { kind: 'message' | 'signal' | 'timer' | 'conditional' }
 > {
   switch (trigger) {
     case 'message':
-      return { kind: 'message', messageName: stmt.code ?? '' };
+      return { kind: 'message', messageName: raisedCodeOf(stmt.items) ?? '' };
     case 'signal':
-      return { kind: 'signal', signalName: stmt.code ?? '' };
-    case 'timer':
+      return { kind: 'signal', signalName: raisedCodeOf(stmt.items) ?? '' };
+    case 'timer': {
+      const timer = timerPayloadOf(stmt.items);
       return {
         kind: 'timer',
-        timerKind: timerParticleKind(stmt.particle),
-        expression: stmt.time ?? stmt.code ?? '',
+        timerKind: timerParticleKind(timer?.particle),
+        expression: timer?.time ?? '',
       };
-    case 'condition':
+    }
+    case 'condition': {
+      const expr = payloadItemOf(stmt.items)?.value;
       return {
         kind: 'conditional',
-        condition:
-          stmt.condition !== undefined
-            ? renderExpression(stmt.condition)
-            : '${true}',
+        condition: expr !== undefined ? renderExpression(expr) : '${true}',
       };
+    }
     default: {
       const exhaustive: never = trigger;
       throw new Error(
@@ -1376,15 +1465,18 @@ function namedTriggerDefinition(
 
 /** `calledElement` falls back to `''` when the `process` attribute is absent. */
 function lowerCallActivity(builder: Builder, stmt: AstCallActivity): Frontier {
-  const calledElement = attrValue(stmt.attrs, 'process') ?? '';
-  const binding = versionBinding(stmt.attrs);
-  const businessKey = rawExpressionAttrValue(stmt.attrs, 'businessKey');
+  const calledElement = attrValue(settingsOf(stmt.items), 'process') ?? '';
+  const binding = versionBinding(settingsOf(stmt.items));
+  const businessKey = rawExpressionAttrValue(
+    settingsOf(stmt.items),
+    'businessKey',
+  );
   const { inMappings, outMappings } = lowerCallMappings(stmt.mappings);
 
   builder.flowElements.push({
     kind: 'callActivity',
     id: stmt.name,
-    ...(stmt.label !== undefined ? { name: stmt.label } : {}),
+    ...labelName(stmt),
     calledElement,
     ...(binding !== undefined ? { binding } : {}),
     ...(businessKey !== undefined ? { businessKey } : {}),
@@ -1404,7 +1496,7 @@ function lowerCallActivity(builder: Builder, stmt: AstCallActivity): Frontier {
  * together are a validator error, so the desugarer picks the one BPMN can use.
  * A `binding` resolves only for a bare `latest` or `deployment`.
  */
-function versionBinding(attrs: Attribute[]): VersionBinding | undefined {
+function versionBinding(attrs: KeyValueAttr[]): VersionBinding | undefined {
   const versionAttr = attrs.find((a) => a.key === 'version');
   if (versionAttr !== undefined) {
     return { kind: 'version', version: numericOrElValue(versionAttr.value) };
@@ -1415,10 +1507,10 @@ function versionBinding(attrs: Attribute[]): VersionBinding | undefined {
     isVarRef(bindingAttr.value) &&
     bindingAttr.value.accessors.length === 0
   ) {
-    if (bindingAttr.value.name === 'latest') {
+    if (bindingAttr.value.ref.$refText === 'latest') {
       return { kind: 'latest' };
     }
-    if (bindingAttr.value.name === 'deployment') {
+    if (bindingAttr.value.ref.$refText === 'deployment') {
       return { kind: 'deployment' };
     }
   }
@@ -1442,7 +1534,7 @@ function numericOrElValue(expr: Expr): string {
 
 /** First match wins, as in {@link attrValue}. */
 function numericOrElAttrValue(
-  attrs: Attribute[],
+  attrs: KeyValueAttr[],
   key: string,
 ): string | undefined {
   const attr = attrs.find((a) => a.key === key);
@@ -1479,7 +1571,12 @@ function lowerCallMapping(mapping: VariableMapping): CallVariableMapping {
     return { kind: 'variable', source: target, target, ...local };
   }
   if (isVarRef(mapping.source) && mapping.source.accessors.length === 0) {
-    return { kind: 'variable', source: mapping.source.name, target, ...local };
+    return {
+      kind: 'variable',
+      source: mapping.source.ref.$refText,
+      target,
+      ...local,
+    };
   }
   return {
     kind: 'expression',
@@ -1558,7 +1655,7 @@ function loopCardinality(expr: Expr): string {
  */
 function loopCollection(expr: Expr): string {
   if (isVarRef(expr) && expr.accessors.length === 0) {
-    return expr.name;
+    return expr.ref.$refText;
   }
   if (isLiteralString(expr)) {
     return expr.value;
@@ -1566,15 +1663,15 @@ function loopCollection(expr: Expr): string {
   return renderExpression(expr);
 }
 
-/** Structural rather than a union of statement types, so either kind of carrier reads the same. */
+/** Structural rather than a union of statement types, so every carrier reads the same. */
 interface EngineAttributeOwner {
-  attrs: Attribute[];
+  items: ParenItem[];
   listeners: AstListener[];
 }
 
 /** {@link engineAttributes} decides what is kept; this says how each field is spelled. */
 function readEngineAttributes(owner: EngineAttributeOwner): EngineAttributes {
-  const attrs = owner.attrs;
+  const attrs = settingsOf(owner.items);
   return engineAttributes({
     asyncBefore: boolAttrValue(attrs, 'asyncBefore'),
     asyncAfter: boolAttrValue(attrs, 'asyncAfter'),
@@ -1643,7 +1740,7 @@ function listenerBinding(listener: AstListener): ListenerBinding {
     const { tag, code } = splitFencedScript(listener.script);
     return { kind: 'script', format: SCRIPT_FORMAT_ALIASES[tag] ?? tag, code };
   }
-  return codeBinding(listener.attrs) ?? NO_BINDING;
+  return codeBinding(settingsOf(listener.items)) ?? NO_BINDING;
 }
 
 /**
@@ -1688,7 +1785,10 @@ function lowerIoValue(value: AstIoValue): IoValue {
   return { kind: 'text', text: exprText(value) };
 }
 
-function boolAttrValue(attrs: Attribute[], key: string): boolean | undefined {
+function boolAttrValue(
+  attrs: KeyValueAttr[],
+  key: string,
+): boolean | undefined {
   const attr = attrs.find((a) => a.key === key);
   if (attr === undefined || !isLiteralBool(attr.value)) {
     return undefined;
@@ -1806,11 +1906,20 @@ function collectNamedIds(process: Process): Set<string> {
   return taken;
 }
 
-/** The `key`/`value` shape shared by an {@link Attribute} and a `ProcessAttribute`. */
+/** The `key`/`value` shape every setting carries. */
 type KeyValueAttr = { key: string; value: Expr };
 
 /**
- * The first matching attribute's value, as the plain string the IR carries. NOT
+ * An element's label, written as its `label` setting. The IR calls it `name`,
+ * since BPMN's `name` is the human-facing text.
+ */
+function labelName(stmt: { items: ParenItem[] }): { name?: string } {
+  const label = attrValue(settingsOf(stmt.items), 'label');
+  return label !== undefined ? { name: label } : {};
+}
+
+/**
+ * The first matching setting's value, as the plain string the IR carries. NOT
  * for `expression`/`delegate`: {@link rawExpressionAttrValue} keeps their
  * `${...}` wrapper instead of stripping it.
  */
@@ -1830,7 +1939,7 @@ function exprText(value: Expr): string {
     return value.value;
   }
   if (isVarRef(value) && value.accessors.length === 0) {
-    return value.name;
+    return value.ref.$refText;
   }
   // A dotted VarRef renders as `${com.example.X}`; strip the `${...}` wrapper so
   // the IR carries the plain dotted path the BPMN attribute expects.
@@ -1848,7 +1957,7 @@ function exprText(value: Expr): string {
  * Operaton evaluates as EL.
  */
 function rawExpressionAttrValue(
-  attrs: Attribute[],
+  attrs: KeyValueAttr[],
   key: string,
 ): string | undefined {
   const attr = attrs.find((a) => a.key === key);
@@ -1863,25 +1972,7 @@ function stripExpressionWrapper(rendered: string): string {
   return rendered;
 }
 
-/** Authored inline after the process id or as a header `label = "..."`; inline wins. */
-function processLabel(process: Process): string | undefined {
-  if (process.label !== undefined) {
-    return process.label;
-  }
-  for (const decl of process.decls) {
-    if (decl.$type === 'ProcessLabel') {
-      return decl.value;
-    }
-  }
-  return undefined;
-}
-
-/** `operaton:versionTag`, an author-supplied label distinct from the deployment version. */
-function processVersionTag(process: Process): string | undefined {
-  for (const decl of process.decls) {
-    if (decl.$type === 'ProcessAttribute' && decl.key === 'versionTag') {
-      return attrValue([decl], 'versionTag');
-    }
-  }
-  return undefined;
+/** `operaton:versionTag` is an author-supplied label distinct from the deployment version. */
+function processSetting(process: Process, key: string): string | undefined {
+  return attrValue(settingsOf(process.items), key);
 }

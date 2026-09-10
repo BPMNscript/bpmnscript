@@ -19,23 +19,18 @@
 process order-settlement {
   start OrderReceived
 
-  step RecordOrder "Record the order"
+  step RecordOrder(label: "Record the order")
 
-  send NotifyWarehouse "Tell the warehouse" { class = "com.example.orders.NotifyWarehouseDelegate" }
+  send NotifyWarehouse(label: "Tell the warehouse", class: "com.example.orders.NotifyWarehouseDelegate")
 
-  receive AwaitSettlement "Wait for the payment" { message = "PaymentSettled" }
-  receive AwaitPickingSlot "Wait for a picking slot"
+  receive AwaitSettlement(label: "Wait for the payment", message: "PaymentSettled")
+  receive AwaitPickingSlot(label: "Wait for a picking slot")
 
-  emit message ConfirmPicking "PickingSlotReady" { class = "com.example.orders.ConfirmPickingDelegate" }
+  emit message ConfirmPicking("PickingSlotReady", class: "com.example.orders.ConfirmPickingDelegate")
 
-  decide RateRisk "Rate the order risk" {
-    decision = "riskRating"
-    binding = latest
-    mapDecisionResult = singleEntry
-    resultVariable = "risk"
-  }
-  decide ChooseCarrier "Choose a carrier" { class = "com.example.orders.ChooseCarrierDelegate" }
-  decide PriceShipping "Price the shipping" { decision = "shippingTariff" version = 3 }
+  decide RateRisk(label: "Rate the order risk", decision: "riskRating", binding: latest, mapDecisionResult: singleEntry, resultVariable: "risk")
+  decide ChooseCarrier(label: "Choose a carrier", class: "com.example.orders.ChooseCarrierDelegate")
+  decide PriceShipping(label: "Price the shipping", decision: "shippingTariff", version: 3)
 
-  throw message ForwardSettlement "PaymentSettled" { class = "com.example.orders.PublishSettlementDelegate" }
+  throw message ForwardSettlement("PaymentSettled", class: "com.example.orders.PublishSettlementDelegate")
 }

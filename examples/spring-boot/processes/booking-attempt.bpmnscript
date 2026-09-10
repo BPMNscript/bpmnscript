@@ -1,7 +1,7 @@
 // Seat booking as a block of work that can be given up. `attempt BookAndPay`
 // holds the seat, charges the travel card and issues the ticket; a guard on
 // the declined charge ends that path with
-// `end BookingAbandoned "Give up the booking" cancel`, and
+// `end BookingAbandoned cancel(label: "Give up the booking")`, and
 // `on BookAndPay: cancel` catches it. Started with `chargeDeclined` set, the
 // charge is declined and the escape task opens; started without it, the
 // block completes and the booking goes to confirmation.
@@ -22,29 +22,29 @@ process booking-attempt {
 
   start BookingRequested
 
-  attempt BookAndPay "Try to book and pay for the seat" {
-    subprocess HoldSeat "Hold the seat" {
-      service HoldSeatTask "Take the seat off sale" { class = "com.example.demo.LogDelegate" }
+  attempt BookAndPay(label: "Try to book and pay for the seat") {
+    subprocess HoldSeat(label: "Hold the seat") {
+      service HoldSeatTask(label: "Take the seat off sale", class: "com.example.demo.LogDelegate")
 
       on compensation {
-        service ReleaseSeat "Put the seat back on sale" { class = "com.example.demo.LogDelegate" }
+        service ReleaseSeat(label: "Put the seat back on sale", class: "com.example.demo.LogDelegate")
       }
     }
 
-    service ChargeCard "Charge the travel card" { class = "com.example.demo.LogDelegate" }
+    service ChargeCard(label: "Charge the travel card", class: "com.example.demo.LogDelegate")
 
     if (chargeDeclined) {
-      end BookingAbandoned "Give up the booking" cancel
+      end BookingAbandoned cancel(label: "Give up the booking")
     }
 
-    service IssueTicket "Issue the ticket" { class = "com.example.demo.LogDelegate" }
+    service IssueTicket(label: "Issue the ticket", class: "com.example.demo.LogDelegate")
   }
 
-  user ConfirmBooking "Confirm the booking" { assignee = "demo" }
+  user ConfirmBooking(label: "Confirm the booking", assignee: "demo")
   end BookingComplete
 
   on BookAndPay: cancel {
-    user ApologizeToTraveler "Apologize and confirm the seat was released" { assignee = "demo" }
+    user ApologizeToTraveler(label: "Apologize and confirm the seat was released", assignee: "demo")
     end BookingCancelled
   }
 }

@@ -22,8 +22,8 @@ Where does the repetition sit on a statement, what does it spell, and which shap
 
 ## Considered Options
 
-- A header clause between a statement's label and its settings block
-- Settings-block keys, `times =`, `each =`, `as =`, and `sequential = true`
+- A header clause between a statement's id and its settings
+- Settings keys, `times:`, `each:`, `as:`, and `sequential: true`
 - A wrapping statement, `for each x in c { ... }`
 - One head for both a count and a collection
 - Two heads, `for each ... in ...` for a collection and `repeat <n>` for a count
@@ -34,16 +34,16 @@ Where does the repetition sit on a statement, what does it spell, and which shap
 
 ## Decision Outcome
 
-Chosen options: the header clause, one head, the optional element variable, and the refusal of standard loop characteristics.
+Chosen options: the header clause, one head, the optional element variable, and importing a standard loop as a step that runs once.
 
 The clause reads `for each line in lines`, `for each in lines`, `for 3`, or `for 2 each line in lines`, with `sequentially` and `until (<condition>)` after it.
-It sits between the optional label and the optional settings block on the nine statements that emit an activity.
+It sits between the id and the optional settings on the nine statements that emit an activity.
 `for`, `each`, `sequentially`, and `until` are hard keywords, because in that position only a keyword can tell the parser a clause has started.
 No file in the repo used any of the four in an identifier position, and the four built into a live parser drew no ambiguity report from Chevrotain's self-analysis.
 
-Settings-block keys were the cheap option.
-They lose on ADR-0013, whose test `sequential = true` fails outright, being the XML attribute wearing a DSL hat.
-A flat key/value block also cannot constrain what the clause constrains: `as = "line"` with no `each =` is writable as settings, and it is one of the deployments Operaton refuses.
+Settings keys were the cheap option.
+They lose on ADR-0013, whose test `sequential: true` fails outright, being the XML attribute wearing a DSL hat.
+A flat key/value list also cannot constrain what the clause constrains: `as: "line"` with no `each:` is writable as a setting, and it is one of the deployments Operaton refuses.
 
 The wrapping form loses on ADR-0010.
 BPMN attaches a repetition to exactly one activity, so a wrapper holding two statements has to synthesize a sub-process to hang it on.
@@ -66,7 +66,7 @@ An `asyncBefore`, `asyncAfter`, or `exclusive` written on the `multiInstanceLoop
 An `operaton:failedJobRetryTimeCycle` there refuses for the same reason by another route, Operaton's `DefaultFailedJobParseListener` reading the one written on the repetition element onto each run and the one written on the step around the whole repetition.
 An `operaton:jobPriority` there is reported as a drop instead, because Operaton reads a job priority only in `createActivityOnScope`, off the step, and the repetition's own scope is never built there, so the setting reaches no job.
 An `operaton:outputParameter` on a repeated step refuses, because Operaton's `checkActivityOutputParameterSupported` rejects the deployment outright, and the validator stops an author writing one for the same reason.
-A `bpmn:standardLoopCharacteristics` refuses, because Operaton's `parseActivity` looks only for the multi-instance child, so the document deploys and the step runs once.
+A `bpmn:standardLoopCharacteristics` imports as a step that runs once, with a warning naming the drop, because Operaton's `parseMultiInstanceLoopCharacteristics` looks only for a `bpmn:multiInstanceLoopCharacteristics` child and returns null otherwise, so the document deploys and the step runs once regardless of what the import does.
 A `bpmn:loopCardinality` body that is neither a run of digits nor an expression refuses, and that one is this tool's limit rather than the engine's.
 Operaton's `resolveLoopCardinality` reads `+3` as three, while this printer writes a count only as a plain number or as an expression, so the body would come back spelled differently.
 An `operaton:elementVariable` or a `bpmn:inputDataItem` name outside the grammar's `ID` terminal refuses on the same ground, since the clause writes the name each run sees as a bare identifier and has no second form for it: an element named `größe` would come back as a file this language cannot parse.
@@ -75,7 +75,7 @@ Operaton's own parse errors refuse here rather than importing into a process tha
 ### Consequences
 
 - Good, because a document the engine runs more than once now imports, prints, and recompiles byte for byte, where before it stopped the import at the first repeated activity.
-- Bad, because `asyncBefore = true` in a repeated step's settings block no longer means what it meant before the clause existed.
+- Bad, because `asyncBefore: true` in a repeated step's settings no longer means what it meant before the clause existed.
   Operaton's `parseAsynchronousContinuationForActivity` reads a host element's async attributes onto the repetition, so it is one job around the whole loop rather than one per run.
   It is the only async this surface can express, and it is what an author writing it there usually means.
 - Neutral, because `operaton:collection` and `bpmn:loopDataInputRef` are one field to Operaton's `parseMultiInstanceLoopCharacteristics`, read in that order, so they import into one field here and the `operaton:` spelling is what gets written back.
@@ -88,7 +88,7 @@ Operaton's own parse errors refuse here rather than importing into a process tha
 
 ### Confirmation
 
-`packages/language/test/` pins every form of the clause token by token, its placement against the label and the settings block, the output-parameter rule, the seeded variables, and what the position completes to.
+`packages/language/test/` pins every form of the clause token by token, its placement against the id and the settings, the output-parameter rule, the seeded variables, and what the position completes to.
 `packages/transform/test/` pins the lowering, each refusal by error class and by a substring of its message, each shadowing warning, the emitted child, and the printed line.
 The frozen pair `tests/golden/repetition.{bpmnscript,bpmn}` carries every form of the clause across eight statements of one process, and `tests/repetition.round-trip.test.ts` compares the compiled XML byte for byte and requires an import with no warning at all.
 `tests/e2e/repetition.test.ts` deploys to a real Operaton and drives it over REST, offering a parallel repetition's three runs at once and a sequential one's one at a time on the same activity.
@@ -96,14 +96,14 @@ A completion condition ends a repetition after two runs, a count drives a servic
 
 ## Pros and Cons of the Options
 
-### A header clause between a statement's label and its settings block
+### A header clause between a statement's id and its settings
 
-- Good, because the repetition reads as something done to one statement, which is what the engine does with it, and every statement keeps the block it already had.
-- Bad, because it spends four keywords and touches nine grammar rules where the settings-block form would have touched none.
+- Good, because the repetition reads as something done to one statement, which is what the engine does with it, and every statement keeps the settings it already had.
+- Bad, because it spends four keywords and touches nine grammar rules where the settings-key form would have touched none.
 
-### Settings-block keys
+### Settings keys
 
-- Bad, because `sequential = true` names the BPMN attribute rather than what the author means, which is the one thing ADR-0013 rules out.
+- Bad, because `sequential: true` names the BPMN attribute rather than what the author means, which is the one thing ADR-0013 rules out.
 
 ### A wrapping statement
 
@@ -119,11 +119,17 @@ A completion condition ends a repetition after two runs, a count drives a servic
 
 ### `bpmn:standardLoopCharacteristics` imported as a step that runs once
 
-- Bad, because it hands back a script saying a step repeats where the engine runs it once, which is a worse answer than a refusal naming the element.
+- Good, because it accepts every document Operaton deploys and runs.
+  `parseMultiInstanceLoopCharacteristics` looks only for a `bpmn:multiInstanceLoopCharacteristics` child, so the engine treats a standard loop as absent and runs the step once, the same behavior this import gives it, on every host the loop can sit on, including an event handler.
+- Bad, because the import drops the element the document wrote, keeping only a warning that names it, so a decompiled file carries no trace that the source declared a loop there.
+
+### `bpmn:standardLoopCharacteristics` refused
+
+- Bad, because Operaton deploys and runs a `bpmn:standardLoopCharacteristics` exactly as if it were absent, so refusing it rejects a document the engine executes the same way this import would import it.
 
 ## More Information
 
 Related decisions: ADR-0010 (the synthesized ids a wrapping form would have had to invent).
-ADR-0013 (the rule that a keyword names what the author means, and the reason `sequential = true` is not one).
+ADR-0013 (the rule that a keyword names what the author means, and the reason `sequential: true` is not one).
 ADR-0014 (the honest import contract behind every refusal and every warning here).
 ADR-0026 (the same call on a receive task with no message name, reused here for a collection with no element variable).

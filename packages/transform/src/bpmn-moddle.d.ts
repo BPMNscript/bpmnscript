@@ -1,4 +1,7 @@
-/** `bpmn-moddle` and `bpmn-auto-layout` ship no `.d.ts` files of their own. */
+/**
+ * `bpmn-moddle`, `bpmn-auto-layout` and `saxen` ship no `.d.ts` files of their
+ * own.
+ */
 
 declare module 'bpmn-moddle' {
   // Moddle attaches properties dynamically, keyed by the `name` in each
@@ -37,4 +40,33 @@ declare module 'bpmn-moddle' {
 declare module 'bpmn-auto-layout' {
   /** Returns the XML with `bpmndi:` diagram-interchange elements injected. */
   export function layoutProcess(xml: string): Promise<string>;
+}
+
+declare module 'saxen' {
+  /** The source position the parser has reached, both counted from zero. */
+  export interface ParseContext {
+    line: number;
+    column: number;
+  }
+
+  export type OpenTagHandler = (
+    elementName: string,
+    getAttrs: () => Record<string, string>,
+    decodeEntities: boolean,
+    selfClosing: boolean,
+    getContext: () => ParseContext,
+  ) => void;
+
+  export type CloseTagHandler = (
+    elementName: string,
+    decodeEntities: boolean,
+    selfClosing: boolean,
+    getContext: () => ParseContext,
+  ) => void;
+
+  export class Parser {
+    on(event: 'openTag', handler: OpenTagHandler): void;
+    on(event: 'closeTag', handler: CloseTagHandler): void;
+    parse(xml: string): void;
+  }
 }

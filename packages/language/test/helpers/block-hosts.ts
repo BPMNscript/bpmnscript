@@ -1,9 +1,9 @@
 /**
- * The element kinds that take an attribute block, as test fixtures.
+ * The element kinds that take settings, as test fixtures.
  *
- * The validator suite checks what a block accepts and the completion suite
+ * The validator suite checks what an element accepts and the completion suite
  * checks what it offers, which are two readings of one table. Both drive off
- * these rows, so a new block-bearing kind is added in one place.
+ * these rows, so a new kind is added in one place.
  */
 
 /**
@@ -12,79 +12,130 @@
  */
 export const FENCE = '`' + '`' + '`';
 
-/** Every engine execution setting, in one block's worth of source. */
+/** Every engine execution setting, as one parens' worth of items. */
 export const ENGINE_SETTINGS =
-  'asyncBefore = true asyncAfter = true exclusive = false ' +
-  'jobPriority = 50 retryCycle = "R3/PT10M"';
+  'asyncBefore: true, asyncAfter: true, exclusive: false, ' +
+  'jobPriority: 50, retryCycle: "R3/PT10M"';
 
 /**
- * One otherwise-valid program per element kind that takes an attribute block,
- * with the block's contents left open. Everything else in each program already
- * validates, so the only diagnostics a case can produce are the block's own.
+ * One otherwise-valid program per element kind, with one slot left open:
+ * `settings` opens the parens and `members` the brace block holding the forms,
+ * the parameters, and the listeners. Everything else in each program already
+ * validates, so the only diagnostics a case can produce are the slot's own.
+ *
+ * Both slots take non-empty contents. Parens with nothing between them are a
+ * parse error, and an empty brace block is read as the body on the kinds that
+ * take one.
  */
 export const BLOCK_HOSTS: ReadonlyArray<
-  [kind: string, description: string, program: (contents: string) => string]
+  [
+    kind: string,
+    description: string,
+    members: (contents: string) => string,
+    settings: (items: string) => string,
+  ]
 > = [
-  ['start', 'a start event', (c) => `process p { start S { ${c} } }`],
-  ['end', 'an end event', (c) => `process p { start S end E { ${c} } }`],
-  ['user', 'a user task', (c) => `process p { user U { ${c} } }`],
+  [
+    'start',
+    'a start event',
+    (c) => `process p { start S { ${c} } }`,
+    (i) => `process p { start S(${i}) }`,
+  ],
+  [
+    'end',
+    'an end event',
+    (c) => `process p { start S end E { ${c} } }`,
+    (i) => `process p { start S end E(${i}) }`,
+  ],
+  [
+    'user',
+    'a user task',
+    (c) => `process p { user U { ${c} } }`,
+    (i) => `process p { user U(${i}) }`,
+  ],
   [
     'service',
     'a service task',
-    (c) => `process p { service V { topic = "t" ${c} } }`,
+    (c) => `process p { service V(topic: "t") { ${c} } }`,
+    (i) => `process p { service V(topic: "t", ${i}) }`,
   ],
   [
     'script',
     'a script task',
     (c) => `process p { script T { ${c} } ${FENCE}js\nwork()\n${FENCE} }`,
+    (i) => `process p { script T(${i}) ${FENCE}js\nwork()\n${FENCE} }`,
   ],
-  ['step', 'a step', (c) => `process p { step T { ${c} } }`],
+  [
+    'step',
+    'a step',
+    (c) => `process p { step T { ${c} } }`,
+    (i) => `process p { step T(${i}) }`,
+  ],
   [
     'send',
     'a send task',
-    (c) => `process p { send N { class = "com.example.Send" ${c} } }`,
+    (c) => `process p { send N(class: "com.example.Send") { ${c} } }`,
+    (i) => `process p { send N(class: "com.example.Send", ${i}) }`,
   ],
-  ['receive', 'a receive task', (c) => `process p { receive R { ${c} } }`],
+  [
+    'receive',
+    'a receive task',
+    (c) => `process p { receive R { ${c} } }`,
+    (i) => `process p { receive R(${i}) }`,
+  ],
   [
     'decide',
     'a decision step',
-    (c) => `process p { decide D { decision = "riskRating" ${c} } }`,
+    (c) => `process p { decide D(decision: "riskRating") { ${c} } }`,
+    (i) => `process p { decide D(decision: "riskRating", ${i}) }`,
   ],
   [
     'subprocess',
     'a subprocess',
     (c) => `process p { subprocess S { ${c} } { user U } }`,
+    (i) => `process p { subprocess S(${i}) { user U } }`,
   ],
   [
     'attempt',
     'an attempt block',
     (c) => `process p { attempt S { ${c} } { user U } }`,
+    (i) => `process p { attempt S(${i}) { user U } }`,
   ],
-  ['call', 'a call', (c) => `process p { call C { process = "q" ${c} } }`],
+  [
+    'call',
+    'a call',
+    (c) => `process p { call C(process: "q") { ${c} } }`,
+    (i) => `process p { call C(process: "q", ${i}) }`,
+  ],
   [
     'throw',
     'a throw statement',
-    (c) => `process p { start S throw error "E409" { ${c} } }`,
+    (c) => `process p { start S throw message("Settled") { ${c} } }`,
+    (i) => `process p { start S throw message("Settled", ${i}) }`,
   ],
   [
     'emit',
     'an emit statement',
-    (c) => `process p { start S emit signal "Ready" { ${c} } }`,
+    (c) => `process p { start S emit signal("Ready") { ${c} } }`,
+    (i) => `process p { start S emit signal("Ready", ${i}) }`,
   ],
   [
     'await',
     'an awaited event',
-    (c) => `process p { await message "M" { ${c} } }`,
+    (c) => `process p { await message("M") { ${c} } }`,
+    (i) => `process p { await message("M", ${i}) }`,
   ],
   [
     'on',
     'an event handler',
-    (c) => `process p { start S on error { ${c} } { end Failed } }`,
+    (c) => `process p { start S on message("M") { ${c} } { end Failed } }`,
+    (i) => `process p { start S on message("M", ${i}) { end Failed } }`,
   ],
   [
     'on-hosted',
     'an event handler',
-    (c) => `process p { user U on U: error { ${c} } { end Failed } }`,
+    (c) => `process p { user U on U: message("M") { ${c} } { end Failed } }`,
+    (i) => `process p { user U on U: message("M", ${i}) { end Failed } }`,
   ],
 ];
 
@@ -111,15 +162,30 @@ export const PARAMETER_HOSTS = new Set([
 export const FORM_HOSTS = new Set(['start', 'user']);
 
 /**
- * A row's program with the caret placed inside the attribute block, after
- * `before`. Every program writes its block on the first line, so the caret's
- * line is always zero.
- *
- * An empty block is ambiguous where the element takes a second one: the parser
- * reads `subprocess S { │ }` as the body rather than the attributes, so pass a
- * `before` that commits the block to being the attribute block.
+ * The element kinds whose parens take a `label`. The rest lower to a BPMN node
+ * with no name slot of its own, so a label there would be dropped.
  */
-export function caretInBlock(
+export const LABEL_HOSTS = new Set([
+  'start',
+  'end',
+  'user',
+  'service',
+  'script',
+  'step',
+  'send',
+  'receive',
+  'decide',
+  'subprocess',
+  'attempt',
+  'call',
+]);
+
+/**
+ * A row's program with the caret placed in one of its slots, after `before`.
+ * Every program writes its element on the first line, so the caret's line is
+ * always zero.
+ */
+export function caretInSlot(
   program: (contents: string) => string,
   before: string,
 ): { text: string; line: number; character: number } {

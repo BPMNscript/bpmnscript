@@ -54,7 +54,7 @@ Three decisions, chosen together for the same reason ADR-0016's and ADR-0019's e
 
 The keyword is `await`.
 Before committing to it, the rule was built into a live Langium parser with Chevrotain's self-analysis switched on (`createServicesForGrammar`), and the full trigger-payload battery was run through it.
-Every form parsed with zero ambiguity warnings, including the case that actually matters: `await timer after "PT1H"`, three bare identifiers followed by a string, the same token shape `on timer after "PT1H"` already has, resolved to `trigger='timer'`, `particle='after'`, `time='PT1H'`, never confusing the particle for anything else.
+Every form parsed with zero ambiguity warnings, including the case that actually matters: `await timer("PT1H")`, a bare identifier followed by a parenthesized payload, the same token shape `on timer("PT1H")` already has, resolved to `trigger='timer'` with the duration as its payload, never confusing the trigger for anything else.
 `wait` and `receive` parse exactly as cleanly; the choice between the three is not a parsing question at all, and is settled on what each word actually says.
 `receive` names precisely what a message catch does and nothing else: a signal is broadcast, not addressed to anyone to "receive"; a timer is not received from anywhere; a condition is evaluated, not delivered.
 Using it across all four triggers would mislabel three of them.
@@ -67,9 +67,9 @@ Unlike `message` or `code`, words ADR-0016 keeps soft precisely because they are
 
 No authored name; the id is synthesized.
 A trial grammar carrying an optional `name=ID` slot ahead of the trigger, mirroring how a hosted `on` handler is named, was run through the same live-parser check and reintroduced the exact ambiguity ADR-0019's colon separator exists to avoid.
-Chevrotain reported "Ambiguous Alternatives Detected inside IntermediateCatchEvent Rule", and the parser misread `await timer after "PT1H"` as `name='after', code='PT1H'`: the particle swallowed into the name slot, and with it the one piece of information that decides which of BPMN's three timer forms the author meant.
+Chevrotain reported "Ambiguous Alternatives Detected inside IntermediateCatchEvent Rule": with a name and a trigger both bare identifiers, nothing decides which of the two the first word after `await` is, and a timer read the wrong way loses the one piece of information deciding which of BPMN's three timer forms the author meant.
 That is not a cosmetic misparse.
-`after`, `at`, and `every` map to a duration, a fixed date, and a repeating cycle respectively, three different things the engine schedules, so losing which one was written is a scheduling error hiding behind a name field nobody asked the catch to have in the first place.
+A bare payload, an `at` key, and an `every` key map to a duration, a fixed date, and a repeating cycle respectively, three different things the engine schedules, so losing which one was written is a scheduling error hiding behind a name field nobody asked the catch to have in the first place.
 
 Dropping the name slot removes the ambiguity outright, and it costs the surface nothing a `goto` target ever needed: an intermediate catch has no body, so unlike a hosted `on` handler it never has to be an addressable jump-back point.
 It also matches the one construct already shaped exactly like it.
@@ -113,7 +113,7 @@ Both claims are confirmed by dedicated regression cases rather than left as an a
 
 ### Confirmation
 
-`packages/language/test/parsing.test.ts` pins the `await` disambiguation directly: each of `await message "..."`, `await timer after/at/every "..."`, `await signal "..."`, and `await condition (...)` parses to the field shape its trigger implies, with the timer case pinning that the particle survives as `particle`, not swallowed into a name.
+`packages/language/test/parsing.test.ts` pins the `await` disambiguation directly: each of `await message("...")`, `await timer("...")` in all three of its forms, `await signal("...")`, and `await condition(...)` parses to the field shape its trigger implies, with the timer case pinning that which of the three was written survives, not swallowed into a name.
 A soft-word survival pin confirms `var await` fails to parse, proving the reservation, while `var message: string` and a step named `every` still parse clean.
 `packages/language/test/validating.test.ts` pins the four-trigger acceptance and each trigger's missing payload, alongside the rejection of `await error`, `await escalation`, and `await compensation`, matched on the substrings that name the four legal words and the shape each of those kinds takes instead.
 `await cancel` is refused there too, matched against its whole message, which points at the `end <name> cancel` that gives an `attempt` block up and the `on <block>: cancel` that catches it.
@@ -148,7 +148,7 @@ A Docker-gated end-to-end test deploys an example awaiting a message mid-flow, c
 ### An optional `name=ID` slot
 
 - Good, because it would let an author give a catch an explicit `goto` target.
-- Bad, because it reintroduces the exact ambiguity ADR-0019's colon separator exists to avoid: Chevrotain flags it directly, and the parser reads a timer's particle as a name, losing which of the three timer forms was meant.
+- Bad, because it reintroduces the exact ambiguity ADR-0019's colon separator exists to avoid: Chevrotain flags it directly, and the parser reads the trigger word as a name, losing which of the three timer forms was meant.
 
 ### Every BPMN catchable trigger, including error, escalation, compensation, cancel, and link
 

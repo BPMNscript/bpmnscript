@@ -3,24 +3,24 @@
 process structured-control-flow {
   start Begin
 
-  user Triage "Triage request" { assignee = "demo" }
+  user Triage(label: "Triage request", assignee: "demo")
 
   if (priority > 5) {
-    user EscalateReview "Escalate review" { assignee = "manager" }
+    user EscalateReview(label: "Escalate review", assignee: "manager")
   } else {
-    service AutoTriage "Auto-triage" { class = "com.example.flow.AutoTriageDelegate" }
+    service AutoTriage(label: "Auto-triage", class: "com.example.flow.AutoTriageDelegate")
   }
 
   while (retries < 3) {
-    service RetryFetch "Retry fetch" { class = "com.example.flow.RetryFetchDelegate" }
+    service RetryFetch(label: "Retry fetch", class: "com.example.flow.RetryFetchDelegate")
   }
 
   parallel {
     {
-      user NotifyOwner "Notify owner" { assignee = "demo" }
+      user NotifyOwner(label: "Notify owner", assignee: "demo")
     }
     {
-      service AuditLog "Write audit log" { class = "com.example.flow.AuditLogDelegate" }
+      service AuditLog(label: "Write audit log", class: "com.example.flow.AuditLogDelegate")
     }
   }
 

@@ -348,11 +348,9 @@ describeImportFirst(
   IMPORT_FIRST_BPMN,
   (first) => {
     it('prints each boundary as an attached handler naming its host', () => {
-      expect(first.dsl).toContain('on InspectCrate: error "TORN_BOX" {');
-      expect(first.dsl).toContain('on InspectCrate: error "MISSING_ITEM" {');
-      expect(first.dsl).toContain(
-        'on StoreCrate: timer after "PT1H" alongside {',
-      );
+      expect(first.dsl).toContain('on InspectCrate: error(TORN_BOX) {');
+      expect(first.dsl).toContain('on InspectCrate: error(MISSING_ITEM) {');
+      expect(first.dsl).toContain('on StoreCrate: timer("PT1H", alongside) {');
     });
 
     it('re-synthesizes the host-derived ids, suffixing the second of the colliding pair', () => {
