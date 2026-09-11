@@ -37,6 +37,7 @@ import type {
   IoValue,
   ListenerBinding,
   LoopCharacteristics,
+  Named,
   ParallelGateway,
   ReceiveTask,
   ScriptTask,
@@ -450,6 +451,7 @@ export async function xmlToIr(
   const documentId = root.id ?? ir.id;
   collectExtensionDrops(root, documentId, warnings);
   collectUnmappedBpmnDrops(root, documentId, warnings);
+  warnDocumentationDrop(root, documentId, 'the definitions root', warnings);
   const reportedRootIds = collectRootDrops(rootElements, ir.id, warnings);
 
   collectUnparsableResidualDrops(
@@ -725,7 +727,7 @@ function mapProcess(
   if (id === undefined) {
     throw new Error("<bpmn:process> is missing its required 'id' attribute.");
   }
-  const name = readDerivableName(processEl, id);
+  const named = readNamed(processEl, id, warnings);
 
   // The one place import changes what the document says rather than leaving
   // something out, so it gets its own wording.
@@ -755,7 +757,7 @@ function mapProcess(
 
   return {
     id,
-    ...(name === undefined ? {} : { name }),
+    ...named,
     isExecutable: true,
     ...(versionTag === undefined ? {} : { versionTag }),
     flowElements,
@@ -1116,13 +1118,13 @@ function mapContainerChildren(
         // Only here is it known whether a start's trigger moves into an `on`
         // header, which decides whether the statement prints at all.
         const start = mapStart(child);
-        warnElidedLabel(start, hostKind === 'eventSubProcess', warnings);
+        warnElidedNamedDrop(start, hostKind === 'eventSubProcess', warnings);
         flowElements.push(start);
         break;
       }
       case 'bpmn:EndEvent': {
         const end = mapEndEvent(child, warnings, hostKind);
-        warnElidedLabel(end, false, warnings);
+        warnElidedNamedDrop(end, false, warnings);
         flowElements.push(end);
         break;
       }
@@ -1136,13 +1138,17 @@ function mapContainerChildren(
         flowElements.push(mapBoundaryEvent(child, warnings, el));
         break;
       case 'bpmn:ExclusiveGateway':
-        flowElements.push(mapDefaultingGateway(child, 'exclusiveGateway'));
+        flowElements.push(
+          mapDefaultingGateway(child, 'exclusiveGateway', warnings),
+        );
         break;
       case 'bpmn:InclusiveGateway':
-        flowElements.push(mapDefaultingGateway(child, 'inclusiveGateway'));
+        flowElements.push(
+          mapDefaultingGateway(child, 'inclusiveGateway', warnings),
+        );
         break;
       case 'bpmn:ParallelGateway':
-        flowElements.push(mapParallelGateway(child));
+        flowElements.push(mapParallelGateway(child, warnings));
         break;
       case 'bpmn:EventBasedGateway':
         flowElements.push(mapEventBasedGateway(child, warnings));
@@ -1576,7 +1582,7 @@ function mapSubProcess(
   const id = requireId(el);
   collectLaneDrops(el, id, warnings);
   if (element === 'transaction') warnIgnoredTransactionAttrs(el, id, warnings);
-  const name = readDerivableName(el, id);
+  const named = readNamed(el, id, warnings);
   const { flowElements, sequenceFlows } = mapContainer(
     el,
     warnings,
@@ -1586,7 +1592,7 @@ function mapSubProcess(
   return {
     kind: 'subProcess',
     id,
-    ...(name === undefined ? {} : { name }),
+    ...named,
     ...(element === undefined ? {} : { element }),
     ...readEngineAttributes(el, id, warnings),
     ...readIoMapping(el, id, warnings),
@@ -1650,7 +1656,7 @@ function mapEventSubProcess(
   }
 
   collectLaneDrops(el, id, warnings);
-  warnGenuineLabel(el, id, 'an event handler', warnings);
+  warnNamedDrop(el, id, 'an event handler', warnings);
 
   const children = (el.get('flowElements') as ModdleElement[]) ?? [];
   const startEvents = children.filter((c) => c.$type === 'bpmn:StartEvent');
@@ -1739,14 +1745,14 @@ function mapEventSubProcessStart(
   }
 
   // Unlike a boundary event or a throw, the start statement under an `on`
-  // header has a label slot, so the label is carried rather than dropped;
-  // warnElidedLabel reports it if the statement turns out not to print.
-  const name = readDerivableName(startEl, id);
+  // header has a label slot, so the pair is carried rather than dropped;
+  // warnElidedNamedDrop reports it if the statement turns out not to print.
+  const named = readNamed(startEl, id, warnings);
   const formFields = readFormFields(startEl, id, warnings);
   return {
     kind: 'startEvent',
     id,
-    ...(name === undefined ? {} : { name }),
+    ...named,
     eventDefinition,
     ...(isInterrupting === false ? { isInterrupting: false } : {}),
     ...(formFields === undefined ? {} : { formFields }),
@@ -1828,7 +1834,7 @@ function mapBoundaryEvent(
     warnings,
     'boundary',
   );
-  warnGenuineLabel(el, id, 'a boundary event', warnings);
+  warnNamedDrop(el, id, 'a boundary event', warnings);
 
   const cancelActivity = el.get('cancelActivity') === false ? false : undefined;
   const nonInterrupting = NON_INTERRUPTING_REFUSALS[eventDefinition.kind];
@@ -1870,6 +1876,7 @@ function readCatchEventDefinition(
 ): EventDefinition {
   collectExtensionDrops(defEl, ownerId, warnings);
   collectUnmappedBpmnDrops(defEl, ownerId, warnings);
+  warnDocumentationDrop(defEl, ownerId, 'an event definition', warnings);
   warnCatchSideImplementationAttrs(defEl, ownerId, warnings);
 
   if (defEl.$type === 'bpmn:ErrorEventDefinition') {
@@ -2100,6 +2107,7 @@ function readThrowEventDefinition(
 ): EventDefinition {
   collectExtensionDrops(defEl, ownerId, warnings);
   collectUnmappedBpmnDrops(defEl, ownerId, warnings);
+  warnDocumentationDrop(defEl, ownerId, 'an event definition', warnings);
   warnThrowSideBindingAttrs(defEl, ownerId, warnings);
 
   if (defEl.$type === 'bpmn:ErrorEventDefinition') {
@@ -2180,43 +2188,80 @@ function warnCatchSideImplementationAttrs(
 }
 
 /**
- * Report the label of a start or end the printer writes no statement for. The
- * printer's own predicate decides, so a label that does survive is never
- * reported, and one that stops surviving is never reported silently.
+ * Report the label and the documentation of a start or end the printer writes
+ * no statement for. The printer's own predicate decides, so text that does
+ * survive is never reported, and text that stops surviving is never dropped
+ * without a word.
  */
-function warnElidedLabel(
+function warnElidedNamedDrop(
   el: StartEvent | EndEvent,
   startTriggerSuppressed: boolean,
   warnings: ImportWarning[],
 ): void {
-  if (el.name === undefined) return;
   if (!isElidedOnPrint(el, startTriggerSuppressed)) return;
   const statement = el.kind === 'startEvent' ? 'start' : 'end';
-  warnings.push({
-    elementId: el.id,
-    category: 'label',
-    message:
-      `The label '${el.name}' on '${el.id}' was not written to the script: ` +
-      `'${el.id}' is the kind of name this tool generates for itself, which ` +
-      `a script cannot repeat, so this ${statement} is left out entirely and ` +
-      'its label with it. Rename it in the diagram to keep the label.',
-  });
+  const report = (
+    category: 'label' | 'documentation',
+    subject: string,
+  ): void => {
+    warnings.push({
+      elementId: el.id,
+      category,
+      message:
+        `The ${subject} on '${el.id}' was not written to the script: ` +
+        `'${el.id}' is the kind of name this tool generates for itself, ` +
+        `which a script cannot repeat, so this ${statement} is left out ` +
+        `entirely and its ${category} with it. Rename it in the diagram to ` +
+        `keep the ${category}.`,
+    });
+  };
+  if (el.name !== undefined) report('label', `label '${el.name}'`);
+  if (el.documentation !== undefined) report('documentation', 'documentation');
 }
 
-function warnGenuineLabel(
+/**
+ * Report the label and the documentation of an element whose position has no
+ * IR node to hold either. `surface` names that position, and each fact takes
+ * its own category, so an element draws one warning per fact and never two for
+ * one.
+ */
+function warnNamedDrop(
   el: ModdleElement,
   id: string,
   surface: string,
   warnings: ImportWarning[],
 ): void {
-  const name = readDerivableName(el, id);
-  if (name === undefined) return;
+  const label = readDerivableName(el, id);
+  if (label !== undefined) {
+    warnings.push({
+      elementId: id,
+      category: 'label',
+      message:
+        `The label '${label}' on '${id}' was not imported: ${surface} has no ` +
+        "label in this tool's surface.",
+    });
+  }
+  warnDocumentationDrop(el, id, surface, warnings);
+}
+
+/**
+ * Report a `bpmn:documentation` at a position with no IR node to hold it,
+ * naming that position the way {@link warnNamedDrop} names it. A position that
+ * does hold one reads it through {@link readNamed} instead.
+ */
+function warnDocumentationDrop(
+  el: ModdleElement,
+  id: string,
+  surface: string,
+  warnings: ImportWarning[],
+): void {
+  if (documentationChildren(el).length === 0) return;
   warnings.push({
     elementId: id,
-    category: 'label',
+    category: 'documentation',
     message:
-      `The label '${name}' on '${id}' was not imported: ${surface} has no ` +
-      "label in this tool's surface.",
+      `The documentation on '${id}' was not imported: ${surface} has no ` +
+      "documentation in this tool's surface.",
   });
 }
 
@@ -2225,7 +2270,7 @@ function mapCallActivity(
   warnings: ImportWarning[],
 ): CallActivity {
   const id = requireId(el);
-  const name = readDerivableName(el, id);
+  const named = readNamed(el, id, warnings);
 
   const calledElement = readString(el, 'calledElement');
   if (calledElement === undefined) {
@@ -2248,7 +2293,7 @@ function mapCallActivity(
   return {
     kind: 'callActivity',
     id,
-    ...(name === undefined ? {} : { name }),
+    ...named,
     calledElement,
     ...(binding === undefined ? {} : { binding }),
     ...(businessKey === undefined ? {} : { businessKey }),
@@ -2523,7 +2568,8 @@ function warnLaneSetDrops(
  * The element-valued moddle properties some reader on this transform reads;
  * every other BPMN child is content nothing reads, reported by
  * {@link collectUnmappedBpmnDrops}. Several are read without being mapped
- * one-to-one: `documentation` and `extensionElements` by
+ * one-to-one: `documentation` by {@link readNamed} or
+ * {@link warnDocumentationDrop}, `extensionElements` by
  * {@link collectExtensionDrops}, `laneSets` by {@link collectLaneDrops},
  * `loopCharacteristics` and its four children here by
  * {@link readLoopCharacteristics}, `rootElements` by {@link xmlToIr}, and
@@ -2623,7 +2669,14 @@ function collectRootDrops(
   for (const root of rootElements) {
     if (HANDLED_ROOT_KINDS.has(root.$type)) {
       if (root.$type !== 'bpmn:Process') {
-        collectExtensionDrops(root, root.id ?? processId, warnings);
+        const rootId = root.id ?? processId;
+        collectExtensionDrops(root, rootId, warnings);
+        warnDocumentationDrop(
+          root,
+          rootId,
+          `a ${xmlTagOf(root.$type)} root`,
+          warnings,
+        );
       }
       continue;
     }
@@ -2678,7 +2731,6 @@ function collectExtensionDrops(
   warnUnreadPrefixedAttrs(el, ownerId, warnings);
   warnUnreadExtensionElements(el, ownerId, warnings);
   warnUnreadDeclaredAttrs(el, ownerId, warnings);
-  warnDocumentationDrop(el, ownerId, warnings);
 }
 
 /**
@@ -2754,23 +2806,6 @@ function warnUnreadDeclaredAttrs(
       continue;
     }
     warnUnimportedSetting(warnings, ownerId, `'${prop.ns.name}' setting`);
-  }
-}
-
-/** One warning per element carrying `bpmn:documentation`, however many children. */
-function warnDocumentationDrop(
-  el: ModdleElement,
-  ownerId: string,
-  warnings: ImportWarning[],
-): void {
-  const documentation =
-    (el.get('documentation') as ModdleElement[] | undefined) ?? [];
-  if (documentation.length > 0) {
-    warnings.push({
-      elementId: ownerId,
-      category: 'documentation',
-      message: `Documentation on '${ownerId}' was not imported; documentation is not yet carried by this tool.`,
-    });
   }
 }
 
@@ -2901,12 +2936,12 @@ function mapStartEvent(
 ): StartEvent {
   const id = requireId(el);
   const eventDefinition = readStartTrigger(el, id, warnings, hostKind);
-  const name = readDerivableName(el, id);
+  const named = readNamed(el, id, warnings);
   const formFields = readFormFields(el, id, warnings);
   return {
     kind: 'startEvent',
     id,
-    ...(name === undefined ? {} : { name }),
+    ...named,
     ...(formFields === undefined ? {} : { formFields }),
     ...(eventDefinition === undefined ? {} : { eventDefinition }),
     ...readEngineAttributes(el, id, warnings),
@@ -3040,11 +3075,11 @@ function mapEndEvent(
   const defs = eventDefinitionsOf(el);
 
   if (defs.length === 0) {
-    const name = readDerivableName(el, id);
+    const named = readNamed(el, id, warnings);
     return {
       kind: 'endEvent',
       id,
-      ...(name === undefined ? {} : { name }),
+      ...named,
       ...readEngineAttributes(el, id, warnings),
     };
   }
@@ -3071,11 +3106,12 @@ function mapEndEvent(
     }
     collectExtensionDrops(defEl, id, warnings);
     collectUnmappedBpmnDrops(defEl, id, warnings);
-    const name = readDerivableName(el, id);
+    warnDocumentationDrop(defEl, id, 'an event definition', warnings);
+    const named = readNamed(el, id, warnings);
     return {
       kind: 'endEvent',
       id,
-      ...(name === undefined ? {} : { name }),
+      ...named,
       eventDefinition: { kind: carried },
       ...readEngineAttributes(el, id, warnings),
     };
@@ -3091,7 +3127,7 @@ function mapEndEvent(
   }
 
   const eventDefinition = readThrowEventDefinition(defEl, id, warnings);
-  warnGenuineLabel(el, id, 'a throw', warnings);
+  warnNamedDrop(el, id, 'a throw', warnings);
 
   return {
     kind: 'endEvent',
@@ -3145,7 +3181,7 @@ function mapIntermediateThrowEvent(
   }
 
   const eventDefinition = readThrowEventDefinition(defEl, id, warnings);
-  warnGenuineLabel(el, id, 'an emit', warnings);
+  warnNamedDrop(el, id, 'an emit', warnings);
 
   return {
     kind: 'intermediateThrowEvent',
@@ -3270,7 +3306,7 @@ function mapIntermediateCatchEvent(
     warnings,
     'intermediate catch',
   ) as IntermediateCatchEvent['eventDefinition'];
-  warnGenuineLabel(el, id, 'an await', warnings);
+  warnNamedDrop(el, id, 'an await', warnings);
 
   return {
     kind: 'intermediateCatchEvent',
@@ -3570,6 +3606,7 @@ function sweepRepetition(
 ): void {
   collectUnmappedBpmnDrops(loopEl, id, warnings);
   collectExtensionDrops(loopEl, id, warnings);
+  warnDocumentationDrop(loopEl, id, 'a repetition', warnings);
   for (const name of IGNORED_REPETITION_REFS) {
     if (
       getEl(loopEl, name) !== undefined ||
@@ -3606,7 +3643,7 @@ function warnRepetitionContentIgnored(
 
 function mapUserTask(el: ModdleElement, warnings: ImportWarning[]): UserTask {
   const id = requireId(el);
-  const name = readDerivableName(el, id);
+  const named = readNamed(el, id, warnings);
   const assignee = readNamespacedAttr(el, 'assignee');
   const formKey = readNamespacedAttr(el, 'formKey');
   const formFields = readFormFields(el, id, warnings);
@@ -3620,7 +3657,7 @@ function mapUserTask(el: ModdleElement, warnings: ImportWarning[]): UserTask {
   return {
     kind: 'userTask',
     id,
-    ...(name === undefined ? {} : { name }),
+    ...named,
     ...(assignee === undefined ? {} : { assignee }),
     ...(formKey === undefined ? {} : { formKey }),
     ...(formFields === undefined ? {} : { formFields }),
@@ -3637,11 +3674,11 @@ function mapUserTask(el: ModdleElement, warnings: ImportWarning[]): UserTask {
 
 function mapTask(el: ModdleElement, warnings: ImportWarning[]): Task {
   const id = requireId(el);
-  const name = readDerivableName(el, id);
+  const named = readNamed(el, id, warnings);
   return {
     kind: 'task',
     id,
-    ...(name === undefined ? {} : { name }),
+    ...named,
     ...readEngineAttributes(el, id, warnings),
     ...readIoMapping(el, id, warnings),
   };
@@ -3676,7 +3713,7 @@ function mapReceiveTask(
   warnings: ImportWarning[],
 ): ReceiveTask {
   const id = requireId(el);
-  const name = readDerivableName(el, id);
+  const named = readNamed(el, id, warnings);
   // A missing messageRef is a legitimate wait state, so it is imported rather
   // than refused.
   const messageName =
@@ -3686,7 +3723,7 @@ function mapReceiveTask(
   return {
     kind: 'receiveTask',
     id,
-    ...(name === undefined ? {} : { name }),
+    ...named,
     ...(messageName === undefined ? {} : { messageName }),
     ...readEngineAttributes(el, id, warnings),
     ...readIoMapping(el, id, warnings),
@@ -3700,12 +3737,12 @@ function mapServiceTask(
   element?: ServiceTask['element'],
 ): ServiceTask {
   const id = requireId(el);
-  const name = readDerivableName(el, id);
+  const named = readNamed(el, id, warnings);
   const resultVariable = readNamespacedAttr(el, 'resultVariable');
   return {
     kind: 'serviceTask',
     id,
-    ...(name === undefined ? {} : { name }),
+    ...named,
     binding: readServiceTaskBinding(el, id, element, warnings),
     ...(resultVariable === undefined ? {} : { resultVariable }),
     ...(element === undefined ? {} : { element }),
@@ -3967,7 +4004,7 @@ function mapScriptTask(
       externalResourceDetail(`the script on '${id}'`, resource),
     );
   }
-  const name = readDerivableName(el, id);
+  const named = readNamed(el, id, warnings);
   const format = readString(el, 'scriptFormat') ?? '';
   const body = el.get('script');
   const code = typeof body === 'string' ? body : '';
@@ -3975,7 +4012,7 @@ function mapScriptTask(
   return {
     kind: 'scriptTask',
     id,
-    ...(name === undefined ? {} : { name }),
+    ...named,
     format,
     code,
     ...(resultVariable === undefined ? {} : { resultVariable }),
@@ -3992,26 +4029,30 @@ function mapScriptTask(
 function mapDefaultingGateway(
   el: ModdleElement,
   kind: 'exclusiveGateway' | 'inclusiveGateway',
+  warnings: ImportWarning[],
 ): ExclusiveGateway | InclusiveGateway {
   const id = requireId(el);
-  const name = readString(el, 'name');
+  const named = readNamed(el, id, warnings, readString(el, 'name'));
   const defaultFlowId = getEl(el, 'default')?.id;
 
   return {
     kind,
     id,
-    ...(name === undefined ? {} : { name }),
+    ...named,
     ...(defaultFlowId === undefined ? {} : { defaultFlowId }),
   };
 }
 
-function mapParallelGateway(el: ModdleElement): ParallelGateway {
+function mapParallelGateway(
+  el: ModdleElement,
+  warnings: ImportWarning[],
+): ParallelGateway {
   const id = requireId(el);
-  const name = readString(el, 'name');
+  const named = readNamed(el, id, warnings, readString(el, 'name'));
   return {
     kind: 'parallelGateway',
     id,
-    ...(name === undefined ? {} : { name }),
+    ...named,
   };
 }
 
@@ -4026,11 +4067,11 @@ function mapEventBasedGateway(
 ): EventBasedGateway {
   const id = requireId(el);
   warnIgnoredWaitAttrs(el, id, warnings);
-  const name = readString(el, 'name');
+  const named = readNamed(el, id, warnings, readString(el, 'name'));
   return {
     kind: 'eventBasedGateway',
     id,
-    ...(name === undefined ? {} : { name }),
+    ...named,
   };
 }
 
@@ -4074,6 +4115,7 @@ function mapSequenceFlow(
   warnings: ImportWarning[],
 ): SequenceFlow {
   const id = requireId(el);
+  warnDocumentationDrop(el, id, 'a sequence flow', warnings);
 
   const sourceRef = requireFlowEndpoint(el, 'sourceRef', id);
   const targetRef = requireFlowEndpoint(el, 'targetRef', id);
@@ -4202,6 +4244,76 @@ function readString(el: ModdleElement, name: string): string | undefined {
 function readDerivableName(el: ModdleElement, id: string): string | undefined {
   const name = readString(el, 'name');
   return name === undefined || name === humanize(id) ? undefined : name;
+}
+
+/**
+ * The label and the documentation an element carries, read as one pair: every
+ * kind whose IR node holds a `name` holds a `documentation` beside it. A mapper
+ * for a new kind reads both here, or reports both through
+ * {@link warnNamedDrop} when its position has no node to hold either; those are
+ * the only two answers, and neither of them is silence.
+ *
+ * A gateway is the one caller that passes `name` itself, because its id is a
+ * structural coordinate rather than a label the export direction derives, so a
+ * name equal to the derived one is still the author's.
+ */
+function readNamed(
+  el: ModdleElement,
+  id: string,
+  warnings: ImportWarning[],
+  name = readDerivableName(el, id),
+): Named {
+  const documentation = readDocumentation(el, id, warnings);
+  return {
+    ...(name === undefined ? {} : { name }),
+    ...(documentation === undefined ? {} : { documentation }),
+  };
+}
+
+/**
+ * The text of a single plaintext `bpmn:documentation` child, verbatim: the
+ * whitespace a modeler pretty-printed into the body comes back with it, and an
+ * empty body carries as an empty string. More than one child, or a `textFormat`
+ * naming anything but plain text, is one string this surface cannot hold and is
+ * reported instead. moddle answers BPMN's `text/plain` default for an absent
+ * `textFormat`, so an unwritten format needs no case of its own.
+ */
+function readDocumentation(
+  el: ModdleElement,
+  id: string,
+  warnings: ImportWarning[],
+): string | undefined {
+  const children = documentationChildren(el);
+  const [first] = children;
+  if (first === undefined) return undefined;
+  const report = (detail: string): undefined => {
+    warnings.push({
+      elementId: id,
+      category: 'documentation',
+      message: `The documentation on '${id}' was not imported: ${detail}.`,
+    });
+    return undefined;
+  };
+  if (children.length > 1) {
+    return report(
+      `this surface holds one <bpmn:documentation> and '${id}' carries ` +
+        String(children.length),
+    );
+  }
+  const textFormat = first.get('textFormat');
+  if (textFormat !== 'text/plain') {
+    return report(
+      'this surface holds plain text and its textFormat is ' +
+        `'${String(textFormat)}'`,
+    );
+  }
+  const text = first.get('text');
+  return typeof text === 'string' ? text : '';
+}
+
+/** The `bpmn:documentation` children moddle parsed off an element. */
+function documentationChildren(el: ModdleElement): ModdleElement[] {
+  return (el.get('documentation') as ModdleElement[] | undefined) ?? [];
 }
 
 /**

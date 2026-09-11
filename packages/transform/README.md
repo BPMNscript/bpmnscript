@@ -36,6 +36,7 @@ All types live in `src/ir/types.ts` and are re-exported from the package root.
 interface BpmnProcess {
   id: string;
   name?: string;
+  documentation?: string; // bpmn:documentation, carried verbatim from a single plaintext child
   isExecutable: true; // always true (executable process)
   versionTag?: string; // operaton:versionTag, an author-supplied version label
   flowElements: FlowElement[];
@@ -200,9 +201,10 @@ It also covers a label on a start or an end whose id carries a synthesized-id pr
 `unreferencedRoot` covers a `bpmn:Message` or `bpmn:Signal` root that nothing in the process references, a receive task's `messageRef` included.
 It also covers an error or escalation root carrying no code, which nothing can key it by; one carrying a code imports as a declaration whether or not anything raises it.
 
-`documentation` covers `bpmn:documentation` on any mapped element, one warning per element.
-The IR has no documentation surface, so the text is dropped rather than kept.
-Carrying documentation through both transform directions is a real future feature, not yet built.
+`documentation` covers `bpmn:documentation` at every position where `label` above is warned, for the same reason: an event handler, a typed end event, an intermediate throw, an intermediate catch, a boundary event, and a start or an end whose id carries a synthesized-id prefix.
+It also covers a `bpmn:documentation` on a position that reads no `name` at all: the definitions root, an event definition, an Error/Escalation/Message/Signal root, a multi-instance loop characteristics element, and a sequence flow.
+A second `bpmn:documentation` child on one element, or one whose `textFormat` is set to anything but plaintext, falls under the category regardless of position.
+Everywhere else the text is carried onto the IR node alongside its `name` ([ADR-0031](../../docs/decisions/0031-carry-bpmn-documentation.md)).
 
 `unmappedConstruct` covers BPMN content no reader on this transform reads, one warning per construct.
 On an element it touches: an artifact on a process or sub-process (a `bpmn:textAnnotation`, its `bpmn:association`, a `bpmn:group`), a `bpmn:ioSpecification`, a `bpmn:property`, a data association, a `bpmn:auditing` or `bpmn:monitoring` block, and a resource assignment such as a `bpmn:potentialOwner`.

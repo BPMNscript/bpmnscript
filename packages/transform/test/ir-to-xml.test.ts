@@ -398,6 +398,49 @@ describe('irToXml: scriptTask serialization', () => {
   });
 });
 
+describe('irToXml: documentation', () => {
+  const documentedIr: BpmnProcess = {
+    ...chained([
+      { kind: 'startEvent', id: 'Start' },
+      { kind: 'userTask', id: 'Review', documentation: 'Review the order.' },
+      { kind: 'endEvent', id: 'End', documentation: 'Order handled.' },
+    ]),
+    documentation: 'Process notes.',
+  };
+
+  let documentedXml: string;
+  let proc: Moddle;
+
+  beforeAll(async () => {
+    documentedXml = await irToXml(documentedIr);
+    proc = await parseProcessTree(documentedXml);
+  });
+
+  it("writes a bpmn:documentation child carrying the exact text, before the node's other children and with no textFormat attribute, on the process and on every carrying node", () => {
+    expect(documentationOf(proc)).toEqual(['Process notes.']);
+    expect(documentationOf(childById(proc, 'Review'))).toEqual([
+      'Review the order.',
+    ]);
+    expect(documentationOf(childById(proc, 'End'))).toEqual(['Order handled.']);
+    expect(childById(proc, 'Start').documentation).toBeUndefined();
+
+    // A bare opening tag, with no `textFormat` attribute, for all three: an
+    // absent attribute is what `text/plain` means, and the parsed tree's
+    // `.textFormat` getter would answer that default either way.
+    expect(documentedXml.match(/<bpmn:documentation[^>]*>/g)).toEqual([
+      '<bpmn:documentation>',
+      '<bpmn:documentation>',
+      '<bpmn:documentation>',
+    ]);
+
+    const reviewBlock = extractNodeBlock(documentedXml, 'Review');
+    expect(reviewBlock.indexOf('<bpmn:documentation>')).toBeGreaterThan(-1);
+    expect(reviewBlock.indexOf('<bpmn:documentation>')).toBeLessThan(
+      reviewBlock.indexOf('<bpmn:incoming>'),
+    );
+  });
+});
+
 /** `PStart -> Outer(OStart -> Inner(IStart -> Deep -> IEnd) -> OEnd) -> PEnd`. */
 const twoLevelIr: BpmnProcess = chained([
   { kind: 'startEvent', id: 'PStart' },
@@ -2417,6 +2460,11 @@ function structureOf(container: Moddle): string[] {
   return (container.flowElements ?? []).map((e) => `${e.$type} ${e.id}`);
 }
 
+/** The text of every `bpmn:documentation` child. */
+function documentationOf(node: Moddle): string[] {
+  return (node.documentation ?? []).map((doc) => doc.text ?? '');
+}
+
 /** The `<bpmn:incoming>`/`<bpmn:outgoing>` child count of one flow node. */
 function degreeOf(xmlStr: string, id: string): { in: number; out: number } {
   const block = extractNodeBlock(xmlStr, id);
@@ -2643,6 +2691,8 @@ interface Moddle {
   id?: string;
   name?: string;
   body?: string;
+  text?: string;
+  documentation?: Moddle[];
   rootElements: Moddle[];
   flowElements?: Moddle[];
   eventDefinitions?: Moddle[];

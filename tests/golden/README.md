@@ -25,6 +25,7 @@ A few stand alone as inputs for one direction only.
 | `repetition.{bpmnscript,bpmn}`         | Every form of the repeat clause                               |
 | `transactions.{bpmnscript,bpmn}`       | A block of work that can be given up, and the cancel pair     |
 | `branch-and-race.{bpmnscript,bpmn}`    | The splits that weigh their branches, and the race of waits   |
+| `documentation.{bpmnscript,bpmn}`      | Human-facing text, on the header and on every carrying kind   |
 | `unstructured-goto.bpmn`               | The `goto` degradation path on import                         |
 
 The three invoice-approval files all describe the same process (review, then a gateway on `amount > 1000`, then senior approval or auto-approve) but come from different sources and pull the tests in different directions.
@@ -219,6 +220,15 @@ The gateway, its catch events, and the merge are all elided on print, each of th
 Every condition reads a field of the start form rather than a `var`, so the declaration comes back out of the XML on the way in.
 
 Contract: two `bpmn:inclusiveGateway` pairs and one `bpmn:parallelGateway` pair, each a `_fork` and a `_join`; exactly two `default` attributes, one naming the flow into the `else` branch and one the flow into the join; one `bpmn:eventBasedGateway` per race, each with one unconditioned flow per catch event and an exclusive merge; and every authored id.
+
+## `documentation.{bpmnscript,bpmn}`
+
+A supplier-onboarding narrative carrying a `documentation` setting on the process header and on one statement of every kind that takes one: a start, a step, a user task, a service task, a script task, a send, a receive, a decision step, a call, a sub-process, and an end.
+Three of the strings are picked for what they put the printer through rather than for how they read.
+One spans two lines, one holds a quote and a backslash, and one opens with `${`, which reads as an expression rather than as a string and is written back escaped, so the fixture pins that both spellings land on the same text.
+The recording step carries documentation and no label while the header and every other carrier hold both, so the order the two settings print in is frozen either way.
+
+Contract: the `bpmn:documentation` child on the process element and on each carrying node, written ahead of that element's other children, with its text verbatim and no `textFormat` attribute; the printed spelling of every setting, `label` ahead of `documentation` wherever a node holds both; and every authored id.
 
 ## `unstructured-goto.bpmn`
 

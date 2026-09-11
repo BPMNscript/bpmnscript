@@ -33,6 +33,7 @@ import type {
   IoMapped,
   IoValue,
   ListenerBinding,
+  Named,
   Repeatable,
   SequenceFlow,
   ServiceTaskBinding,
@@ -74,6 +75,7 @@ interface CodeNames {
 
 export type PrintWarningCategory =
   | 'label'
+  | 'documentation'
   | 'droppedEdge'
   | 'defaultFlow'
   | 'degradedSplit'
@@ -98,7 +100,7 @@ export function irToDsl(process: BpmnProcess): {
   warnings: PrintWarning[];
 } {
   const warnings: PrintWarning[] = [];
-  warnGatewayLabels(process, warnings);
+  warnGatewayText(process, warnings);
   warnRefusedStatements(process, warnings);
 
   const codes = codeDeclarations(process);
@@ -117,11 +119,13 @@ export function irToDsl(process: BpmnProcess): {
 
 /**
  * A split or a merge is derived from the block structure and has no statement
- * of its own, so a name on one is lost on the way out. Every other elided label
- * is reported by `xmlToIr`, which is why this covers gateways alone: a wider
- * rule would report the same drop twice to a caller printing both channels.
+ * of its own, so the text on one is lost on the way out. Every other elided
+ * label is reported by `xmlToIr`, which is why this covers gateways alone: a
+ * wider rule would report the same drop twice to a caller printing both
+ * channels. A label and documentation are reported apart, one warning per
+ * fact, so a caller sorting by category sees each of them once.
  */
-function warnGatewayLabels(
+function warnGatewayText(
   container: FlowContainer,
   warnings: PrintWarning[],
 ): void {
@@ -129,8 +133,11 @@ function warnGatewayLabels(
     // Keyed on the container shape, so a nested split is reached whatever
     // container it sits in.
     if ('flowElements' in el) {
-      warnGatewayLabels(el, warnings);
-    } else if (isGateway(el) && el.name !== undefined) {
+      warnGatewayText(el, warnings);
+      continue;
+    }
+    if (!isGateway(el)) continue;
+    if (el.name !== undefined) {
       warnings.push({
         elementId: el.id,
         category: 'label',
@@ -138,6 +145,17 @@ function warnGatewayLabels(
           `The label '${el.name}' was not written to the script: the ` +
           'script derives every split and every merge from its block ' +
           'structure, so there is no statement here to carry a name. The ' +
+          'process runs the same without it.',
+      });
+    }
+    if (el.documentation !== undefined) {
+      warnings.push({
+        elementId: el.id,
+        category: 'documentation',
+        message:
+          'The documentation written here was not written to the script: ' +
+          'the script derives every split and every merge from its block ' +
+          'structure, so there is no statement here to carry it. The ' +
           'process runs the same without it.',
       });
     }
@@ -401,7 +419,7 @@ class Emitter {
       lines.push(
         ...bodyHeader(
           `${head} ${id}${repeatClause(el)}`,
-          [...labelSetting(el.name), ...engineSettings(el)],
+          [...namedSettings(el), ...engineSettings(el)],
           structuredMembers(el),
         ),
       );
@@ -1272,7 +1290,7 @@ class Emitter {
           const head = definition === undefined ? '' : ` ${definition.kind}`;
           return bracketed(
             `end ${el.id}${head}`,
-            [...labelSetting(el.name), ...engineSettings(el)],
+            [...namedSettings(el), ...engineSettings(el)],
             members,
           );
         }
@@ -1323,7 +1341,7 @@ class Emitter {
       case 'task':
         return bracketed(
           `step ${el.id}${repeatClause(el)}`,
-          [...labelSetting(el.name), ...engineSettings(el)],
+          [...namedSettings(el), ...engineSettings(el)],
           structuredMembers(el),
         );
       case 'receiveTask':
@@ -1591,12 +1609,9 @@ function deadFallbackWarning(forkId: string): PrintWarning {
 const MAX_NESTING_DEPTH = 1000;
 
 function buildProcessHeader(process: BpmnProcess): string {
-  const settings: string[] = [];
-  if (process.name !== undefined) {
-    settings.push(setting('label', quote(process.name)));
-  }
+  const settings: string[] = namedSettings(process);
   if (process.versionTag !== undefined) {
-    settings.push(setting('versionTag', quote(process.versionTag)));
+    settings.push(setting('versionTag', quoteLiteral(process.versionTag)));
   }
   return `process ${process.id}${parens(settings)} {`;
 }
@@ -2079,14 +2094,14 @@ function renderStartEvent(
   const head = trigger.head === '' ? '' : ` ${trigger.head}`;
   return bracketed(
     `start ${el.id}${head}`,
-    [...trigger.items, ...labelSetting(el.name), ...engineSettings(el)],
+    [...trigger.items, ...namedSettings(el), ...engineSettings(el)],
     startOrEndMembers(el),
   );
 }
 
 /** The label leads the assignment settings, and the form block leads the members. */
 function renderUserTask(el: Extract<FlowElement, { kind: 'userTask' }>): Lines {
-  const settings = labelSetting(el.name);
+  const settings = namedSettings(el);
   for (const [key, render] of USER_TASK_SETTINGS) {
     const value = el[key];
     if (value !== undefined) settings.push(setting(key, render(value)));
@@ -2125,7 +2140,8 @@ function renderFormBlock(formFields: FormField[]): Lines {
 
 /** `<id>: <type> "<label>"? (= <default>)?`. */
 function renderFormField(field: FormField): string {
-  const label = field.label !== undefined ? ` ${quote(field.label)}` : '';
+  const label =
+    field.label !== undefined ? ` ${quoteLiteral(field.label)}` : '';
   const def =
     field.defaultValue !== undefined
       ? ` = ${renderFormDefault(field.defaultValue, field.type)}`
@@ -2146,7 +2162,7 @@ function renderReceiveTask(
   el: Extract<FlowElement, { kind: 'receiveTask' }>,
 ): Lines {
   const settings = [
-    ...labelSetting(el.name),
+    ...namedSettings(el),
     ...(el.messageName === undefined
       ? []
       : [setting('message', quote(el.messageName))]),
@@ -2170,7 +2186,7 @@ function renderServiceTask(
 ): Lines {
   const keyword = SERVICE_TASK_LIKE_KEYWORD[el.element ?? 'service'];
   const settings = [
-    ...labelSetting(el.name),
+    ...namedSettings(el),
     ...bindingSettings(el.binding),
     ...resultVariableSetting(el),
     ...engineSettings(el),
@@ -2237,7 +2253,7 @@ function renderCallActivity(
   el: Extract<FlowElement, { kind: 'callActivity' }>,
 ): Lines {
   const settings: string[] = [
-    ...labelSetting(el.name),
+    ...namedSettings(el),
     setting('process', quote(el.calledElement)),
   ];
 
@@ -2308,7 +2324,7 @@ function renderScriptTask(
   el: Extract<FlowElement, { kind: 'scriptTask' }>,
 ): Lines {
   const settings = [
-    ...labelSetting(el.name),
+    ...namedSettings(el),
     ...resultVariableSetting(el),
     ...engineSettings(el),
   ];
@@ -2321,9 +2337,18 @@ function renderScriptTask(
   return lines;
 }
 
-/** The label is a setting, and leads the keyed ones wherever an element carries it. */
-function labelSetting(name: string | undefined): string[] {
-  return name === undefined ? [] : [setting('label', quote(name))];
+/**
+ * The human-facing text an element carries, leading the keyed settings
+ * wherever it carries any. The two travel together so a surface cannot gain
+ * one and forget the other.
+ */
+function namedSettings(el: Named): string[] {
+  return [
+    ...(el.name === undefined ? [] : [setting('label', quoteLiteral(el.name))]),
+    ...(el.documentation === undefined
+      ? []
+      : [setting('documentation', quoteLiteral(el.documentation))]),
+  ];
 }
 
 /** The one spelling a setting takes; a payload and a flag are written without a key. */
@@ -2400,10 +2425,12 @@ function codeDeclarations(process: BpmnProcess): {
     lines.push(
       `${kind} ${name}` +
         parens([
-          ...(decl.code === name ? [] : [setting('code', quote(decl.code))]),
+          ...(decl.code === name
+            ? []
+            : [setting('code', quoteLiteral(decl.code))]),
           ...(decl.message === undefined
             ? []
-            : [setting('message', quote(decl.message))]),
+            : [setting('message', quoteLiteral(decl.message))]),
         ]),
     );
   };
@@ -2497,7 +2524,39 @@ function renderRawCondition(body: string): string {
   return renderRawFallback(parseJuel(body));
 }
 
-/** Escapes inner quotes and backslashes to match the STRING terminal. */
+/**
+ * Escapes inner quotes and backslashes to match the STRING terminal. This is
+ * the quoting for a value the engine evaluates, which a body opening with
+ * `${` has to keep re-lexing as: an expression, a delegate, a timer body, an
+ * io value, a collection. Prose and a declared name take {@link quoteLiteral}.
+ */
 function quote(value: string): string {
   return `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+}
+
+/**
+ * The quoting for a value that has to come back byte for byte: a label,
+ * documentation, a version tag, a form field label, a declared code, an error
+ * message.
+ *
+ * A body opening with `${` is escaped because it lexes as a raw expression,
+ * and the reader unwrapping one strips its quotes without unescaping, so every
+ * other escape inside it would come back as two characters. `\$` is not a
+ * recognized escape and the lexer hands an unrecognized one back unchanged,
+ * which keeps the two exact inverses. Only that opening earns the backslash:
+ * anywhere else a `$` needs none, and an escape no terminal asks for is noise
+ * in source somebody reads.
+ *
+ * A carriage return is escaped for the reason a newline is: the printed line
+ * carries no raw control character, so nothing between writing the source and
+ * reading it back can normalize the prose out from under it. `\r` is a
+ * recognized escape and the lexer maps it straight back.
+ */
+function quoteLiteral(value: string): string {
+  const escaped = value
+    .replace(/\\/g, '\\\\')
+    .replace(/"/g, '\\"')
+    .replace(/\r/g, '\\r')
+    .replace(/\n/g, '\\n');
+  return `"${escaped.startsWith('${') ? '\\' + escaped : escaped}"`;
 }

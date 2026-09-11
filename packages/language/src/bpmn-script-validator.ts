@@ -873,7 +873,7 @@ export class BpmnScriptValidator {
 
   /**
    * The engine execution settings are per-flow-node and have no process-wide
-   * form, leaving the label and `versionTag`.
+   * form, leaving {@link PROCESS_HEADER_KEYS}.
    */
   private checkProcessAttributes(
     process: Process,

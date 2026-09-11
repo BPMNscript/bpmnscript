@@ -518,6 +518,63 @@ describe('astToIr: attribute mapping', () => {
   });
 });
 
+describe('astToIr: documentation setting', () => {
+  /** `documentation` on a `FlowElement` needs `in`, since three kinds carry no such field at all. */
+  const docOf = (container: FlowContainer, id: string): string | undefined => {
+    const node = byId(container, id);
+    return 'documentation' in node ? node.documentation : undefined;
+  };
+
+  it('carries documentation into the IR on the process header and on every element kind that takes it', async () => {
+    const result = await ir(`process P(documentation: "Process notes") {
+      start S(documentation: "Start notes")
+      user U(documentation: "User notes")
+      service V(documentation: "Service notes", class: "x.C")
+      script SC(documentation: "Script notes") \`\`\`js
+x = 1;
+\`\`\`
+      step ST(documentation: "Step notes")
+      send SN(documentation: "Send notes", class: "x.C")
+      receive RV(documentation: "Receive notes")
+      decide DC(documentation: "Decide notes", decision: "d")
+      subprocess SP(documentation: "Subprocess notes") { user X }
+      call CA(documentation: "Call notes", process: "other")
+      end E(documentation: "End notes")
+    }`);
+
+    const carrierIds = [
+      'S',
+      'U',
+      'V',
+      'SC',
+      'ST',
+      'SN',
+      'RV',
+      'DC',
+      'SP',
+      'CA',
+      'E',
+    ];
+    expect([
+      ['P', result.documentation],
+      ...carrierIds.map((id) => [id, docOf(result, id)]),
+    ]).toEqual([
+      ['P', 'Process notes'],
+      ['S', 'Start notes'],
+      ['U', 'User notes'],
+      ['V', 'Service notes'],
+      ['SC', 'Script notes'],
+      ['ST', 'Step notes'],
+      ['SN', 'Send notes'],
+      ['RV', 'Receive notes'],
+      ['DC', 'Decide notes'],
+      ['SP', 'Subprocess notes'],
+      ['CA', 'Call notes'],
+      ['E', 'End notes'],
+    ]);
+  });
+});
+
 describe('astToIr: service task binding variants', () => {
   it.each([
     [

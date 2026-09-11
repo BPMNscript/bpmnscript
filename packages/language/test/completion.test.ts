@@ -286,6 +286,11 @@ const CATCH_TRIGGERS: Item[] = [
 ];
 
 const LABEL: Item = ['label', SETTING, 'label: "${1:label}"'];
+const DOCUMENTATION: Item = [
+  'documentation',
+  SETTING,
+  'documentation: "${1:documentation}"',
+];
 
 const ENGINE_SETTINGS: Item[] = [
   ['asyncBefore', SETTING, 'asyncBefore: ${1|true,false|}'],
@@ -338,6 +343,7 @@ const VERSION: Item = ['version', SETTING, 'version: ${1:1}'];
 
 const USER_PARENS: Item[] = [
   LABEL,
+  DOCUMENTATION,
   ['assignee', SETTING, 'assignee: "${1:user}"'],
   ['formKey', SETTING, 'formKey: "${1:form-key}"'],
   ['candidateGroups', SETTING, 'candidateGroups: "${1:group}"'],
@@ -351,6 +357,7 @@ const USER_PARENS: Item[] = [
 
 const SERVICE_PARENS: Item[] = [
   LABEL,
+  DOCUMENTATION,
   ...BINDINGS,
   TOPIC,
   RESULT_VARIABLE,
@@ -360,6 +367,7 @@ const SERVICE_PARENS: Item[] = [
 
 const CALL_PARENS: Item[] = [
   LABEL,
+  DOCUMENTATION,
   ['process', SETTING, 'process: "${1:process-id}"'],
   BINDING,
   VERSION,
@@ -374,6 +382,7 @@ const CALL_PARENS: Item[] = [
 
 const RECEIVE_PARENS: Item[] = [
   LABEL,
+  DOCUMENTATION,
   ['message', SETTING, 'message: "${1:MessageName}"'],
   ...ENGINE_SETTINGS,
   ...LITERALS,
@@ -381,6 +390,7 @@ const RECEIVE_PARENS: Item[] = [
 
 const DECIDE_PARENS: Item[] = [
   LABEL,
+  DOCUMENTATION,
   ...BINDINGS,
   TOPIC,
   ['decision', SETTING, 'decision: "${1:decision-key}"'],
@@ -406,6 +416,7 @@ const HANDLER_PARENS: Item[] = [
 
 const PROCESS_PARENS: Item[] = [
   LABEL,
+  DOCUMENTATION,
   ['versionTag', SETTING, 'versionTag: "${1:1.0.0}"'],
   ...LITERALS,
 ];

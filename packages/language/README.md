@@ -36,6 +36,7 @@ process invoice-approval {
 
 Every targetable statement carries an explicit id, which is what `goto` and boundary events refer to.
 The BPMN `name` is derived from that id (`ReviewInvoice` becomes "Review Invoice") unless a `label` setting gives one instead: `user ReviewInvoice(label: "Review invoice")`.
+A `documentation` setting carries free-form text alongside it, spelled the same way: `user ReviewInvoice(documentation: "Escalate to the senior approver above 1000.")`.
 
 ### Statements
 
@@ -70,7 +71,7 @@ A brace holds what has internal structure: the body of a `while`, `do`, `paralle
 #### Attribute keys per element
 
 The grammar accepts any key in any element's parens and the validator decides which ones that element has, so an unknown key is a diagnostic naming the element rather than a parse error.
-Five engine execution settings are legal on every element that takes settings, `label` is legal on all of them too, and each element kind adds the keys it owns on top.
+Five engine execution settings are legal on every element that takes settings, `label` and `documentation` are legal on all of them too, and each element kind adds the keys it owns on top.
 
 | Element                                                | Keys beyond the engine settings                                                                                     |
 | ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------- |
@@ -84,7 +85,7 @@ Five engine execution settings are legal on every element that takes settings, `
 | `decide`                                               | `class`, `expression`, `delegate`, `topic`, `decision`, `binding`, `version`, `mapDecisionResult`, `resultVariable` |
 | `call`                                                 | `process`, `binding`, `version`, `businessKey`                                                                      |
 | `throw`, `emit`                                        | `class`, `expression`, `delegate`, `topic` (on a `message` trigger only)                                            |
-| process header                                         | `versionTag`, and nothing else                                                                                      |
+| process header                                         | `versionTag`, `documentation`                                                                                       |
 
 The engine settings are `asyncBefore` and `asyncAfter`, which put a transaction boundary before or after the step, `exclusive`, which says whether the engine may run the step's jobs beside other jobs of the same instance, `jobPriority`, which orders those jobs in the queue, and `retryCycle`, the ISO cycle a failed job is retried on.
 The gateways that `if`, `while`, `do...while`, `parallel`, and a multi-branch `await` synthesize have no settings of their own, so no engine setting can be written on one.
@@ -522,7 +523,7 @@ The categories it covers:
 
 - Variables: an undeclared reference (warning), a type mismatch against the declared `var`, a name declared twice.
 - Tasks: a duplicate attribute key, a `service`, `send`, or `decide` task without exactly one binding attribute, a `mapDecisionResult` outside the four result mappings, a `script` task with an unsupported fence tag or an empty or unterminated body.
-- Settings: a key the element does not own, a value in a shape its lowering cannot read (a quoted `asyncBefore`, an unquoted `versionTag`), a `form` block on an element that renders none, and a process header carrying anything but `versionTag`.
+- Settings: a key the element does not own, a value in a shape its lowering cannot read (a quoted `asyncBefore`, an unquoted `versionTag`), a `form` block on an element that renders none, and a process header carrying anything but `versionTag` or `documentation`.
 - Parameters: a direction word other than `input` or `output`, a parameter on an element that carries none, a name repeated within one direction, and an `output` mapping on a repeated step.
 - Listeners: an event word the element does not have, a binding count other than one, a missing timer on `on timeout` or a timer on any other event, a repeated event on one element, and the same fence rules a `script` body follows.
 - Structure: an empty process, subprocess, or handler body, an empty branch or loop body (warning), an unreachable statement, an explicit `start` anywhere but first in its container, a `goto` reaching into a `parallel` or `await` branch from outside it, a second `else` branch on a `parallel` statement, an `else` branch with no conditioned sibling, and an `else` branch beside a sibling carrying no condition.

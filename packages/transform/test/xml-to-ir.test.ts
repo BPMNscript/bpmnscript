@@ -4,9 +4,9 @@
  *
  * `xmlToIr` returns `{ ir, warnings }`, where `warnings` reports non-semantic
  * content dropped on import (extra Operaton/camunda extension attributes and
- * elements, lanes, documentation). Semantic content the IR cannot express is
- * refused instead: an `UnsupportedConstructError` subclass is thrown before any
- * IR is produced.
+ * elements, lanes, and documentation this surface has no slot for). Semantic
+ * content the IR cannot express is refused instead: an
+ * `UnsupportedConstructError` subclass is thrown before any IR is produced.
  */
 
 import { describe, it, expect, beforeAll } from 'vitest';
@@ -2127,34 +2127,317 @@ describe('xmlToIr: undeclared operaton extension element residual', () => {
   });
 });
 
-describe('xmlToIr: warns for dropped documentation', () => {
-  const documentationXml = operatonDoc`    <bpmn:documentation>This process handles onboarding.</bpmn:documentation>
-    <bpmn:startEvent id="S" />
-    <bpmn:userTask id="DocTask" name="Review the application" operaton:assignee="alice">
-      <bpmn:documentation>Collect the signed form.</bpmn:documentation>
-    </bpmn:userTask>
-    <bpmn:endEvent id="E" />
-    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="DocTask" />
-    <bpmn:sequenceFlow id="F2" sourceRef="DocTask" targetRef="E" />`;
+describe('xmlToIr: bpmn:documentation', () => {
+  const doc = (text: string): string =>
+    `<bpmn:documentation>${text}</bpmn:documentation>`;
 
-  it('surfaces one warning per owning element (process and task), and still imports the body', async () => {
-    const { ir, warnings } = await xmlToIr(documentationXml);
-    expect(byId(ir, 'DocTask')).toEqual({
-      kind: 'userTask',
-      id: 'DocTask',
-      name: 'Review the application',
-      assignee: 'alice',
-    });
-    expect(
-      warnings.map((w) => [
-        w.category,
-        w.elementId,
-        /documentation/i.test(w.message),
-      ]),
-    ).toEqual([
-      ['documentation', 'p', true],
-      ['documentation', 'DocTask', true],
+  /** Every `(id, documentation)` the IR holds, the process itself included. */
+  const documented = (ir: BpmnProcess): [string, string][] => {
+    const carried: [string, string][] = [];
+    const visit = (node: BpmnProcess | FlowElement): void => {
+      if ('documentation' in node && node.documentation !== undefined) {
+        carried.push([node.id, node.documentation]);
+      }
+      if ('flowElements' in node) node.flowElements.forEach(visit);
+    };
+    visit(ir);
+    return carried;
+  };
+
+  const reported = (warnings: ImportWarning[]): unknown[] =>
+    warnings.map((w) => [w.category, w.elementId, w.message]);
+
+  const expected = (
+    rows: readonly (readonly [ImportWarning['category'], string, string])[],
+  ): unknown[] =>
+    rows.map(([category, id, detail]) => [
+      category,
+      id,
+      expect.stringContaining(detail),
     ]);
+
+  const TIMER = `<bpmn:timerEventDefinition>
+        <bpmn:timeDuration>P1D</bpmn:timeDuration>
+      </bpmn:timerEventDefinition>`;
+
+  /**
+   * One row per position `bpmn:documentation` can sit on, each stating the text
+   * the IR node holds and the warnings the document draws whole. A position
+   * that carries draws none, and a position wired to neither branch fails both
+   * columns rather than passing in silence.
+   */
+  const POSITIONS: [
+    title: string,
+    xml: string,
+    carried: readonly (readonly [string, string])[],
+    warned: readonly (readonly [ImportWarning['category'], string, string])[],
+  ][] = [
+    [
+      'a process, its start and its end each carry their own',
+      bpmnDoc`    ${doc('Onboarding, end to end.')}
+    <bpmn:startEvent id="S">${doc('Fires when HR files the request.')}</bpmn:startEvent>
+    <bpmn:endEvent id="E">${doc('The hire is on the payroll.')}</bpmn:endEvent>
+    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="E" />`,
+      [
+        ['p', 'Onboarding, end to end.'],
+        ['S', 'Fires when HR files the request.'],
+        ['E', 'The hire is on the payroll.'],
+      ],
+      [],
+    ],
+    ...(
+      [
+        ['a user task', 'userTask', '', ''],
+        [
+          'a service task',
+          'serviceTask',
+          'operaton:class="com.example.Svc"',
+          '',
+        ],
+        ['a send task', 'sendTask', 'operaton:class="com.example.Svc"', ''],
+        [
+          'a business rule task',
+          'businessRuleTask',
+          'operaton:class="com.example.Svc"',
+          '',
+        ],
+        [
+          'a script task',
+          'scriptTask',
+          'scriptFormat="javascript"',
+          '<bpmn:script>total = 1;</bpmn:script>',
+        ],
+        ['a receive task', 'receiveTask', '', ''],
+        ['a step', 'task', '', ''],
+        ['a call activity', 'callActivity', 'calledElement="other"', ''],
+        [
+          'a subprocess',
+          'subProcess',
+          '',
+          `<bpmn:startEvent id="SubS" />
+      <bpmn:endEvent id="SubE" />
+      <bpmn:sequenceFlow id="SubF" sourceRef="SubS" targetRef="SubE" />`,
+        ],
+        ['a branch point', 'exclusiveGateway', '', ''],
+        ['a fork', 'inclusiveGateway', '', ''],
+        ['a parallel fork', 'parallelGateway', '', ''],
+      ] as const
+    ).map(([subject, tag, attrs, extra]): (typeof POSITIONS)[number] => [
+      `${subject} carries it`,
+      oneNodeDoc(tag, { attrs, children: `${doc(`On ${tag}.`)}${extra}` }),
+      [['T', `On ${tag}.`]],
+      [],
+    ]),
+    [
+      "the text is carried verbatim, the body's own whitespace included",
+      oneNodeDoc('userTask', {
+        children:
+          '<bpmn:documentation>\n        Two lines.\n      </bpmn:documentation>',
+      }),
+      [['T', '\n        Two lines.\n      ']],
+      [],
+    ],
+    [
+      'an empty documentation body carries as an empty string',
+      oneNodeDoc('userTask', {
+        children: '<bpmn:documentation></bpmn:documentation>',
+      }),
+      [['T', '']],
+      [],
+    ],
+    [
+      'an event handler reports it, and the trigger start under it carries its own',
+      bpmnDefs`  <bpmn:process id="p" isExecutable="true">
+    <bpmn:startEvent id="S" />
+    <bpmn:endEvent id="E" />
+    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="E" />
+    <bpmn:subProcess id="Handler" triggeredByEvent="true">${doc('Runs when the deadline passes.')}
+      <bpmn:startEvent id="HStart">${doc('The deadline itself.')}
+      ${TIMER}
+      </bpmn:startEvent>
+      <bpmn:endEvent id="HEnd" />
+      <bpmn:sequenceFlow id="SF1" sourceRef="HStart" targetRef="HEnd" />
+    </bpmn:subProcess>
+  </bpmn:process>`,
+      [['HStart', 'The deadline itself.']],
+      [['documentation', 'Handler', 'an event handler has no documentation']],
+    ],
+    [
+      'a start and an end whose ids this tool writes for itself carry it and report that no script can spell it back',
+      bpmnDoc`    <bpmn:startEvent id="StartEvent_1">${doc('Where it begins.')}</bpmn:startEvent>
+    <bpmn:endEvent id="EndEvent_1">${doc('Where it stops.')}</bpmn:endEvent>
+    <bpmn:sequenceFlow id="F1" sourceRef="StartEvent_1" targetRef="EndEvent_1" />`,
+      [
+        ['StartEvent_1', 'Where it begins.'],
+        ['EndEvent_1', 'Where it stops.'],
+      ],
+      [
+        [
+          'documentation',
+          'StartEvent_1',
+          'this start is left out entirely and its documentation with it',
+        ],
+        [
+          'documentation',
+          'EndEvent_1',
+          'this end is left out entirely and its documentation with it',
+        ],
+      ],
+    ],
+    [
+      'the definitions root reports it against the process',
+      bpmnDefs`  ${doc('Exported by hand.')}
+  <bpmn:process id="p" isExecutable="true">
+    <bpmn:startEvent id="S" />
+    <bpmn:endEvent id="E" />
+    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="E" />
+  </bpmn:process>`,
+      [],
+      [['documentation', 'p', 'the definitions root has no documentation']],
+    ],
+    [
+      'an Error, an Escalation, a Message and a Signal root each report it',
+      bpmnDefs`  <bpmn:error id="Err" name="Boom" errorCode="BOOM">${doc('Raised by the vendor.')}</bpmn:error>
+  <bpmn:escalation id="Esc" name="Late" escalationCode="LATE">${doc('Raised on day three.')}</bpmn:escalation>
+  <bpmn:message id="Msg" name="Paid">${doc('Sent by billing.')}</bpmn:message>
+  <bpmn:signal id="Sig" name="Stocked">${doc('Broadcast by the warehouse.')}</bpmn:signal>
+  <bpmn:process id="p" isExecutable="true">
+    <bpmn:startEvent id="S" />
+    <bpmn:endEvent id="E" />
+    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="E" />
+  </bpmn:process>`,
+      [],
+      [
+        ['unreferencedRoot', 'Msg', 'is never used by an on/throw/emit'],
+        ['unreferencedRoot', 'Sig', 'is never used by an on/throw/emit'],
+        ['documentation', 'Err', 'a bpmn:error root has no documentation'],
+        ['documentation', 'Esc', 'a bpmn:escalation root has no documentation'],
+        ['documentation', 'Msg', 'a bpmn:message root has no documentation'],
+        ['documentation', 'Sig', 'a bpmn:signal root has no documentation'],
+      ],
+    ],
+    [
+      'a repetition reports it, and the step it repeats carries its own',
+      oneNodeDoc('userTask', {
+        children: `${doc('Review one application.')}
+      <bpmn:multiInstanceLoopCharacteristics>${doc('Once per applicant.')}
+        <bpmn:loopCardinality>3</bpmn:loopCardinality>
+      </bpmn:multiInstanceLoopCharacteristics>`,
+      }),
+      [['T', 'Review one application.']],
+      [['documentation', 'T', 'a repetition has no documentation']],
+    ],
+    [
+      'a sequence flow reports it',
+      bpmnDoc`    <bpmn:startEvent id="S" />
+    <bpmn:endEvent id="E" />
+    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="E">${doc('Straight through.')}</bpmn:sequenceFlow>`,
+      [],
+      [['documentation', 'F1', 'a sequence flow has no documentation']],
+    ],
+    [
+      'a boundary event reports it',
+      bpmnDoc`    <bpmn:startEvent id="S" />
+    <bpmn:userTask id="T" />
+    <bpmn:boundaryEvent id="B" attachedToRef="T">${doc('Give up after a day.')}
+      ${TIMER}
+    </bpmn:boundaryEvent>
+    <bpmn:endEvent id="E" />
+    <bpmn:endEvent id="Late" />
+    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="T" />
+    <bpmn:sequenceFlow id="F2" sourceRef="T" targetRef="E" />
+    <bpmn:sequenceFlow id="F3" sourceRef="B" targetRef="Late" />`,
+      [],
+      [['documentation', 'B', 'a boundary event has no documentation']],
+    ],
+    [
+      'an await reports it, and so does the event definition inside it',
+      bpmnDoc`    <bpmn:startEvent id="S" />
+    <bpmn:intermediateCatchEvent id="Await">${doc('Wait a day.')}
+      <bpmn:timerEventDefinition>${doc('The day itself.')}
+        <bpmn:timeDuration>P1D</bpmn:timeDuration>
+      </bpmn:timerEventDefinition>
+    </bpmn:intermediateCatchEvent>
+    <bpmn:endEvent id="E" />
+    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="Await" />
+    <bpmn:sequenceFlow id="F2" sourceRef="Await" targetRef="E" />`,
+      [],
+      [
+        ['documentation', 'Await', 'an event definition has no documentation'],
+        ['documentation', 'Await', 'an await has no documentation'],
+      ],
+    ],
+    [
+      'an emit reports it, and so does the event definition inside it',
+      bpmnDefs`  <bpmn:signal id="Sig" name="Stocked" />
+  <bpmn:process id="p" isExecutable="true">
+    <bpmn:startEvent id="S" />
+    <bpmn:intermediateThrowEvent id="Emit">${doc('Tell the warehouse.')}
+      <bpmn:signalEventDefinition signalRef="Sig">${doc('The broadcast itself.')}</bpmn:signalEventDefinition>
+    </bpmn:intermediateThrowEvent>
+    <bpmn:endEvent id="E" />
+    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="Emit" />
+    <bpmn:sequenceFlow id="F2" sourceRef="Emit" targetRef="E" />
+  </bpmn:process>`,
+      [],
+      [
+        ['documentation', 'Emit', 'an event definition has no documentation'],
+        ['documentation', 'Emit', 'an emit has no documentation'],
+      ],
+    ],
+    [
+      'a throw reports it, and so does the event definition inside it',
+      bpmnDefs`  <bpmn:error id="Err" name="Boom" errorCode="BOOM" />
+  <bpmn:process id="p" isExecutable="true">
+    <bpmn:startEvent id="S" />
+    <bpmn:endEvent id="Throw">${doc('Give up here.')}
+      <bpmn:errorEventDefinition errorRef="Err">${doc('The error itself.')}</bpmn:errorEventDefinition>
+    </bpmn:endEvent>
+    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="Throw" />
+  </bpmn:process>`,
+      [],
+      [
+        ['documentation', 'Throw', 'an event definition has no documentation'],
+        ['documentation', 'Throw', 'a throw has no documentation'],
+      ],
+    ],
+    [
+      'an end carrying a terminate definition carries its own and reports the definition',
+      bpmnDoc`    <bpmn:startEvent id="S" />
+    <bpmn:endEvent id="Stop">${doc('Nothing else runs.')}
+      <bpmn:terminateEventDefinition>${doc('The terminate itself.')}</bpmn:terminateEventDefinition>
+    </bpmn:endEvent>
+    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="Stop" />`,
+      [['Stop', 'Nothing else runs.']],
+      [['documentation', 'Stop', 'an event definition has no documentation']],
+    ],
+  ];
+
+  it.each(POSITIONS)('%s', async (_title, xml, carried, warned) => {
+    const { ir, warnings } = await xmlToIr(xml);
+    expect(documented(ir)).toEqual(carried);
+    expect(reported(warnings)).toEqual(expected(warned));
+  });
+
+  it.each([
+    [
+      'a second documentation child leaves the element with none',
+      `${doc('The first.')}${doc('The second.')}`,
+      "this surface holds one <bpmn:documentation> and 'T' carries 2",
+    ],
+    [
+      'a textFormat naming anything but plain text leaves the element with none',
+      '<bpmn:documentation textFormat="text/html">&lt;p&gt;Hi&lt;/p&gt;</bpmn:documentation>',
+      "this surface holds plain text and its textFormat is 'text/html'",
+    ],
+  ])('%s', async (_title, children, detail) => {
+    const { ir, warnings } = await xmlToIr(
+      oneNodeDoc('userTask', { children }),
+    );
+    expect(documented(ir)).toEqual([]);
+    expect(reported(warnings)).toEqual(
+      expected([['documentation', 'T', detail]]),
+    );
   });
 });
 
@@ -6895,6 +7178,7 @@ ${branches
       kind: 'eventBasedGateway',
       id: 'Wait',
       name: 'Whichever comes first',
+      documentation: 'Pick one.',
     });
     const reported = (warning: ImportWarning) => [
       warning.category,
@@ -6912,7 +7196,6 @@ ${branches
         id,
         expect.stringContaining("'operaton:jobPriority' setting"),
       ],
-      ['documentation', id, expect.stringContaining('Documentation')],
       [
         'unmappedConstruct',
         id,

@@ -1,0 +1,98 @@
+// Documentation round-trip fixture: one supplier-onboarding narrative carrying
+// a `documentation` setting on the process header and on one statement of every
+// kind that takes one.
+//
+// Three of the strings are picked for what they put the printer through rather
+// than for how they read:
+//
+//   - the one on the review task spans two lines, written with an escape, since
+//     a setting prints on a single line;
+//   - the one on the screening task holds a quote and a backslash;
+//   - the one on the recording step opens with `${`, which reads as an
+//     expression rather than as a string, so the fixture pins that the escaped
+//     spelling the printer writes back lands on the same text.
+//
+// The recording step is also the one statement carrying documentation and no
+// label, and the process header and every other carrier hold both, so the
+// order the two print in is frozen either way.
+process supplier-onboarding(
+  label: "Supplier onboarding",
+  documentation: "Runs once for each supplier the buying team wants to trade with."
+) {
+  start ApplicationReceived(
+    label: "Application received",
+    documentation: "The supplier fills this in on the portal before anything else happens."
+  ) {
+    form {
+      supplierId: string "Reference the supplier applied under"
+      contractValue: number "Value of the first contract in euros"
+    }
+  }
+
+  step RecordApplication(documentation: "${supplierId} is the reference every later step quotes.")
+
+  user ReviewApplication(
+    label: "Review the application",
+    documentation: "Two buyers must agree before the application moves on.\nEscalate to the buying lead when they do not."
+  )
+
+  service ScreenSanctions(
+    label: "Screen against the sanctions lists",
+    documentation: "The screening batch reads \"C:\\onboarding\\watchlist.csv\" from the compliance host.",
+    class: "com.example.onboarding.SanctionsScreeningDelegate"
+  )
+
+  script ScoreRisk(
+    label: "Score the country risk",
+    documentation: "The score weighs the country of registration against the contract value.",
+    resultVariable: "riskScore"
+  ) ```groovy
+def score = contractValue > 50000 ? 3 : 1
+execution.setVariable("riskScore", score)
+```
+
+  send RequestReferences(
+    label: "Ask the named referees",
+    documentation: "Three referees are asked at once, and two answers are enough.",
+    class: "com.example.onboarding.ReferenceRequestDelegate"
+  )
+
+  receive AwaitReferences(
+    label: "Wait for the references",
+    documentation: "The portal posts each answer back as it arrives.",
+    message: "ReferencesReturned"
+  )
+
+  decide GradeSupplier(
+    label: "Grade the supplier",
+    documentation: "The grade decides the payment terms the contract may offer.",
+    decision: "supplierGrade",
+    binding: latest,
+    resultVariable: "supplierGrade"
+  )
+
+  if (contractValue > 50000) {
+    call ArrangeAudit(
+      label: "Arrange an on-site audit",
+      documentation: "An audit is booked with the supplier before the first order goes out.",
+      process: "supplier-audit"
+    ) {
+      in supplierId
+      out auditVerdict
+    }
+  }
+
+  subprocess SetUpAccount(
+    label: "Set up the account",
+    documentation: "Everything the finance system needs before the supplier can invoice."
+  ) {
+    start AccountSetupStarted
+    user CreateLedgerEntry(label: "Create the ledger entry", assignee: "demo")
+    end AccountSetupDone
+  }
+
+  end SupplierOnboarded(
+    label: "Supplier onboarded",
+    documentation: "The supplier may be named on a purchase order from here on."
+  )
+}

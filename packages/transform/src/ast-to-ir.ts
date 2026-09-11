@@ -118,6 +118,7 @@ import type {
   IoMapped,
   IoParameter,
   IoValue,
+  Named,
   Repeatable,
   SequenceFlow as IrSequenceFlow,
   ListenerBinding,
@@ -192,6 +193,7 @@ export function astToIr(model: Model): BpmnProcess {
   lowerContainerBody(builder, process.body, process.name, process.name);
 
   const label = processSetting(process, 'label');
+  const documentation = processSetting(process, 'documentation');
   const versionTag = processSetting(process, 'versionTag');
   const { errorCodes, escalationCodes } = eventIdentities({
     id: process.name,
@@ -207,6 +209,7 @@ export function astToIr(model: Model): BpmnProcess {
   return {
     id: process.name,
     ...(label !== undefined ? { name: label } : {}),
+    ...(documentation !== undefined ? { documentation } : {}),
     isExecutable: true,
     ...(versionTag !== undefined ? { versionTag } : {}),
     flowElements: builder.flowElements,
@@ -475,7 +478,7 @@ function lowerStartEvent(builder: Builder, stmt: AstStartEvent): Frontier {
   builder.flowElements.push({
     kind: 'startEvent',
     id: stmt.name,
-    ...labelName(stmt),
+    ...namedAttrs(stmt),
     ...(formFields !== undefined ? { formFields } : {}),
     ...(eventDefinition !== undefined ? { eventDefinition } : {}),
     ...readEngineAttributes(stmt),
@@ -530,7 +533,7 @@ function lowerEndEvent(builder: Builder, stmt: AstEndEvent): Frontier {
   builder.flowElements.push({
     kind: 'endEvent',
     id: stmt.name,
-    ...labelName(stmt),
+    ...namedAttrs(stmt),
     ...(eventDefinition !== undefined ? { eventDefinition } : {}),
     ...readEngineAttributes(stmt),
   });
@@ -555,7 +558,7 @@ function lowerUserTask(builder: Builder, stmt: AstUserTask): Frontier {
   builder.flowElements.push({
     kind: 'userTask',
     id: stmt.name,
-    ...labelName(stmt),
+    ...namedAttrs(stmt),
     ...(assignee !== undefined ? { assignee } : {}),
     ...(formKey !== undefined ? { formKey } : {}),
     ...(formFields !== undefined ? { formFields } : {}),
@@ -624,7 +627,7 @@ function lowerServiceTaskLike(
   builder.flowElements.push({
     kind: 'serviceTask',
     id: stmt.name,
-    ...labelName(stmt),
+    ...namedAttrs(stmt),
     binding,
     ...(resultVariable !== undefined ? { resultVariable } : {}),
     ...(element !== undefined ? { element } : {}),
@@ -687,7 +690,7 @@ function lowerGenericTask(builder: Builder, stmt: AstGenericTask): Frontier {
   builder.flowElements.push({
     kind: 'task',
     id: stmt.name,
-    ...labelName(stmt),
+    ...namedAttrs(stmt),
     ...readLoop(stmt),
     ...readIoParameters(stmt.params),
     ...readEngineAttributes(stmt),
@@ -710,7 +713,7 @@ function lowerReceiveTask(builder: Builder, stmt: AstReceiveTask): Frontier {
   builder.flowElements.push({
     kind: 'receiveTask',
     id: stmt.name,
-    ...labelName(stmt),
+    ...namedAttrs(stmt),
     ...(messageName !== undefined ? { messageName } : {}),
     ...readLoop(stmt),
     ...readIoParameters(stmt.params),
@@ -770,7 +773,7 @@ function lowerScriptTask(builder: Builder, stmt: AstScriptTask): Frontier {
   builder.flowElements.push({
     kind: 'scriptTask',
     id: stmt.name,
-    ...labelName(stmt),
+    ...namedAttrs(stmt),
     format: SCRIPT_FORMAT_ALIASES[tag] ?? tag,
     code,
     ...(resultVariable !== undefined ? { resultVariable } : {}),
@@ -1068,7 +1071,7 @@ function lowerSubProcess(
   builder.flowElements.push({
     kind: 'subProcess',
     id: stmt.name,
-    ...labelName(stmt),
+    ...namedAttrs(stmt),
     ...(stmt.transactional ? { element: 'transaction' as const } : {}),
     flowElements: nested.flowElements,
     sequenceFlows: nested.sequenceFlows,
@@ -1476,7 +1479,7 @@ function lowerCallActivity(builder: Builder, stmt: AstCallActivity): Frontier {
   builder.flowElements.push({
     kind: 'callActivity',
     id: stmt.name,
-    ...labelName(stmt),
+    ...namedAttrs(stmt),
     calledElement,
     ...(binding !== undefined ? { binding } : {}),
     ...(businessKey !== undefined ? { businessKey } : {}),
@@ -1910,12 +1913,18 @@ function collectNamedIds(process: Process): Set<string> {
 type KeyValueAttr = { key: string; value: Expr };
 
 /**
- * An element's label, written as its `label` setting. The IR calls it `name`,
- * since BPMN's `name` is the human-facing text.
+ * An element's name and documentation, written as its `label` and
+ * `documentation` settings. The IR calls the label `name`, since BPMN's
+ * `name` is the human-facing text.
  */
-function labelName(stmt: { items: ParenItem[] }): { name?: string } {
-  const label = attrValue(settingsOf(stmt.items), 'label');
-  return label !== undefined ? { name: label } : {};
+function namedAttrs(stmt: { items: ParenItem[] }): Named {
+  const attrs = settingsOf(stmt.items);
+  const name = attrValue(attrs, 'label');
+  const documentation = attrValue(attrs, 'documentation');
+  return {
+    ...(name !== undefined ? { name } : {}),
+    ...(documentation !== undefined ? { documentation } : {}),
+  };
 }
 
 /**

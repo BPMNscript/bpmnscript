@@ -121,6 +121,7 @@ export async function irToXml(
   const processAttrs: Record<string, unknown> = {
     id: process.id,
     name: process.name ?? humanize(process.id),
+    ...documentationChild(moddle, process.documentation),
     isExecutable: process.isExecutable,
     'operaton:historyTimeToLive': HISTORY_TIME_TO_LIVE,
     ...(process.versionTag !== undefined
@@ -495,6 +496,7 @@ function createFlowNode(
   const baseAttrs: Record<string, unknown> = {
     id: node.id,
     ...(name === undefined ? {} : { name }),
+    ...flowNodeDocumentation(moddle, node),
     ...engineSettingAttrs(moddle, node, roots),
     ...loopCharacteristicsAttrs(moddle, node),
   };
@@ -681,6 +683,36 @@ function versionBindingAttrs(
       ? { [`${prefix}Version`]: binding.version }
       : {}),
   };
+}
+
+/**
+ * The `bpmn:documentation` child carrying `text` verbatim, or `{}` for
+ * `undefined`. `textFormat` stays unset, since an absent attribute is what
+ * `text/plain` means, and moddle serializes `BaseElement`'s properties in
+ * descriptor order regardless of where this is spread in.
+ */
+function documentationChild(
+  moddle: BpmnModdleInstance,
+  text: string | undefined,
+): { documentation?: ModdleElement[] } {
+  return text === undefined
+    ? {}
+    : { documentation: [moddle.create('bpmn:Documentation', { text })] };
+}
+
+/**
+ * A flow node's documentation, or `{}`. `in` narrows past the kinds whose IR
+ * type carries no `documentation` field at all. Unlike {@link flowNodeName}
+ * this derives nothing and humanizes nothing: absent is absent.
+ */
+function flowNodeDocumentation(
+  moddle: BpmnModdleInstance,
+  node: FlowElement,
+): { documentation?: ModdleElement[] } {
+  return documentationChild(
+    moddle,
+    'documentation' in node ? node.documentation : undefined,
+  );
 }
 
 /**

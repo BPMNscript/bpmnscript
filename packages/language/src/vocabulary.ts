@@ -115,8 +115,15 @@ export const LISTENER_BINDING_KEYS: readonly string[] = [
 /** How a call or a decision step pins which deployed version the engine runs. */
 export const CALL_BINDING_VALUES: readonly string[] = ['latest', 'deployment'];
 
-/** A process header carries its label and the version tag it deploys under. */
-export const PROCESS_HEADER_KEYS: readonly string[] = ['label', 'versionTag'];
+/**
+ * A process header carries its label, its documentation and the version tag it
+ * deploys under.
+ */
+export const PROCESS_HEADER_KEYS: readonly string[] = [
+  'label',
+  'documentation',
+  'versionTag',
+];
 
 export const IO_DIRECTIONS: readonly string[] = ['input', 'output'];
 
@@ -399,10 +406,11 @@ export interface AttributeBlockRule {
   /** The element kind as a noun phrase with article, for diagnostics. */
   readonly description: string;
   /**
-   * The keys this kind owns, in the order they are offered. `label` is one of
-   * them wherever the element lowers to a BPMN node carrying a `name`; a
-   * handler, a `throw`/`emit`, and an `await` have no name slot, so a label
-   * written there is an unknown key rather than a dropped one.
+   * The keys this kind owns, in the order they are offered. `label` and
+   * `documentation` are both present wherever the element lowers to a BPMN
+   * node carrying a `name`; a handler, a `throw`/`emit`, and an `await` have
+   * no name slot, so either key written there is an unknown key rather than a
+   * dropped one.
    */
   readonly own: readonly string[];
   /** {@link own} and the engine settings together, for membership tests. */
@@ -432,7 +440,7 @@ export const ATTRIBUTE_BLOCK_RULES: Readonly<
 > = {
   StartEvent: withKeys({
     description: 'a start event',
-    own: ['label'],
+    own: ['label', 'documentation'],
     flags: [],
     forms: true,
     parameters: false,
@@ -440,7 +448,7 @@ export const ATTRIBUTE_BLOCK_RULES: Readonly<
   }),
   EndEvent: withKeys({
     description: 'an end event',
-    own: ['label'],
+    own: ['label', 'documentation'],
     flags: [],
     forms: false,
     parameters: false,
@@ -450,6 +458,7 @@ export const ATTRIBUTE_BLOCK_RULES: Readonly<
     description: 'a user task',
     own: [
       'label',
+      'documentation',
       'assignee',
       'formKey',
       'candidateGroups',
@@ -465,7 +474,12 @@ export const ATTRIBUTE_BLOCK_RULES: Readonly<
   }),
   ServiceTask: withKeys({
     description: 'a service task',
-    own: ['label', ...SERVICE_TASK_BINDING_KEYS, 'resultVariable'],
+    own: [
+      'label',
+      'documentation',
+      ...SERVICE_TASK_BINDING_KEYS,
+      'resultVariable',
+    ],
     flags: [],
     forms: false,
     parameters: true,
@@ -473,7 +487,7 @@ export const ATTRIBUTE_BLOCK_RULES: Readonly<
   }),
   ScriptTask: withKeys({
     description: 'a script task',
-    own: ['label', 'resultVariable'],
+    own: ['label', 'documentation', 'resultVariable'],
     flags: [],
     forms: false,
     parameters: true,
@@ -481,7 +495,7 @@ export const ATTRIBUTE_BLOCK_RULES: Readonly<
   }),
   GenericTask: withKeys({
     description: 'a step',
-    own: ['label'],
+    own: ['label', 'documentation'],
     flags: [],
     forms: false,
     parameters: true,
@@ -489,7 +503,12 @@ export const ATTRIBUTE_BLOCK_RULES: Readonly<
   }),
   SendTask: withKeys({
     description: 'a send task',
-    own: ['label', ...SERVICE_TASK_BINDING_KEYS, 'resultVariable'],
+    own: [
+      'label',
+      'documentation',
+      ...SERVICE_TASK_BINDING_KEYS,
+      'resultVariable',
+    ],
     flags: [],
     forms: false,
     parameters: true,
@@ -497,7 +516,7 @@ export const ATTRIBUTE_BLOCK_RULES: Readonly<
   }),
   ReceiveTask: withKeys({
     description: 'a receive task',
-    own: ['label', 'message'],
+    own: ['label', 'documentation', 'message'],
     flags: [],
     forms: false,
     parameters: true,
@@ -507,6 +526,7 @@ export const ATTRIBUTE_BLOCK_RULES: Readonly<
     description: 'a decision step',
     own: [
       'label',
+      'documentation',
       ...BUSINESS_RULE_BINDING_KEYS,
       'binding',
       'version',
@@ -520,7 +540,7 @@ export const ATTRIBUTE_BLOCK_RULES: Readonly<
   }),
   SubProcess: withKeys({
     description: 'a subprocess',
-    own: ['label'],
+    own: ['label', 'documentation'],
     flags: [],
     forms: false,
     parameters: true,
@@ -528,7 +548,14 @@ export const ATTRIBUTE_BLOCK_RULES: Readonly<
   }),
   CallActivity: withKeys({
     description: 'a call',
-    own: ['label', 'process', 'binding', 'version', 'businessKey'],
+    own: [
+      'label',
+      'documentation',
+      'process',
+      'binding',
+      'version',
+      'businessKey',
+    ],
     flags: [],
     forms: false,
     parameters: true,

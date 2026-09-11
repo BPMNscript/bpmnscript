@@ -177,6 +177,7 @@ const STRUCTURE_SNIPPETS: Readonly<
  */
 const SETTING_SNIPPETS: Readonly<Record<string, string>> = {
   label: 'label: "${1:label}"',
+  documentation: 'documentation: "${1:documentation}"',
   asyncBefore: 'asyncBefore: ${1|true,false|}',
   asyncAfter: 'asyncAfter: ${1|true,false|}',
   exclusive: 'exclusive: ${1|false,true|}',

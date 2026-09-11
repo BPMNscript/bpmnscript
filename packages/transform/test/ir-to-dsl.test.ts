@@ -3319,6 +3319,93 @@ describe('irToDsl: repeated activities', () => {
   });
 });
 
+/**
+ * A prose setting is read back as text rather than evaluated, so the printer's
+ * escaping and the lexer's unescaping have to be exact inverses over every
+ * input a modeler can type. The adversarial rows are the ones a quoted body
+ * opening with `${` reaches: that body lexes as a raw expression, and the
+ * reader unwrapping one strips the quotes without unescaping, so every escape
+ * inside it would come back as two characters.
+ *
+ * Re-parsing through the compiler is the assertion, not the printed text: text
+ * that looks right and lexes differently is the whole failure being guarded.
+ */
+describe('irToDsl: prose comes back byte for byte', () => {
+  /** Each shape, the prose, and whether printing it needs a backslash at all. */
+  const PROSE = [
+    ['plain prose', 'Review the order', false],
+    ['prose holding a quote', 'Review the "rush" order', true],
+    ['prose holding a backslash', 'Review C:\\orders\\rush', true],
+    ['prose opening with a template', '${orderId} is the reference', true],
+    ['prose holding a template', 'Reference ${orderId} was confirmed', false],
+    ['prose opening with a bare dollar', '$50 is the threshold', false],
+    ['prose spanning two lines', 'Review the order.\nThen release it.', true],
+    ['prose holding a carriage return', 'Review the order.\rNow.', true],
+    [
+      'prose spanning two lines the way a text editor ends them',
+      'Review the order.\r\nThen release it.',
+      true,
+    ],
+    [
+      'prose opening with a template and holding a quote',
+      '${orderId} is the "rush" reference',
+      true,
+    ],
+    [
+      'prose opening with a template and spanning two lines',
+      '${orderId}\nis the reference',
+      true,
+    ],
+  ] as const;
+
+  /** Each prose setting and the IR field it is written from. */
+  const SLOTS = [
+    ['label', 'name'],
+    ['documentation', 'documentation'],
+  ] as const;
+
+  it.each(
+    PROSE.flatMap(([shape, text, escapes]) =>
+      SLOTS.map(
+        ([setting, field]) =>
+          [`${setting}, ${shape}`, field, text, escapes] as const,
+      ),
+    ),
+  )('%s', async (_title, field, text, escapes) => {
+    const carrying = (
+      value: string,
+    ): { name?: string; documentation?: string } =>
+      field === 'name' ? { name: value } : { documentation: value };
+    const print = (value: string): Promise<string> =>
+      printed(around({ kind: 'userTask', id: 'Review', ...carrying(value) }));
+
+    const dsl = await print(text);
+    // A statement prints on one line whatever its prose holds, which is what
+    // keeps the indentation of an enclosing block meaningful. Splitting on a
+    // lone carriage return too, since a raw one breaks a line for every reader
+    // of the file without breaking it for this test.
+    expect(dsl.split(/\r\n|\r|\n/)).toHaveLength(
+      (await print('Review the order')).split(/\r\n|\r|\n/).length,
+    );
+    // An escape no terminal asks for is noise in source somebody reads.
+    expect(dsl.includes('\\')).toBe(escapes);
+
+    const back = await reDesugar(dsl);
+    const [review] = back.flowElements.filter(
+      (el): el is Extract<FlowElement, { kind: 'userTask' }> =>
+        el.kind === 'userTask',
+    );
+    expect({
+      name: review?.name,
+      documentation: review?.documentation,
+    }).toEqual({
+      name: undefined,
+      documentation: undefined,
+      ...carrying(text),
+    });
+  });
+});
+
 // `printDsl` is the real entry point; the alias above unwraps `.source` for
 // every suite that only asserts printed text.
 
@@ -3329,6 +3416,12 @@ describe('irToDsl: repeated activities', () => {
  */
 const REPORT = {
   label: { category: 'label', says: ['block structure'] },
+  documentation: {
+    category: 'documentation',
+    says: ['block structure', 'carry it'],
+    // The two facts are reported apart, so neither message may state the other.
+    never: ['The label'],
+  },
   refusedStatement: {
     category: 'refusedStatement',
     says: ['draws an error', 'Rename the step in the model'],
@@ -3513,7 +3606,7 @@ const loopWithEscapesIr = ({
   );
 };
 
-describe('warnings: labels the script has nowhere to write', () => {
+describe('warnings: text the script has nowhere to write', () => {
   const splitIr = (name?: string): BpmnProcess =>
     minimalProcess(
       [
@@ -3605,6 +3698,61 @@ describe('warnings: labels the script has nowhere to write', () => {
     );
 
     expectReports(warnings, ['label', 'NSplit'], ['label', 'HSplit']);
+  });
+
+  /**
+   * Every gateway here has one way in and one way out, so all of them are
+   * walked straight through and the printed source is the same whether they
+   * carry text or not.
+   */
+  const gatewayTextIr = (carried: boolean): BpmnProcess => {
+    const text = (documentation: string) => (carried ? { documentation } : {});
+    return minimalProcess(
+      [
+        { kind: 'startEvent', id: 'S' },
+        {
+          kind: 'exclusiveGateway',
+          id: 'Choice',
+          ...(carried ? { name: 'Amount check' } : {}),
+          ...text('Small orders skip the review.'),
+        },
+        { kind: 'parallelGateway', id: 'Fork', ...text('Both routes run.') },
+        {
+          kind: 'inclusiveGateway',
+          id: 'Some',
+          ...text('Whichever conditions hold.'),
+        },
+        { kind: 'eventBasedGateway', id: 'Race', ...text('First reply wins.') },
+        chainedSub('Sub', [
+          { kind: 'startEvent', id: 'NS' },
+          {
+            kind: 'exclusiveGateway',
+            id: 'Nested',
+            ...text('Nested, and reported all the same.'),
+          },
+          { kind: 'endEvent', id: 'NE' },
+        ]),
+        { kind: 'endEvent', id: 'E' },
+      ],
+      flowChain('S', 'Choice', 'Fork', 'Some', 'Race', 'Sub', 'E'),
+    );
+  };
+
+  it('reports the documentation on every gateway kind, at any depth, and leaves the printed source alone', () => {
+    const carried = printDsl(gatewayTextIr(true));
+    const plain = printDsl(gatewayTextIr(false));
+
+    expect(carried.source).toBe(plain.source);
+    expect(plain.warnings).toEqual([]);
+    expectReports(
+      carried.warnings,
+      ['label', 'Choice'],
+      ['documentation', 'Choice'],
+      ['documentation', 'Fork'],
+      ['documentation', 'Some'],
+      ['documentation', 'Race'],
+      ['documentation', 'Nested'],
+    );
   });
 });
 

@@ -25,8 +25,7 @@ export interface FlowContainer {
   sequenceFlows: SequenceFlow[];
 }
 
-export interface BpmnProcess extends FlowContainer {
-  name?: string;
+export interface BpmnProcess extends FlowContainer, Named {
   /** Always `true`; Operaton runs only executable processes. */
   isExecutable: true;
   /** Distinct from the engine's deployment version. */
@@ -237,6 +236,16 @@ export type EventDefinition =
     };
 
 /**
+ * The human-facing text a BPMN element carries, mixed into every kind the
+ * surface gives a name, so a kind that carries one carries the other. The
+ * three intermediate events have no label slot and therefore hold neither.
+ */
+export interface Named {
+  name?: string;
+  documentation?: string;
+}
+
+/**
  * Mixed into every event and activity kind but not the gateways, which
  * `if`/`while`/`parallel` synthesize, leaving nowhere on the DSL surface to
  * author one. Each field is stored only in the non-default direction, so
@@ -403,10 +412,9 @@ export interface TaskListener {
   timer?: Extract<EventDefinition, { kind: 'timer' }>;
 }
 
-export interface StartEvent extends EngineAttributes {
+export interface StartEvent extends EngineAttributes, Named {
   kind: 'startEvent';
   id: string;
-  name?: string;
   /** `operaton:formData` fields, so Tasklist renders a start form. */
   formFields?: FormField[];
   /** The trigger this start waits on, whether the process's or a handler's. */
@@ -415,10 +423,9 @@ export interface StartEvent extends EngineAttributes {
   isInterrupting?: false;
 }
 
-export interface EndEvent extends EngineAttributes {
+export interface EndEvent extends EngineAttributes, Named {
   kind: 'endEvent';
   id: string;
-  name?: string;
   /** Present when this end is a typed throw or a terminate. */
   eventDefinition?: EventDefinition;
   /**
@@ -456,10 +463,10 @@ export interface IntermediateCatchEvent extends EngineAttributes {
   >;
 }
 
-export interface UserTask extends EngineAttributes, IoMapped, Repeatable {
+export interface UserTask
+  extends EngineAttributes, IoMapped, Repeatable, Named {
   kind: 'userTask';
   id: string;
-  name?: string;
   assignee?: string;
   formKey?: string;
   /** `operaton:formData` fields Tasklist renders. */
@@ -501,10 +508,10 @@ export type ServiceTaskBinding =
       mapDecisionResult?: DecisionResultMapping;
     };
 
-export interface ServiceTask extends EngineAttributes, IoMapped, Repeatable {
+export interface ServiceTask
+  extends EngineAttributes, IoMapped, Repeatable, Named {
   kind: 'serviceTask';
   id: string;
-  name?: string;
   binding: ServiceTaskBinding;
   /** Filled with the binding's return value. */
   resultVariable?: string;
@@ -519,10 +526,10 @@ export interface ServiceTask extends EngineAttributes, IoMapped, Repeatable {
   element?: 'send' | 'businessRule';
 }
 
-export interface ScriptTask extends EngineAttributes, IoMapped, Repeatable {
+export interface ScriptTask
+  extends EngineAttributes, IoMapped, Repeatable, Named {
   kind: 'scriptTask';
   id: string;
-  name?: string;
   /** Canonical Operaton `scriptFormat`, e.g. `"javascript"`, `"groovy"`. */
   format: string;
   /** The `<bpmn:script>` body, verbatim. */
@@ -532,29 +539,27 @@ export interface ScriptTask extends EngineAttributes, IoMapped, Repeatable {
 }
 
 /** A step the engine records and leaves at once; the work happens outside it. */
-export interface Task extends EngineAttributes, IoMapped, Repeatable {
+export interface Task extends EngineAttributes, IoMapped, Repeatable, Named {
   kind: 'task';
   id: string;
-  name?: string;
 }
 
 /**
  * A wait state. With no `messageName` the engine continues it through its own
  * API rather than a correlation.
  */
-export interface ReceiveTask extends EngineAttributes, IoMapped, Repeatable {
+export interface ReceiveTask
+  extends EngineAttributes, IoMapped, Repeatable, Named {
   kind: 'receiveTask';
   id: string;
-  name?: string;
   /** `messageRef`, and the dedupe key: one name, one root element. */
   messageName?: string;
 }
 
 /** Carries no {@link EngineAttributes}, for the reason that interface gives. */
-export interface ExclusiveGateway {
+export interface ExclusiveGateway extends Named {
   kind: 'exclusiveGateway';
   id: string;
-  name?: string;
   /** The BPMN `default` attribute: the flow taken when no condition matches. */
   defaultFlowId?: string;
 }
@@ -563,20 +568,18 @@ export interface ExclusiveGateway {
  * Fork and join both. Every outgoing flow is taken, so there are no conditions
  * and no default. Carries no {@link EngineAttributes} either.
  */
-export interface ParallelGateway {
+export interface ParallelGateway extends Named {
   kind: 'parallelGateway';
   id: string;
-  name?: string;
 }
 
 /**
  * A fork that takes every branch whose condition holds, and the merge that
  * waits for exactly those. Carries no {@link EngineAttributes} either.
  */
-export interface InclusiveGateway {
+export interface InclusiveGateway extends Named {
   kind: 'inclusiveGateway';
   id: string;
-  name?: string;
   /** The BPMN `default` attribute: the flow taken when no condition matches. */
   defaultFlowId?: string;
 }
@@ -585,10 +588,9 @@ export interface InclusiveGateway {
  * A fork whose branches each begin with a wait; the first to resolve cancels
  * the rest. Every outgoing flow is unconditioned, so there is no default.
  */
-export interface EventBasedGateway {
+export interface EventBasedGateway extends Named {
   kind: 'eventBasedGateway';
   id: string;
-  name?: string;
 }
 
 /**
@@ -638,9 +640,8 @@ export function gatewayDefaultFlowId(gateway: Gateway): string | undefined {
 
 /** An activity that is itself a container; the parent wires flow to it by `id`. */
 export interface SubProcess
-  extends FlowContainer, EngineAttributes, IoMapped, Repeatable {
+  extends FlowContainer, EngineAttributes, IoMapped, Repeatable, Named {
   kind: 'subProcess';
-  name?: string;
   /** The event sub-process an `on` lowers to, fired by its start event's trigger. */
   triggeredByEvent?: true;
   /**
@@ -679,10 +680,10 @@ export type CallVariableMapping =
  * definition. Extension children serialize in one order so the round trip is
  * stable: `businessKey`, then `inMappings`, then `outMappings`.
  */
-export interface CallActivity extends EngineAttributes, IoMapped, Repeatable {
+export interface CallActivity
+  extends EngineAttributes, IoMapped, Repeatable, Named {
   kind: 'callActivity';
   id: string;
-  name?: string;
   /** The id of the invoked process. */
   calledElement: string;
   /** Absent means the engine default, latest. */

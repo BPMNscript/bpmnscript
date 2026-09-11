@@ -2981,6 +2981,18 @@ const TASK_KIND_BLOCKS = BLOCK_HOSTS.filter(([kind]) =>
   TASK_KINDS.some(([taskKind]) => taskKind === kind),
 );
 
+/**
+ * `label` and `documentation` share their whole derivation: both are owned by
+ * exactly the kinds lowering to a BPMN node with a name slot. Each key runs
+ * against every host so neither stands in for the other.
+ */
+const NAME_SLOT_HOSTS = ['label', 'documentation'].flatMap((key) =>
+  BLOCK_HOSTS.map(
+    ([kind, description, , settings]) =>
+      [key, kind, description, settings] as const,
+  ),
+);
+
 describe('Validation - every element with settings and a member block', () => {
   test.each(BLOCK_HOSTS)(
     'the engine settings are accepted on %s',
@@ -3010,18 +3022,18 @@ describe('Validation - every element with settings and a member block', () => {
     },
   );
 
-  test.each(BLOCK_HOSTS.filter(([kind]) => LABEL_HOSTS.has(kind)))(
-    'a label is accepted on %s',
-    async (_kind, _description, _members, settings) => {
-      expect(await diagnosticsOf(settings('label: "L"'))).toEqual([]);
+  test.each(NAME_SLOT_HOSTS.filter(([, kind]) => LABEL_HOSTS.has(kind)))(
+    '%s is accepted on %s',
+    async (key, _kind, _description, settings) => {
+      expect(await diagnosticsOf(settings(`${key}: "L"`))).toEqual([]);
     },
   );
 
-  test.each(BLOCK_HOSTS.filter(([kind]) => !LABEL_HOSTS.has(kind)))(
-    'a label on %s names the element kind, having no name slot to land in',
-    async (_kind, description, _members, settings) => {
-      expect(await diagnosticsOf(settings('label: "L"'))).toEqual([
-        notValidOn('label', description),
+  test.each(NAME_SLOT_HOSTS.filter(([, kind]) => !LABEL_HOSTS.has(kind)))(
+    '%s on %s names the element kind, having no name slot to land in',
+    async (key, _kind, description, settings) => {
+      expect(await diagnosticsOf(settings(`${key}: "L"`))).toEqual([
+        notValidOn(key, description),
       ]);
     },
   );

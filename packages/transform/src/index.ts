@@ -23,6 +23,7 @@ export type {
   IntermediateThrowEvent,
   IntermediateCatchEvent,
   BoundaryEvent,
+  Named,
   EngineAttributes,
   IoMapped,
   LoopCharacteristics,
