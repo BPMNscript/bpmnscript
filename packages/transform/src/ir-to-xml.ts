@@ -56,9 +56,9 @@ import {
 const TARGET_NAMESPACE = 'http://bpmnscript.io/processes';
 
 /**
- * `operaton:historyTimeToLive` on every process, not parameterized at the IR
- * level. Exported so the importer can pass a document carrying exactly this
- * value without a warning: re-export reproduces it.
+ * The `operaton:historyTimeToLive` written for a process that authors none.
+ * Exported so the importer can recognise this exact value as unwritten and
+ * drop it, rather than inventing a setting the source never had.
  */
 export const HISTORY_TIME_TO_LIVE = 'P30D';
 
@@ -123,9 +123,20 @@ export async function irToXml(
     name: process.name ?? humanize(process.id),
     ...documentationChild(moddle, process.documentation),
     isExecutable: process.isExecutable,
-    'operaton:historyTimeToLive': HISTORY_TIME_TO_LIVE,
+    // Suppressing an unwritten value belongs on the import side, not here:
+    // `normalizeContainer` spreads the whole container during round-trip
+    // comparison, so a printer-side suppression would leave the source IR
+    // mismatched against the reimported one.
+    'operaton:historyTimeToLive':
+      process.historyTimeToLive ?? HISTORY_TIME_TO_LIVE,
     ...(process.versionTag !== undefined
       ? { 'operaton:versionTag': process.versionTag }
+      : {}),
+    ...(process.candidateStarterUsers !== undefined
+      ? { 'operaton:candidateStarterUsers': process.candidateStarterUsers }
+      : {}),
+    ...(process.candidateStarterGroups !== undefined
+      ? { 'operaton:candidateStarterGroups': process.candidateStarterGroups }
       : {}),
     flowElements: buildContainerChildren(moddle, process, roots),
   };
@@ -506,6 +517,9 @@ function createFlowNode(
       const attrs: Record<string, unknown> = {
         ...baseAttrs,
         ...eventDefinitionAttrs(moddle, node.eventDefinition, roots),
+        ...(node.initiator !== undefined
+          ? { 'operaton:initiator': node.initiator }
+          : {}),
       };
       // BPMN defaults to interrupting, and the serializer drops a default.
       if (node.isInterrupting === false) {

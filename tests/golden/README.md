@@ -137,8 +137,9 @@ Contract: the four event definitions, their order, and the absence of any `name`
 ## `engine-attributes.{bpmnscript,bpmn}`
 
 A motor-claim settlement narrative carrying the flat engine settings, the ones whose value is a single scalar.
-`versionTag` sits on the process header, and `asyncBefore`, `asyncAfter`, `exclusive`, `jobPriority`, and `retryCycle` are spread across a start, an end, a user task, a service task, a script task, a subprocess, a call, an `await`, an `emit`, and both handler forms.
+`versionTag`, `historyTimeToLive`, `candidateStarterUsers`, and `candidateStarterGroups` sit on the process header, `initiator` on the start, and `asyncBefore`, `asyncAfter`, `exclusive`, `jobPriority`, and `retryCycle` are spread across a start, an end, a user task, a service task, a script task, a subprocess, a call, an `await`, an `emit`, and both handler forms.
 Five of the seven keys a user task owns (`assignee`, `formKey`, `candidateGroups`, `candidateUsers`, `priority`) sit together on one task, and `resultVariable` on both a service and a script task.
+The header's `historyTimeToLive` is `P90D` rather than the `P30D` the exporter stamps on a process that wrote none, because the importer reads that value back as unwritten and the fixture would otherwise pin nothing.
 
 Both handler forms are here so the placement rule is pinned in the artifact rather than only in prose.
 A hosted `on ApprovePayout: timer` writes its settings on the boundary event it lowers to, and a host-less `on escalation` writes them on the event sub-process rather than on the trigger start event nested inside it.
@@ -146,7 +147,7 @@ That start event's own block belongs to the `start` statement written inside the
 A `while`, an `if`, and a `parallel` put five synthesized gateways in the same artifact, none of which carries a setting: a gateway id is a structural coordinate with no name an author writes, so a setting found on a gateway during import stays a reported drop.
 Every named node carries an explicit id, and the frozen artifact imports without a single warning, which is what makes that drop report meaningful.
 
-Contract: the `(node id, attribute, value)` table in `tests/engine-attributes.round-trip.test.ts`, the `3.1.0` version tag on the process, and the absence of any engine setting on a gateway and on the event sub-process's trigger start event.
+Contract: the `(node id, attribute, value)` table in `tests/engine-attributes.round-trip.test.ts`, the four engine settings on the header (`3.1.0`, `P90D`, `demo,manager`, `adjusters`) asserted as one record, and the absence of any engine setting on a gateway and on the event sub-process's trigger start event.
 
 ## `input-output.{bpmnscript,bpmn}`
 

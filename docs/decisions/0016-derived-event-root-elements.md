@@ -165,7 +165,7 @@ Extended by ADR-0017 (message/signal/timer/conditional payloads) and ADR-0018 (c
 Extended also by ADR-0019 (boundary events), whose colon separator exists precisely so the trigger words stay soft.
 Amended by ADR-0030, which generalizes the message-text declaration to the code itself so that a code carries a cross-reference.
 
-Related decisions: ADR-0006 (the IR as the shared model, where vendor- or serialization-only data such as `operaton:historyTimeToLive` attaches at the IR-to-XML boundary rather than living in the IR; `errorDecls` and `escalationDecls` are the one exception, and they are an exception because they cannot be derived from usage, not because the boundary rule was relaxed).
+Related decisions: ADR-0006 (the IR as the shared model, where vendor- or serialization-only data such as `targetNamespace` attaches at the IR-to-XML boundary rather than living in the IR; `errorDecls` and `escalationDecls` are the one exception, and they are an exception because they cannot be derived from usage, not because the boundary rule was relaxed).
 ADR-0010 (deterministic structural ids, whose sanitize-then-suffix collision rule synthesized root ids follow).
 ADR-0013 (the audience this design serves: no BPMN-document bookkeeping, no required syntax the compiler could supply itself).
 ADR-0014 (the honest import contract, under which disagreeing root definitions for one code are refused rather than merged, for the same reason a semantically significant drop is refused rather than warned).

@@ -9,10 +9,17 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import { EmptyFileSystem } from 'langium';
 import { parseHelper, validationHelper } from 'langium/test';
-import { createBpmnScriptServices } from '@bpmn-script/language';
+import {
+  createBpmnScriptServices,
+  PROCESS_HEADER_KEYS,
+} from '@bpmn-script/language';
 import type { Model } from '@bpmn-script/language';
 
-import { irToDsl as printDsl, UNSTRUCTURED_MARKER } from '../src/ir-to-dsl.js';
+import {
+  irToDsl as printDsl,
+  PROCESS_HEADER_SETTINGS,
+  UNSTRUCTURED_MARKER,
+} from '../src/ir-to-dsl.js';
 import { astToIr } from '../src/ast-to-ir.js';
 import { xmlToIr } from '../src/xml-to-ir.js';
 import { isGateway } from '../src/ir/types.js';
@@ -2432,6 +2439,57 @@ describe('irToDsl: parallel-fork recovery (terminating branch)', () => {
     expect(dsl).toContain('\n  end Finish');
     expect(dsl).not.toContain('goto Gateway_');
     expect(dsl).not.toContain('goto Throw_');
+  });
+});
+
+describe('irToDsl: the process header and the start it opens on', () => {
+  /** Every key the header carries, an initiator, and a condition start. */
+  const HEADER_IR: BpmnProcess = {
+    id: 'stock-watch',
+    isExecutable: true,
+    versionTag: '3.1',
+    historyTimeToLive: 'P90D',
+    candidateStarterUsers: 'demo,manager',
+    candidateStarterGroups: 'adjusters',
+    flowElements: [
+      {
+        kind: 'startEvent',
+        id: 'StockRanLow',
+        formFields: [{ id: 'stockLevel', type: 'number' }],
+        eventDefinition: conditionDef('${stockLevel < 5}'),
+        initiator: 'claimant',
+      },
+      { kind: 'userTask', id: 'ReorderStock', assignee: 'demo' },
+      { kind: 'endEvent', id: 'Restocked' },
+    ],
+    sequenceFlows: [
+      edge('StockRanLow', 'ReorderStock'),
+      edge('ReorderStock', 'Restocked'),
+    ],
+  };
+
+  it('prints every key the header vocabulary declares, in the order it declares them', () => {
+    expect([
+      'label',
+      'documentation',
+      ...PROCESS_HEADER_SETTINGS.map(([key]) => key),
+    ]).toEqual(PROCESS_HEADER_KEYS);
+  });
+
+  it('prints the header, the initiator and the condition, and re-desugars to the same IR', async () => {
+    const dsl = await printed(HEADER_IR);
+    expect(dsl).toBe(
+      'process stock-watch(versionTag: "3.1", historyTimeToLive: "P90D", candidateStarterUsers: "demo,manager", candidateStarterGroups: "adjusters") {\n' +
+        '  start StockRanLow condition(stockLevel < 5, initiator: "claimant") {\n' +
+        '    form {\n' +
+        '      stockLevel: number\n' +
+        '    }\n' +
+        '  }\n' +
+        '  user ReorderStock(assignee: "demo")\n' +
+        '  end Restocked\n' +
+        '}\n',
+    );
+    expect(await reDesugar(dsl)).toEqual(HEADER_IR);
   });
 });
 

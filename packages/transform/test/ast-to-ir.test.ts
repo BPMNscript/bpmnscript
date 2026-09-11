@@ -8,7 +8,10 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import { EmptyFileSystem } from 'langium';
 import { parseHelper } from 'langium/test';
-import { createBpmnScriptServices } from '@bpmn-script/language';
+import {
+  createBpmnScriptServices,
+  PROCESS_HEADER_KEYS,
+} from '@bpmn-script/language';
 import type { Model } from '@bpmn-script/language';
 
 import { astToIr } from '../src/ast-to-ir.js';
@@ -463,6 +466,29 @@ describe('astToIr: synthesized id determinism', () => {
 });
 
 describe('astToIr: attribute mapping', () => {
+  /**
+   * Where each process header key lands in the IR. The lowering reads the six
+   * one by one because they land on differently named fields, so this pairing
+   * is what keeps it from drifting behind the vocabulary.
+   */
+  const HEADER_FIELD_BY_KEY: Readonly<Record<string, keyof BpmnProcess>> = {
+    label: 'name',
+    documentation: 'documentation',
+    versionTag: 'versionTag',
+    historyTimeToLive: 'historyTimeToLive',
+    candidateStarterUsers: 'candidateStarterUsers',
+    candidateStarterGroups: 'candidateStarterGroups',
+  };
+
+  it('lowers every header key the vocabulary declares', async () => {
+    expect(Object.keys(HEADER_FIELD_BY_KEY)).toEqual(PROCESS_HEADER_KEYS);
+
+    for (const [key, field] of Object.entries(HEADER_FIELD_BY_KEY)) {
+      const result = await ir(`process P(${key}: "carried") { user A }`);
+      expect(result[field], key).toBe('carried');
+    }
+  });
+
   it('maps user assignee/formKey and service class to IR fields', async () => {
     const result = await ir(`process P {
       user T(label: "Task", assignee: "demo", formKey: "embedded:form")
@@ -493,11 +519,7 @@ describe('astToIr: attribute mapping', () => {
       `process P(label: "My Process") { user A }`,
       { name: 'My Process' },
     ],
-    [
-      'a header carrying neither leaves both keys out',
-      `process P { user A }`,
-      {},
-    ],
+    ['a bare header leaves every key out', `process P { user A }`, {}],
     [
       'a duplicated versionTag keeps the first (the validator owns the diagnostic)',
       `process p(versionTag: "1.4", versionTag: "2.0") { user A }`,
@@ -508,11 +530,35 @@ describe('astToIr: attribute mapping', () => {
       `process p(label: "Invoice", versionTag: "1.4") { var amount: number user A }`,
       { name: 'Invoice', versionTag: '1.4' },
     ],
+    [
+      'a header carrying all three engine settings reaches the IR unchanged',
+      `process p(historyTimeToLive: "P90D", candidateStarterUsers: "demo,manager", candidateStarterGroups: "adjusters") { user A }`,
+      {
+        historyTimeToLive: 'P90D',
+        candidateStarterUsers: 'demo,manager',
+        candidateStarterGroups: 'adjusters',
+      },
+    ],
   ])('%s', async (_title, source, expected) => {
-    const { name, versionTag } = await ir(source);
-    expect({ name, versionTag }).toEqual({
+    const {
+      name,
+      versionTag,
+      historyTimeToLive,
+      candidateStarterUsers,
+      candidateStarterGroups,
+    } = await ir(source);
+    expect({
+      name,
+      versionTag,
+      historyTimeToLive,
+      candidateStarterUsers,
+      candidateStarterGroups,
+    }).toEqual({
       name: undefined,
       versionTag: undefined,
+      historyTimeToLive: undefined,
+      candidateStarterUsers: undefined,
+      candidateStarterGroups: undefined,
       ...expected,
     });
   });
@@ -2432,6 +2478,7 @@ describe('astToIr: start/end triggers and message throw/emit', () => {
       timerDef('date', '2026-08-01T09:00:00'),
     ],
     [`start S timer(every: "R/PT10M")`, timerDef('cycle', 'R/PT10M')],
+    [`start S condition(amount > 100)`, conditionDef('${amount > 100}')],
   ])('lowers `%s` to its event definition', async (statement, expected) => {
     const result = await ir(`process p { ${statement} }`);
     expect(only(result, 'startEvent').eventDefinition).toEqual(expected);
@@ -2446,13 +2493,13 @@ describe('astToIr: start/end triggers and message throw/emit', () => {
     expect(start.eventDefinition).toEqual(messageDef('M'));
   });
 
+  it('reads initiator off a process start', async () => {
+    const result = await ir(`process p { start S(initiator: "starter") }`);
+    expect(only(result, 'startEvent').initiator).toBe('starter');
+  });
+
   it.each([
     ['a plain start', `process p { start S user A end E }`, 'startEvent'],
-    [
-      'a start carrying a trigger the position does not admit',
-      `process p { start S condition user A end E }`,
-      'startEvent',
-    ],
     ['a plain end', `process p { start S user A end E }`, 'endEvent'],
     [
       'an end carrying a trigger it does not take',

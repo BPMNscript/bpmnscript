@@ -20,7 +20,7 @@ import { fileURLToPath } from 'node:url';
 
 import { xmlToIr } from '../src/xml-to-ir.js';
 import type { ImportWarning } from '../src/xml-to-ir.js';
-import { irToXml } from '../src/ir-to-xml.js';
+import { HISTORY_TIME_TO_LIVE, irToXml } from '../src/ir-to-xml.js';
 import {
   UnsupportedCallActivityError,
   UnsupportedCollaborationError,
@@ -626,7 +626,7 @@ describe('xmlToIr: start, end, and emit triggers', () => {
     <bpmn:sequenceFlow id="F2" sourceRef="Emit1" targetRef="E" />
   </bpmn:process>`;
 
-  describe('a start carries message, signal, or timer', () => {
+  describe('a start carries message, signal, timer, or condition', () => {
     it.each([
       ['timeDuration', 'PT1H', 'duration'],
       ['timeDate', '2026-08-01T09:00:00Z', 'date'],
@@ -668,6 +668,18 @@ describe('xmlToIr: start, end, and emit triggers', () => {
         'startEvent',
       );
       expect(node.eventDefinition).toEqual(signalDef('StockLow'));
+      expect(warnings).toEqual([]);
+    });
+
+    it('a conditional start imports as the condition the engine waits on', async () => {
+      const { node, warnings } = await importById(
+        startTriggerXml(`<bpmn:conditionalEventDefinition id="cd">
+        <bpmn:condition>\${stockLevel &lt; 5}</bpmn:condition>
+      </bpmn:conditionalEventDefinition>`),
+        'TStart',
+        'startEvent',
+      );
+      expect(node.eventDefinition).toEqual(conditionDef('${stockLevel < 5}'));
       expect(warnings).toEqual([]);
     });
 
@@ -720,18 +732,21 @@ describe('xmlToIr: start, end, and emit triggers', () => {
       },
     );
 
-    it('a conditional start refuses as an unsupported definition kind', async () => {
+    it('a link start refuses, naming every trigger a process start does take', async () => {
       const e = await expectRefusal<UnsupportedEventDefinitionError>(
         xmlToIr(
-          startTriggerXml(`<bpmn:conditionalEventDefinition id="cd">
-        <bpmn:condition>\${stockLevel &lt; 5}</bpmn:condition>
-      </bpmn:conditionalEventDefinition>`),
+          startTriggerXml('<bpmn:linkEventDefinition id="ld" name="Resume" />'),
         ),
         UnsupportedEventDefinitionError,
       );
-      expect(e.elementId).toBe('TStart');
-      expect(e.eventKind).toBe('start');
-      expect(e.definitionType).toBe('bpmn:ConditionalEventDefinition');
+      expect([e.elementId, e.eventKind, e.definitionType]).toEqual([
+        'TStart',
+        'start',
+        'bpmn:LinkEventDefinition',
+      ]);
+      expect(e.message).toContain(
+        "a process's start supports message, signal, timer, or condition",
+      );
     });
 
     it('a start carrying two event definitions refuses, naming the count', async () => {
@@ -745,7 +760,7 @@ describe('xmlToIr: start, end, and emit triggers', () => {
         ),
         UnsupportedEventFeatureError,
         'a start carries 2 event definitions: only a single message, ' +
-          'signal, or timer trigger is supported',
+          'signal, timer, or condition trigger is supported',
       );
       expect(e.elementId).toBe('TStart');
     });
@@ -1944,31 +1959,119 @@ describe('xmlToIr: warns for dropped extension attributes', () => {
     expect(warnings).toEqual([]);
   });
 
-  // `historyTimeToLive` is declared in the moddle extension, so it parses
-  // into a typed property (not `$attrs`) and needs the descriptor scan.
+  /** `start -> E`, with the given attributes on the process and on its start. */
+  const headerDoc = (
+    processAttrs: string,
+    startAttrs = '',
+    startId = 'S',
+  ): string =>
+    operatonDefs`  <bpmn:process id="p" isExecutable="true" ${processAttrs}>
+    <bpmn:startEvent id="${startId}" ${startAttrs} />
+    <bpmn:endEvent id="E" />
+    <bpmn:sequenceFlow id="F1" sourceRef="${startId}" targetRef="E" />
+  </bpmn:process>`;
+
+  // Each is declared in the moddle extension, so it parses into a typed
+  // property (not `$attrs`) and is invisible to the raw-attribute sweep: read
+  // it and the descriptor scan stays silent, drop it and the scan reports it.
   it.each([
     [
-      'a custom operaton:historyTimeToLive would be lost, so it is reported',
+      'a process keeps the history time to live it authored',
+      'operaton:historyTimeToLive="P90D"',
+      '',
+      (ir: BpmnProcess) => ir.historyTimeToLive,
       'P90D',
-      [
-        {
-          elementId: 'p',
-          category: 'extensionAttribute',
-          message: expect.stringContaining('operaton:historyTimeToLive'),
-        },
-      ],
     ],
-    ['the value the exporter re-stamps is silent', 'P30D', []],
-  ])('%s', async (_title, value, expected) => {
-    const { warnings } = await xmlToIr(
-      operatonDefs`  <bpmn:process id="p" isExecutable="true" operaton:historyTimeToLive="${value}">
+    [
+      'the value the exporter stamps for a process that authored none reads as unwritten',
+      `operaton:historyTimeToLive="${HISTORY_TIME_TO_LIVE}"`,
+      '',
+      (ir: BpmnProcess) => ir.historyTimeToLive,
+      undefined,
+    ],
+    [
+      'a process keeps the users allowed to start it',
+      'operaton:candidateStarterUsers="demo,manager"',
+      '',
+      (ir: BpmnProcess) => ir.candidateStarterUsers,
+      'demo,manager',
+    ],
+    [
+      'a process keeps the groups allowed to start it',
+      'operaton:candidateStarterGroups="adjusters"',
+      '',
+      (ir: BpmnProcess) => ir.candidateStarterGroups,
+      'adjusters',
+    ],
+    [
+      'a start keeps the variable the engine writes the starting user into',
+      '',
+      'operaton:initiator="claimant"',
+      (ir: BpmnProcess) => only(ir, 'startEvent').initiator,
+      'claimant',
+    ],
+  ])('%s', async (_title, processAttrs, startAttrs, read, expected) => {
+    const { ir, warnings } = await xmlToIr(headerDoc(processAttrs, startAttrs));
+    expect([read(ir), warnings]).toEqual([expected, []]);
+  });
+
+  // `CONSUMED_EXTENSION_ATTRS` is keyed by `$type`, so declaring `initiator`
+  // read on `bpmn:StartEvent` silences the unread-attribute sweep for a
+  // handler's start as much as for the process's own. Only this test stands
+  // between a handler start's value and being dropped without a word.
+  it('an event handler start keeps its initiator too', async () => {
+    const { ir, warnings } = await xmlToIr(
+      handlerDoc('<bpmn:signalEventDefinition id="d" signalRef="Signal_1" />', {
+        startAttrs: 'operaton:initiator="claimant"',
+        roots: '  <bpmn:signal id="Signal_1" name="StockLow" />\n',
+        defs: operatonDefs,
+      }),
+    );
+    const handlerStart = only(subProcess(ir, 'Handler'), 'startEvent');
+    expect([handlerStart.initiator, warnings]).toEqual(['claimant', []]);
+  });
+
+  // A start the modeler left unnamed carries the id this tool mints for one it
+  // synthesizes, which a script cannot repeat, so the whole statement is left
+  // out and the initiator with it. The unread-attribute sweep no longer covers
+  // it, so this report is all that stands between the value and a silent drop.
+  it.each([
+    [
+      "a process's own start",
+      headerDoc('', 'operaton:initiator="claimant"', 'StartEvent_1'),
+    ],
+    [
+      'an event handler start, whose trigger prints in the header instead',
+      operatonDefs`  <bpmn:signal id="Signal_1" name="StockLow" />
+  <bpmn:process id="p" isExecutable="true">
     <bpmn:startEvent id="S" />
+    <bpmn:subProcess id="Handler" triggeredByEvent="true">
+      <bpmn:startEvent id="StartEvent_1" operaton:initiator="claimant">
+        <bpmn:signalEventDefinition id="d" signalRef="Signal_1" />
+      </bpmn:startEvent>
+    </bpmn:subProcess>
     <bpmn:endEvent id="E" />
     <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="E" />
   </bpmn:process>`,
-    );
-    expect(warnings).toEqual(expected);
-  });
+    ],
+  ])(
+    '%s printing no statement says its initiator went with it',
+    async (_title, xml) => {
+      const { warnings } = await xmlToIr(xml);
+      expect(warnings).toEqual([
+        {
+          elementId: 'StartEvent_1',
+          category: 'extensionAttribute',
+          message:
+            "The 'operaton:initiator' setting on 'StartEvent_1' was not " +
+            "written to the script: 'StartEvent_1' is the kind of name this " +
+            'tool generates for itself, which a script cannot repeat, so this ' +
+            'start is left out entirely and its initiator with it. Rename it ' +
+            'in the diagram to keep the initiator.',
+        },
+      ]);
+    },
+  );
 });
 
 describe('xmlToIr: warns for dropped lanes', () => {
@@ -4759,7 +4862,7 @@ ${extraFlows}    <bpmn:sequenceFlow id="F1" sourceRef="PStart" targetRef="Review
       expect(e.definitionType).toBe('bpmn:LinkEventDefinition');
       expect(e.message).toContain(
         'A boundary event supports error, escalation, message, signal, ' +
-          'timer, or conditional, plus cancel on a block that can be given up.',
+          'timer, or condition, plus cancel on a block that can be given up.',
       );
     });
 
@@ -4915,7 +5018,7 @@ describe('xmlToIr: intermediate catch event import', () => {
      */
     const unawaitableDetail = (tag: string): string =>
       `an await cannot carry a bpmn:${tag}: only message, timer, signal, ` +
-      'or conditional triggers can be awaited inline; error and escalation ' +
+      'or condition triggers can be awaited inline; error and escalation ' +
       'are caught by an event handler and raised with throw/emit, ' +
       'compensation is undone by a subprocess block, a link has no surface, ' +
       'and a cancel is written on the end that gives up an attempt block';
@@ -4982,7 +5085,7 @@ ${definitions}
       <bpmn:signalEventDefinition id="d2" signalRef="Signal_Ping" />`,
         ),
         'an await carries 2 event definitions: only a single message, ' +
-          'timer, signal, or conditional trigger can be awaited',
+          'timer, signal, or condition trigger can be awaited',
       ],
       [
         'parallelMultiple="true"',
@@ -4991,7 +5094,7 @@ ${definitions}
           '      <bpmn:signalEventDefinition id="d" signalRef="Signal_Ping" />',
         ),
         'an await with parallelMultiple="true" waits for several triggers ' +
-          'together; only a single message, timer, signal, or conditional ' +
+          'together; only a single message, timer, signal, or condition ' +
           'trigger can be awaited',
       ],
       [
@@ -6531,7 +6634,7 @@ describe('xmlToIr: a block that can be given up', () => {
   /** The closing sentence {@link UnsupportedEventFeatureError} appends by default. */
   const EVENT_SURFACE_NOTE =
     'Event handlers catch one error, escalation, message, signal, timer, ' +
-    'conditional, or compensation trigger on their single start event; ' +
+    'condition, or compensation trigger on their single start event; ' +
     'throws and emits carry the code or name their kind requires, and ' +
     'compensation carries neither.';
 

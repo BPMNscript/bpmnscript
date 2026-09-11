@@ -195,6 +195,15 @@ export function astToIr(model: Model): BpmnProcess {
   const label = processSetting(process, 'label');
   const documentation = processSetting(process, 'documentation');
   const versionTag = processSetting(process, 'versionTag');
+  const historyTimeToLive = processSetting(process, 'historyTimeToLive');
+  const candidateStarterUsers = processSetting(
+    process,
+    'candidateStarterUsers',
+  );
+  const candidateStarterGroups = processSetting(
+    process,
+    'candidateStarterGroups',
+  );
   const { errorCodes, escalationCodes } = eventIdentities({
     id: process.name,
     flowElements: builder.flowElements,
@@ -212,6 +221,9 @@ export function astToIr(model: Model): BpmnProcess {
     ...(documentation !== undefined ? { documentation } : {}),
     isExecutable: true,
     ...(versionTag !== undefined ? { versionTag } : {}),
+    ...(historyTimeToLive !== undefined ? { historyTimeToLive } : {}),
+    ...(candidateStarterUsers !== undefined ? { candidateStarterUsers } : {}),
+    ...(candidateStarterGroups !== undefined ? { candidateStarterGroups } : {}),
     flowElements: builder.flowElements,
     sequenceFlows: builder.sequenceFlows,
     ...(errorDecls.length > 0 ? { errorDecls } : {}),
@@ -475,12 +487,14 @@ function lowerStatement(
 function lowerStartEvent(builder: Builder, stmt: AstStartEvent): Frontier {
   const formFields = lowerFormFields(stmt);
   const eventDefinition = startEventDefinition(stmt);
+  const initiator = attrValue(settingsOf(stmt.items), 'initiator');
   builder.flowElements.push({
     kind: 'startEvent',
     id: stmt.name,
     ...namedAttrs(stmt),
     ...(formFields !== undefined ? { formFields } : {}),
     ...(eventDefinition !== undefined ? { eventDefinition } : {}),
+    ...(initiator !== undefined ? { initiator } : {}),
     ...readEngineAttributes(stmt),
   });
   return { entry: stmt.name, exit: stmt.name };
@@ -502,10 +516,9 @@ function admittedTrigger<W extends string>(
 }
 
 /**
- * The trigger a top-level start carries. A word outside the start vocabulary
- * lowers to nothing, which is where `start S condition` goes: the validator
- * rejects a condition at this position, and a conditional start is outside
- * what this surface emits.
+ * The trigger a top-level start carries, among the words `START_TRIGGERS`
+ * admits. A word outside that vocabulary lowers to nothing, leaving the
+ * validator to report it.
  */
 function startEventDefinition(
   stmt: AstStartEvent,
@@ -1981,7 +1994,7 @@ function stripExpressionWrapper(rendered: string): string {
   return rendered;
 }
 
-/** `operaton:versionTag` is an author-supplied label distinct from the deployment version. */
+/** Reads one of the process header keys in `PROCESS_HEADER_KEYS`, verbatim as authored. */
 function processSetting(process: Process, key: string): string | undefined {
   return attrValue(settingsOf(process.items), key);
 }

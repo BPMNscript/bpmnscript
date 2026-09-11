@@ -4,7 +4,7 @@ date: 2026-08-29
 decision-makers: Marlon Kranz
 ---
 
-# Event Triggers at the Process Boundary: Three Start Kinds, `terminate` on `end`, and the Message End on `throw`
+# Event Triggers at the Process Boundary: Four Start Kinds, `terminate` on `end`, and the Message End on `throw`
 
 ## Context and Problem Statement
 
@@ -12,7 +12,7 @@ Every event trigger this language writes is caught or raised inside a process th
 No trigger reaches the two positions that bracket a process.
 So a correlated order, a broadcast, and a nightly schedule all have to be modeled outside the process they start.
 A branch that decides nothing else should continue cannot stop a sibling parked on a user task.
-Six BPMN elements sit in that gap: a message, signal, or timer start event, a terminate end event, a message end event, and a message intermediate throw.
+Seven BPMN elements sit in that gap: a message, signal, timer, or condition start event, a terminate end event, a message end event, and a message intermediate throw.
 Where does each one land, given that `start`, `end`, `throw`, and `emit` could all plausibly carry the clause?
 And which of them does Operaton actually execute?
 The specification is more permissive at the start position than the engine is, in a direction that produces no error.
@@ -33,8 +33,8 @@ The specification is more permissive at the start position than the engine is, i
 - `end E message("Name")`, the message end as a clause on the end statement
 - `end <id> terminate(label: "...")` for the terminate end event
 - `throw terminate`
-- Message, signal, and timer as the triggers a start event carries
-- Every trigger the specification allows on a start event, adding error, escalation, compensation, and conditional
+- Message, signal, timer, and condition as the triggers a start event carries
+- Every trigger the specification allows on a start event, adding error, escalation, and compensation
 - A start trigger only on a process's own start event
 - A start trigger on any start event, including a sub-process's and an event handler's
 
@@ -42,7 +42,7 @@ The specification is more permissive at the start position than the engine is, i
 
 Chosen options: `throw message("Name")` and `emit message("Name")` for the message end and the message intermediate throw.
 `end <id> terminate(label: "...")` for the terminate end.
-Message, signal, and timer as the triggers a start event carries.
+Message, signal, timer, and condition as the triggers a start event carries.
 A process's own start event as the only position that may carry one.
 The terminate is the one place here where the option costing no grammar was not taken.
 `end` carries the label a diagram's terminate node needs, and `throw` drops one.
@@ -53,7 +53,7 @@ The validator refuses the two illegal start positions the same way, each with it
 
 The accepted set is `START_TRIGGERS` (`packages/language/src/vocabulary.ts`).
 Import refuses what lies outside it with wording about the degradation rather than about the element type (`IGNORED_START_SUBJECTS` and `readStartTrigger`).
-A conditional start is refused in different words, because Operaton does execute one.
+A conditional start is accepted rather than refused, because the engine dispatches on it where it ignores an error, escalation, or compensation one, so the set that stops where the engine stops includes it.
 
 A container has one start event, already implied by requiring an explicit `start` to be the first statement of its body (`checkStartPosition`).
 A modeler document carrying two of them is refused by name and by count (`refuseMultipleStartEvents`, `packages/transform/src/xml-to-ir.ts`).
@@ -64,7 +64,7 @@ The second token therefore decides everything: an `ID` is the trigger, a `(` the
 Nothing else can appear there, because every statement in this grammar is keyword-led.
 Both rules were built into a live Langium parser with Chevrotain's self-analysis on.
 The generator reported no ambiguity.
-`terminate` and the three start words therefore stay soft identifiers, and `var terminate: string` parses beside `end Done terminate`.
+`terminate` and the four start words therefore stay soft identifiers, and `var terminate: string` parses beside `end Done terminate`.
 
 One class of name cannot be imported at all, for a lexical rather than a semantic reason.
 `RAW_TEMPLATE` is declared before `STRING` (`packages/language/src/bpmn-script.langium`), so a quoted name opening with `${` lexes as a raw expression.
@@ -76,7 +76,7 @@ A message start refuses both spellings, because Operaton rejects an expression a
 
 - Good, because the message end and the message intermediate throw cost no grammar and read like the signal end and signal emit beside them.
   One IR shape keeps one printed form.
-- Good, because the three start triggers reuse the payload surfaces and name-keyed roots ADR-0017 already built.
+- Good, because the four start triggers reuse the payload surfaces and name-keyed roots ADR-0017 already built.
   The set stops where the engine stops, so an import either runs as it reads or refuses and names the element that stopped it.
 - Bad, because a thrown message carrying a send implementation refuses on import rather than importing without it.
   `operaton:class`, `expression`, `delegateExpression`, `type`, `topic`, and an `<operaton:connector>` child are what make the engine really send the message.
@@ -94,7 +94,7 @@ A message start refuses both spellings, because Operaton rejects an expression a
 `packages/cli/test/decompile-contract.e2e.test.ts` pins that a refused trigger exits nonzero and writes no output file.
 The frozen pair `tests/golden/event-positions.{bpmnscript,bpmn}` holds a message start, an `emit message`, a `throw message`, and a terminate end.
 `tests/event-positions.round-trip.test.ts` compares the compiled XML byte for byte and requires an import with no warning at all.
-`tests/new-constructs.round-trip.test.ts` carries the timer and signal starts.
+`tests/new-constructs.round-trip.test.ts` carries the timer, signal, and conditional starts.
 `tests/e2e/event-positions.test.ts` deploys three processes to a real Operaton through Testcontainers.
 A correlated message with no instance to aim at creates one, a broadcast signal creates one with both branches active, and a timer parks a job.
 The terminate cancels a sibling branch parked on a user task, and both thrown messages pass the token through to completion.
@@ -121,9 +121,9 @@ That last result is what shows an implementation-free message throw deploys and 
 - Bad, because `throw` means raise this event and end this path, and a terminate raises nothing and ends every path.
 - Bad, because `throw` drops a label, so importing a labeled terminate would warn about a caption a diagram carries.
 
-### Message, signal, and timer on a start
+### Message, signal, timer, and condition on a start
 
-- Good, because these are the three the engine builds a start behavior for, so what is written is what runs.
+- Good, because these are the four the engine builds a start behavior for, so what is written is what runs.
 
 ### Every trigger the specification allows on a start event
 
@@ -144,7 +144,7 @@ That last result is what shows an implementation-free message throw deploys and 
 ADR-0026 (task kinds on the authoring surface) supersedes the message-throw implementation refusal recorded above: Operaton reads that implementation off the `bpmn:messageEventDefinition`, so the same attributes on the event itself are inert.
 
 Related decisions: ADR-0016 (soft trigger words and the `throw`/`emit` terminality rule).
-ADR-0017 (the payload surfaces the three start triggers reuse, including the timer mapping).
+ADR-0017 (the payload surfaces the four start triggers reuse, including the timer mapping).
 ADR-0014 (the honest import contract behind every refusal here).
 ADR-0013 (the reason a start trigger is a clause rather than a declaration).
 ADR-0020 (the live-parser ambiguity check and the rejected `await <name> <trigger>` shape).

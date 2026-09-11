@@ -9,9 +9,12 @@
  */
 
 import {
+  CATCH_TRIGGERS,
   DECISION_RESULT_MAPPINGS,
   END_TRIGGERS,
   EXECUTION_LISTENER_EVENTS,
+  formatPlainWordList,
+  START_TRIGGERS,
   TASK_LISTENER_EVENTS,
 } from '@bpmn-script/language';
 import { Parser } from 'saxen';
@@ -209,6 +212,10 @@ const CONSUMED_EXTENSION_ATTRS = consumptionTable([
   ['collection', ['bpmn:MultiInstanceLoopCharacteristics']],
   ['elementVariable', ['bpmn:MultiInstanceLoopCharacteristics']],
   ['versionTag', ['bpmn:Process']],
+  ['historyTimeToLive', ['bpmn:Process']],
+  ['candidateStarterUsers', ['bpmn:Process']],
+  ['candidateStarterGroups', ['bpmn:Process']],
+  ['initiator', ['bpmn:StartEvent']],
   ['errorCodeVariable', ['bpmn:ErrorEventDefinition']],
   ['errorMessageVariable', ['bpmn:ErrorEventDefinition']],
   ['escalationCodeVariable', ['bpmn:EscalationEventDefinition']],
@@ -314,14 +321,6 @@ const KEPT_SETTINGS_NOTE =
 const IMPORTED_FLOW_NOTE =
   '(this tool imports the executable flow and the engine settings on its ' +
   'steps, and nothing declared or drawn beside it).';
-
-/**
- * Attributes the exporter re-stamps as a fixed constant. An imported value
- * equal to the constant loses nothing on re-export, so it raises no warning.
- */
-const REEXPORTED_CONSTANT_ATTRS: ReadonlyMap<string, string> = new Map([
-  ['operaton:historyTimeToLive', HISTORY_TIME_TO_LIVE],
-]);
 
 /** Loose moddle-element type: the tiny surface every moddle node shares. */
 interface ModdleElement {
@@ -754,12 +753,32 @@ function mapProcess(
   );
 
   const versionTag = readNamespacedAttr(processEl, 'versionTag');
+  // The exporter stamps HISTORY_TIME_TO_LIVE on every process that authored
+  // none, so reading that exact value back would invent a setting the source
+  // never had, and leave a re-imported IR unequal to the one it was exported
+  // from. Every other value is the author's and is carried.
+  const authoredTimeToLive = readNamespacedAttr(processEl, 'historyTimeToLive');
+  const historyTimeToLive =
+    authoredTimeToLive === HISTORY_TIME_TO_LIVE
+      ? undefined
+      : authoredTimeToLive;
+  const candidateStarterUsers = readNamespacedAttr(
+    processEl,
+    'candidateStarterUsers',
+  );
+  const candidateStarterGroups = readNamespacedAttr(
+    processEl,
+    'candidateStarterGroups',
+  );
 
   return {
     id,
     ...named,
     isExecutable: true,
     ...(versionTag === undefined ? {} : { versionTag }),
+    ...(historyTimeToLive === undefined ? {} : { historyTimeToLive }),
+    ...(candidateStarterUsers === undefined ? {} : { candidateStarterUsers }),
+    ...(candidateStarterGroups === undefined ? {} : { candidateStarterGroups }),
     flowElements,
     sequenceFlows,
   };
@@ -1756,6 +1775,7 @@ function mapEventSubProcessStart(
     eventDefinition,
     ...(isInterrupting === false ? { isInterrupting: false } : {}),
     ...(formFields === undefined ? {} : { formFields }),
+    ...readStartAttributes(startEl),
     ...readEngineAttributes(startEl, id, warnings),
   };
 }
@@ -2188,10 +2208,12 @@ function warnCatchSideImplementationAttrs(
 }
 
 /**
- * Report the label and the documentation of a start or end the printer writes
- * no statement for. The printer's own predicate decides, so text that does
- * survive is never reported, and text that stops surviving is never dropped
- * without a word.
+ * Report everything a start or end the printer writes no statement for takes
+ * with it: its label, its documentation, and a start's initiator. The
+ * printer's own predicate decides, so what does survive is never reported, and
+ * what stops surviving is never dropped without a word. This is the only
+ * report standing behind an `initiator`, which {@link warnUnreadDeclaredAttrs}
+ * counts as read the moment any start carries it.
  */
 function warnElidedNamedDrop(
   el: StartEvent | EndEvent,
@@ -2201,8 +2223,9 @@ function warnElidedNamedDrop(
   if (!isElidedOnPrint(el, startTriggerSuppressed)) return;
   const statement = el.kind === 'startEvent' ? 'start' : 'end';
   const report = (
-    category: 'label' | 'documentation',
+    category: ImportWarningCategory,
     subject: string,
+    noun: string = category,
   ): void => {
     warnings.push({
       elementId: el.id,
@@ -2211,12 +2234,15 @@ function warnElidedNamedDrop(
         `The ${subject} on '${el.id}' was not written to the script: ` +
         `'${el.id}' is the kind of name this tool generates for itself, ` +
         `which a script cannot repeat, so this ${statement} is left out ` +
-        `entirely and its ${category} with it. Rename it in the diagram to ` +
-        `keep the ${category}.`,
+        `entirely and its ${noun} with it. Rename it in the diagram to ` +
+        `keep the ${noun}.`,
     });
   };
   if (el.name !== undefined) report('label', `label '${el.name}'`);
   if (el.documentation !== undefined) report('documentation', 'documentation');
+  if (el.kind === 'startEvent' && el.initiator !== undefined) {
+    report('extensionAttribute', "'operaton:initiator' setting", 'initiator');
+  }
 }
 
 /**
@@ -2802,9 +2828,6 @@ function warnUnreadDeclaredAttrs(
     }
     // Only what the document wrote: moddle stores a parsed value as an own property.
     if (!Object.prototype.hasOwnProperty.call(el, prop.name)) continue;
-    if (el.get(prop.ns.name) === REEXPORTED_CONSTANT_ATTRS.get(prop.ns.name)) {
-      continue;
-    }
     warnUnimportedSetting(warnings, ownerId, `'${prop.ns.name}' setting`);
   }
 }
@@ -2928,7 +2951,7 @@ function noteRewrappedExpression(
   });
 }
 
-/** Message, signal, and timer only. See {@link readStartTrigger}. */
+/** A container's own start; {@link readStartTrigger} bounds what it may carry. */
 function mapStartEvent(
   el: ModdleElement,
   warnings: ImportWarning[],
@@ -2944,8 +2967,21 @@ function mapStartEvent(
     ...named,
     ...(formFields === undefined ? {} : { formFields }),
     ...(eventDefinition === undefined ? {} : { eventDefinition }),
+    ...readStartAttributes(el),
     ...readEngineAttributes(el, id, warnings),
   };
+}
+
+/**
+ * The extension attributes a start event carries wherever it sits. Both start
+ * mappers read it here rather than each for itself: `initiator` is declared
+ * read on `bpmn:StartEvent`, which silences the unread-attribute sweep for a
+ * handler's start as much as for a process's own, so a mapper that skipped it
+ * would drop an authored value without a word.
+ */
+function readStartAttributes(el: ModdleElement): { initiator?: string } {
+  const initiator = readNamespacedAttr(el, 'initiator');
+  return initiator === undefined ? {} : { initiator };
 }
 
 /**
@@ -2983,6 +3019,18 @@ const IGNORED_START_SUBJECTS: ReadonlyMap<
 ]);
 
 /**
+ * The tag each trigger a process start may carry is written with. The
+ * `satisfies` clause demands a row per word, so a word added to the vocabulary
+ * opens the import path with it rather than leaving the two to drift.
+ */
+const START_CARRIED_TAGS = {
+  message: 'bpmn:MessageEventDefinition',
+  signal: 'bpmn:SignalEventDefinition',
+  timer: 'bpmn:TimerEventDefinition',
+  condition: 'bpmn:ConditionalEventDefinition',
+} satisfies Record<(typeof START_TRIGGERS)[number], string>;
+
+/**
  * The trigger on a container's own start event. An event handler's start is
  * entered through {@link mapEventSubProcessStart}, which requires one
  * definition and takes a wider set of kinds.
@@ -3009,7 +3057,7 @@ function readStartTrigger(
     id,
     defs,
     'a start',
-    'message, signal, or timer trigger is supported',
+    `${formatPlainWordList(START_TRIGGERS)} trigger is supported`,
   );
 
   const [defEl] = defs;
@@ -3024,11 +3072,7 @@ function readStartTrigger(
       ignored.remedy,
     );
   }
-  if (
-    defEl.$type !== 'bpmn:MessageEventDefinition' &&
-    defEl.$type !== 'bpmn:SignalEventDefinition' &&
-    defEl.$type !== 'bpmn:TimerEventDefinition'
-  ) {
+  if (!Object.values<string>(START_CARRIED_TAGS).includes(defEl.$type)) {
     throw new UnsupportedEventDefinitionError(id, 'start', defEl.$type);
   }
 
@@ -3249,6 +3293,9 @@ function readThrownMessageBinding(
   return {};
 }
 
+/** The triggers a linear flow can block on, as the refusals below name them. */
+const AWAITABLE_TRIGGERS = formatPlainWordList(CATCH_TRIGGERS);
+
 function mapIntermediateCatchEvent(
   el: ModdleElement,
   warnings: ImportWarning[],
@@ -3259,8 +3306,7 @@ function mapIntermediateCatchEvent(
     throw new UnsupportedEventFeatureError(
       id,
       'an await with parallelMultiple="true" waits for several triggers ' +
-        'together; only a single message, timer, signal, or conditional ' +
-        'trigger can be awaited',
+        `together; only a single ${AWAITABLE_TRIGGERS} trigger can be awaited`,
     );
   }
 
@@ -3277,7 +3323,7 @@ function mapIntermediateCatchEvent(
     id,
     defs,
     'an await',
-    'message, timer, signal, or conditional trigger can be awaited',
+    `${AWAITABLE_TRIGGERS} trigger can be awaited`,
   );
 
   const [defEl] = defs;
@@ -3289,8 +3335,8 @@ function mapIntermediateCatchEvent(
   ) {
     throw new UnsupportedEventFeatureError(
       id,
-      `an await cannot carry a ${defEl.$type}: only message, timer, ` +
-        'signal, or conditional triggers can be awaited inline; error and ' +
+      `an await cannot carry a ${defEl.$type}: only ${AWAITABLE_TRIGGERS} ` +
+        'triggers can be awaited inline; error and ' +
         'escalation are caught by an event handler and raised with ' +
         'throw/emit, compensation is undone by a subprocess block, a link ' +
         'has no surface, and a cancel is written on the end that gives up ' +

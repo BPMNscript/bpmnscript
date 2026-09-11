@@ -30,6 +30,12 @@ export interface BpmnProcess extends FlowContainer, Named {
   isExecutable: true;
   /** Distinct from the engine's deployment version. */
   versionTag?: string;
+  /** Absent means the exporter's default; see `HISTORY_TIME_TO_LIVE`. */
+  historyTimeToLive?: string;
+  /** Comma-separated user ids the engine checks before it will start the process. */
+  candidateStarterUsers?: string;
+  /** Comma-separated group ids the engine checks before it will start the process. */
+  candidateStarterGroups?: string;
   /**
    * Every error code the process raises, catches, or declares, in canonical
    * order: codes something uses in first-use order, then the rest in
@@ -419,6 +425,8 @@ export interface StartEvent extends EngineAttributes, Named {
   formFields?: FormField[];
   /** The trigger this start waits on, whether the process's or a handler's. */
   eventDefinition?: EventDefinition;
+  /** The process variable the engine writes the starting user's id into. */
+  initiator?: string;
   /** Stored only for a non-interrupting (`alongside`) start; BPMN defaults to on. */
   isInterrupting?: false;
 }

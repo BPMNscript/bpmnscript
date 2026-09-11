@@ -17,7 +17,16 @@ const rt = roundTripFixture('engine-attributes', {
   recompile: 'clean',
 });
 
-const VERSION_TAG = '3.1.0';
+// Asserted as a whole rather than key by key, so a value that stops travelling
+// and a value that appears out of nowhere both fail. `historyTimeToLive` is
+// authored as something other than the exporter's own default on purpose: at
+// `P30D` the importer reads it as unwritten and the hop would prove nothing.
+const PROCESS_HEADER = {
+  versionTag: '3.1.0',
+  historyTimeToLive: 'P90D',
+  candidateStarterUsers: 'demo,manager',
+  candidateStarterGroups: 'adjusters',
+};
 
 // The tripwire for a regenerated golden: layout, flow ids, and synthesized
 // handler and gateway ids may move, and no row here may. The three carriers
@@ -28,6 +37,7 @@ const ENGINE_ATTRIBUTE_CONTRACT: readonly (readonly [
   attribute: string,
   value: string | boolean,
 ])[] = [
+  ['ClaimFiled', 'initiator', 'claimant'],
   ['ClaimFiled', 'asyncAfter', true],
   ['TriageClaim', 'assignee', 'demo'],
   ['TriageClaim', 'formKey', 'embedded:app:forms/claim-triage.html'],
@@ -80,9 +90,23 @@ describe('the frozen engine-attribute contract', () => {
     }
   });
 
-  it('the process header keeps its version tag at every hop', () => {
+  it('the four engine settings on the header keep their values at every hop', () => {
     for (const [label, ir] of rt.hops) {
-      expect(ir.versionTag, `versionTag differs in ${label}`).toBe(VERSION_TAG);
+      const {
+        versionTag,
+        historyTimeToLive,
+        candidateStarterUsers,
+        candidateStarterGroups,
+      } = ir;
+      expect(
+        {
+          versionTag,
+          historyTimeToLive,
+          candidateStarterUsers,
+          candidateStarterGroups,
+        },
+        `the process header differs in ${label}`,
+      ).toEqual(PROCESS_HEADER);
     }
   });
 

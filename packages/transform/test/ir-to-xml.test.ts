@@ -16,7 +16,7 @@ import { parseHelper } from 'langium/test';
 import { createBpmnScriptServices } from '@bpmn-script/language';
 import type { Model } from '@bpmn-script/language';
 
-import { irToXml } from '../src/ir-to-xml.js';
+import { irToXml, HISTORY_TIME_TO_LIVE } from '../src/ir-to-xml.js';
 import { astToIr } from '../src/ast-to-ir.js';
 import {
   around,
@@ -1617,8 +1617,17 @@ const engineSettingsIr: BpmnProcess = {
   id: 'engine-settings',
   isExecutable: true,
   versionTag: '1.4.2',
+  historyTimeToLive: 'P90D',
+  candidateStarterUsers: 'demo,manager',
+  candidateStarterGroups: 'adjusters',
   flowElements: [
-    { kind: 'startEvent', id: 'Start', asyncAfter: true, jobPriority: '50' },
+    {
+      kind: 'startEvent',
+      id: 'Start',
+      asyncAfter: true,
+      jobPriority: '50',
+      initiator: 'claimant',
+    },
     {
       kind: 'userTask',
       id: 'Review',
@@ -1665,10 +1674,40 @@ describe('irToXml: flat engine attributes', () => {
   /** One flow node of the engine-settings process, with its Operaton props. */
   const node = (id: string): Moddle => childById(engineProc, id);
 
-  it('writes operaton:versionTag on the process alongside historyTimeToLive', () => {
-    const openingTag = engineXml.match(/<bpmn:process[^>]*>/)?.[0] ?? '';
-    expect(openingTag).toContain('operaton:versionTag="1.4.2"');
-    expect(openingTag).toContain('operaton:historyTimeToLive="P30D"');
+  it('writes the whole set of Operaton attributes the process IR carries, and nothing else', () => {
+    expect({
+      versionTag: engineProc.versionTag,
+      historyTimeToLive: engineProc.historyTimeToLive,
+      candidateStarterUsers: engineProc.candidateStarterUsers,
+      candidateStarterGroups: engineProc.candidateStarterGroups,
+    }).toEqual({
+      versionTag: '1.4.2',
+      historyTimeToLive: 'P90D',
+      candidateStarterUsers: 'demo,manager',
+      candidateStarterGroups: 'adjusters',
+    });
+    // The projection above covers every Operaton property the descriptor
+    // declares on a process, so an empty `$attrs` closes the undeclared case.
+    expect(engineProc.$attrs).toEqual({});
+  });
+
+  it('writes the initiator on the start event, and nothing undeclared beside it', () => {
+    const start = node('Start');
+    expect({ initiator: start.initiator, $attrs: start.$attrs }).toEqual({
+      initiator: 'claimant',
+      $attrs: {},
+    });
+  });
+
+  it('a process authoring no historyTimeToLive still writes the exported default', async () => {
+    const xml = await irToXml({
+      id: 'no-history',
+      isExecutable: true,
+      flowElements: [{ kind: 'startEvent', id: 'S' }],
+      sequenceFlows: [],
+    });
+    const proc = await parseProcessTreeWithOperaton(xml);
+    expect(proc.historyTimeToLive).toBe(HISTORY_TIME_TO_LIVE);
   });
 
   it('writes the async continuation settings the IR carries, and nothing else', () => {
@@ -2688,6 +2727,8 @@ function boundsStrictlyInside(inner: DiBounds, outer: DiBounds): boolean {
  */
 interface Moddle {
   $type: string;
+  /** Attributes the descriptor does not declare for this type land here. */
+  $attrs: Record<string, string>;
   id?: string;
   name?: string;
   body?: string;
@@ -2721,6 +2762,10 @@ interface Moddle {
   cancelActivity?: boolean;
   triggeredByEvent?: boolean;
   versionTag?: string;
+  historyTimeToLive?: string;
+  candidateStarterUsers?: string;
+  candidateStarterGroups?: string;
+  initiator?: string;
   asyncBefore?: boolean;
   asyncAfter?: boolean;
   exclusive?: boolean;

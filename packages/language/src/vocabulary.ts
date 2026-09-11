@@ -116,13 +116,17 @@ export const LISTENER_BINDING_KEYS: readonly string[] = [
 export const CALL_BINDING_VALUES: readonly string[] = ['latest', 'deployment'];
 
 /**
- * A process header carries its label, its documentation and the version tag it
- * deploys under.
+ * The settings a process header takes, in the order they are offered and
+ * printed. Each attaches to the `bpmn:process` element itself rather than to
+ * any node inside it.
  */
 export const PROCESS_HEADER_KEYS: readonly string[] = [
   'label',
   'documentation',
   'versionTag',
+  'historyTimeToLive',
+  'candidateStarterUsers',
+  'candidateStarterGroups',
 ];
 
 export const IO_DIRECTIONS: readonly string[] = ['input', 'output'];
@@ -222,11 +226,16 @@ export const CATCH_TRIGGERS = [
 ] as const;
 
 /**
- * The triggers Operaton starts a process on. It ignores an error, escalation,
- * or compensation trigger there and starts as if none were written, so those
- * stay off rather than emitting XML the engine disregards.
+ * The triggers Operaton dispatches a start behaviour for. It ignores an error,
+ * escalation, or compensation trigger there and starts as if none were
+ * written, so those stay off rather than emitting XML the engine disregards.
  */
-export const START_TRIGGERS = ['message', 'signal', 'timer'] as const;
+export const START_TRIGGERS = [
+  'message',
+  'signal',
+  'timer',
+  'condition',
+] as const;
 
 /**
  * The two kinds an end event carries rather than raises. A terminate stops
@@ -440,7 +449,7 @@ export const ATTRIBUTE_BLOCK_RULES: Readonly<
 > = {
   StartEvent: withKeys({
     description: 'a start event',
-    own: ['label', 'documentation'],
+    own: ['label', 'documentation', 'initiator'],
     flags: [],
     forms: true,
     parameters: false,

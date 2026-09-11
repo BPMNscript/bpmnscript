@@ -17,7 +17,7 @@ The package also owns the base VS Code TextMate grammar (`syntaxes/bpmn-script.t
 
 One `process` block per file.
 Steps run top to bottom, so sequence flow is never written out, and control flow uses structured statements instead.
-Optional `var` declarations go in the process header, before the body, alongside `versionTag = "<value>"`, which labels the deployed process definition.
+Optional `var` declarations go in the process header, before the body, alongside the header's own settings: `versionTag`, which labels the deployed process definition, and `historyTimeToLive`, `candidateStarterUsers`, and `candidateStarterGroups`, which the engine reads before it starts an instance.
 
 ```bpmnscript
 process invoice-approval {
@@ -73,19 +73,20 @@ A brace holds what has internal structure: the body of a `while`, `do`, `paralle
 The grammar accepts any key in any element's parens and the validator decides which ones that element has, so an unknown key is a diagnostic naming the element rather than a parse error.
 Five engine execution settings are legal on every element that takes settings, `label` and `documentation` are legal on all of them too, and each element kind adds the keys it owns on top.
 
-| Element                                                | Keys beyond the engine settings                                                                                     |
-| ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------- |
-| `start`, `end`, `await`, `on`, `subprocess`, `attempt` | none                                                                                                                |
-| `user`                                                 | `assignee`, `formKey`, `candidateGroups`, `candidateUsers`, `dueDate`, `followUpDate`, `priority`                   |
-| `service`                                              | `class`, `expression`, `delegate`, `topic`, `resultVariable`                                                        |
-| `script`                                               | `resultVariable`                                                                                                    |
-| `step`                                                 | none                                                                                                                |
-| `send`                                                 | `class`, `expression`, `delegate`, `topic`, `resultVariable`                                                        |
-| `receive`                                              | `message`                                                                                                           |
-| `decide`                                               | `class`, `expression`, `delegate`, `topic`, `decision`, `binding`, `version`, `mapDecisionResult`, `resultVariable` |
-| `call`                                                 | `process`, `binding`, `version`, `businessKey`                                                                      |
-| `throw`, `emit`                                        | `class`, `expression`, `delegate`, `topic` (on a `message` trigger only)                                            |
-| process header                                         | `versionTag`, `documentation`                                                                                       |
+| Element                                       | Keys beyond the engine settings                                                                                     |
+| --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| `start`                                       | `initiator`                                                                                                         |
+| `end`, `await`, `on`, `subprocess`, `attempt` | none                                                                                                                |
+| `user`                                        | `assignee`, `formKey`, `candidateGroups`, `candidateUsers`, `dueDate`, `followUpDate`, `priority`                   |
+| `service`                                     | `class`, `expression`, `delegate`, `topic`, `resultVariable`                                                        |
+| `script`                                      | `resultVariable`                                                                                                    |
+| `step`                                        | none                                                                                                                |
+| `send`                                        | `class`, `expression`, `delegate`, `topic`, `resultVariable`                                                        |
+| `receive`                                     | `message`                                                                                                           |
+| `decide`                                      | `class`, `expression`, `delegate`, `topic`, `decision`, `binding`, `version`, `mapDecisionResult`, `resultVariable` |
+| `call`                                        | `process`, `binding`, `version`, `businessKey`                                                                      |
+| `throw`, `emit`                               | `class`, `expression`, `delegate`, `topic` (on a `message` trigger only)                                            |
+| process header                                | `label`, `documentation`, `versionTag`, `historyTimeToLive`, `candidateStarterUsers`, `candidateStarterGroups`      |
 
 The engine settings are `asyncBefore` and `asyncAfter`, which put a transaction boundary before or after the step, `exclusive`, which says whether the engine may run the step's jobs beside other jobs of the same instance, `jobPriority`, which orders those jobs in the queue, and `retryCycle`, the ISO cycle a failed job is retried on.
 The gateways that `if`, `while`, `do...while`, `parallel`, and a multi-branch `await` synthesize have no settings of their own, so no engine setting can be written on one.
@@ -412,7 +413,7 @@ process order-intake {
 }
 ```
 
-Three words are legal there: `message`, `signal`, and `timer`, each with the payload it already carries elsewhere, a name for the first two and a duration or an `at` or `every` key for the third.
+Four words are legal there: `message`, `signal`, `timer`, and `condition`, each with the payload it already carries elsewhere, a name for the first two, a duration or an `at` or `every` key for the third, and the condition expression, the same clause `on condition` and `await condition` carry, for the fourth.
 A subprocess start and an event-handler start take none, because both are entered by their container rather than by an event of their own; the validator rejects a trigger written on either.
 
 Writing `error`, `escalation`, or `compensation` on a process start is rejected too, for a different reason: Operaton's own start-event parser does not branch on those three, so the engine ignores the trigger and starts the process exactly as if none were written, and this surface refuses to compile XML the engine would disregard.
@@ -523,7 +524,7 @@ The categories it covers:
 
 - Variables: an undeclared reference (warning), a type mismatch against the declared `var`, a name declared twice.
 - Tasks: a duplicate attribute key, a `service`, `send`, or `decide` task without exactly one binding attribute, a `mapDecisionResult` outside the four result mappings, a `script` task with an unsupported fence tag or an empty or unterminated body.
-- Settings: a key the element does not own, a value in a shape its lowering cannot read (a quoted `asyncBefore`, an unquoted `versionTag`), a `form` block on an element that renders none, and a process header carrying anything but `versionTag` or `documentation`.
+- Settings: a key the element does not own, a value in a shape its lowering cannot read (a quoted `asyncBefore`, an unquoted `versionTag`), a `form` block on an element that renders none, and a process header carrying a key it does not own.
 - Parameters: a direction word other than `input` or `output`, a parameter on an element that carries none, a name repeated within one direction, and an `output` mapping on a repeated step.
 - Listeners: an event word the element does not have, a binding count other than one, a missing timer on `on timeout` or a timer on any other event, a repeated event on one element, and the same fence rules a `script` body follows.
 - Structure: an empty process, subprocess, or handler body, an empty branch or loop body (warning), an unreachable statement, an explicit `start` anywhere but first in its container, a `goto` reaching into a `parallel` or `await` branch from outside it, a second `else` branch on a `parallel` statement, an `else` branch with no conditioned sibling, and an `else` branch beside a sibling carrying no condition.

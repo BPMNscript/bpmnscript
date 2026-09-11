@@ -25,7 +25,7 @@ The four solid arrows are this package; the dotted one is the parser from `@bpmn
 Compiling is `astToIr` then `irToXml`; decompiling is `xmlToIr` then `irToDsl`.
 
 The IR names the engine settings it carries without a vendor prefix, and the `operaton:` prefix itself is applied inside `irToXml` alone.
-Details the IR does not model at all, such as the 30-day history setting, are attached there too.
+Details the IR does not model at all, such as the process's `targetNamespace`, are attached there too.
 
 ## IR shape
 
@@ -39,6 +39,9 @@ interface BpmnProcess {
   documentation?: string; // bpmn:documentation, carried verbatim from a single plaintext child
   isExecutable: true; // always true (executable process)
   versionTag?: string; // operaton:versionTag, an author-supplied version label
+  historyTimeToLive?: string; // operaton:historyTimeToLive, absent means the exporter's default (P30D)
+  candidateStarterUsers?: string; // operaton:candidateStarterUsers, a comma-separated list of user ids
+  candidateStarterGroups?: string; // operaton:candidateStarterGroups, a comma-separated list of group ids
   flowElements: FlowElement[];
   sequenceFlows: SequenceFlow[];
   errorDecls?: { name: string; code: string; message?: string }[]; // every error code the process raises, catches, or declares
@@ -46,7 +49,7 @@ interface BpmnProcess {
 }
 
 type FlowElement =
-  | StartEvent // kind: 'startEvent'  (+eventDefinition? on a process's own start with a trigger, or on an event-handler start)
+  | StartEvent // kind: 'startEvent'  (+eventDefinition? on a process's own start with a trigger, or on an event-handler start, +initiator?)
   | EndEvent // kind: 'endEvent'  (+eventDefinition? for a typed throw end, a terminate, or a cancel)
   | UserTask // kind: 'userTask'  (+assignee?, +formKey?, +candidateGroups?/candidateUsers?/dueDate?/followUpDate?/priority?, +loop?)
   | ServiceTask // kind: 'serviceTask' (+binding: class | expression | delegateExpression | external | decision, +resultVariable?, +element?: send | businessRule, the tag it serializes to, +loop?)
@@ -95,7 +98,7 @@ Event semantics ride on an `eventDefinition` field, optional on a start or end e
 `terminate` and `cancel` join the union on an end event alone and are both payload-free: one stops every running path of its scope at once and the other gives up the block the end sits in.
 Neither raises anything for a handler to catch by name, which is why the surface spells both on `end` instead of `throw`.
 Compensation is the odd one out, because BPMN expresses it through `isForCompensation` and an association rather than a boundary event: every holder may carry it except `BoundaryEvent`.
-`IntermediateCatchEvent` is restricted to message, signal, timer, or conditional, the four triggers a linear flow can block on and then continue past ([ADR-0020](../../docs/decisions/0020-intermediate-catch-events.md)).
+`IntermediateCatchEvent` is restricted to message, signal, timer, or condition, the four triggers a linear flow can block on and then continue past ([ADR-0020](../../docs/decisions/0020-intermediate-catch-events.md)).
 The document-level `bpmn:Error`, `bpmn:Escalation`, `bpmn:Message`, and `bpmn:Signal` roots are synthesized rather than modeled ([ADR-0016](../../docs/decisions/0016-derived-event-root-elements.md), [ADR-0017](../../docs/decisions/0017-event-trigger-payload-surfaces.md)).
 A message or signal root comes from the names in use, an error or escalation root from the codes in use together with `errorDecls` and `escalationDecls`, which is where a declared root's `name` and message text live.
 

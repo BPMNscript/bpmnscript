@@ -39,7 +39,7 @@ Because both directions share it, the round-trip is verified against one represe
 Portability across execution engines is a non-goal.
 The project targets Operaton (ADR-0007), so the IR is not abstracted for other engines.
 It models the semantics Operaton executes under field names that carry no vendor prefix: executable processes, service tasks bound to a Java class, a JUEL expression, a delegate expression, or an external topic, script tasks, and process variables.
-Attributes that vary only at serialization, such as `operaton:historyTimeToLive`, are attached at the IR-to-XML boundary and are not stored in the IR.
+Attributes that vary only at serialization, such as `targetNamespace`, are attached at the IR-to-XML boundary and are not stored in the IR.
 
 ### Consequences
 

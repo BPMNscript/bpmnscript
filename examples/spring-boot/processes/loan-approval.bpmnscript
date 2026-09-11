@@ -1,10 +1,20 @@
-process loan-approval(label: "Loan Approval") {
+process loan-approval(
+  label: "Loan Approval",
+  documentation: "Decides a consumer loan request. Small loans are screened automatically and only the ones the screening does not clear reach a loan officer.",
+  historyTimeToLive: "P180D",
+  candidateStarterUsers: "demo",
+  candidateStarterGroups: "loan-officers"
+) {
   var amount: number
   var creditScore: number
   var risk: string
   var approved: boolean
 
-  start RequestReceived(label: "Loan request received") {
+  start RequestReceived(
+    label: "Loan request received",
+    documentation: "The amount and the credit score are the whole application; every later decision is derived from those two figures.",
+    initiator: "submittedBy"
+  ) {
     form {
       amount: number "Loan amount"
       creditScore: number "Credit score"
@@ -21,7 +31,11 @@ process loan-approval(label: "Loan Approval") {
   if (amount < 10000 && risk == "low") {
     service AutoApprove(label: "Auto-approve", class: "com.example.loan.AutoApproveDelegate")
   } else {
-    user Approve(label: "Approve loan", assignee: "demo") {
+    user Approve(
+      label: "Approve loan",
+      documentation: "Decline anything the applicant cannot service from documented income, whatever the credit score says.",
+      assignee: "demo"
+    ) {
       form {
         approved: boolean "Approve the loan?"
       }

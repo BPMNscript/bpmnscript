@@ -52,6 +52,20 @@ const SIGNAL_START_SRC =
   '  end Restocked\n' +
   '}\n';
 
+// The condition reads a variable, and the form on the start is what declares it,
+// so the printed source validates without a `var` the import hop would have had
+// nowhere to put.
+const CONDITION_START_SRC =
+  'process stock-watch {\n' +
+  '  start StockRanLow condition(stockLevel < 5) {\n' +
+  '    form {\n' +
+  '      stockLevel: number "Stock on hand"\n' +
+  '    }\n' +
+  '  }\n' +
+  '  user ReorderStock(assignee: "demo")\n' +
+  '  end Restocked\n' +
+  '}\n';
+
 const TERMINATE_END_SRC =
   'process order-abandon {\n' +
   '  start OrderPlaced\n' +
@@ -258,6 +272,36 @@ describe('round-trip: process start event with a signal trigger', () => {
     );
     const document = await parse(run.dsl);
     expect(document.parseResult.parserErrors).toHaveLength(0);
+  });
+});
+
+describe('round-trip: process start event with a condition trigger', () => {
+  const run = roundTripOf(CONDITION_START_SRC);
+
+  it('keeps the condition through every hop and re-emits a start that validates clean', async () => {
+    const conditional = {
+      kind: 'conditional',
+      condition: '${stockLevel < 5}',
+    };
+
+    expect(theOnly(run.ir1, 'startEvent').eventDefinition, 'IR1').toEqual(
+      conditional,
+    );
+
+    expect(run.xml, 'XML').toContain(
+      '<bpmn:condition xsi:type="bpmn:tFormalExpression">' +
+        '${stockLevel &lt; 5}</bpmn:condition>',
+    );
+
+    expect(theOnly(run.ir2, 'startEvent').eventDefinition, 'IR2').toEqual(
+      conditional,
+    );
+
+    expect(run.dsl, 'DSL').toContain(
+      'start StockRanLow condition(stockLevel < 5)',
+    );
+    const { diagnostics } = await validate(run.dsl);
+    expect(diagnostics).toEqual([]);
   });
 });
 

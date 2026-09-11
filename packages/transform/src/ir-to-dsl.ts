@@ -1608,10 +1608,24 @@ function deadFallbackWarning(forkId: string): PrintWarning {
 /** A pathological IR degrades to a `goto` rather than overflowing the stack. */
 const MAX_NESTING_DEPTH = 1000;
 
+/**
+ * In print order, after the label and documentation {@link namedSettings}
+ * writes. The IR field name is also the DSL key. Exported so a test can hold
+ * the pair against `PROCESS_HEADER_KEYS`: a key the vocabulary gains and this
+ * table does not would print nothing and round-trip as a silent drop.
+ */
+export const PROCESS_HEADER_SETTINGS = [
+  ['versionTag', quoteLiteral],
+  ['historyTimeToLive', quote],
+  ['candidateStarterUsers', quote],
+  ['candidateStarterGroups', quote],
+] as const;
+
 function buildProcessHeader(process: BpmnProcess): string {
   const settings: string[] = namedSettings(process);
-  if (process.versionTag !== undefined) {
-    settings.push(setting('versionTag', quoteLiteral(process.versionTag)));
+  for (const [key, render] of PROCESS_HEADER_SETTINGS) {
+    const value = process[key];
+    if (value !== undefined) settings.push(setting(key, render(value)));
   }
   return `process ${process.id}${parens(settings)} {`;
 }
@@ -2094,7 +2108,14 @@ function renderStartEvent(
   const head = trigger.head === '' ? '' : ` ${trigger.head}`;
   return bracketed(
     `start ${el.id}${head}`,
-    [...trigger.items, ...namedSettings(el), ...engineSettings(el)],
+    [
+      ...trigger.items,
+      ...namedSettings(el),
+      ...(el.initiator === undefined
+        ? []
+        : [setting('initiator', quote(el.initiator))]),
+      ...engineSettings(el),
+    ],
     startOrEndMembers(el),
   );
 }

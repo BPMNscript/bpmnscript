@@ -418,6 +418,25 @@ const PROCESS_PARENS: Item[] = [
   LABEL,
   DOCUMENTATION,
   ['versionTag', SETTING, 'versionTag: "${1:1.0.0}"'],
+  ['historyTimeToLive', SETTING, 'historyTimeToLive: "${1:P30D}"'],
+  [
+    'candidateStarterUsers',
+    SETTING,
+    'candidateStarterUsers: "${1:demo,manager}"',
+  ],
+  [
+    'candidateStarterGroups',
+    SETTING,
+    'candidateStarterGroups: "${1:adjusters}"',
+  ],
+  ...LITERALS,
+];
+
+const START_PARENS: Item[] = [
+  LABEL,
+  DOCUMENTATION,
+  ['initiator', SETTING, 'initiator: "${1:starter}"'],
+  ...ENGINE_SETTINGS,
   ...LITERALS,
 ];
 
@@ -533,6 +552,7 @@ describe('the completions offered at a caret', () => {
         ['message', EVENT_WORD, 'message'],
         ['signal', EVENT_WORD, 'signal'],
         TIMER,
+        CONDITION,
         ...STATEMENTS,
       ],
     ],
@@ -578,9 +598,14 @@ describe('the completions offered at a caret', () => {
       USER_PARENS,
     ],
     [
-      'the process parens offer the two settings a process header takes',
+      'the process parens offer the settings a process header takes',
       'process p(|) {\n  user T\n}',
       PROCESS_PARENS,
+    ],
+    [
+      'the start parens offer the settings a start event takes',
+      'process p {\n  start S(|)\n  user T\n}',
+      START_PARENS,
     ],
     [
       'a service task offers the binding settings and none of the user-task ones',

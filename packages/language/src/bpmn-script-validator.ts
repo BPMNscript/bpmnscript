@@ -182,8 +182,7 @@ type VersionPinnedElement = CallActivity | BusinessRuleTask;
 type CatchHeader = IntermediateCatchEvent | RaceBranch;
 
 /**
- * Keys whose value names something outside process-variable scope (a Java
- * class, a form id, an EL binding, a topic, a process id, a principal), so a
+ * Keys whose value names something outside process-variable scope, so a
  * bareword there must not warn about an undeclared variable. `jobPriority`,
  * `priority`, and `businessKey` stay out: a bareword there lowers to `${...}`
  * and does name a variable. The date keys are here because
@@ -208,6 +207,10 @@ const NON_VARIABLE_ATTR_KEYS: ReadonlySet<string> = new Set([
   'followUpDate',
   'retryCycle',
   'resultVariable',
+  'historyTimeToLive',
+  'candidateStarterUsers',
+  'candidateStarterGroups',
+  'initiator',
 ]);
 
 const BOOLEAN_ATTR_KEYS: ReadonlySet<string> = new Set([
@@ -217,11 +220,13 @@ const BOOLEAN_ATTR_KEYS: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * Keys whose value the engine parses (version label, ISO retry cycle, ISO
- * date). The other text keys stay out: the engine takes them as written.
+ * Keys whose value the engine parses rather than takes as written, so a
+ * bareword or a number there reaches it as something it cannot read. The other
+ * text keys stay out: the engine takes them as written.
  */
 const TEXT_ATTR_KEYS: ReadonlySet<string> = new Set([
   'versionTag',
+  'historyTimeToLive',
   'retryCycle',
   'dueDate',
   'followUpDate',
@@ -305,31 +310,45 @@ const LISTENER_TIMER_PAYLOAD_MESSAGE =
   TIMER_PAYLOAD_PREFIX +
   `'after "PT1H"', 'at "2026-08-01T09:00:00"', or 'every "R/PT10M"'.`;
 
-const CONDITION_REQUIRED_MESSAGE =
-  "A condition handler needs its condition: 'on condition(amount > 100)'.";
+/**
+ * What the condition diagnostics differ by from one position to the next: the
+ * subject of the sentence, the clause as that position spells it, and how a
+ * sentence names the position on its own. `only` is separate because the start
+ * clause carries a name slot: quoting `start S condition` at a user who never
+ * wrote an `S` puts a placeholder in front of them that nothing introduces. The
+ * three wordings themselves live once, in
+ * {@link BpmnScriptValidator.checkConditionPayload}.
+ */
+const CONDITION_PHRASING = {
+  handler: {
+    subject: 'A condition handler',
+    clause: 'on condition',
+    only: "'on condition'",
+  },
+  catch: {
+    subject: 'An awaited condition',
+    clause: 'await condition',
+    only: "'await condition'",
+  },
+  start: {
+    subject: 'A condition start',
+    clause: 'start S condition',
+    only: 'a condition start',
+  },
+} as const;
 
-const CONDITION_NO_CODE_MESSAGE =
-  "A condition handler takes no code string; write the condition itself: 'on condition(amount > 100)'.";
+type ConditionPosition = keyof typeof CONDITION_PHRASING;
 
 const SECOND_PAREN_VALUE_MESSAGE =
   'The parens carry one unkeyed value, the payload; a second one names ' +
   "nothing and never reaches the engine. Write it as a 'key: value' setting, " +
   'or remove it.';
 
-const CONDITION_ONLY_MESSAGE =
-  "Only 'on condition' takes a condition expression.";
-
 const COMPENSATE_TYPO_MESSAGE =
   "Unknown event kind 'compensate'; write 'compensation'.";
 
-const CATCH_CONDITION_REQUIRED_MESSAGE =
-  "An awaited condition needs its condition: 'await condition(amount > 100)'.";
-
-const CATCH_CONDITION_NO_CODE_MESSAGE =
-  "An awaited condition takes no code string; write the condition itself: 'await condition(amount > 100)'.";
-
-const CATCH_CONDITION_ONLY_MESSAGE =
-  "Only 'await condition' takes a condition expression.";
+/** Answered the same wherever the near miss is written. */
+const CONDITIONAL_TYPO_MESSAGE = `Unknown event kind 'conditional'; did you mean 'condition'?`;
 
 const PARALLEL_SECOND_ELSE_MESSAGE =
   "A 'parallel' statement takes one 'else' branch at most; the first one " +
@@ -349,10 +368,6 @@ const PARALLEL_ELSE_BESIDE_UNCONDITIONED_MESSAGE =
 const START_TRIGGER_IN_HANDLER_MESSAGE =
   "The start of an event-handler body carries no trigger; the handler's own " +
   "'on <kind>' is what it catches.";
-
-const START_CONDITION_MESSAGE =
-  'A process cannot start on a condition in this tool; a start event supports ' +
-  'message, signal, or timer.';
 
 const END_TRIGGERS_MESSAGE =
   "An end event carries 'terminate', which stops every running path in this " +
@@ -1096,6 +1111,8 @@ export class BpmnScriptValidator {
         property: 'value',
       });
     }
+
+    this.checkConditionPayload(start, rule, 'start', accept);
 
     this.checkTimerClause(
       start,
@@ -1978,17 +1995,9 @@ export class BpmnScriptValidator {
       }
     } else if (rule.code === 'optional') {
       checkEmptyCode(code, handler.items, accept);
-    } else if (
-      handler.trigger === 'condition' &&
-      hasQuotedPayload(handler.items)
-    ) {
+    } else if (handler.trigger === 'compensation' && code !== undefined) {
       // Timer's forbidden payload folds into the timer branch below, so
       // `on timer("banana")` reads as an unreadable time, not a stray code.
-      accept('error', CONDITION_NO_CODE_MESSAGE, {
-        node: payload!,
-        property: 'value',
-      });
-    } else if (handler.trigger === 'compensation' && code !== undefined) {
       accept('error', COMPENSATION_NO_CODE_MESSAGE, {
         node: payload!,
         property: 'value',
@@ -2000,6 +2009,8 @@ export class BpmnScriptValidator {
       });
     }
 
+    this.checkConditionPayload(handler, rule, 'handler', accept);
+
     this.checkTimerClause(
       handler,
       rule.timer,
@@ -2008,14 +2019,7 @@ export class BpmnScriptValidator {
     );
 
     const handlerBindings = caughtBindingsOf(handler.items);
-    if (rule.parens === 'condition') {
-      if (payload === undefined) {
-        accept('error', CONDITION_REQUIRED_MESSAGE, {
-          node: handler,
-          property: 'trigger',
-        });
-      }
-    } else if (rule.parens === 'forbidden' && handlerBindings.length > 0) {
+    if (rule.parens === 'forbidden' && handlerBindings.length > 0) {
       for (const binding of handlerBindings) {
         accept(
           'error',
@@ -2026,12 +2030,42 @@ export class BpmnScriptValidator {
         );
       }
     }
+  }
 
-    if (
-      handler.trigger !== 'condition' &&
-      hasExpressionPayload(handler.items)
-    ) {
-      accept('error', CONDITION_ONLY_MESSAGE, {
+  /**
+   * The three diagnostics a condition clause raises, wherever one is written:
+   * the clause is required where the trigger is `condition`, a quoted string
+   * there is a code rather than the condition, and an expression payload
+   * belongs to no other trigger. At most one of the three holds for a given
+   * node, so they need no ordering between them.
+   */
+  private checkConditionPayload(
+    node: CatchHeader | OnHandler | StartEvent,
+    rule: TriggerPayloadRule,
+    position: ConditionPosition,
+    accept: ValidationAcceptor,
+  ): void {
+    const { subject, clause, only } = CONDITION_PHRASING[position];
+    const form = `${clause}(amount > 100)`;
+    const payload = payloadItemOf(node.items);
+
+    if (rule.parens === 'condition' && payload === undefined) {
+      accept('error', `${subject} needs its condition: '${form}'.`, {
+        node,
+        property: 'trigger',
+      });
+    }
+
+    if (node.trigger === 'condition' && hasQuotedPayload(node.items)) {
+      accept(
+        'error',
+        `${subject} takes no code string; write the condition itself: '${form}'.`,
+        { node: payload!, property: 'value' },
+      );
+    }
+
+    if (node.trigger !== 'condition' && hasExpressionPayload(node.items)) {
+      accept('error', `Only ${only} takes a condition expression.`, {
         node: payload!,
         property: 'value',
       });
@@ -2409,22 +2443,14 @@ export class BpmnScriptValidator {
     rule: TriggerPayloadRule,
     accept: ValidationAcceptor,
   ): void {
-    if (rule.code === 'required') {
-      if (!payloadTextOf(catchEvent.items)) {
-        accept('error', nameRequiredMessage('An awaited message', 'message'), {
-          node: catchEvent,
-          property: 'trigger',
-        });
-      }
-    } else if (
-      catchEvent.trigger === 'condition' &&
-      hasQuotedPayload(catchEvent.items)
-    ) {
-      accept('error', CATCH_CONDITION_NO_CODE_MESSAGE, {
-        node: payloadItemOf(catchEvent.items)!,
-        property: 'value',
+    if (rule.code === 'required' && !payloadTextOf(catchEvent.items)) {
+      accept('error', nameRequiredMessage('An awaited message', 'message'), {
+        node: catchEvent,
+        property: 'trigger',
       });
     }
+
+    this.checkConditionPayload(catchEvent, rule, 'catch', accept);
 
     this.checkTimerClause(
       catchEvent,
@@ -2432,24 +2458,6 @@ export class BpmnScriptValidator {
       particleOnlyMessage("'await timer'"),
       accept,
     );
-
-    const catchCondition = payloadItemOf(catchEvent.items);
-    if (rule.parens === 'condition' && catchCondition === undefined) {
-      accept('error', CATCH_CONDITION_REQUIRED_MESSAGE, {
-        node: catchEvent,
-        property: 'trigger',
-      });
-    }
-
-    if (
-      catchEvent.trigger !== 'condition' &&
-      hasExpressionPayload(catchEvent.items)
-    ) {
-      accept('error', CATCH_CONDITION_ONLY_MESSAGE, {
-        node: catchCondition!,
-        property: 'value',
-      });
-    }
   }
 
   /**
@@ -2651,7 +2659,7 @@ function unknownDeclarationKindMessage(word: string): string {
 
 function onTriggerMessage(word: string): string {
   if (word === 'conditional') {
-    return `Unknown event kind 'conditional'; did you mean 'condition'?`;
+    return CONDITIONAL_TYPO_MESSAGE;
   }
   if (word === 'compensate') {
     return COMPENSATE_TYPO_MESSAGE;
@@ -2674,8 +2682,8 @@ function startTriggerMessage(word: string): string {
       'that subprocess.'
     );
   }
-  if (word === 'condition' || word === 'conditional') {
-    return START_CONDITION_MESSAGE;
+  if (word === 'conditional') {
+    return CONDITIONAL_TYPO_MESSAGE;
   }
   return `Unknown event kind '${word}'; a start event supports ${formatWordList(START_TRIGGERS)}.`;
 }

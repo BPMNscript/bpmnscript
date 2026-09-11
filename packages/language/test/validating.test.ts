@@ -243,11 +243,14 @@ const START_COMPENSATION =
   "A process cannot start on compensation: it undoes a subprocess's " +
   "completed work, so it belongs in an 'on compensation' block inside that " +
   'subprocess.';
-const START_CONDITION =
-  'A process cannot start on a condition in this tool; a start event supports ' +
-  'message, signal, or timer.';
+const START_CONDITION_REQUIRED =
+  "A condition start needs its condition: 'start S condition(amount > 100)'.";
+const START_CONDITION_NO_CODE =
+  "A condition start takes no code string; write the condition itself: 'start S condition(amount > 100)'.";
+const START_CONDITION_ONLY =
+  'Only a condition start takes a condition expression.';
 const unknownStartKind = (word: string) =>
-  `Unknown event kind '${word}'; a start event supports 'message', 'signal', or 'timer'.`;
+  `Unknown event kind '${word}'; a start event supports 'message', 'signal', 'timer', or 'condition'.`;
 const startNameRequired = (trigger: string) =>
   `A ${trigger} start needs the ${trigger}'s name: the engine matches ${trigger}s by name.`;
 const startMessageExpression = (name: string) =>
@@ -759,6 +762,21 @@ checks('Validation - attribute keys and value shapes', [
     'a bareword in versionTag asks for quotes and still reads as a variable',
     `process p(versionTag: deadline) { start S }`,
     [warn(undeclared('deadline')), unquotedText('versionTag')],
+  ],
+  [
+    'a bareword in historyTimeToLive asks for quotes and names no variable',
+    `process p(historyTimeToLive: P90D) { start S }`,
+    [unquotedText('historyTimeToLive')],
+  ],
+  [
+    'a bareword starter list names a principal, not a variable',
+    `process p(candidateStarterUsers: demo, candidateStarterGroups: adjusters) { start S }`,
+    [],
+  ],
+  [
+    'a bareword initiator names the variable the engine writes, not one in scope',
+    `process p { start S(initiator: claimant) }`,
+    [],
   ],
   [
     'an expression in a numeric attribute carries no value-shape rule',
@@ -1797,6 +1815,11 @@ checks('Validation - event handlers', [
     [noFlowSteps('p'), CONDITION_NO_CODE],
   ],
   [
+    'a condition handler carrying both mistakes reports them left to right',
+    `process p { on condition("X", at: "2026-01-01") { user A } }`,
+    [noFlowSteps('p'), CONDITION_NO_CODE, PARTICLE_ONLY],
+  ],
+  [
     "'after' with no duration is a shape warning",
     `process p { on timer("banana") { user A } }`,
     [noFlowSteps('p'), warn(AFTER_SHAPE)],
@@ -2371,6 +2394,11 @@ checks('Validation - awaited events', [
     [AWAIT_CONDITION_NO_CODE],
   ],
   [
+    'an awaited condition carrying both mistakes reports them left to right',
+    `process p { await condition("X", at: "2026-01-01") }`,
+    [AWAIT_CONDITION_NO_CODE, AWAIT_PARTICLE_ONLY],
+  ],
+  [
     'a race branch takes the settings keys an awaited event takes',
     `process p { await { message("M", assignee: "u") { user A } signal("S") { user B } } }`,
     [notValidOn('assignee', 'a branch of an await block')],
@@ -2490,17 +2518,37 @@ checks('Validation - start triggers', [
     [START_COMPENSATION],
   ],
   [
-    'a condition cannot start a process here',
+    'a condition start carrying its condition is clean',
+    `process p { var amount: number start S condition(amount > 100) user A }`,
+    [],
+  ],
+  [
+    'a condition start with no condition asks for it',
     `process p { start S condition }`,
-    [START_CONDITION],
+    [START_CONDITION_REQUIRED],
   ],
   [
-    'the near-miss spelling gets the same answer',
+    'a code string on a condition start is not the condition',
+    `process p { start S condition("X") }`,
+    [START_CONDITION_NO_CODE],
+  ],
+  [
+    'a condition start carrying both mistakes reports them left to right',
+    `process p { start S condition("X", at: "2026-01-01") }`,
+    [START_CONDITION_NO_CODE, START_PARTICLE_ONLY],
+  ],
+  [
+    'a condition on a message start belongs to a condition start',
+    `process p { var amount: number start S message(amount > 100) }`,
+    [startNameRequired('message'), START_CONDITION_ONLY],
+  ],
+  [
+    'the near-miss spelling is answered as a typo',
     `process p { start S conditional }`,
-    [START_CONDITION],
+    [CONDITIONAL_TYPO],
   ],
   [
-    'an unknown start kind names the three legal ones',
+    'an unknown start kind names the legal ones',
     `process p { start S nonsense("X") }`,
     [unknownStartKind('nonsense')],
   ],
@@ -3297,6 +3345,13 @@ checks('Validation - process header attributes', [
     'a header takes the label every element takes, and no bare flag',
     `process p(label: "P", alongside) { start S }`,
     [flagNotValidOn('alongside', 'a process header')],
+  ],
+  [
+    'the header and the start take every key their own element carries',
+    `process p(label: "P", documentation: "D", versionTag: "1.0.0", historyTimeToLive: "P90D", candidateStarterUsers: "demo,manager", candidateStarterGroups: "adjusters") {
+  start S(initiator: "claimant")
+}`,
+    [],
   ],
 ]);
 

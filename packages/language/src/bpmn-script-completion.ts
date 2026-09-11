@@ -204,6 +204,10 @@ const SETTING_SNIPPETS: Readonly<Record<string, string>> = {
   version: 'version: ${1:1}',
   businessKey: 'businessKey: "${1:\\${execution.processBusinessKey}}"',
   versionTag: 'versionTag: "${1:1.0.0}"',
+  historyTimeToLive: 'historyTimeToLive: "${1:P30D}"',
+  candidateStarterUsers: 'candidateStarterUsers: "${1:demo,manager}"',
+  candidateStarterGroups: 'candidateStarterGroups: "${1:adjusters}"',
+  initiator: 'initiator: "${1:starter}"',
 };
 
 /**
