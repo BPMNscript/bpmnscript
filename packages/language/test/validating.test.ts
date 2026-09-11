@@ -149,10 +149,29 @@ const PARAMETER_HOSTS_SENTENCE =
   "attempt block, and an 'on' handler with no host.";
 const noParameters = (description: string) =>
   `${capitalized(description)} cannot declare an 'input' or 'output' parameter; ${PARAMETER_HOSTS_SENTENCE}`;
-const unknownDirection = (word: string) =>
-  `Unknown parameter direction '${word}'; write 'input' or 'output'.`;
+const unknownDirection = (word: string, legal = `'input' or 'output'`) =>
+  `Unknown parameter direction '${word}'; write ${legal}.`;
 const duplicateParameter = (direction: string, name: string) =>
   `Duplicate '${direction}' parameter '${name}'.`;
+const FIELD_HOSTS_SENTENCE =
+  'an injected field belongs on a service task, a send task, a decision ' +
+  'step, and on a listener.';
+const noFields = (description: string) =>
+  `${capitalized(description)} cannot declare a 'field' parameter; ${FIELD_HOSTS_SENTENCE}`;
+const fieldBinding = (subject: string, written?: string) =>
+  `${subject} carries an injected field only under a 'class' or 'delegate' ` +
+  'binding: the engine injects into the class or the delegate that binding ' +
+  'names' +
+  (written === undefined
+    ? '.'
+    : `, and the binding written with '${written}' receives none.`);
+const scriptListenerField = (subject: string) =>
+  `${subject} runs a fenced script, which the engine hands no field list; ` +
+  "remove the script and bind the listener with 'class' or 'delegate' " +
+  'to inject one.';
+const fieldValue = (name: string) =>
+  `Field '${name}' takes a quoted string or a "\${...}" expression; ` +
+  'put the value in quotes.';
 const REPEATED_OUTPUT =
   "A repeated step cannot map an 'output' parameter: the engine refuses to " +
   'deploy it. Move the mapping to a step after the repetition.';
@@ -212,6 +231,16 @@ const BINDING_VALUE = `Setting 'binding' must be 'latest' or 'deployment'.`;
 const BINDING_IS_VERSION = `Write 'version: <number>' instead of 'binding: version'.`;
 const bindingVersionClash = (subject: string) =>
   `${subject} cannot combine 'binding' and 'version'; use 'version: <number>' to pin a specific version, or 'binding: latest'/'binding: deployment' for the other modes.`;
+const FORM_KEY_AND_REF =
+  "A user task names its form with 'formKey' or with 'formRef', never both; " +
+  'the engine refuses to deploy a task carrying the two.';
+const FORM_REF_NEEDS_BINDING =
+  "A 'formRef' needs the binding resolving it: add 'binding: latest', " +
+  "'binding: deployment', or 'version: <number>'. The engine refuses to " +
+  'deploy a form reference with none.';
+const FORM_REF_MISSING =
+  "'binding' and 'version' pin which deployed version of a form the engine " +
+  "resolves, so neither stands without a 'formRef'.";
 const duplicateMapping = (direction: string, target: string) =>
   `Duplicate '${direction}' mapping target '${target}'.`;
 const duplicateAllMapping = (direction: string) =>
@@ -243,11 +272,14 @@ const START_COMPENSATION =
   "A process cannot start on compensation: it undoes a subprocess's " +
   "completed work, so it belongs in an 'on compensation' block inside that " +
   'subprocess.';
-const START_CONDITION =
-  'A process cannot start on a condition in this tool; a start event supports ' +
-  'message, signal, or timer.';
+const START_CONDITION_REQUIRED =
+  "A condition start needs its condition: 'start S condition(amount > 100)'.";
+const START_CONDITION_NO_CODE =
+  "A condition start takes no code string; write the condition itself: 'start S condition(amount > 100)'.";
+const START_CONDITION_ONLY =
+  'Only a condition start takes a condition expression.';
 const unknownStartKind = (word: string) =>
-  `Unknown event kind '${word}'; a start event supports 'message', 'signal', or 'timer'.`;
+  `Unknown event kind '${word}'; a start event supports 'message', 'signal', 'timer', or 'condition'.`;
 const startNameRequired = (trigger: string) =>
   `A ${trigger} start needs the ${trigger}'s name: the engine matches ${trigger}s by name.`;
 const startMessageExpression = (name: string) =>
@@ -759,6 +791,21 @@ checks('Validation - attribute keys and value shapes', [
     'a bareword in versionTag asks for quotes and still reads as a variable',
     `process p(versionTag: deadline) { start S }`,
     [warn(undeclared('deadline')), unquotedText('versionTag')],
+  ],
+  [
+    'a bareword in historyTimeToLive asks for quotes and names no variable',
+    `process p(historyTimeToLive: P90D) { start S }`,
+    [unquotedText('historyTimeToLive')],
+  ],
+  [
+    'a bareword starter list names a principal, not a variable',
+    `process p(candidateStarterUsers: demo, candidateStarterGroups: adjusters) { start S }`,
+    [],
+  ],
+  [
+    'a bareword initiator names the variable the engine writes, not one in scope',
+    `process p { start S(initiator: claimant) }`,
+    [],
   ],
   [
     'an expression in a numeric attribute carries no value-shape rule',
@@ -1797,6 +1844,11 @@ checks('Validation - event handlers', [
     [noFlowSteps('p'), CONDITION_NO_CODE],
   ],
   [
+    'a condition handler carrying both mistakes reports them left to right',
+    `process p { on condition("X", at: "2026-01-01") { user A } }`,
+    [noFlowSteps('p'), CONDITION_NO_CODE, PARTICLE_ONLY],
+  ],
+  [
     "'after' with no duration is a shape warning",
     `process p { on timer("banana") { user A } }`,
     [noFlowSteps('p'), warn(AFTER_SHAPE)],
@@ -2371,6 +2423,11 @@ checks('Validation - awaited events', [
     [AWAIT_CONDITION_NO_CODE],
   ],
   [
+    'an awaited condition carrying both mistakes reports them left to right',
+    `process p { await condition("X", at: "2026-01-01") }`,
+    [AWAIT_CONDITION_NO_CODE, AWAIT_PARTICLE_ONLY],
+  ],
+  [
     'a race branch takes the settings keys an awaited event takes',
     `process p { await { message("M", assignee: "u") { user A } signal("S") { user B } } }`,
     [notValidOn('assignee', 'a branch of an await block')],
@@ -2490,17 +2547,37 @@ checks('Validation - start triggers', [
     [START_COMPENSATION],
   ],
   [
-    'a condition cannot start a process here',
+    'a condition start carrying its condition is clean',
+    `process p { var amount: number start S condition(amount > 100) user A }`,
+    [],
+  ],
+  [
+    'a condition start with no condition asks for it',
     `process p { start S condition }`,
-    [START_CONDITION],
+    [START_CONDITION_REQUIRED],
   ],
   [
-    'the near-miss spelling gets the same answer',
+    'a code string on a condition start is not the condition',
+    `process p { start S condition("X") }`,
+    [START_CONDITION_NO_CODE],
+  ],
+  [
+    'a condition start carrying both mistakes reports them left to right',
+    `process p { start S condition("X", at: "2026-01-01") }`,
+    [START_CONDITION_NO_CODE, START_PARTICLE_ONLY],
+  ],
+  [
+    'a condition on a message start belongs to a condition start',
+    `process p { var amount: number start S message(amount > 100) }`,
+    [startNameRequired('message'), START_CONDITION_ONLY],
+  ],
+  [
+    'the near-miss spelling is answered as a typo',
     `process p { start S conditional }`,
-    [START_CONDITION],
+    [CONDITIONAL_TYPO],
   ],
   [
-    'an unknown start kind names the three legal ones',
+    'an unknown start kind names the legal ones',
     `process p { start S nonsense("X") }`,
     [unknownStartKind('nonsense')],
   ],
@@ -2981,6 +3058,18 @@ const TASK_KIND_BLOCKS = BLOCK_HOSTS.filter(([kind]) =>
   TASK_KINDS.some(([taskKind]) => taskKind === kind),
 );
 
+/**
+ * `label` and `documentation` share their whole derivation: both are owned by
+ * exactly the kinds lowering to a BPMN node with a name slot. Each key runs
+ * against every host so neither stands in for the other.
+ */
+const NAME_SLOT_HOSTS = ['label', 'documentation'].flatMap((key) =>
+  BLOCK_HOSTS.map(
+    ([kind, description, , settings]) =>
+      [key, kind, description, settings] as const,
+  ),
+);
+
 describe('Validation - every element with settings and a member block', () => {
   test.each(BLOCK_HOSTS)(
     'the engine settings are accepted on %s',
@@ -3010,18 +3099,18 @@ describe('Validation - every element with settings and a member block', () => {
     },
   );
 
-  test.each(BLOCK_HOSTS.filter(([kind]) => LABEL_HOSTS.has(kind)))(
-    'a label is accepted on %s',
-    async (_kind, _description, _members, settings) => {
-      expect(await diagnosticsOf(settings('label: "L"'))).toEqual([]);
+  test.each(NAME_SLOT_HOSTS.filter(([, kind]) => LABEL_HOSTS.has(kind)))(
+    '%s is accepted on %s',
+    async (key, _kind, _description, settings) => {
+      expect(await diagnosticsOf(settings(`${key}: "L"`))).toEqual([]);
     },
   );
 
-  test.each(BLOCK_HOSTS.filter(([kind]) => !LABEL_HOSTS.has(kind)))(
-    'a label on %s names the element kind, having no name slot to land in',
-    async (_kind, description, _members, settings) => {
-      expect(await diagnosticsOf(settings('label: "L"'))).toEqual([
-        notValidOn('label', description),
+  test.each(NAME_SLOT_HOSTS.filter(([, kind]) => !LABEL_HOSTS.has(kind)))(
+    '%s on %s names the element kind, having no name slot to land in',
+    async (key, _kind, description, settings) => {
+      expect(await diagnosticsOf(settings(`${key}: "L"`))).toEqual([
+        notValidOn(key, description),
       ]);
     },
   );
@@ -3133,6 +3222,196 @@ checks('Validation - input and output parameters', [
     'a key holding a quote, a brace, a newline, or non-ASCII text is accepted',
     `process p { user U { input m = { "say \\"hi\\"": 1, "{ braces }": 2, "two
 lines": 3, "Grüße 日本": 4 } } }`,
+    [],
+  ],
+]);
+
+// The placement rule under test is Operaton's: a field list is built for the
+// behaviours a `class` and a `delegate` expression select, so every other
+// binding, and the fenced script a listener can bind with, takes none.
+checks('Validation - injected fields', [
+  [
+    'a class-bound service task carries a field',
+    `process p { service V(class: "com.acme.D") { field greeting = "hello" } }`,
+    [],
+  ],
+  [
+    'a delegate-bound send task carries a field written as an expression',
+    `process p { send N(delegate: "\${sender}") { field subject = "\${topic}" } }`,
+    [],
+  ],
+  [
+    'a class-bound decision step carries a field beside its io parameters',
+    `process p { decide D(class: "com.acme.R") { input amount = 1 field greeting = "hello" output risk = 2 } }`,
+    [],
+  ],
+  [
+    'an expression-bound service task takes no field',
+    `process p { service V(expression: "\${bean.run(execution)}") { field greeting = "hello" } }`,
+    [fieldBinding('A service task', 'expression')],
+  ],
+  [
+    'a topic-bound service task hands work to a worker, so it takes no field',
+    `process p { service V(topic: "t") { field greeting = "hello" } }`,
+    [fieldBinding('A service task', 'topic')],
+  ],
+  [
+    'a decision-bound decide step runs no implementation, so it takes no field',
+    `process p { decide D(decision: "riskRating") { field greeting = "hello" } }`,
+    [fieldBinding('A decision step', 'decision')],
+  ],
+  [
+    'a service task binding nothing at all has no binding to name in the refusal',
+    `process p { service V { field greeting = "hello" } }`,
+    [
+      fieldBinding('A service task'),
+      bindingRequired(`Service task 'V'`, SERVICE_BINDINGS),
+    ],
+  ],
+  [
+    'a field and a member of an unknown direction report in the order they are written',
+    `process p { service V(class: "com.acme.D") { field greeting = 3 fld x = 1 } }`,
+    [
+      fieldValue('greeting'),
+      unknownDirection('fld', `'input', 'output', or 'field'`),
+    ],
+  ],
+  [
+    'a user task names the kinds that take a field',
+    `process p { user U { field greeting = "hello" } }`,
+    [noFields('a user task')],
+  ],
+  [
+    'a start event names the kinds that take a field',
+    `process p { start S { field greeting = "hello" } }`,
+    [noFields('a start event')],
+  ],
+  [
+    'a class-bound listener carries a field',
+    `process p { user U { on start(class: "com.acme.L") { field greeting = "hello" } } }`,
+    [],
+  ],
+  [
+    'a delegate-bound task listener carries a field',
+    `process p { user U { on complete(delegate: "\${listenerBean}") { field greeting = "hello" } } }`,
+    [],
+  ],
+  [
+    'an expression-bound listener takes no field',
+    `process p { user U { on start(expression: "\${bean.run(task)}") { field greeting = "hello" } } }`,
+    [fieldBinding(`The 'on start' listener`, 'expression')],
+  ],
+  [
+    'a fenced-script listener takes no field',
+    `process p { user U { on start ${FENCE}groovy\nlog(task)\n${FENCE} { field greeting = "hello" } } }`,
+    [scriptListenerField(`The 'on start' listener`)],
+  ],
+  [
+    'a fenced script beside a class binding is still what refuses the field',
+    `process p { user U { on start(class: "com.acme.L") ${FENCE}groovy\nlog(task)\n${FENCE} { field greeting = "hello" } } }`,
+    [scriptListenerField(`The 'on start' listener`)],
+  ],
+  [
+    'a number is not a field value',
+    `process p { service V(class: "com.acme.D") { field retries = 3 } }`,
+    [fieldValue('retries')],
+  ],
+  [
+    'a bareword is not a field value',
+    `process p { var salutation: string service V(class: "com.acme.D") { field greeting = salutation } }`,
+    [fieldValue('greeting')],
+  ],
+  [
+    'a list is not a field value',
+    `process p { service V(class: "com.acme.D") { field greetings = ["a", "b"] } }`,
+    [fieldValue('greetings')],
+  ],
+  [
+    'a map is not a field value',
+    `process p { service V(class: "com.acme.D") { field greeting = { text: "hi" } } }`,
+    [fieldValue('greeting')],
+  ],
+  [
+    'an inline script is not a field value',
+    `process p { service V(class: "com.acme.D") { field greeting = ${FENCE}groovy\n"hi"\n${FENCE} } }`,
+    [fieldValue('greeting')],
+  ],
+  [
+    'a repeated field name is one error',
+    `process p { service V(class: "com.acme.D") { field greeting = "hi" field greeting = "ho" } }`,
+    [duplicateParameter('field', 'greeting')],
+  ],
+  [
+    'a field and an input of the same name are independent namespaces',
+    `process p { service V(class: "com.acme.D") { input greeting = 1 field greeting = "hi" } }`,
+    [],
+  ],
+  [
+    'an unrecognized direction on a service task names field as legal too',
+    `process p { service V(class: "com.acme.D") { fld greeting = "hi" } }`,
+    [unknownDirection('fld', `'input', 'output', or 'field'`)],
+  ],
+  [
+    "a listener's block takes a field alone, so an input there is unrecognized",
+    `process p { user U { on start(class: "com.acme.L") { input x = 1 } } }`,
+    [unknownDirection('input', `'field'`)],
+  ],
+]);
+
+checks('Validation - form references on a user task', [
+  [
+    'a form reference resolved by binding is accepted',
+    `process p { user T(formRef: "review-form", binding: latest) }`,
+    [],
+  ],
+  [
+    'a form reference pinned to a version is accepted',
+    `process p { user T(formRef: "review-form", version: 2) }`,
+    [],
+  ],
+  [
+    'a form key alone is still accepted',
+    `process p { user T(formKey: "review-form") }`,
+    [],
+  ],
+  [
+    'a form key beside a form reference is one error',
+    `process p { user T(formKey: "k", formRef: "review-form", binding: latest) }`,
+    [FORM_KEY_AND_REF],
+  ],
+  [
+    'a form reference with no binding is one error',
+    `process p { user T(formRef: "review-form") }`,
+    [FORM_REF_NEEDS_BINDING],
+  ],
+  [
+    'a binding with no form reference has nothing to pin',
+    `process p { user T(binding: latest) }`,
+    [FORM_REF_MISSING],
+  ],
+  [
+    'a version with no form reference has nothing to pin',
+    `process p { user T(version: 2) }`,
+    [FORM_REF_MISSING],
+  ],
+  [
+    'a binding and a version together is reported once',
+    `process p { user T(formRef: "review-form", binding: latest, version: 2) }`,
+    [bindingVersionClash('A user task')],
+  ],
+  [
+    "'binding: version' redirects to the numeric form",
+    `process p { user T(formRef: "review-form", binding: version) }`,
+    [BINDING_IS_VERSION],
+  ],
+  [
+    'an unrecognized binding names the two it accepts',
+    `process p { user T(formRef: "review-form", binding: newest) }`,
+    [BINDING_VALUE],
+  ],
+  [
+    'a form id names a form, not a variable',
+    `process p { user T(formRef: reviewForm, binding: latest) }`,
     [],
   ],
 ]);
@@ -3285,6 +3564,13 @@ checks('Validation - process header attributes', [
     'a header takes the label every element takes, and no bare flag',
     `process p(label: "P", alongside) { start S }`,
     [flagNotValidOn('alongside', 'a process header')],
+  ],
+  [
+    'the header and the start take every key their own element carries',
+    `process p(label: "P", documentation: "D", versionTag: "1.0.0", historyTimeToLive: "P90D", candidateStarterUsers: "demo,manager", candidateStarterGroups: "adjusters") {
+  start S(initiator: "claimant")
+}`,
+    [],
   ],
 ]);
 

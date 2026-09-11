@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI" xmlns:dc="http://www.omg.org/spec/DD/20100524/DC" xmlns:di="http://www.omg.org/spec/DD/20100524/DI" xmlns:operaton="http://operaton.org/schema/1.0/bpmn" id="Definitions_claim-settlement" targetNamespace="http://bpmnscript.io/processes" exporter="BPMNscript" exporterVersion="0.0.0">
-  <bpmn:process id="claim-settlement" name="Motor claim settlement" isExecutable="true" operaton:historyTimeToLive="P30D" operaton:versionTag="3.1.0">
-    <bpmn:startEvent id="ClaimFiled" name="Claim filed" operaton:asyncAfter="true">
+  <bpmn:process id="claim-settlement" name="Motor claim settlement" isExecutable="true" operaton:historyTimeToLive="P90D" operaton:versionTag="3.1.0" operaton:candidateStarterUsers="demo,manager" operaton:candidateStarterGroups="adjusters">
+    <bpmn:startEvent id="ClaimFiled" name="Claim filed" operaton:asyncAfter="true" operaton:initiator="claimant">
       <bpmn:extensionElements>
         <operaton:formData>
           <operaton:formField id="claimAmount" label="Claimed amount in euros" type="long" />
@@ -93,7 +93,7 @@ execution.setVariable("mechanicsGrade", grade)
       <bpmn:outgoing>Flow_PayoutReviewNeeded_Gateway_claim-settlement_6_join</bpmn:outgoing>
       <bpmn:escalationEventDefinition escalationRef="Escalation_PAYOUT_REVIEW" />
     </bpmn:intermediateThrowEvent>
-    <bpmn:userTask id="ApprovePayout" name="Approve the payout" operaton:assignee="manager">
+    <bpmn:userTask id="ApprovePayout" name="Approve the payout" operaton:assignee="manager" operaton:formRef="payout-approval" operaton:formRefBinding="version" operaton:formRefVersion="2">
       <bpmn:incoming>Flow_Gateway_claim-settlement_6_join_ApprovePayout</bpmn:incoming>
       <bpmn:outgoing>Flow_ApprovePayout_ClaimSettled</bpmn:outgoing>
     </bpmn:userTask>

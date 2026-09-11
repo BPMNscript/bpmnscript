@@ -77,7 +77,9 @@ function extensionValues(el: ModdleElement): ModdleElement[] {
 
 describe('every new type parses and re-serializes with nested values intact', () => {
   const fixture = `${XML_HEADER}
-  <bpmn:process id="Process_1" isExecutable="true" operaton:versionTag="1.2.3">
+  <bpmn:process id="Process_1" isExecutable="true" operaton:versionTag="1.2.3"
+                operaton:candidateStarterUsers="demo,manager" operaton:candidateStarterGroups="adjusters">
+    <bpmn:startEvent id="Start" operaton:initiator="claimant" />
     <bpmn:userTask id="Review" operaton:assignee="alice" operaton:candidateUsers="bob,carol"
                    operaton:candidateGroups="reviewers" operaton:dueDate="P1D"
                    operaton:followUpDate="P2D" operaton:priority="50">
@@ -120,6 +122,9 @@ describe('every new type parses and re-serializes with nested values intact', ()
 
   /** Read every value this test cares about out of a parsed process tree. */
   function snapshot(process: ModdleElement): unknown {
+    const start = (process.get('flowElements') as ModdleElement[]).find(
+      (e) => e.id === 'Start',
+    )!;
     const review = (process.get('flowElements') as ModdleElement[]).find(
       (e) => e.id === 'Review',
     )!;
@@ -144,6 +149,11 @@ describe('every new type parses and re-serializes with nested values intact', ()
 
     return {
       versionTag: process.get('versionTag'),
+      candidateStarterUsers: process.get('candidateStarterUsers'),
+      candidateStarterGroups: process.get('candidateStarterGroups'),
+      start: {
+        initiator: start.get('initiator'),
+      },
       review: {
         assignee: review.get('assignee'),
         candidateUsers: review.get('candidateUsers'),
@@ -188,6 +198,11 @@ describe('every new type parses and re-serializes with nested values intact', ()
 
   const expected = {
     versionTag: '1.2.3',
+    candidateStarterUsers: 'demo,manager',
+    candidateStarterGroups: 'adjusters',
+    start: {
+      initiator: 'claimant',
+    },
     review: {
       assignee: 'alice',
       candidateUsers: 'bob,carol',

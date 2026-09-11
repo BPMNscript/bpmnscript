@@ -4,8 +4,21 @@
 
 import { describe, it, expect } from 'vitest';
 
+import type { BpmnProcess } from '@bpmn-script/transform';
+
 import { theOnly } from './helpers/ir-query.js';
 import { parse, roundTripOf, validate } from './helpers/pipeline.js';
+import type { RoundTripRun } from './helpers/pipeline.js';
+
+// Labelled so a value that stops travelling at one hop names the hop it stopped
+// at rather than failing as a bare inequality.
+function hops(run: RoundTripRun): readonly (readonly [string, BpmnProcess])[] {
+  return [
+    ['IR1', run.ir1],
+    ['IR2', run.ir2],
+    ['IR3', run.ir3],
+  ];
+}
 
 const SERVICE_EXPRESSION_SRC =
   'process shipping-quote {\n' +
@@ -50,6 +63,42 @@ const SIGNAL_START_SRC =
   '  start StockRunningLow signal("StockRunningLow")\n' +
   '  user ReorderStock(assignee: "demo")\n' +
   '  end Restocked\n' +
+  '}\n';
+
+// The condition reads a variable, and the form on the start is what declares it,
+// so the printed source validates without a `var` the import hop would have had
+// nowhere to put.
+const CONDITION_START_SRC =
+  'process stock-watch {\n' +
+  '  start StockRanLow condition(stockLevel < 5) {\n' +
+  '    form {\n' +
+  '      stockLevel: number "Stock on hand"\n' +
+  '    }\n' +
+  '  }\n' +
+  '  user ReorderStock(assignee: "demo")\n' +
+  '  end Restocked\n' +
+  '}\n';
+
+// Both value forms on the element and one on a listener, so the two carriers
+// and the two slots are in one program.
+const FIELD_INJECTION_SRC =
+  'process shipment-dispatch {\n' +
+  '  start OrderPacked\n' +
+  '  service PrintLabel(class: "com.acme.PrintLabelDelegate") {\n' +
+  '    field printer = "warehouse-north"\n' +
+  '    field copies = "${order.parcelCount}"\n' +
+  '    on start(delegate: "${dispatchAudit}") {\n' +
+  '      field stage = "label-printing"\n' +
+  '    }\n' +
+  '  }\n' +
+  '  end LabelPrinted\n' +
+  '}\n';
+
+const FORM_REF_SRC =
+  'process refund-approval {\n' +
+  '  start RefundRequested\n' +
+  '  user ApproveRefund(assignee: "demo", formRef: "refund-form", binding: latest)\n' +
+  '  end RefundApproved\n' +
   '}\n';
 
 const TERMINATE_END_SRC =
@@ -261,6 +310,36 @@ describe('round-trip: process start event with a signal trigger', () => {
   });
 });
 
+describe('round-trip: process start event with a condition trigger', () => {
+  const run = roundTripOf(CONDITION_START_SRC);
+
+  it('keeps the condition through every hop and re-emits a start that validates clean', async () => {
+    const conditional = {
+      kind: 'conditional',
+      condition: '${stockLevel < 5}',
+    };
+
+    expect(theOnly(run.ir1, 'startEvent').eventDefinition, 'IR1').toEqual(
+      conditional,
+    );
+
+    expect(run.xml, 'XML').toContain(
+      '<bpmn:condition xsi:type="bpmn:tFormalExpression">' +
+        '${stockLevel &lt; 5}</bpmn:condition>',
+    );
+
+    expect(theOnly(run.ir2, 'startEvent').eventDefinition, 'IR2').toEqual(
+      conditional,
+    );
+
+    expect(run.dsl, 'DSL').toContain(
+      'start StockRanLow condition(stockLevel < 5)',
+    );
+    const { diagnostics } = await validate(run.dsl);
+    expect(diagnostics).toEqual([]);
+  });
+});
+
 describe('round-trip: `end ... terminate`', () => {
   const run = roundTripOf(TERMINATE_END_SRC);
 
@@ -288,5 +367,82 @@ describe('round-trip: `end ... terminate`', () => {
     );
     const document = await parse(run.dsl);
     expect(document.parseResult.parserErrors).toHaveLength(0);
+  });
+});
+
+describe('round-trip: `field` on a class binding and on a listener binding', () => {
+  const run = roundTripOf(FIELD_INJECTION_SRC);
+
+  it('every field keeps its carrier, name, and value through every hop, and the re-emitted DSL validates clean', async () => {
+    const taskBinding = {
+      kind: 'class',
+      className: 'com.acme.PrintLabelDelegate',
+      fields: [
+        { name: 'printer', value: 'warehouse-north' },
+        { name: 'copies', value: '${order.parcelCount}' },
+      ],
+    };
+    const listener = {
+      event: 'start',
+      binding: {
+        kind: 'delegateExpression',
+        expression: '${dispatchAudit}',
+        fields: [{ name: 'stage', value: 'label-printing' }],
+      },
+    };
+
+    for (const [label, ir] of hops(run)) {
+      const task = theOnly(ir, 'serviceTask');
+      expect(task.binding, `the task binding differs in ${label}`).toEqual(
+        taskBinding,
+      );
+      expect(
+        task.executionListeners,
+        `the listener differs in ${label}`,
+      ).toEqual([listener]);
+    }
+
+    // The literal takes the attribute slot and the `${...}` an expression
+    // child. Written the other way round the engine injects the text of the
+    // expression instead of what it evaluates to.
+    expect(run.xml, 'XML').toContain(
+      '<operaton:field name="printer" stringValue="warehouse-north" />',
+    );
+    expect(run.xml, 'XML').toContain(
+      '<operaton:expression>${order.parcelCount}</operaton:expression>',
+    );
+    expect(run.warnings, 'import warnings').toEqual([]);
+
+    expect(run.dsl, 'DSL').toContain('field printer = "warehouse-north"');
+    expect(run.dsl, 'DSL').toContain('field copies = "${order.parcelCount}"');
+    expect(run.dsl, 'DSL').toContain('field stage = "label-printing"');
+    const { diagnostics } = await validate(run.dsl);
+    expect(diagnostics).toEqual([]);
+  });
+});
+
+describe('round-trip: `formRef` on a user task', () => {
+  const run = roundTripOf(FORM_REF_SRC);
+
+  it('the form reference keeps its key and binding through every hop, and the re-emitted DSL validates clean', async () => {
+    for (const [label, ir] of hops(run)) {
+      expect(
+        theOnly(ir, 'userTask').formRef,
+        `the form reference differs in ${label}`,
+      ).toEqual({ key: 'refund-form', binding: { kind: 'latest' } });
+    }
+
+    // Operaton refuses to deploy a form reference carrying no binding, so the
+    // binding attribute is written even where it names the engine's own
+    // default, and the version attribute only where a version was pinned.
+    expect(run.xml, 'XML').toContain(
+      'operaton:formRef="refund-form" operaton:formRefBinding="latest"',
+    );
+    expect(run.xml, 'XML').not.toContain('formRefVersion');
+    expect(run.warnings, 'import warnings').toEqual([]);
+
+    expect(run.dsl, 'DSL').toContain('formRef: "refund-form", binding: latest');
+    const { diagnostics } = await validate(run.dsl);
+    expect(diagnostics).toEqual([]);
   });
 });

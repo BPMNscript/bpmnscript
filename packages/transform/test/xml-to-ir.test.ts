@@ -4,9 +4,9 @@
  *
  * `xmlToIr` returns `{ ir, warnings }`, where `warnings` reports non-semantic
  * content dropped on import (extra Operaton/camunda extension attributes and
- * elements, lanes, documentation). Semantic content the IR cannot express is
- * refused instead: an `UnsupportedConstructError` subclass is thrown before any
- * IR is produced.
+ * elements, lanes, and documentation this surface has no slot for). Semantic
+ * content the IR cannot express is refused instead: an
+ * `UnsupportedConstructError` subclass is thrown before any IR is produced.
  */
 
 import { describe, it, expect, beforeAll } from 'vitest';
@@ -20,7 +20,7 @@ import { fileURLToPath } from 'node:url';
 
 import { xmlToIr } from '../src/xml-to-ir.js';
 import type { ImportWarning } from '../src/xml-to-ir.js';
-import { irToXml } from '../src/ir-to-xml.js';
+import { HISTORY_TIME_TO_LIVE, irToXml } from '../src/ir-to-xml.js';
 import {
   UnsupportedCallActivityError,
   UnsupportedCollaborationError,
@@ -30,6 +30,7 @@ import {
   UnsupportedEventDefinitionError,
   UnsupportedEventFeatureError,
   UnsupportedExtensionFormError,
+  UnsupportedFormReferenceError,
   UnsupportedLoopCharacteristicsError,
   UnsupportedServiceTaskFormError,
 } from '../src/errors.js';
@@ -39,6 +40,9 @@ import type {
   EventDefinition,
   FlowElement,
   IntermediateCatchEvent,
+  ListenerBinding,
+  ServiceTaskBinding,
+  VersionBinding,
 } from '../src/ir/types.js';
 import { isGateway } from '../src/ir/types.js';
 import { expectRefusal } from './helpers/expect-refusal.js';
@@ -626,7 +630,7 @@ describe('xmlToIr: start, end, and emit triggers', () => {
     <bpmn:sequenceFlow id="F2" sourceRef="Emit1" targetRef="E" />
   </bpmn:process>`;
 
-  describe('a start carries message, signal, or timer', () => {
+  describe('a start carries message, signal, timer, or condition', () => {
     it.each([
       ['timeDuration', 'PT1H', 'duration'],
       ['timeDate', '2026-08-01T09:00:00Z', 'date'],
@@ -668,6 +672,18 @@ describe('xmlToIr: start, end, and emit triggers', () => {
         'startEvent',
       );
       expect(node.eventDefinition).toEqual(signalDef('StockLow'));
+      expect(warnings).toEqual([]);
+    });
+
+    it('a conditional start imports as the condition the engine waits on', async () => {
+      const { node, warnings } = await importById(
+        startTriggerXml(`<bpmn:conditionalEventDefinition id="cd">
+        <bpmn:condition>\${stockLevel &lt; 5}</bpmn:condition>
+      </bpmn:conditionalEventDefinition>`),
+        'TStart',
+        'startEvent',
+      );
+      expect(node.eventDefinition).toEqual(conditionDef('${stockLevel < 5}'));
       expect(warnings).toEqual([]);
     });
 
@@ -720,18 +736,21 @@ describe('xmlToIr: start, end, and emit triggers', () => {
       },
     );
 
-    it('a conditional start refuses as an unsupported definition kind', async () => {
+    it('a link start refuses, naming every trigger a process start does take', async () => {
       const e = await expectRefusal<UnsupportedEventDefinitionError>(
         xmlToIr(
-          startTriggerXml(`<bpmn:conditionalEventDefinition id="cd">
-        <bpmn:condition>\${stockLevel &lt; 5}</bpmn:condition>
-      </bpmn:conditionalEventDefinition>`),
+          startTriggerXml('<bpmn:linkEventDefinition id="ld" name="Resume" />'),
         ),
         UnsupportedEventDefinitionError,
       );
-      expect(e.elementId).toBe('TStart');
-      expect(e.eventKind).toBe('start');
-      expect(e.definitionType).toBe('bpmn:ConditionalEventDefinition');
+      expect([e.elementId, e.eventKind, e.definitionType]).toEqual([
+        'TStart',
+        'start',
+        'bpmn:LinkEventDefinition',
+      ]);
+      expect(e.message).toContain(
+        "a process's start supports message, signal, timer, or condition",
+      );
     });
 
     it('a start carrying two event definitions refuses, naming the count', async () => {
@@ -745,7 +764,7 @@ describe('xmlToIr: start, end, and emit triggers', () => {
         ),
         UnsupportedEventFeatureError,
         'a start carries 2 event definitions: only a single message, ' +
-          'signal, or timer trigger is supported',
+          'signal, timer, or condition trigger is supported',
       );
       expect(e.elementId).toBe('TStart');
     });
@@ -1911,23 +1930,23 @@ describe('xmlToIr: warns for dropped extension attributes', () => {
     ['operaton', operatonDoc],
     ['camunda', camundaDoc],
   ] as const)(
-    'a %s:formRef is reported against the task carrying it, while the assignee beside it is read',
+    'a %s:formHandlerClass is reported against the task carrying it, while the assignee beside it is read',
     async (prefix, doc) => {
       const { node, warnings } = await importOnly(
         oneNodeDoc('userTask', {
-          id: 'FormRefTask',
+          id: 'FormHandlerTask',
           attrs:
-            `name="Form Ref Task" ${prefix}:assignee="alice" ` +
-            `${prefix}:formRef="review-form"`,
+            `name="Form Handler Task" ${prefix}:assignee="alice" ` +
+            `${prefix}:formHandlerClass="com.example.FormHandler"`,
           doc,
         }),
         'userTask',
       );
       expect(node.assignee).toBe('alice');
       expectOneWarning(warnings, {
-        elementId: 'FormRefTask',
+        elementId: 'FormHandlerTask',
         category: 'extensionAttribute',
-        message: 'formRef',
+        message: 'formHandlerClass',
       });
     },
   );
@@ -1944,31 +1963,119 @@ describe('xmlToIr: warns for dropped extension attributes', () => {
     expect(warnings).toEqual([]);
   });
 
-  // `historyTimeToLive` is declared in the moddle extension, so it parses
-  // into a typed property (not `$attrs`) and needs the descriptor scan.
+  /** `start -> E`, with the given attributes on the process and on its start. */
+  const headerDoc = (
+    processAttrs: string,
+    startAttrs = '',
+    startId = 'S',
+  ): string =>
+    operatonDefs`  <bpmn:process id="p" isExecutable="true" ${processAttrs}>
+    <bpmn:startEvent id="${startId}" ${startAttrs} />
+    <bpmn:endEvent id="E" />
+    <bpmn:sequenceFlow id="F1" sourceRef="${startId}" targetRef="E" />
+  </bpmn:process>`;
+
+  // Each is declared in the moddle extension, so it parses into a typed
+  // property (not `$attrs`) and is invisible to the raw-attribute sweep: read
+  // it and the descriptor scan stays silent, drop it and the scan reports it.
   it.each([
     [
-      'a custom operaton:historyTimeToLive would be lost, so it is reported',
+      'a process keeps the history time to live it authored',
+      'operaton:historyTimeToLive="P90D"',
+      '',
+      (ir: BpmnProcess) => ir.historyTimeToLive,
       'P90D',
-      [
-        {
-          elementId: 'p',
-          category: 'extensionAttribute',
-          message: expect.stringContaining('operaton:historyTimeToLive'),
-        },
-      ],
     ],
-    ['the value the exporter re-stamps is silent', 'P30D', []],
-  ])('%s', async (_title, value, expected) => {
-    const { warnings } = await xmlToIr(
-      operatonDefs`  <bpmn:process id="p" isExecutable="true" operaton:historyTimeToLive="${value}">
+    [
+      'the value the exporter stamps for a process that authored none reads as unwritten',
+      `operaton:historyTimeToLive="${HISTORY_TIME_TO_LIVE}"`,
+      '',
+      (ir: BpmnProcess) => ir.historyTimeToLive,
+      undefined,
+    ],
+    [
+      'a process keeps the users allowed to start it',
+      'operaton:candidateStarterUsers="demo,manager"',
+      '',
+      (ir: BpmnProcess) => ir.candidateStarterUsers,
+      'demo,manager',
+    ],
+    [
+      'a process keeps the groups allowed to start it',
+      'operaton:candidateStarterGroups="adjusters"',
+      '',
+      (ir: BpmnProcess) => ir.candidateStarterGroups,
+      'adjusters',
+    ],
+    [
+      'a start keeps the variable the engine writes the starting user into',
+      '',
+      'operaton:initiator="claimant"',
+      (ir: BpmnProcess) => only(ir, 'startEvent').initiator,
+      'claimant',
+    ],
+  ])('%s', async (_title, processAttrs, startAttrs, read, expected) => {
+    const { ir, warnings } = await xmlToIr(headerDoc(processAttrs, startAttrs));
+    expect([read(ir), warnings]).toEqual([expected, []]);
+  });
+
+  // `CONSUMED_EXTENSION_ATTRS` is keyed by `$type`, so declaring `initiator`
+  // read on `bpmn:StartEvent` silences the unread-attribute sweep for a
+  // handler's start as much as for the process's own. Only this test stands
+  // between a handler start's value and being dropped without a word.
+  it('an event handler start keeps its initiator too', async () => {
+    const { ir, warnings } = await xmlToIr(
+      handlerDoc('<bpmn:signalEventDefinition id="d" signalRef="Signal_1" />', {
+        startAttrs: 'operaton:initiator="claimant"',
+        roots: '  <bpmn:signal id="Signal_1" name="StockLow" />\n',
+        defs: operatonDefs,
+      }),
+    );
+    const handlerStart = only(subProcess(ir, 'Handler'), 'startEvent');
+    expect([handlerStart.initiator, warnings]).toEqual(['claimant', []]);
+  });
+
+  // A start the modeler left unnamed carries the id this tool mints for one it
+  // synthesizes, which a script cannot repeat, so the whole statement is left
+  // out and the initiator with it. The unread-attribute sweep no longer covers
+  // it, so this report is all that stands between the value and a silent drop.
+  it.each([
+    [
+      "a process's own start",
+      headerDoc('', 'operaton:initiator="claimant"', 'StartEvent_1'),
+    ],
+    [
+      'an event handler start, whose trigger prints in the header instead',
+      operatonDefs`  <bpmn:signal id="Signal_1" name="StockLow" />
+  <bpmn:process id="p" isExecutable="true">
     <bpmn:startEvent id="S" />
+    <bpmn:subProcess id="Handler" triggeredByEvent="true">
+      <bpmn:startEvent id="StartEvent_1" operaton:initiator="claimant">
+        <bpmn:signalEventDefinition id="d" signalRef="Signal_1" />
+      </bpmn:startEvent>
+    </bpmn:subProcess>
     <bpmn:endEvent id="E" />
     <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="E" />
   </bpmn:process>`,
-    );
-    expect(warnings).toEqual(expected);
-  });
+    ],
+  ])(
+    '%s printing no statement says its initiator went with it',
+    async (_title, xml) => {
+      const { warnings } = await xmlToIr(xml);
+      expect(warnings).toEqual([
+        {
+          elementId: 'StartEvent_1',
+          category: 'extensionAttribute',
+          message:
+            "The 'operaton:initiator' setting on 'StartEvent_1' was not " +
+            "written to the script: 'StartEvent_1' is the kind of name this " +
+            'tool generates for itself, which a script cannot repeat, so this ' +
+            'start is left out entirely and its initiator with it. Rename it ' +
+            'in the diagram to keep the initiator.',
+        },
+      ]);
+    },
+  );
 });
 
 describe('xmlToIr: warns for dropped lanes', () => {
@@ -2026,13 +2133,13 @@ describe('xmlToIr: an empty extensionElements is not flagged beside a real drop'
    * operaton extension elements makes the drop attributable to the exact
    * owning element.
    */
-  it('reports the field against the service task alone, and reads the assignee off the clean task', async () => {
+  it('reports the field against the service task alone, because an operaton:expression binding never receives an injected field, and reads the assignee off the clean task', async () => {
     const { ir, warnings } = await xmlToIr(
       operatonDoc`    <bpmn:startEvent id="S" />
     <bpmn:userTask id="CleanTask" name="Clean Task" operaton:assignee="alice">
       <bpmn:extensionElements/>
     </bpmn:userTask>
-    <bpmn:serviceTask id="ConfiguredSvc" operaton:class="com.example.Svc">
+    <bpmn:serviceTask id="ConfiguredSvc" operaton:expression="\${someBean.execute(execution)}">
       <bpmn:extensionElements>
         <operaton:field name="greeting" stringValue="hello" />
       </bpmn:extensionElements>
@@ -2127,34 +2234,317 @@ describe('xmlToIr: undeclared operaton extension element residual', () => {
   });
 });
 
-describe('xmlToIr: warns for dropped documentation', () => {
-  const documentationXml = operatonDoc`    <bpmn:documentation>This process handles onboarding.</bpmn:documentation>
-    <bpmn:startEvent id="S" />
-    <bpmn:userTask id="DocTask" name="Review the application" operaton:assignee="alice">
-      <bpmn:documentation>Collect the signed form.</bpmn:documentation>
-    </bpmn:userTask>
-    <bpmn:endEvent id="E" />
-    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="DocTask" />
-    <bpmn:sequenceFlow id="F2" sourceRef="DocTask" targetRef="E" />`;
+describe('xmlToIr: bpmn:documentation', () => {
+  const doc = (text: string): string =>
+    `<bpmn:documentation>${text}</bpmn:documentation>`;
 
-  it('surfaces one warning per owning element (process and task), and still imports the body', async () => {
-    const { ir, warnings } = await xmlToIr(documentationXml);
-    expect(byId(ir, 'DocTask')).toEqual({
-      kind: 'userTask',
-      id: 'DocTask',
-      name: 'Review the application',
-      assignee: 'alice',
-    });
-    expect(
-      warnings.map((w) => [
-        w.category,
-        w.elementId,
-        /documentation/i.test(w.message),
-      ]),
-    ).toEqual([
-      ['documentation', 'p', true],
-      ['documentation', 'DocTask', true],
+  /** Every `(id, documentation)` the IR holds, the process itself included. */
+  const documented = (ir: BpmnProcess): [string, string][] => {
+    const carried: [string, string][] = [];
+    const visit = (node: BpmnProcess | FlowElement): void => {
+      if ('documentation' in node && node.documentation !== undefined) {
+        carried.push([node.id, node.documentation]);
+      }
+      if ('flowElements' in node) node.flowElements.forEach(visit);
+    };
+    visit(ir);
+    return carried;
+  };
+
+  const reported = (warnings: ImportWarning[]): unknown[] =>
+    warnings.map((w) => [w.category, w.elementId, w.message]);
+
+  const expected = (
+    rows: readonly (readonly [ImportWarning['category'], string, string])[],
+  ): unknown[] =>
+    rows.map(([category, id, detail]) => [
+      category,
+      id,
+      expect.stringContaining(detail),
     ]);
+
+  const TIMER = `<bpmn:timerEventDefinition>
+        <bpmn:timeDuration>P1D</bpmn:timeDuration>
+      </bpmn:timerEventDefinition>`;
+
+  /**
+   * One row per position `bpmn:documentation` can sit on, each stating the text
+   * the IR node holds and the warnings the document draws whole. A position
+   * that carries draws none, and a position wired to neither branch fails both
+   * columns rather than passing in silence.
+   */
+  const POSITIONS: [
+    title: string,
+    xml: string,
+    carried: readonly (readonly [string, string])[],
+    warned: readonly (readonly [ImportWarning['category'], string, string])[],
+  ][] = [
+    [
+      'a process, its start and its end each carry their own',
+      bpmnDoc`    ${doc('Onboarding, end to end.')}
+    <bpmn:startEvent id="S">${doc('Fires when HR files the request.')}</bpmn:startEvent>
+    <bpmn:endEvent id="E">${doc('The hire is on the payroll.')}</bpmn:endEvent>
+    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="E" />`,
+      [
+        ['p', 'Onboarding, end to end.'],
+        ['S', 'Fires when HR files the request.'],
+        ['E', 'The hire is on the payroll.'],
+      ],
+      [],
+    ],
+    ...(
+      [
+        ['a user task', 'userTask', '', ''],
+        [
+          'a service task',
+          'serviceTask',
+          'operaton:class="com.example.Svc"',
+          '',
+        ],
+        ['a send task', 'sendTask', 'operaton:class="com.example.Svc"', ''],
+        [
+          'a business rule task',
+          'businessRuleTask',
+          'operaton:class="com.example.Svc"',
+          '',
+        ],
+        [
+          'a script task',
+          'scriptTask',
+          'scriptFormat="javascript"',
+          '<bpmn:script>total = 1;</bpmn:script>',
+        ],
+        ['a receive task', 'receiveTask', '', ''],
+        ['a step', 'task', '', ''],
+        ['a call activity', 'callActivity', 'calledElement="other"', ''],
+        [
+          'a subprocess',
+          'subProcess',
+          '',
+          `<bpmn:startEvent id="SubS" />
+      <bpmn:endEvent id="SubE" />
+      <bpmn:sequenceFlow id="SubF" sourceRef="SubS" targetRef="SubE" />`,
+        ],
+        ['a branch point', 'exclusiveGateway', '', ''],
+        ['a fork', 'inclusiveGateway', '', ''],
+        ['a parallel fork', 'parallelGateway', '', ''],
+      ] as const
+    ).map(([subject, tag, attrs, extra]): (typeof POSITIONS)[number] => [
+      `${subject} carries it`,
+      oneNodeDoc(tag, { attrs, children: `${doc(`On ${tag}.`)}${extra}` }),
+      [['T', `On ${tag}.`]],
+      [],
+    ]),
+    [
+      "the text is carried verbatim, the body's own whitespace included",
+      oneNodeDoc('userTask', {
+        children:
+          '<bpmn:documentation>\n        Two lines.\n      </bpmn:documentation>',
+      }),
+      [['T', '\n        Two lines.\n      ']],
+      [],
+    ],
+    [
+      'an empty documentation body carries as an empty string',
+      oneNodeDoc('userTask', {
+        children: '<bpmn:documentation></bpmn:documentation>',
+      }),
+      [['T', '']],
+      [],
+    ],
+    [
+      'an event handler reports it, and the trigger start under it carries its own',
+      bpmnDefs`  <bpmn:process id="p" isExecutable="true">
+    <bpmn:startEvent id="S" />
+    <bpmn:endEvent id="E" />
+    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="E" />
+    <bpmn:subProcess id="Handler" triggeredByEvent="true">${doc('Runs when the deadline passes.')}
+      <bpmn:startEvent id="HStart">${doc('The deadline itself.')}
+      ${TIMER}
+      </bpmn:startEvent>
+      <bpmn:endEvent id="HEnd" />
+      <bpmn:sequenceFlow id="SF1" sourceRef="HStart" targetRef="HEnd" />
+    </bpmn:subProcess>
+  </bpmn:process>`,
+      [['HStart', 'The deadline itself.']],
+      [['documentation', 'Handler', 'an event handler has no documentation']],
+    ],
+    [
+      'a start and an end whose ids this tool writes for itself carry it and report that no script can spell it back',
+      bpmnDoc`    <bpmn:startEvent id="StartEvent_1">${doc('Where it begins.')}</bpmn:startEvent>
+    <bpmn:endEvent id="EndEvent_1">${doc('Where it stops.')}</bpmn:endEvent>
+    <bpmn:sequenceFlow id="F1" sourceRef="StartEvent_1" targetRef="EndEvent_1" />`,
+      [
+        ['StartEvent_1', 'Where it begins.'],
+        ['EndEvent_1', 'Where it stops.'],
+      ],
+      [
+        [
+          'documentation',
+          'StartEvent_1',
+          'this start is left out entirely and its documentation with it',
+        ],
+        [
+          'documentation',
+          'EndEvent_1',
+          'this end is left out entirely and its documentation with it',
+        ],
+      ],
+    ],
+    [
+      'the definitions root reports it against the process',
+      bpmnDefs`  ${doc('Exported by hand.')}
+  <bpmn:process id="p" isExecutable="true">
+    <bpmn:startEvent id="S" />
+    <bpmn:endEvent id="E" />
+    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="E" />
+  </bpmn:process>`,
+      [],
+      [['documentation', 'p', 'the definitions root has no documentation']],
+    ],
+    [
+      'an Error, an Escalation, a Message and a Signal root each report it',
+      bpmnDefs`  <bpmn:error id="Err" name="Boom" errorCode="BOOM">${doc('Raised by the vendor.')}</bpmn:error>
+  <bpmn:escalation id="Esc" name="Late" escalationCode="LATE">${doc('Raised on day three.')}</bpmn:escalation>
+  <bpmn:message id="Msg" name="Paid">${doc('Sent by billing.')}</bpmn:message>
+  <bpmn:signal id="Sig" name="Stocked">${doc('Broadcast by the warehouse.')}</bpmn:signal>
+  <bpmn:process id="p" isExecutable="true">
+    <bpmn:startEvent id="S" />
+    <bpmn:endEvent id="E" />
+    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="E" />
+  </bpmn:process>`,
+      [],
+      [
+        ['unreferencedRoot', 'Msg', 'is never used by an on/throw/emit'],
+        ['unreferencedRoot', 'Sig', 'is never used by an on/throw/emit'],
+        ['documentation', 'Err', 'a bpmn:error root has no documentation'],
+        ['documentation', 'Esc', 'a bpmn:escalation root has no documentation'],
+        ['documentation', 'Msg', 'a bpmn:message root has no documentation'],
+        ['documentation', 'Sig', 'a bpmn:signal root has no documentation'],
+      ],
+    ],
+    [
+      'a repetition reports it, and the step it repeats carries its own',
+      oneNodeDoc('userTask', {
+        children: `${doc('Review one application.')}
+      <bpmn:multiInstanceLoopCharacteristics>${doc('Once per applicant.')}
+        <bpmn:loopCardinality>3</bpmn:loopCardinality>
+      </bpmn:multiInstanceLoopCharacteristics>`,
+      }),
+      [['T', 'Review one application.']],
+      [['documentation', 'T', 'a repetition has no documentation']],
+    ],
+    [
+      'a sequence flow reports it',
+      bpmnDoc`    <bpmn:startEvent id="S" />
+    <bpmn:endEvent id="E" />
+    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="E">${doc('Straight through.')}</bpmn:sequenceFlow>`,
+      [],
+      [['documentation', 'F1', 'a sequence flow has no documentation']],
+    ],
+    [
+      'a boundary event reports it',
+      bpmnDoc`    <bpmn:startEvent id="S" />
+    <bpmn:userTask id="T" />
+    <bpmn:boundaryEvent id="B" attachedToRef="T">${doc('Give up after a day.')}
+      ${TIMER}
+    </bpmn:boundaryEvent>
+    <bpmn:endEvent id="E" />
+    <bpmn:endEvent id="Late" />
+    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="T" />
+    <bpmn:sequenceFlow id="F2" sourceRef="T" targetRef="E" />
+    <bpmn:sequenceFlow id="F3" sourceRef="B" targetRef="Late" />`,
+      [],
+      [['documentation', 'B', 'a boundary event has no documentation']],
+    ],
+    [
+      'an await reports it, and so does the event definition inside it',
+      bpmnDoc`    <bpmn:startEvent id="S" />
+    <bpmn:intermediateCatchEvent id="Await">${doc('Wait a day.')}
+      <bpmn:timerEventDefinition>${doc('The day itself.')}
+        <bpmn:timeDuration>P1D</bpmn:timeDuration>
+      </bpmn:timerEventDefinition>
+    </bpmn:intermediateCatchEvent>
+    <bpmn:endEvent id="E" />
+    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="Await" />
+    <bpmn:sequenceFlow id="F2" sourceRef="Await" targetRef="E" />`,
+      [],
+      [
+        ['documentation', 'Await', 'an event definition has no documentation'],
+        ['documentation', 'Await', 'an await has no documentation'],
+      ],
+    ],
+    [
+      'an emit reports it, and so does the event definition inside it',
+      bpmnDefs`  <bpmn:signal id="Sig" name="Stocked" />
+  <bpmn:process id="p" isExecutable="true">
+    <bpmn:startEvent id="S" />
+    <bpmn:intermediateThrowEvent id="Emit">${doc('Tell the warehouse.')}
+      <bpmn:signalEventDefinition signalRef="Sig">${doc('The broadcast itself.')}</bpmn:signalEventDefinition>
+    </bpmn:intermediateThrowEvent>
+    <bpmn:endEvent id="E" />
+    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="Emit" />
+    <bpmn:sequenceFlow id="F2" sourceRef="Emit" targetRef="E" />
+  </bpmn:process>`,
+      [],
+      [
+        ['documentation', 'Emit', 'an event definition has no documentation'],
+        ['documentation', 'Emit', 'an emit has no documentation'],
+      ],
+    ],
+    [
+      'a throw reports it, and so does the event definition inside it',
+      bpmnDefs`  <bpmn:error id="Err" name="Boom" errorCode="BOOM" />
+  <bpmn:process id="p" isExecutable="true">
+    <bpmn:startEvent id="S" />
+    <bpmn:endEvent id="Throw">${doc('Give up here.')}
+      <bpmn:errorEventDefinition errorRef="Err">${doc('The error itself.')}</bpmn:errorEventDefinition>
+    </bpmn:endEvent>
+    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="Throw" />
+  </bpmn:process>`,
+      [],
+      [
+        ['documentation', 'Throw', 'an event definition has no documentation'],
+        ['documentation', 'Throw', 'a throw has no documentation'],
+      ],
+    ],
+    [
+      'an end carrying a terminate definition carries its own and reports the definition',
+      bpmnDoc`    <bpmn:startEvent id="S" />
+    <bpmn:endEvent id="Stop">${doc('Nothing else runs.')}
+      <bpmn:terminateEventDefinition>${doc('The terminate itself.')}</bpmn:terminateEventDefinition>
+    </bpmn:endEvent>
+    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="Stop" />`,
+      [['Stop', 'Nothing else runs.']],
+      [['documentation', 'Stop', 'an event definition has no documentation']],
+    ],
+  ];
+
+  it.each(POSITIONS)('%s', async (_title, xml, carried, warned) => {
+    const { ir, warnings } = await xmlToIr(xml);
+    expect(documented(ir)).toEqual(carried);
+    expect(reported(warnings)).toEqual(expected(warned));
+  });
+
+  it.each([
+    [
+      'a second documentation child leaves the element with none',
+      `${doc('The first.')}${doc('The second.')}`,
+      "this surface holds one <bpmn:documentation> and 'T' carries 2",
+    ],
+    [
+      'a textFormat naming anything but plain text leaves the element with none',
+      '<bpmn:documentation textFormat="text/html">&lt;p&gt;Hi&lt;/p&gt;</bpmn:documentation>',
+      "this surface holds plain text and its textFormat is 'text/html'",
+    ],
+  ])('%s', async (_title, children, detail) => {
+    const { ir, warnings } = await xmlToIr(
+      oneNodeDoc('userTask', { children }),
+    );
+    expect(documented(ir)).toEqual([]);
+    expect(reported(warnings)).toEqual(
+      expected([['documentation', 'T', detail]]),
+    );
   });
 });
 
@@ -2409,10 +2799,10 @@ describe("xmlToIr: a root of a kind this tool does not model reports its own chi
     'its steps, and nothing declared or drawn beside it).';
 
   const KEPT_SETTINGS_NOTE =
-    '(this tool keeps the assignee, form, script, service-task binding, ' +
-    'result variable, version tag, input/output mappings and listeners, ' +
-    'and the async, retry, job-priority and task-assignment settings; a ' +
-    'gateway carries no engine setting at all).';
+    '(this tool keeps the assignee, form, form reference, script, ' +
+    'service-task binding, injected fields, result variable, version tag, ' +
+    'input/output mappings and listeners, and the async, retry, job-priority ' +
+    'and task-assignment settings; a gateway carries no engine setting at all).';
 
   it.each([
     [
@@ -2587,7 +2977,7 @@ describe('xmlToIr: embedded sub-process imports recursively', () => {
     const xml = subProcessDoc(
       `<bpmn:startEvent id="SubStart" />
       <bpmn:userTask id="InnerTask" name="Inner Task"
-                     operaton:assignee="alice" operaton:formRef="review-form" />
+                     operaton:assignee="alice" operaton:formHandlerClass="com.example.FormHandler" />
       <bpmn:endEvent id="SubEnd" />
       <bpmn:sequenceFlow id="SF1" sourceRef="SubStart" targetRef="InnerTask" />
       <bpmn:sequenceFlow id="SF2" sourceRef="InnerTask" targetRef="SubEnd" />`,
@@ -2598,7 +2988,7 @@ describe('xmlToIr: embedded sub-process imports recursively', () => {
     const { warnings } = await xmlToIr(xml);
     expectOneWarning(warnings, {
       elementId: 'InnerTask',
-      message: 'formRef',
+      message: 'formHandlerClass',
     });
   });
 
@@ -4476,7 +4866,7 @@ ${extraFlows}    <bpmn:sequenceFlow id="F1" sourceRef="PStart" targetRef="Review
       expect(e.definitionType).toBe('bpmn:LinkEventDefinition');
       expect(e.message).toContain(
         'A boundary event supports error, escalation, message, signal, ' +
-          'timer, or conditional, plus cancel on a block that can be given up.',
+          'timer, or condition, plus cancel on a block that can be given up.',
       );
     });
 
@@ -4632,7 +5022,7 @@ describe('xmlToIr: intermediate catch event import', () => {
      */
     const unawaitableDetail = (tag: string): string =>
       `an await cannot carry a bpmn:${tag}: only message, timer, signal, ` +
-      'or conditional triggers can be awaited inline; error and escalation ' +
+      'or condition triggers can be awaited inline; error and escalation ' +
       'are caught by an event handler and raised with throw/emit, ' +
       'compensation is undone by a subprocess block, a link has no surface, ' +
       'and a cancel is written on the end that gives up an attempt block';
@@ -4699,7 +5089,7 @@ ${definitions}
       <bpmn:signalEventDefinition id="d2" signalRef="Signal_Ping" />`,
         ),
         'an await carries 2 event definitions: only a single message, ' +
-          'timer, signal, or conditional trigger can be awaited',
+          'timer, signal, or condition trigger can be awaited',
       ],
       [
         'parallelMultiple="true"',
@@ -4708,7 +5098,7 @@ ${definitions}
           '      <bpmn:signalEventDefinition id="d" signalRef="Signal_Ping" />',
         ),
         'an await with parallelMultiple="true" waits for several triggers ' +
-          'together; only a single message, timer, signal, or conditional ' +
+          'together; only a single message, timer, signal, or condition ' +
           'trigger can be awaited',
       ],
       [
@@ -5547,54 +5937,467 @@ describe('xmlToIr: a consumed extension child reports its own unread attributes'
   });
 });
 
-describe('xmlToIr: operaton:field is reported per field', () => {
-  it('a field on a step names the field and refuses nothing', async () => {
-    const { node: task, warnings } = await importServiceTask(
-      `        <operaton:field name="greeting" stringValue="hello" />`,
+/** The reason a field under a binding that receives no field list draws. */
+const boundElsewhere = (binding: string): string =>
+  'Operaton injects a field into a class or delegate binding and into no ' +
+  `other, and this one is bound by ${binding}`;
+
+describe('xmlToIr: an injected field rides a class or a delegate binding', () => {
+  const importBound = (tag: string, attrs: string, fields: string) =>
+    importById(
+      oneNodeDoc(tag, {
+        id: 'Svc',
+        attrs,
+        children: extensionElements(fields),
+      }),
+      'Svc',
+      'serviceTask',
     );
-    expect(task.binding).toEqual(classBinding('com.example.Svc'));
-    expect(warnings).toHaveLength(1);
-    expect(warnings[0]).toEqual({
-      elementId: 'Svc',
-      category: 'extensionAttribute',
-      message: expect.stringContaining("'greeting'"),
-    });
+
+  const field = (attrs: string, body = ''): string =>
+    body === ''
+      ? `        <operaton:field ${attrs} />`
+      : `        <operaton:field ${attrs}>${body}</operaton:field>`;
+
+  const warned = (message: string): ImportWarning => ({
+    elementId: 'Svc',
+    category: 'extensionAttribute',
+    message,
   });
 
-  it('a field on a listener is reported against the owning step', async () => {
-    const { node: task, warnings } = await importServiceTask(
-      `        <operaton:executionListener event="start" class="com.example.L">
-          <operaton:field name="greeting" stringValue="hello" />
-        </operaton:executionListener>`,
-    );
-    expect(task.executionListeners).toEqual([
-      { event: 'start', binding: classBinding('com.example.L') },
+  const dropped = (reason: string, name = "'greeting'"): ImportWarning =>
+    warned(`The injected field ${name} on 'Svc' was not imported: ${reason}.`);
+
+  const CLASS = 'operaton:class="com.example.Svc"';
+  const GREETING = field('name="greeting" stringValue="hello"');
+  const SVC = classBinding('com.example.Svc');
+  const INJECTED = [{ name: 'greeting', value: 'hello' }];
+  const SVC_INJECTED: ServiceTaskBinding = {
+    kind: 'class',
+    className: 'com.example.Svc',
+    fields: INJECTED,
+  };
+
+  const cases: readonly [
+    string,
+    string,
+    string,
+    string,
+    ServiceTaskBinding,
+    ImportWarning[],
+  ][] = [
+    [
+      'a class binding carries a quoted value as the literal the engine injects',
+      'serviceTask',
+      CLASS,
+      GREETING,
+      SVC_INJECTED,
+      [],
+    ],
+    [
+      'a delegate binding carries an operaton:expression child as the expression the engine evaluates',
+      'sendTask',
+      'operaton:delegateExpression="${svcBean}"',
+      field(
+        'name="greeting"',
+        '<operaton:expression>${who}</operaton:expression>',
+      ),
+      {
+        kind: 'delegateExpression',
+        expression: '${svcBean}',
+        fields: [{ name: 'greeting', value: '${who}' }],
+      },
+      [],
+    ],
+    [
+      'a code-bound business rule task keeps both of its fields in the order the document writes them',
+      'businessRuleTask',
+      CLASS,
+      `${GREETING}\n${field('name="role" stringValue="clerk"')}`,
+      {
+        kind: 'class',
+        className: 'com.example.Svc',
+        fields: [...INJECTED, { name: 'role', value: 'clerk' }],
+      },
+      [],
+    ],
+    [
+      'an operaton:string child carries, and warns that export writes it back as a stringValue attribute',
+      'serviceTask',
+      CLASS,
+      field('name="greeting"', '<operaton:string>hello</operaton:string>'),
+      SVC_INJECTED,
+      [
+        warned(
+          "The injected field 'greeting' on 'Svc' writes its value in an " +
+            'operaton:string child, which this tool writes back as a ' +
+            'stringValue attribute; the engine injects the same text either way.',
+        ),
+      ],
+    ],
+    [
+      'a stringValue that reads as an expression drops, because export would write it back as an operaton:expression the engine evaluates',
+      'serviceTask',
+      CLASS,
+      field('name="greeting" stringValue="${who}"'),
+      SVC,
+      [
+        dropped(
+          "a stringValue attribute holding '${who}' would be written back " +
+            'as an operaton:expression child, and the engine would evaluate ' +
+            'it rather than inject the text',
+        ),
+      ],
+    ],
+    [
+      'an operaton:expression child that does not read as an expression drops, because export would write it back as the literal stringValue, and its text is quoted on one line',
+      'serviceTask',
+      CLASS,
+      field(
+        'name="greeting"',
+        '<operaton:expression>hello\n          world</operaton:expression>',
+      ),
+      SVC,
+      [
+        dropped(
+          'an operaton:expression child holding ' +
+            "'hello\\n          world' would be written back as a stringValue " +
+            'attribute, and the engine would inject that text rather than ' +
+            'evaluate it',
+        ),
+      ],
+    ],
+    [
+      'a pretty-printed operaton:expression child drops, because the engine evaluates the body it is handed untrimmed and the indentation is part of the expression',
+      'serviceTask',
+      CLASS,
+      field(
+        'name="greeting"',
+        '\n          <operaton:expression>\n            ${who}\n          </operaton:expression>\n        ',
+      ),
+      SVC,
+      [
+        dropped(
+          'an operaton:expression child holding ' +
+            "'\\n            ${who}\\n          ' would be written back as a " +
+            'stringValue attribute, and the engine would inject that text ' +
+            'rather than evaluate it',
+        ),
+      ],
+    ],
+    [
+      'an operaton:string child keeps every space it carries, because the engine injects it verbatim',
+      'serviceTask',
+      CLASS,
+      field('name="greeting"', '<operaton:string>  hello  </operaton:string>'),
+      {
+        kind: 'class',
+        className: 'com.example.Svc',
+        fields: [{ name: 'greeting', value: '  hello  ' }],
+      },
+      [
+        warned(
+          "The injected field 'greeting' on 'Svc' writes its value in an " +
+            'operaton:string child, which this tool writes back as a ' +
+            'stringValue attribute; the engine injects the same text either way.',
+        ),
+      ],
+    ],
+    [
+      'a stringValue beside an operaton:expression child carries the stringValue Operaton reads, and reports the child it passes over',
+      'serviceTask',
+      CLASS,
+      field(
+        'name="greeting" stringValue="hello"',
+        '<operaton:expression>${who}</operaton:expression>',
+      ),
+      SVC_INJECTED,
+      [
+        warned(
+          "The 'operaton:expression' child of the injected field 'greeting' " +
+            "on 'Svc' has no effect alongside a stringValue attribute and was " +
+            'not imported.',
+        ),
+      ],
+    ],
+    [
+      'a field declaring no name drops, because a field is injected under the name it declares',
+      'serviceTask',
+      CLASS,
+      field('stringValue="hello"'),
+      SVC,
+      [
+        dropped(
+          'a field is injected under the name it declares, and this one ' +
+            'declares none',
+          '(unnamed)',
+        ),
+      ],
+    ],
+    [
+      'an expression binding receives no field list, so the field drops',
+      'serviceTask',
+      'operaton:expression="${svcBean.run()}"',
+      GREETING,
+      exprBinding('${svcBean.run()}'),
+      [dropped(boundElsewhere('operaton:expression'))],
+    ],
+    [
+      'an external topic receives no field list, so the field drops',
+      'serviceTask',
+      'operaton:type="external" operaton:topic="rate"',
+      GREETING,
+      externalBinding('rate'),
+      [dropped(boundElsewhere('operaton:type="external"'))],
+    ],
+    [
+      'a decision binding receives no field list, so the field drops',
+      'businessRuleTask',
+      'operaton:decisionRef="riskRating" operaton:decisionRefBinding="latest"',
+      GREETING,
+      {
+        kind: 'decision',
+        decisionRef: 'riskRating',
+        binding: { kind: 'latest' },
+      },
+      [dropped(boundElsewhere('an operaton:decisionRef'))],
+    ],
+  ];
+
+  it.each(cases)(
+    '%s',
+    async (_title, tag, attrs, fields, binding, expected) => {
+      const { node, warnings } = await importBound(tag, attrs, fields);
+      expect(node.binding).toEqual(binding);
+      expect(warnings).toEqual(expected);
+    },
+  );
+
+  it('a field on a step with no binding to inject into is reported whole', async () => {
+    const { warnings } = await importUserTaskWith(GREETING);
+    expect(warnings.map((w) => w.message)).toEqual([
+      "The injected field 'greeting' on 'Review' was not imported: this tool " +
+        'carries an injected field on the step or the listener whose class ' +
+        'or delegate binding receives it, and on no other position.',
     ]);
-    expectOneWarning(warnings, { elementId: 'Svc', message: "'greeting'" });
-    expect(warnings[0].message).toMatch(/listener/i);
   });
 
-  it('one document carrying a carried element and a dropped element yields exactly one warning', async () => {
-    const xml = operatonDoc`    <bpmn:startEvent id="S" />
-    <bpmn:userTask id="CleanTask" operaton:assignee="alice">
-      <bpmn:extensionElements>
-        <operaton:executionListener event="start" class="com.example.L" />
-      </bpmn:extensionElements>
-    </bpmn:userTask>
-    <bpmn:serviceTask id="ConfiguredSvc" operaton:class="com.example.Svc">
-      <bpmn:extensionElements>
-        <operaton:field name="greeting" stringValue="hello" />
-      </bpmn:extensionElements>
-    </bpmn:serviceTask>
-    <bpmn:endEvent id="E" />
-    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="CleanTask" />
-    <bpmn:sequenceFlow id="F2" sourceRef="CleanTask" targetRef="ConfiguredSvc" />
-    <bpmn:sequenceFlow id="F3" sourceRef="ConfiguredSvc" targetRef="E" />`;
-
-    const { warnings } = await xmlToIr(xml);
-    expect(warnings).toHaveLength(1);
-    expect(warnings[0].elementId).toBe('ConfiguredSvc');
+  it('a carried field still reports the attributes no reader reads off it', async () => {
+    const { node, warnings } = await importBound(
+      'serviceTask',
+      CLASS,
+      field(
+        'xmlns:foo="http://foo.example" name="greeting" stringValue="hello" foo:bar="1"',
+      ),
+    );
+    expect(node.binding).toEqual(SVC_INJECTED);
+    expect(warnings.map((w) => w.message)).toEqual([
+      expect.stringMatching(/'foo:bar' on an operaton:field 'greeting'/),
+    ]);
   });
+});
+
+describe('xmlToIr: a listener carries an injected field on the same two bindings', () => {
+  const GREETING =
+    '          <operaton:field name="greeting" stringValue="hello" />';
+  const SCRIPT =
+    '          <operaton:script scriptFormat="groovy">x = 1</operaton:script>\n';
+
+  /** The single listener's binding, off the node each listener kind hangs on. */
+  const importListener = async (
+    kind: 'execution' | 'task',
+    attrs: string,
+    body = '',
+  ): Promise<{ binding: ListenerBinding; warnings: ImportWarning[] }> => {
+    const child = (tag: string, event: string): string =>
+      `        <operaton:${tag} event="${event}" ${attrs}>\n${body}${GREETING}\n        </operaton:${tag}>`;
+
+    if (kind === 'execution') {
+      const { node, warnings } = await importServiceTask(
+        child('executionListener', 'start'),
+      );
+      return { binding: node.executionListeners![0].binding, warnings };
+    }
+    const { node, warnings } = await importUserTaskWith(
+      child('taskListener', 'create'),
+    );
+    return { binding: node.taskListeners![0].binding, warnings };
+  };
+
+  const cases: readonly [
+    string,
+    'execution' | 'task',
+    string,
+    string,
+    ListenerBinding,
+    ImportWarning[],
+  ][] = [
+    [
+      'an execution listener bound by class carries the field onto its own binding',
+      'execution',
+      'class="com.example.L"',
+      '',
+      {
+        kind: 'class',
+        className: 'com.example.L',
+        fields: [{ name: 'greeting', value: 'hello' }],
+      },
+      [],
+    ],
+    [
+      'a task listener bound by a delegate expression carries the field onto its own binding',
+      'task',
+      'delegateExpression="${listenerBean}"',
+      '',
+      {
+        kind: 'delegateExpression',
+        expression: '${listenerBean}',
+        fields: [{ name: 'greeting', value: 'hello' }],
+      },
+      [],
+    ],
+    [
+      'a listener bound by a fenced script receives no field list, so the field drops',
+      'execution',
+      '',
+      SCRIPT,
+      scriptValue('groovy', 'x = 1'),
+      [
+        {
+          elementId: 'Svc',
+          category: 'extensionAttribute',
+          message:
+            "The injected field 'greeting' on an operaton:executionListener " +
+            `on 'Svc' was not imported: ${boundElsewhere('an operaton:script child')}.`,
+        },
+      ],
+    ],
+  ];
+
+  it.each(cases)('%s', async (_title, kind, attrs, body, binding, expected) => {
+    const { binding: imported, warnings } = await importListener(
+      kind,
+      attrs,
+      body,
+    );
+    expect(imported).toEqual(binding);
+    expect(warnings).toEqual(expected);
+  });
+});
+
+describe('xmlToIr: a user task names a deployed form by reference', () => {
+  const importFormRef = (attrs: string, doc = operatonDoc) =>
+    importOnly(oneNodeDoc('userTask', { attrs, doc }), 'userTask');
+
+  const bound: readonly [string, string, VersionBinding][] = [
+    [
+      'the latest deployed form',
+      'operaton:formRefBinding="latest"',
+      { kind: 'latest' },
+    ],
+    [
+      'the form deployed alongside the process',
+      'operaton:formRefBinding="deployment"',
+      { kind: 'deployment' },
+    ],
+    [
+      'one pinned version of the form',
+      'operaton:formRefBinding="version" operaton:formRefVersion="3"',
+      { kind: 'version', version: '3' },
+    ],
+  ];
+
+  it.each(bound)(
+    'a formRef resolving to %s imports the key and the binding together, reporting nothing',
+    async (_title, attrs, binding) => {
+      const { node, warnings } = await importFormRef(
+        `operaton:formRef="review-form" ${attrs}`,
+      );
+      expect(node).toEqual({
+        kind: 'userTask',
+        id: 'T',
+        formRef: { key: 'review-form', binding },
+      });
+      expect(warnings).toEqual([]);
+    },
+  );
+
+  it('the camunda: prefix spells the same form reference', async () => {
+    const { node, warnings } = await importFormRef(
+      'camunda:formRef="review-form" camunda:formRefBinding="version" ' +
+        'camunda:formRefVersion="3"',
+      camundaDoc,
+    );
+    expect(node).toEqual({
+      kind: 'userTask',
+      id: 'T',
+      formRef: {
+        key: 'review-form',
+        binding: { kind: 'version', version: '3' },
+      },
+    });
+    expect(warnings).toEqual([]);
+  });
+
+  it.each([
+    [
+      'a version the binding beside it never resolves is reported, and the reference still imports',
+      'operaton:formRef="review-form" operaton:formRefBinding="latest" operaton:formRefVersion="3"',
+      { key: 'review-form', binding: { kind: 'latest' } },
+      [
+        "The 'formRefVersion' setting on 'T' has no effect without " +
+          'formRefBinding="version" and was not imported.',
+      ],
+    ],
+    [
+      'a binding and a version with no formRef to pin are both reported, and the task still imports',
+      'operaton:formRefBinding="latest" operaton:formRefVersion="3"',
+      undefined,
+      [
+        "The 'formRefBinding' setting on 'T' has no effect without an " +
+          'operaton:formRef and was not imported.',
+        "The 'formRefVersion' setting on 'T' has no effect without an " +
+          'operaton:formRef and was not imported.',
+      ],
+    ],
+  ] as const)('%s', async (_title, attrs, formRef, messages) => {
+    const { node, warnings } = await importFormRef(attrs);
+    expect(node.formRef).toEqual(formRef);
+    expect(warnings.map((w) => w.message)).toEqual(messages);
+  });
+
+  it.each([
+    [
+      'a formKey beside a formRef',
+      'operaton:formKey="embedded:app:forms/review.html" operaton:formRef="review-form" operaton:formRefBinding="latest"',
+      'it names an operaton:formKey beside the operaton:formRef, and a task renders one form',
+    ],
+    [
+      'a formRef with no binding to resolve it',
+      'operaton:formRef="review-form"',
+      'its operaton:formRef carries no operaton:formRefBinding, so the engine cannot resolve which deployed form to render',
+    ],
+    [
+      'a formRef bound by a word this tool cannot represent',
+      'operaton:formRef="review-form" operaton:formRefBinding="versionTag"',
+      'formRefBinding="versionTag" is not a binding this tool can represent',
+    ],
+    [
+      'a formRef pinned to a version it never names',
+      'operaton:formRef="review-form" operaton:formRefBinding="version"',
+      'formRefBinding="version" is set without a formRefVersion, so the engine cannot resolve which version to use',
+    ],
+  ])(
+    '%s refuses, rather than importing a task Operaton would not deploy',
+    async (_title, attrs, detail) => {
+      const error = await expectRefusal(
+        xmlToIr(oneNodeDoc('userTask', { attrs })),
+        UnsupportedFormReferenceError,
+        detail,
+      );
+      expect(error.message).toContain("The form reference on 'T'");
+    },
+  );
 });
 
 describe('xmlToIr: a repeated extension block keeps the first and reports the rest', () => {
@@ -5799,6 +6602,20 @@ ${body}
         ioBlock(`          <operaton:inputParameter name="x">1</operaton:inputParameter>
           <operaton:inputParameter name="x">2</operaton:inputParameter>`),
       detail: /two operaton:inputParameter children share name="x"/,
+    },
+    {
+      case: 'an injected field naming no value slot',
+      on: 'Svc',
+      children: `        <operaton:field name="greeting" />`,
+      detail: "the injected field 'greeting' on 'Svc' names no value",
+    },
+    {
+      case: 'an injected field naming an attribute and a child of the same slot',
+      on: 'Svc',
+      children: `        <operaton:field name="greeting" stringValue="hello"><operaton:string>hi</operaton:string></operaton:field>`,
+      detail:
+        "the injected field 'greeting' on 'Svc' names a stringValue " +
+        'attribute and an operaton:string child',
     },
     {
       case: 'a listener carrying no binding at all',
@@ -6248,7 +7065,7 @@ describe('xmlToIr: a block that can be given up', () => {
   /** The closing sentence {@link UnsupportedEventFeatureError} appends by default. */
   const EVENT_SURFACE_NOTE =
     'Event handlers catch one error, escalation, message, signal, timer, ' +
-    'conditional, or compensation trigger on their single start event; ' +
+    'condition, or compensation trigger on their single start event; ' +
     'throws and emits carry the code or name their kind requires, and ' +
     'compensation carries neither.';
 
@@ -6895,6 +7712,7 @@ ${branches
       kind: 'eventBasedGateway',
       id: 'Wait',
       name: 'Whichever comes first',
+      documentation: 'Pick one.',
     });
     const reported = (warning: ImportWarning) => [
       warning.category,
@@ -6912,7 +7730,6 @@ ${branches
         id,
         expect.stringContaining("'operaton:jobPriority' setting"),
       ],
-      ['documentation', id, expect.stringContaining('Documentation')],
       [
         'unmappedConstruct',
         id,

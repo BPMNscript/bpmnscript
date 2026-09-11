@@ -286,6 +286,11 @@ const CATCH_TRIGGERS: Item[] = [
 ];
 
 const LABEL: Item = ['label', SETTING, 'label: "${1:label}"'];
+const DOCUMENTATION: Item = [
+  'documentation',
+  SETTING,
+  'documentation: "${1:documentation}"',
+];
 
 const ENGINE_SETTINGS: Item[] = [
   ['asyncBefore', SETTING, 'asyncBefore: ${1|true,false|}'],
@@ -300,16 +305,28 @@ const PARAMETERS: Item[] = [
   ['output', 'a value this step hands back', 'output ${1:name} = ${2:value}'],
 ];
 
+const FIELD: Item = [
+  'field',
+  'a value injected into the class or delegate this step names',
+  'field ${1:name} = "${2:value}"',
+];
+
 const LISTENER_KEYWORD: Item = [
   'on',
   'run code when this step reaches a lifecycle point',
   'on ${1|start,end|}(class: "${2:com.example.Listener}")',
 ];
 
+const FORM_KEYWORD: Item = ['form', KEYWORD, 'form'];
+
 /** What the brace block of an element holds, its settings having moved out. */
-const BLOCK_MEMBERS: Item[] = [
-  ['form', KEYWORD, 'form'],
+const BLOCK_MEMBERS: Item[] = [FORM_KEYWORD, ...PARAMETERS, LISTENER_KEYWORD];
+
+/** The same block on a kind binding an implementation to inject into. */
+const FIELD_BLOCK_MEMBERS: Item[] = [
+  FORM_KEYWORD,
   ...PARAMETERS,
+  FIELD,
   LISTENER_KEYWORD,
 ];
 
@@ -338,8 +355,12 @@ const VERSION: Item = ['version', SETTING, 'version: ${1:1}'];
 
 const USER_PARENS: Item[] = [
   LABEL,
+  DOCUMENTATION,
   ['assignee', SETTING, 'assignee: "${1:user}"'],
   ['formKey', SETTING, 'formKey: "${1:form-key}"'],
+  ['formRef', SETTING, 'formRef: "${1:form-id}"'],
+  BINDING,
+  VERSION,
   ['candidateGroups', SETTING, 'candidateGroups: "${1:group}"'],
   ['candidateUsers', SETTING, 'candidateUsers: "${1:user}"'],
   ['dueDate', SETTING, 'dueDate: "${1:\\${dateTime().plusDays(3)}}"'],
@@ -351,6 +372,7 @@ const USER_PARENS: Item[] = [
 
 const SERVICE_PARENS: Item[] = [
   LABEL,
+  DOCUMENTATION,
   ...BINDINGS,
   TOPIC,
   RESULT_VARIABLE,
@@ -360,6 +382,7 @@ const SERVICE_PARENS: Item[] = [
 
 const CALL_PARENS: Item[] = [
   LABEL,
+  DOCUMENTATION,
   ['process', SETTING, 'process: "${1:process-id}"'],
   BINDING,
   VERSION,
@@ -374,6 +397,7 @@ const CALL_PARENS: Item[] = [
 
 const RECEIVE_PARENS: Item[] = [
   LABEL,
+  DOCUMENTATION,
   ['message', SETTING, 'message: "${1:MessageName}"'],
   ...ENGINE_SETTINGS,
   ...LITERALS,
@@ -381,6 +405,7 @@ const RECEIVE_PARENS: Item[] = [
 
 const DECIDE_PARENS: Item[] = [
   LABEL,
+  DOCUMENTATION,
   ...BINDINGS,
   TOPIC,
   ['decision', SETTING, 'decision: "${1:decision-key}"'],
@@ -406,7 +431,27 @@ const HANDLER_PARENS: Item[] = [
 
 const PROCESS_PARENS: Item[] = [
   LABEL,
+  DOCUMENTATION,
   ['versionTag', SETTING, 'versionTag: "${1:1.0.0}"'],
+  ['historyTimeToLive', SETTING, 'historyTimeToLive: "${1:P30D}"'],
+  [
+    'candidateStarterUsers',
+    SETTING,
+    'candidateStarterUsers: "${1:demo,manager}"',
+  ],
+  [
+    'candidateStarterGroups',
+    SETTING,
+    'candidateStarterGroups: "${1:adjusters}"',
+  ],
+  ...LITERALS,
+];
+
+const START_PARENS: Item[] = [
+  LABEL,
+  DOCUMENTATION,
+  ['initiator', SETTING, 'initiator: "${1:starter}"'],
+  ...ENGINE_SETTINGS,
   ...LITERALS,
 ];
 
@@ -522,6 +567,7 @@ describe('the completions offered at a caret', () => {
         ['message', EVENT_WORD, 'message'],
         ['signal', EVENT_WORD, 'signal'],
         TIMER,
+        CONDITION,
         ...STATEMENTS,
       ],
     ],
@@ -567,9 +613,14 @@ describe('the completions offered at a caret', () => {
       USER_PARENS,
     ],
     [
-      'the process parens offer the two settings a process header takes',
+      'the process parens offer the settings a process header takes',
       'process p(|) {\n  user T\n}',
       PROCESS_PARENS,
+    ],
+    [
+      'the start parens offer the settings a start event takes',
+      'process p {\n  start S(|)\n  user T\n}',
+      START_PARENS,
     ],
     [
       'a service task offers the binding settings and none of the user-task ones',
@@ -616,6 +667,16 @@ describe('the completions offered at a caret', () => {
       'an unclosed user block still offers the members of the element it belongs to',
       'process p {\n  user T {\n    |',
       BLOCK_MEMBERS,
+    ],
+    [
+      'a service block offers `field` alongside the two io directions',
+      'process p {\n  service S(class: "com.example.D") {\n    |\n  }\n}',
+      FIELD_BLOCK_MEMBERS,
+    ],
+    [
+      "a listener's block holds an injected field and nothing else",
+      'process p {\n  user T {\n    on create(class: "com.example.L") {\n      |\n    }\n  }\n}',
+      [FIELD],
     ],
     [
       'a host-less handler block offers parameters, which a boundary event has none of',
@@ -745,6 +806,15 @@ const REQUIRED_BINDINGS = new Set([
 const binds = ([label]: Item) => REQUIRED_BINDINGS.has(label);
 
 /**
+ * A form reference and the binding pinning its version are legal only
+ * together, so each half is checked in a host writing the other one.
+ */
+const FORM_REFERENCE_MODIFIERS = new Set(['binding', 'version']);
+
+const pinsAForm = ([label]: Item) => FORM_REFERENCE_MODIFIERS.has(label);
+const namesAForm = ([label]: Item) => label === 'formRef';
+
+/**
  * The declaration a statement scaffold needs in the header. Every scaffold
  * writes its code as the same placeholder name, and a code reaches only the
  * declarations of its own kind, so which kind is declared follows the
@@ -779,8 +849,18 @@ describe('a scaffold parses and validates once accepted', () => {
     ),
     ...scaffolds(
       'the parens of a user task',
-      USER_PARENS,
+      USER_PARENS.filter((item) => !pinsAForm(item) && !namesAForm(item)),
       (setting) => `process p {\n  user T(${setting})\n}`,
+    ),
+    ...scaffolds(
+      'the parens of a user task',
+      USER_PARENS.filter(pinsAForm),
+      (setting) => `process p {\n  user T(formRef: "f", ${setting})\n}`,
+    ),
+    ...scaffolds(
+      'the parens of a user task',
+      USER_PARENS.filter(namesAForm),
+      (setting) => `process p {\n  user T(${setting}, binding: latest)\n}`,
     ),
     ...scaffolds(
       'the parens of a receive task',
@@ -834,6 +914,18 @@ describe('a scaffold parses and validates once accepted', () => {
       'a user block',
       BLOCK_MEMBERS,
       (member) => `process p {\n  user T {\n${member}\n  }\n}`,
+    ),
+    ...scaffolds(
+      'a service block',
+      [FIELD],
+      (member) =>
+        `process p {\n  service S(class: "com.example.D") {\n${member}\n  }\n}`,
+    ),
+    ...scaffolds(
+      "a listener's block",
+      [FIELD],
+      (member) =>
+        `process p {\n  user T {\n    on create(class: "com.example.L") {\n${member}\n    }\n  }\n}`,
     ),
     ...scaffolds(
       'the parens of a listener',

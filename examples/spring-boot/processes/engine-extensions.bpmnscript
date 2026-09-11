@@ -2,7 +2,10 @@ process engine-extensions(label: "Engine extension surface") {
   start ExtensionsRequested
 
   service RecordMarkers(label: "Record the lifecycle markers", class: "com.example.demo.LogDelegate") {
-    on start(class: "com.example.demo.RecordingExecutionListener")
+    field marker = "recorded-${1+1}"
+    on start(class: "com.example.demo.RecordingExecutionListener") {
+      field marker = "${execution.processInstanceId}"
+    }
     on end(class: "com.example.demo.RecordingExecutionListener")
   }
 
@@ -16,8 +19,15 @@ process engine-extensions(label: "Engine extension surface") {
     output mappedDesk = "${routing.desk}"
   }
 
-  user ConfirmMarkers(label: "Confirm the recorded markers", assignee: "demo") {
-    on create(class: "com.example.demo.RecordingTaskListener")
+  user ConfirmMarkers(
+    label: "Confirm the recorded markers",
+    assignee: "demo",
+    formRef: "confirm-markers",
+    version: 1
+  ) {
+    on create(class: "com.example.demo.RecordingTaskListener") {
+      field marker = "confirmed"
+    }
   }
 
   service SettleExtensions(label: "Settle behind the transaction boundary", class: "com.example.demo.LogDelegate", asyncBefore: true)

@@ -7,6 +7,14 @@
  * `packages/transform/README.md` tabulates which construct lands where.
  */
 
+import {
+  CATCH_TRIGGERS,
+  formatPlainWordList,
+  ON_TRIGGERS,
+  START_TRIGGERS,
+  TRIGGER_PAYLOAD,
+} from '@bpmn-script/language';
+
 /**
  * Base for every refusal, so a consumer can classify the whole family with one
  * `instanceof`. Subclasses declare their fields with `declare` so the class
@@ -140,12 +148,26 @@ export class UnsupportedEventDefinitionError extends UnsupportedConstructError {
   }
 }
 
+/** The triggers that open a handler of their own, which is what a handler start is. */
+const HANDLER_START_TRIGGERS = ON_TRIGGERS.filter(
+  (word) => TRIGGER_PAYLOAD[word]?.hostless === true,
+);
+
+/**
+ * Compensation falls out because a boundary compensation trigger refuses
+ * earlier, via {@link UnsupportedEventFeatureError}. Cancel is named apart from
+ * the list because nothing in the table records that it needs a host that can
+ * be given up.
+ */
+const BOUNDARY_TRIGGERS = ON_TRIGGERS.filter(
+  (word) => TRIGGER_PAYLOAD[word]?.boundary === true && word !== 'cancel',
+);
+
 /** The default closing sentence: what a handler, a throw, and an emit accept. */
 const EVENT_SURFACE_NOTE =
-  'Event handlers catch one error, escalation, message, signal, timer, ' +
-  'conditional, or compensation trigger on their single start event; ' +
-  'throws and emits carry the code or name their kind requires, and ' +
-  'compensation carries neither.';
+  `Event handlers catch one ${formatPlainWordList(HANDLER_START_TRIGGERS)} ` +
+  'trigger on their single start event; throws and emits carry the code or ' +
+  'name their kind requires, and compensation carries neither.';
 
 /**
  * A supported event definition kind shaped in a way the DSL surface cannot
@@ -217,8 +239,30 @@ export class UnsupportedExtensionFormError extends UnsupportedConstructError {
         'one nested value, never both or two, and is always named; a script ' +
         'value declares a scriptFormat and carries inline code, never an ' +
         'external resource; a listener names exactly one binding and an event ' +
-        'its position accepts; and a timeout task listener carries exactly one ' +
-        'timer, which no other task listener event carries.',
+        'its position accepts; a timeout task listener carries exactly one ' +
+        'timer, which no other task listener event carries; and an injected ' +
+        'field names exactly one value slot, Operaton refusing to deploy one ' +
+        'that names none or both of its literal slots.',
+      { elementId, detail },
+    );
+  }
+}
+
+/**
+ * A user task naming a deployed form in a shape Operaton's
+ * `parseFormDefinition` rejects. `detail` names the shape; the message states
+ * the rule it broke.
+ */
+export class UnsupportedFormReferenceError extends UnsupportedConstructError {
+  declare readonly elementId: string;
+  declare readonly detail: string;
+
+  constructor(elementId: string, detail: string) {
+    super(
+      `The form reference on '${elementId}' cannot be imported: ${detail}. ` +
+        'Operaton refuses to deploy a user task that names both a form key ' +
+        'and a form reference, and one whose form reference has no binding ' +
+        'or a binding outside latest, deployment, and version.',
       { elementId, detail },
     );
   }
@@ -253,10 +297,6 @@ function friendlyEventDefinition(definitionType: string): string {
   return local.replace(/EventDefinition$/, '').toLowerCase() || 'special';
 }
 
-/**
- * Compensation is absent from the boundary sentence because a boundary
- * compensation trigger refuses earlier, via {@link UnsupportedEventFeatureError}.
- */
 function supportedKindsMessage(
   eventKind:
     'start' | 'end' | 'intermediate throw' | 'intermediate catch' | 'boundary',
@@ -265,9 +305,8 @@ function supportedKindsMessage(
     case 'start':
       return (
         "A plain start event carries no definition; a process's start " +
-        "supports message, signal, or timer, and an event handler's start " +
-        'supports error, escalation, message, signal, timer, conditional, ' +
-        'or compensation.'
+        `supports ${formatPlainWordList(START_TRIGGERS)}, and an event ` +
+        `handler's start supports ${formatPlainWordList(HANDLER_START_TRIGGERS)}.`
       );
     case 'end':
       return (
@@ -278,11 +317,11 @@ function supportedKindsMessage(
     case 'intermediate throw':
       return 'An emit supports escalation, message, signal, or compensation.';
     case 'intermediate catch':
-      return 'An await supports message, timer, signal, or conditional.';
+      return `An await supports ${formatPlainWordList(CATCH_TRIGGERS)}.`;
     case 'boundary':
       return (
-        'A boundary event supports error, escalation, message, signal, ' +
-        'timer, or conditional, plus cancel on a block that can be given up.'
+        `A boundary event supports ${formatPlainWordList(BOUNDARY_TRIGGERS)}, ` +
+        'plus cancel on a block that can be given up.'
       );
   }
 }

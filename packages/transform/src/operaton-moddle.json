@@ -21,6 +21,16 @@
           "name": "versionTag",
           "isAttr": true,
           "type": "String"
+        },
+        {
+          "name": "candidateStarterUsers",
+          "isAttr": true,
+          "type": "String"
+        },
+        {
+          "name": "candidateStarterGroups",
+          "isAttr": true,
+          "type": "String"
         }
       ]
     },
@@ -67,6 +77,21 @@
       "properties": [
         {
           "name": "formKey",
+          "isAttr": true,
+          "type": "String"
+        },
+        {
+          "name": "formRef",
+          "isAttr": true,
+          "type": "String"
+        },
+        {
+          "name": "formRefBinding",
+          "isAttr": true,
+          "type": "String"
+        },
+        {
+          "name": "formRefVersion",
           "isAttr": true,
           "type": "String"
         }
@@ -464,6 +489,18 @@
       "properties": [
         {
           "name": "errorMessage",
+          "isAttr": true,
+          "type": "String"
+        }
+      ]
+    },
+    {
+      "name": "Initiator",
+      "isAbstract": true,
+      "extends": ["bpmn:StartEvent"],
+      "properties": [
+        {
+          "name": "initiator",
           "isAttr": true,
           "type": "String"
         }

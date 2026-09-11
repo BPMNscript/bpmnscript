@@ -2,7 +2,11 @@ process claim-settlement {
   start ClaimFiled
 
   service ValidateClaim(label: "Validate the claim", class: "com.example.claims.ValidateClaimDelegate") {
-    on start(class: "com.example.claims.OpenAuditTrail")
+    field policyRegister = "motor-policies"
+    field settlementCurrency = "${claim.currency}"
+    on start(class: "com.example.claims.OpenAuditTrail") {
+      field auditCategory = "claim-validation"
+    }
     on end(expression: "${auditTrail.close(execution)}")
   }
 
@@ -13,7 +17,9 @@ process claim-settlement {
     user InspectVehicle(label: "Inspect the vehicle", assignee: "demo", candidateGroups: "assessors") {
       on create(class: "com.example.claims.NotifyAssessor")
       on assign(expression: "${assessorRoster.record(task)}")
-      on complete(delegate: "${assessmentRecorder}")
+      on complete(delegate: "${assessmentRecorder}") {
+        field reviewedBy = "${task.assignee}"
+      }
       on update ```javascript
 task.setVariable("assessmentRevised", true);
 ```

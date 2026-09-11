@@ -17,7 +17,7 @@ import {
   xmlToIr,
   irToDsl,
   UnsupportedConstructError,
-  UnsupportedEventDefinitionError,
+  UnsupportedEventFeatureError,
 } from '@bpmn-script/transform';
 
 import { diagnosticMessage } from '../src/util.js';
@@ -33,9 +33,9 @@ const LANES_AND_ASYNC_BPMN = path.resolve(
   'tests/fixtures/lanes-and-async.bpmn',
 );
 
-const CONDITIONAL_START_BPMN = path.resolve(
+const ERROR_START_BPMN = path.resolve(
   REPO_ROOT,
-  'tests/fixtures/conditional-start.bpmn',
+  'tests/fixtures/error-start.bpmn',
 );
 
 // `StartEvent_1`/`EndEvent_1` are what a modeler mints for a start and an end
@@ -102,11 +102,11 @@ describe('decompile contract: what the import makes of a fixture', () => {
     ]);
   });
 
-  it('the conditional-start fixture is refused with UnsupportedEventDefinitionError naming the offending start event, with no BPMN jargon', async () => {
-    const xml = fs.readFileSync(CONDITIONAL_START_BPMN, 'utf-8');
+  it('the error-start fixture is refused with UnsupportedEventFeatureError naming the offending start event, with no BPMN jargon', async () => {
+    const xml = fs.readFileSync(ERROR_START_BPMN, 'utf-8');
 
     await expect(xmlToIr(xml)).rejects.toBeInstanceOf(
-      UnsupportedEventDefinitionError,
+      UnsupportedEventFeatureError,
     );
 
     try {
@@ -114,12 +114,10 @@ describe('decompile contract: what the import makes of a fixture', () => {
       expect.fail('Should have thrown');
     } catch (err) {
       expect(err).toBeInstanceOf(UnsupportedConstructError);
-      const e = err as UnsupportedEventDefinitionError;
-      expect(e.elementId).toBe('ScheduledStart');
-      expect(e.eventKind).toBe('start');
-      expect(e.definitionType).toBe('bpmn:ConditionalEventDefinition');
-      expect(e.message).toContain('ScheduledStart');
-      expect(e.message.toLowerCase()).toContain('conditional');
+      const e = err as UnsupportedEventFeatureError;
+      expect(e.elementId).toBe('ShipmentFailed');
+      expect(e.message).toContain('ShipmentFailed');
+      expect(e.message).toContain("Catch it with 'on error'");
       assertNoForbiddenJargon(e.message);
     }
   });
@@ -160,9 +158,9 @@ describe('decompile contract: what `bpmns parse` does with the same fixtures', (
     ],
     [
       'a refused construct exits 1, writes nothing, and says which element it was',
-      CONDITIONAL_START_BPMN,
+      ERROR_START_BPMN,
       // 1 means unsupported construct; 2 would mean I/O or generic failure.
-      { exit: 1, mentions: ['ScheduledStart', 'conditional'] },
+      { exit: 1, mentions: ['ShipmentFailed', 'on error'] },
     ],
   ])('%s', async (_title, fixture, expected) => {
     const run = await runParse({ file: fixture });

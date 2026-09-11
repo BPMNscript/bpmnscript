@@ -1,7 +1,13 @@
-process claim-settlement(label: "Motor claim settlement", versionTag: "3.1.0") {
+process claim-settlement(
+  label: "Motor claim settlement",
+  versionTag: "3.1.0",
+  historyTimeToLive: "P90D",
+  candidateStarterUsers: "demo,manager",
+  candidateStarterGroups: "adjusters"
+) {
   escalation PAYOUT_REVIEW
 
-  start ClaimFiled(label: "Claim filed", asyncAfter: true) {
+  start ClaimFiled(label: "Claim filed", initiator: "claimant", asyncAfter: true) {
     form {
       claimAmount: number "Claimed amount in euros"
       openQuestions: number "Questions still open with the claimant"
@@ -65,7 +71,7 @@ execution.setVariable("mechanicsGrade", grade)
     emit escalation PayoutReviewNeeded(PAYOUT_REVIEW, asyncAfter: true, jobPriority: 40)
   }
 
-  user ApprovePayout(label: "Approve the payout", assignee: "manager")
+  user ApprovePayout(label: "Approve the payout", assignee: "manager", formRef: "payout-approval", version: 2)
 
   end ClaimSettled(label: "Claim settled", asyncBefore: true)
 

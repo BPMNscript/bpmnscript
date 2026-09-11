@@ -2,22 +2,20 @@
 <bpmn:definitions
     xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
     xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-    id="Definitions_ConditionalStart"
+    id="Definitions_ErrorStart"
     targetNamespace="http://bpmn.io/schema/bpmn"
     exporter="Operaton Modeler"
     exporterVersion="5.0.0">
 
-  <bpmn:process id="conditional-start" name="Conditional Start" isExecutable="true">
+  <bpmn:process id="error-start" name="Error Start" isExecutable="true">
 
-    <bpmn:startEvent id="ScheduledStart">
-      <bpmn:outgoing>Flow_ScheduledStart_Notify</bpmn:outgoing>
-      <bpmn:conditionalEventDefinition id="CondDef_1">
-        <bpmn:condition xsi:type="bpmn:tFormalExpression">${stockLevel &lt; 5}</bpmn:condition>
-      </bpmn:conditionalEventDefinition>
+    <bpmn:startEvent id="ShipmentFailed">
+      <bpmn:outgoing>Flow_ShipmentFailed_Notify</bpmn:outgoing>
+      <bpmn:errorEventDefinition id="ErrDef_1" />
     </bpmn:startEvent>
 
     <bpmn:userTask id="Notify" name="Notify team">
-      <bpmn:incoming>Flow_ScheduledStart_Notify</bpmn:incoming>
+      <bpmn:incoming>Flow_ShipmentFailed_Notify</bpmn:incoming>
       <bpmn:outgoing>Flow_Notify_Done</bpmn:outgoing>
     </bpmn:userTask>
 
@@ -25,7 +23,7 @@
       <bpmn:incoming>Flow_Notify_Done</bpmn:incoming>
     </bpmn:endEvent>
 
-    <bpmn:sequenceFlow id="Flow_ScheduledStart_Notify" sourceRef="ScheduledStart" targetRef="Notify" />
+    <bpmn:sequenceFlow id="Flow_ShipmentFailed_Notify" sourceRef="ShipmentFailed" targetRef="Notify" />
     <bpmn:sequenceFlow id="Flow_Notify_Done" sourceRef="Notify" targetRef="Done" />
 
   </bpmn:process>

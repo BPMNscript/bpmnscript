@@ -17,7 +17,16 @@ const rt = roundTripFixture('engine-attributes', {
   recompile: 'clean',
 });
 
-const VERSION_TAG = '3.1.0';
+// Asserted as a whole rather than key by key, so a value that stops travelling
+// and a value that appears out of nowhere both fail. `historyTimeToLive` is
+// authored as something other than the exporter's own default on purpose: at
+// `P30D` the importer reads it as unwritten and the hop would prove nothing.
+const PROCESS_HEADER = {
+  versionTag: '3.1.0',
+  historyTimeToLive: 'P90D',
+  candidateStarterUsers: 'demo,manager',
+  candidateStarterGroups: 'adjusters',
+};
 
 // The tripwire for a regenerated golden: layout, flow ids, and synthesized
 // handler and gateway ids may move, and no row here may. The three carriers
@@ -26,8 +35,9 @@ const VERSION_TAG = '3.1.0';
 const ENGINE_ATTRIBUTE_CONTRACT: readonly (readonly [
   id: string,
   attribute: string,
-  value: string | boolean,
+  value: string | boolean | Record<string, unknown>,
 ])[] = [
+  ['ClaimFiled', 'initiator', 'claimant'],
   ['ClaimFiled', 'asyncAfter', true],
   ['TriageClaim', 'assignee', 'demo'],
   ['TriageClaim', 'formKey', 'embedded:app:forms/claim-triage.html'],
@@ -47,6 +57,14 @@ const ENGINE_ATTRIBUTE_CONTRACT: readonly (readonly [
   ['OrderRepair', 'retryCycle', 'R5/PT10M'],
   ['PayoutReviewNeeded', 'asyncAfter', true],
   ['PayoutReviewNeeded', 'jobPriority', '40'],
+  // The key and the binding are one value in the IR, so the whole reference is
+  // one row: a version that stopped travelling fails it as loudly as a key that
+  // did.
+  [
+    'ApprovePayout',
+    'formRef',
+    { key: 'payout-approval', binding: { kind: 'version', version: '2' } },
+  ],
   ['ClaimSettled', 'asyncBefore', true],
 ];
 
@@ -75,15 +93,40 @@ describe('the frozen engine-attribute contract', () => {
         expect(
           setting(elementById(ir, id), attribute),
           `${id}.${attribute} differs in ${label}`,
-        ).toBe(value);
+        ).toStrictEqual(value);
       }
     }
   });
 
-  it('the process header keeps its version tag at every hop', () => {
+  it('the four engine settings on the header keep their values at every hop', () => {
     for (const [label, ir] of rt.hops) {
-      expect(ir.versionTag, `versionTag differs in ${label}`).toBe(VERSION_TAG);
+      const {
+        versionTag,
+        historyTimeToLive,
+        candidateStarterUsers,
+        candidateStarterGroups,
+      } = ir;
+      expect(
+        {
+          versionTag,
+          historyTimeToLive,
+          candidateStarterUsers,
+          candidateStarterGroups,
+        },
+        `the process header differs in ${label}`,
+      ).toEqual(PROCESS_HEADER);
     }
+  });
+
+  // Asserted as the whole opening tag: Operaton refuses to deploy a form
+  // reference whose binding attribute is missing, so an emission that dropped
+  // one of the three would still look plausible read on its own.
+  it('the user task naming a deployed form writes all three reference attributes', () => {
+    expect(rt.frozenXml).toContain(
+      '<bpmn:userTask id="ApprovePayout" name="Approve the payout"' +
+        ' operaton:assignee="manager" operaton:formRef="payout-approval"' +
+        ' operaton:formRefBinding="version" operaton:formRefVersion="2">',
+    );
   });
 
   it('the awaited catch keeps its async continuation at every hop', () => {

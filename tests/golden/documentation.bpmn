@@ -1,0 +1,225 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI" xmlns:dc="http://www.omg.org/spec/DD/20100524/DC" xmlns:di="http://www.omg.org/spec/DD/20100524/DI" xmlns:operaton="http://operaton.org/schema/1.0/bpmn" id="Definitions_supplier-onboarding" targetNamespace="http://bpmnscript.io/processes" exporter="BPMNscript" exporterVersion="0.0.0">
+  <bpmn:process id="supplier-onboarding" name="Supplier onboarding" isExecutable="true" operaton:historyTimeToLive="P30D">
+    <bpmn:documentation>Runs once for each supplier the buying team wants to trade with.</bpmn:documentation>
+    <bpmn:startEvent id="ApplicationReceived" name="Application received">
+      <bpmn:documentation>The supplier fills this in on the portal before anything else happens.</bpmn:documentation>
+      <bpmn:extensionElements>
+        <operaton:formData>
+          <operaton:formField id="supplierId" label="Reference the supplier applied under" type="string" />
+          <operaton:formField id="contractValue" label="Value of the first contract in euros" type="long" />
+        </operaton:formData>
+      </bpmn:extensionElements>
+      <bpmn:outgoing>Flow_ApplicationReceived_RecordApplication</bpmn:outgoing>
+    </bpmn:startEvent>
+    <bpmn:task id="RecordApplication" name="Record Application">
+      <bpmn:documentation>${supplierId} is the reference every later step quotes.</bpmn:documentation>
+      <bpmn:incoming>Flow_ApplicationReceived_RecordApplication</bpmn:incoming>
+      <bpmn:outgoing>Flow_RecordApplication_ReviewApplication</bpmn:outgoing>
+    </bpmn:task>
+    <bpmn:userTask id="ReviewApplication" name="Review the application">
+      <bpmn:documentation>Two buyers must agree before the application moves on.
+Escalate to the buying lead when they do not.</bpmn:documentation>
+      <bpmn:incoming>Flow_RecordApplication_ReviewApplication</bpmn:incoming>
+      <bpmn:outgoing>Flow_ReviewApplication_ScreenSanctions</bpmn:outgoing>
+    </bpmn:userTask>
+    <bpmn:serviceTask id="ScreenSanctions" name="Screen against the sanctions lists" operaton:class="com.example.onboarding.SanctionsScreeningDelegate">
+      <bpmn:documentation>The screening batch reads "C:\onboarding\watchlist.csv" from the compliance host.</bpmn:documentation>
+      <bpmn:incoming>Flow_ReviewApplication_ScreenSanctions</bpmn:incoming>
+      <bpmn:outgoing>Flow_ScreenSanctions_ScoreRisk</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:scriptTask id="ScoreRisk" name="Score the country risk" scriptFormat="groovy" operaton:resultVariable="riskScore">
+      <bpmn:documentation>The score weighs the country of registration against the contract value.</bpmn:documentation>
+      <bpmn:incoming>Flow_ScreenSanctions_ScoreRisk</bpmn:incoming>
+      <bpmn:outgoing>Flow_ScoreRisk_RequestReferences</bpmn:outgoing>
+      <bpmn:script>def score = contractValue &gt; 50000 ? 3 : 1
+execution.setVariable("riskScore", score)
+</bpmn:script>
+    </bpmn:scriptTask>
+    <bpmn:sendTask id="RequestReferences" name="Ask the named referees" operaton:class="com.example.onboarding.ReferenceRequestDelegate">
+      <bpmn:documentation>Three referees are asked at once, and two answers are enough.</bpmn:documentation>
+      <bpmn:incoming>Flow_ScoreRisk_RequestReferences</bpmn:incoming>
+      <bpmn:outgoing>Flow_RequestReferences_AwaitReferences</bpmn:outgoing>
+    </bpmn:sendTask>
+    <bpmn:receiveTask id="AwaitReferences" name="Wait for the references" messageRef="Message_ReferencesReturned">
+      <bpmn:documentation>The portal posts each answer back as it arrives.</bpmn:documentation>
+      <bpmn:incoming>Flow_RequestReferences_AwaitReferences</bpmn:incoming>
+      <bpmn:outgoing>Flow_AwaitReferences_GradeSupplier</bpmn:outgoing>
+    </bpmn:receiveTask>
+    <bpmn:businessRuleTask id="GradeSupplier" name="Grade the supplier" operaton:resultVariable="supplierGrade" operaton:decisionRef="supplierGrade" operaton:decisionRefBinding="latest">
+      <bpmn:documentation>The grade decides the payment terms the contract may offer.</bpmn:documentation>
+      <bpmn:incoming>Flow_AwaitReferences_GradeSupplier</bpmn:incoming>
+      <bpmn:outgoing>Flow_GradeSupplier_Gateway_supplier-onboarding_8_split</bpmn:outgoing>
+    </bpmn:businessRuleTask>
+    <bpmn:exclusiveGateway id="Gateway_supplier-onboarding_8_split" default="Flow_Gateway_supplier-onboarding_8_split_default">
+      <bpmn:incoming>Flow_GradeSupplier_Gateway_supplier-onboarding_8_split</bpmn:incoming>
+      <bpmn:outgoing>Flow_Gateway_supplier-onboarding_8_split_ArrangeAudit</bpmn:outgoing>
+      <bpmn:outgoing>Flow_Gateway_supplier-onboarding_8_split_default</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+    <bpmn:exclusiveGateway id="Gateway_supplier-onboarding_8_join">
+      <bpmn:incoming>Flow_ArrangeAudit_Gateway_supplier-onboarding_8_join</bpmn:incoming>
+      <bpmn:incoming>Flow_Gateway_supplier-onboarding_8_split_default</bpmn:incoming>
+      <bpmn:outgoing>Flow_Gateway_supplier-onboarding_8_join_SetUpAccount</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+    <bpmn:callActivity id="ArrangeAudit" name="Arrange an on-site audit" calledElement="supplier-audit">
+      <bpmn:documentation>An audit is booked with the supplier before the first order goes out.</bpmn:documentation>
+      <bpmn:extensionElements>
+        <operaton:in source="supplierId" target="supplierId" />
+        <operaton:out source="auditVerdict" target="auditVerdict" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_Gateway_supplier-onboarding_8_split_ArrangeAudit</bpmn:incoming>
+      <bpmn:outgoing>Flow_ArrangeAudit_Gateway_supplier-onboarding_8_join</bpmn:outgoing>
+    </bpmn:callActivity>
+    <bpmn:subProcess id="SetUpAccount" name="Set up the account">
+      <bpmn:documentation>Everything the finance system needs before the supplier can invoice.</bpmn:documentation>
+      <bpmn:incoming>Flow_Gateway_supplier-onboarding_8_join_SetUpAccount</bpmn:incoming>
+      <bpmn:outgoing>Flow_SetUpAccount_SupplierOnboarded</bpmn:outgoing>
+      <bpmn:startEvent id="AccountSetupStarted">
+        <bpmn:outgoing>Flow_AccountSetupStarted_CreateLedgerEntry</bpmn:outgoing>
+      </bpmn:startEvent>
+      <bpmn:userTask id="CreateLedgerEntry" name="Create the ledger entry" operaton:assignee="demo">
+        <bpmn:incoming>Flow_AccountSetupStarted_CreateLedgerEntry</bpmn:incoming>
+        <bpmn:outgoing>Flow_CreateLedgerEntry_AccountSetupDone</bpmn:outgoing>
+      </bpmn:userTask>
+      <bpmn:endEvent id="AccountSetupDone">
+        <bpmn:incoming>Flow_CreateLedgerEntry_AccountSetupDone</bpmn:incoming>
+      </bpmn:endEvent>
+      <bpmn:sequenceFlow id="Flow_AccountSetupStarted_CreateLedgerEntry" sourceRef="AccountSetupStarted" targetRef="CreateLedgerEntry" />
+      <bpmn:sequenceFlow id="Flow_CreateLedgerEntry_AccountSetupDone" sourceRef="CreateLedgerEntry" targetRef="AccountSetupDone" />
+    </bpmn:subProcess>
+    <bpmn:endEvent id="SupplierOnboarded" name="Supplier onboarded">
+      <bpmn:documentation>The supplier may be named on a purchase order from here on.</bpmn:documentation>
+      <bpmn:incoming>Flow_SetUpAccount_SupplierOnboarded</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:sequenceFlow id="Flow_ApplicationReceived_RecordApplication" sourceRef="ApplicationReceived" targetRef="RecordApplication" />
+    <bpmn:sequenceFlow id="Flow_RecordApplication_ReviewApplication" sourceRef="RecordApplication" targetRef="ReviewApplication" />
+    <bpmn:sequenceFlow id="Flow_ReviewApplication_ScreenSanctions" sourceRef="ReviewApplication" targetRef="ScreenSanctions" />
+    <bpmn:sequenceFlow id="Flow_ScreenSanctions_ScoreRisk" sourceRef="ScreenSanctions" targetRef="ScoreRisk" />
+    <bpmn:sequenceFlow id="Flow_ScoreRisk_RequestReferences" sourceRef="ScoreRisk" targetRef="RequestReferences" />
+    <bpmn:sequenceFlow id="Flow_RequestReferences_AwaitReferences" sourceRef="RequestReferences" targetRef="AwaitReferences" />
+    <bpmn:sequenceFlow id="Flow_AwaitReferences_GradeSupplier" sourceRef="AwaitReferences" targetRef="GradeSupplier" />
+    <bpmn:sequenceFlow id="Flow_Gateway_supplier-onboarding_8_split_ArrangeAudit" name="contractValue &#62; 50000" sourceRef="Gateway_supplier-onboarding_8_split" targetRef="ArrangeAudit">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">${contractValue &gt; 50000}</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="Flow_ArrangeAudit_Gateway_supplier-onboarding_8_join" sourceRef="ArrangeAudit" targetRef="Gateway_supplier-onboarding_8_join" />
+    <bpmn:sequenceFlow id="Flow_Gateway_supplier-onboarding_8_split_default" sourceRef="Gateway_supplier-onboarding_8_split" targetRef="Gateway_supplier-onboarding_8_join" />
+    <bpmn:sequenceFlow id="Flow_GradeSupplier_Gateway_supplier-onboarding_8_split" sourceRef="GradeSupplier" targetRef="Gateway_supplier-onboarding_8_split" />
+    <bpmn:sequenceFlow id="Flow_Gateway_supplier-onboarding_8_join_SetUpAccount" sourceRef="Gateway_supplier-onboarding_8_join" targetRef="SetUpAccount" />
+    <bpmn:sequenceFlow id="Flow_SetUpAccount_SupplierOnboarded" sourceRef="SetUpAccount" targetRef="SupplierOnboarded" />
+  </bpmn:process>
+  <bpmn:message id="Message_ReferencesReturned" name="ReferencesReturned" />
+  <bpmndi:BPMNDiagram id="BPMNDiagram_supplier-onboarding">
+    <bpmndi:BPMNPlane id="BPMNPlane_supplier-onboarding" bpmnElement="supplier-onboarding">
+      <bpmndi:BPMNShape id="ApplicationReceived_di" bpmnElement="ApplicationReceived">
+        <dc:Bounds x="57" y="52" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="RecordApplication_di" bpmnElement="RecordApplication">
+        <dc:Bounds x="175" y="30" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="ReviewApplication_di" bpmnElement="ReviewApplication">
+        <dc:Bounds x="325" y="30" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="ScreenSanctions_di" bpmnElement="ScreenSanctions">
+        <dc:Bounds x="475" y="30" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="ScoreRisk_di" bpmnElement="ScoreRisk">
+        <dc:Bounds x="625" y="30" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="RequestReferences_di" bpmnElement="RequestReferences">
+        <dc:Bounds x="775" y="30" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="AwaitReferences_di" bpmnElement="AwaitReferences">
+        <dc:Bounds x="925" y="30" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="GradeSupplier_di" bpmnElement="GradeSupplier">
+        <dc:Bounds x="1075" y="30" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_supplier-onboarding_8_split_di" bpmnElement="Gateway_supplier-onboarding_8_split" isMarkerVisible="true">
+        <dc:Bounds x="1250" y="45" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="ArrangeAudit_di" bpmnElement="ArrangeAudit">
+        <dc:Bounds x="1375" y="30" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_supplier-onboarding_8_join_di" bpmnElement="Gateway_supplier-onboarding_8_join" isMarkerVisible="true">
+        <dc:Bounds x="1550" y="45" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="SetUpAccount_di" bpmnElement="SetUpAccount" isExpanded="true">
+        <dc:Bounds x="1675" y="30" width="550" height="220" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="SupplierOnboarded_di" bpmnElement="SupplierOnboarded">
+        <dc:Bounds x="2307" y="52" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_ApplicationReceived_RecordApplication_di" bpmnElement="Flow_ApplicationReceived_RecordApplication">
+        <di:waypoint x="93" y="70" />
+        <di:waypoint x="175" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_RecordApplication_ReviewApplication_di" bpmnElement="Flow_RecordApplication_ReviewApplication">
+        <di:waypoint x="275" y="70" />
+        <di:waypoint x="325" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ReviewApplication_ScreenSanctions_di" bpmnElement="Flow_ReviewApplication_ScreenSanctions">
+        <di:waypoint x="425" y="70" />
+        <di:waypoint x="475" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ScreenSanctions_ScoreRisk_di" bpmnElement="Flow_ScreenSanctions_ScoreRisk">
+        <di:waypoint x="575" y="70" />
+        <di:waypoint x="625" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ScoreRisk_RequestReferences_di" bpmnElement="Flow_ScoreRisk_RequestReferences">
+        <di:waypoint x="725" y="70" />
+        <di:waypoint x="775" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_RequestReferences_AwaitReferences_di" bpmnElement="Flow_RequestReferences_AwaitReferences">
+        <di:waypoint x="875" y="70" />
+        <di:waypoint x="925" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_AwaitReferences_GradeSupplier_di" bpmnElement="Flow_AwaitReferences_GradeSupplier">
+        <di:waypoint x="1025" y="70" />
+        <di:waypoint x="1075" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_GradeSupplier_Gateway_supplier-onboarding_8_split_di" bpmnElement="Flow_GradeSupplier_Gateway_supplier-onboarding_8_split">
+        <di:waypoint x="1175" y="70" />
+        <di:waypoint x="1250" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Gateway_supplier-onboarding_8_split_ArrangeAudit_di" bpmnElement="Flow_Gateway_supplier-onboarding_8_split_ArrangeAudit">
+        <di:waypoint x="1300" y="70" />
+        <di:waypoint x="1375" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Gateway_supplier-onboarding_8_split_default_di" bpmnElement="Flow_Gateway_supplier-onboarding_8_split_default">
+        <di:waypoint x="1275" y="95" />
+        <di:waypoint x="1275" y="140" />
+        <di:waypoint x="1575" y="140" />
+        <di:waypoint x="1575" y="95" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ArrangeAudit_Gateway_supplier-onboarding_8_join_di" bpmnElement="Flow_ArrangeAudit_Gateway_supplier-onboarding_8_join">
+        <di:waypoint x="1475" y="70" />
+        <di:waypoint x="1550" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Gateway_supplier-onboarding_8_join_SetUpAccount_di" bpmnElement="Flow_Gateway_supplier-onboarding_8_join_SetUpAccount">
+        <di:waypoint x="1600" y="70" />
+        <di:waypoint x="1675" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_SetUpAccount_SupplierOnboarded_di" bpmnElement="Flow_SetUpAccount_SupplierOnboarded">
+        <di:waypoint x="2225" y="70" />
+        <di:waypoint x="2307" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNShape id="AccountSetupStarted_di" bpmnElement="AccountSetupStarted">
+        <dc:Bounds x="1782" y="122" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="CreateLedgerEntry_di" bpmnElement="CreateLedgerEntry">
+        <dc:Bounds x="1900" y="100" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="AccountSetupDone_di" bpmnElement="AccountSetupDone">
+        <dc:Bounds x="2082" y="122" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_AccountSetupStarted_CreateLedgerEntry_di" bpmnElement="Flow_AccountSetupStarted_CreateLedgerEntry">
+        <di:waypoint x="1818" y="140" />
+        <di:waypoint x="1900" y="140" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_CreateLedgerEntry_AccountSetupDone_di" bpmnElement="Flow_CreateLedgerEntry_AccountSetupDone">
+        <di:waypoint x="2000" y="140" />
+        <di:waypoint x="2082" y="140" />
+      </bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>

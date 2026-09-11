@@ -156,7 +156,8 @@ describe('conversion commands: what the author is shown', () => {
           {
             elementId: 'Task1',
             category: 'extensionAttribute',
-            message: "The 'formRef' setting on 'Task1' was not imported",
+            message:
+              "The 'formHandlerClass' setting on 'Task1' was not imported",
           },
         ],
       },
@@ -164,7 +165,7 @@ describe('conversion commands: what the author is shown', () => {
         info: ['BPMNscript: Decompiled "example.bpmn" -> "example.bpmnscript"'],
         warning: [
           'BPMNscript: "example.bpmn" reported 1 item(s) during decompile: ' +
-            "Task1: The 'formRef' setting on 'Task1' was not imported",
+            "Task1: The 'formHandlerClass' setting on 'Task1' was not imported",
         ],
         returns: '/tmp/example.bpmnscript',
       },

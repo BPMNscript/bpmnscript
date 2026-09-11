@@ -140,7 +140,7 @@ The event statements `on`, `throw`, `emit` and `await` are the exception: their 
 
 The `for` row is a modifier rather than a statement: every activity in the table takes it between the id and the parens, meaning `user`, `service`, `script`, `step`, `send`, `receive`, `decide`, `subprocess`, `attempt`, and `call`.
 The last three rows are members of an element rather than statements: an engine setting joins the rest in the `( )`, a parameter and a listener go in the `{ }`, and not every element takes every one.
-A `versionTag` on the process header itself is written with the other process declarations.
+The process header's own settings are written with the other process declarations.
 The listener row reuses `on` instead of opening a new event sub-process; the body block a handler always carries and a listener never does is what tells the two apart ([ADR-0023](docs/decisions/0023-listeners-on-the-attribute-block.md)).
 The `attempt` head and the `cancel` end are one construct: the end gives up the block it sits in, `on <block>: cancel` beside the block catches it, and the block's finished steps that carry an undo block are undone in between.
 
@@ -151,7 +151,7 @@ The `attempt` head and the `cancel` end are one construct: the end gives up the 
 The event layer reads like try/catch.
 A handler written at the end of a body catches an event raised anywhere inside it, `throw` ends the current path the way `throw` does in Java, and `emit` fires the event and carries on.
 Every trigger kind but `cancel` opens such a handler, `cancel` being caught on the block it gives up; the table in [packages/language/README.md](packages/language/README.md#the-event-layer) gives each kind with its payload.
-A message, a signal, or a timer can also start a process, carrying the same payload it does as a handler, and a `terminate` end stops every running path at once.
+A message, a signal, a timer, or a condition can also start a process, carrying the same payload it does as a handler, and a `terminate` end stops every running path at once.
 An error or escalation code is declared in the process header, beside the `var` declarations, and named at every throw, emit, and catch site.
 
 A handler can also attach to one step instead of the whole body, which is where `on Host: kind` comes in.

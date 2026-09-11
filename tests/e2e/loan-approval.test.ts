@@ -9,6 +9,7 @@ import {
   irOfExample,
   SKIP_DOCKER as SKIP,
   ENGINE_BOOT_TIMEOUT_MS,
+  ENGINE_STOP_TIMEOUT_MS,
 } from '../helpers/e2e-fixture.js';
 import { waitForTasks } from '../helpers/engine-rest.js';
 
@@ -51,7 +52,7 @@ describe.skipIf(SKIP)('E2E: loan-approval on Spring Boot Operaton', () => {
 
   afterAll(async () => {
     await fixture?.stop();
-  });
+  }, ENGINE_STOP_TIMEOUT_MS);
 
   // amount = 5000, creditScore = 800 runs RequestReceived -> AssessRisk
   // (risk="low") -> AutoApprove (approved=true) -> NotifyAccepted -> Done with

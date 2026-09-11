@@ -16,7 +16,7 @@ import { parseHelper } from 'langium/test';
 import { createBpmnScriptServices } from '@bpmn-script/language';
 import type { Model } from '@bpmn-script/language';
 
-import { irToXml } from '../src/ir-to-xml.js';
+import { irToXml, HISTORY_TIME_TO_LIVE } from '../src/ir-to-xml.js';
 import { astToIr } from '../src/ast-to-ir.js';
 import {
   around,
@@ -49,9 +49,11 @@ import {
 } from './helpers/ir-fixtures.js';
 import type {
   BpmnProcess,
+  CodeBinding,
   EventDefinition,
   FlowElement,
   LoopCharacteristics,
+  VersionBinding,
 } from '../src/ir/types.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -395,6 +397,49 @@ describe('irToXml: scriptTask serialization', () => {
 
   it('parses cleanly via bpmn-moddle', async () => {
     await expectNoModdleWarnings(scriptXml);
+  });
+});
+
+describe('irToXml: documentation', () => {
+  const documentedIr: BpmnProcess = {
+    ...chained([
+      { kind: 'startEvent', id: 'Start' },
+      { kind: 'userTask', id: 'Review', documentation: 'Review the order.' },
+      { kind: 'endEvent', id: 'End', documentation: 'Order handled.' },
+    ]),
+    documentation: 'Process notes.',
+  };
+
+  let documentedXml: string;
+  let proc: Moddle;
+
+  beforeAll(async () => {
+    documentedXml = await irToXml(documentedIr);
+    proc = await parseProcessTree(documentedXml);
+  });
+
+  it("writes a bpmn:documentation child carrying the exact text, before the node's other children and with no textFormat attribute, on the process and on every carrying node", () => {
+    expect(documentationOf(proc)).toEqual(['Process notes.']);
+    expect(documentationOf(childById(proc, 'Review'))).toEqual([
+      'Review the order.',
+    ]);
+    expect(documentationOf(childById(proc, 'End'))).toEqual(['Order handled.']);
+    expect(childById(proc, 'Start').documentation).toBeUndefined();
+
+    // A bare opening tag, with no `textFormat` attribute, for all three: an
+    // absent attribute is what `text/plain` means, and the parsed tree's
+    // `.textFormat` getter would answer that default either way.
+    expect(documentedXml.match(/<bpmn:documentation[^>]*>/g)).toEqual([
+      '<bpmn:documentation>',
+      '<bpmn:documentation>',
+      '<bpmn:documentation>',
+    ]);
+
+    const reviewBlock = extractNodeBlock(documentedXml, 'Review');
+    expect(reviewBlock.indexOf('<bpmn:documentation>')).toBeGreaterThan(-1);
+    expect(reviewBlock.indexOf('<bpmn:documentation>')).toBeLessThan(
+      reviewBlock.indexOf('<bpmn:incoming>'),
+    );
   });
 });
 
@@ -1574,8 +1619,17 @@ const engineSettingsIr: BpmnProcess = {
   id: 'engine-settings',
   isExecutable: true,
   versionTag: '1.4.2',
+  historyTimeToLive: 'P90D',
+  candidateStarterUsers: 'demo,manager',
+  candidateStarterGroups: 'adjusters',
   flowElements: [
-    { kind: 'startEvent', id: 'Start', asyncAfter: true, jobPriority: '50' },
+    {
+      kind: 'startEvent',
+      id: 'Start',
+      asyncAfter: true,
+      jobPriority: '50',
+      initiator: 'claimant',
+    },
     {
       kind: 'userTask',
       id: 'Review',
@@ -1622,10 +1676,40 @@ describe('irToXml: flat engine attributes', () => {
   /** One flow node of the engine-settings process, with its Operaton props. */
   const node = (id: string): Moddle => childById(engineProc, id);
 
-  it('writes operaton:versionTag on the process alongside historyTimeToLive', () => {
-    const openingTag = engineXml.match(/<bpmn:process[^>]*>/)?.[0] ?? '';
-    expect(openingTag).toContain('operaton:versionTag="1.4.2"');
-    expect(openingTag).toContain('operaton:historyTimeToLive="P30D"');
+  it('writes the whole set of Operaton attributes the process IR carries, and nothing else', () => {
+    expect({
+      versionTag: engineProc.versionTag,
+      historyTimeToLive: engineProc.historyTimeToLive,
+      candidateStarterUsers: engineProc.candidateStarterUsers,
+      candidateStarterGroups: engineProc.candidateStarterGroups,
+    }).toEqual({
+      versionTag: '1.4.2',
+      historyTimeToLive: 'P90D',
+      candidateStarterUsers: 'demo,manager',
+      candidateStarterGroups: 'adjusters',
+    });
+    // The projection above covers every Operaton property the descriptor
+    // declares on a process, so an empty `$attrs` closes the undeclared case.
+    expect(engineProc.$attrs).toEqual({});
+  });
+
+  it('writes the initiator on the start event, and nothing undeclared beside it', () => {
+    const start = node('Start');
+    expect({ initiator: start.initiator, $attrs: start.$attrs }).toEqual({
+      initiator: 'claimant',
+      $attrs: {},
+    });
+  });
+
+  it('a process authoring no historyTimeToLive still writes the exported default', async () => {
+    const xml = await irToXml({
+      id: 'no-history',
+      isExecutable: true,
+      flowElements: [{ kind: 'startEvent', id: 'S' }],
+      sequenceFlows: [],
+    });
+    const proc = await parseProcessTreeWithOperaton(xml);
+    expect(proc.historyTimeToLive).toBe(HISTORY_TIME_TO_LIVE);
   });
 
   it('writes the async continuation settings the IR carries, and nothing else', () => {
@@ -1965,6 +2049,136 @@ describe('irToXml: listeners', () => {
     expect(nestedGroupsBlock).toMatch(
       /<operaton:taskListener event="timeout"[^>]*>\s*<bpmn:timerEventDefinition>\s*<bpmn:timeDuration[^>]*>\s*PT2H\s*<\/bpmn:timeDuration>\s*<\/bpmn:timerEventDefinition>\s*<\/operaton:taskListener>/,
     );
+  });
+});
+
+/** One class-bound `operaton:field`, in the two XML value forms a field takes. */
+const STRING_FIELD_TAG =
+  /<operaton:field name="greeting" stringValue="hello"\s*\/>/;
+const EXPRESSION_FIELD_TAG =
+  /<operaton:field name="greeting">\s*<operaton:expression>\$\{x\}<\/operaton:expression>\s*<\/operaton:field>/;
+
+describe('irToXml: field injection', () => {
+  type Carrier = 'service task' | 'execution listener' | 'task listener';
+
+  /** A minimal process planting `binding` on the carrier the row names. */
+  const carrierIr = (carrier: Carrier, binding: CodeBinding): BpmnProcess => {
+    switch (carrier) {
+      case 'service task':
+        return around({ kind: 'serviceTask', id: 'Task', binding });
+      case 'execution listener':
+        return around({
+          kind: 'serviceTask',
+          id: 'Task',
+          binding: classBinding('com.example.Impl'),
+          executionListeners: [{ event: 'start', binding }],
+        });
+      case 'task listener':
+        return around({
+          kind: 'userTask',
+          id: 'Task',
+          taskListeners: [{ event: 'create', binding }],
+        });
+    }
+  };
+
+  it.each([
+    [
+      'a literal value on a class-bound service task writes the stringValue attribute',
+      'service task',
+      'hello',
+      STRING_FIELD_TAG,
+    ],
+    [
+      'a raw expression value on a class-bound service task writes an operaton:expression child',
+      'service task',
+      '${x}',
+      EXPRESSION_FIELD_TAG,
+    ],
+    [
+      'a literal value on a class-bound execution listener writes the stringValue attribute',
+      'execution listener',
+      'hello',
+      STRING_FIELD_TAG,
+    ],
+    [
+      'a raw expression value on a class-bound execution listener writes an operaton:expression child',
+      'execution listener',
+      '${x}',
+      EXPRESSION_FIELD_TAG,
+    ],
+    [
+      'a literal value on a class-bound task listener writes the stringValue attribute',
+      'task listener',
+      'hello',
+      STRING_FIELD_TAG,
+    ],
+    [
+      'a raw expression value on a class-bound task listener writes an operaton:expression child',
+      'task listener',
+      '${x}',
+      EXPRESSION_FIELD_TAG,
+    ],
+  ] as const)('%s', async (_title, carrier, value, expected) => {
+    const binding = {
+      ...classBinding('com.example.Impl'),
+      fields: [{ name: 'greeting', value }],
+    };
+    const xml = await irToXml(carrierIr(carrier, binding));
+    expect(xml).toMatch(expected);
+  });
+
+  it('places element-level fields before the operaton:inputOutput block, both under one wrapper', async () => {
+    const xml = await irToXml(
+      around({
+        kind: 'serviceTask',
+        id: 'Task',
+        binding: {
+          ...classBinding('com.example.Impl'),
+          fields: [{ name: 'greeting', value: 'hello' }],
+        },
+        inputParameters: [ioParam('amount', textValue('${total}'))],
+      }),
+    );
+    const block = extensionBlock(xml);
+    expect(block.indexOf('<operaton:field')).toBeGreaterThanOrEqual(0);
+    expect(block.indexOf('<operaton:field')).toBeLessThan(
+      block.indexOf('<operaton:inputOutput>'),
+    );
+  });
+});
+
+describe('irToXml: user task formRef', () => {
+  it.each([
+    [
+      'a latest binding writes formRef and formRefBinding, no version',
+      { kind: 'latest' },
+      { formRef: 'review-form', formRefBinding: 'latest' },
+    ],
+    [
+      'a deployment binding writes formRef and formRefBinding, no version',
+      { kind: 'deployment' },
+      { formRef: 'review-form', formRefBinding: 'deployment' },
+    ],
+    [
+      'a pinned version writes all three formRef* attributes',
+      { kind: 'version', version: '3' },
+      {
+        formRef: 'review-form',
+        formRefBinding: 'version',
+        formRefVersion: '3',
+      },
+    ],
+  ] as const)('%s', async (_title, binding, expected) => {
+    const xml = await irToXml(
+      around({
+        kind: 'userTask',
+        id: 'Task',
+        formRef: { key: 'review-form', binding: binding as VersionBinding },
+      }),
+    );
+    const node = await engineNode(xml, 'Task');
+    expect(formRefAttrs(node)).toEqual(expected);
   });
 });
 
@@ -2412,9 +2626,22 @@ function mappingAttrs(mapping: Moddle): Record<string, unknown> {
   );
 }
 
+/** Every `formRef*` property a parsed user task carries, if set. */
+function formRefAttrs(node: Moddle): Record<string, unknown> {
+  const keys = ['formRef', 'formRefBinding', 'formRefVersion'] as const;
+  return Object.fromEntries(
+    keys.filter((k) => node[k] !== undefined).map((k) => [k, node[k]]),
+  );
+}
+
 /** A container's children as `<type> <id>`, in document order. */
 function structureOf(container: Moddle): string[] {
   return (container.flowElements ?? []).map((e) => `${e.$type} ${e.id}`);
+}
+
+/** The text of every `bpmn:documentation` child. */
+function documentationOf(node: Moddle): string[] {
+  return (node.documentation ?? []).map((doc) => doc.text ?? '');
 }
 
 /** The `<bpmn:incoming>`/`<bpmn:outgoing>` child count of one flow node. */
@@ -2640,9 +2867,13 @@ function boundsStrictlyInside(inner: DiBounds, outer: DiBounds): boolean {
  */
 interface Moddle {
   $type: string;
+  /** Attributes the descriptor does not declare for this type land here. */
+  $attrs: Record<string, string>;
   id?: string;
   name?: string;
   body?: string;
+  text?: string;
+  documentation?: Moddle[];
   rootElements: Moddle[];
   flowElements?: Moddle[];
   eventDefinitions?: Moddle[];
@@ -2671,12 +2902,19 @@ interface Moddle {
   cancelActivity?: boolean;
   triggeredByEvent?: boolean;
   versionTag?: string;
+  historyTimeToLive?: string;
+  candidateStarterUsers?: string;
+  candidateStarterGroups?: string;
+  initiator?: string;
   asyncBefore?: boolean;
   asyncAfter?: boolean;
   exclusive?: boolean;
   jobPriority?: string;
   assignee?: string;
   formKey?: string;
+  formRef?: string;
+  formRefBinding?: string;
+  formRefVersion?: string;
   candidateUsers?: string;
   candidateGroups?: string;
   dueDate?: string;

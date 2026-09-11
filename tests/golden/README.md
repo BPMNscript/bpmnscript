@@ -5,27 +5,28 @@ Known-good files checked into the repo, so a test can compare its output against
 Most fixtures here come in pairs: a `.bpmnscript` source and the `.bpmn` the full pipeline produces from it, frozen.
 A few stand alone as inputs for one direction only.
 
-| Fixture                                | Covers                                                        |
-| -------------------------------------- | ------------------------------------------------------------- |
-| `invoice-approval-handwritten.bpmn`    | Import of a realistic modeler file                            |
-| `invoice-approval-generated.bpmn`      | The full compile pipeline, frozen                             |
-| `bad-service-task-no-binding.bpmn`     | The import refusal path                                       |
-| `structured-control-flow.bpmnscript`   | Round-trip idempotence for `if`, `while`, and `parallel`      |
-| `nested-subprocess.{bpmnscript,bpmn}`  | Embedded sub-process round trip                               |
-| `event-handlers.{bpmnscript,bpmn}`     | The error and escalation layer                                |
-| `event-triggers.{bpmnscript,bpmn}`     | The message, signal, timer, and conditional triggers          |
-| `compensation.{bpmnscript,bpmn}`       | The compensation (undo-block) layer                           |
-| `boundary-events.{bpmnscript,bpmn}`    | Host-attached handlers, every boundary trigger but `cancel`   |
-| `intermediate-catch.{bpmnscript,bpmn}` | `await` across all four catchable triggers                    |
-| `engine-attributes.{bpmnscript,bpmn}`  | The flat engine settings, on events, activities, and handlers |
-| `input-output.{bpmnscript,bpmn}`       | `operaton:inputOutput` in all four value forms                |
-| `listeners.{bpmnscript,bpmn}`          | The execution-listener and task-listener surface              |
-| `event-positions.{bpmnscript,bpmn}`    | A message start, `emit`/`throw message`, and a terminate end  |
-| `task-kinds.{bpmnscript,bpmn}`         | The generic, send, receive, and decision task kinds           |
-| `repetition.{bpmnscript,bpmn}`         | Every form of the repeat clause                               |
-| `transactions.{bpmnscript,bpmn}`       | A block of work that can be given up, and the cancel pair     |
-| `branch-and-race.{bpmnscript,bpmn}`    | The splits that weigh their branches, and the race of waits   |
-| `unstructured-goto.bpmn`               | The `goto` degradation path on import                         |
+| Fixture                                | Covers                                                       |
+| -------------------------------------- | ------------------------------------------------------------ |
+| `invoice-approval-handwritten.bpmn`    | Import of a realistic modeler file                           |
+| `invoice-approval-generated.bpmn`      | The full compile pipeline, frozen                            |
+| `bad-service-task-no-binding.bpmn`     | The import refusal path                                      |
+| `structured-control-flow.bpmnscript`   | Round-trip idempotence for `if`, `while`, and `parallel`     |
+| `nested-subprocess.{bpmnscript,bpmn}`  | Embedded sub-process round trip                              |
+| `event-handlers.{bpmnscript,bpmn}`     | The error and escalation layer                               |
+| `event-triggers.{bpmnscript,bpmn}`     | The message, signal, timer, and conditional triggers         |
+| `compensation.{bpmnscript,bpmn}`       | The compensation (undo-block) layer                          |
+| `boundary-events.{bpmnscript,bpmn}`    | Host-attached handlers, every boundary trigger but `cancel`  |
+| `intermediate-catch.{bpmnscript,bpmn}` | `await` across all four catchable triggers                   |
+| `engine-attributes.{bpmnscript,bpmn}`  | The flat engine settings, and both ways of naming a form     |
+| `input-output.{bpmnscript,bpmn}`       | `operaton:inputOutput` in all four value forms               |
+| `listeners.{bpmnscript,bpmn}`          | Both listener kinds, and field injection on all its carriers |
+| `event-positions.{bpmnscript,bpmn}`    | A message start, `emit`/`throw message`, and a terminate end |
+| `task-kinds.{bpmnscript,bpmn}`         | The generic, send, receive, and decision task kinds          |
+| `repetition.{bpmnscript,bpmn}`         | Every form of the repeat clause                              |
+| `transactions.{bpmnscript,bpmn}`       | A block of work that can be given up, and the cancel pair    |
+| `branch-and-race.{bpmnscript,bpmn}`    | The splits that weigh their branches, and the race of waits  |
+| `documentation.{bpmnscript,bpmn}`      | Human-facing text, on the header and on every carrying kind  |
+| `unstructured-goto.bpmn`               | The `goto` degradation path on import                        |
 
 The three invoice-approval files all describe the same process (review, then a gateway on `amount > 1000`, then senior approval or auto-approve) but come from different sources and pull the tests in different directions.
 
@@ -34,6 +35,8 @@ The three invoice-approval files all describe the same process (review, then a g
 Change the parser, the desugarer, or `irToXml` in a way that should alter the output (a new attribute, different formatting, a layout-library upgrade, an id-scheme change) and the frozen `.bpmn` has to be regenerated:
 
 1. Run the full pipeline on the source: `irToXml(astToIr(parse(source)))`, wiring the Langium services exactly as `tests/round-trip.test.ts` does, with `createBpmnScriptServices(EmptyFileSystem)` and `parseHelper`.
+   `bpmns build` is not a substitute.
+   It passes the source file's name and its own version into `irToXml`, so what it writes carries `id="Definitions_<source file stem>"` and the real `exporterVersion`, where a frozen file carries `Definitions_<process id>` and `0.0.0`.
 2. Write the returned string over the frozen `.bpmn`.
 3. Read the diff and confirm every change is intended.
 
@@ -136,8 +139,10 @@ Contract: the four event definitions, their order, and the absence of any `name`
 ## `engine-attributes.{bpmnscript,bpmn}`
 
 A motor-claim settlement narrative carrying the flat engine settings, the ones whose value is a single scalar.
-`versionTag` sits on the process header, and `asyncBefore`, `asyncAfter`, `exclusive`, `jobPriority`, and `retryCycle` are spread across a start, an end, a user task, a service task, a script task, a subprocess, a call, an `await`, an `emit`, and both handler forms.
+`versionTag`, `historyTimeToLive`, `candidateStarterUsers`, and `candidateStarterGroups` sit on the process header, `initiator` on the start, and `asyncBefore`, `asyncAfter`, `exclusive`, `jobPriority`, and `retryCycle` are spread across a start, an end, a user task, a service task, a script task, a subprocess, a call, an `await`, an `emit`, and both handler forms.
 Five of the seven keys a user task owns (`assignee`, `formKey`, `candidateGroups`, `candidateUsers`, `priority`) sit together on one task, and `resultVariable` on both a service and a script task.
+`TriageClaim` names its form with `formKey` and `ApprovePayout` with a `formRef` pinned to a version, so both ways of naming a form sit in one artifact on separate tasks, which is the only way they can appear together: Operaton refuses to deploy a user task carrying both.
+The header's `historyTimeToLive` is `P90D` rather than the `P30D` the exporter stamps on a process that wrote none, because the importer reads that value back as unwritten and the fixture would otherwise pin nothing.
 
 Both handler forms are here so the placement rule is pinned in the artifact rather than only in prose.
 A hosted `on ApprovePayout: timer` writes its settings on the boundary event it lowers to, and a host-less `on escalation` writes them on the event sub-process rather than on the trigger start event nested inside it.
@@ -145,7 +150,7 @@ That start event's own block belongs to the `start` statement written inside the
 A `while`, an `if`, and a `parallel` put five synthesized gateways in the same artifact, none of which carries a setting: a gateway id is a structural coordinate with no name an author writes, so a setting found on a gateway during import stays a reported drop.
 Every named node carries an explicit id, and the frozen artifact imports without a single warning, which is what makes that drop report meaningful.
 
-Contract: the `(node id, attribute, value)` table in `tests/engine-attributes.round-trip.test.ts`, the `3.1.0` version tag on the process, and the absence of any engine setting on a gateway and on the event sub-process's trigger start event.
+Contract: the `(node id, attribute, value)` table in `tests/engine-attributes.round-trip.test.ts`, the four engine settings on the header (`3.1.0`, `P90D`, `demo,manager`, `adjusters`) asserted as one record, the three `operaton:formRef*` attributes on `ApprovePayout`, and the absence of any engine setting on a gateway and on the event sub-process's trigger start event.
 
 ## `input-output.{bpmnscript,bpmn}`
 
@@ -161,7 +166,10 @@ A process registering execution listeners on a service task, a subprocess, an en
 The service task carries both execution events, `start` and `end`; the other three carry one of the two each.
 All four bindings appear, a Java class, a JUEL expression, a delegate expression, and an inline fenced script, and the `timeout` listener carries the timer clause a caught timer event spells the same way.
 
-Contract: the `operaton:executionListener` and `operaton:taskListener` children in their authored order, the event word on each, the single binding each carries, the `scriptFormat` on the inline script, and the timer child under the `timeout` listener.
+Three bindings in the artifact also carry an injected field, which is every carrier one rides: the service task's own class binding takes two, a literal and a `${...}` expression, its `on start` execution listener takes one, and the delegate-bound `on complete` task listener takes one.
+The expression-bound `on assign` listener carries none, because Operaton hands a field list to a class and a delegate binding and to no other.
+
+Contract: the `operaton:executionListener` and `operaton:taskListener` children in their authored order, the event word on each, the single binding each carries, the `scriptFormat` on the inline script, the timer child under the `timeout` listener, and every `operaton:field` under the binding that receives it, a literal in the `stringValue` attribute and an expression in an `operaton:expression` child.
 
 ## `event-positions.{bpmnscript,bpmn}`
 
@@ -219,6 +227,15 @@ The gateway, its catch events, and the merge are all elided on print, each of th
 Every condition reads a field of the start form rather than a `var`, so the declaration comes back out of the XML on the way in.
 
 Contract: two `bpmn:inclusiveGateway` pairs and one `bpmn:parallelGateway` pair, each a `_fork` and a `_join`; exactly two `default` attributes, one naming the flow into the `else` branch and one the flow into the join; one `bpmn:eventBasedGateway` per race, each with one unconditioned flow per catch event and an exclusive merge; and every authored id.
+
+## `documentation.{bpmnscript,bpmn}`
+
+A supplier-onboarding narrative carrying a `documentation` setting on the process header and on one statement of every kind that takes one: a start, a step, a user task, a service task, a script task, a send, a receive, a decision step, a call, a sub-process, and an end.
+Three of the strings are picked for what they put the printer through rather than for how they read.
+One spans two lines, one holds a quote and a backslash, and one opens with `${`, which reads as an expression rather than as a string and is written back escaped, so the fixture pins that both spellings land on the same text.
+The recording step carries documentation and no label while the header and every other carrier hold both, so the order the two settings print in is frozen either way.
+
+Contract: the `bpmn:documentation` child on the process element and on each carrying node, written ahead of that element's other children, with its text verbatim and no `textFormat` attribute; the printed spelling of every setting, `label` ahead of `documentation` wherever a node holds both; and every authored id.
 
 ## `unstructured-goto.bpmn`
 

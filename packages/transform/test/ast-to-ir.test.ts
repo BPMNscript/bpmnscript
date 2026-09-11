@@ -8,7 +8,10 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import { EmptyFileSystem } from 'langium';
 import { parseHelper } from 'langium/test';
-import { createBpmnScriptServices } from '@bpmn-script/language';
+import {
+  createBpmnScriptServices,
+  PROCESS_HEADER_KEYS,
+} from '@bpmn-script/language';
 import type { Model } from '@bpmn-script/language';
 
 import { astToIr } from '../src/ast-to-ir.js';
@@ -463,6 +466,29 @@ describe('astToIr: synthesized id determinism', () => {
 });
 
 describe('astToIr: attribute mapping', () => {
+  /**
+   * Where each process header key lands in the IR. The lowering reads the six
+   * one by one because they land on differently named fields, so this pairing
+   * is what keeps it from drifting behind the vocabulary.
+   */
+  const HEADER_FIELD_BY_KEY: Readonly<Record<string, keyof BpmnProcess>> = {
+    label: 'name',
+    documentation: 'documentation',
+    versionTag: 'versionTag',
+    historyTimeToLive: 'historyTimeToLive',
+    candidateStarterUsers: 'candidateStarterUsers',
+    candidateStarterGroups: 'candidateStarterGroups',
+  };
+
+  it('lowers every header key the vocabulary declares', async () => {
+    expect(Object.keys(HEADER_FIELD_BY_KEY)).toEqual(PROCESS_HEADER_KEYS);
+
+    for (const [key, field] of Object.entries(HEADER_FIELD_BY_KEY)) {
+      const result = await ir(`process P(${key}: "carried") { user A }`);
+      expect(result[field], key).toBe('carried');
+    }
+  });
+
   it('maps user assignee/formKey and service class to IR fields', async () => {
     const result = await ir(`process P {
       user T(label: "Task", assignee: "demo", formKey: "embedded:form")
@@ -493,11 +519,7 @@ describe('astToIr: attribute mapping', () => {
       `process P(label: "My Process") { user A }`,
       { name: 'My Process' },
     ],
-    [
-      'a header carrying neither leaves both keys out',
-      `process P { user A }`,
-      {},
-    ],
+    ['a bare header leaves every key out', `process P { user A }`, {}],
     [
       'a duplicated versionTag keeps the first (the validator owns the diagnostic)',
       `process p(versionTag: "1.4", versionTag: "2.0") { user A }`,
@@ -508,13 +530,94 @@ describe('astToIr: attribute mapping', () => {
       `process p(label: "Invoice", versionTag: "1.4") { var amount: number user A }`,
       { name: 'Invoice', versionTag: '1.4' },
     ],
+    [
+      'a header carrying all three engine settings reaches the IR unchanged',
+      `process p(historyTimeToLive: "P90D", candidateStarterUsers: "demo,manager", candidateStarterGroups: "adjusters") { user A }`,
+      {
+        historyTimeToLive: 'P90D',
+        candidateStarterUsers: 'demo,manager',
+        candidateStarterGroups: 'adjusters',
+      },
+    ],
   ])('%s', async (_title, source, expected) => {
-    const { name, versionTag } = await ir(source);
-    expect({ name, versionTag }).toEqual({
+    const {
+      name,
+      versionTag,
+      historyTimeToLive,
+      candidateStarterUsers,
+      candidateStarterGroups,
+    } = await ir(source);
+    expect({
+      name,
+      versionTag,
+      historyTimeToLive,
+      candidateStarterUsers,
+      candidateStarterGroups,
+    }).toEqual({
       name: undefined,
       versionTag: undefined,
+      historyTimeToLive: undefined,
+      candidateStarterUsers: undefined,
+      candidateStarterGroups: undefined,
       ...expected,
     });
+  });
+});
+
+describe('astToIr: documentation setting', () => {
+  /** `documentation` on a `FlowElement` needs `in`, since three kinds carry no such field at all. */
+  const docOf = (container: FlowContainer, id: string): string | undefined => {
+    const node = byId(container, id);
+    return 'documentation' in node ? node.documentation : undefined;
+  };
+
+  it('carries documentation into the IR on the process header and on every element kind that takes it', async () => {
+    const result = await ir(`process P(documentation: "Process notes") {
+      start S(documentation: "Start notes")
+      user U(documentation: "User notes")
+      service V(documentation: "Service notes", class: "x.C")
+      script SC(documentation: "Script notes") \`\`\`js
+x = 1;
+\`\`\`
+      step ST(documentation: "Step notes")
+      send SN(documentation: "Send notes", class: "x.C")
+      receive RV(documentation: "Receive notes")
+      decide DC(documentation: "Decide notes", decision: "d")
+      subprocess SP(documentation: "Subprocess notes") { user X }
+      call CA(documentation: "Call notes", process: "other")
+      end E(documentation: "End notes")
+    }`);
+
+    const carrierIds = [
+      'S',
+      'U',
+      'V',
+      'SC',
+      'ST',
+      'SN',
+      'RV',
+      'DC',
+      'SP',
+      'CA',
+      'E',
+    ];
+    expect([
+      ['P', result.documentation],
+      ...carrierIds.map((id) => [id, docOf(result, id)]),
+    ]).toEqual([
+      ['P', 'Process notes'],
+      ['S', 'Start notes'],
+      ['U', 'User notes'],
+      ['V', 'Service notes'],
+      ['SC', 'Script notes'],
+      ['ST', 'Step notes'],
+      ['SN', 'Send notes'],
+      ['RV', 'Receive notes'],
+      ['DC', 'Decide notes'],
+      ['SP', 'Subprocess notes'],
+      ['CA', 'Call notes'],
+      ['E', 'End notes'],
+    ]);
   });
 });
 
@@ -2365,6 +2468,101 @@ describe('astToIr: task listeners', () => {
   });
 });
 
+describe('astToIr: field injection and form references', () => {
+  it('hangs a field list on the class and delegate bindings a task and a listener name, and carries a form reference with its binding', async () => {
+    const service = only(
+      await ir(
+        'process p { service Ship(class: "com.example.Ship") {' +
+          ' field greeting = "hello" field target = "${order.address}" } }',
+      ),
+      'serviceTask',
+    );
+    const send = only(
+      await ir(
+        'process p { send Notify(delegate: "${notifier}") { field channel = "email" } }',
+      ),
+      'serviceTask',
+    );
+    const decide = only(
+      await ir(
+        'process p { decide Rate(class: "com.example.Rate") { field table = "rates" } }',
+      ),
+      'serviceTask',
+    );
+    const user = only(
+      await ir(
+        'process p { user Review(formRef: "review-form", version: 3) {' +
+          ' on start(class: "com.example.Enter") { field level = "INFO" }' +
+          ' on create(delegate: "${assignHook}") { field role = "clerk" } } }',
+      ),
+      'userTask',
+    );
+
+    expect({
+      service: service.binding,
+      send: send.binding,
+      decide: decide.binding,
+      executionListener: user.executionListeners?.[0]?.binding,
+      taskListener: user.taskListeners?.[0]?.binding,
+      formRef: user.formRef,
+    }).toEqual({
+      service: {
+        ...classBinding('com.example.Ship'),
+        fields: [
+          { name: 'greeting', value: 'hello' },
+          { name: 'target', value: '${order.address}' },
+        ],
+      },
+      send: {
+        ...delegateBinding('${notifier}'),
+        fields: [{ name: 'channel', value: 'email' }],
+      },
+      decide: {
+        ...classBinding('com.example.Rate'),
+        fields: [{ name: 'table', value: 'rates' }],
+      },
+      executionListener: {
+        ...classBinding('com.example.Enter'),
+        fields: [{ name: 'level', value: 'INFO' }],
+      },
+      taskListener: {
+        ...delegateBinding('${assignHook}'),
+        fields: [{ name: 'role', value: 'clerk' }],
+      },
+      formRef: {
+        key: 'review-form',
+        binding: { kind: 'version', version: '3' },
+      },
+    });
+  });
+
+  it('leaves the field off a binding the engine injects none into, and the form reference off a task naming no binding', async () => {
+    const external = only(
+      await ir(
+        'process p { service Ship(topic: "shipping") { field greeting = "hello" } }',
+      ),
+      'serviceTask',
+    );
+    const unbound = await ir(
+      'process p { service Run(expression: "${bean.run()}") { field greeting = "hello" }' +
+        ' user Review(formRef: "review-form") { on assign ```groovy\nx = 1\n``` { field role = "clerk" } } }',
+    );
+    const user = only(unbound, 'userTask');
+
+    expect({
+      external: external.binding,
+      expression: only(unbound, 'serviceTask').binding,
+      scriptListener: user.taskListeners?.[0]?.binding,
+      formRef: user.formRef,
+    }).toEqual({
+      external: externalBinding('shipping'),
+      expression: exprBinding('${bean.run()}'),
+      scriptListener: scriptValue('groovy', 'x = 1\n'),
+      formRef: undefined,
+    });
+  });
+});
+
 describe('astToIr: start/end triggers and message throw/emit', () => {
   it.each([
     [`start S message("OrderReceived")`, messageDef('OrderReceived')],
@@ -2375,6 +2573,7 @@ describe('astToIr: start/end triggers and message throw/emit', () => {
       timerDef('date', '2026-08-01T09:00:00'),
     ],
     [`start S timer(every: "R/PT10M")`, timerDef('cycle', 'R/PT10M')],
+    [`start S condition(amount > 100)`, conditionDef('${amount > 100}')],
   ])('lowers `%s` to its event definition', async (statement, expected) => {
     const result = await ir(`process p { ${statement} }`);
     expect(only(result, 'startEvent').eventDefinition).toEqual(expected);
@@ -2389,13 +2588,13 @@ describe('astToIr: start/end triggers and message throw/emit', () => {
     expect(start.eventDefinition).toEqual(messageDef('M'));
   });
 
+  it('reads initiator off a process start', async () => {
+    const result = await ir(`process p { start S(initiator: "starter") }`);
+    expect(only(result, 'startEvent').initiator).toBe('starter');
+  });
+
   it.each([
     ['a plain start', `process p { start S user A end E }`, 'startEvent'],
-    [
-      'a start carrying a trigger the position does not admit',
-      `process p { start S condition user A end E }`,
-      'startEvent',
-    ],
     ['a plain end', `process p { start S user A end E }`, 'endEvent'],
     [
       'an end carrying a trigger it does not take',

@@ -9,9 +9,12 @@
  */
 
 import {
+  CATCH_TRIGGERS,
   DECISION_RESULT_MAPPINGS,
   END_TRIGGERS,
   EXECUTION_LISTENER_EVENTS,
+  formatPlainWordList,
+  START_TRIGGERS,
   TASK_LISTENER_EVENTS,
 } from '@bpmn-script/language';
 import { Parser } from 'saxen';
@@ -26,6 +29,7 @@ import type {
   EventDefinition,
   ExclusiveGateway,
   ExecutionListener,
+  FieldInjection,
   FlowElement,
   FormField,
   FormFieldType,
@@ -37,6 +41,7 @@ import type {
   IoValue,
   ListenerBinding,
   LoopCharacteristics,
+  Named,
   ParallelGateway,
   ReceiveTask,
   ScriptTask,
@@ -63,6 +68,7 @@ import {
   UnsupportedEventFeatureError,
   UnsupportedExtensionFormError,
   UnsupportedFormFieldTypeError,
+  UnsupportedFormReferenceError,
   UnsupportedLoopCharacteristicsError,
   UnsupportedServiceTaskFormError,
 } from './errors.js';
@@ -188,6 +194,9 @@ const CONSUMED_EXTENSION_ATTRS = consumptionTable([
   ],
   ['assignee', ['bpmn:UserTask']],
   ['formKey', ['bpmn:UserTask']],
+  ['formRef', ['bpmn:UserTask']],
+  ['formRefBinding', ['bpmn:UserTask']],
+  ['formRefVersion', ['bpmn:UserTask']],
   ['candidateGroups', ['bpmn:UserTask']],
   ['candidateUsers', ['bpmn:UserTask']],
   ['dueDate', ['bpmn:UserTask']],
@@ -208,6 +217,10 @@ const CONSUMED_EXTENSION_ATTRS = consumptionTable([
   ['collection', ['bpmn:MultiInstanceLoopCharacteristics']],
   ['elementVariable', ['bpmn:MultiInstanceLoopCharacteristics']],
   ['versionTag', ['bpmn:Process']],
+  ['historyTimeToLive', ['bpmn:Process']],
+  ['candidateStarterUsers', ['bpmn:Process']],
+  ['candidateStarterGroups', ['bpmn:Process']],
+  ['initiator', ['bpmn:StartEvent']],
   ['errorCodeVariable', ['bpmn:ErrorEventDefinition']],
   ['errorMessageVariable', ['bpmn:ErrorEventDefinition']],
   ['escalationCodeVariable', ['bpmn:EscalationEventDefinition']],
@@ -222,13 +235,15 @@ const CONSUMED_EXTENSION_ELEMENTS = consumptionTable([
   ['operaton:InputOutput', ACTIVITY_TAGS],
   ['operaton:ExecutionListener', ENGINE_ATTRIBUTE_OWNERS],
   ['operaton:TaskListener', ['bpmn:UserTask']],
+  ['operaton:Field', SERVICE_TASK_LIKE_OWNERS],
 ]);
 
 /**
  * Per extension element the IR reads, the attribute local names its reader
  * reads off it; body text is not an attribute and is absent. A `$type` missing
- * from the table is never swept by {@link warnUnreadChildAttrs}: an
- * `operaton:field` is reported whole by {@link warnFieldDrop} instead.
+ * from the table is never swept by {@link warnUnreadChildAttrs}, which is the
+ * answer for a child no reader reads at all: reporting it whole says more than
+ * naming each of its attributes would.
  */
 const CONSUMED_CHILD_ATTRS = consumptionTable([
   ['operaton:FormData', []],
@@ -265,6 +280,7 @@ const CONSUMED_CHILD_ATTRS = consumptionTable([
     'operaton:TaskListener',
     ['event', 'class', 'expression', 'delegateExpression'],
   ],
+  ['operaton:Field', ['name', 'stringValue']],
 ]);
 
 /**
@@ -305,22 +321,14 @@ const OPERATON_TO_FORM_FIELD_TYPE: Readonly<Record<string, FormFieldType>> =
   invert(FORM_FIELD_TYPE_TO_OPERATON);
 
 const KEPT_SETTINGS_NOTE =
-  '(this tool keeps the assignee, form, script, service-task binding, ' +
-  'result variable, version tag, input/output mappings and listeners, and ' +
-  'the async, retry, job-priority and task-assignment settings; a gateway ' +
-  'carries no engine setting at all).';
+  '(this tool keeps the assignee, form, form reference, script, ' +
+  'service-task binding, injected fields, result variable, version tag, ' +
+  'input/output mappings and listeners, and the async, retry, job-priority ' +
+  'and task-assignment settings; a gateway carries no engine setting at all).';
 
 const IMPORTED_FLOW_NOTE =
   '(this tool imports the executable flow and the engine settings on its ' +
   'steps, and nothing declared or drawn beside it).';
-
-/**
- * Attributes the exporter re-stamps as a fixed constant. An imported value
- * equal to the constant loses nothing on re-export, so it raises no warning.
- */
-const REEXPORTED_CONSTANT_ATTRS: ReadonlyMap<string, string> = new Map([
-  ['operaton:historyTimeToLive', HISTORY_TIME_TO_LIVE],
-]);
 
 /** Loose moddle-element type: the tiny surface every moddle node shares. */
 interface ModdleElement {
@@ -450,6 +458,7 @@ export async function xmlToIr(
   const documentId = root.id ?? ir.id;
   collectExtensionDrops(root, documentId, warnings);
   collectUnmappedBpmnDrops(root, documentId, warnings);
+  warnDocumentationDrop(root, documentId, 'the definitions root', warnings);
   const reportedRootIds = collectRootDrops(rootElements, ir.id, warnings);
 
   collectUnparsableResidualDrops(
@@ -725,7 +734,7 @@ function mapProcess(
   if (id === undefined) {
     throw new Error("<bpmn:process> is missing its required 'id' attribute.");
   }
-  const name = readDerivableName(processEl, id);
+  const named = readNamed(processEl, id, warnings);
 
   // The one place import changes what the document says rather than leaving
   // something out, so it gets its own wording.
@@ -752,12 +761,32 @@ function mapProcess(
   );
 
   const versionTag = readNamespacedAttr(processEl, 'versionTag');
+  // The exporter stamps HISTORY_TIME_TO_LIVE on every process that authored
+  // none, so reading that exact value back would invent a setting the source
+  // never had, and leave a re-imported IR unequal to the one it was exported
+  // from. Every other value is the author's and is carried.
+  const authoredTimeToLive = readNamespacedAttr(processEl, 'historyTimeToLive');
+  const historyTimeToLive =
+    authoredTimeToLive === HISTORY_TIME_TO_LIVE
+      ? undefined
+      : authoredTimeToLive;
+  const candidateStarterUsers = readNamespacedAttr(
+    processEl,
+    'candidateStarterUsers',
+  );
+  const candidateStarterGroups = readNamespacedAttr(
+    processEl,
+    'candidateStarterGroups',
+  );
 
   return {
     id,
-    ...(name === undefined ? {} : { name }),
+    ...named,
     isExecutable: true,
     ...(versionTag === undefined ? {} : { versionTag }),
+    ...(historyTimeToLive === undefined ? {} : { historyTimeToLive }),
+    ...(candidateStarterUsers === undefined ? {} : { candidateStarterUsers }),
+    ...(candidateStarterGroups === undefined ? {} : { candidateStarterGroups }),
     flowElements,
     sequenceFlows,
   };
@@ -1116,13 +1145,13 @@ function mapContainerChildren(
         // Only here is it known whether a start's trigger moves into an `on`
         // header, which decides whether the statement prints at all.
         const start = mapStart(child);
-        warnElidedLabel(start, hostKind === 'eventSubProcess', warnings);
+        warnElidedNamedDrop(start, hostKind === 'eventSubProcess', warnings);
         flowElements.push(start);
         break;
       }
       case 'bpmn:EndEvent': {
         const end = mapEndEvent(child, warnings, hostKind);
-        warnElidedLabel(end, false, warnings);
+        warnElidedNamedDrop(end, false, warnings);
         flowElements.push(end);
         break;
       }
@@ -1136,13 +1165,17 @@ function mapContainerChildren(
         flowElements.push(mapBoundaryEvent(child, warnings, el));
         break;
       case 'bpmn:ExclusiveGateway':
-        flowElements.push(mapDefaultingGateway(child, 'exclusiveGateway'));
+        flowElements.push(
+          mapDefaultingGateway(child, 'exclusiveGateway', warnings),
+        );
         break;
       case 'bpmn:InclusiveGateway':
-        flowElements.push(mapDefaultingGateway(child, 'inclusiveGateway'));
+        flowElements.push(
+          mapDefaultingGateway(child, 'inclusiveGateway', warnings),
+        );
         break;
       case 'bpmn:ParallelGateway':
-        flowElements.push(mapParallelGateway(child));
+        flowElements.push(mapParallelGateway(child, warnings));
         break;
       case 'bpmn:EventBasedGateway':
         flowElements.push(mapEventBasedGateway(child, warnings));
@@ -1576,7 +1609,7 @@ function mapSubProcess(
   const id = requireId(el);
   collectLaneDrops(el, id, warnings);
   if (element === 'transaction') warnIgnoredTransactionAttrs(el, id, warnings);
-  const name = readDerivableName(el, id);
+  const named = readNamed(el, id, warnings);
   const { flowElements, sequenceFlows } = mapContainer(
     el,
     warnings,
@@ -1586,7 +1619,7 @@ function mapSubProcess(
   return {
     kind: 'subProcess',
     id,
-    ...(name === undefined ? {} : { name }),
+    ...named,
     ...(element === undefined ? {} : { element }),
     ...readEngineAttributes(el, id, warnings),
     ...readIoMapping(el, id, warnings),
@@ -1650,7 +1683,7 @@ function mapEventSubProcess(
   }
 
   collectLaneDrops(el, id, warnings);
-  warnGenuineLabel(el, id, 'an event handler', warnings);
+  warnNamedDrop(el, id, 'an event handler', warnings);
 
   const children = (el.get('flowElements') as ModdleElement[]) ?? [];
   const startEvents = children.filter((c) => c.$type === 'bpmn:StartEvent');
@@ -1739,17 +1772,18 @@ function mapEventSubProcessStart(
   }
 
   // Unlike a boundary event or a throw, the start statement under an `on`
-  // header has a label slot, so the label is carried rather than dropped;
-  // warnElidedLabel reports it if the statement turns out not to print.
-  const name = readDerivableName(startEl, id);
+  // header has a label slot, so the pair is carried rather than dropped;
+  // warnElidedNamedDrop reports it if the statement turns out not to print.
+  const named = readNamed(startEl, id, warnings);
   const formFields = readFormFields(startEl, id, warnings);
   return {
     kind: 'startEvent',
     id,
-    ...(name === undefined ? {} : { name }),
+    ...named,
     eventDefinition,
     ...(isInterrupting === false ? { isInterrupting: false } : {}),
     ...(formFields === undefined ? {} : { formFields }),
+    ...readStartAttributes(startEl),
     ...readEngineAttributes(startEl, id, warnings),
   };
 }
@@ -1828,7 +1862,7 @@ function mapBoundaryEvent(
     warnings,
     'boundary',
   );
-  warnGenuineLabel(el, id, 'a boundary event', warnings);
+  warnNamedDrop(el, id, 'a boundary event', warnings);
 
   const cancelActivity = el.get('cancelActivity') === false ? false : undefined;
   const nonInterrupting = NON_INTERRUPTING_REFUSALS[eventDefinition.kind];
@@ -1870,6 +1904,7 @@ function readCatchEventDefinition(
 ): EventDefinition {
   collectExtensionDrops(defEl, ownerId, warnings);
   collectUnmappedBpmnDrops(defEl, ownerId, warnings);
+  warnDocumentationDrop(defEl, ownerId, 'an event definition', warnings);
   warnCatchSideImplementationAttrs(defEl, ownerId, warnings);
 
   if (defEl.$type === 'bpmn:ErrorEventDefinition') {
@@ -2100,6 +2135,7 @@ function readThrowEventDefinition(
 ): EventDefinition {
   collectExtensionDrops(defEl, ownerId, warnings);
   collectUnmappedBpmnDrops(defEl, ownerId, warnings);
+  warnDocumentationDrop(defEl, ownerId, 'an event definition', warnings);
   warnThrowSideBindingAttrs(defEl, ownerId, warnings);
 
   if (defEl.$type === 'bpmn:ErrorEventDefinition') {
@@ -2180,43 +2216,86 @@ function warnCatchSideImplementationAttrs(
 }
 
 /**
- * Report the label of a start or end the printer writes no statement for. The
- * printer's own predicate decides, so a label that does survive is never
- * reported, and one that stops surviving is never reported silently.
+ * Report everything a start or end the printer writes no statement for takes
+ * with it: its label, its documentation, and a start's initiator. The
+ * printer's own predicate decides, so what does survive is never reported, and
+ * what stops surviving is never dropped without a word. This is the only
+ * report standing behind an `initiator`, which {@link warnUnreadDeclaredAttrs}
+ * counts as read the moment any start carries it.
  */
-function warnElidedLabel(
+function warnElidedNamedDrop(
   el: StartEvent | EndEvent,
   startTriggerSuppressed: boolean,
   warnings: ImportWarning[],
 ): void {
-  if (el.name === undefined) return;
   if (!isElidedOnPrint(el, startTriggerSuppressed)) return;
   const statement = el.kind === 'startEvent' ? 'start' : 'end';
-  warnings.push({
-    elementId: el.id,
-    category: 'label',
-    message:
-      `The label '${el.name}' on '${el.id}' was not written to the script: ` +
-      `'${el.id}' is the kind of name this tool generates for itself, which ` +
-      `a script cannot repeat, so this ${statement} is left out entirely and ` +
-      'its label with it. Rename it in the diagram to keep the label.',
-  });
+  const report = (
+    category: ImportWarningCategory,
+    subject: string,
+    noun: string = category,
+  ): void => {
+    warnings.push({
+      elementId: el.id,
+      category,
+      message:
+        `The ${subject} on '${el.id}' was not written to the script: ` +
+        `'${el.id}' is the kind of name this tool generates for itself, ` +
+        `which a script cannot repeat, so this ${statement} is left out ` +
+        `entirely and its ${noun} with it. Rename it in the diagram to ` +
+        `keep the ${noun}.`,
+    });
+  };
+  if (el.name !== undefined) report('label', `label '${el.name}'`);
+  if (el.documentation !== undefined) report('documentation', 'documentation');
+  if (el.kind === 'startEvent' && el.initiator !== undefined) {
+    report('extensionAttribute', "'operaton:initiator' setting", 'initiator');
+  }
 }
 
-function warnGenuineLabel(
+/**
+ * Report the label and the documentation of an element whose position has no
+ * IR node to hold either. `surface` names that position, and each fact takes
+ * its own category, so an element draws one warning per fact and never two for
+ * one.
+ */
+function warnNamedDrop(
   el: ModdleElement,
   id: string,
   surface: string,
   warnings: ImportWarning[],
 ): void {
-  const name = readDerivableName(el, id);
-  if (name === undefined) return;
+  const label = readDerivableName(el, id);
+  if (label !== undefined) {
+    warnings.push({
+      elementId: id,
+      category: 'label',
+      message:
+        `The label '${label}' on '${id}' was not imported: ${surface} has no ` +
+        "label in this tool's surface.",
+    });
+  }
+  warnDocumentationDrop(el, id, surface, warnings);
+}
+
+/**
+ * Report a `bpmn:documentation` at a position with no IR node to hold it,
+ * naming that position the way {@link warnNamedDrop} names it. A position that
+ * does hold one reads it through {@link readNamed} instead.
+ */
+function warnDocumentationDrop(
+  el: ModdleElement,
+  id: string,
+  surface: string,
+  warnings: ImportWarning[],
+): void {
+  if (documentationChildren(el).length === 0) return;
   warnings.push({
     elementId: id,
-    category: 'label',
+    category: 'documentation',
     message:
-      `The label '${name}' on '${id}' was not imported: ${surface} has no ` +
-      "label in this tool's surface.",
+      `The documentation on '${id}' was not imported: ${surface} has no ` +
+      "documentation in this tool's surface.",
   });
 }
 
@@ -2225,7 +2304,7 @@ function mapCallActivity(
   warnings: ImportWarning[],
 ): CallActivity {
   const id = requireId(el);
-  const name = readDerivableName(el, id);
+  const named = readNamed(el, id, warnings);
 
   const calledElement = readString(el, 'calledElement');
   if (calledElement === undefined) {
@@ -2248,7 +2327,7 @@ function mapCallActivity(
   return {
     kind: 'callActivity',
     id,
-    ...(name === undefined ? {} : { name }),
+    ...named,
     calledElement,
     ...(binding === undefined ? {} : { binding }),
     ...(businessKey === undefined ? {} : { businessKey }),
@@ -2294,16 +2373,17 @@ const EXECUTION_AFFECTING_CALL_ATTRS: readonly (readonly [string, string])[] = [
 ];
 
 /**
- * Resolve the `<prefix>Binding`/`<prefix>Version` pair a call activity and a
- * decision reference both pin their version with, the inverse of
- * `ir-to-xml.ts`'s `versionBindingAttrs`. The generic sweep cannot tell a
- * meaningful version from a dangling one (set while the binding is absent or
- * not `"version"`, where Operaton ignores it), so it is reported here.
+ * Resolve the `<prefix>Binding`/`<prefix>Version` pair a call activity, a
+ * decision reference, and a form reference all pin their version with, the
+ * inverse of `ir-to-xml.ts`'s `versionBindingAttrs`. The generic sweep cannot
+ * tell a meaningful version from a dangling one (set while the binding is
+ * absent or not `"version"`, where Operaton ignores it), so it is reported
+ * here.
  */
 function readVersionBinding(
   el: ModdleElement,
   id: string,
-  prefix: 'calledElement' | 'decisionRef',
+  prefix: 'calledElement' | 'decisionRef' | 'formRef',
   refusal: (detail: string) => Error,
   warnings: ImportWarning[],
 ): VersionBinding | undefined {
@@ -2523,7 +2603,8 @@ function warnLaneSetDrops(
  * The element-valued moddle properties some reader on this transform reads;
  * every other BPMN child is content nothing reads, reported by
  * {@link collectUnmappedBpmnDrops}. Several are read without being mapped
- * one-to-one: `documentation` and `extensionElements` by
+ * one-to-one: `documentation` by {@link readNamed} or
+ * {@link warnDocumentationDrop}, `extensionElements` by
  * {@link collectExtensionDrops}, `laneSets` by {@link collectLaneDrops},
  * `loopCharacteristics` and its four children here by
  * {@link readLoopCharacteristics}, `rootElements` by {@link xmlToIr}, and
@@ -2623,7 +2704,14 @@ function collectRootDrops(
   for (const root of rootElements) {
     if (HANDLED_ROOT_KINDS.has(root.$type)) {
       if (root.$type !== 'bpmn:Process') {
-        collectExtensionDrops(root, root.id ?? processId, warnings);
+        const rootId = root.id ?? processId;
+        collectExtensionDrops(root, rootId, warnings);
+        warnDocumentationDrop(
+          root,
+          rootId,
+          `a ${xmlTagOf(root.$type)} root`,
+          warnings,
+        );
       }
       continue;
     }
@@ -2678,7 +2766,6 @@ function collectExtensionDrops(
   warnUnreadPrefixedAttrs(el, ownerId, warnings);
   warnUnreadExtensionElements(el, ownerId, warnings);
   warnUnreadDeclaredAttrs(el, ownerId, warnings);
-  warnDocumentationDrop(el, ownerId, warnings);
 }
 
 /**
@@ -2704,6 +2791,14 @@ function warnUnreadPrefixedAttrs(
 }
 
 /**
+ * The reason a field drops from a position that holds none: a step's binding
+ * and a listener's are the only two this tool reads one onto.
+ */
+const FIELD_HAS_NO_HOME =
+  'this tool carries an injected field on the step or the listener whose ' +
+  'class or delegate binding receives it, and on no other position';
+
+/**
  * Report the materialized `<bpmn:extensionElements>` children that
  * {@link CONSUMED_EXTENSION_ELEMENTS} does not list for this owner kind. An
  * undeclared `operaton:` element leaves no value behind and is reported against
@@ -2720,7 +2815,13 @@ function warnUnreadExtensionElements(
       continue;
     }
     if (value.$type === 'operaton:Field') {
-      warnFieldDrop(value, ownerId, `'${ownerId}'`, warnings);
+      warnFieldDrop(
+        value,
+        ownerId,
+        `'${ownerId}'`,
+        FIELD_HAS_NO_HOME,
+        warnings,
+      );
       continue;
     }
     warnings.push({
@@ -2750,27 +2851,7 @@ function warnUnreadDeclaredAttrs(
     }
     // Only what the document wrote: moddle stores a parsed value as an own property.
     if (!Object.prototype.hasOwnProperty.call(el, prop.name)) continue;
-    if (el.get(prop.ns.name) === REEXPORTED_CONSTANT_ATTRS.get(prop.ns.name)) {
-      continue;
-    }
     warnUnimportedSetting(warnings, ownerId, `'${prop.ns.name}' setting`);
-  }
-}
-
-/** One warning per element carrying `bpmn:documentation`, however many children. */
-function warnDocumentationDrop(
-  el: ModdleElement,
-  ownerId: string,
-  warnings: ImportWarning[],
-): void {
-  const documentation =
-    (el.get('documentation') as ModdleElement[] | undefined) ?? [];
-  if (documentation.length > 0) {
-    warnings.push({
-      elementId: ownerId,
-      category: 'documentation',
-      message: `Documentation on '${ownerId}' was not imported; documentation is not yet carried by this tool.`,
-    });
   }
 }
 
@@ -2893,7 +2974,7 @@ function noteRewrappedExpression(
   });
 }
 
-/** Message, signal, and timer only. See {@link readStartTrigger}. */
+/** A container's own start; {@link readStartTrigger} bounds what it may carry. */
 function mapStartEvent(
   el: ModdleElement,
   warnings: ImportWarning[],
@@ -2901,16 +2982,29 @@ function mapStartEvent(
 ): StartEvent {
   const id = requireId(el);
   const eventDefinition = readStartTrigger(el, id, warnings, hostKind);
-  const name = readDerivableName(el, id);
+  const named = readNamed(el, id, warnings);
   const formFields = readFormFields(el, id, warnings);
   return {
     kind: 'startEvent',
     id,
-    ...(name === undefined ? {} : { name }),
+    ...named,
     ...(formFields === undefined ? {} : { formFields }),
     ...(eventDefinition === undefined ? {} : { eventDefinition }),
+    ...readStartAttributes(el),
     ...readEngineAttributes(el, id, warnings),
   };
+}
+
+/**
+ * The extension attributes a start event carries wherever it sits. Both start
+ * mappers read it here rather than each for itself: `initiator` is declared
+ * read on `bpmn:StartEvent`, which silences the unread-attribute sweep for a
+ * handler's start as much as for a process's own, so a mapper that skipped it
+ * would drop an authored value without a word.
+ */
+function readStartAttributes(el: ModdleElement): { initiator?: string } {
+  const initiator = readNamespacedAttr(el, 'initiator');
+  return initiator === undefined ? {} : { initiator };
 }
 
 /**
@@ -2948,6 +3042,18 @@ const IGNORED_START_SUBJECTS: ReadonlyMap<
 ]);
 
 /**
+ * The tag each trigger a process start may carry is written with. The
+ * `satisfies` clause demands a row per word, so a word added to the vocabulary
+ * opens the import path with it rather than leaving the two to drift.
+ */
+const START_CARRIED_TAGS = {
+  message: 'bpmn:MessageEventDefinition',
+  signal: 'bpmn:SignalEventDefinition',
+  timer: 'bpmn:TimerEventDefinition',
+  condition: 'bpmn:ConditionalEventDefinition',
+} satisfies Record<(typeof START_TRIGGERS)[number], string>;
+
+/**
  * The trigger on a container's own start event. An event handler's start is
  * entered through {@link mapEventSubProcessStart}, which requires one
  * definition and takes a wider set of kinds.
@@ -2974,7 +3080,7 @@ function readStartTrigger(
     id,
     defs,
     'a start',
-    'message, signal, or timer trigger is supported',
+    `${formatPlainWordList(START_TRIGGERS)} trigger is supported`,
   );
 
   const [defEl] = defs;
@@ -2989,11 +3095,7 @@ function readStartTrigger(
       ignored.remedy,
     );
   }
-  if (
-    defEl.$type !== 'bpmn:MessageEventDefinition' &&
-    defEl.$type !== 'bpmn:SignalEventDefinition' &&
-    defEl.$type !== 'bpmn:TimerEventDefinition'
-  ) {
+  if (!Object.values<string>(START_CARRIED_TAGS).includes(defEl.$type)) {
     throw new UnsupportedEventDefinitionError(id, 'start', defEl.$type);
   }
 
@@ -3040,11 +3142,11 @@ function mapEndEvent(
   const defs = eventDefinitionsOf(el);
 
   if (defs.length === 0) {
-    const name = readDerivableName(el, id);
+    const named = readNamed(el, id, warnings);
     return {
       kind: 'endEvent',
       id,
-      ...(name === undefined ? {} : { name }),
+      ...named,
       ...readEngineAttributes(el, id, warnings),
     };
   }
@@ -3071,11 +3173,12 @@ function mapEndEvent(
     }
     collectExtensionDrops(defEl, id, warnings);
     collectUnmappedBpmnDrops(defEl, id, warnings);
-    const name = readDerivableName(el, id);
+    warnDocumentationDrop(defEl, id, 'an event definition', warnings);
+    const named = readNamed(el, id, warnings);
     return {
       kind: 'endEvent',
       id,
-      ...(name === undefined ? {} : { name }),
+      ...named,
       eventDefinition: { kind: carried },
       ...readEngineAttributes(el, id, warnings),
     };
@@ -3091,7 +3194,7 @@ function mapEndEvent(
   }
 
   const eventDefinition = readThrowEventDefinition(defEl, id, warnings);
-  warnGenuineLabel(el, id, 'a throw', warnings);
+  warnNamedDrop(el, id, 'a throw', warnings);
 
   return {
     kind: 'endEvent',
@@ -3145,7 +3248,7 @@ function mapIntermediateThrowEvent(
   }
 
   const eventDefinition = readThrowEventDefinition(defEl, id, warnings);
-  warnGenuineLabel(el, id, 'an emit', warnings);
+  warnNamedDrop(el, id, 'an emit', warnings);
 
   return {
     kind: 'intermediateThrowEvent',
@@ -3213,6 +3316,9 @@ function readThrownMessageBinding(
   return {};
 }
 
+/** The triggers a linear flow can block on, as the refusals below name them. */
+const AWAITABLE_TRIGGERS = formatPlainWordList(CATCH_TRIGGERS);
+
 function mapIntermediateCatchEvent(
   el: ModdleElement,
   warnings: ImportWarning[],
@@ -3223,8 +3329,7 @@ function mapIntermediateCatchEvent(
     throw new UnsupportedEventFeatureError(
       id,
       'an await with parallelMultiple="true" waits for several triggers ' +
-        'together; only a single message, timer, signal, or conditional ' +
-        'trigger can be awaited',
+        `together; only a single ${AWAITABLE_TRIGGERS} trigger can be awaited`,
     );
   }
 
@@ -3241,7 +3346,7 @@ function mapIntermediateCatchEvent(
     id,
     defs,
     'an await',
-    'message, timer, signal, or conditional trigger can be awaited',
+    `${AWAITABLE_TRIGGERS} trigger can be awaited`,
   );
 
   const [defEl] = defs;
@@ -3253,8 +3358,8 @@ function mapIntermediateCatchEvent(
   ) {
     throw new UnsupportedEventFeatureError(
       id,
-      `an await cannot carry a ${defEl.$type}: only message, timer, ` +
-        'signal, or conditional triggers can be awaited inline; error and ' +
+      `an await cannot carry a ${defEl.$type}: only ${AWAITABLE_TRIGGERS} ` +
+        'triggers can be awaited inline; error and ' +
         'escalation are caught by an event handler and raised with ' +
         'throw/emit, compensation is undone by a subprocess block, a link ' +
         'has no surface, and a cancel is written on the end that gives up ' +
@@ -3270,7 +3375,7 @@ function mapIntermediateCatchEvent(
     warnings,
     'intermediate catch',
   ) as IntermediateCatchEvent['eventDefinition'];
-  warnGenuineLabel(el, id, 'an await', warnings);
+  warnNamedDrop(el, id, 'an await', warnings);
 
   return {
     kind: 'intermediateCatchEvent',
@@ -3570,6 +3675,7 @@ function sweepRepetition(
 ): void {
   collectUnmappedBpmnDrops(loopEl, id, warnings);
   collectExtensionDrops(loopEl, id, warnings);
+  warnDocumentationDrop(loopEl, id, 'a repetition', warnings);
   for (const name of IGNORED_REPETITION_REFS) {
     if (
       getEl(loopEl, name) !== undefined ||
@@ -3606,9 +3712,10 @@ function warnRepetitionContentIgnored(
 
 function mapUserTask(el: ModdleElement, warnings: ImportWarning[]): UserTask {
   const id = requireId(el);
-  const name = readDerivableName(el, id);
+  const named = readNamed(el, id, warnings);
   const assignee = readNamespacedAttr(el, 'assignee');
   const formKey = readNamespacedAttr(el, 'formKey');
+  const formRef = readFormRef(el, id, warnings);
   const formFields = readFormFields(el, id, warnings);
   const taskListeners = readTaskListeners(el, id, warnings);
   const candidateGroups = readNamespacedAttr(el, 'candidateGroups');
@@ -3620,9 +3727,10 @@ function mapUserTask(el: ModdleElement, warnings: ImportWarning[]): UserTask {
   return {
     kind: 'userTask',
     id,
-    ...(name === undefined ? {} : { name }),
+    ...named,
     ...(assignee === undefined ? {} : { assignee }),
     ...(formKey === undefined ? {} : { formKey }),
+    ...(formRef === undefined ? {} : { formRef }),
     ...(formFields === undefined ? {} : { formFields }),
     ...(candidateGroups === undefined ? {} : { candidateGroups }),
     ...(candidateUsers === undefined ? {} : { candidateUsers }),
@@ -3635,13 +3743,56 @@ function mapUserTask(el: ModdleElement, warnings: ImportWarning[]): UserTask {
   };
 }
 
+/**
+ * The deployed form a user task renders, and the binding resolving which
+ * version of it. Operaton's `parseFormDefinition` refuses to deploy a task
+ * naming a form key beside a form reference, and refuses a form reference
+ * whose binding is absent or outside the three it resolves, so both shapes
+ * refuse here rather than importing a task that would never deploy.
+ */
+function readFormRef(
+  el: ModdleElement,
+  id: string,
+  warnings: ImportWarning[],
+): UserTask['formRef'] {
+  const key = readNamespacedAttr(el, 'formRef');
+  if (key === undefined) {
+    warnDanglingModifiers(
+      el,
+      id,
+      FORM_REF_MODIFIER_ATTRS,
+      'operaton:formRef',
+      warnings,
+    );
+    return undefined;
+  }
+
+  const refusal = (detail: string): Error =>
+    new UnsupportedFormReferenceError(id, detail);
+  if (readNamespacedAttr(el, 'formKey') !== undefined) {
+    throw refusal(
+      'it names an operaton:formKey beside the operaton:formRef, and a task ' +
+        'renders one form',
+    );
+  }
+
+  const binding = readVersionBinding(el, id, 'formRef', refusal, warnings);
+  if (binding === undefined) {
+    throw refusal(
+      'its operaton:formRef carries no operaton:formRefBinding, so the ' +
+        'engine cannot resolve which deployed form to render',
+    );
+  }
+  return { key, binding };
+}
+
 function mapTask(el: ModdleElement, warnings: ImportWarning[]): Task {
   const id = requireId(el);
-  const name = readDerivableName(el, id);
+  const named = readNamed(el, id, warnings);
   return {
     kind: 'task',
     id,
-    ...(name === undefined ? {} : { name }),
+    ...named,
     ...readEngineAttributes(el, id, warnings),
     ...readIoMapping(el, id, warnings),
   };
@@ -3676,7 +3827,7 @@ function mapReceiveTask(
   warnings: ImportWarning[],
 ): ReceiveTask {
   const id = requireId(el);
-  const name = readDerivableName(el, id);
+  const named = readNamed(el, id, warnings);
   // A missing messageRef is a legitimate wait state, so it is imported rather
   // than refused.
   const messageName =
@@ -3686,7 +3837,7 @@ function mapReceiveTask(
   return {
     kind: 'receiveTask',
     id,
-    ...(name === undefined ? {} : { name }),
+    ...named,
     ...(messageName === undefined ? {} : { messageName }),
     ...readEngineAttributes(el, id, warnings),
     ...readIoMapping(el, id, warnings),
@@ -3700,12 +3851,12 @@ function mapServiceTask(
   element?: ServiceTask['element'],
 ): ServiceTask {
   const id = requireId(el);
-  const name = readDerivableName(el, id);
+  const named = readNamed(el, id, warnings);
   const resultVariable = readNamespacedAttr(el, 'resultVariable');
   return {
     kind: 'serviceTask',
     id,
-    ...(name === undefined ? {} : { name }),
+    ...named,
     binding: readServiceTaskBinding(el, id, element, warnings),
     ...(resultVariable === undefined ? {} : { resultVariable }),
     ...(element === undefined ? {} : { element }),
@@ -3752,15 +3903,15 @@ function readServiceTaskBinding(
 
   // The decision reference is the engine's discriminator, so it is read before
   // the code forms a business rule task may otherwise fall back to.
-  if (element === 'businessRule') {
-    const decision = readDecisionBinding(el, id, refusal, warnings);
-    if (decision !== undefined) return decision;
+  const binding =
+    (element === 'businessRule'
+      ? readDecisionBinding(el, id, refusal, warnings)
+      : undefined) ?? readCodeOrExternalBinding(el, id, warnings);
+  if (binding === undefined) {
+    throw refusal(detectUnsupportedServiceTaskForm(el));
   }
 
-  const binding = readCodeOrExternalBinding(el, id, warnings);
-  if (binding !== undefined) return binding;
-
-  throw refusal(detectUnsupportedServiceTaskForm(el));
+  return withInjectedFields(binding, el, id, `'${id}'`, warnings);
 }
 
 /**
@@ -3834,7 +3985,13 @@ function readDecisionBinding(
 ): Extract<ServiceTaskBinding, { kind: 'decision' }> | undefined {
   const decisionRef = readNamespacedAttr(el, 'decisionRef');
   if (decisionRef === undefined) {
-    warnDanglingDecisionModifiers(el, id, warnings);
+    warnDanglingModifiers(
+      el,
+      id,
+      DECISION_MODIFIER_ATTRS,
+      'operaton:decisionRef',
+      warnings,
+    );
     return undefined;
   }
   warnShadowedImplementation(el, id, 'an operaton:decisionRef', [], warnings);
@@ -3868,19 +4025,29 @@ const DECISION_MODIFIER_ATTRS = [
   'mapDecisionResult',
 ] as const;
 
-function warnDanglingDecisionModifiers(
+/** The two settings only a named form gives meaning to; see {@link readFormRef}. */
+const FORM_REF_MODIFIER_ATTRS = ['formRefBinding', 'formRefVersion'] as const;
+
+/**
+ * Report the settings that pin or shape a reference the element never makes.
+ * The consumption table marks them read on the owner kind, so they leave with
+ * a warning here or with none. `ref` names the missing reference.
+ */
+function warnDanglingModifiers(
   el: ModdleElement,
   id: string,
+  attrs: readonly string[],
+  ref: string,
   warnings: ImportWarning[],
 ): void {
-  for (const attr of DECISION_MODIFIER_ATTRS) {
+  for (const attr of attrs) {
     if (readNamespacedAttr(el, attr) === undefined) continue;
     warnings.push({
       elementId: id,
       category: 'extensionAttribute',
       message:
         `The '${attr}' setting on '${id}' has no effect without an ` +
-        'operaton:decisionRef and was not imported.',
+        `${ref} and was not imported.`,
     });
   }
 }
@@ -3967,7 +4134,7 @@ function mapScriptTask(
       externalResourceDetail(`the script on '${id}'`, resource),
     );
   }
-  const name = readDerivableName(el, id);
+  const named = readNamed(el, id, warnings);
   const format = readString(el, 'scriptFormat') ?? '';
   const body = el.get('script');
   const code = typeof body === 'string' ? body : '';
@@ -3975,7 +4142,7 @@ function mapScriptTask(
   return {
     kind: 'scriptTask',
     id,
-    ...(name === undefined ? {} : { name }),
+    ...named,
     format,
     code,
     ...(resultVariable === undefined ? {} : { resultVariable }),
@@ -3992,26 +4159,30 @@ function mapScriptTask(
 function mapDefaultingGateway(
   el: ModdleElement,
   kind: 'exclusiveGateway' | 'inclusiveGateway',
+  warnings: ImportWarning[],
 ): ExclusiveGateway | InclusiveGateway {
   const id = requireId(el);
-  const name = readString(el, 'name');
+  const named = readNamed(el, id, warnings, readString(el, 'name'));
   const defaultFlowId = getEl(el, 'default')?.id;
 
   return {
     kind,
     id,
-    ...(name === undefined ? {} : { name }),
+    ...named,
     ...(defaultFlowId === undefined ? {} : { defaultFlowId }),
   };
 }
 
-function mapParallelGateway(el: ModdleElement): ParallelGateway {
+function mapParallelGateway(
+  el: ModdleElement,
+  warnings: ImportWarning[],
+): ParallelGateway {
   const id = requireId(el);
-  const name = readString(el, 'name');
+  const named = readNamed(el, id, warnings, readString(el, 'name'));
   return {
     kind: 'parallelGateway',
     id,
-    ...(name === undefined ? {} : { name }),
+    ...named,
   };
 }
 
@@ -4026,11 +4197,11 @@ function mapEventBasedGateway(
 ): EventBasedGateway {
   const id = requireId(el);
   warnIgnoredWaitAttrs(el, id, warnings);
-  const name = readString(el, 'name');
+  const named = readNamed(el, id, warnings, readString(el, 'name'));
   return {
     kind: 'eventBasedGateway',
     id,
-    ...(name === undefined ? {} : { name }),
+    ...named,
   };
 }
 
@@ -4074,6 +4245,7 @@ function mapSequenceFlow(
   warnings: ImportWarning[],
 ): SequenceFlow {
   const id = requireId(el);
+  warnDocumentationDrop(el, id, 'a sequence flow', warnings);
 
   const sourceRef = requireFlowEndpoint(el, 'sourceRef', id);
   const targetRef = requireFlowEndpoint(el, 'targetRef', id);
@@ -4202,6 +4374,76 @@ function readString(el: ModdleElement, name: string): string | undefined {
 function readDerivableName(el: ModdleElement, id: string): string | undefined {
   const name = readString(el, 'name');
   return name === undefined || name === humanize(id) ? undefined : name;
+}
+
+/**
+ * The label and the documentation an element carries, read as one pair: every
+ * kind whose IR node holds a `name` holds a `documentation` beside it. A mapper
+ * for a new kind reads both here, or reports both through
+ * {@link warnNamedDrop} when its position has no node to hold either; those are
+ * the only two answers, and neither of them is silence.
+ *
+ * A gateway is the one caller that passes `name` itself, because its id is a
+ * structural coordinate rather than a label the export direction derives, so a
+ * name equal to the derived one is still the author's.
+ */
+function readNamed(
+  el: ModdleElement,
+  id: string,
+  warnings: ImportWarning[],
+  name = readDerivableName(el, id),
+): Named {
+  const documentation = readDocumentation(el, id, warnings);
+  return {
+    ...(name === undefined ? {} : { name }),
+    ...(documentation === undefined ? {} : { documentation }),
+  };
+}
+
+/**
+ * The text of a single plaintext `bpmn:documentation` child, verbatim: the
+ * whitespace a modeler pretty-printed into the body comes back with it, and an
+ * empty body carries as an empty string. More than one child, or a `textFormat`
+ * naming anything but plain text, is one string this surface cannot hold and is
+ * reported instead. moddle answers BPMN's `text/plain` default for an absent
+ * `textFormat`, so an unwritten format needs no case of its own.
+ */
+function readDocumentation(
+  el: ModdleElement,
+  id: string,
+  warnings: ImportWarning[],
+): string | undefined {
+  const children = documentationChildren(el);
+  const [first] = children;
+  if (first === undefined) return undefined;
+  const report = (detail: string): undefined => {
+    warnings.push({
+      elementId: id,
+      category: 'documentation',
+      message: `The documentation on '${id}' was not imported: ${detail}.`,
+    });
+    return undefined;
+  };
+  if (children.length > 1) {
+    return report(
+      `this surface holds one <bpmn:documentation> and '${id}' carries ` +
+        String(children.length),
+    );
+  }
+  const textFormat = first.get('textFormat');
+  if (textFormat !== 'text/plain') {
+    return report(
+      'this surface holds plain text and its textFormat is ' +
+        `'${String(textFormat)}'`,
+    );
+  }
+  const text = first.get('text');
+  return typeof text === 'string' ? text : '';
+}
+
+/** The `bpmn:documentation` children moddle parsed off an element. */
+function documentationChildren(el: ModdleElement): ModdleElement[] {
+  return (el.get('documentation') as ModdleElement[] | undefined) ?? [];
 }
 
 /**
@@ -4644,16 +4886,30 @@ function readListenerEvent<E extends string>(
   return event as E;
 }
 
-/**
- * Resolve the single executable binding a listener names. Every alternative is
- * read before any is acted on: naming two leaves the engine to pick, naming
- * none never runs, so both refuse.
- */
 function readListenerBinding(
   listener: ModdleElement,
   spec: ListenerSpec<string>,
 ): ListenerBinding {
   const { ownerId, tag, warnings } = spec;
+  return withInjectedFields(
+    resolveListenerBinding(listener, spec),
+    listener,
+    ownerId,
+    `an ${tag} on '${ownerId}'`,
+    warnings,
+  );
+}
+
+/**
+ * Resolve the single executable binding a listener names. Every alternative is
+ * read before any is acted on: naming two leaves the engine to pick, naming
+ * none never runs, so both refuse.
+ */
+function resolveListenerBinding(
+  listener: ModdleElement,
+  spec: ListenerSpec<string>,
+): ListenerBinding {
+  const { ownerId, tag } = spec;
   const className = readString(listener, 'class');
   const expression = readString(listener, 'expression');
   const delegate = readString(listener, 'delegateExpression');
@@ -4672,8 +4928,6 @@ function readListenerBinding(
         'and a listener names exactly one',
     );
   }
-
-  warnFieldDrops(listener, ownerId, `an ${tag} on '${ownerId}'`, warnings);
 
   if (className !== undefined) return { kind: 'class', className };
   if (expression !== undefined) return { kind: 'expression', expression };
@@ -4745,27 +4999,192 @@ function refuseRepeatedExtensionKey(
 }
 
 /**
- * Report every `operaton:field` child as a drop. Field injection sets a
- * property on the bound class or expression before it runs, and the IR has no
- * surface for it.
+ * A listener declares its fields as a property of its own; a step carries them
+ * loose in `extensionElements`, beside every other extension child it holds.
  */
-function warnFieldDrops(
+function fieldChildren(carrier: ModdleElement): ModdleElement[] {
+  const declared = carrier.get('fields') as ModdleElement[] | undefined;
+  return (
+    declared ??
+    extensionValues(carrier).filter((value) => value.$type === 'operaton:Field')
+  );
+}
+
+/** What names a binding that receives no field list, in the drop it draws. */
+const FIELDLESS_BINDING: Readonly<
+  Record<'expression' | 'external' | 'decision' | 'script', string>
+> = {
+  expression: 'operaton:expression',
+  external: 'operaton:type="external"',
+  decision: 'an operaton:decisionRef',
+  script: 'an operaton:script child',
+};
+
+/**
+ * Read the `operaton:field` children a carrier holds onto the binding it
+ * resolved to. Operaton builds the field list for the behaviours a class and a
+ * delegate expression select and hands it to no other, on a step and on both
+ * listener kinds alike, so a field under any other binding is reported rather
+ * than carried into a slot the engine would never read it from.
+ */
+function withInjectedFields<B extends ServiceTaskBinding | ListenerBinding>(
+  binding: B,
   carrier: ModdleElement,
   ownerId: string,
   where: string,
   warnings: ImportWarning[],
-): void {
-  const fields = (carrier.get('fields') as ModdleElement[] | undefined) ?? [];
-  for (const field of fields) {
-    warnFieldDrop(field, ownerId, where, warnings);
+): B {
+  const children = fieldChildren(carrier);
+  if (children.length === 0) return binding;
+
+  if (binding.kind !== 'class' && binding.kind !== 'delegateExpression') {
+    const reason =
+      'Operaton injects a field into a class or delegate binding and into no ' +
+      `other, and this one is bound by ${FIELDLESS_BINDING[binding.kind]}`;
+    for (const field of children) {
+      warnFieldDrop(field, ownerId, where, reason, warnings);
+    }
+    return binding;
   }
+
+  const fields = children.flatMap(
+    (field) => readField(field, ownerId, where, warnings) ?? [],
+  );
+  return fields.length === 0 ? binding : { ...binding, fields };
 }
 
-/** Report one `operaton:field` as a drop; see {@link warnFieldDrops}. */
+/**
+ * The three slots Operaton writes a field's value in, and whether it evaluates
+ * that slot rather than injecting it verbatim. The IR holds one text for all
+ * three and picks the slot back off its leading `${`, the same reading
+ * `renderIoValue` does, so a slot whose text disagrees with it has no spelling
+ * here and is reported instead of coming back as the other one.
+ */
+const FIELD_VALUE_SLOTS = [
+  {
+    property: 'stringValue',
+    subject: 'a stringValue attribute',
+    evaluated: false,
+  },
+  { property: 'string', subject: 'an operaton:string child', evaluated: false },
+  {
+    property: 'expression',
+    subject: 'an operaton:expression child',
+    evaluated: true,
+  },
+] as const;
+
+/**
+ * A value quoted inside a one-sentence warning: one line, with whatever
+ * whitespace it carries still visible, since that whitespace is often the
+ * reason the value is being reported.
+ */
+function oneLine(text: string): string {
+  return text.replace(/\n/g, '\\n').replace(/\r/g, '\\r').replace(/\t/g, '\\t');
+}
+
+/** `undefined` when the field was reported as a drop instead of read. */
+function readField(
+  field: ModdleElement,
+  ownerId: string,
+  where: string,
+  warnings: ImportWarning[],
+): FieldInjection | undefined {
+  const drop = (reason: string): undefined => {
+    warnFieldDrop(field, ownerId, where, reason, warnings);
+    return undefined;
+  };
+
+  const name = readString(field, 'name');
+  if (name === undefined) {
+    return drop(
+      'a field is injected under the name it declares, and this one declares none',
+    );
+  }
+
+  // Every slot is read verbatim. `parseExpressionFieldDeclaration` hands the
+  // body to `createExpression` untrimmed, and
+  // `getStringValueFromAttributeOrElement` reads `childElement.getText()`
+  // without trimming either, so the whitespace an indented body carries is
+  // part of the composite expression the engine evaluates. A body that does
+  // not open with `${` cannot round-trip through a slot this tool picks by
+  // that prefix, and is reported rather than quietly reshaped.
+  const written = FIELD_VALUE_SLOTS.map((slot) => ({
+    slot,
+    value: readString(field, slot.property),
+  })).filter(
+    (slot): slot is { slot: FieldValueSlot; value: string } =>
+      slot.value !== undefined,
+  );
+
+  // `parseFieldDeclaration` reads the two literal slots first and never reaches
+  // the expression child once one of them answers, so a literal wins here too.
+  const literals = written.filter((slot) => !slot.slot.evaluated);
+  const evaluated = written.find((slot) => slot.slot.evaluated);
+  const chosen = literals[0] ?? evaluated;
+  // `parseFieldDeclaration` calls `addError` on a field naming no slot, and
+  // `getStringValueFromAttributeOrElement` calls it on one naming the
+  // attribute and the child of the same slot, so neither document deploys.
+  if (chosen === undefined || literals.length > 1) {
+    throw new UnsupportedExtensionFormError(
+      ownerId,
+      `the injected field '${name}' on ${where} names ` +
+        (chosen === undefined
+          ? 'no value'
+          : literals.map((w) => w.slot.subject).join(' and ')),
+    );
+  }
+
+  if (chosen.value.startsWith('${') !== chosen.slot.evaluated) {
+    return drop(
+      `${chosen.slot.subject} holding '${oneLine(chosen.value)}' would be ` +
+        'written back as ' +
+        (chosen.slot.evaluated
+          ? 'a stringValue attribute, and the engine would inject that text ' +
+            'rather than evaluate it'
+          : 'an operaton:expression child, and the engine would evaluate it ' +
+            'rather than inject the text'),
+    );
+  }
+
+  if (chosen.slot.property === 'string') {
+    warnings.push({
+      elementId: ownerId,
+      category: 'extensionAttribute',
+      message:
+        `The injected field '${name}' on ${where} writes its value in an ` +
+        'operaton:string child, which this tool writes back as a stringValue ' +
+        'attribute; the engine injects the same text either way.',
+    });
+  }
+
+  if (chosen !== evaluated && evaluated !== undefined) {
+    warnings.push({
+      elementId: ownerId,
+      category: 'extensionAttribute',
+      message:
+        `The 'operaton:expression' child of the injected field '${name}' on ` +
+        `${where} has no effect alongside ${chosen.slot.subject} and was not ` +
+        'imported.',
+    });
+  }
+
+  return { name, value: chosen.value };
+}
+
+type FieldValueSlot = (typeof FIELD_VALUE_SLOTS)[number];
+
+/**
+ * Report one `operaton:field` as a drop. `reason` says why this field never
+ * reaches the bean it names, which differs between a binding that receives no
+ * field list, a value slot the round trip cannot preserve, and a position this
+ * tool holds no field on at all.
+ */
 function warnFieldDrop(
   field: ModdleElement,
   ownerId: string,
   where: string,
+  reason: string,
   warnings: ImportWarning[],
 ): void {
   const name = readString(field, 'name');
@@ -4774,6 +5193,6 @@ function warnFieldDrop(
     category: 'extensionAttribute',
     message:
       `The injected field ${name === undefined ? '(unnamed)' : `'${name}'`} ` +
-      `on ${where} was not imported; field injection is not carried.`,
+      `on ${where} was not imported: ${reason}.`,
   });
 }

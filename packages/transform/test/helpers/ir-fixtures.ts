@@ -88,7 +88,9 @@ export const typedEvent = <K extends EventNodeKind>(
   }) as EventNodeOf<K>;
 
 /** The code a service task or a listener runs. */
-export const classBinding = (className: string): CodeBinding => ({
+export const classBinding = (
+  className: string,
+): Extract<CodeBinding, { kind: 'class' }> => ({
   kind: 'class',
   className,
 });
@@ -98,7 +100,9 @@ export const exprBinding = (expression: string): CodeBinding => ({
   expression,
 });
 
-export const delegateBinding = (expression: string): CodeBinding => ({
+export const delegateBinding = (
+  expression: string,
+): Extract<CodeBinding, { kind: 'delegateExpression' }> => ({
   kind: 'delegateExpression',
   expression,
 });

@@ -9,10 +9,17 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import { EmptyFileSystem } from 'langium';
 import { parseHelper, validationHelper } from 'langium/test';
-import { createBpmnScriptServices } from '@bpmn-script/language';
+import {
+  createBpmnScriptServices,
+  PROCESS_HEADER_KEYS,
+} from '@bpmn-script/language';
 import type { Model } from '@bpmn-script/language';
 
-import { irToDsl as printDsl, UNSTRUCTURED_MARKER } from '../src/ir-to-dsl.js';
+import {
+  irToDsl as printDsl,
+  PROCESS_HEADER_SETTINGS,
+  UNSTRUCTURED_MARKER,
+} from '../src/ir-to-dsl.js';
 import { astToIr } from '../src/ast-to-ir.js';
 import { xmlToIr } from '../src/xml-to-ir.js';
 import { isGateway } from '../src/ir/types.js';
@@ -60,6 +67,7 @@ import type {
   IntermediateCatchEvent,
   LoopCharacteristics,
   SequenceFlow,
+  VersionBinding,
 } from '../src/ir/types.js';
 
 // The suite asserts printed source; the warnings channel has its own block.
@@ -2435,6 +2443,57 @@ describe('irToDsl: parallel-fork recovery (terminating branch)', () => {
   });
 });
 
+describe('irToDsl: the process header and the start it opens on', () => {
+  /** Every key the header carries, an initiator, and a condition start. */
+  const HEADER_IR: BpmnProcess = {
+    id: 'stock-watch',
+    isExecutable: true,
+    versionTag: '3.1',
+    historyTimeToLive: 'P90D',
+    candidateStarterUsers: 'demo,manager',
+    candidateStarterGroups: 'adjusters',
+    flowElements: [
+      {
+        kind: 'startEvent',
+        id: 'StockRanLow',
+        formFields: [{ id: 'stockLevel', type: 'number' }],
+        eventDefinition: conditionDef('${stockLevel < 5}'),
+        initiator: 'claimant',
+      },
+      { kind: 'userTask', id: 'ReorderStock', assignee: 'demo' },
+      { kind: 'endEvent', id: 'Restocked' },
+    ],
+    sequenceFlows: [
+      edge('StockRanLow', 'ReorderStock'),
+      edge('ReorderStock', 'Restocked'),
+    ],
+  };
+
+  it('prints every key the header vocabulary declares, in the order it declares them', () => {
+    expect([
+      'label',
+      'documentation',
+      ...PROCESS_HEADER_SETTINGS.map(([key]) => key),
+    ]).toEqual(PROCESS_HEADER_KEYS);
+  });
+
+  it('prints the header, the initiator and the condition, and re-desugars to the same IR', async () => {
+    const dsl = await printed(HEADER_IR);
+    expect(dsl).toBe(
+      'process stock-watch(versionTag: "3.1", historyTimeToLive: "P90D", candidateStarterUsers: "demo,manager", candidateStarterGroups: "adjusters") {\n' +
+        '  start StockRanLow condition(stockLevel < 5, initiator: "claimant") {\n' +
+        '    form {\n' +
+        '      stockLevel: number\n' +
+        '    }\n' +
+        '  }\n' +
+        '  user ReorderStock(assignee: "demo")\n' +
+        '  end Restocked\n' +
+        '}\n',
+    );
+    expect(await reDesugar(dsl)).toEqual(HEADER_IR);
+  });
+});
+
 describe('irToDsl: engine attributes', () => {
   /**
    * One of every statement kind that carries engine settings, each carrying at
@@ -3071,6 +3130,101 @@ describe('irToDsl: listeners', () => {
   });
 });
 
+describe('irToDsl: field injection and form references', () => {
+  /**
+   * `printed` is the whole point of the assertion: a field or a form reference
+   * printed where the compiler refuses it would still read fine as text.
+   */
+  it('prints a field before the io parameters on every carrier, and a form reference beside its binding', async () => {
+    const dsl = await printed(
+      chained([
+        { kind: 'startEvent', id: 'S' },
+        {
+          kind: 'serviceTask',
+          id: 'Ship',
+          binding: {
+            kind: 'class',
+            className: 'com.example.Ship',
+            fields: [
+              { name: 'greeting', value: 'hello' },
+              { name: 'target', value: '${order.address}' },
+            ],
+          },
+          inputParameters: [ioParam('amount', textValue('${total}'))],
+          executionListeners: [
+            {
+              event: 'start',
+              binding: {
+                kind: 'delegateExpression',
+                expression: '${auditHook}',
+                fields: [{ name: 'level', value: 'INFO' }],
+              },
+            },
+          ],
+        },
+        {
+          kind: 'userTask',
+          id: 'Review',
+          formRef: {
+            key: 'review-form',
+            binding: { kind: 'version', version: '3' },
+          },
+          taskListeners: [
+            {
+              event: 'create',
+              binding: {
+                kind: 'class',
+                className: 'com.example.Assign',
+                fields: [{ name: 'role', value: 'clerk' }],
+              },
+            },
+          ],
+        },
+        { kind: 'endEvent', id: 'E' },
+      ]),
+    );
+
+    expect(dsl).toContain(
+      '  service Ship(class: "com.example.Ship") {\n' +
+        '    field greeting = "hello"\n' +
+        '    field target = "${order.address}"\n' +
+        '    input amount = "${total}"\n' +
+        '    on start(delegate: "${auditHook}") {\n' +
+        '      field level = "INFO"\n' +
+        '    }\n' +
+        '  }\n' +
+        '  user Review(formRef: "review-form", version: 3) {\n' +
+        '    on create(class: "com.example.Assign") {\n' +
+        '      field role = "clerk"\n' +
+        '    }\n' +
+        '  }\n',
+    );
+  });
+
+  it('prints binding: latest and binding: deployment for the two unpinned form bindings', async () => {
+    const printedWith = async (binding: VersionBinding): Promise<string> =>
+      printed(
+        around({
+          kind: 'userTask',
+          id: 'Review',
+          formRef: { key: 'review-form', binding },
+        }),
+      );
+
+    expect([
+      await printedWith({ kind: 'latest' }),
+      await printedWith({ kind: 'deployment' }),
+    ]).toEqual([
+      expect.stringContaining(
+        'user Review(formRef: "review-form", binding: latest)',
+      ),
+      expect.stringContaining(
+        'user Review(formRef: "review-form", binding: deployment)',
+      ),
+    ]);
+  });
+});
+
 describe('irToDsl: repeated activities', () => {
   const OVER_LINES: LoopCharacteristics = {
     collection: 'lines',
@@ -3319,6 +3473,93 @@ describe('irToDsl: repeated activities', () => {
   });
 });
 
+/**
+ * A prose setting is read back as text rather than evaluated, so the printer's
+ * escaping and the lexer's unescaping have to be exact inverses over every
+ * input a modeler can type. The adversarial rows are the ones a quoted body
+ * opening with `${` reaches: that body lexes as a raw expression, and the
+ * reader unwrapping one strips the quotes without unescaping, so every escape
+ * inside it would come back as two characters.
+ *
+ * Re-parsing through the compiler is the assertion, not the printed text: text
+ * that looks right and lexes differently is the whole failure being guarded.
+ */
+describe('irToDsl: prose comes back byte for byte', () => {
+  /** Each shape, the prose, and whether printing it needs a backslash at all. */
+  const PROSE = [
+    ['plain prose', 'Review the order', false],
+    ['prose holding a quote', 'Review the "rush" order', true],
+    ['prose holding a backslash', 'Review C:\\orders\\rush', true],
+    ['prose opening with a template', '${orderId} is the reference', true],
+    ['prose holding a template', 'Reference ${orderId} was confirmed', false],
+    ['prose opening with a bare dollar', '$50 is the threshold', false],
+    ['prose spanning two lines', 'Review the order.\nThen release it.', true],
+    ['prose holding a carriage return', 'Review the order.\rNow.', true],
+    [
+      'prose spanning two lines the way a text editor ends them',
+      'Review the order.\r\nThen release it.',
+      true,
+    ],
+    [
+      'prose opening with a template and holding a quote',
+      '${orderId} is the "rush" reference',
+      true,
+    ],
+    [
+      'prose opening with a template and spanning two lines',
+      '${orderId}\nis the reference',
+      true,
+    ],
+  ] as const;
+
+  /** Each prose setting and the IR field it is written from. */
+  const SLOTS = [
+    ['label', 'name'],
+    ['documentation', 'documentation'],
+  ] as const;
+
+  it.each(
+    PROSE.flatMap(([shape, text, escapes]) =>
+      SLOTS.map(
+        ([setting, field]) =>
+          [`${setting}, ${shape}`, field, text, escapes] as const,
+      ),
+    ),
+  )('%s', async (_title, field, text, escapes) => {
+    const carrying = (
+      value: string,
+    ): { name?: string; documentation?: string } =>
+      field === 'name' ? { name: value } : { documentation: value };
+    const print = (value: string): Promise<string> =>
+      printed(around({ kind: 'userTask', id: 'Review', ...carrying(value) }));
+
+    const dsl = await print(text);
+    // A statement prints on one line whatever its prose holds, which is what
+    // keeps the indentation of an enclosing block meaningful. Splitting on a
+    // lone carriage return too, since a raw one breaks a line for every reader
+    // of the file without breaking it for this test.
+    expect(dsl.split(/\r\n|\r|\n/)).toHaveLength(
+      (await print('Review the order')).split(/\r\n|\r|\n/).length,
+    );
+    // An escape no terminal asks for is noise in source somebody reads.
+    expect(dsl.includes('\\')).toBe(escapes);
+
+    const back = await reDesugar(dsl);
+    const [review] = back.flowElements.filter(
+      (el): el is Extract<FlowElement, { kind: 'userTask' }> =>
+        el.kind === 'userTask',
+    );
+    expect({
+      name: review?.name,
+      documentation: review?.documentation,
+    }).toEqual({
+      name: undefined,
+      documentation: undefined,
+      ...carrying(text),
+    });
+  });
+});
+
 // `printDsl` is the real entry point; the alias above unwraps `.source` for
 // every suite that only asserts printed text.
 
@@ -3329,6 +3570,12 @@ describe('irToDsl: repeated activities', () => {
  */
 const REPORT = {
   label: { category: 'label', says: ['block structure'] },
+  documentation: {
+    category: 'documentation',
+    says: ['block structure', 'carry it'],
+    // The two facts are reported apart, so neither message may state the other.
+    never: ['The label'],
+  },
   refusedStatement: {
     category: 'refusedStatement',
     says: ['draws an error', 'Rename the step in the model'],
@@ -3513,7 +3760,7 @@ const loopWithEscapesIr = ({
   );
 };
 
-describe('warnings: labels the script has nowhere to write', () => {
+describe('warnings: text the script has nowhere to write', () => {
   const splitIr = (name?: string): BpmnProcess =>
     minimalProcess(
       [
@@ -3605,6 +3852,61 @@ describe('warnings: labels the script has nowhere to write', () => {
     );
 
     expectReports(warnings, ['label', 'NSplit'], ['label', 'HSplit']);
+  });
+
+  /**
+   * Every gateway here has one way in and one way out, so all of them are
+   * walked straight through and the printed source is the same whether they
+   * carry text or not.
+   */
+  const gatewayTextIr = (carried: boolean): BpmnProcess => {
+    const text = (documentation: string) => (carried ? { documentation } : {});
+    return minimalProcess(
+      [
+        { kind: 'startEvent', id: 'S' },
+        {
+          kind: 'exclusiveGateway',
+          id: 'Choice',
+          ...(carried ? { name: 'Amount check' } : {}),
+          ...text('Small orders skip the review.'),
+        },
+        { kind: 'parallelGateway', id: 'Fork', ...text('Both routes run.') },
+        {
+          kind: 'inclusiveGateway',
+          id: 'Some',
+          ...text('Whichever conditions hold.'),
+        },
+        { kind: 'eventBasedGateway', id: 'Race', ...text('First reply wins.') },
+        chainedSub('Sub', [
+          { kind: 'startEvent', id: 'NS' },
+          {
+            kind: 'exclusiveGateway',
+            id: 'Nested',
+            ...text('Nested, and reported all the same.'),
+          },
+          { kind: 'endEvent', id: 'NE' },
+        ]),
+        { kind: 'endEvent', id: 'E' },
+      ],
+      flowChain('S', 'Choice', 'Fork', 'Some', 'Race', 'Sub', 'E'),
+    );
+  };
+
+  it('reports the documentation on every gateway kind, at any depth, and leaves the printed source alone', () => {
+    const carried = printDsl(gatewayTextIr(true));
+    const plain = printDsl(gatewayTextIr(false));
+
+    expect(carried.source).toBe(plain.source);
+    expect(plain.warnings).toEqual([]);
+    expectReports(
+      carried.warnings,
+      ['label', 'Choice'],
+      ['documentation', 'Choice'],
+      ['documentation', 'Fork'],
+      ['documentation', 'Some'],
+      ['documentation', 'Race'],
+      ['documentation', 'Nested'],
+    );
   });
 });
 

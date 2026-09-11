@@ -57,6 +57,7 @@ import {
   EMIT_TRIGGERS,
   END_TRIGGERS,
   EXECUTION_LISTENER_EVENTS,
+  FIELD_DIRECTION,
   FORM_FIELD_TYPES,
   ON_TRIGGERS,
   START_TRIGGERS,
@@ -112,12 +113,14 @@ import type {
   EngineAttributes,
   EventDefinition,
   ExecutionListener,
+  FieldInjection,
   FlowElement,
   FormField,
   FormFieldType,
   IoMapped,
   IoParameter,
   IoValue,
+  Named,
   Repeatable,
   SequenceFlow as IrSequenceFlow,
   ListenerBinding,
@@ -125,6 +128,7 @@ import type {
   ServiceTaskBinding,
   StartEvent as IrStartEvent,
   TaskListener,
+  UserTask as IrUserTask,
   VersionBinding,
 } from './ir/types.js';
 import { engineAttributes, eventIdentities, ioMapped } from './ir/types.js';
@@ -192,7 +196,17 @@ export function astToIr(model: Model): BpmnProcess {
   lowerContainerBody(builder, process.body, process.name, process.name);
 
   const label = processSetting(process, 'label');
+  const documentation = processSetting(process, 'documentation');
   const versionTag = processSetting(process, 'versionTag');
+  const historyTimeToLive = processSetting(process, 'historyTimeToLive');
+  const candidateStarterUsers = processSetting(
+    process,
+    'candidateStarterUsers',
+  );
+  const candidateStarterGroups = processSetting(
+    process,
+    'candidateStarterGroups',
+  );
   const { errorCodes, escalationCodes } = eventIdentities({
     id: process.name,
     flowElements: builder.flowElements,
@@ -207,8 +221,12 @@ export function astToIr(model: Model): BpmnProcess {
   return {
     id: process.name,
     ...(label !== undefined ? { name: label } : {}),
+    ...(documentation !== undefined ? { documentation } : {}),
     isExecutable: true,
     ...(versionTag !== undefined ? { versionTag } : {}),
+    ...(historyTimeToLive !== undefined ? { historyTimeToLive } : {}),
+    ...(candidateStarterUsers !== undefined ? { candidateStarterUsers } : {}),
+    ...(candidateStarterGroups !== undefined ? { candidateStarterGroups } : {}),
     flowElements: builder.flowElements,
     sequenceFlows: builder.sequenceFlows,
     ...(errorDecls.length > 0 ? { errorDecls } : {}),
@@ -472,12 +490,14 @@ function lowerStatement(
 function lowerStartEvent(builder: Builder, stmt: AstStartEvent): Frontier {
   const formFields = lowerFormFields(stmt);
   const eventDefinition = startEventDefinition(stmt);
+  const initiator = attrValue(settingsOf(stmt.items), 'initiator');
   builder.flowElements.push({
     kind: 'startEvent',
     id: stmt.name,
-    ...labelName(stmt),
+    ...namedAttrs(stmt),
     ...(formFields !== undefined ? { formFields } : {}),
     ...(eventDefinition !== undefined ? { eventDefinition } : {}),
+    ...(initiator !== undefined ? { initiator } : {}),
     ...readEngineAttributes(stmt),
   });
   return { entry: stmt.name, exit: stmt.name };
@@ -499,10 +519,9 @@ function admittedTrigger<W extends string>(
 }
 
 /**
- * The trigger a top-level start carries. A word outside the start vocabulary
- * lowers to nothing, which is where `start S condition` goes: the validator
- * rejects a condition at this position, and a conditional start is outside
- * what this surface emits.
+ * The trigger a top-level start carries, among the words `START_TRIGGERS`
+ * admits. A word outside that vocabulary lowers to nothing, leaving the
+ * validator to report it.
  */
 function startEventDefinition(
   stmt: AstStartEvent,
@@ -530,7 +549,7 @@ function lowerEndEvent(builder: Builder, stmt: AstEndEvent): Frontier {
   builder.flowElements.push({
     kind: 'endEvent',
     id: stmt.name,
-    ...labelName(stmt),
+    ...namedAttrs(stmt),
     ...(eventDefinition !== undefined ? { eventDefinition } : {}),
     ...readEngineAttributes(stmt),
   });
@@ -545,6 +564,7 @@ function lowerEndEvent(builder: Builder, stmt: AstEndEvent): Frontier {
 function lowerUserTask(builder: Builder, stmt: AstUserTask): Frontier {
   const assignee = attrValue(settingsOf(stmt.items), 'assignee');
   const formKey = attrValue(settingsOf(stmt.items), 'formKey');
+  const formRef = readFormRef(settingsOf(stmt.items));
   const formFields = lowerFormFields(stmt);
   const candidateGroups = attrValue(settingsOf(stmt.items), 'candidateGroups');
   const candidateUsers = attrValue(settingsOf(stmt.items), 'candidateUsers');
@@ -555,9 +575,10 @@ function lowerUserTask(builder: Builder, stmt: AstUserTask): Frontier {
   builder.flowElements.push({
     kind: 'userTask',
     id: stmt.name,
-    ...labelName(stmt),
+    ...namedAttrs(stmt),
     ...(assignee !== undefined ? { assignee } : {}),
     ...(formKey !== undefined ? { formKey } : {}),
+    ...(formRef !== undefined ? { formRef } : {}),
     ...(formFields !== undefined ? { formFields } : {}),
     ...(candidateGroups !== undefined ? { candidateGroups } : {}),
     ...(candidateUsers !== undefined ? { candidateUsers } : {}),
@@ -570,6 +591,18 @@ function lowerUserTask(builder: Builder, stmt: AstUserTask): Frontier {
     ...readEngineAttributes(stmt),
   });
   return { entry: stmt.name, exit: stmt.name };
+}
+
+/**
+ * A form reference naming no binding is left out: Operaton refuses to deploy
+ * one, so there is nothing to carry. The validator reports it.
+ */
+function readFormRef(attrs: KeyValueAttr[]): IrUserTask['formRef'] {
+  const key = attrValue(attrs, 'formRef');
+  const binding = versionBinding(attrs);
+  return key === undefined || binding === undefined
+    ? undefined
+    : { key, binding };
 }
 
 function lowerFormFields(
@@ -624,8 +657,11 @@ function lowerServiceTaskLike(
   builder.flowElements.push({
     kind: 'serviceTask',
     id: stmt.name,
-    ...labelName(stmt),
-    binding,
+    ...namedAttrs(stmt),
+    binding:
+      binding.kind === 'external' || binding.kind === 'decision'
+        ? binding
+        : withDeclaredFields(binding, stmt.params),
     ...(resultVariable !== undefined ? { resultVariable } : {}),
     ...(element !== undefined ? { element } : {}),
     ...readLoop(stmt),
@@ -687,7 +723,7 @@ function lowerGenericTask(builder: Builder, stmt: AstGenericTask): Frontier {
   builder.flowElements.push({
     kind: 'task',
     id: stmt.name,
-    ...labelName(stmt),
+    ...namedAttrs(stmt),
     ...readLoop(stmt),
     ...readIoParameters(stmt.params),
     ...readEngineAttributes(stmt),
@@ -710,7 +746,7 @@ function lowerReceiveTask(builder: Builder, stmt: AstReceiveTask): Frontier {
   builder.flowElements.push({
     kind: 'receiveTask',
     id: stmt.name,
-    ...labelName(stmt),
+    ...namedAttrs(stmt),
     ...(messageName !== undefined ? { messageName } : {}),
     ...readLoop(stmt),
     ...readIoParameters(stmt.params),
@@ -770,7 +806,7 @@ function lowerScriptTask(builder: Builder, stmt: AstScriptTask): Frontier {
   builder.flowElements.push({
     kind: 'scriptTask',
     id: stmt.name,
-    ...labelName(stmt),
+    ...namedAttrs(stmt),
     format: SCRIPT_FORMAT_ALIASES[tag] ?? tag,
     code,
     ...(resultVariable !== undefined ? { resultVariable } : {}),
@@ -1068,7 +1104,7 @@ function lowerSubProcess(
   builder.flowElements.push({
     kind: 'subProcess',
     id: stmt.name,
-    ...labelName(stmt),
+    ...namedAttrs(stmt),
     ...(stmt.transactional ? { element: 'transaction' as const } : {}),
     flowElements: nested.flowElements,
     sequenceFlows: nested.sequenceFlows,
@@ -1476,7 +1512,7 @@ function lowerCallActivity(builder: Builder, stmt: AstCallActivity): Frontier {
   builder.flowElements.push({
     kind: 'callActivity',
     id: stmt.name,
-    ...labelName(stmt),
+    ...namedAttrs(stmt),
     calledElement,
     ...(binding !== undefined ? { binding } : {}),
     ...(businessKey !== undefined ? { businessKey } : {}),
@@ -1740,7 +1776,49 @@ function listenerBinding(listener: AstListener): ListenerBinding {
     const { tag, code } = splitFencedScript(listener.script);
     return { kind: 'script', format: SCRIPT_FORMAT_ALIASES[tag] ?? tag, code };
   }
-  return codeBinding(settingsOf(listener.items)) ?? NO_BINDING;
+  return withDeclaredFields(
+    codeBinding(settingsOf(listener.items)) ?? NO_BINDING,
+    listener.params,
+  );
+}
+
+/**
+ * Carry the block's fields onto the binding, or leave a binding the engine
+ * hands no field list as it is. The validator reports the write; this only
+ * declines to carry it. Exhaustive on purpose: a kind added to
+ * {@link CodeBinding} stops compiling here until it picks a side.
+ */
+function withDeclaredFields(
+  binding: CodeBinding,
+  params: AstIoParameter[],
+): CodeBinding {
+  switch (binding.kind) {
+    case 'class':
+    case 'delegateExpression': {
+      const fields = readFieldInjections(params);
+      return fields.length === 0 ? binding : { ...binding, fields };
+    }
+    case 'expression':
+      // Operaton builds this behaviour from the expression and the result
+      // variable alone, with no field list to hand it.
+      return binding;
+  }
+}
+
+/**
+ * The `field` members of a block, in source order. A list, a map, and an inline
+ * script have no `operaton:field` slot to lower to, so a value in one of those
+ * forms is left out for the validator to report.
+ */
+function readFieldInjections(params: AstIoParameter[]): FieldInjection[] {
+  return params
+    .filter((param) => param.direction === FIELD_DIRECTION)
+    .flatMap((param) => {
+      const value = lowerIoValue(param.value);
+      return value.kind === 'text'
+        ? [{ name: param.name, value: value.text }]
+        : [];
+    });
 }
 
 /**
@@ -1910,12 +1988,18 @@ function collectNamedIds(process: Process): Set<string> {
 type KeyValueAttr = { key: string; value: Expr };
 
 /**
- * An element's label, written as its `label` setting. The IR calls it `name`,
- * since BPMN's `name` is the human-facing text.
+ * An element's name and documentation, written as its `label` and
+ * `documentation` settings. The IR calls the label `name`, since BPMN's
+ * `name` is the human-facing text.
  */
-function labelName(stmt: { items: ParenItem[] }): { name?: string } {
-  const label = attrValue(settingsOf(stmt.items), 'label');
-  return label !== undefined ? { name: label } : {};
+function namedAttrs(stmt: { items: ParenItem[] }): Named {
+  const attrs = settingsOf(stmt.items);
+  const name = attrValue(attrs, 'label');
+  const documentation = attrValue(attrs, 'documentation');
+  return {
+    ...(name !== undefined ? { name } : {}),
+    ...(documentation !== undefined ? { documentation } : {}),
+  };
 }
 
 /**
@@ -1972,7 +2056,7 @@ function stripExpressionWrapper(rendered: string): string {
   return rendered;
 }
 
-/** `operaton:versionTag` is an author-supplied label distinct from the deployment version. */
+/** Reads one of the process header keys in `PROCESS_HEADER_KEYS`, verbatim as authored. */
 function processSetting(process: Process, key: string): string | undefined {
   return attrValue(settingsOf(process.items), key);
 }

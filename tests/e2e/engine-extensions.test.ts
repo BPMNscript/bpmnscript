@@ -1,9 +1,11 @@
-// A listener the engine never invokes, an input parameter it ignores, and an
-// `asyncBefore` that does not break the transaction all compile to the same
-// well-formed file, so no XML-against-XML test can tell them apart. This suite
-// boots a real Operaton and reads back what it did: the markers the listeners
-// wrote, the values the service task resolved from its mapped parameters, and
-// the job the async continuation parked the token on.
+// A listener the engine never invokes, an input parameter it ignores, an
+// injected field that never reaches its delegate, and an `asyncBefore` that
+// does not break the transaction all compile to the same well-formed file, so
+// no XML-against-XML test can tell them apart. This suite boots a real Operaton
+// and reads back what it did: the markers the listeners wrote, the values the
+// engine set on each bean before invoking it, the values the service task
+// resolved from its mapped parameters, the form reference it parsed off the
+// user task, and the job the async continuation parked the token on.
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 
@@ -11,6 +13,7 @@ import type { FixtureAdapter } from '../fixtures/index.js';
 import {
   deployExamples,
   ENGINE_BOOT_TIMEOUT_MS,
+  ENGINE_STOP_TIMEOUT_MS,
   SKIP_DOCKER as SKIP,
 } from '../helpers/e2e-fixture.js';
 import {
@@ -45,6 +48,13 @@ interface JobDefinition {
 
 interface TransitionInstance {
   activityId: string;
+}
+
+// What `GET /task/{id}/form` reports: a task naming a form by key fills `key`,
+// one naming a deployed form fills `operatonFormRef`, and never both.
+interface TaskForm {
+  key: string | null;
+  operatonFormRef: { key: string; binding: string; version: number } | null;
 }
 
 interface ActivityInstanceTree {
@@ -162,16 +172,64 @@ describe.skipIf(SKIP)(
 
     afterAll(async () => {
       await fixture?.stop();
-    });
+    }, ENGINE_STOP_TIMEOUT_MS);
 
-    it('fires both execution listeners of a service task, start before end', async () => {
+    it('fires both execution listeners of a service task, its delegate, and the task listener, in that order', async () => {
       const { processInstanceId } = await startAndReachUserTask();
 
       const markers = await listenerMarkers(processInstanceId);
 
+      // The injected value is the third segment and is dropped here, so this
+      // asserts what the engine invoked and the test below what it set.
       expect(
-        markers.filter((marker) => marker.startsWith('RecordMarkers:')),
-      ).toEqual(['RecordMarkers:start', 'RecordMarkers:end']);
+        markers.map((marker) => marker.split(':').slice(0, 2).join(':')),
+      ).toEqual([
+        'RecordMarkers:start',
+        'RecordMarkers:execute',
+        'RecordMarkers:end',
+        'ConfirmMarkers:create',
+      ]);
+    }, 60_000);
+
+    it('sets each injected field on the bean it was declared under, evaluating an expression and leaving a literal alone', async () => {
+      const { processInstanceId } = await startAndReachUserTask();
+
+      const markers = await listenerMarkers(processInstanceId);
+
+      // Null where the binding carried no field, so a field that leaked onto
+      // the wrong bean fails as loudly as one that never arrived. The start
+      // listener's value is the instance id the expression resolved to, which
+      // nothing in the deployment could have carried: had the engine been
+      // handed the literal instead, the marker would read `${...}` verbatim.
+      // The delegate's value runs the reverse check: it holds a `${...}` the
+      // engine would evaluate to `recorded-2` had it arrived in the expression
+      // slot, so it reads back verbatim only while the literal slot is used.
+      expect(markers.map((marker) => marker.split(':')[2] ?? null)).toEqual([
+        processInstanceId,
+        'recorded-${1+1}',
+        null,
+        'confirmed',
+      ]);
+    }, 60_000);
+
+    it('parses the form reference off the user task and reports it with its binding and version', async () => {
+      const { taskId } = await startAndReachUserTask();
+
+      const form = await engineGet<TaskForm>(
+        fixture,
+        `/engine-rest/task/${encodeURIComponent(taskId)}/form`,
+        `formOf(${taskId})`,
+      );
+
+      // Read back off the engine's own parse of the deployment, which is the
+      // only place the three `operaton:formRef*` attributes are ever read: a
+      // reference missing its binding fails the deployment outright.
+      expect(form.operatonFormRef).toEqual({
+        key: 'confirm-markers',
+        binding: 'version',
+        version: 1,
+      });
+      expect(form.key).toBeNull();
     }, 60_000);
 
     it('maps a scalar and a map input into the service task and an output back onto the instance', async () => {
@@ -207,7 +265,7 @@ describe.skipIf(SKIP)(
         'ConfirmMarkers',
       ]);
       expect(await listenerMarkers(processInstanceId)).toContain(
-        'ConfirmMarkers:create',
+        'ConfirmMarkers:create:confirmed',
       );
 
       await fixture.completeTask(taskId);

@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname } from 'node:path';
 
 import { EmptyFileSystem } from 'langium';
-import { parseHelper } from 'langium/test';
+import { validationHelper } from 'langium/test';
 import { createBpmnScriptServices } from '@bpmn-script/language';
 import type { Model } from '@bpmn-script/language';
 import { xmlToIr } from '@bpmn-script/transform';
@@ -51,11 +51,11 @@ for (const [label, p] of [
   }
 }
 
-let parse: ReturnType<typeof parseHelper<Model>>;
+let validate: ReturnType<typeof validationHelper<Model>>;
 
 beforeAll(() => {
   const services = createBpmnScriptServices(EmptyFileSystem);
-  parse = parseHelper<Model>(services.BpmnScript);
+  validate = validationHelper<Model>(services.BpmnScript);
 });
 
 /** Every substring must appear, so a message that stops naming one fails. */
@@ -142,8 +142,8 @@ describe('compileDslToBpmn', () => {
   });
 });
 
-// `formRef` and the lane are both dropped without loss of behavior, so
-// `xmlToIr` warns instead of refusing.
+// `formHandlerClass` and the lane are both dropped without loss of
+// behavior, so `xmlToIr` warns instead of refusing.
 const LANE_AND_ASYNC_ATTR_BPMN = `<?xml version="1.0" encoding="UTF-8"?>
 <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
                   xmlns:operaton="http://operaton.org/schema/1.0/bpmn"
@@ -159,7 +159,7 @@ const LANE_AND_ASYNC_ATTR_BPMN = `<?xml version="1.0" encoding="UTF-8"?>
     <bpmn:startEvent id="S" />
     <bpmn:userTask id="AsyncTask" name="Async Task"
                    operaton:assignee="alice" operaton:asyncBefore="true"
-                   operaton:formRef="review-form" />
+                   operaton:formHandlerClass="com.example.FormHandler" />
     <bpmn:endEvent id="E" />
     <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="AsyncTask" />
     <bpmn:sequenceFlow id="F2" sourceRef="AsyncTask" targetRef="E" />
@@ -212,7 +212,7 @@ describe('decompileBpmnToDsl', () => {
           ['Lane_Ops', 'lane'],
           ['AsyncTask', 'extensionAttribute'],
         ],
-        mentions: ['formRef'],
+        mentions: ['formHandlerClass'],
       },
     ],
     [
@@ -225,13 +225,9 @@ describe('decompileBpmnToDsl', () => {
       },
     ],
     [
-      'a conditional start event is refused, naming the event and its trigger',
+      'a conditional start event comes back as a script the compiler accepts',
       CONDITIONAL_START_BPMN,
-      {
-        ok: false,
-        kind: 'unsupported',
-        mentions: ['ConditionalStart', 'conditional'],
-      },
+      { ok: true, warnings: [], mentions: [] },
     ],
   ])('%s', async (_title, xml, expected) => {
     const result = await decompileBpmnToDsl(xml, 'input.bpmn');
@@ -246,9 +242,15 @@ describe('decompileBpmnToDsl', () => {
         result.warnings.map((w) => w.message).join('\n'),
         expected.mentions,
       );
-      // Whatever it accepts, it must hand back a script Langium accepts.
-      const doc = await parse(result.output);
-      expect(doc.parseResult.parserErrors).toHaveLength(0);
+      // Whatever it accepts, it must hand back a script the compiler accepts.
+      // Parsing alone is not that bar: it takes source the validator refuses.
+      // Severity 1 is the bar the compile direction blocks on, so it is the
+      // bar the output has to clear; a BPMN carrying no variable declarations
+      // decompiles to a script that warns about them.
+      const { diagnostics } = await validate(result.output);
+      expect(
+        diagnostics.filter((d) => d.severity === 1).map((d) => d.message),
+      ).toEqual([]);
       return;
     }
 

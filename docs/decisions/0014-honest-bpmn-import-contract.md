@@ -55,7 +55,8 @@ Warned constructs are returned in a `warnings: ImportWarning[]` array alongside 
 - a `name` on an event handler, a boundary event, a throw, an emit, or an await, since none of those has a label slot in this tool's surface; and a `name` on a start or an end whose id carries a synthesized-id prefix, which no script can spell back, so the statement that would have carried the label is left out whole
 - a `bpmn:Message` or `bpmn:Signal` root that nothing in the imported process references, a receive task's `messageRef` included; and an error or escalation root carrying no code, which nothing can key it by.
   An error or escalation root carrying a code imports as the declaration ADR-0030 gives it, whether or not anything raises it.
-- `bpmn:documentation` on any element
+- `bpmn:documentation` on the definitions root, an event definition, an Error, Escalation, Message, or Signal root, a multi-instance loop characteristics element, a sequence flow, or one of the three intermediate events with no label slot, since none of those has a node in the IR to hold it.
+  `bpmn:documentation` carrying more than one child on one element, or a child whose `textFormat` is not plaintext, warns the same way; a single plaintext child on any other element imports as the `documentation` ADR-0031 gives it.
 - BPMN content on an element the transform touches that no reader reads: an artifact on a process or a sub-process (a `bpmn:textAnnotation`, its `bpmn:association`, a `bpmn:group`), a `bpmn:ioSpecification`, a `bpmn:property`, a data association, a `bpmn:auditing` or `bpmn:monitoring` block, and a resource assignment such as a `bpmn:potentialOwner`
 - a root element other than the process and the error, escalation, message, and signal roots the events resolve against, such as a `bpmn:category`, a `bpmn:dataStore`, a `bpmn:itemDefinition`, or a `bpmn:interface`
 - an attribute written without a namespace that BPMN does not declare
@@ -103,6 +104,8 @@ ADR-0025 is the decision that extended this contract to the print hop.
 The exact refuse/warn boundary and the `ImportWarning` shape (`elementId`, `category`, `message`) are documented in `packages/transform/src/errors.ts` and `packages/transform/src/xml-to-ir.ts`; a consumer-facing summary is in `packages/transform/README.md`.
 
 Amended by ADR-0030, which narrows `unreferencedRoot` to the roots the surface still cannot hold.
+
+Amended by ADR-0031, which narrows the `bpmn:documentation` bullet to the positions the surface still cannot hold.
 
 Related decisions: ADR-0006 (the shared IR, where `warnings` deliberately lives outside the IR, which stays serializable).
 ADR-0007 (the Operaton moddle extension fork, whose declared and undeclared elements determine warning-attribution precision).

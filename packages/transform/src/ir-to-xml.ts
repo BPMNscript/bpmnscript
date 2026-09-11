@@ -31,6 +31,7 @@ import type {
   CallVariableMapping,
   EventDefinition,
   ExecutionListener,
+  FieldInjection,
   FlowContainer,
   FlowElement,
   FormField,
@@ -56,9 +57,9 @@ import {
 const TARGET_NAMESPACE = 'http://bpmnscript.io/processes';
 
 /**
- * `operaton:historyTimeToLive` on every process, not parameterized at the IR
- * level. Exported so the importer can pass a document carrying exactly this
- * value without a warning: re-export reproduces it.
+ * The `operaton:historyTimeToLive` written for a process that authors none.
+ * Exported so the importer can recognise this exact value as unwritten and
+ * drop it, rather than inventing a setting the source never had.
  */
 export const HISTORY_TIME_TO_LIVE = 'P30D';
 
@@ -121,10 +122,22 @@ export async function irToXml(
   const processAttrs: Record<string, unknown> = {
     id: process.id,
     name: process.name ?? humanize(process.id),
+    ...documentationChild(moddle, process.documentation),
     isExecutable: process.isExecutable,
-    'operaton:historyTimeToLive': HISTORY_TIME_TO_LIVE,
+    // Suppressing an unwritten value belongs on the import side, not here:
+    // `normalizeContainer` spreads the whole container during round-trip
+    // comparison, so a printer-side suppression would leave the source IR
+    // mismatched against the reimported one.
+    'operaton:historyTimeToLive':
+      process.historyTimeToLive ?? HISTORY_TIME_TO_LIVE,
     ...(process.versionTag !== undefined
       ? { 'operaton:versionTag': process.versionTag }
+      : {}),
+    ...(process.candidateStarterUsers !== undefined
+      ? { 'operaton:candidateStarterUsers': process.candidateStarterUsers }
+      : {}),
+    ...(process.candidateStarterGroups !== undefined
+      ? { 'operaton:candidateStarterGroups': process.candidateStarterGroups }
       : {}),
     flowElements: buildContainerChildren(moddle, process, roots),
   };
@@ -495,6 +508,7 @@ function createFlowNode(
   const baseAttrs: Record<string, unknown> = {
     id: node.id,
     ...(name === undefined ? {} : { name }),
+    ...flowNodeDocumentation(moddle, node),
     ...engineSettingAttrs(moddle, node, roots),
     ...loopCharacteristicsAttrs(moddle, node),
   };
@@ -504,6 +518,9 @@ function createFlowNode(
       const attrs: Record<string, unknown> = {
         ...baseAttrs,
         ...eventDefinitionAttrs(moddle, node.eventDefinition, roots),
+        ...(node.initiator !== undefined
+          ? { 'operaton:initiator': node.initiator }
+          : {}),
       };
       // BPMN defaults to interrupting, and the serializer drops a default.
       if (node.isInterrupting === false) {
@@ -558,6 +575,13 @@ function createFlowNode(
       for (const key of USER_TASK_ATTRIBUTES) {
         const value = node[key];
         if (value !== undefined) attrs[`operaton:${key}`] = value;
+      }
+      if (node.formRef !== undefined) {
+        attrs['operaton:formRef'] = node.formRef.key;
+        Object.assign(
+          attrs,
+          versionBindingAttrs('operaton:formRef', node.formRef.binding),
+        );
       }
       return moddle.create('bpmn:UserTask', attrs);
     }
@@ -684,6 +708,36 @@ function versionBindingAttrs(
 }
 
 /**
+ * The `bpmn:documentation` child carrying `text` verbatim, or `{}` for
+ * `undefined`. `textFormat` stays unset, since an absent attribute is what
+ * `text/plain` means, and moddle serializes `BaseElement`'s properties in
+ * descriptor order regardless of where this is spread in.
+ */
+function documentationChild(
+  moddle: BpmnModdleInstance,
+  text: string | undefined,
+): { documentation?: ModdleElement[] } {
+  return text === undefined
+    ? {}
+    : { documentation: [moddle.create('bpmn:Documentation', { text })] };
+}
+
+/**
+ * A flow node's documentation, or `{}`. `in` narrows past the kinds whose IR
+ * type carries no `documentation` field at all. Unlike {@link flowNodeName}
+ * this derives nothing and humanizes nothing: absent is absent.
+ */
+function flowNodeDocumentation(
+  moddle: BpmnModdleInstance,
+  node: FlowElement,
+): { documentation?: ModdleElement[] } {
+  return documentationChild(
+    moddle,
+    'documentation' in node ? node.documentation : undefined,
+  );
+}
+
+/**
  * Derived from the id where the IR carries no name. A synthesized id
  * (`Gateway_..._split`, `StartEvent_<processId>`) would humanize to noise, so
  * the kinds that carry one derive nothing, and the surfaces with no label slot
@@ -798,6 +852,16 @@ function buildExtensionElements(
   roots: RootElementIndex,
 ): ModdleElement | undefined {
   const values: ModdleElement[] = [];
+  // A field configures the implementation the element's own attributes name
+  // (`operaton:class`/`operaton:delegateExpression`), so it precedes even the
+  // io-parameter block. Only a serviceTask-like tag has that implementation
+  // slot; a thrown or emitted message's binding lives on its message
+  // definition instead, which carries no field slot of its own (ADR 0032).
+  if (node.kind === 'serviceTask') {
+    for (const field of codeBindingFields(node.binding)) {
+      values.push(buildField(moddle, field));
+    }
+  }
   const inputOutput = buildInputOutput(moddle, node);
   if (inputOutput !== undefined) {
     values.push(inputOutput);
@@ -914,6 +978,38 @@ function buildIoValueElement(
   }
 }
 
+/**
+ * The `operaton:field` list a `class` or `delegateExpression` binding
+ * carries, the two members Operaton's parser hands a field list to; every
+ * other binding shape (an expression, a topic, a decision, or a listener's
+ * inline script) has no `fields` slot to read.
+ */
+function codeBindingFields(
+  binding: ServiceTaskBinding | ListenerBinding,
+): FieldInjection[] {
+  return binding.kind === 'class' || binding.kind === 'delegateExpression'
+    ? (binding.fields ?? [])
+    : [];
+}
+
+/**
+ * One `operaton:field`. `stringValue` is injected into the bean verbatim;
+ * `expression` is evaluated per instantiation. The moddle declares
+ * `expression` as a non-attribute String, so it serializes as a child rather
+ * than an attribute, which is what lets the two slots share one DSL spelling.
+ */
+function buildField(
+  moddle: BpmnModdleInstance,
+  field: FieldInjection,
+): ModdleElement {
+  return moddle.create('operaton:Field', {
+    name: field.name,
+    ...(field.value.startsWith('${')
+      ? { expression: field.value }
+      : { stringValue: field.value }),
+  });
+}
+
 /** A `timeout` task listener adds the `bpmn:timerEventDefinition` child. */
 function buildListener(
   moddle: BpmnModdleInstance,
@@ -921,9 +1017,13 @@ function buildListener(
   listener: ExecutionListener | TaskListener,
   roots: RootElementIndex,
 ): ModdleElement {
+  const fields = codeBindingFields(listener.binding);
   const attrs: Record<string, unknown> = {
     event: listener.event,
     ...listenerBindingAttrs(moddle, listener.binding),
+    ...(fields.length > 0
+      ? { fields: fields.map((field) => buildField(moddle, field)) }
+      : {}),
   };
   if ('timer' in listener && listener.timer !== undefined) {
     attrs.eventDefinitions = [
