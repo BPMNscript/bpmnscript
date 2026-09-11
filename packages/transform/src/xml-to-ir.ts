@@ -22,6 +22,7 @@ import type {
   BoundaryEvent,
   BpmnProcess,
   CallActivity,
+  CallVariableMapper,
   CallVariableMapping,
   EndEvent,
   EngineAttributes,
@@ -86,6 +87,7 @@ import {
   HISTORY_TIME_TO_LIVE,
   SERVICE_TASK_LIKE_TAG,
   TIMER_KIND_TO_CHILD,
+  VARIABLE_MAPPING_ATTR_BY_KIND,
 } from './ir-to-xml.js';
 import {
   claimDeclarationName,
@@ -214,6 +216,12 @@ const CONSUMED_EXTENSION_ATTRS = consumptionTable([
   ['mapDecisionResult', ['bpmn:BusinessRuleTask']],
   ['calledElementBinding', ['bpmn:CallActivity']],
   ['calledElementVersion', ['bpmn:CallActivity']],
+  ...Object.values(VARIABLE_MAPPING_ATTR_BY_KIND).map(
+    (attr): readonly [string, readonly string[]] => [
+      attr,
+      ['bpmn:CallActivity'],
+    ],
+  ),
   ['collection', ['bpmn:MultiInstanceLoopCharacteristics']],
   ['elementVariable', ['bpmn:MultiInstanceLoopCharacteristics']],
   ['versionTag', ['bpmn:Process']],
@@ -2323,6 +2331,7 @@ function mapCallActivity(
     warnings,
   );
   const { businessKey, inMappings, outMappings } = readCallMappings(el, id);
+  const mapper = readCallVariableMapper(el, id, warnings);
 
   return {
     kind: 'callActivity',
@@ -2331,11 +2340,49 @@ function mapCallActivity(
     calledElement,
     ...(binding === undefined ? {} : { binding }),
     ...(businessKey === undefined ? {} : { businessKey }),
+    ...(mapper === undefined ? {} : { mapper }),
     ...(inMappings === undefined ? {} : { inMappings }),
     ...(outMappings === undefined ? {} : { outMappings }),
     ...readEngineAttributes(el, id, warnings),
     ...readIoMapping(el, id, warnings),
   };
+}
+
+/**
+ * The variable-mapping delegate a call activity names, class first then
+ * delegate expression: Operaton's own if/else-if in
+ * `BpmnParse.parseCallActivity` resolves them in that order, taking the class
+ * and silently dropping the delegate expression when both are set. Importing
+ * that way loses nothing the engine was going to run, so this warns instead
+ * of refusing, through {@link buildShadowedImplementationWarning} rather than
+ * `warnShadowedImplementation` itself, since `IMPLEMENTATION_ATTRS`/
+ * `IMPLEMENTATION_OWNERS` is keyed to the tags that resolve one
+ * implementation and deliberately excludes `bpmn:CallActivity`.
+ */
+function readCallVariableMapper(
+  el: ModdleElement,
+  id: string,
+  warnings: ImportWarning[],
+): CallVariableMapper | undefined {
+  const classAttr = VARIABLE_MAPPING_ATTR_BY_KIND.class;
+  const delegateAttr = VARIABLE_MAPPING_ATTR_BY_KIND.delegateExpression;
+  const className = readNamespacedAttr(el, classAttr);
+  const expression = readNamespacedAttr(el, delegateAttr);
+
+  if (className !== undefined && expression !== undefined) {
+    warnings.push(
+      buildShadowedImplementationWarning(
+        id,
+        delegateAttr,
+        `operaton:${classAttr}`,
+      ),
+    );
+  }
+
+  if (className !== undefined) return { kind: 'class', className };
+  if (expression !== undefined)
+    return { kind: 'delegateExpression', expression };
+  return undefined;
 }
 
 /** Refuse the call-activity attributes that change what the engine executes. */
@@ -2350,20 +2397,7 @@ function refuseExecutionAffectingCallActivityAttrs(
   }
 }
 
-/** Checked in this order, so an element carrying two of them names the first. */
 const EXECUTION_AFFECTING_CALL_ATTRS: readonly (readonly [string, string])[] = [
-  [
-    'variableMappingClass',
-    'it sets variableMappingClass, which replaces the operaton:in/operaton:out ' +
-      'mapping with a Java delegate; importing it would pass no variables ' +
-      'into or out of the called process',
-  ],
-  [
-    'variableMappingDelegateExpression',
-    'it sets variableMappingDelegateExpression, which replaces the ' +
-      'operaton:in/operaton:out mapping with a delegate expression; ' +
-      'importing it would pass no variables into or out of the called process',
-  ],
   [
     'calledElementTenantId',
     'it sets calledElementTenantId, which pins the tenant the engine ' +
@@ -4053,6 +4087,27 @@ function warnDanglingModifiers(
 }
 
 /**
+ * The warning that `attr` on `id` is a no-op because `winner` already
+ * resolved the implementation. Shared by {@link warnShadowedImplementation},
+ * which loops it over every unread implementation attribute, and by
+ * {@link readCallVariableMapper}, which has exactly one attribute
+ * (`operaton:delegateExpression`) that `bpmn:CallActivity` can shadow.
+ */
+function buildShadowedImplementationWarning(
+  id: string,
+  attr: string,
+  winner: string,
+): ImportWarning {
+  return {
+    elementId: id,
+    category: 'extensionAttribute',
+    message:
+      `The '${attr}' setting on '${id}' has no effect alongside ${winner} ` +
+      'and was not imported.',
+  };
+}
+
+/**
  * Every implementation attribute `winner` leaves unread, named against it.
  * Operaton passes over the same ones: `parseServiceTaskLike` stops at the first
  * it resolves, and a named decision goes to `parseDmnBusinessRuleTask`, which
@@ -4070,13 +4125,7 @@ function warnShadowedImplementation(
   for (const attr of IMPLEMENTATION_ATTRS) {
     if (consumed.includes(attr)) continue;
     if (readNamespacedAttr(el, attr) === undefined) continue;
-    warnings.push({
-      elementId: id,
-      category: 'extensionAttribute',
-      message:
-        `The '${attr}' setting on '${id}' has no effect alongside ${winner} ` +
-        'and was not imported.',
-    });
+    warnings.push(buildShadowedImplementationWarning(id, attr, winner));
   }
 }
 

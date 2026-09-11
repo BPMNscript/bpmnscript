@@ -61,7 +61,7 @@ type FlowElement =
   | InclusiveGateway // kind: 'inclusiveGateway' (+defaultFlowId?)
   | EventBasedGateway // kind: 'eventBasedGateway'
   | SubProcess // kind: 'subProcess'  (a nested FlowContainer; may host an on-compensation undo block; +element?: 'transaction', the tag it serializes to; +loop?)
-  | CallActivity // kind: 'callActivity'  (starts another process; in/out mappings, binding, businessKey, +loop?)
+  | CallActivity // kind: 'callActivity'  (starts another process; in/out mappings, binding, businessKey, +mapper?: the class or bean that computes the mapping in code, +loop?)
   | IntermediateThrowEvent // kind: 'intermediateThrowEvent'  (an emit: escalation | message | signal | compensation; +binding? on a message, the implementation Operaton sends it with)
   | IntermediateCatchEvent // kind: 'intermediateCatchEvent'  (an await: message | timer | signal | conditional)
   | BoundaryEvent; // kind: 'boundaryEvent'  (attached to an activity in the same container; +cancelActivity?: false)
@@ -192,9 +192,10 @@ The question is asked per owner kind, so an engine setting on a gateway, an `ope
 It is asked again of every extension child the IR does read, so an unread attribute there is reported rather than leaving with the element that imports: an `operaton:taskListener`'s `id`, which Operaton addresses a timeout listener's job by, an undeclared `operaton:` or foreign-namespace attribute on a listener or an input/output parameter, and the `id`/`name` decoration on an `operaton:value` list item.
 A second `operaton:inputOutput`, `operaton:formData`, or `operaton:failedJobRetryTimeCycle` on one element is reported here as well, since Operaton reads one of each and the first is kept.
 A repetition naming its collection or its element variable in both the BPMN and the `operaton:` spelling goes the same way, since the BPMN spelling is the one Operaton keeps and the `operaton:` one is dropped.
-An implementation attribute that a higher-ranked one shadows is reported here too, on a service, send, or business rule task and on a thrown message alike, since Operaton never reads past the binding it resolves.
+An implementation attribute that a higher-ranked one shadows is reported here too, on a service, send, or business rule task, on a thrown message, and on a call activity naming both of its variable-mapping attributes, since Operaton never reads past the binding it resolves.
 Attribution is exact wherever moddle ties the content to its owning element; the few undeclared `operaton:` elements it cannot pin down are reported once against the process id instead, coarser but still reported.
-On a call activity, `variableMappingClass`, `variableMappingDelegateExpression`, and `calledElementTenantId` are execution-affecting rather than cosmetic, so they are refused instead of warned about.
+On a call activity, `calledElementTenantId` is execution-affecting rather than cosmetic, so it is refused instead of warned about: it pins which tenant the engine resolves the called process against, so dropping it changes which process runs.
+Neither variable-mapping attribute falls on that side of the boundary, since Operaton runs a mapping delegate after the declared `in` and `out` mappings rather than in place of them, so both import into the IR's `mapper` field instead ([ADR-0033](../../docs/decisions/0033-call-activity-variable-mapping.md)).
 An input/output value or a listener the surface cannot write is refused for the same reason: dropping a value form, a second listener firing at the same event, or a second parameter binding the same name would change what the process runs.
 
 `lane` covers a `bpmn:Lane`, one warning per lane, a lane nested in a `bpmn:childLaneSet` included.

@@ -109,8 +109,9 @@ export class UnsupportedCallActivityError extends UnsupportedConstructError {
     super(
       `The call activity '${elementId}' cannot be imported: ${detail}. ` +
         'Supported call activities name a calledElement, an optional ' +
-        'latest/deployment/version binding, a businessKey, and in/out ' +
-        'mappings using source+target, sourceExpression+target, or ' +
+        'latest/deployment/version binding, a businessKey, a ' +
+        'variableMappingClass or variableMappingDelegateExpression, and ' +
+        'in/out mappings using source+target, sourceExpression+target, or ' +
         'variables="all".',
       { elementId, detail },
     );

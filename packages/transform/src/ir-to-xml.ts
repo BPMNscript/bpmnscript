@@ -28,6 +28,7 @@ import { resolveCollision } from './synthesize-ids.js';
 import type {
   BpmnProcess,
   CallActivity,
+  CallVariableMapper,
   CallVariableMapping,
   EventDefinition,
   ExecutionListener,
@@ -662,6 +663,12 @@ function createFlowNode(
           versionBindingAttrs('operaton:calledElement', node.binding),
         );
       }
+      if (node.mapper !== undefined) {
+        attrs[`operaton:${VARIABLE_MAPPING_ATTR_BY_KIND[node.mapper.kind]}`] =
+          node.mapper.kind === 'class'
+            ? node.mapper.className
+            : node.mapper.expression;
+      }
       // The business key and the mappings are extension children, already
       // placed by `buildExtensionElements`.
       return moddle.create('bpmn:CallActivity', attrs);
@@ -693,6 +700,19 @@ const SUB_PROCESS_LIKE_TAG = {
 const SUB_PROCESS_LIKE_TAGS = new Set<string>(
   Object.values(SUB_PROCESS_LIKE_TAG),
 );
+
+/**
+ * The Operaton attribute each mapper kind writes. `CallActivityLike` in
+ * `operaton-moddle.json` has to declare both, or `moddle.create` drops the
+ * undeclared one on write with no error.
+ */
+export const VARIABLE_MAPPING_ATTR_BY_KIND: Record<
+  CallVariableMapper['kind'],
+  string
+> = {
+  class: 'variableMappingClass',
+  delegateExpression: 'variableMappingDelegateExpression',
+};
 
 /** `<prefix>Binding`, plus `<prefix>Version` when the version is pinned. */
 function versionBindingAttrs(

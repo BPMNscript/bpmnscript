@@ -15,6 +15,7 @@
  */
 
 import {
+  CALL_MAPPER_KEY_BY_KIND,
   END_TRIGGERS,
   isReservedName,
   TIMER_PARTICLE_BY_KIND,
@@ -2305,6 +2306,24 @@ function renderCallActivity(
 
   if (el.businessKey !== undefined) {
     settings.push(setting('businessKey', quote(el.businessKey)));
+  }
+
+  // After `businessKey` and before the engine settings, which is the order
+  // `CallActivity.own` offers the keys in. Both values print through
+  // `quote()`: the delegate body has to re-lex as an expression, and
+  // `quoteLiteral` escapes a leading `${` to stop exactly that; the class
+  // prints through `quote()` like every other class binding.
+  if (el.mapper !== undefined) {
+    settings.push(
+      setting(
+        CALL_MAPPER_KEY_BY_KIND[el.mapper.kind],
+        quote(
+          el.mapper.kind === 'class'
+            ? el.mapper.className
+            : el.mapper.expression,
+        ),
+      ),
+    );
   }
 
   settings.push(...engineSettings(el));

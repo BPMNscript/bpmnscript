@@ -84,7 +84,7 @@ Five engine execution settings are legal on every element that takes settings, `
 | `send`                                        | `class`, `expression`, `delegate`, `topic`, `resultVariable`                                                                       |
 | `receive`                                     | `message`                                                                                                                          |
 | `decide`                                      | `class`, `expression`, `delegate`, `topic`, `decision`, `binding`, `version`, `mapDecisionResult`, `resultVariable`                |
-| `call`                                        | `process`, `binding`, `version`, `businessKey`                                                                                     |
+| `call`                                        | `process`, `binding`, `version`, `businessKey`, `mapper`, `mapperDelegate`                                                         |
 | `throw`, `emit`                               | `class`, `expression`, `delegate`, `topic` (on a `message` trigger only)                                                           |
 | process header                                | `label`, `documentation`, `versionTag`, `historyTimeToLive`, `candidateStarterUsers`, `candidateStarterGroups`                     |
 
@@ -200,6 +200,24 @@ A `call` reads like a function call at the process boundary.
 
 A `local` mapping (`in local x = y`) reads from or writes to variables belonging to the call step itself rather than to the whole process.
 It's rare when authoring, and exists mainly so diagrams that use step-local variables import faithfully.
+
+`mapper: "<class>"` and `mapperDelegate: "${bean}"` name a Java class or a bean that computes the mapping in code, `operaton:variableMappingClass` and `operaton:variableMappingDelegateExpression` on the wire.
+Either one names an implementation of Operaton's `DelegateVariableMapping`, whose `mapInputVariables` runs after the declared `in` mappings and whose `mapOutputVariables` runs after the declared `out` ones.
+A mapper therefore adds to what the call declares rather than standing in for it, and sits beside any `in` and `out` mappings the same call carries.
+Writing both spellings on one call is an error, since Operaton would read the class and drop the delegate expression without saying so.
+A mapper is not one of the bindings field injection rides: Operaton hands a variable mapping no field list, so a `call` carries no `field`.
+
+```bpmnscript
+process order-handling {
+  var orderTotal: number
+  var approved: boolean
+
+  call ApproveInvoice(process: "invoice-approval", mapper: "com.example.invoice.ApprovalMapper") {
+    in amount = orderTotal
+    out approved
+  }
+}
+```
 
 #### Repetition
 
@@ -554,7 +572,7 @@ The categories it covers:
 - Listeners: an event word the element does not have, a binding count other than one, a missing timer on `on timeout` or a timer on any other event, a repeated event on one element, and the same fence rules a `script` body follows.
 - Structure: an empty process, subprocess, or handler body, an empty branch or loop body (warning), an unreachable statement, an explicit `start` anywhere but first in its container, a `goto` reaching into a `parallel` or `await` branch from outside it, a second `else` branch on a `parallel` statement, an `else` branch with no conditioned sibling, and an `else` branch beside a sibling carrying no condition.
 - Names: a reused process name, step name, or `label`, and a name matching a synthesized-id pattern ([ADR-0010](../../docs/decisions/0010-deterministic-structural-ids.md)).
-- Call activities: a missing `process`, an unknown `binding` value, `binding` and `version` together, and duplicate `in` or `out` mappings.
+- Call activities: a missing `process`, an unknown `binding` value, `binding` and `version` together, `mapper` and `mapperDelegate` together, and duplicate `in` or `out` mappings.
   A `decide` step pins its decision table with `binding` and `version`, under those same two rules.
 - Form references: `formKey` beside `formRef` on a user task, a `formRef` with neither `binding` nor `version`, and `binding` or `version` with no `formRef` to pin, under the same `binding`/`version` exclusivity a `call` and a `decide` step already use.
 - Events: a trigger word outside the set its verb accepts, a payload that doesn't match its trigger's shape, a handler in the wrong container or not at the end of its body, `alongside` on `error`, `compensation`, or `cancel`, two handlers that would catch the same thing, a host that isn't an activity a token can sit at, a binding attribute on a `throw` or `emit` whose trigger is not `message`, and more than one binding on one whose trigger is.

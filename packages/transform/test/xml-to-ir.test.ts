@@ -3162,16 +3162,6 @@ describe('xmlToIr: callActivity import', () => {
 
   it.each([
     [
-      'operaton:variableMappingClass is refused, naming the variable-mapping attribute',
-      'operaton:variableMappingClass="com.acme.Mapper"',
-      /variableMappingClass/,
-    ],
-    [
-      'operaton:variableMappingDelegateExpression is refused, naming the variable-mapping attribute',
-      'operaton:variableMappingDelegateExpression="${mapper}"',
-      /variableMappingDelegateExpression/,
-    ],
-    [
       'operaton:calledElementTenantId is refused, naming the tenant attribute',
       'operaton:calledElementTenantId="tenant-a"',
       /calledElementTenantId/,
@@ -3188,6 +3178,50 @@ describe('xmlToIr: callActivity import', () => {
       detail,
     );
   });
+
+  it.each([
+    [
+      'operaton:variableMappingClass imports as a class mapper with no warning',
+      'operaton:variableMappingClass="com.acme.Mapper"',
+      { kind: 'class', className: 'com.acme.Mapper' },
+      [],
+    ],
+    [
+      'operaton:variableMappingDelegateExpression imports as a delegate mapper with no warning',
+      'operaton:variableMappingDelegateExpression="${mapperBean}"',
+      { kind: 'delegateExpression', expression: '${mapperBean}' },
+      [],
+    ],
+    [
+      'camunda:variableMappingClass imports the same way, matching the dual-namespace contract',
+      'camunda:variableMappingClass="com.acme.Mapper"',
+      { kind: 'class', className: 'com.acme.Mapper' },
+      [],
+    ],
+    [
+      'both attributes import the class and report the delegate as shadowed',
+      'operaton:variableMappingClass="com.acme.Mapper" ' +
+        'operaton:variableMappingDelegateExpression="${mapperBean}"',
+      { kind: 'class', className: 'com.acme.Mapper' },
+      [
+        {
+          elementId: 'CallSub',
+          category: 'extensionAttribute',
+          message:
+            "The 'variableMappingDelegateExpression' setting on 'CallSub' " +
+            'has no effect alongside operaton:variableMappingClass and was ' +
+            'not imported.',
+        },
+      ],
+    ],
+  ] as const)(
+    '%s',
+    async (_title, attributes, expectedMapper, expectedWarnings) => {
+      const { node, warnings } = await importCall(attributes);
+      expect(node.mapper).toEqual(expectedMapper);
+      expect(warnings).toEqual(expectedWarnings);
+    },
+  );
 
   const callXmlWithExtension = (extension: string): string =>
     callDoc('', extensionElements(extension));

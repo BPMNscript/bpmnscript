@@ -49,6 +49,7 @@ import {
 } from './helpers/ir-fixtures.js';
 import type {
   BpmnProcess,
+  CallVariableMapper,
   CodeBinding,
   EventDefinition,
   FlowElement,
@@ -726,6 +727,40 @@ describe('irToXml: callActivity serialization', () => {
     // The excluded-name path does not apply to activities: the id humanizes.
     expect(childById(proc, 'ProcessPayment').name).toBe('Process Payment');
   });
+
+  it.each([
+    [
+      'a class mapper writes operaton:variableMappingClass and no delegate attribute',
+      { kind: 'class', className: 'com.acme.Mapper' } as const,
+      ['variableMappingClass', 'com.acme.Mapper'] as const,
+      'variableMappingDelegateExpression' as const,
+    ],
+    [
+      'a delegate mapper writes operaton:variableMappingDelegateExpression and no class attribute',
+      { kind: 'delegateExpression', expression: '${mapperBean}' } as const,
+      ['variableMappingDelegateExpression', '${mapperBean}'] as const,
+      'variableMappingClass' as const,
+    ],
+  ])(
+    '%s',
+    async (
+      _title: string,
+      mapper: CallVariableMapper,
+      [presentAttr, presentValue]: readonly [string, string],
+      absentAttr: string,
+    ) => {
+      const ir = minimalCallIr({
+        kind: 'callActivity',
+        id: 'CallSub',
+        calledElement: 'sub',
+        mapper,
+      });
+      const proc = await parseProcessTreeWithOperaton(await irToXml(ir));
+      const c = childById(proc, 'CallSub');
+      expect(c[presentAttr as keyof Moddle]).toBe(presentValue);
+      expect(c[absentAttr as keyof Moddle]).toBeUndefined();
+    },
+  );
 });
 
 describe('irToXml: event layer (errors + escalations)', () => {
@@ -2924,6 +2959,8 @@ interface Moddle {
   calledElement?: string;
   calledElementBinding?: string;
   calledElementVersion?: string;
+  variableMappingClass?: string;
+  variableMappingDelegateExpression?: string;
   source?: string;
   sourceExpression?: string;
   variables?: string;

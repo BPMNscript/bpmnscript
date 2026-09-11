@@ -52,6 +52,7 @@ import {
   formatPlainWordList,
   SCRIPT_FORMAT_ALIASES,
   splitFencedScript,
+  CALL_MAPPER_KEY_BY_KIND,
   CATCH_TRIGGERS,
   DECISION_RESULT_MAPPINGS,
   EMIT_TRIGGERS,
@@ -108,6 +109,7 @@ import type {
 } from '@bpmn-script/language';
 import type {
   BpmnProcess,
+  CallVariableMapper,
   CallVariableMapping,
   CodeBinding,
   EngineAttributes,
@@ -1507,6 +1509,7 @@ function lowerCallActivity(builder: Builder, stmt: AstCallActivity): Frontier {
     settingsOf(stmt.items),
     'businessKey',
   );
+  const mapper = callVariableMapper(settingsOf(stmt.items));
   const { inMappings, outMappings } = lowerCallMappings(stmt.mappings);
 
   builder.flowElements.push({
@@ -1516,6 +1519,7 @@ function lowerCallActivity(builder: Builder, stmt: AstCallActivity): Frontier {
     calledElement,
     ...(binding !== undefined ? { binding } : {}),
     ...(businessKey !== undefined ? { businessKey } : {}),
+    ...(mapper !== undefined ? { mapper } : {}),
     ...(inMappings.length > 0 ? { inMappings } : {}),
     ...(outMappings.length > 0 ? { outMappings } : {}),
     ...readLoop(stmt),
@@ -1523,6 +1527,30 @@ function lowerCallActivity(builder: Builder, stmt: AstCallActivity): Frontier {
     ...readEngineAttributes(stmt),
   });
   return { entry: stmt.name, exit: stmt.name };
+}
+
+/**
+ * The {@link CallVariableMapper} a call's settings name, class first, matching
+ * the order Operaton resolves the two attributes in. The class reads through
+ * {@link attrValue}, which strips the `${...}` wrapper so a bareword stays a
+ * dotted Java path; the delegate keeps it, that text being what Operaton
+ * evaluates as EL.
+ */
+function callVariableMapper(
+  attrs: KeyValueAttr[],
+): CallVariableMapper | undefined {
+  const className = attrValue(attrs, CALL_MAPPER_KEY_BY_KIND.class);
+  if (className !== undefined) {
+    return { kind: 'class', className };
+  }
+  const expression = rawExpressionAttrValue(
+    attrs,
+    CALL_MAPPER_KEY_BY_KIND.delegateExpression,
+  );
+  if (expression !== undefined) {
+    return { kind: 'delegateExpression', expression };
+  }
+  return undefined;
 }
 
 /**

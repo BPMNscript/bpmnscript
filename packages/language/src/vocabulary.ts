@@ -122,6 +122,17 @@ export const LISTENER_BINDING_KEYS: readonly string[] = [
  */
 export const FIELD_BINDING_KEYS: readonly string[] = ['class', 'delegate'];
 
+/**
+ * A call activity's variable-mapping delegate computes its in/out mapping in
+ * code, keyed by the IR mapper kind each spells. It is not `class`/`delegate`
+ * because Operaton hands this binding no field list, which is exactly what
+ * {@link FIELD_BINDING_KEYS} keys on.
+ */
+export const CALL_MAPPER_KEY_BY_KIND = {
+  class: 'mapper',
+  delegateExpression: 'mapperDelegate',
+} as const;
+
 /** How a call or a decision step pins which deployed version the engine runs. */
 export const CALL_BINDING_VALUES: readonly string[] = ['latest', 'deployment'];
 
@@ -603,6 +614,8 @@ export const ATTRIBUTE_BLOCK_RULES: Readonly<
       'binding',
       'version',
       'businessKey',
+      'mapper',
+      'mapperDelegate',
     ],
     flags: [],
     forms: false,

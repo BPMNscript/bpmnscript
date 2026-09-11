@@ -195,6 +195,8 @@ const SETTING_SNIPPETS: Readonly<Record<string, string>> = {
   class: 'class: "${1:com.example.Delegate}"',
   expression: 'expression: "${1:\\${bean.method(execution)}}"',
   delegate: 'delegate: "${1:\\${beanName}}"',
+  mapper: 'mapper: "${1:com.example.CallMapper}"',
+  mapperDelegate: 'mapperDelegate: "${1:\\${callMapperBean}}"',
   topic: 'topic: "${1:topic-name}"',
   decision: 'decision: "${1:decision-key}"',
   mapDecisionResult:
