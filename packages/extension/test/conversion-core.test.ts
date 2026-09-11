@@ -142,8 +142,8 @@ describe('compileDslToBpmn', () => {
   });
 });
 
-// `formRef` and the lane are both dropped without loss of behavior, so
-// `xmlToIr` warns instead of refusing.
+// `formHandlerClass` and the lane are both dropped without loss of
+// behavior, so `xmlToIr` warns instead of refusing.
 const LANE_AND_ASYNC_ATTR_BPMN = `<?xml version="1.0" encoding="UTF-8"?>
 <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
                   xmlns:operaton="http://operaton.org/schema/1.0/bpmn"
@@ -159,7 +159,7 @@ const LANE_AND_ASYNC_ATTR_BPMN = `<?xml version="1.0" encoding="UTF-8"?>
     <bpmn:startEvent id="S" />
     <bpmn:userTask id="AsyncTask" name="Async Task"
                    operaton:assignee="alice" operaton:asyncBefore="true"
-                   operaton:formRef="review-form" />
+                   operaton:formHandlerClass="com.example.FormHandler" />
     <bpmn:endEvent id="E" />
     <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="AsyncTask" />
     <bpmn:sequenceFlow id="F2" sourceRef="AsyncTask" targetRef="E" />
@@ -212,7 +212,7 @@ describe('decompileBpmnToDsl', () => {
           ['Lane_Ops', 'lane'],
           ['AsyncTask', 'extensionAttribute'],
         ],
-        mentions: ['formRef'],
+        mentions: ['formHandlerClass'],
       },
     ],
     [

@@ -2468,6 +2468,101 @@ describe('astToIr: task listeners', () => {
   });
 });
 
+describe('astToIr: field injection and form references', () => {
+  it('hangs a field list on the class and delegate bindings a task and a listener name, and carries a form reference with its binding', async () => {
+    const service = only(
+      await ir(
+        'process p { service Ship(class: "com.example.Ship") {' +
+          ' field greeting = "hello" field target = "${order.address}" } }',
+      ),
+      'serviceTask',
+    );
+    const send = only(
+      await ir(
+        'process p { send Notify(delegate: "${notifier}") { field channel = "email" } }',
+      ),
+      'serviceTask',
+    );
+    const decide = only(
+      await ir(
+        'process p { decide Rate(class: "com.example.Rate") { field table = "rates" } }',
+      ),
+      'serviceTask',
+    );
+    const user = only(
+      await ir(
+        'process p { user Review(formRef: "review-form", version: 3) {' +
+          ' on start(class: "com.example.Enter") { field level = "INFO" }' +
+          ' on create(delegate: "${assignHook}") { field role = "clerk" } } }',
+      ),
+      'userTask',
+    );
+
+    expect({
+      service: service.binding,
+      send: send.binding,
+      decide: decide.binding,
+      executionListener: user.executionListeners?.[0]?.binding,
+      taskListener: user.taskListeners?.[0]?.binding,
+      formRef: user.formRef,
+    }).toEqual({
+      service: {
+        ...classBinding('com.example.Ship'),
+        fields: [
+          { name: 'greeting', value: 'hello' },
+          { name: 'target', value: '${order.address}' },
+        ],
+      },
+      send: {
+        ...delegateBinding('${notifier}'),
+        fields: [{ name: 'channel', value: 'email' }],
+      },
+      decide: {
+        ...classBinding('com.example.Rate'),
+        fields: [{ name: 'table', value: 'rates' }],
+      },
+      executionListener: {
+        ...classBinding('com.example.Enter'),
+        fields: [{ name: 'level', value: 'INFO' }],
+      },
+      taskListener: {
+        ...delegateBinding('${assignHook}'),
+        fields: [{ name: 'role', value: 'clerk' }],
+      },
+      formRef: {
+        key: 'review-form',
+        binding: { kind: 'version', version: '3' },
+      },
+    });
+  });
+
+  it('leaves the field off a binding the engine injects none into, and the form reference off a task naming no binding', async () => {
+    const external = only(
+      await ir(
+        'process p { service Ship(topic: "shipping") { field greeting = "hello" } }',
+      ),
+      'serviceTask',
+    );
+    const unbound = await ir(
+      'process p { service Run(expression: "${bean.run()}") { field greeting = "hello" }' +
+        ' user Review(formRef: "review-form") { on assign ```groovy\nx = 1\n``` { field role = "clerk" } } }',
+    );
+    const user = only(unbound, 'userTask');
+
+    expect({
+      external: external.binding,
+      expression: only(unbound, 'serviceTask').binding,
+      scriptListener: user.taskListeners?.[0]?.binding,
+      formRef: user.formRef,
+    }).toEqual({
+      external: externalBinding('shipping'),
+      expression: exprBinding('${bean.run()}'),
+      scriptListener: scriptValue('groovy', 'x = 1\n'),
+      formRef: undefined,
+    });
+  });
+});
+
 describe('astToIr: start/end triggers and message throw/emit', () => {
   it.each([
     [`start S message("OrderReceived")`, messageDef('OrderReceived')],

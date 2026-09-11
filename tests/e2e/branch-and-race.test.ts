@@ -4,6 +4,7 @@ import type { FixtureAdapter } from '../fixtures/index.js';
 import {
   deployExamples,
   ENGINE_BOOT_TIMEOUT_MS,
+  ENGINE_STOP_TIMEOUT_MS,
   SKIP_DOCKER as SKIP,
 } from '../helpers/e2e-fixture.js';
 import {
@@ -51,7 +52,7 @@ describe.skipIf(SKIP)(
 
     afterAll(async () => {
       await fixture?.stop();
-    });
+    }, ENGINE_STOP_TIMEOUT_MS);
 
     // Starts an instance and walks it past the fork, so the race assertions
     // begin from a token sitting at the event-based gateway.

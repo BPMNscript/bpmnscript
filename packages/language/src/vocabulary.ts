@@ -112,6 +112,16 @@ export const LISTENER_BINDING_KEYS: readonly string[] = [
   'delegate',
 ];
 
+/**
+ * The bindings an injected field reaches. Operaton builds the field list for
+ * the behaviours a `class` and a `delegate` expression select and for no other:
+ * an `expression` binding is constructed from its expression and its result
+ * variable alone, a `topic` hands the work to an external worker the engine
+ * injects nothing into, and a `decision` binding runs no implementation at all.
+ * A task and both listener kinds split the same way.
+ */
+export const FIELD_BINDING_KEYS: readonly string[] = ['class', 'delegate'];
+
 /** How a call or a decision step pins which deployed version the engine runs. */
 export const CALL_BINDING_VALUES: readonly string[] = ['latest', 'deployment'];
 
@@ -130,6 +140,14 @@ export const PROCESS_HEADER_KEYS: readonly string[] = [
 ];
 
 export const IO_DIRECTIONS: readonly string[] = ['input', 'output'];
+
+/**
+ * The third direction a member of a block is written with. It names a property
+ * of the class or delegate the element binds, set once as that implementation
+ * is instantiated, so it is neither read from nor written to a process
+ * variable. See {@link FIELD_BINDING_KEYS} for where one is legal.
+ */
+export const FIELD_DIRECTION = 'field';
 
 /**
  * The particle a timer clause is written with, keyed by the BPMN timer
@@ -432,6 +450,13 @@ export interface AttributeBlockRule {
   readonly flags: readonly string[];
   readonly forms: boolean;
   readonly parameters: boolean;
+  /**
+   * Whether the kind lowers to an element with an implementation to inject
+   * into. It answers for the element's own block: a listener's block follows
+   * the listener's own binding, so a task listener carries a field on a kind
+   * this says `false` for.
+   */
+  readonly fields: boolean;
   readonly taskListeners: boolean;
 }
 
@@ -441,8 +466,9 @@ function withKeys(spec: Omit<AttributeBlockRule, 'keys'>): AttributeBlockRule {
 }
 
 /**
- * `process` is required on a call, and `binding`/`version` there are mutually
- * exclusive version-pinning discriminators, all checked separately.
+ * `process` is required on a call, and `binding`/`version` are mutually
+ * exclusive version-pinning discriminators for whichever key they sit beside.
+ * All of it is checked separately.
  */
 export const ATTRIBUTE_BLOCK_RULES: Readonly<
   Record<AttributeOwner['$type'], AttributeBlockRule>
@@ -453,6 +479,7 @@ export const ATTRIBUTE_BLOCK_RULES: Readonly<
     flags: [],
     forms: true,
     parameters: false,
+    fields: false,
     taskListeners: false,
   }),
   EndEvent: withKeys({
@@ -461,6 +488,7 @@ export const ATTRIBUTE_BLOCK_RULES: Readonly<
     flags: [],
     forms: false,
     parameters: false,
+    fields: false,
     taskListeners: false,
   }),
   UserTask: withKeys({
@@ -470,6 +498,9 @@ export const ATTRIBUTE_BLOCK_RULES: Readonly<
       'documentation',
       'assignee',
       'formKey',
+      'formRef',
+      'binding',
+      'version',
       'candidateGroups',
       'candidateUsers',
       'dueDate',
@@ -479,6 +510,7 @@ export const ATTRIBUTE_BLOCK_RULES: Readonly<
     flags: [],
     forms: true,
     parameters: true,
+    fields: false,
     taskListeners: true,
   }),
   ServiceTask: withKeys({
@@ -492,6 +524,7 @@ export const ATTRIBUTE_BLOCK_RULES: Readonly<
     flags: [],
     forms: false,
     parameters: true,
+    fields: true,
     taskListeners: false,
   }),
   ScriptTask: withKeys({
@@ -500,6 +533,7 @@ export const ATTRIBUTE_BLOCK_RULES: Readonly<
     flags: [],
     forms: false,
     parameters: true,
+    fields: false,
     taskListeners: false,
   }),
   GenericTask: withKeys({
@@ -508,6 +542,7 @@ export const ATTRIBUTE_BLOCK_RULES: Readonly<
     flags: [],
     forms: false,
     parameters: true,
+    fields: false,
     taskListeners: false,
   }),
   SendTask: withKeys({
@@ -521,6 +556,7 @@ export const ATTRIBUTE_BLOCK_RULES: Readonly<
     flags: [],
     forms: false,
     parameters: true,
+    fields: true,
     taskListeners: false,
   }),
   ReceiveTask: withKeys({
@@ -529,6 +565,7 @@ export const ATTRIBUTE_BLOCK_RULES: Readonly<
     flags: [],
     forms: false,
     parameters: true,
+    fields: false,
     taskListeners: false,
   }),
   BusinessRuleTask: withKeys({
@@ -545,6 +582,7 @@ export const ATTRIBUTE_BLOCK_RULES: Readonly<
     flags: [],
     forms: false,
     parameters: true,
+    fields: true,
     taskListeners: false,
   }),
   SubProcess: withKeys({
@@ -553,6 +591,7 @@ export const ATTRIBUTE_BLOCK_RULES: Readonly<
     flags: [],
     forms: false,
     parameters: true,
+    fields: false,
     taskListeners: false,
   }),
   CallActivity: withKeys({
@@ -568,6 +607,7 @@ export const ATTRIBUTE_BLOCK_RULES: Readonly<
     flags: [],
     forms: false,
     parameters: true,
+    fields: false,
     taskListeners: false,
   }),
   OnHandler: withKeys({
@@ -576,6 +616,7 @@ export const ATTRIBUTE_BLOCK_RULES: Readonly<
     flags: ['alongside'],
     forms: false,
     parameters: false,
+    fields: false,
     taskListeners: false,
   }),
   // The binding keys carry the implementation that makes the engine really
@@ -586,6 +627,7 @@ export const ATTRIBUTE_BLOCK_RULES: Readonly<
     flags: [],
     forms: false,
     parameters: false,
+    fields: false,
     taskListeners: false,
   }),
   EmitStatement: withKeys({
@@ -594,6 +636,7 @@ export const ATTRIBUTE_BLOCK_RULES: Readonly<
     flags: [],
     forms: false,
     parameters: false,
+    fields: false,
     taskListeners: false,
   }),
   IntermediateCatchEvent: withKeys({
@@ -602,6 +645,7 @@ export const ATTRIBUTE_BLOCK_RULES: Readonly<
     flags: [],
     forms: false,
     parameters: false,
+    fields: false,
     taskListeners: false,
   }),
   // The same catch element with a body, so it takes the same keys.
@@ -611,6 +655,7 @@ export const ATTRIBUTE_BLOCK_RULES: Readonly<
     flags: [],
     forms: false,
     parameters: false,
+    fields: false,
     taskListeners: false,
   }),
 };
@@ -629,6 +674,16 @@ export function listenerEventsFor(rule: AttributeBlockRule): readonly string[] {
   return rule.taskListeners
     ? [...EXECUTION_LISTENER_EVENTS, ...TASK_LISTENER_EVENTS]
     : EXECUTION_LISTENER_EVENTS;
+}
+
+/** The directions a member of this kind's block is written with. */
+export function parameterDirectionsFor(
+  rule: AttributeBlockRule,
+): readonly string[] {
+  return [
+    ...(rule.parameters ? IO_DIRECTIONS : []),
+    ...(rule.fields ? [FIELD_DIRECTION] : []),
+  ];
 }
 
 /**

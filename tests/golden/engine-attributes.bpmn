@@ -93,7 +93,7 @@ execution.setVariable("mechanicsGrade", grade)
       <bpmn:outgoing>Flow_PayoutReviewNeeded_Gateway_claim-settlement_6_join</bpmn:outgoing>
       <bpmn:escalationEventDefinition escalationRef="Escalation_PAYOUT_REVIEW" />
     </bpmn:intermediateThrowEvent>
-    <bpmn:userTask id="ApprovePayout" name="Approve the payout" operaton:assignee="manager">
+    <bpmn:userTask id="ApprovePayout" name="Approve the payout" operaton:assignee="manager" operaton:formRef="payout-approval" operaton:formRefBinding="version" operaton:formRefVersion="2">
       <bpmn:incoming>Flow_Gateway_claim-settlement_6_join_ApprovePayout</bpmn:incoming>
       <bpmn:outgoing>Flow_ApprovePayout_ClaimSettled</bpmn:outgoing>
     </bpmn:userTask>

@@ -6,7 +6,13 @@
     </bpmn:startEvent>
     <bpmn:serviceTask id="ValidateClaim" name="Validate the claim" operaton:class="com.example.claims.ValidateClaimDelegate">
       <bpmn:extensionElements>
-        <operaton:executionListener event="start" class="com.example.claims.OpenAuditTrail" />
+        <operaton:field name="policyRegister" stringValue="motor-policies" />
+        <operaton:field name="settlementCurrency">
+          <operaton:expression>${claim.currency}</operaton:expression>
+        </operaton:field>
+        <operaton:executionListener event="start" class="com.example.claims.OpenAuditTrail">
+          <operaton:field name="auditCategory" stringValue="claim-validation" />
+        </operaton:executionListener>
         <operaton:executionListener event="end" expression="${auditTrail.close(execution)}" />
       </bpmn:extensionElements>
       <bpmn:incoming>Flow_ClaimFiled_ValidateClaim</bpmn:incoming>
@@ -25,7 +31,11 @@
         <bpmn:extensionElements>
           <operaton:taskListener event="create" class="com.example.claims.NotifyAssessor" />
           <operaton:taskListener event="assign" expression="${assessorRoster.record(task)}" />
-          <operaton:taskListener event="complete" delegateExpression="${assessmentRecorder}" />
+          <operaton:taskListener event="complete" delegateExpression="${assessmentRecorder}">
+            <operaton:field name="reviewedBy">
+              <operaton:expression>${task.assignee}</operaton:expression>
+            </operaton:field>
+          </operaton:taskListener>
           <operaton:taskListener event="update">
             <operaton:script scriptFormat="javascript">task.setVariable("assessmentRevised", true);
 </operaton:script>

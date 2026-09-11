@@ -57,6 +57,7 @@ import {
   EMIT_TRIGGERS,
   END_TRIGGERS,
   EXECUTION_LISTENER_EVENTS,
+  FIELD_DIRECTION,
   FORM_FIELD_TYPES,
   ON_TRIGGERS,
   START_TRIGGERS,
@@ -112,6 +113,7 @@ import type {
   EngineAttributes,
   EventDefinition,
   ExecutionListener,
+  FieldInjection,
   FlowElement,
   FormField,
   FormFieldType,
@@ -126,6 +128,7 @@ import type {
   ServiceTaskBinding,
   StartEvent as IrStartEvent,
   TaskListener,
+  UserTask as IrUserTask,
   VersionBinding,
 } from './ir/types.js';
 import { engineAttributes, eventIdentities, ioMapped } from './ir/types.js';
@@ -561,6 +564,7 @@ function lowerEndEvent(builder: Builder, stmt: AstEndEvent): Frontier {
 function lowerUserTask(builder: Builder, stmt: AstUserTask): Frontier {
   const assignee = attrValue(settingsOf(stmt.items), 'assignee');
   const formKey = attrValue(settingsOf(stmt.items), 'formKey');
+  const formRef = readFormRef(settingsOf(stmt.items));
   const formFields = lowerFormFields(stmt);
   const candidateGroups = attrValue(settingsOf(stmt.items), 'candidateGroups');
   const candidateUsers = attrValue(settingsOf(stmt.items), 'candidateUsers');
@@ -574,6 +578,7 @@ function lowerUserTask(builder: Builder, stmt: AstUserTask): Frontier {
     ...namedAttrs(stmt),
     ...(assignee !== undefined ? { assignee } : {}),
     ...(formKey !== undefined ? { formKey } : {}),
+    ...(formRef !== undefined ? { formRef } : {}),
     ...(formFields !== undefined ? { formFields } : {}),
     ...(candidateGroups !== undefined ? { candidateGroups } : {}),
     ...(candidateUsers !== undefined ? { candidateUsers } : {}),
@@ -586,6 +591,18 @@ function lowerUserTask(builder: Builder, stmt: AstUserTask): Frontier {
     ...readEngineAttributes(stmt),
   });
   return { entry: stmt.name, exit: stmt.name };
+}
+
+/**
+ * A form reference naming no binding is left out: Operaton refuses to deploy
+ * one, so there is nothing to carry. The validator reports it.
+ */
+function readFormRef(attrs: KeyValueAttr[]): IrUserTask['formRef'] {
+  const key = attrValue(attrs, 'formRef');
+  const binding = versionBinding(attrs);
+  return key === undefined || binding === undefined
+    ? undefined
+    : { key, binding };
 }
 
 function lowerFormFields(
@@ -641,7 +658,10 @@ function lowerServiceTaskLike(
     kind: 'serviceTask',
     id: stmt.name,
     ...namedAttrs(stmt),
-    binding,
+    binding:
+      binding.kind === 'external' || binding.kind === 'decision'
+        ? binding
+        : withDeclaredFields(binding, stmt.params),
     ...(resultVariable !== undefined ? { resultVariable } : {}),
     ...(element !== undefined ? { element } : {}),
     ...readLoop(stmt),
@@ -1756,7 +1776,49 @@ function listenerBinding(listener: AstListener): ListenerBinding {
     const { tag, code } = splitFencedScript(listener.script);
     return { kind: 'script', format: SCRIPT_FORMAT_ALIASES[tag] ?? tag, code };
   }
-  return codeBinding(settingsOf(listener.items)) ?? NO_BINDING;
+  return withDeclaredFields(
+    codeBinding(settingsOf(listener.items)) ?? NO_BINDING,
+    listener.params,
+  );
+}
+
+/**
+ * Carry the block's fields onto the binding, or leave a binding the engine
+ * hands no field list as it is. The validator reports the write; this only
+ * declines to carry it. Exhaustive on purpose: a kind added to
+ * {@link CodeBinding} stops compiling here until it picks a side.
+ */
+function withDeclaredFields(
+  binding: CodeBinding,
+  params: AstIoParameter[],
+): CodeBinding {
+  switch (binding.kind) {
+    case 'class':
+    case 'delegateExpression': {
+      const fields = readFieldInjections(params);
+      return fields.length === 0 ? binding : { ...binding, fields };
+    }
+    case 'expression':
+      // Operaton builds this behaviour from the expression and the result
+      // variable alone, with no field list to hand it.
+      return binding;
+  }
+}
+
+/**
+ * The `field` members of a block, in source order. A list, a map, and an inline
+ * script have no `operaton:field` slot to lower to, so a value in one of those
+ * forms is left out for the validator to report.
+ */
+function readFieldInjections(params: AstIoParameter[]): FieldInjection[] {
+  return params
+    .filter((param) => param.direction === FIELD_DIRECTION)
+    .flatMap((param) => {
+      const value = lowerIoValue(param.value);
+      return value.kind === 'text'
+        ? [{ name: param.name, value: value.text }]
+        : [];
+    });
 }
 
 /**

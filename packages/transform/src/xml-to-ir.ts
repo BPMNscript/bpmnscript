@@ -29,6 +29,7 @@ import type {
   EventDefinition,
   ExclusiveGateway,
   ExecutionListener,
+  FieldInjection,
   FlowElement,
   FormField,
   FormFieldType,
@@ -67,6 +68,7 @@ import {
   UnsupportedEventFeatureError,
   UnsupportedExtensionFormError,
   UnsupportedFormFieldTypeError,
+  UnsupportedFormReferenceError,
   UnsupportedLoopCharacteristicsError,
   UnsupportedServiceTaskFormError,
 } from './errors.js';
@@ -192,6 +194,9 @@ const CONSUMED_EXTENSION_ATTRS = consumptionTable([
   ],
   ['assignee', ['bpmn:UserTask']],
   ['formKey', ['bpmn:UserTask']],
+  ['formRef', ['bpmn:UserTask']],
+  ['formRefBinding', ['bpmn:UserTask']],
+  ['formRefVersion', ['bpmn:UserTask']],
   ['candidateGroups', ['bpmn:UserTask']],
   ['candidateUsers', ['bpmn:UserTask']],
   ['dueDate', ['bpmn:UserTask']],
@@ -230,13 +235,15 @@ const CONSUMED_EXTENSION_ELEMENTS = consumptionTable([
   ['operaton:InputOutput', ACTIVITY_TAGS],
   ['operaton:ExecutionListener', ENGINE_ATTRIBUTE_OWNERS],
   ['operaton:TaskListener', ['bpmn:UserTask']],
+  ['operaton:Field', SERVICE_TASK_LIKE_OWNERS],
 ]);
 
 /**
  * Per extension element the IR reads, the attribute local names its reader
  * reads off it; body text is not an attribute and is absent. A `$type` missing
- * from the table is never swept by {@link warnUnreadChildAttrs}: an
- * `operaton:field` is reported whole by {@link warnFieldDrop} instead.
+ * from the table is never swept by {@link warnUnreadChildAttrs}, which is the
+ * answer for a child no reader reads at all: reporting it whole says more than
+ * naming each of its attributes would.
  */
 const CONSUMED_CHILD_ATTRS = consumptionTable([
   ['operaton:FormData', []],
@@ -273,6 +280,7 @@ const CONSUMED_CHILD_ATTRS = consumptionTable([
     'operaton:TaskListener',
     ['event', 'class', 'expression', 'delegateExpression'],
   ],
+  ['operaton:Field', ['name', 'stringValue']],
 ]);
 
 /**
@@ -313,10 +321,10 @@ const OPERATON_TO_FORM_FIELD_TYPE: Readonly<Record<string, FormFieldType>> =
   invert(FORM_FIELD_TYPE_TO_OPERATON);
 
 const KEPT_SETTINGS_NOTE =
-  '(this tool keeps the assignee, form, script, service-task binding, ' +
-  'result variable, version tag, input/output mappings and listeners, and ' +
-  'the async, retry, job-priority and task-assignment settings; a gateway ' +
-  'carries no engine setting at all).';
+  '(this tool keeps the assignee, form, form reference, script, ' +
+  'service-task binding, injected fields, result variable, version tag, ' +
+  'input/output mappings and listeners, and the async, retry, job-priority ' +
+  'and task-assignment settings; a gateway carries no engine setting at all).';
 
 const IMPORTED_FLOW_NOTE =
   '(this tool imports the executable flow and the engine settings on its ' +
@@ -2365,16 +2373,17 @@ const EXECUTION_AFFECTING_CALL_ATTRS: readonly (readonly [string, string])[] = [
 ];
 
 /**
- * Resolve the `<prefix>Binding`/`<prefix>Version` pair a call activity and a
- * decision reference both pin their version with, the inverse of
- * `ir-to-xml.ts`'s `versionBindingAttrs`. The generic sweep cannot tell a
- * meaningful version from a dangling one (set while the binding is absent or
- * not `"version"`, where Operaton ignores it), so it is reported here.
+ * Resolve the `<prefix>Binding`/`<prefix>Version` pair a call activity, a
+ * decision reference, and a form reference all pin their version with, the
+ * inverse of `ir-to-xml.ts`'s `versionBindingAttrs`. The generic sweep cannot
+ * tell a meaningful version from a dangling one (set while the binding is
+ * absent or not `"version"`, where Operaton ignores it), so it is reported
+ * here.
  */
 function readVersionBinding(
   el: ModdleElement,
   id: string,
-  prefix: 'calledElement' | 'decisionRef',
+  prefix: 'calledElement' | 'decisionRef' | 'formRef',
   refusal: (detail: string) => Error,
   warnings: ImportWarning[],
 ): VersionBinding | undefined {
@@ -2782,6 +2791,14 @@ function warnUnreadPrefixedAttrs(
 }
 
 /**
+ * The reason a field drops from a position that holds none: a step's binding
+ * and a listener's are the only two this tool reads one onto.
+ */
+const FIELD_HAS_NO_HOME =
+  'this tool carries an injected field on the step or the listener whose ' +
+  'class or delegate binding receives it, and on no other position';
+
+/**
  * Report the materialized `<bpmn:extensionElements>` children that
  * {@link CONSUMED_EXTENSION_ELEMENTS} does not list for this owner kind. An
  * undeclared `operaton:` element leaves no value behind and is reported against
@@ -2798,7 +2815,13 @@ function warnUnreadExtensionElements(
       continue;
     }
     if (value.$type === 'operaton:Field') {
-      warnFieldDrop(value, ownerId, `'${ownerId}'`, warnings);
+      warnFieldDrop(
+        value,
+        ownerId,
+        `'${ownerId}'`,
+        FIELD_HAS_NO_HOME,
+        warnings,
+      );
       continue;
     }
     warnings.push({
@@ -3692,6 +3715,7 @@ function mapUserTask(el: ModdleElement, warnings: ImportWarning[]): UserTask {
   const named = readNamed(el, id, warnings);
   const assignee = readNamespacedAttr(el, 'assignee');
   const formKey = readNamespacedAttr(el, 'formKey');
+  const formRef = readFormRef(el, id, warnings);
   const formFields = readFormFields(el, id, warnings);
   const taskListeners = readTaskListeners(el, id, warnings);
   const candidateGroups = readNamespacedAttr(el, 'candidateGroups');
@@ -3706,6 +3730,7 @@ function mapUserTask(el: ModdleElement, warnings: ImportWarning[]): UserTask {
     ...named,
     ...(assignee === undefined ? {} : { assignee }),
     ...(formKey === undefined ? {} : { formKey }),
+    ...(formRef === undefined ? {} : { formRef }),
     ...(formFields === undefined ? {} : { formFields }),
     ...(candidateGroups === undefined ? {} : { candidateGroups }),
     ...(candidateUsers === undefined ? {} : { candidateUsers }),
@@ -3716,6 +3741,49 @@ function mapUserTask(el: ModdleElement, warnings: ImportWarning[]): UserTask {
     ...readEngineAttributes(el, id, warnings),
     ...readIoMapping(el, id, warnings),
   };
+}
+
+/**
+ * The deployed form a user task renders, and the binding resolving which
+ * version of it. Operaton's `parseFormDefinition` refuses to deploy a task
+ * naming a form key beside a form reference, and refuses a form reference
+ * whose binding is absent or outside the three it resolves, so both shapes
+ * refuse here rather than importing a task that would never deploy.
+ */
+function readFormRef(
+  el: ModdleElement,
+  id: string,
+  warnings: ImportWarning[],
+): UserTask['formRef'] {
+  const key = readNamespacedAttr(el, 'formRef');
+  if (key === undefined) {
+    warnDanglingModifiers(
+      el,
+      id,
+      FORM_REF_MODIFIER_ATTRS,
+      'operaton:formRef',
+      warnings,
+    );
+    return undefined;
+  }
+
+  const refusal = (detail: string): Error =>
+    new UnsupportedFormReferenceError(id, detail);
+  if (readNamespacedAttr(el, 'formKey') !== undefined) {
+    throw refusal(
+      'it names an operaton:formKey beside the operaton:formRef, and a task ' +
+        'renders one form',
+    );
+  }
+
+  const binding = readVersionBinding(el, id, 'formRef', refusal, warnings);
+  if (binding === undefined) {
+    throw refusal(
+      'its operaton:formRef carries no operaton:formRefBinding, so the ' +
+        'engine cannot resolve which deployed form to render',
+    );
+  }
+  return { key, binding };
 }
 
 function mapTask(el: ModdleElement, warnings: ImportWarning[]): Task {
@@ -3835,15 +3903,15 @@ function readServiceTaskBinding(
 
   // The decision reference is the engine's discriminator, so it is read before
   // the code forms a business rule task may otherwise fall back to.
-  if (element === 'businessRule') {
-    const decision = readDecisionBinding(el, id, refusal, warnings);
-    if (decision !== undefined) return decision;
+  const binding =
+    (element === 'businessRule'
+      ? readDecisionBinding(el, id, refusal, warnings)
+      : undefined) ?? readCodeOrExternalBinding(el, id, warnings);
+  if (binding === undefined) {
+    throw refusal(detectUnsupportedServiceTaskForm(el));
   }
 
-  const binding = readCodeOrExternalBinding(el, id, warnings);
-  if (binding !== undefined) return binding;
-
-  throw refusal(detectUnsupportedServiceTaskForm(el));
+  return withInjectedFields(binding, el, id, `'${id}'`, warnings);
 }
 
 /**
@@ -3917,7 +3985,13 @@ function readDecisionBinding(
 ): Extract<ServiceTaskBinding, { kind: 'decision' }> | undefined {
   const decisionRef = readNamespacedAttr(el, 'decisionRef');
   if (decisionRef === undefined) {
-    warnDanglingDecisionModifiers(el, id, warnings);
+    warnDanglingModifiers(
+      el,
+      id,
+      DECISION_MODIFIER_ATTRS,
+      'operaton:decisionRef',
+      warnings,
+    );
     return undefined;
   }
   warnShadowedImplementation(el, id, 'an operaton:decisionRef', [], warnings);
@@ -3951,19 +4025,29 @@ const DECISION_MODIFIER_ATTRS = [
   'mapDecisionResult',
 ] as const;
 
-function warnDanglingDecisionModifiers(
+/** The two settings only a named form gives meaning to; see {@link readFormRef}. */
+const FORM_REF_MODIFIER_ATTRS = ['formRefBinding', 'formRefVersion'] as const;
+
+/**
+ * Report the settings that pin or shape a reference the element never makes.
+ * The consumption table marks them read on the owner kind, so they leave with
+ * a warning here or with none. `ref` names the missing reference.
+ */
+function warnDanglingModifiers(
   el: ModdleElement,
   id: string,
+  attrs: readonly string[],
+  ref: string,
   warnings: ImportWarning[],
 ): void {
-  for (const attr of DECISION_MODIFIER_ATTRS) {
+  for (const attr of attrs) {
     if (readNamespacedAttr(el, attr) === undefined) continue;
     warnings.push({
       elementId: id,
       category: 'extensionAttribute',
       message:
         `The '${attr}' setting on '${id}' has no effect without an ` +
-        'operaton:decisionRef and was not imported.',
+        `${ref} and was not imported.`,
     });
   }
 }
@@ -4802,16 +4886,30 @@ function readListenerEvent<E extends string>(
   return event as E;
 }
 
-/**
- * Resolve the single executable binding a listener names. Every alternative is
- * read before any is acted on: naming two leaves the engine to pick, naming
- * none never runs, so both refuse.
- */
 function readListenerBinding(
   listener: ModdleElement,
   spec: ListenerSpec<string>,
 ): ListenerBinding {
   const { ownerId, tag, warnings } = spec;
+  return withInjectedFields(
+    resolveListenerBinding(listener, spec),
+    listener,
+    ownerId,
+    `an ${tag} on '${ownerId}'`,
+    warnings,
+  );
+}
+
+/**
+ * Resolve the single executable binding a listener names. Every alternative is
+ * read before any is acted on: naming two leaves the engine to pick, naming
+ * none never runs, so both refuse.
+ */
+function resolveListenerBinding(
+  listener: ModdleElement,
+  spec: ListenerSpec<string>,
+): ListenerBinding {
+  const { ownerId, tag } = spec;
   const className = readString(listener, 'class');
   const expression = readString(listener, 'expression');
   const delegate = readString(listener, 'delegateExpression');
@@ -4830,8 +4928,6 @@ function readListenerBinding(
         'and a listener names exactly one',
     );
   }
-
-  warnFieldDrops(listener, ownerId, `an ${tag} on '${ownerId}'`, warnings);
 
   if (className !== undefined) return { kind: 'class', className };
   if (expression !== undefined) return { kind: 'expression', expression };
@@ -4903,27 +4999,192 @@ function refuseRepeatedExtensionKey(
 }
 
 /**
- * Report every `operaton:field` child as a drop. Field injection sets a
- * property on the bound class or expression before it runs, and the IR has no
- * surface for it.
+ * A listener declares its fields as a property of its own; a step carries them
+ * loose in `extensionElements`, beside every other extension child it holds.
  */
-function warnFieldDrops(
+function fieldChildren(carrier: ModdleElement): ModdleElement[] {
+  const declared = carrier.get('fields') as ModdleElement[] | undefined;
+  return (
+    declared ??
+    extensionValues(carrier).filter((value) => value.$type === 'operaton:Field')
+  );
+}
+
+/** What names a binding that receives no field list, in the drop it draws. */
+const FIELDLESS_BINDING: Readonly<
+  Record<'expression' | 'external' | 'decision' | 'script', string>
+> = {
+  expression: 'operaton:expression',
+  external: 'operaton:type="external"',
+  decision: 'an operaton:decisionRef',
+  script: 'an operaton:script child',
+};
+
+/**
+ * Read the `operaton:field` children a carrier holds onto the binding it
+ * resolved to. Operaton builds the field list for the behaviours a class and a
+ * delegate expression select and hands it to no other, on a step and on both
+ * listener kinds alike, so a field under any other binding is reported rather
+ * than carried into a slot the engine would never read it from.
+ */
+function withInjectedFields<B extends ServiceTaskBinding | ListenerBinding>(
+  binding: B,
   carrier: ModdleElement,
   ownerId: string,
   where: string,
   warnings: ImportWarning[],
-): void {
-  const fields = (carrier.get('fields') as ModdleElement[] | undefined) ?? [];
-  for (const field of fields) {
-    warnFieldDrop(field, ownerId, where, warnings);
+): B {
+  const children = fieldChildren(carrier);
+  if (children.length === 0) return binding;
+
+  if (binding.kind !== 'class' && binding.kind !== 'delegateExpression') {
+    const reason =
+      'Operaton injects a field into a class or delegate binding and into no ' +
+      `other, and this one is bound by ${FIELDLESS_BINDING[binding.kind]}`;
+    for (const field of children) {
+      warnFieldDrop(field, ownerId, where, reason, warnings);
+    }
+    return binding;
   }
+
+  const fields = children.flatMap(
+    (field) => readField(field, ownerId, where, warnings) ?? [],
+  );
+  return fields.length === 0 ? binding : { ...binding, fields };
 }
 
-/** Report one `operaton:field` as a drop; see {@link warnFieldDrops}. */
+/**
+ * The three slots Operaton writes a field's value in, and whether it evaluates
+ * that slot rather than injecting it verbatim. The IR holds one text for all
+ * three and picks the slot back off its leading `${`, the same reading
+ * `renderIoValue` does, so a slot whose text disagrees with it has no spelling
+ * here and is reported instead of coming back as the other one.
+ */
+const FIELD_VALUE_SLOTS = [
+  {
+    property: 'stringValue',
+    subject: 'a stringValue attribute',
+    evaluated: false,
+  },
+  { property: 'string', subject: 'an operaton:string child', evaluated: false },
+  {
+    property: 'expression',
+    subject: 'an operaton:expression child',
+    evaluated: true,
+  },
+] as const;
+
+/**
+ * A value quoted inside a one-sentence warning: one line, with whatever
+ * whitespace it carries still visible, since that whitespace is often the
+ * reason the value is being reported.
+ */
+function oneLine(text: string): string {
+  return text.replace(/\n/g, '\\n').replace(/\r/g, '\\r').replace(/\t/g, '\\t');
+}
+
+/** `undefined` when the field was reported as a drop instead of read. */
+function readField(
+  field: ModdleElement,
+  ownerId: string,
+  where: string,
+  warnings: ImportWarning[],
+): FieldInjection | undefined {
+  const drop = (reason: string): undefined => {
+    warnFieldDrop(field, ownerId, where, reason, warnings);
+    return undefined;
+  };
+
+  const name = readString(field, 'name');
+  if (name === undefined) {
+    return drop(
+      'a field is injected under the name it declares, and this one declares none',
+    );
+  }
+
+  // Every slot is read verbatim. `parseExpressionFieldDeclaration` hands the
+  // body to `createExpression` untrimmed, and
+  // `getStringValueFromAttributeOrElement` reads `childElement.getText()`
+  // without trimming either, so the whitespace an indented body carries is
+  // part of the composite expression the engine evaluates. A body that does
+  // not open with `${` cannot round-trip through a slot this tool picks by
+  // that prefix, and is reported rather than quietly reshaped.
+  const written = FIELD_VALUE_SLOTS.map((slot) => ({
+    slot,
+    value: readString(field, slot.property),
+  })).filter(
+    (slot): slot is { slot: FieldValueSlot; value: string } =>
+      slot.value !== undefined,
+  );
+
+  // `parseFieldDeclaration` reads the two literal slots first and never reaches
+  // the expression child once one of them answers, so a literal wins here too.
+  const literals = written.filter((slot) => !slot.slot.evaluated);
+  const evaluated = written.find((slot) => slot.slot.evaluated);
+  const chosen = literals[0] ?? evaluated;
+  // `parseFieldDeclaration` calls `addError` on a field naming no slot, and
+  // `getStringValueFromAttributeOrElement` calls it on one naming the
+  // attribute and the child of the same slot, so neither document deploys.
+  if (chosen === undefined || literals.length > 1) {
+    throw new UnsupportedExtensionFormError(
+      ownerId,
+      `the injected field '${name}' on ${where} names ` +
+        (chosen === undefined
+          ? 'no value'
+          : literals.map((w) => w.slot.subject).join(' and ')),
+    );
+  }
+
+  if (chosen.value.startsWith('${') !== chosen.slot.evaluated) {
+    return drop(
+      `${chosen.slot.subject} holding '${oneLine(chosen.value)}' would be ` +
+        'written back as ' +
+        (chosen.slot.evaluated
+          ? 'a stringValue attribute, and the engine would inject that text ' +
+            'rather than evaluate it'
+          : 'an operaton:expression child, and the engine would evaluate it ' +
+            'rather than inject the text'),
+    );
+  }
+
+  if (chosen.slot.property === 'string') {
+    warnings.push({
+      elementId: ownerId,
+      category: 'extensionAttribute',
+      message:
+        `The injected field '${name}' on ${where} writes its value in an ` +
+        'operaton:string child, which this tool writes back as a stringValue ' +
+        'attribute; the engine injects the same text either way.',
+    });
+  }
+
+  if (chosen !== evaluated && evaluated !== undefined) {
+    warnings.push({
+      elementId: ownerId,
+      category: 'extensionAttribute',
+      message:
+        `The 'operaton:expression' child of the injected field '${name}' on ` +
+        `${where} has no effect alongside ${chosen.slot.subject} and was not ` +
+        'imported.',
+    });
+  }
+
+  return { name, value: chosen.value };
+}
+
+type FieldValueSlot = (typeof FIELD_VALUE_SLOTS)[number];
+
+/**
+ * Report one `operaton:field` as a drop. `reason` says why this field never
+ * reaches the bean it names, which differs between a binding that receives no
+ * field list, a value slot the round trip cannot preserve, and a position this
+ * tool holds no field on at all.
+ */
 function warnFieldDrop(
   field: ModdleElement,
   ownerId: string,
   where: string,
+  reason: string,
   warnings: ImportWarning[],
 ): void {
   const name = readString(field, 'name');
@@ -4932,6 +5193,6 @@ function warnFieldDrop(
     category: 'extensionAttribute',
     message:
       `The injected field ${name === undefined ? '(unnamed)' : `'${name}'`} ` +
-      `on ${where} was not imported; field injection is not carried.`,
+      `on ${where} was not imported: ${reason}.`,
   });
 }

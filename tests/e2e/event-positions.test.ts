@@ -11,6 +11,7 @@ import type { FixtureAdapter } from '../fixtures/index.js';
 import {
   deployExamples,
   ENGINE_BOOT_TIMEOUT_MS,
+  ENGINE_STOP_TIMEOUT_MS,
   SKIP_DOCKER as SKIP,
 } from '../helpers/e2e-fixture.js';
 import {
@@ -59,7 +60,7 @@ describe.skipIf(SKIP)('E2E: start, end and throw triggers on Operaton', () => {
 
   afterAll(async () => {
     await fixture?.stop();
-  });
+  }, ENGINE_STOP_TIMEOUT_MS);
 
   it('message start: a correlated message with no instance to aim at starts one', async () => {
     const processInstanceId = await startByMessage(fixture, 'OrderReceived');

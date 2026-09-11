@@ -14,6 +14,7 @@ import type { FixtureAdapter } from '../fixtures/index.js';
 import {
   deployExamples,
   ENGINE_BOOT_TIMEOUT_MS,
+  ENGINE_STOP_TIMEOUT_MS,
   SKIP_DOCKER as SKIP,
 } from '../helpers/e2e-fixture.js';
 import {
@@ -43,7 +44,7 @@ describe.skipIf(SKIP)(
 
     afterAll(async () => {
       await fixture?.stop();
-    });
+    }, ENGINE_STOP_TIMEOUT_MS);
 
     describe('error boundary on the charge service task', () => {
       // A misconfigured boundary surfaces as an HTTP 500 from startProcess, so

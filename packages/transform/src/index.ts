@@ -30,6 +30,7 @@ export type {
   Repeatable,
   IoParameter,
   IoValue,
+  FieldInjection,
   ListenerBinding,
   ExecutionListener,
   TaskListener,
@@ -68,6 +69,7 @@ export {
   UnsupportedCollaborationError,
   UnsupportedCallActivityError,
   UnsupportedExtensionFormError,
+  UnsupportedFormReferenceError,
   UnsupportedConditionExpressionError,
 } from './errors.js';
 

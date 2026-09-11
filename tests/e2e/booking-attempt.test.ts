@@ -4,6 +4,7 @@ import type { FixtureAdapter } from '../fixtures/index.js';
 import {
   deployExamples,
   ENGINE_BOOT_TIMEOUT_MS,
+  ENGINE_STOP_TIMEOUT_MS,
   SKIP_DOCKER as SKIP,
 } from '../helpers/e2e-fixture.js';
 import type { HistoricActivityInstance } from '../helpers/engine-rest.js';
@@ -33,7 +34,7 @@ describe.skipIf(SKIP)(
 
     afterAll(async () => {
       await fixture?.stop();
-    });
+    }, ENGINE_STOP_TIMEOUT_MS);
 
     // Starts one booking and reads its history once `marker` has been recorded,
     // so every assertion below reads a run that reached at least that far.

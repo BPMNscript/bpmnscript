@@ -208,14 +208,18 @@ ScriptLiteral:
 // An engine lifecycle callback on the enclosing element, `on <event>(class:
 // "...")`; a `timeout` one also carries a timer clause. The `on` word is the
 // statement layer's: at statement position it catches a BPMN event, inside a
-// member block it registers a callback. A callback carries settings and an
-// optional inline script and nothing else, so it can nest neither a form, nor a
-// parameter, nor another callback.
+// member block it registers a callback. A callback carries settings, an
+// optional inline script, and a block of parameters configuring the binding it
+// names, so it can nest neither a form nor another callback. Which directions
+// the block takes is the validator's business, as it is for an element's own
+// block. The block cannot be read as the next member: nothing else a member
+// block holds starts with `{`.
 Listener:
     'on' event=ListenerEvent
     (particle=ID time=(STRING | RAW_TEMPLATE))?
     SettingsParens?
-    script=FENCED_SCRIPT?;
+    script=FENCED_SCRIPT?
+    ('{' params+=IoParameter* '}')?;
 
 // `start` and `end` are named explicitly because the statements of the same name
 // make them keyword tokens that never lex as `ID`.

@@ -41,6 +41,7 @@ import type {
   Statement,
   SubProcess,
   ThrowStatement,
+  UserTask,
   VarType,
   WhileStatement,
 } from './generated/ast.js';
@@ -113,6 +114,8 @@ import {
   END_TRIGGERS,
   EVENT_BINDING_FIELDS,
   EXECUTION_LISTENER_EVENTS,
+  FIELD_BINDING_KEYS,
+  FIELD_DIRECTION,
   FORM_FIELD_TYPES,
   formatPlainWordList,
   formatWordList,
@@ -120,6 +123,7 @@ import {
   LISTENER_BINDING_KEYS,
   listenerEventsFor,
   ON_TRIGGERS,
+  parameterDirectionsFor,
   PROCESS_HEADER_KEYS,
   SCRIPT_FORMAT_ALIASES,
   SERVICE_TASK_BINDING_KEYS,
@@ -151,7 +155,7 @@ export function registerValidationChecks(services: BpmnScriptServices) {
     Process: validator.checkProcess,
     StartEvent: validator.checkStartEvent,
     EndEvent: validator.checkEndEvent,
-    UserTask: validator.checkAttributeOwner,
+    UserTask: validator.checkUserTask,
     ServiceTask: validator.checkServiceTaskAttributes,
     ScriptTask: validator.checkScriptTask,
     GenericTask: validator.checkAttributeOwner,
@@ -175,7 +179,7 @@ export function registerValidationChecks(services: BpmnScriptServices) {
   registry.register(checks, validator);
 }
 
-type VersionPinnedElement = CallActivity | BusinessRuleTask;
+type VersionPinnedElement = CallActivity | BusinessRuleTask | UserTask;
 
 /** The two shapes `await` opens: a race branch is the same header with a body,
  * down to the slot names, so both run through one set of payload rules. */
@@ -194,6 +198,7 @@ type CatchHeader = IntermediateCatchEvent | RaceBranch;
 const NON_VARIABLE_ATTR_KEYS: ReadonlySet<string> = new Set([
   'class',
   'formKey',
+  'formRef',
   'expression',
   'delegate',
   'topic',
@@ -246,6 +251,10 @@ const EVENT_BINDING_FIELD_SET: ReadonlySet<string> = new Set(
   EVENT_BINDING_FIELDS,
 );
 const IO_DIRECTION_SET: ReadonlySet<string> = new Set(IO_DIRECTIONS);
+const FIELD_BINDING_KEY_SET: ReadonlySet<string> = new Set(FIELD_BINDING_KEYS);
+/** The remaining binding keys, so the two lists cannot name the same word. */
+const FIELDLESS_BINDING_KEYS: readonly string[] =
+  BUSINESS_RULE_BINDING_KEYS.filter((key) => !FIELD_BINDING_KEY_SET.has(key));
 const LISTENER_BINDING_KEY_SET: ReadonlySet<string> = new Set(
   LISTENER_BINDING_KEYS,
 );
@@ -283,6 +292,80 @@ const PARAMETER_HOSTS_MESSAGE = `parameters belong on ${[
 const REPEATED_OUTPUT_MESSAGE =
   "A repeated step cannot map an 'output' parameter: the engine refuses to " +
   'deploy it. Move the mapping to a step after the repetition.';
+
+/**
+ * Read off the block rules, as {@link PARAMETER_HOSTS_MESSAGE} is. A listener
+ * has no row of its own, being a callback on an element rather than one, and
+ * is added back here.
+ */
+const FIELD_HOSTS_MESSAGE = `an injected field belongs on ${Object.values(
+  ATTRIBUTE_BLOCK_RULES,
+)
+  .filter((rule) => rule.fields)
+  .map((rule) => rule.description)
+  .join(', ')}, and on a listener.`;
+
+/** @param description Noun phrase with article, e.g. `'a user task'`. */
+const noFieldHostMessage = (description: string) =>
+  `${capitalize(description)} cannot declare a 'field' parameter; ${FIELD_HOSTS_MESSAGE}`;
+
+/**
+ * Refuses a field written under a binding that receives no field list;
+ * {@link FIELD_BINDING_KEYS} states the rule.
+ *
+ * @param subject The message's leading noun phrase (`'A service task'`).
+ * @param written The fieldless bindings the author wrote here. Naming those
+ *   rather than every fieldless key keeps the tail off keys the subject cannot
+ *   write: a listener takes neither `topic` nor `decision`.
+ */
+const fieldBindingMessage = (subject: string, written: readonly string[]) =>
+  `${subject} carries an injected field only under a ${formatWordList(FIELD_BINDING_KEYS)} ` +
+  'binding: the engine injects into the class or the delegate that binding ' +
+  'names' +
+  (written.length === 0
+    ? '.'
+    : `, and the binding written with ${formatWordList(written)} receives none.`);
+
+/** The bindings written on an element or a listener that receive no field list. */
+const fieldlessBindingsOf = (attrs: readonly Setting[]): string[] =>
+  bindingKeysOf(attrs, FIELDLESS_BINDING_KEYS);
+
+/**
+ * A fenced body binds a listener in place of its settings, and the script
+ * listener behaviours are built from the script alone. Naming the bindings
+ * that do take a field would be a dead end here: a listener writing both a
+ * script and a `class` setting reaches this and has already followed it.
+ *
+ * @param subject The message's leading noun phrase (`"The 'on start' listener"`).
+ */
+const scriptListenerFieldMessage = (subject: string) =>
+  `${subject} runs a fenced script, which the engine hands no field list; ` +
+  `remove the script and bind the listener with ${formatWordList(FIELD_BINDING_KEYS)} ` +
+  'to inject one.';
+
+const fieldValueMessage = (name: string) =>
+  `Field '${name}' takes a quoted string or a "\${...}" expression; ` +
+  'put the value in quotes.';
+
+const unknownDirectionMessage = (word: string, legal: readonly string[]) =>
+  `Unknown parameter direction '${word}'; write ${formatWordList(legal)}.`;
+
+const FORM_KEY_AND_REF_MESSAGE =
+  "A user task names its form with 'formKey' or with 'formRef', never both; " +
+  'the engine refuses to deploy a task carrying the two.';
+
+/** One phrase per mode the setting takes, as an author writes it. */
+const BINDING_MODE_PHRASES: readonly string[] = CALL_BINDING_VALUES.map(
+  (value) => `'binding: ${value}'`,
+);
+
+const FORM_REF_BINDING_MESSAGE = `A 'formRef' needs the binding resolving it: add ${formatPlainWordList(
+  [...BINDING_MODE_PHRASES, "'version: <number>'"],
+)}. The engine refuses to deploy a form reference with none.`;
+
+const FORM_REF_MISSING_MESSAGE =
+  "'binding' and 'version' pin which deployed version of a form the engine " +
+  "resolves, so neither stands without a 'formRef'.";
 
 /** @param subject The clause or noun phrase that does take one, quoted as written. */
 function particleOnlyMessage(subject: string): string {
@@ -1163,6 +1246,41 @@ export class BpmnScriptValidator {
     this.checkAttributeBlock(owner, accept);
   };
 
+  checkUserTask = (task: UserTask, accept: ValidationAcceptor): void => {
+    this.checkAttributeBlock(task, accept);
+    this.checkFormReference(task, accept);
+  };
+
+  /**
+   * A form reference is a key plus the binding resolving which deployed
+   * version of that form the engine hands the assignee. Operaton refuses to
+   * deploy a task naming a form both ways, or naming one with no binding at
+   * all, so each is an error rather than a warning. Both are reported against
+   * the task's name, as {@link checkBindingVersionExclusion} is: a user task
+   * may legitimately name no form.
+   */
+  private checkFormReference(task: UserTask, accept: ValidationAcceptor): void {
+    const attrs = settingsOf(task.items);
+    const writes = (key: string) => attrs.some((attr) => attr.key === key);
+    const target = { node: task, property: 'name' } as const;
+
+    if (!writes('formRef')) {
+      if (writes('binding') || writes('version')) {
+        accept('error', FORM_REF_MISSING_MESSAGE, target);
+      }
+      return;
+    }
+    if (writes('formKey')) {
+      accept('error', FORM_KEY_AND_REF_MESSAGE, target);
+    }
+    if (!writes('binding') && !writes('version')) {
+      accept('error', FORM_REF_BINDING_MESSAGE, target);
+      return;
+    }
+    this.checkBindingAttribute(task, accept);
+    this.checkBindingVersionExclusion(task, 'A user task', accept);
+  }
+
   /** One check for both: the engine runs a send task the way it runs a service task. */
   checkServiceTaskAttributes = (
     task: ServiceTask | SendTask,
@@ -1461,37 +1579,72 @@ export class BpmnScriptValidator {
     this.checkListeners(owner, rule, accept);
   }
 
+  /**
+   * The block's members split three ways: the io directions, the field
+   * direction, and a word that is neither. Which of the three the owner takes
+   * is its row's business, and a member of a direction it does not take is
+   * reported against the direction word the author wrote.
+   */
   private checkIoParameters(
     owner: AttributeOwner,
     rule: AttributeBlockRule,
     accept: ValidationAcceptor,
   ): void {
-    if (!rule.parameters) {
-      for (const param of owner.params) {
+    const settings = settingsOf(owner.items);
+    const refusal = namesFieldBinding(settings)
+      ? undefined
+      : fieldBindingMessage(
+          capitalize(rule.description),
+          fieldlessBindingsOf(settings),
+        );
+    const recognized: IoParameter[] = [];
+    for (const param of owner.params) {
+      if (param.direction === FIELD_DIRECTION) {
+        if (rule.fields) {
+          recognized.push(param);
+          this.checkField(param, refusal, accept);
+        } else {
+          accept('error', noFieldHostMessage(rule.description), {
+            node: param,
+            property: 'direction',
+          });
+        }
+      } else if (!rule.parameters) {
         accept(
           'error',
           `${capitalize(rule.description)} cannot declare an 'input' or 'output' parameter; ${PARAMETER_HOSTS_MESSAGE}`,
           { node: param, property: 'direction' },
         );
-      }
-      return;
-    }
-
-    const directed: IoParameter[] = [];
-    for (const param of owner.params) {
-      if (IO_DIRECTION_SET.has(param.direction)) {
-        directed.push(param);
+      } else if (IO_DIRECTION_SET.has(param.direction)) {
+        recognized.push(param);
       } else {
         accept(
           'error',
-          `Unknown parameter direction '${param.direction}'; write ${formatWordList(IO_DIRECTIONS)}.`,
+          unknownDirectionMessage(
+            param.direction,
+            parameterDirectionsFor(rule),
+          ),
           { node: param, property: 'direction' },
         );
       }
     }
 
+    this.checkDuplicateParameters(recognized, accept);
+
+    const directed = recognized.filter((param) => !isFieldParameter(param));
+    this.checkRepeatedOutput(owner, directed, accept);
+    for (const param of directed) {
+      this.checkMapKeys(param.value, accept);
+    }
+  }
+
+  /** The key is namespaced by direction, so the three do not collide. */
+  private checkDuplicateParameters(
+    params: readonly IoParameter[],
+    accept: ValidationAcceptor,
+  ): void {
     forEachDuplicate(
-      directed,
+      params,
       (param) => duplicateKey(param.direction, param.name),
       (param) =>
         accept(
@@ -1500,11 +1653,30 @@ export class BpmnScriptValidator {
           { node: param, property: 'name' },
         ),
     );
+  }
 
-    this.checkRepeatedOutput(owner, directed, accept);
-
-    for (const param of directed) {
-      this.checkMapKeys(param.value, accept);
+  /**
+   * A field configures the implementation the binding instantiates, so a
+   * binding running none has nothing to inject into and the engine hands it no
+   * field list. One diagnostic per member: a field with no place to go is the
+   * mistake to fix before its value shape. Called where the member is written,
+   * so the block's diagnostics stay in document order.
+   *
+   * @param refusal Why no field rides here, or `undefined` where one does. The
+   *   caller words it, since what to remove differs by what the owner wrote.
+   */
+  private checkField(
+    field: IoParameter,
+    refusal: string | undefined,
+    accept: ValidationAcceptor,
+  ): void {
+    if (refusal !== undefined) {
+      accept('error', refusal, { node: field, property: 'direction' });
+    } else if (!isFieldValue(field.value)) {
+      accept('error', fieldValueMessage(field.name), {
+        node: field,
+        property: 'value',
+      });
     }
   }
 
@@ -1566,6 +1738,7 @@ export class BpmnScriptValidator {
       recognized.push(listener);
       this.checkListenerTimer(listener, accept);
       this.checkListenerBinding(listener, accept);
+      this.checkListenerFields(listener, accept);
     }
 
     forEachDuplicate(
@@ -1607,6 +1780,45 @@ export class BpmnScriptValidator {
       { node: listener, property: 'event' },
     );
     return false;
+  }
+
+  /**
+   * A listener's block holds injected fields alone: it configures the binding
+   * the listener names rather than the element the listener runs on, so there
+   * is nothing an io parameter there could map. Which binding takes a field
+   * follows the listener's own, not its host's, so a task listener on a user
+   * task carries one even though its host takes none.
+   */
+  private checkListenerFields(
+    listener: Listener,
+    accept: ValidationAcceptor,
+  ): void {
+    const subject = `The 'on ${listener.event}' listener`;
+    const settings = settingsOf(listener.items);
+    // A fenced body binds the listener in place of its settings, so it is the
+    // script that has to go, whatever the settings beside it say.
+    const refusal =
+      listener.script !== undefined
+        ? scriptListenerFieldMessage(subject)
+        : namesFieldBinding(settings)
+          ? undefined
+          : fieldBindingMessage(subject, fieldlessBindingsOf(settings));
+
+    const fields: IoParameter[] = [];
+    for (const param of listener.params) {
+      if (isFieldParameter(param)) {
+        fields.push(param);
+        this.checkField(param, refusal, accept);
+      } else {
+        accept(
+          'error',
+          unknownDirectionMessage(param.direction, [FIELD_DIRECTION]),
+          { node: param, property: 'direction' },
+        );
+      }
+    }
+
+    this.checkDuplicateParameters(fields, accept);
   }
 
   /** The fenced script replaces the whole brace block, so only braces can bind none or several. */
@@ -1902,7 +2114,7 @@ export class BpmnScriptValidator {
     if (hasBinding && hasVersion) {
       accept(
         'error',
-        `${subject} cannot combine 'binding' and 'version'; use 'version: <number>' to pin a specific version, or 'binding: latest'/'binding: deployment' for the other modes.`,
+        `${subject} cannot combine 'binding' and 'version'; use 'version: <number>' to pin a specific version, or ${BINDING_MODE_PHRASES.join('/')} for the other modes.`,
         { node: owner, property: 'name' },
       );
     }
@@ -2935,6 +3147,23 @@ function checkEmptyCode(
       property: 'value',
     });
   }
+}
+
+const isFieldParameter = (param: IoParameter): boolean =>
+  param.direction === FIELD_DIRECTION;
+
+/** Whether the parens name a binding the engine injects a field into. */
+function namesFieldBinding(attrs: readonly Setting[]): boolean {
+  return attrs.some((attr) => FIELD_BINDING_KEY_SET.has(attr.key));
+}
+
+/**
+ * A field's value has one slot per shape in the XML, the `stringValue`
+ * attribute for a literal and an `<operaton:expression>` child for a raw
+ * expression. A list, a map, and an inline script have neither.
+ */
+function isFieldValue(value: IoValue | undefined): boolean {
+  return value !== undefined && (isLiteralString(value) || isRawExpr(value));
 }
 
 /** The distinct binding keys written on an element, in document order. */

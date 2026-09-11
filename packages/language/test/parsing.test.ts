@@ -883,6 +883,18 @@ ${FENCE} }
       '[UserTask(name="T", listeners=[Listener(event="end", script="```groovy\\nexecution.setVariable(\\"x\\", 1)\\n```")])]',
     ],
     [
+      'a listener carries its own member block, and one bound by a script carries none',
+      `process p {
+  service S {
+    on start(class: "com.acme.L") { field greeting = "hello" }
+    on end ${FENCE}groovy
+execution.setVariable("x", 1)
+${FENCE}
+  }
+}`,
+      '[ServiceTask(name="S", listeners=[Listener(event="start", items=[Setting(key="class", value=LiteralString(value="com.acme.L"))], params=[IoParameter(direction="field", name="greeting", value=LiteralString(value="hello"))]), Listener(event="end", script="```groovy\\nexecution.setVariable(\\"x\\", 1)\\n```")])]',
+    ],
+    [
       'a listener sits in the member block before a subprocess body',
       `process p { subprocess S { on start(class: "X") } { user U } }`,
       '[SubProcess(name="S", listeners=[Listener(event="start", items=[Setting(key="class", value=LiteralString(value="X"))])], body=Block(statements=[UserTask(name="U")]))]',

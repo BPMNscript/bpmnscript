@@ -79,6 +79,21 @@
           "name": "formKey",
           "isAttr": true,
           "type": "String"
+        },
+        {
+          "name": "formRef",
+          "isAttr": true,
+          "type": "String"
+        },
+        {
+          "name": "formRefBinding",
+          "isAttr": true,
+          "type": "String"
+        },
+        {
+          "name": "formRefVersion",
+          "isAttr": true,
+          "type": "String"
         }
       ]
     },

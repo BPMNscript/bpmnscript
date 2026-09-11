@@ -30,6 +30,7 @@ import {
   UnsupportedEventDefinitionError,
   UnsupportedEventFeatureError,
   UnsupportedExtensionFormError,
+  UnsupportedFormReferenceError,
   UnsupportedLoopCharacteristicsError,
   UnsupportedServiceTaskFormError,
 } from '../src/errors.js';
@@ -39,6 +40,9 @@ import type {
   EventDefinition,
   FlowElement,
   IntermediateCatchEvent,
+  ListenerBinding,
+  ServiceTaskBinding,
+  VersionBinding,
 } from '../src/ir/types.js';
 import { isGateway } from '../src/ir/types.js';
 import { expectRefusal } from './helpers/expect-refusal.js';
@@ -1926,23 +1930,23 @@ describe('xmlToIr: warns for dropped extension attributes', () => {
     ['operaton', operatonDoc],
     ['camunda', camundaDoc],
   ] as const)(
-    'a %s:formRef is reported against the task carrying it, while the assignee beside it is read',
+    'a %s:formHandlerClass is reported against the task carrying it, while the assignee beside it is read',
     async (prefix, doc) => {
       const { node, warnings } = await importOnly(
         oneNodeDoc('userTask', {
-          id: 'FormRefTask',
+          id: 'FormHandlerTask',
           attrs:
-            `name="Form Ref Task" ${prefix}:assignee="alice" ` +
-            `${prefix}:formRef="review-form"`,
+            `name="Form Handler Task" ${prefix}:assignee="alice" ` +
+            `${prefix}:formHandlerClass="com.example.FormHandler"`,
           doc,
         }),
         'userTask',
       );
       expect(node.assignee).toBe('alice');
       expectOneWarning(warnings, {
-        elementId: 'FormRefTask',
+        elementId: 'FormHandlerTask',
         category: 'extensionAttribute',
-        message: 'formRef',
+        message: 'formHandlerClass',
       });
     },
   );
@@ -2129,13 +2133,13 @@ describe('xmlToIr: an empty extensionElements is not flagged beside a real drop'
    * operaton extension elements makes the drop attributable to the exact
    * owning element.
    */
-  it('reports the field against the service task alone, and reads the assignee off the clean task', async () => {
+  it('reports the field against the service task alone, because an operaton:expression binding never receives an injected field, and reads the assignee off the clean task', async () => {
     const { ir, warnings } = await xmlToIr(
       operatonDoc`    <bpmn:startEvent id="S" />
     <bpmn:userTask id="CleanTask" name="Clean Task" operaton:assignee="alice">
       <bpmn:extensionElements/>
     </bpmn:userTask>
-    <bpmn:serviceTask id="ConfiguredSvc" operaton:class="com.example.Svc">
+    <bpmn:serviceTask id="ConfiguredSvc" operaton:expression="\${someBean.execute(execution)}">
       <bpmn:extensionElements>
         <operaton:field name="greeting" stringValue="hello" />
       </bpmn:extensionElements>
@@ -2795,10 +2799,10 @@ describe("xmlToIr: a root of a kind this tool does not model reports its own chi
     'its steps, and nothing declared or drawn beside it).';
 
   const KEPT_SETTINGS_NOTE =
-    '(this tool keeps the assignee, form, script, service-task binding, ' +
-    'result variable, version tag, input/output mappings and listeners, ' +
-    'and the async, retry, job-priority and task-assignment settings; a ' +
-    'gateway carries no engine setting at all).';
+    '(this tool keeps the assignee, form, form reference, script, ' +
+    'service-task binding, injected fields, result variable, version tag, ' +
+    'input/output mappings and listeners, and the async, retry, job-priority ' +
+    'and task-assignment settings; a gateway carries no engine setting at all).';
 
   it.each([
     [
@@ -2973,7 +2977,7 @@ describe('xmlToIr: embedded sub-process imports recursively', () => {
     const xml = subProcessDoc(
       `<bpmn:startEvent id="SubStart" />
       <bpmn:userTask id="InnerTask" name="Inner Task"
-                     operaton:assignee="alice" operaton:formRef="review-form" />
+                     operaton:assignee="alice" operaton:formHandlerClass="com.example.FormHandler" />
       <bpmn:endEvent id="SubEnd" />
       <bpmn:sequenceFlow id="SF1" sourceRef="SubStart" targetRef="InnerTask" />
       <bpmn:sequenceFlow id="SF2" sourceRef="InnerTask" targetRef="SubEnd" />`,
@@ -2984,7 +2988,7 @@ describe('xmlToIr: embedded sub-process imports recursively', () => {
     const { warnings } = await xmlToIr(xml);
     expectOneWarning(warnings, {
       elementId: 'InnerTask',
-      message: 'formRef',
+      message: 'formHandlerClass',
     });
   });
 
@@ -5933,54 +5937,467 @@ describe('xmlToIr: a consumed extension child reports its own unread attributes'
   });
 });
 
-describe('xmlToIr: operaton:field is reported per field', () => {
-  it('a field on a step names the field and refuses nothing', async () => {
-    const { node: task, warnings } = await importServiceTask(
-      `        <operaton:field name="greeting" stringValue="hello" />`,
+/** The reason a field under a binding that receives no field list draws. */
+const boundElsewhere = (binding: string): string =>
+  'Operaton injects a field into a class or delegate binding and into no ' +
+  `other, and this one is bound by ${binding}`;
+
+describe('xmlToIr: an injected field rides a class or a delegate binding', () => {
+  const importBound = (tag: string, attrs: string, fields: string) =>
+    importById(
+      oneNodeDoc(tag, {
+        id: 'Svc',
+        attrs,
+        children: extensionElements(fields),
+      }),
+      'Svc',
+      'serviceTask',
     );
-    expect(task.binding).toEqual(classBinding('com.example.Svc'));
-    expect(warnings).toHaveLength(1);
-    expect(warnings[0]).toEqual({
-      elementId: 'Svc',
-      category: 'extensionAttribute',
-      message: expect.stringContaining("'greeting'"),
-    });
+
+  const field = (attrs: string, body = ''): string =>
+    body === ''
+      ? `        <operaton:field ${attrs} />`
+      : `        <operaton:field ${attrs}>${body}</operaton:field>`;
+
+  const warned = (message: string): ImportWarning => ({
+    elementId: 'Svc',
+    category: 'extensionAttribute',
+    message,
   });
 
-  it('a field on a listener is reported against the owning step', async () => {
-    const { node: task, warnings } = await importServiceTask(
-      `        <operaton:executionListener event="start" class="com.example.L">
-          <operaton:field name="greeting" stringValue="hello" />
-        </operaton:executionListener>`,
-    );
-    expect(task.executionListeners).toEqual([
-      { event: 'start', binding: classBinding('com.example.L') },
+  const dropped = (reason: string, name = "'greeting'"): ImportWarning =>
+    warned(`The injected field ${name} on 'Svc' was not imported: ${reason}.`);
+
+  const CLASS = 'operaton:class="com.example.Svc"';
+  const GREETING = field('name="greeting" stringValue="hello"');
+  const SVC = classBinding('com.example.Svc');
+  const INJECTED = [{ name: 'greeting', value: 'hello' }];
+  const SVC_INJECTED: ServiceTaskBinding = {
+    kind: 'class',
+    className: 'com.example.Svc',
+    fields: INJECTED,
+  };
+
+  const cases: readonly [
+    string,
+    string,
+    string,
+    string,
+    ServiceTaskBinding,
+    ImportWarning[],
+  ][] = [
+    [
+      'a class binding carries a quoted value as the literal the engine injects',
+      'serviceTask',
+      CLASS,
+      GREETING,
+      SVC_INJECTED,
+      [],
+    ],
+    [
+      'a delegate binding carries an operaton:expression child as the expression the engine evaluates',
+      'sendTask',
+      'operaton:delegateExpression="${svcBean}"',
+      field(
+        'name="greeting"',
+        '<operaton:expression>${who}</operaton:expression>',
+      ),
+      {
+        kind: 'delegateExpression',
+        expression: '${svcBean}',
+        fields: [{ name: 'greeting', value: '${who}' }],
+      },
+      [],
+    ],
+    [
+      'a code-bound business rule task keeps both of its fields in the order the document writes them',
+      'businessRuleTask',
+      CLASS,
+      `${GREETING}\n${field('name="role" stringValue="clerk"')}`,
+      {
+        kind: 'class',
+        className: 'com.example.Svc',
+        fields: [...INJECTED, { name: 'role', value: 'clerk' }],
+      },
+      [],
+    ],
+    [
+      'an operaton:string child carries, and warns that export writes it back as a stringValue attribute',
+      'serviceTask',
+      CLASS,
+      field('name="greeting"', '<operaton:string>hello</operaton:string>'),
+      SVC_INJECTED,
+      [
+        warned(
+          "The injected field 'greeting' on 'Svc' writes its value in an " +
+            'operaton:string child, which this tool writes back as a ' +
+            'stringValue attribute; the engine injects the same text either way.',
+        ),
+      ],
+    ],
+    [
+      'a stringValue that reads as an expression drops, because export would write it back as an operaton:expression the engine evaluates',
+      'serviceTask',
+      CLASS,
+      field('name="greeting" stringValue="${who}"'),
+      SVC,
+      [
+        dropped(
+          "a stringValue attribute holding '${who}' would be written back " +
+            'as an operaton:expression child, and the engine would evaluate ' +
+            'it rather than inject the text',
+        ),
+      ],
+    ],
+    [
+      'an operaton:expression child that does not read as an expression drops, because export would write it back as the literal stringValue, and its text is quoted on one line',
+      'serviceTask',
+      CLASS,
+      field(
+        'name="greeting"',
+        '<operaton:expression>hello\n          world</operaton:expression>',
+      ),
+      SVC,
+      [
+        dropped(
+          'an operaton:expression child holding ' +
+            "'hello\\n          world' would be written back as a stringValue " +
+            'attribute, and the engine would inject that text rather than ' +
+            'evaluate it',
+        ),
+      ],
+    ],
+    [
+      'a pretty-printed operaton:expression child drops, because the engine evaluates the body it is handed untrimmed and the indentation is part of the expression',
+      'serviceTask',
+      CLASS,
+      field(
+        'name="greeting"',
+        '\n          <operaton:expression>\n            ${who}\n          </operaton:expression>\n        ',
+      ),
+      SVC,
+      [
+        dropped(
+          'an operaton:expression child holding ' +
+            "'\\n            ${who}\\n          ' would be written back as a " +
+            'stringValue attribute, and the engine would inject that text ' +
+            'rather than evaluate it',
+        ),
+      ],
+    ],
+    [
+      'an operaton:string child keeps every space it carries, because the engine injects it verbatim',
+      'serviceTask',
+      CLASS,
+      field('name="greeting"', '<operaton:string>  hello  </operaton:string>'),
+      {
+        kind: 'class',
+        className: 'com.example.Svc',
+        fields: [{ name: 'greeting', value: '  hello  ' }],
+      },
+      [
+        warned(
+          "The injected field 'greeting' on 'Svc' writes its value in an " +
+            'operaton:string child, which this tool writes back as a ' +
+            'stringValue attribute; the engine injects the same text either way.',
+        ),
+      ],
+    ],
+    [
+      'a stringValue beside an operaton:expression child carries the stringValue Operaton reads, and reports the child it passes over',
+      'serviceTask',
+      CLASS,
+      field(
+        'name="greeting" stringValue="hello"',
+        '<operaton:expression>${who}</operaton:expression>',
+      ),
+      SVC_INJECTED,
+      [
+        warned(
+          "The 'operaton:expression' child of the injected field 'greeting' " +
+            "on 'Svc' has no effect alongside a stringValue attribute and was " +
+            'not imported.',
+        ),
+      ],
+    ],
+    [
+      'a field declaring no name drops, because a field is injected under the name it declares',
+      'serviceTask',
+      CLASS,
+      field('stringValue="hello"'),
+      SVC,
+      [
+        dropped(
+          'a field is injected under the name it declares, and this one ' +
+            'declares none',
+          '(unnamed)',
+        ),
+      ],
+    ],
+    [
+      'an expression binding receives no field list, so the field drops',
+      'serviceTask',
+      'operaton:expression="${svcBean.run()}"',
+      GREETING,
+      exprBinding('${svcBean.run()}'),
+      [dropped(boundElsewhere('operaton:expression'))],
+    ],
+    [
+      'an external topic receives no field list, so the field drops',
+      'serviceTask',
+      'operaton:type="external" operaton:topic="rate"',
+      GREETING,
+      externalBinding('rate'),
+      [dropped(boundElsewhere('operaton:type="external"'))],
+    ],
+    [
+      'a decision binding receives no field list, so the field drops',
+      'businessRuleTask',
+      'operaton:decisionRef="riskRating" operaton:decisionRefBinding="latest"',
+      GREETING,
+      {
+        kind: 'decision',
+        decisionRef: 'riskRating',
+        binding: { kind: 'latest' },
+      },
+      [dropped(boundElsewhere('an operaton:decisionRef'))],
+    ],
+  ];
+
+  it.each(cases)(
+    '%s',
+    async (_title, tag, attrs, fields, binding, expected) => {
+      const { node, warnings } = await importBound(tag, attrs, fields);
+      expect(node.binding).toEqual(binding);
+      expect(warnings).toEqual(expected);
+    },
+  );
+
+  it('a field on a step with no binding to inject into is reported whole', async () => {
+    const { warnings } = await importUserTaskWith(GREETING);
+    expect(warnings.map((w) => w.message)).toEqual([
+      "The injected field 'greeting' on 'Review' was not imported: this tool " +
+        'carries an injected field on the step or the listener whose class ' +
+        'or delegate binding receives it, and on no other position.',
     ]);
-    expectOneWarning(warnings, { elementId: 'Svc', message: "'greeting'" });
-    expect(warnings[0].message).toMatch(/listener/i);
   });
 
-  it('one document carrying a carried element and a dropped element yields exactly one warning', async () => {
-    const xml = operatonDoc`    <bpmn:startEvent id="S" />
-    <bpmn:userTask id="CleanTask" operaton:assignee="alice">
-      <bpmn:extensionElements>
-        <operaton:executionListener event="start" class="com.example.L" />
-      </bpmn:extensionElements>
-    </bpmn:userTask>
-    <bpmn:serviceTask id="ConfiguredSvc" operaton:class="com.example.Svc">
-      <bpmn:extensionElements>
-        <operaton:field name="greeting" stringValue="hello" />
-      </bpmn:extensionElements>
-    </bpmn:serviceTask>
-    <bpmn:endEvent id="E" />
-    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="CleanTask" />
-    <bpmn:sequenceFlow id="F2" sourceRef="CleanTask" targetRef="ConfiguredSvc" />
-    <bpmn:sequenceFlow id="F3" sourceRef="ConfiguredSvc" targetRef="E" />`;
-
-    const { warnings } = await xmlToIr(xml);
-    expect(warnings).toHaveLength(1);
-    expect(warnings[0].elementId).toBe('ConfiguredSvc');
+  it('a carried field still reports the attributes no reader reads off it', async () => {
+    const { node, warnings } = await importBound(
+      'serviceTask',
+      CLASS,
+      field(
+        'xmlns:foo="http://foo.example" name="greeting" stringValue="hello" foo:bar="1"',
+      ),
+    );
+    expect(node.binding).toEqual(SVC_INJECTED);
+    expect(warnings.map((w) => w.message)).toEqual([
+      expect.stringMatching(/'foo:bar' on an operaton:field 'greeting'/),
+    ]);
   });
+});
+
+describe('xmlToIr: a listener carries an injected field on the same two bindings', () => {
+  const GREETING =
+    '          <operaton:field name="greeting" stringValue="hello" />';
+  const SCRIPT =
+    '          <operaton:script scriptFormat="groovy">x = 1</operaton:script>\n';
+
+  /** The single listener's binding, off the node each listener kind hangs on. */
+  const importListener = async (
+    kind: 'execution' | 'task',
+    attrs: string,
+    body = '',
+  ): Promise<{ binding: ListenerBinding; warnings: ImportWarning[] }> => {
+    const child = (tag: string, event: string): string =>
+      `        <operaton:${tag} event="${event}" ${attrs}>\n${body}${GREETING}\n        </operaton:${tag}>`;
+
+    if (kind === 'execution') {
+      const { node, warnings } = await importServiceTask(
+        child('executionListener', 'start'),
+      );
+      return { binding: node.executionListeners![0].binding, warnings };
+    }
+    const { node, warnings } = await importUserTaskWith(
+      child('taskListener', 'create'),
+    );
+    return { binding: node.taskListeners![0].binding, warnings };
+  };
+
+  const cases: readonly [
+    string,
+    'execution' | 'task',
+    string,
+    string,
+    ListenerBinding,
+    ImportWarning[],
+  ][] = [
+    [
+      'an execution listener bound by class carries the field onto its own binding',
+      'execution',
+      'class="com.example.L"',
+      '',
+      {
+        kind: 'class',
+        className: 'com.example.L',
+        fields: [{ name: 'greeting', value: 'hello' }],
+      },
+      [],
+    ],
+    [
+      'a task listener bound by a delegate expression carries the field onto its own binding',
+      'task',
+      'delegateExpression="${listenerBean}"',
+      '',
+      {
+        kind: 'delegateExpression',
+        expression: '${listenerBean}',
+        fields: [{ name: 'greeting', value: 'hello' }],
+      },
+      [],
+    ],
+    [
+      'a listener bound by a fenced script receives no field list, so the field drops',
+      'execution',
+      '',
+      SCRIPT,
+      scriptValue('groovy', 'x = 1'),
+      [
+        {
+          elementId: 'Svc',
+          category: 'extensionAttribute',
+          message:
+            "The injected field 'greeting' on an operaton:executionListener " +
+            `on 'Svc' was not imported: ${boundElsewhere('an operaton:script child')}.`,
+        },
+      ],
+    ],
+  ];
+
+  it.each(cases)('%s', async (_title, kind, attrs, body, binding, expected) => {
+    const { binding: imported, warnings } = await importListener(
+      kind,
+      attrs,
+      body,
+    );
+    expect(imported).toEqual(binding);
+    expect(warnings).toEqual(expected);
+  });
+});
+
+describe('xmlToIr: a user task names a deployed form by reference', () => {
+  const importFormRef = (attrs: string, doc = operatonDoc) =>
+    importOnly(oneNodeDoc('userTask', { attrs, doc }), 'userTask');
+
+  const bound: readonly [string, string, VersionBinding][] = [
+    [
+      'the latest deployed form',
+      'operaton:formRefBinding="latest"',
+      { kind: 'latest' },
+    ],
+    [
+      'the form deployed alongside the process',
+      'operaton:formRefBinding="deployment"',
+      { kind: 'deployment' },
+    ],
+    [
+      'one pinned version of the form',
+      'operaton:formRefBinding="version" operaton:formRefVersion="3"',
+      { kind: 'version', version: '3' },
+    ],
+  ];
+
+  it.each(bound)(
+    'a formRef resolving to %s imports the key and the binding together, reporting nothing',
+    async (_title, attrs, binding) => {
+      const { node, warnings } = await importFormRef(
+        `operaton:formRef="review-form" ${attrs}`,
+      );
+      expect(node).toEqual({
+        kind: 'userTask',
+        id: 'T',
+        formRef: { key: 'review-form', binding },
+      });
+      expect(warnings).toEqual([]);
+    },
+  );
+
+  it('the camunda: prefix spells the same form reference', async () => {
+    const { node, warnings } = await importFormRef(
+      'camunda:formRef="review-form" camunda:formRefBinding="version" ' +
+        'camunda:formRefVersion="3"',
+      camundaDoc,
+    );
+    expect(node).toEqual({
+      kind: 'userTask',
+      id: 'T',
+      formRef: {
+        key: 'review-form',
+        binding: { kind: 'version', version: '3' },
+      },
+    });
+    expect(warnings).toEqual([]);
+  });
+
+  it.each([
+    [
+      'a version the binding beside it never resolves is reported, and the reference still imports',
+      'operaton:formRef="review-form" operaton:formRefBinding="latest" operaton:formRefVersion="3"',
+      { key: 'review-form', binding: { kind: 'latest' } },
+      [
+        "The 'formRefVersion' setting on 'T' has no effect without " +
+          'formRefBinding="version" and was not imported.',
+      ],
+    ],
+    [
+      'a binding and a version with no formRef to pin are both reported, and the task still imports',
+      'operaton:formRefBinding="latest" operaton:formRefVersion="3"',
+      undefined,
+      [
+        "The 'formRefBinding' setting on 'T' has no effect without an " +
+          'operaton:formRef and was not imported.',
+        "The 'formRefVersion' setting on 'T' has no effect without an " +
+          'operaton:formRef and was not imported.',
+      ],
+    ],
+  ] as const)('%s', async (_title, attrs, formRef, messages) => {
+    const { node, warnings } = await importFormRef(attrs);
+    expect(node.formRef).toEqual(formRef);
+    expect(warnings.map((w) => w.message)).toEqual(messages);
+  });
+
+  it.each([
+    [
+      'a formKey beside a formRef',
+      'operaton:formKey="embedded:app:forms/review.html" operaton:formRef="review-form" operaton:formRefBinding="latest"',
+      'it names an operaton:formKey beside the operaton:formRef, and a task renders one form',
+    ],
+    [
+      'a formRef with no binding to resolve it',
+      'operaton:formRef="review-form"',
+      'its operaton:formRef carries no operaton:formRefBinding, so the engine cannot resolve which deployed form to render',
+    ],
+    [
+      'a formRef bound by a word this tool cannot represent',
+      'operaton:formRef="review-form" operaton:formRefBinding="versionTag"',
+      'formRefBinding="versionTag" is not a binding this tool can represent',
+    ],
+    [
+      'a formRef pinned to a version it never names',
+      'operaton:formRef="review-form" operaton:formRefBinding="version"',
+      'formRefBinding="version" is set without a formRefVersion, so the engine cannot resolve which version to use',
+    ],
+  ])(
+    '%s refuses, rather than importing a task Operaton would not deploy',
+    async (_title, attrs, detail) => {
+      const error = await expectRefusal(
+        xmlToIr(oneNodeDoc('userTask', { attrs })),
+        UnsupportedFormReferenceError,
+        detail,
+      );
+      expect(error.message).toContain("The form reference on 'T'");
+    },
+  );
 });
 
 describe('xmlToIr: a repeated extension block keeps the first and reports the rest', () => {
@@ -6185,6 +6602,20 @@ ${body}
         ioBlock(`          <operaton:inputParameter name="x">1</operaton:inputParameter>
           <operaton:inputParameter name="x">2</operaton:inputParameter>`),
       detail: /two operaton:inputParameter children share name="x"/,
+    },
+    {
+      case: 'an injected field naming no value slot',
+      on: 'Svc',
+      children: `        <operaton:field name="greeting" />`,
+      detail: "the injected field 'greeting' on 'Svc' names no value",
+    },
+    {
+      case: 'an injected field naming an attribute and a child of the same slot',
+      on: 'Svc',
+      children: `        <operaton:field name="greeting" stringValue="hello"><operaton:string>hi</operaton:string></operaton:field>`,
+      detail:
+        "the injected field 'greeting' on 'Svc' names a stringValue " +
+        'attribute and an operaton:string child',
     },
     {
       case: 'a listener carrying no binding at all',

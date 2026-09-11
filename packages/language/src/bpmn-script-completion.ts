@@ -21,11 +21,12 @@ import {
   ENGINE_KEYS,
   EVENT_BINDING_FIELDS,
   EXECUTION_LISTENER_EVENTS,
-  IO_DIRECTIONS,
+  FIELD_DIRECTION,
   LISTENER_BINDING_KEYS,
   listenerEventsFor,
   namesACode,
   ON_TRIGGERS,
+  parameterDirectionsFor,
   PROCESS_HEADER_KEYS,
   SCRIPT_FORMAT_ALIASES,
   START_TRIGGERS,
@@ -185,6 +186,7 @@ const SETTING_SNIPPETS: Readonly<Record<string, string>> = {
   retryCycle: 'retryCycle: "${1:R3/PT10M}"',
   assignee: 'assignee: "${1:user}"',
   formKey: 'formKey: "${1:form-key}"',
+  formRef: 'formRef: "${1:form-id}"',
   candidateGroups: 'candidateGroups: "${1:group}"',
   candidateUsers: 'candidateUsers: "${1:user}"',
   dueDate: 'dueDate: "${1:\\${dateTime().plusDays(3)}}"',
@@ -277,6 +279,19 @@ function settingFormsFor(node: AstNode): StructureForm[] | undefined {
       ...settingForms([...rule.own, ...ENGINE_KEYS]),
     ]
   );
+}
+
+/**
+ * The directions a member of `node`'s block is written with. A listener's block
+ * holds injected fields alone, for the reason
+ * `BpmnScriptValidator.checkListenerFields` states, so it has no row to read.
+ */
+function parameterDirectionsOf(node: AstNode): readonly string[] {
+  if (node.$type === 'Listener') {
+    return [FIELD_DIRECTION];
+  }
+  const rule = attributeBlockRuleOf(node);
+  return rule ? parameterDirectionsFor(rule) : [];
 }
 
 /**
@@ -415,11 +430,13 @@ export class BpmnScriptCompletionProvider extends DefaultCompletionProvider {
     if (
       next.property === 'direction' &&
       !GrammarAST.isKeyword(next.feature) &&
-      owner &&
-      attributeBlockRuleOf(owner)?.parameters
+      owner
     ) {
-      this.acceptParameterDirections(context, acceptor);
-      return;
+      const directions = parameterDirectionsOf(owner);
+      if (directions.length > 0) {
+        this.acceptParameterDirections(context, acceptor, directions);
+        return;
+      }
     }
     if (next.property === 'event' && owner) {
       this.acceptListenerEvents(context, acceptor, owner);
@@ -484,19 +501,33 @@ export class BpmnScriptCompletionProvider extends DefaultCompletionProvider {
     {
       input: 'a value handed to this step',
       output: 'a value this step hands back',
+      [FIELD_DIRECTION]:
+        'a value injected into the class or delegate this step names',
     };
+
+  /**
+   * A field's value is quoted where an io parameter's is not: it lowers to a
+   * `stringValue` attribute or to an expression child, and neither takes a
+   * list, a map, or an inline script.
+   */
+  private static readonly DIRECTION_VALUES: Readonly<Record<string, string>> = {
+    [FIELD_DIRECTION]: '"${2:value}"',
+  };
 
   private acceptParameterDirections(
     context: CompletionContext,
     acceptor: CompletionAcceptor,
+    directions: readonly string[],
   ): void {
-    for (const direction of IO_DIRECTIONS) {
-      const detail = BpmnScriptCompletionProvider.DIRECTION_DETAILS[direction];
+    for (const direction of directions) {
+      const value =
+        BpmnScriptCompletionProvider.DIRECTION_VALUES[direction] ??
+        '${2:value}';
       acceptor(context, {
         label: direction,
         kind: CompletionItemKind.Snippet,
-        detail,
-        insertText: `${direction} \${1:name} = \${2:value}`,
+        detail: BpmnScriptCompletionProvider.DIRECTION_DETAILS[direction],
+        insertText: `${direction} \${1:name} = ${value}`,
         insertTextFormat: InsertTextFormat.Snippet,
         sortText: '1',
       });

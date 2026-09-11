@@ -9,6 +9,7 @@ import {
   irOfExample,
   SKIP_DOCKER as SKIP,
   ENGINE_BOOT_TIMEOUT_MS,
+  ENGINE_STOP_TIMEOUT_MS,
 } from '../helpers/e2e-fixture.js';
 import { waitForTasks } from '../helpers/engine-rest.js';
 
@@ -50,7 +51,7 @@ describe.skipIf(SKIP)('E2E: loan-approval-kopp on Spring Boot Operaton', () => {
 
   afterAll(async () => {
     await fixture?.stop();
-  });
+  }, ENGINE_STOP_TIMEOUT_MS);
 
   // creditScore = 750 gives intRes = "low", which opens the conditional
   // `AssessRisk` task inside the parallel branch while the external branches

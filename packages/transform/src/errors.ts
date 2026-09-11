@@ -239,8 +239,30 @@ export class UnsupportedExtensionFormError extends UnsupportedConstructError {
         'one nested value, never both or two, and is always named; a script ' +
         'value declares a scriptFormat and carries inline code, never an ' +
         'external resource; a listener names exactly one binding and an event ' +
-        'its position accepts; and a timeout task listener carries exactly one ' +
-        'timer, which no other task listener event carries.',
+        'its position accepts; a timeout task listener carries exactly one ' +
+        'timer, which no other task listener event carries; and an injected ' +
+        'field names exactly one value slot, Operaton refusing to deploy one ' +
+        'that names none or both of its literal slots.',
+      { elementId, detail },
+    );
+  }
+}
+
+/**
+ * A user task naming a deployed form in a shape Operaton's
+ * `parseFormDefinition` rejects. `detail` names the shape; the message states
+ * the rule it broke.
+ */
+export class UnsupportedFormReferenceError extends UnsupportedConstructError {
+  declare readonly elementId: string;
+  declare readonly detail: string;
+
+  constructor(elementId: string, detail: string) {
+    super(
+      `The form reference on '${elementId}' cannot be imported: ${detail}. ` +
+        'Operaton refuses to deploy a user task that names both a form key ' +
+        'and a form reference, and one whose form reference has no binding ' +
+        'or a binding outside latest, deployment, and version.',
       { elementId, detail },
     );
   }

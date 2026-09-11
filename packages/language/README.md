@@ -73,23 +73,26 @@ A brace holds what has internal structure: the body of a `while`, `do`, `paralle
 The grammar accepts any key in any element's parens and the validator decides which ones that element has, so an unknown key is a diagnostic naming the element rather than a parse error.
 Five engine execution settings are legal on every element that takes settings, `label` and `documentation` are legal on all of them too, and each element kind adds the keys it owns on top.
 
-| Element                                       | Keys beyond the engine settings                                                                                     |
-| --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
-| `start`                                       | `initiator`                                                                                                         |
-| `end`, `await`, `on`, `subprocess`, `attempt` | none                                                                                                                |
-| `user`                                        | `assignee`, `formKey`, `candidateGroups`, `candidateUsers`, `dueDate`, `followUpDate`, `priority`                   |
-| `service`                                     | `class`, `expression`, `delegate`, `topic`, `resultVariable`                                                        |
-| `script`                                      | `resultVariable`                                                                                                    |
-| `step`                                        | none                                                                                                                |
-| `send`                                        | `class`, `expression`, `delegate`, `topic`, `resultVariable`                                                        |
-| `receive`                                     | `message`                                                                                                           |
-| `decide`                                      | `class`, `expression`, `delegate`, `topic`, `decision`, `binding`, `version`, `mapDecisionResult`, `resultVariable` |
-| `call`                                        | `process`, `binding`, `version`, `businessKey`                                                                      |
-| `throw`, `emit`                               | `class`, `expression`, `delegate`, `topic` (on a `message` trigger only)                                            |
-| process header                                | `label`, `documentation`, `versionTag`, `historyTimeToLive`, `candidateStarterUsers`, `candidateStarterGroups`      |
+| Element                                       | Keys beyond the engine settings                                                                                                    |
+| --------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `start`                                       | `initiator`                                                                                                                        |
+| `end`, `await`, `on`, `subprocess`, `attempt` | none                                                                                                                               |
+| `user`                                        | `assignee`, `formKey`, `formRef`, `binding`, `version`, `candidateGroups`, `candidateUsers`, `dueDate`, `followUpDate`, `priority` |
+| `service`                                     | `class`, `expression`, `delegate`, `topic`, `resultVariable`                                                                       |
+| `script`                                      | `resultVariable`                                                                                                                   |
+| `step`                                        | none                                                                                                                               |
+| `send`                                        | `class`, `expression`, `delegate`, `topic`, `resultVariable`                                                                       |
+| `receive`                                     | `message`                                                                                                                          |
+| `decide`                                      | `class`, `expression`, `delegate`, `topic`, `decision`, `binding`, `version`, `mapDecisionResult`, `resultVariable`                |
+| `call`                                        | `process`, `binding`, `version`, `businessKey`                                                                                     |
+| `throw`, `emit`                               | `class`, `expression`, `delegate`, `topic` (on a `message` trigger only)                                                           |
+| process header                                | `label`, `documentation`, `versionTag`, `historyTimeToLive`, `candidateStarterUsers`, `candidateStarterGroups`                     |
 
 The engine settings are `asyncBefore` and `asyncAfter`, which put a transaction boundary before or after the step, `exclusive`, which says whether the engine may run the step's jobs beside other jobs of the same instance, `jobPriority`, which orders those jobs in the queue, and `retryCycle`, the ISO cycle a failed job is retried on.
 The gateways that `if`, `while`, `do...while`, `parallel`, and a multi-branch `await` synthesize have no settings of their own, so no engine setting can be written on one.
+
+A user task names its deployed form with `formKey` or with `formRef`, never both.
+`formRef` also needs `binding: latest`, `binding: deployment`, or `version: <number>` beside it, the same version-pinning a `call` or a `decide` step carries, since the engine refuses to deploy a form reference it cannot resolve a version for.
 
 #### Service tasks
 
@@ -127,6 +130,26 @@ process order-shipping {
 }
 ```
 
+#### Field injection
+
+`field <name> = <value>` sets a Java bean property on the class or the delegate expression a step's binding names, `operaton:field` on the wire.
+The value is a quoted string, injected literally, or a `"${...}"` expression, evaluated per invocation; a list, a map, and an inline script have no field slot to hold.
+A field rides a `class:` or `delegate:` binding and no other, since Operaton builds the field list for the class or the delegate expression a binding names and hands it to none of `expression:`, `topic:`, or `decision:`.
+It is legal on a `service`, `send`, or `decide` task bound that way, and inside a listener's braces, since a listener binds the same way a service task does.
+
+```bpmnscript
+process claim-intake {
+  service NotifyAdjuster(class: "com.example.claims.NotifyAdjusterDelegate") {
+    field team = "east-coast"
+    field escalationThreshold = "${priorityScore}"
+
+    on start(delegate: "${auditListener}") {
+      field auditTag = "claim-intake"
+    }
+  }
+}
+```
+
 #### Listeners
 
 An element's braces also hold listeners, written with `on <event>` and the thing to run.
@@ -140,6 +163,7 @@ A task listener fires on a step in a user task's lifecycle and is legal on a `us
 
 A listener runs exactly one thing: `class`, `expression`, or `delegate` in its own parens, or a fenced script whose opening tag names the language.
 That is the same choice a service task binding makes, without the external `topic`.
+A `class` or `delegate` binding also opens a brace block of its own, holding injected fields the same way a `service`, `send`, or `decide` task's braces do; see [Field injection](#field-injection).
 `on timeout` carries the timer that says when it runs, written as an `after`, `at`, or `every` particle and a time, and no other event takes one.
 
 ````bpmnscript
@@ -154,7 +178,7 @@ process claim-review {
 }
 ````
 
-An `on` inside an element's braces is a listener; an `on` at statement position is a caught BPMN event, told apart by the body block a handler always carries and a listener never does.
+An `on` inside an element's braces is a listener; an `on` at statement position is a caught BPMN event, told apart by what follows the header: a handler always carries a body of statements, and a listener's own braces, when it carries any, hold field declarations instead.
 
 #### Script tasks
 
@@ -525,12 +549,14 @@ The categories it covers:
 - Variables: an undeclared reference (warning), a type mismatch against the declared `var`, a name declared twice.
 - Tasks: a duplicate attribute key, a `service`, `send`, or `decide` task without exactly one binding attribute, a `mapDecisionResult` outside the four result mappings, a `script` task with an unsupported fence tag or an empty or unterminated body.
 - Settings: a key the element does not own, a value in a shape its lowering cannot read (a quoted `asyncBefore`, an unquoted `versionTag`), a `form` block on an element that renders none, and a process header carrying a key it does not own.
-- Parameters: a direction word other than `input` or `output`, a parameter on an element that carries none, a name repeated within one direction, and an `output` mapping on a repeated step.
+- Parameters: a direction word the owner doesn't take, a parameter on an element that carries none, a name repeated within one direction, and an `output` mapping on a repeated step.
+  A `field` also errors on a kind that takes none, when its binding is anything other than `class` or `delegate`, and when its value is neither a quoted string nor a `"${...}"` expression.
 - Listeners: an event word the element does not have, a binding count other than one, a missing timer on `on timeout` or a timer on any other event, a repeated event on one element, and the same fence rules a `script` body follows.
 - Structure: an empty process, subprocess, or handler body, an empty branch or loop body (warning), an unreachable statement, an explicit `start` anywhere but first in its container, a `goto` reaching into a `parallel` or `await` branch from outside it, a second `else` branch on a `parallel` statement, an `else` branch with no conditioned sibling, and an `else` branch beside a sibling carrying no condition.
 - Names: a reused process name, step name, or `label`, and a name matching a synthesized-id pattern ([ADR-0010](../../docs/decisions/0010-deterministic-structural-ids.md)).
 - Call activities: a missing `process`, an unknown `binding` value, `binding` and `version` together, and duplicate `in` or `out` mappings.
   A `decide` step pins its decision table with `binding` and `version`, under those same two rules.
+- Form references: `formKey` beside `formRef` on a user task, a `formRef` with neither `binding` nor `version`, and `binding` or `version` with no `formRef` to pin, under the same `binding`/`version` exclusivity a `call` and a `decide` step already use.
 - Events: a trigger word outside the set its verb accepts, a payload that doesn't match its trigger's shape, a handler in the wrong container or not at the end of its body, `alongside` on `error`, `compensation`, or `cancel`, two handlers that would catch the same thing, a host that isn't an activity a token can sit at, a binding attribute on a `throw` or `emit` whose trigger is not `message`, and more than one binding on one whose trigger is.
 - The cancel construct: a cancel end outside an `attempt` block, a cancel handler with no host or on a host that is not one, and either half of the pair written without the other (warning).
 - Timers: an unknown particle, a value that doesn't look like its particle expects (warning), and a repeating `every` on an interrupting handler (warning).

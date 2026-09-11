@@ -59,7 +59,7 @@ A host-less handler lowers to two elements instead, a `bpmn:subProcess` and a ne
 - Good, because the timer clause, the script block, and the three binding keys are reused as they stand.
   Highlighting, completion, and the binding diagnostic extend to listeners for free.
 - Good, because a listener's binding is a list of its own rather than the members every other element carries.
-  A listener cannot nest a form, a parameter, or another listener.
+  A listener still cannot nest a form, an input or output parameter, or another listener.
 - Bad, because a reader must check the enclosing context to know which `on` they are looking at: inside a task's braces it is a callback, at statement position it is a catch.
 
 ## Pros and Cons of the Options
@@ -82,4 +82,6 @@ A host-less handler lowers to two elements instead, a `bpmn:subProcess` and a ne
 
 The intermediate representation carries a listener as an event plus a four-way tagged binding mirroring `ServiceTaskBinding`.
 A `timeout` task listener also carries the timer the event layer already models.
+Amended by ADR-0032, which gives a listener's own brace block a field member alongside its bindings, because a field is none of the form, parameter, or nested-listener shapes this decision ruled out.
+
 Related decisions: ADR-0016 (soft words), ADR-0017 (the timer particle clause), ADR-0019 (the hosted form), ADR-0021 (the exactly-one binding rule), ADR-0022 (engine attributes as named IR fields), and ADR-0014 (the import contract this surface honors).

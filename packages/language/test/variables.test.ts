@@ -64,6 +64,25 @@ process p {
     expect(newProvider().collect(process).size).toBe(0);
   });
 
+  test('a field name stays out of the table while input and output names enter it', async () => {
+    const process = await parseProcess(`
+process p {
+  service S(class: "com.acme.D") {
+    input amount = 1
+    output result = "x"
+    field greeting = "hello"
+    on start(class: "com.acme.L") { field salutation = "hi" }
+  }
+}
+`);
+    expect(newProvider().collect(process)).toEqual(
+      new Map([
+        ['amount', { name: 'amount', type: 'any' }],
+        ['result', { name: 'result', type: 'any' }],
+      ]),
+    );
+  });
+
   test('collect() answers membership and type queries via the returned table', async () => {
     const process = await parseProcess(`
 process p {

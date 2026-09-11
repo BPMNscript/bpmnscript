@@ -35,7 +35,7 @@ const PROCESS_HEADER = {
 const ENGINE_ATTRIBUTE_CONTRACT: readonly (readonly [
   id: string,
   attribute: string,
-  value: string | boolean,
+  value: string | boolean | Record<string, unknown>,
 ])[] = [
   ['ClaimFiled', 'initiator', 'claimant'],
   ['ClaimFiled', 'asyncAfter', true],
@@ -57,6 +57,14 @@ const ENGINE_ATTRIBUTE_CONTRACT: readonly (readonly [
   ['OrderRepair', 'retryCycle', 'R5/PT10M'],
   ['PayoutReviewNeeded', 'asyncAfter', true],
   ['PayoutReviewNeeded', 'jobPriority', '40'],
+  // The key and the binding are one value in the IR, so the whole reference is
+  // one row: a version that stopped travelling fails it as loudly as a key that
+  // did.
+  [
+    'ApprovePayout',
+    'formRef',
+    { key: 'payout-approval', binding: { kind: 'version', version: '2' } },
+  ],
   ['ClaimSettled', 'asyncBefore', true],
 ];
 
@@ -85,7 +93,7 @@ describe('the frozen engine-attribute contract', () => {
         expect(
           setting(elementById(ir, id), attribute),
           `${id}.${attribute} differs in ${label}`,
-        ).toBe(value);
+        ).toStrictEqual(value);
       }
     }
   });
@@ -108,6 +116,17 @@ describe('the frozen engine-attribute contract', () => {
         `the process header differs in ${label}`,
       ).toEqual(PROCESS_HEADER);
     }
+  });
+
+  // Asserted as the whole opening tag: Operaton refuses to deploy a form
+  // reference whose binding attribute is missing, so an emission that dropped
+  // one of the three would still look plausible read on its own.
+  it('the user task naming a deployed form writes all three reference attributes', () => {
+    expect(rt.frozenXml).toContain(
+      '<bpmn:userTask id="ApprovePayout" name="Approve the payout"' +
+        ' operaton:assignee="manager" operaton:formRef="payout-approval"' +
+        ' operaton:formRefBinding="version" operaton:formRefVersion="2">',
+    );
   });
 
   it('the awaited catch keeps its async continuation at every hop', () => {

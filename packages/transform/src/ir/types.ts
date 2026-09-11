@@ -384,11 +384,31 @@ export type ScriptValue = {
   code: string;
 };
 
+/**
+ * One `operaton:field`, set on the bean its binding instantiates. `value`
+ * carries both of the XML value slots as one text: a body opening with `${` is
+ * the expression form, evaluated per instantiation and written as an
+ * `operaton:expression` child, and anything else is the literal form, injected
+ * verbatim and written as a `stringValue` attribute. That is the same reading
+ * of a leading `${` that `renderIoValue` does on the way out.
+ */
+export interface FieldInjection {
+  name: string;
+  value: string;
+}
+
+/**
+ * The field list sits on the two members whose behaviours Operaton builds one
+ * for rather than on the element, so a binding that receives none has no slot
+ * to hold one instead of a rule against holding one.
+ */
 export type CodeBinding =
   | {
       kind: 'class';
       /** Fully qualified. */
       className: string;
+      /** In emission order. */
+      fields?: FieldInjection[];
     }
   | {
       kind: 'expression';
@@ -399,6 +419,8 @@ export type CodeBinding =
       kind: 'delegateExpression';
       /** Raw JUEL text. */
       expression: string;
+      /** In emission order. */
+      fields?: FieldInjection[];
     };
 
 /** A listener adds the inline script a service task has no form for. */
@@ -477,6 +499,12 @@ export interface UserTask
   id: string;
   assignee?: string;
   formKey?: string;
+  /**
+   * The deployed form the task renders, as `operaton:formRef` and the binding
+   * pinning which version of it. Operaton refuses to deploy a form reference
+   * carrying no binding, so the binding is required rather than optional.
+   */
+  formRef?: { key: string; binding: VersionBinding };
   /** `operaton:formData` fields Tasklist renders. */
   formFields?: FormField[];
   /** Verbatim: comma-separated text or EL. */

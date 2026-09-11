@@ -11,11 +11,17 @@ import type { FixtureAdapter } from '../fixtures/index.js';
 import {
   deployExamples,
   ENGINE_BOOT_TIMEOUT_MS,
+  ENGINE_STOP_TIMEOUT_MS,
   SKIP_DOCKER as SKIP,
 } from '../helpers/e2e-fixture.js';
 import { waitForTasks } from '../helpers/engine-rest.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+// Addressed by path rather than run through `npx`, which resolves a command
+// by walking `node_modules/.bin` upwards and so can reach a neighbouring
+// checkout's build instead of this one's (see `tests/fixtures/index.ts`).
+const CLI_ENTRY = path.resolve(__dirname, '../../packages/cli/bin/cli.js');
 
 describe.skipIf(SKIP)('E2E: invoice-approval on Spring Boot Operaton', () => {
   let fixture: FixtureAdapter;
@@ -27,7 +33,7 @@ describe.skipIf(SKIP)('E2E: invoice-approval on Spring Boot Operaton', () => {
 
   afterAll(async () => {
     await fixture?.stop();
-  });
+  }, ENGINE_STOP_TIMEOUT_MS);
 
   // ReviewStart -> ReviewInvoice -> AmountCheck -> SeniorApproval.
   it('happy path: senior approval branch', async () => {
@@ -83,17 +89,31 @@ describe.skipIf(SKIP)('E2E: invoice-approval on Spring Boot Operaton', () => {
   }, 30_000);
 
   // The fixture's service task carries no execution binding, so `xmlToIr`
-  // rejects it and the CLI exits non-zero; `execFileSync` throws on that.
+  // rejects it with `UnsupportedServiceTaskFormError` and the CLI exits 1.
+  // Checking exit status and stderr content, rather than just that
+  // `execFileSync` threw, is what tells a real refusal apart from the CLI
+  // never having run at all (wrong path, spawn failure, timeout).
   it('refuses unsupported service-task form', () => {
     const badBpmnPath = path.resolve(
       __dirname,
       '../golden/bad-service-task-no-binding.bpmn',
     );
 
-    expect(() =>
-      execFileSync('npx', ['bpmns', 'parse', badBpmnPath], {
+    let status: number | null = null;
+    let stderr = '';
+    try {
+      execFileSync(process.execPath, [CLI_ENTRY, 'parse', badBpmnPath], {
         stdio: 'pipe',
-      }),
-    ).toThrow();
-  });
+      });
+      expect.fail('bpmns parse should have exited non-zero');
+    } catch (err) {
+      const e = err as { status: number | null; stderr: Buffer };
+      status = e.status;
+      stderr = e.stderr.toString();
+    }
+
+    expect(status).toBe(1);
+    expect(stderr).toContain("Service task 'BadService_1'");
+    expect(stderr).toContain('unsupported service task form');
+  }, 30_000);
 });

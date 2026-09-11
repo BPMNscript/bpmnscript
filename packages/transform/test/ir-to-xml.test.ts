@@ -49,9 +49,11 @@ import {
 } from './helpers/ir-fixtures.js';
 import type {
   BpmnProcess,
+  CodeBinding,
   EventDefinition,
   FlowElement,
   LoopCharacteristics,
+  VersionBinding,
 } from '../src/ir/types.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -2050,6 +2052,136 @@ describe('irToXml: listeners', () => {
   });
 });
 
+/** One class-bound `operaton:field`, in the two XML value forms a field takes. */
+const STRING_FIELD_TAG =
+  /<operaton:field name="greeting" stringValue="hello"\s*\/>/;
+const EXPRESSION_FIELD_TAG =
+  /<operaton:field name="greeting">\s*<operaton:expression>\$\{x\}<\/operaton:expression>\s*<\/operaton:field>/;
+
+describe('irToXml: field injection', () => {
+  type Carrier = 'service task' | 'execution listener' | 'task listener';
+
+  /** A minimal process planting `binding` on the carrier the row names. */
+  const carrierIr = (carrier: Carrier, binding: CodeBinding): BpmnProcess => {
+    switch (carrier) {
+      case 'service task':
+        return around({ kind: 'serviceTask', id: 'Task', binding });
+      case 'execution listener':
+        return around({
+          kind: 'serviceTask',
+          id: 'Task',
+          binding: classBinding('com.example.Impl'),
+          executionListeners: [{ event: 'start', binding }],
+        });
+      case 'task listener':
+        return around({
+          kind: 'userTask',
+          id: 'Task',
+          taskListeners: [{ event: 'create', binding }],
+        });
+    }
+  };
+
+  it.each([
+    [
+      'a literal value on a class-bound service task writes the stringValue attribute',
+      'service task',
+      'hello',
+      STRING_FIELD_TAG,
+    ],
+    [
+      'a raw expression value on a class-bound service task writes an operaton:expression child',
+      'service task',
+      '${x}',
+      EXPRESSION_FIELD_TAG,
+    ],
+    [
+      'a literal value on a class-bound execution listener writes the stringValue attribute',
+      'execution listener',
+      'hello',
+      STRING_FIELD_TAG,
+    ],
+    [
+      'a raw expression value on a class-bound execution listener writes an operaton:expression child',
+      'execution listener',
+      '${x}',
+      EXPRESSION_FIELD_TAG,
+    ],
+    [
+      'a literal value on a class-bound task listener writes the stringValue attribute',
+      'task listener',
+      'hello',
+      STRING_FIELD_TAG,
+    ],
+    [
+      'a raw expression value on a class-bound task listener writes an operaton:expression child',
+      'task listener',
+      '${x}',
+      EXPRESSION_FIELD_TAG,
+    ],
+  ] as const)('%s', async (_title, carrier, value, expected) => {
+    const binding = {
+      ...classBinding('com.example.Impl'),
+      fields: [{ name: 'greeting', value }],
+    };
+    const xml = await irToXml(carrierIr(carrier, binding));
+    expect(xml).toMatch(expected);
+  });
+
+  it('places element-level fields before the operaton:inputOutput block, both under one wrapper', async () => {
+    const xml = await irToXml(
+      around({
+        kind: 'serviceTask',
+        id: 'Task',
+        binding: {
+          ...classBinding('com.example.Impl'),
+          fields: [{ name: 'greeting', value: 'hello' }],
+        },
+        inputParameters: [ioParam('amount', textValue('${total}'))],
+      }),
+    );
+    const block = extensionBlock(xml);
+    expect(block.indexOf('<operaton:field')).toBeGreaterThanOrEqual(0);
+    expect(block.indexOf('<operaton:field')).toBeLessThan(
+      block.indexOf('<operaton:inputOutput>'),
+    );
+  });
+});
+
+describe('irToXml: user task formRef', () => {
+  it.each([
+    [
+      'a latest binding writes formRef and formRefBinding, no version',
+      { kind: 'latest' },
+      { formRef: 'review-form', formRefBinding: 'latest' },
+    ],
+    [
+      'a deployment binding writes formRef and formRefBinding, no version',
+      { kind: 'deployment' },
+      { formRef: 'review-form', formRefBinding: 'deployment' },
+    ],
+    [
+      'a pinned version writes all three formRef* attributes',
+      { kind: 'version', version: '3' },
+      {
+        formRef: 'review-form',
+        formRefBinding: 'version',
+        formRefVersion: '3',
+      },
+    ],
+  ] as const)('%s', async (_title, binding, expected) => {
+    const xml = await irToXml(
+      around({
+        kind: 'userTask',
+        id: 'Task',
+        formRef: { key: 'review-form', binding: binding as VersionBinding },
+      }),
+    );
+    const node = await engineNode(xml, 'Task');
+    expect(formRefAttrs(node)).toEqual(expected);
+  });
+});
+
 describe('irToXml: extension-element assembly order', () => {
   it('emits every group a user task carries under one wrapper in canonical order', async () => {
     expect(nestedGroupsXml.match(/<bpmn:extensionElements/g)).toHaveLength(1);
@@ -2494,6 +2626,14 @@ function mappingAttrs(mapping: Moddle): Record<string, unknown> {
   );
 }
 
+/** Every `formRef*` property a parsed user task carries, if set. */
+function formRefAttrs(node: Moddle): Record<string, unknown> {
+  const keys = ['formRef', 'formRefBinding', 'formRefVersion'] as const;
+  return Object.fromEntries(
+    keys.filter((k) => node[k] !== undefined).map((k) => [k, node[k]]),
+  );
+}
+
 /** A container's children as `<type> <id>`, in document order. */
 function structureOf(container: Moddle): string[] {
   return (container.flowElements ?? []).map((e) => `${e.$type} ${e.id}`);
@@ -2772,6 +2912,9 @@ interface Moddle {
   jobPriority?: string;
   assignee?: string;
   formKey?: string;
+  formRef?: string;
+  formRefBinding?: string;
+  formRefVersion?: string;
   candidateUsers?: string;
   candidateGroups?: string;
   dueDate?: string;

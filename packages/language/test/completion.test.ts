@@ -305,16 +305,28 @@ const PARAMETERS: Item[] = [
   ['output', 'a value this step hands back', 'output ${1:name} = ${2:value}'],
 ];
 
+const FIELD: Item = [
+  'field',
+  'a value injected into the class or delegate this step names',
+  'field ${1:name} = "${2:value}"',
+];
+
 const LISTENER_KEYWORD: Item = [
   'on',
   'run code when this step reaches a lifecycle point',
   'on ${1|start,end|}(class: "${2:com.example.Listener}")',
 ];
 
+const FORM_KEYWORD: Item = ['form', KEYWORD, 'form'];
+
 /** What the brace block of an element holds, its settings having moved out. */
-const BLOCK_MEMBERS: Item[] = [
-  ['form', KEYWORD, 'form'],
+const BLOCK_MEMBERS: Item[] = [FORM_KEYWORD, ...PARAMETERS, LISTENER_KEYWORD];
+
+/** The same block on a kind binding an implementation to inject into. */
+const FIELD_BLOCK_MEMBERS: Item[] = [
+  FORM_KEYWORD,
   ...PARAMETERS,
+  FIELD,
   LISTENER_KEYWORD,
 ];
 
@@ -346,6 +358,9 @@ const USER_PARENS: Item[] = [
   DOCUMENTATION,
   ['assignee', SETTING, 'assignee: "${1:user}"'],
   ['formKey', SETTING, 'formKey: "${1:form-key}"'],
+  ['formRef', SETTING, 'formRef: "${1:form-id}"'],
+  BINDING,
+  VERSION,
   ['candidateGroups', SETTING, 'candidateGroups: "${1:group}"'],
   ['candidateUsers', SETTING, 'candidateUsers: "${1:user}"'],
   ['dueDate', SETTING, 'dueDate: "${1:\\${dateTime().plusDays(3)}}"'],
@@ -654,6 +669,16 @@ describe('the completions offered at a caret', () => {
       BLOCK_MEMBERS,
     ],
     [
+      'a service block offers `field` alongside the two io directions',
+      'process p {\n  service S(class: "com.example.D") {\n    |\n  }\n}',
+      FIELD_BLOCK_MEMBERS,
+    ],
+    [
+      "a listener's block holds an injected field and nothing else",
+      'process p {\n  user T {\n    on create(class: "com.example.L") {\n      |\n    }\n  }\n}',
+      [FIELD],
+    ],
+    [
       'a host-less handler block offers parameters, which a boundary event has none of',
       'process p {\n  start S\n  on error {\n    input x = 1\n    |\n  } {\n    end Failed\n  }\n}',
       BLOCK_OR_BODY,
@@ -781,6 +806,15 @@ const REQUIRED_BINDINGS = new Set([
 const binds = ([label]: Item) => REQUIRED_BINDINGS.has(label);
 
 /**
+ * A form reference and the binding pinning its version are legal only
+ * together, so each half is checked in a host writing the other one.
+ */
+const FORM_REFERENCE_MODIFIERS = new Set(['binding', 'version']);
+
+const pinsAForm = ([label]: Item) => FORM_REFERENCE_MODIFIERS.has(label);
+const namesAForm = ([label]: Item) => label === 'formRef';
+
+/**
  * The declaration a statement scaffold needs in the header. Every scaffold
  * writes its code as the same placeholder name, and a code reaches only the
  * declarations of its own kind, so which kind is declared follows the
@@ -815,8 +849,18 @@ describe('a scaffold parses and validates once accepted', () => {
     ),
     ...scaffolds(
       'the parens of a user task',
-      USER_PARENS,
+      USER_PARENS.filter((item) => !pinsAForm(item) && !namesAForm(item)),
       (setting) => `process p {\n  user T(${setting})\n}`,
+    ),
+    ...scaffolds(
+      'the parens of a user task',
+      USER_PARENS.filter(pinsAForm),
+      (setting) => `process p {\n  user T(formRef: "f", ${setting})\n}`,
+    ),
+    ...scaffolds(
+      'the parens of a user task',
+      USER_PARENS.filter(namesAForm),
+      (setting) => `process p {\n  user T(${setting}, binding: latest)\n}`,
     ),
     ...scaffolds(
       'the parens of a receive task',
@@ -870,6 +914,18 @@ describe('a scaffold parses and validates once accepted', () => {
       'a user block',
       BLOCK_MEMBERS,
       (member) => `process p {\n  user T {\n${member}\n  }\n}`,
+    ),
+    ...scaffolds(
+      'a service block',
+      [FIELD],
+      (member) =>
+        `process p {\n  service S(class: "com.example.D") {\n${member}\n  }\n}`,
+    ),
+    ...scaffolds(
+      "a listener's block",
+      [FIELD],
+      (member) =>
+        `process p {\n  user T {\n    on create(class: "com.example.L") {\n${member}\n    }\n  }\n}`,
     ),
     ...scaffolds(
       'the parens of a listener',

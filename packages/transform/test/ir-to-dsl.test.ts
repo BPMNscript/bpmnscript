@@ -67,6 +67,7 @@ import type {
   IntermediateCatchEvent,
   LoopCharacteristics,
   SequenceFlow,
+  VersionBinding,
 } from '../src/ir/types.js';
 
 // The suite asserts printed source; the warnings channel has its own block.
@@ -3126,6 +3127,101 @@ describe('irToDsl: listeners', () => {
         '    on complete(class: "com.example.Done")\n' +
         '  }',
     );
+  });
+});
+
+describe('irToDsl: field injection and form references', () => {
+  /**
+   * `printed` is the whole point of the assertion: a field or a form reference
+   * printed where the compiler refuses it would still read fine as text.
+   */
+  it('prints a field before the io parameters on every carrier, and a form reference beside its binding', async () => {
+    const dsl = await printed(
+      chained([
+        { kind: 'startEvent', id: 'S' },
+        {
+          kind: 'serviceTask',
+          id: 'Ship',
+          binding: {
+            kind: 'class',
+            className: 'com.example.Ship',
+            fields: [
+              { name: 'greeting', value: 'hello' },
+              { name: 'target', value: '${order.address}' },
+            ],
+          },
+          inputParameters: [ioParam('amount', textValue('${total}'))],
+          executionListeners: [
+            {
+              event: 'start',
+              binding: {
+                kind: 'delegateExpression',
+                expression: '${auditHook}',
+                fields: [{ name: 'level', value: 'INFO' }],
+              },
+            },
+          ],
+        },
+        {
+          kind: 'userTask',
+          id: 'Review',
+          formRef: {
+            key: 'review-form',
+            binding: { kind: 'version', version: '3' },
+          },
+          taskListeners: [
+            {
+              event: 'create',
+              binding: {
+                kind: 'class',
+                className: 'com.example.Assign',
+                fields: [{ name: 'role', value: 'clerk' }],
+              },
+            },
+          ],
+        },
+        { kind: 'endEvent', id: 'E' },
+      ]),
+    );
+
+    expect(dsl).toContain(
+      '  service Ship(class: "com.example.Ship") {\n' +
+        '    field greeting = "hello"\n' +
+        '    field target = "${order.address}"\n' +
+        '    input amount = "${total}"\n' +
+        '    on start(delegate: "${auditHook}") {\n' +
+        '      field level = "INFO"\n' +
+        '    }\n' +
+        '  }\n' +
+        '  user Review(formRef: "review-form", version: 3) {\n' +
+        '    on create(class: "com.example.Assign") {\n' +
+        '      field role = "clerk"\n' +
+        '    }\n' +
+        '  }\n',
+    );
+  });
+
+  it('prints binding: latest and binding: deployment for the two unpinned form bindings', async () => {
+    const printedWith = async (binding: VersionBinding): Promise<string> =>
+      printed(
+        around({
+          kind: 'userTask',
+          id: 'Review',
+          formRef: { key: 'review-form', binding },
+        }),
+      );
+
+    expect([
+      await printedWith({ kind: 'latest' }),
+      await printedWith({ kind: 'deployment' }),
+    ]).toEqual([
+      expect.stringContaining(
+        'user Review(formRef: "review-form", binding: latest)',
+      ),
+      expect.stringContaining(
+        'user Review(formRef: "review-form", binding: deployment)',
+      ),
+    ]);
   });
 });
 

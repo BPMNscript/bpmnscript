@@ -6,6 +6,7 @@
 import { AstUtils, type AstNode } from 'langium';
 import type { Process, VarType } from './generated/ast.js';
 import { caughtBindingsOf } from './paren-items.js';
+import { FIELD_DIRECTION } from './vocabulary.js';
 import {
   isIoParameter,
   isOnHandler,
@@ -101,6 +102,9 @@ export class DefaultVariableSymbolProvider implements VariableSymbolProvider {
     let repeats = false;
     for (const node of AstUtils.streamAst(process)) {
       if (isIoParameter(node)) {
+        // A field names a property of the delegate the element binds, set as
+        // that object is built, so it declares nothing the process can read.
+        if (node.direction === FIELD_DIRECTION) continue;
         seedOpen(node.name);
         continue;
       }

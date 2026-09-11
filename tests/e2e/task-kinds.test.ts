@@ -4,6 +4,7 @@ import type { FixtureAdapter } from '../fixtures/index.js';
 import {
   deployExamples,
   ENGINE_BOOT_TIMEOUT_MS,
+  ENGINE_STOP_TIMEOUT_MS,
   SKIP_DOCKER as SKIP,
 } from '../helpers/e2e-fixture.js';
 import {
@@ -33,7 +34,7 @@ describe.skipIf(SKIP)('E2E: task kinds on Spring Boot Operaton', () => {
 
   afterAll(async () => {
     await fixture?.stop();
-  });
+  }, ENGINE_STOP_TIMEOUT_MS);
 
   it('deploys, so the engine parser accepts every tag as it is written', async () => {
     const definitions = await engineGet<Array<{ key: string }>>(

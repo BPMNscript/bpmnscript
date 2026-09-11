@@ -71,7 +71,7 @@ execution.setVariable("mechanicsGrade", grade)
     emit escalation PayoutReviewNeeded(PAYOUT_REVIEW, asyncAfter: true, jobPriority: 40)
   }
 
-  user ApprovePayout(label: "Approve the payout", assignee: "manager")
+  user ApprovePayout(label: "Approve the payout", assignee: "manager", formRef: "payout-approval", version: 2)
 
   end ClaimSettled(label: "Claim settled", asyncBefore: true)
 

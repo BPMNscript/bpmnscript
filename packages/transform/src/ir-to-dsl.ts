@@ -1766,6 +1766,19 @@ function engineSettings(el: EngineAttributes): string[] {
   return settings;
 }
 
+/**
+ * Ahead of the io parameters wherever both print, since a field configures the
+ * implementation the head names. `structuredMembers` cannot place them: it
+ * reads an element's own lists and a field hangs off the binding.
+ */
+function fieldMembers(binding: ServiceTaskBinding | ListenerBinding): Lines[] {
+  const fields =
+    binding.kind === 'class' || binding.kind === 'delegateExpression'
+      ? (binding.fields ?? [])
+      : [];
+  return fields.map((field) => [`field ${field.name} = ${quote(field.value)}`]);
+}
+
 /** Inputs before outputs, each in IR order, which the engine evaluates in. */
 function ioParameters(el: IoMapped): Lines[] {
   const members: Lines[] = [];
@@ -1835,7 +1848,10 @@ function renderListener(
   const head = `on ${event}${clause}`;
   return binding.kind === 'script'
     ? [`${head} ${renderFence(binding.format, binding.code)}`]
-    : [head + parens([renderCodeBinding(binding)])];
+    : withMembers(
+        head + parens([renderCodeBinding(binding)]),
+        fieldMembers(binding),
+      );
 }
 
 /**
@@ -2127,6 +2143,12 @@ function renderUserTask(el: Extract<FlowElement, { kind: 'userTask' }>): Lines {
     const value = el[key];
     if (value !== undefined) settings.push(setting(key, render(value)));
   }
+  if (el.formRef !== undefined) {
+    settings.push(
+      setting('formRef', quote(el.formRef.key)),
+      versionBindingSetting(el.formRef.binding),
+    );
+  }
   settings.push(...engineSettings(el));
   const form =
     el.formFields === undefined ? [] : [renderFormBlock(el.formFields)];
@@ -2212,11 +2234,10 @@ function renderServiceTask(
     ...resultVariableSetting(el),
     ...engineSettings(el),
   ];
-  return bracketed(
-    `${keyword} ${el.id}${repeatClause(el)}`,
-    settings,
-    structuredMembers(el),
-  );
+  return bracketed(`${keyword} ${el.id}${repeatClause(el)}`, settings, [
+    ...fieldMembers(el.binding),
+    ...structuredMembers(el),
+  ]);
 }
 
 /** The settings spelling out an execution binding, whatever carries it. */

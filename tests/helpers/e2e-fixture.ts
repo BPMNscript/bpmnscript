@@ -17,6 +17,10 @@ export const SKIP_DOCKER = process.env.SKIP_DOCKER_TESTS === 'true';
 // A cold image build plus Spring Boot startup needs this much.
 export const ENGINE_BOOT_TIMEOUT_MS = 300_000;
 
+// Stopping and removing the container, which is bounded by the Docker stop
+// grace period rather than by anything the engine does.
+export const ENGINE_STOP_TIMEOUT_MS = 120_000;
+
 export function dslPath(name: string): string {
   return resolve(
     __dirname,

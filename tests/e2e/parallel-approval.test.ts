@@ -10,6 +10,7 @@ import {
   irOfExample,
   SKIP_DOCKER as SKIP,
   ENGINE_BOOT_TIMEOUT_MS,
+  ENGINE_STOP_TIMEOUT_MS,
 } from '../helpers/e2e-fixture.js';
 import { waitForTasks } from '../helpers/engine-rest.js';
 
@@ -44,7 +45,7 @@ describe.skipIf(SKIP)('E2E: parallel-approval on Spring Boot Operaton', () => {
 
   afterAll(async () => {
     await fixture?.stop();
-  });
+  }, ENGINE_STOP_TIMEOUT_MS);
 
   // A parallel gateway fires every outgoing branch unconditionally, where an
   // exclusive gateway fires exactly one.
