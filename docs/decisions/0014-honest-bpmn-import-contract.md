@@ -37,7 +37,7 @@ Refused constructs throw a subclass of `UnsupportedConstructError` before any IR
 - a multi-instance repetition the engine refuses to deploy, one this tool cannot write back unchanged, or one on an event handler, which its trigger enters rather than repeats -> `UnsupportedLoopCharacteristicsError`
 - a collaboration (pools/message flows) -> `UnsupportedCollaborationError`
 - an event of a supported kind carrying a shape the surface cannot express, such as an error throw with no code -> `UnsupportedEventFeatureError`
-- a call activity naming a resolution shape the surface cannot write back -> `UnsupportedCallActivityError`
+- a call activity with no `calledElement`, with a version binding the surface cannot pin, with a `calledElementTenantId`, which decides which tenant's copy of the called process runs, or with an `operaton:in`/`out` mapping in a shape the surface cannot spell -> `UnsupportedCallActivityError`
 - an `operaton:formField` of a type the form surface does not map -> `UnsupportedFormFieldTypeError`
 - Operaton extension content the IR's discriminated unions cannot represent, such as a parameter carrying body text and a nested value at once -> `UnsupportedExtensionFormError`
 - an unsupported flow-element kind (pre-existing) -> `UnsupportedElementError`
@@ -106,6 +106,8 @@ The exact refuse/warn boundary and the `ImportWarning` shape (`elementId`, `cate
 Amended by ADR-0030, which narrows `unreferencedRoot` to the roots the surface still cannot hold.
 
 Amended by ADR-0031, which narrows the `bpmn:documentation` bullet to the positions the surface still cannot hold.
+
+Amended by ADR-0033, which lifts the refusal on a call activity's variable mapping and narrows the bullet to the shapes the surface still cannot resolve or write back.
 
 Related decisions: ADR-0006 (the shared IR, where `warnings` deliberately lives outside the IR, which stays serializable).
 ADR-0007 (the Operaton moddle extension fork, whose declared and undeclared elements determine warning-attribution precision).

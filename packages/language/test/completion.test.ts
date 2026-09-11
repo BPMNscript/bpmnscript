@@ -391,6 +391,8 @@ const CALL_PARENS: Item[] = [
     SETTING,
     'businessKey: "${1:\\${execution.processBusinessKey}}"',
   ],
+  ['mapper', SETTING, 'mapper: "${1:com.example.CallMapper}"'],
+  ['mapperDelegate', SETTING, 'mapperDelegate: "${1:\\${callMapperBean}}"'],
   ...ENGINE_SETTINGS,
   ...LITERALS,
 ];

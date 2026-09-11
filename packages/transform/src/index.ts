@@ -18,6 +18,7 @@ export type {
   CallActivity,
   VersionBinding,
   CallVariableMapping,
+  CallVariableMapper,
   SequenceFlow,
   EventDefinition,
   IntermediateThrowEvent,

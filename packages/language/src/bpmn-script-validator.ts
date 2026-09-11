@@ -107,6 +107,7 @@ import {
   attributeBlockRuleOf,
   BUSINESS_RULE_BINDING_KEYS,
   CALL_BINDING_VALUES,
+  CALL_MAPPER_KEY_BY_KIND,
   CATCH_TRIGGERS,
   DECLARED_CODE_TRIGGERS,
   DECISION_RESULT_MAPPINGS,
@@ -216,6 +217,7 @@ const NON_VARIABLE_ATTR_KEYS: ReadonlySet<string> = new Set([
   'candidateStarterUsers',
   'candidateStarterGroups',
   'initiator',
+  ...Object.values(CALL_MAPPER_KEY_BY_KIND),
 ]);
 
 const BOOLEAN_ATTR_KEYS: ReadonlySet<string> = new Set([
@@ -2036,6 +2038,7 @@ export class BpmnScriptValidator {
     this.checkCallProcessAttribute(call, accept);
     this.checkBindingAttribute(call, accept);
     this.checkBindingVersionExclusion(call, 'A call', accept);
+    this.checkCallMapperExclusion(call, accept);
     this.checkCallMappingDuplicates(call, accept);
   };
 
@@ -2118,6 +2121,23 @@ export class BpmnScriptValidator {
         { node: owner, property: 'name' },
       );
     }
+  }
+
+  /**
+   * Both pin the same variable-mapping delegate, so the engine's if/else-if
+   * would silently drop one; refusing here beats mirroring that at import.
+   */
+  private checkCallMapperExclusion(
+    call: CallActivity,
+    accept: ValidationAcceptor,
+  ): void {
+    checkAtMostOneBinding(
+      settingsOf(call.items),
+      Object.values(CALL_MAPPER_KEY_BY_KIND),
+      'A call',
+      { node: call, property: 'name' },
+      accept,
+    );
   }
 
   /**

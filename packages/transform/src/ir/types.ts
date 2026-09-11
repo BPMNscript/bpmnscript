@@ -712,6 +712,18 @@ export type CallVariableMapping =
     };
 
 /**
+ * Computes a call activity's variable mapping in code, running after the
+ * declared `in`/`out` mappings on each side, so it adds to them rather than
+ * replacing them. Not {@link CodeBinding}: the engine reads exactly two
+ * attributes here, with no expression form, and `CodeBinding`'s `fields?`
+ * slot exists only for the two behaviours Operaton injects into, which this
+ * is not.
+ */
+export type CallVariableMapper =
+  | { kind: 'class'; /** Fully qualified. */ className: string }
+  | { kind: 'delegateExpression'; /** Raw JUEL text. */ expression: string };
+
+/**
  * A leaf, not a {@link FlowContainer}: the callee's body lives in its own
  * definition. Extension children serialize in one order so the round trip is
  * stable: `businessKey`, then `inMappings`, then `outMappings`.
@@ -726,6 +738,7 @@ export interface CallActivity
   binding?: VersionBinding;
   /** `operaton:in businessKey`, propagated to the callee. */
   businessKey?: string;
+  mapper?: CallVariableMapper;
   inMappings?: CallVariableMapping[];
   outMappings?: CallVariableMapping[];
 }

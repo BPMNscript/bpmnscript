@@ -12,6 +12,7 @@ import type {
   BpmnProcess,
   FlowContainer,
   CallActivity,
+  CallVariableMapper,
   ImportWarning,
 } from '@bpmn-script/transform';
 
@@ -217,6 +218,80 @@ describe('round-trip: call activity with businessKey and every mapping shape', (
     expect(diagnostics.filter((d) => d.severity === 1)).toEqual([]);
   });
 });
+
+// `[what the call carries, the authored and printed setting, the IR mapper, the
+// Operaton attribute]`. The setting column serves both the source and the
+// re-emitted DSL, which is what makes a printing change visible here.
+const MAPPER_ROWS: readonly [string, string, CallVariableMapper, string][] = [
+  [
+    'a mapper class',
+    'mapper: "com.acme.CallMapper"',
+    { kind: 'class', className: 'com.acme.CallMapper' },
+    'operaton:variableMappingClass="com.acme.CallMapper"',
+  ],
+  [
+    'a mapper delegate',
+    'mapperDelegate: "${callMapperBean}"',
+    { kind: 'delegateExpression', expression: '${callMapperBean}' },
+    'operaton:variableMappingDelegateExpression="${callMapperBean}"',
+  ],
+];
+
+describe.each(MAPPER_ROWS)(
+  'round-trip: call activity with %s beside its declared mappings',
+  (_label, mapperSetting, mapper, mapperAttr) => {
+    // `asyncBefore` is here so the printed position is pinned on both sides: a
+    // mapper that printed after the engine settings would still satisfy an
+    // assertion that only pinned what precedes it.
+    const CALL_HEAD = `call InvokeSub(process: "invoice-approval", ${mapperSetting}, asyncBefore: true) {`;
+
+    const MAPPER_SRC = [
+      'process call-variable-mapper {',
+      '  var amount: number',
+      '',
+      '  start Start',
+      `  ${CALL_HEAD}`,
+      '    in invoiceAmount = amount',
+      '    out approved',
+      '  }',
+      '  end End',
+      '}',
+      '',
+    ].join('\n');
+
+    const EXPECTED_CALL: CallActivity = {
+      kind: 'callActivity',
+      id: 'InvokeSub',
+      calledElement: 'invoice-approval',
+      mapper,
+      asyncBefore: true,
+      inMappings: [
+        { kind: 'variable', source: 'amount', target: 'invoiceAmount' },
+      ],
+      outMappings: [
+        { kind: 'variable', source: 'approved', target: 'approved' },
+      ],
+    };
+
+    const run = roundTripOf(MAPPER_SRC);
+
+    it('the mapper survives all four hops beside the declared mappings', () => {
+      expect(findCallActivity(run.ir1, 'InvokeSub')).toEqual(EXPECTED_CALL);
+      expect(run.xml).toContain(mapperAttr);
+      expect(run.warnings).toEqual([]);
+      expect(findCallActivity(run.ir2, 'InvokeSub')).toEqual(
+        findCallActivity(run.ir1, 'InvokeSub'),
+      );
+      expect(run.dsl).toContain(CALL_HEAD);
+      expect(normalizeIr(run.ir3)).toEqual(normalizeIr(run.ir1));
+    });
+
+    it('the decompiled DSL recompiles without validation errors', async () => {
+      const { diagnostics } = await validate(run.dsl);
+      expect(diagnostics.filter((d) => d.severity === 1)).toEqual([]);
+    });
+  },
+);
 
 describe('round-trip: call activity nested inside a subprocess', () => {
   const NESTED_CALL_SRC = [

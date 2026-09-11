@@ -1608,6 +1608,37 @@ checks('Validation - call activities', [
     `process p { call X(process: some-id) }`,
     [],
   ],
+  [
+    'a mapper class is clean',
+    `process p { call X(process: "p", mapper: "com.acme.Mapper") }`,
+    [],
+  ],
+  [
+    'a mapper delegate is clean',
+    `process p { call X(process: "p", mapperDelegate: "\${mapperBean}") }`,
+    [],
+  ],
+  [
+    'a bareword mapper class is not read as a variable',
+    `process p { call X(process: "p", mapper: com.acme.Mapper) }`,
+    [],
+  ],
+  [
+    'a mapper runs beside the declared mappings, not instead of them',
+    `process p { call X(process: "p", mapper: "com.acme.Mapper") { in * out result } }`,
+    [],
+  ],
+  [
+    'both mapper spellings on one call is one exclusion error',
+    `process p { call X(process: "p", mapper: "com.acme.Mapper", mapperDelegate: "\${mapperBean}") }`,
+    [
+      bindingConflict(
+        'A call',
+        'mapper, mapperDelegate',
+        `'mapper' or 'mapperDelegate'`,
+      ),
+    ],
+  ],
 ]);
 
 checks('Validation - event handlers', [
