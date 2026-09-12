@@ -169,3 +169,6 @@ ADR-0009 (the dominator-based restructuring analysis the catch needs no new entr
 ADR-0010 (the structural-coordinate id scheme `Catch_<coord>` follows, and the re-keying rule that already excludes task and event ids, so the catch's id needs no new normalizer case either).
 
 Extended by ADR-0028 (work that can be given up), which surfaces the transaction sub-process as the `attempt` block and gives cancel the two positions BPMN does allow it, leaving this decision's four-trigger scope where it stands: a cancel is written on the end that gives a block up and caught beside that block, never awaited.
+
+Amended by ADR-0035, which admits `link` to the `await` trigger scope, gives `await` the optional trigger-first name slot `emit` already carries, and wires a link catch to the virtual entry beside a start and a boundary event.
+The reasoning above for keeping link off the authoring surface stands as a claim about authoring; ADR-0035 adds link for the import direction, where a modeller's document already carries one and rewriting it to a `goto` would not round-trip.

@@ -63,6 +63,7 @@ A `documentation` setting carries free-form text alongside it, spelled the same 
 | `await <kind>(...)`                         | intermediate catch event                                                  | see [Awaiting an event inline](#awaiting-an-event-inline)                                                          |
 | `await { <kind>(...) { } <kind>(...) { } }` | event-based gateway, a catch event per branch, exclusive join             | see [Waiting on several triggers at once](#waiting-on-several-triggers-at-once)                                    |
 | `throw` / `emit <kind>`                     | throw event                                                               | see [The event layer](#the-event-layer)                                                                            |
+| `emit link("X")` / `await link("X")`        | intermediate throw and catch event, with no flow between them             | see [Link events](#link-events)                                                                                    |
 
 Every statement in that table that takes settings of its own also takes the engine settings and an execution listener, and most of them take input and output parameters as well.
 The ten that map to an activity also take a repetition clause, see [Repetition](#repetition).
@@ -312,29 +313,32 @@ Omitting the code, as in `on error { }`, catches any event of that kind.
 
 `alongside` marks a handler non-interrupting, so the guarded scope's main flow keeps running beside it.
 
-Two verbs raise an event, and the distinction holds across every kind.
+Two verbs raise an event.
 `throw <kind>` ends the current path right there, exactly like `throw` in a programming language, and `emit <kind>` fires the event and keeps going.
+`emit link` is the one emit that ends its path instead, because the token continues at the catch of the same name, see [Link events](#link-events).
 
 Every error and escalation code is a declaration in the process header, `error CODE(message: "text")` or `escalation CODE`, that every throw, emit, and catch site names.
 The declarations sit with the `var` declarations at the top of the body.
 `message:` is the text a thrown error of that code carries at runtime; BPMN gives an escalation none.
 A code that is not identifier-shaped goes on its declaration as `code: "..."`, so the use site is a bare name in every case.
 
-Eight trigger kinds open an `on` handler:
+There are nine trigger kinds, and every one but `link` opens an `on` handler:
 
-| Trigger        | Payload                                                       | `alongside`?                       | `throw` (ends the path)      | `emit` (continues)           |
-| -------------- | ------------------------------------------------------------- | ---------------------------------- | ---------------------------- | ---------------------------- |
-| `error`        | a declared code, optional `code: c` and `message: m` bindings | no, an error always interrupts     | `throw error(CODE)`          | none, an error ends its path |
-| `escalation`   | a declared code, optional `code: c` binding                   | yes                                | `throw escalation(CODE)`     | `emit escalation(CODE)`      |
-| `message`      | a name                                                        | yes                                | `throw message("Name")`      | `emit message("Name")`       |
-| `signal`       | a name                                                        | yes                                | `throw signal("Name")`       | `emit signal("Name")`        |
-| `timer`        | a duration, or an `at` or `every` key and a time              | yes                                | none, it fires off the clock | none                         |
-| `condition`    | a condition expression                                        | yes                                | none, it fires off data      | none                         |
-| `compensation` | none                                                          | no, its scope has already finished | `throw compensation`         | `emit compensation`          |
-| `cancel`       | none                                                          | no, the block stops either way     | none, an `end` carries it    | none                         |
+| Trigger        | Payload                                                       | `alongside`?                       | `throw` (ends the path)             | `emit` (continues)                       |
+| -------------- | ------------------------------------------------------------- | ---------------------------------- | ----------------------------------- | ---------------------------------------- |
+| `error`        | a declared code, optional `code: c` and `message: m` bindings | no, an error always interrupts     | `throw error(CODE)`                 | none, an error ends its path             |
+| `escalation`   | a declared code, optional `code: c` binding                   | yes                                | `throw escalation(CODE)`            | `emit escalation(CODE)`                  |
+| `message`      | a name                                                        | yes                                | `throw message("Name")`             | `emit message("Name")`                   |
+| `signal`       | a name                                                        | yes                                | `throw signal("Name")`              | `emit signal("Name")`                    |
+| `timer`        | a duration, or an `at` or `every` key and a time              | yes                                | none, it fires off the clock        | none                                     |
+| `condition`    | a condition expression                                        | yes                                | none, it fires off data             | none                                     |
+| `compensation` | none                                                          | no, its scope has already finished | `throw compensation`                | `emit compensation`                      |
+| `cancel`       | none                                                          | no, the block stops either way     | none, an `end` carries it           | none                                     |
+| `link`         | a name                                                        | no handler, only `await link`      | none, a link continues at its catch | `emit link("Name")`, which ends the path |
 
 `timer` and `condition` are handler-only: nothing in the process raises them.
 `cancel` is carried on an `end` statement rather than raised by a verb, and it is the one kind with no host-less handler, since it is caught on the block it gives up.
+`link` has no handler at all: it is caught by an `await link` of the same name and by nothing else.
 The rest, message included, are both caught and raised, under the one rule above.
 
 Reading each kind:
@@ -362,10 +366,11 @@ Reading each kind:
   `throw compensation` undoes the nearest enclosing scope's completed work newest first and ends the path; `emit compensation` runs the same undo, waits for it, and continues.
 - `cancel` gives up a whole block of work written with `attempt`.
   `end <name> cancel` inside the block gives it up, `on <block>: cancel` beside the block catches it, and the undo blocks of the finished steps run in between, see [Giving a block of work up](#giving-a-block-of-work-up).
+- `link` is a jump drawn as two events, the throwing `emit link` and the catching `await link`, paired by name, see [Link events](#link-events).
 
 ### Attaching a handler to one step
 
-Every trigger but `compensation` can name a single host step instead of guarding a whole body, and `cancel` is the one that has to.
+Every trigger but `compensation` and `link` can name a single host step instead of guarding a whole body, and `cancel` is the one that has to.
 `on <Host>: <trigger>(...) { }` attaches the handler to `<Host>` as a `bpmn:boundaryEvent`, catching only while that one step runs, so `on ReviewInvoice: timer("PT2H") { ... }` reads "if reviewing the invoice takes longer than two hours, do this instead" rather than "at any point in the process".
 
 The colon is what separates a host from a bare trigger.
@@ -396,7 +401,7 @@ Written where any other step would go, as in `await message("Invoice Received")`
 An `on` handler races its trigger against the rest of the guarded body and fires only if the trigger wins; a plain `await` sets nothing against its trigger and blocks until it fires.
 [`await` with several branches](#waiting-on-several-triggers-at-once) races its own branches against each other instead.
 
-Four trigger kinds can be awaited: `message`, `timer`, `signal`, and `condition`, using the same payload surfaces `on` and a boundary event already use.
+Five trigger kinds can be awaited: `message`, `timer`, `signal`, and `condition` use the same payload surfaces `on` and a boundary event already use, and `link` has no other surface and gets [its own section](#link-events).
 
 ```bpmnscript
 process invoice-intake {
@@ -410,17 +415,51 @@ process invoice-intake {
 ```
 
 `error`, `escalation`, `compensation`, and `cancel` have no awaited form: an error or escalation is raised and caught by a racing handler rather than blocked on, compensation is invoked by the engine's compensation machinery, and a cancel is written on the `end` that gives an `attempt` block up.
-Writing one of the first three after `await` is rejected with a diagnostic naming the four legal words, and `await cancel` draws its own, pointing at the `end <name> cancel` that gives a block up and the `on <block>: cancel` that catches it.
+Writing one of the first three after `await` is rejected with a diagnostic naming the five legal words, and `await cancel` draws its own, pointing at the `end <name> cancel` that gives a block up and the `on <block>: cancel` that catches it.
 
 A plain `await` takes no host, no catch bindings, no `alongside`, and no body.
-Its id is always synthesized (`Catch_<coord>`), never authored, because there is nothing to `goto` back into.
-[ADR-0020](../../docs/decisions/0020-intermediate-catch-events.md) covers why `await` beat `wait` and `receive`, why the id has no authored name, and why the trigger scope stops at four kinds.
+An optional name between the trigger and the payload, `await message Paid("Paid")`, makes it a step a `goto` can target, under the same duplicate-name rules as any other step; without one the id is synthesized (`Catch_<coord>`).
+[ADR-0020](../../docs/decisions/0020-intermediate-catch-events.md) covers why `await` beat `wait` and `receive`, and [ADR-0035](../../docs/decisions/0035-link-events-for-import-round-trip-symmetry.md) why every `await` can carry a name and why `link` joined the trigger scope.
+
+### Link events
+
+A link is a jump drawn as two events with no sequence flow between them, BPMN's off-page connector.
+`emit link` is the throwing end, `await link` the catching end, and the quoted link name is what pairs them.
+Both ends carry the link name as their diagram label.
+
+```bpmnscript
+process invoice-rework {
+  var approved: boolean
+
+  start InvoiceReceived
+  user ReviewInvoice(assignee: "demo")
+  if (!approved) {
+    emit link ToRework("Rework")
+  }
+  end Approved
+
+  await link AtRework("Rework")
+  user ReworkInvoice(assignee: "demo")
+  goto ReviewInvoice
+}
+```
+
+`emit link` ends its path the way a `goto` does: the token continues at the `await link` of the same name and nowhere else, so a step written after it can never run.
+Nothing flows into a link catch, so the statement before an `await link` has to end the path: an `end`, a `throw`, a `goto`, an `emit link`, or a block whose every branch does one of those.
+One `await link` per name in the whole file, at any depth, and any number of `emit link` may name it.
+Both ends sit in one container, the process, subprocess, or handler body, the same rule a `goto` follows, and an `emit link` cannot reach into a `parallel` or multi-branch `await` branch from outside it.
+`link` cannot head a branch of a multi-branch `await`, because Operaton refuses a link catch behind an event-based gateway.
+An engine setting or a listener on `emit link` is an error: the engine creates no activity for a link throw, so nothing written there would run; the same items on `await link` are fine.
+An `await link` nothing emits is a warning rather than an error, since the engine deploys it and an imported diagram may carry one.
+
+`goto` stays the way to jump in source: its target is scoped to its container and needs no file-wide name, and it compiles to the one sequence flow it prints as.
+`link` exists for a diagram that already carries one, so that it imports and compiles back to the same two events; [ADR-0035](../../docs/decisions/0035-link-events-for-import-round-trip-symmetry.md) makes that argument.
 
 ### Waiting on several triggers at once
 
 `await { ... }` with two or more branches compiles to a `bpmn:eventBasedGateway` with one `bpmn:intermediateCatchEvent` per branch, waiting on every trigger at once and continuing down whichever fires first.
 Two branches are the minimum; write a single `await <trigger>(<payload>)` instead when there is only one.
-Each branch opens the same way a plain `await` does: one of the same four trigger kinds, its payload and settings, then a body the plain form has no place for.
+Each branch opens the same way a plain `await` does: a trigger word, its payload and settings, then a body the plain form has no place for; `link` is the one awaitable kind a branch cannot head, and a branch carries no name.
 
 ```bpmnscript
 process order-fulfillment {
@@ -459,6 +498,28 @@ Four words are legal there: `message`, `signal`, `timer`, and `condition`, each 
 A subprocess start and an event-handler start take none, because both are entered by their container rather than by an event of their own; the validator rejects a trigger written on either.
 
 Writing `error`, `escalation`, or `compensation` on a process start is rejected too, for a different reason: Operaton's own start-event parser does not branch on those three, so the engine ignores the trigger and starts the process exactly as if none were written, and this surface refuses to compile XML the engine would disregard.
+
+A process may carry more than one `start`, written as flat siblings, so one process is entered by hand and by a correlated message alike.
+
+```bpmnscript
+process support-ticket {
+  start ByAgent(label: "An agent opens a ticket")
+  start ByEmail message("TicketEmailed", label: "A ticket arrives by email")
+
+  user Triage(label: "Triage the ticket", assignee: "demo")
+
+  end Resolved(label: "Ticket resolved")
+}
+```
+
+A `start` opens a chain and takes no incoming flow, so it sits first, right after another `start`, or after a statement that always ends or redirects the flow, such as an `end`, a `throw`, or a `goto`.
+Starts written back to back share the chain that follows, which is how `ByAgent` and `ByEmail` both enter `Triage`, and a start after an `end` opens a chain of its own that reaches a shared step by `goto`.
+A start after a step whose flow is still live is an error, since the page would not say whether that flow runs past the start or stops at it.
+A subprocess, an `attempt` block, and an event-handler body keep exactly one start, because Operaton's `BpmnParse.parseScopeStartEvent` rejects a second start on any scope that is not a process.
+
+Two warnings follow from how the engine picks a default start.
+A process whose starts are all message, signal, or condition starts has no default, so the engine can create an instance only by triggering one of them, and starting it by key fails at runtime.
+The engine offers a start form only on the default start, the plain or timer one, so a `form` block on any other start is parsed and never shown.
 
 ### Ending every path
 
@@ -570,12 +631,13 @@ The categories it covers:
 - Parameters: a direction word the owner doesn't take, a parameter on an element that carries none, a name repeated within one direction, and an `output` mapping on a repeated step.
   A `field` also errors on a kind that takes none, when its binding is anything other than `class` or `delegate`, and when its value is neither a quoted string nor a `"${...}"` expression.
 - Listeners: an event word the element does not have, a binding count other than one, a missing timer on `on timeout` or a timer on any other event, a repeated event on one element, and the same fence rules a `script` body follows.
-- Structure: an empty process, subprocess, or handler body, an empty branch or loop body (warning), an unreachable statement, an explicit `start` anywhere but first in its container, a `goto` reaching into a `parallel` or `await` branch from outside it, a second `else` branch on a `parallel` statement, an `else` branch with no conditioned sibling, and an `else` branch beside a sibling carrying no condition.
+- Structure: an empty process, subprocess, or handler body, an empty branch or loop body (warning), an unreachable statement, a process-level `start` after a step whose flow still runs on, a `start` anywhere but first in its subprocess, attempt block, or handler body, a process with several starts and no plain or timer one among them (warning), a `form` block on a start that is not the default one (warning), a `goto` reaching into a `parallel` or `await` branch from outside it, a second `else` branch on a `parallel` statement, an `else` branch with no conditioned sibling, and an `else` branch beside a sibling carrying no condition.
 - Names: a reused process name, step name, or `label`, and a name matching a synthesized-id pattern ([ADR-0010](../../docs/decisions/0010-deterministic-structural-ids.md)).
 - Call activities: a missing `process`, an unknown `binding` value, `binding` and `version` together, `mapper` and `mapperDelegate` together, and duplicate `in` or `out` mappings.
   A `decide` step pins its decision table with `binding` and `version`, under those same two rules.
 - Form references: `formKey` beside `formRef` on a user task, a `formRef` with neither `binding` nor `version`, and `binding` or `version` with no `formRef` to pin, under the same `binding`/`version` exclusivity a `call` and a `decide` step already use.
 - Events: a trigger word outside the set its verb accepts, a payload that doesn't match its trigger's shape, a handler in the wrong container or not at the end of its body, `alongside` on `error`, `compensation`, or `cancel`, two handlers that would catch the same thing, a host that isn't an activity a token can sit at, a binding attribute on a `throw` or `emit` whose trigger is not `message`, and more than one binding on one whose trigger is.
+  A link pair adds its own: an `await link` after a statement whose flow still runs on, an `emit link` with no catch of its name, a second `await link` of one name anywhere in the file, a pair split across containers, an `emit link` reaching into a `parallel` or `await` branch from outside, `link` heading a race branch, a `goto` onto a link catch, an engine setting or listener on `emit link`, a `throw link`, and an `await link` nothing emits (warning).
 - The cancel construct: a cancel end outside an `attempt` block, a cancel handler with no host or on a host that is not one, and either half of the pair written without the other (warning).
 - Timers: an unknown particle, a value that doesn't look like its particle expects (warning), and a repeating `every` on an interrupting handler (warning).
 
@@ -586,7 +648,8 @@ Diagnostics name the valid alternative rather than reporting an unknown identifi
 A custom `ScopeProvider` (`src/bpmn-script-scope-provider.ts`) resolves `goto` targets, and a hosted handler's `host` reference, against the steps of their own nearest enclosing container: the `process`, the `subprocess`, or the host-less `on` handler body they sit in, at any block-nesting depth within it.
 
 A `goto` therefore never resolves into another process, into a sibling or nested `subprocess`, into or out of a host-less handler's body, or out to a parent container, even when both are declared in the same file.
-A `subprocess` statement is itself a valid target, resolved from its own container like any other step; an `on` handler has no name, so it's never a target.
+A `subprocess` statement is itself a valid target, resolved from its own container like any other step, and so is an `await` that carries a name, unless its trigger is `link`: a link catch is entered by `emit link` of the same name and by nothing else.
+An `on` handler has no name, so it's never a target.
 This mirrors BPMN's rule that a sequence flow cannot cross a sub-process boundary, and a host-less handler is a kind of sub-process: its steps only run once its event fires.
 
 A hosted handler is the one exception.

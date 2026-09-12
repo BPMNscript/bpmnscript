@@ -164,6 +164,7 @@ A single verb whose compiled form depends on whether a successor statement follo
 Extended by ADR-0017 (message/signal/timer/conditional payloads) and ADR-0018 (compensation), the later event kinds that reuse this decision's `throw`/`emit` terminality rule and soft-word design without adding a reserved word.
 Extended also by ADR-0019 (boundary events), whose colon separator exists precisely so the trigger words stay soft.
 Amended by ADR-0030, which generalizes the message-text declaration to the code itself so that a code carries a cross-reference.
+Amended by ADR-0035, which adds the one `emit` that ends its chain, `emit link`, and argues terminality is still read off the printed words.
 
 Related decisions: ADR-0006 (the IR as the shared model, where vendor- or serialization-only data such as `targetNamespace` attaches at the IR-to-XML boundary rather than living in the IR; `errorDecls` and `escalationDecls` are the one exception, and they are an exception because they cannot be derived from usage, not because the boundary rule was relaxed).
 ADR-0010 (deterministic structural ids, whose sanitize-then-suffix collision rule synthesized root ids follow).

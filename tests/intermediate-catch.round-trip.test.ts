@@ -29,6 +29,8 @@ function triggerSignature(catchEvent: IntermediateCatchEvent): string {
       return `message ${def.messageName}`;
     case 'signal':
       return `signal ${def.signalName}`;
+    case 'link':
+      return `link ${def.linkName}`;
     case 'timer':
       return `timer ${def.timerKind} ${def.expression}`;
     case 'conditional':

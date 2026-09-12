@@ -556,6 +556,11 @@ describe('Parsing - the event layer', () => {
       '[IntermediateCatchEvent(trigger="condition", items=[ParenValue(value=Relational(left=VarRef(ref=->amount), op=">", right=LiteralInt(value=100)))])]',
     ],
     [
+      '`await` takes an optional name between the trigger and the payload, as `emit` does',
+      `process p { await message Named("M") user U }`,
+      '[IntermediateCatchEvent(trigger="message", name="Named", items=[ParenValue(value=LiteralString(value="M"))]), UserTask(name="U")]',
+    ],
+    [
       'a race carries one trigger header per branch and does not swallow what follows',
       `process p { await { message("M") { service S } timer("P3D") { user U } } user W }`,
       '[RaceStatement(branches=[RaceBranch(trigger="message", items=[ParenValue(value=LiteralString(value="M"))], body=Block(statements=[ServiceTask(name="S")])), RaceBranch(trigger="timer", items=[ParenValue(value=LiteralString(value="P3D"))], body=Block(statements=[UserTask(name="U")]))]), UserTask(name="W")]',

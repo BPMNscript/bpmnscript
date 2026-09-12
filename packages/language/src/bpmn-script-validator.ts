@@ -76,6 +76,7 @@ import {
   isExpr,
   isGotoStatement,
   isIfStatement,
+  isIntermediateCatchEvent,
   isLiteralBool,
   isLiteralString,
   isLogical,
@@ -113,6 +114,7 @@ import {
   DECISION_RESULT_MAPPINGS,
   EMIT_TRIGGERS,
   END_TRIGGERS,
+  ENGINE_KEYS,
   EVENT_BINDING_FIELDS,
   EXECUTION_LISTENER_EVENTS,
   FIELD_BINDING_KEYS,
@@ -248,6 +250,7 @@ const CALL_BINDING_VALUE_SET: ReadonlySet<string> = new Set(
 const START_TRIGGERS_SET: ReadonlySet<string> = new Set(START_TRIGGERS);
 const THROW_TRIGGERS_SET: ReadonlySet<string> = new Set(THROW_TRIGGERS);
 const EMIT_TRIGGERS_SET: ReadonlySet<string> = new Set(EMIT_TRIGGERS);
+const ENGINE_KEY_SET: ReadonlySet<string> = new Set(ENGINE_KEYS);
 const TIMER_PARTICLE_SET: ReadonlySet<string> = new Set(TIMER_PARTICLES);
 const EVENT_BINDING_FIELD_SET: ReadonlySet<string> = new Set(
   EVENT_BINDING_FIELDS,
@@ -539,6 +542,17 @@ const COMPENSATION_HOST_MESSAGE =
   "boundary event; remove the host and write 'on compensation { ... }' " +
   'directly inside the subprocess or attempt block it reverses.';
 
+const LINK_CATCH_FLOW_MESSAGE =
+  "Nothing may flow into an 'await link': end the path before it with 'end', " +
+  "'throw', 'goto', or 'emit link', because a link catch is entered only by " +
+  "'emit link' of the same name.";
+
+/** `BpmnParse.parseIntermediateCatchEvent` refuses a link catch behind an event-based gateway. */
+const LINK_IN_RACE_MESSAGE =
+  "'link' cannot head a branch of an 'await' block: the engine refuses a link " +
+  `catch after an event-based gateway; write 'await link("<name>")' as its ` +
+  'own statement.';
+
 const ESCALATION_NO_MESSAGE_MESSAGE =
   'An escalation carries a code but no message.';
 
@@ -652,14 +666,29 @@ function hasNoFlowStep(statements: Statement[]): boolean {
   return statements.every(isOnHandler);
 }
 
+function isLinkThrow(node: AstNode): node is EmitStatement {
+  return isEmitStatement(node) && node.trigger === 'link';
+}
+
+function isLinkCatch(node: AstNode): node is IntermediateCatchEvent {
+  return isIntermediateCatchEvent(node) && node.trigger === 'link';
+}
+
 /**
  * Whether `stmt`, once reached, always ends or diverts the flow. A compound
  * counts only when every branch does, which is exactly when the transform
  * prunes its synthesized join to zero incoming flows. An `if` without an
  * `else` and a loop never count: their gateway keeps a non-terminating exit.
+ * An `emit link` counts like a `goto`: `BpmnParse.parseSequenceFlow` refuses
+ * a flow out of a link throw as an invalid source.
  */
 function statementTerminates(stmt: Statement): boolean {
-  if (isEndEvent(stmt) || isGotoStatement(stmt) || isThrowStatement(stmt)) {
+  if (
+    isEndEvent(stmt) ||
+    isGotoStatement(stmt) ||
+    isThrowStatement(stmt) ||
+    isLinkThrow(stmt)
+  ) {
     return true;
   }
   if (isIfStatement(stmt) && stmt.elseBlock !== undefined) {
@@ -703,6 +732,18 @@ function blockTerminates(statements: Statement[]): boolean {
   return statements.some(
     (stmt) => !isOnHandler(stmt) && statementTerminates(stmt),
   );
+}
+
+/** A handler is a side path off the main flow, not a step in the chain a start may close. */
+function previousFlowStatement(
+  statements: Statement[],
+  index: number,
+): Statement | undefined {
+  for (let i = index - 1; i >= 0; i--) {
+    const stmt = statements[i]!;
+    if (!isOnHandler(stmt)) return stmt;
+  }
+  return undefined;
 }
 
 /**
@@ -761,11 +802,17 @@ export class BpmnScriptValidator {
   };
 
   /**
-   * An explicit `start` is only valid first in a container body. Anywhere else
-   * the desugarer gives it an incoming sequence flow, and a start event with
-   * incoming flows is invalid BPMN that Operaton rejects at deployment. A
-   * hosted handler's body lowers inline into its host's container, so it is no
-   * container of its own and gets its own message.
+   * A process body takes any number of top-level starts, each opening the
+   * body, following another `start`, or following a statement whose flow
+   * always ends or redirects. A start after a live chain is refused as
+   * ambiguous rather than guessed: Operaton accepts a flow into a start
+   * (`BpmnParse.parseSequenceFlow` has no arm for that destination) and runs
+   * the start as a pass-through step, so the page would state an ambiguity the
+   * engine resolves one way at runtime. A subprocess, attempt block, or
+   * event-handler body takes a start first and nowhere else, since the engine
+   * allows one start per such scope (`BpmnParse.parseScopeStartEvent`). A
+   * hosted handler's body lowers inline into its host's container, so it is
+   * no container of its own and gets its own message.
    */
   private checkStartPosition(
     process: Process,
@@ -773,7 +820,28 @@ export class BpmnScriptValidator {
   ): void {
     for (const node of AstUtils.streamAst(process)) {
       if (!isStartEvent(node) || node.name === undefined) continue;
-      if (node === process.body[0]) continue;
+      if (node.$container === process) {
+        const prev = previousFlowStatement(
+          process.body,
+          process.body.indexOf(node),
+        );
+        if (
+          prev === undefined ||
+          isStartEvent(prev) ||
+          statementTerminates(prev)
+        ) {
+          continue;
+        }
+        accept(
+          'error',
+          `'start ${node.name}' opens an entry of its own and takes no incoming flow, ` +
+            'but the statement before it still flows on to it. Close that flow ' +
+            "first (with 'end', 'throw', or 'goto') or move the start ahead of " +
+            'that step.',
+          { node, property: 'name' },
+        );
+        continue;
+      }
       const container = node.$container;
       if (isBlock(container) && container.statements[0] === node) {
         if (isSubProcess(container.$container)) continue;
@@ -788,10 +856,46 @@ export class BpmnScriptValidator {
       }
       accept(
         'error',
-        `'start ${node.name}' must be the first statement of its process, subprocess, attempt block, or event-handler body. ` +
+        `'start ${node.name}' must be a top-level statement of its process, or the first statement of its subprocess, attempt block, or event-handler body. ` +
           'A start event cannot have incoming flows.',
         { node, property: 'name' },
       );
+    }
+  }
+
+  /**
+   * Two facts about a start set only the engine matrix can tell, both silent
+   * at deploy time and worth telling the author here instead. With no plain
+   * or timer start, `initial` stays null and starting the process by key
+   * throws (`ProcessDefinitionImpl.ensureDefaultInitialExists`). A start
+   * form binds to `initial` only, so a form on any other start is parsed and
+   * never shown (`BpmnParse.parseStartFormHandlers`). Two plain or
+   * timer starts is itself a deploy error the engine reports on its own, so
+   * this check does not duplicate it and treats the first as the default.
+   */
+  private checkDefaultStart(
+    process: Process,
+    accept: ValidationAcceptor,
+  ): void {
+    const starts = process.body.filter(isStartEvent);
+    if (starts.length < 2) return;
+
+    const defaultCandidates = starts.filter(
+      (start) => start.trigger === undefined || start.trigger === 'timer',
+    );
+    if (defaultCandidates.length === 0 && process.name !== undefined) {
+      accept('warning', noDefaultStartMessage(process.name), {
+        node: process,
+        property: 'name',
+      });
+    }
+
+    const defaultStart = defaultCandidates[0];
+    for (const start of starts) {
+      if (start === defaultStart) continue;
+      for (const form of start.forms) {
+        accept('warning', FORM_NEVER_OFFERED_MESSAGE, { node: form });
+      }
     }
   }
 
@@ -812,6 +916,7 @@ export class BpmnScriptValidator {
     }
 
     this.checkStartPosition(process, accept);
+    this.checkDefaultStart(process, accept);
 
     const named = collectNamedStatements(process);
     this.checkReservedNames(named, accept);
@@ -821,18 +926,30 @@ export class BpmnScriptValidator {
     this.checkDuplicateStatementNames(process, named, accept);
     this.checkFormVariableAgreement(process, accept);
     this.checkUnreachableStatements(process, accept);
+    this.checkLinkEvents(process, accept);
     this.checkHandlerDuplicates(process, accept);
     this.checkCodeDecls(process, accept);
   };
 
   /**
    * Reject a step control flow can never reach: it would lower to a
-   * disconnected node, which is invalid BPMN. A step named by some `goto` is
-   * reachable again. Nested blocks are scanned only when their owner is
-   * reachable, so an unreachable `if` is reported once rather than once per
-   * step inside it, and a handler body is a fresh root since a handler is not
-   * part of the sequential flow. The scan is sound rather than exhaustive: a
-   * dead step may go unreported, a live one is never wrongly rejected.
+   * disconnected node, which is invalid BPMN. A step named by some `goto`, a
+   * `start`, or an `await link` is reachable again: the last two each open a
+   * fresh entry of their own. A start after a live chain is
+   * {@link checkStartPosition}'s to refuse (a start after a start is legal,
+   * which `reachable` alone cannot tell); a link catch after one is refused
+   * here, where `reachable` is exactly "the previous statement still flows
+   * on", and before the `goto` re-rooting so a catch some `goto` names draws
+   * only the `goto` rule's error. Operaton accepts a flow into a link catch
+   * (`BpmnParse.parseSequenceFlow` gives it an ordinary transition); this
+   * surface refuses it since a modeller's link target never has an incoming
+   * flow, and an imported catch then prints after a dead fall-through the
+   * way the diagram drew it. Nested blocks are scanned
+   * only when their owner is reachable, so an unreachable `if` is reported
+   * once rather than once per step inside it, and a handler body is a fresh
+   * root since a handler is not part of the sequential flow. The scan is sound
+   * rather than exhaustive: a dead step may go unreported, a live one is never
+   * wrongly rejected.
    */
   private checkUnreachableStatements(
     process: Process,
@@ -849,18 +966,28 @@ export class BpmnScriptValidator {
           }
           continue;
         }
+        if (isLinkCatch(stmt) && reachable) {
+          accept('error', LINK_CATCH_FLOW_MESSAGE, {
+            node: stmt,
+            property: 'trigger',
+          });
+        }
         const name = statementName(stmt);
-        if (!reachable && name !== undefined && gotoTargets.has(name)) {
+        if (
+          isStartEvent(stmt) ||
+          isLinkCatch(stmt) ||
+          (name !== undefined && gotoTargets.has(name))
+        ) {
           reachable = true;
         }
         if (!reachable) {
           accept(
             'error',
-            'This step can never run: an earlier `end`, `throw`, `goto`, or ' +
-              'an all-terminating `if`/`parallel`/`await` in the same block ' +
-              'always ends or redirects the flow before reaching it, so this ' +
-              'step would lower to a disconnected node with no incoming flow, ' +
-              'which is invalid BPMN.',
+            'This step can never run: an earlier `end`, `throw`, `goto`, ' +
+              '`emit link`, or an all-terminating `if`/`parallel`/`await` in ' +
+              'the same block always ends or redirects the flow before ' +
+              'reaching it, so this step would lower to a disconnected node ' +
+              'with no incoming flow, which is invalid BPMN.',
             { node: stmt },
           );
         } else {
@@ -875,6 +1002,98 @@ export class BpmnScriptValidator {
     };
 
     scan(process.body);
+  }
+
+  /**
+   * The rules that need both ends of a link pair at once. The engine keeps one
+   * table of link names per parsed file (`BpmnParse.eventLinkTargets`), so a
+   * second catch of a name is refused wherever it sits; a throw resolves
+   * against the catch in its own container, else the first in document order,
+   * so the duplicate is reported once and not through every throw beside it.
+   * A flow resolves only at its own level
+   * (`ScopeImpl.findActivityAtLevelOfSubprocess`), so both ends must share a
+   * flow container, as a `goto` and its target must. A throw with no catch
+   * fails to deploy (`BpmnParse.parseSequenceFlow`); a catch with no throw
+   * deploys, and an imported diagram may carry one, so it only warns. A
+   * nameless end is left to the payload rules, which already report it.
+   */
+  private checkLinkEvents(process: Process, accept: ValidationAcceptor): void {
+    const throws: EmitStatement[] = [];
+    const catches: IntermediateCatchEvent[] = [];
+    for (const node of AstUtils.streamAst(process)) {
+      if (isLinkThrow(node) && payloadTextOf(node.items)) throws.push(node);
+      if (isLinkCatch(node) && payloadTextOf(node.items)) catches.push(node);
+    }
+    const nameOf = (end: EmitStatement | IntermediateCatchEvent): string =>
+      payloadTextOf(end.items) ?? '';
+    const at = (end: EmitStatement | IntermediateCatchEvent) => ({
+      node: end,
+      property: 'trigger' as const,
+    });
+
+    forEachDuplicate(catches, nameOf, (extra) =>
+      accept(
+        'error',
+        `Another 'await link("${nameOf(extra)}")' already catches this link: ` +
+          'the engine keeps one catch per link name in the whole file, even ' +
+          'across subprocesses.',
+        at(extra),
+      ),
+    );
+
+    for (const throwEvent of throws) {
+      const name = nameOf(throwEvent);
+      const container = enclosingFlowContainer(throwEvent);
+      const named = catches.filter((c) => nameOf(c) === name);
+      const catchEvent =
+        named.find((c) => enclosingFlowContainer(c) === container) ?? named[0];
+      if (catchEvent === undefined) {
+        accept(
+          'error',
+          `No 'await link("${name}")' catches this link, and the engine ` +
+            'refuses to deploy an emitted link with no catch of its name. ' +
+            'Write one where the flow should continue.',
+          at(throwEvent),
+        );
+        continue;
+      }
+      if (enclosingFlowContainer(catchEvent) !== container) {
+        accept(
+          'error',
+          `'emit link("${name}")' must sit in the same process, subprocess, ` +
+            "or handler body as its 'await link': a link cannot cross a " +
+            "subprocess or handler boundary, the same way a 'goto' cannot.",
+          at(throwEvent),
+        );
+        continue;
+      }
+      const branch = findEnclosingBranch(catchEvent);
+      if (
+        branch &&
+        !AstUtils.hasContainerOfType(throwEvent, (node) => node === branch.body)
+      ) {
+        accept(
+          'error',
+          intoBranchMessage(
+            `emit link("${name}")`,
+            'emit link',
+            branch.keyword,
+          ),
+          at(throwEvent),
+        );
+      }
+    }
+
+    const thrown = new Set(throws.map(nameOf));
+    for (const catchEvent of catches) {
+      if (thrown.has(nameOf(catchEvent))) continue;
+      accept(
+        'warning',
+        `No 'emit link("${nameOf(catchEvent)}")' names this catch, so it ` +
+          'and the steps after it never run.',
+        at(catchEvent),
+      );
+    }
   }
 
   /**
@@ -2015,16 +2234,24 @@ export class BpmnScriptValidator {
     if (!target) {
       return;
     }
+    const targetName = targetStatementName(target);
+    if (isLinkCatch(target)) {
+      accept(
+        'error',
+        `'goto ${targetName}' cannot target an awaited link: a link catch is ` +
+          "entered by 'emit link' of the same name, not by a sequence flow.",
+        { node: goto, property: 'target' },
+      );
+      return;
+    }
     const branch = findEnclosingBranch(target);
     if (
       branch &&
       !AstUtils.hasContainerOfType(goto, (node) => node === branch.body)
     ) {
-      const targetName = targetStatementName(target);
-      const article = branch.keyword === 'await' ? 'an' : 'a';
       accept(
         'error',
-        `'goto ${targetName}' jumps into a branch of ${article} '${branch.keyword}' statement from outside that branch; a branch's steps run only when the whole '${branch.keyword}' statement is reached, not via an external 'goto'.`,
+        intoBranchMessage(`goto ${targetName}`, 'goto', branch.keyword),
         { node: goto, property: 'target' },
       );
     }
@@ -2626,7 +2853,35 @@ export class BpmnScriptValidator {
     }
     checkThrowEmitCode(stmt, 'An emitted', 'emit', accept);
     checkThrowEmitBinding(stmt, 'an emitted', accept);
+    if (stmt.trigger === 'link') {
+      this.checkLinkThrowItems(stmt, accept);
+    }
   };
+
+  /**
+   * A link throw gets no activity (`BpmnParse.parseIntermediateThrowEvent`
+   * returns before `createActivityOnScope`), so a setting or listener on it
+   * is parsed into nothing; the catch is a real activity and takes both.
+   */
+  private checkLinkThrowItems(
+    stmt: EmitStatement,
+    accept: ValidationAcceptor,
+  ): void {
+    for (const setting of configuredSettingsOf(stmt)) {
+      if (!ENGINE_KEY_SET.has(setting.key)) continue;
+      accept('error', linkThrowNeverRunsMessage(`Setting '${setting.key}'`), {
+        node: setting,
+        property: 'key',
+      });
+    }
+    for (const listener of stmt.listeners) {
+      accept(
+        'error',
+        linkThrowNeverRunsMessage(`The 'on ${listener.event}' listener`),
+        { node: listener },
+      );
+    }
+  }
 
   /** No host and no body: an awaited event is a step in the flow, not a scope. */
   checkIntermediateCatchEvent = (
@@ -2661,6 +2916,13 @@ export class BpmnScriptValidator {
       });
       return;
     }
+    if (isRaceBranch(catchEvent) && catchEvent.trigger === 'link') {
+      accept('error', LINK_IN_RACE_MESSAGE, {
+        node: catchEvent,
+        property: 'trigger',
+      });
+      return;
+    }
 
     this.checkCatchPayload(
       catchEvent,
@@ -2676,10 +2938,14 @@ export class BpmnScriptValidator {
     accept: ValidationAcceptor,
   ): void {
     if (rule.code === 'required' && !payloadTextOf(catchEvent.items)) {
-      accept('error', nameRequiredMessage('An awaited message', 'message'), {
-        node: catchEvent,
-        property: 'trigger',
-      });
+      accept(
+        'error',
+        nameRequiredMessage(
+          `An awaited ${catchEvent.trigger}`,
+          catchEvent.trigger,
+        ),
+        { node: catchEvent, property: 'trigger' },
+      );
     }
 
     this.checkConditionPayload(catchEvent, rule, 'catch', accept);
@@ -2861,13 +3127,13 @@ function quotedCodeMessage(trigger: string, text: string): string {
 }
 
 /**
- * The mirror of {@link quotedCodeMessage}: a message or signal name is the text
- * the engine correlates a subscription on, so it carries its own text rather
- * than referring to a declaration.
+ * The mirror of {@link quotedCodeMessage}: a message, signal, or link name is
+ * the text the engine matches on, so it carries its own text rather than
+ * referring to a declaration.
  */
 function barewordNameMessage(trigger: string, text: string): string {
   return (
-    `A ${trigger} name is the text the engine subscribes with, not a declared ` +
+    `A ${trigger} name is the text the engine matches by name, not a declared ` +
     `name. Write '${trigger}("${text}")'.`
   );
 }
@@ -2975,6 +3241,9 @@ function throwTriggerMessage(word: string): string {
   if (word === 'cancel') {
     return CANCEL_NOT_RAISED_MESSAGE;
   }
+  if (word === 'link') {
+    return "A link continues at its catch rather than ending the path; write 'emit link'.";
+  }
   return unknownTriggerMessage(word, THROW_TRIGGERS);
 }
 
@@ -3010,7 +3279,8 @@ function catchTriggerMessage(word: string): string {
  * The activities an engine token can be "at", which a boundary event may attach
  * to. Read off {@link isNamedStatement} rather than listing the kinds a second
  * time: the statements carrying a name are the activities and the events, so
- * taking the events away leaves the activities.
+ * taking the events away leaves the activities. An intermediate catch event
+ * is no activity either: `BpmnParse.parseBoundaryEvents` attaches only to one.
  */
 function isActivityStatement(stmt: Statement): boolean {
   return (
@@ -3018,7 +3288,8 @@ function isActivityStatement(stmt: Statement): boolean {
     !isStartEvent(stmt) &&
     !isEndEvent(stmt) &&
     !isThrowStatement(stmt) &&
-    !isEmitStatement(stmt)
+    !isEmitStatement(stmt) &&
+    !isIntermediateCatchEvent(stmt)
   );
 }
 
@@ -3142,6 +3413,19 @@ function hostedHandlerStartMessage(name: string): string {
     'first step of the body is where the escape path begins.'
   );
 }
+
+function noDefaultStartMessage(name: string): string {
+  return (
+    `Process '${name}' has no default start: with only message, signal, or ` +
+    'condition starts, the engine can create an instance only by triggering ' +
+    'one of them, and starting it by key fails at runtime.'
+  );
+}
+
+const FORM_NEVER_OFFERED_MESSAGE =
+  "The engine offers a start form only on the process's default start, its " +
+  'plain or timer start; this form is on a different start and is never ' +
+  'shown.';
 
 function handlerHostKey(handler: OnHandler): string {
   return handler.host?.ref ? targetStatementName(handler.host.ref) : '';
@@ -3330,6 +3614,23 @@ function findEnclosingBranch(
     parent = parent.$container;
   }
   return undefined;
+}
+
+function intoBranchMessage(
+  subject: string,
+  jump: string,
+  keyword: 'parallel' | 'await',
+): string {
+  const article = keyword === 'await' ? 'an' : 'a';
+  return `'${subject}' jumps into a branch of ${article} '${keyword}' statement from outside that branch; a branch's steps run only when the whole '${keyword}' statement is reached, not via an external '${jump}'.`;
+}
+
+function linkThrowNeverRunsMessage(item: string): string {
+  return (
+    `${item} has no effect on an emitted link: the engine creates no activity ` +
+    "for a link throw, so nothing written on it runs. Put it on the 'await " +
+    "link' of the same name instead."
+  );
 }
 
 /** A resolved cross-reference always carries a name; the `'?'` just keeps this total. */

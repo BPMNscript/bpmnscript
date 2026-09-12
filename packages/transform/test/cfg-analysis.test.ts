@@ -32,6 +32,10 @@ const start = (id: string): FlowElement => ({ kind: 'startEvent', id });
 const end = (id: string): FlowElement => ({ kind: 'endEvent', id });
 const task = (id: string): FlowElement => ({ kind: 'userTask', id });
 const parallel = (id: string): FlowElement => ({ kind: 'parallelGateway', id });
+const linkThrow = (id: string, linkName: string): FlowElement =>
+  typedEvent('intermediateThrowEvent', id, { kind: 'link', linkName });
+const linkCatch = (id: string, linkName: string): FlowElement =>
+  typedEvent('intermediateCatchEvent', id, { kind: 'link', linkName });
 
 /**
  * A process from its nodes and a whitespace-separated `source>target` list.
@@ -360,6 +364,31 @@ const CASES: [title: string, process: BpmnProcess, expected: string[]][] = [
       'esc in=B out=e idom=B ipdom=e dom=ENTRY,B,esc pdom=esc,e,EXIT',
       'e in=esc out=EXIT idom=esc ipdom=EXIT dom=ENTRY,B,esc,e pdom=e,EXIT',
       'EXIT in=main,e out=- idom=ENTRY ipdom=- dom=ENTRY,EXIT pdom=EXIT',
+      'back-edges=-',
+    ],
+  ],
+  [
+    'a link catch is a second entry: the virtual entry dominates it and it dominates its whole chain, while the throw drains to the exit',
+    graph(
+      [
+        start('start'),
+        task('main'),
+        linkThrow('ToRetry', 'Retry'),
+        linkCatch('AtRetry', 'Retry'),
+        task('retry'),
+        end('end'),
+      ],
+      'start>main main>ToRetry AtRetry>retry retry>end',
+    ),
+    [
+      'ENTRY in=- out=start,AtRetry idom=- ipdom=EXIT dom=ENTRY pdom=ENTRY,EXIT',
+      'start in=ENTRY out=main idom=ENTRY ipdom=main dom=ENTRY,start pdom=start,main,ToRetry,EXIT',
+      'main in=start out=ToRetry idom=start ipdom=ToRetry dom=ENTRY,start,main pdom=main,ToRetry,EXIT',
+      'ToRetry in=main out=EXIT idom=main ipdom=EXIT dom=ENTRY,start,main,ToRetry pdom=ToRetry,EXIT',
+      'AtRetry in=ENTRY out=retry idom=ENTRY ipdom=retry dom=ENTRY,AtRetry pdom=AtRetry,retry,end,EXIT',
+      'retry in=AtRetry out=end idom=AtRetry ipdom=end dom=ENTRY,AtRetry,retry pdom=retry,end,EXIT',
+      'end in=retry out=EXIT idom=retry ipdom=EXIT dom=ENTRY,AtRetry,retry,end pdom=end,EXIT',
+      'EXIT in=ToRetry,end out=- idom=ENTRY ipdom=- dom=ENTRY,EXIT pdom=EXIT',
       'back-edges=-',
     ],
   ],

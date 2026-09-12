@@ -17,6 +17,7 @@
  * The desugarer is total: it never throws on a program the validator rejects.
  */
 
+import { AstUtils } from 'langium';
 import {
   isStartEvent,
   isEndEvent,
@@ -72,6 +73,7 @@ import {
   TASK_LISTENER_EVENTS,
   THROW_TRIGGERS,
   TIMER_PARTICLE_BY_KIND,
+  isNamedStatement,
 } from '@bpmn-script/language';
 import type {
   Model,
@@ -111,7 +113,9 @@ import type {
   BpmnProcess,
   CallVariableMapper,
   CallVariableMapping,
+  CatchEventDefinition,
   CodeBinding,
+  EndEventDefinition,
   EngineAttributes,
   EventDefinition,
   ExecutionListener,
@@ -164,9 +168,16 @@ interface Frontier {
   /**
    * When set, the fall-through flow out of `exit` uses this exact id and
    * becomes its source gateway's default flow. `while` reserves
-   * `Flow_<loopId>_default` so the gateway's `defaultFlowId` matches.
+   * `Flow_<loopId>_default` so the gateway's `defaultFlowId` matches. Only
+   * ever set together with a non-null `exit`, which is what lets a `start`
+   * that takes the empty `exit` slot leave this field alone.
    */
   exitFlowId?: string;
+  /**
+   * Starts beyond `exit` still waiting for a step when the block ends. Only a
+   * container body reads them, routing each to its synthesized end.
+   */
+  waitingStarts?: string[];
 }
 
 /**
@@ -339,6 +350,9 @@ function lowerContainerBody(
       builder.flowElements.push({ kind: 'endEvent', id: endId });
       // Honor a reserved exit-flow id, e.g. a `while` loop's default exit.
       addFlow(builder, body.exit, endId, undefined, body.exitFlowId);
+      for (const start of body.waitingStarts ?? []) {
+        addFlow(builder, start, endId);
+      }
     }
   } else if (body.entry === null) {
     // No flow step at all (empty, or every statement is an `on` handler), so
@@ -354,7 +368,9 @@ function lowerContainerBody(
 /**
  * Lower a flat statement list with implicit top-to-bottom flow. A `null` exit
  * breaks the chain: later statements are still lowered, since they may be jump
- * targets, but no implicit flow bridges the gap.
+ * targets, but no implicit flow bridges the gap. A `start` takes no incoming
+ * flow: it joins the exits waiting for the next step without consuming them,
+ * so starts written back to back all enter the step after them.
  */
 function lowerBlockStatements(
   builder: Builder,
@@ -362,13 +378,13 @@ function lowerBlockStatements(
   coord: string,
 ): Frontier {
   let entry: string | null = null;
-  let prevExit: string | null = null;
-  let prevExitFlowId: string | undefined;
-  let lastFrontier: Frontier | undefined;
+  let exit: string | null = null;
+  let exitFlowId: string | undefined;
+  let waitingStarts: string[] = [];
 
   statements.forEach((stmt, index) => {
     // An `on` handler catches an event rather than being a flow step, so it
-    // lowers out-of-chain and leaves `prevExit`/`entry` untouched.
+    // lowers out-of-chain and leaves the waiting exits and `entry` untouched.
     if (isOnHandler(stmt)) {
       if (stmt.host !== undefined) {
         // `$refText` is there even when the linker could not resolve the host.
@@ -388,22 +404,32 @@ function lowerBlockStatements(
     if (entry === null) {
       entry = stmtEntry;
     }
-    if (prevExit !== null) {
-      addFlow(builder, prevExit, stmtEntry, undefined, prevExitFlowId);
+    if (isStartEvent(stmt)) {
+      if (exit === null) {
+        exit = stmtEntry;
+      } else {
+        waitingStarts.push(stmtEntry);
+      }
+      return;
     }
-    prevExit = frontier.exit;
-    prevExitFlowId = frontier.exitFlowId;
-    lastFrontier = frontier;
+    if (exit !== null) {
+      addFlow(builder, exit, stmtEntry, undefined, exitFlowId);
+    }
+    for (const start of waitingStarts) {
+      addFlow(builder, start, stmtEntry);
+    }
+    exit = frontier.exit;
+    exitFlowId = frontier.exitFlowId;
+    waitingStarts = [];
   });
 
   // Propagate the trailing `exitFlowId` so the block's own exit flow honors a
   // reserved default-flow id when the block ends in a `while`.
   return {
     entry,
-    exit: prevExit,
-    ...(lastFrontier?.exitFlowId !== undefined
-      ? { exitFlowId: lastFrontier.exitFlowId }
-      : {}),
+    exit,
+    ...(exitFlowId !== undefined ? { exitFlowId } : {}),
+    ...(waitingStarts.length > 0 ? { waitingStarts } : {}),
   };
 }
 
@@ -541,7 +567,7 @@ function startEventDefinition(
  */
 function endEventDefinition(
   trigger: string | undefined,
-): EventDefinition | undefined {
+): EndEventDefinition | undefined {
   const kind = admittedTrigger(END_TRIGGERS, trigger);
   return kind === undefined ? undefined : { kind };
 }
@@ -1338,6 +1364,10 @@ function thrownMessageBinding(
   return binding === undefined ? {} : { binding };
 }
 
+/**
+ * A link ends the chain like a `goto`: `BpmnParse.parseSequenceFlow` refuses
+ * a flow out of a link throw.
+ */
 function lowerEmit(
   builder: Builder,
   stmt: EmitStatement,
@@ -1353,7 +1383,9 @@ function lowerEmit(
     ...thrownMessageBinding(eventDefinition, settingsOf(stmt.items)),
     ...readEngineAttributes(stmt),
   });
-  return { entry: id, exit: id };
+  return eventDefinition.kind === 'link'
+    ? { entry: id, exit: null }
+    : { entry: id, exit: id };
 }
 
 /**
@@ -1371,6 +1403,8 @@ function emitEventDefinition(stmt: EmitStatement): EventDefinition {
       return { kind: 'signal', signalName: code ?? '' };
     case 'compensation':
       return { kind: 'compensation' };
+    case 'link':
+      return namedTriggerDefinition('link', stmt);
     case 'escalation':
     case undefined:
       return { kind: 'escalation', escalationCode: code };
@@ -1383,14 +1417,13 @@ function emitEventDefinition(stmt: EmitStatement): EventDefinition {
   }
 }
 
-/** The `await` surface carries no name slot, so the id is always `Catch_<coord>_<index>`. */
 function lowerIntermediateCatch(
   builder: Builder,
   stmt: IntermediateCatchEvent,
   coord: string,
   index: number,
 ): Frontier {
-  const id = makeIntermediateCatchEventId(`${coord}_${index}`);
+  const id = stmt.name ?? makeIntermediateCatchEventId(`${coord}_${index}`);
   builder.flowElements.push({
     kind: 'intermediateCatchEvent',
     id,
@@ -1401,7 +1434,7 @@ function lowerIntermediateCatch(
 }
 
 /** A word the throw position does not admit maps to `error`. */
-function throwEventDefinition(stmt: ThrowStatement): EventDefinition {
+function throwEventDefinition(stmt: ThrowStatement): EndEventDefinition {
   const trigger = admittedTrigger(THROW_TRIGGERS, stmt.trigger);
   const code = raisedCodeOf(stmt.items);
   switch (trigger) {
@@ -1426,17 +1459,14 @@ function throwEventDefinition(stmt: ThrowStatement): EventDefinition {
 }
 
 /**
- * The caught {@link EventDefinition} for an `await`, narrowed to message,
- * signal, timer, and conditional: error, escalation, and compensation are
- * raised with `throw`/`emit` and never awaited inline. A word the await
- * position does not admit falls back to the always-true conditional.
+ * The caught {@link CatchEventDefinition} for an `await`: error, escalation,
+ * and compensation are raised with `throw`/`emit` and never awaited inline. A
+ * word the await position does not admit falls back to the always-true
+ * conditional.
  */
 function catchEventDefinition(
   stmt: IntermediateCatchEvent | RaceBranch,
-): Extract<
-  EventDefinition,
-  { kind: 'message' | 'signal' | 'timer' | 'conditional' }
-> {
+): CatchEventDefinition {
   const trigger = admittedTrigger(CATCH_TRIGGERS, stmt.trigger);
   return trigger === undefined
     ? { kind: 'conditional', condition: '${true}' }
@@ -1459,19 +1489,16 @@ function raisedCodeOf(items: ParenItem[]): string | undefined {
 }
 
 /** The trigger words that mean the same thing in every position that takes them. */
-type NamedTrigger = 'message' | 'signal' | 'timer' | 'condition';
+type NamedTrigger = 'message' | 'signal' | 'timer' | 'condition' | 'link';
 
 /**
- * The {@link EventDefinition} for the four trigger words that mean the same
- * thing wherever they are written.
+ * The {@link CatchEventDefinition} for the five trigger words that mean the
+ * same thing wherever they are written.
  */
 function namedTriggerDefinition(
   trigger: NamedTrigger,
   stmt: { items: ParenItem[] },
-): Extract<
-  EventDefinition,
-  { kind: 'message' | 'signal' | 'timer' | 'conditional' }
-> {
+): CatchEventDefinition {
   switch (trigger) {
     case 'message':
       return { kind: 'message', messageName: raisedCodeOf(stmt.items) ?? '' };
@@ -1492,6 +1519,8 @@ function namedTriggerDefinition(
         condition: expr !== undefined ? renderExpression(expr) : '${true}',
       };
     }
+    case 'link':
+      return { kind: 'link', linkName: raisedCodeOf(stmt.items) ?? '' };
     default: {
       const exhaustive: never = trigger;
       throw new Error(
@@ -1967,49 +1996,18 @@ function pruneUnreachableJoin(builder: Builder, joinId: string): string | null {
   return null;
 }
 
-/** Seeds the collision set, so a synthesized id never clashes with a named element. */
+/**
+ * Seeds the collision set, so a synthesized id never clashes with a named
+ * element. An on-handler's id is positional and never registered, which
+ * {@link isNamedStatement} encodes by leaving `OnHandler` out; `streamAst`
+ * still walks its body for the names inside it.
+ */
 function collectNamedIds(process: Process): Set<string> {
-  const taken = new Set<string>();
-  const visit = (statements: Statement[]): void => {
-    for (const stmt of statements) {
-      if (
-        isStartEvent(stmt) ||
-        isEndEvent(stmt) ||
-        isUserTask(stmt) ||
-        isServiceTask(stmt) ||
-        isScriptTask(stmt) ||
-        isGenericTask(stmt) ||
-        isSendTask(stmt) ||
-        isReceiveTask(stmt) ||
-        isBusinessRuleTask(stmt) ||
-        isCallActivity(stmt)
-      ) {
-        taken.add(stmt.name);
-      } else if (isIfStatement(stmt)) {
-        visit(stmt.then.statements);
-        for (const ei of stmt.elseIfs) visit(ei.body.statements);
-        if (stmt.elseBlock) visit(stmt.elseBlock.statements);
-      } else if (isWhileStatement(stmt) || isDoWhileStatement(stmt)) {
-        visit(stmt.body.statements);
-      } else if (isParallelStatement(stmt) || isRaceStatement(stmt)) {
-        for (const branch of stmt.branches) visit(branch.body.statements);
-      } else if (isSubProcess(stmt)) {
-        // A sub-process name is itself a document id (a goto target).
-        taken.add(stmt.name);
-        visit(stmt.body.statements);
-      } else if (isOnHandler(stmt)) {
-        // The handler id is positional and never registered, but its body's names are.
-        visit(stmt.body.statements);
-      } else if (isThrowStatement(stmt) || isEmitStatement(stmt)) {
-        // An authored id on a throw/emit is used verbatim; an unnamed one is positional.
-        if (stmt.name !== undefined) {
-          taken.add(stmt.name);
-        }
-      }
-    }
-  };
-  visit(process.body);
-  return taken;
+  return new Set(
+    AstUtils.streamAst(process)
+      .filter(isNamedStatement)
+      .map((stmt) => stmt.name),
+  );
 }
 
 /** The `key`/`value` shape every setting carries. */

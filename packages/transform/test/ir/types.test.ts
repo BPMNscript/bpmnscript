@@ -190,6 +190,8 @@ function describeDefinition(def: EventDefinition): string {
       return `timer:${def.timerKind}:${def.expression}`;
     case 'conditional':
       return `conditional:${def.condition}`;
+    case 'link':
+      return `link:${def.linkName}`;
     default: {
       const _: never = def;
       throw new Error(`Unhandled EventDefinition kind: ${JSON.stringify(_)}`);

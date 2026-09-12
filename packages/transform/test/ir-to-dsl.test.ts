@@ -43,6 +43,7 @@ import {
   gateway,
   HANDWRITTEN_IMPORT_IR,
   ioParam,
+  linkDef,
   listValue,
   mapEntry,
   mapValue,
@@ -1296,16 +1297,7 @@ describe('irToDsl: event layer (message / signal / timer / conditional)', () => 
     );
   });
 
-  it('refuses a throw-side event carrying a non-throwable definition', () => {
-    const badEnd: BpmnProcess = minimalProcess(
-      [
-        { kind: 'startEvent', id: 'S' },
-        typedEvent('endEvent', 'Bad', conditionDef('${true}')),
-      ],
-      [{ id: 'F', sourceRef: 'S', targetRef: 'Bad' }],
-    );
-    expect(() => irToDsl(badEnd)).toThrow(/conditional/);
-
+  it('refuses an emit carrying a non-emittable definition', () => {
     const badEmit: BpmnProcess = minimalProcess(
       [
         { kind: 'startEvent', id: 'S' },
@@ -1581,6 +1573,71 @@ describe('irToDsl: event layer (intermediate catch / await)', () => {
       );
     },
   );
+});
+
+describe('irToDsl: link pairs and named catches', () => {
+  it('prints a link pair as a chain-ending emit link and a named await link opening the next chain', async () => {
+    const ir = minimalProcess(
+      [
+        { kind: 'startEvent', id: 'S' },
+        { kind: 'task', id: 'A' },
+        typedEvent('intermediateThrowEvent', 'ToRetry', linkDef('Retry')),
+        {
+          ...typedEvent('intermediateCatchEvent', 'AtRetry', linkDef('Retry')),
+          asyncBefore: true,
+        },
+        { kind: 'task', id: 'B' },
+        { kind: 'endEvent', id: 'E' },
+      ],
+      [
+        edge('S', 'A'),
+        edge('A', 'ToRetry'),
+        edge('AtRetry', 'B'),
+        edge('B', 'E'),
+      ],
+    );
+    expect(await expectIdempotent(ir)).toBe(
+      'process p {\n' +
+        '  start S\n' +
+        '  step A\n' +
+        '  emit link ToRetry("Retry")\n' +
+        '  await link AtRetry("Retry", asyncBefore: true)\n' +
+        '  step B\n' +
+        '  end E\n' +
+        '}\n',
+    );
+  });
+
+  // `Catch_p_2` is the id `ast-to-ir` mints for the second (unnamed) await
+  // statement in process `p`'s body; the round trip must re-derive the same
+  // one, so the exact coordinate is pinned rather than guessed.
+  it('prints a named await of any trigger with its name and an unnamed one with none', async () => {
+    const ir = minimalProcess(
+      [
+        { kind: 'startEvent', id: 'S' },
+        typedEvent('intermediateCatchEvent', 'Wait', messageDef('M')),
+        typedEvent('intermediateCatchEvent', 'Catch_p_2', messageDef('M')),
+        { kind: 'endEvent', id: 'E' },
+      ],
+      flowChain('S', 'Wait', 'Catch_p_2', 'E'),
+    );
+    const dsl = await expectIdempotent(ir);
+    expect(dsl).toContain('await message Wait("M")\n  await message("M")');
+  });
+
+  it('prints a goto into a named await as a jump, not a dropped edge', async () => {
+    const ir = minimalProcess(
+      [
+        { kind: 'startEvent', id: 'S' },
+        typedEvent('intermediateCatchEvent', 'Wait', messageDef('M')),
+        { kind: 'userTask', id: 'A' },
+      ],
+      [edge('S', 'Wait'), edge('Wait', 'A'), edge('A', 'Wait')],
+    );
+    const dsl = await expectIdempotent(ir);
+    expect(dsl).not.toContain(UNSTRUCTURED_MARKER);
+    expect(printDsl(ir).warnings).toEqual([]);
+  });
 });
 
 describe('irToDsl: event layer (compensation)', () => {
@@ -3984,6 +4041,95 @@ describe('warnings: edges with no form in the script', () => {
     expect(printDsl(around({ kind: 'userTask', id: 'A' })).warnings).toEqual(
       [],
     );
+  });
+
+  it('an unnamed plain start heads the printed body whatever its position among the starts', async () => {
+    // Idempotence is the whole assertion: the re-desugared IR keeps both
+    // starts only when the elided one heads the body; elsewhere it strands the
+    // message start's trailing goto and draws "This step can never run".
+    await expectIdempotent(
+      minimalProcess(
+        [
+          typedEvent('startEvent', 'B', messageDef('M')),
+          { kind: 'startEvent', id: 'StartEvent_p' },
+          { kind: 'userTask', id: 'V' },
+          { kind: 'endEvent', id: 'E' },
+        ],
+        [edge('B', 'V'), edge('StartEvent_p', 'V'), edge('V', 'E')],
+      ),
+    );
+  });
+
+  it('a second unnamed plain start prints under its reserved id and is reported, rather than vanishing', async () => {
+    const { source, warnings } = printDsl(
+      minimalProcess(
+        [
+          { kind: 'startEvent', id: 'StartEvent_p1' },
+          { kind: 'startEvent', id: 'StartEvent_p2' },
+          { kind: 'userTask', id: 'V' },
+          { kind: 'endEvent', id: 'E' },
+        ],
+        [
+          edge('StartEvent_p1', 'V'),
+          edge('StartEvent_p2', 'V'),
+          edge('V', 'E'),
+        ],
+      ),
+    );
+
+    expectReports(warnings, ['refusedStatement', 'StartEvent_p2']);
+    const lines = source.split('\n');
+    expect(lines.filter((l) => l.trim().startsWith('start '))).toEqual([
+      '  start StartEvent_p2',
+    ]);
+    // The printed source is meant to fail on exactly that name, which is
+    // what tells the reader which step to rename.
+    const errors = (await validate(source)).diagnostics
+      .filter((d) => d.severity === 1)
+      .map((d) => [
+        lines[d.range.start.line],
+        typeof d.message === 'string' ? d.message : d.message.value,
+      ]);
+    expect(errors).toEqual([
+      [
+        '  start StartEvent_p2',
+        expect.stringContaining(MODEL_REFUSAL.reservedId),
+      ],
+    ]);
+  });
+
+  it('a start entering a synthesized split prints as a dropped-edge marker, not as a jump', async () => {
+    const base = await reDesugar(
+      'process p {\n' +
+        '  var x: boolean\n' +
+        '  start A\n' +
+        '  if (x) {\n' +
+        '    user T1\n' +
+        '  } else {\n' +
+        '    user T2\n' +
+        '  }\n' +
+        '  end E\n' +
+        '}\n',
+    );
+    const split = base.flowElements.find(
+      (el) => el.kind === 'exclusiveGateway' && el.id.endsWith('_split'),
+    )!;
+    const ir: BpmnProcess = {
+      ...base,
+      flowElements: [
+        ...base.flowElements,
+        typedEvent('startEvent', 'B', messageDef('M')),
+      ],
+      sequenceFlows: [...base.sequenceFlows, edge('B', split.id)],
+    };
+
+    const { source, warnings } = printDsl(ir);
+
+    expectReports(warnings, ['droppedEdge', split.id]);
+    expect(source).toContain(
+      `${UNSTRUCTURED_MARKER} (dropped edge into ${split.id})`,
+    );
+    expect(source).not.toMatch(new RegExp(`goto\\s+${split.id}\\b`));
   });
 });
 

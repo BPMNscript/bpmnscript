@@ -47,7 +47,11 @@ import {
   isVarRef,
   payloadTextOf,
 } from '@bpmn-script/language';
-import { withTextMessages } from './helpers/diagnostics.js';
+import {
+  UNREACHABLE,
+  undeclaredVariable,
+  withTextMessages,
+} from './helpers/diagnostics.js';
 
 const SEVERITY_ERROR = 1;
 
@@ -167,11 +171,6 @@ async function checkCodeRow(
   expect(await codeResolutionsOf(source)).toEqual(expected);
 }
 
-/** The warning an identifier that names no variable still earns. */
-function undeclaredVariable(name: string): string {
-  return `warning: Variable '${name}' is not declared. Add 'var ${name}: <type>' to the process.`;
-}
-
 /** The trailing sentence of a boundary explanation, by the boundary crossed. */
 const BOUNDARY_RULE = {
   subprocess: 'a goto cannot cross a subprocess boundary.',
@@ -227,6 +226,11 @@ describe('Scoping - process-scoped goto', () => {
       'a goto to a name no process has does not resolve',
       `process p { user Foo goto Missing }`,
       ['goto Missing -> unresolved', stockError('Missing')],
+    ],
+    [
+      'a goto reaches a named await',
+      `process p { await message Wait("M") goto Wait }`,
+      ['goto Wait -> p/Wait:IntermediateCatchEvent'],
     ],
   ])('%s', checkRow);
 });
@@ -372,7 +376,7 @@ describe('Scoping - container-scoped goto (event-handler boundary)', () => {
       [
         'goto Failed -> p/Failed:ThrowStatement',
         'goto Ping -> p/Ping:EmitStatement',
-        'error: This step can never run: an earlier `end`, `throw`, `goto`, or an all-terminating `if`/`parallel`/`await` in the same block always ends or redirects the flow before reaching it, so this step would lower to a disconnected node with no incoming flow, which is invalid BPMN.',
+        `error: ${UNREACHABLE}`,
       ],
     ],
     [
@@ -563,7 +567,7 @@ describe('Scoping - code declarations reached from a code position', () => {
       `process p { error PAYMENT_DECLINED(message: "x") user A if (PAYMENT_DECLINED) { user B } }`,
       [
         'PAYMENT_DECLINED -> unresolved',
-        undeclaredVariable('PAYMENT_DECLINED'),
+        `warning: ${undeclaredVariable('PAYMENT_DECLINED')}`,
       ],
     ],
     [

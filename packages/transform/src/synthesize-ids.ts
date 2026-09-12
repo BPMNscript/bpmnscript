@@ -16,6 +16,7 @@ import { BpmnScriptGrammar, reservedWordsOf } from '@bpmn-script/language';
 export const START_EVENT_PREFIX = 'StartEvent_';
 export const END_EVENT_PREFIX = 'EndEvent_';
 export const THROW_EVENT_PREFIX = 'Throw_';
+export const CATCH_EVENT_PREFIX = 'Catch_';
 
 export function makeGatewaySplitId(enclosingId: string): string {
   return `Gateway_${enclosingId}_split`;
@@ -71,7 +72,7 @@ export function makeEventSubProcessId(coordinate: string): string {
 }
 
 export function makeIntermediateCatchEventId(coordinate: string): string {
-  return `Catch_${coordinate}`;
+  return `${CATCH_EVENT_PREFIX}${coordinate}`;
 }
 
 /**

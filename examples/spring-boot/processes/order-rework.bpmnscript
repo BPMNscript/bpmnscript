@@ -1,0 +1,23 @@
+// Order Rework: a rework loop drawn with BPMN's own link events rather than
+// a `goto`. Rejecting the review sends the token off at the throw; it
+// reappears at the catch with no flow drawn between the two, then loops back
+// into Review by name once the fix is done.
+//
+// Both steps are user tasks assigned to "demo", so this process deploys and
+// runs on the demo profile without additional Java classes.
+
+process order-rework(label: "Order Rework") {
+  var approved: boolean
+
+  start Received
+  user Review(assignee: "demo") {
+    form { approved: boolean "Approved?" }
+  }
+  if (!approved) {
+    emit link ToRework("Rework")
+  }
+  end Done
+  await link AtRework("Rework")
+  user Rework(assignee: "demo")
+  goto Review
+}

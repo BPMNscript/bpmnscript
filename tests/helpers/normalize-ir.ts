@@ -209,6 +209,8 @@ function definitionPayloadKey(def: EventDefinition | undefined): string {
       return def.messageName;
     case 'signal':
       return def.signalName;
+    case 'link':
+      return def.linkName;
     case 'timer':
       return `${def.timerKind} ${def.expression}`;
     case 'conditional':

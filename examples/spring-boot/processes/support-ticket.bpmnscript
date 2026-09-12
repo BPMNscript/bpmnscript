@@ -1,0 +1,12 @@
+// A ticket enters two ways: an agent opens it directly, or it arrives by a
+// correlated message before any instance exists. Both starts lead into the
+// same triage step, so the entry chosen never changes what happens next.
+
+process support-ticket {
+  start ByAgent(label: "An agent opens a ticket")
+  start ByEmail message("TicketEmailed", label: "A ticket arrives by email")
+
+  user Triage(label: "Triage the ticket", assignee: "demo")
+
+  end Resolved(label: "Ticket resolved")
+}

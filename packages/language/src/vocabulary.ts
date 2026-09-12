@@ -234,25 +234,38 @@ export const THROW_TRIGGERS = [
   'compensation',
 ] as const;
 
-/** Every kind with a continuing form; an error always ends its path. */
+/**
+ * Every kind with a continuing form; an error always ends its path. A link
+ * continues at its catch rather than at the next statement here, and `throw`
+ * has no link form because a link throw is intermediate, never an end.
+ */
 export const EMIT_TRIGGERS = [
   'escalation',
   'message',
   'signal',
   'compensation',
+  'link',
 ] as const;
 
 /**
- * The kinds with a blocking inline catch form. Error and escalation travel
- * outward, compensation runs through a subprocess's own `on compensation`
- * body, and a cancel is caught by `on <block>: cancel`.
+ * The triggers legal behind an event-based gateway. `link` is left out:
+ * `BpmnParse.parseIntermediateCatchEvent` addErrors a link catch there, so a
+ * plain `await` is the only place one may stand.
  */
-export const CATCH_TRIGGERS = [
+export const RACE_TRIGGERS = [
   'message',
   'timer',
   'signal',
   'condition',
 ] as const;
+
+/**
+ * The kinds with a blocking inline catch form: {@link RACE_TRIGGERS} plus
+ * `link`, which only a plain `await` may head. Error and escalation travel
+ * outward, compensation runs through a subprocess's own `on compensation`
+ * body, and a cancel is caught by `on <block>: cancel`.
+ */
+export const CATCH_TRIGGERS = [...RACE_TRIGGERS, 'link'] as const;
 
 /**
  * The triggers Operaton dispatches a start behaviour for. It ignores an error,
@@ -294,7 +307,9 @@ export interface TriggerPayloadRule {
  * name-keyed subscriptions, so the name is required. `compensation` reverses
  * finished work: nothing to catch by name, no flow to run alongside. `cancel`
  * mirrors it, legal only on a host where compensation is legal only without
- * one. The `satisfies` clause forces a row per word in {@link ON_TRIGGERS}
+ * one. `link` opens no `on` handler: it keys the engine's per-file link table
+ * by name alone, so it has no handler, boundary, or start form. The
+ * `satisfies` clause forces a row per word in {@link ON_TRIGGERS} plus `link`,
  * while the annotation keeps the lookup open to a word of any origin.
  */
 export const TRIGGER_PAYLOAD: Readonly<Record<string, TriggerPayloadRule>> = {
@@ -362,7 +377,15 @@ export const TRIGGER_PAYLOAD: Readonly<Record<string, TriggerPayloadRule>> = {
     boundary: true,
     hostless: false,
   },
-} satisfies Record<(typeof ON_TRIGGERS)[number], TriggerPayloadRule>;
+  link: {
+    code: 'required',
+    timer: false,
+    parens: 'forbidden',
+    alongside: false,
+    boundary: false,
+    hostless: false,
+  },
+} satisfies Record<(typeof ON_TRIGGERS)[number] | 'link', TriggerPayloadRule>;
 
 /**
  * The triggers whose payload refers to a declaration rather than carrying a
@@ -446,9 +469,11 @@ export interface AttributeBlockRule {
   /**
    * The keys this kind owns, in the order they are offered. `label` and
    * `documentation` are both present wherever the element lowers to a BPMN
-   * node carrying a `name`; a handler, a `throw`/`emit`, and an `await` have
-   * no name slot, so either key written there is an unknown key rather than a
-   * dropped one.
+   * node carrying a diagram name; an `on` handler, a `throw`, and an `emit`
+   * have no `label` key, so either written there is an unknown key rather
+   * than a dropped one. An `await`'s own name is a grammar identifier for
+   * `goto`, not this key: a link pair's element name is stamped from the link
+   * name instead.
    */
   readonly own: readonly string[];
   /** {@link own} and the engine settings together, for membership tests. */

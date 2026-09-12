@@ -9,9 +9,11 @@
 
 import type {
   DECISION_RESULT_MAPPINGS,
+  END_TRIGGERS,
   EXECUTION_LISTENER_EVENTS,
   FORM_FIELD_TYPES,
   TASK_LISTENER_EVENTS,
+  THROW_TRIGGERS,
 } from '@bpmn-script/language';
 
 /**
@@ -147,7 +149,8 @@ export function eventIdentities(container: FlowContainer): EventIdentities {
         identities.signalNames.add(def.signalName);
         break;
       default:
-        // Compensation, timer, and conditional need no document-level element.
+        // Compensation, timer, conditional, and link need no document-level
+        // element.
         break;
     }
   }
@@ -239,7 +242,32 @@ export type EventDefinition =
       kind: 'conditional';
       /** Raw `${...}` body, re-checked whenever a variable changes. */
       condition: string;
+    }
+  | {
+      kind: 'link';
+      /**
+       * What a throw and a catch match on: the engine keys one table of these
+       * per deployed file and rewires every throw of a name to the catch of
+       * the same name, so the IR carries no reference between the two nodes.
+       */
+      linkName: string;
     };
+
+/** The definitions an `await` may catch; narrower than what a `throw`/`emit` may raise. */
+export type CatchEventDefinition = Extract<
+  EventDefinition,
+  { kind: 'message' | 'signal' | 'timer' | 'conditional' | 'link' }
+>;
+
+/**
+ * The definitions an end may carry: what a `throw` raises plus the two an
+ * `end` statement spells itself. Link, timer, and conditional stay out, since
+ * BPMN gives none of them an end form.
+ */
+export type EndEventDefinition = Extract<
+  EventDefinition,
+  { kind: (typeof THROW_TRIGGERS | typeof END_TRIGGERS)[number] }
+>;
 
 /**
  * The human-facing text a BPMN element carries, mixed into every kind the
@@ -457,7 +485,7 @@ export interface EndEvent extends EngineAttributes, Named {
   kind: 'endEvent';
   id: string;
   /** Present when this end is a typed throw or a terminate. */
-  eventDefinition?: EventDefinition;
+  eventDefinition?: EndEventDefinition;
   /**
    * What the engine runs to really send a thrown message; without it the throw
    * records and ends. Only a message definition carries one, and it serializes
@@ -481,16 +509,13 @@ export interface IntermediateThrowEvent extends EngineAttributes {
 /**
  * The DSL's `await`: the token pauses until the trigger fires. Error,
  * escalation, and compensation are raised with `throw`/`emit` and never caught
- * inline, hence the narrowing. `await` has no label slot, so the id is always
- * synthesized.
+ * inline, hence the narrowing. `await` has no label slot; the id is
+ * synthesized unless the `await` carries a name.
  */
 export interface IntermediateCatchEvent extends EngineAttributes {
   kind: 'intermediateCatchEvent';
   id: string;
-  eventDefinition: Extract<
-    EventDefinition,
-    { kind: 'message' | 'signal' | 'timer' | 'conditional' }
-  >;
+  eventDefinition: CatchEventDefinition;
 }
 
 export interface UserTask

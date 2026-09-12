@@ -10,7 +10,7 @@ Two more are planned and have no fixture yet: an Operaton REST engine with exter
 The fixture runs Operaton 2.1.0 embedded in a Spring Boot 4.0.6 application on Java 17, exposing the Operaton REST API on port 8080.
 It's packaged as a Docker image so the integration test harness can start and stop it programmatically.
 
-Twenty-four DSL sources live under `spring-boot/processes/`, one per construct or construct combination.
+Twenty-six DSL sources live under `spring-boot/processes/`, one per construct or construct combination.
 Running `bpmns build` on any of them produces the deployable `.bpmn`.
 
 | Source                  | Covers                                                                     |
@@ -39,12 +39,14 @@ Running `bpmns build` on any of them produces the deployable `.bpmn`.
 | `empty-batch`           | A repetition count of zero, which leaves the step without running it       |
 | `booking-attempt`       | A block given up from inside, its undo block, and its cancel handler       |
 | `order-dispatch`        | Conditioned `parallel` branches and an `await` race between two triggers   |
+| `support-ticket`        | Two starts, one plain and one message, entering the same step              |
+| `order-rework`          | A link pair: `emit link` inside an `if`, and the `await link` it jumps to  |
 
 [Running processes on Operaton](spring-boot/README.md#running-processes-on-operaton-demo) is a hands-on tour of the two loan-approval processes.
 
 ### Testcontainers harness
 
-Thirteen E2E test files in `tests/e2e/` use [testcontainers-node](https://testcontainers.com/) to start the Docker image, deploy compiled BPMN over the Operaton REST API, start instances, and assert engine behavior: `invoice-approval`, `parallel-approval`, `loan-approval`, `loan-approval-kopp`, `boundary-events` (over `order-handling`), `awaiting-confirmation`, `engine-extensions`, `service-boundary-and-compensation` (over `charge-with-recovery` and `compensating-saga` in one container boot), `event-positions` (over `order-intake`, `stock-alert`, and `scheduled-audit` in one container boot), `task-kinds`, `repetition` (over `batch-approval` and `empty-batch` in one container boot), `booking-attempt`, and `branch-and-race` (over `order-dispatch`).
+Thirteen E2E test files in `tests/e2e/` use [testcontainers-node](https://testcontainers.com/) to start the Docker image, deploy compiled BPMN over the Operaton REST API, start instances, and assert engine behavior: `invoice-approval`, `parallel-approval`, `loan-approval`, `loan-approval-kopp`, `boundary-events` (over `order-handling`), `awaiting-confirmation`, `engine-extensions`, `service-boundary-and-compensation` (over `charge-with-recovery` and `compensating-saga` in one container boot), `event-positions` (over `order-intake`, `stock-alert`, `scheduled-audit`, `support-ticket`, and `order-rework` in one container boot), `task-kinds`, `repetition` (over `batch-approval` and `empty-batch` in one container boot), `booking-attempt`, and `branch-and-race` (over `order-dispatch`).
 The remaining fixtures are demo-only.
 
 The compensation half of `service-boundary-and-compensation` asserts that the `emit compensation` its `on error` handler raises reaches the undo block of the subprocess that completed before the charge failed.

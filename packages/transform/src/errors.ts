@@ -9,6 +9,7 @@
 
 import {
   CATCH_TRIGGERS,
+  EMIT_TRIGGERS,
   formatPlainWordList,
   ON_TRIGGERS,
   START_TRIGGERS,
@@ -316,7 +317,7 @@ function supportedKindsMessage(
         'given up.'
       );
     case 'intermediate throw':
-      return 'An emit supports escalation, message, signal, or compensation.';
+      return `An emit supports ${formatPlainWordList(EMIT_TRIGGERS)}.`;
     case 'intermediate catch':
       return `An await supports ${formatPlainWordList(CATCH_TRIGGERS)}.`;
     case 'boundary':

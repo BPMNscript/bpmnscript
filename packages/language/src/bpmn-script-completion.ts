@@ -28,6 +28,7 @@ import {
   ON_TRIGGERS,
   parameterDirectionsFor,
   PROCESS_HEADER_KEYS,
+  RACE_TRIGGERS,
   SCRIPT_FORMAT_ALIASES,
   START_TRIGGERS,
   THROW_TRIGGERS,
@@ -156,9 +157,9 @@ const STRUCTURE_SNIPPETS: Readonly<
       label: 'await any',
       insertText:
         'await {\n\t${1|' +
-        subscriptionChoices(CATCH_TRIGGERS) +
+        subscriptionChoices(RACE_TRIGGERS) +
         '|}("${2:NAME}") {\n\t\t$3\n\t}\n\t${4|' +
-        subscriptionChoices(CATCH_TRIGGERS) +
+        subscriptionChoices(RACE_TRIGGERS) +
         '|}("${5:OTHER}") {\n\t\t$6\n\t}\n}',
     },
   ],
@@ -378,10 +379,14 @@ const STATEMENT_TRIGGERS: Readonly<
     words: EMIT_TRIGGERS,
     details: {
       compensation: "undo this scope's completed work, then continue",
+      link: "jump to the 'await link' of the same name",
     },
   },
-  IntermediateCatchEvent: { words: CATCH_TRIGGERS },
-  RaceBranch: { words: CATCH_TRIGGERS },
+  IntermediateCatchEvent: {
+    words: CATCH_TRIGGERS,
+    details: { link: "the target of an 'emit link' of the same name" },
+  },
+  RaceBranch: { words: RACE_TRIGGERS },
   StartEvent: { words: START_TRIGGERS },
   EndEvent: {
     words: END_TRIGGERS,

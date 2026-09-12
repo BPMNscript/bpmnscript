@@ -1,0 +1,62 @@
+// Link-event round-trip fixture: one claim-review process carrying a link
+// pair at the process level and a second pair inside a sub-process.
+//
+//   - `ReworkMissingReceipts` and `ReworkRejected`, two `emit link` throws to
+//     the one catch `AtRework`, raised from an `if`/`else if` chain;
+//   - `AtRework` carries `asyncBefore`, legal on a catch because the engine
+//     runs it as an activity while a throw has none;
+//   - `ToAudit` and `AtAudit` sit together inside `Settlement`, both ends in
+//     one scope as the engine requires;
+//   - the catch chain holds an `if`/`else` that rejoins before its `goto`
+//     back into the main flow.
+//
+// Two rules keep the pair re-parsing under the same ids. Every end of a pair
+// is named, because an unnamed catch re-derives a coordinate id that moves
+// when the printed source reorders statements. Every chain that precedes a
+// catch ends on an authored `end`, a `goto` or an `emit link`, because an
+// end the printer elides would fall through into the catch. As in every
+// fixture, no label equals its humanized id (the import drops one as derived)
+// and the condition variables are declared on the start form so they survive
+// the import hop.
+
+process claim-review {
+  start Filed(label: "A claim is filed") {
+    form {
+      approved: boolean "Approved?"
+      amount: number "Claim amount"
+      receiptsComplete: boolean "Receipts complete?"
+    }
+  }
+
+  user AssessClaim(label: "Assess the claim", assignee: "demo")
+
+  if (!receiptsComplete) {
+    emit link ReworkMissingReceipts("Rework")
+  } else if (!approved) {
+    emit link ReworkRejected("Rework")
+  }
+
+  subprocess Settlement(label: "Settle the claim") {
+    start SettlementStart
+    service PayClaim(label: "Pay the claim", class: "com.example.claims.PayClaimDelegate")
+    if (amount > 1000) {
+      emit link ToAudit("Audit")
+    }
+    end Settled
+
+    await link AtAudit("Audit")
+    user AuditPayout(label: "Audit the payout", assignee: "manager")
+    end Audited
+  }
+
+  end Closed(label: "Claim closed")
+
+  await link AtRework("Rework", asyncBefore: true)
+  user ReworkClaim(label: "Rework the claim", assignee: "demo")
+  if (amount > 5000) {
+    user EscalateRework(label: "Escalate the rework", assignee: "manager")
+  } else {
+    user NoteRework(label: "Note the rework", assignee: "demo")
+  }
+  goto AssessClaim
+}

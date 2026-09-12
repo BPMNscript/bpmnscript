@@ -11,6 +11,7 @@
 import {
   CATCH_TRIGGERS,
   DECISION_RESULT_MAPPINGS,
+  EMIT_TRIGGERS,
   END_TRIGGERS,
   EXECUTION_LISTENER_EVENTS,
   formatPlainWordList,
@@ -25,6 +26,7 @@ import type {
   CallVariableMapper,
   CallVariableMapping,
   EndEvent,
+  EndEventDefinition,
   EngineAttributes,
   EventBasedGateway,
   EventDefinition,
@@ -184,7 +186,8 @@ function consumptionTable(
  * A name listed for an owner that reads it on one side only, or not at all, is
  * reported by hand with its own reason: the three `*Variable` names by
  * {@link warnThrowSideBindingAttrs}, `jobPriority` on a repetition by
- * {@link sweepRepetition}.
+ * {@link sweepRepetition}, every engine setting on a link throw by
+ * {@link warnLinkThrowEngineSettings}.
  */
 const CONSUMED_EXTENSION_ATTRS = consumptionTable([
   ['asyncBefore', ENGINE_ATTRIBUTE_OWNERS],
@@ -813,7 +816,7 @@ function mapContainer(
   warnings: ImportWarning[],
   hostKind: ContainerHostKind,
 ): { flowElements: FlowElement[]; sequenceFlows: SequenceFlow[] } {
-  refuseMultipleStartEvents(el);
+  refuseMultipleStartEvents(el, hostKind);
   return mapContainerChildren(
     el,
     warnings,
@@ -823,18 +826,23 @@ function mapContainer(
 }
 
 /**
- * One entry point per container: the surface writes a start as the first
- * statement of its body, so a second start would decompile to a statement the
- * validator rejects. An event handler is checked in {@link mapEventSubProcess}.
+ * A process takes several start events, one per `start` statement of its
+ * body. A subprocess or a transaction takes one: `BpmnParse.parseScopeStartEvent`
+ * errors deployment on the second start of any scope that is not a process.
+ * An event handler is checked in {@link mapEventSubProcess}.
  */
-function refuseMultipleStartEvents(el: ModdleElement): void {
+function refuseMultipleStartEvents(
+  el: ModdleElement,
+  hostKind: ContainerHostKind,
+): void {
+  if (hostKind === 'process') return;
   const children = (el.get('flowElements') as ModdleElement[]) ?? [];
   const starts = children.filter((c) => c.$type === 'bpmn:StartEvent');
   if (starts.length > 1) {
     throw new UnsupportedEventFeatureError(
       requireId(el),
       `it has ${starts.length} start events; this tool writes one entry ` +
-        'point per process or subprocess, so a second start has nowhere to go',
+        'point per subprocess or transaction, so a second start has nowhere to go',
       'Leave one start and connect the steps that followed the others onto it.',
     );
   }
@@ -1151,16 +1159,22 @@ function mapContainerChildren(
     switch (child.$type) {
       case 'bpmn:StartEvent': {
         // Only here is it known whether a start's trigger moves into an `on`
-        // header, which decides whether the statement prints at all.
+        // header, which decides whether the statement prints at all. The
+        // starts before it decide too, so it joins the list before asking.
         const start = mapStart(child);
-        warnElidedNamedDrop(start, hostKind === 'eventSubProcess', warnings);
         flowElements.push(start);
+        warnElidedNamedDrop(
+          start,
+          flowElements,
+          hostKind === 'eventSubProcess',
+          warnings,
+        );
         break;
       }
       case 'bpmn:EndEvent': {
         const end = mapEndEvent(child, warnings, hostKind);
-        warnElidedNamedDrop(end, false, warnings);
         flowElements.push(end);
+        warnElidedNamedDrop(end, flowElements, false, warnings);
         break;
       }
       case 'bpmn:IntermediateThrowEvent':
@@ -1241,8 +1255,63 @@ function mapContainerChildren(
   }
 
   checkBoundaryEventHosts(flowElements, sequenceFlows, warnings);
+  checkLinkFlows(flowElements, sequenceFlows);
   checkWaitBranches(flowElements, sequenceFlows);
   return { flowElements, sequenceFlows };
+}
+
+/**
+ * Runs before {@link checkWaitBranches} so a wait branch leading to a link
+ * catch draws this message rather than passing the wait's own check. The
+ * engine refuses a flow out of a link throw at deploy
+ * (`BpmnParse.parseSequenceFlow`, an invalid source) but accepts one into a
+ * link catch and runs the catch as a pass-through; that side is this surface's
+ * own refusal, since `await link` takes no incoming flow, so the flow could
+ * neither print nor be dropped without changing what runs.
+ */
+function checkLinkFlows(
+  flowElements: FlowElement[],
+  sequenceFlows: SequenceFlow[],
+): void {
+  const linkEnds = (
+    kind: 'intermediateThrowEvent' | 'intermediateCatchEvent',
+  ): Set<string> =>
+    new Set(
+      flowElements
+        .filter((el) => el.kind === kind && el.eventDefinition.kind === 'link')
+        .map((el) => el.id),
+    );
+  const throws = linkEnds('intermediateThrowEvent');
+  const catches = linkEnds('intermediateCatchEvent');
+  if (throws.size === 0 && catches.size === 0) return;
+
+  const refuse = (id: string, detail: string, flowId: string): never => {
+    throw new UnsupportedEventFeatureError(
+      id,
+      detail,
+      `Take the flow '${flowId}' off, and lead it from or to a step instead.`,
+    );
+  };
+  for (const sf of sequenceFlows) {
+    if (throws.has(sf.sourceRef)) {
+      refuse(
+        sf.sourceRef,
+        `the flow '${sf.id}' leaves the link throw '${sf.sourceRef}'; a ` +
+          'link throw ends its path, and the token continues at the catch ' +
+          'of the same name rather than along a flow',
+        sf.id,
+      );
+    }
+    if (catches.has(sf.targetRef)) {
+      refuse(
+        sf.targetRef,
+        `the flow '${sf.id}' enters the link catch '${sf.targetRef}'; a ` +
+          'link catch is entered by the throw of the same name rather than ' +
+          'along a flow',
+        sf.id,
+      );
+    }
+  }
 }
 
 /** The kinds that can repeat: every activity, and nothing else. */
@@ -1902,7 +1971,8 @@ function refuseBoundaryInputOutput(el: ModdleElement, id: string): void {
 /**
  * Resolve one event definition on the CATCH side. An error or escalation
  * definition with no ref, or whose root carries no code, is catch-all: the
- * missing code is what makes the handler match anything.
+ * missing code is what makes the handler match anything. A cancel and a link
+ * are read at one position each and refused everywhere else.
  */
 function readCatchEventDefinition(
   defEl: ModdleElement,
@@ -1959,7 +2029,40 @@ function readCatchEventDefinition(
     return { kind: 'cancel' };
   }
 
+  // Operaton reads a link definition in `BpmnParse.parseIntermediateCatchEvent`
+  // and nowhere else on the catch side: a start ignores it and runs as a none
+  // start, and `parseBoundaryEvents` refuses it at deploy.
+  if (
+    defEl.$type === 'bpmn:LinkEventDefinition' &&
+    position === 'intermediate catch'
+  ) {
+    return readLinkDefinition(defEl, ownerId);
+  }
+
   throw new UnsupportedEventDefinitionError(ownerId, position, defEl.$type);
+}
+
+/**
+ * A nameless link definition has nothing to match:
+ * `BpmnParse.parseIntermediateLinkEventCatchBehavior` throws a
+ * NullPointerException on a catch, and `BpmnParse.parseSequenceFlow` reports
+ * every flow into such a throw as a deploy error.
+ */
+function readLinkDefinition(
+  defEl: ModdleElement,
+  ownerId: string,
+): EventDefinition {
+  const linkName = readString(defEl, 'name');
+  if (linkName === undefined) {
+    throw new UnsupportedEventFeatureError(
+      ownerId,
+      'a link definition carries no name; the name is what a link throw and ' +
+        'its catch match on, so one without it has nothing to match',
+      'Give the link definition a name, and the same name to the throw and ' +
+        'the catch it joins.',
+    );
+  }
+  return { kind: 'link', linkName };
 }
 
 /**
@@ -2135,6 +2238,8 @@ function readConditionalDefinition(
  * Resolve one event definition on the THROW side. The definition type is the
  * same on both sides, so {@link CONSUMED_EXTENSION_ATTRS} marks the catch
  * parameters read and {@link warnThrowSideBindingAttrs} reports them here.
+ * Only an intermediate throw reaches this with a link: {@link mapEndEvent}
+ * refuses one by tag first, since Operaton runs a link end as a none end.
  */
 function readThrowEventDefinition(
   defEl: ModdleElement,
@@ -2160,6 +2265,10 @@ function readThrowEventDefinition(
 
   const shared = readSharedEventDefinition(defEl, ownerId);
   if (shared !== undefined) return shared;
+
+  if (defEl.$type === 'bpmn:LinkEventDefinition') {
+    return readLinkDefinition(defEl, ownerId);
+  }
 
   const ref = getEl(defEl, 'escalationRef');
   const escalationCode = ref ? readString(ref, 'escalationCode') : undefined;
@@ -2200,6 +2309,41 @@ function warnThrowSideBindingAttrs(
 }
 
 /**
+ * `BpmnParse.parseIntermediateThrowEvent` returns before creating an activity
+ * for a link throw, so the engine never read these and the re-exported
+ * document runs the same without them. The generic sweep cannot report them:
+ * {@link CONSUMED_EXTENSION_ATTRS} and {@link CONSUMED_EXTENSION_ELEMENTS}
+ * mark them read on every intermediate throw, since the other emit kinds do
+ * carry them.
+ */
+function warnLinkThrowEngineSettings(
+  el: ModdleElement,
+  id: string,
+  warnings: ImportWarning[],
+): void {
+  const { executionListeners, ...settings } = readEngineAttributes(
+    el,
+    id,
+    warnings,
+  );
+  const report = (what: string, does: string): void => {
+    warnings.push({
+      elementId: id,
+      category: 'extensionAttribute',
+      message:
+        `The ${what} on '${id}' was not imported: Operaton creates no ` +
+        `activity for a link throw, so it never ${does} one.`,
+    });
+  };
+  for (const key of Object.keys(settings)) {
+    report(`'${key}' setting`, 'reads a setting on');
+  }
+  for (const listener of executionListeners ?? []) {
+    report(`'${listener.event}' execution listener`, 'runs a listener on');
+  }
+}
+
+/**
  * The mirror of {@link warnThrowSideBindingAttrs}: an implementation on a
  * message definition is what sends the message, which only a throw does, so the
  * catch side reads the same names and imports none of them.
@@ -2233,10 +2377,11 @@ function warnCatchSideImplementationAttrs(
  */
 function warnElidedNamedDrop(
   el: StartEvent | EndEvent,
+  siblings: readonly FlowElement[],
   startTriggerSuppressed: boolean,
   warnings: ImportWarning[],
 ): void {
-  if (!isElidedOnPrint(el, startTriggerSuppressed)) return;
+  if (!isElidedOnPrint(el, siblings, startTriggerSuppressed)) return;
   const statement = el.kind === 'startEvent' ? 'start' : 'end';
   const report = (
     category: ImportWarningCategory,
@@ -2272,8 +2417,9 @@ function warnNamedDrop(
   id: string,
   surface: string,
   warnings: ImportWarning[],
+  derived?: string,
 ): void {
-  const label = readDerivableName(el, id);
+  const label = readDerivableName(el, id, derived);
   if (label !== undefined) {
     warnings.push({
       elementId: id,
@@ -3227,7 +3373,13 @@ function mapEndEvent(
     throw new UnsupportedEventDefinitionError(id, 'end', defEl.$type);
   }
 
-  const eventDefinition = readThrowEventDefinition(defEl, id, warnings);
+  // The tag check above admits only the five thrown kinds, so the reader's
+  // link arm is unreachable here and the cast holds.
+  const eventDefinition = readThrowEventDefinition(
+    defEl,
+    id,
+    warnings,
+  ) as EndEventDefinition;
   warnNamedDrop(el, id, 'a throw', warnings);
 
   return {
@@ -3238,6 +3390,15 @@ function mapEndEvent(
     ...readEngineAttributes(el, id, warnings),
   };
 }
+
+/** As {@link START_CARRIED_TAGS}, for the triggers an emit may carry. */
+const EMIT_CARRIED_TAGS = {
+  escalation: 'bpmn:EscalationEventDefinition',
+  message: 'bpmn:MessageEventDefinition',
+  signal: 'bpmn:SignalEventDefinition',
+  compensation: 'bpmn:CompensateEventDefinition',
+  link: 'bpmn:LinkEventDefinition',
+} satisfies Record<(typeof EMIT_TRIGGERS)[number], string>;
 
 function mapIntermediateThrowEvent(
   el: ModdleElement,
@@ -3257,7 +3418,7 @@ function mapIntermediateThrowEvent(
     id,
     defs,
     'an emit',
-    'escalation, message, signal, or compensation is supported',
+    `${formatPlainWordList(EMIT_TRIGGERS)} is supported`,
   );
 
   const [defEl] = defs;
@@ -3268,12 +3429,7 @@ function mapIntermediateThrowEvent(
         'throw; write "throw error" to end the path instead',
     );
   }
-  if (
-    defEl.$type !== 'bpmn:EscalationEventDefinition' &&
-    defEl.$type !== 'bpmn:MessageEventDefinition' &&
-    defEl.$type !== 'bpmn:SignalEventDefinition' &&
-    defEl.$type !== 'bpmn:CompensateEventDefinition'
-  ) {
+  if (!Object.values<string>(EMIT_CARRIED_TAGS).includes(defEl.$type)) {
     throw new UnsupportedEventDefinitionError(
       id,
       'intermediate throw',
@@ -3282,6 +3438,11 @@ function mapIntermediateThrowEvent(
   }
 
   const eventDefinition = readThrowEventDefinition(defEl, id, warnings);
+  if (eventDefinition.kind === 'link') {
+    warnNamedDrop(el, id, 'an emit link', warnings, eventDefinition.linkName);
+    warnLinkThrowEngineSettings(el, id, warnings);
+    return { kind: 'intermediateThrowEvent', id, eventDefinition };
+  }
   warnNamedDrop(el, id, 'an emit', warnings);
 
   return {
@@ -3350,8 +3511,17 @@ function readThrownMessageBinding(
   return {};
 }
 
-/** The triggers a linear flow can block on, as the refusals below name them. */
+/** The triggers an await may head, as the refusals below name them. */
 const AWAITABLE_TRIGGERS = formatPlainWordList(CATCH_TRIGGERS);
+
+/** As {@link START_CARRIED_TAGS}, for the triggers an await may carry. */
+const AWAIT_CARRIED_TAGS = {
+  message: 'bpmn:MessageEventDefinition',
+  timer: 'bpmn:TimerEventDefinition',
+  signal: 'bpmn:SignalEventDefinition',
+  condition: 'bpmn:ConditionalEventDefinition',
+  link: 'bpmn:LinkEventDefinition',
+} satisfies Record<(typeof CATCH_TRIGGERS)[number], string>;
 
 function mapIntermediateCatchEvent(
   el: ModdleElement,
@@ -3384,20 +3554,14 @@ function mapIntermediateCatchEvent(
   );
 
   const [defEl] = defs;
-  if (
-    defEl.$type !== 'bpmn:MessageEventDefinition' &&
-    defEl.$type !== 'bpmn:SignalEventDefinition' &&
-    defEl.$type !== 'bpmn:TimerEventDefinition' &&
-    defEl.$type !== 'bpmn:ConditionalEventDefinition'
-  ) {
+  if (!Object.values<string>(AWAIT_CARRIED_TAGS).includes(defEl.$type)) {
     throw new UnsupportedEventFeatureError(
       id,
       `an await cannot carry a ${defEl.$type}: only ${AWAITABLE_TRIGGERS} ` +
         'triggers can be awaited inline; error and ' +
         'escalation are caught by an event handler and raised with ' +
-        'throw/emit, compensation is undone by a subprocess block, a link ' +
-        'has no surface, and a cancel is written on the end that gives up ' +
-        'an attempt block',
+        'throw/emit, compensation is undone by a subprocess block, and a ' +
+        'cancel is written on the end that gives up an attempt block',
     );
   }
 
@@ -3409,7 +3573,11 @@ function mapIntermediateCatchEvent(
     warnings,
     'intermediate catch',
   ) as IntermediateCatchEvent['eventDefinition'];
-  warnNamedDrop(el, id, 'an await', warnings);
+  if (eventDefinition.kind === 'link') {
+    warnNamedDrop(el, id, 'an await link', warnings, eventDefinition.linkName);
+  } else {
+    warnNamedDrop(el, id, 'an await', warnings);
+  }
 
   return {
     kind: 'intermediateCatchEvent',
@@ -4416,13 +4584,19 @@ function readString(el: ModdleElement, name: string): string | undefined {
 }
 
 /**
- * Read a `name`, dropping it when it equals `humanize(id)`: that is the label
- * the export direction derives, so neither the IR nor any DSL printed from it
- * carries it back, which is what makes DSL -> XML -> DSL idempotent.
+ * Read a `name`, dropping it when it equals `derived`: that is the label the
+ * export direction derives, so neither the IR nor any DSL printed from it
+ * carries it back, which is what makes DSL -> XML -> DSL idempotent. The export
+ * derives `humanize(id)` for every kind but a link event, whose label it
+ * stamps from the link name.
  */
-function readDerivableName(el: ModdleElement, id: string): string | undefined {
+function readDerivableName(
+  el: ModdleElement,
+  id: string,
+  derived: string = humanize(id),
+): string | undefined {
   const name = readString(el, 'name');
-  return name === undefined || name === humanize(id) ? undefined : name;
+  return name === undefined || name === derived ? undefined : name;
 }
 
 /**

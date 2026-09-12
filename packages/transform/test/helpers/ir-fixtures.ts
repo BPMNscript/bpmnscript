@@ -46,6 +46,11 @@ export const messageDef = (messageName: string): Def<'message'> => ({
   messageName,
 });
 
+export const linkDef = (linkName: string): Def<'link'> => ({
+  kind: 'link',
+  linkName,
+});
+
 export const signalDef = (signalName: string): Def<'signal'> => ({
   kind: 'signal',
   signalName,

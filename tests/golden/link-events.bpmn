@@ -1,0 +1,301 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI" xmlns:dc="http://www.omg.org/spec/DD/20100524/DC" xmlns:di="http://www.omg.org/spec/DD/20100524/DI" xmlns:operaton="http://operaton.org/schema/1.0/bpmn" id="Definitions_claim-review" targetNamespace="http://bpmnscript.io/processes" exporter="BPMNscript" exporterVersion="0.0.0">
+  <bpmn:process id="claim-review" name="Claim Review" isExecutable="true" operaton:historyTimeToLive="P30D">
+    <bpmn:startEvent id="Filed" name="A claim is filed">
+      <bpmn:extensionElements>
+        <operaton:formData>
+          <operaton:formField id="approved" label="Approved?" type="boolean" />
+          <operaton:formField id="amount" label="Claim amount" type="long" />
+          <operaton:formField id="receiptsComplete" label="Receipts complete?" type="boolean" />
+        </operaton:formData>
+      </bpmn:extensionElements>
+      <bpmn:outgoing>Flow_Filed_AssessClaim</bpmn:outgoing>
+    </bpmn:startEvent>
+    <bpmn:userTask id="AssessClaim" name="Assess the claim" operaton:assignee="demo">
+      <bpmn:incoming>Flow_Filed_AssessClaim</bpmn:incoming>
+      <bpmn:incoming>Flow_Gateway_claim-review_7_join_AssessClaim</bpmn:incoming>
+      <bpmn:outgoing>Flow_AssessClaim_Gateway_claim-review_2_split</bpmn:outgoing>
+    </bpmn:userTask>
+    <bpmn:exclusiveGateway id="Gateway_claim-review_2_split" default="Flow_Gateway_claim-review_2_split_default">
+      <bpmn:incoming>Flow_AssessClaim_Gateway_claim-review_2_split</bpmn:incoming>
+      <bpmn:outgoing>Flow_Gateway_claim-review_2_split_ReworkMissingReceipts</bpmn:outgoing>
+      <bpmn:outgoing>Flow_Gateway_claim-review_2_split_ReworkRejected</bpmn:outgoing>
+      <bpmn:outgoing>Flow_Gateway_claim-review_2_split_default</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+    <bpmn:exclusiveGateway id="Gateway_claim-review_2_join">
+      <bpmn:incoming>Flow_Gateway_claim-review_2_split_default</bpmn:incoming>
+      <bpmn:outgoing>Flow_Gateway_claim-review_2_join_Settlement</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+    <bpmn:intermediateThrowEvent id="ReworkMissingReceipts" name="Rework">
+      <bpmn:incoming>Flow_Gateway_claim-review_2_split_ReworkMissingReceipts</bpmn:incoming>
+      <bpmn:linkEventDefinition name="Rework" />
+    </bpmn:intermediateThrowEvent>
+    <bpmn:intermediateThrowEvent id="ReworkRejected" name="Rework">
+      <bpmn:incoming>Flow_Gateway_claim-review_2_split_ReworkRejected</bpmn:incoming>
+      <bpmn:linkEventDefinition name="Rework" />
+    </bpmn:intermediateThrowEvent>
+    <bpmn:subProcess id="Settlement" name="Settle the claim">
+      <bpmn:incoming>Flow_Gateway_claim-review_2_join_Settlement</bpmn:incoming>
+      <bpmn:outgoing>Flow_Settlement_Closed</bpmn:outgoing>
+      <bpmn:startEvent id="SettlementStart">
+        <bpmn:outgoing>Flow_SettlementStart_PayClaim</bpmn:outgoing>
+      </bpmn:startEvent>
+      <bpmn:serviceTask id="PayClaim" name="Pay the claim" operaton:class="com.example.claims.PayClaimDelegate">
+        <bpmn:incoming>Flow_SettlementStart_PayClaim</bpmn:incoming>
+        <bpmn:outgoing>Flow_PayClaim_Gateway_claim-review_3_2_split</bpmn:outgoing>
+      </bpmn:serviceTask>
+      <bpmn:exclusiveGateway id="Gateway_claim-review_3_2_split" default="Flow_Gateway_claim-review_3_2_split_default">
+        <bpmn:incoming>Flow_PayClaim_Gateway_claim-review_3_2_split</bpmn:incoming>
+        <bpmn:outgoing>Flow_Gateway_claim-review_3_2_split_ToAudit</bpmn:outgoing>
+        <bpmn:outgoing>Flow_Gateway_claim-review_3_2_split_default</bpmn:outgoing>
+      </bpmn:exclusiveGateway>
+      <bpmn:exclusiveGateway id="Gateway_claim-review_3_2_join">
+        <bpmn:incoming>Flow_Gateway_claim-review_3_2_split_default</bpmn:incoming>
+        <bpmn:outgoing>Flow_Gateway_claim-review_3_2_join_Settled</bpmn:outgoing>
+      </bpmn:exclusiveGateway>
+      <bpmn:intermediateThrowEvent id="ToAudit" name="Audit">
+        <bpmn:incoming>Flow_Gateway_claim-review_3_2_split_ToAudit</bpmn:incoming>
+        <bpmn:linkEventDefinition name="Audit" />
+      </bpmn:intermediateThrowEvent>
+      <bpmn:endEvent id="Settled">
+        <bpmn:incoming>Flow_Gateway_claim-review_3_2_join_Settled</bpmn:incoming>
+      </bpmn:endEvent>
+      <bpmn:intermediateCatchEvent id="AtAudit" name="Audit">
+        <bpmn:outgoing>Flow_AtAudit_AuditPayout</bpmn:outgoing>
+        <bpmn:linkEventDefinition name="Audit" />
+      </bpmn:intermediateCatchEvent>
+      <bpmn:userTask id="AuditPayout" name="Audit the payout" operaton:assignee="manager">
+        <bpmn:incoming>Flow_AtAudit_AuditPayout</bpmn:incoming>
+        <bpmn:outgoing>Flow_AuditPayout_Audited</bpmn:outgoing>
+      </bpmn:userTask>
+      <bpmn:endEvent id="Audited">
+        <bpmn:incoming>Flow_AuditPayout_Audited</bpmn:incoming>
+      </bpmn:endEvent>
+      <bpmn:sequenceFlow id="Flow_SettlementStart_PayClaim" sourceRef="SettlementStart" targetRef="PayClaim" />
+      <bpmn:sequenceFlow id="Flow_Gateway_claim-review_3_2_split_ToAudit" name="amount &#62; 1000" sourceRef="Gateway_claim-review_3_2_split" targetRef="ToAudit">
+        <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">${amount &gt; 1000}</bpmn:conditionExpression>
+      </bpmn:sequenceFlow>
+      <bpmn:sequenceFlow id="Flow_Gateway_claim-review_3_2_split_default" sourceRef="Gateway_claim-review_3_2_split" targetRef="Gateway_claim-review_3_2_join" />
+      <bpmn:sequenceFlow id="Flow_PayClaim_Gateway_claim-review_3_2_split" sourceRef="PayClaim" targetRef="Gateway_claim-review_3_2_split" />
+      <bpmn:sequenceFlow id="Flow_Gateway_claim-review_3_2_join_Settled" sourceRef="Gateway_claim-review_3_2_join" targetRef="Settled" />
+      <bpmn:sequenceFlow id="Flow_AtAudit_AuditPayout" sourceRef="AtAudit" targetRef="AuditPayout" />
+      <bpmn:sequenceFlow id="Flow_AuditPayout_Audited" sourceRef="AuditPayout" targetRef="Audited" />
+    </bpmn:subProcess>
+    <bpmn:endEvent id="Closed" name="Claim closed">
+      <bpmn:incoming>Flow_Settlement_Closed</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:intermediateCatchEvent id="AtRework" name="Rework" operaton:asyncBefore="true">
+      <bpmn:outgoing>Flow_AtRework_ReworkClaim</bpmn:outgoing>
+      <bpmn:linkEventDefinition name="Rework" />
+    </bpmn:intermediateCatchEvent>
+    <bpmn:userTask id="ReworkClaim" name="Rework the claim" operaton:assignee="demo">
+      <bpmn:incoming>Flow_AtRework_ReworkClaim</bpmn:incoming>
+      <bpmn:outgoing>Flow_ReworkClaim_Gateway_claim-review_7_split</bpmn:outgoing>
+    </bpmn:userTask>
+    <bpmn:exclusiveGateway id="Gateway_claim-review_7_split" default="Flow_Gateway_claim-review_7_split_default">
+      <bpmn:incoming>Flow_ReworkClaim_Gateway_claim-review_7_split</bpmn:incoming>
+      <bpmn:outgoing>Flow_Gateway_claim-review_7_split_EscalateRework</bpmn:outgoing>
+      <bpmn:outgoing>Flow_Gateway_claim-review_7_split_default</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+    <bpmn:exclusiveGateway id="Gateway_claim-review_7_join">
+      <bpmn:incoming>Flow_EscalateRework_Gateway_claim-review_7_join</bpmn:incoming>
+      <bpmn:incoming>Flow_NoteRework_Gateway_claim-review_7_join</bpmn:incoming>
+      <bpmn:outgoing>Flow_Gateway_claim-review_7_join_AssessClaim</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+    <bpmn:userTask id="EscalateRework" name="Escalate the rework" operaton:assignee="manager">
+      <bpmn:incoming>Flow_Gateway_claim-review_7_split_EscalateRework</bpmn:incoming>
+      <bpmn:outgoing>Flow_EscalateRework_Gateway_claim-review_7_join</bpmn:outgoing>
+    </bpmn:userTask>
+    <bpmn:userTask id="NoteRework" name="Note the rework" operaton:assignee="demo">
+      <bpmn:incoming>Flow_Gateway_claim-review_7_split_default</bpmn:incoming>
+      <bpmn:outgoing>Flow_NoteRework_Gateway_claim-review_7_join</bpmn:outgoing>
+    </bpmn:userTask>
+    <bpmn:sequenceFlow id="Flow_Filed_AssessClaim" sourceRef="Filed" targetRef="AssessClaim" />
+    <bpmn:sequenceFlow id="Flow_Gateway_claim-review_2_split_ReworkMissingReceipts" name="!receiptsComplete" sourceRef="Gateway_claim-review_2_split" targetRef="ReworkMissingReceipts">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">${!receiptsComplete}</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="Flow_Gateway_claim-review_2_split_ReworkRejected" name="!approved" sourceRef="Gateway_claim-review_2_split" targetRef="ReworkRejected">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">${!approved}</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="Flow_Gateway_claim-review_2_split_default" sourceRef="Gateway_claim-review_2_split" targetRef="Gateway_claim-review_2_join" />
+    <bpmn:sequenceFlow id="Flow_AssessClaim_Gateway_claim-review_2_split" sourceRef="AssessClaim" targetRef="Gateway_claim-review_2_split" />
+    <bpmn:sequenceFlow id="Flow_Gateway_claim-review_2_join_Settlement" sourceRef="Gateway_claim-review_2_join" targetRef="Settlement" />
+    <bpmn:sequenceFlow id="Flow_Settlement_Closed" sourceRef="Settlement" targetRef="Closed" />
+    <bpmn:sequenceFlow id="Flow_AtRework_ReworkClaim" sourceRef="AtRework" targetRef="ReworkClaim" />
+    <bpmn:sequenceFlow id="Flow_Gateway_claim-review_7_split_EscalateRework" name="amount &#62; 5000" sourceRef="Gateway_claim-review_7_split" targetRef="EscalateRework">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">${amount &gt; 5000}</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="Flow_EscalateRework_Gateway_claim-review_7_join" sourceRef="EscalateRework" targetRef="Gateway_claim-review_7_join" />
+    <bpmn:sequenceFlow id="Flow_Gateway_claim-review_7_split_default" sourceRef="Gateway_claim-review_7_split" targetRef="NoteRework" />
+    <bpmn:sequenceFlow id="Flow_NoteRework_Gateway_claim-review_7_join" sourceRef="NoteRework" targetRef="Gateway_claim-review_7_join" />
+    <bpmn:sequenceFlow id="Flow_ReworkClaim_Gateway_claim-review_7_split" sourceRef="ReworkClaim" targetRef="Gateway_claim-review_7_split" />
+    <bpmn:sequenceFlow id="Flow_Gateway_claim-review_7_join_AssessClaim" sourceRef="Gateway_claim-review_7_join" targetRef="AssessClaim" />
+  </bpmn:process>
+  <bpmndi:BPMNDiagram id="BPMNDiagram_claim-review">
+    <bpmndi:BPMNPlane id="BPMNPlane_claim-review" bpmnElement="claim-review">
+      <bpmndi:BPMNShape id="Filed_di" bpmnElement="Filed">
+        <dc:Bounds x="57" y="52" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="AssessClaim_di" bpmnElement="AssessClaim">
+        <dc:Bounds x="775" y="30" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_claim-review_2_split_di" bpmnElement="Gateway_claim-review_2_split" isMarkerVisible="true">
+        <dc:Bounds x="950" y="45" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="ReworkMissingReceipts_di" bpmnElement="ReworkMissingReceipts">
+        <dc:Bounds x="1107" y="52" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="AtRework_di" bpmnElement="AtRework">
+        <dc:Bounds x="57" y="192" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="ReworkClaim_di" bpmnElement="ReworkClaim">
+        <dc:Bounds x="175" y="170" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_claim-review_7_split_di" bpmnElement="Gateway_claim-review_7_split" isMarkerVisible="true">
+        <dc:Bounds x="350" y="185" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="EscalateRework_di" bpmnElement="EscalateRework">
+        <dc:Bounds x="475" y="170" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_claim-review_7_join_di" bpmnElement="Gateway_claim-review_7_join" isMarkerVisible="true">
+        <dc:Bounds x="650" y="185" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="ReworkRejected_di" bpmnElement="ReworkRejected">
+        <dc:Bounds x="1107" y="192" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_claim-review_2_join_di" bpmnElement="Gateway_claim-review_2_join" isMarkerVisible="true">
+        <dc:Bounds x="1250" y="185" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Settlement_di" bpmnElement="Settlement" isExpanded="true">
+        <dc:Bounds x="1375" y="170" width="1000" height="360" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Closed_di" bpmnElement="Closed">
+        <dc:Bounds x="2457" y="192" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="NoteRework_di" bpmnElement="NoteRework">
+        <dc:Bounds x="475" y="590" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_Filed_AssessClaim_di" bpmnElement="Flow_Filed_AssessClaim">
+        <di:waypoint x="93" y="70" />
+        <di:waypoint x="775" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_AssessClaim_Gateway_claim-review_2_split_di" bpmnElement="Flow_AssessClaim_Gateway_claim-review_2_split">
+        <di:waypoint x="875" y="70" />
+        <di:waypoint x="950" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Gateway_claim-review_2_split_ReworkMissingReceipts_di" bpmnElement="Flow_Gateway_claim-review_2_split_ReworkMissingReceipts">
+        <di:waypoint x="1000" y="70" />
+        <di:waypoint x="1107" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Gateway_claim-review_2_split_ReworkRejected_di" bpmnElement="Flow_Gateway_claim-review_2_split_ReworkRejected">
+        <di:waypoint x="975" y="95" />
+        <di:waypoint x="975" y="210" />
+        <di:waypoint x="1107" y="210" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Gateway_claim-review_2_split_default_di" bpmnElement="Flow_Gateway_claim-review_2_split_default">
+        <di:waypoint x="1000" y="70" />
+        <di:waypoint x="1050" y="70" />
+        <di:waypoint x="1050" y="140" />
+        <di:waypoint x="1200" y="140" />
+        <di:waypoint x="1200" y="210" />
+        <di:waypoint x="1250" y="210" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_AtRework_ReworkClaim_di" bpmnElement="Flow_AtRework_ReworkClaim">
+        <di:waypoint x="93" y="210" />
+        <di:waypoint x="175" y="210" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ReworkClaim_Gateway_claim-review_7_split_di" bpmnElement="Flow_ReworkClaim_Gateway_claim-review_7_split">
+        <di:waypoint x="275" y="210" />
+        <di:waypoint x="350" y="210" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Gateway_claim-review_7_split_EscalateRework_di" bpmnElement="Flow_Gateway_claim-review_7_split_EscalateRework">
+        <di:waypoint x="400" y="210" />
+        <di:waypoint x="475" y="210" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Gateway_claim-review_7_split_default_di" bpmnElement="Flow_Gateway_claim-review_7_split_default">
+        <di:waypoint x="375" y="235" />
+        <di:waypoint x="375" y="630" />
+        <di:waypoint x="475" y="630" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_EscalateRework_Gateway_claim-review_7_join_di" bpmnElement="Flow_EscalateRework_Gateway_claim-review_7_join">
+        <di:waypoint x="575" y="210" />
+        <di:waypoint x="650" y="210" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Gateway_claim-review_7_join_AssessClaim_di" bpmnElement="Flow_Gateway_claim-review_7_join_AssessClaim">
+        <di:waypoint x="700" y="210" />
+        <di:waypoint x="825" y="210" />
+        <di:waypoint x="825" y="110" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Gateway_claim-review_2_join_Settlement_di" bpmnElement="Flow_Gateway_claim-review_2_join_Settlement">
+        <di:waypoint x="1300" y="210" />
+        <di:waypoint x="1375" y="210" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Settlement_Closed_di" bpmnElement="Flow_Settlement_Closed">
+        <di:waypoint x="2375" y="210" />
+        <di:waypoint x="2457" y="210" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_NoteRework_Gateway_claim-review_7_join_di" bpmnElement="Flow_NoteRework_Gateway_claim-review_7_join">
+        <di:waypoint x="575" y="630" />
+        <di:waypoint x="675" y="630" />
+        <di:waypoint x="675" y="235" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNShape id="SettlementStart_di" bpmnElement="SettlementStart">
+        <dc:Bounds x="1482" y="262" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="PayClaim_di" bpmnElement="PayClaim">
+        <dc:Bounds x="1600" y="240" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_claim-review_3_2_split_di" bpmnElement="Gateway_claim-review_3_2_split" isMarkerVisible="true">
+        <dc:Bounds x="1775" y="255" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="ToAudit_di" bpmnElement="ToAudit">
+        <dc:Bounds x="1932" y="262" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_claim-review_3_2_join_di" bpmnElement="Gateway_claim-review_3_2_join" isMarkerVisible="true">
+        <dc:Bounds x="2075" y="255" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Settled_di" bpmnElement="Settled">
+        <dc:Bounds x="2232" y="262" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="AtAudit_di" bpmnElement="AtAudit">
+        <dc:Bounds x="1482" y="402" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="AuditPayout_di" bpmnElement="AuditPayout">
+        <dc:Bounds x="1600" y="380" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Audited_di" bpmnElement="Audited">
+        <dc:Bounds x="1782" y="402" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_SettlementStart_PayClaim_di" bpmnElement="Flow_SettlementStart_PayClaim">
+        <di:waypoint x="1518" y="280" />
+        <di:waypoint x="1600" y="280" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_PayClaim_Gateway_claim-review_3_2_split_di" bpmnElement="Flow_PayClaim_Gateway_claim-review_3_2_split">
+        <di:waypoint x="1700" y="280" />
+        <di:waypoint x="1775" y="280" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Gateway_claim-review_3_2_split_ToAudit_di" bpmnElement="Flow_Gateway_claim-review_3_2_split_ToAudit">
+        <di:waypoint x="1825" y="280" />
+        <di:waypoint x="1932" y="280" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Gateway_claim-review_3_2_split_default_di" bpmnElement="Flow_Gateway_claim-review_3_2_split_default">
+        <di:waypoint x="1800" y="305" />
+        <di:waypoint x="1800" y="140" />
+        <di:waypoint x="2100" y="140" />
+        <di:waypoint x="2100" y="305" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Gateway_claim-review_3_2_join_Settled_di" bpmnElement="Flow_Gateway_claim-review_3_2_join_Settled">
+        <di:waypoint x="2125" y="280" />
+        <di:waypoint x="2232" y="280" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_AtAudit_AuditPayout_di" bpmnElement="Flow_AtAudit_AuditPayout">
+        <di:waypoint x="1518" y="420" />
+        <di:waypoint x="1600" y="420" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_AuditPayout_Audited_di" bpmnElement="Flow_AuditPayout_Audited">
+        <di:waypoint x="1700" y="420" />
+        <di:waypoint x="1782" y="420" />
+      </bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>

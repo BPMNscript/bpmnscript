@@ -162,3 +162,6 @@ ADR-0019 supplies the live-parser method, and ADR-0020 the keyword and trigger s
 Operaton behavior was read from `BpmnParse.java`, `InclusiveGatewayActivityBehavior.java`, and `EventBasedGatewayActivityBehavior.java` in the `operaton/operaton` repository, with line numbers as of the time of writing.
 The documented restrictions are from <https://docs.operaton.org/docs/documentation/reference/bpmn20/gateways/event-based-gateway/>.
 The dataset behind Compagnucci, Corradini, Fornari and Re (BISE 66(1), 2024, DOI 10.1007/s12599-023-00818-7) has an event-based gateway in roughly 12 percent of its 38,863 models and an inclusive gateway in roughly 6 percent.
+
+Amended by ADR-0035, which admits a link definition on an intermediate catch and an intermediate throw on import.
+The event-based gateway's second refusal now rests on the rule that no sequence flow may enter a link catch, which the importer enforces for every flow and so for a branch of a wait as well.
