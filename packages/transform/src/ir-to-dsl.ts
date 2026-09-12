@@ -170,6 +170,9 @@ function warnGatewayText(
  * the name the model holds, and the compiler turns that writing down on the way
  * back in. The report is what tells the reader it is the model to repair.
  *
+ * The emitter reports a plain synthesized end printed for its position itself,
+ * since only it knows that position.
+ *
  * `suppressed` describes the container being walked, false at the top: a start
  * in the process body prints its own trigger.
  */
@@ -215,6 +218,12 @@ class Emitter {
   private readonly outgoingBySource = new Map<string, SequenceFlow[]>();
   private readonly emittedNodes = new Set<string>();
   private readonly consumedFlows = new Set<string>();
+  private readonly deferredEnds: {
+    lines: string[];
+    index: number;
+    stmt: Lines;
+    id: string;
+  }[] = [];
 
   constructor(
     private readonly container: FlowContainer,
@@ -304,6 +313,20 @@ class Emitter {
         this.pushGoto(f.targetRef, lines);
       }
     }
+
+    // A plain synthesized end stays out only at its block's tail, the one
+    // position the compiler re-derives it at, and whether a flow statement
+    // followed it is known only now. The boundary blocks and handlers appended
+    // below are lowered out of chain, so they do not count as one. Reverse
+    // order keeps every lower index valid while splicing. A boundary body is
+    // one chain in its own array, so its end is always that array's tail.
+    const printedEnds: string[] = [];
+    for (const d of this.deferredEnds.toReversed()) {
+      if (d.index >= d.lines.length) continue;
+      d.lines.splice(d.index, 0, ...d.stmt);
+      printedEnds.unshift(d.id);
+    }
+    for (const id of printedEnds) this.warnings.push(reservedNameWarning(id));
 
     // 5. Trailing handler group: boundary blocks, then event sub-processes.
     for (const l of boundaryLines) lines.push(l);
@@ -460,7 +483,24 @@ class Emitter {
 
     this.emittedNodes.add(id);
     const stmt = this.renderStatement(el);
-    if (stmt !== undefined) lines.push(...stmt);
+    if (
+      stmt !== undefined &&
+      el.kind === 'endEvent' &&
+      el.eventDefinition === undefined &&
+      isElidedOnPrint(el, this.container.flowElements)
+    ) {
+      // The compiler never mints a synthesized end inside a branch or loop
+      // body, whose exit it wires to the join or loop head, so one there
+      // always prints; a top-level one is settled in `emit`.
+      if (depth > 0) {
+        lines.push(...stmt);
+        this.warnings.push(reservedNameWarning(id));
+      } else {
+        this.deferredEnds.push({ lines, index: lines.length, stmt, id });
+      }
+    } else if (stmt !== undefined) {
+      lines.push(...stmt);
+    }
     return this.followLinear(id, stop, lines, depth);
   }
 
@@ -698,13 +738,15 @@ class Emitter {
   }
 
   /**
-   * Whether the entry sits inside `[split, join)` and can be walked inline. Two
-   * shapes qualify: an ordinary body that re-merges, so `join` post-dominates
-   * `entry`; and a guard clause whose entry is a synthesized terminal the split
-   * owns and that terminates before the join, which has no continuation to
-   * relocate and prints the same statement in either scope. An authored entry
-   * stays a `goto`, keeping its chain at its authored scope so its
-   * coordinate-derived id survives the round trip.
+   * Whether the entry sits inside `[split, join)` and can be walked inline.
+   * Three shapes qualify: an ordinary body that re-merges, so `join`
+   * post-dominates `entry`; a guard clause whose entry is a synthesized
+   * terminal the split owns and that terminates before the join, which has no
+   * continuation to relocate and prints the same statement in either scope;
+   * and a guard clause whose entry is a bare authored end that the split's
+   * route reaches as its only incoming flow. An authored entry with a chain
+   * of its own stays a `goto`, keeping that chain at its authored scope so its
+   * coordinate-derived ids survive the round trip.
    */
   private branchStaysInRegion(
     entry: string,
@@ -713,12 +755,15 @@ class Emitter {
   ): boolean {
     if (this.cfg.postDominates(join, entry)) return true;
     const el = this.byId.get(entry);
-    return (
-      el !== undefined &&
-      isSynthesizedTerminalId(entry, el.kind) &&
-      this.cfg.dominates(splitId, entry) &&
-      !this.cfg.dominates(join, entry)
-    );
+    if (
+      el === undefined ||
+      !this.cfg.dominates(splitId, entry) ||
+      this.cfg.dominates(join, entry)
+    ) {
+      return false;
+    }
+    if (isSynthesizedTerminalId(entry, el.kind)) return true;
+    return el.kind === 'endEvent' && this.cfg.incoming(entry).length === 1;
   }
 
   /** With no `join` the body runs to its own end, which is how a race with no merge prints. */
@@ -1319,9 +1364,6 @@ class Emitter {
         const members = startOrEndMembers(el);
         const definition = el.eventDefinition;
         if (definition === undefined || isEndCarried(definition)) {
-          if (isElidedOnPrint(el, this.container.flowElements)) {
-            return undefined;
-          }
           const head = definition === undefined ? '' : ` ${definition.kind}`;
           return bracketed(
             `end ${el.id}${head}`,
@@ -1699,6 +1741,11 @@ function isEndCarried(
  * resolve against. `xmlToIr` asks the same question to report the label an
  * elided start or end takes with it, so the two answers cannot drift apart.
  *
+ * For a plain end the answer is only that the printer may drop it; `emitNode`
+ * and `Emitter.emit` decide by position whether it does. `forwardToRealTarget`
+ * reads this half alone, so a jump into such an end is dropped and marked
+ * whether or not the end ends up printed.
+ *
  * `siblings` is the container's flow elements in order; only the start arm
  * reads them. The compiler re-derives a dropped start at the body's head and
  * nowhere else, so only the first plain unnamed start can go: a second one
@@ -1722,10 +1769,9 @@ export function isElidedOnPrint(
       );
     case 'endEvent':
       if (!isSynthesizedTerminalId(el.id, el.kind)) return false;
-      // Dropping a plain end is lossless because the forward compiler
-      // re-derives an equivalent one at the same position; a definition the
-      // `end` statement carries it cannot re-derive, so that always prints,
-      // and `end`'s mandatory `name=ID` means the synthesized id prints too.
+      // The compiler cannot re-derive a definition the `end` statement
+      // carries, so that always prints, and `end`'s mandatory `name=ID` means
+      // the synthesized id prints too.
       if (el.eventDefinition === undefined) return !carriesPrintableContent(el);
       // Every other definition prints as a `throw`, which drops a synthesized name.
       return !isEndCarried(el.eventDefinition);
@@ -1779,10 +1825,10 @@ function isPlainUnnamed(
 
 /**
  * A synthesized start or end has no authored name and the grammar's `name=ID`
- * is mandatory, so it is dropped whole unless its block carries content. Both
- * {@link isElidedOnPrint} and the renderers read this one answer: a reason to
- * print reaching one but not the other would leave a jump naming a statement
- * that never gets emitted.
+ * is mandatory, so it is dropped unless its block carries content. Every
+ * reader goes through {@link isElidedOnPrint}: a reason to print reaching one
+ * but not another would leave a jump naming a statement that never gets
+ * emitted.
  *
  * A label is not such a reason: printing the id to carry one writes a name the
  * validator rejects, so the label is reported as an import warning instead.

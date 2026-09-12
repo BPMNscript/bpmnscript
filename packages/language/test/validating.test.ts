@@ -267,6 +267,10 @@ const FORM_NEVER_OFFERED =
   "The engine offers a start form only on the process's default start, its " +
   'plain or timer start; this form is on a different start and is never ' +
   'shown.';
+const INITIATOR_SHADOWED =
+  'The engine keeps one initiator per process: whichever start is parsed ' +
+  'last wins, so this setting is never written. Move it to the last ' +
+  'start, or drop it.';
 const hostedHandlerStart = (name: string) =>
   `'start ${name}' cannot open a handler that names a host: the body runs ` +
   "inside the host's own container and is entered from the boundary event, " +
@@ -1311,6 +1315,16 @@ checks('Validation - the default start among several', [
     'with no default start every form is dead',
     `process p { start A message("M") { form { x: number "X" } } start B signal("S") user T end E }`,
     [warn(noDefaultStart('p')), warn(FORM_NEVER_OFFERED)],
+  ],
+  [
+    'initiator on more than one start warns on every start but the last',
+    `process p { start A(initiator: "a") start B message("M", initiator: "b") start C signal("S", initiator: "c") user T end E }`,
+    [warn(INITIATOR_SHADOWED), warn(INITIATOR_SHADOWED)],
+  ],
+  [
+    'initiator on one start beside a start with none shadows nothing',
+    `process p { start A(initiator: "a") start B message("M") user T end E }`,
+    [],
   ],
 ]);
 

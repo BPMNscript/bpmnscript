@@ -86,7 +86,7 @@ The golden fixture and the `support-ticket` example both obey it.
 - Good, because the chain rule is one the reader can check on the page, and the desugarer never has to define the ambiguous shape.
   Operaton does not reject a start event with an incoming flow: `BpmnParse.parseSequenceFlow` has no arm for a start-event destination, and `NoneStartEventActivityBehavior` inherits `FlowNodeActivityBehavior.execute`, which leaves the activity at once, so a start the flow runs past would deploy and run as a pass-through step, and the mistake would show only in history.
   Refusing the shape is what rules that out.
-- Neutral, because `initiator` is read off every start and set on the process definition by `BpmnParse.parseProcessDefinitionStartEvent`, last one wins, and this surface does not check that several starts agree.
+- Neutral, because `initiator` is read off every start and set on the process definition by `BpmnParse.parseProcessDefinitionStartEvent`, last one wins, and the validator warns on every start but the last that names one.
 - Neutral, because a message start whose name is already subscribed by another deployed definition fails in `BpmnDeployer.addMessageStartEventSubscription`, a fact about the deployment rather than the file, and out of this tool's reach.
 - Bad, because the printed form of a process with several starts is not the authored one: every start after the first chain prints after that chain's `end`, followed by a `goto` onto the shared step.
   The graph is the same, which the idempotence block asserts, but the reader has to learn the shape.

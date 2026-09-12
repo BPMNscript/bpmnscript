@@ -206,7 +206,7 @@ The flat IR has no lane concept, so every step lands in one process and the assi
 `label` covers a distinct `name` on an event handler, a typed end event, an intermediate throw, an intermediate catch, or a boundary event.
 Those read from their trigger and code, so a differing label has nowhere to render.
 A link event's `name` is written from its link name on export, so a `name` equal to the link name is derived and a differing one alone is reported.
-It also covers a label on a start or an end whose id carries a synthesized-id prefix, since a script cannot spell that id back, and the statement that would have carried the label is left out whole.
+It also covers a label on a start or an end whose id carries a synthesized-id prefix, since a script cannot spell that id back: the statement that would have carried the label is left out whole for a start, and for an end only at its block's tail; elsewhere the end prints under its reserved id and the print reports it.
 
 `unreferencedRoot` covers a `bpmn:Message` or `bpmn:Signal` root that nothing in the process references, a receive task's `messageRef` included.
 It also covers an error or escalation root carrying no code, which nothing can key it by; one carrying a code imports as a declaration whether or not anything raises it.

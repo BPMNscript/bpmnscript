@@ -78,5 +78,7 @@ The goto-degradation path is confirmed by `tests/golden/unstructured-goto.bpmn` 
 The CFG analysis utility lives at `packages/transform/src/cfg-analysis.ts` and exposes `analyzeCfg(process): CfgAnalysis` with `immediateDominator`, `immediatePostDominator`, `dominates`, `postDominates`, `backEdges`, `outgoing`, and `incoming` queries.
 `VIRTUAL_ENTRY` and `VIRTUAL_EXIT` constants give the dominator algorithm a unique single entry and exit.
 
+Amended by ADR-0036, which lets a bare authored terminal print inline in a guard clause when the split's own route is its only incoming flow, rather than staying a `goto`.
+
 RPST decomposition is left for later.
 It would recover more structured patterns, but the dominator-based catalog with a `goto` fallback already covers the current scope, so the added machinery is not yet justified.

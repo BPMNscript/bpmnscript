@@ -2191,6 +2191,114 @@ describe('irToDsl: synthesized terminal omission', () => {
   });
 });
 
+// Leaving a synthesized plain end out anywhere but its block's tail would wire
+// its predecessor into whatever follows on the page, so it prints under its
+// reserved id and is reported. Rows 2 and 3 spell that id in their source
+// because the compiler never mints one in those positions; `EndEvent_1` is the
+// id a modelling tool mints, and the parser accepts it without validating.
+describe("irToDsl: a synthesized plain end that is not its block's tail", () => {
+  const start = (id: string): FlowElement => ({ kind: 'startEvent', id });
+  const step = (id: string): FlowElement => ({ kind: 'task', id });
+  const end = (id: string): FlowElement => ({ kind: 'endEvent', id });
+
+  it.each([
+    [
+      "a guard's throw with a single incoming flow inlines, so its tail end stays elided rather than deferred",
+      'process p { error E  start S  step A  if (x) { throw error Named(E) }  step X }',
+      [
+        'process p {',
+        '  error E',
+        '  start S',
+        '  step A',
+        '  if (x) {',
+        '    throw error Named(E)',
+        '  }',
+        '  step X',
+        '}',
+      ],
+      [],
+    ],
+    [
+      'a plain end whose chain a later goto-reached step follows prints before that step, and its label rides along',
+      'process p { start S  step A  if (x) { goto B }  step C  end EndEvent_2(label: "Order filed")  step B }',
+      [
+        'process p {',
+        '  start S',
+        '  step A',
+        '  if (x) {',
+        '    goto B',
+        '  }',
+        '  step C',
+        '  end EndEvent_2(label: "Order filed")',
+        '  step B',
+        '}',
+      ],
+      [['refusedStatement', 'EndEvent_2']],
+    ],
+    [
+      'a plain end inside a branch prints at once, so the branch does not fall through',
+      'process p { start S  step A  if (x) { end EndEvent_1 }  step X }',
+      [
+        'process p {',
+        '  start S',
+        '  step A',
+        '  if (x) {',
+        '    end EndEvent_1',
+        '  }',
+        '  step X',
+        '}',
+      ],
+      [['refusedStatement', 'EndEvent_1']],
+    ],
+    [
+      'of three chains each ending in its own plain end, the first two print in place and the last stays elided',
+      minimalProcess(
+        [
+          start('S1'),
+          step('A'),
+          end('EndEvent_1'),
+          start('S2'),
+          step('B'),
+          end('EndEvent_2'),
+          start('S3'),
+          step('C'),
+          end('EndEvent_3'),
+        ],
+        [
+          edge('S1', 'A'),
+          edge('A', 'EndEvent_1'),
+          edge('S2', 'B'),
+          edge('B', 'EndEvent_2'),
+          edge('S3', 'C'),
+          edge('C', 'EndEvent_3'),
+        ],
+      ),
+      [
+        'process p {',
+        '  start S1',
+        '  step A',
+        '  end EndEvent_1',
+        '  start S2',
+        '  step B',
+        '  end EndEvent_2',
+        '  start S3',
+        '  step C',
+        '}',
+      ],
+      [
+        ['refusedStatement', 'EndEvent_1'],
+        ['refusedStatement', 'EndEvent_2'],
+      ],
+    ],
+  ] as const)('%s', async (_title, fixture, source, reports) => {
+    const ir = typeof fixture === 'string' ? await reDesugar(fixture) : fixture;
+    expect(await expectIdempotent(ir, 'reservedId')).toEqual(
+      `${source.join('\n')}\n`,
+    );
+    expectReports(printDsl(ir).warnings, ...reports);
+  });
+});
+
 describe('irToDsl: guard-clause continuation', () => {
   it('recovers a throw-guard `if` with the continuation at the body level and no gateway token', async () => {
     // `if (c) { throw }` with no else: the then-branch terminates, the default
@@ -2259,6 +2367,50 @@ describe('irToDsl: guard-clause continuation', () => {
     expect(bIdx).toBeGreaterThan(whileIdx);
     expect(doneIdx).toBeGreaterThan(bIdx);
     expect(indentOf(lines[bIdx]!)).toBeGreaterThan(indentOf(lines[doneIdx]!));
+  });
+});
+
+describe('irToDsl: authored terminal in a guard clause', () => {
+  it('keeps a goto for an authored end reached from more than one predecessor', async () => {
+    // `Done` has two predecessors, `split`'s guarded route and `split2`'s.
+    // Without `split2`, `Done` would post-dominate `split` and the printer
+    // would fold the shape into a re-merging `if`/`else` before
+    // `branchStaysInRegion` is ever asked about the terminal.
+    const ir = minimalProcess(
+      [
+        { kind: 'startEvent', id: 'S' },
+        { kind: 'userTask', id: 'A' },
+        gateway('split'),
+        { kind: 'userTask', id: 'B' },
+        gateway('split2'),
+        { kind: 'endEvent', id: 'Done' },
+        { kind: 'endEvent', id: 'End2' },
+      ],
+      [
+        edge('S', 'A'),
+        edge('A', 'split'),
+        edge('split', 'Done', { condition: '${x}' }),
+        edge('split', 'B'),
+        edge('split2', 'Done', { condition: '${z}' }),
+        edge('B', 'split2'),
+        edge('split2', 'End2'),
+      ],
+    );
+    const dsl = await printed(ir);
+    expect(dsl).toEqual(`process p {
+  start S
+  user A
+  if (x) {
+    goto Done
+  }
+  user B
+  if (z) {
+    goto Done
+  }
+  end End2
+  end Done
+}
+`);
   });
 });
 
