@@ -5,28 +5,30 @@ Known-good files checked into the repo, so a test can compare its output against
 Most fixtures here come in pairs: a `.bpmnscript` source and the `.bpmn` the full pipeline produces from it, frozen.
 A few stand alone as inputs for one direction only.
 
-| Fixture                                | Covers                                                       |
-| -------------------------------------- | ------------------------------------------------------------ |
-| `invoice-approval-handwritten.bpmn`    | Import of a realistic modeler file                           |
-| `invoice-approval-generated.bpmn`      | The full compile pipeline, frozen                            |
-| `bad-service-task-no-binding.bpmn`     | The import refusal path                                      |
-| `structured-control-flow.bpmnscript`   | Round-trip idempotence for `if`, `while`, and `parallel`     |
-| `nested-subprocess.{bpmnscript,bpmn}`  | Embedded sub-process round trip                              |
-| `event-handlers.{bpmnscript,bpmn}`     | The error and escalation layer                               |
-| `event-triggers.{bpmnscript,bpmn}`     | The message, signal, timer, and conditional triggers         |
-| `compensation.{bpmnscript,bpmn}`       | The compensation (undo-block) layer                          |
-| `boundary-events.{bpmnscript,bpmn}`    | Host-attached handlers, every boundary trigger but `cancel`  |
-| `intermediate-catch.{bpmnscript,bpmn}` | `await` across all four catchable triggers                   |
-| `engine-attributes.{bpmnscript,bpmn}`  | The flat engine settings, and both ways of naming a form     |
-| `input-output.{bpmnscript,bpmn}`       | `operaton:inputOutput` in all four value forms               |
-| `listeners.{bpmnscript,bpmn}`          | Both listener kinds, and field injection on all its carriers |
-| `event-positions.{bpmnscript,bpmn}`    | A message start, `emit`/`throw message`, and a terminate end |
-| `task-kinds.{bpmnscript,bpmn}`         | The generic, send, receive, and decision task kinds          |
-| `repetition.{bpmnscript,bpmn}`         | Every form of the repeat clause                              |
-| `transactions.{bpmnscript,bpmn}`       | A block of work that can be given up, and the cancel pair    |
-| `branch-and-race.{bpmnscript,bpmn}`    | The splits that weigh their branches, and the race of waits  |
-| `documentation.{bpmnscript,bpmn}`      | Human-facing text, on the header and on every carrying kind  |
-| `unstructured-goto.bpmn`               | The `goto` degradation path on import                        |
+| Fixture                                | Covers                                                                           |
+| -------------------------------------- | -------------------------------------------------------------------------------- |
+| `invoice-approval-handwritten.bpmn`    | Import of a realistic modeler file                                               |
+| `invoice-approval-generated.bpmn`      | The full compile pipeline, frozen                                                |
+| `bad-service-task-no-binding.bpmn`     | The import refusal path                                                          |
+| `structured-control-flow.bpmnscript`   | Round-trip idempotence for `if`, `while`, and `parallel`                         |
+| `nested-subprocess.{bpmnscript,bpmn}`  | Embedded sub-process round trip                                                  |
+| `event-handlers.{bpmnscript,bpmn}`     | The error and escalation layer                                                   |
+| `event-triggers.{bpmnscript,bpmn}`     | The message, signal, timer, and conditional triggers                             |
+| `compensation.{bpmnscript,bpmn}`       | The compensation (undo-block) layer                                              |
+| `boundary-events.{bpmnscript,bpmn}`    | Host-attached handlers, every boundary trigger but `cancel`                      |
+| `intermediate-catch.{bpmnscript,bpmn}` | `await` on the four triggers a token blocks on and continues past                |
+| `engine-attributes.{bpmnscript,bpmn}`  | The flat engine settings, and both ways of naming a form                         |
+| `input-output.{bpmnscript,bpmn}`       | `operaton:inputOutput` in all four value forms                                   |
+| `listeners.{bpmnscript,bpmn}`          | Both listener kinds, and field injection on all its carriers                     |
+| `event-positions.{bpmnscript,bpmn}`    | A message start, `emit`/`throw message`, and a terminate end                     |
+| `task-kinds.{bpmnscript,bpmn}`         | The generic, send, receive, and decision task kinds                              |
+| `repetition.{bpmnscript,bpmn}`         | Every form of the repeat clause                                                  |
+| `transactions.{bpmnscript,bpmn}`       | A block of work that can be given up, and the cancel pair                        |
+| `branch-and-race.{bpmnscript,bpmn}`    | The splits that weigh their branches, and the race of waits                      |
+| `documentation.{bpmnscript,bpmn}`      | Human-facing text, on the header and on every carrying kind                      |
+| `multiple-starts.{bpmnscript,bpmn}`    | Four starts on one process, across two chains                                    |
+| `link-events.{bpmnscript,bpmn}`        | The link pair, in the process and in a sub-process, with two throws to one catch |
+| `unstructured-goto.bpmn`               | The `goto` degradation path on import                                            |
 
 The three invoice-approval files all describe the same process (review, then a gateway on `amount > 1000`, then senior approval or auto-approve) but come from different sources and pull the tests in different directions.
 
@@ -120,7 +122,7 @@ Contract: every `attachedToRef`, `cancelActivity="false"` on each `alongside` bo
 
 ## `intermediate-catch.{bpmnscript,bpmn}`
 
-A single main flow awaiting all four catchable triggers back to back, between a review task and a dispatch task, so the golden covers every payload shape (a message name, a timer duration, a signal name, and a rendered boolean expression) in one artifact.
+A single main flow awaiting, back to back, the four triggers a token blocks on and continues past, between a review task and a dispatch task, so the golden covers every payload shape (a message name, a timer duration, a signal name, and a rendered boolean expression) in one artifact.
 The stretch that does it, with the declaration its condition reads:
 
 ```bpmnscript
@@ -236,6 +238,29 @@ One spans two lines, one holds a quote and a backslash, and one opens with `${`,
 The recording step carries documentation and no label while the header and every other carrier hold both, so the order the two settings print in is frozen either way.
 
 Contract: the `bpmn:documentation` child on the process element and on each carrying node, written ahead of that element's other children, with its text verbatim and no `textFormat` attribute; the printed spelling of every setting, `label` ahead of `documentation` wherever a node holds both; and every authored id.
+
+## `multiple-starts.{bpmnscript,bpmn}`
+
+An order-entry narrative carrying four start events on one process, across two chains.
+`FromDesk` is the only plain start, so it is the process's default and the only one whose `form` is ever offered; `FromShop` (message) and `FromWarehouse` (signal) sit right after it with no step of their own, so all three enter `CheckOrder` directly.
+`FromPartner` (message) opens a second chain after the first chain's `end`, runs a service task of its own, and rejoins `CheckOrder` by `goto`.
+Every start enters an authored step, because a start whose first step is a synthesized branch gateway prints back as a dropped-edge marker instead of the branch, so none of the four is written that way.
+The restructured DSL keeps the first chain as authored and prints each later start after that chain's `end`, followed by its own steps and a `goto CheckOrder`, so `FromShop` and `FromWarehouse` come back as two one-line chains rather than as siblings of `FromDesk`; the graph is the same, which the idempotence block asserts.
+
+Contract: four `bpmn:startEvent` elements, none carrying a `bpmn:incoming`; the four `bpmn:incoming` children of `CheckOrder` in the order their flows are met in the source, the three starts ahead of `ImportPartnerOrder`; one `bpmn:Message` root per distinct name in first-appearance order (`OrderPlaced`, `PartnerOrderReceived`) and one `bpmn:Signal` root; `operaton:formData` on `FromDesk` and on no other start; an import of the frozen artifact that reports no warning at all; and every authored id.
+
+## `link-events.{bpmnscript,bpmn}`
+
+A claim-review narrative carrying a link pair at the process level and a second pair inside a sub-process, in one program: `ReworkMissingReceipts` and `ReworkRejected`, two `emit link` throws raised from an `if`/`else if` chain onto the one catch `AtRework`; `asyncBefore` on `AtRework`, legal on a catch because the engine runs it as an activity while a throw has none; `ToAudit` and `AtAudit` sitting together inside `Settlement`, both ends in one scope as the engine requires; and a catch chain holding an `if`/`else` that rejoins before its `goto` back into the main flow.
+Two authoring rules keep the pair re-parsing under the same ids.
+Every end of a pair is named, because an unnamed catch re-derives a coordinate id that moves when the restructured DSL reorders statements.
+Every chain that precedes a catch ends on an authored `end`, a `goto`, or an `emit link`, because a link catch takes no incoming flow and an end the printer elides would fall through into it.
+The label convention `boundary-events` follows above holds here too, and it protects the IR comparison rather than the ids: no label equals the name humanized from its id, so the header reads `process claim-review {` with no label, because the importer drops a name it can derive and a `label: "Claim Review"` would come back missing.
+The condition variables are declared on the start form so they survive an import-and-back round trip.
+An `emit link` inside a guard ends its branch, so the restructured DSL prints the guard as a `goto` onto the throw and the throw itself as a top-level statement after `end Closed`, the way it prints the guarded `throw error` of `event-handlers`; the IR is the same either way, which is what the idempotence block asserts.
+That order is pinned: `end Closed`, the two `emit link` throws, then `await link AtRework("Rework", asyncBefore: true)` and the rework chain with its `if`/`else` intact, ending in `goto AssessClaim`; inside the sub-process, `end Settled`, `emit link ToAudit("Audit")`, `await link AtAudit("Audit")`, the audit task, and `end Audited`.
+
+Contract: five `bpmn:linkEventDefinition` elements, three named `Rework` and two `Audit`; the element `name` equal to the link name on each of the five ends; `bpmn:incoming` on a throw alone and `bpmn:outgoing` on a catch alone; `operaton:asyncBefore` on `AtRework` and nowhere else; no derived root of any kind; the `ToAudit` and `AtAudit` shapes inside the `Settlement` shape; an import of the frozen artifact that reports no warning at all; the restructured DSL order above; and every authored id.
 
 ## `unstructured-goto.bpmn`
 

@@ -788,40 +788,47 @@ describe('xmlToIr: start, end, and emit triggers', () => {
     });
   });
 
-  describe('one start per container', () => {
-    it('a process with two start events refuses, naming the count', async () => {
-      const e = await expectRefusal<UnsupportedEventFeatureError>(
-        xmlToIr(bpmnDoc`    <bpmn:startEvent id="S1" />
+  describe('a process takes several starts, a subprocess or transaction takes one', () => {
+    it('a process with two start events imports both, each keeping its outgoing flow', async () => {
+      const { ir, warnings } =
+        await xmlToIr(bpmnDoc`    <bpmn:startEvent id="S1" />
     <bpmn:startEvent id="S2" />
     <bpmn:endEvent id="E" />
-    <bpmn:sequenceFlow id="F1" sourceRef="S1" targetRef="E" />`),
-        UnsupportedEventFeatureError,
-        'it has 2 start events; this tool writes one entry point per ' +
-          'process or subprocess, so a second start has nowhere to go',
-      );
-      expect(e.elementId).toBe('p');
-      expect(e.message).toContain('Leave one start');
-      expect(e.message).not.toContain('Event handlers catch one');
+    <bpmn:sequenceFlow id="F1" sourceRef="S1" targetRef="E" />
+    <bpmn:sequenceFlow id="F2" sourceRef="S2" targetRef="E" />`);
+      expect(warnings).toEqual([]);
+      expect(ir.flowElements.map((fe) => [fe.kind, fe.id])).toEqual([
+        ['startEvent', 'S1'],
+        ['startEvent', 'S2'],
+        ['endEvent', 'E'],
+      ]);
+      expect(ir.sequenceFlows.map((f) => [f.sourceRef, f.targetRef])).toEqual([
+        ['S1', 'E'],
+        ['S2', 'E'],
+      ]);
     });
 
-    it('a plain sub-process with two start events refuses, attributed to it', async () => {
-      const e = await expectRefusal<UnsupportedEventFeatureError>(
-        xmlToIr(bpmnDoc`    <bpmn:startEvent id="S" />
-    <bpmn:subProcess id="Sub">
+    it.each(['bpmn:subProcess', 'bpmn:transaction'])(
+      'a %s with two start events refuses, attributed to it',
+      async (tag) => {
+        const e = await expectRefusal<UnsupportedEventFeatureError>(
+          xmlToIr(bpmnDoc`    <bpmn:startEvent id="S" />
+    <${tag} id="Sub">
       <bpmn:startEvent id="S1" />
       <bpmn:startEvent id="S2" />
       <bpmn:endEvent id="SubEnd" />
       <bpmn:sequenceFlow id="SF1" sourceRef="S1" targetRef="SubEnd" />
-    </bpmn:subProcess>
+    </${tag}>
     <bpmn:endEvent id="E" />
     <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="Sub" />
     <bpmn:sequenceFlow id="F2" sourceRef="Sub" targetRef="E" />`),
-        UnsupportedEventFeatureError,
-        'it has 2 start events; this tool writes one entry point per ' +
-          'process or subprocess, so a second start has nowhere to go',
-      );
-      expect(e.elementId).toBe('Sub');
-    });
+          UnsupportedEventFeatureError,
+          'it has 2 start events; this tool writes one entry point per ' +
+            'subprocess or transaction, so a second start has nowhere to go',
+        );
+        expect(e.elementId).toBe('Sub');
+      },
+    );
   });
 
   describe('an end carries terminate or a thrown message', () => {
@@ -3991,7 +3998,7 @@ describe('xmlToIr: message/signal/timer/conditional import', () => {
         }),
         'intermediate throw',
         'bpmn:ConditionalEventDefinition',
-        'An emit supports escalation, message, signal, or compensation.',
+        'An emit supports escalation, message, signal, compensation, or link.',
       ],
     ] as const)(
       '%s refuses with UnsupportedEventDefinitionError naming what the position does take',
@@ -5056,17 +5063,12 @@ describe('xmlToIr: intermediate catch event import', () => {
      */
     const unawaitableDetail = (tag: string): string =>
       `an await cannot carry a bpmn:${tag}: only message, timer, signal, ` +
-      'or condition triggers can be awaited inline; error and escalation ' +
-      'are caught by an event handler and raised with throw/emit, ' +
-      'compensation is undone by a subprocess block, a link has no surface, ' +
-      'and a cancel is written on the end that gives up an attempt block';
+      'condition, or link triggers can be awaited inline; error and ' +
+      'escalation are caught by an event handler and raised with ' +
+      'throw/emit, compensation is undone by a subprocess block, and a ' +
+      'cancel is written on the end that gives up an attempt block';
 
     it.each([
-      [
-        'link',
-        '<bpmn:linkEventDefinition id="d" name="X" />',
-        unawaitableDetail('LinkEventDefinition'),
-      ],
       [
         'error',
         '<bpmn:errorEventDefinition id="d" />',
@@ -5123,7 +5125,7 @@ ${definitions}
       <bpmn:signalEventDefinition id="d2" signalRef="Signal_Ping" />`,
         ),
         'an await carries 2 event definitions: only a single message, ' +
-          'timer, signal, or condition trigger can be awaited',
+          'timer, signal, condition, or link trigger can be awaited',
       ],
       [
         'parallelMultiple="true"',
@@ -5132,8 +5134,8 @@ ${definitions}
           '      <bpmn:signalEventDefinition id="d" signalRef="Signal_Ping" />',
         ),
         'an await with parallelMultiple="true" waits for several triggers ' +
-          'together; only a single message, timer, signal, or condition ' +
-          'trigger can be awaited',
+          'together; only a single message, timer, signal, condition, or ' +
+          'link trigger can be awaited',
       ],
       [
         'a "none" catch with zero event definitions',
@@ -5168,6 +5170,187 @@ ${definitions}
         await expectRefusal(xmlToIr(xml), UnsupportedEventFeatureError, detail);
       },
     );
+  });
+});
+
+describe('xmlToIr: link events', () => {
+  const LINK_DEF = '<bpmn:linkEventDefinition name="Retry" />';
+  const link: EventDefinition = { kind: 'link', linkName: 'Retry' };
+
+  interface PairOptions {
+    throwAttrs?: string;
+    /** Extension content written before the throw's definition. */
+    throwChildren?: string;
+    throwDef?: string;
+    catchAttrs?: string;
+    catchDef?: string;
+    /** Flows written on top of the three the pair gets. */
+    extraFlows?: string;
+    defs?: XmlTag;
+  }
+
+  /** `S -> A -> ToRetry` (the throw) and `AtRetry` (the catch) `-> E`. */
+  const pairDoc = ({
+    throwAttrs = 'name="Retry"',
+    throwChildren = '',
+    throwDef = LINK_DEF,
+    catchAttrs = 'name="Retry"',
+    catchDef = LINK_DEF,
+    extraFlows = '',
+    defs = bpmnDefs,
+  }: PairOptions = {}): string =>
+    defs`  <bpmn:process id="p" isExecutable="true">
+    <bpmn:startEvent id="S" />
+    <bpmn:userTask id="A" />
+    <bpmn:intermediateThrowEvent id="ToRetry" ${throwAttrs}>${throwChildren}
+      ${throwDef}
+    </bpmn:intermediateThrowEvent>
+    <bpmn:intermediateCatchEvent id="AtRetry" ${catchAttrs}>
+      ${catchDef}
+    </bpmn:intermediateCatchEvent>
+    <bpmn:endEvent id="E" />
+    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="A" />
+    <bpmn:sequenceFlow id="F2" sourceRef="A" targetRef="ToRetry" />
+    <bpmn:sequenceFlow id="F3" sourceRef="AtRetry" targetRef="E" />
+${extraFlows}  </bpmn:process>`;
+
+  it('a link pair imports as two disconnected events under one link name, and a name equal to the link name is nothing to report', async () => {
+    const { ir, warnings } = await xmlToIr(pairDoc());
+    expect(warnings).toEqual([]);
+    expect([byId(ir, 'ToRetry'), byId(ir, 'AtRetry')]).toEqual([
+      { kind: 'intermediateThrowEvent', id: 'ToRetry', eventDefinition: link },
+      { kind: 'intermediateCatchEvent', id: 'AtRetry', eventDefinition: link },
+    ]);
+    expect(ir.sequenceFlows.map((f) => [f.sourceRef, f.targetRef])).toEqual([
+      ['S', 'A'],
+      ['A', 'ToRetry'],
+      ['AtRetry', 'E'],
+    ]);
+  });
+
+  it.each([
+    ['the throw', 'ToRetry', 'an emit link', { throwAttrs: 'name="Go back"' }],
+    ['the catch', 'AtRetry', 'an await link', { catchAttrs: 'name="Go back"' }],
+  ] as const)(
+    'a link event whose label is not its link name reports the label, on %s',
+    async (_end, id, surface, options) => {
+      const { ir, warnings } = await xmlToIr(pairDoc(options));
+      expect(byId(ir, id)).not.toHaveProperty('name');
+      expect(warnings).toEqual([
+        {
+          elementId: id,
+          category: 'label',
+          message:
+            `The label 'Go back' on '${id}' was not imported: ${surface} ` +
+            "has no label in this tool's surface.",
+        },
+      ]);
+    },
+  );
+
+  it('engine settings and listeners on a link throw are reported one each and reach the IR on the catch alone', async () => {
+    const { ir, warnings } = await xmlToIr(
+      pairDoc({
+        throwAttrs:
+          'name="Retry" operaton:asyncBefore="true" operaton:jobPriority="5"',
+        throwChildren: extensionElements(
+          `        <operaton:failedJobRetryTimeCycle>R3/PT5M</operaton:failedJobRetryTimeCycle>
+        <operaton:executionListener event="end" class="com.example.L" />`,
+        ),
+        catchAttrs: 'name="Retry" operaton:asyncBefore="true"',
+        defs: operatonDefs,
+      }),
+    );
+    expect([byId(ir, 'ToRetry'), byId(ir, 'AtRetry')]).toEqual([
+      { kind: 'intermediateThrowEvent', id: 'ToRetry', eventDefinition: link },
+      {
+        kind: 'intermediateCatchEvent',
+        id: 'AtRetry',
+        eventDefinition: link,
+        asyncBefore: true,
+      },
+    ]);
+    const dropped = (what: string, does: string): ImportWarning => ({
+      elementId: 'ToRetry',
+      category: 'extensionAttribute',
+      message:
+        `The ${what} on 'ToRetry' was not imported: Operaton creates no ` +
+        `activity for a link throw, so it never ${does} one.`,
+    });
+    expect(warnings).toEqual([
+      dropped("'asyncBefore' setting", 'reads a setting on'),
+      dropped("'jobPriority' setting", 'reads a setting on'),
+      dropped("'retryCycle' setting", 'reads a setting on'),
+      dropped("'end' execution listener", 'runs a listener on'),
+    ]);
+  });
+
+  it.each([
+    ['the throw', 'ToRetry', { throwDef: '<bpmn:linkEventDefinition />' }],
+    ['the catch', 'AtRetry', { catchDef: '<bpmn:linkEventDefinition />' }],
+    [
+      'the throw, with an empty name',
+      'ToRetry',
+      { throwDef: '<bpmn:linkEventDefinition name="" />' },
+    ],
+  ] as const)(
+    'a link definition with no name refuses, on %s',
+    async (_end, id, options) => {
+      const e = await expectRefusal<UnsupportedEventFeatureError>(
+        xmlToIr(pairDoc(options)),
+        UnsupportedEventFeatureError,
+        'a link definition carries no name; the name is what a link throw ' +
+          'and its catch match on, so one without it has nothing to match',
+      );
+      expect(e.elementId).toBe(id);
+      expect(e.message).toContain(
+        'Give the link definition a name, and the same name to the throw ' +
+          'and the catch it joins.',
+      );
+    },
+  );
+
+  it.each([
+    [
+      'leaves the link throw',
+      'ToRetry',
+      '    <bpmn:sequenceFlow id="F4" sourceRef="ToRetry" targetRef="E" />\n',
+      "the flow 'F4' leaves the link throw 'ToRetry'; a link throw ends its " +
+        'path, and the token continues at the catch of the same name rather ' +
+        'than along a flow',
+    ],
+    [
+      'enters the link catch',
+      'AtRetry',
+      '    <bpmn:sequenceFlow id="F4" sourceRef="A" targetRef="AtRetry" />\n',
+      "the flow 'F4' enters the link catch 'AtRetry'; a link catch is " +
+        'entered by the throw of the same name rather than along a flow',
+    ],
+  ] as const)(
+    'a flow that %s refuses, naming the flow',
+    async (_shape, id, extraFlows, detail) => {
+      const e = await expectRefusal<UnsupportedEventFeatureError>(
+        xmlToIr(pairDoc({ extraFlows })),
+        UnsupportedEventFeatureError,
+        detail,
+      );
+      expect(e.elementId).toBe(id);
+      expect(e.message).toContain(
+        "Take the flow 'F4' off, and lead it from or to a step instead.",
+      );
+    },
+  );
+
+  it("a link on an event handler's start is still refused, like one on a process start, an end, or a boundary", async () => {
+    const e = await expectRefusal<UnsupportedEventDefinitionError>(
+      xmlToIr(handlerDoc(LINK_DEF)),
+      UnsupportedEventDefinitionError,
+    );
+    expect([e.elementId, e.eventKind, e.definitionType]).toEqual([
+      'HStart',
+      'start',
+      'bpmn:LinkEventDefinition',
+    ]);
   });
 });
 
@@ -7825,7 +8008,7 @@ ${branches
     );
   });
 
-  it('refuses a link trigger on a branch, by the rule that refuses one anywhere', async () => {
+  it('refuses a link catch on a branch by the flow rule: the branch is a flow into the catch', async () => {
     const e = await expectRefusal<UnsupportedEventFeatureError>(
       xmlToIr(
         waitDoc({
@@ -7833,7 +8016,7 @@ ${branches
             messageBranch,
             {
               id: 'OnLink',
-              element: `<bpmn:intermediateCatchEvent id="OnLink">
+              element: `<bpmn:intermediateCatchEvent id="OnLink" name="X">
       <bpmn:linkEventDefinition id="OnLinkDef" name="X" />
     </bpmn:intermediateCatchEvent>`,
             },
@@ -7841,11 +8024,9 @@ ${branches
         }),
       ),
       UnsupportedEventFeatureError,
+      "the flow 'F_OnLink' enters the link catch 'OnLink'; a link catch is " +
+        'entered by the throw of the same name rather than along a flow',
     );
     expect(e.elementId).toBe('OnLink');
-    expect(e.detail).toContain(
-      'an await cannot carry a bpmn:LinkEventDefinition',
-    );
-    expect(e.detail).toContain('a link has no surface');
   });
 });

@@ -4,12 +4,22 @@
 // The terminate end is here for the same reason: what separates it from a
 // plain end is that it stops a sibling branch still parked on its own task.
 // The audit timer is dated 2099, so only the test can fire it.
+// A fourth way, entering the same process by two different starts, checks that
+// each start is a real entry and not a pass-through the other flows into.
+// A link pair is a fifth: the token leaves a throw with no drawn flow and
+// appears at the catch of the same name, which no compiled document draws.
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+import { irToXml } from '@bpmn-script/transform';
 
 import type { FixtureAdapter } from '../fixtures/index.js';
 import {
   deployExamples,
+  dslPath,
   ENGINE_BOOT_TIMEOUT_MS,
   ENGINE_STOP_TIMEOUT_MS,
   SKIP_DOCKER as SKIP,
@@ -27,8 +37,11 @@ import {
   waitForTaskKeys,
   waitUntilFinished,
 } from '../helpers/engine-rest.js';
+import { roundTrip, validate } from '../helpers/pipeline.js';
 
-describe.skipIf(SKIP)('E2E: start, end and throw triggers on Operaton', () => {
+const __dirname = dirname(fileURLToPath(import.meta.url));
+
+describe.skipIf(SKIP)('E2E: start, end, throw and link on Operaton', () => {
   let fixture: FixtureAdapter;
 
   // A broadcast names no instance in its response, so the one it created is
@@ -55,6 +68,8 @@ describe.skipIf(SKIP)('E2E: start, end and throw triggers on Operaton', () => {
       'order-intake',
       'stock-alert',
       'scheduled-audit',
+      'support-ticket',
+      'order-rework',
     );
   }, ENGINE_BOOT_TIMEOUT_MS);
 
@@ -145,5 +160,97 @@ describe.skipIf(SKIP)('E2E: start, end and throw triggers on Operaton', () => {
         k.includes('ReviewAudit'),
       ),
     ).toContain('ReviewAudit');
+  }, 60_000);
+
+  it('two starts: an instance opened by key enters through the plain start, one opened by message through the message start, and both reach the same step', async () => {
+    const { processInstanceId: byKey } =
+      await fixture.startProcess('support-ticket');
+    const byEmail = await startByMessage(fixture, 'TicketEmailed');
+
+    for (const [processInstanceId, entry] of [
+      [byKey, 'ByAgent'],
+      [byEmail, 'ByEmail'],
+    ] as const) {
+      expect(
+        await waitForTaskKeys(fixture, processInstanceId, (k) =>
+          k.includes('Triage'),
+        ),
+      ).toEqual(['Triage']);
+
+      expect(
+        (
+          await activityIdsIncluding(fixture, processInstanceId, 'Triage')
+        ).sort(),
+      ).toEqual([entry, 'Triage'].sort());
+    }
+  }, 60_000);
+
+  it("link pair: the token leaves the throw with no drawn flow and appears at the catch's successor, on the compiled document and again on its round trip", async () => {
+    // Neither link end reaches history: the catch writes no row
+    // (`HistoryParseListener.parseIntermediateCatchEvent` skips it) and the
+    // throw has no activity to write one.
+    async function reworkJourney(): Promise<void> {
+      const { processInstanceId } = await fixture.startProcess(
+        'order-rework',
+        {},
+      );
+
+      await fixture.completeTask(
+        await waitForTaskId(fixture, processInstanceId, 'Review'),
+        { approved: false },
+      );
+      expect(
+        await waitForTaskKeys(fixture, processInstanceId, (k) =>
+          k.includes('Rework'),
+        ),
+      ).toEqual(['Rework']);
+
+      await fixture.completeTask(
+        await waitForTaskId(fixture, processInstanceId, 'Rework'),
+      );
+      expect(
+        await waitForTaskKeys(fixture, processInstanceId, (k) =>
+          k.includes('Review'),
+        ),
+      ).toEqual(['Review']);
+
+      await fixture.completeTask(
+        await waitForTaskId(fixture, processInstanceId, 'Review'),
+        { approved: true },
+      );
+      expect(await waitUntilFinished(fixture, processInstanceId)).toBe(true);
+
+      const activityIds = (await historicActivities(fixture, processInstanceId))
+        .map((a) => a.activityId)
+        .filter((id) => !id.startsWith('Gateway_'))
+        .sort();
+      expect(activityIds).toEqual([
+        'Done',
+        'Received',
+        'Review',
+        'Review',
+        'Rework',
+      ]);
+    }
+
+    await reworkJourney();
+
+    const run = await roundTrip(readFileSync(dslPath('order-rework'), 'utf-8'));
+    expect((await validate(run.dsl)).diagnostics).toEqual([]);
+
+    const roundTripXmlPath = resolve(
+      __dirname,
+      '../../out/order-rework.round-trip.bpmn',
+    );
+    mkdirSync(dirname(roundTripXmlPath), { recursive: true });
+    writeFileSync(roundTripXmlPath, await irToXml(run.ir3));
+
+    const { deploymentId } = await fixture.deploy(
+      roundTripXmlPath,
+      'order-rework-round-trip-test',
+    );
+    expect(deploymentId).toBeTruthy();
+
+    await reworkJourney();
   }, 60_000);
 });

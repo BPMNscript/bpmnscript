@@ -101,7 +101,7 @@ See [packages/extension/README.md](packages/extension/README.md) for how the pie
 One `process` block per file.
 Steps run top to bottom, so you never write a sequence flow; control flow is expressed with the structured statements you'd expect from a programming language.
 Every step carries an id (`user ReviewInvoice`), which is what `goto` and boundary events refer to, and which becomes the BPMN element's name (`ReviewInvoice` -> "Review Invoice") unless a `label` setting gives one instead.
-The event statements `on`, `throw`, `emit` and `await` are the exception: their id is a jump target only, so they carry no name in the diagram and take no `label`.
+The event statements `on`, `throw`, `emit` and `await` are the exception: their id is a jump target only, so they take no `label`, and the diagram shows no name on them, except on the two ends of a link pair, which carry their link name.
 
 | BPMNscript                                  | What it means                                                               | BPMN element                                                  |
 | ------------------------------------------- | --------------------------------------------------------------------------- | ------------------------------------------------------------- |
@@ -133,6 +133,7 @@ The event statements `on`, `throw`, `emit` and `await` are the exception: their 
 | `await <kind>(...)`                         | stop here until the event arrives                                           | intermediate catch event                                      |
 | `await { <kind>(...) { } <kind>(...) { } }` | wait on several triggers, continue down whichever fires first               | event-based gateway, a catch event per branch, exclusive join |
 | `throw` / `emit <kind>`                     | raise an event, ending the path or continuing                               | throw event                                                   |
+| `emit link("X")` / `await link("X")`        | jump to the catch of the same name, a diagram's off-page connector          | intermediate throw and catch event, with no flow between them |
 | `for each x in c`                           | run a step once per item, or a set number of times                          | multi-instance marker                                         |
 | `asyncBefore: true`                         | engine settings: async, exclusive, priority, retries                        | `operaton:` attribute/element                                 |
 | `input x = "..."`                           | data into a step's execution, and `output` back out                         | `operaton:inputOutput`                                        |
@@ -150,7 +151,8 @@ The `attempt` head and the `cancel` end are one construct: the end gives up the 
 
 The event layer reads like try/catch.
 A handler written at the end of a body catches an event raised anywhere inside it, `throw` ends the current path the way `throw` does in Java, and `emit` fires the event and carries on.
-Every trigger kind but `cancel` opens such a handler, `cancel` being caught on the block it gives up; the table in [packages/language/README.md](packages/language/README.md#the-event-layer) gives each kind with its payload.
+`emit link` is the one emit that ends the path instead: the token continues at the `await link` of the same name, which is how a diagram's off-page connector reads ([packages/language/README.md](packages/language/README.md#link-events)).
+Every trigger kind but `cancel` and `link` opens such a handler, `cancel` being caught on the block it gives up and `link` by its `await`; the table in [packages/language/README.md](packages/language/README.md#the-event-layer) gives each kind with its payload.
 A message, a signal, a timer, or a condition can also start a process, carrying the same payload it does as a handler, and a `terminate` end stops every running path at once.
 An error or escalation code is declared in the process header, beside the `var` declarations, and named at every throw, emit, and catch site.
 
@@ -258,6 +260,7 @@ What each hop reports, item by item, is the import contract in [packages/transfo
 [ADR-0009](docs/decisions/0009-dominator-based-restructuring.md) covers which shapes degrade and why.
 
 The engine settings a modeler tunes import warning-free: async continuation, exclusivity, job priority and the retry cycle on any event or activity, `operaton:inputOutput` on an activity in all four value forms, execution listeners on any event or activity and task listeners on a user task in all four binding forms, a step's repetition in either spelling of its collection and element variable, and a call activity's variable mapping in either of the two attributes that name one ([ADR-0022](docs/decisions/0022-engine-attributes-as-named-ir-fields.md), [ADR-0023](docs/decisions/0023-listeners-on-the-attribute-block.md), [ADR-0027](docs/decisions/0027-repetition-on-the-authoring-surface.md), [ADR-0033](docs/decisions/0033-call-activity-variable-mapping.md)).
+A link throw is the exception: each engine setting and listener on one warns, because Operaton creates no activity for a link throw and so never reads them ([ADR-0035](docs/decisions/0035-link-events-for-import-round-trip-symmetry.md)).
 What stays out of reach is a setting with nowhere to sit in the text: on a synthesized gateway, on the `bpmn:process` element, or a repetition setting the clause cannot spell.
 
 The reasoning is in [ADR-0014](docs/decisions/0014-honest-bpmn-import-contract.md).

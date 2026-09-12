@@ -1,0 +1,31 @@
+// Multiple-start round-trip fixture: one order-entry process carrying four
+// start events across two chains.
+//
+//   - `FromDesk` is the only plain start, so it is the process's default and
+//     the only one whose form is ever offered;
+//   - `FromShop` (message) and `FromWarehouse` (signal) sit right after it
+//     with no step of their own, so all three enter `CheckOrder` directly;
+//   - `FromPartner` (message) opens a second chain after the first chain's
+//     `end` and rejoins the shared step by `goto`.
+//
+// Every start enters an authored step: a start whose first step is a
+// synthesized branch gateway prints back as a dropped-edge marker instead of
+// the branch, so none of the four is written that way.
+
+process order-entry {
+  start FromDesk {
+    form {
+      priority: string "Priority"
+    }
+  }
+  start FromShop message("OrderPlaced", label: "An order is placed online")
+  start FromWarehouse signal("StockCounted")
+
+  user CheckOrder(label: "Check the order", assignee: "demo")
+
+  end Accepted
+
+  start FromPartner message("PartnerOrderReceived")
+  service ImportPartnerOrder(class: "com.example.orders.ImportPartnerOrder")
+  goto CheckOrder
+}

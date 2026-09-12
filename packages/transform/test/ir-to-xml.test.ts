@@ -50,7 +50,9 @@ import {
 import type {
   BpmnProcess,
   CallVariableMapper,
+  CatchEventDefinition,
   CodeBinding,
+  EndEventDefinition,
   EventDefinition,
   FlowElement,
   LoopCharacteristics,
@@ -972,7 +974,7 @@ describe('irToXml: event layer (errors + escalations)', () => {
 
   /** The one `bpmn:Error` root of `S -> [occupied ->] T`, where T throws `def`. */
   const soleErrorRoot = async (
-    def: EventDefinition,
+    def: EndEventDefinition,
     occupied?: string,
   ): Promise<Moddle> => {
     const thrown = typedEvent('endEvent', 'T', def);
@@ -1513,12 +1515,6 @@ describe('irToXml: boundary events', () => {
   });
 });
 
-/** The event definitions an `intermediateCatchEvent` node may carry. */
-type CatchEventDefinition = Extract<
-  EventDefinition,
-  { kind: 'message' | 'signal' | 'timer' | 'conditional' }
->;
-
 /** {@link hostedBoundaryIr} with the attachment pointing at an absent node. */
 function ghostHostIr(): BpmnProcess {
   const ir = hostedBoundaryIr(messageDef('Ping'));
@@ -1637,6 +1633,77 @@ describe('irToXml: intermediate catch events', () => {
   it('stamps no name attribute on the catch element: the await surface carries no label slot', async () => {
     const defs = await defsOf(mainFlowCatchIr(messageDef('Ping')));
     expect(requireDeep(defs, 'Catch_x').name).toBeUndefined();
+  });
+});
+
+describe('irToXml: link events', () => {
+  it('emits a link pair as two named events sharing one link name, nothing leaving the throw, nothing entering the catch, both laid out', async () => {
+    const link: Extract<EventDefinition, { kind: 'link' }> = {
+      kind: 'link',
+      linkName: 'Retry',
+    };
+    const ir = processIr(
+      'proc',
+      [
+        { kind: 'startEvent', id: 'PStart' },
+        { kind: 'userTask', id: 'Work' },
+        {
+          kind: 'intermediateThrowEvent',
+          id: 'ToRetry',
+          eventDefinition: link,
+        },
+        {
+          kind: 'intermediateCatchEvent',
+          id: 'AtRetry',
+          eventDefinition: link,
+        },
+        { kind: 'userTask', id: 'Fix' },
+        { kind: 'endEvent', id: 'PEnd' },
+      ],
+      [
+        { id: 'SF_PStart_Work', sourceRef: 'PStart', targetRef: 'Work' },
+        { id: 'SF_Work_ToRetry', sourceRef: 'Work', targetRef: 'ToRetry' },
+        { id: 'SF_AtRetry_Fix', sourceRef: 'AtRetry', targetRef: 'Fix' },
+        { id: 'SF_Fix_PEnd', sourceRef: 'Fix', targetRef: 'PEnd' },
+      ],
+    );
+    const xml = await irToXml(ir);
+    const defs = await parseDefinitionsWithOperaton(xml);
+
+    const throwNode = requireDeep(defs, 'ToRetry');
+    const catchNode = requireDeep(defs, 'AtRetry');
+    const throwDef = soleDef(throwNode);
+    const catchDef = soleDef(catchNode);
+
+    expect({
+      throwType: throwNode.$type,
+      throwDefType: throwDef.$type,
+      throwDefName: throwDef.name,
+      throwName: throwNode.name,
+      throwOutgoing: (throwNode.outgoing ?? []).map((f) => f.id),
+      catchType: catchNode.$type,
+      catchDefType: catchDef.$type,
+      catchDefName: catchDef.name,
+      catchName: catchNode.name,
+      catchIncoming: (catchNode.incoming ?? []).map((f) => f.id),
+      rootTypes: defs.rootElements.map((r) => r.$type),
+      hasThrowShape: xml.includes('bpmnElement="ToRetry"'),
+      hasCatchShape: xml.includes('bpmnElement="AtRetry"'),
+    }).toEqual({
+      throwType: 'bpmn:IntermediateThrowEvent',
+      throwDefType: 'bpmn:LinkEventDefinition',
+      throwDefName: 'Retry',
+      throwName: 'Retry',
+      throwOutgoing: [],
+      catchType: 'bpmn:IntermediateCatchEvent',
+      catchDefType: 'bpmn:LinkEventDefinition',
+      catchDefName: 'Retry',
+      catchName: 'Retry',
+      catchIncoming: [],
+      rootTypes: ['bpmn:Process'],
+      hasThrowShape: true,
+      hasCatchShape: true,
+    });
   });
 });
 

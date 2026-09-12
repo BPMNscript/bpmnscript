@@ -7,3 +7,9 @@ export * from './vocabulary.js';
 export * from './generated/ast.js';
 export * from './generated/grammar.js';
 export * from './generated/module.js';
+// Selective, not `export *`: `bpmn-script-scope-provider.js` also exports a
+// `FlowContainer` type whose name the transform's IR already uses.
+export {
+  isNamedStatement,
+  type NamedStatement,
+} from './bpmn-script-scope-provider.js';

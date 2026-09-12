@@ -317,12 +317,13 @@ EmitStatement:
 // `await` blocks the main flow in one of two shapes, told apart by the token
 // after the keyword.
 //
-// `await <trigger>` pauses until the trigger fires, then continues. There is no
-// name slot: `await <name> <trigger>` and `await <trigger>` both open with an
-// identifier and nothing marks which reading is meant, so the id is synthesized.
+// `await <trigger> <name>?` pauses until the trigger fires, then continues. The
+// name sits after the trigger, placed by the one token of lookahead
+// `ThrowStatement`'s comment describes; the id is synthesized when omitted.
 //
 // `await { ... }` waits on several triggers at once and continues down the one
-// that fires first; the others are cancelled.
+// that fires first; the others are cancelled. A `RaceBranch` carries no name of
+// its own: it is not a statement, so nothing can `goto` one branch of a race.
 //
 // One rule for both shapes, so the keyword commits the parser before the payload
 // is read: with a rule apiece a mistyped payload leaves no viable alternative
@@ -331,7 +332,7 @@ EmitStatement:
 AwaitStatement:
     'await' (
         {infer IntermediateCatchEvent}
-        trigger=ID SettingsParens? AttributeBlock?
+        trigger=ID (name=ID)? SettingsParens? AttributeBlock?
       | {infer RaceStatement}
         '{' branches+=RaceBranch (branches+=RaceBranch)+ '}'
     );

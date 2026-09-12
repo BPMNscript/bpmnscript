@@ -176,6 +176,33 @@ describe('astToIr: implicit sequence and implicit start/end', () => {
         [edge('A', 'Done'), edge('StartEvent_P', 'A')],
       ),
     ],
+    [
+      'starts written back to back each enter the step after them, none taking a flow',
+      `process P { start A start B message("M") user T end E }`,
+      processIr(
+        'P',
+        [
+          { kind: 'startEvent', id: 'A' },
+          { kind: 'startEvent', id: 'B', eventDefinition: messageDef('M') },
+          { kind: 'userTask', id: 'T' },
+          { kind: 'endEvent', id: 'E' },
+        ],
+        [edge('A', 'T'), edge('B', 'T'), edge('T', 'E')],
+      ),
+    ],
+    [
+      'starts with no step after them run straight to the synthesized end',
+      `process P { start A start B message("M") }`,
+      processIr(
+        'P',
+        [
+          { kind: 'startEvent', id: 'A' },
+          { kind: 'startEvent', id: 'B', eventDefinition: messageDef('M') },
+          { kind: 'endEvent', id: 'EndEvent_P' },
+        ],
+        [edge('A', 'EndEvent_P'), edge('B', 'EndEvent_P')],
+      ),
+    ],
   ])('%s', async (_title, source, expected) => {
     expect(await ir(source)).toEqual(expected);
   });
@@ -457,6 +484,7 @@ describe('astToIr: synthesized id determinism', () => {
     ['decide EndEvent_P(decision: "d")'],
     ['script EndEvent_P ```js\nx = 1;\n```'],
     ['call EndEvent_P(process: "p")'],
+    ['await message EndEvent_P("M")'],
   ])(
     '`%s` reserves its name against the synthesized end',
     async (statement) => {
@@ -1954,6 +1982,43 @@ describe('astToIr: await intermediate catch lowering', () => {
     expect(byId(result, firstId).kind).toBe('intermediateCatchEvent');
     expect(byId(result, secondId).kind).toBe('intermediateCatchEvent');
     expect(flow(result, firstId, secondId)).toBeDefined();
+  });
+});
+
+describe('astToIr: link pair lowering', () => {
+  it('lowers a link pair as two disconnected nodes carrying one link name: nothing leaves the throw, nothing enters the catch', async () => {
+    const result = await ir(
+      `process p { service A(class: "x.A") emit link ToRetry("Retry") await link AtRetry("Retry") service B(class: "x.B") }`,
+    );
+
+    const linkEvents = result.flowElements
+      .filter((fe) => fe.id === 'ToRetry' || fe.id === 'AtRetry')
+      .map((fe) => [
+        fe.kind,
+        fe.id,
+        'eventDefinition' in fe ? fe.eventDefinition : undefined,
+      ]);
+    expect(linkEvents).toEqual([
+      [
+        'intermediateThrowEvent',
+        'ToRetry',
+        { kind: 'link', linkName: 'Retry' },
+      ],
+      [
+        'intermediateCatchEvent',
+        'AtRetry',
+        { kind: 'link', linkName: 'Retry' },
+      ],
+    ]);
+
+    expect(result.sequenceFlows.map((f) => [f.sourceRef, f.targetRef])).toEqual(
+      [
+        ['A', 'ToRetry'],
+        ['AtRetry', 'B'],
+        ['StartEvent_p', 'A'],
+        ['B', 'EndEvent_p'],
+      ],
+    );
   });
 });
 

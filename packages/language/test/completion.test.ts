@@ -235,8 +235,8 @@ const STATEMENTS: Item[] = [
   ['throw', CONSTRUCT, 'throw ${1|error,escalation|}(${2:CODE})'],
   ['throw message', CONSTRUCT, 'throw ${1|message,signal|}("${2:NAME}")'],
   ['emit', CONSTRUCT, 'emit ${1|escalation|}(${2:CODE})'],
-  ['emit message', CONSTRUCT, 'emit ${1|message,signal|}("${2:NAME}")'],
-  ['await', CONSTRUCT, 'await ${1|message,signal|}("${2:NAME}")'],
+  ['emit message', CONSTRUCT, 'emit ${1|message,signal,link|}("${2:NAME}")'],
+  ['await', CONSTRUCT, 'await ${1|message,signal,link|}("${2:NAME}")'],
   [
     'await any',
     CONSTRUCT,
@@ -278,11 +278,16 @@ const ON_TRIGGERS: Item[] = [
   ['cancel', EVENT_WORD, 'cancel'],
 ];
 
-const CATCH_TRIGGERS: Item[] = [
+const RACE_TRIGGERS: Item[] = [
   ['message', EVENT_WORD, 'message'],
   TIMER,
   ['signal', EVENT_WORD, 'signal'],
   CONDITION,
+];
+
+const CATCH_TRIGGERS: Item[] = [
+  ...RACE_TRIGGERS,
+  ['link', "the target of an 'emit link' of the same name", 'link'],
 ];
 
 const LABEL: Item = ['label', SETTING, 'label: "${1:label}"'];
@@ -540,6 +545,7 @@ describe('the completions offered at a caret', () => {
           "undo this scope's completed work, then continue",
           'compensation',
         ],
+        ['link', "jump to the 'await link' of the same name", 'link'],
       ],
     ],
     [
@@ -558,9 +564,9 @@ describe('the completions offered at a caret', () => {
       CATCH_TRIGGERS,
     ],
     [
-      'a race branch header offers the same triggers a bare await does',
+      'a race branch header offers every await trigger but link',
       'process p {\n  await { |\n}',
-      CATCH_TRIGGERS,
+      RACE_TRIGGERS,
     ],
     [
       'the start trigger position offers the kinds a process can start on',

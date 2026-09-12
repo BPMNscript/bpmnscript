@@ -23,7 +23,11 @@ import {
   LABEL_HOSTS,
   PARAMETER_HOSTS,
 } from './helpers/block-hosts.js';
-import { withTextMessages } from './helpers/diagnostics.js';
+import {
+  UNREACHABLE,
+  undeclaredVariable as undeclared,
+  withTextMessages,
+} from './helpers/diagnostics.js';
 
 const SEVERITY_WARNING = 2;
 
@@ -60,8 +64,6 @@ const capitalized = (text: string) => text[0]!.toUpperCase() + text.slice(1);
 
 // ── The messages, each spelled once ─────────────────────────────────────────
 
-const undeclared = (name: string) =>
-  `Variable '${name}' is not declared. Add 'var ${name}: <type>' to the process.`;
 const typeMismatch = (
   name: string,
   type: string,
@@ -76,11 +78,6 @@ const noFlowSteps = (name: string) =>
   `Process '${name}' has no flow steps: a process needs at least one step on its main flow (handlers alone do not start a process).`;
 const blockNoFlowSteps = (kind: string, name: string) =>
   `${capitalized(kind)} named '${name}' has no flow steps: ${kind} needs at least one step on its main flow (handlers alone do not start it).`;
-const UNREACHABLE =
-  'This step can never run: an earlier `end`, `throw`, `goto`, or an ' +
-  'all-terminating `if`/`parallel`/`await` in the same block always ends or ' +
-  'redirects the flow before reaching it, so this step would lower to a ' +
-  'disconnected node with no incoming flow, which is invalid BPMN.';
 /** The shapes are derived from the patterns, so this pins the pair. */
 const RESERVED_SHAPES =
   `'Gateway_..._(split|join|fork|loop|race)', 'Flow_..._...', 'StartEvent_', ` +
@@ -109,7 +106,7 @@ const bindingNotAName = (field: string) =>
   `A catch binding names the variable the caught ${field} lands in, not a ` +
   `value: write '${field}: <name>'.`;
 const barewordName = (trigger: string, text: string) =>
-  `A ${trigger} name is the text the engine subscribes with, not a declared ` +
+  `A ${trigger} name is the text the engine matches by name, not a declared ` +
   `name. Write '${trigger}("${text}")'.`;
 const quotedBoolean = (key: string) =>
   `Setting '${key}' takes an unquoted boolean; ` +
@@ -214,8 +211,14 @@ const PARALLEL_ELSE_BESIDE_UNCONDITIONED =
   "An 'else' branch runs only when no sibling branch was taken, and a branch " +
   'with no condition is always taken, so this one could never run. Give every ' +
   "sibling a condition, or drop the 'else'.";
+const intoBranch = (
+  subject: string,
+  jump: string,
+  keyword: 'parallel' | 'await',
+) =>
+  `'${subject}' jumps into a branch of ${keyword === 'await' ? 'an' : 'a'} '${keyword}' statement from outside that branch; a branch's steps run only when the whole '${keyword}' statement is reached, not via an external '${jump}'.`;
 const gotoIntoBranch = (target: string, keyword: 'parallel' | 'await') =>
-  `'goto ${target}' jumps into a branch of ${keyword === 'await' ? 'an' : 'a'} '${keyword}' statement from outside that branch; a branch's steps run only when the whole '${keyword}' statement is reached, not via an external 'goto'.`;
+  intoBranch(`goto ${target}`, 'goto', keyword);
 const unresolvedStatement = (name: string) =>
   `Could not resolve reference to Statement named '${name}'.`;
 const reservedWord = (word: string) =>
@@ -249,9 +252,21 @@ const duplicateAllMapping = (direction: string) =>
 // Start events.
 
 const startNotFirst = (name: string) =>
-  `'start ${name}' must be the first statement of its process, subprocess, ` +
-  'attempt block, or event-handler body. A start event cannot have incoming ' +
-  'flows.';
+  `'start ${name}' must be a top-level statement of its process, or the ` +
+  'first statement of its subprocess, attempt block, or event-handler body. ' +
+  'A start event cannot have incoming flows.';
+const startAfterLiveChain = (name: string) =>
+  `'start ${name}' opens an entry of its own and takes no incoming flow, ` +
+  'but the statement before it still flows on to it. Close that flow first ' +
+  "(with 'end', 'throw', or 'goto') or move the start ahead of that step.";
+const noDefaultStart = (name: string) =>
+  `Process '${name}' has no default start: with only message, signal, or ` +
+  'condition starts, the engine can create an instance only by triggering ' +
+  'one of them, and starting it by key fails at runtime.';
+const FORM_NEVER_OFFERED =
+  "The engine offers a start form only on the process's default start, its " +
+  'plain or timer start; this form is on a different start and is never ' +
+  'shown.';
 const hostedHandlerStart = (name: string) =>
   `'start ${name}' cannot open a handler that names a host: the body runs ` +
   "inside the host's own container and is entered from the boundary event, " +
@@ -460,7 +475,7 @@ const cancelHandlerWithoutEnd = (name: string) =>
 const unknownThrowKind = (word: string) =>
   `Unknown event kind '${word}'; write 'error', 'escalation', 'message', 'signal', or 'compensation'.`;
 const unknownEmitKind = (word: string) =>
-  `Unknown event kind '${word}'; write 'escalation', 'message', 'signal', or 'compensation'.`;
+  `Unknown event kind '${word}'; write 'escalation', 'message', 'signal', 'compensation', or 'link'.`;
 const EMIT_ERROR = "An error always aborts its path; write 'throw error'.";
 const codeRequired = (
   subject: 'A thrown' | 'An emitted',
@@ -472,11 +487,11 @@ const noImplementation = (key: string, subject: string) =>
   'makes the engine really send a message, so only a message carries one.';
 const unknownAwaitKind = (word: string) =>
   `Unknown event kind '${word}'; intermediate catch supports 'message', ` +
-  `'timer', 'signal', or 'condition'. An error or an escalation is raised ` +
-  `with 'throw'/'emit', compensation is a subprocess's undo block, and a ` +
-  `cancel is written on the end that gives up an 'attempt' block.`;
-const AWAIT_NAME_REQUIRED =
-  "An awaited message needs the message's name: the engine matches messages by name.";
+  `'timer', 'signal', 'condition', or 'link'. An error or an escalation is ` +
+  `raised with 'throw'/'emit', compensation is a subprocess's undo block, ` +
+  `and a cancel is written on the end that gives up an 'attempt' block.`;
+const awaitNameRequired = (kind: string) =>
+  `An awaited ${kind} needs the ${kind}'s name: the engine matches ${kind}s by name.`;
 const AWAIT_CONDITION_REQUIRED =
   "An awaited condition needs its condition: 'await condition(amount > 100)'.";
 const AWAIT_CONDITION_NO_CODE =
@@ -484,6 +499,42 @@ const AWAIT_CONDITION_NO_CODE =
 const AWAIT_CONDITION_ONLY =
   "Only 'await condition' takes a condition expression.";
 const AWAIT_PARTICLE_ONLY = "Only 'await timer' takes a particle.";
+
+// Link events.
+
+const LINK_CATCH_FLOW =
+  "Nothing may flow into an 'await link': end the path before it with 'end', " +
+  "'throw', 'goto', or 'emit link', because a link catch is entered only by " +
+  "'emit link' of the same name.";
+const LINK_IN_RACE =
+  "'link' cannot head a branch of an 'await' block: the engine refuses a link " +
+  `catch after an event-based gateway; write 'await link("<name>")' as its ` +
+  'own statement.';
+const linkThrowNeverRuns = (item: string) =>
+  `${item} has no effect on an emitted link: the engine creates no activity ` +
+  "for a link throw, so nothing written on it runs. Put it on the 'await " +
+  "link' of the same name instead.";
+const linkNoCatch = (name: string) =>
+  `No 'await link("${name}")' catches this link, and the engine refuses to ` +
+  'deploy an emitted link with no catch of its name. Write one where the ' +
+  'flow should continue.';
+const linkOtherContainer = (name: string) =>
+  `'emit link("${name}")' must sit in the same process, subprocess, or ` +
+  "handler body as its 'await link': a link cannot cross a subprocess or " +
+  "handler boundary, the same way a 'goto' cannot.";
+const linkIntoBranch = (name: string, keyword: 'parallel' | 'await') =>
+  intoBranch(`emit link("${name}")`, 'emit link', keyword);
+const linkNameTaken = (name: string) =>
+  `Another 'await link("${name}")' already catches this link: the engine ` +
+  'keeps one catch per link name in the whole file, even across subprocesses.';
+const linkUnused = (name: string) =>
+  `No 'emit link("${name}")' names this catch, so it and the steps after it ` +
+  'never run.';
+const gotoToLink = (target: string) =>
+  `'goto ${target}' cannot target an awaited link: a link catch is entered ` +
+  "by 'emit link' of the same name, not by a sequence flow.";
+const THROW_LINK =
+  "A link continues at its catch rather than ending the path; write 'emit link'.";
 
 // Code declarations.
 
@@ -1167,11 +1218,26 @@ checks('Validation - one process per file', [
   ['a single process is clean', `process Invoice { start S end E }`, []],
 ]);
 
-checks('Validation - an explicit start comes first', [
+checks('Validation - where a start may sit', [
   [
-    'a start after another statement names the start',
+    'a start after a chain that still flows on interrupts it',
     `process p { user A start S end E }`,
-    [startNotFirst('S')],
+    [startAfterLiveChain('S')],
+  ],
+  [
+    'starts written back to back open one chain',
+    `process p { start A start B message("M") user T end E }`,
+    [],
+  ],
+  [
+    'a start may follow any statement that always ends or redirects the flow',
+    `process p { var c: boolean start A if (c) { end E1 } else { end E2 } start B message("M") user T goto U start C signal("S") user U end E3 }`,
+    [],
+  ],
+  [
+    'a start after an end is a fresh root, and so is the chain it opens',
+    `process p { start A user T end E start B message("M") goto T }`,
+    [],
   ],
   [
     'a start nested in a branch is not first in its container',
@@ -1212,6 +1278,39 @@ checks('Validation - an explicit start comes first', [
     'a start inside an if nested in a subprocess is one error',
     `process p { subprocess S { if (true) { start In } } }`,
     [startNotFirst('In')],
+  ],
+]);
+
+checks('Validation - the default start among several', [
+  [
+    'message and signal starts alone leave no default start',
+    `process p { start A message("M") start B signal("S") user T end E }`,
+    [warn(noDefaultStart('p'))],
+  ],
+  [
+    'a timer start beside a message start is the default',
+    `process p { start A timer(every: "R/PT1H") start B message("M") user T end E }`,
+    [],
+  ],
+  [
+    'a single message start is its own default',
+    `process p { start A message("M") user T end E }`,
+    [],
+  ],
+  [
+    'a form on a start that is not the default is never offered',
+    `process p { start A start B message("M") { form { x: number "X" } } user T end E }`,
+    [warn(FORM_NEVER_OFFERED)],
+  ],
+  [
+    'a form on the default start beside a message start is offered',
+    `process p { start A { form { x: number "X" } } start B message("M") user T end E }`,
+    [],
+  ],
+  [
+    'with no default start every form is dead',
+    `process p { start A message("M") { form { x: number "X" } } start B signal("S") user T end E }`,
+    [warn(noDefaultStart('p')), warn(FORM_NEVER_OFFERED)],
   ],
 ]);
 
@@ -1266,6 +1365,11 @@ checks('Validation - duplicate declarations', [
     'two named throws sharing a name is one error, and the second is dead',
     `process p { error X escalation Y throw error Same(X) throw escalation Same(Y) }`,
     [duplicateStepName('Same', 'p'), UNREACHABLE],
+  ],
+  [
+    'a named await shares the step namespace',
+    `process p { user Wait await message Wait("M") }`,
+    [duplicateStepName('Wait', 'p')],
   ],
 ]);
 
@@ -1501,6 +1605,11 @@ checks('Validation - unreachable statements', [
     'a step after an emitted compensation runs',
     `process p { emit compensation user Alive }`,
     [],
+  ],
+  [
+    'a named await after an end is reachable again as a goto target',
+    `process p { start S if (c) { goto Wait } end Done await message Wait("M") }`,
+    [warn(undeclared('c'))],
   ],
 ]);
 
@@ -1931,6 +2040,11 @@ checks('Validation - boundary hosts', [
     'a throw statement is no activity to attach to',
     `process p { error PAYMENT_FAILED throw error Foo(PAYMENT_FAILED) on Foo: escalation { user A } }`,
     [illegalHost('Foo', 'a throw statement')],
+  ],
+  [
+    'an awaited event is no activity to attach to',
+    `process p { error X await message Wait("M") on Wait: error(X) { user A } }`,
+    [illegalHost('Wait', 'an awaited event')],
   ],
   [
     'every activity kind hosts a boundary event',
@@ -2421,12 +2535,12 @@ checks('Validation - awaited events', [
   [
     'an awaited message with no name asks for it',
     `process p { await message }`,
-    [AWAIT_NAME_REQUIRED],
+    [awaitNameRequired('message')],
   ],
   [
     'an awaited signal with no name asks for it',
     `process p { await signal }`,
-    [AWAIT_NAME_REQUIRED],
+    [awaitNameRequired('signal')],
   ],
   [
     'an awaited timer with no payload asks how to read the time',
@@ -2441,12 +2555,12 @@ checks('Validation - awaited events', [
   [
     'a timer key on an awaited message belongs to a timer',
     `process p { await message(at: "PT1H") }`,
-    [AWAIT_NAME_REQUIRED, AWAIT_PARTICLE_ONLY],
+    [awaitNameRequired('message'), AWAIT_PARTICLE_ONLY],
   ],
   [
     'a condition on an awaited message belongs to an awaited condition',
     `process p { var x: number await message(x > 1) }`,
-    [AWAIT_NAME_REQUIRED, AWAIT_CONDITION_ONLY],
+    [awaitNameRequired('message'), AWAIT_CONDITION_ONLY],
   ],
   [
     'a code string on an awaited condition is not the condition',
@@ -2510,6 +2624,88 @@ process p {
     },
   );
 });
+
+checks('Validation - link events', [
+  [
+    'a link pair in one container is clean, and the catch opens a new chain after the throw',
+    `process p { start S step Try emit link ToRetry("Retry") await link AtRetry("Retry") step Fix goto Try }`,
+    [],
+  ],
+  [
+    'a step after an emit link can never run',
+    `process p { step A emit link T("L") step Dead await link C("L") }`,
+    [UNREACHABLE],
+  ],
+  [
+    'a link catch after a live step refuses the flow that would enter it',
+    `process p { step A await link C("L") step B emit link T("L") }`,
+    [LINK_CATCH_FLOW],
+  ],
+  [
+    'a link cannot head a race branch',
+    `process p { await { link("L") { user A } message("M") { user B } } }`,
+    [LINK_IN_RACE],
+  ],
+  [
+    'an awaited link with no name asks for it',
+    `process p { step A end E await link C }`,
+    [awaitNameRequired('link')],
+  ],
+  [
+    'an emitted link with no name asks for it',
+    `process p { step A emit link }`,
+    [codeRequired('An emitted', 'link', 'emit')],
+  ],
+  [
+    'a bareword link name is a missing pair of quotes',
+    `process p { step A emit link T(Retry) await link C(Retry) }`,
+    [barewordName('link', 'Retry'), barewordName('link', 'Retry')],
+  ],
+  [
+    'engine settings and listeners on an emitted link are refused, one each',
+    `process p { step A emit link T("L", asyncBefore: true, jobPriority: 5) { on end(class: "x.L") } await link C("L") }`,
+    [
+      linkThrowNeverRuns("Setting 'asyncBefore'"),
+      linkThrowNeverRuns("Setting 'jobPriority'"),
+      linkThrowNeverRuns("The 'on end' listener"),
+    ],
+  ],
+  [
+    'an emit link with no catch is refused',
+    `process p { step A emit link T("L") }`,
+    [linkNoCatch('L')],
+  ],
+  [
+    'a link catch in another container is out of reach',
+    `process p { subprocess S { step A emit link T("L") } end E await link C("L") step B }`,
+    [linkOtherContainer('L')],
+  ],
+  [
+    'an emit link cannot enter a parallel branch from outside it',
+    `process p { parallel { { user P if (c) { emit link T("L") } } { end X await link C("L") user B } } }`,
+    [warn(undeclared('c')), linkIntoBranch('L', 'parallel')],
+  ],
+  [
+    'two catches of one link name are refused even across subprocesses',
+    `process p { step A emit link T("L") await link C1("L") subprocess S { step B emit link T2("L") await link C2("L") step D } }`,
+    [linkNameTaken('L')],
+  ],
+  [
+    'a link catch nothing emits is a warning, not an error',
+    `process p { step A end E await link C("L") step B }`,
+    [warn(linkUnused('L'))],
+  ],
+  [
+    'a goto cannot target a link catch',
+    `process p { step A if (c) { goto C } emit link T("L") await link C("L") step B }`,
+    [warn(undeclared('c')), gotoToLink('C')],
+  ],
+  [
+    'throw link points at emit link',
+    `process p { step A throw link("L") }`,
+    [THROW_LINK],
+  ],
+]);
 
 checks('Validation - start triggers', [
   [

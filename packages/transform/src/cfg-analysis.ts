@@ -111,16 +111,26 @@ function buildGraph(container: FlowContainer): Graph {
     addEdge(f.sourceRef, f.targetRef);
   }
 
-  // A boundary event is a second, independent entry: its token appears when
-  // the trigger fires, never along a sequence flow, so it is wired
-  // unconditionally rather than folded into the no-start fallback. Any other
-  // node without a predecessor stays unwired: it really is unreachable.
+  // A boundary event and a link catch are each an independent entry beside
+  // the start: a boundary's token appears when its trigger fires, a link
+  // catch's when the engine reroutes a flow into a throw of its name, never
+  // along a flow drawn to either. All three are wired unconditionally rather
+  // than folded into the no-start fallback. Any other node without a
+  // predecessor stays unwired: it really is unreachable. A link throw needs
+  // no wiring of its own: it has no successor and drains to VIRTUAL_EXIT.
   const hasAnyStart = container.flowElements.some(
     (e) => e.kind === 'startEvent',
   );
   for (const el of container.flowElements) {
     const hasRealPred = pred.get(el.id)!.length > 0;
-    if (el.kind === 'startEvent' || el.kind === 'boundaryEvent') {
+    const isLinkCatch =
+      el.kind === 'intermediateCatchEvent' &&
+      el.eventDefinition.kind === 'link';
+    if (
+      el.kind === 'startEvent' ||
+      el.kind === 'boundaryEvent' ||
+      isLinkCatch
+    ) {
       addEdge(VIRTUAL_ENTRY, el.id);
     } else if (!hasAnyStart && !hasRealPred) {
       addEdge(VIRTUAL_ENTRY, el.id);

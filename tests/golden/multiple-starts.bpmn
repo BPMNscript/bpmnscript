@@ -1,0 +1,100 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI" xmlns:dc="http://www.omg.org/spec/DD/20100524/DC" xmlns:di="http://www.omg.org/spec/DD/20100524/DI" xmlns:operaton="http://operaton.org/schema/1.0/bpmn" id="Definitions_order-entry" targetNamespace="http://bpmnscript.io/processes" exporter="BPMNscript" exporterVersion="0.0.0">
+  <bpmn:process id="order-entry" name="Order Entry" isExecutable="true" operaton:historyTimeToLive="P30D">
+    <bpmn:startEvent id="FromDesk">
+      <bpmn:extensionElements>
+        <operaton:formData>
+          <operaton:formField id="priority" label="Priority" type="string" />
+        </operaton:formData>
+      </bpmn:extensionElements>
+      <bpmn:outgoing>Flow_FromDesk_CheckOrder</bpmn:outgoing>
+    </bpmn:startEvent>
+    <bpmn:startEvent id="FromShop" name="An order is placed online">
+      <bpmn:outgoing>Flow_FromShop_CheckOrder</bpmn:outgoing>
+      <bpmn:messageEventDefinition messageRef="Message_OrderPlaced" />
+    </bpmn:startEvent>
+    <bpmn:startEvent id="FromWarehouse">
+      <bpmn:outgoing>Flow_FromWarehouse_CheckOrder</bpmn:outgoing>
+      <bpmn:signalEventDefinition signalRef="Signal_StockCounted" />
+    </bpmn:startEvent>
+    <bpmn:userTask id="CheckOrder" name="Check the order" operaton:assignee="demo">
+      <bpmn:incoming>Flow_FromDesk_CheckOrder</bpmn:incoming>
+      <bpmn:incoming>Flow_FromShop_CheckOrder</bpmn:incoming>
+      <bpmn:incoming>Flow_FromWarehouse_CheckOrder</bpmn:incoming>
+      <bpmn:incoming>Flow_ImportPartnerOrder_CheckOrder</bpmn:incoming>
+      <bpmn:outgoing>Flow_CheckOrder_Accepted</bpmn:outgoing>
+    </bpmn:userTask>
+    <bpmn:endEvent id="Accepted">
+      <bpmn:incoming>Flow_CheckOrder_Accepted</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:startEvent id="FromPartner">
+      <bpmn:outgoing>Flow_FromPartner_ImportPartnerOrder</bpmn:outgoing>
+      <bpmn:messageEventDefinition messageRef="Message_PartnerOrderReceived" />
+    </bpmn:startEvent>
+    <bpmn:serviceTask id="ImportPartnerOrder" name="Import Partner Order" operaton:class="com.example.orders.ImportPartnerOrder">
+      <bpmn:incoming>Flow_FromPartner_ImportPartnerOrder</bpmn:incoming>
+      <bpmn:outgoing>Flow_ImportPartnerOrder_CheckOrder</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:sequenceFlow id="Flow_FromDesk_CheckOrder" sourceRef="FromDesk" targetRef="CheckOrder" />
+    <bpmn:sequenceFlow id="Flow_FromShop_CheckOrder" sourceRef="FromShop" targetRef="CheckOrder" />
+    <bpmn:sequenceFlow id="Flow_FromWarehouse_CheckOrder" sourceRef="FromWarehouse" targetRef="CheckOrder" />
+    <bpmn:sequenceFlow id="Flow_CheckOrder_Accepted" sourceRef="CheckOrder" targetRef="Accepted" />
+    <bpmn:sequenceFlow id="Flow_FromPartner_ImportPartnerOrder" sourceRef="FromPartner" targetRef="ImportPartnerOrder" />
+    <bpmn:sequenceFlow id="Flow_ImportPartnerOrder_CheckOrder" sourceRef="ImportPartnerOrder" targetRef="CheckOrder" />
+  </bpmn:process>
+  <bpmn:message id="Message_OrderPlaced" name="OrderPlaced" />
+  <bpmn:message id="Message_PartnerOrderReceived" name="PartnerOrderReceived" />
+  <bpmn:signal id="Signal_StockCounted" name="StockCounted" />
+  <bpmndi:BPMNDiagram id="BPMNDiagram_order-entry">
+    <bpmndi:BPMNPlane id="BPMNPlane_order-entry" bpmnElement="order-entry">
+      <bpmndi:BPMNShape id="FromDesk_di" bpmnElement="FromDesk">
+        <dc:Bounds x="57" y="52" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="CheckOrder_di" bpmnElement="CheckOrder">
+        <dc:Bounds x="325" y="30" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Accepted_di" bpmnElement="Accepted">
+        <dc:Bounds x="507" y="52" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="FromShop_di" bpmnElement="FromShop">
+        <dc:Bounds x="57" y="192" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="FromWarehouse_di" bpmnElement="FromWarehouse">
+        <dc:Bounds x="57" y="332" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="FromPartner_di" bpmnElement="FromPartner">
+        <dc:Bounds x="57" y="472" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="ImportPartnerOrder_di" bpmnElement="ImportPartnerOrder">
+        <dc:Bounds x="175" y="450" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_FromDesk_CheckOrder_di" bpmnElement="Flow_FromDesk_CheckOrder">
+        <di:waypoint x="93" y="70" />
+        <di:waypoint x="325" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_CheckOrder_Accepted_di" bpmnElement="Flow_CheckOrder_Accepted">
+        <di:waypoint x="425" y="70" />
+        <di:waypoint x="507" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_FromShop_CheckOrder_di" bpmnElement="Flow_FromShop_CheckOrder">
+        <di:waypoint x="93" y="210" />
+        <di:waypoint x="375" y="210" />
+        <di:waypoint x="375" y="110" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_FromWarehouse_CheckOrder_di" bpmnElement="Flow_FromWarehouse_CheckOrder">
+        <di:waypoint x="93" y="350" />
+        <di:waypoint x="375" y="350" />
+        <di:waypoint x="375" y="110" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_FromPartner_ImportPartnerOrder_di" bpmnElement="Flow_FromPartner_ImportPartnerOrder">
+        <di:waypoint x="93" y="490" />
+        <di:waypoint x="175" y="490" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ImportPartnerOrder_CheckOrder_di" bpmnElement="Flow_ImportPartnerOrder_CheckOrder">
+        <di:waypoint x="275" y="490" />
+        <di:waypoint x="375" y="490" />
+        <di:waypoint x="375" y="110" />
+      </bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>

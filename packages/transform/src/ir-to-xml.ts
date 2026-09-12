@@ -387,6 +387,10 @@ function buildEventDefinition(
       return moddle.create('bpmn:TerminateEventDefinition', {});
     case 'cancel':
       return moddle.create('bpmn:CancelEventDefinition', {});
+    case 'link':
+      // `source`/`target` are moddle references the engine never reads: it
+      // correlates a throw and a catch by `name` alone, at deploy time.
+      return moddle.create('bpmn:LinkEventDefinition', { name: def.linkName });
     default: {
       const exhaustive: never = def;
       throw new Error(
@@ -769,6 +773,12 @@ function flowNodeName(node: FlowElement): string | undefined {
   switch (node.kind) {
     case 'intermediateThrowEvent':
     case 'intermediateCatchEvent':
+      // `BpmnParse.parseIntermediateLinkEventCatchBehavior` warns at deploy
+      // when a catch's element name differs from its link name, so both ends
+      // are stamped with it.
+      return node.eventDefinition.kind === 'link'
+        ? node.eventDefinition.linkName
+        : undefined;
     case 'boundaryEvent':
       return undefined;
     case 'startEvent':

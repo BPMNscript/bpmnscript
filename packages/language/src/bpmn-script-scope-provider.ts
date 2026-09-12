@@ -41,6 +41,7 @@ import {
   isEndEvent,
   isGenericTask,
   isGotoStatement,
+  isIntermediateCatchEvent,
   isOnHandler,
   isProcess,
   isReceiveTask,
@@ -57,6 +58,7 @@ import {
   type EmitStatement,
   type EndEvent,
   type GenericTask,
+  type IntermediateCatchEvent,
   type OnHandler,
   type Process,
   type ReceiveTask,
@@ -71,8 +73,9 @@ import {
 
 /**
  * The `Statement` subtypes carrying a `name`, so the valid `goto` targets and
- * handler hosts. A `throw`/`emit` name is optional (the id is synthesized when
- * omitted), so an unnamed one is neither referenceable nor able to collide.
+ * handler hosts. A `throw`/`emit`/`await` name is optional (the id is
+ * synthesized when omitted), so an unnamed one is neither referenceable nor
+ * able to collide.
  */
 export type NamedStatement =
   | StartEvent
@@ -87,7 +90,8 @@ export type NamedStatement =
   | SubProcess
   | CallActivity
   | (ThrowStatement & { name: string })
-  | (EmitStatement & { name: string });
+  | (EmitStatement & { name: string })
+  | (IntermediateCatchEvent & { name: string });
 
 export function isNamedStatement(node: AstNode): node is NamedStatement {
   return (
@@ -103,7 +107,8 @@ export function isNamedStatement(node: AstNode): node is NamedStatement {
     isSubProcess(node) ||
     isCallActivity(node) ||
     ((isThrowStatement(node) || isEmitStatement(node)) &&
-      node.name !== undefined)
+      node.name !== undefined) ||
+    (isIntermediateCatchEvent(node) && node.name !== undefined)
   );
 }
 

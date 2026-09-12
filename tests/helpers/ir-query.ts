@@ -94,16 +94,25 @@ export function handlerTriggerDef(
 }
 
 // Locating a node by what it is, not by id, is what lets a suite pin a carrier
-// whose id the lowering synthesizes. Throws unless exactly one matches.
+// whose id the lowering synthesizes.
+export function allOf<K extends FlowElement['kind']>(
+  container: FlowContainer,
+  kind: K,
+  predicate: (el: Extract<FlowElement, { kind: K }>) => boolean = () => true,
+): Extract<FlowElement, { kind: K }>[] {
+  return allElements(container).filter(
+    (fe): fe is Extract<FlowElement, { kind: K }> =>
+      fe.kind === kind && predicate(fe as Extract<FlowElement, { kind: K }>),
+  );
+}
+
+// Throws unless exactly one match, for the common case of one carrier per kind.
 export function theOnly<K extends FlowElement['kind']>(
   container: FlowContainer,
   kind: K,
   predicate: (el: Extract<FlowElement, { kind: K }>) => boolean = () => true,
 ): Extract<FlowElement, { kind: K }> {
-  const matches = allElements(container).filter(
-    (fe): fe is Extract<FlowElement, { kind: K }> =>
-      fe.kind === kind && predicate(fe as Extract<FlowElement, { kind: K }>),
-  );
+  const matches = allOf(container, kind, predicate);
   if (matches.length !== 1) {
     throw new Error(
       `expected exactly one ${kind} in '${container.id}', found ${matches.length}`,

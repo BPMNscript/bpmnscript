@@ -24,6 +24,7 @@ import type {
   BpmnProcess,
   CallVariableMapping,
   CodeBinding,
+  EndEventDefinition,
   EngineAttributes,
   EventDefinition,
   FlowContainer,
@@ -49,6 +50,7 @@ import {
   repeats,
 } from './ir/types.js';
 import {
+  CATCH_EVENT_PREFIX,
   claimDeclarationName,
   END_EVENT_PREFIX,
   START_EVENT_PREFIX,
@@ -177,7 +179,10 @@ function warnRefusedStatements(
   suppressed = false,
 ): void {
   for (const el of container.flowElements) {
-    if (!isElidedOnPrint(el, suppressed) && isReservedName(el.id)) {
+    if (
+      !isElidedOnPrint(el, container.flowElements, suppressed) &&
+      isReservedName(el.id)
+    ) {
       warnings.push(reservedNameWarning(el.id));
     }
     if (el.kind === 'subProcess') {
@@ -251,7 +256,23 @@ class Emitter {
   emit(): string[] {
     const lines: string[] = [];
 
-    // 1. Structured emission from each start event.
+    // 1. Structured emission from each start event. An elided start is
+    // re-derived by the compiler only at the body's head, so its chain is
+    // walked first; anywhere else it lands after another chain's `end` as a
+    // dangling `goto` and the compiler re-derives no start for it.
+    for (const el of this.container.flowElements) {
+      if (
+        el.kind === 'startEvent' &&
+        isElidedOnPrint(
+          el,
+          this.container.flowElements,
+          this.startTriggerSuppressed,
+        ) &&
+        !this.emittedNodes.has(el.id)
+      ) {
+        this.emitFrom(el.id, undefined, lines, 0);
+      }
+    }
     for (const el of this.container.flowElements) {
       if (el.kind === 'startEvent' && !this.emittedNodes.has(el.id)) {
         this.emitFrom(el.id, undefined, lines, 0);
@@ -1261,7 +1282,9 @@ class Emitter {
     const el = this.byId.get(target);
     if (el === undefined) return target;
     if (!isGateway(el)) {
-      return isElidedOnPrint(el) ? undefined : target;
+      return isElidedOnPrint(el, this.container.flowElements)
+        ? undefined
+        : target;
     }
     if (seen.has(target)) return undefined;
     seen.add(target);
@@ -1278,6 +1301,15 @@ class Emitter {
   private renderStatement(el: FlowElement): Lines | undefined {
     switch (el.kind) {
       case 'startEvent':
+        if (
+          isElidedOnPrint(
+            el,
+            this.container.flowElements,
+            this.startTriggerSuppressed,
+          )
+        ) {
+          return undefined;
+        }
         return renderStartEvent(
           el,
           this.startTriggerSuppressed,
@@ -1287,7 +1319,9 @@ class Emitter {
         const members = startOrEndMembers(el);
         const definition = el.eventDefinition;
         if (definition === undefined || isEndCarried(definition)) {
-          if (isElidedOnPrint(el)) return undefined;
+          if (isElidedOnPrint(el, this.container.flowElements)) {
+            return undefined;
+          }
           const head = definition === undefined ? '' : ` ${definition.kind}`;
           return bracketed(
             `end ${el.id}${head}`,
@@ -1304,33 +1338,34 @@ class Emitter {
         );
       }
       case 'intermediateThrowEvent': {
-        // Only escalation, signal, message, and compensation are emittable: an
-        // error aborts its path (`throw error`) and the rest have no throw surface.
+        // Only escalation, signal, message, compensation, and link are
+        // emittable: an error aborts its path (`throw error`) and the rest
+        // have no throw surface.
         const def = el.eventDefinition;
         const settings = [...throwBindingSettings(el), ...engineSettings(el)];
         switch (def.kind) {
           case 'escalation':
           case 'signal':
           case 'message':
-          case 'compensation': {
+          case 'compensation':
+          case 'link': {
             const trigger = renderTrigger(def, this.codeNames);
             return bracketed(
-              `emit ${trigger.head}${throwNameSuffix(el)}`,
+              `emit ${trigger.head}${terminalNameSuffix(el)}`,
               [...trigger.items, ...settings],
               structuredMembers(el),
             );
           }
           default:
             throw new Error(
-              `irToDsl: intermediate throw '${el.id}' carries a ${def.kind} definition; only escalation, signal, message, or compensation can be emitted.`,
+              `irToDsl: intermediate throw '${el.id}' carries a ${def.kind} definition; only escalation, signal, message, compensation, or link can be emitted.`,
             );
         }
       }
       case 'intermediateCatchEvent': {
-        // `await` has no name slot, so the line is trigger, payload, settings.
         const trigger = renderTrigger(el.eventDefinition, this.codeNames);
         return bracketed(
-          `await ${trigger.head}`,
+          `await ${trigger.head}${terminalNameSuffix(el)}`,
           [...trigger.items, ...engineSettings(el)],
           structuredMembers(el),
         );
@@ -1653,7 +1688,9 @@ function isBoundary(
 const END_CARRIED_KINDS = new Set<EventDefinition['kind']>(END_TRIGGERS);
 
 /** Read by the print and by the elision, so the two cannot drift. */
-function isEndCarried(def: EventDefinition): boolean {
+function isEndCarried(
+  def: EventDefinition,
+): def is Extract<EventDefinition, { kind: (typeof END_TRIGGERS)[number] }> {
   return END_CARRIED_KINDS.has(def.kind);
 }
 
@@ -1661,21 +1698,27 @@ function isEndCarried(def: EventDefinition): boolean {
  * Whether the id is absent from the printed form, leaving a `goto` nothing to
  * resolve against. `xmlToIr` asks the same question to report the label an
  * elided start or end takes with it, so the two answers cannot drift apart.
+ *
+ * `siblings` is the container's flow elements in order; only the start arm
+ * reads them. The compiler re-derives a dropped start at the body's head and
+ * nowhere else, so only the first plain unnamed start can go: a second one
+ * prints under its reserved id, and the error the validator draws on that id
+ * is what tells the reader an entry point needs a name, where dropping it too
+ * would turn two entries into one without a word.
  */
 export function isElidedOnPrint(
   el: FlowElement,
+  siblings: readonly FlowElement[],
   startTriggerSuppressed = false,
 ): boolean {
   switch (el.kind) {
     case 'startEvent':
-      // A trigger has nowhere else to print, so a start carrying one always
-      // prints. Inside an event sub-process the trigger prints in the `on`
-      // header instead, and the emitter suppresses it here.
-      if (el.eventDefinition !== undefined && !startTriggerSuppressed) {
-        return false;
-      }
       return (
-        isSynthesizedTerminalId(el.id, el.kind) && !carriesPrintableContent(el)
+        siblings.find(
+          (s) =>
+            s.kind === 'startEvent' &&
+            isPlainUnnamed(s, startTriggerSuppressed),
+        )?.id === el.id
       );
     case 'endEvent':
       if (!isSynthesizedTerminalId(el.id, el.kind)) return false;
@@ -1687,11 +1730,11 @@ export function isElidedOnPrint(
       // Every other definition prints as a `throw`, which drops a synthesized name.
       return !isEndCarried(el.eventDefinition);
     case 'intermediateThrowEvent':
-      // Spells the id through `throwNameSuffix`, which drops a synthesized one.
+      // Spells the id through `terminalNameSuffix`, which drops a synthesized one.
       return isSynthesizedTerminalId(el.id, el.kind);
     case 'intermediateCatchEvent':
-      // `await <trigger>` has no name slot in the grammar.
-      return true;
+      // Spells the id through `terminalNameSuffix`, which drops a synthesized one.
+      return isSynthesizedTerminalId(el.id, el.kind);
     case 'boundaryEvent':
       // Prints as `on <attachedToRef>: <trigger>`, keyed on the host.
       return true;
@@ -1718,6 +1761,20 @@ export function isElidedOnPrint(
       );
     }
   }
+}
+
+/** A start with nothing of its own to print, so nothing is lost by dropping it. */
+function isPlainUnnamed(
+  el: Extract<FlowElement, { kind: 'startEvent' }>,
+  startTriggerSuppressed: boolean,
+): boolean {
+  // A trigger has nowhere else to print, so a start carrying one always
+  // prints. Inside an event sub-process the trigger prints in the `on`
+  // header instead, and the emitter suppresses it here.
+  if (el.eventDefinition !== undefined && !startTriggerSuppressed) return false;
+  return (
+    isSynthesizedTerminalId(el.id, el.kind) && !carriesPrintableContent(el)
+  );
 }
 
 /**
@@ -1890,7 +1947,8 @@ function renderFence(format: string, code: string): string {
  * The validator rejects these prefixes in authored source, so an id carrying
  * the one its own kind is minted with is synthesized. An id carrying another
  * kind's template is an authored name and has to keep printing. An end answers
- * to the throw prefix as well, because `throw` lowers to an end event.
+ * to the throw prefix as well, because `throw` lowers to an end event; a catch
+ * answers to its own prefix only, since nothing else lowers to one.
  */
 function isSynthesizedTerminalId(
   id: string,
@@ -1905,6 +1963,8 @@ function isSynthesizedTerminalId(
       );
     case 'intermediateThrowEvent':
       return id.startsWith(THROW_EVENT_PREFIX);
+    case 'intermediateCatchEvent':
+      return id.startsWith(CATCH_EVENT_PREFIX);
     default:
       return false;
   }
@@ -1912,10 +1972,14 @@ function isSynthesizedTerminalId(
 
 /**
  * Omitted for a synthesized id: the forward compiler re-derives the same
- * `Throw_...` from the statement's coordinate, so dropping it is lossless.
+ * `Throw_...`/`Catch_...` from the statement's coordinate, so dropping it is
+ * lossless.
  */
-function throwNameSuffix(
-  el: Extract<FlowElement, { kind: 'endEvent' | 'intermediateThrowEvent' }>,
+function terminalNameSuffix(
+  el: Extract<
+    FlowElement,
+    { kind: 'endEvent' | 'intermediateThrowEvent' | 'intermediateCatchEvent' }
+  >,
 ): string {
   return isSynthesizedTerminalId(el.id, el.kind) ? '' : ` ${el.id}`;
 }
@@ -1923,7 +1987,7 @@ function throwNameSuffix(
 /** An authored id prints so it survives as a goto target. */
 function renderThrow(
   el: Extract<FlowElement, { kind: 'endEvent' }>,
-  def: EventDefinition,
+  def: Exclude<EndEventDefinition, { kind: (typeof END_TRIGGERS)[number] }>,
   settings: string[],
   members: Lines[],
   names: CodeNames,
@@ -1936,15 +2000,17 @@ function renderThrow(
     case 'compensation': {
       const trigger = renderTrigger(def, names);
       return bracketed(
-        `throw ${trigger.head}${throwNameSuffix(el)}`,
+        `throw ${trigger.head}${terminalNameSuffix(el)}`,
         [...trigger.items, ...settings],
         members,
       );
     }
-    default:
+    default: {
+      const exhaustive: never = def;
       throw new Error(
-        `irToDsl: end event '${el.id}' carries a ${def.kind} definition; only error, escalation, signal, message, or compensation can be thrown.`,
+        `irToDsl: unhandled thrown definition: ${JSON.stringify(exhaustive)}`,
       );
+    }
   }
 }
 
@@ -2041,6 +2107,8 @@ function renderTrigger(
         head: 'condition',
         items: [renderRawCondition(def.condition)],
       };
+    case 'link':
+      return { head: 'link', items: payloadItem(def.linkName) };
     case 'cancel':
       return { head: 'cancel', items: [] };
     case 'terminate':
@@ -2111,13 +2179,11 @@ function alongsideFlag(nonInterrupting: boolean): string[] {
   return nonInterrupting ? ['alongside'] : [];
 }
 
-/** `name=ID` is mandatory, so an elided start is dropped whole and re-derived. */
 function renderStartEvent(
   el: Extract<FlowElement, { kind: 'startEvent' }>,
   startTriggerSuppressed: boolean,
   names: CodeNames,
-): Lines | undefined {
-  if (isElidedOnPrint(el, startTriggerSuppressed)) return undefined;
+): Lines {
   const trigger =
     el.eventDefinition === undefined || startTriggerSuppressed
       ? { head: '', items: [] }
