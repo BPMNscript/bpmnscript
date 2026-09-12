@@ -864,7 +864,7 @@ export class BpmnScriptValidator {
   }
 
   /**
-   * Two facts about a start set only the engine matrix can tell, both silent
+   * Three facts about a start set only the engine matrix can tell, all silent
    * at deploy time and worth telling the author here instead. With no plain
    * or timer start, `initial` stays null and starting the process by key
    * throws (`ProcessDefinitionImpl.ensureDefaultInitialExists`). A start
@@ -872,6 +872,9 @@ export class BpmnScriptValidator {
    * never shown (`BpmnParse.parseStartFormHandlers`). Two plain or
    * timer starts is itself a deploy error the engine reports on its own, so
    * this check does not duplicate it and treats the first as the default.
+   * `BpmnParse.parseProcessDefinitionStartEvent` reads `operaton:initiator`
+   * off every start in document order and sets each on the process
+   * definition, so only the last start naming one keeps its value.
    */
   private checkDefaultStart(
     process: Process,
@@ -896,6 +899,19 @@ export class BpmnScriptValidator {
       for (const form of start.forms) {
         accept('warning', FORM_NEVER_OFFERED_MESSAGE, { node: form });
       }
+    }
+
+    const initiatorSettings = starts.flatMap((start) => {
+      const setting = configuredSettingsOf(start).find(
+        (item) => item.key === 'initiator',
+      );
+      return setting !== undefined ? [setting] : [];
+    });
+    for (const setting of initiatorSettings.slice(0, -1)) {
+      accept('warning', INITIATOR_SHADOWED_MESSAGE, {
+        node: setting,
+        property: 'key',
+      });
     }
   }
 
@@ -3426,6 +3442,11 @@ const FORM_NEVER_OFFERED_MESSAGE =
   "The engine offers a start form only on the process's default start, its " +
   'plain or timer start; this form is on a different start and is never ' +
   'shown.';
+
+const INITIATOR_SHADOWED_MESSAGE =
+  'The engine keeps one initiator per process: whichever start is parsed ' +
+  'last wins, so this setting is never written. Move it to the last ' +
+  'start, or drop it.';
 
 function handlerHostKey(handler: OnHandler): string {
   return handler.host?.ref ? targetStatementName(handler.host.ref) : '';

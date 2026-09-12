@@ -2368,12 +2368,13 @@ function warnCatchSideImplementationAttrs(
 }
 
 /**
- * Report everything a start or end the printer writes no statement for takes
- * with it: its label, its documentation, and a start's initiator. The
- * printer's own predicate decides, so what does survive is never reported, and
- * what stops surviving is never dropped without a word. This is the only
- * report standing behind an `initiator`, which {@link warnUnreadDeclaredAttrs}
- * counts as read the moment any start carries it.
+ * Report everything a start or end the printer may leave unprinted takes with
+ * it: its label, its documentation, and a start's initiator.
+ * {@link isElidedOnPrint} decides a start's fate alone; an end's is settled
+ * by print position, unknown here, so an end's message covers both outcomes.
+ * This is the only report standing behind an `initiator`, which
+ * {@link warnUnreadDeclaredAttrs} counts as read the moment any start carries
+ * it.
  */
 function warnElidedNamedDrop(
   el: StartEvent | EndEvent,
@@ -2382,22 +2383,25 @@ function warnElidedNamedDrop(
   warnings: ImportWarning[],
 ): void {
   if (!isElidedOnPrint(el, siblings, startTriggerSuppressed)) return;
-  const statement = el.kind === 'startEvent' ? 'start' : 'end';
+  const isStart = el.kind === 'startEvent';
   const report = (
     category: ImportWarningCategory,
     subject: string,
     noun: string = category,
   ): void => {
-    warnings.push({
-      elementId: el.id,
-      category,
-      message:
-        `The ${subject} on '${el.id}' was not written to the script: ` +
+    const message = isStart
+      ? `The ${subject} on '${el.id}' was not written to the script: ` +
         `'${el.id}' is the kind of name this tool generates for itself, ` +
-        `which a script cannot repeat, so this ${statement} is left out ` +
+        `which a script cannot repeat, so this start is left out ` +
         `entirely and its ${noun} with it. Rename it in the diagram to ` +
-        `keep the ${noun}.`,
-    });
+        `keep the ${noun}.`
+      : `The ${subject} on '${el.id}' cannot be kept as written: ` +
+        `'${el.id}' is the kind of name this tool generates for itself, ` +
+        `which a script cannot repeat. Where the script can do without ` +
+        `this end, it is left out and its ${noun} with it; anywhere else ` +
+        `it prints under that name and is refused when read back. ` +
+        `Rename it in the diagram to keep the ${noun}.`;
+    warnings.push({ elementId: el.id, category, message });
   };
   if (el.name !== undefined) report('label', `label '${el.name}'`);
   if (el.documentation !== undefined) report('documentation', 'documentation');

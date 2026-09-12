@@ -2394,7 +2394,7 @@ describe('xmlToIr: bpmn:documentation', () => {
         [
           'documentation',
           'EndEvent_1',
-          'this end is left out entirely and its documentation with it',
+          'Where the script can do without this end, it is left out and its documentation with it',
         ],
       ],
     ],

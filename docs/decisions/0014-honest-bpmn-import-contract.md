@@ -109,6 +109,8 @@ Amended by ADR-0031, which narrows the `bpmn:documentation` bullet to the positi
 
 Amended by ADR-0033, which lifts the refusal on a call activity's variable mapping and narrows the bullet to the shapes the surface still cannot resolve or write back.
 
+Amended by ADR-0036, under which the label bullet's "left out whole" holds for a start, and for an end only at its block's tail; anywhere else the end prints under its reserved id, label and all, and the print reports it.
+
 Related decisions: ADR-0006 (the shared IR, where `warnings` deliberately lives outside the IR, which stays serializable).
 ADR-0007 (the Operaton moddle extension fork, whose declared and undeclared elements determine warning-attribution precision).
 ADR-0003 (auto-layout for diagram interchange, the one kind of element this contract drops without a warning).
