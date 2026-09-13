@@ -10,6 +10,7 @@
 import {
   CATCH_TRIGGERS,
   EMIT_TRIGGERS,
+  FORM_CONSTRAINT_NAMES,
   formatPlainWordList,
   ON_TRIGGERS,
   START_TRIGGERS,
@@ -55,9 +56,9 @@ export class UnsupportedServiceTaskFormError extends UnsupportedConstructError {
 }
 
 /**
- * An `operaton:formField` type outside the four the DSL maps: `string`, `long`,
- * `boolean` and `date`, `long` being the Operaton spelling of the DSL's
- * `number`.
+ * An `operaton:formField` type outside the five the DSL maps: `string`,
+ * `long`, `boolean`, `date`, and `enum`, `long` being the Operaton spelling of
+ * the DSL's `number`.
  */
 export class UnsupportedFormFieldTypeError extends UnsupportedConstructError {
   declare readonly elementId: string;
@@ -68,8 +69,38 @@ export class UnsupportedFormFieldTypeError extends UnsupportedConstructError {
     super(
       `The form field '${fieldId}' on '${elementId}' has type '${fieldType}', ` +
         'which this tool cannot import. Supported form field types are ' +
-        'string, long, boolean, and date.',
+        'string, long, boolean, date, and enum.',
       { elementId, fieldId, fieldType },
+    );
+  }
+}
+
+/** {@link FORM_CONSTRAINT_NAMES} minus `validator`, joined as a plain enumeration. */
+const REGISTERED_VALIDATOR_NAMES = (() => {
+  const names = FORM_CONSTRAINT_NAMES.filter((name) => name !== 'validator');
+  return `${names.slice(0, -1).join(', ')}, and ${names[names.length - 1]}`;
+})();
+
+/** A form field constraint the engine fails the deployment on or the script cannot hold; `detail` states which. */
+export class UnsupportedFormFieldConstraintError extends UnsupportedConstructError {
+  declare readonly elementId: string;
+  declare readonly fieldId: string;
+  declare readonly constraintName: string;
+  declare readonly detail: string;
+
+  constructor(
+    elementId: string,
+    fieldId: string,
+    constraintName: string,
+    detail: string,
+  ) {
+    super(
+      `The constraint '${constraintName}' on form field '${fieldId}' of '${elementId}' ` +
+        `cannot be imported: ${detail}. Operaton registers ` +
+        `${REGISTERED_VALIDATOR_NAMES}, and reads a custom validator class ` +
+        "or expression off 'validator'; FormValidators.createValidator " +
+        'fails the deployment on any other name.',
+      { elementId, fieldId, constraintName, detail },
     );
   }
 }
@@ -288,6 +319,39 @@ export class UnsupportedConditionExpressionError extends UnsupportedConstructErr
         'tool writes a condition as an expression Operaton evaluates as ' +
         'UEL, and a condition Operaton hands to a script engine has no ' +
         'spelling here.',
+      { elementId, detail },
+    );
+  }
+}
+
+/** An external task's error mapping the engine fails the deployment on or that names no coded error root; `detail` states which. */
+export class UnsupportedErrorMappingError extends UnsupportedConstructError {
+  declare readonly elementId: string;
+  declare readonly detail: string;
+
+  constructor(elementId: string, detail: string) {
+    super(
+      `The error mapping on '${elementId}' cannot be imported: ${detail}. ` +
+        "Operaton's parseOperatonErrorEventDefinitions fails the deployment " +
+        'on an operaton:errorEventDefinition carrying no expression, and ' +
+        'this tool needs its errorRef to name an error root carrying a code.',
+      { elementId, detail },
+    );
+  }
+}
+
+/** A user task's BPMN resource assignment in a shape Operaton refuses to deploy; `detail` states which. */
+export class UnsupportedAssignmentError extends UnsupportedConstructError {
+  declare readonly elementId: string;
+  declare readonly detail: string;
+
+  constructor(elementId: string, detail: string) {
+    super(
+      `The assignment on '${elementId}' cannot be imported: ${detail}. ` +
+        'Operaton refuses to deploy a user task carrying a ' +
+        'bpmn:humanPerformer beside operaton:assignee ' +
+        '(BpmnParse.parseUserTaskCustomExtensions) or more than one ' +
+        'bpmn:humanPerformer (parseHumanPerformer).',
       { elementId, detail },
     );
   }

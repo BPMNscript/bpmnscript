@@ -35,6 +35,13 @@ export type {
   ListenerBinding,
   ExecutionListener,
   TaskListener,
+  FormField,
+  FormFieldType,
+  FormFieldValue,
+  FormFieldConstraint,
+  FormConstraintName,
+  ExtensionProperty,
+  ErrorMapping,
 } from './ir/types.js';
 
 export { isGateway, gatewayDefaultFlowId } from './ir/types.js';
@@ -72,6 +79,9 @@ export {
   UnsupportedExtensionFormError,
   UnsupportedFormReferenceError,
   UnsupportedConditionExpressionError,
+  UnsupportedFormFieldConstraintError,
+  UnsupportedErrorMappingError,
+  UnsupportedAssignmentError,
 } from './errors.js';
 
 export { astToIr } from './ast-to-ir.js';

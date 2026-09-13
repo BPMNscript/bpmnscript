@@ -776,6 +776,21 @@ describe('Parsing - element settings and member blocks', () => {
       '[StartEvent(name="Begin", forms=[FormBlock(fields=[FormField(id="amount", type="number", label="Amount", defaultValue=LiteralInt(value=0))])]), UserTask(name="Approve", items=[Setting(key="assignee", value=LiteralString(value="demo"))], forms=[FormBlock(fields=[FormField(id="ok", type="boolean", label="OK?")])])]',
     ],
     [
+      'a form field takes a default, settings parens, enum values and property lines',
+      `process p { start S { form { plan: enum "Plan" = "basic" (required: true, minlength: 2) { basic "Basic" plus property description = "Sets the fee" } } } }`,
+      '[StartEvent(name="S", forms=[FormBlock(fields=[FormField(id="plan", type="enum", label="Plan", defaultValue=LiteralString(value="basic"), items=[Setting(key="required", value=LiteralBool(value="true")), Setting(key="minlength", value=LiteralInt(value=2))], values=[EnumValue(id="basic", label="Basic"), EnumValue(id="plus")], params=[IoParameter(direction="property", name="description", value=LiteralString(value="Sets the fee"))])])])]',
+    ],
+    [
+      'a bare enum value before a property line, and one named `property`, are told apart',
+      `process p { start S { form { plan: enum { family property x = "y" property "Property" } } } }`,
+      '[StartEvent(name="S", forms=[FormBlock(fields=[FormField(id="plan", type="enum", values=[EnumValue(id="family"), EnumValue(id="property", label="Property")], params=[IoParameter(direction="property", name="x", value=LiteralString(value="y"))])])])]',
+    ],
+    [
+      "any word parses in a form field's type slot; which words are types is the validator's job",
+      `process p { start S { form { blob: whatever "Blob" } } }`,
+      '[StartEvent(name="S", forms=[FormBlock(fields=[FormField(id="blob", type="whatever", label="Blob")])])]',
+    ],
+    [
       '`process` is still accepted as the call attribute key',
       `process p { call C(process: "x") }`,
       '[CallActivity(name="C", items=[Setting(key="process", value=LiteralString(value="x"))])]',
@@ -942,6 +957,31 @@ ${FENCE}
       expect(sub.body.statements.map((s) => s.$type)).toEqual(bodyTypes);
     },
   );
+});
+
+describe("Parsing - an external task's extras", () => {
+  // `error <Code> when <condition>` is `ID ID ID Expr`, told from a
+  // parameter's `ID ID '='` at the third token; neither word is reserved, so
+  // the second row keeps a misspelt `when` for the validator to report.
+  test.each<Row>([
+    [
+      'an external task takes a priority, property lines and error mappings among its members',
+      `process p { error E service V(topic: "t", taskPriority: 42) { property k = "v" error E when externalTask.errorMessage == "declined" property j = "w" } }`,
+      'Process(name="p", decls=[CodeDecl(kind="error", name="E")], body=[ServiceTask(name="V", items=[Setting(key="topic", value=LiteralString(value="t")), Setting(key="taskPriority", value=LiteralInt(value=42))], params=[IoParameter(direction="property", name="k", value=LiteralString(value="v")), IoParameter(direction="property", name="j", value=LiteralString(value="w"))], errorMappings=[ErrorMapping(trigger="error", code=->E, when="when", condition=Equality(left=VarRef(ref=->externalTask, accessors=[Accessor(prop="errorMessage")]), op="==", right=LiteralString(value="declined")))])])',
+    ],
+    [
+      'a bare condition ends where the next member starts',
+      `process p { service V(topic: "t") { error E when ready property k = "v" } }`,
+      'Process(name="p", body=[ServiceTask(name="V", items=[Setting(key="topic", value=LiteralString(value="t"))], errorMappings=[ErrorMapping(trigger="error", code=->E, when="when", condition=VarRef(ref=->ready))], params=[IoParameter(direction="property", name="k", value=LiteralString(value="v"))])])',
+    ],
+    [
+      'a mapping with a word other than `when` parses, so the validator can name the word',
+      `process p { service V(topic: "t") { error E wenn "\${x}" } }`,
+      'Process(name="p", body=[ServiceTask(name="V", items=[Setting(key="topic", value=LiteralString(value="t"))], errorMappings=[ErrorMapping(trigger="error", code=->E, when="wenn", condition=RawExpr(raw="\\"${x}\\""))])])',
+    ],
+  ])('%s', async (_title, source, expected) => {
+    await expectProcess(source, expected);
+  });
 });
 
 describe('Parsing - task kinds, service bindings and fenced scripts', () => {
@@ -1282,11 +1322,12 @@ describe('Parsing - sources the parser rejects', () => {
       'process p {\n  var amount: while\n  start S\n}',
       [notATypeWord('while'), "Expecting token of type '(' but found `start`."],
     ],
+    // The slot takes any word, so it gets the guidance every `ID` slot gives.
     [
-      'a reserved word in the type slot of a form field names the types it takes',
+      'a reserved word in the type slot of a form field gets the reserved-word guidance',
       'process p {\n  start S\n  user U { form { amount: while } }\n}',
       [
-        notATypeWord('while'),
+        reservedWord('while'),
         "Expecting token of type '(' but found `}`.",
         "Expecting token of type 'EOF' but found `}`.",
       ],

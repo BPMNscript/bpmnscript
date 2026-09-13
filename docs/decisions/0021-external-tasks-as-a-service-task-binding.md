@@ -71,3 +71,5 @@ A dedicated keyword would flag that operational fork at the point an author writ
 The validator's zero-binding and more-than-one-binding messages name all four keys (`class`, `expression`, `delegate`, `topic`), so the fourth binding is discoverable from the error text alone.
 Related decisions: ADR-0006 (engine-agnostic intermediate representation) already modeled `external` as a `ServiceTaskBinding` variant rather than its own IR node; this decision brings the DSL surface in line with that model.
 ADR-0013 (target users without BPMN knowledge and minimize boilerplate) is the standing rule this decision applies.
+
+Amended by ADR-0038, under which the `topic` binding carries the three things the engine reads beside the topic and under no other binding: a `taskPriority` setting, `property` lines, and `error <Code> when <condition>` mappings.

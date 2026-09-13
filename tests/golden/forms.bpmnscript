@@ -1,0 +1,40 @@
+// Forms round-trip fixture: every extension a form field takes, spread over a
+// start form and a task form, so one artifact carries an enum with labelled
+// and bare values, every built-in constraint, a custom validator, a date
+// pattern, and property lines on two field types.
+
+process gym-membership {
+  start Applied(label: "Membership requested") {
+    form {
+      fullName: string "Full name" (required: true, minlength: 2, maxlength: 80)
+      birthDate: date "Date of birth" (pattern: "dd/MM/yyyy", required: true)
+      plan: enum "Membership plan" = "basic" (required: true) {
+        basic "Basic"
+        plus "Plus"
+        family
+        property description = "The plan sets the monthly fee"
+      }
+      newsletter: boolean "Send the newsletter?" = false
+    }
+  }
+
+  user ConfirmPayment(label: "Confirm the first payment", assignee: "demo") {
+    form {
+      amount: number "Amount in euros" = 0 (min: 0, max: 5000)
+      iban: string "IBAN" (validator: "com.example.gym.IbanValidator")
+      reference: string "Payment reference" (readonly: true) {
+        property placeholder = "Filled in by accounting"
+        property help = "Leave it empty; accounting fills it in"
+      }
+      confirmed: boolean "Payment received?" (required: true)
+    }
+  }
+
+  if (confirmed) {
+    service Enroll(label: "Enroll the member", class: "com.example.gym.EnrollDelegate")
+  } else {
+    user ChaseUp(label: "Chase the payment", assignee: "demo")
+  }
+
+  end Done(label: "Application closed")
+}

@@ -1,0 +1,151 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI" xmlns:dc="http://www.omg.org/spec/DD/20100524/DC" xmlns:di="http://www.omg.org/spec/DD/20100524/DI" xmlns:operaton="http://operaton.org/schema/1.0/bpmn" id="Definitions_card-payment" targetNamespace="http://bpmnscript.io/processes" exporter="BPMNscript" exporterVersion="0.0.0">
+  <bpmn:process id="card-payment" name="Card Payment" isExecutable="true" operaton:historyTimeToLive="P30D">
+    <bpmn:startEvent id="ChargeRequested">
+      <bpmn:extensionElements>
+        <operaton:formData>
+          <operaton:formField id="amount" label="Amount in euros" type="long" />
+        </operaton:formData>
+      </bpmn:extensionElements>
+      <bpmn:outgoing>Flow_ChargeRequested_ChargeCard</bpmn:outgoing>
+    </bpmn:startEvent>
+    <bpmn:serviceTask id="ChargeCard" name="Charge the card" operaton:type="external" operaton:topic="charge-card" operaton:taskPriority="42">
+      <bpmn:extensionElements>
+        <operaton:properties>
+          <operaton:property name="gateway" value="stripe" />
+          <operaton:property name="attempts" value="3" />
+        </operaton:properties>
+        <operaton:errorEventDefinition errorRef="Error_PAYMENT_DECLINED" expression="${externalTask.errorMessage == &#34;declined&#34;}" />
+        <operaton:errorEventDefinition errorRef="Error_GATEWAY_DOWN" expression="${externalTask.retries == 0}" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_ChargeRequested_ChargeCard</bpmn:incoming>
+      <bpmn:outgoing>Flow_ChargeCard_SendReceipt</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:sendTask id="SendReceipt" name="Send the receipt" operaton:type="external" operaton:topic="send-receipt" operaton:taskPriority="${amount &#62; 1000 ? 90 : 10}">
+      <bpmn:extensionElements>
+        <operaton:properties>
+          <operaton:property name="channel" value="email" />
+        </operaton:properties>
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_ChargeCard_SendReceipt</bpmn:incoming>
+      <bpmn:outgoing>Flow_SendReceipt_RateFraud</bpmn:outgoing>
+    </bpmn:sendTask>
+    <bpmn:businessRuleTask id="RateFraud" name="Rate the fraud risk" operaton:type="external" operaton:topic="rate-fraud">
+      <bpmn:extensionElements>
+        <operaton:errorEventDefinition errorRef="Error_PAYMENT_DECLINED" expression="${externalTask.errorDetails == &#34;fraud&#34;}" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_SendReceipt_RateFraud</bpmn:incoming>
+      <bpmn:outgoing>Flow_RateFraud_ChargeSettled</bpmn:outgoing>
+    </bpmn:businessRuleTask>
+    <bpmn:endEvent id="ChargeSettled" name="The charge is settled">
+      <bpmn:incoming>Flow_RateFraud_ChargeSettled</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:boundaryEvent id="Boundary_ChargeCard_error" attachedToRef="ChargeCard">
+      <bpmn:outgoing>Flow_Boundary_ChargeCard_error_ReviewDecline</bpmn:outgoing>
+      <bpmn:errorEventDefinition errorRef="Error_PAYMENT_DECLINED" />
+    </bpmn:boundaryEvent>
+    <bpmn:userTask id="ReviewDecline" name="Review the declined charge" operaton:assignee="demo">
+      <bpmn:incoming>Flow_Boundary_ChargeCard_error_ReviewDecline</bpmn:incoming>
+      <bpmn:outgoing>Flow_ReviewDecline_EndEvent_Boundary_ChargeCard_error</bpmn:outgoing>
+    </bpmn:userTask>
+    <bpmn:endEvent id="EndEvent_Boundary_ChargeCard_error">
+      <bpmn:incoming>Flow_ReviewDecline_EndEvent_Boundary_ChargeCard_error</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:subProcess id="EventSubProcess_card-payment_6" triggeredByEvent="true">
+      <bpmn:startEvent id="GatewayDown">
+        <bpmn:outgoing>Flow_GatewayDown_RetryLater</bpmn:outgoing>
+        <bpmn:errorEventDefinition errorRef="Error_GATEWAY_DOWN" />
+      </bpmn:startEvent>
+      <bpmn:userTask id="RetryLater" name="Retry once the gateway is back" operaton:assignee="demo">
+        <bpmn:incoming>Flow_GatewayDown_RetryLater</bpmn:incoming>
+        <bpmn:outgoing>Flow_RetryLater_GatewayHandled</bpmn:outgoing>
+      </bpmn:userTask>
+      <bpmn:endEvent id="GatewayHandled">
+        <bpmn:incoming>Flow_RetryLater_GatewayHandled</bpmn:incoming>
+      </bpmn:endEvent>
+      <bpmn:sequenceFlow id="Flow_GatewayDown_RetryLater" sourceRef="GatewayDown" targetRef="RetryLater" />
+      <bpmn:sequenceFlow id="Flow_RetryLater_GatewayHandled" sourceRef="RetryLater" targetRef="GatewayHandled" />
+    </bpmn:subProcess>
+    <bpmn:sequenceFlow id="Flow_ChargeRequested_ChargeCard" sourceRef="ChargeRequested" targetRef="ChargeCard" />
+    <bpmn:sequenceFlow id="Flow_ChargeCard_SendReceipt" sourceRef="ChargeCard" targetRef="SendReceipt" />
+    <bpmn:sequenceFlow id="Flow_SendReceipt_RateFraud" sourceRef="SendReceipt" targetRef="RateFraud" />
+    <bpmn:sequenceFlow id="Flow_RateFraud_ChargeSettled" sourceRef="RateFraud" targetRef="ChargeSettled" />
+    <bpmn:sequenceFlow id="Flow_Boundary_ChargeCard_error_ReviewDecline" sourceRef="Boundary_ChargeCard_error" targetRef="ReviewDecline" />
+    <bpmn:sequenceFlow id="Flow_ReviewDecline_EndEvent_Boundary_ChargeCard_error" sourceRef="ReviewDecline" targetRef="EndEvent_Boundary_ChargeCard_error" />
+  </bpmn:process>
+  <bpmn:error id="Error_PAYMENT_DECLINED" name="PAYMENT_DECLINED" errorCode="PAYMENT_DECLINED" operaton:errorMessage="The card issuer declined the charge" />
+  <bpmn:error id="Error_GATEWAY_DOWN" name="GATEWAY_DOWN" errorCode="GATEWAY_DOWN" />
+  <bpmndi:BPMNDiagram id="BPMNDiagram_card-payment">
+    <bpmndi:BPMNPlane id="BPMNPlane_card-payment" bpmnElement="card-payment">
+      <bpmndi:BPMNShape id="ChargeRequested_di" bpmnElement="ChargeRequested">
+        <dc:Bounds x="57" y="52" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="ChargeCard_di" bpmnElement="ChargeCard">
+        <dc:Bounds x="625" y="30" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Boundary_ChargeCard_error_di" bpmnElement="Boundary_ChargeCard_error">
+        <dc:Bounds x="657" y="92" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="SendReceipt_di" bpmnElement="SendReceipt">
+        <dc:Bounds x="775" y="30" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="RateFraud_di" bpmnElement="RateFraud">
+        <dc:Bounds x="925" y="30" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="ChargeSettled_di" bpmnElement="ChargeSettled">
+        <dc:Bounds x="1107" y="52" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="EventSubProcess_card-payment_6_di" bpmnElement="EventSubProcess_card-payment_6" isExpanded="true">
+        <dc:Bounds x="25" y="170" width="550" height="220" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="ReviewDecline_di" bpmnElement="ReviewDecline">
+        <dc:Bounds x="775" y="170" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="EndEvent_Boundary_ChargeCard_error_di" bpmnElement="EndEvent_Boundary_ChargeCard_error">
+        <dc:Bounds x="957" y="192" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_ChargeRequested_ChargeCard_di" bpmnElement="Flow_ChargeRequested_ChargeCard">
+        <di:waypoint x="93" y="70" />
+        <di:waypoint x="625" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ChargeCard_SendReceipt_di" bpmnElement="Flow_ChargeCard_SendReceipt">
+        <di:waypoint x="725" y="70" />
+        <di:waypoint x="775" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Boundary_ChargeCard_error_ReviewDecline_di" bpmnElement="Flow_Boundary_ChargeCard_error_ReviewDecline">
+        <di:waypoint x="675" y="128" />
+        <di:waypoint x="675" y="210" />
+        <di:waypoint x="775" y="210" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_SendReceipt_RateFraud_di" bpmnElement="Flow_SendReceipt_RateFraud">
+        <di:waypoint x="875" y="70" />
+        <di:waypoint x="925" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_RateFraud_ChargeSettled_di" bpmnElement="Flow_RateFraud_ChargeSettled">
+        <di:waypoint x="1025" y="70" />
+        <di:waypoint x="1107" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ReviewDecline_EndEvent_Boundary_ChargeCard_error_di" bpmnElement="Flow_ReviewDecline_EndEvent_Boundary_ChargeCard_error">
+        <di:waypoint x="875" y="210" />
+        <di:waypoint x="957" y="210" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNShape id="GatewayDown_di" bpmnElement="GatewayDown">
+        <dc:Bounds x="132" y="262" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="RetryLater_di" bpmnElement="RetryLater">
+        <dc:Bounds x="250" y="240" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="GatewayHandled_di" bpmnElement="GatewayHandled">
+        <dc:Bounds x="432" y="262" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_GatewayDown_RetryLater_di" bpmnElement="Flow_GatewayDown_RetryLater">
+        <di:waypoint x="168" y="280" />
+        <di:waypoint x="250" y="280" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_RetryLater_GatewayHandled_di" bpmnElement="Flow_RetryLater_GatewayHandled">
+        <di:waypoint x="350" y="280" />
+        <di:waypoint x="432" y="280" />
+      </bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>

@@ -40,6 +40,7 @@ import { parseHelper } from 'langium/test';
 import type { Model, OnHandler } from '@bpmn-script/language';
 import {
   createBpmnScriptServices,
+  isErrorMapping,
   isGotoStatement,
   isOnHandler,
   isProcess,
@@ -142,7 +143,8 @@ async function checkRow(
  * Every identifier of `source` in document order with what it resolves to,
  * then every diagnostic of either severity. Warnings are in because the
  * undeclared-variable one is what an identifier outside a code position has to
- * keep producing.
+ * keep producing. A mapping's code slot is the one reference that is not an
+ * identifier in an expression, and reads as `error E -> ...`.
  */
 async function codeResolutionsOf(source: string): Promise<string[]> {
   const document = await parse(source, { validation: true });
@@ -152,6 +154,10 @@ async function codeResolutionsOf(source: string): Promise<string[]> {
   for (const node of AstUtils.streamAst(document.parseResult.value)) {
     if (isVarRef(node)) {
       lines.push(`${node.ref.$refText} -> ${targetOf(node.ref)}`);
+    } else if (isErrorMapping(node)) {
+      lines.push(
+        `${node.trigger} ${node.code.$refText} -> ${targetOf(node.code)}`,
+      );
     }
   }
   for (const diagnostic of withTextMessages(document.diagnostics ?? [])) {
@@ -579,6 +585,43 @@ describe('Scoping - code declarations reached from a code position', () => {
       'a condition payload is an expression, not a code, whichever way it is written',
       `process p { var ready: boolean user Check on Check: condition(ready) { user B } }`,
       ['ready -> unresolved'],
+    ],
+  ])('%s', checkCodeRow);
+});
+
+describe('Scoping - the code slot of an error mapping', () => {
+  // Raw conditions, so no undeclared-variable warning rides along; the
+  // validator's own rules for a mapping are not what these rows pin.
+  test.each<Row>([
+    [
+      'a mapping naming a declared error resolves it, with nothing to report',
+      `process p { error E service V(topic: "t") { error E when "\${x}" } }`,
+      ['error E -> p/E:CodeDecl'],
+    ],
+    [
+      'a mapping naming nothing declared says how to declare it',
+      `process p { service V(topic: "t") { error NOPE when "\${x}" } }`,
+      [
+        'error NOPE -> unresolved',
+        `error: 'NOPE' is not declared. Add 'error NOPE' to the process.`,
+      ],
+    ],
+    [
+      'a mapping does not reach a declaration of another kind',
+      `process p { escalation E service V(topic: "t") { error E when "\${x}" } }`,
+      [
+        'error E -> unresolved',
+        `error: 'E' is declared as an escalation, not an error.`,
+      ],
+    ],
+    [
+      'a mapping headed by the other code word resolves that kind, which the validator refuses on its own',
+      `process p { escalation E service V(topic: "t") { escalation E when "\${x}" } }`,
+      [
+        'escalation E -> p/E:CodeDecl',
+        'error: An external task maps a reported failure onto an error and ' +
+          "nothing else; write 'error <Code> when <condition>'.",
+      ],
     ],
   ])('%s', checkCodeRow);
 });

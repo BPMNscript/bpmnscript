@@ -132,6 +132,11 @@
           "type": "String"
         },
         {
+          "name": "taskPriority",
+          "isAttr": true,
+          "type": "String"
+        },
+        {
           "name": "resultVariable",
           "isAttr": true,
           "type": "String"
@@ -308,6 +313,83 @@
           "name": "defaultValue",
           "isAttr": true,
           "type": "String"
+        },
+        {
+          "name": "datePattern",
+          "isAttr": true,
+          "type": "String"
+        },
+        {
+          "name": "properties",
+          "type": "Properties"
+        },
+        {
+          "name": "validation",
+          "type": "Validation"
+        },
+        {
+          "name": "values",
+          "type": "Value",
+          "isMany": true
+        }
+      ]
+    },
+    {
+      "name": "Properties",
+      "superClass": ["Element"],
+      "properties": [
+        {
+          "name": "values",
+          "type": "Property",
+          "isMany": true
+        }
+      ]
+    },
+    {
+      "name": "Property",
+      "superClass": ["Element"],
+      "properties": [
+        {
+          "name": "id",
+          "isAttr": true,
+          "type": "String"
+        },
+        {
+          "name": "name",
+          "isAttr": true,
+          "type": "String"
+        },
+        {
+          "name": "value",
+          "isAttr": true,
+          "type": "String"
+        }
+      ]
+    },
+    {
+      "name": "Validation",
+      "superClass": ["Element"],
+      "properties": [
+        {
+          "name": "constraints",
+          "type": "Constraint",
+          "isMany": true
+        }
+      ]
+    },
+    {
+      "name": "Constraint",
+      "superClass": ["Element"],
+      "properties": [
+        {
+          "name": "name",
+          "isAttr": true,
+          "type": "String"
+        },
+        {
+          "name": "config",
+          "isAttr": true,
+          "type": "String"
         }
       ]
     },
@@ -464,7 +546,7 @@
       ]
     },
     {
-      "name": "ErrorEventDefinition",
+      "name": "ErrorEventDefinitionExtension",
       "isAbstract": true,
       "extends": ["bpmn:ErrorEventDefinition"],
       "properties": [
@@ -475,6 +557,17 @@
         },
         {
           "name": "errorMessageVariable",
+          "isAttr": true,
+          "type": "String"
+        }
+      ]
+    },
+    {
+      "name": "ErrorEventDefinition",
+      "superClass": ["bpmn:ErrorEventDefinition", "Element"],
+      "properties": [
+        {
+          "name": "expression",
           "isAttr": true,
           "type": "String"
         }

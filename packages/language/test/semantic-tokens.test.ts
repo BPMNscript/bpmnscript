@@ -183,6 +183,11 @@ describe('Semantic tokens - soft event words', () => {
       'user T { on <|create|>(<|class|>: "com.acme.L") }',
       [KEYWORD, KEYWORD],
     ],
+    [
+      'an error mapping highlights its two words, not the code or the condition',
+      'error E\n  service V(topic: "t") { <|error|> <|E|> <|when|> <|ready|> }',
+      [KEYWORD, PLAIN, KEYWORD, PLAIN],
+    ],
     ['a step named after a soft word stays plain', 'user <|input|>', [PLAIN]],
     ...SOFT_WORDS_AS_VAR_NAME.map((word): Row => [
       `\`var ${word}\` carries no token on the name`,

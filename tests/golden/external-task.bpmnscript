@@ -1,0 +1,54 @@
+// External-task round-trip fixture: one card-payment narrative that exercises
+// every extra a step handed to an external worker carries, spread over the
+// three task kinds that bind to a topic:
+//
+//   - `taskPriority`, as a number on the charge and as an expression on the
+//     receipt, the two spellings the engine's `parsePriority` accepts;
+//   - `property` lines, the key-value pairs a worker fetches with the task;
+//   - `error ... when` lines, which raise a declared error when a failure the
+//     worker reports matches: two on one task so their order is pinned, one on
+//     a decision step so a mapping outside the service tag is pinned.
+//
+// `PAYMENT_DECLINED` is caught by a handler attached to the charge and
+// `GATEWAY_DOWN` by a process-wide one, so the artifact carries a code a
+// handler uses beside one only the mappings raise. The `amount` the receipt's
+// priority reads is declared on the start form so it survives an import-and-
+// back round trip, and every label differs from the name humanized from its id.
+
+process card-payment {
+  error PAYMENT_DECLINED(message: "The card issuer declined the charge")
+  error GATEWAY_DOWN
+
+  start ChargeRequested {
+    form {
+      amount: number "Amount in euros"
+    }
+  }
+
+  service ChargeCard(label: "Charge the card", topic: "charge-card", taskPriority: 42) {
+    property gateway = "stripe"
+    property attempts = "3"
+    error PAYMENT_DECLINED when externalTask.errorMessage == "declined"
+    error GATEWAY_DOWN when externalTask.retries == 0
+  }
+
+  send SendReceipt(label: "Send the receipt", topic: "send-receipt", taskPriority: "${amount > 1000 ? 90 : 10}") {
+    property channel = "email"
+  }
+
+  decide RateFraud(label: "Rate the fraud risk", topic: "rate-fraud") {
+    error PAYMENT_DECLINED when externalTask.errorDetails == "fraud"
+  }
+
+  end ChargeSettled(label: "The charge is settled")
+
+  on ChargeCard: error(PAYMENT_DECLINED) {
+    user ReviewDecline(label: "Review the declined charge", assignee: "demo")
+  }
+
+  on error(GATEWAY_DOWN) {
+    start GatewayDown
+    user RetryLater(label: "Retry once the gateway is back", assignee: "demo")
+    end GatewayHandled
+  }
+}

@@ -6,7 +6,11 @@
 import { AstUtils, type AstNode } from 'langium';
 import type { Process, VarType } from './generated/ast.js';
 import { caughtBindingsOf } from './paren-items.js';
-import { FIELD_DIRECTION } from './vocabulary.js';
+import {
+  FIELD_DIRECTION,
+  formFieldVariableType,
+  PROPERTY_DIRECTION,
+} from './vocabulary.js';
 import {
   isIoParameter,
   isOnHandler,
@@ -73,8 +77,9 @@ export class DefaultVariableSymbolProvider implements VariableSymbolProvider {
       if (!isStartEvent(node) && !isUserTask(node)) continue;
       for (const form of node.forms) {
         for (const field of form.fields) {
-          if (!table.has(field.id)) {
-            table.set(field.id, { name: field.id, type: field.type });
+          const type = formFieldVariableType(field.type);
+          if (type !== undefined && !table.has(field.id)) {
+            table.set(field.id, { name: field.id, type });
           }
         }
       }
@@ -103,8 +108,14 @@ export class DefaultVariableSymbolProvider implements VariableSymbolProvider {
     for (const node of AstUtils.streamAst(process)) {
       if (isIoParameter(node)) {
         // A field names a property of the delegate the element binds, set as
-        // that object is built, so it declares nothing the process can read.
-        if (node.direction === FIELD_DIRECTION) continue;
+        // that object is built, and a property is text handed to Tasklist or
+        // a worker, so neither declares anything the process can read.
+        if (
+          node.direction === FIELD_DIRECTION ||
+          node.direction === PROPERTY_DIRECTION
+        ) {
+          continue;
+        }
         seedOpen(node.name);
         continue;
       }

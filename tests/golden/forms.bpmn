@@ -1,0 +1,154 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI" xmlns:dc="http://www.omg.org/spec/DD/20100524/DC" xmlns:di="http://www.omg.org/spec/DD/20100524/DI" xmlns:operaton="http://operaton.org/schema/1.0/bpmn" id="Definitions_gym-membership" targetNamespace="http://bpmnscript.io/processes" exporter="BPMNscript" exporterVersion="0.0.0">
+  <bpmn:process id="gym-membership" name="Gym Membership" isExecutable="true" operaton:historyTimeToLive="P30D">
+    <bpmn:startEvent id="Applied" name="Membership requested">
+      <bpmn:extensionElements>
+        <operaton:formData>
+          <operaton:formField id="fullName" label="Full name" type="string">
+            <operaton:validation>
+              <operaton:constraint name="required" />
+              <operaton:constraint name="minlength" config="2" />
+              <operaton:constraint name="maxlength" config="80" />
+            </operaton:validation>
+          </operaton:formField>
+          <operaton:formField id="birthDate" label="Date of birth" type="date" datePattern="dd/MM/yyyy">
+            <operaton:validation>
+              <operaton:constraint name="required" />
+            </operaton:validation>
+          </operaton:formField>
+          <operaton:formField id="plan" label="Membership plan" type="enum" defaultValue="basic">
+            <operaton:properties>
+              <operaton:property id="description" value="The plan sets the monthly fee" />
+            </operaton:properties>
+            <operaton:validation>
+              <operaton:constraint name="required" />
+            </operaton:validation>
+            <operaton:value id="basic" name="Basic" />
+            <operaton:value id="plus" name="Plus" />
+            <operaton:value id="family" />
+          </operaton:formField>
+          <operaton:formField id="newsletter" label="Send the newsletter?" type="boolean" defaultValue="false" />
+        </operaton:formData>
+      </bpmn:extensionElements>
+      <bpmn:outgoing>Flow_Applied_ConfirmPayment</bpmn:outgoing>
+    </bpmn:startEvent>
+    <bpmn:userTask id="ConfirmPayment" name="Confirm the first payment" operaton:assignee="demo">
+      <bpmn:extensionElements>
+        <operaton:formData>
+          <operaton:formField id="amount" label="Amount in euros" type="long" defaultValue="0">
+            <operaton:validation>
+              <operaton:constraint name="min" config="0" />
+              <operaton:constraint name="max" config="5000" />
+            </operaton:validation>
+          </operaton:formField>
+          <operaton:formField id="iban" label="IBAN" type="string">
+            <operaton:validation>
+              <operaton:constraint name="validator" config="com.example.gym.IbanValidator" />
+            </operaton:validation>
+          </operaton:formField>
+          <operaton:formField id="reference" label="Payment reference" type="string">
+            <operaton:properties>
+              <operaton:property id="placeholder" value="Filled in by accounting" />
+              <operaton:property id="help" value="Leave it empty; accounting fills it in" />
+            </operaton:properties>
+            <operaton:validation>
+              <operaton:constraint name="readonly" />
+            </operaton:validation>
+          </operaton:formField>
+          <operaton:formField id="confirmed" label="Payment received?" type="boolean">
+            <operaton:validation>
+              <operaton:constraint name="required" />
+            </operaton:validation>
+          </operaton:formField>
+        </operaton:formData>
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_Applied_ConfirmPayment</bpmn:incoming>
+      <bpmn:outgoing>Flow_ConfirmPayment_Gateway_gym-membership_2_split</bpmn:outgoing>
+    </bpmn:userTask>
+    <bpmn:exclusiveGateway id="Gateway_gym-membership_2_split" default="Flow_Gateway_gym-membership_2_split_default">
+      <bpmn:incoming>Flow_ConfirmPayment_Gateway_gym-membership_2_split</bpmn:incoming>
+      <bpmn:outgoing>Flow_Gateway_gym-membership_2_split_Enroll</bpmn:outgoing>
+      <bpmn:outgoing>Flow_Gateway_gym-membership_2_split_default</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+    <bpmn:exclusiveGateway id="Gateway_gym-membership_2_join">
+      <bpmn:incoming>Flow_Enroll_Gateway_gym-membership_2_join</bpmn:incoming>
+      <bpmn:incoming>Flow_ChaseUp_Gateway_gym-membership_2_join</bpmn:incoming>
+      <bpmn:outgoing>Flow_Gateway_gym-membership_2_join_Done</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+    <bpmn:serviceTask id="Enroll" name="Enroll the member" operaton:class="com.example.gym.EnrollDelegate">
+      <bpmn:incoming>Flow_Gateway_gym-membership_2_split_Enroll</bpmn:incoming>
+      <bpmn:outgoing>Flow_Enroll_Gateway_gym-membership_2_join</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:userTask id="ChaseUp" name="Chase the payment" operaton:assignee="demo">
+      <bpmn:incoming>Flow_Gateway_gym-membership_2_split_default</bpmn:incoming>
+      <bpmn:outgoing>Flow_ChaseUp_Gateway_gym-membership_2_join</bpmn:outgoing>
+    </bpmn:userTask>
+    <bpmn:endEvent id="Done" name="Application closed">
+      <bpmn:incoming>Flow_Gateway_gym-membership_2_join_Done</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:sequenceFlow id="Flow_Applied_ConfirmPayment" sourceRef="Applied" targetRef="ConfirmPayment" />
+    <bpmn:sequenceFlow id="Flow_Gateway_gym-membership_2_split_Enroll" name="confirmed" sourceRef="Gateway_gym-membership_2_split" targetRef="Enroll">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">${confirmed}</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="Flow_Enroll_Gateway_gym-membership_2_join" sourceRef="Enroll" targetRef="Gateway_gym-membership_2_join" />
+    <bpmn:sequenceFlow id="Flow_Gateway_gym-membership_2_split_default" sourceRef="Gateway_gym-membership_2_split" targetRef="ChaseUp" />
+    <bpmn:sequenceFlow id="Flow_ChaseUp_Gateway_gym-membership_2_join" sourceRef="ChaseUp" targetRef="Gateway_gym-membership_2_join" />
+    <bpmn:sequenceFlow id="Flow_ConfirmPayment_Gateway_gym-membership_2_split" sourceRef="ConfirmPayment" targetRef="Gateway_gym-membership_2_split" />
+    <bpmn:sequenceFlow id="Flow_Gateway_gym-membership_2_join_Done" sourceRef="Gateway_gym-membership_2_join" targetRef="Done" />
+  </bpmn:process>
+  <bpmndi:BPMNDiagram id="BPMNDiagram_gym-membership">
+    <bpmndi:BPMNPlane id="BPMNPlane_gym-membership" bpmnElement="gym-membership">
+      <bpmndi:BPMNShape id="Applied_di" bpmnElement="Applied">
+        <dc:Bounds x="57" y="52" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="ConfirmPayment_di" bpmnElement="ConfirmPayment">
+        <dc:Bounds x="175" y="30" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_gym-membership_2_split_di" bpmnElement="Gateway_gym-membership_2_split" isMarkerVisible="true">
+        <dc:Bounds x="350" y="45" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Enroll_di" bpmnElement="Enroll">
+        <dc:Bounds x="475" y="30" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_gym-membership_2_join_di" bpmnElement="Gateway_gym-membership_2_join" isMarkerVisible="true">
+        <dc:Bounds x="650" y="45" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Done_di" bpmnElement="Done">
+        <dc:Bounds x="807" y="52" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="ChaseUp_di" bpmnElement="ChaseUp">
+        <dc:Bounds x="475" y="170" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_Applied_ConfirmPayment_di" bpmnElement="Flow_Applied_ConfirmPayment">
+        <di:waypoint x="93" y="70" />
+        <di:waypoint x="175" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ConfirmPayment_Gateway_gym-membership_2_split_di" bpmnElement="Flow_ConfirmPayment_Gateway_gym-membership_2_split">
+        <di:waypoint x="275" y="70" />
+        <di:waypoint x="350" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Gateway_gym-membership_2_split_Enroll_di" bpmnElement="Flow_Gateway_gym-membership_2_split_Enroll">
+        <di:waypoint x="400" y="70" />
+        <di:waypoint x="475" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Gateway_gym-membership_2_split_default_di" bpmnElement="Flow_Gateway_gym-membership_2_split_default">
+        <di:waypoint x="375" y="95" />
+        <di:waypoint x="375" y="210" />
+        <di:waypoint x="475" y="210" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Enroll_Gateway_gym-membership_2_join_di" bpmnElement="Flow_Enroll_Gateway_gym-membership_2_join">
+        <di:waypoint x="575" y="70" />
+        <di:waypoint x="650" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Gateway_gym-membership_2_join_Done_di" bpmnElement="Flow_Gateway_gym-membership_2_join_Done">
+        <di:waypoint x="700" y="70" />
+        <di:waypoint x="807" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ChaseUp_Gateway_gym-membership_2_join_di" bpmnElement="Flow_ChaseUp_Gateway_gym-membership_2_join">
+        <di:waypoint x="575" y="210" />
+        <di:waypoint x="675" y="210" />
+        <di:waypoint x="675" y="95" />
+      </bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>

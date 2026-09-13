@@ -11,6 +11,7 @@ import type {
   DECISION_RESULT_MAPPINGS,
   END_TRIGGERS,
   EXECUTION_LISTENER_EVENTS,
+  FORM_CONSTRAINT_NAMES,
   FORM_FIELD_TYPES,
   TASK_LISTENER_EVENTS,
   THROW_TRIGGERS,
@@ -103,6 +104,16 @@ function collectEventDefinitions(container: FlowContainer): EventDefinition[] {
           defs.push({ kind: 'message', messageName: el.messageName });
         }
         break;
+      case 'serviceTask':
+        // An external task's failure mapping raises its code the way a throw
+        // does, so its root is derived the same way even with no throw or
+        // declaration of its own (`ExternalTaskEntity.evaluateThrowBpmnError`).
+        if (el.binding.kind === 'external' && el.binding.errorMappings) {
+          for (const mapping of el.binding.errorMappings) {
+            defs.push({ kind: 'error', errorCode: mapping.errorCode });
+          }
+        }
+        break;
       default:
         break;
     }
@@ -159,6 +170,31 @@ export function eventIdentities(container: FlowContainer): EventIdentities {
 
 export type FormFieldType = (typeof FORM_FIELD_TYPES)[number];
 
+export type FormConstraintName = (typeof FORM_CONSTRAINT_NAMES)[number];
+
+/** One `operaton:value` of an `enum` field; `label` is its `name` attribute. */
+export interface FormFieldValue {
+  id: string;
+  label?: string;
+}
+
+/**
+ * One `operaton:constraint`. `config` is absent on `required`/`readonly`
+ * (`RequiredValidator.validate` and `ReadOnlyValidator.validate` never read
+ * it), the parsed text of a bound on the four numeric/length names, and the
+ * class name or `${...}` expression `validator` names.
+ */
+export interface FormFieldConstraint {
+  name: FormConstraintName;
+  config?: string;
+}
+
+/** One `operaton:property`; `key` is written as `id` on a form field and as `name` on an external task, the attribute each engine reader keys on. */
+export interface ExtensionProperty {
+  key: string;
+  value: string;
+}
+
 /** An `<operaton:formField>` inside the owning element's `<operaton:formData>`. */
 export interface FormField {
   /** Also the process variable the field binds. */
@@ -167,6 +203,14 @@ export interface FormField {
   label?: string;
   /** Carried as text whatever the field's type. */
   defaultValue?: string;
+  /** `datePattern`, read by `FormTypes.parseFormPropertyType` on a `date` field alone. */
+  datePattern?: string;
+  /** Document order, which the engine keeps; absent rather than empty. */
+  values?: FormFieldValue[];
+  /** Document order, which the engine validates in; absent rather than empty. */
+  constraints?: FormFieldConstraint[];
+  /** Document order; absent rather than empty. */
+  properties?: ExtensionProperty[];
 }
 
 /**
@@ -548,6 +592,14 @@ export interface UserTask
 
 export type DecisionResultMapping = (typeof DECISION_RESULT_MAPPINGS)[number];
 
+/** One `operaton:errorEventDefinition` on an external task: the failure condition and the code it raises. */
+export interface ErrorMapping {
+  /** The code the `errorRef` root carries; resolved to a declaration name on print. */
+  errorCode: string;
+  /** Raw JUEL, evaluated on the task's execution on failure and on completion (`ExternalTaskEntity.evaluateThrowBpmnError`). */
+  condition: string;
+}
+
 /**
  * A service task adds the external topic a listener has no form for, and a
  * business rule task the deployed decision it evaluates.
@@ -558,6 +610,12 @@ export type ServiceTaskBinding =
       kind: 'external';
       /** Paired with `operaton:type="external"`. */
       topic: string;
+      /** Verbatim: an integer or EL; `operaton:taskPriority`, the worker's fetch order. */
+      taskPriority?: string;
+      /** Document order; absent rather than empty. */
+      properties?: ExtensionProperty[];
+      /** Document order, which the engine evaluates in; absent rather than empty. */
+      errorMappings?: ErrorMapping[];
     }
   | {
       kind: 'decision';

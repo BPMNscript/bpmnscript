@@ -144,3 +144,5 @@ Related decisions: ADR-0029 (the bracket shape the declaration takes, and the or
 ADR-0024 (the verbs at the process boundary, and the reason an error is raised with `throw` alone).
 ADR-0010 (the sanitize-then-suffix collision rule, which the name minted for an unspellable code follows the same way a synthesized id does).
 ADR-0002 (Langium, whose scope provider, linker and document validator are the three seams this decision uses, none of which the grammar could replace).
+
+Amended by ADR-0038, which adds a third site naming a declared code beside a throw and a catch: an external task's `error <Code> when <condition>` mapping, whose code resolves in the same scope and derives the same root.

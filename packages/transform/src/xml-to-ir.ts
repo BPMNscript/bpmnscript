@@ -14,7 +14,11 @@ import {
   EMIT_TRIGGERS,
   END_TRIGGERS,
   EXECUTION_LISTENER_EVENTS,
+  EXPRESSION_OPEN,
+  FORM_BOUND_TEXT,
+  FORM_CONSTRAINT_TYPES,
   formatPlainWordList,
+  isFormConstraintName,
   START_TRIGGERS,
   TASK_LISTENER_EVENTS,
 } from '@bpmn-script/language';
@@ -28,14 +32,18 @@ import type {
   EndEvent,
   EndEventDefinition,
   EngineAttributes,
+  ErrorMapping,
   EventBasedGateway,
   EventDefinition,
   ExclusiveGateway,
   ExecutionListener,
+  ExtensionProperty,
   FieldInjection,
   FlowElement,
   FormField,
+  FormFieldConstraint,
   FormFieldType,
+  FormFieldValue,
   InclusiveGateway,
   IntermediateCatchEvent,
   IntermediateThrowEvent,
@@ -62,14 +70,17 @@ import type {
 import { engineAttributes, eventIdentities, ioMapped } from './ir/types.js';
 
 import {
+  UnsupportedAssignmentError,
   UnsupportedCallActivityError,
   UnsupportedCollaborationError,
   UnsupportedConditionExpressionError,
   UnsupportedConstructError,
   UnsupportedElementError,
+  UnsupportedErrorMappingError,
   UnsupportedEventDefinitionError,
   UnsupportedEventFeatureError,
   UnsupportedExtensionFormError,
+  UnsupportedFormFieldConstraintError,
   UnsupportedFormFieldTypeError,
   UnsupportedFormReferenceError,
   UnsupportedLoopCharacteristicsError,
@@ -212,6 +223,7 @@ const CONSUMED_EXTENSION_ATTRS = consumptionTable([
   ['delegateExpression', IMPLEMENTATION_OWNERS],
   ['type', IMPLEMENTATION_OWNERS],
   ['topic', IMPLEMENTATION_OWNERS],
+  ['taskPriority', SERVICE_TASK_LIKE_OWNERS],
   ['resultVariable', [...SERVICE_TASK_LIKE_OWNERS, 'bpmn:ScriptTask']],
   ['decisionRef', ['bpmn:BusinessRuleTask']],
   ['decisionRefBinding', ['bpmn:BusinessRuleTask']],
@@ -247,6 +259,8 @@ const CONSUMED_EXTENSION_ELEMENTS = consumptionTable([
   ['operaton:ExecutionListener', ENGINE_ATTRIBUTE_OWNERS],
   ['operaton:TaskListener', ['bpmn:UserTask']],
   ['operaton:Field', SERVICE_TASK_LIKE_OWNERS],
+  ['operaton:Properties', SERVICE_TASK_LIKE_OWNERS],
+  ['operaton:ErrorEventDefinition', SERVICE_TASK_LIKE_OWNERS],
 ]);
 
 /**
@@ -255,10 +269,42 @@ const CONSUMED_EXTENSION_ELEMENTS = consumptionTable([
  * from the table is never swept by {@link warnUnreadChildAttrs}, which is the
  * answer for a child no reader reads at all: reporting it whole says more than
  * naming each of its attributes would.
+ *
+ * A key is the path of resolved keys down from `bpmn:ExtensionElements`,
+ * falling back to the bare `$type` at each step, and a qualified row wins over
+ * the bare one. That is what lets one tag be swept by two rows: an enum
+ * field's `operaton:value` is read by `id` and `name` where an io list item
+ * reports both, and a task's `operaton:property` is keyed by `name`
+ * (`BpmnParseUtil.parseOperatonExtensionProperties`) where a form field's is
+ * keyed by `id` (`DefaultFormHandler.parseProperties`), under the same
+ * `operaton:properties` parent.
  */
 const CONSUMED_CHILD_ATTRS = consumptionTable([
   ['operaton:FormData', []],
-  ['operaton:FormField', ['id', 'label', 'type', 'defaultValue']],
+  [
+    'operaton:FormField',
+    ['id', 'label', 'type', 'defaultValue', 'datePattern'],
+  ],
+  ['operaton:FormField/operaton:Value', ['id', 'name']],
+  ['operaton:Properties', []],
+  ['operaton:Property', ['id', 'value']],
+  ['bpmn:ExtensionElements/operaton:Properties', []],
+  [
+    'bpmn:ExtensionElements/operaton:Properties/operaton:Property',
+    ['name', 'value'],
+  ],
+  [
+    'operaton:ErrorEventDefinition',
+    [
+      'id',
+      'errorRef',
+      'expression',
+      'errorCodeVariable',
+      'errorMessageVariable',
+    ],
+  ],
+  ['operaton:Validation', []],
+  ['operaton:Constraint', ['name', 'config']],
   ['operaton:FailedJobRetryTimeCycle', []],
   [
     'operaton:In',
@@ -334,8 +380,9 @@ const OPERATON_TO_FORM_FIELD_TYPE: Readonly<Record<string, FormFieldType>> =
 const KEPT_SETTINGS_NOTE =
   '(this tool keeps the assignee, form, form reference, script, ' +
   'service-task binding, injected fields, result variable, version tag, ' +
-  'input/output mappings and listeners, and the async, retry, job-priority ' +
-  'and task-assignment settings; a gateway carries no engine setting at all).';
+  "input/output mappings and listeners, an external task's priority, " +
+  'properties and error mappings, and the async, retry, job-priority and ' +
+  'task-assignment settings; a gateway carries no engine setting at all).';
 
 const IMPORTED_FLOW_NOTE =
   '(this tool imports the executable flow and the engine settings on its ' +
@@ -1138,6 +1185,33 @@ function warnDroppedDefaultFlow(
 }
 
 /**
+ * `BpmnParse` reads neither quantity attribute. Reported by hand, for the
+ * reason {@link warnDroppedDefaultFlow} gives.
+ */
+function warnIgnoredQuantityAttrs(
+  el: ModdleElement,
+  id: string,
+  warnings: ImportWarning[],
+): void {
+  if (!ACTIVITY_TYPES.has(el.$type)) return;
+  for (const name of ['startQuantity', 'completionQuantity']) {
+    // moddle's descriptor default (1) applies before .get() ever returns
+    // undefined, so an absent attribute reads back as 1, which is what the
+    // engine runs either way.
+    const value: unknown = el.get(name);
+    if (value === 1) continue;
+    warnings.push({
+      elementId: id,
+      category: 'unmappedConstruct',
+      message:
+        `The '${name}' attribute on '${id}' was not imported: Operaton's ` +
+        'BpmnParse never reads it, so the step runs as if it read 1, which ' +
+        'is what the source document runs.',
+    });
+  }
+}
+
+/**
  * Per-child dispatch for a container's `flowElements`. `attachedToRef` is
  * validated afterwards by {@link checkBoundaryEventHosts}, not inline: moddle
  * may present a boundary event before its host, so the container's full
@@ -1249,6 +1323,7 @@ function mapContainerChildren(
     attachRepetition(flowElements, mappedAt, child, warnings);
     if (child.id !== undefined) {
       warnDroppedDefaultFlow(child, child.id, warnings);
+      warnIgnoredQuantityAttrs(child, child.id, warnings);
       collectExtensionDrops(child, child.id, warnings);
       collectUnmappedBpmnDrops(child, child.id, warnings);
     }
@@ -2291,7 +2366,8 @@ function warnThrowSideBindingAttrs(
   warnings: ImportWarning[],
 ): void {
   const names =
-    defEl.$type === 'bpmn:ErrorEventDefinition'
+    defEl.$type === 'bpmn:ErrorEventDefinition' ||
+    defEl.$type === 'operaton:ErrorEventDefinition'
       ? ['errorCodeVariable', 'errorMessageVariable']
       : defEl.$type === 'bpmn:EscalationEventDefinition'
         ? ['escalationCodeVariable']
@@ -2592,6 +2668,7 @@ function readVersionBinding(
             'the engine cannot resolve which version to use',
         );
       }
+      noteRewrappedExpression(version, id, `${prefix}Version`, warnings);
       binding = { kind: 'version', version };
       break;
     default:
@@ -2842,6 +2919,9 @@ function collectUnmappedBpmnDrops(
     if (prop.isAttr === true || prop.isBody === true) continue;
     if (prop.isReference === true) continue;
     if (READ_BPMN_CHILDREN.has(prop.name)) continue;
+    // A user task's resource roles are read by `readAssignment`; on every
+    // other activity the engine reads none of them, so the drop stands.
+    if (prop.name === 'resources' && el.$type === 'bpmn:UserTask') continue;
     const value = el.get(prop.name);
     // A property holding one element is spelled as that property
     // (`<bpmn:ioSpecification>`), one holding a list as each item's own type.
@@ -2995,7 +3075,14 @@ function warnUnreadExtensionElements(
 ): void {
   for (const value of extensionValues(el)) {
     if (isConsumedHere(CONSUMED_EXTENSION_ELEMENTS, el.$type, value.$type)) {
-      warnUnreadChildAttrs(value, ownerId, describeChild(value), warnings);
+      const key = consumedKeyOf(value.$type, 'bpmn:ExtensionElements');
+      warnUnreadChildAttrs(
+        value,
+        ownerId,
+        describeChild(value, key),
+        warnings,
+        key,
+      );
       continue;
     }
     if (value.$type === 'operaton:Field') {
@@ -3060,14 +3147,18 @@ function warnUnimportedSetting(
  *
  * Both spellings are swept, because moddle stores them apart: a declared
  * attribute parses into a typed property, an undeclared one lands in `$attrs`.
+ *
+ * `key` is the table key `el` resolved to under its parent, so a qualified
+ * row chains: a child of `a/b` is looked up as `a/b/c` before `c`.
  */
 function warnUnreadChildAttrs(
   el: ModdleElement,
   ownerId: string,
   where: string,
   warnings: ImportWarning[],
+  key: string,
 ): void {
-  const consumed = CONSUMED_CHILD_ATTRS.get(el.$type);
+  const consumed = CONSUMED_CHILD_ATTRS.get(key);
   if (consumed === undefined) return;
 
   const report = (name: string): void =>
@@ -3086,18 +3177,26 @@ function warnUnreadChildAttrs(
     report(key);
   }
   for (const child of childElements(el)) {
+    const childKey = consumedKeyOf(child.$type, key);
     warnUnreadChildAttrs(
       child,
       ownerId,
-      `${describeChild(child)} in ${where}`,
+      `${describeChild(child, childKey)} in ${where}`,
       warnings,
+      childKey,
     );
   }
 }
 
-/** Name one extension child: its XML tag, plus the word that tells it from its siblings. */
-function describeChild(el: ModdleElement): string {
-  const consumed = CONSUMED_CHILD_ATTRS.get(el.$type);
+/** The {@link CONSUMED_CHILD_ATTRS} key for `type` under `parentKey`: the position-qualified row when one exists, else the bare `$type`. */
+function consumedKeyOf(type: string, parentKey: string): string {
+  const qualified = `${parentKey}/${type}`;
+  return CONSUMED_CHILD_ATTRS.has(qualified) ? qualified : type;
+}
+
+/** Name one extension child: its XML tag, plus the word its row at `key` reads that tells it from its siblings. */
+function describeChild(el: ModdleElement, key: string): string {
+  const consumed = CONSUMED_CHILD_ATTRS.get(key);
   const identity = CHILD_IDENTITY_ATTRS.filter(
     (attr) => consumed?.has(attr) === true,
   )
@@ -3119,12 +3218,14 @@ function xmlTagOf(type: string): string {
 
 /**
  * The elements moddle materialized under `el`. A property declared as an
- * element but typed as a string (an `operaton:field`'s body) holds none.
+ * element but typed as a string (an `operaton:field`'s body) holds none, and
+ * a reference holds an element that lives elsewhere.
  */
 function childElements(el: ModdleElement): ModdleElement[] {
   const children: ModdleElement[] = [];
   for (const prop of el.$descriptor?.properties ?? []) {
     if (prop.isAttr === true || prop.isBody === true) continue;
+    if (prop.isReference === true) continue;
     const value = el.get(prop.name);
     for (const item of Array.isArray(value) ? value : [value]) {
       if (typeof (item as ModdleElement | undefined)?.$type === 'string') {
@@ -3919,33 +4020,219 @@ function warnRepetitionContentIgnored(
 function mapUserTask(el: ModdleElement, warnings: ImportWarning[]): UserTask {
   const id = requireId(el);
   const named = readNamed(el, id, warnings);
-  const assignee = readNamespacedAttr(el, 'assignee');
+  const assignment = readAssignment(el, id, warnings);
   const formKey = readNamespacedAttr(el, 'formKey');
   const formRef = readFormRef(el, id, warnings);
   const formFields = readFormFields(el, id, warnings);
   const taskListeners = readTaskListeners(el, id, warnings);
-  const candidateGroups = readNamespacedAttr(el, 'candidateGroups');
-  const candidateUsers = readNamespacedAttr(el, 'candidateUsers');
   const dueDate = readNamespacedAttr(el, 'dueDate');
   const followUpDate = readNamespacedAttr(el, 'followUpDate');
   const priority = readNamespacedAttr(el, 'priority');
+  noteRewrappedExpression(priority, id, "'priority' setting", warnings);
 
   return {
     kind: 'userTask',
     id,
     ...named,
-    ...(assignee === undefined ? {} : { assignee }),
+    ...assignment,
     ...(formKey === undefined ? {} : { formKey }),
     ...(formRef === undefined ? {} : { formRef }),
     ...(formFields === undefined ? {} : { formFields }),
-    ...(candidateGroups === undefined ? {} : { candidateGroups }),
-    ...(candidateUsers === undefined ? {} : { candidateUsers }),
     ...(dueDate === undefined ? {} : { dueDate }),
     ...(followUpDate === undefined ? {} : { followUpDate }),
     ...(priority === undefined ? {} : { priority }),
     ...(taskListeners === undefined ? {} : { taskListeners }),
     ...readEngineAttributes(el, id, warnings),
     ...readIoMapping(el, id, warnings),
+  };
+}
+
+/** The resource roles `BpmnParse.parseTaskDefinition` reads, by tag, and the method reading each. */
+const ROLE_READERS: ReadonlyMap<string, string> = new Map([
+  ['bpmn:HumanPerformer', 'parseHumanPerformerResourceAssignment'],
+  ['bpmn:PotentialOwner', 'parsePotentialOwnerResourceAssignment'],
+]);
+
+const USER_PREFIX = 'user(';
+const GROUP_PREFIX = 'group(';
+
+/**
+ * `BpmnParse.parseCommaSeparatedList`, as the engine writes it: a `$` or a
+ * `{` opens an expression and a `}` closes one, and only a comma outside
+ * splits, so `${groupOf(a, b)}` stays one entry. Entries are trimmed, and an
+ * empty tail is dropped.
+ */
+function splitAsEngine(text: string): string[] {
+  const entries: string[] = [];
+  let current = '';
+  let insideExpression = false;
+  for (const char of text) {
+    if (char === '{' || char === '$') {
+      insideExpression = true;
+    } else if (char === '}') {
+      insideExpression = false;
+    } else if (char === ',' && !insideExpression) {
+      entries.push(current.trim());
+      current = '';
+      continue;
+    }
+    current += char;
+  }
+  if (current.length > 0) entries.push(current.trim());
+  return entries;
+}
+
+/** `BpmnParse.getAssignmentId`: the text between the prefix and the last character, trimmed. */
+function assignmentId(entry: string, prefix: string): string {
+  return entry.slice(prefix.length, -1).trim();
+}
+
+/**
+ * Merged as the engine builds its lists: `BpmnParse.parseTaskDefinition`
+ * reads the roles first and `parseUserTaskCustomExtensions` appends the
+ * attributes' entries after. Roles match on the exact `$type`: bpmn-moddle
+ * derives `PotentialOwner` from `HumanPerformer`, and the engine reads by tag.
+ */
+function readAssignment(
+  el: ModdleElement,
+  id: string,
+  warnings: ImportWarning[],
+): Pick<UserTask, 'assignee' | 'candidateUsers' | 'candidateGroups'> {
+  const roles = (el.get('resources') as ModdleElement[] | undefined) ?? [];
+  const attrAssignee = readNamespacedAttr(el, 'assignee');
+  const performers = roles.filter((r) => r.$type === 'bpmn:HumanPerformer');
+  if (performers.length > 1) {
+    throw new UnsupportedAssignmentError(
+      id,
+      `it carries ${performers.length} bpmn:humanPerformer elements, and ` +
+        'BpmnParse.parseHumanPerformer admits one',
+    );
+  }
+
+  let assignee = attrAssignee;
+  const users: string[] = [];
+  const groups: string[] = [];
+  for (const role of roles) {
+    const tag = describeUnmapped(role);
+    const reader = ROLE_READERS.get(role.$type);
+    const drop = (reason: string): void => {
+      warnings.push({
+        elementId: id,
+        category: 'unmappedConstruct',
+        message: `The ${tag} on '${id}' was not imported: ${reason}.`,
+      });
+    };
+    if (reader === undefined) {
+      drop(
+        'Operaton reads a bpmn:humanPerformer and a bpmn:potentialOwner by ' +
+          'tag (BpmnParse.parseTaskDefinition) and no other resource role',
+      );
+      continue;
+    }
+    const rae = getEl(role, 'resourceAssignmentExpression');
+    const expression = rae === undefined ? undefined : getEl(rae, 'expression');
+    // Both role readers fetch this child by tag (Element.elementsNS), so
+    // only a <bpmn:formalExpression> reaches the engine. moddle gives the same
+    // $type to <bpmn:expression xsi:type="bpmn:tFormalExpression">; the
+    // xsi:type attribute is what tells the two apart.
+    const text =
+      expression?.$type === 'bpmn:FormalExpression' &&
+      expression.$attrs['xsi:type'] === undefined
+        ? readString(expression, 'body')
+        : undefined;
+    if (text === undefined) {
+      drop(
+        'it carries no formal expression, and Operaton reads nothing else ' +
+          `off it (BpmnParse.${reader})`,
+      );
+      continue;
+    }
+
+    const became: [key: string, value: string][] = [];
+    if (role.$type === 'bpmn:HumanPerformer') {
+      if (attrAssignee !== undefined) {
+        throw new UnsupportedAssignmentError(
+          id,
+          `its ${tag} names an assignee ("${text}") beside ` +
+            `operaton:assignee="${attrAssignee}", which ` +
+            'BpmnParse.parseUserTaskCustomExtensions refuses as a duplicate ' +
+            'assignee declaration',
+        );
+      }
+      assignee = text;
+      became.push(['assignee', text]);
+    } else {
+      const roleUsers: string[] = [];
+      const roleGroups: string[] = [];
+      for (const entry of splitAsEngine(text)) {
+        if (entry.startsWith(USER_PREFIX)) {
+          roleUsers.push(assignmentId(entry, USER_PREFIX));
+        } else if (entry.startsWith(GROUP_PREFIX)) {
+          roleGroups.push(assignmentId(entry, GROUP_PREFIX));
+        } else {
+          roleGroups.push(entry);
+        }
+      }
+      users.push(...roleUsers);
+      groups.push(...roleGroups);
+      if (roleUsers.length > 0)
+        became.push(['candidateUsers', roleUsers.join(',')]);
+      if (roleGroups.length > 0)
+        became.push(['candidateGroups', roleGroups.join(',')]);
+    }
+    warnings.push({
+      elementId: id,
+      category: 'unmappedConstruct',
+      message:
+        `The ${tag} on '${id}' imports as ` +
+        `${became.map(([key, value]) => `${key}: "${value}"`).join(' and ')}: ` +
+        `Operaton reads its formal expression that way (BpmnParse.${reader}), ` +
+        'and this tool writes it back as ' +
+        `${became.map(([key]) => `operaton:${key}`).join(' and ')}, which ` +
+        'the engine reads the same.',
+    });
+
+    const unread = [
+      ...(getEl(role, 'resourceRef') !== undefined ||
+      unresolvedRef(role, 'resourceRef') !== undefined
+        ? ['resourceRef']
+        : []),
+      ...((role.get('resourceParameterBindings') as ModdleElement[] | undefined)
+        ?.length
+        ? ['resourceParameterBindings']
+        : []),
+    ];
+    if (unread.length > 0) {
+      warnings.push({
+        elementId: id,
+        category: 'unmappedConstruct',
+        message:
+          `The ${unread.join(' and ')} on the ${tag} on '${id}' was not ` +
+          `imported: Operaton reads the role's formal expression alone ` +
+          `(BpmnParse.${reader}).`,
+      });
+    }
+  }
+
+  const merged = (
+    fromRoles: string[],
+    fromAttr: string | undefined,
+  ): string | undefined => {
+    const all = fromAttr === undefined ? fromRoles : [...fromRoles, fromAttr];
+    return all.length === 0 ? undefined : all.join(',');
+  };
+  const candidateUsers = merged(
+    users,
+    readNamespacedAttr(el, 'candidateUsers'),
+  );
+  const candidateGroups = merged(
+    groups,
+    readNamespacedAttr(el, 'candidateGroups'),
+  );
+  return {
+    ...(assignee === undefined ? {} : { assignee }),
+    ...(candidateUsers === undefined ? {} : { candidateUsers }),
+    ...(candidateGroups === undefined ? {} : { candidateGroups }),
   };
 }
 
@@ -4117,7 +4404,137 @@ function readServiceTaskBinding(
     throw refusal(detectUnsupportedServiceTaskForm(el));
   }
 
-  return withInjectedFields(binding, el, id, `'${id}'`, warnings);
+  return withExternalExtras(
+    withInjectedFields(binding, el, id, `'${id}'`, warnings),
+    el,
+    id,
+    warnings,
+  );
+}
+
+/**
+ * What `BpmnParse.parseExternalServiceTask` reads beside the topic. No other
+ * binding reaches that method, so under one the three are reported instead.
+ */
+function withExternalExtras(
+  binding: ServiceTaskBinding,
+  el: ModdleElement,
+  id: string,
+  warnings: ImportWarning[],
+): ServiceTaskBinding {
+  const taskPriority = readNamespacedAttr(el, 'taskPriority');
+  const propertiesEl = firstExtensionElement(
+    el,
+    'operaton:Properties',
+    id,
+    warnings,
+  );
+  const definitions = extensionValues(el).filter(
+    (value) => value.$type === 'operaton:ErrorEventDefinition',
+  );
+
+  if (binding.kind !== 'external') {
+    const present = [
+      ...(taskPriority === undefined ? [] : ["'taskPriority' setting"]),
+      ...(propertiesEl === undefined ? [] : ['operaton:properties block']),
+      ...definitions.map(
+        (defEl) =>
+          'operaton:errorEventDefinition' +
+          (defEl.id === undefined ? '' : ` '${defEl.id}'`),
+      ),
+    ];
+    for (const what of present) {
+      warnings.push({
+        elementId: id,
+        category: 'extensionAttribute',
+        message:
+          `The ${what} on '${id}' was not imported: Operaton reads it in ` +
+          'parseExternalServiceTask alone, which only ' +
+          'operaton:type="external" reaches, so the step runs as written ' +
+          'without it.',
+      });
+    }
+    return binding;
+  }
+
+  const properties =
+    propertiesEl === undefined
+      ? []
+      : readPropertyEntries(propertiesEl, 'name', `'${id}'`, (message) => {
+          warnings.push({
+            elementId: id,
+            category: 'extensionAttribute',
+            message,
+          });
+        });
+  const errorMappings = definitions.map((defEl) =>
+    readErrorMapping(defEl, id, warnings),
+  );
+  if (
+    taskPriority !== undefined &&
+    !FORM_BOUND_TEXT.test(taskPriority) &&
+    !EXPRESSION_OPEN.test(taskPriority)
+  ) {
+    warnings.push({
+      elementId: id,
+      category: 'extensionAttribute',
+      message:
+        `The taskPriority '${taskPriority}' on '${id}' was imported as ` +
+        'written, and the printed script draws an error at the step: ' +
+        'BpmnParse.parsePriority parses a constant as an integer and fails ' +
+        'the deployment on any other.',
+    });
+  }
+  noteRewrappedExpression(taskPriority, id, "'taskPriority' setting", warnings);
+  return {
+    ...binding,
+    ...(taskPriority === undefined ? {} : { taskPriority }),
+    ...(properties.length === 0 ? {} : { properties }),
+    ...(errorMappings.length === 0 ? {} : { errorMappings }),
+  };
+}
+
+/**
+ * Checked in the order `parseOperatonErrorEventDefinitions` branches. moddle
+ * deletes an `errorRef` naming no root, so a definition written without one
+ * and one whose reference dangles arrive alike; both refuse.
+ */
+function readErrorMapping(
+  defEl: ModdleElement,
+  ownerId: string,
+  warnings: ImportWarning[],
+): ErrorMapping {
+  warnThrowSideBindingAttrs(defEl, ownerId, warnings);
+  warnDocumentationDrop(defEl, ownerId, 'an error mapping', warnings);
+  const ref = getEl(defEl, 'errorRef');
+  const written = unresolvedRef(defEl, 'errorRef');
+  if (ref === undefined && written === undefined) {
+    throw new UnsupportedErrorMappingError(
+      ownerId,
+      'its errorRef names no error root',
+    );
+  }
+  const condition = readString(defEl, 'expression');
+  if (condition === undefined) {
+    throw new UnsupportedErrorMappingError(
+      ownerId,
+      'the operaton:errorEventDefinition carries no expression',
+    );
+  }
+  if (ref === undefined) {
+    throw new UnsupportedErrorMappingError(
+      ownerId,
+      `its errorRef '${written}' names no error root`,
+    );
+  }
+  const errorCode = readString(ref, 'errorCode');
+  if (errorCode === undefined) {
+    throw new UnsupportedErrorMappingError(
+      ownerId,
+      `its errorRef names the error root '${ref.id}', which carries no code`,
+    );
+  }
+  return { errorCode, condition };
 }
 
 /**
@@ -4712,11 +5129,18 @@ function readEngineAttributes(
     ownerId,
     warnings,
   );
+  const jobPriority = readNamespacedAttr(el, 'jobPriority');
+  noteRewrappedExpression(
+    jobPriority,
+    ownerId,
+    "'jobPriority' setting",
+    warnings,
+  );
   return engineAttributes({
     asyncBefore: readNamespacedFlag(el, 'asyncBefore'),
     asyncAfter: readNamespacedFlag(el, 'asyncAfter'),
     exclusive: readNamespacedFlag(el, 'exclusive'),
-    jobPriority: readNamespacedAttr(el, 'jobPriority'),
+    jobPriority,
     retryCycle:
       retryCycleEl === undefined ? undefined : readString(retryCycleEl, 'body'),
     executionListeners: readExecutionListeners(el, ownerId, warnings),
@@ -4761,22 +5185,279 @@ function readFormFields(
   if (fields.length === 0) {
     return undefined;
   }
-  return fields.map((field) => {
-    const fieldId = requireId(field);
-    const type = importFormFieldType(
-      readString(field, 'type'),
-      fieldId,
-      ownerId,
+  return fields.map((field) => readFormField(field, ownerId, warnings));
+}
+
+/** A warning sink bound to one owner, so a reader names only what it dropped. */
+type Report = (message: string) => void;
+
+/** One form field as its readers see it: how to name it and where to warn. */
+interface FieldContext {
+  fieldId: string;
+  ownerId: string;
+  type: FormFieldType;
+  /** `form field 'x' of 'T'`, the noun phrase every warning on the field uses. */
+  subject: string;
+  report: Report;
+}
+
+/** The one shape for content the engine deploys but the compiler will refuse. */
+function warnCarriedAsWritten(
+  { subject, report }: FieldContext,
+  what: string,
+  reason: string,
+): void {
+  report(
+    `The ${what} on ${subject} was imported as written, and the printed ` +
+      `script draws an error at the field: ${reason}.`,
+  );
+}
+
+function readFormField(
+  field: ModdleElement,
+  ownerId: string,
+  warnings: ImportWarning[],
+): FormField {
+  const fieldId = requireId(field);
+  const type = importFormFieldType(readString(field, 'type'), fieldId, ownerId);
+  const ctx: FieldContext = {
+    fieldId,
+    ownerId,
+    type,
+    subject: `form field '${fieldId}' of '${ownerId}'`,
+    report: (message) => {
+      warnings.push({
+        elementId: ownerId,
+        category: 'extensionAttribute',
+        message,
+      });
+    },
+  };
+
+  const label = readString(field, 'label');
+  const defaultValue = readString(field, 'defaultValue');
+  let datePattern = readString(field, 'datePattern');
+  if (datePattern !== undefined && type !== 'date') {
+    ctx.report(
+      `The 'datePattern' on ${ctx.subject} was not imported; ` +
+        'FormTypes.parseFormPropertyType reads it on a date field alone.',
     );
-    const label = readString(field, 'label');
-    const defaultValue = readString(field, 'defaultValue');
-    return {
-      id: fieldId,
-      type,
-      ...(label === undefined ? {} : { label }),
-      ...(defaultValue === undefined ? {} : { defaultValue }),
-    };
+    datePattern = undefined;
+  }
+  const values = readEnumValues(field, ctx);
+  const constraints = readConstraints(field, ctx);
+  const propertiesEl = getEl(field, 'properties');
+  const properties =
+    propertiesEl === undefined
+      ? []
+      : readPropertyEntries(propertiesEl, 'id', ctx.subject, ctx.report);
+
+  // FormFieldHandler.createFormField converts the evaluated default through
+  // the type on every render, and EnumFormType.validateValue refuses an id
+  // outside the map; a literal is decided here, an expression at run time.
+  if (
+    type === 'enum' &&
+    defaultValue !== undefined &&
+    !EXPRESSION_BODY.test(defaultValue) &&
+    !values.some((value) => value.id === defaultValue)
+  ) {
+    warnCarriedAsWritten(
+      ctx,
+      `default '${defaultValue}'`,
+      "it names none of the field's values, and EnumFormType.validateValue " +
+        'refuses it on every render of the form',
+    );
+  }
+
+  return {
+    id: fieldId,
+    type,
+    ...(label === undefined ? {} : { label }),
+    ...(defaultValue === undefined ? {} : { defaultValue }),
+    ...(datePattern === undefined ? {} : { datePattern }),
+    ...(values.length === 0 ? {} : { values }),
+    ...(constraints.length === 0 ? {} : { constraints }),
+    ...(properties.length === 0 ? {} : { properties }),
+  };
+}
+
+/**
+ * `FormTypes.parseFormPropertyType` reads the `operaton:value` children on an
+ * enum field alone, into a `LinkedHashMap`: a repeated id keeps its first
+ * position and takes its last `name`, so the import does the same and says so.
+ */
+function readEnumValues(
+  field: ModdleElement,
+  { type, subject, report }: FieldContext,
+): FormFieldValue[] {
+  const valueEls = (field.get('values') as ModdleElement[] | undefined) ?? [];
+  if (valueEls.length === 0) return [];
+  if (type !== 'enum') {
+    const n = valueEls.length;
+    report(
+      `The ${n} operaton:value ${n === 1 ? 'child' : 'children'} of ` +
+        `${subject} ${n === 1 ? 'was' : 'were'} not imported; ` +
+        'FormTypes.parseFormPropertyType reads them on an enum field alone.',
+    );
+    return [];
+  }
+  const byId = new Map<string, FormFieldValue>();
+  valueEls.forEach((valueEl, i) => {
+    const id = readString(valueEl, 'id');
+    if (id === undefined) {
+      report(
+        `The operaton:value #${i + 1} of ${subject} has no id and was not imported.`,
+      );
+      return;
+    }
+    if (byId.has(id)) {
+      report(
+        `The operaton:value '${id}' of ${subject} is written twice and was ` +
+          'imported once, at its first position with its last name, as ' +
+          'FormTypes.parseFormPropertyType keeps it (LinkedHashMap.put).',
+      );
+    }
+    const label = readString(valueEl, 'name');
+    byId.set(id, { id, ...(label === undefined ? {} : { label }) });
   });
+  return [...byId.values()];
+}
+
+/**
+ * The four bounds, each by the validator that parses `config` as an integer
+ * ({@link FORM_BOUND_TEXT}) on every submission.
+ */
+const BOUND_VALIDATORS: Readonly<Record<string, string>> = {
+  min: 'MinValidator.validate',
+  max: 'MaxValidator.validate',
+  minlength: 'MinLengthValidator.validate',
+  maxlength: 'MaxLengthValidator.validate',
+};
+
+/** The constraints whose `config` the engine never reads, by the method that ignores it. */
+const FLAG_VALIDATORS: Readonly<Record<string, string>> = {
+  required: 'RequiredValidator.validate',
+  readonly: 'ReadOnlyValidator.validate',
+};
+
+/** Read `operaton:validation` in document order, which is the engine's validation order. */
+function readConstraints(
+  field: ModdleElement,
+  ctx: FieldContext,
+): FormFieldConstraint[] {
+  const { fieldId, ownerId, type, subject, report } = ctx;
+  const constraintEls =
+    (getEl(field, 'validation')?.get('constraints') as
+      ModdleElement[] | undefined) ?? [];
+  const read: FormFieldConstraint[] = [];
+  for (const constraintEl of constraintEls) {
+    const name = readString(constraintEl, 'name');
+    const config = readString(constraintEl, 'config');
+    const refuse = (detail: string): UnsupportedFormFieldConstraintError =>
+      new UnsupportedFormFieldConstraintError(
+        ownerId,
+        fieldId,
+        name ?? '(none)',
+        detail,
+      );
+    if (name === undefined) throw refuse('it has no name');
+    if (!isFormConstraintName(name)) {
+      throw refuse('no validator is registered under that name');
+    }
+    if (read.some((constraint) => constraint.name === name)) {
+      throw refuse('the script holds each constraint once per field');
+    }
+    const flag = FLAG_VALIDATORS[name];
+    if (flag !== undefined) {
+      if (config !== undefined) {
+        report(
+          `The config '${config}' on the '${name}' constraint of ${subject} ` +
+            `was not imported; ${flag} never reads it.`,
+        );
+      }
+      read.push({ name });
+      continue;
+    }
+    const bound = BOUND_VALIDATORS[name];
+    if (config === undefined) {
+      throw refuse(
+        bound === undefined
+          ? 'FormValidators.createValidator needs a class name or an ' +
+              'expression in its config'
+          : `${bound} parses its config on every submission`,
+      );
+    }
+    if (bound !== undefined) {
+      const fits = FORM_CONSTRAINT_TYPES[name];
+      if (!fits.includes(type)) {
+        warnCarriedAsWritten(
+          ctx,
+          `'${name}' constraint`,
+          `'${name}' fits a ${formatPlainWordList(fits)} field alone, and ` +
+            `'${fieldId}' is a ${type} field, whose every submitted value ` +
+            `${bound} refuses`,
+        );
+      }
+      if (!FORM_BOUND_TEXT.test(config)) {
+        warnCarriedAsWritten(
+          ctx,
+          `'${name}' constraint`,
+          `${bound} parses its config as an integer on every submission, ` +
+            `and '${config}' is not one`,
+        );
+      }
+    }
+    read.push({ name, config });
+  }
+  return read;
+}
+
+/**
+ * What a repeated key comes to, by the attribute the engine reader keys on:
+ * `DefaultFormHandler.parseProperties` reads a form field's by `id` into a
+ * `LinkedHashMap`, which keeps the first position as well as the last value;
+ * `BpmnParseUtil.parseOperatonExtensionProperties` reads an external task's
+ * by `name` into a `HashMap`, which keeps the last value and no position, so
+ * the first position there is this import's choice.
+ */
+const PROPERTY_REWRITE_BY_KEY = {
+  id: ', at its first position with its last value, as DefaultFormHandler.parseProperties keeps it (LinkedHashMap.put)',
+  name: ' with its last value, as BpmnParseUtil.parseOperatonExtensionProperties keeps it (HashMap.put), at its first position',
+} as const;
+
+/** `subject` names the owner in the warnings. */
+function readPropertyEntries(
+  properties: ModdleElement,
+  keyAttr: keyof typeof PROPERTY_REWRITE_BY_KEY,
+  subject: string,
+  report: Report,
+): ExtensionProperty[] {
+  const entries =
+    (properties.get('values') as ModdleElement[] | undefined) ?? [];
+  const byKey = new Map<string, ExtensionProperty>();
+  entries.forEach((entry, i) => {
+    const key = readString(entry, keyAttr);
+    // Both readers `put` the attribute as written, so `value=""` is an entry
+    // holding the empty string, not a missing one.
+    const raw = entry.get('value');
+    const value = typeof raw === 'string' ? raw : undefined;
+    if (key === undefined || value === undefined) {
+      report(
+        `The operaton:property ${key === undefined ? `#${i + 1}` : `'${key}'`} ` +
+          `of ${subject} has no ${key === undefined ? keyAttr : 'value'} and ` +
+          'was not imported.',
+      );
+      return;
+    }
+    if (byKey.has(key)) {
+      report(
+        `The operaton:property '${key}' of ${subject} is written twice and ` +
+          `was imported once${PROPERTY_REWRITE_BY_KEY[keyAttr]}.`,
+      );
+    }
+    byKey.set(key, { key, value });
+  });
+  return [...byKey.values()];
 }
 
 /** Map an `operaton:formField` type to its DSL type, refusing what the DSL lacks. */

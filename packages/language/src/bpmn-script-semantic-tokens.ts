@@ -21,6 +21,8 @@ import {
   isCodeDecl,
   isEmitStatement,
   isEndEvent,
+  isErrorMapping,
+  isFormField,
   isIntermediateCatchEvent,
   isIoParameter,
   isListener,
@@ -58,11 +60,16 @@ export class BpmnScriptSemanticTokenProvider extends AbstractSemanticTokenProvid
       keyword('key');
     } else if (isIoParameter(node)) {
       keyword('direction');
+    } else if (isFormField(node)) {
+      keyword('type');
     } else if (isListener(node)) {
       keyword('event');
       if (node.particle) {
         keyword('particle');
       }
+    } else if (isErrorMapping(node)) {
+      keyword('trigger');
+      keyword('when');
     }
     return undefined;
   }

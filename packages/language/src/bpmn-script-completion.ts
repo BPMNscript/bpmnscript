@@ -19,15 +19,19 @@ import {
   EMIT_TRIGGERS,
   END_TRIGGERS,
   ENGINE_KEYS,
+  ERROR_MAPPING_HEAD,
+  ERROR_MAPPING_WHEN,
   EVENT_BINDING_FIELDS,
   EXECUTION_LISTENER_EVENTS,
   FIELD_DIRECTION,
+  FORM_FIELD_SETTING_KEYS,
   LISTENER_BINDING_KEYS,
   listenerEventsFor,
   namesACode,
   ON_TRIGGERS,
   parameterDirectionsFor,
   PROCESS_HEADER_KEYS,
+  PROPERTY_DIRECTION,
   RACE_TRIGGERS,
   SCRIPT_FORMAT_ALIASES,
   START_TRIGGERS,
@@ -199,6 +203,7 @@ const SETTING_SNIPPETS: Readonly<Record<string, string>> = {
   mapper: 'mapper: "${1:com.example.CallMapper}"',
   mapperDelegate: 'mapperDelegate: "${1:\\${callMapperBean}}"',
   topic: 'topic: "${1:topic-name}"',
+  taskPriority: 'taskPriority: ${1:50}',
   decision: 'decision: "${1:decision-key}"',
   mapDecisionResult:
     'mapDecisionResult: ${1|' + DECISION_RESULT_MAPPINGS.join(',') + '|}',
@@ -213,6 +218,16 @@ const SETTING_SNIPPETS: Readonly<Record<string, string>> = {
   candidateStarterUsers: 'candidateStarterUsers: "${1:demo,manager}"',
   candidateStarterGroups: 'candidateStarterGroups: "${1:adjusters}"',
   initiator: 'initiator: "${1:starter}"',
+  // A form field's parens. The two flags are on while written, so neither
+  // scaffolds a choice.
+  required: 'required: true',
+  readonly: 'readonly: true',
+  min: 'min: ${1:0}',
+  max: 'max: ${1:100}',
+  minlength: 'minlength: ${1:1}',
+  maxlength: 'maxlength: ${1:80}',
+  validator: 'validator: "${1:com.example.Validator}"',
+  pattern: 'pattern: "${1:dd/MM/yyyy}"',
 };
 
 /**
@@ -274,6 +289,9 @@ function settingFormsFor(node: AstNode): StructureForm[] | undefined {
   if (node.$type === 'Listener') {
     return settingForms(LISTENER_BINDING_KEYS);
   }
+  if (node.$type === 'FormField') {
+    return settingForms(FORM_FIELD_SETTING_KEYS);
+  }
   const rule = attributeBlockRuleOf(node);
   return (
     rule && [
@@ -287,11 +305,15 @@ function settingFormsFor(node: AstNode): StructureForm[] | undefined {
 /**
  * The directions a member of `node`'s block is written with. A listener's block
  * holds injected fields alone, for the reason
- * `BpmnScriptValidator.checkListenerFields` states, so it has no row to read.
+ * `BpmnScriptValidator.checkListenerFields` states, and a form field's holds
+ * properties alone, so neither has a row to read.
  */
 function parameterDirectionsOf(node: AstNode): readonly string[] {
   if (node.$type === 'Listener') {
     return [FIELD_DIRECTION];
+  }
+  if (node.$type === 'FormField') {
+    return [PROPERTY_DIRECTION];
   }
   const rule = attributeBlockRuleOf(node);
   return rule ? parameterDirectionsFor(rule) : [];
@@ -449,6 +471,21 @@ export class BpmnScriptCompletionProvider extends DefaultCompletionProvider {
       this.acceptListenerEvents(context, acceptor, owner);
       return;
     }
+    // A mapping is offered where its row takes one; elsewhere the block
+    // position offers nothing for it, so a user task is never handed one.
+    if (next.property === 'trigger' && next.type === 'ErrorMapping') {
+      if (owner && attributeBlockRuleOf(owner)?.externalExtras) {
+        acceptor(context, {
+          label: ERROR_MAPPING_HEAD,
+          kind: CompletionItemKind.Snippet,
+          detail: 'raise a declared error when a reported failure matches',
+          insertText: `${ERROR_MAPPING_HEAD} \${1:CODE} ${ERROR_MAPPING_WHEN} \${2:condition}`,
+          insertTextFormat: InsertTextFormat.Snippet,
+          sortText: '1',
+        });
+      }
+      return;
+    }
     if (next.property === 'trigger' && nodeType) {
       const triggers = STATEMENT_TRIGGERS[nodeType];
       if (triggers) {
@@ -510,15 +547,19 @@ export class BpmnScriptCompletionProvider extends DefaultCompletionProvider {
       output: 'a value this step hands back',
       [FIELD_DIRECTION]:
         'a value injected into the class or delegate this step names',
+      [PROPERTY_DIRECTION]:
+        'a value Tasklist or a worker reads off the step, never a variable',
     };
 
   /**
    * A field's value is quoted where an io parameter's is not: it lowers to a
    * `stringValue` attribute or to an expression child, and neither takes a
-   * list, a map, or an inline script.
+   * list, a map, or an inline script. A property's is the same text in a
+   * `value` attribute.
    */
   private static readonly DIRECTION_VALUES: Readonly<Record<string, string>> = {
     [FIELD_DIRECTION]: '"${2:value}"',
+    [PROPERTY_DIRECTION]: '"${2:value}"',
   };
 
   private acceptParameterDirections(

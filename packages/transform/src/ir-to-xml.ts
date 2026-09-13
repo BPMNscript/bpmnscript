@@ -30,12 +30,15 @@ import type {
   CallActivity,
   CallVariableMapper,
   CallVariableMapping,
+  ErrorMapping,
   EventDefinition,
   ExecutionListener,
+  ExtensionProperty,
   FieldInjection,
   FlowContainer,
   FlowElement,
   FormField,
+  FormFieldConstraint,
   FormFieldType,
   Gateway,
   IoParameter,
@@ -302,7 +305,13 @@ function serviceTaskBindingAttrs(
     case 'delegateExpression':
       return { 'operaton:delegateExpression': binding.expression };
     case 'external':
-      return { 'operaton:type': 'external', 'operaton:topic': binding.topic };
+      return {
+        'operaton:type': 'external',
+        'operaton:topic': binding.topic,
+        ...(binding.taskPriority !== undefined
+          ? { 'operaton:taskPriority': binding.taskPriority }
+          : {}),
+      };
     case 'decision':
       return {
         'operaton:decisionRef': binding.decisionRef,
@@ -896,6 +905,18 @@ function buildExtensionElements(
   if (inputOutput !== undefined) {
     values.push(inputOutput);
   }
+  // A thrown message's binding lives on its `bpmn:MessageEventDefinition`
+  // (`serviceTaskBindingAttrs`, called from `buildEventDefinition`), which has
+  // no `extensionElements` of its own to carry a property list or a mapping
+  // into; only a serviceTask-like tag reaches here with one.
+  if (node.kind === 'serviceTask' && node.binding.kind === 'external') {
+    if (node.binding.properties !== undefined) {
+      values.push(buildProperties(moddle, node.binding.properties, 'name'));
+    }
+    for (const mapping of node.binding.errorMappings ?? []) {
+      values.push(buildErrorMappingDefinition(moddle, mapping, roots));
+    }
+  }
   if ('formFields' in node && node.formFields !== undefined) {
     values.push(buildFormData(moddle, node.formFields));
   }
@@ -1109,6 +1130,7 @@ export const FORM_FIELD_TYPE_TO_OPERATON: Record<FormFieldType, string> = {
   number: 'long',
   boolean: 'boolean',
   date: 'date',
+  enum: 'enum',
 };
 
 function buildFormData(
@@ -1123,9 +1145,76 @@ function buildFormData(
       ...(field.defaultValue !== undefined
         ? { defaultValue: field.defaultValue }
         : {}),
+      ...(field.datePattern !== undefined
+        ? { datePattern: field.datePattern }
+        : {}),
+      ...(field.properties !== undefined
+        ? { properties: buildProperties(moddle, field.properties, 'id') }
+        : {}),
+      ...(field.constraints !== undefined
+        ? {
+            validation: moddle.create('operaton:Validation', {
+              constraints: field.constraints.map((constraint) =>
+                buildConstraint(moddle, constraint),
+              ),
+            }),
+          }
+        : {}),
+      ...(field.values !== undefined
+        ? {
+            values: field.values.map((value) =>
+              moddle.create('operaton:Value', {
+                id: value.id,
+                ...(value.label !== undefined ? { name: value.label } : {}),
+              }),
+            ),
+          }
+        : {}),
     }),
   );
   return moddle.create('operaton:FormData', { fields });
+}
+
+/**
+ * `DefaultFormHandler.parseProperties` reads `id` off a form field's entries
+ * and `BpmnParseUtil.parseOperatonExtensionProperties` reads `name` off a
+ * task's, so the key attribute is the caller's to say.
+ */
+function buildProperties(
+  moddle: BpmnModdleInstance,
+  properties: ExtensionProperty[],
+  keyAttr: 'id' | 'name',
+): ModdleElement {
+  return moddle.create('operaton:Properties', {
+    values: properties.map((property) =>
+      moddle.create('operaton:Property', {
+        [keyAttr]: property.key,
+        value: property.value,
+      }),
+    ),
+  });
+}
+
+/** Read by `ExternalTaskEntity.evaluateThrowBpmnError` alone, which raises `errorRef`'s code when `expression` holds on a reported failure or on completion. */
+function buildErrorMappingDefinition(
+  moddle: BpmnModdleInstance,
+  mapping: ErrorMapping,
+  roots: RootElementIndex,
+): ModdleElement {
+  return moddle.create('operaton:ErrorEventDefinition', {
+    errorRef: roots.errorByCode.get(mapping.errorCode),
+    expression: mapping.condition,
+  });
+}
+
+function buildConstraint(
+  moddle: BpmnModdleInstance,
+  constraint: FormFieldConstraint,
+): ModdleElement {
+  return moddle.create('operaton:Constraint', {
+    name: constraint.name,
+    ...(constraint.config !== undefined ? { config: constraint.config } : {}),
+  });
 }
 
 /** Canonical order: the business key, then the in-mappings, then the out-mappings. */
