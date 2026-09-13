@@ -34,7 +34,7 @@ process claim-settlement(
       {
         service AssessBodywork(
           label: "Assess the bodywork",
-          class: "com.example.claims.BodyworkDelegate",
+          expression: "${bodyworkAssessor.assess(execution)}",
           resultVariable: "bodyworkReport",
           asyncBefore: true,
           retryCycle: "R3/PT5M"

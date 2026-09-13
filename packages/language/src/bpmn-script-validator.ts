@@ -490,6 +490,34 @@ const BUILTIN_BEHAVIOUR_CLASS: Readonly<Record<BuiltinTaskType, string>> = {
   shell: 'ShellActivityBehavior',
 };
 
+/**
+ * The bindings `BpmnParse.parseServiceTaskLike` fails the deployment for when
+ * a result variable sits beside them, each with the attribute name its
+ * refusal quotes. The `expression` branch alone is built with the variable;
+ * the `type` branches never read it, and a `decision` reads it on its own path.
+ */
+const RESULT_VARIABLE_REFUSING_BINDINGS: Readonly<Record<string, string>> = {
+  class: 'class',
+  delegate: 'delegateExpression',
+};
+
+/** The element name the same refusal quotes, per kind that reaches that method. */
+const SERVICE_TASK_LIKE_ELEMENT: Readonly<
+  Record<(ServiceTask | SendTask | BusinessRuleTask)['$type'], string>
+> = {
+  ServiceTask: 'serviceTask',
+  SendTask: 'sendTask',
+  BusinessRuleTask: 'businessRuleTask',
+};
+
+/** @param description Noun phrase with article, e.g. `'a service task'`. */
+const resultVariableBindingMessage = (
+  description: string,
+  binding: string,
+  element: string,
+) =>
+  `${capitalize(description)} cannot carry 'resultVariable' beside '${binding}': the engine refuses to deploy it ('resultVariableName' not supported for ${element} elements using '${RESULT_VARIABLE_REFUSING_BINDINGS[binding]}'); bind with 'expression' to store the return value, or drop it.`;
+
 /** @param subject The message's leading noun phrase (`"Service task 'Notify'"`). */
 const missingBuiltinFieldMessage = (
   subject: string,
@@ -1850,6 +1878,7 @@ export class BpmnScriptValidator {
       )
     ) {
       this.checkBuiltinBinding(task, subject, accept);
+      this.checkResultVariableBinding(task, accept);
     }
   };
 
@@ -1871,6 +1900,7 @@ export class BpmnScriptValidator {
         )
       ) {
         this.checkBuiltinBinding(task, subject, accept);
+        this.checkResultVariableBinding(task, accept);
       }
     }
     this.checkBindingAttribute(task, accept);
@@ -1935,6 +1965,28 @@ export class BpmnScriptValidator {
         });
       }
     }
+  }
+
+  /** Asked, as {@link checkBuiltinBinding} is, only once exactly one binding is written. */
+  private checkResultVariableBinding(
+    task: ServiceTask | SendTask | BusinessRuleTask,
+    accept: ValidationAcceptor,
+  ): void {
+    const settings = settingsOf(task.items);
+    const result = settings.find((a) => a.key === 'resultVariable');
+    const binding = settings.find(
+      (a) => RESULT_VARIABLE_REFUSING_BINDINGS[a.key] !== undefined,
+    );
+    if (result === undefined || binding === undefined) return;
+    accept(
+      'error',
+      resultVariableBindingMessage(
+        attributeBlockRuleOf(task)!.description,
+        binding.key,
+        SERVICE_TASK_LIKE_ELEMENT[task.$type],
+      ),
+      { node: result, property: 'key' },
+    );
   }
 
   private checkDecisionResultMapping(

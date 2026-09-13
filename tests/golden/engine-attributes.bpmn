@@ -40,7 +40,7 @@
         <bpmn:incoming>Flow_GradeMechanics_Gateway_claim-settlement_3_1_join</bpmn:incoming>
         <bpmn:outgoing>Flow_Gateway_claim-settlement_3_1_join_InspectionReported</bpmn:outgoing>
       </bpmn:parallelGateway>
-      <bpmn:serviceTask id="AssessBodywork" name="Assess the bodywork" operaton:asyncBefore="true" operaton:class="com.example.claims.BodyworkDelegate" operaton:resultVariable="bodyworkReport">
+      <bpmn:serviceTask id="AssessBodywork" name="Assess the bodywork" operaton:asyncBefore="true" operaton:expression="${bodyworkAssessor.assess(execution)}" operaton:resultVariable="bodyworkReport">
         <bpmn:extensionElements>
           <operaton:failedJobRetryTimeCycle>R3/PT5M</operaton:failedJobRetryTimeCycle>
         </bpmn:extensionElements>

@@ -4398,12 +4398,46 @@ function readServiceTaskBinding(
   if (binding === undefined) {
     throw refusal(detectUnsupportedServiceTaskForm(el, 'task'));
   }
+  refuseResultVariableBeside(
+    binding,
+    el,
+    `${element ?? 'service'}Task`,
+    refusal,
+  );
 
   const bound = withInjectedFields(binding, el, id, `'${id}'`, warnings);
   if (bound.kind === 'builtin') {
     refuseBuiltinShapes(bound, id, refusal, warnings);
   }
   return withExternalExtras(bound, el, id, warnings);
+}
+
+/**
+ * `BpmnParse.parseServiceTaskLike` builds only the `expression` behaviour
+ * with the result variable and fails the deployment when a `class` or
+ * `delegateExpression` binding carries one; its `parseResultVariable` reads
+ * the older `resultVariableName` spelling too. The `type` branches never
+ * read it, and a `decisionRef` reads it on its own path.
+ *
+ * @param elementName The tag as the engine's refusal names it (`serviceTask`).
+ */
+function refuseResultVariableBeside(
+  binding: ServiceTaskBinding,
+  el: ModdleElement,
+  elementName: string,
+  refusal: (construct: string) => Error,
+): void {
+  if (binding.kind !== 'class' && binding.kind !== 'delegateExpression') return;
+  const written = ['resultVariable', 'resultVariableName'].find(
+    (attr) => readNamespacedAttr(el, attr) !== undefined,
+  );
+  if (written === undefined) return;
+  throw refusal(
+    `operaton:${binding.kind} with operaton:${written}, which Operaton ` +
+      `refuses to deploy: "'resultVariableName' not supported for ` +
+      `${elementName} elements using '${binding.kind}'" ` +
+      '(BpmnParse.parseServiceTaskLike)',
+  );
 }
 
 /**

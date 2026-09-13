@@ -5849,7 +5849,7 @@ describe('xmlToIr: flat engine settings on every carrying node kind', () => {
   <bpmn:process id="p" isExecutable="true" operaton:versionTag="1.4">
     <bpmn:startEvent id="Start" operaton:asyncBefore="true" />
     <bpmn:userTask id="Review" operaton:asyncBefore="true" />
-    <bpmn:serviceTask id="Charge" operaton:class="com.example.Charge"
+    <bpmn:serviceTask id="Charge" operaton:expression="\${charge.run(execution)}"
                       operaton:asyncBefore="true" operaton:resultVariable="receipt" />
     <bpmn:scriptTask id="Calc" scriptFormat="javascript"
                      operaton:asyncBefore="true" operaton:resultVariable="total">
@@ -6936,7 +6936,7 @@ describe('xmlToIr: a mail or shell task imports with its fields on the three tag
   });
 });
 
-describe('xmlToIr: a mail or shell task the engine would refuse is refused with its rule', () => {
+describe('xmlToIr: a service-like task the engine would refuse is refused with its rule', () => {
   const TO = field('name="to" stringValue="ops@example.com"');
   const TEXT = field('name="text" stringValue="Report attached"');
   const COMMAND = field('name="command" stringValue="echo"');
@@ -6951,7 +6951,8 @@ describe('xmlToIr: a mail or shell task the engine would refuse is refused with 
     `operaton:type="mail" without ${missing} field, which Operaton refuses ` +
     `to deploy: "${rule}" (BpmnParse.validateFieldDeclarationsForEmail)`;
 
-  // Revert: delete refuseBuiltinShapes, and the first six rows import.
+  // Revert: delete refuseBuiltinShapes, and the first six rows import; delete
+  // the result-variable check in readServiceTaskBinding, and the last two do.
   it.each([
     [
       'a mail task with cc and text and no to, since cc satisfies nothing',
@@ -7025,6 +7026,29 @@ describe('xmlToIr: a mail or shell task the engine would refuse is refused with 
       'Thrown message',
       'operaton:type="mail", which this surface carries on a service, send ' +
         'or business rule task alone',
+    ],
+    [
+      'a result variable beside a class, which only an expression binding is built with',
+      oneNodeDoc('serviceTask', {
+        attrs:
+          'operaton:class="com.example.Svc" operaton:resultVariable="outcome"',
+      }),
+      'Service task',
+      'operaton:class with operaton:resultVariable, which Operaton refuses ' +
+        "to deploy: \"'resultVariableName' not supported for serviceTask " +
+        "elements using 'class'\" (BpmnParse.parseServiceTaskLike)",
+    ],
+    [
+      'the older resultVariableName spelling beside a delegate on a business rule task, read by the same parse',
+      oneNodeDoc('businessRuleTask', {
+        attrs:
+          'operaton:delegateExpression="${rater}" operaton:resultVariableName="rating"',
+      }),
+      'Business rule task',
+      'operaton:delegateExpression with operaton:resultVariableName, which ' +
+        "Operaton refuses to deploy: \"'resultVariableName' not supported " +
+        "for businessRuleTask elements using 'delegateExpression'\" " +
+        '(BpmnParse.parseServiceTaskLike)',
     ],
   ])('%s', async (_title, xml, subject, construct) => {
     const e = await expectRefusal<UnsupportedServiceTaskFormError>(
