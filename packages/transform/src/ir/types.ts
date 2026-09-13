@@ -8,6 +8,7 @@
  */
 
 import type {
+  BuiltinTaskType,
   DECISION_RESULT_MAPPINGS,
   END_TRIGGERS,
   EXECUTION_LISTENER_EVENTS,
@@ -324,13 +325,14 @@ export interface Named {
 }
 
 /**
- * Mixed into every event and activity kind but not the gateways, which
- * `if`/`while`/`parallel` synthesize, leaving nowhere on the DSL surface to
- * author one. Each field is stored only in the non-default direction, so
- * `asyncBefore="false"` and `exclusive="true"` reproduce by omission. See ADR
- * 0022, Carry Operaton Engine Attributes as Named IR Fields.
+ * The five Operaton job-execution settings, mixed into every event and
+ * activity kind and, authored on the statement head, into the four gateway
+ * kinds directly. Each field is stored only in the non-default direction, so
+ * `asyncBefore="false"` and `exclusive="true"` reproduce by omission. See
+ * ADR 0022, Carry Operaton Engine Attributes as Named IR Fields, and ADR
+ * 0040, Engine Settings on Synthesized Gateways.
  */
-export interface EngineAttributes {
+export interface JobSettings {
   asyncBefore?: true;
   asyncAfter?: true;
   exclusive?: false;
@@ -338,18 +340,15 @@ export interface EngineAttributes {
   jobPriority?: string;
   /** The `operaton:failedJobRetryTimeCycle` element body, verbatim. */
   retryCycle?: string;
-  /** In emission order. */
-  executionListeners?: ExecutionListener[];
 }
 
-export function engineAttributes(found: {
+export function jobSettings(found: {
   asyncBefore: boolean | undefined;
   asyncAfter: boolean | undefined;
   exclusive: boolean | undefined;
   jobPriority: string | undefined;
   retryCycle: string | undefined;
-  executionListeners: ExecutionListener[] | undefined;
-}): EngineAttributes {
+}): JobSettings {
   return {
     ...(found.asyncBefore === true ? { asyncBefore: true } : {}),
     ...(found.asyncAfter === true ? { asyncAfter: true } : {}),
@@ -358,10 +357,18 @@ export function engineAttributes(found: {
       ? {}
       : { jobPriority: found.jobPriority }),
     ...(found.retryCycle === undefined ? {} : { retryCycle: found.retryCycle }),
-    ...(found.executionListeners === undefined
-      ? {}
-      : { executionListeners: found.executionListeners }),
   };
+}
+
+/**
+ * {@link JobSettings} plus execution listeners. Mixed into every event and
+ * activity kind; the four gateway kinds extend `JobSettings` directly and
+ * take no listeners, since a listener needs the textual identity a
+ * synthesized gateway has none of (ADR 0010) to author one against.
+ */
+export interface EngineAttributes extends JobSettings {
+  /** In emission order. */
+  executionListeners?: ExecutionListener[];
 }
 
 /** An `operaton:inputOutput` block: read on entry, written on exit. */
@@ -384,9 +391,11 @@ export function ioMapped(
 /**
  * How many times an activity runs, and what each run sees. At least one of
  * `cardinality` and `collection` is present: with both, the count drives the
- * runs while each run still sees its element.
+ * runs while each run still sees its element. The job settings are the ones
+ * the engine reads off this element onto each run, `RUN_ENGINE_KEYS` in the
+ * language package, which is why there is no `jobPriority`.
  */
-export interface LoopCharacteristics {
+export interface LoopCharacteristics extends Omit<JobSettings, 'jobPriority'> {
   /** A literal count, or an expression that yields one. */
   cardinality?: string;
   /** A variable name, or an expression when it carries `${`. */
@@ -601,8 +610,9 @@ export interface ErrorMapping {
 }
 
 /**
- * A service task adds the external topic a listener has no form for, and a
- * business rule task the deployed decision it evaluates.
+ * A service task adds the external topic and the built-in mail or shell
+ * behaviour a listener has no form for, and a business rule task the deployed
+ * decision it evaluates.
  */
 export type ServiceTaskBinding =
   | CodeBinding
@@ -625,7 +635,31 @@ export type ServiceTaskBinding =
       binding?: VersionBinding;
       /** What `resultVariable` ends up holding. */
       mapDecisionResult?: DecisionResultMapping;
+    }
+  | {
+      kind: 'builtin';
+      /** Paired with `operaton:type="mail"`/`"shell"`. */
+      type: BuiltinTaskType;
+      fields?: FieldInjection[];
     };
+
+/**
+ * The bindings Operaton hands a field list to, `FIELD_BINDING_KEYS` in the
+ * language package: a class and the two built-in behaviours through
+ * `instantiateDelegate`, a delegate expression's bean on each invocation.
+ */
+export function carriesFields(
+  binding: ServiceTaskBinding | ListenerBinding,
+): binding is Extract<
+  ServiceTaskBinding | ListenerBinding,
+  { fields?: FieldInjection[] }
+> {
+  return (
+    binding.kind === 'class' ||
+    binding.kind === 'delegateExpression' ||
+    binding.kind === 'builtin'
+  );
+}
 
 export interface ServiceTask
   extends EngineAttributes, IoMapped, Repeatable, Named {
@@ -637,10 +671,10 @@ export interface ServiceTask
   /**
    * Which tag this serializes to; absent is a service task. Operaton runs all
    * three through `parseServiceTaskLike` when the tag carries a class,
-   * expression, delegate expression, or external topic binding, so they share
-   * this node. A business rule task naming an `operaton:decisionRef` goes to
-   * `parseDmnBusinessRuleTask` instead, and that binding is legal on that tag
-   * alone.
+   * expression, delegate expression, external topic, or `mail`/`shell` type
+   * binding, so they share this node. A business rule task naming an
+   * `operaton:decisionRef` goes to `parseDmnBusinessRuleTask` instead, and
+   * that binding is legal on that tag alone.
    */
   element?: 'send' | 'businessRule';
 }
@@ -675,8 +709,8 @@ export interface ReceiveTask
   messageName?: string;
 }
 
-/** Carries no {@link EngineAttributes}, for the reason that interface gives. */
-export interface ExclusiveGateway extends Named {
+/** Job settings but no listeners: see {@link EngineAttributes}. The other three kinds are the same. */
+export interface ExclusiveGateway extends JobSettings, Named {
   kind: 'exclusiveGateway';
   id: string;
   /** The BPMN `default` attribute: the flow taken when no condition matches. */
@@ -685,18 +719,18 @@ export interface ExclusiveGateway extends Named {
 
 /**
  * Fork and join both. Every outgoing flow is taken, so there are no conditions
- * and no default. Carries no {@link EngineAttributes} either.
+ * and no default.
  */
-export interface ParallelGateway extends Named {
+export interface ParallelGateway extends JobSettings, Named {
   kind: 'parallelGateway';
   id: string;
 }
 
 /**
  * A fork that takes every branch whose condition holds, and the merge that
- * waits for exactly those. Carries no {@link EngineAttributes} either.
+ * waits for exactly those.
  */
-export interface InclusiveGateway extends Named {
+export interface InclusiveGateway extends JobSettings, Named {
   kind: 'inclusiveGateway';
   id: string;
   /** The BPMN `default` attribute: the flow taken when no condition matches. */
@@ -707,7 +741,7 @@ export interface InclusiveGateway extends Named {
  * A fork whose branches each begin with a wait; the first to resolve cancels
  * the rest. Every outgoing flow is unconditioned, so there is no default.
  */
-export interface EventBasedGateway extends Named {
+export interface EventBasedGateway extends JobSettings, Named {
   kind: 'eventBasedGateway';
   id: string;
 }

@@ -68,6 +68,7 @@ const CORPUS = [
   `process p { error E start S user U on error(E) { goto Fin } end Fin }`,
   `process p { start S if (a > 1) { user U } else { goto Fin } while (b) { step T } end Fin }`,
   `process p { start S parallel { { user U } { service V(topic: "t") } } end E }`,
+  `process p { start S if (a) (asyncBefore: true, joinJobPriority: 20) { user U } parallel (jobPriority: 5, joinAsyncAfter: true) { { user V } { user W } } end E }`,
   `process p { start S send N(class: "C") receive R(message: "M") decide D(decision: "d") end E }`,
   `process p { start S { form { plan: enum "P" = "a" (required: true, validator: "V") { a "A" b property k = "v" } n: number (min: 1, max: "5") d: date (pattern: "yyyy") } } end E }`,
   `process p { error E start S service V(topic: "t", taskPriority: 42) { property k = "v" property j = "w" error E when externalTask.retries == 0 error E when "\${x}" } end F }`,

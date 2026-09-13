@@ -37,15 +37,19 @@ import type {
   ExecutionListener,
   FlowContainer,
   FlowElement,
+  Gateway,
   InclusiveGateway,
   IoValue,
+  JobSettings,
   LoopCharacteristics,
   Repeatable,
   SequenceFlow,
   SubProcess,
 } from '../src/ir/types.js';
+import { isGateway } from '../src/ir/types.js';
 import { byId, only, subProcess } from './helpers/ir-query.js';
 import {
+  builtinBinding,
   callActivity,
   classBinding,
   conditionDef,
@@ -279,9 +283,9 @@ describe('astToIr: if/else exclusive gateway', () => {
     expect(flow(result, 'A', joinId)).toBeDefined();
   });
 
-  it('prunes the join when both the if and else branch terminate, and emits no implicit end', async () => {
+  it('prunes the join when both the if and else branch terminate, taking its join settings with it, and emits no implicit end', async () => {
     const result = await ir(
-      `process P { error Failed if (c) { throw error B(Failed) } else { end S } }`,
+      `process P { error Failed if (c) (joinAsyncBefore: true) { throw error B(Failed) } else { end S } }`,
     );
     const joinId = makeGatewayJoinId('P_0');
     expect(result.flowElements.some((fe) => fe.id === joinId)).toBe(false);
@@ -684,10 +688,73 @@ describe('astToIr: service task binding variants', () => {
       'expression: svc.status',
       exprBinding('${svc.status}'),
     ],
+    [
+      'lower-cases `type: "Mail"` to the engine discriminator it compares case-insensitively',
+      'type: "Mail"',
+      builtinBinding('mail'),
+    ],
+    [
+      'reads a bareword `type: shell` like a quoted one',
+      'type: shell',
+      builtinBinding('shell'),
+    ],
+    [
+      'binds nothing for a `type` value the engine has no behaviour for, leaving it to the validator',
+      'type: "ftp"',
+      classBinding(''),
+    ],
   ])('%s', async (_title, member, binding) => {
     const result = await ir(`process P { service S(${member}) }`);
     expect(only(result, 'serviceTask').binding).toEqual(binding);
   });
+
+  // Revert: drop the `type` branch from `writtenBinding` -> every row binds nothing.
+  const TAGS = [
+    ['service', undefined],
+    ['send', 'send'],
+    ['decide', 'businessRule'],
+  ] as const;
+  const BUILTINS = [
+    [
+      'mail',
+      'field to = "a@b" field text = "t"',
+      [
+        { name: 'to', value: 'a@b' },
+        { name: 'text', value: 't' },
+      ],
+    ],
+    [
+      'shell',
+      'field command = "echo" field arg1 = "x" field outputVariable = "o"',
+      [
+        { name: 'command', value: 'echo' },
+        { name: 'arg1', value: 'x' },
+        { name: 'outputVariable', value: 'o' },
+      ],
+    ],
+  ] as const;
+  it.each(
+    TAGS.flatMap(([tag, element]) =>
+      BUILTINS.map(
+        ([type, fields, injected]) =>
+          [tag, type, element, fields, injected] as const,
+      ),
+    ),
+  )(
+    'a %s task with type: "%s" lowers to the builtin binding carrying its fields in source order, resultVariable staying on the node',
+    async (tag, type, element, fields, injected) => {
+      const result = await ir(
+        `process P { ${tag} S(type: "${type}", resultVariable: "r") { ${fields} } }`,
+      );
+      expect(only(result, 'serviceTask')).toEqual({
+        kind: 'serviceTask',
+        id: 'S',
+        binding: builtinBinding(type, [...injected]),
+        resultVariable: 'r',
+        ...(element === undefined ? {} : { element }),
+      });
+    },
+  );
 });
 
 describe('astToIr: script task', () => {
@@ -2862,6 +2929,65 @@ describe('astToIr: repeat clause', () => {
   ])('a repeated %s carries the loop into the IR', async (_kind, statement) => {
     expect(await loopOf(statement)).toEqual({ cardinality: '2' });
   });
+
+  /** What `X` carries at each of its two job positions: on the loop, and on the element itself. */
+  const jobPositionsOf = (
+    node: FlowElement,
+  ): { loop: LoopCharacteristics | undefined; own: JobSettings } => {
+    const {
+      loop,
+      asyncBefore,
+      asyncAfter,
+      exclusive,
+      jobPriority,
+      retryCycle,
+    } = node as Repeatable & JobSettings;
+    return {
+      loop,
+      own: { asyncBefore, asyncAfter, exclusive, jobPriority, retryCycle },
+    };
+  };
+
+  // Both positions in one parens, so a reader taking the other's spelling
+  // shows. `runJobPriority` has no reader in the engine, so a stray one must
+  // reach neither position. Revert: read the loop through the identity key
+  // mapper, or keep `jobPriority` in the loop spread.
+  const BOTH_POSITIONS =
+    'asyncBefore: true, jobPriority: 5, retryCycle: "R3/PT10M", runAsyncBefore: true, runAsyncAfter: true, runExclusive: false, runRetryCycle: "R2/PT1M", runJobPriority: 7';
+
+  it.each([
+    ['service', `service X for 2(class: "c", ${BOTH_POSITIONS})`],
+    ['step', `step X for 2(${BOTH_POSITIONS})`],
+    ['subprocess', `subprocess X for 2(${BOTH_POSITIONS}) { step Q }`],
+    ['call', `call X for 2(process: "p", ${BOTH_POSITIONS})`],
+  ])(
+    'the run keys of a repeated %s land on the loop and the element keys on the step',
+    async (_kind, statement) => {
+      expect(
+        jobPositionsOf(byId(await ir(`process P { ${statement} }`), 'X')),
+      ).toEqual({
+        loop: {
+          cardinality: '2',
+          asyncBefore: true,
+          asyncAfter: true,
+          exclusive: false,
+          retryCycle: 'R2/PT1M',
+        },
+        own: { asyncBefore: true, jobPriority: '5', retryCycle: 'R3/PT10M' },
+      });
+    },
+  );
+
+  it('run keys on a statement without a clause lower to nothing', async () => {
+    expect(
+      byId(
+        await ir(
+          'process P { step X(runAsyncBefore: true, runRetryCycle: "R2/PT1M") }',
+        ),
+        'X',
+      ),
+    ).toEqual({ kind: 'task', id: 'X' });
+  });
 });
 
 describe('astToIr: conditioned parallel branches', () => {
@@ -3037,12 +3163,21 @@ describe('astToIr: race lowering', () => {
     );
   });
 
-  it('a branch setting lands on the catch event, never on the gateway', async () => {
+  it('a branch setting lands on the catch event and a head setting on the gateway, neither crossing over', async () => {
     const result = await ir(
-      `process P { await { message("M", asyncBefore: true) { user A } signal("S") { user B } } }`,
+      `process P { await (asyncBefore: true) { message("M", asyncAfter: true) { user A } signal("S") { user B } } }`,
     );
-    expect(byId(result, firstCatch)).toMatchObject({ asyncBefore: true });
-    expect('asyncBefore' in byId(result, raceId)).toBe(false);
+    expect(byId(result, raceId)).toEqual({
+      kind: 'eventBasedGateway',
+      id: raceId,
+      asyncBefore: true,
+    });
+    expect(byId(result, firstCatch)).toEqual({
+      kind: 'intermediateCatchEvent',
+      id: firstCatch,
+      eventDefinition: messageDef('M'),
+      asyncAfter: true,
+    });
   });
 
   it('a name inside a race branch reserves the collision seed', async () => {
@@ -3089,6 +3224,86 @@ describe('astToIr: race lowering', () => {
   });
 });
 
+describe('astToIr: gateway settings', () => {
+  const HEAD =
+    'asyncBefore: true, asyncAfter: true, exclusive: false, jobPriority: 5, retryCycle: "R3/PT10M"';
+  const JOIN =
+    'joinAsyncBefore: true, joinAsyncAfter: true, joinExclusive: false, joinJobPriority: prio, joinRetryCycle: "R1/PT1M"';
+  const head = {
+    asyncBefore: true,
+    asyncAfter: true,
+    exclusive: false,
+    jobPriority: '5',
+    retryCycle: 'R3/PT10M',
+  };
+  const join = {
+    asyncBefore: true,
+    asyncAfter: true,
+    exclusive: false,
+    jobPriority: '${prio}',
+    retryCycle: 'R1/PT1M',
+  };
+  const splitId = makeGatewaySplitId('P_0');
+  const forkId = makeGatewayForkId('P_0');
+  const loopId = makeGatewayLoopId('P_0');
+  const raceId = makeGatewayRaceId('P_0');
+  const joinId = makeGatewayJoinId('P_0');
+
+  // Every gateway of the process with the settings it carries, so a row pins
+  // both that the settings landed and that nothing else was minted. Revert:
+  // read the join with the identity mapper too -> every row with a join goes
+  // red; drop the spread from one lowering -> its row goes red.
+  it.each([
+    [
+      'an if chain mints one split for the head keys, one join for the join keys, and no gateway per else if',
+      `if (a) (${HEAD}, ${JOIN}) { user A } else if (b) { user B } else if (c) { user C } else { user D }`,
+      [
+        [splitId, head],
+        [joinId, join],
+      ],
+    ],
+    [
+      'a while loop puts the head keys on its one gateway',
+      `while (a) (${HEAD}) { user A }`,
+      [[loopId, head]],
+    ],
+    [
+      'a do-while loop puts the head keys on its one gateway',
+      `do { user A } while (a) (${HEAD})`,
+      [[loopId, head]],
+    ],
+    [
+      'an AND parallel with join keys alone leaves the fork bare',
+      `parallel (${JOIN}) { { user A } { user B } }`,
+      [
+        [forkId, {}],
+        [joinId, join],
+      ],
+    ],
+    [
+      'an inclusive parallel with head keys alone leaves the join bare',
+      `parallel (${HEAD}) { if (a) { user A } { user B } }`,
+      [
+        [forkId, head],
+        [joinId, {}],
+      ],
+    ],
+    [
+      'an await block puts the head keys on the event-based gateway and joinAsyncBefore on the exclusive join',
+      `await (asyncBefore: true, jobPriority: 5, joinAsyncBefore: true) { message("M") { user A } timer("PT1H") { user B } }`,
+      [
+        [raceId, { asyncBefore: true, jobPriority: '5' }],
+        [joinId, { asyncBefore: true }],
+      ],
+    ],
+  ] as const)('%s', async (_title, statement, gateways) => {
+    const result = await ir(`process P { ${statement} }`);
+    expect(
+      result.flowElements.filter(isGateway).map((g) => [g.id, settingsOn(g)]),
+    ).toEqual(gateways);
+  });
+});
+
 // ── Local helpers ────────────────────────────────────────────────────────────
 
 /** The event definition carried by the flow element with the given id. */
@@ -3099,6 +3314,17 @@ function definitionOf(container: FlowContainer, id: string): unknown {
 /** The execution binding carried by the flow element with the given id. */
 function bindingOf(container: FlowContainer, id: string): unknown {
   return (byId(container, id) as { binding?: unknown }).binding;
+}
+
+/** What a gateway carries beyond its identity and default flow: its job settings. */
+function settingsOn(gateway: Gateway): JobSettings {
+  const {
+    kind: _kind,
+    id: _id,
+    defaultFlowId: _flow,
+    ...settings
+  } = gateway as Gateway & { defaultFlowId?: string };
+  return settings;
 }
 
 /** Collect every flow-element id (events, tasks, gateways) of a process. */

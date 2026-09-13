@@ -69,8 +69,9 @@ const ENGINE_ATTRIBUTE_CONTRACT: readonly (readonly [
 ];
 
 // Spelled out rather than derived, because the sweep below reads it off a
-// gateway, which declares none of these. The `satisfies` clause is what keeps
-// the copy honest: a field added to the interface and not here stops compiling.
+// gateway, which declares the five job settings and never the listeners. The
+// `satisfies` clause is what keeps the copy honest: a field added to the
+// interface and not here stops compiling.
 const ENGINE_ATTRIBUTE_KEYS = Object.keys({
   asyncBefore: 0,
   asyncAfter: 0,
@@ -137,7 +138,10 @@ describe('the frozen engine-attribute contract', () => {
   });
 });
 
-describe('a synthesized gateway carries no engine attribute', () => {
+// The `gateway-settings` pair pins what a gateway written with settings
+// carries; this artifact writes none, so what it pins is that no direction
+// invents one, on either kind, at any depth.
+describe('a gateway written without settings gains none at any hop', () => {
   it('neither gateway kind holds one, at any container depth or hop', () => {
     for (const [label, ir] of rt.hops) {
       const gateways = allElements(ir).filter(isGateway);

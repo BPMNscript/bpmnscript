@@ -1,0 +1,505 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI" xmlns:dc="http://www.omg.org/spec/DD/20100524/DC" xmlns:di="http://www.omg.org/spec/DD/20100524/DI" xmlns:operaton="http://operaton.org/schema/1.0/bpmn" id="Definitions_loan-application" targetNamespace="http://bpmnscript.io/processes" exporter="BPMNscript" exporterVersion="0.0.0">
+  <bpmn:process id="loan-application" name="Consumer loan application" isExecutable="true" operaton:historyTimeToLive="P30D">
+    <bpmn:startEvent id="Applied" name="Application received">
+      <bpmn:extensionElements>
+        <operaton:formData>
+          <operaton:formField id="creditScore" label="Score reported by the credit bureau" type="long" />
+          <operaton:formField id="amount" label="Requested amount in euros" type="long" />
+          <operaton:formField id="documentsMissing" label="Whether a required document is still missing" type="boolean" />
+          <operaton:formField id="referencesPending" label="Whether a reference has yet to reply" type="boolean" />
+          <operaton:formField id="selfEmployed" label="Whether the applicant is self-employed" type="boolean" />
+        </operaton:formData>
+      </bpmn:extensionElements>
+      <bpmn:outgoing>Flow_Applied_ScreenApplication</bpmn:outgoing>
+    </bpmn:startEvent>
+    <bpmn:userTask id="ScreenApplication" name="Screen the application for completeness" operaton:assignee="demo">
+      <bpmn:incoming>Flow_Applied_ScreenApplication</bpmn:incoming>
+      <bpmn:outgoing>Flow_ScreenApplication_Gateway_loan-application_2_split</bpmn:outgoing>
+    </bpmn:userTask>
+    <bpmn:exclusiveGateway id="Gateway_loan-application_2_split" default="Flow_Gateway_loan-application_2_split_default" operaton:asyncBefore="true" operaton:exclusive="false" operaton:jobPriority="30">
+      <bpmn:incoming>Flow_ScreenApplication_Gateway_loan-application_2_split</bpmn:incoming>
+      <bpmn:outgoing>Flow_Gateway_loan-application_2_split_PreApprove</bpmn:outgoing>
+      <bpmn:outgoing>Flow_Gateway_loan-application_2_split_ReviewScore</bpmn:outgoing>
+      <bpmn:outgoing>Flow_Gateway_loan-application_2_split_default</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+    <bpmn:exclusiveGateway id="Gateway_loan-application_2_join" operaton:asyncBefore="true" operaton:jobPriority="20">
+      <bpmn:incoming>Flow_PreApprove_Gateway_loan-application_2_join</bpmn:incoming>
+      <bpmn:incoming>Flow_ReviewScore_Gateway_loan-application_2_join</bpmn:incoming>
+      <bpmn:incoming>Flow_FlagRisk_Gateway_loan-application_2_join</bpmn:incoming>
+      <bpmn:outgoing>Flow_Gateway_loan-application_2_join_Gateway_loan-application_3_loop</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+    <bpmn:serviceTask id="PreApprove" name="Pre-approve on the bureau score alone" operaton:class="com.example.loans.PreApproveDelegate">
+      <bpmn:incoming>Flow_Gateway_loan-application_2_split_PreApprove</bpmn:incoming>
+      <bpmn:outgoing>Flow_PreApprove_Gateway_loan-application_2_join</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:userTask id="ReviewScore" name="Review the borderline score by hand" operaton:assignee="demo">
+      <bpmn:incoming>Flow_Gateway_loan-application_2_split_ReviewScore</bpmn:incoming>
+      <bpmn:outgoing>Flow_ReviewScore_Gateway_loan-application_2_join</bpmn:outgoing>
+    </bpmn:userTask>
+    <bpmn:serviceTask id="FlagRisk" name="Flag the application as high risk" operaton:class="com.example.loans.RiskFlagDelegate">
+      <bpmn:incoming>Flow_Gateway_loan-application_2_split_default</bpmn:incoming>
+      <bpmn:outgoing>Flow_FlagRisk_Gateway_loan-application_2_join</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:exclusiveGateway id="Gateway_loan-application_3_loop" default="Flow_Gateway_loan-application_3_loop_default" operaton:asyncAfter="true">
+      <bpmn:extensionElements>
+        <operaton:failedJobRetryTimeCycle>R3/PT10M</operaton:failedJobRetryTimeCycle>
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_Gateway_loan-application_3_1_join_Gateway_loan-application_3_loop</bpmn:incoming>
+      <bpmn:incoming>Flow_Gateway_loan-application_2_join_Gateway_loan-application_3_loop</bpmn:incoming>
+      <bpmn:outgoing>Flow_Gateway_loan-application_3_loop_RequestDocument</bpmn:outgoing>
+      <bpmn:outgoing>Flow_Gateway_loan-application_3_loop_default</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+    <bpmn:userTask id="RequestDocument" name="Ask the applicant for the missing document" operaton:assignee="demo">
+      <bpmn:incoming>Flow_Gateway_loan-application_3_loop_RequestDocument</bpmn:incoming>
+      <bpmn:outgoing>Flow_RequestDocument_Gateway_loan-application_3_1_split</bpmn:outgoing>
+    </bpmn:userTask>
+    <bpmn:exclusiveGateway id="Gateway_loan-application_3_1_split" default="Flow_Gateway_loan-application_3_1_split_default">
+      <bpmn:incoming>Flow_RequestDocument_Gateway_loan-application_3_1_split</bpmn:incoming>
+      <bpmn:outgoing>Flow_Gateway_loan-application_3_1_split_RequestAccounts</bpmn:outgoing>
+      <bpmn:outgoing>Flow_Gateway_loan-application_3_1_split_default</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+    <bpmn:exclusiveGateway id="Gateway_loan-application_3_1_join">
+      <bpmn:incoming>Flow_RequestAccounts_Gateway_loan-application_3_1_join</bpmn:incoming>
+      <bpmn:incoming>Flow_Gateway_loan-application_3_1_split_default</bpmn:incoming>
+      <bpmn:outgoing>Flow_Gateway_loan-application_3_1_join_Gateway_loan-application_3_loop</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+    <bpmn:userTask id="RequestAccounts" name="Ask for the latest business accounts too" operaton:assignee="demo">
+      <bpmn:incoming>Flow_Gateway_loan-application_3_1_split_RequestAccounts</bpmn:incoming>
+      <bpmn:outgoing>Flow_RequestAccounts_Gateway_loan-application_3_1_join</bpmn:outgoing>
+    </bpmn:userTask>
+    <bpmn:subProcess id="CollectReferences" name="Collect the references the applicant named">
+      <bpmn:incoming>Flow_Gateway_loan-application_3_loop_default</bpmn:incoming>
+      <bpmn:outgoing>Flow_CollectReferences_Gateway_loan-application_5_fork</bpmn:outgoing>
+      <bpmn:startEvent id="StartEvent_CollectReferences">
+        <bpmn:outgoing>Flow_StartEvent_CollectReferences_ChaseReference</bpmn:outgoing>
+      </bpmn:startEvent>
+      <bpmn:userTask id="ChaseReference" name="Chase one outstanding reference" operaton:assignee="demo">
+        <bpmn:incoming>Flow_Gateway_loan-application_4_0_loop_ChaseReference</bpmn:incoming>
+        <bpmn:incoming>Flow_StartEvent_CollectReferences_ChaseReference</bpmn:incoming>
+        <bpmn:outgoing>Flow_ChaseReference_Gateway_loan-application_4_0_loop</bpmn:outgoing>
+      </bpmn:userTask>
+      <bpmn:exclusiveGateway id="Gateway_loan-application_4_0_loop" default="Flow_Gateway_loan-application_4_0_loop_default" operaton:exclusive="false" operaton:jobPriority="10">
+        <bpmn:incoming>Flow_ChaseReference_Gateway_loan-application_4_0_loop</bpmn:incoming>
+        <bpmn:outgoing>Flow_Gateway_loan-application_4_0_loop_ChaseReference</bpmn:outgoing>
+        <bpmn:outgoing>Flow_Gateway_loan-application_4_0_loop_default</bpmn:outgoing>
+      </bpmn:exclusiveGateway>
+      <bpmn:endEvent id="EndEvent_CollectReferences">
+        <bpmn:incoming>Flow_Gateway_loan-application_4_0_loop_default</bpmn:incoming>
+      </bpmn:endEvent>
+      <bpmn:sequenceFlow id="Flow_ChaseReference_Gateway_loan-application_4_0_loop" sourceRef="ChaseReference" targetRef="Gateway_loan-application_4_0_loop" />
+      <bpmn:sequenceFlow id="Flow_Gateway_loan-application_4_0_loop_ChaseReference" name="referencesPending" sourceRef="Gateway_loan-application_4_0_loop" targetRef="ChaseReference">
+        <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">${referencesPending}</bpmn:conditionExpression>
+      </bpmn:sequenceFlow>
+      <bpmn:sequenceFlow id="Flow_StartEvent_CollectReferences_ChaseReference" sourceRef="StartEvent_CollectReferences" targetRef="ChaseReference" />
+      <bpmn:sequenceFlow id="Flow_Gateway_loan-application_4_0_loop_default" sourceRef="Gateway_loan-application_4_0_loop" targetRef="EndEvent_CollectReferences" />
+    </bpmn:subProcess>
+    <bpmn:parallelGateway id="Gateway_loan-application_5_fork" operaton:asyncBefore="true">
+      <bpmn:incoming>Flow_CollectReferences_Gateway_loan-application_5_fork</bpmn:incoming>
+      <bpmn:outgoing>Flow_Gateway_loan-application_5_fork_VerifyIdentity</bpmn:outgoing>
+      <bpmn:outgoing>Flow_Gateway_loan-application_5_fork_ScreenFraud</bpmn:outgoing>
+    </bpmn:parallelGateway>
+    <bpmn:parallelGateway id="Gateway_loan-application_5_join" operaton:asyncAfter="true" operaton:exclusive="false">
+      <bpmn:extensionElements>
+        <operaton:failedJobRetryTimeCycle>R2/PT1M</operaton:failedJobRetryTimeCycle>
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_VerifyIdentity_Gateway_loan-application_5_join</bpmn:incoming>
+      <bpmn:incoming>Flow_ScreenFraud_Gateway_loan-application_5_join</bpmn:incoming>
+      <bpmn:outgoing>Flow_Gateway_loan-application_5_join_Gateway_loan-application_6_fork</bpmn:outgoing>
+    </bpmn:parallelGateway>
+    <bpmn:serviceTask id="VerifyIdentity" name="Verify the applicant against the register" operaton:class="com.example.loans.IdentityDelegate">
+      <bpmn:incoming>Flow_Gateway_loan-application_5_fork_VerifyIdentity</bpmn:incoming>
+      <bpmn:outgoing>Flow_VerifyIdentity_Gateway_loan-application_5_join</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:serviceTask id="ScreenFraud" name="Run the fraud screen" operaton:class="com.example.loans.FraudDelegate">
+      <bpmn:incoming>Flow_Gateway_loan-application_5_fork_ScreenFraud</bpmn:incoming>
+      <bpmn:outgoing>Flow_ScreenFraud_Gateway_loan-application_5_join</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:inclusiveGateway id="Gateway_loan-application_6_fork" default="Flow_Gateway_loan-application_6_fork_default" operaton:jobPriority="${selfEmployed ? 90 : 50}">
+      <bpmn:incoming>Flow_Gateway_loan-application_5_join_Gateway_loan-application_6_fork</bpmn:incoming>
+      <bpmn:outgoing>Flow_Gateway_loan-application_6_fork_AppraiseCollateral</bpmn:outgoing>
+      <bpmn:outgoing>Flow_Gateway_loan-application_6_fork_PriceLoan</bpmn:outgoing>
+      <bpmn:outgoing>Flow_Gateway_loan-application_6_fork_default</bpmn:outgoing>
+    </bpmn:inclusiveGateway>
+    <bpmn:inclusiveGateway id="Gateway_loan-application_6_join" operaton:asyncBefore="true">
+      <bpmn:incoming>Flow_AppraiseCollateral_Gateway_loan-application_6_join</bpmn:incoming>
+      <bpmn:incoming>Flow_PriceLoan_Gateway_loan-application_6_join</bpmn:incoming>
+      <bpmn:incoming>Flow_Gateway_loan-application_6_fork_default</bpmn:incoming>
+      <bpmn:outgoing>Flow_Gateway_loan-application_6_join_MakeOffer</bpmn:outgoing>
+    </bpmn:inclusiveGateway>
+    <bpmn:userTask id="AppraiseCollateral" name="Appraise the offered collateral" operaton:assignee="manager">
+      <bpmn:incoming>Flow_Gateway_loan-application_6_fork_AppraiseCollateral</bpmn:incoming>
+      <bpmn:outgoing>Flow_AppraiseCollateral_Gateway_loan-application_6_join</bpmn:outgoing>
+    </bpmn:userTask>
+    <bpmn:serviceTask id="PriceLoan" name="Price the loan from the checks" operaton:class="com.example.loans.PricingDelegate">
+      <bpmn:incoming>Flow_Gateway_loan-application_6_fork_PriceLoan</bpmn:incoming>
+      <bpmn:outgoing>Flow_PriceLoan_Gateway_loan-application_6_join</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:userTask id="MakeOffer" name="Send the offer to the applicant" operaton:assignee="demo">
+      <bpmn:incoming>Flow_Gateway_loan-application_6_join_MakeOffer</bpmn:incoming>
+      <bpmn:outgoing>Flow_MakeOffer_Gateway_loan-application_8_race</bpmn:outgoing>
+    </bpmn:userTask>
+    <bpmn:eventBasedGateway id="Gateway_loan-application_8_race" operaton:asyncBefore="true" operaton:jobPriority="5">
+      <bpmn:incoming>Flow_MakeOffer_Gateway_loan-application_8_race</bpmn:incoming>
+      <bpmn:outgoing>Flow_Gateway_loan-application_8_race_Catch_loan-application_8_b0</bpmn:outgoing>
+      <bpmn:outgoing>Flow_Gateway_loan-application_8_race_Catch_loan-application_8_b1</bpmn:outgoing>
+    </bpmn:eventBasedGateway>
+    <bpmn:exclusiveGateway id="Gateway_loan-application_8_join" operaton:asyncBefore="true">
+      <bpmn:incoming>Flow_DisburseFunds_Gateway_loan-application_8_join</bpmn:incoming>
+      <bpmn:incoming>Flow_ExpireOffer_Gateway_loan-application_8_join</bpmn:incoming>
+      <bpmn:outgoing>Flow_Gateway_loan-application_8_join_Closed</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+    <bpmn:intermediateCatchEvent id="Catch_loan-application_8_b0">
+      <bpmn:incoming>Flow_Gateway_loan-application_8_race_Catch_loan-application_8_b0</bpmn:incoming>
+      <bpmn:outgoing>Flow_Catch_loan-application_8_b0_DisburseFunds</bpmn:outgoing>
+      <bpmn:messageEventDefinition messageRef="Message_OfferAccepted" />
+    </bpmn:intermediateCatchEvent>
+    <bpmn:serviceTask id="DisburseFunds" name="Pay the loan out" operaton:class="com.example.loans.DisburseDelegate">
+      <bpmn:incoming>Flow_Catch_loan-application_8_b0_DisburseFunds</bpmn:incoming>
+      <bpmn:outgoing>Flow_DisburseFunds_Gateway_loan-application_8_join</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:intermediateCatchEvent id="Catch_loan-application_8_b1">
+      <bpmn:incoming>Flow_Gateway_loan-application_8_race_Catch_loan-application_8_b1</bpmn:incoming>
+      <bpmn:outgoing>Flow_Catch_loan-application_8_b1_ExpireOffer</bpmn:outgoing>
+      <bpmn:timerEventDefinition>
+        <bpmn:timeDuration xsi:type="bpmn:tFormalExpression">P14D</bpmn:timeDuration>
+      </bpmn:timerEventDefinition>
+    </bpmn:intermediateCatchEvent>
+    <bpmn:serviceTask id="ExpireOffer" name="Withdraw the unanswered offer" operaton:class="com.example.loans.ExpireDelegate">
+      <bpmn:incoming>Flow_Catch_loan-application_8_b1_ExpireOffer</bpmn:incoming>
+      <bpmn:outgoing>Flow_ExpireOffer_Gateway_loan-application_8_join</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:endEvent id="Closed" name="Application closed">
+      <bpmn:incoming>Flow_Gateway_loan-application_8_join_Closed</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:sequenceFlow id="Flow_Applied_ScreenApplication" sourceRef="Applied" targetRef="ScreenApplication" />
+    <bpmn:sequenceFlow id="Flow_Gateway_loan-application_2_split_PreApprove" name="creditScore &#62;= 700" sourceRef="Gateway_loan-application_2_split" targetRef="PreApprove">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">${creditScore &gt;= 700}</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="Flow_PreApprove_Gateway_loan-application_2_join" sourceRef="PreApprove" targetRef="Gateway_loan-application_2_join" />
+    <bpmn:sequenceFlow id="Flow_Gateway_loan-application_2_split_ReviewScore" name="creditScore &#62;= 600" sourceRef="Gateway_loan-application_2_split" targetRef="ReviewScore">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">${creditScore &gt;= 600}</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="Flow_ReviewScore_Gateway_loan-application_2_join" sourceRef="ReviewScore" targetRef="Gateway_loan-application_2_join" />
+    <bpmn:sequenceFlow id="Flow_Gateway_loan-application_2_split_default" sourceRef="Gateway_loan-application_2_split" targetRef="FlagRisk" />
+    <bpmn:sequenceFlow id="Flow_FlagRisk_Gateway_loan-application_2_join" sourceRef="FlagRisk" targetRef="Gateway_loan-application_2_join" />
+    <bpmn:sequenceFlow id="Flow_ScreenApplication_Gateway_loan-application_2_split" sourceRef="ScreenApplication" targetRef="Gateway_loan-application_2_split" />
+    <bpmn:sequenceFlow id="Flow_Gateway_loan-application_3_1_split_RequestAccounts" name="selfEmployed" sourceRef="Gateway_loan-application_3_1_split" targetRef="RequestAccounts">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">${selfEmployed}</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="Flow_RequestAccounts_Gateway_loan-application_3_1_join" sourceRef="RequestAccounts" targetRef="Gateway_loan-application_3_1_join" />
+    <bpmn:sequenceFlow id="Flow_Gateway_loan-application_3_1_split_default" sourceRef="Gateway_loan-application_3_1_split" targetRef="Gateway_loan-application_3_1_join" />
+    <bpmn:sequenceFlow id="Flow_RequestDocument_Gateway_loan-application_3_1_split" sourceRef="RequestDocument" targetRef="Gateway_loan-application_3_1_split" />
+    <bpmn:sequenceFlow id="Flow_Gateway_loan-application_3_loop_RequestDocument" name="documentsMissing" sourceRef="Gateway_loan-application_3_loop" targetRef="RequestDocument">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">${documentsMissing}</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="Flow_Gateway_loan-application_3_1_join_Gateway_loan-application_3_loop" sourceRef="Gateway_loan-application_3_1_join" targetRef="Gateway_loan-application_3_loop" />
+    <bpmn:sequenceFlow id="Flow_Gateway_loan-application_2_join_Gateway_loan-application_3_loop" sourceRef="Gateway_loan-application_2_join" targetRef="Gateway_loan-application_3_loop" />
+    <bpmn:sequenceFlow id="Flow_Gateway_loan-application_3_loop_default" sourceRef="Gateway_loan-application_3_loop" targetRef="CollectReferences" />
+    <bpmn:sequenceFlow id="Flow_Gateway_loan-application_5_fork_VerifyIdentity" sourceRef="Gateway_loan-application_5_fork" targetRef="VerifyIdentity" />
+    <bpmn:sequenceFlow id="Flow_VerifyIdentity_Gateway_loan-application_5_join" sourceRef="VerifyIdentity" targetRef="Gateway_loan-application_5_join" />
+    <bpmn:sequenceFlow id="Flow_Gateway_loan-application_5_fork_ScreenFraud" sourceRef="Gateway_loan-application_5_fork" targetRef="ScreenFraud" />
+    <bpmn:sequenceFlow id="Flow_ScreenFraud_Gateway_loan-application_5_join" sourceRef="ScreenFraud" targetRef="Gateway_loan-application_5_join" />
+    <bpmn:sequenceFlow id="Flow_CollectReferences_Gateway_loan-application_5_fork" sourceRef="CollectReferences" targetRef="Gateway_loan-application_5_fork" />
+    <bpmn:sequenceFlow id="Flow_Gateway_loan-application_6_fork_AppraiseCollateral" name="amount &#62; 250000" sourceRef="Gateway_loan-application_6_fork" targetRef="AppraiseCollateral">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">${amount &gt; 250000}</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="Flow_AppraiseCollateral_Gateway_loan-application_6_join" sourceRef="AppraiseCollateral" targetRef="Gateway_loan-application_6_join" />
+    <bpmn:sequenceFlow id="Flow_Gateway_loan-application_6_fork_PriceLoan" sourceRef="Gateway_loan-application_6_fork" targetRef="PriceLoan" />
+    <bpmn:sequenceFlow id="Flow_PriceLoan_Gateway_loan-application_6_join" sourceRef="PriceLoan" targetRef="Gateway_loan-application_6_join" />
+    <bpmn:sequenceFlow id="Flow_Gateway_loan-application_6_fork_default" sourceRef="Gateway_loan-application_6_fork" targetRef="Gateway_loan-application_6_join" />
+    <bpmn:sequenceFlow id="Flow_Gateway_loan-application_5_join_Gateway_loan-application_6_fork" sourceRef="Gateway_loan-application_5_join" targetRef="Gateway_loan-application_6_fork" />
+    <bpmn:sequenceFlow id="Flow_Gateway_loan-application_6_join_MakeOffer" sourceRef="Gateway_loan-application_6_join" targetRef="MakeOffer" />
+    <bpmn:sequenceFlow id="Flow_Gateway_loan-application_8_race_Catch_loan-application_8_b0" sourceRef="Gateway_loan-application_8_race" targetRef="Catch_loan-application_8_b0" />
+    <bpmn:sequenceFlow id="Flow_Catch_loan-application_8_b0_DisburseFunds" sourceRef="Catch_loan-application_8_b0" targetRef="DisburseFunds" />
+    <bpmn:sequenceFlow id="Flow_DisburseFunds_Gateway_loan-application_8_join" sourceRef="DisburseFunds" targetRef="Gateway_loan-application_8_join" />
+    <bpmn:sequenceFlow id="Flow_Gateway_loan-application_8_race_Catch_loan-application_8_b1" sourceRef="Gateway_loan-application_8_race" targetRef="Catch_loan-application_8_b1" />
+    <bpmn:sequenceFlow id="Flow_Catch_loan-application_8_b1_ExpireOffer" sourceRef="Catch_loan-application_8_b1" targetRef="ExpireOffer" />
+    <bpmn:sequenceFlow id="Flow_ExpireOffer_Gateway_loan-application_8_join" sourceRef="ExpireOffer" targetRef="Gateway_loan-application_8_join" />
+    <bpmn:sequenceFlow id="Flow_MakeOffer_Gateway_loan-application_8_race" sourceRef="MakeOffer" targetRef="Gateway_loan-application_8_race" />
+    <bpmn:sequenceFlow id="Flow_Gateway_loan-application_8_join_Closed" sourceRef="Gateway_loan-application_8_join" targetRef="Closed" />
+  </bpmn:process>
+  <bpmn:message id="Message_OfferAccepted" name="OfferAccepted" />
+  <bpmndi:BPMNDiagram id="BPMNDiagram_loan-application">
+    <bpmndi:BPMNPlane id="BPMNPlane_loan-application" bpmnElement="loan-application">
+      <bpmndi:BPMNShape id="Applied_di" bpmnElement="Applied">
+        <dc:Bounds x="57" y="52" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="ScreenApplication_di" bpmnElement="ScreenApplication">
+        <dc:Bounds x="175" y="30" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_loan-application_2_split_di" bpmnElement="Gateway_loan-application_2_split" isMarkerVisible="true">
+        <dc:Bounds x="350" y="45" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="PreApprove_di" bpmnElement="PreApprove">
+        <dc:Bounds x="475" y="30" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_loan-application_2_join_di" bpmnElement="Gateway_loan-application_2_join" isMarkerVisible="true">
+        <dc:Bounds x="650" y="45" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_loan-application_3_loop_di" bpmnElement="Gateway_loan-application_3_loop" isMarkerVisible="true">
+        <dc:Bounds x="800" y="45" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="RequestDocument_di" bpmnElement="RequestDocument">
+        <dc:Bounds x="925" y="30" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_loan-application_3_1_split_di" bpmnElement="Gateway_loan-application_3_1_split" isMarkerVisible="true">
+        <dc:Bounds x="1700" y="45" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="RequestAccounts_di" bpmnElement="RequestAccounts">
+        <dc:Bounds x="1825" y="30" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_loan-application_3_1_join_di" bpmnElement="Gateway_loan-application_3_1_join" isMarkerVisible="true">
+        <dc:Bounds x="2000" y="45" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="ReviewScore_di" bpmnElement="ReviewScore">
+        <dc:Bounds x="475" y="170" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="CollectReferences_di" bpmnElement="CollectReferences" isExpanded="true">
+        <dc:Bounds x="925" y="170" width="700" height="220" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_loan-application_5_fork_di" bpmnElement="Gateway_loan-application_5_fork">
+        <dc:Bounds x="2150" y="185" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="VerifyIdentity_di" bpmnElement="VerifyIdentity">
+        <dc:Bounds x="2275" y="170" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_loan-application_5_join_di" bpmnElement="Gateway_loan-application_5_join">
+        <dc:Bounds x="2450" y="185" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_loan-application_6_fork_di" bpmnElement="Gateway_loan-application_6_fork">
+        <dc:Bounds x="2600" y="185" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="AppraiseCollateral_di" bpmnElement="AppraiseCollateral">
+        <dc:Bounds x="2725" y="170" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_loan-application_6_join_di" bpmnElement="Gateway_loan-application_6_join">
+        <dc:Bounds x="2900" y="185" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="MakeOffer_di" bpmnElement="MakeOffer">
+        <dc:Bounds x="3025" y="170" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_loan-application_8_race_di" bpmnElement="Gateway_loan-application_8_race">
+        <dc:Bounds x="3200" y="185" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Catch_loan-application_8_b0_di" bpmnElement="Catch_loan-application_8_b0">
+        <dc:Bounds x="3357" y="192" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="DisburseFunds_di" bpmnElement="DisburseFunds">
+        <dc:Bounds x="3475" y="170" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_loan-application_8_join_di" bpmnElement="Gateway_loan-application_8_join" isMarkerVisible="true">
+        <dc:Bounds x="3650" y="185" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Closed_di" bpmnElement="Closed">
+        <dc:Bounds x="3807" y="192" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="FlagRisk_di" bpmnElement="FlagRisk">
+        <dc:Bounds x="475" y="450" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="ScreenFraud_di" bpmnElement="ScreenFraud">
+        <dc:Bounds x="2275" y="450" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="PriceLoan_di" bpmnElement="PriceLoan">
+        <dc:Bounds x="2725" y="450" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Catch_loan-application_8_b1_di" bpmnElement="Catch_loan-application_8_b1">
+        <dc:Bounds x="3357" y="472" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="ExpireOffer_di" bpmnElement="ExpireOffer">
+        <dc:Bounds x="3475" y="450" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_Applied_ScreenApplication_di" bpmnElement="Flow_Applied_ScreenApplication">
+        <di:waypoint x="93" y="70" />
+        <di:waypoint x="175" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ScreenApplication_Gateway_loan-application_2_split_di" bpmnElement="Flow_ScreenApplication_Gateway_loan-application_2_split">
+        <di:waypoint x="275" y="70" />
+        <di:waypoint x="350" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Gateway_loan-application_2_split_PreApprove_di" bpmnElement="Flow_Gateway_loan-application_2_split_PreApprove">
+        <di:waypoint x="400" y="70" />
+        <di:waypoint x="475" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Gateway_loan-application_2_split_ReviewScore_di" bpmnElement="Flow_Gateway_loan-application_2_split_ReviewScore">
+        <di:waypoint x="375" y="95" />
+        <di:waypoint x="375" y="210" />
+        <di:waypoint x="475" y="210" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Gateway_loan-application_2_split_default_di" bpmnElement="Flow_Gateway_loan-application_2_split_default">
+        <di:waypoint x="375" y="95" />
+        <di:waypoint x="375" y="490" />
+        <di:waypoint x="475" y="490" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_PreApprove_Gateway_loan-application_2_join_di" bpmnElement="Flow_PreApprove_Gateway_loan-application_2_join">
+        <di:waypoint x="575" y="70" />
+        <di:waypoint x="650" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Gateway_loan-application_2_join_Gateway_loan-application_3_loop_di" bpmnElement="Flow_Gateway_loan-application_2_join_Gateway_loan-application_3_loop">
+        <di:waypoint x="700" y="70" />
+        <di:waypoint x="800" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Gateway_loan-application_3_loop_RequestDocument_di" bpmnElement="Flow_Gateway_loan-application_3_loop_RequestDocument">
+        <di:waypoint x="850" y="70" />
+        <di:waypoint x="925" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Gateway_loan-application_3_loop_default_di" bpmnElement="Flow_Gateway_loan-application_3_loop_default">
+        <di:waypoint x="825" y="95" />
+        <di:waypoint x="825" y="280" />
+        <di:waypoint x="925" y="280" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_RequestDocument_Gateway_loan-application_3_1_split_di" bpmnElement="Flow_RequestDocument_Gateway_loan-application_3_1_split">
+        <di:waypoint x="1025" y="70" />
+        <di:waypoint x="1700" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Gateway_loan-application_3_1_split_RequestAccounts_di" bpmnElement="Flow_Gateway_loan-application_3_1_split_RequestAccounts">
+        <di:waypoint x="1750" y="70" />
+        <di:waypoint x="1825" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Gateway_loan-application_3_1_split_default_di" bpmnElement="Flow_Gateway_loan-application_3_1_split_default">
+        <di:waypoint x="1725" y="95" />
+        <di:waypoint x="1725" y="140" />
+        <di:waypoint x="2025" y="140" />
+        <di:waypoint x="2025" y="95" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_RequestAccounts_Gateway_loan-application_3_1_join_di" bpmnElement="Flow_RequestAccounts_Gateway_loan-application_3_1_join">
+        <di:waypoint x="1925" y="70" />
+        <di:waypoint x="2000" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Gateway_loan-application_3_1_join_Gateway_loan-application_3_loop_di" bpmnElement="Flow_Gateway_loan-application_3_1_join_Gateway_loan-application_3_loop">
+        <di:waypoint x="2025" y="95" />
+        <di:waypoint x="2025" y="140" />
+        <di:waypoint x="825" y="140" />
+        <di:waypoint x="825" y="95" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ReviewScore_Gateway_loan-application_2_join_di" bpmnElement="Flow_ReviewScore_Gateway_loan-application_2_join">
+        <di:waypoint x="575" y="210" />
+        <di:waypoint x="675" y="210" />
+        <di:waypoint x="675" y="95" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_CollectReferences_Gateway_loan-application_5_fork_di" bpmnElement="Flow_CollectReferences_Gateway_loan-application_5_fork">
+        <di:waypoint x="1625" y="210" />
+        <di:waypoint x="2150" y="210" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Gateway_loan-application_5_fork_VerifyIdentity_di" bpmnElement="Flow_Gateway_loan-application_5_fork_VerifyIdentity">
+        <di:waypoint x="2200" y="210" />
+        <di:waypoint x="2275" y="210" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Gateway_loan-application_5_fork_ScreenFraud_di" bpmnElement="Flow_Gateway_loan-application_5_fork_ScreenFraud">
+        <di:waypoint x="2175" y="235" />
+        <di:waypoint x="2175" y="490" />
+        <di:waypoint x="2275" y="490" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_VerifyIdentity_Gateway_loan-application_5_join_di" bpmnElement="Flow_VerifyIdentity_Gateway_loan-application_5_join">
+        <di:waypoint x="2375" y="210" />
+        <di:waypoint x="2450" y="210" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Gateway_loan-application_5_join_Gateway_loan-application_6_fork_di" bpmnElement="Flow_Gateway_loan-application_5_join_Gateway_loan-application_6_fork">
+        <di:waypoint x="2500" y="210" />
+        <di:waypoint x="2600" y="210" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Gateway_loan-application_6_fork_AppraiseCollateral_di" bpmnElement="Flow_Gateway_loan-application_6_fork_AppraiseCollateral">
+        <di:waypoint x="2650" y="210" />
+        <di:waypoint x="2725" y="210" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Gateway_loan-application_6_fork_PriceLoan_di" bpmnElement="Flow_Gateway_loan-application_6_fork_PriceLoan">
+        <di:waypoint x="2625" y="235" />
+        <di:waypoint x="2625" y="490" />
+        <di:waypoint x="2725" y="490" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Gateway_loan-application_6_fork_default_di" bpmnElement="Flow_Gateway_loan-application_6_fork_default">
+        <di:waypoint x="2625" y="235" />
+        <di:waypoint x="2625" y="280" />
+        <di:waypoint x="2925" y="280" />
+        <di:waypoint x="2925" y="235" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_AppraiseCollateral_Gateway_loan-application_6_join_di" bpmnElement="Flow_AppraiseCollateral_Gateway_loan-application_6_join">
+        <di:waypoint x="2825" y="210" />
+        <di:waypoint x="2900" y="210" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Gateway_loan-application_6_join_MakeOffer_di" bpmnElement="Flow_Gateway_loan-application_6_join_MakeOffer">
+        <di:waypoint x="2950" y="210" />
+        <di:waypoint x="3025" y="210" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_MakeOffer_Gateway_loan-application_8_race_di" bpmnElement="Flow_MakeOffer_Gateway_loan-application_8_race">
+        <di:waypoint x="3125" y="210" />
+        <di:waypoint x="3200" y="210" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Gateway_loan-application_8_race_Catch_loan-application_8_b0_di" bpmnElement="Flow_Gateway_loan-application_8_race_Catch_loan-application_8_b0">
+        <di:waypoint x="3250" y="210" />
+        <di:waypoint x="3357" y="210" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Gateway_loan-application_8_race_Catch_loan-application_8_b1_di" bpmnElement="Flow_Gateway_loan-application_8_race_Catch_loan-application_8_b1">
+        <di:waypoint x="3225" y="235" />
+        <di:waypoint x="3225" y="490" />
+        <di:waypoint x="3357" y="490" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Catch_loan-application_8_b0_DisburseFunds_di" bpmnElement="Flow_Catch_loan-application_8_b0_DisburseFunds">
+        <di:waypoint x="3393" y="210" />
+        <di:waypoint x="3475" y="210" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_DisburseFunds_Gateway_loan-application_8_join_di" bpmnElement="Flow_DisburseFunds_Gateway_loan-application_8_join">
+        <di:waypoint x="3575" y="210" />
+        <di:waypoint x="3650" y="210" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Gateway_loan-application_8_join_Closed_di" bpmnElement="Flow_Gateway_loan-application_8_join_Closed">
+        <di:waypoint x="3700" y="210" />
+        <di:waypoint x="3807" y="210" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_FlagRisk_Gateway_loan-application_2_join_di" bpmnElement="Flow_FlagRisk_Gateway_loan-application_2_join">
+        <di:waypoint x="575" y="490" />
+        <di:waypoint x="675" y="490" />
+        <di:waypoint x="675" y="95" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ScreenFraud_Gateway_loan-application_5_join_di" bpmnElement="Flow_ScreenFraud_Gateway_loan-application_5_join">
+        <di:waypoint x="2375" y="490" />
+        <di:waypoint x="2475" y="490" />
+        <di:waypoint x="2475" y="235" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_PriceLoan_Gateway_loan-application_6_join_di" bpmnElement="Flow_PriceLoan_Gateway_loan-application_6_join">
+        <di:waypoint x="2825" y="490" />
+        <di:waypoint x="2925" y="490" />
+        <di:waypoint x="2925" y="235" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Catch_loan-application_8_b1_ExpireOffer_di" bpmnElement="Flow_Catch_loan-application_8_b1_ExpireOffer">
+        <di:waypoint x="3393" y="490" />
+        <di:waypoint x="3475" y="490" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ExpireOffer_Gateway_loan-application_8_join_di" bpmnElement="Flow_ExpireOffer_Gateway_loan-application_8_join">
+        <di:waypoint x="3575" y="490" />
+        <di:waypoint x="3675" y="490" />
+        <di:waypoint x="3675" y="235" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNShape id="StartEvent_CollectReferences_di" bpmnElement="StartEvent_CollectReferences">
+        <dc:Bounds x="1032" y="262" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="ChaseReference_di" bpmnElement="ChaseReference">
+        <dc:Bounds x="1150" y="240" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_loan-application_4_0_loop_di" bpmnElement="Gateway_loan-application_4_0_loop" isMarkerVisible="true">
+        <dc:Bounds x="1325" y="255" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="EndEvent_CollectReferences_di" bpmnElement="EndEvent_CollectReferences">
+        <dc:Bounds x="1482" y="262" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_StartEvent_CollectReferences_ChaseReference_di" bpmnElement="Flow_StartEvent_CollectReferences_ChaseReference">
+        <di:waypoint x="1068" y="280" />
+        <di:waypoint x="1150" y="280" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ChaseReference_Gateway_loan-application_4_0_loop_di" bpmnElement="Flow_ChaseReference_Gateway_loan-application_4_0_loop">
+        <di:waypoint x="1250" y="280" />
+        <di:waypoint x="1325" y="280" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Gateway_loan-application_4_0_loop_ChaseReference_di" bpmnElement="Flow_Gateway_loan-application_4_0_loop_ChaseReference">
+        <di:waypoint x="1350" y="305" />
+        <di:waypoint x="1350" y="140" />
+        <di:waypoint x="1200" y="140" />
+        <di:waypoint x="1200" y="320" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Gateway_loan-application_4_0_loop_default_di" bpmnElement="Flow_Gateway_loan-application_4_0_loop_default">
+        <di:waypoint x="1375" y="280" />
+        <di:waypoint x="1482" y="280" />
+      </bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>

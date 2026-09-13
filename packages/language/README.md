@@ -40,30 +40,30 @@ A `documentation` setting carries free-form text alongside it, spelled the same 
 
 ### Statements
 
-| Statement                                   | BPMN element                                                              | Notes                                                                                                              |
-| ------------------------------------------- | ------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| `start X` / `end X`                         | start event / end event                                                   | a trigger on either, see [Starting on an event](#starting-on-an-event) and [Ending every path](#ending-every-path) |
-| `user X(...)`                               | user task                                                                 | assignment and form attributes, see below                                                                          |
-| `service X(...)`                            | service task                                                              | exactly one binding attribute, see below                                                                           |
-| `script X` + a fenced body                  | script task                                                               | fence tag picks the language, see below                                                                            |
-| `step X(...)`                               | task                                                                      | no binding of its own                                                                                              |
-| `send X(...)`                               | send task                                                                 | binds like a service task, see below                                                                               |
-| `receive X(...)`                            | receive task                                                              | waits for a message, or for the engine, see below                                                                  |
-| `decide X(...)`                             | business rule task                                                        | binds to a decision table, or like a service task, see below                                                       |
-| `if` / `else if` / `else`                   | exclusive gateway                                                         |                                                                                                                    |
-| `while (cond) { }`                          | exclusive gateway loop                                                    |                                                                                                                    |
-| `do { } while (cond)`                       | exclusive gateway loop                                                    |                                                                                                                    |
-| `parallel { { } { } }`                      | parallel gateway fork and join, or inclusive when a branch is conditioned | see [Conditioning a parallel branch](#conditioning-a-parallel-branch)                                              |
-| `subprocess X(...) { }`                     | embedded sub-process                                                      | a nested container, see below                                                                                      |
-| `attempt X(...) { }`                        | transaction sub-process                                                   | the same container, for work that can be given up, see [Giving a block of work up](#giving-a-block-of-work-up)     |
-| `call X(...) { }`                           | call activity                                                             | starts another process, see below                                                                                  |
-| `goto X`                                    | sequence flow                                                             | targets a step in the same container                                                                               |
-| `on <kind> { }`                             | event sub-process                                                         | see [The event layer](#the-event-layer)                                                                            |
-| `on Host: <kind> { }`                       | boundary event                                                            | see [Attaching a handler to one step](#attaching-a-handler-to-one-step)                                            |
-| `await <kind>(...)`                         | intermediate catch event                                                  | see [Awaiting an event inline](#awaiting-an-event-inline)                                                          |
-| `await { <kind>(...) { } <kind>(...) { } }` | event-based gateway, a catch event per branch, exclusive join             | see [Waiting on several triggers at once](#waiting-on-several-triggers-at-once)                                    |
-| `throw` / `emit <kind>`                     | throw event                                                               | see [The event layer](#the-event-layer)                                                                            |
-| `emit link("X")` / `await link("X")`        | intermediate throw and catch event, with no flow between them             | see [Link events](#link-events)                                                                                    |
+| Statement                                              | BPMN element                                                              | Notes                                                                                                                                       |
+| ------------------------------------------------------ | ------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `start X` / `end X`                                    | start event / end event                                                   | a trigger on either, see [Starting on an event](#starting-on-an-event) and [Ending every path](#ending-every-path)                          |
+| `user X(...)`                                          | user task                                                                 | assignment and form attributes, see below                                                                                                   |
+| `service X(...)`                                       | service task                                                              | exactly one binding attribute, see below                                                                                                    |
+| `script X` + a fenced body                             | script task                                                               | fence tag picks the language, see below                                                                                                     |
+| `step X(...)`                                          | task                                                                      | no binding of its own                                                                                                                       |
+| `send X(...)`                                          | send task                                                                 | binds like a service task, see below                                                                                                        |
+| `receive X(...)`                                       | receive task                                                              | waits for a message, or for the engine, see below                                                                                           |
+| `decide X(...)`                                        | business rule task                                                        | binds to a decision table, or like a service task, see below                                                                                |
+| `if (cond) (settings)` / `else if` / `else`            | exclusive gateway                                                         | settings on the head only, see [Job settings on a gateway](#job-settings-on-a-gateway)                                                      |
+| `while (cond) (settings) { }`                          | exclusive gateway loop                                                    | see [Job settings on a gateway](#job-settings-on-a-gateway)                                                                                 |
+| `do { } while (cond) (settings)`                       | exclusive gateway loop                                                    | see [Job settings on a gateway](#job-settings-on-a-gateway)                                                                                 |
+| `parallel (settings) { { } { } }`                      | parallel gateway fork and join, or inclusive when a branch is conditioned | see [Conditioning a parallel branch](#conditioning-a-parallel-branch) and [Job settings on a gateway](#job-settings-on-a-gateway)           |
+| `subprocess X(...) { }`                                | embedded sub-process                                                      | a nested container, see below                                                                                                               |
+| `attempt X(...) { }`                                   | transaction sub-process                                                   | the same container, for work that can be given up, see [Giving a block of work up](#giving-a-block-of-work-up)                              |
+| `call X(...) { }`                                      | call activity                                                             | starts another process, see below                                                                                                           |
+| `goto X`                                               | sequence flow                                                             | targets a step in the same container                                                                                                        |
+| `on <kind> { }`                                        | event sub-process                                                         | see [The event layer](#the-event-layer)                                                                                                     |
+| `on Host: <kind> { }`                                  | boundary event                                                            | see [Attaching a handler to one step](#attaching-a-handler-to-one-step)                                                                     |
+| `await <kind>(...)`                                    | intermediate catch event                                                  | see [Awaiting an event inline](#awaiting-an-event-inline)                                                                                   |
+| `await (settings) { <kind>(...) { } <kind>(...) { } }` | event-based gateway, a catch event per branch, exclusive join             | see [Waiting on several triggers at once](#waiting-on-several-triggers-at-once) and [Job settings on a gateway](#job-settings-on-a-gateway) |
+| `throw` / `emit <kind>`                                | throw event                                                               | see [The event layer](#the-event-layer)                                                                                                     |
+| `emit link("X")` / `await link("X")`                   | intermediate throw and catch event, with no flow between them             | see [Link events](#link-events)                                                                                                             |
 
 Every statement in that table that takes settings of its own also takes the engine settings and an execution listener, and most of them take input and output parameters as well.
 The ten that map to an activity also take a repetition clause, see [Repetition](#repetition).
@@ -74,27 +74,65 @@ A brace holds what has internal structure: the body of a `while`, `do`, `paralle
 The grammar accepts any key in any element's parens and the validator decides which ones that element has, so an unknown key is a diagnostic naming the element rather than a parse error.
 Five engine execution settings are legal on every element that takes settings, `label` and `documentation` are legal on all of them too, and each element kind adds the keys it owns on top.
 
-| Element                                       | Keys beyond the engine settings                                                                                                     |
-| --------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
-| `start`                                       | `initiator`                                                                                                                         |
-| `end`, `await`, `on`, `subprocess`, `attempt` | none                                                                                                                                |
-| `user`                                        | `assignee`, `formKey`, `formRef`, `binding`, `version`, `candidateGroups`, `candidateUsers`, `dueDate`, `followUpDate`, `priority`  |
-| `service`                                     | `class`, `expression`, `delegate`, `topic`, `resultVariable`, `taskPriority`                                                        |
-| `script`                                      | `resultVariable`                                                                                                                    |
-| `step`                                        | none                                                                                                                                |
-| `send`                                        | `class`, `expression`, `delegate`, `topic`, `resultVariable`, `taskPriority`                                                        |
-| `receive`                                     | `message`                                                                                                                           |
-| `decide`                                      | `class`, `expression`, `delegate`, `topic`, `decision`, `binding`, `version`, `mapDecisionResult`, `resultVariable`, `taskPriority` |
-| `call`                                        | `process`, `binding`, `version`, `businessKey`, `mapper`, `mapperDelegate`                                                          |
-| `throw`, `emit`                               | `class`, `expression`, `delegate`, `topic` (on a `message` trigger only)                                                            |
-| process header                                | `label`, `documentation`, `versionTag`, `historyTimeToLive`, `candidateStarterUsers`, `candidateStarterGroups`                      |
+| Element                                       | Keys beyond the engine settings                                                                                                             |
+| --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `start`                                       | `initiator`                                                                                                                                 |
+| `end`, `await`, `on`, `subprocess`, `attempt` | none                                                                                                                                        |
+| `user`                                        | `assignee`, `formKey`, `formRef`, `binding`, `version`, `candidateGroups`, `candidateUsers`, `dueDate`, `followUpDate`, `priority`          |
+| `service`                                     | `class`, `expression`, `delegate`, `topic`, `type`, `resultVariable`, `taskPriority`                                                        |
+| `script`                                      | `resultVariable`                                                                                                                            |
+| `step`                                        | none                                                                                                                                        |
+| `send`                                        | `class`, `expression`, `delegate`, `topic`, `type`, `resultVariable`, `taskPriority`                                                        |
+| `receive`                                     | `message`                                                                                                                                   |
+| `decide`                                      | `class`, `expression`, `delegate`, `topic`, `type`, `decision`, `binding`, `version`, `mapDecisionResult`, `resultVariable`, `taskPriority` |
+| `call`                                        | `process`, `binding`, `version`, `businessKey`, `mapper`, `mapperDelegate`                                                                  |
+| `throw`, `emit`                               | `class`, `expression`, `delegate`, `topic` (on a `message` trigger only)                                                                    |
+| process header                                | `label`, `documentation`, `versionTag`, `historyTimeToLive`, `candidateStarterUsers`, `candidateStarterGroups`                              |
 
 The engine settings are `asyncBefore` and `asyncAfter`, which put a transaction boundary before or after the step, `exclusive`, which says whether the engine may run the step's jobs beside other jobs of the same instance, `jobPriority`, which orders those jobs in the queue, and `retryCycle`, the ISO cycle a failed job is retried on.
-The gateways that `if`, `while`, `do...while`, `parallel`, and a multi-branch `await` synthesize have no settings of their own, so no engine setting can be written on one.
+The gateways that `if`, `while`, `do...while`, `parallel`, and a multi-branch `await` synthesize take the same five settings on the statement head, see [Job settings on a gateway](#job-settings-on-a-gateway).
 `taskPriority` rides a `topic` binding alone, see [External task extras](#external-task-extras).
+A repeated step also takes `runAsyncBefore`, `runAsyncAfter`, `runExclusive`, and `runRetryCycle`, written to the repetition itself and read by the engine onto each run rather than around the whole loop.
+There is no `runJobPriority`, since the engine reads a job priority off the step alone, see [Repetition](#repetition).
 
 A user task names its deployed form with `formKey` or with `formRef`, never both.
 `formRef` also needs `binding: latest`, `binding: deployment`, or `version: <number>` beside it, the same version-pinning a `call` or a `decide` step carries, since the engine refuses to deploy a form reference it cannot resolve a version for.
+
+#### Job settings on a gateway
+
+An `if`, a `while`, a `do...while`, a `parallel`, and a multi-branch `await` each synthesize a gateway with no name to hang a setting on.
+Its five settings sit in a parens on the statement head instead, right where an ordinary element's settings sit.
+`if`, `parallel`, and a multi-branch `await` also synthesize a join beside the split, and the join's settings share the same parens under a `join`-prefixed spelling: `joinAsyncBefore`, `joinAsyncAfter`, `joinExclusive`, `joinJobPriority`, `joinRetryCycle`.
+An `if` chain lowers to one exclusive-gateway split no matter how many `else if` branches it carries, so the head parens govern the whole chain and an `else if` head takes none of its own.
+
+```bpmnscript
+process order-fulfillment {
+  var amount: number
+
+  start OrderPlaced
+
+  if (amount > 10000) (asyncBefore: true, joinJobPriority: 5) {
+    user AuditReview(assignee: "auditor")
+  } else {
+    user SkipAudit(assignee: "clerk")
+  }
+
+  parallel (exclusive: true, joinAsyncAfter: true) {
+    {
+      user PackItems
+    }
+    {
+      user PrintLabel
+    }
+  }
+
+  end OrderShipped
+}
+```
+
+A `while` or a `do...while` has one gateway, so a `join`-prefixed key on either is an error naming the plain spelling to write instead.
+A multi-branch `await` head refuses `asyncAfter`: `BpmnParse.parseEventBasedGateway` refuses the flag on the gateway it deploys, so the setting has to move onto whichever branch trigger should carry it.
+A `join`-prefixed setting on a statement whose branches all end their own path is a warning rather than an error, since the join it would set is never reached.
 
 #### Forms
 
@@ -158,13 +196,13 @@ process gym-membership {
 
 #### Service tasks
 
-A `service` task takes exactly one of four binding attributes.
-`class` is a Java delegate class name, `expression` maps to `operaton:expression`, `delegate` is the friendlier spelling of `operaton:delegateExpression`, and `topic` hands the work to an external worker through `operaton:type="external"` and `operaton:topic`.
+A `service` task takes exactly one of five binding attributes.
+`class` is a Java delegate class name, `expression` maps to `operaton:expression`, `delegate` is the friendlier spelling of `operaton:delegateExpression`, `topic` hands the work to an external worker through `operaton:type="external"` and `operaton:topic`, and `type` selects a behaviour Operaton builds itself, see [Mail and shell tasks](#mail-and-shell-tasks).
 `resultVariable` names the process variable the invocation's return value is stored in, and is not itself a binding.
 
 #### Send, receive, and decision tasks
 
-A `send` task binds exactly the way a `service` task does: the same four attributes, and the same `resultVariable`.
+A `send` task binds exactly the way a `service` task does: the same five attributes, and the same `resultVariable`.
 Operaton runs both through the same execution factory, so the tag changes what the diagram calls the step, not what the engine does with it.
 It carries no message name of its own, unlike `receive` or `await message`.
 
@@ -173,7 +211,36 @@ With no `message` key it still waits, but names nothing to correlate on: only th
 
 A `decide` task answers a decision table when `decision` names one.
 `binding: latest` or `binding: deployment` pins the deployed version the same way a `call` does, `version: <n>` pins a specific one, and `mapDecisionResult` picks what lands in `resultVariable`: `singleEntry`, `singleResult`, `collectEntries`, or `resultList`.
-With no `decision` key it falls back to the same four binding attributes a `service` task takes, serialized as a `bpmn:businessRuleTask` instead of a `bpmn:serviceTask`.
+With no `decision` key it falls back to the same five binding attributes a `service` task takes, serialized as a `bpmn:businessRuleTask` instead of a `bpmn:serviceTask`.
+
+#### Mail and shell tasks
+
+`type: "mail"` and `type: "shell"` select a behaviour Operaton builds itself, on a `service`, `send`, or `decide` task.
+A thrown message cannot bind one, since it opens no member block to carry the fields either behaviour requires.
+Each field rides `field <name> = <value>` the same way a `class` or `delegate` binding's fields do, see [Field injection](#field-injection).
+
+```bpmnscript
+process notify-ops {
+  service SendAlert(type: "mail") {
+    field to = "ops@example.com"
+    field subject = "Disk usage high"
+    field text = "Disk usage crossed the threshold on host-1."
+  }
+  send RunCheck(type: "shell") {
+    field command = "df"
+    field arg1 = "-h"
+    field wait = "true"
+    field outputVariable = "diskReport"
+  }
+}
+```
+
+A mail task needs `to` and one of `text` or `html`; `cc` and `bcc` satisfy neither.
+A shell task needs `command`.
+Every shell field is a quoted literal, never a `"${...}"` expression, and its three flags, `wait`, `redirectError`, and `cleanEnv`, are written `true` or `false`.
+A shell task's output has no `resultVariable` of its own to hold it.
+`field outputVariable = "..."` names the process variable the command's stdout is written to, and `field errorCodeVariable = "..."` the one its exit code is written to.
+`resultVariable` beside `type:` is accepted and ignored, the same as beside `topic:`.
 
 #### Input and output parameters
 
@@ -194,10 +261,10 @@ process order-shipping {
 
 #### Field injection
 
-`field <name> = <value>` sets a Java bean property on the class or the delegate expression a step's binding names, `operaton:field` on the wire.
+`field <name> = <value>` sets a Java bean property on the class, the delegate expression, or the mail or shell behaviour a step's binding names, `operaton:field` on the wire.
 The value is a quoted string, injected literally, or a `"${...}"` expression, evaluated per invocation; a list, a map, and an inline script have no field slot to hold.
-A field rides a `class:` or `delegate:` binding and no other, since Operaton builds the field list for the class or the delegate expression a binding names and hands it to none of `expression:`, `topic:`, or `decision:`.
-It is legal on a `service`, `send`, or `decide` task bound that way, and inside a listener's braces, since a listener binds the same way a service task does.
+A field rides a `class:`, `delegate:`, or `type:` binding and no other, since Operaton builds the field list for whichever of the three a binding names and hands it to none of `expression:`, `topic:`, or `decision:`.
+It is legal on a `service`, `send`, or `decide` task bound that way, and, `type:` aside, inside a listener's braces, since a listener binds the same way a service task does.
 
 ```bpmnscript
 process claim-intake {
@@ -221,7 +288,7 @@ A worker fetching the task with `includeExtensionProperties` receives the list.
 An `error <Code> when <condition>` line is an `operaton:errorEventDefinition errorRef= expression=`: it raises the declared code (see [The event layer](#the-event-layer)) when the condition holds, checked on a failure the worker reports and again on a completion.
 `ExternalTaskEntity.evaluateThrowBpmnError` runs the mappings in the order written, and the first true one wins.
 Beside the process variables the condition may read `externalTask.errorMessage`, `externalTask.errorDetails`, and `externalTask.retries`, the names the engine resolves on an external task's execution and nowhere else, so `externalTask` inside a mapping draws no undeclared-variable warning and in an `if` it does.
-`parseExternalServiceTask` is the only reader of all three, so each is an error on a task bound with `class`, `expression`, `delegate`, or `decision`, and on a `throw message` or an `emit message` bound with a topic, which take none of them.
+`parseExternalServiceTask` is the only reader of all three, so each is an error on a task bound with `class`, `expression`, `delegate`, `type`, or `decision`, and on a `throw message` or an `emit message` bound with a topic, which take none of them.
 
 ```bpmnscript
 process card-payment {
@@ -249,7 +316,7 @@ A task listener fires on a step in a user task's lifecycle and is legal on a `us
 | task, `user` only | `create`, `assign`, `complete`, `update`, `delete`, `timeout` |
 
 A listener runs exactly one thing: `class`, `expression`, or `delegate` in its own parens, or a fenced script whose opening tag names the language.
-That is the same choice a service task binding makes, without the external `topic`.
+That is the same choice a service task binding makes, without the external `topic` or the built-in `type`.
 A `class` or `delegate` binding also opens a brace block of its own, holding injected fields the same way a `service`, `send`, or `decide` task's braces do; see [Field injection](#field-injection).
 `on timeout` carries the timer that says when it runs, written as an `after`, `at`, or `every` particle and a time, and no other event takes one.
 
@@ -345,7 +412,17 @@ process invoice-batch {
 ```
 
 `asyncBefore` in a repeated step's settings puts one job around the whole repetition rather than one job per run.
-One job per run is a setting on the multi-instance element itself, which this surface has nowhere to write.
+`runAsyncBefore`, `runAsyncAfter`, `runExclusive`, and `runRetryCycle` put the matching job on each run instead, written in the same parens as the step's own settings.
+There is no `runJobPriority`: the engine reads a job priority off the step alone, so writing one on the repetition would be honored by nothing.
+A `run*` key on a step with no `for` clause is an error, since one job per run means nothing where there is no run.
+
+```bpmnscript
+process order-notifications {
+  var orders: any
+
+  service NotifyCustomer for each order in orders(class: "com.example.orders.NotifyCustomer", runAsyncBefore: true, runRetryCycle: "R3/PT10M")
+}
+```
 
 A repeated step cannot map an `output` parameter, because Operaton refuses to deploy that combination outright.
 An `input` parameter is fine.
@@ -435,7 +512,8 @@ Reading each kind:
 - `message` is both received and sent.
   The handler and a message start event receive one by correlation, the engine's own mechanism, so either needs only the name.
   `emit message("Name")` and `throw message("Name")` send one.
-  A `class`, `expression`, `delegate`, or `topic` setting is what makes the engine send it, the same four bindings a `service` task takes.
+  A `class`, `expression`, `delegate`, or `topic` setting is what makes the engine send it, four of the five bindings a `service` task takes.
+  `type` is not among them, since a thrown message opens no member block for the fields a mail or shell task needs.
   Without one the event delivers nothing.
 - `signal` is a broadcast channel.
   `emit signal("Name")` notifies every listener anywhere waiting on that name and continues; `throw signal("Name")` broadcasts the same way and ends this path.
@@ -715,9 +793,13 @@ The categories it covers:
 - Variables: an undeclared reference (warning), a type mismatch against the declared `var`, a name declared twice.
 - Tasks: a duplicate attribute key, a `service`, `send`, or `decide` task without exactly one binding attribute, a `mapDecisionResult` outside the four result mappings, a `script` task with an unsupported fence tag or an empty or unterminated body.
   An external task's extras add their own: a `taskPriority` or an `error ... when` mapping on a step not bound with `topic`, a mapping headed by a word other than `error` or missing `when`, a mapping naming an undeclared code, and a `taskPriority` or `jobPriority` that is neither an integer nor a `"${...}"` expression.
+  A `service`, `send`, or `decide` task bound with `type` adds its own: a required field its type's own parse requires missing, a field name its behaviour class does not declare, and, on a shell task, a field carried as an expression or a flag other than `true`/`false`.
 - Settings: a key the element does not own, a value in a shape its lowering cannot read (a quoted `asyncBefore`, an unquoted `versionTag`), a `form` block on an element that renders none, and a process header carrying a key it does not own.
+  A gateway statement's parens add their own: a bare value rather than a `key: value` setting, a `join`-prefixed key on a `while` or `do...while` loop, and `asyncAfter` on a multi-branch `await` head.
+  A `join`-prefixed key on a statement whose branches all terminate warns, since the join it would set is pruned.
+  A `run*` key on a step with no `for` clause, and `runJobPriority`, which does not exist, since the engine reads a job priority off the step alone.
 - Parameters: a direction word the owner doesn't take, a parameter on an element that carries none, a name repeated within one direction, and an `output` mapping on a repeated step.
-  A `field` also errors on a kind that takes none, when its binding is anything other than `class` or `delegate`, and when its value is neither a quoted string nor a `"${...}"` expression.
+  A `field` also errors on a kind that takes none, when its binding is anything other than `class`, `delegate`, or `type`, and when its value is neither a quoted string nor a `"${...}"` expression.
   A `property` line errors the same way on a kind that takes none and on a `service`, `send`, or `decide` step not bound with `topic`.
 - Listeners: an event word the element does not have, a binding count other than one, a missing timer on `on timeout` or a timer on any other event, a repeated event on one element, and the same fence rules a `script` body follows.
 - Structure: an empty process, subprocess, or handler body, an empty branch or loop body (warning), an unreachable statement, a process-level `start` after a step whose flow still runs on, a `start` anywhere but first in its subprocess, attempt block, or handler body, a process with several starts and no plain or timer one among them (warning), a `form` block on a start that is not the default one (warning), a `goto` reaching into a `parallel` or `await` branch from outside it, a second `else` branch on a `parallel` statement, an `else` branch with no conditioned sibling, and an `else` branch beside a sibling carrying no condition.

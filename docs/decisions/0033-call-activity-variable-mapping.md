@@ -21,7 +21,7 @@ What is open is everything else: what the two attributes spell on the authoring 
 ## Decision Drivers
 
 - The honest import contract (ADR-0014) reserves a refusal for loss that changes execution, and the engine runs a declared mapping and a delegate alike.
-- ADR-0032 states where an injected field is legal as a rule about two words, `class` and `delegate`, and that rule stays a one-word rule only while no other binding spells itself with them.
+- ADR-0032 states where an injected field is legal as a rule about binding words, `class` and `delegate`, and that rule stays keyed on a word alone only while no other binding spells itself with them.
 - ADR-0029 puts a setting that describes the element in the parens and a list with members of its own in the braces.
 - An illegal combination should be unrepresentable in the IR's type rather than merely checked for, the convention ADR-0022 set for engine attributes.
 - Operaton resolves a document setting both attributes with an if/else-if in `BpmnParse.parseCallActivity`: the class wins and the delegate expression is dropped with no diagnostic.
@@ -54,7 +54,7 @@ Chosen: `mapper` and `mapperDelegate` in the parens, carried by a `CallVariableM
 
 The spelling is the decision the rest hangs off.
 A variable mapping delegate has the Java shape of a `class` or a `delegate` binding and none of its behaviour, because Operaton hands it no field list: `instantiateDelegateClass` constructs the delegate with a null field-declaration list, and `ClassDelegateUtil.applyFieldDeclaration` returns without setting anything when the list is null.
-ADR-0032's rule that a field rides a `class` or a `delegate` binding and no other is therefore still a rule about two words, and seven sites in the source and the documentation state it that way.
+ADR-0032's rule that a field rides a `class` or a `delegate` binding and no other is therefore still a rule about binding words, and seven sites in the source and the documentation state it that way.
 Spelling a variable mapping with those two words would make all seven false at once and re-key the rule from which word to which word on which element.
 It would cost a user-facing diagnostic too, since `FIELD_HOSTS_MESSAGE` is derived from the `fields` flag on `ATTRIBUTE_BLOCK_RULES`: flipping a call activity to carry fields would rewrite the sentence every element that hosts none prints.
 A distinct word is also the honest one.
@@ -147,6 +147,8 @@ The import table in `packages/transform/test/xml-to-ir.test.ts` pins both attrib
 - Bad, because it reproduces a silent drop on the hop where a diagnostic costs nothing, which is what the surface exists to avoid.
 
 ## More Information
+
+Amended by ADR-0042, which adds `type` on a task to the binding words ADR-0032's rule names; the two words and the seven sites above are as they stood at this decision, which is unchanged.
 
 Amends ADR-0014, whose refused-construct list read "a call activity naming a resolution shape the surface cannot write back"; the bullet now names the four shapes this decision leaves refused.
 

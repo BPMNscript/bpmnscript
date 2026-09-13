@@ -306,6 +306,44 @@ const ENGINE_SETTINGS: Item[] = [
   ['retryCycle', SETTING, 'retryCycle: "${1:R3/PT10M}"'],
 ];
 
+/** The join gateway's settings: the same values under the prefixed keys. */
+const JOIN_SETTINGS: Item[] = [
+  ['joinAsyncBefore', SETTING, 'joinAsyncBefore: ${1|true,false|}'],
+  ['joinAsyncAfter', SETTING, 'joinAsyncAfter: ${1|true,false|}'],
+  ['joinExclusive', SETTING, 'joinExclusive: ${1|false,true|}'],
+  ['joinJobPriority', SETTING, 'joinJobPriority: ${1:50}'],
+  ['joinRetryCycle', SETTING, 'joinRetryCycle: "${1:R3/PT10M}"'],
+];
+
+/**
+ * The per-run settings a repeated statement's parens take after the engine
+ * ones: the same values under the `run` keys, a job priority having no per-run
+ * carrier.
+ */
+const RUN_SETTINGS: Item[] = [
+  ['runAsyncBefore', SETTING, 'runAsyncBefore: ${1|true,false|}'],
+  ['runAsyncAfter', SETTING, 'runAsyncAfter: ${1|true,false|}'],
+  ['runExclusive', SETTING, 'runExclusive: ${1|false,true|}'],
+  ['runRetryCycle', SETTING, 'runRetryCycle: "${1:R3/PT10M}"'],
+];
+
+/** The head of a statement with a join: the split's keys, then the join's. */
+const SPLIT_AND_JOIN_PARENS: Item[] = [
+  ...ENGINE_SETTINGS,
+  ...JOIN_SETTINGS,
+  ...LITERALS,
+];
+
+/** A loop has one gateway, so its parens take the bare keys alone. */
+const LOOP_PARENS: Item[] = [...ENGINE_SETTINGS, ...LITERALS];
+
+/** An await block's head leaves out the one key the validator refuses there. */
+const AWAIT_PARENS: Item[] = [
+  ...ENGINE_SETTINGS.filter(([label]) => label !== 'asyncAfter'),
+  ...JOIN_SETTINGS,
+  ...LITERALS,
+];
+
 const PARAMETERS: Item[] = [
   ['input', 'a value handed to this step', 'input ${1:name} = ${2:value}'],
   ['output', 'a value this step hands back', 'output ${1:name} = ${2:value}'],
@@ -313,7 +351,7 @@ const PARAMETERS: Item[] = [
 
 const FIELD: Item = [
   'field',
-  'a value injected into the class or delegate this step names',
+  'a value injected into the class, delegate, or built-in behaviour this step names',
   'field ${1:name} = "${2:value}"',
 ];
 
@@ -382,6 +420,7 @@ const BINDINGS: Item[] = [
 ];
 
 const TOPIC: Item = ['topic', SETTING, 'topic: "${1:topic-name}"'];
+const TYPE: Item = ['type', SETTING, 'type: "${1|mail,shell|}"'];
 const RESULT_VARIABLE: Item = [
   'resultVariable',
   SETTING,
@@ -408,14 +447,23 @@ const USER_PARENS: Item[] = [
   ...LITERALS,
 ];
 
-const SERVICE_PARENS: Item[] = [
+const SERVICE_SETTINGS: Item[] = [
   LABEL,
   DOCUMENTATION,
   ...BINDINGS,
   TOPIC,
+  TYPE,
   RESULT_VARIABLE,
   TASK_PRIORITY,
   ...ENGINE_SETTINGS,
+];
+
+const SERVICE_PARENS: Item[] = [...SERVICE_SETTINGS, ...LITERALS];
+
+/** A repeated statement's parens offer the run keys after the engine ones. */
+const REPEATED_SERVICE_PARENS: Item[] = [
+  ...SERVICE_SETTINGS,
+  ...RUN_SETTINGS,
   ...LITERALS,
 ];
 
@@ -449,6 +497,7 @@ const DECIDE_PARENS: Item[] = [
   DOCUMENTATION,
   ...BINDINGS,
   TOPIC,
+  TYPE,
   ['decision', SETTING, 'decision: "${1:decision-key}"'],
   BINDING,
   VERSION,
@@ -666,9 +715,16 @@ describe('the completions offered at a caret', () => {
       START_PARENS,
     ],
     [
-      'a service task offers the binding settings and none of the user-task ones',
+      'a service task offers the binding settings, no run key, and none of the user-task ones',
       'process p {\n  service S(|)\n}',
       SERVICE_PARENS,
+    ],
+    // Revert: drop `isRepeated` from `settingFormsFor` and the unrepeated
+    // service task above is offered the run keys.
+    [
+      'a repeated service task offers the run keys after the engine ones',
+      'process p {\n  service S for 3(|)\n}',
+      REPEATED_SERVICE_PARENS,
     ],
     [
       'a call offers the call settings, `process` among them, exactly once',
@@ -684,6 +740,31 @@ describe('the completions offered at a caret', () => {
       'a decision step offers the decision settings alongside the binding ones',
       'process p {\n  decide D(|)\n}',
       DECIDE_PARENS,
+    ],
+    [
+      'the parens of an if statement offer the split keys and the join keys',
+      'process p {\n  var a: boolean\n  if (a) (|) {\n    user A\n  }\n}',
+      SPLIT_AND_JOIN_PARENS,
+    ],
+    [
+      'the parens of a while loop offer the bare keys alone',
+      'process p {\n  var a: boolean\n  while (a) (|) {\n    user A\n  }\n}',
+      LOOP_PARENS,
+    ],
+    [
+      'the parens closing a do-while loop offer the bare keys alone',
+      'process p {\n  var a: boolean\n  do {\n    user A\n  } while (a) (|)\n}',
+      LOOP_PARENS,
+    ],
+    [
+      'the parens of a parallel statement offer the fork keys and the join keys',
+      'process p {\n  parallel (|) {\n    { user A }\n    { user B }\n  }\n}',
+      SPLIT_AND_JOIN_PARENS,
+    ],
+    [
+      'the parens of an await block offer the gateway keys, asyncAfter left out, and the join keys',
+      'process p {\n  await (|) {\n    message("M") { user A }\n    signal("S") { user B }\n  }\n}',
+      AWAIT_PARENS,
     ],
     [
       'a user block offers its members, the settings having moved to the parens',
@@ -869,11 +950,15 @@ const REQUIRED_BINDINGS = new Set([
   'expression',
   'delegate',
   'topic',
+  'type',
   'decision',
   'process',
 ]);
 
 const binds = ([label]: Item) => REQUIRED_BINDINGS.has(label);
+
+/** A built-in behaviour needs its fields, so its host writes the mail ones. */
+const bindsBuiltin = ([label]: Item) => label === 'type';
 
 /**
  * A form reference and the binding pinning its version are legal only
@@ -945,8 +1030,19 @@ describe('a scaffold parses and validates once accepted', () => {
     ),
     ...scaffolds(
       'the parens of a service task',
-      SERVICE_PARENS.filter(binds),
+      SERVICE_PARENS.filter((item) => binds(item) && !bindsBuiltin(item)),
       (binding) => `process p {\n  service S(${binding})\n}`,
+    ),
+    ...scaffolds(
+      'the parens of a service task',
+      SERVICE_PARENS.filter(bindsBuiltin),
+      (binding) =>
+        `process p {\n  service S(${binding}) {\n    field to = "a@b"\n    field text = "t"\n  }\n}`,
+    ),
+    ...scaffolds(
+      'the parens of a repeated service task',
+      RUN_SETTINGS,
+      (setting) => `process p {\n  service S for 3(topic: "t", ${setting})\n}`,
     ),
     ...scaffolds(
       'the parens of a decision step',
@@ -955,7 +1051,7 @@ describe('a scaffold parses and validates once accepted', () => {
     ),
     ...scaffolds(
       'the parens of a decision step',
-      DECIDE_PARENS.filter(binds),
+      DECIDE_PARENS.filter((item) => binds(item) && !bindsBuiltin(item)),
       (binding) => `process p {\n  decide D(${binding})\n}`,
     ),
     ...scaffolds(
@@ -978,6 +1074,12 @@ describe('a scaffold parses and validates once accepted', () => {
       'the parens of a process',
       PROCESS_PARENS,
       (setting) => `process p(${setting}) {\n  user U\n}`,
+    ),
+    ...scaffolds(
+      'the parens of an if statement',
+      SPLIT_AND_JOIN_PARENS,
+      (setting) =>
+        `process p {\n  var a: boolean\n  if (a) (${setting}) {\n    user A\n  }\n}`,
     ),
     ...scaffolds(
       'a user block',

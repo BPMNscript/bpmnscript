@@ -116,7 +116,7 @@ The last is wider than the engine's rule: Operaton lets a path through where it 
 Neither that shape nor the one Operaton refuses is authorable, so the extra width costs no script anything.
 
 `parseEventBasedGateway` rejects `operaton:asyncAfter` on the gateway itself as well.
-That one needs no refusal here, because no author writes a gateway and so nothing can put the setting on one; a document that carries it imports with the drop reported.
+Since ADR-0040 a multi-branch `await` head takes the gateway's job settings, so the validator refuses `asyncAfter` there under the same rule, and the import refuses a document carrying it rather than dropping it.
 
 ### Consequences
 
@@ -165,3 +165,5 @@ The dataset behind Compagnucci, Corradini, Fornari and Re (BISE 66(1), 2024, DOI
 
 Amended by ADR-0035, which admits a link definition on an intermediate catch and an intermediate throw on import.
 The event-based gateway's second refusal now rests on the rule that no sequence flow may enter a link catch, which the importer enforces for every flow and so for a branch of a wait as well.
+
+Amended by ADR-0040, which gives every gateway synthesized here a settings parens on its statement head, so a multi-branch `await` now refuses `asyncAfter` by validation rather than by having nothing to write it on.

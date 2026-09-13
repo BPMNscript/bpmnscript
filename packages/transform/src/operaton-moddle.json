@@ -612,7 +612,7 @@
     {
       "name": "AsyncCapable",
       "isAbstract": true,
-      "extends": ["bpmn:FlowNode"],
+      "extends": ["bpmn:FlowNode", "bpmn:MultiInstanceLoopCharacteristics"],
       "properties": [
         {
           "name": "asyncBefore",

@@ -43,6 +43,7 @@ import type {
   Gateway,
   IoParameter,
   IoValue,
+  JobSettings,
   ListenerBinding,
   ScriptValue,
   SequenceFlow,
@@ -51,6 +52,7 @@ import type {
   VersionBinding,
 } from './ir/types.js';
 import {
+  carriesFields,
   eventIdentities,
   gatewayDefaultFlowId,
   isGateway,
@@ -322,6 +324,8 @@ function serviceTaskBindingAttrs(
           ? {}
           : { 'operaton:mapDecisionResult': binding.mapDecisionResult }),
       };
+    case 'builtin':
+      return { 'operaton:type': binding.type };
     default: {
       const exhaustive: never = binding;
       throw new Error(
@@ -806,6 +810,9 @@ function flowNodeName(node: FlowElement): string | undefined {
  * The `bpmn:multiInstanceLoopCharacteristics` child of a repeated activity, and
  * nothing for a node that {@link repeats} answers no for. Operaton reads it
  * before the tag dispatch, so the same child serves every activity kind alike.
+ * The per-run settings ride it as an activity's own do; moddle writes the
+ * inherited `extensionElements` ahead of `loopCardinality` whatever the
+ * attribute order here.
  */
 function loopCharacteristicsAttrs(
   moddle: BpmnModdleInstance,
@@ -825,6 +832,7 @@ function loopCharacteristicsAttrs(
   if (loop.elementVariable !== undefined) {
     attrs['operaton:elementVariable'] = loop.elementVariable;
   }
+  Object.assign(attrs, bareJobSettingAttrs(moddle, loop));
   if (loop.cardinality !== undefined) {
     attrs.loopCardinality = moddle.create('bpmn:FormalExpression', {
       body: loop.cardinality,
@@ -843,15 +851,8 @@ function loopCharacteristicsAttrs(
   };
 }
 
-/** Nothing for a gateway: no gateway kind carries engine settings. */
-function engineSettingAttrs(
-  moddle: BpmnModdleInstance,
-  node: FlowElement,
-  roots: RootElementIndex,
-): Record<string, unknown> {
-  if (isGateway(node)) {
-    return {};
-  }
+/** The four `operaton:` attributes of {@link JobSettings}, in one fixed order for every carrier. */
+export function jobSettingAttrs(node: JobSettings): Record<string, unknown> {
   const attrs: Record<string, unknown> = {};
   if (node.asyncBefore === true) attrs['operaton:asyncBefore'] = true;
   if (node.asyncAfter === true) attrs['operaton:asyncAfter'] = true;
@@ -859,6 +860,49 @@ function engineSettingAttrs(
   if (node.jobPriority !== undefined) {
     attrs['operaton:jobPriority'] = node.jobPriority;
   }
+  return attrs;
+}
+
+/** The `operaton:FailedJobRetryTimeCycle` child a retry cycle becomes, wherever it is authored. */
+export function retryCycleElement(
+  moddle: BpmnModdleInstance,
+  node: JobSettings,
+): ModdleElement | undefined {
+  return node.retryCycle === undefined
+    ? undefined
+    : moddle.create('operaton:FailedJobRetryTimeCycle', {
+        body: node.retryCycle,
+      });
+}
+
+/**
+ * The settings of a carrier that takes none of the other groups
+ * `buildExtensionElements` assembles, a gateway (no listeners, ADR 0010) or a
+ * loop element: its extension child is the retry cycle alone.
+ */
+function bareJobSettingAttrs(
+  moddle: BpmnModdleInstance,
+  node: JobSettings,
+): Record<string, unknown> {
+  const attrs = jobSettingAttrs(node);
+  const retryCycle = retryCycleElement(moddle, node);
+  if (retryCycle !== undefined) {
+    attrs.extensionElements = moddle.create('bpmn:ExtensionElements', {
+      values: [retryCycle],
+    });
+  }
+  return attrs;
+}
+
+function engineSettingAttrs(
+  moddle: BpmnModdleInstance,
+  node: FlowElement,
+  roots: RootElementIndex,
+): Record<string, unknown> {
+  if (isGateway(node)) {
+    return bareJobSettingAttrs(moddle, node);
+  }
+  const attrs: Record<string, unknown> = jobSettingAttrs(node);
   const extensionElements = buildExtensionElements(moddle, node, roots);
   if (extensionElements !== undefined) {
     attrs.extensionElements = extensionElements;
@@ -935,12 +979,9 @@ function buildExtensionElements(
       );
     }
   }
-  if (node.retryCycle !== undefined) {
-    values.push(
-      moddle.create('operaton:FailedJobRetryTimeCycle', {
-        body: node.retryCycle,
-      }),
-    );
+  const retryCycle = retryCycleElement(moddle, node);
+  if (retryCycle !== undefined) {
+    values.push(retryCycle);
   }
   return values.length > 0
     ? moddle.create('bpmn:ExtensionElements', { values })
@@ -1029,18 +1070,11 @@ function buildIoValueElement(
   }
 }
 
-/**
- * The `operaton:field` list a `class` or `delegateExpression` binding
- * carries, the two members Operaton's parser hands a field list to; every
- * other binding shape (an expression, a topic, a decision, or a listener's
- * inline script) has no `fields` slot to read.
- */
+/** The `operaton:field` list a binding carries, or none for a shape the engine hands no field list to ({@link carriesFields}). */
 function codeBindingFields(
   binding: ServiceTaskBinding | ListenerBinding,
 ): FieldInjection[] {
-  return binding.kind === 'class' || binding.kind === 'delegateExpression'
-    ? (binding.fields ?? [])
-    : [];
+  return carriesFields(binding) ? (binding.fields ?? []) : [];
 }
 
 /**

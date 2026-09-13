@@ -1,3 +1,4 @@
+import type { BuiltinTaskType } from '@bpmn-script/language';
 import type {
   BoundaryEvent,
   BpmnProcess,
@@ -5,6 +6,7 @@ import type {
   CodeBinding,
   EventDefinition,
   ExclusiveGateway,
+  FieldInjection,
   FlowElement,
   IoParameter,
   IoValue,
@@ -116,6 +118,16 @@ export const delegateBinding = (
 export const externalBinding = (topic: string): ServiceTaskBinding => ({
   kind: 'external',
   topic,
+});
+
+/** The behaviour Operaton builds itself for `operaton:type="mail"`/`"shell"`. */
+export const builtinBinding = (
+  type: BuiltinTaskType,
+  fields?: FieldInjection[],
+): ServiceTaskBinding => ({
+  kind: 'builtin',
+  type,
+  ...(fields === undefined ? {} : { fields }),
 });
 
 /** The four forms an `operaton:inputOutput` value takes. */

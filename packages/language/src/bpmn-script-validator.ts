@@ -88,6 +88,7 @@ import {
   isOnHandler,
   isParallelBranch,
   isParallelStatement,
+  isParenValue,
   isProcess,
   isRaceBranch,
   isRaceStatement,
@@ -112,6 +113,9 @@ import {
   ATTEMPT_BLOCK_RULE,
   ATTRIBUTE_BLOCK_RULES,
   attributeBlockRuleOf,
+  BUILTIN_FIELD_NAMES,
+  BUILTIN_FIELD_VALIDATOR,
+  BUILTIN_REQUIRED_FIELDS,
   BUSINESS_RULE_BINDING_KEYS,
   CALL_BINDING_VALUES,
   CALL_MAPPER_KEY_BY_KIND,
@@ -137,24 +141,37 @@ import {
   formFieldVariableType,
   formatPlainWordList,
   formatWordList,
+  gatewayStatementRuleOf,
   IO_DIRECTIONS,
+  JOIN_ENGINE_KEYS,
+  JOIN_KEY_BY_ENGINE_KEY,
+  joinSettingKey,
   LISTENER_BINDING_KEYS,
   listenerEventsFor,
   ON_TRIGGERS,
   parameterDirectionsFor,
   PROCESS_HEADER_KEYS,
   PROPERTY_DIRECTION,
+  RUN_ENGINE_KEYS,
+  runSettingKey,
   SCRIPT_FORMAT_ALIASES,
   SERVICE_TASK_BINDING_KEYS,
+  SHELL_FLAG_FIELDS,
+  SHELL_FLAG_LITERALS,
   splitFencedScript,
   START_TRIGGERS,
   TASK_LISTENER_EVENTS,
   TASK_PRIORITY_KEY,
+  THROW_BINDING_KEYS,
   THROW_TRIGGERS,
   TIMER_PARTICLES,
   TRIGGER_PAYLOAD,
+  TYPE_BINDING_KEY,
+  TYPE_BINDING_VALUES,
   type AttributeBlockRule,
   type AttributeOwner,
+  type BuiltinTaskType,
+  type RequiredFieldGroup,
   type TriggerPayloadRule,
 } from './vocabulary.js';
 import {
@@ -205,6 +222,21 @@ type VersionPinnedElement = CallActivity | BusinessRuleTask | UserTask;
  * down to the slot names, so both run through one set of payload rules. */
 type CatchHeader = IntermediateCatchEvent | RaceBranch;
 
+/** The statements whose head parens carry the settings of the gateways they lower to. */
+type GatewayStatement =
+  | IfStatement
+  | WhileStatement
+  | DoWhileStatement
+  | ParallelStatement
+  | RaceStatement;
+
+/** An engine key under each spelling a parens carries it, the value shape being the same under all three. */
+const engineSpellings = (key: string): string[] => [
+  key,
+  joinSettingKey(key),
+  runSettingKey(key),
+];
+
 /**
  * Keys whose value names something outside process-variable scope, so a
  * bareword there must not warn about an undeclared variable. `jobPriority`,
@@ -222,6 +254,7 @@ const NON_VARIABLE_ATTR_KEYS: ReadonlySet<string> = new Set([
   'expression',
   'delegate',
   'topic',
+  TYPE_BINDING_KEY,
   'process',
   'binding',
   'version',
@@ -230,7 +263,7 @@ const NON_VARIABLE_ATTR_KEYS: ReadonlySet<string> = new Set([
   'candidateUsers',
   'dueDate',
   'followUpDate',
-  'retryCycle',
+  ...engineSpellings('retryCycle'),
   'resultVariable',
   'historyTimeToLive',
   'candidateStarterUsers',
@@ -240,18 +273,16 @@ const NON_VARIABLE_ATTR_KEYS: ReadonlySet<string> = new Set([
   ...Object.values(CALL_MAPPER_KEY_BY_KIND),
 ]);
 
-const BOOLEAN_ATTR_KEYS: ReadonlySet<string> = new Set([
-  'asyncBefore',
-  'asyncAfter',
-  'exclusive',
-]);
+const BOOLEAN_ATTR_KEYS: ReadonlySet<string> = new Set(
+  ['asyncBefore', 'asyncAfter', 'exclusive'].flatMap(engineSpellings),
+);
 
 /**
  * Keys `BpmnParse.parsePriority` reads: a constant there must parse as an
  * integer or the deployment fails, so anything else has to be an expression.
  */
 const PRIORITY_ATTR_KEYS: ReadonlySet<string> = new Set([
-  'jobPriority',
+  ...engineSpellings('jobPriority'),
   TASK_PRIORITY_KEY,
 ]);
 
@@ -263,7 +294,7 @@ const PRIORITY_ATTR_KEYS: ReadonlySet<string> = new Set([
 const TEXT_ATTR_KEYS: ReadonlySet<string> = new Set([
   'versionTag',
   'historyTimeToLive',
-  'retryCycle',
+  ...engineSpellings('retryCycle'),
   'dueDate',
   'followUpDate',
 ]);
@@ -278,6 +309,23 @@ const START_TRIGGERS_SET: ReadonlySet<string> = new Set(START_TRIGGERS);
 const THROW_TRIGGERS_SET: ReadonlySet<string> = new Set(THROW_TRIGGERS);
 const EMIT_TRIGGERS_SET: ReadonlySet<string> = new Set(EMIT_TRIGGERS);
 const ENGINE_KEY_SET: ReadonlySet<string> = new Set(ENGINE_KEYS);
+const JOIN_ENGINE_KEY_SET: ReadonlySet<string> = new Set(JOIN_ENGINE_KEYS);
+const RUN_ENGINE_KEY_SET: ReadonlySet<string> = new Set(RUN_ENGINE_KEYS);
+/** The element spelling of each run key, for the message a clause-less statement draws. */
+const ENGINE_KEY_BY_RUN_KEY: Readonly<Record<string, string>> =
+  Object.fromEntries(ENGINE_KEYS.map((key) => [runSettingKey(key), key]));
+/** The one engine key with no per-run spelling (see `RUN_ENGINE_KEYS`); it draws a refusal of its own. */
+const RUN_JOB_PRIORITY_KEY = runSettingKey('jobPriority');
+/** What the head of a statement with a join takes: both gateways' settings. */
+const SPLIT_AND_JOIN_KEY_SET: ReadonlySet<string> = new Set([
+  ...ENGINE_KEYS,
+  ...JOIN_ENGINE_KEYS,
+]);
+/** The head spelling of each join key, for the message a loop's parens draw. */
+const ENGINE_KEY_BY_JOIN_KEY: Readonly<Record<string, string>> =
+  Object.fromEntries(
+    Object.entries(JOIN_KEY_BY_ENGINE_KEY).map(([key, join]) => [join, key]),
+  );
 const TIMER_PARTICLE_SET: ReadonlySet<string> = new Set(TIMER_PARTICLES);
 const EVENT_BINDING_FIELD_SET: ReadonlySet<string> = new Set(
   EVENT_BINDING_FIELDS,
@@ -290,6 +338,10 @@ const FIELDLESS_BINDING_KEYS: readonly string[] =
 const LISTENER_BINDING_KEY_SET: ReadonlySet<string> = new Set(
   LISTENER_BINDING_KEYS,
 );
+/** The field bindings a listener can write: it binds no `type`. */
+const LISTENER_FIELD_BINDING_KEYS: readonly string[] =
+  LISTENER_BINDING_KEYS.filter((key) => FIELD_BINDING_KEY_SET.has(key));
+const SHELL_FLAG_FIELD_SET: ReadonlySet<string> = new Set(SHELL_FLAG_FIELDS);
 const PROCESS_HEADER_KEY_SET: ReadonlySet<string> = new Set(
   PROCESS_HEADER_KEYS,
 );
@@ -352,14 +404,28 @@ const noFieldHostMessage = (description: string) =>
  * @param written The fieldless bindings the author wrote here. Naming those
  *   rather than every fieldless key keeps the tail off keys the subject cannot
  *   write: a listener takes neither `topic` nor `decision`.
+ * @param takes The field bindings the subject can write, and what each names.
  */
-const fieldBindingMessage = (subject: string, written: readonly string[]) =>
-  `${subject} carries an injected field only under a ${formatWordList(FIELD_BINDING_KEYS)} ` +
-  'binding: the engine injects into the class or the delegate that binding ' +
-  'names' +
+const fieldBindingMessage = (
+  subject: string,
+  written: readonly string[],
+  takes: { keys: readonly string[]; targets: string },
+) =>
+  `${subject} carries an injected field only under a ${formatWordList(takes.keys)} ` +
+  `binding: the engine injects into ${takes.targets} that binding names` +
   (written.length === 0
     ? '.'
     : `, and the binding written with ${formatWordList(written)} receives none.`);
+
+const ELEMENT_FIELD_BINDINGS = {
+  keys: FIELD_BINDING_KEYS,
+  targets: 'the class, the delegate, or the built-in behaviour',
+};
+
+const LISTENER_FIELD_BINDINGS = {
+  keys: LISTENER_FIELD_BINDING_KEYS,
+  targets: 'the class or the delegate',
+};
 
 /** The bindings written on an element or a listener that receive no field list. */
 const fieldlessBindingsOf = (attrs: readonly Setting[]): string[] =>
@@ -410,6 +476,41 @@ const MAPPING_WHEN_MESSAGE = `Write '${ERROR_MAPPING_WHEN}' between the code and
 const priorityShapeMessage = (key: string) =>
   `Setting '${key}' takes an integer or a "\${...}" expression; the engine refuses to deploy a constant that is not an integer.`;
 
+/** @param description Noun phrase with article, e.g. `'a service task'`. */
+const runWithoutClauseMessage = (key: string, description: string) =>
+  `Setting '${key}' is not valid on ${description} that does not repeat: it makes one job per run, so write a 'for' clause, or '${ENGINE_KEY_BY_RUN_KEY[key]}' for one job around the step.`;
+
+const RUN_JOB_PRIORITY_MESSAGE = `Setting '${RUN_JOB_PRIORITY_KEY}' does not exist: Operaton reads a job priority off the step alone (BpmnParse.createActivityOnScope), so 'jobPriority' applies to every run's job.`;
+
+const TYPE_VALUE_MESSAGE = `Setting '${TYPE_BINDING_KEY}' must be ${formatWordList(TYPE_BINDING_VALUES)}.`;
+
+/** The class each type's fields are set on, for the refusal of an undeclared name. */
+const BUILTIN_BEHAVIOUR_CLASS: Readonly<Record<BuiltinTaskType, string>> = {
+  mail: 'MailActivityBehavior',
+  shell: 'ShellActivityBehavior',
+};
+
+/** @param subject The message's leading noun phrase (`"Service task 'Notify'"`). */
+const missingBuiltinFieldMessage = (
+  subject: string,
+  type: BuiltinTaskType,
+  group: RequiredFieldGroup,
+) =>
+  `${subject} binds ${TYPE_BINDING_KEY}: "${type}" without a ${formatWordList(group.names)} field; Operaton refuses to deploy it: "${group.error}" (BpmnParse.${BUILTIN_FIELD_VALIDATOR[type]}).`;
+
+const unknownBuiltinFieldMessage = (name: string, type: BuiltinTaskType) =>
+  `Field '${name}' is not one a ${type} task takes; the engine sets it on ${BUILTIN_BEHAVIOUR_CLASS[type]}, which declares ${formatPlainWordList(BUILTIN_FIELD_NAMES[type], 'and')} (ClassDelegateUtil.applyFieldDeclaration).`;
+
+const shellFieldExpressionMessage = (name: string) =>
+  `Field '${name}' on a shell task takes a quoted literal: Operaton reads every shell field as a fixed value (BpmnParse.validateFieldDeclarationsForShell) and fails the deployment on an expression.`;
+
+const shellFlagValueMessage = (name: string) =>
+  `Field '${name}' on a shell task takes "true" or "false"; the engine reads any other spelling as false (ShellActivityBehavior.readFields).`;
+
+const SHELL_FLAG_LITERAL_SET: ReadonlySet<string> = new Set(
+  SHELL_FLAG_LITERALS,
+);
+
 /**
  * A fenced body binds a listener in place of its settings, and the script
  * listener behaviours are built from the script alone. Naming the bindings
@@ -420,7 +521,7 @@ const priorityShapeMessage = (key: string) =>
  */
 const scriptListenerFieldMessage = (subject: string) =>
   `${subject} runs a fenced script, which the engine hands no field list; ` +
-  `remove the script and bind the listener with ${formatWordList(FIELD_BINDING_KEYS)} ` +
+  `remove the script and bind the listener with ${formatWordList(LISTENER_FIELD_BINDING_KEYS)} ` +
   'to inject one.';
 
 const fieldValueMessage = (name: string) =>
@@ -745,6 +846,23 @@ const ESCALATION_NO_MESSAGE_MESSAGE =
 const DECLARATION_SETTINGS_ONLY_MESSAGE =
   `A declaration's parens take only ${formatWordList(EVENT_BINDING_FIELDS)} ` +
   "settings, written 'key: value'.";
+
+/** @param description Noun phrase with article, e.g. `'an if statement'`. */
+const gatewaySettingsOnlyMessage = (description: string) =>
+  `The parens of ${description} take only settings, written 'key: value'.`;
+
+/** @param description Noun phrase with article, e.g. `'a while loop'`. */
+const loopJoinKeyMessage = (key: string, description: string) =>
+  `Setting '${key}' is not valid on ${description}: a loop has one gateway, so write '${ENGINE_KEY_BY_JOIN_KEY[key]}'.`;
+
+const refusedHeadKeyMessage = (key: string, description: string): string =>
+  `Setting '${key}' is not valid on ${description}: Operaton refuses it ` +
+  'on an event-based gateway (BpmnParse.parseEventBasedGateway). Write it on ' +
+  'the branch triggers instead.';
+
+/** @param description Noun phrase with article; the sentence points at this one. */
+const prunedJoinMessage = (description: string, key: string) =>
+  `Every branch of this ${description.replace(/^an? /, '')} ends its path, so there is no join for '${key}' to set; the setting has no effect.`;
 
 /**
  * Ids the `astToIr` desugarer synthesizes; an author-chosen statement name
@@ -1460,6 +1578,11 @@ export class BpmnScriptValidator {
     // so a bare word there is a missing pair of quotes or an item that does not
     // belong, both of which {@link BpmnScriptValidator.checkCodeDecls} reports.
     const isDeclarationItem = isCodeDecl(container.$container);
+    // A gateway head's parens take settings alone, so a bare word there is
+    // already an error of its own; a variable warning on top is a red herring.
+    const isGatewayHeadValue =
+      isParenValue(container) &&
+      gatewayStatementRuleOf(container.$container) !== undefined;
     if (isVarRef(expr)) {
       // A name position is exempt from the warning for the same reason a code
       // position is: the word names something other than a variable there, and
@@ -1474,6 +1597,7 @@ export class BpmnScriptValidator {
       } else if (
         !isNonVariableAttrValue &&
         !isDeclarationItem &&
+        !isGatewayHeadValue &&
         !isCodePosition(expr) &&
         !readsExternalTask(expr) &&
         !symbols.has(expr.ref.$refText)
@@ -1715,13 +1839,18 @@ export class BpmnScriptValidator {
     this.checkAttributeBlock(task, accept);
     if (task.name === undefined) return;
 
-    this.checkExactlyOneBinding(
-      settingsOf(task.items),
-      SERVICE_TASK_BINDING_KEYS,
-      `${isServiceTask(task) ? 'Service' : 'Send'} task '${task.name}'`,
-      { node: task, property: 'name' },
-      accept,
-    );
+    const subject = `${isServiceTask(task) ? 'Service' : 'Send'} task '${task.name}'`;
+    if (
+      this.checkExactlyOneBinding(
+        settingsOf(task.items),
+        SERVICE_TASK_BINDING_KEYS,
+        subject,
+        { node: task, property: 'name' },
+        accept,
+      )
+    ) {
+      this.checkBuiltinBinding(task, subject, accept);
+    }
   };
 
   checkBusinessRuleTask = (
@@ -1731,18 +1860,82 @@ export class BpmnScriptValidator {
     this.checkAttributeBlock(task, accept);
 
     if (task.name !== undefined) {
-      this.checkExactlyOneBinding(
-        settingsOf(task.items),
-        BUSINESS_RULE_BINDING_KEYS,
-        `Decision step '${task.name}'`,
-        { node: task, property: 'name' },
-        accept,
-      );
+      const subject = `Decision step '${task.name}'`;
+      if (
+        this.checkExactlyOneBinding(
+          settingsOf(task.items),
+          BUSINESS_RULE_BINDING_KEYS,
+          subject,
+          { node: task, property: 'name' },
+          accept,
+        )
+      ) {
+        this.checkBuiltinBinding(task, subject, accept);
+      }
     }
     this.checkBindingAttribute(task, accept);
     this.checkBindingVersionExclusion(task, 'A decision step', accept);
     this.checkDecisionResultMapping(task, accept);
   };
+
+  /**
+   * The deployment refusals `BpmnParse.parseServiceTaskLike` raises for a mail
+   * or shell task, reported here instead. A field's own shape is
+   * {@link checkField}'s business and comes first, so a value that is neither
+   * a literal nor an expression draws that refusal alone.
+   *
+   * @param subject The message's leading noun phrase (`"Service task 'Notify'"`).
+   */
+  private checkBuiltinBinding(
+    task: ServiceTask | SendTask | BusinessRuleTask,
+    subject: string,
+    accept: ValidationAcceptor,
+  ): void {
+    const attr = settingsOf(task.items).find((a) => a.key === TYPE_BINDING_KEY);
+    if (!attr) return;
+
+    const type = bindingValueText(attr.value);
+    const builtin = TYPE_BINDING_VALUES.find((value) => value === type);
+    if (builtin === undefined) {
+      accept('error', TYPE_VALUE_MESSAGE, { node: attr, property: 'value' });
+      return;
+    }
+    // A field left nameless by parser recovery has its own diagnostic.
+    const fields = task.params.filter(
+      (param) => isFieldParameter(param) && param.name !== undefined,
+    );
+    for (const group of BUILTIN_REQUIRED_FIELDS[builtin]) {
+      if (!fields.some((field) => group.names.includes(field.name))) {
+        accept('error', missingBuiltinFieldMessage(subject, builtin, group), {
+          node: task,
+          property: 'name',
+        });
+      }
+    }
+    for (const field of fields) {
+      if (!BUILTIN_FIELD_NAMES[builtin].includes(field.name)) {
+        accept('error', unknownBuiltinFieldMessage(field.name, builtin), {
+          node: field,
+          property: 'name',
+        });
+      } else if (builtin === 'shell' && isRawExpr(field.value)) {
+        accept('error', shellFieldExpressionMessage(field.name), {
+          node: field,
+          property: 'value',
+        });
+      } else if (
+        builtin === 'shell' &&
+        SHELL_FLAG_FIELD_SET.has(field.name) &&
+        isLiteralString(field.value) &&
+        !SHELL_FLAG_LITERAL_SET.has(field.value.value)
+      ) {
+        accept('error', shellFlagValueMessage(field.name), {
+          node: field,
+          property: 'value',
+        });
+      }
+    }
+  }
 
   private checkDecisionResultMapping(
     task: BusinessRuleTask,
@@ -1983,6 +2176,8 @@ export class BpmnScriptValidator {
    *
    * @param subject The message's leading noun phrase (`"Service task 'total'"`).
    * @param alternative Appended to the names-none message only.
+   * @returns Whether exactly one binding is written, so a check reading that
+   *   binding's value can stand down otherwise.
    */
   private checkExactlyOneBinding(
     attrs: readonly Setting[],
@@ -1991,16 +2186,18 @@ export class BpmnScriptValidator {
     target: { node: AstNode; property: string },
     accept: ValidationAcceptor,
     alternative = '',
-  ): void {
-    if (bindingKeysOf(attrs, keys).length === 0) {
+  ): boolean {
+    const written = bindingKeysOf(attrs, keys);
+    if (written.length === 0) {
       accept(
         'error',
         `${subject} must declare a ${formatWordList(keys)} setting${alternative}.`,
         target,
       );
-      return;
+      return false;
     }
     checkAtMostOneBinding(attrs, keys, subject, target, accept);
+    return written.length === 1;
   }
 
   private checkDuplicateKeys(
@@ -2113,12 +2310,16 @@ export class BpmnScriptValidator {
   ): void {
     const rule = attributeBlockRuleOf(owner)!;
     this.checkDuplicateKeys(settingsOf(owner.items), accept);
+    const settings = configuredSettingsOf(owner);
     this.checkAttributeKeys(
-      configuredSettingsOf(owner),
+      rule.repeats
+        ? settings.filter((setting) => setting.key !== RUN_JOB_PRIORITY_KEY)
+        : settings,
       rule.keys,
       rule.description,
       accept,
     );
+    this.checkRunSettings(owner, rule, settings, accept);
     this.checkFlags(owner.items, rule.flags, rule.description, accept);
     // A `call` block has no `forms` member at all.
     if ('forms' in owner) {
@@ -2131,6 +2332,38 @@ export class BpmnScriptValidator {
     this.checkIoParameters(owner, rule, accept);
     this.checkExternalExtras(owner, rule, accept);
     this.checkListeners(owner, rule, accept);
+  }
+
+  /**
+   * A run key on a statement with no `for` clause contradicts itself, so the
+   * refusal names both fixes. A kind that never takes a clause owns no run
+   * key, so the unknown-key check answers there.
+   */
+  private checkRunSettings(
+    owner: AttributeOwner,
+    rule: AttributeBlockRule,
+    settings: readonly Setting[],
+    accept: ValidationAcceptor,
+  ): void {
+    if (!rule.repeats) return;
+    const repeated = isRepeated(owner);
+    for (const setting of settings) {
+      if (setting.key === RUN_JOB_PRIORITY_KEY) {
+        accept('error', RUN_JOB_PRIORITY_MESSAGE, {
+          node: setting,
+          property: 'key',
+        });
+      } else if (!repeated && RUN_ENGINE_KEY_SET.has(setting.key)) {
+        accept(
+          'error',
+          runWithoutClauseMessage(setting.key, rule.description),
+          {
+            node: setting,
+            property: 'key',
+          },
+        );
+      }
+    }
   }
 
   /**
@@ -2150,6 +2383,7 @@ export class BpmnScriptValidator {
       : fieldBindingMessage(
           capitalize(rule.description),
           fieldlessBindingsOf(settings),
+          ELEMENT_FIELD_BINDINGS,
         );
     const recognized: IoParameter[] = [];
     for (const param of owner.params) {
@@ -2426,7 +2660,11 @@ export class BpmnScriptValidator {
         ? scriptListenerFieldMessage(subject)
         : namesFieldBinding(settings)
           ? undefined
-          : fieldBindingMessage(subject, fieldlessBindingsOf(settings));
+          : fieldBindingMessage(
+              subject,
+              fieldlessBindingsOf(settings),
+              LISTENER_FIELD_BINDINGS,
+            );
 
     const fields: IoParameter[] = [];
     for (const param of listener.params) {
@@ -2477,8 +2715,68 @@ export class BpmnScriptValidator {
     );
   }
 
+  /**
+   * A loop's parens refuse the join spelling by name, since the fix is the
+   * unprefixed key. A join every branch closes is pruned by the transform, so
+   * a setting written for it warns rather than vanishing; the predicate is
+   * the one {@link checkUnreachableStatements} reads.
+   */
+  private checkGatewaySettings(
+    stmt: GatewayStatement,
+    accept: ValidationAcceptor,
+  ): void {
+    const rule = gatewayStatementRuleOf(stmt)!;
+    const settings = settingsOf(stmt.items);
+    for (const item of stmt.items) {
+      if (isParenValue(item)) {
+        accept('error', gatewaySettingsOnlyMessage(rule.description), {
+          node: item,
+        });
+      }
+    }
+    this.checkDuplicateKeys(settings, accept);
+    this.checkFlags(stmt.items, [], rule.description, accept);
+
+    const joinSettings = settings.filter((setting) =>
+      JOIN_ENGINE_KEY_SET.has(setting.key),
+    );
+    if (!rule.join) {
+      for (const setting of joinSettings) {
+        accept('error', loopJoinKeyMessage(setting.key, rule.description), {
+          node: setting,
+          property: 'key',
+        });
+      }
+    }
+    this.checkAttributeKeys(
+      rule.join
+        ? settings
+        : settings.filter((setting) => !JOIN_ENGINE_KEY_SET.has(setting.key)),
+      rule.join ? SPLIT_AND_JOIN_KEY_SET : ENGINE_KEY_SET,
+      rule.description,
+      accept,
+    );
+
+    for (const setting of settings) {
+      if (!rule.refuses.includes(setting.key)) continue;
+      accept('error', refusedHeadKeyMessage(setting.key, rule.description), {
+        node: setting,
+        property: 'key',
+      });
+    }
+    if (rule.join && statementTerminates(stmt)) {
+      for (const setting of joinSettings) {
+        accept('warning', prunedJoinMessage(rule.description, setting.key), {
+          node: setting,
+          property: 'key',
+        });
+      }
+    }
+  }
+
   /** The grammar allows an empty `Block`, so an empty branch is a warning, not an error. */
   checkIfStatement = (stmt: IfStatement, accept: ValidationAcceptor): void => {
+    this.checkGatewaySettings(stmt, accept);
     this.warnIfEmptyBlock(stmt.then, "The 'if' branch has no steps.", accept);
     for (const elseIf of stmt.elseIfs) {
       this.warnIfEmptyBlock(
@@ -2500,6 +2798,7 @@ export class BpmnScriptValidator {
     stmt: WhileStatement,
     accept: ValidationAcceptor,
   ): void => {
+    this.checkGatewaySettings(stmt, accept);
     this.warnIfEmptyBlock(stmt.body, "The 'while' body has no steps.", accept);
   };
 
@@ -2507,6 +2806,7 @@ export class BpmnScriptValidator {
     stmt: DoWhileStatement,
     accept: ValidationAcceptor,
   ): void => {
+    this.checkGatewaySettings(stmt, accept);
     this.warnIfEmptyBlock(stmt.body, "The 'do' body has no steps.", accept);
   };
 
@@ -2553,6 +2853,7 @@ export class BpmnScriptValidator {
     stmt: ParallelStatement,
     accept: ValidationAcceptor,
   ): void => {
+    this.checkGatewaySettings(stmt, accept);
     stmt.branches.forEach((branch, index) => {
       this.warnIfEmptyBlock(
         branch.body,
@@ -2600,6 +2901,7 @@ export class BpmnScriptValidator {
     stmt: RaceStatement,
     accept: ValidationAcceptor,
   ): void => {
+    this.checkGatewaySettings(stmt, accept);
     stmt.branches.forEach((branch, index) => {
       this.checkAttributeBlock(branch, accept);
       this.warnIfEmptyBlock(
@@ -3957,10 +4259,7 @@ function checkThrowEmitBinding(
   subject: 'a thrown' | 'an emitted',
   accept: ValidationAcceptor,
 ): void {
-  const written = bindingKeysOf(
-    settingsOf(stmt.items),
-    SERVICE_TASK_BINDING_KEYS,
-  );
+  const written = bindingKeysOf(settingsOf(stmt.items), THROW_BINDING_KEYS);
   if (written.length === 0) return;
 
   if (stmt.trigger !== 'message') {
@@ -3979,7 +4278,7 @@ function checkThrowEmitBinding(
 
   checkAtMostOneBinding(
     settingsOf(stmt.items),
-    SERVICE_TASK_BINDING_KEYS,
+    THROW_BINDING_KEYS,
     capitalize(`${subject} ${stmt.trigger}`),
     { node: stmt, property: 'trigger' },
     accept,

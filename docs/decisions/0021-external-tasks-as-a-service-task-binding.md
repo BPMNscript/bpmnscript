@@ -35,6 +35,7 @@ Chosen option: "Fold `external` into `service` as a fourth binding attribute", b
 
 A service task's settings gain `topic` as a fourth legal key alongside `class`, `expression`, and `delegate`.
 The validator's exactly-one-binding check now requires exactly one of the four, naming all four in its error message, and the printer emits `service X(topic: "...")` for the binding the same way it already emits `service X(delegate: "...")` for a delegate expression.
+A fifth binding, `type`, joins the four under the same check (ADR-0042).
 The emitted BPMN XML is unchanged: `operaton:type="external"` alongside `operaton:topic` is exactly what the `external` keyword produced before, since the IR and the XML generator never referenced the DSL keyword in the first place.
 `external` stops being reserved and parses as an ordinary identifier, freeing it for a variable or step name the way any other non-keyword does.
 
@@ -73,3 +74,5 @@ Related decisions: ADR-0006 (engine-agnostic intermediate representation) alread
 ADR-0013 (target users without BPMN knowledge and minimize boilerplate) is the standing rule this decision applies.
 
 Amended by ADR-0038, under which the `topic` binding carries the three things the engine reads beside the topic and under no other binding: a `taskPriority` setting, `property` lines, and `error <Code> when <condition>` mappings.
+
+Amended by ADR-0042, which adds `type` as a fifth binding, the engine's own discriminator for a mail or shell task it builds itself.

@@ -84,11 +84,12 @@ Rejected: two DSL spellings, one mirroring `stringValue` and one mirroring `<ope
 The two spellings would name a distinction in Operaton's XML that carries no distinction in what the engine does with either shape until an author writes `${...}`, at which point the one-spelling rule already draws exactly that line.
 
 Where a field is legal follows the engine, not the schema.
-Operaton's `BpmnParse.parseServiceTaskLike` hands `parseFieldDeclarations` to `ClassDelegateActivityBehavior` and to `ServiceTaskDelegateExpressionActivityBehavior`, and to nothing else.
+Operaton's `BpmnParse.parseServiceTaskLike` hands `parseFieldDeclarations` to `ClassDelegateActivityBehavior`, to `ServiceTaskDelegateExpressionActivityBehavior`, and to the mail and shell behaviours it instantiates itself (a binding this surface carries since ADR-0042); nothing else takes one.
 `ServiceTaskExpressionActivityBehavior` is built from an expression and a result variable with no field list, and `parseExternalServiceTask` is never handed one either.
-`parseExecutionListener` and `parseTaskListener` repeat the identical split for both listener kinds.
-So a field rides a `class:` or a `delegate:` binding and nothing else, on a task and on a listener alike; an `expression:` binding, a `topic:` binding, and a `decision:` binding all take none.
-The validator reports a field written elsewhere as an error naming the two bindings that do take one, and an imported field found under any other binding keeps a drop warning rather than being carried into a binding the engine would never read it from.
+`parseExecutionListener` and `parseTaskListener` repeat the identical split for both listener kinds, neither of which binds a built-in type.
+So on a task a field rides a `class:`, a `delegate:`, or a `type:` binding; an `expression:` binding, a `topic:` binding, and a `decision:` binding all take none.
+On a listener, which has no `type:` binding, a field rides `class:` or `delegate:` alone.
+The validator reports a field written elsewhere as an error naming the bindings that do take one, and an imported field found under any other binding keeps a drop warning rather than being carried into a binding the engine would never read it from.
 
 `formRef` lands on a user task only, matching where `formKey` already sits.
 Operaton's schema also allows a `formRef` on a start event, but this language does not carry `formKey` on a start event either.
@@ -114,7 +115,8 @@ The validator errors on both shapes the same way, and the importer refuses both 
   A field has no binding-key slot to sit in on an expression, a topic, or a decision binding, and a form reference with no binding cannot be constructed in the IR at all.
 - Good, because a document Operaton itself refuses to deploy is refused on import rather than accepted into a state the compiler could not have produced.
 - Bad, because a listener's brace block now holds two different kinds of member under the same grammar rule, an io parameter and a field, so a reader has to check the direction word rather than the rule name to know which one they are looking at.
-- Bad, because the placement rule for a field, class and delegate only, and nothing on an expression, a topic, or a decision, is a fact about Operaton's parser rather than something visible in its schema, so it has to be documented rather than discoverable from the moddle alone.
+- Bad, because the field-placement rule is a fact about Operaton's parser, not its schema: class and delegate on a task or a listener, plus a task's `type` binding since ADR-0042.
+  It has to be documented rather than discoverable from the moddle alone.
 
 ## Pros and Cons of the Options
 
@@ -164,4 +166,7 @@ ADR-0029 (no new reserved words among its own drivers, the same driver behind re
 
 Amended by ADR-0037, which adds `property` as a fourth direction, a member of a form field's block, by the same reuse of `IoParameter`.
 
-Amended by ADR-0038, under which the `property` direction rides a `topic` binding too, on a `service`, `send`, or `decide` task, the one direction a topic binding takes; a field still rides `class` and `delegate` alone.
+Amended by ADR-0038, under which the `property` direction rides a `topic` binding too, on a `service`, `send`, or `decide` task, the one direction a topic binding takes.
+A field never rides `topic`; it rides `class`, `delegate`, and, since ADR-0042, a task's `type` binding instead.
+
+Amended by ADR-0042, which adds a task's built-in `type` binding as a third carrier of a field, beside `class` and `delegate`.

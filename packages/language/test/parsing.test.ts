@@ -365,6 +365,40 @@ describe('Parsing - control flow and containers', () => {
   });
 });
 
+describe('Parsing - gateway settings', () => {
+  // Revert: drop `SettingsParens?` from one of the five rules and its row is a
+  // parse error.
+  test.each<Row>([
+    [
+      'an if head carries the split settings and the join settings; an else if head carries none',
+      `process p { if (a) (asyncBefore: true, joinJobPriority: 20) { user A } else if (b) { user B } }`,
+      '[IfStatement(condition=VarRef(ref=->a), items=[Setting(key="asyncBefore", value=LiteralBool(value="true")), Setting(key="joinJobPriority", value=LiteralInt(value=20))], then=Block(statements=[UserTask(name="A")]), elseIfs=[ElseIf(condition=VarRef(ref=->b), body=Block(statements=[UserTask(name="B")]))])]',
+    ],
+    [
+      'a while head carries the loop settings after its condition',
+      `process p { while (a) (asyncAfter: true) { user A } }`,
+      '[WhileStatement(condition=VarRef(ref=->a), items=[Setting(key="asyncAfter", value=LiteralBool(value="true"))], body=Block(statements=[UserTask(name="A")]))]',
+    ],
+    [
+      'a do-while tail carries the loop settings after its condition',
+      `process p { do { user A } while (a) (exclusive: false) }`,
+      '[DoWhileStatement(body=Block(statements=[UserTask(name="A")]), condition=VarRef(ref=->a), items=[Setting(key="exclusive", value=LiteralBool(value="false"))])]',
+    ],
+    [
+      'a parallel head carries the fork settings before its branches; a branch head carries none',
+      `process p { parallel (jobPriority: 5) { { user A } { user B } } }`,
+      '[ParallelStatement(items=[Setting(key="jobPriority", value=LiteralInt(value=5))], branches=[ParallelBranch(body=Block(statements=[UserTask(name="A")])), ParallelBranch(body=Block(statements=[UserTask(name="B")]))])]',
+    ],
+    [
+      "an await head carries the race settings before its branches, apart from each branch's own",
+      `process p { await (retryCycle: "R3/PT10M") { message("M") { user A } timer("PT1H") { user B } } }`,
+      '[RaceStatement(items=[Setting(key="retryCycle", value=LiteralString(value="R3/PT10M"))], branches=[RaceBranch(trigger="message", items=[ParenValue(value=LiteralString(value="M"))], body=Block(statements=[UserTask(name="A")])), RaceBranch(trigger="timer", items=[ParenValue(value=LiteralString(value="PT1H"))], body=Block(statements=[UserTask(name="B")]))])]',
+    ],
+  ])('%s', async (_title, source, expected) => {
+    await expectBody(source, expected);
+  });
+});
+
 describe('Parsing - the event layer', () => {
   test.each<Row>([
     [
@@ -1220,6 +1254,22 @@ describe('Parsing - sources the parser rejects', () => {
       'parallel requires at least two branches',
       `process p { parallel { { user A } } }`,
       [STOCK_ALTERNATIVES, 'Expecting end of file but found `}`.'],
+    ],
+    // Revert: give `ElseIf` or `ParallelBranch` a `SettingsParens?` and its
+    // row parses. The `else if` row blames `if`: with the parens breaking the
+    // `else if` shape, the lookahead settles on `else` opening a plain block.
+    [
+      'an else if head takes no settings: the if head governs the whole chain',
+      `process p { if (a) { user A } else if (b) (asyncBefore: true) { user B } }`,
+      [
+        "Expecting token of type '{' but found `if`.",
+        "Expecting token of type '}' but found ``.",
+      ],
+    ],
+    [
+      'a parallel branch head takes no settings: the parallel head governs the fork and the join',
+      `process p { parallel { if (a) (asyncBefore: true) { user A } { user B } } }`,
+      ["Expecting token of type '{' but found `(`."],
     ],
     [
       'a race requires at least two branches',

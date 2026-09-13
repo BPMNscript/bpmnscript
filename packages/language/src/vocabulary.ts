@@ -54,11 +54,14 @@ export function reservedWordsOf(grammar: Grammar): ReadonlySet<string> {
   return words;
 }
 
-/** An English "or" clause: `a`, `b`, or `c`. */
-export function formatPlainWordList(words: readonly string[]): string {
+/** An English clause: `a`, `a or b`, `a, b, or c`; the same with `and`. */
+export function formatPlainWordList(
+  words: readonly string[],
+  conjunction: 'or' | 'and' = 'or',
+): string {
   if (words.length === 1) return words[0]!;
-  if (words.length === 2) return `${words[0]} or ${words[1]}`;
-  return `${words.slice(0, -1).join(', ')}, or ${words[words.length - 1]}`;
+  if (words.length === 2) return `${words[0]} ${conjunction} ${words[1]}`;
+  return `${words.slice(0, -1).join(', ')}, ${conjunction} ${words[words.length - 1]}`;
 }
 
 /** The same clause with every word quoted: `'a'`, `'b'`, or `'c'`. */
@@ -66,7 +69,15 @@ export function formatWordList(words: readonly string[]): string {
   return formatPlainWordList(words.map((w) => `'${w}'`));
 }
 
-/** The engine execution settings Operaton reads off any flow node. */
+/**
+ * The engine execution settings Operaton reads off any flow node, gateways
+ * included: `BpmnParse.parseExclusiveGateway`, `parseInclusiveGateway`,
+ * `parseParallelGateway` and `parseEventBasedGateway` each go through
+ * `parseAsynchronousContinuationForActivity` for the async flags and
+ * `createActivityOnScope` for `jobPriority`, and
+ * `DefaultFailedJobParseListener.parseActivity` reads the retry cycle on the
+ * same four.
+ */
 export const ENGINE_KEYS: readonly string[] = [
   'asyncBefore',
   'asyncAfter',
@@ -75,16 +86,154 @@ export const ENGINE_KEYS: readonly string[] = [
   'retryCycle',
 ];
 
+/** `key` spelled for a second carrier in the same parens: `join` + `asyncBefore` is `joinAsyncBefore`. */
+export function prefixedSettingKey(prefix: string, key: string): string {
+  return prefix + key.charAt(0).toUpperCase() + key.slice(1);
+}
+
+/** `key` spelled for the synthesized join gateway: `join` + `asyncBefore` is `joinAsyncBefore`. */
+export function joinSettingKey(key: string): string {
+  return prefixedSettingKey('join', key);
+}
+
+/** The join gateway's spelling of each engine setting, keyed by the split's. */
+export const JOIN_KEY_BY_ENGINE_KEY: Readonly<Record<string, string>> =
+  Object.fromEntries(ENGINE_KEYS.map((key) => [key, joinSettingKey(key)]));
+
+/** The join spellings alone, in {@link ENGINE_KEYS} order. */
+export const JOIN_ENGINE_KEYS: readonly string[] = Object.values(
+  JOIN_KEY_BY_ENGINE_KEY,
+);
+
+/** `key` spelled for the per-run carrier: `run` + `asyncBefore` is `runAsyncBefore`. */
+export function runSettingKey(key: string): string {
+  return prefixedSettingKey('run', key);
+}
+
+/**
+ * The four settings a repetition writes on its `multiInstanceLoopCharacteristics`
+ * element rather than on the repeated activity itself.
+ * `BpmnParse.parseAsynchronousContinuationForActivity` hands that element to
+ * `parseAsynchronousContinuation`, which reads the three async settings onto
+ * each run, and `DefaultFailedJobParseListener.parseActivity` reads the retry
+ * cycle there the same way; `createActivityOnScope` reads a job priority off
+ * the activity element alone, which is why there is no `runJobPriority`.
+ */
+export const RUN_ENGINE_KEYS: readonly string[] = ENGINE_KEYS.filter(
+  (key) => key !== 'jobPriority',
+).map((key) => runSettingKey(key));
+
+/**
+ * The fifth binding: `BpmnParse.parseServiceTaskLike` dispatches on this key's
+ * value before it looks at any code attribute.
+ */
+export const TYPE_BINDING_KEY = 'type';
+
 /**
  * Exactly one of these binds a service task. `topic` delegates to an external
- * worker polling the engine rather than the engine invoking the binding.
+ * worker polling the engine rather than the engine invoking the binding, and
+ * `type` selects a behaviour the engine builds itself.
+ * {@link BUSINESS_RULE_BINDING_KEYS} inherits it since `parseBusinessRuleTask`
+ * without a `decisionRef` reaches `parseServiceTaskLike`.
  */
 export const SERVICE_TASK_BINDING_KEYS: readonly string[] = [
   'class',
   'expression',
   'delegate',
   'topic',
+  TYPE_BINDING_KEY,
 ];
+
+/**
+ * What a thrown or emitted message binds: a thrown message has no member
+ * block, so the fields a built-in behaviour requires cannot be written on it.
+ */
+export const THROW_BINDING_KEYS: readonly string[] =
+  SERVICE_TASK_BINDING_KEYS.filter((key) => key !== TYPE_BINDING_KEY);
+
+/** The two `operaton:type` values `parseServiceTaskLike` routes to a built-in behaviour. */
+export const TYPE_BINDING_VALUES = ['mail', 'shell'] as const;
+
+export type BuiltinTaskType = (typeof TYPE_BINDING_VALUES)[number];
+
+/**
+ * The field names each built-in behaviour class declares, in declaration
+ * order. `ClassDelegateUtil.applyFieldDeclaration` throws "Field definition
+ * uses unexisting field '<name>' on class ..." for any other name, reached
+ * through `instantiateDelegate` from both `parseEmailServiceTask` and
+ * `parseShellServiceTask`.
+ */
+export const BUILTIN_FIELD_NAMES: Readonly<
+  Record<BuiltinTaskType, readonly string[]>
+> = {
+  mail: ['to', 'from', 'cc', 'bcc', 'subject', 'text', 'html', 'charset'],
+  shell: [
+    'command',
+    'wait',
+    'arg1',
+    'arg2',
+    'arg3',
+    'arg4',
+    'arg5',
+    'outputVariable',
+    'errorCodeVariable',
+    'redirectError',
+    'cleanEnv',
+    'directory',
+  ],
+};
+
+/** A field group a built-in task must write at least one name of before it deploys. */
+export interface RequiredFieldGroup {
+  readonly names: readonly string[];
+  /** The message the engine's parse throws when none of the names is written. */
+  readonly error: string;
+}
+
+/**
+ * The field combinations `validateFieldDeclarationsForEmail` and
+ * `validateFieldDeclarationsForShell` require before a mail or shell task
+ * deploys, in the order the engine checks them. A mail task needs `to` and one
+ * of `text`/`html`; `cc`/`bcc` satisfy neither. A shell task needs only
+ * `command`.
+ */
+export const BUILTIN_REQUIRED_FIELDS: Readonly<
+  Record<BuiltinTaskType, readonly RequiredFieldGroup[]>
+> = {
+  mail: [
+    { names: ['to'], error: 'No recipient is defined on the mail activity' },
+    { names: ['text', 'html'], error: 'Text or html field should be provided' },
+  ],
+  shell: [
+    {
+      names: ['command'],
+      error: 'No shell command is defined on the shell activity',
+    },
+  ],
+};
+
+/** The `BpmnParse` method that refuses a deployment missing one of the type's required fields. */
+export const BUILTIN_FIELD_VALIDATOR: Readonly<
+  Record<BuiltinTaskType, string>
+> = {
+  mail: 'validateFieldDeclarationsForEmail',
+  shell: 'validateFieldDeclarationsForShell',
+};
+
+/**
+ * The shell fields `validateFieldDeclarationsForShell` requires a fixed
+ * `true`/`false` value on, case-insensitively. `ShellActivityBehavior.readFields`
+ * then compares the deployed value with `"true".equals(...)`, case-sensitively,
+ * so a value like `"True"` deploys and is read back as `false` at runtime.
+ */
+export const SHELL_FLAG_FIELDS: readonly string[] = [
+  'wait',
+  'redirectError',
+  'cleanEnv',
+];
+
+/** The spellings `ShellActivityBehavior.readFields` compares a flag with. */
+export const SHELL_FLAG_LITERALS: readonly string[] = ['true', 'false'];
 
 /**
  * A decision step binds to a decision table or, as a service task does, to
@@ -114,14 +263,21 @@ export const LISTENER_BINDING_KEYS: readonly string[] = [
 ];
 
 /**
- * The bindings an injected field reaches. Operaton builds the field list for
- * the behaviours a `class` and a `delegate` expression select and for no other:
- * an `expression` binding is constructed from its expression and its result
- * variable alone, a `topic` hands the work to an external worker the engine
- * injects nothing into, and a `decision` binding runs no implementation at all.
- * A task and both listener kinds split the same way.
+ * The bindings an injected field reaches. Operaton hands the field list to
+ * the class a `class` binding names, to the delegate a `delegate` expression
+ * resolves, and to the two built-in behaviours a `type` selects
+ * (`BpmnParse.parseEmailServiceTask` and `parseShellServiceTask` both go
+ * through `instantiateDelegate`), and to no other: an `expression` binding is
+ * constructed from its expression and its result variable alone, a `topic`
+ * hands the work to an external worker the engine injects nothing into, and a
+ * `decision` binding runs no implementation at all. A task and both listener
+ * kinds split the same way, a listener binding no `type`.
  */
-export const FIELD_BINDING_KEYS: readonly string[] = ['class', 'delegate'];
+export const FIELD_BINDING_KEYS: readonly string[] = [
+  'class',
+  'delegate',
+  TYPE_BINDING_KEY,
+];
 
 /**
  * A call activity's variable-mapping delegate computes its in/out mapping in
@@ -155,9 +311,9 @@ export const IO_DIRECTIONS: readonly string[] = ['input', 'output'];
 
 /**
  * The third direction a member of a block is written with. It names a property
- * of the class or delegate the element binds, set once as that implementation
- * is instantiated, so it is neither read from nor written to a process
- * variable. See {@link FIELD_BINDING_KEYS} for where one is legal.
+ * of the class, delegate, or built-in behaviour the element binds, set once as
+ * that implementation is instantiated, so it is neither read from nor written
+ * to a process variable. See {@link FIELD_BINDING_KEYS} for where one is legal.
  */
 export const FIELD_DIRECTION = 'field';
 
@@ -606,6 +762,12 @@ export interface AttributeBlockRule {
    */
   readonly flags: readonly string[];
   readonly forms: boolean;
+  /**
+   * Whether the statement takes a `for` clause, and so its parens the
+   * {@link RUN_ENGINE_KEYS}: the settings of the job each run gets, written
+   * on the `multiInstanceLoopCharacteristics` element the clause lowers to.
+   */
+  readonly repeats: boolean;
   readonly parameters: boolean;
   /**
    * Whether the kind lowers to an element with an implementation to inject
@@ -624,9 +786,16 @@ export interface AttributeBlockRule {
   readonly externalExtras: boolean;
 }
 
-/** Derive `keys` from `own` so the two cannot disagree. */
+/** Derive `keys` from `own` and `repeats` so they cannot disagree. */
 function withKeys(spec: Omit<AttributeBlockRule, 'keys'>): AttributeBlockRule {
-  return { ...spec, keys: new Set([...ENGINE_KEYS, ...spec.own]) };
+  return {
+    ...spec,
+    keys: new Set([
+      ...ENGINE_KEYS,
+      ...spec.own,
+      ...(spec.repeats ? RUN_ENGINE_KEYS : []),
+    ]),
+  };
 }
 
 /**
@@ -642,6 +811,7 @@ export const ATTRIBUTE_BLOCK_RULES: Readonly<
     own: ['label', 'documentation', 'initiator'],
     flags: [],
     forms: true,
+    repeats: false,
     parameters: false,
     fields: false,
     taskListeners: false,
@@ -652,6 +822,7 @@ export const ATTRIBUTE_BLOCK_RULES: Readonly<
     own: ['label', 'documentation'],
     flags: [],
     forms: false,
+    repeats: false,
     parameters: false,
     fields: false,
     taskListeners: false,
@@ -675,6 +846,7 @@ export const ATTRIBUTE_BLOCK_RULES: Readonly<
     ],
     flags: [],
     forms: true,
+    repeats: true,
     parameters: true,
     fields: false,
     taskListeners: true,
@@ -691,6 +863,7 @@ export const ATTRIBUTE_BLOCK_RULES: Readonly<
     ],
     flags: [],
     forms: false,
+    repeats: true,
     parameters: true,
     fields: true,
     taskListeners: false,
@@ -701,6 +874,7 @@ export const ATTRIBUTE_BLOCK_RULES: Readonly<
     own: ['label', 'documentation', 'resultVariable'],
     flags: [],
     forms: false,
+    repeats: true,
     parameters: true,
     fields: false,
     taskListeners: false,
@@ -711,6 +885,7 @@ export const ATTRIBUTE_BLOCK_RULES: Readonly<
     own: ['label', 'documentation'],
     flags: [],
     forms: false,
+    repeats: true,
     parameters: true,
     fields: false,
     taskListeners: false,
@@ -727,6 +902,7 @@ export const ATTRIBUTE_BLOCK_RULES: Readonly<
     ],
     flags: [],
     forms: false,
+    repeats: true,
     parameters: true,
     fields: true,
     taskListeners: false,
@@ -737,6 +913,7 @@ export const ATTRIBUTE_BLOCK_RULES: Readonly<
     own: ['label', 'documentation', 'message'],
     flags: [],
     forms: false,
+    repeats: true,
     parameters: true,
     fields: false,
     taskListeners: false,
@@ -756,6 +933,7 @@ export const ATTRIBUTE_BLOCK_RULES: Readonly<
     ],
     flags: [],
     forms: false,
+    repeats: true,
     parameters: true,
     fields: true,
     taskListeners: false,
@@ -766,6 +944,7 @@ export const ATTRIBUTE_BLOCK_RULES: Readonly<
     own: ['label', 'documentation'],
     flags: [],
     forms: false,
+    repeats: true,
     parameters: true,
     fields: false,
     taskListeners: false,
@@ -785,6 +964,7 @@ export const ATTRIBUTE_BLOCK_RULES: Readonly<
     ],
     flags: [],
     forms: false,
+    repeats: true,
     parameters: true,
     fields: false,
     taskListeners: false,
@@ -795,6 +975,7 @@ export const ATTRIBUTE_BLOCK_RULES: Readonly<
     own: [],
     flags: ['alongside'],
     forms: false,
+    repeats: false,
     parameters: false,
     fields: false,
     taskListeners: false,
@@ -804,9 +985,10 @@ export const ATTRIBUTE_BLOCK_RULES: Readonly<
   // send a thrown message; the validator holds them to the `message` trigger.
   ThrowStatement: withKeys({
     description: 'a throw statement',
-    own: [...SERVICE_TASK_BINDING_KEYS],
+    own: [...THROW_BINDING_KEYS],
     flags: [],
     forms: false,
+    repeats: false,
     parameters: false,
     fields: false,
     taskListeners: false,
@@ -814,9 +996,10 @@ export const ATTRIBUTE_BLOCK_RULES: Readonly<
   }),
   EmitStatement: withKeys({
     description: 'an emit statement',
-    own: [...SERVICE_TASK_BINDING_KEYS],
+    own: [...THROW_BINDING_KEYS],
     flags: [],
     forms: false,
+    repeats: false,
     parameters: false,
     fields: false,
     taskListeners: false,
@@ -827,6 +1010,7 @@ export const ATTRIBUTE_BLOCK_RULES: Readonly<
     own: [],
     flags: [],
     forms: false,
+    repeats: false,
     parameters: false,
     fields: false,
     taskListeners: false,
@@ -838,12 +1022,72 @@ export const ATTRIBUTE_BLOCK_RULES: Readonly<
     own: [],
     flags: [],
     forms: false,
+    repeats: false,
     parameters: false,
     fields: false,
     taskListeners: false,
     externalExtras: false,
   }),
 };
+
+export interface GatewayStatementRule {
+  /** The statement as a noun phrase with article, for diagnostics. */
+  readonly description: string;
+  /**
+   * Whether the statement synthesizes a join gateway beside its split, and so
+   * takes the {@link JOIN_ENGINE_KEYS}. A loop is one gateway with a
+   * back-edge, so its parens take the {@link ENGINE_KEYS} alone.
+   */
+  readonly join: boolean;
+  /**
+   * The {@link ENGINE_KEYS} the head does not take: the validator refuses
+   * them and completion leaves them out.
+   */
+  readonly refuses: readonly string[];
+}
+
+/**
+ * The statements whose parens carry a gateway's engine settings. The head
+ * takes the {@link ENGINE_KEYS} for the split, the loop gateway, or the
+ * event-based gateway, less what its row refuses.
+ */
+export const GATEWAY_STATEMENT_RULES: Readonly<
+  Record<
+    | 'IfStatement'
+    | 'WhileStatement'
+    | 'DoWhileStatement'
+    | 'ParallelStatement'
+    | 'RaceStatement',
+    GatewayStatementRule
+  >
+> = {
+  IfStatement: { description: 'an if statement', join: true, refuses: [] },
+  WhileStatement: { description: 'a while loop', join: false, refuses: [] },
+  DoWhileStatement: {
+    description: 'a do-while loop',
+    join: false,
+    refuses: [],
+  },
+  ParallelStatement: {
+    description: 'a parallel statement',
+    join: true,
+    refuses: [],
+  },
+  // `BpmnParse.parseEventBasedGateway` refuses `asyncAfter` at deployment.
+  RaceStatement: {
+    description: 'an await block',
+    join: true,
+    refuses: ['asyncAfter'],
+  },
+};
+
+export function gatewayStatementRuleOf(
+  node: AstNode,
+): GatewayStatementRule | undefined {
+  const rules: Readonly<Record<string, GatewayStatementRule>> =
+    GATEWAY_STATEMENT_RULES;
+  return rules[node.$type];
+}
 
 /**
  * A host-less `on` handler lowers to an event sub-process, so it carries

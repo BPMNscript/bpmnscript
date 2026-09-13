@@ -10,6 +10,7 @@ import {
   InsertTextFormat,
 } from 'vscode-languageserver-types';
 import { isOnHandler } from './generated/ast.js';
+import { isRepeated } from './variable-symbol-provider.js';
 import {
   attributeBlockRuleOf,
   CALL_BINDING_VALUES,
@@ -25,6 +26,9 @@ import {
   EXECUTION_LISTENER_EVENTS,
   FIELD_DIRECTION,
   FORM_FIELD_SETTING_KEYS,
+  gatewayStatementRuleOf,
+  JOIN_ENGINE_KEYS,
+  joinSettingKey,
   LISTENER_BINDING_KEYS,
   listenerEventsFor,
   namesACode,
@@ -33,11 +37,15 @@ import {
   PROCESS_HEADER_KEYS,
   PROPERTY_DIRECTION,
   RACE_TRIGGERS,
+  RUN_ENGINE_KEYS,
+  runSettingKey,
   SCRIPT_FORMAT_ALIASES,
   START_TRIGGERS,
   THROW_TRIGGERS,
   TIMER_PARTICLE_BY_KIND,
   TRIGGER_PAYLOAD,
+  TYPE_BINDING_KEY,
+  TYPE_BINDING_VALUES,
 } from './vocabulary.js';
 
 interface StructureForm {
@@ -175,6 +183,27 @@ const STRUCTURE_SNIPPETS: Readonly<
   ],
 };
 
+/** The value each engine setting scaffolds, under whichever spelling of the key. */
+const ENGINE_VALUE_SNIPPETS: Readonly<Record<string, string>> = {
+  asyncBefore: '${1|true,false|}',
+  asyncAfter: '${1|true,false|}',
+  exclusive: '${1|false,true|}',
+  jobPriority: '${1:50}',
+  retryCycle: '"${1:R3/PT10M}"',
+};
+
+/** @param keys The engine keys to spell through `keyOf`; a carrier may take fewer than all. */
+const engineSnippets = (
+  keyOf: (key: string) => string,
+  keys: readonly string[] = ENGINE_KEYS,
+): Record<string, string> =>
+  Object.fromEntries(
+    keys.map((key) => [
+      keyOf(key),
+      `${keyOf(key)}: ${ENGINE_VALUE_SNIPPETS[key]}`,
+    ]),
+  );
+
 /**
  * Snippet bodies for the settings an element's parens can hold. These lex as
  * plain identifiers, so the default completion offers nothing for them. The
@@ -184,11 +213,12 @@ const STRUCTURE_SNIPPETS: Readonly<
 const SETTING_SNIPPETS: Readonly<Record<string, string>> = {
   label: 'label: "${1:label}"',
   documentation: 'documentation: "${1:documentation}"',
-  asyncBefore: 'asyncBefore: ${1|true,false|}',
-  asyncAfter: 'asyncAfter: ${1|true,false|}',
-  exclusive: 'exclusive: ${1|false,true|}',
-  jobPriority: 'jobPriority: ${1:50}',
-  retryCycle: 'retryCycle: "${1:R3/PT10M}"',
+  ...engineSnippets((key) => key),
+  ...engineSnippets(joinSettingKey),
+  ...engineSnippets(
+    runSettingKey,
+    ENGINE_KEYS.filter((key) => RUN_ENGINE_KEYS.includes(runSettingKey(key))),
+  ),
   assignee: 'assignee: "${1:user}"',
   formKey: 'formKey: "${1:form-key}"',
   formRef: 'formRef: "${1:form-id}"',
@@ -203,6 +233,7 @@ const SETTING_SNIPPETS: Readonly<Record<string, string>> = {
   mapper: 'mapper: "${1:com.example.CallMapper}"',
   mapperDelegate: 'mapperDelegate: "${1:\\${callMapperBean}}"',
   topic: 'topic: "${1:topic-name}"',
+  [TYPE_BINDING_KEY]: `${TYPE_BINDING_KEY}: "\${1|${TYPE_BINDING_VALUES.join(',')}|}"`,
   taskPriority: 'taskPriority: ${1:50}',
   decision: 'decision: "${1:decision-key}"',
   mapDecisionResult:
@@ -277,10 +308,11 @@ function catchBindingForms(node: AstNode): StructureForm[] {
 
 /**
  * The settings the parens of `node` take, in the order they are offered, or
- * `undefined` where `node` is not an element. The keys come from the element's
- * own row, so a kind that takes no label is offered none; a listener carries a
- * list of its own, being a callback on the element rather than one of its
- * settings.
+ * `undefined` where `node` has no parens of its own. The keys come from the
+ * element's own row, so a kind that takes no label is offered none; a listener
+ * carries a list of its own, being a callback on the element rather than one
+ * of its settings. The `run` keys are offered only with a `for` clause, which
+ * the validator requires for them.
  */
 function settingFormsFor(node: AstNode): StructureForm[] | undefined {
   if (node.$type === 'Process') {
@@ -292,12 +324,23 @@ function settingFormsFor(node: AstNode): StructureForm[] | undefined {
   if (node.$type === 'FormField') {
     return settingForms(FORM_FIELD_SETTING_KEYS);
   }
+  const gateway = gatewayStatementRuleOf(node);
+  if (gateway) {
+    return settingForms([
+      ...ENGINE_KEYS.filter((key) => !gateway.refuses.includes(key)),
+      ...(gateway.join ? JOIN_ENGINE_KEYS : []),
+    ]);
+  }
   const rule = attributeBlockRuleOf(node);
   return (
     rule && [
       ...timerKeyForms(node),
       ...catchBindingForms(node),
-      ...settingForms([...rule.own, ...ENGINE_KEYS]),
+      ...settingForms([
+        ...rule.own,
+        ...ENGINE_KEYS,
+        ...(rule.repeats && isRepeated(node) ? RUN_ENGINE_KEYS : []),
+      ]),
     ]
   );
 }
@@ -546,7 +589,7 @@ export class BpmnScriptCompletionProvider extends DefaultCompletionProvider {
       input: 'a value handed to this step',
       output: 'a value this step hands back',
       [FIELD_DIRECTION]:
-        'a value injected into the class or delegate this step names',
+        'a value injected into the class, delegate, or built-in behaviour this step names',
       [PROPERTY_DIRECTION]:
         'a value Tasklist or a worker reads off the step, never a variable',
     };

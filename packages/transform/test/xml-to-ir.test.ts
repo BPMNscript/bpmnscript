@@ -53,6 +53,7 @@ import { expectRefusal } from './helpers/expect-refusal.js';
 import {
   boundaryEvent,
   around,
+  builtinBinding,
   chained,
   chainedSub,
   classBinding,
@@ -63,7 +64,6 @@ import {
   eventSubProcess,
   exprBinding,
   externalBinding,
-  gateway,
   HANDWRITTEN_IMPORT_IR,
   ioParam,
   listValue,
@@ -316,21 +316,6 @@ describe('xmlToIr: service task binding forms', () => {
     },
   );
 
-  it('an operaton:type this surface cannot carry refuses rather than falling back to the class', async () => {
-    const e = await expectRefusal<UnsupportedServiceTaskFormError>(
-      xmlToIr(
-        oneNodeDoc('serviceTask', {
-          attrs: 'operaton:class="com.example.Svc" operaton:type="mail"',
-        }),
-      ),
-      UnsupportedServiceTaskFormError,
-    );
-    expect(e.construct).toBe(
-      'operaton:type="mail", which Operaton resolves ahead of the ' +
-        'operaton:class alongside it',
-    );
-  });
-
   it('the refusal names every code attribute the type shadows', async () => {
     const e = await expectRefusal<UnsupportedServiceTaskFormError>(
       xmlToIr(
@@ -357,7 +342,8 @@ describe('xmlToIr: service task binding forms', () => {
     expect(e.message).toContain('no execution discriminator');
     expect(e.message).toContain(
       'Supported forms are a Java class, an expression, a delegate expression, ' +
-        'an external task topic, or, on a business rule task, a decision reference.',
+        'an external task topic, a built-in mail or shell task with its ' +
+        'fields, or, on a business rule task, a decision reference.',
     );
   });
 
@@ -1454,11 +1440,6 @@ describe('xmlToIr: imports a repetition', () => {
     `its bpmn:loopCardinality is "${body}", which this tool cannot write back out unchanged; it ` +
     'writes a count as a plain whole number or as an expression, and this body is neither';
 
-  const perRunJobDetail = (setting: string): string =>
-    `it carries 'operaton:${setting}' on the repetition itself, which gives every run a job of ` +
-    'its own; the same setting on the step makes one job around the whole repetition, and this ' +
-    "tool's surface can only say the second";
-
   const elementNameRefusalDetail = (name: string): string =>
     `it names ${JSON.stringify(name)} for each run to see, which this tool cannot write back ` +
     'out unchanged; it writes that name as a plain identifier, and this name is not one';
@@ -1506,33 +1487,6 @@ describe('xmlToIr: imports a repetition', () => {
       "it names 'line' for each run to see but no collection to take it from, and Operaton refuses to deploy that",
     ],
     [
-      'operaton:asyncBefore on the repetition itself',
-      repeatedTaskDoc(
-        'operaton:collection="lines" operaton:asyncBefore="true"',
-      ),
-      perRunJobDetail('asyncBefore'),
-    ],
-    [
-      'operaton:asyncAfter on the repetition itself',
-      repeatedTaskDoc('operaton:collection="lines" operaton:asyncAfter="true"'),
-      perRunJobDetail('asyncAfter'),
-    ],
-    [
-      'operaton:exclusive on the repetition itself',
-      repeatedTaskDoc('operaton:collection="lines" operaton:exclusive="true"'),
-      perRunJobDetail('exclusive'),
-    ],
-    [
-      'an operaton:failedJobRetryTimeCycle on the repetition itself',
-      repeatedTaskDoc(
-        'operaton:collection="lines"',
-        extensionElements(
-          '        <operaton:failedJobRetryTimeCycle>R3/PT1M</operaton:failedJobRetryTimeCycle>',
-        ),
-      ),
-      perRunJobDetail('failedJobRetryTimeCycle'),
-    ],
-    [
       'an operaton:elementVariable outside the identifier the clause writes',
       repeatedTaskDoc(
         'operaton:collection="lines" operaton:elementVariable="größe"',
@@ -1566,6 +1520,104 @@ describe('xmlToIr: imports a repetition', () => {
       `The repetition on 'T' cannot be imported: ${detail}.`,
     );
   });
+
+  const retryChild = (cycle: string): string =>
+    extensionElements(
+      `        <operaton:failedJobRetryTimeCycle>${cycle}</operaton:failedJobRetryTimeCycle>`,
+    );
+  const RUN_ATTRS = (prefix: 'operaton' | 'camunda'): string =>
+    `${prefix}:asyncBefore="true" ${prefix}:asyncAfter="true" ${prefix}:exclusive="false"`;
+  const STEP_SETTINGS = {
+    asyncBefore: true,
+    asyncAfter: true,
+    exclusive: false,
+    jobPriority: '50',
+    retryCycle: 'R3/PT10M',
+  };
+  const RUN_SETTINGS = {
+    asyncBefore: true,
+    asyncAfter: true,
+    exclusive: false,
+    retryCycle: 'R5/PT1M',
+  };
+
+  // Revert: drop the loop element from JOB_SETTING_OWNERS, and the two full
+  // rows each gain one 'was not imported' warning per run setting; read the
+  // loop through readJobSettings instead of readRunSettings, and the priority
+  // row gains the rewrap note.
+  it.each([
+    {
+      title:
+        "operaton: run settings on a loop element written after the step's own settings",
+      prefix: 'operaton' as const,
+      loopFirst: false,
+      loopAttrs: `operaton:collection="lines" ${RUN_ATTRS('operaton')}`,
+      loopChildren: retryChild('R5/PT1M'),
+      loop: { collection: 'lines', ...RUN_SETTINGS },
+      warnings: [],
+    },
+    {
+      title:
+        "camunda: run settings on a loop element written before the step's own settings",
+      prefix: 'camunda' as const,
+      loopFirst: true,
+      loopAttrs: `camunda:collection="lines" ${RUN_ATTRS('camunda')}`,
+      loopChildren: retryChild('R5/PT1M'),
+      loop: { collection: 'lines', ...RUN_SETTINGS },
+      warnings: [],
+    },
+    {
+      title: 'run flags written at their engine default carry nothing',
+      prefix: 'operaton' as const,
+      loopFirst: false,
+      loopAttrs:
+        'operaton:collection="lines" operaton:asyncBefore="false" operaton:exclusive="true"',
+      loopChildren: '',
+      loop: { collection: 'lines' },
+      warnings: [],
+    },
+    {
+      title:
+        'a job priority on the loop element draws the one ignored-content warning and reaches no field',
+      prefix: 'operaton' as const,
+      loopFirst: true,
+      loopAttrs: 'operaton:collection="lines" operaton:jobPriority="#{high}"',
+      loopChildren: '',
+      loop: { collection: 'lines' },
+      warnings: [
+        {
+          elementId: 'T',
+          category: 'unmappedConstruct',
+          message:
+            "The operaton:jobPriority on the repetition of 'T' was not " +
+            'imported: Operaton does not read it, so the imported process runs the same.',
+        },
+      ],
+    },
+  ])(
+    'the per-run settings import off the loop element: $title',
+    async ({ prefix, loopFirst, loopAttrs, loopChildren, loop, warnings }) => {
+      const loopEl = repeat(loopAttrs, loopChildren);
+      const stepChildren = retryChild('R3/PT10M');
+      const imported = await importOnly(
+        oneNodeDoc('userTask', {
+          attrs: `${RUN_ATTRS(prefix)} ${prefix}:jobPriority="50"`,
+          children: loopFirst
+            ? `${loopEl}${stepChildren}`
+            : `${stepChildren}${loopEl}`,
+          doc: dualDoc,
+        }),
+        'userTask',
+      );
+      expect(imported.node).toEqual({
+        kind: 'userTask',
+        id: 'T',
+        ...STEP_SETTINGS,
+        loop,
+      });
+      expect(imported.warnings).toEqual(warnings);
+    },
+  );
 
   it('a standard loop imports the step that runs once and reports the dropped element', async () => {
     const { node, warnings } = await importOnly(
@@ -1751,6 +1803,13 @@ describe('xmlToIr: a #{...} expression body is rewrapped, and says so', () => {
     [
       'a job priority',
       oneNodeDoc('userTask', { attrs: 'operaton:jobPriority="#{high}"' }),
+      rewrapped("'jobPriority' setting", 'T'),
+    ],
+    [
+      'a job priority on a gateway',
+      oneNodeDoc('exclusiveGateway', {
+        attrs: 'operaton:jobPriority="#{high}"',
+      }),
       rewrapped("'jobPriority' setting", 'T'),
     ],
     [
@@ -2851,7 +2910,8 @@ describe("xmlToIr: a root of a kind this tool does not model reports its own chi
     'service-task binding, injected fields, result variable, version tag, ' +
     "input/output mappings and listeners, an external task's priority, " +
     'properties and error mappings, and the async, retry, job-priority and ' +
-    'task-assignment settings; a gateway carries no engine setting at all).';
+    'task-assignment settings; a gateway carries the async, retry and ' +
+    'job-priority settings and nothing else).';
 
   it.each([
     [
@@ -5880,40 +5940,136 @@ describe('xmlToIr: flat engine settings on every carrying node kind', () => {
   });
 });
 
-describe('xmlToIr: engine settings on a gateway stay a reported drop', () => {
-  const gatewayXml = (attrs: string, children = ''): string =>
-    oneNodeDoc('exclusiveGateway', { id: 'G', attrs, children });
+describe('xmlToIr: the job settings on a gateway', () => {
+  const TIMER_CATCH = `<bpmn:intermediateCatchEvent id="C">
+      <bpmn:timerEventDefinition>
+        <bpmn:timeDuration>P1D</bpmn:timeDuration>
+      </bpmn:timerEventDefinition>
+    </bpmn:intermediateCatchEvent>`;
 
+  /**
+   * `S -> G -> C -> E`, `C` a timer so the one shape also holds for a wait.
+   * The gateway is written first or last among the nodes, so a sweep keyed
+   * on document position meets it at either end.
+   */
+  const gatewayDoc = (
+    tag: string,
+    attrs: string,
+    {
+      children = '',
+      placement = 'first',
+      doc: wrapper = operatonDoc,
+    }: { children?: string; placement?: 'first' | 'last'; doc?: XmlTag } = {},
+  ): string => {
+    const node = `<bpmn:${tag} id="G" ${attrs}>${children}</bpmn:${tag}>`;
+    const others = `<bpmn:startEvent id="S" />
+    ${TIMER_CATCH}
+    <bpmn:endEvent id="E" />`;
+    const [head, tail] =
+      placement === 'first' ? [node, others] : [others, node];
+    return wrapper`    ${head}
+    ${tail}
+    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="G" />
+    <bpmn:sequenceFlow id="F2" sourceRef="G" targetRef="C" />
+    <bpmn:sequenceFlow id="F3" sourceRef="C" targetRef="E" />`;
+  };
+
+  const settingAttrs = (prefix: 'operaton' | 'camunda', asyncAfter = true) =>
+    `${prefix}:asyncBefore="true" ` +
+    (asyncAfter ? `${prefix}:asyncAfter="true" ` : '') +
+    `${prefix}:exclusive="false" ${prefix}:jobPriority="7"`;
+  const RETRY_CHILD = extensionElements(
+    '        <operaton:failedJobRetryTimeCycle>R3/PT10M</operaton:failedJobRetryTimeCycle>',
+  );
+  const ALL_FIVE = {
+    asyncBefore: true,
+    asyncAfter: true,
+    exclusive: false,
+    jobPriority: '7',
+    retryCycle: 'R3/PT10M',
+  };
+  const stillReported = (type: string) => [
+    [
+      'G',
+      'extensionAttribute',
+      `Extra configuration (${type}) on 'G' was not imported.`,
+    ],
+  ];
+
+  // Revert: drop GATEWAY_TAGS from JOB_SETTING_OWNERS, and every settings row
+  // loses its node fields and gains one 'was not imported' warning per setting.
   it.each([
     {
-      carrier: 'an operaton:asyncBefore attribute',
-      attrs: 'operaton:asyncBefore="true"',
-      children: '',
-      message: 'asyncBefore',
+      title: 'a split written first carries all five',
+      tag: 'exclusiveGateway',
+      attrs: settingAttrs('operaton'),
+      children: RETRY_CHILD,
+      placement: 'first' as const,
+      settings: ALL_FIVE,
+      warnings: [],
     },
     {
-      carrier: 'an operaton:failedJobRetryTimeCycle child',
-      attrs: '',
-      children: extensionElements(
-        '        <operaton:failedJobRetryTimeCycle>R3/PT10M</operaton:failedJobRetryTimeCycle>',
-      ),
-      message: /FailedJobRetryTimeCycle/i,
+      title:
+        'a conditioned fork written last carries all five under the camunda prefix',
+      tag: 'inclusiveGateway',
+      attrs: settingAttrs('camunda'),
+      children: RETRY_CHILD,
+      placement: 'last' as const,
+      doc: dualDoc,
+      settings: ALL_FIVE,
+      warnings: [],
     },
     {
-      carrier: 'an operaton:inputOutput child (no gateway IR node carries one)',
+      title: 'a fork written last carries all five',
+      tag: 'parallelGateway',
+      attrs: settingAttrs('operaton'),
+      children: RETRY_CHILD,
+      placement: 'last' as const,
+      settings: ALL_FIVE,
+      warnings: [],
+    },
+    {
+      title: 'a wait carries the four the engine deploys on it',
+      tag: 'eventBasedGateway',
+      attrs: settingAttrs('operaton', false),
+      children: RETRY_CHILD,
+      placement: 'first' as const,
+      settings: {
+        asyncBefore: true,
+        exclusive: false,
+        jobPriority: '7',
+        retryCycle: 'R3/PT10M',
+      },
+      warnings: [],
+    },
+    {
+      title: 'an input/output block on a fork is still reported',
+      tag: 'parallelGateway',
       attrs: '',
       children: extensionElements(`        <operaton:inputOutput>
           <operaton:inputParameter name="foo">bar</operaton:inputParameter>
         </operaton:inputOutput>`),
-      message: /InputOutput/i,
+      placement: 'first' as const,
+      settings: {},
+      warnings: stillReported('operaton:InputOutput'),
     },
-  ])('warns for $carrier and carries nothing', async (row) => {
-    const { ir, warnings } = await xmlToIr(gatewayXml(row.attrs, row.children));
-    expect(byId(ir, 'G')).toEqual(gateway('G'));
-    expectOneWarning(extensionWarnings(warnings), {
-      elementId: 'G',
-      message: row.message,
-    });
+    {
+      title: 'an execution listener on a split is still reported',
+      tag: 'exclusiveGateway',
+      attrs: '',
+      children: extensionElements(
+        '        <operaton:executionListener event="start" class="com.example.L" />',
+      ),
+      placement: 'last' as const,
+      settings: {},
+      warnings: stillReported('operaton:ExecutionListener'),
+    },
+  ])('$title', async (row) => {
+    const { ir, warnings } = await xmlToIr(gatewayDoc(row.tag, row.attrs, row));
+    expect(byId(ir, 'G')).toEqual({ kind: row.tag, id: 'G', ...row.settings });
+    expect(warnings.map((w) => [w.elementId, w.category, w.message])).toEqual(
+      row.warnings,
+    );
   });
 });
 
@@ -6226,20 +6382,6 @@ ${listener}
     expect(carrying).toEqual(['Start', 'Review', 'Booking', 'Timeout', 'End']);
     expect(warnings).toEqual([]);
   });
-
-  it('an execution listener on a gateway stays a reported drop', async () => {
-    const xml = oneNodeDoc('exclusiveGateway', {
-      id: 'G',
-      children: extensionElements(
-        '        <operaton:executionListener event="start" class="com.example.L" />',
-      ),
-    });
-    const { warnings } = await xmlToIr(xml);
-    expectOneWarning(warnings, {
-      elementId: 'G',
-      message: /ExecutionListener/i,
-    });
-  });
 });
 
 describe('xmlToIr: task listeners', () => {
@@ -6420,10 +6562,16 @@ describe('xmlToIr: a consumed extension child reports its own unread attributes'
   });
 });
 
+/** One `operaton:field`, self-closing unless given a child element as its body. */
+const field = (attrs: string, body = ''): string =>
+  body === ''
+    ? `        <operaton:field ${attrs} />`
+    : `        <operaton:field ${attrs}>${body}</operaton:field>`;
+
 /** The reason a field under a binding that receives no field list draws. */
 const boundElsewhere = (binding: string): string =>
-  'Operaton injects a field into a class or delegate binding and into no ' +
-  `other, and this one is bound by ${binding}`;
+  'Operaton injects a field into a class, a delegate or a built-in mail or ' +
+  `shell binding and into no other, and this one is bound by ${binding}`;
 
 describe('xmlToIr: an injected field rides a class or a delegate binding', () => {
   const importBound = (tag: string, attrs: string, fields: string) =>
@@ -6436,11 +6584,6 @@ describe('xmlToIr: an injected field rides a class or a delegate binding', () =>
       'Svc',
       'serviceTask',
     );
-
-  const field = (attrs: string, body = ''): string =>
-    body === ''
-      ? `        <operaton:field ${attrs} />`
-      : `        <operaton:field ${attrs}>${body}</operaton:field>`;
 
   const warned = (message: string): ImportWarning => ({
     elementId: 'Svc',
@@ -6661,7 +6804,8 @@ describe('xmlToIr: an injected field rides a class or a delegate binding', () =>
     expect(warnings.map((w) => w.message)).toEqual([
       "The injected field 'greeting' on 'Review' was not imported: this tool " +
         'carries an injected field on the step or the listener whose class ' +
-        'or delegate binding receives it, and on no other position.',
+        'or delegate binding receives it, on the step whose built-in mail or ' +
+        'shell behaviour does, and on no other position.',
     ]);
   });
 
@@ -6677,6 +6821,218 @@ describe('xmlToIr: an injected field rides a class or a delegate binding', () =>
     expect(warnings.map((w) => w.message)).toEqual([
       expect.stringMatching(/'foo:bar' on an operaton:field 'greeting'/),
     ]);
+  });
+});
+
+describe('xmlToIr: a mail or shell task imports with its fields on the three tags', () => {
+  const TO = field('name="to" stringValue="ops@example.com"');
+  const COMMAND = field('name="command" stringValue="echo"');
+  const MAIL_FIELDS = [
+    TO,
+    field(
+      'name="text"',
+      '<operaton:expression>${report}</operaton:expression>',
+    ),
+  ].join('\n');
+  const SHELL_FIELDS = [
+    COMMAND,
+    field('name="outputVariable" stringValue="out"'),
+  ].join('\n');
+  const MAIL = builtinBinding('mail', [
+    { name: 'to', value: 'ops@example.com' },
+    { name: 'text', value: '${report}' },
+  ]);
+  const SHELL_INJECTED = [
+    { name: 'command', value: 'echo' },
+    { name: 'outputVariable', value: 'out' },
+  ];
+  const SHELL = builtinBinding('shell', SHELL_INJECTED);
+  const shadowed = (attr: string, winner: string): ImportWarning => ({
+    elementId: 'T',
+    category: 'extensionAttribute',
+    message: `The '${attr}' setting on 'T' has no effect alongside ${winner} and was not imported.`,
+  });
+
+  const TAGS = [
+    ['serviceTask', {}],
+    ['sendTask', { element: 'send' }],
+    ['businessRuleTask', { element: 'businessRule' }],
+  ] as const;
+
+  // Revert: drop the builtin arm from readCodeOrExternalBinding, and every row
+  // refuses as an unsupported form.
+  it.each([
+    ...TAGS.flatMap(([tag, element]) => [
+      {
+        title: `a mail task on bpmn:${tag} carries a field in each value slot`,
+        tag,
+        attrs: 'operaton:type="mail"',
+        fields: MAIL_FIELDS,
+        node: { binding: MAIL, ...element },
+        warnings: [],
+      },
+      {
+        title: `a shell task on bpmn:${tag} carries its fields`,
+        tag,
+        attrs: 'operaton:type="shell"',
+        fields: SHELL_FIELDS,
+        node: { binding: SHELL, ...element },
+        warnings: [],
+      },
+    ]),
+    {
+      title:
+        'operaton:type="Shell" imports lower-case, and a resultVariable beside it stays on the node',
+      tag: 'serviceTask',
+      attrs: 'operaton:type="Shell" operaton:resultVariable="out"',
+      fields: SHELL_FIELDS,
+      node: { binding: SHELL, resultVariable: 'out' },
+      warnings: [],
+    },
+    {
+      title:
+        'a shell flag spelled TRUE imports as written with a warning, since the engine deploys it and reads it as false',
+      tag: 'serviceTask',
+      attrs: 'operaton:type="shell"',
+      fields: `${SHELL_FIELDS}\n${field('name="wait" stringValue="TRUE"')}`,
+      node: {
+        binding: builtinBinding('shell', [
+          ...SHELL_INJECTED,
+          { name: 'wait', value: 'TRUE' },
+        ]),
+      },
+      warnings: [
+        {
+          elementId: 'T',
+          category: 'extensionAttribute',
+          message:
+            "The shell field 'wait' spelled 'TRUE' on 'T' was imported as " +
+            'written, and the printed script draws an error at the field: ' +
+            'ShellActivityBehavior.readFields compares it with "true" ' +
+            'case-sensitively, so the engine reads it as false.',
+        },
+      ],
+    },
+    {
+      title:
+        'a class and a topic beside type="mail" are reported as shadowed, as the engine never reaches them',
+      tag: 'serviceTask',
+      attrs:
+        'operaton:class="com.example.Svc" operaton:type="mail" operaton:topic="notify"',
+      fields: MAIL_FIELDS,
+      node: { binding: MAIL },
+      warnings: [
+        shadowed('class', 'operaton:type="mail"'),
+        shadowed('topic', 'operaton:type="mail"'),
+      ],
+    },
+  ])('$title', async ({ tag, attrs, fields, node, warnings }) => {
+    const imported = await importOnly(
+      oneNodeDoc(tag, { attrs, children: extensionElements(fields) }),
+      'serviceTask',
+    );
+    expect(imported.node).toEqual({ kind: 'serviceTask', id: 'T', ...node });
+    expect(imported.warnings).toEqual(warnings);
+  });
+});
+
+describe('xmlToIr: a mail or shell task the engine would refuse is refused with its rule', () => {
+  const TO = field('name="to" stringValue="ops@example.com"');
+  const TEXT = field('name="text" stringValue="Report attached"');
+  const COMMAND = field('name="command" stringValue="echo"');
+
+  const typed = (type: string, fields: string[], attrs = ''): string =>
+    oneNodeDoc('serviceTask', {
+      attrs: `operaton:type="${type}" ${attrs}`,
+      children: fields.length === 0 ? '' : extensionElements(fields.join('\n')),
+    });
+
+  const refusedByEmail = (missing: string, rule: string): string =>
+    `operaton:type="mail" without ${missing} field, which Operaton refuses ` +
+    `to deploy: "${rule}" (BpmnParse.validateFieldDeclarationsForEmail)`;
+
+  // Revert: delete refuseBuiltinShapes, and the first six rows import.
+  it.each([
+    [
+      'a mail task with cc and text and no to, since cc satisfies nothing',
+      typed('mail', [field('name="cc" stringValue="lead@example.com"'), TEXT]),
+      'Service task',
+      refusedByEmail("a 'to'", 'No recipient is defined on the mail activity'),
+    ],
+    [
+      'a mail task with to and no body',
+      typed('mail', [TO]),
+      'Service task',
+      refusedByEmail(
+        "a 'text' or 'html'",
+        'Text or html field should be provided',
+      ),
+    ],
+    [
+      'a shell task without a command',
+      typed('shell', [field('name="arg1" stringValue="x"')]),
+      'Service task',
+      'operaton:type="shell" without a \'command\' field, which Operaton ' +
+        'refuses to deploy: "No shell command is defined on the shell ' +
+        'activity" (BpmnParse.validateFieldDeclarationsForShell)',
+    ],
+    [
+      'a shell task with a field written as an expression',
+      typed('shell', [
+        COMMAND,
+        field('name="arg1"', '<operaton:expression>${x}</operaton:expression>'),
+      ]),
+      'Service task',
+      'operaton:type="shell" with the field \'arg1\' written as an ' +
+        'operaton:expression, which Operaton fails to deploy: ' +
+        'BpmnParse.validateFieldDeclarationsForShell casts every shell field ' +
+        'to a FixedValue, and an expression is not one',
+    ],
+    [
+      'a shell wait flag outside true and false',
+      typed('shell', [COMMAND, field('name="wait" stringValue="yes"')]),
+      'Service task',
+      "operaton:type=\"shell\" with the field 'wait' set to 'yes', which " +
+        'Operaton refuses to deploy: "undefined value for shell wait ' +
+        'parameter :yes" (BpmnParse.validateFieldDeclarationsForShell)',
+    ],
+    [
+      'a mail field the behaviour does not declare',
+      typed('mail', [TO, TEXT, field('name="recipient" stringValue="x"')]),
+      'Service task',
+      'operaton:type="mail" with a field \'recipient\', which the mail ' +
+        'behaviour does not declare; Operaton refuses to deploy it: "Field ' +
+        "definition uses unexisting field 'recipient'\" " +
+        '(ClassDelegateUtil.applyFieldDeclaration)',
+    ],
+    [
+      'an operaton:type outside mail, shell and external, beside the class it outranks',
+      typed('ftp', [], 'operaton:class="com.example.Svc"'),
+      'Service task',
+      'operaton:type="ftp", which Operaton resolves ahead of the ' +
+        'operaton:class alongside it',
+    ],
+    [
+      'a built-in type on the definition of a thrown message',
+      operatonDefs`  <bpmn:message id="Message_1" name="OrderReceived" />
+  <bpmn:process id="p" isExecutable="true">
+    <bpmn:startEvent id="S" />
+    <bpmn:endEvent id="Typed">
+      <bpmn:messageEventDefinition id="md" messageRef="Message_1" operaton:type="mail" />
+    </bpmn:endEvent>
+    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="Typed" />
+  </bpmn:process>`,
+      'Thrown message',
+      'operaton:type="mail", which this surface carries on a service, send ' +
+        'or business rule task alone',
+    ],
+  ])('%s', async (_title, xml, subject, construct) => {
+    const e = await expectRefusal<UnsupportedServiceTaskFormError>(
+      xmlToIr(xml),
+      UnsupportedServiceTaskFormError,
+    );
+    expect(e.subject).toBe(subject);
+    expect(e.construct).toBe(construct);
   });
 });
 
@@ -8844,38 +9200,15 @@ ${branches
     expect(quiet).toEqual([]);
   });
 
-  it('speaks for the ignored attribute alone, beside a setting on the same wait that Operaton does read', async () => {
-    // `parseEventBasedGateway` reads `operaton:asyncBefore` off the element it
-    // is parsing, so a report claiming nothing on a wait is read would be
-    // refuted by the report printed next to it.
-    const { warnings } = await xmlToIr(
-      waitDoc({
-        attrs: 'instantiate="true" operaton:asyncBefore="true"',
-        defs: operatonDefs,
-      }),
-    );
-
-    const ignored = warnings.find((w) => w.message.includes("'instantiate'"));
-    expect(
-      warnings.some((w) => w.message.includes("'operaton:asyncBefore'")),
-    ).toBe(true);
-    expect(ignored?.message).toContain(
-      'Operaton does not read it on a wait with several branches',
-    );
-    expect(ignored?.message).not.toContain('no attribute');
-  });
-
-  it('reads the name off a wait, and lets the generic sweeps report what it drops on either new gateway kind', async () => {
-    // Neither gateway kind owns an engine-settings row, so what an author
-    // writes on one has to reach them through the generic sweeps instead.
-    const SWEPT_ATTRS =
+  it('reads the name and the job settings off a wait, and lets the generic sweeps report the rest on either gateway kind', async () => {
+    const ATTRS =
       'operaton:asyncBefore="true" operaton:jobPriority="7" sortOrder="3"';
-    const SWEPT_DOC = '<bpmn:documentation>Pick one.</bpmn:documentation>';
+    const DOC = '<bpmn:documentation>Pick one.</bpmn:documentation>';
 
     const { ir, warnings } = await xmlToIr(
       waitDoc({
-        attrs: `name="Whichever comes first" ${SWEPT_ATTRS}`,
-        children: SWEPT_DOC,
+        attrs: `name="Whichever comes first" ${ATTRS}`,
+        children: DOC,
         defs: operatonDefs,
       }),
     );
@@ -8885,6 +9218,8 @@ ${branches
       id: 'Wait',
       name: 'Whichever comes first',
       documentation: 'Pick one.',
+      asyncBefore: true,
+      jobPriority: '7',
     });
     const reported = (warning: ImportWarning) => [
       warning.category,
@@ -8893,36 +9228,53 @@ ${branches
     ];
     const sweepsOn = (id: string) => [
       [
-        'extensionAttribute',
-        id,
-        expect.stringContaining("'operaton:asyncBefore' setting"),
-      ],
-      [
-        'extensionAttribute',
-        id,
-        expect.stringContaining("'operaton:jobPriority' setting"),
-      ],
-      [
         'unmappedConstruct',
         id,
         expect.stringContaining("'sortOrder' attribute"),
       ],
     ];
-
     expect(warnings.map(reported)).toEqual(sweepsOn('Wait'));
-    expect(warnings[0]!.message).toContain(
-      'a gateway carries no engine setting at all',
-    );
 
     const fork = await xmlToIr(
       oneNodeDoc('inclusiveGateway', {
         id: 'Fork',
-        attrs: SWEPT_ATTRS,
-        children: SWEPT_DOC,
+        attrs: ATTRS,
+        children: DOC,
       }),
     );
+    expect(only(fork.ir, 'inclusiveGateway')).toEqual({
+      kind: 'inclusiveGateway',
+      id: 'Fork',
+      documentation: 'Pick one.',
+      asyncBefore: true,
+      jobPriority: '7',
+    });
     expect(fork.warnings.map(reported)).toEqual(sweepsOn('Fork'));
   });
+
+  // Revert: delete the asyncAfter throw in mapEventBasedGateway, and both
+  // rows import the wait with the flag set.
+  it.each([
+    ['operaton:asyncAfter="true"', operatonDefs],
+    ['camunda:asyncAfter="true"', camundaDefs],
+  ])(
+    'a wait marked %s is refused, naming the engine rule',
+    async (attrs, defs) => {
+      const err = await expectRefusal<UnsupportedEventFeatureError>(
+        xmlToIr(waitDoc({ attrs, defs })),
+        UnsupportedEventFeatureError,
+        "'Wait' is marked asyncAfter, which BpmnParse.parseEventBasedGateway " +
+          'refuses to deploy on a wait with several branches',
+      );
+      expect(err.elementId).toBe('Wait');
+      expect(err.message).toBe(
+        "The event construct at 'Wait' cannot be imported: 'Wait' is marked " +
+          'asyncAfter, which BpmnParse.parseEventBasedGateway refuses to ' +
+          'deploy on a wait with several branches. Drop the asyncAfter ' +
+          "setting from 'Wait'; its other job settings are read as written.",
+      );
+    },
+  );
 
   it('refuses a branch that does not begin with something to wait for, and one reached by more than one path', async () => {
     const notAWait = await expectRefusal<UnsupportedEventFeatureError>(

@@ -1,0 +1,93 @@
+// Round-trip fixture for the job settings a gateway statement writes on the
+// gateways it lowers to: one loan-application narrative in which every one of
+// the five statements carries a parens of its own.
+//
+// An application is screened, scored, completed, checked and offered:
+//
+//   - the `if` chain scores the applicant three ways and carries three keys
+//     for its split and two `join*` keys for its join, so one head governs
+//     both gateways of an `else if` chain;
+//   - the `while` chases missing documents with `asyncAfter` and a retry
+//     cycle, and its body holds a plain `if` that carries nothing at all;
+//   - the `do ... while` inside `CollectReferences` chases references with
+//     `exclusive: false` and a priority, the two keys a single loop gateway
+//     takes beside the async flags;
+//   - the first `parallel` weighs nothing, so the pair stays an AND fork and
+//     join; the fork carries `asyncBefore` and the join the other three
+//     `join*` keys;
+//   - the second `parallel` weighs one branch, which makes the pair inclusive;
+//     the fork carries an expression priority and the join one key;
+//   - the `await` races the accepted offer against a fortnight's timer with
+//     `asyncBefore` and a priority on the head, never `asyncAfter`, which
+//     Operaton refuses on an event-based gateway, and one `join*` key on the
+//     exclusive merge behind it.
+//
+// Every condition reads a field of the start form rather than a `var`, so the
+// declaration comes back out of the XML on the way in, and every label differs
+// from the name humanized from its id. See README.md.
+
+process loan-application(label: "Consumer loan application") {
+  start Applied(label: "Application received") {
+    form {
+      creditScore: number "Score reported by the credit bureau"
+      amount: number "Requested amount in euros"
+      documentsMissing: boolean "Whether a required document is still missing"
+      referencesPending: boolean "Whether a reference has yet to reply"
+      selfEmployed: boolean "Whether the applicant is self-employed"
+    }
+  }
+
+  user ScreenApplication(label: "Screen the application for completeness", assignee: "demo")
+
+  if (creditScore >= 700) (asyncBefore: true, exclusive: false, jobPriority: 30, joinAsyncBefore: true, joinJobPriority: 20) {
+    service PreApprove(label: "Pre-approve on the bureau score alone", class: "com.example.loans.PreApproveDelegate")
+  } else if (creditScore >= 600) {
+    user ReviewScore(label: "Review the borderline score by hand", assignee: "demo")
+  } else {
+    service FlagRisk(label: "Flag the application as high risk", class: "com.example.loans.RiskFlagDelegate")
+  }
+
+  while (documentsMissing) (asyncAfter: true, retryCycle: "R3/PT10M") {
+    user RequestDocument(label: "Ask the applicant for the missing document", assignee: "demo")
+    if (selfEmployed) {
+      user RequestAccounts(label: "Ask for the latest business accounts too", assignee: "demo")
+    }
+  }
+
+  subprocess CollectReferences(label: "Collect the references the applicant named") {
+    do {
+      user ChaseReference(label: "Chase one outstanding reference", assignee: "demo")
+    } while (referencesPending) (exclusive: false, jobPriority: 10)
+  }
+
+  parallel (asyncBefore: true, joinAsyncAfter: true, joinExclusive: false, joinRetryCycle: "R2/PT1M") {
+    {
+      service VerifyIdentity(label: "Verify the applicant against the register", class: "com.example.loans.IdentityDelegate")
+    }
+    {
+      service ScreenFraud(label: "Run the fraud screen", class: "com.example.loans.FraudDelegate")
+    }
+  }
+
+  parallel (jobPriority: "${selfEmployed ? 90 : 50}", joinAsyncBefore: true) {
+    if (amount > 250000) {
+      user AppraiseCollateral(label: "Appraise the offered collateral", assignee: "manager")
+    }
+    {
+      service PriceLoan(label: "Price the loan from the checks", class: "com.example.loans.PricingDelegate")
+    }
+  }
+
+  user MakeOffer(label: "Send the offer to the applicant", assignee: "demo")
+
+  await (asyncBefore: true, jobPriority: 5, joinAsyncBefore: true) {
+    message("OfferAccepted") {
+      service DisburseFunds(label: "Pay the loan out", class: "com.example.loans.DisburseDelegate")
+    }
+    timer("P14D") {
+      service ExpireOffer(label: "Withdraw the unanswered offer", class: "com.example.loans.ExpireDelegate")
+    }
+  }
+
+  end Closed(label: "Application closed")
+}

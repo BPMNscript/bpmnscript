@@ -9,6 +9,9 @@
  */
 
 import {
+  BUILTIN_FIELD_NAMES,
+  BUILTIN_FIELD_VALIDATOR,
+  BUILTIN_REQUIRED_FIELDS,
   CATCH_TRIGGERS,
   DECISION_RESULT_MAPPINGS,
   EMIT_TRIGGERS,
@@ -18,10 +21,15 @@ import {
   FORM_BOUND_TEXT,
   FORM_CONSTRAINT_TYPES,
   formatPlainWordList,
+  formatWordList,
+  SHELL_FLAG_FIELDS,
+  SHELL_FLAG_LITERALS,
   isFormConstraintName,
   START_TRIGGERS,
   TASK_LISTENER_EVENTS,
+  TYPE_BINDING_VALUES,
 } from '@bpmn-script/language';
+import type { BuiltinTaskType } from '@bpmn-script/language';
 import { Parser } from 'saxen';
 import type {
   BoundaryEvent,
@@ -50,6 +58,7 @@ import type {
   IoMapped,
   IoParameter,
   IoValue,
+  JobSettings,
   ListenerBinding,
   LoopCharacteristics,
   Named,
@@ -67,7 +76,12 @@ import type {
   UserTask,
   VersionBinding,
 } from './ir/types.js';
-import { engineAttributes, eventIdentities, ioMapped } from './ir/types.js';
+import {
+  carriesFields,
+  eventIdentities,
+  ioMapped,
+  jobSettings,
+} from './ir/types.js';
 
 import {
   UnsupportedAssignmentError,
@@ -150,9 +164,8 @@ const ACTIVITY_TAGS: readonly string[] = [
 ];
 
 /**
- * The `$type`s whose IR node carries the flat engine settings. Gateways are
- * absent on purpose: they are synthesized from `if`/`while`/`parallel` and have
- * no textual identity to hang a setting on, so a setting found on one is a drop.
+ * The `$type`s whose IR node carries the job settings and execution listeners
+ * both; a gateway takes the settings alone, so it is listed one table down.
  */
 const ENGINE_ATTRIBUTE_OWNERS: readonly string[] = [
   'bpmn:StartEvent',
@@ -161,6 +174,27 @@ const ENGINE_ATTRIBUTE_OWNERS: readonly string[] = [
   'bpmn:IntermediateCatchEvent',
   'bpmn:BoundaryEvent',
   ...ACTIVITY_TAGS,
+];
+
+const GATEWAY_TAGS: readonly string[] = [
+  'bpmn:ExclusiveGateway',
+  'bpmn:InclusiveGateway',
+  'bpmn:ParallelGateway',
+  'bpmn:EventBasedGateway',
+];
+
+const MULTI_INSTANCE = 'bpmn:MultiInstanceLoopCharacteristics';
+
+/**
+ * The `$type`s whose IR node carries the job settings (`ENGINE_KEYS` names the
+ * engine calls). The repetition element carries the four besides the priority
+ * ({@link readRunSettings}); its priority is read by nothing in the engine and
+ * is reported by hand in {@link sweepRepetition}.
+ */
+const JOB_SETTING_OWNERS: readonly string[] = [
+  ...ENGINE_ATTRIBUTE_OWNERS,
+  ...GATEWAY_TAGS,
+  MULTI_INSTANCE,
 ];
 
 /**
@@ -201,13 +235,10 @@ function consumptionTable(
  * {@link warnLinkThrowEngineSettings}.
  */
 const CONSUMED_EXTENSION_ATTRS = consumptionTable([
-  ['asyncBefore', ENGINE_ATTRIBUTE_OWNERS],
-  ['asyncAfter', ENGINE_ATTRIBUTE_OWNERS],
-  ['exclusive', ENGINE_ATTRIBUTE_OWNERS],
-  [
-    'jobPriority',
-    [...ENGINE_ATTRIBUTE_OWNERS, 'bpmn:MultiInstanceLoopCharacteristics'],
-  ],
+  ['asyncBefore', JOB_SETTING_OWNERS],
+  ['asyncAfter', JOB_SETTING_OWNERS],
+  ['exclusive', JOB_SETTING_OWNERS],
+  ['jobPriority', JOB_SETTING_OWNERS],
   ['assignee', ['bpmn:UserTask']],
   ['formKey', ['bpmn:UserTask']],
   ['formRef', ['bpmn:UserTask']],
@@ -237,8 +268,8 @@ const CONSUMED_EXTENSION_ATTRS = consumptionTable([
       ['bpmn:CallActivity'],
     ],
   ),
-  ['collection', ['bpmn:MultiInstanceLoopCharacteristics']],
-  ['elementVariable', ['bpmn:MultiInstanceLoopCharacteristics']],
+  ['collection', [MULTI_INSTANCE]],
+  ['elementVariable', [MULTI_INSTANCE]],
   ['versionTag', ['bpmn:Process']],
   ['historyTimeToLive', ['bpmn:Process']],
   ['candidateStarterUsers', ['bpmn:Process']],
@@ -252,7 +283,7 @@ const CONSUMED_EXTENSION_ATTRS = consumptionTable([
 
 const CONSUMED_EXTENSION_ELEMENTS = consumptionTable([
   ['operaton:FormData', ['bpmn:StartEvent', 'bpmn:UserTask']],
-  ['operaton:FailedJobRetryTimeCycle', ENGINE_ATTRIBUTE_OWNERS],
+  ['operaton:FailedJobRetryTimeCycle', JOB_SETTING_OWNERS],
   ['operaton:In', ['bpmn:CallActivity']],
   ['operaton:Out', ['bpmn:CallActivity']],
   ['operaton:InputOutput', ACTIVITY_TAGS],
@@ -382,7 +413,8 @@ const KEPT_SETTINGS_NOTE =
   'service-task binding, injected fields, result variable, version tag, ' +
   "input/output mappings and listeners, an external task's priority, " +
   'properties and error mappings, and the async, retry, job-priority and ' +
-  'task-assignment settings; a gateway carries no engine setting at all).';
+  'task-assignment settings; a gateway carries the async, retry and ' +
+  'job-priority settings and nothing else).';
 
 const IMPORTED_FLOW_NOTE =
   '(this tool imports the executable flow and the engine settings on its ' +
@@ -1503,15 +1535,6 @@ const flowElementNoun = (el: FlowElement): string =>
 const withArticle = (noun: string): string =>
   `${/^[aeio]/i.test(noun) ? 'an' : 'a'} ${noun}`;
 
-/** `a`, `a and b`, `a, b, or c`: an enumeration in the prose of a diagnostic. */
-function joinList(items: readonly string[], conjunction: 'and' | 'or'): string {
-  const rest = items.slice(0, -1);
-  const last = items.slice(-1).join('');
-  if (rest.length === 0) return last;
-  const comma = rest.length > 1 ? ',' : '';
-  return `${rest.join(', ')}${comma} ${conjunction} ${last}`;
-}
-
 /**
  * Every noun a host can be named by, for the refusal that enumerates them. Both
  * maps feed it, so adding a kind to either widens the sentence with it.
@@ -1588,7 +1611,7 @@ function checkBoundaryEventHosts(
       throw new UnsupportedEventFeatureError(
         el.id,
         `attachedToRef "${el.attachedToRef}" does not name ` +
-          `${withArticle(joinList(BOUNDARY_HOST_NOUN_LIST, 'or'))} that is ` +
+          `${withArticle(formatPlainWordList(BOUNDARY_HOST_NOUN_LIST))} that is ` +
           'itself a flow element of this same container; a boundary event can ' +
           'only attach to an activity alongside it',
       );
@@ -1601,11 +1624,10 @@ function checkBoundaryEventHosts(
         el.id,
         `an escalation boundary event attaches to "${el.attachedToRef}", ` +
           `${withArticle(boundaryHostNoun(host))}; Operaton only allows an ` +
-          `escalation boundary on ${joinList(
+          `escalation boundary on ${formatPlainWordList(
             [...ESCALATION_BOUNDARY_HOST_KINDS].map((kind) =>
               withArticle(BOUNDARY_HOST_NOUNS[kind]),
             ),
-            'or',
           )}`,
       );
     }
@@ -3060,7 +3082,8 @@ function warnUnreadPrefixedAttrs(
  */
 const FIELD_HAS_NO_HOME =
   'this tool carries an injected field on the step or the listener whose ' +
-  'class or delegate binding receives it, and on no other position';
+  'class or delegate binding receives it, on the step whose built-in mail ' +
+  'or shell behaviour does, and on no other position';
 
 /**
  * Report the materialized `<bpmn:extensionElements>` children that
@@ -3594,12 +3617,17 @@ function readThrownMessageBinding(
     );
   }
 
-  const binding = readCodeOrExternalBinding(defEl, id, warnings);
+  const binding = readCodeOrExternalBinding(
+    defEl,
+    id,
+    warnings,
+    'thrownMessage',
+  );
   if (binding !== undefined) return { binding };
   if (readNamespacedAttr(defEl, 'type') !== undefined) {
     throw new UnsupportedServiceTaskFormError(
       id,
-      detectUnsupportedServiceTaskForm(defEl),
+      detectUnsupportedServiceTaskForm(defEl, 'thrownMessage'),
       'Thrown message',
     );
   }
@@ -3710,8 +3738,6 @@ function refuseLoopCharacteristics(el: ModdleElement, id: string): void {
   }
 }
 
-const MULTI_INSTANCE = 'bpmn:MultiInstanceLoopCharacteristics';
-
 /**
  * How often a step runs, or `undefined` for one that runs once.
  *
@@ -3744,7 +3770,6 @@ function readLoopCharacteristics(
     });
     return undefined;
   }
-  refusePerRunJobSettings(loopEl, id);
   refuseOutputParameters(el, id);
 
   const cardinality = readCardinality(loopEl, id, warnings);
@@ -3783,6 +3808,10 @@ function readLoopCharacteristics(
     ...(elementVariable === undefined ? {} : { elementVariable }),
     ...(completionCondition === undefined ? {} : { completionCondition }),
     ...(loopEl.get('isSequential') === true ? { sequential: true } : {}),
+    ...jobSettings({
+      ...readRunSettings(loopEl, id, warnings),
+      jobPriority: undefined,
+    }),
   };
 }
 
@@ -3905,40 +3934,6 @@ function warnShadowedRepetitionField(
       `'${id}'; Operaton reads ${shadow.winner} second, so ` +
       `'${shadow.kept}' was imported and '${shadow.dropped}' was dropped.`,
   });
-}
-
-/**
- * The async settings that mean one job per run rather than one around the whole
- * repetition: Operaton hands the repetition element to
- * `parseAsynchronousContinuation`, which reads exactly these three onto the run.
- */
-const PER_RUN_JOB_ATTRS = ['asyncBefore', 'asyncAfter', 'exclusive'] as const;
-
-/**
- * Refuse the job settings written on the repetition itself. The same names on
- * the step are ordinary settings this tool imports, so the message says which
- * of the two the document wrote.
- */
-function refusePerRunJobSettings(loopEl: ModdleElement, id: string): void {
-  const attr = PER_RUN_JOB_ATTRS.find(
-    (name) => readNamespacedAttr(loopEl, name) !== undefined,
-  );
-  const setting =
-    attr ??
-    (extensionValues(loopEl).some(
-      (value) => value.$type === 'operaton:FailedJobRetryTimeCycle',
-    )
-      ? 'failedJobRetryTimeCycle'
-      : undefined);
-  if (setting === undefined) return;
-  throw new UnsupportedLoopCharacteristicsError(
-    id,
-    MULTI_INSTANCE,
-    `it carries 'operaton:${setting}' on the repetition itself, which gives ` +
-      'every run a job of its own; the same setting on the step makes one ' +
-      "job around the whole repetition, and this tool's surface can only " +
-      'say the second',
-  );
 }
 
 /** Operaton refuses to deploy an output mapping on a step that repeats. */
@@ -4399,17 +4394,95 @@ function readServiceTaskBinding(
   const binding =
     (element === 'businessRule'
       ? readDecisionBinding(el, id, refusal, warnings)
-      : undefined) ?? readCodeOrExternalBinding(el, id, warnings);
+      : undefined) ?? readCodeOrExternalBinding(el, id, warnings, 'task');
   if (binding === undefined) {
-    throw refusal(detectUnsupportedServiceTaskForm(el));
+    throw refusal(detectUnsupportedServiceTaskForm(el, 'task'));
   }
 
-  return withExternalExtras(
-    withInjectedFields(binding, el, id, `'${id}'`, warnings),
-    el,
-    id,
-    warnings,
+  const bound = withInjectedFields(binding, el, id, `'${id}'`, warnings);
+  if (bound.kind === 'builtin') {
+    refuseBuiltinShapes(bound, id, refusal, warnings);
+  }
+  return withExternalExtras(bound, el, id, warnings);
+}
+
+/**
+ * Refuse the field lists the engine's parse refuses, in its order: the shell
+ * value shapes and flags come before the missing-field checks, and the
+ * undeclared name last. The flag check is case-insensitive as the engine's
+ * is, so `"True"` imports as written with a warning (see `SHELL_FLAG_FIELDS`).
+ */
+function refuseBuiltinShapes(
+  binding: Extract<ServiceTaskBinding, { kind: 'builtin' }>,
+  id: string,
+  refusal: (construct: string) => Error,
+  warnings: ImportWarning[],
+): void {
+  const { type } = binding;
+  const fields = binding.fields ?? [];
+  const named = `operaton:type="${type}"`;
+  const method = `BpmnParse.${BUILTIN_FIELD_VALIDATOR[type]}`;
+
+  if (type === 'shell') {
+    const evaluated = fields.find((field) => field.value.startsWith('${'));
+    if (evaluated !== undefined) {
+      throw refusal(
+        `${named} with the field '${evaluated.name}' written as an ` +
+          'operaton:expression, which Operaton fails to deploy: ' +
+          `${method} casts every shell field to a FixedValue, and an ` +
+          'expression is not one',
+      );
+    }
+    const flag = fields.find(
+      (field) =>
+        SHELL_FLAG_FIELDS.includes(field.name) &&
+        !SHELL_FLAG_LITERALS.includes(field.value.toLowerCase()),
+    );
+    if (flag !== undefined) {
+      throw refusal(
+        `${named} with the field '${flag.name}' set to '${flag.value}', ` +
+          'which Operaton refuses to deploy: "undefined value for shell ' +
+          `${flag.name} parameter :${flag.value}" (${method})`,
+      );
+    }
+    for (const field of fields) {
+      if (
+        !SHELL_FLAG_FIELDS.includes(field.name) ||
+        SHELL_FLAG_LITERALS.includes(field.value)
+      ) {
+        continue;
+      }
+      warnings.push({
+        elementId: id,
+        category: 'extensionAttribute',
+        message:
+          `The shell field '${field.name}' spelled '${field.value}' on ` +
+          `'${id}' was imported as written, and the printed script draws an ` +
+          'error at the field: ShellActivityBehavior.readFields compares it ' +
+          'with "true" case-sensitively, so the engine reads it as false.',
+      });
+    }
+  }
+
+  const names = fields.map((field) => field.name);
+  for (const group of BUILTIN_REQUIRED_FIELDS[type]) {
+    if (group.names.some((name) => names.includes(name))) continue;
+    throw refusal(
+      `${named} without a ${formatWordList(group.names)} field, which Operaton refuses to deploy: ` +
+        `"${group.error}" (${method})`,
+    );
+  }
+
+  const unknown = names.find(
+    (name) => !BUILTIN_FIELD_NAMES[type].includes(name),
   );
+  if (unknown !== undefined) {
+    throw refusal(
+      `${named} with a field '${unknown}', which the ${type} behaviour does ` +
+        'not declare; Operaton refuses to deploy it: "Field definition uses ' +
+        `unexisting field '${unknown}'" (ClassDelegateUtil.applyFieldDeclaration)`,
+    );
+  }
 }
 
 /**
@@ -4538,9 +4611,16 @@ function readErrorMapping(
 }
 
 /**
+ * Where an implementation is read from: a service-like tag carries every form,
+ * a thrown message's definition every form but the built-in ones, since the
+ * fields they require have no place on a throw.
+ */
+type BindingHost = 'task' | 'thrownMessage';
+
+/**
  * The implementation Operaton resolves, in `parseServiceTaskLike`'s order:
  * `operaton:type` outranks every code attribute, then `class`, then
- * `delegateExpression`, then `expression`. A `type` this surface cannot carry
+ * `delegateExpression`, then `expression`. A `type` this position cannot carry
  * returns `undefined` rather than falling back to a code attribute the engine
  * would never reach, and so does an element naming no implementation at all;
  * the caller reads either as a refusal or as a legal absence.
@@ -4549,6 +4629,7 @@ function readCodeOrExternalBinding(
   el: ModdleElement,
   id: string,
   warnings: ImportWarning[],
+  host: BindingHost,
 ): ServiceTaskBinding | undefined {
   const resolve = (
     winner: string,
@@ -4568,6 +4649,13 @@ function readCodeOrExternalBinding(
   const type = readNamespacedAttr(el, 'type');
   const topic = readNamespacedAttr(el, 'topic');
   if (type !== undefined) {
+    const builtin = builtinTypeOf(type);
+    if (builtin !== undefined && host === 'task') {
+      return resolve(`type="${type}"`, ['type'], {
+        kind: 'builtin',
+        type: builtin,
+      });
+    }
     if (!isExternalType(type) || topic === undefined) return undefined;
     return resolve(`type="${type}"`, ['type', 'topic'], {
       kind: 'external',
@@ -4723,6 +4811,12 @@ function isExternalType(type: string): boolean {
   return type.toLowerCase() === 'external';
 }
 
+/** The built-in behaviour `parseServiceTaskLike` routes `type` to, compared as it compares. */
+function builtinTypeOf(type: string): BuiltinTaskType | undefined {
+  const lower = type.toLowerCase();
+  return TYPE_BINDING_VALUES.find((value) => value === lower);
+}
+
 /**
  * The implementation attributes that carry code, in the order
  * {@link readCodeOrExternalBinding} resolves them. `type` and `topic` name the
@@ -4740,7 +4834,10 @@ const CODE_ATTRS = [
  * going to reach, so a refusal listing the supported forms without it reads as
  * if the document had none.
  */
-function detectUnsupportedServiceTaskForm(el: ModdleElement): string {
+function detectUnsupportedServiceTaskForm(
+  el: ModdleElement,
+  host: BindingHost,
+): string {
   const type = readNamespacedAttr(el, 'type');
   if (type === undefined) return 'no execution discriminator';
 
@@ -4750,11 +4847,21 @@ function detectUnsupportedServiceTaskForm(el: ModdleElement): string {
   const shadowed = CODE_ATTRS.filter(
     (attr) => readNamespacedAttr(el, attr) !== undefined,
   ).map((attr) => `operaton:${attr}`);
-  if (shadowed.length === 0) return named;
-  return (
-    `${named}, which Operaton resolves ahead of the ` +
-    `${joinList(shadowed, 'and')} alongside it`
-  );
+  const clauses = [
+    ...(host === 'thrownMessage' && builtinTypeOf(type) !== undefined
+      ? [
+          'which this surface carries on a service, send or business rule task alone',
+        ]
+      : []),
+    ...(shadowed.length === 0
+      ? []
+      : [
+          `which Operaton resolves ahead of the ${formatPlainWordList(shadowed, 'and')} alongside it`,
+        ]),
+  ];
+  return clauses.length === 0
+    ? named
+    : `${named}, ${formatPlainWordList(clauses, 'and')}`;
 }
 
 function mapScriptTask(
@@ -4808,6 +4915,7 @@ function mapDefaultingGateway(
     id,
     ...named,
     ...(defaultFlowId === undefined ? {} : { defaultFlowId }),
+    ...readJobSettings(el, id, warnings),
   };
 }
 
@@ -4821,6 +4929,7 @@ function mapParallelGateway(
     kind: 'parallelGateway',
     id,
     ...named,
+    ...readJobSettings(el, id, warnings),
   };
 }
 
@@ -4834,12 +4943,22 @@ function mapEventBasedGateway(
   warnings: ImportWarning[],
 ): EventBasedGateway {
   const id = requireId(el);
+  if (readNamespacedFlag(el, 'asyncAfter') === true) {
+    throw new UnsupportedEventFeatureError(
+      id,
+      `'${id}' is marked asyncAfter, which BpmnParse.parseEventBasedGateway ` +
+        'refuses to deploy on a wait with several branches',
+      `Drop the asyncAfter setting from '${id}'; its other job settings are ` +
+        'read as written.',
+    );
+  }
   warnIgnoredWaitAttrs(el, id, warnings);
   const named = readNamed(el, id, warnings, readString(el, 'name'));
   return {
     kind: 'eventBasedGateway',
     id,
     ...named,
+    ...readJobSettings(el, id, warnings),
   };
 }
 
@@ -5118,17 +5237,32 @@ function extensionValues(el: ModdleElement): ModdleElement[] {
   return (extensionElements.get('values') as ModdleElement[] | undefined) ?? [];
 }
 
-function readEngineAttributes(
+/** The settings a repetition element carries as a step does ({@link LoopCharacteristics}), as {@link jobSettings} takes them. */
+function readRunSettings(
   el: ModdleElement,
   ownerId: string,
   warnings: ImportWarning[],
-): EngineAttributes {
+): Omit<Parameters<typeof jobSettings>[0], 'jobPriority'> {
   const retryCycleEl = firstExtensionElement(
     el,
     'operaton:FailedJobRetryTimeCycle',
     ownerId,
     warnings,
   );
+  return {
+    asyncBefore: readNamespacedFlag(el, 'asyncBefore'),
+    asyncAfter: readNamespacedFlag(el, 'asyncAfter'),
+    exclusive: readNamespacedFlag(el, 'exclusive'),
+    retryCycle:
+      retryCycleEl === undefined ? undefined : readString(retryCycleEl, 'body'),
+  };
+}
+
+function readJobSettings(
+  el: ModdleElement,
+  ownerId: string,
+  warnings: ImportWarning[],
+): JobSettings {
   const jobPriority = readNamespacedAttr(el, 'jobPriority');
   noteRewrappedExpression(
     jobPriority,
@@ -5136,15 +5270,23 @@ function readEngineAttributes(
     "'jobPriority' setting",
     warnings,
   );
-  return engineAttributes({
-    asyncBefore: readNamespacedFlag(el, 'asyncBefore'),
-    asyncAfter: readNamespacedFlag(el, 'asyncAfter'),
-    exclusive: readNamespacedFlag(el, 'exclusive'),
+  return jobSettings({
+    ...readRunSettings(el, ownerId, warnings),
     jobPriority,
-    retryCycle:
-      retryCycleEl === undefined ? undefined : readString(retryCycleEl, 'body'),
-    executionListeners: readExecutionListeners(el, ownerId, warnings),
   });
+}
+
+function readEngineAttributes(
+  el: ModdleElement,
+  ownerId: string,
+  warnings: ImportWarning[],
+): EngineAttributes {
+  const settings = readJobSettings(el, ownerId, warnings);
+  const executionListeners = readExecutionListeners(el, ownerId, warnings);
+  return {
+    ...settings,
+    ...(executionListeners === undefined ? {} : { executionListeners }),
+  };
 }
 
 /**
@@ -5930,10 +6072,11 @@ const FIELDLESS_BINDING: Readonly<
 
 /**
  * Read the `operaton:field` children a carrier holds onto the binding it
- * resolved to. Operaton builds the field list for the behaviours a class and a
- * delegate expression select and hands it to no other, on a step and on both
- * listener kinds alike, so a field under any other binding is reported rather
- * than carried into a slot the engine would never read it from.
+ * resolved to. Operaton builds the field list for the behaviours a class, a
+ * delegate expression and a built-in type select and hands it to no other, on
+ * a step and on both listener kinds alike, so a field under any other binding
+ * is reported rather than carried into a slot the engine would never read it
+ * from.
  */
 function withInjectedFields<B extends ServiceTaskBinding | ListenerBinding>(
   binding: B,
@@ -5945,10 +6088,11 @@ function withInjectedFields<B extends ServiceTaskBinding | ListenerBinding>(
   const children = fieldChildren(carrier);
   if (children.length === 0) return binding;
 
-  if (binding.kind !== 'class' && binding.kind !== 'delegateExpression') {
+  if (!carriesFields(binding)) {
     const reason =
-      'Operaton injects a field into a class or delegate binding and into no ' +
-      `other, and this one is bound by ${FIELDLESS_BINDING[binding.kind]}`;
+      'Operaton injects a field into a class, a delegate or a built-in mail ' +
+      'or shell binding and into no other, and this one is bound by ' +
+      FIELDLESS_BINDING[binding.kind];
     for (const field of children) {
       warnFieldDrop(field, ownerId, where, reason, warnings);
     }

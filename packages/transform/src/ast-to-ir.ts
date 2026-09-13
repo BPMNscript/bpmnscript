@@ -69,6 +69,8 @@ import {
   PROPERTY_DIRECTION,
   START_TRIGGERS,
   TASK_PRIORITY_KEY,
+  TYPE_BINDING_KEY,
+  TYPE_BINDING_VALUES,
   caughtBindingsOf,
   declaredCodeOf,
   settingsOf,
@@ -76,6 +78,8 @@ import {
   payloadTextOf,
   timerPayloadOf,
   payloadItemOf,
+  joinSettingKey,
+  runSettingKey,
   TASK_LISTENER_EVENTS,
   THROW_TRIGGERS,
   TIMER_PARTICLE_BY_KIND,
@@ -111,6 +115,7 @@ import type {
   IntermediateCatchEvent,
   VariableMapping,
   ParenItem,
+  Setting,
   IoParameter as AstIoParameter,
   IoValue as AstIoValue,
   Listener as AstListener,
@@ -139,6 +144,7 @@ import type {
   IoMapped,
   IoParameter,
   IoValue,
+  JobSettings,
   Named,
   Repeatable,
   SequenceFlow as IrSequenceFlow,
@@ -150,7 +156,12 @@ import type {
   UserTask as IrUserTask,
   VersionBinding,
 } from './ir/types.js';
-import { engineAttributes, eventIdentities, ioMapped } from './ir/types.js';
+import {
+  carriesFields,
+  eventIdentities,
+  ioMapped,
+  jobSettings,
+} from './ir/types.js';
 import {
   makeGatewaySplitId,
   makeGatewayJoinId,
@@ -800,7 +811,7 @@ function codeBinding(attrs: KeyValueAttr[]): CodeBinding | undefined {
 /** What a binding block with no key resolves to; the validator owns the diagnostic. */
 const NO_BINDING: CodeBinding = { kind: 'class', className: '' };
 
-/** The three code forms first, then `topic`, which emits `operaton:type="external"`. */
+/** The three code forms first, then `type`, then `topic`, which emits `operaton:type="external"`. */
 function serviceTaskBinding(attrs: KeyValueAttr[]): ServiceTaskBinding {
   return writtenBinding(attrs) ?? NO_BINDING;
 }
@@ -811,8 +822,23 @@ function writtenBinding(attrs: KeyValueAttr[]): ServiceTaskBinding | undefined {
   if (code !== undefined) {
     return code;
   }
+  const builtin = builtinBinding(attrs);
+  if (builtin !== undefined) {
+    return builtin;
+  }
   const topic = attrValue(attrs, 'topic');
   return topic === undefined ? undefined : { kind: 'external', topic };
+}
+
+/**
+ * Lower-cased first, since `BpmnParse.parseServiceTaskLike` compares the
+ * attribute case-insensitively; any other value binds nothing here and the
+ * validator refuses it.
+ */
+function builtinBinding(attrs: KeyValueAttr[]): ServiceTaskBinding | undefined {
+  const written = attrValue(attrs, TYPE_BINDING_KEY)?.toLowerCase();
+  const type = TYPE_BINDING_VALUES.find((value) => value === written);
+  return type === undefined ? undefined : { kind: 'builtin', type };
 }
 
 function lowerGenericTask(builder: Builder, stmt: AstGenericTask): Frontier {
@@ -914,17 +940,21 @@ function lowerScriptTask(builder: Builder, stmt: AstScriptTask): Frontier {
 }
 
 /**
- * Lower `if`/`else if`/`else` to an exclusive-gateway split and join.
+ * Lower `if`/`else if`/`else` to an exclusive-gateway split and join. The
+ * whole chain is one split with a conditioned flow per branch, so the head
+ * parens govern that split and an `else if` head takes none.
  *
  * The trailing `else`, or the implicit fall-through standing in for an absent
  * one, is the split's default flow and never carries a condition: Operaton
  * rejects a conditioned default. With an `else` present and every branch
  * terminating, the join has no incoming flow and is pruned (see
- * {@link pruneUnreachableJoin}), reporting `exit: null`.
+ * {@link pruneUnreachableJoin}), reporting `exit: null`, and the join
+ * settings go with it.
  */
 function lowerIf(builder: Builder, stmt: IfStatement, x: string): Frontier {
   const splitId = makeGatewaySplitId(x);
   const joinId = makeGatewayJoinId(x);
+  const settings = settingsOf(stmt.items);
 
   // Reserved up-front so it is stable regardless of branch count.
   const defaultFlowId = reserveDefaultFlowId(builder, splitId);
@@ -933,8 +963,13 @@ function lowerIf(builder: Builder, stmt: IfStatement, x: string): Frontier {
     kind: 'exclusiveGateway',
     id: splitId,
     defaultFlowId,
+    ...readJobSettings(settings),
   });
-  builder.flowElements.push({ kind: 'exclusiveGateway', id: joinId });
+  builder.flowElements.push({
+    kind: 'exclusiveGateway',
+    id: joinId,
+    ...readJobSettings(settings, joinSettingKey),
+  });
 
   lowerForkBranches(
     builder,
@@ -1026,6 +1061,7 @@ function lowerWhile(
     kind: 'exclusiveGateway',
     id: loopId,
     defaultFlowId,
+    ...readJobSettings(settingsOf(stmt.items)),
   });
 
   const condition = renderExpression(stmt.condition);
@@ -1063,6 +1099,7 @@ function lowerDoWhile(
     kind: 'exclusiveGateway',
     id: loopId,
     defaultFlowId,
+    ...readJobSettings(settingsOf(stmt.items)),
   });
 
   if (body.exit !== null) {
@@ -1102,6 +1139,9 @@ function lowerParallel(
   const forkId = makeGatewayForkId(x);
   const joinId = makeGatewayJoinId(x);
   const inclusive = stmt.branches.some((b) => b.condition !== undefined);
+  const settings = settingsOf(stmt.items);
+  const fork = readJobSettings(settings);
+  const join = readJobSettings(settings, joinSettingKey);
 
   // Reserved only where a fallback is named: an AND split pushes no flow under
   // the id, so claiming it would move an authored collider off it for nothing.
@@ -1112,11 +1152,16 @@ function lowerParallel(
       kind: 'inclusiveGateway',
       id: forkId,
       defaultFlowId,
+      ...fork,
     });
-    builder.flowElements.push({ kind: 'inclusiveGateway', id: joinId });
+    builder.flowElements.push({
+      kind: 'inclusiveGateway',
+      id: joinId,
+      ...join,
+    });
   } else {
-    builder.flowElements.push({ kind: 'parallelGateway', id: forkId });
-    builder.flowElements.push({ kind: 'parallelGateway', id: joinId });
+    builder.flowElements.push({ kind: 'parallelGateway', id: forkId, ...fork });
+    builder.flowElements.push({ kind: 'parallelGateway', id: joinId, ...join });
   }
 
   // Only the first `else` carries the default flow; a second one lowers as a
@@ -1153,9 +1198,18 @@ function lowerParallel(
 function lowerRace(builder: Builder, stmt: RaceStatement, x: string): Frontier {
   const raceId = makeGatewayRaceId(x);
   const joinId = makeGatewayJoinId(x);
+  const settings = settingsOf(stmt.items);
 
-  builder.flowElements.push({ kind: 'eventBasedGateway', id: raceId });
-  builder.flowElements.push({ kind: 'exclusiveGateway', id: joinId });
+  builder.flowElements.push({
+    kind: 'eventBasedGateway',
+    id: raceId,
+    ...readJobSettings(settings),
+  });
+  builder.flowElements.push({
+    kind: 'exclusiveGateway',
+    id: joinId,
+    ...readJobSettings(settings, joinSettingKey),
+  });
 
   stmt.branches.forEach((branch, i) => {
     const coord = `${x}_b${i}`;
@@ -1770,18 +1824,26 @@ interface RepeatOwner {
   element?: string;
   completion?: Expr;
   sequential: boolean;
+  items: ParenItem[];
 }
 
 /**
  * The repeat clause of a statement, as the key it contributes: a statement
- * carrying none spreads nothing at all. A clause always sets a count, a
+ * carrying none spreads nothing at all, not even a `run*` setting written
+ * beside it (the validator reports that one). A clause always sets a count, a
  * collection or both, which is what tells it apart from an absent one:
  * `sequential` is a plain boolean the parser leaves `false` either way.
+ * Nothing in the engine reads a priority off the loop, so a stray
+ * `runJobPriority` is dropped rather than carried.
  */
 function readLoop(stmt: RepeatOwner): Repeatable {
   if (stmt.cardinality === undefined && stmt.collection === undefined) {
     return {};
   }
+  const { jobPriority, ...runSettings } = readJobSettings(
+    settingsOf(stmt.items),
+    runSettingKey,
+  );
   return {
     loop: {
       ...(stmt.cardinality !== undefined
@@ -1796,6 +1858,7 @@ function readLoop(stmt: RepeatOwner): Repeatable {
         : {}),
       // Parallel is the engine default, so only the marked form is stored.
       ...(stmt.sequential ? { sequential: true as const } : {}),
+      ...runSettings,
     },
   };
 }
@@ -1835,16 +1898,28 @@ interface EngineAttributeOwner {
   listeners: AstListener[];
 }
 
-/** {@link engineAttributes} decides what is kept; this says how each field is spelled. */
 function readEngineAttributes(owner: EngineAttributeOwner): EngineAttributes {
-  const attrs = settingsOf(owner.items);
-  return engineAttributes({
-    asyncBefore: boolAttrValue(attrs, 'asyncBefore'),
-    asyncAfter: boolAttrValue(attrs, 'asyncAfter'),
-    exclusive: boolAttrValue(attrs, 'exclusive'),
-    jobPriority: numericOrElAttrValue(attrs, 'jobPriority'),
-    retryCycle: attrValue(attrs, 'retryCycle'),
-    executionListeners: readExecutionListeners(owner.listeners),
+  const executionListeners = readExecutionListeners(owner.listeners);
+  return {
+    ...readJobSettings(settingsOf(owner.items)),
+    ...(executionListeners === undefined ? {} : { executionListeners }),
+  };
+}
+
+/**
+ * {@link jobSettings} decides what is kept; this says how each field is
+ * spelled. `keyOf` respells the keys for a second carrier sharing the parens.
+ */
+function readJobSettings(
+  attrs: Setting[],
+  keyOf: (key: string) => string = (key) => key,
+): JobSettings {
+  return jobSettings({
+    asyncBefore: boolAttrValue(attrs, keyOf('asyncBefore')),
+    asyncAfter: boolAttrValue(attrs, keyOf('asyncAfter')),
+    exclusive: boolAttrValue(attrs, keyOf('exclusive')),
+    jobPriority: numericOrElAttrValue(attrs, keyOf('jobPriority')),
+    retryCycle: attrValue(attrs, keyOf('retryCycle')),
   });
 }
 
@@ -1915,24 +1990,16 @@ function listenerBinding(listener: AstListener): ListenerBinding {
 /**
  * Carry the block's fields onto the binding, or leave a binding the engine
  * hands no field list as it is. The validator reports the write; this only
- * declines to carry it. Exhaustive on purpose: a kind added to
- * {@link CodeBinding} stops compiling here until it picks a side.
+ * declines to carry it.
  */
-function withDeclaredFields(
-  binding: CodeBinding,
-  params: AstIoParameter[],
-): CodeBinding {
-  switch (binding.kind) {
-    case 'class':
-    case 'delegateExpression': {
-      const fields = readFieldInjections(params);
-      return fields.length === 0 ? binding : { ...binding, fields };
-    }
-    case 'expression':
-      // Operaton builds this behaviour from the expression and the result
-      // variable alone, with no field list to hand it.
-      return binding;
-  }
+function withDeclaredFields<
+  B extends CodeBinding | Extract<ServiceTaskBinding, { kind: 'builtin' }>,
+>(binding: B, params: AstIoParameter[]): B {
+  // Operaton builds the expression behaviour from the expression and the
+  // result variable alone, with no field list to hand it.
+  if (!carriesFields(binding)) return binding;
+  const fields = readFieldInjections(params);
+  return fields.length === 0 ? binding : { ...binding, fields };
 }
 
 /**

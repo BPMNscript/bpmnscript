@@ -565,6 +565,47 @@ describe('AsyncCapable defaults are omitted on write', () => {
   });
 });
 
+describe('AsyncCapable extends the multi-instance element, so a repetition can carry per-run job settings', () => {
+  const fixture = `${XML_HEADER}
+  <bpmn:process id="P">
+    <bpmn:serviceTask id="T" operaton:class="com.example.Delegate">
+      <bpmn:multiInstanceLoopCharacteristics operaton:asyncBefore="true" operaton:asyncAfter="true" operaton:exclusive="false">
+        <bpmn:extensionElements>
+          <operaton:failedJobRetryTimeCycle>R3/PT10M</operaton:failedJobRetryTimeCycle>
+        </bpmn:extensionElements>
+        <bpmn:loopCardinality>3</bpmn:loopCardinality>
+      </bpmn:multiInstanceLoopCharacteristics>
+    </bpmn:serviceTask>
+  </bpmn:process>
+</bpmn:definitions>`;
+
+  it('parses the four settings and the retry child as typed values and writes them back onto the loop tag', async () => {
+    const moddle = operatonModdle();
+    const { definitions, process, warnings } = await parseProcess(
+      moddle,
+      fixture,
+    );
+    expect(warnings).toHaveLength(0);
+
+    const task = (process.get('flowElements') as ModdleElement[])[0];
+    const loop = task.get('loopCharacteristics') as ModdleElement;
+    const [retryCycle] = extensionValues(loop);
+
+    // Revert: drop the `extends` entry for the loop element and these typed
+    // reads see no declared property on it at all, so `get` answers
+    // `undefined` rather than the schema default or the parsed value.
+    expect(loop.get('asyncBefore')).toBe(true);
+    expect(loop.get('asyncAfter')).toBe(true);
+    expect(loop.get('exclusive')).toBe(false);
+    expect(retryCycle.get('body')).toBe('R3/PT10M');
+
+    const { xml } = await moddle.toXML(definitions, { format: false });
+    expect(xml).toContain(
+      '<bpmn:multiInstanceLoopCharacteristics operaton:asyncBefore="true" operaton:asyncAfter="true" operaton:exclusive="false">',
+    );
+  });
+});
+
 describe('TaskListener timer event definition', () => {
   it('a bpmn:timerEventDefinition child parses into eventDefinitions and re-serializes', async () => {
     const fixture = `${XML_HEADER}

@@ -10,6 +10,7 @@
 // regex, because the handwritten counterpart is hand-named. Task and event ids
 // are never re-keyed: they have to survive the round trip verbatim.
 
+import { ENGINE_KEYS } from '@bpmn-script/language';
 import {
   gatewayDefaultFlowId,
   isGateway,
@@ -94,11 +95,15 @@ function normalizeContainer<T extends FlowContainer>(container: T): T {
 // A re-synthesized `if/else` always grows a join the hand-authored IR never
 // had. Treating that join as transparent lets the two halves compare
 // structurally. Only sibling flows of the same container are considered.
+// A join carrying a job setting stays: inlining it would take the setting
+// out of the comparison, and a `join*` key that one direction drops is what
+// the comparison has to catch.
 function inlinePassThroughJoins(ir: FlowContainer): FlowContainer {
   const successorOf = new Map<string, string>();
   for (const fe of ir.flowElements) {
     if (!isGateway(fe)) continue;
     if (!SYNTHESIZED_JOIN_ID.test(fe.id)) continue;
+    if (ENGINE_KEYS.some((key) => key in fe)) continue;
 
     const outgoing = ir.sequenceFlows.filter((sf) => sf.sourceRef === fe.id);
     const incoming = ir.sequenceFlows.filter((sf) => sf.targetRef === fe.id);

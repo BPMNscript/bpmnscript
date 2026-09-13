@@ -53,8 +53,9 @@ export async function parseAction(
             `  ${err.message}\n` +
             '  The attributes are operaton:class (or the deprecated camunda:class ' +
             'alias), operaton:expression, operaton:delegateExpression, ' +
-            'operaton:type="external" with operaton:topic, and ' +
-            'operaton:decisionRef.',
+            'operaton:type="external" with operaton:topic, ' +
+            'operaton:type="mail" or "shell" with their operaton:field ' +
+            'children, and operaton:decisionRef.',
         ),
       );
       process.exit(1);

@@ -17,10 +17,12 @@ import {
   SKIP_DOCKER as SKIP,
 } from '../helpers/e2e-fixture.js';
 import {
-  assertOk,
   engineGet,
   historicActivities,
   isRunning,
+  jobDefinitionsFor,
+  jobsOfInstance,
+  setJobDefinitionSuspended,
   waitFor,
   waitUntilFinished,
 } from '../helpers/engine-rest.js';
@@ -33,17 +35,6 @@ const LISTENER_LOG = 'listenerLog';
 
 interface EngineVariable {
   value: unknown;
-}
-
-interface Job {
-  jobDefinitionId: string;
-  suspended: boolean;
-}
-
-interface JobDefinition {
-  id: string;
-  jobType: string;
-  jobConfiguration: string;
 }
 
 interface TransitionInstance {
@@ -91,45 +82,6 @@ describe.skipIf(SKIP)(
     ): Promise<string[]> {
       const recorded = await variableValue(processInstanceId, LISTENER_LOG);
       return typeof recorded === 'string' ? recorded.split(',') : [];
-    }
-
-    function jobsOf(processInstanceId: string): Promise<Job[]> {
-      return engineGet<Job[]>(
-        fixture,
-        `/engine-rest/job?processInstanceId=${encodeURIComponent(processInstanceId)}`,
-        `jobsOf(${processInstanceId})`,
-      );
-    }
-
-    // The engine creates one job definition per activity that needs a job at
-    // all, so an activity without an async continuation has none.
-    function jobDefinitionsFor(activityId: string): Promise<JobDefinition[]> {
-      return engineGet<JobDefinition[]>(
-        fixture,
-        `/engine-rest/job-definition?processDefinitionKey=${PROCESS_KEY}&activityIdIn=${encodeURIComponent(activityId)}`,
-        `jobDefinitionsFor(${activityId})`,
-      );
-    }
-
-    // A suspended job definition stamps its state onto jobs created later too,
-    // which is what holds the async continuation still long enough to observe
-    // instead of racing the job executor for it.
-    async function setJobDefinitionSuspended(
-      jobDefinitionId: string,
-      suspended: boolean,
-    ): Promise<void> {
-      const response = await fetch(
-        `${fixture.restBaseUrl()}/engine-rest/job-definition/${encodeURIComponent(jobDefinitionId)}/suspended`,
-        {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ suspended, includeJobs: true }),
-        },
-      );
-      await assertOk(
-        response,
-        `setJobDefinitionSuspended(${jobDefinitionId}, ${suspended})`,
-      );
     }
 
     // An async continuation parks on a transition: the token has left the
@@ -284,7 +236,11 @@ describe.skipIf(SKIP)(
     it('parks the instance on a job at the async activity until the job executor runs it', async () => {
       // The engine's own reading of `asyncBefore`: this job definition exists
       // only because the deployment declared a transaction boundary there.
-      const jobDefinitions = await jobDefinitionsFor(ASYNC_ACTIVITY);
+      const jobDefinitions = await jobDefinitionsFor(
+        fixture,
+        PROCESS_KEY,
+        ASYNC_ACTIVITY,
+      );
       expect(
         jobDefinitions,
         `no job definition for ${ASYNC_ACTIVITY}, so the engine saw no async continuation`,
@@ -295,7 +251,7 @@ describe.skipIf(SKIP)(
 
       // Suspend first: otherwise the job executor runs the job within
       // milliseconds of the transaction committing and the parked state is gone.
-      await setJobDefinitionSuspended(jobDefinition.id, true);
+      await setJobDefinitionSuspended(fixture, jobDefinition.id, true);
 
       const { processInstanceId, taskId } = await startAndReachUserTask();
       await fixture.completeTask(taskId);
@@ -307,7 +263,7 @@ describe.skipIf(SKIP)(
         ASYNC_ACTIVITY,
       ]);
 
-      const parkedJobs = await jobsOf(processInstanceId);
+      const parkedJobs = await jobsOfInstance(fixture, processInstanceId);
       expect(parkedJobs).toHaveLength(1);
       expect(parkedJobs[0]!.jobDefinitionId).toBe(jobDefinition.id);
       expect(parkedJobs[0]!.suspended).toBe(true);
@@ -318,7 +274,7 @@ describe.skipIf(SKIP)(
       expect(beforeActivation).toContain('ConfirmMarkers');
       expect(beforeActivation).not.toContain(ASYNC_ACTIVITY);
 
-      await setJobDefinitionSuspended(jobDefinition.id, false);
+      await setJobDefinitionSuspended(fixture, jobDefinition.id, false);
 
       expect(await waitUntilFinished(fixture, processInstanceId, 30_000)).toBe(
         true,

@@ -5,23 +5,11 @@
 
 import { describe, it, expect } from 'vitest';
 
-import type { BpmnProcess, ServiceTask } from '@bpmn-script/transform';
+import type { BpmnProcess, ServiceTaskBinding } from '@bpmn-script/transform';
 
 import { roundTripFixture } from './helpers/round-trip-fixture.js';
 import { describeDiContainment } from './helpers/di-bounds.js';
-import { elementById, theOnly } from './helpers/ir-query.js';
-
-// `ServiceTaskBinding` itself is not a public export; derived here from the
-// exported `ServiceTask` carrier instead of widening the package's surface.
-type ServiceTaskBinding = ServiceTask['binding'];
-
-function bindingOf(container: BpmnProcess, id: string): ServiceTaskBinding {
-  const el = elementById(container, id);
-  if (el.kind !== 'serviceTask') {
-    throw new Error(`expected '${id}' to be a service task, found ${el.kind}`);
-  }
-  return el.binding;
-}
+import { bindingOf, theOnly } from './helpers/ir-query.js';
 
 const rt = roundTripFixture('external-task', {
   dslPrimeFrom: 'generated',

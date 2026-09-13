@@ -20,7 +20,10 @@ import {
   END_TRIGGERS,
   EXPRESSION_OPEN,
   isReservedName,
+  joinSettingKey,
+  runSettingKey,
   TIMER_PARTICLE_BY_KIND,
+  TYPE_BINDING_KEY,
 } from '@bpmn-script/language';
 import type {
   BpmnProcess,
@@ -40,6 +43,7 @@ import type {
   Gateway,
   IoMapped,
   IoValue,
+  JobSettings,
   ListenerBinding,
   Named,
   Repeatable,
@@ -49,6 +53,7 @@ import type {
   VersionBinding,
 } from './ir/types.js';
 import {
+  carriesFields,
   eachElement,
   eventIdentities,
   gatewayDefaultFlowId,
@@ -89,7 +94,8 @@ export type PrintWarningCategory =
   | 'defaultFlow'
   | 'degradedSplit'
   | 'droppedCondition'
-  | 'refusedStatement';
+  | 'refusedStatement'
+  | 'droppedSetting';
 
 /**
  * A non-fatal notice that `irToDsl` could not carry something into the script.
@@ -224,6 +230,8 @@ class Emitter {
   private readonly outgoingBySource = new Map<string, SequenceFlow[]>();
   private readonly emittedNodes = new Set<string>();
   private readonly consumedFlows = new Set<string>();
+  /** The gateways whose job settings a statement head has printed. */
+  private readonly settingsTaken = new Set<string>();
   private readonly deferredEnds: {
     lines: string[];
     index: number;
@@ -342,7 +350,60 @@ class Emitter {
       }
     }
 
+    // Swept once the walk is done rather than reported where a construct gives
+    // up: an elided pass-through and a jump forwarded through a gateway leave
+    // no degradation site, and a merge left behind by one statement can still
+    // open the next.
+    for (const el of this.container.flowElements) {
+      if (
+        isGateway(el) &&
+        !this.settingsTaken.has(el.id) &&
+        jobSettingItems(el).length > 0
+      ) {
+        this.warnings.push(droppedSettingWarning(el.id));
+      }
+    }
+
     return lines;
+  }
+
+  /**
+   * Nothing for a step, or for a gateway a head has already taken: a loop
+   * hands its leftover routes to the choice chain under its own id.
+   */
+  private takeHeadSettings(id: string): string[] {
+    const el = this.byId.get(id);
+    if (el === undefined || !isGateway(el) || this.settingsTaken.has(id)) {
+      return [];
+    }
+    this.settingsTaken.add(id);
+    return jobSettingItems(el);
+  }
+
+  /**
+   * Taken only while the merge is an unprinted gateway with one route out,
+   * the shape the compiler synthesizes and the printed keys land on again. A
+   * merge with a second route is a statement of its own and keeps its
+   * settings for that head; one already printed carries them nowhere, and
+   * the sweep reports it. Counted over the model's routes, not the unprinted
+   * ones: an enclosing loop spends the back-edge a merge at its body's tail
+   * leaves by before the body is walked, and that merge is still the
+   * pass-through it elides.
+   */
+  private takeJoinSettings(join: string | undefined): string[] {
+    if (join === undefined) return [];
+    const el = this.byId.get(join);
+    if (
+      el === undefined ||
+      !isGateway(el) ||
+      this.emittedNodes.has(join) ||
+      this.settingsTaken.has(join) ||
+      (this.outgoingBySource.get(join) ?? []).length !== 1
+    ) {
+      return [];
+    }
+    this.settingsTaken.add(join);
+    return jobSettingItems(el, joinSettingKey);
   }
 
   /** The routes of `flows` no construct has printed yet, in IR order. */
@@ -608,6 +669,7 @@ class Emitter {
       fallback,
       join,
       splitId,
+      [...this.takeHeadSettings(splitId), ...this.takeJoinSettings(join)],
       lines,
       depth,
     );
@@ -636,6 +698,7 @@ class Emitter {
     fallback: SequenceFlow | undefined,
     join: string | undefined,
     splitId: string,
+    settings: string[],
     lines: string[],
     depth: number,
   ): void {
@@ -656,7 +719,11 @@ class Emitter {
     // At least one head: this runs on two routes or more, and at most one of
     // them is the `else`.
     heads.forEach(([condition, f], i) => {
-      lines.push(`${i === 0 ? 'if' : '} else if'} (${condition}) {`);
+      lines.push(
+        i === 0
+          ? `if (${condition})${headSettings(settings)} {`
+          : `} else if (${condition}) {`,
+      );
       this.emitIfBranch(f.targetRef, join, splitId, lines, depth);
     });
 
@@ -673,7 +740,8 @@ class Emitter {
    * A split the catalog cannot fold, every route leaving as a jump. Each jump
    * takes a branch of its own because a jump ends its block, so a second one
    * written beside the first could never run. Nothing weighs the branches: the
-   * conditions go with the split, which {@link degradedSplitWarning} reports.
+   * conditions go with the split, which {@link degradedSplitWarning} reports,
+   * and so do its settings, which the sweep reports.
    */
   private emitJumps(
     splitId: string,
@@ -681,7 +749,7 @@ class Emitter {
     lines: string[],
     depth: number,
   ): void {
-    this.emitIfChain([], outs, undefined, undefined, splitId, lines, depth);
+    this.emitIfChain([], outs, undefined, undefined, splitId, [], lines, depth);
   }
 
   /**
@@ -810,8 +878,9 @@ class Emitter {
     this.consumedFlows.add(cond.id);
     this.consumedFlows.add(backEdge.id);
     const rest = this.takeRest(outs);
+    const settings = this.takeHeadSettings(loop.id);
 
-    lines.push(`while (${renderCondition(cond)}) {`);
+    lines.push(`while (${renderCondition(cond)})${headSettings(settings)} {`);
     // The back-edge is consumed, so the body walk stops at the head.
     this.emitBranch(cond.targetRef, loop.id, lines, depth);
     lines.push('}');
@@ -853,10 +922,11 @@ class Emitter {
     this.emittedNodes.add(loopId);
     this.consumedFlows.add(cond.id);
     const rest = this.takeRest(outs);
+    const settings = this.takeHeadSettings(loopId);
 
     lines.push('do {');
     this.emitBranch(node, loopId, lines, depth);
-    lines.push(`} while (${renderCondition(cond)})`);
+    lines.push(`} while (${renderCondition(cond)})${headSettings(settings)}`);
 
     return this.emitRoutes(loopId, rest, stop, lines, depth);
   }
@@ -922,7 +992,11 @@ class Emitter {
 
     // The join is continued from, never pre-elided: a one-out parallel join is
     // a transparent pass-through in `emitNode`.
-    lines.push('parallel {');
+    const settings = [
+      ...this.takeHeadSettings(fork.id),
+      ...this.takeJoinSettings(join),
+    ];
+    lines.push(`parallel${headSettings(settings)} {`);
     branches.forEach((f) => {
       // `emitBranch` prefixes one INDENT; wrap and re-indent for `parallel {`.
       const branchLines: string[] = [];
@@ -1173,7 +1247,11 @@ class Emitter {
       this.cleanForkJoin(race.id, outs, 'exclusiveGateway') ??
       this.recoveredForkJoin(race.id, outs, 'exclusiveGateway');
 
-    lines.push('await {');
+    const settings = [
+      ...this.takeHeadSettings(race.id),
+      ...this.takeJoinSettings(join),
+    ];
+    lines.push(`await${headSettings(settings)} {`);
     for (const wait of waits) {
       const { el, body } = wait!;
       this.emittedNodes.add(el.id);
@@ -1187,7 +1265,7 @@ class Emitter {
       const trigger = renderTrigger(el.eventDefinition, this.codeNames);
       const head = bodyHeader(
         trigger.head,
-        [...trigger.items, ...engineSettings(el)],
+        [...trigger.items, ...jobSettingItems(el)],
         structuredMembers(el),
       );
       for (const l of head) lines.push(INDENT + l);
@@ -1373,14 +1451,14 @@ class Emitter {
           const head = definition === undefined ? '' : ` ${definition.kind}`;
           return bracketed(
             `end ${el.id}${head}`,
-            [...namedSettings(el), ...engineSettings(el)],
+            [...namedSettings(el), ...jobSettingItems(el)],
             members,
           );
         }
         return renderThrow(
           el,
           definition,
-          [...throwBindingSettings(el), ...engineSettings(el)],
+          [...throwBindingSettings(el), ...jobSettingItems(el)],
           members,
           this.codeNames,
         );
@@ -1390,7 +1468,7 @@ class Emitter {
         // emittable: an error aborts its path (`throw error`) and the rest
         // have no throw surface.
         const def = el.eventDefinition;
-        const settings = [...throwBindingSettings(el), ...engineSettings(el)];
+        const settings = [...throwBindingSettings(el), ...jobSettingItems(el)];
         switch (def.kind) {
           case 'escalation':
           case 'signal':
@@ -1414,7 +1492,7 @@ class Emitter {
         const trigger = renderTrigger(el.eventDefinition, this.codeNames);
         return bracketed(
           `await ${trigger.head}${terminalNameSuffix(el)}`,
-          [...trigger.items, ...engineSettings(el)],
+          [...trigger.items, ...jobSettingItems(el)],
           structuredMembers(el),
         );
       }
@@ -1689,6 +1767,18 @@ function deadFallbackWarning(forkId: string): PrintWarning {
   };
 }
 
+function droppedSettingWarning(gatewayId: string): PrintWarning {
+  return {
+    elementId: gatewayId,
+    category: 'droppedSetting',
+    message:
+      'The engine settings on this split or merge were not written to the ' +
+      'script: the script derives every split and every merge from its ' +
+      'block structure, and this one has no statement here to carry them, ' +
+      'so the process runs without them.',
+  };
+}
+
 /** A pathological IR degrades to a `goto` rather than overflowing the stack. */
 const MAX_NESTING_DEPTH = 1000;
 
@@ -1842,7 +1932,7 @@ function isPlainUnnamed(
 function carriesPrintableContent(
   el: Extract<FlowElement, { kind: 'startEvent' | 'endEvent' }>,
 ): boolean {
-  return engineSettings(el).length > 0 || startOrEndMembers(el).length > 0;
+  return jobSettingItems(el).length > 0 || startOrEndMembers(el).length > 0;
 }
 
 /** The form block leads the members every element shares. */
@@ -1861,19 +1951,42 @@ function structuredMembers(el: SettingsCarrier): Lines[] {
   return [...ioParameters(el), ...listenerMembers(el)];
 }
 
-/** Fixed order, so the parens stay stable across runs. */
-function engineSettings(el: EngineAttributes): string[] {
+/** Fixed order, so the parens stay stable across runs; `keyOf` respells each key for a second carrier sharing the parens. */
+function jobSettingItems(
+  el: JobSettings,
+  keyOf: (key: string) => string = (key) => key,
+): string[] {
   const settings: string[] = [];
-  if (el.asyncBefore === true) settings.push(setting('asyncBefore', 'true'));
-  if (el.asyncAfter === true) settings.push(setting('asyncAfter', 'true'));
-  if (el.exclusive === false) settings.push(setting('exclusive', 'false'));
+  if (el.asyncBefore === true) {
+    settings.push(setting(keyOf('asyncBefore'), 'true'));
+  }
+  if (el.asyncAfter === true) {
+    settings.push(setting(keyOf('asyncAfter'), 'true'));
+  }
+  if (el.exclusive === false) {
+    settings.push(setting(keyOf('exclusive'), 'false'));
+  }
   if (el.jobPriority !== undefined) {
-    settings.push(setting('jobPriority', renderNumericValue(el.jobPriority)));
+    settings.push(
+      setting(keyOf('jobPriority'), renderNumericValue(el.jobPriority)),
+    );
   }
   if (el.retryCycle !== undefined) {
-    settings.push(setting('retryCycle', quote(el.retryCycle)));
+    settings.push(setting(keyOf('retryCycle'), quote(el.retryCycle)));
   }
   return settings;
+}
+
+/**
+ * Own settings, then the loop's under the `run` spellings (see
+ * `LoopCharacteristics` in `ir/types.ts`); guarded by {@link repeats} like
+ * `repeatClause`, so a loop with nothing to repeat over prints nothing.
+ */
+function engineSettings(el: EngineAttributes & Repeatable): string[] {
+  return [
+    ...jobSettingItems(el),
+    ...(repeats(el.loop) ? jobSettingItems(el.loop, runSettingKey) : []),
+  ];
 }
 
 /**
@@ -1882,10 +1995,7 @@ function engineSettings(el: EngineAttributes): string[] {
  * reads an element's own lists and a field hangs off the binding.
  */
 function fieldMembers(binding: ServiceTaskBinding | ListenerBinding): Lines[] {
-  const fields =
-    binding.kind === 'class' || binding.kind === 'delegateExpression'
-      ? (binding.fields ?? [])
-      : [];
+  const fields = carriesFields(binding) ? (binding.fields ?? []) : [];
   return fields.map((field) => [`field ${field.name} = ${quote(field.value)}`]);
 }
 
@@ -2102,7 +2212,7 @@ function buildBoundaryHeader(
     `on ${boundary.attachedToRef}: ${trigger.head}`,
     [
       ...trigger.items,
-      ...engineSettings(boundary),
+      ...jobSettingItems(boundary),
       ...alongsideFlag(boundary.cancelActivity === false),
     ],
     structuredMembers(boundary),
@@ -2249,7 +2359,7 @@ function renderStartEvent(
       ...(el.initiator === undefined
         ? []
         : [setting('initiator', quote(el.initiator))]),
-      ...engineSettings(el),
+      ...jobSettingItems(el),
     ],
     startOrEndMembers(el),
   );
@@ -2483,6 +2593,8 @@ function bindingSettings(binding: ServiceTaskBinding): string[] {
           ? []
           : [setting('mapDecisionResult', binding.mapDecisionResult)]),
       ];
+    case 'builtin':
+      return [setting(TYPE_BINDING_KEY, quote(binding.type))];
     default: {
       const exhaustive: never = binding;
       throw new Error(
@@ -2675,6 +2787,11 @@ function withMembers(head: string, members: Lines[]): Lines {
 
 function parens(settings: string[]): string {
   return settings.length === 0 ? '' : `(${settings.join(', ')})`;
+}
+
+/** A statement head's parens follow a space, where an element's hug its name. */
+function headSettings(settings: string[]): string {
+  return settings.length === 0 ? '' : ` ${parens(settings)}`;
 }
 
 /** A literal count prints bare; anything else is an expression. */

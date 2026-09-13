@@ -10,7 +10,7 @@ Two more are planned and have no fixture yet: an Operaton REST engine with exter
 The fixture runs Operaton 2.1.0 embedded in a Spring Boot 4.0.6 application on Java 17, exposing the Operaton REST API on port 8080.
 It's packaged as a Docker image so the integration test harness can start and stop it programmatically.
 
-Twenty-eight DSL sources live under `spring-boot/processes/`, one per construct or construct combination.
+Thirty DSL sources live under `spring-boot/processes/`, one per construct or construct combination.
 Running `bpmns build` on any of them produces the deployable `.bpmn`.
 
 | Source                  | Covers                                                                     |
@@ -43,12 +43,14 @@ Running `bpmns build` on any of them produces the deployable `.bpmn`.
 | `order-rework`          | A link pair: `emit link` inside an `if`, and the `await link` it jumps to  |
 | `card-charge`           | A topic-bound step with a priority, properties, and an error mapping       |
 | `plan-selection`        | A task form with a required enum and a length-bounded text field           |
+| `nightly-report`        | An async join, per-run jobs on a repetition, and a shell task              |
+| `outage-notice`         | A mail task, deployed and never started                                    |
 
 [Running processes on Operaton](spring-boot/README.md#running-processes-on-operaton-demo) is a hands-on tour of the two loan-approval processes.
 
 ### Testcontainers harness
 
-Fourteen E2E test files in `tests/e2e/` use [testcontainers-node](https://testcontainers.com/) to start the Docker image, deploy compiled BPMN over the Operaton REST API, start instances, and assert engine behavior: `invoice-approval`, `parallel-approval`, `loan-approval`, `loan-approval-kopp`, `boundary-events` (over `order-handling`), `awaiting-confirmation`, `engine-extensions`, `service-boundary-and-compensation` (over `charge-with-recovery` and `compensating-saga` in one container boot), `event-positions` (over `order-intake`, `stock-alert`, `scheduled-audit`, `support-ticket`, and `order-rework` in one container boot), `task-kinds`, `repetition` (over `batch-approval` and `empty-batch` in one container boot), `booking-attempt`, `branch-and-race` (over `order-dispatch`), and `forms-and-external-tasks` (over `card-charge` and `plan-selection` in one container boot).
+Fifteen E2E test files in `tests/e2e/` use [testcontainers-node](https://testcontainers.com/) to start the Docker image, deploy compiled BPMN over the Operaton REST API, start instances, and assert engine behavior: `invoice-approval`, `parallel-approval`, `loan-approval`, `loan-approval-kopp`, `boundary-events` (over `order-handling`), `awaiting-confirmation`, `engine-extensions`, `service-boundary-and-compensation` (over `charge-with-recovery` and `compensating-saga` in one container boot), `event-positions` (over `order-intake`, `stock-alert`, `scheduled-audit`, `support-ticket`, and `order-rework` in one container boot), `task-kinds`, `repetition` (over `batch-approval` and `empty-batch` in one container boot), `booking-attempt`, `branch-and-race` (over `order-dispatch`), `forms-and-external-tasks` (over `card-charge` and `plan-selection` in one container boot), and `job-settings-and-mail` (over `nightly-report` and `outage-notice` in one container boot).
 The remaining fixtures are demo-only.
 
 The compensation half of `service-boundary-and-compensation` asserts that the `emit compensation` its `on error` handler raises reaches the undo block of the subprocess that completed before the charge failed.
@@ -58,6 +60,11 @@ An inclusive join waits for exactly the branches the conditions opened, so compl
 The first trigger of a race to fire cancels the wait the other branch was holding: the losing timer job disappears, and the instance's history holds the message catch and the `Handover` task behind it, with no row for the timer catch or `ChaseCarrier`.
 `forms-and-external-tasks` asserts what the engine does with what a compiled document only declares: a worker fetching the charge sees its priority and its properties, a failure it reports ends through the declined handler when its message matches the mapping and stays on the topic for a retry when it does not, and the form service refuses a submission that leaves the required enum empty or names a value outside its list.
 Its last case runs a user task assigned with `bpmn:humanPerformer` and `bpmn:potentialOwner` through the importer, deploys the re-exported document, and asserts the engine builds the assignee, candidate users, and candidate groups the source declared.
+`job-settings-and-mail` asserts what a job setting makes the engine do, which the compiled document only declares.
+With the join's job definition suspended, an async parallel join parks one job per arriving branch, and the instance completes once the job executor is let at them.
+A repetition of three with `runAsyncBefore` has a job definition on the run and none on the repetition itself, so three jobs park, one per run.
+A shell task running `echo` writes its output, newline included, and its exit code into the variables its fields name.
+The mail task deploys because the fixture's `pom.xml` supplies the mail library the engine declares `provided`, and a mail task built without a body is refused at deployment with the engine's own message, which is the check the validator mirrors.
 
 Docker tests run by default and are skipped only when `SKIP_DOCKER_TESTS=true`, which is what CI sets.
 
