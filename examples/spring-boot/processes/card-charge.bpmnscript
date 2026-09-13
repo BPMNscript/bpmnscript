@@ -1,0 +1,27 @@
+// Card charge handed to an external worker that polls the "charge-card"
+// topic. The worker fetching it sees the task's priority and its two
+// properties beside the topic, and a failure it reports with the message
+// "declined" is raised as the declared error, which the boundary handler
+// catches and hands to a review task. A failure with any other message
+// leaves the task on the topic for a retry.
+//
+// The fixture's worker polls "print-label" alone, so an instance of this
+// process waits until something fetches "charge-card" over the REST API.
+
+process card-charge {
+  error PAYMENT_DECLINED(message: "The card issuer declined the charge")
+
+  start OrderReceived
+
+  service ChargeCard(label: "Charge the card", topic: "charge-card", taskPriority: 42) {
+    property gateway = "stripe"
+    property attempts = "3"
+    error PAYMENT_DECLINED when externalTask.errorMessage == "declined"
+  }
+
+  end OrderCharged
+
+  on ChargeCard: error(PAYMENT_DECLINED) {
+    user ReviewDecline(label: "Review the declined charge", assignee: "demo")
+  }
+}

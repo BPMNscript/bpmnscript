@@ -15,12 +15,12 @@
 // Reserved words are exactly this file's keywords, read back out of the grammar
 // by `reservedWordsOf` in `vocabulary.ts`; a variable named like one is written
 // with the quoted "${...}" raw-string fallback. The trigger kinds, catch-binding
-// fields, timer particles, setting keys, parameter directions, and listener
-// events are deliberately soft: they lex as plain `ID` and are checked in
-// position, so `var message: string` and `if (priority > 5)` stay legal and a
-// step may be named after any business concept. A statement-opening word cannot
-// be soft, because after `start S` it would be swallowed as `start`'s trigger
-// rather than opening its own statement.
+// fields, timer particles, setting keys, parameter directions, the `enum` form
+// type, and listener events are deliberately soft: they lex as plain `ID` and
+// are checked in position, so `var message: string` and `if (priority > 5)`
+// stay legal and a step may be named after any business concept. A
+// statement-opening word cannot be soft, because after `start S` it would be
+// swallowed as `start`'s trigger rather than opening its own statement.
 
 grammar BpmnScript
 
@@ -110,9 +110,16 @@ ScriptTask:
 // On a statement that also has a body the block comes first, and the two never
 // collide: no statement starts with a plain identifier, so an identifier after
 // the opening brace can only be a member, and an empty block is told apart from
-// an empty body by the brace that follows it.
+// an empty body by the brace that follows it. The two members opening with an
+// identifier, a parameter and a mapping, are told apart at the third token.
 fragment AttributeBlock:
-    '{' (forms+=FormBlock | params+=IoParameter | listeners+=Listener)* '}';
+    '{' (forms+=FormBlock | params+=IoParameter | listeners+=Listener | errorMappings+=ErrorMapping)* '}';
+
+// `error PaymentDeclined when <condition>`. Both words are soft: `error` is the
+// trigger word every code site writes, and `when` is told from a parameter's
+// `=` at the third token, so the line costs no reserved word.
+ErrorMapping:
+    trigger=ID code=[CodeDecl:ID] when=ID condition=Expr;
 
 // How many times an activity runs. `for each line in lines` runs it once per
 // element bound to `line`, `for 3` a fixed number of times, and both together
@@ -138,10 +145,24 @@ FormBlock:
 
 // `id` is the process variable the field reads or writes, deliberately not
 // `name=ID` so a field and a `var` of the same id coexist instead of colliding
-// in the symbol table. `type` reuses `VarType`; the validator restricts it to
-// the subset Operaton form fields support.
+// in the symbol table. The block cannot be read as the next field, which opens
+// with `ID ':'`; its two member shapes are told apart at the third token (`=`),
+// which ALL(*) lookahead resolves.
 FormField:
-    id=ID ':' type=VarType (label=STRING)? ('=' defaultValue=Expr)?;
+    id=ID ':' type=FormFieldType (label=STRING)? ('=' defaultValue=Expr)?
+    SettingsParens?
+    ('{' (values+=EnumValue | params+=IoParameter)* '}')?;
+
+// Open beyond `VarType` because an `enum` field is not a `var` type, and a soft
+// word keeps `var enum: string` legal. The validator holds the word to
+// `FORM_FIELD_TYPES`.
+FormFieldType returns string:
+    VarType | ID;
+
+// `card "Card"`: one line per value an `enum` offers, in the order the engine
+// keeps them (`FormTypes.parseFormPropertyType` fills a LinkedHashMap).
+EnumValue:
+    id=ID (label=STRING)?;
 
 // The settings list every element shares. A payload sits first and unkeyed, a
 // setting carries `key: value`, and a flag is a bare word. The three are told

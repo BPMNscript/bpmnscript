@@ -24,6 +24,7 @@ import {
   type BpmnScriptServices,
   createBpmnScriptServices,
   ENGINE_KEYS,
+  FORM_CONSTRAINT_TYPES,
 } from '@bpmn-script/language';
 import { BLOCK_HOSTS, caretInSlot } from './helpers/block-hosts.js';
 import { withTextMessages } from './helpers/diagnostics.js';
@@ -324,15 +325,46 @@ const LISTENER_KEYWORD: Item = [
 
 const FORM_KEYWORD: Item = ['form', KEYWORD, 'form'];
 
+/** A form field's parens, in the order the constraints are registered. */
+const FORM_FIELD_PARENS: Item[] = [
+  ['required', SETTING, 'required: true'],
+  ['readonly', SETTING, 'readonly: true'],
+  ['min', SETTING, 'min: ${1:0}'],
+  ['max', SETTING, 'max: ${1:100}'],
+  ['minlength', SETTING, 'minlength: ${1:1}'],
+  ['maxlength', SETTING, 'maxlength: ${1:80}'],
+  ['validator', SETTING, 'validator: "${1:com.example.Validator}"'],
+  ['pattern', SETTING, 'pattern: "${1:dd/MM/yyyy}"'],
+];
+
+const PROPERTY: Item = [
+  'property',
+  'a value Tasklist or a worker reads off the step, never a variable',
+  'property ${1:name} = "${2:value}"',
+];
+
+/** The one field type each setting is legal on; `pattern` has no row and fits a date. */
+const fieldTypeTaking = (key: string): string =>
+  FORM_CONSTRAINT_TYPES[key]?.[0] ?? 'date';
+
+/** A mapping's code is a declaration, so the scaffold writes it bare. */
+const ERROR_MAPPING: Item = [
+  'error',
+  'raise a declared error when a reported failure matches',
+  'error ${1:CODE} when ${2:condition}',
+];
+
 /** What the brace block of an element holds, its settings having moved out. */
 const BLOCK_MEMBERS: Item[] = [FORM_KEYWORD, ...PARAMETERS, LISTENER_KEYWORD];
 
-/** The same block on a kind binding an implementation to inject into. */
+/** The same block on a service task, whose binding injects fields or hands the work to an external worker. */
 const FIELD_BLOCK_MEMBERS: Item[] = [
   FORM_KEYWORD,
   ...PARAMETERS,
   FIELD,
+  PROPERTY,
   LISTENER_KEYWORD,
+  ERROR_MAPPING,
 ];
 
 /**
@@ -356,6 +388,7 @@ const RESULT_VARIABLE: Item = [
   'resultVariable: "${1:result}"',
 ];
 const BINDING: Item = ['binding', SETTING, 'binding: ${1|latest,deployment|}'];
+const TASK_PRIORITY: Item = ['taskPriority', SETTING, 'taskPriority: ${1:50}'];
 const VERSION: Item = ['version', SETTING, 'version: ${1:1}'];
 
 const USER_PARENS: Item[] = [
@@ -381,6 +414,7 @@ const SERVICE_PARENS: Item[] = [
   ...BINDINGS,
   TOPIC,
   RESULT_VARIABLE,
+  TASK_PRIORITY,
   ...ENGINE_SETTINGS,
   ...LITERALS,
 ];
@@ -424,6 +458,7 @@ const DECIDE_PARENS: Item[] = [
     'mapDecisionResult: ${1|singleEntry,singleResult,collectEntries,resultList|}',
   ],
   RESULT_VARIABLE,
+  TASK_PRIORITY,
   ...ENGINE_SETTINGS,
   ...LITERALS,
 ];
@@ -677,8 +712,13 @@ describe('the completions offered at a caret', () => {
       BLOCK_MEMBERS,
     ],
     [
-      'a service block offers `field` alongside the two io directions',
+      'a service block offers `field` and `property` alongside the two io directions',
       'process p {\n  service S(class: "com.example.D") {\n    |\n  }\n}',
+      FIELD_BLOCK_MEMBERS,
+    ],
+    [
+      'a service block offers its whole member set after a property line',
+      'process p {\n  service S(topic: "t") {\n    property k = "v"\n    |\n  }\n}',
       FIELD_BLOCK_MEMBERS,
     ],
     [
@@ -758,9 +798,31 @@ describe('the completions offered at a caret', () => {
       ],
     ],
     [
+      "a mapping's code slot offers the declared errors and nothing else",
+      'process p {\n  error PAYMENT_DECLINED(message: "x")\n  escalation PAYMENT_REVIEW\n  service S(topic: "t") {\n    error PAY| when "${x}"\n  }\n}',
+      [
+        [
+          'PAYMENT_DECLINED',
+          'CodeDecl',
+          'PAYMENT_DECLINED',
+          CompletionItemKind.Reference,
+        ],
+      ],
+    ],
+    [
       'a map key inside a parameter value is left to the default completion',
       'process p {\n  user T {\n    input x = {\n      |\n    }\n  }\n}',
       [],
+    ],
+    [
+      "a form field's parens offer its settings after a preceding one",
+      'process p {\n  start S {\n    form {\n      amount: number (required: true, |)\n    }\n  }\n}',
+      [...FORM_FIELD_PARENS, ...LITERALS],
+    ],
+    [
+      "a form field's block offers the property direction after a value line",
+      'process p {\n  start S {\n    form {\n      plan: enum {\n        basic "Basic"\n        |\n      }\n    }\n  }\n}',
+      [PROPERTY],
     ],
   ])('%s', async (_title, program, expected) => {
     const { text, line, character } = caretAt(program);
@@ -875,11 +937,11 @@ describe('a scaffold parses and validates once accepted', () => {
       RECEIVE_PARENS,
       (setting) => `process p {\n  receive R(${setting})\n}`,
     ),
+    // `taskPriority` rides a `topic` binding alone, so the host binds one.
     ...scaffolds(
       'the parens of a service task',
       SERVICE_PARENS.filter((item) => !binds(item)),
-      (setting) =>
-        `process p {\n  service S(class: "com.example.D", ${setting})\n}`,
+      (setting) => `process p {\n  service S(topic: "t", ${setting})\n}`,
     ),
     ...scaffolds(
       'the parens of a service task',
@@ -889,8 +951,7 @@ describe('a scaffold parses and validates once accepted', () => {
     ...scaffolds(
       'the parens of a decision step',
       DECIDE_PARENS.filter((item) => !binds(item)),
-      (setting) =>
-        `process p {\n  decide D(decision: "riskRating", ${setting})\n}`,
+      (setting) => `process p {\n  decide D(topic: "t", ${setting})\n}`,
     ),
     ...scaffolds(
       'the parens of a decision step',
@@ -929,6 +990,13 @@ describe('a scaffold parses and validates once accepted', () => {
       (member) =>
         `process p {\n  service S(class: "com.example.D") {\n${member}\n  }\n}`,
     ),
+    // The code is declared in the header, where the mapping's scaffold resolves it.
+    ...scaffolds(
+      'a topic-bound service block',
+      [PROPERTY, ERROR_MAPPING],
+      (member) =>
+        `process p {\n  error CODE(message: "m")\n  service S(topic: "t") {\n${member}\n  }\n}`,
+    ),
     ...scaffolds(
       "a listener's block",
       [FIELD],
@@ -955,6 +1023,22 @@ describe('a scaffold parses and validates once accepted', () => {
       'the trigger position of an await',
       CATCH_TRIGGERS,
       (trigger) => `process p {\n  user U\n  await ${trigger}\n}`,
+    ),
+    // Each setting lands on a field of the one type it fits.
+    ...FORM_FIELD_PARENS.map(
+      ([label]) =>
+        [
+          `\`${label}\` in the parens of a form field`,
+          label,
+          (setting: string) =>
+            `process p {\n  start S {\n    form {\n      f: ${fieldTypeTaking(label)} (${setting})\n    }\n  }\n}`,
+        ] as const,
+    ),
+    ...scaffolds(
+      "a form field's block",
+      [PROPERTY],
+      (member) =>
+        `process p {\n  start S {\n    form {\n      plan: enum {\n        basic "Basic"\n${member}\n      }\n    }\n  }\n}`,
     ),
   ])('%s', async (_title, label, program) => {
     const { text, line, character } = caretAt(program('|'));

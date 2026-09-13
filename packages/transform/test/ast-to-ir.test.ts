@@ -2628,6 +2628,76 @@ describe('astToIr: field injection and form references', () => {
   });
 });
 
+describe('astToIr: external task extras', () => {
+  it('lowers taskPriority, properties and error mappings onto an external binding only, each list omitted when empty', async () => {
+    const process = await ir(
+      'process p { error OrderFailed(code: "order.failed") error TIMEOUT' +
+        ' service Charge(topic: "charge-card", taskPriority: 42) {' +
+        '   property gateway = "stripe" property mode = "live"' +
+        '   error OrderFailed when externalTask.errorMessage == "declined"' +
+        '   error TIMEOUT when externalTask.retries == 0' +
+        ' }' +
+        ' send Notify(topic: "notify-support") { property channel = "email" }' +
+        ' decide Rate(topic: "rate-card") { error OrderFailed when "${flag}" }' +
+        ' service Legacy(class: "com.example.Legacy", taskPriority: 42) {' +
+        '   property gateway = "stripe" error OrderFailed when "${flag}"' +
+        ' } }',
+    );
+
+    expect({
+      charge: bindingOf(process, 'Charge'),
+      notify: bindingOf(process, 'Notify'),
+      rate: bindingOf(process, 'Rate'),
+      legacy: bindingOf(process, 'Legacy'),
+    }).toEqual({
+      charge: {
+        ...externalBinding('charge-card'),
+        taskPriority: '42',
+        properties: [
+          { key: 'gateway', value: 'stripe' },
+          { key: 'mode', value: 'live' },
+        ],
+        errorMappings: [
+          {
+            errorCode: 'order.failed',
+            condition: '${externalTask.errorMessage == "declined"}',
+          },
+          { errorCode: 'TIMEOUT', condition: '${externalTask.retries == 0}' },
+        ],
+      },
+      notify: {
+        ...externalBinding('notify-support'),
+        properties: [{ key: 'channel', value: 'email' }],
+      },
+      rate: {
+        ...externalBinding('rate-card'),
+        errorMappings: [{ errorCode: 'order.failed', condition: '${flag}' }],
+      },
+      // A class binding takes none of the three: the engine never reads them
+      // off any owner but `parseExternalServiceTask`.
+      legacy: classBinding('com.example.Legacy'),
+    });
+  });
+
+  it('reads taskPriority as an int, a raw EL string or a bare name', async () => {
+    const taskPriority = async (written: string) =>
+      (
+        bindingOf(
+          await ir(
+            `process p { service S(topic: "t", taskPriority: ${written}) }`,
+          ),
+          'S',
+        ) as { taskPriority?: string }
+      ).taskPriority;
+
+    expect(await taskPriority('42')).toBe('42');
+    expect(await taskPriority('"${amount > 1000 ? 90 : 10}"')).toBe(
+      '${amount > 1000 ? 90 : 10}',
+    );
+    expect(await taskPriority('prio')).toBe('${prio}');
+  });
+});
+
 describe('astToIr: start/end triggers and message throw/emit', () => {
   it.each([
     [`start S message("OrderReceived")`, messageDef('OrderReceived')],

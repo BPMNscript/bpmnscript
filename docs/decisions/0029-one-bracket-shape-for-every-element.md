@@ -69,6 +69,8 @@ A listener's own timer clause stays positional, as in `on timeout after "PT8H"(c
 Form blocks, listeners, io parameters and call mappings live in the braces.
 The parens carry settings that describe the element itself, and those four are lists with their own members, so they belong to the same half of the shape as flow does.
 This is why `{ }` is defined above as everything with internal structure rather than as what runs: a form does not run, and forcing it into a parenthesised value would nest a listener's own settings two levels deep.
+A form field takes the same shape in turn, `id: type "label" = default (settings) { members }`, its constraints in the parens and an enum's values and its property lines in the braces (ADR-0037).
+An external task's `error <Code> when <condition>` mappings live in the braces too, one member line each (ADR-0038).
 
 A setting with no value is written as a bare word inside the parens, as in `timer("PT2H", alongside)`.
 The parens therefore hold a payload, then keyed settings, then bare flags, told apart by whether a `:` follows.
@@ -136,6 +138,10 @@ The TextMate keyword alternation must stay equal to the grammar's reserved words
 ## More Information
 
 The six options were drafted as full renderings of the same process, `order-handling`, so each was judged on a realistic file rather than a fragment.
+
+Amended by ADR-0037, which gives a form field the parens-and-braces shape this decision gives every element.
+
+Amended by ADR-0038, which adds an external task's error mappings to the members the braces hold.
 
 Related decisions: ADR-0008 (the structured grammar this shape fills in, which decided against prose but not the bracket unification).
 ADR-0030 (error and escalation codes as declared names, which fills the one payload slot this shape left holding quoted text).

@@ -372,9 +372,7 @@ describe('per-element attribution of a dropped extension child', () => {
     <bpmn:serviceTask id="T">
       <bpmn:extensionElements>
         <operaton:failedJobRetryTimeCycle>R3/PT10M</operaton:failedJobRetryTimeCycle>
-        <operaton:properties>
-          <operaton:property name="x" value="y" />
-        </operaton:properties>
+        <operaton:potentialStarter />
       </bpmn:extensionElements>
     </bpmn:serviceTask>
   </bpmn:process>
@@ -396,8 +394,150 @@ describe('per-element attribution of a dropped extension child', () => {
     // Never infer a per-element drop from a document-level boolean: assert
     // the exact warning count and that its message names the dropped type.
     expect(warnings).toHaveLength(1);
-    expect(warnings[0].message).toContain('operaton:properties');
+    expect(warnings[0].message).toContain('operaton:potentialStarter');
   });
+});
+
+describe('the form field extras and the external task extras parse and re-serialize', () => {
+  const FORM_FIELD_FIXTURE = `${XML_HEADER}
+  <bpmn:process id="P">
+    <bpmn:userTask id="T">
+      <bpmn:extensionElements>
+        <operaton:formData>
+          <operaton:formField id="plan" label="Plan" type="enum" defaultValue="silver"
+                              datePattern="dd/MM/yyyy">
+            <operaton:properties>
+              <operaton:property id="hint" name="Hint" value="pick one" />
+            </operaton:properties>
+            <operaton:validation>
+              <operaton:constraint name="required" />
+              <operaton:constraint name="validator" config="com.example.PlanValidator" />
+            </operaton:validation>
+            <operaton:value id="silver" name="Silver" />
+            <operaton:value id="gold" name="Gold" />
+          </operaton:formField>
+        </operaton:formData>
+      </bpmn:extensionElements>
+    </bpmn:userTask>
+  </bpmn:process>
+</bpmn:definitions>`;
+
+  /** Every child of the form field, at the path each direction reads it from. */
+  function formFieldSnapshot(process: ModdleElement): unknown {
+    const task = (process.get('flowElements') as ModdleElement[])[0];
+    const [formData] = extensionValues(task);
+    const [field] = formData.get('fields') as ModdleElement[];
+    const properties = field.get('properties') as ModdleElement;
+    const [property] = properties.get('values') as ModdleElement[];
+    const validation = field.get('validation') as ModdleElement;
+    const constraints = validation.get('constraints') as ModdleElement[];
+    const values = field.get('values') as ModdleElement[];
+
+    return {
+      datePattern: field.get('datePattern'),
+      property: {
+        id: property.get('id'),
+        name: property.get('name'),
+        value: property.get('value'),
+      },
+      constraints: constraints.map((c) => ({
+        name: c.get('name'),
+        config: c.get('config'),
+      })),
+      values: values.map((v) => ({ id: v.get('id'), name: v.get('name') })),
+    };
+  }
+
+  const EXTERNAL_TASK_FIXTURE = `${XML_HEADER}
+  <bpmn:error id="Error_1" errorCode="DECLINED" />
+  <bpmn:process id="P">
+    <bpmn:serviceTask id="T" operaton:type="external" operaton:topic="t" operaton:taskPriority="42">
+      <bpmn:extensionElements>
+        <operaton:properties>
+          <operaton:property name="k" value="v" />
+        </operaton:properties>
+        <operaton:errorEventDefinition id="Def_1" errorRef="Error_1" expression="\${x}" operaton:errorCodeVariable="c" />
+      </bpmn:extensionElements>
+    </bpmn:serviceTask>
+  </bpmn:process>
+</bpmn:definitions>`;
+
+  /** Every child `xmlToIr` reads, at the path it reads it from. */
+  function externalTaskSnapshot(process: ModdleElement): unknown {
+    const task = (process.get('flowElements') as ModdleElement[])[0];
+    const [propertiesEl, definitionEl] = extensionValues(task);
+    const property = (propertiesEl.get('values') as ModdleElement[])[0];
+    const errorRoot = definitionEl.get('errorRef') as ModdleElement;
+
+    return {
+      taskPriority: task.get('taskPriority'),
+      property: { name: property.get('name'), value: property.get('value') },
+      definitionType: definitionEl.$type,
+      expression: definitionEl.get('expression'),
+      errorCodeVariable: definitionEl.get('errorCodeVariable'),
+      errorRoot: {
+        type: errorRoot.$type,
+        errorCode: errorRoot.get('errorCode'),
+      },
+    };
+  }
+
+  it.each([
+    [
+      'a full formField declares datePattern, properties, validation and values',
+      FORM_FIELD_FIXTURE,
+      formFieldSnapshot,
+      {
+        datePattern: 'dd/MM/yyyy',
+        property: { id: 'hint', name: 'Hint', value: 'pick one' },
+        constraints: [
+          { name: 'required', config: undefined },
+          { name: 'validator', config: 'com.example.PlanValidator' },
+        ],
+        values: [
+          { id: 'silver', name: 'Silver' },
+          { id: 'gold', name: 'Gold' },
+        ],
+      },
+    ],
+    [
+      'operaton:ErrorEventDefinition is a concrete type, distinct from the ErrorEventDefinitionExtension trait, so errorRef resolves to the coded root',
+      EXTERNAL_TASK_FIXTURE,
+      externalTaskSnapshot,
+      {
+        taskPriority: '42',
+        property: { name: 'k', value: 'v' },
+        definitionType: 'operaton:ErrorEventDefinition',
+        expression: '${x}',
+        errorCodeVariable: 'c',
+        errorRoot: { type: 'bpmn:Error', errorCode: 'DECLINED' },
+      },
+    ],
+  ])(
+    '%s: parses with zero warnings, every child at its expected path, and round-trips byte for byte',
+    async (_title, fixture, snapshot, expected) => {
+      const first = operatonModdle();
+      const { definitions, process, warnings } = await parseProcess(
+        first,
+        fixture,
+      );
+      expect(warnings).toHaveLength(0);
+      expect(snapshot(process)).toEqual(expected);
+
+      const { xml } = await first.toXML(definitions, { format: false });
+      const second = operatonModdle();
+      const {
+        definitions: reparsedDefs,
+        process: reparsed,
+        warnings: warnings2,
+      } = await parseProcess(second, xml);
+      expect(warnings2).toHaveLength(0);
+      expect(snapshot(reparsed)).toEqual(expected);
+
+      const { xml: xml2 } = await second.toXML(reparsedDefs, { format: false });
+      expect(xml2).toBe(xml);
+    },
+  );
 });
 
 describe('AsyncCapable defaults are omitted on write', () => {

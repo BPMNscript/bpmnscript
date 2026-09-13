@@ -54,6 +54,7 @@ Field injection reuses `IoParameter` as a third direction.
 `IoParameter` already parses `direction=ID name=ID '=' value=IoValue` for any identifier in the direction position, so the grammar accepts `field` with no new rule at all.
 The direction word stays a soft word exactly as `input` and `output` already are, free for a variable or a step name everywhere else in a file, and it is the validator, not the parser, that checks which directions a given owner allows.
 Zero grammar rule is spent on the direction itself; the one grammar edit this decision needs is the brace block a listener gains, described below.
+A fourth direction, `property`, joins the three the same way for a form field's block (ADR-0037).
 
 Rejected: a dedicated `FieldInjection` rule with `field` a hard keyword.
 It would reserve a word for an idea `IoParameter` already has room for, the exact cost ADR-0023 already refused to pay for `listener`, and it would still need the same class-and-delegate placement rule and the same one-spelling value rule regardless of which grammar rule carries it.
@@ -160,3 +161,7 @@ ADR-0022 (engine attributes as named IR fields, the precedent a field and a form
 ADR-0023 (the listener surface this decision amends).
 ADR-0028 (the refuse-on-parser-rejection rule this decision reuses for a form reference with no binding).
 ADR-0029 (no new reserved words among its own drivers, the same driver behind reusing `IoParameter` here).
+
+Amended by ADR-0037, which adds `property` as a fourth direction, a member of a form field's block, by the same reuse of `IoParameter`.
+
+Amended by ADR-0038, under which the `property` direction rides a `topic` binding too, on a `service`, `send`, or `decide` task, the one direction a topic binding takes; a field still rides `class` and `delegate` alone.

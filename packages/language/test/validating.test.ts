@@ -18,6 +18,7 @@ import { createBpmnScriptServices } from '@bpmn-script/language';
 import {
   BLOCK_HOSTS,
   ENGINE_SETTINGS,
+  EXTERNAL_HOSTS,
   FENCE,
   FORM_HOSTS,
   LABEL_HOSTS,
@@ -61,6 +62,22 @@ function checks(concern: string, cases: Case[]): void {
 }
 
 const capitalized = (text: string) => text[0]!.toUpperCase() + text.slice(1);
+
+/**
+ * One row per `(setting, field type)` pair, each a field `f` of that type
+ * carrying the setting alone. An enum gets a value so its own empty-values
+ * warning stays out of the list.
+ */
+function formFieldRows(
+  concern: string,
+  pairs: Array<[setting: string, type: string, expected: string[]]>,
+): Case[] {
+  return pairs.map(([setting, type, expected]) => [
+    `${concern}: ${setting} on ${type}`,
+    `process p { start S { form { f: ${type} (${setting})${type === 'enum' ? ' { a }' : ''} } } }`,
+    expected,
+  ]);
+}
 
 // ── The messages, each spelled once ─────────────────────────────────────────
 
@@ -133,10 +150,43 @@ const oneFormBlock = (description: string) =>
   `${description} may declare at most one 'form' block.`;
 const duplicateFormField = (id: string) => `Duplicate form field '${id}'.`;
 const formFieldType = (id: string, type: string) =>
-  `Form field '${id}' has type '${type}', which a form cannot use. Use string, number, boolean, or date.`;
+  `Form field '${id}' has type '${type}', which a form cannot use. Use string, number, boolean, date, or enum.`;
 const HANDLER_START_FORM =
   `The start of an event-handler body has no form; the event's data is bound ` +
   `by the handler's own '(...)' bindings, not by a form.`;
+const FORM_FIELD_SETTINGS = `'required', 'readonly', 'min', 'max', 'minlength', 'maxlength', 'validator', or 'pattern'`;
+const formFieldSettingsOnly = (id: string, text: string) =>
+  `Form field '${id}' takes 'key: value' settings in its parens; '${text}' is not one.`;
+const unknownFormFieldSetting = (id: string, key: string) =>
+  `Unknown form field setting '${key}' on '${id}'; write ${FORM_FIELD_SETTINGS}.`;
+const constraintMisfit = (
+  name: string,
+  id: string,
+  type: string,
+  fits: string,
+) =>
+  `Constraint '${name}' fits a ${fits} field, not the ${type} field '${id}': the engine checks a submitted ${fits} alone and fails every other submission.`;
+const patternMisfit = (id: string, type: string) =>
+  `Setting 'pattern' is the date pattern a 'date' field is parsed with; '${id}' is a ${type} field, which the engine reads no pattern off.`;
+const flagFalse = (key: string) =>
+  `A field is ${key} only while the setting is written, so '${key}: false' says nothing; leave the setting out.`;
+const flagNotTrue = (key: string) =>
+  `Setting '${key}' takes the literal true; write '${key}: true'.`;
+const integerBound = (key: string) =>
+  `Setting '${key}' takes an integer literal or a quoted integer such as "-5".`;
+const PATTERN_VALUE = `Setting 'pattern' takes a non-empty quoted date pattern such as "dd/MM/yyyy".`;
+const valuesOnNonEnum = (id: string, type: string) =>
+  `Value lines belong on an 'enum' field; '${id}' is a ${type} field.`;
+const emptyEnum = (id: string) =>
+  `Enum field '${id}' offers no values, so the engine rejects every submitted value; add a value line such as 'basic "Basic"'.`;
+const duplicateValue = (id: string) => `Duplicate value '${id}'.`;
+const enumDefault = (id: string, value: string, ids: string) =>
+  `The default "${value}" of enum field '${id}' names none of its values; write ${ids}.`;
+const formFieldDirection = (id: string, direction: string, isEnum = false) =>
+  `Unknown member direction '${direction}' in form field '${id}': its block takes 'property <key> = "<value>"' lines${isEnum ? ' and value lines' : ''}.`;
+const propertyValue = (name: string) =>
+  `Property '${name}' takes a quoted string or a "\${...}" expression; ` +
+  'put the value in quotes.';
 
 // Parameters and listeners.
 
@@ -183,6 +233,29 @@ const USER_LISTENER_EVENTS = `'start', 'end', 'create', 'assign', 'complete', 'u
 const duplicateListener = (event: string) =>
   `Duplicate 'on ${event}' listener.`;
 const LISTENER_PARTICLE_ONLY = "Only 'on timeout' takes a particle.";
+
+// The extras of a step handed to an external worker.
+
+const EXTERNAL_HOSTS_SENTENCE =
+  "a service task, a send task, or a decision step bound with 'topic'";
+const topicBinding = (subject: string, item: string, written?: string) =>
+  `${subject} carries ${item} only under a 'topic' binding: the engine reads it for a step handed to an external worker` +
+  (written === undefined
+    ? '.'
+    : `, and the binding written with '${written}' hands the step to none.`);
+const noPropertyHost = (description: string) =>
+  `${capitalized(description)} cannot declare a 'property' line; a property line belongs on ${EXTERNAL_HOSTS_SENTENCE}, and in a form field's block.`;
+const noMappingHost = (description: string) =>
+  `${capitalized(description)} cannot map a reported failure; an 'error <Code> when <condition>' line belongs on ${EXTERNAL_HOSTS_SENTENCE}, whose external worker is what reports one.`;
+const MAPPING_HEAD =
+  'An external task maps a reported failure onto an error and nothing else; ' +
+  "write 'error <Code> when <condition>'.";
+const MAPPING_WHEN =
+  "Write 'when' between the code and the condition: 'error <Code> when <condition>'.";
+const priorityShape = (key: string) =>
+  `Setting '${key}' takes an integer or a "\${...}" expression; the engine refuses to deploy a constant that is not an integer.`;
+const codeNotDeclared = (trigger: string, name: string) =>
+  `'${name}' is not declared. Add '${trigger} ${name}' to the process.`;
 
 // Fenced scripts.
 
@@ -1498,9 +1571,95 @@ checks('Validation - form fields', [
     [],
   ],
   [
+    'an enum field agrees with a string var, since it binds the chosen id as a string',
+    `process p { var plan: string start Begin { form { plan: enum { a } } } }`,
+    [],
+  ],
+  [
     "a handler body's start reads the event through the handler's bindings, not a form",
     `process p { error X on error(X) { start In { form { a: string } } user A } }`,
     [noFlowSteps('p'), HANDLER_START_FORM],
+  ],
+  [
+    'a constraint name outside the six and validator names the eight settings',
+    `process p { start S { form { amount: number (minimum: 0) } } }`,
+    [unknownFormFieldSetting('amount', 'minimum')],
+  ],
+  ...formFieldRows('a constraint fits the type its validator checks', [
+    ['min: 0', 'string', [constraintMisfit('min', 'f', 'string', 'number')]],
+    [
+      'maxlength: 2',
+      'number',
+      [constraintMisfit('maxlength', 'f', 'number', 'string')],
+    ],
+    [
+      'minlength: 2',
+      'date',
+      [constraintMisfit('minlength', 'f', 'date', 'string')],
+    ],
+    ['pattern: "dd/MM/yyyy"', 'string', [patternMisfit('f', 'string')]],
+    ['pattern: "dd/MM/yyyy"', 'enum', [patternMisfit('f', 'enum')]],
+    ['min: 0', 'number', []],
+    ['minlength: 2', 'string', []],
+    ['required: true', 'boolean', []],
+    ['pattern: "dd/MM/yyyy"', 'date', []],
+  ]),
+  ...formFieldRows('a constraint takes one value shape', [
+    ['required: false', 'string', [flagFalse('required')]],
+    ['required: "true"', 'string', [flagNotTrue('required')]],
+    ['min: "abc"', 'number', [integerBound('min')]],
+    ['max: 1.5', 'number', [integerBound('max')]],
+    ['minlength: 2.5', 'string', [integerBound('minlength')]],
+    ['pattern: ""', 'date', [PATTERN_VALUE]],
+    ['min: -5', 'number', []],
+    ['min: "-5"', 'number', []],
+    ['maxlength: "80"', 'string', []],
+    ['validator: com.example.Check', 'string', []],
+  ]),
+  [
+    "a bare word in a field's parens is not a setting",
+    `process p { start S { form { amount: number (required) } } }`,
+    [warn(undeclared('required')), formFieldSettingsOnly('amount', 'required')],
+  ],
+  [
+    'an enum with no values is a warning',
+    `process p { start S { form { plan: enum } } }`,
+    [warn(emptyEnum('plan'))],
+  ],
+  [
+    'a repeated value id is one error on the repeat',
+    `process p { start S { form { plan: enum { a "A" a "B" } } } }`,
+    [duplicateValue('a')],
+  ],
+  [
+    'a literal default outside the values names the ids it can take',
+    `process p { start S { form { plan: enum = "zzz" { a "A" b } } } }`,
+    [enumDefault('plan', 'zzz', `'a' or 'b'`)],
+  ],
+  [
+    'an expression default is left to the engine',
+    `process p { start S { form { plan: enum = "\${plan}" { a } } } }`,
+    [],
+  ],
+  [
+    'value lines belong on an enum',
+    `process p { start S { form { plan: string { a "A" } } } }`,
+    [valuesOnNonEnum('plan', 'string')],
+  ],
+  [
+    'a property is text',
+    `process p { start S { form { p: string { property hint = ["a"] } } } }`,
+    [propertyValue('hint')],
+  ],
+  [
+    'a repeated property key is a duplicate',
+    `process p { start S { form { p: string { property hint = "1" property hint = "2" } } } }`,
+    [duplicateParameter('property', 'hint')],
+  ],
+  [
+    "an io direction in a field's block is not a member",
+    `process p { start S { form { p: enum { a input x = "1" } } } }`,
+    [formFieldDirection('p', 'input', true)],
   ],
 ]);
 
@@ -3411,6 +3570,54 @@ describe('Validation - every element with settings and a member block', () => {
       ]);
     },
   );
+
+  test.each(BLOCK_HOSTS.filter(([kind]) => !EXTERNAL_HOSTS.has(kind)))(
+    'a property line on %s names the element kind and the hosts that take one',
+    async (_kind, description, program) => {
+      expect(await diagnosticsOf(program('property k = "v"'))).toEqual([
+        noPropertyHost(description),
+      ]);
+    },
+  );
+
+  // `call` is absent: its own block has no mapping member, so one written
+  // there is a parse error rather than this diagnostic. The code is declared
+  // in the header so the linker stays out of the list.
+  test.each(
+    BLOCK_HOSTS.filter(
+      ([kind]) => !EXTERNAL_HOSTS.has(kind) && kind !== 'call',
+    ).map(
+      ([kind, description, members]) =>
+        [
+          kind,
+          description,
+          (c: string) =>
+            members(c).replace('process p {', 'process p { error E '),
+        ] as const,
+    ),
+  )(
+    'an error mapping on %s names the element kind and the hosts that take one',
+    async (_kind, description, program) => {
+      expect(await diagnosticsOf(program('error E when "${x}"'))).toEqual([
+        noMappingHost(description),
+      ]);
+    },
+  );
+
+  test.each([
+    ['service', 'service V(topic: "t")'],
+    ['send', 'send N(topic: "t")'],
+    ['decide', 'decide D(topic: "t")'],
+  ])(
+    'a topic-bound %s takes a property line and an error mapping',
+    async (_kind, statement) => {
+      expect(
+        await diagnosticsOf(
+          `process p { error E ${statement} { property k = "v" error E when "\${x}" } }`,
+        ),
+      ).toEqual([]);
+    },
+  );
 });
 
 checks('Validation - input and output parameters', [
@@ -3514,7 +3721,7 @@ checks('Validation - injected fields', [
     `process p { service V(class: "com.acme.D") { field greeting = 3 fld x = 1 } }`,
     [
       fieldValue('greeting'),
-      unknownDirection('fld', `'input', 'output', or 'field'`),
+      unknownDirection('fld', `'input', 'output', 'field', or 'property'`),
     ],
   ],
   [
@@ -3590,7 +3797,7 @@ checks('Validation - injected fields', [
   [
     'an unrecognized direction on a service task names field as legal too',
     `process p { service V(class: "com.acme.D") { fld greeting = "hi" } }`,
-    [unknownDirection('fld', `'input', 'output', or 'field'`)],
+    [unknownDirection('fld', `'input', 'output', 'field', or 'property'`)],
   ],
   [
     "a listener's block takes a field alone, so an input there is unrecognized",
@@ -3598,6 +3805,113 @@ checks('Validation - injected fields', [
     [unknownDirection('input', `'field'`)],
   ],
 ]);
+
+/**
+ * The extras `BpmnParse.parseExternalServiceTask` reads and nothing else does,
+ * so each is legal beside `topic` on the three kinds that bind one and nowhere
+ * else. Raw conditions where the condition is not the point, so no variable
+ * warning rides along.
+ */
+checks('Validation - external task extras', [
+  // `taskPriority` needs `topic`.
+  [
+    'a priority under a class binding names the binding written',
+    `process p { service V(class: "c.D", taskPriority: 5) }`,
+    [topicBinding('A service task', "'taskPriority'", 'class')],
+  ],
+  [
+    'a priority under a decision binding names the binding written',
+    `process p { decide D(decision: "k", taskPriority: 5) }`,
+    [topicBinding('A decision step', "'taskPriority'", 'decision')],
+  ],
+  [
+    'a priority on a thrown message is an unknown key, topic or not',
+    `process p { start S emit message M("X", topic: "t", taskPriority: 5) }`,
+    [notValidOn('taskPriority', 'an emit statement')],
+  ],
+  // Property lines.
+  [
+    'a property line under a class binding names the binding written',
+    `process p { service V(class: "c.D") { property k = "v" } }`,
+    [topicBinding('A service task', 'a property line', 'class')],
+  ],
+  [
+    'a property value is text',
+    `process p { service V(topic: "t") { property k = ["a"] } }`,
+    [propertyValue('k')],
+  ],
+  [
+    'a repeated property key is one duplicate',
+    `process p { service V(topic: "t") { property k = "1" property k = "2" } }`,
+    [duplicateParameter('property', 'k')],
+  ],
+  [
+    'a property declares no process variable',
+    `process p { service V(topic: "t") { property k = "v" } if (k) { step A } }`,
+    [warn(undeclared('k'))],
+  ],
+  // Error mappings.
+  [
+    'a mapping under a class binding names the binding written',
+    `process p { error E service V(class: "c.D") { error E when "\${x}" } }`,
+    [topicBinding('A service task', 'an error mapping', 'class')],
+  ],
+  [
+    'a mapping raises an error and nothing else',
+    `process p { escalation S service V(topic: "t") { escalation S when "\${x}" } }`,
+    [MAPPING_HEAD],
+  ],
+  [
+    'a mapping is written with when',
+    `process p { error E service V(topic: "t") { error E wenn "\${x}" } }`,
+    [MAPPING_WHEN],
+  ],
+  [
+    'a mapping naming an undeclared code draws the linker message alone',
+    `process p { service V(topic: "t") { error NOPE when "\${x}" } }`,
+    [codeNotDeclared('error', 'NOPE')],
+  ],
+  // `externalTask` is resolved on an external task's execution alone.
+  [
+    "a mapping's condition reads the external task",
+    `process p { error E service V(topic: "t") { error E when externalTask.errorMessage == "x" } }`,
+    [],
+  ],
+  [
+    'an if reading the external task warns like any undeclared variable',
+    `process p { if (externalTask.retries == 0) { step A } }`,
+    [warn(undeclared('externalTask'))],
+  ],
+]);
+
+/**
+ * One row per key and value shape. `parsePriority` deploys an integer or an
+ * expression and refuses every other constant, for `jobPriority` as for
+ * `taskPriority`.
+ */
+checks(
+  'Validation - a priority is an integer or an expression',
+  (
+    [
+      ['taskPriority', '1.5', [priorityShape('taskPriority')]],
+      ['taskPriority', '"high"', [priorityShape('taskPriority')]],
+      ['jobPriority', '2.5', [priorityShape('jobPriority')]],
+      ['jobPriority', 'true', [priorityShape('jobPriority')]],
+      ['taskPriority', '42', []],
+      ['taskPriority', '-5', []],
+      ['taskPriority', '"42"', []],
+      ['taskPriority', '"${p}"', []],
+      ['jobPriority', '"7"', []],
+      ['taskPriority', 'prio', [warn(undeclared('prio'))]],
+    ] as Array<[key: string, value: string, expected: string[]]>
+  ).map(([key, value, expected]) => [
+    `${key}: ${value}`,
+    key === 'jobPriority'
+      ? `process p { user U(${key}: ${value}) }`
+      : `process p { service V(topic: "t", ${key}: ${value}) }`,
+    expected,
+  ]),
+);
 
 checks('Validation - form references on a user task', [
   [

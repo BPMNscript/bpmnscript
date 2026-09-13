@@ -49,20 +49,26 @@ import {
   isListLiteral,
   isMapLiteral,
   isScriptLiteral,
+  integerLiteralText,
   renderExpression,
   formatPlainWordList,
   SCRIPT_FORMAT_ALIASES,
   splitFencedScript,
   CALL_MAPPER_KEY_BY_KIND,
   CATCH_TRIGGERS,
+  DATE_PATTERN_KEY,
   DECISION_RESULT_MAPPINGS,
   EMIT_TRIGGERS,
   END_TRIGGERS,
+  ERROR_MAPPING_HEAD,
   EXECUTION_LISTENER_EVENTS,
   FIELD_DIRECTION,
   FORM_FIELD_TYPES,
+  isFormConstraintName,
   ON_TRIGGERS,
+  PROPERTY_DIRECTION,
   START_TRIGGERS,
+  TASK_PRIORITY_KEY,
   caughtBindingsOf,
   declaredCodeOf,
   settingsOf,
@@ -108,6 +114,8 @@ import type {
   IoParameter as AstIoParameter,
   IoValue as AstIoValue,
   Listener as AstListener,
+  FormField as AstFormField,
+  ErrorMapping as AstErrorMapping,
 } from '@bpmn-script/language';
 import type {
   BpmnProcess,
@@ -117,12 +125,17 @@ import type {
   CodeBinding,
   EndEventDefinition,
   EngineAttributes,
+  ErrorMapping as IrErrorMapping,
   EventDefinition,
   ExecutionListener,
+  ExtensionProperty,
   FieldInjection,
   FlowElement,
+  FormConstraintName,
   FormField,
+  FormFieldConstraint,
   FormFieldType,
+  FormFieldValue,
   IoMapped,
   IoParameter,
   IoValue,
@@ -640,24 +653,77 @@ function lowerFormFields(
   if (fields.length === 0) {
     return undefined;
   }
-  return fields.map((f) => ({
+  return fields.map(lowerFormField);
+}
+
+function lowerFormField(f: AstFormField): FormField {
+  const settings = settingsOf(f.items);
+  const datePattern = attrValue(settings, DATE_PATTERN_KEY);
+  const constraints = readFormFieldConstraints(settings);
+  const values: FormFieldValue[] = f.values.map((v) => ({
+    id: v.id,
+    ...(v.label !== undefined ? { label: v.label } : {}),
+  }));
+  const properties = readExtensionProperties(f.params);
+  return {
     id: f.id,
     type: toFormFieldType(f.type),
     ...(f.label !== undefined ? { label: f.label } : {}),
     ...(f.defaultValue !== undefined
       ? { defaultValue: renderFormDefault(f.defaultValue) }
       : {}),
-  }));
+    ...(datePattern !== undefined ? { datePattern } : {}),
+    ...(values.length > 0 ? { values } : {}),
+    ...(constraints.length > 0 ? { constraints } : {}),
+    ...(properties !== undefined ? { properties } : {}),
+  };
 }
 
 function toFormFieldType(type: string): FormFieldType {
   const mapped = FORM_FIELD_TYPES.find((t) => t === type);
   if (mapped === undefined) {
     throw new Error(
-      `astToIr: unsupported form field type '${type}' (expected string, number, boolean, or date).`,
+      `astToIr: unsupported form field type '${type}' (expected ${formatPlainWordList(FORM_FIELD_TYPES)}).`,
     );
   }
   return mapped;
+}
+
+/**
+ * Source order, which the engine validates in. A key outside
+ * {@link FORM_CONSTRAINT_NAMES} (`pattern` included) is left to the validator.
+ */
+function readFormFieldConstraints(
+  settings: KeyValueAttr[],
+): FormFieldConstraint[] {
+  return settings
+    .filter((setting): setting is KeyValueAttr & { key: FormConstraintName } =>
+      isFormConstraintName(setting.key),
+    )
+    .map((setting) => formFieldConstraint(setting.key, setting.value));
+}
+
+/**
+ * `validator` reads the shape a `class:` binding takes. Exhaustive on
+ * purpose: a name added to {@link FORM_CONSTRAINT_NAMES} stops compiling here
+ * until it picks a reading.
+ */
+function formFieldConstraint(
+  name: FormConstraintName,
+  value: Expr,
+): FormFieldConstraint {
+  switch (name) {
+    case 'required':
+    case 'readonly':
+      return { name };
+    case 'validator':
+      return { name, config: exprText(value) };
+    case 'min':
+    case 'max':
+    case 'minlength':
+    case 'maxlength':
+      return { name, config: numericOrElValue(value) };
+  }
 }
 
 /** Literals yield their bare value; anything else falls back to its `${...}` body, evaluated as EL. */
@@ -687,9 +753,11 @@ function lowerServiceTaskLike(
     id: stmt.name,
     ...namedAttrs(stmt),
     binding:
-      binding.kind === 'external' || binding.kind === 'decision'
-        ? binding
-        : withDeclaredFields(binding, stmt.params),
+      binding.kind === 'external'
+        ? withExternalExtras(binding, stmt)
+        : binding.kind === 'decision'
+          ? binding
+          : withDeclaredFields(binding, stmt.params),
     ...(resultVariable !== undefined ? { resultVariable } : {}),
     ...(element !== undefined ? { element } : {}),
     ...readLoop(stmt),
@@ -1613,10 +1681,15 @@ function versionBinding(attrs: KeyValueAttr[]): VersionBinding | undefined {
 /**
  * Render a numeric-or-EL attribute value into plain BPMN text: an int or
  * decimal yields its digits, a string its bare text, anything else its `${...}`
- * body. Shared by a pinned `version` and the `jobPriority`/`priority` settings.
+ * body. Shared by a pinned `version`, the `jobPriority`/`priority` settings,
+ * and a form field's `min`/`max`/`minlength`/`maxlength` bounds.
  */
 function numericOrElValue(expr: Expr): string {
-  if (isLiteralInt(expr) || isLiteralDecimal(expr)) {
+  const integer = integerLiteralText(expr);
+  if (integer !== undefined) {
+    return integer;
+  }
+  if (isLiteralDecimal(expr)) {
     return String(expr.value);
   }
   if (isLiteralString(expr)) {
@@ -1876,6 +1949,63 @@ function readFieldInjections(params: AstIoParameter[]): FieldInjection[] {
         ? [{ name: param.name, value: value.text }]
         : [];
     });
+}
+
+function readExtensionProperties(
+  params: AstIoParameter[],
+): ExtensionProperty[] | undefined {
+  const properties = params
+    .filter((param) => param.direction === PROPERTY_DIRECTION)
+    .flatMap((param) => {
+      const value = lowerIoValue(param.value);
+      return value.kind === 'text'
+        ? [{ key: param.name, value: value.text }]
+        : [];
+    });
+  return properties.length === 0 ? undefined : properties;
+}
+
+/** What `parseExternalServiceTask` reads beside `topic`; no other binding reaches that reader. */
+function withExternalExtras(
+  binding: Extract<ServiceTaskBinding, { kind: 'external' }>,
+  stmt: AstServiceTask | AstSendTask | AstBusinessRuleTask,
+): Extract<ServiceTaskBinding, { kind: 'external' }> {
+  const taskPriority = numericOrElAttrValue(
+    settingsOf(stmt.items),
+    TASK_PRIORITY_KEY,
+  );
+  const properties = readExtensionProperties(stmt.params);
+  const errorMappings = lowerErrorMappings(stmt.errorMappings);
+  return {
+    ...binding,
+    ...(taskPriority !== undefined ? { taskPriority } : {}),
+    ...(properties !== undefined ? { properties } : {}),
+    ...(errorMappings !== undefined ? { errorMappings } : {}),
+  };
+}
+
+/**
+ * The code is read through the declaration's `code` setting, as a thrown one
+ * is ({@link raisedCodeOf}); an unresolved reference falls back to the text
+ * written, which the linker has already reported.
+ */
+function lowerErrorMappings(
+  mappings: AstErrorMapping[],
+): IrErrorMapping[] | undefined {
+  const lowered = mappings
+    .filter((mapping) => mapping.trigger === ERROR_MAPPING_HEAD)
+    .map((mapping) => ({
+      errorCode: loweredErrorCode(mapping),
+      condition: renderExpression(mapping.condition),
+    }));
+  return lowered.length === 0 ? undefined : lowered;
+}
+
+function loweredErrorCode(mapping: AstErrorMapping): string {
+  const declaration = mapping.code.ref;
+  const code =
+    declaration !== undefined ? declaredCodeOf(declaration) : undefined;
+  return code ?? mapping.code.$refText;
 }
 
 /**

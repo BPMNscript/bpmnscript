@@ -28,8 +28,11 @@ import {
   UnsupportedConstructError,
   UnsupportedElementError,
   UnsupportedEventDefinitionError,
+  UnsupportedAssignmentError,
+  UnsupportedErrorMappingError,
   UnsupportedEventFeatureError,
   UnsupportedExtensionFormError,
+  UnsupportedFormFieldConstraintError,
   UnsupportedFormReferenceError,
   UnsupportedLoopCharacteristicsError,
   UnsupportedServiceTaskFormError,
@@ -39,6 +42,7 @@ import type {
   CallActivity,
   EventDefinition,
   FlowElement,
+  FormField,
   IntermediateCatchEvent,
   ListenerBinding,
   ServiceTaskBinding,
@@ -114,6 +118,17 @@ const extensionWarnings = (warnings: ImportWarning[]): ImportWarning[] =>
 /** Only the warnings reporting BPMN content the transform does not map. */
 const unmappedWarnings = (warnings: ImportWarning[]): ImportWarning[] =>
   warnings.filter((w) => w.category === 'unmappedConstruct');
+
+/** One expected warning, matched on its message; a dropped extension unless told otherwise. */
+const warning = (
+  elementId: string,
+  message: RegExp,
+  category: ImportWarning['category'] = 'extensionAttribute',
+): { elementId: string; category: string; message: unknown } => ({
+  elementId,
+  category,
+  message: expect.stringMatching(message),
+});
 
 /** The whole refusal an activity excluded from normal flow draws. */
 const IS_FOR_COMPENSATION_DETAIL =
@@ -1733,6 +1748,25 @@ describe('xmlToIr: a #{...} expression body is rewrapped, and says so', () => {
       }),
       rewrapped('bpmn:condition', 'T'),
     ],
+    [
+      'a job priority',
+      oneNodeDoc('userTask', { attrs: 'operaton:jobPriority="#{high}"' }),
+      rewrapped("'jobPriority' setting", 'T'),
+    ],
+    [
+      'a user task priority',
+      oneNodeDoc('userTask', { attrs: 'operaton:priority="#{high}"' }),
+      rewrapped("'priority' setting", 'T'),
+    ],
+    [
+      'a call activity version binding',
+      oneNodeDoc('callActivity', {
+        attrs:
+          'calledElement="sub" operaton:calledElementBinding="version" ' +
+          'operaton:calledElementVersion="#{v}"',
+      }),
+      rewrapped('calledElementVersion', 'T'),
+    ],
   ] as const)('%s reports the rewrap', async (_title, xml, message) => {
     const { warnings } = await xmlToIr(xml);
     expect(warnings.map((w) => w.message)).toEqual([message]);
@@ -2196,9 +2230,7 @@ describe('xmlToIr: undeclared operaton extension element residual', () => {
     </bpmn:userTask>
     <bpmn:userTask id="PropsTask" name="Props Task">
       <bpmn:extensionElements>
-        <operaton:properties>
-          <operaton:property name="k" value="v" />
-        </operaton:properties>
+        <operaton:potentialStarter />
       </bpmn:extensionElements>
     </bpmn:userTask>
     <bpmn:endEvent id="E" />
@@ -2212,7 +2244,7 @@ describe('xmlToIr: undeclared operaton extension element residual', () => {
     // cannot tie to a specific step.
     expectOneWarning(extensionWarnings(warnings), {
       elementId: 'p',
-      message: /properties/i,
+      message: /potentialStarter/i,
     });
     expect(warnings.some((w) => w.elementId === 'CleanTask')).toBe(false);
   });
@@ -2608,16 +2640,25 @@ describe('xmlToIr: warns for unmapped BPMN content', () => {
       ],
     ],
     [
-      'a resource assignment and a data association on a task',
-      reviewTaskDoc(`<bpmn:dataOutputAssociation id="DataOut_1" />
+      'a data association on a user task, and a resource assignment on a service task, where the engine reads none',
+      operatonDoc`    <bpmn:startEvent id="S" />
+    <bpmn:userTask id="Review">
+      <bpmn:dataOutputAssociation id="DataOut_1" />
+    </bpmn:userTask>
+    <bpmn:serviceTask id="Svc" operaton:class="com.example.Svc">
       <bpmn:potentialOwner id="Owner_1">
         <bpmn:resourceAssignmentExpression id="Assign_1">
           <bpmn:formalExpression id="Expr_1">managers</bpmn:formalExpression>
         </bpmn:resourceAssignmentExpression>
-      </bpmn:potentialOwner>`),
+      </bpmn:potentialOwner>
+    </bpmn:serviceTask>
+    <bpmn:endEvent id="E" />
+    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="Review" />
+    <bpmn:sequenceFlow id="F2" sourceRef="Review" targetRef="Svc" />
+    <bpmn:sequenceFlow id="F3" sourceRef="Svc" targetRef="E" />`,
       [
         ['Review', "bpmn:dataOutputAssociation 'DataOut_1'"],
-        ['Review', "bpmn:potentialOwner 'Owner_1'"],
+        ['Svc', "bpmn:potentialOwner 'Owner_1'"],
       ],
     ],
     [
@@ -2808,8 +2849,9 @@ describe("xmlToIr: a root of a kind this tool does not model reports its own chi
   const KEPT_SETTINGS_NOTE =
     '(this tool keeps the assignee, form, form reference, script, ' +
     'service-task binding, injected fields, result variable, version tag, ' +
-    'input/output mappings and listeners, and the async, retry, job-priority ' +
-    'and task-assignment settings; a gateway carries no engine setting at all).';
+    "input/output mappings and listeners, an external task's priority, " +
+    'properties and error mappings, and the async, retry, job-priority and ' +
+    'task-assignment settings; a gateway carries no engine setting at all).';
 
   it.each([
     [
@@ -3156,15 +3198,18 @@ describe('xmlToIr: callActivity import', () => {
 
   it('a dangling calledElementVersion (binding absent) imports with NO binding and exactly one warning', async () => {
     const { node, warnings } = await importCall(
-      'operaton:calledElementVersion="7"',
+      'operaton:calledElementVersion="#{v}"',
     );
     expect('binding' in node).toBe(false);
-
-    const versionWarnings = warnings.filter((w) =>
-      w.message.includes('calledElementVersion'),
-    );
-    expect(versionWarnings).toHaveLength(1);
-    expect(versionWarnings[0].elementId).toBe('CallSub');
+    expect(warnings).toEqual([
+      {
+        elementId: 'CallSub',
+        category: 'extensionAttribute',
+        message:
+          "The 'calledElementVersion' setting on 'CallSub' has no effect " +
+          'without calledElementBinding="version" and was not imported.',
+      },
+    ]);
   });
 
   it.each([
@@ -5490,6 +5535,227 @@ describe('xmlToIr: flat engine settings on a user task', () => {
     expect(warnings).toEqual([]);
   });
 });
+describe('xmlToIr: BPMN-native assignment and the quantity attributes', () => {
+  const role = (
+    tag: string,
+    id: string,
+    expression?: string,
+    attrs = '',
+  ): string =>
+    `      <bpmn:${tag} id="${id}" ${attrs}>${
+      expression === undefined
+        ? ''
+        : `
+        <bpmn:resourceAssignmentExpression>
+          <bpmn:formalExpression>${expression}</bpmn:formalExpression>
+        </bpmn:resourceAssignmentExpression>`
+    }
+      </bpmn:${tag}>`;
+  const importReview = (attrs: string, children: string) =>
+    importOnly(
+      oneNodeDoc('userTask', { id: 'Review', attrs, children }),
+      'userTask',
+    );
+  const reported = (warnings: ImportWarning[]) =>
+    warnings.map((w) => [w.category, w.elementId, w.message]);
+
+  it('merges the roles before the operaton: attributes, in the order the engine builds its lists, and names each rewrite', async () => {
+    const { node, warnings } = await importReview(
+      'operaton:candidateUsers="bob" operaton:candidateGroups="audit"',
+      role('humanPerformer', 'Lead', 'demo') +
+        role('potentialOwner', 'Team', 'user(mary), group(managers)') +
+        role('potentialOwner', 'Finance', 'finance'),
+    );
+    expect(node).toEqual({
+      kind: 'userTask',
+      id: 'Review',
+      assignee: 'demo',
+      candidateUsers: 'mary,bob',
+      candidateGroups: 'managers,finance,audit',
+    });
+    expect(reported(warnings)).toEqual([
+      [
+        'unmappedConstruct',
+        'Review',
+        expect.stringMatching(
+          /^The bpmn:humanPerformer 'Lead' on 'Review' imports as assignee: "demo":.*parseHumanPerformerResourceAssignment.*operaton:assignee/,
+        ),
+      ],
+      [
+        'unmappedConstruct',
+        'Review',
+        expect.stringMatching(
+          /^The bpmn:potentialOwner 'Team' on 'Review' imports as candidateUsers: "mary" and candidateGroups: "managers":.*parsePotentialOwnerResourceAssignment/,
+        ),
+      ],
+      [
+        'unmappedConstruct',
+        'Review',
+        expect.stringMatching(
+          /^The bpmn:potentialOwner 'Finance' on 'Review' imports as candidateGroups: "finance":/,
+        ),
+      ],
+    ]);
+  });
+
+  it.each([
+    [
+      'a humanPerformer beside operaton:assignee',
+      'operaton:assignee="bob"',
+      role('humanPerformer', 'Lead', 'demo'),
+      /'Lead'.*"demo".*operaton:assignee="bob".*parseUserTaskCustomExtensions/,
+    ],
+    [
+      'two humanPerformers',
+      '',
+      role('humanPerformer', 'Lead', 'demo') +
+        role('humanPerformer', 'Backup', 'mary'),
+      /2 bpmn:humanPerformer.*parseHumanPerformer/,
+    ],
+  ])('%s is refused', async (_title, attrs, children, detail) => {
+    const err = await expectRefusal<UnsupportedAssignmentError>(
+      xmlToIr(oneNodeDoc('userTask', { id: 'Review', attrs, children })),
+      UnsupportedAssignmentError,
+      detail,
+    );
+    expect(err.elementId).toBe('Review');
+  });
+
+  it.each([
+    [
+      'a comma inside an expression does not split',
+      "user(${a}), group(x), ${groupOf(b, 'c')}",
+      {
+        candidateUsers: '${a}',
+        candidateGroups: "x,${groupOf(b, 'c')}",
+      },
+      `imports as candidateUsers: "\${a}" and candidateGroups: "x,\${groupOf(b, 'c')}"`,
+    ],
+    [
+      'a bare $ opens an expression no } closes, so the comma after it does not split either',
+      'group(x), a$b, c',
+      { candidateGroups: 'x,a$b, c' },
+      'imports as candidateGroups: "x,a$b, c"',
+    ],
+  ])(
+    'splits a potentialOwner as parseCommaSeparatedList does: %s',
+    async (_title, expression, imported, detail) => {
+      const { node, warnings } = await importReview(
+        '',
+        role('potentialOwner', 'Team', expression),
+      );
+      expect(node).toEqual({ kind: 'userTask', id: 'Review', ...imported });
+      expect(reported(warnings)).toEqual([
+        ['unmappedConstruct', 'Review', expect.stringContaining(detail)],
+      ]);
+    },
+  );
+
+  it('drops a role without a formal expression, any other resource role, and what a read role carries beside its expression, and leaves the generic drop on every other activity', async () => {
+    const xml = operatonDoc`    <bpmn:startEvent id="S" />
+    <bpmn:userTask id="Review">
+${role('humanPerformer', 'Lead', 'demo', 'resourceRef="Res_1"')}
+${role('potentialOwner', 'Empty')}
+${role('performer', 'Actor', 'ops')}
+      <bpmn:potentialOwner id="XsiSpelled">
+        <bpmn:resourceAssignmentExpression>
+          <bpmn:expression xsi:type="bpmn:tFormalExpression" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">demo</bpmn:expression>
+        </bpmn:resourceAssignmentExpression>
+      </bpmn:potentialOwner>
+    </bpmn:userTask>
+    <bpmn:serviceTask id="Svc" operaton:class="com.example.Svc">
+${role('potentialOwner', 'Owner_1', 'managers')}
+    </bpmn:serviceTask>
+    <bpmn:endEvent id="E" />
+    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="Review" />
+    <bpmn:sequenceFlow id="F2" sourceRef="Review" targetRef="Svc" />
+    <bpmn:sequenceFlow id="F3" sourceRef="Svc" targetRef="E" />`;
+    const { ir, warnings } = await xmlToIr(xml);
+    expect(byId(ir, 'Review')).toEqual({
+      kind: 'userTask',
+      id: 'Review',
+      assignee: 'demo',
+    });
+    expect(reported(warnings)).toEqual([
+      [
+        'unmappedConstruct',
+        'Review',
+        expect.stringMatching(
+          /^The bpmn:humanPerformer 'Lead' on 'Review' imports as assignee: "demo":/,
+        ),
+      ],
+      [
+        'unmappedConstruct',
+        'Review',
+        expect.stringMatching(
+          /^The resourceRef on the bpmn:humanPerformer 'Lead' on 'Review' was not imported:.*formal expression alone/,
+        ),
+      ],
+      [
+        'unmappedConstruct',
+        'Review',
+        expect.stringMatching(
+          /^The bpmn:potentialOwner 'Empty' on 'Review' was not imported: it carries no formal expression.*parsePotentialOwnerResourceAssignment/,
+        ),
+      ],
+      [
+        'unmappedConstruct',
+        'Review',
+        expect.stringMatching(
+          /^The bpmn:performer 'Actor' on 'Review' was not imported:.*by tag.*parseTaskDefinition/,
+        ),
+      ],
+      [
+        'unmappedConstruct',
+        'Review',
+        expect.stringMatching(
+          /^The bpmn:potentialOwner 'XsiSpelled' on 'Review' was not imported: it carries no formal expression.*parsePotentialOwnerResourceAssignment/,
+        ),
+      ],
+      [
+        'unmappedConstruct',
+        'Svc',
+        expect.stringMatching(
+          /^A bpmn:potentialOwner 'Owner_1' on 'Svc' was not imported/,
+        ),
+      ],
+    ]);
+  });
+
+  it('warns for a startQuantity or completionQuantity away from 1, which BpmnParse never reads', async () => {
+    const xml = operatonDoc`    <bpmn:startEvent id="S" />
+    <bpmn:userTask id="Review" startQuantity="3" />
+    <bpmn:subProcess id="Sub" startQuantity="1">
+      <bpmn:startEvent id="SubS" />
+      <bpmn:serviceTask id="Svc" operaton:class="com.example.Svc" completionQuantity="2" />
+      <bpmn:endEvent id="SubE" />
+      <bpmn:sequenceFlow id="SubF1" sourceRef="SubS" targetRef="Svc" />
+      <bpmn:sequenceFlow id="SubF2" sourceRef="Svc" targetRef="SubE" />
+    </bpmn:subProcess>
+    <bpmn:endEvent id="E" />
+    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="Review" />
+    <bpmn:sequenceFlow id="F2" sourceRef="Review" targetRef="Sub" />
+    <bpmn:sequenceFlow id="F3" sourceRef="Sub" targetRef="E" />`;
+    const { warnings } = await xmlToIr(xml);
+    expect(reported(warnings)).toEqual([
+      [
+        'unmappedConstruct',
+        'Review',
+        expect.stringMatching(
+          /^The 'startQuantity' attribute on 'Review' was not imported: .*BpmnParse never reads it/,
+        ),
+      ],
+      [
+        'unmappedConstruct',
+        'Svc',
+        expect.stringMatching(
+          /^The 'completionQuantity' attribute on 'Svc' was not imported: .*BpmnParse never reads it/,
+        ),
+      ],
+    ]);
+  });
+});
+
 describe('xmlToIr: flat engine settings honor the camunda: alias', () => {
   const importUserTask = (attrs: string) =>
     importOnly(oneNodeDoc('userTask', { attrs, doc: dualDoc }), 'userTask');
@@ -6676,6 +6942,695 @@ describe('xmlToIr: form data on an event handler trigger start', () => {
       { id: 'reason', type: 'string' },
     ]);
     expect(warnings).toEqual([]);
+  });
+});
+
+/** One `<operaton:formData>` block on the `Review` user task, wrapping the given fields. */
+const formOn = (fields: string): string =>
+  `        <operaton:formData>\n${fields}\n        </operaton:formData>`;
+
+const importForm = (fields: string) => importUserTaskWith(formOn(fields));
+
+/** The `validation` block of one field. */
+const validation = (constraints: string): string =>
+  `            <operaton:validation>\n${constraints}\n            </operaton:validation>`;
+
+describe('xmlToIr: form field constraints, values, pattern and properties', () => {
+  it('reads a date pattern, constraints in document order, properties and enum values, warning about none', async () => {
+    const { node: task, warnings } = await importForm(
+      `          <operaton:formField id="due" type="date" label="Due" datePattern="dd/MM/yyyy">
+            <operaton:properties>
+              <operaton:property id="hint" value="Pick a day" />
+              <operaton:property id="group" value="dates" />
+            </operaton:properties>
+${validation(`              <operaton:constraint name="validator" config="com.example.DueCheck" />
+              <operaton:constraint name="readonly" />
+              <operaton:constraint name="required" />`)}
+          </operaton:formField>
+          <operaton:formField id="amount" type="long" defaultValue="5">
+${validation(`              <operaton:constraint name="min" config="-15" />
+              <operaton:constraint name="max" config="100" />`)}
+          </operaton:formField>
+          <operaton:formField id="note" type="string">
+${validation(`              <operaton:constraint name="maxlength" config="40" />
+              <operaton:constraint name="minlength" config="2" />`)}
+          </operaton:formField>
+          <operaton:formField id="plan" type="enum" defaultValue="pro">
+            <operaton:value id="basic" name="Basic" />
+            <operaton:value id="pro" />
+          </operaton:formField>`,
+    );
+    const expected: FormField[] = [
+      {
+        id: 'due',
+        type: 'date',
+        label: 'Due',
+        datePattern: 'dd/MM/yyyy',
+        constraints: [
+          { name: 'validator', config: 'com.example.DueCheck' },
+          { name: 'readonly' },
+          { name: 'required' },
+        ],
+        properties: [
+          { key: 'hint', value: 'Pick a day' },
+          { key: 'group', value: 'dates' },
+        ],
+      },
+      {
+        id: 'amount',
+        type: 'number',
+        defaultValue: '5',
+        constraints: [
+          { name: 'min', config: '-15' },
+          { name: 'max', config: '100' },
+        ],
+      },
+      {
+        id: 'note',
+        type: 'string',
+        constraints: [
+          { name: 'maxlength', config: '40' },
+          { name: 'minlength', config: '2' },
+        ],
+      },
+      {
+        id: 'plan',
+        type: 'enum',
+        defaultValue: 'pro',
+        values: [{ id: 'basic', label: 'Basic' }, { id: 'pro' }],
+      },
+    ];
+    expect(task.formFields).toEqual(expected);
+    expect(warnings).toEqual([]);
+  });
+
+  it.each([
+    {
+      case: 'a name Operaton registers no validator for',
+      constraints:
+        '              <operaton:constraint name="minimum" config="0" />',
+      name: 'minimum',
+      detail: /no validator is registered/,
+    },
+    {
+      case: 'a constraint with no name',
+      constraints: '              <operaton:constraint config="0" />',
+      name: '(none)',
+      detail: /no name/,
+    },
+    {
+      case: "a 'validator' with no config",
+      constraints: '              <operaton:constraint name="validator" />',
+      name: 'validator',
+      detail: /FormValidators\.createValidator/,
+    },
+    {
+      case: "a 'min' with no config",
+      constraints: '              <operaton:constraint name="min" />',
+      name: 'min',
+      detail: /every submission/,
+    },
+    {
+      case: "'required' written twice",
+      constraints: `              <operaton:constraint name="required" />
+              <operaton:constraint name="required" />`,
+      name: 'required',
+      detail: /once per field/,
+    },
+  ])('refuses $case', async ({ constraints, name, detail }) => {
+    const err = await expectRefusal<UnsupportedFormFieldConstraintError>(
+      xmlToIr(
+        userTaskWith(
+          formOn(`          <operaton:formField id="amount" type="long">
+${validation(constraints)}
+          </operaton:formField>`),
+        ),
+      ),
+      UnsupportedFormFieldConstraintError,
+      detail,
+    );
+    expect([err.elementId, err.fieldId, err.constraintName]).toEqual([
+      'Review',
+      'amount',
+      name,
+    ]);
+    expect(err.message).toMatch(
+      /required, readonly, min, max, minlength, and maxlength/,
+    );
+    expect(err.message).toMatch(/'validator'/);
+  });
+
+  const reviewWarning = (message: RegExp) => warning('Review', message);
+
+  it.each([
+    {
+      case: 'a datePattern on a string field is dropped',
+      field: `          <operaton:formField id="note" type="string" datePattern="dd/MM/yyyy" />`,
+      imported: { id: 'note', type: 'string' },
+      warnings: [
+        reviewWarning(
+          /'datePattern'.*'note'.*FormTypes\.parseFormPropertyType/,
+        ),
+      ],
+    },
+    {
+      case: 'operaton:value children on a string field are dropped, reported once',
+      field: `          <operaton:formField id="note" type="string">
+            <operaton:value id="a" name="A" />
+            <operaton:value id="b" />
+          </operaton:formField>`,
+      imported: { id: 'note', type: 'string' },
+      warnings: [
+        reviewWarning(
+          /2 operaton:value.*'note'.*FormTypes\.parseFormPropertyType/,
+        ),
+      ],
+    },
+    {
+      case: "a config on 'required' is dropped and the constraint kept",
+      field: `          <operaton:formField id="note" type="string">
+${validation('              <operaton:constraint name="required" config="true" />')}
+          </operaton:formField>`,
+      imported: {
+        id: 'note',
+        type: 'string',
+        constraints: [{ name: 'required' }],
+      },
+      warnings: [
+        reviewWarning(/config 'true'.*'required'.*RequiredValidator\.validate/),
+      ],
+    },
+    {
+      case: "a 'min' on a string field is carried and the script draws an error",
+      field: `          <operaton:formField id="note" type="string">
+${validation('              <operaton:constraint name="min" config="0" />')}
+          </operaton:formField>`,
+      imported: {
+        id: 'note',
+        type: 'string',
+        constraints: [{ name: 'min', config: '0' }],
+      },
+      warnings: [
+        reviewWarning(
+          /'min'.*imported as written.*number field.*MinValidator\.validate/,
+        ),
+      ],
+    },
+    {
+      case: "a non-numeric 'min' is carried and the script draws an error",
+      field: `          <operaton:formField id="amount" type="long">
+${validation('              <operaton:constraint name="min" config="abc" />')}
+          </operaton:formField>`,
+      imported: {
+        id: 'amount',
+        type: 'number',
+        constraints: [{ name: 'min', config: 'abc' }],
+      },
+      warnings: [
+        reviewWarning(
+          /'min'.*imported as written.*MinValidator\.validate.*'abc'/,
+        ),
+      ],
+    },
+    {
+      case: "a decimal 'min' is carried and the script draws an error",
+      field: `          <operaton:formField id="amount" type="long">
+${validation('              <operaton:constraint name="min" config="1.5" />')}
+          </operaton:formField>`,
+      imported: {
+        id: 'amount',
+        type: 'number',
+        constraints: [{ name: 'min', config: '1.5' }],
+      },
+      warnings: [
+        reviewWarning(
+          /'min'.*imported as written.*MinValidator\.validate.*'1\.5'/,
+        ),
+      ],
+    },
+    {
+      case: "a decimal 'maxlength' is carried and the script draws an error",
+      field: `          <operaton:formField id="note" type="string">
+${validation('              <operaton:constraint name="maxlength" config="2.5" />')}
+          </operaton:formField>`,
+      imported: {
+        id: 'note',
+        type: 'string',
+        constraints: [{ name: 'maxlength', config: '2.5' }],
+      },
+      warnings: [
+        reviewWarning(
+          /'maxlength'.*imported as written.*MaxLengthValidator\.validate.*'2\.5'/,
+        ),
+      ],
+    },
+    {
+      case: 'an enum default naming no value is carried and the script draws an error',
+      field: `          <operaton:formField id="plan" type="enum" defaultValue="zzz">
+            <operaton:value id="a" />
+            <operaton:value id="b" />
+          </operaton:formField>`,
+      imported: {
+        id: 'plan',
+        type: 'enum',
+        defaultValue: 'zzz',
+        values: [{ id: 'a' }, { id: 'b' }],
+      },
+      warnings: [
+        reviewWarning(
+          /'zzz'.*imported as written.*EnumFormType\.validateValue/,
+        ),
+      ],
+    },
+    {
+      case: 'an enum default that is an expression is not checked against the values',
+      field: `          <operaton:formField id="plan" type="enum" defaultValue="\${chosen}">
+            <operaton:value id="a" />
+          </operaton:formField>`,
+      imported: {
+        id: 'plan',
+        type: 'enum',
+        defaultValue: '${chosen}',
+        values: [{ id: 'a' }],
+      },
+      warnings: [],
+    },
+    {
+      case: 'a repeated enum value id keeps the first position and the last label',
+      field: `          <operaton:formField id="plan" type="enum">
+            <operaton:value id="a" name="A" />
+            <operaton:value id="b" />
+            <operaton:value id="a" name="Again" />
+          </operaton:formField>`,
+      imported: {
+        id: 'plan',
+        type: 'enum',
+        values: [{ id: 'a', label: 'Again' }, { id: 'b' }],
+      },
+      warnings: [reviewWarning(/value 'a'.*'plan'.*LinkedHashMap/)],
+    },
+    {
+      case: 'an enum value with no id is dropped',
+      field: `          <operaton:formField id="plan" type="enum">
+            <operaton:value id="a" />
+            <operaton:value name="Nameless" />
+          </operaton:formField>`,
+      imported: { id: 'plan', type: 'enum', values: [{ id: 'a' }] },
+      warnings: [reviewWarning(/operaton:value #2.*'plan'.*no id/)],
+    },
+    {
+      case: 'a repeated property id keeps the first position and the last value',
+      field: `          <operaton:formField id="note" type="string">
+            <operaton:properties>
+              <operaton:property id="hint" value="First" />
+              <operaton:property id="group" value="dates" />
+              <operaton:property id="hint" value="Again" />
+            </operaton:properties>
+          </operaton:formField>`,
+      imported: {
+        id: 'note',
+        type: 'string',
+        properties: [
+          { key: 'hint', value: 'Again' },
+          { key: 'group', value: 'dates' },
+        ],
+      },
+      warnings: [
+        reviewWarning(
+          /property 'hint'.*'note'.*once, at its first position with its last value, as DefaultFormHandler.parseProperties keeps it \(LinkedHashMap.put\)/,
+        ),
+      ],
+    },
+    {
+      case: 'a property missing its id or its value is dropped, naming which, and an empty value is kept as the engine map holds it',
+      field: `          <operaton:formField id="note" type="string">
+            <operaton:properties>
+              <operaton:property value="orphan" />
+              <operaton:property id="k" value="v" />
+              <operaton:property id="empty" />
+              <operaton:property id="blank" value="" />
+            </operaton:properties>
+          </operaton:formField>`,
+      imported: {
+        id: 'note',
+        type: 'string',
+        properties: [
+          { key: 'k', value: 'v' },
+          { key: 'blank', value: '' },
+        ],
+      },
+      warnings: [
+        reviewWarning(/operaton:property #1.*'note'.*no id/),
+        reviewWarning(/operaton:property 'empty'.*'note'.*no value/),
+      ],
+    },
+  ] satisfies {
+    case: string;
+    field: string;
+    imported: FormField;
+    warnings: unknown[];
+  }[])('$case', async ({ field, imported, warnings: expected }) => {
+    // The clean field first: a warning drawn against it, or against the
+    // offending field twice, is as wrong as one never drawn.
+    const { node: task, warnings } = await importForm(
+      `          <operaton:formField id="clean" type="string" />\n${field}`,
+    );
+    expect(task.formFields).toEqual([
+      { id: 'clean', type: 'string' },
+      imported,
+    ]);
+    expect(warnings).toEqual(expected);
+  });
+
+  it("a property's name and a foreign attribute on a constraint are reported by the sweep", async () => {
+    const { node: task, warnings } = await importUserTaskWith(
+      `        <operaton:formData xmlns:foo="http://foo.example">
+          <operaton:formField id="note" type="string">
+            <operaton:properties>
+              <operaton:property id="k" name="K" value="v" />
+            </operaton:properties>
+${validation('              <operaton:constraint name="required" foo:bar="1" />')}
+          </operaton:formField>
+        </operaton:formData>`,
+    );
+    expect(task.formFields).toEqual([
+      {
+        id: 'note',
+        type: 'string',
+        constraints: [{ name: 'required' }],
+        properties: [{ key: 'k', value: 'v' }],
+      },
+    ]);
+    expect(warnings.map((w) => w.message)).toEqual([
+      expect.stringMatching(
+        /'name' on an operaton:property 'k' in an operaton:properties in an operaton:formField 'note'/,
+      ),
+      expect.stringMatching(
+        /'foo:bar' on an operaton:constraint 'required' in an operaton:validation in an operaton:formField 'note'/,
+      ),
+    ]);
+  });
+});
+
+/** Two coded error roots followed by a process body written verbatim. */
+const codedErrorsDoc = (body: string): string =>
+  operatonDefs`  <bpmn:error id="Err_Declined" errorCode="DECLINED" />
+  <bpmn:error id="Err_Timeout" errorCode="TIMEOUT" />
+  <bpmn:process id="p" isExecutable="true">
+    <bpmn:startEvent id="S" />
+${body}
+    <bpmn:endEvent id="E" />
+  </bpmn:process>`;
+
+/** An external service task `Charge`, with the given attributes and extension children. */
+const externalTask = (attrs: string, children: string): string =>
+  `    <bpmn:serviceTask id="Charge" operaton:type="external" operaton:topic="charge-card" ${attrs}>
+${extensionElements(children)}</bpmn:serviceTask>`;
+
+const errorMapping = (attrs: string): string =>
+  `        <operaton:errorEventDefinition ${attrs} />`;
+
+const propertiesOf = (entries: string): string =>
+  `        <operaton:properties>\n${entries}\n        </operaton:properties>`;
+
+describe('xmlToIr: external task extras', () => {
+  it('a service, send and business rule task each carry their priority, properties and error mappings on the external binding', async () => {
+    const { ir, warnings } = await xmlToIr(
+      codedErrorsDoc(
+        `${externalTask(
+          'operaton:taskPriority="42"',
+          `${propertiesOf(`          <operaton:property name="gateway" value="stripe" />
+          <operaton:property name="attempts" value="3" />`)}
+${errorMapping(
+  `id="Map_1" errorRef="Err_Declined" expression="\${externalTask.errorMessage == 'declined'}"`,
+)}
+${errorMapping('id="Map_2" errorRef="Err_Timeout" expression="${externalTask.retries == 0}"')}`,
+        )}
+    <bpmn:sendTask id="Notify" operaton:type="external" operaton:topic="notify" operaton:taskPriority="\${p}">
+${extensionElements(propertiesOf('          <operaton:property name="channel" value="email" />'))}</bpmn:sendTask>
+    <bpmn:businessRuleTask id="Decide" operaton:type="external" operaton:topic="decide">
+${extensionElements(errorMapping('errorRef="Err_Timeout" expression="${false}"'))}</bpmn:businessRuleTask>`,
+      ),
+    );
+    const bindingOf = (id: string): ServiceTaskBinding => {
+      const node = byId(ir, id);
+      expect(node.kind).toBe('serviceTask');
+      return (node as { binding: ServiceTaskBinding }).binding;
+    };
+    expect(bindingOf('Charge')).toEqual({
+      kind: 'external',
+      topic: 'charge-card',
+      taskPriority: '42',
+      properties: [
+        { key: 'gateway', value: 'stripe' },
+        { key: 'attempts', value: '3' },
+      ],
+      errorMappings: [
+        {
+          errorCode: 'DECLINED',
+          condition: "${externalTask.errorMessage == 'declined'}",
+        },
+        { errorCode: 'TIMEOUT', condition: '${externalTask.retries == 0}' },
+      ],
+    });
+    expect(bindingOf('Notify')).toEqual({
+      kind: 'external',
+      topic: 'notify',
+      taskPriority: '${p}',
+      properties: [{ key: 'channel', value: 'email' }],
+    });
+    expect(bindingOf('Decide')).toEqual({
+      kind: 'external',
+      topic: 'decide',
+      errorMappings: [{ errorCode: 'TIMEOUT', condition: '${false}' }],
+    });
+    expect(warnings).toEqual([]);
+  });
+
+  it.each([
+    [
+      'a mapping with no expression',
+      errorMapping('errorRef="Err_Declined"'),
+      /no expression/,
+    ],
+    [
+      'a mapping whose errorRef names a root with no code',
+      errorMapping('errorRef="Err_Blank" expression="${true}"'),
+      /'Err_Blank'.*no code/,
+    ],
+    [
+      'a mapping with no errorRef',
+      errorMapping('expression="${true}"'),
+      /names no error root/,
+    ],
+    [
+      'a mapping with neither attribute',
+      errorMapping(''),
+      /names no error root/,
+    ],
+    [
+      'a mapping whose errorRef names no root in the document',
+      errorMapping('errorRef="Err_Missing" expression="${true}"'),
+      /'Err_Missing'.*names no error root/,
+    ],
+  ])('%s is refused', async (_title, mapping, detail) => {
+    const xml = operatonDefs`  <bpmn:error id="Err_Declined" errorCode="DECLINED" />
+  <bpmn:error id="Err_Blank" />
+  <bpmn:process id="p" isExecutable="true">
+    <bpmn:startEvent id="S" />
+${externalTask('', mapping)}
+    <bpmn:endEvent id="E" />
+  </bpmn:process>`;
+    const err = await expectRefusal<UnsupportedErrorMappingError>(
+      xmlToIr(xml),
+      UnsupportedErrorMappingError,
+      detail,
+    );
+    expect(err.elementId).toBe('Charge');
+    expect(err.message).toContain('parseOperatonErrorEventDefinitions');
+  });
+
+  it.each([
+    {
+      case: 'the three extras on a class-bound service task are dropped, each naming the one reader',
+      body: `    <bpmn:serviceTask id="Svc" operaton:class="com.example.Svc" operaton:taskPriority="42">
+${extensionElements(`${propertiesOf('          <operaton:property name="k" value="v" />')}
+${errorMapping('errorRef="Err_Declined" expression="${true}"')}`)}</bpmn:serviceTask>`,
+      binding: classBinding('com.example.Svc'),
+      warnings: [
+        warning('Svc', /'taskPriority'.*parseExternalServiceTask/),
+        warning('Svc', /operaton:properties.*parseExternalServiceTask/),
+        warning(
+          'Svc',
+          /operaton:errorEventDefinition.*parseExternalServiceTask/,
+        ),
+      ],
+    },
+    {
+      case: 'a mapping carrying a catch-side variable imports, and the variable is reported as a throw-side drop',
+      body: externalTask(
+        '',
+        errorMapping(
+          'errorRef="Err_Declined" expression="${true}" operaton:errorCodeVariable="c"',
+        ),
+      ),
+      binding: {
+        ...externalBinding('charge-card'),
+        errorMappings: [{ errorCode: 'DECLINED', condition: '${true}' }],
+      },
+      warnings: [
+        warning('Charge', /'errorCodeVariable'.*takes effect on a catch/),
+      ],
+    },
+    {
+      case: 'a mapping carrying documentation imports, and the documentation is reported as dropped',
+      body: externalTask(
+        '',
+        `        <operaton:errorEventDefinition errorRef="Err_Declined" expression="\${true}">
+          <bpmn:documentation>Declined by the issuer.</bpmn:documentation>
+        </operaton:errorEventDefinition>`,
+      ),
+      binding: {
+        ...externalBinding('charge-card'),
+        errorMappings: [{ errorCode: 'DECLINED', condition: '${true}' }],
+      },
+      warnings: [
+        warning(
+          'Charge',
+          /documentation on 'Charge'.*an error mapping has no documentation/,
+          'documentation',
+        ),
+      ],
+    },
+    {
+      case: 'a property with no name is skipped, naming which',
+      body: externalTask(
+        '',
+        propertiesOf(`          <operaton:property name="k" value="v" />
+          <operaton:property value="orphan" />`),
+      ),
+      binding: {
+        ...externalBinding('charge-card'),
+        properties: [{ key: 'k', value: 'v' }],
+      },
+      warnings: [warning('Charge', /operaton:property #2.*no name/)],
+    },
+    {
+      case: 'a repeated property name keeps the first position and the last value, as the engine map does',
+      body: externalTask(
+        '',
+        propertiesOf(`          <operaton:property name="k" value="first" />
+          <operaton:property name="other" value="o" />
+          <operaton:property name="k" value="last" />`),
+      ),
+      binding: {
+        ...externalBinding('charge-card'),
+        properties: [
+          { key: 'k', value: 'last' },
+          { key: 'other', value: 'o' },
+        ],
+      },
+      warnings: [
+        warning(
+          'Charge',
+          /property 'k'.*written twice.*once with its last value, as BpmnParseUtil.parseOperatonExtensionProperties keeps it \(HashMap.put\), at its first position/,
+        ),
+      ],
+    },
+    {
+      case: "a property's id beside its name is reported by the sweep as unread",
+      body: externalTask(
+        '',
+        propertiesOf(
+          '          <operaton:property id="p1" name="k" value="v" />',
+        ),
+      ),
+      binding: {
+        ...externalBinding('charge-card'),
+        properties: [{ key: 'k', value: 'v' }],
+      },
+      warnings: [warning('Charge', /'id' on an operaton:property 'k'/)],
+    },
+    {
+      case: 'a decimal task priority is carried and the script draws an error',
+      body: externalTask('operaton:taskPriority="1.5"', ''),
+      binding: { ...externalBinding('charge-card'), taskPriority: '1.5' },
+      warnings: [
+        warning(
+          'Charge',
+          /taskPriority '1\.5' on 'Charge' was imported as written.*parsePriority/,
+        ),
+      ],
+    },
+    {
+      case: 'a task priority opening with a digit before its expression is carried and the script draws an error',
+      body: externalTask('operaton:taskPriority="1 ${x}"', ''),
+      binding: { ...externalBinding('charge-card'), taskPriority: '1 ${x}' },
+      warnings: [
+        warning(
+          'Charge',
+          /taskPriority '1 \$\{x\}' on 'Charge' was imported as written.*parsePriority/,
+        ),
+      ],
+    },
+    {
+      case: 'a task priority opening with #{ is carried and its rewrapping reported',
+      body: externalTask('operaton:taskPriority="#{x}"', ''),
+      binding: { ...externalBinding('charge-card'), taskPriority: '#{x}' },
+      warnings: [
+        warning(
+          'Charge',
+          /'taskPriority' setting on 'Charge' is written with "#\{\.\.\.\}".*written back inside "\$\{\.\.\.\}"/,
+          'unmappedConstruct',
+        ),
+      ],
+    },
+    {
+      case: 'a task priority on an external message throw is an unimported setting',
+      roots: '  <bpmn:message id="Msg" name="ping" />\n',
+      body: `    <bpmn:intermediateThrowEvent id="Ping">
+      <bpmn:messageEventDefinition messageRef="Msg" operaton:type="external" operaton:topic="ping" operaton:taskPriority="7" />
+    </bpmn:intermediateThrowEvent>`,
+      binding: undefined,
+      warnings: [
+        warning(
+          'Ping',
+          /'operaton:taskPriority' setting on 'Ping' was not imported/,
+        ),
+      ],
+    },
+    {
+      case: 'properties on a user task stay extra configuration',
+      body: `    <bpmn:userTask id="Review">
+${extensionElements(propertiesOf('          <operaton:property name="k" value="v" />'))}</bpmn:userTask>`,
+      binding: undefined,
+      warnings: [
+        warning(
+          'Review',
+          /Extra configuration \(operaton:Properties\) on 'Review'/,
+        ),
+      ],
+    },
+  ])('$case', async ({ roots = '', body, binding, warnings: expected }) => {
+    // The clean external task first, the offending element last: a warning
+    // drawn against the clean one is as wrong as one never drawn.
+    const xml = operatonDefs`  <bpmn:error id="Err_Declined" errorCode="DECLINED" />
+${roots}  <bpmn:process id="p" isExecutable="true">
+    <bpmn:startEvent id="S" />
+    <bpmn:serviceTask id="Clean" operaton:type="external" operaton:topic="clean" operaton:taskPriority="1">
+${extensionElements(`${propertiesOf('          <operaton:property name="a" value="b" />')}
+${errorMapping('errorRef="Err_Declined" expression="${true}"')}`)}</bpmn:serviceTask>
+${body}
+    <bpmn:endEvent id="E" />
+  </bpmn:process>`;
+    const { ir, warnings } = await xmlToIr(xml);
+    if (binding !== undefined) {
+      const node = ir.flowElements.find(
+        (fe) => fe.kind === 'serviceTask' && fe.id !== 'Clean',
+      );
+      expect(node?.kind === 'serviceTask' && node.binding).toEqual(binding);
+    }
+    expect(warnings).toEqual(expected);
   });
 });
 

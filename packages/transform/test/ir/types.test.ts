@@ -7,6 +7,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
+import { eventIdentities } from '../../src/ir/types.js';
 import type {
   EventDefinition,
   FlowElement,
@@ -45,6 +46,7 @@ import {
   mapEntry,
   mapValue,
   messageDef,
+  minimalProcess,
   scriptTask,
   scriptValue,
   serviceTask,
@@ -495,6 +497,28 @@ const LISTENER_BINDING_WITH_TWO: ListenerBinding = {
   // @ts-expect-error a listener names exactly one binding
   expression: '${e}',
 };
+
+describe('eventIdentities: an external service task mapping counts as a use of its code', () => {
+  it('an external binding contributes each mapping code in order; a class-bound task contributes none', () => {
+    const mapped = serviceTask('T', {
+      kind: 'external',
+      topic: 'charge-card',
+      errorMappings: [
+        { errorCode: 'DECLINED', condition: '${x}' },
+        { errorCode: 'TIMEOUT', condition: '${y}' },
+      ],
+    });
+    expect([...eventIdentities(minimalProcess([mapped])).errorCodes]).toEqual([
+      'DECLINED',
+      'TIMEOUT',
+    ]);
+
+    const classBound = serviceTask('T2', classBinding('com.example.X'));
+    expect([
+      ...eventIdentities(minimalProcess([classBound])).errorCodes,
+    ]).toEqual([]);
+  });
+});
 
 describe('the IR type table', () => {
   it('compiles', () => {

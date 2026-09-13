@@ -16,6 +16,7 @@ import type {
   EndEvent,
   Expr,
   FormBlock,
+  FormField,
   GotoStatement,
   IfStatement,
   IntermediateCatchEvent,
@@ -42,6 +43,7 @@ import type {
   SubProcess,
   ThrowStatement,
   UserTask,
+  VarRef,
   VarType,
   WhileStatement,
 } from './generated/ast.js';
@@ -73,6 +75,7 @@ import {
   isDoWhileStatement,
   isEmitStatement,
   isEndEvent,
+  isErrorMapping,
   isExpr,
   isGotoStatement,
   isIfStatement,
@@ -100,7 +103,10 @@ import {
   isVarRef,
   isWhileStatement,
 } from './generated/ast.js';
-import { renderExpressionInner } from './expression-render.js';
+import {
+  integerLiteralText,
+  renderExpressionInner,
+} from './expression-render.js';
 import type { BpmnScriptServices } from './bpmn-script-module.js';
 import {
   ATTEMPT_BLOCK_RULE,
@@ -110,16 +116,25 @@ import {
   CALL_BINDING_VALUES,
   CALL_MAPPER_KEY_BY_KIND,
   CATCH_TRIGGERS,
+  DATE_PATTERN_KEY,
   DECLARED_CODE_TRIGGERS,
   DECISION_RESULT_MAPPINGS,
   EMIT_TRIGGERS,
   END_TRIGGERS,
   ENGINE_KEYS,
+  ERROR_MAPPING_HEAD,
+  ERROR_MAPPING_WHEN,
   EVENT_BINDING_FIELDS,
   EXECUTION_LISTENER_EVENTS,
+  EXTERNAL_TASK_EL_NAME,
   FIELD_BINDING_KEYS,
   FIELD_DIRECTION,
+  FORM_BOUND_TEXT,
+  FORM_CONSTRAINT_NAMES,
+  FORM_CONSTRAINT_TYPES,
+  FORM_FIELD_SETTING_KEYS,
   FORM_FIELD_TYPES,
+  formFieldVariableType,
   formatPlainWordList,
   formatWordList,
   IO_DIRECTIONS,
@@ -128,11 +143,13 @@ import {
   ON_TRIGGERS,
   parameterDirectionsFor,
   PROCESS_HEADER_KEYS,
+  PROPERTY_DIRECTION,
   SCRIPT_FORMAT_ALIASES,
   SERVICE_TASK_BINDING_KEYS,
   splitFencedScript,
   START_TRIGGERS,
   TASK_LISTENER_EVENTS,
+  TASK_PRIORITY_KEY,
   THROW_TRIGGERS,
   TIMER_PARTICLES,
   TRIGGER_PAYLOAD,
@@ -191,8 +208,8 @@ type CatchHeader = IntermediateCatchEvent | RaceBranch;
 /**
  * Keys whose value names something outside process-variable scope, so a
  * bareword there must not warn about an undeclared variable. `jobPriority`,
- * `priority`, and `businessKey` stay out: a bareword there lowers to `${...}`
- * and does name a variable. The date keys are here because
+ * `taskPriority`, `priority`, and `businessKey` stay out: a bareword there
+ * lowers to `${...}` and does name a variable. The date keys are here because
  * `dueDate = deadline` emits `operaton:dueDate="deadline"`, which Operaton
  * cannot parse as a date, so declaring `deadline` would hide the warning and
  * leave the attribute just as broken; {@link
@@ -219,6 +236,7 @@ const NON_VARIABLE_ATTR_KEYS: ReadonlySet<string> = new Set([
   'candidateStarterUsers',
   'candidateStarterGroups',
   'initiator',
+  'validator',
   ...Object.values(CALL_MAPPER_KEY_BY_KIND),
 ]);
 
@@ -226,6 +244,15 @@ const BOOLEAN_ATTR_KEYS: ReadonlySet<string> = new Set([
   'asyncBefore',
   'asyncAfter',
   'exclusive',
+]);
+
+/**
+ * Keys `BpmnParse.parsePriority` reads: a constant there must parse as an
+ * integer or the deployment fails, so anything else has to be an expression.
+ */
+const PRIORITY_ATTR_KEYS: ReadonlySet<string> = new Set([
+  'jobPriority',
+  TASK_PRIORITY_KEY,
 ]);
 
 /**
@@ -270,6 +297,9 @@ const DECISION_RESULT_MAPPING_SET: ReadonlySet<string> = new Set(
   DECISION_RESULT_MAPPINGS,
 );
 const FORM_FIELD_TYPE_SET: ReadonlySet<string> = new Set(FORM_FIELD_TYPES);
+const FORM_FIELD_SETTING_KEY_SET: ReadonlySet<string> = new Set(
+  FORM_FIELD_SETTING_KEYS,
+);
 const EXECUTION_LISTENER_EVENT_SET: ReadonlySet<string> = new Set(
   EXECUTION_LISTENER_EVENTS,
 );
@@ -336,6 +366,51 @@ const fieldlessBindingsOf = (attrs: readonly Setting[]): string[] =>
   bindingKeysOf(attrs, FIELDLESS_BINDING_KEYS);
 
 /**
+ * Read off the block rules, as {@link FIELD_HOSTS_MESSAGE} is. The extras are
+ * legal beside `topic` alone: `parseExternalServiceTask`, their one reader,
+ * runs for `operaton:type="external"` and for nothing else.
+ */
+const EXTERNAL_HOSTS_PHRASE = `${formatPlainWordList(
+  Object.values(ATTRIBUTE_BLOCK_RULES)
+    .filter((rule) => rule.externalExtras)
+    .map((rule) => rule.description),
+)} bound with 'topic'`;
+
+/** @param description Noun phrase with article, e.g. `'a user task'`. */
+const noPropertyHostMessage = (description: string) =>
+  `${capitalize(description)} cannot declare a 'property' line; a property line belongs on ${EXTERNAL_HOSTS_PHRASE}, and in a form field's block.`;
+
+/** @param description Noun phrase with article, e.g. `'a user task'`. */
+const noMappingHostMessage = (description: string) =>
+  `${capitalize(description)} cannot map a reported failure; an 'error <Code> when <condition>' line belongs on ${EXTERNAL_HOSTS_PHRASE}, whose external worker is what reports one.`;
+
+/**
+ * The shape of {@link fieldBindingMessage}.
+ *
+ * @param item The extra as written (`'a property line'`).
+ * @param written The bindings the author wrote here, none of them `topic`.
+ */
+const topicBindingMessage = (
+  subject: string,
+  item: string,
+  written: readonly string[],
+) =>
+  `${subject} carries ${item} only under a 'topic' binding: the engine reads it for a step handed to an external worker` +
+  (written.length === 0
+    ? '.'
+    : `, and the binding written with ${formatWordList(written)} hands the step to none.`);
+
+/** `ExternalTaskEntity.evaluateThrowBpmnError` raises a BPMN error and nothing else. */
+const MAPPING_HEAD_MESSAGE =
+  'An external task maps a reported failure onto an error and nothing else; ' +
+  `write '${ERROR_MAPPING_HEAD} <Code> ${ERROR_MAPPING_WHEN} <condition>'.`;
+
+const MAPPING_WHEN_MESSAGE = `Write '${ERROR_MAPPING_WHEN}' between the code and the condition: '${ERROR_MAPPING_HEAD} <Code> ${ERROR_MAPPING_WHEN} <condition>'.`;
+
+const priorityShapeMessage = (key: string) =>
+  `Setting '${key}' takes an integer or a "\${...}" expression; the engine refuses to deploy a constant that is not an integer.`;
+
+/**
  * A fenced body binds a listener in place of its settings, and the script
  * listener behaviours are built from the script alone. Naming the bindings
  * that do take a field would be a dead end here: a listener writing both a
@@ -371,6 +446,116 @@ const FORM_REF_BINDING_MESSAGE = `A 'formRef' needs the binding resolving it: ad
 const FORM_REF_MISSING_MESSAGE =
   "'binding' and 'version' pin which deployed version of a form the engine " +
   "resolves, so neither stands without a 'formRef'.";
+
+const formFieldSettingsOnlyMessage = (id: string, text: string) =>
+  `Form field '${id}' takes 'key: value' settings in its parens; '${text}' is not one.`;
+
+const unknownFormFieldSettingMessage = (id: string, key: string) =>
+  `Unknown form field setting '${key}' on '${id}'; write ${formatWordList(FORM_FIELD_SETTING_KEYS)}.`;
+
+/** The engine deploys the pair and then fails every submission of the field ({@link FORM_CONSTRAINT_TYPES}). */
+const constraintMisfitMessage = (
+  name: string,
+  field: FormField,
+  fits: readonly string[],
+) =>
+  `Constraint '${name}' fits a ${formatPlainWordList(fits)} field, not the ${field.type} field '${field.id}': the engine checks a submitted ${formatPlainWordList(fits)} alone and fails every other submission.`;
+
+/** `FormTypes.parseFormPropertyType` reads `datePattern` under `type="date"` alone. */
+const patternMisfitMessage = (field: FormField) =>
+  `Setting 'pattern' is the date pattern a 'date' field is parsed with; '${field.id}' is a ${field.type} field, which the engine reads no pattern off.`;
+
+const flagFalseMessage = (key: string) =>
+  `A field is ${key} only while the setting is written, so '${key}: false' says nothing; leave the setting out.`;
+
+const flagNotTrueMessage = (key: string) =>
+  `Setting '${key}' takes the literal true; write '${key}: true'.`;
+
+const integerBoundMessage = (key: string) =>
+  `Setting '${key}' takes an integer literal or a quoted integer such as "-5".`;
+
+const PATTERN_VALUE_MESSAGE = `Setting 'pattern' takes a non-empty quoted date pattern such as "dd/MM/yyyy".`;
+
+const valuesOnNonEnumMessage = (field: FormField) =>
+  `Value lines belong on an 'enum' field; '${field.id}' is a ${field.type} field.`;
+
+/** `EnumFormType.validateValue` refuses any value outside the (empty) map. */
+const emptyEnumMessage = (id: string) =>
+  `Enum field '${id}' offers no values, so the engine rejects every submitted value; add a value line such as 'basic "Basic"'.`;
+
+const duplicateValueMessage = (id: string) => `Duplicate value '${id}'.`;
+
+/**
+ * `FormFieldHandler.createFormField` converts the default through the enum type
+ * on every render of the form, so the deployment succeeds and the form never
+ * opens.
+ */
+const enumDefaultMessage = (
+  id: string,
+  value: string,
+  ids: readonly string[],
+) =>
+  `The default "${value}" of enum field '${id}' names none of its values; write ${formatWordList(ids)}.`;
+
+const formFieldDirectionMessage = (
+  id: string,
+  direction: string,
+  isEnum: boolean,
+) =>
+  `Unknown member direction '${direction}' in form field '${id}': its block takes 'property <key> = "<value>"' lines${isEnum ? ' and value lines' : ''}.`;
+
+const propertyValueMessage = (name: string) =>
+  `Property '${name}' takes a quoted string or a "\${...}" expression; ` +
+  'put the value in quotes.';
+
+const isQuotedMatching = (value: Expr | undefined, shape: RegExp): boolean =>
+  isLiteralString(value) && shape.test(value.value);
+
+/** A bare integer, signed or not, as {@link FORM_BOUND_TEXT} admits it quoted. */
+const isIntegerValue = (value: Expr | undefined): boolean =>
+  value !== undefined && integerLiteralText(value) !== undefined;
+
+/** The message a value of the wrong shape draws, or `undefined` where it fits. */
+type ValueShapeRule = (
+  key: string,
+  value: Expr | undefined,
+) => string | undefined;
+
+/** `false` has no representation: a flag is on while written and off otherwise. */
+const literalTrue: ValueShapeRule = (key, value) =>
+  isLiteralBool(value)
+    ? value.value === 'true'
+      ? undefined
+      : flagFalseMessage(key)
+    : flagNotTrueMessage(key);
+
+const integer: ValueShapeRule = (key, value) =>
+  isIntegerValue(value) || isQuotedMatching(value, FORM_BOUND_TEXT)
+    ? undefined
+    : integerBoundMessage(key);
+
+const nonEmptyText: ValueShapeRule = (_key, value) =>
+  isLiteralString(value) && value.value.length > 0
+    ? undefined
+    : PATTERN_VALUE_MESSAGE;
+
+/** `validator` reads as `class:` does: a quoted class, a bare dotted name, or an expression. */
+const anyText: ValueShapeRule = () => undefined;
+
+/** What each setting of a form field's parens takes; typed as {@link FORM_CONSTRAINT_TYPES} is. */
+const FORM_FIELD_VALUE_RULES: Readonly<Record<string, ValueShapeRule>> = {
+  required: literalTrue,
+  readonly: literalTrue,
+  min: integer,
+  max: integer,
+  minlength: integer,
+  maxlength: integer,
+  validator: anyText,
+  [DATE_PATTERN_KEY]: nonEmptyText,
+} satisfies Record<
+  (typeof FORM_CONSTRAINT_NAMES)[number] | typeof DATE_PATTERN_KEY,
+  ValueShapeRule
+>;
 
 /** @param subject The clause or noun phrase that does take one, quoted as written. */
 function particleOnlyMessage(subject: string): string {
@@ -1154,10 +1339,13 @@ export class BpmnScriptValidator {
       for (const form of node.forms) {
         for (const field of form.fields) {
           if (field.id === undefined || field.type === undefined) continue;
+          // A word that is no type is reported by the form block check.
+          const type = formFieldVariableType(field.type);
+          if (type === undefined) continue;
           const prior = declaredType.get(field.id);
           if (prior === undefined) {
-            declaredType.set(field.id, field.type);
-          } else if (prior !== field.type) {
+            declaredType.set(field.id, type);
+          } else if (prior !== type) {
             accept(
               'error',
               `Form field '${field.id}' is typed '${field.type}', but '${field.id}' is already declared as '${prior}'; the types must agree.`,
@@ -1287,6 +1475,7 @@ export class BpmnScriptValidator {
         !isNonVariableAttrValue &&
         !isDeclarationItem &&
         !isCodePosition(expr) &&
+        !readsExternalTask(expr) &&
         !symbols.has(expr.ref.$refText)
       ) {
         accept(
@@ -1633,7 +1822,126 @@ export class BpmnScriptValidator {
             { node: field, property: 'type' },
           );
         }
+        this.checkFormField(field, accept);
       }
+    }
+  }
+
+  /**
+   * An unknown key is an error, since `FormValidators.createValidator` fails
+   * the deployment on it; the misfit and shape rules each stand for a
+   * deployment that succeeds and a form that then fails on every submission.
+   */
+  private checkFormField(field: FormField, accept: ValidationAcceptor): void {
+    // An unparsed id or type would print as a name; the parser reported it.
+    if (field.id === undefined || field.type === undefined) return;
+
+    for (const item of field.items) {
+      if (!isSetting(item)) {
+        accept(
+          'error',
+          formFieldSettingsOnlyMessage(field.id, item.$cstNode?.text ?? ''),
+          { node: item },
+        );
+      }
+    }
+    const settings = settingsOf(field.items);
+    this.checkDuplicateKeys(settings, accept);
+    for (const setting of settings) {
+      if (!FORM_FIELD_SETTING_KEY_SET.has(setting.key)) {
+        accept('error', unknownFormFieldSettingMessage(field.id, setting.key), {
+          node: setting,
+          property: 'key',
+        });
+        continue;
+      }
+      // A type outside the list is reported above; no fit is true against it.
+      if (FORM_FIELD_TYPE_SET.has(field.type)) {
+        const fits = FORM_CONSTRAINT_TYPES[setting.key];
+        if (setting.key === DATE_PATTERN_KEY && field.type !== 'date') {
+          accept('error', patternMisfitMessage(field), {
+            node: setting,
+            property: 'key',
+          });
+        } else if (fits && !fits.some((type) => type === field.type)) {
+          accept('error', constraintMisfitMessage(setting.key, field, fits), {
+            node: setting,
+            property: 'key',
+          });
+        }
+      }
+      const shape = FORM_FIELD_VALUE_RULES[setting.key]?.(
+        setting.key,
+        setting.value,
+      );
+      if (shape !== undefined) {
+        accept('error', shape, { node: setting, property: 'value' });
+      }
+    }
+
+    const isEnum = field.type === 'enum';
+    if (!isEnum) {
+      for (const value of field.values) {
+        accept('error', valuesOnNonEnumMessage(field), { node: value });
+      }
+    } else if (field.values.length === 0) {
+      accept('warning', emptyEnumMessage(field.id), {
+        node: field,
+        property: 'id',
+      });
+    } else {
+      forEachDuplicate(
+        field.values,
+        (value) => value.id,
+        (value) =>
+          accept('error', duplicateValueMessage(value.id), {
+            node: value,
+            property: 'id',
+          }),
+      );
+      // A `${...}` default or a bare word is evaluated when the form is
+      // rendered, so only literal text can be held to the value ids here.
+      const ids = field.values
+        .map((value) => value.id)
+        .filter((id) => id !== undefined);
+      if (
+        isLiteralString(field.defaultValue) &&
+        !ids.includes(field.defaultValue.value)
+      ) {
+        accept(
+          'error',
+          enumDefaultMessage(field.id, field.defaultValue.value, ids),
+          { node: field, property: 'defaultValue' },
+        );
+      }
+    }
+
+    const properties: IoParameter[] = [];
+    for (const param of field.params) {
+      if (param.direction === PROPERTY_DIRECTION) {
+        properties.push(param);
+        this.checkPropertyValue(param, accept);
+      } else {
+        accept(
+          'error',
+          formFieldDirectionMessage(field.id, param.direction, isEnum),
+          { node: param, property: 'direction' },
+        );
+      }
+    }
+    this.checkDuplicateParameters(properties, accept);
+  }
+
+  /** A property's value is a `value` attribute, so it takes the shapes an injected field's `stringValue` takes. */
+  private checkPropertyValue(
+    param: IoParameter,
+    accept: ValidationAcceptor,
+  ): void {
+    if (!isFieldValue(param.value)) {
+      accept('error', propertyValueMessage(param.name), {
+        node: param,
+        property: 'value',
+      });
     }
   }
 
@@ -1787,6 +2095,14 @@ export class BpmnScriptValidator {
             'expression; put the value in quotes.',
           { node: attr, property: 'value' },
         );
+      } else if (
+        PRIORITY_ATTR_KEYS.has(attr.key) &&
+        !isPriorityValue(attr.value)
+      ) {
+        accept('error', priorityShapeMessage(attr.key), {
+          node: attr,
+          property: 'value',
+        });
       }
     }
   }
@@ -1813,14 +2129,15 @@ export class BpmnScriptValidator {
       }
     }
     this.checkIoParameters(owner, rule, accept);
+    this.checkExternalExtras(owner, rule, accept);
     this.checkListeners(owner, rule, accept);
   }
 
   /**
-   * The block's members split three ways: the io directions, the field
-   * direction, and a word that is neither. Which of the three the owner takes
-   * is its row's business, and a member of a direction it does not take is
-   * reported against the direction word the author wrote.
+   * The block's members split four ways: the io directions, the field
+   * direction, the property direction, and a word that is none of them. Which
+   * of them the owner takes is its row's business, and a member of a direction
+   * it does not take is reported against the direction word the author wrote.
    */
   private checkIoParameters(
     owner: AttributeOwner,
@@ -1842,6 +2159,28 @@ export class BpmnScriptValidator {
           this.checkField(param, refusal, accept);
         } else {
           accept('error', noFieldHostMessage(rule.description), {
+            node: param,
+            property: 'direction',
+          });
+        }
+      } else if (param.direction === PROPERTY_DIRECTION) {
+        if (rule.externalExtras) {
+          recognized.push(param);
+          const topicRefusal = topicRefusalOf(
+            rule,
+            settings,
+            'a property line',
+          );
+          if (topicRefusal !== undefined) {
+            accept('error', topicRefusal, {
+              node: param,
+              property: 'direction',
+            });
+          } else {
+            this.checkPropertyValue(param, accept);
+          }
+        } else {
+          accept('error', noPropertyHostMessage(rule.description), {
             node: param,
             property: 'direction',
           });
@@ -1868,10 +2207,58 @@ export class BpmnScriptValidator {
 
     this.checkDuplicateParameters(recognized, accept);
 
-    const directed = recognized.filter((param) => !isFieldParameter(param));
+    const directed = recognized.filter((param) =>
+      IO_DIRECTION_SET.has(param.direction),
+    );
     this.checkRepeatedOutput(owner, directed, accept);
     for (const param of directed) {
       this.checkMapKeys(param.value, accept);
+    }
+  }
+
+  /**
+   * A kind without the extras owns no `taskPriority` key, so only a mapping
+   * needs refusing there; a mapping draws one diagnostic, where it may not
+   * stand before how it is spelled.
+   */
+  private checkExternalExtras(
+    owner: AttributeOwner,
+    rule: AttributeBlockRule,
+    accept: ValidationAcceptor,
+  ): void {
+    const settings = settingsOf(owner.items);
+    const priority = settings.find((attr) => attr.key === TASK_PRIORITY_KEY);
+    if (priority !== undefined && rule.externalExtras) {
+      const refusal = topicRefusalOf(rule, settings, `'${TASK_PRIORITY_KEY}'`);
+      if (refusal !== undefined) {
+        accept('error', refusal, { node: priority, property: 'key' });
+      }
+    }
+    // A `call` block has no mapping member at all.
+    if (!('errorMappings' in owner)) return;
+    for (const mapping of owner.errorMappings) {
+      const refusal = rule.externalExtras
+        ? topicRefusalOf(rule, settings, 'an error mapping')
+        : noMappingHostMessage(rule.description);
+      if (refusal !== undefined) {
+        accept('error', refusal, { node: mapping, property: 'trigger' });
+      } else if (
+        mapping.trigger !== undefined &&
+        mapping.trigger !== ERROR_MAPPING_HEAD
+      ) {
+        accept('error', MAPPING_HEAD_MESSAGE, {
+          node: mapping,
+          property: 'trigger',
+        });
+      } else if (
+        mapping.when !== undefined &&
+        mapping.when !== ERROR_MAPPING_WHEN
+      ) {
+        accept('error', MAPPING_WHEN_MESSAGE, {
+          node: mapping,
+          property: 'when',
+        });
+      }
     }
   }
 
@@ -3476,6 +3863,44 @@ function checkEmptyCode(
 
 const isFieldParameter = (param: IoParameter): boolean =>
   param.direction === FIELD_DIRECTION;
+
+/** Admitted inside a mapping alone, for the reason {@link EXTERNAL_TASK_EL_NAME} gives. */
+function readsExternalTask(ref: VarRef): boolean {
+  return (
+    ref.ref.$refText === EXTERNAL_TASK_EL_NAME &&
+    AstUtils.getContainerOfType(ref, isErrorMapping) !== undefined
+  );
+}
+
+/** An integer, bare or quoted, or a value lowering to `${...}`: a bare name or a raw template. */
+function isPriorityValue(value: Expr): boolean {
+  return (
+    isIntegerValue(value) ||
+    isQuotedMatching(value, FORM_BOUND_TEXT) ||
+    isVarRef(value) ||
+    isRawExpr(value)
+  );
+}
+
+/**
+ * Why no external extra rides here, or `undefined` where the parens bind a
+ * `topic`. Asked on a kind whose row takes the extras alone.
+ *
+ * @param item The extra as written (`'a property line'`).
+ */
+function topicRefusalOf(
+  rule: AttributeBlockRule,
+  settings: readonly Setting[],
+  item: string,
+): string | undefined {
+  return settings.some((attr) => attr.key === 'topic')
+    ? undefined
+    : topicBindingMessage(
+        capitalize(rule.description),
+        item,
+        bindingKeysOf(settings, BUSINESS_RULE_BINDING_KEYS),
+      );
+}
 
 /** Whether the parens name a binding the engine injects a field into. */
 function namesFieldBinding(attrs: readonly Setting[]): boolean {

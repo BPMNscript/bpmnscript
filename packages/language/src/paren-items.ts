@@ -15,6 +15,7 @@ import {
 import type { AstNode } from 'langium';
 import { unquoteRaw } from './expression-render.js';
 import {
+  isErrorMapping,
   isLiteralString,
   isOnHandler,
   isRawExpr,
@@ -23,6 +24,7 @@ import {
   isParenValue,
   isSetting,
   type CodeDecl,
+  type ErrorMapping,
   type Expr,
   type Flag,
   type ParenItem,
@@ -141,14 +143,37 @@ function triggerWordOf(owner: AstNode): string | undefined {
 
 /**
  * The trigger word under which `node` names a declared code, or `undefined`
- * where it names none: only the unkeyed value of an `error` or `escalation`
- * event does.
+ * where it names none: the unkeyed value of an `error` or `escalation` event
+ * does, and so does a mapping's code slot, `error E when ...`, whose own
+ * trigger word heads the line.
  */
 export function codeTriggerOf(node: AstNode): string | undefined {
-  const trigger = payloadTriggerOf(node);
+  const trigger = isErrorMapping(node)
+    ? mappingTriggerOf(node)
+    : payloadTriggerOf(node);
   return trigger !== undefined && DECLARED_CODE_TRIGGERS.has(trigger)
     ? trigger
     : undefined;
+}
+
+/**
+ * The stand-in completion builds for the code slot (see
+ * {@link payloadTriggerOf}) is a mapping node with no trigger of its own,
+ * held by the parsed mapping whose slot is being typed, so its word is read
+ * off that container.
+ */
+function mappingTriggerOf(mapping: ErrorMapping): string | undefined {
+  // Widened: the generated type says a mapping is held by an element, which
+  // only the stand-in departs from.
+  const holder: AstNode | undefined = mapping.$container;
+  if (
+    mapping.trigger === undefined &&
+    mapping.$containerProperty === 'code' &&
+    isErrorMapping(holder)
+  ) {
+    return holder.trigger;
+  }
+  return mapping.trigger;
 }
 
 /**

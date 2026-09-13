@@ -16,7 +16,9 @@
 
 import {
   CALL_MAPPER_KEY_BY_KIND,
+  DATE_PATTERN_KEY,
   END_TRIGGERS,
+  EXPRESSION_OPEN,
   isReservedName,
   TIMER_PARTICLE_BY_KIND,
 } from '@bpmn-script/language';
@@ -26,11 +28,15 @@ import type {
   CodeBinding,
   EndEventDefinition,
   EngineAttributes,
+  ErrorMapping,
   EventDefinition,
+  ExtensionProperty,
   FlowContainer,
   FlowElement,
   FormField,
+  FormFieldConstraint,
   FormFieldType,
+  FormFieldValue,
   Gateway,
   IoMapped,
   IoValue,
@@ -1415,7 +1421,7 @@ class Emitter {
       case 'userTask':
         return renderUserTask(el);
       case 'serviceTask':
-        return renderServiceTask(el);
+        return renderServiceTask(el, this.codeNames);
       case 'task':
         return bracketed(
           `step ${el.id}${repeatClause(el)}`,
@@ -2283,34 +2289,123 @@ const USER_TASK_SETTINGS = [
 ] as const;
 
 /**
- * One field per line: a form is a member list, so it prints as a block of its
- * own. The braces are written even with no fields, `form` alone being no rule.
+ * One field per line, or a block of its own where a field carries extras: a
+ * form is a member list, so it prints that way itself. The braces are written
+ * even with no fields, `form` alone being no rule.
  */
 function renderFormBlock(formFields: FormField[]): Lines {
   return [
     'form {',
-    ...formFields.map((field) => INDENT + renderFormField(field)),
+    ...formFields
+      .map((field) => renderFormField(field))
+      .flat()
+      .map((line) => INDENT + line),
     '}',
   ];
 }
 
-/** `<id>: <type> "<label>"? (= <default>)?`. */
-function renderFormField(field: FormField): string {
+/** `<id>: <type> "<label>"? (= <default>)? (settings)? { block }?`. */
+function renderFormField(field: FormField): Lines {
   const label =
     field.label !== undefined ? ` ${quoteLiteral(field.label)}` : '';
   const def =
     field.defaultValue !== undefined
       ? ` = ${renderFormDefault(field.defaultValue, field.type)}`
       : '';
-  return `${field.id}: ${field.type}${label}${def}`;
+  const head = `${field.id}: ${field.type}${label}${def}`;
+  const settings = fieldSettings(field);
+  // A space ahead of the parens, unlike every other statement head: a field
+  // is a member line rather than its own statement, and the space is what
+  // keeps it reading as one.
+  const headWithSettings =
+    settings.length === 0 ? head : `${head} ${parens(settings)}`;
+  return withMembers(headWithSettings, fieldBlockMembers(field));
 }
 
-/** `string` and `date` quote, `number` and `boolean` print bare, EL always quotes. */
+/** `string`, `date` and `enum` quote, `number` and `boolean` print bare, EL always quotes. */
 function renderFormDefault(value: string, type: FormFieldType): string {
   if (value.startsWith('${')) {
     return quote(value);
   }
   return type === 'number' || type === 'boolean' ? value : quote(value);
+}
+
+/** `pattern` first, being a type parameter rather than a constraint, then each constraint in IR order. */
+function fieldSettings(field: FormField): string[] {
+  const settings: string[] =
+    field.datePattern === undefined
+      ? []
+      : [setting(DATE_PATTERN_KEY, quote(field.datePattern))];
+  for (const constraint of field.constraints ?? []) {
+    settings.push(renderFormConstraint(constraint));
+  }
+  return settings;
+}
+
+/**
+ * A flag writes the literal `true`; a bound prints as `renderNumericValue`
+ * prints a priority; `validator` is always quoted, like `class:`.
+ */
+function renderFormConstraint(constraint: FormFieldConstraint): string {
+  switch (constraint.name) {
+    case 'required':
+    case 'readonly':
+      return setting(constraint.name, 'true');
+    case 'min':
+    case 'max':
+    case 'minlength':
+    case 'maxlength':
+      return setting(
+        constraint.name,
+        renderNumericValue(constraint.config ?? ''),
+      );
+    case 'validator':
+      return setting('validator', quote(constraint.config ?? ''));
+    default: {
+      const exhaustive: never = constraint.name;
+      throw new Error(
+        `irToDsl: unhandled form constraint name: ${JSON.stringify(exhaustive)}`,
+      );
+    }
+  }
+}
+
+/** Values in the engine's document order, then the field's `property` lines. */
+function fieldBlockMembers(field: FormField): Lines[] {
+  const values = (field.values ?? []).map((value) => [renderFormValue(value)]);
+  return [...values, ...propertyMembers(field.properties)];
+}
+
+/** `<id> "<label>"?`, one line per value an `enum` field offers. */
+function renderFormValue(value: FormFieldValue): string {
+  return value.label === undefined
+    ? value.id
+    : `${value.id} ${quoteLiteral(value.label)}`;
+}
+
+/**
+ * `property <key> = <value>` lines, of a form field's block or an external
+ * task's. `quote`, not `quoteLiteral`: a `${...}` value has to re-lex as a
+ * raw expression so it lowers back to the same text.
+ */
+function propertyMembers(properties: ExtensionProperty[] | undefined): Lines[] {
+  return (properties ?? []).map((p) => [
+    `property ${p.key} = ${quote(p.value)}`,
+  ]);
+}
+
+/**
+ * `error <name> when <condition>` lines. `eventIdentities` counts every
+ * mapping as a use of its code, so `codeDeclarations` always has a name for
+ * it, declared or synthesized.
+ */
+function errorMappingMembers(
+  mappings: ErrorMapping[] | undefined,
+  names: CodeNames,
+): Lines[] {
+  return (mappings ?? []).map((m) => [
+    `error ${names.error.get(m.errorCode) ?? m.errorCode} when ${renderRawCondition(m.condition)}`,
+  ]);
 }
 
 /** The message leads the engine settings, so the wait reads before them. */
@@ -2339,16 +2434,25 @@ const SERVICE_TASK_LIKE_KEYWORD = {
 
 function renderServiceTask(
   el: Extract<FlowElement, { kind: 'serviceTask' }>,
+  codeNames: CodeNames,
 ): Lines {
   const keyword = SERVICE_TASK_LIKE_KEYWORD[el.element ?? 'service'];
+  const binding = el.binding;
   const settings = [
     ...namedSettings(el),
-    ...bindingSettings(el.binding),
+    ...bindingSettings(binding),
     ...resultVariableSetting(el),
     ...engineSettings(el),
   ];
   return bracketed(`${keyword} ${el.id}${repeatClause(el)}`, settings, [
-    ...fieldMembers(el.binding),
+    ...fieldMembers(binding),
+    ...propertyMembers(
+      binding.kind === 'external' ? binding.properties : undefined,
+    ),
+    ...errorMappingMembers(
+      binding.kind === 'external' ? binding.errorMappings : undefined,
+      codeNames,
+    ),
     ...structuredMembers(el),
   ]);
 }
@@ -2361,7 +2465,14 @@ function bindingSettings(binding: ServiceTaskBinding): string[] {
     case 'delegateExpression':
       return [renderCodeBinding(binding)];
     case 'external':
-      return [setting('topic', quote(binding.topic))];
+      return [
+        setting('topic', quote(binding.topic)),
+        ...(binding.taskPriority === undefined
+          ? []
+          : [
+              setting('taskPriority', renderNumericValue(binding.taskPriority)),
+            ]),
+      ];
     case 'decision':
       return [
         setting('decision', quote(binding.decisionRef)),
@@ -2451,9 +2562,17 @@ function renderCallActivity(
   return bracketed(`call ${el.id}${repeatClause(el)}`, settings, members);
 }
 
-/** All-digit prints bare; anything else quotes, so it re-parses as an expression. */
+/**
+ * All-digit prints bare; anything else quotes, so it re-parses as an
+ * expression. An expression is trimmed and a `#{` opening written as `${`,
+ * the one raw form the surface lexes; Operaton reads either opening after a
+ * trim (`StringUtil.isExpression`).
+ */
 function renderNumericValue(value: string): string {
-  return /^[0-9]+$/.test(value) ? value : quote(value);
+  if (/^[0-9]+$/.test(value)) return value;
+  return quote(
+    EXPRESSION_OPEN.test(value) ? value.trim().replace(/^#/, '$') : value,
+  );
 }
 
 function resultVariableSetting(el: { resultVariable?: string }): string[] {

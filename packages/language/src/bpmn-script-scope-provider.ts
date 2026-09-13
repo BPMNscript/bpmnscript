@@ -1,7 +1,8 @@
 /**
  * Container-scoped resolution for `goto` and for an `on` handler's host: both
  * see every named step of their own flow container at any nesting depth and
- * nothing outside it. A code reference sees the enclosing process's
+ * nothing outside it. A code reference, whether an event's payload or the
+ * code slot of an `error ... when` mapping, sees the enclosing process's
  * declarations of its own kind in a code position and nothing at all anywhere
  * else.
  *
@@ -39,6 +40,7 @@ import {
   isCodeDecl,
   isEmitStatement,
   isEndEvent,
+  isErrorMapping,
   isGenericTask,
   isGotoStatement,
   isIntermediateCatchEvent,
@@ -147,7 +149,10 @@ function isContainerScoped(context: ReferenceInfo): boolean {
 
 export class BpmnScriptScopeProvider extends DefaultScopeProvider {
   override getScope(context: ReferenceInfo): Scope {
-    if (isVarRef(context.container)) {
+    if (isVarRef(context.container) || isErrorMapping(context.container)) {
+      // Never the default scope: it would resolve the name against every
+      // declaration of both kinds, so a mapping headed by a word that names no
+      // code gets nothing, as a `VarRef` outside a code position does.
       const trigger = codeTriggerOf(context.container);
       if (trigger === undefined) return EMPTY_SCOPE;
       const process = AstUtils.getContainerOfType(context.container, isProcess);

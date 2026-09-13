@@ -5,30 +5,32 @@ Known-good files checked into the repo, so a test can compare its output against
 Most fixtures here come in pairs: a `.bpmnscript` source and the `.bpmn` the full pipeline produces from it, frozen.
 A few stand alone as inputs for one direction only.
 
-| Fixture                                | Covers                                                                           |
-| -------------------------------------- | -------------------------------------------------------------------------------- |
-| `invoice-approval-handwritten.bpmn`    | Import of a realistic modeler file                                               |
-| `invoice-approval-generated.bpmn`      | The full compile pipeline, frozen                                                |
-| `bad-service-task-no-binding.bpmn`     | The import refusal path                                                          |
-| `structured-control-flow.bpmnscript`   | Round-trip idempotence for `if`, `while`, and `parallel`                         |
-| `nested-subprocess.{bpmnscript,bpmn}`  | Embedded sub-process round trip                                                  |
-| `event-handlers.{bpmnscript,bpmn}`     | The error and escalation layer                                                   |
-| `event-triggers.{bpmnscript,bpmn}`     | The message, signal, timer, and conditional triggers                             |
-| `compensation.{bpmnscript,bpmn}`       | The compensation (undo-block) layer                                              |
-| `boundary-events.{bpmnscript,bpmn}`    | Host-attached handlers, every boundary trigger but `cancel`                      |
-| `intermediate-catch.{bpmnscript,bpmn}` | `await` on the four triggers a token blocks on and continues past                |
-| `engine-attributes.{bpmnscript,bpmn}`  | The flat engine settings, and both ways of naming a form                         |
-| `input-output.{bpmnscript,bpmn}`       | `operaton:inputOutput` in all four value forms                                   |
-| `listeners.{bpmnscript,bpmn}`          | Both listener kinds, and field injection on all its carriers                     |
-| `event-positions.{bpmnscript,bpmn}`    | A message start, `emit`/`throw message`, and a terminate end                     |
-| `task-kinds.{bpmnscript,bpmn}`         | The generic, send, receive, and decision task kinds                              |
-| `repetition.{bpmnscript,bpmn}`         | Every form of the repeat clause                                                  |
-| `transactions.{bpmnscript,bpmn}`       | A block of work that can be given up, and the cancel pair                        |
-| `branch-and-race.{bpmnscript,bpmn}`    | The splits that weigh their branches, and the race of waits                      |
-| `documentation.{bpmnscript,bpmn}`      | Human-facing text, on the header and on every carrying kind                      |
-| `multiple-starts.{bpmnscript,bpmn}`    | Four starts on one process, across two chains                                    |
-| `link-events.{bpmnscript,bpmn}`        | The link pair, in the process and in a sub-process, with two throws to one catch |
-| `unstructured-goto.bpmn`               | The `goto` degradation path on import                                            |
+| Fixture                                | Covers                                                                                   |
+| -------------------------------------- | ---------------------------------------------------------------------------------------- |
+| `invoice-approval-handwritten.bpmn`    | Import of a realistic modeler file                                                       |
+| `invoice-approval-generated.bpmn`      | The full compile pipeline, frozen                                                        |
+| `bad-service-task-no-binding.bpmn`     | The import refusal path                                                                  |
+| `structured-control-flow.bpmnscript`   | Round-trip idempotence for `if`, `while`, and `parallel`                                 |
+| `nested-subprocess.{bpmnscript,bpmn}`  | Embedded sub-process round trip                                                          |
+| `event-handlers.{bpmnscript,bpmn}`     | The error and escalation layer                                                           |
+| `event-triggers.{bpmnscript,bpmn}`     | The message, signal, timer, and conditional triggers                                     |
+| `compensation.{bpmnscript,bpmn}`       | The compensation (undo-block) layer                                                      |
+| `boundary-events.{bpmnscript,bpmn}`    | Host-attached handlers, every boundary trigger but `cancel`                              |
+| `intermediate-catch.{bpmnscript,bpmn}` | `await` on the four triggers a token blocks on and continues past                        |
+| `engine-attributes.{bpmnscript,bpmn}`  | The flat engine settings, and both ways of naming a form                                 |
+| `input-output.{bpmnscript,bpmn}`       | `operaton:inputOutput` in all four value forms                                           |
+| `listeners.{bpmnscript,bpmn}`          | Both listener kinds, and field injection on all its carriers                             |
+| `event-positions.{bpmnscript,bpmn}`    | A message start, `emit`/`throw message`, and a terminate end                             |
+| `task-kinds.{bpmnscript,bpmn}`         | The generic, send, receive, and decision task kinds                                      |
+| `repetition.{bpmnscript,bpmn}`         | Every form of the repeat clause                                                          |
+| `transactions.{bpmnscript,bpmn}`       | A block of work that can be given up, and the cancel pair                                |
+| `branch-and-race.{bpmnscript,bpmn}`    | The splits that weigh their branches, and the race of waits                              |
+| `documentation.{bpmnscript,bpmn}`      | Human-facing text, on the header and on every carrying kind                              |
+| `multiple-starts.{bpmnscript,bpmn}`    | Four starts on one process, across two chains                                            |
+| `link-events.{bpmnscript,bpmn}`        | The link pair, in the process and in a sub-process, with two throws to one catch         |
+| `forms.{bpmnscript,bpmn}`              | Every extension a form field takes: constraints, a date pattern, enum values, properties |
+| `external-task.{bpmnscript,bpmn}`      | The extras a topic-bound task carries: priority, properties, error mappings              |
+| `unstructured-goto.bpmn`               | The `goto` degradation path on import                                                    |
 
 The three invoice-approval files all describe the same process (review, then a gateway on `amount > 1000`, then senior approval or auto-approve) but come from different sources and pull the tests in different directions.
 
@@ -261,6 +263,30 @@ An `emit link` inside a guard ends its branch, so the restructured DSL prints th
 That order is pinned: `end Closed`, the two `emit link` throws, then `await link AtRework("Rework", asyncBefore: true)` and the rework chain with its `if`/`else` intact, ending in `goto AssessClaim`; inside the sub-process, `end Settled`, `emit link ToAudit("Audit")`, `await link AtAudit("Audit")`, the audit task, and `end Audited`.
 
 Contract: five `bpmn:linkEventDefinition` elements, three named `Rework` and two `Audit`; the element `name` equal to the link name on each of the five ends; `bpmn:incoming` on a throw alone and `bpmn:outgoing` on a catch alone; `operaton:asyncBefore` on `AtRework` and nowhere else; no derived root of any kind; the `ToAudit` and `AtAudit` shapes inside the `Settlement` shape; an import of the frozen artifact that reports no warning at all; the restructured DSL order above; and every authored id.
+
+## `forms.{bpmnscript,bpmn}`
+
+A gym-membership narrative carrying every extension a form field takes, spread over a start form and a task form so one artifact exercises both carriers.
+`Applied`'s form covers a string field with three built-in constraints (`required`, `minlength`, `maxlength`), a date field pinning its `pattern`, an `enum` field naming two labelled values and one bare value beside a `property` line, and a plain boolean default.
+`ConfirmPayment`'s form covers a number field bounded by `min`/`max`, a string field naming a custom `validator` class, a `readonly` string field carrying two `property` lines, and a required boolean field the `if` below reads.
+Every constraint sits on the type its validator accepts, the bounds on a `number` or a `string` field alone and the flags and `validator` on any type, because the engine deploys a mismatch and fails every submission rather than refusing the deployment.
+Two authoring rules keep the pair re-parsing under the same ids.
+Every element label differs from the name humanized from its id, because the importer drops a label it can derive and the fixture would otherwise come back with one missing.
+The `if (confirmed)` condition reads a field declared on the `ConfirmPayment` form rather than a `var`, so the declaration comes back out of the XML on the way in.
+
+Contract: the `(element id, FormField[])` table in `tests/forms.round-trip.test.ts`, asserting `Applied` and `ConfirmPayment` keep every value, constraint, pattern and property at each hop and through import; and the frozen `plan` and `fullName` elements, pinning the child order (properties, validation, values) and that `required` writes with no `config`.
+
+## `external-task.{bpmnscript,bpmn}`
+
+A card-payment narrative carrying every extra a step handed to an external worker takes, spread over the three task kinds that bind to a topic.
+`ChargeCard` is a `service` task naming a numeric `taskPriority`, two `property` lines the worker fetches with the task, and two `error ... when` mappings in the order they raise; `SendReceipt` is a `send` task naming an expression `taskPriority` and one `property` line; `RateFraud` is a `decide` task naming one mapping, so a mapping outside the service tag is pinned too.
+`PAYMENT_DECLINED` is caught by a handler attached to `ChargeCard` and `GATEWAY_DOWN` by a process-wide one, so the artifact carries a code a handler uses beside one only the mappings raise.
+Three authoring rules keep the pair re-parsing under the same ids.
+Every element label differs from the name humanized from its id, because the importer drops a label it can derive and the fixture would otherwise come back with one missing.
+The `amount` the receipt's priority reads is declared on the start form rather than a `var`, so the declaration comes back out of the XML on the way in.
+Every mapping condition is written structured rather than as a raw `"${...}"` string, since a raw string prints back structured and would change what IR3 compares against.
+
+Contract: the `EXTERNAL_BINDINGS` record in `tests/external-task.round-trip.test.ts`, asserting `ChargeCard`, `SendReceipt` and `RateFraud` keep their priority, properties and error mappings at each hop and through import; and the frozen artifact's `operaton:taskPriority`, `operaton:properties` and `operaton:errorEventDefinition` children, and the two `bpmn:error` roots in first-use order.
 
 ## `unstructured-goto.bpmn`
 

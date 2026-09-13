@@ -69,6 +69,8 @@ const CORPUS = [
   `process p { start S if (a > 1) { user U } else { goto Fin } while (b) { step T } end Fin }`,
   `process p { start S parallel { { user U } { service V(topic: "t") } } end E }`,
   `process p { start S send N(class: "C") receive R(message: "M") decide D(decision: "d") end E }`,
+  `process p { start S { form { plan: enum "P" = "a" (required: true, validator: "V") { a "A" b property k = "v" } n: number (min: 1, max: "5") d: date (pattern: "yyyy") } } end E }`,
+  `process p { error E start S service V(topic: "t", taskPriority: 42) { property k = "v" property j = "w" error E when externalTask.retries == 0 error E when "\${x}" } end F }`,
   `process p(label: "x", label: "y") { var a: number var a: number start S user U user U end E }`,
 ];
 

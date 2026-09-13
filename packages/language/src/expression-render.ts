@@ -23,6 +23,22 @@ import {
   isVarRef,
 } from './generated/ast.js';
 
+/**
+ * The digits of an integer literal with its sign, or `undefined` for any other
+ * expression. Bare, `-5` parses as a `-` unary over `5`, and every setting the
+ * engine reads with `Integer.parseInt` or `Long.parseLong` takes that as the
+ * one integer it is rather than as an expression.
+ */
+export function integerLiteralText(node: Expr): string | undefined {
+  if (isLiteralInt(node)) {
+    return String(node.value);
+  }
+  if (isUnary(node) && node.op === '-' && isLiteralInt(node.operand)) {
+    return `-${node.operand.value}`;
+  }
+  return undefined;
+}
+
 /** A {@link RawExpr} body is already a complete one and comes back verbatim. */
 export function renderExpression(node: Expr): string {
   if (isRawExpr(node)) {

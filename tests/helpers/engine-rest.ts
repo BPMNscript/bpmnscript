@@ -277,3 +277,177 @@ export async function activityIdsIncluding(
   );
   return activities.map((a) => a.activityId);
 }
+
+// The adapter's start carries variables alone. A business key is what a fetch
+// can filter a topic by (FetchExternalTasksDto names no process instance), so
+// a journey that must lock its own instance's task starts through this.
+export async function startWithBusinessKey(
+  fixture: FixtureAdapter,
+  processDefinitionKey: string,
+  businessKey: string,
+): Promise<string> {
+  const response = await fetch(
+    `${fixture.restBaseUrl()}/engine-rest/process-definition/key/${encodeURIComponent(processDefinitionKey)}/start`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ businessKey }),
+    },
+  );
+  await assertOk(response, `startWithBusinessKey(${processDefinitionKey})`);
+  return ((await response.json()) as { id: string }).id;
+}
+
+// The one worker id every lock, completion and failure below names: the engine
+// hands a locked task back only to the worker holding its lock.
+const WORKER_ID = 'e2e-worker';
+
+export interface LockedExternalTask {
+  id: string;
+  processInstanceId: string;
+  priority: number;
+  extensionProperties: Record<string, string>;
+}
+
+// Locks the topic's task of the instance carrying the business key, as a
+// worker would. `includeExtensionProperties` is what puts the task's
+// `operaton:property` map on the answer; `priority` comes regardless.
+export async function fetchAndLock(
+  fixture: FixtureAdapter,
+  topicName: string,
+  businessKey: string,
+): Promise<LockedExternalTask> {
+  const locked = await waitFor(
+    async () => {
+      const response = await fetch(
+        `${fixture.restBaseUrl()}/engine-rest/external-task/fetchAndLock`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            workerId: WORKER_ID,
+            maxTasks: 1,
+            topics: [
+              {
+                topicName,
+                businessKey,
+                lockDuration: 60_000,
+                includeExtensionProperties: true,
+              },
+            ],
+          }),
+        },
+      );
+      await assertOk(response, `fetchAndLock(${topicName})`);
+      return (await response.json()) as LockedExternalTask[];
+    },
+    (tasks) => tasks.length > 0,
+  );
+  if (locked[0] === undefined) {
+    throw new Error(
+      `no external task on '${topicName}' for business key ${businessKey}`,
+    );
+  }
+  return locked[0];
+}
+
+export async function completeExternalTask(
+  fixture: FixtureAdapter,
+  taskId: string,
+): Promise<void> {
+  const response = await fetch(
+    `${fixture.restBaseUrl()}/engine-rest/external-task/${encodeURIComponent(taskId)}/complete`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ workerId: WORKER_ID }),
+    },
+  );
+  await assertOk(response, `completeExternalTask(${taskId})`);
+}
+
+export interface ExternalTaskFailure {
+  errorMessage: string;
+  errorDetails?: string;
+  retries: number;
+}
+
+// Reports the failure the way a worker does. `ExternalTaskEntity.failed` runs
+// the task's error mappings against the message before it touches the
+// retries, so a matching message never leaves a task behind.
+export async function failExternalTask(
+  fixture: FixtureAdapter,
+  taskId: string,
+  failure: ExternalTaskFailure,
+): Promise<void> {
+  const response = await fetch(
+    `${fixture.restBaseUrl()}/engine-rest/external-task/${encodeURIComponent(taskId)}/failure`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ workerId: WORKER_ID, ...failure }),
+    },
+  );
+  await assertOk(response, `failExternalTask(${taskId})`);
+}
+
+export interface ExternalTask {
+  id: string;
+  topicName: string;
+  errorMessage: string | null;
+  retries: number | null;
+}
+
+// Every external task the instance holds, locked or not.
+export async function externalTasksOf(
+  fixture: FixtureAdapter,
+  processInstanceId: string,
+): Promise<ExternalTask[]> {
+  return engineGet<ExternalTask[]>(
+    fixture,
+    `/engine-rest/external-task?processInstanceId=${encodeURIComponent(processInstanceId)}`,
+    `externalTasksOf(${processInstanceId})`,
+  );
+}
+
+// Returns the raw response: the form service answers a refused submission
+// with a non-2xx whose body names the field or value it refused, and that is
+// what a caller asserts on.
+export async function submitTaskForm(
+  fixture: FixtureAdapter,
+  taskId: string,
+  variables: Record<string, string>,
+): Promise<Response> {
+  return fetch(
+    `${fixture.restBaseUrl()}/engine-rest/task/${encodeURIComponent(taskId)}/submit-form`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        variables: Object.fromEntries(
+          Object.entries(variables).map(([key, value]) => [key, { value }]),
+        ),
+      }),
+    },
+  );
+}
+
+export interface IdentityLink {
+  type: string;
+  userId: string | null;
+  groupId: string | null;
+}
+
+// The assignee and candidate links the engine created for the task, which is
+// what `operaton:assignee`, `operaton:candidateUsers` and
+// `operaton:candidateGroups` resolve to at runtime.
+export async function identityLinksOf(
+  fixture: FixtureAdapter,
+  taskId: string,
+): Promise<IdentityLink[]> {
+  return engineGet<IdentityLink[]>(
+    fixture,
+    `/engine-rest/task/${encodeURIComponent(taskId)}/identity-links`,
+    `identityLinksOf(${taskId})`,
+  );
+}

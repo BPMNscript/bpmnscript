@@ -162,6 +162,13 @@ export const PARAMETER_HOSTS = new Set([
 export const FORM_HOSTS = new Set(['start', 'user']);
 
 /**
+ * The element kinds that take an external task's extras: `taskPriority` in
+ * the parens, `property` and `error ... when` lines in the block, each legal
+ * beside a `topic` binding alone.
+ */
+export const EXTERNAL_HOSTS = new Set(['service', 'send', 'decide']);
+
+/**
  * The element kinds whose parens take a `label`. The rest lower to a BPMN node
  * with no name slot of its own, so a label there would be dropped.
  */

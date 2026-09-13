@@ -55,7 +55,9 @@ import type {
   EndEventDefinition,
   EventDefinition,
   FlowElement,
+  FormField,
   LoopCharacteristics,
+  ServiceTaskBinding,
   VersionBinding,
 } from '../src/ir/types.js';
 
@@ -373,6 +375,94 @@ describe('irToXml: serviceTask binding variants', () => {
       expect(out).toContain(attribute);
     }
   });
+});
+
+/**
+ * Read from a run once, then frozen: `properties` before the mappings, `name`
+ * (not `id`) on a task's property, `errorRef` resolving to a synthesized root
+ * for a code nothing declares or throws.
+ */
+const FROZEN_EXTERNAL_EXTRAS_BLOCK = `<bpmn:extensionElements>
+        <operaton:properties>
+          <operaton:property name="gateway" value="stripe" />
+          <operaton:property name="currency" value="USD" />
+        </operaton:properties>
+        <operaton:errorEventDefinition errorRef="Error_DECLINED" expression="\${externalTask.errorMessage == &#34;declined&#34;}" />
+        <operaton:errorEventDefinition errorRef="Error_TIMEOUT" expression="\${retries == 0}" />
+      </bpmn:extensionElements>`;
+
+describe('irToXml: external task extras', () => {
+  const externalWithExtras: ServiceTaskBinding = {
+    kind: 'external',
+    topic: 'charge-card',
+    taskPriority: '42',
+    properties: [
+      { key: 'gateway', value: 'stripe' },
+      { key: 'currency', value: 'USD' },
+    ],
+    errorMappings: [
+      {
+        errorCode: 'DECLINED',
+        condition: '${externalTask.errorMessage == "declined"}',
+      },
+      { errorCode: 'TIMEOUT', condition: '${retries == 0}' },
+    ],
+  };
+
+  it('writes taskPriority beside type/topic, properties keyed by name, and one error root plus mapping per code, with nothing declared or throwing them', async () => {
+    const xml = await irToXml(
+      around({
+        kind: 'serviceTask',
+        id: 'Charge',
+        binding: externalWithExtras,
+      }),
+    );
+
+    expect(extractNodeBlock(xml, 'Charge')).toContain(
+      'operaton:type="external" operaton:topic="charge-card" operaton:taskPriority="42"',
+    );
+
+    expect(extensionBlock(xml)).toBe(FROZEN_EXTERNAL_EXTRAS_BLOCK);
+
+    const defs = await parseDefinitionsWithOperaton(xml);
+    expect(rootsOfType(defs, 'bpmn:Error').map((r) => r.errorCode)).toEqual([
+      'DECLINED',
+      'TIMEOUT',
+    ]);
+  });
+
+  it('an external binding with topic alone serializes exactly as before: no taskPriority, no extensionElements', async () => {
+    const xml = await irToXml(
+      around({
+        kind: 'serviceTask',
+        id: 'Task',
+        binding: externalBinding('shipping'),
+      }),
+    );
+    expect(extractNodeBlock(xml, 'Task')).not.toContain(
+      'operaton:taskPriority',
+    );
+    expect(xml).not.toContain('<bpmn:extensionElements');
+  });
+
+  it.each([
+    ['send binding', 'send', 'bpmn:sendTask'],
+    ['businessRule binding', 'businessRule', 'bpmn:businessRuleTask'],
+  ] as const)(
+    'a %s carries the same properties and mapping children under its own tag',
+    async (_title, element, tag) => {
+      const xml = await irToXml(
+        around({
+          kind: 'serviceTask',
+          id: 'Step',
+          element,
+          binding: externalWithExtras,
+        }),
+      );
+      expect(extractNodeBlock(xml, 'Step').startsWith(`<${tag} `)).toBe(true);
+      expect(extensionBlock(xml)).toBe(FROZEN_EXTERNAL_EXTRAS_BLOCK);
+    },
+  );
 });
 
 describe('irToXml: scriptTask serialization', () => {
@@ -2281,6 +2371,72 @@ describe('irToXml: user task formRef', () => {
     );
     const node = await engineNode(xml, 'Task');
     expect(formRefAttrs(node)).toEqual(expected);
+  });
+});
+
+describe('irToXml: form field constraints, values, pattern and properties', () => {
+  it('serializes every extra a form field carries, in the descriptor order properties, validation, values', async () => {
+    const field: FormField = {
+      id: 'plan',
+      type: 'enum',
+      label: 'Plan',
+      defaultValue: 'basic',
+      properties: [{ key: 'description', value: 'Sets the fee' }],
+      constraints: [
+        { name: 'required' },
+        { name: 'validator', config: 'com.example.Check' },
+      ],
+      values: [{ id: 'basic', label: 'Basic' }, { id: 'plus' }],
+    };
+    const xml = await irToXml(
+      around({ kind: 'userTask', id: 'Task', formFields: [field] }),
+    );
+    expect(xml)
+      .toContain(`<operaton:formField id="plan" label="Plan" type="enum" defaultValue="basic">
+            <operaton:properties>
+              <operaton:property id="description" value="Sets the fee" />
+            </operaton:properties>
+            <operaton:validation>
+              <operaton:constraint name="required" />
+              <operaton:constraint name="validator" config="com.example.Check" />
+            </operaton:validation>
+            <operaton:value id="basic" name="Basic" />
+            <operaton:value id="plus" />
+          </operaton:formField>`);
+  });
+
+  it('writes datePattern and constraints in IR order, and no empty properties/validation/values for a field with none', async () => {
+    const dateField: FormField = {
+      id: 'birthDate',
+      type: 'date',
+      datePattern: 'dd/MM/yyyy',
+    };
+    const numberField: FormField = {
+      id: 'amount',
+      type: 'number',
+      constraints: [
+        { name: 'min', config: '0' },
+        { name: 'max', config: '5000' },
+      ],
+    };
+    const plainField: FormField = { id: 'note', type: 'string' };
+    const xml = await irToXml(
+      around({
+        kind: 'userTask',
+        id: 'Task',
+        formFields: [dateField, numberField, plainField],
+      }),
+    );
+    expect(xml).toContain(
+      '<operaton:formField id="birthDate" type="date" datePattern="dd/MM/yyyy" />',
+    );
+    expect(xml).toContain(`<operaton:formField id="amount" type="long">
+            <operaton:validation>
+              <operaton:constraint name="min" config="0" />
+              <operaton:constraint name="max" config="5000" />
+            </operaton:validation>
+          </operaton:formField>`);
+    expect(xml).toContain('<operaton:formField id="note" type="string" />');
   });
 });
 

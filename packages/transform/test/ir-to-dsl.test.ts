@@ -65,9 +65,11 @@ import type {
   EventDefinition,
   ExecutionListener,
   FlowElement,
+  FormField,
   IntermediateCatchEvent,
   LoopCharacteristics,
   SequenceFlow,
+  ServiceTaskBinding,
   VersionBinding,
 } from '../src/ir/types.js';
 
@@ -672,6 +674,92 @@ describe('irToDsl: service-task bindings', () => {
       (e) => e.id === node.id,
     );
     expect(svc?.kind === 'serviceTask' && svc.binding.kind).toBe(bindingKind);
+  });
+});
+
+describe('irToDsl: an external task prints its priority, properties and mappings only with something to print', () => {
+  /** Two properties and two mappings, one code declared under a chosen name, one left for `codeDeclarations` to synthesize. */
+  const MAPPED_PROCESS: BpmnProcess = {
+    ...around(
+      serviceTask('V', {
+        kind: 'external',
+        topic: 't',
+        properties: [
+          { key: 'amount', value: '100' },
+          { key: 'currency', value: 'EUR' },
+        ],
+        errorMappings: [
+          {
+            errorCode: 'DECLINED',
+            condition: '${externalTask.errorMessage == "declined"}',
+          },
+          { errorCode: 'TIMEOUT', condition: '${externalTask.retries == 0}' },
+        ],
+      }),
+    ),
+    errorDecls: [{ name: 'PaymentDeclined', code: 'DECLINED' }],
+  };
+
+  it.each([
+    [
+      'a topic alone prints no parens beyond it',
+      around(serviceTask('V', { kind: 'external', topic: 't' })),
+      'service V(topic: "t")',
+    ],
+    [
+      'an integer taskPriority prints bare, as jobPriority does',
+      around(
+        serviceTask('V', { kind: 'external', topic: 't', taskPriority: '42' }),
+      ),
+      'service V(topic: "t", taskPriority: 42)',
+    ],
+    [
+      'an expression taskPriority prints quoted so it re-lexes as raw EL',
+      around(
+        serviceTask('V', {
+          kind: 'external',
+          topic: 't',
+          taskPriority: '${amount > 1000 ? 90 : 10}',
+        }),
+      ),
+      'service V(topic: "t", taskPriority: "${amount > 1000 ? 90 : 10}")',
+    ],
+    [
+      'a taskPriority opening with #{ prints inside "${...}", the one raw form the surface has',
+      around(
+        serviceTask('V', {
+          kind: 'external',
+          topic: 't',
+          taskPriority: '#{x}',
+        }),
+      ),
+      'service V(topic: "t", taskPriority: "${x}")',
+    ],
+    [
+      'properties then mappings print after the fields, a declared code by its name and an undeclared one under a synthesized header',
+      MAPPED_PROCESS,
+      'service V(topic: "t") {\n' +
+        '    property amount = "100"\n' +
+        '    property currency = "EUR"\n' +
+        '    error PaymentDeclined when externalTask.errorMessage == "declined"\n' +
+        '    error TIMEOUT when externalTask.retries == 0\n' +
+        '  }',
+    ],
+  ] as const)('%s', async (_title, process, expected) => {
+    const dsl = await printed(process);
+    expect(dsl).toContain(expected);
+  });
+
+  it('an empty property value prints as "" and lowers back to the empty string, which both engine readers store', async () => {
+    const binding: ServiceTaskBinding = {
+      kind: 'external',
+      topic: 't',
+      properties: [{ key: 'k', value: '' }],
+    };
+    const dsl = await printed(around(serviceTask('V', binding)));
+    expect(dsl).toContain('property k = ""');
+    const svc = (await reDesugar(dsl)).flowElements.find((e) => e.id === 'V');
+    expect(svc?.kind === 'serviceTask' && svc.binding).toEqual(binding);
   });
 });
 
@@ -2703,6 +2791,105 @@ describe('irToDsl: the process header and the start it opens on', () => {
   });
 });
 
+/**
+ * The lines strictly between `form {` and the matching `}`, trimmed, brace
+ * depth tracked so a field's own block (parens and members nest inside a
+ * field line) does not end the slice early.
+ */
+function formBlockLines(dsl: string): string[] {
+  const lines = dsl.split('\n');
+  const start = lines.findIndex((line) => line.trim() === 'form {');
+  const body: string[] = [];
+  let depth = 1;
+  for (let i = start + 1; depth > 0; i++) {
+    const line = lines[i]!;
+    depth += (line.match(/{/g)?.length ?? 0) - (line.match(/}/g)?.length ?? 0);
+    if (depth > 0) body.push(line.trim());
+  }
+  return body;
+}
+
+describe('irToDsl: form fields print their parens and block only with something to print', () => {
+  const PLAN_FIELD: FormField = {
+    id: 'plan',
+    type: 'enum',
+    label: 'Plan',
+    defaultValue: 'basic',
+    values: [
+      { id: 'basic', label: 'Basic' },
+      { id: 'plus' },
+      { id: 'weird', label: '${weird}' },
+    ],
+    properties: [{ key: 'hint', value: '${hint}' }],
+  };
+
+  const FIELD_ROWS: [string, FormField, string[]][] = [
+    [
+      'a plain field prints unchanged: no parens, no block',
+      { id: 'ok', type: 'boolean' },
+      ['ok: boolean'],
+    ],
+    [
+      'a date field prints its pattern first, then the flag constraint',
+      {
+        id: 'birthDate',
+        type: 'date',
+        label: 'Date of birth',
+        datePattern: 'dd/MM/yyyy',
+        constraints: [{ name: 'required' }],
+      },
+      [
+        'birthDate: date "Date of birth" (pattern: "dd/MM/yyyy", required: true)',
+      ],
+    ],
+    [
+      'a number prints an all-digit bound bare and a negative bound quoted',
+      {
+        id: 'amount',
+        type: 'number',
+        constraints: [
+          { name: 'min', config: '-5' },
+          { name: 'max', config: '5000' },
+        ],
+      },
+      ['amount: number (min: "-5", max: 5000)'],
+    ],
+    [
+      'a string with a validator constraint opens a block for its property',
+      {
+        id: 'iban',
+        type: 'string',
+        constraints: [{ name: 'validator', config: 'com.example.Check' }],
+        properties: [{ key: 'placeholder', value: 'Filled in later' }],
+      },
+      [
+        'iban: string (validator: "com.example.Check") {',
+        'property placeholder = "Filled in later"',
+        '}',
+      ],
+    ],
+    [
+      'an enum prints its labelled, bare and escaped values before a raw property value',
+      PLAN_FIELD,
+      [
+        'plan: enum "Plan" = "basic" {',
+        'basic "Basic"',
+        'plus',
+        'weird "\\${weird}"',
+        'property hint = "${hint}"',
+        '}',
+      ],
+    ],
+  ];
+
+  it.each(FIELD_ROWS)('%s', async (_title, field, expected) => {
+    const dsl = await printed(
+      around({ kind: 'userTask', id: 'T', formFields: [field] }),
+    );
+    expect(formBlockLines(dsl)).toEqual(expected);
+  });
+});
+
 describe('irToDsl: engine attributes', () => {
   /**
    * One of every statement kind that carries engine settings, each carrying at
@@ -2896,7 +3083,7 @@ describe('irToDsl: engine attributes', () => {
     expect(dsl).not.toContain('"false"');
   });
 
-  it('prints an all-digit priority bare and any other value quoted', async () => {
+  it('prints an all-digit priority bare and any other value quoted, a #{ opening or padding rewritten to the raw ${...} form', async () => {
     const dsl = await printed(
       minimalProcess(
         [
@@ -2908,14 +3095,23 @@ describe('irToDsl: engine attributes', () => {
             jobPriority: '${order.rush}',
             priority: '${p}',
           },
+          {
+            kind: 'userTask',
+            id: 'C',
+            jobPriority: '#{order.rush}',
+            priority: '  ${p}',
+          },
           { kind: 'endEvent', id: 'E' },
         ],
-        flowChain('S', 'A', 'B', 'E'),
+        flowChain('S', 'A', 'B', 'C', 'E'),
       ),
     );
     expect(dsl).toContain('user A(priority: 7, jobPriority: 50)');
     expect(dsl).toContain(
       'user B(priority: "${p}", jobPriority: "${order.rush}")',
+    );
+    expect(dsl).toContain(
+      'user C(priority: "${p}", jobPriority: "${order.rush}")',
     );
   });
 });

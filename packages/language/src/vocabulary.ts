@@ -27,6 +27,7 @@ import type {
   SubProcess,
   ThrowStatement,
   UserTask,
+  VarType,
 } from './generated/ast.js';
 
 const RESERVED_WORDS_BY_GRAMMAR = new WeakMap<Grammar, ReadonlySet<string>>();
@@ -161,6 +162,35 @@ export const IO_DIRECTIONS: readonly string[] = ['input', 'output'];
 export const FIELD_DIRECTION = 'field';
 
 /**
+ * The fourth direction: a member of a form field's block or an external
+ * task's, written to `operaton:properties` as text. On a form field
+ * `DefaultFormHandler.parseProperties` reads it keyed by `id` and hands it to
+ * Tasklist; on an external task `BpmnParseUtil.parseOperatonExtensionProperties`
+ * reads it keyed by `name` and hands it to the worker. It declares no process
+ * variable.
+ */
+export const PROPERTY_DIRECTION = 'property';
+
+/**
+ * Read by `BpmnParse.parsePriority` inside `parseExternalServiceTask` and
+ * nowhere else on a step; the process header's own `operaton:taskPriority` is
+ * a separate site this surface does not carry. An integer or an expression.
+ */
+export const TASK_PRIORITY_KEY = 'taskPriority';
+
+/**
+ * The name `VariableScopeElResolver` resolves to the external task entity in
+ * an expression evaluated on its execution, which is where a mapping's
+ * condition runs (`ExternalTaskEntity.evaluateThrowBpmnError`). A process
+ * variable everywhere else, so it is admitted inside a mapping alone.
+ */
+export const EXTERNAL_TASK_EL_NAME = 'externalTask';
+
+/** The two soft words of a mapping line; the validator holds each to its word. */
+export const ERROR_MAPPING_HEAD = 'error';
+export const ERROR_MAPPING_WHEN = 'when';
+
+/**
  * The particle a timer clause is written with, keyed by the BPMN timer
  * definition it selects (`timeDuration`, `timeDate`, `timeCycle`). Read in
  * both directions, so the pairing cannot drift.
@@ -194,16 +224,107 @@ export const TASK_LISTENER_EVENTS = [
 ] as const;
 
 /**
- * The form-field subset of `VarType`, in vendor-neutral spellings: `number`
- * becomes the Operaton `long` at export, and `json`/`any` have no
- * `operaton:formField` representation at all.
+ * The types a form field takes, in vendor-neutral spellings: `number` becomes
+ * the Operaton `long` at export, and `json`/`any` have no `operaton:formField`
+ * representation at all. `enum` is a form type and not a `var` type, so the
+ * grammar's field type rule admits it beside `VarType` and the validator holds
+ * the word to this list.
  */
 export const FORM_FIELD_TYPES = [
   'string',
   'number',
   'boolean',
   'date',
+  'enum',
 ] as const;
+
+/**
+ * The process variable a form field of `type` binds: an `enum` stores the
+ * chosen value's id as a string (`EnumFormType.convertValue`), every other
+ * form type is a `VarType` of the same name, and a word outside the list is
+ * no type at all.
+ */
+export function formFieldVariableType(type: string): VarType | undefined {
+  const found = FORM_FIELD_TYPES.find((t) => t === type);
+  return found === 'enum' ? 'string' : found;
+}
+
+/**
+ * The names a form field's `operaton:constraint` takes. The first six are the
+ * validators `ProcessEngineConfigurationImpl.initFormFieldValidators`
+ * registers; `FormValidators.createValidator` reads a class name or an
+ * expression off `validator`'s `config` and fails the deployment on any other
+ * name.
+ */
+export const FORM_CONSTRAINT_NAMES = [
+  'required',
+  'readonly',
+  'min',
+  'max',
+  'minlength',
+  'maxlength',
+  'validator',
+] as const;
+
+export function isFormConstraintName(
+  name: string,
+): name is (typeof FORM_CONSTRAINT_NAMES)[number] {
+  return (FORM_CONSTRAINT_NAMES as readonly string[]).includes(name);
+}
+
+/**
+ * The field types each constraint is legal on.
+ * `AbstractNumericValidator.validate` throws on any submitted value that is
+ * not a Java number and `AbstractTextValueValidator.validate` on any that is
+ * not a string, so the bounds fit one type each; the rest never read the
+ * value's type. The `satisfies` clause forces a row per name in
+ * {@link FORM_CONSTRAINT_NAMES}, while the annotation keeps the lookup open to
+ * a word of any origin.
+ */
+export const FORM_CONSTRAINT_TYPES: Readonly<
+  Record<string, readonly (typeof FORM_FIELD_TYPES)[number][]>
+> = {
+  required: FORM_FIELD_TYPES,
+  readonly: FORM_FIELD_TYPES,
+  min: ['number'],
+  max: ['number'],
+  minlength: ['string'],
+  maxlength: ['string'],
+  validator: FORM_FIELD_TYPES,
+} satisfies Record<
+  (typeof FORM_CONSTRAINT_NAMES)[number],
+  readonly (typeof FORM_FIELD_TYPES)[number][]
+>;
+
+/**
+ * The text a bound's `config` may hold, bare or quoted in the script. A
+ * `number` field is an Operaton `long`, so `AbstractNumericValidator.validate`
+ * parses a `min`/`max` config with `Long.parseLong`, and
+ * `MinLengthValidator.validate` a length with `Integer.parseInt`; neither
+ * reads an expression, and a decimal bound deploys and then fails every
+ * submission with `FormFieldConfigurationException`.
+ */
+export const FORM_BOUND_TEXT = /^-?\d+$/;
+
+/**
+ * What `StringUtil.isExpression` counts as one: an opening at the start of
+ * the trimmed text. A body with an opening further in is a constant to the
+ * engine, and `BpmnParse.parsePriority` fails the deployment on it.
+ */
+export const EXPRESSION_OPEN = /^\s*[$#]\{/;
+
+/**
+ * Written to `datePattern`, which `FormTypes.parseFormPropertyType` reads on
+ * a `date` field alone. A type parameter rather than a constraint, so it is
+ * not in {@link FORM_CONSTRAINT_NAMES}.
+ */
+export const DATE_PATTERN_KEY = 'pattern';
+
+/** Everything a form field's parens take, in the order diagnostics list them. */
+export const FORM_FIELD_SETTING_KEYS: readonly string[] = [
+  ...FORM_CONSTRAINT_NAMES,
+  DATE_PATTERN_KEY,
+];
 
 /**
  * Soft trigger words: they lex as plain `ID`s rather than keywords, so an
@@ -494,6 +615,13 @@ export interface AttributeBlockRule {
    */
   readonly fields: boolean;
   readonly taskListeners: boolean;
+  /**
+   * Whether the kind takes an external task's extras: `taskPriority` in the
+   * parens, and `property` and `error ... when` lines in the block, each
+   * checked against the binding actually written. A thrown message can bind a
+   * topic too and takes none of them.
+   */
+  readonly externalExtras: boolean;
 }
 
 /** Derive `keys` from `own` so the two cannot disagree. */
@@ -517,6 +645,7 @@ export const ATTRIBUTE_BLOCK_RULES: Readonly<
     parameters: false,
     fields: false,
     taskListeners: false,
+    externalExtras: false,
   }),
   EndEvent: withKeys({
     description: 'an end event',
@@ -526,6 +655,7 @@ export const ATTRIBUTE_BLOCK_RULES: Readonly<
     parameters: false,
     fields: false,
     taskListeners: false,
+    externalExtras: false,
   }),
   UserTask: withKeys({
     description: 'a user task',
@@ -548,6 +678,7 @@ export const ATTRIBUTE_BLOCK_RULES: Readonly<
     parameters: true,
     fields: false,
     taskListeners: true,
+    externalExtras: false,
   }),
   ServiceTask: withKeys({
     description: 'a service task',
@@ -556,12 +687,14 @@ export const ATTRIBUTE_BLOCK_RULES: Readonly<
       'documentation',
       ...SERVICE_TASK_BINDING_KEYS,
       'resultVariable',
+      TASK_PRIORITY_KEY,
     ],
     flags: [],
     forms: false,
     parameters: true,
     fields: true,
     taskListeners: false,
+    externalExtras: true,
   }),
   ScriptTask: withKeys({
     description: 'a script task',
@@ -571,6 +704,7 @@ export const ATTRIBUTE_BLOCK_RULES: Readonly<
     parameters: true,
     fields: false,
     taskListeners: false,
+    externalExtras: false,
   }),
   GenericTask: withKeys({
     description: 'a step',
@@ -580,6 +714,7 @@ export const ATTRIBUTE_BLOCK_RULES: Readonly<
     parameters: true,
     fields: false,
     taskListeners: false,
+    externalExtras: false,
   }),
   SendTask: withKeys({
     description: 'a send task',
@@ -588,12 +723,14 @@ export const ATTRIBUTE_BLOCK_RULES: Readonly<
       'documentation',
       ...SERVICE_TASK_BINDING_KEYS,
       'resultVariable',
+      TASK_PRIORITY_KEY,
     ],
     flags: [],
     forms: false,
     parameters: true,
     fields: true,
     taskListeners: false,
+    externalExtras: true,
   }),
   ReceiveTask: withKeys({
     description: 'a receive task',
@@ -603,6 +740,7 @@ export const ATTRIBUTE_BLOCK_RULES: Readonly<
     parameters: true,
     fields: false,
     taskListeners: false,
+    externalExtras: false,
   }),
   BusinessRuleTask: withKeys({
     description: 'a decision step',
@@ -614,12 +752,14 @@ export const ATTRIBUTE_BLOCK_RULES: Readonly<
       'version',
       'mapDecisionResult',
       'resultVariable',
+      TASK_PRIORITY_KEY,
     ],
     flags: [],
     forms: false,
     parameters: true,
     fields: true,
     taskListeners: false,
+    externalExtras: true,
   }),
   SubProcess: withKeys({
     description: 'a subprocess',
@@ -629,6 +769,7 @@ export const ATTRIBUTE_BLOCK_RULES: Readonly<
     parameters: true,
     fields: false,
     taskListeners: false,
+    externalExtras: false,
   }),
   CallActivity: withKeys({
     description: 'a call',
@@ -647,6 +788,7 @@ export const ATTRIBUTE_BLOCK_RULES: Readonly<
     parameters: true,
     fields: false,
     taskListeners: false,
+    externalExtras: false,
   }),
   OnHandler: withKeys({
     description: 'an event handler',
@@ -656,6 +798,7 @@ export const ATTRIBUTE_BLOCK_RULES: Readonly<
     parameters: false,
     fields: false,
     taskListeners: false,
+    externalExtras: false,
   }),
   // The binding keys carry the implementation that makes the engine really
   // send a thrown message; the validator holds them to the `message` trigger.
@@ -667,6 +810,7 @@ export const ATTRIBUTE_BLOCK_RULES: Readonly<
     parameters: false,
     fields: false,
     taskListeners: false,
+    externalExtras: false,
   }),
   EmitStatement: withKeys({
     description: 'an emit statement',
@@ -676,6 +820,7 @@ export const ATTRIBUTE_BLOCK_RULES: Readonly<
     parameters: false,
     fields: false,
     taskListeners: false,
+    externalExtras: false,
   }),
   IntermediateCatchEvent: withKeys({
     description: 'an awaited event',
@@ -685,6 +830,7 @@ export const ATTRIBUTE_BLOCK_RULES: Readonly<
     parameters: false,
     fields: false,
     taskListeners: false,
+    externalExtras: false,
   }),
   // The same catch element with a body, so it takes the same keys.
   RaceBranch: withKeys({
@@ -695,6 +841,7 @@ export const ATTRIBUTE_BLOCK_RULES: Readonly<
     parameters: false,
     fields: false,
     taskListeners: false,
+    externalExtras: false,
   }),
 };
 
@@ -721,6 +868,7 @@ export function parameterDirectionsFor(
   return [
     ...(rule.parameters ? IO_DIRECTIONS : []),
     ...(rule.fields ? [FIELD_DIRECTION] : []),
+    ...(rule.externalExtras ? [PROPERTY_DIRECTION] : []),
   ];
 }
 

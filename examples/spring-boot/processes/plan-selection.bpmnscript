@@ -1,0 +1,19 @@
+// A task form Operaton Tasklist renders from the field list: a required
+// enum the engine refuses to submit without a value or with one outside its
+// list, and a free-text note bounded in length.
+
+process plan-selection {
+  start SignedUp
+
+  user ChoosePlan(label: "Choose a plan", assignee: "demo") {
+    form {
+      plan: enum "Plan" (required: true) {
+        basic "Basic"
+        plus "Plus"
+      }
+      notes: string "Notes for the account manager" (maxlength: 200)
+    }
+  }
+
+  end PlanChosen
+}

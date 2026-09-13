@@ -90,15 +90,14 @@ describe('decompile contract: what the import makes of a fixture', () => {
     expect(task?.kind === 'userTask' && task.assignee).toBe('demo');
     expect(task?.kind === 'userTask' && task.asyncBefore).toBe(true);
 
-    // moddle cannot tie an undeclared operaton: element to a step, so the
-    // attribute warning lands on the process rather than on the task that
-    // carries it.
+    // operaton:properties is a declared type, so moddle ties the drop to the
+    // task that carries it rather than to the process.
     expect(warnings.map((w) => [w.elementId, w.category])).toEqual([
       ['Lane_Ops', 'lane'],
-      ['lanes-and-async', 'extensionAttribute'],
+      ['ReviewRequest', 'extensionAttribute'],
     ]);
     expectMentions(warnings.map((w) => w.message).join('\n'), [
-      'operaton:properties',
+      'operaton:Properties',
     ]);
   });
 
@@ -145,8 +144,8 @@ describe('decompile contract: what `bpmns parse` does with the same fixtures', (
       'a dropped lane and a dropped engine attribute are printed as warnings, and the script is written anyway',
       LANES_AND_ASYNC_BPMN,
       {
-        warningIds: ['Lane_Ops', 'lanes-and-async'],
-        mentions: ['operaton:properties'],
+        warningIds: ['Lane_Ops', 'ReviewRequest'],
+        mentions: ['operaton:Properties'],
         script: [
           'process lanes-and-async',
           'start ReviewStart',

@@ -67,33 +67,94 @@ A `documentation` setting carries free-form text alongside it, spelled the same 
 
 Every statement in that table that takes settings of its own also takes the engine settings and an execution listener, and most of them take input and output parameters as well.
 The ten that map to an activity also take a repetition clause, see [Repetition](#repetition).
-A brace holds what has internal structure: the body of a `while`, `do`, `parallel`, `subprocess`, `attempt`, `on`, or multi-branch `await`, and the form fields, parameters, listeners, and call mappings an element carries.
+A brace holds what has internal structure: the body of a `while`, `do`, `parallel`, `subprocess`, `attempt`, `on`, or multi-branch `await`, and the form fields, parameters, listeners, error mappings, and call mappings an element carries.
 
 #### Attribute keys per element
 
 The grammar accepts any key in any element's parens and the validator decides which ones that element has, so an unknown key is a diagnostic naming the element rather than a parse error.
 Five engine execution settings are legal on every element that takes settings, `label` and `documentation` are legal on all of them too, and each element kind adds the keys it owns on top.
 
-| Element                                       | Keys beyond the engine settings                                                                                                    |
-| --------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
-| `start`                                       | `initiator`                                                                                                                        |
-| `end`, `await`, `on`, `subprocess`, `attempt` | none                                                                                                                               |
-| `user`                                        | `assignee`, `formKey`, `formRef`, `binding`, `version`, `candidateGroups`, `candidateUsers`, `dueDate`, `followUpDate`, `priority` |
-| `service`                                     | `class`, `expression`, `delegate`, `topic`, `resultVariable`                                                                       |
-| `script`                                      | `resultVariable`                                                                                                                   |
-| `step`                                        | none                                                                                                                               |
-| `send`                                        | `class`, `expression`, `delegate`, `topic`, `resultVariable`                                                                       |
-| `receive`                                     | `message`                                                                                                                          |
-| `decide`                                      | `class`, `expression`, `delegate`, `topic`, `decision`, `binding`, `version`, `mapDecisionResult`, `resultVariable`                |
-| `call`                                        | `process`, `binding`, `version`, `businessKey`, `mapper`, `mapperDelegate`                                                         |
-| `throw`, `emit`                               | `class`, `expression`, `delegate`, `topic` (on a `message` trigger only)                                                           |
-| process header                                | `label`, `documentation`, `versionTag`, `historyTimeToLive`, `candidateStarterUsers`, `candidateStarterGroups`                     |
+| Element                                       | Keys beyond the engine settings                                                                                                     |
+| --------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `start`                                       | `initiator`                                                                                                                         |
+| `end`, `await`, `on`, `subprocess`, `attempt` | none                                                                                                                                |
+| `user`                                        | `assignee`, `formKey`, `formRef`, `binding`, `version`, `candidateGroups`, `candidateUsers`, `dueDate`, `followUpDate`, `priority`  |
+| `service`                                     | `class`, `expression`, `delegate`, `topic`, `resultVariable`, `taskPriority`                                                        |
+| `script`                                      | `resultVariable`                                                                                                                    |
+| `step`                                        | none                                                                                                                                |
+| `send`                                        | `class`, `expression`, `delegate`, `topic`, `resultVariable`, `taskPriority`                                                        |
+| `receive`                                     | `message`                                                                                                                           |
+| `decide`                                      | `class`, `expression`, `delegate`, `topic`, `decision`, `binding`, `version`, `mapDecisionResult`, `resultVariable`, `taskPriority` |
+| `call`                                        | `process`, `binding`, `version`, `businessKey`, `mapper`, `mapperDelegate`                                                          |
+| `throw`, `emit`                               | `class`, `expression`, `delegate`, `topic` (on a `message` trigger only)                                                            |
+| process header                                | `label`, `documentation`, `versionTag`, `historyTimeToLive`, `candidateStarterUsers`, `candidateStarterGroups`                      |
 
 The engine settings are `asyncBefore` and `asyncAfter`, which put a transaction boundary before or after the step, `exclusive`, which says whether the engine may run the step's jobs beside other jobs of the same instance, `jobPriority`, which orders those jobs in the queue, and `retryCycle`, the ISO cycle a failed job is retried on.
 The gateways that `if`, `while`, `do...while`, `parallel`, and a multi-branch `await` synthesize have no settings of their own, so no engine setting can be written on one.
+`taskPriority` rides a `topic` binding alone, see [External task extras](#external-task-extras).
 
 A user task names its deployed form with `formKey` or with `formRef`, never both.
 `formRef` also needs `binding: latest`, `binding: deployment`, or `version: <number>` beside it, the same version-pinning a `call` or a `decide` step carries, since the engine refuses to deploy a form reference it cannot resolve a version for.
+
+#### Forms
+
+A `start` and a `user` task each take one `form` block, `operaton:formData` on the wire, which Tasklist renders as one input per field and which fills one process variable per field when the form is submitted.
+A field takes the shape every element takes ([ADR-0029](../../docs/decisions/0029-one-bracket-shape-for-every-element.md)): `id: type "label" = default (settings) { members }`, the label and the default optional.
+The parens hold what the engine validates a submission under, plus the date pattern; the braces hold what the field is built from, an `enum`'s values and its `property` lines.
+`id` is the process variable the field fills, so a `var` of the same name has to declare the same type.
+
+The type is `string`, `number`, `boolean`, `date`, or `enum`.
+`number` is written as `long` on the wire, the engine's own name for it, and an `enum` field stores the id of the chosen value, so its variable is a string.
+
+Each setting in the parens but `pattern` is one `operaton:constraint`, evaluated in the order written.
+`FormValidators.createValidator` fails the deployment on any constraint name the engine has not registered, so the seven below are the closed set the parens take.
+
+| Setting                            | What the engine checks                                                                    | Fits     | Value                                                              |
+| ---------------------------------- | ----------------------------------------------------------------------------------------- | -------- | ------------------------------------------------------------------ |
+| `required: true`                   | a value was submitted, or the variable or the default already holds one; empty text fails | any type | the literal `true`                                                 |
+| `readonly: true`                   | no value was submitted for the field                                                      | any type | the literal `true`                                                 |
+| `min: <n>`, `max: <n>`             | the submitted number is at least `n`, or below `n` (`MaxValidator.validate` is exclusive) | `number` | an integer literal or a quoted integer such as `"-5"`              |
+| `minlength: <n>`, `maxlength: <n>` | the submitted text has at least, or at most, `n` characters                               | `string` | an integer literal or a quoted integer                             |
+| `validator: "..."`                 | whatever the named class or expression decides                                            | any type | a class name or a `"${...}"` expression, the shapes `class:` takes |
+| `pattern: "..."`                   | nothing; it is the format a submitted date is parsed with, `datePattern` on the wire      | `date`   | a non-empty quoted pattern such as `"dd/MM/yyyy"`                  |
+
+A flag is on while written and off otherwise, so `required: false` is an error telling you to leave the setting out.
+The bounds fit one type each: `AbstractNumericValidator.validate` throws on a submitted value that is not a number and `AbstractTextValueValidator.validate` on one that is not text, so a `min` on a `string` field would deploy and then fail every submission.
+All four take an integer, since a `number` field is an Operaton `long`, whose validator parses the bound with `Long.parseLong`, and a length is a character count.
+
+An `enum` field lists its values in the braces, one `id "Label"` line each in the order the form offers them, the label optional.
+Its default, when it is a literal, has to name one of them: `FormFieldHandler.createFormField` converts the default through the type on every render of the form, so a default naming no value deploys and then fails to open.
+A `property <key> = "<value>"` line in the braces is an `operaton:property` on the field, a key and a text the engine parses into the form's description and never acts on itself.
+It is legal on a field of any type, and its value is a quoted string or a `"${...}"` expression, the shapes `field` takes.
+The same line sits in an external task's braces, where the engine keys it by `name` instead of `id`, see [External task extras](#external-task-extras).
+
+```bpmnscript
+process gym-membership {
+  start Applied {
+    form {
+      fullName: string "Full name" (required: true, minlength: 2, maxlength: 80)
+      birthDate: date "Date of birth" (pattern: "dd/MM/yyyy", required: true)
+      plan: enum "Plan" = "basic" (required: true) {
+        basic "Basic"
+        plus "Plus"
+        family
+        property description = "The plan sets the monthly fee"
+      }
+      newsletter: boolean "Send the newsletter?" = false
+    }
+  }
+  user ConfirmPayment(assignee: "demo") {
+    form {
+      amount: number "Amount in euros" = 0 (min: 0, max: 5000)
+      iban: string "IBAN" (validator: "com.example.gym.IbanValidator")
+      reference: string "Payment reference" (readonly: true) {
+        property placeholder = "Filled in by accounting"
+      }
+    }
+  }
+  end Done
+}
+```
 
 #### Service tasks
 
@@ -147,6 +208,31 @@ process claim-intake {
     on start(delegate: "${auditListener}") {
       field auditTag = "claim-intake"
     }
+  }
+}
+```
+
+#### External task extras
+
+A `service`, `send`, or `decide` task bound with `topic:` hands its work to an external worker, and three more things ride that binding and no other.
+`taskPriority: <n>` in the parens is `operaton:taskPriority`, the priority a worker's fetch can order by: an integer, a quoted one such as `"-5"`, a bare variable name, or a `"${...}"` expression, since `parsePriority` fails the deployment on any other constant.
+A `property <key> = "<value>"` line in the braces is the same member a form field takes, written to the wire as `operaton:property name=` here and `id=` there, since `BpmnParseUtil.parseOperatonExtensionProperties` and `DefaultFormHandler.parseProperties` read the one tag by different attributes.
+A worker fetching the task with `includeExtensionProperties` receives the list.
+An `error <Code> when <condition>` line is an `operaton:errorEventDefinition errorRef= expression=`: it raises the declared code (see [The event layer](#the-event-layer)) when the condition holds, checked on a failure the worker reports and again on a completion.
+`ExternalTaskEntity.evaluateThrowBpmnError` runs the mappings in the order written, and the first true one wins.
+Beside the process variables the condition may read `externalTask.errorMessage`, `externalTask.errorDetails`, and `externalTask.retries`, the names the engine resolves on an external task's execution and nowhere else, so `externalTask` inside a mapping draws no undeclared-variable warning and in an `if` it does.
+`parseExternalServiceTask` is the only reader of all three, so each is an error on a task bound with `class`, `expression`, `delegate`, or `decision`, and on a `throw message` or an `emit message` bound with a topic, which take none of them.
+
+```bpmnscript
+process card-payment {
+  error PAYMENT_DECLINED(message: "The card issuer declined the charge")
+  error GATEWAY_DOWN
+
+  service ChargeCard(label: "Charge the card", topic: "charge-card", taskPriority: 42) {
+    property gateway = "stripe"
+    property attempts = "3"
+    error PAYMENT_DECLINED when externalTask.errorMessage == "declined"
+    error GATEWAY_DOWN when externalTask.retries == 0
   }
 }
 ```
@@ -317,7 +403,7 @@ Two verbs raise an event.
 `throw <kind>` ends the current path right there, exactly like `throw` in a programming language, and `emit <kind>` fires the event and keeps going.
 `emit link` is the one emit that ends its path instead, because the token continues at the catch of the same name, see [Link events](#link-events).
 
-Every error and escalation code is a declaration in the process header, `error CODE(message: "text")` or `escalation CODE`, that every throw, emit, and catch site names.
+Every error and escalation code is a declaration in the process header, `error CODE(message: "text")` or `escalation CODE`, that every throw, emit, and catch site names, as does an external task's `error <Code> when <condition>` mapping (see [External task extras](#external-task-extras)).
 The declarations sit with the `var` declarations at the top of the body.
 `message:` is the text a thrown error of that code carries at runtime; BPMN gives an escalation none.
 A code that is not identifier-shaped goes on its declaration as `code: "..."`, so the use site is a bare name in every case.
@@ -610,7 +696,8 @@ A block carrying neither half draws no diagnostic: an `attempt` with no cancel a
 ### Contextual words
 
 Only `on`, `throw`, `emit`, `alongside`, and `await` are reserved keywords in the event layer.
-The trigger kinds, the timer particles `after`/`at`/`every`, and the field names `code`/`message` are deliberately ordinary identifiers, so `var message: string`, `var timer: number`, and a task named `every` all parse like any other identifier.
+The trigger kinds, the timer particles `after`/`at`/`every`, the field names `code`/`message`, the form field type `enum`, the member directions `input`/`output`/`field`/`property`, and the `when` of an error mapping are deliberately ordinary identifiers, so `var message: string`, `var enum: string`, `var timer: number`, and a task named `every` all parse like any other identifier.
+The `error` heading a mapping is the same soft trigger word every code site writes.
 They're among the most common variable and property names a Java-background author reaches for, which is why they stay available.
 The editor still highlights and completes them, but only in the positions where they carry event meaning.
 
@@ -627,14 +714,17 @@ The categories it covers:
 
 - Variables: an undeclared reference (warning), a type mismatch against the declared `var`, a name declared twice.
 - Tasks: a duplicate attribute key, a `service`, `send`, or `decide` task without exactly one binding attribute, a `mapDecisionResult` outside the four result mappings, a `script` task with an unsupported fence tag or an empty or unterminated body.
+  An external task's extras add their own: a `taskPriority` or an `error ... when` mapping on a step not bound with `topic`, a mapping headed by a word other than `error` or missing `when`, a mapping naming an undeclared code, and a `taskPriority` or `jobPriority` that is neither an integer nor a `"${...}"` expression.
 - Settings: a key the element does not own, a value in a shape its lowering cannot read (a quoted `asyncBefore`, an unquoted `versionTag`), a `form` block on an element that renders none, and a process header carrying a key it does not own.
 - Parameters: a direction word the owner doesn't take, a parameter on an element that carries none, a name repeated within one direction, and an `output` mapping on a repeated step.
   A `field` also errors on a kind that takes none, when its binding is anything other than `class` or `delegate`, and when its value is neither a quoted string nor a `"${...}"` expression.
+  A `property` line errors the same way on a kind that takes none and on a `service`, `send`, or `decide` step not bound with `topic`.
 - Listeners: an event word the element does not have, a binding count other than one, a missing timer on `on timeout` or a timer on any other event, a repeated event on one element, and the same fence rules a `script` body follows.
 - Structure: an empty process, subprocess, or handler body, an empty branch or loop body (warning), an unreachable statement, a process-level `start` after a step whose flow still runs on, a `start` anywhere but first in its subprocess, attempt block, or handler body, a process with several starts and no plain or timer one among them (warning), a `form` block on a start that is not the default one (warning), a `goto` reaching into a `parallel` or `await` branch from outside it, a second `else` branch on a `parallel` statement, an `else` branch with no conditioned sibling, and an `else` branch beside a sibling carrying no condition.
 - Names: a reused process name, step name, or `label`, and a name matching a synthesized-id pattern ([ADR-0010](../../docs/decisions/0010-deterministic-structural-ids.md)).
 - Call activities: a missing `process`, an unknown `binding` value, `binding` and `version` together, `mapper` and `mapperDelegate` together, and duplicate `in` or `out` mappings.
   A `decide` step pins its decision table with `binding` and `version`, under those same two rules.
+- Form fields: a type outside the five, a repeated field id, a field typed against a `var` of its name, a settings key outside the seven constraints and `pattern`, a constraint on a type its validator refuses or a `pattern` off a `date` field, a value in a shape the engine cannot parse (`required: false`, a bound that is not an integer, an empty `pattern`), a value line on a field that is not an `enum`, an `enum` offering no values (warning), a repeated value id, a literal default naming none of the values, a block member that is not a `property` line, and a property value that is neither a quoted string nor a `"${...}"` expression.
 - Form references: `formKey` beside `formRef` on a user task, a `formRef` with neither `binding` nor `version`, and `binding` or `version` with no `formRef` to pin, under the same `binding`/`version` exclusivity a `call` and a `decide` step already use.
 - Events: a trigger word outside the set its verb accepts, a payload that doesn't match its trigger's shape, a handler in the wrong container or not at the end of its body, `alongside` on `error`, `compensation`, or `cancel`, two handlers that would catch the same thing, a host that isn't an activity a token can sit at, a binding attribute on a `throw` or `emit` whose trigger is not `message`, and more than one binding on one whose trigger is.
   A link pair adds its own: an `await link` after a statement whose flow still runs on, an `emit link` with no catch of its name, a second `await link` of one name anywhere in the file, a pair split across containers, an `emit link` reaching into a `parallel` or `await` branch from outside, `link` heading a race branch, a `goto` onto a link catch, an engine setting or listener on `emit link`, a `throw link`, and an `await link` nothing emits (warning).
@@ -703,6 +793,8 @@ npm test
 | `src/bpmn-script.langium`                          | Grammar definition                                                                                   |
 | `src/vocabulary.ts`                                | The trigger words, listener events, and attribute keys each element owns                             |
 | `src/bpmn-script-validator.ts`                     | AST-level validator; source of truth for the diagnostics                                             |
+| `src/bpmn-script-document-validator.ts`            | Drops the link failure of a variable reference, since only a code position has a scope to resolve in |
+| `src/paren-items.ts`                               | Readers over an element's parens: the payload, the keyed settings, and the flags                     |
 | `src/bpmn-script-scope-provider.ts`                | Resolves `goto` targets and a hosted handler's `host` within the enclosing container only            |
 | `src/bpmn-script-linker.ts`                        | Replaces an unresolved `goto` or `host` message with a boundary explanation                          |
 | `src/bpmn-script-parser-error-message-provider.ts` | Guidance for a reserved word used as an identifier                                                   |

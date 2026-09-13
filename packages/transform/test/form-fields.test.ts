@@ -23,8 +23,10 @@ import { irToXml } from '../src/ir-to-xml.js';
 import { xmlToIr } from '../src/xml-to-ir.js';
 import { irToDsl } from '../src/ir-to-dsl.js';
 import { UnsupportedFormFieldTypeError } from '../src/errors.js';
+import { expectRefusal } from './helpers/expect-refusal.js';
 import type {
   BpmnProcess,
+  FormConstraintName,
   FormField,
   StartEvent,
   UserTask,
@@ -126,11 +128,15 @@ describe('xmlToIr: form fields round-trip through XML', () => {
     expect(userOf(reimported).formFields).toEqual(userOf(original).formFields);
   });
 
-  it('refuses a form field type the DSL cannot express', async () => {
+  it('refuses a form field type the DSL cannot express, naming the five it takes', async () => {
     const xml = await irToXml(await ir(SOURCE));
     const withDouble = xml.replace('type="long"', 'type="double"');
-    await expect(xmlToIr(withDouble)).rejects.toThrow(
+    const err = await expectRefusal<UnsupportedFormFieldTypeError>(
+      xmlToIr(withDouble),
       UnsupportedFormFieldTypeError,
+    );
+    expect(err.message).toMatch(
+      /'double'.*string, long, boolean, date, and enum/,
     );
   });
 });
@@ -147,5 +153,81 @@ describe('irToDsl: form fields round-trip back to a form block', () => {
     const reparsed = await ir(dsl);
     expect(startOf(reparsed).formFields).toEqual(startOf(original).formFields);
     expect(userOf(reparsed).formFields).toEqual(userOf(original).formFields);
+  });
+});
+
+describe('astToIr: constraints, values, pattern and properties lower to the field', () => {
+  const CONSTRAINT_SOURCE = `process p {
+  start S {
+    form {
+      plan: string "Plan" (pattern: "dd/MM/yyyy", maxlength: 10, required: true, minlength: 2) {
+        property description = "Sets the fee"
+        property helpText = "See docs"
+      }
+      choice: enum "Choice" {
+        basic "Basic"
+        plus
+        property note = "n/a"
+      }
+      blank: string
+    }
+  }
+}`;
+
+  it('reads a field whole: parens settings split into a pattern and ordered constraints, block members into values and properties, an empty field carrying none of them', async () => {
+    const process = await ir(CONSTRAINT_SOURCE);
+
+    expect(startOf(process).formFields).toEqual<FormField[]>([
+      {
+        id: 'plan',
+        type: 'string',
+        label: 'Plan',
+        datePattern: 'dd/MM/yyyy',
+        constraints: [
+          { name: 'maxlength', config: '10' },
+          { name: 'required' },
+          { name: 'minlength', config: '2' },
+        ],
+        properties: [
+          { key: 'description', value: 'Sets the fee' },
+          { key: 'helpText', value: 'See docs' },
+        ],
+      },
+      {
+        id: 'choice',
+        type: 'enum',
+        label: 'Choice',
+        values: [{ id: 'basic', label: 'Basic' }, { id: 'plus' }],
+        properties: [{ key: 'note', value: 'n/a' }],
+      },
+      { id: 'blank', type: 'string' },
+    ]);
+  });
+
+  const configRows: Array<[string, string, FormConstraintName, string]> = [
+    ['a quoted negative number keeps its text', 'min: "-5"', 'min', '-5'],
+    ['a bare negative number keeps its sign', 'min: -5', 'min', '-5'],
+    [
+      'a bare dotted class name reads like a class: binding',
+      'validator: com.example.Check',
+      'validator',
+      'com.example.Check',
+    ],
+    [
+      'a raw EL expression keeps its ${...} wrapper',
+      'validator: "${checker}"',
+      'validator',
+      '${checker}',
+    ],
+  ];
+
+  it.each(configRows)('%s', async (_title, setting, name, config) => {
+    const process = await ir(
+      `process p { start S { form { f: number (${setting}) } } }`,
+    );
+
+    expect(startOf(process).formFields).toEqual<FormField[]>([
+      { id: 'f', type: 'number', constraints: [{ name, config }] },
+    ]);
   });
 });
