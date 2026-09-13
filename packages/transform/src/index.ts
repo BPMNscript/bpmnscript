@@ -25,6 +25,7 @@ export type {
   IntermediateCatchEvent,
   BoundaryEvent,
   Named,
+  JobSettings,
   EngineAttributes,
   IoMapped,
   LoopCharacteristics,
@@ -42,9 +43,16 @@ export type {
   FormConstraintName,
   ExtensionProperty,
   ErrorMapping,
+  ServiceTaskBinding,
 } from './ir/types.js';
+export type { BuiltinTaskType } from '@bpmn-script/language';
 
-export { isGateway, gatewayDefaultFlowId } from './ir/types.js';
+export {
+  isGateway,
+  gatewayDefaultFlowId,
+  jobSettings,
+  carriesFields,
+} from './ir/types.js';
 
 export {
   makeGatewaySplitId,

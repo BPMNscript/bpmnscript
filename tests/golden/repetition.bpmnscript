@@ -5,7 +5,9 @@
 //   - a bound collection on a user task;
 //   - an expression collection on a service task, run sequentially and stopped
 //     early by an until condition;
-//   - a bare count on a service task;
+//   - a bare count on a service task that sets asyncBefore and a retry cycle
+//     around the repetition as a whole and, under the run spellings, one job
+//     with its own retry cycle per run;
 //   - a count and a collection together on a step;
 //   - an unbound collection on a receive;
 //   - a bound collection on a call;
@@ -30,7 +32,7 @@ process order-fulfilment {
 
   service ReserveStock for each line in "${order.lines}" sequentially until (nrOfCompletedInstances >= 2)(label: "Reserve the stock", class: "com.example.orders.ReserveStockDelegate")
 
-  service WarmPricing for 3(label: "Warm the pricing cache", class: "com.example.orders.WarmPricingDelegate")
+  service WarmPricing for 3(label: "Warm the pricing cache", class: "com.example.orders.WarmPricingDelegate", asyncBefore: true, retryCycle: "R3/PT10M", runAsyncBefore: true, runAsyncAfter: true, runExclusive: false, runRetryCycle: "R2/PT1M")
 
   step RecordLine for 2 each line in lines(label: "Record each line")
 

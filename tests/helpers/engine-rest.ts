@@ -78,6 +78,8 @@ export async function broadcastSignal(
 export interface EngineJob {
   id: string;
   processDefinitionKey: string;
+  jobDefinitionId: string;
+  suspended: boolean;
 }
 
 // A timer start event parks a job at deployment, with no instance behind it.
@@ -89,6 +91,62 @@ export async function jobsOf(
     fixture,
     `/engine-rest/job?processDefinitionKey=${encodeURIComponent(processDefinitionKey)}`,
     `jobsOf(${processDefinitionKey})`,
+  );
+}
+
+// The jobs an instance is parked on, async continuations included.
+export async function jobsOfInstance(
+  fixture: FixtureAdapter,
+  processInstanceId: string,
+): Promise<EngineJob[]> {
+  return engineGet<EngineJob[]>(
+    fixture,
+    `/engine-rest/job?processInstanceId=${encodeURIComponent(processInstanceId)}`,
+    `jobsOfInstance(${processInstanceId})`,
+  );
+}
+
+export interface JobDefinition {
+  id: string;
+  jobType: string;
+  jobConfiguration: string;
+}
+
+// The engine creates one job definition per activity that needs a job at
+// all, so an activity without an async continuation has none. A repeated
+// activity is two activities to the engine, the body under
+// `<id>#multiInstanceBody` and the run under `<id>`, each with its own.
+export async function jobDefinitionsFor(
+  fixture: FixtureAdapter,
+  processDefinitionKey: string,
+  activityId: string,
+): Promise<JobDefinition[]> {
+  return engineGet<JobDefinition[]>(
+    fixture,
+    `/engine-rest/job-definition?processDefinitionKey=${encodeURIComponent(processDefinitionKey)}&activityIdIn=${encodeURIComponent(activityId)}`,
+    `jobDefinitionsFor(${activityId})`,
+  );
+}
+
+// A suspended job definition stamps its state onto jobs created later too,
+// which is what holds the async continuation still long enough to observe
+// instead of racing the job executor for it.
+export async function setJobDefinitionSuspended(
+  fixture: FixtureAdapter,
+  jobDefinitionId: string,
+  suspended: boolean,
+): Promise<void> {
+  const response = await fetch(
+    `${fixture.restBaseUrl()}/engine-rest/job-definition/${encodeURIComponent(jobDefinitionId)}/suspended`,
+    {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ suspended, includeJobs: true }),
+    },
+  );
+  await assertOk(
+    response,
+    `setJobDefinitionSuspended(${jobDefinitionId}, ${suspended})`,
   );
 }
 
@@ -120,6 +178,24 @@ export async function historicInstances(
     fixture,
     `/engine-rest/history/process-instance?processDefinitionKey=${encodeURIComponent(processDefinitionKey)}`,
     `historicInstances(${processDefinitionKey})`,
+  );
+}
+
+export interface HistoricVariable {
+  name: string;
+  value: unknown;
+}
+
+// Running and finished alike: the runtime forgets an instance's variables the
+// moment it ends, and history is where a finished step's output is read.
+export async function historicVariables(
+  fixture: FixtureAdapter,
+  processInstanceId: string,
+): Promise<HistoricVariable[]> {
+  return engineGet<HistoricVariable[]>(
+    fixture,
+    `/engine-rest/history/variable-instance?processInstanceId=${encodeURIComponent(processInstanceId)}`,
+    `historicVariables(${processInstanceId})`,
   );
 }
 

@@ -2,6 +2,7 @@ import type {
   EventDefinition,
   FlowContainer,
   FlowElement,
+  ServiceTaskBinding,
 } from '@bpmn-script/transform';
 
 export function kindOf(
@@ -43,6 +44,17 @@ export function elementById(container: FlowContainer, id: string): FlowElement {
     throw new Error(`no flow element '${id}' in '${container.id}'`);
   }
   return found;
+}
+
+export function bindingOf(
+  container: FlowContainer,
+  id: string,
+): ServiceTaskBinding {
+  const el = elementById(container, id);
+  if (el.kind !== 'serviceTask') {
+    throw new Error(`expected '${id}' to be a service task, found ${el.kind}`);
+  }
+  return el.binding;
 }
 
 export function endEvent(

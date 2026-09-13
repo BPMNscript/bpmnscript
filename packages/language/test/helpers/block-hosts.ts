@@ -6,16 +6,32 @@
  * these rows, so a new kind is added in one place.
  */
 
+import { ENGINE_KEYS } from '@bpmn-script/language';
+
 /**
  * A triple-backtick fence, assembled without a literal fence in the test source
  * so it can be interpolated into JS template-literal DSL fixtures.
  */
 export const FENCE = '`' + '`' + '`';
 
+/** A value each engine key takes, in the shape its lowering reads. */
+const VALID_ENGINE_VALUE: Readonly<Record<string, string>> = {
+  asyncBefore: 'true',
+  asyncAfter: 'true',
+  exclusive: 'false',
+  jobPriority: '50',
+  retryCycle: '"R3/PT10M"',
+};
+
+/** `keys` as one parens' worth of items, each spelled through `keyOf`. */
+export const engineItems = (
+  keys: readonly string[],
+  keyOf: (key: string) => string = (key) => key,
+): string =>
+  keys.map((key) => `${keyOf(key)}: ${VALID_ENGINE_VALUE[key]}`).join(', ');
+
 /** Every engine execution setting, as one parens' worth of items. */
-export const ENGINE_SETTINGS =
-  'asyncBefore: true, asyncAfter: true, exclusive: false, ' +
-  'jobPriority: 50, retryCycle: "R3/PT10M"';
+export const ENGINE_SETTINGS = engineItems(ENGINE_KEYS);
 
 /**
  * One otherwise-valid program per element kind, with one slot left open:

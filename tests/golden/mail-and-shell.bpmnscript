@@ -1,0 +1,48 @@
+// Mail-and-shell round-trip fixture: one incident-report narrative that binds
+// the two behaviours Operaton builds itself, spread over the three tags that
+// take a `type` binding:
+//
+//   - a decision step running a shell command and nothing else, the one field
+//     the engine requires of a shell task;
+//   - a send task running a shell command with an argument, the variables its
+//     output and exit code land in, and `wait` spelled the one way the engine
+//     reads as true, beside a `resultVariable` the engine accepts on the tag
+//     and never reads for a shell task;
+//   - a service task mailing the on-call engineer: `to`, `cc`, a `subject`
+//     given as an expression, a `text` literal, and an `html` body given as an
+//     expression, so both value slots a field takes sit on one task.
+//
+// The `summary` and `details` the mail's expressions read are declared on the
+// start form so they survive an import-and-back round trip, and every label
+// differs from the name humanized from its id.
+
+process incident-report {
+  start IncidentLogged {
+    form {
+      summary: string "One-line summary of the incident"
+      details: string "What happened, as HTML"
+    }
+  }
+
+  decide RateSeverity(label: "Rate the severity", type: "shell") {
+    field command = "rate-severity"
+  }
+
+  send PageOnCall(label: "Page the on-call engineer", type: "shell", resultVariable: "pageResult") {
+    field command = "page"
+    field arg1 = "oncall"
+    field outputVariable = "pageReceipt"
+    field errorCodeVariable = "pageExitCode"
+    field wait = "true"
+  }
+
+  service MailOnCall(label: "Mail the on-call engineer", type: "mail") {
+    field to = "oncall@example.com"
+    field cc = "ops-lead@example.com"
+    field subject = "${summary}"
+    field text = "An incident was logged. Open the HTML part for its details."
+    field html = "${details}"
+  }
+
+  end IncidentReported(label: "The incident is reported")
+}

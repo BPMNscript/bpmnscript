@@ -62,8 +62,7 @@ Operaton reads an `operaton:collection` value containing `{` as an expression an
 A collection spelled as a plain identifier therefore prints bare and everything else prints quoted, since a bare `order.lines` would name a variable that does not exist.
 The whole construct is one optional field on the shape the seven activity nodes already share, so it reached every kind without adding an arm to any exhaustive switch in the transform.
 
-An `asyncBefore`, `asyncAfter`, or `exclusive` written on the `multiInstanceLoopCharacteristics` element refuses on import, because Operaton's `parseAsynchronousContinuationForActivity` hands that element to `parseAsynchronousContinuation`, which reads those three onto each run rather than around the repetition, and no clause here can say that.
-An `operaton:failedJobRetryTimeCycle` there refuses for the same reason by another route, Operaton's `DefaultFailedJobParseListener` reading the one written on the repetition element onto each run and the one written on the step around the whole repetition.
+An `asyncBefore`, `asyncAfter`, `exclusive`, or `operaton:failedJobRetryTimeCycle` written on the `multiInstanceLoopCharacteristics` element imports as one of the four `run`-prefixed settings ADR-0041 gives the clause, rather than refusing.
 An `operaton:jobPriority` there is reported as a drop instead, because Operaton reads a job priority only in `createActivityOnScope`, off the step, and the repetition's own scope is never built there, so the setting reaches no job.
 An `operaton:outputParameter` on a repeated step refuses, because Operaton's `checkActivityOutputParameterSupported` rejects the deployment outright, and the validator stops an author writing one for the same reason.
 A `bpmn:standardLoopCharacteristics` imports as a step that runs once, with a warning naming the drop, because Operaton's `parseMultiInstanceLoopCharacteristics` looks only for a `bpmn:multiInstanceLoopCharacteristics` child and returns null otherwise, so the document deploys and the step runs once regardless of what the import does.
@@ -77,7 +76,7 @@ Operaton's own parse errors refuse here rather than importing into a process tha
 - Good, because a document the engine runs more than once now imports, prints, and recompiles byte for byte, where before it stopped the import at the first repeated activity.
 - Bad, because `asyncBefore: true` in a repeated step's settings no longer means what it meant before the clause existed.
   Operaton's `parseAsynchronousContinuationForActivity` reads a host element's async attributes onto the repetition, so it is one job around the whole loop rather than one per run.
-  It is the only async this surface can express, and it is what an author writing it there usually means.
+  One job per run is a separate setting, `runAsyncBefore`, in the same parens (ADR-0041).
 - Neutral, because `operaton:collection` and `bpmn:loopDataInputRef` are one field to Operaton's `parseMultiInstanceLoopCharacteristics`, read in that order, so they import into one field here and the `operaton:` spelling is what gets written back.
   The BPMN slot holds the text of a variable name rather than a reference to an element in the document.
   `bpmn:inputDataItem` and `operaton:elementVariable` pair the same way, and a document setting both spellings of either pair gets a warning naming the one that was dropped.
@@ -128,6 +127,8 @@ A completion condition ends a repetition after two runs, a count drives a servic
 - Bad, because Operaton deploys and runs a `bpmn:standardLoopCharacteristics` exactly as if it were absent, so refusing it rejects a document the engine executes the same way this import would import it.
 
 ## More Information
+
+Amended by ADR-0041, which gives the clause four `run`-prefixed settings that write onto the `multiInstanceLoopCharacteristics` element itself and import an async, exclusive, or retry setting found there instead of refusing it.
 
 Related decisions: ADR-0010 (the synthesized ids a wrapping form would have had to invent).
 ADR-0013 (the rule that a keyword names what the author means, and the reason `sequential: true` is not one).

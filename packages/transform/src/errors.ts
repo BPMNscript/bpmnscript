@@ -49,7 +49,8 @@ export class UnsupportedServiceTaskFormError extends UnsupportedConstructError {
     super(
       `${subject} '${serviceTaskId}' uses unsupported execution form: ${construct}. ` +
         'Supported forms are a Java class, an expression, a delegate expression, ' +
-        'an external task topic, or, on a business rule task, a decision reference.',
+        'an external task topic, a built-in mail or shell task with its fields, ' +
+        'or, on a business rule task, a decision reference.',
       { serviceTaskId, construct, subject },
     );
   }

@@ -7,13 +7,15 @@
  */
 
 import { describe, it, expect, beforeAll } from 'vitest';
-import { EmptyFileSystem } from 'langium';
+import { AstUtils, EmptyFileSystem } from 'langium';
 import { parseHelper, validationHelper } from 'langium/test';
 import {
   createBpmnScriptServices,
+  ENGINE_KEYS,
+  gatewayStatementRuleOf,
   PROCESS_HEADER_KEYS,
 } from '@bpmn-script/language';
-import type { Model } from '@bpmn-script/language';
+import type { Model, ParenItem } from '@bpmn-script/language';
 
 import {
   irToDsl as printDsl,
@@ -27,6 +29,7 @@ import { bpmnDoc } from './helpers/bpmn-doc.js';
 import {
   around,
   boundaryEvent,
+  builtinBinding,
   callActivity,
   chained,
   chainedSub,
@@ -64,11 +67,15 @@ import type {
   BpmnProcess,
   EventDefinition,
   ExecutionListener,
+  FieldInjection,
   FlowElement,
   FormField,
   IntermediateCatchEvent,
+  JobSettings,
   LoopCharacteristics,
+  Repeatable,
   SequenceFlow,
+  ServiceTask,
   ServiceTaskBinding,
   VersionBinding,
 } from '../src/ir/types.js';
@@ -675,6 +682,61 @@ describe('irToDsl: service-task bindings', () => {
     );
     expect(svc?.kind === 'serviceTask' && svc.binding.kind).toBe(bindingKind);
   });
+});
+
+/**
+ * The behaviour Operaton builds itself for `operaton:type="mail"`/`"shell"`
+ * carries fields exactly as a class binding does, and its own checks refuse a
+ * mail task with no `to` or a shell task with no `command`, so a dropped field
+ * fails the validation `printed` runs before the binding comparison does.
+ */
+describe('irToDsl: mail and shell task bindings', () => {
+  const MAIL_FIELDS: FieldInjection[] = [
+    { name: 'to', value: 'ops@example.com' },
+    { name: 'text', value: '${incident.body}' },
+  ];
+  const SHELL_FIELDS: FieldInjection[] = [
+    { name: 'command', value: 'echo' },
+    { name: 'arg1', value: 'hello' },
+  ];
+
+  it.each([
+    [
+      'a mail binding on a service task',
+      {
+        kind: 'serviceTask',
+        id: 'Notify',
+        binding: builtinBinding('mail', MAIL_FIELDS),
+      },
+      'service Notify(type: "mail") {\n' +
+        '    field to = "ops@example.com"\n' +
+        '    field text = "${incident.body}"\n' +
+        '  }',
+    ],
+    [
+      'a shell binding on a decide task',
+      {
+        kind: 'serviceTask',
+        id: 'Run',
+        element: 'businessRule',
+        binding: builtinBinding('shell', SHELL_FIELDS),
+      },
+      'decide Run(type: "shell") {\n' +
+        '    field command = "echo"\n' +
+        '    field arg1 = "hello"\n' +
+        '  }',
+    ],
+  ] as const satisfies ReadonlyArray<readonly [string, ServiceTask, string]>)(
+    '%s prints its type and fields and reads back as the same binding',
+    async (_title, el, block) => {
+      const dsl = await printed(around(el));
+      expect(dsl).toContain(block);
+      const back = (await reDesugar(dsl)).flowElements.find(
+        (e) => e.id === el.id,
+      )!;
+      expect(back.kind === 'serviceTask' && back.binding).toEqual(el.binding);
+    },
+  );
 });
 
 describe('irToDsl: an external task prints its priority, properties and mappings only with something to print', () => {
@@ -2594,33 +2656,86 @@ describe('irToDsl: routes leaving a loop beside the two it is built from', () =>
       expect(realReachability(lowered)).toEqual(realReachability(ir));
     },
   );
+
+  // Revert symptom: read the loop's settings again for its leftover routes ->
+  // the choice after the loop carries a second copy.
+  it.each([
+    [
+      'pre-test',
+      PRE_TEST_IR,
+      'Loop',
+      'while (more) {',
+      'while (more) (asyncBefore: true) {',
+    ],
+    [
+      'post-test',
+      POST_TEST_IR,
+      'Decide',
+      '} while (rework)',
+      '} while (rework) (asyncBefore: true)',
+    ],
+  ] as const)(
+    'writes the loop settings on the %s loop once, and none on the choice its surplus route becomes',
+    async (_title, plain, loopId, plainHead, head) => {
+      const ir = withJobSettings(plain, { [loopId]: { asyncBefore: true } });
+      const { source, warnings } = printDsl(ir);
+
+      expect(source).toBe(irToDsl(plain).replace(plainHead, head));
+      expect(warnings).toEqual([]);
+      await printed(ir);
+    },
+  );
 });
 
-describe('irToDsl: never emit a goto to a gateway', () => {
-  /**
-   * A multi-out real node whose routes end apart, so neither branch has a join
-   * to walk to and each keeps its edge as a jump. The second lands on a one-out
-   * pass-through gateway `Gateway_p_9_join -> R`: naming the gateway is
-   * impossible, so the jump forwards through it to the real successor.
-   */
-  const PASS_THROUGH_IR: BpmnProcess = minimalProcess(
-    [
-      { kind: 'startEvent', id: 'S' },
-      { kind: 'userTask', id: 'A' },
-      gateway('Gateway_p_9_join'),
-      { kind: 'userTask', id: 'R' },
-      { kind: 'endEvent', id: 'E' },
-      { kind: 'endEvent', id: 'E2' },
-    ],
-    [
-      { id: 'f0', sourceRef: 'S', targetRef: 'A' },
-      { id: 'f1', sourceRef: 'A', targetRef: 'E' },
-      { id: 'f2', sourceRef: 'A', targetRef: 'Gateway_p_9_join' },
-      { id: 'f3', sourceRef: 'Gateway_p_9_join', targetRef: 'R' },
-      { id: 'f4', sourceRef: 'R', targetRef: 'E2' },
-    ],
-  );
+/**
+ * A multi-out real node whose routes end apart, so neither branch has a join
+ * to walk to and each keeps its edge as a jump. The second lands on a one-out
+ * pass-through gateway `Gateway_p_9_join -> R`: naming the gateway is
+ * impossible, so the jump forwards through it to the real successor.
+ */
+const PASS_THROUGH_IR: BpmnProcess = minimalProcess(
+  [
+    { kind: 'startEvent', id: 'S' },
+    { kind: 'userTask', id: 'A' },
+    gateway('Gateway_p_9_join'),
+    { kind: 'userTask', id: 'R' },
+    { kind: 'endEvent', id: 'E' },
+    { kind: 'endEvent', id: 'E2' },
+  ],
+  [
+    { id: 'f0', sourceRef: 'S', targetRef: 'A' },
+    { id: 'f1', sourceRef: 'A', targetRef: 'E' },
+    { id: 'f2', sourceRef: 'A', targetRef: 'Gateway_p_9_join' },
+    { id: 'f3', sourceRef: 'Gateway_p_9_join', targetRef: 'R' },
+    { id: 'f4', sourceRef: 'R', targetRef: 'E2' },
+  ],
+);
 
+/**
+ * A parallel fork with a back-edge into it (`B -> fork`). By the time the
+ * back-arrival is realized, the fork's out-edges are all consumed, so there
+ * is no single successor to forward to, so the edge becomes a hand-repair
+ * marker rather than an unresolvable `goto` into the fork. This shape is only
+ * reachable through hostile input; the forward compiler never emits it.
+ */
+const GOTO_INTO_FORK_IR: BpmnProcess = minimalProcess(
+  [
+    { kind: 'startEvent', id: 'S' },
+    { kind: 'parallelGateway', id: 'Gateway_p_1_fork' },
+    { kind: 'userTask', id: 'A' },
+    { kind: 'userTask', id: 'B' },
+    { kind: 'endEvent', id: 'E' },
+  ],
+  [
+    { id: 'f0', sourceRef: 'S', targetRef: 'Gateway_p_1_fork' },
+    { id: 'f1', sourceRef: 'Gateway_p_1_fork', targetRef: 'A' },
+    { id: 'f2', sourceRef: 'Gateway_p_1_fork', targetRef: 'B' },
+    { id: 'f3', sourceRef: 'A', targetRef: 'E' },
+    { id: 'f4', sourceRef: 'B', targetRef: 'Gateway_p_1_fork' },
+  ],
+);
+
+describe('irToDsl: never emit a goto to a gateway', () => {
   it('forwards a goto through a one-out pass-through gateway to the real successor', async () => {
     const dsl = irToDsl(PASS_THROUGH_IR);
     // The jump names the real successor, never the elided gateway.
@@ -2629,30 +2744,6 @@ describe('irToDsl: never emit a goto to a gateway', () => {
     expect(dsl).not.toContain('Gateway_p_9_join');
     await reDesugar(dsl);
   });
-
-  /**
-   * A parallel fork with a back-edge into it (`B -> fork`). By the time the
-   * back-arrival is realized, the fork's out-edges are all consumed, so there
-   * is no single successor to forward to, so the edge becomes a hand-repair
-   * marker rather than an unresolvable `goto` into the fork. This shape is only
-   * reachable through hostile input; the forward compiler never emits it.
-   */
-  const GOTO_INTO_FORK_IR: BpmnProcess = minimalProcess(
-    [
-      { kind: 'startEvent', id: 'S' },
-      { kind: 'parallelGateway', id: 'Gateway_p_1_fork' },
-      { kind: 'userTask', id: 'A' },
-      { kind: 'userTask', id: 'B' },
-      { kind: 'endEvent', id: 'E' },
-    ],
-    [
-      { id: 'f0', sourceRef: 'S', targetRef: 'Gateway_p_1_fork' },
-      { id: 'f1', sourceRef: 'Gateway_p_1_fork', targetRef: 'A' },
-      { id: 'f2', sourceRef: 'Gateway_p_1_fork', targetRef: 'B' },
-      { id: 'f3', sourceRef: 'A', targetRef: 'E' },
-      { id: 'f4', sourceRef: 'B', targetRef: 'Gateway_p_1_fork' },
-    ],
-  );
 
   it('emits the hand-repair marker for a goto into a fork, never a gateway-targeting goto', async () => {
     const dsl = irToDsl(GOTO_INTO_FORK_IR);
@@ -3879,6 +3970,60 @@ describe('irToDsl: repeated activities', () => {
 });
 
 /**
+ * The four settings a repetition writes on the loop element itself
+ * (`runAsyncBefore`, `runAsyncAfter`, `runExclusive`, `runRetryCycle`) sit in
+ * the same parens as the statement's own, after them, and read back onto the
+ * loop rather than the step.
+ */
+describe('irToDsl: per-run settings on a repetition', () => {
+  const RUN_LOOP: LoopCharacteristics = {
+    cardinality: '3',
+    asyncBefore: true,
+    asyncAfter: true,
+    exclusive: false,
+    retryCycle: 'R2/PT1M',
+  };
+
+  it.each([
+    [
+      "a service's run keys follow its own settings",
+      {
+        ...serviceTask(
+          'WarmPricing',
+          classBinding('com.example.WarmPricingDelegate'),
+        ),
+        asyncBefore: true,
+        retryCycle: 'R3/PT10M',
+        loop: RUN_LOOP,
+      },
+      'service WarmPricing for 3(class: "com.example.WarmPricingDelegate", ' +
+        'asyncBefore: true, retryCycle: "R3/PT10M", runAsyncBefore: true, ' +
+        'runAsyncAfter: true, runExclusive: false, runRetryCycle: "R2/PT1M")',
+    ],
+    [
+      "a subprocess's run keys follow its own settings",
+      {
+        ...chainedSub('Fulfil', [{ kind: 'userTask', id: 'Inner' }]),
+        asyncBefore: true,
+        retryCycle: 'R3/PT10M',
+        loop: RUN_LOOP,
+      },
+      'subprocess Fulfil for 3(asyncBefore: true, retryCycle: "R3/PT10M", ' +
+        'runAsyncBefore: true, runAsyncAfter: true, runExclusive: false, ' +
+        'runRetryCycle: "R2/PT1M") {',
+    ],
+  ] as const)('%s and read back onto the loop', async (_title, el, head) => {
+    const dsl = await printed(around(el));
+    expect(dsl).toContain(head);
+    const back = (await reDesugar(dsl)).flowElements.find(
+      (e): e is Extract<FlowElement, Repeatable> => e.id === el.id,
+    )!;
+    expect(back.loop).toEqual(RUN_LOOP);
+    expect([back.asyncBefore, back.retryCycle]).toEqual([true, 'R3/PT10M']);
+  });
+});
+
+/**
  * A prose setting is read back as text rather than evaluated, so the printer's
  * escaping and the lexer's unescaping have to be exact inverses over every
  * input a modeler can type. The adversarial rows are the ones a quoted body
@@ -4053,6 +4198,10 @@ const REPORT = {
   deadFallback: {
     category: 'defaultFlow',
     says: ['nothing is ever left over', 'draws an error'],
+  },
+  droppedSetting: {
+    category: 'droppedSetting',
+    says: ['engine settings', 'block structure', 'runs without them'],
   },
 } as const satisfies Record<
   string,
@@ -5806,6 +5955,412 @@ describe('irToDsl: a split with one way out is transparent', () => {
       expect(source).toContain('goto R');
       expect(source).not.toContain(UNSTRUCTURED_MARKER);
       expectReports(warnings, ['implicitSplit', 'A']);
+    },
+  );
+});
+
+/** `ir` with each listed element carrying the job settings named for it. */
+function withJobSettings(
+  ir: BpmnProcess,
+  settings: Record<string, JobSettings>,
+): BpmnProcess {
+  return {
+    ...ir,
+    flowElements: ir.flowElements.map((el) =>
+      el.id in settings ? { ...el, ...settings[el.id] } : el,
+    ),
+  };
+}
+
+/**
+ * The parens of every gateway statement in `dsl`, in source order, as
+ * `[statement type, ['key: value', ...]]`: which head the printer put the keys
+ * on. Which gateway each lands on is the compiler's business.
+ */
+async function headParens(dsl: string): Promise<[string, string[]][]> {
+  const doc = await parse(dsl);
+  return AstUtils.streamAllContents(doc.parseResult.value)
+    .filter((node) => gatewayStatementRuleOf(node) !== undefined)
+    .map((node): [string, string[]] => [
+      node.$type,
+      ((node as { items?: ParenItem[] }).items ?? []).map(
+        (item) => item.$cstNode!.text,
+      ),
+    ])
+    .toArray();
+}
+
+/**
+ * Every gateway of `ir` carrying a setting, as `[kind, settings]` in an order
+ * the ids take no part in: the compiler mints its own ids on re-parse, and a
+ * merge that splits again comes back as a split beside a join the model never
+ * had, so only the settings-bearing gateways can be compared.
+ */
+function gatewaySettings(ir: BpmnProcess): [string, JobSettings][] {
+  return ir.flowElements
+    .filter(isGateway)
+    .map((el): [string, JobSettings] => [
+      el.kind,
+      Object.fromEntries(
+        ENGINE_KEYS.filter((key) => key in el).map((key) => [
+          key,
+          (el as unknown as Record<string, unknown>)[key],
+        ]),
+      ),
+    ])
+    .filter(([, settings]) => Object.keys(settings).length > 0)
+    .sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
+}
+
+describe('irToDsl: gateway settings', () => {
+  const CYCLE = 'R3/PT10M';
+
+  /** `if (a) {A} else if (b) {B} else {C}` as the compiler lowers it: one split, one join. */
+  const CHAIN_IR: BpmnProcess = minimalProcess(
+    [
+      { kind: 'startEvent', id: 'S' },
+      gateway('Gateway_p_1_split', 'Flow_Gateway_p_1_split_default'),
+      gateway('Gateway_p_1_join'),
+      { kind: 'userTask', id: 'A' },
+      { kind: 'userTask', id: 'B' },
+      { kind: 'userTask', id: 'C' },
+      { kind: 'endEvent', id: 'E' },
+    ],
+    [
+      edge('S', 'Gateway_p_1_split'),
+      edge('Gateway_p_1_split', 'A', { condition: '${a}' }),
+      edge('A', 'Gateway_p_1_join'),
+      edge('Gateway_p_1_split', 'B', { condition: '${b}' }),
+      edge('B', 'Gateway_p_1_join'),
+      edge('Gateway_p_1_split', 'C', {
+        id: 'Flow_Gateway_p_1_split_default',
+      }),
+      edge('C', 'Gateway_p_1_join'),
+      edge('Gateway_p_1_join', 'E'),
+    ],
+  );
+
+  /** A merge that is itself a two-route split, which prints as the `if` that follows the first. */
+  const MERGE_THAT_SPLITS_IR: BpmnProcess = minimalProcess(
+    [
+      { kind: 'startEvent', id: 'S' },
+      gateway('Gateway_p_1_split', 'Flow_Gateway_p_1_split_default'),
+      gateway('Merge', 'Flow_Merge_default'),
+      { kind: 'userTask', id: 'A' },
+      { kind: 'userTask', id: 'B' },
+      { kind: 'userTask', id: 'X' },
+      { kind: 'userTask', id: 'Y' },
+      { kind: 'endEvent', id: 'E' },
+    ],
+    [
+      edge('S', 'Gateway_p_1_split'),
+      edge('Gateway_p_1_split', 'A', { condition: '${a}' }),
+      edge('A', 'Merge'),
+      edge('Gateway_p_1_split', 'B', {
+        id: 'Flow_Gateway_p_1_split_default',
+      }),
+      edge('B', 'Merge'),
+      edge('Merge', 'X', { condition: '${x}' }),
+      edge('X', 'E'),
+      edge('Merge', 'Y', { id: 'Flow_Merge_default' }),
+      edge('Y', 'E'),
+    ],
+  );
+
+  /**
+   * `while (c) { if (a) {A} else {B} }` as the compiler lowers it: the inner
+   * join's only route is the loop's back-edge, which the `while` spends before
+   * the body is walked.
+   */
+  const IF_IN_WHILE_IR: BpmnProcess = minimalProcess(
+    [
+      { kind: 'startEvent', id: 'S' },
+      gateway('Gateway_p_1_loop', 'Flow_Gateway_p_1_loop_default'),
+      gateway('Gateway_p_1_b_0_split', 'Flow_Gateway_p_1_b_0_split_default'),
+      gateway('Gateway_p_1_b_0_join'),
+      { kind: 'userTask', id: 'A' },
+      { kind: 'userTask', id: 'B' },
+      { kind: 'endEvent', id: 'E' },
+    ],
+    [
+      edge('S', 'Gateway_p_1_loop'),
+      edge('Gateway_p_1_loop', 'Gateway_p_1_b_0_split', { condition: '${c}' }),
+      edge('Gateway_p_1_b_0_split', 'A', { condition: '${a}' }),
+      edge('A', 'Gateway_p_1_b_0_join'),
+      edge('Gateway_p_1_b_0_split', 'B', {
+        id: 'Flow_Gateway_p_1_b_0_split_default',
+      }),
+      edge('B', 'Gateway_p_1_b_0_join'),
+      edge('Gateway_p_1_b_0_join', 'Gateway_p_1_loop'),
+      edge('Gateway_p_1_loop', 'E', { id: 'Flow_Gateway_p_1_loop_default' }),
+    ],
+  );
+
+  // Revert symptoms: drop the join items from the head -> every `join*` row
+  // red; take the join's settings whatever its shape -> the merge-that-splits
+  // row prints them as `join*` on the first `if`; read the loop's settings
+  // again for its leftover routes -> the loop rows print them twice; read a
+  // join's keys onto the split in the compiler -> the printed text is
+  // unchanged and the re-parse pin alone goes red.
+  it.each([
+    [
+      'an if prints the split settings and, join-prefixed, the pass-through merge settings',
+      withJobSettings(IF_ELSE_IR, {
+        Gateway_p_2_split: { asyncBefore: true, jobPriority: '10' },
+        Gateway_p_2_join: { asyncBefore: true, retryCycle: CYCLE },
+      }),
+      [
+        'process p {',
+        '  start S',
+        '  user A(label: "A task")',
+        '  if (amount > 1000) (asyncBefore: true, jobPriority: 10, joinAsyncBefore: true, joinRetryCycle: "R3/PT10M") {',
+        '    user B(label: "B task")',
+        '  } else {',
+        '    service C(class: "com.example.C")',
+        '  }',
+        '  end E',
+        '}',
+      ],
+      [
+        [
+          'IfStatement',
+          [
+            'asyncBefore: true',
+            'jobPriority: 10',
+            'joinAsyncBefore: true',
+            'joinRetryCycle: "R3/PT10M"',
+          ],
+        ],
+      ],
+    ],
+    [
+      'an else-if chain is one split, so the head carries the parens and no else-if does',
+      withJobSettings(CHAIN_IR, {
+        Gateway_p_1_split: { exclusive: false },
+        Gateway_p_1_join: { asyncAfter: true },
+      }),
+      [
+        'process p {',
+        '  start S',
+        '  if (a) (exclusive: false, joinAsyncAfter: true) {',
+        '    user A',
+        '  } else if (b) {',
+        '    user B',
+        '  } else {',
+        '    user C',
+        '  }',
+        '  end E',
+        '}',
+      ],
+      [['IfStatement', ['exclusive: false', 'joinAsyncAfter: true']]],
+    ],
+    [
+      'an if inside a while prints the merge settings although the loop already spent its back-edge',
+      withJobSettings(IF_IN_WHILE_IR, {
+        Gateway_p_1_b_0_join: { asyncBefore: true },
+      }),
+      [
+        'process p {',
+        '  start S',
+        '  while (c) {',
+        '    if (a) (joinAsyncBefore: true) {',
+        '      user A',
+        '    } else {',
+        '      user B',
+        '    }',
+        '  }',
+        '  end E',
+        '}',
+      ],
+      [
+        ['WhileStatement', []],
+        ['IfStatement', ['joinAsyncBefore: true']],
+      ],
+    ],
+    [
+      'a merge that splits again keeps its settings for the if it opens, not as join settings on the first',
+      withJobSettings(MERGE_THAT_SPLITS_IR, {
+        Merge: { asyncBefore: true },
+      }),
+      [
+        'process p {',
+        '  start S',
+        '  if (a) {',
+        '    user A',
+        '  } else {',
+        '    user B',
+        '  }',
+        '  if (x) (asyncBefore: true) {',
+        '    user X',
+        '  } else {',
+        '    user Y',
+        '  }',
+        '  end E',
+        '}',
+      ],
+      [
+        ['IfStatement', []],
+        ['IfStatement', ['asyncBefore: true']],
+      ],
+    ],
+    [
+      'a while prints the loop settings on its head',
+      withJobSettings(WHILE_IR, { Gateway_p_1_loop: { asyncAfter: true } }),
+      [
+        'process p {',
+        '  start S',
+        '  while (count < 10) (asyncAfter: true) {',
+        '    user W(label: "Work")',
+        '  }',
+        '  end E',
+        '}',
+      ],
+      [['WhileStatement', ['asyncAfter: true']]],
+    ],
+    [
+      'a do-while prints the loop settings after its condition',
+      withJobSettings(DO_WHILE_IR, { Gateway_p_1_loop: { exclusive: false } }),
+      [
+        'process p {',
+        '  start S',
+        '  do {',
+        '    user W(label: "Work")',
+        '  } while (count < 10) (exclusive: false)',
+        '  end E',
+        '}',
+      ],
+      [['DoWhileStatement', ['exclusive: false']]],
+    ],
+    [
+      'a parallel prints the fork settings and, join-prefixed, the join settings',
+      withJobSettings(PARALLEL_IR, {
+        Gateway_p_1_fork: { jobPriority: '5' },
+        Gateway_p_1_join: { asyncBefore: true },
+      }),
+      [
+        'process p {',
+        '  start S',
+        '  parallel (jobPriority: 5, joinAsyncBefore: true) {',
+        '    {',
+        '      user X(label: "X")',
+        '    }',
+        '    {',
+        '      service Y(class: "com.example.Y")',
+        '    }',
+        '  }',
+        '  end E',
+        '}',
+      ],
+      [['ParallelStatement', ['jobPriority: 5', 'joinAsyncBefore: true']]],
+    ],
+    [
+      'a weighed parallel prints the same head ahead of its branch heads',
+      withJobSettings(inclusiveIr('join'), {
+        Gateway_p_1_fork: { retryCycle: CYCLE },
+        Gateway_p_1_join: { exclusive: false },
+      }),
+      [
+        'process p {',
+        '  start S',
+        '  parallel (retryCycle: "R3/PT10M", joinExclusive: false) {',
+        '    if (amount > 10000) {',
+        '      user Audit',
+        '    }',
+        '    {',
+        '      user Record',
+        '    }',
+        '  }',
+        '  end E',
+        '}',
+      ],
+      [
+        [
+          'ParallelStatement',
+          ['retryCycle: "R3/PT10M"', 'joinExclusive: false'],
+        ],
+      ],
+    ],
+    [
+      'an await prints the race settings and, join-prefixed, the merge settings',
+      withJobSettings(RACE_IR, {
+        Gateway_p_1_race: { asyncBefore: true },
+        Gateway_p_1_join: { asyncBefore: true },
+      }),
+      [
+        'process p {',
+        '  start S',
+        '  await (asyncBefore: true, joinAsyncBefore: true) {',
+        '    message("Paid") {',
+        '      user Ship',
+        '    }',
+        '    timer("P3D") {',
+        '      user Chase',
+        '    }',
+        '  }',
+        '  end E',
+        '}',
+      ],
+      [['RaceStatement', ['asyncBefore: true', 'joinAsyncBefore: true']]],
+    ],
+  ] as const)('%s', async (_title, ir, expected, parens) => {
+    const { source, warnings } = printDsl(ir);
+
+    expect(source).toBe(`${expected.join('\n')}\n`);
+    expect(warnings).toEqual([]);
+    expect(await headParens(await printed(ir))).toEqual(parens);
+    expect(gatewaySettings(await reDesugar(source))).toEqual(
+      gatewaySettings(ir),
+    );
+  });
+
+  /** `S -> G -> A -> E` with a one-way `G` no statement stands for. */
+  const LONE_PASS_THROUGH_IR: BpmnProcess = minimalProcess(
+    [
+      { kind: 'startEvent', id: 'S' },
+      gateway('G'),
+      { kind: 'userTask', id: 'A' },
+      { kind: 'endEvent', id: 'E' },
+    ],
+    flowChain('S', 'G', 'A', 'E'),
+  );
+
+  // Revert symptom: delete the sweep at the end of `Emitter.emit` -> every row
+  // red on the missing report.
+  it.each([
+    [
+      'a one-way split the flow walks through',
+      LONE_PASS_THROUGH_IR,
+      'G',
+      [['droppedSetting', 'G']],
+    ],
+    [
+      'a merge a jump forwards through',
+      PASS_THROUGH_IR,
+      'Gateway_p_9_join',
+      [
+        ['implicitSplit', 'A'],
+        ['droppedSetting', 'Gateway_p_9_join'],
+      ],
+    ],
+    [
+      'a fork degraded to jumps',
+      GOTO_INTO_FORK_IR,
+      'Gateway_p_1_fork',
+      [
+        ['degradedSplit', 'Gateway_p_1_fork'],
+        ['droppedEdge', 'Gateway_p_1_fork'],
+        ['droppedSetting', 'Gateway_p_1_fork'],
+      ],
+    ],
+  ] as const)(
+    'reports the settings of %s once and writes none of them',
+    (_title, ir, id, reports) => {
+      const { source, warnings } = printDsl(
+        withJobSettings(ir, { [id]: { asyncBefore: true, jobPriority: '7' } }),
+      );
+
+      expect(source).toBe(irToDsl(ir));
+      expectReports(warnings, ...reports);
     },
   );
 });

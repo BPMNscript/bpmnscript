@@ -7,7 +7,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { eventIdentities } from '../../src/ir/types.js';
+import { carriesFields, eventIdentities } from '../../src/ir/types.js';
 import type {
   EventDefinition,
   FlowElement,
@@ -32,6 +32,7 @@ import type {
 } from '../../src/ir/types.js';
 import {
   boundaryEvent,
+  builtinBinding,
   callActivity,
   classBinding,
   conditionDef,
@@ -118,6 +119,8 @@ function describeBinding(binding: ServiceTaskBinding): string {
       return `external:${binding.topic}`;
     case 'decision':
       return `decision:${binding.decisionRef}`;
+    case 'builtin':
+      return `builtin:${binding.type}`;
     default: {
       const _: never = binding;
       throw new Error(`Unhandled binding kind: ${JSON.stringify(_)}`);
@@ -276,6 +279,30 @@ describe('IR discriminated unions: exhaustive switch guards', () => {
     expect(
       describeBinding({ kind: 'decision', decisionRef: 'riskRating' }),
     ).toBe('decision:riskRating');
+    expect(describeBinding(builtinBinding('shell'))).toBe('builtin:shell');
+  });
+
+  it('carriesFields is true for class, delegateExpression and builtin, false for the other four', () => {
+    const table: [string, ServiceTaskBinding | ListenerBinding][] = [
+      ['class', classBinding('com.example.Delegate')],
+      ['expression', exprBinding('${x}')],
+      ['delegateExpression', delegateBinding('${bean}')],
+      ['external', externalBinding('shipping')],
+      ['decision', { kind: 'decision', decisionRef: 'riskRating' }],
+      ['builtin', builtinBinding('mail')],
+      ['script', scriptValue('groovy', 'return 1')],
+    ];
+    expect(
+      table.map(([kind, binding]) => [kind, carriesFields(binding)]),
+    ).toEqual([
+      ['class', true],
+      ['expression', false],
+      ['delegateExpression', true],
+      ['external', false],
+      ['decision', false],
+      ['builtin', true],
+      ['script', false],
+    ]);
   });
 
   it('the exhaustive switch handles every EventDefinition variant', () => {
@@ -464,18 +491,25 @@ const TYPE_TABLE: [
 ];
 
 /**
- * The constraints that make an illegal combination unrepresentable: gateways
- * get neither mixin, and the two value unions (`IoValue`, `ListenerBinding`)
- * refuse a value carrying more than one form, the way `ServiceTaskBinding`
- * already does. Each literal is one TypeScript can only accept by widening or
- * dropping the extra property, and every `@ts-expect-error` below fails the
- * typecheck if the constraint it names ever stops holding.
+ * The constraints that make an illegal combination unrepresentable: a gateway
+ * carries `JobSettings` but not `IoMapped`, and the two value unions
+ * (`IoValue`, `ListenerBinding`) refuse a value carrying more than one form,
+ * the way `ServiceTaskBinding` already does. Each literal is one TypeScript
+ * can only accept by widening or dropping the extra property, and every
+ * `@ts-expect-error` below fails the typecheck if the constraint it names
+ * ever stops holding.
  */
-const GATEWAY_WITH_ENGINE_ATTRIBUTE: ExclusiveGateway = {
+const GATEWAY_WITH_JOB_SETTINGS: ExclusiveGateway = {
   kind: 'exclusiveGateway',
   id: 'Gw_xor',
-  // @ts-expect-error a synthesized gateway carries neither EngineAttributes nor IoMapped
   asyncBefore: true,
+};
+
+const GATEWAY_WITH_IO_MAPPED: ExclusiveGateway = {
+  kind: 'exclusiveGateway',
+  id: 'Gw_xor2',
+  // @ts-expect-error a synthesized gateway carries JobSettings but no IoMapped
+  inputParameters: [],
 };
 
 // @ts-expect-error the engine default (true) is represented by omitting the field, not by storing it
@@ -528,7 +562,8 @@ describe('the IR type table', () => {
     // This keeps them referenced and confirms every one is a real value.
     for (const literal of [
       ...TYPE_TABLE,
-      GATEWAY_WITH_ENGINE_ATTRIBUTE,
+      GATEWAY_WITH_JOB_SETTINGS,
+      GATEWAY_WITH_IO_MAPPED,
       EXCLUSIVE_AT_DEFAULT,
       IO_VALUE_WITH_TWO_FORMS,
       LISTENER_BINDING_WITH_NONE,

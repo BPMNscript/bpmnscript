@@ -247,9 +247,11 @@ Listener:
 ListenerEvent returns string:
     ID | 'start' | 'end';
 
-// if / else if / else -> exclusive gateway (desugared by `astToIr`).
+// if / else if / else -> exclusive gateway (desugared by `astToIr`). The parens
+// after the condition hold the split's settings and, `join`-prefixed, the
+// join's; the whole chain is one split, so an `else if` head takes none.
 IfStatement:
-    'if' '(' condition=Expr ')' then=Block
+    'if' '(' condition=Expr ')' SettingsParens? then=Block
     (elseIfs+=ElseIf)*
     ('else' elseBlock=Block)?;
 
@@ -257,19 +259,22 @@ ElseIf:
     'else' 'if' '(' condition=Expr ')' body=Block;
 
 // Pre-test loop -> XOR gateway + back-edge (never standardLoopCharacteristics).
+// A loop has one gateway, so its parens take no `join` spelling; the validator
+// says so.
 WhileStatement:
-    'while' '(' condition=Expr ')' body=Block;
+    'while' '(' condition=Expr ')' SettingsParens? body=Block;
 
 // Post-test loop -> body runs first, then the conditioned back-edge.
 DoWhileStatement:
-    'do' body=Block 'while' '(' condition=Expr ')';
+    'do' body=Block 'while' '(' condition=Expr ')' SettingsParens?;
 
 // parallel -> AND fork/join, or an OR fork/join when any branch carries a
 // condition. An unheaded branch always runs, a conditioned one when its
 // condition holds, and the `else` branch only when none held; left out, that
-// fallback goes straight to the join.
+// fallback goes straight to the join. The parens after the keyword hold the
+// fork's settings and, `join`-prefixed, the join's; a branch head takes none.
 ParallelStatement:
-    'parallel' '{' branches+=ParallelBranch (branches+=ParallelBranch)+ '}';
+    'parallel' SettingsParens? '{' branches+=ParallelBranch (branches+=ParallelBranch)+ '}';
 
 // `if` and `else` are already keywords, so the head costs no reserved word.
 ParallelBranch:
@@ -336,7 +341,8 @@ EmitStatement:
     'emit' trigger=ID (name=ID)? SettingsParens? AttributeBlock?;
 
 // `await` blocks the main flow in one of two shapes, told apart by the token
-// after the keyword.
+// after the keyword: an `ID` is the trigger of the single-catch form, and `(`
+// or `{` opens the block form.
 //
 // `await <trigger> <name>?` pauses until the trigger fires, then continues. The
 // name sits after the trigger, placed by the one token of lookahead
@@ -345,6 +351,8 @@ EmitStatement:
 // `await { ... }` waits on several triggers at once and continues down the one
 // that fires first; the others are cancelled. A `RaceBranch` carries no name of
 // its own: it is not a statement, so nothing can `goto` one branch of a race.
+// The parens before the block hold the gateway's settings and, `join`-prefixed,
+// the join's; a branch's own parens belong to its catch event.
 //
 // One rule for both shapes, so the keyword commits the parser before the payload
 // is read: with a rule apiece a mistyped payload leaves no viable alternative
@@ -355,7 +363,7 @@ AwaitStatement:
         {infer IntermediateCatchEvent}
         trigger=ID (name=ID)? SettingsParens? AttributeBlock?
       | {infer RaceStatement}
-        '{' branches+=RaceBranch (branches+=RaceBranch)+ '}'
+        SettingsParens? '{' branches+=RaceBranch (branches+=RaceBranch)+ '}'
     );
 
 // `IntermediateCatchEvent`'s header plus a body, the two told apart as a

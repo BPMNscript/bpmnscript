@@ -42,10 +42,13 @@ Refused constructs throw a subclass of `UnsupportedConstructError` before any IR
 - an `operaton:constraint` the engine refuses to deploy or the surface cannot spell: an unregistered name, a `validator` or a bound with no `config`, or a name repeated on one field -> `UnsupportedFormFieldConstraintError` (ADR-0037)
 - Operaton extension content the IR's discriminated unions cannot represent, such as a parameter carrying body text and a nested value at once -> `UnsupportedExtensionFormError`
 - an unsupported flow-element kind (pre-existing) -> `UnsupportedElementError`
-- an unsupported service-task execution form (pre-existing) -> `UnsupportedServiceTaskFormError`
+- an unsupported service-task execution form (pre-existing), an `operaton:type` outside `external`, `mail`, and `shell`, or a `mail`/`shell` type on a thrown message -> `UnsupportedServiceTaskFormError` (ADR-0042)
+  A mail or shell task missing a field its behaviour's own parse requires or naming a field its behaviour class does not declare draws the same error.
+  So does a shell task carrying a field as an expression, or spelling a flag outside `true`/`false` in any letter case.
 - a sequence flow's condition expression or a conditional event definition's condition carrying a `language`, which Operaton hands to a script engine rather than evaluating as the UEL expression this tool writes -> `UnsupportedConditionExpressionError`
 - an `operaton:errorEventDefinition` on an external task carrying `errorRef` and no `expression`, which fails the deployment, or an `errorRef` naming no error root with a code -> `UnsupportedErrorMappingError` (ADR-0038)
 - a user task carrying a `bpmn:humanPerformer` beside `operaton:assignee`, or more than one `bpmn:humanPerformer`, both of which Operaton refuses to deploy -> `UnsupportedAssignmentError` (ADR-0039)
+- an event-based gateway carrying `operaton:asyncAfter`, which `BpmnParse.parseEventBasedGateway` refuses to deploy -> `UnsupportedEventFeatureError` (ADR-0040)
 
 Every refusal shares the abstract base `UnsupportedConstructError`, so a consumer classifies the whole family with a single `instanceof` check while each subclass still carries construct-specific metadata for a tailored message.
 
@@ -54,7 +57,8 @@ Warned constructs are returned in a `warnings: ImportWarning[]` array alongside 
 
 - an Operaton or camunda extension attribute or element whose content the IR does not read.
   The boundary is drawn per owner kind rather than by a list of names, so `operaton:assignee` is data on a user task and a reported drop on a service task.
-- an external task's `operaton:taskPriority`, `operaton:properties`, or `operaton:errorEventDefinition` on a service, send, or business rule task bound by class, expression, delegate expression, or decision, since `parseExternalServiceTask` alone reads them and no other binding reaches it (ADR-0038)
+- an external task's `operaton:taskPriority`, `operaton:properties`, or `operaton:errorEventDefinition` on a service, send, or business rule task bound by class, expression, delegate expression, decision, or a built-in mail or shell type, since `parseExternalServiceTask` alone reads them and no other binding reaches it (ADR-0038, ADR-0042)
+- a shell flag the engine deploys and then reads as `false`, one spelled `TRUE` rather than `true`, carried as written with a warning that the printed script draws an error there (ADR-0042)
 - on a form field, what the engine never reads: a `datePattern` off a `date` field, `operaton:value` children off an `enum` field, and a `config` on `required` or `readonly`.
   What the engine deploys and then fails on is carried as written, with a warning that the printed script draws an error there.
   That is a bound on a type its validator refuses, a bound whose `config` is not an integer, and a literal enum default naming no value.
@@ -125,6 +129,13 @@ Amended by ADR-0037, which adds the form field constraint refusal and the form f
 Amended by ADR-0038, which adds the error mapping refusal and the warning on an external task's extras under a binding the engine never reads them for.
 
 Amended by ADR-0039, which adds the assignment refusal, narrows the resource-role drop to the roles the engine never reads, adds the quantity attributes to the warned list, and removes `startQuantity` from the unreported examples.
+
+Amended by ADR-0040, which adds the event-based gateway refusal above and carries a gateway's five job settings instead of warning about them.
+A listener or an input/output parameter found on a gateway still warns, since no gateway kind reads either.
+
+Amended by ADR-0041, which carries an async, exclusive, or retry setting found on a repetition's `multiInstanceLoopCharacteristics` element instead of refusing it, narrowing the `UnsupportedLoopCharacteristicsError` bullet above.
+
+Amended by ADR-0042, which adds the `UnsupportedServiceTaskFormError` and extras-warning detail above for a mail or shell task.
 
 Related decisions: ADR-0006 (the shared IR, where `warnings` deliberately lives outside the IR, which stays serializable).
 ADR-0007 (the Operaton moddle extension fork, whose declared and undeclared elements determine warning-attribution precision).

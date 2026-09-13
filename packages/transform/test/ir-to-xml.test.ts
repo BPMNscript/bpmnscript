@@ -21,6 +21,7 @@ import { astToIr } from '../src/ast-to-ir.js';
 import {
   around,
   boundaryEvent,
+  builtinBinding,
   callActivity,
   chained,
   chainedSub,
@@ -54,8 +55,10 @@ import type {
   CodeBinding,
   EndEventDefinition,
   EventDefinition,
+  FieldInjection,
   FlowElement,
   FormField,
+  Gateway,
   LoopCharacteristics,
   ServiceTaskBinding,
   VersionBinding,
@@ -289,40 +292,6 @@ describe('irToXml: inclusive and event-based gateway serialization', () => {
     expect(degreeOf(gatewaysXml, 'Race').out).toBe(2);
   });
 
-  it('writes no engine attribute on either kind, even when the IR literal carries the fields an activity would', async () => {
-    // Neither gateway type declares the engine settings, so the fields only
-    // reach the serializer through a cast: what is pinned here is that the
-    // serializer refuses them by kind rather than by the IR shape.
-    const withEngineFields = processIr('engine-on-gateway', [
-      {
-        kind: 'inclusiveGateway',
-        id: 'Fork',
-        asyncBefore: true,
-        asyncAfter: true,
-        exclusive: false,
-        jobPriority: '50',
-        executionListeners: [
-          { event: 'start', binding: classBinding('com.example.L') },
-        ],
-      },
-      {
-        kind: 'eventBasedGateway',
-        id: 'Race',
-        asyncBefore: true,
-        executionListeners: [
-          { event: 'start', binding: classBinding('com.example.L') },
-        ],
-      },
-    ] as unknown as FlowElement[]);
-
-    const xmlOut = await irToXml(withEngineFields);
-    for (const id of ['Fork', 'Race']) {
-      const block = extractNodeBlock(xmlOut, id);
-      expect(block).not.toContain('operaton:');
-      expect(block).not.toContain('extensionElements');
-    }
-  });
-
   it('names the offending gateway kind when a declared default flow is missing', async () => {
     const danglingDefault = processIr('dangling-default', [
       { kind: 'inclusiveGateway', id: 'Fork', defaultFlowId: 'F_absent' },
@@ -375,6 +344,63 @@ describe('irToXml: serviceTask binding variants', () => {
       expect(out).toContain(attribute);
     }
   });
+});
+
+/** The `operaton:field` children a builtin binding's fields serialize to, one literal and one expression. */
+function builtinFieldsBlock(fields: FieldInjection[]): string {
+  return fields
+    .map((f) =>
+      f.value.startsWith('${')
+        ? `        <operaton:field name="${f.name}">\n          <operaton:expression>${f.value}</operaton:expression>\n        </operaton:field>\n`
+        : `        <operaton:field name="${f.name}" stringValue="${f.value}" />\n`,
+    )
+    .join('');
+}
+
+/** The serialized tag for each `ServiceTask.element`; lower-cased, unlike the moddle `$type` name. */
+const SERVICE_TASK_LIKE_XML_TAG = {
+  service: 'bpmn:serviceTask',
+  send: 'bpmn:sendTask',
+  businessRule: 'bpmn:businessRuleTask',
+} as const;
+
+describe('irToXml: builtin (mail/shell) service task binding', () => {
+  it.each([
+    ['service', 'mail'],
+    ['businessRule', 'shell'],
+  ] as const)(
+    'a %s task with a builtin %s binding serializes operaton:type and its fields, under its own tag',
+    async (element, type) => {
+      const fields: FieldInjection[] =
+        type === 'mail'
+          ? [
+              { name: 'to', value: 'ops@example.com' },
+              { name: 'text', value: '${body}' },
+            ]
+          : [
+              { name: 'command', value: 'echo hi' },
+              { name: 'arg1', value: '${input}' },
+            ];
+      const tag = SERVICE_TASK_LIKE_XML_TAG[element];
+      const xml = await irToXml(
+        around({
+          kind: 'serviceTask',
+          id: 'Task',
+          ...(element === 'service' ? {} : { element }),
+          binding: builtinBinding(type, fields),
+        }),
+      );
+      expect(extractNodeBlock(xml, 'Task')).toBe(
+        `<${tag} id="Task" name="Task" operaton:type="${type}">\n` +
+          '      <bpmn:extensionElements>\n' +
+          builtinFieldsBlock(fields) +
+          '      </bpmn:extensionElements>\n' +
+          '      <bpmn:incoming>F1</bpmn:incoming>\n' +
+          '      <bpmn:outgoing>F2</bpmn:outgoing>\n' +
+          `    </${tag}>`,
+      );
+    },
+  );
 });
 
 /**
@@ -2040,39 +2066,56 @@ describe('irToXml: flat engine attributes', () => {
     );
   });
 
-  it('writes neither attribute nor extension child for engine fields cast onto a gateway', async () => {
-    // The IR keeps engine fields off both gateway kinds, so no honest fixture
-    // can reach the runtime guard that skips them. The cast supplies the shape
-    // the type forbids, which is the only way to observe the guard working.
-    const gatewayXml = await irToXml(
-      minimalProcess(
-        [
-          { kind: 'startEvent', id: 'S' },
-          {
-            kind: 'exclusiveGateway',
-            id: 'G',
-            asyncBefore: true,
-            asyncAfter: true,
-            exclusive: false,
-            jobPriority: '30',
-            retryCycle: 'R3/PT1M',
-            executionListeners: [
-              { event: 'start', binding: { kind: 'class', className: 'x.L' } },
-            ],
-          } as unknown as FlowElement,
-          { kind: 'endEvent', id: 'E' },
-        ],
-        [
-          { id: 'F1', sourceRef: 'S', targetRef: 'G' },
-          { id: 'F2', sourceRef: 'G', targetRef: 'E' },
-        ],
-      ),
-    );
+  it.each<[string, Gateway['kind'], string]>([
+    ['an exclusive gateway', 'exclusiveGateway', 'bpmn:exclusiveGateway'],
+    ['a parallel gateway', 'parallelGateway', 'bpmn:parallelGateway'],
+    ['an inclusive gateway', 'inclusiveGateway', 'bpmn:inclusiveGateway'],
+    ['an event-based gateway', 'eventBasedGateway', 'bpmn:eventBasedGateway'],
+  ])(
+    '%s serializes its job settings like an activity, and none of its listeners',
+    async (_title, kind, tag) => {
+      const withSettings: Gateway = {
+        kind,
+        id: 'G',
+        asyncBefore: true,
+        asyncAfter: true,
+        exclusive: false,
+        jobPriority: '30',
+        retryCycle: 'R3/PT1M',
+      } as Gateway;
+      const settingsXml = await irToXml(around(withSettings));
+      expect(extractNodeBlock(settingsXml, 'G')).toBe(
+        `<${tag} id="G" operaton:asyncBefore="true" operaton:asyncAfter="true" operaton:exclusive="false" operaton:jobPriority="30">\n` +
+          `      <bpmn:extensionElements>\n` +
+          `        <operaton:failedJobRetryTimeCycle>R3/PT1M</operaton:failedJobRetryTimeCycle>\n` +
+          `      </bpmn:extensionElements>\n` +
+          `      <bpmn:incoming>F1</bpmn:incoming>\n` +
+          `      <bpmn:outgoing>F2</bpmn:outgoing>\n` +
+          `    </${tag}>`,
+      );
 
-    const block = extractNodeBlock(gatewayXml, 'G');
-    expect(block).not.toContain('operaton:');
-    expect(block).not.toContain('extensionElements');
-  });
+      const bareXml = await irToXml(around({ kind, id: 'G' } as Gateway));
+      const bareBlock = extractNodeBlock(bareXml, 'G');
+      expect(bareBlock).not.toContain('operaton:');
+      expect(bareBlock).not.toContain('extensionElements');
+
+      // No carrier for a listener on a gateway (ADR 0010: a synthesized
+      // gateway has no textual identity to author one against), so the cast
+      // supplies the shape the type forbids to observe the guard working.
+      const listenersXml = await irToXml(
+        around({
+          kind,
+          id: 'G',
+          executionListeners: [
+            { event: 'start', binding: { kind: 'class', className: 'x.L' } },
+          ],
+        } as unknown as Gateway),
+      );
+      const listenerBlock = extractNodeBlock(listenersXml, 'G');
+      expect(listenerBlock).not.toContain('operaton:');
+      expect(listenerBlock).not.toContain('extensionElements');
+    },
+  );
 });
 
 /**
@@ -2760,6 +2803,56 @@ describe('irToXml: multi-instance loop characteristics', () => {
       /<bpmn:completionCondition[^>]*>\$\{nrOfCompletedInstances >= 2\}<\/bpmn:completionCondition>/,
     );
   });
+
+  it("a repetition carrying per-run settings writes them on the loop element, beside the step's own", async () => {
+    const xml = await irToXml(
+      around({
+        kind: 'serviceTask',
+        id: 'Step',
+        binding: classBinding('com.example.Step'),
+        asyncBefore: true,
+        asyncAfter: true,
+        jobPriority: '20',
+        retryCycle: 'R3/PT5M',
+        resultVariable: 'outcome',
+        loop: {
+          collection: 'lines',
+          elementVariable: 'line',
+          asyncBefore: true,
+          asyncAfter: true,
+          exclusive: false,
+          retryCycle: 'R2/PT1M',
+        },
+      }),
+    );
+    expect(extractNodeBlock(xml, 'Step')).toBe(
+      '<bpmn:serviceTask id="Step" name="Step" operaton:asyncBefore="true" operaton:asyncAfter="true" operaton:jobPriority="20" operaton:class="com.example.Step" operaton:resultVariable="outcome">\n' +
+        '      <bpmn:extensionElements>\n' +
+        '        <operaton:failedJobRetryTimeCycle>R3/PT5M</operaton:failedJobRetryTimeCycle>\n' +
+        '      </bpmn:extensionElements>\n' +
+        '      <bpmn:incoming>F1</bpmn:incoming>\n' +
+        '      <bpmn:outgoing>F2</bpmn:outgoing>\n' +
+        '      <bpmn:multiInstanceLoopCharacteristics operaton:collection="lines" operaton:elementVariable="line" operaton:asyncBefore="true" operaton:asyncAfter="true" operaton:exclusive="false">\n' +
+        '        <bpmn:extensionElements>\n' +
+        '          <operaton:failedJobRetryTimeCycle>R2/PT1M</operaton:failedJobRetryTimeCycle>\n' +
+        '        </bpmn:extensionElements>\n' +
+        '      </bpmn:multiInstanceLoopCharacteristics>\n' +
+        '    </bpmn:serviceTask>',
+    );
+
+    // No run setting on this loop, so no `operaton:` attribute and no child
+    // extension wrapper: the run keys are opt-in, never a default write.
+    const bareXml = await irToXml(
+      around({ kind: 'userTask', id: 'Approve', loop: OVER_LINES }),
+    );
+    expect(extractNodeBlock(bareXml, 'Approve')).toBe(
+      '<bpmn:userTask id="Approve" name="Approve">\n' +
+        '      <bpmn:incoming>F1</bpmn:incoming>\n' +
+        '      <bpmn:outgoing>F2</bpmn:outgoing>\n' +
+        '      <bpmn:multiInstanceLoopCharacteristics operaton:collection="lines" operaton:elementVariable="line" />\n' +
+        '    </bpmn:userTask>',
+    );
+  });
 });
 
 /**
@@ -3250,25 +3343,23 @@ function extractNodeBlock(xml: string, nodeId: string): string {
   }
   const tagName = tagNameMatch[1]!;
 
-  // Find the end of this element. The element is either self-closing (`/>`)
-  // or has a closing tag (`</bpmn:foo>`).
-  const selfClosePos = xml.indexOf('/>', tagStart);
+  // Whether this element itself self-closes is decided by the first `>` of
+  // its own opening tag, never by scanning ahead: a repeated activity nests a
+  // self-closing `multiInstanceLoopCharacteristics` before its own close tag,
+  // which a bare "first `/>` after tagStart" scan would mistake for its own.
+  const openTagEnd = xml.indexOf('>', tagStart);
+  if (openTagEnd === -1) {
+    throw new Error(`Unterminated opening tag for id="${nodeId}".`);
+  }
+  if (xml[openTagEnd - 1] === '/') {
+    return xml.slice(tagStart, openTagEnd + 1);
+  }
   const closeTagStr = `</${tagName}>`;
-  const closeTagPos = xml.indexOf(closeTagStr, tagStart);
-
-  let blockEnd: number;
-  if (
-    selfClosePos !== -1 &&
-    (closeTagPos === -1 || selfClosePos < closeTagPos)
-  ) {
-    blockEnd = selfClosePos + 2; // include `>`
-  } else if (closeTagPos !== -1) {
-    blockEnd = closeTagPos + closeTagStr.length;
-  } else {
+  const closeTagPos = xml.indexOf(closeTagStr, openTagEnd);
+  if (closeTagPos === -1) {
     throw new Error(
       `Could not find end of element "${tagName}" with id="${nodeId}".`,
     );
   }
-
-  return xml.slice(tagStart, blockEnd);
+  return xml.slice(tagStart, closeTagPos + closeTagStr.length);
 }

@@ -16,10 +16,16 @@
         <bpmn:completionCondition xsi:type="bpmn:tFormalExpression">${nrOfCompletedInstances &gt;= 2}</bpmn:completionCondition>
       </bpmn:multiInstanceLoopCharacteristics>
     </bpmn:serviceTask>
-    <bpmn:serviceTask id="WarmPricing" name="Warm the pricing cache" operaton:class="com.example.orders.WarmPricingDelegate">
+    <bpmn:serviceTask id="WarmPricing" name="Warm the pricing cache" operaton:asyncBefore="true" operaton:class="com.example.orders.WarmPricingDelegate">
+      <bpmn:extensionElements>
+        <operaton:failedJobRetryTimeCycle>R3/PT10M</operaton:failedJobRetryTimeCycle>
+      </bpmn:extensionElements>
       <bpmn:incoming>Flow_ReserveStock_WarmPricing</bpmn:incoming>
       <bpmn:outgoing>Flow_WarmPricing_RecordLine</bpmn:outgoing>
-      <bpmn:multiInstanceLoopCharacteristics>
+      <bpmn:multiInstanceLoopCharacteristics operaton:asyncBefore="true" operaton:asyncAfter="true" operaton:exclusive="false">
+        <bpmn:extensionElements>
+          <operaton:failedJobRetryTimeCycle>R2/PT1M</operaton:failedJobRetryTimeCycle>
+        </bpmn:extensionElements>
         <bpmn:loopCardinality xsi:type="bpmn:tFormalExpression">3</bpmn:loopCardinality>
       </bpmn:multiInstanceLoopCharacteristics>
     </bpmn:serviceTask>

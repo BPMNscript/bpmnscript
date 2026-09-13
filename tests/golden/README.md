@@ -19,7 +19,7 @@ A few stand alone as inputs for one direction only.
 | `intermediate-catch.{bpmnscript,bpmn}` | `await` on the four triggers a token blocks on and continues past                        |
 | `engine-attributes.{bpmnscript,bpmn}`  | The flat engine settings, and both ways of naming a form                                 |
 | `input-output.{bpmnscript,bpmn}`       | `operaton:inputOutput` in all four value forms                                           |
-| `listeners.{bpmnscript,bpmn}`          | Both listener kinds, and field injection on all its carriers                             |
+| `listeners.{bpmnscript,bpmn}`          | Both listener kinds, and field injection on a class and a delegate binding               |
 | `event-positions.{bpmnscript,bpmn}`    | A message start, `emit`/`throw message`, and a terminate end                             |
 | `task-kinds.{bpmnscript,bpmn}`         | The generic, send, receive, and decision task kinds                                      |
 | `repetition.{bpmnscript,bpmn}`         | Every form of the repeat clause                                                          |
@@ -30,6 +30,8 @@ A few stand alone as inputs for one direction only.
 | `link-events.{bpmnscript,bpmn}`        | The link pair, in the process and in a sub-process, with two throws to one catch         |
 | `forms.{bpmnscript,bpmn}`              | Every extension a form field takes: constraints, a date pattern, enum values, properties |
 | `external-task.{bpmnscript,bpmn}`      | The extras a topic-bound task carries: priority, properties, error mappings              |
+| `gateway-settings.{bpmnscript,bpmn}`   | The job settings on the five gateway statements, for the split and for the join          |
+| `mail-and-shell.{bpmnscript,bpmn}`     | The mail and shell behaviours, with their fields, on the three tags that take `type`     |
 | `unstructured-goto.bpmn`               | The `goto` degradation path on import                                                    |
 
 The three invoice-approval files all describe the same process (review, then a gateway on `amount > 1000`, then senior approval or auto-approve) but come from different sources and pull the tests in different directions.
@@ -151,10 +153,10 @@ The header's `historyTimeToLive` is `P90D` rather than the `P30D` the exporter s
 Both handler forms are here so the placement rule is pinned in the artifact rather than only in prose.
 A hosted `on ApprovePayout: timer` writes its settings on the boundary event it lowers to, and a host-less `on escalation` writes them on the event sub-process rather than on the trigger start event nested inside it.
 That start event's own block belongs to the `start` statement written inside the handler body, and a synthesized start prints no statement at all, so a setting stored there could have nowhere to go.
-A `while`, an `if`, and a `parallel` put five synthesized gateways in the same artifact, none of which carries a setting: a gateway id is a structural coordinate with no name an author writes, so a setting found on a gateway during import stays a reported drop.
-Every named node carries an explicit id, and the frozen artifact imports without a single warning, which is what makes that drop report meaningful.
+A `while`, an `if`, and a `parallel` put five synthesized gateways in the same artifact, none of which is written with a setting, so the pair pins that no direction invents one on a gateway; what a gateway written with settings carries is the `gateway-settings` pair's to pin.
+Every named node carries an explicit id, and the frozen artifact imports without a single warning.
 
-Contract: the `(node id, attribute, value)` table in `tests/engine-attributes.round-trip.test.ts`, the four engine settings on the header (`3.1.0`, `P90D`, `demo,manager`, `adjusters`) asserted as one record, the three `operaton:formRef*` attributes on `ApprovePayout`, and the absence of any engine setting on a gateway and on the event sub-process's trigger start event.
+Contract: the `(node id, attribute, value)` table in `tests/engine-attributes.round-trip.test.ts`, the four engine settings on the header (`3.1.0`, `P90D`, `demo,manager`, `adjusters`) asserted as one record, the three `operaton:formRef*` attributes on `ApprovePayout`, and the absence of any engine setting on the gateways, which are written without one, and on the event sub-process's trigger start event.
 
 ## `input-output.{bpmnscript,bpmn}`
 
@@ -170,8 +172,8 @@ A process registering execution listeners on a service task, a subprocess, an en
 The service task carries both execution events, `start` and `end`; the other three carry one of the two each.
 All four bindings appear, a Java class, a JUEL expression, a delegate expression, and an inline fenced script, and the `timeout` listener carries the timer clause a caught timer event spells the same way.
 
-Three bindings in the artifact also carry an injected field, which is every carrier one rides: the service task's own class binding takes two, a literal and a `${...}` expression, its `on start` execution listener takes one, and the delegate-bound `on complete` task listener takes one.
-The expression-bound `on assign` listener carries none, because Operaton hands a field list to a class and a delegate binding and to no other.
+Three bindings in the artifact also carry an injected field, every carrier one rides but the built-in `type` binding the `mail-and-shell` pair pins: the service task's own class binding takes two, a literal and a `${...}` expression, its `on start` execution listener takes one, and the delegate-bound `on complete` task listener takes one.
+The expression-bound `on assign` listener carries none, because Operaton hands a field list to a class binding, a delegate binding, and a built-in `type` binding, and to no other.
 
 Contract: the `operaton:executionListener` and `operaton:taskListener` children in their authored order, the event word on each, the single binding each carries, the `scriptFormat` on the inline script, the timer child under the `timeout` listener, and every `operaton:field` under the binding that receives it, a literal in the `stringValue` attribute and an expression in an `operaton:expression` child.
 
@@ -198,11 +200,12 @@ Contract: a `bpmn:task`, a `bpmn:sendTask`, two `bpmn:receiveTask`, three `bpmn:
 ## `repetition.{bpmnscript,bpmn}`
 
 An order-fulfilment narrative whose stages each run once per item they are handed, so one artifact carries every form of the repeat clause on seven of the ten activity tags that take one.
-A user task repeats over a bound collection; a service task over a collection expression, sequentially, stopped early by an `until` condition; a second service task over a bare count; a step over a count and a collection together; a receive over a collection it binds no element of; a call over a bound collection; a script task whose clause is written ahead of both its settings and its fenced body; and a sub-process that repeats sequentially, sets `asyncBefore`, and wraps one ordinary service task.
-`asyncBefore` on a repeated statement makes one job for the repetition as a whole rather than one per run of it, which is the only async a clause can express.
+A user task repeats over a bound collection; a service task over a collection expression, sequentially, stopped early by an `until` condition; a second service task over a bare count, carrying a job around the repetition and one per run; a step over a count and a collection together; a receive over a collection it binds no element of; a call over a bound collection; a script task whose clause is written ahead of both its settings and its fenced body; and a sub-process that repeats sequentially, sets `asyncBefore`, and wraps one ordinary service task.
+A repeated statement takes its job settings in two positions: its own `asyncBefore` and `retryCycle` make one job around the repetition as a whole, and the `run*` keys make one job per run, because `BpmnParse.parseAsynchronousContinuationForActivity` reads the loop element's own async settings onto each run.
+`WarmPricing` carries both, so the pair pins the step's settings on the task tag beside the run settings on the loop element, and `DispatchParcels` carries the step's alone.
 Every collection variable is declared in the process header, and the decompiler writes a declaration back for each collection a clause names bare, since a bare `operaton:collection` is the name of a process variable the engine requires to exist.
 
-Contract: one `bpmn:multiInstanceLoopCharacteristics` under each of `bpmn:userTask`, both `bpmn:serviceTask`, `bpmn:task`, `bpmn:receiveTask`, `bpmn:callActivity`, `bpmn:scriptTask`, and `bpmn:subProcess`, written ahead of the script body and of a sub-process's own children; `isSequential="true"` on the two statements that wrote `sequentially` and the attribute absent everywhere else, because the engine runs the instances at once unless told otherwise; one `bpmn:loopCardinality` carrying a count alone and one carrying a count beside a collection, which the engine accepts together; one `bpmn:completionCondition`; `operaton:elementVariable` absent on the one collection that binds no element; and `operaton:collection="${order.lines}"` keeping its `${}` where the author wrote an expression while `operaton:collection="approvers"` stays bare where the author named a variable, since Operaton reads a bare value as a variable name and only a `${...}` body as an expression.
+Contract: one `bpmn:multiInstanceLoopCharacteristics` under each of `bpmn:userTask`, both `bpmn:serviceTask`, `bpmn:task`, `bpmn:receiveTask`, `bpmn:callActivity`, `bpmn:scriptTask`, and `bpmn:subProcess`, written ahead of the script body and of a sub-process's own children; `isSequential="true"` on the two statements that wrote `sequentially` and the attribute absent everywhere else, because the engine runs the instances at once unless told otherwise; one `bpmn:loopCardinality` carrying a count alone and one carrying a count beside a collection, which the engine accepts together; one `bpmn:completionCondition`; `operaton:elementVariable` absent on the one collection that binds no element; and `operaton:collection="${order.lines}"` keeping its `${}` where the author wrote an expression while `operaton:collection="approvers"` stays bare where the author named a variable, since Operaton reads a bare value as a variable name and only a `${...}` body as an expression; and on `WarmPricing`, `operaton:asyncBefore` and an `operaton:failedJobRetryTimeCycle` child on the task tag, with `operaton:asyncBefore`, `operaton:asyncAfter`, `operaton:exclusive` and a second retry child on its loop element alone, while no other loop element carries an `operaton:` async or exclusive attribute.
 
 ## `transactions.{bpmnscript,bpmn}`
 
@@ -287,6 +290,30 @@ The `amount` the receipt's priority reads is declared on the start form rather t
 Every mapping condition is written structured rather than as a raw `"${...}"` string, since a raw string prints back structured and would change what IR3 compares against.
 
 Contract: the `EXTERNAL_BINDINGS` record in `tests/external-task.round-trip.test.ts`, asserting `ChargeCard`, `SendReceipt` and `RateFraud` keep their priority, properties and error mappings at each hop and through import; and the frozen artifact's `operaton:taskPriority`, `operaton:properties` and `operaton:errorEventDefinition` children, and the two `bpmn:error` roots in first-use order.
+
+## `gateway-settings.{bpmnscript,bpmn}`
+
+A loan-application narrative in which each of the five gateway statements carries a parens of its own, so one artifact freezes all ten spellings a gateway head takes: the five engine keys for the split, the loop gateway, the fork or the race, and the five `join*` keys for the join synthesized beside it.
+The `if` chain carries three head keys and two join keys and its `else if` head none, because the chain lowers to one split and one join and the head parens governs both.
+The `while` carries `asyncAfter` and a retry cycle, and its body holds a plain `if` whose two gateways carry nothing, so a gateway written bare is frozen beside the ones written with settings.
+The `do ... while` sits inside a sub-process, the one nesting the artifact has, and carries `exclusive: false` and a priority, the two keys a loop takes beside the async flags.
+The first `parallel` weighs nothing, so the pair stays `bpmn:parallelGateway`, and it puts `asyncBefore` on the fork and the other three `join*` keys on the join; the second weighs one branch, so the pair is `bpmn:inclusiveGateway`, and it puts an expression priority on the fork and one key on the join.
+The `await` carries `asyncBefore` and a priority on the head and one `join*` key on the exclusive merge behind it, and never `asyncAfter`, which `BpmnParse.parseEventBasedGateway` refuses to deploy.
+Every condition reads a field of the start form rather than a `var`, so the declaration comes back out of the XML on the way in, and every label differs from the name humanized from its id.
+
+Every job setting in the artifact sits on a gateway, so a direction that moved one onto a neighbouring node would put an attribute where the contract allows none.
+The comparison at each hop keeps a join that carries a setting rather than inlining it as a pass-through the way `tests/helpers/normalize-ir.ts` treats every other synthesized join, because an inlined join takes its settings out of both sides of the comparison at once and a `join*` key one direction dropped would go unseen.
+
+Contract: the `(gateway id, JobSettings)` record in `tests/gateway-settings.round-trip.test.ts`, asserting each of the twelve gateways carries exactly its settings at each hop, the bare ones included; the `operaton:asyncBefore`, `operaton:asyncAfter`, `operaton:exclusive` and `operaton:jobPriority` attributes and the `operaton:failedJobRetryTimeCycle` child on the gateway elements and nowhere else; the printed head of every gateway statement, with its parens or without; an import of the frozen artifact that reports no warning at all; and every authored id.
+
+## `mail-and-shell.{bpmnscript,bpmn}`
+
+An incident-report narrative binding the two behaviours Operaton builds itself, `type: "mail"` and `type: "shell"`, spread over the three tags that take the binding.
+`RateSeverity` is a `decide` step running a shell command and nothing else, the one field `BpmnParse.validateFieldDeclarationsForShell` requires; `PageOnCall` is a `send` task running a shell command with an argument, the variables its output and exit code land in, and `wait = "true"`, spelled the one way `ShellActivityBehavior.readFields` reads as true; `MailOnCall` is a `service` task naming `to`, `cc`, a `subject` expression, a `text` literal and an `html` expression, so both value slots a field takes sit on one task.
+`PageOnCall` also names a `resultVariable`, which the engine accepts on the tag and never reads for a shell task, so the accepted-and-ignored setting is pinned beside the binding.
+The two form fields the mail's expressions read are declared on the start form rather than as a `var`, so the declarations come back out of the XML on the way in, and every label differs from the name humanized from its id.
+
+Contract: the `BUILTIN_BINDINGS` record in `tests/mail-and-shell.round-trip.test.ts`, asserting the three tasks keep their type and every field, in order and in its value slot, at each hop and through import; `operaton:type="shell"` on the `bpmn:businessRuleTask` and the `bpmn:sendTask` and `operaton:type="mail"` on the `bpmn:serviceTask`, each with its `operaton:field` children written as a `stringValue` attribute or an `operaton:expression` child; the printed head of each task with its `type` and the field lines beneath it; an import of the frozen artifact that reports no warning at all; and every authored id.
 
 ## `unstructured-goto.bpmn`
 

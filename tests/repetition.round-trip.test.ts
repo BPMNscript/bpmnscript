@@ -96,6 +96,57 @@ describe('multi-instance placement on the frozen .bpmn', () => {
         '${nrOfCompletedInstances &gt;= 2}</bpmn:completionCondition>',
     );
   });
+
+  // The step's own settings sit on the task tag and make one job around the
+  // repetition; the `run*` keys sit on the loop element and make one per run.
+  // Revert: any direction dropping a loop setting, or `irToXml` writing a run
+  // key onto the task tag.
+  it("WarmPricing carries the step's job around the repetition and one per run", () => {
+    expect(
+      rt.frozenXml.match(
+        /<bpmn:serviceTask id="WarmPricing"[\s\S]*?<\/bpmn:serviceTask>/,
+      )?.[0],
+    ).toBe(
+      '<bpmn:serviceTask id="WarmPricing" name="Warm the pricing cache" operaton:asyncBefore="true" operaton:class="com.example.orders.WarmPricingDelegate">\n' +
+        '      <bpmn:extensionElements>\n' +
+        '        <operaton:failedJobRetryTimeCycle>R3/PT10M</operaton:failedJobRetryTimeCycle>\n' +
+        '      </bpmn:extensionElements>\n' +
+        '      <bpmn:incoming>Flow_ReserveStock_WarmPricing</bpmn:incoming>\n' +
+        '      <bpmn:outgoing>Flow_WarmPricing_RecordLine</bpmn:outgoing>\n' +
+        '      <bpmn:multiInstanceLoopCharacteristics operaton:asyncBefore="true" operaton:asyncAfter="true" operaton:exclusive="false">\n' +
+        '        <bpmn:extensionElements>\n' +
+        '          <operaton:failedJobRetryTimeCycle>R2/PT1M</operaton:failedJobRetryTimeCycle>\n' +
+        '        </bpmn:extensionElements>\n' +
+        '        <bpmn:loopCardinality xsi:type="bpmn:tFormalExpression">3</bpmn:loopCardinality>\n' +
+        '      </bpmn:multiInstanceLoopCharacteristics>\n' +
+        '    </bpmn:serviceTask>',
+    );
+  });
+
+  it('the run settings sit on the one loop element that wrote them and on no other', () => {
+    const runSettings = (open: string): string[] =>
+      [...open.matchAll(/operaton:(?:async\w+|exclusive)="[^"]*"/g)].map(
+        (match) => match[0],
+      );
+    expect(
+      Object.fromEntries(
+        loops().map((loop) => [loop.id, runSettings(loop.open)]),
+      ),
+    ).toEqual({
+      ApproveLines: [],
+      ReserveStock: [],
+      WarmPricing: [
+        'operaton:asyncBefore="true"',
+        'operaton:asyncAfter="true"',
+        'operaton:exclusive="false"',
+      ],
+      RecordLine: [],
+      AwaitBatch: [],
+      RegionalReport: [],
+      LabelParcel: [],
+      DispatchParcels: [],
+    });
+  });
 });
 
 describe("idempotence: golden .bpmn -> IR2 -> DSL' -> IR3", () => {
@@ -107,7 +158,10 @@ describe("idempotence: golden .bpmn -> IR2 -> DSL' -> IR3", () => {
       'label: "Reserve the stock", ' +
       'class: "com.example.orders.ReserveStockDelegate")',
     'service WarmPricing for 3(label: "Warm the pricing cache", ' +
-      'class: "com.example.orders.WarmPricingDelegate")',
+      'class: "com.example.orders.WarmPricingDelegate", ' +
+      'asyncBefore: true, retryCycle: "R3/PT10M", ' +
+      'runAsyncBefore: true, runAsyncAfter: true, runExclusive: false, ' +
+      'runRetryCycle: "R2/PT1M")',
     'step RecordLine for 2 each line in lines(label: "Record each line")',
     'receive AwaitBatch for each in batches(label: "Wait for each batch")',
     'call RegionalReport for each region in regions(' +

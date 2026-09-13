@@ -14,10 +14,15 @@ import { beforeAll, describe, expect, test } from 'vitest';
 import { EmptyFileSystem } from 'langium';
 import { validationHelper, type ValidationResult } from 'langium/test';
 import type { Model } from '@bpmn-script/language';
-import { createBpmnScriptServices } from '@bpmn-script/language';
+import {
+  createBpmnScriptServices,
+  ENGINE_KEYS,
+  joinSettingKey,
+} from '@bpmn-script/language';
 import {
   BLOCK_HOSTS,
   ENGINE_SETTINGS,
+  engineItems,
   EXTERNAL_HOSTS,
   FENCE,
   FORM_HOSTS,
@@ -119,6 +124,16 @@ const notValidOn = (key: string, description: string) =>
   `Setting '${key}' is not valid on ${description}.`;
 const flagNotValidOn = (flag: string, description: string) =>
   `Flag '${flag}' is not valid on ${description}.`;
+const loopJoinKey = (key: string, description: string, base: string) =>
+  `Setting '${key}' is not valid on ${description}: a loop has one gateway, so write '${base}'.`;
+const gatewaySettingsOnly = (description: string) =>
+  `The parens of ${description} take only settings, written 'key: value'.`;
+const AWAIT_ASYNC_AFTER =
+  "Setting 'asyncAfter' is not valid on an await block: Operaton refuses it " +
+  'on an event-based gateway (BpmnParse.parseEventBasedGateway). Write it on ' +
+  'the branch triggers instead.';
+const prunedJoin = (statement: string, key: string) =>
+  `Every branch of this ${statement} ends its path, so there is no join for '${key}' to set; the setting has no effect.`;
 const bindingNotAName = (field: string) =>
   `A catch binding names the variable the caught ${field} lands in, not a ` +
   `value: write '${field}: <name>'.`;
@@ -131,9 +146,40 @@ const quotedBoolean = (key: string) =>
 const unquotedText = (key: string) =>
   `Setting '${key}' takes a quoted string or a "\${...}" expression; ` +
   'put the value in quotes.';
-const SERVICE_BINDINGS = `'class', 'expression', 'delegate', or 'topic'`;
-const DECISION_BINDINGS = `'class', 'expression', 'delegate', 'topic', or 'decision'`;
+const SERVICE_BINDINGS = `'class', 'expression', 'delegate', 'topic', or 'type'`;
+const DECISION_BINDINGS = `'class', 'expression', 'delegate', 'topic', 'type', or 'decision'`;
+/** A thrown message has no member block for the fields a built-in behaviour needs. */
+const THROW_BINDINGS = `'class', 'expression', 'delegate', or 'topic'`;
 const LISTENER_BINDINGS = `'class', 'expression', or 'delegate'`;
+const TYPE_VALUE = `Setting 'type' must be 'mail' or 'shell'.`;
+const missingBuiltinField = (
+  subject: string,
+  type: string,
+  names: string,
+  error: string,
+  method: string,
+) =>
+  `${subject} binds type: "${type}" without a ${names} field; Operaton refuses to deploy it: "${error}" (BpmnParse.${method}).`;
+const MAIL_FIELDS = 'to, from, cc, bcc, subject, text, html, and charset';
+const SHELL_FIELDS =
+  'command, wait, arg1, arg2, arg3, arg4, arg5, outputVariable, errorCodeVariable, redirectError, cleanEnv, and directory';
+const unknownBuiltinField = (
+  name: string,
+  type: string,
+  behaviour: string,
+  declared: string,
+) =>
+  `Field '${name}' is not one a ${type} task takes; the engine sets it on ${behaviour}, which declares ${declared} (ClassDelegateUtil.applyFieldDeclaration).`;
+const shellFieldExpression = (name: string) =>
+  `Field '${name}' on a shell task takes a quoted literal: Operaton reads every shell field as a fixed value (BpmnParse.validateFieldDeclarationsForShell) and fails the deployment on an expression.`;
+const shellFlagValue = (name: string) =>
+  `Field '${name}' on a shell task takes "true" or "false"; the engine reads any other spelling as false (ShellActivityBehavior.readFields).`;
+const runWithoutClause = (key: string, description: string, base: string) =>
+  `Setting '${key}' is not valid on ${description} that does not repeat: it makes one job per run, so write a 'for' clause, or '${base}' for one job around the step.`;
+const RUN_JOB_PRIORITY =
+  "Setting 'runJobPriority' does not exist: Operaton reads a job priority off " +
+  "the step alone (BpmnParse.createActivityOnScope), so 'jobPriority' applies " +
+  "to every run's job.";
 const bindingRequired = (subject: string, keys: string, alternative = '') =>
   `${subject} must declare a ${keys} setting${alternative}.`;
 const bindingConflict = (subject: string, written: string, keys: string) =>
@@ -206,12 +252,17 @@ const FIELD_HOSTS_SENTENCE =
 const noFields = (description: string) =>
   `${capitalized(description)} cannot declare a 'field' parameter; ${FIELD_HOSTS_SENTENCE}`;
 const fieldBinding = (subject: string, written?: string) =>
-  `${subject} carries an injected field only under a 'class' or 'delegate' ` +
-  'binding: the engine injects into the class or the delegate that binding ' +
-  'names' +
+  `${subject} carries an injected field only under a 'class', 'delegate', or 'type' ` +
+  'binding: the engine injects into the class, the delegate, or the built-in ' +
+  'behaviour that binding names' +
   (written === undefined
     ? '.'
     : `, and the binding written with '${written}' receives none.`);
+/** A listener binds no `type`, so its refusal names the two it can write. */
+const listenerFieldBinding = (subject: string, written: string) =>
+  `${subject} carries an injected field only under a 'class' or 'delegate' ` +
+  'binding: the engine injects into the class or the delegate that binding ' +
+  `names, and the binding written with '${written}' receives none.`;
 const scriptListenerField = (subject: string) =>
   `${subject} runs a fenced script, which the engine hands no field list; ` +
   "remove the script and bind the listener with 'class' or 'delegate' " +
@@ -949,7 +1000,7 @@ checks('Validation - attribute keys and value shapes', [
 
 checks('Validation - service, send, and decision bindings', [
   [
-    'a service task with no binding names the four attributes',
+    'a service task with no binding names the five attributes',
     `process p { service S { } }`,
     [bindingRequired(`Service task 'S'`, SERVICE_BINDINGS)],
   ],
@@ -985,7 +1036,7 @@ checks('Validation - service, send, and decision bindings', [
     [bindingRequired(`Service task 'V'`, SERVICE_BINDINGS)],
   ],
   [
-    'a send task with no binding names the four attributes',
+    'a send task with no binding names the five attributes',
     `process p { send N { } }`,
     [bindingRequired(`Send task 'N'`, SERVICE_BINDINGS)],
   ],
@@ -995,7 +1046,7 @@ checks('Validation - service, send, and decision bindings', [
     [bindingConflict(`Send task 'N'`, 'class, topic', SERVICE_BINDINGS)],
   ],
   [
-    'a decision step with no binding names the five attributes',
+    'a decision step with no binding names the six attributes',
     `process p { decide D { } }`,
     [bindingRequired(`Decision step 'D'`, DECISION_BINDINGS)],
   ],
@@ -1029,6 +1080,174 @@ checks('Validation - service, send, and decision bindings', [
   [
     'a receive task takes a message name',
     `process p { receive R(message: "OrderPaid") }`,
+    [],
+  ],
+]);
+
+/**
+ * The three checks `BpmnParse.parseServiceTaskLike` runs before it builds a
+ * mail or shell behaviour, each mirrored so a clean script deploys. Revert
+ * checks: dropping `['text', 'html']` from the required table turns the
+ * body rows red, removing the flag check the `"True"` row, and removing the
+ * declared-name check the `recipient` row.
+ */
+checks('Validation - the mail and shell bindings', [
+  [
+    'a mail task with a recipient and a text body is clean',
+    `process p { service N(type: "mail") { field to = "a@b" field text = "t" } }`,
+    [],
+  ],
+  [
+    'a shell send task with a command, an argument, an output variable, and a flag is clean',
+    `process p { send S(type: "shell") { field command = "echo" field arg1 = "x" field outputVariable = "o" field wait = "true" } }`,
+    [],
+  ],
+  [
+    'a shell decision step with a command alone is clean',
+    `process p { decide D(type: "shell") { field command = "true" } }`,
+    [],
+  ],
+  [
+    'the type is read bare as it is read quoted',
+    `process p { service N(type: mail) { field to = "a@b" field text = "t" } }`,
+    [],
+  ],
+  [
+    'an upper-case type is refused: one printed form keeps the round trip stable',
+    `process p { service N(type: "MAIL") }`,
+    [TYPE_VALUE],
+  ],
+  [
+    'a type the engine has no behaviour for names the two it has',
+    `process p { service N(type: "ftp") }`,
+    [TYPE_VALUE],
+  ],
+  [
+    'a cc does not stand in for the recipient',
+    `process p { service N(type: "mail") { field cc = "c@d" field text = "t" } }`,
+    [
+      missingBuiltinField(
+        `Service task 'N'`,
+        'mail',
+        "'to'",
+        'No recipient is defined on the mail activity',
+        'validateFieldDeclarationsForEmail',
+      ),
+    ],
+  ],
+  [
+    'a subject does not stand in for the body',
+    `process p { send N(type: "mail") { field to = "a@b" field subject = "s" } }`,
+    [
+      missingBuiltinField(
+        `Send task 'N'`,
+        'mail',
+        "'text' or 'html'",
+        'Text or html field should be provided',
+        'validateFieldDeclarationsForEmail',
+      ),
+    ],
+  ],
+  [
+    'a mail task with both bodies is clean',
+    `process p { service N(type: "mail") { field to = "a@b" field text = "t" field html = "<p>t</p>" } }`,
+    [],
+  ],
+  [
+    'a mail task with no field at all draws one refusal per requirement',
+    `process p { service N(type: "mail") }`,
+    [
+      missingBuiltinField(
+        `Service task 'N'`,
+        'mail',
+        "'to'",
+        'No recipient is defined on the mail activity',
+        'validateFieldDeclarationsForEmail',
+      ),
+      missingBuiltinField(
+        `Service task 'N'`,
+        'mail',
+        "'text' or 'html'",
+        'Text or html field should be provided',
+        'validateFieldDeclarationsForEmail',
+      ),
+    ],
+  ],
+  [
+    'a shell task without a command names the engine check',
+    `process p { send S(type: "shell") { field wait = "true" } }`,
+    [
+      missingBuiltinField(
+        `Send task 'S'`,
+        'shell',
+        "'command'",
+        'No shell command is defined on the shell activity',
+        'validateFieldDeclarationsForShell',
+      ),
+    ],
+  ],
+  [
+    'a shell field written as an expression fails the deployment, so it is refused',
+    `process p { service R(type: "shell") { field command = "\${cmd}" } }`,
+    [shellFieldExpression('command')],
+  ],
+  [
+    'a shell flag the engine would read as false is refused',
+    `process p { service R(type: "shell") { field command = "ls" field wait = "True" } }`,
+    [shellFlagValue('wait')],
+  ],
+  [
+    'a field the mail behaviour does not declare names the ones it does',
+    `process p { service N(type: "mail") { field to = "a@b" field text = "t" field recipient = "x" } }`,
+    [
+      unknownBuiltinField(
+        'recipient',
+        'mail',
+        'MailActivityBehavior',
+        MAIL_FIELDS,
+      ),
+    ],
+  ],
+  [
+    'a field the shell behaviour does not declare names the ones it does',
+    `process p { service R(type: "shell") { field command = "ls" field args = "x" } }`,
+    [
+      unknownBuiltinField(
+        'args',
+        'shell',
+        'ShellActivityBehavior',
+        SHELL_FIELDS,
+      ),
+    ],
+  ],
+  [
+    "a field's own shape is refused first, and the shell rules stand down",
+    `process p { service R(type: "shell") { field command = ["ls"] } }`,
+    [fieldValue('command')],
+  ],
+  [
+    'a type beside a code binding is the one-binding conflict and nothing more',
+    `process p { service N(class: "com.example.X", type: "mail") }`,
+    [bindingConflict(`Service task 'N'`, 'class, type', SERVICE_BINDINGS)],
+  ],
+  [
+    'a thrown message has no block for the fields, so it takes no type',
+    `process p { start S throw message("Ack", type: "mail") }`,
+    [notValidOn('type', 'a throw statement')],
+  ],
+  [
+    'an emitted message takes none either',
+    `process p { start S emit message("Ack", type: "shell") }`,
+    [notValidOn('type', 'an emit statement')],
+  ],
+  [
+    'a user task takes no type',
+    `process p { user U(type: "mail") }`,
+    [notValidOn('type', 'a user task')],
+  ],
+  [
+    'a result variable beside a type is accepted and ignored, as beside a topic',
+    `process p { service R(type: "shell", resultVariable: "r") { field command = "ls" } }`,
     [],
   ],
 ]);
@@ -1520,6 +1739,139 @@ process p {
     expect(diagnostics[0]!.range.start.line).toBe(6);
   });
 });
+
+/**
+ * The five statements whose head parens carry a gateway's settings, each an
+ * otherwise-clean program with the parens left open. The `if` carries an
+ * `else if`, so a row on it also pins that the chain's one head takes the
+ * settings for the whole chain.
+ */
+const GATEWAY_HOSTS: ReadonlyArray<
+  [kind: string, description: string, head: (items: string) => string]
+> = [
+  [
+    'if',
+    'an if statement',
+    (i) =>
+      `process p { var a: boolean if (a) (${i}) { user A } else if (a) { user B } else { user C } }`,
+  ],
+  [
+    'while',
+    'a while loop',
+    (i) => `process p { var a: boolean while (a) (${i}) { user A } }`,
+  ],
+  [
+    'do-while',
+    'a do-while loop',
+    (i) => `process p { var a: boolean do { user A } while (a) (${i}) }`,
+  ],
+  [
+    'parallel',
+    'a parallel statement',
+    (i) => `process p { parallel (${i}) { { user A } { user B } } }`,
+  ],
+  [
+    'await',
+    'an await block',
+    (i) =>
+      `process p { await (${i}) { message("M") { user A } signal("S") { user B } } }`,
+  ],
+];
+const LOOP_HOSTS = GATEWAY_HOSTS.filter(([kind]) => kind.includes('while'));
+const JOIN_HOSTS = GATEWAY_HOSTS.filter(([kind]) => !kind.includes('while'));
+const hostOf = (kind: string) => GATEWAY_HOSTS.find(([k]) => k === kind)![2];
+const ifHead = hostOf('if');
+const awaitHead = hostOf('await');
+
+checks('Validation - gateway settings', [
+  // The await head leaves `asyncAfter` out: its own row below refuses it.
+  ...GATEWAY_HOSTS.map(([kind, , head]): Case => [
+    `${kind} takes every head key`,
+    head(
+      engineItems(
+        kind === 'await'
+          ? ENGINE_KEYS.filter((key) => key !== 'asyncAfter')
+          : ENGINE_KEYS,
+      ),
+    ),
+    [],
+  ]),
+  ...JOIN_HOSTS.map(([kind, , head]): Case => [
+    `${kind} takes every join key`,
+    head(engineItems(ENGINE_KEYS, joinSettingKey)),
+    [],
+  ]),
+  ...LOOP_HOSTS.map(([kind, description, head]): Case => [
+    `a join key on ${kind} names the unprefixed key, a loop having one gateway`,
+    head('joinAsyncBefore: true'),
+    [loopJoinKey('joinAsyncBefore', description, 'asyncBefore')],
+  ]),
+  [
+    'a key no gateway takes is not valid on an if statement',
+    ifHead('wibble: 1'),
+    [notValidOn('wibble', 'an if statement')],
+  ],
+  [
+    'a flag is not valid on an if statement',
+    ifHead('alongside'),
+    [flagNotValidOn('alongside', 'an if statement')],
+  ],
+  [
+    'a bare word is refused, the parens taking settings alone, and names no variable',
+    ifHead('wibble'),
+    [gatewaySettingsOnly('an if statement')],
+  ],
+  [
+    'a repeated key is one duplicate',
+    hostOf('parallel')('asyncBefore: true, asyncBefore: true'),
+    [duplicateSetting('asyncBefore')],
+  ],
+  [
+    'asyncAfter on an await block is what the engine refuses on an event-based gateway',
+    awaitHead('asyncAfter: true'),
+    [AWAIT_ASYNC_AFTER],
+  ],
+  [
+    'a quoted boolean in a join key names the unquoted form',
+    ifHead('joinExclusive: "false"'),
+    [quotedBoolean('joinExclusive')],
+  ],
+  [
+    'a decimal in joinJobPriority is refused as on an element',
+    ifHead('joinJobPriority: 1.5'),
+    [priorityShape('joinJobPriority')],
+  ],
+  [
+    'a number in joinRetryCycle asks for quotes',
+    ifHead('joinRetryCycle: 3'),
+    [unquotedText('joinRetryCycle')],
+  ],
+  [
+    'a bareword in joinRetryCycle asks for quotes and names no variable',
+    ifHead('joinRetryCycle: R3'),
+    [unquotedText('joinRetryCycle')],
+  ],
+  [
+    'a bareword jobPriority on a head lowers to an expression, so it warns when undeclared',
+    ifHead('jobPriority: prio'),
+    [warn(undeclared('prio'))],
+  ],
+  [
+    'a join key on an if whose every branch ends has no join to set',
+    `process p { var a: boolean if (a) (joinAsyncBefore: true) { end A } else { end B } }`,
+    [warn(prunedJoin('if statement', 'joinAsyncBefore'))],
+  ],
+  [
+    'a join key on a parallel whose every branch ends has no join to set',
+    `process p { parallel (asyncBefore: true, joinJobPriority: 5) { { end A } { end B } } }`,
+    [warn(prunedJoin('parallel statement', 'joinJobPriority'))],
+  ],
+  [
+    'the same if without an else keeps its join, so the join key is clean',
+    `process p { var a: boolean if (a) (joinAsyncBefore: true) { end A } }`,
+    [],
+  ],
+]);
 
 checks('Validation - form fields', [
   [
@@ -2661,13 +3013,7 @@ checks('Validation - throw and emit', [
   [
     'a thrown message with two implementations names both',
     `process p { start S throw message("Ack", class: "a", expression: "b") }`,
-    [
-      bindingConflict(
-        'A thrown message',
-        'class, expression',
-        SERVICE_BINDINGS,
-      ),
-    ],
+    [bindingConflict('A thrown message', 'class, expression', THROW_BINDINGS)],
   ],
   [
     'a goto targeting a named throw resolves',
@@ -3747,7 +4093,7 @@ checks('Validation - injected fields', [
   [
     'an expression-bound listener takes no field',
     `process p { user U { on start(expression: "\${bean.run(task)}") { field greeting = "hello" } } }`,
-    [fieldBinding(`The 'on start' listener`, 'expression')],
+    [listenerFieldBinding(`The 'on start' listener`, 'expression')],
   ],
   [
     'a fenced-script listener takes no field',
@@ -4134,23 +4480,46 @@ const DECORATED_CLAUSE =
   'for each line in lines sequentially until (nrOfCompletedInstances >= 2)';
 
 /**
- * One statement per kind that takes the clause, with the clause and one block
- * member left open. Each writes whatever else its own validation demands, so
- * the only diagnostics a case can produce are the clause's.
+ * One statement per kind that takes the clause, with the clause, the parens
+ * items, and the block members left open. Each writes whatever else its own
+ * validation demands, so the only diagnostics a case can produce are the
+ * slots'.
  */
 const REPEAT_HOSTS: Array<
-  [kind: string, statement: (clause: string, settings: string) => string]
+  [
+    kind: string,
+    description: string,
+    statement: (clause: string, items: string, members: string) => string,
+  ]
 > = [
-  ['user', (c, s) => `user U ${c} { ${s} }`],
-  ['service', (c, s) => `service V ${c}(topic: "t") { ${s} }`],
-  ['step', (c, s) => `step T ${c} { ${s} }`],
-  ['send', (c, s) => `send N ${c}(class: "com.example.Send") { ${s} }`],
-  ['receive', (c, s) => `receive R ${c} { ${s} }`],
-  ['decide', (c, s) => `decide D ${c}(decision: "riskRating") { ${s} }`],
-  ['script', (c, s) => `script K ${c} { ${s} } ${FENCE}js\nwork()\n${FENCE}`],
-  ['subprocess', (c, s) => `subprocess B ${c} { ${s} } { user W }`],
-  ['call', (c, s) => `call C ${c}(process: "q") { ${s} }`],
+  ['user', 'a user task', repeatHost('user U')],
+  ['service', 'a service task', repeatHost('service V', 'topic: "t"')],
+  ['step', 'a step', repeatHost('step T')],
+  ['send', 'a send task', repeatHost('send N', 'class: "com.example.Send"')],
+  ['receive', 'a receive task', repeatHost('receive R')],
+  [
+    'decide',
+    'a decision step',
+    repeatHost('decide D', 'decision: "riskRating"'),
+  ],
+  [
+    'script',
+    'a script task',
+    repeatHost('script K', '', `${FENCE}js\nwork()\n${FENCE}`),
+  ],
+  ['subprocess', 'a subprocess', repeatHost('subprocess B', '', '{ user W }')],
+  ['call', 'a call', repeatHost('call C', 'process: "q"')],
 ];
+
+/** An empty parens or block is omitted, so the unrepeated form is what an author writes. */
+function repeatHost(head: string, own = '', tail = '') {
+  return (clause: string, items: string, members: string) => {
+    const all = [own, items].filter(Boolean).join(', ');
+    const parens = all ? `(${all})` : '';
+    const block = members ? ` { ${members} }` : '';
+    return `${head} ${clause}${parens}${block} ${tail}`;
+  };
+}
 
 describe('Validation - the repeat clause', () => {
   // Nothing in the clause's validation branches on the statement kind or on how
@@ -4192,10 +4561,10 @@ describe('Validation - the repeat clause', () => {
 
   test.each(REPEAT_HOSTS)(
     "an 'output' parameter on a repeated %s is one error saying to move it",
-    async (_kind, statement) => {
+    async (_kind, _description, statement) => {
       expect(
         await diagnosticsOf(
-          `process p { ${statement('for 3', 'output b = 1')} }`,
+          `process p { ${statement('for 3', '', 'output b = 1')} }`,
         ),
       ).toEqual([REPEATED_OUTPUT]);
     },
@@ -4203,10 +4572,10 @@ describe('Validation - the repeat clause', () => {
 
   test.each(REPEAT_HOSTS)(
     "an 'input' parameter on a repeated %s is accepted",
-    async (_kind, statement) => {
+    async (_kind, _description, statement) => {
       expect(
         await diagnosticsOf(
-          `process p { ${statement('for 3', 'input a = 1')} }`,
+          `process p { ${statement('for 3', '', 'input a = 1')} }`,
         ),
       ).toEqual([]);
     },
@@ -4214,9 +4583,11 @@ describe('Validation - the repeat clause', () => {
 
   test.each(REPEAT_HOSTS)(
     "an 'output' parameter on an unrepeated %s stays clean",
-    async (_kind, statement) => {
+    async (_kind, _description, statement) => {
       expect(
-        await diagnosticsOf(`process p { ${statement('', 'output b = 1')} }`),
+        await diagnosticsOf(
+          `process p { ${statement('', '', 'output b = 1')} }`,
+        ),
       ).toEqual([]);
     },
   );
@@ -4241,6 +4612,73 @@ checks('Validation - the repeat clause in scope', [
   [
     'a clause nests inside a repeated subprocess',
     `process p { var lines: json subprocess B for each line in lines { user U for 2 } }`,
+    [],
+  ],
+]);
+
+/** The four per-run keys with a value each takes, spelled out so a drift in the derivation shows. */
+const RUN_SETTINGS =
+  'runAsyncBefore: true, runAsyncAfter: true, runExclusive: false, runRetryCycle: "R3/PT10M"';
+
+/**
+ * Revert checks: dropping `repeats` from the `GenericTask` row turns the step
+ * rows red, dropping the `run` prefix from the boolean set the `runExclusive`
+ * row, and removing the no-clause guard the no-clause rows.
+ */
+checks('Validation - per-run job settings', [
+  ...REPEAT_HOSTS.map(([kind, , statement]): Case => [
+    `${kind} with a clause takes every run key`,
+    `process p { ${statement('for 3', RUN_SETTINGS, '')} }`,
+    [],
+  ]),
+  ...REPEAT_HOSTS.map(([kind, description, statement]): Case => [
+    `${kind} without a clause refuses every run key, one refusal per key`,
+    `process p { ${statement('', RUN_SETTINGS, '')} }`,
+    [
+      runWithoutClause('runAsyncBefore', description, 'asyncBefore'),
+      runWithoutClause('runAsyncAfter', description, 'asyncAfter'),
+      runWithoutClause('runExclusive', description, 'exclusive'),
+      runWithoutClause('runRetryCycle', description, 'retryCycle'),
+    ],
+  ]),
+  [
+    'a run key on a kind that never repeats is an unknown key there',
+    `process p { start S(runAsyncBefore: true) }`,
+    [notValidOn('runAsyncBefore', 'a start event')],
+  ],
+  [
+    'a run key on a gateway head is an unknown key there',
+    `process p { var a: boolean if (a) (runAsyncBefore: true) { user A } }`,
+    [notValidOn('runAsyncBefore', 'an if statement')],
+  ],
+  [
+    'runJobPriority on a repeated step names the key the engine reads',
+    `process p { step X for 2(runJobPriority: 5) }`,
+    [RUN_JOB_PRIORITY],
+  ],
+  [
+    'runJobPriority on a kind that never repeats is an unknown key there',
+    `process p { start S(runJobPriority: 5) }`,
+    [notValidOn('runJobPriority', 'a start event')],
+  ],
+  [
+    'a quoted boolean in a run key names the unquoted form',
+    `process p { service V for 3(topic: "t", runExclusive: "false") }`,
+    [quotedBoolean('runExclusive')],
+  ],
+  [
+    'a number in runRetryCycle asks for quotes',
+    `process p { service V for 3(topic: "t", runRetryCycle: 3) }`,
+    [unquotedText('runRetryCycle')],
+  ],
+  [
+    'a bareword in runRetryCycle asks for quotes and names no variable',
+    `process p { service V for 3(topic: "t", runRetryCycle: R2) }`,
+    [unquotedText('runRetryCycle')],
+  ],
+  [
+    'a run key beside the step key of the same setting is clean: one job around, one per run',
+    `process p { step X for 2(asyncBefore: true, runAsyncBefore: true) }`,
     [],
   ],
 ]);

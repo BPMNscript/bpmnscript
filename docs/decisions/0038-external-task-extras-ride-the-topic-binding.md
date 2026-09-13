@@ -123,5 +123,7 @@ Amends ADR-0014 (the refusal list gains `UnsupportedErrorMappingError`, the warn
 Amends ADR-0030 (a mapping is a third site naming a declared code) and ADR-0032 (the `property` direction rides a `topic` binding too).
 Amends ADR-0037 (`property` is shared with an external task, keyed differently on the wire) and ADR-0029 (an error mapping joins the members the braces hold).
 
+Amended by ADR-0042, under which a built-in mail or shell `type` binding joins the bindings the extras are refused on in a script and warned about on import, since `parseExternalServiceTask` alone reads them.
+
 Related decisions: ADR-0007 (the moddle fork, which gains `taskPriority` on `ServiceTaskLike` and a concrete `ErrorEventDefinition` type beside the trait carrying the catch-side variables).
 ADR-0016 (derived root elements, which a mapping's code now feeds).

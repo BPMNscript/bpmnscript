@@ -1,0 +1,89 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI" xmlns:dc="http://www.omg.org/spec/DD/20100524/DC" xmlns:di="http://www.omg.org/spec/DD/20100524/DI" xmlns:operaton="http://operaton.org/schema/1.0/bpmn" id="Definitions_incident-report" targetNamespace="http://bpmnscript.io/processes" exporter="BPMNscript" exporterVersion="0.0.0">
+  <bpmn:process id="incident-report" name="Incident Report" isExecutable="true" operaton:historyTimeToLive="P30D">
+    <bpmn:startEvent id="IncidentLogged">
+      <bpmn:extensionElements>
+        <operaton:formData>
+          <operaton:formField id="summary" label="One-line summary of the incident" type="string" />
+          <operaton:formField id="details" label="What happened, as HTML" type="string" />
+        </operaton:formData>
+      </bpmn:extensionElements>
+      <bpmn:outgoing>Flow_IncidentLogged_RateSeverity</bpmn:outgoing>
+    </bpmn:startEvent>
+    <bpmn:businessRuleTask id="RateSeverity" name="Rate the severity" operaton:type="shell">
+      <bpmn:extensionElements>
+        <operaton:field name="command" stringValue="rate-severity" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_IncidentLogged_RateSeverity</bpmn:incoming>
+      <bpmn:outgoing>Flow_RateSeverity_PageOnCall</bpmn:outgoing>
+    </bpmn:businessRuleTask>
+    <bpmn:sendTask id="PageOnCall" name="Page the on-call engineer" operaton:type="shell" operaton:resultVariable="pageResult">
+      <bpmn:extensionElements>
+        <operaton:field name="command" stringValue="page" />
+        <operaton:field name="arg1" stringValue="oncall" />
+        <operaton:field name="outputVariable" stringValue="pageReceipt" />
+        <operaton:field name="errorCodeVariable" stringValue="pageExitCode" />
+        <operaton:field name="wait" stringValue="true" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_RateSeverity_PageOnCall</bpmn:incoming>
+      <bpmn:outgoing>Flow_PageOnCall_MailOnCall</bpmn:outgoing>
+    </bpmn:sendTask>
+    <bpmn:serviceTask id="MailOnCall" name="Mail the on-call engineer" operaton:type="mail">
+      <bpmn:extensionElements>
+        <operaton:field name="to" stringValue="oncall@example.com" />
+        <operaton:field name="cc" stringValue="ops-lead@example.com" />
+        <operaton:field name="subject">
+          <operaton:expression>${summary}</operaton:expression>
+        </operaton:field>
+        <operaton:field name="text" stringValue="An incident was logged. Open the HTML part for its details." />
+        <operaton:field name="html">
+          <operaton:expression>${details}</operaton:expression>
+        </operaton:field>
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_PageOnCall_MailOnCall</bpmn:incoming>
+      <bpmn:outgoing>Flow_MailOnCall_IncidentReported</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:endEvent id="IncidentReported" name="The incident is reported">
+      <bpmn:incoming>Flow_MailOnCall_IncidentReported</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:sequenceFlow id="Flow_IncidentLogged_RateSeverity" sourceRef="IncidentLogged" targetRef="RateSeverity" />
+    <bpmn:sequenceFlow id="Flow_RateSeverity_PageOnCall" sourceRef="RateSeverity" targetRef="PageOnCall" />
+    <bpmn:sequenceFlow id="Flow_PageOnCall_MailOnCall" sourceRef="PageOnCall" targetRef="MailOnCall" />
+    <bpmn:sequenceFlow id="Flow_MailOnCall_IncidentReported" sourceRef="MailOnCall" targetRef="IncidentReported" />
+  </bpmn:process>
+  <bpmndi:BPMNDiagram id="BPMNDiagram_incident-report">
+    <bpmndi:BPMNPlane id="BPMNPlane_incident-report" bpmnElement="incident-report">
+      <bpmndi:BPMNShape id="IncidentLogged_di" bpmnElement="IncidentLogged">
+        <dc:Bounds x="57" y="52" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="RateSeverity_di" bpmnElement="RateSeverity">
+        <dc:Bounds x="175" y="30" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="PageOnCall_di" bpmnElement="PageOnCall">
+        <dc:Bounds x="325" y="30" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="MailOnCall_di" bpmnElement="MailOnCall">
+        <dc:Bounds x="475" y="30" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="IncidentReported_di" bpmnElement="IncidentReported">
+        <dc:Bounds x="657" y="52" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_IncidentLogged_RateSeverity_di" bpmnElement="Flow_IncidentLogged_RateSeverity">
+        <di:waypoint x="93" y="70" />
+        <di:waypoint x="175" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_RateSeverity_PageOnCall_di" bpmnElement="Flow_RateSeverity_PageOnCall">
+        <di:waypoint x="275" y="70" />
+        <di:waypoint x="325" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_PageOnCall_MailOnCall_di" bpmnElement="Flow_PageOnCall_MailOnCall">
+        <di:waypoint x="425" y="70" />
+        <di:waypoint x="475" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_MailOnCall_IncidentReported_di" bpmnElement="Flow_MailOnCall_IncidentReported">
+        <di:waypoint x="575" y="70" />
+        <di:waypoint x="657" y="70" />
+      </bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>

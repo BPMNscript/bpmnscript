@@ -264,3 +264,72 @@ describe('normalizeIr: gateway re-key', () => {
     expect(gateway?.id).toContain('Gateway_eventBasedGateway_');
   });
 });
+
+describe('normalizeIr: pass-through join', () => {
+  const PASS_THROUGH_JOIN = 'Gateway_exclusiveGateway_[in:A,B]_[out:E]';
+
+  // Revert: drop the settings guard in `inlinePassThroughJoins` -> the kept
+  // row red, its join inlined and its setting gone from the comparison.
+  it.each([
+    [
+      'a pass-through join carrying a setting is kept and re-keyed',
+      { asyncBefore: true as const },
+      [
+        { kind: 'userTask', id: 'A' },
+        { kind: 'userTask', id: 'B' },
+        { kind: 'userTask', id: 'E' },
+        { kind: 'exclusiveGateway', id: PASS_THROUGH_JOIN, asyncBefore: true },
+      ],
+      [
+        {
+          id: `Flow_A_${PASS_THROUGH_JOIN}`,
+          sourceRef: 'A',
+          targetRef: PASS_THROUGH_JOIN,
+        },
+        {
+          id: `Flow_B_${PASS_THROUGH_JOIN}`,
+          sourceRef: 'B',
+          targetRef: PASS_THROUGH_JOIN,
+        },
+        {
+          id: `Flow_${PASS_THROUGH_JOIN}_E`,
+          sourceRef: PASS_THROUGH_JOIN,
+          targetRef: 'E',
+        },
+      ],
+    ],
+    [
+      'a pass-through join carrying none is inlined',
+      {},
+      [
+        { kind: 'userTask', id: 'A' },
+        { kind: 'userTask', id: 'B' },
+        { kind: 'userTask', id: 'E' },
+      ],
+      [
+        { id: 'Flow_A_E', sourceRef: 'A', targetRef: 'E' },
+        { id: 'Flow_B_E', sourceRef: 'B', targetRef: 'E' },
+      ],
+    ],
+  ] as const)('%s', (_title, settings, flowElements, sequenceFlows) => {
+    const ir = process(
+      [
+        { kind: 'userTask', id: 'A' },
+        { kind: 'userTask', id: 'B' },
+        { kind: 'exclusiveGateway', id: 'Gateway_p_1_join', ...settings },
+        { kind: 'userTask', id: 'E' },
+      ],
+      [
+        { id: 'Flow_A', sourceRef: 'A', targetRef: 'Gateway_p_1_join' },
+        { id: 'Flow_B', sourceRef: 'B', targetRef: 'Gateway_p_1_join' },
+        { id: 'Flow_J', sourceRef: 'Gateway_p_1_join', targetRef: 'E' },
+      ],
+    );
+
+    expect(normalizeIr(ir)).toEqual({
+      ...ir,
+      flowElements,
+      sequenceFlows,
+    });
+  });
+});
