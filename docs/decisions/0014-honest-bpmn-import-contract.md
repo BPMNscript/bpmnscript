@@ -45,6 +45,7 @@ Refused constructs throw a subclass of `UnsupportedConstructError` before any IR
 - an unsupported service-task execution form (pre-existing), an `operaton:type` outside `external`, `mail`, and `shell`, or a `mail`/`shell` type on a thrown message -> `UnsupportedServiceTaskFormError` (ADR-0042)
   A mail or shell task missing a field its behaviour's own parse requires or naming a field its behaviour class does not declare draws the same error.
   So does a shell task carrying a field as an expression, or spelling a flag outside `true`/`false` in any letter case.
+  A service, send, or business rule task without a decision reference that carries `operaton:resultVariable`, or the older `operaton:resultVariableName`, beside `operaton:class` or `operaton:delegateExpression` draws it too, since `BpmnParse.parseServiceTaskLike` fails the deployment (ADR-0043).
 - a sequence flow's condition expression or a conditional event definition's condition carrying a `language`, which Operaton hands to a script engine rather than evaluating as the UEL expression this tool writes -> `UnsupportedConditionExpressionError`
 - an `operaton:errorEventDefinition` on an external task carrying `errorRef` and no `expression`, which fails the deployment, or an `errorRef` naming no error root with a code -> `UnsupportedErrorMappingError` (ADR-0038)
 - a user task carrying a `bpmn:humanPerformer` beside `operaton:assignee`, or more than one `bpmn:humanPerformer`, both of which Operaton refuses to deploy -> `UnsupportedAssignmentError` (ADR-0039)
@@ -136,6 +137,8 @@ A listener or an input/output parameter found on a gateway still warns, since no
 Amended by ADR-0041, which carries an async, exclusive, or retry setting found on a repetition's `multiInstanceLoopCharacteristics` element instead of refusing it, narrowing the `UnsupportedLoopCharacteristicsError` bullet above.
 
 Amended by ADR-0042, which adds the `UnsupportedServiceTaskFormError` and extras-warning detail above for a mail or shell task.
+
+Amended by ADR-0043, which adds a result variable beside a class or delegate expression binding to the `UnsupportedServiceTaskFormError` bullet above.
 
 Related decisions: ADR-0006 (the shared IR, where `warnings` deliberately lives outside the IR, which stays serializable).
 ADR-0007 (the Operaton moddle extension fork, whose declared and undeclared elements determine warning-attribution precision).
