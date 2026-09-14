@@ -3013,7 +3013,7 @@ describe('irToDsl: engine attributes', () => {
       {
         kind: 'serviceTask',
         id: 'V',
-        binding: classBinding('com.example.C'),
+        binding: exprBinding('${c.run(execution)}'),
         resultVariable: 'res',
         asyncBefore: true,
       },
@@ -3105,7 +3105,7 @@ describe('irToDsl: engine attributes', () => {
         '  }',
     );
     expect(dsl).toContain(
-      'service V(class: "com.example.C", resultVariable: "res", asyncBefore: true)',
+      'service V(expression: "${c.run(execution)}", resultVariable: "res", asyncBefore: true)',
     );
     expect(dsl).toContain(
       'script Sc(resultVariable: "out", asyncAfter: true) ```javascript',

@@ -184,6 +184,13 @@ const bindingRequired = (subject: string, keys: string, alternative = '') =>
   `${subject} must declare a ${keys} setting${alternative}.`;
 const bindingConflict = (subject: string, written: string, keys: string) =>
   `${subject} declares more than one binding (${written}); exactly one of ${keys} is allowed.`;
+const resultVariableBinding = (
+  subject: string,
+  binding: string,
+  element: string,
+  attribute: string,
+) =>
+  `${subject} cannot carry 'resultVariable' beside '${binding}': the engine refuses to deploy it ('resultVariableName' not supported for ${element} elements using '${attribute}'); bind with 'expression' to store the return value, or drop it.`;
 const MAP_DECISION_RESULT =
   `Setting 'mapDecisionResult' must be 'singleEntry', 'singleResult', ` +
   `'collectEntries', or 'resultList'.`;
@@ -905,11 +912,6 @@ checks('Validation - attribute keys and value shapes', [
     [],
   ],
   [
-    'a service task accepts resultVariable beside its binding',
-    `process p { service V(class: com.example.X, resultVariable: "outcome") }`,
-    [],
-  ],
-  [
     'a script task accepts resultVariable',
     `process p { script T(resultVariable: "total") ${FENCE}js\n1 + 1\n${FENCE} }`,
     [],
@@ -1034,6 +1036,45 @@ checks('Validation - service, send, and decision bindings', [
     'keys that bind nothing leave a service task without a binding',
     `process p { service V(resultVariable: "r", asyncBefore: true) }`,
     [bindingRequired(`Service task 'V'`, SERVICE_BINDINGS)],
+  ],
+  [
+    'a service task cannot carry resultVariable beside class: the engine refuses to deploy it',
+    `process p { service V(class: com.example.X, resultVariable: "outcome") }`,
+    [resultVariableBinding('A service task', 'class', 'serviceTask', 'class')],
+  ],
+  [
+    'a service task cannot carry resultVariable beside delegate either',
+    `process p { service V(delegate: "\${bean}", resultVariable: "outcome") }`,
+    [
+      resultVariableBinding(
+        'A service task',
+        'delegate',
+        'serviceTask',
+        'delegateExpression',
+      ),
+    ],
+  ],
+  [
+    'a send task bound with class refuses resultVariable under its own element name',
+    `process p { send N(class: com.example.X, resultVariable: "outcome") }`,
+    [resultVariableBinding('A send task', 'class', 'sendTask', 'class')],
+  ],
+  [
+    'a decision step bound with delegate refuses resultVariable under its own element name',
+    `process p { decide D(delegate: "\${bean}", resultVariable: "outcome") }`,
+    [
+      resultVariableBinding(
+        'A decision step',
+        'delegate',
+        'businessRuleTask',
+        'delegateExpression',
+      ),
+    ],
+  ],
+  [
+    'resultVariable beside an expression binding is where the engine stores the return value',
+    `process p { service V(expression: "\${bean.method(execution)}", resultVariable: "outcome") }`,
+    [],
   ],
   [
     'a send task with no binding names the five attributes',

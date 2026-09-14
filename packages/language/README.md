@@ -199,6 +199,8 @@ process gym-membership {
 A `service` task takes exactly one of five binding attributes.
 `class` is a Java delegate class name, `expression` maps to `operaton:expression`, `delegate` is the friendlier spelling of `operaton:delegateExpression`, `topic` hands the work to an external worker through `operaton:type="external"` and `operaton:topic`, and `type` selects a behaviour Operaton builds itself, see [Mail and shell tasks](#mail-and-shell-tasks).
 `resultVariable` names the process variable the invocation's return value is stored in, and is not itself a binding.
+It is legal beside `expression:`, where the engine stores the return value, and beside `decision:` on a `decide` task, where it holds the decision result.
+Beside `topic:` and `type:` it is accepted and ignored, and beside `class:` and `delegate:` it is refused, because the engine refuses to deploy that combination.
 
 #### Send, receive, and decision tasks
 
@@ -791,7 +793,7 @@ Validation beyond syntax lives in `src/bpmn-script-validator.ts`, which is the s
 The categories it covers:
 
 - Variables: an undeclared reference (warning), a type mismatch against the declared `var`, a name declared twice.
-- Tasks: a duplicate attribute key, a `service`, `send`, or `decide` task without exactly one binding attribute, a `mapDecisionResult` outside the four result mappings, a `script` task with an unsupported fence tag or an empty or unterminated body.
+- Tasks: a duplicate attribute key, a `service`, `send`, or `decide` task without exactly one binding attribute, a `resultVariable` beside a `class` or `delegate` binding, which the engine refuses to deploy, a `mapDecisionResult` outside the four result mappings, a `script` task with an unsupported fence tag or an empty or unterminated body.
   An external task's extras add their own: a `taskPriority` or an `error ... when` mapping on a step not bound with `topic`, a mapping headed by a word other than `error` or missing `when`, a mapping naming an undeclared code, and a `taskPriority` or `jobPriority` that is neither an integer nor a `"${...}"` expression.
   A `service`, `send`, or `decide` task bound with `type` adds its own: a required field its type's own parse requires missing, a field name its behaviour class does not declare, and, on a shell task, a field carried as an expression or a flag other than `true`/`false`.
 - Settings: a key the element does not own, a value in a shape its lowering cannot read (a quoted `asyncBefore`, an unquoted `versionTag`), a `form` block on an element that renders none, and a process header carrying a key it does not own.

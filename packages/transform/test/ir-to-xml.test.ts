@@ -1866,7 +1866,7 @@ const engineSettingsIr: BpmnProcess = {
     {
       kind: 'serviceTask',
       id: 'Auto',
-      binding: classBinding('com.example.Auto'),
+      binding: exprBinding('${auto.run(execution)}'),
       resultVariable: 'outcome',
     },
     {
@@ -2809,7 +2809,7 @@ describe('irToXml: multi-instance loop characteristics', () => {
       around({
         kind: 'serviceTask',
         id: 'Step',
-        binding: classBinding('com.example.Step'),
+        binding: exprBinding('${step.run(execution)}'),
         asyncBefore: true,
         asyncAfter: true,
         jobPriority: '20',
@@ -2826,7 +2826,7 @@ describe('irToXml: multi-instance loop characteristics', () => {
       }),
     );
     expect(extractNodeBlock(xml, 'Step')).toBe(
-      '<bpmn:serviceTask id="Step" name="Step" operaton:asyncBefore="true" operaton:asyncAfter="true" operaton:jobPriority="20" operaton:class="com.example.Step" operaton:resultVariable="outcome">\n' +
+      '<bpmn:serviceTask id="Step" name="Step" operaton:asyncBefore="true" operaton:asyncAfter="true" operaton:jobPriority="20" operaton:expression="${step.run(execution)}" operaton:resultVariable="outcome">\n' +
         '      <bpmn:extensionElements>\n' +
         '        <operaton:failedJobRetryTimeCycle>R3/PT5M</operaton:failedJobRetryTimeCycle>\n' +
         '      </bpmn:extensionElements>\n' +
