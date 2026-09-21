@@ -36,11 +36,11 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "langium": "^4.3.1",
+    "langium": "^4.4.0",
     "vscode-languageserver-types": "^3.18.3"
   },
   "devDependencies": {
-    "langium-cli": "^4.3.0",
+    "langium-cli": "^4.4.0",
     "vitest": "^4.1.11"
   }
 }
