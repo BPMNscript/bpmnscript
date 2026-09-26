@@ -59,6 +59,10 @@ The terminate is the one place here where the option costing no grammar was not 
 A kind belonging on `throw` earns a validator message naming the statement to write, instead of a parse error (`endTriggerMessage`), and the validator refuses the two illegal start positions the same way, each with its own wording (`checkStartEvent`, `packages/language/src/bpmn-script-validator.ts`).
 The accepted trigger set is `START_TRIGGERS` (`packages/language/src/vocabulary.ts`), and import refuses what lies outside it with wording about the degradation rather than about the element type (`IGNORED_START_SUBJECTS` and `readStartTrigger`).
 A conditional start is accepted rather than refused, because the engine dispatches on it where it ignores an error, escalation, or compensation one, so the set that stops where the engine stops includes it.
+Operaton also ignores a `bpmn:standardLoopCharacteristics`, and ADR-0022 imports that as a step that runs once with a warning, so the two ignored elements are handled differently on purpose.
+An error, escalation or compensation trigger on a process's own start event is not valid BPMN: the specification allows only none, message, timer, conditional, signal, multiple and parallel multiple there (BPMN 2.0.2, Table 10.84), and keeps the other three for an event sub-process start (Table 10.86).
+Such a document says something no conforming reading can give it, so the import refuses it and the fix belongs in the model.
+A standard loop is valid BPMN that the engine does not implement, and refusing it would reject a conforming document that deploys, against the import contract of ADR-0012.
 
 Neither clause needs a new reserved word.
 `name=ID` is mandatory and comes first in both the `StartEvent` and `EndEvent` rules (`packages/language/src/bpmn-script.langium`), so the second token decides everything: an `ID` is the trigger, a `(` the settings, and a `{` the members.

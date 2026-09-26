@@ -76,7 +76,7 @@ The parens therefore hold a payload, then keyed settings, then bare flags, told 
 - Good, because the DSL reads and writes like program code (`if`/`while`/`parallel`), and an author who has seen one element can write any other.
 - Good, because conditions are a first-class expression AST, enabling type-check validation and jump-to-definition for variable references.
 - Good, because `parallel { { } { } }` maps directly to AND fork/join pairs, making parallel-gateway support natural to author.
-- Good, because `goto` as a residual form keeps decompilation total: every valid BPMN graph has a valid DSL representation.
+- Good, because `goto` as a residual form keeps decompilation total: every imported graph prints as source, and an edge with no name to jump to is dropped with a marker line and a warning (ADR-0014).
 - Good, because the printer emits one shape rather than choosing a spelling per position, which removes a class of difference between an authored file and a generated one.
 - Good, because a `{` opens children and nothing else, so the delimiter alone says whether a construct nests.
 - Bad, because settings lists are longer and wrap.

@@ -31,7 +31,7 @@ How should BPMNscript register Operaton's extension attributes with `bpmn-moddle
 ## Decision Outcome
 
 Chosen option: "Ship a trimmed fork", because it avoids namespace collisions, eliminates fragile string-replacement post-processing, and keeps the descriptor small and auditable.
-The fork is based on `camunda-bpmn-moddle/resources/camunda.json` from the bpmn-io GitHub organization, with the prefix and namespace URI replaced and only the attributes BPMNscript uses kept.
+The fork is based on `camunda-bpmn-moddle/resources/camunda.json` from the `camunda/camunda-bpmn-moddle` repository on GitHub, with the prefix and namespace URI replaced and only the attributes BPMNscript uses kept.
 
 ### Consequences
 

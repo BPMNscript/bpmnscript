@@ -33,7 +33,7 @@ Two narrower questions ride along with it: how a timer's payload text becomes on
 - A binding-marker keyword freeing the parens for bindings only, writing them after a marker such as `as (...)`, which spends a new reserved word on a collision structural lookahead already dissolves for free and breaks the parameter-list reading (`on error(X, code: c, message: m)`, read like `catch (Exception e)`) that motivated the binding shape in the first place.
 - A string-wrapped condition, written as a quoted literal instead of a real expression, which reads worse than the language's own `if (...)` and throws away everything a real expression AST buys, including undeclared-variable checking, type checking, symbol participation, and precise highlighting.
 - Reserving `condition` as a keyword to dispatch the parens, which would be a lexer-global reservation, unusable as an ordinary variable name anywhere in a file, for exactly the reason the trigger and binding words already stay soft identifiers.
-- Timer particles, `after`, `at` and `every`, as validated identifiers mapping one-to-one to BPMN's three timer forms, which read as the English they mean and cannot silently resolve to the wrong form.
+- Timer particles, a bare string for a duration and the keys `at` and `every` for a date and a cycle, as validated identifiers mapping one-to-one to BPMN's three timer forms, which read as the English they mean and cannot silently resolve to the wrong form.
 - A single particle with the timer form inferred from the value's shape, where an ISO date looks like a date and a duration string looks like a duration, which shifts a scheduling decision onto pattern-matching the value's text: a mistyped ISO string, or an expression the engine evaluates at runtime rather than a literal the compiler can inspect, becomes a different timer kind than the one the author meant, with no diagnostic pointing at the mismatch.
 - Deferring the conditional narrowing attributes and refusing them on import rather than dropping them.
 - Surfacing them as a fourth payload shape, narrower than the other three and carrying nothing but an engine-side optimization hint the audience has no reason to know about.
@@ -46,12 +46,15 @@ Two narrower questions ride along with it: how a timer's payload text becomes on
 Chosen: one paren slot disambiguated structurally, timer particles mapping one-to-one with no inference, conditional narrowing deferred and refused rather than dropped, and message and signal roots derived from usage.
 Each keeps the same principle: spend a new payload shape or a new reserved word only where the alternative loses something the surface cannot get back, whether round-trip fidelity, execution-accurate scheduling, or truthful runtime semantics, and nowhere else.
 
-The parentheses after a trigger's code stay a single grammar position that holds either a binding list or a condition expression, and which one is present is decided structurally, not by which trigger word precedes it.
-A binding list is a field name followed by a variable name, two identifiers in a row, and the expression sub-language never places two identifiers adjacently, since every accessor starts with `.` or `[` and every operator level requires an operator token in between.
-The parser therefore tells the two apart by looking at the second token after the opening parenthesis, which settles it before any per-trigger legality is considered, and whether a given trigger may use bindings, a condition, or neither is the kind of position rule the validator already owns for every other soft word.
+The parentheses after a trigger word are the settings parens every statement carries, and the code or name, the catch bindings, a condition and the engine settings all sit in them.
+Which one an item is gets decided structurally, not by which trigger word precedes it.
+An item written `key: value` is a setting, and a catch binding is one, the binding field as its key and the variable as its value: `on error(PAYMENT_FAILED, code: c, message: m)`.
+An item with no key is the payload, a code, a quoted name or a condition expression such as `condition(ready)`.
+No expression opens with an identifier followed by `:`, since the expression sub-language uses `:` only after the `?` of a conditional, so the parser settles the item's kind before any per-trigger legality is considered, and whether a given trigger may use bindings, a condition, or neither is the kind of position rule the validator already owns for every other soft word.
 
-A timer's payload is a particle word followed by a time expression, each particle mapping to exactly one of BPMN's timer forms, a duration, a fixed date, or a repeating cycle.
-The particle is a plain identifier, checked in position by the validator like every other soft trigger word, not a keyword.
+A timer's payload picks one of BPMN's timer forms, a duration, a fixed date, or a repeating cycle, by how the time string is written: bare it is a duration, `timer("PT1H")`, and under the keys `at` and `every` a date or a cycle, `timer(at: "2026-08-01T09:00:00")`.
+The two keys are plain identifiers, checked in position by the validator like every other soft trigger word, not keywords.
+A task listener's `timeout` writes the same choice as a word before the string, `after`, `at` or `every`, as in `on timeout after "PT8H"`.
 
 BPMN's conditional event definition can additionally narrow when a condition is re-evaluated, to a named variable or a specific kind of variable change, rather than re-checking on every change.
 This narrowing is an optional, engine-side evaluation optimization: a handler behaves correctly without it, re-checking on any variable change instead of a specific one, so the surface does not expose it.

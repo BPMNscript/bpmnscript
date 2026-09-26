@@ -9,7 +9,7 @@ decision-makers: Marlon Kranz
 ## Context and Problem Statement
 
 The `astToIr` desugarer gives an id to every BPMN element the DSL source leaves unnamed: the exclusive gateway pair enclosing an `if`/`else`, the loop-head gateway for `while`/`do...while`, the fork/join pair for `parallel`, the event-based gateway and exclusive merge for a multi-branch `await`, the catch event each `await` waits at, the boundary event a hosted handler attaches with, the event sub-process a host-less handler becomes, an `emit` or `throw` written without a name, and implicit start/end events.
-The `irToDsl` restructurer also synthesizes flow ids when emitting the DSL.
+It also gives every sequence flow its id, since the script never writes a flow: `irToDsl` prints none of the flow ids an imported document carries, and the compiler mints them again when the printed source is compiled.
 How should these ids be generated, and what does an author's own name have to stay clear of so that the compiler never mints a second element under an id the document already carries?
 
 The spelling of an author's id is the other half of the same question.
@@ -24,7 +24,7 @@ Renaming such an element is not a fix the user can apply without cost: the engin
 - The round-trip normalizer (`tests/helpers/normalize-ir.ts`) must be able to recognize and re-key synthesized ids, which is only practical if the id scheme is stable and documented.
 - Sequential counters depend on traversal order, making ids sensitive to unrelated source changes.
 - Ids derived from structural position are self-documenting and survive refactoring of unrelated parts of the process.
-- The import contract (ADR-0012): a document that deploys imports, and every change to what runs is reported.
+- The import contract ([ADR-0012](0012-honest-bpmn-import.md#decision-outcome)): a document that deploys imports, unless it marks more than one process executable, holds an event without an id that the engine deploys but cannot run, or uses a construct this surface cannot spell, and every change to what runs is reported.
 - An activity id is the key the engine's history and migration match on, so a changed id is a changed process, and the report has to say so.
 - One fact, one home: the shape of a name is the `ID` terminal, and the transform spells it once for both directions.
 
@@ -90,8 +90,19 @@ The printer builds one map per print, from the process id and every element id t
 An id the `ID` terminal accepts maps to itself.
 Any other maps to the id with every non-word character replaced by `_`, a leading `_` where the result would open on a digit or read as a keyword, resolved against every id in the document and every name minted before it.
 Every site that writes an id reads the map: the process head, every statement head, a `goto`, a boundary's host, and a named throw or catch.
-A gateway, a boundary and an event sub-process never write their id and keep it.
+A gateway of any kind, a boundary event, an event sub-process, the catch event of a race branch and a sequence flow have no id slot in the script, so the map leaves them out.
+Their authored ids do not survive a rebuild: the compiler synthesizes each one from the templates above, and no warning reports it.
+An element with a name slot keeps its id: a task, a sub-process, a start, an end, a single `await`, and a named `throw` or `emit`.
 Each rename draws one `renamedId` warning naming the printed name and saying that the rebuilt document carries it as the activity id.
+
+An element the document gives no id gets one on import, before anything keys it.
+A sequence flow gets `Flow_<source>_<target>`, and any other element `<Type>_<container>`, from the local name of its BPMN type and the id of the process or sub-process holding it, such as `UserTask_invoice`; both resolve against every id in the document the way the compiler's ids do.
+An end event also skips `EndEvent_<id>` for every id in the document and so usually imports as `EndEvent_<container>_2`, since the printer would take such an id for the implicit end the compiler gives a container or a boundary escape and leave the event out.
+Operaton deploys such a flow as an unnamed transition and such a task, end or catch as an activity nothing can flow into, since a `sourceRef` or `targetRef` needs an id, so the step prints and the validator reports that it can never run.
+A start event, a timer event, an event-based gateway, and a message or signal boundary event without an id refuse the import instead, since Operaton fails the deployment on each.
+An error, escalation, cancel or conditional boundary event without an id refuses too: Operaton deploys it and fails the run when an error is thrown inside its step, an escalation reaches it, its transaction is cancelled, or its step runs.
+A minted id would make the rebuilt document deploy and run where the source does not.
+A compensation boundary event deploys and runs without an id, so it takes a minted one like a task, and is then refused like every compensation boundary event ([ADR-0012](0012-honest-bpmn-import.md)).
 
 A form field id or an `operaton:inputParameter`/`operaton:outputParameter` name outside the terminal refuses the import.
 The engine sets the variable under that exact name (`FormFieldHandler.handleSubmit`, `InputParameter.execute`, `OutputParameter.execute`), so a minted name would change which variable is set rather than how it is written.
@@ -106,6 +117,8 @@ The engine sets the variable under that exact name (`FormFieldHandler.handleSubm
 - Bad, because renaming a process id or reordering top-level statements changes all synthesized ids in that process, which breaks deployed BPMN definitions.
   That is a concern for production use and acceptable for a DSL-authoring workflow where recompile is expected to replace the definition.
 - Bad, because a respelled id is a changed activity id in the rebuilt document, so a process rebuilt from such a script is not the process the history and migration APIs know; the warning says so, and the remedy is a rename in the model.
+- Bad, because an imported gateway, boundary event, event sub-process or race-branch catch comes back under a synthesized id without a warning, and the engine records these in history under their activity id as it does a task.
+  A migration plan written against the original document has to map them anew.
 - Bad, because a statement written under another container's minted id, such as `user EndEvent_S` beside `subprocess S`, is legal and makes the compiler mint `EndEvent_S_2` for `S`, which the printer then writes as an ordinary `end EndEvent_S_2`; the round trip stays stable from the second print on, and nothing runs differently.
 
 ### Confirmation
@@ -114,6 +127,7 @@ The engine sets the variable under that exact name (`FormFieldHandler.handleSubm
 The reserved-name table in `packages/language/test/validating.test.ts` pins the exact rule per container and the freed `StartEvent_1`.
 The respelling table in `packages/transform/test/ir-to-dsl.test.ts` prints every id site under a minted name, asserts the whole warning list, and re-parses and validates the source; the Modeler-default row asserts the printed start, end and initiator with no warning.
 The refusal matrix in `packages/transform/test/xml-to-ir.test.ts` pins the two import refusals.
+The two id-less tables in the same file pin the minted ids and the id-less events that refuse.
 The round-trip normalizer (`tests/helpers/normalize-ir.ts`) uses the id patterns to re-key synthesized ids before comparing IR snapshots, and the golden pair suites pass unchanged.
 
 ## More Information

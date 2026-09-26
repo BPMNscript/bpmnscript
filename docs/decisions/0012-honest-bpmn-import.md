@@ -42,17 +42,20 @@ Document shapes the engine rejects before `BpmnParse` sees an element pass throu
 
 ## Decision Outcome
 
-Chosen option: two tiers, drawn where `BpmnParse` draws them, because it is the only option consistent with the no-silent-semantic-loss claim that accepts exactly what the engine deploys and says what the engine does with what it drops.
+Chosen option: two tiers, drawn where `BpmnParse` draws them, because it is the only option consistent with the no-silent-semantic-loss claim that accepts what the engine deploys, within the scope bounds below (one executable process per file, no event without an id that the engine deploys but cannot run, and no construct this surface cannot spell), and says what the engine does with what it drops.
 
 The rule has three clauses.
 A shape `BpmnParse` fails the deployment on refuses, and the message names the method and quotes its sentence, since there is nothing that runs to write back.
 A shape the engine deploys and this surface can spell is carried, with a warning where the spelling changes.
-A shape the engine deploys and this surface cannot spell drops with a warning that names the method that reads it and says the document written back runs without it.
-The one drop that refuses instead is a thrown message's result variable beside an `expression` binding, where the engine stores a value the throw has no slot for.
+A shape the engine deploys and this surface cannot spell either drops with a warning that names the method that reads it and says the document written back runs without it, or is refused with its reason.
+`packages/transform/README.md` lists the refused ones, among them a `bpmn:complexGateway`, a compensation boundary event, two input parameters sharing a name, a script body no fence can enclose, and a thrown message's result variable beside an `expression` binding, where the engine stores a value the throw has no slot for.
 
 A refusal throws a subclass of `UnsupportedConstructError` before any IR is produced, so there is never a partial IR, and a consumer classifies the whole family with a single `instanceof` check while each subclass still carries construct-specific metadata for a tailored message.
 A warning is returned in a `warnings: ImportWarning[]` array alongside the IR, so `xmlToIr` returns `{ ir, warnings }` rather than a bare `BpmnProcess`, which makes the channel unignorable at the type level: every call site must destructure or explicitly discard `warnings`, where an optional collector parameter (`xmlToIr(xml, sink?)`) or a second `xmlToIrWithWarnings` function leaves it easy to skip.
 What the engine deploys and then fails on at run time is carried as written, with a warning that the printed script draws an error there.
+The exception is an event without an id that the engine deploys and cannot run, which is an error, escalation, cancel or conditional boundary event.
+The IR names every node, so such an event cannot be carried as written, and an id minted for it would make the handler run where the source fails, so the import refuses it ([ADR-0010](0010-deterministic-synthesized-ids.md)).
+The import contract is therefore that a document the engine deploys imports, unless it marks more than one process executable, holds an event without an id that the engine deploys but cannot run, or uses a construct this surface cannot spell; each of these is refused with its reason, and nothing the engine runs is dropped without a warning.
 
 No element leaves the transform unreported: whatever it cannot carry is named by the tag the document spells and by its own id, and attributed to the element it sat on, a construct being reported whole so that a dropped `bpmn:ioSpecification` names itself rather than each data input inside it.
 What is dropped without a warning is the diagram interchange data ADR-0009 settles, a BPMN attribute the transform neither reads nor reports, such as a process's `processType` or `isClosed`, and an attribute in a foreign namespace written directly on a mapped BPMN element, which is where an editor parks its own bookkeeping; the same foreign attribute on an extension child the IR reads is reported.
@@ -60,6 +63,7 @@ What is dropped without a warning is the diagram interchange data ADR-0009 settl
 
 Three document-level shapes follow from the same rule rather than from any one element.
 `selectProcess` imports the one process marked `isExecutable="true"` and pushes one warning per other process, since `parseProcessDefinitions` does not deploy those either.
+A file with two or more processes marked executable is refused, although `parseProcessDefinitions` deploys each of them as a definition of its own: the IR and a script hold one process, so one executable process per file is a scope bound of this tool, not an engine rule.
 A collaboration is diagram data to the engine, since `parseCollaboration` records a participant's `processRef` only so that `parseBPMNShape` can attach the pool's bounds and no method in `BpmnParse` reads a `bpmn:messageFlow`, so a pool warns rather than refuses.
 The camunda namespace is read as the operaton one by replacing the URI in the document text before `moddle.fromXML`, with one warning per document: `BpmnParse.OPERATON_BPMN_EXTENSIONS_NS` falls back to the camunda URI only when the operaton lookup finds nothing, and moddle-xml binds a prefix to a package by URI rather than by spelling, so after the swap every `camunda:` element arrives typed `operaton:*` and every `camunda:` attribute reads through the one `operaton:` reader.
 
@@ -77,7 +81,7 @@ Every one of them is warned rather than refused, because a refusal has no meanin
 
 ### Consequences
 
-- Good, because a document the engine deploys imports, among them the Modeler's default collaboration file, the Operaton invoice example, and the MIWG files with one executable process, and one the engine refuses is refused with the engine's own sentence rather than imported into a script that cannot deploy.
+- Good, because a document the engine deploys imports, provided it marks at most one process executable, holds no event without an id that the engine cannot run, and uses no construct this surface cannot spell, among them the Modeler's default collaboration file, the Operaton invoice example, and the MIWG files with one executable process, and one the engine refuses is refused with the engine's own sentence rather than imported into a script that cannot deploy.
 - Good, because every caller, the CLI, the VS Code extension, and the round-trip suite, surfaces both the refusal and the warning channel instead of only one or neither, and the shared `UnsupportedConstructError` base keeps classification to one `instanceof` check as new refusal categories are added.
 - Good, because every warning on a setting the engine reads says which method reads it, so the reader knows whether the drop changes a run.
 - Bad, because the engine's sentences are quoted in the importer and drift with the engine's wording.

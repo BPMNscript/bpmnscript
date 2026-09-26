@@ -71,6 +71,11 @@ A host-less `on timer(...)` handler lowers `jobPriority`, `retryCycle` and `excl
 The printer lifts the three back into the `on timer` head as long as the start prints no statement of its own, and leaves them on the `start` line when it does, so an authored start inside the body keeps its settings where it wrote them.
 Every other host-less handler writes its settings on the event sub-process.
 
+The process header's settings follow the same naming rule, and `historyTimeToLive` is the one with a default.
+`HistoryTimeToLiveParser.parseAndValidate` refuses a process without one under the engine's default `enforceHistoryTimeToLive`, so `irToXml` writes `P30D` when the IR names none, and the importer reads exactly that value back as absent to keep the round trip stable.
+An imported document that sets none is warned about, since its rebuilt process deploys where the source did not.
+`isStartableInTasklist` is the one that takes a boolean, and the importer reads it as `BpmnParse.isStartable` does, so any value but a case-insensitive `true` imports as `false`.
+
 ### Consequences
 
 - Good, because the validator can restrict attribute keys per element kind, and the vendor prefix stays on the serialization boundary, so the IR reads the same regardless of whether the reader knows Operaton.

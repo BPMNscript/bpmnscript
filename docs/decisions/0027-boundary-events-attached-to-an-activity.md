@@ -8,7 +8,7 @@ decision-makers: Marlon Kranz
 
 ## Context and Problem Statement
 
-Every `on` handler compiles to an event sub-process that guards its whole enclosing process or subprocess body (ADR-0023).
+A host-less `on` handler compiles to an event sub-process that guards its whole enclosing process or subprocess body, as the decision outcome below records.
 BPMN has a second, narrower attachment for the same catch vocabulary: a `bpmn:boundaryEvent` docked directly on one activity, which only catches while that activity is running and, depending on `cancelActivity`, either cancels it the moment the trigger fires or lets it keep running alongside the catch.
 Giving `on` an optional host turns it into this second attachment form without introducing a competing keyword or a second handler construct.
 Four questions settle together: how a host is spelled without colliding with the handler shape `on timer("PT2H")` that already parses; which of the language's catchable triggers may attach; what a hosted body compiles to, given that the host-less form's meaning must not move; and how a token that appears directly at a boundary event, without ever traversing the main flow, is represented in the dominator-based restructuring analysis (ADR-0014).
@@ -39,6 +39,12 @@ Four questions settle together: how a host is spelled without colliding with the
 ## Decision Outcome
 
 Chosen options: the colon separator, a scope read from the engine, a self-contained body, virtual-entry wiring, and host-derived ids.
+
+The host-less form keeps its meaning.
+A host-less `on` compiles to a `bpmn:subProcess` with `triggeredByEvent="true"` in the container whose body holds the handler, the process, a `subprocess` or an `attempt` block, and so catches while any part of that container runs.
+Its trigger sits on the start event the event sub-process opens with, `alongside` writes that start as `isInterrupting="false"`, and the handler's body lowers as the event sub-process's own body, with its own implicit start and end.
+Its id is the positional `EventSubProcess_<X>` (ADR-0010), and the decompiler prints every event sub-process back as a host-less handler after the container's other statements, in model order, since the compiler numbers each one by its statement index.
+`on compensation` is the host-less handler with a record of its own (ADR-0028), and `cancel` has no host-less form (ADR-0029).
 
 The scope is message, timer, signal, conditional, error, and escalation.
 Escalation is restricted to a subprocess, an `attempt` block, a call, or a user task because Operaton gates that boundary on `attachedActivity.isSubProcessScope()`, and `parseTransaction` sets that flag exactly as `parseSubProcess` does, so an `attempt` block hosts an escalation on the same terms an ordinary block does.

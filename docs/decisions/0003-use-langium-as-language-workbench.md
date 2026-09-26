@@ -24,20 +24,22 @@ Which language workbench should be used to implement the DSL infrastructure?
 
 - Langium: TypeScript throughout, with built-in scoping, cross-reference resolution and validation infrastructure, and a Chevrotain parser with unbounded (ALL(\*)) lookahead.
 - Eclipse Xtext: the most mature workbench (20 years), with EMF integration giving native access to the BPMN 2.0 metamodel and a built-in AST-to-text serializer, but VS Code support needs a hybrid Java/TypeScript stack with a JVM backend, no browser deployment path exists, the learning curve is steep (EMF, Guice, Xtend, Eclipse, MWE2), and its maintenance future has been in question since a 2020 sustainability discussion.
-- MontiCore: has an existing BPMN Workflow DSL grammar, auto-generates pretty printers from grammars, and has strong language composition (inheritance, embedding, aggregation), but has no LSP support, no VS Code integration path, and no browser deployment path.
+- MontiCore: has an existing BPMN Workflow DSL grammar, auto-generates pretty printers from grammars, and has strong language composition (inheritance, embedding, aggregation).
+  A language server and IntelliJ and VS Code plugins can be generated from a MontiCore grammar (Charles, Hellwig and Rumpe, Modellierung 2026), but its toolchain is Java, and the BPMN libraries this project builds on are TypeScript.
 - ANTLR with a manual LSP server: the most widely used parser generator, with full control and no framework lock-in, and grammar-aware completion via `antlr4-c3`, but every IDE feature would need to be implemented by hand, an estimated 3-5 weeks of the timeline, with no generated VS Code extension scaffolding.
 - JetBrains MPS: backed by JetBrains, with trivial language composition in its projectional editor, but it stores files as XML rather than human-readable text, has no VS Code or LSP integration, and is architecturally incompatible with a textual DSL.
 
 ## Decision Outcome
 
 Chosen option: "Langium", primarily for its own ergonomics: a smaller, more approachable toolchain than Xtext's, and native access to the existing TypeScript BPMN tooling this project builds on: `bpmn-moddle` to read and write BPMN 2.0 XML, and `bpmn-auto-layout` to generate the Diagram Interchange (DI) data a textual syntax has no coordinate system to produce by hand.
-The IDE target followed from this choice rather than preceding it: Langium's TypeScript toolchain generates an LSP server and VS Code extension directly from the grammar, which made Visual Studio Code the easier of the two viable targets to reach, whereas an IntelliJ plugin for Xtext would not have benefited from that same generation path.
+The IDE target followed from this choice rather than preceding it: `langium-cli` generates the AST types and a TextMate grammar from the grammar, the language server builds its parser, completion, scoping and validation on the same grammar at run time, and a one-time project template supplies the VS Code extension that hosts the server.
+That made Visual Studio Code the easier of the two viable targets to reach, whereas an IntelliJ plugin for Xtext would not have benefited from the same path.
 Browser deployment for a future playground was a secondary factor, all within a timeline-feasible learning curve.
 
 ### Consequences
 
 - Good, because the entire stack is TypeScript, eliminating context-switching between languages
-- Good, because Langium generates parser, AST, syntax highlighting, completion, go-to-definition, and diagnostics from the grammar
+- Good, because the grammar yields the AST types and syntax highlighting at build time, and the parser, completion, go-to-definition, and diagnostics at run time
 - Good, because the language server can run in a web worker, enabling a browser-based playground with approximately 95% code reuse
 - Good, because `bpmn-moddle` (the standard TypeScript library for BPMN 2.0 XML) integrates naturally
 - Good, because Langium is actively maintained by TypeFox as an Eclipse Foundation mature project
@@ -56,3 +58,4 @@ Sources for the comparison:
 - [Langium 4.0 Release](https://www.typefox.io/blog/langium-release-4.0/)
 - [Call To Action: Secure the future maintenance of Xtext (GitHub #1721)](https://github.com/eclipse-xtext/xtext/issues/1721)
 - [Jordan & Zib: A Langium-based approach to BigER (TU Wien, 2024)](https://model-engineering.info/publications/theses/thesis-jordan-zib.pdf)
+- [Charles, Hellwig & Rumpe: Generating Language Servers for MontiCore-based DSLs (Modellierung 2026)](https://doi.org/10.18420/modellierung2026-08)

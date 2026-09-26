@@ -43,16 +43,17 @@ The DSL sources under `spring-boot/processes/` cover one construct or construct 
 | `plan-selection`        | A task form with a required enum and a length-bounded text field           |
 | `nightly-report`        | An async join, per-run jobs on a repetition, and a shell task              |
 | `outage-notice`         | A mail task, deployed and never started                                    |
+| `expense-claim`         | A `while` loop, an `if`/`else`, and a `parallel` block in one process      |
 
 [Running processes on Operaton](spring-boot/README.md#running-processes-on-operaton-demo) is a hands-on tour of the two loan-approval processes.
 
 ### Testcontainers harness
 
 The E2E tests in `tests/e2e/` use [testcontainers-node](https://testcontainers.com/) to start the Docker image, deploy compiled BPMN over the Operaton REST API, start instances, and assert what the engine does with what the compiled document only declares.
-Each file names the example it drives, or the examples it deploys in one container boot.
-`deploy-sweep` deploys every golden under `tests/golden/`, every fixture under `tests/fixtures/`, and every example here in one container boot, once as written and once rebuilt from the tool's own print of it.
+The suite builds the image and starts one engine once, and every file runs against it; each file names the example it drives or the examples it deploys.
+`deploy-sweep` deploys every golden under `tests/golden/`, every fixture under `tests/fixtures/`, and every example here, once as written and once rebuilt from the tool's own print of it.
 
-Docker tests run by default and are skipped only when `SKIP_DOCKER_TESTS=true`, which is what CI sets.
+Docker tests run by default, in CI too, and are skipped only when `SKIP_DOCKER_TESTS=true`.
 
 ## Adding a new deployment mode
 
