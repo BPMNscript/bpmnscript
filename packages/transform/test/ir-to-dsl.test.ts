@@ -1884,11 +1884,11 @@ describe('irToDsl: event layer (compensation)', () => {
   });
 });
 
-// A boundary event is the only IR node with outgoing but no incoming flow, so
-// its chain is unreachable from the start event and a pass of its own prints
-// it, before the orphan sweep would flush it as a detached top-level chain.
-// The chain lives in the same container as the main flow, so the shared
-// emitted-node bookkeeping is what makes a rejoin degrade to a `goto`.
+// A boundary event's chain is entered by no start or link catch, so the entry
+// passes never reach it and a pass of its own prints it, before the orphan
+// sweep would flush it as a detached top-level chain. The chain lives in the
+// same container as the main flow, so the shared emitted-node bookkeeping is
+// what makes a rejoin degrade to a `goto`.
 
 describe('irToDsl: boundary events', () => {
   /**
@@ -2525,18 +2525,21 @@ describe("irToDsl: a synthesized plain end that is not its block's tail", () => 
       [],
     ],
     [
-      'a plain end whose chain a later goto-reached step follows prints before that step, and its label rides along',
-      'process p { start S  step A  if (x) { goto B }  step C  end Done(label: "Order filed")  step B  end Fin }',
+      // A link catch is an entry of its own, so its chain is never walked
+      // inside the guard the way a chain the split owns is.
+      "a plain end whose chain a link catch's chain follows prints before that catch, and its label rides along",
+      'process p { start S  step A  if (x) { emit link L("x") }  step C  end Done(label: "Order filed")  await link M("x")  step B  end Fin }',
       [
         'process p {',
         '  var x: any',
         '  start S',
         '  step A',
         '  if (x) {',
-        '    goto B',
+        '    emit link L("x")',
         '  }',
         '  step C',
         '  end EndEvent_p(label: "Order filed")',
+        '  await link M("x")',
         '  step B',
         '  end Fin',
         '}',
@@ -2726,6 +2729,91 @@ describe('irToDsl: authored terminal in a guard clause', () => {
   end Done
 }
 `);
+  });
+});
+
+// A branch whose chain ends before the join is walked inline only where the
+// block's tail is the end the printer leaves out: hoisted behind that end, the
+// chain would push it off the tail and print it under its reserved id. With
+// an authored end closing the block the chain stays a jump at its authored
+// scope, so the coordinate ids of its unnamed events survive the round trip,
+// which the multiset comparison pins; a chain running into the elided end is
+// that tail and stays a jump too.
+describe('irToDsl: an authored chain a branch owns', () => {
+  it.each([
+    [
+      'two branches whose chains end print them inline, and the implicit end stays unwritten',
+      [
+        'process p {',
+        '  var a: any',
+        '  var b: any',
+        '  if (a) {',
+        '    user A',
+        '    throw message("Quote Received")',
+        '  } else if (b) {',
+        '    user B',
+        '    await {',
+        '      message("OrderReceived") {',
+        '        end Done',
+        '      }',
+        '      message("Quote Received") {',
+        '        user C',
+        '      }',
+        '    }',
+        '  } else {',
+        '    user D',
+        '  }',
+        '}',
+      ],
+    ],
+    [
+      'a guard clause whose branch runs a step into an end prints the step inside the branch',
+      [
+        'process p {',
+        '  var a: any',
+        '  if (a) {',
+        '    user A',
+        '    end Stop',
+        '  }',
+        '  user B',
+        '}',
+      ],
+    ],
+    [
+      'a chain jumped to behind an authored end stays behind it, keeping the coordinate id of its unnamed throw',
+      [
+        'process p {',
+        '  error E',
+        '  var x: any',
+        '  if (x) {',
+        '    goto X',
+        '  }',
+        '  user C',
+        '  end Done',
+        '  user X',
+        '  throw error(E)',
+        '}',
+      ],
+    ],
+    [
+      'a chain that runs into the implicit end is the tail and stays a jump',
+      [
+        'process p {',
+        '  var a: any',
+        '  if (a) {',
+        '    goto X',
+        '  }',
+        '  user B',
+        '  end Done',
+        '  user X',
+        '}',
+      ],
+    ],
+  ])('%s', async (_title, lines) => {
+    const source = `${lines.join('\n')}\n`;
+    const ir = await reDesugar(source);
+    expect(await expectIdempotent(ir)).toBe(source);
+    expect(printDsl(ir).warnings).toEqual([]);
   });
 });
 
@@ -5839,12 +5927,170 @@ describe('irToDsl: a branch walk stops where the block comes back together', () 
         '}',
       ],
     ],
+    [
+      'an if whose one branch runs on to the implicit end beside two that end keeps the end unwritten',
+      [
+        'process p {',
+        '  if (b) {',
+        '    user A',
+        '  } else if (c) {',
+        '    user B',
+        '    end D',
+        '  } else {',
+        '    user C',
+        '    end E',
+        '  }',
+        '}',
+      ],
+    ],
+    [
+      'an if over a parallel beside two ending branches that share a step stops at its own join, not at that step',
+      [
+        'process p {',
+        '  if (b) {',
+        '    parallel {',
+        '      {',
+        '        user A1',
+        '      }',
+        '      {',
+        '        user A2',
+        '      }',
+        '    }',
+        '  } else if (c) {',
+        '    user B',
+        '    end D',
+        '  } else {',
+        '    user C',
+        '    goto B',
+        '  }',
+        '}',
+      ],
+    ],
+    [
+      'an if over a parallel beside an ending else keeps the join settings on the parallel',
+      [
+        'process p {',
+        '  if (b) {',
+        '    parallel (joinAsyncBefore: true) {',
+        '      {',
+        '        user A1',
+        '      }',
+        '      {',
+        '        user A2',
+        '      }',
+        '    }',
+        '  } else {',
+        '    end E',
+        '  }',
+        '}',
+      ],
+    ],
+    [
+      'an if with an ending else whose branch holds a nested if stops at its own join, not at the nested one',
+      [
+        'process p {',
+        '  if (c) {',
+        '    user A',
+        '    if (b) {',
+        '      user B1',
+        '    }',
+        '    user A2',
+        '  } else {',
+        '    end X',
+        '  }',
+        '}',
+      ],
+    ],
+    [
+      'a race whose one branch ends and whose other runs on to the implicit end keeps that branch whole',
+      [
+        'process p {',
+        '  await {',
+        '    message("M") {',
+        '      if (x) {',
+        '        emit message("PaymentDone")',
+        '      } else {',
+        '        user Charge',
+        '      }',
+        '      step Approve',
+        '    }',
+        '    timer("P3D") {',
+        '      user Archive',
+        '      end Done terminate',
+        '    }',
+        '  }',
+        '}',
+      ],
+    ],
   ] as const)('%s', async (_title, lines) => {
     const source = `${lines.join('\n')}\n`;
     const ir = await reDesugar(source);
     expect(bodyOf(await expectIdempotent(ir))).toEqual(source);
     expect(printDsl(ir).warnings).toEqual([]);
   });
+
+  // Every path into the split passes `P`, so `P` lies upstream of the block
+  // and is no merge of it: taken as the join, the print would jump back to
+  // it from a position nothing reaches, after a block whose every branch
+  // jumps.
+  it.each([
+    [
+      'an if whose branch and following chain both jump back to the step above the split',
+      [
+        'process p {',
+        '  var a: any',
+        '  user P',
+        '  if (a) {',
+        '    user A',
+        '    goto P',
+        '  }',
+        '  user B',
+        '  goto P',
+        '}',
+      ],
+    ],
+    [
+      'an if whose two branches both jump back to the step above the split',
+      [
+        'process p {',
+        '  var a: any',
+        '  user P',
+        '  if (a) {',
+        '    user A',
+        '    goto P',
+        '  } else {',
+        '    user B',
+        '    goto P',
+        '  }',
+        '}',
+      ],
+    ],
+  ] as const)(
+    '%s prints as the guard clause, with the jump back outside the block',
+    async (_title, lines) => {
+      const ir = await reDesugar(`${lines.join('\n')}\n`);
+      const source = await printed(ir);
+      expect(bodyOf(source)).toEqual(
+        [
+          'process p {',
+          '  user P',
+          '  if (a) {',
+          '    goto A',
+          '  }',
+          '  user B',
+          '  goto P',
+          '  user A',
+          '  goto P',
+          '}',
+          '',
+        ].join('\n'),
+      );
+      expect(printDsl(ir).warnings).toEqual([]);
+      expect(realReachability(await reDesugar(source))).toEqual(
+        realReachability(ir),
+      );
+    },
+  );
 });
 
 describe('irToDsl: an event sub-process a flow edge leads into', () => {

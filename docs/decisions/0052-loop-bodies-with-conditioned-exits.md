@@ -84,6 +84,7 @@ The `review-loop` round-trip suite pins the frozen artifact byte for byte, its i
 ## More Information
 
 The predicate is `enclosingContinuation` in `packages/transform/src/ir-to-dsl.ts`; the containment check is in `cleanJoin` beside it.
+`emitRoutes` asks a further step between the clean join and the guard clause, `convergence`, which reads where the split's live routes come back together off the model's routes by forward reachability bounded by the stop node, and so answers a split whose branch can end and whose post-dominator therefore lies at the exit.
 
 Amends ADR-0009, whose catalog gains the enclosing continuation beside the clean join and the guard clause.
 

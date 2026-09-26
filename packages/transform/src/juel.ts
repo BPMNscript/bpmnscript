@@ -488,9 +488,11 @@ function renderNode(node: JuelNode): string {
     case 'decimal':
       return String(node.value);
     case 'string':
-      // The grammar's string reader turns `\b` into a backspace and drops any
-      // other lone backslash, so only the doubled form reads back; it is also
-      // the one escape `Scanner.nextString` in operaton-juel takes besides `\"`.
+      // The grammar's string reader (Langium's `convertEscapeCharacter`)
+      // resolves `\b \f \n \r \t \v \0` to control characters and, for any
+      // other character, drops the backslash and keeps the character, so only
+      // the doubled form reads back as a backslash; it is also the one escape
+      // `Scanner.nextString` in operaton-juel takes besides `\"`.
       return `"${escapeQuoted(node.value)}"`;
     case 'bool':
       return node.value;

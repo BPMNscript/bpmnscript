@@ -12,7 +12,7 @@ import { fileURLToPath } from 'node:url';
 
 import { astToIr, irToDsl, irToXml, xmlToIr } from '@bpmn-script/transform';
 
-import { parse, parseToAst, validate } from './helpers/pipeline.js';
+import { parseToAst, validate } from './helpers/pipeline.js';
 import { normalizeIr } from './helpers/normalize-ir.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -32,9 +32,7 @@ const sourceOf = (file: string): string =>
   readFileSync(resolve(PROCESSES_DIR, `${file}.bpmnscript`), 'utf-8');
 
 async function compile(file: string): Promise<string> {
-  const document = await parse(sourceOf(file));
-  expect(document.parseResult.parserErrors).toEqual([]);
-  return irToXml(astToIr(document.parseResult.value));
+  return irToXml(astToIr(await parseToAst(sourceOf(file))));
 }
 
 describe('every deployable example', () => {
@@ -47,54 +45,46 @@ describe('every deployable example', () => {
 });
 
 describe("every example round-trips through the tool's own output without a word", () => {
-  it.each(EXAMPLES)(
-    "%s round-trips through the tool's own output without a word",
-    async (file) => {
-      const document = await parse(
-        readFileSync(resolve(PROCESSES_DIR, file), 'utf-8'),
-      );
-      expect(document.parseResult.parserErrors).toEqual([]);
-      const ir1 = astToIr(document.parseResult.value);
+  it.each(EXAMPLES)('%s', async (file) => {
+    const ir1 = astToIr(
+      await parseToAst(readFileSync(resolve(PROCESSES_DIR, file), 'utf-8')),
+    );
 
-      const xml1 = await irToXml(ir1);
-      const { ir: ir2, warnings: importWarnings } = await xmlToIr(xml1);
-      const { source: dslPrime, warnings: printWarnings } = irToDsl(ir2);
-      const ir3 = astToIr(await parseToAst(dslPrime));
-      const { diagnostics } = await validate(dslPrime);
+    const xml1 = await irToXml(ir1);
+    const { ir: ir2, warnings: importWarnings } = await xmlToIr(xml1);
+    const { source: dslPrime, warnings: printWarnings } = irToDsl(ir2);
+    const ir3 = astToIr(await parseToAst(dslPrime));
+    const { diagnostics } = await validate(dslPrime);
 
-      // Mapped rather than compared raw: a failure then names the id and the
-      // category or message, not a range and offset nobody reads.
-      expect({
-        importWarnings: importWarnings.map((w) => ({
-          elementId: w.elementId,
-          category: w.category,
-        })),
-        printWarnings: printWarnings.map((w) => ({
-          elementId: w.elementId,
-          category: w.category,
-        })),
-        dslPrimeDiagnostics: diagnostics.map((d) => ({
-          severity: d.severity,
-          message: d.message,
-        })),
-      }).toEqual({
-        importWarnings: [],
-        printWarnings: [],
-        dslPrimeDiagnostics: [],
-      });
+    // Mapped rather than compared raw: a failure then names the id and the
+    // category or message, not a range and offset nobody reads.
+    expect({
+      importWarnings: importWarnings.map((w) => ({
+        elementId: w.elementId,
+        category: w.category,
+      })),
+      printWarnings: printWarnings.map((w) => ({
+        elementId: w.elementId,
+        category: w.category,
+      })),
+      dslPrimeDiagnostics: diagnostics.map((d) => ({
+        severity: d.severity,
+        message: d.message,
+      })),
+    }).toEqual({
+      importWarnings: [],
+      printWarnings: [],
+      dslPrimeDiagnostics: [],
+    });
 
-      expect(normalizeIr(ir3)).toEqual(normalizeIr(ir1));
-    },
-  );
+    expect(normalizeIr(ir3)).toEqual(normalizeIr(ir1));
+  });
 });
 
 describe('construct shapes pinned only by a deployable example', () => {
   it('awaiting-confirmation desugars the await into an intermediateCatchEvent carrying the message definition', async () => {
     // Desugaring decides what an `await` lowers to, so XML alone would miss it.
-    const document = await parse(sourceOf('awaiting-confirmation'));
-    expect(document.parseResult.parserErrors).toEqual([]);
-
-    const ir = astToIr(document.parseResult.value);
+    const ir = astToIr(await parseToAst(sourceOf('awaiting-confirmation')));
     const catchNode = ir.flowElements.find(
       (el) => el.kind === 'intermediateCatchEvent',
     );

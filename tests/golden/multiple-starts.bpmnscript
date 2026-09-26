@@ -8,9 +8,10 @@
 //   - `FromPartner` (message) opens a second chain after the first chain's
 //     `end` and rejoins the shared step by `goto`.
 //
-// Every start enters an authored step: a start whose first step is a
-// synthesized branch gateway prints back as a dropped-edge marker instead of
-// the branch, so none of the four is written that way.
+// Every start enters an authored step, so none of the four opens on a
+// synthesized branch gateway, and the print is the file as authored: the three
+// starts sharing `CheckOrder` back to back above it, `FromPartner`'s chain
+// after `end Accepted` with its `goto`.
 
 process order-entry {
   start FromDesk {

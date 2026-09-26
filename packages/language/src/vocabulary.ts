@@ -326,10 +326,10 @@ export const CALL_BINDING_VALUES: readonly string[] = ['latest', 'deployment'];
  * The settings a process header takes, in the order they are offered and
  * printed. Each attaches to the `bpmn:process` element itself rather than to
  * any node inside it. `BpmnParse.parseProcess` also reads `jobPriority`,
- * `taskPriority`, `isStartableInTasklist`, a process-level execution listener,
- * and `potentialStarter` off the same element; this set leaves them out on
- * purpose, since giving them authoring surface is a separate addition, not a
- * gap in this list.
+ * `taskPriority`, and `isStartableInTasklist` off the same element, and,
+ * through `parseScope`, a process-level execution listener and
+ * `potentialStarter`; this set leaves them out on purpose, since giving them
+ * authoring surface is a separate addition, not a gap in this list.
  */
 export const PROCESS_HEADER_KEYS: readonly string[] = [
   'label',
@@ -526,6 +526,16 @@ export const JUEL_RESERVED_WORDS = [
   'gt',
   'instanceof',
 ] as const;
+
+/**
+ * `true`, `false` and `null`, which the grammar spells as literals so a
+ * variable or a rendered `.prop` accessor can never carry one. A raw template
+ * is plain text, so `${order.true}` reaches `Scanner.nextIdentifier`, which
+ * returns the `Symbol.TRUE` keyword token there too; `Parser.parseDotToken`'s
+ * `consumeToken(IDENTIFIER)` then refuses it. The raw-template scan checks the
+ * union of this and {@link JUEL_RESERVED_WORDS}.
+ */
+export const JUEL_LITERAL_WORDS = ['true', 'false', 'null'] as const;
 
 /**
  * Written to `datePattern`, which `FormTypes.parseFormPropertyType` reads on

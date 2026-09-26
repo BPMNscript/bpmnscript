@@ -256,8 +256,8 @@ Contract: the `bpmn:documentation` child on the process element and on each carr
 An order-entry narrative carrying four start events on one process, across two chains.
 `FromDesk` is the only plain start, so it is the process's default and the only one whose `form` is ever offered; `FromShop` (message) and `FromWarehouse` (signal) sit right after it with no step of their own, so all three enter `CheckOrder` directly.
 `FromPartner` (message) opens a second chain after the first chain's `end`, runs a service task of its own, and rejoins `CheckOrder` by `goto`.
-Every start enters an authored step, because a start whose first step is a synthesized branch gateway prints back as a dropped-edge marker instead of the branch, so none of the four is written that way.
-The restructured DSL keeps the first chain as authored and prints each later start after that chain's `end`, followed by its own steps and a `goto CheckOrder`, so `FromShop` and `FromWarehouse` come back as two one-line chains rather than as siblings of `FromDesk`; the graph is the same, which the idempotence block asserts.
+Every start enters an authored step, so none of the four opens on a synthesized branch gateway.
+The restructured DSL prints the file as authored: the three starts sharing `CheckOrder` print back to back above it, and `FromPartner`'s chain after `end Accepted` with its `goto`; the idempotence block asserts the graph.
 
 Contract: four `bpmn:startEvent` elements, none carrying a `bpmn:incoming`; the four `bpmn:incoming` children of `CheckOrder` in the order their flows are met in the source, the three starts ahead of `ImportPartnerOrder`; one `bpmn:Message` root per distinct name in first-appearance order (`OrderPlaced`, `PartnerOrderReceived`) and one `bpmn:Signal` root; `operaton:formData` on `FromDesk` and on no other start; an import of the frozen artifact that reports no warning at all; and every authored id.
 

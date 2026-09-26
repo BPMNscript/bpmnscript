@@ -1,8 +1,8 @@
 /**
  * IR to BPMN 2.0 XML, producing a document Operaton can parse and deploy. The
  * `operaton:` namespace is attached here through the local
- * `operaton-moddle.json` extension; the IR itself stays vendor-neutral (ADR
- * 0006).
+ * `operaton-moddle.json` extension; the IR carries the same settings under
+ * vendor-free names (ADR 0006).
  *
  * Three steps are more than a mapping: `<bpmn:incoming>`/`<bpmn:outgoing>` are
  * computed per flow node, a `bpmndi:BPMNShape isExpanded` hint is authored per
@@ -62,9 +62,10 @@ import {
 
 /**
  * `BpmnParse.parseDefinitionsAttributes` stores this as `this.targetNamespace`,
- * `parseProcess` sets it as the process definition's category, and
- * `resolveName` prefixes every unqualified message and signal id and ref with
- * it. None of that dereferences it as a URI; the engine never fetches it.
+ * `parseProcess` sets it as the process definition's category, `parseMessages`
+ * and `parseSignals` prefix every message and signal id with it, and
+ * `resolveName` prefixes an unqualified `messageRef` or `signalRef` the same
+ * way. None of that dereferences it as a URI; the engine never fetches it.
  */
 const TARGET_NAMESPACE = 'http://bpmnscript.io/processes';
 
@@ -1199,8 +1200,8 @@ function buildScript(
 }
 
 /**
- * `number` becomes `long`, so the IR spelling can stay vendor-neutral (ADR
- * 0006). Read back by the import direction, which inverts it.
+ * `number` becomes `long`: the IR carries the engine's type under a vendor-free
+ * name (ADR 0006). Read back by the import direction, which inverts it.
  */
 export const FORM_FIELD_TYPE_TO_OPERATON: Record<FormFieldType, string> = {
   string: 'string',

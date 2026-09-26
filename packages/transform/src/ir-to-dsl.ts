@@ -333,6 +333,13 @@ class Emitter {
     stmt: Lines;
     id: string;
   }[] = [];
+  /**
+   * The plain end minted for this container when the printer leaves it out,
+   * which is the block's tail unless a chain hoisted behind it forces it to
+   * print. A boundary body's minted end is not it: that body prints in an
+   * array of its own, where nothing follows its end.
+   */
+  private readonly elidedTail: string | undefined;
 
   constructor(
     private readonly container: FlowContainer,
@@ -347,6 +354,13 @@ class Emitter {
     private readonly startTriggerSuppressed = false,
   ) {
     this.cfg = analyzeCfg(container);
+    this.elidedTail = container.flowElements.find(
+      (el) =>
+        el.kind === 'endEvent' &&
+        el.eventDefinition === undefined &&
+        isMintedEndId(el.id, container.id, []) &&
+        isElidedOnPrint(el, container),
+    )?.id;
     for (const el of container.flowElements) {
       // A duplicate would corrupt the walk. The desugarer resolves collisions,
       // so one here means malformed IR.
@@ -365,11 +379,13 @@ class Emitter {
   }
 
   /**
-   * The order of the first three passes is a constraint. A boundary escape
-   * chain is never reached from a start event, so walking it before the orphan
-   * sweep stops that sweep printing the chain as detached top-level statements,
-   * and walking it after the structured pass makes a chain rejoining the main
-   * flow degrade to a `goto`, its targets being emitted already.
+   * The order of the first four passes is a constraint. A node belongs to the
+   * chain that reaches it from one of the container's own entries, a start or
+   * a node no flow enters (a link catch above all), so every such chain is
+   * walked before the boundary handlers and a handler whose body jumps to one
+   * degrades to a `goto` there, its target being emitted already. A boundary
+   * escape chain is reached from no entry, so walking it before the orphan
+   * sweep stops that sweep printing the chain as detached top-level statements.
    */
   emit(): string[] {
     const lines: string[] = [];
@@ -394,9 +410,19 @@ class Emitter {
       }
     }
 
-    // 2. Boundary handlers, held back because the surface requires a handler
+    // 2. Every chain an entry reaches that pass 1 left for a jump, in model
+    //    order like the orphan sweep, which is what places a link catch's
+    //    chain among them.
+    const owned = this.reachableFromEntries();
+    for (const el of this.container.flowElements) {
+      if (owned.has(el.id) && !this.emittedNodes.has(el.id)) {
+        this.emitFrom(el.id, undefined, lines, 0);
+      }
+    }
+
+    // 3. Boundary handlers, held back because the surface requires a handler
     //    block to follow the body it guards. Each block is kept under its
-    //    element's index so pass 5 can place it among the event sub-processes
+    //    element's index so pass 6 can place it among the event sub-processes
     //    the way the model orders them.
     const boundaryBlocks = new Map<number, string[]>();
     this.container.flowElements.forEach((el, index) => {
@@ -407,7 +433,8 @@ class Emitter {
       }
     });
 
-    // 3. Orphaned fragments.
+    // 4. Orphaned fragments: a cycle no entry reaches, and what a handler's
+    //    walk left for a jump.
     for (const el of this.container.flowElements) {
       if (isHandler(el) || isBoundary(el)) continue;
       if (!this.emittedNodes.has(el.id)) {
@@ -415,7 +442,7 @@ class Emitter {
       }
     }
 
-    // 4. Final goto sweep. A jump carries the route and nothing else, so a
+    // 5. Final goto sweep. A jump carries the route and nothing else, so a
     //    condition on one of these goes the way a fall-through's does.
     for (const f of this.container.sequenceFlows) {
       if (!this.consumedFlows.has(f.id)) {
@@ -438,7 +465,7 @@ class Emitter {
     }
     for (const id of printedEnds) this.warnings.push(reservedNameWarning(id));
 
-    // 5. Trailing handler group, in model order: the compiler lays handlers
+    // 6. Trailing handler group, in model order: the compiler lays handlers
     //    down in statement order and numbers an event sub-process by its
     //    statement index, so any other order renumbers it on the next compile.
     this.container.flowElements.forEach((el, index) => {
@@ -510,6 +537,36 @@ class Emitter {
       this.consume(own);
     }
     this.emitFrom(route.targetRef, undefined, lines, 0);
+  }
+
+  /**
+   * Every node a flow can carry a token to from one of the container's own
+   * entries: a start, or a node no flow enters, which is a link catch or a
+   * stranded fragment. A boundary event is an entry too, but its chain is the
+   * handler's own until an entry's chain reaches into it.
+   */
+  private reachableFromEntries(): Set<string> {
+    const entered = new Set(
+      this.container.sequenceFlows.map((f) => f.targetRef),
+    );
+    const reached = new Set<string>();
+    const pending = this.container.flowElements
+      .filter(
+        (el) =>
+          !isBoundary(el) &&
+          !isHandler(el) &&
+          (el.kind === 'startEvent' || !entered.has(el.id)),
+      )
+      .map((el) => el.id);
+    while (pending.length > 0) {
+      const id = pending.pop()!;
+      if (reached.has(id)) continue;
+      reached.add(id);
+      for (const f of this.outgoingBySource.get(id) ?? []) {
+        pending.push(f.targetRef);
+      }
+    }
+    return reached;
   }
 
   /** The one route the model gives a node, or `undefined` where it splits or ends. */
@@ -1003,17 +1060,20 @@ class Emitter {
    * a branch walked past it prints the continuation inside the block.
    *
    * A route straight into a sink is a branch that ends and never counts. Of
-   * the rest, a route is live when it reaches `stop` or a node another route
-   * reaches; where none does, every one is. Among the nodes the live routes
-   * share, in the first one's breadth order: a merge, a gateway with one
-   * route out, ahead of a step on the way to it, since the compiler lowers
-   * every block with a merge and a step ahead of it belongs to the branch;
-   * then `stop`; then the nearest, except for a lone live route heading a
-   * branch with its condition, whose whole chain is that branch and which
-   * continues where the chain ends. `joinKind` narrows the answer to a merge
-   * of that kind the split dominates, the only node a fork or a race
-   * synchronizes at: a merge entered from outside the block as well would
-   * synchronize that entry too once the block's own join stands for it.
+   * the rest, the routes that reach the block's exit, which is `stop` or,
+   * at the top of the container, its elided end, are the live ones; where
+   * none does, a route is live when it reaches a node another route reaches,
+   * and where none does that either, every one is. Among the nodes the live
+   * routes share, in the first one's breadth order: a merge, a gateway with
+   * one route out, ahead of a step on the way to it, since the compiler
+   * lowers every block with a merge and a step ahead of it belongs to the
+   * branch; then the exit; then the nearest step no live route can end or
+   * leave before, except for a lone live route heading a branch with its
+   * condition, whose whole chain is that branch and which continues at the
+   * farthest such step. `joinKind` narrows the answer to a merge of that kind
+   * the split dominates, the only node a fork or a race synchronizes at: a
+   * merge entered from outside the block as well would synchronize that
+   * entry too once the block's own join stands for it.
    */
   private convergence(
     splitId: string,
@@ -1021,39 +1081,86 @@ class Emitter {
     stop: string | undefined,
     joinKind?: Gateway['kind'],
   ): string | undefined {
+    const exit = stop ?? this.elidedTail;
     const routes = outs
       .filter((f) => (this.outgoingBySource.get(f.targetRef) ?? []).length > 0)
       .map((f) => ({ f, reach: this.reachable(f.targetRef, splitId, stop) }));
     const shares = ({ reach }: (typeof routes)[number]): boolean =>
-      [...reach].some(
-        (n) =>
-          n === stop || routes.some((r) => r.reach !== reach && r.reach.has(n)),
+      [...reach].some((n) =>
+        routes.some((r) => r.reach !== reach && r.reach.has(n)),
       );
-    const live = routes.some(shares) ? routes.filter(shares) : routes;
-    if (live.length === 0) return undefined;
-    const shared = [...live[0]!.reach].filter((n) =>
-      live.every((r) => r.reach.has(n)),
+    const running = routes.filter(
+      ({ reach }) => exit !== undefined && reach.has(exit),
     );
-    const isMerge = (n: string): boolean => {
+    const live =
+      running.length > 0
+        ? running
+        : routes.some(shares)
+          ? routes.filter(shares)
+          : routes;
+    if (live.length === 0) return undefined;
+    // A node every path into the split passes lies upstream of it, so
+    // continuing there is a jump back over the block, not its merge. `stop`
+    // is kept: a loop head dominates its body and is where the body ends.
+    const shared = [...live[0]!.reach].filter(
+      (n) =>
+        live.every((r) => r.reach.has(n)) &&
+        (n === stop || !this.cfg.dominates(n, splitId)),
+    );
+    const isMerge = (n: string, kind?: FlowElement['kind']): boolean => {
       const el = this.byId.get(n);
       return (
         el !== undefined &&
         isGateway(el) &&
         (this.outgoingBySource.get(n) ?? []).length === 1 &&
-        (joinKind === undefined ||
-          (el.kind === joinKind && this.cfg.dominates(splitId, n)))
+        (kind === undefined ||
+          (el.kind === kind && this.cfg.dominates(splitId, n)))
       );
     };
-    const merge = shared.find(isMerge);
+    // A lone live route's reach holds every merge on its way, a nested or a
+    // later block's beside this block's own, and the graph does not tell
+    // them apart in general: the compiler keeps a join one route enters.
+    // What it does tell: this block's join is entered by the lone route
+    // alone where a nested if/else's is entered by each of its routes, and a
+    // choice's join is a merge of its own kind where a nested fork's is not.
+    // A nested guard clause's join is entered by one route too, so it can
+    // still be taken first; the block's tail then prints after the block.
+    const ownKind = joinKind ?? this.byId.get(splitId)?.kind;
+    const merge =
+      live.length === 1
+        ? (shared.find(
+            (n) => isMerge(n, ownKind) && this.cfg.incoming(n).length === 1,
+          ) ??
+          shared.find((n) => isMerge(n, ownKind)) ??
+          (joinKind === undefined ? shared.find((n) => isMerge(n)) : undefined))
+        : shared.find((n) => isMerge(n, joinKind));
     if (joinKind !== undefined) return merge;
     if (merge !== undefined) return merge;
-    if (stop !== undefined && shared.includes(stop)) return stop;
+    if (exit !== undefined && shared.includes(exit)) {
+      // A branch's chain leaves the block through its join, so a lone route
+      // that runs into the elided end past no merge was written behind an
+      // authored end and jumped to; the guard clause keeps it that way.
+      return live.length === 1 && stop === undefined ? undefined : exit;
+    }
     const [only] = live;
     const weighed =
       live.length === 1 &&
       only!.f.conditionExpression !== undefined &&
       only!.f.id !== this.splitFallbackFlowId(splitId);
-    return weighed ? shared.at(-1) : shared[0];
+    // A step every live route reaches is the merge only when none can end
+    // or leave for `stop` before it: two jumps into one step from a branch
+    // and from the chain after the block reach it as well, and the chain
+    // walked with the step as its stop prints nested inside the branch,
+    // which the next pass prints hoisted.
+    const leavesBefore = (entry: string, n: string): boolean =>
+      [...this.reachable(entry, splitId, n)].some(
+        (m) =>
+          m !== n &&
+          (m === stop || (this.outgoingBySource.get(m) ?? []).length === 0),
+      );
+    const holds = (n: string): boolean =>
+      live.every((r) => !leavesBefore(r.f.targetRef, n));
+    return weighed ? shared.findLast(holds) : shared.find(holds);
   }
 
   /**
@@ -1159,9 +1266,18 @@ class Emitter {
    * a guard clause whose entry is a bare authored end that the split's route
    * reaches as its only incoming flow; and a guard clause whose entry is a
    * gateway the split owns, which a jump could not name anyway, and whose
-   * routes the walk sorts with `join` as their stop node. An authored entry
-   * with a chain of its own stays a `goto`, keeping that chain at its authored
-   * scope so its coordinate-derived ids survive the round trip.
+   * routes the walk sorts with `join` as their stop node.
+   *
+   * An authored entry with a chain of its own is decided by the block's tail.
+   * A jump hoists the chain behind everything walked from the starts; where
+   * that ends on the plain end the printer leaves out, the chain would follow
+   * that end on the page and push it off the one position the compiler
+   * re-derives it at, so the chain prints inside the branch. Where the block
+   * ends on authored terminals the chain stays a `goto` at its authored
+   * scope, so the coordinate-derived ids of its unnamed events survive the
+   * round trip. A chain that runs into the elided end is that tail itself and
+   * stays a `goto` as well: printed inside the branch, the end would print
+   * under its reserved id.
    */
   private branchStaysInRegion(
     entry: string,
@@ -1179,7 +1295,13 @@ class Emitter {
     }
     if (isGateway(el)) return true;
     if (isSynthesizedTerminalId(entry, el.kind, this.container)) return true;
-    return el.kind === 'endEvent' && this.cfg.incoming(entry).length === 1;
+    if (el.kind === 'endEvent' && this.cfg.incoming(entry).length === 1) {
+      return true;
+    }
+    return (
+      this.elidedTail !== undefined &&
+      !this.reachable(entry, splitId, join).has(this.elidedTail)
+    );
   }
 
   /**

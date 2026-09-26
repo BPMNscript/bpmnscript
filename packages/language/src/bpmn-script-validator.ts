@@ -162,6 +162,7 @@ import {
   JOIN_ENGINE_KEYS,
   JOIN_KEY_BY_ENGINE_KEY,
   joinSettingKey,
+  JUEL_LITERAL_WORDS,
   JUEL_RESERVED_WORDS,
   LISTENER_BINDING_KEYS,
   listenerEventsFor,
@@ -788,6 +789,17 @@ const EMPTY_STRING_VALUE_MESSAGE =
 const JUEL_RESERVED_WORD_SET: ReadonlySet<string> = new Set(
   JUEL_RESERVED_WORDS,
 );
+
+/**
+ * A raw template is plain text, so unlike a declaration or a rendered
+ * accessor it can spell `true`, `false` or `null` as a `.prop` read; the
+ * scanner still returns their keyword tokens there (see
+ * {@link JUEL_LITERAL_WORDS}).
+ */
+const JUEL_RAW_TEMPLATE_WORD_SET: ReadonlySet<string> = new Set([
+  ...JUEL_RESERVED_WORDS,
+  ...JUEL_LITERAL_WORDS,
+]);
 
 /** @param key The string-key spelling that reaches the name, `execution.getVariable('x')` or `order['x']`. */
 const juelKeywordMessage = (word: string, key: string) =>
@@ -4773,6 +4785,9 @@ export class BpmnScriptValidator {
     catchEvent: CatchHeader,
     accept: ValidationAcceptor,
   ): void {
+    // A race branch whose leading `ID` a syntax error swallows still reaches
+    // the AST with no trigger at all; the parser errors already say so, and
+    // naming 'undefined' as an unknown event kind would only pile on.
     if (catchEvent.trigger === undefined) return;
 
     if (!CATCH_TRIGGERS_SET.has(catchEvent.trigger)) {
@@ -5708,8 +5723,10 @@ const STRING_OR_PROPERTY_READ =
 
 /**
  * Every `.prop` a raw template reads, held to the keyword rule a rendered
- * accessor is under: the scanner registers the keywords as operators wherever
- * they stand, so `${order.and}` fails to parse at deployment. Text between
+ * accessor is under, plus `true`/`false`/`null`: the scanner registers all of
+ * them as operators or literal tokens wherever they stand, so `${order.and}`
+ * and `${order.true}` both fail to parse at deployment, though the grammar
+ * would never let either spell a variable or an accessor name. Text between
  * two templates is never scanned as an expression, so a word there is text.
  */
 function checkRawTemplateNames(
@@ -5720,7 +5737,7 @@ function checkRawTemplateNames(
   for (const [, body] of raw.matchAll(TEMPLATE_BODIES)) {
     for (const match of body!.matchAll(STRING_OR_PROPERTY_READ)) {
       const word = match[1];
-      if (word === undefined || !JUEL_RESERVED_WORD_SET.has(word)) continue;
+      if (word === undefined || !JUEL_RAW_TEMPLATE_WORD_SET.has(word)) continue;
       // The object as written, `items[0]` or `order.line`, for the hint.
       const object = /[\w$.[\]'"]*$/.exec(
         body!.slice(0, match.index).trimEnd(),

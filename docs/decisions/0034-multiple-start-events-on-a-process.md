@@ -76,8 +76,11 @@ The decompiler walks an unnamed plain start ahead of every other.
 Such a start is elided on print and re-derived by the compiler at the head of the body, so its chain has to be the first one printed, else the entry point is lost on the way back.
 
 One corner is accepted rather than fixed, the one ADR-0019 already records for a boundary chain.
-A start whose first step is a synthesized gateway, as in `start A`, `start B`, `if (x) { ... }`, compiles to correct XML but prints back as a dropped-edge marker, because the gateway's out-edges were consumed by the `if` printed for the first chain.
-The authoring rule that follows: write each start ahead of a named step.
+A start whose first step is a synthesized gateway prints the branch when every start into that gateway prints: `start A`, `start B`, `if (x) { ... }` round-trips clean.
+The corner survives when one of those starts is the elided plain start, the one carrying the minted `StartEvent_<process>` id and no content.
+Its chain is walked first, the `if` printed for it consumes the gateway's out-edges, and the other start prints back as a dropped-edge marker.
+No source spells that shape, since `goto` names an authored statement and never a synthesized gateway, so it reaches the printer through an imported document alone.
+The authoring rule that keeps clear of it: write each start ahead of a named step.
 The golden fixture and the `support-ticket` example both obey it.
 
 ### Consequences
@@ -88,9 +91,9 @@ The golden fixture and the `support-ticket` example both obey it.
   Refusing the shape is what rules that out.
 - Neutral, because `initiator` is read off every start and set on the process definition by `BpmnParse.parseProcessDefinitionStartEvent`, last one wins, and the validator warns on every start but the last that names one.
 - Neutral, because a message start whose name is already subscribed by another deployed definition fails in `BpmnDeployer.addMessageStartEventSubscription`, a fact about the deployment rather than the file, and out of this tool's reach.
-- Bad, because the printed form of a process with several starts is not the authored one: every start after the first chain prints after that chain's `end`, followed by a `goto` onto the shared step.
+- Bad, because the printed form of a process with several starts is not always the authored one: starts entering the same step print back to back above it, even one written after an `end` with a `goto` onto that step.
   The graph is the same, which the idempotence block asserts, but the reader has to learn the shape.
-- Bad, because the corner above means a start into a synthesized gateway round-trips with a warning rather than cleanly.
+- Bad, because the corner above means an imported document with an unnamed plain start into a shared synthesized gateway round-trips with a warning rather than cleanly.
 
 ### Confirmation
 

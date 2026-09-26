@@ -418,7 +418,7 @@ An element name with no collection to take it from is a deployment error in Oper
 The runs happen at once, which is the engine's own default, unless `sequentially` orders them one after another.
 
 `until ( <condition> )` drops the runs still outstanding, once the condition holds.
-Operaton keeps `nrOfInstances`, `nrOfActiveInstances`, and `nrOfCompletedInstances` on the repetition as a whole and evaluates the completion condition there, so those three are the names the condition can read.
+Operaton keeps `nrOfInstances`, `nrOfActiveInstances`, and `nrOfCompletedInstances` on the repetition as a whole, where every run's condition can read them, so those three are the names the condition can read.
 `loopCounter` is set on each run and is readable there too: in the run's body, its `input` parameters, and the `until` condition alike.
 A sequential repetition evaluates the condition on the run that just finished, since only one run is ever active (`SequentialMultiInstanceActivityBehavior.complete`); a parallel one evaluates it on whichever concurrent run just ended, not the whole set, so `loopCounter` there names that one run's index (`ParallelMultiInstanceActivityBehavior.concurrentChildExecutionEnded`).
 All four are in scope without a `var` declaration, as is the element name.

@@ -302,7 +302,7 @@ flowchart LR
     IR -- irToDsl --> SRC
 ```
 
-A source file is parsed into an AST, converted into the IR (a small set of plain TypeScript objects in `packages/transform/src/ir/types.ts` that describe a process without reference to any specific engine), and written out from there.
+A source file is parsed into an AST, converted into the IR (a small set of plain TypeScript objects in `packages/transform/src/ir/types.ts` that describe a process in the engine's own terms, tied to no file format), and written out from there.
 Compiling is `.bpmnscript` -> AST -> IR -> `.bpmn`; decompiling is `.bpmn` -> IR -> `.bpmnscript`.
 
 The IR carries Operaton's semantics under names with no vendor prefix: the engine's bindings, execution settings, input/output parameters and lifecycle listeners are all plain-named IR fields, and `operaton:` is applied only where `irToXml` builds the moddle element from a local [moddle extension](packages/transform/src/operaton-moddle.json) ([ADR-0006](docs/decisions/0006-intermediate-representation-between-ast-and-bpmn.md), [ADR-0022](docs/decisions/0022-engine-attributes-as-named-ir-fields.md), [ADR-0023](docs/decisions/0023-listeners-on-the-attribute-block.md)).

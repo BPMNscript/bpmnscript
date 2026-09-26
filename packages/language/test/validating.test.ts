@@ -1062,6 +1062,11 @@ checks('Validation - a JUEL keyword or a hyphen in a rendered name', [
     ],
   ]),
   [
+    "'true' as a property inside a raw template is the same operator",
+    `process p { if ("\${order.true}") { user A } }`,
+    [juelKeyword('true', "order['true']")],
+  ],
+  [
     'a keyword read off a bracketed object in a raw template is keyed on that object',
     `process p { if ("\${items[0].and}") { user A } }`,
     [juelKeyword('and', "items[0]['and']")],
@@ -4423,6 +4428,19 @@ checks('Validation - awaited events', [
     'a message branch and a signal branch of one name are two subscriptions',
     `process p { await { message("Dup") { user A } signal("Dup") { user B } } }`,
     [],
+  ],
+  [
+    'a race branch a parse error leaves without a trigger draws no phantom trigger error',
+    `process p { start S  await { (label: "x") message M } }`,
+    [
+      "Expecting token of type 'ID' but found `(`.",
+      "Expecting token of type '{' but found `message`.",
+      "Expecting token of type '=' but found `}`.",
+      "Expecting: expecting at least one iteration which starts with one of these possible Token sequences::\n  <[ID]>\nbut found: '}'",
+      notValidOn('label', 'a branch of an await block'),
+      warn(emptyNumberedBranch(1, 'await')),
+      blockParameter('message'),
+    ],
   ],
 ]);
 

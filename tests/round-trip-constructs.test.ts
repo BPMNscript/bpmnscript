@@ -246,11 +246,11 @@ describe('bean-call condition stays quoted-raw end-to-end', () => {
   });
 });
 
-// The fuzz found every row below by printing, rebuilding and printing again;
-// the suites elsewhere in this repo stop after one hop each direction and
-// never see a value that is stable on the first print but drifts on the
-// second. `xml2`/`dsl2` come from feeding `dsl1` back through the same two
-// hops, so a row pins idempotence, not just a single compile.
+// Every row below prints, rebuilds and prints again; the suites elsewhere in
+// this repo stop after one hop each direction and never see a value that is
+// stable on the first print but drifts on the second. `xml2`/`dsl2` come from
+// feeding `dsl1` back through the same two hops, so a row pins idempotence,
+// not just a single compile.
 //
 // Two attribute values below carry a literal `"`, which this pipeline's XML
 // writer cannot place directly in an attribute and instead numeric-escapes
@@ -395,6 +395,46 @@ const ENDING_BRANCH_BESIDE_ELSE_CHAIN_SRC = [
   '',
 ].join('\n');
 
+const LOOP_INSIDE_BRANCH_SRC = [
+  'process claim-review {',
+  '  if (true) {',
+  '    do {',
+  '      await message Wait3("PaymentDone")',
+  '    } while (true)',
+  '  } else if (true) {',
+  '    throw message("Quote Received")',
+  '  } else {',
+  '    service Escalate(class: "com.example.Delegate")',
+  '  }',
+  '  end Done9',
+  '}',
+  '',
+].join('\n');
+
+const ENDING_CHAINS_IN_BRANCHES_SRC = [
+  'process p {',
+  '  var a: any',
+  '  var b: any',
+  '  if (a) {',
+  '    user A',
+  '    throw message("Quote Received")',
+  '  } else if (b) {',
+  '    user B',
+  '    await {',
+  '      message("OrderReceived") {',
+  '        end Done',
+  '      }',
+  '      message("Quote Received") {',
+  '        user C',
+  '      }',
+  '    }',
+  '  } else {',
+  '    user D',
+  '  }',
+  '}',
+  '',
+].join('\n');
+
 const EXPRESSION_MAP_KEY_SRC = [
   'process p {',
   '  service A(class: "x") {',
@@ -409,6 +449,52 @@ const BACKSLASH_IN_JUEL_STRING_SRC = [
   '  if ("${region == \\"a\\\\\\\\b\\"}") {',
   '    user A',
   '  }',
+  '}',
+  '',
+].join('\n');
+
+const HANDLER_JUMPING_TO_ITS_HOST_SRC = [
+  'process invoice_batch {',
+  '  emit link("Skip")',
+  '  await link("Skip")',
+  '  receive Hold14',
+  '  on Hold14: message("Cancelled") {',
+  '    goto Hold14',
+  '  }',
+  '}',
+  '',
+].join('\n');
+
+const HANDLER_JUMPING_TO_A_LINKED_STEP_SRC = [
+  'process invoice_batch {',
+  '  var order: any',
+  '  var items: any',
+  '  step Check6',
+  '  emit link("Retry")',
+  '  await link("Retry")',
+  '  call Call(process: "payment-run")',
+  '  on Check6: condition(order.name != items[0]) {',
+  '    goto Call',
+  '  }',
+  '}',
+  '',
+].join('\n');
+
+const TWO_JUMPS_INTO_ONE_STEP_SRC = [
+  'process p {',
+  '  var a: any',
+  '  var b: any',
+  '  if (a) {',
+  '    goto X',
+  '  }',
+  '  user B',
+  '  if (b) {',
+  '    goto X',
+  '  }',
+  '  user C',
+  '  end Done',
+  '  user X',
+  '  throw message("M")',
   '}',
   '',
 ].join('\n');
@@ -550,9 +636,10 @@ describe('two-pass round trip: printed expression text stays engine-runnable and
       ],
     ],
     [
-      // The ending branch takes the split's post-dominator to the exit, so
-      // the else chain used to be read as the continuation and the middle
-      // branch walked on through the join to the implicit end.
+      // The ending branch puts the split's post-dominator at the exit, so
+      // the join is read off the routes: the middle branch and the else
+      // chain come back together at it, and neither walks on to the
+      // implicit end.
       'an if chain with an ending branch beside an else chain keeps the else, and the implicit end stays unwritten',
       ENDING_BRANCH_BESIDE_ELSE_CHAIN_SRC,
       [
@@ -560,6 +647,74 @@ describe('two-pass round trip: printed expression text stays engine-runnable and
       ],
       [
         '  } else if (b) {\n    user Log\n  } else {\n    service Approve10(class: "org.acme.Audit")\n  }\n}\n',
+      ],
+    ],
+    [
+      // The branch's entry is the loop body, which the block's join
+      // post-dominates, so the walk stays inside the branch and prints the
+      // loop where it was written.
+      'a loop inside a branch prints inside it, not as a jump with the loop hoisted behind the end',
+      LOOP_INSIDE_BRANCH_SRC,
+      [
+        '<bpmn:sequenceFlow id="Flow_Gateway_claim-review_0_t_0_loop_Wait3" name="true" sourceRef="Gateway_claim-review_0_t_0_loop" targetRef="Wait3">',
+        '<bpmn:sequenceFlow id="Flow_Gateway_claim-review_0_split_Wait3" name="true" sourceRef="Gateway_claim-review_0_split" targetRef="Wait3">',
+      ],
+      [
+        '  if (true) {\n    do {\n      await message Wait3("PaymentDone")\n    } while (true)\n  } else if (true) {\n',
+      ],
+    ],
+    [
+      // Neither chain reaches the join, and the block's tail is the implicit
+      // end; hoisted behind it as jump targets, the chains would push that
+      // end off its tail and print it under its reserved id.
+      'two branches whose chains end print them inside the branches, and the implicit end stays unwritten',
+      ENDING_CHAINS_IN_BRANCHES_SRC,
+      [
+        '<bpmn:sequenceFlow id="Flow_A_Throw_p_0_t_1" sourceRef="A" targetRef="Throw_p_0_t_1" />',
+        '<bpmn:sequenceFlow id="Flow_Catch_p_0_e0_1_b0_Done" sourceRef="Catch_p_0_e0_1_b0" targetRef="Done" />',
+        '<bpmn:sequenceFlow id="Flow_Gateway_p_0_join_EndEvent_p" sourceRef="Gateway_p_0_join" targetRef="EndEvent_p" />',
+      ],
+      [
+        '  if (a) {\n    user A\n    throw message("Quote Received")\n  } else if (b) {\n    user B\n    await {\n',
+        '  } else {\n    user D\n  }\n}\n',
+      ],
+    ],
+    [
+      // Both routes of the first split reach `X`, and the else route can
+      // also end at `Done` without passing it, so `X` is no merge of the
+      // block: taken as one, the else chain prints nested inside the branch
+      // and the next pass prints it hoisted.
+      'two jumps from sibling branches into one step keep the step after the chain, not as the join',
+      TWO_JUMPS_INTO_ONE_STEP_SRC,
+      [
+        '<bpmn:sequenceFlow id="Flow_Gateway_p_0_split_X" name="a" sourceRef="Gateway_p_0_split" targetRef="X">',
+        '<bpmn:sequenceFlow id="Flow_Gateway_p_2_split_X" name="b" sourceRef="Gateway_p_2_split" targetRef="X">',
+      ],
+      [
+        '  if (a) {\n    goto X\n  }\n  user B\n  if (b) {\n    goto X\n  }\n  user C\n  end Done\n  user X\n  throw message("M")\n}\n',
+      ],
+    ],
+    [
+      // The host is reached only through the link catch; a handler walked
+      // before that chain would pull the host into its own body.
+      'a handler jumping back to its host keeps the host where the link catch reaches it',
+      HANDLER_JUMPING_TO_ITS_HOST_SRC,
+      [
+        '<bpmn:sequenceFlow id="Flow_Boundary_Hold14_message_Hold14" sourceRef="Boundary_Hold14_message" targetRef="Hold14" />',
+      ],
+      [
+        '  await link("Skip")\n  receive Hold14\n  on Hold14: message("Cancelled") {\n    goto Hold14\n  }\n}\n',
+      ],
+    ],
+    [
+      'a handler jumping to a step the link catch reaches keeps the step, and the process end, outside the handler',
+      HANDLER_JUMPING_TO_A_LINKED_STEP_SRC,
+      [
+        '<bpmn:sequenceFlow id="Flow_Boundary_Check6_condition_Call" sourceRef="Boundary_Check6_condition" targetRef="Call" />',
+        '<bpmn:sequenceFlow id="Flow_Call_EndEvent_invoice_batch" sourceRef="Call" targetRef="EndEvent_invoice_batch" />',
+      ],
+      [
+        '  await link("Retry")\n  call Call(process: "payment-run")\n  on Check6: condition(order.name != items[0]) {\n    goto Call\n  }\n}\n',
       ],
     ],
   ] as const)('%s', async (_title, source, xmlContains, dslContains) => {
@@ -578,5 +733,62 @@ describe('two-pass round trip: printed expression text stays engine-runnable and
 
     expect(xml2).toBe(xml1);
     expect(dsl2).toBe(dsl1);
+  });
+
+  // The pass that walks a node first owns it in the print, and the chains
+  // the container's entries reach are walked before the handler blocks. The
+  // owned chain then ends at the process end rather than the handler's, so
+  // the model changes where the print is stable; what it keeps is which
+  // steps reach which.
+  it("an entry chain jumping into a handler body owns the body's chain, and the handler degrades to a goto", async () => {
+    const source = [
+      'process p {',
+      '  var order: any',
+      '  step Host',
+      '  emit link("L")',
+      '  await link("L")',
+      '  step B',
+      '  goto A',
+      '  on Host: condition(order.paid) {',
+      '    step A',
+      '  }',
+      '}',
+      '',
+    ].join('\n');
+    const { dsl1, dsl2, xml1, xml2 } = await roundTripTwice(source);
+
+    expect(dsl1).toBe(
+      [
+        'process p {',
+        '  var order: any',
+        '  step Host',
+        '  emit link("L")',
+        '  await link("L")',
+        '  step B',
+        '  step A',
+        '  on Host: condition(order.paid) {',
+        '    goto A',
+        '  }',
+        '}',
+        '',
+      ].join('\n'),
+    );
+    const { diagnostics } = await validate(dsl1);
+    expect(diagnostics.map((d) => d.message)).toEqual([]);
+    expect(dsl2).toBe(dsl1);
+
+    const [ir1, ir2] = await Promise.all(
+      [xml1, xml2].map(async (xml) => (await xmlToIr(xml)).ir),
+    );
+    const owned = (id: string): string =>
+      id === 'EndEvent_Boundary_Host_condition' ? 'EndEvent_p' : id;
+    expect(ir2.flowElements.map((el) => el.id).sort()).toEqual(
+      ir1.flowElements.map((el) => owned(el.id)).sort(),
+    );
+    expect(realNodeReachability(ir2)).toEqual(
+      realNodeReachability(ir1).map((pair) =>
+        pair.split('->').map(owned).join('->'),
+      ),
+    );
   });
 });
