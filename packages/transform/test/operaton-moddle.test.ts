@@ -1,22 +1,6 @@
-/**
- * Pins the behavior of `operaton-moddle.json` directly against a real
- * `BpmnModdle` instance, with no `xmlToIr`/`irToXml` involved. Three traps
- * this descriptor exists to close:
- *
- *   - `extensionElements` splits its children three ways: a declared type
- *     becomes a typed entry in `values`, an unregistered namespace becomes a
- *     generic value with no warning, and a registered namespace carrying an
- *     undeclared type is dropped with only a document-level warning and no
- *     back-pointer to the element that lost it. A type has to be declared
- *     here before it can be attributed to the step that carries it.
- *   - `InputParameter`/`OutputParameter`/`Entry` declare their nested value
- *     as an `isMany` `definitions` array. A single-valued property would
- *     silently keep only the last of two co-present nested values, with zero
- *     warnings and no way for a reader to detect the loss.
- *   - `default` on `exclusive`/`asyncBefore`/`asyncAfter` makes moddle omit
- *     those attributes on write when they hold the default value, matching
- *     the IR convention of storing only non-default booleans.
- */
+// Pins operaton-moddle.json against a bare BpmnModdle: moddle drops an undeclared extension child with only a
+// document-level warning, keeps only the last of two values in a single-valued property, and omits a boolean
+// attribute at its declared default on write.
 
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
@@ -27,12 +11,10 @@ import { BpmnModdle, type ModdleElement } from 'bpmn-moddle';
 
 const here = dirname(fileURLToPath(import.meta.url));
 
-/** The Operaton moddle extension descriptor under test, read from source. */
 const OPERATON_EXTENSION: Record<string, unknown> = JSON.parse(
   readFileSync(resolve(here, '../src/operaton-moddle.json'), 'utf-8'),
 );
 
-/** A raw `BpmnModdle` carrying only the Operaton extension (no `camunda-bpmn-moddle`). */
 function operatonModdle(): InstanceType<typeof BpmnModdle> {
   return new BpmnModdle({ operaton: OPERATON_EXTENSION });
 }
@@ -42,13 +24,6 @@ const XML_HEADER = `<?xml version="1.0" encoding="UTF-8"?>
                   xmlns:operaton="http://operaton.org/schema/1.0/bpmn"
                   targetNamespace="http://test">`;
 
-/**
- * Parse a full document and return its single `bpmn:Process` root element,
- * alongside the `bpmn:Definitions` root that holds it. A re-serialize has to
- * start from the definitions root: `toXML` writes its own XML declaration, so
- * serializing the process alone and pasting the result under a header would put
- * a declaration in the middle of the document.
- */
 async function parseProcess(
   moddle: InstanceType<typeof BpmnModdle>,
   xmlStr: string,
@@ -66,7 +41,6 @@ async function parseProcess(
   return { definitions: rootElement, process, warnings };
 }
 
-/** The typed `extensionElements.values` of a flow node, or `[]` if none. */
 function extensionValues(el: ModdleElement): ModdleElement[] {
   const extensionElements = el.get('extensionElements') as
     ModdleElement | undefined;
@@ -75,13 +49,24 @@ function extensionValues(el: ModdleElement): ModdleElement[] {
     : (extensionElements.get('values') as ModdleElement[]);
 }
 
-describe('every new type parses and re-serializes with nested values intact', () => {
-  const fixture = `${XML_HEADER}
+const elementsOf = (process: ModdleElement): ModdleElement[] =>
+  process.get('flowElements') as ModdleElement[];
+
+const definitionsOf = (parameter: ModdleElement): ModdleElement[] =>
+  parameter.get('definitions') as ModdleElement[];
+
+function inputParameters(process: ModdleElement): ModdleElement[] {
+  const [io] = extensionValues(elementsOf(process)[0]);
+  return io.get('inputParameters') as ModdleElement[];
+}
+
+describe('every declared type parses with zero warnings, every child at its expected path, and round-trips byte for byte', () => {
+  const EVERY_TYPE_FIXTURE = `${XML_HEADER}
   <bpmn:process id="Process_1" isExecutable="true" operaton:versionTag="1.2.3"
                 operaton:candidateStarterUsers="demo,manager" operaton:candidateStarterGroups="adjusters">
     <bpmn:startEvent id="Start" operaton:initiator="claimant" />
     <bpmn:userTask id="Review" operaton:assignee="alice" operaton:candidateUsers="bob,carol"
-                   operaton:candidateGroups="reviewers" operaton:dueDate="P1D"
+                   operaton:candidateGroups="approvers" operaton:dueDate="P1D"
                    operaton:followUpDate="P2D" operaton:priority="50">
       <bpmn:extensionElements>
         <operaton:inputOutput>
@@ -120,20 +105,8 @@ describe('every new type parses and re-serializes with nested values intact', ()
   </bpmn:process>
 </bpmn:definitions>`;
 
-  /** Read every value this test cares about out of a parsed process tree. */
-  function snapshot(process: ModdleElement): unknown {
-    const start = (process.get('flowElements') as ModdleElement[]).find(
-      (e) => e.id === 'Start',
-    )!;
-    const review = (process.get('flowElements') as ModdleElement[]).find(
-      (e) => e.id === 'Review',
-    )!;
-    const compute = (process.get('flowElements') as ModdleElement[]).find(
-      (e) => e.id === 'Compute',
-    )!;
-    const notify = (process.get('flowElements') as ModdleElement[]).find(
-      (e) => e.id === 'Notify',
-    )!;
+  function everyTypeSnapshot(process: ModdleElement): unknown {
+    const [start, review, compute, notify] = elementsOf(process);
 
     const [io, listener, failedJob] = extensionValues(review);
     const param = (io.get('inputParameters') as ModdleElement[])[0];
@@ -196,7 +169,7 @@ describe('every new type parses and re-serializes with nested values intact', ()
     };
   }
 
-  const expected = {
+  const EVERY_TYPE_EXPECTED = {
     versionTag: '1.2.3',
     candidateStarterUsers: 'demo,manager',
     candidateStarterGroups: 'adjusters',
@@ -206,7 +179,7 @@ describe('every new type parses and re-serializes with nested values intact', ()
     review: {
       assignee: 'alice',
       candidateUsers: 'bob,carol',
-      candidateGroups: 'reviewers',
+      candidateGroups: 'approvers',
       dueDate: 'P1D',
       followUpDate: 'P2D',
       priority: '50',
@@ -242,27 +215,7 @@ describe('every new type parses and re-serializes with nested values intact', ()
     },
   };
 
-  it('parses with zero warnings and every nested value at its expected path', async () => {
-    const { process, warnings } = await parseProcess(operatonModdle(), fixture);
-    expect(warnings).toHaveLength(0);
-    expect(snapshot(process)).toEqual(expected);
-  });
-
-  it('round-trips through toXML unchanged', async () => {
-    const first = operatonModdle();
-    const { definitions } = await parseProcess(first, fixture);
-    const { xml } = await first.toXML(definitions, { format: false });
-
-    const second = operatonModdle();
-    const { process: reparsed, warnings } = await parseProcess(second, xml);
-    expect(warnings).toHaveLength(0);
-    expect(snapshot(reparsed)).toEqual(expected);
-  });
-});
-
-describe('InputOutputParameterDefinition is isMany, not a single-valued definition', () => {
-  it('a parameter carrying a list and a map keeps both, in document order', async () => {
-    const fixture = `${XML_HEADER}
+  const LIST_AND_MAP_FIXTURE = `${XML_HEADER}
   <bpmn:process id="P">
     <bpmn:serviceTask id="T">
       <bpmn:extensionElements>
@@ -274,27 +227,7 @@ describe('InputOutputParameterDefinition is isMany, not a single-valued definiti
   </bpmn:process>
 </bpmn:definitions>`;
 
-    const { process, warnings } = await parseProcess(operatonModdle(), fixture);
-    expect(warnings).toHaveLength(0);
-
-    const task = (process.get('flowElements') as ModdleElement[])[0];
-    const [io] = extensionValues(task);
-    const param = (io.get('inputParameters') as ModdleElement[])[0];
-    const definitions = param.get('definitions') as ModdleElement[];
-
-    // The trap: a single-valued `definition` property would keep only the
-    // last of these two (the map), with zero warnings and no signal that
-    // the list was ever there.
-    expect(definitions.map((d) => d.$type)).toEqual([
-      'operaton:List',
-      'operaton:Map',
-    ]);
-  });
-});
-
-describe('operaton:entry is accepted wherever a definition is accepted', () => {
-  it('parses warning-free inside a list and directly under an input parameter', async () => {
-    const fixture = `${XML_HEADER}
+  const ENTRY_FIXTURE = `${XML_HEADER}
   <bpmn:process id="P">
     <bpmn:serviceTask id="T">
       <bpmn:extensionElements>
@@ -307,38 +240,7 @@ describe('operaton:entry is accepted wherever a definition is accepted', () => {
   </bpmn:process>
 </bpmn:definitions>`;
 
-    const { process, warnings } = await parseProcess(operatonModdle(), fixture);
-    expect(warnings).toHaveLength(0);
-
-    const task = (process.get('flowElements') as ModdleElement[])[0];
-    const [io] = extensionValues(task);
-    const [inList, bare] = io.get('inputParameters') as ModdleElement[];
-
-    // `Entry` subclasses `InputOutputParameterDefinition`, so it satisfies both
-    // `List.items` and `InputParameter.definitions`. The descriptor accepts a
-    // stray entry outside a map; rejecting that shape is the importer's job,
-    // and this pins that the tolerance is where the rejection can see it.
-    const inListEntry = (
-      (inList.get('definitions') as ModdleElement[])[0].get(
-        'items',
-      ) as ModdleElement[]
-    )[0];
-    expect([inListEntry.$type, inListEntry.get('key')]).toEqual([
-      'operaton:Entry',
-      'a',
-    ]);
-
-    const bareEntry = (bare.get('definitions') as ModdleElement[])[0];
-    expect([bareEntry.$type, bareEntry.get('key')]).toEqual([
-      'operaton:Entry',
-      'b',
-    ]);
-  });
-});
-
-describe('a parameter carrying both body text and a nested definition keeps both', () => {
-  it('yields both `value` and a `definitions` entry', async () => {
-    const fixture = `${XML_HEADER}
+  const TEXT_AND_SCRIPT_FIXTURE = `${XML_HEADER}
   <bpmn:process id="P">
     <bpmn:serviceTask id="T">
       <bpmn:extensionElements>
@@ -350,55 +252,6 @@ describe('a parameter carrying both body text and a nested definition keeps both
   </bpmn:process>
 </bpmn:definitions>`;
 
-    const { process, warnings } = await parseProcess(operatonModdle(), fixture);
-    expect(warnings).toHaveLength(0);
-
-    const task = (process.get('flowElements') as ModdleElement[])[0];
-    const [io] = extensionValues(task);
-    const param = (io.get('inputParameters') as ModdleElement[])[0];
-
-    // A reader must check both forms rather than returning on the first hit.
-    expect(param.get('value')).toBe('text');
-    const definitions = param.get('definitions') as ModdleElement[];
-    expect(definitions).toHaveLength(1);
-    expect(definitions[0].$type).toBe('operaton:Script');
-  });
-});
-
-describe('per-element attribution of a dropped extension child', () => {
-  it('a declared child materializes, an undeclared one produces exactly one warning naming it', async () => {
-    const fixture = `${XML_HEADER}
-  <bpmn:process id="P">
-    <bpmn:serviceTask id="T">
-      <bpmn:extensionElements>
-        <operaton:failedJobRetryTimeCycle>R3/PT10M</operaton:failedJobRetryTimeCycle>
-        <operaton:potentialStarter />
-      </bpmn:extensionElements>
-    </bpmn:serviceTask>
-  </bpmn:process>
-</bpmn:definitions>`;
-
-    const { process, warnings } = await parseProcess(operatonModdle(), fixture);
-
-    const task = (process.get('flowElements') as ModdleElement[])[0];
-    const values = extensionValues(task);
-
-    // The declared element survives as a typed value; the undeclared one is
-    // dropped from `values` entirely (no back-pointer to `task`). The surviving
-    // child is one this descriptor introduces, so the assertion measures the
-    // declaration rather than what `bpmn-moddle` already knew.
-    expect(values.map((v) => v.$type)).toEqual([
-      'operaton:FailedJobRetryTimeCycle',
-    ]);
-
-    // Never infer a per-element drop from a document-level boolean: assert
-    // the exact warning count and that its message names the dropped type.
-    expect(warnings).toHaveLength(1);
-    expect(warnings[0].message).toContain('operaton:potentialStarter');
-  });
-});
-
-describe('the form field extras and the external task extras parse and re-serialize', () => {
   const FORM_FIELD_FIXTURE = `${XML_HEADER}
   <bpmn:process id="P">
     <bpmn:userTask id="T">
@@ -422,10 +275,8 @@ describe('the form field extras and the external task extras parse and re-serial
   </bpmn:process>
 </bpmn:definitions>`;
 
-  /** Every child of the form field, at the path each direction reads it from. */
   function formFieldSnapshot(process: ModdleElement): unknown {
-    const task = (process.get('flowElements') as ModdleElement[])[0];
-    const [formData] = extensionValues(task);
+    const [formData] = extensionValues(elementsOf(process)[0]);
     const [field] = formData.get('fields') as ModdleElement[];
     const properties = field.get('properties') as ModdleElement;
     const [property] = properties.get('values') as ModdleElement[];
@@ -462,9 +313,8 @@ describe('the form field extras and the external task extras parse and re-serial
   </bpmn:process>
 </bpmn:definitions>`;
 
-  /** Every child `xmlToIr` reads, at the path it reads it from. */
   function externalTaskSnapshot(process: ModdleElement): unknown {
-    const task = (process.get('flowElements') as ModdleElement[])[0];
+    const task = elementsOf(process)[0];
     const [propertiesEl, definitionEl] = extensionValues(task);
     const property = (propertiesEl.get('values') as ModdleElement[])[0];
     const errorRoot = definitionEl.get('errorRef') as ModdleElement;
@@ -482,7 +332,79 @@ describe('the form field extras and the external task extras parse and re-serial
     };
   }
 
+  const LOOP_SETTINGS_FIXTURE = `${XML_HEADER}
+  <bpmn:process id="P">
+    <bpmn:serviceTask id="T" operaton:class="com.example.Delegate">
+      <bpmn:multiInstanceLoopCharacteristics operaton:asyncBefore="true" operaton:asyncAfter="true" operaton:exclusive="false">
+        <bpmn:extensionElements>
+          <operaton:failedJobRetryTimeCycle>R3/PT10M</operaton:failedJobRetryTimeCycle>
+        </bpmn:extensionElements>
+        <bpmn:loopCardinality>3</bpmn:loopCardinality>
+      </bpmn:multiInstanceLoopCharacteristics>
+    </bpmn:serviceTask>
+  </bpmn:process>
+</bpmn:definitions>`;
+
+  const TIMEOUT_LISTENER_FIXTURE = `${XML_HEADER}
+  <bpmn:process id="P">
+    <bpmn:userTask id="T">
+      <bpmn:extensionElements>
+        <operaton:taskListener event="timeout" class="com.example.L">
+          <bpmn:timerEventDefinition>
+            <bpmn:timeDuration>PT1H</bpmn:timeDuration>
+          </bpmn:timerEventDefinition>
+        </operaton:taskListener>
+      </bpmn:extensionElements>
+    </bpmn:userTask>
+  </bpmn:process>
+</bpmn:definitions>`;
+
   it.each([
+    [
+      'every declared type, nested values included',
+      EVERY_TYPE_FIXTURE,
+      everyTypeSnapshot,
+      EVERY_TYPE_EXPECTED,
+    ],
+    [
+      'InputOutputParameterDefinition is isMany: a parameter carrying a list and a map keeps both, in document order',
+      LIST_AND_MAP_FIXTURE,
+      (process: ModdleElement) =>
+        definitionsOf(inputParameters(process)[0]).map((d) => d.$type),
+      ['operaton:List', 'operaton:Map'],
+    ],
+    [
+      // Refusing an entry outside a map is the importer's job, so the descriptor keeps it visible.
+      'operaton:entry is accepted inside a list and directly under an input parameter',
+      ENTRY_FIXTURE,
+      (process: ModdleElement) => {
+        const [inList, bare] = inputParameters(process);
+        const listed = (
+          definitionsOf(inList)[0].get('items') as ModdleElement[]
+        )[0];
+        const direct = definitionsOf(bare)[0];
+        return [
+          [listed.$type, listed.get('key')],
+          [direct.$type, direct.get('key')],
+        ];
+      },
+      [
+        ['operaton:Entry', 'a'],
+        ['operaton:Entry', 'b'],
+      ],
+    ],
+    [
+      'a parameter carrying body text beside a nested definition keeps both, so a reader must check both forms',
+      TEXT_AND_SCRIPT_FIXTURE,
+      (process: ModdleElement) => {
+        const [param] = inputParameters(process);
+        return {
+          value: param.get('value'),
+          definitions: definitionsOf(param).map((d) => d.$type),
+        };
+      },
+      { value: 'text', definitions: ['operaton:Script'] },
+    ],
     [
       'a full formField declares datePattern, properties, validation and values',
       FORM_FIELD_FIXTURE,
@@ -513,31 +435,131 @@ describe('the form field extras and the external task extras parse and re-serial
         errorRoot: { type: 'bpmn:Error', errorCode: 'DECLINED' },
       },
     ],
-  ])(
-    '%s: parses with zero warnings, every child at its expected path, and round-trips byte for byte',
-    async (_title, fixture, snapshot, expected) => {
-      const first = operatonModdle();
-      const { definitions, process, warnings } = await parseProcess(
-        first,
-        fixture,
-      );
-      expect(warnings).toHaveLength(0);
-      expect(snapshot(process)).toEqual(expected);
+    [
+      'AsyncCapable extends the multi-instance element, so a repetition carries per-run job settings and its retry child',
+      LOOP_SETTINGS_FIXTURE,
+      (process: ModdleElement) => {
+        const loop = elementsOf(process)[0].get(
+          'loopCharacteristics',
+        ) as ModdleElement;
+        const [retryCycle] = extensionValues(loop);
+        return {
+          asyncBefore: loop.get('asyncBefore'),
+          asyncAfter: loop.get('asyncAfter'),
+          exclusive: loop.get('exclusive'),
+          retryCycle: retryCycle.get('body'),
+        };
+      },
+      {
+        asyncBefore: true,
+        asyncAfter: true,
+        exclusive: false,
+        retryCycle: 'R3/PT10M',
+      },
+    ],
+    [
+      'a timeout task listener parses its bpmn:timerEventDefinition child into eventDefinitions',
+      TIMEOUT_LISTENER_FIXTURE,
+      (process: ModdleElement) => {
+        const [listener] = extensionValues(elementsOf(process)[0]);
+        const [definition] = listener.get(
+          'eventDefinitions',
+        ) as ModdleElement[];
+        return {
+          type: definition.$type,
+          timeDuration: (definition.get('timeDuration') as ModdleElement).body,
+        };
+      },
+      { type: 'bpmn:TimerEventDefinition', timeDuration: 'PT1H' },
+    ],
+  ])('%s', async (_title, fixture, snapshot, expected) => {
+    const first = operatonModdle();
+    const { definitions, process, warnings } = await parseProcess(
+      first,
+      fixture,
+    );
+    expect(warnings).toHaveLength(0);
+    expect(snapshot(process)).toEqual(expected);
 
-      const { xml } = await first.toXML(definitions, { format: false });
-      const second = operatonModdle();
-      const {
-        definitions: reparsedDefs,
-        process: reparsed,
-        warnings: warnings2,
-      } = await parseProcess(second, xml);
-      expect(warnings2).toHaveLength(0);
-      expect(snapshot(reparsed)).toEqual(expected);
+    const { xml } = await first.toXML(definitions, { format: false });
+    const second = operatonModdle();
+    const {
+      definitions: reparsedDefs,
+      process: reparsed,
+      warnings: warnings2,
+    } = await parseProcess(second, xml);
+    expect(warnings2).toHaveLength(0);
+    expect(snapshot(reparsed)).toEqual(expected);
 
-      const { xml: xml2 } = await second.toXML(reparsedDefs, { format: false });
-      expect(xml2).toBe(xml);
-    },
-  );
+    const { xml: xml2 } = await second.toXML(reparsedDefs, { format: false });
+    expect(xml2).toBe(xml);
+  });
+});
+
+describe('per-element attribution of a dropped extension child', () => {
+  it('a declared child materializes, an undeclared one produces exactly one warning naming it', async () => {
+    const fixture = `${XML_HEADER}
+  <bpmn:process id="P">
+    <bpmn:serviceTask id="T">
+      <bpmn:extensionElements>
+        <operaton:failedJobRetryTimeCycle>R3/PT10M</operaton:failedJobRetryTimeCycle>
+        <operaton:formProperty />
+      </bpmn:extensionElements>
+    </bpmn:serviceTask>
+  </bpmn:process>
+</bpmn:definitions>`;
+
+    const { process, warnings } = await parseProcess(operatonModdle(), fixture);
+
+    expect(extensionValues(elementsOf(process)[0]).map((v) => v.$type)).toEqual(
+      ['operaton:FailedJobRetryTimeCycle'],
+    );
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0].message).toContain('operaton:formProperty');
+  });
+});
+
+describe('a potential starter declares the formal expression BpmnParse.parseStartAuthorization reads off it', () => {
+  it('parses the resourceAssignmentExpression as a typed bpmn child and writes it back', async () => {
+    const fixture = `${XML_HEADER}
+  <bpmn:process id="P">
+    <bpmn:extensionElements>
+      <operaton:potentialStarter>
+        <bpmn:resourceAssignmentExpression>
+          <bpmn:formalExpression>user(a), group(g)</bpmn:formalExpression>
+        </bpmn:resourceAssignmentExpression>
+      </operaton:potentialStarter>
+    </bpmn:extensionElements>
+  </bpmn:process>
+</bpmn:definitions>`;
+
+    const moddle = operatonModdle();
+    const { definitions, process, warnings } = await parseProcess(
+      moddle,
+      fixture,
+    );
+    expect(warnings).toHaveLength(0);
+
+    const [starter] = extensionValues(process);
+    const rae = starter.get('resourceAssignmentExpression') as ModdleElement;
+    expect([
+      starter.$type,
+      rae.$type,
+      rae.get('expression').get('body'),
+    ]).toEqual([
+      'operaton:PotentialStarter',
+      'bpmn:ResourceAssignmentExpression',
+      'user(a), group(g)',
+    ]);
+
+    // The engine finds formalExpression by tag, not through this xsi:type, so the import respells the starter.
+    const { xml } = await moddle.toXML(definitions, { format: false });
+    expect(xml).toContain(
+      '<operaton:potentialStarter><bpmn:resourceAssignmentExpression>' +
+        '<bpmn:expression xsi:type="bpmn:tFormalExpression">user(a), group(g)' +
+        '</bpmn:expression>',
+    );
+  });
 });
 
 describe('AsyncCapable defaults are omitted on write', () => {
@@ -565,21 +587,23 @@ describe('AsyncCapable defaults are omitted on write', () => {
   });
 });
 
-describe('AsyncCapable extends the multi-instance element, so a repetition can carry per-run job settings', () => {
-  const fixture = `${XML_HEADER}
+describe('a timer definition declares the lock BpmnParse.parseTimer reads off it', () => {
+  it('parses operaton:exclusive on bpmn:timerEventDefinition as a typed boolean and writes it back off its default only', async () => {
+    const fixture = `${XML_HEADER}
   <bpmn:process id="P">
-    <bpmn:serviceTask id="T" operaton:class="com.example.Delegate">
-      <bpmn:multiInstanceLoopCharacteristics operaton:asyncBefore="true" operaton:asyncAfter="true" operaton:exclusive="false">
-        <bpmn:extensionElements>
-          <operaton:failedJobRetryTimeCycle>R3/PT10M</operaton:failedJobRetryTimeCycle>
-        </bpmn:extensionElements>
-        <bpmn:loopCardinality>3</bpmn:loopCardinality>
-      </bpmn:multiInstanceLoopCharacteristics>
-    </bpmn:serviceTask>
+    <bpmn:startEvent id="S">
+      <bpmn:timerEventDefinition operaton:exclusive="false">
+        <bpmn:timeCycle>R/PT1H</bpmn:timeCycle>
+      </bpmn:timerEventDefinition>
+    </bpmn:startEvent>
+    <bpmn:intermediateCatchEvent id="C">
+      <bpmn:timerEventDefinition operaton:exclusive="true">
+        <bpmn:timeDuration>PT1H</bpmn:timeDuration>
+      </bpmn:timerEventDefinition>
+    </bpmn:intermediateCatchEvent>
   </bpmn:process>
 </bpmn:definitions>`;
 
-  it('parses the four settings and the retry child as typed values and writes them back onto the loop tag', async () => {
     const moddle = operatonModdle();
     const { definitions, process, warnings } = await parseProcess(
       moddle,
@@ -587,58 +611,18 @@ describe('AsyncCapable extends the multi-instance element, so a repetition can c
     );
     expect(warnings).toHaveLength(0);
 
-    const task = (process.get('flowElements') as ModdleElement[])[0];
-    const loop = task.get('loopCharacteristics') as ModdleElement;
-    const [retryCycle] = extensionValues(loop);
-
-    // Revert: drop the `extends` entry for the loop element and these typed
-    // reads see no declared property on it at all, so `get` answers
-    // `undefined` rather than the schema default or the parsed value.
-    expect(loop.get('asyncBefore')).toBe(true);
-    expect(loop.get('asyncAfter')).toBe(true);
-    expect(loop.get('exclusive')).toBe(false);
-    expect(retryCycle.get('body')).toBe('R3/PT10M');
+    const [start, wait] = elementsOf(process);
+    const definitionOf = (el: ModdleElement): ModdleElement =>
+      (el.get('eventDefinitions') as ModdleElement[])[0];
+    expect([
+      definitionOf(start).get('exclusive'),
+      definitionOf(wait).get('exclusive'),
+    ]).toEqual([false, true]);
 
     const { xml } = await moddle.toXML(definitions, { format: false });
     expect(xml).toContain(
-      '<bpmn:multiInstanceLoopCharacteristics operaton:asyncBefore="true" operaton:asyncAfter="true" operaton:exclusive="false">',
+      '<bpmn:timerEventDefinition operaton:exclusive="false">',
     );
-  });
-});
-
-describe('TaskListener timer event definition', () => {
-  it('a bpmn:timerEventDefinition child parses into eventDefinitions and re-serializes', async () => {
-    const fixture = `${XML_HEADER}
-  <bpmn:process id="P">
-    <bpmn:userTask id="T">
-      <bpmn:extensionElements>
-        <operaton:taskListener event="timeout" class="com.example.L">
-          <bpmn:timerEventDefinition>
-            <bpmn:timeDuration>PT1H</bpmn:timeDuration>
-          </bpmn:timerEventDefinition>
-        </operaton:taskListener>
-      </bpmn:extensionElements>
-    </bpmn:userTask>
-  </bpmn:process>
-</bpmn:definitions>`;
-
-    const first = operatonModdle();
-    const { process, warnings } = await parseProcess(first, fixture);
-    expect(warnings).toHaveLength(0);
-
-    const task = (process.get('flowElements') as ModdleElement[])[0];
-    const [listener] = extensionValues(task);
-    const eventDefinitions = listener.get(
-      'eventDefinitions',
-    ) as ModdleElement[];
-    expect(eventDefinitions).toHaveLength(1);
-    expect(eventDefinitions[0].$type).toBe('bpmn:TimerEventDefinition');
-    expect(
-      (eventDefinitions[0].get('timeDuration') as ModdleElement).body,
-    ).toBe('PT1H');
-
-    const { xml } = await first.toXML(process, { format: false });
-    expect(xml).toContain('timerEventDefinition');
-    expect(xml).toContain('PT1H');
+    expect(xml).toContain('<bpmn:timerEventDefinition><bpmn:timeDuration>PT1H');
   });
 });

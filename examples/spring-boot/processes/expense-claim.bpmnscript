@@ -1,0 +1,38 @@
+process expense-claim {
+  var amount: number
+  var compliant: boolean
+
+  start ClaimSubmitted {
+    form {
+      amount: number "Claimed amount"
+    }
+  }
+
+  service CheckPolicy(label: "Check the expense policy", class: "com.example.expense.CheckPolicyDelegate")
+
+  while (!compliant) {
+    user ReviseClaim(label: "Revise the claim", assignee: "demo") {
+      form {
+        amount: number "Corrected amount"
+        compliant: boolean "Claim now complies"
+      }
+    }
+  }
+
+  if (amount > 500) {
+    user ApproveClaim(label: "Approve the claim", assignee: "manager")
+  } else {
+    service AutoApprove(label: "Approve automatically", class: "com.example.expense.AutoApproveDelegate")
+  }
+
+  parallel {
+    {
+      service BookPayment(label: "Book the payment", class: "com.example.expense.BookPaymentDelegate")
+    }
+    {
+      service NotifyClaimant(label: "Notify the claimant", class: "com.example.expense.NotifyDelegate")
+    }
+  }
+
+  end ClaimSettled
+}

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
@@ -9,8 +9,7 @@ import { irToXml, xmlToIr } from '@bpmn-script/transform';
 import type { FixtureAdapter } from '../fixtures/index.js';
 import {
   deployExamples,
-  ENGINE_BOOT_TIMEOUT_MS,
-  ENGINE_STOP_TIMEOUT_MS,
+  DEPLOY_TIMEOUT_MS,
   SKIP_DOCKER as SKIP,
 } from '../helpers/e2e-fixture.js';
 import {
@@ -41,7 +40,7 @@ const ASSIGNMENT_BPMN = `<?xml version="1.0" encoding="UTF-8"?>
 <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
                   xmlns:operaton="http://operaton.org/schema/1.0/bpmn"
                   targetNamespace="http://example.com/assignment">
-  <bpmn:process id="${ASSIGNMENT_KEY}" isExecutable="true">
+  <bpmn:process id="${ASSIGNMENT_KEY}" isExecutable="true" operaton:historyTimeToLive="P30D">
     <bpmn:startEvent id="Opened" />
     <bpmn:userTask id="Review" name="Review the request" operaton:candidateGroups="finance">
       <bpmn:humanPerformer id="Lead">
@@ -67,13 +66,8 @@ describe.skipIf(SKIP)('E2E: forms and external tasks on Operaton', () => {
 
   beforeAll(async () => {
     fixture = await deployExamples(CHARGE_KEY, PLAN_KEY);
-  }, ENGINE_BOOT_TIMEOUT_MS);
+  }, DEPLOY_TIMEOUT_MS);
 
-  afterAll(async () => {
-    await fixture?.stop();
-  }, ENGINE_STOP_TIMEOUT_MS);
-
-  // One instance per journey, locked as a worker would lock it.
   async function startAndFetchCharge() {
     const businessKey = randomUUID();
     const processInstanceId = await startWithBusinessKey(
@@ -183,8 +177,8 @@ describe.skipIf(SKIP)('E2E: forms and external tasks on Operaton', () => {
       candidateGroups: 'managers,finance',
     });
     expect(warnings.map((w) => [w.category, w.elementId])).toEqual([
-      ['unmappedConstruct', 'Review'],
-      ['unmappedConstruct', 'Review'],
+      ['rewritten', 'Review'],
+      ['rewritten', 'Review'],
     ]);
 
     const xmlPath = resolve(__dirname, `../../out/${ASSIGNMENT_KEY}.bpmn`);

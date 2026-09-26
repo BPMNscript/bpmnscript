@@ -11,12 +11,20 @@ Terms that show up across the READMEs, the ADRs, and the code.
   A `decide` step names a deployed table by its key and reads back what it returns; the `.dmn` artifact itself is authored and deployed outside this tool.
 - **Operaton**: the process engine this project targets.
   It loads a BPMN file and executes the workflow it describes.
+- **Token**: BPMN's representation of a thread of execution inside a running process instance.
+  It sits on one flow node at a time and moves along sequence flows, splitting into several at a parallel gateway fork and merging back at its join.
+- **Job**: what Operaton schedules for anything that runs asynchronously, such as an async continuation or a timer.
+  A job carries a priority and, on failure, works through a retry cycle before the engine gives up on it.
+- **Java delegate**: a Java class implementing Operaton's `JavaDelegate` interface.
+  A `service X(class: "...")` step binds to one, and Operaton calls it synchronously in the engine's JVM.
+- **External task and worker**: an external task is a service task the engine does not run itself; a `service X(topic: "...")` step publishes work under a topic instead.
+  A worker is the separate process that polls Operaton's REST API, fetches work under that topic, and reports it complete or failed.
 - **DSL**: domain-specific language.
   A small language built for one narrow purpose.
   BPMNscript is a DSL for writing BPMN processes as text.
 - **DI**: diagram interchange.
   The `<bpmndi:...>` part of a BPMN file that stores diagram coordinates, meaning where each box sits.
-  BPMNscript regenerates it automatically on export; see [ADR-0003](decisions/0003-auto-layout-for-diagram-interchange.md).
+  BPMNscript regenerates it automatically on export; see [ADR-0009](decisions/0009-auto-layout-and-expansion-hint.md).
 - **Multi-instance**: the BPMN marker that makes one activity run several times, once per element of a collection or a fixed number of times.
   BPMNscript writes it from a `for` clause on the step; Operaton keeps the run counters on the repetition and a `loopCounter` on each run.
 - **MIWG**: the Model Interchange Working Group.
@@ -26,7 +34,7 @@ Terms that show up across the READMEs, the ADRs, and the code.
 
 - **Langium**: the TypeScript toolkit used to build the language.
   From one grammar file it generates the parser, the AST types, and a language server.
-  See [ADR-0002](decisions/0002-use-langium-as-language-workbench.md).
+  See [ADR-0003](decisions/0003-use-langium-as-language-workbench.md).
 - **Grammar**: the file (`bpmn-script.langium`) that defines the DSL's syntax, meaning which keywords and shapes are valid.
   Langium turns it into a parser.
 - **Parser**: the code that reads `.bpmnscript` text and builds the AST.
@@ -35,8 +43,8 @@ Terms that show up across the READMEs, the ADRs, and the code.
   The parser's structured, in-memory representation of a source file, with nodes for each `process`, `user`, `service`, `if`, `while`, `parallel`, and so on.
 - **IR**: intermediate representation.
   A small set of plain objects (`packages/transform/src/ir/types.ts`) that every transform reads from or writes to, in both directions.
-  See [ADR-0006](decisions/0006-engine-agnostic-intermediate-representation.md).
-  [ADR-0022](decisions/0022-engine-attributes-as-named-ir-fields.md) and [ADR-0023](decisions/0023-listeners-on-the-attribute-block.md) extend that shape to the engine's execution settings, input/output parameters, and lifecycle listeners.
+  See [ADR-0007](decisions/0007-intermediate-representation-ast-bpmn.md).
+  [ADR-0021](decisions/0021-operaton-engine-attributes-as-named-ir-fields.md) and [ADR-0020](decisions/0020-listeners-reuse-on-inside-the-attribute-block.md) extend that shape to the engine's execution settings, input/output parameters, and lifecycle listeners.
 - **Validator**: checks that a parsed process is structurally sound and reports errors in the editor.
   The full list of checks is in [packages/language/README.md](../packages/language/README.md#diagnostics).
 - **LSP**: Language Server Protocol.
@@ -44,11 +52,13 @@ Terms that show up across the READMEs, the ADRs, and the code.
   Langium implements it for us; the VS Code extension is the host.
 - **moddle / bpmn-moddle**: the library that reads and writes BPMN XML as objects.
   A _moddle extension_ (here, `operaton-moddle.json`) teaches it about the extra `operaton:` attributes, and about the nested types they can carry, such as an input/output value or a listener binding.
-  Declaring those nested shapes is what lets an import warning attribute a dropped element to the specific step that carried it, instead of reporting an anonymous loss ([ADR-0022](decisions/0022-engine-attributes-as-named-ir-fields.md)).
+  Declaring those nested shapes is what lets an import warning attribute a dropped element to the specific step that carried it, instead of reporting an anonymous loss ([ADR-0021](decisions/0021-operaton-engine-attributes-as-named-ir-fields.md)).
+- **Round trip**: compiling a `.bpmnscript` file to BPMN and decompiling the result back to `.bpmnscript`, or the reverse.
+  Used to check what each hop keeps and what it warns about or drops.
 
 ## The repository
 
 - **Golden file**: a known-good reference output checked into the repo so a test can diff against it instead of recomputing the expected result.
   See [tests/golden/README.md](../tests/golden/README.md).
 - **Monorepo / workspace**: this repo holds several npm packages (`packages/*`) in one place; npm "workspaces" link them so they can depend on each other without publishing.
-  See [ADR-0005](decisions/0005-use-mono-repo-structure.md).
+  See [ADR-0002](decisions/0002-use-mono-repo-structure.md).

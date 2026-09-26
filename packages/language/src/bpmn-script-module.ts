@@ -6,6 +6,7 @@ import {
   type LangiumServices,
   type LangiumSharedServices,
   type PartialLangiumServices,
+  type PartialLangiumSharedServices,
 } from 'langium/lsp';
 import {
   BpmnScriptGeneratedModule,
@@ -26,8 +27,13 @@ import { BpmnScriptLinker } from './bpmn-script-linker.js';
 import { BpmnScriptParserErrorMessageProvider } from './bpmn-script-parser-error-message-provider.js';
 import { BpmnScriptSemanticTokenProvider } from './bpmn-script-semantic-tokens.js';
 import { BpmnScriptValueConverter } from './bpmn-script-value-converter.js';
+import { BpmnScriptHoverProvider } from './bpmn-script-hover.js';
+import { BpmnScriptReferences } from './bpmn-script-references.js';
+import {
+  BpmnScriptDocumentSymbolProvider,
+  BpmnScriptNodeKindProvider,
+} from './bpmn-script-symbols.js';
 
-/** {@link VariableSymbolProvider} sits in `references`: resolving identifiers is its concern. */
 export type BpmnScriptAddedServices = {
   references: {
     VariableSymbolProvider: VariableSymbolProvider;
@@ -50,6 +56,7 @@ export const BpmnScriptModule: Module<
   },
   references: {
     VariableSymbolProvider: () => new DefaultVariableSymbolProvider(),
+    References: (services) => new BpmnScriptReferences(services),
     ScopeProvider: (services) => new BpmnScriptScopeProvider(services),
     Linker: (services) => new BpmnScriptLinker(services),
   },
@@ -62,6 +69,19 @@ export const BpmnScriptModule: Module<
       new BpmnScriptCompletionProvider(services),
     SemanticTokenProvider: (services) =>
       new BpmnScriptSemanticTokenProvider(services),
+    HoverProvider: (services) => new BpmnScriptHoverProvider(services),
+    DocumentSymbolProvider: (services) =>
+      new BpmnScriptDocumentSymbolProvider(services),
+  },
+};
+
+/** `NodeKindProvider` is a shared service, so overriding it takes a second module. */
+export const BpmnScriptSharedModule: Module<
+  LangiumSharedServices,
+  PartialLangiumSharedServices
+> = {
+  lsp: {
+    NodeKindProvider: () => new BpmnScriptNodeKindProvider(),
   },
 };
 
@@ -72,6 +92,7 @@ export function createBpmnScriptServices(context: DefaultSharedModuleContext): {
   const shared = inject(
     createDefaultSharedModule(context),
     BpmnScriptGeneratedSharedModule,
+    BpmnScriptSharedModule,
   );
   const BpmnScript = inject(
     createDefaultModule({ shared }),

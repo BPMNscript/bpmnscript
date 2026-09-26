@@ -1,7 +1,6 @@
-// These tests run the grammar's begin/end patterns through JS RegExp instead of
-// a TextMate engine. That only holds because the patterns stick to constructs
-// JS and Oniguruma agree on: literal backticks, alternation, \s, $, character
-// classes. Add an Oniguruma-only construct and this file stops modeling VS Code.
+// The begin/end patterns run through JS RegExp instead of a TextMate engine,
+// which holds only while they stick to constructs JS and Oniguruma agree on
+// (literal backticks, alternation, \s, $, character classes).
 
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
@@ -9,8 +8,6 @@ import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { SCRIPT_FORMAT_ALIASES } from '@bpmn-script/language';
 
-// The TextMate scope each canonical script format embeds. A format missing here
-// has no installed grammar, and every fence tag reaching it must say so below.
 const EMBEDDED_SCOPE_BY_FORMAT: Readonly<Record<string, string>> = {
   javascript: 'source.js',
   python: 'source.python',
@@ -18,8 +15,8 @@ const EMBEDDED_SCOPE_BY_FORMAT: Readonly<Record<string, string>> = {
   groovy: 'source.groovy',
 };
 
-// Tags deliberately left unhighlighted: VS Code ships no grammar for them.
-const NO_INSTALLED_GRAMMAR = new Set(['feel']);
+// VS Code ships no grammar for these.
+const NO_INSTALLED_GRAMMAR = new Set(['feel', 'juel']);
 
 const EXTENSION_DIR = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -54,70 +51,51 @@ function matchFence(line: string): { name: string; rule: any } | undefined {
 }
 
 describe('fenced-script injection grammar', () => {
-  it('injects into source.bpmn-script and is registered with injectTo', () => {
+  it('is registered against source.bpmn-script at a path build:prepare copies it to', () => {
     expect(injection.injectionSelector).toContain('source.bpmn-script');
 
     const entry = pkg.contributes.grammars.find(
       (g: { scopeName: string }) => g.scopeName === injection.scopeName,
     );
     expect(entry).toBeDefined();
-    expect(entry.injectTo).toContain('source.bpmn-script');
-    expect(entry.path).toBe('syntaxes/bpmn-script.injection.tmLanguage.json');
-  });
-
-  it('build:prepare copies the injection asset into the runtime syntaxes dir', () => {
+    expect(entry.injectTo).toEqual(['source.bpmn-script']);
     expect(pkg.scripts['build:prepare']).toContain(
-      './injection/bpmn-script.injection.tmLanguage.json',
-    );
-    expect(pkg.scripts['build:prepare']).toContain(
-      './syntaxes/bpmn-script.injection.tmLanguage.json',
+      `cp -f ./injection/bpmn-script.injection.tmLanguage.json ./${entry.path}`,
     );
     expect(() =>
-      readFileSync(
-        path.join(
-          EXTENSION_DIR,
-          'syntaxes',
-          'bpmn-script.injection.tmLanguage.json',
-        ),
-      ),
+      readFileSync(path.join(EXTENSION_DIR, entry.path)),
     ).not.toThrow();
   });
 
   // Driven off the alias table, so a new alias fails here until it is either
   // routed by the grammar or declared as having no installed grammar.
-  it.each(Object.keys(SCRIPT_FORMAT_ALIASES))(
-    'tag ```%s routes to its embedded scope, or is a declared miss',
-    (tag) => {
+  it('every alias tag routes to its embedded scope or is a declared miss, and unknown tags fall back to a plain block', () => {
+    for (const tag of [
+      ...Object.keys(SCRIPT_FORMAT_ALIASES),
+      'kotlin',
+      'sql',
+    ]) {
       const match = matchFence('script demo ```' + tag);
-      expect(match).toBeDefined();
-      if (NO_INSTALLED_GRAMMAR.has(tag)) {
-        expect(match!.name).toBe('plain-block');
-        expect(match!.rule.contentName).toBeUndefined();
-        expect(match!.rule.patterns).toBeUndefined();
-        return;
-      }
+      expect(match, tag).toBeDefined();
       const format = SCRIPT_FORMAT_ALIASES[tag];
+      if (format === undefined || NO_INSTALLED_GRAMMAR.has(tag)) {
+        expect(
+          [match!.name, match!.rule.contentName, match!.rule.patterns],
+          tag,
+        ).toEqual(['plain-block', undefined, undefined]);
+        continue;
+      }
       const embedded = EMBEDDED_SCOPE_BY_FORMAT[format];
       expect(
         embedded,
         `tag '${tag}' normalizes to '${format}': give it an injection block and an EMBEDDED_SCOPE_BY_FORMAT entry, or add the tag to NO_INSTALLED_GRAMMAR`,
       ).toBeDefined();
-      expect(match!.rule.contentName).toBe(`meta.embedded.block.${format}`);
-      expect(match!.rule.patterns).toContainEqual({ include: embedded });
-    },
-  );
-
-  it.each([['kotlin'], ['sql']])(
-    'unknown tag ```%s falls back to a plain block (no embedded include)',
-    (tag) => {
-      expect(SCRIPT_FORMAT_ALIASES[tag]).toBeUndefined();
-      const match = matchFence('script demo ```' + tag);
-      expect(match).toBeDefined();
-      expect(match!.name).toBe('plain-block');
-      expect(match!.rule.contentName).toBeUndefined();
-      expect(match!.rule.patterns).toBeUndefined();
-    },
-  );
+      expect(match!.rule.contentName, tag).toBe(
+        `meta.embedded.block.${format}`,
+      );
+      expect(match!.rule.patterns, tag).toContainEqual({ include: embedded });
+    }
+  });
 
   it('a bare closing fence starts no block and matches an end pattern', () => {
     expect(matchFence('```')).toBeUndefined();

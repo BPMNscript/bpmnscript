@@ -19,6 +19,7 @@ export default function (): void {
       '-o, --output <file>',
       'output .bpmn file path (default: same dir, same basename)',
     )
+    .option('--force', 'overwrite an existing output file')
     .description('Compile a .bpmnscript source file to BPMN 2.0 XML')
     .action(buildAction);
 
@@ -29,6 +30,7 @@ export default function (): void {
       '-o, --output <file>',
       'output .bpmnscript file path (default: same dir, same basename)',
     )
+    .option('--force', 'overwrite an existing output file')
     .description('Decompile a BPMN 2.0 XML file to .bpmnscript DSL')
     .action(parseAction);
 

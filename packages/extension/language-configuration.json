@@ -5,6 +5,8 @@
     // block comment markers
     "blockComment": ["/*", "*/"]
   },
+  // the ID terminal in bpmn-script.langium, so a hyphenated name selects whole
+  "wordPattern": "[_a-zA-Z]\\w*(-\\w+)*",
   // symbols used as brackets
   "brackets": [
     ["{", "}"],

@@ -1,10 +1,9 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll } from 'vitest';
 
 import type { ActiveTask, FixtureAdapter } from '../fixtures/index.js';
 import {
   deployExamples,
-  ENGINE_BOOT_TIMEOUT_MS,
-  ENGINE_STOP_TIMEOUT_MS,
+  DEPLOY_TIMEOUT_MS,
   SKIP_DOCKER as SKIP,
 } from '../helpers/e2e-fixture.js';
 import {
@@ -24,14 +23,8 @@ describe.skipIf(SKIP)('E2E: repetition on Spring Boot Operaton', () => {
 
   beforeAll(async () => {
     fixture = await deployExamples(PROCESS_KEY, EMPTY_KEY);
-  }, ENGINE_BOOT_TIMEOUT_MS);
+  }, DEPLOY_TIMEOUT_MS);
 
-  afterAll(async () => {
-    await fixture?.stop();
-  }, ENGINE_STOP_TIMEOUT_MS);
-
-  // The open tasks of one activity, once the engine has offered at least `count`
-  // of them.
   async function tasksOf(
     instanceId: string,
     key: string,
@@ -46,8 +39,6 @@ describe.skipIf(SKIP)('E2E: repetition on Spring Boot Operaton', () => {
     return tasks.filter((task) => task.taskDefinitionKey === key);
   }
 
-  // Completes every open run of an activity, which is what a parallel
-  // repetition offers all at once.
   async function completeAll(
     instanceId: string,
     key: string,
@@ -58,9 +49,6 @@ describe.skipIf(SKIP)('E2E: repetition on Spring Boot Operaton', () => {
     }
   }
 
-  // Completes `runs` runs of an activity one at a time, checking on every run
-  // that the engine offered exactly one, and returning the task id each run was
-  // offered under.
   async function completeInTurn(
     instanceId: string,
     key: string,
@@ -79,7 +67,6 @@ describe.skipIf(SKIP)('E2E: repetition on Spring Boot Operaton', () => {
     return ids;
   }
 
-  // The list entry bound to one run, read off the execution the task hangs on.
   // Values stay serialized so the read never depends on how the engine stored
   // the list itself.
   async function boundElement(taskId: string): Promise<unknown> {
@@ -91,8 +78,6 @@ describe.skipIf(SKIP)('E2E: repetition on Spring Boot Operaton', () => {
     return variables.line?.value;
   }
 
-  // Walks a fresh instance to the tasks the review sub-process opens, so every
-  // assertion past the first two starts from the same known point.
   async function walkToReview(): Promise<string> {
     const { processInstanceId } = await fixture.startProcess(PROCESS_KEY, {});
     await completeAll(processInstanceId, 'CollectApprovals', 3);

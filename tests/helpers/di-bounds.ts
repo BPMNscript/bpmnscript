@@ -1,8 +1,6 @@
-import { describe, it, expect } from 'vitest';
+import { expect } from 'vitest';
 
 import type { FlowContainer, FlowElement } from '@bpmn-script/transform';
-
-import type { RoundTrip } from './round-trip-fixture.js';
 
 export interface Bounds {
   x: number;
@@ -11,7 +9,7 @@ export interface Bounds {
   height: number;
 }
 
-// Regex rather than a parser: the tests workspace declares no moddle dependency.
+// Regex, for the reason xml-query.ts gives.
 export function parseShapeBounds(xml: string): Map<string, Bounds> {
   const shape =
     /<bpmndi:BPMNShape\b[^>]*\bbpmnElement="([^"]+)"[^>]*>\s*<dc:Bounds x="([-\d.]+)" y="([-\d.]+)" width="([-\d.]+)" height="([-\d.]+)"/g;
@@ -42,53 +40,6 @@ function overlaps(a: Bounds, b: Bounds): boolean {
   );
 }
 
-// A boundary shape is centered on the lower edge of the host it watches, so that
-// one pair overlaps by design.
-function sitsOnTheEdgeOf(attacher: FlowElement, host: FlowElement): boolean {
-  return (
-    attacher.kind === 'boundaryEvent' && attacher.attachedToRef === host.id
-  );
-}
-
-/**
- * A flat plane's own containment check: every flow node of the root container
- * has a shape, and no two of them share space, apart from a boundary event and
- * the host it watches.
- */
-export function describeNoOverlappingShapes(rt: RoundTrip): void {
-  describe('DI layout on the frozen .bpmn', () => {
-    it('every flow node has a shape and only a boundary and its own host overlap', () => {
-      const bounds = parseShapeBounds(rt.frozenXml);
-      const shapes = rt.ir1.flowElements.map(
-        (fe) => [fe, boundsOf(bounds, fe.id)] as const,
-      );
-
-      for (let i = 0; i < shapes.length; i++) {
-        for (let j = i + 1; j < shapes.length; j++) {
-          const [aEl, a] = shapes[i]!;
-          const [bEl, b] = shapes[j]!;
-          if (sitsOnTheEdgeOf(aEl, bEl) || sitsOnTheEdgeOf(bEl, aEl)) {
-            continue;
-          }
-          expect(
-            overlaps(a, b),
-            `${aEl.id} ${JSON.stringify(a)} overlaps ${bEl.id} ${JSON.stringify(b)}`,
-          ).toBe(false);
-        }
-      }
-    });
-  });
-}
-
-/** DI is emitted once for the whole document, not once per container. */
-export function describeSingleDiagram(rt: RoundTrip): void {
-  describe('DI on the generated .bpmn', () => {
-    it('exactly one bpmndi:BPMNDiagram is emitted', () => {
-      expect(rt.generatedXml.match(/<bpmndi:BPMNDiagram\b/g)).toHaveLength(1);
-    });
-  });
-}
-
 function strictlyInside(child: Bounds, parent: Bounds): boolean {
   return (
     child.x > parent.x &&
@@ -98,60 +49,60 @@ function strictlyInside(child: Bounds, parent: Bounds): boolean {
   );
 }
 
-// The root process has no shape, so its direct children are unbounded. The
-// recursion still descends into them.
-function assertShapeContainment(
+// A boundary shape is centered on its host's lower edge, so it overlaps the
+// host and may overlap a sibling on the same edge.
+function attachedPair(a: FlowElement, b: FlowElement): boolean {
+  const host = (fe: FlowElement): string | undefined =>
+    fe.kind === 'boundaryEvent' ? fe.attachedToRef : undefined;
+  return (
+    host(a) === b.id ||
+    host(b) === a.id ||
+    (host(a) !== undefined && host(a) === host(b))
+  );
+}
+
+function expectNoOverlap(
   container: FlowContainer,
   bounds: Map<string, Bounds>,
-  isRoot: boolean,
 ): void {
-  const parentBounds = isRoot ? undefined : bounds.get(container.id);
-  if (!isRoot) {
-    expect(
-      parentBounds,
-      `sub-process ${container.id} has no BPMNShape`,
-    ).toBeDefined();
-  }
-  for (const fe of container.flowElements) {
-    if (parentBounds !== undefined) {
-      const childBounds = bounds.get(fe.id);
-      expect(childBounds, `child ${fe.id} has no BPMNShape`).toBeDefined();
+  const shapes = container.flowElements.map(
+    (fe) => [fe, boundsOf(bounds, fe.id)] as const,
+  );
+  shapes.forEach(([aEl, a], i) => {
+    for (const [bEl, b] of shapes.slice(i + 1)) {
+      if (attachedPair(aEl, bEl)) continue;
       expect(
-        strictlyInside(childBounds!, parentBounds),
-        `${fe.id} ${JSON.stringify(childBounds)} not inside ${container.id} ${JSON.stringify(parentBounds)}`,
+        overlaps(a, b),
+        `${aEl.id} ${JSON.stringify(a)} overlaps ${bEl.id} ${JSON.stringify(b)}`,
+      ).toBe(false);
+    }
+  });
+}
+
+// The layout library places a disconnected event sub-process and its children
+// inside the parent only with the `isExpanded="true"` stub irToXml emits.
+function expectContained(
+  container: FlowContainer,
+  bounds: Map<string, Bounds>,
+  parent?: Bounds,
+): void {
+  for (const fe of container.flowElements) {
+    const box = boundsOf(bounds, fe.id);
+    if (parent !== undefined) {
+      expect(
+        strictlyInside(box, parent),
+        `${fe.id} ${JSON.stringify(box)} not inside ${container.id} ${JSON.stringify(parent)}`,
       ).toBe(true);
     }
-    if (fe.kind === 'subProcess') {
-      assertShapeContainment(fe, bounds, false);
-    }
+    if (fe.kind === 'subProcess') expectContained(fe, bounds, box);
   }
 }
 
-// An event sub-process is a disconnected node, so the layout library only
-// places its box and its children inside the parent when the `isExpanded="true"`
-// stub irToXml emits is present. Removing that stub fails this block.
-//
-// `requiredIds` stops the walk passing because the interesting containers are
-// absent; pass a thunk when the ids come from the IR, which is readable only
-// after the pipeline has run.
-export function describeDiContainment(
-  rt: RoundTrip,
-  requiredIds: readonly string[] | (() => readonly string[]) = [],
-  source: 'generated' | 'frozen' = 'frozen',
-): void {
-  describe(`DI containment on the ${source} .bpmn`, () => {
-    it('every child shape lies strictly inside its parent sub-process bounds', () => {
-      const bounds = parseShapeBounds(
-        source === 'frozen' ? rt.frozenXml : rt.generatedXml,
-      );
-
-      const ids =
-        typeof requiredIds === 'function' ? requiredIds() : requiredIds;
-      for (const id of ids) {
-        expect(bounds.has(id), `missing BPMNShape for ${id}`).toBe(true);
-      }
-
-      assertShapeContainment(rt.ir1, bounds, true);
-    });
-  });
+// One diagram, a shape per flow node, siblings apart (a boundary and its own
+// host excepted), and every child strictly inside its sub-process.
+export function expectSoundLayout(xml: string, process: FlowContainer): void {
+  expect(xml.match(/<bpmndi:BPMNDiagram\b/g)).toHaveLength(1);
+  const bounds = parseShapeBounds(xml);
+  expectNoOverlap(process, bounds);
+  expectContained(process, bounds);
 }

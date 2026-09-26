@@ -32,6 +32,7 @@ A few stand alone as inputs for one direction only.
 | `external-task.{bpmnscript,bpmn}`      | The extras a topic-bound task carries: priority, properties, error mappings              |
 | `gateway-settings.{bpmnscript,bpmn}`   | The job settings on the five gateway statements, for the split and for the join          |
 | `mail-and-shell.{bpmnscript,bpmn}`     | The mail and shell behaviours, with their fields, on the three tags that take `type`     |
+| `review-loop.{bpmnscript,bpmn}`        | The approve-review loop, a split inside a loop body with a condition on every route      |
 | `unstructured-goto.bpmn`               | The `goto` degradation path on import                                                    |
 
 The three invoice-approval files all describe the same process (review, then a gateway on `amount > 1000`, then senior approval or auto-approve) but come from different sources and pull the tests in different directions.
@@ -40,9 +41,9 @@ The three invoice-approval files all describe the same process (review, then a g
 
 Change the parser, the desugarer, or `irToXml` in a way that should alter the output (a new attribute, different formatting, a layout-library upgrade, an id-scheme change) and the frozen `.bpmn` has to be regenerated:
 
-1. Run the full pipeline on the source: `irToXml(astToIr(parse(source)))`, wiring the Langium services exactly as `tests/round-trip.test.ts` does, with `createBpmnScriptServices(EmptyFileSystem)` and `parseHelper`.
+1. Run the full pipeline on the source: `irToXml(astToIr(parse(source)))`, wiring the Langium services as `tests/helpers/pipeline.ts` does, with `createBpmnScriptServices(EmptyFileSystem)` and `parseHelper`.
    `bpmns build` is not a substitute.
-   It passes the source file's name and its own version into `irToXml`, so what it writes carries `id="Definitions_<source file stem>"` and the real `exporterVersion`, where a frozen file carries `Definitions_<process id>` and `0.0.0`.
+   It passes its own version into `irToXml`, so what it writes carries the real `exporterVersion`, where a frozen file carries `0.0.0`; the `bpmn:Definitions` id is `Definitions_<process id>` either way.
 2. Write the returned string over the frozen `.bpmn`.
 3. Read the diff and confirm every change is intended.
 
@@ -52,10 +53,11 @@ Everything each section below calls a contract must stay exactly as it is.
 
 ## What the pair tests do
 
-Each pair has a round-trip test at `tests/<name>.round-trip.test.ts`, and `tests/helpers/round-trip-fixture.ts` registers what they share: reproduce the pipeline and compare byte-for-byte against the frozen `.bpmn`, round-trip the source through XML and back asserting IR equivalence through `tests/helpers/normalize-ir.ts`, re-parse and re-validate the restructured DSL, and open the authored fixture validator-clean.
+Each pair has a round-trip test at `tests/<name>.round-trip.test.ts`, and `tests/helpers/round-trip-fixture.ts` registers what they share: reproduce the pipeline and compare byte-for-byte against the frozen `.bpmn`, check its layout (one diagram, no two sibling shapes overlapping except a boundary on its host's edge, every nested shape strictly inside its sub-process), round-trip the source through XML and back asserting IR equivalence through `tests/helpers/normalize-ir.ts`, re-parse and re-validate the restructured DSL, and open the authored fixture validator-clean.
 Every pair but `intermediate-catch` also asserts that the frozen `.bpmn` imports without a single warning and re-desugars back to the IR the fixture compiled to.
-The DI assertion is each suite's own, since what the layout has to get right differs: nested shapes inside their parent's bounds wherever a fixture nests (the `isExpanded` hint from `irToXml`, without which a disconnected event sub-process leaks into the root plane), and a boundary shape centered on its host's lower edge in `boundary-events`.
+Nested shapes stay inside their parent only through the `isExpanded` hint from `irToXml`, without which a disconnected event sub-process leaks into the root plane.
 Per-fixture extras, such as which root elements must be shared or how strictly the restructured DSL is validated, live in the test file.
+`tests/e2e/deploy-sweep.test.ts` deploys every frozen `.bpmn` here, every fixture under `tests/fixtures/`, and every example, on the engine, both as written and rebuilt from its own print; that suite lives outside the pair suites and runs once per file rather than once per pair.
 
 ## `invoice-approval-handwritten.bpmn`
 
@@ -68,8 +70,8 @@ This is the input for the XML to IR direction.
 ## `invoice-approval-generated.bpmn`
 
 The frozen output of the full pipeline, checked in: `irToXml(astToIr(parse(examples/spring-boot/processes/invoice-approval.bpmnscript)))`.
-The `irToXml` test (`packages/transform/test/ir-to-xml.test.ts`, describe block "irToXml, full-pipeline golden diff") reproduces that pipeline and compares byte-for-byte, so any accidental change to the parser, the desugarer, or the serializer shows up as a failed diff.
-This is the same XML the spring-boot engine E2E deploys.
+The `irToXml` test (`packages/transform/test/ir-to-xml.test.ts`, describe block "irToXml: full-pipeline golden diff") reproduces that pipeline and compares byte-for-byte, so any accidental change to the parser, the desugarer, or the serializer shows up as a failed diff.
+`tests/e2e/deploy-sweep.test.ts` deploys this frozen file as written, while `tests/e2e/invoice-approval.test.ts` deploys the same source compiled fresh through the CLI; the two documents differ in `exporterVersion` alone (see "Regenerating a frozen output" above).
 
 Contract: the process id `invoice-approval`, the userTask ids `ReviewInvoice` and `SeniorApproval`, `operaton:class="com.example.invoice.AutoApproveDelegate"`, the `demo` and `manager` assignees, and the condition `${amount > 1000}`.
 
@@ -145,37 +147,41 @@ Contract: the four event definitions, their order, and the absence of any `name`
 ## `engine-attributes.{bpmnscript,bpmn}`
 
 A motor-claim settlement narrative carrying the flat engine settings, the ones whose value is a single scalar.
-`versionTag`, `historyTimeToLive`, `candidateStarterUsers`, and `candidateStarterGroups` sit on the process header, `initiator` on the start, and `asyncBefore`, `asyncAfter`, `exclusive`, `jobPriority`, and `retryCycle` are spread across a start, an end, a user task, a service task, a script task, a subprocess, a call, an `await`, an `emit`, and both handler forms.
+`versionTag`, `historyTimeToLive`, `candidateStarterUsers`, `candidateStarterGroups`, and `isStartableInTasklist` sit on the process header, `initiator` on the start, and `asyncBefore`, `asyncAfter`, `exclusive`, `jobPriority`, and `retryCycle` are spread across a start, an end, a user task, a service task, a script task, a subprocess, a call, an `await`, an `emit`, and both handler forms.
 Five of the seven keys a user task owns (`assignee`, `formKey`, `candidateGroups`, `candidateUsers`, `priority`) sit together on one task, and `resultVariable` on both a service and a script task.
 `TriageClaim` names its form with `formKey` and `ApprovePayout` with a `formRef` pinned to a version, so both ways of naming a form sit in one artifact on separate tasks, which is the only way they can appear together: Operaton refuses to deploy a user task carrying both.
 The header's `historyTimeToLive` is `P90D` rather than the `P30D` the exporter stamps on a process that wrote none, because the importer reads that value back as unwritten and the fixture would otherwise pin nothing.
 
 Both handler forms are here so the placement rule is pinned in the artifact rather than only in prose.
-A hosted `on ApprovePayout: timer` writes its settings on the boundary event it lowers to, and a host-less `on escalation` writes them on the event sub-process rather than on the trigger start event nested inside it.
+A hosted `on ApprovePayout: timer` writes its settings on the boundary event it lowers to, and its `exclusive` on the timer definition as well, since `BpmnParse.parseTimer` locks the timer job from there and the tag's copy reaches only the `asyncAfter` job.
+A host-less `on escalation` writes them on the event sub-process rather than on the trigger start event nested inside it.
 That start event's own block belongs to the `start` statement written inside the handler body, and a synthesized start prints no statement at all, so a setting stored there could have nowhere to go.
+A host-less `on timer` is the one exception: its `jobPriority`, `retryCycle` and `exclusive` go on the trigger start event, whose job they configure, and the printer lifts them back into the head as long as that start prints no statement ([ADR-0021](../../docs/decisions/0021-operaton-engine-attributes-as-named-ir-fields.md)).
 A `while`, an `if`, and a `parallel` put five synthesized gateways in the same artifact, none of which is written with a setting, so the pair pins that no direction invents one on a gateway; what a gateway written with settings carries is the `gateway-settings` pair's to pin.
 Every named node carries an explicit id, and the frozen artifact imports without a single warning.
 
-Contract: the `(node id, attribute, value)` table in `tests/engine-attributes.round-trip.test.ts`, the four engine settings on the header (`3.1.0`, `P90D`, `demo,manager`, `adjusters`) asserted as one record, the three `operaton:formRef*` attributes on `ApprovePayout`, and the absence of any engine setting on the gateways, which are written without one, and on the event sub-process's trigger start event.
+Contract: the `(node id, attribute, value)` table in `tests/engine-attributes.round-trip.test.ts`, the five engine settings on the header (`3.1.0`, `P90D`, `demo,manager`, `adjusters`, `false`) asserted as one record, the three `operaton:formRef*` attributes on `ApprovePayout`, and the absence of any engine setting on the gateways, which are written without one, and on the event sub-process's trigger start event.
 
 ## `input-output.{bpmnscript,bpmn}`
 
-A process exercising the `operaton:inputOutput` block in all four value forms, a scalar, an inline script, a list, and a map, on a user task, a service task, a script task, a subprocess, a call, and an `on message` handler.
+A process exercising the `operaton:inputOutput` block in all four value forms, a scalar, an inline script, a list, and a map, on a user task, a service task, a script task, a subprocess, and a call.
 The scalar and the inline script each appear in both directions; as a parameter's own value the list is only ever an input and the map only ever an output, and each of the two structured forms nests inside the other.
 The call carries its own `in`/`out` variable mappings beside its parameters, so one artifact pins the two mechanisms as distinct: a variable mapping crosses the process boundary into the callee, a parameter binds a value into the activity's own execution scope.
+The `on message` handler at the end carries no parameter: it lowers to an event sub-process, which `BpmnParse.checkActivityInputOutputSupported` refuses a mapping on ([ADR-0020](../../docs/decisions/0020-listeners-reuse-on-inside-the-attribute-block.md)).
 
 Contract: the parameter names and their declaration order per direction, each value's form, the `scriptFormat` on each inline script, and the call's variable mappings serialized beside the `operaton:inputOutput` block rather than inside it.
 
 ## `listeners.{bpmnscript,bpmn}`
 
-A process registering execution listeners on a service task, a subprocess, an end event, and an `on message` handler, and all six task-listener events, `create`, `assign`, `complete`, `update`, `delete`, and `timeout`, on one user task.
+A process registering execution listeners on a service task, a subprocess, an end event, and an `on message` handler, and all six task-listener events, `create`, `assignment`, `complete`, `update`, `delete`, and `timeout`, on one user task.
 The service task carries both execution events, `start` and `end`; the other three carry one of the two each.
 All four bindings appear, a Java class, a JUEL expression, a delegate expression, and an inline fenced script, and the `timeout` listener carries the timer clause a caught timer event spells the same way.
+The `timeout` listener is written with the id `InspectVehicle_timeout_1`, which `BpmnParse.parseTimeoutTaskListener` requires and the export mints from the task id, and the `on message` handler carries no parameter, since the engine refuses a mapping on the event sub-process it lowers to ([ADR-0020](../../docs/decisions/0020-listeners-reuse-on-inside-the-attribute-block.md)).
 
 Three bindings in the artifact also carry an injected field, every carrier one rides but the built-in `type` binding the `mail-and-shell` pair pins: the service task's own class binding takes two, a literal and a `${...}` expression, its `on start` execution listener takes one, and the delegate-bound `on complete` task listener takes one.
-The expression-bound `on assign` listener carries none, because Operaton hands a field list to a class binding, a delegate binding, and a built-in `type` binding, and to no other.
+The expression-bound `on assignment` listener carries none, because Operaton hands a field list to a class binding, a delegate binding, and a built-in `type` binding, and to no other.
 
-Contract: the `operaton:executionListener` and `operaton:taskListener` children in their authored order, the event word on each, the single binding each carries, the `scriptFormat` on the inline script, the timer child under the `timeout` listener, and every `operaton:field` under the binding that receives it, a literal in the `stringValue` attribute and an expression in an `operaton:expression` child.
+Contract: the `operaton:executionListener` and `operaton:taskListener` children in their authored order, the event word on each, the single binding each carries, the `scriptFormat` on the inline script, the id and the timer child under the `timeout` listener, and every `operaton:field` under the binding that receives it, a literal in the `stringValue` attribute and an expression in an `operaton:expression` child.
 
 ## `event-positions.{bpmnscript,bpmn}`
 
@@ -223,8 +229,9 @@ An order-handling narrative carrying every shape a `parallel` block takes and bo
 The first `parallel` closes with an `else`, and every sibling of that `else` carries a condition, because a branch carrying none always runs and would leave the fallback nothing to pick up.
 The second drops the `else` and leaves a branch unheaded; the third heads nothing at all.
 A condition on any branch makes the fork and the join `bpmn:inclusiveGateway`, so the first two blocks freeze one such pair each, while the third stays the `bpmn:parallelGateway` pair a `parallel` has always produced.
-An inclusive fork always names a default flow, because a gateway whose every branch is conditioned and which names none deploys, runs, and then throws a stuck execution the first time no condition holds.
-Where the block writes an `else` that default points at the branch, and where it does not it runs straight to the join, which is the one flow the source never shows and the decompiler leaves out again.
+An inclusive fork names a default flow only where the engine can take it.
+With an `else` the default points at that branch, and with every branch conditioned it runs straight to the join, because a gateway whose every branch is conditioned and which names none deploys, runs, and then throws a stuck execution the first time no condition holds.
+The second block leaves a branch unheaded, and that branch runs every time, so its fork names no default at all.
 Both races open on `await {`: the first weighs a settled payment against a three-day timer whose branch carries `asyncBefore`, the second the restocking signal against a condition on the order, so all four triggers a branch can wait on sit in one artifact.
 A plain `await` follows the two, so both forms of the keyword are frozen side by side.
 
@@ -233,7 +240,7 @@ No flow out of that gateway carries a condition: Operaton builds no transition f
 The gateway, its catch events, and the merge are all elided on print, each of them recovered from the `await` block the branches spell out, and a branch's settings are written back on the catch event the engine waits at.
 Every condition reads a field of the start form rather than a `var`, so the declaration comes back out of the XML on the way in.
 
-Contract: two `bpmn:inclusiveGateway` pairs and one `bpmn:parallelGateway` pair, each a `_fork` and a `_join`; exactly two `default` attributes, one naming the flow into the `else` branch and one the flow into the join; one `bpmn:eventBasedGateway` per race, each with one unconditioned flow per catch event and an exclusive merge; and every authored id.
+Contract: two `bpmn:inclusiveGateway` pairs and one `bpmn:parallelGateway` pair, each a `_fork` and a `_join`; exactly one `default` attribute, naming the flow into the `else` branch; one `bpmn:eventBasedGateway` per race, each with one unconditioned flow per catch event and an exclusive merge; and every authored id.
 
 ## `documentation.{bpmnscript,bpmn}`
 
@@ -249,8 +256,8 @@ Contract: the `bpmn:documentation` child on the process element and on each carr
 An order-entry narrative carrying four start events on one process, across two chains.
 `FromDesk` is the only plain start, so it is the process's default and the only one whose `form` is ever offered; `FromShop` (message) and `FromWarehouse` (signal) sit right after it with no step of their own, so all three enter `CheckOrder` directly.
 `FromPartner` (message) opens a second chain after the first chain's `end`, runs a service task of its own, and rejoins `CheckOrder` by `goto`.
-Every start enters an authored step, because a start whose first step is a synthesized branch gateway prints back as a dropped-edge marker instead of the branch, so none of the four is written that way.
-The restructured DSL keeps the first chain as authored and prints each later start after that chain's `end`, followed by its own steps and a `goto CheckOrder`, so `FromShop` and `FromWarehouse` come back as two one-line chains rather than as siblings of `FromDesk`; the graph is the same, which the idempotence block asserts.
+Every start enters an authored step, so none of the four opens on a synthesized branch gateway.
+The restructured DSL prints the file as authored: the three starts sharing `CheckOrder` print back to back above it, and `FromPartner`'s chain after `end Accepted` with its `goto`; the idempotence block asserts the graph.
 
 Contract: four `bpmn:startEvent` elements, none carrying a `bpmn:incoming`; the four `bpmn:incoming` children of `CheckOrder` in the order their flows are met in the source, the three starts ahead of `ImportPartnerOrder`; one `bpmn:Message` root per distinct name in first-appearance order (`OrderPlaced`, `PartnerOrderReceived`) and one `bpmn:Signal` root; `operaton:formData` on `FromDesk` and on no other start; an import of the frozen artifact that reports no warning at all; and every authored id.
 
@@ -296,8 +303,8 @@ Contract: the `EXTERNAL_BINDINGS` record in `tests/external-task.round-trip.test
 A loan-application narrative in which each of the five gateway statements carries a parens of its own, so one artifact freezes all ten spellings a gateway head takes: the five engine keys for the split, the loop gateway, the fork or the race, and the five `join*` keys for the join synthesized beside it.
 The `if` chain carries three head keys and two join keys and its `else if` head none, because the chain lowers to one split and one join and the head parens governs both.
 The `while` carries `asyncAfter` and a retry cycle, and its body holds a plain `if` whose two gateways carry nothing, so a gateway written bare is frozen beside the ones written with settings.
-The `do ... while` sits inside a sub-process, the one nesting the artifact has, and carries `exclusive: false` and a priority, the two keys a loop takes beside the async flags.
-The first `parallel` weighs nothing, so the pair stays `bpmn:parallelGateway`, and it puts `asyncBefore` on the fork and the other three `join*` keys on the join; the second weighs one branch, so the pair is `bpmn:inclusiveGateway`, and it puts an expression priority on the fork and one key on the join.
+The `do ... while` sits inside a sub-process, the one nesting the artifact has, and carries `asyncBefore`, `exclusive: false`, and a priority, since a bare priority or `exclusive` needs the async flag beside it to configure a job at all.
+The first `parallel` weighs nothing, so the pair stays `bpmn:parallelGateway`, and it puts `asyncBefore` on the fork and the other three `join*` keys on the join; the second weighs one branch, so the pair is `bpmn:inclusiveGateway`, and it puts `asyncBefore` and an expression priority on the fork and one key on the join.
 The `await` carries `asyncBefore` and a priority on the head and one `join*` key on the exclusive merge behind it, and never `asyncAfter`, which `BpmnParse.parseEventBasedGateway` refuses to deploy.
 Every condition reads a field of the start form rather than a `var`, so the declaration comes back out of the XML on the way in, and every label differs from the name humanized from its id.
 
@@ -310,10 +317,22 @@ Contract: the `(gateway id, JobSettings)` record in `tests/gateway-settings.roun
 
 An incident-report narrative binding the two behaviours Operaton builds itself, `type: "mail"` and `type: "shell"`, spread over the three tags that take the binding.
 `RateSeverity` is a `decide` step running a shell command and nothing else, the one field `BpmnParse.validateFieldDeclarationsForShell` requires; `PageOnCall` is a `send` task running a shell command with an argument, the variables its output and exit code land in, and `wait = "true"`, spelled the one way `ShellActivityBehavior.readFields` reads as true; `MailOnCall` is a `service` task naming `to`, `cc`, a `subject` expression, a `text` literal and an `html` expression, so both value slots a field takes sit on one task.
-`PageOnCall` also names a `resultVariable`, which the engine accepts on the tag and never reads for a shell task, so the accepted-and-ignored setting is pinned beside the binding.
 The two form fields the mail's expressions read are declared on the start form rather than as a `var`, so the declarations come back out of the XML on the way in, and every label differs from the name humanized from its id.
 
 Contract: the `BUILTIN_BINDINGS` record in `tests/mail-and-shell.round-trip.test.ts`, asserting the three tasks keep their type and every field, in order and in its value slot, at each hop and through import; `operaton:type="shell"` on the `bpmn:businessRuleTask` and the `bpmn:sendTask` and `operaton:type="mail"` on the `bpmn:serviceTask`, each with its `operaton:field` children written as a `stringValue` attribute or an `operaton:expression` child; the printed head of each task with its `type` and the field lines beneath it; an import of the frozen artifact that reports no warning at all; and every authored id.
+
+## `review-loop.{bpmnscript,bpmn}`
+
+The approve-review loop of an invoice process, the shape every approve-or-rework loop drawn by hand takes and the one the Operaton invoice example is built around.
+An invoice is approved or sent back for review, and a review that clarifies it goes round again, so the loop is a `do ... while` whose head is the "clarified" decision.
+The split inside the loop body carries a condition on both routes, `approved` leaving the loop by `goto` for the bank transfer and `!approved` staying in it for the review call, and the chain names no `else`.
+The route leaving the loop puts that split's immediate post-dominator outside the loop, so the split has no join of its own, and with no unconditioned route it has no guard clause either; the printer continues it at the loop gateway instead, so the review call prints inside the loop and only the leaving route is a jump.
+The two condition variables are declared as `var` lines, which the IR does not carry, so the restructured DSL' declares them again as `var x: any`, the type a read alone can say.
+
+The frozen file's split carries a default flow to the join, which the compiled else-less chain gives it and which a hand-drawn original lacks.
+That is why the import-first pin of the modeler's shape, with a condition on every route and no default anywhere, lives in `tests/goto-fallback.round-trip.test.ts` rather than here.
+
+Contract: one `bpmn:exclusiveGateway` split carrying `${approved}`, `${!approved}` and a `default` into the join, that join with two incoming flows, the loop gateway carrying the `${clarified}` back edge into `ApproveInvoice` and a default exit into `InvoiceNotProcessed`; the restructured DSL' printing the `if`/`else if` chain inside the `do` body with the review call inline; an import of the frozen artifact that reports no warning at all; and every authored id.
 
 ## `unstructured-goto.bpmn`
 

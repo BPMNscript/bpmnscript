@@ -16,5 +16,5 @@ Closes #
 
 - [ ] I have tested this change manually
 - [ ] I have added or updated tests as appropriate
-- [ ] All checks pass (`npm test`, `npm run lint`, `npm run format:check`)
+- [ ] All checks pass (`npm test`, `npm run lint`, `npm run format:check`, `npm run typecheck --workspaces`)
 - [ ] I have updated documentation as needed

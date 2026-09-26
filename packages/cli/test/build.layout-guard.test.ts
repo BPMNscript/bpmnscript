@@ -1,0 +1,25 @@
+// Its own file because `vi.mock` applies to the whole file.
+import { describe, it, expect, vi } from 'vitest';
+
+vi.mock('bpmn-auto-layout', () => ({
+  layoutProcess: vi.fn(() => {
+    throw new TypeError('Cannot set properties of undefined');
+  }),
+}));
+
+import { runBuild } from './helpers/actions.js';
+
+describe('bpmns build: layoutProcess guard', () => {
+  it('falls back to writing the DI-less document with a warning instead of failing the build', async () => {
+    const run = await runBuild({ text: 'process guard { start S end E }' });
+
+    expect(run.exit).toBeUndefined();
+    expect(run.stderr).toEqual([
+      'Warning: no diagram could be drawn for this process (bpmn-auto-layout ' +
+        'failed to lay out the process: Cannot set properties of undefined); ' +
+        'the file deploys but opens without shapes in a modeler',
+    ]);
+    expect(run.output).toBeDefined();
+    expect(run.output).not.toContain('bpmndi:');
+  });
+});

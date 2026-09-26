@@ -11,7 +11,7 @@
   ],
   "repository": {
     "javascript-block": {
-      "begin": "(`{3})(javascript|js)\\s*$",
+      "begin": "(`{3})(javascript|js|ecmascript)\\s*$",
       "beginCaptures": {
         "1": { "name": "punctuation.definition.script.begin.bpmn-script" },
         "2": { "name": "fenced_code.block.language.bpmn-script" }

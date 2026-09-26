@@ -1,12 +1,7 @@
-// The editor-independent half of the conversion commands: what each direction
-// makes of a given input. `conversion.test.ts` covers what the VS Code adapter
-// then shows the author.
-
 import { describe, expect, test, beforeAll } from 'vitest';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { dirname } from 'node:path';
 
 import { EmptyFileSystem } from 'langium';
 import { validationHelper } from 'langium/test';
@@ -17,39 +12,20 @@ import { xmlToIr } from '@bpmn-script/transform';
 import {
   compileDslToBpmn,
   decompileBpmnToDsl,
-  swapExtension,
 } from '../src/extension/conversion-core.js';
 import type { ConvDiagnostic } from '../src/extension/conversion-core.js';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
-
-const REPO_ROOT = path.resolve(__dirname, '../../..');
+const REPO_ROOT = fileURLToPath(new URL('../../..', import.meta.url));
 
 const INVOICE_APPROVAL_SRC = path.resolve(
   REPO_ROOT,
   'examples/spring-boot/processes/invoice-approval.bpmnscript',
 );
 
-const GOLDEN_GENERATED_BPMN = path.resolve(
-  REPO_ROOT,
-  'tests/golden/invoice-approval-generated.bpmn',
-);
-
 const BAD_SERVICE_TASK_BPMN = path.resolve(
   REPO_ROOT,
   'tests/golden/bad-service-task-no-binding.bpmn',
 );
-
-for (const [label, p] of [
-  ['invoice-approval.bpmnscript', INVOICE_APPROVAL_SRC],
-  ['invoice-approval-generated.bpmn', GOLDEN_GENERATED_BPMN],
-  ['bad-service-task-no-binding.bpmn', BAD_SERVICE_TASK_BPMN],
-] as const) {
-  if (!fs.existsSync(p)) {
-    throw new Error(`Fixture not found: ${label} at ${p}`);
-  }
-}
 
 let validate: ReturnType<typeof validationHelper<Model>>;
 
@@ -58,7 +34,6 @@ beforeAll(() => {
   validate = validationHelper<Model>(services.BpmnScript);
 });
 
-/** Every substring must appear, so a message that stops naming one fails. */
 function expectMentions(text: string, mentions: readonly string[]): void {
   for (const mention of mentions) {
     expect(text, `expected to find "${mention}" in: ${text}`).toContain(
@@ -67,10 +42,7 @@ function expectMentions(text: string, mentions: readonly string[]): void {
   }
 }
 
-/**
- * A diagnostic minus its wording: the positions, the severity and the source
- * text are this module's own mapping, the sentence belongs to the validator.
- */
+// The wording belongs to the validator, the rest is this module's mapping.
 type DiagnosticPosition = Omit<ConvDiagnostic, 'message'>;
 
 type CompileOutcome =
@@ -91,7 +63,6 @@ describe('compileDslToBpmn', () => {
       { ok: true, reimportsAs: 'invoice-approval' },
     ],
     [
-      // String `name` in a numeric comparison: a severity-1 diagnostic.
       'a type mismatch blocks the compile and reports the comparison it rejected',
       `process p {\n  var name: string\n  if (name > 1000) { user A }\n}\n`,
       {
@@ -99,7 +70,6 @@ describe('compileDslToBpmn', () => {
         kind: 'validation',
         diagnostics: [
           {
-            // 0-based, LSP convention.
             line: 2,
             character: 6,
             endLine: 2,
@@ -111,13 +81,12 @@ describe('compileDslToBpmn', () => {
       },
     ],
     [
-      // Uses `amount` without declaring it: severity 2, which must not block.
       'an undeclared variable is only a warning, so the source still compiles',
       `process p { if (amount > 1000) { user A } }`,
       { ok: true, reimportsAs: 'p' },
     ],
   ])('%s', async (_title, source, expected) => {
-    const result = await compileDslToBpmn(source, 'test.bpmnscript', '0.0.1');
+    const result = await compileDslToBpmn(source, '0.0.1');
 
     expect(result.ok).toBe(expected.ok);
     if (expected.ok) {
@@ -129,8 +98,6 @@ describe('compileDslToBpmn', () => {
 
     if (result.ok) return;
     expect(result.kind).toBe(expected.kind);
-    // The union type alone does not stop the adapter writing result.output if a
-    // kind check goes missing, so assert the field is absent.
     expect('output' in result).toBe(false);
     if (result.kind !== 'validation') return;
     expect(
@@ -140,15 +107,53 @@ describe('compileDslToBpmn', () => {
       expected.diagnostics.map(() => true),
     );
   });
+
+  // `bpmn-auto-layout`'s grid solver throws on this validator-clean shape: a
+  // mixed true/false/expression `else if` chain feeding one `goto` each.
+  test('a layouter crash on a validator-clean goto graph still compiles, without a diagram, and reports why', async () => {
+    const source = `process p {
+  if (true) {
+    goto L
+  } else if (a.b) {
+    goto U
+  } else if (false) {
+  }
+  receive R
+  end E
+  emit compensation L
+  user U
+  end H
+}
+`;
+
+    const result = await compileDslToBpmn(source, '0.0.1');
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.output).toContain('<bpmn:process');
+    expect(result.output).not.toContain('bpmndi:');
+    expect(result.layoutWarning).toContain('bpmn-auto-layout');
+  });
+
+  test('a comment-only file is refused in plain words, not in astToIr wording', async () => {
+    const result = await compileDslToBpmn(
+      '// nothing but a comment here\n',
+      '0.0.1',
+    );
+
+    expect(result).toEqual({
+      ok: false,
+      kind: 'error',
+      message: 'the file has no process',
+    });
+  });
 });
 
-// `formHandlerClass` and the lane are both dropped without loss of
-// behavior, so `xmlToIr` warns instead of refusing.
 const LANE_AND_ASYNC_ATTR_BPMN = `<?xml version="1.0" encoding="UTF-8"?>
 <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
                   xmlns:operaton="http://operaton.org/schema/1.0/bpmn"
                   targetNamespace="http://test">
-  <bpmn:process id="warns" isExecutable="true">
+  <bpmn:process id="warns" isExecutable="true" operaton:historyTimeToLive="P30D">
     <bpmn:laneSet id="LS1">
       <bpmn:lane id="Lane_Ops" name="Ops">
         <bpmn:flowNodeRef>S</bpmn:flowNodeRef>
@@ -170,7 +175,7 @@ const CONDITIONAL_START_BPMN = `<?xml version="1.0" encoding="UTF-8"?>
 <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
                   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
                   targetNamespace="http://test">
-  <bpmn:process id="conditional" isExecutable="true">
+  <bpmn:process id="conditional" isExecutable="true" xmlns:operaton="http://operaton.org/schema/1.0/bpmn" operaton:historyTimeToLive="P30D">
     <bpmn:startEvent id="ConditionalStart">
       <bpmn:conditionalEventDefinition id="cd">
         <bpmn:condition xsi:type="bpmn:tFormalExpression">\${stockLevel &lt; 5}</bpmn:condition>
@@ -199,11 +204,6 @@ type DecompileRow = readonly [
 describe('decompileBpmnToDsl', () => {
   test.each<DecompileRow>([
     [
-      'a BPMN this tool generated comes back with nothing to report',
-      fs.readFileSync(GOLDEN_GENERATED_BPMN, 'utf-8'),
-      { ok: true, warnings: [], mentions: [] },
-    ],
-    [
       'a lane and an unsupported engine attribute are dropped with a warning each, naming the element they came off',
       LANE_AND_ASYNC_ATTR_BPMN,
       {
@@ -230,7 +230,7 @@ describe('decompileBpmnToDsl', () => {
       { ok: true, warnings: [], mentions: [] },
     ],
   ])('%s', async (_title, xml, expected) => {
-    const result = await decompileBpmnToDsl(xml, 'input.bpmn');
+    const result = await decompileBpmnToDsl(xml);
 
     expect(result.ok).toBe(expected.ok);
     if (expected.ok) {
@@ -242,11 +242,8 @@ describe('decompileBpmnToDsl', () => {
         result.warnings.map((w) => w.message).join('\n'),
         expected.mentions,
       );
-      // Whatever it accepts, it must hand back a script the compiler accepts.
-      // Parsing alone is not that bar: it takes source the validator refuses.
-      // Severity 1 is the bar the compile direction blocks on, so it is the
-      // bar the output has to clear; a BPMN carrying no variable declarations
-      // decompiles to a script that warns about them.
+      // Parsing alone accepts source the validator refuses. Warnings are
+      // expected: a BPMN declares no variables.
       const { diagnostics } = await validate(result.output);
       expect(
         diagnostics.filter((d) => d.severity === 1).map((d) => d.message),
@@ -258,16 +255,29 @@ describe('decompileBpmnToDsl', () => {
     expect(result.kind).toBe(expected.kind);
     expectMentions(result.message, expected.mentions);
   });
-});
 
-describe('swapExtension', () => {
+  // The file picker offers every file, and the message goes into a
+  // notification whole.
+  const UNPARSABLE_TAG = '<bad\0tag' + 'z'.repeat(300);
+
   test.each([
-    ['/a/b/my.invoice.bpmnscript', '.bpmn', '/a/b/my.invoice.bpmn'],
-    ['/a/b/x.bpmn', '.bpmnscript', '/a/b/x.bpmnscript'],
-  ] as const)(
-    'only the final extension of %s is replaced by %s',
-    (input, newExt, expected) => {
-      expect(swapExtension(input, newExt)).toBe(expected);
-    },
-  );
+    [
+      'a long file that is not XML at all is named by a short preview of its start',
+      'PK\u0003\u0004' + 'x'.repeat(300_000),
+      `not an XML document (starts with "PK${'x'.repeat(38)}")`,
+    ],
+    [
+      'a document the parser chokes on is cut to its first line, capped, and stripped of control characters',
+      UNPARSABLE_TAG,
+      (
+        `unparsable content ${UNPARSABLE_TAG} detected`.slice(0, 200) + '...'
+      ).replace(/\p{C}/gu, ''),
+    ],
+  ])('%s', async (_title, xml, message) => {
+    expect(await decompileBpmnToDsl(xml)).toEqual({
+      ok: false,
+      kind: 'error',
+      message,
+    });
+  });
 });

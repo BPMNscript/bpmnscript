@@ -2,6 +2,12 @@
   "name": "@bpmn-script/transform",
   "description": "IR type definitions and bidirectional BPMN transforms for BPMNscript",
   "version": "0.0.1",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/BPMNscript/bpmnscript.git",
+    "directory": "packages/transform"
+  },
   "type": "module",
   "engines": {
     "node": ">=22.0.0",

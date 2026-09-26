@@ -110,11 +110,6 @@ execution.setVariable("allowanceBase", base)
       <bpmn:incoming>Flow_PayOut_ClaimSettled</bpmn:incoming>
     </bpmn:endEvent>
     <bpmn:subProcess id="EventSubProcess_expense-reimbursement_7" triggeredByEvent="true">
-      <bpmn:extensionElements>
-        <operaton:inputOutput>
-          <operaton:inputParameter name="recallReason">${recallText}</operaton:inputParameter>
-        </operaton:inputOutput>
-      </bpmn:extensionElements>
       <bpmn:startEvent id="RecallNoted">
         <bpmn:outgoing>Flow_RecallNoted_RecordRecall</bpmn:outgoing>
         <bpmn:messageEventDefinition messageRef="Message_ClaimRecalled" />

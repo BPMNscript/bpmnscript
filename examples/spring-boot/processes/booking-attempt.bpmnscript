@@ -1,21 +1,10 @@
-// Seat booking as a block of work that can be given up. `attempt BookAndPay`
-// holds the seat, charges the travel card and issues the ticket; a guard on
-// the declined charge ends that path with
-// `end BookingAbandoned cancel(label: "Give up the booking")`, and
-// `on BookAndPay: cancel` catches it. Started with `chargeDeclined` set, the
-// charge is declined and the escape task opens; started without it, the
-// block completes and the booking goes to confirmation.
+// A block of work that can be given up: started with `chargeDeclined` set,
+// the cancel end inside the block fires and `on BookAndPay: cancel` catches it.
 //
-// Giving up the block undoes the steps inside it that had already finished
-// and carry an `on compensation` block, and it undoes them before the cancel
-// handler opens. `HoldSeat` has one, so the seat goes back on sale.
-// `ChargeCard` has none, so it stays completed and nothing reverses it.
-// Nothing outside the block is undone either.
-//
-// Every service task points at the generic delegate
-// examples/spring-boot/src/main/java/com/example/demo/LogDelegate.java, so
-// this process deploys and runs on the demo profile without additional Java
-// classes.
+// Giving up the block undoes every finished step inside it that carries an
+// `on compensation` block, before the cancel handler opens. `HoldSeat` has
+// one, so the seat goes back on sale; `ChargeCard` has none, so it stays
+// completed. Nothing outside the block is undone.
 
 process booking-attempt {
   var chargeDeclined: boolean

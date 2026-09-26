@@ -1,15 +1,3 @@
-/**
- * Completion for the BPMNscript language server, driven through the real
- * `CompletionProvider` on the shared services so the DI wiring is exercised too.
- *
- * The default Langium completion inserts bare keywords, leaving the caret at
- * `process|`, a position the grammar continues with an id then `{`, where
- * nothing is suggestible. The custom provider emits LSP snippet items for the
- * structural keywords instead, so accepting one scaffolds the whole construct
- * and drops the caret inside the body. Non-structural keywords still fall
- * through to plain keyword completion.
- */
-
 import { beforeAll, describe, expect, test } from 'vitest';
 import { EmptyFileSystem, URI, type LangiumDocument } from 'langium';
 import {
@@ -22,9 +10,13 @@ import {
   ATTEMPT_BLOCK_RULE,
   ATTRIBUTE_BLOCK_RULES,
   type BpmnScriptServices,
+  CALL_BINDING_VALUES,
   createBpmnScriptServices,
+  DECISION_RESULT_MAPPINGS,
   ENGINE_KEYS,
   FORM_CONSTRAINT_TYPES,
+  FORM_FIELD_TYPES,
+  TRIGGER_PAYLOAD,
 } from '@bpmn-script/language';
 import { BLOCK_HOSTS, caretInSlot } from './helpers/block-hosts.js';
 import { withTextMessages } from './helpers/diagnostics.js';
@@ -67,7 +59,7 @@ async function labelsAt(
   return (await completionItems(text, line, character)).map((i) => i.label);
 }
 
-/** The text an LSP client would actually insert (textEdit wins over insertText). */
+/** What an LSP client inserts: `textEdit` wins over `insertText`. */
 function inserted(item: CompletionItem): string {
   if (item.textEdit && 'newText' in item.textEdit) {
     return item.textEdit.newText;
@@ -75,12 +67,7 @@ function inserted(item: CompletionItem): string {
   return item.insertText ?? item.label;
 }
 
-/**
- * The text an editor leaves behind when a snippet is accepted and every tab
- * stop is tabbed past: choices collapse to their first option, defaults to
- * their default, bare stops to `fillStop`, and a `\$` escape to the EL `$` it
- * stands for.
- */
+/** The text an editor leaves once every tab stop is tabbed past. */
 function accepted(
   item: CompletionItem,
   fillStop: (stop: string) => string = () => '',
@@ -92,12 +79,7 @@ function accepted(
     .replace(/\\\$/g, '$');
 }
 
-/**
- * The same text with a step typed into every bare tab stop, which is what the
- * author does next: each one opens a body, and a container is only complete
- * once something runs in it. The stop's number keeps the steps apart, so two
- * branches of one scaffold do not collide on a name.
- */
+/** A bare tab stop opens a body, complete only once a step runs in it. */
 const typedInto = (stop: string) => `user Step${stop}`;
 
 let parseCounter = 0;
@@ -115,11 +97,7 @@ async function build(text: string, validation: boolean) {
   return document;
 }
 
-/**
- * The lexer and parser errors `text` produces, so a scaffold can be checked as
- * accepted. Both arrays matter: an unlexable character never reaches the parser,
- * so parser errors alone would report a rejected input as clean.
- */
+/** An unlexable character never reaches the parser, so lexer errors count too. */
 async function parseErrors(text: string): Promise<string[]> {
   const { parseResult } = await build(text, false);
   return [...parseResult.lexerErrors, ...parseResult.parserErrors].map(
@@ -127,11 +105,7 @@ async function parseErrors(text: string): Promise<string[]> {
   );
 }
 
-/**
- * The errors `text` raises once validated. Warnings are left out: a scaffold
- * writes an example value naming a variable the author has yet to declare, and
- * saying so is the editor doing its job rather than a defect in the scaffold.
- */
+/** Errors only: a scaffold's example value names a variable not yet declared. */
 async function validationErrors(text: string): Promise<string[]> {
   const document: LangiumDocument = await build(text, true);
   return withTextMessages(document.diagnostics ?? [])
@@ -139,7 +113,6 @@ async function validationErrors(text: string): Promise<string[]> {
     .map((d) => d.message);
 }
 
-/** A program with `|` marking the caret, split into text and position. */
 function caretAt(program: string) {
   const offset = program.indexOf('|');
   const lines = program.slice(0, offset).split('\n');
@@ -150,12 +123,7 @@ function caretAt(program: string) {
   };
 }
 
-/**
- * One offered completion, as `[label, detail, inserted text]`, with the kind
- * where it is neither of the two the harness derives: an item that inserts more
- * than its label is a `Snippet` and one that inserts its label is a `Keyword`,
- * so only a cross-reference row spells its own.
- */
+/** The kind defaults to `Snippet` when the item inserts more than its label, else `Keyword`. */
 type Item = readonly [
   label: string,
   detail: string,
@@ -167,13 +135,9 @@ const CONSTRUCT = 'BPMNscript construct';
 const SETTING = 'BPMNscript setting';
 const EVENT_WORD = 'BPMNscript event word';
 const LISTENER_EVENT = 'BPMNscript listener event';
-/** Langium's own caption for a keyword it completes with no help from us. */
+/** Langium's caption for a keyword it completes on its own. */
 const KEYWORD = 'Keyword';
 
-/**
- * The words every settings position also offers: an unkeyed item there is an
- * event payload or a condition, which is an expression like any other.
- */
 const LITERALS: Item[] = [
   ['true', KEYWORD, 'true'],
   ['false', KEYWORD, 'false'],
@@ -190,16 +154,14 @@ const CONDITION: Item = [
   'a data-change watchdog',
   'condition(${1:amount > 100})',
 ];
-/** A duration is the bare payload the `timer` snippet already scaffolds. */
+/** A duration is the bare payload the `timer` snippet scaffolds, so only the keyed forms are offered. */
 const TIMER_KEYS: Item[] = [
   ['at', SETTING, 'at: "${1:2026-08-01T09:00:00}"'],
   ['every', SETTING, 'every: "${1:R/PT10M}"'],
 ];
 
-/** Opens the flow, so it belongs above the first step rather than after one. */
 const START: Item = ['start', CONSTRUCT, 'start ${1:name}'];
 
-/** Every statement a body position opens, in the order they are offered. */
 const STATEMENTS: Item[] = [
   START,
   ['end', CONSTRUCT, 'end ${1:name}'],
@@ -208,7 +170,7 @@ const STATEMENTS: Item[] = [
   [
     'script',
     CONSTRUCT,
-    'script ${1:id} ```${2|javascript,groovy,python,ruby,feel|}\n\t$0\n```',
+    'script ${1:id} ```${2|juel,javascript,groovy,python,ruby,feel|}\n\t$0\n```',
   ],
   ['step', CONSTRUCT, 'step ${1:id}'],
   ['send', CONSTRUCT, 'send ${1:id}(class: "${2:com.example.Delegate}")'],
@@ -245,19 +207,27 @@ const STATEMENTS: Item[] = [
   ],
 ];
 
-/**
- * The process-scope declarations, offered alongside the statements. A label is
- * a setting on the process head rather than a declaration, so it is not here.
- */
 const HEADER_DECLS: Item[] = [
   [
     'var',
     CONSTRUCT,
     'var ${1:name}: ${2|string,number,boolean,date,json,any|}',
   ],
+  [
+    'error',
+    'declare an error code',
+    'error ${1:NAME}(message: "${2:message}")',
+  ],
+  ['escalation', 'declare an escalation code', 'escalation ${1:NAME}'],
 ];
 
 const PROCESS_BODY: Item[] = [...HEADER_DECLS, ...STATEMENTS];
+
+const VARS = 'var amount: number\n  var ok: boolean';
+const VARIABLES: Item[] = [
+  ['amount', 'number', 'amount', CompletionItemKind.Variable],
+  ['ok', 'boolean', 'ok', CompletionItemKind.Variable],
+];
 
 const REPEAT_FORMS: Item[] = [
   [
@@ -268,6 +238,7 @@ const REPEAT_FORMS: Item[] = [
   ['for', 'how often the preceding step runs', 'for ${1:3}'],
 ];
 
+/** `compensation` joins only inside a subprocess body, `cancel` only on an attempt host; a service task drops `escalation`. */
 const ON_TRIGGERS: Item[] = [
   ['error', EVENT_WORD, 'error'],
   ['escalation', EVENT_WORD, 'escalation'],
@@ -275,8 +246,6 @@ const ON_TRIGGERS: Item[] = [
   ['signal', EVENT_WORD, 'signal'],
   TIMER,
   CONDITION,
-  ['compensation', 'the undo block of this subprocess', 'compensation'],
-  ['cancel', EVENT_WORD, 'cancel'],
 ];
 
 const RACE_TRIGGERS: Item[] = [
@@ -306,7 +275,6 @@ const ENGINE_SETTINGS: Item[] = [
   ['retryCycle', SETTING, 'retryCycle: "${1:R3/PT10M}"'],
 ];
 
-/** The join gateway's settings: the same values under the prefixed keys. */
 const JOIN_SETTINGS: Item[] = [
   ['joinAsyncBefore', SETTING, 'joinAsyncBefore: ${1|true,false|}'],
   ['joinAsyncAfter', SETTING, 'joinAsyncAfter: ${1|true,false|}'],
@@ -315,11 +283,7 @@ const JOIN_SETTINGS: Item[] = [
   ['joinRetryCycle', SETTING, 'joinRetryCycle: "${1:R3/PT10M}"'],
 ];
 
-/**
- * The per-run settings a repeated statement's parens take after the engine
- * ones: the same values under the `run` keys, a job priority having no per-run
- * carrier.
- */
+/** The per-run keys; a job priority has no per-run carrier. */
 const RUN_SETTINGS: Item[] = [
   ['runAsyncBefore', SETTING, 'runAsyncBefore: ${1|true,false|}'],
   ['runAsyncAfter', SETTING, 'runAsyncAfter: ${1|true,false|}'],
@@ -327,21 +291,15 @@ const RUN_SETTINGS: Item[] = [
   ['runRetryCycle', SETTING, 'runRetryCycle: "${1:R3/PT10M}"'],
 ];
 
-/** The head of a statement with a join: the split's keys, then the join's. */
-const SPLIT_AND_JOIN_PARENS: Item[] = [
-  ...ENGINE_SETTINGS,
-  ...JOIN_SETTINGS,
-  ...LITERALS,
-];
+const SPLIT_AND_JOIN_PARENS: Item[] = [...ENGINE_SETTINGS, ...JOIN_SETTINGS];
 
-/** A loop has one gateway, so its parens take the bare keys alone. */
-const LOOP_PARENS: Item[] = [...ENGINE_SETTINGS, ...LITERALS];
+/** A loop has one gateway, so no join keys. */
+const LOOP_PARENS: Item[] = ENGINE_SETTINGS;
 
-/** An await block's head leaves out the one key the validator refuses there. */
+/** Without the one key the validator refuses on an await head. */
 const AWAIT_PARENS: Item[] = [
   ...ENGINE_SETTINGS.filter(([label]) => label !== 'asyncAfter'),
   ...JOIN_SETTINGS,
-  ...LITERALS,
 ];
 
 const PARAMETERS: Item[] = [
@@ -363,7 +321,6 @@ const LISTENER_KEYWORD: Item = [
 
 const FORM_KEYWORD: Item = ['form', KEYWORD, 'form'];
 
-/** A form field's parens, in the order the constraints are registered. */
 const FORM_FIELD_PARENS: Item[] = [
   ['required', SETTING, 'required: true'],
   ['readonly', SETTING, 'readonly: true'],
@@ -381,38 +338,28 @@ const PROPERTY: Item = [
   'property ${1:name} = "${2:value}"',
 ];
 
-/** The one field type each setting is legal on; `pattern` has no row and fits a date. */
+/** The one field type a setting is legal on; `pattern` has no row and fits a date. */
 const fieldTypeTaking = (key: string): string =>
   FORM_CONSTRAINT_TYPES[key]?.[0] ?? 'date';
 
-/** A mapping's code is a declaration, so the scaffold writes it bare. */
+/** The code is a declaration, so the scaffold writes it bare. */
 const ERROR_MAPPING: Item = [
   'error',
   'raise a declared error when a reported failure matches',
   'error ${1:CODE} when ${2:condition}',
 ];
 
-/** What the brace block of an element holds, its settings having moved out. */
 const BLOCK_MEMBERS: Item[] = [FORM_KEYWORD, ...PARAMETERS, LISTENER_KEYWORD];
 
-/** The same block on a service task, whose binding injects fields or hands the work to an external worker. */
-const FIELD_BLOCK_MEMBERS: Item[] = [
-  FORM_KEYWORD,
+const CLASS_BLOCK_MEMBERS: Item[] = [...PARAMETERS, FIELD, LISTENER_KEYWORD];
+
+const TOPIC_BLOCK_MEMBERS: Item[] = [
   ...PARAMETERS,
-  FIELD,
   PROPERTY,
   LISTENER_KEYWORD,
   ERROR_MAPPING,
 ];
 
-/**
- * The first brace block of an element that also takes a body is ambiguous while
- * it is still open: no member commits it to being the member block, so a
- * statement stays possible and both sets are offered.
- */
-const BLOCK_OR_BODY: Item[] = [...STATEMENTS, ...PARAMETERS];
-
-/** The three ways a listener binds; also the whole listener parens. */
 const BINDINGS: Item[] = [
   ['class', SETTING, 'class: "${1:com.example.Delegate}"'],
   ['expression', SETTING, 'expression: "${1:\\${bean.method(execution)}}"'],
@@ -444,10 +391,9 @@ const USER_PARENS: Item[] = [
   ['followUpDate', SETTING, 'followUpDate: "${1:\\${dateTime().plusDays(1)}}"'],
   ['priority', SETTING, 'priority: ${1:50}'],
   ...ENGINE_SETTINGS,
-  ...LITERALS,
 ];
 
-const SERVICE_SETTINGS: Item[] = [
+const SERVICE_PARENS: Item[] = [
   LABEL,
   DOCUMENTATION,
   ...BINDINGS,
@@ -458,14 +404,7 @@ const SERVICE_SETTINGS: Item[] = [
   ...ENGINE_SETTINGS,
 ];
 
-const SERVICE_PARENS: Item[] = [...SERVICE_SETTINGS, ...LITERALS];
-
-/** A repeated statement's parens offer the run keys after the engine ones. */
-const REPEATED_SERVICE_PARENS: Item[] = [
-  ...SERVICE_SETTINGS,
-  ...RUN_SETTINGS,
-  ...LITERALS,
-];
+const REPEATED_SERVICE_PARENS: Item[] = [...SERVICE_PARENS, ...RUN_SETTINGS];
 
 const CALL_PARENS: Item[] = [
   LABEL,
@@ -481,7 +420,6 @@ const CALL_PARENS: Item[] = [
   ['mapper', SETTING, 'mapper: "${1:com.example.CallMapper}"'],
   ['mapperDelegate', SETTING, 'mapperDelegate: "${1:\\${callMapperBean}}"'],
   ...ENGINE_SETTINGS,
-  ...LITERALS,
 ];
 
 const RECEIVE_PARENS: Item[] = [
@@ -489,7 +427,6 @@ const RECEIVE_PARENS: Item[] = [
   DOCUMENTATION,
   ['message', SETTING, 'message: "${1:MessageName}"'],
   ...ENGINE_SETTINGS,
-  ...LITERALS,
 ];
 
 const DECIDE_PARENS: Item[] = [
@@ -509,15 +446,36 @@ const DECIDE_PARENS: Item[] = [
   RESULT_VARIABLE,
   TASK_PRIORITY,
   ...ENGINE_SETTINGS,
-  ...LITERALS,
 ];
 
-/** A handler catching an error or an escalation binds what the event carries. */
+const CODE_BINDING: Item = ['code', SETTING, 'code: ${1:code}'];
+
 const HANDLER_PARENS: Item[] = [
-  ['code', SETTING, 'code: ${1:code}'],
+  CODE_BINDING,
   ['message', SETTING, 'message: ${1:message}'],
   ...ENGINE_SETTINGS,
-  ...LITERALS,
+];
+
+const ALONGSIDE: Item = ['alongside', 'BPMNscript flag', 'alongside'];
+
+/** An escalation carries no message and may run alongside. */
+const ESCALATION_HANDLER_PARENS: Item[] = [
+  CODE_BINDING,
+  ...ENGINE_SETTINGS,
+  ALONGSIDE,
+];
+
+/** A declaration's fields carry text, so both are quoted. */
+const DECLARATION_FIELDS: Item[] = [
+  ['code', SETTING, 'code: "${1:code}"'],
+  ['message', SETTING, 'message: "${1:message}"'],
+];
+
+const SETTING_VALUE = 'BPMNscript setting value';
+
+const TYPE_VALUES: Item[] = [
+  ['"mail"', SETTING_VALUE, '"mail"'],
+  ['"shell"', SETTING_VALUE, '"shell"'],
 ];
 
 const PROCESS_PARENS: Item[] = [
@@ -535,7 +493,7 @@ const PROCESS_PARENS: Item[] = [
     SETTING,
     'candidateStarterGroups: "${1:adjusters}"',
   ],
-  ...LITERALS,
+  ['isStartableInTasklist', SETTING, 'isStartableInTasklist: ${1|false,true|}'],
 ];
 
 const START_PARENS: Item[] = [
@@ -543,10 +501,9 @@ const START_PARENS: Item[] = [
   DOCUMENTATION,
   ['initiator', SETTING, 'initiator: "${1:starter}"'],
   ...ENGINE_SETTINGS,
-  ...LITERALS,
 ];
 
-const LISTENER_PARENS: Item[] = [...BINDINGS, ...LITERALS];
+const LISTENER_PARENS: Item[] = BINDINGS;
 
 const listenerEvent = (event: string): Item => [
   event,
@@ -559,7 +516,7 @@ const EXECUTION_EVENTS: Item[] = [listenerEvent('start'), listenerEvent('end')];
 const TASK_EVENTS: Item[] = [
   ...EXECUTION_EVENTS,
   listenerEvent('create'),
-  listenerEvent('assign'),
+  listenerEvent('assignment'),
   listenerEvent('complete'),
   listenerEvent('update'),
   listenerEvent('delete'),
@@ -638,9 +595,24 @@ describe('the completions offered at a caret', () => {
       HANDLER_PARENS,
     ],
     [
-      'the parens of a timer handler offer the keys naming a date and a cycle',
+      'an escalation handler offers the code binding and the flag after its code',
+      'process p {\n  escalation X\n  start S\n  on escalation(X, |) {\n    end Failed\n  }\n}',
+      ESCALATION_HANDLER_PARENS,
+    ],
+    [
+      'the parens of a timer handler offer only the keys naming a date and a cycle until a time is written',
       'process p {\n  on timer(|) {\n    end Late\n  }\n}',
-      [...TIMER_KEYS, ...ENGINE_SETTINGS, ...LITERALS],
+      TIMER_KEYS,
+    ],
+    [
+      "an error declaration's parens offer its two fields, quoted",
+      'process p {\n  error E(|)\n  user A\n}',
+      DECLARATION_FIELDS,
+    ],
+    [
+      "a service task's type slot offers the two built-in behaviours, quoted",
+      'process p {\n  service S(type: |)\n}',
+      TYPE_VALUES,
     ],
     [
       'the `await` trigger position offers only the triggers something can fire',
@@ -672,8 +644,8 @@ describe('the completions offered at a caret', () => {
         ...STATEMENTS,
       ],
     ],
-    // `Decoy` (another process) and `Inner` (a nested subprocess body) are both
-    // named statements the scope must keep out.
+    // `Decoy` (another process) and `Inner` (a nested body) are named
+    // statements the scope keeps out.
     [
       "the host position offers the container's activities and nothing from another scope",
       'process p {\n  user Review\n  service Ship\n  subprocess Sub {\n    user Inner\n  }\n  on |\n}\nprocess q { user Decoy }',
@@ -719,8 +691,6 @@ describe('the completions offered at a caret', () => {
       'process p {\n  service S(|)\n}',
       SERVICE_PARENS,
     ],
-    // Revert: drop `isRepeated` from `settingFormsFor` and the unrepeated
-    // service task above is offered the run keys.
     [
       'a repeated service task offers the run keys after the engine ones',
       'process p {\n  service S for 3(|)\n}',
@@ -781,7 +751,6 @@ describe('the completions offered at a caret', () => {
       'process p {\n  user T {\n    input x = 1\n    |\n  }\n}',
       BLOCK_MEMBERS,
     ],
-    // A closed listener must not capture the caret that follows it.
     [
       'a user block offers its whole member set after a closed listener',
       'process p {\n  user T {\n    on create(class: "com.example.L")\n    |\n  }\n}',
@@ -793,27 +762,54 @@ describe('the completions offered at a caret', () => {
       BLOCK_MEMBERS,
     ],
     [
-      'a service block offers `field` and `property` alongside the two io directions',
+      'a class-bound service block offers `field` alongside the two io directions',
       'process p {\n  service S(class: "com.example.D") {\n    |\n  }\n}',
-      FIELD_BLOCK_MEMBERS,
+      CLASS_BLOCK_MEMBERS,
     ],
     [
-      'a service block offers its whole member set after a property line',
+      'a topic-bound service block offers its whole member set after a property line',
       'process p {\n  service S(topic: "t") {\n    property k = "v"\n    |\n  }\n}',
-      FIELD_BLOCK_MEMBERS,
+      TOPIC_BLOCK_MEMBERS,
+    ],
+    // The same brace opens the body, so the body position offers no member.
+    [
+      'a subprocess body offers the statements and no member',
+      'process p {\n  subprocess S {\n    |\n  }\n}',
+      STATEMENTS,
+    ],
+    [
+      'an attempt body offers the statements and no member',
+      'process p {\n  attempt A {\n    |\n  }\n}',
+      STATEMENTS,
+    ],
+    [
+      'a subprocess body offers the statements alone after a step too',
+      'process p {\n  subprocess S {\n    user A\n    |\n  }\n}',
+      [...REPEAT_FORMS, ...STATEMENTS],
+    ],
+    [
+      'a branch body offers the statements',
+      'process p {\n  var a: boolean\n  if (a) {\n    |\n  }\n}',
+      STATEMENTS,
+    ],
+    [
+      'an unclosed user block still offers the task listener events',
+      'process p {\n  user T {\n    on |',
+      TASK_EVENTS,
     ],
     [
       "a listener's block holds an injected field and nothing else",
       'process p {\n  user T {\n    on create(class: "com.example.L") {\n      |\n    }\n  }\n}',
       [FIELD],
     ],
+    // An event sub-process refuses a parameter; a boundary event carries none.
     [
-      'a host-less handler block offers parameters, which a boundary event has none of',
-      'process p {\n  start S\n  on error {\n    input x = 1\n    |\n  } {\n    end Failed\n  }\n}',
-      BLOCK_OR_BODY,
+      'a host-less handler block offers no parameter',
+      'process p {\n  start S\n  on error {\n    |\n  } {\n    end Failed\n  }\n}',
+      STATEMENTS,
     ],
     [
-      'a hosted handler lowers to a boundary event, so its block offers no parameter',
+      'a hosted handler block offers no parameter either',
       'process p {\n  user U\n  on U: error {\n    |\n  } {\n    end Failed\n  }\n}',
       STATEMENTS,
     ],
@@ -859,8 +855,7 @@ describe('the completions offered at a caret', () => {
         ['any', KEYWORD, 'any'],
       ],
     ],
-    // Every identifier in an expression is a reference to a code declaration,
-    // so the scope is what keeps the declared codes out of this list.
+    // The scope keeps the declared codes out of an expression's offer.
     [
       'an expression position offers no code declaration, only the literal words',
       'process p {\n  error PAYMENT_DECLINED(message: "x")\n  if (|) {\n    user A\n  }\n}',
@@ -890,6 +885,89 @@ describe('the completions offered at a caret', () => {
         ],
       ],
     ],
+    // With nothing after the head word the mapping does not parse.
+    [
+      "a mapping's code slot offers the declared errors before the rest of the line is written",
+      'process p {\n  error PAYMENT_DECLINED(message: "x")\n  escalation PAYMENT_REVIEW\n  service S(topic: "t") {\n    error |\n  }\n}',
+      [
+        [
+          'PAYMENT_DECLINED',
+          'CodeDecl',
+          'PAYMENT_DECLINED',
+          CompletionItemKind.Reference,
+        ],
+      ],
+    ],
+    // The caret's node is the preceding member, not the service task.
+    [
+      "a mapping's code slot offers the declared errors after a preceding member too",
+      'process p {\n  error PAYMENT_DECLINED(message: "x")\n  escalation PAYMENT_REVIEW\n  service S(topic: "t") {\n    property k = "v"\n    error |\n  }\n}',
+      [
+        [
+          'PAYMENT_DECLINED',
+          'CodeDecl',
+          'PAYMENT_DECLINED',
+          CompletionItemKind.Reference,
+        ],
+      ],
+    ],
+    [
+      'a class-bound service block offers no code at the head word, since it maps nothing',
+      'process p {\n  error PAYMENT_DECLINED(message: "x")\n  service S(class: "c") {\n    error |\n  }\n}',
+      [],
+    ],
+    // A bare variable is a prefix of the expression, so these pin the offer only.
+    [
+      'a condition offers the declared variables beside the literal words',
+      `process p {\n  ${VARS}\n  if (|) {\n    user A\n  }\n}`,
+      [...LITERALS, ...VARIABLES],
+    ],
+    [
+      'a typed prefix narrows the offer to the variables matching it',
+      `process p {\n  ${VARS}\n  if (am|) {\n    user A\n  }\n}`,
+      [VARIABLES[0]!],
+    ],
+    // The parameter's own name is a variable too.
+    [
+      "an io parameter's value offers the variables",
+      `process p {\n  ${VARS}\n  user T {\n    input total = |\n  }\n}`,
+      [
+        ...LITERALS,
+        ...VARIABLES,
+        ['total', 'any', 'total', CompletionItemKind.Variable],
+      ],
+    ],
+    [
+      "a condition handler's open payload offers the variables",
+      `process p {\n  ${VARS}\n  start S\n  on condition(|) {\n    end E\n  }\n}`,
+      [LITERALS[0]!, LITERALS[1]!, ...VARIABLES],
+    ],
+    [
+      'a number setting offers the variables alone',
+      `process p {\n  ${VARS}\n  user T(jobPriority: |)\n}`,
+      VARIABLES,
+    ],
+    [
+      'a repeat clause offers the variables as its collection',
+      `process p {\n  ${VARS}\n  user T for each item in |\n}`,
+      [...LITERALS, ...VARIABLES],
+    ],
+    [
+      "a call's in mapping offers the variables as its source",
+      `process p {\n  ${VARS}\n  call C(process: "q") {\n    in x = |\n  }\n}`,
+      [...LITERALS, ...VARIABLES],
+    ],
+    // An out mapping's source is read in the called process.
+    [
+      "a call's out mapping offers no variable",
+      `process p {\n  ${VARS}\n  call C(process: "q") {\n    out x = |\n  }\n}`,
+      LITERALS,
+    ],
+    [
+      'a message name slot offers no variable',
+      `process p {\n  ${VARS}\n  user A\n  throw message(|)\n}`,
+      [],
+    ],
     [
       'a map key inside a parameter value is left to the default completion',
       'process p {\n  user T {\n    input x = {\n      |\n    }\n  }\n}',
@@ -898,7 +976,7 @@ describe('the completions offered at a caret', () => {
     [
       "a form field's parens offer its settings after a preceding one",
       'process p {\n  start S {\n    form {\n      amount: number (required: true, |)\n    }\n  }\n}',
-      [...FORM_FIELD_PARENS, ...LITERALS],
+      FORM_FIELD_PARENS,
     ],
     [
       "a form field's block offers the property direction after a value line",
@@ -912,10 +990,6 @@ describe('the completions offered at a caret', () => {
       expected.map(([label, detail, insert]) => [label, detail, insert]),
     );
     for (const [index, item] of items.entries()) {
-      // An item that inserts more than its own label has to say it is a
-      // snippet, or the editor writes the placeholders out literally. One that
-      // inserts its label carries the kind its row names, a keyword unless the
-      // row says otherwise.
       const scaffolds = inserted(item) !== item.label;
       expect(item.insertTextFormat === InsertTextFormat.Snippet).toBe(
         scaffolds,
@@ -929,22 +1003,27 @@ describe('the completions offered at a caret', () => {
   });
 });
 
-/** The rows of `items` that scaffold something, with the program they land in. */
+type Scaffolds = readonly [
+  where: string,
+  labels: string[],
+  program: (accepted: string, label: string) => string,
+];
+
 function scaffolds(
   where: string,
   items: Item[],
-  program: (accepted: string) => string,
-): Array<readonly [string, string, (accepted: string) => string]> {
-  return items
-    .filter(([label, , insertText]) => insertText !== label)
-    .map(([label]) => [`\`${label}\` in ${where}`, label, program] as const);
+  program: (accepted: string, label: string) => string,
+): Scaffolds {
+  return [
+    where,
+    items
+      .filter(([label, , insertText]) => insertText !== label)
+      .map(([label]) => label),
+    program,
+  ];
 }
 
-/**
- * A setting the element it belongs to cannot do without. Each is offered
- * alongside the rest, so a host that already writes one would collide with the
- * row under test: they are checked in a host that writes none instead.
- */
+/** A binding is checked in a host that writes none, since a second one would collide with it. */
 const REQUIRED_BINDINGS = new Set([
   'class',
   'expression',
@@ -960,21 +1039,18 @@ const binds = ([label]: Item) => REQUIRED_BINDINGS.has(label);
 /** A built-in behaviour needs its fields, so its host writes the mail ones. */
 const bindsBuiltin = ([label]: Item) => label === 'type';
 
-/**
- * A form reference and the binding pinning its version are legal only
- * together, so each half is checked in a host writing the other one.
- */
+/** A form reference and its version pin are legal only together, so each half is checked in a host writing the other. */
 const FORM_REFERENCE_MODIFIERS = new Set(['binding', 'version']);
 
 const pinsAForm = ([label]: Item) => FORM_REFERENCE_MODIFIERS.has(label);
 const namesAForm = ([label]: Item) => label === 'formRef';
 
-/**
- * The declaration a statement scaffold needs in the header. Every scaffold
- * writes its code as the same placeholder name, and a code reaches only the
- * declarations of its own kind, so which kind is declared follows the
- * statement.
- */
+/** Legal only beside `decision`, so their host binds one. */
+const DECISION_MODIFIERS = new Set(['binding', 'version', 'mapDecisionResult']);
+
+const pinsADecision = ([label]: Item) => DECISION_MODIFIERS.has(label);
+
+/** Every scaffold writes the same placeholder code, and a code reaches only its own kind, so the declared kind follows the statement. */
 const declarationNaming = (statement: string): string =>
   statement.includes('escalation')
     ? 'escalation CODE'
@@ -985,177 +1061,168 @@ describe('a scaffold parses and validates once accepted', () => {
     expect(await parseErrors('process p {\n  @@@\n}')).not.toEqual([]);
   });
 
-  test.each([
-    ...scaffolds(
+  test.each<Scaffolds>([
+    scaffolds(
       'a process header',
       [...HEADER_DECLS, START],
       (decl) => `process p {\n${decl}\n  user Anchor\n}`,
     ),
-    ...scaffolds(
+    scaffolds(
       'a process body',
       STATEMENTS.filter((item) => item !== START),
       (statement) =>
         `process p {\n  ${declarationNaming(statement)}\n  user Anchor\n${statement}\n}`,
     ),
-    ...scaffolds(
+    scaffolds(
       'the position after a step name',
       REPEAT_FORMS,
       (clause) => `process p {\n  user U ${clause}\n}`,
     ),
-    ...scaffolds(
+    scaffolds(
       'the parens of a user task',
       USER_PARENS.filter((item) => !pinsAForm(item) && !namesAForm(item)),
       (setting) => `process p {\n  user T(${setting})\n}`,
     ),
-    ...scaffolds(
+    scaffolds(
       'the parens of a user task',
       USER_PARENS.filter(pinsAForm),
       (setting) => `process p {\n  user T(formRef: "f", ${setting})\n}`,
     ),
-    ...scaffolds(
+    scaffolds(
       'the parens of a user task',
       USER_PARENS.filter(namesAForm),
       (setting) => `process p {\n  user T(${setting}, binding: latest)\n}`,
     ),
-    ...scaffolds(
-      'the parens of a receive task',
-      RECEIVE_PARENS,
-      (setting) => `process p {\n  receive R(${setting})\n}`,
-    ),
-    // `taskPriority` rides a `topic` binding alone, so the host binds one.
-    ...scaffolds(
+    // `taskPriority` rides a `topic` binding alone.
+    scaffolds(
       'the parens of a service task',
       SERVICE_PARENS.filter((item) => !binds(item)),
       (setting) => `process p {\n  service S(topic: "t", ${setting})\n}`,
     ),
-    ...scaffolds(
+    scaffolds(
       'the parens of a service task',
       SERVICE_PARENS.filter((item) => binds(item) && !bindsBuiltin(item)),
       (binding) => `process p {\n  service S(${binding})\n}`,
     ),
-    ...scaffolds(
+    scaffolds(
       'the parens of a service task',
       SERVICE_PARENS.filter(bindsBuiltin),
       (binding) =>
         `process p {\n  service S(${binding}) {\n    field to = "a@b"\n    field text = "t"\n  }\n}`,
     ),
-    ...scaffolds(
+    scaffolds(
       'the parens of a repeated service task',
       RUN_SETTINGS,
       (setting) => `process p {\n  service S for 3(topic: "t", ${setting})\n}`,
     ),
-    ...scaffolds(
+    scaffolds(
       'the parens of a decision step',
-      DECIDE_PARENS.filter((item) => !binds(item)),
+      DECIDE_PARENS.filter((item) => !binds(item) && !pinsADecision(item)),
       (setting) => `process p {\n  decide D(topic: "t", ${setting})\n}`,
     ),
-    ...scaffolds(
+    scaffolds(
+      'the parens of a decision step',
+      DECIDE_PARENS.filter(pinsADecision),
+      (setting) => `process p {\n  decide D(decision: "d", ${setting})\n}`,
+    ),
+    scaffolds(
       'the parens of a decision step',
       DECIDE_PARENS.filter((item) => binds(item) && !bindsBuiltin(item)),
       (binding) => `process p {\n  decide D(${binding})\n}`,
     ),
-    ...scaffolds(
+    scaffolds(
       'the parens of a call',
       CALL_PARENS.filter((item) => !binds(item)),
       (setting) => `process p {\n  call C(process: "q", ${setting})\n}`,
     ),
-    ...scaffolds(
+    scaffolds(
       'the parens of a call',
       CALL_PARENS.filter(binds),
       (binding) => `process p {\n  call C(${binding})\n}`,
     ),
-    ...scaffolds(
-      'the parens of a handler',
-      HANDLER_PARENS,
-      (setting) =>
-        `process p {\n  start S\n  on error(${setting}) {\n    user Caught\n  }\n}`,
-    ),
-    ...scaffolds(
+    scaffolds(
       'the parens of a process',
       PROCESS_PARENS,
       (setting) => `process p(${setting}) {\n  user U\n}`,
     ),
-    ...scaffolds(
-      'the parens of an if statement',
-      SPLIT_AND_JOIN_PARENS,
-      (setting) =>
-        `process p {\n  var a: boolean\n  if (a) (${setting}) {\n    user A\n  }\n}`,
-    ),
-    ...scaffolds(
+    scaffolds(
       'a user block',
       BLOCK_MEMBERS,
       (member) => `process p {\n  user T {\n${member}\n  }\n}`,
     ),
-    ...scaffolds(
+    scaffolds(
       'a service block',
       [FIELD],
       (member) =>
         `process p {\n  service S(class: "com.example.D") {\n${member}\n  }\n}`,
     ),
-    // The code is declared in the header, where the mapping's scaffold resolves it.
-    ...scaffolds(
+    scaffolds(
       'a topic-bound service block',
       [PROPERTY, ERROR_MAPPING],
       (member) =>
         `process p {\n  error CODE(message: "m")\n  service S(topic: "t") {\n${member}\n  }\n}`,
     ),
-    ...scaffolds(
+    scaffolds(
       "a listener's block",
       [FIELD],
       (member) =>
         `process p {\n  user T {\n    on create(class: "com.example.L") {\n${member}\n    }\n  }\n}`,
     ),
-    ...scaffolds(
+    scaffolds(
       'the parens of a listener',
       LISTENER_PARENS,
       (binding) => `process p {\n  user T {\n    on create(${binding})\n  }\n}`,
     ),
-    ...scaffolds(
+    scaffolds(
       'the listener event position',
       TASK_EVENTS,
       (listener) => `process p {\n  user T {\n    on ${listener}\n  }\n}`,
     ),
-    ...scaffolds(
+    scaffolds(
       'the trigger position of a handler',
       ON_TRIGGERS,
       (trigger) =>
         `process p {\n  user U\n  on U: ${trigger} {\n    user Caught\n  }\n}`,
     ),
-    ...scaffolds(
+    scaffolds(
       'the trigger position of an await',
       CATCH_TRIGGERS,
       (trigger) => `process p {\n  user U\n  await ${trigger}\n}`,
     ),
-    // Each setting lands on a field of the one type it fits.
-    ...FORM_FIELD_PARENS.map(
-      ([label]) =>
-        [
-          `\`${label}\` in the parens of a form field`,
-          label,
-          (setting: string) =>
-            `process p {\n  start S {\n    form {\n      f: ${fieldTypeTaking(label)} (${setting})\n    }\n  }\n}`,
-        ] as const,
+    scaffolds(
+      'the parens of a form field',
+      FORM_FIELD_PARENS,
+      (setting, label) =>
+        `process p {\n  start S {\n    form {\n      f: ${fieldTypeTaking(label)} (${setting})\n    }\n  }\n}`,
     ),
-    ...scaffolds(
+    scaffolds(
       "a form field's block",
       [PROPERTY],
       (member) =>
         `process p {\n  start S {\n    form {\n      plan: enum {\n        basic "Basic"\n${member}\n      }\n    }\n  }\n}`,
     ),
-  ])('%s', async (_title, label, program) => {
-    const { text, line, character } = caretAt(program('|'));
-    const item = (await completionItems(text, line, character)).find(
-      (i) => i.label === label,
-    );
-    expect(item).toBeDefined();
-    expect(await parseErrors(program(accepted(item!)))).toEqual([]);
-    expect(await validationErrors(program(accepted(item!, typedInto)))).toEqual(
-      [],
-    );
+  ])('every scaffold in %s', async (_where, labels, program) => {
+    expect(labels).not.toEqual([]);
+    const refused: Array<[label: string, ...messages: string[]]> = [];
+    for (const label of labels) {
+      const { text, line, character } = caretAt(program('|', label));
+      const item = (await completionItems(text, line, character)).find(
+        (i) => i.label === label,
+      );
+      if (!item) {
+        refused.push([label, 'not offered']);
+        continue;
+      }
+      const messages = [
+        ...(await parseErrors(program(accepted(item), label))),
+        ...(await validationErrors(program(accepted(item, typedInto), label))),
+      ];
+      if (messages.length > 0) refused.push([label, ...messages]);
+    }
+    expect(refused).toEqual([]);
   });
 });
 
-/** Keyed by description, which is the noun phrase a host row spells as well. */
 const RULE_BY_DESCRIPTION = new Map(
   [...Object.values(ATTRIBUTE_BLOCK_RULES), ATTEMPT_BLOCK_RULE].map((rule) => [
     rule.description,
@@ -1166,17 +1233,251 @@ const RULE_BY_DESCRIPTION = new Map(
 describe('an element offers exactly the settings it takes', () => {
   test.each(BLOCK_HOSTS)(
     'the parens of %s offer the keys the validator accepts there',
-    async (_kind, description, _members, settings) => {
+    async (kind, description, _members, settings) => {
       const rule = RULE_BY_DESCRIPTION.get(description)!;
       const { text, line, character } = caretInSlot(
         settings,
         'asyncBefore: true, ',
       );
+      // An emitted signal carries no implementation binding.
       expect(await labelsAt(text, line, character)).toEqual([
-        ...rule.own,
+        ...(kind === 'emit' ? [] : rule.own),
         ...ENGINE_KEYS,
-        ...LITERALS.map(([label]) => label),
+        ...rule.flags,
       ]);
     },
   );
+});
+
+const labels = (items: readonly Item[]): string[] =>
+  items.map(([label]) => label);
+
+/** Each continues with a mandatory token, so it cannot parse alone. */
+const PREFIX_WORDS: ReadonlySet<string> = new Set(['goto', 'form']);
+
+describe('offered is a subset of accepted', () => {
+  test.each<readonly [string, (inserted: string) => string, string[]]>([
+    [
+      'a thrown error takes engine settings and no implementation binding',
+      (x) =>
+        `process p {\n  error E(message: "m")\n  user A\n  throw error(E, ${x})\n}`,
+      [...ENGINE_KEYS],
+    ],
+    [
+      'a thrown escalation takes engine settings and no implementation binding',
+      (x) =>
+        `process p {\n  escalation E\n  user A\n  throw escalation(E, ${x})\n}`,
+      [...ENGINE_KEYS],
+    ],
+    [
+      'a thrown message keeps its bindings',
+      (x) => `process p {\n  user A\n  throw message("M", ${x})\n}`,
+      [...labels(BINDINGS), TOPIC[0], ...ENGINE_KEYS],
+    ],
+    [
+      'an emitted signal takes engine settings alone',
+      (x) => `process p {\n  user A\n  emit signal("S", ${x})\n}`,
+      [...ENGINE_KEYS],
+    ],
+    [
+      'an error handler binds both fields after its code',
+      (x) =>
+        `process p {\n  error X(message: "m")\n  start S\n  on error(X, ${x}) {\n    end Failed\n  }\n}`,
+      labels(HANDLER_PARENS),
+    ],
+    [
+      'an escalation handler binds the code alone and may run alongside',
+      (x) =>
+        `process p {\n  escalation X\n  start S\n  on escalation(X, ${x}) {\n    end Failed\n  }\n}`,
+      labels(ESCALATION_HANDLER_PARENS),
+    ],
+    [
+      'a hosted message handler takes the flag after its name',
+      (x) =>
+        `process p {\n  user U\n  on U: message("M", ${x}) {\n    end Failed\n  }\n}`,
+      [...ENGINE_KEYS, ALONGSIDE[0]],
+    ],
+    [
+      'a catch-all error handler offers its bindings at the first slot',
+      (x) =>
+        `process p {\n  start S\n  on error(${x}) {\n    end Failed\n  }\n}`,
+      labels(HANDLER_PARENS),
+    ],
+    [
+      'a timer handler offers only the clause keys until a time is written',
+      (x) => `process p {\n  start S\n  on timer(${x}) {\n    end Late\n  }\n}`,
+      labels(TIMER_KEYS),
+    ],
+    [
+      'a timer handler offers settings and the flag after its duration',
+      (x) =>
+        `process p {\n  start S\n  on timer("PT1H", ${x}) {\n    end Late\n  }\n}`,
+      [...ENGINE_KEYS, ALONGSIDE[0]],
+    ],
+    [
+      'a condition handler offers the boolean words at its open payload',
+      (x) =>
+        `process p {\n  start S\n  on condition(${x}) {\n    end E\n  }\n}`,
+      ['true', 'false'],
+    ],
+    [
+      'a condition handler offers settings and the flag after its condition',
+      (x) =>
+        `process p {\n  var x: number\n  start S\n  on condition(x > 1, ${x}) {\n    end E\n  }\n}`,
+      [...ENGINE_KEYS, ALONGSIDE[0]],
+    ],
+    [
+      'a message handler offers nothing before its name is written',
+      (x) => `process p {\n  start S\n  on message(${x}) {\n    end E\n  }\n}`,
+      [],
+    ],
+    [
+      'a thrown error offers only its declared codes before the code is written',
+      (x) =>
+        `process p {\n  error E(message: "m")\n  user A\n  throw error(${x})\n}`,
+      ['E'],
+    ],
+    [
+      'an error declaration takes its two fields, quoted',
+      (x) => `process p {\n  error E(${x})\n  user A\n}`,
+      labels(DECLARATION_FIELDS),
+    ],
+    [
+      'an escalation declaration takes the code alone',
+      (x) => `process p {\n  escalation E(${x})\n  user A\n}`,
+      [DECLARATION_FIELDS[0]![0]],
+    ],
+    [
+      'a form field offers the five form types and no variable type',
+      (x) =>
+        `process p {\n  start S {\n    form {\n      f: ${x}\n    }\n  }\n}`,
+      [...FORM_FIELD_TYPES],
+    ],
+    [
+      "a receive task's parens offer settings and no literal word",
+      (x) => `process p {\n  receive R(${x})\n}`,
+      labels(RECEIVE_PARENS),
+    ],
+    [
+      "a gateway head's parens offer settings and no literal word",
+      (x) =>
+        `process p {\n  var a: boolean\n  if (a) (${x}) {\n    user A\n  }\n}`,
+      labels(SPLIT_AND_JOIN_PARENS),
+    ],
+    [
+      'a version pin on a user task offers its two words',
+      (x) => `process p {\n  user T(formRef: "f", binding: ${x})\n}`,
+      [...CALL_BINDING_VALUES],
+    ],
+    [
+      'a version pin on a call offers its two words',
+      (x) => `process p {\n  call C(process: "q", binding: ${x})\n}`,
+      [...CALL_BINDING_VALUES],
+    ],
+    [
+      'a decision result mapping offers its four words',
+      (x) =>
+        `process p {\n  decide D(decision: "d", mapDecisionResult: ${x})\n}`,
+      [...DECISION_RESULT_MAPPINGS],
+    ],
+    [
+      'a boolean setting offers true and false',
+      (x) => `process p {\n  user T(asyncBefore: ${x})\n}`,
+      ['true', 'false'],
+    ],
+    [
+      'a text setting offers no literal word and no variable',
+      (x) => `process p {\n  ${VARS}\n  user T(label: ${x})\n}`,
+      [],
+    ],
+    [
+      'a class-bound service block takes an injected field and no property',
+      (x) => `process p {\n  service S(class: "c") {\n    ${x}\n  }\n}`,
+      labels(CLASS_BLOCK_MEMBERS),
+    ],
+    [
+      'a topic-bound service block takes a property and a mapping and no field',
+      (x) =>
+        `process p {\n  error CODE(message: "m")\n  service S(topic: "t") {\n    ${x}\n  }\n}`,
+      labels(TOPIC_BLOCK_MEMBERS),
+    ],
+    [
+      'an expression-bound service block takes neither',
+      (x) =>
+        `process p {\n  service S(expression: "\${e}") {\n    ${x}\n  }\n}`,
+      [...labels(PARAMETERS), LISTENER_KEYWORD[0]],
+    ],
+    [
+      'a user block takes a form and no field',
+      (x) => `process p {\n  user T {\n    ${x}\n  }\n}`,
+      labels(BLOCK_MEMBERS),
+    ],
+    [
+      'a host-less handler at process level catches neither a cancel nor a compensation',
+      (x) => `process p {\n  start S\n  on ${x} {\n    end Failed\n  }\n}`,
+      labels(ON_TRIGGERS),
+    ],
+    [
+      'a host-less handler in a subprocess body catches a compensation too',
+      (x) =>
+        `process p {\n  start S\n  subprocess Sub {\n    start Inner\n    on ${x} {\n      end Failed\n    }\n  }\n}`,
+      [...labels(ON_TRIGGERS), 'compensation'],
+    ],
+    // A host alone is the prefix of `on Host: trigger`, so the row completes it.
+    [
+      'a host-less handler in a subprocess body offers the hosts of that body and none outside it',
+      (x) =>
+        `process p {\n  user Outside\n  subprocess Sub {\n    user Inside\n    on ${x === 'Inside' ? 'Inside: timer("PT1H")' : x} {\n      end Failed\n    }\n  }\n}`,
+      ['Inside', ...labels(ON_TRIGGERS), 'compensation'],
+    ],
+    [
+      'a partly typed host word inside a subprocess body still offers the hosts of that body',
+      (x) =>
+        `process p {\n  subprocess Sub {\n    user Inside\n    on ${x === '|' ? 'Ins|' : `${x}: timer("PT1H") {\n      end Failed\n    }`}\n  }\n}`,
+      ['Inside'],
+    ],
+    [
+      'a handler on a user task catches the boundary words and no cancel',
+      (x) => `process p {\n  user U\n  on U: ${x} {\n    end Failed\n  }\n}`,
+      labels(ON_TRIGGERS),
+    ],
+    [
+      'a handler on an attempt block catches a cancel too',
+      (x) =>
+        `process p {\n  attempt A {\n    user B\n  }\n  on A: ${x} {\n    end Failed\n  }\n}`,
+      [...labels(ON_TRIGGERS), 'cancel'],
+    ],
+    [
+      'a handler on a service task catches no escalation',
+      (x) =>
+        `process p {\n  service U(class: "c")\n  on U: ${x} {\n    end Failed\n  }\n}`,
+      labels(ON_TRIGGERS).filter((word) => word !== 'escalation'),
+    ],
+  ])('%s', async (_title, program, expectedLabels) => {
+    const { text, line, character } = caretAt(program('|'));
+    const items = await completionItems(text, line, character);
+    expect(items.map((i) => i.label)).toEqual(expectedLabels);
+    const refused: Array<[label: string, messages: string[]]> = [];
+    for (const item of items) {
+      const bare = accepted(item, typedInto) === item.label;
+      const inserted =
+        bare && TRIGGER_PAYLOAD[item.label]?.code === 'required'
+          ? `${item.label}("N")`
+          : accepted(item, typedInto);
+      if (inserted.includes('undefined')) {
+        refused.push([item.label, [`inserts '${inserted}'`]]);
+        continue;
+      }
+      const source = program(inserted);
+      const parse = await parseErrors(source);
+      const prefix = bare && PREFIX_WORDS.has(item.label);
+      if (parse.length > 0) {
+        if (!prefix) refused.push([item.label, parse]);
+        continue;
+      }
+      const errors = await validationErrors(source);
+      if (errors.length > 0) refused.push([item.label, errors]);
+    }
+    expect(refused).toEqual([]);
+  });
 });

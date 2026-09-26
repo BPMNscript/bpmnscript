@@ -1,10 +1,7 @@
 import { isGateway, type BpmnProcess } from '@bpmn-script/transform';
 
-// Gateways are synthesized scaffolding and get fresh ids on every re-desugar,
-// so the raw flow-endpoint sets of an imported graph and its round-tripped
-// counterpart never match even when nothing was lost. Contracting each gateway
-// to a transparent routing point leaves the authored-node connectivity, which a
-// lossless round trip does preserve. Returns sorted `source->target` pairs.
+// Sorted `source->target` pairs between non-gateway nodes, gateways contracted,
+// since re-desugaring gives every gateway a fresh id.
 export function realNodeReachability(ir: BpmnProcess): string[] {
   const gatewayById = new Map<string, boolean>(
     ir.flowElements.map((fe) => [fe.id, isGateway(fe)]),

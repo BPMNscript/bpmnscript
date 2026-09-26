@@ -1,7 +1,4 @@
-/**
- * Variables live in a flat process scope: a `var` declared anywhere is visible
- * from every expression in the process, whatever the source order.
- */
+/** A `var` declared anywhere is visible from every expression in the process. */
 
 import { AstUtils, type AstNode } from 'langium';
 import type { Process, VarType } from './generated/ast.js';
@@ -9,6 +6,7 @@ import { caughtBindingsOf } from './paren-items.js';
 import {
   FIELD_DIRECTION,
   formFieldVariableType,
+  LOOP_VARIABLES,
   PROPERTY_DIRECTION,
 } from './vocabulary.js';
 import {
@@ -26,23 +24,26 @@ export interface VariableSymbol {
 
 export type VariableTable = Map<string, VariableSymbol>;
 
-/** Injected as `references.VariableSymbolProvider`. */
-export interface VariableSymbolProvider {
-  collect(process: Process): VariableTable;
+/** Node and property so a rename finds the name's own leaf. */
+export interface DeclaringSite {
+  node: AstNode;
+  property: string;
+  name: string;
+  type: VarType;
 }
 
-/** The repeat-clause slots read here, off whichever statement carries them. */
+export interface VariableSymbolProvider {
+  collect(process: Process): VariableTable;
+  declaringSites(process: Process): DeclaringSite[];
+}
+
 interface RepeatSlots {
   cardinality?: unknown;
   collection?: unknown;
   element?: string;
 }
 
-/**
- * Whether `node` carries a repeat clause. Only the count and the collection
- * decide it: `sequential` is `false` on every repeatable statement, written or
- * not, so its value says nothing about whether a clause was written.
- */
+/** `sequential` is `false` whether written or not, so only the count and collection tell. */
 export function isRepeated(node: AstNode): node is AstNode & RepeatSlots {
   return (
     ('cardinality' in node && node.cardinality !== undefined) ||
@@ -51,79 +52,85 @@ export function isRepeated(node: AstNode): node is AstNode & RepeatSlots {
 }
 
 /**
- * The variables Operaton sets around a repeated step: three counters on the
- * repetition and `loopCounter` on each run (`MultiInstanceActivityBehavior`).
- * They exist undeclared, so a process that repeats anything gets them in scope.
+ * In precedence order: `var`, form field, catch binding, then parameters and
+ * repeat elements in source order.
  */
-const LOOP_VARIABLES = [
-  'nrOfInstances',
-  'nrOfActiveInstances',
-  'nrOfCompletedInstances',
-  'loopCounter',
-] as const;
-
-export class DefaultVariableSymbolProvider implements VariableSymbolProvider {
-  collect(process: Process): VariableTable {
-    const table: VariableTable = new Map();
-    // Precedence, held by the `has` guards below: a header `var` beats a form
-    // field, which beats a catch binding.
-    for (const decl of process.decls) {
-      if (isVarDecl(decl)) {
-        table.set(decl.name, { name: decl.name, type: decl.type });
-      }
+export function declaringSites(process: Process): DeclaringSite[] {
+  const declared: DeclaringSite[] = [];
+  for (const decl of process.decls) {
+    if (isVarDecl(decl)) {
+      declared.push({
+        node: decl,
+        property: 'name',
+        name: decl.name,
+        type: decl.type,
+      });
     }
-    // A type disagreement between two declarations is the validator's job.
-    for (const node of AstUtils.streamAst(process)) {
-      if (!isStartEvent(node) && !isUserTask(node)) continue;
+  }
+  const formFields: DeclaringSite[] = [];
+  const catchBindings: DeclaringSite[] = [];
+  const mapped: DeclaringSite[] = [];
+  for (const node of AstUtils.streamAst(process)) {
+    if (isStartEvent(node) || isUserTask(node)) {
       for (const form of node.forms) {
         for (const field of form.fields) {
           const type = formFieldVariableType(field.type);
-          if (type !== undefined && !table.has(field.id)) {
-            table.set(field.id, { name: field.id, type });
+          if (type !== undefined) {
+            formFields.push({
+              node: field,
+              property: 'id',
+              name: field.id,
+              type,
+            });
           }
         }
       }
-    }
-    // A catch binding declares a `string`: the code or message text it caught.
-    for (const node of AstUtils.streamAst(process)) {
-      if (!isOnHandler(node)) continue;
-      for (const binding of caughtBindingsOf(node.items)) {
-        // A setting whose value is not a plain name reads a variable rather
-        // than declaring one, so it seeds nothing.
-        const { variable } = binding;
+    } else if (isOnHandler(node)) {
+      for (const { variable, node: setting } of caughtBindingsOf(node.items)) {
         if (variable === undefined) continue;
-        if (!table.has(variable)) {
-          table.set(variable, { name: variable, type: 'string' });
-        }
+        catchBindings.push({
+          node: setting.value,
+          property: 'ref',
+          name: variable,
+          type: 'string',
+        });
       }
     }
-    // Seeded last, so an author who declares one of these names keeps its
-    // type. Both hold whatever was mapped or collected, so their type is open.
-    const seedOpen = (name: string | undefined): void => {
-      if (name !== undefined && !table.has(name)) {
-        table.set(name, { name, type: 'any' });
+    if (isIoParameter(node)) {
+      // A field or property is not a process variable.
+      if (
+        node.direction !== FIELD_DIRECTION &&
+        node.direction !== PROPERTY_DIRECTION
+      ) {
+        mapped.push({ node, property: 'name', name: node.name, type: 'any' });
       }
-    };
-    let repeats = false;
-    for (const node of AstUtils.streamAst(process)) {
-      if (isIoParameter(node)) {
-        // A field names a property of the delegate the element binds, set as
-        // that object is built, and a property is text handed to Tasklist or
-        // a worker, so neither declares anything the process can read.
-        if (
-          node.direction === FIELD_DIRECTION ||
-          node.direction === PROPERTY_DIRECTION
-        ) {
-          continue;
-        }
-        seedOpen(node.name);
-        continue;
-      }
-      if (!isRepeated(node)) continue;
-      repeats = true;
-      seedOpen(node.element);
+    } else if (isRepeated(node) && node.element !== undefined) {
+      mapped.push({
+        node,
+        property: 'element',
+        name: node.element,
+        type: 'any',
+      });
     }
-    if (repeats) {
+  }
+  return [...declared, ...formFields, ...catchBindings, ...mapped];
+}
+
+export class DefaultVariableSymbolProvider implements VariableSymbolProvider {
+  declaringSites(process: Process): DeclaringSite[] {
+    return declaringSites(process);
+  }
+
+  collect(process: Process): VariableTable {
+    const table: VariableTable = new Map();
+    for (const site of this.declaringSites(process)) {
+      if (!table.has(site.name)) {
+        table.set(site.name, { name: site.name, type: site.type });
+      }
+    }
+    // Seeded last so a declared name keeps its type; `for 3` sets them too, so
+    // not read off the sites.
+    if (AstUtils.streamAst(process).some(isRepeated)) {
       for (const name of LOOP_VARIABLES) {
         if (!table.has(name)) {
           table.set(name, { name, type: 'number' });

@@ -4,8 +4,7 @@ import * as fs from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { swapExtension } from './conversion-core.js';
 
-// Types shared between host and webview (duplicated in sidebar.js as JSDoc).
-
+// media/sidebar.js reads this shape untyped: change both.
 interface Counterpart {
   uri: string;
   name: string;
@@ -41,7 +40,6 @@ export class SidebarViewProvider implements vscode.WebviewViewProvider {
     webviewView.webview.html = this._buildHtml(webviewView.webview);
 
     // retainContextWhenHidden is false, so the view is rebuilt on every show.
-    // Without collecting the disposable the listeners pile up.
     const disposables: vscode.Disposable[] = [];
     webviewView.webview.onDidReceiveMessage(
       (message: unknown) => void this._handleMessage(message),
@@ -50,7 +48,6 @@ export class SidebarViewProvider implements vscode.WebviewViewProvider {
     );
     webviewView.onDidDispose(() => {
       disposables.forEach((d) => d.dispose());
-      // A later refresh() must be a no-op, not a post to a disposed webview.
       this._view = undefined;
     });
   }
@@ -158,7 +155,6 @@ export class SidebarViewProvider implements vscode.WebviewViewProvider {
     ).fsPath;
     let html = fs.readFileSync(templatePath, 'utf-8');
 
-    // replaceAll: {{NONCE}} and {{CSP_SOURCE}} each appear more than once.
     html = html
       .replaceAll('{{NONCE}}', nonce)
       .replaceAll('{{CSP_SOURCE}}', cspSource)

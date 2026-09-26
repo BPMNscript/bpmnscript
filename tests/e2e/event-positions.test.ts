@@ -1,15 +1,13 @@
-// Three ways of entering a process that no compiled document shows: a message
+// Ways in and out of a process that no compiled document shows: a message
 // correlated with no instance to aim at, a signal broadcast to whatever
-// subscribed at deployment, and a timer job parked until something fires it.
-// The terminate end is here for the same reason: what separates it from a
-// plain end is that it stops a sibling branch still parked on its own task.
-// The audit timer is dated 2099, so only the test can fire it.
-// A fourth way, entering the same process by two different starts, checks that
-// each start is a real entry and not a pass-through the other flows into.
-// A link pair is a fifth: the token leaves a throw with no drawn flow and
-// appears at the catch of the same name, which no compiled document draws.
+// subscribed at deployment, a timer job parked until something fires it (the
+// audit timer is dated 2099, so only the test can), two starts that are each a
+// real entry rather than a pass-through the other flows into, and a link pair
+// whose token leaves the throw with no drawn flow. The terminate end is here
+// because what separates it from a plain end is that it stops a sibling branch
+// still parked on its own task.
 
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll } from 'vitest';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -20,8 +18,7 @@ import type { FixtureAdapter } from '../fixtures/index.js';
 import {
   deployExamples,
   dslPath,
-  ENGINE_BOOT_TIMEOUT_MS,
-  ENGINE_STOP_TIMEOUT_MS,
+  DEPLOY_TIMEOUT_MS,
   SKIP_DOCKER as SKIP,
 } from '../helpers/e2e-fixture.js';
 import {
@@ -71,11 +68,7 @@ describe.skipIf(SKIP)('E2E: start, end, throw and link on Operaton', () => {
       'support-ticket',
       'order-rework',
     );
-  }, ENGINE_BOOT_TIMEOUT_MS);
-
-  afterAll(async () => {
-    await fixture?.stop();
-  }, ENGINE_STOP_TIMEOUT_MS);
+  }, DEPLOY_TIMEOUT_MS);
 
   it('message start: a correlated message with no instance to aim at starts one', async () => {
     const processInstanceId = await startByMessage(fixture, 'OrderReceived');

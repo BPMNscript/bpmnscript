@@ -1,7 +1,6 @@
 /**
- * Renders a parsed JUEL-subset expression AST back to its canonical `${...}`
- * body string. It lives here rather than in `transform` so it carries no
- * dependency on that package; `astToIr` imports it the other way round.
+ * Here rather than in `transform` because `astToIr` imports it and the
+ * dependency runs transform -> language.
  */
 
 import type { Expr, Accessor } from './generated/ast.js';
@@ -23,12 +22,7 @@ import {
   isVarRef,
 } from './generated/ast.js';
 
-/**
- * The digits of an integer literal with its sign, or `undefined` for any other
- * expression. Bare, `-5` parses as a `-` unary over `5`, and every setting the
- * engine reads with `Integer.parseInt` or `Long.parseLong` takes that as the
- * one integer it is rather than as an expression.
- */
+/** A bare `-5` parses as unary minus, but `Integer.parseInt` reads it as one integer. */
 export function integerLiteralText(node: Expr): string | undefined {
   if (isLiteralInt(node)) {
     return String(node.value);
@@ -39,22 +33,19 @@ export function integerLiteralText(node: Expr): string | undefined {
   return undefined;
 }
 
-/** A {@link RawExpr} body is already a complete one and comes back verbatim. */
 export function renderExpression(node: Expr): string {
   if (isRawExpr(node)) {
-    return unquoteRaw(node.raw);
+    return node.raw;
   }
   return `\${${renderExpressionInner(node)}}`;
 }
 
-/**
- * The inner text without the `${...}` wrapper. Parentheses are emitted only
- * where the author wrote them: a faithful structural render, not a
- * minimal-parenthesization printer.
- */
+/** Parentheses are emitted only where the author wrote them. */
 export function renderExpressionInner(node: Expr): string {
   if (isRawExpr(node)) {
-    return unquoteRaw(node.raw);
+    // JUEL has no `${` inside an expression, so a raw operand is spliced in by its body.
+    const body = singleTemplateBody(node.raw);
+    return body === undefined ? node.raw : `(${body})`;
   }
   if (isTernary(node)) {
     return (
@@ -63,7 +54,6 @@ export function renderExpressionInner(node: Expr): string {
       `${renderExpressionInner(node.whenFalse)}`
     );
   }
-  // All five binary precedence levels share the same `left op right` shape.
   if (
     isLogical(node) ||
     isEquality(node) ||
@@ -86,9 +76,8 @@ export function renderExpressionInner(node: Expr): string {
     return String(node.value);
   }
   if (isLiteralString(node)) {
-    // The lexer stripped the author's quotes. Re-quoting the way `juel.ts` in
-    // `@bpmn-script/transform` does keeps a parse of this output idempotent.
-    return `"${node.value.replace(/"/g, '\\"')}"`;
+    // The only two escapes JUEL's `Scanner.nextString` accepts; backslash first.
+    return `"${node.value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
   }
   if (isLiteralBool(node) || isLiteralNull(node)) {
     return node.value;
@@ -103,8 +92,6 @@ function renderAccessor(accessor: Accessor): string {
   if (accessor.prop !== undefined) {
     return `.${accessor.prop}`;
   }
-  // The grammar guarantees `prop` XOR `index`, which TS cannot prove here;
-  // guard so a third accessor form throws instead of rendering `undefined`.
   if (accessor.index === undefined) {
     throw new Error(
       'renderAccessor: accessor has neither a `prop` nor an `index` (unexpected accessor shape)',
@@ -114,16 +101,12 @@ function renderAccessor(accessor: Accessor): string {
 }
 
 /**
- * Langium auto-unquotes only the default STRING terminal, so RAW_TEMPLATE keeps
- * the author's surrounding `"` or `'`. An unquoted body passes through.
+ * `undefined` for a composite such as `${a} and ${b}`, which the engine
+ * evaluates to text. A `}` inside a JUEL string literal is string text.
  */
-export function unquoteRaw(raw: string): string {
-  if (raw.length >= 2) {
-    const first = raw[0];
-    const last = raw[raw.length - 1];
-    if ((first === '"' && last === '"') || (first === "'" && last === "'")) {
-      return raw.slice(1, -1);
-    }
-  }
-  return raw;
+export function singleTemplateBody(raw: string): string | undefined {
+  if (!/^[$#]\{[^]*\}$/.test(raw)) return undefined;
+  const body = raw.slice(2, -1);
+  const unquoted = body.replace(/'(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*"/g, '');
+  return /\}|[$#]\{/.test(unquoted) ? undefined : body;
 }

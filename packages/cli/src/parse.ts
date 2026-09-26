@@ -1,43 +1,53 @@
+import { DiagnosticSeverity } from '@bpmn-script/language';
 import chalk from 'chalk';
 import * as fs from 'node:fs/promises';
-import * as fsSync from 'node:fs';
-import * as path from 'node:path';
 
 import {
   xmlToIr,
   irToDsl,
+  EMPTY_INPUT_MESSAGE,
+  readableParseError,
+  xmlInputProblem,
+  SERVICE_TASK_FORM_ATTRIBUTES,
   UnsupportedConstructError,
   UnsupportedServiceTaskFormError,
   UnsupportedElementError,
 } from '@bpmn-script/transform';
 import type { ImportWarning, PrintWarning } from '@bpmn-script/transform';
-import { resolveOutputPath } from './util.js';
-
-export type ParseOptions = {
-  output?: string;
-};
+import {
+  type CommandOptions,
+  buildDocument,
+  fail,
+  formatDiagnostic,
+  guardOutputPath,
+  resolveInputPath,
+  resolveOutputPath,
+  warn,
+  writeOutput,
+} from './util.js';
 
 export async function parseAction(
   fileName: string,
-  opts: ParseOptions,
+  opts: CommandOptions,
 ): Promise<void> {
-  const resolvedInput = path.resolve(fileName);
-
-  if (!fsSync.existsSync(resolvedInput)) {
-    console.error(chalk.red(`Error: file not found: ${fileName}`));
-    process.exit(2);
-  }
-
+  const resolvedInput = resolveInputPath(fileName);
   const outPath = resolveOutputPath(resolvedInput, '.bpmnscript', opts.output);
+  guardOutputPath(resolvedInput, outPath, opts);
 
   let xml: string;
   try {
     xml = await fs.readFile(resolvedInput, 'utf-8');
   } catch (err) {
-    console.error(
-      chalk.red(`Error: could not read ${fileName}: ${(err as Error).message}`),
+    fail(2, `Error: could not read ${fileName}: ${(err as Error).message}`);
+  }
+
+  const problem = xmlInputProblem(xml);
+  if (problem === EMPTY_INPUT_MESSAGE) fail(2, `Error: ${problem}`);
+  if (problem !== undefined) {
+    fail(
+      2,
+      `Error: ${problem}; a .bpmnscript file is built with \`bpmns build\``,
     );
-    process.exit(2);
   }
 
   let ir;
@@ -47,43 +57,30 @@ export async function parseAction(
   } catch (err) {
     // Subclasses first: they all extend UnsupportedConstructError.
     if (err instanceof UnsupportedServiceTaskFormError) {
-      console.error(
-        chalk.red(
-          `Error: unsupported ${err.subject.toLowerCase()} form in ${fileName}:\n` +
-            `  ${err.message}\n` +
-            '  The attributes are operaton:class (or the deprecated camunda:class ' +
-            'alias), operaton:expression, operaton:delegateExpression, ' +
-            'operaton:type="external" with operaton:topic, ' +
-            'operaton:type="mail" or "shell" with their operaton:field ' +
-            'children, and operaton:decisionRef.',
-        ),
+      fail(
+        1,
+        `Error: unsupported ${err.subject.toLowerCase()} form in ${fileName}:\n` +
+          `  ${err.message}\n` +
+          `  The attributes are ${SERVICE_TASK_FORM_ATTRIBUTES}.`,
       );
-      process.exit(1);
     }
     if (err instanceof UnsupportedElementError) {
-      console.error(
-        chalk.red(
-          `Error: unsupported BPMN element in ${fileName}:\n` +
-            `  ${err.message}`,
-        ),
+      fail(
+        1,
+        `Error: unsupported BPMN element in ${fileName}:\n  ${err.message}`,
       );
-      process.exit(1);
     }
     if (err instanceof UnsupportedConstructError) {
-      console.error(
-        chalk.red(
-          `Error: unsupported BPMN construct in ${fileName}:\n` +
-            `  ${err.message}`,
-        ),
+      fail(
+        1,
+        `Error: unsupported BPMN construct in ${fileName}:\n  ${err.message}`,
       );
-      process.exit(1);
     }
-    console.error(
-      chalk.red(
-        `Error: failed to parse ${fileName}: ${(err as Error).message}`,
-      ),
+    fail(
+      2,
+      `Error: failed to parse ${fileName}: ` +
+        readableParseError((err as Error).message, xml),
     );
-    process.exit(2);
   }
 
   let dsl: string;
@@ -91,33 +88,29 @@ export async function parseAction(
   try {
     ({ source: dsl, warnings: printWarnings } = irToDsl(ir));
   } catch (err) {
-    console.error(
-      chalk.red(
-        `Error: IR to DSL conversion failed: ${(err as Error).message}`,
-      ),
-    );
-    process.exit(2);
+    fail(2, `Error: ${(err as Error).message}`);
   }
 
-  try {
-    const outDir = path.dirname(outPath);
-    await fs.mkdir(outDir, { recursive: true });
-    await fs.writeFile(outPath, dsl, 'utf-8');
-  } catch (err) {
-    console.error(
-      chalk.red(
-        `Error: could not write output to ${outPath}: ${(err as Error).message}`,
-      ),
-    );
-    process.exit(2);
-  }
-
+  await writeOutput(outPath, dsl);
   console.log(chalk.green(`Parsed: ${outPath}`));
 
-  // The id leads: several messages describe the route on from a step without
-  // naming it, and two such warnings are otherwise the same line twice. The id
-  // is also a token the reader can search for in the script just written.
+  // Several messages do not name their step, so the id tells them apart.
   for (const w of [...warnings, ...printWarnings]) {
-    console.error(chalk.yellow(`Warning: ${w.elementId}: ${w.message}`));
+    warn(`Warning: ${w.elementId}: ${w.message}`);
+  }
+
+  // Nothing above runs the validator, so rebuilding the written script is what catches an error.
+  const rebuilt = await buildDocument(outPath);
+  const buildErrors = (rebuilt.diagnostics ?? []).filter(
+    (d) => d.severity === DiagnosticSeverity.Error,
+  );
+  if (buildErrors.length > 0) {
+    warn(
+      `Warning: the printed script draws ${buildErrors.length} error(s) ` +
+        'when built; hand-repair is needed:',
+    );
+    for (const diag of buildErrors) {
+      warn(formatDiagnostic(rebuilt, diag));
+    }
   }
 }

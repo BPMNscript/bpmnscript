@@ -1,7 +1,6 @@
-// Outage notice: one mail task the engine sends itself. The harness and the
-// demo profile deploy this process and never start it, since sending needs an
-// SMTP server neither runs. Deploying is the proof: the engine builds the mail
-// behaviour at parse time and refuses a task missing a recipient or a body.
+// Deployed and never started: sending needs an SMTP server the fixture does
+// not run. Deploying alone proves the engine builds the mail behaviour at
+// parse time, where it refuses a task missing a recipient or a body.
 
 process outage-notice(label: "Outage notice") {
   start OutageDetected

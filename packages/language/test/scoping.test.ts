@@ -1,33 +1,5 @@
-/**
- * Scoping and reserved-word guidance, driven through the real parser and linker
- * (`parseHelper`, with `{ validation: true }` where linking must run).
- *
- * A `goto` resolves only within its nearest enclosing container, the `process`,
- * `subprocess`, or `on` handler body it directly sits in, and a `subprocess`
- * statement is itself a target by name. A cross-boundary `goto` fails to
- * resolve, and the custom linker replaces the stock "Could not resolve
- * reference" message with a boundary explanation rather than adding to it. A
- * handler has no name of its own, so it is named in that message by its header.
- *
- * A hosted handler lowers inline into its host's container rather than into one
- * of its own, which makes its body transparent to the container walk: a `goto`
- * crosses between the handler body and the main flow in both directions, while
- * a host-less handler nested inside it stays a boundary of its own.
- *
- * Each row of the resolution tables carries one program and the whole oracle
- * {@link resolutionsOf} reads off it: every `goto` target and every handler
- * host in document order, then every error-severity diagnostic. Asserting the
- * complete list pins what each reference reaches, the exact boundary wording,
- * and that nothing stacks a second diagnostic on a replaced one. Diagnostic
- * severity follows the LSP convention: `1 = Error`, `2 = Warning`.
- *
- * A code reference is the third kind and asks the same question the other way
- * round: every identifier in every expression is one, so what separates a code
- * from a variable is the scope it is resolved in. {@link codeResolutionsOf}
- * therefore reads every identifier and every diagnostic of either severity, so
- * a scope reaching further than a code position shows up as a resolved
- * identifier where a warning belongs.
- */
+// A row pins every reference in document order with its target, then every
+// diagnostic, so no second diagnostic can stack on a replaced one.
 
 import { beforeAll, describe, expect, test } from 'vitest';
 import {
@@ -37,6 +9,7 @@ import {
   type Reference,
 } from 'langium';
 import { parseHelper } from 'langium/test';
+import { DiagnosticSeverity } from 'vscode-languageserver-types';
 import type { Model, OnHandler } from '@bpmn-script/language';
 import {
   createBpmnScriptServices,
@@ -54,8 +27,6 @@ import {
   withTextMessages,
 } from './helpers/diagnostics.js';
 
-const SEVERITY_ERROR = 1;
-
 let services: ReturnType<typeof createBpmnScriptServices>;
 let parse: ReturnType<typeof parseHelper<Model>>;
 
@@ -64,17 +35,12 @@ beforeAll(() => {
   parse = parseHelper<Model>(services.BpmnScript);
 });
 
-/** A row of the resolution tables: a title, a program, and its whole oracle. */
 type Row = readonly [
   title: string,
   source: string,
   expected: readonly string[],
 ];
 
-/**
- * The handler as its source header reads, since a handler has no name to be
- * identified by: `on <host>: <trigger>(<payload>)`, each part where written.
- */
 function headerOf(handler: OnHandler): string {
   const head = handler.host
     ? `on ${handler.host.$refText}: ${handler.trigger}`
@@ -83,11 +49,6 @@ function headerOf(handler: OnHandler): string {
   return code ? `${head}(${code})` : head;
 }
 
-/**
- * A resolved node as `container/.../name:Type`, naming every flow container it
- * sits in. The path is what distinguishes two same-named steps in different
- * processes or containers, which is the whole question these tables ask.
- */
 function pathOf(node: AstNode): string {
   const segments: string[] = [];
   for (let n: AstNode | undefined = node.$container; n; n = n.$container) {
@@ -105,11 +66,6 @@ function targetOf(reference: Reference<AstNode>): string {
   return reference.ref ? pathOf(reference.ref) : 'unresolved';
 }
 
-/**
- * Every `goto` target and handler host of `source` in document order, then
- * every error-severity diagnostic. Warnings are left out: nothing here raises
- * one, and an unrelated validator's warning would say nothing about scoping.
- */
 async function resolutionsOf(source: string): Promise<string[]> {
   const document = await parse(source, { validation: true });
   expect(document.parseResult.parserErrors.map((e) => e.message)).toEqual([]);
@@ -123,14 +79,13 @@ async function resolutionsOf(source: string): Promise<string[]> {
     }
   }
   for (const diagnostic of withTextMessages(document.diagnostics ?? [])) {
-    if (diagnostic.severity === SEVERITY_ERROR) {
+    if (diagnostic.severity === DiagnosticSeverity.Error) {
       lines.push(`error: ${diagnostic.message}`);
     }
   }
   return lines;
 }
 
-/** The body every resolution table runs. */
 async function checkRow(
   _title: string,
   source: string,
@@ -139,13 +94,7 @@ async function checkRow(
   expect(await resolutionsOf(source)).toEqual(expected);
 }
 
-/**
- * Every identifier of `source` in document order with what it resolves to,
- * then every diagnostic of either severity. Warnings are in because the
- * undeclared-variable one is what an identifier outside a code position has to
- * keep producing. A mapping's code slot is the one reference that is not an
- * identifier in an expression, and reads as `error E -> ...`.
- */
+/** Warnings count here: a scope reaching past a code position hides the undeclared-variable warning. */
 async function codeResolutionsOf(source: string): Promise<string[]> {
   const document = await parse(source, { validation: true });
   expect(document.parseResult.parserErrors.map((e) => e.message)).toEqual([]);
@@ -162,13 +111,12 @@ async function codeResolutionsOf(source: string): Promise<string[]> {
   }
   for (const diagnostic of withTextMessages(document.diagnostics ?? [])) {
     const severity =
-      diagnostic.severity === SEVERITY_ERROR ? 'error' : 'warning';
+      diagnostic.severity === DiagnosticSeverity.Error ? 'error' : 'warning';
     lines.push(`${severity}: ${diagnostic.message}`);
   }
   return lines;
 }
 
-/** The body the code-resolution table runs. */
 async function checkCodeRow(
   _title: string,
   source: string,
@@ -177,7 +125,6 @@ async function checkCodeRow(
   expect(await codeResolutionsOf(source)).toEqual(expected);
 }
 
-/** The trailing sentence of a boundary explanation, by the boundary crossed. */
 const BOUNDARY_RULE = {
   subprocess: 'a goto cannot cross a subprocess boundary.',
   handler:
@@ -185,7 +132,6 @@ const BOUNDARY_RULE = {
   host: 'a boundary event attaches to an activity in its own scope.',
 } as const;
 
-/** The linker's replacement for the stock unresolved-reference message. */
 function boundary(
   name: string,
   where: string,
@@ -194,12 +140,14 @@ function boundary(
   return `error: '${name}' is ${where}; ${BOUNDARY_RULE[rule]}`;
 }
 
-/** The stock message, kept wherever the name exists nowhere in the process. */
-function stockError(name: string): string {
-  return `error: Could not resolve reference to Statement named '${name}'.`;
+function missingStep(name: string): string {
+  return `error: No step named '${name}' in this process.`;
 }
 
-/** Raised on every two-process fixture below, which needs both to ask its question. */
+function missingHost(name: string): string {
+  return `error: No step named '${name}' in this process to attach to.`;
+}
+
 const MULTI_PROCESS =
   'error: Only one process is supported per file. Move additional processes into separate files.';
 
@@ -226,12 +174,12 @@ describe('Scoping - process-scoped goto', () => {
     [
       'a goto does not reach a step only another process has',
       `process a { user Foo goto Only } process b { user Only }`,
-      ['goto Only -> unresolved', stockError('Only'), MULTI_PROCESS],
+      ['goto Only -> unresolved', missingStep('Only'), MULTI_PROCESS],
     ],
     [
       'a goto to a name no process has does not resolve',
       `process p { user Foo goto Missing }`,
-      ['goto Missing -> unresolved', stockError('Missing')],
+      ['goto Missing -> unresolved', missingStep('Missing')],
     ],
     [
       'a goto reaches a named await',
@@ -281,11 +229,6 @@ describe('Scoping - container-scoped goto (subprocess boundary)', () => {
         'goto Deep -> unresolved',
         boundary('Deep', `inside subprocess 'Inner'`, 'subprocess'),
       ],
-    ],
-    [
-      'a goto to a name nowhere in the process keeps the stock message',
-      `process p { subprocess Sub { user Inner } goto Missing }`,
-      ['goto Missing -> unresolved', stockError('Missing')],
     ],
   ])('%s', checkRow);
 });
@@ -359,11 +302,6 @@ describe('Scoping - container-scoped goto (event-handler boundary)', () => {
       ],
     ],
     [
-      'a goto to a name nowhere in the process keeps the stock message',
-      `process p { error PAYMENT_FAILED goto Missing on error(PAYMENT_FAILED) { user Inner } }`,
-      ['goto Missing -> unresolved', stockError('Missing')],
-    ],
-    [
       'an `on timer` handler is named by its code-less header',
       `process p { goto Inner on timer(at: "2026-08-01T09:00:00") { user Inner } }`,
       [
@@ -431,7 +369,7 @@ describe('Scoping - hosted handler host reference', () => {
     [
       'a host does not reach an activity of another process',
       `process a { user Review on Only: signal("Cancelled") { } } process b { user Only }`,
-      ['host Only -> unresolved', stockError('Only'), MULTI_PROCESS],
+      ['host Only -> unresolved', missingHost('Only'), MULTI_PROCESS],
     ],
     [
       "a host reads the handler's container, not the handler's own body",
@@ -452,9 +390,9 @@ describe('Scoping - hosted handler host reference', () => {
       ],
     ],
     [
-      'a host naming nothing anywhere keeps the stock message',
+      'a host naming nothing anywhere says so',
       `process p { error X user Review on Missing: error(X) { } }`,
-      ['host Missing -> unresolved', stockError('Missing')],
+      ['host Missing -> unresolved', missingHost('Missing')],
     ],
   ])('%s', checkRow);
 });
@@ -590,8 +528,7 @@ describe('Scoping - code declarations reached from a code position', () => {
 });
 
 describe('Scoping - the code slot of an error mapping', () => {
-  // Raw conditions, so no undeclared-variable warning rides along; the
-  // validator's own rules for a mapping are not what these rows pin.
+  // Raw conditions, so no undeclared-variable warning rides along.
   test.each<Row>([
     [
       'a mapping naming a declared error resolves it, with nothing to report',
@@ -624,37 +561,4 @@ describe('Scoping - the code slot of an error mapping', () => {
       ],
     ],
   ])('%s', checkCodeRow);
-});
-
-describe('Scoping - reserved-word guidance', () => {
-  /**
-   * A reserved word reaches the guidance down two Chevrotain paths: a
-   * no-viable-alternative error in expression position, and a mismatched-token
-   * error where the grammar expects exactly `ID`.
-   */
-  const RESERVED_DATE =
-    "'date' is a reserved word and cannot be used as a plain name here. To refer to a variable named 'date', write it as a quoted raw expression: \"${date}\".";
-
-  test.each<Row>([
-    [
-      'a reserved word in expression position points to the raw-string fallback',
-      `process p { if (date > deadline) { user A } }`,
-      [RESERVED_DATE],
-    ],
-    [
-      'a reserved word in a name position points to the raw-string fallback',
-      `process p { user date }`,
-      [RESERVED_DATE],
-    ],
-    [
-      'a plain identifier in the same expression position parses cleanly',
-      `process p { if (status > deadline) { user A } }`,
-      [],
-    ],
-  ])('%s', async (_title, source, expected) => {
-    const document = await parse(source);
-    expect(document.parseResult.parserErrors.map((e) => e.message)).toEqual(
-      expected,
-    );
-  });
 });

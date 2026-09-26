@@ -1,15 +1,9 @@
 /**
- * Normalizes `Listener.time`, which `time=(STRING | RAW_TEMPLATE)` fills with a
- * plain duration (`on timeout after "PT1H"`) or an EL template
- * (`on timeout at "${dueDate}"`). Langium's `DefaultValueConverter`
- * auto-unquotes `STRING` but returns `RAW_TEMPLATE` verbatim, quotes included,
- * because the terminal's other use (`RawExpr.raw`) needs them kept for
- * `expression-render.ts` to strip, so left alone the two alternatives disagree:
- * `PT1H` vs `"${dueDate}"`.
+ * Langium unquotes only `STRING`; a verbatim `RAW_TEMPLATE` would reach the
+ * engine with a stray `\` and gain another each time the printer quotes it.
  */
 
 import {
-  AstUtils,
   DefaultValueConverter,
   GrammarAST,
   ValueConverter,
@@ -18,7 +12,6 @@ import {
 } from 'langium';
 
 const RAW_TEMPLATE_RULE_NAME = 'RAW_TEMPLATE';
-const TIME_FEATURE_NAME = 'time';
 
 export class BpmnScriptValueConverter extends DefaultValueConverter {
   protected override runConverter(
@@ -26,19 +19,9 @@ export class BpmnScriptValueConverter extends DefaultValueConverter {
     input: string,
     cstNode: CstNode,
   ): ValueType {
-    if (
-      rule.name === RAW_TEMPLATE_RULE_NAME &&
-      this.fillsTimeFeature(cstNode)
-    ) {
+    if (rule.name === RAW_TEMPLATE_RULE_NAME) {
       return ValueConverter.convertString(input);
     }
     return super.runConverter(rule, input, cstNode);
-  }
-
-  private fillsTimeFeature(cstNode: CstNode): boolean {
-    const source = cstNode.grammarSource;
-    const assignment =
-      source && AstUtils.getContainerOfType(source, GrammarAST.isAssignment);
-    return assignment?.feature === TIME_FEATURE_NAME;
   }
 }

@@ -79,7 +79,7 @@
         <bpmn:incoming>Flow_StartEvent_CollectReferences_ChaseReference</bpmn:incoming>
         <bpmn:outgoing>Flow_ChaseReference_Gateway_loan-application_4_0_loop</bpmn:outgoing>
       </bpmn:userTask>
-      <bpmn:exclusiveGateway id="Gateway_loan-application_4_0_loop" default="Flow_Gateway_loan-application_4_0_loop_default" operaton:exclusive="false" operaton:jobPriority="10">
+      <bpmn:exclusiveGateway id="Gateway_loan-application_4_0_loop" default="Flow_Gateway_loan-application_4_0_loop_default" operaton:asyncBefore="true" operaton:exclusive="false" operaton:jobPriority="10">
         <bpmn:incoming>Flow_ChaseReference_Gateway_loan-application_4_0_loop</bpmn:incoming>
         <bpmn:outgoing>Flow_Gateway_loan-application_4_0_loop_ChaseReference</bpmn:outgoing>
         <bpmn:outgoing>Flow_Gateway_loan-application_4_0_loop_default</bpmn:outgoing>
@@ -115,16 +115,14 @@
       <bpmn:incoming>Flow_Gateway_loan-application_5_fork_ScreenFraud</bpmn:incoming>
       <bpmn:outgoing>Flow_ScreenFraud_Gateway_loan-application_5_join</bpmn:outgoing>
     </bpmn:serviceTask>
-    <bpmn:inclusiveGateway id="Gateway_loan-application_6_fork" default="Flow_Gateway_loan-application_6_fork_default" operaton:jobPriority="${selfEmployed ? 90 : 50}">
+    <bpmn:inclusiveGateway id="Gateway_loan-application_6_fork" operaton:asyncBefore="true" operaton:jobPriority="${selfEmployed ? 90 : 50}">
       <bpmn:incoming>Flow_Gateway_loan-application_5_join_Gateway_loan-application_6_fork</bpmn:incoming>
       <bpmn:outgoing>Flow_Gateway_loan-application_6_fork_AppraiseCollateral</bpmn:outgoing>
       <bpmn:outgoing>Flow_Gateway_loan-application_6_fork_PriceLoan</bpmn:outgoing>
-      <bpmn:outgoing>Flow_Gateway_loan-application_6_fork_default</bpmn:outgoing>
     </bpmn:inclusiveGateway>
     <bpmn:inclusiveGateway id="Gateway_loan-application_6_join" operaton:asyncBefore="true">
       <bpmn:incoming>Flow_AppraiseCollateral_Gateway_loan-application_6_join</bpmn:incoming>
       <bpmn:incoming>Flow_PriceLoan_Gateway_loan-application_6_join</bpmn:incoming>
-      <bpmn:incoming>Flow_Gateway_loan-application_6_fork_default</bpmn:incoming>
       <bpmn:outgoing>Flow_Gateway_loan-application_6_join_MakeOffer</bpmn:outgoing>
     </bpmn:inclusiveGateway>
     <bpmn:userTask id="AppraiseCollateral" name="Appraise the offered collateral" operaton:assignee="manager">
@@ -207,7 +205,6 @@
     <bpmn:sequenceFlow id="Flow_AppraiseCollateral_Gateway_loan-application_6_join" sourceRef="AppraiseCollateral" targetRef="Gateway_loan-application_6_join" />
     <bpmn:sequenceFlow id="Flow_Gateway_loan-application_6_fork_PriceLoan" sourceRef="Gateway_loan-application_6_fork" targetRef="PriceLoan" />
     <bpmn:sequenceFlow id="Flow_PriceLoan_Gateway_loan-application_6_join" sourceRef="PriceLoan" targetRef="Gateway_loan-application_6_join" />
-    <bpmn:sequenceFlow id="Flow_Gateway_loan-application_6_fork_default" sourceRef="Gateway_loan-application_6_fork" targetRef="Gateway_loan-application_6_join" />
     <bpmn:sequenceFlow id="Flow_Gateway_loan-application_5_join_Gateway_loan-application_6_fork" sourceRef="Gateway_loan-application_5_join" targetRef="Gateway_loan-application_6_fork" />
     <bpmn:sequenceFlow id="Flow_Gateway_loan-application_6_join_MakeOffer" sourceRef="Gateway_loan-application_6_join" targetRef="MakeOffer" />
     <bpmn:sequenceFlow id="Flow_Gateway_loan-application_8_race_Catch_loan-application_8_b0" sourceRef="Gateway_loan-application_8_race" targetRef="Catch_loan-application_8_b0" />
@@ -406,12 +403,6 @@
         <di:waypoint x="2625" y="235" />
         <di:waypoint x="2625" y="490" />
         <di:waypoint x="2725" y="490" />
-      </bpmndi:BPMNEdge>
-      <bpmndi:BPMNEdge id="Flow_Gateway_loan-application_6_fork_default_di" bpmnElement="Flow_Gateway_loan-application_6_fork_default">
-        <di:waypoint x="2625" y="235" />
-        <di:waypoint x="2625" y="280" />
-        <di:waypoint x="2925" y="280" />
-        <di:waypoint x="2925" y="235" />
       </bpmndi:BPMNEdge>
       <bpmndi:BPMNEdge id="Flow_AppraiseCollateral_Gateway_loan-application_6_join_di" bpmnElement="Flow_AppraiseCollateral_Gateway_loan-application_6_join">
         <di:waypoint x="2825" y="210" />

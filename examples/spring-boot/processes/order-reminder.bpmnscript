@@ -1,14 +1,3 @@
-// Order handling with a timer reminder and a message handler. The fulfillment
-// steps are grouped into a `subprocess`; while they run, a non-interrupting
-// `on timer("PT1H", alongside)` handler fires an hour in to chase the
-// warehouse without stopping the main flow (the reminder pattern). A process-
-// level `on message("OrderCancelled")` handler catches a cancellation the engine
-// correlates from outside and rolls the order back.
-//
-// The service tasks point at the generic delegate
-// examples/spring-boot/src/main/java/com/example/demo/LogDelegate.java, so this
-// process deploys and runs on the demo profile without additional Java classes.
-
 process order-reminder {
   start OrderPlaced
   user ReviewOrder(label: "Review order", assignee: "demo")

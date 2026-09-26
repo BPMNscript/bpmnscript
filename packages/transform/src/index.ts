@@ -30,6 +30,7 @@ export type {
   IoMapped,
   LoopCharacteristics,
   Repeatable,
+  Activity,
   IoParameter,
   IoValue,
   FieldInjection,
@@ -47,12 +48,7 @@ export type {
 } from './ir/types.js';
 export type { BuiltinTaskType } from '@bpmn-script/language';
 
-export {
-  isGateway,
-  gatewayDefaultFlowId,
-  jobSettings,
-  carriesFields,
-} from './ir/types.js';
+export { isGateway, gatewayDefaultFlowId } from './ir/types.js';
 
 export {
   makeGatewaySplitId,
@@ -69,10 +65,18 @@ export {
 } from './synthesize-ids.js';
 
 export { parseJuel, renderRawFallback } from './juel.js';
-export type { JuelNode, Accessor, BinaryOp, ExprResult } from './juel.js';
+export type { JuelNode } from './juel.js';
 
-export { irToXml, type IrToXmlOptions } from './ir-to-xml.js';
-export { xmlToIr } from './xml-to-ir.js';
+export { irToXml } from './ir-to-xml.js';
+export {
+  COMPENSATION_BOUNDARY_DETAIL,
+  CONNECTOR_CONSTRUCT,
+  dataConstructDropMessage,
+  IS_FOR_COMPENSATION_DETAIL,
+  loopDroppedMessage,
+  manualTaskMessage,
+  xmlToIr,
+} from './xml-to-ir.js';
 export type { ImportWarning, ImportWarningCategory } from './xml-to-ir.js';
 export {
   UnsupportedConstructError,
@@ -83,15 +87,25 @@ export {
   UnsupportedEventFeatureError,
   UnsupportedLoopCharacteristicsError,
   UnsupportedCollaborationError,
+  UnsupportedDocumentError,
   UnsupportedCallActivityError,
   UnsupportedExtensionFormError,
   UnsupportedFormReferenceError,
   UnsupportedConditionExpressionError,
+  UnsupportedGatewayShapeError,
   UnsupportedFormFieldConstraintError,
   UnsupportedErrorMappingError,
   UnsupportedAssignmentError,
+  LayoutError,
+  SERVICE_TASK_FORM_ATTRIBUTES,
 } from './errors.js';
 
 export { astToIr } from './ast-to-ir.js';
 export { irToDsl, UNSTRUCTURED_MARKER } from './ir-to-dsl.js';
 export type { PrintWarning, PrintWarningCategory } from './ir-to-dsl.js';
+export {
+  EMPTY_INPUT_MESSAGE,
+  NO_PROCESS_MESSAGE,
+  readableParseError,
+  xmlInputProblem,
+} from './host-messages.js';

@@ -1,12 +1,5 @@
-/**
- * `bpmn-moddle`, `bpmn-auto-layout` and `saxen` ship no `.d.ts` files of their
- * own.
- */
-
 declare module 'bpmn-moddle' {
-  // Moddle attaches properties dynamically, keyed by the `name` in each
-  // `*-moddle.json` schema entry, so `any` is the honest type here. The IR in
-  // `./ir/types.ts` is the only typed contract in this package.
+  // Moddle attaches properties dynamically from its JSON schemas.
   export type ModdleElement = any;
 
   export interface BpmnModdleInstance {
@@ -38,12 +31,11 @@ declare module 'bpmn-moddle' {
 }
 
 declare module 'bpmn-auto-layout' {
-  /** Returns the XML with `bpmndi:` diagram-interchange elements injected. */
   export function layoutProcess(xml: string): Promise<string>;
 }
 
 declare module 'saxen' {
-  /** The source position the parser has reached, both counted from zero. */
+  /** Both counted from zero. */
   export interface ParseContext {
     line: number;
     column: number;
@@ -64,9 +56,23 @@ declare module 'saxen' {
     getContext: () => ParseContext,
   ) => void;
 
+  /** Entities still encoded; `decodeEntities` resolves them. */
+  export type TextHandler = (
+    value: string,
+    decodeEntities: (text: string) => string,
+    getContext: () => ParseContext,
+  ) => void;
+
+  export type CDataHandler = (
+    value: string,
+    getContext: () => ParseContext,
+  ) => void;
+
   export class Parser {
     on(event: 'openTag', handler: OpenTagHandler): void;
     on(event: 'closeTag', handler: CloseTagHandler): void;
+    on(event: 'text', handler: TextHandler): void;
+    on(event: 'cdata', handler: CDataHandler): void;
     parse(xml: string): void;
   }
 }

@@ -4,10 +4,10 @@
  * Runs inside the VS Code webview (Chromium sandbox). Communicates with the
  * extension host exclusively via postMessage (no DOM event handlers in HTML).
  *
- * Message protocol (host → webview):
+ * Message protocol (host -> webview):
  *   {type:'state', activeFile}  - active-file state push
  *
- * Message protocol (webview → host):
+ * Message protocol (webview -> host):
  *   {type:'ready'}            - page loaded; request current state
  *   {type:'compile', uri}     - run bpmnscript.compile on this URI
  *   {type:'decompile', uri}   - run bpmnscript.decompile on this URI
@@ -27,7 +27,7 @@
   vscode.postMessage({ type: 'ready' });
 
   // -------------------------------------------------------------------------
-  // Message handling (host → webview)
+  // Message handling (host -> webview)
   // -------------------------------------------------------------------------
 
   window.addEventListener('message', function (event) {
@@ -89,7 +89,7 @@
     if (file.counterpart) {
       container.appendChild(
         linkButton(
-          'Open ' + file.counterpart.name + ' →',
+          'Open ' + file.counterpart.name + ' ->',
           file.counterpart.uri,
         ),
       );
@@ -106,7 +106,7 @@
 
     const pickBtn = document.createElement('button');
     pickBtn.className = 'action secondary';
-    pickBtn.textContent = 'Pick a BPMN file…';
+    pickBtn.textContent = 'Pick a BPMN file...';
     pickBtn.title = 'Choose a .bpmn file to convert to BPMNscript';
     pickBtn.addEventListener('click', function () {
       vscode.postMessage({ type: 'pick' });

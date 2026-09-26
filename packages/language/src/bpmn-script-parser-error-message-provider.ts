@@ -1,16 +1,7 @@
 /**
- * Reserved-word guidance for parse errors: a reserved grammar keyword (`date`,
- * `class`, `if`, ...) written where the parser expects a plain identifier gets
- * a message naming the word and pointing at the quoted `"${...}"` raw-string
- * fallback. Two Chevrotain paths reach that mistake, so both are overridden:
- * `buildMismatchTokenMessage` where the grammar expects exactly `ID`, and
- * `buildNoViableAltMessage` where `ID` is one alternative among several. A slot
- * whose alternatives are all keywords takes neither path and gets its own
- * message naming the words it does take. Every message here stays free of BPMN
- * vocabulary (ADR-0013).
- *
- * This only enriches the message Chevrotain already built; it cannot suppress
- * or restructure error recovery, nor change which token positions are legal.
+ * Guidance in place of Chevrotain's stock wording; recovery is unchanged. A
+ * reserved word arrives as a token mismatch where the grammar expects `ID` and
+ * as no viable alternative where `ID` is one choice, so both are overridden.
  */
 
 import {
@@ -21,41 +12,44 @@ import {
 import {
   DECLARED_CODE_TRIGGERS,
   formatWordList,
+  IO_DIRECTIONS,
   reservedWordsOf,
 } from './vocabulary.js';
 
 const ID_TOKEN_NAME = 'ID';
 
 /**
- * A `var` declaration is legal only in the process header, so anywhere else the
- * parser has finished the statement list and reports "expecting `}`, found
- * `var`". `var` used as a name expects `ID` and takes the reserved-word path.
+ * A misplaced `var` or `for` ends the statement list early; at `EOF` the stock
+ * message would say "found ``".
  */
 const CLOSE_BRACE_TOKEN_NAME = '}';
 const VAR_KEYWORD_TOKEN_NAME = 'var';
-
-/** After a statement that takes no repeat clause, the same "expecting `}`". */
 const FOR_KEYWORD_TOKEN_NAME = 'for';
+const EOF_TOKEN_NAME = 'EOF';
 
 /**
- * A code declaration is the one header declaration opening with a plain `ID`,
- * so a mistyped statement keyword in the header region is parsed as one and
- * fails at its name slot, where Chevrotain's raw expected-token list says
- * nothing about the actual mistake. A word that really does open a declaration
- * is excluded, so `error "PF"` still blames the text where the name belongs. A
- * mistyped kind *followed by a name* parses whole and never reaches here; the
- * validator names its kind instead.
+ * A mistyped statement keyword parses as a code declaration and fails at the
+ * name slot; a real declaration word is excluded.
  */
 const CODE_DECL_RULE_NAME = 'CodeDecl';
 
-/** A token whose image could have been meant as a word rather than punctuation or a literal. */
+/**
+ * After the first step a plain word ends the process body early. In a braced
+ * block the same word opens a parameter (`direction=ID name=ID '='`) and fails
+ * at its name slot or at its `=`, where only the name is left to quote.
+ */
+const PROCESS_RULE_NAME = 'Process';
+const IO_PARAMETER_RULE_NAME = 'IoParameter';
+const EQUALS_TOKEN_NAME = '=';
+const CLOSE_PAREN_TOKEN_NAME = ')';
+
+const STEP_KEYWORD_HINT =
+  'every step starts with a keyword such as ' +
+  "'start', 'user', 'service', 'if', 'on', 'throw', 'emit', ...";
+
 const WORD_SHAPED = /^[A-Za-z_]/;
 
-/**
- * Langium's generated Chevrotain rules carry a trailing zero-width space on
- * `ruleName` (`withRuleSuffix` in `langium-parser.ts`) so rule names never
- * collide with reserved JavaScript identifiers.
- */
+/** Langium suffixes every Chevrotain rule name with a zero-width space. */
 function bareRuleName(ruleName: string): string {
   return ruleName.replace(/\u200b+$/, '');
 }
@@ -78,6 +72,24 @@ export class BpmnScriptParserErrorMessageProvider extends LangiumParserErrorMess
 
   override buildMismatchTokenMessage(options: MismatchTokenOptions): string {
     const { expected, actual } = options;
+    const rule = bareRuleName(options.ruleName);
+    if (expected.name === CLOSE_PAREN_TOKEN_NAME) {
+      const where =
+        actual.tokenType.name === EOF_TOKEN_NAME
+          ? 'the end of the file'
+          : `'${actual.image}'`;
+      return `Expected ')' before ${where}: a '(' is still open.`;
+    }
+    if (
+      expected.name === EQUALS_TOKEN_NAME &&
+      rule === IO_PARAMETER_RULE_NAME
+    ) {
+      return (
+        `Expected '=' after '${options.previous.image}': inside a block, two ` +
+        "plain words start a parameter such as 'input name = value'; " +
+        STEP_KEYWORD_HINT
+      );
+    }
     if (expected.name === CLOSE_BRACE_TOKEN_NAME) {
       if (actual.tokenType.name === VAR_KEYWORD_TOKEN_NAME) {
         return this.varPlacementMessage();
@@ -85,17 +97,26 @@ export class BpmnScriptParserErrorMessageProvider extends LangiumParserErrorMess
       if (actual.tokenType.name === FOR_KEYWORD_TOKEN_NAME) {
         return this.repeatClausePlacementMessage();
       }
+      if (actual.tokenType.name === EOF_TOKEN_NAME) {
+        return this.unclosedBlockMessage();
+      }
+      if (
+        actual.tokenType.name === ID_TOKEN_NAME &&
+        rule === PROCESS_RULE_NAME
+      ) {
+        return `'${actual.image}' is not a step keyword; ${STEP_KEYWORD_HINT}`;
+      }
     }
     if (expected.name === ID_TOKEN_NAME) {
       if (this.isReservedWord(actual.tokenType.name)) {
         return this.reservedWordMessage(actual.image);
       }
       const word = options.previous.image;
-      if (
-        bareRuleName(options.ruleName) === CODE_DECL_RULE_NAME &&
-        !DECLARED_CODE_TRIGGERS.has(word)
-      ) {
+      if (rule === CODE_DECL_RULE_NAME && !DECLARED_CODE_TRIGGERS.has(word)) {
         return this.declarationOrStepMessage(word);
+      }
+      if (rule === IO_PARAMETER_RULE_NAME && !IO_DIRECTIONS.includes(word)) {
+        return `'${word}' is not a step keyword; ${STEP_KEYWORD_HINT}`;
       }
     }
     return super.buildMismatchTokenMessage(options);
@@ -117,13 +138,16 @@ export class BpmnScriptParserErrorMessageProvider extends LangiumParserErrorMess
     );
   }
 
+  private unclosedBlockMessage(): string {
+    return "Expected '}' before the end of the file: a block is still open.";
+  }
+
   private declarationOrStepMessage(word: string): string {
     return (
       `'${word}' is neither a known declaration nor a step keyword. ` +
       'A declaration starting with a plain word is ' +
       `${formatWordList([...DECLARED_CODE_TRIGGERS])} followed by the name it ` +
-      'declares; every step starts with a keyword such as ' +
-      "'start', 'user', 'service', 'if', 'on', 'throw', 'emit', ..."
+      `declares; ${STEP_KEYWORD_HINT}`
     );
   }
 
@@ -152,12 +176,7 @@ export class BpmnScriptParserErrorMessageProvider extends LangiumParserErrorMess
     return `'${word}' is not a word this position takes; write ${formatWordList(alternatives)}.`;
   }
 
-  /**
-   * The keywords a slot admits, in grammar order, when every alternative is one
-   * keyword and nothing else. `undefined` anywhere else, so a slot also taking
-   * an identifier, a literal, or a longer phrase keeps Chevrotain's message
-   * rather than being described as a closed set of words.
-   */
+  /** `undefined` unless every alternative is a single keyword. */
   private keywordAlternatives(
     expectedPathsPerAlt: NoViableAltOptions['expectedPathsPerAlt'],
   ): readonly string[] | undefined {

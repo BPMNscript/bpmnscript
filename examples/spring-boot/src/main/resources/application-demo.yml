@@ -1,3 +1,2 @@
-# "demo" profile: turns classpath auto-deployment on so the compiled processes deploy at startup.
 operaton.bpm:
   auto-deployment-enabled: true

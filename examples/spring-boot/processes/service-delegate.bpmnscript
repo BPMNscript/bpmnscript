@@ -1,5 +1,4 @@
-// Charge the customer's payment method through a Spring-managed delegate
-// bean, referenced by bean name rather than by fully-qualified Java class.
+// `chargeService` is the bean name `ChargeService` registers under.
 
 process payment-charge {
   start OrderPlaced

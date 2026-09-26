@@ -1,24 +1,5 @@
-/**
- * Form-field support across the whole pipeline.
- *
- * A `form { ... }` block on a `start` event or `user` task becomes an
- * `operaton:formData` extension element so Operaton Tasklist renders a labeled
- * form. These tests pin every transform in both directions:
- *   - `astToIr`: the AST form block lowers to IR `formFields`.
- *   - `irToXml`: IR form fields serialize to `operaton:formData`/`formField`,
- *                  mapping the DSL `number` type to Operaton `long`.
- *   - `xmlToIr`: the extension element is read back (no spurious drop warning),
- *                  mapping `long` to `number`; an unmappable type is refused.
- *   - `irToDsl`: form fields round-trip back to a `form { ... }` block.
- */
+import { describe, expect, it } from 'vitest';
 
-import { beforeAll, describe, expect, it } from 'vitest';
-import { EmptyFileSystem } from 'langium';
-import { parseHelper } from 'langium/test';
-import { createBpmnScriptServices } from '@bpmn-script/language';
-import type { Model } from '@bpmn-script/language';
-
-import { astToIr } from '../src/ast-to-ir.js';
 import { irToXml } from '../src/ir-to-xml.js';
 import { xmlToIr } from '../src/xml-to-ir.js';
 import { irToDsl } from '../src/ir-to-dsl.js';
@@ -31,29 +12,13 @@ import type {
   StartEvent,
   UserTask,
 } from '../src/ir/types.js';
+import { ir } from './helpers/parse.js';
 
-let parse: ReturnType<typeof parseHelper<Model>>;
+const startOf = (process: BpmnProcess): StartEvent =>
+  process.flowElements.find((e) => e.kind === 'startEvent') as StartEvent;
 
-beforeAll(() => {
-  const services = createBpmnScriptServices(EmptyFileSystem);
-  parse = parseHelper<Model>(services.BpmnScript);
-});
-
-async function ir(source: string): Promise<BpmnProcess> {
-  const doc = await parse(source);
-  expect(doc.parseResult.parserErrors).toHaveLength(0);
-  return astToIr(doc.parseResult.value);
-}
-
-function startOf(process: BpmnProcess): StartEvent {
-  const s = process.flowElements.find((e) => e.kind === 'startEvent');
-  return s as StartEvent;
-}
-
-function userOf(process: BpmnProcess): UserTask {
-  const u = process.flowElements.find((e) => e.kind === 'userTask');
-  return u as UserTask;
-}
+const userOf = (process: BpmnProcess): UserTask =>
+  process.flowElements.find((e) => e.kind === 'userTask') as UserTask;
 
 const SOURCE = `process loan(label: "Loan") {
   start RequestReceived {
@@ -67,10 +32,9 @@ const SOURCE = `process loan(label: "Loan") {
   }
 }`;
 
-describe('astToIr: form blocks lower to IR form fields', () => {
-  it('reads start-event and user-task form fields', async () => {
+describe('form fields', () => {
+  it('lower to IR, serialize to operaton:formData with number as long, and come back unchanged through XML and through printed source', async () => {
     const process = await ir(SOURCE);
-
     expect(startOf(process).formFields).toEqual<FormField[]>([
       { id: 'amount', type: 'number', label: 'Loan amount' },
       {
@@ -88,71 +52,44 @@ describe('astToIr: form blocks lower to IR form fields', () => {
         defaultValue: 'false',
       },
     ]);
+
+    const xml = await irToXml(process);
+    expect(
+      xml.match(/<operaton:formData>[\s\S]*?<\/operaton:formData>/g),
+    ).toEqual([
+      '<operaton:formData>\n' +
+        '          <operaton:formField id="amount" label="Loan amount" type="long" />\n' +
+        '          <operaton:formField id="creditScore" label="Credit score" type="long" defaultValue="700" />\n' +
+        '        </operaton:formData>',
+      '<operaton:formData>\n' +
+        '          <operaton:formField id="approved" label="Approve the loan?" type="boolean" defaultValue="false" />\n' +
+        '        </operaton:formData>',
+    ]);
+
+    const { ir: reimported, warnings } = await xmlToIr(xml);
+    expect(warnings.filter((w) => /form/i.test(w.message))).toEqual([]);
+    const reparsed = await ir(irToDsl(process).source);
+    for (const back of [reimported, reparsed]) {
+      expect(startOf(back).formFields).toEqual(startOf(process).formFields);
+      expect(userOf(back).formFields).toEqual(userOf(process).formFields);
+    }
   });
 
-  it('omits formFields when there is no form block', async () => {
+  it('are absent without a form block', async () => {
     const process = await ir('process p { start S user U }');
     expect(startOf(process).formFields).toBeUndefined();
     expect(userOf(process).formFields).toBeUndefined();
   });
-});
 
-describe('irToXml: form fields serialize to operaton:formData', () => {
-  it('emits formData/formField, mapping number to long', async () => {
+  it('refuse on import a type the script cannot express, naming the five it takes', async () => {
     const xml = await irToXml(await ir(SOURCE));
-
-    expect(xml).toContain('operaton:formData');
-    expect(xml).toContain('operaton:formField');
-    // number -> long, boolean stays boolean.
-    expect(xml).toMatch(/id="amount"[^>]*type="long"/);
-    expect(xml).toMatch(/id="creditScore"[^>]*type="long"/);
-    expect(xml).toMatch(/id="approved"[^>]*type="boolean"/);
-    expect(xml).toContain('label="Loan amount"');
-    expect(xml).toContain('defaultValue="700"');
-    expect(xml).toContain('defaultValue="false"');
-  });
-});
-
-describe('xmlToIr: form fields round-trip through XML', () => {
-  it('recovers form fields (long -> number) with no drop warning', async () => {
-    const original = await ir(SOURCE);
-    const xml = await irToXml(original);
-    const { ir: reimported, warnings } = await xmlToIr(xml);
-
-    // No warning about the formData extension element being dropped.
-    expect(warnings.filter((w) => /form/i.test(w.message))).toHaveLength(0);
-
-    expect(startOf(reimported).formFields).toEqual(
-      startOf(original).formFields,
-    );
-    expect(userOf(reimported).formFields).toEqual(userOf(original).formFields);
-  });
-
-  it('refuses a form field type the DSL cannot express, naming the five it takes', async () => {
-    const xml = await irToXml(await ir(SOURCE));
-    const withDouble = xml.replace('type="long"', 'type="double"');
     const err = await expectRefusal<UnsupportedFormFieldTypeError>(
-      xmlToIr(withDouble),
+      xmlToIr(xml.replace('type="long"', 'type="double"')),
       UnsupportedFormFieldTypeError,
     );
     expect(err.message).toMatch(
       /'double'.*string, long, boolean, date, and enum/,
     );
-  });
-});
-
-describe('irToDsl: form fields round-trip back to a form block', () => {
-  it('re-emits form blocks that re-desugar to the same fields', async () => {
-    const original = await ir(SOURCE);
-    const dsl = irToDsl(original).source;
-
-    expect(dsl).toContain('form {');
-    expect(dsl).toContain('amount: number "Loan amount"');
-    expect(dsl).toContain('approved: boolean "Approve the loan?" = false');
-
-    const reparsed = await ir(dsl);
-    expect(startOf(reparsed).formFields).toEqual(startOf(original).formFields);
-    expect(userOf(reparsed).formFields).toEqual(userOf(original).formFields);
   });
 });
 

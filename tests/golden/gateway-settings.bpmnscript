@@ -57,7 +57,7 @@ process loan-application(label: "Consumer loan application") {
   subprocess CollectReferences(label: "Collect the references the applicant named") {
     do {
       user ChaseReference(label: "Chase one outstanding reference", assignee: "demo")
-    } while (referencesPending) (exclusive: false, jobPriority: 10)
+    } while (referencesPending) (asyncBefore: true, exclusive: false, jobPriority: 10)
   }
 
   parallel (asyncBefore: true, joinAsyncAfter: true, joinExclusive: false, joinRetryCycle: "R2/PT1M") {
@@ -69,7 +69,7 @@ process loan-application(label: "Consumer loan application") {
     }
   }
 
-  parallel (jobPriority: "${selfEmployed ? 90 : 50}", joinAsyncBefore: true) {
+  parallel (asyncBefore: true, jobPriority: "${selfEmployed ? 90 : 50}", joinAsyncBefore: true) {
     if (amount > 250000) {
       user AppraiseCollateral(label: "Appraise the offered collateral", assignee: "manager")
     }

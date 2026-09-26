@@ -1,20 +1,17 @@
 /**
- * Deterministic ids for BPMN elements the DSL does not name, and the names
- * error and escalation declarations are written with.
- *
- * Every template here is frozen by ADR 0010, Use Deterministic Structural Ids
- * for Synthesized BPMN Elements: the printer recognizes an id it minted by the
- * template that minted it, so a changed template breaks round-trip stability.
- * Templates whose base can collide with an author-chosen name take a `taken`
- * set and claim their result in it; the positional ones are unique by
- * construction.
+ * Deterministic ids for elements the DSL does not name. Templates are frozen
+ * (ADR 0010): the printer recognizes a minted id by its template, so changing
+ * one breaks round-trip stability.
  */
 
-import { BpmnScriptGrammar, reservedWordsOf } from '@bpmn-script/language';
+import {
+  BpmnScriptGrammar,
+  ID_TEXT,
+  reservedWordsOf,
+} from '@bpmn-script/language';
 
-/** The prefixes the printer matches on to tell a minted id from an authored one. */
-export const START_EVENT_PREFIX = 'StartEvent_';
-export const END_EVENT_PREFIX = 'EndEvent_';
+const START_EVENT_PREFIX = 'StartEvent_';
+const END_EVENT_PREFIX = 'EndEvent_';
 export const THROW_EVENT_PREFIX = 'Throw_';
 export const CATCH_EVENT_PREFIX = 'Catch_';
 
@@ -22,7 +19,6 @@ export function makeGatewaySplitId(enclosingId: string): string {
   return `Gateway_${enclosingId}_split`;
 }
 
-/** Shared by the XOR join after `if`/`else` and the AND join after `parallel`. */
 export function makeGatewayJoinId(enclosingId: string): string {
   return `Gateway_${enclosingId}_join`;
 }
@@ -31,7 +27,6 @@ export function makeGatewayForkId(enclosingId: string): string {
   return `Gateway_${enclosingId}_fork`;
 }
 
-/** Names the event-based fork a multi-branch wait lowers to. */
 export function makeGatewayRaceId(enclosingId: string): string {
   return `Gateway_${enclosingId}_race`;
 }
@@ -59,8 +54,32 @@ export function makeStartEventId(
   return claimId(`${START_EVENT_PREFIX}${processId}`, taken);
 }
 
+export function endIdOf(containerId: string): string {
+  return `${END_EVENT_PREFIX}${containerId}`;
+}
+
 export function makeEndEventId(processId: string, taken: Set<string>): string {
-  return claimId(`${END_EVENT_PREFIX}${processId}`, taken);
+  return claimId(endIdOf(processId), taken);
+}
+
+/**
+ * Exact, not a prefix test: the Modeler's `StartEvent_1` is authored and must
+ * print. The validator reserves the same forms.
+ */
+export function isMintedStartId(id: string, containerId: string): boolean {
+  return id === `${START_EVENT_PREFIX}${containerId}`;
+}
+
+export function isMintedEndId(
+  id: string,
+  containerId: string,
+  boundaryIds: Iterable<string>,
+): boolean {
+  if (id === endIdOf(containerId)) return true;
+  for (const boundaryId of boundaryIds) {
+    if (id === endIdOf(boundaryId)) return true;
+  }
+  return false;
 }
 
 export function makeThrowEventId(coordinate: string): string {
@@ -75,40 +94,32 @@ export function makeIntermediateCatchEventId(coordinate: string): string {
   return `${CATCH_EVENT_PREFIX}${coordinate}`;
 }
 
-/**
- * Host-derived rather than positional, so the id stays put when the decompiler
- * moves handlers to the end of their container's body. Two boundaries sharing a
- * host and trigger collide on the base id and need the numeric suffix.
- */
+/** Host-derived, so the id survives handlers moving to the end of the body. */
 export function makeBoundaryEventId(
   hostId: string,
   trigger: string,
   taken: Set<string>,
 ): string {
-  return claimId(`Boundary_${hostId}_${trigger}`, taken);
+  return claimId(boundaryEventIdBase(hostId, trigger), taken);
 }
 
-function claimId(base: string, taken: Set<string>): string {
+export function boundaryEventIdBase(hostId: string, trigger: string): string {
+  return `Boundary_${hostId}_${trigger}`;
+}
+
+export function claimId(base: string, taken: Set<string>): string {
   const id = resolveCollision(base, taken);
   taken.add(id);
   return id;
 }
 
-/** Mirrors the `ID` terminal, which is the only shape a declaration name has. */
-const ID_SHAPED = /^[_a-zA-Z]\w*(-\w+)*$/;
-
-function isWritableName(word: string): boolean {
-  return (
-    ID_SHAPED.test(word) && !reservedWordsOf(BpmnScriptGrammar()).has(word)
-  );
+export function isWritableName(word: string): boolean {
+  return ID_TEXT.test(word) && !reservedWordsOf(BpmnScriptGrammar()).has(word);
 }
 
 /**
- * The name an error or escalation declaration is written with: `preferred`
- * where a declaration could carry it, otherwise one minted from the code. The
- * result is claimed in `taken`, since two codes differing only in punctuation
- * mint the same name and one name written twice leaves every use site
- * ambiguous.
+ * Claimed in `taken`: codes differing only in punctuation mint the same name,
+ * which would make every use site ambiguous.
  */
 export function claimDeclarationName(
   code: string,
@@ -118,20 +129,17 @@ export function claimDeclarationName(
   const base =
     preferred !== undefined && isWritableName(preferred)
       ? preferred
-      : mintDeclarationName(code);
+      : mintPrintableName(code);
   return claimId(base, taken);
 }
 
-/** A code a name cannot spell keeps its word characters and loses the rest. */
-function mintDeclarationName(code: string): string {
-  const sanitized = isWritableName(code) ? code : code.replace(/\W/g, '_');
-  // A keyword lexes as itself rather than as an `ID`, and a word opening on a
-  // digit does not lex as one at all, so neither can name a declaration. An
-  // underscore fixes both, and no keyword carries one.
+export function mintPrintableName(text: string): string {
+  const sanitized = isWritableName(text) ? text : text.replace(/\W/g, '_');
+  // Keywords and digit-led words do not lex as `ID`; a leading underscore
+  // fixes both, and no keyword has one.
   return isWritableName(sanitized) ? sanitized : `_${sanitized}`;
 }
 
-/** First free id in `base`, `base_2`, `base_3`, ... Does not mutate `taken`. */
 export function resolveCollision(base: string, taken: Set<string>): string {
   if (!taken.has(base)) {
     return base;

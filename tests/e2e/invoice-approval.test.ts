@@ -2,7 +2,7 @@
 // so only a real instance shows which branch an exclusive gateway takes. Both
 // amounts run here.
 
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -10,8 +10,7 @@ import { fileURLToPath } from 'node:url';
 import type { FixtureAdapter } from '../fixtures/index.js';
 import {
   deployExamples,
-  ENGINE_BOOT_TIMEOUT_MS,
-  ENGINE_STOP_TIMEOUT_MS,
+  DEPLOY_TIMEOUT_MS,
   SKIP_DOCKER as SKIP,
 } from '../helpers/e2e-fixture.js';
 import { waitForTasks } from '../helpers/engine-rest.js';
@@ -26,14 +25,9 @@ const CLI_ENTRY = path.resolve(__dirname, '../../packages/cli/bin/cli.js');
 describe.skipIf(SKIP)('E2E: invoice-approval on Spring Boot Operaton', () => {
   let fixture: FixtureAdapter;
 
-  // One deployment serves every case.
   beforeAll(async () => {
     fixture = await deployExamples('invoice-approval');
-  }, ENGINE_BOOT_TIMEOUT_MS);
-
-  afterAll(async () => {
-    await fixture?.stop();
-  }, ENGINE_STOP_TIMEOUT_MS);
+  }, DEPLOY_TIMEOUT_MS);
 
   // ReviewStart -> ReviewInvoice -> AmountCheck -> SeniorApproval.
   it('happy path: senior approval branch', async () => {
@@ -90,9 +84,8 @@ describe.skipIf(SKIP)('E2E: invoice-approval on Spring Boot Operaton', () => {
 
   // The fixture's service task carries no execution binding, so `xmlToIr`
   // rejects it with `UnsupportedServiceTaskFormError` and the CLI exits 1.
-  // Checking exit status and stderr content, rather than just that
-  // `execFileSync` threw, is what tells a real refusal apart from the CLI
-  // never having run at all (wrong path, spawn failure, timeout).
+  // Checking status and stderr, not just that `execFileSync` threw, tells a
+  // real refusal apart from the CLI never having run at all.
   it('refuses unsupported service-task form', () => {
     const badBpmnPath = path.resolve(
       __dirname,

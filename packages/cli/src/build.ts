@@ -1,136 +1,103 @@
 import {
-  createBpmnScriptServices,
   BpmnScriptLanguageMetaData,
+  Diagnostic,
+  DiagnosticSeverity,
 } from '@bpmn-script/language';
 import type { Model } from '@bpmn-script/language';
-import { NodeFileSystem } from 'langium/node';
-import { URI } from 'langium';
 import chalk from 'chalk';
-import * as fs from 'node:fs/promises';
-import * as fsSync from 'node:fs';
 import * as path from 'node:path';
 
-import { astToIr, irToXml } from '@bpmn-script/transform';
-import { CLI_VERSION, diagnosticMessage, resolveOutputPath } from './util.js';
-
-export type BuildOptions = {
-  output?: string;
-};
-
-const SEVERITY_ERROR = 1;
-const SEVERITY_WARNING = 2;
+import {
+  astToIr,
+  irToXml,
+  LayoutError,
+  NO_PROCESS_MESSAGE,
+} from '@bpmn-script/transform';
+import {
+  CLI_VERSION,
+  type CommandOptions,
+  buildDocument,
+  fail,
+  formatDiagnostic,
+  guardOutputPath,
+  resolveInputPath,
+  resolveOutputPath,
+  warn,
+  writeOutput,
+} from './util.js';
 
 export async function buildAction(
   fileName: string,
-  opts: BuildOptions,
+  opts: CommandOptions,
 ): Promise<void> {
-  const resolvedInput = path.resolve(fileName);
+  const resolvedInput = resolveInputPath(fileName);
 
-  if (!fsSync.existsSync(resolvedInput)) {
-    console.error(chalk.red(`Error: file not found: ${fileName}`));
-    process.exit(2);
-  }
-
+  // A wrong extension fails later with an internal Langium "service registry contains no services".
   const extensions: readonly string[] =
     BpmnScriptLanguageMetaData.fileExtensions;
   if (!extensions.includes(path.extname(resolvedInput))) {
-    console.error(
-      chalk.yellow(
-        `Warning: expected a file with one of these extensions: ${extensions.join(', ')}`,
-      ),
+    fail(
+      2,
+      `Error: expected a file with one of these extensions: ${extensions.join(', ')}; ` +
+        'a .bpmn file is decompiled with `bpmns parse`',
     );
   }
 
   const outPath = resolveOutputPath(resolvedInput, '.bpmn', opts.output);
-
-  const services = createBpmnScriptServices(NodeFileSystem).BpmnScript;
+  guardOutputPath(resolvedInput, outPath, opts);
 
   let document;
   try {
-    document =
-      await services.shared.workspace.LangiumDocuments.getOrCreateDocument(
-        URI.file(resolvedInput),
-      );
-    await services.shared.workspace.DocumentBuilder.build([document], {
-      validation: true,
-    });
+    document = await buildDocument(resolvedInput);
   } catch (err) {
-    console.error(
-      chalk.red(
-        `Error: failed to parse ${fileName}: ${(err as Error).message}`,
-      ),
-    );
-    process.exit(2);
+    fail(2, `Error: failed to parse ${fileName}: ${(err as Error).message}`);
   }
 
   const errors = (document.diagnostics ?? []).filter(
-    (d) => d.severity === SEVERITY_ERROR,
+    (d) => d.severity === DiagnosticSeverity.Error,
   );
   if (errors.length > 0) {
     console.error(chalk.red('Validation errors:'));
     for (const diag of errors) {
-      console.error(
-        chalk.red(
-          `  line ${diag.range.start.line + 1}: ${diagnosticMessage(diag)}` +
-            ` [${document.textDocument.getText(diag.range)}]`,
-        ),
-      );
+      console.error(chalk.red(formatDiagnostic(document, diag)));
     }
     process.exit(1);
   }
 
+  // After the error gate: a keyword typo also parses into a model with no processes.
+  const ast = document.parseResult.value as Model;
+  if (ast.processes.length === 0) fail(1, `Error: ${NO_PROCESS_MESSAGE}`);
+
   const warnings = (document.diagnostics ?? []).filter(
-    (d) => d.severity === SEVERITY_WARNING,
+    (d) => d.severity === DiagnosticSeverity.Warning,
   );
   for (const diag of warnings) {
-    console.error(
-      chalk.yellow(
-        `Warning: line ${diag.range.start.line + 1}: ${diagnosticMessage(diag)}`,
-      ),
+    warn(
+      `Warning: line ${diag.range.start.line + 1}: ${Diagnostic.getMessageString(diag)}`,
     );
   }
-
-  const ast = document.parseResult?.value as Model;
 
   let ir;
   try {
     ir = astToIr(ast);
   } catch (err) {
-    console.error(
-      chalk.red(
-        `Error: AST to IR conversion failed: ${(err as Error).message}`,
-      ),
-    );
-    process.exit(1);
+    fail(1, `Error: ${(err as Error).message}`);
   }
 
-  let xml;
+  let xml: string;
   try {
-    xml = await irToXml(ir, {
-      sourceFileName: path.basename(resolvedInput),
-      exporterVersion: CLI_VERSION,
-    });
+    xml = await irToXml(ir, { exporterVersion: CLI_VERSION });
   } catch (err) {
-    console.error(
-      chalk.red(
-        `Error: IR to XML conversion failed: ${(err as Error).message}`,
-      ),
+    if (!(err instanceof LayoutError)) {
+      fail(1, `Error: ${(err as Error).message}`);
+    }
+    // Operaton deploys the document without a diagram.
+    xml = err.xml;
+    warn(
+      `Warning: no diagram could be drawn for this process (${err.message}); the file deploys but opens without shapes in a modeler`,
     );
-    process.exit(1);
   }
 
-  try {
-    const outDir = path.dirname(outPath);
-    await fs.mkdir(outDir, { recursive: true });
-    await fs.writeFile(outPath, xml, 'utf-8');
-  } catch (err) {
-    console.error(
-      chalk.red(
-        `Error: could not write output to ${outPath}: ${(err as Error).message}`,
-      ),
-    );
-    process.exit(2);
-  }
-
+  await writeOutput(outPath, xml);
   console.log(chalk.green(`Built: ${outPath}`));
 }

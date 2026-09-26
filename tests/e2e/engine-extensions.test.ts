@@ -1,19 +1,14 @@
 // A listener the engine never invokes, an input parameter it ignores, an
 // injected field that never reaches its delegate, and an `asyncBefore` that
 // does not break the transaction all compile to the same well-formed file, so
-// no XML-against-XML test can tell them apart. This suite boots a real Operaton
-// and reads back what it did: the markers the listeners wrote, the values the
-// engine set on each bean before invoking it, the values the service task
-// resolved from its mapped parameters, the form reference it parsed off the
-// user task, and the job the async continuation parked the token on.
+// only a real Operaton can tell them apart.
 
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll } from 'vitest';
 
 import type { FixtureAdapter } from '../fixtures/index.js';
 import {
   deployExamples,
-  ENGINE_BOOT_TIMEOUT_MS,
-  ENGINE_STOP_TIMEOUT_MS,
+  DEPLOY_TIMEOUT_MS,
   SKIP_DOCKER as SKIP,
 } from '../helpers/e2e-fixture.js';
 import {
@@ -74,9 +69,9 @@ describe.skipIf(SKIP)(
       return (await variablesOf(processInstanceId))[name]?.value;
     }
 
-    // In the order the engine fired them. An instance whose listeners never ran
-    // holds no such variable and gets an empty list, so the assertion that
-    // follows reports the missing marker rather than a read error.
+    // In firing order; an instance whose listeners never ran holds no such
+    // variable and gets an empty list, so the assertion that follows names the
+    // missing marker rather than a read error.
     async function listenerMarkers(
       processInstanceId: string,
     ): Promise<string[]> {
@@ -99,9 +94,9 @@ describe.skipIf(SKIP)(
       );
     }
 
-    // Returns once the instance reaches the user task, the one wait state on the
-    // path. Everything before it runs in the starting transaction, so the
-    // listener markers and mapped parameters are settled when this resolves.
+    // The user task is the one wait state on the path, and everything before
+    // it runs in the starting transaction, so the listener markers and mapped
+    // parameters are settled when this resolves.
     async function startAndReachUserTask(): Promise<{
       processInstanceId: string;
       taskId: string;
@@ -120,11 +115,7 @@ describe.skipIf(SKIP)(
 
     beforeAll(async () => {
       fixture = await deployExamples('engine-extensions');
-    }, ENGINE_BOOT_TIMEOUT_MS);
-
-    afterAll(async () => {
-      await fixture?.stop();
-    }, ENGINE_STOP_TIMEOUT_MS);
+    }, DEPLOY_TIMEOUT_MS);
 
     it('fires both execution listeners of a service task, its delegate, and the task listener, in that order', async () => {
       const { processInstanceId } = await startAndReachUserTask();
@@ -150,12 +141,11 @@ describe.skipIf(SKIP)(
 
       // Null where the binding carried no field, so a field that leaked onto
       // the wrong bean fails as loudly as one that never arrived. The start
-      // listener's value is the instance id the expression resolved to, which
-      // nothing in the deployment could have carried: had the engine been
-      // handed the literal instead, the marker would read `${...}` verbatim.
-      // The delegate's value runs the reverse check: it holds a `${...}` the
-      // engine would evaluate to `recorded-2` had it arrived in the expression
-      // slot, so it reads back verbatim only while the literal slot is used.
+      // listener's value is the instance id its expression resolved to, which
+      // nothing in the deployment could have carried literally; the delegate's
+      // holds a `${...}` the engine would have evaluated to `recorded-2` had it
+      // arrived in the expression slot, so it reads back verbatim only while
+      // the literal slot is used.
       expect(markers.map((marker) => marker.split(':')[2] ?? null)).toEqual([
         processInstanceId,
         'recorded-${1+1}',

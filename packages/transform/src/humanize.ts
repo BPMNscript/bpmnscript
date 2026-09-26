@@ -1,7 +1,6 @@
 /**
- * Derive a BPMN `name` from a DSL identifier, at serialization time only.
- * `xml-to-ir.ts` reverses this by dropping a `name` that equals `humanize(id)`,
- * so the two must stay in step or the round trip grows redundant labels.
+ * Derives a BPMN `name` from a DSL id. `xmlToIr` drops a `name` equal to
+ * `humanize(id)`, so changing this grows redundant labels on round trips.
  */
 export function humanize(id: string): string {
   return id

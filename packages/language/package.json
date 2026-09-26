@@ -1,7 +1,13 @@
 {
   "name": "@bpmn-script/language",
-  "description": "The language specific package",
+  "description": "Langium grammar, validator and language server for BPMNscript",
   "version": "0.0.1",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/BPMNscript/bpmnscript.git",
+    "directory": "packages/language"
+  },
   "type": "module",
   "engines": {
     "node": ">=22.0.0",
@@ -28,9 +34,9 @@
   },
   "scripts": {
     "clean": "shx rm -fr *.tsbuildinfo out",
-    "build": "langium generate && tsc -p tsconfig.src.json",
+    "build": "npm run langium:generate && tsc -p tsconfig.src.json",
     "build:clean": "npm run clean && npm run build",
-    "langium:generate": "langium generate",
+    "langium:generate": "langium generate && node textmate-postprocess.mjs",
     "langium:watch": "langium generate --watch",
     "typecheck": "tsc -b tsconfig.test.json",
     "test": "vitest run"

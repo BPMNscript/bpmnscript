@@ -1,5 +1,5 @@
-// One uniform API over the deployment modes, so an integration test is written
-// once and runs against any of them.
+// One API for a deployment fixture, so an integration test is written once and
+// can run against another runtime later.
 export interface ActiveTask {
   id: string;
   name: string;
@@ -8,12 +8,12 @@ export interface ActiveTask {
 }
 
 export interface FixtureAdapter {
-  // Returns when the runtime accepts deployments.
-  start(): Promise<void>;
-
+  // A tenant id isolates the deployment's message-start subscriptions from
+  // every other tenant's; without one the deployment is shared.
   deploy(
     xmlPath: string,
     deploymentName?: string,
+    tenantId?: string,
   ): Promise<{ deploymentId: string }>;
 
   startProcess(
@@ -29,8 +29,4 @@ export interface FixtureAdapter {
   ): Promise<void>;
 
   restBaseUrl(): string;
-
-  stop(): Promise<void>;
 }
-
-export type FixtureMode = 'spring-boot' | 'external-tasks' | 'standalone';

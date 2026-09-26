@@ -1,31 +1,12 @@
-/**
- * `irToDsl` is the inverse of the desugaring `astToIr`: it turns a flat,
- * BPMN-shaped IR back into structured DSL source. The IR fixtures are inline
- * literals matching byte-for-byte what `astToIr` emits for the corresponding
- * source, so the idempotence assertions are exact rather than
- * reachability-based.
- */
+import { describe, it, expect } from 'vitest';
 
-import { describe, it, expect, beforeAll } from 'vitest';
-import { AstUtils, EmptyFileSystem } from 'langium';
-import { parseHelper, validationHelper } from 'langium/test';
-import {
-  createBpmnScriptServices,
-  ENGINE_KEYS,
-  gatewayStatementRuleOf,
-  PROCESS_HEADER_KEYS,
-} from '@bpmn-script/language';
-import type { Model, ParenItem } from '@bpmn-script/language';
-
-import {
-  irToDsl as printDsl,
-  PROCESS_HEADER_SETTINGS,
-  UNSTRUCTURED_MARKER,
-} from '../src/ir-to-dsl.js';
+import { irToDsl as printDsl, UNSTRUCTURED_MARKER } from '../src/ir-to-dsl.js';
 import { astToIr } from '../src/ast-to-ir.js';
 import { xmlToIr } from '../src/xml-to-ir.js';
 import { isGateway } from '../src/ir/types.js';
 import { bpmnDoc } from './helpers/bpmn-doc.js';
+import { parse, validate } from './helpers/parse.js';
+import { byId, only } from './helpers/ir-query.js';
 import {
   around,
   boundaryEvent,
@@ -44,7 +25,6 @@ import {
   externalBinding,
   flowChain,
   gateway,
-  HANDWRITTEN_IMPORT_IR,
   ioParam,
   linkDef,
   listValue,
@@ -65,42 +45,37 @@ import {
 import type { PrintWarning } from '../src/ir-to-dsl.js';
 import type {
   BpmnProcess,
-  EventDefinition,
   ExecutionListener,
   FieldInjection,
   FlowElement,
   FormField,
-  IntermediateCatchEvent,
   JobSettings,
   LoopCharacteristics,
   Repeatable,
   SequenceFlow,
   ServiceTask,
+  StartEvent,
+  Task,
+  UserTask,
+  EndEvent,
   ServiceTaskBinding,
   VersionBinding,
 } from '../src/ir/types.js';
 
-// The suite asserts printed source; the warnings channel has its own block.
+const start = (id: string): StartEvent => ({ kind: 'startEvent', id });
+const user = (id: string): UserTask => ({ kind: 'userTask', id });
+const task = (id: string): Task => ({ kind: 'task', id });
+const end = (id: string): EndEvent => ({ kind: 'endEvent', id });
+const chain = (...ids: string[]): SequenceFlow[] =>
+  ids.slice(1).map((target, i) => edge(ids[i]!, target));
+
 const irToDsl = (process: BpmnProcess): string => printDsl(process).source;
 
-let parse: ReturnType<typeof parseHelper<Model>>;
-let validate: ReturnType<typeof validationHelper<Model>>;
-
-beforeAll(() => {
-  const services = createBpmnScriptServices(EmptyFileSystem);
-  parse = parseHelper<Model>(services.BpmnScript);
-  validate = validationHelper<Model>(services.BpmnScript);
-});
-
-// Normalization helpers mirror the round-trip contract: IR equivalence up to
-// synthesized-id renaming, never byte-for-byte text or literal-id equality.
-
-/** Synthesized-id families that the desugarer mints. */
+// Round trips compare up to the ids the compiler mints.
 const SYNTH_GATEWAY = /^Gateway_.*_(split|join|fork|loop)$/;
 const SYNTH_START = /^StartEvent_/;
 const SYNTH_END = /^EndEvent_/;
 
-/** Map a possibly-synthesized id to a stable role token for comparison. */
 function normId(id: string): string {
   if (SYNTH_GATEWAY.test(id)) return '<GW>';
   if (SYNTH_START.test(id)) return '<START>';
@@ -108,31 +83,23 @@ function normId(id: string): string {
   return id;
 }
 
-/** Canonical key for an element (kind + normalized id). */
 function elemKey(kind: string, id: string): string {
   return `${kind}:${normId(id)}`;
 }
 
-/** Canonical key for an edge (normalized endpoints + condition). */
 function edgeKey(f: SequenceFlow): string {
   const cond = f.conditionExpression ? `[${f.conditionExpression}]` : '';
   return `${normId(f.sourceRef)}->${normId(f.targetRef)}${cond}`;
 }
 
-/** Sorted multiset of element keys (order-independent). */
 function elementMultiset(ir: BpmnProcess): string[] {
   return ir.flowElements.map((e) => elemKey(e.kind, e.id)).sort();
 }
 
-/** Sorted multiset of edge keys (order-independent). */
 function edgeMultiset(ir: BpmnProcess): string[] {
   return ir.sequenceFlows.map(edgeKey).sort();
 }
 
-/**
- * Parse `dsl` and assert no parser errors, returning the desugared IR.
- * Surfaces parser error messages on failure to make regressions debuggable.
- */
 async function reDesugar(dsl: string): Promise<BpmnProcess> {
   const doc = await parse(dsl);
   const errors = doc.parseResult.parserErrors;
@@ -145,31 +112,14 @@ async function reDesugar(dsl: string): Promise<BpmnProcess> {
   return astToIr(doc.parseResult.value);
 }
 
-/**
- * Errors the compiler draws on what the model holds rather than on how it was
- * printed: an id the model chose, a listener the model carries twice, a step
- * the model puts where the engine refuses it. A fixture feeding one names it,
- * so the gate below stays a gate for everything else.
- */
+// Errors the model itself draws; a fixture feeding one names it.
 const MODEL_REFUSAL = {
-  reservedId: 'matches a reserved synthesized-id pattern',
-  cancelOutsideAttempt:
-    "A cancel end belongs directly inside an 'attempt' block",
-  undoOutsideBlock: 'An undo block belongs directly inside the',
-  hostOutsideContainer:
-    "Could not resolve reference to Statement named 'Elsewhere'",
+  mintedId: 'is the id the compiler generates for the implicit',
   orphanStep: 'This step can never run',
-  duplicateTimeout: "Duplicate 'on timeout' listener",
   deadElse: 'could never run',
-  undoAlongside: 'there is no running flow to run alongside',
 } as const;
 
-/**
- * Print `ir`, assert the emitted source re-parses and compiles, and return it.
- * Parsing alone passes a print the compiler refuses, which is how source that
- * draws "can never run" stayed green: the statement a printed jump cut off
- * parses fine and lowers to a step nothing reaches.
- */
+// Re-parsing alone accepts a statement a printed jump cut off.
 async function printed(
   ir: BpmnProcess,
   ...refused: (keyof typeof MODEL_REFUSAL)[]
@@ -185,11 +135,13 @@ async function printed(
   return dsl;
 }
 
-/**
- * Assert local idempotence up to id normalization: `irToDsl(ir)` re-parses and
- * re-desugars to an IR with the same normalized element + edge multisets as
- * `ir`.
- */
+// `var` lines come from the model, so a dropped condition is checked on the body.
+const bodyOf = (source: string): string =>
+  source
+    .split('\n')
+    .filter((line) => !line.startsWith('  var '))
+    .join('\n');
+
 async function expectIdempotent(
   ir: BpmnProcess,
   ...refused: (keyof typeof MODEL_REFUSAL)[]
@@ -201,12 +153,7 @@ async function expectIdempotent(
   return dsl;
 }
 
-/**
- * Real-node reachability set (gateway-transparent): for every non-gateway node,
- * the set of non-gateway nodes reachable through any number of gateway hops.
- * In degraded graphs the literal edge set legitimately changes as gateways are
- * synthesized, but connectivity between real nodes must be preserved exactly.
- */
+// Degrading to jumps re-mints gateways, so a print keeps real-node reachability.
 function realReachability(ir: BpmnProcess): Set<string> {
   const real = new Set(
     ir.flowElements.filter((e) => !isGateway(e)).map((e) => e.id),
@@ -232,464 +179,37 @@ function realReachability(ir: BpmnProcess): Set<string> {
   return pairs;
 }
 
-/** `S -> end`: a typed end terminates the chain, so nothing follows it. */
-const terminating = (end: FlowElement): BpmnProcess =>
-  minimalProcess(
-    [{ kind: 'startEvent', id: 'S' }, end],
-    [{ id: 'F', sourceRef: 'S', targetRef: end.id }],
-  );
-
-/** `true` iff the output contains a top-level `goto` statement. */
-function hasGoto(dsl: string): boolean {
-  return /\bgoto\s+\w/.test(dsl);
-}
-
-/** `true` iff the output contains the `gateway` keyword. */
-function hasGatewayKeyword(dsl: string): boolean {
-  // A `gateway` statement would read `gateway <id>` at the start of a line.
-  return /(^|\n)\s*gateway\s/.test(dsl);
-}
-
-// Inline IR fixtures: the exact shapes `astToIr` emits for each construct.
-
-/** Desugared `if (amount > 1000) { user B } else { service C }` at body index 2. */
-const IF_ELSE_IR: BpmnProcess = minimalProcess(
-  [
-    { kind: 'startEvent', id: 'S' },
-    { kind: 'userTask', id: 'A', name: 'A task' },
-    gateway('Gateway_p_2_split', 'Flow_Gateway_p_2_split_default'),
-    gateway('Gateway_p_2_join'),
-    { kind: 'userTask', id: 'B', name: 'B task' },
-    serviceTask('C', classBinding('com.example.C')),
-    { kind: 'endEvent', id: 'E' },
-  ],
-  [
-    edge('S', 'A'),
-    edge('Gateway_p_2_split', 'B', { condition: '${amount > 1000}' }),
-    edge('B', 'Gateway_p_2_join'),
-    edge('Gateway_p_2_split', 'C', { id: 'Flow_Gateway_p_2_split_default' }),
-    edge('C', 'Gateway_p_2_join'),
-    edge('A', 'Gateway_p_2_split'),
-    edge('Gateway_p_2_join', 'E'),
-  ],
-);
-
-/** Desugared `while (count < 10) { user W }`. */
-const WHILE_IR: BpmnProcess = minimalProcess(
-  [
-    { kind: 'startEvent', id: 'S' },
-    gateway('Gateway_p_1_loop', 'Flow_Gateway_p_1_loop_default'),
-    { kind: 'userTask', id: 'W', name: 'Work' },
-    { kind: 'endEvent', id: 'E' },
-  ],
-  [
-    edge('Gateway_p_1_loop', 'W', { condition: '${count < 10}' }),
-    edge('W', 'Gateway_p_1_loop'),
-    edge('S', 'Gateway_p_1_loop'),
-    edge('Gateway_p_1_loop', 'E', { id: 'Flow_Gateway_p_1_loop_default' }),
-  ],
-);
-
-/** Desugared `do { user W } while (count < 10)`. */
-const DO_WHILE_IR: BpmnProcess = minimalProcess(
-  [
-    { kind: 'startEvent', id: 'S' },
-    { kind: 'userTask', id: 'W', name: 'Work' },
-    gateway('Gateway_p_1_loop', 'Flow_Gateway_p_1_loop_default'),
-    { kind: 'endEvent', id: 'E' },
-  ],
-  [
-    edge('W', 'Gateway_p_1_loop'),
-    edge('Gateway_p_1_loop', 'W', { condition: '${count < 10}' }),
-    edge('S', 'W'),
-    edge('Gateway_p_1_loop', 'E', { id: 'Flow_Gateway_p_1_loop_default' }),
-  ],
-);
-
-/** Desugared `parallel { { user X } { service Y } }`. */
-const PARALLEL_IR: BpmnProcess = minimalProcess(
-  [
-    { kind: 'startEvent', id: 'S' },
-    { kind: 'parallelGateway', id: 'Gateway_p_1_fork' },
-    { kind: 'parallelGateway', id: 'Gateway_p_1_join' },
-    { kind: 'userTask', id: 'X', name: 'X' },
-    serviceTask('Y', classBinding('com.example.Y')),
-    { kind: 'endEvent', id: 'E' },
-  ],
-  [
-    edge('Gateway_p_1_fork', 'X'),
-    edge('X', 'Gateway_p_1_join'),
-    edge('Gateway_p_1_fork', 'Y'),
-    edge('Y', 'Gateway_p_1_join'),
-    edge('S', 'Gateway_p_1_fork'),
-    edge('Gateway_p_1_join', 'E'),
-  ],
-);
-
-/**
- * The whole printed source for {@link PARALLEL_IR}. Both branches reach the
- * join, so the clean-join path handles it and the terminating-branch recovery
- * is never entered.
- */
-const PARALLEL_SOURCE =
-  'process p {\n' +
-  '  start S\n' +
-  '  parallel {\n' +
-  '    {\n' +
-  '      user X(label: "X")\n' +
-  '    }\n' +
-  '    {\n' +
-  '      service Y(class: "com.example.Y")\n' +
-  '    }\n' +
-  '  }\n' +
-  '  end E\n' +
-  '}\n';
-
-/**
- * Canonical invoice IR: the `xmlToIr` import shape of the handwritten golden
- * (an XOR split with named branch flows, no explicit join). Drives the
- * "structured restructuring of a real import" assertions.
- */
-const INVOICE_IR: BpmnProcess = {
-  ...HANDWRITTEN_IMPORT_IR,
-  name: 'Invoice Approval',
-};
-
-/** The whole printed source for {@link IF_ELSE_IR}, asserted from two angles. */
-const IF_ELSE_SOURCE =
-  'process p {\n' +
-  '  start S\n' +
-  '  user A(label: "A task")\n' +
-  '  if (amount > 1000) {\n' +
-  '    user B(label: "B task")\n' +
-  '  } else {\n' +
-  '    service C(class: "com.example.C")\n' +
-  '  }\n' +
-  '  end E\n' +
-  '}\n';
-
-describe('irToDsl: structured restructuring', () => {
-  // Each row is the whole source, so anything the emitter adds fails it too:
-  // no `gateway` statement, no `goto`, no `and` between parallel branches, and
-  // 2-space indentation per nesting level.
-  it.each([
-    [
-      'restructures a desugared if/else to `if (...) { } else { }`',
-      IF_ELSE_IR,
-      IF_ELSE_SOURCE,
-    ],
-    [
-      'restructures a desugared while to `while (...) { }`, with no process label where the IR has no name',
-      WHILE_IR,
-      'process p {\n' +
-        '  start S\n' +
-        '  while (count < 10) {\n' +
-        '    user W(label: "Work")\n' +
-        '  }\n' +
-        '  end E\n' +
-        '}\n',
-    ],
-    [
-      'restructures a desugared do-while to `do { } while (...)`',
-      DO_WHILE_IR,
-      'process p {\n' +
-        '  start S\n' +
-        '  do {\n' +
-        '    user W(label: "Work")\n' +
-        '  } while (count < 10)\n' +
-        '  end E\n' +
-        '}\n',
-    ],
-    [
-      'restructures a desugared parallel to nested `parallel { { } { } }` blocks',
-      PARALLEL_IR,
-      PARALLEL_SOURCE,
-    ],
-    [
-      'restructures the canonical invoice import to if/else under a labeled process header',
-      INVOICE_IR,
-      'process invoice-approval(label: "Invoice Approval") {\n' +
-        '  start ReviewStart\n' +
-        '  user ReviewInvoice(label: "Review invoice", assignee: "demo")\n' +
-        '  if (amount > 1000) {\n' +
-        '    user SeniorApproval(label: "Senior approval", assignee: "manager")\n' +
-        '  } else {\n' +
-        '    service AutoApprove(label: "Auto-approve", class: "com.example.invoice.AutoApproveDelegate")\n' +
-        '  }\n' +
-        '  end Done\n' +
-        '}\n',
-    ],
-  ])('%s', async (_title, ir, expected) => {
-    expect(await printed(ir)).toBe(expected);
-  });
-});
-
-describe('irToDsl: local idempotence (re-desugar equivalence)', () => {
-  it.each([
-    ['if/else round-trips to an equivalent IR', IF_ELSE_IR],
-    ['while round-trips to an equivalent IR (back-edge consumed)', WHILE_IR],
-    ['do-while round-trips to an equivalent IR', DO_WHILE_IR],
-    ['parallel round-trips to an equivalent IR', PARALLEL_IR],
-  ])('%s', async (_title, ir) => {
-    await expectIdempotent(ir);
-  });
-
-  it('invoice import preserves assignee, class binding and condition through re-desugar', async () => {
-    const ir = await reDesugar(await printed(INVOICE_IR));
-
-    const review = ir.flowElements.find(
-      (e) => e.kind === 'userTask' && e.id === 'ReviewInvoice',
+describe('irToDsl: goto degradation', () => {
+  it('prints crossing splits no join closes with a goto, losing no real-node connection', async () => {
+    // `G2` re-enters `A`, which `G1` also targets, so no join post-dominates either.
+    const ir = minimalProcess(
+      [
+        start('S'),
+        gateway('G1', 'd1'),
+        user('A'),
+        user('B'),
+        gateway('G2', 'd2'),
+        end('E'),
+      ],
+      [
+        edge('S', 'G1'),
+        edge('G1', 'A', { condition: '${p}' }),
+        edge('G1', 'B', { id: 'd1' }),
+        edge('A', 'E'),
+        edge('B', 'G2'),
+        edge('G2', 'A', { condition: '${q}' }),
+        edge('G2', 'E', { id: 'd2' }),
+      ],
     );
-    expect(review?.kind === 'userTask' && review.assignee).toBe('demo');
-
-    const auto = ir.flowElements.find(
-      (e) => e.kind === 'serviceTask' && e.id === 'AutoApprove',
-    );
-    expect(
-      auto?.kind === 'serviceTask' &&
-        auto.binding.kind === 'class' &&
-        auto.binding.className,
-    ).toBe('com.example.invoice.AutoApproveDelegate');
-
-    const cond = ir.sequenceFlows.find(
-      (f) => f.conditionExpression !== undefined,
-    );
-    expect(cond?.conditionExpression).toBe('${amount > 1000}');
-  });
-
-  it('process id, name and isExecutable survive the round-trip', async () => {
-    const ir = await reDesugar(await printed(INVOICE_IR));
-    expect(ir.id).toBe('invoice-approval');
-    expect(ir.name).toBe('Invoice Approval');
-    expect(ir.isExecutable).toBe(true);
-  });
-});
-
-describe('irToDsl: goto degradation (every edge with a form keeps it)', () => {
-  /**
-   * Hand-built unstructured IR: two XOR gateways whose branches cross so no
-   * single post-dominating join exists (`G2` re-enters `A`, which `G1` also
-   * targets). The contract: >=1 `goto`, valid source, and every real-node
-   * connection preserved on re-desugar.
-   */
-  const IRREDUCIBLE_IR: BpmnProcess = minimalProcess(
-    [
-      { kind: 'startEvent', id: 'S' },
-      gateway('G1', 'd1'),
-      { kind: 'userTask', id: 'A' },
-      { kind: 'userTask', id: 'B' },
-      gateway('G2', 'd2'),
-      { kind: 'endEvent', id: 'E' },
-    ],
-    [
-      { id: 'f0', sourceRef: 'S', targetRef: 'G1' },
-      edge('G1', 'A', { id: 'f1', condition: '${p}' }),
-      { id: 'd1', sourceRef: 'G1', targetRef: 'B' },
-      { id: 'f2', sourceRef: 'A', targetRef: 'E' },
-      { id: 'f3', sourceRef: 'B', targetRef: 'G2' },
-      edge('G2', 'A', { id: 'f4', condition: '${q}' }),
-      { id: 'd2', sourceRef: 'G2', targetRef: 'E' },
-    ],
-  );
-
-  it('emits valid source with at least one goto, losing no real-node connection', async () => {
-    const dsl = await printed(IRREDUCIBLE_IR);
-    expect(hasGoto(dsl)).toBe(true);
+    const dsl = await printed(ir);
+    expect(dsl).toMatch(/\bgoto\s+\w/);
     expect(realReachability(await reDesugar(dsl))).toEqual(
-      realReachability(IRREDUCIBLE_IR),
+      realReachability(ir),
     );
-  });
-
-  /**
-   * An XOR split with three routes out, unreachable through the desugaring
-   * pipeline (a desugared XOR always weighs at least one route) but a shape the
-   * emitter must still be total on. `weighed` puts a condition on the first
-   * route, leaving one surplus unconditioned route or two.
-   */
-  const threeWayXor = (weighed?: string): BpmnProcess =>
-    minimalProcess(
-      [
-        { kind: 'startEvent', id: 'S' },
-        gateway('G'),
-        { kind: 'userTask', id: 'A' },
-        { kind: 'userTask', id: 'B' },
-        { kind: 'userTask', id: 'C' },
-        { kind: 'endEvent', id: 'E' },
-      ],
-      [
-        { id: 'f0', sourceRef: 'S', targetRef: 'G' },
-        edge('G', 'A', {
-          id: 'f1',
-          ...(weighed === undefined ? {} : { condition: weighed }),
-        }),
-        { id: 'f2', sourceRef: 'G', targetRef: 'B' },
-        { id: 'f3', sourceRef: 'G', targetRef: 'C' },
-        { id: 'f4', sourceRef: 'A', targetRef: 'E' },
-        { id: 'f5', sourceRef: 'B', targetRef: 'E' },
-        { id: 'f6', sourceRef: 'C', targetRef: 'E' },
-      ],
-    );
-
-  // A naive emit would chain `if (true) { } else { } else { }`, which is not
-  // valid source; the chain heads every route but the last with a condition
-  // that holds instead, so no route vanishes and none of its targets dangle.
-  it.each([
-    ['every route unconditioned', undefined],
-    ['one route weighed and two surplus ones (regression)', '${x > 1}'],
-  ] as const)(
-    'degrades a 3-way XOR with %s to source that compiles, losing no route',
-    async (_title, weighed) => {
-      const ir = threeWayXor(weighed);
-      const dsl = await printed(ir);
-      expect(dsl).toContain('} else if (true) {');
-      expect((dsl.match(/}\s*else\s*{/g) ?? []).length).toBeLessThanOrEqual(1);
-      expect(realReachability(await reDesugar(dsl))).toEqual(
-        realReachability(ir),
-      );
-    },
-  );
-
-  it('never throws and always re-parses on degenerate graphs', async () => {
-    const degenerate: BpmnProcess[] = [
-      // No start event.
-      minimalProcess(
-        [
-          { kind: 'userTask', id: 'A' },
-          { kind: 'endEvent', id: 'E' },
-        ],
-        [{ id: 'f', sourceRef: 'A', targetRef: 'E' }],
-      ),
-      // Empty process.
-      processIr('p', [], []),
-      // Orphan (unreachable) node.
-      minimalProcess(
-        [
-          { kind: 'startEvent', id: 'S' },
-          { kind: 'endEvent', id: 'E' },
-          { kind: 'userTask', id: 'Orphan' },
-        ],
-        [{ id: 'f', sourceRef: 'S', targetRef: 'E' }],
-      ),
-      // Self-loop on a task.
-      minimalProcess(
-        [
-          { kind: 'startEvent', id: 'S' },
-          { kind: 'userTask', id: 'A' },
-          { kind: 'endEvent', id: 'E' },
-        ],
-        [
-          { id: 'f0', sourceRef: 'S', targetRef: 'A' },
-          { id: 'f1', sourceRef: 'A', targetRef: 'A' },
-          { id: 'f2', sourceRef: 'A', targetRef: 'E' },
-        ],
-      ),
-    ];
-
-    for (const ir of degenerate) {
-      const dsl = irToDsl(ir);
-      expect(typeof dsl).toBe('string');
-      // Each must re-parse without parser errors (totality).
-      await reDesugar(dsl);
-    }
   });
 });
 
-describe('irToDsl: multiple and named ends', () => {
-  /** Desugared XOR split routing to two distinct named ends (no join). */
-  const TWO_ENDS_IR: BpmnProcess = minimalProcess(
-    [
-      { kind: 'startEvent', id: 'S' },
-      gateway('Gateway_p_1_split', 'Flow_Gateway_p_1_split_default'),
-      { kind: 'endEvent', id: 'Approved', name: 'Approved' },
-      { kind: 'endEvent', id: 'Rejected', name: 'Rejected' },
-    ],
-    [
-      edge('S', 'Gateway_p_1_split'),
-      edge('Gateway_p_1_split', 'Approved', { condition: '${ok}' }),
-      edge('Gateway_p_1_split', 'Rejected', {
-        id: 'Flow_Gateway_p_1_split_default',
-      }),
-    ],
-  );
-
-  it('emits both named ends as explicit `end` statements, losing neither end connection', async () => {
-    const dsl = await printed(TWO_ENDS_IR);
-    expect(dsl).toContain('end Approved(label: "Approved")');
-    expect(dsl).toContain('end Rejected(label: "Rejected")');
-
-    const ir = await reDesugar(dsl);
-    const ends = ir.flowElements
-      .filter((e) => e.kind === 'endEvent')
-      .map((e) => e.id)
-      .sort();
-    expect(ends).toEqual(['Approved', 'Rejected']);
-    expect(realReachability(ir)).toEqual(realReachability(TWO_ENDS_IR));
-  });
-});
-
-describe('irToDsl: service-task bindings', () => {
-  it.each([
-    [
-      'renders a class binding as `service X(class: "...")`',
-      serviceTask('Charge', classBinding('com.example.Charge')),
-      'service Charge(class: "com.example.Charge")',
-      undefined,
-      'class',
-    ],
-    [
-      'keeps a labeled class binding on one line, the label leading',
-      {
-        kind: 'serviceTask',
-        id: 'AutoApprove',
-        name: 'Auto-approve',
-        binding: classBinding('com.example.invoice.AutoApproveDelegate'),
-      },
-      'service AutoApprove(label: "Auto-approve", class: "com.example.invoice.AutoApproveDelegate")',
-      undefined,
-      'class',
-    ],
-    [
-      'renders an expression binding as `service X(expression: "${...}")`',
-      serviceTask('Calc', exprBinding('${greeter.hello(execution)}')),
-      'service Calc(expression: "${greeter.hello(execution)}")',
-      undefined,
-      'expression',
-    ],
-    [
-      'renders a delegateExpression binding with the `delegate` alias',
-      serviceTask('Ship', delegateBinding('${shipDelegate}')),
-      'service Ship(delegate: "${shipDelegate}")',
-      // The XML-level `delegateExpression` name never surfaces in the source.
-      'delegateExpression',
-      'delegateExpression',
-    ],
-    [
-      'renders an external binding as `service X(topic: "...")`',
-      serviceTask('Notify', externalBinding('notifications')),
-      'service Notify(topic: "notifications")',
-      // An external binding keeps the `service` keyword, never `external`.
-      'external Notify',
-      'external',
-    ],
-    // The last column is the binding kind the source lowers back to.
-  ] as const)('%s', async (_title, node, statement, absent, bindingKind) => {
-    const dsl = await printed(around(node));
-    expect(dsl).toContain(statement);
-    if (absent !== undefined) expect(dsl).not.toContain(absent);
-
-    const svc = (await reDesugar(dsl)).flowElements.find(
-      (e) => e.id === node.id,
-    );
-    expect(svc?.kind === 'serviceTask' && svc.binding.kind).toBe(bindingKind);
-  });
-});
-
-/**
- * The behaviour Operaton builds itself for `operaton:type="mail"`/`"shell"`
- * carries fields exactly as a class binding does, and its own checks refuse a
- * mail task with no `to` or a shell task with no `command`, so a dropped field
- * fails the validation `printed` runs before the binding comparison does.
- */
+// Operaton refuses mail without `to` and shell without `command`, so `printed` catches a dropped field.
 describe('irToDsl: mail and shell task bindings', () => {
   const MAIL_FIELDS: FieldInjection[] = [
     { name: 'to', value: 'ops@example.com' },
@@ -740,10 +260,39 @@ describe('irToDsl: mail and shell task bindings', () => {
 });
 
 describe('irToDsl: an external task prints its priority, properties and mappings only with something to print', () => {
-  /** Two properties and two mappings, one code declared under a chosen name, one left for `codeDeclarations` to synthesize. */
-  const MAPPED_PROCESS: BpmnProcess = {
-    ...around(
-      serviceTask('V', {
+  it.each<[string, ServiceTaskBinding, string]>([
+    [
+      'a topic alone prints no parens beyond it',
+      { kind: 'external', topic: 't' },
+      'service V(topic: "t")',
+    ],
+    [
+      'an integer taskPriority prints bare, as jobPriority does',
+      { kind: 'external', topic: 't', taskPriority: '42' },
+      'service V(topic: "t", taskPriority: 42)',
+    ],
+    [
+      'an expression taskPriority prints quoted so it re-lexes as raw EL',
+      {
+        kind: 'external',
+        topic: 't',
+        taskPriority: '${amount > 1000 ? 90 : 10}',
+      },
+      'service V(topic: "t", taskPriority: "${amount > 1000 ? 90 : 10}")',
+    ],
+    [
+      'a taskPriority opening with #{ prints as written',
+      { kind: 'external', topic: 't', taskPriority: '#{x}' },
+      'service V(topic: "t", taskPriority: "#{x}")',
+    ],
+    [
+      'an empty property value prints as "" and lowers back to the empty string, which both engine readers store',
+      { kind: 'external', topic: 't', properties: [{ key: 'k', value: '' }] },
+      'service V(topic: "t") {\n    property k = ""\n  }',
+    ],
+    [
+      'properties then mappings print after the fields, a declared code by its name and an undeclared one under a synthesized header',
+      {
         kind: 'external',
         topic: 't',
         properties: [
@@ -757,49 +306,7 @@ describe('irToDsl: an external task prints its priority, properties and mappings
           },
           { errorCode: 'TIMEOUT', condition: '${externalTask.retries == 0}' },
         ],
-      }),
-    ),
-    errorDecls: [{ name: 'PaymentDeclined', code: 'DECLINED' }],
-  };
-
-  it.each([
-    [
-      'a topic alone prints no parens beyond it',
-      around(serviceTask('V', { kind: 'external', topic: 't' })),
-      'service V(topic: "t")',
-    ],
-    [
-      'an integer taskPriority prints bare, as jobPriority does',
-      around(
-        serviceTask('V', { kind: 'external', topic: 't', taskPriority: '42' }),
-      ),
-      'service V(topic: "t", taskPriority: 42)',
-    ],
-    [
-      'an expression taskPriority prints quoted so it re-lexes as raw EL',
-      around(
-        serviceTask('V', {
-          kind: 'external',
-          topic: 't',
-          taskPriority: '${amount > 1000 ? 90 : 10}',
-        }),
-      ),
-      'service V(topic: "t", taskPriority: "${amount > 1000 ? 90 : 10}")',
-    ],
-    [
-      'a taskPriority opening with #{ prints inside "${...}", the one raw form the surface has',
-      around(
-        serviceTask('V', {
-          kind: 'external',
-          topic: 't',
-          taskPriority: '#{x}',
-        }),
-      ),
-      'service V(topic: "t", taskPriority: "${x}")',
-    ],
-    [
-      'properties then mappings print after the fields, a declared code by its name and an undeclared one under a synthesized header',
-      MAPPED_PROCESS,
+      },
       'service V(topic: "t") {\n' +
         '    property amount = "100"\n' +
         '    property currency = "EUR"\n' +
@@ -807,33 +314,25 @@ describe('irToDsl: an external task prints its priority, properties and mappings
         '    error TIMEOUT when externalTask.retries == 0\n' +
         '  }',
     ],
-  ] as const)('%s', async (_title, process, expected) => {
-    const dsl = await printed(process);
+  ])('%s', async (_title, binding, expected) => {
+    const dsl = await printed({
+      ...around(serviceTask('V', binding)),
+      errorDecls: [{ name: 'PaymentDeclined', code: 'DECLINED' }],
+    });
     expect(dsl).toContain(expected);
-  });
-
-  it('an empty property value prints as "" and lowers back to the empty string, which both engine readers store', async () => {
-    const binding: ServiceTaskBinding = {
-      kind: 'external',
-      topic: 't',
-      properties: [{ key: 'k', value: '' }],
-    };
-    const dsl = await printed(around(serviceTask('V', binding)));
-    expect(dsl).toContain('property k = ""');
-    const svc = (await reDesugar(dsl)).flowElements.find((e) => e.id === 'V');
-    expect(svc?.kind === 'serviceTask' && svc.binding).toEqual(binding);
+    const back = byId(await reDesugar(dsl), 'V');
+    expect(back.kind === 'serviceTask' && back.binding).toEqual(binding);
   });
 });
 
 describe('irToDsl: task kinds', () => {
-  /** Statement lines, indentation stripped, so a match is the whole statement. */
-  const statements = async (ir: BpmnProcess): Promise<string[]> =>
-    (await printed(ir)).split('\n').map((line) => line.trim());
+  const source = (statement: string): string =>
+    `process p {\n  start S\n  ${statement}\n  end E\n}\n`;
 
   it.each([
     [
       'a plain task prints as a step statement',
-      { kind: 'task', id: 'Draft' },
+      task('Draft'),
       'step Draft',
       'step Draft(label: "Draft it")',
     ],
@@ -842,6 +341,12 @@ describe('irToDsl: task kinds', () => {
       { kind: 'receiveTask', id: 'Wait', messageName: 'OrderPaid' },
       'receive Wait(message: "OrderPaid")',
       'receive Wait(label: "Draft it", message: "OrderPaid")',
+    ],
+    [
+      'a receive task with no message name prints as a bare statement',
+      { kind: 'receiveTask', id: 'Wait' },
+      'receive Wait',
+      'receive Wait(label: "Draft it")',
     ],
     [
       'a send element prints under the send keyword',
@@ -866,16 +371,10 @@ describe('irToDsl: task kinds', () => {
       'decide Rate(label: "Draft it", decision: "riskRating")',
     ],
   ] as const)('%s', async (_title, node, nameless, labeled) => {
-    expect(await statements(around(node))).toContain(nameless);
-    expect(await statements(around({ ...node, name: 'Draft it' }))).toContain(
-      labeled,
+    expect(await printed(around(node))).toBe(source(nameless));
+    expect(await printed(around({ ...node, name: 'Draft it' }))).toBe(
+      source(labeled),
     );
-  });
-
-  it('prints a receive task with no message name as a bare statement', async () => {
-    expect(
-      await statements(around({ kind: 'receiveTask', id: 'Wait' })),
-    ).toContain('receive Wait');
   });
 
   it('prints a decision binding decision, version pin, mapping, result variable', async () => {
@@ -898,205 +397,55 @@ describe('irToDsl: task kinds', () => {
   });
 });
 
-describe('irToDsl: fenced script task', () => {
-  it.each([
-    [
-      'emits the opening fence with its language tag, the body, and the closing fence',
-      scriptTask(
-        'Compute',
-        'javascript',
-        'var x = 1;\nexecution.setVariable("x", x);',
-      ),
-      'script Compute ```javascript\nvar x = 1;\nexecution.setVariable("x", x);```',
-    ],
-    [
-      // The emitter must prepend no block indentation to the opaque body.
-      'reproduces a body carrying its own indentation byte-for-byte',
-      scriptTask('Guard', 'groovy', 'if (ok) {\n  doThing();\n}'),
-      '```groovy\nif (ok) {\n  doThing();\n}```',
-    ],
-    [
-      'carries the label before the fence when present',
-      {
-        ...scriptTask('Compute', 'javascript', 'x = 1'),
-        name: 'Compute totals',
-      },
-      'script Compute(label: "Compute totals") ```javascript',
-    ],
-  ])('%s', async (_title, node, expected) => {
-    expect(await printed(around(node))).toContain(expected);
-  });
-
-  it('emits a fenced script that re-parses to an equivalent scriptTask', async () => {
-    const ir = await reDesugar(
-      await printed(around(scriptTask('Compute', 'javascript', 'x = 1'))),
-    );
-    const script = ir.flowElements.find((e) => e.kind === 'scriptTask');
-    expect(script?.kind === 'scriptTask' && script.format).toBe('javascript');
-    expect(script?.kind === 'scriptTask' && script.code).toBe('x = 1');
-  });
-});
-
-describe('irToDsl: sub-process emission', () => {
-  /** `PStart -> Before -> sub(SubStart -> Work -> SubEnd) -> After -> PEnd`. */
-  const NESTED_IR: BpmnProcess = processIr(
-    'proc',
-    [
-      { kind: 'startEvent', id: 'PStart' },
-      { kind: 'userTask', id: 'Before' },
-      {
-        kind: 'subProcess',
-        id: 'sub',
-        flowElements: [
-          { kind: 'startEvent', id: 'SubStart' },
-          { kind: 'userTask', id: 'Work', assignee: 'demo' },
-          { kind: 'endEvent', id: 'SubEnd' },
-        ],
-        sequenceFlows: [
-          { id: 'a', sourceRef: 'SubStart', targetRef: 'Work' },
-          { id: 'b', sourceRef: 'Work', targetRef: 'SubEnd' },
-        ],
-      },
-      { kind: 'userTask', id: 'After' },
-      { kind: 'endEvent', id: 'PEnd' },
-    ],
-    [
-      { id: 'f0', sourceRef: 'PStart', targetRef: 'Before' },
-      { id: 'f1', sourceRef: 'Before', targetRef: 'sub' },
-      { id: 'f2', sourceRef: 'sub', targetRef: 'After' },
-      { id: 'f3', sourceRef: 'After', targetRef: 'PEnd' },
-    ],
-  );
-
-  it('prints `subprocess sub { ... }` one indent level in, with the parent chain intact around it', async () => {
-    expect(await printed(NESTED_IR)).toBe(
-      'process proc {\n' +
-        '  start PStart\n' +
-        '  user Before\n' +
-        '  subprocess sub {\n' +
-        '    start SubStart\n' +
-        '    user Work(assignee: "demo")\n' +
-        '    end SubEnd\n' +
-        '  }\n' +
-        '  user After\n' +
-        '  end PEnd\n' +
-        '}\n',
-    );
-  });
-
-  it('restructures an if/else inside a sub-process body (two indent levels)', async () => {
-    const SUB_WITH_IF: BpmnProcess = processIr(
-      'proc',
-      [
-        { kind: 'startEvent', id: 'PStart' },
+describe('irToDsl: call activity', () => {
+  it('prints every setting, every mapping form and each version binding, calls falling through in chain order', async () => {
+    const call = (id: string, binding?: VersionBinding): FlowElement => ({
+      ...callActivity(id, 'p'),
+      ...(binding ? { binding } : {}),
+    });
+    const dsl = await printed(
+      chained([
+        start('S'),
         {
-          kind: 'subProcess',
-          id: 'sub',
-          flowElements: [
-            { kind: 'startEvent', id: 'SubStart' },
-            gateway('Gateway_sub_0_split', 'df'),
-            gateway('Gateway_sub_0_join'),
-            { kind: 'userTask', id: 'Yes' },
-            { kind: 'userTask', id: 'No' },
-            { kind: 'endEvent', id: 'SubEnd' },
+          kind: 'callActivity',
+          id: 'CallSub',
+          name: 'Call sub',
+          calledElement: 'sub-process',
+          binding: { kind: 'deployment' },
+          businessKey: '${execution.processBusinessKey}',
+          inMappings: [
+            { kind: 'all' },
+            { kind: 'variable', source: 'amount', target: 'amount' },
+            { kind: 'variable', source: 'x', target: 'y' },
+            {
+              kind: 'expression',
+              sourceExpression: '${total * 2}',
+              target: 'doubled',
+              local: true,
+            },
           ],
-          sequenceFlows: [
-            edge('SubStart', 'Gateway_sub_0_split', { id: 's0' }),
-            edge('Gateway_sub_0_split', 'Yes', {
-              id: 's1',
-              condition: '${ok}',
-            }),
-            { id: 'df', sourceRef: 'Gateway_sub_0_split', targetRef: 'No' },
-            { id: 's2', sourceRef: 'Yes', targetRef: 'Gateway_sub_0_join' },
-            { id: 's3', sourceRef: 'No', targetRef: 'Gateway_sub_0_join' },
-            edge('Gateway_sub_0_join', 'SubEnd', { id: 's4' }),
+          outMappings: [
+            { kind: 'variable', source: 'result', target: 'outcome' },
+            {
+              kind: 'expression',
+              sourceExpression: '${status}',
+              target: 'final',
+            },
+            { kind: 'all', local: true },
           ],
         },
-        { kind: 'endEvent', id: 'PEnd' },
-      ],
-      [
-        { id: 'f0', sourceRef: 'PStart', targetRef: 'sub' },
-        { id: 'f1', sourceRef: 'sub', targetRef: 'PEnd' },
-      ],
+        call('Plain'),
+        call('Latest', { kind: 'latest' }),
+        call('Pinned', { kind: 'version', version: '3' }),
+        call('Dynamic', { kind: 'version', version: '${v}' }),
+        end('E'),
+      ]),
     );
-
-    expect(await printed(SUB_WITH_IF)).toBe(
+    expect(dsl).toBe(
       'process proc {\n' +
-        '  start PStart\n' +
-        '  subprocess sub {\n' +
-        '    start SubStart\n' +
-        '    if (ok) {\n' +
-        '      user Yes\n' +
-        '    } else {\n' +
-        '      user No\n' +
-        '    }\n' +
-        '    end SubEnd\n' +
-        '  }\n' +
-        '  end PEnd\n' +
-        '}\n',
-    );
-  });
-
-  it.each([
-    [
-      'prints the quoted label for a named sub-process',
-      {
-        ...chainedSub('Sub', [{ kind: 'userTask', id: 'Do' }]),
-        name: 'Handle order',
-      },
-      'subprocess Sub(label: "Handle order") {',
-    ],
-    [
-      'prints an empty named sub-process body as an opening brace immediately followed by a closing one',
-      { ...chainedSub('Sub', []), name: 'Handle order' },
-      '  subprocess Sub(label: "Handle order") {\n  }\n',
-    ],
-    [
-      'prints an unnamed empty sub-process body without a label',
-      chainedSub('Sub', []),
-      '  subprocess Sub {\n  }\n',
-    ],
-  ])('%s', (_title, node, expected) => {
-    expect(irToDsl(around(node))).toContain(expected);
-  });
-});
-
-describe('irToDsl: call activity', () => {
-  it('prints every setting and every member in canonical order, shorthand mappings included', async () => {
-    const dsl = await printed(
-      around({
-        kind: 'callActivity',
-        id: 'CallSub',
-        name: 'Call sub',
-        calledElement: 'sub-process',
-        binding: { kind: 'deployment' },
-        businessKey: '${execution.processBusinessKey}',
-        inMappings: [
-          { kind: 'all' },
-          // source === target -> bare shorthand.
-          { kind: 'variable', source: 'amount', target: 'amount' },
-          // source !== target -> `target = source`.
-          { kind: 'variable', source: 'x', target: 'y' },
-          {
-            kind: 'expression',
-            sourceExpression: '${total * 2}',
-            target: 'doubled',
-            local: true,
-          },
-        ],
-        outMappings: [
-          { kind: 'variable', source: 'result', target: 'outcome' },
-          {
-            kind: 'expression',
-            sourceExpression: '${status}',
-            target: 'final',
-          },
-          { kind: 'all', local: true },
-        ],
-      }),
-    );
-    expect(dsl).toContain(
-      '  call CallSub(label: "Call sub", process: "sub-process", ' +
+        '  var x: any\n' +
+        '  start S\n' +
+        '  call CallSub(label: "Call sub", process: "sub-process", ' +
         'binding: deployment, businessKey: "${execution.processBusinessKey}") {\n' +
         '    in *\n' +
         '    in amount\n' +
@@ -1105,168 +454,18 @@ describe('irToDsl: call activity', () => {
         '    out outcome = result\n' +
         '    out final = "${status}"\n' +
         '    out local *\n' +
-        '  }',
-    );
-  });
-
-  it.each([
-    [
-      'prints a minimal call as `call X(process: "p")`',
-      undefined,
-      'call X(process: "p")',
-      undefined,
-    ],
-    [
-      'prints `binding = latest` for a latest binding',
-      { kind: 'latest' },
-      'call X(process: "p", binding: latest)',
-      undefined,
-    ],
-    [
-      'prints only `version = 3` for a numeric version binding (no `binding` key)',
-      { kind: 'version', version: '3' },
-      'call X(process: "p", version: 3)',
-      'binding =',
-    ],
-    [
-      'prints a non-numeric version quoted verbatim',
-      { kind: 'version', version: '${v}' },
-      'call X(process: "p", version: "${v}")',
-      undefined,
-    ],
-  ] as const)('%s', (_title, binding, printed, absent) => {
-    const dsl = irToDsl(
-      around({
-        kind: 'callActivity',
-        id: 'X',
-        calledElement: 'p',
-        ...(binding ? { binding } : {}),
-      }),
-    );
-    expect(dsl).toContain(printed);
-    if (absent !== undefined) expect(dsl).not.toContain(absent);
-  });
-
-  it('prints a call in mid-chain as a plain fall-through node (order preserved)', async () => {
-    const ir: BpmnProcess = minimalProcess(
-      [
-        { kind: 'startEvent', id: 'S' },
-        { kind: 'userTask', id: 'Before' },
-        callActivity('Mid', 'sub'),
-        { kind: 'userTask', id: 'After' },
-        { kind: 'endEvent', id: 'E' },
-      ],
-      flowChain('S', 'Before', 'Mid', 'After', 'E'),
-    );
-    expect(await printed(ir)).toBe(
-      'process p {\n' +
-        '  start S\n' +
-        '  user Before\n' +
-        '  call Mid(process: "sub")\n' +
-        '  user After\n' +
+        '  }\n' +
+        '  call Plain(process: "p")\n' +
+        '  call Latest(process: "p", binding: latest)\n' +
+        '  call Pinned(process: "p", version: 3)\n' +
+        '  call Dynamic(process: "p", version: "${v}")\n' +
         '  end E\n' +
         '}\n',
     );
   });
 });
 
-/**
- * `S -> E` alongside a handler `H` whose body is an `if` over `A`: the fixture
- * that pins how deep a construct nests inside a handler.
- */
-const handlerWithIf = (eventDefinition: EventDefinition): BpmnProcess =>
-  minimalProcess(
-    [
-      { kind: 'startEvent', id: 'S' },
-      { kind: 'endEvent', id: 'E' },
-      {
-        kind: 'subProcess',
-        id: 'H',
-        triggeredByEvent: true,
-        flowElements: [
-          { kind: 'startEvent', id: 'HS', eventDefinition },
-          gateway('Gateway_HS_split', 'DF'),
-          { kind: 'userTask', id: 'A' },
-          gateway('Gateway_HS_join'),
-          { kind: 'endEvent', id: 'HE' },
-        ],
-        sequenceFlows: [
-          { id: 'F1', sourceRef: 'HS', targetRef: 'Gateway_HS_split' },
-          edge('Gateway_HS_split', 'A', {
-            id: 'F2',
-            condition: '${amount > 1000}',
-          }),
-          edge('Gateway_HS_split', 'Gateway_HS_join', { id: 'DF' }),
-          { id: 'F3', sourceRef: 'A', targetRef: 'Gateway_HS_join' },
-          { id: 'F4', sourceRef: 'Gateway_HS_join', targetRef: 'HE' },
-        ],
-      },
-    ],
-    [{ id: 'F', sourceRef: 'S', targetRef: 'E' }],
-  );
-
 describe('irToDsl: event layer', () => {
-  it('prints declarations, throws, emits, and trailing handlers in order', async () => {
-    const ir: BpmnProcess = {
-      ...chained(
-        [
-          { kind: 'startEvent', id: 'PStart' },
-          { kind: 'userTask', id: 'Work' },
-          typedEvent('intermediateThrowEvent', 'Ping', escalationDef('LS')),
-          typedEvent('endEvent', 'Boom', errorDef('PF')),
-        ],
-        {
-          unwired: [
-            triggeredSub('OnPF', [
-              typedEvent(
-                'startEvent',
-                'PFStart',
-                errorDef('PF', { codeVariable: 'c', messageVariable: 'm' }),
-              ),
-              { kind: 'userTask', id: 'Recover' },
-              { kind: 'endEvent', id: 'PFEnd' },
-            ]),
-            triggeredSub('OnLS', [
-              typedEvent(
-                'startEvent',
-                'LSStart',
-                escalationDef('LS', 'v'),
-                false,
-              ),
-              { kind: 'userTask', id: 'Note' },
-              { kind: 'endEvent', id: 'LSEnd' },
-            ]),
-          ],
-        },
-      ),
-      errorDecls: [{ name: 'PF', code: 'PF', message: 'boom' }],
-    };
-
-    expect(await printed(ir)).toBe(
-      [
-        'process proc {',
-        '  error PF(message: "boom")',
-        '  escalation LS',
-        '  start PStart',
-        '  user Work',
-        '  emit escalation Ping(LS)',
-        '  throw error Boom(PF)',
-        '  on error(PF, code: c, message: m) {',
-        '    start PFStart',
-        '    user Recover',
-        '    end PFEnd',
-        '  }',
-        '  on escalation(LS, code: v, alongside) {',
-        '    start LSStart',
-        '    user Note',
-        '    end LSEnd',
-        '  }',
-        '}',
-        '',
-      ].join('\n'),
-    );
-  });
-
   it('declares every code in the header and raises each one by name', async () => {
     const ir = await reDesugar(
       [
@@ -1282,157 +481,36 @@ describe('irToDsl: event layer', () => {
       ].join('\n'),
     );
 
-    // Whole source rather than the header alone: a declaration is only right if
-    // the name it claims is the one every use site raises, and `printed`
-    // compiles the result, so a name with nothing to resolve to fails here too.
     expect(await printed(ir)).toBe(
-      [
-        'process p {',
-        '  error OrderFailed(code: "order.failed")',
-        '  error OUT_OF_STOCK(message: "Out of stock")',
-        '  escalation MANUAL_REVIEW',
-        '  user Pack',
-        '  throw error(OrderFailed)',
-        '  on Pack: error(OUT_OF_STOCK, code: c) {',
-        '    user Restock',
-        '  }',
-        '  on Pack: error {',
-        '    user Escalate',
-        '  }',
-        '}',
-        '',
-      ].join('\n'),
+      `process p {
+  error OrderFailed(code: "order.failed")
+  error OUT_OF_STOCK(message: "Out of stock")
+  escalation MANUAL_REVIEW
+  user Pack
+  throw error(OrderFailed)
+  on Pack: error(OUT_OF_STOCK, code: c) {
+    user Restock
+  }
+  on Pack: error {
+    user Escalate
+  }
+}
+`,
     );
   });
-
-  it('prints an escalation end event as a throw, and a plain end as end', async () => {
-    const ir: BpmnProcess = minimalProcess(
-      [
-        { kind: 'startEvent', id: 'S' },
-        typedEvent('endEvent', 'Esc', escalationDef('X')),
-      ],
-      [{ id: 'F', sourceRef: 'S', targetRef: 'Esc' }],
-    );
-    const dsl = await printed(ir);
-    expect(dsl).toContain('throw escalation Esc(X)');
-    expect(dsl).not.toContain('end Esc');
-  });
-
-  // An undo block only belongs inside the block whose work it undoes, so the
-  // process-level fixture draws that refusal from the model it was built from.
-  it.each([
-    ['error', errorDef('C'), '\n  on error(C) {\n', undefined],
-    [
-      'compensation',
-      { kind: 'compensation' } as EventDefinition,
-      '\n  on compensation {\n',
-      'undoOutsideBlock',
-    ],
-  ] as const)(
-    'nests a construct two levels deep inside a %s handler body',
-    async (_kind, def, header, refused) => {
-      const dsl = await printed(
-        handlerWithIf(def),
-        ...(refused ? [refused] : []),
-      );
-      expect(dsl).toContain(header);
-      expect(dsl).toContain('\n    if (amount > 1000) {\n');
-      expect(dsl).toContain('\n      user A\n');
-      expect(dsl).not.toContain('gateway');
-    },
-  );
 });
 
 describe('irToDsl: event layer (message / signal / timer / conditional)', () => {
-  it('prints message/signal headers, the signal emit/throw, and trailing handlers', async () => {
-    const ir: BpmnProcess = processIr(
-      'proc',
-      [
-        { kind: 'startEvent', id: 'PStart' },
-        typedEvent('intermediateThrowEvent', 'EmitSig', signalDef('Cancelled')),
-        typedEvent('endEvent', 'ThrowSig', signalDef('Cancelled')),
-        eventHandler('OnMsg', 'MsgStart', messageDef('PaymentReceived')),
-        eventHandler('OnSig', 'SigStart', signalDef('Cancelled'), false),
-      ],
-      [
-        { id: 'SF_PStart_EmitSig', sourceRef: 'PStart', targetRef: 'EmitSig' },
-        edge('EmitSig', 'ThrowSig', { id: 'SF_EmitSig_ThrowSig' }),
-      ],
-    );
-    const dsl = await printed(ir);
-    expect(dsl).toContain('  emit signal EmitSig("Cancelled")\n');
-    expect(dsl).toContain('  throw signal ThrowSig("Cancelled")\n');
-    expect(dsl).toContain('  on message("PaymentReceived") {\n');
-    expect(dsl).toContain('  on signal("Cancelled", alongside) {\n');
-    // Handlers print last: both headers follow the throw.
-    expect(dsl.indexOf('on message')).toBeGreaterThan(
-      dsl.indexOf('throw signal'),
-    );
-    expect(dsl.indexOf('on signal')).toBeGreaterThan(dsl.indexOf('on message'));
-  });
-
-  /** `S -> E` beside the trailing handlers under test. */
-  const withHandlers = (...handlers: FlowElement[]): BpmnProcess =>
-    processIr(
-      'proc',
-      [
-        { kind: 'startEvent', id: 'S' },
-        { kind: 'endEvent', id: 'E' },
-        ...handlers,
-      ],
-      [{ id: 'F', sourceRef: 'S', targetRef: 'E' }],
-    );
-
-  // The last column marks a non-interrupting handler.
-  it.each([
-    [
-      'a duration timer as `after`',
-      timerDef('duration', 'PT1H'),
-      '  on timer("PT1H") {\n',
-      undefined,
-    ],
-    [
-      'a date timer as `at`',
-      timerDef('date', '2026-08-01T09:00:00'),
-      '  on timer(at: "2026-08-01T09:00:00") {\n',
-      undefined,
-    ],
-    [
-      'a repeating timer as `every`, alongside for a non-interrupting handler',
-      timerDef('cycle', 'R/PT10M'),
-      '  on timer(every: "R/PT10M", alongside) {\n',
-      false,
-    ],
-    [
-      'a condition in the expression subset as bare DSL',
-      conditionDef('${amount > 100}'),
-      '  on condition(amount > 100) {\n',
-      undefined,
-    ],
-    [
-      'a condition out of the subset as a quoted raw fallback',
-      conditionDef('${bean.check()}'),
-      '  on condition("${bean.check()}") {\n',
-      undefined,
-    ],
-  ] as const)(
-    'prints %s in the handler header',
-    async (_title, def, header, interrupting) => {
-      const ir = withHandlers(eventHandler('H', 'HS', def, interrupting));
-      expect(await printed(ir)).toContain(header);
-    },
-  );
-
   it('prints the implementation a thrown or emitted message carries', async () => {
     const thrown = minimalProcess(
       [
-        { kind: 'startEvent', id: 'S' },
+        start('S'),
         {
           ...typedEvent('endEvent', 'Sent', messageDef('Ack')),
           binding: classBinding('com.example.Send'),
         },
       ],
-      [{ id: 'F', sourceRef: 'S', targetRef: 'Sent' }],
+      [edge('S', 'Sent', { id: 'F' })],
     );
     expect(await printed(thrown)).toContain(
       'throw message Sent("Ack", class: "com.example.Send")',
@@ -1446,227 +524,25 @@ describe('irToDsl: event layer (message / signal / timer / conditional)', () => 
       'emit message Ping("Ack", topic: "send-ack")',
     );
   });
-
-  it('refuses an emit carrying a non-emittable definition', () => {
-    const badEmit: BpmnProcess = minimalProcess(
-      [
-        { kind: 'startEvent', id: 'S' },
-        typedEvent(
-          'intermediateThrowEvent',
-          'Bad',
-          timerDef('duration', 'PT1H'),
-        ),
-        { kind: 'endEvent', id: 'E' },
-      ],
-      flowChain('S', 'Bad', 'E'),
-    );
-    expect(() => irToDsl(badEmit)).toThrow(/timer/);
-  });
-});
-
-// A top-level start's own trigger has nowhere else to print; an event
-// sub-process's start puts its trigger in the `on` header instead.
-
-describe('irToDsl: triggered start events', () => {
-  const startWith = (def: EventDefinition): BpmnProcess =>
-    minimalProcess(
-      [
-        { kind: 'startEvent', id: 'S', eventDefinition: def },
-        { kind: 'endEvent', id: 'E' },
-      ],
-      [{ id: 'F', sourceRef: 'S', targetRef: 'E' }],
-    );
-
-  it.each([
-    [
-      'message',
-      messageDef('OrderReceived'),
-      'start S message("OrderReceived")',
-    ],
-    ['signal', signalDef('Cancelled'), 'start S signal("Cancelled")'],
-    ['timer after', timerDef('duration', 'PT1H'), 'start S timer("PT1H")'],
-    [
-      'timer at',
-      timerDef('date', '2026-08-01T09:00:00'),
-      'start S timer(at: "2026-08-01T09:00:00")',
-    ],
-    [
-      'timer every',
-      timerDef('cycle', 'R/PT10M'),
-      'start S timer(every: "R/PT10M")',
-    ],
-  ])(
-    'prints a top-level start carrying a %s trigger',
-    async (_title, def, expected) => {
-      expect(await printed(startWith(def))).toContain(expected);
-    },
-  );
-
-  it('prints the label as a setting beside the trigger', async () => {
-    const ir = minimalProcess(
-      [
-        {
-          kind: 'startEvent',
-          id: 'S',
-          name: 'Order in',
-          eventDefinition: messageDef('OrderReceived'),
-        },
-        { kind: 'endEvent', id: 'E' },
-      ],
-      [{ id: 'F', sourceRef: 'S', targetRef: 'E' }],
-    );
-    expect(await printed(ir)).toContain(
-      'start S message("OrderReceived", label: "Order in")',
-    );
-  });
-
-  it('prints a triggered start whole even under a synthesized StartEvent_ id', async () => {
-    const ir = minimalProcess(
-      [
-        {
-          kind: 'startEvent',
-          id: 'StartEvent_p',
-          eventDefinition: messageDef('OrderReceived'),
-        },
-        { kind: 'endEvent', id: 'E' },
-      ],
-      [{ id: 'F', sourceRef: 'StartEvent_p', targetRef: 'E' }],
-    );
-    expect(await printed(ir, 'reservedId')).toContain(
-      'start StartEvent_p message("OrderReceived")',
-    );
-  });
-});
-
-describe('irToDsl: event sub-process start-trigger suppression', () => {
-  it("prints the trigger once, in the on header, never on the handler's own start; a synthesized start prints nothing", async () => {
-    const ir = minimalProcess(
-      [
-        { kind: 'startEvent', id: 'S' },
-        { kind: 'endEvent', id: 'E' },
-        eventHandler('OnMsg', 'MsgStart', messageDef('PaymentReceived')),
-        triggeredSub('OnSig', [
-          typedEvent('startEvent', 'StartEvent_OnSig', signalDef('Cancelled')),
-          { kind: 'endEvent', id: 'SigEnd' },
-        ]),
-      ],
-      [{ id: 'F', sourceRef: 'S', targetRef: 'E' }],
-    );
-    const dsl = await printed(ir);
-    expect(dsl).toContain(
-      '  on message("PaymentReceived") {\n    start MsgStart\n',
-    );
-    expect(dsl).not.toContain('start MsgStart message');
-    expect(dsl).not.toContain('StartEvent_OnSig');
-    expect(dsl).toContain('  on signal("Cancelled") {\n    end SigEnd\n  }\n');
-    // The trigger appears exactly once: in the `on` header, never on the start.
-    expect(dsl.split('message("PaymentReceived")')).toHaveLength(2);
-    expect(dsl.split('signal("Cancelled")')).toHaveLength(2);
-  });
-});
-
-describe('irToDsl: ends spelling their own word', () => {
-  // The third column names the refusals the model itself draws: a reserved id
-  // the model chose, a cancel end the model puts outside an `attempt`.
-  it.each([
-    [
-      'a terminate end',
-      typedEvent('endEvent', 'Stop', { kind: 'terminate' }),
-      [],
-      'end Stop terminate',
-    ],
-    [
-      'a terminate end with its label',
-      {
-        ...typedEvent('endEvent', 'Stop', { kind: 'terminate' }),
-        name: 'All stop',
-      },
-      [],
-      'end Stop terminate(label: "All stop")',
-    ],
-    [
-      'a synthesized terminate end, rather than dropping it',
-      typedEvent('endEvent', 'EndEvent_p', { kind: 'terminate' }),
-      ['reservedId'],
-      'end EndEvent_p terminate',
-    ],
-    [
-      'a cancel end with its label',
-      {
-        ...typedEvent('endEvent', 'GiveUp', { kind: 'cancel' }),
-        name: 'Give up the booking',
-      },
-      ['cancelOutsideAttempt'],
-      'end GiveUp cancel(label: "Give up the booking")',
-    ],
-    [
-      'a synthesized cancel end, rather than dropping it',
-      typedEvent('endEvent', 'EndEvent_p', { kind: 'cancel' }),
-      ['reservedId', 'cancelOutsideAttempt'],
-      'end EndEvent_p cancel',
-    ],
-  ] as const)('prints %s', async (_title, end, refused, expected) => {
-    expect(await printed(terminating(end), ...refused)).toContain(expected);
-  });
-
-  it('keeps the terminate and its label across an imported end event round trip', async () => {
-    const ir = processIr(
-      'proc',
-      [
-        { kind: 'startEvent', id: 'S' },
-        {
-          kind: 'endEvent',
-          id: 'EndEvent_1',
-          name: 'Abandon all',
-          eventDefinition: { kind: 'terminate' },
-        },
-      ],
-      [{ id: 'F', sourceRef: 'S', targetRef: 'EndEvent_1' }],
-    );
-    const dsl = await printed(ir, 'reservedId');
-    expect(dsl).toContain('end EndEvent_1 terminate(label: "Abandon all")');
-
-    const ends = (await reDesugar(dsl)).flowElements.filter(
-      (el) => el.kind === 'endEvent',
-    );
-    expect(ends).toEqual([
-      {
-        kind: 'endEvent',
-        id: 'EndEvent_1',
-        name: 'Abandon all',
-        eventDefinition: { kind: 'terminate' },
-      },
-    ]);
-  });
 });
 
 describe('irToDsl: blocks that can be given up', () => {
-  /** The block under test, wired `St -> Book -> En` by {@link around}. */
   const book = (element?: 'transaction'): FlowElement => ({
-    ...chainedSub('Book', [{ kind: 'userTask', id: 'Charge' }]),
+    ...chainedSub('Book', [user('Charge')]),
     name: 'Book and pay',
     asyncBefore: true,
     loop: { collection: 'lines', elementVariable: 'line' },
     ...(element === undefined ? {} : { element }),
   });
 
-  it('prints the block that can be given up under its own head, and a plain one under `subprocess`', async () => {
-    expect(await printed(around(book('transaction')))).toContain(
-      'attempt Book for each line in lines(label: "Book and pay", asyncBefore: true) {\n',
-    );
-    expect(await printed(around(book()))).toContain(
-      'subprocess Book for each line in lines(label: "Book and pay", asyncBefore: true) {\n',
-    );
-  });
-
   it('prints the handler that catches the block being given up', async () => {
     const ir = minimalProcess(
       [
-        { kind: 'startEvent', id: 'St' },
+        start('St'),
         book('transaction'),
-        { kind: 'endEvent', id: 'En' },
+        end('En'),
         boundaryEvent('Boundary_Book_cancel', 'Book', { kind: 'cancel' }),
-        { kind: 'endEvent', id: 'Escaped' },
+        end('Escaped'),
       ],
       [
         edge('St', 'Book', { id: 'f0' }),
@@ -1680,71 +556,21 @@ describe('irToDsl: blocks that can be given up', () => {
   });
 });
 
-describe('irToDsl: event layer (intermediate catch / await)', () => {
-  /** A `start -> task -> catch -> task -> end` body: the catch is on the main flow. */
-  function catchBody(
-    def: IntermediateCatchEvent['eventDefinition'],
-  ): BpmnProcess {
-    return processIr(
-      'proc',
-      [
-        { kind: 'startEvent', id: 'S' },
-        { kind: 'userTask', id: 'Before' },
-        typedEvent('intermediateCatchEvent', 'Catch_1', def),
-        { kind: 'userTask', id: 'After' },
-        { kind: 'endEvent', id: 'E' },
-      ],
-      flowChain('S', 'Before', 'Catch_1', 'After', 'E'),
-    );
-  }
-
-  // The whole source per row, so the missing id token is asserted too: a catch
-  // has no name slot, and `Catch_1` appears nowhere.
-  it.each([
-    ['a message catch', messageDef('M'), '  await message("M")\n'],
-    [
-      'a duration timer catch',
-      timerDef('duration', 'PT1H'),
-      '  await timer("PT1H")\n',
-    ],
-    ['a signal catch', signalDef('S'), '  await signal("S")\n'],
-    [
-      'a conditional catch, bare DSL in the expression subset',
-      conditionDef('${amount > 100}'),
-      '  await condition(amount > 100)\n',
-    ],
-  ] as const)(
-    'prints %s inline between the surrounding steps',
-    async (_title, def, statement) => {
-      expect(await printed(catchBody(def))).toBe(
-        'process proc {\n  start S\n  user Before\n' +
-          statement +
-          '  user After\n  end E\n}\n',
-      );
-    },
-  );
-});
-
 describe('irToDsl: link pairs and named catches', () => {
   it('prints a link pair as a chain-ending emit link and a named await link opening the next chain', async () => {
     const ir = minimalProcess(
       [
-        { kind: 'startEvent', id: 'S' },
-        { kind: 'task', id: 'A' },
+        start('S'),
+        task('A'),
         typedEvent('intermediateThrowEvent', 'ToRetry', linkDef('Retry')),
         {
           ...typedEvent('intermediateCatchEvent', 'AtRetry', linkDef('Retry')),
           asyncBefore: true,
         },
-        { kind: 'task', id: 'B' },
-        { kind: 'endEvent', id: 'E' },
+        task('B'),
+        end('E'),
       ],
-      [
-        edge('S', 'A'),
-        edge('A', 'ToRetry'),
-        edge('AtRetry', 'B'),
-        edge('B', 'E'),
-      ],
+      [...chain('S', 'A', 'ToRetry'), ...chain('AtRetry', 'B', 'E')],
     );
     expect(await expectIdempotent(ir)).toBe(
       'process p {\n' +
@@ -1758,826 +584,408 @@ describe('irToDsl: link pairs and named catches', () => {
     );
   });
 
-  // `Catch_p_2` is the id `ast-to-ir` mints for the second (unnamed) await
-  // statement in process `p`'s body; the round trip must re-derive the same
-  // one, so the exact coordinate is pinned rather than guessed.
-  it('prints a named await of any trigger with its name and an unnamed one with none', async () => {
-    const ir = minimalProcess(
-      [
-        { kind: 'startEvent', id: 'S' },
-        typedEvent('intermediateCatchEvent', 'Wait', messageDef('M')),
-        typedEvent('intermediateCatchEvent', 'Catch_p_2', messageDef('M')),
-        { kind: 'endEvent', id: 'E' },
-      ],
-      flowChain('S', 'Wait', 'Catch_p_2', 'E'),
-    );
-    const dsl = await expectIdempotent(ir);
-    expect(dsl).toContain('await message Wait("M")\n  await message("M")');
-  });
-
-  it('prints a goto into a named await as a jump, not a dropped edge', async () => {
-    const ir = minimalProcess(
-      [
-        { kind: 'startEvent', id: 'S' },
-        typedEvent('intermediateCatchEvent', 'Wait', messageDef('M')),
-        { kind: 'userTask', id: 'A' },
-      ],
-      [edge('S', 'Wait'), edge('Wait', 'A'), edge('A', 'Wait')],
-    );
-    const dsl = await expectIdempotent(ir);
-    expect(dsl).not.toContain(UNSTRUCTURED_MARKER);
-    expect(printDsl(ir).warnings).toEqual([]);
-  });
-});
-
-describe('irToDsl: event layer (compensation)', () => {
-  /**
-   * A process exercising the whole compensation surface: `emit compensation`
-   * mid-chain, a terminal `throw compensation`, and a trailing `on
-   * compensation` handler. Compensation is payload-less, so none of the three
-   * carry a code or a name.
-   */
-  const COMPENSATION: EventDefinition = { kind: 'compensation' };
-
-  const compensationIr: BpmnProcess = chained(
-    [
-      { kind: 'startEvent', id: 'PStart' },
-      { kind: 'userTask', id: 'Work' },
-      typedEvent('intermediateThrowEvent', 'EmitComp', COMPENSATION),
-      typedEvent('endEvent', 'ThrowComp', COMPENSATION),
-    ],
-    {
-      unwired: [
-        triggeredSub('CompHandler', [
-          typedEvent('startEvent', 'CompStart', COMPENSATION),
-          { kind: 'userTask', id: 'Undo' },
-          { kind: 'endEvent', id: 'CompEnd' },
-        ]),
-      ],
-    },
-  );
-
-  it('prints a bare on-compensation handler after all flow, with emit/throw compensation carrying no trailing string', async () => {
-    expect(await printed(compensationIr, 'undoOutsideBlock')).toBe(
-      [
-        'process proc {',
-        '  start PStart',
-        '  user Work',
-        '  emit compensation EmitComp',
-        '  throw compensation ThrowComp',
-        '  on compensation {',
-        '    start CompStart',
-        '    user Undo',
-        '    end CompEnd',
-        '  }',
-        '}',
-        '',
-      ].join('\n'),
-    );
-  });
-
-  it("prints alongside for a malformed-IR compensation start with isInterrupting: false (the printer mirrors the IR; prohibiting it is the validator's job)", async () => {
-    const ir: BpmnProcess = minimalProcess(
-      [
-        { kind: 'startEvent', id: 'S' },
-        { kind: 'endEvent', id: 'E' },
-        triggeredSub('H', [
-          typedEvent('startEvent', 'HS', { kind: 'compensation' }, false),
-          { kind: 'endEvent', id: 'HE' },
-        ]),
-      ],
-      [{ id: 'F', sourceRef: 'S', targetRef: 'E' }],
-    );
-    expect(await printed(ir, 'undoOutsideBlock', 'undoAlongside')).toContain(
-      '  on compensation(alongside) {\n',
-    );
-  });
-});
-
-// A boundary event is the only IR node with outgoing but no incoming flow, so
-// its chain is unreachable from the start event and a pass of its own prints
-// it, before the orphan sweep would flush it as a detached top-level chain.
-// The chain lives in the same container as the main flow, so the shared
-// emitted-node bookkeeping is what makes a rejoin degrade to a `goto`.
-
-describe('irToDsl: boundary events', () => {
-  /**
-   * `start S -> user <host> -> end E`, flows F1 and F2, with `rest` and
-   * `flows` appended verbatim: the boundary event, its escape chain, and
-   * their edges.
-   */
-  const boundaryIr = (
-    host: string,
-    rest: readonly FlowElement[],
-    flows: readonly SequenceFlow[],
-  ): BpmnProcess =>
-    minimalProcess(
-      [
-        { kind: 'startEvent', id: 'S' },
-        { kind: 'userTask', id: host },
-        { kind: 'endEvent', id: 'E' },
-        ...rest,
-      ],
-      [
-        { id: 'F1', sourceRef: 'S', targetRef: host },
-        { id: 'F2', sourceRef: host, targetRef: 'E' },
-        ...flows,
-      ],
-    );
-
-  it('prints an interrupting boundary as a hosted handler with its chain indented', async () => {
-    const ir = boundaryIr(
-      'Review',
-      [
-        boundaryEvent(
-          'Boundary_Review_timer',
-          'Review',
-          timerDef('duration', 'PT2H'),
-        ),
-        { kind: 'userTask', id: 'Escalate' },
-        { kind: 'endEvent', id: 'Timeout' },
-      ],
-      [
-        edge('Boundary_Review_timer', 'Escalate', { id: 'F3' }),
-        { id: 'F4', sourceRef: 'Escalate', targetRef: 'Timeout' },
-      ],
+  it('of several throws of one link name, none takes the catch along, so no throw strands behind the process end', async () => {
+    const ir = await reDesugar(
+      'process p { var c: any var x: any  start S  if (c) { if (x) { emit link("L") } else { step Q  emit link("L") }  await link("L")  step B }  step Z  end Done }',
     );
     expect(await printed(ir)).toBe(
-      [
-        'process p {',
-        '  start S',
-        '  user Review',
-        '  end E',
-        '  on Review: timer("PT2H") {',
-        '    user Escalate',
-        '    end Timeout',
-        '  }',
-        '}',
-        '',
-      ].join('\n'),
+      `process p {
+  var c: any
+  var x: any
+  start S
+  if (c) {
+    if (x) {
+      emit link("L")
+    }
+    step Q
+    emit link("L")
+  }
+  step Z
+  end Done
+  await link("L")
+  step B
+  goto Z
+}
+`,
     );
   });
+});
 
-  // The header is printed whether the escape chain carries statements, is
-  // empty, or the host is not in this container at all.
-  it.each([
-    [
-      'alongside for a non-interrupting boundary, its chain indented under it',
-      'Pack',
-      [
-        boundaryEvent(
-          'Boundary_Pack_message',
-          'Pack',
-          messageDef('Nudge'),
-          false,
-        ),
-        serviceTask('Notify', exprBinding('${n.go()}')),
-        { kind: 'endEvent', id: 'Nudged' },
-      ],
-      [
-        edge('Boundary_Pack_message', 'Notify', { id: 'F3' }),
-        edge('Notify', 'Nudged', { id: 'F4' }),
-      ],
-      ['  on Pack: message("Nudge", alongside) {\n', '    end Nudged\n'],
-      [],
-    ],
-    [
-      'an empty body for a boundary carrying no outgoing flow',
-      'Review',
-      [
-        boundaryEvent(
-          'Boundary_Review_timer',
-          'Review',
-          timerDef('cycle', 'R/PT1H'),
-        ),
-      ],
-      [],
-      ['  on Review: timer(every: "R/PT1H") {\n  }\n'],
-      [],
-    ],
-    [
-      'the header all the same when the host lives outside this container',
-      'Review',
-      [
-        boundaryEvent(
-          'Boundary_Elsewhere_message',
-          'Elsewhere',
-          messageDef('M'),
-        ),
-      ],
-      [],
-      ['  on Elsewhere: message("M") {\n  }\n'],
-      // The host the model names is nowhere for the compiler to resolve.
-      ['hostOutsideContainer'],
-    ],
-  ] as const)('prints %s', async (_title, host, rest, flows, has, refused) => {
-    const dsl = await printed(boundaryIr(host, rest, flows), ...refused);
-    for (const text of has) expect(dsl).toContain(text);
-  });
-
-  it('degrades a rejoin into the main flow to a goto and prints the main-flow node once', async () => {
+describe('irToDsl: boundary events', () => {
+  it('prints the handler block for a boundary event a malformed flow edge points at, once', async () => {
     const ir: BpmnProcess = minimalProcess(
       [
-        { kind: 'startEvent', id: 'S' },
-        { kind: 'userTask', id: 'Fetch' },
-        { kind: 'userTask', id: 'Ship' },
-        { kind: 'endEvent', id: 'E' },
-        boundaryEvent('Boundary_Fetch_error', 'Fetch', errorDef('GONE')),
-        { kind: 'userTask', id: 'Retry' },
-      ],
-      [
-        { id: 'F1', sourceRef: 'S', targetRef: 'Fetch' },
-        { id: 'F2', sourceRef: 'Fetch', targetRef: 'Ship' },
-        { id: 'F3', sourceRef: 'Ship', targetRef: 'E' },
-        { id: 'F4', sourceRef: 'Boundary_Fetch_error', targetRef: 'Retry' },
-        { id: 'F5', sourceRef: 'Retry', targetRef: 'Ship' },
-      ],
-    );
-    const dsl = await printed(ir);
-    expect(dsl).toContain('  on Fetch: error(GONE) {\n');
-    expect(dsl).toContain('    user Retry\n');
-    expect(dsl).toContain('    goto Ship\n');
-    expect(dsl.match(/^ *user Ship$/gm)).toHaveLength(1);
-  });
-
-  it('restructures an if/else inside an escape chain (the boundary is a second CFG entry)', async () => {
-    const ir = boundaryIr(
-      'Review',
-      [
-        boundaryEvent('Boundary_Review_signal', 'Review', signalDef('Abort')),
-        gateway('Gateway_p_9_split', 'B4'),
-        gateway('Gateway_p_9_join'),
-        { kind: 'userTask', id: 'Refund' },
-        { kind: 'userTask', id: 'Keep' },
-        { kind: 'endEvent', id: 'Aborted' },
-      ],
-      [
-        edge('Boundary_Review_signal', 'Gateway_p_9_split', { id: 'B1' }),
-        edge('Gateway_p_9_split', 'Refund', { id: 'B2', condition: '${paid}' }),
-        { id: 'B3', sourceRef: 'Refund', targetRef: 'Gateway_p_9_join' },
-        { id: 'B4', sourceRef: 'Gateway_p_9_split', targetRef: 'Keep' },
-        { id: 'B5', sourceRef: 'Keep', targetRef: 'Gateway_p_9_join' },
-        { id: 'B6', sourceRef: 'Gateway_p_9_join', targetRef: 'Aborted' },
-      ],
-    );
-    const dsl = await printed(ir);
-    expect(dsl).toContain('  on Review: signal("Abort") {\n');
-    expect(dsl).toContain('    if (paid) {\n');
-    expect(dsl).toContain('    } else {\n');
-    expect(hasGoto(dsl)).toBe(false);
-    expect(hasGatewayKeyword(dsl)).toBe(false);
-  });
-
-  it('prints two boundaries on one host as two blocks in IR order', async () => {
-    const ir = boundaryIr(
-      'Review',
-      [
-        boundaryEvent(
-          'Boundary_Review_timer',
-          'Review',
-          timerDef('duration', 'PT2H'),
-        ),
-        { kind: 'endEvent', id: 'Late' },
-        boundaryEvent(
-          'Boundary_Review_escalation',
-          'Review',
-          escalationDef('LOUD', 'c'),
-        ),
-        { kind: 'endEvent', id: 'Loud' },
-      ],
-      [
-        { id: 'F3', sourceRef: 'Boundary_Review_timer', targetRef: 'Late' },
-        edge('Boundary_Review_escalation', 'Loud', { id: 'F4' }),
-      ],
-    );
-    const dsl = await printed(ir);
-    const timer = dsl.indexOf('on Review: timer("PT2H") {');
-    const escalation = dsl.indexOf('on Review: escalation(LOUD, code: c) {');
-    expect(timer).toBeGreaterThan(-1);
-    expect(escalation).toBeGreaterThan(timer);
-    // Each boundary prints exactly one header: neither the escape-chain walk
-    // nor the orphan sweep may print a boundary a second time.
-    expect(dsl.match(/^ *on Review: /gm)).toHaveLength(2);
-  });
-
-  it('keeps the handler block trailing when the body also flushes sweep gotos', async () => {
-    const source = [
-      'process p {',
-      '  error X',
-      '  var r: string',
-      '  user Intake',
-      '  if (r == "A") { goto Alpha } else { goto Beta }',
-      '  user Alpha',
-      '  user Beta',
-      '  end E',
-      '  on Intake: error(X) { user Fix }',
-      '}',
-      '',
-    ].join('\n');
-    const doc = await parse(source);
-    expect(doc.parseResult.parserErrors).toHaveLength(0);
-
-    const dsl = irToDsl(astToIr(doc.parseResult.value));
-    // A handler reads like a catch block: no ordinary statement, and in
-    // particular no swept `goto`, may follow it.
-    expect(dsl.indexOf('on Intake: error(X) {')).toBeGreaterThan(
-      dsl.lastIndexOf('goto '),
-    );
-    // Re-opening the emitted source must raise no handler-placement error.
-    const reparsed = await parse(dsl, { validation: true });
-    expect(
-      (reparsed.diagnostics ?? [])
-        .map((d) =>
-          typeof d.message === 'string' ? d.message : d.message.value,
-        )
-        .filter((m) => m.includes('catch blocks')),
-    ).toEqual([]);
-  });
-
-  it('keeps the handler block trailing when the container holds an orphan fragment', async () => {
-    const ir = boundaryIr(
-      'Review',
-      [
-        boundaryEvent('Boundary_Review_error', 'Review', errorDef('X')),
-        { kind: 'userTask', id: 'Fix' },
-        // Unreachable from the start event and from the escape chain.
-        { kind: 'userTask', id: 'Stranded' },
-      ],
-      [{ id: 'F3', sourceRef: 'Boundary_Review_error', targetRef: 'Fix' }],
-    );
-    const dsl = await printed(ir, 'orphanStep');
-    expect(dsl.indexOf('on Review: error(X) {')).toBeGreaterThan(
-      dsl.indexOf('user Stranded'),
-    );
-  });
-
-  it('prints the handler block for a boundary event a malformed flow edge points at', async () => {
-    const ir: BpmnProcess = minimalProcess(
-      [
-        { kind: 'startEvent', id: 'S' },
-        { kind: 'userTask', id: 'A' },
+        start('S'),
+        user('A'),
         boundaryEvent('Boundary_A_error', 'A', errorDef('X')),
-        { kind: 'userTask', id: 'Fix' },
+        user('Fix'),
       ],
       flowChain('S', 'A', 'Boundary_A_error', 'Fix'),
     );
-    const dsl = await printed(ir);
-    expect(dsl).toContain('on A: error(X) {');
-    expect(dsl).toContain('user Fix');
-    // Printed at its arrival point and nowhere else: the boundary pass must
-    // find it already emitted.
-    expect(dsl.match(/^ *on A: /gm)).toHaveLength(1);
-  });
-
-  it('prints a boundary event before a host-less handler in the same container', async () => {
-    const ir = boundaryIr(
-      'Review',
-      [
-        triggeredSub('OnPF', [
-          typedEvent('startEvent', 'PFStart', errorDef('PF')),
-          { kind: 'endEvent', id: 'PFEnd' },
-        ]),
-        boundaryEvent(
-          'Boundary_Review_timer',
-          'Review',
-          timerDef('duration', 'PT2H'),
-        ),
-        { kind: 'endEvent', id: 'Late' },
-      ],
-      [{ id: 'F3', sourceRef: 'Boundary_Review_timer', targetRef: 'Late' }],
-    );
-    const dsl = await printed(ir);
-    expect(dsl.indexOf('on Review: timer')).toBeGreaterThan(-1);
-    expect(dsl.indexOf('on error(PF) {')).toBeGreaterThan(
-      dsl.indexOf('on Review: timer'),
+    expect(await printed(ir)).toBe(
+      `process p {
+  error X
+  start S
+  user A
+  on A: error(X) {
+    user Fix
+  }
+}
+`,
     );
   });
 
   it('prints a boundary event inside the sub-process container that holds its host', async () => {
     const ir: BpmnProcess = minimalProcess(
       [
-        { kind: 'startEvent', id: 'S' },
+        start('S'),
         {
           kind: 'subProcess',
           id: 'Inner',
           flowElements: [
-            { kind: 'startEvent', id: 'IS' },
-            { kind: 'userTask', id: 'Check' },
-            { kind: 'endEvent', id: 'IE' },
+            start('IS'),
+            user('Check'),
+            end('IE'),
             boundaryEvent(
               'Boundary_Check_condition',
               'Check',
               conditionDef('${stale}'),
             ),
-            { kind: 'endEvent', id: 'Stale' },
+            end('Stale'),
           ],
           sequenceFlows: [
-            { id: 'I1', sourceRef: 'IS', targetRef: 'Check' },
-            { id: 'I2', sourceRef: 'Check', targetRef: 'IE' },
+            edge('IS', 'Check', { id: 'I1' }),
+            edge('Check', 'IE', { id: 'I2' }),
             edge('Boundary_Check_condition', 'Stale', { id: 'I3' }),
           ],
         },
-        { kind: 'endEvent', id: 'E' },
+        end('E'),
       ],
       flowChain('S', 'Inner', 'E'),
     );
     expect(await printed(ir)).toContain('    on Check: condition(stale) {\n');
   });
-
-  it('leaves a container without boundary events printing exactly as before', () => {
-    expect(irToDsl(IF_ELSE_IR)).toBe(IF_ELSE_SOURCE);
-  });
 });
 
-// A reserved `StartEvent_`/`EndEvent_`/`Throw_` id is the desugarer's own
-// doing, not something an author could type, so printing it back out as a name
-// produces source the validator rejects. These ids are omitted (start/end) or
-// dropped from the name slot (throw/emit) instead.
-
 describe('irToDsl: synthesized terminal omission', () => {
-  /** A synthesized implicit start/end pair wrapping a sibling container that
-   * carries its own authored start/end. */
-  const IMPLICIT_TERMINALS_IR: BpmnProcess = minimalProcess(
-    [
-      { kind: 'startEvent', id: 'StartEvent_p' },
-      { kind: 'userTask', id: 'Work' },
-      {
-        kind: 'subProcess',
-        id: 'Sub',
-        flowElements: [
-          { kind: 'startEvent', id: 'S' },
-          { kind: 'userTask', id: 'Inner' },
-          { kind: 'endEvent', id: 'Done' },
-        ],
-        sequenceFlows: [
-          { id: 'SF1', sourceRef: 'S', targetRef: 'Inner' },
-          { id: 'SF2', sourceRef: 'Inner', targetRef: 'Done' },
-        ],
-      },
-      { kind: 'endEvent', id: 'EndEvent_p' },
-    ],
-    [
-      { id: 'F1', sourceRef: 'StartEvent_p', targetRef: 'Work' },
-      { id: 'F2', sourceRef: 'Work', targetRef: 'Sub' },
-      { id: 'F3', sourceRef: 'Sub', targetRef: 'EndEvent_p' },
-    ],
-  );
-
-  it('omits synthesized implicit start/end terminals but keeps authored ones in a nested container', async () => {
-    const dsl = await expectIdempotent(IMPLICIT_TERMINALS_IR);
-    expect(dsl).not.toContain('StartEvent_');
-    expect(dsl).not.toContain('EndEvent_');
-    expect(dsl).toContain('start S');
-    expect(dsl).toContain('end Done');
-  });
-
-  // A synthesized `Throw_` id is dropped from the name slot; an authored one is
-  // spelled. No row may leave `Throw_` anywhere in the source.
-  it.each([
-    [
-      'an authored message end',
-      'endEvent',
-      'Ack',
-      messageDef('Ack'),
-      'throw message Ack("Ack")',
-    ],
-    [
-      'a synthesized message end',
-      'endEvent',
-      'Throw_p_1',
-      messageDef('Ack'),
-      'throw message("Ack")',
-    ],
-    [
-      'an authored error end',
-      'endEvent',
-      'PaymentFailed',
-      errorDef('PF'),
-      'throw error PaymentFailed(PF)',
-    ],
-    [
-      'a synthesized escalation end',
-      'endEvent',
-      'Throw_p_1',
-      escalationDef('ESC'),
-      'throw escalation(ESC)',
-    ],
-    [
-      'an authored message emit',
-      'intermediateThrowEvent',
-      'Notify',
-      messageDef('Ack'),
-      'emit message Notify("Ack")',
-    ],
-    [
-      'a synthesized message emit',
-      'intermediateThrowEvent',
-      'Throw_p_2',
-      messageDef('Ack'),
-      'emit message("Ack")',
-    ],
-    [
-      'a synthesized signal emit',
-      'intermediateThrowEvent',
-      'Throw_p_2',
-      signalDef('Ping'),
-      'emit signal("Ping")',
-    ],
-  ] as const)('prints %s', async (_title, kind, id, def, expected) => {
-    const node = typedEvent(kind, id, def);
-    const dsl = await printed(
-      kind === 'endEvent' ? terminating(node) : around(node),
-    );
-    expect(dsl).toContain(expected);
-    expect(dsl).not.toContain('Throw_');
-  });
-
-  // `StartEvent_1` is the id a modeler mints, so a labeled start drawn in one
-  // arrives under a synthesized-shaped id rather than an authored one. Printing
-  // it would write a name the validator rejects, so the statement is left out
-  // and the label it carried is reported at import instead.
-  it('reports the label a synthesized start and end take with them, and prints neither', async () => {
+  // Only the exact minted id is synthesized; `StartEvent_1` is authored.
+  it("prints a modelling tool's default start and end under their own ids, label and initiator kept", async () => {
     const { ir, warnings } = await xmlToIr(bpmnDoc`
-    <bpmn:startEvent id="StartEvent_1" name="Order Received" />
+    <bpmn:startEvent id="StartEvent_1" name="Order Received" operaton:initiator="who" />
     <bpmn:userTask id="Approve" />
     <bpmn:endEvent id="EndEvent_1" name="Order Filed" />
     <bpmn:sequenceFlow id="F1" sourceRef="StartEvent_1" targetRef="Approve" />
     <bpmn:sequenceFlow id="F2" sourceRef="Approve" targetRef="EndEvent_1" />`);
-    expect(warnings.map((w) => [w.category, w.elementId])).toEqual([
-      ['label', 'StartEvent_1'],
-      ['label', 'EndEvent_1'],
-    ]);
-    expect(warnings[0]?.message).toContain('Order Received');
-    expect(warnings[1]?.message).toContain('Order Filed');
+    expect(warnings).toEqual([]);
 
-    const dsl = irToDsl(ir);
-    expect(dsl).not.toContain('StartEvent_1');
-    expect(dsl).not.toContain('EndEvent_1');
-    expect(dsl).not.toContain('Order Received');
-    expect(dsl).not.toContain('Order Filed');
+    const { source, warnings: printWarnings } = printDsl(ir);
+    expect(printWarnings).toEqual([]);
+    expect(source).toBe(
+      `process p {
+  start StartEvent_1(label: "Order Received", initiator: "who")
+  user Approve
+  end EndEvent_1(label: "Order Filed")
+}
+`,
+    );
+    expect((await validate(source)).diagnostics).toEqual([]);
+    expect((await reDesugar(source)).flowElements).toEqual(ir.flowElements);
   });
 
-  // The trigger moves into the `on` header, so nothing else holds the start
-  // inside a handler body either.
-  it("reports the label an event handler's synthesized trigger start takes with it", async () => {
-    const { ir, warnings } = await xmlToIr(bpmnDoc`
+  it.each([
+    [
+      "the handler's minted start id, so the label is reported and the start left out",
+      'StartEvent_Handler',
+      [['label', 'StartEvent_Handler']],
+      '  on error {\n  }\n',
+    ],
+    [
+      "a modelling tool's start id, so the start prints with its label",
+      'StartEvent_9',
+      [],
+      '  on error {\n    start StartEvent_9(label: "Restock Heard")\n  }\n',
+    ],
+  ] as const)(
+    "an event handler's trigger start carries %s",
+    async (_title, startId, expectedWarnings, handler) => {
+      const { ir, warnings } = await xmlToIr(bpmnDoc`
     <bpmn:startEvent id="S" />
     <bpmn:subProcess id="Handler" triggeredByEvent="true">
-      <bpmn:startEvent id="StartEvent_9" name="Restock Heard">
+      <bpmn:startEvent id="${startId}" name="Restock Heard">
         <bpmn:errorEventDefinition />
       </bpmn:startEvent>
     </bpmn:subProcess>
     <bpmn:endEvent id="E" />
     <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="E" />`);
-    expect(warnings.map((w) => [w.category, w.elementId])).toEqual([
-      ['label', 'StartEvent_9'],
-    ]);
-    expect(warnings[0]?.message).toContain('Restock Heard');
+      expect(warnings.map((w) => [w.category, w.elementId])).toEqual(
+        expectedWarnings,
+      );
+      expect(await printed(ir)).toContain(handler);
+    },
+  );
+});
 
-    const dsl = irToDsl(ir);
-    expect(dsl).toContain('on error {');
-    expect(dsl).not.toContain('StartEvent_9');
-    expect(dsl).not.toContain('Restock Heard');
+describe('irToDsl: ids the script cannot spell print under a minted name', () => {
+  const ir = processIr(
+    'WFP-6-',
+    [
+      start('S'),
+      user('Task.1'),
+      user('user'),
+      chainedSub('Sub.1', [start('S2'), task('Step.2'), end('E2')]),
+      typedEvent('intermediateThrowEvent', 'Notify.1', messageDef('M')),
+      user('Review-'),
+      end('E'),
+      boundaryEvent('B', 'Task.1', timerDef('duration', 'PT1H')),
+    ],
+    [
+      ...flowChain('S', 'Task.1', 'user', 'Sub.1', 'Notify.1', 'Review-', 'E'),
+      edge('B', 'Review-'),
+    ],
+  );
+
+  it('prints every site under the minted name, reports each rename once, and the source compiles clean', async () => {
+    const { source, warnings } = printDsl(ir);
+    expect(source).toBe(
+      `process WFP_6_ {
+  start S
+  user Task_1
+  user _user
+  subprocess Sub_1 {
+    start S2
+    step Step_2
+    end E2
+  }
+  emit message Notify_1("M")
+  user Review_
+  end E
+  on Task_1: timer("PT1H") {
+    goto Review_
+  }
+}
+`,
+    );
+    expectReports(
+      warnings,
+      ['renamedId', 'WFP-6-'],
+      ['renamedId', 'Task.1'],
+      ['renamedId', 'user'],
+      ['renamedId', 'Sub.1'],
+      ['renamedId', 'Step.2'],
+      ['renamedId', 'Notify.1'],
+      ['renamedId', 'Review-'],
+    );
+    expect((await validate(source)).diagnostics).toEqual([]);
+    expect((await reDesugar(source)).id).toBe('WFP_6_');
   });
 });
 
-// Leaving a synthesized plain end out anywhere but its block's tail would wire
-// its predecessor into whatever follows on the page, so it prints under its
-// reserved id and is reported. Rows 2 and 3 spell that id in their source
-// because the compiler never mints one in those positions; `EndEvent_1` is the
-// id a modelling tool mints, and the parser accepts it without validating.
+// The compiler never mints a plain end where the source rows put one, so they rename an authored end.
 describe("irToDsl: a synthesized plain end that is not its block's tail", () => {
-  const start = (id: string): FlowElement => ({ kind: 'startEvent', id });
-  const step = (id: string): FlowElement => ({ kind: 'task', id });
-  const end = (id: string): FlowElement => ({ kind: 'endEvent', id });
+  const renamed = (ir: BpmnProcess, from: string, to: string): BpmnProcess => ({
+    ...ir,
+    flowElements: ir.flowElements.map((el) =>
+      el.id === from ? { ...el, id: to } : el,
+    ),
+    sequenceFlows: ir.sequenceFlows.map((f) => ({
+      ...f,
+      sourceRef: f.sourceRef === from ? to : f.sourceRef,
+      targetRef: f.targetRef === from ? to : f.targetRef,
+    })),
+  });
 
   it.each([
     [
       "a guard's throw with a single incoming flow inlines, so its tail end stays elided rather than deferred",
       'process p { error E  start S  step A  if (x) { throw error Named(E) }  step X }',
-      [
-        'process p {',
-        '  error E',
-        '  start S',
-        '  step A',
-        '  if (x) {',
-        '    throw error Named(E)',
-        '  }',
-        '  step X',
-        '}',
-      ],
+      `process p {
+  error E
+  var x: any
+  start S
+  step A
+  if (x) {
+    throw error Named(E)
+  }
+  step X
+}
+`,
       [],
     ],
     [
-      'a plain end whose chain a later goto-reached step follows prints before that step, and its label rides along',
-      'process p { start S  step A  if (x) { goto B }  step C  end EndEvent_2(label: "Order filed")  step B }',
-      [
-        'process p {',
-        '  start S',
-        '  step A',
-        '  if (x) {',
-        '    goto B',
-        '  }',
-        '  step C',
-        '  end EndEvent_2(label: "Order filed")',
-        '  step B',
-        '}',
-      ],
-      [['refusedStatement', 'EndEvent_2']],
+      "a plain end whose chain a second start's chain follows prints before that start, and its label rides along",
+      'process p { start S  step A  end Done(label: "Order filed")  start T message("M")  step B  end Fin }',
+      `process p {
+  start S
+  step A
+  end EndEvent_p(label: "Order filed")
+  start T message("M")
+  step B
+  end Fin
+}
+`,
+      [['refusedStatement', 'EndEvent_p']],
     ],
     [
       'a plain end inside a branch prints at once, so the branch does not fall through',
-      'process p { start S  step A  if (x) { end EndEvent_1 }  step X }',
-      [
-        'process p {',
-        '  start S',
-        '  step A',
-        '  if (x) {',
-        '    end EndEvent_1',
-        '  }',
-        '  step X',
-        '}',
-      ],
-      [['refusedStatement', 'EndEvent_1']],
+      'process p { start S  step A  if (x) { end Done }  step X  end Fin }',
+      `process p {
+  var x: any
+  start S
+  step A
+  if (x) {
+    end EndEvent_p
+  }
+  step X
+  end Fin
+}
+`,
+      [['refusedStatement', 'EndEvent_p']],
     ],
     [
-      'of three chains each ending in its own plain end, the first two print in place and the last stays elided',
+      'a link catch whose chain never reaches the plain end prints behind its throw, so that end stays the tail',
+      'process p { start S  step A  if (x) { emit link T("L") }  step C  end Done  await link C2("L")  step B  end Fin }',
+      `process p {
+  var x: any
+  start S
+  step A
+  if (x) {
+    emit link T("L")
+    await link C2("L")
+    step B
+    end Fin
+  }
+  step C
+}
+`,
+      [],
+    ],
+    [
+      'of three chains, the one whose own end is the synthesized tail prints last so that end stays implicit',
+      // The validator refuses a second plain start, as `BpmnParse.selectInitial` does.
       minimalProcess(
         [
           start('S1'),
-          step('A'),
-          end('EndEvent_1'),
-          start('S2'),
-          step('B'),
-          end('EndEvent_2'),
-          start('S3'),
-          step('C'),
-          end('EndEvent_3'),
+          task('A'),
+          end('EndEvent_p'),
+          typedEvent('startEvent', 'S2', messageDef('M2')),
+          task('B'),
+          end('E2'),
+          typedEvent('startEvent', 'S3', messageDef('M3')),
+          task('C'),
+          end('E3'),
         ],
         [
-          edge('S1', 'A'),
-          edge('A', 'EndEvent_1'),
-          edge('S2', 'B'),
-          edge('B', 'EndEvent_2'),
-          edge('S3', 'C'),
-          edge('C', 'EndEvent_3'),
+          ...chain('S1', 'A', 'EndEvent_p'),
+          ...chain('S2', 'B', 'E2'),
+          ...chain('S3', 'C', 'E3'),
         ],
       ),
-      [
-        'process p {',
-        '  start S1',
-        '  step A',
-        '  end EndEvent_1',
-        '  start S2',
-        '  step B',
-        '  end EndEvent_2',
-        '  start S3',
-        '  step C',
-        '}',
-      ],
-      [
-        ['refusedStatement', 'EndEvent_1'],
-        ['refusedStatement', 'EndEvent_2'],
-      ],
+      `process p {
+  start S2 message("M2")
+  step B
+  end E2
+  start S3 message("M3")
+  step C
+  end E3
+  start S1
+  step A
+}
+`,
+      [],
     ],
   ] as const)('%s', async (_title, fixture, source, reports) => {
-    const ir = typeof fixture === 'string' ? await reDesugar(fixture) : fixture;
-    expect(await expectIdempotent(ir, 'reservedId')).toEqual(
-      `${source.join('\n')}\n`,
-    );
+    const ir =
+      typeof fixture === 'string'
+        ? renamed(await reDesugar(fixture), 'Done', 'EndEvent_p')
+        : fixture;
+    expect(await expectIdempotent(ir, 'mintedId')).toEqual(source);
     expectReports(printDsl(ir).warnings, ...reports);
   });
 });
 
-describe('irToDsl: guard-clause continuation', () => {
-  it('recovers a throw-guard `if` with the continuation at the body level and no gateway token', async () => {
-    // `if (c) { throw }` with no else: the then-branch terminates, the default
-    // continues the main flow. There is no clean post-dominating join, so the
-    // fallback consumes the sole default edge as the continuation.
-    const ir = await reDesugar(`process p {
-  error BOOM
-  start S
-  service Pre(class: "x.Pre")
-  if (amount > 1000) {
-    throw error(BOOM)
-  }
-  service Post(class: "x.Post")
-  end Done
-}
-`);
-    const dsl = await expectIdempotent(ir);
-
-    // Both the split and the join are elided, so no synthesized gateway id
-    // appears and nothing jumps to one.
-    expect(dsl).not.toContain('goto Gateway_');
-    expect(dsl).not.toContain('Gateway_');
-
-    // The guard's terminal prints inline, not as a jump to the throw node.
-    expect(dsl).toContain('throw error(BOOM)');
-    expect(dsl).not.toContain('goto Throw_');
-
-    // The continuation prints AFTER the `if`, at the container body level, not
-    // swept to the end past a terminating gateway.
-    const ifIdx = dsl.indexOf('if (amount > 1000)');
-    const postIdx = dsl.indexOf('service Post');
-    const doneIdx = dsl.indexOf('end Done');
-    expect(ifIdx).toBeGreaterThan(-1);
-    expect(postIdx).toBeGreaterThan(ifIdx);
-    expect(doneIdx).toBeGreaterThan(postIdx);
-  });
-
-  it('keeps a loop-body statement after a terminal-branch guard inside the while block', async () => {
-    // `while (...) { A; if (d) { throw }; B }`: the guard's terminal branch must
-    // not push `B` out of the loop.
-    const ir = await reDesugar(`process p {
-  error X
-  start S
-  while (retries < 3) {
-    service A(class: "x.A")
-    if (retries < 1) {
-      throw error(X)
+// Behind an authored end the chain stays a jump, keeping the coordinate ids of its unnamed events.
+describe('irToDsl: an authored chain a branch owns', () => {
+  it.each([
+    [
+      'two branches whose chains end print them inline, and the implicit end stays unwritten',
+      `process p {
+  var a: any
+  var b: any
+  if (a) {
+    user A
+    throw message("Quote Received")
+  } else if (b) {
+    user B
+    await {
+      message("OrderReceived") {
+        end Done
+      }
+      message("Quote Received") {
+        user C
+      }
     }
-    service B(class: "x.B")
+  } else {
+    user D
   }
-  end Done
 }
-`);
-    const dsl = await expectIdempotent(ir);
-    expect(dsl).not.toContain('goto Gateway_');
-
-    const lines = dsl.split('\n');
-    const indentOf = (s: string): number => s.length - s.trimStart().length;
-    const whileIdx = lines.findIndex((l) => l.includes('while (retries < 3)'));
-    const bIdx = lines.findIndex((l) => l.includes('service B'));
-    const doneIdx = lines.findIndex((l) => l.includes('end Done'));
-
-    // `B` appears after the `while` header, before `end Done`, and indented
-    // deeper than it, so it is nested inside the loop rather than after it.
-    expect(whileIdx).toBeGreaterThan(-1);
-    expect(bIdx).toBeGreaterThan(whileIdx);
-    expect(doneIdx).toBeGreaterThan(bIdx);
-    expect(indentOf(lines[bIdx]!)).toBeGreaterThan(indentOf(lines[doneIdx]!));
-  });
-});
-
-describe('irToDsl: authored terminal in a guard clause', () => {
-  it('keeps a goto for an authored end reached from more than one predecessor', async () => {
-    // `Done` has two predecessors, `split`'s guarded route and `split2`'s.
-    // Without `split2`, `Done` would post-dominate `split` and the printer
-    // would fold the shape into a re-merging `if`/`else` before
-    // `branchStaysInRegion` is ever asked about the terminal.
-    const ir = minimalProcess(
-      [
-        { kind: 'startEvent', id: 'S' },
-        { kind: 'userTask', id: 'A' },
-        gateway('split'),
-        { kind: 'userTask', id: 'B' },
-        gateway('split2'),
-        { kind: 'endEvent', id: 'Done' },
-        { kind: 'endEvent', id: 'End2' },
-      ],
-      [
-        edge('S', 'A'),
-        edge('A', 'split'),
-        edge('split', 'Done', { condition: '${x}' }),
-        edge('split', 'B'),
-        edge('split2', 'Done', { condition: '${z}' }),
-        edge('B', 'split2'),
-        edge('split2', 'End2'),
-      ],
-    );
-    const dsl = await printed(ir);
-    expect(dsl).toEqual(`process p {
-  start S
-  user A
-  if (x) {
-    goto Done
+`,
+    ],
+    [
+      'a guard clause whose branch runs a step into an end prints the step inside the branch',
+      `process p {
+  var a: any
+  if (a) {
+    user A
+    end Stop
   }
   user B
-  if (z) {
-    goto Done
-  }
-  end End2
-  end Done
 }
-`);
+`,
+    ],
+    [
+      'a chain jumped to behind an authored end stays behind it, keeping the coordinate id of its unnamed throw',
+      `process p {
+  error E
+  var x: any
+  if (x) {
+    goto X
+  }
+  user C
+  end Done
+  user X
+  throw error(E)
+}
+`,
+    ],
+    [
+      'a chain that runs into the implicit end is the tail and stays a jump',
+      `process p {
+  var a: any
+  if (a) {
+    goto X
+  }
+  user B
+  end Done
+  user X
+}
+`,
+    ],
+  ])('%s', async (_title, source) => {
+    const ir = await reDesugar(source);
+    expect(await expectIdempotent(ir)).toBe(source);
+    expect(printDsl(ir).warnings).toEqual([]);
   });
 });
 
 describe('irToDsl: routes leaving a loop beside the two it is built from', () => {
-  /**
-   * A review loop with an escalate exit: the loop head routes back, escalates,
-   * or carries on. The loop is built from the back-edge and one route out, and
-   * the third route is taken where the loop leaves off.
-   */
   const PRE_TEST_IR: BpmnProcess = minimalProcess(
     [
-      { kind: 'startEvent', id: 'S' },
+      start('S'),
       gateway('Loop'),
-      { kind: 'userTask', id: 'Work' },
-      { kind: 'userTask', id: 'Escalate' },
-      { kind: 'endEvent', id: 'E' },
-      { kind: 'endEvent', id: 'E2' },
+      user('Work'),
+      user('Escalate'),
+      end('E'),
+      end('E2'),
     ],
     [
       edge('S', 'Loop'),
@@ -2591,74 +999,23 @@ describe('irToDsl: routes leaving a loop beside the two it is built from', () =>
 
   const POST_TEST_IR: BpmnProcess = minimalProcess(
     [
-      { kind: 'startEvent', id: 'S' },
-      { kind: 'userTask', id: 'Review' },
+      start('S'),
+      user('Review'),
       gateway('Decide'),
-      { kind: 'userTask', id: 'Escalate' },
-      { kind: 'userTask', id: 'Done' },
-      { kind: 'endEvent', id: 'E' },
-      { kind: 'endEvent', id: 'E2' },
+      user('Escalate'),
+      user('Done'),
+      end('E'),
+      end('E2'),
     ],
     [
-      edge('S', 'Review'),
-      edge('Review', 'Decide'),
+      ...chain('S', 'Review', 'Decide'),
       edge('Decide', 'Review', { condition: '${rework}' }),
       edge('Decide', 'Escalate', { condition: '${escalate}' }),
-      edge('Decide', 'Done'),
-      edge('Done', 'E'),
+      ...chain('Decide', 'Done', 'E'),
       edge('Escalate', 'E2'),
     ],
   );
 
-  it.each([
-    [
-      'pre-test',
-      PRE_TEST_IR,
-      'process p {\n' +
-        '  start S\n' +
-        '  while (more) {\n' +
-        '    user Work\n' +
-        '  }\n' +
-        '  if (escalate) {\n' +
-        '    goto Escalate\n' +
-        '  }\n' +
-        '  end E\n' +
-        '  user Escalate\n' +
-        '  end E2\n' +
-        '}\n',
-    ],
-    [
-      'post-test',
-      POST_TEST_IR,
-      'process p {\n' +
-        '  start S\n' +
-        '  do {\n' +
-        '    user Review\n' +
-        '  } while (rework)\n' +
-        '  if (escalate) {\n' +
-        '    goto Escalate\n' +
-        '  }\n' +
-        '  user Done\n' +
-        '  end E\n' +
-        '  user Escalate\n' +
-        '  end E2\n' +
-        '}\n',
-    ],
-  ])(
-    'takes the surplus route as a choice after a %s loop closes',
-    async (_title, ir, expected) => {
-      const { source, warnings } = printDsl(ir);
-      expect(source).toBe(expected);
-      expect(warnings).toEqual([]);
-
-      const lowered = await reDesugar(await printed(ir));
-      expect(edgeMultiset(lowered)).toContain('<GW>->Escalate[${escalate}]');
-      expect(realReachability(lowered)).toEqual(realReachability(ir));
-    },
-  );
-
-  // Revert symptom: read the loop's settings again for its leftover routes ->
-  // the choice after the loop carries a second copy.
   it.each([
     [
       'pre-test',
@@ -2687,206 +1044,329 @@ describe('irToDsl: routes leaving a loop beside the two it is built from', () =>
   );
 });
 
-/**
- * A multi-out real node whose routes end apart, so neither branch has a join
- * to walk to and each keeps its edge as a jump. The second lands on a one-out
- * pass-through gateway `Gateway_p_9_join -> R`: naming the gateway is
- * impossible, so the jump forwards through it to the real successor.
- */
-const PASS_THROUGH_IR: BpmnProcess = minimalProcess(
-  [
-    { kind: 'startEvent', id: 'S' },
-    { kind: 'userTask', id: 'A' },
-    gateway('Gateway_p_9_join'),
-    { kind: 'userTask', id: 'R' },
-    { kind: 'endEvent', id: 'E' },
-    { kind: 'endEvent', id: 'E2' },
-  ],
-  [
-    { id: 'f0', sourceRef: 'S', targetRef: 'A' },
-    { id: 'f1', sourceRef: 'A', targetRef: 'E' },
-    { id: 'f2', sourceRef: 'A', targetRef: 'Gateway_p_9_join' },
-    { id: 'f3', sourceRef: 'Gateway_p_9_join', targetRef: 'R' },
-    { id: 'f4', sourceRef: 'R', targetRef: 'E2' },
-  ],
-);
+describe('irToDsl: a loop head whose exit is listed before its route into the body', () => {
+  // The engine tests the exit first, which `while (c)` cannot say, so the loop
+  // stays unfolded and its back edge becomes the hand-repair marker.
+  const marker = `${UNSTRUCTURED_MARKER} (dropped edge into L)`;
+  it.each<[title: string, exits: SequenceFlow[], body: string[]]>([
+    [
+      'an exit listed first keeps its place ahead of the body',
+      [edge('L', 'A', { condition: '${x > 1}' })],
+      [
+        '  if (x > 1) {',
+        '  } else if (n > 100) {',
+        '    user T',
+        `    ${marker}`,
+        '  }',
+        '  user A',
+        '  end EA',
+      ],
+    ],
+    [
+      'an exit listed first keeps its place with another exit after the body',
+      [
+        edge('L', 'A', { condition: '${x > 1}' }),
+        edge('L', 'B', { condition: '${y > 1}' }),
+      ],
+      [
+        '  if (x > 1) {',
+        '    user A',
+        '    end EA',
+        '  } else if (n > 100) {',
+        '    goto T',
+        '  }',
+        '  user B',
+        '  end EB',
+        '  user T',
+        `  ${marker}`,
+      ],
+    ],
+  ])('%s', async (_, exits, body) => {
+    const [first, ...after] = exits;
+    const exitSteps = exits.map((f) => f.targetRef);
+    const ir = minimalProcess(
+      [
+        start('S'),
+        gateway('L'),
+        user('T'),
+        ...exitSteps.map(user),
+        ...exitSteps.map((id) => end(`E${id}`)),
+      ],
+      [
+        edge('S', 'L'),
+        first!,
+        edge('L', 'T', { condition: '${n > 100}' }),
+        ...after,
+        edge('T', 'L'),
+        ...exitSteps.map((id) => edge(id, `E${id}`)),
+      ],
+    );
+    const { source, warnings } = printDsl(ir);
 
-/**
- * A parallel fork with a back-edge into it (`B -> fork`). By the time the
- * back-arrival is realized, the fork's out-edges are all consumed, so there
- * is no single successor to forward to, so the edge becomes a hand-repair
- * marker rather than an unresolvable `goto` into the fork. This shape is only
- * reachable through hostile input; the forward compiler never emits it.
- */
+    expect(bodyOf(source)).toBe(
+      ['process p {', '  start S', ...body, '}', ''].join('\n'),
+    );
+    expectReports(warnings, ['inventedFallback', 'L'], ['droppedEdge', 'L']);
+    const second = irToDsl(await reDesugar(await printed(ir)));
+    const withoutMarker = bodyOf(source)
+      .split('\n')
+      .filter((line) => line.trim() !== marker)
+      .join('\n');
+    expect(bodyOf(second)).toBe(withoutMarker);
+  });
+});
+
+describe('irToDsl: a loop route with no condition listed before a conditioned one', () => {
+  // Operaton's exclusive split: the first route but the default, in document
+  // order, with no condition or one that holds, else the default.
+  const run = (ir: BpmnProcess, vars: Record<string, unknown>): string[] => {
+    const holds = (c: string): boolean =>
+      Boolean(
+        new Function(...Object.keys(vars), `return ${c.slice(2, -1)};`)(
+          ...Object.values(vars),
+        ),
+      );
+    const trace: string[] = [];
+    let at: FlowElement = only(ir, 'startEvent');
+    while (at.kind !== 'endEvent' && trace.length < 4) {
+      if (at.kind === 'userTask') trace.push(at.id);
+      const fallback = 'defaultFlowId' in at ? at.defaultFlowId : undefined;
+      const outs = ir.sequenceFlows.filter((f) => f.sourceRef === at.id);
+      const next =
+        outs.find(
+          (f) =>
+            f.id !== fallback &&
+            (f.conditionExpression === undefined ||
+              holds(f.conditionExpression)),
+        ) ?? outs.find((f) => f.id === fallback);
+      if (next === undefined) return [...trace, 'stuck'];
+      at = byId(ir, next.targetRef);
+    }
+    return trace;
+  };
+  const marker = `${UNSTRUCTURED_MARKER} (dropped edge into L)`;
+
+  it.each<
+    [
+      title: string,
+      elements: FlowElement[],
+      flows: SequenceFlow[],
+      body: string[],
+      reports: [keyof typeof REPORT, string][],
+      runs: Record<string, unknown>[],
+    ]
+  >([
+    [
+      'an exit listed before the back edge of a do-while stays tested first',
+      [start('S'), user('T'), gateway('L'), end('E')],
+      [...chain('S', 'T', 'L', 'E'), edge('L', 'T', { condition: '${c}' })],
+      [
+        '  user T',
+        '  if (true) {',
+        '  } else if (c) {',
+        '    goto T',
+        '  }',
+        '  end E',
+      ],
+      [],
+      [{ c: true }, { c: false }],
+    ],
+    [
+      'an exit listed before a route back into a printed step stays tested first',
+      [start('S'), user('T'), gateway('G'), user('A'), end('EA')],
+      [
+        ...chain('S', 'T', 'G', 'A', 'EA'),
+        edge('G', 'T', { condition: '${x > 5}' }),
+      ],
+      [
+        '  user T',
+        '  if (true) {',
+        '  } else if (x > 5) {',
+        '    goto T',
+        '  }',
+        '  user A',
+        '  end EA',
+      ],
+      [],
+      [{ x: 0 }, { x: 10 }],
+    ],
+    [
+      'a back edge to a while head listed before a conditioned route is marked',
+      [
+        start('S'),
+        gateway('L', 'Flow_L_E'),
+        user('T'),
+        gateway('G'),
+        user('B'),
+        end('EB'),
+        end('E'),
+      ],
+      [
+        edge('S', 'L'),
+        edge('L', 'T', { condition: '${n > 100}' }),
+        edge('L', 'E'),
+        ...chain('T', 'G', 'L'),
+        edge('G', 'B', { condition: '${x > 1}' }),
+        edge('B', 'EB'),
+      ],
+      [
+        '  if (n > 100) {',
+        '    user T',
+        '    if (true) {',
+        `      ${marker}`,
+        '    } else if (x > 1) {',
+        '      user B',
+        '    }',
+        '  } else {',
+        '    end E',
+        '  }',
+        '  end EB',
+      ],
+      [['droppedEdge', 'L']],
+      [],
+    ],
+  ])('%s', async (_, elements, flows, body, reports, runs) => {
+    const ir = minimalProcess(elements, flows);
+    const { source, warnings } = printDsl(ir);
+
+    expect(bodyOf(source)).toBe(
+      ['process p {', '  start S', ...body, '}', ''].join('\n'),
+    );
+    expectReports(warnings, ...reports);
+    const rebuilt = await reDesugar(await printed(ir));
+    const withoutMarker = bodyOf(source)
+      .split('\n')
+      .filter((line) => line.trim() !== marker)
+      .join('\n');
+    expect(bodyOf(irToDsl(rebuilt))).toBe(withoutMarker);
+    expect(runs.map((vars) => run(rebuilt, vars))).toEqual(
+      runs.map((vars) => run(ir, vars)),
+    );
+  });
+});
+
+describe('irToDsl: a split inside a loop body whose every route is conditioned', () => {
+  const reviewLoopIr = (
+    staying: readonly (readonly [step: string, condition: string])[],
+    exit: 'E' | 'E2' = 'E2',
+  ): BpmnProcess =>
+    minimalProcess(
+      [
+        start('S'),
+        user('Approve'),
+        gateway('G1'),
+        ...staying.map(([id]): FlowElement => ({ kind: 'userTask', id })),
+        gateway('G2'),
+        user('Pay'),
+        end('E'),
+        ...(exit === 'E2' ? [{ kind: 'endEvent', id: 'E2' } as const] : []),
+      ],
+      [
+        ...chain('S', 'Approve', 'G1'),
+        edge('G1', 'Pay', { condition: '${approved}' }),
+        ...staying.map(([id, condition]) => edge('G1', id, { condition })),
+        ...staying.map(([id]) => edge(id, 'G2')),
+        edge('G2', 'Approve', { condition: '${clarified}' }),
+        edge('G2', exit, { condition: '${!clarified}' }),
+        edge('Pay', 'E'),
+      ],
+    );
+
+  const loopHead = (declared: string): string =>
+    `process p {\n${declared}  start S\n  do {\n    user Approve\n`;
+  const loopTail = '    }\n' + '  } while (clarified)\n';
+  const reviewBranch = '    } else if (!approved) {\n' + '      user Review\n';
+
+  it.each([
+    [
+      'walks the one route that stays in the loop inline and jumps on the one that leaves',
+      reviewLoopIr([['Review', '${!approved}']]),
+      loopHead('  var approved: any\n  var clarified: any\n') +
+        '    if (approved) {\n' +
+        '      goto Pay\n' +
+        reviewBranch +
+        loopTail +
+        '  end E2\n' +
+        '  user Pay\n' +
+        '  end E\n' +
+        '}\n',
+    ],
+    [
+      'walks both routes that stay in the loop inline',
+      reviewLoopIr([
+        ['Review', '${!approved && !escalated}'],
+        ['Escalate', '${escalated}'],
+      ]),
+      loopHead(
+        '  var approved: any\n  var clarified: any\n  var escalated: any\n',
+      ) +
+        '    if (approved) {\n' +
+        '      goto Pay\n' +
+        '    } else if (!approved && !escalated) {\n' +
+        '      user Review\n' +
+        '    } else if (escalated) {\n' +
+        '      user Escalate\n' +
+        loopTail +
+        '  end E2\n' +
+        '  user Pay\n' +
+        '  end E\n' +
+        '}\n',
+    ],
+    [
+      'keeps the split inside the loop when its leaving route and the loop exit share one end',
+      reviewLoopIr([['Review', '${!approved}']], 'E'),
+      loopHead('  var approved: any\n  var clarified: any\n') +
+        '    if (approved) {\n' +
+        '      goto Pay\n' +
+        reviewBranch +
+        loopTail +
+        '  end E\n' +
+        '  user Pay\n' +
+        '  goto E\n' +
+        '}\n',
+    ],
+  ])('%s', async (_title, ir, expected) => {
+    const { source, warnings } = printDsl(ir);
+    expect(source).toBe(expected);
+    expectReports(
+      warnings,
+      ['inventedFallback', 'G1'],
+      ['droppedFlowCondition', 'G2'],
+    );
+    await printed(ir);
+  });
+});
+
+// A jump into one-way gateway `G` forwards through it to `R`.
+const passThroughIr = (
+  kind: 'exclusiveGateway' | 'inclusiveGateway' | 'eventBasedGateway',
+  id = 'G',
+): BpmnProcess =>
+  minimalProcess(
+    [start('S'), user('A'), { kind, id }, user('R'), end('E')],
+    [...chain('S', 'A', 'E'), edge('A', id), edge(id, 'R'), edge('R', 'E')],
+  );
+
+const PASS_THROUGH_IR = passThroughIr('exclusiveGateway', 'Gateway_p_9_join');
+
+// Hostile input: a back edge into a parallel fork, which no goto can name.
 const GOTO_INTO_FORK_IR: BpmnProcess = minimalProcess(
   [
-    { kind: 'startEvent', id: 'S' },
+    start('S'),
     { kind: 'parallelGateway', id: 'Gateway_p_1_fork' },
-    { kind: 'userTask', id: 'A' },
-    { kind: 'userTask', id: 'B' },
-    { kind: 'endEvent', id: 'E' },
+    user('A'),
+    user('B'),
+    end('E'),
   ],
   [
-    { id: 'f0', sourceRef: 'S', targetRef: 'Gateway_p_1_fork' },
-    { id: 'f1', sourceRef: 'Gateway_p_1_fork', targetRef: 'A' },
-    { id: 'f2', sourceRef: 'Gateway_p_1_fork', targetRef: 'B' },
-    { id: 'f3', sourceRef: 'A', targetRef: 'E' },
-    { id: 'f4', sourceRef: 'B', targetRef: 'Gateway_p_1_fork' },
+    edge('S', 'Gateway_p_1_fork', { id: 'f0' }),
+    edge('Gateway_p_1_fork', 'A', { id: 'f1' }),
+    edge('Gateway_p_1_fork', 'B', { id: 'f2' }),
+    edge('A', 'E', { id: 'f3' }),
+    edge('B', 'Gateway_p_1_fork', { id: 'f4' }),
   ],
 );
 
-describe('irToDsl: never emit a goto to a gateway', () => {
-  it('forwards a goto through a one-out pass-through gateway to the real successor', async () => {
-    const dsl = irToDsl(PASS_THROUGH_IR);
-    // The jump names the real successor, never the elided gateway.
-    expect(dsl).toContain('goto R');
-    expect(dsl).not.toContain('goto Gateway_');
-    expect(dsl).not.toContain('Gateway_p_9_join');
-    await reDesugar(dsl);
-  });
-
-  it('emits the hand-repair marker for a goto into a fork, never a gateway-targeting goto', async () => {
-    const dsl = irToDsl(GOTO_INTO_FORK_IR);
-    expect(dsl).toContain('// unstructured region: hand-repair required');
-    expect(dsl).not.toContain('goto Gateway_');
-    expect(dsl).not.toContain('goto Gateway_p_1_fork');
-    // The marker is a hidden comment, so the output still parses.
-    await reDesugar(dsl);
-  });
-});
-
-describe('irToDsl: parallel-fork recovery (terminating branch)', () => {
-  it('recovers an asymmetric fork as `parallel { ... }` with the throw inline, the continuation after, and an equal IR back', async () => {
-    // A `parallel` where one branch terminates (`throw`) and the other flows on
-    // to the join. The fork's immediate post-dominator is the virtual exit, so
-    // there is no clean parallel join and the fork must be recovered
-    // structurally rather than degrading to raw gotos.
-    const ir = await reDesugar(`process p {
-  error BOOM(message: "it broke")
-  start Begin
-  parallel {
-    { service A(label: "a", class: "x.A") }
-    { throw error(BOOM) }
-  }
-  end Finish
-}
-`);
-    const dsl = await expectIdempotent(ir);
-
-    expect(dsl).toContain('parallel {');
-    // Both branch bodies print inline; the terminating branch prints its throw
-    // in place, never as a jump to the (un-nameable) synthesized throw node.
-    expect(dsl).toContain('service A(label: "a", class: "x.A")');
-    expect(dsl).toContain('throw error(BOOM)');
-
-    expect(hasGoto(dsl)).toBe(false);
-    expect(dsl).not.toContain('goto Throw_');
-    expect(dsl).not.toContain('goto Gateway_');
-    expect(dsl).not.toContain('Gateway_');
-    expect(dsl).not.toContain('Throw_');
-
-    // The continuation prints AFTER the parallel, at the container body level
-    // (one indent), not swept to the end and not nested inside the block.
-    const parIdx = dsl.indexOf('parallel {');
-    const finishIdx = dsl.indexOf('end Finish');
-    expect(parIdx).toBeGreaterThan(-1);
-    expect(finishIdx).toBeGreaterThan(parIdx);
-    expect(dsl).toContain('\n  end Finish');
-  });
-
-  it('recovers the shared continuation of a nested fork with a terminating branch (idempotence)', async () => {
-    // An outer `parallel` whose surviving branches each hold their own nested
-    // `parallel`, plus one terminating `throw`. The continuation (`end Finish`)
-    // must resume after the OUTER join both survivors reconverge at, not the
-    // first survivor's inner join, which would drift it into a sibling branch
-    // and make the round-trip non-idempotent.
-    const ir = await reDesugar(`process p {
-  error BOOM(message: "it broke")
-  start Begin
-  parallel {
-    {
-      parallel {
-        { service A(label: "a", class: "x.A") }
-        { service B(label: "b", class: "x.B") }
-      }
-    }
-    {
-      parallel {
-        { service C(label: "c", class: "x.C") }
-        { service D(label: "d", class: "x.D") }
-      }
-    }
-    { throw error(BOOM) }
-  }
-  end Finish
-}
-`);
-    const dsl = await expectIdempotent(ir);
-
-    // The continuation lands after the outer parallel at container level, and
-    // no edge is dropped through a bare gateway or throw-targeting goto.
-    expect(dsl).toContain('\n  end Finish');
-    expect(dsl).not.toContain('goto Gateway_');
-    expect(dsl).not.toContain('goto Throw_');
-  });
-});
-
-describe('irToDsl: the process header and the start it opens on', () => {
-  /** Every key the header carries, an initiator, and a condition start. */
-  const HEADER_IR: BpmnProcess = {
-    id: 'stock-watch',
-    isExecutable: true,
-    versionTag: '3.1',
-    historyTimeToLive: 'P90D',
-    candidateStarterUsers: 'demo,manager',
-    candidateStarterGroups: 'adjusters',
-    flowElements: [
-      {
-        kind: 'startEvent',
-        id: 'StockRanLow',
-        formFields: [{ id: 'stockLevel', type: 'number' }],
-        eventDefinition: conditionDef('${stockLevel < 5}'),
-        initiator: 'claimant',
-      },
-      { kind: 'userTask', id: 'ReorderStock', assignee: 'demo' },
-      { kind: 'endEvent', id: 'Restocked' },
-    ],
-    sequenceFlows: [
-      edge('StockRanLow', 'ReorderStock'),
-      edge('ReorderStock', 'Restocked'),
-    ],
-  };
-
-  it('prints every key the header vocabulary declares, in the order it declares them', () => {
-    expect([
-      'label',
-      'documentation',
-      ...PROCESS_HEADER_SETTINGS.map(([key]) => key),
-    ]).toEqual(PROCESS_HEADER_KEYS);
-  });
-
-  it('prints the header, the initiator and the condition, and re-desugars to the same IR', async () => {
-    const dsl = await printed(HEADER_IR);
-    expect(dsl).toBe(
-      'process stock-watch(versionTag: "3.1", historyTimeToLive: "P90D", candidateStarterUsers: "demo,manager", candidateStarterGroups: "adjusters") {\n' +
-        '  start StockRanLow condition(stockLevel < 5, initiator: "claimant") {\n' +
-        '    form {\n' +
-        '      stockLevel: number\n' +
-        '    }\n' +
-        '  }\n' +
-        '  user ReorderStock(assignee: "demo")\n' +
-        '  end Restocked\n' +
-        '}\n',
-    );
-    expect(await reDesugar(dsl)).toEqual(HEADER_IR);
-  });
-});
-
-/**
- * The lines strictly between `form {` and the matching `}`, trimmed, brace
- * depth tracked so a field's own block (parens and members nest inside a
- * field line) does not end the slice early.
- */
 function formBlockLines(dsl: string): string[] {
   const lines = dsl.split('\n');
   const start = lines.findIndex((line) => line.trim() === 'form {');
@@ -2932,6 +1412,11 @@ describe('irToDsl: form fields print their parens and block only with something 
       [
         'birthDate: date "Date of birth" (pattern: "dd/MM/yyyy", required: true)',
       ],
+    ],
+    [
+      'a number default opening with #{ prints quoted so it re-lexes as a raw template',
+      { id: 'seed', type: 'number', defaultValue: '#{seed}' },
+      ['seed: number = "#{seed}"'],
     ],
     [
       'a number prints an all-digit bound bare and a negative bound quoted',
@@ -2982,11 +1467,6 @@ describe('irToDsl: form fields print their parens and block only with something 
 });
 
 describe('irToDsl: engine attributes', () => {
-  /**
-   * One of every statement kind that carries engine settings, each carrying at
-   * least one, plus a boundary handler whose escape chain is a
-   * typed throw and a host-less handler.
-   */
   const ENGINE_IR: BpmnProcess = {
     id: 'p',
     isExecutable: true,
@@ -3037,7 +1517,7 @@ describe('irToDsl: engine attributes', () => {
         kind: 'subProcess',
         id: 'Sub',
         asyncBefore: true,
-        flowElements: [{ kind: 'userTask', id: 'Inner' }],
+        flowElements: [user('Inner')],
         sequenceFlows: [],
       },
       {
@@ -3078,238 +1558,211 @@ describe('irToDsl: engine attributes', () => {
       },
     ],
     sequenceFlows: [
-      { id: 'F1', sourceRef: 'S', targetRef: 'U' },
-      { id: 'F2', sourceRef: 'U', targetRef: 'V' },
-      { id: 'F3', sourceRef: 'V', targetRef: 'Sc' },
-      { id: 'F4', sourceRef: 'Sc', targetRef: 'C' },
-      { id: 'F5', sourceRef: 'C', targetRef: 'Sub' },
-      { id: 'F6', sourceRef: 'Sub', targetRef: 'Catch_p_1' },
-      { id: 'F7', sourceRef: 'Catch_p_1', targetRef: 'Throw_p_1' },
-      { id: 'F8', sourceRef: 'Throw_p_1', targetRef: 'E' },
-      { id: 'F9', sourceRef: 'Boundary_U_error', targetRef: 'Failed' },
+      ...flowChain(
+        'S',
+        'U',
+        'V',
+        'Sc',
+        'C',
+        'Sub',
+        'Catch_p_1',
+        'Throw_p_1',
+        'E',
+      ),
+      edge('Boundary_U_error', 'Failed', { id: 'F9' }),
     ],
   };
 
   it('renders the parens on every statement kind that takes them, in a fixed setting order', async () => {
-    const dsl = await printed(ENGINE_IR, 'reservedId');
-    expect(dsl).toContain('start S(asyncAfter: true)');
-    expect(dsl).toContain(
-      'user U(label: "Review", assignee: "ana", ' +
-        'formKey: "embedded:app:forms/r.html", candidateGroups: "ops", ' +
-        'candidateUsers: "ana,bo", dueDate: "${due}", followUpDate: "P1D", ' +
-        'priority: 20, asyncBefore: true, exclusive: false, jobPriority: 50, ' +
-        'retryCycle: "R3/PT10M") {\n' +
-        '    form {\n' +
-        '      amount: number\n' +
-        '    }\n' +
+    expect(await printed(ENGINE_IR)).toBe(
+      [
+        'process p(versionTag: "3.1") {',
+        '  error BOOM',
+        '  error PF',
+        '  escalation ESC',
+        '  start S(asyncAfter: true)',
+        '  user U(label: "Review", assignee: "ana", formKey: "embedded:app:forms/r.html", candidateGroups: "ops", candidateUsers: "ana,bo", dueDate: "${due}", followUpDate: "P1D", priority: 20, asyncBefore: true, exclusive: false, jobPriority: 50, retryCycle: "R3/PT10M") {',
+        '    form {',
+        '      amount: number',
+        '    }',
         '  }',
-    );
-    expect(dsl).toContain(
-      'service V(expression: "${c.run(execution)}", resultVariable: "res", asyncBefore: true)',
-    );
-    expect(dsl).toContain(
-      'script Sc(resultVariable: "out", asyncAfter: true) ```javascript',
-    );
-    expect(dsl).toContain(
-      'call C(process: "other", businessKey: "bk", asyncBefore: true) {\n' +
-        '    in *\n' +
+        '  service V(expression: "${c.run(execution)}", resultVariable: "res", asyncBefore: true)',
+        '  script Sc(resultVariable: "out", asyncAfter: true) ```javascript',
+        'x = 1;',
+        '```',
+        '  call C(process: "other", businessKey: "bk", asyncBefore: true) {',
+        '    in *',
         '  }',
+        '  subprocess Sub(asyncBefore: true) {',
+        '    user Inner',
+        '  }',
+        '  await timer("PT1H", asyncBefore: true)',
+        '  emit escalation(ESC, exclusive: false)',
+        '  end E(asyncBefore: true)',
+        '  on U: error(BOOM, asyncBefore: true) {',
+        '    throw error Failed(PF, asyncAfter: true)',
+        '  }',
+        '  on escalation(ESC, asyncBefore: true) {',
+        '  }',
+        '}',
+        '',
+      ].join('\n'),
     );
-    expect(dsl).toContain('subprocess Sub(asyncBefore: true) {');
-    expect(dsl).toContain('await timer("PT1H", asyncBefore: true)');
-    expect(dsl).toContain('emit escalation(ESC, exclusive: false)');
-    expect(dsl).toContain('end E(asyncBefore: true)');
-    expect(dsl).toContain('throw error Failed(PF, asyncAfter: true)');
-
-    // Both handler headers carry their settings before the body brace.
-    expect(dsl).toContain('on U: error(BOOM, asyncBefore: true) {');
-    expect(dsl).toContain('on escalation(ESC, asyncBefore: true) {');
-
-    // The process carries its own settings the way every element does.
-    expect(dsl).toContain('versionTag: "3.1"');
   });
 
-  it('prints neither parens nor braces for a node carrying no engine attributes', async () => {
-    const dsl = await printed(
-      minimalProcess(
-        [
-          { kind: 'startEvent', id: 'S' },
-          { kind: 'userTask', id: 'U' },
-          {
-            kind: 'subProcess',
-            id: 'Sub',
-            flowElements: [{ kind: 'userTask', id: 'Inner' }],
-            sequenceFlows: [],
-          },
-          typedEvent('intermediateCatchEvent', 'Catch_p_1', signalDef('Ping')),
-          { kind: 'endEvent', id: 'E' },
-        ],
-        flowChain('S', 'U', 'Sub', 'Catch_p_1', 'E'),
-      ),
+  const timerHandler = (
+    startId: string,
+    subProcessSettings: JobSettings = {},
+  ): BpmnProcess =>
+    processIr(
+      'p',
+      [
+        start('S'),
+        end('E'),
+        {
+          ...triggeredSub('EventSubProcess_p_1', [
+            {
+              kind: 'startEvent',
+              id: startId,
+              eventDefinition: timerDef('cycle', 'R/PT1H'),
+              isInterrupting: false,
+              exclusive: false,
+              jobPriority: '5',
+              retryCycle: 'R1/PT1M',
+            },
+            end('EndEvent_EventSubProcess_p_1'),
+          ]),
+          ...subProcessSettings,
+        },
+      ],
+      [edge('S', 'E')],
     );
-    expect(dsl).not.toContain('{ }');
-    expect(dsl).not.toContain('()');
-    expect(dsl).toContain('\n  start S\n');
-    expect(dsl).toContain('\n  user U\n');
-    expect(dsl).toContain('\n  await signal("Ping")\n');
-    expect(dsl).toContain('\n  end E\n');
-    expect(dsl).toContain('\n  subprocess Sub {\n');
-  });
 
-  it('prints booleans bare and only in their non-default direction', async () => {
-    const dsl = await printed(
-      minimalProcess(
-        [
-          { kind: 'startEvent', id: 'S' },
-          { kind: 'userTask', id: 'A', asyncBefore: true, asyncAfter: true },
-          { kind: 'userTask', id: 'B', exclusive: false },
-          { kind: 'endEvent', id: 'E' },
-        ],
-        flowChain('S', 'A', 'B', 'E'),
-      ),
+  it.each<[string, BpmnProcess, string[]]>([
+    [
+      "a synthesized start's timer-job settings print on the `on timer` head",
+      timerHandler('StartEvent_EventSubProcess_p_1'),
+      [
+        '  on timer(every: "R/PT1H", exclusive: false, jobPriority: 5, retryCycle: "R1/PT1M", alongside) {',
+        '  }',
+      ],
+    ],
+    [
+      "the sub-process's async flags print ahead of the start's timer-job settings",
+      timerHandler('StartEvent_EventSubProcess_p_1', { asyncBefore: true }),
+      [
+        '  on timer(every: "R/PT1H", asyncBefore: true, exclusive: false, jobPriority: 5, retryCycle: "R1/PT1M", alongside) {',
+        '  }',
+      ],
+    ],
+    [
+      'an authored start keeps them on its own statement',
+      timerHandler('Tick'),
+      [
+        '  on timer(every: "R/PT1H", alongside) {',
+        '    start Tick(exclusive: false, jobPriority: 5, retryCycle: "R1/PT1M")',
+        '  }',
+      ],
+    ],
+  ])('%s', async (_title, ir, handlerLines) => {
+    const dsl = await printed(ir);
+    expect(dsl.split('\n').slice(-2 - handlerLines.length, -2)).toEqual(
+      handlerLines,
     );
-    expect(dsl).toContain('user A(asyncBefore: true, asyncAfter: true)');
-    expect(dsl).toContain('user B(exclusive: false)');
-    expect(dsl).not.toContain('"true"');
-    expect(dsl).not.toContain('"false"');
-  });
-
-  it('prints an all-digit priority bare and any other value quoted, a #{ opening or padding rewritten to the raw ${...} form', async () => {
-    const dsl = await printed(
-      minimalProcess(
-        [
-          { kind: 'startEvent', id: 'S' },
-          { kind: 'userTask', id: 'A', jobPriority: '50', priority: '7' },
-          {
-            kind: 'userTask',
-            id: 'B',
-            jobPriority: '${order.rush}',
-            priority: '${p}',
-          },
-          {
-            kind: 'userTask',
-            id: 'C',
-            jobPriority: '#{order.rush}',
-            priority: '  ${p}',
-          },
-          { kind: 'endEvent', id: 'E' },
-        ],
-        flowChain('S', 'A', 'B', 'C', 'E'),
-      ),
+    const back = (await reDesugar(dsl)).flowElements.find(
+      (fe) => fe.kind === 'subProcess' && fe.triggeredByEvent === true,
     );
-    expect(dsl).toContain('user A(priority: 7, jobPriority: 50)');
-    expect(dsl).toContain(
-      'user B(priority: "${p}", jobPriority: "${order.rush}")',
-    );
-    expect(dsl).toContain(
-      'user C(priority: "${p}", jobPriority: "${order.rush}")',
-    );
+    const start = back?.kind === 'subProcess' && only(back, 'startEvent');
+    expect(
+      start && {
+        exclusive: start.exclusive,
+        jobPriority: start.jobPriority,
+        retryCycle: start.retryCycle,
+      },
+    ).toEqual({ exclusive: false, jobPriority: '5', retryCycle: 'R1/PT1M' });
   });
 });
 
-/**
- * A step whose two routes end apart, so neither branch has a join to walk to
- * and the one landing on the end keeps its edge as a jump.
- */
 const jumpToEndIr = (
   end: Partial<Omit<Extract<FlowElement, { kind: 'endEvent' }>, 'kind'>>,
 ): BpmnProcess => {
   const { id = 'EndEvent_p', ...attrs } = end;
   return minimalProcess(
+    [start('S'), user('A'), user('B'), { kind: 'endEvent', id, ...attrs }],
     [
-      { kind: 'startEvent', id: 'S' },
-      { kind: 'userTask', id: 'A' },
-      { kind: 'userTask', id: 'B' },
-      { kind: 'endEvent', id, ...attrs },
-      { kind: 'endEvent', id: 'E2' },
-    ],
-    [
-      { id: 'F1', sourceRef: 'S', targetRef: 'A' },
+      edge('S', 'A', { id: 'F1' }),
       { id: 'F2', sourceRef: 'A', targetRef: id },
-      { id: 'F3', sourceRef: 'A', targetRef: 'B' },
-      { id: 'F4', sourceRef: 'B', targetRef: 'E2' },
+      edge('A', 'B', { id: 'F3' }),
+      { id: 'F4', sourceRef: 'B', targetRef: id },
     ],
   );
 };
 
-/**
- * A back edge to the start event: the loop cannot be recognized as a `while`,
- * so the edge is written as a jump, asking the same question on the other side
- * of the predicate.
- */
 const backEdgeIr = (
   start: Partial<Omit<Extract<FlowElement, { kind: 'startEvent' }>, 'kind'>>,
 ): BpmnProcess => {
   const { id = 'StartEvent_p', ...attrs } = start;
   return minimalProcess(
-    [
-      { kind: 'startEvent', id, ...attrs },
-      { kind: 'userTask', id: 'A' },
-    ],
+    [{ kind: 'startEvent', id, ...attrs }, user('A')],
     flowChain(id, 'A', id),
   );
 };
 
-/** A listener is a further reason a synthesized terminal has something to print. */
 const DONE_LISTENERS: ExecutionListener[] = [
   { event: 'end', binding: classBinding('com.example.Done') },
 ];
 
 describe('irToDsl: whether a synthesized terminal prints', () => {
-  // One row per arm of the shared printability predicate: content that cannot
-  // be re-derived prints the statement and the jump resolves; anything else
-  // elides the terminal and the edge takes the marker instead. `expected` is
-  // the statement, or null for the elided arm.
   it.each([
     [
       'an engine attribute on an end',
       'end',
       { asyncBefore: true },
       'end EndEvent_p(asyncBefore: true)',
-      ['reservedId'],
+      ['mintedId'],
     ],
     [
       'a terminate on an end, which cannot be re-derived',
       'end',
       { eventDefinition: { kind: 'terminate' } },
       'end EndEvent_p terminate',
-      ['reservedId'],
+      ['mintedId'],
     ],
     [
       'a listener on an end',
       'end',
       { executionListeners: DONE_LISTENERS },
       'end EndEvent_p {\n    on end(class: "com.example.Done")\n  }',
-      ['reservedId'],
+      ['mintedId'],
     ],
     [
       "an id carrying another kind's synthesized prefix on an end, authored here",
       'end',
       { id: 'StartEvent_p' },
       'end StartEvent_p',
-      ['reservedId'],
+      ['mintedId'],
     ],
     ['nothing on an end', 'end', {}, null, []],
     [
-      'a label alone on an end, a label not being printable content',
+      'a label alone on an end, which nothing else can carry, forces the print',
       'end',
       { name: 'Order Filed' },
-      null,
-      [],
+      'end EndEvent_p(label: "Order Filed")',
+      ['mintedId'],
     ],
     [
       'an engine attribute on a start',
       'start',
       { asyncBefore: true },
       'start StartEvent_p(asyncBefore: true)',
-      ['reservedId'],
+      ['mintedId'],
     ],
     [
       "an id carrying another kind's synthesized prefix on a start, authored here",
       'start',
       { id: 'EndEvent_p' },
       'start EndEvent_p',
-      ['reservedId'],
+      ['mintedId'],
     ],
     ['nothing on a start', 'start', {}, null, []],
     ['a label alone on a start', 'start', { name: 'Order Received' }, null, []],
@@ -3330,311 +1783,115 @@ describe('irToDsl: whether a synthesized terminal prints', () => {
         expect(dsl).not.toContain(`${side} ${id}`);
         expect(dsl).not.toContain(`goto ${id}`);
         if ('name' in payload) expect(dsl).not.toContain(payload.name);
-        expect(dsl).toContain(UNSTRUCTURED_MARKER);
+        expect(dsl).toContain(`${UNSTRUCTURED_MARKER} (dropped edge into`);
       } else {
         expect(dsl).toContain(expected);
         expect(dsl).toContain(`goto ${id}`);
-        expect(dsl).not.toContain(UNSTRUCTURED_MARKER);
+        expect(dsl).not.toContain('dropped edge');
       }
     },
   );
 });
 
-describe('irToDsl: input/output parameters', () => {
-  it('prints every value form, inputs before outputs, in IR order', async () => {
-    const dsl = await printed(
-      around({
-        kind: 'serviceTask',
-        id: 'V',
-        binding: externalBinding('charge'),
-        inputParameters: [
-          ioParam('plain', textValue('ready')),
-          ioParam('expr', textValue('${order.id}')),
-          ioParam('items', listValue([])),
-        ],
-        outputParameters: [
-          ioParam('code', textValue('200')),
-          ioParam('blank', mapValue([])),
-        ],
-      }),
-    );
-    expect(dsl).toContain(
-      'service V(topic: "charge") {\n' +
-        '    input plain = "ready"\n' +
-        '    input expr = "${order.id}"\n' +
-        '    input items = []\n' +
-        '    output code = "200"\n' +
-        '    output blank = {}\n' +
-        '  }',
-    );
-  });
-
-  it('nests a map inside a list and a list inside a map, keeping a keyword-shaped key quoted', async () => {
-    const dsl = await printed(
-      around({
-        kind: 'userTask',
-        id: 'U',
-        inputParameters: [
-          ioParam(
-            'rows',
-            listValue([
-              textValue('a'),
-              mapValue([
-                mapEntry('k', textValue('v')),
-                // `end` is a statement keyword, so it never lexes as an
-                // identifier: only the quoted spelling survives re-parsing.
-                mapEntry('end', textValue('z')),
+describe('irToDsl: members inside the braces', () => {
+  it('prints fields, the form, parameters and listeners in one fixed order on every carrier', async () => {
+    const ir = minimalProcess(
+      [
+        start('S'),
+        {
+          ...serviceTask('V', externalBinding('charge')),
+          inputParameters: [
+            ioParam('plain', textValue('ready')),
+            ioParam('expr', textValue('${order.id}')),
+            ioParam('items', listValue([])),
+          ],
+          outputParameters: [
+            ioParam('code', textValue('200')),
+            ioParam('blank', mapValue([])),
+          ],
+        },
+        {
+          ...user('Nested'),
+          inputParameters: [
+            ioParam(
+              'rows',
+              listValue([
+                textValue('a'),
+                // `end` is a keyword, so only the quoted key re-parses.
+                mapValue([
+                  mapEntry('k', textValue('v')),
+                  mapEntry('end', textValue('z')),
+                ]),
               ]),
-            ]),
-          ),
-          ioParam(
-            'lookup',
-            mapValue([
-              mapEntry('ids', listValue([textValue('x')])),
-              mapEntry('with space', textValue('w')),
-            ]),
-          ),
-        ],
-      }),
-    );
-    expect(dsl).toContain(
-      'user U {\n' +
-        '    input rows = ["a", { "k": "v", "end": "z" }]\n' +
-        '    input lookup = { "ids": ["x"], "with space": "w" }\n' +
-        '  }',
-    );
-  });
-
-  it('prints a script value as a fenced block carrying its format', async () => {
-    const dsl = await printed(
-      around({
-        kind: 'userTask',
-        id: 'U',
-        inputParameters: [
-          ioParam('total', scriptValue('groovy', 'sum(a, b)\n')),
-        ],
-      }),
-    );
-    expect(dsl).toContain(
-      'user U {\n    input total = ```groovy\nsum(a, b)\n```\n  }',
-    );
-  });
-
-  it('keeps a script task readable with a fenced value among its members', async () => {
-    const dsl = await printed(
-      around({
-        kind: 'scriptTask',
-        id: 'Sc',
-        format: 'javascript',
-        code: 'x = 1;\n',
-        inputParameters: [ioParam('seed', scriptValue('groovy', 'seed()\n'))],
-      }),
-    );
-    expect(dsl).toContain(
-      'script Sc {\n' +
-        '    input seed = ```groovy\nseed()\n```\n' +
-        '  } ```javascript\nx = 1;\n```',
-    );
-  });
-
-  it('prints the members before the body on a sub-process and before the mappings on a call', async () => {
-    const dsl = await printed(
-      minimalProcess(
-        [
-          { kind: 'startEvent', id: 'S' },
-          {
-            kind: 'subProcess',
-            id: 'Sub',
-            inputParameters: [
-              ioParam('seed', textValue('1')),
-              ioParam('extra', mapValue([])),
-            ],
-            flowElements: [{ kind: 'userTask', id: 'Inner' }],
-            sequenceFlows: [],
-          },
-          {
-            kind: 'callActivity',
-            id: 'C',
-            calledElement: 'other',
-            outputParameters: [ioParam('total', textValue('${sum}'))],
-            inMappings: [{ kind: 'all' }],
-          },
-          { kind: 'endEvent', id: 'E' },
-        ],
-        flowChain('S', 'Sub', 'C', 'E'),
-      ),
-    );
-    // An empty map ending the members puts `{}` `}` `{` in a row, the sequence
-    // the body brace has to be told apart from.
-    expect(dsl).toContain(
-      'subprocess Sub {\n' +
-        '    input seed = "1"\n' +
-        '    input extra = {}\n' +
-        '  } {',
-    );
-    expect(dsl).toContain(
-      'call C(process: "other") {\n' +
-        '    output total = "${sum}"\n' +
-        '    in *\n' +
-        '  }',
-    );
-  });
-});
-
-describe('irToDsl: listeners', () => {
-  it('prints each binding form, execution listeners before task listeners', async () => {
-    const dsl = await printed(
-      around({
-        kind: 'userTask',
-        id: 'U',
-        executionListeners: [
-          { event: 'start', binding: classBinding('com.example.Enter') },
-          { event: 'end', binding: exprBinding('${audit.log()}') },
-        ],
-        taskListeners: [
-          { event: 'create', binding: delegateBinding('${assignHook}') },
-        ],
-      }),
-    );
-    expect(dsl).toContain(
-      'user U {\n' +
-        '    on start(class: "com.example.Enter")\n' +
-        '    on end(expression: "${audit.log()}")\n' +
-        '    on create(delegate: "${assignHook}")\n' +
-        '  }',
-    );
-  });
-
-  it('prints a script-bound listener as a fenced block', async () => {
-    const dsl = await printed(
-      around({
-        kind: 'serviceTask',
-        id: 'V',
-        binding: classBinding('com.example.C'),
-        executionListeners: [
-          { event: 'end', binding: scriptValue('groovy', "println 'bye'\n") },
-        ],
-      }),
-    );
-    expect(dsl).toContain(
-      'service V(class: "com.example.C") {\n' +
-        '    on end ```groovy\n' +
-        "println 'bye'\n" +
-        '```\n' +
-        '  }',
-    );
-  });
-
-  it('carries a timeout listener timer through the timer particle', async () => {
-    const dsl = await printed(
-      around({
-        kind: 'userTask',
-        id: 'U',
-        taskListeners: [
-          {
-            event: 'timeout',
-            binding: classBinding('com.example.T'),
-            timer: timerDef('duration', 'PT1H'),
-          },
-          {
-            event: 'timeout',
-            binding: classBinding('com.example.D'),
-            timer: timerDef('date', '${deadline}'),
-          },
-        ],
-      }),
-      // The model carries two of one listener; the surface holds one, so it
-      // is the model the compiler refuses, not the print.
-      'duplicateTimeout',
-    );
-    expect(dsl).toContain(
-      'user U {\n' +
-        '    on timeout after "PT1H"(class: "com.example.T")\n' +
-        '    on timeout at "${deadline}"(class: "com.example.D")\n' +
-        '  }',
-    );
-  });
-
-  it('prints an execution listener on a handler header and an awaited event', async () => {
-    const dsl = await printed(
-      minimalProcess(
-        [
-          { kind: 'startEvent', id: 'S' },
-          {
-            kind: 'intermediateCatchEvent',
-            id: 'Catch_p_1',
-            eventDefinition: signalDef('Ping'),
-            executionListeners: [
-              { event: 'start', binding: classBinding('com.example.W') },
-            ],
-          },
-          { kind: 'endEvent', id: 'E' },
-          {
-            kind: 'subProcess',
-            id: 'H',
-            triggeredByEvent: true,
-            executionListeners: [
-              { event: 'end', binding: classBinding('com.example.H') },
-            ],
-            flowElements: [
-              typedEvent('startEvent', 'StartEvent_H', escalationDef('ESC')),
-            ],
-            sequenceFlows: [],
-          },
-        ],
-        flowChain('S', 'Catch_p_1', 'E'),
-      ),
-    );
-    expect(dsl).toContain(
-      'await signal("Ping") {\n    on start(class: "com.example.W")\n  }',
-    );
-    expect(dsl).toContain(
-      'on escalation(ESC) {\n    on end(class: "com.example.H")\n  } {',
-    );
-  });
-
-  it('prints the settings in the parens and the form, the parameters and the listeners in the braces, in one fixed order', async () => {
-    const dsl = await printed(
-      around({
-        kind: 'userTask',
-        id: 'U',
-        name: 'Review',
-        assignee: 'ana',
-        asyncBefore: true,
-        inputParameters: [ioParam('seed', textValue('1'))],
-        outputParameters: [ioParam('note', textValue('${n}'))],
-        executionListeners: [
-          { event: 'start', binding: classBinding('com.example.Enter') },
-        ],
-        taskListeners: [
-          { event: 'complete', binding: classBinding('com.example.Done') },
-        ],
-        formFields: [{ id: 'amount', type: 'number' }],
-      }),
-    );
-    expect(dsl).toContain(
-      'user U(label: "Review", assignee: "ana", asyncBefore: true) {\n' +
-        '    form {\n' +
-        '      amount: number\n' +
-        '    }\n' +
-        '    input seed = "1"\n' +
-        '    output note = "${n}"\n' +
-        '    on start(class: "com.example.Enter")\n' +
-        '    on complete(class: "com.example.Done")\n' +
-        '  }',
-    );
-  });
-});
-
-describe('irToDsl: field injection and form references', () => {
-  /**
-   * `printed` is the whole point of the assertion: a field or a form reference
-   * printed where the compiler refuses it would still read fine as text.
-   */
-  it('prints a field before the io parameters on every carrier, and a form reference beside its binding', async () => {
-    const dsl = await printed(
-      chained([
-        { kind: 'startEvent', id: 'S' },
+            ),
+            ioParam(
+              'lookup',
+              mapValue([
+                mapEntry('ids', listValue([textValue('x')])),
+                mapEntry('with space', textValue('w')),
+              ]),
+            ),
+            ioParam('total', scriptValue('groovy', 'sum(a, b)\n')),
+          ],
+        },
+        {
+          ...scriptTask('Sc', 'javascript', 'x = 1;\n'),
+          inputParameters: [ioParam('seed', scriptValue('groovy', 'seed()\n'))],
+        },
+        {
+          ...chainedSub('Sub', [user('Inner')]),
+          // An empty map ending the members puts `{}` `}` `{` in a row.
+          inputParameters: [
+            ioParam('seed', textValue('1')),
+            ioParam('extra', mapValue([])),
+          ],
+        },
+        {
+          ...callActivity('C', 'other'),
+          outputParameters: [ioParam('total', textValue('${sum}'))],
+          inMappings: [{ kind: 'all' }],
+        },
+        {
+          ...user('Listened'),
+          executionListeners: [
+            { event: 'start', binding: classBinding('com.example.Enter') },
+            { event: 'end', binding: exprBinding('${audit.log()}') },
+          ],
+          taskListeners: [
+            { event: 'create', binding: delegateBinding('${assignHook}') },
+            {
+              event: 'timeout',
+              binding: classBinding('com.example.T'),
+              timer: timerDef('duration', 'PT1H'),
+            },
+            {
+              event: 'timeout',
+              binding: classBinding('com.example.D'),
+              timer: timerDef('date', '${deadline}'),
+            },
+          ],
+        },
+        {
+          ...serviceTask('Scripted', classBinding('com.example.C')),
+          executionListeners: [
+            { event: 'end', binding: scriptValue('groovy', "println 'bye'\n") },
+          ],
+        },
+        {
+          ...user('Ordered'),
+          name: 'Review',
+          assignee: 'ana',
+          asyncBefore: true,
+          inputParameters: [ioParam('seed', textValue('1'))],
+          outputParameters: [ioParam('note', textValue('${n}'))],
+          executionListeners: [
+            { event: 'start', binding: classBinding('com.example.Enter') },
+          ],
+          taskListeners: [
+            { event: 'complete', binding: classBinding('com.example.Done') },
+          ],
+          formFields: [{ id: 'amount', type: 'number' }],
+        },
         {
           kind: 'serviceTask',
           id: 'Ship',
@@ -3659,8 +1916,7 @@ describe('irToDsl: field injection and form references', () => {
           ],
         },
         {
-          kind: 'userTask',
-          id: 'Review',
+          ...user('Review'),
           formRef: {
             key: 'review-form',
             binding: { kind: 'version', version: '3' },
@@ -3676,48 +1932,132 @@ describe('irToDsl: field injection and form references', () => {
             },
           ],
         },
-        { kind: 'endEvent', id: 'E' },
-      ]),
-    );
-
-    expect(dsl).toContain(
-      '  service Ship(class: "com.example.Ship") {\n' +
-        '    field greeting = "hello"\n' +
-        '    field target = "${order.address}"\n' +
-        '    input amount = "${total}"\n' +
-        '    on start(delegate: "${auditHook}") {\n' +
-        '      field level = "INFO"\n' +
-        '    }\n' +
-        '  }\n' +
-        '  user Review(formRef: "review-form", version: 3) {\n' +
-        '    on create(class: "com.example.Assign") {\n' +
-        '      field role = "clerk"\n' +
-        '    }\n' +
-        '  }\n',
-    );
-  });
-
-  it('prints binding: latest and binding: deployment for the two unpinned form bindings', async () => {
-    const printedWith = async (binding: VersionBinding): Promise<string> =>
-      printed(
-        around({
-          kind: 'userTask',
-          id: 'Review',
-          formRef: { key: 'review-form', binding },
-        }),
-      );
-
-    expect([
-      await printedWith({ kind: 'latest' }),
-      await printedWith({ kind: 'deployment' }),
-    ]).toEqual([
-      expect.stringContaining(
-        'user Review(formRef: "review-form", binding: latest)',
+        {
+          ...user('Latest'),
+          formRef: { key: 'f', binding: { kind: 'latest' } },
+        },
+        {
+          ...user('Deployed'),
+          formRef: { key: 'f', binding: { kind: 'deployment' } },
+        },
+        {
+          ...typedEvent(
+            'intermediateCatchEvent',
+            'Catch_p_1',
+            signalDef('Ping'),
+          ),
+          executionListeners: [
+            { event: 'start', binding: classBinding('com.example.W') },
+          ],
+        },
+        end('E'),
+        {
+          ...triggeredSub('H', [
+            typedEvent('startEvent', 'StartEvent_H', escalationDef('ESC')),
+          ]),
+          executionListeners: [
+            { event: 'end', binding: classBinding('com.example.H') },
+          ],
+        },
+      ],
+      flowChain(
+        'S',
+        'V',
+        'Nested',
+        'Sc',
+        'Sub',
+        'C',
+        'Listened',
+        'Scripted',
+        'Ordered',
+        'Ship',
+        'Review',
+        'Latest',
+        'Deployed',
+        'Catch_p_1',
+        'E',
       ),
-      expect.stringContaining(
-        'user Review(formRef: "review-form", binding: deployment)',
-      ),
-    ]);
+    );
+    expect(await printed(ir)).toBe(`process p {
+  escalation ESC
+  start S
+  service V(topic: "charge") {
+    input plain = "ready"
+    input expr = "\${order.id}"
+    input items = []
+    output code = "200"
+    output blank = {}
+  }
+  user Nested {
+    input rows = ["a", { "k": "v", "end": "z" }]
+    input lookup = { "ids": ["x"], "with space": "w" }
+    input total = \`\`\`groovy
+sum(a, b)
+\`\`\`
+  }
+  script Sc {
+    input seed = \`\`\`groovy
+seed()
+\`\`\`
+  } \`\`\`javascript
+x = 1;
+\`\`\`
+  subprocess Sub {
+    input seed = "1"
+    input extra = {}
+  } {
+    user Inner
+  }
+  call C(process: "other") {
+    output total = "\${sum}"
+    in *
+  }
+  user Listened {
+    on start(class: "com.example.Enter")
+    on end(expression: "\${audit.log()}")
+    on create(delegate: "\${assignHook}")
+    on timeout after "PT1H"(class: "com.example.T")
+    on timeout at "\${deadline}"(class: "com.example.D")
+  }
+  service Scripted(class: "com.example.C") {
+    on end \`\`\`groovy
+println 'bye'
+\`\`\`
+  }
+  user Ordered(label: "Review", assignee: "ana", asyncBefore: true) {
+    form {
+      amount: number
+    }
+    input seed = "1"
+    output note = "\${n}"
+    on start(class: "com.example.Enter")
+    on complete(class: "com.example.Done")
+  }
+  service Ship(class: "com.example.Ship") {
+    field greeting = "hello"
+    field target = "\${order.address}"
+    input amount = "\${total}"
+    on start(delegate: "\${auditHook}") {
+      field level = "INFO"
+    }
+  }
+  user Review(formRef: "review-form", version: 3) {
+    on create(class: "com.example.Assign") {
+      field role = "clerk"
+    }
+  }
+  user Latest(formRef: "f", binding: latest)
+  user Deployed(formRef: "f", binding: deployment)
+  await signal("Ping") {
+    on start(class: "com.example.W")
+  }
+  end E
+  on escalation(ESC) {
+    on end(class: "com.example.H")
+  } {
+  }
+}
+`);
   });
 });
 
@@ -3727,123 +2067,12 @@ describe('irToDsl: repeated activities', () => {
     elementVariable: 'line',
   };
 
-  /** The kinds that carry a loop; anything else here is a compile error. */
-  type RepeatableElement = Extract<
-    FlowElement,
-    {
-      kind:
-        | 'task'
-        | 'userTask'
-        | 'serviceTask'
-        | 'scriptTask'
-        | 'receiveTask'
-        | 'subProcess'
-        | 'callActivity';
-    }
-  >;
+  type RepeatableElement = Extract<FlowElement, Repeatable>;
 
-  /** Print one repeated element, wired `S -> el -> E`, with its settings. */
   const printRepeated = (
     el: RepeatableElement,
     loop: LoopCharacteristics,
-  ): string => irToDsl(around({ ...el, asyncBefore: true, loop }));
-
-  /** Every kind that can repeat: the head its clause follows, its settings, and what closes the statement. */
-  const KINDS = [
-    [
-      { kind: 'task', id: 'Record', name: 'Record it' },
-      'step Record',
-      'label: "Record it", asyncBefore: true',
-      '',
-    ],
-    [
-      { kind: 'userTask', id: 'Approve', name: 'Approve it' },
-      'user Approve',
-      'label: "Approve it", asyncBefore: true',
-      '',
-    ],
-    [
-      {
-        kind: 'serviceTask',
-        id: 'Notify',
-        name: 'Notify them',
-        element: 'send',
-        binding: classBinding('com.example.Notify'),
-      },
-      'send Notify',
-      'label: "Notify them", class: "com.example.Notify", asyncBefore: true',
-      '',
-    ],
-    [
-      {
-        kind: 'scriptTask',
-        id: 'Compute',
-        name: 'Compute it',
-        format: 'javascript',
-        code: 'x = 1',
-      },
-      'script Compute',
-      'label: "Compute it", asyncBefore: true',
-      ' ```javascript',
-    ],
-    [
-      {
-        kind: 'receiveTask',
-        id: 'Wait',
-        name: 'Wait for it',
-        messageName: 'OrderPaid',
-      },
-      'receive Wait',
-      'label: "Wait for it", message: "OrderPaid", asyncBefore: true',
-      '',
-    ],
-    [
-      {
-        ...chainedSub('Fulfil', [
-          {
-            kind: 'serviceTask',
-            id: 'Pick',
-            binding: classBinding('com.example.Pick'),
-          },
-        ]),
-        name: 'Fulfil it',
-      },
-      'subprocess Fulfil',
-      'label: "Fulfil it", asyncBefore: true',
-      ' {',
-    ],
-    [
-      {
-        kind: 'callActivity',
-        id: 'Regional',
-        name: 'Run it',
-        calledElement: 'regional-report',
-      },
-      'call Regional',
-      'label: "Run it", process: "regional-report", asyncBefore: true',
-      '',
-    ],
-  ] as const satisfies ReadonlyArray<
-    readonly [RepeatableElement, string, string, string]
-  >;
-
-  it.each(KINDS)(
-    'prints the clause between the name and the settings of %#',
-    (el, head, settings, tail) => {
-      expect(printRepeated(el, OVER_LINES)).toContain(
-        `${head} for each line in lines(${settings})${tail}`,
-      );
-    },
-  );
-
-  it.each(KINDS)(
-    'leaves %# untouched when it carries no loop',
-    (el, head, settings, tail) => {
-      expect(irToDsl(around({ ...el, asyncBefore: true }))).toContain(
-        `${head}(${settings})${tail}`,
-      );
-    },
-  );
+  ): Promise<string> => printed(around({ ...el, asyncBefore: true, loop }));
 
   it.each([
     [
@@ -3851,6 +2080,7 @@ describe('irToDsl: repeated activities', () => {
       'for each line in lines',
     ],
     [{ collection: 'lines' }, 'for each in lines'],
+    [{ collection: 'check-close' }, 'for each in check-close'],
     [
       { collection: '${order.lines}', elementVariable: 'line' },
       'for each line in "${order.lines}"',
@@ -3878,21 +2108,19 @@ describe('irToDsl: repeated activities', () => {
     ],
   ] as const satisfies ReadonlyArray<readonly [LoopCharacteristics, string]>)(
     'prints %j as `%s`',
-    (loop, clause) => {
-      expect(printRepeated({ kind: 'task', id: 'Record' }, loop)).toContain(
+    async (loop, clause) => {
+      expect(await printRepeated(task('Record'), loop)).toContain(
         `step Record ${clause}(asyncBefore: true)`,
       );
     },
   );
 
-  // A bare collection needs a declaration to lower back; anything the source
-  // already types, or that is no name at all, must not get a second one.
   it.each([
     [
       'declares every bare collection once, at any depth',
       minimalProcess(
         [
-          { kind: 'startEvent', id: 'S' },
+          start('S'),
           { kind: 'task', id: 'Record', loop: OVER_LINES },
           { kind: 'task', id: 'Price', loop: OVER_LINES },
           chainedSub('Fulfil', [
@@ -3902,7 +2130,7 @@ describe('irToDsl: repeated activities', () => {
               loop: { collection: 'parcels', elementVariable: 'parcel' },
             },
           ]),
-          { kind: 'endEvent', id: 'E' },
+          end('E'),
         ],
         flowChain('S', 'Record', 'Price', 'Fulfil', 'E'),
       ),
@@ -3931,7 +2159,7 @@ describe('irToDsl: repeated activities', () => {
             formFields: [{ id: 'lines', type: 'string' }],
           },
           { kind: 'task', id: 'Record', loop: OVER_LINES },
-          { kind: 'endEvent', id: 'E' },
+          end('E'),
         ],
         flowChain('S', 'Record', 'E'),
       ),
@@ -3943,11 +2171,11 @@ describe('irToDsl: repeated activities', () => {
       'leaves a collection a catch binding already types undeclared',
       minimalProcess(
         [
-          { kind: 'startEvent', id: 'S' },
+          start('S'),
           { kind: 'task', id: 'Record', loop: { collection: 'c' } },
           { kind: 'task', id: 'Note', loop: { collection: 'm' } },
           { kind: 'task', id: 'Escalate', loop: { collection: 'x' } },
-          { kind: 'endEvent', id: 'E' },
+          end('E'),
           eventHandler(
             'H',
             'HS',
@@ -3969,73 +2197,8 @@ describe('irToDsl: repeated activities', () => {
   });
 });
 
-/**
- * The four settings a repetition writes on the loop element itself
- * (`runAsyncBefore`, `runAsyncAfter`, `runExclusive`, `runRetryCycle`) sit in
- * the same parens as the statement's own, after them, and read back onto the
- * loop rather than the step.
- */
-describe('irToDsl: per-run settings on a repetition', () => {
-  const RUN_LOOP: LoopCharacteristics = {
-    cardinality: '3',
-    asyncBefore: true,
-    asyncAfter: true,
-    exclusive: false,
-    retryCycle: 'R2/PT1M',
-  };
-
-  it.each([
-    [
-      "a service's run keys follow its own settings",
-      {
-        ...serviceTask(
-          'WarmPricing',
-          classBinding('com.example.WarmPricingDelegate'),
-        ),
-        asyncBefore: true,
-        retryCycle: 'R3/PT10M',
-        loop: RUN_LOOP,
-      },
-      'service WarmPricing for 3(class: "com.example.WarmPricingDelegate", ' +
-        'asyncBefore: true, retryCycle: "R3/PT10M", runAsyncBefore: true, ' +
-        'runAsyncAfter: true, runExclusive: false, runRetryCycle: "R2/PT1M")',
-    ],
-    [
-      "a subprocess's run keys follow its own settings",
-      {
-        ...chainedSub('Fulfil', [{ kind: 'userTask', id: 'Inner' }]),
-        asyncBefore: true,
-        retryCycle: 'R3/PT10M',
-        loop: RUN_LOOP,
-      },
-      'subprocess Fulfil for 3(asyncBefore: true, retryCycle: "R3/PT10M", ' +
-        'runAsyncBefore: true, runAsyncAfter: true, runExclusive: false, ' +
-        'runRetryCycle: "R2/PT1M") {',
-    ],
-  ] as const)('%s and read back onto the loop', async (_title, el, head) => {
-    const dsl = await printed(around(el));
-    expect(dsl).toContain(head);
-    const back = (await reDesugar(dsl)).flowElements.find(
-      (e): e is Extract<FlowElement, Repeatable> => e.id === el.id,
-    )!;
-    expect(back.loop).toEqual(RUN_LOOP);
-    expect([back.asyncBefore, back.retryCycle]).toEqual([true, 'R3/PT10M']);
-  });
-});
-
-/**
- * A prose setting is read back as text rather than evaluated, so the printer's
- * escaping and the lexer's unescaping have to be exact inverses over every
- * input a modeler can type. The adversarial rows are the ones a quoted body
- * opening with `${` reaches: that body lexes as a raw expression, and the
- * reader unwrapping one strips the quotes without unescaping, so every escape
- * inside it would come back as two characters.
- *
- * Re-parsing through the compiler is the assertion, not the printed text: text
- * that looks right and lexes differently is the whole failure being guarded.
- */
+// Rows opening with `${` lex as a raw expression, whose reader does not unescape.
 describe('irToDsl: prose comes back byte for byte', () => {
-  /** Each shape, the prose, and whether printing it needs a backslash at all. */
   const PROSE = [
     ['plain prose', 'Review the order', false],
     ['prose holding a quote', 'Review the "rush" order', true],
@@ -4062,68 +2225,35 @@ describe('irToDsl: prose comes back byte for byte', () => {
     ],
   ] as const;
 
-  /** Each prose setting and the IR field it is written from. */
-  const SLOTS = [
-    ['label', 'name'],
-    ['documentation', 'documentation'],
-  ] as const;
+  it.each(PROSE)(
+    'label and documentation, %s',
+    async (_title, text, escapes) => {
+      const print = (prose: string): Promise<string> =>
+        printed(
+          around({ ...user('Review'), name: prose, documentation: prose }),
+        );
 
-  it.each(
-    PROSE.flatMap(([shape, text, escapes]) =>
-      SLOTS.map(
-        ([setting, field]) =>
-          [`${setting}, ${shape}`, field, text, escapes] as const,
-      ),
-    ),
-  )('%s', async (_title, field, text, escapes) => {
-    const carrying = (
-      value: string,
-    ): { name?: string; documentation?: string } =>
-      field === 'name' ? { name: value } : { documentation: value };
-    const print = (value: string): Promise<string> =>
-      printed(around({ kind: 'userTask', id: 'Review', ...carrying(value) }));
-
-    const dsl = await print(text);
-    // A statement prints on one line whatever its prose holds, which is what
-    // keeps the indentation of an enclosing block meaningful. Splitting on a
-    // lone carriage return too, since a raw one breaks a line for every reader
-    // of the file without breaking it for this test.
-    expect(dsl.split(/\r\n|\r|\n/)).toHaveLength(
-      (await print('Review the order')).split(/\r\n|\r|\n/).length,
-    );
-    // An escape no terminal asks for is noise in source somebody reads.
-    expect(dsl.includes('\\')).toBe(escapes);
-
-    const back = await reDesugar(dsl);
-    const [review] = back.flowElements.filter(
-      (el): el is Extract<FlowElement, { kind: 'userTask' }> =>
-        el.kind === 'userTask',
-    );
-    expect({
-      name: review?.name,
-      documentation: review?.documentation,
-    }).toEqual({
-      name: undefined,
-      documentation: undefined,
-      ...carrying(text),
-    });
-  });
+      const dsl = await print(text);
+      // A lone carriage return breaks a line for every reader too.
+      expect(dsl.split(/\r\n|\r|\n/)).toHaveLength(
+        (await print('Review the order')).split(/\r\n|\r|\n/).length,
+      );
+      expect(dsl.includes('\\')).toBe(escapes);
+      const { name, documentation } = only(await reDesugar(dsl), 'userTask');
+      expect({ name, documentation }).toEqual({
+        name: text,
+        documentation: text,
+      });
+    },
+  );
 });
 
-// `printDsl` is the real entry point; the alias above unwraps `.source` for
-// every suite that only asserts printed text.
-
-/**
- * What each report says, keyed by the degradation it reports. `says` is every
- * phrase its message must carry; `never` is the phrase of a neighbouring report
- * it must not, which is what keeps two of them from collapsing into one.
- */
+// `never` holds a neighbouring report's phrase, keeping two reports apart.
 const REPORT = {
   label: { category: 'label', says: ['block structure'] },
   documentation: {
     category: 'documentation',
     says: ['block structure', 'carry it'],
-    // The two facts are reported apart, so neither message may state the other.
     never: ['The label'],
   },
   refusedStatement: {
@@ -4139,26 +2269,22 @@ const REPORT = {
     says: [
       'leaves as a jump',
       'or as a marker',
+      'written on its jump',
       'at most one branch is left running',
     ],
   },
-  implicitSplit: {
+  emptySplit: {
     category: 'degradedSplit',
-    says: ['takes every route it can at once', 'which takes one of them'],
+    says: ['no route out', 'left out of the script'],
+  },
+  crossBranchJump: {
+    category: 'refusedStatement',
+    says: ['crosses', 'draws an error'],
+    never: ['Rename the step'],
   },
   inventedFallback: {
     category: 'defaultFlow',
     says: ['names no fallback', 'what runs changes'],
-  },
-  inventedStepFallback: {
-    category: 'defaultFlow',
-    says: [
-      'this tool carries a fallback on a split alone',
-      'carrying on is what was meant',
-    ],
-    // The import reports the fallback the model named, so claiming the model
-    // named none would contradict it.
-    never: ['names no fallback'],
   },
   raceCondition: {
     category: 'droppedCondition',
@@ -4191,8 +2317,6 @@ const REPORT = {
   choiceFallbackCondition: {
     category: 'defaultFlow',
     says: ['weighs the fallback', 'refuses to deploy'],
-    // What a fork that opens every branch reads instead: weighing the fallback
-    // of a choice is what the engine refuses, so the run is not the same.
     never: ['the run is the same without it'],
   },
   deadFallback: {
@@ -4203,6 +2327,10 @@ const REPORT = {
     category: 'droppedSetting',
     says: ['engine settings', 'block structure', 'runs without them'],
   },
+  renamedId: {
+    category: 'renamedId',
+    says: ['written as', 'activity id'],
+  },
 } as const satisfies Record<
   string,
   {
@@ -4212,14 +2340,8 @@ const REPORT = {
   }
 >;
 
-/** BPMN vocabulary no report may spend on a reader who never drew a diagram. */
 const JARGON = ['flow node', 'gateway', 'token', 'sequence flow'];
 
-/**
- * Assert the reports raised, in order: one `[report, elementId]` per warning,
- * each matched on category, element, every phrase its report says, every phrase
- * it must not, and the plain-words rule.
- */
 function expectReports(
   warnings: readonly PrintWarning[],
   ...expected: readonly (readonly [keyof typeof REPORT, string])[]
@@ -4244,27 +2366,15 @@ function expectReports(
   });
 }
 
-/** How a route is written where the test cares: its flow id, its condition. */
 type Route = { id?: string; condition?: string };
 
-/**
- * A review loop closed by a second split: the head takes the body under
- * `${again}`, the body runs into `split`, and the split routes back round the
- * loop or on to the end. `back` and `on` name and weigh those two routes.
- */
 const loopIntoSplitIr = (
   split: FlowElement,
   back: Route,
   on: Route,
 ): BpmnProcess =>
   minimalProcess(
-    [
-      { kind: 'startEvent', id: 'S' },
-      gateway('Loop'),
-      { kind: 'userTask', id: 'Review' },
-      split,
-      { kind: 'endEvent', id: 'E' },
-    ],
+    [start('S'), gateway('Loop'), user('Review'), split, end('E')],
     [
       edge('S', 'Loop'),
       edge('Loop', 'Review', { condition: '${again}' }),
@@ -4275,149 +2385,12 @@ const loopIntoSplitIr = (
     ],
   );
 
-/**
- * A loop and the weighed escapes beside the route round it. `shape` puts the
- * head before the body (a `while`) or after it (a `do`); `back` names and
- * weighs the route round the loop; each escape leaves the head for a step of
- * its own, which then ends the run.
- */
-const loopWithEscapesIr = ({
-  shape = 'pre',
-  head,
-  body,
-  back,
-  escapes,
-}: {
-  shape?: 'pre' | 'post';
-  head: FlowElement;
-  body: string;
-  back: Route;
-  escapes: readonly (readonly [string, string])[];
-}): BpmnProcess => {
-  const pre = shape === 'pre';
-  return minimalProcess(
-    [
-      { kind: 'startEvent', id: 'S' },
-      ...(pre ? [head] : []),
-      { kind: 'userTask', id: body },
-      ...(pre ? [] : [head]),
-      ...escapes.map(([id]): FlowElement => ({ kind: 'userTask', id })),
-      { kind: 'endEvent', id: 'E' },
-    ],
-    [
-      edge('S', pre ? head.id : body),
-      pre ? edge(head.id, body, back) : edge(body, head.id),
-      pre ? edge(body, head.id) : edge(head.id, body, back),
-      ...escapes.map(([id, condition]) => edge(head.id, id, { condition })),
-      ...escapes.map(([id]) => edge(id, 'E')),
-    ],
-  );
-};
-
 describe('warnings: text the script has nowhere to write', () => {
-  const splitIr = (name?: string): BpmnProcess =>
-    minimalProcess(
-      [
-        { kind: 'startEvent', id: 'S' },
-        {
-          kind: 'exclusiveGateway',
-          id: 'Split_1',
-          ...(name === undefined ? {} : { name }),
-        },
-        { kind: 'userTask', id: 'A' },
-        { kind: 'userTask', id: 'B' },
-        { kind: 'exclusiveGateway', id: 'Join_1' },
-        { kind: 'endEvent', id: 'E' },
-      ],
-      [
-        edge('S', 'Split_1'),
-        edge('Split_1', 'A', { condition: 'ok' }),
-        edge('Split_1', 'B'),
-        edge('A', 'Join_1'),
-        edge('B', 'Join_1'),
-        edge('Join_1', 'E'),
-      ],
-    );
-
-  it('reports the label on a split, says nothing about a split without one, and leaves the printed source alone', () => {
-    const named = printDsl(splitIr('Amount check'));
-    const plain = printDsl(splitIr());
-
-    expect(named.source).toBe(plain.source);
-    expect(plain.warnings).toEqual([]);
-    expectReports(named.warnings, ['label', 'Split_1']);
-    expect(named.warnings[0]?.message).toContain("'Amount check'");
-  });
-
-  const forkIr = (named: 'fork' | 'join'): BpmnProcess =>
-    minimalProcess(
-      [
-        { kind: 'startEvent', id: 'S' },
-        {
-          kind: 'parallelGateway',
-          id: 'Fork_1',
-          ...(named === 'fork' ? { name: 'Split work' } : {}),
-        },
-        { kind: 'userTask', id: 'A' },
-        { kind: 'userTask', id: 'B' },
-        {
-          kind: 'parallelGateway',
-          id: 'Join_1',
-          ...(named === 'join' ? { name: 'Split work' } : {}),
-        },
-        { kind: 'endEvent', id: 'E' },
-      ],
-      [
-        edge('S', 'Fork_1'),
-        edge('Fork_1', 'A'),
-        edge('Fork_1', 'B'),
-        edge('A', 'Join_1'),
-        edge('B', 'Join_1'),
-        edge('Join_1', 'E'),
-      ],
-    );
-
-  it.each([
-    ['fork', 'Fork_1'],
-    ['join', 'Join_1'],
-  ] as const)('reports the label on a parallel %s', (which, id) => {
-    expectReports(printDsl(forkIr(which)).warnings, ['label', id]);
-  });
-
-  it('reaches a split nested in a sub-process and one in an event handler', () => {
-    const { warnings } = printDsl(
-      minimalProcess(
-        [
-          { kind: 'startEvent', id: 'S' },
-          chainedSub('Sub', [
-            { kind: 'startEvent', id: 'NS' },
-            { kind: 'exclusiveGateway', id: 'NSplit', name: 'nested pick' },
-            { kind: 'endEvent', id: 'NE' },
-          ]),
-          { kind: 'endEvent', id: 'E' },
-          triggeredSub('H', [
-            { kind: 'startEvent', id: 'HS', eventDefinition: signalDef('go') },
-            { kind: 'exclusiveGateway', id: 'HSplit', name: 'handler pick' },
-            { kind: 'endEvent', id: 'HE' },
-          ]),
-        ],
-        flowChain('S', 'Sub', 'E'),
-      ),
-    );
-
-    expectReports(warnings, ['label', 'NSplit'], ['label', 'HSplit']);
-  });
-
-  /**
-   * Every gateway here has one way in and one way out, so all of them are
-   * walked straight through and the printed source is the same whether they
-   * carry text or not.
-   */
   const gatewayTextIr = (carried: boolean): BpmnProcess => {
     const text = (documentation: string) => (carried ? { documentation } : {});
     return minimalProcess(
       [
-        { kind: 'startEvent', id: 'S' },
+        start('S'),
         {
           kind: 'exclusiveGateway',
           id: 'Choice',
@@ -4432,25 +2405,25 @@ describe('warnings: text the script has nowhere to write', () => {
         },
         { kind: 'eventBasedGateway', id: 'Race', ...text('First reply wins.') },
         chainedSub('Sub', [
-          { kind: 'startEvent', id: 'NS' },
+          start('NS'),
           {
             kind: 'exclusiveGateway',
             id: 'Nested',
             ...text('Nested, and reported all the same.'),
           },
-          { kind: 'endEvent', id: 'NE' },
+          end('NE'),
         ]),
-        { kind: 'endEvent', id: 'E' },
+        end('E'),
       ],
       flowChain('S', 'Choice', 'Fork', 'Some', 'Race', 'Sub', 'E'),
     );
   };
 
-  it('reports the documentation on every gateway kind, at any depth, and leaves the printed source alone', () => {
+  it('reports the documentation on every gateway kind, at any depth, and leaves the printed source alone', async () => {
     const carried = printDsl(gatewayTextIr(true));
     const plain = printDsl(gatewayTextIr(false));
 
-    expect(carried.source).toBe(plain.source);
+    expect(carried.source).toBe(await printed(gatewayTextIr(false)));
     expect(plain.warnings).toEqual([]);
     expectReports(
       carried.warnings,
@@ -4465,310 +2438,715 @@ describe('warnings: text the script has nowhere to write', () => {
 });
 
 describe('warnings: edges with no form in the script', () => {
-  /** A back-edge into a fork whose out-edges are all consumed by then. */
-  const DROPPED_EDGE_IR: BpmnProcess = minimalProcess(
-    [
-      { kind: 'startEvent', id: 'S' },
-      { kind: 'parallelGateway', id: 'Gateway_d_1_fork' },
-      { kind: 'userTask', id: 'A' },
-      { kind: 'userTask', id: 'B' },
-      { kind: 'endEvent', id: 'E' },
-    ],
-    [
-      edge('S', 'Gateway_d_1_fork'),
-      edge('Gateway_d_1_fork', 'A'),
-      edge('Gateway_d_1_fork', 'B'),
-      edge('A', 'E'),
-      edge('B', 'Gateway_d_1_fork'),
-    ],
-  );
-
-  it('reports the dropped edge and still prints the marker comment', () => {
-    const { source, warnings } = printDsl(DROPPED_EDGE_IR);
-
-    expect(source).toContain(UNSTRUCTURED_MARKER);
-    expectReports(
-      warnings,
-      ['degradedSplit', 'Gateway_d_1_fork'],
-      ['droppedEdge', 'Gateway_d_1_fork'],
+  // `Ring1` and `Ring2` forward to each other, so the walk comes back round.
+  it('drops an arrival at a ring of one-way gateways', async () => {
+    const ir = minimalProcess(
+      [start('S'), user('A'), gateway('Ring1'), gateway('Ring2'), end('E')],
+      [
+        edge('S', 'A'),
+        edge('S', 'Ring1'),
+        edge('A', 'E'),
+        ...chain('Ring1', 'Ring2', 'Ring1'),
+      ],
     );
-  });
-
-  /**
-   * An arrival with nowhere to land: `Ring1` and `Ring2` hand the forwarding
-   * walk to each other, so it comes back to where it started and the edge
-   * takes the marker instead of a jump.
-   */
-  it('drops an arrival at a ring of one-way gateways', () => {
-    const ring = printDsl(
-      minimalProcess(
-        [
-          { kind: 'startEvent', id: 'S' },
-          { kind: 'userTask', id: 'A' },
-          gateway('Ring1'),
-          gateway('Ring2'),
-          { kind: 'endEvent', id: 'E' },
-        ],
-        [
-          edge('S', 'A'),
-          edge('S', 'Ring1'),
-          edge('A', 'E'),
-          edge('Ring1', 'Ring2'),
-          edge('Ring2', 'Ring1'),
-        ],
-      ),
-    );
+    const ring = printDsl(ir);
 
     expect(ring.source).toContain(
       `${UNSTRUCTURED_MARKER} (dropped edge into Ring1)`,
     );
-    expect(ring.source).not.toContain('goto');
-    // `S` leaves on two routes, which is its own report, and the ring is
-    // reached twice: once from the branch that opens on it, and once from the
-    // sweep that picks up what the walk left unprinted.
+    expect(ring.source).not.toContain('goto Ring');
+    // The ring is reached from the jump and again from the closing sweep.
     expectReports(
       ring.warnings,
-      ['implicitSplit', 'S'],
+      ['degradedSplit', 'S'],
       ['droppedEdge', 'Ring1'],
       ['droppedEdge', 'Ring1'],
     );
-  });
-
-  it('returns no warnings at all for a process that prints in full', () => {
-    expect(printDsl(around({ kind: 'userTask', id: 'A' })).warnings).toEqual(
-      [],
-    );
-  });
-
-  it('an unnamed plain start heads the printed body whatever its position among the starts', async () => {
-    // Idempotence is the whole assertion: the re-desugared IR keeps both
-    // starts only when the elided one heads the body; elsewhere it strands the
-    // message start's trailing goto and draws "This step can never run".
-    await expectIdempotent(
-      minimalProcess(
-        [
-          typedEvent('startEvent', 'B', messageDef('M')),
-          { kind: 'startEvent', id: 'StartEvent_p' },
-          { kind: 'userTask', id: 'V' },
-          { kind: 'endEvent', id: 'E' },
-        ],
-        [edge('B', 'V'), edge('StartEvent_p', 'V'), edge('V', 'E')],
-      ),
-    );
-  });
-
-  it('a second unnamed plain start prints under its reserved id and is reported, rather than vanishing', async () => {
-    const { source, warnings } = printDsl(
-      minimalProcess(
-        [
-          { kind: 'startEvent', id: 'StartEvent_p1' },
-          { kind: 'startEvent', id: 'StartEvent_p2' },
-          { kind: 'userTask', id: 'V' },
-          { kind: 'endEvent', id: 'E' },
-        ],
-        [
-          edge('StartEvent_p1', 'V'),
-          edge('StartEvent_p2', 'V'),
-          edge('V', 'E'),
-        ],
-      ),
-    );
-
-    expectReports(warnings, ['refusedStatement', 'StartEvent_p2']);
-    const lines = source.split('\n');
-    expect(lines.filter((l) => l.trim().startsWith('start '))).toEqual([
-      '  start StartEvent_p2',
-    ]);
-    // The printed source is meant to fail on exactly that name, which is
-    // what tells the reader which step to rename.
-    const errors = (await validate(source)).diagnostics
-      .filter((d) => d.severity === 1)
-      .map((d) => [
-        lines[d.range.start.line],
-        typeof d.message === 'string' ? d.message : d.message.value,
-      ]);
-    expect(errors).toEqual([
-      [
-        '  start StartEvent_p2',
-        expect.stringContaining(MODEL_REFUSAL.reservedId),
-      ],
-    ]);
-  });
-
-  it('a start entering a synthesized split prints as a dropped-edge marker, not as a jump', async () => {
-    const base = await reDesugar(
-      'process p {\n' +
-        '  var x: boolean\n' +
-        '  start A\n' +
-        '  if (x) {\n' +
-        '    user T1\n' +
-        '  } else {\n' +
-        '    user T2\n' +
-        '  }\n' +
-        '  end E\n' +
-        '}\n',
-    );
-    const split = base.flowElements.find(
-      (el) => el.kind === 'exclusiveGateway' && el.id.endsWith('_split'),
-    )!;
-    const ir: BpmnProcess = {
-      ...base,
-      flowElements: [
-        ...base.flowElements,
-        typedEvent('startEvent', 'B', messageDef('M')),
-      ],
-      sequenceFlows: [...base.sequenceFlows, edge('B', split.id)],
-    };
-
-    const { source, warnings } = printDsl(ir);
-
-    expectReports(warnings, ['droppedEdge', split.id]);
-    expect(source).toContain(
-      `${UNSTRUCTURED_MARKER} (dropped edge into ${split.id})`,
-    );
-    expect(source).not.toMatch(new RegExp(`goto\\s+${split.id}\\b`));
+    await printed(ir);
   });
 });
 
 describe('warnings: a split the script has no form for', () => {
-  /**
-   * A fork with nothing to rejoin at: every branch ends where it stands. The
-   * edges all keep a jump, so nothing is dropped and no marker is printed, and
-   * this warning is the only report that the split itself is gone.
-   */
-  it('reports the fork it wrote as jumps, and drops no edge doing it', async () => {
+  it('prints a step split whose route loops straight back to the step as a parallel block with a goto', async () => {
     const ir = minimalProcess(
-      [
-        { kind: 'startEvent', id: 'S' },
-        { kind: 'parallelGateway', id: 'Gateway_p_1_fork' },
-        { kind: 'endEvent', id: 'X' },
-        { kind: 'endEvent', id: 'Y' },
-      ],
-      [
-        edge('S', 'Gateway_p_1_fork'),
-        edge('Gateway_p_1_fork', 'X'),
-        edge('Gateway_p_1_fork', 'Y'),
-      ],
+      [start('S'), user('T1'), user('Cont'), end('E')],
+      [...chain('S', 'T1', 'T1', 'Cont', 'E')],
     );
-    const { warnings } = printDsl(ir);
-    // Each jump in a branch of its own, so the source still compiles: a second
-    // jump written beside the first could never run.
-    const source = await printed(ir);
 
-    expect(source).not.toContain('parallel {');
-    expect(source).toContain('goto X');
-    expect(source).toContain('goto Y');
-    expect(source).not.toContain(UNSTRUCTURED_MARKER);
-    expectReports(warnings, ['degradedSplit', 'Gateway_p_1_fork']);
+    const { source, warnings } = printDsl(ir);
+    const again = await reDesugar(await printed(ir));
+
+    expect(source).toBe(
+      `process p {
+  start S
+  user T1
+  parallel {
+    {
+      goto T1
+    }
+    {
+      user Cont
+      end E
+    }
+  }
+}
+`,
+    );
+    expect(warnings).toEqual([]);
+    expect(realReachability(again)).toEqual(realReachability(ir));
+    expect(irToDsl(again)).toBe(source);
   });
 });
 
-describe('a step whose own routes split', () => {
-  /**
-   * A step with two routes on, one of them weighed. Legal BPMN, and a shape a
-   * jump cannot carry: a jump ends its block, so a second route written as one
-   * severs the first route's chain behind it.
-   */
-  const implicitSplitIr = (condition?: string): BpmnProcess =>
-    minimalProcess(
+describe('irToDsl: a split degraded to jumps keeps its conditions on them', () => {
+  it('keeps a race off the block form when a wait routes on twice, and forks the wait itself', async () => {
+    const ir = minimalProcess(
       [
-        { kind: 'startEvent', id: 'S' },
-        { kind: 'userTask', id: 'A' },
-        { kind: 'userTask', id: 'B' },
-        { kind: 'userTask', id: 'C' },
-        { kind: 'endEvent', id: 'E' },
+        start('S'),
+        { kind: 'eventBasedGateway', id: 'Race' },
+        typedEvent(
+          'intermediateCatchEvent',
+          'C1',
+          timerDef('duration', 'PT1M'),
+        ),
+        typedEvent('intermediateCatchEvent', 'C2', messageDef('m')),
+        user('A'),
+        user('B'),
+        end('E'),
       ],
       [
-        edge('S', 'A'),
-        edge('A', 'B', condition === undefined ? {} : { condition }),
-        edge('A', 'C'),
+        ...chain('S', 'Race', 'C1'),
+        edge('Race', 'C2'),
+        edge('C1', 'A'),
+        edge('C1', 'B'),
+        edge('C2', 'E'),
+        edge('A', 'E'),
         edge('B', 'E'),
-        edge('C', 'E'),
       ],
     );
+    const { source, warnings } = printDsl(ir);
 
-  it('keeps both routes, their condition, and source that compiles', async () => {
-    const ir = implicitSplitIr('${ok}');
-    const dsl = await printed(ir);
-
-    expect(dsl).toContain('if (ok) {');
-    // The route that would have been severed behind a jump.
-    expect(realReachability(await reDesugar(dsl))).toEqual(
-      realReachability(ir),
+    expect(source).toContain(
+      `${UNSTRUCTURED_MARKER} (split Race degraded to jumps; was event-based)`,
     );
-  });
-
-  it('reports the choice it wrote, naming the step the routes leave', () => {
-    const { warnings } = printDsl(implicitSplitIr('${ok}'));
-
-    expectReports(warnings, ['implicitSplit', 'A']);
-  });
-
-  it('says it whether or not a route is weighed, the model taking both either way', () => {
-    expectReports(printDsl(implicitSplitIr()).warnings, ['implicitSplit', 'A']);
-  });
-
-  it('says it for a step the loop around it left one route to print', () => {
-    // `Review` runs the escape and the route back at once. The loop prints the
-    // route back as its closing brace, leaving one route at the step's own
-    // position, and the script runs the escape in place of looping rather than
-    // beside it. What splits is what the model gives the step, so the question
-    // is asked of that.
-    const { warnings } = printDsl(
-      minimalProcess(
-        [
-          { kind: 'startEvent', id: 'S' },
-          gateway('Loop'),
-          { kind: 'userTask', id: 'Review' },
-          { kind: 'userTask', id: 'Escalate' },
-          { kind: 'userTask', id: 'Settle' },
-          { kind: 'endEvent', id: 'E' },
-        ],
-        [
-          edge('S', 'Loop'),
-          edge('Loop', 'Review', { condition: '${again}' }),
-          edge('Loop', 'Settle'),
-          edge('Review', 'Loop'),
-          edge('Review', 'Escalate', { condition: '${overdue}' }),
-          edge('Escalate', 'E'),
-          edge('Settle', 'E'),
-        ],
-      ),
+    expect(source).toContain(
+      `${UNSTRUCTURED_MARKER} (split C1 degraded to jumps; was parallel)`,
     );
+    expectReports(warnings, ['degradedSplit', 'Race'], ['degradedSplit', 'C1']);
+    await printed(ir);
+  });
+});
 
+describe('irToDsl: a split with no route out', () => {
+  it.each([
+    [
+      'a parallel split ends the run there, as the script does',
+      'parallelGateway',
+      'ends the run here',
+    ],
+    [
+      'an inclusive split stops the model with an error',
+      'inclusiveGateway',
+      'stops the run with an error',
+    ],
+    [
+      'a wait with nothing to wait for holds the model forever',
+      'eventBasedGateway',
+      'waits here forever',
+    ],
+    [
+      'an exclusive split keeps the model from deploying',
+      'exclusiveGateway',
+      'refuses to deploy',
+    ],
+  ] as const)('%s', async (_title, kind, says) => {
+    const ir = minimalProcess(
+      [start('S'), { kind, id: 'G' }],
+      [edge('S', 'G')],
+    );
+    const { source, warnings } = printDsl(ir);
+
+    expect(source).toBe('process p {\n  start S\n}\n');
+    expectReports(warnings, ['emptySplit', 'G']);
+    expect(warnings[0]!.message).toContain(says);
+    await printed(ir);
+  });
+});
+
+describe('irToDsl: a route with no condition at an exclusive split', () => {
+  // Operaton takes the first route in document order that carries no condition
+  // or one that holds, so a `true` head keeps an early one in its place.
+  it.each<
+    [title: string, split: FlowElement, routes: SequenceFlow[], body: string[]]
+  >([
+    [
+      'listed before a conditioned route, it heads the chain as true',
+      gateway('G'),
+      [edge('G', 'A'), edge('G', 'B', { condition: '${x > 5}' })],
+      [
+        '  if (true) {',
+        '    user A',
+        '  } else if (x > 5) {',
+        '    user B',
+        '  }',
+        '  end E',
+      ],
+    ],
+    [
+      'listed between two conditioned routes, it heads its place as true',
+      gateway('G'),
+      [
+        edge('G', 'B', { condition: '${x > 5}' }),
+        edge('G', 'A'),
+        edge('G', 'C', { condition: '${x > 9}' }),
+      ],
+      [
+        '  if (x > 5) {',
+        '    user B',
+        '  } else if (true) {',
+        '    user A',
+        '  } else if (x > 9) {',
+        '    user C',
+        '  }',
+        '  end E',
+      ],
+    ],
+    [
+      'listed last, it is the continuation as drawn',
+      gateway('G'),
+      [edge('G', 'B', { condition: '${x > 5}' }), edge('G', 'A')],
+      [
+        '  if (x > 5) {',
+        '    user B',
+        '  } else {',
+        '    user A',
+        '  }',
+        '  end E',
+      ],
+    ],
+    [
+      'named as the default, it is tried last wherever it is listed',
+      gateway('G', 'F_A'),
+      [
+        edge('G', 'A', { id: 'F_A' }),
+        edge('G', 'B', { condition: '${x > 5}' }),
+      ],
+      [
+        '  if (x > 5) {',
+        '    user B',
+        '  } else {',
+        '    user A',
+        '  }',
+        '  end E',
+      ],
+    ],
+  ])('%s', async (_, split, routes, body) => {
+    const steps = routes.map((f) => f.targetRef);
+    const ir = minimalProcess(
+      [start('S'), split, ...steps.map(user), end('E')],
+      [edge('S', 'G'), ...routes, ...steps.map((id) => edge(id, 'E'))],
+    );
+    const { source, warnings } = printDsl(ir);
+
+    expect(bodyOf(source)).toBe(
+      ['process p {', '  start S', ...body, '}', ''].join('\n'),
+    );
+    expect(warnings).toEqual([]);
+    expect(irToDsl(await reDesugar(await printed(ir)))).toBe(source);
+  });
+});
+
+describe('irToDsl: a split that routes back into itself', () => {
+  it.each([
+    [
+      'a plain route back beside a weighed way on',
+      gateway('G'),
+      [edge('G', 'G'), edge('G', 'A', { condition: '${go}' })],
+      '  if (true) {\n' +
+        `    ${UNSTRUCTURED_MARKER} (dropped edge into G)\n` +
+        '  } else if (go) {\n' +
+        '  }\n',
+      [['droppedEdge', 'G']],
+    ],
+    [
+      'a weighed route back beside the fallback',
+      gateway('G', 'F_on'),
+      [
+        edge('G', 'G', { condition: '${again}' }),
+        edge('G', 'A', { id: 'F_on' }),
+      ],
+      '  if (again) {\n' +
+        `    ${UNSTRUCTURED_MARKER} (dropped edge into G)\n` +
+        '  }\n',
+      [['droppedEdge', 'G']],
+    ],
+  ] as const)(
+    '%s prints the marker rather than a loop',
+    async (_title, split, routes, chain, reports) => {
+      const ir = minimalProcess(
+        [start('S'), split, user('A'), end('E')],
+        [edge('S', 'G'), ...routes, edge('A', 'E')],
+      );
+      const { source, warnings } = printDsl(ir);
+
+      expect(bodyOf(source)).toBe(
+        'process p {\n  start S\n' + chain + '  user A\n  end E\n}\n',
+      );
+      expectReports(warnings, ...reports);
+      await printed(ir);
+    },
+  );
+});
+
+describe('irToDsl: a jump into a branch of a fork or a race', () => {
+  it('reports the jump the script refuses, from the sibling branch it was printed in', async () => {
+    // The first branch walks `B` inline, so the second jumps across the branch border.
+    const ir = minimalProcess(
+      [
+        start('S'),
+        { kind: 'parallelGateway', id: 'Fork' },
+        gateway('X'),
+        user('A'),
+        user('B'),
+        { kind: 'parallelGateway', id: 'Join' },
+        end('E'),
+      ],
+      [
+        ...chain('S', 'Fork', 'X'),
+        edge('X', 'A', { condition: '${a}' }),
+        edge('X', 'B', { condition: '${b}' }),
+        edge('A', 'Join'),
+        ...chain('Fork', 'B', 'Join', 'E'),
+      ],
+    );
+    const { source, warnings } = printDsl(ir);
+
+    expect(bodyOf(source)).toBe(
+      'process p {\n' +
+        '  start S\n' +
+        '  parallel {\n' +
+        '    {\n' +
+        '      if (a) {\n' +
+        '        user A\n' +
+        '      } else if (b) {\n' +
+        '        user B\n' +
+        '      }\n' +
+        '    }\n' +
+        '    {\n' +
+        '      goto B\n' +
+        '    }\n' +
+        '  }\n' +
+        '  end E\n' +
+        '}\n',
+    );
     expectReports(
       warnings,
-      ['implicitSplit', 'Review'],
-      ['droppedFlowCondition', 'Review'],
+      ['inventedFallback', 'X'],
+      ['crossBranchJump', 'B'],
     );
+    const errors = (await validate(source)).diagnostics
+      .filter((d) => d.severity === 1)
+      .map((d) =>
+        typeof d.message === 'string' ? d.message : d.message.value,
+      );
+    expect(errors).toEqual([
+      expect.stringContaining("'goto B' jumps into a branch of a 'parallel'"),
+    ]);
   });
 
-  it('says nothing where a step has one route on', () => {
-    expect(
-      printDsl(
-        minimalProcess(
-          [
-            { kind: 'startEvent', id: 'S' },
-            { kind: 'userTask', id: 'A' },
-            { kind: 'endEvent', id: 'E' },
-          ],
-          flowChain('S', 'A', 'E'),
-        ),
-      ).warnings,
-    ).toEqual([]);
+  it('says nothing about a jump written inside the branch it lands in', async () => {
+    const ir = minimalProcess(
+      [
+        start('S'),
+        { kind: 'parallelGateway', id: 'Fork' },
+        gateway('Head'),
+        user('A'),
+        gateway('Again', 'F_out'),
+        user('Retry'),
+        user('B'),
+        { kind: 'parallelGateway', id: 'Join' },
+        end('E'),
+      ],
+      [
+        ...chain('S', 'Fork', 'Head', 'A', 'Again'),
+        edge('Again', 'Retry', { condition: '${retry}' }),
+        edge('Retry', 'Head'),
+        edge('Again', 'Join', { id: 'F_out' }),
+        ...chain('Fork', 'B', 'Join', 'E'),
+      ],
+    );
+    const { source, warnings } = printDsl(ir);
+
+    expect(source).toContain('        user Retry\n        goto A\n');
+    expect(warnings).toEqual([]);
+    await printed(ir);
+  });
+});
+
+describe('irToDsl: a branch walk stops where the block comes back together', () => {
+  // The post-dominator queries miss every one of these shapes.
+  it.each([
+    [
+      'a do-while prints back as written',
+      `process p {
+  start S
+  do {
+    user W
+  } while (count < 10)
+  end E
+}
+`,
+    ],
+    [
+      'a throw guard with no else prints the continuation after it at the body level, no gateway named',
+      `process p {
+  error BOOM
+  start S
+  service Pre(class: "x.Pre")
+  if (amount > 1000) {
+    throw error(BOOM)
+  }
+  service Post(class: "x.Post")
+  end Done
+}
+`,
+    ],
+    [
+      'a throw guard inside a loop body keeps the statement after it inside the loop',
+      `process p {
+  error X
+  start S
+  while (retries < 3) {
+    service A(class: "x.A")
+    if (retries < 1) {
+      throw error(X)
+    }
+    service B(class: "x.B")
+  }
+  end Done
+}
+`,
+    ],
+    [
+      'a fork with a throwing branch prints the throw inline and the continuation after the block',
+      `process p {
+  error BOOM(message: "it broke")
+  start Begin
+  parallel {
+    {
+      service A(label: "a", class: "x.A")
+    }
+    {
+      throw error(BOOM)
+    }
+  }
+  end Finish
+}
+`,
+    ],
+    [
+      'a fork whose ending branch runs a step first still joins the survivor at the merge',
+      `process p {
+  start Begin
+  parallel {
+    {
+      user A
+    }
+    {
+      user B
+      end Abandoned terminate
+    }
+  }
+  end Finish
+}
+`,
+    ],
+    [
+      'a fork whose surviving branches each hold a nested fork resumes after the outer join, not the first inner one',
+      `process p {
+  error BOOM(message: "it broke")
+  start Begin
+  parallel {
+    {
+      parallel {
+        {
+          service A(label: "a", class: "x.A")
+        }
+        {
+          service B(label: "b", class: "x.B")
+        }
+      }
+    }
+    {
+      parallel {
+        {
+          service C(label: "c", class: "x.C")
+        }
+        {
+          service D(label: "d", class: "x.D")
+        }
+      }
+    }
+    {
+      throw error(BOOM)
+    }
+  }
+  end Finish
+}
+`,
+    ],
+    [
+      'a race with empty branches into a step that loops on itself prints the step after the block',
+      `process p {
+  await {
+    message("M") {
+    }
+    timer("PT1H") {
+    }
+  }
+  user A
+  goto A
+}
+`,
+    ],
+    [
+      'a race whose branch holds a throw guard stops at the merge, and the end prints after the block',
+      `process p {
+  await {
+    timer("PT1H") {
+      if (c) {
+        throw message("PaymentDone")
+      }
+    }
+    timer("PT2H") {
+    }
+  }
+  end Done
+}
+`,
+    ],
+    [
+      'an if chain with an ending branch, an empty branch and an else chain keeps the else, and the implicit end stays unwritten',
+      `process onboarding {
+  subprocess Sub4 {
+    if (true) {
+      end Done7
+    } else if (true) {
+    } else {
+      service Approve10(class: "org.acme.Audit")
+    }
+  }
+}
+`,
+    ],
+    [
+      'a fork branch holding an empty if with an ending else stops at the join, not at the else',
+      `process p {
+  parallel {
+    {
+      if (c) {
+      } else {
+        end X
+      }
+    }
+    {
+      user B
+    }
+  }
+  end Done
+}
+`,
+    ],
+    [
+      'a fork whose fallback runs straight into the join beside a nested fork and an ending branch takes that join',
+      `process p {
+  parallel {
+    if (a) {
+      parallel {
+        if (b) {
+          user P
+        }
+        if (c) {
+          user Q
+        }
+      }
+    }
+    if (d) {
+      end X
+    }
+  }
+  end Done
+}
+`,
+    ],
+    [
+      'an if whose one branch runs on to the implicit end beside two that end keeps the end unwritten',
+      `process p {
+  if (b) {
+    user A
+  } else if (c) {
+    user B
+    end D
+  } else {
+    user C
+    end E
+  }
+}
+`,
+    ],
+    [
+      'an if over a parallel beside two ending branches that share a step stops at its own join, not at that step',
+      `process p {
+  if (b) {
+    parallel {
+      {
+        user A1
+      }
+      {
+        user A2
+      }
+    }
+  } else if (c) {
+    user B
+    end D
+  } else {
+    user C
+    goto B
+  }
+}
+`,
+    ],
+    [
+      'an if over a parallel beside an ending else keeps the join settings on the parallel',
+      `process p {
+  if (b) {
+    parallel (joinAsyncBefore: true) {
+      {
+        user A1
+      }
+      {
+        user A2
+      }
+    }
+  } else {
+    end E
+  }
+}
+`,
+    ],
+    [
+      'an if with an ending else whose branch holds a nested if stops at its own join, not at the nested one',
+      `process p {
+  if (c) {
+    user A
+    if (b) {
+      user B1
+    }
+    user A2
+  } else {
+    end X
+  }
+}
+`,
+    ],
+    [
+      'a race whose one branch ends and whose other runs on to the implicit end keeps that branch whole',
+      `process p {
+  await {
+    message("M") {
+      if (x) {
+        emit message("PaymentDone")
+      } else {
+        user Charge
+      }
+      step Approve
+    }
+    timer("P3D") {
+      user Archive
+      end Done terminate
+    }
+  }
+}
+`,
+    ],
+  ] as const)('%s', async (_title, source) => {
+    const ir = await reDesugar(source);
+    expect(bodyOf(await expectIdempotent(ir))).toEqual(source);
+    expect(printDsl(ir).warnings).toEqual([]);
+  });
+
+  // `P` is upstream of the split, so it is no merge of it.
+  it.each([
+    [
+      'an if whose branch and following chain both jump back to the step above the split',
+      `process p {
+  var a: any
+  user P
+  if (a) {
+    user A
+    goto P
+  }
+  user B
+  goto P
+}
+`,
+    ],
+    [
+      'an if whose two branches both jump back to the step above the split',
+      `process p {
+  var a: any
+  user P
+  if (a) {
+    user A
+    goto P
+  } else {
+    user B
+    goto P
+  }
+}
+`,
+    ],
+  ] as const)(
+    '%s prints as the guard clause, with the jump back outside the block',
+    async (_title, authored) => {
+      const ir = await reDesugar(authored);
+      const source = await printed(ir);
+      expect(bodyOf(source)).toEqual(
+        `process p {
+  user P
+  if (a) {
+    goto A
+  }
+  user B
+  goto P
+  user A
+  goto P
+}
+`,
+      );
+      expect(printDsl(ir).warnings).toEqual([]);
+      expect(realReachability(await reDesugar(source))).toEqual(
+        realReachability(ir),
+      );
+    },
+  );
+});
+
+describe('irToDsl: an event sub-process a flow edge leads into', () => {
+  it('is refused as malformed, the import turning the flow down ahead of it', () => {
+    const ir = minimalProcess(
+      [start('S'), eventHandler('H', 'H_Start', messageDef('m'))],
+      [edge('S', 'H')],
+    );
+
+    expect(() => printDsl(ir)).toThrow(/flow edge/);
   });
 });
 
 describe('warnings: a condition the script has nowhere to write', () => {
-  /** `source` weighs its one route on, which the script writes as plain flow. */
   const oneWeighedRouteIr = (source: FlowElement, target = 'A'): BpmnProcess =>
     minimalProcess(
-      [
-        { kind: 'startEvent', id: 'S' },
-        source,
-        { kind: 'userTask', id: 'A' },
-        { kind: 'endEvent', id: 'E' },
-      ],
+      [start('S'), source, user('A'), end('E')],
       [
         edge('S', source.id),
         edge(source.id, target, { condition: '${approved}' }),
@@ -4776,14 +3154,8 @@ describe('warnings: a condition the script has nowhere to write', () => {
       ],
     );
 
-  // A split with one way out prints nothing of its own, so its one route is the
-  // same plain step-to-step flow a route between two steps is, and the report
-  // turns on whether the engine reads a condition there at all: a fork opening
-  // every route and a wait taking the first to resolve read none, so the drop
-  // costs nothing at run time and their reports say so instead. Reusing one
-  // message for the other would tell the reader a run changed that did not.
   it.each([
-    ['a step', { kind: 'userTask', id: 'T' }, 'droppedFlowCondition'],
+    ['a step', user('T'), 'droppedFlowCondition'],
     [
       'a one-way exclusive split',
       { kind: 'exclusiveGateway', id: 'G' },
@@ -4795,8 +3167,6 @@ describe('warnings: a condition the script has nowhere to write', () => {
       'droppedFlowCondition',
     ],
     [
-      // The fallback it names has no route, so the engine raises over the
-      // missing route instead and the failure stands.
       'a split naming a fallback it has no route for',
       { kind: 'exclusiveGateway', id: 'G', defaultFlowId: 'Flow_absent' },
       'droppedFlowCondition',
@@ -4817,37 +3187,37 @@ describe('warnings: a condition the script has nowhere to write', () => {
       const ir = oneWeighedRouteIr(node);
       const { source, warnings } = printDsl(ir);
 
-      expect(source).not.toContain('approved');
+      expect(bodyOf(source)).not.toContain('approved');
       expectReports(warnings, [report, node.id]);
       await printed(ir);
     },
   );
 
-  // A split that names a fallback is never left without a route, so the run
-  // carries on by another one instead of failing. The loop spends the fallback
-  // as its closing brace, which leaves the weighed route to print as the plain
-  // route on.
-  it.each(['exclusiveGateway', 'inclusiveGateway'] as const)(
-    'reports a weighed route out of a %s that names a fallback as a run that goes on elsewhere',
-    (kind) => {
-      const { source, warnings } = printDsl(
-        loopIntoSplitIr(
-          { kind, id: 'Split', defaultFlowId: 'Flow_again' },
-          { id: 'Flow_again' },
-          { condition: '${settled}' },
-        ),
+  it.each([
+    ['an exclusive split keeps it as an if', 'exclusiveGateway', true, []],
+    [
+      'an inclusive split reports a run that goes on elsewhere',
+      'inclusiveGateway',
+      false,
+      [['divertedRun', 'Split']],
+    ],
+  ] as const)(
+    'a weighed route beside a fallback that closes a loop: %s',
+    async (_title, kind, keepsIf, reports) => {
+      const ir = loopIntoSplitIr(
+        { kind, id: 'Split', defaultFlowId: 'Flow_again' },
+        { id: 'Flow_again' },
+        { condition: '${settled}' },
       );
+      const { source, warnings } = printDsl(ir);
 
       expect(source).toContain('while (again) {');
-      expect(source).not.toContain('settled');
-      expectReports(warnings, ['divertedRun', 'Split']);
+      expect(bodyOf(source).includes('settled')).toBe(keepsIf);
+      expectReports(warnings, ...reports);
+      await printed(ir);
     },
   );
 
-  // A choice whose fallback is weighed is the one the engine refuses at
-  // deployment, which the report beside this one says. A model that never runs
-  // takes no route, so the route this one leaves out is not one to describe as
-  // taken instead.
   it('keeps the run that goes on elsewhere off a split whose fallback is weighed', () => {
     const { warnings } = printDsl(
       loopIntoSplitIr(
@@ -4859,95 +3229,31 @@ describe('warnings: a condition the script has nowhere to write', () => {
 
     expectReports(
       warnings,
-      ['droppedEdge', 'Split'],
       ['choiceFallbackCondition', 'Split'],
-      ['droppedFlowCondition', 'Split'],
+      ['droppedEdge', 'Loop'],
     );
   });
 
-  it('reports it on a route the walk never reaches, which leaves as a bare jump', () => {
-    // A route whose source is not in the container: nothing walks it, so it
-    // prints in the closing sweep as a jump, and a jump carries the route and
-    // nothing else.
+  it('reports it on a route the walk never reaches, which leaves as a bare jump', async () => {
     const ir = minimalProcess(
+      [start('S'), user('A'), end('E')],
       [
-        { kind: 'startEvent', id: 'S' },
-        { kind: 'userTask', id: 'A' },
-        { kind: 'endEvent', id: 'E' },
-      ],
-      [
-        edge('S', 'A'),
-        edge('A', 'E'),
+        ...chain('S', 'A', 'E'),
         edge('Detached', 'A', { condition: '${approved}' }),
       ],
     );
     const { source, warnings } = printDsl(ir);
 
     expect(source).toContain('goto A');
-    expect(source).not.toContain('approved');
+    expect(bodyOf(source)).not.toContain('approved');
     expectReports(warnings, ['droppedFlowCondition', 'Detached']);
-  });
-
-  it('says nothing where the route carries no condition', () => {
-    expect(
-      printDsl(
-        minimalProcess(
-          [
-            { kind: 'startEvent', id: 'S' },
-            { kind: 'exclusiveGateway', id: 'G' },
-            { kind: 'userTask', id: 'A' },
-            { kind: 'endEvent', id: 'E' },
-          ],
-          flowChain('S', 'G', 'A', 'E'),
-        ),
-      ).warnings,
-    ).toEqual([]);
+    await printed(ir, 'orphanStep');
   });
 });
-
-describe('warnings: source the compiler turns down, drawn from the model', () => {
-  it('reports a name the script keeps for the names it derives itself', async () => {
-    const ir = around({ kind: 'userTask', id: 'Catch_Order_Paid' });
-    const { source, warnings } = printDsl(ir);
-
-    expect(source).toContain('user Catch_Order_Paid');
-    expectReports(warnings, ['refusedStatement', 'Catch_Order_Paid']);
-    await printed(ir, 'reservedId');
-  });
-
-  it('says nothing where the reserved name never prints', () => {
-    // A synthesized end with nothing to carry is dropped whole, so no name
-    // reaches the source to be turned down.
-    expect(
-      printDsl(
-        minimalProcess(
-          [
-            { kind: 'startEvent', id: 'S' },
-            { kind: 'endEvent', id: 'EndEvent_p' },
-          ],
-          [edge('S', 'EndEvent_p')],
-        ),
-      ).warnings,
-    ).toEqual([]);
-  });
-});
-
-// Hand-built: these IR shapes are what the desugarer emits for
-// `parallel { if (c) { } ... }` and for `await { ... }`.
 
 const DEFAULT_FLOW_ID = 'Flow_Gateway_p_1_fork_default';
 
-/**
- * A fork whose first branch is conditioned. `fallback` places the flow the
- * fork names as its default: a third branch, the merge itself, the second
- * branch, or nowhere. `all-conditioned` names none either and puts the second
- * branch under a condition too, so the fork has nothing left to take when
- * neither holds.
- *
- * `fallbackCondition` weighs the default flow itself. That is legal BPMN the
- * fork never reads: the fallback is taken when no other branch was, whatever
- * the condition on it says.
- */
+// Desugared `parallel { if (amount > 10000) { user Audit } { user Record } }`, the fallback placed per `fallback`.
 function inclusiveIr(
   fallback: 'branch' | 'join' | 'none' | 'all-conditioned' | 'second-branch',
   fallbackCondition?: string,
@@ -4968,17 +3274,17 @@ function inclusiveIr(
         : {};
   return minimalProcess(
     [
-      { kind: 'startEvent', id: 'S' },
+      start('S'),
       {
         kind: 'inclusiveGateway',
         id: 'Gateway_p_1_fork',
         ...(named ? { defaultFlowId: DEFAULT_FLOW_ID } : {}),
       },
       { kind: 'inclusiveGateway', id: 'Gateway_p_1_join' },
-      { kind: 'userTask', id: 'Audit' },
-      { kind: 'userTask', id: 'Record' },
-      ...(third ? [{ kind: 'userTask', id: 'Triage' } as FlowElement] : []),
-      { kind: 'endEvent', id: 'E' },
+      user('Audit'),
+      user('Record'),
+      ...(third ? [user('Triage') as FlowElement] : []),
+      end('E'),
     ],
     [
       edge('S', 'Gateway_p_1_fork'),
@@ -5001,175 +3307,131 @@ function inclusiveIr(
 }
 
 describe('irToDsl: conditioned parallel branches', () => {
-  /** One conditioned branch and one plain one, the fork and the merge elided. */
-  const TWO_BRANCH_SOURCE =
+  const block = (declared: string, ...branches: string[]): string =>
     'process p {\n' +
+    declared +
     '  start S\n' +
     '  parallel {\n' +
     '    if (amount > 10000) {\n' +
     '      user Audit\n' +
     '    }\n' +
-    '    {\n' +
-    '      user Record\n' +
-    '    }\n' +
+    branches.join('') +
     '  }\n' +
     '  end E\n' +
     '}\n';
+  const plainRecord = '    {\n      user Record\n    }\n';
+  const elseRecord = '    else {\n      user Record\n    }\n';
+  const elseTriage = '    else {\n      user Triage\n    }\n';
+  const AMOUNT = '  var amount: any\n';
 
-  it('prints the conditioned branch, the plain one and the fallback, and reports the fallback as one that can never fire', async () => {
-    // `Record` carries no condition, so it runs whatever the conditions do and
-    // the fallback behind `Triage` is left nothing to pick up. The model says
-    // so and the print keeps it: dropping the `else` would move `Triage` off
-    // the run, and the report is what stops the author meeting the validator's
-    // refusal with no explanation.
-    const ir = inclusiveIr('branch');
-    const { source, warnings } = printDsl(ir);
-
-    expect(source).toBe(
-      'process p {\n' +
-        '  start S\n' +
-        '  parallel {\n' +
-        '    if (amount > 10000) {\n' +
-        '      user Audit\n' +
-        '    }\n' +
-        '    {\n' +
-        '      user Record\n' +
-        '    }\n' +
-        '    else {\n' +
-        '      user Triage\n' +
-        '    }\n' +
-        '  }\n' +
-        '  end E\n' +
-        '}\n',
-    );
-    expectReports(warnings, ['deadFallback', 'Gateway_p_1_fork']);
-    // The refusal the report warns about: the model is where the dead fallback
-    // comes from, so the print writes it out and the compiler turns it down.
-    await expectIdempotent(ir, 'deadElse');
-  });
-
-  it('leaves out the fallback branch when it runs straight into the merge, and reports nothing', async () => {
-    // The same dead fallback as the case above, beside the same unconditioned
-    // branch, but it goes nowhere the merge does not, so it is left out and the
-    // printed source holds no `else` to report. The report is read off the
-    // branches that print, not off the model's edges.
-    const ir = inclusiveIr('join');
-    const { source, warnings } = printDsl(ir);
-
-    expect(source).toBe(TWO_BRANCH_SOURCE);
-    expect(warnings).toEqual([]);
-    await expectIdempotent(ir);
-  });
-
-  it('says nothing about a fallback while one branch is unconditioned, that branch being taken whatever the conditions do', () => {
-    const { source, warnings } = printDsl(inclusiveIr('none'));
-
-    // The same two branches as the case above, reached without a default flow.
-    expect(source).toBe(TWO_BRANCH_SOURCE);
-    expect(warnings).toEqual([]);
-  });
-
-  it('reports the fallback it had to invent when the model names none', () => {
-    const { source, warnings } = printDsl(inclusiveIr('all-conditioned'));
-
-    expect(source).toContain('if (amount > 10000) {');
-    expectReports(warnings, ['inventedFallback', 'Gateway_p_1_fork']);
-  });
-
-  it('writes a fallback the model weighs as the fallback, keeping it off a run of its own, and reports the condition it leaves out', async () => {
-    // Legal BPMN whose condition a fork never weighs: it takes the fallback
-    // when it took no other branch, whatever that condition says. Head the
-    // branch with the condition instead and it joins the run whenever the
-    // condition holds, beside its sibling rather than in place of it.
-    const ir = inclusiveIr('second-branch', '${urgent}');
-    const { source, warnings } = printDsl(ir);
-
-    expect(source).toBe(
-      'process p {\n' +
-        '  start S\n' +
-        '  parallel {\n' +
-        '    if (amount > 10000) {\n' +
-        '      user Audit\n' +
-        '    }\n' +
-        '    else {\n' +
-        '      user Record\n' +
-        '    }\n' +
-        '  }\n' +
-        '  end E\n' +
-        '}\n',
-    );
-    expect(source).not.toContain('urgent');
-    expectReports(warnings, ['forkFallbackCondition', 'Gateway_p_1_fork']);
-
-    // What the round trip has to hold on to: the branch is still the fork's
-    // fallback and still carries no condition, so it runs where it ran before.
-    const relowered = await reDesugar(source);
-    const fork = relowered.flowElements.find(
-      (e): e is Extract<FlowElement, { kind: 'inclusiveGateway' }> =>
-        e.kind === 'inclusiveGateway' && e.defaultFlowId !== undefined,
-    );
-    const fallback = relowered.sequenceFlows.find(
-      (f) => f.id === fork?.defaultFlowId,
-    );
-    expect(fallback?.targetRef).toBe('Record');
-    expect(fallback?.conditionExpression).toBeUndefined();
-  });
-
-  it('leaves out a weighed fallback that runs straight into the merge, and reports the condition all the same', async () => {
-    // The fallback goes nowhere the merge does not, so it stays implicit and
-    // the condition on it is the only thing there is to report.
-    const ir = inclusiveIr('join', '${late}');
-    const { source, warnings } = printDsl(ir);
-
-    expect(source).toBe(TWO_BRANCH_SOURCE);
-    expectReports(warnings, ['forkFallbackCondition', 'Gateway_p_1_fork']);
-    await reDesugar(source);
-  });
-
-  it('reports the weighed fallback of a fork a loop has left one route to print', () => {
-    // The loop prints the fork's route back into it as its closing brace, so
-    // the fork reaches its position with its own weighed fallback left and
-    // prints that as the plain route on. The fork weighs the fallback nowhere
-    // whichever way it prints, so the drop reads as the fallback it is.
-    const { source, warnings } = printDsl(
-      loopIntoSplitIr(
-        { kind: 'inclusiveGateway', id: 'Fork', defaultFlowId: 'Flow_settled' },
-        {},
-        { id: 'Flow_settled', condition: '${settled}' },
+  it.each<
+    [
+      title: string,
+      ir: BpmnProcess,
+      source: string,
+      reports: (readonly [keyof typeof REPORT, string])[],
+      lowersTo: BpmnProcess,
+      refused: (keyof typeof MODEL_REFUSAL)[],
+    ]
+  >([
+    [
+      'prints the conditioned branch, the plain one and the fallback, and reports the fallback as one that can never fire',
+      inclusiveIr('branch'),
+      block(AMOUNT, plainRecord, elseTriage),
+      [['deadFallback', 'Gateway_p_1_fork']],
+      inclusiveIr('branch'),
+      ['deadElse'],
+    ],
+    [
+      'leaves out the fallback branch when it runs straight into the merge, and reports nothing',
+      inclusiveIr('join'),
+      block(AMOUNT, plainRecord),
+      [],
+      inclusiveIr('none'),
+      [],
+    ],
+    [
+      'prints one weighed branch beside a bare fallback as the block with an else, and reports nothing',
+      inclusiveIr('second-branch'),
+      block(AMOUNT, elseRecord),
+      [],
+      inclusiveIr('second-branch'),
+      [],
+    ],
+    [
+      'says nothing about a fallback while one branch is unconditioned, that branch being taken whatever the conditions do',
+      inclusiveIr('none'),
+      block(AMOUNT, plainRecord),
+      [],
+      inclusiveIr('none'),
+      [],
+    ],
+    [
+      'reports the fallback it had to invent when the model names none, which the source lowers to',
+      inclusiveIr('all-conditioned'),
+      block(
+        '  var amount: any\n  var urgent: any\n',
+        '    if (urgent) {\n      user Record\n    }\n',
       ),
-    );
+      [['inventedFallback', 'Gateway_p_1_fork']],
+      {
+        ...inclusiveIr('all-conditioned'),
+        sequenceFlows: [
+          ...inclusiveIr('all-conditioned').sequenceFlows,
+          edge('Gateway_p_1_fork', 'Gateway_p_1_join'),
+        ],
+      },
+      [],
+    ],
+    [
+      'writes a fallback the model weighs as the fallback, keeping it off a run of its own, and reports the condition it leaves out',
+      inclusiveIr('second-branch', '${urgent}'),
+      block('  var amount: any\n  var urgent: any\n', elseRecord),
+      [['forkFallbackCondition', 'Gateway_p_1_fork']],
+      inclusiveIr('second-branch'),
+      [],
+    ],
+    [
+      'leaves out a weighed fallback that runs straight into the merge, and reports the condition all the same',
+      inclusiveIr('join', '${late}'),
+      block('  var amount: any\n  var late: any\n', plainRecord),
+      [['forkFallbackCondition', 'Gateway_p_1_fork']],
+      inclusiveIr('none'),
+      [],
+    ],
+    [
+      'reports a weighed fallback that nothing can reach as one that can never fire, beside the condition it leaves out',
+      inclusiveIr('branch', '${late}'),
+      block('  var amount: any\n  var late: any\n', plainRecord, elseTriage),
+      [
+        ['forkFallbackCondition', 'Gateway_p_1_fork'],
+        ['deadFallback', 'Gateway_p_1_fork'],
+      ],
+      inclusiveIr('branch'),
+      ['deadElse'],
+    ],
+  ])('%s', async (_title, ir, source, reports, lowersTo, refused) => {
+    const print = printDsl(ir);
+    expect(print.source).toBe(source);
+    expectReports(print.warnings, ...reports);
 
-    expect(source).toContain('while (again) {');
-    expect(source).not.toContain('settled');
-    expectReports(warnings, ['forkFallbackCondition', 'Fork']);
-  });
-
-  it('reports a weighed fallback that nothing can reach as one that can never fire, beside the condition it leaves out', () => {
-    // `Record` runs whatever the conditions do, so the fallback behind `Triage`
-    // is left nothing to pick up whether it is weighed or not.
-    const { source, warnings } = printDsl(inclusiveIr('branch', '${late}'));
-
-    expect(source).toContain('    else {\n      user Triage\n');
-    expect(source).not.toContain('late');
-    expectReports(
-      warnings,
-      ['forkFallbackCondition', 'Gateway_p_1_fork'],
-      ['deadFallback', 'Gateway_p_1_fork'],
-    );
+    const back = await reDesugar(await printed(ir, ...refused));
+    expect(elementMultiset(back)).toEqual(elementMultiset(lowersTo));
+    expect(edgeMultiset(back)).toEqual(edgeMultiset(lowersTo));
   });
 
   it('keeps a conditioned branch that runs straight into the merge as an empty block', async () => {
     const ir = minimalProcess(
       [
-        { kind: 'startEvent', id: 'S' },
+        start('S'),
         {
           kind: 'inclusiveGateway',
           id: 'Gateway_p_1_fork',
           defaultFlowId: DEFAULT_FLOW_ID,
         },
         { kind: 'inclusiveGateway', id: 'Gateway_p_1_join' },
-        { kind: 'userTask', id: 'Record' },
-        { kind: 'endEvent', id: 'E' },
+        user('Record'),
+        end('E'),
       ],
       [
         edge('S', 'Gateway_p_1_fork'),
@@ -5177,8 +3439,7 @@ describe('irToDsl: conditioned parallel branches', () => {
           id: 'Flow_skip',
           condition: '${amount > 10000}',
         }),
-        edge('Gateway_p_1_fork', 'Record'),
-        edge('Record', 'Gateway_p_1_join'),
+        ...chain('Gateway_p_1_fork', 'Record', 'Gateway_p_1_join'),
         edge('Gateway_p_1_fork', 'Gateway_p_1_join', { id: DEFAULT_FLOW_ID }),
         edge('Gateway_p_1_join', 'E'),
       ],
@@ -5186,6 +3447,7 @@ describe('irToDsl: conditioned parallel branches', () => {
 
     expect(await printed(ir)).toBe(
       'process p {\n' +
+        '  var amount: any\n' +
         '  start S\n' +
         '  parallel {\n' +
         '    if (amount > 10000) {\n' +
@@ -5198,139 +3460,164 @@ describe('irToDsl: conditioned parallel branches', () => {
         '}\n',
     );
   });
-
-  it('degrades to jumps when no merge of its own kind closes the fork, inventing no fallback on the way', () => {
-    // The merge is an XOR one, so the fork has no matching join and every
-    // branch keeps its edge as a jump instead. No block is printed, so no
-    // fallback is invented either, though both branches are conditioned.
-    const { source, warnings } = printDsl(
-      minimalProcess(
-        [
-          { kind: 'startEvent', id: 'S' },
-          { kind: 'inclusiveGateway', id: 'Gateway_p_1_fork' },
-          { kind: 'userTask', id: 'Audit' },
-          { kind: 'userTask', id: 'Record' },
-          gateway('Gateway_p_1_join'),
-          { kind: 'endEvent', id: 'E' },
-        ],
-        [
-          edge('S', 'Gateway_p_1_fork'),
-          edge('Gateway_p_1_fork', 'Audit', { condition: '${ok}' }),
-          edge('Gateway_p_1_fork', 'Record', { condition: '${urgent}' }),
-          edge('Audit', 'Gateway_p_1_join'),
-          edge('Record', 'Gateway_p_1_join'),
-          edge('Gateway_p_1_join', 'E'),
-        ],
-      ),
-    );
-
-    expect(source).not.toContain('parallel {');
-    expect(source).toContain('goto Audit');
-    expect(source).toContain('goto Record');
-    expectReports(warnings, ['degradedSplit', 'Gateway_p_1_fork']);
-  });
 });
 
 describe('irToDsl: a split left with nowhere to go when no condition holds', () => {
-  /**
-   * The `if` chain's shapes, which the fork block's counterparts have their own
-   * block above: a choice, a loop's exits and a step's own routes all print as
-   * one chain, so the fall-through past it is the same in all three.
-   */
-
-  /** `Pick` weighs both its routes and names none to take when neither holds. */
-  const allConditionedChoice = (defaultFlowId?: string): BpmnProcess =>
+  // Operaton tries an exclusive split's routes in document order, so only the
+  // last one may print as the fall-through and give up its condition.
+  const invoiceIr = (
+    approval: [condition: string, target: string][],
+  ): BpmnProcess =>
     minimalProcess(
       [
-        { kind: 'startEvent', id: 'S' },
-        gateway('Pick', defaultFlowId),
-        { kind: 'userTask', id: 'Audit' },
-        { kind: 'userTask', id: 'Record' },
-        gateway('Merge'),
-        { kind: 'endEvent', id: 'E' },
+        start('S'),
+        user('Approve'),
+        gateway('G'),
+        user('Pay'),
+        user('Review'),
+        gateway('G2'),
+        end('E1'),
+        end('E2'),
       ],
       [
-        edge('S', 'Pick'),
-        edge('Pick', 'Audit', {
-          id: 'F_audit',
-          condition: '${amount > 10000}',
-        }),
-        edge('Pick', 'Record', { id: 'F_record', condition: '${urgent}' }),
-        edge('Audit', 'Merge'),
-        edge('Record', 'Merge'),
-        edge('Merge', 'E'),
+        ...chain('S', 'Approve', 'G'),
+        ...approval.map(([condition, target]) =>
+          edge('G', target, { condition }),
+        ),
+        edge('Pay', 'E1'),
+        edge('Review', 'G2'),
+        edge('G2', 'E2', { condition: '${!clarified}' }),
+        edge('G2', 'Approve', { condition: '${clarified}' }),
       ],
     );
-
-  it('reports the fallback it had to invent at a choice whose every route is weighed', async () => {
-    const { source, warnings } = printDsl(allConditionedChoice());
-
-    // The chain closes with a bare `}`, so the position after it carries the
-    // run on where the model had nothing left to take.
-    expect(source).toBe(
-      'process p {\n' +
-        '  start S\n' +
-        '  if (amount > 10000) {\n' +
-        '    user Audit\n' +
-        '  } else if (urgent) {\n' +
-        '    user Record\n' +
-        '  }\n' +
-        '  end E\n' +
-        '}\n',
-    );
-    expectReports(warnings, ['inventedFallback', 'Pick']);
-
-    // The invention itself: the printed source lowers to a route the model
-    // never had, unconditioned and straight to the merge.
-    const relowered = await reDesugar(source);
-    const split = relowered.flowElements.find(
-      (e): e is Extract<FlowElement, { kind: 'exclusiveGateway' }> =>
-        e.kind === 'exclusiveGateway' && e.defaultFlowId !== undefined,
-    );
-    const invented = relowered.sequenceFlows.find(
-      (f) => f.id === split?.defaultFlowId,
-    );
-    expect(invented?.conditionExpression).toBeUndefined();
-  });
-
-  it('reports the invented fallback at a step whose own routes are all weighed, beside the choice it degrades them to', () => {
-    // Two reports, each about a different change: the model takes every route
-    // whose condition holds and the script takes one, and the model stops where
-    // none holds and the script carries on.
-    const { warnings } = printDsl(
+  it.each<
+    [
+      title: string,
+      ir: BpmnProcess,
+      body: string[],
+      reports: (readonly [keyof typeof REPORT, string])[],
+    ]
+  >([
+    [
+      'overlapping conditions keep their order: the first keeps its condition and the last falls through',
       minimalProcess(
+        [start('S'), gateway('G'), user('A'), user('B'), end('EA'), end('EB')],
         [
-          { kind: 'startEvent', id: 'S' },
-          { kind: 'userTask', id: 'Triage' },
-          { kind: 'userTask', id: 'Audit' },
-          { kind: 'userTask', id: 'Record' },
-          gateway('Merge'),
-          { kind: 'endEvent', id: 'E' },
-        ],
-        [
-          edge('S', 'Triage'),
-          edge('Triage', 'Audit', { condition: '${amount > 10000}' }),
-          edge('Triage', 'Record', { condition: '${urgent}' }),
-          edge('Audit', 'Merge'),
-          edge('Record', 'Merge'),
-          edge('Merge', 'E'),
+          edge('S', 'G'),
+          edge('G', 'A', { condition: '${x > 1}' }),
+          edge('G', 'B', { condition: '${x > 5}' }),
+          edge('A', 'EA'),
+          edge('B', 'EB'),
         ],
       ),
-    );
-
-    // A step's fallback is not carried into the IR, so the report says what
-    // the script does and leaves the model out of it.
-    expectReports(
-      warnings,
-      ['implicitSplit', 'Triage'],
-      ['inventedStepFallback', 'Triage'],
-    );
+      [
+        '  start S',
+        '  if (x > 1) {',
+        '    user A',
+        '    end EA',
+        '  }',
+        '  user B',
+        '  end EB',
+      ],
+      [['inventedFallback', 'G']],
+    ],
+    [
+      'an approval listed before its review falls through to the review',
+      invoiceIr([
+        ['${approved}', 'Pay'],
+        ['${!approved}', 'Review'],
+      ]),
+      [
+        '  start S',
+        '  user Approve',
+        '  if (approved) {',
+        '    user Pay',
+        '    end E1',
+        '  }',
+        '  user Review',
+        '  if (!clarified) {',
+        '    end E2',
+        '  } else if (clarified) {',
+        '    goto Approve',
+        '  }',
+        '  goto E1',
+      ],
+      [
+        ['inventedFallback', 'G'],
+        ['inventedFallback', 'G2'],
+      ],
+    ],
+    [
+      'an approval listed after its review falls through to the approval',
+      invoiceIr([
+        ['${!approved}', 'Review'],
+        ['${approved}', 'Pay'],
+      ]),
+      [
+        '  start S',
+        '  user Approve',
+        '  if (!approved) {',
+        '    user Review',
+        '    if (!clarified) {',
+        '      end E2',
+        '    } else if (clarified) {',
+        '      goto Approve',
+        '    }',
+        '  }',
+        '  user Pay',
+        '  end E1',
+      ],
+      [
+        ['inventedFallback', 'G'],
+        ['inventedFallback', 'G2'],
+      ],
+    ],
+    [
+      'a last route into a step reached from elsewhere keeps its condition behind an empty first branch',
+      minimalProcess(
+        [
+          start('S'),
+          gateway('G0'),
+          gateway('G'),
+          user('A'),
+          user('B'),
+          end('EA'),
+          end('EB'),
+        ],
+        [
+          edge('S', 'G0'),
+          edge('G0', 'B', { condition: '${p}' }),
+          edge('G0', 'G'),
+          edge('G', 'A', { condition: '${a}' }),
+          edge('G', 'B', { condition: '${b}' }),
+          edge('A', 'EA'),
+          edge('B', 'EB'),
+        ],
+      ),
+      [
+        '  start S',
+        '  if (p) {',
+        '    goto B',
+        '  }',
+        '  if (a) {',
+        '  } else if (b) {',
+        '    goto B',
+        '  }',
+        '  user A',
+        '  end EA',
+        '  user B',
+        '  end EB',
+      ],
+      [['inventedFallback', 'G']],
+    ],
+  ])('%s', async (_, ir, body, reports) => {
+    const { source, warnings } = printDsl(ir);
+    expect(bodyOf(source)).toBe(['process p {', ...body, '}', ''].join('\n'));
+    expectReports(warnings, ...reports);
+    await printed(ir);
   });
 
-  it('leaves the drop reported on import and the fallback reported on print saying the same thing', async () => {
-    // The two hops speak about the same step in the same run of the CLI, so a
-    // print report claiming the model named no fallback would contradict the
-    // import report naming the one it dropped.
+  it('reads the fallback an imported step carries, and reports only the condition on it that is weighed nowhere', async () => {
     const condition = (body: string): string =>
       `<bpmn:conditionExpression xsi:type="bpmn:tFormalExpression" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">${body}</bpmn:conditionExpression>`;
     const { ir, warnings: imported } = await xmlToIr(bpmnDoc`
@@ -5346,109 +3633,126 @@ describe('irToDsl: a split left with nowhere to go when no condition holds', () 
       ${condition('${urgent}')}
     </bpmn:sequenceFlow>`);
 
-    expect(imported.map((w) => [w.category, w.elementId])).toEqual([
-      ['unmappedConstruct', 'Triage'],
-    ]);
-    expect(imported[0]?.message).toContain(
-      "The 'default' attribute on 'Triage' was not imported",
-    );
-
-    expectReports(
-      printDsl(ir).warnings,
-      ['implicitSplit', 'Triage'],
-      ['inventedStepFallback', 'Triage'],
-    );
-  });
-
-  it('says nothing about a step whose route back into the loop the loop already printed', () => {
-    // The route back carries no condition, so `Review` always has it and can
-    // never be left with nowhere to go. The loop prints it as the closing
-    // brace, which leaves only the weighed escapes at the step's position: the
-    // question is asked of the routes the model gives the step, not of the ones
-    // still to print.
-    const { source, warnings } = printDsl(
-      minimalProcess(
-        [
-          { kind: 'startEvent', id: 'S' },
-          gateway('Loop'),
-          { kind: 'userTask', id: 'Review' },
-          { kind: 'userTask', id: 'Escalate' },
-          { kind: 'userTask', id: 'Reject' },
-          { kind: 'userTask', id: 'Settle' },
-          { kind: 'endEvent', id: 'E' },
-        ],
-        [
-          edge('S', 'Loop'),
-          edge('Loop', 'Review', { condition: '${again}' }),
-          edge('Loop', 'Settle'),
-          edge('Review', 'Loop'),
-          edge('Review', 'Escalate', { condition: '${overdue}' }),
-          edge('Review', 'Reject', { condition: '${abandoned}' }),
-          edge('Escalate', 'E'),
-          edge('Reject', 'E'),
-          edge('Settle', 'E'),
-        ],
-      ),
-    );
-
-    expect(source).toContain('while (again) {');
-    expectReports(warnings, ['implicitSplit', 'Review']);
-  });
-
-  it('keeps the guard-clause continuation when the route the split names carries a condition', async () => {
-    // No clean join here: one branch throws while the route the split takes
-    // when nothing holds carries the main flow. That route is the continuation
-    // whether it carries a condition or not, so the guard clause still prints
-    // as one instead of degrading to a pair of jumps.
-    const ir = await reDesugar(`process p {
-  error BOOM
-  start S
-  if (amount > 1000) {
-    throw error(BOOM)
-  }
-  service Post(class: "x.Post")
-  end Done
-}
-`);
-    const split = ir.flowElements.find(
-      (e): e is Extract<FlowElement, { kind: 'exclusiveGateway' }> =>
-        e.kind === 'exclusiveGateway' && e.defaultFlowId !== undefined,
-    )!;
-    const fallback = ir.sequenceFlows.find(
-      (f) => f.id === split.defaultFlowId,
-    )!;
-    fallback.conditionExpression = '${urgent}';
+    expect(imported).toEqual([]);
+    expect(ir.flowElements.find((e) => e.id === 'Triage')).toEqual({
+      kind: 'userTask',
+      id: 'Triage',
+      defaultFlowId: 'F2',
+    });
 
     const { source, warnings } = printDsl(ir);
+    expect(bodyOf(source)).toBe(
+      'process p {\n' +
+        '  start S\n' +
+        '  user Triage\n' +
+        '  if (paid) {\n' +
+        '    end E1\n' +
+        '  }\n' +
+        '  end E2\n' +
+        '}\n',
+    );
+    expectReports(warnings, ['forkFallbackCondition', 'Triage']);
+    await printed(ir);
+  });
 
-    expect(source).toContain('if (amount > 1000) {');
-    expect(source).toContain('service Post');
-    expect(source).not.toContain('goto ');
-    expectReports(warnings, ['choiceFallbackCondition', split.id]);
+  it('an empty condition body leaves two routes unconditioned, so none is resumed', async () => {
+    // The import refusal counts the empty body as a condition, as Operaton
+    // does, but the flow imports without one.
+    const { ir, warnings: imported } = await xmlToIr(bpmnDoc`
+    <bpmn:startEvent id="S" />
+    <bpmn:exclusiveGateway id="G" />
+    <bpmn:userTask id="A" />
+    <bpmn:userTask id="B" />
+    <bpmn:userTask id="C" />
+    <bpmn:endEvent id="EA" />
+    <bpmn:endEvent id="EB" />
+    <bpmn:endEvent id="EC" />
+    <bpmn:sequenceFlow id="F0" sourceRef="S" targetRef="G" />
+    <bpmn:sequenceFlow id="F1" sourceRef="G" targetRef="A">
+      <bpmn:conditionExpression />
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="F2" sourceRef="G" targetRef="B" />
+    <bpmn:sequenceFlow id="F3" sourceRef="G" targetRef="C">
+      <bpmn:conditionExpression>${'${c}'}</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="FA" sourceRef="A" targetRef="EA" />
+    <bpmn:sequenceFlow id="FB" sourceRef="B" targetRef="EB" />
+    <bpmn:sequenceFlow id="FC" sourceRef="C" targetRef="EC" />`);
+
+    expect(imported.map((w) => w.elementId)).toEqual(['F1']);
+    const { source, warnings } = printDsl(ir);
+    expect(bodyOf(source)).toBe(
+      [
+        'process p {',
+        '  start S',
+        '  if (true) {',
+        '    goto A',
+        '  } else if (true) {',
+        '    goto B',
+        '  } else if (c) {',
+        '    goto C',
+        '  }',
+        '  user A',
+        '  end EA',
+        '  user B',
+        '  end EB',
+        '  user C',
+        '  end EC',
+        '}',
+        '',
+      ].join('\n'),
+    );
+    expect(warnings).toEqual([]);
+    await printed(ir);
+  });
+
+  it('says nothing about an invented fallback at a step whose route back into the loop the loop already printed', async () => {
+    const ir = minimalProcess(
+      [
+        start('S'),
+        gateway('Loop'),
+        user('Review'),
+        user('Escalate'),
+        user('Reject'),
+        user('Settle'),
+        end('E'),
+      ],
+      [
+        edge('S', 'Loop'),
+        edge('Loop', 'Review', { condition: '${again}' }),
+        edge('Loop', 'Settle'),
+        edge('Review', 'Loop'),
+        edge('Review', 'Escalate', { condition: '${overdue}' }),
+        edge('Review', 'Reject', { condition: '${abandoned}' }),
+        edge('Escalate', 'E'),
+        edge('Reject', 'E'),
+        edge('Settle', 'E'),
+      ],
+    );
+    const { source, warnings } = printDsl(ir);
+
+    expect(source).toContain('while (again) {');
+    expectReports(warnings, ['degradedSplit', 'Review']);
+    await printed(ir);
   });
 
   it('says nothing about an invented fallback at a fork that opens every branch', () => {
-    // Every branch is weighed and the fork names no fallback, but it opens all
-    // of them whatever the conditions say, so it is never left with nowhere to
-    // go and the block after it invents nothing. The conditions it reads
-    // nowhere are the only thing there is to report.
     const { warnings } = printDsl(
       minimalProcess(
         [
-          { kind: 'startEvent', id: 'S' },
+          start('S'),
           { kind: 'parallelGateway', id: 'Gateway_p_1_fork' },
-          { kind: 'userTask', id: 'Audit' },
-          { kind: 'userTask', id: 'Record' },
+          user('Audit'),
+          user('Record'),
           { kind: 'parallelGateway', id: 'Gateway_p_1_join' },
-          { kind: 'endEvent', id: 'E' },
+          end('E'),
         ],
         [
           edge('S', 'Gateway_p_1_fork'),
           edge('Gateway_p_1_fork', 'Audit', { condition: '${amount > 10000}' }),
           edge('Gateway_p_1_fork', 'Record', { condition: '${urgent}' }),
           edge('Audit', 'Gateway_p_1_join'),
-          edge('Record', 'Gateway_p_1_join'),
-          edge('Gateway_p_1_join', 'E'),
+          ...chain('Record', 'Gateway_p_1_join', 'E'),
         ],
       ),
     );
@@ -5456,116 +3760,7 @@ describe('irToDsl: a split left with nowhere to go when no condition holds', () 
     expectReports(warnings, ['unweighedBranch', 'Gateway_p_1_fork']);
   });
 
-  it('writes a weighed fallback of a choice as the plain else, and reports the model the engine will not deploy', async () => {
-    // A choice weighs its fallback like any other route, so the engine refuses
-    // the model at deployment for carrying a condition there and there is no
-    // run to carry it into. Heading the branch with it would put it on a run of
-    // its own and leave the choice falling through where the model never did.
-    // The fallback lands among the weighed routes on a plain reading, so the
-    // model still has somewhere to go and nothing is invented for it.
-    const ir = allConditionedChoice('F_record');
-    const { source, warnings } = printDsl(ir);
-
-    expect(source).toBe(
-      'process p {\n' +
-        '  start S\n' +
-        '  if (amount > 10000) {\n' +
-        '    user Audit\n' +
-        '  } else {\n' +
-        '    user Record\n' +
-        '  }\n' +
-        '  end E\n' +
-        '}\n',
-    );
-    expect(source).not.toContain('urgent');
-    expectReports(warnings, ['choiceFallbackCondition', 'Pick']);
-
-    // What the round trip has to hold on to: `Record` is still what the split
-    // takes when the other condition fails, and still carries no condition.
-    const relowered = await reDesugar(source);
-    const split = relowered.flowElements.find(
-      (e): e is Extract<FlowElement, { kind: 'exclusiveGateway' }> =>
-        e.kind === 'exclusiveGateway' && e.defaultFlowId !== undefined,
-    );
-    const fallback = relowered.sequenceFlows.find(
-      (f) => f.id === split?.defaultFlowId,
-    );
-    expect(fallback?.targetRef).toBe('Record');
-    expect(fallback?.conditionExpression).toBeUndefined();
-  });
-
-  // The loop spends the route round it, printing it as the `while` condition,
-  // the `do` closing condition, or the plain route on where one route is left,
-  // so it is gone from the routes still to print at the head. The report is
-  // asked of the routes the model gives the head, not of those.
-  const ESCAPES = [
-    ['Escalate', '${overdue}'],
-    ['Settle', '${paid}'],
-  ] as const;
-
-  it.each([
-    [
-      'names no fallback, so the choice after the loop invents one',
-      loopWithEscapesIr({
-        head: gateway('Loop'),
-        body: 'Retry',
-        back: { condition: '${again}' },
-        escapes: ESCAPES,
-      }),
-      [['inventedFallback', 'Loop']],
-      'while (again) {',
-    ],
-    [
-      'weighs the fallback a pre-test loop prints as its condition, which the engine refuses at deployment',
-      loopWithEscapesIr({
-        head: gateway('Loop', 'F_body'),
-        body: 'Review',
-        back: { id: 'F_body', condition: '${again}' },
-        escapes: ESCAPES,
-      }),
-      [['choiceFallbackCondition', 'Loop']],
-      'while (again) {',
-    ],
-    [
-      'weighs the fallback a post-test loop prints as its closing condition',
-      loopWithEscapesIr({
-        shape: 'post',
-        head: gateway('Pick', 'F_again'),
-        body: 'Review',
-        back: { id: 'F_again', condition: '${again}' },
-        escapes: ESCAPES,
-      }),
-      [['choiceFallbackCondition', 'Pick']],
-      '} while (again)',
-    ],
-    [
-      // One route left is the fall-through, which the head prints without a
-      // choice around it, so the condition it leaves out is reported beside
-      // the deployment refusal.
-      'weighs the fallback where the loop leaves it one route to print',
-      loopWithEscapesIr({
-        shape: 'post',
-        head: gateway('Pick', 'F_again'),
-        body: 'Review',
-        back: { id: 'F_again', condition: '${again}' },
-        escapes: [['Settle', '${paid}']],
-      }),
-      [
-        ['choiceFallbackCondition', 'Pick'],
-        ['droppedFlowCondition', 'Pick'],
-      ],
-      '} while (again)',
-    ],
-  ] as const)('reports a loop head that %s', (_title, ir, reports, has) => {
-    const { source, warnings } = printDsl(ir);
-    expect(source).toContain(has);
-    expectReports(warnings, ...reports);
-  });
-
   it('reports the refusal alone when the one route the loop leaves is the weighed fallback itself', () => {
-    // The route left to print is the fallback, so the condition the plain
-    // route on leaves out is the one the refusal is about. Saying the engine
-    // reads it beside that would name a run the model never reaches.
     const { warnings } = printDsl(
       loopIntoSplitIr(
         gateway('Pick', 'Flow_settled'),
@@ -5579,109 +3774,11 @@ describe('irToDsl: a split left with nowhere to go when no condition holds', () 
 
     expectReports(warnings, ['choiceFallbackCondition', 'Pick']);
   });
-
-  it('gives the else to the route the split names, over a plain route beside it', async () => {
-    // `Triage` carries no condition and is not the named fallback, so the model
-    // takes it whenever the weighed route fails and never reaches `Record`. The
-    // `else` has to be `Record` for the chain to read that way: give it to
-    // `Triage` instead and the plain route becomes the one nothing reaches.
-    const ir = minimalProcess(
-      [
-        { kind: 'startEvent', id: 'S' },
-        gateway('Pick', 'F_record'),
-        { kind: 'userTask', id: 'Audit' },
-        { kind: 'userTask', id: 'Record' },
-        { kind: 'userTask', id: 'Triage' },
-        gateway('Merge'),
-        { kind: 'endEvent', id: 'E' },
-      ],
-      [
-        edge('S', 'Pick'),
-        edge('Pick', 'Audit', {
-          id: 'F_audit',
-          condition: '${amount > 10000}',
-        }),
-        edge('Pick', 'Record', { id: 'F_record', condition: '${urgent}' }),
-        edge('Pick', 'Triage', { id: 'F_triage' }),
-        edge('Audit', 'Merge'),
-        edge('Record', 'Merge'),
-        edge('Triage', 'Merge'),
-        edge('Merge', 'E'),
-      ],
-    );
-
-    expect(await printed(ir)).toBe(
-      'process p {\n' +
-        '  start S\n' +
-        '  if (amount > 10000) {\n' +
-        '    user Audit\n' +
-        '  } else if (true) {\n' +
-        '    user Triage\n' +
-        '  } else {\n' +
-        '    user Record\n' +
-        '  }\n' +
-        '  end E\n' +
-        '}\n',
-    );
-  });
 });
 
-describe('irToDsl: a condition on a branch of a fork that weighs none', () => {
-  /**
-   * A fork that opens every branch, with a condition on one of them. Legal
-   * BPMN the engine never reads, and content the block form has no head to
-   * carry: a head written here would read back as the fork that weighs its
-   * branches, which is a different fork.
-   */
-  const CONDITIONED_AND_FORK: BpmnProcess = minimalProcess(
-    [
-      { kind: 'startEvent', id: 'S' },
-      { kind: 'parallelGateway', id: 'Gateway_p_1_fork' },
-      { kind: 'userTask', id: 'Audit' },
-      { kind: 'userTask', id: 'Record' },
-      { kind: 'parallelGateway', id: 'Gateway_p_1_join' },
-      { kind: 'endEvent', id: 'E' },
-    ],
-    [
-      edge('S', 'Gateway_p_1_fork'),
-      edge('Gateway_p_1_fork', 'Audit', { condition: '${urgent}' }),
-      edge('Gateway_p_1_fork', 'Record'),
-      edge('Audit', 'Gateway_p_1_join'),
-      edge('Record', 'Gateway_p_1_join'),
-      edge('Gateway_p_1_join', 'E'),
-    ],
-  );
-
-  it('leaves the condition out, keeping the fork the fork it was', async () => {
-    const dsl = await printed(CONDITIONED_AND_FORK);
-
-    expect(dsl).toContain('parallel {');
-    expect(dsl).not.toContain('urgent');
-    // Both forks print as `parallel`, so a head is all that tells them apart.
-    expect(dsl).not.toContain('if (');
-  });
-
-  it('reports the condition it left out, naming the fork it belongs to', () => {
-    const { warnings } = printDsl(CONDITIONED_AND_FORK);
-
-    expectReports(warnings, ['unweighedBranch', 'Gateway_p_1_fork']);
-  });
-
-  it('says nothing when no branch of the fork is weighed', () => {
-    const plain: BpmnProcess = {
-      ...CONDITIONED_AND_FORK,
-      sequenceFlows: CONDITIONED_AND_FORK.sequenceFlows.map(
-        ({ conditionExpression: _drop, ...rest }) => rest,
-      ),
-    };
-    expect(printDsl(plain).warnings).toEqual([]);
-  });
-});
-
-/** Desugared `await { message("Paid") { user Ship } timer("P3D") { user Chase } }`. */
 const RACE_IR: BpmnProcess = minimalProcess(
   [
-    { kind: 'startEvent', id: 'S' },
+    start('S'),
     { kind: 'eventBasedGateway', id: 'Gateway_p_1_race' },
     typedEvent('intermediateCatchEvent', 'Catch_p_1_b0', messageDef('Paid')),
     typedEvent(
@@ -5689,139 +3786,63 @@ const RACE_IR: BpmnProcess = minimalProcess(
       'Catch_p_1_b1',
       timerDef('duration', 'P3D'),
     ),
-    { kind: 'userTask', id: 'Ship' },
-    { kind: 'userTask', id: 'Chase' },
+    user('Ship'),
+    user('Chase'),
     gateway('Gateway_p_1_join'),
-    { kind: 'endEvent', id: 'E' },
+    end('E'),
   ],
   [
-    edge('S', 'Gateway_p_1_race'),
-    edge('Gateway_p_1_race', 'Catch_p_1_b0'),
-    edge('Catch_p_1_b0', 'Ship'),
-    edge('Ship', 'Gateway_p_1_join'),
-    edge('Gateway_p_1_race', 'Catch_p_1_b1'),
-    edge('Catch_p_1_b1', 'Chase'),
-    edge('Chase', 'Gateway_p_1_join'),
-    edge('Gateway_p_1_join', 'E'),
+    ...chain(
+      'S',
+      'Gateway_p_1_race',
+      'Catch_p_1_b0',
+      'Ship',
+      'Gateway_p_1_join',
+    ),
+    ...chain(
+      'Gateway_p_1_race',
+      'Catch_p_1_b1',
+      'Chase',
+      'Gateway_p_1_join',
+      'E',
+    ),
   ],
 );
 
 describe('irToDsl: race', () => {
-  it('prints one branch per wait, split, waits and merge all elided', async () => {
-    const { source, warnings } = printDsl(RACE_IR);
-
-    expect(source).toBe(
-      'process p {\n' +
-        '  start S\n' +
-        '  await {\n' +
-        '    message("Paid") {\n' +
-        '      user Ship\n' +
-        '    }\n' +
-        '    timer("P3D") {\n' +
-        '      user Chase\n' +
-        '    }\n' +
-        '  }\n' +
-        '  end E\n' +
-        '}\n',
-    );
-    expect(warnings).toEqual([]);
-    await expectIdempotent(RACE_IR);
-  });
-
-  it('reports a condition weighing a race branch, which the block form has nowhere to put', () => {
-    // Legal BPMN a race never weighs: it opens every branch at once and takes
-    // the first to resolve, so the condition decides nothing either way. The
-    // print is the same source as without it, and the report is the only trace.
+  it.each([
+    [
+      'a condition weighing a race branch, which the block form has nowhere to put',
+      'Gateway_p_1_race',
+      'Catch_p_1_b1',
+      'raceCondition',
+    ],
+    [
+      'a condition on the route from a wait into its own body, which the engine reads',
+      'Catch_p_1_b0',
+      'Ship',
+      'droppedFlowCondition',
+    ],
+  ] as const)('reports %s', async (_title, sourceRef, targetRef, report) => {
     const ir: BpmnProcess = {
       ...RACE_IR,
       sequenceFlows: RACE_IR.sequenceFlows.map((f) =>
-        f.sourceRef === 'Gateway_p_1_race' && f.targetRef === 'Catch_p_1_b1'
+        f.sourceRef === sourceRef && f.targetRef === targetRef
           ? { ...f, conditionExpression: '${overdue}' }
           : f,
       ),
     };
     const { source, warnings } = printDsl(ir);
 
-    expect(source).toBe(irToDsl(RACE_IR));
-    expect(source).not.toContain('overdue');
-    expectReports(warnings, ['raceCondition', 'Gateway_p_1_race']);
+    expect(bodyOf(source)).toBe(bodyOf(irToDsl(RACE_IR)));
+    expectReports(warnings, [report, sourceRef]);
+    await printed(ir);
   });
 
-  it('reports a condition on the route from a wait into its own body, which the engine reads', async () => {
-    // Not the condition on the branch above, which the wait weighs nowhere:
-    // this one sits between the wait and the step it opens on, where the
-    // engine takes the route only when it holds and refuses the run when it
-    // does not. The block form writes the body straight under the wait, so
-    // the condition has no place to go.
-    const ir: BpmnProcess = {
-      ...RACE_IR,
-      sequenceFlows: RACE_IR.sequenceFlows.map((f) =>
-        f.sourceRef === 'Catch_p_1_b0' && f.targetRef === 'Ship'
-          ? { ...f, conditionExpression: '${ok}' }
-          : f,
-      ),
-    };
-    const { source, warnings } = printDsl(ir);
-
-    expect(source).toBe(irToDsl(RACE_IR));
-    expect(source).not.toContain('ok');
-    expectReports(warnings, ['droppedFlowCondition', 'Catch_p_1_b0']);
-  });
-
-  it('writes the branch settings in the header parens, and an empty body for a branch that only waits', async () => {
+  it('prints a wait with no route out as an empty branch, which ends the run where the model does when nothing follows the race', async () => {
     const ir = minimalProcess(
       [
-        { kind: 'startEvent', id: 'S' },
-        { kind: 'eventBasedGateway', id: 'Gateway_p_1_race' },
-        {
-          ...typedEvent(
-            'intermediateCatchEvent',
-            'Catch_p_1_b0',
-            messageDef('Paid'),
-          ),
-          asyncBefore: true,
-        },
-        typedEvent(
-          'intermediateCatchEvent',
-          'Catch_p_1_b1',
-          timerDef('duration', 'P3D'),
-        ),
-        { kind: 'userTask', id: 'Chase' },
-        gateway('Gateway_p_1_join'),
-        { kind: 'endEvent', id: 'E' },
-      ],
-      [
-        edge('S', 'Gateway_p_1_race'),
-        edge('Gateway_p_1_race', 'Catch_p_1_b0'),
-        edge('Catch_p_1_b0', 'Gateway_p_1_join'),
-        edge('Gateway_p_1_race', 'Catch_p_1_b1'),
-        edge('Catch_p_1_b1', 'Chase'),
-        edge('Chase', 'Gateway_p_1_join'),
-        edge('Gateway_p_1_join', 'E'),
-      ],
-    );
-
-    const dsl = irToDsl(ir);
-    expect(dsl).toBe(
-      'process p {\n' +
-        '  start S\n' +
-        '  await {\n' +
-        '    message("Paid", asyncBefore: true) {\n' +
-        '    }\n' +
-        '    timer("P3D") {\n' +
-        '      user Chase\n' +
-        '    }\n' +
-        '  }\n' +
-        '  end E\n' +
-        '}\n',
-    );
-    await expectIdempotent(ir);
-  });
-
-  it('still prints a race whose every branch ends, the merge having been pruned away', async () => {
-    const ir = minimalProcess(
-      [
-        { kind: 'startEvent', id: 'S' },
+        start('S'),
         { kind: 'eventBasedGateway', id: 'Gateway_p_1_race' },
         typedEvent(
           'intermediateCatchEvent',
@@ -5833,133 +3854,76 @@ describe('irToDsl: race', () => {
           'Catch_p_1_b1',
           timerDef('duration', 'P3D'),
         ),
-        { kind: 'endEvent', id: 'Done' },
-        { kind: 'endEvent', id: 'Expired' },
+        user('Chase'),
+        end('E'),
       ],
       [
-        edge('S', 'Gateway_p_1_race'),
-        edge('Gateway_p_1_race', 'Catch_p_1_b0'),
-        edge('Catch_p_1_b0', 'Done'),
-        edge('Gateway_p_1_race', 'Catch_p_1_b1'),
-        edge('Catch_p_1_b1', 'Expired'),
+        ...chain('S', 'Gateway_p_1_race', 'Catch_p_1_b0'),
+        ...chain('Gateway_p_1_race', 'Catch_p_1_b1', 'Chase', 'E'),
       ],
     );
-    const dsl = irToDsl(ir);
-
-    expect(dsl).toBe(
+    const { source, warnings } = printDsl(ir);
+    expect(source).toBe(
       'process p {\n' +
         '  start S\n' +
         '  await {\n' +
         '    message("Paid") {\n' +
-        '      end Done\n' +
         '    }\n' +
         '    timer("P3D") {\n' +
-        '      end Expired\n' +
+        '      user Chase\n' +
+        '      end E\n' +
         '    }\n' +
         '  }\n' +
         '}\n',
     );
-    await expectIdempotent(ir);
+    expect(warnings).toEqual([]);
+    await printed(ir);
   });
 
-  it('degrades when a branch does not open on a wait, and loses no edge doing it', () => {
-    const { source, warnings } = printDsl(
-      minimalProcess(
-        [
-          { kind: 'startEvent', id: 'S' },
-          { kind: 'eventBasedGateway', id: 'Gateway_p_1_race' },
-          typedEvent(
-            'intermediateCatchEvent',
-            'Catch_p_1_b0',
-            messageDef('Paid'),
-          ),
-          { kind: 'userTask', id: 'Chase' },
-          { kind: 'endEvent', id: 'E' },
-        ],
-        [
-          edge('S', 'Gateway_p_1_race'),
-          edge('Gateway_p_1_race', 'Catch_p_1_b0'),
-          edge('Catch_p_1_b0', 'E'),
-          edge('Gateway_p_1_race', 'Chase'),
-          edge('Chase', 'E'),
-        ],
-      ),
+  it('degrades when a branch does not open on a wait, and loses no edge doing it', async () => {
+    const ir = minimalProcess(
+      [
+        start('S'),
+        { kind: 'eventBasedGateway', id: 'Gateway_p_1_race' },
+        typedEvent(
+          'intermediateCatchEvent',
+          'Catch_p_1_b0',
+          messageDef('Paid'),
+        ),
+        user('Chase'),
+        end('E'),
+      ],
+      [
+        ...chain('S', 'Gateway_p_1_race', 'Catch_p_1_b0', 'E'),
+        ...chain('Gateway_p_1_race', 'Chase', 'E'),
+      ],
     );
+    const { source, warnings } = printDsl(ir);
 
-    expect(source).not.toContain('await {');
-    // One edge takes a jump; the other lands on a wait, which has no name to
-    // jump to, so it leaves the marker and its report instead.
-    expect(source).toContain('goto Chase');
-    expect(source).toContain(`${UNSTRUCTURED_MARKER} (dropped edge into Catch`);
+    expect(source).toBe(
+      'process p {\n' +
+        '  start S\n' +
+        `  ${UNSTRUCTURED_MARKER} (split Gateway_p_1_race degraded to jumps; was event-based)\n` +
+        '  if (true) {\n' +
+        `    ${UNSTRUCTURED_MARKER} (dropped edge into Catch_p_1_b0)\n` +
+        '  } else {\n' +
+        '    goto Chase\n' +
+        '  }\n' +
+        '  await message("Paid")\n' +
+        '  end E\n' +
+        '  user Chase\n' +
+        '  goto E\n' +
+        '}\n',
+    );
     expectReports(
       warnings,
       ['degradedSplit', 'Gateway_p_1_race'],
       ['droppedEdge', 'Catch_p_1_b0'],
     );
-    // The wait itself is still printed, so its own chain survives.
-    expect(source).toContain('await message("Paid")');
+    await printed(ir);
   });
 });
 
-describe('irToDsl: a split with one way out is transparent', () => {
-  const oneOutIr = (kind: 'inclusiveGateway' | 'eventBasedGateway') =>
-    minimalProcess(
-      [
-        { kind: 'startEvent', id: 'S' },
-        { kind, id: 'G' },
-        { kind: 'userTask', id: 'A' },
-        { kind: 'endEvent', id: 'E' },
-      ],
-      flowChain('S', 'G', 'A', 'E'),
-    );
-
-  it.each(['inclusiveGateway', 'eventBasedGateway'] as const)(
-    'walks straight through a one-way %s',
-    async (kind) => {
-      expect(await printed(oneOutIr(kind))).toBe(
-        'process p {\n  start S\n  user A\n  end E\n}\n',
-      );
-    },
-  );
-
-  /**
-   * One route of a real node lands on a one-way split, and the routes end
-   * apart, so the branch keeps its edge as a jump. The jump has to forward
-   * through the split to the successor: naming the split is impossible, and
-   * giving up on it would drop an edge the model has.
-   */
-  const passThroughIr = (kind: 'inclusiveGateway' | 'eventBasedGateway') =>
-    minimalProcess(
-      [
-        { kind: 'startEvent', id: 'S' },
-        { kind: 'userTask', id: 'A' },
-        { kind, id: 'G' },
-        { kind: 'userTask', id: 'R' },
-        { kind: 'endEvent', id: 'E' },
-        { kind: 'endEvent', id: 'E2' },
-      ],
-      [
-        edge('S', 'A'),
-        edge('A', 'E'),
-        edge('A', 'G'),
-        edge('G', 'R'),
-        edge('R', 'E2'),
-      ],
-    );
-
-  it.each(['inclusiveGateway', 'eventBasedGateway'] as const)(
-    'forwards a jump through a one-way %s to the real successor',
-    (kind) => {
-      const { source, warnings } = printDsl(passThroughIr(kind));
-
-      expect(source).toContain('goto R');
-      expect(source).not.toContain(UNSTRUCTURED_MARKER);
-      expectReports(warnings, ['implicitSplit', 'A']);
-    },
-  );
-});
-
-/** `ir` with each listed element carrying the job settings named for it. */
 function withJobSettings(
   ir: BpmnProcess,
   settings: Record<string, JobSettings>,
@@ -5972,360 +3936,12 @@ function withJobSettings(
   };
 }
 
-/**
- * The parens of every gateway statement in `dsl`, in source order, as
- * `[statement type, ['key: value', ...]]`: which head the printer put the keys
- * on. Which gateway each lands on is the compiler's business.
- */
-async function headParens(dsl: string): Promise<[string, string[]][]> {
-  const doc = await parse(dsl);
-  return AstUtils.streamAllContents(doc.parseResult.value)
-    .filter((node) => gatewayStatementRuleOf(node) !== undefined)
-    .map((node): [string, string[]] => [
-      node.$type,
-      ((node as { items?: ParenItem[] }).items ?? []).map(
-        (item) => item.$cstNode!.text,
-      ),
-    ])
-    .toArray();
-}
-
-/**
- * Every gateway of `ir` carrying a setting, as `[kind, settings]` in an order
- * the ids take no part in: the compiler mints its own ids on re-parse, and a
- * merge that splits again comes back as a split beside a join the model never
- * had, so only the settings-bearing gateways can be compared.
- */
-function gatewaySettings(ir: BpmnProcess): [string, JobSettings][] {
-  return ir.flowElements
-    .filter(isGateway)
-    .map((el): [string, JobSettings] => [
-      el.kind,
-      Object.fromEntries(
-        ENGINE_KEYS.filter((key) => key in el).map((key) => [
-          key,
-          (el as unknown as Record<string, unknown>)[key],
-        ]),
-      ),
-    ])
-    .filter(([, settings]) => Object.keys(settings).length > 0)
-    .sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
-}
-
 describe('irToDsl: gateway settings', () => {
-  const CYCLE = 'R3/PT10M';
-
-  /** `if (a) {A} else if (b) {B} else {C}` as the compiler lowers it: one split, one join. */
-  const CHAIN_IR: BpmnProcess = minimalProcess(
-    [
-      { kind: 'startEvent', id: 'S' },
-      gateway('Gateway_p_1_split', 'Flow_Gateway_p_1_split_default'),
-      gateway('Gateway_p_1_join'),
-      { kind: 'userTask', id: 'A' },
-      { kind: 'userTask', id: 'B' },
-      { kind: 'userTask', id: 'C' },
-      { kind: 'endEvent', id: 'E' },
-    ],
-    [
-      edge('S', 'Gateway_p_1_split'),
-      edge('Gateway_p_1_split', 'A', { condition: '${a}' }),
-      edge('A', 'Gateway_p_1_join'),
-      edge('Gateway_p_1_split', 'B', { condition: '${b}' }),
-      edge('B', 'Gateway_p_1_join'),
-      edge('Gateway_p_1_split', 'C', {
-        id: 'Flow_Gateway_p_1_split_default',
-      }),
-      edge('C', 'Gateway_p_1_join'),
-      edge('Gateway_p_1_join', 'E'),
-    ],
-  );
-
-  /** A merge that is itself a two-route split, which prints as the `if` that follows the first. */
-  const MERGE_THAT_SPLITS_IR: BpmnProcess = minimalProcess(
-    [
-      { kind: 'startEvent', id: 'S' },
-      gateway('Gateway_p_1_split', 'Flow_Gateway_p_1_split_default'),
-      gateway('Merge', 'Flow_Merge_default'),
-      { kind: 'userTask', id: 'A' },
-      { kind: 'userTask', id: 'B' },
-      { kind: 'userTask', id: 'X' },
-      { kind: 'userTask', id: 'Y' },
-      { kind: 'endEvent', id: 'E' },
-    ],
-    [
-      edge('S', 'Gateway_p_1_split'),
-      edge('Gateway_p_1_split', 'A', { condition: '${a}' }),
-      edge('A', 'Merge'),
-      edge('Gateway_p_1_split', 'B', {
-        id: 'Flow_Gateway_p_1_split_default',
-      }),
-      edge('B', 'Merge'),
-      edge('Merge', 'X', { condition: '${x}' }),
-      edge('X', 'E'),
-      edge('Merge', 'Y', { id: 'Flow_Merge_default' }),
-      edge('Y', 'E'),
-    ],
-  );
-
-  /**
-   * `while (c) { if (a) {A} else {B} }` as the compiler lowers it: the inner
-   * join's only route is the loop's back-edge, which the `while` spends before
-   * the body is walked.
-   */
-  const IF_IN_WHILE_IR: BpmnProcess = minimalProcess(
-    [
-      { kind: 'startEvent', id: 'S' },
-      gateway('Gateway_p_1_loop', 'Flow_Gateway_p_1_loop_default'),
-      gateway('Gateway_p_1_b_0_split', 'Flow_Gateway_p_1_b_0_split_default'),
-      gateway('Gateway_p_1_b_0_join'),
-      { kind: 'userTask', id: 'A' },
-      { kind: 'userTask', id: 'B' },
-      { kind: 'endEvent', id: 'E' },
-    ],
-    [
-      edge('S', 'Gateway_p_1_loop'),
-      edge('Gateway_p_1_loop', 'Gateway_p_1_b_0_split', { condition: '${c}' }),
-      edge('Gateway_p_1_b_0_split', 'A', { condition: '${a}' }),
-      edge('A', 'Gateway_p_1_b_0_join'),
-      edge('Gateway_p_1_b_0_split', 'B', {
-        id: 'Flow_Gateway_p_1_b_0_split_default',
-      }),
-      edge('B', 'Gateway_p_1_b_0_join'),
-      edge('Gateway_p_1_b_0_join', 'Gateway_p_1_loop'),
-      edge('Gateway_p_1_loop', 'E', { id: 'Flow_Gateway_p_1_loop_default' }),
-    ],
-  );
-
-  // Revert symptoms: drop the join items from the head -> every `join*` row
-  // red; take the join's settings whatever its shape -> the merge-that-splits
-  // row prints them as `join*` on the first `if`; read the loop's settings
-  // again for its leftover routes -> the loop rows print them twice; read a
-  // join's keys onto the split in the compiler -> the printed text is
-  // unchanged and the re-parse pin alone goes red.
-  it.each([
-    [
-      'an if prints the split settings and, join-prefixed, the pass-through merge settings',
-      withJobSettings(IF_ELSE_IR, {
-        Gateway_p_2_split: { asyncBefore: true, jobPriority: '10' },
-        Gateway_p_2_join: { asyncBefore: true, retryCycle: CYCLE },
-      }),
-      [
-        'process p {',
-        '  start S',
-        '  user A(label: "A task")',
-        '  if (amount > 1000) (asyncBefore: true, jobPriority: 10, joinAsyncBefore: true, joinRetryCycle: "R3/PT10M") {',
-        '    user B(label: "B task")',
-        '  } else {',
-        '    service C(class: "com.example.C")',
-        '  }',
-        '  end E',
-        '}',
-      ],
-      [
-        [
-          'IfStatement',
-          [
-            'asyncBefore: true',
-            'jobPriority: 10',
-            'joinAsyncBefore: true',
-            'joinRetryCycle: "R3/PT10M"',
-          ],
-        ],
-      ],
-    ],
-    [
-      'an else-if chain is one split, so the head carries the parens and no else-if does',
-      withJobSettings(CHAIN_IR, {
-        Gateway_p_1_split: { exclusive: false },
-        Gateway_p_1_join: { asyncAfter: true },
-      }),
-      [
-        'process p {',
-        '  start S',
-        '  if (a) (exclusive: false, joinAsyncAfter: true) {',
-        '    user A',
-        '  } else if (b) {',
-        '    user B',
-        '  } else {',
-        '    user C',
-        '  }',
-        '  end E',
-        '}',
-      ],
-      [['IfStatement', ['exclusive: false', 'joinAsyncAfter: true']]],
-    ],
-    [
-      'an if inside a while prints the merge settings although the loop already spent its back-edge',
-      withJobSettings(IF_IN_WHILE_IR, {
-        Gateway_p_1_b_0_join: { asyncBefore: true },
-      }),
-      [
-        'process p {',
-        '  start S',
-        '  while (c) {',
-        '    if (a) (joinAsyncBefore: true) {',
-        '      user A',
-        '    } else {',
-        '      user B',
-        '    }',
-        '  }',
-        '  end E',
-        '}',
-      ],
-      [
-        ['WhileStatement', []],
-        ['IfStatement', ['joinAsyncBefore: true']],
-      ],
-    ],
-    [
-      'a merge that splits again keeps its settings for the if it opens, not as join settings on the first',
-      withJobSettings(MERGE_THAT_SPLITS_IR, {
-        Merge: { asyncBefore: true },
-      }),
-      [
-        'process p {',
-        '  start S',
-        '  if (a) {',
-        '    user A',
-        '  } else {',
-        '    user B',
-        '  }',
-        '  if (x) (asyncBefore: true) {',
-        '    user X',
-        '  } else {',
-        '    user Y',
-        '  }',
-        '  end E',
-        '}',
-      ],
-      [
-        ['IfStatement', []],
-        ['IfStatement', ['asyncBefore: true']],
-      ],
-    ],
-    [
-      'a while prints the loop settings on its head',
-      withJobSettings(WHILE_IR, { Gateway_p_1_loop: { asyncAfter: true } }),
-      [
-        'process p {',
-        '  start S',
-        '  while (count < 10) (asyncAfter: true) {',
-        '    user W(label: "Work")',
-        '  }',
-        '  end E',
-        '}',
-      ],
-      [['WhileStatement', ['asyncAfter: true']]],
-    ],
-    [
-      'a do-while prints the loop settings after its condition',
-      withJobSettings(DO_WHILE_IR, { Gateway_p_1_loop: { exclusive: false } }),
-      [
-        'process p {',
-        '  start S',
-        '  do {',
-        '    user W(label: "Work")',
-        '  } while (count < 10) (exclusive: false)',
-        '  end E',
-        '}',
-      ],
-      [['DoWhileStatement', ['exclusive: false']]],
-    ],
-    [
-      'a parallel prints the fork settings and, join-prefixed, the join settings',
-      withJobSettings(PARALLEL_IR, {
-        Gateway_p_1_fork: { jobPriority: '5' },
-        Gateway_p_1_join: { asyncBefore: true },
-      }),
-      [
-        'process p {',
-        '  start S',
-        '  parallel (jobPriority: 5, joinAsyncBefore: true) {',
-        '    {',
-        '      user X(label: "X")',
-        '    }',
-        '    {',
-        '      service Y(class: "com.example.Y")',
-        '    }',
-        '  }',
-        '  end E',
-        '}',
-      ],
-      [['ParallelStatement', ['jobPriority: 5', 'joinAsyncBefore: true']]],
-    ],
-    [
-      'a weighed parallel prints the same head ahead of its branch heads',
-      withJobSettings(inclusiveIr('join'), {
-        Gateway_p_1_fork: { retryCycle: CYCLE },
-        Gateway_p_1_join: { exclusive: false },
-      }),
-      [
-        'process p {',
-        '  start S',
-        '  parallel (retryCycle: "R3/PT10M", joinExclusive: false) {',
-        '    if (amount > 10000) {',
-        '      user Audit',
-        '    }',
-        '    {',
-        '      user Record',
-        '    }',
-        '  }',
-        '  end E',
-        '}',
-      ],
-      [
-        [
-          'ParallelStatement',
-          ['retryCycle: "R3/PT10M"', 'joinExclusive: false'],
-        ],
-      ],
-    ],
-    [
-      'an await prints the race settings and, join-prefixed, the merge settings',
-      withJobSettings(RACE_IR, {
-        Gateway_p_1_race: { asyncBefore: true },
-        Gateway_p_1_join: { asyncBefore: true },
-      }),
-      [
-        'process p {',
-        '  start S',
-        '  await (asyncBefore: true, joinAsyncBefore: true) {',
-        '    message("Paid") {',
-        '      user Ship',
-        '    }',
-        '    timer("P3D") {',
-        '      user Chase',
-        '    }',
-        '  }',
-        '  end E',
-        '}',
-      ],
-      [['RaceStatement', ['asyncBefore: true', 'joinAsyncBefore: true']]],
-    ],
-  ] as const)('%s', async (_title, ir, expected, parens) => {
-    const { source, warnings } = printDsl(ir);
-
-    expect(source).toBe(`${expected.join('\n')}\n`);
-    expect(warnings).toEqual([]);
-    expect(await headParens(await printed(ir))).toEqual(parens);
-    expect(gatewaySettings(await reDesugar(source))).toEqual(
-      gatewaySettings(ir),
-    );
-  });
-
-  /** `S -> G -> A -> E` with a one-way `G` no statement stands for. */
   const LONE_PASS_THROUGH_IR: BpmnProcess = minimalProcess(
-    [
-      { kind: 'startEvent', id: 'S' },
-      gateway('G'),
-      { kind: 'userTask', id: 'A' },
-      { kind: 'endEvent', id: 'E' },
-    ],
+    [start('S'), gateway('G'), user('A'), end('E')],
     flowChain('S', 'G', 'A', 'E'),
   );
 
-  // Revert symptom: delete the sweep at the end of `Emitter.emit` -> every row
-  // red on the missing report.
   it.each([
     [
       'a one-way split the flow walks through',
@@ -6338,7 +3954,7 @@ describe('irToDsl: gateway settings', () => {
       PASS_THROUGH_IR,
       'Gateway_p_9_join',
       [
-        ['implicitSplit', 'A'],
+        ['degradedSplit', 'A'],
         ['droppedSetting', 'Gateway_p_9_join'],
       ],
     ],
@@ -6354,12 +3970,12 @@ describe('irToDsl: gateway settings', () => {
     ],
   ] as const)(
     'reports the settings of %s once and writes none of them',
-    (_title, ir, id, reports) => {
+    async (_title, ir, id, reports) => {
       const { source, warnings } = printDsl(
         withJobSettings(ir, { [id]: { asyncBefore: true, jobPriority: '7' } }),
       );
 
-      expect(source).toBe(irToDsl(ir));
+      expect(source).toBe(await printed(ir));
       expectReports(warnings, ...reports);
     },
   );

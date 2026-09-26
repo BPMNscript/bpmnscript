@@ -4,13 +4,12 @@
 // catch, still running with an active message subscription, before correlating
 // the message and watching it finish.
 
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll } from 'vitest';
 
 import type { FixtureAdapter } from '../fixtures/index.js';
 import {
   deployExamples,
-  ENGINE_BOOT_TIMEOUT_MS,
-  ENGINE_STOP_TIMEOUT_MS,
+  DEPLOY_TIMEOUT_MS,
   SKIP_DOCKER as SKIP,
 } from '../helpers/e2e-fixture.js';
 import {
@@ -31,11 +30,7 @@ describe.skipIf(SKIP)('E2E: await message on Spring Boot Operaton', () => {
 
   beforeAll(async () => {
     fixture = await deployExamples('awaiting-confirmation');
-  }, ENGINE_BOOT_TIMEOUT_MS);
-
-  afterAll(async () => {
-    await fixture?.stop();
-  }, ENGINE_STOP_TIMEOUT_MS);
+  }, DEPLOY_TIMEOUT_MS);
 
   it('blocks at the message catch until the message is correlated, then completes', async () => {
     const { processInstanceId } = await fixture.startProcess(PROCESS_KEY, {});

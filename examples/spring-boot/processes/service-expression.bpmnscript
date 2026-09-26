@@ -1,6 +1,4 @@
-// Compute a shipping quote through a JUEL expression evaluated by Operaton
-// directly, rather than a Java delegate class. The start form supplies the
-// order reference passed to the bean.
+// `shippingBean` is the bean name `ShippingBean` registers under.
 
 process shipping-quote {
   start OrderPlaced {

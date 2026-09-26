@@ -1,27 +1,22 @@
 /**
- * Refusals raised by `xmlToIr`.
- *
- * Content the IR cannot express is refused before any IR is produced. Content
- * the IR does not carry but that costs no semantics is dropped with a warning
- * instead, on the `warnings` channel `xmlToIr` returns.
- * `packages/transform/README.md` tabulates which construct lands where.
+ * Refusals raised by `xmlToIr` (content the IR cannot express; lossless drops
+ * warn instead), plus {@link LayoutError} from `irToXml`.
  */
 
 import {
-  CATCH_TRIGGERS,
+  BOUNDARY_TRIGGERS,
   EMIT_TRIGGERS,
+  END_TRIGGERS,
   FORM_CONSTRAINT_NAMES,
   formatPlainWordList,
-  ON_TRIGGERS,
+  HANDLER_START_TRIGGERS,
   START_TRIGGERS,
-  TRIGGER_PAYLOAD,
+  THROW_TRIGGERS,
 } from '@bpmn-script/language';
 
 /**
- * Base for every refusal, so a consumer can classify the whole family with one
- * `instanceof`. Subclasses declare their fields with `declare` so the class
- * field initializers cannot overwrite what `Object.assign` wrote after
- * `super()`.
+ * Subclasses `declare` their fields so class field initializers cannot
+ * overwrite what `Object.assign` wrote after `super()`.
  */
 export abstract class UnsupportedConstructError extends Error {
   constructor(message: string, detail: Record<string, unknown>) {
@@ -31,10 +26,26 @@ export abstract class UnsupportedConstructError extends Error {
   }
 }
 
+const SERVICE_TASK_FORMS = [
+  ['a Java class', 'operaton:class (or the deprecated camunda:class alias)'],
+  ['an expression', 'operaton:expression'],
+  ['a delegate expression', 'operaton:delegateExpression'],
+  ['an external task topic', 'operaton:type="external" with operaton:topic'],
+  [
+    'a built-in mail or shell task with its fields',
+    'operaton:type="mail" or "shell" with their operaton:field children',
+  ],
+  ['a decision reference on a business rule task', 'operaton:decisionRef'],
+] as const;
+
+export const SERVICE_TASK_FORM_ATTRIBUTES = formatPlainWordList(
+  SERVICE_TASK_FORMS.map(([, attributes]) => attributes),
+  'and',
+);
+
 /**
- * A task with no execution form, or an external type missing its topic.
- * Operaton applies the same mandatory-discriminator rule to every tag it runs
- * through its service-task factory, so `subject` names which one refused.
+ * Operaton applies the same mandatory-discriminator rule to every tag its
+ * service-task factory runs, so `subject` names which one refused.
  */
 export class UnsupportedServiceTaskFormError extends UnsupportedConstructError {
   declare readonly serviceTaskId: string;
@@ -48,19 +59,12 @@ export class UnsupportedServiceTaskFormError extends UnsupportedConstructError {
   ) {
     super(
       `${subject} '${serviceTaskId}' uses unsupported execution form: ${construct}. ` +
-        'Supported forms are a Java class, an expression, a delegate expression, ' +
-        'an external task topic, a built-in mail or shell task with its fields, ' +
-        'or, on a business rule task, a decision reference.',
+        `Supported forms are ${formatPlainWordList(SERVICE_TASK_FORMS.map(([prose]) => prose))}.`,
       { serviceTaskId, construct, subject },
     );
   }
 }
 
-/**
- * An `operaton:formField` type outside the five the DSL maps: `string`,
- * `long`, `boolean`, `date`, and `enum`, `long` being the Operaton spelling of
- * the DSL's `number`.
- */
 export class UnsupportedFormFieldTypeError extends UnsupportedConstructError {
   declare readonly elementId: string;
   declare readonly fieldId: string;
@@ -76,13 +80,11 @@ export class UnsupportedFormFieldTypeError extends UnsupportedConstructError {
   }
 }
 
-/** {@link FORM_CONSTRAINT_NAMES} minus `validator`, joined as a plain enumeration. */
-const REGISTERED_VALIDATOR_NAMES = (() => {
-  const names = FORM_CONSTRAINT_NAMES.filter((name) => name !== 'validator');
-  return `${names.slice(0, -1).join(', ')}, and ${names[names.length - 1]}`;
-})();
+const REGISTERED_VALIDATOR_NAMES = formatPlainWordList(
+  FORM_CONSTRAINT_NAMES.filter((name) => name !== 'validator'),
+  'and',
+);
 
-/** A form field constraint the engine fails the deployment on or the script cannot hold; `detail` states which. */
 export class UnsupportedFormFieldConstraintError extends UnsupportedConstructError {
   declare readonly elementId: string;
   declare readonly fieldId: string;
@@ -106,14 +108,15 @@ export class UnsupportedFormFieldConstraintError extends UnsupportedConstructErr
   }
 }
 
-/**
- * A flow element kind outside the supported subset, such as
- * `bpmn:adHocSubProcess` or `bpmn:complexGateway`. A supported kind carrying an
- * unrepresentable shape refuses via {@link UnsupportedEventFeatureError} or
- * {@link UnsupportedEventDefinitionError} instead.
- */
+export const SUPPORTED_KINDS_MESSAGE =
+  'Only start/end events, throws, emits, boundary events, event ' +
+  'handlers, plain tasks, user tasks, service tasks, send tasks, ' +
+  'receive tasks, business rule tasks, script tasks, exclusive ' +
+  'gateways, parallel gateways, inclusive gateways, event-based ' +
+  'gateways, embedded subprocesses, attempt blocks, call activities, ' +
+  'and sequence flows are supported.';
+
 export class UnsupportedElementError extends UnsupportedConstructError {
-  /** Fully-qualified BPMN type name, e.g. `bpmn:ParallelGateway`. */
   declare readonly qname: string;
   declare readonly elementId?: string;
 
@@ -121,19 +124,12 @@ export class UnsupportedElementError extends UnsupportedConstructError {
     super(
       `The BPMN element ${qname}` +
         (elementId ? ` (id='${elementId}')` : '') +
-        ' is a kind that this tool cannot import. ' +
-        'Only start/end events, throws, emits, boundary events, event ' +
-        'handlers, plain tasks, user tasks, service tasks, send tasks, ' +
-        'receive tasks, business rule tasks, script tasks, exclusive ' +
-        'gateways, parallel gateways, inclusive gateways, event-based ' +
-        'gateways, embedded subprocesses, attempt blocks, call activities, ' +
-        'and sequence flows are supported.',
+        ` is a kind that this tool cannot import. ${SUPPORTED_KINDS_MESSAGE}`,
       { qname, elementId },
     );
   }
 }
 
-/** A call activity the engine could not resolve: `detail` names the shape. */
 export class UnsupportedCallActivityError extends UnsupportedConstructError {
   declare readonly elementId: string;
   declare readonly detail: string;
@@ -151,26 +147,16 @@ export class UnsupportedCallActivityError extends UnsupportedConstructError {
   }
 }
 
-/**
- * An event definition kind this tool does not import at that position. The
- * right kind in the wrong shape (an error throw with no code, a timer with no
- * time child) refuses via {@link UnsupportedEventFeatureError} instead.
- */
+type EventPosition = 'start' | 'end' | 'intermediate throw' | 'boundary';
+
 export class UnsupportedEventDefinitionError extends UnsupportedConstructError {
   declare readonly elementId: string;
-  declare readonly eventKind:
-    'start' | 'end' | 'intermediate throw' | 'intermediate catch' | 'boundary';
-  /** Moddle `$type`, e.g. `bpmn:TerminateEventDefinition`. */
+  declare readonly eventKind: EventPosition;
   declare readonly definitionType: string;
 
   constructor(
     elementId: string,
-    eventKind:
-      | 'start'
-      | 'end'
-      | 'intermediate throw'
-      | 'intermediate catch'
-      | 'boundary',
+    eventKind: EventPosition,
     definitionType: string,
   ) {
     super(
@@ -182,34 +168,24 @@ export class UnsupportedEventDefinitionError extends UnsupportedConstructError {
   }
 }
 
-/** The triggers that open a handler of their own, which is what a handler start is. */
-const HANDLER_START_TRIGGERS = ON_TRIGGERS.filter(
-  (word) => TRIGGER_PAYLOAD[word]?.hostless === true,
-);
-
 /**
- * Compensation falls out because a boundary compensation trigger refuses
- * earlier, via {@link UnsupportedEventFeatureError}. Cancel is named apart from
- * the list because nothing in the table records that it needs a host that can
- * be given up.
+ * Compensation refuses earlier. Cancel is named apart since the trigger table
+ * does not record that it needs a cancellable host.
  */
-const BOUNDARY_TRIGGERS = ON_TRIGGERS.filter(
-  (word) => TRIGGER_PAYLOAD[word]?.boundary === true && word !== 'cancel',
+const BOUNDARY_TRIGGERS_BUT_CANCEL = BOUNDARY_TRIGGERS.filter(
+  (word) => word !== 'cancel',
 );
 
-/** The default closing sentence: what a handler, a throw, and an emit accept. */
+const END_EVENT_TRIGGERS = [
+  ...END_TRIGGERS.filter((word) => word !== 'cancel'),
+  ...THROW_TRIGGERS,
+];
+
 const EVENT_SURFACE_NOTE =
   `Event handlers catch one ${formatPlainWordList(HANDLER_START_TRIGGERS)} ` +
   'trigger on their single start event; throws and emits carry the code or ' +
   'name their kind requires, and compensation carries neither.';
 
-/**
- * A supported event definition kind shaped in a way the DSL surface cannot
- * express. `detail` names the shape; the sentence after it says what to write
- * instead. A refusal outside the handler/throw/emit surface passes its own
- * `remedy`, so the reader is told the move that fixes the document rather than
- * a rule that does not describe it.
- */
 export class UnsupportedEventFeatureError extends UnsupportedConstructError {
   declare readonly elementId: string;
   declare readonly detail: string;
@@ -220,19 +196,14 @@ export class UnsupportedEventFeatureError extends UnsupportedConstructError {
     remedy: string = EVENT_SURFACE_NOTE,
   ) {
     super(
-      `The event construct at '${elementId}' cannot be imported: ${detail}. ${remedy}`,
+      `The element '${elementId}' cannot be imported: ${detail}. ${remedy}`,
       { elementId, detail },
     );
   }
 }
 
-/**
- * A repetition the surface cannot express, or one the engine itself refuses to
- * deploy. `detail` names which of the two, and why.
- */
 export class UnsupportedLoopCharacteristicsError extends UnsupportedConstructError {
   declare readonly elementId: string;
-  /** Moddle `$type`, e.g. `bpmn:MultiInstanceLoopCharacteristics`. */
   declare readonly loopType: string;
   declare readonly detail: string;
 
@@ -245,23 +216,30 @@ export class UnsupportedLoopCharacteristicsError extends UnsupportedConstructErr
   }
 }
 
-/** Pools or message flows: the IR models a single standalone process. */
+/**
+ * Operaton deploys every executable process and the IR holds one. Pools and
+ * message flows are diagram data to the engine and only warn.
+ */
 export class UnsupportedCollaborationError extends UnsupportedConstructError {
   declare readonly detail: string;
 
   constructor(detail: string) {
     super(
-      `The file contains ${detail}, which this tool cannot import. ` +
-        'Only a single standalone process (no pools or message flows) is supported.',
+      `The file contains ${detail}; this tool imports one process, and ` +
+        '`BpmnParse.parseProcessDefinitions` deploys each of them.',
       { detail },
     );
   }
 }
 
-/**
- * Operaton extension content the IR's discriminated unions cannot represent.
- * `detail` names the shape; the message states the rule it broke.
- */
+export class UnsupportedDocumentError extends UnsupportedConstructError {
+  declare readonly detail: string;
+
+  constructor(detail: string) {
+    super(`The document cannot be imported: ${detail}.`, { detail });
+  }
+}
+
 export class UnsupportedExtensionFormError extends UnsupportedConstructError {
   declare readonly elementId: string;
   declare readonly detail: string;
@@ -282,11 +260,6 @@ export class UnsupportedExtensionFormError extends UnsupportedConstructError {
   }
 }
 
-/**
- * A user task naming a deployed form in a shape Operaton's
- * `parseFormDefinition` rejects. `detail` names the shape; the message states
- * the rule it broke.
- */
 export class UnsupportedFormReferenceError extends UnsupportedConstructError {
   declare readonly elementId: string;
   declare readonly detail: string;
@@ -303,12 +276,8 @@ export class UnsupportedFormReferenceError extends UnsupportedConstructError {
 }
 
 /**
- * A condition Operaton evaluates outside UEL: a sequence flow's
- * `bpmn:conditionExpression`, or a conditional event definition's
- * `bpmn:condition`. Both reach Operaton's `parseConditionExpression`, so
- * `detail` names the same shape either way, a `language` attribute: Operaton
- * builds a `ScriptCondition` from it and runs the body in that language,
- * never as the UEL expression this tool writes.
+ * `parseConditionExpression` runs a condition with a `language` attribute as a
+ * script, not UEL, and refuses an `xsi:type` other than `tFormalExpression`.
  */
 export class UnsupportedConditionExpressionError extends UnsupportedConstructError {
   declare readonly elementId: string;
@@ -317,15 +286,31 @@ export class UnsupportedConditionExpressionError extends UnsupportedConstructErr
   constructor(elementId: string, detail: string) {
     super(
       `The condition on '${elementId}' cannot be imported: ${detail}. This ` +
-        'tool writes a condition as an expression Operaton evaluates as ' +
-        'UEL, and a condition Operaton hands to a script engine has no ' +
-        'spelling here.',
+        'tool writes a condition as a tFormalExpression Operaton evaluates ' +
+        'as UEL; a condition of another type, or one Operaton hands to a ' +
+        'script engine, has no spelling here.',
       { elementId, detail },
     );
   }
 }
 
-/** An external task's error mapping the engine fails the deployment on or that names no coded error root; `detail` states which. */
+/** `detail` is the engine's own sentence, so the refusal reads as the deployment error would. */
+export class UnsupportedGatewayShapeError extends UnsupportedConstructError {
+  declare readonly elementId: string;
+  declare readonly detail: string;
+
+  constructor(elementId: string, detail: string) {
+    super(
+      `The exclusive gateway '${elementId}' cannot be imported: ${detail} ` +
+        "Operaton's BpmnParse.validateExclusiveGateway fails the deployment " +
+        'on this shape, so there is nothing that runs to write back; give ' +
+        'every route but the fallback a condition, and name the fallback ' +
+        "in the gateway's 'default'.",
+      { elementId, detail },
+    );
+  }
+}
+
 export class UnsupportedErrorMappingError extends UnsupportedConstructError {
   declare readonly elementId: string;
   declare readonly detail: string;
@@ -341,7 +326,6 @@ export class UnsupportedErrorMappingError extends UnsupportedConstructError {
   }
 }
 
-/** A user task's BPMN resource assignment in a shape Operaton refuses to deploy; `detail` states which. */
 export class UnsupportedAssignmentError extends UnsupportedConstructError {
   declare readonly elementId: string;
   declare readonly detail: string;
@@ -358,16 +342,12 @@ export class UnsupportedAssignmentError extends UnsupportedConstructError {
   }
 }
 
-/** `bpmn:TimerEventDefinition` -> `timer`. */
 function friendlyEventDefinition(definitionType: string): string {
   const local = definitionType.replace(/^.*:/, '');
   return local.replace(/EventDefinition$/, '').toLowerCase() || 'special';
 }
 
-function supportedKindsMessage(
-  eventKind:
-    'start' | 'end' | 'intermediate throw' | 'intermediate catch' | 'boundary',
-): string {
+function supportedKindsMessage(eventKind: EventPosition): string {
   switch (eventKind) {
     case 'start':
       return (
@@ -377,18 +357,30 @@ function supportedKindsMessage(
       );
     case 'end':
       return (
-        'A typed end event supports terminate, error, escalation, message, ' +
-        'signal, or compensation, plus cancel inside a block that can be ' +
-        'given up.'
+        `A typed end event supports ${formatPlainWordList(END_EVENT_TRIGGERS)}, ` +
+        'plus cancel inside a block that can be given up.'
       );
     case 'intermediate throw':
       return `An emit supports ${formatPlainWordList(EMIT_TRIGGERS)}.`;
-    case 'intermediate catch':
-      return `An await supports ${formatPlainWordList(CATCH_TRIGGERS)}.`;
     case 'boundary':
       return (
-        `A boundary event supports ${formatPlainWordList(BOUNDARY_TRIGGERS)}, ` +
+        `A boundary event supports ${formatPlainWordList(BOUNDARY_TRIGGERS_BUT_CANCEL)}, ` +
         'plus cancel on a block that can be given up.'
       );
+  }
+}
+
+/**
+ * `bpmn-auto-layout` throws on some valid flow shapes. `xml` is the document
+ * without `bpmndi:`, which Operaton deploys the same, as a fallback.
+ */
+export class LayoutError extends Error {
+  readonly xml: string;
+
+  constructor(xml: string, cause: unknown) {
+    const causeMessage = cause instanceof Error ? cause.message : String(cause);
+    super(`bpmn-auto-layout failed to lay out the process: ${causeMessage}`);
+    this.name = 'LayoutError';
+    this.xml = xml;
   }
 }

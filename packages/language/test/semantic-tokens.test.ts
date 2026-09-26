@@ -1,15 +1,3 @@
-/**
- * Semantic-token test suite for the soft event words.
- *
- * `error`, `escalation`, `code`, and `message` lex as plain `ID` under the
- * grammar's soft-word convention, so the generated TextMate grammar (which
- * knows only the real keywords `on`, `throw`, `emit`, `alongside`) gives them
- * no highlighting. These tests drive `BpmnScriptSemanticTokenProvider` through
- * the real LSP semantic-tokens request and assert it marks a soft word with the
- * `keyword` token type exactly where it carries event meaning: `var message:
- * string` and a plain `code` variable reference stay untouched.
- */
-
 import { beforeAll, describe, expect, test } from 'vitest';
 import { EmptyFileSystem } from 'langium';
 import {
@@ -27,14 +15,9 @@ beforeAll(() => {
 });
 
 const KEYWORD = SemanticTokenTypes.keyword;
-/** No token covers the marked range at all. */
 const PLAIN = 'plain';
 
-/**
- * The token type covering each `<|...|>` range, in source order, as one list:
- * a range nothing covers reads as `plain`, and a range two tokens claim reads
- * as both joined, so neither a missing nor a doubled token can pass as one.
- */
+/** The token type covering each `<|...|>` range; two tokens on one range read joined. */
 function markedTokenTypes(
   result: DecodedSemanticTokensWithRanges,
 ): readonly string[] {
@@ -48,157 +31,111 @@ function markedTokenTypes(
   });
 }
 
-/** A row: a title, a process body, and the token type of every marked range. */
 type Row = readonly [title: string, body: string, expected: readonly string[]];
 
-/** Soft words whose meaning is positional: as a variable name they are plain. */
 const SOFT_WORDS_AS_VAR_NAME = [
   'at',
   'priority',
   'message',
   'compensation',
   'after',
+  'terminate',
 ];
 
-/** The same, read in an expression rather than declared. */
-const SOFT_WORDS_AS_OPERAND = ['priority', 'code', 'compensation'];
+const SOFT_WORDS_AS_OPERAND = ['priority', 'code', 'compensation', 'after'];
 
 describe('Semantic tokens - soft event words', () => {
   test.each<Row>([
     [
-      'the trigger word of an `on` handler is a keyword',
-      'on <|error|>("X") { }',
-      [KEYWORD],
-    ],
-    [
-      'the trigger word of a `throw` is a keyword',
-      'throw <|escalation|>("C")',
-      [KEYWORD],
-    ],
-    [
-      'the trigger word of an `emit` is a keyword',
-      'emit <|escalation|>("C")',
-      [KEYWORD],
-    ],
-    [
-      'a catch binding highlights its field word, not the variable it introduces',
-      'on error("X", <|code|>: <|c|>) { }',
-      [KEYWORD, PLAIN],
-    ],
-    [
-      'a message handler highlights its trigger word',
-      'on <|message|>("X") { }',
-      [KEYWORD],
-    ],
-    [
-      'a condition handler highlights its trigger word, not the variable it tests',
-      'on <|condition|> (<|amount|> > 100) { }',
-      [KEYWORD, PLAIN],
-    ],
-    [
-      'a timer particle in an expression is a plain operand',
-      'var after: number\n  if (<|after|> > 2) {\n    end Done\n  }',
-      [PLAIN],
-    ],
-    [
-      'an awaited event highlights its trigger word, not the time it carries',
-      'await <|timer|>("<|PT1H|>")',
-      [KEYWORD, PLAIN],
-    ],
-    [
-      'every branch header of a race highlights its trigger word',
-      `await {
+      'trigger words highlight as keywords, distinct from the names they carry',
+      `on <|error|>("X") { }
+  throw <|escalation|>("C")
+  on error("X", <|code|>: <|c|>) { }
+  on <|condition|> (<|amount|> > 100) { }
+  await <|timer|>("<|PT1H|>")
+  await {
     <|message|>("M") { user A }
     <|timer|>("PT1H") { user B }
-  }`,
-      [KEYWORD, KEYWORD],
+  }
+  start <|S|> <|message|>("M")
+  user A
+  start S
+  user A
+  end E <|terminate|>
+  start <|S|>
+  end <|E|>`,
+      [
+        KEYWORD,
+        KEYWORD,
+        KEYWORD,
+        PLAIN,
+        KEYWORD,
+        PLAIN,
+        KEYWORD,
+        PLAIN,
+        KEYWORD,
+        KEYWORD,
+        PLAIN,
+        KEYWORD,
+        KEYWORD,
+        PLAIN,
+        PLAIN,
+      ],
     ],
     [
-      'a start event highlights its trigger word, not its name',
-      'start <|S|> <|message|>("M")\n  user A',
-      [PLAIN, KEYWORD],
+      'soft keywords highlight correctly, distinct from the identifiers beside them',
+      `<|error|> X(<|message|>: "m")
+  <|escalation|> <|MANUAL_REVIEW|>
+  emit <|compensation|> <|Undo|>
+  user Review
+  on <|Review|>: <|timer|>("PT2H") { }
+  user T(<|assignee|>: "<|demo|>")
+  service S { <|input|> <|amount|> = 1 }
+  user T { on timeout <|after|> "<|PT1H|>" (class: "com.acme.L") }
+  user T { on <|create|>(<|class|>: "com.acme.L") }
+  error E
+  service V(topic: "t") { <|error|> <|E|> <|when|> <|ready|> }
+  user <|input|>
+  start S { form { <|amount|>: <|number|> "Weight" } }`,
+      [
+        KEYWORD,
+        KEYWORD,
+        KEYWORD,
+        PLAIN,
+        KEYWORD,
+        PLAIN,
+        PLAIN,
+        KEYWORD,
+        KEYWORD,
+        PLAIN,
+        KEYWORD,
+        PLAIN,
+        KEYWORD,
+        PLAIN,
+        KEYWORD,
+        KEYWORD,
+        KEYWORD,
+        PLAIN,
+        KEYWORD,
+        PLAIN,
+        PLAIN,
+        PLAIN,
+        KEYWORD,
+      ],
     ],
     [
-      'a terminating end highlights its trigger word',
-      'start S\n  user A\n  end E <|terminate|>',
-      [KEYWORD],
+      'a soft word as a variable name carries no token, declared or read',
+      [
+        ...SOFT_WORDS_AS_VAR_NAME.map((word) => `var <|${word}|>: string`),
+        ...SOFT_WORDS_AS_OPERAND.filter(
+          (word) => !SOFT_WORDS_AS_VAR_NAME.includes(word),
+        ).map((word) => `var ${word}: string`),
+        ...SOFT_WORDS_AS_OPERAND.map(
+          (word, i) => `if (<|${word}|> == "x") { end Done${i} }`,
+        ),
+      ].join('\n  '),
+      [...SOFT_WORDS_AS_VAR_NAME, ...SOFT_WORDS_AS_OPERAND].map(() => PLAIN),
     ],
-    [
-      'a start and an end with no trigger carry nothing on their names',
-      'start <|S|>\n  end <|E|>',
-      [PLAIN, PLAIN],
-    ],
-    [
-      'a variable named after a trigger word stays plain where the word is also used as one',
-      'var <|terminate|>: string\n  end Done terminate',
-      [PLAIN],
-    ],
-    [
-      'a declaration highlights both its kind and the key of its message',
-      '<|error|> X(<|message|>: "m")',
-      [KEYWORD, KEYWORD],
-    ],
-    [
-      'a code declaration highlights its kind, not the name it declares',
-      '<|escalation|> <|MANUAL_REVIEW|>',
-      [KEYWORD, PLAIN],
-    ],
-    [
-      'a compensation handler highlights its trigger word',
-      'on <|compensation|> { }',
-      [KEYWORD],
-    ],
-    [
-      'a compensation throw highlights its trigger word',
-      'throw <|compensation|>',
-      [KEYWORD],
-    ],
-    [
-      'a compensation emit highlights its trigger word, not the activity it names',
-      'emit <|compensation|> <|Undo|>',
-      [KEYWORD, PLAIN],
-    ],
-    [
-      'a handler attached to an activity highlights the trigger, not the host',
-      'user Review\n  on <|Review|>: <|timer|>("PT2H") { }',
-      [PLAIN, KEYWORD],
-    ],
-    [
-      'a setting key is a keyword, its value is not',
-      'user T(<|assignee|>: "<|demo|>")',
-      [KEYWORD, PLAIN],
-    ],
-    [
-      'a parameter direction is a keyword, the parameter name is not',
-      'service S { <|input|> <|amount|> = 1 }',
-      [KEYWORD, PLAIN],
-    ],
-    [
-      'a timeout particle is a keyword, the duration it takes is not',
-      'user T { on timeout <|after|> "<|PT1H|>" (class: "com.acme.L") }',
-      [KEYWORD, PLAIN],
-    ],
-    [
-      'a listener event and its binding key are both keywords',
-      'user T { on <|create|>(<|class|>: "com.acme.L") }',
-      [KEYWORD, KEYWORD],
-    ],
-    [
-      'an error mapping highlights its two words, not the code or the condition',
-      'error E\n  service V(topic: "t") { <|error|> <|E|> <|when|> <|ready|> }',
-      [KEYWORD, PLAIN, KEYWORD, PLAIN],
-    ],
-    ['a step named after a soft word stays plain', 'user <|input|>', [PLAIN]],
-    ...SOFT_WORDS_AS_VAR_NAME.map((word): Row => [
-      `\`var ${word}\` carries no token on the name`,
-      `var <|${word}|>: string`,
-      [PLAIN],
-    ]),
-    ...SOFT_WORDS_AS_OPERAND.map((word): Row => [
-      `\`if (${word} ...)\` carries no token on the operand`,
-      `var ${word}: string\n  if (<|${word}|> == "x") {\n    end Done\n  }`,
-      [PLAIN],
-    ]),
   ])('%s', async (_title, body, expected) => {
     const result = await highlight(`process p {\n  ${body}\n}\n`);
     expect(markedTokenTypes(result)).toEqual(expected);

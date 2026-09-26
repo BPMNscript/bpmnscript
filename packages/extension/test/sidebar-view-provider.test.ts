@@ -1,6 +1,3 @@
-// `vscode` is injected by the extension host, not installed from npm, so it is
-// mocked. The fake view exists to fire onDidDispose on demand.
-
 import { describe, expect, it, vi } from 'vitest';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -19,7 +16,6 @@ vi.mock('vscode', () => ({
 
 import { SidebarViewProvider } from '../src/extension/sidebar-view-provider.js';
 
-// _buildHtml reads media/sidebar.html from this directory.
 const EXTENSION_DIR = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   '..',

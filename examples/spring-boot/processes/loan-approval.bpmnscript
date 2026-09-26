@@ -1,5 +1,4 @@
 process loan-approval(
-  label: "Loan Approval",
   documentation: "Decides a consumer loan request. Small loans are screened automatically and only the ones the screening does not clear reach a loan officer.",
   historyTimeToLive: "P180D",
   candidateStarterUsers: "demo",
@@ -21,13 +20,10 @@ process loan-approval(
     }
   }
 
-  // Small loans are screened by an automated risk assessment.
   if (amount < 10000) {
     service AssessRisk(label: "Assess risk", class: "com.example.loan.RiskAssessmentDelegate")
   }
 
-  // A low-risk small loan is approved automatically; everything else
-  // (large loans, or small loans that are not low-risk) needs a human decision.
   if (amount < 10000 && risk == "low") {
     service AutoApprove(label: "Auto-approve", class: "com.example.loan.AutoApproveDelegate")
   } else {

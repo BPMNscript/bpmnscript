@@ -1,7 +1,10 @@
-// No `vscode` import here: the unit tests run this without an editor host.
-// `conversion.ts` is the VS Code adapter.
+// No `vscode` import, so unit tests run this without an editor host.
 
-import { createBpmnScriptServices } from '@bpmn-script/language';
+import {
+  createBpmnScriptServices,
+  Diagnostic,
+  DiagnosticSeverity,
+} from '@bpmn-script/language';
 import type { Model } from '@bpmn-script/language';
 import { EmptyFileSystem, URI } from 'langium';
 import * as path from 'node:path';
@@ -10,11 +13,14 @@ import {
   irToXml,
   xmlToIr,
   irToDsl,
+  NO_PROCESS_MESSAGE,
+  readableParseError,
+  xmlInputProblem,
   UnsupportedConstructError,
+  LayoutError,
 } from '@bpmn-script/transform';
 import type { ImportWarning, PrintWarning } from '@bpmn-script/transform';
 
-// Positions are 0-based, LSP convention.
 export interface ConvDiagnostic {
   line: number;
   character: number;
@@ -26,7 +32,7 @@ export interface ConvDiagnostic {
 }
 
 export type CompileResult =
-  | { ok: true; output: string }
+  | { ok: true; output: string; layoutWarning?: string }
   | { ok: false; kind: 'validation'; diagnostics: ConvDiagnostic[] }
   | { ok: false; kind: 'error'; message: string };
 
@@ -35,22 +41,17 @@ export type DecompileResult =
   | { ok: false; kind: 'unsupported'; message: string }
   | { ok: false; kind: 'error'; message: string };
 
-const SEVERITY_ERROR = 1;
-
-// Built once per module load: creating the services is expensive.
 const { shared } = createBpmnScriptServices(EmptyFileSystem);
 
 let nextDocId = 0;
 
 export async function compileDslToBpmn(
   source: string,
-  sourceFileName: string,
   exporterVersion: string,
 ): Promise<CompileResult> {
   const uri = URI.parse(`memory:///conv-${nextDocId++}.bpmnscript`);
 
-  // Registered so the DocumentBuilder can resolve cross-references, and
-  // removed afterwards so the index does not grow with every call.
+  // Registered so cross-references resolve, removed so the index does not grow.
   const doc = shared.workspace.LangiumDocumentFactory.fromString<Model>(
     source,
     uri,
@@ -61,7 +62,7 @@ export async function compileDslToBpmn(
     await shared.workspace.DocumentBuilder.build([doc], { validation: true });
 
     const errors = (doc.diagnostics ?? []).filter(
-      (d) => d.severity === SEVERITY_ERROR,
+      (d) => d.severity === DiagnosticSeverity.Error,
     );
     if (errors.length > 0) {
       const diagnostics: ConvDiagnostic[] = errors.map((d) => ({
@@ -69,17 +70,21 @@ export async function compileDslToBpmn(
         character: d.range.start.character,
         endLine: d.range.end.line,
         endCharacter: d.range.end.character,
-        message: typeof d.message === 'string' ? d.message : d.message.value,
-        severity: SEVERITY_ERROR,
+        message: Diagnostic.getMessageString(d),
+        severity: DiagnosticSeverity.Error,
         text: doc.textDocument.getText(d.range),
       }));
       return { ok: false, kind: 'validation', diagnostics };
     }
 
-    const ast = doc.parseResult.value as Model;
+    // After the error gate: a keyword typo also parses into a model with no processes.
+    if (doc.parseResult.value.processes.length === 0) {
+      return { ok: false, kind: 'error', message: NO_PROCESS_MESSAGE };
+    }
+
     let ir;
     try {
-      ir = astToIr(ast);
+      ir = astToIr(doc.parseResult.value);
     } catch (err) {
       return {
         ok: false,
@@ -89,17 +94,27 @@ export async function compileDslToBpmn(
     }
 
     let output;
+    let layoutWarning: string | undefined;
     try {
-      output = await irToXml(ir, { sourceFileName, exporterVersion });
+      output = await irToXml(ir, { exporterVersion });
     } catch (err) {
-      return {
-        ok: false,
-        kind: 'error',
-        message: `IR to XML conversion failed: ${(err as Error).message}`,
-      };
+      if (err instanceof LayoutError) {
+        output = err.xml;
+        layoutWarning = err.message;
+      } else {
+        return {
+          ok: false,
+          kind: 'error',
+          message: `IR to XML conversion failed: ${(err as Error).message}`,
+        };
+      }
     }
 
-    return { ok: true, output };
+    return {
+      ok: true,
+      output,
+      ...(layoutWarning !== undefined ? { layoutWarning } : {}),
+    };
   } catch (err) {
     return {
       ok: false,
@@ -113,8 +128,12 @@ export async function compileDslToBpmn(
 
 export async function decompileBpmnToDsl(
   xml: string,
-  _sourceFileName: string, // unused; keeps the signature parallel to compile
 ): Promise<DecompileResult> {
+  const problem = xmlInputProblem(xml);
+  if (problem !== undefined) {
+    return { ok: false, kind: 'error', message: problem };
+  }
+
   let ir;
   let warnings: ImportWarning[];
   try {
@@ -123,10 +142,11 @@ export async function decompileBpmnToDsl(
     if (err instanceof UnsupportedConstructError) {
       return { ok: false, kind: 'unsupported', message: err.message };
     }
+    // A parser error quotes the rest of the document, too long for a notification.
     return {
       ok: false,
       kind: 'error',
-      message: (err as Error).message,
+      message: readableParseError((err as Error).message, xml),
     };
   }
 
@@ -145,8 +165,7 @@ export async function decompileBpmnToDsl(
   return { ok: true, output, warnings: [...warnings, ...printWarnings] };
 }
 
-// Duplicated from `packages/cli/src/util.ts` rather than imported: importing it
-// would pull chalk and commander into the extension bundle.
+// Importing the cli's `resolveOutputPath` would pull chalk and commander into the bundle.
 export function swapExtension(filePath: string, newExt: string): string {
   const dir = path.dirname(filePath);
   const base = path.basename(filePath, path.extname(filePath));

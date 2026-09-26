@@ -1,13 +1,8 @@
 // A job setting on a gateway or on a loop element, and a shell task the engine
 // runs itself, compile to well-formed XML that shows nothing of what the
-// engine does with them. This suite boots a real Operaton and reads back what
-// it did: the jobs an async join parks, one per arriving branch; the three
-// jobs a repetition of three parks with `runAsyncBefore`, one per run and none
-// around the repetition; the output and exit code a shell `echo` wrote into
-// the variables its fields name; and a mail task the engine builds at
-// deployment, beside one it refuses for want of a body.
+// engine does with them; this suite reads back what a real Operaton did.
 
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll } from 'vitest';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -18,8 +13,7 @@ import type { BpmnProcess } from '@bpmn-script/transform';
 import type { FixtureAdapter } from '../fixtures/index.js';
 import {
   deployExamples,
-  ENGINE_BOOT_TIMEOUT_MS,
-  ENGINE_STOP_TIMEOUT_MS,
+  DEPLOY_TIMEOUT_MS,
   irOfExample,
   SKIP_DOCKER as SKIP,
 } from '../helpers/e2e-fixture.js';
@@ -77,14 +71,8 @@ describe.skipIf(SKIP)('E2E: job settings, shell and mail tasks', () => {
 
   beforeAll(async () => {
     fixture = await deployExamples(REPORT_KEY, NOTICE_KEY);
-  }, ENGINE_BOOT_TIMEOUT_MS);
+  }, DEPLOY_TIMEOUT_MS);
 
-  afterAll(async () => {
-    await fixture?.stop();
-  }, ENGINE_STOP_TIMEOUT_MS);
-
-  // The definition and suspension state of each job once the instance holds
-  // the expected number of them.
   async function parkedJobs(
     processInstanceId: string,
     count: number,
@@ -224,7 +212,7 @@ describe.skipIf(SKIP)('E2E: job settings, shell and mail tasks', () => {
   it("a mail task deploys, and one the engine's parse refuses is refused with its message", async () => {
     const deployed = await engineGet<Array<{ key: string }>>(
       fixture,
-      `/engine-rest/process-definition?key=${NOTICE_KEY}`,
+      `/engine-rest/process-definition?withoutTenantId=true&key=${NOTICE_KEY}`,
       `definitionsOf(${NOTICE_KEY})`,
     );
     expect(deployed.map((d) => d.key)).toEqual([NOTICE_KEY]);

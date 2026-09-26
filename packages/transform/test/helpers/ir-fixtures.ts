@@ -18,7 +18,6 @@ import type {
   SubProcess,
 } from '../../src/ir/types.js';
 
-/** The {@link EventDefinition} variant of one kind. */
 type Def<K extends EventDefinition['kind']> = Extract<
   EventDefinition,
   { kind: K }
@@ -68,7 +67,6 @@ export const timerDef = (
   expression: string,
 ): Def<'timer'> => ({ kind: 'timer', timerKind, expression });
 
-/** The event node kinds whose payload is an {@link EventDefinition}. */
 type EventNodeKind =
   | 'startEvent'
   | 'endEvent'
@@ -77,10 +75,7 @@ type EventNodeKind =
 
 type EventNodeOf<K extends EventNodeKind> = Extract<FlowElement, { kind: K }>;
 
-/**
- * An event node of `kind` carrying the definition that kind admits.
- * `isInterrupting: false` marks the trigger start of an `alongside` handler.
- */
+// `isInterrupting: false` marks the trigger start of an `alongside` handler.
 export const typedEvent = <K extends EventNodeKind>(
   kind: K,
   id: string,
@@ -94,7 +89,6 @@ export const typedEvent = <K extends EventNodeKind>(
     eventDefinition,
   }) as EventNodeOf<K>;
 
-/** The code a service task or a listener runs. */
 export const classBinding = (
   className: string,
 ): Extract<CodeBinding, { kind: 'class' }> => ({
@@ -114,7 +108,6 @@ export const delegateBinding = (
   expression,
 });
 
-/** The external-task topic form, which only a service task has. */
 export const externalBinding = (topic: string): ServiceTaskBinding => ({
   kind: 'external',
   topic,
@@ -130,7 +123,6 @@ export const builtinBinding = (
   ...(fields === undefined ? {} : { fields }),
 });
 
-/** The four forms an `operaton:inputOutput` value takes. */
 export const textValue = (text: string): IoValue => ({ kind: 'text', text });
 
 export const listValue = (items: IoValue[]): IoValue => ({
@@ -151,38 +143,32 @@ export const scriptValue = (format: string, code: string): ScriptValue => ({
 
 type MapEntry = { key: string; value: IoValue };
 
-/** One `operaton:entry` of a {@link mapValue}. */
 export const mapEntry = (key: string, value: IoValue): MapEntry => ({
   key,
   value,
 });
 
-/** One `operaton:inputParameter`/`operaton:outputParameter`. */
 export const ioParam = (name: string, value: IoValue): IoParameter => ({
   name,
   value,
 });
 
-/** A service task, in the common shape: an id and the code it binds. */
 export const serviceTask = (
   id: string,
   binding: ServiceTaskBinding,
 ): ServiceTask => ({ kind: 'serviceTask', id, binding });
 
-/** A script task carrying its inline body. */
 export const scriptTask = (
   id: string,
   format: string,
   code: string,
 ): ScriptTask => ({ kind: 'scriptTask', id, format, code });
 
-/** A call activity naming the process it calls. */
 export const callActivity = (
   id: string,
   calledElement: string,
 ): CallActivity => ({ kind: 'callActivity', id, calledElement });
 
-/** An exclusive gateway, naming its default flow when it has one. */
 export const gateway = (
   id: string,
   defaultFlowId?: string,
@@ -192,7 +178,6 @@ export const gateway = (
   ...(defaultFlowId === undefined ? {} : { defaultFlowId }),
 });
 
-/** A boundary event on `host`, non-interrupting when `cancelActivity` is false. */
 export const boundaryEvent = (
   id: string,
   host: string,
@@ -206,20 +191,17 @@ export const boundaryEvent = (
   ...(cancelActivity === false ? { cancelActivity } : {}),
 });
 
-/** An executable process holding the given elements and flows. */
 export const processIr = (
   id: string,
   flowElements: FlowElement[],
   sequenceFlows: SequenceFlow[] = [],
 ): BpmnProcess => ({ id, isExecutable: true, flowElements, sequenceFlows });
 
-/** {@link processIr} under the id `p`, the default every fixture shares. */
 export const minimalProcess = (
   flowElements: FlowElement[],
   sequenceFlows: SequenceFlow[] = [],
 ): BpmnProcess => processIr('p', flowElements, sequenceFlows);
 
-/** A one-activity process wired `S -> el -> E`. */
 export const around = (el: FlowElement): BpmnProcess =>
   minimalProcess(
     [{ kind: 'startEvent', id: 'S' }, el, { kind: 'endEvent', id: 'E' }],
@@ -229,7 +211,6 @@ export const around = (el: FlowElement): BpmnProcess =>
     ],
   );
 
-/** Flows `F1..Fn` wiring the given element ids head to tail. */
 export const flowChain = (...ids: string[]): SequenceFlow[] =>
   ids.slice(1).map((target, i) => ({
     id: `F${i + 1}`,
@@ -238,13 +219,10 @@ export const flowChain = (...ids: string[]): SequenceFlow[] =>
   }));
 
 interface EdgeOptions {
-  /** The flow id. Defaults to `Flow_<source>_<target>`. */
   id?: string;
-  /** The guard on the flow, written as the IR carries it. */
   condition?: string;
 }
 
-/** One sequence flow between two elements. */
 export const edge = (
   source: string,
   target: string,
@@ -256,7 +234,6 @@ export const edge = (
   ...(condition === undefined ? {} : { conditionExpression: condition }),
 });
 
-/** Flows wiring the elements head to tail, each named `<prefix>_<source>_<target>`. */
 const chainFlows = (
   elements: readonly FlowElement[],
   prefix: string,
@@ -268,16 +245,11 @@ const chainFlows = (
   }));
 
 interface ChainOptions {
-  /**
-   * Elements appended carrying no flow of their own, which is what an event
-   * sub-process is: triggered rather than flow-connected.
-   */
+  // Appended without flows: an event sub-process is triggered, not flow-connected.
   unwired?: FlowElement[];
-  /** The flow-id prefix. Defaults to `SF`. */
   prefix?: string;
 }
 
-/** A process whose elements run head to tail over generated flows. */
 export const chained = (
   elements: FlowElement[],
   { unwired = [], prefix = 'SF' }: ChainOptions = {},
@@ -288,7 +260,6 @@ export const chained = (
   sequenceFlows: chainFlows(elements, prefix),
 });
 
-/** A sub-process whose body runs head to tail, in the shape {@link chained} uses. */
 export const chainedSub = (
   id: string,
   elements: FlowElement[],
@@ -300,7 +271,6 @@ export const chainedSub = (
   sequenceFlows: chainFlows(elements, prefix),
 });
 
-/** {@link chainedSub} as an event sub-process: triggered, not flow-connected. */
 export const triggeredSub = (
   id: string,
   elements: FlowElement[],
@@ -310,10 +280,7 @@ export const triggeredSub = (
   triggeredByEvent: true,
 });
 
-/**
- * An `on ...` handler: an event sub-process whose trigger start `startId`
- * carries `eventDefinition` and whose body is `<id>_Work -> <id>_End`.
- */
+// An `on ...` handler whose body is `<id>_Work -> <id>_End`.
 export const eventHandler = (
   id: string,
   startId: string,
@@ -332,16 +299,11 @@ export const eventHandler = (
   ]);
 
 interface EventSubProcessOptions {
-  /** The event sub-process id. Defaults to `<prefix>Handler`. */
   id?: string;
-  /** Written on the trigger start for a non-interrupting handler. */
   isInterrupting?: false;
 }
 
-/**
- * An event sub-process whose trigger start `<prefix>Start` carries
- * `eventDefinition` and flows to `<prefix>End` over `SF_<prefix>`.
- */
+// `<prefix>Start -> <prefix>End` over `SF_<prefix>`.
 export const eventSubProcess = (
   prefix: string,
   eventDefinition: EventDefinition,
@@ -368,18 +330,8 @@ export const eventSubProcess = (
   ],
 });
 
-/**
- * The IR `xmlToIr` produces from `tests/golden/invoice-approval-handwritten.bpmn`,
- * with the handwritten ids preserved verbatim on import.
- *
- * The start event (ReviewStart) and end event (Done) have no `name` because the
- * handwritten BPMN gives them no `name` attribute, and the gateway has no
- * synthesized join: both branches converge directly on `Done`. The process
- * `name` is absent for the same reason: "Invoice Approval" is exactly
- * `humanize("invoice-approval")`, so import treats it as derivable and drops
- * it. Fixtures that need the name back spread it in:
- * `{ ...HANDWRITTEN_IMPORT_IR, name: 'Invoice Approval' }`.
- */
+// The IR xmlToIr produces from tests/golden/invoice-approval-handwritten.bpmn. The process name is absent
+// because "Invoice Approval" equals humanize("invoice-approval"), which import drops as derivable.
 export const HANDWRITTEN_IMPORT_IR: BpmnProcess = {
   id: 'invoice-approval',
   isExecutable: true,

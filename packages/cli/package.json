@@ -1,7 +1,13 @@
 {
   "name": "@bpmn-script/cli",
-  "description": "The cli specific package",
+  "description": "Command line interface compiling BPMNscript to BPMN 2.0 XML and back",
   "version": "0.0.1",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/BPMNscript/bpmnscript.git",
+    "directory": "packages/cli"
+  },
   "type": "module",
   "engines": {
     "node": ">=22.0.0",

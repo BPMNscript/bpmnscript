@@ -5,10 +5,8 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 /**
- * Bean referenced by the shipping-quote process via
- * {@code expression = "${shippingBean.quote(order)}"} (operaton:expression). The
- * service task evaluates the method call; the returned quote is logged (the DSL
- * does not yet bind an expression result to a process variable).
+ * The {@code ${shippingBean.quote(order)}} expression in
+ * {@code service-expression.bpmnscript} resolves to this bean by name.
  */
 @Component("shippingBean")
 public class ShippingBean {

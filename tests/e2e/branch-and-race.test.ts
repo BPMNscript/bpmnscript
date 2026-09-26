@@ -1,10 +1,9 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll } from 'vitest';
 
 import type { FixtureAdapter } from '../fixtures/index.js';
 import {
   deployExamples,
-  ENGINE_BOOT_TIMEOUT_MS,
-  ENGINE_STOP_TIMEOUT_MS,
+  DEPLOY_TIMEOUT_MS,
   SKIP_DOCKER as SKIP,
 } from '../helpers/e2e-fixture.js';
 import {
@@ -12,6 +11,7 @@ import {
   engineGet,
   eventSubscriptions,
   historicActivities,
+  jobsOfInstance,
   waitFor,
   waitForTaskId,
   waitForTaskKeys,
@@ -28,19 +28,6 @@ const MESSAGE_CATCH = 'Catch_order-dispatch_2_b0';
 const FORK_GATEWAY = 'Gateway_order-dispatch_1_fork';
 const JOIN_GATEWAY = 'Gateway_order-dispatch_1_join';
 
-// One engine serves every instance this file starts, so a job query keyed on
-// the definition would count the timers of the other tests too.
-async function jobsOfInstance(
-  fixture: FixtureAdapter,
-  processInstanceId: string,
-): Promise<Array<{ id: string }>> {
-  return engineGet<Array<{ id: string }>>(
-    fixture,
-    `/engine-rest/job?processInstanceId=${encodeURIComponent(processInstanceId)}`,
-    `jobsOfInstance(${processInstanceId})`,
-  );
-}
-
 describe.skipIf(SKIP)(
   'E2E: an inclusive fork and a race on Spring Boot Operaton',
   () => {
@@ -48,14 +35,8 @@ describe.skipIf(SKIP)(
 
     beforeAll(async () => {
       fixture = await deployExamples(PROCESS_KEY);
-    }, ENGINE_BOOT_TIMEOUT_MS);
+    }, DEPLOY_TIMEOUT_MS);
 
-    afterAll(async () => {
-      await fixture?.stop();
-    }, ENGINE_STOP_TIMEOUT_MS);
-
-    // Starts an instance and walks it past the fork, so the race assertions
-    // begin from a token sitting at the event-based gateway.
     async function reachRace(): Promise<string> {
       const { processInstanceId } = await fixture.startProcess(PROCESS_KEY, {
         amount: 100,
@@ -73,7 +54,7 @@ describe.skipIf(SKIP)(
     it('deploys, so the engine parser accepts both gateway tags as they are written', async () => {
       const definitions = await engineGet<Array<{ key: string }>>(
         fixture,
-        `/engine-rest/process-definition?key=${encodeURIComponent(PROCESS_KEY)}`,
+        `/engine-rest/process-definition?withoutTenantId=true&key=${encodeURIComponent(PROCESS_KEY)}`,
         `processDefinitions(${PROCESS_KEY})`,
       );
       expect(definitions.map((definition) => definition.key)).toContain(

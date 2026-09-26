@@ -1,14 +1,8 @@
-// Nightly report: two job settings and a shell task, three things an XML
-// comparison cannot show the engine doing. The two gather steps run on parallel branches
-// and their join carries `joinAsyncBefore`, so each arriving token parks a job
-// at the join until the job executor runs it. The count step repeats three
-// times with `runAsyncBefore`, so each run parks a job of its own rather than
-// one job around the repetition. The last step is a shell task the engine runs
-// itself: `echo report-host`, whose output and exit code land in the two
-// variables the fields name.
-//
-// The shell command is `echo`, which every image the fixture builds on ships,
-// so the process runs on the demo profile without additional Java classes.
+// Two job settings and a shell task, which compile to XML that shows nothing
+// of what the engine does. `joinAsyncBefore` parks one job per token arriving
+// at the join; `runAsyncBefore` on a repetition parks one job per run, none
+// around the repetition; the shell task writes `echo`'s output and exit code
+// into the variables its fields name.
 
 process nightly-report(label: "Nightly report") {
   start NightlyRun

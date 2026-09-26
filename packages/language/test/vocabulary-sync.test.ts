@@ -1,13 +1,5 @@
-/**
- * Two lists that have to agree with a list they cannot import.
- *
- * A TextMate grammar cannot read TypeScript, so its keyword alternation is a
- * second derivation of the keywords the parser reserves. It is generated into
- * `syntaxes/`, which is gitignored, so a stale copy never shows up in a diff.
- *
- * A trigger word and a listener event both follow `on`, so one word appearing
- * in both vocabularies would give `on <word>` two meanings.
- */
+// The TextMate grammar cannot import TypeScript, and its generated copy under
+// the gitignored `syntaxes/` never shows in a diff, so these pin the two lists.
 
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -18,7 +10,10 @@ import {
   EMIT_TRIGGERS,
   END_TRIGGERS,
   EXECUTION_LISTENER_EVENTS,
+  FLAG_WORD_RULE,
   ON_TRIGGERS,
+  SETTING_KEY_RULE,
+  splitFencedScript,
   START_TRIGGERS,
   TASK_LISTENER_EVENTS,
   THROW_TRIGGERS,
@@ -30,8 +25,8 @@ const TEXTMATE_GRAMMAR = fileURLToPath(
   new URL('../syntaxes/bpmn-script.tmLanguage.json', import.meta.url),
 );
 
-/** `\b(a|b|c)\b` from the generated `keyword.control` pattern. */
-const ALTERNATION = /^\\b\((.*)\)\\b$/;
+/** The `keyword.control` alternation as `textmate-postprocess.mjs` leaves it, hyphen-aware so `invoice-start` colours no `start`. */
+const ALTERNATION = /^\(\?<!\[\\w-\]\)\((.*)\)\(\?!\[\\w-\]\)$/;
 
 function textMateKeywords(): string[] {
   let raw;
@@ -78,5 +73,87 @@ describe('lists that must not drift apart', () => {
       ...TASK_LISTENER_EVENTS,
     ];
     expect(listenerEvents.filter((event) => triggers.has(event))).toEqual([]);
+  });
+
+  test('the completion provider names datatype rules the grammar has', () => {
+    const services = createBpmnScriptServices(EmptyFileSystem);
+    const rules = new Set(
+      services.BpmnScript.Grammar.rules.map((rule) => rule.name),
+    );
+    expect(
+      [SETTING_KEY_RULE, FLAG_WORD_RULE].filter((name) => !rules.has(name)),
+    ).toEqual([]);
+  });
+});
+
+function grammarPatterns(): { name?: string; match?: string }[] {
+  const raw = readFileSync(TEXTMATE_GRAMMAR, 'utf8');
+  return (JSON.parse(raw) as { patterns: { name?: string; match?: string }[] })
+    .patterns;
+}
+
+/** Oniguruma agrees with JS `RegExp` on the lookaround and classes used here. */
+function tokensOf(line: string, namePrefix: string): string[] {
+  const pattern = grammarPatterns().find((p) => p.name?.startsWith(namePrefix));
+  if (!pattern?.match) {
+    throw new Error(
+      `No ${namePrefix} pattern in the generated TextMate grammar.`,
+    );
+  }
+  return [...line.matchAll(new RegExp(pattern.match, 'g'))].map((m) => m[0]);
+}
+
+describe('the TextMate grammar scopes a line', () => {
+  test.each<[string, string, string[], string[], string[]]>([
+    [
+      'a hyphenated process name colours only the keyword',
+      'process invoice-start {',
+      ['process'],
+      [],
+      [],
+    ],
+    [
+      'a hyphenated step name colours only the keyword',
+      '  step end-of-day',
+      ['step'],
+      [],
+      [],
+    ],
+    [
+      'a hyphenated setting value colours only the keyword',
+      '  user for-review(assignee: x)',
+      ['user'],
+      [],
+      [],
+    ],
+    [
+      'numbers and operators get their own scope, a hyphenated digit gets none',
+      '  if (amount == 100 && count-2 > 0.5) {',
+      ['if'],
+      ['100', '0.5'],
+      ['==', '&&', '>'],
+    ],
+  ])('%s', (_title, line, keywords, numbers, operators) => {
+    expect(tokensOf(line, 'keyword.control')).toEqual(keywords);
+    expect(tokensOf(line, 'constant.numeric')).toEqual(numbers);
+    expect(tokensOf(line, 'keyword.operator')).toEqual(operators);
+  });
+});
+
+describe('splitFencedScript', () => {
+  test('a CRLF-checked-out source normalizes the body to LF', () => {
+    expect(
+      splitFencedScript('```groovy\r\ndef a = 1\r\ndef b = 2\r\n```'),
+    ).toEqual({ tag: 'groovy', code: 'def a = 1\ndef b = 2\n' });
+  });
+
+  test('the tag runs to the first whitespace', () => {
+    expect([
+      splitFencedScript('```groovy 1 + 1```'),
+      splitFencedScript('```http://www.java.com/java\nx```'),
+    ]).toEqual([
+      { tag: 'groovy', code: ' 1 + 1' },
+      { tag: 'http://www.java.com/java', code: 'x' },
+    ]);
   });
 });

@@ -7,11 +7,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * Charges a payment, conditionally failing: when the process variable
- * {@code failCharge} is {@code true}, it raises a BPMN error with code
- * {@code CHARGE_FAILED} instead of completing; otherwise it logs and
- * continues like {@link LogDelegate}. The boolean gate lets one deployment
- * drive both a failing run and a clean pass-through run.
+ * The {@code failCharge} process variable lets one deployment drive both a
+ * failing and a clean run.
  */
 public class FailingChargeDelegate implements JavaDelegate {
 

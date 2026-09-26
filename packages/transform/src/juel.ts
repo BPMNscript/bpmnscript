@@ -1,38 +1,16 @@
 /**
- * Parser, classifier, and DSL serializer for the JUEL subset, on the import
- * path. It decides whether a raw `${...}` or `#{...}` body fits the subset and
- * can print as clean unquoted DSL, or has to fall back to the quoted `"${...}"`
- * raw form.
+ * JUEL subset parser for the import path: a `${...}`/`#{...}` body inside the
+ * subset prints as bare DSL, anything else (method calls, `fn:` functions,
+ * malformed text) as the quoted raw form with its original opener.
  *
- * The subset boundary is the Langium expression sub-grammar in
- * `packages/language/src/bpmn-script.langium`, whose precedence the
- * recursive-descent parser below reproduces. A test cross-checks this ladder
- * against the real grammar, so the two cannot drift:
- *
- *   ternary          c ? t : f
- *   logical          ||  &&
- *   equality         ==  !=
- *   relational       <=  >=  <  >
- *   additive         +  -
- *   multiplicative   *  /  %
- *   unary            !x  -x
- *   primary          int | decimal | string | bool | null
- *                    | varRef (id with `.prop` / `[expr]` accessors)
- *                    | ( expr )
- *
- * A method or bean call (`x.foo()`), a JUEL function (`fn:size(x)`), or a
- * malformed body is classified raw.
- *
- * Hand-rolled rather than re-invoking Langium: a synchronous, dependency-free
- * parser keeps `xmlToIr` and `irToDsl` off the language package's async parse
- * machinery on the hot import path.
- *
- * The surface form is shared with `renderExpression` in `@bpmn-script/language`:
- * double-quoted strings, spaced operators, `.prop`/`[idx]` accessors, author
- * parentheses preserved. That makes `parseJuel(renderExpression(x))` idempotent
- * on the subset, which is what keeps a round trip from re-wrapping a body it
- * already printed bare.
+ * Precedence mirrors the Langium expression grammar (a test cross-checks it):
+ * ternary, `|| &&`, `== !=`, `<= >= < >`, `+ -`, `* / %`, unary `! -`, primary.
+ * Hand-rolled so `xmlToIr` and `irToDsl` stay synchronous. Output matches
+ * `renderExpression` in `@bpmn-script/language`, so a printed body re-parses
+ * to itself.
  */
+
+import { ID_TERMINAL } from '@bpmn-script/language';
 
 export type JuelNode =
   | { kind: 'int'; value: number }
@@ -68,55 +46,57 @@ export type BinaryOp =
   | '/'
   | '%';
 
-/** A raw `text` is the verbatim inner body, without the wrapper it came in. */
+/** Raw `text` is the body without its wrapper; `open` is the wrapper's first char (`$` if none). */
 export type ExprResult =
-  { kind: 'structured'; expr: JuelNode } | { kind: 'raw'; text: string };
+  | { kind: 'structured'; expr: JuelNode }
+  | { kind: 'raw'; text: string; open: '$' | '#' };
 
-/** Never throws: anything outside the subset comes back as a raw result. */
 export function parseJuel(body: string): ExprResult {
+  const open = /^#\{/.test(body.trim()) ? '#' : '$';
   const inner = stripWrapper(body);
   if (inner === undefined) {
-    return { kind: 'raw', text: stripWrapperLenient(body) };
+    return { kind: 'raw', text: stripWrapperLenient(body), open };
   }
   try {
     const tokens = tokenize(inner);
     if (tokens === undefined) {
-      return { kind: 'raw', text: inner };
+      return { kind: 'raw', text: inner, open };
     }
     const parser = new Parser(tokens);
     const expr = parser.parseExpr();
-    // Trailing tokens, such as the `()` of a method call, put the body outside
-    // the subset, so the parse has to consume the whole stream.
+    // Trailing tokens (a method call's `()`) put the body outside the subset.
     if (!parser.atEnd()) {
-      return { kind: 'raw', text: inner };
+      return { kind: 'raw', text: inner, open };
     }
     return { kind: 'structured', expr };
   } catch {
-    return { kind: 'raw', text: inner };
+    return { kind: 'raw', text: inner, open };
   }
 }
 
-/**
- * The DSL surface string `irToDsl` writes into a condition or attribute:
- * `amount > 1000` when structured, the quoted `"${...}"` fallback when raw, so
- * an out-of-subset body survives the round trip with its text intact, rewrapped
- * as `${...}`.
- */
 export function renderRawFallback(result: ExprResult): string {
   if (result.kind === 'raw') {
-    return `"\${${result.text}}"`;
+    return `"${result.open}{${escapeQuoted(result.text)}}"`;
   }
   return renderNode(result.expr);
 }
 
+/** Inverse of the grammar's `convertString`: these five are the only escapes it resolves. */
+export function escapeQuoted(value: string): string {
+  return value
+    .replace(/\\/g, '\\\\')
+    .replace(/"/g, '\\"')
+    .replace(/\n/g, '\\n')
+    .replace(/\r/g, '\\r')
+    .replace(/\t/g, '\\t');
+}
+
 /**
- * Either delimiter opens an EL body, and Operaton evaluates one written with
- * either the same way, so a `#{...}` body reads in here and prints back out
- * through the `${...}` surface the DSL has a form for.
+ * Operaton evaluates `#{...}` and `${...}` alike, so a structured `#{...}`
+ * body prints bare and is rewritten inside `${...}`.
  */
 const OPEN_WRAPPER = /^[$#]\{/;
 
-/** `undefined` when the body carries no closed wrapper, routing it to the fallback. */
 function stripWrapper(body: string): string | undefined {
   const trimmed = body.trim();
   if (
@@ -130,10 +110,8 @@ function stripWrapper(body: string): string | undefined {
 }
 
 /**
- * Only fills the `text` of a raw result, never the classification. It sees a
- * body with no wrapper or with an unclosed one, so it drops the opening
- * delimiter alone: taking a closing brace it never opened would corrupt the
- * text {@link renderRawFallback} re-wraps.
+ * Drops only the opening delimiter: taking a closing brace it never opened
+ * would corrupt the text {@link renderRawFallback} re-wraps.
  */
 function stripWrapperLenient(body: string): string {
   const trimmed = body.trim();
@@ -145,25 +123,18 @@ type TokenType =
 
 interface Token {
   type: TokenType;
-  /** Raw text for `op` and `punct`, the decoded value otherwise. */
   value: string;
-  /** String tokens only: the unescaped content. */
   stringValue?: string;
 }
 
-// Tried before their single-character prefixes: `<=` before `<`.
 const MULTI_CHAR_OPS = ['||', '&&', '==', '!=', '<=', '>='];
 const SINGLE_CHAR_OPS = ['<', '>', '+', '-', '*', '/', '%', '!', '?', ':'];
 const PUNCT = ['(', ')', '[', ']', '.'];
 
-const ID_START = /[_a-zA-Z]/;
-// The grammar's ID terminal: word chars with internal hyphen groups, where a
-// hyphen must be followed by at least one word char.
-const ID_REGEX = /^[_a-zA-Z]\w*(?:-\w+)*/;
+const ID_REGEX = new RegExp(`^${ID_TERMINAL.source}`, ID_TERMINAL.flags);
 const DECIMAL_REGEX = /^[0-9]+\.[0-9]+/;
 const INT_REGEX = /^[0-9]+/;
 
-/** `undefined` on an illegal character or an unterminated string. */
 function tokenize(input: string): Token[] | undefined {
   const tokens: Token[] = [];
   let i = 0;
@@ -184,7 +155,6 @@ function tokenize(input: string): Token[] | undefined {
       continue;
     }
 
-    // Mirrors the grammar's STRING terminal, single or double quoted.
     if (ch === '"' || ch === "'") {
       const lit = readString(input, i, ch);
       if (lit === undefined) {
@@ -195,7 +165,6 @@ function tokenize(input: string): Token[] | undefined {
       continue;
     }
 
-    // DECIMAL before INT: longer match wins, as in the grammar lexer.
     const rest = input.slice(i);
     const dec = DECIMAL_REGEX.exec(rest);
     if (dec) {
@@ -210,10 +179,9 @@ function tokenize(input: string): Token[] | undefined {
       continue;
     }
 
-    if (ID_START.test(ch)) {
-      const idMatch = ID_REGEX.exec(rest);
-      // ID_REGEX is anchored and ch is an id-start char, so this always matches.
-      const word = idMatch![0];
+    const idMatch = ID_REGEX.exec(rest);
+    if (idMatch) {
+      const word = idMatch[0];
       if (word === 'true' || word === 'false') {
         tokens.push({ type: 'bool', value: word });
       } else if (word === 'null') {
@@ -244,14 +212,12 @@ function tokenize(input: string): Token[] | undefined {
       continue;
     }
 
-    // `@`, `,` and anything else are outside the subset.
     return undefined;
   }
 
   return tokens;
 }
 
-/** `end` is the index just past the closing quote. `undefined` if unterminated. */
 function readString(
   input: string,
   start: number,
@@ -262,7 +228,6 @@ function readString(
   while (i < input.length) {
     const ch = input[i];
     if (ch === '\\') {
-      // Backslash escape: the next char is kept literally.
       if (i + 1 >= input.length) {
         return undefined;
       }
@@ -279,11 +244,7 @@ function readString(
   return undefined;
 }
 
-/**
- * Climbs the precedence ladder in the module header. Binary levels are
- * left-associative. A structural error throws {@link ParseError}, which
- * {@link parseJuel} turns into a raw result.
- */
+/** Binary levels are left-associative; {@link ParseError} becomes a raw result. */
 class Parser {
   private pos = 0;
 
@@ -334,7 +295,6 @@ class Parser {
     return this.parseBinaryLevel(['*', '/', '%'], () => this.parseUnary());
   }
 
-  /** `operand (op operand)*`, shared by every binary level. */
   private parseBinaryLevel(ops: BinaryOp[], operand: () => JuelNode): JuelNode {
     let left = operand();
     for (;;) {
@@ -382,7 +342,8 @@ class Parser {
         this.pos++;
         return { kind: 'null' };
       case 'id':
-        return this.parseVarRef();
+        this.pos++;
+        return this.parseVarRef(tok.value);
       case 'punct':
         if (tok.value === '(') {
           this.pos++;
@@ -396,9 +357,7 @@ class Parser {
     }
   }
 
-  /** `id (.prop | [expr])*`. */
-  private parseVarRef(): JuelNode {
-    const idTok = this.advance();
+  private parseVarRef(name: string): JuelNode {
     const accessors: Accessor[] = [];
     for (;;) {
       const tok = this.peek();
@@ -421,20 +380,11 @@ class Parser {
       }
       break;
     }
-    return { kind: 'varRef', name: idTok.value, accessors };
+    return { kind: 'varRef', name, accessors };
   }
 
   private peek(): Token | undefined {
     return this.tokens[this.pos];
-  }
-
-  private advance(): Token {
-    const tok = this.tokens[this.pos];
-    if (tok === undefined) {
-      throw new ParseError('unexpected end of input');
-    }
-    this.pos++;
-    return tok;
   }
 
   private peekOp(): string | undefined {
@@ -466,21 +416,18 @@ class Parser {
   }
 }
 
-/** Control-flow signal for an out-of-subset or malformed parse. */
 class ParseError extends Error {}
 
-/**
- * Bare DSL surface text, no `${...}` wrapper, in the canonical form the module
- * header describes.
- */
 function renderNode(node: JuelNode): string {
   switch (node.kind) {
     case 'int':
     case 'decimal':
       return String(node.value);
     case 'string':
-      // Canonical form is double-quoted, so an embedded quote is re-escaped.
-      return `"${node.value.replace(/"/g, '\\"')}"`;
+      // Langium's `convertEscapeCharacter` drops the backslash before unknown
+      // characters, so only `\\` reads back as a backslash; operaton-juel's
+      // scanner accepts it too.
+      return `"${escapeQuoted(node.value)}"`;
     case 'bool':
       return node.value;
     case 'null':
