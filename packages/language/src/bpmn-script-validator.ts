@@ -128,6 +128,7 @@ import {
   ASYNC_FLAG_KEYS,
   ATTRIBUTE_BLOCK_RULES,
   attributeBlockRuleOf,
+  BOOLEAN_ENGINE_KEYS,
   BUILTIN_FIELD_NAMES,
   BUILTIN_FIELD_VALIDATOR,
   BUILTIN_REQUIRED_FIELDS,
@@ -141,11 +142,13 @@ import {
   EMIT_TRIGGERS,
   END_TRIGGERS,
   ENGINE_KEYS,
+  engineSpellings,
   ERROR_MAPPING_HEAD,
   ERROR_MAPPING_WHEN,
   EVENT_BINDING_FIELDS,
   EXECUTION_LISTENER_EVENTS,
   EXPRESSION_OPEN,
+  EXTERNAL_BINDING_KEY,
   EXTERNAL_TASK_EL_NAME,
   FIELD_BINDING_KEYS,
   FIELD_DIRECTION,
@@ -182,6 +185,7 @@ import {
   TASK_LISTENER_EVENTS,
   TASK_PRIORITY_KEY,
   THROW_BINDING_KEYS,
+  THROW_BINDING_TRIGGER,
   THROW_TRIGGERS,
   TIMER_JOB_KEYS,
   TIMER_PARTICLES,
@@ -252,13 +256,6 @@ type GatewayStatement =
   | ParallelStatement
   | RaceStatement;
 
-/** An engine key under each spelling a parens carries it, the value shape being the same under all three. */
-const engineSpellings = (key: string): string[] => [
-  key,
-  joinSettingKey(key),
-  runSettingKey(key),
-];
-
 /**
  * Keys whose value names something outside process-variable scope, so a
  * bareword there must not warn about an undeclared variable, nor be scanned
@@ -274,7 +271,7 @@ const engineSpellings = (key: string): string[] => [
  * broken; {@link BpmnScriptValidator.checkAttributeValues} asks for a quoted
  * date instead.
  */
-const NON_VARIABLE_ATTR_KEYS: ReadonlySet<string> = new Set([
+export const NON_VARIABLE_ATTR_KEYS: ReadonlySet<string> = new Set([
   'label',
   'documentation',
   'class',
@@ -282,7 +279,7 @@ const NON_VARIABLE_ATTR_KEYS: ReadonlySet<string> = new Set([
   'formRef',
   'expression',
   'delegate',
-  'topic',
+  EXTERNAL_BINDING_KEY,
   TYPE_BINDING_KEY,
   'process',
   'binding',
@@ -305,7 +302,7 @@ const NON_VARIABLE_ATTR_KEYS: ReadonlySet<string> = new Set([
 ]);
 
 const BOOLEAN_ATTR_KEYS: ReadonlySet<string> = new Set(
-  ['asyncBefore', 'asyncAfter', 'exclusive'].flatMap(engineSpellings),
+  BOOLEAN_ENGINE_KEYS.flatMap(engineSpellings),
 );
 
 /** Each timer job key is dead on an element with no job, so written alone it draws a warning. */
@@ -1718,7 +1715,7 @@ function previousFlowStatement(
  * refused under a message of its own (a gateway head, a form field, a code
  * declaration).
  */
-function settingsOnlyOwnerDescription(
+export function settingsOnlyOwnerDescription(
   owner: ParenValue['$container'],
 ): string | undefined {
   if (isProcess(owner)) return 'a process header';
@@ -2346,39 +2343,20 @@ export class BpmnScriptValidator {
       return;
     }
 
-    // Only the direct value position is exempt; a nested VarRef is checked.
     const container = expr.$container;
-    const isNonVariableAttrValue =
-      isSetting(container) && NON_VARIABLE_ATTR_KEYS.has(container.key);
-    // A code position is exempt for the same reason `NON_VARIABLE_ATTR_KEYS`
-    // is: the word names something other than a variable there, and an
-    // undeclared code already has a diagnostic of its own from the linker.
-    // A declaration's parens hold the text a code and its message are made of,
-    // so a bare word there is a missing pair of quotes or an item that does not
-    // belong, both of which {@link BpmnScriptValidator.checkCodeDecls} reports.
-    const isDeclarationItem = isCodeDecl(container.$container);
-    // A gateway head's parens take settings alone, so a bare word there is
-    // already an error of its own; a variable warning on top is a red herring.
-    const isGatewayHeadValue =
-      isParenValue(container) &&
-      gatewayStatementRuleOf(container.$container) !== undefined;
     if (isVarRef(expr)) {
       // A name position is exempt from the warning for the same reason a code
       // position is: the word names something other than a variable there, and
       // the message below is the one the author needs.
       const nameTrigger = nameTriggerOf(expr);
+      const variableUse = isVariableUse(expr);
       if (nameTrigger !== undefined) {
         accept(
           'error',
           barewordNameMessage(nameTrigger, renderExpressionInner(expr)),
           { node: expr, property: 'ref' },
         );
-      } else if (
-        !isNonVariableAttrValue &&
-        !isDeclarationItem &&
-        !isGatewayHeadValue &&
-        !isCodePosition(expr)
-      ) {
+      } else if (variableUse || readsExternalTask(expr)) {
         // A bare collection name is written as it is and looked up as a
         // variable (`operaton:collection`), so JUEL never scans it; a bare
         // `in`/`out` mapping source is exempt the same way: `lowerCallMapping`
@@ -2393,7 +2371,7 @@ export class BpmnScriptValidator {
         if (!isBareLookupName) {
           checkRenderedNames(expr, accept);
         }
-        if (!readsExternalTask(expr) && !symbols.has(expr.ref.$refText)) {
+        if (variableUse && !symbols.has(expr.ref.$refText)) {
           accept(
             'warning',
             `Variable '${expr.ref.$refText}' is not declared. Add 'var ${expr.ref.$refText}: <type>' to the process.`,
@@ -2815,7 +2793,7 @@ export class BpmnScriptValidator {
       return;
     }
     const unread = settings.find(
-      (a) => a.key === 'topic' || a.key === TYPE_BINDING_KEY,
+      (a) => a.key === EXTERNAL_BINDING_KEY || a.key === TYPE_BINDING_KEY,
     );
     if (unread !== undefined) {
       accept('warning', resultVariableUnreadMessage(unread.key), target);
@@ -4535,7 +4513,10 @@ export class BpmnScriptValidator {
     accept: ValidationAcceptor,
   ): void {
     for (const binding of caughtBindingsOf(handler.items)) {
-      if (binding.field === 'message' && handler.trigger === 'escalation') {
+      if (
+        binding.field === 'message' &&
+        !TRIGGER_PAYLOAD[handler.trigger]!.message
+      ) {
         accept('error', ESCALATION_NO_MESSAGE_MESSAGE, {
           node: binding.node,
           property: 'key',
@@ -4925,7 +4906,7 @@ export class BpmnScriptValidator {
 
     for (const setting of settings) {
       if (!EVENT_BINDING_FIELD_SET.has(setting.key)) continue;
-      if (setting.key === 'message' && decl.kind === 'escalation') {
+      if (setting.key === 'message' && !TRIGGER_PAYLOAD[decl.kind]!.message) {
         accept('error', ESCALATION_NO_MESSAGE_MESSAGE, {
           node: setting,
           property: 'key',
@@ -5182,7 +5163,7 @@ function catchTriggerMessage(word: string): string {
  * taking the events away leaves the activities. An intermediate catch event
  * is no activity either: `BpmnParse.parseBoundaryEvents` attaches only to one.
  */
-function isActivityStatement(stmt: Statement): boolean {
+export function isActivityStatement(stmt: Statement): boolean {
   return (
     isNamedStatement(stmt) &&
     !isStartEvent(stmt) &&
@@ -5198,12 +5179,12 @@ function isActivityStatement(stmt: Statement): boolean {
  * activity, or a user task (`BpmnParse.parseBoundaryEvents`); both the
  * `subprocess` and the `attempt` head are subprocess scopes.
  */
-function isEscalationLegalHost(stmt: Statement): boolean {
+export function isEscalationLegalHost(stmt: Statement): boolean {
   return isSubProcess(stmt) || isCallActivity(stmt) || isUserTask(stmt);
 }
 
 /** A block written with the `attempt` head: the only one a cancel may give up. */
-function isAttemptBlock(node: AstNode | undefined): node is SubProcess {
+export function isAttemptBlock(node: AstNode | undefined): node is SubProcess {
   return node !== undefined && isSubProcess(node) && node.transactional;
 }
 
@@ -5435,8 +5416,37 @@ const isFieldParameter = (param: IoParameter): boolean =>
 /** Admitted inside a mapping alone, for the reason {@link EXTERNAL_TASK_EL_NAME} gives. */
 function readsExternalTask(ref: VarRef): boolean {
   return (
-    ref.ref.$refText === EXTERNAL_TASK_EL_NAME &&
+    ref.ref?.$refText === EXTERNAL_TASK_EL_NAME &&
     AstUtils.getContainerOfType(ref, isErrorMapping) !== undefined
+  );
+}
+
+/**
+ * Whether `ref` reads a process variable, which is what the undeclared-variable
+ * warning, a definition lookup and a rename all key on.
+ * Every other position names something else: an `out` mapping's source is
+ * evaluated in the called process's scope; the value of a
+ * {@link NON_VARIABLE_ATTR_KEYS} setting is plain text (the direct value
+ * alone, a nested reference is a variable); a declaration's parens hold the
+ * text a code and its message are made of; a gateway head's parens take
+ * settings alone; a code or a name position names an event; and
+ * `externalTask` inside a mapping is the engine's own object. The answer is
+ * read off the container chain alone, so it also holds for the stand-in
+ * completion builds for a reference not yet typed, whose `ref` is empty.
+ */
+export function isVariableUse(ref: VarRef): boolean {
+  const container = ref.$container;
+  return (
+    AstUtils.getContainerOfType(ref, isVariableMapping)?.direction !== 'out' &&
+    !(isSetting(container) && NON_VARIABLE_ATTR_KEYS.has(container.key)) &&
+    !isCodeDecl(container?.$container) &&
+    !(
+      isParenValue(container) &&
+      gatewayStatementRuleOf(container.$container) !== undefined
+    ) &&
+    !isCodePosition(ref) &&
+    nameTriggerOf(ref) === undefined &&
+    !readsExternalTask(ref)
   );
 }
 
@@ -5519,7 +5529,7 @@ function topicRefusalOf(
   settings: readonly Setting[],
   item: string,
 ): string | undefined {
-  return settings.some((attr) => attr.key === 'topic')
+  return settings.some((attr) => attr.key === EXTERNAL_BINDING_KEY)
     ? undefined
     : topicBindingMessage(
         capitalize(rule.description),
@@ -5586,7 +5596,7 @@ function checkThrowEmitBinding(
   const written = bindingKeysOf(settingsOf(stmt.items), THROW_BINDING_KEYS);
   if (written.length === 0) return;
 
-  if (stmt.trigger !== 'message') {
+  if (stmt.trigger !== THROW_BINDING_TRIGGER) {
     for (const attr of settingsOf(stmt.items)) {
       if (!written.includes(attr.key)) continue;
       accept(

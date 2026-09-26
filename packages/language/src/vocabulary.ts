@@ -86,6 +86,18 @@ export const TIMER_JOB_KEYS = [
 ] as const;
 export type TimerJobKey = (typeof TIMER_JOB_KEYS)[number];
 
+export type EngineKey = (typeof ASYNC_FLAG_KEYS)[number] | TimerJobKey;
+
+/**
+ * The engine keys `BpmnParse.isAsyncBefore`, `isAsyncAfter` and `isExclusive`
+ * read with a case-sensitive `"true"` comparison, so any other text deploys
+ * as the setting turned off.
+ */
+export const BOOLEAN_ENGINE_KEYS: readonly EngineKey[] = [
+  ...ASYNC_FLAG_KEYS,
+  'exclusive',
+];
+
 /**
  * The engine execution settings Operaton reads off any flow node, gateways
  * included: `BpmnParse.parseExclusiveGateway`, `parseInclusiveGateway`,
@@ -95,7 +107,7 @@ export type TimerJobKey = (typeof TIMER_JOB_KEYS)[number];
  * `DefaultFailedJobParseListener.parseActivity` reads the retry cycle on the
  * same four.
  */
-export const ENGINE_KEYS: readonly string[] = [
+export const ENGINE_KEYS: readonly EngineKey[] = [
   ...ASYNC_FLAG_KEYS,
   ...TIMER_JOB_KEYS,
 ];
@@ -136,6 +148,13 @@ export function runSettingKey(key: string): string {
   return prefixedSettingKey('run', key);
 }
 
+/** An engine key under each spelling a parens carries it, the value shape being the same under all three. */
+export const engineSpellings = (key: string): string[] => [
+  key,
+  joinSettingKey(key),
+  runSettingKey(key),
+];
+
 /**
  * The four settings a repetition writes on its `multiInstanceLoopCharacteristics`
  * element rather than on the repeated activity itself.
@@ -159,6 +178,13 @@ export const RUN_ENGINE_KEYS: readonly string[] = ENGINE_KEYS.filter(
 export const TYPE_BINDING_KEY = 'type';
 
 /**
+ * The binding handing the step to an external worker, and so the one the
+ * external extras ride: `taskPriority` in the parens, a `property` line and an
+ * `error ... when` mapping in the block.
+ */
+export const EXTERNAL_BINDING_KEY = 'topic';
+
+/**
  * Exactly one of these binds a service task. `topic` delegates to an external
  * worker polling the engine rather than the engine invoking the binding, and
  * `type` selects a behaviour the engine builds itself.
@@ -169,7 +195,7 @@ export const SERVICE_TASK_BINDING_KEYS: readonly string[] = [
   'class',
   'expression',
   'delegate',
-  'topic',
+  EXTERNAL_BINDING_KEY,
   TYPE_BINDING_KEY,
 ];
 
@@ -179,6 +205,9 @@ export const SERVICE_TASK_BINDING_KEYS: readonly string[] = [
  */
 export const THROW_BINDING_KEYS: readonly string[] =
   SERVICE_TASK_BINDING_KEYS.filter((key) => key !== TYPE_BINDING_KEY);
+
+/** The one trigger whose throw or emit carries an implementation binding. */
+export const THROW_BINDING_TRIGGER = 'message';
 
 /** The two `operaton:type` values `parseServiceTaskLike` routes to a built-in behaviour. */
 export const TYPE_BINDING_VALUES = ['mail', 'shell'] as const;
@@ -398,6 +427,13 @@ export const TIMER_PARTICLES: readonly string[] = Object.values(
 );
 
 export const EVENT_BINDING_FIELDS: readonly string[] = ['code', 'message'];
+
+/** The fields the `trigger`'s event carries: a code always, a message where its rule says so. */
+export function eventBindingFieldsFor(trigger: string): readonly string[] {
+  return EVENT_BINDING_FIELDS.filter(
+    (field) => field !== 'message' || TRIGGER_PAYLOAD[trigger]?.message,
+  );
+}
 
 /** Legal on every element with a member block, since each lowers to a flow node. */
 export const EXECUTION_LISTENER_EVENTS = ['start', 'end'] as const;
@@ -639,6 +675,8 @@ export interface TriggerPayloadRule {
   /** Whether the `particle`/`time` clause is required. */
   readonly timer: boolean;
   readonly parens: 'bindings' | 'condition' | 'forbidden';
+  /** Whether the event carries a message text beside its code. */
+  readonly message: boolean;
   /** Whether a non-interrupting `alongside` handler is legal. */
   readonly alongside: boolean;
   /**
@@ -665,6 +703,7 @@ export const TRIGGER_PAYLOAD: Readonly<Record<string, TriggerPayloadRule>> = {
     code: 'optional',
     timer: false,
     parens: 'bindings',
+    message: true,
     alongside: false,
     boundary: true,
     hostless: true,
@@ -673,6 +712,7 @@ export const TRIGGER_PAYLOAD: Readonly<Record<string, TriggerPayloadRule>> = {
     code: 'optional',
     timer: false,
     parens: 'bindings',
+    message: false,
     alongside: true,
     boundary: true,
     hostless: true,
@@ -681,6 +721,7 @@ export const TRIGGER_PAYLOAD: Readonly<Record<string, TriggerPayloadRule>> = {
     code: 'required',
     timer: false,
     parens: 'forbidden',
+    message: false,
     alongside: true,
     boundary: true,
     hostless: true,
@@ -689,6 +730,7 @@ export const TRIGGER_PAYLOAD: Readonly<Record<string, TriggerPayloadRule>> = {
     code: 'required',
     timer: false,
     parens: 'forbidden',
+    message: false,
     alongside: true,
     boundary: true,
     hostless: true,
@@ -697,6 +739,7 @@ export const TRIGGER_PAYLOAD: Readonly<Record<string, TriggerPayloadRule>> = {
     code: 'forbidden',
     timer: true,
     parens: 'forbidden',
+    message: false,
     alongside: true,
     boundary: true,
     hostless: true,
@@ -705,6 +748,7 @@ export const TRIGGER_PAYLOAD: Readonly<Record<string, TriggerPayloadRule>> = {
     code: 'forbidden',
     timer: false,
     parens: 'condition',
+    message: false,
     alongside: true,
     boundary: true,
     hostless: true,
@@ -713,6 +757,7 @@ export const TRIGGER_PAYLOAD: Readonly<Record<string, TriggerPayloadRule>> = {
     code: 'forbidden',
     timer: false,
     parens: 'forbidden',
+    message: false,
     alongside: false,
     boundary: false,
     hostless: true,
@@ -721,6 +766,7 @@ export const TRIGGER_PAYLOAD: Readonly<Record<string, TriggerPayloadRule>> = {
     code: 'forbidden',
     timer: false,
     parens: 'forbidden',
+    message: false,
     alongside: false,
     boundary: true,
     hostless: false,
@@ -729,6 +775,7 @@ export const TRIGGER_PAYLOAD: Readonly<Record<string, TriggerPayloadRule>> = {
     code: 'required',
     timer: false,
     parens: 'forbidden',
+    message: false,
     alongside: false,
     boundary: false,
     hostless: false,

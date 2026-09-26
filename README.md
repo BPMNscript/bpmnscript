@@ -90,10 +90,11 @@ Press <kbd>F5</kbd> from the repo root.
 VS Code opens a second window with the extension loaded, where `.bpmnscript` files get:
 
 - syntax highlighting, including inside a `script` task's fenced body, which is highlighted in its own language
-- autocompletion and hover, from the same grammar that drives the compiler
+- completion, hover, go to definition, find all references and rename, for steps, codes and variables, plus an outline, from the same grammar that drives the compiler
 - errors and warnings inline as you type, so a `goto` that can't reach its target, a `string` variable under an ordered comparison, or a `boolean` in arithmetic is flagged before you ever run the compiler
 - a **Convert** panel in the sidebar: compile the open file, jump to its counterpart when one exists, or pick a `.bpmn` from disk to decompile
 
+For a normal install instead of the development host, see the extension README's [Installing](packages/extension/README.md#installing) section.
 Compiling and decompiling are the same two operations as `bpmns build` and `bpmns parse` above, without leaving the editor.
 Both are in the command palette too, under "BPMNscript".
 See [packages/extension/README.md](packages/extension/README.md) for how the pieces fit together.

@@ -487,6 +487,10 @@ const gotoIntoBranch = (target: string, keyword: 'parallel' | 'await') =>
   intoBranch(`goto ${target}`, 'goto', keyword);
 const unresolvedStatement = (name: string) =>
   `Could not resolve reference to Statement named '${name}'.`;
+const missingStep = (name: string) =>
+  `No step named '${name}' in this process.`;
+const missingHost = (name: string) =>
+  `No step named '${name}' in this process to attach to.`;
 const reservedWord = (word: string) =>
   `'${word}' is a reserved word and cannot be used as a plain name here. ` +
   `To refer to a variable named '${word}', write it as a quoted raw expression: "\${${word}}".`;
@@ -2019,7 +2023,7 @@ checks('Validation - goto', [
   [
     'an unresolved goto is the linker error alone',
     `process p { user Foo goto Missing }`,
-    [unresolvedStatement('Missing')],
+    [missingStep('Missing')],
   ],
   [
     'a goto resolving to a user task is clean',
@@ -3971,7 +3975,7 @@ ${FENCE}
   [
     'an unresolved host reports only the resolution error',
     `process p { start S on message("M") { user A } on Missing: message("M") { user B } }`,
-    [unresolvedStatement('Missing')],
+    [missingHost('Missing')],
   ],
   [
     'two host-less handlers of an unknown trigger word draw the unknown-kind error alone',

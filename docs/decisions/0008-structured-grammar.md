@@ -52,3 +52,4 @@ Neither the conditioned branch nor the multi-branch `await` spent a reserved wor
 ## More Information
 
 The JUEL-subset boundary, meaning what parses natively and what falls back to `"${...}"`, is fixed by the grammar's expression sub-rules in `packages/language/src/bpmn-script.langium` and mirrored by the hand-rolled parser in `packages/transform/src/juel.ts`.
+The completion provider offers at a caret only what the validator accepts there, and `packages/language/test/completion.test.ts` holds that with a table that inserts every offered item and validates the result.

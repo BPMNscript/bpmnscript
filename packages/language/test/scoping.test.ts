@@ -5,9 +5,11 @@
  * A `goto` resolves only within its nearest enclosing container, the `process`,
  * `subprocess`, or `on` handler body it directly sits in, and a `subprocess`
  * statement is itself a target by name. A cross-boundary `goto` fails to
- * resolve, and the custom linker replaces the stock "Could not resolve
- * reference" message with a boundary explanation rather than adding to it. A
- * handler has no name of its own, so it is named in that message by its header.
+ * resolve, and the custom linker replaces Langium's stock resolution failure
+ * with a boundary explanation where the name exists elsewhere in the process,
+ * or with a plain "no step named" message where it exists nowhere at all. A
+ * handler has no name of its own, so it is named in a boundary message by its
+ * header.
  *
  * A hosted handler lowers inline into its host's container rather than into one
  * of its own, which makes its body transparent to the container walk: a `goto`
@@ -194,9 +196,14 @@ function boundary(
   return `error: '${name}' is ${where}; ${BOUNDARY_RULE[rule]}`;
 }
 
-/** The stock message, kept wherever the name exists nowhere in the process. */
-function stockError(name: string): string {
-  return `error: Could not resolve reference to Statement named '${name}'.`;
+/** A `goto` naming a step nowhere in the process. */
+function missingStep(name: string): string {
+  return `error: No step named '${name}' in this process.`;
+}
+
+/** A handler's host naming a step nowhere in the process. */
+function missingHost(name: string): string {
+  return `error: No step named '${name}' in this process to attach to.`;
 }
 
 /** Raised on every two-process fixture below, which needs both to ask its question. */
@@ -226,12 +233,12 @@ describe('Scoping - process-scoped goto', () => {
     [
       'a goto does not reach a step only another process has',
       `process a { user Foo goto Only } process b { user Only }`,
-      ['goto Only -> unresolved', stockError('Only'), MULTI_PROCESS],
+      ['goto Only -> unresolved', missingStep('Only'), MULTI_PROCESS],
     ],
     [
       'a goto to a name no process has does not resolve',
       `process p { user Foo goto Missing }`,
-      ['goto Missing -> unresolved', stockError('Missing')],
+      ['goto Missing -> unresolved', missingStep('Missing')],
     ],
     [
       'a goto reaches a named await',
@@ -283,9 +290,9 @@ describe('Scoping - container-scoped goto (subprocess boundary)', () => {
       ],
     ],
     [
-      'a goto to a name nowhere in the process keeps the stock message',
+      'a goto to a name nowhere in the process says so',
       `process p { subprocess Sub { user Inner } goto Missing }`,
-      ['goto Missing -> unresolved', stockError('Missing')],
+      ['goto Missing -> unresolved', missingStep('Missing')],
     ],
   ])('%s', checkRow);
 });
@@ -359,9 +366,9 @@ describe('Scoping - container-scoped goto (event-handler boundary)', () => {
       ],
     ],
     [
-      'a goto to a name nowhere in the process keeps the stock message',
+      'a goto to a name nowhere in the process says so',
       `process p { error PAYMENT_FAILED goto Missing on error(PAYMENT_FAILED) { user Inner } }`,
-      ['goto Missing -> unresolved', stockError('Missing')],
+      ['goto Missing -> unresolved', missingStep('Missing')],
     ],
     [
       'an `on timer` handler is named by its code-less header',
@@ -431,7 +438,7 @@ describe('Scoping - hosted handler host reference', () => {
     [
       'a host does not reach an activity of another process',
       `process a { user Review on Only: signal("Cancelled") { } } process b { user Only }`,
-      ['host Only -> unresolved', stockError('Only'), MULTI_PROCESS],
+      ['host Only -> unresolved', missingHost('Only'), MULTI_PROCESS],
     ],
     [
       "a host reads the handler's container, not the handler's own body",
@@ -452,9 +459,9 @@ describe('Scoping - hosted handler host reference', () => {
       ],
     ],
     [
-      'a host naming nothing anywhere keeps the stock message',
+      'a host naming nothing anywhere says so',
       `process p { error X user Review on Missing: error(X) { } }`,
-      ['host Missing -> unresolved', stockError('Missing')],
+      ['host Missing -> unresolved', missingHost('Missing')],
     ],
   ])('%s', checkRow);
 });

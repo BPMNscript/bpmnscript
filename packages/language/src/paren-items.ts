@@ -85,7 +85,7 @@ export function caughtBindingsOf(items: ParenItem[]): CaughtBinding[] {
  * message, and there {@link caughtBindingsOf} has already read it; only a timer
  * names a date or a cycle. Anywhere else those words are ordinary unknown keys.
  */
-function isStructuralParenKey(owner: AstNode, key: string): boolean {
+export function isStructuralParenKey(owner: AstNode, key: string): boolean {
   if (isOnHandler(owner) && EVENT_BINDING_FIELD_SET.has(key)) return true;
   return 'trigger' in owner && TIMER_PARTICLE_KEYS.has(key);
 }
@@ -134,7 +134,8 @@ function payloadTriggerOf(node: AstNode): string | undefined {
     : undefined;
 }
 
-function triggerWordOf(owner: AstNode): string | undefined {
+/** The soft trigger word of an event statement, or `undefined` on any other node. */
+export function triggerWordOf(owner: AstNode): string | undefined {
   return 'trigger' in owner && typeof owner.trigger === 'string'
     ? owner.trigger
     : undefined;

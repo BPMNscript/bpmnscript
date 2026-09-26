@@ -189,6 +189,11 @@ describe('Semantic tokens - soft event words', () => {
       [KEYWORD, PLAIN, KEYWORD, PLAIN],
     ],
     ['a step named after a soft word stays plain', 'user <|input|>', [PLAIN]],
+    [
+      "a form field's type word is a keyword, its id is not",
+      'start S { form { <|amount|>: <|number|> "Weight" } }',
+      [PLAIN, KEYWORD],
+    ],
     ...SOFT_WORDS_AS_VAR_NAME.map((word): Row => [
       `\`var ${word}\` carries no token on the name`,
       `var <|${word}|>: string`,

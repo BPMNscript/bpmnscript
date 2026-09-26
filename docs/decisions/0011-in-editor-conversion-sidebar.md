@@ -45,7 +45,7 @@ A webview gives direct control over that layout and leaves room to grow it, for 
 
 The architecture is a two-layer split: a pure core (`conversion-core.ts`, no `vscode` import) and a thin VS Code adapter (`conversion.ts`).
 The core contains all interesting logic (severity gating, error classification, unsupported-element handling) and is unit-testable under vitest.
-The adapter owns only VS Code I/O: URI resolution, file reads and writes, `DiagnosticCollection` updates, overwrite confirmation, and opening the result.
+The adapter owns only VS Code I/O: URI resolution, file reads and writes, focusing the Problems panel, overwrite confirmation, and opening the result.
 The commands (`bpmnscript.compile`, `bpmnscript.decompile`, and `bpmnscript.openAndDecompile`, which picks a BPMN file and runs the decompile handler on it) are the single execution path.
 The sidebar and the command palette call the same commands with a URI argument, so behavior is identical across entry points.
 

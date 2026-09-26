@@ -1288,7 +1288,7 @@ describe('Parsing - sources the parser rejects', () => {
       `process p { if (a) { user A } else if (b) (asyncBefore: true) { user B } }`,
       [
         "Expecting token of type '{' but found `if`.",
-        "Expecting token of type '}' but found ``.",
+        "Expected '}' before the end of the file: a block is still open.",
       ],
     ],
     [

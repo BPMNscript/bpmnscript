@@ -31,8 +31,12 @@ const TEXTMATE_GRAMMAR = fileURLToPath(
   new URL('../syntaxes/bpmn-script.tmLanguage.json', import.meta.url),
 );
 
-/** `\b(a|b|c)\b` from the generated `keyword.control` pattern. */
-const ALTERNATION = /^\\b\((.*)\)\\b$/;
+/**
+ * `(?<![\w-])(a|b|c)(?![\w-])` from the generated `keyword.control` pattern,
+ * patched by `textmate-postprocess.mjs` so a hyphenated name (`invoice-start`)
+ * does not colour the part that collides with a keyword.
+ */
+const ALTERNATION = /^\(\?<!\[\\w-\]\)\((.*)\)\(\?!\[\\w-\]\)$/;
 
 function textMateKeywords(): string[] {
   let raw;
@@ -79,6 +83,62 @@ describe('lists that must not drift apart', () => {
       ...TASK_LISTENER_EVENTS,
     ];
     expect(listenerEvents.filter((event) => triggers.has(event))).toEqual([]);
+  });
+});
+
+function grammarPatterns(): { name?: string; match?: string }[] {
+  const raw = readFileSync(TEXTMATE_GRAMMAR, 'utf8');
+  return (JSON.parse(raw) as { patterns: { name?: string; match?: string }[] })
+    .patterns;
+}
+
+/** Every match of the named top-level pattern, tried as a JS `RegExp` (both
+ * engines agree on lookaround and the classes used here, the same assumption
+ * `injection-grammar.test.ts` makes for the extension's Oniguruma grammar). */
+function tokensOf(line: string, namePrefix: string): string[] {
+  const pattern = grammarPatterns().find((p) => p.name?.startsWith(namePrefix));
+  if (!pattern?.match) {
+    throw new Error(
+      `No ${namePrefix} pattern in the generated TextMate grammar.`,
+    );
+  }
+  return [...line.matchAll(new RegExp(pattern.match, 'g'))].map((m) => m[0]);
+}
+
+describe('the TextMate grammar scopes a line', () => {
+  test.each<[string, string, string[], string[], string[]]>([
+    [
+      'a hyphenated process name colours only the keyword',
+      'process invoice-start {',
+      ['process'],
+      [],
+      [],
+    ],
+    [
+      'a hyphenated step name colours only the keyword',
+      '  step end-of-day',
+      ['step'],
+      [],
+      [],
+    ],
+    [
+      'a hyphenated setting value colours only the keyword',
+      '  user for-review(assignee: x)',
+      ['user'],
+      [],
+      [],
+    ],
+    [
+      'numbers and operators get their own scope, a hyphenated digit gets none',
+      '  if (amount == 100 && count-2 > 0.5) {',
+      ['if'],
+      ['100', '0.5'],
+      ['==', '&&', '>'],
+    ],
+  ])('%s', (_title, line, keywords, numbers, operators) => {
+    expect(tokensOf(line, 'keyword.control')).toEqual(keywords);
+    expect(tokensOf(line, 'constant.numeric')).toEqual(numbers);
+    expect(tokensOf(line, 'keyword.operator')).toEqual(operators);
   });
 });
 

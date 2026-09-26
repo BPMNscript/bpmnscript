@@ -11,54 +11,38 @@ const mocks = vi.hoisted(() => ({
   showErrorMessage: vi.fn(),
   showInformationMessage: vi.fn(),
   showTextDocument: vi.fn(),
+  executeCommand: vi.fn(),
 }));
 
-vi.mock('vscode', () => {
-  class Range {
-    constructor(
-      public startLine: number,
-      public startCharacter: number,
-      public endLine: number,
-      public endCharacter: number,
-    ) {}
-  }
-  class Diagnostic {
-    constructor(
-      public range: Range,
-      public message: string,
-      public severity: number,
-    ) {}
-  }
-  return {
-    Range,
-    Diagnostic,
-    DiagnosticSeverity: { Error: 0, Warning: 1 },
-    Uri: {
-      file: (fsPath: string) => ({
-        fsPath,
-        toString: () => `file://${fsPath}`,
-      }),
+vi.mock('vscode', () => ({
+  Uri: {
+    file: (fsPath: string) => ({
+      fsPath,
+      toString: () => `file://${fsPath}`,
+    }),
+  },
+  window: {
+    activeTextEditor: undefined,
+    showWarningMessage: mocks.showWarningMessage,
+    showErrorMessage: mocks.showErrorMessage,
+    showInformationMessage: mocks.showInformationMessage,
+    showTextDocument: mocks.showTextDocument,
+    showOpenDialog: vi.fn(),
+  },
+  commands: {
+    executeCommand: mocks.executeCommand,
+  },
+  workspace: {
+    textDocuments: [],
+    fs: {
+      readFile: vi.fn().mockResolvedValue(new Uint8Array()),
+      writeFile: vi.fn().mockResolvedValue(undefined),
+      // Rejecting sends confirmOverwrite down its "nothing to overwrite"
+      // branch, so no row below hits the modal.
+      stat: vi.fn().mockRejectedValue(new Error('ENOENT')),
     },
-    window: {
-      activeTextEditor: undefined,
-      showWarningMessage: mocks.showWarningMessage,
-      showErrorMessage: mocks.showErrorMessage,
-      showInformationMessage: mocks.showInformationMessage,
-      showTextDocument: mocks.showTextDocument,
-      showOpenDialog: vi.fn(),
-    },
-    workspace: {
-      textDocuments: [],
-      fs: {
-        readFile: vi.fn().mockResolvedValue(new Uint8Array()),
-        writeFile: vi.fn().mockResolvedValue(undefined),
-        // Rejecting sends confirmOverwrite down its "nothing to overwrite"
-        // branch, so no row below hits the modal.
-        stat: vi.fn().mockRejectedValue(new Error('ENOENT')),
-      },
-    },
-  };
-});
+  },
+}));
 
 vi.mock('../src/extension/conversion-core.js', () => ({
   compileDslToBpmn: vi.fn(),
@@ -81,22 +65,6 @@ import {
   decompileCommand,
 } from '../src/extension/conversion.js';
 
-// `set` is overloaded in the real API, so the spy is declared with the
-// two-argument form the adapter uses and the recorded calls stay readable.
-function fakeDiagnosticCollection() {
-  const set =
-    vi.fn<(uri: vscode.Uri, published: vscode.Diagnostic[]) => void>();
-  const cleared = vi.fn<(uri: vscode.Uri) => void>();
-  return {
-    collection: {
-      set,
-      delete: cleared,
-    } as unknown as vscode.DiagnosticCollection,
-    set,
-    cleared,
-  };
-}
-
 function occurrences(haystack: string, needle: string): number {
   return haystack.split(needle).length - 1;
 }
@@ -112,6 +80,18 @@ function notifications(): Record<'info' | 'warning' | 'error', string[]> {
   };
 }
 
+/** The fsPath of every document the run opened, in call order. */
+function shownDocuments(): string[] {
+  return mocks.showTextDocument.mock.calls.map(
+    (call) => (call[0] as vscode.Uri).fsPath,
+  );
+}
+
+/** The first argument of every editor command the run executed. */
+function executedCommands(): string[] {
+  return mocks.executeCommand.mock.calls.map((call) => String(call[0]));
+}
+
 // Neither message names its own element: they say "here" and leave the id to
 // the caller, so unrendered they arrive as one line repeated.
 const SAME_WORDING =
@@ -124,21 +104,21 @@ type Expected = {
   error?: string[];
   /** The uri the command returns, or undefined where it gives up. */
   returns: string | undefined;
-  /** The diagnostics published per `set` call, `[]` where none is expected. */
-  published?: vscode.Diagnostic[][];
+  /** Every document opened via showTextDocument, in call order. */
+  shown?: string[];
+  /** Every editor command executed, in call order. */
+  executed?: string[];
 };
 
 type Row = readonly [
   title: string,
   command: 'compile' | 'decompile',
-  result: CompileResult | DecompileResult,
+  /** Basename of the source file the row hands the command. */
+  sourceName: string,
+  // undefined means the guard refuses the file before the core ever runs.
+  result: CompileResult | DecompileResult | undefined,
   expected: Expected,
 ];
-
-const SOURCE_NAME = {
-  compile: 'example.bpmnscript',
-  decompile: 'example.bpmn',
-} as const;
 
 describe('conversion commands: what the author is shown', () => {
   beforeEach(() => {
@@ -149,6 +129,7 @@ describe('conversion commands: what the author is shown', () => {
     [
       'a decompile that dropped something names the file once and the dropped item after it',
       'decompile',
+      'example.bpmn',
       {
         ok: true,
         output: 'process P { start S end E }',
@@ -168,11 +149,13 @@ describe('conversion commands: what the author is shown', () => {
             "Task1: The 'formHandlerClass' setting on 'Task1' was not imported",
         ],
         returns: '/tmp/example.bpmnscript',
+        shown: ['/tmp/example.bpmnscript'],
       },
     ],
     [
       'two same-worded warnings are told apart by the element each is about',
       'decompile',
+      'example.bpmn',
       {
         ok: true,
         output: 'process P { start S end E }',
@@ -196,11 +179,13 @@ describe('conversion commands: what the author is shown', () => {
             `CheckStock: ${SAME_WORDING}; ReserveGoods: ${SAME_WORDING}`,
         ],
         returns: '/tmp/example.bpmnscript',
+        shown: ['/tmp/example.bpmnscript'],
       },
     ],
     [
       'a refused construct is reported as an error naming the file once, and nothing is written',
       'decompile',
+      'example.bpmn',
       {
         ok: false,
         kind: 'unsupported',
@@ -215,8 +200,9 @@ describe('conversion commands: what the author is shown', () => {
       },
     ],
     [
-      'a validation failure reports the count and publishes the diagnostics to the Problems panel',
+      'a validation failure focuses the Problems panel and reports the count',
       'compile',
+      'example.bpmnscript',
       {
         ok: false,
         kind: 'validation',
@@ -237,52 +223,89 @@ describe('conversion commands: what the author is shown', () => {
           'BPMNscript: "example.bpmnscript" has 1 compilation error(s). See the Problems panel.',
         ],
         returns: undefined,
-        published: [
-          [
-            new vscode.Diagnostic(
-              new vscode.Range(0, 0, 0, 1),
-              'bad',
-              vscode.DiagnosticSeverity.Error,
-            ),
-          ],
-        ],
+        shown: ['/tmp/example.bpmnscript'],
+        executed: ['workbench.action.problems.focus'],
       },
     ],
     [
       'an unexpected failure is reported as an error naming the file once',
       'compile',
+      'example.bpmnscript',
       { ok: false, kind: 'error', message: 'boom' },
       {
         error: ['BPMNscript: Failed to compile "example.bpmnscript": boom'],
         returns: undefined,
       },
     ],
-  ])('%s', async (_title, command, result, expected) => {
-    const diagnostics = fakeDiagnosticCollection();
+    [
+      'compile refuses a file that is not a script',
+      'compile',
+      'example.bpmn',
+      undefined,
+      {
+        warning: [
+          'BPMNscript: "example.bpmn" is not a .bpmnscript file; ' +
+            'use "Decompile to BPMNscript" for it.',
+        ],
+        returns: undefined,
+      },
+    ],
+    [
+      'decompile refuses a file that is not BPMN',
+      'decompile',
+      'example.bpmnscript',
+      undefined,
+      {
+        warning: [
+          'BPMNscript: "example.bpmnscript" is not a .bpmn file; ' +
+            'use "Compile to BPMN" for it.',
+        ],
+        returns: undefined,
+      },
+    ],
+    [
+      'compile takes an upper-case extension',
+      'compile',
+      'ORDER.BPMNSCRIPT',
+      { ok: true, output: 'process P { start S end E }' },
+      {
+        info: ['BPMNscript: Compiled "ORDER.BPMNSCRIPT" -> "ORDER.bpmn"'],
+        returns: '/tmp/ORDER.bpmn',
+        shown: ['/tmp/ORDER.bpmn'],
+      },
+    ],
+  ])('%s', async (_title, command, sourceName, result, expected) => {
     let handler: (uri?: vscode.Uri) => Promise<vscode.Uri | undefined>;
     if (command === 'compile') {
-      vi.mocked(compileDslToBpmn).mockResolvedValue(result as CompileResult);
-      handler = compileCommand(diagnostics.collection, '0.0.1');
+      if (result) {
+        vi.mocked(compileDslToBpmn).mockResolvedValue(result as CompileResult);
+      }
+      handler = compileCommand('0.0.1');
     } else {
-      vi.mocked(decompileBpmnToDsl).mockResolvedValue(
-        result as DecompileResult,
-      );
-      handler = decompileCommand(diagnostics.collection);
+      if (result) {
+        vi.mocked(decompileBpmnToDsl).mockResolvedValue(
+          result as DecompileResult,
+        );
+      }
+      handler = decompileCommand();
     }
 
-    const sourceName = SOURCE_NAME[command];
     const returned = await handler(vscode.Uri.file(`/tmp/${sourceName}`));
 
-    const { info = [], warning = [], error = [] } = expected;
+    const {
+      info = [],
+      warning = [],
+      error = [],
+      shown = [],
+      executed = [],
+    } = expected;
     expect(returned?.fsPath).toBe(expected.returns);
     expect(notifications()).toEqual({ info, warning, error });
+    expect(shownDocuments()).toEqual(shown);
+    expect(executedCommands()).toEqual(executed);
 
-    // Stale diagnostics go on every outcome; only the validation branch fills
-    // the panel again.
-    expect(diagnostics.cleared).toHaveBeenCalledTimes(1);
-    expect(
-      diagnostics.set.mock.calls.map(([, published]) => published),
-    ).toEqual(expected.published ?? []);
+    const core = command === 'compile' ? compileDslToBpmn : decompileBpmnToDsl;
+    expect(core).toHaveBeenCalledTimes(result === undefined ? 0 : 1);
 
     // The file is named once per line. The success line is the exception: it
     // names the file it read and the file it wrote.

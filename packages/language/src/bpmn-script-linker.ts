@@ -1,9 +1,11 @@
 /**
- * Boundary-explanation linker for `goto` and for an `on` handler's host: where
- * the name exists elsewhere in the process, Langium's stock "Could not resolve
- * reference" is replaced by a message naming the boundary crossed. A validator
- * could not do the job: it only ever sees a `goto` that already resolved. An
- * undeclared code is reworded here for the same reason.
+ * Boundary-explanation linker for `goto` and for an `on` handler's host:
+ * Langium's stock resolution failure, which names the grammar type
+ * (`Statement`) rather than anything the author wrote, is replaced by a
+ * message naming the boundary crossed where the name exists elsewhere in the
+ * process, or by a plain "no step named" message where it exists nowhere at
+ * all. A validator could not do the job: it only ever sees a `goto` that
+ * already resolved. An undeclared code is reworded here for the same reason.
  *
  * Rewording is all a linker can do. `doLink` stores the error on the reference
  * and lists the reference either way, so whether the error becomes a diagnostic
@@ -145,10 +147,15 @@ export class BpmnScriptLinker extends DefaultLinker {
     const isGotoTarget =
       isGotoStatement(source) && refInfo.property === 'target';
     if (isHost || isGotoTarget) {
+      const name = refInfo.reference.$refText;
       const process = AstUtils.getContainerOfType(source, isProcess);
-      const target = process
-        ? findNamedStatement(process, refInfo.reference.$refText)
-        : undefined;
+      const target = process ? findNamedStatement(process, name) : undefined;
+      if (process && !target) {
+        const message = isHost
+          ? `No step named '${name}' in this process to attach to.`
+          : `No step named '${name}' in this process.`;
+        return { info: refInfo, message };
+      }
       const sourceContainer = enclosingFlowContainer(source);
       const located =
         target && sourceContainer

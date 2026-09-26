@@ -17,19 +17,15 @@ let client: LanguageClient;
 export async function activate(
   context: vscode.ExtensionContext,
 ): Promise<void> {
-  const convDiagnostics =
-    vscode.languages.createDiagnosticCollection('bpmnscript');
-  context.subscriptions.push(convDiagnostics);
-
   const extensionVersion = String(
     (context.extension.packageJSON as { version?: string }).version ?? '0.0.1',
   );
 
-  const decompile = decompileCommand(convDiagnostics);
+  const decompile = decompileCommand();
   context.subscriptions.push(
     vscode.commands.registerCommand(
       'bpmnscript.compile',
-      compileCommand(convDiagnostics, extensionVersion),
+      compileCommand(extensionVersion),
     ),
     vscode.commands.registerCommand('bpmnscript.decompile', decompile),
     vscode.commands.registerCommand(
@@ -92,7 +88,7 @@ async function startLanguageClient(
 
   const client = new LanguageClient(
     'bpmn-script',
-    'BpmnScript',
+    'BPMNscript',
     serverOptions,
     clientOptions,
   );

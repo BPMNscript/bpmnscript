@@ -38,6 +38,13 @@ const VAR_KEYWORD_TOKEN_NAME = 'var';
 const FOR_KEYWORD_TOKEN_NAME = 'for';
 
 /**
+ * Chevrotain names the end-of-input token `EOF`; its image is the empty
+ * string, so the stock message reads "found ``" where an unclosed block ran
+ * out of source before its closing brace.
+ */
+const EOF_TOKEN_NAME = 'EOF';
+
+/**
  * A code declaration is the one header declaration opening with a plain `ID`,
  * so a mistyped statement keyword in the header region is parsed as one and
  * fails at its name slot, where Chevrotain's raw expected-token list says
@@ -85,6 +92,9 @@ export class BpmnScriptParserErrorMessageProvider extends LangiumParserErrorMess
       if (actual.tokenType.name === FOR_KEYWORD_TOKEN_NAME) {
         return this.repeatClausePlacementMessage();
       }
+      if (actual.tokenType.name === EOF_TOKEN_NAME) {
+        return this.unclosedBlockMessage();
+      }
     }
     if (expected.name === ID_TOKEN_NAME) {
       if (this.isReservedWord(actual.tokenType.name)) {
@@ -115,6 +125,10 @@ export class BpmnScriptParserErrorMessageProvider extends LangiumParserErrorMess
       'The statement before it does not take one; move the clause onto ' +
       'the step that should.'
     );
+  }
+
+  private unclosedBlockMessage(): string {
+    return "Expected '}' before the end of the file: a block is still open.";
   }
 
   private declarationOrStepMessage(word: string): string {

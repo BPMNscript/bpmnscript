@@ -41,6 +41,8 @@ Thumbs.db
 
 # VS Code extension packaging
 *.vsix
+packages/extension/LICENSE
+packages/extension/CHANGELOG.md
 
 # Environment
 .env

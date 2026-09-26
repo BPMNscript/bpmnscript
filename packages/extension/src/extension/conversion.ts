@@ -5,7 +5,6 @@ import {
   decompileBpmnToDsl,
   swapExtension,
 } from './conversion-core.js';
-import type { ConvDiagnostic } from './conversion-core.js';
 
 function resolveSourceUri(uri?: vscode.Uri): vscode.Uri | undefined {
   return uri ?? vscode.window.activeTextEditor?.document.uri;
@@ -38,18 +37,7 @@ async function confirmOverwrite(outputUri: vscode.Uri): Promise<boolean> {
   return answer === 'Overwrite';
 }
 
-function toVsDiagnostic(d: ConvDiagnostic): vscode.Diagnostic {
-  return new vscode.Diagnostic(
-    new vscode.Range(d.line, d.character, d.endLine, d.endCharacter),
-    d.message,
-    d.severity === 1
-      ? vscode.DiagnosticSeverity.Error
-      : vscode.DiagnosticSeverity.Warning,
-  );
-}
-
 export function compileCommand(
-  diagnostics: vscode.DiagnosticCollection,
   extensionVersion: string,
 ): (uri?: vscode.Uri) => Promise<vscode.Uri | undefined> {
   return async (uri?: vscode.Uri): Promise<vscode.Uri | undefined> => {
@@ -62,12 +50,18 @@ export function compileCommand(
     }
 
     const sourceFileName = path.basename(sourceUri.fsPath);
+
+    if (path.extname(sourceUri.fsPath).toLowerCase() !== '.bpmnscript') {
+      await vscode.window.showWarningMessage(
+        `BPMNscript: "${sourceFileName}" is not a .bpmnscript file; ` +
+          'use "Decompile to BPMNscript" for it.',
+      );
+      return undefined;
+    }
+
     const text = await readText(sourceUri);
 
     const result = await compileDslToBpmn(text, extensionVersion);
-
-    // Cleared on every outcome; the validation branch repopulates.
-    diagnostics.delete(sourceUri);
 
     if (result.ok) {
       const outputPath = swapExtension(sourceUri.fsPath, '.bpmn');
@@ -96,7 +90,11 @@ export function compileCommand(
 
       return outputUri;
     } else if (result.kind === 'validation') {
-      diagnostics.set(sourceUri, result.diagnostics.map(toVsDiagnostic));
+      // The language client already publishes these same diagnostics for
+      // every workspace .bpmnscript file; showing the source and focusing
+      // Problems is enough, a second collection would only duplicate them.
+      await vscode.window.showTextDocument(sourceUri);
+      await vscode.commands.executeCommand('workbench.action.problems.focus');
       await vscode.window.showErrorMessage(
         `BPMNscript: "${sourceFileName}" has ${result.diagnostics.length} compilation error(s). See the Problems panel.`,
       );
@@ -110,9 +108,9 @@ export function compileCommand(
   };
 }
 
-export function decompileCommand(
-  diagnostics: vscode.DiagnosticCollection,
-): (uri?: vscode.Uri) => Promise<vscode.Uri | undefined> {
+export function decompileCommand(): (
+  uri?: vscode.Uri,
+) => Promise<vscode.Uri | undefined> {
   return async (uri?: vscode.Uri): Promise<vscode.Uri | undefined> => {
     const sourceUri = resolveSourceUri(uri);
     if (!sourceUri) {
@@ -123,11 +121,18 @@ export function decompileCommand(
     }
 
     const sourceFileName = path.basename(sourceUri.fsPath);
+
+    if (path.extname(sourceUri.fsPath).toLowerCase() !== '.bpmn') {
+      await vscode.window.showWarningMessage(
+        `BPMNscript: "${sourceFileName}" is not a .bpmn file; ` +
+          'use "Compile to BPMN" for it.',
+      );
+      return undefined;
+    }
+
     const text = await readText(sourceUri);
 
     const result = await decompileBpmnToDsl(text);
-
-    diagnostics.delete(sourceUri);
 
     if (result.ok) {
       const outputPath = swapExtension(sourceUri.fsPath, '.bpmnscript');

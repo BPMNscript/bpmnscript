@@ -83,6 +83,31 @@ process p {
     );
   });
 
+  test('a repeat element enters the table as any beside the loop counters', async () => {
+    const process = await parseProcess(`
+process p {
+  var items: json
+  user U for each item in items
+}
+`);
+    expect(newProvider().collect(process)).toEqual(
+      new Map([
+        ['items', { name: 'items', type: 'json' }],
+        ['item', { name: 'item', type: 'any' }],
+        ['nrOfInstances', { name: 'nrOfInstances', type: 'number' }],
+        [
+          'nrOfActiveInstances',
+          { name: 'nrOfActiveInstances', type: 'number' },
+        ],
+        [
+          'nrOfCompletedInstances',
+          { name: 'nrOfCompletedInstances', type: 'number' },
+        ],
+        ['loopCounter', { name: 'loopCounter', type: 'number' }],
+      ]),
+    );
+  });
+
   test('collect() answers membership and type queries via the returned table', async () => {
     const process = await parseProcess(`
 process p {

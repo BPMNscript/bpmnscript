@@ -28,9 +28,9 @@
   },
   "scripts": {
     "clean": "shx rm -fr *.tsbuildinfo out",
-    "build": "langium generate && tsc -p tsconfig.src.json",
+    "build": "npm run langium:generate && tsc -p tsconfig.src.json",
     "build:clean": "npm run clean && npm run build",
-    "langium:generate": "langium generate",
+    "langium:generate": "langium generate && node textmate-postprocess.mjs",
     "langium:watch": "langium generate --watch",
     "typecheck": "tsc -b tsconfig.test.json",
     "test": "vitest run"

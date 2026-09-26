@@ -159,7 +159,7 @@ const MODEL_REFUSAL = {
     "A cancel end belongs directly inside an 'attempt' block",
   undoOutsideBlock: 'An undo block belongs directly inside the',
   hostOutsideContainer:
-    "Could not resolve reference to Statement named 'Elsewhere'",
+    "No step named 'Elsewhere' in this process to attach to.",
   orphanStep: 'This step can never run',
   secondDefaultStart: "this is the process's second plain or timer start",
   deadElse: 'could never run',
