@@ -4,7 +4,13 @@ import { parseHelper, validationHelper } from 'langium/test';
 import { createBpmnScriptServices } from '@bpmn-script/language';
 import type { Model } from '@bpmn-script/language';
 
-import { astToIr, irToDsl, irToXml, xmlToIr } from '@bpmn-script/transform';
+import {
+  astToIr,
+  irToDsl,
+  irToXml,
+  LayoutError,
+  xmlToIr,
+} from '@bpmn-script/transform';
 import type { BpmnProcess, ImportWarning } from '@bpmn-script/transform';
 
 const services = createBpmnScriptServices(EmptyFileSystem);
@@ -58,10 +64,14 @@ export interface RoundTripRun {
 
 // The cli's build.ts and the extension's conversion-core.ts run the same
 // astToIr -> irToXml chain, each with its own failure reporting; here a
-// failure throws.
+// failure throws. Like both, a layout failure keeps the diagram-less XML,
+// since the model it carries is complete.
 export async function roundTrip(source: string): Promise<RoundTripRun> {
   const ir1 = astToIr(await parseToAst(source));
-  const xml = await irToXml(ir1);
+  const xml = await irToXml(ir1).catch((e: unknown) => {
+    if (e instanceof LayoutError) return e.xml;
+    throw e;
+  });
   const { ir: ir2, warnings } = await xmlToIr(xml);
   const dsl = printDsl(ir2);
   const ir3 = astToIr(await parseToAst(dsl));

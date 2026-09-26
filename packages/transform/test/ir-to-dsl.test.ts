@@ -1655,6 +1655,34 @@ describe('irToDsl: link pairs and named catches', () => {
     expect(dsl).toContain('await message Wait("M")\n  await message("M")');
   });
 
+  it('of several throws of one link name, none takes the catch along, so no throw strands behind the process end', async () => {
+    const ir = await reDesugar(
+      'process p { var c: any var x: any  start S  if (c) { if (x) { emit link("L") } else { step Q  emit link("L") }  await link("L")  step B }  step Z  end Done }',
+    );
+    expect(await printed(ir)).toBe(
+      [
+        'process p {',
+        '  var c: any',
+        '  var x: any',
+        '  start S',
+        '  if (c) {',
+        '    if (x) {',
+        '      emit link("L")',
+        '    }',
+        '    step Q',
+        '    emit link("L")',
+        '  }',
+        '  step Z',
+        '  end Done',
+        '  await link("L")',
+        '  step B',
+        '  goto Z',
+        '}',
+        '',
+      ].join('\n'),
+    );
+  });
+
   it('prints a goto into a named await as a jump, not a dropped edge', async () => {
     const ir = minimalProcess(
       [
@@ -2331,8 +2359,8 @@ describe('irToDsl: ids the script cannot spell print under a minted name', () =>
 
 // A synthesized plain end left out anywhere but its block's tail would wire its
 // predecessor into whatever follows, so it prints under its reserved id and is
-// reported. The compiler never mints one where rows 2 and 3 put it, so those
-// rows compile an authored end there and rename it afterwards.
+// reported. The compiler never mints one where the rows given as source put
+// it, so those rows compile an authored end there and rename it afterwards.
 describe("irToDsl: a synthesized plain end that is not its block's tail", () => {
   const start = (id: string): FlowElement => ({ kind: 'startEvent', id });
   const step = (id: string): FlowElement => ({ kind: 'task', id });
@@ -2368,21 +2396,14 @@ describe("irToDsl: a synthesized plain end that is not its block's tail", () => 
       [],
     ],
     [
-      // A link catch is an entry of its own, so its chain is never walked
-      // inside the guard the way a chain the split owns is.
-      "a plain end whose chain a link catch's chain follows prints before that catch, and its label rides along",
-      'process p { start S  step A  if (x) { emit link L("x") }  step C  end Done(label: "Order filed")  await link M("x")  step B  end Fin }',
+      "a plain end whose chain a second start's chain follows prints before that start, and its label rides along",
+      'process p { start S  step A  end Done(label: "Order filed")  start T message("M")  step B  end Fin }',
       [
         'process p {',
-        '  var x: any',
         '  start S',
         '  step A',
-        '  if (x) {',
-        '    emit link L("x")',
-        '  }',
-        '  step C',
         '  end EndEvent_p(label: "Order filed")',
-        '  await link M("x")',
+        '  start T message("M")',
         '  step B',
         '  end Fin',
         '}',
@@ -2407,7 +2428,26 @@ describe("irToDsl: a synthesized plain end that is not its block's tail", () => 
       [['refusedStatement', 'EndEvent_p']],
     ],
     [
-      'of three chains, the synthesized end closing the first prints in place while the authored ends print as any end does',
+      'a link catch whose chain never reaches the plain end prints behind its throw, so that end stays the tail',
+      'process p { start S  step A  if (x) { emit link T("L") }  step C  end Done  await link C2("L")  step B  end Fin }',
+      [
+        'process p {',
+        '  var x: any',
+        '  start S',
+        '  step A',
+        '  if (x) {',
+        '    emit link T("L")',
+        '    await link C2("L")',
+        '    step B',
+        '    end Fin',
+        '  }',
+        '  step C',
+        '}',
+      ],
+      [],
+    ],
+    [
+      'of three chains, the one whose own end is the synthesized tail prints last so that end stays implicit',
       // The second and third starts carry a trigger: the validator refuses a
       // second plain start, as `BpmnParse.selectInitial` does.
       minimalProcess(
@@ -2433,18 +2473,17 @@ describe("irToDsl: a synthesized plain end that is not its block's tail", () => 
       ),
       [
         'process p {',
-        '  start S1',
-        '  step A',
-        '  end EndEvent_p',
         '  start S2 message("M2")',
         '  step B',
         '  end E2',
         '  start S3 message("M3")',
         '  step C',
         '  end E3',
+        '  start S1',
+        '  step A',
         '}',
       ],
-      [['refusedStatement', 'EndEvent_p']],
+      [],
     ],
   ] as const)('%s', async (_title, fixture, source, reports) => {
     const ir =
@@ -2632,8 +2671,8 @@ describe('irToDsl: routes leaving a loop beside the two it is built from', () =>
       'pre-test',
       PRE_TEST_IR,
       'process p {\n' +
-        '  var more: any\n' +
         '  var escalate: any\n' +
+        '  var more: any\n' +
         '  start S\n' +
         '  while (more) {\n' +
         '    user Work\n' +
@@ -2650,8 +2689,8 @@ describe('irToDsl: routes leaving a loop beside the two it is built from', () =>
       'post-test',
       POST_TEST_IR,
       'process p {\n' +
-        '  var rework: any\n' +
         '  var escalate: any\n' +
+        '  var rework: any\n' +
         '  start S\n' +
         '  do {\n' +
         '    user Review\n' +
@@ -2769,7 +2808,7 @@ describe('irToDsl: a split inside a loop body whose every route is conditioned',
         ['Escalate', '${escalated}'],
       ]),
       loopHead(
-        '  var approved: any\n  var escalated: any\n  var clarified: any\n',
+        '  var approved: any\n  var clarified: any\n  var escalated: any\n',
       ) +
         '    if (approved) {\n' +
         '      goto Pay\n' +
@@ -2812,9 +2851,9 @@ describe('irToDsl: a split inside a loop body whose every route is conditioned',
 });
 
 /**
- * A step whose two routes end apart, so each keeps its edge as a jump, and the
- * second lands on a one-way gateway `G -> R`: a gateway cannot be named, so
- * the jump forwards through it to the real successor.
+ * A step whose two routes both reach `E`, so each keeps its edge as a jump,
+ * and the second lands on a one-way gateway `G -> R`: a gateway cannot be
+ * named, so the jump forwards through it to the real successor.
  */
 const passThroughIr = (
   kind: 'exclusiveGateway' | 'inclusiveGateway' | 'eventBasedGateway',
@@ -2827,14 +2866,13 @@ const passThroughIr = (
       { kind, id },
       { kind: 'userTask', id: 'R' },
       { kind: 'endEvent', id: 'E' },
-      { kind: 'endEvent', id: 'E2' },
     ],
     [
       edge('S', 'A'),
       edge('A', 'E'),
       edge('A', id),
       edge(id, 'R'),
-      edge('R', 'E2'),
+      edge('R', 'E'),
     ],
   );
 
@@ -3370,7 +3408,7 @@ describe('irToDsl: engine attributes', () => {
   });
 });
 
-/** A step whose two routes end apart, so the one landing on the end keeps its edge as a jump. */
+/** A step whose two routes both reach the end, so the one landing on it keeps its edge as a jump. */
 const jumpToEndIr = (
   end: Partial<Omit<Extract<FlowElement, { kind: 'endEvent' }>, 'kind'>>,
 ): BpmnProcess => {
@@ -3381,13 +3419,12 @@ const jumpToEndIr = (
       { kind: 'userTask', id: 'A' },
       { kind: 'userTask', id: 'B' },
       { kind: 'endEvent', id, ...attrs },
-      { kind: 'endEvent', id: 'E2' },
     ],
     [
       { id: 'F1', sourceRef: 'S', targetRef: 'A' },
       { id: 'F2', sourceRef: 'A', targetRef: id },
       { id: 'F3', sourceRef: 'A', targetRef: 'B' },
-      { id: 'F4', sourceRef: 'B', targetRef: 'E2' },
+      { id: 'F4', sourceRef: 'B', targetRef: id },
     ],
   );
 };
@@ -3445,11 +3482,11 @@ describe('irToDsl: whether a synthesized terminal prints', () => {
     ],
     ['nothing on an end', 'end', {}, null, []],
     [
-      'a label alone on an end, a label not being printable content',
+      'a label alone on an end, which nothing else can carry, forces the print',
       'end',
       { name: 'Order Filed' },
-      null,
-      [],
+      'end EndEvent_p(label: "Order Filed")',
+      ['mintedId'],
     ],
     [
       'an engine attribute on a start',
@@ -3492,6 +3529,31 @@ describe('irToDsl: whether a synthesized terminal prints', () => {
       }
     },
   );
+
+  // At the body's tail no jump or second chain forces the print by
+  // position, so the name alone must.
+  it('keeps its label at the body tail, the same as one forced to print off the tail', () => {
+    const ir = minimalProcess(
+      [
+        { kind: 'startEvent', id: 'S' },
+        { kind: 'userTask', id: 'A' },
+        { kind: 'endEvent', id: 'EndEvent_p', name: 'Order filed' },
+      ],
+      flowChain('S', 'A', 'EndEvent_p'),
+    );
+    const { source, warnings } = printDsl(ir);
+    expect(source).toBe(
+      [
+        'process p {',
+        '  start S',
+        '  user A',
+        '  end EndEvent_p(label: "Order filed")',
+        '}',
+        '',
+      ].join('\n'),
+    );
+    expectReports(warnings, ['refusedStatement', 'EndEvent_p']);
+  });
 });
 
 describe('irToDsl: input/output parameters', () => {
@@ -4138,7 +4200,7 @@ describe('irToDsl: repeated activities', () => {
 // binding, an io parameter, an element variable or a repetition's engine
 // counters already type.
 describe('irToDsl: the header declares every variable the body reads bare', () => {
-  it('declares each bare read once, typed any, in the order it appears', async () => {
+  it('declares each bare read once, typed any, in name order', async () => {
     const ir = minimalProcess(
       [
         {
@@ -4204,7 +4266,7 @@ describe('irToDsl: the header declares every variable the body reads bare', () =
 
     const dsl = await printed(ir);
     expect(dsl.split('\n').filter((line) => line.startsWith('  var '))).toEqual(
-      ['  var count: any', '  var source: any', '  var flag: any'],
+      ['  var count: any', '  var flag: any', '  var source: any'],
     );
     const { diagnostics } = await validate(dsl);
     expect(diagnostics.map((d) => d.message)).toEqual([]);
@@ -4807,22 +4869,68 @@ describe('irToDsl: several starts entering one step', () => {
   });
 });
 
+/** A parallel fork into `X` and `Y` with no merge, `rest` the flows after them. */
+const unjoinedForkIr = (
+  elements: FlowElement[],
+  rest: SequenceFlow[],
+): BpmnProcess =>
+  minimalProcess(
+    [
+      { kind: 'startEvent', id: 'S' },
+      { kind: 'parallelGateway', id: 'Gateway_p_1_fork' },
+      ...elements,
+    ],
+    [
+      edge('S', 'Gateway_p_1_fork'),
+      edge('Gateway_p_1_fork', 'X'),
+      edge('Gateway_p_1_fork', 'Y'),
+      ...rest,
+    ],
+  );
+
 describe('warnings: a split the script has no form for', () => {
-  // A fork with nothing to rejoin at: every edge keeps a jump, so nothing is
-  // dropped and this report is the only trace that the split itself is gone.
-  it('reports the fork it wrote as jumps, and drops no edge doing it', async () => {
-    const ir = minimalProcess(
+  it('prints a fork whose routes each run to an end of their own as a parallel block, and reports nothing', async () => {
+    const ir = unjoinedForkIr(
       [
-        { kind: 'startEvent', id: 'S' },
-        { kind: 'parallelGateway', id: 'Gateway_p_1_fork' },
         { kind: 'endEvent', id: 'X' },
-        { kind: 'endEvent', id: 'Y' },
+        { kind: 'userTask', id: 'Y' },
+        { kind: 'endEvent', id: 'Z' },
       ],
+      [edge('Y', 'Z')],
+    );
+
+    expect(await expectIdempotent(ir)).toBe(
       [
-        edge('S', 'Gateway_p_1_fork'),
-        edge('Gateway_p_1_fork', 'X'),
-        edge('Gateway_p_1_fork', 'Y'),
+        'process p {',
+        '  start S',
+        '  parallel {',
+        '    {',
+        '      end X',
+        '    }',
+        '    {',
+        '      user Y',
+        '      end Z',
+        '    }',
+        '  }',
+        '}',
+        '',
+      ].join('\n'),
+    );
+    expect(printDsl(ir).warnings).toEqual([]);
+  });
+
+  // Both routes run into `C` with no merge to rejoin at: every edge keeps a
+  // jump, so nothing is dropped and this report is the only trace that the
+  // split itself is gone.
+  it('reports the fork it wrote as jumps, and drops no edge doing it', async () => {
+    const ir = unjoinedForkIr(
+      [
+        { kind: 'userTask', id: 'X' },
+        { kind: 'userTask', id: 'Y' },
+        { kind: 'userTask', id: 'C' },
+        { kind: 'endEvent', id: 'E' },
       ],
+      [edge('X', 'C'), edge('Y', 'C'), edge('C', 'E')],
     );
     const { warnings } = printDsl(ir);
     // Each jump in a branch of its own, so the source still compiles: a second
@@ -4837,6 +4945,81 @@ describe('warnings: a split the script has no form for', () => {
     );
     expect(source).not.toContain('dropped edge');
     expectReports(warnings, ['degradedSplit', 'Gateway_p_1_fork']);
+  });
+
+  // A block branch is entered only through its head, so a message start
+  // running into `Cont` would jump into a branch from outside it.
+  it('reports a step split as jumps when another entry runs into one of its routes', async () => {
+    const ir = minimalProcess(
+      [
+        { kind: 'startEvent', id: 'S' },
+        {
+          kind: 'startEvent',
+          id: 'S2',
+          eventDefinition: { kind: 'message', messageName: 'm' },
+        },
+        { kind: 'userTask', id: 'T1' },
+        { kind: 'userTask', id: 'Cont' },
+        { kind: 'endEvent', id: 'E' },
+        { kind: 'endEvent', id: 'E2' },
+      ],
+      [
+        edge('S', 'T1'),
+        edge('T1', 'Cont'),
+        edge('Cont', 'E'),
+        edge('T1', 'E2'),
+        edge('S2', 'Cont'),
+      ],
+    );
+    const source = await printed(ir);
+
+    expect(source).not.toContain('parallel {');
+    expect(realReachability(await reDesugar(source))).toEqual(
+      realReachability(ir),
+    );
+    expectReports(printDsl(ir).warnings, ['degradedSplit', 'T1']);
+  });
+
+  it('prints a step split whose route loops straight back to the step as a parallel block with a goto', async () => {
+    const ir = minimalProcess(
+      [
+        { kind: 'startEvent', id: 'S' },
+        { kind: 'userTask', id: 'T1' },
+        { kind: 'userTask', id: 'Cont' },
+        { kind: 'endEvent', id: 'E' },
+      ],
+      [
+        edge('S', 'T1'),
+        edge('T1', 'T1'),
+        edge('T1', 'Cont'),
+        edge('Cont', 'E'),
+      ],
+    );
+
+    const { source, warnings } = printDsl(ir);
+    const again = await reDesugar(await printed(ir));
+
+    expect(source).toBe(
+      [
+        'process p {',
+        '  start S',
+        '  user T1',
+        '  parallel {',
+        '    {',
+        '      goto T1',
+        '    }',
+        '    {',
+        '      user Cont',
+        '      end E',
+        '    }',
+        '  }',
+        '}',
+        '',
+      ].join('\n'),
+    );
+    expect(warnings).toEqual([]);
+    expect(realReachability(again)).toEqual(realReachability(ir));
+    expect(irToDsl(again)).toBe(source);
   });
 });
 
@@ -5823,12 +6006,22 @@ describe('warnings: a condition the script has nowhere to write', () => {
     },
   );
 
-  // A split that names a fallback is never left without a route, so the run
-  // carries on by another one instead of failing; the loop spends the fallback
-  // as its closing brace, leaving the weighed route to print as plain flow.
-  it.each(['exclusiveGateway', 'inclusiveGateway'] as const)(
-    'reports a weighed route out of a %s that names a fallback as a run that goes on elsewhere',
-    async (kind) => {
+  // A split that names a fallback is never left without a route, and the loop
+  // spends that fallback as its closing brace. An exclusive split keeps its
+  // weighed route as an `if` that falls through to the brace; an inclusive
+  // one runs its weighed route as plain flow instead (emitFork, not the `if`
+  // form), so the run carrying on by the fallback is reported separately.
+  it.each([
+    ['an exclusive split keeps it as an if', 'exclusiveGateway', true, []],
+    [
+      'an inclusive split reports a run that goes on elsewhere',
+      'inclusiveGateway',
+      false,
+      [['divertedRun', 'Split']],
+    ],
+  ] as const)(
+    'a weighed route beside a fallback that closes a loop: %s',
+    async (_title, kind, keepsIf, reports) => {
       const ir = loopIntoSplitIr(
         { kind, id: 'Split', defaultFlowId: 'Flow_again' },
         { id: 'Flow_again' },
@@ -5837,8 +6030,8 @@ describe('warnings: a condition the script has nowhere to write', () => {
       const { source, warnings } = printDsl(ir);
 
       expect(source).toContain('while (again) {');
-      expect(bodyOf(source)).not.toContain('settled');
-      expectReports(warnings, ['divertedRun', 'Split']);
+      expect(bodyOf(source).includes('settled')).toBe(keepsIf);
+      expectReports(warnings, ...reports);
       await printed(ir);
     },
   );
@@ -7076,8 +7269,8 @@ describe('irToDsl: gateway settings', () => {
       }),
       [
         'process p {',
-        '  var c: any',
         '  var a: any',
+        '  var c: any',
         '  start S',
         '  while (c) {',
         '    if (a) (joinAsyncBefore: true) {',

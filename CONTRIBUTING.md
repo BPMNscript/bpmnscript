@@ -64,13 +64,15 @@ CI's build job still runs `git diff --exit-code` right after `npm run build`; th
 ### Running tests
 
 ```sh
-npm test                                   # Full suite (all packages + e2e)
-npm test --workspace packages/language     # Language package only
-npm test --workspace packages/transform    # Transform package only
-npm test --workspace packages/cli          # CLI package only
-npm test --workspace packages/extension    # Extension package only
+npm test                                                                     # Full suite (all packages + e2e)
+npm test --workspace packages/language                                       # Language package only
+npm test --workspace packages/transform                                      # Transform package only
+npm test --workspace packages/cli                                            # CLI package only
+npm test --workspace packages/extension                                      # Extension package only
+FUZZ_N=2000 FUZZ_OUT=/tmp/fuzz npm test --workspace tests -- fuzz.test.ts    # Round-trip fuzz over 2000 generated programs
 ```
 
+`npm test` runs the round-trip fuzz over the first 200 generated programs as part of the tests workspace.
 The extension tests require `@bpmn-script/language` and `@bpmn-script/transform` to be built first (they are consumed as compiled `out/` directories).
 Run `npm run build` from the repo root before running the extension suite in isolation.
 

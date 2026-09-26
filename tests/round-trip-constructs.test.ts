@@ -122,26 +122,23 @@ describe('goto-degradation preserves the edges that have a goto form', () => {
     irSecondRound = astToIr(await parseToAst(printDsl(irReDesugared)));
   });
 
-  it('the degraded DSL prints every edge with no structured form as a `goto`', () => {
+  it('the degraded DSL prints unstructured routing as `goto`, except a chain only this branch enters, which prints inline in its branch', () => {
     expect(degradedDsl).toBe(
       [
         'process unstructured-goto {',
-        '  var route: any',
         '  var retry: any',
+        '  var route: any',
         '  start Start',
         '  user Intake(assignee: "demo")',
         '  if (route == "A") {',
-        '    goto Alpha',
+        '    user Alpha(assignee: "demo")',
+        '    if (retry == true) {',
+        '    } else {',
+        '      end Done',
+        '    }',
         '  }',
         '  user Beta(assignee: "manager")',
         '  end DoneBeta',
-        '  user Alpha(assignee: "demo")',
-        '  if (retry == true) {',
-        '    goto Beta',
-        '  } else {',
-        '    end Done',
-        '  }',
-        '  goto DoneBeta',
         '}',
         '',
       ].join('\n'),

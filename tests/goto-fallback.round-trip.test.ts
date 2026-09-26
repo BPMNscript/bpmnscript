@@ -245,8 +245,8 @@ const SURPLUS_EDGE_ON_TASK: BpmnProcess = {
 describe('surplus out-edge on a plain node keeps the fall-through', () => {
   // A bare `goto` beside the fall-through would end the chain and leave
   // everything after it unreachable, so both routes head a branch. The back
-  // edge names `T1`, the one step the join leads to, and the marker records
-  // that the fork closes on no merge.
+  // edge names `T1`, the one step the join leads to, and each route ends in
+  // its own branch, so the fork needs no merge to print as a block.
   it('gives both routes a branch rather than a jump beside the fall-through, and keeps the rest reachable', async () => {
     const { imported, dsl } = await emit(SURPLUS_EDGE_ON_TASK);
     expect(dsl).toBe(
@@ -254,15 +254,16 @@ describe('surplus out-edge on a plain node keeps the fall-through', () => {
         'process SurplusEdgeOnTask {',
         '  start Start_1',
         '  user T1',
-        `  ${UNSTRUCTURED_MARKER} (split T1 degraded to jumps; was parallel)`,
-        '  if (true) {',
-        '    goto Cont',
-        '  } else {',
-        '    goto T1',
+        '  parallel {',
+        '    {',
+        '      user Cont',
+        '      user Later',
+        '      end End_1',
+        '    }',
+        '    {',
+        '      goto T1',
+        '    }',
         '  }',
-        '  user Cont',
-        '  user Later',
-        '  end End_1',
         '}',
         '',
       ].join('\n'),

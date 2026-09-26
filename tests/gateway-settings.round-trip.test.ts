@@ -14,6 +14,8 @@ import { bpmnDoc } from './helpers/bpmn-doc.js';
 import { describeDiContainment } from './helpers/di-bounds.js';
 import { allElements } from './helpers/ir-query.js';
 import { describeImportFirst } from './helpers/import-first.js';
+import { roundTrip, validate } from './helpers/pipeline.js';
+import { modelSignature } from './helpers/model-equivalence.js';
 
 const rt = roundTripFixture('gateway-settings', {
   dslPrimeFrom: 'frozen',
@@ -216,5 +218,26 @@ describeImportFirst(
     });
   },
 );
+
+// The self-loop leaves no post-dominators, so only forward reachability sees
+// the branch step running back into the join; jumped to from the branch, that
+// step would leave the join's settings off the weighed route.
+it('a branch step that loops back through a join with settings prints inside the branch, so every route passes the join', async () => {
+  const source = [
+    'process p {',
+    '  var c: any',
+    '  if (c) (joinAsyncBefore: true) {',
+    '    receive X',
+    '  }',
+    '  goto X',
+    '}',
+    '',
+  ].join('\n');
+  const first = await roundTrip(source);
+  expect(first.dsl).toBe(source);
+  const { diagnostics } = await validate(first.dsl);
+  expect(diagnostics.filter((d) => d.severity === 1)).toEqual([]);
+  expect(modelSignature(first.ir3)).toEqual(modelSignature(first.ir1));
+});
 
 describeDiContainment(rt, ['CollectReferences']);

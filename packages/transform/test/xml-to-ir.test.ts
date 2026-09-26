@@ -109,7 +109,8 @@ const HANDWRITTEN_XML = readFileSync(
 );
 
 // Only the tests that print DSL (the compensation-rewrite preview, the
-// none-throw rewrite) re-parse it; every other test asserts against the IR alone.
+// none-throw rewrite, the boundary-escape label) re-parse it; every other
+// test asserts against the IR alone.
 let parse: ReturnType<typeof parseHelper<Model>>;
 
 beforeAll(() => {
@@ -6714,8 +6715,9 @@ describe('xmlToIr: a label on an event the surface gives no label to', () => {
     },
   );
 
-  it('an end named for a boundary escape reports its label even when the boundary is written after it', async () => {
-    const { warnings } = await xmlToIr(bpmnDoc`    <bpmn:startEvent id="S" />
+  it('an end named for a boundary escape keeps its label in the print, even when the boundary is written after it', async () => {
+    const { ir, warnings } =
+      await xmlToIr(bpmnDoc`    <bpmn:startEvent id="S" />
     <bpmn:userTask id="Review" />
     <bpmn:endEvent id="EndEvent_Boundary" name="Escaped" />
     <bpmn:boundaryEvent id="Boundary" attachedToRef="Review">
@@ -6725,15 +6727,19 @@ describe('xmlToIr: a label on an event the surface gives no label to', () => {
     <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="Review" />
     <bpmn:sequenceFlow id="F2" sourceRef="Review" targetRef="E" />
     <bpmn:sequenceFlow id="F3" sourceRef="Boundary" targetRef="EndEvent_Boundary" />`);
-    expect(warnings).toEqual([
-      {
-        elementId: 'EndEvent_Boundary',
-        category: 'label',
-        message: expect.stringContaining(
-          "The label 'Escaped' on 'EndEvent_Boundary' cannot be kept as written",
-        ),
-      },
-    ]);
+    expect(warnings).toEqual([]);
+    const dsl = irToDsl(ir).source;
+    expect(dsl).toBe(
+      'process p {\n' +
+        '  start S\n' +
+        '  user Review\n' +
+        '  end E\n' +
+        '  on Review: timer("PT1H") {\n' +
+        '    end EndEvent_Boundary(label: "Escaped")\n' +
+        '  }\n' +
+        '}\n',
+    );
+    await expectParses(dsl);
   });
 });
 

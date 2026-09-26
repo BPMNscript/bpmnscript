@@ -198,7 +198,10 @@ describe('decompile contract: the script it hands back goes through the pipeline
   });
 
   // Only the exact ids the compiler generates for the process are left out of
-  // the script; a modeller's defaults (`StartEvent_1`) are names like any other.
+  // the script; a modeller's defaults (`StartEvent_1`) are names like any
+  // other. A start with nowhere else to carry a label still drops it, warned
+  // at import; an end always has the statement to carry one, so it prints
+  // and is refused on the name alone instead, its label never lost.
   it.each([
     [
       "a modelling tool's default ids keep their statements and labels",
@@ -209,17 +212,26 @@ describe('decompile contract: the script it hands back goes through the pipeline
         'end EndEvent_1(label: "Order filed")',
       ],
       [],
+      0,
     ],
     [
-      'the ids this tool generates for the process drop their statements, and each dropped label is warned about',
+      'the start id this tool generates for the process drops its statement and label, but a like-named end keeps both and is refused on the name alone',
       'StartEvent_generated-id-labels',
       'EndEvent_generated-id-labels',
-      [],
-      ['StartEvent_generated-id-labels', 'EndEvent_generated-id-labels'],
+      ['end EndEvent_generated-id-labels(label: "Order filed")'],
+      ['StartEvent_generated-id-labels'],
+      1,
     ],
   ])(
-    'the DSL produced from a diagram where %s re-parses with zero diagnostics',
-    async (_title, startId, endId, printedLines, warnedIds) => {
+    'the DSL produced from a diagram where %s',
+    async (
+      _title,
+      startId,
+      endId,
+      printedLines,
+      warnedIds,
+      diagnosticCount,
+    ) => {
       const { ir, warnings } = await xmlToIr(
         labeledTerminalsBpmn(startId, endId),
       );
@@ -229,7 +241,7 @@ describe('decompile contract: the script it hands back goes through the pipeline
       expect(document.parseResult.parserErrors).toHaveLength(0);
 
       const { diagnostics } = await validate(dsl);
-      expect(diagnostics).toHaveLength(0);
+      expect(diagnostics).toHaveLength(diagnosticCount);
       expect(
         dsl.split('\n').filter((line) => /^\s+(start|end) /.test(line)),
       ).toEqual(printedLines.map((line) => `  ${line}`));

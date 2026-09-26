@@ -23,8 +23,8 @@ const FIXTURE = readFileSync(
 
 const PRINTED = [
   'process invoice(label: "Invoice Receipt", versionTag: "V2.0", historyTimeToLive: "45") {',
-  '  var clarified: any',
   '  var approved: any',
+  '  var clarified: any',
   '  start StartEvent_1(label: "Invoice\\nreceived")',
   '  decide assignApprover(label: "Assign Approver Group", decision: "invoice-assign-approver", mapDecisionResult: collectEntries, resultVariable: "approverGroups")',
   '  do {',

@@ -115,7 +115,12 @@ export function makeBoundaryEventId(
   trigger: string,
   taken: Set<string>,
 ): string {
-  return claimId(`Boundary_${hostId}_${trigger}`, taken);
+  return claimId(boundaryEventIdBase(hostId, trigger), taken);
+}
+
+/** The id the first boundary on `hostId` with this trigger claims; siblings add `_2`, `_3`, ... */
+export function boundaryEventIdBase(hostId: string, trigger: string): string {
+  return `Boundary_${hostId}_${trigger}`;
 }
 
 function claimId(base: string, taken: Set<string>): string {

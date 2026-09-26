@@ -57,7 +57,9 @@ The dominance result is correct: a region two independent entry points can both 
 
 A boundary event's id is `Boundary_<hostId>_<trigger>`, collision-resolved against the same document-wide `taken` set the implicit start and end ids already share.
 The one case this scheme does not fully disambiguate is two boundary handlers sharing a host and a trigger but differing in code: `on Pack: error(A)` and `on Pack: error(B)` are legal, non-duplicate handlers under the validator's `(host, trigger, code)` key, yet both base to the identical `Boundary_Pack_error`, so which one receives the `_2` suffix is positional.
-That is stable in the generation direction, since lowering assigns suffixes in statement order and the decompiler reprints handlers in that same order, but it is exposed on import, where another tool may present the two in whatever order it chose.
+That is stable in the generation direction, since lowering assigns suffixes in statement order.
+The decompiler reprints such a group in the rank each handler's own id already carries, the id equal to the base first and `_2`, `_3` and so on after it, so a reimport that lists the group in a different order still keeps each handler under its own id.
+Two ids that both fall outside the minted pattern carry no such rank, so nothing but model order settles which prints first, the same exposure to another tool's ordering choice on a first import.
 Folding the code into the base id was rejected: no other id constructor sanitizes arbitrary author-supplied text into an id fragment, and a numeric suffix would still be needed for two `timer` boundaries on one host, which carry no engine subscription key and so are never rejected as duplicates.
 The round-trip normalizer compensates on the comparison side instead, keying a boundary event's signature on the event definition's own payload rather than on the printed id, so two IR snapshots compare equal regardless of which physical id each assigns to which occurrence.
 
@@ -72,12 +74,14 @@ The round-trip normalizer compensates on the comparison side instead, keying a b
 - Good, because a host-derived id survives every reordering the decompiler's trailing-position rule performs, without adding a re-key rule for the generation direction.
 - Bad, because a node reachable from both the main flow and an escape chain loses a tight immediate dominator, degrading a main-flow `if`/`else` whose join such a chain jumps into into `goto`s on decompile.
 - Bad, because a host-less `on` handler written inside a hosted handler's body lowers into the outer container and therefore guards that whole container rather than just the escape path it is written inside, which follows necessarily from transparency and which an author cannot see from the source alone.
-- Bad, because two boundary handlers sharing a host and a trigger but differing only in code cannot be told apart by id text before the positional collision suffix is applied, which is stable across a recompile but exposed on an import written by another tool.
+- Bad, because two boundary handlers sharing a host and a trigger but differing only in code cannot be told apart by id text until one carries a minted rank.
+  Two such handlers that both import under an id outside the minted pattern still fall back to model order, exposed to whatever order another tool presents them in on a first import.
 
 ### Confirmation
 
 `packages/language/test/` pins the colon's disambiguation, the transparency rule in both directions, and the trigger scope, the escalation host restriction, and the compensation-has-no-host refusal, each with an exact-message assertion.
 `packages/transform/test/` pins the promotion consequence of transparency, the virtual-entry wiring and the accepted dominance trade-off as an explicit regression case, the self-contained body including a nested `if`/`else` inside an escape chain restructuring cleanly, and the host-derived id template with its collision suffixing.
+`tests/fuzz-regressions.test.ts` pins the mint-rank print order for two boundary handlers sharing a host and trigger, both when one side already carries a minted id and when both are authored and fall back to model order.
 The frozen `tests/golden/boundary-events.bpmn` fixture and its round-trip suite exercise these decisions together across a real DSL -> XML -> IR -> DSL -> IR cycle, including the import-first direction that is this scheme's one open disambiguation case.
 
 ## More Information
