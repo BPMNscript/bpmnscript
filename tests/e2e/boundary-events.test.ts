@@ -4,13 +4,12 @@
 // is driven by correlating a message over REST, never by waiting on a clock.
 // The process also carries a PT4H timer boundary that stays dormant throughout.
 
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll } from 'vitest';
 
 import type { FixtureAdapter } from '../fixtures/index.js';
 import {
   deployExamples,
-  ENGINE_BOOT_TIMEOUT_MS,
-  ENGINE_STOP_TIMEOUT_MS,
+  DEPLOY_TIMEOUT_MS,
   SKIP_DOCKER as SKIP,
 } from '../helpers/e2e-fixture.js';
 import {
@@ -30,11 +29,7 @@ describe.skipIf(SKIP)('E2E: boundary events on Spring Boot Operaton', () => {
 
   beforeAll(async () => {
     fixture = await deployExamples('order-handling');
-  }, ENGINE_BOOT_TIMEOUT_MS);
-
-  afterAll(async () => {
-    await fixture?.stop();
-  }, ENGINE_STOP_TIMEOUT_MS);
+  }, DEPLOY_TIMEOUT_MS);
 
   // The escalation thrown inside the payment sub-process is part of the main
   // narrative: its non-interrupting boundary opens the supervisory review task

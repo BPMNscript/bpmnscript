@@ -1,10 +1,9 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll } from 'vitest';
 
 import type { ActiveTask, FixtureAdapter } from '../fixtures/index.js';
 import {
   deployExamples,
-  ENGINE_BOOT_TIMEOUT_MS,
-  ENGINE_STOP_TIMEOUT_MS,
+  DEPLOY_TIMEOUT_MS,
   SKIP_DOCKER as SKIP,
 } from '../helpers/e2e-fixture.js';
 import {
@@ -24,11 +23,7 @@ describe.skipIf(SKIP)('E2E: repetition on Spring Boot Operaton', () => {
 
   beforeAll(async () => {
     fixture = await deployExamples(PROCESS_KEY, EMPTY_KEY);
-  }, ENGINE_BOOT_TIMEOUT_MS);
-
-  afterAll(async () => {
-    await fixture?.stop();
-  }, ENGINE_STOP_TIMEOUT_MS);
+  }, DEPLOY_TIMEOUT_MS);
 
   async function tasksOf(
     instanceId: string,

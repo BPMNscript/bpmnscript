@@ -14,11 +14,9 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 
 export const SKIP_DOCKER = process.env.SKIP_DOCKER_TESTS === 'true';
 
-// A cold image build plus Spring Boot startup needs this much.
-export const ENGINE_BOOT_TIMEOUT_MS = 300_000;
-
-// Bounded by the Docker stop grace period, not by the engine.
-export const ENGINE_STOP_TIMEOUT_MS = 120_000;
+// Compiling a file's examples and deploying them while every other e2e file
+// deploys to the same engine.
+export const DEPLOY_TIMEOUT_MS = 60_000;
 
 export function dslPath(name: string): string {
   return resolve(
@@ -46,7 +44,7 @@ export async function deployExamples(
     return { name, xmlPath };
   });
 
-  const fixture = await startFixture();
+  const fixture = startFixture();
   for (const { name, xmlPath } of built) {
     const { deploymentId } = await fixture.deploy(xmlPath, `${name}-test`);
     expect(deploymentId).toBeTruthy();

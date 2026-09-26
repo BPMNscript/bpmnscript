@@ -1,5 +1,10 @@
 // The fixture adapter covers deploy, start, task list, and task completion.
 // Everything else here goes straight at restBaseUrl().
+//
+// Every e2e file shares one engine. The deploy sweep puts each of its rows,
+// every example among them, in a tenant of its own, and every other file
+// deploys into the default tenant, so each query, message and signal below
+// that is not already pinned to an instance says `withoutTenantId`.
 
 import type { ActiveTask, FixtureAdapter } from '../fixtures/index.js';
 
@@ -64,7 +69,7 @@ export async function startByMessage(
   const response = await engineSend(
     fixture,
     '/engine-rest/message',
-    { messageName, resultEnabled: true },
+    { messageName, resultEnabled: true, withoutTenantId: true },
     `startByMessage(${messageName})`,
   );
   const results = (await response.json()) as Array<{
@@ -86,7 +91,7 @@ export async function broadcastSignal(
   await engineSend(
     fixture,
     '/engine-rest/signal',
-    { name },
+    { name, withoutTenantId: true },
     `broadcastSignal(${name})`,
   );
 }
@@ -105,7 +110,7 @@ export async function jobsOf(
 ): Promise<EngineJob[]> {
   return engineGet<EngineJob[]>(
     fixture,
-    `/engine-rest/job?processDefinitionKey=${encodeURIComponent(processDefinitionKey)}`,
+    `/engine-rest/job?withoutTenantId=true&processDefinitionKey=${encodeURIComponent(processDefinitionKey)}`,
     `jobsOf(${processDefinitionKey})`,
   );
 }
@@ -138,7 +143,7 @@ export async function jobDefinitionsFor(
 ): Promise<JobDefinition[]> {
   return engineGet<JobDefinition[]>(
     fixture,
-    `/engine-rest/job-definition?processDefinitionKey=${encodeURIComponent(processDefinitionKey)}&activityIdIn=${encodeURIComponent(activityId)}`,
+    `/engine-rest/job-definition?withoutTenantId=true&processDefinitionKey=${encodeURIComponent(processDefinitionKey)}&activityIdIn=${encodeURIComponent(activityId)}`,
     `jobDefinitionsFor(${activityId})`,
   );
 }
@@ -186,7 +191,7 @@ export async function historicInstances(
 ): Promise<HistoricProcessInstance[]> {
   return engineGet<HistoricProcessInstance[]>(
     fixture,
-    `/engine-rest/history/process-instance?processDefinitionKey=${encodeURIComponent(processDefinitionKey)}`,
+    `/engine-rest/history/process-instance?withoutTenantId=true&processDefinitionKey=${encodeURIComponent(processDefinitionKey)}`,
     `historicInstances(${processDefinitionKey})`,
   );
 }

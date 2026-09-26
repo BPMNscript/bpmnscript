@@ -7,7 +7,7 @@
 // because what separates it from a plain end is that it stops a sibling branch
 // still parked on its own task.
 
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll } from 'vitest';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -18,8 +18,7 @@ import type { FixtureAdapter } from '../fixtures/index.js';
 import {
   deployExamples,
   dslPath,
-  ENGINE_BOOT_TIMEOUT_MS,
-  ENGINE_STOP_TIMEOUT_MS,
+  DEPLOY_TIMEOUT_MS,
   SKIP_DOCKER as SKIP,
 } from '../helpers/e2e-fixture.js';
 import {
@@ -69,11 +68,7 @@ describe.skipIf(SKIP)('E2E: start, end, throw and link on Operaton', () => {
       'support-ticket',
       'order-rework',
     );
-  }, ENGINE_BOOT_TIMEOUT_MS);
-
-  afterAll(async () => {
-    await fixture?.stop();
-  }, ENGINE_STOP_TIMEOUT_MS);
+  }, DEPLOY_TIMEOUT_MS);
 
   it('message start: a correlated message with no instance to aim at starts one', async () => {
     const processInstanceId = await startByMessage(fixture, 'OrderReceived');

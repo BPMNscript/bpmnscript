@@ -2,7 +2,7 @@
 // runs itself, compile to well-formed XML that shows nothing of what the
 // engine does with them; this suite reads back what a real Operaton did.
 
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll } from 'vitest';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -13,8 +13,7 @@ import type { BpmnProcess } from '@bpmn-script/transform';
 import type { FixtureAdapter } from '../fixtures/index.js';
 import {
   deployExamples,
-  ENGINE_BOOT_TIMEOUT_MS,
-  ENGINE_STOP_TIMEOUT_MS,
+  DEPLOY_TIMEOUT_MS,
   irOfExample,
   SKIP_DOCKER as SKIP,
 } from '../helpers/e2e-fixture.js';
@@ -72,11 +71,7 @@ describe.skipIf(SKIP)('E2E: job settings, shell and mail tasks', () => {
 
   beforeAll(async () => {
     fixture = await deployExamples(REPORT_KEY, NOTICE_KEY);
-  }, ENGINE_BOOT_TIMEOUT_MS);
-
-  afterAll(async () => {
-    await fixture?.stop();
-  }, ENGINE_STOP_TIMEOUT_MS);
+  }, DEPLOY_TIMEOUT_MS);
 
   async function parkedJobs(
     processInstanceId: string,
@@ -217,7 +212,7 @@ describe.skipIf(SKIP)('E2E: job settings, shell and mail tasks', () => {
   it("a mail task deploys, and one the engine's parse refuses is refused with its message", async () => {
     const deployed = await engineGet<Array<{ key: string }>>(
       fixture,
-      `/engine-rest/process-definition?key=${NOTICE_KEY}`,
+      `/engine-rest/process-definition?withoutTenantId=true&key=${NOTICE_KEY}`,
       `definitionsOf(${NOTICE_KEY})`,
     );
     expect(deployed.map((d) => d.key)).toEqual([NOTICE_KEY]);

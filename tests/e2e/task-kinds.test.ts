@@ -1,10 +1,9 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll } from 'vitest';
 
 import type { FixtureAdapter } from '../fixtures/index.js';
 import {
   deployExamples,
-  ENGINE_BOOT_TIMEOUT_MS,
-  ENGINE_STOP_TIMEOUT_MS,
+  DEPLOY_TIMEOUT_MS,
   SKIP_DOCKER as SKIP,
 } from '../helpers/e2e-fixture.js';
 import {
@@ -30,16 +29,12 @@ describe.skipIf(SKIP)('E2E: task kinds on Spring Boot Operaton', () => {
 
   beforeAll(async () => {
     fixture = await deployExamples(PROCESS_KEY);
-  }, ENGINE_BOOT_TIMEOUT_MS);
-
-  afterAll(async () => {
-    await fixture?.stop();
-  }, ENGINE_STOP_TIMEOUT_MS);
+  }, DEPLOY_TIMEOUT_MS);
 
   it('deploys, so the engine parser accepts every tag as it is written', async () => {
     const definitions = await engineGet<Array<{ key: string }>>(
       fixture,
-      `/engine-rest/process-definition?key=${encodeURIComponent(PROCESS_KEY)}`,
+      `/engine-rest/process-definition?withoutTenantId=true&key=${encodeURIComponent(PROCESS_KEY)}`,
       `processDefinitions(${PROCESS_KEY})`,
     );
     expect(definitions.map((definition) => definition.key)).toContain(

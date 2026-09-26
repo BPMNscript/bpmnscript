@@ -1,18 +1,7 @@
 import * as path from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { GenericContainer, Wait } from 'testcontainers';
-import type { StartedTestContainer } from 'testcontainers';
+import { inject } from 'vitest';
 import { assertOk } from '../../helpers/engine-rest.js';
 import type { ActiveTask, FixtureAdapter } from '../types.js';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
-// Vitest transforms TS in place, so import.meta.url resolves to this source file.
-const SPRING_BOOT_DIR = path.resolve(
-  __dirname,
-  '../../../examples/spring-boot',
-);
 
 type OperatonVariableType = 'Long' | 'String' | 'Boolean' | 'Double';
 
@@ -42,38 +31,11 @@ function toOperatonVariables(
 }
 
 class SpringBootAdapter implements FixtureAdapter {
-  private container: StartedTestContainer | null = null;
-  private _restBaseUrl = '';
-
-  async start(): Promise<void> {
-    const container =
-      await GenericContainer.fromDockerfile(SPRING_BOOT_DIR).build();
-
-    this.container = await container
-      .withExposedPorts(8080)
-      .withWaitStrategy(
-        Wait.forHttp('/engine-rest/engine', 8080)
-          .forStatusCode(200)
-          .withReadTimeout(120_000),
-      )
-      .withStartupTimeout(120_000)
-      .start();
-
-    const host = this.container.getHost();
-    const port = this.container.getMappedPort(8080);
-    this._restBaseUrl = `http://${host}:${port}`;
-  }
+  // Started once per run by the e2e global setup and shared by every file.
+  private readonly _restBaseUrl = inject('engineRestUrl');
 
   restBaseUrl(): string {
     return this._restBaseUrl;
-  }
-
-  async stop(): Promise<void> {
-    if (this.container) {
-      await this.container.stop();
-      this.container = null;
-      this._restBaseUrl = '';
-    }
   }
 
   async deploy(
@@ -174,9 +136,6 @@ class SpringBootAdapter implements FixtureAdapter {
   }
 }
 
-// A cold Docker build takes up to 120 seconds.
-export async function start(): Promise<FixtureAdapter> {
-  const adapter = new SpringBootAdapter();
-  await adapter.start();
-  return adapter;
+export function start(): FixtureAdapter {
+  return new SpringBootAdapter();
 }

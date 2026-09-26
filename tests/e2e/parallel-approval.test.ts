@@ -3,14 +3,13 @@
 // the token until both complete. The always-on guard below checks the fork/join
 // pair in the IR when Docker is skipped.
 
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll } from 'vitest';
 import type { FixtureAdapter } from '../fixtures/index.js';
 import {
   deployExamples,
   irOfExample,
   SKIP_DOCKER as SKIP,
-  ENGINE_BOOT_TIMEOUT_MS,
-  ENGINE_STOP_TIMEOUT_MS,
+  DEPLOY_TIMEOUT_MS,
 } from '../helpers/e2e-fixture.js';
 import { waitForTasks } from '../helpers/engine-rest.js';
 
@@ -40,11 +39,7 @@ describe.skipIf(SKIP)('E2E: parallel-approval on Spring Boot Operaton', () => {
 
   beforeAll(async () => {
     fixture = await deployExamples('parallel-approval');
-  }, ENGINE_BOOT_TIMEOUT_MS);
-
-  afterAll(async () => {
-    await fixture?.stop();
-  }, ENGINE_STOP_TIMEOUT_MS);
+  }, DEPLOY_TIMEOUT_MS);
 
   // A parallel gateway fires every outgoing branch unconditionally, where an
   // exclusive gateway fires exactly one.

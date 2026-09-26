@@ -8,13 +8,12 @@
 // `emit compensation` raised by the process-level error handler has to reach
 // the undo block of a subprocess that already completed.
 
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll } from 'vitest';
 
 import type { FixtureAdapter } from '../fixtures/index.js';
 import {
   deployExamples,
-  ENGINE_BOOT_TIMEOUT_MS,
-  ENGINE_STOP_TIMEOUT_MS,
+  DEPLOY_TIMEOUT_MS,
   SKIP_DOCKER as SKIP,
 } from '../helpers/e2e-fixture.js';
 import {
@@ -39,11 +38,7 @@ describe.skipIf(SKIP)(
         CHARGE_PROCESS_KEY,
         COMPENSATION_PROCESS_KEY,
       );
-    }, ENGINE_BOOT_TIMEOUT_MS);
-
-    afterAll(async () => {
-      await fixture?.stop();
-    }, ENGINE_STOP_TIMEOUT_MS);
+    }, DEPLOY_TIMEOUT_MS);
 
     describe('error boundary on the charge service task', () => {
       // A misconfigured boundary surfaces as an HTTP 500 from startProcess, so

@@ -28,6 +28,6 @@ export function buildExample(dslPath: string, xmlOutPath: string): void {
   );
 }
 
-export async function startFixture(): Promise<FixtureAdapter> {
+export function startFixture(): FixtureAdapter {
   return springBootAdapter.start();
 }

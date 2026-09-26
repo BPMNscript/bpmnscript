@@ -1,4 +1,4 @@
-// Every golden, fixture and example on the engine, in one boot: once as the
+// Every golden, fixture and example on the engine: once as the
 // file is written, and once rebuilt from the tool's own print of it, where a
 // deployable file whose print compiles back to one the engine refuses would
 // hide.
@@ -6,10 +6,12 @@
 // Each row deploys in a tenant of its own, because
 // BpmnDeployer.addMessageStartEventSubscription refuses a second message start
 // of one name across process definitions in one tenant, and two independent
-// files here start on the same message. The same process key deployed twice
-// is only a new version to the engine and needs nothing.
+// files here start on the same message. The tenants also keep the sweep out of
+// the other e2e files, which share this engine and read only the default
+// tenant. The same process key deployed twice is only a new version to the
+// engine and needs nothing.
 
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll } from 'vitest';
 import { mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { basename, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -19,8 +21,7 @@ import { astToIr, irToXml, xmlToIr } from '@bpmn-script/transform';
 import { buildExample, startFixture } from '../fixtures/index.js';
 import type { FixtureAdapter } from '../fixtures/index.js';
 import {
-  ENGINE_BOOT_TIMEOUT_MS,
-  ENGINE_STOP_TIMEOUT_MS,
+  DEPLOY_TIMEOUT_MS,
   SKIP_DOCKER as SKIP,
 } from '../helpers/e2e-fixture.js';
 import { parseToAst, printDsl } from '../helpers/pipeline.js';
@@ -92,12 +93,8 @@ describe.skipIf(SKIP)('E2E: every golden, fixture and example deploys', () => {
         buildExample(row.dslPath, row.xmlPath);
       }
     }
-    fixture = await startFixture();
-  }, ENGINE_BOOT_TIMEOUT_MS);
-
-  afterAll(async () => {
-    await fixture?.stop();
-  }, ENGINE_STOP_TIMEOUT_MS);
+    fixture = startFixture();
+  }, DEPLOY_TIMEOUT_MS);
 
   it.each(ROWS)(
     '$key deploys as written',

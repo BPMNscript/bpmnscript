@@ -8,9 +8,6 @@ export interface ActiveTask {
 }
 
 export interface FixtureAdapter {
-  // Returns when the runtime accepts deployments.
-  start(): Promise<void>;
-
   // A tenant id isolates the deployment's message-start subscriptions from
   // every other tenant's; without one the deployment is shared.
   deploy(
@@ -32,6 +29,4 @@ export interface FixtureAdapter {
   ): Promise<void>;
 
   restBaseUrl(): string;
-
-  stop(): Promise<void>;
 }

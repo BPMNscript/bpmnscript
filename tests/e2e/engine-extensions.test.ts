@@ -3,13 +3,12 @@
 // does not break the transaction all compile to the same well-formed file, so
 // only a real Operaton can tell them apart.
 
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll } from 'vitest';
 
 import type { FixtureAdapter } from '../fixtures/index.js';
 import {
   deployExamples,
-  ENGINE_BOOT_TIMEOUT_MS,
-  ENGINE_STOP_TIMEOUT_MS,
+  DEPLOY_TIMEOUT_MS,
   SKIP_DOCKER as SKIP,
 } from '../helpers/e2e-fixture.js';
 import {
@@ -116,11 +115,7 @@ describe.skipIf(SKIP)(
 
     beforeAll(async () => {
       fixture = await deployExamples('engine-extensions');
-    }, ENGINE_BOOT_TIMEOUT_MS);
-
-    afterAll(async () => {
-      await fixture?.stop();
-    }, ENGINE_STOP_TIMEOUT_MS);
+    }, DEPLOY_TIMEOUT_MS);
 
     it('fires both execution listeners of a service task, its delegate, and the task listener, in that order', async () => {
       const { processInstanceId } = await startAndReachUserTask();
