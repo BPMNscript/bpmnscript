@@ -7,8 +7,10 @@
 import {
   DECLARED_CODE_TRIGGERS,
   EVENT_BINDING_FIELD_SET,
+  EVENT_CODE_FIELD,
   namesACode,
   TIMER_PARTICLE_BY_KIND,
+  type TimerParticle,
 } from './vocabulary.js';
 import type { AstNode } from 'langium';
 import {
@@ -76,14 +78,17 @@ export function caughtBindingsOf(items: ParenItem[]): CaughtBinding[] {
  */
 export function isStructuralParenKey(owner: AstNode, key: string): boolean {
   if (isOnHandler(owner) && EVENT_BINDING_FIELD_SET.has(key)) return true;
-  return 'trigger' in owner && TIMER_PARTICLE_KEYS.has(key);
+  return (
+    'trigger' in owner &&
+    TIMER_PARTICLE_KEYS.some((particle) => particle === key)
+  );
 }
 
 /** A timer says a duration by writing it bare, and a date or a cycle by key. */
-const TIMER_PARTICLE_KEYS: ReadonlySet<string> = new Set([
+const TIMER_PARTICLE_KEYS: readonly TimerParticle[] = [
   TIMER_PARTICLE_BY_KIND.date,
   TIMER_PARTICLE_BY_KIND.cycle,
-]);
+];
 
 export function configuredSettingsOf(
   owner: AstNode & { items?: ParenItem[] },
@@ -180,7 +185,9 @@ export function isCodePosition(node: AstNode): boolean {
  * both of which the validator reports on its own.
  */
 export function declaredCodeOf(decl: CodeDecl): string | undefined {
-  const setting = settingsOf(decl.items).find((item) => item.key === 'code');
+  const setting = settingsOf(decl.items).find(
+    (item) => item.key === EVENT_CODE_FIELD,
+  );
   if (setting === undefined) return decl.name;
   if (!isLiteralString(setting.value) || setting.value.value.length === 0) {
     return undefined;
@@ -211,7 +218,7 @@ export function hasQuotedPayload(items: ParenItem[]): boolean {
 
 /** A timer clause, and the item a diagnostic about it belongs on. */
 export interface TimerPayload {
-  readonly particle: string;
+  readonly particle: TimerParticle;
   readonly time: string;
   readonly node: Setting | ParenValue;
 }
@@ -220,10 +227,11 @@ export function timerParticleOf(
   items: ParenItem[],
 ): (TimerPayload & { node: Setting }) | undefined {
   for (const setting of settingsOf(items)) {
-    if (!TIMER_PARTICLE_KEYS.has(setting.key)) continue;
+    const particle = TIMER_PARTICLE_KEYS.find((key) => key === setting.key);
+    if (particle === undefined) continue;
     const time = timeTextOf(setting.value);
     if (time !== undefined) {
-      return { particle: setting.key, time, node: setting };
+      return { particle, time, node: setting };
     }
   }
   return undefined;

@@ -107,3 +107,9 @@ export {
 export { astToIr } from './ast-to-ir.js';
 export { irToDsl, UNSTRUCTURED_MARKER } from './ir-to-dsl.js';
 export type { PrintWarning, PrintWarningCategory } from './ir-to-dsl.js';
+export {
+  EMPTY_INPUT_MESSAGE,
+  NO_PROCESS_MESSAGE,
+  readableParseError,
+  xmlInputProblem,
+} from './host-messages.js';

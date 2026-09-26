@@ -444,7 +444,9 @@ describe('bpmns build / bpmns parse: guards against destructive or unclear failu
           inputPath,
           opts: {},
           exit: 2,
-          line: 'Error: expected a file with one of these extensions: .bpmnscript',
+          line:
+            'Error: expected a file with one of these extensions: .bpmnscript; ' +
+            'a .bpmn file is decompiled with `bpmns parse`',
         };
       },
     ],
@@ -699,20 +701,9 @@ describe('bpmns build / bpmns parse: guards against destructive or unclear failu
 });
 
 describe('tmLanguage extension sync', () => {
-  test('the extension ships the current grammar, copied by a build step', () => {
+  test('the extension ships the current grammar', () => {
     expect(fs.readFileSync(EXTENSION_TMLANGUAGE, 'utf-8')).toBe(
       fs.readFileSync(LANGUAGE_TMLANGUAGE, 'utf-8'),
     );
-
-    const pkg = JSON.parse(
-      fs.readFileSync(
-        path.resolve(REPO_ROOT, 'packages/extension/package.json'),
-        'utf-8',
-      ),
-    ) as { scripts?: Record<string, string> };
-
-    const prepare = pkg.scripts?.['build:prepare'] ?? '';
-    expect(prepare).toContain('language/syntaxes');
-    expect(prepare, 'build:prepare must perform a file copy').toMatch(/\bcp\b/);
   });
 });

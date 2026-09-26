@@ -17,7 +17,11 @@ import {
   isNamedStatement,
   type NamedStatement,
 } from './bpmn-script-scope-provider.js';
-import { attributeBlockRuleOf } from './vocabulary.js';
+import {
+  attributeBlockRuleOf,
+  EVENT_CODE_FIELD,
+  EVENT_MESSAGE_FIELD,
+} from './vocabulary.js';
 import { isVariableSymbolNode } from './bpmn-script-references.js';
 import { declaredCodeOf, settingsOf } from './paren-items.js';
 
@@ -41,11 +45,11 @@ function codeDeclHover(decl: CodeDecl): string {
   // `declaredCodeOf` falls back to the name; hover quotes only a written
   // setting.
   const hasCodeSetting = settingsOf(decl.items).some(
-    (item) => item.key === 'code',
+    (item) => item.key === EVENT_CODE_FIELD,
   );
   const code = hasCodeSetting ? declaredCodeOf(decl) : undefined;
   if (code !== undefined) line += ` with code "${code}"`;
-  const message = literalSetting(decl.items, 'message');
+  const message = literalSetting(decl.items, EVENT_MESSAGE_FIELD);
   if (message !== undefined) line += `: ${message}`;
   return line;
 }

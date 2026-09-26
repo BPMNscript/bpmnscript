@@ -60,7 +60,7 @@
       },
       {
         "command": "bpmnscript.openAndDecompile",
-        "title": "Open a BPMN file and convert it\u2026",
+        "title": "Open a BPMN file and convert it...",
         "category": "BPMNscript"
       }
     ],

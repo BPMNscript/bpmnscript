@@ -10,6 +10,9 @@ import {
   irToXml,
   xmlToIr,
   irToDsl,
+  NO_PROCESS_MESSAGE,
+  readableParseError,
+  xmlInputProblem,
   UnsupportedConstructError,
   LayoutError,
 } from '@bpmn-script/transform';
@@ -78,6 +81,12 @@ export async function compileDslToBpmn(
       return { ok: false, kind: 'validation', diagnostics };
     }
 
+    // Checked after the error gate: a keyword typo also parses into a model
+    // with no processes, and should report its parser error instead.
+    if (doc.parseResult.value.processes.length === 0) {
+      return { ok: false, kind: 'error', message: NO_PROCESS_MESSAGE };
+    }
+
     // The cli's build.ts and tests/helpers/pipeline.ts run the same
     // astToIr -> irToXml chain, each with its own failure reporting.
     let ir;
@@ -127,6 +136,11 @@ export async function compileDslToBpmn(
 export async function decompileBpmnToDsl(
   xml: string,
 ): Promise<DecompileResult> {
+  const problem = xmlInputProblem(xml);
+  if (problem !== undefined) {
+    return { ok: false, kind: 'error', message: problem };
+  }
+
   let ir;
   let warnings: ImportWarning[];
   try {
@@ -135,10 +149,12 @@ export async function decompileBpmnToDsl(
     if (err instanceof UnsupportedConstructError) {
       return { ok: false, kind: 'unsupported', message: err.message };
     }
+    // Straight into a notification otherwise: a parser error quotes the rest
+    // of the document, which for a large file is the whole file.
     return {
       ok: false,
       kind: 'error',
-      message: (err as Error).message,
+      message: readableParseError((err as Error).message, xml),
     };
   }
 

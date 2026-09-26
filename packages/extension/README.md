@@ -4,7 +4,7 @@ The VS Code extension for BPMNscript.
 It runs the Langium language server for highlighting, completion, hover, go to definition, references, rename, the outline and inline diagnostics, and it converts the open file between `.bpmnscript` and `.bpmn` from a sidebar panel or the command palette.
 
 The language intelligence itself lives in `@bpmn-script/language`; this package loads it in VS Code.
-That wiring is mostly Langium scaffold, which is the point of choosing Langium in the first place ([ADR-0002](https://github.com/BPMNscript/bpmnscript/blob/main/docs/decisions/0002-use-langium-as-language-workbench.md)).
+That wiring is mostly Langium scaffold, which is the point of choosing Langium in the first place ([ADR-0003](https://github.com/BPMNscript/bpmnscript/blob/main/docs/decisions/0003-use-langium-as-language-workbench.md)).
 The conversion layer on top is project-specific: three commands (`bpmnscript.compile`, `bpmnscript.decompile`, and `bpmnscript.openAndDecompile`, which picks a BPMN file from disk and decompiles it) and a sidebar webview that drives them for the active file.
 
 ## How it fits together
@@ -24,7 +24,7 @@ The conversion layer splits along the VS Code boundary.
 `conversion-core.ts` is a pure, `vscode`-free module driving the `compileDslToBpmn` and `decompileBpmnToDsl` pipelines, and it holds the decisions: severity gating (warnings don't block a compile), error classification, unsupported-element handling.
 A successful decompile also returns `warnings`, what `xmlToIr` reported on the way in and `irToDsl` on the way out, in one list.
 Because nothing here touches `vscode`, it's testable under vitest with no editor host.
-`conversion.ts` is the adapter around it: it resolves the source URI (an argument, otherwise the active editor), reads the text (preferring an unsaved in-memory document), calls the core, opens the Problems panel on a validation failure (the language server already publishes the same diagnostics), asks before overwriting an existing output file, writes the result next to the source with the extension swapped, and opens it.
+`conversion.ts` is the adapter around it: it resolves the source URI (an argument, otherwise the active editor), refuses a file whose extension is not the one the command takes and names the command that is, reads the text (preferring an unsaved in-memory document), calls the core, opens the Problems panel on a validation failure (the language server already publishes the same diagnostics), asks before overwriting an existing output file, writes the result next to the source with the extension swapped, and opens it.
 A BPMN construct the transform refuses surfaces as an error notification and no file is written; any `warnings` surface as one aggregated notification listing what the two hops reported.
 
 `sidebar-view-provider.ts` implements `WebviewViewProvider` for the "Convert" view in the "BPMNscript" activity-bar container.
@@ -49,7 +49,7 @@ npm run build --workspace packages/extension
 ```
 
 `esbuild` bundles both entry points into CommonJS under `out/`, which is how VS Code loads extensions.
-To try it live, press <kbd>F5</kbd> in VS Code from the repo root: a second window opens with the extension loaded, where `.bpmnscript` and `.bpmn` files get language support and the sidebar panel.
+To try it live, press <kbd>F5</kbd> in VS Code from the repo root: a second window opens with the extension loaded, where `.bpmnscript` files get language support and `.bpmn` files get the decompile command and the sidebar panel.
 See [CONTRIBUTING.md](https://github.com/BPMNscript/bpmnscript/blob/main/CONTRIBUTING.md#trying-it-out-in-vs-code).
 
 Build order matters.

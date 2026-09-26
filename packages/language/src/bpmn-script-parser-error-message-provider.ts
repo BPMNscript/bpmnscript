@@ -6,7 +6,7 @@
  * Chevrotain paths, so both builders are overridden: `buildMismatchTokenMessage`
  * where the grammar expects exactly `ID`, `buildNoViableAltMessage` where `ID`
  * is one alternative among several. Every message stays free of BPMN
- * vocabulary (ADR-0013). Only the message changes; recovery and the legal
+ * vocabulary. Only the message changes; recovery and the legal
  * token positions are Chevrotain's.
  */
 

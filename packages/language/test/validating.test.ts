@@ -211,7 +211,7 @@ function formFieldRows(
   ]);
 }
 
-// ── The messages, each spelled once ─────────────────────────────────────────
+// The messages, each spelled once
 //
 // A message the validator exports is imported; a helper below adapts the few
 // that take an AST node or a slot to the strings a case spells.
@@ -557,7 +557,7 @@ const alreadyDeclared = (kind: string, name: string) =>
 const duplicateDeclaredCode = (kind: string, code: string, owner: string) =>
   `${capitalized(kind)} code '${code}' is already declared by '${owner}'; two declarations cannot share a code.`;
 
-// ── Cases ───────────────────────────────────────────────────────────────────
+// Cases
 
 checks('Validation - variables in expressions', [
   [
@@ -1253,6 +1253,11 @@ checks('Validation - service, send, and decision bindings', [
         DECISION_BINDINGS,
       ),
     ],
+  ],
+  [
+    'a bareword decision names a decision table, not a variable',
+    `process p { decide D(decision: riskRating) }`,
+    [],
   ],
   [
     'a decision step combining binding and version is one error',

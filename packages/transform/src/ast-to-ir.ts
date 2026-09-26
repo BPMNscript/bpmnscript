@@ -86,6 +86,7 @@ import {
   TASK_LISTENER_EVENTS,
   THROW_TRIGGERS,
   TIMER_PARTICLE_BY_KIND,
+  type TimerKind,
   isNamedStatement,
 } from '@bpmn-script/language';
 import type {
@@ -1371,12 +1372,10 @@ function handlerEventDefinition(stmt: OnHandler): EventDefinition {
 }
 
 /** `TIMER_PARTICLE_BY_KIND` read backwards; a timer with no readable time lands on `duration`. */
-function timerParticleKind(
-  particle: string | undefined,
-): 'duration' | 'date' | 'cycle' {
+function timerParticleKind(particle: string | undefined): TimerKind {
   for (const [kind, word] of Object.entries(TIMER_PARTICLE_BY_KIND)) {
     if (word === particle) {
-      return kind as 'duration' | 'date' | 'cycle';
+      return kind as TimerKind;
     }
   }
   return 'duration';

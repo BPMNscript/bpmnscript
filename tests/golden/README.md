@@ -156,7 +156,7 @@ Both handler forms are here so the placement rule is pinned in the artifact rath
 A hosted `on ApprovePayout: timer` writes its settings on the boundary event it lowers to, and its `exclusive` on the timer definition as well, since `BpmnParse.parseTimer` locks the timer job from there and the tag's copy reaches only the `asyncAfter` job.
 A host-less `on escalation` writes them on the event sub-process rather than on the trigger start event nested inside it.
 That start event's own block belongs to the `start` statement written inside the handler body, and a synthesized start prints no statement at all, so a setting stored there could have nowhere to go.
-A host-less `on timer` is the one exception: its `jobPriority`, `retryCycle` and `exclusive` go on the trigger start event, whose job they configure, and the printer lifts them back into the head as long as that start prints no statement ([ADR-0047](../../docs/decisions/0047-timer-job-settings-on-the-element-the-engine-reads.md)).
+A host-less `on timer` is the one exception: its `jobPriority`, `retryCycle` and `exclusive` go on the trigger start event, whose job they configure, and the printer lifts them back into the head as long as that start prints no statement ([ADR-0021](../../docs/decisions/0021-operaton-engine-attributes-as-named-ir-fields.md)).
 A `while`, an `if`, and a `parallel` put five synthesized gateways in the same artifact, none of which is written with a setting, so the pair pins that no direction invents one on a gateway; what a gateway written with settings carries is the `gateway-settings` pair's to pin.
 Every named node carries an explicit id, and the frozen artifact imports without a single warning.
 
@@ -167,7 +167,7 @@ Contract: the `(node id, attribute, value)` table in `tests/engine-attributes.ro
 A process exercising the `operaton:inputOutput` block in all four value forms, a scalar, an inline script, a list, and a map, on a user task, a service task, a script task, a subprocess, and a call.
 The scalar and the inline script each appear in both directions; as a parameter's own value the list is only ever an input and the map only ever an output, and each of the two structured forms nests inside the other.
 The call carries its own `in`/`out` variable mappings beside its parameters, so one artifact pins the two mechanisms as distinct: a variable mapping crosses the process boundary into the callee, a parameter binds a value into the activity's own execution scope.
-The `on message` handler at the end carries no parameter: it lowers to an event sub-process, which `BpmnParse.checkActivityInputOutputSupported` refuses a mapping on ([ADR-0046](../../docs/decisions/0046-listener-shapes-the-engine-deploys.md)).
+The `on message` handler at the end carries no parameter: it lowers to an event sub-process, which `BpmnParse.checkActivityInputOutputSupported` refuses a mapping on ([ADR-0020](../../docs/decisions/0020-listeners-reuse-on-inside-the-attribute-block.md)).
 
 Contract: the parameter names and their declaration order per direction, each value's form, the `scriptFormat` on each inline script, and the call's variable mappings serialized beside the `operaton:inputOutput` block rather than inside it.
 
@@ -176,7 +176,7 @@ Contract: the parameter names and their declaration order per direction, each va
 A process registering execution listeners on a service task, a subprocess, an end event, and an `on message` handler, and all six task-listener events, `create`, `assignment`, `complete`, `update`, `delete`, and `timeout`, on one user task.
 The service task carries both execution events, `start` and `end`; the other three carry one of the two each.
 All four bindings appear, a Java class, a JUEL expression, a delegate expression, and an inline fenced script, and the `timeout` listener carries the timer clause a caught timer event spells the same way.
-The `timeout` listener is written with the id `InspectVehicle_timeout_1`, which `BpmnParse.parseTimeoutTaskListener` requires and the export mints from the task id, and the `on message` handler carries no parameter, since the engine refuses a mapping on the event sub-process it lowers to ([ADR-0046](../../docs/decisions/0046-listener-shapes-the-engine-deploys.md)).
+The `timeout` listener is written with the id `InspectVehicle_timeout_1`, which `BpmnParse.parseTimeoutTaskListener` requires and the export mints from the task id, and the `on message` handler carries no parameter, since the engine refuses a mapping on the event sub-process it lowers to ([ADR-0020](../../docs/decisions/0020-listeners-reuse-on-inside-the-attribute-block.md)).
 
 Three bindings in the artifact also carry an injected field, every carrier one rides but the built-in `type` binding the `mail-and-shell` pair pins: the service task's own class binding takes two, a literal and a `${...}` expression, its `on start` execution listener takes one, and the delegate-bound `on complete` task listener takes one.
 The expression-bound `on assignment` listener carries none, because Operaton hands a field list to a class binding, a delegate binding, and a built-in `type` binding, and to no other.

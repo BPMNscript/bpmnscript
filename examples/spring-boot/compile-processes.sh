@@ -29,7 +29,7 @@ shopt -s nullglob
 count=0
 for src in "$SRC_DIR"/*.bpmnscript; do
   base="$(basename "$src" .bpmnscript)"
-  node "$CLI" build "$src" -o "$OUT_DIR/$base.bpmn"
+  node "$CLI" build "$src" -o "$OUT_DIR/$base.bpmn" --force
   count=$((count + 1))
 done
 

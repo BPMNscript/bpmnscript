@@ -109,7 +109,7 @@ A user task names its deployed form with `formKey` or with `formRef`, never both
 #### Forms
 
 A process's own `start` and a `user` task each take one `form` block, `operaton:formData` on the wire, which Tasklist renders as one input per field and which fills one process variable per field when the form is submitted.
-A field takes the shape every element takes ([ADR-0029](../../docs/decisions/0029-one-bracket-shape-for-every-element.md)): `id: type "label" = default (settings) { members }`, the label and the default optional.
+A field takes the shape every element takes ([ADR-0011](../../docs/decisions/0011-structured-grammar-one-bracket-shape.md)): `id: type "label" = default (settings) { members }`, the label and the default optional.
 The parens hold what the engine validates a submission under, plus the date pattern; the braces hold what the field is built from, an `enum`'s values and its `property` lines.
 `id` is the process variable the field fills, so a `var` of the same name has to declare the same type.
 
@@ -138,6 +138,7 @@ A `number` default has to be an integer, which `LongFormType.convertValue` reads
 A bare name or a `"${...}"` expression is left to the engine, since it is evaluated fresh at every render.
 
 An `enum` field lists its values in the braces, one `id "Label"` line each in the order the form offers them, the label optional.
+One offering no values at all draws a warning rather than an error, since the engine deploys the form and then rejects every value submitted for the field.
 Its default, when it is a literal, has to name one of them: `FormFieldHandler.createFormField` converts the default through the type on every render of the form, so a default naming no value deploys and then fails to open.
 A `property <key> = "<value>"` line in the braces is an `operaton:property` on the field, a key and a text the engine parses into the form's description and never acts on itself.
 It is legal on a field of any type, and its value is a quoted string or a `"${...}"` expression, the shapes `field` takes.
@@ -533,7 +534,7 @@ The colon is what separates a host from a bare trigger.
 Trigger words are ordinary identifiers rather than keywords (see below), so a host-less handler carrying a code and a hosted handler carrying none would otherwise both read as `on` followed by two identifiers; the colon settles which reading applies at the second token.
 
 A host has to be a step an engine token can be running at: a `user`, `service`, `script`, `send`, or `receive` task, a `step`, a `decide` step, a `subprocess`, an `attempt` block, or a `call`.
-A `start` or `end` event, a `goto`, a `throw` or `emit`, and another handler are all rejected.
+A `start` or `end` event, a `goto`, a `throw` or `emit`, and another handler are all rejected, and so is an `await` of any trigger kind: `BpmnParse.parseBoundaryEvents` attaches to an activity alone, and an intermediate catch event is none.
 `escalation` narrows the set further, to a `subprocess`, an `attempt` block, a `call`, or a `user` task, matching Operaton's own restriction.
 `cancel` narrows it to one kind, an `attempt` block, the only host Operaton accepts a cancel boundary on.
 `alongside` keeps its usual meaning, letting the host run beside the catch instead of being canceled the moment the trigger fires, and `error` still always cancels its host.
@@ -575,7 +576,7 @@ Writing one of the first three after `await` is rejected with a diagnostic namin
 
 A plain `await` takes no host, no catch bindings, no `alongside`, and no body.
 An optional name between the trigger and the payload, `await message Paid("Paid")`, makes it a step a `goto` can target, under the same duplicate-name rules as any other step; without one the id is synthesized (`Catch_<coord>`).
-[ADR-0020](../../docs/decisions/0020-intermediate-catch-events.md) covers why `await` beat `wait` and `receive`, and [ADR-0035](../../docs/decisions/0035-link-events-for-import-round-trip-symmetry.md) why every `await` can carry a name and why `link` joined the trigger scope.
+[ADR-0026](../../docs/decisions/0026-intermediate-catch-events.md) covers why `await` beat `wait` and `receive`, and [ADR-0030](../../docs/decisions/0030-link-events-for-import-round-trip-symmetry.md) why every `await` can carry a name and why `link` joined the trigger scope.
 
 ### Link events
 
@@ -603,13 +604,13 @@ process invoice-rework {
 `emit link` ends its path the way a `goto` does: the token continues at the `await link` of the same name and nowhere else, so a step written after it can never run.
 Nothing flows into a link catch, so the statement before an `await link` has to end the path: an `end`, a `throw`, a `goto`, an `emit link`, or a block whose every branch does one of those.
 One `await link` per name in the whole file, at any depth, and any number of `emit link` may name it.
-Both ends sit in one container, the process, subprocess, or handler body, the same rule a `goto` follows, and an `emit link` cannot reach into a `parallel` or multi-branch `await` branch from outside it.
+Both ends sit in one container, the process, subprocess, or handler body, the same rule a `goto` follows, and an `emit link` cannot reach into a `parallel` or multi-branch `await` branch from outside it, since a token arriving inside one branch leaves the block's join waiting for the branches the run never entered, so it never completes.
 `link` cannot head a branch of a multi-branch `await`, because Operaton refuses a link catch behind an event-based gateway.
 An engine setting or a listener on `emit link` is an error: the engine creates no activity for a link throw, so nothing written there would run; the same items on `await link` are fine.
 An `await link` nothing emits is a warning rather than an error, since the engine deploys it and an imported diagram may carry one.
 
 `goto` stays the way to jump in source: its target is scoped to its container and needs no file-wide name, and it compiles to the one sequence flow it prints as.
-`link` exists for a diagram that already carries one, so that it imports and compiles back to the same two events; [ADR-0035](../../docs/decisions/0035-link-events-for-import-round-trip-symmetry.md) makes that argument.
+`link` exists for a diagram that already carries one, so that it imports and compiles back to the same two events; [ADR-0030](../../docs/decisions/0030-link-events-for-import-round-trip-symmetry.md) makes that argument.
 
 ### Waiting on several triggers at once
 
@@ -653,6 +654,7 @@ process order-intake {
 Four words are legal there: `message`, `signal`, `timer`, and `condition`, each with the payload it already carries elsewhere, a name for the first two, a duration or an `at` or `every` key for the third, and the condition expression, the same clause `on condition` and `await condition` carry, for the fourth.
 A subprocess start and an event-handler start take none, because both are entered by their container rather than by an event of their own; the validator rejects a trigger written on either.
 Neither takes `initiator` or a `form` block: `BpmnParse.parseScopeStartEvent` reads neither off a start that is not the process's own, so the validator rejects both there too.
+A message start's name has to be a fixed one: an expression anywhere in it is rejected, whether it opens the name as a raw template or sits further in and leaves the name a plain string, since a process that has not started yet has no variables for the engine to evaluate it against.
 
 Writing `error`, `escalation`, or `compensation` on a process start is rejected too, for a different reason: Operaton's own start-event parser does not branch on those three, so the engine ignores the trigger and starts the process exactly as if none were written, and this surface refuses to compile XML the engine would disregard.
 
@@ -840,7 +842,7 @@ The categories it covers:
   A `property` line errors the same way on a kind that takes none and on a `service`, `send`, or `decide` step not bound with `topic`.
 - Listeners: an event word the element does not have, a binding count other than one, a missing timer on `on timeout` or a timer on any other event, a repeated event on one element, and the same fence rules a `script` body follows.
 - Structure: an empty process, subprocess, or handler body, an empty branch (warning), an empty loop body, which would drop the loop and its condition, a `do` body that always ends or redirects the flow, which would leave the loop gateway with no incoming flow, a parameter or listener written inside a body rather than in an element's attribute block, an unreachable statement, a process-level `start` after a step whose flow still runs on, a `start` anywhere but first in its subprocess, attempt block, or handler body, a second plain or timer start on a process, counting the plain start the compiler adds to a body that does not open with a `start`, a second message, signal, or condition start repeating an earlier one's payload, `initiator` or a `form` block on a start inside a subprocess, attempt block, or handler body, a process with several starts and no plain or timer one among them (warning), a `form` block on a start that is not the default one (warning), a `goto` reaching into a `parallel` or `await` branch from outside it, a second `else` branch on a `parallel` statement, an `else` branch with no conditioned sibling, and an `else` branch beside a sibling carrying no condition.
-- Names: a reused process name, step name, or `label`, a step name equal to the process id, which the compiled document can hold only once, and a name matching a synthesized-id pattern, the desugarer's own or the layouter's `_di`, `BPMNDiagram_`, and `BPMNPlane_` ids ([ADR-0010](../../docs/decisions/0010-deterministic-structural-ids.md)).
+- Names: a reused process name, step name, or `label`, a step name equal to the process id, which the compiled document can hold only once, and a name matching a synthesized-id pattern, the desugarer's own or the layouter's `_di`, `BPMNDiagram_`, and `BPMNPlane_` ids ([ADR-0010](../../docs/decisions/0010-deterministic-synthesized-ids.md)).
 - Call activities: a missing `process`, an unknown `binding` value, `binding` and `version` together, `mapper` and `mapperDelegate` together, and duplicate `in` or `out` mappings.
   A `decide` step pins its decision table with `binding` and `version`, under those same two rules.
 - Form fields: a type outside the five, a repeated field id, a field typed against a `var` of its name, a settings key outside the seven constraints and `pattern`, a constraint on a type its validator refuses or a `pattern` off a `date` field, a value in a shape the engine cannot parse (`required: false`, a bound that is not an integer, an empty `pattern` or `validator`, a `pattern` holding a letter `SimpleDateFormat` does not read), a literal default that is not what its type converts (`number`, not an integer; `boolean`, not `true` or `false`; `date` with no `pattern`, an ISO date rather than the engine's own `dd/MM/yyyy`), a value line on a field that is not an `enum`, an `enum` offering no values (warning), a repeated value id, a literal default naming none of the values, a block member that is not a `property` line, and a property value that is neither a quoted string nor a `"${...}"` expression.
@@ -883,7 +885,7 @@ Using a reserved keyword where an identifier belongs, as in `if (date > deadline
 ```ts
 import {
   createBpmnScriptServices, // factory: returns a fully wired Langium service container
-  BpmnScriptLanguageMetaData, // file-extension constants (e.g. fileExtensions: ['bpmnscript'])
+  BpmnScriptLanguageMetaData, // file-extension constants (e.g. fileExtensions: ['.bpmnscript'])
   renderExpression, // serialize a parsed expression AST node to a "${...}" string
 } from '@bpmn-script/language';
 ```
@@ -903,7 +905,7 @@ npm run build    # runs langium generate + tsc
 npm test
 ```
 
-`langium:generate` and `langium:watch` are also available for IDE use; the VS Code launch configuration relies on them.
+`langium:generate` and `langium:watch` are also available for IDE use.
 
 ## Source layout
 

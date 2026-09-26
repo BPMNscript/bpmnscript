@@ -149,6 +149,19 @@ describe('compileDslToBpmn', () => {
     expect(result.output).not.toContain('bpmndi:');
     expect(result.layoutWarning).toContain('bpmn-auto-layout');
   });
+
+  test('a comment-only file is refused in plain words, not in astToIr wording', async () => {
+    const result = await compileDslToBpmn(
+      '// nothing but a comment here\n',
+      '0.0.1',
+    );
+
+    expect(result).toEqual({
+      ok: false,
+      kind: 'error',
+      message: 'the file has no process',
+    });
+  });
 });
 
 const LANE_AND_ASYNC_ATTR_BPMN = `<?xml version="1.0" encoding="UTF-8"?>
@@ -262,6 +275,31 @@ describe('decompileBpmnToDsl', () => {
     if (result.ok) return;
     expect(result.kind).toBe(expected.kind);
     expectMentions(result.message, expected.mentions);
+  });
+
+  // The sidebar's file picker offers every file, and whatever comes back here
+  // goes into a notification whole.
+  const UNPARSABLE_TAG = '<bad\0tag' + 'z'.repeat(300);
+
+  test.each([
+    [
+      'a long file that is not XML at all is named by a short preview of its start',
+      'PK\u0003\u0004' + 'x'.repeat(300_000),
+      `not an XML document (starts with "PK${'x'.repeat(38)}")`,
+    ],
+    [
+      'a document the parser chokes on is cut to its first line, capped, and stripped of control characters',
+      UNPARSABLE_TAG,
+      (
+        `unparsable content ${UNPARSABLE_TAG} detected`.slice(0, 200) + '...'
+      ).replace(/\p{C}/gu, ''),
+    ],
+  ])('%s', async (_title, xml, message) => {
+    expect(await decompileBpmnToDsl(xml)).toEqual({
+      ok: false,
+      kind: 'error',
+      message,
+    });
   });
 });
 

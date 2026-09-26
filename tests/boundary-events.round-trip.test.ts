@@ -336,7 +336,7 @@ describeImportFirst(
       ]);
     });
 
-    it('keeps every host, trigger payload, and cancelActivity paired correctly', () => {
+    it('keeps every host, trigger payload, and cancelActivity paired', () => {
       const expected = [
         'InspectCrate error MISSING_ITEM interrupting',
         'InspectCrate error TORN_BOX interrupting',

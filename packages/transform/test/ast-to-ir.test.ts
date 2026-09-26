@@ -74,7 +74,7 @@ beforeAll(() => {
   parse = parseHelper<Model>(services.BpmnScript);
 });
 
-// ── Test helpers ─────────────────────────────────────────────────────────────
+// Test helpers
 
 async function ir(source: string): Promise<BpmnProcess> {
   const doc = await parse(source);
@@ -202,7 +202,7 @@ describe('astToIr: implicit sequence and implicit start/end', () => {
 
     expect(only(result, 'startEvent').id).toBe(startId);
     expect(only(result, 'endEvent').id).toBe(endId);
-    expect(flow(result, startId, endId)).toBeDefined();
+    flow(result, startId, endId);
   });
 });
 
@@ -1091,8 +1091,8 @@ describe('astToIr: call activity lowering', () => {
 
     const startId = makeStartEventId('p', new Set());
     const endId = makeEndEventId('p', new Set());
-    expect(flow(result, startId, 'F')).toBeDefined();
-    expect(flow(result, 'F', endId)).toBeDefined();
+    flow(result, startId, 'F');
+    flow(result, 'F', endId);
 
     const call = only(result, 'callActivity');
     expect(call).toEqual(callActivity('F', 'fulfilment'));
@@ -1219,8 +1219,8 @@ describe('astToIr: on-handler lowering', () => {
       sequenceFlows: [edge(startId, 'R'), edge('R', endId)],
     });
 
-    expect(flow(result, 'StartEvent_p', 'A')).toBeDefined();
-    expect(flow(result, 'A', 'EndEvent_p')).toBeDefined();
+    flow(result, 'StartEvent_p', 'A');
+    flow(result, 'A', 'EndEvent_p');
     for (const f of result.sequenceFlows) {
       expect(f.sourceRef).not.toBe(handlerId);
       expect(f.targetRef).not.toBe(handlerId);
@@ -1436,7 +1436,7 @@ describe('astToIr: hosted-handler lowering', () => {
     const result = await afterA('on A: error(PF) { }', 'error PF');
     const boundaryId = makeBoundaryEventId('A', 'error', new Set());
     const endId = makeEndEventId(boundaryId, new Set());
-    expect(flow(result, boundaryId, endId)).toBeDefined();
+    flow(result, boundaryId, endId);
     expect(byId(result, endId).kind).toBe('endEvent');
   });
 
@@ -1453,8 +1453,8 @@ describe('astToIr: hosted-handler lowering', () => {
       'Boundary_A_timer',
       'Boundary_A_timer_2',
     ]);
-    expect(flow(result, 'Boundary_A_timer', 'R')).toBeDefined();
-    expect(flow(result, 'Boundary_A_timer_2', 'S')).toBeDefined();
+    flow(result, 'Boundary_A_timer', 'R');
+    flow(result, 'Boundary_A_timer_2', 'S');
   });
 
   it('lands a handler hosted inside a sub-process in that sub-process container', async () => {
@@ -1609,8 +1609,8 @@ describe('astToIr: throw/emit lowering', () => {
       const result = await throwChain(statement);
       expect(byId(result, emitId).kind).toBe('intermediateThrowEvent');
       expect(definitionOf(result, emitId)).toEqual(expected);
-      expect(flow(result, 'A', emitId)).toBeDefined();
-      expect(flow(result, emitId, 'B')).toBeDefined();
+      flow(result, 'A', emitId);
+      flow(result, emitId, 'B');
     },
   );
 
@@ -1739,8 +1739,8 @@ describe('astToIr: handler inside a sub-process', () => {
       }`,
     );
     const sub = subProcess(result, 'S');
-    expect(flow(sub, 'StartEvent_S', 'A')).toBeDefined();
-    expect(flow(sub, 'A', 'EndEvent_S')).toBeDefined();
+    flow(sub, 'StartEvent_S', 'A');
+    flow(sub, 'A', 'EndEvent_S');
 
     const handlerId = makeEventSubProcessId('p_0_1');
     const handler = subProcess(sub, handlerId);
@@ -1762,8 +1762,8 @@ describe('astToIr: await intermediate catch lowering', () => {
     const catchId = makeIntermediateCatchEventId('p_1');
     expect(byId(result, catchId).kind).toBe('intermediateCatchEvent');
     expect(definitionOf(result, catchId)).toEqual(messageDef('M'));
-    expect(flow(result, 'A', catchId)).toBeDefined();
-    expect(flow(result, catchId, 'B')).toBeDefined();
+    flow(result, 'A', catchId);
+    flow(result, catchId, 'B');
   });
 
   it.each([
@@ -2991,7 +2991,7 @@ describe('astToIr: race lowering', () => {
     const empty = await ir(
       `process P { await { message("M") { } signal("S") { user B } } }`,
     );
-    expect(flow(empty, firstCatch, joinId)).toBeDefined();
+    flow(empty, firstCatch, joinId);
 
     const terminating = await ir(
       `process P { error Failed await { message("M") { end Done } signal("S") { throw error B(Failed) } } }`,
@@ -3154,7 +3154,7 @@ describe('astToIr: gateway settings', () => {
   });
 });
 
-// ── Local helpers ────────────────────────────────────────────────────────────
+// Local helpers
 
 function definitionOf(container: FlowContainer, id: string): unknown {
   return (byId(container, id) as { eventDefinition?: unknown }).eventDefinition;

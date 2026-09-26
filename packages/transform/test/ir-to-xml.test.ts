@@ -84,7 +84,7 @@ const importShapedIr: BpmnProcess = {
   name: 'Invoice Approval',
 };
 
-// ── Shared XML output ────────────────────────────────────────────────────────
+// Shared XML output
 
 let xml: string;
 
@@ -2741,7 +2741,7 @@ describe('irToXml: blocks that can be given up', () => {
   });
 });
 
-// ── Helpers ──────────────────────────────────────────────────────────────────
+// Helpers
 
 /**
  * Re-read with the Operaton extension registered, the stricter read: an

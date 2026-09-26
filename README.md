@@ -61,7 +61,7 @@ npm test
 ```
 
 The test run includes end-to-end tests that boot a real Operaton engine in Docker via [testcontainers](https://testcontainers.com/), so it needs a running Docker daemon.
-Without one, set `SKIP_DOCKER_TESTS=true` to skip them (CI does this automatically).
+Without one, set `SKIP_DOCKER_TESTS=true` to skip them; CI runs them.
 
 ## Documentation
 
@@ -90,7 +90,7 @@ npx bpmns build invoice-approval.bpmnscript -o out/invoice-approval.bpmn
 npx bpmns parse out/invoice-approval.bpmn -o out/invoice-approval.bpmnscript
 ```
 
-Exit codes are `0` for success, `1` for validation or parse errors, `2` for I/O errors.
+Exit codes are `0` for success, `1` for validation errors on `build` or a refused BPMN construct on `parse`, and `2` for an I/O problem or input that cannot be read as BPMN XML.
 Both directions print non-fatal warnings to stderr without changing the exit code, so an undeclared variable reference on compile, or a dropped lane on import is warned about but still produces a file.
 `parse` also re-validates the script it wrote and lists every error `build` would draw from it, still with exit `0`.
 Both commands read a file from disk, never stdin, refuse to overwrite an existing output unless you pass `--force`, and refuse the input path itself even then; see [packages/cli/README.md](packages/cli/README.md) for the exact rules.
@@ -158,7 +158,7 @@ The event statements `on`, `throw`, `emit` and `await` are the exception: their 
 The `for` row is a modifier rather than a statement: every activity in the table takes it between the id and the parens, meaning `user`, `service`, `script`, `step`, `send`, `receive`, `decide`, `subprocess`, `attempt`, and `call`.
 The last three rows are members of an element rather than statements: an engine setting joins the rest in the `( )`, a parameter and a listener go in the `{ }`, and not every element takes every one.
 The process header's own settings are written with the other process declarations.
-The listener row reuses `on` instead of opening a new event sub-process; the body block a handler always carries and a listener never does is what tells the two apart ([ADR-0023](docs/decisions/0023-listeners-on-the-attribute-block.md)).
+The listener row reuses `on` instead of opening a new event sub-process; the body block a handler always carries and a listener never does is what tells the two apart ([ADR-0020](docs/decisions/0020-listeners-reuse-on-inside-the-attribute-block.md)).
 The `attempt` head and the `cancel` end are one construct: the end gives up the block it sits in, `on <block>: cancel` beside the block catches it, and the block's finished steps that carry an `on compensation` block (the undo block) are undone in between.
 
 [packages/language/README.md](packages/language/README.md) is the full specification: which keys each element takes, which elements take parameters and listeners, and what a conditioned `parallel` branch compiles to.
@@ -278,16 +278,16 @@ A decompile deals with that in three ways.
 A branch that only rejoins the block's tail may print after the block instead, reached by a `goto`, and the block's join may be replaced by direct edges into that tail; the set of steps and their order along each path is unchanged, so this restructuring prints with no warning at all.
 
 What each hop reports, item by item, is the import contract in [packages/transform/README.md](packages/transform/README.md#the-import-contract) and the print warnings in [packages/transform/README.md](packages/transform/README.md#print-warnings).
-[ADR-0009](docs/decisions/0009-dominator-based-restructuring.md) covers which shapes degrade and why.
+[ADR-0014](docs/decisions/0014-restructure-the-ir-into-a-dsl-with-dominator-analysis.md) covers which shapes degrade and why.
 
 Every engine setting a modeler tunes imports warning-free; the IR shape in [packages/transform/README.md](packages/transform/README.md#ir-shape) lists each one.
-A user task assigned in BPMN's own words, a `bpmn:humanPerformer` or a `bpmn:potentialOwner`, imports onto the same `assignee`, `candidateUsers` and `candidateGroups` the engine reads it into, with a warning naming the rewrite ([ADR-0039](docs/decisions/0039-import-bpmn-resource-assignment-and-report-the-quantity-attributes.md)).
-A link throw is one exception: each engine setting and listener on one warns, because Operaton creates no activity for a link throw and so never reads them ([ADR-0035](docs/decisions/0035-link-events-for-import-round-trip-symmetry.md)).
-`asyncAfter` on an event-based gateway is the other: the import refuses it, as Operaton refuses to deploy it ([ADR-0040](docs/decisions/0040-engine-settings-on-synthesized-gateways.md)).
+A user task assigned in BPMN's own words, a `bpmn:humanPerformer` or a `bpmn:potentialOwner`, imports onto the same `assignee`, `candidateUsers` and `candidateGroups` the engine reads it into, with a warning naming the rewrite ([ADR-0012](docs/decisions/0012-honest-bpmn-import.md)).
+A link throw is one exception: each engine setting and listener on one warns, because Operaton creates no activity for a link throw and so never reads them ([ADR-0030](docs/decisions/0030-link-events-for-import-round-trip-symmetry.md)).
+`asyncAfter` on an event-based gateway is the other: the import refuses it, as Operaton refuses to deploy it ([ADR-0021](docs/decisions/0021-operaton-engine-attributes-as-named-ir-fields.md)).
 What stays out of reach is a setting with nowhere to sit in the text.
 That is a listener or an input/output parameter on a synthesized gateway, a setting on the `bpmn:process` element, or a job priority on the repetition element, which the engine reads off the step alone.
 
-The reasoning is in [ADR-0014](docs/decisions/0014-honest-bpmn-import-contract.md).
+The reasoning is in [ADR-0012](docs/decisions/0012-honest-bpmn-import.md).
 The short version: a round trip that changes the model/workflow without warning is worse than one that refuses to run.
 
 ## Running a process on a real engine
@@ -317,7 +317,7 @@ flowchart LR
 A source file is parsed into an AST, converted into the IR (a small set of plain TypeScript objects in `packages/transform/src/ir/types.ts` that describe a process in the engine's own terms, tied to no file format), and written out from there.
 Compiling is `.bpmnscript` -> AST -> IR -> `.bpmn`; decompiling is `.bpmn` -> IR -> `.bpmnscript`.
 
-The IR carries Operaton's semantics under names with no vendor prefix: the engine's bindings, execution settings, input/output parameters and lifecycle listeners are all plain-named IR fields, and `operaton:` is applied only where `irToXml` builds the moddle element from a local [moddle extension](packages/transform/src/operaton-moddle.json) ([ADR-0006](docs/decisions/0006-intermediate-representation-between-ast-and-bpmn.md), [ADR-0022](docs/decisions/0022-engine-attributes-as-named-ir-fields.md), [ADR-0023](docs/decisions/0023-listeners-on-the-attribute-block.md)).
+The IR carries Operaton's semantics under names with no vendor prefix: the engine's bindings, execution settings, input/output parameters and lifecycle listeners are all plain-named IR fields, and `operaton:` is applied only where `irToXml` builds the moddle element from a local [moddle extension](packages/transform/src/operaton-moddle.json) ([ADR-0007](docs/decisions/0007-intermediate-representation-ast-bpmn.md), [ADR-0021](docs/decisions/0021-operaton-engine-attributes-as-named-ir-fields.md), [ADR-0020](docs/decisions/0020-listeners-reuse-on-inside-the-attribute-block.md)).
 
 | Library                                                         | Role                                                |
 | --------------------------------------------------------------- | --------------------------------------------------- |
@@ -353,7 +353,7 @@ A manual task and a definition-less intermediate throw are not authored; each im
 A compensation handler is written on a `subprocess` only, so BPMN's compensation boundary event with its association refuses the import and the message names the rewrite ([coverage table](docs/bpmn-coverage.md#boundary-events)).
 Forms are the `operaton:formData` fields on a start or a user task, or a `formKey`/`formRef` naming one deployed elsewhere; a form field typed outside `string`, `long`, `boolean`, `date`, and `enum` refuses the import ([import contract](packages/transform/README.md#refusals)).
 A `decide` step names a deployed decision table, and the language has no form for the table itself ([packages/language/README.md](packages/language/README.md#send-receive-and-decision-tasks)).
-The diagram is generated on every compile, so hand-placed coordinates in a `.bpmn` file are discarded on import without a warning ([ADR-0003](docs/decisions/0003-auto-layout-for-diagram-interchange.md)).
+The diagram is generated on every compile, so hand-placed coordinates in a `.bpmn` file are discarded on import without a warning ([ADR-0009](docs/decisions/0009-auto-layout-and-expansion-hint.md)).
 
 ## Project status
 

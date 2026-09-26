@@ -156,6 +156,7 @@ import {
   ERROR_MAPPING_WHEN,
   EVENT_BINDING_FIELD_SET,
   EVENT_BINDING_FIELDS,
+  EVENT_MESSAGE_FIELD,
   EXECUTION_LISTENER_EVENTS,
   EXPRESSION_ANYWHERE,
   EXPRESSION_OPEN,
@@ -202,6 +203,7 @@ import {
   THROW_TRIGGERS,
   TIMER_JOB_KEYS,
   TIMER_PARTICLES,
+  type TimerParticle,
   TRIGGER_PAYLOAD,
   TYPE_BINDING_KEY,
   TYPE_BINDING_VALUES,
@@ -286,12 +288,8 @@ const USER_PRIORITY_KEY = 'priority';
 export const NON_VARIABLE_ATTR_KEYS: ReadonlySet<string> = new Set([
   'label',
   'documentation',
-  'class',
   'formRef',
-  'expression',
-  'delegate',
-  EXTERNAL_BINDING_KEY,
-  TYPE_BINDING_KEY,
+  ...BUSINESS_RULE_BINDING_KEYS,
   'process',
   'binding',
   'version',
@@ -462,7 +460,6 @@ const ENGINE_KEY_BY_JOIN_KEY: Readonly<Record<string, string>> =
   Object.fromEntries(
     Object.entries(JOIN_KEY_BY_ENGINE_KEY).map(([key, join]) => [join, key]),
   );
-const TIMER_PARTICLE_SET: ReadonlySet<string> = new Set(TIMER_PARTICLES);
 const IO_DIRECTION_SET: ReadonlySet<string> = new Set(IO_DIRECTIONS);
 const FIELD_BINDING_KEY_SET: ReadonlySet<string> = new Set(FIELD_BINDING_KEYS);
 /** The remaining binding keys, so the two lists cannot name the same word. */
@@ -1069,7 +1066,7 @@ export const EVERY_SHAPE_MESSAGE = timerShapeMessage(
 
 /** The shape each particle's calendar reads. */
 const TIMER_SHAPE_BY_PARTICLE: Readonly<
-  Record<string, { pattern: RegExp; message: string }>
+  Record<TimerParticle, { pattern: RegExp; message: string }>
 > = {
   after: { pattern: AFTER_TIME_TEXT, message: AFTER_SHAPE_MESSAGE },
   at: { pattern: AT_TIME_TEXT, message: AT_SHAPE_MESSAGE },
@@ -1356,11 +1353,11 @@ function isSignalSubscriptionJobCarrier(owner: AttributeOwner): boolean {
 }
 
 /**
- * Ids the `astToIr` desugarer synthesizes (ADR-0010); a statement name
+ * Ids the `astToIr` desugarer synthesizes; a statement name
  * matching one produces duplicate-id IR. A process or subprocess body's own
  * `StartEvent_<container>` and `EndEvent_<container>` are matched exactly by
  * {@link mintedTerminalRole} instead, since a prefix would refuse the
- * Modeler's default `StartEvent_1` (ADR-0050); a handler body's and a boundary
+ * Modeler's default `StartEvent_1`; a handler body's and a boundary
  * escape's terminals are minted off a coordinate no author writes, so only a
  * prefix catches them. `_di$`, `BPMNDiagram_` and `BPMNPlane_` are `irToXml`'s
  * layout ids, which collide as a duplicate `xs:ID` the same way.
@@ -4178,12 +4175,13 @@ export class BpmnScriptValidator {
       }
       return;
     }
+    const known = TIMER_PARTICLES.find((word) => word === particle);
     if (particle === undefined) {
       accept('error', LISTENER_TIMER_PAYLOAD_MESSAGE, {
         node: listener,
         property: 'event',
       });
-    } else if (!TIMER_PARTICLE_SET.has(particle)) {
+    } else if (known === undefined) {
       accept(
         'error',
         `Unknown timer particle '${particle}'; write ${formatWordList(TIMER_PARTICLES)}.`,
@@ -4198,7 +4196,7 @@ export class BpmnScriptValidator {
       );
       this.checkTimerShape(
         listener.time,
-        particle,
+        known,
         { node: listener, property: 'time' },
         'warning',
         accept,
@@ -4213,14 +4211,14 @@ export class BpmnScriptValidator {
    */
   private checkTimerShape(
     time: string,
-    particle: string,
+    particle: TimerParticle,
     target: { node: AstNode; property: string },
     severity: 'error' | 'warning',
     accept: ValidationAcceptor,
   ): void {
     if (EXPRESSION_OPEN.test(time)) return;
     const shape = TIMER_SHAPE_BY_PARTICLE[particle];
-    if (shape !== undefined && !shape.pattern.test(time)) {
+    if (!shape.pattern.test(time)) {
       accept(severity, shape.message, target);
     }
   }
@@ -4295,7 +4293,7 @@ export class BpmnScriptValidator {
   ): void {
     for (const binding of caughtBindingsOf(handler.items)) {
       if (
-        binding.field === 'message' &&
+        binding.field === EVENT_MESSAGE_FIELD &&
         !TRIGGER_PAYLOAD[handler.trigger]!.message
       ) {
         accept('error', ESCALATION_NO_MESSAGE_MESSAGE, {
@@ -4679,7 +4677,10 @@ export class BpmnScriptValidator {
 
     for (const setting of settings) {
       if (!EVENT_BINDING_FIELD_SET.has(setting.key)) continue;
-      if (setting.key === 'message' && !TRIGGER_PAYLOAD[decl.kind]!.message) {
+      if (
+        setting.key === EVENT_MESSAGE_FIELD &&
+        !TRIGGER_PAYLOAD[decl.kind]!.message
+      ) {
         accept('error', ESCALATION_NO_MESSAGE_MESSAGE, {
           node: setting,
           property: 'key',

@@ -54,7 +54,7 @@ const labeledTerminalsBpmn = (
 </bpmn:definitions>
 `;
 
-// BPMN vocabulary the DSL author never sees (ADR-0013).
+// BPMN vocabulary the DSL author never sees.
 const FORBIDDEN_JARGON = ['flow node', 'gateway', 'token', 'sequence flow'];
 
 function assertNoForbiddenJargon(text: string): void {

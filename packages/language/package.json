@@ -1,6 +1,6 @@
 {
   "name": "@bpmn-script/language",
-  "description": "The language specific package",
+  "description": "Langium grammar, validator and language server for BPMNscript",
   "version": "0.0.1",
   "license": "Apache-2.0",
   "repository": {

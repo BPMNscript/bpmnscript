@@ -4,6 +4,9 @@ import * as fs from 'node:fs/promises';
 import {
   xmlToIr,
   irToDsl,
+  EMPTY_INPUT_MESSAGE,
+  readableParseError,
+  xmlInputProblem,
   UnsupportedConstructError,
   UnsupportedServiceTaskFormError,
   UnsupportedElementError,
@@ -26,37 +29,6 @@ type ParseOptions = {
   force?: boolean;
 };
 
-// `moddle-xml`'s one message for a root that resolves to no registered type;
-// it never says what it found.
-const WRONG_ROOT_MESSAGE = 'failed to parse document as <bpmn:Definitions>';
-const BPMN_NAMESPACE = 'http://www.omg.org/spec/BPMN/20100524/MODEL';
-
-function describeRoot(xml: string): string {
-  const tag = /<([\w:]+)/.exec(xml)?.[1];
-  if (tag === undefined) return '';
-  // A greedy `[^>]*` backtracks from the tag's end, so it lands on the last
-  // xmlns declared on the root, not the one for the root's own prefix.
-  const colon = tag.indexOf(':');
-  const decl = colon === -1 ? 'xmlns' : `xmlns:${tag.slice(0, colon)}`;
-  const uri = new RegExp(`<${tag}[^>]*?\\s${decl}="([^"]+)"`).exec(xml)?.[1];
-  const found = uri === undefined ? '' : `; found ${decl}=${uri}`;
-  return ` (root element is <${tag}>; expected <bpmn:definitions> in namespace ${BPMN_NAMESPACE}${found})`;
-}
-
-// `saxen`'s parse errors quote the unparsed remainder of the document after a
-// newline: megabytes for a large or binary file, control characters included.
-function readableParseError(message: string, xml: string): string {
-  const firstLine = message.split('\n')[0];
-  const capped = (
-    firstLine.length > 200 ? firstLine.slice(0, 200) + '...' : firstLine
-  ).replace(/\p{C}/gu, '');
-  return capped === WRONG_ROOT_MESSAGE ? capped + describeRoot(xml) : capped;
-}
-
-function printablePreview(text: string): string {
-  return text.slice(0, 200).replace(/\p{C}/gu, '').slice(0, 40);
-}
-
 export async function parseAction(
   fileName: string,
   opts: ParseOptions,
@@ -72,14 +44,12 @@ export async function parseAction(
     fail(2, `Error: could not read ${fileName}: ${(err as Error).message}`);
   }
 
-  // `trim` treats a leading BOM as whitespace (ECMA-262 WhiteSpace includes
-  // U+FEFF), so neither check needs a BOM strip.
-  if (xml.trim() === '') fail(2, 'Error: the file is empty');
-  if (!xml.trimStart().startsWith('<')) {
+  const problem = xmlInputProblem(xml);
+  if (problem === EMPTY_INPUT_MESSAGE) fail(2, `Error: ${problem}`);
+  if (problem !== undefined) {
     fail(
       2,
-      `Error: not an XML document (starts with "${printablePreview(xml.trimStart())}"); ` +
-        'a .bpmnscript file is built with `bpmns build`',
+      `Error: ${problem}; a .bpmnscript file is built with \`bpmns build\``,
     );
   }
 
@@ -137,7 +107,7 @@ export async function parseAction(
     warn(`Warning: ${w.elementId}: ${w.message}`);
   }
 
-  // The print hop never refuses (ADR-0014) and none of the warnings above run
+  // The print hop never refuses and none of the warnings above run
   // the validator, so a setting carried as written may still draw an error;
   // building the written script the way `build` would is what catches it.
   const rebuilt = await buildDocument(outPath);

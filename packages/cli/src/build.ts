@@ -3,7 +3,12 @@ import type { Model } from '@bpmn-script/language';
 import chalk from 'chalk';
 import * as path from 'node:path';
 
-import { astToIr, irToXml, LayoutError } from '@bpmn-script/transform';
+import {
+  astToIr,
+  irToXml,
+  LayoutError,
+  NO_PROCESS_MESSAGE,
+} from '@bpmn-script/transform';
 import {
   CLI_VERSION,
   SEVERITY_ERROR,
@@ -38,7 +43,8 @@ export async function buildAction(
   if (!extensions.includes(path.extname(resolvedInput))) {
     fail(
       2,
-      `Error: expected a file with one of these extensions: ${extensions.join(', ')}`,
+      `Error: expected a file with one of these extensions: ${extensions.join(', ')}; ` +
+        'a .bpmn file is decompiled with `bpmns parse`',
     );
   }
 
@@ -63,12 +69,10 @@ export async function buildAction(
     process.exit(1);
   }
 
-  // A blank or comment-only source parses clean into a model with no
-  // processes, which astToIr would refuse in its own internal wording. Checked
-  // after the error gate: a keyword typo also yields zero processes and should
-  // report its parser error instead.
+  // Checked after the error gate: a keyword typo also parses into a model with
+  // no processes, and should report its parser error instead.
   const ast = document.parseResult.value as Model;
-  if (ast.processes.length === 0) fail(1, 'Error: the file has no process');
+  if (ast.processes.length === 0) fail(1, `Error: ${NO_PROCESS_MESSAGE}`);
 
   const warnings = (document.diagnostics ?? []).filter(
     (d) => d.severity === SEVERITY_WARNING,

@@ -389,17 +389,25 @@ export type TimerKind = 'duration' | 'date' | 'cycle';
  * The particle a timer clause is written with, keyed by the BPMN timer
  * definition it selects (`timeDuration`, `timeDate`, `timeCycle`).
  */
-export const TIMER_PARTICLE_BY_KIND: Readonly<Record<TimerKind, string>> = {
+export const TIMER_PARTICLE_BY_KIND = {
   duration: 'after',
   date: 'at',
   cycle: 'every',
-};
+} as const satisfies Record<TimerKind, string>;
 
-export const TIMER_PARTICLES: readonly string[] = Object.values(
+export type TimerParticle = (typeof TIMER_PARTICLE_BY_KIND)[TimerKind];
+
+export const TIMER_PARTICLES: readonly TimerParticle[] = Object.values(
   TIMER_PARTICLE_BY_KIND,
 );
 
-export const EVENT_BINDING_FIELDS: readonly string[] = ['code', 'message'];
+export const EVENT_CODE_FIELD = 'code';
+export const EVENT_MESSAGE_FIELD = 'message';
+
+export const EVENT_BINDING_FIELDS: readonly string[] = [
+  EVENT_CODE_FIELD,
+  EVENT_MESSAGE_FIELD,
+];
 
 export const EVENT_BINDING_FIELD_SET: ReadonlySet<string> = new Set(
   EVENT_BINDING_FIELDS,
@@ -407,7 +415,8 @@ export const EVENT_BINDING_FIELD_SET: ReadonlySet<string> = new Set(
 
 export function eventBindingFieldsFor(trigger: string): readonly string[] {
   return EVENT_BINDING_FIELDS.filter(
-    (field) => field !== 'message' || TRIGGER_PAYLOAD[trigger]?.message,
+    (field) =>
+      field !== EVENT_MESSAGE_FIELD || TRIGGER_PAYLOAD[trigger]?.message,
   );
 }
 

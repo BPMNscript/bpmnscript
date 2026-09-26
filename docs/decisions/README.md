@@ -1,64 +1,41 @@
 # Architecture decision records
 
 Each file in this directory records one design decision behind BPMNscript: the problem, the options weighed, the choice, and what it costs.
-Every record follows the MADR shape in [adr-template.md](adr-template.md).
-A later decision that changes an earlier one says so with an `Amends ADR-XXXX` line in its "More Information" section, and the earlier one carries the matching `Amended by` line, so the two link both ways.
-A `Supersedes ADR-XXXX` line pairs with a `Superseded by` line the same way.
+Every record follows the MADR shape in [adr-template.md](adr-template.md), and states the decision as it stands today.
+Where a record names what the engine does, that behaviour was read from Operaton 2.1.0.
 
-| Number                                                                             | Title                                                                                                               | Status   |
-| ---------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- | -------- |
-| [0000](0000-use-markdown-architectural-decision-records.md)                        | Use Markdown Architectural Decision Records                                                                         | accepted |
-| [0001](0001-vscode-as-primary-ide-target.md)                                       | Use VS Code as Primary IDE Target                                                                                   | accepted |
-| [0002](0002-use-langium-as-language-workbench.md)                                  | Use Langium as Language Workbench                                                                                   | accepted |
-| [0003](0003-auto-layout-for-diagram-interchange.md)                                | Use Auto-layout for Diagram Interchange Data                                                                        | accepted |
-| [0004](0004-use-apache-2-license.md)                                               | Use Apache 2.0 License                                                                                              | accepted |
-| [0005](0005-use-mono-repo-structure.md)                                            | Use Mono-repo Structure                                                                                             | accepted |
-| [0006](0006-intermediate-representation-between-ast-and-bpmn.md)                   | Use an Intermediate Representation between the AST and BPMN XML                                                     | accepted |
-| [0007](0007-operaton-moddle-extension-fork.md)                                     | Fork the Camunda Moddle Extension as a Local Operaton Extension                                                     | accepted |
-| [0008](0008-structured-grammar.md)                                                 | Use a Structured, Code-Like Grammar                                                                                 | accepted |
-| [0009](0009-dominator-based-restructuring.md)                                      | Use Dominator/Post-Dominator Analysis for IR-to-DSL Restructuring                                                   | accepted |
-| [0010](0010-deterministic-structural-ids.md)                                       | Use Deterministic Structural Ids for Synthesized BPMN Elements                                                      | accepted |
-| [0011](0011-in-editor-conversion-sidebar.md)                                       | In-Editor Conversion: Webview Sidebar, Two-Layer Architecture, and CJS Bundling                                     | accepted |
-| [0012](0012-embed-java-delegate-code-and-generate-operaton-application.md)         | Embed Java Delegate Code and Generate the Operaton Application                                                      | rejected |
-| [0013](0013-target-users-without-bpmn-knowledge.md)                                | Target Users Without BPMN Knowledge and Minimize Boilerplate                                                        | accepted |
-| [0014](0014-honest-bpmn-import-contract.md)                                        | Honest BPMN Import: Refuse Unsupported Constructs, Warn on Non-Semantic Drops                                       | accepted |
-| [0015](0015-subprocess-di-expansion-hint.md)                                       | Author a Diagram-Interchange Expansion Hint for Sub-processes                                                       | accepted |
-| [0016](0016-derived-event-root-elements.md)                                        | Derive Event Root Elements From Usage: Syntactic Throw Terminality, Soft Trigger Words                              | accepted |
-| [0017](0017-event-trigger-payload-surfaces.md)                                     | Event Trigger Payloads: One Paren Slot, Validated Timer Particles, Deferred Conditional Narrowing, Name-Keyed Roots | accepted |
-| [0018](0018-compensation-through-event-subprocesses.md)                            | Compensation Only as a Subprocess Undo Block: One Handler Form, No Targeted Throws                                  | accepted |
-| [0019](0019-boundary-events-attached-to-an-activity.md)                            | Boundary Events Attached to an Activity: Host Syntax, Trigger Scope, and a Self-Contained Body                      | accepted |
-| [0020](0020-intermediate-catch-events.md)                                          | Intermediate Catch Events: the `await` Keyword, a Synthesized Id, and a Four-Trigger Scope                          | accepted |
-| [0021](0021-external-tasks-as-a-service-task-binding.md)                           | External Tasks as a Service Task Binding, Not a Separate Keyword                                                    | accepted |
-| [0022](0022-engine-attributes-as-named-ir-fields.md)                               | Carry Operaton Engine Attributes as Named IR Fields                                                                 | accepted |
-| [0023](0023-listeners-on-the-attribute-block.md)                                   | Listeners Reuse `on` Inside the Attribute Block, Not a Second Keyword                                               | accepted |
-| [0024](0024-event-triggers-on-start-end-and-throw.md)                              | Event Triggers at the Process Boundary: Four Start Kinds, `terminate` on `end`, and the Message End on `throw`      | accepted |
-| [0025](0025-authoring-inclusive-and-event-based-gateways.md)                       | Inclusive and Event-Based Gateways: Conditioned `parallel` Branches, a Multi-Branch `await`, and No Gateway Label   | accepted |
-| [0026](0026-task-kinds-on-the-authoring-surface.md)                                | Task Kinds on the Authoring Surface: `step`, `send`, `receive`, and `decide`                                        | accepted |
-| [0027](0027-repetition-on-the-authoring-surface.md)                                | Repetition on the Authoring Surface: the `for` Clause                                                               | accepted |
-| [0028](0028-attempt-blocks-and-the-cancel-trigger.md)                              | Work That Can Be Given Up: the `attempt` Block and the `cancel` Trigger                                             | accepted |
-| [0029](0029-one-bracket-shape-for-every-element.md)                                | One bracket shape for every element                                                                                 | accepted |
-| [0030](0030-error-and-escalation-codes-as-declared-names.md)                       | Error and escalation codes as declared, referenced names                                                            | accepted |
-| [0031](0031-carry-bpmn-documentation.md)                                           | Carry bpmn:documentation wherever a name is carried                                                                 | accepted |
-| [0032](0032-field-injection-as-a-parameter-direction.md)                           | Field Injection as a Third Parameter Direction, Form References on User Tasks Only                                  | accepted |
-| [0033](0033-call-activity-variable-mapping.md)                                     | Carry a call activity's variable mapping under its own two setting keys                                             | accepted |
-| [0034](0034-multiple-start-events-on-a-process.md)                                 | Multiple start events on a process                                                                                  | accepted |
-| [0035](0035-link-events-for-import-round-trip-symmetry.md)                         | Link events for import round-trip symmetry                                                                          | accepted |
-| [0036](0036-elide-a-synthesized-end-only-at-its-block-tail.md)                     | Elide a synthesized end only at its block tail                                                                      | accepted |
-| [0037](0037-form-field-constraints-values-and-properties.md)                       | Form field constraints, values and properties                                                                       | accepted |
-| [0038](0038-external-task-extras-ride-the-topic-binding.md)                        | External task extras ride the topic binding                                                                         | accepted |
-| [0039](0039-import-bpmn-resource-assignment-and-report-the-quantity-attributes.md) | Import BPMN resource assignment, and report the quantity attributes                                                 | accepted |
-| [0040](0040-engine-settings-on-synthesized-gateways.md)                            | Engine settings on synthesized gateways                                                                             | accepted |
-| [0041](0041-per-run-job-settings-on-a-repetition.md)                               | Per-run job settings on a repetition                                                                                | accepted |
-| [0042](0042-mail-and-shell-as-a-type-binding.md)                                   | Mail and shell tasks as a `type` binding                                                                            | accepted |
-| [0043](0043-result-variable-beside-an-expression-binding.md)                       | A result variable rides an expression binding, never a class or delegate one                                        | accepted |
-| [0044](0044-raw-templates-read-and-printed-with-string-escapes.md)                 | Read and print a raw template with the string escapes, either opener kept                                           | accepted |
-| [0045](0045-reserve-an-inclusive-fallback-only-where-the-engine-can-take-it.md)    | Reserve an inclusive fallback only where the engine can take it                                                     | accepted |
-| [0046](0046-listener-shapes-the-engine-deploys.md)                                 | Listener shapes the engine deploys                                                                                  | accepted |
-| [0047](0047-timer-job-settings-on-the-element-the-engine-reads.md)                 | Timer job settings on the element the engine reads                                                                  | accepted |
-| [0048](0048-mirror-the-engines-parse-time-rules-in-the-validator.md)               | Mirror the engine's parse-time rules in the validator                                                               | accepted |
-| [0049](0049-import-modeler-shaped-documents.md)                                    | Import Modeler-shaped documents as the engine deploys them                                                          | accepted |
-| [0050](0050-reserve-the-minted-ids-and-respell-unspellable-ones.md)                | Reserve the minted start and end ids exactly, and respell an id the script cannot spell                             | accepted |
-| [0051](0051-synthesize-variable-declarations-on-print.md)                          | The print declares every variable it reads bare, typed any                                                          | accepted |
-| [0052](0052-loop-bodies-with-conditioned-exits.md)                                 | A split inside a loop body continues at the loop head when a route stays inside                                     | accepted |
-| [0053](0053-routes-off-a-step-and-jumps-with-conditions.md)                        | A step's routes print as the fork the engine runs, and a degraded split keeps its conditions on its jumps           | accepted |
-| [0054](0054-import-tiers-follow-the-engine-parse.md)                               | Import tiers follow the engine's parse                                                                              | accepted |
+| Number                                                                 | Title                                                               | Status   |
+| ---------------------------------------------------------------------- | ------------------------------------------------------------------- | -------- |
+| [0000](0000-use-markdown-architectural-decision-records.md)            | Use Markdown Architectural Decision Records                         | accepted |
+| [0001](0001-use-apache-2-license.md)                                   | Use Apache 2.0 License                                              | accepted |
+| [0002](0002-use-mono-repo-structure.md)                                | Use Mono-repo Structure                                             | accepted |
+| [0003](0003-use-langium-as-language-workbench.md)                      | Use Langium as Language Workbench                                   | accepted |
+| [0004](0004-use-vscode-as-primary-ide-target.md)                       | Use VS Code as Primary IDE Target                                   | accepted |
+| [0005](0005-in-editor-conversion-webview-sidebar.md)                   | In-Editor Conversion: Webview Sidebar and Two Layers                | accepted |
+| [0006](0006-target-users-without-bpmn-knowledge.md)                    | Target users without BPMN knowledge, and minimize boilerplate       | accepted |
+| [0007](0007-intermediate-representation-ast-bpmn.md)                   | An intermediate representation between the AST and BPMN XML         | accepted |
+| [0008](0008-fork-camunda-moddle-extension.md)                          | Fork the Camunda moddle extension as a local Operaton one           | accepted |
+| [0009](0009-auto-layout-and-expansion-hint.md)                         | Diagram interchange: auto-layout and the sub-process expansion hint | accepted |
+| [0010](0010-deterministic-synthesized-ids.md)                          | Deterministic ids for synthesized elements, reserved and respelled  | accepted |
+| [0011](0011-structured-grammar-one-bracket-shape.md)                   | A structured, code-like grammar with one bracket shape              | accepted |
+| [0012](0012-honest-bpmn-import.md)                                     | Honest BPMN import: refusals, warnings, and the parse tiers         | accepted |
+| [0013](0013-validator-mirrors-parse-time-rules.md)                     | The validator mirrors the engine's parse-time rules                 | accepted |
+| [0014](0014-restructure-the-ir-into-a-dsl-with-dominator-analysis.md)  | Restructure the IR into a DSL with dominator analysis               | accepted |
+| [0015](0015-the-print-declares-every-variable-it-reads.md)             | The print declares every variable it reads                          | accepted |
+| [0016](0016-task-kinds-on-the-authoring-surface.md)                    | Task kinds on the authoring surface                                 | accepted |
+| [0017](0017-service-task-bindings.md)                                  | Service task bindings, including external, mail and shell           | accepted |
+| [0018](0018-forms-and-field-injection.md)                              | Forms and field injection                                           | accepted |
+| [0019](0019-a-call-activitys-variable-mapping.md)                      | A call activity's variable mapping                                  | accepted |
+| [0020](0020-listeners-reuse-on-inside-the-attribute-block.md)          | Listeners reuse `on` inside the attribute block                     | accepted |
+| [0021](0021-operaton-engine-attributes-as-named-ir-fields.md)          | Operaton engine attributes as named IR fields                       | accepted |
+| [0022](0022-repetition-the-for-clause-and-its-per-run-job-settings.md) | Repetition: the `for` clause and its per-run job settings           | accepted |
+| [0023](0023-event-roots-from-usage-and-declared-codes.md)              | Event root elements derived from usage, and declared codes          | accepted |
+| [0024](0024-event-trigger-payloads-paren-slot.md)                      | Event trigger payloads in one paren slot                            | accepted |
+| [0025](0025-events-at-the-process-boundary.md)                         | Events at the process boundary: starts, ends and throws             | accepted |
+| [0026](0026-intermediate-catch-events.md)                              | Intermediate catch events                                           | accepted |
+| [0027](0027-boundary-events-attached-to-an-activity.md)                | Boundary events attached to an activity                             | accepted |
+| [0028](0028-compensation-as-subprocess-undo-block.md)                  | Compensation as a subprocess undo block                             | accepted |
+| [0029](0029-work-that-can-be-given-up.md)                              | Work that can be given up: `attempt` and `cancel`                   | accepted |
+| [0030](0030-link-events-for-import-round-trip-symmetry.md)             | Link events for import round-trip symmetry                          | accepted |
+| [0031](0031-inclusive-and-event-based-gateways.md)                     | Inclusive and event-based gateways                                  | accepted |
+| [0032](0032-expressions-raw-templates-and-escapes.md)                  | Expressions: raw templates, escapes, and what is lowered as EL      | accepted |

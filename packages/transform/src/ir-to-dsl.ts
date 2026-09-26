@@ -16,12 +16,20 @@ import {
   END_TRIGGERS,
   ENGINE_KEYS,
   type EngineKey,
+  ERROR_MAPPING_HEAD,
+  ERROR_MAPPING_WHEN,
   EXPRESSION_OPEN,
+  EXTERNAL_BINDING_KEY,
   EXTERNAL_TASK_EL_NAME,
+  FIELD_DIRECTION,
+  INPUT_DIRECTION,
   isReservedName,
   joinSettingKey,
   LOOP_VARIABLES,
+  OUTPUT_DIRECTION,
+  PROPERTY_DIRECTION,
   runSettingKey,
+  TASK_PRIORITY_KEY,
   TIMER_PARTICLE_BY_KIND,
   TYPE_BINDING_KEY,
   USER_TASK_VERBATIM_KEYS,
@@ -2303,17 +2311,23 @@ function engineSettings(el: EngineAttributes & Repeatable): string[] {
  */
 function fieldMembers(binding: ServiceTaskBinding | ListenerBinding): Lines[] {
   const fields = carriesFields(binding) ? (binding.fields ?? []) : [];
-  return fields.map((field) => [`field ${field.name} = ${quote(field.value)}`]);
+  return fields.map((field) => [
+    `${FIELD_DIRECTION} ${field.name} = ${quote(field.value)}`,
+  ]);
 }
 
 /** Inputs before outputs, each in IR order, which the engine evaluates in. */
 function ioParameters(el: IoMapped): Lines[] {
   const members: Lines[] = [];
   for (const param of el.inputParameters ?? []) {
-    members.push([`input ${param.name} = ${renderIoValue(param.value)}`]);
+    members.push([
+      `${INPUT_DIRECTION} ${param.name} = ${renderIoValue(param.value)}`,
+    ]);
   }
   for (const param of el.outputParameters ?? []) {
-    members.push([`output ${param.name} = ${renderIoValue(param.value)}`]);
+    members.push([
+      `${OUTPUT_DIRECTION} ${param.name} = ${renderIoValue(param.value)}`,
+    ]);
   }
   return members;
 }
@@ -2799,7 +2813,7 @@ function renderFormValue(value: FormFieldValue): string {
 /** `quote`, not `quoteLiteral`: a `${...}` value has to re-lex as a raw expression. */
 function propertyMembers(properties: ExtensionProperty[] | undefined): Lines[] {
   return (properties ?? []).map((p) => [
-    `property ${p.key} = ${quote(p.value)}`,
+    `${PROPERTY_DIRECTION} ${p.key} = ${quote(p.value)}`,
   ]);
 }
 
@@ -2813,7 +2827,7 @@ function errorMappingMembers(
   names: PrintNames,
 ): Lines[] {
   return (mappings ?? []).map((m) => [
-    `error ${names.error.get(m.errorCode) ?? m.errorCode} when ${renderRawCondition(m.condition)}`,
+    `${ERROR_MAPPING_HEAD} ${names.error.get(m.errorCode) ?? m.errorCode} ${ERROR_MAPPING_WHEN} ${renderRawCondition(m.condition)}`,
   ]);
 }
 
@@ -2879,11 +2893,14 @@ function bindingSettings(binding: ServiceTaskBinding): string[] {
       return [renderCodeBinding(binding)];
     case 'external':
       return [
-        setting('topic', quote(binding.topic)),
+        setting(EXTERNAL_BINDING_KEY, quote(binding.topic)),
         ...(binding.taskPriority === undefined
           ? []
           : [
-              setting('taskPriority', renderNumericValue(binding.taskPriority)),
+              setting(
+                TASK_PRIORITY_KEY,
+                renderNumericValue(binding.taskPriority),
+              ),
             ]),
       ];
     case 'decision':

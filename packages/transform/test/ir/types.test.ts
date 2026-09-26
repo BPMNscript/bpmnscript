@@ -377,7 +377,8 @@ const ENGINE_ATTRIBUTES: EngineAttributes = {
  * extra fields (`versionTag`, `resultVariable`, the user-task assignment
  * fields, `taskListeners`) sit alongside them. The tuple annotation gives each
  * literal its exact type, so a literal only compiles if every field the table
- * promises is present on that interface.
+ * promises is present on that interface. Nothing runs these literals; `tsc -b`
+ * compiles this file, which is where the check lives.
  */
 const TYPE_TABLE: [
   StartEvent,
@@ -554,22 +555,14 @@ describe('eventIdentities: an external service task mapping counts as a use of i
   });
 });
 
-describe('the IR type table', () => {
-  it('compiles', () => {
-    // The literals above are the content: each one only type-checks if the IR
-    // interfaces still carry the fields the table promises, and each
-    // `@ts-expect-error` only type-checks while the constraint it names holds.
-    // This keeps them referenced and confirms every one is a real value.
-    for (const literal of [
-      ...TYPE_TABLE,
-      GATEWAY_WITH_JOB_SETTINGS,
-      GATEWAY_WITH_IO_MAPPED,
-      EXCLUSIVE_AT_DEFAULT,
-      IO_VALUE_WITH_TWO_FORMS,
-      LISTENER_BINDING_WITH_NONE,
-      LISTENER_BINDING_WITH_TWO,
-    ]) {
-      expect(literal).toBeTypeOf('object');
-    }
-  });
-});
+// The literal tables above are compiled, never run: `tsc -b` is the check, and
+// exporting them is what keeps `noUnusedLocals` from failing on them.
+export {
+  TYPE_TABLE,
+  GATEWAY_WITH_JOB_SETTINGS,
+  GATEWAY_WITH_IO_MAPPED,
+  EXCLUSIVE_AT_DEFAULT,
+  IO_VALUE_WITH_TWO_FORMS,
+  LISTENER_BINDING_WITH_NONE,
+  LISTENER_BINDING_WITH_TWO,
+};

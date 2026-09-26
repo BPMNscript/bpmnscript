@@ -24,7 +24,7 @@ export function withTextMessages(
   }));
 }
 
-// ── Messages shared by more than one suite, spelled once ───────────────────
+// Messages shared by more than one suite, spelled once
 
 export const UNREACHABLE =
   'This step can never run: an earlier `end`, `throw`, `goto`, `emit link`, ' +

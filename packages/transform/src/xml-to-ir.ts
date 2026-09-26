@@ -2021,7 +2021,7 @@ const BOUNDARY_HOST_NOUNS = {
   scriptTask: 'script task',
   subProcess: 'subprocess',
   callActivity: 'call activity',
-} as const satisfies Partial<Record<FlowElement['kind'], string>>;
+} as const satisfies Record<(typeof ACTIVITY_KINDS)[number], string>;
 
 type BoundaryHostKind = keyof typeof BOUNDARY_HOST_NOUNS;
 type BoundaryHost = Extract<FlowElement, { kind: BoundaryHostKind }>;
