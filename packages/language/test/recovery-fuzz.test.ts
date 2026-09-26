@@ -1,19 +1,13 @@
 /**
  * Validation stays total on a broken document: no check crashes, and none
- * reports an element by a name the parser never filled in.
- *
- * Hand-written tables kept missing sites because each varied one axis: a
- * keyword in an identifier slot reaches different empty slots than a deleted
- * token, and neither reaches a slot whose reader only runs when something else
- * in the program refers to it. So the corpus is mutated mechanically instead:
- * tokenized by the language's own lexer, with a vocabulary read out of the
- * grammar, then substituted, duplicated and deleted at a fixed seed.
- *
- * `MUTANTS` is sized to keep this a second or two, and `TIMEOUT_MS` scales
- * with it so the knob is the only limit; changing `SEED` explores elsewhere.
- * 50_000 runs in about twenty seconds. Past roughly 150_000 the documents the
- * validation helper retains exhaust the default heap and the worker dies, so a
- * wider run wants `NODE_OPTIONS=--max-old-space-size=8192`.
+ * reports an element by a name the parser never filled in. A hand-written
+ * table varies one axis per row (a keyword in an identifier slot reaches
+ * different empty slots than a deleted token), so the corpus is mutated
+ * mechanically instead: tokenized by the language's own lexer, then
+ * substituted, duplicated and deleted at a fixed seed. Changing `SEED`
+ * explores elsewhere; past roughly 150_000 mutants the documents the
+ * validation helper retains exhaust the default heap, so a wider run wants
+ * `NODE_OPTIONS=--max-old-space-size=8192`.
  */
 
 import { beforeAll, describe, expect, test } from 'vitest';
@@ -28,29 +22,22 @@ const SEED = 0x5eed;
 const MUTANTS = 2000;
 
 /**
- * A mutant costs about 0.5ms on an idle machine, but a first run on a cold
- * cache and a contended CPU has been seen at fifteen times that. The budget is
- * therefore sized against the contended figure, not the warm one, and is only
- * meant to catch a runaway: a raised `MUTANTS` or validation that stopped being
- * linear in the input.
+ * A mutant costs about 0.5ms warm and fifteen times that on a cold, contended
+ * CPU; the budget only catches a runaway.
  */
 const TIMEOUT_MS = MUTANTS * 30;
 
 const FENCE = '`' + '`' + '`';
 
 /**
- * Well-formed sources covering every construct a check reads a slot off. A
- * construct alone is not enough where the reader is a second construct
- * referring to the first: a handler's trigger and a subprocess's name are only
- * printed when a `goto` crosses the boundary they label, and a form field's
- * type only when a `var` of the same name disagrees, so the corpus carries
- * those pairs rather than the halves.
- *
- * A duplicate walk is the one reader a near-collision cannot reach, because a
- * substitution draws from the grammar's own vocabulary and so can never
- * reproduce an identifier the source already spells. The last entry therefore
- * collides outright, on all three process-scoped duplicates at once, and its
- * mutants reach those walks with one half of each colliding pair torn up.
+ * Well-formed sources covering every construct a check reads a slot off. Where
+ * the reader is a second construct referring to the first (a handler's trigger
+ * is only printed when a `goto` crosses its boundary, a field's type only when
+ * a `var` of the same name disagrees), the corpus carries the pair. A
+ * substitution draws from the grammar's vocabulary and never reproduces an
+ * identifier the source spells, so the last entry collides outright on all
+ * three process-scoped duplicates, and its mutants reach the duplicate walks
+ * with one half of each pair torn up.
  */
 const CORPUS = [
   `process p { error E(code: "c", message: "m") start S throw error(E) }`,
@@ -75,11 +62,7 @@ const CORPUS = [
   `process p(label: "x", label: "y") { var a: number var a: number start S user U user U end E }`,
 ];
 
-/**
- * Park-Miller, deterministic so a failure names a mutant that can be replayed,
- * and free of the bitwise operators the lint config bans. The seed must be a
- * positive integer below the modulus.
- */
+/** Park-Miller, so a failure names a mutant that replays, and free of the bitwise operators the lint config bans. */
 function seededRandom(seed: number): () => number {
   const modulus = 2147483647;
   let state = seed % modulus;
@@ -98,9 +81,8 @@ beforeAll(() => {
   validate = validationHelper<Model>(services);
   tokenize = (text) =>
     services.parser.Lexer.tokenize(text).tokens.map((t) => t.image);
-  // Every keyword the grammar declares, so a new one joins the fuzz without
-  // anyone remembering to add it. The three terminal samples cannot be read
-  // out of a regular expression, so they are the one hand-written part.
+  // Every keyword the grammar declares; the three terminal samples cannot be
+  // read out of a regular expression, so they are the one hand-written part.
   const keywords = new Set<string>(['name', '"s"', '1']);
   for (const node of AstUtils.streamAllContents(services.Grammar)) {
     if (GrammarAST.isKeyword(node)) keywords.add(node.value);

@@ -112,10 +112,15 @@ describe("idempotence: DSL -> IR1 -> XML -> IR2 -> DSL' -> IR3", () => {
     }
   });
 
-  it('every map key comes back quoted, keyword-shaped or not', () => {
-    expect(rt.dslPrime).toContain('"start": "${payoutStart}"');
-    expect(rt.dslPrime).toContain('"lines": ["principal", "vat"]');
-    expect(rt.dslPrime).toContain('"field": "receipts"');
+  it('every map key prints quoted, keyword-shaped or not', () => {
+    const literals = rt.dslPrime
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => /^(input|output) \w+ = [[{]/.test(line));
+    expect(literals).toEqual([
+      'input auditChecks = [{ "field": "receipts", "rule": "present" }, { "field": "mileage", "rule": "within-policy" }]',
+      'output payoutReceipt = { "start": "${payoutStart}", "lines": ["principal", "vat"] }',
+    ]);
   });
 });
 
@@ -145,30 +150,39 @@ describe('the call activity keeps its variable mappings and its parameters apart
     }
   });
 
+  // Variable mappings sit beside the inputOutput block, not inside it. Nested
+  // in it they would still be present but would stop being read as mappings.
   it('the frozen call activity serializes both, as siblings under extensionElements', () => {
-    const element = /<bpmn:callActivity\b[\s\S]*?<\/bpmn:callActivity>/.exec(
-      rt.frozenXml,
-    )?.[0];
-    expect(element, 'no callActivity in the frozen artifact').toBeDefined();
-
-    expect(element).toContain(
-      '<operaton:in source="claimTotal" target="claimTotal" />',
+    expect(
+      /<bpmn:callActivity\b[\s\S]*?<\/bpmn:callActivity>/.exec(
+        rt.frozenXml,
+      )?.[0],
+    ).toBe(
+      [
+        '<bpmn:callActivity id="PayOut" name="Pay the reimbursement" calledElement="payment-run">',
+        '      <bpmn:extensionElements>',
+        '        <operaton:inputOutput>',
+        '          <operaton:inputParameter name="payoutChannel">sepa</operaton:inputParameter>',
+        '          <operaton:outputParameter name="payoutReceipt">',
+        '            <operaton:map>',
+        '              <operaton:entry key="start">${payoutStart}</operaton:entry>',
+        '              <operaton:entry key="lines">',
+        '                <operaton:list>',
+        '                  <operaton:value>principal</operaton:value>',
+        '                  <operaton:value>vat</operaton:value>',
+        '                </operaton:list>',
+        '              </operaton:entry>',
+        '            </operaton:map>',
+        '          </operaton:outputParameter>',
+        '        </operaton:inputOutput>',
+        '        <operaton:in source="claimTotal" target="claimTotal" />',
+        '        <operaton:out source="paymentReference" target="paymentReference" />',
+        '      </bpmn:extensionElements>',
+        '      <bpmn:incoming>Flow_AuditClaim_PayOut</bpmn:incoming>',
+        '      <bpmn:outgoing>Flow_PayOut_ClaimSettled</bpmn:outgoing>',
+        '    </bpmn:callActivity>',
+      ].join('\n'),
     );
-    expect(element).toContain(
-      '<operaton:out source="paymentReference" target="paymentReference" />',
-    );
-
-    // Variable mappings sit beside the inputOutput block, not inside it. Nested
-    // in it they would still be present but would stop being read as mappings.
-    const block = /<operaton:inputOutput>[\s\S]*?<\/operaton:inputOutput>/.exec(
-      element ?? '',
-    )?.[0];
-    expect(block, 'no inputOutput block on the call activity').toBeDefined();
-
-    expect(block).toContain('<operaton:inputParameter name="payoutChannel">');
-    expect(block).toContain('<operaton:outputParameter name="payoutReceipt">');
-    expect(block).not.toContain('<operaton:in source=');
-    expect(block).not.toContain('<operaton:out source=');
   });
 });
 

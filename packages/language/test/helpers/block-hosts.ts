@@ -6,7 +6,7 @@
  * these rows, so a new kind is added in one place.
  */
 
-import { ENGINE_KEYS } from '@bpmn-script/language';
+import { ENGINE_KEYS, type EngineKey } from '@bpmn-script/language';
 
 /**
  * A triple-backtick fence, assembled without a literal fence in the test source
@@ -15,7 +15,7 @@ import { ENGINE_KEYS } from '@bpmn-script/language';
 export const FENCE = '`' + '`' + '`';
 
 /** A value each engine key takes, in the shape its lowering reads. */
-const VALID_ENGINE_VALUE: Readonly<Record<string, string>> = {
+const VALID_ENGINE_VALUE: Readonly<Record<EngineKey, string>> = {
   asyncBefore: 'true',
   asyncAfter: 'true',
   exclusive: 'false',
@@ -25,7 +25,7 @@ const VALID_ENGINE_VALUE: Readonly<Record<string, string>> = {
 
 /** `keys` as one parens' worth of items, each spelled through `keyOf`. */
 export const engineItems = (
-  keys: readonly string[],
+  keys: readonly EngineKey[],
   keyOf: (key: string) => string = (key) => key,
 ): string =>
   keys.map((key) => `${keyOf(key)}: ${VALID_ENGINE_VALUE[key]}`).join(', ');

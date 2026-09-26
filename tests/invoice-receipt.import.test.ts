@@ -1,11 +1,8 @@
-// The Operaton invoice example, the thesis's demonstration process: a pool
-// wrapping three lanes, a data store and its reference, an unreferenced
-// message root, and an approve/review loop whose inner split names no
-// default (`invoice_approved`). `describeImportFirst` asserts a warning-free
-// import, which this document is not, so the pipeline is driven by hand
-// here: every per-feature suite in this package pins one shape apiece, and
-// this one pins that the whole file survives import, print, re-parse,
-// validation and a second import together.
+// The Operaton invoice example: a pool wrapping three lanes, a data store and
+// its reference, an unreferenced message root, and an approve/review loop
+// whose inner split names no default. It imports with warnings, which
+// `describeImportFirst` refuses, so the pipeline runs by hand and pins that
+// the whole file survives import, print, validation and a second import.
 
 import { describe, it, expect, beforeAll } from 'vitest';
 import { readFileSync } from 'node:fs';
@@ -24,11 +21,6 @@ const FIXTURE = readFileSync(
   'utf-8',
 );
 
-// The whole print: the start, the async respelling on the archive step, both
-// loop variables declared, the review loop restructured as `do ... while`
-// and no dropped edge. The assignment listener keeps its script body,
-// printed like `on create` just above it; the listener carries no settings,
-// so no parens precede the fenced body.
 const PRINTED = [
   'process invoice(label: "Invoice Receipt", versionTag: "V2.0", historyTimeToLive: "45") {',
   '  var clarified: any',

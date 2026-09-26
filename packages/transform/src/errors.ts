@@ -4,11 +4,10 @@
  * Content the IR cannot express is refused before any IR is produced. Content
  * the IR does not carry but that costs no semantics is dropped with a warning
  * instead, on the `warnings` channel `xmlToIr` returns.
- * `packages/transform/README.md` tabulates which construct lands where.
+ * `packages/transform/README.md` describes which construct lands where.
  */
 
 import {
-  CATCH_TRIGGERS,
   EMIT_TRIGGERS,
   FORM_CONSTRAINT_NAMES,
   formatPlainWordList,
@@ -18,10 +17,9 @@ import {
 } from '@bpmn-script/language';
 
 /**
- * Base for every refusal, so a consumer can classify the whole family with one
- * `instanceof`. Subclasses declare their fields with `declare` so the class
- * field initializers cannot overwrite what `Object.assign` wrote after
- * `super()`.
+ * Base for every refusal, so one `instanceof` classifies the family.
+ * Subclasses `declare` their fields so class field initializers cannot
+ * overwrite what `Object.assign` wrote after `super()`.
  */
 export abstract class UnsupportedConstructError extends Error {
   constructor(message: string, detail: Record<string, unknown>) {
@@ -106,6 +104,15 @@ export class UnsupportedFormFieldConstraintError extends UnsupportedConstructErr
   }
 }
 
+/** The closing sentence of every {@link UnsupportedElementError}. */
+export const SUPPORTED_KINDS_MESSAGE =
+  'Only start/end events, throws, emits, boundary events, event ' +
+  'handlers, plain tasks, user tasks, service tasks, send tasks, ' +
+  'receive tasks, business rule tasks, script tasks, exclusive ' +
+  'gateways, parallel gateways, inclusive gateways, event-based ' +
+  'gateways, embedded subprocesses, attempt blocks, call activities, ' +
+  'and sequence flows are supported.';
+
 /**
  * A flow element kind outside the supported subset, such as
  * `bpmn:adHocSubProcess` or `bpmn:complexGateway`. A supported kind carrying an
@@ -121,13 +128,7 @@ export class UnsupportedElementError extends UnsupportedConstructError {
     super(
       `The BPMN element ${qname}` +
         (elementId ? ` (id='${elementId}')` : '') +
-        ' is a kind that this tool cannot import. ' +
-        'Only start/end events, throws, emits, boundary events, event ' +
-        'handlers, plain tasks, user tasks, service tasks, send tasks, ' +
-        'receive tasks, business rule tasks, script tasks, exclusive ' +
-        'gateways, parallel gateways, inclusive gateways, event-based ' +
-        'gateways, embedded subprocesses, attempt blocks, call activities, ' +
-        'and sequence flows are supported.',
+        ` is a kind that this tool cannot import. ${SUPPORTED_KINDS_MESSAGE}`,
       { qname, elementId },
     );
   }
@@ -151,6 +152,8 @@ export class UnsupportedCallActivityError extends UnsupportedConstructError {
   }
 }
 
+export type EventPosition = 'start' | 'end' | 'intermediate throw' | 'boundary';
+
 /**
  * An event definition kind this tool does not import at that position. The
  * right kind in the wrong shape (an error throw with no code, a timer with no
@@ -158,19 +161,13 @@ export class UnsupportedCallActivityError extends UnsupportedConstructError {
  */
 export class UnsupportedEventDefinitionError extends UnsupportedConstructError {
   declare readonly elementId: string;
-  declare readonly eventKind:
-    'start' | 'end' | 'intermediate throw' | 'intermediate catch' | 'boundary';
+  declare readonly eventKind: EventPosition;
   /** Moddle `$type`, e.g. `bpmn:TerminateEventDefinition`. */
   declare readonly definitionType: string;
 
   constructor(
     elementId: string,
-    eventKind:
-      | 'start'
-      | 'end'
-      | 'intermediate throw'
-      | 'intermediate catch'
-      | 'boundary',
+    eventKind: EventPosition,
     definitionType: string,
   ) {
     super(
@@ -205,10 +202,9 @@ const EVENT_SURFACE_NOTE =
 
 /**
  * A supported event definition kind shaped in a way the DSL surface cannot
- * express. `detail` names the shape; the sentence after it says what to write
- * instead. A refusal outside the handler/throw/emit surface passes its own
- * `remedy`, so the reader is told the move that fixes the document rather than
- * a rule that does not describe it.
+ * express. `detail` names the shape; a refusal outside the handler/throw/emit
+ * surface passes its own `remedy`, so the reader is told the move that fixes
+ * the document.
  */
 export class UnsupportedEventFeatureError extends UnsupportedConstructError {
   declare readonly elementId: string;
@@ -320,13 +316,10 @@ export class UnsupportedFormReferenceError extends UnsupportedConstructError {
 }
 
 /**
- * A condition Operaton evaluates outside UEL, or refuses: a sequence flow's
- * `bpmn:conditionExpression`, or a conditional event definition's
- * `bpmn:condition`. Both reach Operaton's `parseConditionExpression`, so
- * `detail` names the same two shapes either way: a `language` attribute, from
- * which Operaton builds a `ScriptCondition` and runs the body in that
- * language, never as the UEL expression this tool writes; or an `xsi:type`
- * other than `tFormalExpression`, which fails the deployment.
+ * A sequence flow's `bpmn:conditionExpression` or a conditional event
+ * definition's `bpmn:condition` that Operaton's `parseConditionExpression`
+ * runs outside UEL (a `language` attribute builds a `ScriptCondition`) or
+ * refuses (an `xsi:type` other than `tFormalExpression`); `detail` names which.
  */
 export class UnsupportedConditionExpressionError extends UnsupportedConstructError {
   declare readonly elementId: string;
@@ -403,10 +396,7 @@ function friendlyEventDefinition(definitionType: string): string {
   return local.replace(/EventDefinition$/, '').toLowerCase() || 'special';
 }
 
-function supportedKindsMessage(
-  eventKind:
-    'start' | 'end' | 'intermediate throw' | 'intermediate catch' | 'boundary',
-): string {
+function supportedKindsMessage(eventKind: EventPosition): string {
   switch (eventKind) {
     case 'start':
       return (
@@ -422,8 +412,6 @@ function supportedKindsMessage(
       );
     case 'intermediate throw':
       return `An emit supports ${formatPlainWordList(EMIT_TRIGGERS)}.`;
-    case 'intermediate catch':
-      return `An await supports ${formatPlainWordList(CATCH_TRIGGERS)}.`;
     case 'boundary':
       return (
         `A boundary event supports ${formatPlainWordList(BOUNDARY_TRIGGERS)}, ` +
@@ -434,9 +422,8 @@ function supportedKindsMessage(
 
 /**
  * `bpmn-auto-layout`'s grid solver throws on some validator-clean flow shapes
- * (a `goto` restructuring among them). `xml` is the document as serialized
- * before the layout call: no `bpmndi:` diagram, but otherwise the document
- * Operaton deploys the same as a laid-out one
+ * (a `goto` restructuring among them). `xml` is the document with no
+ * `bpmndi:` element, for any process; Operaton deploys it the same
  * (`BpmnParse.parseDiagramInterchangeElements` reads a diagram only when one
  * is present), so a caller can fall back to it.
  */

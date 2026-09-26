@@ -98,6 +98,7 @@ The golden pair suites pass unchanged.
 The exact predicates and the minting scheme sit in `packages/transform/src/synthesize-ids.ts`; the name map is built by `printedNames` in `packages/transform/src/ir-to-dsl.ts`; the per-container check is `checkReservedNames` in `packages/language/src/bpmn-script-validator.ts`; the two import refusals go through `refuseUnspellableVariable` in `packages/transform/src/xml-to-ir.ts`.
 
 Amends ADR-0010, whose reserved-pattern list narrows to the prefixes above and the exact minted forms.
+Amends ADR-0014, whose label bullet names the exact minted ids rather than a prefix, whose warned list gains the `renamedId` respelling, and whose refused list gains a form field id or an input/output parameter name the script cannot spell.
 
 Related decisions: ADR-0014 (the honest import contract behind the refusals and the warning).
 ADR-0036 (where an elided end prints under its id, which this decision leaves as it is).

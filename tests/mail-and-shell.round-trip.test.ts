@@ -17,8 +17,6 @@ const rt = roundTripFixture('mail-and-shell', {
   recompile: 'clean',
 });
 
-// Revert: any direction dropping a field or the type, or `xmlToIr` reading the
-// type through the external branch.
 const BUILTIN_BINDINGS: Record<string, ServiceTaskBinding> = {
   RateSeverity: {
     kind: 'builtin',
@@ -68,8 +66,6 @@ describe('the frozen mail-and-shell binding contract', () => {
     }
   });
 
-  // Revert: `codeBindingFields` in `irToXml` not treating `builtin` as a
-  // carrier -> every field child gone.
   it('the frozen artifact writes the type on each tag and the fields in both value slots', () => {
     expect(rt.frozenXml).toContain(
       '<bpmn:businessRuleTask id="RateSeverity" name="Rate the severity" operaton:type="shell">\n' +
@@ -103,10 +99,8 @@ describe('the frozen mail-and-shell binding contract', () => {
     );
   });
 
-  // The whole set of heads and field lines, so a field printed on a tag that
-  // carries none fails too. The harness re-parses and validates DSL' as a
-  // whole. Revert: `fieldMembers` in `irToDsl` not treating `builtin` as a
-  // carrier -> every field line gone.
+  // Every head and field line, so a field printed on a tag that carries none
+  // fails too; the fixture harness re-parses and validates DSL'.
   it('the printed script carries the type on the head and the fields as members', () => {
     const lines = rt.dslPrime
       .split('\n')

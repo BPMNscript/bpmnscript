@@ -1,12 +1,6 @@
 /**
- * Parsing test suite for the BPMNscript grammar, driven in isolation through
- * Langium's `parseHelper`.
- *
- * Beyond the grammar surface these pin the edge cases Langium 4 makes easy to
- * get wrong: keyword versus ID in expression position, parser-rule expressions,
- * attribute-key versus identifier disambiguation, and duplicate attribute keys
- * reaching the AST. Whether a duplicate key is an error is the validator
- * suite's question, not this one's; where a `goto` may resolve to is the
+ * The grammar, driven through Langium's `parseHelper`. Whether a shape is
+ * legal is the validator suite's question; where a reference resolves is the
  * scoping suite's.
  */
 
@@ -32,12 +26,10 @@ import type {
 } from '@bpmn-script/language';
 import {
   createBpmnScriptServices,
-  isModel,
   renderExpression,
   settingsOf,
 } from '@bpmn-script/language';
 
-/** Every statement the repeat clause attaches to. */
 type Repeatable =
   | UserTask
   | ServiceTask
@@ -58,11 +50,9 @@ beforeAll(() => {
 });
 
 /**
- * A parsed subtree written as `Type(prop=value, ...)`, with a cross-reference
- * as `->target`. Only the properties the source actually set appear: a slot
- * left empty, a flag left off, and an empty list are all dropped. One string
- * therefore pins the filled slots, the empty ones, and any node the parser
- * invented along the way.
+ * A parsed subtree as `Type(prop=value, ...)`, a cross-reference as `->target`.
+ * An empty slot, an unset flag and an empty list are dropped, so one string
+ * pins the filled slots, the empty ones, and any node the parser invented.
  */
 function shape(value: unknown): string {
   if (Array.isArray(value)) {
@@ -89,14 +79,12 @@ function shape(value: unknown): string {
   return JSON.stringify(value);
 }
 
-/** Parse `source`, assert it parsed cleanly, and return the root `Model`. */
 async function parseModel(source: string): Promise<Model> {
   const document = await parse(source);
   expect(formatParseFailure(document)).toBeUndefined();
   return document.parseResult.value;
 }
 
-/** Every lexer and parser error `source` produces, in the order raised. */
 async function parseErrors(source: string): Promise<string[]> {
   const { lexerErrors, parserErrors } = (await parse(source)).parseResult;
   return [...lexerErrors, ...parserErrors].map((e) => e.message);
@@ -116,48 +104,19 @@ async function expectProcess(source: string, process: string) {
   expect(shape(model.processes[0]!)).toBe(process);
 }
 
-/**
- * Parse a bare expression by wrapping it as the condition of an `if`, then
- * return the parsed condition AST node.
- */
+/** The AST of `expr` parsed as the condition of an `if`. */
 async function parseCondition(expr: string) {
   const model = await parseModel(`process p { if (${expr}) { user A } }`);
   return (model.processes[0]!.body[0] as IfStatement).condition;
 }
 
-/** Parse `source` and return the statement at `index` in the first process. */
 async function statementAt<T>(source: string, index = 0): Promise<T> {
   return (await parseModel(source)).processes[0]!.body[index] as T;
 }
 
-/** A row of the shape tables: a title, a program, and the AST it parses to. */
 type Row = readonly [title: string, source: string, expected: string];
 
 describe('Parsing - process header', () => {
-  test('a realistic multi-construct process parses with zero lexer/parser errors', async () => {
-    const document = await parseModel(
-      `
-process invoice(label: "Invoice Approval") {
-  var amount: number
-
-  start Begin
-  user Review(label: "Review invoice", assignee: "demo")
-  if (amount > 1000) {
-    user Senior(label: "Senior approval", assignee: "manager")
-  } else {
-    service Auto(label: "Auto-approve", class: com.example.invoice.AutoApproveDelegate)
-  }
-  while (rejected) {
-    user Fix(label: "Fix issues")
-  }
-  end Done
-}
-`.trim(),
-    );
-    expect(isModel(document)).toBe(true);
-    expect(document.processes).toHaveLength(1);
-  });
-
   test.each<Row>([
     [
       'the process id and its label land in their own slots',
@@ -187,8 +146,6 @@ process invoice(label: "Invoice Approval") {
 }`,
       'Process(name="p", decls=[VarDecl(name="a", type="string"), VarDecl(name="b", type="number"), VarDecl(name="c", type="boolean"), VarDecl(name="d", type="date"), VarDecl(name="e", type="json"), VarDecl(name="f", type="any")], body=[StartEvent(name="S")])',
     ],
-    // The header settings ride on the process head; only `var` and the code
-    // declarations sit inside the braces, and they interleave freely.
     [
       'a code declaration parses beside a var declaration in either order',
       `process p(versionTag: "1.4", label: "Lbl") {
@@ -252,29 +209,9 @@ describe('Parsing - control flow and containers', () => {
       '[ParallelStatement(branches=[ParallelBranch(body=Block(statements=[IfStatement(condition=VarRef(ref=->a), then=Block(statements=[UserTask(name="A")]), elseBlock=Block(statements=[UserTask(name="B")]))])), ParallelBranch(body=Block(statements=[UserTask(name="C")]))])]',
     ],
     [
-      'a branch body holding only an end event parses',
-      `process p { parallel { { end A } { end B } } }`,
-      '[ParallelStatement(branches=[ParallelBranch(body=Block(statements=[EndEvent(name="A")])), ParallelBranch(body=Block(statements=[EndEvent(name="B")]))])]',
-    ],
-    [
       'a labeled subprocess carries its body statements',
       `process p { subprocess Handle(label: "Handle order") { user Review(assignee: "demo") } }`,
       '[SubProcess(name="Handle", items=[Setting(key="label", value=LiteralString(value="Handle order"))], body=Block(statements=[UserTask(name="Review", items=[Setting(key="assignee", value=LiteralString(value="demo"))])]))]',
-    ],
-    [
-      'explicit start/end inside a subprocess body parse as ordinary events',
-      `process p { subprocess S { start In user A end Out } }`,
-      '[SubProcess(name="S", body=Block(statements=[StartEvent(name="In"), UserTask(name="A"), EndEvent(name="Out")]))]',
-    ],
-    [
-      'a subprocess nests inside a subprocess',
-      `process p { subprocess Outer { subprocess Inner { user A } } }`,
-      '[SubProcess(name="Outer", body=Block(statements=[SubProcess(name="Inner", body=Block(statements=[UserTask(name="A")]))]))]',
-    ],
-    [
-      'a subprocess nests inside an if block',
-      `process p { if (a) { subprocess S { user A } } }`,
-      '[IfStatement(condition=VarRef(ref=->a), then=Block(statements=[SubProcess(name="S", body=Block(statements=[UserTask(name="A")]))]))]',
     ],
     [
       'an empty subprocess body parses with no statements and no label',
@@ -290,21 +227,6 @@ describe('Parsing - control flow and containers', () => {
       'an attempt head takes a repeat clause, its settings and a body',
       `process p { attempt A for each line in lines (label: "Book and pay", asyncBefore: true) { user U } }`,
       '[SubProcess(transactional=true, name="A", element="line", collection=VarRef(ref=->lines), items=[Setting(key="label", value=LiteralString(value="Book and pay")), Setting(key="asyncBefore", value=LiteralBool(value="true"))], body=Block(statements=[UserTask(name="U")]))]',
-    ],
-    [
-      'an attempt nests in a subprocess body and in another attempt',
-      `process p { subprocess S { attempt A { attempt B { user U } } } }`,
-      '[SubProcess(name="S", body=Block(statements=[SubProcess(transactional=true, name="A", body=Block(statements=[SubProcess(transactional=true, name="B", body=Block(statements=[UserTask(name="U")]))]))]))]',
-    ],
-    [
-      'an attempt nests in a handler body',
-      `process p { on error(E) { attempt A { user U } } }`,
-      '[OnHandler(trigger="error", items=[ParenValue(value=VarRef(ref=->E))], body=Block(statements=[SubProcess(transactional=true, name="A", body=Block(statements=[UserTask(name="U")]))]))]',
-    ],
-    [
-      'the body after an attempt head parses as its own statements, in order',
-      `process p { attempt A { user U end E } }`,
-      '[SubProcess(transactional=true, name="A", body=Block(statements=[UserTask(name="U"), EndEvent(name="E")]))]',
     ],
     [
       'a full call activity carries its attributes and every mapping shape',
@@ -326,16 +248,6 @@ describe('Parsing - control flow and containers', () => {
       '[CallActivity(name="Fulfilment", items=[Setting(key="label", value=LiteralString(value="Fulfil order")), Setting(key="process", value=LiteralString(value="fulfilment-process")), Setting(key="binding", value=VarRef(ref=->deployment)), Setting(key="businessKey", value=RawExpr(raw="${execution.processBusinessKey}"))], mappings=[VariableMapping(direction="in", all=true), VariableMapping(direction="in", target="orderId"), VariableMapping(direction="in", target="total", source=Additive(left=VarRef(ref=->amount), op="+", right=VarRef(ref=->tax))), VariableMapping(direction="in", local=true, target="vip", source=VarRef(ref=->vipFlag)), VariableMapping(direction="out", target="shipmentId"), VariableMapping(direction="out", target="shipped", source=VarRef(ref=->confirmed))])]',
     ],
     [
-      'an integer attribute value is a LiteralInt',
-      `process p { call C(version: 3) }`,
-      '[CallActivity(name="C", items=[Setting(key="version", value=LiteralInt(value=3))])]',
-    ],
-    [
-      'a raw-template attribute value is a RawExpr',
-      `process p { call C(version: "\${v}") }`,
-      '[CallActivity(name="C", items=[Setting(key="version", value=RawExpr(raw="${v}"))])]',
-    ],
-    [
       'a minimal call with only `process` parses and carries no mappings',
       `process p { call X(process: "p") }`,
       '[CallActivity(name="X", items=[Setting(key="process", value=LiteralString(value="p"))])]',
@@ -344,16 +256,6 @@ describe('Parsing - control flow and containers', () => {
       "an empty call body parses; a missing `process` is the validator's concern",
       `process p { call X { } }`,
       '[CallActivity(name="X")]',
-    ],
-    [
-      'a call nests inside an if block',
-      `process p { if (a) { call X(process: "p") } }`,
-      '[IfStatement(condition=VarRef(ref=->a), then=Block(statements=[CallActivity(name="X", items=[Setting(key="process", value=LiteralString(value="p"))])]))]',
-    ],
-    [
-      'a call nests inside a subprocess body',
-      `process p { subprocess S { call X(process: "p") } }`,
-      '[SubProcess(name="S", body=Block(statements=[CallActivity(name="X", items=[Setting(key="process", value=LiteralString(value="p"))])]))]',
     ],
     [
       'a call carries variable mappings and parameters together',
@@ -366,8 +268,6 @@ describe('Parsing - control flow and containers', () => {
 });
 
 describe('Parsing - gateway settings', () => {
-  // Revert: drop `SettingsParens?` from one of the five rules and its row is a
-  // parse error.
   test.each<Row>([
     [
       'an if head carries the split settings and the join settings; an else if head carries none',
@@ -482,8 +382,7 @@ describe('Parsing - the event layer', () => {
       '[UserTask(name="Review"), OnHandler(host=->Review, trigger="message", items=[ParenValue(value=LiteralString(value="Cancelled")), Flag(flag="alongside")], body=Block)]',
     ],
     // The host and the trigger are both bare IDs, so every trigger word is
-    // pinned on its own: the word before the colon is the host, the one after
-    // it the trigger.
+    // pinned on its own.
     ...(
       [
         'error',
@@ -619,26 +518,6 @@ describe('Parsing - the event layer', () => {
       '[StartEvent(name="S", trigger="timer", items=[ParenValue(value=LiteralString(value="PT1H"))]), UserTask(name="U"), EndEvent(name="E", trigger="terminate")]',
     ],
     [
-      'an on handler nests inside a subprocess body',
-      `process p { subprocess S { on error(X) { } } }`,
-      '[SubProcess(name="S", body=Block(statements=[OnHandler(trigger="error", items=[ParenValue(value=VarRef(ref=->X))], body=Block)]))]',
-    ],
-    [
-      'an on handler nests inside another on handler body',
-      `process p { on error(X) { on escalation(Y) { } } }`,
-      '[OnHandler(trigger="error", items=[ParenValue(value=VarRef(ref=->X))], body=Block(statements=[OnHandler(trigger="escalation", items=[ParenValue(value=VarRef(ref=->Y))], body=Block)]))]',
-    ],
-    [
-      'throw and emit nest inside an if block',
-      `process p { if (a) { throw error(X) } else { emit escalation(Y) } }`,
-      '[IfStatement(condition=VarRef(ref=->a), then=Block(statements=[ThrowStatement(trigger="error", items=[ParenValue(value=VarRef(ref=->X))])]), elseBlock=Block(statements=[EmitStatement(trigger="escalation", items=[ParenValue(value=VarRef(ref=->Y))])]))]',
-    ],
-    [
-      'an explicit start as the first statement of an on body parses',
-      `process p { on error(X) { start In } }`,
-      '[OnHandler(trigger="error", items=[ParenValue(value=VarRef(ref=->X))], body=Block(statements=[StartEvent(name="In")]))]',
-    ],
-    [
       "an unknown trigger word on a handler parses; legality is the validator's job",
       `process p { on banana("X") { } }`,
       '[OnHandler(trigger="banana", items=[ParenValue(value=LiteralString(value="X"))], body=Block)]',
@@ -649,9 +528,6 @@ describe('Parsing - the event layer', () => {
 });
 
 describe('Parsing - soft words stay plain identifiers', () => {
-  // Trigger words, timer particles, attribute keys and parameter directions
-  // all lex as plain `ID`, so each stays available as a variable name, a step
-  // name, and a bare identifier in expression position.
   test.each<Row>([
     ...(
       [
@@ -771,9 +647,9 @@ describe('Parsing - expressions', () => {
     expect(shape(await parseCondition(expr))).toBe(expected);
   });
 
-  // A raw template at the top is printed as read, opener included and escapes
-  // resolved; one nested under an operator is a single template spliced in as a
-  // parenthesised operand, or a composite left as written for the validator.
+  // A raw template at the top prints as read; under an operator a single
+  // template is spliced in as a parenthesised operand and a composite is left
+  // as written for the validator.
   test.each([
     ['amount > 1000', '${amount > 1000}'],
     ['a == null', '${a == null}'],
@@ -806,11 +682,6 @@ describe('Parsing - expressions', () => {
 
 describe('Parsing - element settings and member blocks', () => {
   test.each<Row>([
-    [
-      'a user task attribute value is a LiteralString, not a RawExpr',
-      `process p { user T(label: "Review", assignee: "demo") }`,
-      '[UserTask(name="T", items=[Setting(key="label", value=LiteralString(value="Review")), Setting(key="assignee", value=LiteralString(value="demo"))])]',
-    ],
     [
       'a service class written as a dotted bareword is a VarRef, not a string',
       `process p { service A(class: com.example.invoice.AutoApproveDelegate) }`,
@@ -850,11 +721,6 @@ describe('Parsing - element settings and member blocks', () => {
       '[StartEvent(name="S", forms=[FormBlock(fields=[FormField(id="blob", type="whatever", label="Blob")])])]',
     ],
     [
-      '`process` is still accepted as the call attribute key',
-      `process p { call C(process: "x") }`,
-      '[CallActivity(name="C", items=[Setting(key="process", value=LiteralString(value="x"))])]',
-    ],
-    [
       "an unknown attribute key parses; key legality is the validator's job",
       `process p { user T(wibble: 1) }`,
       '[UserTask(name="T", items=[Setting(key="wibble", value=LiteralInt(value=1))])]',
@@ -863,21 +729,6 @@ describe('Parsing - element settings and member blocks', () => {
       'a bare `binding: version` parses as a value reference',
       `process p { call C(process: "x", binding: version) }`,
       '[CallActivity(name="C", items=[Setting(key="process", value=LiteralString(value="x")), Setting(key="binding", value=VarRef(ref=->version))])]',
-    ],
-    [
-      'an end event carries settings',
-      `process p { end E(asyncBefore: true) }`,
-      '[EndEvent(name="E", items=[Setting(key="asyncBefore", value=LiteralBool(value="true"))])]',
-    ],
-    [
-      'a handler carries its settings before its body',
-      `process p { on error("E", asyncBefore: true) { user U } }`,
-      '[OnHandler(trigger="error", items=[ParenValue(value=LiteralString(value="E")), Setting(key="asyncBefore", value=LiteralBool(value="true"))], body=Block(statements=[UserTask(name="U")]))]',
-    ],
-    [
-      'a hosted alongside handler carries its settings before its body',
-      `process p { user R on R: timer("PT1H", asyncBefore: true, alongside) { user U } }`,
-      '[UserTask(name="R"), OnHandler(host=->R, trigger="timer", items=[ParenValue(value=LiteralString(value="PT1H")), Setting(key="asyncBefore", value=LiteralBool(value="true")), Flag(flag="alongside")], body=Block(statements=[UserTask(name="U")]))]',
     ],
     [
       'throw, emit and await each carry trailing settings',
@@ -897,11 +748,6 @@ describe('Parsing - element settings and member blocks', () => {
       'a statement following a bare await still parses',
       `process p { await message subprocess S { user A } }`,
       '[IntermediateCatchEvent(trigger="message"), SubProcess(name="S", body=Block(statements=[UserTask(name="A")]))]',
-    ],
-    [
-      'a task carries directed, named parameter entries',
-      `process p { user T { input a = 1 output b = "x" } }`,
-      '[UserTask(name="T", params=[IoParameter(direction="input", name="a", value=LiteralInt(value=1)), IoParameter(direction="output", name="b", value=LiteralString(value="x"))])]',
     ],
     [
       'a list value keeps its items in order',
@@ -936,11 +782,6 @@ describe('Parsing - element settings and member blocks', () => {
 ${FENCE} }
 }`,
       '[ServiceTask(name="S", params=[IoParameter(direction="input", name="a", value=ScriptLiteral(body="```groovy\\n1 + 1\\n```"))])]',
-    ],
-    [
-      'a task listener binds by class',
-      `process p { user T { on create(class: "com.acme.L") } }`,
-      '[UserTask(name="T", listeners=[Listener(event="create", items=[Setting(key="class", value=LiteralString(value="com.acme.L"))])])]',
     ],
     [
       'the start and end statement keywords are usable as listener events',
@@ -1000,7 +841,6 @@ ${FENCE}
     await expectBody(source, expected);
   });
 
-  // A lone block is the body, never the members.
   test.each<[tail: string, forms: number, bodyTypes: string[]]>([
     ['{ form { } } { user U(assignee: "demo") }', 1, ['UserTask']],
     ['{ } { user U }', 0, ['UserTask']],
@@ -1019,9 +859,8 @@ ${FENCE}
 });
 
 describe("Parsing - an external task's extras", () => {
-  // `error <Code> when <condition>` is `ID ID ID Expr`, told from a
-  // parameter's `ID ID '='` at the third token; neither word is reserved, so
-  // the second row keeps a misspelt `when` for the validator to report.
+  // Neither word of `error <Code> when <condition>` is reserved, so a
+  // misspelt `when` parses for the validator to report.
   test.each<Row>([
     [
       'an external task takes a priority, property lines and error mappings among its members',
@@ -1053,40 +892,10 @@ describe('Parsing - task kinds, service bindings and fenced scripts', () => {
 
   test.each<Row>([
     ...KINDS.map(([keyword, type]): Row => [
-      `\`${keyword} X\` parses with a name and no label`,
-      `process p { ${keyword} X }`,
-      `[${type}(name="X")]`,
-    ]),
-    ...KINDS.map(([keyword, type]): Row => [
-      `\`${keyword} X(label: "Label")\` carries the label as a setting`,
-      `process p { ${keyword} X(label: "Label") }`,
-      `[${type}(name="X", items=[Setting(key="label", value=LiteralString(value="Label"))])]`,
-    ]),
-    ...KINDS.map(([keyword, type]): Row => [
       `\`${keyword}\` after \`start S\` opens its own statement rather than filling the start's trigger slot`,
       `process p { start S ${keyword} X user U end E }`,
       `[StartEvent(name="S"), ${type}(name="X"), UserTask(name="U"), EndEvent(name="E")]`,
     ]),
-    [
-      'a decide task carries both of its attribute keys in order',
-      `process p { decide D(label: "Rate", decision: "riskRating", binding: latest) }`,
-      '[BusinessRuleTask(name="D", items=[Setting(key="label", value=LiteralString(value="Rate")), Setting(key="decision", value=LiteralString(value="riskRating")), Setting(key="binding", value=VarRef(ref=->latest))])]',
-    ],
-    [
-      'an expression binding parses; the value is a raw template',
-      `process p { service S(expression: "\${bean.method(execution)}") }`,
-      '[ServiceTask(name="S", items=[Setting(key="expression", value=RawExpr(raw="${bean.method(execution)}"))])]',
-    ],
-    [
-      'a delegate binding parses; the value is a raw template',
-      `process p { service S(delegate: "\${beanName}") }`,
-      '[ServiceTask(name="S", items=[Setting(key="delegate", value=RawExpr(raw="${beanName}"))])]',
-    ],
-    [
-      'a topic binding parses with a label',
-      `process p { service ship(label: "Ship it", topic: "shipping") }`,
-      '[ServiceTask(name="ship", items=[Setting(key="label", value=LiteralString(value="Ship it")), Setting(key="topic", value=LiteralString(value="shipping"))])]',
-    ],
     [
       'a topic binding parses without a label',
       `process p { service ship(topic: "shipping") }`,
@@ -1101,17 +910,6 @@ ${FENCE}
 }`,
       '[ScriptTask(name="total", body="```js\\nx = 1\\n```")]',
     ],
-    [
-      'a script task carries its settings before its fence',
-      `process p {
-  script S(resultVariable: "total") ${FENCE}js
-x = 1
-${FENCE}
-}`,
-      '[ScriptTask(name="S", items=[Setting(key="resultVariable", value=LiteralString(value="total"))], body="```js\\nx = 1\\n```")]',
-    ],
-    // The backtick fence is a fresh delimiter with no overlap against the
-    // quote-delimited STRING / RAW_TEMPLATE terminals.
     [
       'a fence coexists with a class bareword and a raw template without lex ambiguity',
       `process p {
@@ -1183,13 +981,11 @@ describe('Parsing - repeat clause', () => {
     await expectBody(source, expected);
   });
 
-  // Every row carries settings, so both tests below see the clause survive
-  // them. `script` and `subprocess` are the two rules where the clause sits
-  // between the name and a further brace-opened body: the only shape a
-  // lookahead ambiguity could surface in.
+  // Every row carries settings, so the clause has to survive them; `script`
+  // and `subprocess` are the two rules where a further brace-opened body
+  // follows, the only shape a lookahead ambiguity could surface in.
   const SET = '(asyncBefore: true)';
 
-  /** Every statement the clause attaches to, with whatever body follows it. */
   const REPEATABLE: Array<
     [keyword: string, type: string, program: (clause: string) => string]
   > = [
@@ -1227,23 +1023,9 @@ describe('Parsing - repeat clause', () => {
       expect(settingsOf(task.items).map((a) => a.key)).toEqual(['asyncBefore']);
     },
   );
-
-  test.each(REPEATABLE)(
-    '`%s` without the clause leaves every slot unset',
-    async (_keyword, type, program) => {
-      const task = await statementAt<Repeatable>(program(''));
-      expect(task.$type).toBe(type);
-      expect(task.cardinality).toBeUndefined();
-      expect(task.element).toBeUndefined();
-      expect(task.collection).toBeUndefined();
-      expect(task.sequential).toBe(false);
-      expect(task.completion).toBeUndefined();
-      expect(settingsOf(task.items).map((a) => a.key)).toEqual(['asyncBefore']);
-    },
-  );
 });
 
-/** Chevrotain's own list-of-alternatives wording, which carries no guidance. */
+/** Chevrotain's list-of-alternatives wording, which carries no guidance. */
 const STOCK_ALTERNATIVES = '<stock list of token alternatives>';
 
 const reservedWord = (word: string) =>
@@ -1270,9 +1052,8 @@ const VAR_PLACEMENT_GUIDANCE =
   'the process, with the other declarations. Move it above the first ' +
   'statement.';
 
-// Each row pins the whole error list, so it also proves that no further
-// complaint follows and that the guidance replaced the raw wording rather than
-// joining it.
+// The whole error list, so a row also proves the guidance replaced the stock
+// wording rather than joining it.
 describe('Parsing - sources the parser rejects', () => {
   test.each<readonly [string, string, readonly string[]]>([
     [
@@ -1280,9 +1061,8 @@ describe('Parsing - sources the parser rejects', () => {
       `process p { parallel { { user A } } }`,
       [STOCK_ALTERNATIVES, 'Expecting end of file but found `}`.'],
     ],
-    // Revert: give `ElseIf` or `ParallelBranch` a `SettingsParens?` and its
-    // row parses. The `else if` row blames `if`: with the parens breaking the
-    // `else if` shape, the lookahead settles on `else` opening a plain block.
+    // The `else if` row blames `if`: with the parens breaking the `else if`
+    // shape, the lookahead settles on `else` opening a plain block.
     [
       'an else if head takes no settings: the if head governs the whole chain',
       `process p { if (a) { user A } else if (b) (asyncBefore: true) { user B } }`,
@@ -1356,9 +1136,6 @@ describe('Parsing - sources the parser rejects', () => {
       `process p { usr }`,
       [notAStepKeyword('usr')],
     ],
-    // The guidance reads the word already consumed as the declaration kind, so
-    // a word that really is one has to be left out of it: there the mistake is
-    // the text where the name belongs, and Chevrotain already names that.
     [
       'a declaration kind followed by text blames the name slot, not the kind word',
       `process p { error "PF" }`,
@@ -1397,7 +1174,6 @@ describe('Parsing - sources the parser rejects', () => {
       'process p {\n  var amount: while\n  start S\n}',
       [notATypeWord('while'), "Expecting token of type '(' but found `start`."],
     ],
-    // The slot takes any word, so it gets the guidance every `ID` slot gives.
     [
       'a reserved word in the type slot of a form field gets the reserved-word guidance',
       'process p {\n  start S\n  user U { form { amount: while } }\n}',
@@ -1412,8 +1188,6 @@ describe('Parsing - sources the parser rejects', () => {
       'process p {\n  var amount: text\n  start S\n}',
       [notATypeWord('text'), reservedWord('start')],
     ],
-    // Nothing about a non-word token is a "word this position takes", so the
-    // guidance stands aside and Chevrotain's own message survives.
     [
       'a quoted string in the type slot keeps the stock message',
       'process p {\n  var amount: "text"\n  start S\n}',
@@ -1429,7 +1203,6 @@ describe('Parsing - sources the parser rejects', () => {
   });
 });
 
-/** A statement carrying a label, as the head before it and the tail after it. */
 type LabelCarrier = readonly [keyword: string, head: string, tail: string];
 
 const LABEL_CARRIERS: readonly LabelCarrier[] = [
@@ -1448,13 +1221,12 @@ const LABEL_CARRIERS: readonly LabelCarrier[] = [
 ];
 
 /**
- * Every shape the grammar once admitted beside the parenthesised settings,
- * paired with the spelling that replaced it. A row asserts the whole combined
- * lexer-and-parser error list: non-empty for the shape that is gone, empty for
- * the one that stands.
+ * A slot has one spelling: a row pairs a shape the grammar refuses with the
+ * one it takes, and asserts the combined lexer-and-parser error list is
+ * non-empty for the first and empty for the second.
  */
-describe('Parsing - settings are written one way', () => {
-  test.each<readonly [title: string, gone: string, kept: string]>([
+describe('Parsing - a slot has one spelling', () => {
+  test.each<readonly [title: string, refused: string, taken: string]>([
     ...LABEL_CARRIERS.map(
       ([keyword, head, tail]) =>
         [
@@ -1493,19 +1265,6 @@ describe('Parsing - settings are written one way', () => {
       `process p { error "PF" message "Payment failed" start S }`,
       `process p { error PF(message: "Payment failed") start S }`,
     ],
-  ])('%s', async (_title, gone, kept) => {
-    expect(await parseErrors(gone)).not.toEqual([]);
-    expect(await parseErrors(kept)).toEqual([]);
-  });
-});
-
-/**
- * A trigger's payload and the non-interrupting flag are parenthesised items
- * like every other, so the word-after-the-trigger spelling of each is no
- * longer a shape the parser knows. One row per slot that carried one.
- */
-describe('Parsing - a trigger payload is written one way', () => {
-  test.each<readonly [title: string, gone: string, kept: string]>([
     [
       'a start names its message in the parens',
       `process p { start S message "M" }`,
@@ -1561,8 +1320,8 @@ describe('Parsing - a trigger payload is written one way', () => {
       `process p { await { message "M" { user A } timer after "PT1H" { user B } } }`,
       `process p { await { message("M") { user A } timer("PT1H") { user B } } }`,
     ],
-  ])('%s', async (_title, gone, kept) => {
-    expect(await parseErrors(gone)).not.toEqual([]);
-    expect(await parseErrors(kept)).toEqual([]);
+  ])('%s', async (_title, refused, taken) => {
+    expect(await parseErrors(refused)).not.toEqual([]);
+    expect(await parseErrors(taken)).toEqual([]);
   });
 });

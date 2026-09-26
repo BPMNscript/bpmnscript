@@ -28,9 +28,9 @@ export interface VariableSymbol {
 export type VariableTable = Map<string, VariableSymbol>;
 
 /**
- * One place a variable is declared: the AST node and the property holding
- * its name, so a rename can find the name's own leaf. A catch binding's site
- * is the `VarRef` its setting carries, under `ref`.
+ * One place a variable is declared, as the node and the property holding its
+ * name so a rename finds the name's own leaf. A catch binding's site is the
+ * `VarRef` its setting carries, under `ref`.
  */
 export interface DeclaringSite {
   node: AstNode;
@@ -39,7 +39,6 @@ export interface DeclaringSite {
   type: VarType;
 }
 
-/** Injected as `references.VariableSymbolProvider`. */
 export interface VariableSymbolProvider {
   collect(process: Process): VariableTable;
   declaringSites(process: Process): DeclaringSite[];
@@ -52,11 +51,7 @@ interface RepeatSlots {
   element?: string;
 }
 
-/**
- * Whether `node` carries a repeat clause. Only the count and the collection
- * decide it: `sequential` is `false` on every repeatable statement, written or
- * not, so its value says nothing about whether a clause was written.
- */
+/** `sequential` is `false` on every repeatable statement, written or not, so only the count and the collection say a clause was written. */
 export function isRepeated(node: AstNode): node is AstNode & RepeatSlots {
   return (
     ('cardinality' in node && node.cardinality !== undefined) ||
@@ -65,10 +60,10 @@ export function isRepeated(node: AstNode): node is AstNode & RepeatSlots {
 }
 
 /**
- * Every declaring site of the process, in precedence order: a header `var`,
- * then a form field, then a catch binding, then an `input`/`output`
- * parameter and a repeated statement's element in source order. A type
- * disagreement between two sites of one name is the validator's job.
+ * Every declaring site, in precedence order: a header `var`, a form field, a
+ * catch binding, then an `input`/`output` parameter or a repeated statement's
+ * element in source order. A type disagreement between two sites of one name
+ * is the validator's job.
  */
 export function declaringSites(process: Process): DeclaringSite[] {
   const sites: DeclaringSite[] = [];
@@ -97,8 +92,6 @@ export function declaringSites(process: Process): DeclaringSite[] {
   for (const node of AstUtils.streamAst(process)) {
     if (!isOnHandler(node)) continue;
     for (const { variable, node: setting } of caughtBindingsOf(node.items)) {
-      // A setting whose value is not a plain name reads a variable rather
-      // than declaring one, so it seeds nothing.
       if (variable === undefined) continue;
       sites.push({
         node: setting.value,
@@ -111,9 +104,8 @@ export function declaringSites(process: Process): DeclaringSite[] {
   // Both hold whatever was mapped or collected, so their type is open.
   for (const node of AstUtils.streamAst(process)) {
     if (isIoParameter(node)) {
-      // A field names a property of the delegate the element binds, set as
-      // that object is built, and a property is text handed to Tasklist or
-      // a worker, so neither declares anything the process can read.
+      // A field is set on the bound delegate and a property is text for
+      // Tasklist or a worker; neither is a process variable.
       if (
         node.direction !== FIELD_DIRECTION &&
         node.direction !== PROPERTY_DIRECTION
@@ -139,16 +131,14 @@ export class DefaultVariableSymbolProvider implements VariableSymbolProvider {
 
   collect(process: Process): VariableTable {
     const table: VariableTable = new Map();
-    // The first site of a name wins, so the table's type follows the
-    // precedence `declaringSites` lists in.
+    // The first site of a name wins, in the order `declaringSites` lists.
     for (const site of this.declaringSites(process)) {
       if (!table.has(site.name)) {
         table.set(site.name, { name: site.name, type: site.type });
       }
     }
-    // Seeded last, so an author who declares one of these names keeps its
-    // type. A count alone (`for 3`) sets them too, so this is not read off
-    // the sites.
+    // Seeded last, so a declared name of the same spelling keeps its type. A
+    // count alone (`for 3`) sets them too, so this is not read off the sites.
     if (AstUtils.streamAst(process).some(isRepeated)) {
       for (const name of LOOP_VARIABLES) {
         if (!table.has(name)) {

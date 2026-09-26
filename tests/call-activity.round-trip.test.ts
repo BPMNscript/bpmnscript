@@ -7,26 +7,19 @@ import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { xmlToIr, astToIr } from '@bpmn-script/transform';
 import type {
-  BpmnProcess,
   FlowContainer,
   CallActivity,
   CallVariableMapper,
-  ImportWarning,
 } from '@bpmn-script/transform';
 
-import { camundaAliasWarning } from './helpers/import-first.js';
+import {
+  camundaAliasWarning,
+  describeImportFirst,
+} from './helpers/import-first.js';
 import { normalizeIr } from './helpers/normalize-ir.js';
 import { idsOf, subProcess as findSubProcess } from './helpers/ir-query.js';
-import {
-  parse,
-  parseToAst,
-  printDsl,
-  roundTrip,
-  roundTripOf,
-  validate,
-} from './helpers/pipeline.js';
+import { roundTrip, roundTripOf, validate } from './helpers/pipeline.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -47,108 +40,76 @@ function findCallActivity(container: FlowContainer, id: string): CallActivity {
   return el;
 }
 
-describe('round-trip: minimal call (process only)', () => {
-  const MINIMAL_CALL_SRC = [
-    'process minimal-call {',
-    '  start Start',
-    '  call InvokeSub(process: "invoice-approval")',
-    '  end End',
-    '}',
+// `[what the call carries, the authored and printed settings after `process`,
+// the IR binding, the Operaton attributes the XML carries, the ones it must not]`.
+const BINDING_ROWS: readonly [
+  string,
+  string,
+  CallActivity['binding'],
+  readonly string[],
+  readonly string[],
+][] = [
+  [
+    'no binding',
     '',
-  ].join('\n');
+    undefined,
+    ['calledElement="invoice-approval"'],
+    ['calledElementBinding', 'calledElementVersion', 'extensionElements'],
+  ],
+  [
+    'a deployment binding',
+    ', binding: deployment',
+    { kind: 'deployment' },
+    ['operaton:calledElementBinding="deployment"'],
+    ['calledElementVersion'],
+  ],
+  [
+    'a pinned version',
+    ', version: 3',
+    { kind: 'version', version: '3' },
+    [
+      'operaton:calledElementBinding="version"',
+      'operaton:calledElementVersion="3"',
+    ],
+    [],
+  ],
+];
 
-  const run = roundTripOf(MINIMAL_CALL_SRC);
+describe.each(BINDING_ROWS)(
+  'round-trip: a call with %s',
+  (_label, settings, binding, written, notWritten) => {
+    const CALL = `call InvokeSub(process: "invoice-approval"${settings})`;
 
-  it('desugars to a callActivity carrying only calledElement', () => {
-    const call = findCallActivity(run.ir1, 'InvokeSub');
-    expect(call.calledElement).toBe('invoice-approval');
-    expect(call.binding).toBeUndefined();
-    expect(call.businessKey).toBeUndefined();
-    expect(call.inMappings).toBeUndefined();
-    expect(call.outMappings).toBeUndefined();
-  });
+    const run = roundTripOf(
+      [
+        'process call-binding {',
+        '  start Start',
+        `  ${CALL}`,
+        '  end End',
+        '}',
+        '',
+      ].join('\n'),
+    );
 
-  it('generates calledElement and NO binding attributes and NO extensionElements', () => {
-    expect(run.xml).toContain('calledElement="invoice-approval"');
-    expect(run.xml).not.toContain('calledElementBinding');
-    expect(run.xml).not.toContain('calledElementVersion');
-    expect(run.xml).not.toContain('extensionElements');
-  });
-
-  it('re-emits the same one-attribute call and re-parses with zero errors', async () => {
-    expect(run.dsl).toContain('call InvokeSub(process: "invoice-approval")');
-    const document = await parse(run.dsl);
-    expect(document.parseResult.parserErrors).toHaveLength(0);
-  });
-});
-
-describe('round-trip: call activity with a deployment binding', () => {
-  const DEPLOYMENT_BINDING_SRC = [
-    'process call-deployment-binding {',
-    '  start Start',
-    '  call InvokeSub(process: "invoice-approval", binding: deployment)',
-    '  end End',
-    '}',
-    '',
-  ].join('\n');
-
-  const run = roundTripOf(DEPLOYMENT_BINDING_SRC);
-
-  it('desugars `binding: deployment` to { kind: "deployment" }', () => {
-    expect(findCallActivity(run.ir1, 'InvokeSub').binding).toEqual({
-      kind: 'deployment',
+    it('desugars to the binding alone, writes exactly its attributes, and prints the call back', () => {
+      expect(findCallActivity(run.ir1, 'InvokeSub')).toEqual({
+        kind: 'callActivity',
+        id: 'InvokeSub',
+        calledElement: 'invoice-approval',
+        binding,
+      });
+      for (const attribute of written) expect(run.xml).toContain(attribute);
+      for (const attribute of notWritten) {
+        expect(run.xml).not.toContain(attribute);
+      }
+      expect(run.warnings).toEqual([]);
+      expect(findCallActivity(run.ir2, 'InvokeSub')).toEqual(
+        findCallActivity(run.ir1, 'InvokeSub'),
+      );
+      expect(run.dsl).toContain(CALL);
     });
-  });
-
-  it('generates operaton:calledElementBinding="deployment" and no version attribute', () => {
-    expect(run.xml).toContain('operaton:calledElementBinding="deployment"');
-    expect(run.xml).not.toContain('calledElementVersion');
-  });
-
-  it('re-imports to the same binding and re-emits `binding: deployment`', async () => {
-    expect(findCallActivity(run.ir2, 'InvokeSub').binding).toEqual({
-      kind: 'deployment',
-    });
-    expect(run.dsl).toContain('binding: deployment');
-    const document = await parse(run.dsl);
-    expect(document.parseResult.parserErrors).toHaveLength(0);
-  });
-});
-
-describe('round-trip: call activity with a pinned version', () => {
-  const PINNED_VERSION_SRC = [
-    'process call-pinned-version {',
-    '  start Start',
-    '  call InvokeSub(process: "invoice-approval", version: 3)',
-    '  end End',
-    '}',
-    '',
-  ].join('\n');
-
-  const run = roundTripOf(PINNED_VERSION_SRC);
-
-  it('desugars `version = 3` to { kind: "version", version: "3" }', () => {
-    expect(findCallActivity(run.ir1, 'InvokeSub').binding).toEqual({
-      kind: 'version',
-      version: '3',
-    });
-  });
-
-  it('generates calledElementBinding="version" and calledElementVersion="3"', () => {
-    expect(run.xml).toContain('operaton:calledElementBinding="version"');
-    expect(run.xml).toContain('operaton:calledElementVersion="3"');
-  });
-
-  it('re-imports to the same binding and re-emits `version = 3`', async () => {
-    expect(findCallActivity(run.ir2, 'InvokeSub').binding).toEqual({
-      kind: 'version',
-      version: '3',
-    });
-    expect(run.dsl).toContain('version: 3');
-    const document = await parse(run.dsl);
-    expect(document.parseResult.parserErrors).toHaveLength(0);
-  });
-});
+  },
+);
 
 describe('round-trip: call activity with businessKey and every mapping shape', () => {
   // The validator checks `in` sources against caller scope, so they are declared
@@ -319,11 +280,9 @@ describe('round-trip: call activity nested inside a subprocess', () => {
     }
   });
 
-  it('the re-emitted DSL reconstructs the nested `subprocess { call ... }` shape and re-parses cleanly', async () => {
+  it('the re-emitted DSL reconstructs the nested `subprocess { call ... }` shape', () => {
     expect(run.dsl).toContain('subprocess Payment(label: "Handle payment") {');
     expect(run.dsl).toContain('call ChargeCustomer');
-    const document = await parse(run.dsl);
-    expect(document.parseResult.parserErrors).toHaveLength(0);
   });
 });
 
@@ -360,7 +319,7 @@ describe('round-trip: goto targeting a call activity', () => {
     }
   });
 
-  it("a second round-trip (DSL' -> IR3) is normalized-equal to the first, and re-parses with zero errors", async () => {
+  it("a second round-trip (DSL' -> IR3) is normalized-equal to the first", () => {
     // irToDsl reconstructs the goto/fallthrough convergence as `if`/`else`
     // rather than replaying the literal `goto`, and re-desugaring that grows a
     // pass-through join, so compare through normalizeIr.
@@ -368,16 +327,12 @@ describe('round-trip: goto targeting a call activity', () => {
       'invoice-approval',
     );
     expect(normalizeIr(run.ir3)).toEqual(normalizeIr(run.ir1));
-
-    const document = await parse(run.dsl);
-    expect(document.parseResult.parserErrors).toHaveLength(0);
   });
 });
 
-describe('round-trip: import-first, with interleaved mappings and the camunda: binding alias', () => {
-  // The `name` differs from the name humanized from the id, so it survives as a
-  // real label instead of being dropped as derivable.
-  const HANDWRITTEN_BPMN = `<?xml version="1.0" encoding="UTF-8"?>
+// The `name` differs from the name humanized from the id, so it survives as a
+// real label instead of being dropped as derivable.
+const HANDWRITTEN_BPMN = `<?xml version="1.0" encoding="UTF-8"?>
 <bpmn:definitions
     xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
     xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI"
@@ -421,58 +376,46 @@ describe('round-trip: import-first, with interleaved mappings and the camunda: b
   </bpmn:process>
 </bpmn:definitions>`;
 
-  let irFirstImport: BpmnProcess;
-  let importWarnings: ImportWarning[];
-  let dsl: string;
-  let irSecondImport: BpmnProcess;
+describeImportFirst(
+  'interleaved mappings and the camunda: binding alias',
+  HANDWRITTEN_BPMN,
+  (first) => {
+    it('imports the alias binding and the interleaved mappings', () => {
+      const call = findCallActivity(first.ir, 'ReviewApprovalCall');
+      expect(call.binding).toEqual({ kind: 'deployment' });
+      expect(call.inMappings).toEqual([
+        { kind: 'variable', source: 'amount', target: 'invoiceAmount' },
+        {
+          kind: 'expression',
+          sourceExpression: '${amount * 2}',
+          target: 'doubledAmount',
+        },
+      ]);
+      expect(call.outMappings).toEqual([
+        { kind: 'variable', source: 'approved', target: 'wasApproved' },
+        {
+          kind: 'expression',
+          sourceExpression: '${approved ? 1 : 0}',
+          target: 'approvedFlag',
+        },
+      ]);
+    });
 
-  beforeAll(async () => {
-    const first = await xmlToIr(HANDWRITTEN_BPMN);
-    irFirstImport = first.ir;
-    importWarnings = first.warnings;
-    dsl = printDsl(irFirstImport);
-    irSecondImport = astToIr(await parseToAst(dsl));
-  });
-
-  it('imports the alias binding and the interleaved mappings with exactly the one namespace-alias warning', () => {
-    expect(importWarnings).toEqual([camundaAliasWarning('call-import-demo')]);
-    const call = findCallActivity(irFirstImport, 'ReviewApprovalCall');
-    expect(call.binding).toEqual({ kind: 'deployment' });
-    expect(call.inMappings).toEqual([
-      { kind: 'variable', source: 'amount', target: 'invoiceAmount' },
-      {
-        kind: 'expression',
-        sourceExpression: '${amount * 2}',
-        target: 'doubledAmount',
-      },
-    ]);
-    expect(call.outMappings).toEqual([
-      { kind: 'variable', source: 'approved', target: 'wasApproved' },
-      {
-        kind: 'expression',
-        sourceExpression: '${approved ? 1 : 0}',
-        target: 'approvedFlag',
-      },
-    ]);
-  });
-
-  it('re-parsing and re-desugaring the emitted DSL is normalized-equal to the first import', () => {
-    expect(normalizeIr(irSecondImport)).toEqual(normalizeIr(irFirstImport));
-  });
-
-  it('the emitted call canonically reorders (all `in`s, then all `out`s) and keeps the alias-normalized binding', () => {
-    expect(dsl).toContain(
-      'call ReviewApprovalCall(label: "Get invoice sign-off", ' +
-        'process: "invoice-approval", binding: deployment, ' +
-        'businessKey: "${orderId}") {\n' +
-        '    in invoiceAmount = amount\n' +
-        '    in doubledAmount = "${amount * 2}"\n' +
-        '    out wasApproved = approved\n' +
-        '    out approvedFlag = "${approved ? 1 : 0}"\n' +
-        '  }',
-    );
-  });
-});
+    it('the emitted call canonically reorders (all `in`s, then all `out`s) and keeps the alias-normalized binding', () => {
+      expect(first.dsl).toContain(
+        'call ReviewApprovalCall(label: "Get invoice sign-off", ' +
+          'process: "invoice-approval", binding: deployment, ' +
+          'businessKey: "${orderId}") {\n' +
+          '    in invoiceAmount = amount\n' +
+          '    in doubledAmount = "${amount * 2}"\n' +
+          '    out wasApproved = approved\n' +
+          '    out approvedFlag = "${approved ? 1 : 0}"\n' +
+          '  }',
+      );
+    });
+  },
+  [camundaAliasWarning('call-import-demo')],
+);
 
 describe('example: purchasing.bpmnscript calls the invoice-approval example by id', () => {
   let source: string;
@@ -493,8 +436,5 @@ describe('example: purchasing.bpmnscript calls the invoice-approval example by i
     );
     expect(run.xml).toContain('calledElement="invoice-approval"');
     expect(run.warnings).toEqual([]);
-
-    const document = await parse(run.dsl);
-    expect(document.parseResult.parserErrors).toHaveLength(0);
   });
 });

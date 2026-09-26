@@ -1,23 +1,21 @@
 /**
- * Restructuring IR -> DSL, the inverse of `astToIr`: a flat, BPMN-shaped
- * {@link BpmnProcess} back into source that re-parses and re-desugars to an
- * equivalent IR.
+ * Restructuring IR -> DSL, the inverse of `astToIr`: a flat {@link BpmnProcess}
+ * back into source that re-parses and re-desugars to an equivalent IR.
  *
  * Structure comes from the dominator analysis in `cfg-analysis.ts` matched
- * against a fixed pattern catalog; whatever it cannot fold degrades to
- * `goto`. See ADR 0009, Use Dominator/Post-Dominator Analysis for IR-to-DSL
- * Restructuring, for the catalog, the totality guarantee, and the edges that
- * have no `goto` form and leave an {@link UNSTRUCTURED_MARKER}.
- *
- * Every gateway a pattern matches is elided, which is what makes DSL -> IR ->
- * DSL idempotent: the desugarer derives gateway ids from structural
- * coordinates, so one that never prints is re-synthesized under the same id.
+ * against the pattern catalog of ADR 0009; whatever it cannot fold degrades to
+ * `goto`, and an edge with no `goto` form leaves an {@link UNSTRUCTURED_MARKER}.
+ * Every gateway a pattern matches is elided: the desugarer derives gateway ids
+ * from structural coordinates, so one that never prints is re-synthesized under
+ * the same id, which is what makes DSL -> IR -> DSL idempotent.
  */
 
 import {
   CALL_MAPPER_KEY_BY_KIND,
   DATE_PATTERN_KEY,
   END_TRIGGERS,
+  ENGINE_KEYS,
+  type EngineKey,
   EXPRESSION_OPEN,
   EXTERNAL_TASK_EL_NAME,
   isReservedName,
@@ -26,6 +24,7 @@ import {
   runSettingKey,
   TIMER_PARTICLE_BY_KIND,
   TYPE_BINDING_KEY,
+  USER_TASK_VERBATIM_KEYS,
 } from '@bpmn-script/language';
 import type {
   BpmnProcess,
@@ -85,35 +84,26 @@ import {
 export const INDENT = '  ';
 
 /**
- * The lines one construct prints on. A fenced body keeps its newlines inside a
- * single entry: the text between the fences is the script itself, and an
- * enclosing block indents whole entries, so splitting one would rewrite the
- * code it holds.
+ * One entry per line, except a fenced script body, which keeps its newlines
+ * inside one entry: an enclosing block indents whole entries, and indenting
+ * inside the fence would rewrite the code.
  */
 type Lines = string[];
 
-/**
- * The names one print writes: the name a raised code is written under, per
- * kind ({@link codeDeclarations}), and the name an id the script cannot spell
- * prints as ({@link printedNames}).
- */
 interface PrintNames {
+  /** The name each raised code is written under, from {@link codeDeclarations}. */
   error: Map<string, string>;
   escalation: Map<string, string>;
-  /** Only the ids that print under another name; every other id prints as itself. */
+  /** Only the ids that print under another name ({@link printedNames}); every other id prints as itself. */
   printed: ReadonlyMap<string, string>;
 }
 
-/** The name `id` prints under, at every site that writes an element or process id. */
+/** Every site that writes an element or process id goes through here. */
 function nameOf(names: PrintNames, id: string): string {
   return names.printed.get(id) ?? id;
 }
 
-/**
- * What the start and end predicates read of a container: its id, which seeds
- * the minted terminals, and its elements, for the boundaries whose escape
- * chains end in a minted end and for the first plain start.
- */
+/** The id seeds the minted terminal ids; the elements find the boundaries and the first plain start. */
 export type PrintContainer = Pick<FlowContainer, 'id' | 'flowElements'>;
 
 export type PrintWarningCategory =
@@ -167,20 +157,15 @@ export function irToDsl(process: BpmnProcess): {
 }
 
 /**
- * A split or a merge is derived from the block structure and has no statement
- * of its own, so the text on one is lost on the way out. Every other elided
- * label is reported by `xmlToIr`, which is why this covers gateways alone: a
+ * Gateways alone: every other elided label is reported by `xmlToIr`, and a
  * wider rule would report the same drop twice to a caller printing both
- * channels. A label and documentation are reported apart, one warning per
- * fact, so a caller sorting by category sees each of them once.
+ * channels.
  */
 function warnGatewayText(
   container: FlowContainer,
   warnings: PrintWarning[],
 ): void {
   for (const el of container.flowElements) {
-    // Keyed on the container shape, so a nested split is reached whatever
-    // container it sits in.
     if ('flowElements' in el) {
       warnGatewayText(el, warnings);
       continue;
@@ -212,25 +197,19 @@ function warnGatewayText(
 }
 
 /**
- * The model, not the print, is where this one comes from: the script writes out
- * the name the model holds, and the compiler turns that writing down on the way
- * back in. The report is what tells the reader it is the model to repair.
- *
- * The emitter reports a plain synthesized end printed for its position itself,
- * since only it knows that position.
- *
- * `suppressed` describes the container being walked, false at the top: a start
- * in the process body prints its own trigger.
+ * A reserved name is the model's to repair, so it is reported ahead of the
+ * print. A plain synthesized end that prints for its position is reported by
+ * the emitter, which alone knows the position.
  */
 function warnRefusedStatements(
   container: FlowContainer,
   names: PrintNames,
   warnings: PrintWarning[],
-  suppressed = false,
+  startTriggerSuppressed = false,
 ): void {
   for (const el of container.flowElements) {
     if (
-      !isElidedOnPrint(el, container, suppressed) &&
+      !isElidedOnPrint(el, container, startTriggerSuppressed) &&
       isReservedName(nameOf(names, el.id), container.id)
     ) {
       warnings.push(reservedNameWarning(el.id));
@@ -253,18 +232,14 @@ function reservedNameWarning(elementId: string): PrintWarning {
 }
 
 /**
- * The name each id prints under where the script cannot spell the id itself:
- * the process id and every element that writes its id as a statement name or
- * a `goto` target. A gateway, a boundary and an event sub-process never write
- * theirs, so they keep it and draw no report. A minted name is resolved
- * against every id in the document and every name minted before it, since a
- * name written twice leaves every jump to it ambiguous.
- *
- * The rebuilt document carries the new id, and the engine keys history
- * (`HistoricActivityInstance.getActivityId`), migration plans
- * (`MigrationPlanBuilder.mapActivities`) and a modification
- * (`InstantiationBuilder.startBeforeActivity`) on the activity id, so the
- * report says the run is not the same.
+ * Every id the script writes, as the process header, a statement name or a
+ * `goto` target, and cannot spell; a gateway, a boundary and an event
+ * sub-process never write theirs. A minted name is resolved against every id
+ * in the document and every name minted before it, since a name written twice
+ * leaves every jump to it ambiguous. The rebuilt document carries the new id,
+ * which the engine keys history (`HistoricActivityInstance.getActivityId`),
+ * migration plans (`MigrationPlanBuilder.mapActivities`) and a modification
+ * (`InstantiationBuilder.startBeforeActivity`) on, hence "not the same".
  */
 function printedNames(
   process: BpmnProcess,
@@ -304,10 +279,9 @@ function printedNames(
 }
 
 /**
- * One per container. A sub-process's body lives in the child container's
- * arrays, so the parent's CFG never sees inside it and treats the sub-process
- * as one opaque node. Cross-container edges cannot exist, so no region spans
- * two containers.
+ * One per container: a sub-process's body lives in the child container's
+ * arrays, so the parent's CFG treats the sub-process as one opaque node and no
+ * region spans two containers.
  */
 class Emitter {
   private readonly cfg: CfgAnalysis;
@@ -316,7 +290,6 @@ class Emitter {
   private readonly outgoingBySource = new Map<string, SequenceFlow[]>();
   private readonly emittedNodes = new Set<string>();
   private readonly consumedFlows = new Set<string>();
-  /** The gateways whose job settings a statement head has printed. */
   private readonly settingsTaken = new Set<string>();
   /**
    * The `await`/`parallel` branch each statement was printed in, as the path
@@ -345,7 +318,6 @@ class Emitter {
     private readonly container: FlowContainer,
     /** Shared with every nested container, so one process yields one report. */
     private readonly warnings: PrintWarning[],
-    /** The header's declarations and the printed names, which every use site in the body writes. */
     private readonly names: PrintNames,
     /**
      * An event sub-process's start prints its trigger in the `on` header, so
@@ -379,22 +351,19 @@ class Emitter {
   }
 
   /**
-   * The order of the first four passes is a constraint. A node belongs to the
-   * chain that reaches it from one of the container's own entries, a start or
-   * a node no flow enters (a link catch above all), so every such chain is
-   * walked before the boundary handlers and a handler whose body jumps to one
-   * degrades to a `goto` there, its target being emitted already. A boundary
-   * escape chain is reached from no entry, so walking it before the orphan
-   * sweep stops that sweep printing the chain as detached top-level statements.
+   * The pass order is the ownership rule: the pass that walks a node first
+   * owns it in the print. Every chain a container entry reaches (a start, or a
+   * node no flow enters, a link catch above all) is walked before the boundary
+   * handlers, so a handler whose body jumps to one degrades to a `goto` there;
+   * a boundary escape chain is reached from no entry, so it is walked before
+   * the orphan sweep would print it as detached top-level statements.
    */
   emit(): string[] {
     const lines: string[] = [];
 
-    // 1. Structured emission from each start event. An elided start is
-    // re-derived by the compiler only at the head of a body that opens with
-    // no `start`, so its chain is walked first and alone; anywhere else it
-    // lands after another chain's `end` as a dangling `goto` and the compiler
-    // re-derives no start for it.
+    // 1. The elided start first and alone: the compiler re-derives it only at
+    //    the head of a body that opens with no `start`, and anywhere else its
+    //    chain lands after another chain's `end` as a dangling `goto`.
     for (const el of this.container.flowElements) {
       if (
         el.kind === 'startEvent' &&
@@ -442,8 +411,8 @@ class Emitter {
       }
     }
 
-    // 5. Final goto sweep. A jump carries the route and nothing else, so a
-    //    condition on one of these goes the way a fall-through's does.
+    // 5. Every route left: a jump carries no condition, so `consume` reports
+    //    one the way it does for a fall-through.
     for (const f of this.container.sequenceFlows) {
       if (!this.consumedFlows.has(f.id)) {
         this.consume(f);
@@ -453,10 +422,9 @@ class Emitter {
 
     // A plain synthesized end stays out only at its block's tail, the one
     // position the compiler re-derives it at, and whether a flow statement
-    // followed it is known only now. The boundary blocks and handlers appended
+    // followed it is known only here. The boundary blocks and handlers appended
     // below are lowered out of chain, so they do not count as one. Reverse
-    // order keeps every lower index valid while splicing. A boundary body is
-    // one chain in its own array, so its end is always that array's tail.
+    // order keeps every lower index valid while splicing.
     const printedEnds: string[] = [];
     for (const d of this.deferredEnds.toReversed()) {
       if (d.index >= d.lines.length) continue;
@@ -508,13 +476,13 @@ class Emitter {
   }
 
   /**
-   * Every unprinted start leaving for the same step as `start` prints with
-   * it, back to back, and that step's chain is walked once under them: starts
+   * Every unprinted start leaving for the same step as `start` prints with it,
+   * back to back, and the step's chain is walked once under them, since starts
    * written back to back all enter the statement after them. Walked one at a
-   * time, the second start would find the step printed and jump onto it,
-   * which a jump cannot do for an elided end, and a `start` after the first
-   * chain would leave that chain's elided end off its block's tail. A start
-   * leaving on several routes is a split of its own and prints as one.
+   * time, the second start would find the step printed and jump onto it, which
+   * a jump cannot do for an elided end, and a `start` after the first chain
+   * would leave that chain's elided end off its block's tail. A start leaving
+   * on several routes is a split of its own and prints as one.
    */
   private emitStartGroup(
     start: Extract<FlowElement, { kind: 'startEvent' }>,
@@ -589,14 +557,13 @@ class Emitter {
   }
 
   /**
-   * Taken only while the merge is an unprinted gateway with one route out,
-   * the shape the compiler synthesizes and the printed keys land on again. A
-   * merge with a second route is a statement of its own and keeps its
-   * settings for that head; one already printed carries them nowhere, and
-   * the sweep reports it. Counted over the model's routes, not the unprinted
-   * ones: an enclosing loop spends the back-edge a merge at its body's tail
-   * leaves by before the body is walked, and that merge is still the
-   * pass-through it elides.
+   * Only an unprinted merge with one route out, the shape the compiler
+   * synthesizes and lands the printed keys on again; a merge with a second
+   * route is a statement of its own, and one already printed carries them
+   * nowhere, which the sweep reports. Counted over the model's routes, not the
+   * unprinted ones: an enclosing loop spends the back-edge a merge at its
+   * body's tail leaves by before the body is walked, and that merge is still
+   * the pass-through it elides.
    */
   private takeJoinSettings(join: string | undefined): string[] {
     if (join === undefined) return [];
@@ -614,7 +581,6 @@ class Emitter {
     return jobSettingItems(el, joinSettingKey);
   }
 
-  /** The routes of `flows` no construct has printed yet, in IR order. */
   private unconsumed(flows: readonly SequenceFlow[]): SequenceFlow[] {
     return flows.filter((f) => !this.consumedFlows.has(f.id));
   }
@@ -672,7 +638,6 @@ class Emitter {
     depth: number,
   ): void {
     if (depth > MAX_NESTING_DEPTH) {
-      // Flush the arrival as a goto rather than overflowing the stack.
       if (node !== undefined) this.pushGoto(node, lines);
       return;
     }
@@ -690,7 +655,6 @@ class Emitter {
     }
   }
 
-  /** Returns the next id in the fall-through chain, or {@link STOP}. */
   private emitNode(
     id: string,
     stop: string | undefined,
@@ -729,13 +693,6 @@ class Emitter {
       return this.emitRaceGateway(el, stop, lines, depth);
     }
 
-    // A fenced body is opaque multi-line text, so it prints as a line group.
-    if (el.kind === 'scriptTask') {
-      this.emittedNodes.add(id);
-      lines.push(...renderScriptTask(el, this.names));
-      return this.followLinear(id, stop, lines, depth);
-    }
-
     if (el.kind === 'subProcess') {
       // An event sub-process prints in the trailing handler pass and is
       // entered by its trigger alone; the import refuses a flow into one, so
@@ -760,8 +717,8 @@ class Emitter {
       return this.followLinear(id, stop, lines, depth);
     }
 
-    // Not reached by flow either. The plain-node case below would emit nothing
-    // and lose the element, so a malformed inbound edge prints its block here.
+    // A boundary has no inbound flow either; a malformed one prints the block
+    // here rather than losing the element.
     if (isBoundary(el)) {
       this.emitBoundaryHandler(el, lines, depth);
       return STOP;
@@ -791,18 +748,14 @@ class Emitter {
   }
 
   /**
-   * The routes leaving a statement. One is the fall-through the next statement
-   * takes. More than one is a fork with the statement as its split:
-   * `BpmnActivityBehavior.performOutgoingBehavior` leaves by every route whose
-   * condition holds or that carries none and by the `default` alone when none
-   * was taken, which is the inclusive fork's rule, and with nothing weighed
-   * and no fallback it is the parallel fork's. One weighed route beside the
-   * fallback is the shape a choice routes the same way, and keeps the
-   * `if`/`else` the choice prints.
-   *
-   * What splits is read off the model rather than off the routes left to print:
-   * a route an enclosing loop has already printed as its closing brace is one
-   * the step takes beside the others all the same.
+   * One route is the fall-through; more is a fork with the statement as its
+   * split. `BpmnActivityBehavior.performOutgoingBehavior` leaves by every route
+   * whose condition holds or that carries none, and by the `default` alone when
+   * none was taken: the inclusive fork's rule, or with nothing weighed and no
+   * fallback the parallel fork's; one weighed route beside the fallback routes
+   * like a choice and keeps its `if`/`else`. Read off the model rather than off
+   * the routes left to print: a route an enclosing loop has already printed as
+   * its closing brace is one the step takes beside the others all the same.
    */
   private followLinear(
     id: string,
@@ -827,11 +780,8 @@ class Emitter {
   }
 
   /**
-   * Given a clean post-dominating join, the branch bodies are the full
-   * sub-regions up to it; without one, each body is a single `goto target`, so
-   * every edge still survives. Keyed on the id rather than on a gateway,
-   * because a step whose own routes split reaches the same chain with no node
-   * of its own there.
+   * Keyed on the id rather than on a gateway: a step whose own routes split
+   * reaches the same chain with no node of its own there.
    */
   private emitChoice(
     splitId: string,
@@ -850,10 +800,9 @@ class Emitter {
   }
 
   /**
-   * The routes taken at one position, given as a list rather than read off the
-   * split, so a construct that has already spent some of a node's routes can
-   * hand the rest to the same chain. The loop emitters do: the routes their
-   * pattern does not spend are taken at the position after the closing line.
+   * The routes are given as a list rather than read off the split, so the loop
+   * emitters can hand the routes their pattern did not spend to the same chain
+   * at the position after the closing line.
    */
   private emitRoutes(
     splitId: string,
@@ -862,17 +811,12 @@ class Emitter {
     lines: string[],
     depth: number,
   ): string | typeof STOP {
-    // A choice does read a condition written on the route taken when no other
-    // holds, and the engine refuses the model at deployment for carrying one;
-    // a step skips its fallback while weighing and takes it when nothing held,
-    // so there the condition is weighed nowhere. Asked of the routes the model
-    // gives the split, ahead of the two shapes below that print without a
-    // chain.
+    // Ahead of the two early returns: the report reads the model's routes,
+    // whatever prints.
     this.warnFallbackCondition(splitId);
 
     if (outs.length === 0) return STOP;
     if (outs.length === 1) {
-      // One route on: the fall-through, or a degenerate single-out gateway.
       return this.takeFallThrough(outs[0]!, stop, lines);
     }
 
@@ -900,23 +844,17 @@ class Emitter {
       depth,
     );
 
-    // Stop when the gateway was unstructured and every branch jumped away.
     return join !== undefined ? this.continueAt(join, stop, lines) : STOP;
   }
 
   /**
-   * Every route gets a form: one carrying a condition heads its own branch with
-   * it, and one carrying none heads a branch as `true`, takes the chain's
-   * `else`, or runs straight into the join as the fall-through, which is
-   * written as nothing at all.
-   *
-   * An `if` chain has one `else`, so an earlier route with no condition heads
-   * its branch with `true`. A split reaches that only with a second
-   * unconditioned route, which the desugarer never writes.
-   *
-   * `fallback` is the route the model takes when no condition holds, and it
-   * gets the `else` ahead of any other candidate, which is what keeps the chain
-   * total where the model was.
+   * Every route gets a form: a conditioned one heads a branch with its
+   * condition, and an unconditioned one heads a branch as `true`, takes the one
+   * `else`, or, running straight into the join, prints as nothing. The `else`
+   * goes to the model's fallback first, which keeps the chain total where the
+   * model was; then to the route into the join, since a `true` head over that
+   * empty branch would leave the rest unreachable; then to the last
+   * unconditioned route, a second one being a shape the desugarer never writes.
    */
   private emitIfChain(
     weighed: SequenceFlow[],
@@ -928,9 +866,6 @@ class Emitter {
     lines: string[],
     depth: number,
   ): void {
-    // A route straight to the join is the fall-through an `else`-less chain
-    // already has, so it prints as nothing and takes the `else` when it can: a
-    // `true` head over that empty branch would leave the rest unreachable.
     const elseFlow =
       fallback ??
       unweighed.find((f) => f.targetRef === join) ??
@@ -942,8 +877,6 @@ class Emitter {
         .map((f): [string, SequenceFlow] => ['true', f]),
     ];
 
-    // At least one head: this runs on two routes or more, and at most one of
-    // them is the `else`.
     heads.forEach(([condition, f], i) => {
       lines.push(
         i === 0
@@ -963,11 +896,9 @@ class Emitter {
   }
 
   /**
-   * The routes of a split sorted the way the chain and the fork block read
-   * them. The fallback is the `else` whatever else it carries: heading its
-   * branch with the condition would put the branch on a run of its own and
-   * leave the split with nowhere to go when nothing holds. Desugared IR has at
-   * most one unconditioned flow; imported IR may carry more.
+   * The fallback counts as unconditioned whatever it carries: heading its
+   * branch with the condition would put it on a run of its own and leave the
+   * split with nowhere to go when nothing holds.
    */
   private weighRoutes(
     splitId: string,
@@ -991,12 +922,10 @@ class Emitter {
   }
 
   /**
-   * A fork or a race the catalog cannot fold, every route leaving as a jump
-   * under the condition it carried. Each jump takes a branch of its own because
-   * a jump ends its block, so a second one written beside the first could never
-   * run. The chain keeps the conditions and loses the split's kind, which the
-   * marker names and {@link degradedSplitWarning} reports; the settings go
-   * with it, which the sweep reports.
+   * Every route leaves as a jump under its condition, each in a branch of its
+   * own since a jump ends its block. The split's kind is lost, which the marker
+   * names and {@link degradedSplitWarning} reports, and its settings with it,
+   * which the sweep reports.
    */
   private emitJumps(
     splitId: string,
@@ -1023,13 +952,11 @@ class Emitter {
   }
 
   /**
-   * The checks below establish that the branch region belongs to this gateway
-   * and re-enters at the join. `undefined` means the gateway is unstructured.
-   *
-   * A join past `stop` is refused: inside a loop body the body dominates
-   * everything after the loop, so a split whose routes leave the loop and
-   * reconverge behind it would pass the dominance checks, walk the staying
-   * route past the printed loop head and drop the back edge.
+   * `undefined` when the split is unstructured. A join past `stop` is refused:
+   * inside a loop body the body dominates everything after the loop, so a
+   * split whose routes leave the loop and reconverge behind it would pass the
+   * dominance checks, walk the staying route past the printed loop head and
+   * drop the back edge.
    */
   private cleanJoin(
     splitId: string,
@@ -1041,7 +968,6 @@ class Emitter {
     if (stop !== undefined && !this.cfg.postDominates(stop, join)) {
       return undefined;
     }
-    if (!this.cfg.postDominates(join, splitId)) return undefined;
     if (!this.cfg.dominates(splitId, join)) return undefined;
     for (const f of outs) {
       if (f.targetRef === join) continue;
@@ -1052,28 +978,23 @@ class Emitter {
 
   /**
    * Where the routes come back together when the post-dominator queries
-   * cannot say: the nearest node every live route reaches, read off the
-   * model's routes and bounded by `stop`. A branch that can end puts the
-   * split's post-dominator at the exit, and a step that loops on itself
-   * leaves the container with no post-dominators at all, so the clean join
-   * and the survivors' chains both miss a merge the routes plainly share, and
-   * a branch walked past it prints the continuation inside the block.
+   * cannot say: a branch that can end puts the split's post-dominator at the
+   * exit, and a step that loops on itself leaves the container with no
+   * post-dominators at all, so {@link cleanJoin} and {@link recoveredForkJoin}
+   * both miss a merge the routes plainly share.
    *
-   * A route straight into a sink is a branch that ends and never counts. Of
-   * the rest, the routes that reach the block's exit, which is `stop` or,
-   * at the top of the container, its elided end, are the live ones; where
-   * none does, a route is live when it reaches a node another route reaches,
-   * and where none does that either, every one is. Among the nodes the live
-   * routes share, in the first one's breadth order: a merge, a gateway with
-   * one route out, ahead of a step on the way to it, since the compiler
-   * lowers every block with a merge and a step ahead of it belongs to the
-   * branch; then the exit; then the nearest step no live route can end or
-   * leave before, except for a lone live route heading a branch with its
-   * condition, whose whole chain is that branch and which continues at the
-   * farthest such step. `joinKind` narrows the answer to a merge of that kind
-   * the split dominates, the only node a fork or a race synchronizes at: a
-   * merge entered from outside the block as well would synchronize that
-   * entry too once the block's own join stands for it.
+   * Read off the model's routes, bounded by `stop`. A route straight into a
+   * sink never counts. The live routes are those reaching the block's exit
+   * (`stop`, or the elided end at the top of the container); where none does,
+   * those reaching a node another route reaches; where none does that either,
+   * all of them. The answer is the first node in the first live route's
+   * breadth order that every live route reaches: a merge (a gateway with one
+   * route out) ahead of a step on the way to it, since the compiler lowers
+   * every block with a merge; then the exit; then the nearest step no live
+   * route can end or leave before. `joinKind` narrows a fork's or a race's
+   * answer to a merge of that kind the split dominates, the only node it
+   * synchronizes at: a merge entered from outside the block as well would
+   * synchronize that entry too.
    */
   private convergence(
     splitId: string,
@@ -1117,14 +1038,14 @@ class Emitter {
           (el.kind === kind && this.cfg.dominates(splitId, n)))
       );
     };
-    // A lone live route's reach holds every merge on its way, a nested or a
-    // later block's beside this block's own, and the graph does not tell
-    // them apart in general: the compiler keeps a join one route enters.
-    // What it does tell: this block's join is entered by the lone route
-    // alone where a nested if/else's is entered by each of its routes, and a
-    // choice's join is a merge of its own kind where a nested fork's is not.
-    // A nested guard clause's join is entered by one route too, so it can
-    // still be taken first; the block's tail then prints after the block.
+    // A lone live route reaches every merge on its way, nested and later
+    // blocks' beside this block's own, and the graph cannot tell them apart
+    // in general (the compiler keeps a join one route enters). It can tell
+    // this much: this block's join is entered by the lone route alone where a
+    // nested if/else's is entered by each of its routes, and a choice's join
+    // is a merge of its own kind where a nested fork's is not; a nested guard
+    // clause's one-in join can still be taken first, and the block's tail
+    // then prints after the block.
     const ownKind = joinKind ?? this.byId.get(splitId)?.kind;
     const merge =
       live.length === 1
@@ -1142,6 +1063,8 @@ class Emitter {
       // authored end and jumped to; the guard clause keeps it that way.
       return live.length === 1 && stop === undefined ? undefined : exit;
     }
+    // A lone weighed route's whole chain is its branch, so it continues at the
+    // farthest step that holds rather than the nearest.
     const [only] = live;
     const weighed =
       live.length === 1 &&
@@ -1187,13 +1110,10 @@ class Emitter {
   }
 
   /**
-   * A guard clause has no clean join: one branch terminates while the else-less
-   * default carries the main flow. Treating that default as the continuation
-   * prints it after the `if` instead of as a bare `goto` at the split.
-   *
-   * Reads the routes the chain leaves unweighed rather than the split's own
-   * edges, so the one route the model takes when no condition holds is the
-   * continuation whether it carries a condition or not.
+   * A guard clause has no clean join: one branch terminates while the
+   * unconditioned route carries the main flow, which prints after the `if`
+   * rather than as a bare `goto`. Reads the routes the chain leaves unweighed,
+   * so the fallback is the continuation whether it carries a condition or not.
    */
   private guardClauseContinuation(
     unconditioned: SequenceFlow[],
@@ -1203,16 +1123,13 @@ class Emitter {
 
   /**
    * A split inside a loop body or a branch whose every route is conditioned:
-   * a leaving route puts the split's immediate post-dominator outside the
-   * region (the exit, or a node behind the loop when the leaving route and the
-   * loop exit share an end), so there is no clean join, and with no
-   * unconditioned route no guard clause, yet the routes that stay inside run
+   * a leaving route puts the split's post-dominator outside the region, so
+   * there is no clean join and no guard clause, yet the routes that stay run
    * into `stop`, which is the continuation. Only the leaving routes print as
-   * jumps; as jumps throughout, the staying route's steps would be hoisted
-   * out of the loop and their edge into its folded head dropped.
-   *
-   * A route straight into `stop` counts as staying (`postDominates` is
-   * reflexive) and prints as an empty branch.
+   * jumps; as jumps throughout, the staying route's steps would be hoisted out
+   * of the loop and their edge into its folded head dropped. A route straight
+   * into `stop` stays, `postDominates` being reflexive, and prints as an empty
+   * branch.
    */
   private enclosingContinuation(
     splitId: string,
@@ -1251,33 +1168,26 @@ class Emitter {
     ) {
       this.emitFrom(entry, join, body, depth + 1);
     } else {
-      // The target escapes the [split, join) region: preserve the edge as a goto.
       this.pushGoto(entry, body);
     }
     for (const l of body) lines.push(INDENT + l);
   }
 
   /**
-   * Whether the entry sits inside `[split, join)` and can be walked inline.
-   * Four shapes qualify: an ordinary body that re-merges, so `join`
-   * post-dominates `entry`; a guard clause whose entry is a synthesized
-   * terminal the split owns and that terminates before the join, which has no
-   * continuation to relocate and prints the same statement in either scope;
-   * a guard clause whose entry is a bare authored end that the split's route
-   * reaches as its only incoming flow; and a guard clause whose entry is a
-   * gateway the split owns, which a jump could not name anyway, and whose
-   * routes the walk sorts with `join` as their stop node.
+   * Four shapes walk inline: a body the join post-dominates; a synthesized
+   * terminal the split owns, which prints the same statement in either scope;
+   * a bare authored end the split's route alone enters; and a gateway the
+   * split owns, which a jump could not name anyway.
    *
    * An authored entry with a chain of its own is decided by the block's tail.
    * A jump hoists the chain behind everything walked from the starts; where
-   * that ends on the plain end the printer leaves out, the chain would follow
-   * that end on the page and push it off the one position the compiler
-   * re-derives it at, so the chain prints inside the branch. Where the block
-   * ends on authored terminals the chain stays a `goto` at its authored
-   * scope, so the coordinate-derived ids of its unnamed events survive the
-   * round trip. A chain that runs into the elided end is that tail itself and
-   * stays a `goto` as well: printed inside the branch, the end would print
-   * under its reserved id.
+   * that ends on the plain end the printer leaves out, the chain would push
+   * that end off the one position the compiler re-derives it at, so the chain
+   * prints inside the branch. Where the block ends on authored terminals the
+   * chain stays a `goto` at its authored scope, so the coordinate-derived ids
+   * of its unnamed events survive the round trip; and a chain that reaches the
+   * elided end is that tail itself and stays a `goto` as well, since inside
+   * the branch the end would print under its reserved id.
    */
   private branchStaysInRegion(
     entry: string,
@@ -1328,13 +1238,11 @@ class Emitter {
 
   /** The post-loop continuation, or `undefined` when the pattern misses. */
   private tryWhile(
-    loop: FlowElement,
+    loop: Extract<FlowElement, { kind: 'exclusiveGateway' }>,
     stop: string | undefined,
     lines: string[],
     depth: number,
   ): string | typeof STOP | undefined {
-    if (loop.kind !== 'exclusiveGateway') return undefined;
-
     // Unconditioned mirrors `tryDoWhileEntry`'s conditioned requirement, so the
     // two patterns never both fire. A route from the head back into itself is
     // no body: matched here it would print the exit route as the body.
@@ -1365,12 +1273,9 @@ class Emitter {
   }
 
   /**
-   * Post-test `do { body } while (c)`, recognized at the body entry because the
-   * body runs before the test and would otherwise print as a plain statement.
-   * The pattern: an exclusive gateway `L` with a conditioned back-edge
-   * `L -> node`, where `node` dominates `L`. The conditioned back-edge is what
-   * tells this from a pre-test `while`, which would otherwise match here
-   * through its inner join-to-head edge.
+   * An exclusive gateway with a conditioned back-edge into `node`, which
+   * dominates it. The condition is what tells a post-test loop from a pre-test
+   * `while`, which would otherwise match here through its join-to-head edge.
    */
   private tryDoWhileEntry(
     node: string,
@@ -1392,27 +1297,25 @@ class Emitter {
 
     const loopId = backEdge.sourceRef;
     const outs = this.unconsumedOut(loopId);
-    // The back-edge carries the loop condition; the routes beside it are taken
-    // where the loop leaves off.
-    const cond = backEdge;
 
     this.emittedNodes.add(loopId);
-    this.consumedFlows.add(cond.id);
+    this.consumedFlows.add(backEdge.id);
     const rest = this.takeRest(outs);
     const settings = this.takeHeadSettings(loopId);
 
     lines.push('do {');
     this.emitBranch(node, loopId, lines, depth);
-    lines.push(`} while (${renderCondition(cond)})${headSettings(settings)}`);
+    lines.push(
+      `} while (${renderCondition(backEdge)})${headSettings(settings)}`,
+    );
 
     return this.emitRoutes(loopId, rest, stop, lines, depth);
   }
 
   /**
-   * The routes of `outs` the caller has not spent on its own pattern, marked
-   * printed here so a jump landing on the loop head while the body is walked
-   * reads the same routing it did before. {@link emitRoutes} takes them from
-   * the position the loop leaves off at, which is where the model takes them.
+   * The routes the loop pattern did not spend, marked printed before the body
+   * is walked so a jump landing on the head reads the same routing it did
+   * before; {@link emitRoutes} takes them where the loop leaves off.
    */
   private takeRest(outs: SequenceFlow[]): SequenceFlow[] {
     const rest = this.unconsumed(outs);
@@ -1421,17 +1324,11 @@ class Emitter {
   }
 
   /**
-   * A clean fork prints `parallel { { } { } }` with both gateways elided. A
-   * branch terminating before the join still prints that way, resuming after
-   * the join the survivors share ({@link recoveredForkJoin}).
-   *
-   * A fork whose branches carry conditions prints the same block with a head on
-   * each branch. One rule reads it back: a condition on any branch means the
-   * branches are weighed one by one, none anywhere means they all run.
-   *
-   * Keyed on the split's id and kind rather than on a gateway: a step whose
-   * own routes split reaches the same block with the kind its routes give it,
-   * and its head settings are none.
+   * Both fork kinds print one `parallel` block: a head on any branch reads
+   * back as the fork that weighs its branches, none anywhere as the one that
+   * opens them all. Keyed on the split's id and kind rather than on a gateway:
+   * a step whose own routes split reaches the same block with the kind its
+   * routes give it, and its head settings are none.
    */
   private emitFork(
     splitId: string,
@@ -1499,11 +1396,9 @@ class Emitter {
   }
 
   /**
-   * `else `, `if (c) ` or nothing. The fallback heads its branch as the
-   * fallback whatever else it carries: a fork takes it when no other branch was
-   * taken, and a condition written on it is weighed nowhere, so printing that
-   * condition would put the branch back on a run of its own. A fork that weighs
-   * nothing heads no branch at all.
+   * The fallback heads its branch as `else` whatever it carries: the fork
+   * weighs no condition on it, and printing one would put the branch on a run
+   * of its own.
    */
   private branchHead(fork: Fork, flow: SequenceFlow): string {
     if (fork.kind !== 'inclusiveGateway') return '';
@@ -1514,9 +1409,8 @@ class Emitter {
   }
 
   /**
-   * The fallback edge that goes nowhere but the merge, which prints as nothing.
-   * A condition on it is weighed nowhere, so it leaves the edge implicit all
-   * the same; {@link warnFallbackCondition} reports the condition either way.
+   * A condition on it changes nothing, the fork weighing none on its fallback,
+   * so it stays implicit; {@link warnFallbackCondition} reports the condition.
    */
   private isImplicitFallback(
     fork: Fork,
@@ -1531,12 +1425,6 @@ class Emitter {
   }
 
   /**
-   * An unconditioned route is taken whatever the conditions do, so only a split
-   * whose every route is weighed and which names none to take when none holds
-   * can be left with nowhere to go. The printed block falls through once its
-   * branches are done, handing that split a fallback it did not have, which is
-   * a change in what runs.
-   *
    * Read off the model rather than from the caller's list: the engine weighs
    * every route the element has, so one an enclosing construct has already
    * printed keeps the element from running out of routes all the same.
@@ -1564,10 +1452,8 @@ class Emitter {
   }
 
   /**
-   * The same route as the flow it is, and `undefined` for a split that names
-   * one it has no route for. The engine looks the name up among the routes the
-   * split has and raises where it finds none, so a name alone is not a route
-   * the model can take.
+   * `undefined` for a split naming a route it does not have: the engine looks
+   * the name up among the split's routes and raises where it finds none.
    */
   private splitFallbackFlow(splitId: string): SequenceFlow | undefined {
     const fallbackId = this.splitFallbackFlowId(splitId);
@@ -1577,16 +1463,10 @@ class Emitter {
   }
 
   /**
-   * The mirror of {@link warnInventedFallback}: a fork whose fallback nothing
-   * can reach, because a branch beside it carries no condition and so runs
-   * whatever the conditions do. {@link branchHead} writes that fallback as an
-   * `else`, which the validator refuses for the same reason, and the model is
-   * where the refusal comes from rather than the printing, so the fallback is
-   * written out and reported instead of dropped.
-   *
-   * Reads the branches that print, after {@link isImplicitFallback} has taken
-   * out the fallback going nowhere but the merge: that one leaves no `else`
-   * behind and so nothing to report.
+   * The mirror of {@link warnInventedFallback}: a fallback nothing can reach,
+   * written out as an `else` the validator refuses, since the model is where
+   * the refusal comes from. Reads the branches that print: a fallback going
+   * nowhere but the merge leaves no `else` behind and nothing to report.
    */
   private warnDeadFallback(fork: Fork, branches: SequenceFlow[]): void {
     if (fork.kind !== 'inclusiveGateway') return;
@@ -1600,12 +1480,10 @@ class Emitter {
   }
 
   /**
-   * A condition on the fallback itself, reported once per split off the
-   * model's routes, whatever the fallback ends up printed as: the `else` of a
-   * chain or a block, the plain route on, or nothing. A choice weighs its
-   * fallback among the others and the engine refuses to deploy one carrying a
-   * condition there; a fork and a step skip it while weighing and take it when
-   * nothing held, so the condition is weighed nowhere and the run is the same.
+   * Reported once per split off the model's routes, however the fallback
+   * prints. A choice weighs its fallback among the others and the engine
+   * refuses to deploy one carrying a condition; a fork and a step skip it while
+   * weighing, so there the condition is weighed nowhere.
    */
   private warnFallbackCondition(splitId: string): void {
     if (this.splitFallbackFlow(splitId)?.conditionExpression === undefined) {
@@ -1619,11 +1497,9 @@ class Emitter {
   }
 
   /**
-   * A condition on a branch of a fork that opens every branch. The engine
-   * reads no condition here, and {@link branchHead} writes none, because a
-   * condition written on a branch is what tells a fork that weighs its
-   * branches from one that does not: printing it would read back as the other
-   * fork. The condition is dropped there, and reported here.
+   * Dropped by {@link branchHead}: a condition on a branch is what tells the
+   * weighing fork from the opening one, so printing it would read back as the
+   * other.
    */
   private warnUnweighedBranchCondition(fork: Fork, outs: SequenceFlow[]): void {
     if (fork.kind !== 'parallelGateway') return;
@@ -1643,14 +1519,14 @@ class Emitter {
   }
 
   /**
-   * When a branch terminates at a `throw` or `end` the fork has no clean
-   * post-dominator, but the survivors still reconverge at a real merge of kind
+   * With a branch ending at a `throw` or `end` the fork has no clean
+   * post-dominator, but the survivors still reconverge at a merge of
    * `joinKind`. Each branch contributes, nearest first, the fork-dominated
-   * gateways of that kind on its post-dominator chain. Branches of one fork
-   * share no node before reconverging, so the first candidate common to every
-   * chain is the join, and the nearest keeps the continuation at this fork
-   * rather than a sibling's nested block. The `cur !== forkId` guard rejects a
-   * back-edge fork that post-dominates itself.
+   * merges of that kind on its post-dominator chain; branches of one fork share
+   * no node before reconverging, so the first candidate common to every chain
+   * is the join, and nearest keeps the continuation at this fork rather than in
+   * a sibling's nested block. `cur !== forkId` rejects a back-edge fork that
+   * post-dominates itself.
    */
   private recoveredForkJoin(
     forkId: string,
@@ -1685,11 +1561,10 @@ class Emitter {
   }
 
   /**
-   * `await { <wait> { } <wait> { } }`: every branch opens on a wait, and the
-   * first to resolve cancels the rest. The pattern is keyed on the waits alone,
-   * so it still holds with no merge to return to, which is the shape a race
-   * whose every branch ends takes. A branch opening on anything else is not a
-   * race at all and degrades, every edge keeping a jump or a marker.
+   * Every branch opens on a wait, and the pattern is keyed on the waits alone,
+   * so it holds with no merge to return to, the shape of a race whose every
+   * branch ends. A branch opening on anything else degrades, every edge keeping
+   * a jump or a marker.
    */
   private emitRaceGateway(
     race: Extract<FlowElement, { kind: 'eventBasedGateway' }>,
@@ -1736,8 +1611,8 @@ class Emitter {
       this.emittedNodes.add(el.id);
       const branchLines: string[] = [];
       if (body !== undefined) {
-        // The wait leads straight into its body with nothing written between
-        // them, so the edge goes the way a fall-through does.
+        // Nothing is written between the wait and its body, so `consume`
+        // reports a condition on the edge as on a fall-through.
         this.consume(body);
         this.emitBranch(body.targetRef, join, branchLines, depth, outs[i]!.id);
       }
@@ -1757,10 +1632,9 @@ class Emitter {
   }
 
   /**
-   * The wait a race branch opens on and the edge into its body, or `undefined`
-   * when the branch is not a wait the block form can hold: an already-printed
-   * one would be printed twice, and one that routes on has no single body.
-   * Reads only, so a sibling branch missing costs nothing.
+   * `undefined` where the branch is not a wait the block can hold: an
+   * already-printed one would print twice, and one that splits has no single
+   * body. Reads only, so a sibling missing costs nothing.
    */
   private raceWait(target: string): RaceWait | undefined {
     const el = this.byId.get(target);
@@ -1772,11 +1646,9 @@ class Emitter {
   }
 
   /**
-   * Marks a route printed as plain flow, one statement leading to the next
-   * with nothing written between them, and reports a condition on it: there is
-   * no place between the two statements to write one. Every route the script
-   * writes that way goes through here, so the report cannot be forgotten at one
-   * of them.
+   * A route printed as plain flow, with no place between the two statements
+   * for its condition, which is reported. Every such route goes through here,
+   * so the report cannot be forgotten at one of them.
    */
   private consume(flow: SequenceFlow): void {
     this.consumedFlows.add(flow.id);
@@ -1785,7 +1657,6 @@ class Emitter {
     if (warning !== undefined) this.warnings.push(warning);
   }
 
-  /** The single route on from a position, taken as the fall-through. */
   private takeFallThrough(
     flow: SequenceFlow,
     stop: string | undefined,
@@ -1796,17 +1667,12 @@ class Emitter {
   }
 
   /**
-   * The report a dropped condition takes, which turns on what reads it. A fork
-   * that opens every route and a wait that takes the first to resolve both
-   * weigh it nowhere, so the run is the same without it; everywhere else the
-   * engine reads it and the run is not.
-   *
-   * The route a split names as its fallback is neither: the split's own report
-   * ({@link warnFallbackCondition}) covers it however it prints.
-   *
-   * A route beside a fallback the split weighs nothing on is neither again: the
-   * model has that fallback left to leave by, so the drop reads as a divergence
-   * rather than as the failure a route without one takes.
+   * Which report a dropped condition takes turns on what reads it: a fork that
+   * opens every route and a wait weigh it nowhere, everywhere else the engine
+   * reads it. The fallback itself is covered by {@link warnFallbackCondition}.
+   * A route beside an unconditioned fallback diverts the run rather than
+   * failing it, since the model has the fallback left to leave by; a fallback
+   * the split weighs is reported on the split and does not count.
    */
   private droppedConditionWarning(
     flow: SequenceFlow,
@@ -1820,8 +1686,6 @@ class Emitter {
       case 'eventBasedGateway':
         return raceConditionWarning(sourceId);
       default: {
-        // A fallback the split weighs is a different shape, reported on the
-        // split in its own right, so only a plain one answers here.
         const fallback = this.splitFallbackFlow(sourceId);
         return fallback !== undefined &&
           fallback.conditionExpression === undefined
@@ -1832,11 +1696,9 @@ class Emitter {
   }
 
   /**
-   * The arrival rule every fall-through follows. Returning a merge node does
-   * not elide it: a synthesized join gateway has one remaining out-edge once
-   * the branch edges are consumed, so `emitNode` passes through it and prints
-   * nothing, reproducing the desugarer's elision, while a real node that
-   * happens to be the merge point prints its normal statement.
+   * Returning a merge does not elide it: a synthesized join has one out-edge
+   * left once the branch edges are consumed, so `emitNode` passes through it
+   * and prints nothing, while a real node at the merge prints its statement.
    */
   private continueAt(
     target: string,
@@ -1868,16 +1730,15 @@ class Emitter {
   }
 
   /**
-   * The first node with a statement form, the only kind a `goto` can name. A
+   * The first node with a statement form, the only kind a `goto` can name: a
    * jump into a gateway re-runs its routing, so it means the same as a jump at
    * the successor whenever that routing has one outcome. The walk crosses the
-   * single unrealized out-edge, and once all are realized, the sole out-edge of
-   * a gateway that never had a choice: consumption records that an edge printed
-   * as structured flow, not that it stopped existing.
-   *
-   * `undefined` for a routing with more than one outcome, a revisited gateway,
-   * or a node the emitter drops on print. An unknown id is named verbatim,
-   * being a dangling IR reference.
+   * single unrealized out-edge, or once all are realized the sole out-edge of a
+   * gateway that never had a choice, since consumption records that an edge
+   * printed as structured flow, not that it stopped existing. `undefined` for
+   * a routing with more than one outcome, a revisited gateway, or a node the
+   * emitter drops on print; an unknown id is named verbatim, being a dangling
+   * IR reference.
    */
   private forwardToRealTarget(
     target: string,
@@ -1943,29 +1804,16 @@ class Emitter {
         );
       }
       case 'intermediateThrowEvent': {
-        // Only escalation, signal, message, compensation, and link are
-        // emittable: an error aborts its path (`throw error`) and the rest
-        // have no throw surface.
-        const def = el.eventDefinition;
-        const settings = [...throwBindingSettings(el), ...jobSettingItems(el)];
-        switch (def.kind) {
-          case 'escalation':
-          case 'signal':
-          case 'message':
-          case 'compensation':
-          case 'link': {
-            const trigger = renderTrigger(def, this.names);
-            return bracketed(
-              `emit ${trigger.head}${this.terminalNameSuffix(el)}`,
-              [...trigger.items, ...settings],
-              structuredMembers(el),
-            );
-          }
-          default:
-            throw new Error(
-              `irToDsl: intermediate throw '${el.id}' carries a ${def.kind} definition; only escalation, signal, message, compensation, or link can be emitted.`,
-            );
-        }
+        const trigger = renderTrigger(el.eventDefinition, this.names);
+        return bracketed(
+          `emit ${trigger.head}${this.terminalNameSuffix(el)}`,
+          [
+            ...trigger.items,
+            ...throwBindingSettings(el),
+            ...jobSettingItems(el),
+          ],
+          structuredMembers(el),
+        );
       }
       case 'intermediateCatchEvent': {
         const trigger = renderTrigger(el.eventDefinition, this.names);
@@ -1989,19 +1837,17 @@ class Emitter {
         return renderReceiveTask(el, this.names);
       case 'callActivity':
         return renderCallActivity(el, this.names);
-      // These print as a line group in `emitNode`/`emitBoundaryHandler`, and are
-      // listed so the type checker still catches a new kind.
       case 'scriptTask':
-        return undefined;
+        return renderScriptTask(el, this.names);
+      // Printed by `emitNode` (a gateway as a construct, a sub-process and a
+      // boundary as a block); listed so the type checker still catches a new
+      // kind.
       case 'subProcess':
-        return undefined;
       case 'boundaryEvent':
-        return undefined;
       case 'exclusiveGateway':
       case 'parallelGateway':
       case 'inclusiveGateway':
       case 'eventBasedGateway':
-        // An unrecognized gateway emits nothing; its edges become gotos.
         return undefined;
       default: {
         const exhaustive: never = el;
@@ -2025,7 +1871,6 @@ interface Fork {
   fallbackId: string | undefined;
 }
 
-/** The word the marker names a lost split by. */
 const SPLIT_KIND_WORD: Record<Gateway['kind'], string> = {
   exclusiveGateway: 'exclusive',
   parallelGateway: 'parallel',
@@ -2041,8 +1886,8 @@ interface RaceWait {
 
 /**
  * Printed where an edge the emitter can neither name nor place would have gone,
- * instead of fabricating a target. It stays in the source as the reader's
- * pointer at the place needing repair; the warning below is the report.
+ * instead of fabricating a target; the warning is the report, the marker the
+ * reader's pointer at the place needing repair.
  */
 export const UNSTRUCTURED_MARKER =
   '// unstructured region: hand-repair required';
@@ -2067,11 +1912,8 @@ function droppedEdgeWarning(target: string): PrintWarning {
 }
 
 /**
- * A split whose branches the catalog cannot fold keeps its edges as jumps,
- * each under the condition it carried, and loses the split itself: the marker
- * line above the jumps names it. An edge with no name to jump to takes the
- * marker {@link droppedEdgeWarning} reports instead, which is why this one
- * counts no branches.
+ * An edge with no name to jump to takes {@link droppedEdgeWarning}'s marker
+ * instead, which is why this one counts no branches.
  */
 function degradedSplitWarning(splitId: string): PrintWarning {
   return {
@@ -2089,18 +1931,11 @@ function degradedSplitWarning(splitId: string): PrintWarning {
   };
 }
 
-/**
- * Where {@link degradedSplitWarning} names a split whose branches the script
- * cannot fold, this names one with nothing to fold: the split prints as
- * nothing and the run ends where the script's block does. What the model does
- * there depends on the kind, and the sentence says which.
- */
 function emptySplitWarning(kind: Gateway['kind'], id: string): PrintWarning {
   const model = {
-    // `ParallelGatewayActivityBehavior.execute` leaves by no route, and
-    // `PvmExecutionImpl.leaveActivityViaTransitions` ends the execution. At
-    // top level that is the whole run; inside a fork's branch it is that
-    // branch alone, and the join it never reaches keeps the fork waiting.
+    // `ParallelGatewayActivityBehavior.execute` leaves by no route and
+    // `PvmExecutionImpl.leaveActivityViaTransitions` ends the execution: the
+    // whole run at top level, one branch inside a fork.
     parallelGateway:
       "The engine ends the run here too, so outside a fork's branch the " +
       'process runs the same without it; inside one, only that branch ends ' +
@@ -2128,12 +1963,7 @@ function emptySplitWarning(kind: Gateway['kind'], id: string): PrintWarning {
   };
 }
 
-/**
- * A jump printed outside the `await`/`parallel` branch its target was printed
- * in. The validator refuses it, since a branch's steps run only when the whole
- * block is reached, and the model is where the route comes from, so the jump
- * is written and reported rather than dropped.
- */
+/** Written and reported rather than dropped: the model is where the route comes from. */
 function crossBranchJumpWarning(target: string): PrintWarning {
   return {
     elementId: target,
@@ -2173,12 +2003,6 @@ function raceConditionWarning(raceId: string): PrintWarning {
   };
 }
 
-/**
- * A condition the engine weighs, on a route the script writes as the plain
- * step-to-step fall-through. Unlike the conditions a wait or an unweighing
- * fork carries, this one changes what runs when it is left out, which is why
- * it reads nothing like {@link raceConditionWarning}.
- */
 function droppedFlowConditionWarning(sourceId: string): PrintWarning {
   return {
     elementId: sourceId,
@@ -2194,13 +2018,6 @@ function droppedFlowConditionWarning(sourceId: string): PrintWarning {
   };
 }
 
-/**
- * The same condition on a route out of a split that names the route to take
- * when none of its conditions holds. The engine takes no route it weighs
- * false, and here it has the fallback left, so the model routes on where
- * {@link droppedFlowConditionWarning} says it fails. It takes a route the
- * script does not, with nothing raised to mark the difference.
- */
 function divertedRunWarning(splitId: string): PrintWarning {
   return {
     elementId: splitId,
@@ -2232,11 +2049,6 @@ function unweighedBranchWarning(forkId: string): PrintWarning {
   };
 }
 
-/**
- * A condition on the fallback of a fork that opens every branch whose condition
- * holds. It takes the fallback only when it took no branch, and reads no
- * condition on the fallback while choosing, so the condition changes nothing.
- */
 function forkFallbackConditionWarning(forkId: string): PrintWarning {
   return {
     elementId: forkId,
@@ -2249,13 +2061,6 @@ function forkFallbackConditionWarning(forkId: string): PrintWarning {
   };
 }
 
-/**
- * The same condition on the fallback of a choice, which takes one route and
- * weighs the fallback among the others rather than holding it back. A model
- * carrying one there is refused at deployment, so where
- * {@link forkFallbackConditionWarning} reports a condition that changes
- * nothing, this reports a model that never gets to run.
- */
 function choiceFallbackConditionWarning(splitId: string): PrintWarning {
   return {
     elementId: splitId,
@@ -2295,18 +2100,13 @@ function droppedSettingWarning(gatewayId: string): PrintWarning {
   };
 }
 
-/**
- * A pathological IR degrades to a `goto` rather than overflowing the stack.
- * Unpinned: reaching it takes an IR nested a thousand blocks deep, which no
- * fixture builds.
- */
+/** A pathological IR degrades to a `goto` rather than overflowing the stack. */
 const MAX_NESTING_DEPTH = 1000;
 
 /**
- * In print order, after the label and documentation {@link namedSettings}
- * writes. The IR field name is also the DSL key. Exported so a test can hold
- * the pair against `PROCESS_HEADER_KEYS`: a key the vocabulary gains and this
- * table does not would print nothing and round-trip as a silent drop.
+ * In print order after {@link namedSettings}; the IR field name is the DSL key.
+ * Exported so a test can hold it against `PROCESS_HEADER_KEYS`, since a key the
+ * vocabulary gains and this table lacks would round-trip with no report.
  */
 export const PROCESS_HEADER_SETTINGS = [
   ['versionTag', quoteLiteral],
@@ -2338,11 +2138,7 @@ function isBoundary(
   return el.kind === 'boundaryEvent';
 }
 
-/**
- * The definitions an `end` statement spells in its own head rather than
- * raising, one per word the surface takes there. Both keep the label a `throw`
- * would drop, and the word each prints is its kind.
- */
+/** The definitions an `end` spells in its own head rather than raising; the word printed is the kind. */
 const END_CARRIED_KINDS = new Set<EventDefinition['kind']>(END_TRIGGERS);
 
 /** Read by the print and by the elision, so the two cannot drift. */
@@ -2354,18 +2150,14 @@ function isEndCarried(
 
 /**
  * Whether the id is absent from the printed form, leaving a `goto` nothing to
- * resolve against. `xmlToIr` asks the same question to report the label an
+ * resolve against; `xmlToIr` asks the same question to report the label an
  * elided start or end takes with it, so the two answers cannot drift apart.
- *
- * For a plain end the answer is only that the printer may drop it; `emitNode`
- * and `Emitter.emit` decide by position whether it does. `forwardToRealTarget`
- * reads this half alone, so a jump into such an end is dropped and marked
- * whether or not the end ends up printed.
- *
- * `container` is the one the element sits in, whose id the minted start and
- * end carry. The compiler re-derives a dropped start at the body's head and
- * nowhere else, so only the first plain start under the minted id can go: a
- * second one prints under its own id.
+ * For a plain end the answer is only that the printer may drop it, `emitNode`
+ * and `Emitter.emit` deciding by position whether it does, and
+ * `forwardToRealTarget` reads this half alone, so a jump into such an end is
+ * dropped and marked whether or not the end ends up printed. The compiler
+ * re-derives a dropped start at the body's head and nowhere else, so only the
+ * first plain start under `container`'s minted id can go.
  */
 export function isElidedOnPrint(
   el: FlowElement,
@@ -2390,10 +2182,8 @@ export function isElidedOnPrint(
       // Every other definition prints as a `throw`, which drops a synthesized name.
       return !isEndCarried(el.eventDefinition);
     case 'intermediateThrowEvent':
-      // Spells the id through `terminalNameSuffix`, which drops a synthesized one.
-      return isSynthesizedTerminalId(el.id, el.kind, container);
     case 'intermediateCatchEvent':
-      // Spells the id through `terminalNameSuffix`, which drops a synthesized one.
+      // Spelled through `terminalNameSuffix`, which drops a synthesized id.
       return isSynthesizedTerminalId(el.id, el.kind, container);
     case 'boundaryEvent':
       // Prints as `on <attachedToRef>: <trigger>`, keyed on the host.
@@ -2412,7 +2202,7 @@ export function isElidedOnPrint(
     case 'parallelGateway':
     case 'inclusiveGateway':
     case 'eventBasedGateway':
-      // Callers forward past a gateway rather than ask, so this arm is unreachable.
+      // A gateway never writes its id.
       return true;
     default: {
       const exhaustive: never = el;
@@ -2446,14 +2236,11 @@ function isPlainUnnamed(
 }
 
 /**
- * A synthesized start or end has no authored name and the grammar's `name=ID`
- * is mandatory, so it is dropped unless its block carries content. Every
- * reader goes through {@link isElidedOnPrint}: a reason to print reaching one
- * but not another would leave a jump naming a statement that never gets
- * emitted.
- *
- * A label is not such a reason: printing the id to carry one writes a name the
- * validator rejects, so the label is reported as an import warning instead.
+ * Every reader goes through {@link isElidedOnPrint}: a reason to print
+ * reaching one reader but not another would leave a jump naming a statement
+ * never emitted. A label is not such a reason: printing the id to carry one
+ * writes a name the validator rejects, so the label is reported on import
+ * instead.
  */
 function carriesPrintableContent(
   el: Extract<FlowElement, { kind: 'startEvent' | 'endEvent' }>,
@@ -2477,30 +2264,24 @@ function structuredMembers(el: SettingsCarrier): Lines[] {
   return [...ioParameters(el), ...listenerMembers(el)];
 }
 
-/** Fixed order, so the parens stay stable across runs; `keyOf` respells each key for a second carrier sharing the parens. */
+/** In the vocabulary's order, so the parens stay stable across runs; `keyOf` respells each key for a second carrier sharing the parens. */
 function jobSettingItems(
   el: JobSettings,
   keyOf: (key: string) => string = (key) => key,
 ): string[] {
-  const settings: string[] = [];
-  if (el.asyncBefore === true) {
-    settings.push(setting(keyOf('asyncBefore'), 'true'));
-  }
-  if (el.asyncAfter === true) {
-    settings.push(setting(keyOf('asyncAfter'), 'true'));
-  }
-  if (el.exclusive === false) {
-    settings.push(setting(keyOf('exclusive'), 'false'));
-  }
-  if (el.jobPriority !== undefined) {
-    settings.push(
-      setting(keyOf('jobPriority'), renderNumericValue(el.jobPriority)),
-    );
-  }
-  if (el.retryCycle !== undefined) {
-    settings.push(setting(keyOf('retryCycle'), quote(el.retryCycle)));
-  }
-  return settings;
+  const text: Record<EngineKey, string | undefined> = {
+    asyncBefore: el.asyncBefore === true ? 'true' : undefined,
+    asyncAfter: el.asyncAfter === true ? 'true' : undefined,
+    exclusive: el.exclusive === false ? 'false' : undefined,
+    jobPriority:
+      el.jobPriority === undefined
+        ? undefined
+        : renderNumericValue(el.jobPriority),
+    retryCycle: el.retryCycle === undefined ? undefined : quote(el.retryCycle),
+  };
+  return ENGINE_KEYS.flatMap((key) =>
+    text[key] === undefined ? [] : [setting(keyOf(key), text[key])],
+  );
 }
 
 /**
@@ -2583,7 +2364,6 @@ function listenerMembers(el: SettingsCarrier): Lines[] {
   return members;
 }
 
-/** A script binding is the one that keeps a body, its fence being where the code goes. */
 function renderListener(
   event: string,
   binding: ListenerBinding,
@@ -2591,7 +2371,7 @@ function renderListener(
 ): Lines {
   const clause =
     timer !== undefined
-      ? ` ${TIMER_PARTICLE[timer.timerKind]} ${quote(timer.expression)}`
+      ? ` ${TIMER_PARTICLE_BY_KIND[timer.timerKind]} ${quote(timer.expression)}`
       : '';
   const head = `on ${event}${clause}`;
   return binding.kind === 'script'
@@ -2626,22 +2406,19 @@ function renderCodeBinding(binding: CodeBinding): string {
 /**
  * The closing fence sits directly after `code` with no injected newline: the
  * split on the way in strips only the newline after the language tag, so a
- * newline added here would be re-absorbed into the body on re-parse. The result
- * carries its own newlines, so a statement holding one is a line group.
+ * newline added here would be re-absorbed into the body on re-parse.
  */
 function renderFence(format: string, code: string): string {
   return `\`\`\`${format}\n${code}\`\`\``;
 }
 
 /**
- * The validator refuses these in authored source, so an id carrying the form
- * its own kind is minted with is synthesized: the exact start and end minted
- * for `container` (and for a boundary escape in it), and the `Throw_` and
- * `Catch_` prefixes, which are positional and no modeler writes. An id
- * carrying another kind's template is an authored name and has to keep
- * printing. An end answers to the throw prefix as well, because `throw`
- * lowers to an end event; a catch answers to its own prefix only, since
- * nothing else lowers to one.
+ * An id carrying the form its own kind is minted with, which the validator
+ * refuses in authored source: the exact start and end minted for `container`
+ * (and for a boundary escape in it), and the positional `Throw_`/`Catch_`
+ * prefixes no modeler writes. An id carrying another kind's template is an
+ * authored name and keeps printing; an end answers to the throw prefix too,
+ * since `throw` lowers to an end event, and a catch to its own prefix only.
  */
 function isSynthesizedTerminalId(
   id: string,
@@ -2700,9 +2477,9 @@ function renderThrow(
 
 /**
  * Engine attributes come off the sub-process, plus the timer job's off the
- * start when that start prints no statement: the compiler puts the three on
- * the start a timer head synthesizes ({@link timerJob}), and a start that
- * prints keeps them on its own line.
+ * start when that start prints no statement: the compiler puts them on the
+ * start a timer head synthesizes ({@link splitTimerJobSettings}), and a start
+ * that prints keeps them on its own line.
  */
 function buildOnHeader(
   handler: Extract<FlowElement, { kind: 'subProcess' }>,
@@ -2719,7 +2496,7 @@ function buildOnHeader(
   }
   const trigger = renderTrigger(start.eventDefinition, names);
   const lifted = isElidedOnPrint(start, handler, true)
-    ? jobSettingItems(timerJob(start))
+    ? jobSettingItems(splitTimerJobSettings(start).timer)
     : [];
   return bodyHeader(
     `on ${trigger.head}`,
@@ -2731,17 +2508,6 @@ function buildOnHeader(
     ],
     structuredMembers(handler),
   );
-}
-
-/**
- * The settings of the job a timer start declares, which an `on timer` head
- * authors for the start it synthesizes ({@link splitTimerJobSettings}); the
- * async flags are the sub-process's own.
- */
-function timerJob(
-  start: Extract<FlowElement, { kind: 'startEvent' }>,
-): JobSettings {
-  return splitTimerJobSettings(start).timer;
 }
 
 /** `attachedToRef` prints under the host's name; refusing a bad host belongs to validation. */
@@ -2761,18 +2527,11 @@ function buildBoundaryHeader(
   );
 }
 
-/** The vocabulary's table, narrowed so a new IR timer kind without a word fails to compile. */
-const TIMER_PARTICLE: Record<
-  Extract<EventDefinition, { kind: 'timer' }>['timerKind'],
-  string
-> = TIMER_PARTICLE_BY_KIND;
-
 /**
- * The trigger clause: the word it opens on, and the items its parens lead with.
- * The payload leads them, so a name, a code and a duration are written the same
- * way wherever a trigger is; a catch binding follows as a setting naming the
- * variable the event data lands in, and the element's own settings after that.
- * A condition prints unquoted, being an expression rather than text.
+ * The payload leads the items, so a name, a code and a duration are written
+ * the same way wherever a trigger is; a catch binding follows, and the
+ * element's own settings after that. A condition prints unquoted, being an
+ * expression rather than text.
  */
 function renderTrigger(
   def: EventDefinition,
@@ -2835,8 +2594,7 @@ function payloadItem(code: string | undefined): string[] {
 
 /**
  * A code is written as the name of the declaration carrying it, which is what
- * lets `error OrderFailed(code: "order.failed")` be raised by a word. Absent
- * for a catch-all, as {@link payloadItem} is.
+ * lets `error OrderFailed(code: "order.failed")` be raised by a word.
  */
 function codeItem(
   names: ReadonlyMap<string, string>,
@@ -2853,7 +2611,7 @@ function renderTimerTrigger(def: Extract<EventDefinition, { kind: 'timer' }>): {
   head: string;
   items: string[];
 } {
-  const particle = TIMER_PARTICLE[def.timerKind];
+  const particle = TIMER_PARTICLE_BY_KIND[def.timerKind];
   const time = quote(def.expression);
   return {
     head: 'timer',
@@ -2875,10 +2633,7 @@ function eventBindingSettings(
   return parts;
 }
 
-/**
- * The flag saying a handler leaves its scope running. A flag is bare and closes
- * the parens, after the payload and the settings.
- */
+/** A flag is bare and closes the parens, after the payload and the settings. */
 function alongsideFlag(nonInterrupting: boolean): string[] {
   return nonInterrupting ? ['alongside'] : [];
 }
@@ -2913,9 +2668,15 @@ function renderUserTask(
   names: PrintNames,
 ): Lines {
   const settings = namedSettings(el);
-  for (const [key, render] of USER_TASK_SETTINGS) {
+  for (const key of USER_TASK_VERBATIM_KEYS) {
     const value = el[key];
-    if (value !== undefined) settings.push(setting(key, render(value)));
+    if (value === undefined) continue;
+    settings.push(
+      setting(
+        key,
+        key === 'priority' ? renderNumericValue(value) : quote(value),
+      ),
+    );
   }
   if (el.formRef !== undefined) {
     settings.push(
@@ -2933,22 +2694,7 @@ function renderUserTask(
   );
 }
 
-/** In print order. The IR field name is also the DSL keyword. */
-const USER_TASK_SETTINGS = [
-  ['assignee', quote],
-  ['formKey', quote],
-  ['candidateGroups', quote],
-  ['candidateUsers', quote],
-  ['dueDate', quote],
-  ['followUpDate', quote],
-  ['priority', renderNumericValue],
-] as const;
-
-/**
- * One field per line, or a block of its own where a field carries extras: a
- * form is a member list, so it prints that way itself. The braces are written
- * even with no fields, `form` alone being no rule.
- */
+/** The braces are written even with no fields, `form` alone being no rule. */
 function renderFormBlock(formFields: FormField[]): Lines {
   return [
     'form {',
@@ -3013,10 +2759,6 @@ function fieldSettings(field: FormField): string[] {
   return settings;
 }
 
-/**
- * A flag writes the literal `true`; a bound prints as `renderNumericValue`
- * prints a priority; `validator` is always quoted, like `class:`.
- */
 function renderFormConstraint(constraint: FormFieldConstraint): string {
   switch (constraint.name) {
     case 'required':
@@ -3054,11 +2796,7 @@ function renderFormValue(value: FormFieldValue): string {
     : `${value.id} ${quoteLiteral(value.label)}`;
 }
 
-/**
- * `property <key> = <value>` lines, of a form field's block or an external
- * task's. `quote`, not `quoteLiteral`: a `${...}` value has to re-lex as a
- * raw expression so it lowers back to the same text.
- */
+/** `quote`, not `quoteLiteral`: a `${...}` value has to re-lex as a raw expression. */
 function propertyMembers(properties: ExtensionProperty[] | undefined): Lines[] {
   return (properties ?? []).map((p) => [
     `property ${p.key} = ${quote(p.value)}`,
@@ -3133,7 +2871,6 @@ function renderServiceTask(
   );
 }
 
-/** The settings spelling out an execution binding, whatever carries it. */
 function bindingSettings(binding: ServiceTaskBinding): string[] {
   switch (binding.kind) {
     case 'class':
@@ -3210,11 +2947,9 @@ function renderCallActivity(
     settings.push(setting('businessKey', quote(el.businessKey)));
   }
 
-  // After `businessKey` and before the engine settings, which is the order
-  // `CallActivity.own` offers the keys in. Both values print through
-  // `quote()`: the delegate body has to re-lex as an expression, and
-  // `quoteLiteral` escapes a leading `${` to stop exactly that; the class
-  // prints through `quote()` like every other class binding.
+  // Between `businessKey` and the engine settings, the order `CallActivity.own`
+  // offers the keys in. Both print through `quote()`: the delegate body has to
+  // re-lex as an expression, which `quoteLiteral` would escape.
   if (el.mapper !== undefined) {
     settings.push(
       setting(
@@ -3311,11 +3046,7 @@ function renderScriptTask(
   return lines;
 }
 
-/**
- * The human-facing text an element carries, leading the keyed settings
- * wherever it carries any. The two travel together so a surface cannot gain
- * one and forget the other.
- */
+/** The two travel together, so a surface cannot gain one and forget the other. */
 function namedSettings(el: Named): string[] {
   return [
     ...(el.name === undefined ? [] : [setting('label', quoteLiteral(el.name))]),
@@ -3325,7 +3056,6 @@ function namedSettings(el: Named): string[] {
   ];
 }
 
-/** The one spelling a setting takes; a payload and a flag are written without a key. */
 function setting(key: string, value: string): string {
   return `${key}: ${value}`;
 }
@@ -3349,7 +3079,6 @@ function bodyHeader(head: string, settings: string[], members: Lines[]): Lines {
   return lines;
 }
 
-/** One member per line inside the braces, or no braces at all. */
 function withMembers(head: string, members: Lines[]): Lines {
   if (members.length === 0) return [head];
   return [`${head} {`, ...members.flat().map((line) => INDENT + line), '}'];
@@ -3367,23 +3096,15 @@ function headSettings(settings: string[]): string {
 /** A literal count prints bare; anything else is an expression. */
 export const BARE_CARDINALITY = /^\d+$/;
 
-/**
- * The grammar's `ID` terminal. The clause writes the name each run sees bare
- * and has no other form for it, so this is also the test the import direction
- * refuses by. A collection spelled as a name prints bare by the same test;
- * anything else is an expression.
- */
+/** The grammar's `ID` terminal: an element variable and a bare collection print by it, and the import refuses by it. */
 export const BARE_ELEMENT_VARIABLE = ID_SHAPED;
 
 /**
- * The name every code is raised by, one map per kind because the two are
- * declared separately, and the header lines that give each code that name.
- *
- * A code nothing declares still gets a declaration, exactly as `irToXml` still
- * gives it a root: a use site is a bare name and a name with nothing to resolve
- * to is an error, so a hand-built IR would otherwise print source that does not
- * compile. Names are claimed across both kinds at once, since a use site
- * resolves in one scope holding all of them.
+ * One map per kind, since the two are declared apart, and names claimed across
+ * both, since a use site resolves in one scope holding all of them. A code
+ * nothing declares still gets a declaration, as `irToXml` still gives it a
+ * root: a use site is a bare name, and a hand-built IR would otherwise print
+ * source that does not compile.
  */
 function codeDeclarations(process: BpmnProcess): {
   lines: string[];
@@ -3430,18 +3151,15 @@ function codeDeclarations(process: BpmnProcess): {
 
 /**
  * A `var <name>: any` line per variable the body reads bare and nothing
- * types, in first-appearance order over one fixed walk. BPMN has no slot for
- * a declaration, so the print declares what it writes in a variable position:
- * the roots of a condition, a count, an `until`, an error mapping's `when`, a
- * conditional trigger, an `in` source and a bare collection, which are the
- * positions the validator reads a variable at, minus what its symbol table
- * already holds (`DefaultVariableSymbolProvider.collect`): a form field, a
- * catch binding, an io parameter name, an element variable, and the engine's
- * loop counters once anything repeats. `externalTask` inside a mapping and an
- * `out` source are exempt there too, the one evaluated on the external task
- * and the other in the called process. The type is `any` because a read says
- * nothing more, and every declaration of one name has to agree on the type,
- * so a second line for a typed name would be an error rather than a duplicate.
+ * types, in first-appearance order. BPMN has no slot for a declaration, so the
+ * print declares what it writes in a variable position (a condition, a count,
+ * an `until`, an error mapping's `when`, a conditional trigger, an `in` source,
+ * a bare collection) minus what the validator's symbol table already holds
+ * (`DefaultVariableSymbolProvider.collect`: a form field, a catch binding, an
+ * io parameter name, an element variable, and the loop counters once anything
+ * repeats); `externalTask` in a mapping and an `out` source are exempt there
+ * too. The type is `any` because a read says nothing more, and every
+ * declaration of one name has to agree on the type.
  */
 function variableDecls(process: BpmnProcess): string[] {
   const reads = new Set<string>();
@@ -3545,10 +3263,9 @@ function* varRoots(node: JuelNode): Generator<string> {
 }
 
 /**
- * The repeat clause of an activity, with a leading space, or the empty string
- * when it runs once. A collection spelled as a plain name prints bare and
- * anything else quotes, because Operaton reads a bare `operaton:collection` as
- * the name of a variable and only a `${...}` body as an expression.
+ * A collection spelled as a plain name prints bare and anything else quotes,
+ * because Operaton reads a bare `operaton:collection` as the name of a
+ * variable and only a `${...}` body as an expression.
  */
 function repeatClause(el: Repeatable): string {
   const loop = el.loop;
@@ -3587,26 +3304,21 @@ function renderRawCondition(body: string): string {
 }
 
 /**
- * The quoting for a value the engine evaluates, which a body opening with
- * `${` or `#{` has to keep re-lexing as: an expression, a delegate, a timer
- * body, an io value, a collection. The grammar reads a raw template with the
- * same escapes as a literal, so one escaper serves both and this is its exact
- * inverse. Prose and a declared name take {@link quoteLiteral}.
+ * For a value the engine evaluates, which a body opening with `${` or `#{`
+ * has to keep re-lexing as. The grammar reads a raw template with the same
+ * escapes as a literal, so one escaper serves both; prose and a declared name
+ * take {@link quoteLiteral}.
  */
 function quote(value: string): string {
   return `"${escapeQuoted(value)}"`;
 }
 
 /**
- * The quoting for a value that has to come back byte for byte as text: a
- * label, documentation, a version tag, a form field label, a map key, a
- * declared code, an error message.
- *
- * A body opening with `${` or `#{` gets a backslash before the opener, so it
- * lexes as a `STRING` rather than as a raw template. `\$` and `\#` are not
- * recognized escapes and the reader hands the character back unchanged, which
- * keeps the two exact inverses. Only that opening earns the backslash: an
- * escape no terminal asks for is noise in source somebody reads.
+ * For a value that has to come back byte for byte as text: a label, a form
+ * field label, a map key, a declared code. A body opening with `${` or `#{`
+ * gets a backslash before the opener so it lexes as a `STRING` rather than a
+ * raw template; `\$` and `\#` are not recognized escapes and the reader hands
+ * the character back unchanged, which keeps the two exact inverses.
  */
 function quoteLiteral(value: string): string {
   const escaped = escapeQuoted(value);

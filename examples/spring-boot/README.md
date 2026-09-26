@@ -1,6 +1,6 @@
 # examples/spring-boot
 
-Operaton 2.1.0 embedded in Spring Boot 4.0.6, the deployment fixture for the BPMNscript E2E test harness.
+Operaton 2.1.0 embedded in Spring Boot 4.0.6, the deployment fixture for the BPMNscript end-to-end (E2E) test harness.
 The engine starts with nothing pre-deployed; the testcontainers harness deploys definitions at test time over REST.
 
 It doubles as a hands-on demo.
@@ -49,7 +49,7 @@ The deployment and lifecycle calls the fixture adapter makes:
 | `GET`  | `/engine-rest/task?processInstanceId={id}`        | List active user tasks for a process instance                    |
 | `POST` | `/engine-rest/task/{id}/complete`                 | Complete a user task, optionally setting variables               |
 
-The assertions reach further into the same API through `tests/helpers/engine-rest.ts`: message correlation and signal broadcast, event subscriptions, a process instance's liveness, jobs, and the two history endpoints.
+The assertions reach further into the same API through `tests/helpers/engine-rest.ts`.
 
 ## Admin credentials
 
@@ -87,6 +87,7 @@ Re-run this whenever you edit or add a `.bpmnscript`.
 ### 3. Start the engine (demo profile)
 
 The `demo` profile turns on classpath auto-deployment and serves the web apps.
+It needs a JDK 17 and Maven on `PATH`; the Docker variant below needs neither.
 From `examples/spring-boot/`, either run it with Maven:
 
 ```bash
@@ -110,7 +111,7 @@ Every compiled process is deployed, so pick one in Cockpit to watch instances an
 
 ### The loan approval walkthrough
 
-The classic WS-BPEL loan approval.
+The loan approval example from the [WS-BPEL 2.0 specification](https://docs.oasis-open.org/wsbpel/2.0/wsbpel-v2.0.html).
 A request arrives with an `amount` and a `creditScore`.
 Loans under 10,000 are screened by an automated risk assessment, and a low-risk small loan is approved automatically.
 Everything else, meaning large loans and small loans that aren't low-risk, goes to a human "Approve loan" task.
@@ -118,10 +119,7 @@ The outcome is recorded as `decision = ACCEPTED` or `REJECTED`.
 Its four service tasks are `JavaDelegate`s in [`src/main/java/com/example/loan/`](src/main/java/com/example/loan).
 
 1. Start a request.
-   In Tasklist, choose Start process, then Loan Approval.
-   There's no start form, so use "Add a variable" to set two variables and then Start:
-   - `amount`, type `Long`, for example `5000`
-   - `creditScore`, type `Long`, for example `750`
+   In Tasklist, choose Start process, then Loan Approval, and fill in the start form: Loan amount (`amount`), for example `5000`, and Credit score (`creditScore`), for example `750`.
 
 2. Watch the automatic path.
    With `amount = 5000` and `creditScore = 750` the risk assessment returns low risk, so the loan is approved with no human step and ends with `decision = ACCEPTED`.
@@ -130,24 +128,21 @@ Its four service tasks are `JavaDelegate`s in [`src/main/java/com/example/loan/`
 3. Watch the human path.
    Start another request with `amount = 25000`, or a small loan that fails the risk screen (`amount = 5000`, `creditScore = 400`, since the assessment marks scores below 600 as high risk).
    The instance stops at the "Approve loan" task, which appears under the `demo` user in Tasklist.
-   Open it and, on Complete, add one variable:
-   - `approved`, type `Boolean`, `true` to accept and `false` to reject
-
+   Open it, tick "Approve the loan?" to accept or leave it unticked to reject, and Complete.
    The instance then records `ACCEPTED` or `REJECTED`.
-   Complete the task without setting `approved` and it defaults to rejected.
 
 In Cockpit, open the live diagram of a running instance to watch the token sit on "Approve loan" and move once you complete it.
 
 ### Variant: Kopp 2009
 
-`loan-approval-kopp` is the parallel-rating variant of that process, following Kopp et al. (2009).
+`loan-approval-kopp` is the parallel-rating variant of that process, following Kopp, Martin, Wutke, and Leymann's ["The Difference Between Graph-Based and Block-Structured Business Process Modelling Languages"](https://doi.org/10.18417/emisa.4.1.1) (EMISA 4(1), 2009).
 The request is rated in parallel by two external bureaus and one internal service, and a low internal rating additionally routes through a human "Manual risk assessment".
 It accepts when both external bureaus rate low, or when the internal rating is low and the assessor agrees (`assessorRes = low`).
 Its delegates live in `src/main/java/com/example/loan/kopp/`.
 
-Start it the same way, through Start process and Loan Approval (Kopp 2009), with `amount` and `creditScore` as `Long`.
-The manual-assessment task edits the pre-seeded `assessorRes` string: set it to `low` to approve that path, leave it `high` to decline.
-Some telling inputs:
+Start it the same way, through Start process and Loan Approval (Kopp 2009), with `amount` and `creditScore` in the start form.
+The manual-assessment task's form shows the pre-seeded `assessorRes`: set it to `low` to approve that path, leave it `high` to decline.
+Inputs worth trying:
 
 - `creditScore = 750`, `amount = 5000`: all three rate low.
   Both externals rating low already grants acceptance, but the assessor task still appears because the internal rating is low, so complete it to let the instance finish.

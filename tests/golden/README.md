@@ -41,7 +41,7 @@ The three invoice-approval files all describe the same process (review, then a g
 
 Change the parser, the desugarer, or `irToXml` in a way that should alter the output (a new attribute, different formatting, a layout-library upgrade, an id-scheme change) and the frozen `.bpmn` has to be regenerated:
 
-1. Run the full pipeline on the source: `irToXml(astToIr(parse(source)))`, wiring the Langium services exactly as `tests/round-trip.test.ts` does, with `createBpmnScriptServices(EmptyFileSystem)` and `parseHelper`.
+1. Run the full pipeline on the source: `irToXml(astToIr(parse(source)))`, wiring the Langium services as `tests/helpers/pipeline.ts` does, with `createBpmnScriptServices(EmptyFileSystem)` and `parseHelper`.
    `bpmns build` is not a substitute.
    It passes its own version into `irToXml`, so what it writes carries the real `exporterVersion`, where a frozen file carries `0.0.0`; the `bpmn:Definitions` id is `Definitions_<process id>` either way.
 2. Write the returned string over the frozen `.bpmn`.

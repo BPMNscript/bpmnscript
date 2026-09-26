@@ -1,7 +1,3 @@
-// Two boundary handlers on one host sharing a trigger kind but differing in
-// payload both base to `Boundary_Pack_error`, and moddle may present them on
-// import in a different order than the author wrote them. A re-key that ignored
-// the payload would collapse them and mask the reordering.
 import { describe, it, expect } from 'vitest';
 import { normalizeIr } from './normalize-ir.js';
 import { gatewayDefaultFlowId, isGateway } from '@bpmn-script/transform';
@@ -94,101 +90,63 @@ describe('normalizeIr: boundary-event re-key', () => {
     expect(new Set(boundaryIds(forward)).size).toBe(2);
   });
 
-  it('re-keys the sequence flow leaving a boundary event to match its canonical id', () => {
-    const ir = process(
-      [
-        { kind: 'userTask', id: 'Review' },
-        boundary('Timeout_Boundary', 'Review', TIMER_PT2H),
-        { kind: 'userTask', id: 'Escalate' },
-      ],
-      [
-        {
-          id: 'Flow_Timeout',
-          sourceRef: 'Timeout_Boundary',
-          targetRef: 'Escalate',
-        },
-      ],
-    );
-
-    const normalized = normalizeIr(ir);
-    const attacher = normalized.flowElements.find(
-      (fe) => fe.kind === 'boundaryEvent',
-    );
-
-    expect(attacher).toBeDefined();
-    expect(attacher?.id).not.toBe('Timeout_Boundary');
-    expect(normalized.sequenceFlows[0].sourceRef).toBe(attacher?.id);
-    // attachedToRef is an authored host id and is never re-keyed.
-    expect(
-      attacher && 'attachedToRef' in attacher && attacher.attachedToRef,
-    ).toBe('Review');
-  });
-
-  it('distinguishes an interrupting boundary from an otherwise-identical non-interrupting one', () => {
-    const interrupting = process(
-      [
-        { kind: 'userTask', id: 'Ship' },
-        boundary('A', 'Ship', { kind: 'message', messageName: 'Cancel' }),
-      ],
-      [],
-    );
-    const alongside = process(
-      [
-        { kind: 'userTask', id: 'Ship' },
-        boundary(
-          'B',
-          'Ship',
-          { kind: 'message', messageName: 'Cancel' },
-          false,
+  it.each([
+    [
+      'the host',
+      boundary('X', 'Pack', { kind: 'error', errorCode: 'A' }),
+      boundary('Y', 'Ship', { kind: 'error', errorCode: 'A' }),
+    ],
+    [
+      'the interrupting flag',
+      boundary('X', 'Pack', { kind: 'message', messageName: 'Cancel' }),
+      boundary('Y', 'Pack', { kind: 'message', messageName: 'Cancel' }, false),
+    ],
+  ])(
+    'two boundaries alike in all but %s get distinct ids without a positional suffix',
+    (_axis, a, b) => {
+      // Drop the axis from the signature and the two collapse onto one
+      // canonical id told apart only by `#1`.
+      const ids = boundaryIds(
+        process(
+          [
+            { kind: 'userTask', id: 'Pack' },
+            { kind: 'userTask', id: 'Ship' },
+            a,
+            b,
+          ],
+          [],
         ),
-      ],
-      [],
-    );
+      );
+      expect(ids).toHaveLength(2);
+      expect(ids.filter((id) => id.includes('#'))).toEqual([]);
+    },
+  );
 
-    expect(boundaryIds(interrupting)).not.toEqual(boundaryIds(alongside));
-  });
-
-  it('keeps two same-trigger same-payload boundary events on different hosts distinct', () => {
-    // Drop the host from the signature and these two collapse to one canonical
-    // id with positional suffixes, the exact hazard the re-key removes.
+  it('re-keys gateways and boundaries alone: a task and an end event keep their ids, and only the gateway loses its name', () => {
     const ir = process(
       [
-        { kind: 'userTask', id: 'Pack' },
-        { kind: 'userTask', id: 'Ship' },
-        boundary('PackTimeout', 'Pack', { kind: 'error', errorCode: 'X' }),
-        boundary('ShipTimeout', 'Ship', { kind: 'error', errorCode: 'X' }),
-      ],
-      [],
-    );
-
-    const ids = boundaryIds(ir);
-    expect(new Set(ids).size).toBe(2);
-    // A positional suffix would mean the two signatures had collided.
-    for (const id of ids) expect(id).not.toContain('#');
-  });
-
-  it('leaves every end event untouched, including one named after a boundary event', () => {
-    // The printer emits a terminal end under its literal id, so it is authored
-    // again on the way back and needs no canonical mapping.
-    const ir = process(
-      [
-        { kind: 'userTask', id: 'Review' },
+        { kind: 'userTask', id: 'Review', name: 'Review the claim' },
+        { kind: 'exclusiveGateway', id: 'Decide', name: 'Approved?' },
         boundary('Timeout_Boundary', 'Review', TIMER_PT2H),
         { kind: 'endEvent', id: 'EndEvent_Timeout_Boundary' },
       ],
-      [],
+      [{ id: 'Flow_1', sourceRef: 'Review', targetRef: 'Decide' }],
     );
 
-    const ids = normalizeIr(ir)
-      .flowElements.filter((fe) => fe.kind === 'endEvent')
-      .map((fe) => fe.id);
-    expect(ids).toEqual(['EndEvent_Timeout_Boundary']);
-  });
-
-  it('leaves a boundary-free container byte-identical to the un-normalized shape', () => {
-    const ir = process([{ kind: 'userTask', id: 'Solo' }], []);
-
-    expect(normalizeIr(ir)).toEqual(ir);
+    expect(normalizeIr(ir).flowElements).toEqual([
+      {
+        kind: 'boundaryEvent',
+        id: 'Boundary_[host:Review]_[trigger:timer]_[code:duration PT2H]_[interrupting]',
+        attachedToRef: 'Review',
+        eventDefinition: TIMER_PT2H,
+      },
+      { kind: 'endEvent', id: 'EndEvent_Timeout_Boundary' },
+      {
+        kind: 'exclusiveGateway',
+        id: 'Gateway_exclusiveGateway_[in:Review]_[out:]',
+      },
+      { kind: 'userTask', id: 'Review', name: 'Review the claim' },
+    ]);
   });
 });
 
@@ -315,7 +273,9 @@ describe('normalizeIr: gateway re-key', () => {
     const gateway = authored.flowElements.find(
       (fe) => fe.kind === 'eventBasedGateway',
     );
-    expect(gateway?.id).toContain('Gateway_eventBasedGateway_');
+    expect(gateway?.id).toBe(
+      'Gateway_eventBasedGateway_[in:Escalate]_[out:Wait]',
+    );
   });
 });
 

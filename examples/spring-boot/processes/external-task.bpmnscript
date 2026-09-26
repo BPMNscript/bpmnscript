@@ -1,5 +1,5 @@
-// Hand the shipment label print-out off to an external worker that polls the
-// "print-label" topic, instead of running the work in the Operaton process.
+// The fixture's own worker polls "print-label", so the instance completes
+// without an outside process.
 
 process shipment-label {
   start OrderPlaced

@@ -1,9 +1,6 @@
-/**
- * `bpmn-auto-layout` is mocked here rather than provoking its real crash
- * (`ir-to-xml.layout-guard.test.ts` in `packages/transform` does that): this
- * file only needs `bpmns build`'s `LayoutError` fallback exercised end to
- * end, not the library's own defect.
- */
+// `bpmn-auto-layout` is mocked rather than crashed for real (transform's
+// `ir-to-xml.layout-guard.test.ts` does that), and `vi.mock` applies to the
+// whole file, so the fallback gets a file of its own.
 import { describe, it, expect, vi } from 'vitest';
 
 vi.mock('bpmn-auto-layout', () => ({

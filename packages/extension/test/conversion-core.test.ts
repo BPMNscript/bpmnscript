@@ -1,6 +1,5 @@
-// The editor-independent half of the conversion commands: what each direction
-// makes of a given input. `conversion.test.ts` covers what the VS Code adapter
-// then shows the author.
+// What each conversion direction makes of a given input; what the VS Code
+// adapter then shows the author is `conversion.test.ts`.
 
 import { describe, expect, test, beforeAll } from 'vitest';
 import * as fs from 'node:fs';
@@ -41,16 +40,6 @@ const BAD_SERVICE_TASK_BPMN = path.resolve(
   'tests/golden/bad-service-task-no-binding.bpmn',
 );
 
-for (const [label, p] of [
-  ['invoice-approval.bpmnscript', INVOICE_APPROVAL_SRC],
-  ['invoice-approval-generated.bpmn', GOLDEN_GENERATED_BPMN],
-  ['bad-service-task-no-binding.bpmn', BAD_SERVICE_TASK_BPMN],
-] as const) {
-  if (!fs.existsSync(p)) {
-    throw new Error(`Fixture not found: ${label} at ${p}`);
-  }
-}
-
 let validate: ReturnType<typeof validationHelper<Model>>;
 
 beforeAll(() => {
@@ -58,7 +47,6 @@ beforeAll(() => {
   validate = validationHelper<Model>(services.BpmnScript);
 });
 
-/** Every substring must appear, so a message that stops naming one fails. */
 function expectMentions(text: string, mentions: readonly string[]): void {
   for (const mention of mentions) {
     expect(text, `expected to find "${mention}" in: ${text}`).toContain(
@@ -67,10 +55,8 @@ function expectMentions(text: string, mentions: readonly string[]): void {
   }
 }
 
-/**
- * A diagnostic minus its wording: the positions, the severity and the source
- * text are this module's own mapping, the sentence belongs to the validator.
- */
+// Minus the wording: the positions, severity and source text are this module's
+// own mapping, the sentence belongs to the validator.
 type DiagnosticPosition = Omit<ConvDiagnostic, 'message'>;
 
 type CompileOutcome =
@@ -91,7 +77,6 @@ describe('compileDslToBpmn', () => {
       { ok: true, reimportsAs: 'invoice-approval' },
     ],
     [
-      // String `name` in a numeric comparison: a severity-1 diagnostic.
       'a type mismatch blocks the compile and reports the comparison it rejected',
       `process p {\n  var name: string\n  if (name > 1000) { user A }\n}\n`,
       {
@@ -99,7 +84,6 @@ describe('compileDslToBpmn', () => {
         kind: 'validation',
         diagnostics: [
           {
-            // 0-based, LSP convention.
             line: 2,
             character: 6,
             endLine: 2,
@@ -111,7 +95,6 @@ describe('compileDslToBpmn', () => {
       },
     ],
     [
-      // Uses `amount` without declaring it: severity 2, which must not block.
       'an undeclared variable is only a warning, so the source still compiles',
       `process p { if (amount > 1000) { user A } }`,
       { ok: true, reimportsAs: 'p' },
@@ -129,8 +112,7 @@ describe('compileDslToBpmn', () => {
 
     if (result.ok) return;
     expect(result.kind).toBe(expected.kind);
-    // The union type alone does not stop the adapter writing result.output if a
-    // kind check goes missing, so assert the field is absent.
+    // A failed result carries nothing the adapter could write.
     expect('output' in result).toBe(false);
     if (result.kind !== 'validation') return;
     expect(
@@ -141,9 +123,8 @@ describe('compileDslToBpmn', () => {
     );
   });
 
-  // `bpmn-auto-layout`'s grid solver throws on this validator-clean `goto`
-  // restructuring (a mixed true/false/expression `else if` chain feeding one
-  // `goto` each); the source is otherwise unremarkable.
+  // `bpmn-auto-layout`'s grid solver throws on this validator-clean shape: a
+  // mixed true/false/expression `else if` chain feeding one `goto` each.
   test('a layouter crash on a validator-clean goto graph still compiles, without a diagram, and reports why', async () => {
     const source = `process p {
   if (true) {
@@ -170,8 +151,6 @@ describe('compileDslToBpmn', () => {
   });
 });
 
-// `formHandlerClass` and the lane are both dropped without loss of
-// behavior, so `xmlToIr` warns instead of refusing.
 const LANE_AND_ASYNC_ATTR_BPMN = `<?xml version="1.0" encoding="UTF-8"?>
 <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
                   xmlns:operaton="http://operaton.org/schema/1.0/bpmn"
@@ -270,11 +249,9 @@ describe('decompileBpmnToDsl', () => {
         result.warnings.map((w) => w.message).join('\n'),
         expected.mentions,
       );
-      // Whatever it accepts, it must hand back a script the compiler accepts.
-      // Parsing alone is not that bar: it takes source the validator refuses.
-      // Severity 1 is the bar the compile direction blocks on, so it is the
-      // bar the output has to clear; a BPMN carrying no variable declarations
-      // decompiles to a script that warns about them.
+      // Parsing alone accepts source the validator refuses, so the output has
+      // to clear what the compile direction blocks on: no severity-1
+      // diagnostic (a BPMN declares no variables, so warnings are expected).
       const { diagnostics } = await validate(result.output);
       expect(
         diagnostics.filter((d) => d.severity === 1).map((d) => d.message),

@@ -1,12 +1,10 @@
 /**
- * Two lists that have to agree with a list they cannot import.
- *
- * A TextMate grammar cannot read TypeScript, so its keyword alternation is a
- * second derivation of the keywords the parser reserves. It is generated into
- * `syntaxes/`, which is gitignored, so a stale copy never shows up in a diff.
- *
- * A trigger word and a listener event both follow `on`, so one word appearing
- * in both vocabularies would give `on <word>` two meanings.
+ * Lists that have to agree with a list they cannot import: the TextMate
+ * grammar cannot read TypeScript, so its keyword alternation is a second
+ * derivation of what the parser reserves, generated into the gitignored
+ * `syntaxes/` where a stale copy never shows in a diff. A trigger word and a
+ * listener event both follow `on`, so one word in both would give `on <word>`
+ * two meanings.
  */
 
 import { readFileSync } from 'node:fs';
@@ -18,7 +16,9 @@ import {
   EMIT_TRIGGERS,
   END_TRIGGERS,
   EXECUTION_LISTENER_EVENTS,
+  FLAG_WORD_RULE,
   ON_TRIGGERS,
+  SETTING_KEY_RULE,
   splitFencedScript,
   START_TRIGGERS,
   TASK_LISTENER_EVENTS,
@@ -31,11 +31,7 @@ const TEXTMATE_GRAMMAR = fileURLToPath(
   new URL('../syntaxes/bpmn-script.tmLanguage.json', import.meta.url),
 );
 
-/**
- * `(?<![\w-])(a|b|c)(?![\w-])` from the generated `keyword.control` pattern,
- * patched by `textmate-postprocess.mjs` so a hyphenated name (`invoice-start`)
- * does not colour the part that collides with a keyword.
- */
+/** The `keyword.control` alternation as `textmate-postprocess.mjs` leaves it, hyphen-aware so `invoice-start` colours no `start`. */
 const ALTERNATION = /^\(\?<!\[\\w-\]\)\((.*)\)\(\?!\[\\w-\]\)$/;
 
 function textMateKeywords(): string[] {
@@ -84,6 +80,16 @@ describe('lists that must not drift apart', () => {
     ];
     expect(listenerEvents.filter((event) => triggers.has(event))).toEqual([]);
   });
+
+  test('the completion provider names datatype rules the grammar has', () => {
+    const services = createBpmnScriptServices(EmptyFileSystem);
+    const rules = new Set(
+      services.BpmnScript.Grammar.rules.map((rule) => rule.name),
+    );
+    expect(
+      [SETTING_KEY_RULE, FLAG_WORD_RULE].filter((name) => !rules.has(name)),
+    ).toEqual([]);
+  });
 });
 
 function grammarPatterns(): { name?: string; match?: string }[] {
@@ -92,9 +98,7 @@ function grammarPatterns(): { name?: string; match?: string }[] {
     .patterns;
 }
 
-/** Every match of the named top-level pattern, tried as a JS `RegExp` (both
- * engines agree on lookaround and the classes used here, the same assumption
- * `injection-grammar.test.ts` makes for the extension's Oniguruma grammar). */
+/** Every match of the named top-level pattern as a JS `RegExp`; Oniguruma agrees on the lookaround and classes used here, as `injection-grammar.test.ts` assumes too. */
 function tokensOf(line: string, namePrefix: string): string[] {
   const pattern = grammarPatterns().find((p) => p.name?.startsWith(namePrefix));
   if (!pattern?.match) {

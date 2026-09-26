@@ -29,6 +29,17 @@ const __dirname = dirname(__filename);
 
 const REPO_ROOT = path.resolve(__dirname, '../../..');
 
+// Read from package.json rather than imported from util.ts: that export is
+// what the exporterVersion assertion pins.
+const PACKAGE_VERSION = (
+  JSON.parse(
+    fs.readFileSync(
+      path.resolve(REPO_ROOT, 'packages/cli/package.json'),
+      'utf-8',
+    ),
+  ) as { version: string }
+).version;
+
 const INVOICE_APPROVAL_SRC = path.resolve(
   REPO_ROOT,
   'examples/spring-boot/processes/invoice-approval.bpmnscript',
@@ -56,9 +67,8 @@ beforeAll(() => {
   parse = parseHelper<Model>(services.BpmnScript);
 });
 
-// Back-edge into a parallel fork (`B -> Fork`). The fork's out-edges are already
-// consumed when the back-arrival is reached, so the decompiler emits the
-// hand-repair marker instead of a `goto`. Only hand-built BPMN gets here.
+// A back-edge into a parallel fork (`B -> Fork`), which the decompiler cannot
+// phrase as a `goto`; only hand-built BPMN gets here.
 const UNSTRUCTURED_FORK_BPMN = `<?xml version="1.0" encoding="UTF-8"?>
 <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
                   targetNamespace="http://test">
@@ -76,9 +86,8 @@ const UNSTRUCTURED_FORK_BPMN = `<?xml version="1.0" encoding="UTF-8"?>
   </bpmn:process>
 </bpmn:definitions>`;
 
-// Two steps, each with a single conditioned outgoing flow. Both produce the
-// same dropped-condition text, so the element id is the only thing telling the
-// reader which step lost a condition, and that two did.
+// Two steps with one conditioned outgoing flow each, so both draw the same
+// dropped-condition warning.
 const TWO_DROPPED_CONDITIONS_BPMN = `<?xml version="1.0" encoding="UTF-8"?>
 <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
                   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
@@ -100,12 +109,8 @@ const TWO_DROPPED_CONDITIONS_BPMN = `<?xml version="1.0" encoding="UTF-8"?>
   </bpmn:process>
 </bpmn:definitions>`;
 
-// An external task's `taskPriority` is carried as written, with an import
-// warning naming the step (`BpmnParse.parsePriority` fails the deployment on
-// a non-integer constant); the warning says so but does not itself run the
-// validator, so re-validating the printed script is what actually confirms
-// `"abc"` draws the error.
-/** A number field whose default the engine's `LongFormType` cannot convert: imported as written, refused by the validator. */
+// A number field whose default the engine's `LongFormType` cannot convert:
+// imported as written, refused by the validator.
 const DECIMAL_DEFAULT_BPMN = `<?xml version="1.0" encoding="UTF-8"?>
 <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
                   xmlns:operaton="http://operaton.org/schema/1.0/bpmn"
@@ -130,16 +135,10 @@ type ParseExpectation = {
   warningIds: string[];
   /** Substrings the warnings must carry; the wording is the transform's own. */
   mentions?: string[];
-  /** Substrings the written script must carry. */
   script?: string[];
   /** Set where the warnings differ in nothing but the element they name. */
   sameMessage?: boolean;
-  /**
-   * The exact lines the re-validation of the printed script appends after
-   * every `warningIds` line, one entry per line, asserted whole: a string for
-   * an exact match, a pattern where the message text is pinned but a detail
-   * (the line number) is not.
-   */
+  /** The re-validation lines after the warnings, whole; a RegExp where the line number is not pinned. */
   buildErrorLines?: (string | RegExp)[];
 };
 
@@ -171,8 +170,6 @@ describe('bpmns parse', () => {
       {
         warningIds: ['CheckStock', 'ReserveGoods'],
         sameMessage: true,
-        // The id is worth printing because it is a token the reader can find
-        // in the script they were just handed.
         script: ['CheckStock', 'ReserveGoods'],
       },
     ],
@@ -195,8 +192,6 @@ describe('bpmns parse', () => {
     expect(run.exit).toBeUndefined();
     expect(run.output).toBeDefined();
 
-    // Every stderr line is accounted for: the id-prefixed warnings, then
-    // (where the row expects them) the re-validation lines appended after.
     const tailLen = expected.buildErrorLines?.length ?? 0;
     expect(run.stderr).toHaveLength(expected.warningIds.length + tailLen);
     const splitAt = run.stderr.length - tailLen;
@@ -225,7 +220,6 @@ describe('bpmns parse', () => {
       expect(bodies[0]).not.toBe('');
     }
 
-    // Whatever it writes has to be a script the language accepts.
     const document = await parse(run.output!);
     expect(document.parseResult.parserErrors).toHaveLength(0);
   });
@@ -243,9 +237,7 @@ const WARNING_ONLY_SOURCE = `process warning-only {
 }
 `;
 
-// A keyword typo (`proces` for `process`) leaves the grammar unable to find
-// a Process node at all, the same symptom an empty file produces; only the
-// parser error, not the no-process message, tells the two apart.
+// Yields zero Process nodes, as an empty file does.
 const KEYWORD_TYPO_SOURCE = 'proces p { user A }\n';
 
 // Declares `amount` as string, then compares it numerically: severity 1.
@@ -261,11 +253,9 @@ const TYPE_MISMATCH_SOURCE = `process type-mismatch {
 `;
 
 type BuildExpectation = {
-  /** The code it exited with, or undefined where it ran to the end. */
   exit?: number;
   /** The process id the written BPMN imports back under, if one was written. */
   reimportsAs?: string;
-  /** How many lines reach stderr, and what they must say. */
   stderrLines: number;
   mentions?: string[];
 };
@@ -319,6 +309,9 @@ describe('bpmns build', () => {
     }
     expect(run.output).toBeDefined();
     expect((await xmlToIr(run.output!)).ir.id).toBe(expected.reimportsAs);
+    expect(run.output!.match(/exporterVersion="[^"]*"/g)).toEqual([
+      `exporterVersion="${PACKAGE_VERSION}"`,
+    ]);
   });
 });
 
@@ -334,14 +327,11 @@ const VALID_BPMN = `<?xml version="1.0" encoding="UTF-8"?>
   </bpmn:process>
 </bpmn:definitions>`;
 
-// DSL text handed to `parse` by mistake: no comma, no newline, over 40
-// characters, so the preview's cutoff is visible without hand-counting it.
+// Over 40 characters, so the preview's cutoff shows.
 const SWAPPED_DSL =
   'process invoice_approval { start S user Review(assignee: "demo") end E }';
 
-// Accented text a real BPMN export can carry: only control bytes are
-// stripped from the preview now, so these survive it. Over 40 characters, so
-// the cutoff is visible without hand-counting it.
+// Over 40 characters of accented text, which the preview keeps.
 const NON_ASCII_PREVIEW_SOURCE =
   'prüfen, ob Umlaute überleben und nicht nur ASCII-Zeichen übrig bleiben';
 
@@ -349,9 +339,8 @@ type GuardCase = {
   inputPath: string;
   opts: { output?: string; force?: boolean };
   exit: number | undefined;
-  /** The exact first stderr line, where the row expects one. */
+  /** The first stderr line, where the row expects one. */
   line?: string;
-  /** Run after the action, for what a stderr line can't say (file contents). */
   check?: () => void;
 };
 
@@ -361,10 +350,8 @@ type GuardRow = readonly [
   make: (dir: string) => GuardCase,
 ];
 
-// One table for both commands: the five destructive-path guards (same file,
-// existing output, --force, directory input, `-o` a directory) are one
-// mechanism shared by `build` and `parse` through `util.ts`, so a row pair
-// proves it fires identically on both rather than trusting a build-only test.
+// The path guards are one mechanism in `util.ts`, so each has a row per
+// command to pin that both call it.
 describe('bpmns build / bpmns parse: guards against destructive or unclear failures', () => {
   test.each<GuardRow>([
     [
@@ -592,9 +579,8 @@ describe('bpmns build / bpmns parse: guards against destructive or unclear failu
         const inputPath = path.join(dir, 'binary.bpmn');
         const bytes = Buffer.from([0x00, 0x01, 0x02, 0xff, 0xfe, 0x00]);
         fs.writeFileSync(inputPath, bytes);
-        // Only control bytes (0x00, 0x01, 0x02) are stripped now; 0xff/0xfe
-        // are not valid UTF-8 on their own and decode as U+FFFD, a printable
-        // symbol the preview keeps.
+        // 0xff/0xfe are not valid UTF-8 and decode to U+FFFD, which is not a
+        // control character, so the preview keeps them.
         const preview = bytes.toString('utf-8').replace(/\p{C}/gu, '');
         return {
           inputPath,
@@ -683,10 +669,10 @@ describe('bpmns build / bpmns parse: guards against destructive or unclear failu
       'parse',
       (dir) => {
         const inputPath = path.join(dir, 'unclosed.bpmn');
-        // `saxen` echoes the whole unparsed remainder into this one line, a
-        // control byte included, then appends `\n\tline: ...` after it, which
-        // this row's cutoff must never reach.
-        const unclosedTag = '<bad tag' + 'z'.repeat(300);
+        // `saxen` echoes the whole unparsed remainder, the NUL included, into
+        // this one line, then appends `\n\tline: ...`, which the cutoff must
+        // never reach.
+        const unclosedTag = '<bad\0tag' + 'z'.repeat(300);
         fs.writeFileSync(inputPath, unclosedTag, 'utf-8');
         const rawFirstLine = `unparsable content ${unclosedTag} detected`;
         const capped = rawFirstLine.slice(0, 200) + '...';
@@ -727,7 +713,6 @@ describe('tmLanguage extension sync', () => {
 
     const prepare = pkg.scripts?.['build:prepare'] ?? '';
     expect(prepare).toContain('language/syntaxes');
-    expect(prepare).toContain('syntaxes');
     expect(prepare, 'build:prepare must perform a file copy').toMatch(/\bcp\b/);
   });
 });

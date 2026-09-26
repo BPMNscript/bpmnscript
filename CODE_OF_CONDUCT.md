@@ -20,7 +20,8 @@ Examples of unacceptable behavior:
 
 ## Enforcement
 
-Instances of unacceptable behavior may be reported to the project maintainer at dev@marlonkranz.com. All complaints will be reviewed.
+Instances of unacceptable behavior may be reported to the project maintainer at dev@marlonkranz.com.
+All complaints will be reviewed.
 
 ## Attribution
 

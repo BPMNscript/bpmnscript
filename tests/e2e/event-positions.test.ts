@@ -1,13 +1,11 @@
-// Three ways of entering a process that no compiled document shows: a message
+// Ways in and out of a process that no compiled document shows: a message
 // correlated with no instance to aim at, a signal broadcast to whatever
-// subscribed at deployment, and a timer job parked until something fires it.
-// The terminate end is here for the same reason: what separates it from a
-// plain end is that it stops a sibling branch still parked on its own task.
-// The audit timer is dated 2099, so only the test can fire it.
-// A fourth way, entering the same process by two different starts, checks that
-// each start is a real entry and not a pass-through the other flows into.
-// A link pair is a fifth: the token leaves a throw with no drawn flow and
-// appears at the catch of the same name, which no compiled document draws.
+// subscribed at deployment, a timer job parked until something fires it (the
+// audit timer is dated 2099, so only the test can), two starts that are each a
+// real entry rather than a pass-through the other flows into, and a link pair
+// whose token leaves the throw with no drawn flow. The terminate end is here
+// because what separates it from a plain end is that it stops a sibling branch
+// still parked on its own task.
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';

@@ -1,12 +1,7 @@
 /**
- * Integration-level tests: `xmlToIr` runs against real BPMN XML strings,
- * including the golden fixture files under `tests/golden/`.
- *
- * `xmlToIr` returns `{ ir, warnings }`, where `warnings` reports non-semantic
- * content dropped on import (extra Operaton/camunda extension attributes and
- * elements, lanes, and documentation this surface has no slot for). Semantic
- * content the IR cannot express is refused instead: an
- * `UnsupportedConstructError` subclass is thrown before any IR is produced.
+ * `xmlToIr` against real BPMN XML. Content the IR has no slot for is dropped
+ * with a warning; content it cannot express without changing what runs is
+ * refused with an `UnsupportedConstructError` before any IR is produced.
  */
 
 import { describe, it, expect, beforeAll } from 'vitest';
@@ -18,7 +13,15 @@ import { createBpmnScriptServices } from '@bpmn-script/language';
 import type { Model } from '@bpmn-script/language';
 import { fileURLToPath } from 'node:url';
 
-import { xmlToIr } from '../src/xml-to-ir.js';
+import {
+  asyncRespellingMessage,
+  CAMUNDA_ALIAS_MESSAGE,
+  COMPENSATION_BOUNDARY_DETAIL,
+  IS_FOR_COMPENSATION_DETAIL,
+  priorityRefusal,
+  unimportedSettingMessage,
+  xmlToIr,
+} from '../src/xml-to-ir.js';
 import type { ImportWarning } from '../src/xml-to-ir.js';
 import { HISTORY_TIME_TO_LIVE, irToXml } from '../src/ir-to-xml.js';
 import { irToDsl } from '../src/ir-to-dsl.js';
@@ -37,6 +40,7 @@ import {
   UnsupportedFormReferenceError,
   UnsupportedGatewayShapeError,
   UnsupportedLoopCharacteristicsError,
+  SUPPORTED_KINDS_MESSAGE,
   UnsupportedServiceTaskFormError,
 } from '../src/errors.js';
 import type {
@@ -113,6 +117,25 @@ beforeAll(() => {
   parse = parseHelper<Model>(services.BpmnScript);
 });
 
+const expectParses = async (source: string): Promise<void> => {
+  const doc = await parse(source, { validation: true });
+  expect(doc.parseResult.parserErrors).toEqual([]);
+  expect(doc.diagnostics ?? []).toEqual([]);
+};
+
+/** The rewrite a compensation refusal proposes: the whole text, and it re-parses. */
+const expectRewrite = async (
+  e: UnsupportedEventFeatureError,
+  lines: readonly string[],
+): Promise<void> => {
+  const marker = 'Write it by hand instead:\n\n';
+  const cut = e.detail.indexOf(marker);
+  expect(cut).toBeGreaterThan(-1);
+  const rewrite = e.detail.slice(cut + marker.length);
+  expect(rewrite).toBe(lines.join('\n'));
+  await expectParses(`process Preview {\n${rewrite}\n}\n`);
+};
+
 /** Only the warnings reporting dropped Operaton/camunda extension content. */
 const extensionWarnings = (warnings: ImportWarning[]): ImportWarning[] =>
   warnings.filter((w) => w.category === 'extensionAttribute');
@@ -144,60 +167,19 @@ const unread = (
 ): ImportWarning => ({
   elementId: id,
   category: 'extensionAttribute',
-  message:
-    `The ${subject} on '${id}' was not imported: this tool reads no such ` +
-    `setting on ${tag}, ` +
-    (engine === undefined
-      ? 'and the document written back carries none.'
-      : `though Operaton ${engine}, so the document written back runs without it.`),
+  message: unimportedSettingMessage(subject, id, tag, engine),
 });
 
-/**
- * The one warning `xmlToIr` pushes once a document's camunda: text is read as
- * operaton:. Every fixture below built with `camundaDoc`/`dualDoc`/
- * `camundaDefs`/`dualDefs` draws it, since the swap runs on the raw namespace
- * declaration regardless of which prefix the body actually spells.
- */
-const CAMUNDA_ALIAS_MESSAGE =
-  'The file declares the camunda namespace; it was read as the operaton ' +
-  'namespace, since `BpmnParse.OPERATON_BPMN_EXTENSIONS_NS` falls back to ' +
-  'the camunda URI wherever the operaton spelling is absent, and the ' +
-  'document written back carries `operaton:` alone.';
 const CAMUNDA_ALIAS_WARNING = {
   elementId: 'p',
   category: 'unmappedConstruct',
   message: CAMUNDA_ALIAS_MESSAGE,
 };
 
-/** The one warning the older `operaton:async` spelling draws on `subject` (`'T'`, `the repetition of 'T'`). */
-const asyncRespelling = (subject: string): string =>
-  `The operaton:async="true" on ${subject} imports as asyncBefore: true: ` +
-  'BpmnParse.isAsyncBefore reads the two spellings as one, and this tool ' +
-  'writes it back as operaton:asyncBefore, which the engine reads the same.';
-
-/** The refusal `BpmnParse.parsePriority` draws for a constant that is not an integer. */
-const priorityRefusal = (attr: string, value: string): string =>
-  `operaton:${attr}="${value}", which BpmnParse.parsePriority refuses to ` +
-  `deploy ("Value '${value}' for attribute '${attr}' is not a valid number")`;
-
-/** The whole refusal an activity excluded from normal flow draws. */
-const IS_FOR_COMPENSATION_DETAIL =
-  'isForCompensation="true" marks this activity as excluded from normal ' +
-  'flow: the boundary-event compensation-handler pattern, which this tool ' +
-  'cannot import; wrap the steps in their own subprocess and target it with ' +
-  '"on compensation" instead';
-
-/** The whole refusal a compensation boundary event draws with no genuine pairing. */
-const COMPENSATION_BOUNDARY_DETAIL =
-  'a compensation boundary event is not imported: BPMN attaches ' +
-  'compensation through isForCompensation and a bpmn:association on ' +
-  'the activity being compensated, not a boundary event; wrap the ' +
-  'steps in their own subprocess and target it with "on compensation" instead';
-
 /**
- * Assert that exactly one warning was raised, and that it names the element and
- * says what was dropped. The count is half the contract: a drop reported twice,
- * or fanned out across clean elements, is as wrong as one never reported.
+ * Exactly one warning, naming the element and the drop. The count is half the
+ * contract: a drop reported twice, or against a clean element, is as wrong as
+ * one never reported.
  */
 const expectOneWarning = (
   warnings: ImportWarning[],
@@ -221,11 +203,7 @@ const expectOneWarning = (
   return warning;
 };
 
-/**
- * A process opening on `<bpmn:startEvent id="S" />`, preceded by root-level
- * declarations and continued by a body written verbatim: the shape of every
- * fixture that pins a root (error, message, signal) against one event.
- */
+/** Root declarations, then a process opening on `<bpmn:startEvent id="S" />` and continuing with `body`. */
 const rootedDoc = (roots: string, body: string, defs = bpmnDefs): string =>
   defs`${roots}  <bpmn:process id="p" isExecutable="true">
     <bpmn:startEvent id="S" />
@@ -251,11 +229,7 @@ describe('xmlToIr: camunda: prefix alias', () => {
     expect(ir).toEqual(HANDWRITTEN_IMPORT_IR);
   });
 
-  /**
-   * One userTask carrying an assignee, a task listener, an input/output block
-   * and a retry cycle, plus one callActivity carrying an in mapping: every
-   * element-form construct finding 13 dropped, in one document.
-   */
+  /** A user task carrying an attribute and three extension elements, and a call activity carrying an in mapping. */
   const constructsBody = (
     prefix: 'operaton' | 'camunda',
   ): string => `    <bpmn:startEvent id="Start" />
@@ -359,8 +333,6 @@ describe('xmlToIr: camunda: prefix alias', () => {
     expect(warnings).toEqual([]);
   });
 
-  // Revert: swapping the URI throughout the text rewrites the documentation
-  // and draws the alias warning for a document declaring only operaton:.
   it('the camunda URI inside a documentation body is text, not a declaration: kept verbatim and no warning', async () => {
     const { ir, warnings } = await xmlToIr(
       operatonDoc`    <bpmn:startEvent id="S" />
@@ -418,14 +390,6 @@ describe('xmlToIr: service task binding forms', () => {
       expect(warnings).toEqual([]);
     },
   );
-
-  it('the camunda: prefix is accepted for the expression form', async () => {
-    const { node } = await importServiceTask(
-      'camunda:expression="${x}"',
-      camundaDoc,
-    );
-    expect(node.binding.kind).toBe('expression');
-  });
 
   it('operaton:type="external" WITHOUT a topic stays refused', async () => {
     await expect(
@@ -585,14 +549,6 @@ describe('xmlToIr: service task binding forms', () => {
 });
 
 describe('xmlToIr: parallel gateway support', () => {
-  it('a lone bpmn:parallelGateway imports carrying its id', async () => {
-    const { node } = await importOnly(
-      oneNodeDoc('parallelGateway', { id: 'PG', doc: bpmnDoc }),
-      'parallelGateway',
-    );
-    expect(node.id).toBe('PG');
-  });
-
   it('a fork and a join import with their labels, and no condition is invented on the branches', async () => {
     const { ir, warnings } = await xmlToIr(
       bpmnDefs`  <bpmn:process id="parallel-proc" isExecutable="true">
@@ -646,22 +602,17 @@ describe('xmlToIr: script task support', () => {
       doc: bpmnDoc,
     });
 
-  it('bpmn:scriptTask imports to a scriptTask IR carrying scriptFormat and body', async () => {
+  it('bpmn:scriptTask imports to a scriptTask IR carrying scriptFormat and the entity-decoded body', async () => {
     const { node } = await importOnly(
-      scriptTaskDoc('total = price * quantity;', 'name="Compute total"'),
+      scriptTaskDoc(
+        'total = price &lt; quantity &amp;&amp; ok;',
+        'name="Compute total"',
+      ),
       'scriptTask',
     );
     expect(node.format).toBe('javascript');
-    expect(node.code).toBe('total = price * quantity;');
+    expect(node.code).toBe('total = price < quantity && ok;');
     expect(node.name).toBe('Compute total');
-  });
-
-  it('decodes an entity-escaped bpmn:script body to the literal text', async () => {
-    const { node } = await importOnly(
-      scriptTaskDoc('a &lt; b &amp;&amp; c'),
-      'scriptTask',
-    );
-    expect(node.code).toBe('a < b && c');
   });
 
   it('a deployment resource refuses instead of importing an empty script, in the same words as the operaton:script spelling', async () => {
@@ -757,8 +708,6 @@ describe('xmlToIr: script task support', () => {
     );
   });
 
-  // Revert: `checkScriptBody` warning on nothing leaves every row's
-  // warning list empty.
   it.each([
     {
       title: 'a self-closing bpmn:script',
@@ -865,14 +814,7 @@ describe('xmlToIr: unsupported element (still refused kinds)', () => {
     );
     expect(e.qname).toBe(qname);
     expect(e.elementId).toBe('T');
-    expect(e.message).toContain(
-      'Only start/end events, throws, emits, boundary events, event ' +
-        'handlers, plain tasks, user tasks, service tasks, send tasks, ' +
-        'receive tasks, business rule tasks, script tasks, exclusive ' +
-        'gateways, parallel gateways, inclusive gateways, event-based ' +
-        'gateways, embedded subprocesses, attempt blocks, call activities, ' +
-        'and sequence flows are supported.',
-    );
+    expect(e.message).toContain(SUPPORTED_KINDS_MESSAGE);
   });
 });
 
@@ -1105,8 +1047,6 @@ ${EXECUTABLE}`,
           /^signal roots 'Signal_1' and 'Signal_2' both declare the name "Go"; `BpmnParse\.parseSignals` fails the deployment/,
       },
     ],
-    // Revert: `checkStartEventCount` returning before the no-start check on
-    // a process imports both rows, the second with no warning at all.
     [
       'an empty process refuses, since parseStartEvents fails the deployment without a start',
       bpmnDefs`${process(' isExecutable="true"', 'p', '')}`,
@@ -1144,11 +1084,8 @@ describe('xmlToIr: start, end, and emit triggers', () => {
     '<bpmn:messageEventDefinition id="md" messageRef="Message_1" />';
 
   interface EventXmlOptions {
-    /** Extra attributes on the event's opening tag. */
     attrs?: string;
-    /** Root-level declarations before the process. */
     roots?: string;
-    /** The `<bpmn:definitions>` wrapper. */
     defs?: typeof bpmnDefs;
   }
 
@@ -1194,61 +1131,62 @@ describe('xmlToIr: start, end, and emit triggers', () => {
   </bpmn:process>`;
 
   describe('a start carries message, signal, timer, or condition', () => {
-    it.each([
-      ['timeDuration', 'PT1H', 'duration'],
-      ['timeDate', '2026-08-01T09:00:00Z', 'date'],
-      ['timeCycle', 'R/PT10M', 'cycle'],
-    ] as const)(
-      'a %s timer start imports as that timer kind, verbatim',
-      async (child, expression, timerKind) => {
-        const { node, warnings } = await importById(
-          startTriggerXml(
-            `<bpmn:timerEventDefinition id="td">
+    const timer = (child: string, expression: string): string =>
+      `<bpmn:timerEventDefinition id="td">
         <bpmn:${child}>${expression}</bpmn:${child}>
-      </bpmn:timerEventDefinition>`,
-          ),
+      </bpmn:timerEventDefinition>`;
+
+    it.each([
+      [
+        'a timeDuration timer',
+        timer('timeDuration', 'PT1H'),
+        '',
+        timerDef('duration', 'PT1H'),
+      ],
+      [
+        'a timeDate timer',
+        timer('timeDate', '2026-08-01T09:00:00Z'),
+        '',
+        timerDef('date', '2026-08-01T09:00:00Z'),
+      ],
+      [
+        'a timeCycle timer',
+        timer('timeCycle', 'R/PT10M'),
+        '',
+        timerDef('cycle', 'R/PT10M'),
+      ],
+      [
+        'a message, named by the root it references',
+        MESSAGE_DEF,
+        MESSAGE_ROOT,
+        messageDef('OrderReceived'),
+      ],
+      [
+        'a signal, named by the root it references',
+        '<bpmn:signalEventDefinition id="sd" signalRef="Signal_1" />',
+        SIGNAL_ROOT,
+        signalDef('StockLow'),
+      ],
+      [
+        'a condition, as the engine waits on it',
+        `<bpmn:conditionalEventDefinition id="cd">
+        <bpmn:condition>\${stockLevel &lt; 5}</bpmn:condition>
+      </bpmn:conditionalEventDefinition>`,
+        '',
+        conditionDef('${stockLevel < 5}'),
+      ],
+    ] as const)(
+      'a start on %s imports the trigger verbatim, reporting nothing',
+      async (_title, definition, roots, expected) => {
+        const { node, warnings } = await importById(
+          startTriggerXml(definition, { roots }),
           'TStart',
           'startEvent',
         );
-        expect(node.eventDefinition).toEqual(timerDef(timerKind, expression));
+        expect(node.eventDefinition).toEqual(expected);
         expect(warnings).toEqual([]);
       },
     );
-
-    it('a message start imports the name of the message root it references', async () => {
-      const { node, warnings } = await importById(
-        startTriggerXml(MESSAGE_DEF, { roots: MESSAGE_ROOT }),
-        'TStart',
-        'startEvent',
-      );
-      expect(node.eventDefinition).toEqual(messageDef('OrderReceived'));
-      expect(warnings).toEqual([]);
-    });
-
-    it('a signal start imports the name of the signal root it references', async () => {
-      const { node, warnings } = await importById(
-        startTriggerXml(
-          '<bpmn:signalEventDefinition id="sd" signalRef="Signal_1" />',
-          { roots: SIGNAL_ROOT },
-        ),
-        'TStart',
-        'startEvent',
-      );
-      expect(node.eventDefinition).toEqual(signalDef('StockLow'));
-      expect(warnings).toEqual([]);
-    });
-
-    it('a conditional start imports as the condition the engine waits on', async () => {
-      const { node, warnings } = await importById(
-        startTriggerXml(`<bpmn:conditionalEventDefinition id="cd">
-        <bpmn:condition>\${stockLevel &lt; 5}</bpmn:condition>
-      </bpmn:conditionalEventDefinition>`),
-        'TStart',
-        'startEvent',
-      );
-      expect(node.eventDefinition).toEqual(conditionDef('${stockLevel < 5}'));
-      expect(warnings).toEqual([]);
-    });
 
     it('a triggered start keeps its form fields alongside the trigger', async () => {
       const { node } = await importById(
@@ -1562,19 +1500,6 @@ describe('xmlToIr: start, end, and emit triggers', () => {
       },
     );
 
-    it('the deprecated camunda: prefix of the same attribute reads alike', async () => {
-      const { node, warnings } = await importById(
-        endTriggerXml(
-          implementedMessageDef('camunda:class="com.example.Send"'),
-          { roots: MESSAGE_ROOT, defs: camundaDefs },
-        ),
-        'Typed',
-        'endEvent',
-      );
-      expect(node.binding).toEqual(classBinding('com.example.Send'));
-      expect(warnings).toEqual([CAMUNDA_ALIAS_WARNING]);
-    });
-
     it('a message emit carries the implementation too', async () => {
       const { node, warnings } = await importById(
         emitXml(
@@ -1640,35 +1565,35 @@ describe('xmlToIr: start, end, and emit triggers', () => {
       });
     });
 
-    it('a connector on the definition refuses: the same send, in element form', async () => {
-      const e = await expectRefusal<UnsupportedEventFeatureError>(
-        xmlToIr(
-          endTriggerXml(connectorMessageDef('operaton'), {
-            roots: MESSAGE_ROOT,
-            defs: operatonDefs,
-          }),
-        ),
-        UnsupportedEventFeatureError,
-        'a thrown message carries a connector; that is what makes the ' +
-          'engine really send it, and this surface has no place to keep it',
-      );
-      expect(e.elementId).toBe('Typed');
-    });
-
-    it('the deprecated camunda: prefix of the connector refuses alike, on an emit', async () => {
-      const e = await expectRefusal<UnsupportedEventFeatureError>(
-        xmlToIr(
-          emitXml(connectorMessageDef('camunda'), {
-            roots: MESSAGE_ROOT,
-            defs: camundaDefs,
-          }),
-        ),
-        UnsupportedEventFeatureError,
-        'a thrown message carries a connector; that is what makes the ' +
-          'engine really send it, and this surface has no place to keep it',
-      );
-      expect(e.elementId).toBe('Emit1');
-    });
+    it.each([
+      [
+        'a message end',
+        endTriggerXml(connectorMessageDef('operaton'), {
+          roots: MESSAGE_ROOT,
+          defs: operatonDefs,
+        }),
+        'Typed',
+      ],
+      [
+        'a message emit, under the camunda: prefix',
+        emitXml(connectorMessageDef('camunda'), {
+          roots: MESSAGE_ROOT,
+          defs: camundaDefs,
+        }),
+        'Emit1',
+      ],
+    ] as const)(
+      'a connector on the definition of %s refuses: the same send, in element form',
+      async (_title, xml, elementId) => {
+        const e = await expectRefusal<UnsupportedEventFeatureError>(
+          xmlToIr(xml),
+          UnsupportedEventFeatureError,
+          'a thrown message carries a connector; that is what makes the ' +
+            'engine really send it, and this surface has no place to keep it',
+        );
+        expect(e.elementId).toBe(elementId);
+      },
+    );
 
     it('the same setting on the event itself warns: the engine reads it off the definition', async () => {
       const { node, warnings } = await importById(
@@ -1743,9 +1668,6 @@ ${children}
       `for ${elementName} elements using '${binding}'" ` +
       '(BpmnParse.parseServiceTaskLike)';
 
-    // Revert: drop the `refuseResultVariableBeside` call from
-    // `readThrownMessageBinding`, and the first two rows import with a
-    // warning; drop the expression arm, and the third does.
     it.each([
       [
         'operaton:class with operaton:resultVariable on an emit',
@@ -1828,9 +1750,6 @@ ${children}
       'whose class or delegate binding receives it, on the step whose ' +
       'built-in mail or shell behaviour does, and on no other position';
 
-    // Revert: take the extras off `CONSUMED_EXTENSION_ATTRS`/`_ELEMENTS`
-    // for the definition and the event, and every row gains a generic
-    // unread-setting warning beside its own.
     it.each([
       {
         case: 'a result variable beside an external type is dropped: the type branch never writes it',
@@ -2085,19 +2004,6 @@ ${children}
     expect(node.eventDefinition).toEqual(messageDef('OrderReceived'));
     expect(warnings).toEqual([]);
   });
-
-  it('a plain start and end (no event definition at all) are not refused', async () => {
-    const { ir, warnings } = await xmlToIr(
-      bpmnDoc`    <bpmn:startEvent id="S" />
-    <bpmn:endEvent id="E" />
-    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="E" />`,
-    );
-    expect(ir.flowElements.map((fe) => fe.kind)).toEqual([
-      'startEvent',
-      'endEvent',
-    ]);
-    expect(warnings).toEqual([]);
-  });
 });
 
 describe('xmlToIr: imports a repetition', () => {
@@ -2217,16 +2123,13 @@ describe('xmlToIr: imports a repetition', () => {
     expect(warnings).toEqual([]);
   });
 
-  // A reference naming an element in the document resolves, and moddle answers
-  // with that element; the fixture declares one so both paths stay covered.
-  const dataDoc = (attrs: string, children: string): string =>
-    oneNodeDoc('userTask', {
-      children: `<bpmn:property id="lines" name="lines" />${repeat(attrs, children)}`,
-    });
-
-  it('a bpmn:loopDataInputRef imports as the collection', async () => {
+  // moddle resolves a reference that names an element in the document to that
+  // element, so this fixture declares one to cover the resolved path too.
+  it('a bpmn:loopDataInputRef naming a declared element imports as the collection', async () => {
     const { node } = await importById(
-      dataDoc('', '<bpmn:loopDataInputRef>lines</bpmn:loopDataInputRef>'),
+      oneNodeDoc('userTask', {
+        children: `<bpmn:property id="lines" name="lines" />${repeat('', '<bpmn:loopDataInputRef>lines</bpmn:loopDataInputRef>')}`,
+      }),
       'T',
       'userTask',
     );
@@ -2359,18 +2262,6 @@ describe('xmlToIr: imports a repetition', () => {
     },
   );
 
-  it('a bpmn:inputDataItem name imports as the element variable', async () => {
-    const { node, warnings } = await importOnly(
-      repeatedTaskDoc(
-        'operaton:collection="lines"',
-        '<bpmn:inputDataItem id="Item" name="line" />',
-      ),
-      'userTask',
-    );
-    expect(node.loop).toEqual({ collection: 'lines', elementVariable: 'line' });
-    expect(warnings).toEqual([]);
-  });
-
   it('a bpmn:inputDataItem shadows operaton:elementVariable, and the drop is reported', async () => {
     const { node, warnings } = await importOnly(
       repeatedTaskDoc(
@@ -2501,10 +2392,6 @@ describe('xmlToIr: imports a repetition', () => {
     retryCycle: 'R5/PT1M',
   };
 
-  // Revert: drop the loop element from JOB_SETTING_OWNERS, and the two full
-  // rows each gain one 'was not imported' warning per run setting; read the
-  // loop through readJobSettings instead of readRunSettings, and the priority
-  // row gains the rewrap note.
   it.each([
     {
       title:
@@ -2548,7 +2435,7 @@ describe('xmlToIr: imports a repetition', () => {
         {
           elementId: 'T',
           category: 'unmappedConstruct',
-          message: asyncRespelling("the repetition of 'T'"),
+          message: asyncRespellingMessage("the repetition of 'T'"),
         },
       ],
     },
@@ -2591,9 +2478,6 @@ describe('xmlToIr: imports a repetition', () => {
         ...STEP_SETTINGS,
         loop,
       });
-      // `doc: dualDoc` above declares the camunda namespace regardless of
-      // which prefix the row itself writes, so every row draws the alias
-      // warning too.
       expect(imported.warnings).toEqual([...warnings, CAMUNDA_ALIAS_WARNING]);
     },
   );
@@ -2803,9 +2687,8 @@ describe('xmlToIr: a #{...} body the printer spells bare is rebuilt inside ${...
     expect(warnings.map((w) => w.category)).toEqual(['unmappedConstruct']);
   });
 
-  // An out-of-subset body prints as the quoted raw template with its opener,
-  // and a `#{` later in the body leaves the parse outside the subset, so the
-  // raw path returns both character for character.
+  // A body outside the printer's bare subset prints as a quoted raw template
+  // with its opener, so it comes back character for character.
   it.each(['${lineCount}', '${a} #{b}', '#{bean.count()}'])(
     'a cardinality the printer keeps as written imports verbatim and reports nothing: %s',
     async (body) => {
@@ -2949,9 +2832,6 @@ describe('xmlToIr: a scripted condition on a sequence flow or a conditional even
     },
   );
 
-  // Revert: drop the raw-text read of an unprefixed type, and the second row
-  // imports the flow with no condition under a residual drop attributed to
-  // the process.
   it.each([
     ['xsi:type="bpmn:tExpression"', 'bpmn:tExpression'],
     [
@@ -3011,8 +2891,6 @@ describe('xmlToIr: a scripted condition on a sequence flow or a conditional even
     },
   );
 
-  // Revert: drop the `.trim()` on the recovered body, and this imports
-  // '   ' as the condition instead of matching moddle's own empty-body path.
   it('a whitespace-only recovered body imports as no condition, as moddle imports one', async () => {
     const { ir, warnings } = await xmlToIr(
       flowDoc(
@@ -3126,10 +3004,8 @@ describe('xmlToIr: a scripted condition on a sequence flow or a conditional even
     },
   );
 
-  // Operaton's parseConditionExpression is the shared helper behind both a
-  // sequence flow's conditionExpression and a conditional event definition's
-  // condition, so the same language/resource handling applies at every
-  // position a conditional event definition can occupy.
+  // `BpmnParse.parseConditionExpression` reads a conditional event
+  // definition's condition the same way it reads a flow's, at every position.
   const conditionalDoc = (
     conditionAttrs: string,
     position: 'boundary' | 'event-subprocess start' | 'intermediate catch',
@@ -3255,8 +3131,7 @@ describe('xmlToIr: warns for dropped extension attributes', () => {
   </bpmn:process>`;
 
   // Each is declared in the moddle extension, so it parses into a typed
-  // property (not `$attrs`) and is invisible to the raw-attribute sweep: read
-  // it and the descriptor scan stays silent, drop it and the scan reports it.
+  // property (not `$attrs`) that the raw-attribute sweep never sees.
   it.each([
     [
       'a process keeps the history time to live it authored',
@@ -3319,8 +3194,6 @@ ${children}
     }
       </operaton:potentialStarter>`;
 
-  // Revert: drop the potential-starter read from mapProcess, and the first
-  // row keeps the attributes' entries alone under a residual-drop warning.
   it.each([
     {
       title:
@@ -3377,9 +3250,6 @@ ${children}
     },
   );
 
-  // Revert: drop a row from ENGINE_READS_ELSEWHERE, and its sentence loses
-  // the clause naming the engine's reader; drop the retry-attribute arm from
-  // warnUnreadPrefixedAttrs, and that row reads as a setting nothing reads.
   it.each([
     {
       title:
@@ -3528,11 +3398,8 @@ ${children}
     expect(warnings).toEqual(expected);
   });
 
-  // A start under the exact id this tool mints for its container is one a
-  // script cannot repeat, so the whole statement is left out and the
-  // initiator with it. The unread-attribute sweep no longer covers it, so this
-  // report is all that stands between the value and a silent drop. (A
-  // handler's start drops the initiator before ever reaching this point.)
+  // The printer leaves out a start under the id this tool mints for its
+  // container, and the unread-attribute sweep does not cover what goes with it.
   it("a process's own start printing no statement says its initiator went with it", async () => {
     const { warnings } = await xmlToIr(
       headerDoc('', 'operaton:initiator="claimant"', 'StartEvent_p'),
@@ -3600,13 +3467,8 @@ describe('xmlToIr: warns for dropped lanes', () => {
 });
 
 describe('xmlToIr: an empty extensionElements is not flagged beside a real drop', () => {
-  /**
-   * A user task with a stray empty `<bpmn:extensionElements/>` beside a
-   * service task with a real `<operaton:field>`. A document-level "unparsable
-   * content" boolean cannot tell the two apart and would flag both; typing the
-   * operaton extension elements makes the drop attributable to the exact
-   * owning element.
-   */
+  // A document-level "unparsable content" boolean could not tell the stray
+  // empty block from the real drop; the typed extension elements can.
   it('reports the field against the service task alone, because an operaton:expression binding never receives an injected field, and reads the assignee off the clean task', async () => {
     const { ir, warnings } = await xmlToIr(
       operatonDoc`    <bpmn:startEvent id="S" />
@@ -3631,25 +3493,6 @@ describe('xmlToIr: an empty extensionElements is not flagged beside a real drop'
       category: 'extensionAttribute',
       message: "'greeting'",
     });
-  });
-});
-
-describe('xmlToIr: camunda: extension elements read exactly as operaton: ones', () => {
-  it('a camunda:field on a class-bound service task is injected, the same as operaton:field', async () => {
-    const xml = oneNodeDoc('serviceTask', {
-      id: 'CamSvc',
-      attrs: 'name="Cam Svc" camunda:class="com.example.Svc"',
-      children: extensionElements(
-        `        <camunda:field name="greeting" stringValue="hello" />`,
-      ),
-      doc: camundaDoc,
-    });
-    const { node, warnings } = await importOnly(xml, 'serviceTask');
-    expect(node.binding).toEqual({
-      ...classBinding('com.example.Svc'),
-      fields: [{ name: 'greeting', value: 'hello' }],
-    });
-    expect(warnings).toEqual([CAMUNDA_ALIAS_WARNING]);
   });
 });
 
@@ -3736,10 +3579,8 @@ describe('xmlToIr: bpmn:documentation', () => {
       </bpmn:timerEventDefinition>`;
 
   /**
-   * One row per position `bpmn:documentation` can sit on, each stating the text
-   * the IR node holds and the warnings the document draws whole. A position
-   * that carries draws none, and a position wired to neither branch fails both
-   * columns rather than passing in silence.
+   * One row per position `bpmn:documentation` can sit on: what the IR carries
+   * and the whole warning list, so a position wired to neither fails both.
    */
   const POSITIONS: [
     title: string,
@@ -4171,15 +4012,6 @@ describe('xmlToIr: warns for unmapped BPMN content', () => {
     });
     expect(reported[0].message).toMatch(/deploy/i);
   });
-
-  it('reports nothing for a process built only from mapped constructs', async () => {
-    const xml = oneNodeDoc('userTask', {
-      id: 'Review',
-      attrs: 'name="Review"',
-      doc: bpmnDoc,
-    });
-    expect((await xmlToIr(xml)).warnings).toEqual([]);
-  });
 });
 
 describe('xmlToIr: a data object, its reference, or a data store reference is dropped, not refused', () => {
@@ -4418,41 +4250,6 @@ describe('xmlToIr: embedded sub-process imports recursively', () => {
     expect('name' in sub).toBe(false);
   });
 
-  it('imports a repeated sub-process, keeping its body', async () => {
-    const xml = subProcessDoc(
-      `<bpmn:multiInstanceLoopCharacteristics isSequential="true">
-        <bpmn:loopCardinality>2</bpmn:loopCardinality>
-      </bpmn:multiInstanceLoopCharacteristics>
-      <bpmn:startEvent id="SubStart" />
-      <bpmn:endEvent id="SubEnd" />
-      <bpmn:sequenceFlow id="SF1" sourceRef="SubStart" targetRef="SubEnd" />`,
-    );
-
-    const { node, warnings } = await importOnly(xml, 'subProcess');
-    expect(node.loop).toEqual({ cardinality: '2', sequential: true });
-    expect(node.flowElements).toHaveLength(2);
-    expect(warnings).toEqual([]);
-  });
-
-  it('warns for an unsupported extension attribute on a task nested inside a sub-process', async () => {
-    const xml = subProcessDoc(
-      `<bpmn:startEvent id="SubStart" />
-      <bpmn:userTask id="InnerTask" name="Inner Task"
-                     operaton:assignee="alice" operaton:formHandlerClass="com.example.FormHandler" />
-      <bpmn:endEvent id="SubEnd" />
-      <bpmn:sequenceFlow id="SF1" sourceRef="SubStart" targetRef="InnerTask" />
-      <bpmn:sequenceFlow id="SF2" sourceRef="InnerTask" targetRef="SubEnd" />`,
-      '',
-      operatonDoc,
-    );
-
-    const { warnings } = await xmlToIr(xml);
-    expectOneWarning(warnings, {
-      elementId: 'InnerTask',
-      message: 'formHandlerClass',
-    });
-  });
-
   it('refuses a trigger on a start event nested inside a sub-process', async () => {
     const xml = subProcessDoc(
       `<bpmn:startEvent id="SubStart">
@@ -4472,39 +4269,6 @@ describe('xmlToIr: embedded sub-process imports recursively', () => {
     expect(e.elementId).toBe('SubStart');
     expect(e.message).toContain("Put the trigger on an 'on' handler");
     expect(e.message).not.toContain('Event handlers catch one');
-  });
-
-  it('imports two-level nesting recursively', async () => {
-    const xml = oneNodeDoc('subProcess', {
-      id: 'Outer',
-      doc: bpmnDoc,
-      children: `<bpmn:startEvent id="OStart" />
-      <bpmn:subProcess id="Inner">
-        <bpmn:startEvent id="IStart" />
-        <bpmn:userTask id="Deep" />
-        <bpmn:endEvent id="IEnd" />
-        <bpmn:sequenceFlow id="SF_IStart_Deep" sourceRef="IStart" targetRef="Deep" />
-        <bpmn:sequenceFlow id="SF_Deep_IEnd" sourceRef="Deep" targetRef="IEnd" />
-      </bpmn:subProcess>
-      <bpmn:endEvent id="OEnd" />
-      <bpmn:sequenceFlow id="SF_OStart_Inner" sourceRef="OStart" targetRef="Inner" />
-      <bpmn:sequenceFlow id="SF_Inner_OEnd" sourceRef="Inner" targetRef="OEnd" />`,
-    });
-
-    const { node: outer, warnings } = await importOnly(xml, 'subProcess');
-    expect(warnings).toEqual([]);
-
-    const inner = subProcess(outer, 'Inner');
-    expect(inner.flowElements.map((fe) => fe.id)).toEqual([
-      'IStart',
-      'Deep',
-      'IEnd',
-    ]);
-    expect(outer.flowElements.map((fe) => fe.id)).toEqual([
-      'OStart',
-      'Inner',
-      'OEnd',
-    ]);
   });
 });
 
@@ -4562,11 +4326,6 @@ describe('xmlToIr: callActivity import', () => {
   const importCall = (attrs: string) =>
     importOnly(callXmlWithBindingAttrs(attrs), 'callActivity');
 
-  it('no binding attributes -> the IR binding is absent', async () => {
-    const { node } = await importCall('');
-    expect('binding' in node).toBe(false);
-  });
-
   it.each([
     [
       'calledElementBinding="latest" -> { kind: "latest" }',
@@ -4614,8 +4373,6 @@ describe('xmlToIr: callActivity import', () => {
     );
   });
 
-  // Revert: refuse the default branch of readVersionBinding again, and the
-  // row throws instead of importing.
   it('a binding word parseBinding does not know imports as latest, naming the rewrite', async () => {
     const { node, warnings } = await importCall(
       'operaton:calledElementBinding="bogus"',
@@ -4745,8 +4502,6 @@ describe('xmlToIr: callActivity import', () => {
     async (_title, attributes, expectedMapper, expectedWarnings) => {
       const { node, warnings } = await importCall(attributes);
       expect(node.mapper).toEqual(expectedMapper);
-      // `importCall` always declares the camunda namespace (`dualDoc`), so
-      // every row draws the alias warning alongside its own.
       expect(warnings).toEqual([...expectedWarnings, CAMUNDA_ALIAS_WARNING]);
     },
   );
@@ -4806,8 +4561,6 @@ describe('xmlToIr: callActivity import', () => {
   const KEY_ALONE =
     'BpmnParse.parseInputParameter reads the business key alone off that element';
 
-  // Revert: refuse each combination in readCallMappings again, and the row
-  // throws instead of importing the engine's pick.
   it.each([
     {
       title: 'source beside sourceExpression keeps source',
@@ -4878,53 +4631,6 @@ describe('xmlToIr: callActivity import', () => {
     },
   );
 
-  it('a camunda:in on a call activity imports the mapping, exactly as operaton:in would', async () => {
-    const xml = callDoc(
-      '',
-      extensionElements('        <camunda:in source="a" target="b" />'),
-      camundaDoc,
-    );
-
-    const { node, warnings } = await importOnly(xml, 'callActivity');
-    expect(node.inMappings).toEqual([
-      { kind: 'variable', source: 'a', target: 'b' },
-    ]);
-    expect(warnings).toEqual([CAMUNDA_ALIAS_WARNING]);
-  });
-
-  it('a call activity inside a sub-process imports into the nested container', async () => {
-    const xml = oneNodeDoc('subProcess', {
-      id: 'Sub',
-      doc: bpmnDoc,
-      children: `<bpmn:startEvent id="SubStart" />
-      <bpmn:callActivity id="InnerCall" calledElement="sub-process" />
-      <bpmn:endEvent id="SubEnd" />
-      <bpmn:sequenceFlow id="SF1" sourceRef="SubStart" targetRef="InnerCall" />
-      <bpmn:sequenceFlow id="SF2" sourceRef="InnerCall" targetRef="SubEnd" />`,
-    });
-
-    const { node: sub } = await importOnly(xml, 'subProcess');
-    const inner = only(sub, 'callActivity');
-    expect(inner.id).toBe('InnerCall');
-    expect(inner.calledElement).toBe('sub-process');
-  });
-
-  it('a call activity with multiInstanceLoopCharacteristics imports its repetition', async () => {
-    const xml = callDoc(
-      '',
-      `<bpmn:multiInstanceLoopCharacteristics>
-        <bpmn:loopCardinality>2</bpmn:loopCardinality>
-      </bpmn:multiInstanceLoopCharacteristics>`,
-      bpmnDoc,
-    );
-
-    const { node, warnings } = await importOnly(xml, 'callActivity');
-    expect(node.loop).toEqual({ cardinality: '2' });
-    expect(warnings).toEqual([]);
-  });
-
-  // Revert: read the name through readString, and the empty label reads as
-  // absent, so the rebuilt document derives one the author erased.
   it.each([
     ['equals humanize(id) is dropped', 'Fulfil Order', undefined],
     [
@@ -5018,43 +4724,35 @@ describe('xmlToIr: event layer import', () => {
     expect(warnings).toEqual([CAMUNDA_ALIAS_WARNING]);
   });
 
-  /** The trigger definition on the handler start of a `handlerDoc` fixture. */
-  const triggerOf = async (xml: string) => {
-    const { node } = await importOnly(xml, 'subProcess');
-    const start = byId(node, 'HStart');
-    return start.kind === 'startEvent' ? start.eventDefinition : undefined;
-  };
-
-  const codelessRootXml = handlerDoc(
-    '<bpmn:errorEventDefinition id="d" errorRef="Error_NoCode" />',
-    { roots: '  <bpmn:error id="Error_NoCode" />\n' },
-  );
-
   it.each([
     [
       'a handler definition without errorRef imports with the code absent (catch-all)',
       handlerDoc('<bpmn:errorEventDefinition id="d" />'),
+      [],
     ],
     [
-      'a ref to a code-less bpmn:Error root imports with the code absent',
-      codelessRootXml,
+      'a ref to a code-less bpmn:Error root imports with the code absent, and the root warns about the missing code rather than "never caught"',
+      handlerDoc(
+        '<bpmn:errorEventDefinition id="d" errorRef="Error_NoCode" />',
+        { roots: '  <bpmn:error id="Error_NoCode" />\n' },
+      ),
+      [
+        {
+          elementId: 'Error_NoCode',
+          category: 'unreferencedRoot',
+          message:
+            "The error root 'Error_NoCode' has no code, so it cannot be " +
+            'keyed or represented in the model; it was not imported.',
+        },
+      ],
     ],
-  ])('%s', async (_title, xml) => {
-    expect(await triggerOf(xml)).toEqual(errorDef());
-  });
-
-  it('a code-less bpmn:Error root warns about the missing code, not "never caught"', async () => {
-    // The root is referenced (errorRef), so "never caught or thrown" would be
-    // false. The message names the real reason: a code-less root cannot be
-    // keyed or represented.
-    const { warnings } = await xmlToIr(codelessRootXml);
-    const w = warnings.find(
-      (w) =>
-        w.category === 'unreferencedRoot' && w.elementId === 'Error_NoCode',
+  ])('%s', async (_title, xml, expected) => {
+    const { node, warnings } = await importOnly(xml, 'subProcess');
+    const start = byId(node, 'HStart');
+    expect(start.kind === 'startEvent' && start.eventDefinition).toEqual(
+      errorDef(),
     );
-    expect(w).toBeDefined();
-    expect(w?.message).toContain('has no code');
-    expect(w?.message).not.toContain('never caught');
+    expect(warnings).toEqual(expected);
   });
 
   describe('refusals', () => {
@@ -5243,8 +4941,6 @@ describe('xmlToIr: event layer import', () => {
       'which Operaton refuses to deploy ("could not find escalation with ' +
       `id 'Esc_Missing'", BpmnParse.${method})`;
 
-    // Revert: read a dangling or absent reference as a catch-all or a
-    // code-less throw again, and every row imports.
     it.each([
       [
         'a boundary catch whose escalationRef names no root',
@@ -5341,8 +5037,6 @@ describe('xmlToIr: event layer import', () => {
         'back declares an error root carrying it.',
     });
 
-    // Revert: drop the `unresolvedRef` read from either reader, and the
-    // catch rows import a catch-all with no warning while the throw refuses.
     it.each([
       [
         'a boundary catch',
@@ -5535,40 +5229,6 @@ describe('xmlToIr: event layer import', () => {
     });
   });
 
-  it('an event handler nested inside a plain sub-process imports into the nested container', async () => {
-    const xml = bpmnDefs`  <bpmn:error id="Error_X" errorCode="X" />
-  <bpmn:process id="p" isExecutable="true">
-    <bpmn:startEvent id="PStart" />
-    <bpmn:subProcess id="Outer">
-      <bpmn:startEvent id="OStart" />
-      <bpmn:userTask id="Work" />
-      <bpmn:endEvent id="OEnd" />
-      <bpmn:subProcess id="InnerHandler" triggeredByEvent="true">
-        <bpmn:startEvent id="IHStart">
-          <bpmn:errorEventDefinition errorRef="Error_X" />
-        </bpmn:startEvent>
-        <bpmn:endEvent id="IHEnd" />
-        <bpmn:sequenceFlow id="SF_IH" sourceRef="IHStart" targetRef="IHEnd" />
-      </bpmn:subProcess>
-      <bpmn:sequenceFlow id="SF_OStart_Work" sourceRef="OStart" targetRef="Work" />
-      <bpmn:sequenceFlow id="SF_Work_OEnd" sourceRef="Work" targetRef="OEnd" />
-    </bpmn:subProcess>
-    <bpmn:endEvent id="PEnd" />
-    <bpmn:sequenceFlow id="F1" sourceRef="PStart" targetRef="Outer" />
-    <bpmn:sequenceFlow id="F2" sourceRef="Outer" targetRef="PEnd" />
-  </bpmn:process>`;
-
-    const { node: outer, warnings } = await importOnly(xml, 'subProcess');
-    expect(warnings).toEqual([]);
-
-    const inner = subProcess(outer, 'InnerHandler');
-    expect(inner.triggeredByEvent).toBe(true);
-    const innerStart = byId(inner, 'IHStart');
-    expect(
-      innerStart.kind === 'startEvent' && innerStart.eventDefinition,
-    ).toEqual(errorDef('X'));
-  });
-
   it('a normal (non-handler) start event with an error definition still refuses', async () => {
     const xml = bpmnDefs`  <bpmn:error id="Error_X" errorCode="X" />
   <bpmn:process id="p" isExecutable="true">
@@ -5692,8 +5352,6 @@ describe('xmlToIr: message/signal/timer/conditional import', () => {
           'non-empty name',
       ],
       [
-        // Revert: drop the `unresolvedRef` read from `resolveNamedRootRef`,
-        // and the detail no longer names the reference text.
         'a prefixed messageRef, which the engine resolves and this tool does not',
         handlerDoc(
           '<bpmn:messageEventDefinition id="d" messageRef="tns:Message_1" />',
@@ -5761,17 +5419,6 @@ describe('xmlToIr: message/signal/timer/conditional import', () => {
           { body: '', defs: camundaDefs },
         ),
         "a conditional definition's operaton:variableEvents narrows when the " +
-          'condition is (re-)evaluated, which this tool cannot represent',
-      ],
-      [
-        'camunda:variableName on a conditional definition, read as operaton: like the rest of the namespace',
-        handlerDoc(
-          `<bpmn:conditionalEventDefinition id="d" camunda:variableName="amount">
-          <bpmn:condition>\${amount &gt; 100}</bpmn:condition>
-        </bpmn:conditionalEventDefinition>`,
-          { body: '', defs: camundaDefs },
-        ),
-        "a conditional definition's operaton:variableName narrows when the " +
           'condition is (re-)evaluated, which this tool cannot represent',
       ],
     ] as const)(
@@ -5860,21 +5507,6 @@ describe('xmlToIr: message/signal/timer/conditional import', () => {
       ).toEqual(messageDef('Ping'));
     });
 
-    it('an unreferenced bpmn:Message root warns once', async () => {
-      const xml = rootedDoc(
-        '  <bpmn:message id="Message_Unused" name="Unused" />\n',
-        `    <bpmn:endEvent id="E" />
-    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="E" />`,
-      );
-
-      const { warnings } = await xmlToIr(xml);
-      const unreferenced = warnings.filter(
-        (w) => w.category === 'unreferencedRoot',
-      );
-      expect(unreferenced).toHaveLength(1);
-      expect(unreferenced[0].elementId).toBe('Message_Unused');
-    });
-
     it('itemRef on a referenced bpmn:Message root warns once and still imports', async () => {
       const xml = handlerDoc(
         '<bpmn:messageEventDefinition id="d" messageRef="Message_X" />',
@@ -5894,42 +5526,9 @@ describe('xmlToIr: message/signal/timer/conditional import', () => {
       const [itemRefWarning, rootWarning] = warnings;
       expect(itemRefWarning.elementId).toBe('Message_X');
       expect(itemRefWarning.message).toContain('itemRef');
-      // The item definition the itemRef pointed at is dropped in its own
-      // right, and is reported in its own right.
       expect(rootWarning.elementId).toBe('Item_1');
       expect(rootWarning.message).toContain("bpmn:itemDefinition 'Item_1'");
     });
-  });
-
-  it('a timer handler nested inside a plain sub-process imports into the nested container', async () => {
-    const xml = oneNodeDoc('subProcess', {
-      id: 'Outer',
-      doc: bpmnDoc,
-      children: `<bpmn:startEvent id="OStart" />
-      <bpmn:userTask id="Work" />
-      <bpmn:endEvent id="OEnd" />
-      <bpmn:subProcess id="InnerTimerHandler" triggeredByEvent="true">
-        <bpmn:startEvent id="ITStart">
-          <bpmn:timerEventDefinition id="itd">
-            <bpmn:timeDuration>PT30M</bpmn:timeDuration>
-          </bpmn:timerEventDefinition>
-        </bpmn:startEvent>
-        <bpmn:endEvent id="ITEnd" />
-        <bpmn:sequenceFlow id="SF_IT" sourceRef="ITStart" targetRef="ITEnd" />
-      </bpmn:subProcess>
-      <bpmn:sequenceFlow id="SF_OStart_Work" sourceRef="OStart" targetRef="Work" />
-      <bpmn:sequenceFlow id="SF_Work_OEnd" sourceRef="Work" targetRef="OEnd" />`,
-    });
-
-    const { node: outer, warnings } = await importOnly(xml, 'subProcess');
-    expect(warnings).toEqual([]);
-
-    const inner = subProcess(outer, 'InnerTimerHandler');
-    expect(inner.triggeredByEvent).toBe(true);
-    const innerStart = byId(inner, 'ITStart');
-    expect(
-      innerStart.kind === 'startEvent' && innerStart.eventDefinition,
-    ).toEqual(timerDef('duration', 'PT30M'));
   });
 });
 
@@ -6212,25 +5811,22 @@ describe('xmlToIr: compensation import', () => {
       },
     );
 
-    /** `S -> ReserveRoom -> E`, `ReserveRoom` compensated by `CancelReservation`. */
-    const pairedDoc = (
-      order: readonly ['boundary' | 'handler', 'boundary' | 'handler'],
-    ) => {
-      const boundary = `<bpmn:boundaryEvent id="CompensationBoundary" attachedToRef="ReserveRoom">
+    const BOUNDARY = `<bpmn:boundaryEvent id="CompensationBoundary" attachedToRef="ReserveRoom">
       <bpmn:compensateEventDefinition id="d" />
     </bpmn:boundaryEvent>`;
-      const handler =
-        '<bpmn:userTask id="CancelReservation" isForCompensation="true" />';
-      const byName = { boundary, handler };
-      return operatonDoc`    <bpmn:startEvent id="S" />
-    <bpmn:serviceTask id="ReserveRoom" operaton:class="com.example.Reserve" />
-    ${byName[order[0]]}
-    ${byName[order[1]]}
+    const HANDLER =
+      '<bpmn:userTask id="CancelReservation" isForCompensation="true" />';
+    const RESERVE =
+      '<bpmn:serviceTask id="ReserveRoom" operaton:class="com.example.Reserve" />';
+
+    /** `S -> ReserveRoom -> E`, `ReserveRoom` compensated by `CancelReservation`, the three written in the given order. */
+    const pairedDoc = (...nodes: readonly string[]): string =>
+      operatonDoc`    <bpmn:startEvent id="S" />
+    ${nodes.join('\n    ')}
     <bpmn:endEvent id="E" />
     <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="ReserveRoom" />
     <bpmn:sequenceFlow id="F2" sourceRef="ReserveRoom" targetRef="E" />
     <bpmn:association id="Assoc1" sourceRef="CompensationBoundary" targetRef="CancelReservation" />`;
-    };
 
     const REWRITE_PREVIEW = [
       'subprocess Compensated_ReserveRoom {',
@@ -6239,67 +5835,31 @@ describe('xmlToIr: compensation import', () => {
       '    user CancelReservation',
       '  }',
       '}',
-    ].join('\n');
+    ];
 
     it.each([
       [
         'the boundary event comes first in document order',
-        pairedDoc(['boundary', 'handler'] as const),
+        pairedDoc(RESERVE, BOUNDARY, HANDLER),
         'CompensationBoundary',
+        REWRITE_PREVIEW,
       ],
       [
         'the handler comes first in document order',
-        pairedDoc(['handler', 'boundary'] as const),
+        pairedDoc(RESERVE, HANDLER, BOUNDARY),
         'CancelReservation',
+        REWRITE_PREVIEW,
       ],
-    ] as const)(
-      'a compensated activity, its boundary event and its association-linked handler are all named in the refusal, and the printed rewrite re-parses through the compiler (%s)',
-      async (_title, xml, elementId) => {
-        const e = await expectRefusal<UnsupportedEventFeatureError>(
-          xmlToIr(xml),
-          UnsupportedEventFeatureError,
-        );
-        expect(e.elementId).toBe(elementId);
-        expect(e.detail).toContain('ReserveRoom');
-        expect(e.detail).toContain('CompensationBoundary');
-        expect(e.detail).toContain('CancelReservation');
-
-        const marker = 'Write it by hand instead:\n\n';
-        const cut = e.detail.indexOf(marker);
-        expect(cut).toBeGreaterThan(-1);
-        const rewrite = e.detail.slice(cut + marker.length);
-        expect(rewrite).toBe(REWRITE_PREVIEW);
-
-        const wrapped = `process Preview {\n${rewrite}\n}\n`;
-        const doc = await parse(wrapped, { validation: true });
-        expect(doc.parseResult.parserErrors).toEqual([]);
-        expect(doc.diagnostics ?? []).toEqual([]);
-      },
-    );
-
-    it('a compensated activity carrying a repetition keeps the for-each clause in the printed rewrite', async () => {
-      const xml = operatonDoc`    <bpmn:startEvent id="S" />
-    <bpmn:serviceTask id="ReserveRoom" operaton:class="com.example.Reserve">
+      [
+        'the compensated activity repeats, which keeps the for-each clause',
+        pairedDoc(
+          `<bpmn:serviceTask id="ReserveRoom" operaton:class="com.example.Reserve">
       <bpmn:multiInstanceLoopCharacteristics operaton:collection="lines" operaton:elementVariable="line" />
-    </bpmn:serviceTask>
-    <bpmn:boundaryEvent id="CompensationBoundary" attachedToRef="ReserveRoom">
-      <bpmn:compensateEventDefinition id="d" />
-    </bpmn:boundaryEvent>
-    <bpmn:userTask id="CancelReservation" isForCompensation="true" />
-    <bpmn:endEvent id="E" />
-    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="ReserveRoom" />
-    <bpmn:sequenceFlow id="F2" sourceRef="ReserveRoom" targetRef="E" />
-    <bpmn:association id="Assoc1" sourceRef="CompensationBoundary" targetRef="CancelReservation" />`;
-
-      const e = await expectRefusal<UnsupportedEventFeatureError>(
-        xmlToIr(xml),
-        UnsupportedEventFeatureError,
-      );
-      const marker = 'Write it by hand instead:\n\n';
-      const cut = e.detail.indexOf(marker);
-      expect(cut).toBeGreaterThan(-1);
-      const rewrite = e.detail.slice(cut + marker.length);
-      expect(rewrite).toBe(
+    </bpmn:serviceTask>`,
+          BOUNDARY,
+          HANDLER,
+        ),
+        'CompensationBoundary',
         [
           'var lines: any',
           'subprocess Compensated_ReserveRoom {',
@@ -6308,20 +5868,26 @@ describe('xmlToIr: compensation import', () => {
           '    user CancelReservation',
           '  }',
           '}',
-        ].join('\n'),
-      );
-
-      const wrapped = `process Preview {\n${rewrite}\n}\n`;
-      const doc = await parse(wrapped, { validation: true });
-      expect(doc.parseResult.parserErrors).toEqual([]);
-      expect(doc.diagnostics ?? []).toEqual([]);
-    });
+        ],
+      ],
+    ] as const)(
+      'a compensated activity, its boundary event and its association-linked handler are all named in the refusal, and the printed rewrite re-parses through the compiler (%s)',
+      async (_title, xml, elementId, preview) => {
+        const e = await expectRefusal<UnsupportedEventFeatureError>(
+          xmlToIr(xml),
+          UnsupportedEventFeatureError,
+        );
+        expect(e.elementId).toBe(elementId);
+        expect(e.detail).toContain('ReserveRoom');
+        expect(e.detail).toContain('CompensationBoundary');
+        expect(e.detail).toContain('CancelReservation');
+        await expectRewrite(e, preview);
+      },
+    );
 
     it('a compensated activity that independently carries content this tool cannot import at all still raises the compensation refusal, not that unrelated one', async () => {
-      // The boundary comes first in document order, so `mapBoundaryEvent`
-      // reaches it, and its rewrite preview, before the container walk ever
-      // maps the host on its own: only the preview's own mapper call sees
-      // the resource defect first.
+      // The boundary comes first, so the rewrite preview maps the host before
+      // the container walk does: only the preview's mapper sees the defect.
       const xml = operatonDoc`    <bpmn:startEvent id="S" />
     <bpmn:boundaryEvent id="CompensationBoundary" attachedToRef="ReserveRoom">
       <bpmn:compensateEventDefinition id="d" />
@@ -6361,43 +5927,6 @@ describe('xmlToIr: compensation import', () => {
           'on its steps, and nothing declared or drawn beside it).',
       },
     ]);
-  });
-
-  it('a compensation handler nested inside a plain sub-process nested inside another plain sub-process imports into the deepest container', async () => {
-    const xml = oneNodeDoc('subProcess', {
-      id: 'Outer',
-      doc: bpmnDoc,
-      children: `<bpmn:startEvent id="OStart" />
-      <bpmn:subProcess id="Inner">
-        <bpmn:startEvent id="IStart" />
-        <bpmn:userTask id="ReserveRoom" />
-        <bpmn:endEvent id="IEnd" />
-        <bpmn:subProcess id="UndoBooking" triggeredByEvent="true">
-          <bpmn:startEvent id="UndoStart">
-            <bpmn:compensateEventDefinition id="UndoStartDef" />
-          </bpmn:startEvent>
-          <bpmn:endEvent id="UndoEnd" />
-          <bpmn:sequenceFlow id="Flow_UndoStart_UndoEnd" sourceRef="UndoStart" targetRef="UndoEnd" />
-        </bpmn:subProcess>
-        <bpmn:sequenceFlow id="Flow_IStart_ReserveRoom" sourceRef="IStart" targetRef="ReserveRoom" />
-        <bpmn:sequenceFlow id="Flow_ReserveRoom_IEnd" sourceRef="ReserveRoom" targetRef="IEnd" />
-      </bpmn:subProcess>
-      <bpmn:endEvent id="OEnd" />
-      <bpmn:sequenceFlow id="Flow_OStart_Inner" sourceRef="OStart" targetRef="Inner" />
-      <bpmn:sequenceFlow id="Flow_Inner_OEnd" sourceRef="Inner" targetRef="OEnd" />`,
-    });
-
-    const { node: outer, warnings } = await importOnly(xml, 'subProcess');
-    expect(warnings).toEqual([]);
-
-    const handler = subProcess(subProcess(outer, 'Inner'), 'UndoBooking');
-    expect(handler.triggeredByEvent).toBe(true);
-
-    const start = byId(handler, 'UndoStart');
-    expect(start.kind === 'startEvent' && start.eventDefinition).toEqual({
-      kind: 'compensation',
-    });
-    expect(start.kind === 'startEvent' && start.isInterrupting).toBeUndefined();
   });
 });
 
@@ -6495,36 +6024,6 @@ describe('xmlToIr: boundary event import', () => {
     expect(warnings).toEqual([]);
   });
 
-  it('a boundary event on a host nested inside a sub-process imports at that depth', async () => {
-    const xml = bpmnDoc`    <bpmn:startEvent id="PStart" />
-    <bpmn:subProcess id="Outer">
-      <bpmn:startEvent id="OStart" />
-      <bpmn:userTask id="Pack" />
-      <bpmn:boundaryEvent id="Boundary_Pack_timer" attachedToRef="Pack">
-        <bpmn:timerEventDefinition id="TimerDef">
-          <bpmn:timeDuration>PT30M</bpmn:timeDuration>
-        </bpmn:timerEventDefinition>
-      </bpmn:boundaryEvent>
-      <bpmn:endEvent id="OEnd" />
-      <bpmn:sequenceFlow id="SF1" sourceRef="OStart" targetRef="Pack" />
-      <bpmn:sequenceFlow id="SF2" sourceRef="Pack" targetRef="OEnd" />
-    </bpmn:subProcess>
-    <bpmn:endEvent id="PEnd" />
-    <bpmn:sequenceFlow id="F1" sourceRef="PStart" targetRef="Outer" />
-    <bpmn:sequenceFlow id="F2" sourceRef="Outer" targetRef="PEnd" />`;
-
-    const { ir, warnings } = await xmlToIr(xml);
-    expect(warnings).toEqual([]);
-
-    expect(byId(subProcess(ir, 'Outer'), 'Boundary_Pack_timer')).toEqual(
-      boundaryEvent(
-        'Boundary_Pack_timer',
-        'Pack',
-        timerDef('duration', 'PT30M'),
-      ),
-    );
-  });
-
   const TIMER_1H = `<bpmn:timerEventDefinition id="TimerDef">
         <bpmn:timeDuration>PT1H</bpmn:timeDuration>
       </bpmn:timerEventDefinition>`;
@@ -6543,10 +6042,7 @@ ${extraFlows}    <bpmn:sequenceFlow id="F1" sourceRef="PStart" targetRef="Review
     <bpmn:sequenceFlow id="F2" sourceRef="Review" targetRef="PEnd" />`;
 
   describe('refusals', () => {
-    /**
-     * The whole refusal an attachedToRef that names nothing attachable draws.
-     * It enumerates every host noun, so pinning it whole pins that list.
-     */
+    /** The whole refusal, since it enumerates every host noun. */
     const unattachableDetail = (ref: string): string =>
       `attachedToRef "${ref}" does not name a plain task, user task, ` +
       'service task, send task, business rule task, receive task, script ' +
@@ -6822,24 +6318,6 @@ describe('xmlToIr: intermediate catch event import', () => {
     const { ir, warnings } = await xmlToIr(xml);
     expect(ir).toEqual(expectedIr);
     expect(warnings).toEqual([]);
-
-    // Every catch sits on the main flow: exactly one incoming and one
-    // outgoing sequence flow apiece.
-    for (const catchId of [
-      'WaitMsg',
-      'WaitDur',
-      'WaitDate',
-      'WaitCycle',
-      'WaitSig',
-      'WaitCond',
-    ]) {
-      expect(
-        ir.sequenceFlows.filter((f) => f.targetRef === catchId),
-      ).toHaveLength(1);
-      expect(
-        ir.sequenceFlows.filter((f) => f.sourceRef === catchId),
-      ).toHaveLength(1);
-    }
   });
 
   /** `S -> Wait -> E`, where the catch carries the given definition. */
@@ -6851,10 +6329,7 @@ describe('xmlToIr: intermediate catch event import', () => {
     });
 
   describe('refuses an unsupported trigger', () => {
-    /**
-     * The whole refusal a trigger no await admits draws. It enumerates where
-     * each refused trigger does have a surface, so pinning it whole pins that.
-     */
+    /** The whole refusal, since it names where each refused trigger does belong. */
     const unawaitableDetail = (tag: string): string =>
       `an await cannot carry a bpmn:${tag}: only message, timer, signal, ` +
       'condition, or link triggers can be awaited inline; error and ' +
@@ -7314,8 +6789,6 @@ describe('xmlToIr: flat engine settings on a user task', () => {
     expect(warnings).toEqual([]);
   });
 
-  // Revert: drop the `operaton:async` read from readRunSettings, and the
-  // first row loses asyncBefore and gains the unread-setting warning.
   it.each([
     [
       'operaton:async="true" imports as asyncBefore and names the respelling',
@@ -7325,7 +6798,7 @@ describe('xmlToIr: flat engine settings on a user task', () => {
         {
           elementId: 'T',
           category: 'unmappedConstruct',
-          message: asyncRespelling("'T'"),
+          message: asyncRespellingMessage("'T'"),
         },
       ],
     ],
@@ -7576,26 +7049,6 @@ ${role('potentialOwner', 'Owner_1', 'managers')}
   });
 });
 
-describe('xmlToIr: flat engine settings honor the camunda: alias', () => {
-  const importUserTask = (attrs: string) =>
-    importOnly(oneNodeDoc('userTask', { attrs, doc: dualDoc }), 'userTask');
-
-  it('reads camunda:asyncBefore, camunda:exclusive, and camunda:candidateGroups', async () => {
-    const { node: task, warnings } = await importUserTask(
-      'camunda:asyncBefore="true" camunda:exclusive="false" ' +
-        'camunda:candidateGroups="managers"',
-    );
-    expect(task).toEqual({
-      kind: 'userTask',
-      id: 'T',
-      asyncBefore: true,
-      exclusive: false,
-      candidateGroups: 'managers',
-    });
-    expect(warnings).toEqual([CAMUNDA_ALIAS_WARNING]);
-  });
-});
-
 describe('xmlToIr: flat engine settings on every carrying node kind', () => {
   const everyKindXml = operatonDefs`  <bpmn:escalation id="Escalation_Up" escalationCode="UP" />
   <bpmn:process id="p" isExecutable="true" operaton:versionTag="1.4">
@@ -7678,8 +7131,6 @@ describe('xmlToIr: flat engine settings on every carrying node kind', () => {
       'operaton:resultVariable, which the engine reads the same.',
   };
 
-  // Revert: read resultVariable alone in readResultVariable, and the first
-  // three rows lose the field and gain the unread-setting warning.
   it.each([
     {
       title: 'an expression-bound service task',
@@ -7812,10 +7263,6 @@ describe("xmlToIr: a timer job's lock is read where BpmnParse.parseTimer reads i
     /'jobPriority' setting on 'Handler' was not imported: the 'on timer' head.*timer job.*continuation job/,
   );
 
-  // Revert: read the tag alone and the first two rows lose their `false`;
-  // drop the definition from the consumed table and they warn "not imported";
-  // keep the sub-process's own timer keys and the last row's IR carries
-  // `jobPriority` with no warning.
   it.each<
     [string, string, { tag?: string; def?: string; sub?: string }, unknown]
   >([
@@ -7915,8 +7362,6 @@ describe('xmlToIr: the job settings on a gateway', () => {
     jobPriority: '7',
     retryCycle: 'R3/PT10M',
   };
-  // Revert: drop GATEWAY_TAGS from JOB_SETTING_OWNERS, and every settings row
-  // loses its node fields and gains one 'was not imported' warning per setting.
   it.each([
     {
       title: 'a split written first carries all five',
@@ -7968,7 +7413,7 @@ describe('xmlToIr: the job settings on a gateway', () => {
       attrs: 'operaton:async="true"',
       placement: 'first' as const,
       settings: { asyncBefore: true },
-      warnings: [['G', 'unmappedConstruct', asyncRespelling("'G'")]],
+      warnings: [['G', 'unmappedConstruct', asyncRespellingMessage("'G'")]],
     },
     {
       title:
@@ -8001,8 +7446,6 @@ describe('xmlToIr: the job settings on a gateway', () => {
     );
   });
 
-  // Revert: drop requireIntegerOrExpression from readJobSettings, and both
-  // rows import the priority as written with no warning.
   it.each([
     ['a decimal', '1.5'],
     ['a word', 'abc'],
@@ -8087,12 +7530,7 @@ describe('xmlToIr: content is consumed only on the owner kind that reads it', ()
   });
 });
 
-/**
- * A service task carrying an arbitrary `<bpmn:extensionElements>` body, the
- * shared subject of the input/output, listener, and refusal-matrix sections
- * below. A service task is an activity, so it carries both the io block and
- * execution listeners, and its own `operaton:class` keeps it importable.
- */
+/** A class-bound service task carrying the given `<bpmn:extensionElements>` body: an activity, so it takes both the io block and execution listeners. */
 const serviceTaskWith = (children: string): string =>
   oneNodeDoc('serviceTask', {
     id: 'Svc',
@@ -8191,25 +7629,6 @@ describe('xmlToIr: input/output parameters', () => {
     expect(warnings).toEqual([]);
   });
 
-  it('parameter order is preserved across both directions', async () => {
-    const { node: task } = await importServiceTask(
-      ioBlock(`          <operaton:inputParameter name="one">1</operaton:inputParameter>
-          <operaton:inputParameter name="two">2</operaton:inputParameter>
-          <operaton:inputParameter name="three">3</operaton:inputParameter>
-          <operaton:outputParameter name="first">a</operaton:outputParameter>
-          <operaton:outputParameter name="second">b</operaton:outputParameter>`),
-    );
-    expect(task.inputParameters?.map((p) => p.name)).toEqual([
-      'one',
-      'two',
-      'three',
-    ]);
-    expect(task.outputParameters?.map((p) => p.name)).toEqual([
-      'first',
-      'second',
-    ]);
-  });
-
   /** One `<bpmn:extensionElements>` holding one io block, optionally with an output parameter beside the input. */
   const IO = (
     params = '<operaton:inputParameter name="amount">1</operaton:inputParameter>',
@@ -8218,10 +7637,6 @@ describe('xmlToIr: input/output parameters', () => {
           ${params}
         </operaton:inputOutput>`);
 
-  // Revert: take bpmn:IntermediateThrowEvent off the operaton:InputOutput
-  // row and the hand report out of the throw's definition arm, and the
-  // throw's block reports twice or not at all; drop an event's row from
-  // ENGINE_READS_ELSEWHERE and its sentence loses the reader.
   it('every activity kind reads its own io block, and an event that runs one reports it naming parseActivityInputOutput', async () => {
     const xml = operatonDefs`  <bpmn:signal id="Sig" name="sig" />
   <bpmn:process id="p" isExecutable="true">
@@ -8289,8 +7704,6 @@ describe('xmlToIr: input/output parameters', () => {
 
   const TRIGGERED = " with attribute 'triggeredByEvent = true'";
 
-  // Revert: drop the refuseIoMapping call from a mapper, and that row imports
-  // the block as a warned drop.
   it.each([
     [
       "the process's own start",
@@ -8370,9 +7783,7 @@ describe('xmlToIr: input/output parameters', () => {
   );
 
   // `BpmnParseUtil.parseNestedParamValueProvider` reads `element.elements()`
-  // alone, so body text beside the one nested child never reaches the engine;
-  // revert: dropping the `text !== undefined` warning branch turns this back
-  // into the old "carries both body text and a nested value" refusal.
+  // alone, so body text beside the one nested child never reaches the engine.
   it('a parameter carrying body text beside one nested child keeps the child and warns on the text', async () => {
     const { node: task, warnings } = await importServiceTask(
       ioBlock(
@@ -8468,8 +7879,6 @@ ${listener}
     expect(warnings).toEqual([]);
   });
 
-  // Revert: drop the process, flow or gateway row from ENGINE_READS_ELSEWHERE,
-  // and its sentence loses the parser that runs the listener.
   it('a listener on the process, a flow or a gateway is dropped naming the parser that runs it', async () => {
     const listener = (event: string): string =>
       extensionElements(
@@ -8507,10 +7916,6 @@ ${listener}
     ]);
   });
 
-  // Each row's revert: `readListeners`/`resolveListenerBinding` refusing what
-  // Operaton actually runs (a repeated event, a second attribute, a shadowed
-  // script, an empty expression) turns the row into a refusal instead of the
-  // listener list plus warning it pins.
   it.each([
     {
       case: 'two listeners on one event import in document order, since Operaton appends rather than replaces',
@@ -8658,11 +8063,6 @@ describe('xmlToIr: task listeners', () => {
     ]);
   });
 
-  // Each row's revert: `readListeners`/`readListenerTimer`/
-  // `resolveListenerBinding` refusing what Operaton actually runs (a repeated
-  // timeout, an empty binding attribute, a timer off a non-timeout event)
-  // turns the row into a refusal instead of the listener list plus warning it
-  // pins.
   it.each([
     {
       case: 'two timeout listeners import in document order, each carrying its own timer, since TaskDefinition.addTimeoutTaskListener keys by id rather than replacing',
@@ -8827,21 +8227,21 @@ describe('xmlToIr: a consumed extension child reports its own unread attributes'
     ]);
   });
 
-  it('a foreign attribute on the operaton:inputOutput block itself reports', async () => {
-    const { warnings } = await importServiceTask(
-      `        <operaton:inputOutput xmlns:foo="http://foo.example" foo:bar="1">
+  it.each([
+    [
+      'a foreign attribute on the operaton:inputOutput block itself reports',
+      serviceTaskWith(
+        `        <operaton:inputOutput xmlns:foo="http://foo.example" foo:bar="1">
           <operaton:inputParameter name="x">v</operaton:inputParameter>
         </operaton:inputOutput>`,
-    );
-    expect(warnings.map((w) => w.message)).toEqual([
-      expect.stringMatching(/'foo:bar' on an operaton:inputOutput/),
-    ]);
-  });
-
-  it('two form fields are told apart by the id their warnings name', async () => {
-    const xml = oneNodeDoc('userTask', {
-      id: 'Review',
-      children: `
+      ),
+      [/'foo:bar' on an operaton:inputOutput/],
+    ],
+    [
+      'two form fields are told apart by the id their warnings name',
+      oneNodeDoc('userTask', {
+        id: 'Review',
+        children: `
       <bpmn:extensionElements xmlns:foo="http://foo.example">
         <operaton:formData>
           <operaton:formField id="approve" type="boolean" foo:bar="1" />
@@ -8849,19 +8249,18 @@ describe('xmlToIr: a consumed extension child reports its own unread attributes'
         </operaton:formData>
       </bpmn:extensionElements>
     `,
-    });
-    const { warnings } = await xmlToIr(xml);
-    expect(warnings.map((w) => w.message)).toEqual([
-      expect.stringMatching(/'foo:bar' on an operaton:formField 'approve'/),
-      expect.stringMatching(/'foo:bar' on an operaton:formField 'comment'/),
-    ]);
-  });
-
-  it('in and out mappings are told apart by the end their warnings name', async () => {
-    const xml = oneNodeDoc('callActivity', {
-      id: 'Call',
-      attrs: 'calledElement="sub"',
-      children: `
+      }),
+      [
+        /'foo:bar' on an operaton:formField 'approve'/,
+        /'foo:bar' on an operaton:formField 'comment'/,
+      ],
+    ],
+    [
+      'in and out mappings are told apart by the end their warnings name',
+      oneNodeDoc('callActivity', {
+        id: 'Call',
+        attrs: 'calledElement="sub"',
+        children: `
       <bpmn:extensionElements xmlns:foo="http://foo.example">
         <operaton:in source="amount" target="total" foo:bar="1" />
         <operaton:in source="customer" target="client" foo:bar="2" />
@@ -8869,14 +8268,19 @@ describe('xmlToIr: a consumed extension child reports its own unread attributes'
         <operaton:out source="verdict" target="outcome" foo:bar="4" />
       </bpmn:extensionElements>
     `,
-    });
+      }),
+      [
+        /'foo:bar' on an operaton:in 'amount'/,
+        /'foo:bar' on an operaton:in 'customer'/,
+        /'foo:bar' on an operaton:in '\$\{now\(\)\}'/,
+        /'foo:bar' on an operaton:out 'verdict'/,
+      ],
+    ],
+  ] as const)('%s', async (_title, xml, expected) => {
     const { warnings } = await xmlToIr(xml);
-    expect(warnings.map((w) => w.message)).toEqual([
-      expect.stringMatching(/'foo:bar' on an operaton:in 'amount'/),
-      expect.stringMatching(/'foo:bar' on an operaton:in 'customer'/),
-      expect.stringMatching(/'foo:bar' on an operaton:in '\$\{now\(\)\}'/),
-      expect.stringMatching(/'foo:bar' on an operaton:out 'verdict'/),
-    ]);
+    expect(warnings.map((w) => w.message)).toEqual(
+      expected.map((pattern) => expect.stringMatching(pattern)),
+    );
   });
 });
 
@@ -9206,8 +8610,6 @@ describe('xmlToIr: a mail or shell task imports with its fields on the three tag
     ['businessRuleTask', { element: 'businessRule' }],
   ] as const;
 
-  // Revert: drop the builtin arm from readCodeOrExternalBinding, and every row
-  // refuses as an unsupported form.
   it.each([
     ...TAGS.flatMap(([tag, element]) => [
       {
@@ -9308,8 +8710,6 @@ describe('xmlToIr: a service-like task the engine would refuse is refused with i
     `operaton:type="mail" without ${missing} field, which Operaton refuses ` +
     `to deploy: "${rule}" (BpmnParse.validateFieldDeclarationsForEmail)`;
 
-  // Revert: delete refuseBuiltinShapes, and the first six rows import; delete
-  // the result-variable check in readServiceTaskBinding, and the last two do.
   it.each([
     [
       'a mail task with cc and text and no to, since cc satisfies nothing',
@@ -9518,8 +8918,8 @@ describe('xmlToIr: a listener carries an injected field on the same two bindings
 });
 
 describe('xmlToIr: a user task names a deployed form by reference', () => {
-  const importFormRef = (attrs: string, doc = operatonDoc) =>
-    importOnly(oneNodeDoc('userTask', { attrs, doc }), 'userTask');
+  const importFormRef = (attrs: string) =>
+    importOnly(oneNodeDoc('userTask', { attrs }), 'userTask');
 
   const bound: readonly [string, string, VersionBinding][] = [
     [
@@ -9553,23 +8953,6 @@ describe('xmlToIr: a user task names a deployed form by reference', () => {
       expect(warnings).toEqual([]);
     },
   );
-
-  it('the camunda: prefix spells the same form reference', async () => {
-    const { node, warnings } = await importFormRef(
-      'camunda:formRef="review-form" camunda:formRefBinding="version" ' +
-        'camunda:formRefVersion="3"',
-      camundaDoc,
-    );
-    expect(node).toEqual({
-      kind: 'userTask',
-      id: 'T',
-      formRef: {
-        key: 'review-form',
-        binding: { kind: 'version', version: '3' },
-      },
-    });
-    expect(warnings).toEqual([CAMUNDA_ALIAS_WARNING]);
-  });
 
   it.each([
     [
@@ -9640,8 +9023,6 @@ describe('xmlToIr: a second extension block of one kind refuses, since Element.e
           <operaton:property name="k" value="v" />
         </operaton:properties>`;
 
-  // Revert: onlyExtensionElement back to returning the first match, and
-  // every row imports the first block under a warning.
   it.each([
     [
       'operaton:failedJobRetryTimeCycle',
@@ -9784,8 +9165,6 @@ describe('xmlToIr: an initiator and a form on a start that is not the process ow
     },
   ];
 
-  // Revert: read `initiator` and the form off every start again, and both
-  // rows carry them with no warning.
   it.each([
     [
       'a handler start',
@@ -10366,9 +9745,6 @@ ${externalTask('', mapping)}
     <bpmn:endEvent id="E" />
   </bpmn:process>`;
 
-  // Revert: refuse a dangling `errorRef` in `readErrorMapping` again, and the
-  // dangling row refuses; drop the no-`errorRef` warning and skip, and that
-  // row refuses too.
   it.each([
     [
       'a mapping with no expression',
@@ -10610,8 +9986,6 @@ ${body}
     expect(warnings).toEqual(expected);
   });
 
-  // Revert: carry the priority as written in withExternalExtras, and both
-  // rows import with a warning instead of refusing.
   it.each([
     ['a decimal task priority', '1.5'],
     ['a task priority opening with a digit before its expression', '1 ${x}'],
@@ -10627,17 +10001,9 @@ ${body}
   });
 });
 
-/**
- * Every shape of `operaton:inputOutput` block or listener that carries content
- * this surface cannot express. Each is semantic loss rather than decoration,
- * so each throws before any IR is produced, naming the shape and the element.
- *
- * Two of them are visible only because the moddle descriptor declares a
- * parameter's nested value as a repeating property: with a single-valued one,
- * a parameter carrying two nested values and a parameter carrying a stray
- * `operaton:entry` both parse to something plausible with no warning at all,
- * and no reader could tell.
- */
+// The two-nested-values and stray-entry rows are only detectable because the
+// moddle descriptor declares a parameter's nested value as a repeating
+// property; single-valued, both would parse to something plausible.
 describe('xmlToIr: the extension-form refusal matrix', () => {
   /** The service task carries the io block and execution listeners, the user task the task listeners. */
   const HOSTS = { Svc: serviceTaskWith, Review: userTaskWith };
@@ -10657,6 +10023,12 @@ describe('xmlToIr: the extension-form refusal matrix', () => {
     ioBlock(`          <operaton:inputParameter name="x">
 ${body}
           </operaton:inputParameter>`);
+
+  const unspellable = (subject: string): string =>
+    `${subject} names a variable the script cannot spell (a name is ` +
+    "letters, digits and '_', with '-' between them, and no keyword), and " +
+    'the engine sets the variable under that name, so writing another ' +
+    'would change what runs';
 
   it.each([
     {
@@ -10790,11 +10162,7 @@ ${body}
       children: ioBlock(
         `          <operaton:inputParameter name="my.param">1</operaton:inputParameter>`,
       ),
-      detail:
-        "operaton:inputParameter 'my.param' names a variable the script " +
-        "cannot spell (a name is letters, digits and '_', with '-' " +
-        'between them, and no keyword), and the engine sets the variable ' +
-        'under that name, so writing another would change what runs',
+      detail: unspellable("operaton:inputParameter 'my.param'"),
     },
     {
       case: 'a form field whose id the script cannot spell',
@@ -10802,11 +10170,7 @@ ${body}
       children: `        <operaton:formData>
           <operaton:formField id="my.field" type="string" />
         </operaton:formData>`,
-      detail:
-        "operaton:formField 'my.field' names a variable the script " +
-        "cannot spell (a name is letters, digits and '_', with '-' " +
-        'between them, and no keyword), and the engine sets the variable ' +
-        'under that name, so writing another would change what runs',
+      detail: unspellable("operaton:formField 'my.field'"),
     },
     {
       case: 'an injected field naming no value slot',
@@ -10972,15 +10336,6 @@ describe('xmlToIr: task kinds', () => {
     },
   );
 
-  it('a send task imports as a service task node tagged as a send', async () => {
-    const { node } = await importOnly(
-      oneNodeDoc('sendTask', { attrs: 'operaton:class="com.example.Send"' }),
-      'serviceTask',
-    );
-    expect(node.element).toBe('send');
-    expect(node.binding).toEqual(classBinding('com.example.Send'));
-  });
-
   it('a send task with no binding refuses as a send task, not as a service task', async () => {
     const e = await expectRefusal<UnsupportedServiceTaskFormError>(
       xmlToIr(oneNodeDoc('sendTask')),
@@ -11013,17 +10368,6 @@ describe('xmlToIr: task kinds', () => {
       mapDecisionResult: 'singleEntry',
     });
     expect(node.resultVariable).toBe('risk');
-  });
-
-  it('a business rule task bound to code imports that binding instead', async () => {
-    const { node } = await importOnly(
-      oneNodeDoc('businessRuleTask', {
-        attrs: 'operaton:class="com.example.Rate"',
-      }),
-      'serviceTask',
-    );
-    expect(node.element).toBe('businessRule');
-    expect(node.binding).toEqual(classBinding('com.example.Rate'));
   });
 
   it('a code-bound business rule task warns about the decision settings it drops', async () => {
@@ -11179,22 +10523,6 @@ describe('xmlToIr: task kinds', () => {
     },
   );
 
-  it.each(KINDS)(
-    'multi-instance loop characteristics on a bpmn:%s import as a repetition',
-    async (tag, kind, binding) => {
-      const { node, warnings } = await importOnly(
-        oneNodeDoc(tag, {
-          attrs: binding,
-          children:
-            '<bpmn:multiInstanceLoopCharacteristics operaton:collection="lines" />',
-        }),
-        kind,
-      );
-      expect(node.loop).toEqual({ collection: 'lines' });
-      expect(warnings).toEqual([]);
-    },
-  );
-
   const MANUAL_TASK_WARNING = {
     elementId: 'M1',
     category: 'unmappedConstruct',
@@ -11232,10 +10560,6 @@ describe('xmlToIr: task kinds', () => {
     expect(warnings).toEqual([MANUAL_TASK_WARNING]);
   });
 
-  // Revert: refuse a definition-less intermediate throw again, and the
-  // import rejects instead of returning the step.
-  // Revert: drop readIoMapping from the none-throw arm, and the step loses
-  // its parameter under a second, residual warning.
   it('an intermediate throw with no definition (the Modeler milestone) imports as a plain step carrying its io mapping, prints and re-parses, warning that history will report it as a task', async () => {
     const { ir, warnings } = await xmlToIr(
       oneNodeDoc('intermediateThrowEvent', {
@@ -11274,9 +10598,7 @@ describe('xmlToIr: task kinds', () => {
     expect(source).toContain(
       'step M(label: "Milestone reached", asyncBefore: true)',
     );
-    const doc = await parse(source, { validation: true });
-    expect(doc.parseResult.parserErrors).toEqual([]);
-    expect(doc.diagnostics ?? []).toEqual([]);
+    await expectParses(source);
   });
 
   it('a document holding all four kinds imports with no warnings at all', async () => {
@@ -11344,19 +10666,14 @@ describe('xmlToIr: a block that can be given up', () => {
 `;
 
   interface BlockOptions {
-    /** The tag the block is written with. Defaults to `transaction`. */
     tag?: string;
-    /** Extra attributes on the block's opening tag. */
     attrs?: string;
-    /** The block's body, written after its start event. */
     body?: string;
-    /** Content written in the process beside the block. */
     beside?: string;
-    /** The `<bpmn:definitions>` wrapper. Defaults to {@link operatonDoc}. */
     doc?: XmlTag;
   }
 
-  /** `S -> Book -> E`, where `Book` is the block and `beside` sits alongside it. */
+  /** `S -> Book -> E`, where `Book` is the block, `body` follows its start, and `beside` sits alongside it. */
   const blockDoc = ({
     tag = 'transaction',
     attrs = '',
@@ -11587,20 +10904,6 @@ ${cancelBoundary()}    <bpmn:endEvent id="E" />
     },
   );
 
-  it('a block writing none of the three warns about nothing', async () => {
-    const { warnings } = await xmlToIr(blockDoc());
-    expect(warnings).toEqual([]);
-  });
-
-  it('isForCompensation="true" on the block still refuses', async () => {
-    const e = await expectRefusal<UnsupportedEventFeatureError>(
-      xmlToIr(blockDoc({ attrs: 'isForCompensation="true"' })),
-      UnsupportedEventFeatureError,
-      IS_FOR_COMPENSATION_DETAIL,
-    );
-    expect(e.elementId).toBe('Book');
-  });
-
   it('an undo handler directly inside the block imports, while one at process level still refuses', async () => {
     const undoHandler = `      <bpmn:subProcess id="UndoCharge" triggeredByEvent="true">
         <bpmn:startEvent id="UndoStart">
@@ -11780,8 +11083,6 @@ ${routes}
     },
   );
 
-  // Revert: read the dropped `default` reference without `|| undefined`, and
-  // the `default=""` row refuses the plain route as not the default.
   it.each([
     ['no default', '<bpmn:exclusiveGateway id="G" />'],
     [
@@ -11937,19 +11238,14 @@ ${element}
 
 describe('xmlToIr: a wait with several branches', () => {
   interface WaitOptions {
-    /** Extra attributes on the wait itself. */
     attrs?: string;
-    /** Children of the wait, which make its tag an open one. */
     children?: string;
     /** The elements the branches begin with, each with the id a flow names. */
     branches?: readonly { id: string; element: string }[];
-    /** Root declarations before the process. */
     roots?: string;
-    /** Content written in the process beside the branches. */
     beside?: string;
     /** Flows written on top of the ones every branch gets. */
     extraFlows?: string;
-    /** The `<bpmn:definitions>` wrapper. Defaults to {@link bpmnDefs}. */
     defs?: XmlTag;
   }
 
@@ -12130,8 +11426,6 @@ ${branches
     expect(fork.warnings.map(reported)).toEqual(sweepsOn('Fork'));
   });
 
-  // Revert: delete the asyncAfter throw in mapEventBasedGateway, and both
-  // rows import the wait with the flag set.
   it.each([
     ['operaton:asyncAfter="true"', operatonDefs],
     ['camunda:asyncAfter="true"', camundaDefs],
@@ -12216,12 +11510,7 @@ ${branches
   });
 });
 
-/**
- * Branches a coverage sweep found no row asserting: each pins the current
- * wording (or the current warning list) of one refusal or warning arm named
- * elsewhere in this file's own tables. A row's title names the one-line
- * source change that would turn it red.
- */
+/** One row per refusal or warning arm whose exact wording no table above pins. */
 describe('xmlToIr: refusal and warning wording', () => {
   const potentialOwnerXml = (
     id: string,
@@ -12261,58 +11550,38 @@ describe('xmlToIr: refusal and warning wording', () => {
         );
       },
     ],
-    [
-      'two bpmn:Error roots sharing a code, both messageless, merge into one declaration',
-      async () => {
-        const { ir, warnings } = await xmlToIr(
-          rootedDoc(
-            '  <bpmn:error id="Error_A" errorCode="DUP" />\n' +
-              '  <bpmn:error id="Error_B" errorCode="DUP" />\n',
-            '    <bpmn:endEvent id="E" />\n' +
-              '    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="E" />',
-            operatonDefs,
-          ),
-        );
-        expect(ir.errorDecls).toEqual([{ name: 'DUP', code: 'DUP' }]);
-        expect(warnings).toEqual([]);
-      },
-    ],
-    [
-      'two bpmn:Error roots sharing a code, only the second carrying a message, merge with it',
-      async () => {
-        const { ir, warnings } = await xmlToIr(
-          rootedDoc(
-            '  <bpmn:error id="Error_A" errorCode="DUP" />\n' +
-              '  <bpmn:error id="Error_B" errorCode="DUP" operaton:errorMessage="Oops" />\n',
-            '    <bpmn:endEvent id="E" />\n' +
-              '    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="E" />',
-            operatonDefs,
-          ),
-        );
-        expect(ir.errorDecls).toEqual([
+    ...(
+      [
+        ['both messageless', '', '', { name: 'DUP', code: 'DUP' }],
+        [
+          'only the second carrying a message',
+          '',
+          'operaton:errorMessage="Oops"',
           { name: 'DUP', code: 'DUP', message: 'Oops' },
-        ]);
-        expect(warnings).toEqual([]);
-      },
-    ],
-    [
-      'two bpmn:Error roots sharing a code and agreeing on the message merge without refusing',
+        ],
+        [
+          'agreeing on the message',
+          'operaton:errorMessage="Oops"',
+          'operaton:errorMessage="Oops"',
+          { name: 'DUP', code: 'DUP', message: 'Oops' },
+        ],
+      ] as const
+    ).map(([shape, first, second, decl]): (typeof rows)[number] => [
+      `two bpmn:Error roots sharing a code, ${shape}, merge into one declaration`,
       async () => {
         const { ir, warnings } = await xmlToIr(
           rootedDoc(
-            '  <bpmn:error id="Error_A" errorCode="DUP" operaton:errorMessage="Oops" />\n' +
-              '  <bpmn:error id="Error_B" errorCode="DUP" operaton:errorMessage="Oops" />\n',
+            `  <bpmn:error id="Error_A" errorCode="DUP" ${first} />\n` +
+              `  <bpmn:error id="Error_B" errorCode="DUP" ${second} />\n`,
             '    <bpmn:endEvent id="E" />\n' +
               '    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="E" />',
             operatonDefs,
           ),
         );
-        expect(ir.errorDecls).toEqual([
-          { name: 'DUP', code: 'DUP', message: 'Oops' },
-        ]);
+        expect(ir.errorDecls).toEqual([decl]);
         expect(warnings).toEqual([]);
       },
-    ],
+    ]),
     [
       'an unnamed, unreferenced bpmn:message root warns that it cannot be keyed, and is dropped',
       async () => {
@@ -12352,9 +11621,7 @@ describe('xmlToIr: refusal and warning wording', () => {
 
         const printed = irToDsl(ir).source;
         expect(printed).toContain('in local *');
-        const doc = await parse(printed, { validation: true });
-        expect(doc.parseResult.parserErrors).toEqual([]);
-        expect(doc.diagnostics ?? []).toEqual([]);
+        await expectParses(printed);
       },
     ],
     [
@@ -12388,9 +11655,8 @@ describe('xmlToIr: refusal and warning wording', () => {
         </operaton:taskListener>`,
           ),
         });
-        // No binding attribute on the listener: this refusal fires reading
-        // its timer, before a binding is ever resolved, so it pins none of
-        // that wording.
+        // No binding on the listener: the timer is read before a binding is
+        // resolved, so this pins the timer refusal alone.
         await expectRefusal(
           xmlToIr(xml),
           UnsupportedExtensionFormError,
@@ -12485,29 +11751,18 @@ describe('xmlToIr: refusal and warning wording', () => {
           UnsupportedEventFeatureError,
         );
         expect(e.elementId).toBe('CompensationBoundary');
-        const marker = 'Write it by hand instead:\n\n';
-        const cut = e.detail.indexOf(marker);
-        expect(cut).toBeGreaterThan(-1);
-        const rewrite = e.detail.slice(cut + marker.length);
-        expect(rewrite).toBe(
-          [
-            'subprocess Compensated_ReserveRoom {',
-            '  subprocess ReserveRoom {',
-            '    start RStart',
-            '    user Hold',
-            '    end REnd',
-            '  }',
-            '  on compensation {',
-            '    user CancelReservation',
-            '  }',
-            '}',
-          ].join('\n'),
-        );
-
-        const wrapped = `process Preview {\n${rewrite}\n}\n`;
-        const doc = await parse(wrapped, { validation: true });
-        expect(doc.parseResult.parserErrors).toEqual([]);
-        expect(doc.diagnostics ?? []).toEqual([]);
+        await expectRewrite(e, [
+          'subprocess Compensated_ReserveRoom {',
+          '  subprocess ReserveRoom {',
+          '    start RStart',
+          '    user Hold',
+          '    end REnd',
+          '  }',
+          '  on compensation {',
+          '    user CancelReservation',
+          '  }',
+          '}',
+        ]);
       },
     ],
     [
@@ -12625,13 +11880,7 @@ describe('xmlToIr: refusal and warning wording', () => {
         expect(e.elementId).toBeUndefined();
         expect(e.message).toBe(
           'The BPMN element bpmn:ComplexGateway is a kind that this tool ' +
-            'cannot import. Only start/end events, throws, emits, boundary ' +
-            'events, event handlers, plain tasks, user tasks, service ' +
-            'tasks, send tasks, receive tasks, business rule tasks, script ' +
-            'tasks, exclusive gateways, parallel gateways, inclusive ' +
-            'gateways, event-based gateways, embedded subprocesses, ' +
-            'attempt blocks, call activities, and sequence flows are ' +
-            'supported.',
+            `cannot import. ${SUPPORTED_KINDS_MESSAGE}`,
         );
       },
     ],

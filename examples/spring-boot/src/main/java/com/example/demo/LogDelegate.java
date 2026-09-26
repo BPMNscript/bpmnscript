@@ -7,12 +7,10 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * Generic delegate for any service task that just needs to log and continue.
- *
- * A task that injects a {@code marker} field also gets
- * {@code <activityId>:execute:<marker>} appended to the {@link MarkerLog}, so
- * what the engine set on the delegate is readable from outside the JVM. A task
- * that injects none writes no variable at all.
+ * The generic delegate: logs and continues. The engine injects {@code marker}
+ * from the task's {@code field}; when set, its value goes into the
+ * {@link MarkerLog} so what the engine set on the delegate is readable from
+ * outside the JVM.
  */
 public class LogDelegate implements JavaDelegate {
 

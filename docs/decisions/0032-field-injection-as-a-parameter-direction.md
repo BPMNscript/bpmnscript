@@ -156,6 +156,8 @@ The validator errors on both shapes the same way, and the importer refuses both 
 
 ## More Information
 
+Amends ADR-0023, whose listener statement gains a brace block holding a field beside its bindings; the absence that decision recorded as deliberate covered a form, a parameter, and a nested listener, and a field is none of the three.
+
 Related decisions: ADR-0006 (the IR's vendor-neutral naming, which a field's name and value pair and a form reference's key and binding pair both follow).
 ADR-0014 (the honest import contract behind every refusal and warning here).
 ADR-0021 (folding a fourth service-task binding into an existing keyword rather than adding one, the same reuse-over-reservation reasoning field injection follows for `IoParameter`).

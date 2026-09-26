@@ -1,7 +1,5 @@
-// The three transform suites each prove one hop; this pair is where the four
-// compose. A documentation string is inert, so nothing about the process looks
-// different when one stops travelling: only a value read back at every hop
-// catches that.
+// A documentation string is inert, so a process whose text stopped travelling
+// looks unchanged; only reading the value back at every hop catches that.
 
 import { describe, it, expect } from 'vitest';
 

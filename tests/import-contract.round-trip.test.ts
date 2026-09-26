@@ -7,6 +7,12 @@ import { describe, it, expect, beforeAll } from 'vitest';
 
 import {
   astToIr,
+  COMPENSATION_BOUNDARY_DETAIL,
+  CONNECTOR_CONSTRUCT,
+  dataConstructDropMessage,
+  IS_FOR_COMPENSATION_DETAIL,
+  loopDroppedMessage,
+  manualTaskMessage,
   xmlToIr,
   UnsupportedConditionExpressionError,
   UnsupportedElementError,
@@ -16,23 +22,9 @@ import {
 } from '@bpmn-script/transform';
 import type { BpmnProcess, ImportWarning } from '@bpmn-script/transform';
 
+import { bpmnDoc } from './helpers/bpmn-doc.js';
 import { normalizeIr } from './helpers/normalize-ir.js';
-import { parse, parseToAst, printDsl, validate } from './helpers/pipeline.js';
-
-const NAMESPACES =
-  'xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" ' +
-  'xmlns:operaton="http://operaton.org/schema/1.0/bpmn"';
-
-/** One `<bpmn:definitions>` document: `roots` sit before the process, `body` inside it. */
-function bpmnDoc(body: string, roots = ''): string {
-  return (
-    '<?xml version="1.0" encoding="UTF-8"?>\n' +
-    `<bpmn:definitions ${NAMESPACES} targetNamespace="http://test">\n` +
-    roots +
-    `  <bpmn:process id="p" isExecutable="true">\n${body}\n  </bpmn:process>\n` +
-    '</bpmn:definitions>'
-  );
-}
+import { parseToAst, printDsl, validate } from './helpers/pipeline.js';
 
 // `GlobalScriptTask.script` is declared `isAttr: true` in the moddle schema,
 // but the BPMN XSD makes `<bpmn:script>` an element, so this root exercises
@@ -43,10 +35,6 @@ const GLOBAL_SCRIPT_TASK_ROOT =
   '    <bpmn:script>x</bpmn:script>\n' +
   '  </bpmn:globalScriptTask>\n';
 
-// A manual task, a de-looped step, all three data-plumbing kinds, and a
-// scripted-looking condition (a lone operaton:resource, no language) that
-// warns rather than refuses, all in one process alongside the compensation-free
-// happy path so the interaction, not just each construct alone, is exercised.
 const FIXTURE = bpmnDoc(
   '    <bpmn:startEvent id="S" />\n' +
     '    <bpmn:exclusiveGateway id="Decide" default="Flow_Decide_Review" />\n' +
@@ -60,9 +48,8 @@ const FIXTURE = bpmnDoc(
     '    <bpmn:dataStoreReference id="ArchiveStore" />\n' +
     '    <bpmn:sequenceFlow id="Flow_S_Decide" sourceRef="S" targetRef="Decide" />\n' +
     '    <bpmn:sequenceFlow id="Flow_Decide_SignOff" sourceRef="Decide" targetRef="SignOff">\n' +
-    // A literal comparison, not a process-variable read: the fixture is about
-    // the dropped operaton:resource, not about declaring a variable, and a
-    // free variable here would draw an unrelated "not declared" diagnostic.
+    // A literal comparison: a free variable would draw an unrelated "not
+    // declared" diagnostic.
     '      <bpmn:conditionExpression operaton:resource="deployment://check.groovy">${1 &lt; 2}</bpmn:conditionExpression>\n' +
     '    </bpmn:sequenceFlow>\n' +
     '    <bpmn:sequenceFlow id="Flow_Decide_Review" sourceRef="Decide" targetRef="Review" />\n' +
@@ -76,27 +63,18 @@ const IMPORTED_FLOW_NOTE =
   'steps, and nothing declared or drawn beside it).';
 
 const dataDropped = (tag: string, id: string) =>
-  `A bpmn:${tag} '${id}' was not imported: Operaton keeps process ` +
-  'variables in its own store and never dispatches on it, so the ' +
-  'imported process runs identically.';
+  dataConstructDropMessage(`bpmn:${tag} '${id}'`);
 
 const EXPECTED_WARNINGS: ImportWarning[] = [
   {
     elementId: 'SignOff',
     category: 'unmappedConstruct',
-    message:
-      "The bpmn:manualTask 'SignOff' imports as a plain step: token flow, " +
-      'waiting, listeners, async and job configuration are all unchanged, ' +
-      "but history and Cockpit will report its activity type as 'task' " +
-      "rather than 'manualTask'.",
+    message: manualTaskMessage('SignOff'),
   },
   {
     elementId: 'Review',
     category: 'unmappedConstruct',
-    message:
-      "The bpmn:standardLoopCharacteristics on 'Review' was not imported: " +
-      'Operaton does not run one at all, it deploys the step and runs it ' +
-      'once, so the imported step runs once too.',
+    message: loopDroppedMessage('bpmn:standardLoopCharacteristics', 'Review'),
   },
   {
     elementId: 'OrderDetails',
@@ -129,7 +107,7 @@ const EXPECTED_WARNINGS: ImportWarning[] = [
   },
 ];
 
-describe('a document holding every construct this phase converted', () => {
+describe('a document holding every construct the import converts', () => {
   const state = {} as {
     ir: BpmnProcess;
     warnings: ImportWarning[];
@@ -147,10 +125,7 @@ describe('a document holding every construct this phase converted', () => {
     expect(state.warnings).toEqual(EXPECTED_WARNINGS);
   });
 
-  it('the script printed from that import re-parses with no parser errors and validates clean', async () => {
-    const document = await parse(state.dsl);
-    expect(document.parseResult.parserErrors).toEqual([]);
-
+  it('the script printed from that import validates clean', async () => {
     const { diagnostics } = await validate(state.dsl);
     expect(diagnostics).toEqual([]);
   });
@@ -161,12 +136,8 @@ describe('a document holding every construct this phase converted', () => {
   });
 });
 
-/**
- * Runs `xmlToIr(xml)` and asserts it refuses as `errorClass`, returning the
- * error. Typed to the `Error` base, not the refusal subclass: the table below
- * mixes every refusal class in one column, and narrowing per row is left to
- * the one caller (the paired-triple test) that reads a subclass-only field.
- */
+// Typed to the `Error` base since the table mixes every refusal class in one
+// column; the one caller reading a subclass field narrows itself.
 async function refusalError(
   xml: string,
   errorClass: abstract new (...args: never[]) => Error,
@@ -180,27 +151,9 @@ async function refusalError(
   throw new Error('expected xmlToIr to refuse the document');
 }
 
-const CONNECTOR_CONSTRUCT =
-  'an <operaton:connector> element, which the Connect plugin runs in ' +
-  'place of whatever operaton:class, expression, delegateExpression, or ' +
-  'type names beside it, and which an engine without the plugin runs ' +
-  'instead of, so the same file has two possible executions';
-
 const CONNECTOR_CHILD =
   '<operaton:connector><operaton:connectorId>http-connector' +
   '</operaton:connectorId></operaton:connector>';
-
-const IS_FOR_COMPENSATION_DETAIL =
-  'isForCompensation="true" marks this activity as excluded from normal ' +
-  'flow: the boundary-event compensation-handler pattern, which this ' +
-  'tool cannot import; wrap the steps in their own subprocess and ' +
-  'target it with "on compensation" instead';
-
-const COMPENSATION_BOUNDARY_DETAIL =
-  'a compensation boundary event is not imported: BPMN attaches ' +
-  'compensation through isForCompensation and a bpmn:association on ' +
-  'the activity being compensated, not a boundary event; wrap the ' +
-  'steps in their own subprocess and target it with "on compensation" instead';
 
 const PAIRED_TRIPLE_XML = bpmnDoc(
   '    <bpmn:startEvent id="S" />\n' +
@@ -224,7 +177,7 @@ const REWRITE_PREVIEW = [
   '}',
 ].join('\n');
 
-describe('every construct this phase refuses names itself in its own message', () => {
+describe('every construct the import refuses names itself in its own message', () => {
   it.each([
     [
       'a scripted condition expression names the language it would run in',
@@ -409,9 +362,6 @@ describe('every construct this phase refuses names itself in its own message', (
     expect(rewrite).toBe(REWRITE_PREVIEW);
 
     const wrapped = `process Preview {\n${rewrite}\n}\n`;
-    const document = await parse(wrapped);
-    expect(document.parseResult.parserErrors).toEqual([]);
-
     const { diagnostics } = await validate(wrapped);
     expect(diagnostics).toEqual([]);
   });

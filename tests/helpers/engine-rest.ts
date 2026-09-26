@@ -25,32 +25,48 @@ export async function engineGet<T>(
   return (await response.json()) as T;
 }
 
+async function engineSend(
+  fixture: FixtureAdapter,
+  resource: string,
+  body: unknown,
+  context: string,
+  method: 'POST' | 'PUT' = 'POST',
+): Promise<Response> {
+  const response = await fetch(fixture.restBaseUrl() + resource, {
+    method,
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  await assertOk(response, context);
+  return response;
+}
+
 export async function correlateMessage(
   fixture: FixtureAdapter,
   messageName: string,
   processInstanceId: string,
 ): Promise<void> {
-  const response = await fetch(fixture.restBaseUrl() + '/engine-rest/message', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ messageName, processInstanceId }),
-  });
-  await assertOk(response, `correlateMessage(${messageName})`);
+  await engineSend(
+    fixture,
+    '/engine-rest/message',
+    { messageName, processInstanceId },
+    `correlateMessage(${messageName})`,
+  );
 }
 
-// A message with no instance to aim at starts one: the engine matches it
-// against the message start events of every deployed definition.
-// `resultEnabled` is what makes the response name the instance it created.
+// With no instance named, the engine matches the message against every
+// deployed message start event; `resultEnabled` makes the response name the
+// instance it created.
 export async function startByMessage(
   fixture: FixtureAdapter,
   messageName: string,
 ): Promise<string> {
-  const response = await fetch(fixture.restBaseUrl() + '/engine-rest/message', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ messageName, resultEnabled: true }),
-  });
-  await assertOk(response, `startByMessage(${messageName})`);
+  const response = await engineSend(
+    fixture,
+    '/engine-rest/message',
+    { messageName, resultEnabled: true },
+    `startByMessage(${messageName})`,
+  );
   const results = (await response.json()) as Array<{
     processInstance: { id: string };
   }>;
@@ -67,12 +83,12 @@ export async function broadcastSignal(
   fixture: FixtureAdapter,
   name: string,
 ): Promise<void> {
-  const response = await fetch(fixture.restBaseUrl() + '/engine-rest/signal', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name }),
-  });
-  await assertOk(response, `broadcastSignal(${name})`);
+  await engineSend(
+    fixture,
+    '/engine-rest/signal',
+    { name },
+    `broadcastSignal(${name})`,
+  );
 }
 
 export interface EngineJob {
@@ -94,7 +110,6 @@ export async function jobsOf(
   );
 }
 
-// The jobs an instance is parked on, async continuations included.
 export async function jobsOfInstance(
   fixture: FixtureAdapter,
   processInstanceId: string,
@@ -112,10 +127,10 @@ export interface JobDefinition {
   jobConfiguration: string;
 }
 
-// The engine creates one job definition per activity that needs a job at
-// all, so an activity without an async continuation has none. A repeated
-// activity is two activities to the engine, the body under
-// `<id>#multiInstanceBody` and the run under `<id>`, each with its own.
+// The engine creates one job definition per activity that needs a job, so an
+// activity without an async continuation has none; a repeated activity is two
+// activities to the engine, `<id>#multiInstanceBody` and `<id>`, each with its
+// own.
 export async function jobDefinitionsFor(
   fixture: FixtureAdapter,
   processDefinitionKey: string,
@@ -129,24 +144,19 @@ export async function jobDefinitionsFor(
 }
 
 // A suspended job definition stamps its state onto jobs created later too,
-// which is what holds the async continuation still long enough to observe
+// which is what holds an async continuation still long enough to observe
 // instead of racing the job executor for it.
 export async function setJobDefinitionSuspended(
   fixture: FixtureAdapter,
   jobDefinitionId: string,
   suspended: boolean,
 ): Promise<void> {
-  const response = await fetch(
-    `${fixture.restBaseUrl()}/engine-rest/job-definition/${encodeURIComponent(jobDefinitionId)}/suspended`,
-    {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ suspended, includeJobs: true }),
-    },
-  );
-  await assertOk(
-    response,
+  await engineSend(
+    fixture,
+    `/engine-rest/job-definition/${encodeURIComponent(jobDefinitionId)}/suspended`,
+    { suspended, includeJobs: true },
     `setJobDefinitionSuspended(${jobDefinitionId}, ${suspended})`,
+    'PUT',
   );
 }
 
@@ -205,7 +215,6 @@ export interface HistoricActivityInstance {
   canceled: boolean;
 }
 
-// Running and finished alike.
 export async function historicActivities(
   fixture: FixtureAdapter,
   processInstanceId: string,
@@ -224,9 +233,8 @@ export interface EventSubscription {
   processInstanceId: string;
 }
 
-// The engine's record of which trigger an instance is parked on. A message
-// intermediate catch holds an active `message` subscription while the token
-// sits at it, and the subscription goes once the message is consumed.
+// Which trigger an instance is parked on: a message catch holds a `message`
+// subscription while the token sits at it, gone once the message is consumed.
 export async function eventSubscriptions(
   fixture: FixtureAdapter,
   processInstanceId: string,
@@ -238,9 +246,9 @@ export async function eventSubscriptions(
   );
 }
 
-// Asks the single-instance resource, not the collection query: the runtime
-// collection has no processInstanceId filter, so a query built on that name
-// answers for every other instance the shared engine holds. A 404 means the
+// The single-instance resource, not the collection query: the runtime
+// collection has no `processInstanceId` filter, so a query built on that name
+// answers for every instance the shared engine holds. A 404 means the
 // instance left the runtime, which for a process nothing cancels means it
 // ran to its end.
 export async function isRunning(
@@ -257,10 +265,10 @@ export async function isRunning(
   return true;
 }
 
-// Operaton's REST API is eventually consistent: after a correlated message, a
-// completed task, or a fired event, the successor state can stay invisible to a
-// query for a moment. Poll, then assert on the last value read, so a real
-// mismatch still fails, just later.
+// Operaton's REST API is eventually consistent, so the state after a correlated
+// message, a completed task, or a fired event can stay invisible to a query for
+// a moment. Polls, then hands back the last value read, so a real mismatch
+// still fails the caller's assertion, just later.
 export async function waitFor<T>(
   probe: () => Promise<T>,
   predicate: (value: T) => boolean,
@@ -275,8 +283,8 @@ export async function waitFor<T>(
   return value;
 }
 
-// Polls until the instance has left the runtime. The caller asserts on the
-// answer, so an instance that never finishes fails rather than hangs.
+// Returns rather than throws on timeout, so an instance that never finishes
+// fails the caller's assertion instead of hanging.
 export async function waitUntilFinished(
   fixture: FixtureAdapter,
   processInstanceId: string,
@@ -309,8 +317,6 @@ export function activeTaskKeys(
   return tasks.map((task) => task.taskDefinitionKey).sort();
 }
 
-// The sorted definition keys of whatever is active once the predicate holds,
-// for asserting which tasks a branch opened rather than acting on one of them.
 export async function waitForTaskKeys(
   fixture: FixtureAdapter,
   processInstanceId: string,
@@ -322,8 +328,8 @@ export async function waitForTaskKeys(
   return activeTaskKeys(tasks);
 }
 
-// The runtime id of an active task, which completing one needs: the definition
-// key names the modeled activity, the id names this instance's token.
+// Completing a task needs its runtime id: the definition key names the modeled
+// activity, the id names this instance's token.
 export async function waitForTaskId(
   fixture: FixtureAdapter,
   processInstanceId: string,
@@ -341,7 +347,6 @@ export async function waitForTaskId(
   return match.id;
 }
 
-// Every activity the instance has visited, once the named one is among them.
 export async function activityIdsIncluding(
   fixture: FixtureAdapter,
   processInstanceId: string,
@@ -362,15 +367,12 @@ export async function startWithBusinessKey(
   processDefinitionKey: string,
   businessKey: string,
 ): Promise<string> {
-  const response = await fetch(
-    `${fixture.restBaseUrl()}/engine-rest/process-definition/key/${encodeURIComponent(processDefinitionKey)}/start`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ businessKey }),
-    },
+  const response = await engineSend(
+    fixture,
+    `/engine-rest/process-definition/key/${encodeURIComponent(processDefinitionKey)}/start`,
+    { businessKey },
+    `startWithBusinessKey(${processDefinitionKey})`,
   );
-  await assertOk(response, `startWithBusinessKey(${processDefinitionKey})`);
   return ((await response.json()) as { id: string }).id;
 }
 
@@ -385,9 +387,8 @@ export interface LockedExternalTask {
   extensionProperties: Record<string, string>;
 }
 
-// Locks the topic's task of the instance carrying the business key, as a
-// worker would. `includeExtensionProperties` is what puts the task's
-// `operaton:property` map on the answer; `priority` comes regardless.
+// `includeExtensionProperties` is what puts the task's `operaton:property` map
+// on the answer; `priority` comes regardless.
 export async function fetchAndLock(
   fixture: FixtureAdapter,
   topicName: string,
@@ -395,26 +396,23 @@ export async function fetchAndLock(
 ): Promise<LockedExternalTask> {
   const locked = await waitFor(
     async () => {
-      const response = await fetch(
-        `${fixture.restBaseUrl()}/engine-rest/external-task/fetchAndLock`,
+      const response = await engineSend(
+        fixture,
+        '/engine-rest/external-task/fetchAndLock',
         {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            workerId: WORKER_ID,
-            maxTasks: 1,
-            topics: [
-              {
-                topicName,
-                businessKey,
-                lockDuration: 60_000,
-                includeExtensionProperties: true,
-              },
-            ],
-          }),
+          workerId: WORKER_ID,
+          maxTasks: 1,
+          topics: [
+            {
+              topicName,
+              businessKey,
+              lockDuration: 60_000,
+              includeExtensionProperties: true,
+            },
+          ],
         },
+        `fetchAndLock(${topicName})`,
       );
-      await assertOk(response, `fetchAndLock(${topicName})`);
       return (await response.json()) as LockedExternalTask[];
     },
     (tasks) => tasks.length > 0,
@@ -431,15 +429,12 @@ export async function completeExternalTask(
   fixture: FixtureAdapter,
   taskId: string,
 ): Promise<void> {
-  const response = await fetch(
-    `${fixture.restBaseUrl()}/engine-rest/external-task/${encodeURIComponent(taskId)}/complete`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ workerId: WORKER_ID }),
-    },
+  await engineSend(
+    fixture,
+    `/engine-rest/external-task/${encodeURIComponent(taskId)}/complete`,
+    { workerId: WORKER_ID },
+    `completeExternalTask(${taskId})`,
   );
-  await assertOk(response, `completeExternalTask(${taskId})`);
 }
 
 export interface ExternalTaskFailure {
@@ -448,23 +443,20 @@ export interface ExternalTaskFailure {
   retries: number;
 }
 
-// Reports the failure the way a worker does. `ExternalTaskEntity.failed` runs
-// the task's error mappings against the message before it touches the
-// retries, so a matching message never leaves a task behind.
+// `ExternalTaskEntity.failed` runs the task's error mappings against the
+// message before it touches the retries, so a matching message never leaves a
+// task behind.
 export async function failExternalTask(
   fixture: FixtureAdapter,
   taskId: string,
   failure: ExternalTaskFailure,
 ): Promise<void> {
-  const response = await fetch(
-    `${fixture.restBaseUrl()}/engine-rest/external-task/${encodeURIComponent(taskId)}/failure`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ workerId: WORKER_ID, ...failure }),
-    },
+  await engineSend(
+    fixture,
+    `/engine-rest/external-task/${encodeURIComponent(taskId)}/failure`,
+    { workerId: WORKER_ID, ...failure },
+    `failExternalTask(${taskId})`,
   );
-  await assertOk(response, `failExternalTask(${taskId})`);
 }
 
 export interface ExternalTask {
@@ -474,7 +466,6 @@ export interface ExternalTask {
   retries: number | null;
 }
 
-// Every external task the instance holds, locked or not.
 export async function externalTasksOf(
   fixture: FixtureAdapter,
   processInstanceId: string,
@@ -514,8 +505,7 @@ export interface IdentityLink {
   groupId: string | null;
 }
 
-// The assignee and candidate links the engine created for the task, which is
-// what `operaton:assignee`, `operaton:candidateUsers` and
+// What `operaton:assignee`, `operaton:candidateUsers` and
 // `operaton:candidateGroups` resolve to at runtime.
 export async function identityLinksOf(
   fixture: FixtureAdapter,

@@ -1,8 +1,6 @@
-// The approve-review loop, frozen: a `do ... while` whose body splits under a
-// condition on every route, one route leaving the loop. What this suite catches
-// is the printer hoisting the staying route out of the loop, which the IR
-// comparison sees as a lost edge into the loop gateway, and the compiled split
-// losing the fallback the else-less chain gives it.
+// A `do ... while` whose body splits on every route, one route leaving the
+// loop. The pin below catches the printer hoisting the staying route out of
+// the loop, which the IR comparison would only report as a lost edge.
 
 import { describe, it, expect } from 'vitest';
 

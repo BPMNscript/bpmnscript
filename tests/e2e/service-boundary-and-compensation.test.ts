@@ -1,7 +1,7 @@
 // Only a real engine decides whether an interrupting error boundary on a
 // service task catches the `BpmnError` its delegate throws, cancels the host,
-// and moves the token onto the escape path. Each path is steered by a boolean
-// process variable the shared conditional delegate reads, never by a clock or a
+// and moves the token onto the escape path; each path is steered by a boolean
+// variable the shared conditional delegate reads, never by a clock or a
 // correlated message.
 //
 // The compensation half covers the other route into the undo machinery: an
@@ -34,7 +34,6 @@ describe.skipIf(SKIP)(
   () => {
     let fixture: FixtureAdapter;
 
-    // Both examples are deployed into one container boot.
     beforeAll(async () => {
       fixture = await deployExamples(
         CHARGE_PROCESS_KEY,

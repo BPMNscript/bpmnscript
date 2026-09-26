@@ -99,6 +99,7 @@ Beside it, one row pins the marker line and the weighed jumps of an inclusive fo
 The step's routing is `followLinear` in `packages/transform/src/ir-to-dsl.ts`; the fork block is `emitFork`, the jumps `emitJumps`, the empty-split report `emptySplitWarning`, the branch bookkeeping `emitBranch` and the check at the end of `Emitter.emit`, and the guard-clause entry `branchStaysInRegion`.
 
 Amends ADR-0009, whose catalog entry for a statement with more than one route out becomes the fork block, and whose degraded split keeps its conditions on the jumps under a marker line.
+Amends ADR-0014, whose step-`default` bullet this rule closes by printing the step's routes as the fork block with the `default` as its `else`, and whose print-hop reports gain a degraded split's marker line, an empty gateway, a self-loop, and a jump across a branch border.
 
 Related decisions: ADR-0009 (the catalog this rule extends).
 ADR-0014 (the import contract, whose `default`-on-a-step clause this rule closes).

@@ -1,14 +1,11 @@
 /**
- * Semantic-token highlighting for the soft words. They lex as plain `ID` so that
- * `var message: string` still parses, and the generated TextMate grammar, a
- * regex over token text, cannot tell `on error` from `var error: string` or a
- * setting `priority` from the variable in `if (priority > 5)`. Semantic
- * tokens are computed from the parsed AST, so a soft word highlights exactly
- * where the grammar gave it that meaning, and VS Code's default themes render a
- * semantic `keyword` like a lexical one.
- *
- * `OnHandler.host` is excluded: it is a cross-reference to the activity the
- * handler attaches to, not a trigger word.
+ * The soft words lex as plain `ID`, so the TextMate grammar, a regex over
+ * token text, cannot tell `on error` from `var error: string`. A semantic
+ * token comes off the parsed AST, so a soft word highlights exactly where the
+ * grammar gave it that meaning, and VS Code's default themes render a
+ * semantic `keyword` like a lexical one. `OnHandler.host` is a cross-reference
+ * to the activity the handler attaches to, not a trigger word, so it is left
+ * out.
  */
 
 import type { AstNode } from 'langium';

@@ -1,13 +1,4 @@
-/**
- * Hover content, driven through the real `HoverProvider` with
- * `expectHover` from `langium/test`.
- *
- * Langium's default hover resolves the caret to a declaration through
- * `References.findDeclarations` before `getAstNodeHoverContent` ever runs, so
- * a `goto` target, a handler's host, and a thrown or caught code exercise the
- * same content function as the name they resolve to, with no row for the
- * position itself.
- */
+/** Hover through the real `HoverProvider`, with `expectHover` from `langium/test`. */
 
 import { describe, test, beforeAll } from 'vitest';
 import { EmptyFileSystem } from 'langium';
@@ -20,7 +11,7 @@ beforeAll(() => {
   hover = expectHover(createBpmnScriptServices(EmptyFileSystem).BpmnScript);
 });
 
-/** A row of the table: a title, a program with one `<|>` caret, and the expected hover text (`undefined` for none). */
+/** A program with one `<|>` caret and the hover text there, `undefined` for none. */
 type Row = readonly [title: string, text: string, expected: string | undefined];
 
 const ROWS: Row[] = [

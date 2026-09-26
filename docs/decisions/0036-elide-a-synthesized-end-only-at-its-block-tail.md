@@ -136,6 +136,7 @@ Extend `branchStaysInRegion` so a branch entry that terminates before the join, 
 ## More Information
 
 Amends ADR-0014, whose warned-construct list said the statement carrying a synthesized start's or end's label is left out whole; that holds for a start, and for an end only at its block's tail.
+Amends ADR-0009, whose guard clause now admits a bare authored terminal as its branch entry when the split's route is its only incoming flow, so the terminal prints inline where it printed as a `goto`; the dropped-jump marker stays as it was.
 
 Related decisions: ADR-0009 (the dropped-jump rule this decision leaves in place).
 ADR-0010 (the reserved-name error that names the fix, and the consequence bullet this decision makes precise).

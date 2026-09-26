@@ -5,7 +5,6 @@ import org.operaton.bpm.engine.delegate.JavaDelegate;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-/** External credit bureau S2: rates by loan size. */
 public class ExternalRatingS2Delegate implements JavaDelegate {
 
     private static final Logger LOG = LoggerFactory.getLogger(ExternalRatingS2Delegate.class);

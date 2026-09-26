@@ -12,6 +12,7 @@ import {
   engineGet,
   eventSubscriptions,
   historicActivities,
+  jobsOfInstance,
   waitFor,
   waitForTaskId,
   waitForTaskKeys,
@@ -28,19 +29,6 @@ const MESSAGE_CATCH = 'Catch_order-dispatch_2_b0';
 const FORK_GATEWAY = 'Gateway_order-dispatch_1_fork';
 const JOIN_GATEWAY = 'Gateway_order-dispatch_1_join';
 
-// One engine serves every instance this file starts, so a job query keyed on
-// the definition would count the timers of the other tests too.
-async function jobsOfInstance(
-  fixture: FixtureAdapter,
-  processInstanceId: string,
-): Promise<Array<{ id: string }>> {
-  return engineGet<Array<{ id: string }>>(
-    fixture,
-    `/engine-rest/job?processInstanceId=${encodeURIComponent(processInstanceId)}`,
-    `jobsOfInstance(${processInstanceId})`,
-  );
-}
-
 describe.skipIf(SKIP)(
   'E2E: an inclusive fork and a race on Spring Boot Operaton',
   () => {
@@ -54,8 +42,6 @@ describe.skipIf(SKIP)(
       await fixture?.stop();
     }, ENGINE_STOP_TIMEOUT_MS);
 
-    // Starts an instance and walks it past the fork, so the race assertions
-    // begin from a token sitting at the event-based gateway.
     async function reachRace(): Promise<string> {
       const { processInstanceId } = await fixture.startProcess(PROCESS_KEY, {
         amount: 100,

@@ -51,10 +51,9 @@ export function analyzeCfg(container: FlowContainer): CfgAnalysis {
   const dominates = makeDominanceQuery(idom, VIRTUAL_ENTRY);
   const postDominates = makeDominanceQuery(ipdom, VIRTUAL_EXIT);
 
-  // A back-edge is u -> v where v dominates u. Filtering the raw flow list
-  // keeps every parallel edge and excludes the sentinel edges. Computed once:
-  // `tryWhile` and `tryDoWhileEntry` each ask for it per emitted node, and a
-  // straight chain of n tasks would otherwise refilter all n flows n times.
+  // A back-edge is u -> v where v dominates u; filtering the raw flow list
+  // keeps every parallel edge and excludes the sentinel edges. Computed once,
+  // since `tryWhile` and `tryDoWhileEntry` ask for it per emitted node.
   const backEdgeList = container.sequenceFlows.filter((f) =>
     dominates(f.targetRef, f.sourceRef),
   );
@@ -115,13 +114,11 @@ function buildGraph(container: FlowContainer): Graph {
     addEdge(f.sourceRef, f.targetRef);
   }
 
-  // A boundary event and a link catch are each an independent entry beside
-  // the start: a boundary's token appears when its trigger fires, a link
-  // catch's when the engine reroutes a flow into a throw of its name, never
-  // along a flow drawn to either. All three are wired unconditionally rather
-  // than folded into the no-start fallback. Any other node without a
-  // predecessor stays unwired: it really is unreachable. A link throw needs
-  // no wiring of its own: it has no successor and drains to VIRTUAL_EXIT.
+  // A boundary event and a link catch are each an entry beside the start: a
+  // boundary's token appears when its trigger fires, a link catch's when the
+  // engine reroutes a throw of its name, never along a drawn flow. Any other
+  // node without a predecessor stays unwired: it really is unreachable. A
+  // link throw has no successor and drains to VIRTUAL_EXIT below.
   const hasAnyStart = container.flowElements.some(
     (e) => e.kind === 'startEvent',
   );
@@ -251,16 +248,11 @@ function reversePostorder(root: string, succ: Map<string, string[]>): string[] {
 
 /**
  * `a` dominates `b` when `a` sits on `b`'s idom chain. Reflexive and total.
- *
- * `idom` is a tree rooted at `root`: every reachable node has exactly one
- * parent, so numbering it by one DFS gives each node a pre-order entry time
- * and, as its exit time, the last entry time handed out anywhere in its
- * subtree. `a` is then an ancestor of `b` (or `b` itself) exactly when `b`'s
- * entry time falls inside `a`'s [entry, exit] interval, a classic Euler-tour
- * containment test that answers in two map lookups.
- * A node absent from `idom` (unknown or unreachable) gets no interval and the
- * query answers false for it on either side, which is what "dominated by
- * nothing and dominates nothing" requires.
+ * `idom` is a tree rooted at `root`, so one DFS numbers each node with a
+ * pre-order entry time and, as its exit time, the last entry time handed out
+ * in its subtree; `a` is an ancestor of `b` (or `b` itself) exactly when
+ * `b`'s entry falls inside `a`'s [entry, exit]. A node absent from `idom`
+ * (unknown or unreachable) gets no interval and answers false on either side.
  */
 function makeDominanceQuery(
   idom: Map<string, string | undefined>,

@@ -4,6 +4,7 @@
 
 import { describe, it, expect } from 'vitest';
 
+import { ENGINE_KEYS, type EngineKey } from '@bpmn-script/language';
 import { isGateway } from '@bpmn-script/transform';
 import type { EngineAttributes, FlowElement } from '@bpmn-script/transform';
 
@@ -17,10 +18,8 @@ const rt = roundTripFixture('engine-attributes', {
   recompile: 'clean',
 });
 
-// Asserted as a whole rather than key by key, so a value that stops travelling
-// and a value that appears out of nowhere both fail. `historyTimeToLive` is
-// authored as something other than the exporter's own default on purpose: at
-// `P30D` the importer reads it as unwritten and the hop would prove nothing.
+// `historyTimeToLive` is deliberately not the exporter's default: at `P30D`
+// the importer reads it as unwritten and the hop proves nothing.
 const PROCESS_HEADER = {
   versionTag: '3.1.0',
   historyTimeToLive: 'P90D',
@@ -57,9 +56,8 @@ const ENGINE_ATTRIBUTE_CONTRACT: readonly (readonly [
   ['OrderRepair', 'retryCycle', 'R5/PT10M'],
   ['PayoutReviewNeeded', 'asyncAfter', true],
   ['PayoutReviewNeeded', 'jobPriority', '40'],
-  // The key and the binding are one value in the IR, so the whole reference is
-  // one row: a version that stopped travelling fails it as loudly as a key that
-  // did.
+  // The key and the binding are one IR value, so one row: a version that
+  // stopped travelling fails as loudly as a key.
   [
     'ApprovePayout',
     'formRef',
@@ -68,18 +66,15 @@ const ENGINE_ATTRIBUTE_CONTRACT: readonly (readonly [
   ['ClaimSettled', 'asyncBefore', true],
 ];
 
-// Spelled out rather than derived, because the sweep below reads it off a
-// gateway, which declares the five job settings and never the listeners. The
-// `satisfies` clause is what keeps the copy honest: a field added to the
-// interface and not here stops compiling.
-const ENGINE_ATTRIBUTE_KEYS = Object.keys({
-  asyncBefore: 0,
-  asyncAfter: 0,
-  exclusive: 0,
-  jobPriority: 0,
-  retryCycle: 0,
-  executionListeners: 0,
-} satisfies Record<keyof EngineAttributes, number>);
+// The `satisfies` clause keeps the list complete: a field added to
+// `EngineAttributes` beyond the job settings and not here stops compiling.
+const ENGINE_ATTRIBUTE_KEYS = [
+  ...ENGINE_KEYS,
+  ...Object.keys({ executionListeners: 0 } satisfies Record<
+    Exclude<keyof EngineAttributes, EngineKey>,
+    number
+  >),
+];
 
 // Indexed rather than a field access: the IR types keep these fields off the
 // kinds that cannot carry them, and the gateway block below reads exactly those.
@@ -139,8 +134,7 @@ describe('the frozen engine-attribute contract', () => {
 });
 
 // The `gateway-settings` pair pins what a gateway written with settings
-// carries; this artifact writes none, so what it pins is that no direction
-// invents one, on either kind, at any depth.
+// carries; this artifact writes none, so it pins that no direction invents one.
 describe('a gateway written without settings gains none at any hop', () => {
   it('neither gateway kind holds one, at any container depth or hop', () => {
     for (const [label, ir] of rt.hops) {

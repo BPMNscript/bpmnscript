@@ -1,19 +1,16 @@
-// language-configuration.json is JSONC (line comments), which JSON.parse
-// rejects. Stripping whole comment lines, not a trailing `//`, keeps the
-// "lineComment": "//" string value intact.
-
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { EmptyFileSystem, GrammarAST, GrammarUtils } from 'langium';
-import { createBpmnScriptServices } from '@bpmn-script/language';
+import { ID_TERMINAL } from '@bpmn-script/language';
 
 const EXTENSION_DIR = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   '..',
 );
 
+// JSONC: whole comment lines are stripped, not a trailing `//`, which would
+// eat the "lineComment": "//" value.
 function readWordPattern(): unknown {
   const raw = readFileSync(
     path.join(EXTENSION_DIR, 'language-configuration.json'),
@@ -24,14 +21,6 @@ function readWordPattern(): unknown {
 
 describe('language configuration', () => {
   it("the editor's word pattern is the grammar's ID terminal", () => {
-    const { Grammar } = createBpmnScriptServices(EmptyFileSystem).BpmnScript;
-    const idRule = Grammar.rules.find(
-      (rule) => GrammarAST.isTerminalRule(rule) && rule.name === 'ID',
-    ) as GrammarAST.TerminalRule | undefined;
-    if (!idRule) {
-      throw new Error("grammar has no 'ID' terminal rule");
-    }
-
-    expect(readWordPattern()).toBe(GrammarUtils.terminalRegex(idRule).source);
+    expect(readWordPattern()).toBe(ID_TERMINAL.source);
   });
 });

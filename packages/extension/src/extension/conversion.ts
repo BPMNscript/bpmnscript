@@ -6,8 +6,12 @@ import {
   swapExtension,
 } from './conversion-core.js';
 
-function resolveSourceUri(uri?: vscode.Uri): vscode.Uri | undefined {
-  return uri ?? vscode.window.activeTextEditor?.document.uri;
+type ConvertHandler = (uri?: vscode.Uri) => Promise<vscode.Uri | undefined>;
+
+interface Source {
+  uri: vscode.Uri;
+  name: string;
+  text: string;
 }
 
 // Prefers an open TextDocument so unsaved edits convert, not the stale file.
@@ -20,6 +24,28 @@ async function readText(sourceUri: vscode.Uri): Promise<string> {
   }
   const bytes = await vscode.workspace.fs.readFile(sourceUri);
   return new TextDecoder().decode(bytes);
+}
+
+async function readSource(
+  uri: vscode.Uri | undefined,
+  ext: '.bpmnscript' | '.bpmn',
+  otherCommand: 'Decompile to BPMNscript' | 'Compile to BPMN',
+): Promise<Source | undefined> {
+  const sourceUri = uri ?? vscode.window.activeTextEditor?.document.uri;
+  if (!sourceUri) {
+    await vscode.window.showWarningMessage(
+      `BPMNscript: No file selected. Open a ${ext} file or select one in the Explorer.`,
+    );
+    return undefined;
+  }
+  const name = path.basename(sourceUri.fsPath);
+  if (path.extname(sourceUri.fsPath).toLowerCase() !== ext) {
+    await vscode.window.showWarningMessage(
+      `BPMNscript: "${name}" is not a ${ext} file; use "${otherCommand}" for it.`,
+    );
+    return undefined;
+  }
+  return { uri: sourceUri, name, text: await readText(sourceUri) };
 }
 
 async function confirmOverwrite(outputUri: vscode.Uri): Promise<boolean> {
@@ -37,151 +63,112 @@ async function confirmOverwrite(outputUri: vscode.Uri): Promise<boolean> {
   return answer === 'Overwrite';
 }
 
-export function compileCommand(
-  extensionVersion: string,
-): (uri?: vscode.Uri) => Promise<vscode.Uri | undefined> {
-  return async (uri?: vscode.Uri): Promise<vscode.Uri | undefined> => {
-    const sourceUri = resolveSourceUri(uri);
-    if (!sourceUri) {
-      await vscode.window.showWarningMessage(
-        'BPMNscript: No file selected. Open a .bpmnscript file or select one in the Explorer.',
-      );
+async function writeOutput(
+  source: Source,
+  ext: '.bpmn' | '.bpmnscript',
+  verb: 'Compiled' | 'Decompiled',
+  output: string,
+): Promise<vscode.Uri | undefined> {
+  const outputPath = swapExtension(source.uri.fsPath, ext);
+  const outputUri = vscode.Uri.file(outputPath);
+  if (!(await confirmOverwrite(outputUri))) {
+    return undefined;
+  }
+  await vscode.workspace.fs.writeFile(
+    outputUri,
+    new TextEncoder().encode(output),
+  );
+  await vscode.window.showTextDocument(outputUri);
+  void vscode.window.showInformationMessage(
+    `BPMNscript: ${verb} "${source.name}" -> "${path.basename(outputPath)}"`,
+  );
+  return outputUri;
+}
+
+export function compileCommand(extensionVersion: string): ConvertHandler {
+  return async (uri) => {
+    const source = await readSource(
+      uri,
+      '.bpmnscript',
+      'Decompile to BPMNscript',
+    );
+    if (!source) {
       return undefined;
     }
 
-    const sourceFileName = path.basename(sourceUri.fsPath);
-
-    if (path.extname(sourceUri.fsPath).toLowerCase() !== '.bpmnscript') {
-      await vscode.window.showWarningMessage(
-        `BPMNscript: "${sourceFileName}" is not a .bpmnscript file; ` +
-          'use "Decompile to BPMNscript" for it.',
-      );
-      return undefined;
-    }
-
-    const text = await readText(sourceUri);
-
-    const result = await compileDslToBpmn(text, extensionVersion);
-
-    if (result.ok) {
-      const outputPath = swapExtension(sourceUri.fsPath, '.bpmn');
-      const outputUri = vscode.Uri.file(outputPath);
-
-      if (!(await confirmOverwrite(outputUri))) {
-        return undefined;
-      }
-
-      await vscode.workspace.fs.writeFile(
-        outputUri,
-        new TextEncoder().encode(result.output),
-      );
-
-      await vscode.window.showTextDocument(outputUri);
-
-      void vscode.window.showInformationMessage(
-        `BPMNscript: Compiled "${sourceFileName}" -> "${path.basename(outputPath)}"`,
-      );
-
-      if (result.layoutWarning) {
-        void vscode.window.showWarningMessage(
-          `BPMNscript: "${sourceFileName}" compiled without a diagram: ${result.layoutWarning}`,
+    const result = await compileDslToBpmn(source.text, extensionVersion);
+    if (!result.ok) {
+      if (result.kind === 'validation') {
+        // The language client already publishes these diagnostics; a second
+        // collection would only duplicate them.
+        await vscode.window.showTextDocument(source.uri);
+        await vscode.commands.executeCommand('workbench.action.problems.focus');
+        await vscode.window.showErrorMessage(
+          `BPMNscript: "${source.name}" has ${result.diagnostics.length} compilation error(s). See the Problems panel.`,
+        );
+      } else {
+        await vscode.window.showErrorMessage(
+          `BPMNscript: Failed to compile "${source.name}": ${result.message}`,
         );
       }
-
-      return outputUri;
-    } else if (result.kind === 'validation') {
-      // The language client already publishes these same diagnostics for
-      // every workspace .bpmnscript file; showing the source and focusing
-      // Problems is enough, a second collection would only duplicate them.
-      await vscode.window.showTextDocument(sourceUri);
-      await vscode.commands.executeCommand('workbench.action.problems.focus');
-      await vscode.window.showErrorMessage(
-        `BPMNscript: "${sourceFileName}" has ${result.diagnostics.length} compilation error(s). See the Problems panel.`,
-      );
-      return undefined;
-    } else {
-      await vscode.window.showErrorMessage(
-        `BPMNscript: Failed to compile "${sourceFileName}": ${result.message}`,
-      );
       return undefined;
     }
+
+    const outputUri = await writeOutput(
+      source,
+      '.bpmn',
+      'Compiled',
+      result.output,
+    );
+    if (outputUri && result.layoutWarning) {
+      void vscode.window.showWarningMessage(
+        `BPMNscript: "${source.name}" compiled without a diagram: ${result.layoutWarning}`,
+      );
+    }
+    return outputUri;
   };
 }
 
-export function decompileCommand(): (
-  uri?: vscode.Uri,
-) => Promise<vscode.Uri | undefined> {
-  return async (uri?: vscode.Uri): Promise<vscode.Uri | undefined> => {
-    const sourceUri = resolveSourceUri(uri);
-    if (!sourceUri) {
-      await vscode.window.showWarningMessage(
-        'BPMNscript: No file selected. Open a .bpmn file or select one in the Explorer.',
-      );
+export function decompileCommand(): ConvertHandler {
+  return async (uri) => {
+    const source = await readSource(uri, '.bpmn', 'Compile to BPMN');
+    if (!source) {
       return undefined;
     }
 
-    const sourceFileName = path.basename(sourceUri.fsPath);
-
-    if (path.extname(sourceUri.fsPath).toLowerCase() !== '.bpmn') {
-      await vscode.window.showWarningMessage(
-        `BPMNscript: "${sourceFileName}" is not a .bpmn file; ` +
-          'use "Compile to BPMN" for it.',
-      );
-      return undefined;
-    }
-
-    const text = await readText(sourceUri);
-
-    const result = await decompileBpmnToDsl(text);
-
-    if (result.ok) {
-      const outputPath = swapExtension(sourceUri.fsPath, '.bpmnscript');
-      const outputUri = vscode.Uri.file(outputPath);
-
-      if (!(await confirmOverwrite(outputUri))) {
-        return undefined;
-      }
-
-      await vscode.workspace.fs.writeFile(
-        outputUri,
-        new TextEncoder().encode(result.output),
-      );
-
-      await vscode.window.showTextDocument(outputUri);
-
-      void vscode.window.showInformationMessage(
-        `BPMNscript: Decompiled "${sourceFileName}" -> "${path.basename(outputPath)}"`,
-      );
-
-      if (result.warnings.length > 0) {
-        // Each entry leads with its element id, as `bpmns parse` does: several
-        // messages describe the route on from a step without naming it, and
-        // two of those read as one line repeated when the id is left off.
-        const details = result.warnings
-          .map((w) => `${w.elementId}: ${w.message}`)
-          .join('; ');
-        void vscode.window.showWarningMessage(
-          `BPMNscript: "${sourceFileName}" reported ${result.warnings.length} item(s) during decompile: ${details}`,
-        );
-      }
-
-      return outputUri;
-    } else if (result.kind === 'unsupported') {
+    const result = await decompileBpmnToDsl(source.text);
+    if (!result.ok) {
       await vscode.window.showErrorMessage(
-        `BPMNscript: "${sourceFileName}" contains an unsupported construct: ${result.message}`,
-      );
-      return undefined;
-    } else {
-      await vscode.window.showErrorMessage(
-        `BPMNscript: Failed to decompile "${sourceFileName}": ${result.message}`,
+        result.kind === 'unsupported'
+          ? `BPMNscript: "${source.name}" contains an unsupported construct: ${result.message}`
+          : `BPMNscript: Failed to decompile "${source.name}": ${result.message}`,
       );
       return undefined;
     }
+
+    const outputUri = await writeOutput(
+      source,
+      '.bpmnscript',
+      'Decompiled',
+      result.output,
+    );
+    if (outputUri && result.warnings.length > 0) {
+      // Prefixed with the element id: several messages describe the route on
+      // from a step without naming it, so two of them would read as one line
+      // repeated.
+      const details = result.warnings
+        .map((w) => `${w.elementId}: ${w.message}`)
+        .join('; ');
+      void vscode.window.showWarningMessage(
+        `BPMNscript: "${source.name}" reported ${result.warnings.length} item(s) during decompile: ${details}`,
+      );
+    }
+    return outputUri;
   };
 }
 
 export function pickBpmnAndDecompileCommand(
-  decompile: (uri?: vscode.Uri) => Promise<vscode.Uri | undefined>,
+  decompile: ConvertHandler,
 ): () => Promise<void> {
   return async (): Promise<void> => {
     const picked = await vscode.window.showOpenDialog({

@@ -9,7 +9,7 @@ The conversion layer on top is project-specific: three commands (`bpmnscript.com
 
 ## How it fits together
 
-Three parts bundle into `out/extension/main.cjs`.
+Three parts, two bundles: the client and the conversion layer in `out/extension/main.cjs`, the language server in `out/language/main.cjs`.
 
 The extension client (`src/extension/main.ts`) runs inside VS Code.
 Opening a `.bpmnscript` file starts the language server and connects to it; the client also registers the conversion commands, wires up the sidebar webview provider, and listens for editor changes to keep the sidebar in sync.

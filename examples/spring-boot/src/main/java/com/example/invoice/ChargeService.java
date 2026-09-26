@@ -7,9 +7,8 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 /**
- * Bean referenced by the payment-charge process via
- * {@code delegate = "${chargeService}"} (operaton:delegateExpression). The bean
- * name "chargeService" is what the delegate expression resolves against.
+ * The {@code ${chargeService}} delegate expression in
+ * {@code service-delegate.bpmnscript} resolves to this bean by name.
  */
 @Component("chargeService")
 public class ChargeService implements JavaDelegate {

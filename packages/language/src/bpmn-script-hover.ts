@@ -1,12 +1,8 @@
 /**
- * Hover content for the three shapes a name can declare: a named statement, a
- * declared error or escalation code, and a variable.
- *
- * Langium's hover resolves the caret through `References.findDeclarations`
- * before this method ever runs: a `goto` target, a handler's host, a thrown
- * or caught code, and every site of a variable all resolve to the declaration
- * they reference, so the same line answers there too, with no case for any of
- * them here.
+ * Hover for a named statement, a declared code and a variable. Langium
+ * resolves the caret through `References.findDeclarations` first, so a `goto`
+ * target, a host, a thrown or caught code and every site of a variable show
+ * their declaration's line with no case of their own.
  */
 
 import type { AstNode } from 'langium';
@@ -25,7 +21,6 @@ import { attributeBlockRuleOf } from './vocabulary.js';
 import { isVariableSymbolNode } from './bpmn-script-references.js';
 import { declaredCodeOf, settingsOf } from './paren-items.js';
 
-/** The literal-string value of a written setting, `undefined` where absent or not quoted text. */
 function literalSetting(items: ParenItem[], key: string): string | undefined {
   const setting = settingsOf(items).find((item) => item.key === key);
   return setting && isLiteralString(setting.value)
@@ -43,10 +38,8 @@ function namedStatementHover(node: NamedStatement): string {
 function codeDeclHover(decl: CodeDecl): string {
   const article = /^[aeiou]/i.test(decl.kind) ? 'an' : 'a';
   let line = `${article} ${decl.kind} '${decl.name}'`;
-  // `declaredCodeOf` falls back to the declaration's own name when no `code`
-  // setting is written; that fallback is the code the engine uses, not a
-  // value the source spells, so hover only quotes one that was actually
-  // written.
+  // `declaredCodeOf` falls back to the name; hover quotes only a written
+  // setting.
   const hasCodeSetting = settingsOf(decl.items).some(
     (item) => item.key === 'code',
   );

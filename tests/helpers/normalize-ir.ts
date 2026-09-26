@@ -1,14 +1,9 @@
-// One half of a round-trip comparison carries hand-authored ids, the other the
-// deterministic ids the pipeline synthesizes (ADR 0010). They are semantically
-// equal but mechanically different, so this canonicalizes the differences away
-// before `toEqual`.
-//
-// A subProcess's flows never cross its boundary, so every step here runs per
-// container at every depth.
-//
-// Gateways are re-keyed by structural position, not by the synthesized-id
-// regex, because the handwritten counterpart is hand-named. Task and event ids
-// are never re-keyed: they have to survive the round trip verbatim.
+// One half of a round-trip comparison carries authored ids, the other the ids
+// the pipeline synthesizes (ADR 0010); this canonicalizes that difference away
+// before `toEqual`. Gateways, boundaries and event sub-processes are re-keyed
+// by structural position, since the handwritten counterpart is hand-named;
+// task and event ids are never re-keyed and have to survive verbatim. Flows
+// never cross a sub-process boundary, so every step runs per container.
 
 import { ENGINE_KEYS } from '@bpmn-script/language';
 import {
@@ -42,9 +37,9 @@ function normalizeContainer<T extends FlowContainer>(container: T): T {
 
   const flowElements: FlowElement[] = inlined.flowElements
     .map((fe) => {
-      // A plain sub-process id is authored, so it stays. A `triggeredByEvent`
-      // one has no surface id and is re-keyed to its trigger signature. Its
-      // own `defaultFlowId` names a flow of this container, not of its body.
+      // A plain sub-process keeps its authored id; a `triggeredByEvent` one
+      // has no surface id and is re-keyed to its trigger. Its `defaultFlowId`
+      // names a flow of this container, not of its body.
       if (fe.kind === 'subProcess') {
         const normalized = { ...normalizeContainer(fe), ...reKeyedDefault(fe) };
         return fe.triggeredByEvent === true
@@ -57,13 +52,11 @@ function normalizeContainer<T extends FlowContainer>(container: T): T {
         return { ...fe, id: canonicalId(fe.id) };
       }
 
-      // A step's `defaultFlowId` points at a flow that is itself re-keyed
-      // below; a gateway's is handled with the gateway.
       if (!isGateway(fe)) return { ...fe, ...reKeyedDefault(fe) };
       const id = canonicalId(fe.id);
 
-      // The structured syntax has no slot for a gateway label, so only gateways
-      // lose their name. Task and event names survive verbatim.
+      // The structured syntax has no slot for a gateway label, so only
+      // gateways lose their name.
       const { name: _name, ...withoutName } = fe;
       return { ...withoutName, id, ...reKeyedDefault(fe) };
     })
@@ -93,12 +86,10 @@ function normalizeContainer<T extends FlowContainer>(container: T): T {
   } as T;
 }
 
-// A re-synthesized `if/else` always grows a join the hand-authored IR never
-// had. Treating that join as transparent lets the two halves compare
-// structurally. Only sibling flows of the same container are considered.
-// A join carrying a job setting stays: inlining it would take the setting
-// out of the comparison, and a `join*` key that one direction drops is what
-// the comparison has to catch.
+// A re-synthesized `if/else` grows a join the hand-authored IR never had, so
+// such a join is treated as transparent. One carrying a job setting stays:
+// inlining it would take the setting out of both sides of the comparison, and
+// a `join*` key one direction drops is what the comparison has to catch.
 function inlinePassThroughJoins(ir: FlowContainer): FlowContainer {
   const successorOf = new Map<string, string>();
   for (const fe of ir.flowElements) {
@@ -202,8 +193,6 @@ function boundarySignature(fe: FlowElement): string | undefined {
   return `Boundary_[host:${fe.attachedToRef}]_[trigger:${fe.eventDefinition.kind}]_[code:${code}]_[${interrupting}]`;
 }
 
-// The datum that identifies a handler within its trigger kind, so two same-kind
-// handlers with different payloads stay apart.
 function definitionPayloadKey(def: EventDefinition | undefined): string {
   if (def === undefined) return '<none>';
   switch (def.kind) {
@@ -221,16 +210,14 @@ function definitionPayloadKey(def: EventDefinition | undefined): string {
       return `${def.timerKind} ${def.expression}`;
     case 'conditional':
       return def.condition;
+    // Payload-free; a container takes one undo block and a block one cancel
+    // handler, and a terminate is never a trigger, so a constant cannot
+    // collide.
     case 'compensation':
-      // The validator allows one undo block per container, so a constant here
-      // cannot collide.
       return '<compensation>';
     case 'terminate':
-      // Payload-free and at most one per container, so a constant cannot collide.
       return '<terminate>';
     case 'cancel':
-      // Payload-free, and the engine takes at most one cancel handler per
-      // block, so a constant cannot collide either.
       return '<cancel>';
     default: {
       const exhaustive: never = def;
@@ -239,31 +226,23 @@ function definitionPayloadKey(def: EventDefinition | undefined): string {
   }
 }
 
-// Re-keyed when the id starts with `Flow_` (the generated families) or either
-// end is itself re-keyed. Everything else stays verbatim.
+// `Flow_` is the prefix of every generated flow id.
 function normalizeFlow(
   sf: SequenceFlow,
   canonicalId: (id: string) => string,
 ): SequenceFlow {
+  const sourceRef = canonicalId(sf.sourceRef);
+  const targetRef = canonicalId(sf.targetRef);
   const touchesReKeyedNode =
-    canonicalId(sf.sourceRef) !== sf.sourceRef ||
-    canonicalId(sf.targetRef) !== sf.targetRef;
+    sourceRef !== sf.sourceRef || targetRef !== sf.targetRef;
 
   if (/^Flow_/.test(sf.id) || touchesReKeyedNode) {
     return {
       ...sf,
-      id: canonicalFlowKey(sf, canonicalId),
-      sourceRef: canonicalId(sf.sourceRef),
-      targetRef: canonicalId(sf.targetRef),
+      id: `Flow_${sourceRef}_${targetRef}`,
+      sourceRef,
+      targetRef,
     };
   }
   return sf;
-}
-
-// A re-keyed flow's id; `reKeyedDefault` reaches it through `normalizeFlow`, so the two agree.
-function canonicalFlowKey(
-  sf: SequenceFlow,
-  canonicalId: (id: string) => string,
-): string {
-  return `Flow_${canonicalId(sf.sourceRef)}_${canonicalId(sf.targetRef)}`;
 }

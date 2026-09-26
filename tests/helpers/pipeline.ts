@@ -32,7 +32,20 @@ export async function parseToAst(source: string): Promise<Model> {
   return document.parseResult.value;
 }
 
-// Every hop of DSL -> ir1 -> xml -> ir2 -> dsl -> ir3.
+export type IrHops = readonly (readonly [label: string, ir: BpmnProcess])[];
+
+export function irHops(
+  ir1: BpmnProcess,
+  ir2: BpmnProcess,
+  ir3: BpmnProcess,
+): IrHops {
+  return [
+    ['IR1', ir1],
+    ['IR2', ir2],
+    ['IR3', ir3],
+  ];
+}
+
 export interface RoundTripRun {
   ir1: BpmnProcess;
   xml: string;
@@ -40,14 +53,27 @@ export interface RoundTripRun {
   ir2: BpmnProcess;
   dsl: string;
   ir3: BpmnProcess;
+  hops: IrHops;
 }
 
+// The cli's build.ts and the extension's conversion-core.ts run the same
+// astToIr -> irToXml chain, each with its own failure reporting; here a
+// failure throws.
 export async function roundTrip(source: string): Promise<RoundTripRun> {
   const ir1 = astToIr(await parseToAst(source));
   const xml = await irToXml(ir1);
   const { ir: ir2, warnings } = await xmlToIr(xml);
   const dsl = printDsl(ir2);
-  return { ir1, xml, warnings, ir2, dsl, ir3: astToIr(await parseToAst(dsl)) };
+  const ir3 = astToIr(await parseToAst(dsl));
+  return {
+    ir1,
+    xml,
+    warnings,
+    ir2,
+    dsl,
+    ir3,
+    hops: irHops(ir1, ir2, ir3),
+  };
 }
 
 // The returned run is filled by a beforeAll, so read it only from an `it` body.
@@ -59,10 +85,9 @@ export function roundTripOf(source: string): RoundTripRun {
   return run;
 }
 
-// Two full compile/decompile passes, chaining the second onto the first's
-// printed DSL. Every other suite stops after one hop each direction, which
-// misses a value that is stable on the first print but drifts on the second
-// (a fuzz-only class of bug: idempotence, not correctness of a single hop).
+// The second pass starts from the first's printed DSL, catching a value that
+// is stable on the first print but drifts on the second, which one hop each
+// direction cannot see.
 export interface RoundTripTwice {
   xml1: string;
   dsl1: string;

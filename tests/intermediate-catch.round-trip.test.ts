@@ -58,9 +58,22 @@ describe("idempotence: golden .bpmn -> IR2 -> DSL' -> IR3", () => {
     }
   });
 
-  it('no synthesized Catch_ id token leaks into the decompiled source', () => {
-    // `await` has no name slot, so the decompiler prints the trigger and its
-    // payload, never the synthesized goto-target id.
-    expect(rt.dslPrime).not.toMatch(/Catch_/);
+  it("the decompiled DSL' prints each catch as a bare `await` on its trigger, never the synthesized id", () => {
+    expect(rt.dslPrime).toBe(
+      [
+        'process order-processing {',
+        '  var amount: any',
+        '  start OrderReceived',
+        '  user ReviewOrder(label: "Review the order", assignee: "demo")',
+        '  await message("PaymentConfirmed")',
+        '  await timer("PT1H")',
+        '  await signal("StockReplenished")',
+        '  await condition(amount > 100)',
+        '  service DispatchOrder(label: "Dispatch the order", class: "com.example.orders.DispatchDelegate")',
+        '  end OrderDispatched',
+        '}',
+        '',
+      ].join('\n'),
+    );
   });
 });

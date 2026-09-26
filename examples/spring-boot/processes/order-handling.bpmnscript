@@ -1,21 +1,3 @@
-// Order handling with an embedded sub-process. The two payment steps are
-// grouped into a `subprocess` that Operaton Cockpit renders as an expanded
-// box with its children inside.
-//
-// Two activities also carry attached boundary events. The review task has
-// three: a non-interrupting timer that sends a nudge when review is taking
-// too long without blocking it, an interrupting message that lets an external
-// system confirm the order was already approved and skip straight to payment,
-// and a non-interrupting message that a supervisor sends to ask for a status
-// note while the review stays open. The payment subprocess carries an
-// interrupting error boundary that hands a declined card to a
-// customer-service agent, and a non-interrupting escalation boundary that
-// pulls a manager into checking a large payment while capture keeps going.
-//
-// The service tasks point at the generic delegate
-// examples/spring-boot/src/main/java/com/example/demo/LogDelegate.java, so this
-// process deploys and runs on the demo profile without additional Java classes.
-
 process order-handling {
   error PAYMENT_DECLINED(message: "The card could not be charged")
   escalation LARGE_PAYMENT_FLAGGED

@@ -54,3 +54,4 @@ Implicit sequence flow (ADR-0008) and synthesized structural ids (ADR-0010) alre
 
 Related decisions: ADR-0008 (structured, code-like grammar) settled the surface shape.
 ADR-0010 (deterministic structural ids) is the existing model for how a compiler-supplied default stays round-trippable.
+The engine tuning keys (`asyncBefore`, `asyncAfter`, `exclusive`, `jobPriority`, `retryCycle`) and the listener block are engine-side settings outside the no-BPMN-knowledge promise: they name what Operaton does with a step, not a BPMN element, and a reader who never tunes the engine never writes them.

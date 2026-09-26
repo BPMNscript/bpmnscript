@@ -1,11 +1,6 @@
 // A job setting on a gateway or on a loop element, and a shell task the engine
 // runs itself, compile to well-formed XML that shows nothing of what the
-// engine does with them. This suite boots a real Operaton and reads back what
-// it did: the jobs an async join parks, one per arriving branch; the three
-// jobs a repetition of three parks with `runAsyncBefore`, one per run and none
-// around the repetition; the output and exit code a shell `echo` wrote into
-// the variables its fields name; and a mail task the engine builds at
-// deployment, beside one it refuses for want of a body.
+// engine does with them; this suite reads back what a real Operaton did.
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { mkdirSync, writeFileSync } from 'node:fs';
@@ -83,8 +78,6 @@ describe.skipIf(SKIP)('E2E: job settings, shell and mail tasks', () => {
     await fixture?.stop();
   }, ENGINE_STOP_TIMEOUT_MS);
 
-  // The definition and suspension state of each job once the instance holds
-  // the expected number of them.
   async function parkedJobs(
     processInstanceId: string,
     count: number,

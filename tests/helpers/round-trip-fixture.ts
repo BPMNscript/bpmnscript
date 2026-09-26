@@ -14,7 +14,8 @@ import { xmlToIr, astToIr, irToXml } from '@bpmn-script/transform';
 import type { BpmnProcess } from '@bpmn-script/transform';
 
 import { normalizeIr } from './normalize-ir.js';
-import { parse, parseToAst, printDsl, validate } from './pipeline.js';
+import { irHops, parse, parseToAst, printDsl, validate } from './pipeline.js';
+import type { IrHops } from './pipeline.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -34,11 +35,10 @@ export interface RoundTripOptions {
   // and re-desugars normalized-equal to IR1.
   importPath?: boolean;
 
-  // How strictly DSL' validation is asserted, and where. 'clean' checks every
-  // diagnostic and only fits fixtures that name every throw and emit, so
-  // nothing synthesizes an id the reserved-name check rejects; 'errors' checks
-  // error severity only, for fixtures whose decompiled form does warn.
-  // 'errors-standalone' is 'errors' in a block of its own.
+  // 'clean' checks every diagnostic and fits only fixtures that name every
+  // throw and emit, so nothing synthesizes an id the reserved-name check
+  // rejects; 'errors' checks error severity alone, for fixtures whose decompiled
+  // form does warn; 'errors-standalone' is 'errors' in a block of its own.
   recompile: 'errors' | 'clean' | 'errors-standalone';
 
   validatorCleanTitles?: [describeTitle: string, itTitle: string];
@@ -57,7 +57,7 @@ export interface RoundTrip {
   ir1: BpmnProcess;
   ir2: BpmnProcess;
   ir3: BpmnProcess;
-  hops: readonly (readonly [label: string, ir: BpmnProcess])[];
+  hops: IrHops;
   dslPrime: string;
   // The next two are only filled when `importPath` is on.
   importWarnings: Awaited<ReturnType<typeof xmlToIr>>['warnings'];
@@ -94,11 +94,7 @@ export function roundTripFixture(
     ));
     rt.dslPrime = printDsl(rt.ir2);
     rt.ir3 = astToIr(await parseToAst(rt.dslPrime));
-    rt.hops = [
-      ['IR1', rt.ir1],
-      ['IR2', rt.ir2],
-      ['IR3', rt.ir3],
-    ];
+    rt.hops = irHops(rt.ir1, rt.ir2, rt.ir3);
 
     if (options.importPath === true) {
       const imported = await xmlToIr(rt.frozenXml);

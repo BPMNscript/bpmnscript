@@ -1,4 +1,5 @@
 import { existsSync, readFileSync, statSync } from 'node:fs';
+import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import chalk from 'chalk';
 import type { LangiumDocument } from 'langium';
@@ -6,18 +7,24 @@ import { URI } from 'langium';
 import { NodeFileSystem } from 'langium/node';
 import { createBpmnScriptServices } from '@bpmn-script/language';
 
-/** Read off the document so the shape is Langium's own, not a restatement. */
 type Diagnostic = NonNullable<LangiumDocument['diagnostics']>[number];
 
-/** LSP's `DiagnosticSeverity` values; both actions filter diagnostics by these. */
+/** LSP's `DiagnosticSeverity` values. */
 export const SEVERITY_ERROR = 1;
 export const SEVERITY_WARNING = 2;
 
+export function fail(code: number, message: string): never {
+  console.error(chalk.red(message));
+  process.exit(code);
+}
+
+export function warn(message: string): void {
+  console.error(chalk.yellow(message));
+}
+
 /**
- * A diagnostic carries its message as plain text or as LSP markup. Everything
- * the language server raises is text, but the union has to be read either way:
- * printed straight into a template literal, a markup message reaches the author
- * as `[object Object]` instead of the diagnostic.
+ * Langium's `message` is a string or LSP markup; a template literal would
+ * print the latter as `[object Object]`.
  */
 export function diagnosticMessage(diagnostic: Diagnostic): string {
   return typeof diagnostic.message === 'string'
@@ -25,16 +32,25 @@ export function diagnosticMessage(diagnostic: Diagnostic): string {
     : diagnostic.message.value;
 }
 
-/**
- * Resolved relative to this module, so it works from both `out/` (compiled) and
- * `src/` (vitest); both sit one level below the package root.
- */
+// Resolved relative to this module, which sits one level below the package
+// root in both `out/` (compiled) and `src/` (vitest).
 export const CLI_VERSION: string = (
   JSON.parse(
     readFileSync(new URL('../package.json', import.meta.url), 'utf-8'),
   ) as { version: string }
 ).version;
 
+/** Without these checks the loader fails with ENOENT or a bare EISDIR. */
+export function resolveInputPath(fileName: string): string {
+  const resolved = path.resolve(fileName);
+  if (!existsSync(resolved)) fail(2, `Error: file not found: ${fileName}`);
+  if (statSync(resolved).isDirectory()) {
+    fail(2, `Error: ${fileName} is a directory`);
+  }
+  return resolved;
+}
+
+// The extension's `swapExtension` (conversion-core.ts) is the no-override case.
 export function resolveOutputPath(
   resolvedInput: string,
   defaultExt: string,
@@ -52,40 +68,39 @@ export function resolveOutputPath(
     : resolved;
 }
 
-export type GuardOptions = { force?: boolean };
+type GuardOptions = { force?: boolean };
 
-/**
- * Refuses two destructive shapes before either action reads its input:
- * an output path identical to the input, and an existing output without
- * `--force`. Both actions call this right after resolving the output path.
- */
 export function guardOutputPath(
   resolvedInput: string,
   outPath: string,
   opts: GuardOptions,
 ): void {
   if (outPath === resolvedInput) {
-    console.error(
-      chalk.red('Error: the input and the output are the same file'),
-    );
-    process.exit(2);
+    fail(2, 'Error: the input and the output are the same file');
   }
   if (!opts.force && existsSync(outPath)) {
-    console.error(
-      chalk.red(
-        `Error: ${outPath} exists; pass --force to overwrite it or -o for another path`,
-      ),
+    fail(
+      2,
+      `Error: ${outPath} exists; pass --force to overwrite it or -o for another path`,
     );
-    process.exit(2);
   }
 }
 
-/**
- * Parses and validates a BpmnScript document through Langium's own pipeline.
- * `build` loads the file it was given this way; `parse` reloads the file it
- * just wrote the same way, to catch what the print step (which never
- * refuses, ADR-0014) still draws wrong.
- */
+export async function writeOutput(
+  outPath: string,
+  content: string,
+): Promise<void> {
+  try {
+    await fs.mkdir(path.dirname(outPath), { recursive: true });
+    await fs.writeFile(outPath, content, 'utf-8');
+  } catch (err) {
+    fail(
+      2,
+      `Error: could not write output to ${outPath}: ${(err as Error).message}`,
+    );
+  }
+}
+
 export async function buildDocument(
   filePath: string,
 ): Promise<LangiumDocument> {
@@ -100,7 +115,6 @@ export async function buildDocument(
   return document;
 }
 
-/** `  line N: message [snippet]`, the shape both actions print a diagnostic in. */
 export function formatDiagnostic(
   document: LangiumDocument,
   diagnostic: Diagnostic,
@@ -109,15 +123,4 @@ export function formatDiagnostic(
     `  line ${diagnostic.range.start.line + 1}: ${diagnosticMessage(diagnostic)}` +
     ` [${document.textDocument.getText(diagnostic.range)}]`
   );
-}
-
-/** A directory has no text or document to read; refused before the loader turns it into a bare EISDIR. */
-export function refuseDirectoryInput(
-  resolvedInput: string,
-  fileName: string,
-): void {
-  if (statSync(resolvedInput).isDirectory()) {
-    console.error(chalk.red(`Error: ${fileName} is a directory`));
-    process.exit(2);
-  }
 }

@@ -9,14 +9,18 @@
 
 import type {
   BuiltinTaskType,
+  CallBindingValue,
   DECISION_RESULT_MAPPINGS,
+  EMIT_TRIGGERS,
   END_TRIGGERS,
+  EngineKey,
   EXECUTION_LISTENER_EVENTS,
   FORM_CONSTRAINT_NAMES,
   FORM_FIELD_TYPES,
   TASK_LISTENER_EVENTS,
   THROW_TRIGGERS,
   TimerJobKey,
+  TimerKind,
 } from '@bpmn-script/language';
 import { TIMER_JOB_KEYS } from '@bpmn-script/language';
 
@@ -47,14 +51,12 @@ export interface BpmnProcess extends FlowContainer, Named {
   /** Comma-separated group ids, listed and stored the same way. */
   candidateStarterGroups?: string;
   /**
-   * Every error code the process raises, catches, or declares, in canonical
-   * order: codes something uses in first-use order, then the rest in
-   * declaration order. Stored rather than derived from usage because two throws
-   * of one code share a root element, a declared code emits its root even when
-   * unused, and the message text usage alone cannot recover. `name` is the
-   * identifier a use site refers to, which is the code itself unless the code
-   * cannot be spelled as one. See ADR 0016, Derive Event Root Elements From
-   * Usage.
+   * Every error code the process raises, catches, or declares: codes in use in
+   * first-use order, then the rest in declaration order. Stored rather than
+   * derived from usage because a declared code emits its root even when unused
+   * and usage alone cannot recover the message text. `name` is the identifier
+   * a use site refers to, the code itself unless the code cannot be spelled as
+   * one. See ADR 0016, Derive Event Root Elements From Usage.
    */
   errorDecls?: { name: string; code: string; message?: string }[];
   /** As {@link BpmnProcess.errorDecls}; BPMN gives an escalation no message. */
@@ -105,16 +107,13 @@ function collectEventDefinitions(container: FlowContainer): EventDefinition[] {
         defs.push(el.eventDefinition);
         break;
       case 'receiveTask':
-        // A receive task names its message on the element itself, and shares
-        // one root with every other use of that name.
         if (el.messageName !== undefined) {
           defs.push({ kind: 'message', messageName: el.messageName });
         }
         break;
       case 'serviceTask':
-        // An external task's failure mapping raises its code the way a throw
-        // does, so its root is derived the same way even with no throw or
-        // declaration of its own (`ExternalTaskEntity.evaluateThrowBpmnError`).
+        // An external task's failure mapping raises its code like a throw
+        // (`ExternalTaskEntity.evaluateThrowBpmnError`), so it derives a root.
         if (el.binding.kind === 'external' && el.binding.errorMappings) {
           for (const mapping of el.binding.errorMappings) {
             defs.push({ kind: 'error', errorCode: mapping.errorCode });
@@ -129,7 +128,7 @@ function collectEventDefinitions(container: FlowContainer): EventDefinition[] {
 }
 
 /** The identities a document-level root element is derived from, or checked against. */
-export interface EventIdentities {
+interface EventIdentities {
   errorCodes: Set<string>;
   escalationCodes: Set<string>;
   messageNames: Set<string>;
@@ -167,8 +166,7 @@ export function eventIdentities(container: FlowContainer): EventIdentities {
         identities.signalNames.add(def.signalName);
         break;
       default:
-        // Compensation, timer, conditional, and link need no document-level
-        // element.
+        // The other kinds need no document-level element.
         break;
     }
   }
@@ -221,15 +219,11 @@ export interface FormField {
 }
 
 /**
- * The payload of a catch or a throw. On a catch the code selects what the
- * handler catches and the bindings name the process variables the caught code
- * and text fill; on a throw the code says what is thrown and the engine ignores
- * the bindings. The type mirrors what BPMN can represent, not where each field
- * is meaningful: the validator and the import contract enforce that bindings
- * appear only on a catch and that a throw resolves to a non-empty code.
- *
- * See ADR 0016, Derive Event Root Elements From Usage, and ADR 0017, Event
- * Trigger Payloads.
+ * The payload of a catch or a throw. The type mirrors what BPMN can represent,
+ * not where each field is meaningful: the validator and the import contract
+ * enforce that bindings appear only on a catch and that a throw resolves to a
+ * non-empty code. See ADR 0016, Derive Event Root Elements From Usage, and
+ * ADR 0017, Event Trigger Payloads.
  */
 export type EventDefinition =
   | {
@@ -250,29 +244,21 @@ export type EventDefinition =
     }
   | {
       /**
-       * Payload-less in this IR: no code and no `activityRef`, so a throw
-       * always compensates its whole scope rather than one activity.
-       * `BpmnParse.parseThrowCompensateEventDefinition` reads both
-       * `activityRef` and `waitForCompletion` off the BPMN definition;
-       * `waitForCompletion` stays unmodeled here because the moddle schema
-       * defaults it to `true` and the engine warns on any other value.
+       * No code and no `activityRef`, so a throw compensates its whole scope.
+       * `waitForCompletion` stays unmodeled: the moddle schema defaults it to
+       * `true` and the engine warns on any other value.
        */
       kind: 'compensation';
     }
   | {
       /**
-       * Payload-free. It ends every running path of its scope at once rather
-       * than raising something, which is why the surface spells it on an `end`
-       * statement instead of a `throw`.
+       * Payload-free: it ends every running path of its scope, which is why
+       * the surface spells it on an `end` rather than a `throw`.
        */
       kind: 'terminate';
     }
   | {
-      /**
-       * Payload-free. It gives up the block it ends rather than raising
-       * something, which is why the surface spells it on an `end` statement and
-       * catches it on the block.
-       */
+      /** Payload-free: it gives up the block it ends, spelled on an `end` and caught on the block. */
       kind: 'cancel';
     }
   | {
@@ -288,7 +274,7 @@ export type EventDefinition =
   | {
       kind: 'timer';
       /** Maps 1:1 to the `timeDuration`/`timeDate`/`timeCycle` BPMN forms. */
-      timerKind: 'duration' | 'date' | 'cycle';
+      timerKind: TimerKind;
       /** ISO-8601 or EL, verbatim. The clock starts with the surrounding scope. */
       expression: string;
     }
@@ -300,9 +286,9 @@ export type EventDefinition =
   | {
       kind: 'link';
       /**
-       * What a throw and a catch match on: the engine keys one table of these
-       * per deployed file and rewires every throw of a name to the catch of
-       * the same name, so the IR carries no reference between the two nodes.
+       * What a throw and a catch match on: the engine rewires every throw of a
+       * name to the catch of the same name, so the IR carries no reference
+       * between the two nodes.
        */
       linkName: string;
     };
@@ -323,6 +309,12 @@ export type EndEventDefinition = Extract<
   { kind: (typeof THROW_TRIGGERS | typeof END_TRIGGERS)[number] }
 >;
 
+/** The definitions an `emit` may raise: the `throw` kinds without the error, plus the link. {@link IntermediateThrowEvent} says why the error is out. */
+export type EmitEventDefinition = Extract<
+  EventDefinition,
+  { kind: (typeof EMIT_TRIGGERS)[number] }
+>;
+
 /**
  * The human-facing text a BPMN element carries, mixed into every kind the
  * surface gives a name, so a kind that carries one carries the other. The
@@ -334,30 +326,33 @@ export interface Named {
 }
 
 /**
- * The five Operaton job-execution settings, mixed into every event and
- * activity kind and, authored on the statement head, into the four gateway
- * kinds directly. Each field is stored only in the non-default direction, so
- * `asyncBefore="false"` and `exclusive="true"` reproduce by omission. See
- * ADR 0022, Carry Operaton Engine Attributes as Named IR Fields, and ADR
- * 0040, Engine Settings on Synthesized Gateways.
+ * The Operaton job-execution settings, on every event and activity kind
+ * and, authored on the statement head, on the four gateway kinds. Each is
+ * stored only in the non-default direction, so `asyncBefore="false"` and
+ * `exclusive="true"` reproduce by omission. See ADR 0022, Carry Operaton
+ * Engine Attributes as Named IR Fields, and ADR 0040, Engine Settings on
+ * Synthesized Gateways.
  */
-export interface JobSettings {
-  asyncBefore?: true;
-  asyncAfter?: true;
-  exclusive?: false;
+export type JobSettings = { [K in EngineKey]?: StoredJobSetting[K] };
+
+interface StoredJobSetting {
+  asyncBefore: true;
+  asyncAfter: true;
+  exclusive: false;
   /** An integer or EL, verbatim. */
-  jobPriority?: string;
+  jobPriority: string;
   /** The `operaton:failedJobRetryTimeCycle` element body, verbatim. */
-  retryCycle?: string;
+  retryCycle: string;
 }
 
-export function jobSettings(found: {
-  asyncBefore: boolean | undefined;
-  asyncAfter: boolean | undefined;
-  exclusive: boolean | undefined;
-  jobPriority: string | undefined;
-  retryCycle: string | undefined;
-}): JobSettings {
+/** What a reader found per setting; {@link jobSettings} keeps the non-default direction alone. */
+type FoundJobSettings = {
+  [K in EngineKey]:
+    | (StoredJobSetting[K] extends boolean ? boolean : StoredJobSetting[K])
+    | undefined;
+};
+
+export function jobSettings(found: FoundJobSettings): JobSettings {
   return {
     ...(found.asyncBefore === true ? { asyncBefore: true } : {}),
     ...(found.asyncAfter === true ? { asyncAfter: true } : {}),
@@ -372,14 +367,10 @@ export function jobSettings(found: {
 export type { TimerJobKey };
 
 /**
- * Split the settings of an element that declares a timer between the two jobs
- * it can create. `BpmnParse.parseTimer` builds the timer job with the lock off
- * the timer definition and the priority off the declaring activity, and
- * `DefaultFailedJobParseListener.parseStartEvent`, `parseBoundaryEvent` and
- * `parseIntermediateCatchEvent` read its retry cycle off the declaring element.
- * The async flags create the continuation job and stay with it. `timer` is
- * normalized as {@link jobSettings} is, so a key absent on `settings` stays
- * absent.
+ * Split a timer-declaring element's settings between the two jobs it creates:
+ * the {@link TIMER_JOB_KEYS} configure the timer job, the async flags create
+ * the continuation job and stay with it. `timer` is normalized as
+ * {@link jobSettings} is.
  */
 export function splitTimerJobSettings<T extends JobSettings>(
   settings: T,
@@ -428,13 +419,11 @@ export function ioMapped(
 
 /**
  * How many times an activity runs, and what each run sees. At least one of
- * `cardinality` and `collection` is present: with both, the count drives the
+ * `cardinality` and `collection` is present; with both, the count drives the
  * runs while each run still sees its element. The job settings are the ones
- * the engine reads off this element onto each run, `RUN_ENGINE_KEYS` in the
- * language package. There is no `jobPriority` field here because the plain
- * one on the repeated activity already prices each run's job, not the whole
- * loop's; the whole-loop job takes the process definition's own priority,
- * since nothing writes one on this element.
+ * the engine reads off this element onto each run (`RUN_ENGINE_KEYS` in the
+ * language package); the plain `jobPriority` on the repeated activity already
+ * prices each run's job, so there is none here.
  */
 export interface LoopCharacteristics extends Omit<JobSettings, 'jobPriority'> {
   /** A literal count, or an expression that yields one. */
@@ -519,11 +508,9 @@ export type ScriptValue = {
 
 /**
  * One `operaton:field`, set on the bean its binding instantiates. `value`
- * carries both of the XML value slots as one text: a body opening with `${` is
- * the expression form, evaluated per instantiation and written as an
- * `operaton:expression` child, and anything else is the literal form, injected
- * verbatim and written as a `stringValue` attribute. That is the same reading
- * of a leading `${` that `renderIoValue` does on the way out.
+ * folds both XML slots into one text: a body opening with `${` is written as
+ * an `operaton:expression` child, anything else as a `stringValue` attribute,
+ * the same reading of a leading `${` that `renderIoValue` does on the way out.
  */
 export interface FieldInjection {
   name: string;
@@ -606,7 +593,7 @@ export interface EndEvent extends EngineAttributes, Named {
 export interface IntermediateThrowEvent extends EngineAttributes {
   kind: 'intermediateThrowEvent';
   id: string;
-  eventDefinition: EventDefinition;
+  eventDefinition: EmitEventDefinition;
   /** The implementation {@link EndEvent.binding} describes, on the emitting side. */
   binding?: ServiceTaskBinding;
 }
@@ -650,7 +637,7 @@ export interface UserTask extends EngineAttributes, IoMapped, Activity, Named {
   taskListeners?: TaskListener[];
 }
 
-export type DecisionResultMapping = (typeof DECISION_RESULT_MAPPINGS)[number];
+type DecisionResultMapping = (typeof DECISION_RESULT_MAPPINGS)[number];
 
 /** One `operaton:errorEventDefinition` on an external task: the failure condition and the code it raises. */
 export interface ErrorMapping {
@@ -694,11 +681,7 @@ export type ServiceTaskBinding =
       fields?: FieldInjection[];
     };
 
-/**
- * The bindings Operaton hands a field list to, `FIELD_BINDING_KEYS` in the
- * language package: a class and the two built-in behaviours through
- * `instantiateDelegate`, a delegate expression's bean on each invocation.
- */
+/** The IR side of `FIELD_BINDING_KEYS` in the language package. */
 export function carriesFields(
   binding: ServiceTaskBinding | ListenerBinding,
 ): binding is Extract<
@@ -721,11 +704,10 @@ export interface ServiceTask
   resultVariable?: string;
   /**
    * Which tag this serializes to; absent is a service task. Operaton runs all
-   * three through `parseServiceTaskLike` when the tag carries a class,
-   * expression, delegate expression, external topic, or `mail`/`shell` type
-   * binding, so they share this node. A business rule task naming an
-   * `operaton:decisionRef` goes to `parseDmnBusinessRuleTask` instead, and
-   * that binding is legal on that tag alone.
+   * three through `parseServiceTaskLike`, so they share this node; a business
+   * rule task naming an `operaton:decisionRef` goes to
+   * `parseDmnBusinessRuleTask` instead, and that binding is legal on that tag
+   * alone.
    */
   element?: 'send' | 'businessRule';
 }
@@ -799,11 +781,8 @@ export interface EventBasedGateway extends JobSettings, Named {
 
 /**
  * Routing rather than work: a fork, a merge or a loop head, never a step.
- *
- * Membership is the `Gateway` suffix on the kind, the only discriminator every
- * BPMN gateway spelling shares. A kind spelled without it would drop out of
- * this alias, out of the map below, and out of every site reading either, all
- * at once and without a compile error.
+ * Membership is the `Gateway` suffix on the kind, so a kind spelled without it
+ * drops out of this alias and of `GATEWAY_KINDS` without a compile error.
  */
 export type Gateway = Extract<FlowElement, { kind: `${string}Gateway` }>;
 
@@ -850,19 +829,17 @@ export interface SubProcess
   triggeredByEvent?: true;
   /**
    * Which tag this serializes to; absent is an embedded sub-process. Operaton
-   * runs a transaction through the very behavior class it gives an ordinary
-   * sub-process, so nothing about the block is atomic and nothing rolls back;
-   * what the tag buys is that the engine then accepts a cancel end inside the
-   * block and a cancel boundary on it.
+   * runs a transaction through the same behavior class as an ordinary
+   * sub-process, so nothing is atomic and nothing rolls back; the tag buys
+   * that the engine accepts a cancel end inside the block and a cancel
+   * boundary on it.
    */
   element?: 'transaction';
 }
 
 /** Which deployed version a call activity or a decision task resolves to. */
 export type VersionBinding =
-  | { kind: 'latest' }
-  | { kind: 'deployment' }
-  | { kind: 'version'; version: string };
+  { kind: CallBindingValue } | { kind: 'version'; version: string };
 
 /**
  * `target` always names the receiving side: the variable created in the callee
@@ -880,12 +857,10 @@ export type CallVariableMapping =
     };
 
 /**
- * Computes a call activity's variable mapping in code, running after the
- * declared `in`/`out` mappings on each side, so it adds to them rather than
- * replacing them. Not {@link CodeBinding}: the engine reads exactly two
- * attributes here, with no expression form, and `CodeBinding`'s `fields?`
- * slot exists only for the two behaviours Operaton injects into, which this
- * is not.
+ * Computes a call activity's variable mapping in code, after the declared
+ * `in`/`out` mappings rather than in place of them. Not {@link CodeBinding}:
+ * the engine reads exactly two attributes here, with no expression form and
+ * no field injection.
  */
 export type CallVariableMapper =
   | { kind: 'class'; /** Fully qualified. */ className: string }

@@ -30,9 +30,9 @@ const rt = roundTripFixture('event-handlers', {
   recompile: 'errors',
 });
 
-// Handwritten import-first, with `camunda:` aliases for the error root message
-// and the catch bindings, and labels that differ from the name humanized from
-// each id, so the importer keeps them.
+// `camunda:` aliases on the error root message and the catch bindings, and
+// labels that differ from the name humanized from each id, so the importer
+// keeps them.
 const IMPORT_FIRST_BPMN = `<?xml version="1.0" encoding="UTF-8"?>
 <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:camunda="http://camunda.org/schema/1.0/bpmn" xmlns:operaton="http://operaton.org/schema/1.0/bpmn" id="Definitions_import_first" targetNamespace="http://bpmn.io/schema/bpmn">
   <bpmn:error id="Error_Boom" name="BOOM" errorCode="BOOM" camunda:errorMessage="It went boom" />
@@ -103,14 +103,16 @@ describe("idempotence: DSL -> IR1 -> XML -> IR2 -> DSL' -> IR3", () => {
   it('the handler trigger start carries its event definition at every hop', () => {
     const isPaymentError = (def: EventDefinition | undefined): boolean =>
       def?.kind === 'error' && def.errorCode === 'PAYMENT_DECLINED';
-    for (const ir of [rt.ir1, rt.ir2, rt.ir3]) {
-      const payment = subProcess(ir, 'ProcessPayment');
-      const def = handlerTriggerDef(payment, isPaymentError);
-      expect(def, `handler error definition missing in a hop`).toBeDefined();
-      if (def?.kind === 'error') {
-        expect(def.codeVariable).toBe('c');
-        expect(def.messageVariable).toBe('m');
-      }
+    for (const [label, ir] of rt.hops) {
+      expect(
+        handlerTriggerDef(subProcess(ir, 'ProcessPayment'), isPaymentError),
+        `handler error definition differs in ${label}`,
+      ).toEqual({
+        kind: 'error',
+        errorCode: 'PAYMENT_DECLINED',
+        codeVariable: 'c',
+        messageVariable: 'm',
+      });
     }
   });
 

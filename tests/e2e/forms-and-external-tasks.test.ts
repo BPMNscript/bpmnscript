@@ -73,7 +73,6 @@ describe.skipIf(SKIP)('E2E: forms and external tasks on Operaton', () => {
     await fixture?.stop();
   }, ENGINE_STOP_TIMEOUT_MS);
 
-  // One instance per journey, locked as a worker would lock it.
   async function startAndFetchCharge() {
     const businessKey = randomUUID();
     const processInstanceId = await startWithBusinessKey(

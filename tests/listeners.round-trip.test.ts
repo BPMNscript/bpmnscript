@@ -51,8 +51,6 @@ const EXPECTED_FIELDS = [
   'InspectVehicle complete reviewedBy=${task.assignee}',
 ];
 
-// Every binding an element or a listener can hold, so the walk below reaches
-// each one without asking what kind of element it came off.
 type AnyBinding =
   | ListenerBinding
   | VersionBinding
@@ -165,8 +163,9 @@ describe("idempotence: DSL -> IR1 -> XML -> IR2 -> DSL' -> IR3", () => {
 });
 
 describe('golden generation: the pipeline output matches the frozen .bpmn', () => {
-  it('the timeout listener carries the id BpmnParse.parseTimeoutTaskListener requires and its timer as a bpmn:timerEventDefinition child', () => {
-    expect(rt.frozenXml).toContain(
+  it.each<[title: string, fragment: string]>([
+    [
+      'the timeout listener carries the id BpmnParse.parseTimeoutTaskListener requires and its timer as a bpmn:timerEventDefinition child',
       [
         '<operaton:taskListener id="InspectVehicle_timeout_1" event="timeout" delegateExpression="${assessmentEscalation}">',
         '  <bpmn:timerEventDefinition>',
@@ -174,23 +173,20 @@ describe('golden generation: the pipeline output matches the frozen .bpmn', () =
         '  </bpmn:timerEventDefinition>',
         '</operaton:taskListener>',
       ].join('\n          '),
-    );
-  });
-
-  it('the inline-script listener writes its body verbatim under its language tag', () => {
-    expect(rt.frozenXml).toContain(
+    ],
+    [
+      'the inline-script listener writes its body verbatim under its language tag',
       `<operaton:script scriptFormat="javascript">${SCRIPT_BODY}</operaton:script>`,
-    );
-  });
-
-  it('a listener binding is written unprefixed on its already-qualified element', () => {
-    expect(rt.frozenXml).toContain(
+    ],
+    [
+      'a listener binding is written unprefixed on its already-qualified element',
       '<operaton:executionListener event="start" class="com.example.claims.OpenAuditTrail">',
-    );
+    ],
+  ])('%s', (_title, fragment) => {
+    expect(rt.frozenXml).toContain(fragment);
   });
 });
 
-// The nested shapes are named so the walk cannot pass on an empty tree.
 describeDiContainment(rt, [
   'AssessDamage',
   'InspectVehicle',

@@ -1,15 +1,7 @@
 /**
- * Form-field support across the whole pipeline.
- *
- * A `form { ... }` block on a `start` event or `user` task becomes an
- * `operaton:formData` extension element so Operaton Tasklist renders a labeled
- * form. These tests pin every transform in both directions:
- *   - `astToIr`: the AST form block lowers to IR `formFields`.
- *   - `irToXml`: IR form fields serialize to `operaton:formData`/`formField`,
- *                  mapping the DSL `number` type to Operaton `long`.
- *   - `xmlToIr`: the extension element is read back (no spurious drop warning),
- *                  mapping `long` to `number`; an unmappable type is refused.
- *   - `irToDsl`: form fields round-trip back to a `form { ... }` block.
+ * A `form { ... }` block on a `start` or a `user` task becomes an
+ * `operaton:formData` extension element, with the DSL `number` type written
+ * as Operaton's `long`; one suite per transform direction.
  */
 
 import { beforeAll, describe, expect, it } from 'vitest';
@@ -45,15 +37,11 @@ async function ir(source: string): Promise<BpmnProcess> {
   return astToIr(doc.parseResult.value);
 }
 
-function startOf(process: BpmnProcess): StartEvent {
-  const s = process.flowElements.find((e) => e.kind === 'startEvent');
-  return s as StartEvent;
-}
+const startOf = (process: BpmnProcess): StartEvent =>
+  process.flowElements.find((e) => e.kind === 'startEvent') as StartEvent;
 
-function userOf(process: BpmnProcess): UserTask {
-  const u = process.flowElements.find((e) => e.kind === 'userTask');
-  return u as UserTask;
-}
+const userOf = (process: BpmnProcess): UserTask =>
+  process.flowElements.find((e) => e.kind === 'userTask') as UserTask;
 
 const SOURCE = `process loan(label: "Loan") {
   start RequestReceived {
@@ -101,15 +89,17 @@ describe('irToXml: form fields serialize to operaton:formData', () => {
   it('emits formData/formField, mapping number to long', async () => {
     const xml = await irToXml(await ir(SOURCE));
 
-    expect(xml).toContain('operaton:formData');
-    expect(xml).toContain('operaton:formField');
-    // number -> long, boolean stays boolean.
-    expect(xml).toMatch(/id="amount"[^>]*type="long"/);
-    expect(xml).toMatch(/id="creditScore"[^>]*type="long"/);
-    expect(xml).toMatch(/id="approved"[^>]*type="boolean"/);
-    expect(xml).toContain('label="Loan amount"');
-    expect(xml).toContain('defaultValue="700"');
-    expect(xml).toContain('defaultValue="false"');
+    expect(
+      xml.match(/<operaton:formData>[\s\S]*?<\/operaton:formData>/g),
+    ).toEqual([
+      '<operaton:formData>\n' +
+        '          <operaton:formField id="amount" label="Loan amount" type="long" />\n' +
+        '          <operaton:formField id="creditScore" label="Credit score" type="long" defaultValue="700" />\n' +
+        '        </operaton:formData>',
+      '<operaton:formData>\n' +
+        '          <operaton:formField id="approved" label="Approve the loan?" type="boolean" defaultValue="false" />\n' +
+        '        </operaton:formData>',
+    ]);
   });
 });
 
@@ -119,7 +109,6 @@ describe('xmlToIr: form fields round-trip through XML', () => {
     const xml = await irToXml(original);
     const { ir: reimported, warnings } = await xmlToIr(xml);
 
-    // No warning about the formData extension element being dropped.
     expect(warnings.filter((w) => /form/i.test(w.message))).toHaveLength(0);
 
     expect(startOf(reimported).formFields).toEqual(

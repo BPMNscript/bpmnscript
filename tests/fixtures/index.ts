@@ -3,12 +3,10 @@ import { mkdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import type { ActiveTask, FixtureAdapter, FixtureMode } from './types.js';
+import type { ActiveTask, FixtureAdapter } from './types.js';
 import * as springBootAdapter from './adapters/spring-boot.js';
-import * as externalTasksAdapter from './adapters/external-tasks.js';
-import * as standaloneAdapter from './adapters/standalone.js';
 
-export type { ActiveTask, FixtureAdapter, FixtureMode };
+export type { ActiveTask, FixtureAdapter };
 
 // Addressed by path rather than run through `npx`, which resolves a command by
 // walking `node_modules/.bin` upwards and so can reach a neighbouring checkout's
@@ -30,17 +28,6 @@ export function buildExample(dslPath: string, xmlOutPath: string): void {
   );
 }
 
-export async function startFixture(mode: FixtureMode): Promise<FixtureAdapter> {
-  switch (mode) {
-    case 'spring-boot':
-      return springBootAdapter.start();
-    case 'external-tasks':
-      return externalTasksAdapter.start();
-    case 'standalone':
-      return standaloneAdapter.start();
-    default: {
-      const _exhaustive: never = mode;
-      throw new Error(`Unknown FixtureMode: ${String(_exhaustive)}`);
-    }
-  }
+export async function startFixture(): Promise<FixtureAdapter> {
+  return springBootAdapter.start();
 }

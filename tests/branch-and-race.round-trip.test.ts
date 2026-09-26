@@ -31,9 +31,8 @@ interface Flow {
   conditioned: boolean;
 }
 
-// Regex rather than a parser: the tests workspace declares no moddle dependency.
-// A flow closes on itself unless it carries a condition, which is the only
-// child a flow of this artifact has.
+// A flow closes on itself unless it carries a condition, the only child a flow
+// of this artifact has.
 function sequenceFlows(xml: string): Flow[] {
   const flow =
     /<bpmn:sequenceFlow id="([^"]+)"[^>]*\bsourceRef="([^"]+)" targetRef="([^"]+)"\s*(?:\/>|>([\s\S]*?)<\/bpmn:sequenceFlow>)/g;
@@ -45,7 +44,6 @@ function sequenceFlows(xml: string): Flow[] {
   }));
 }
 
-/** The `(gateway id, default flow id)` pair of every gateway naming a default. */
 function declaredDefaults(xml: string): [string, string][] {
   return [
     ...xml.matchAll(/<bpmn:\w+Gateway id="([^"]+)" default="([^"]+)"/g),
@@ -57,6 +55,17 @@ function countOfKind(
   kind: FlowElement['kind'],
 ): number {
   return container.flowElements.filter((fe) => fe.kind === kind).length;
+}
+
+// Every line opening a branch or a wait, so a lost `else`, a bare branch that
+// gained a head, or an `await` missing a trigger all show up in order.
+function blockHeads(source: string): string[] {
+  return source
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) =>
+      /^(if |else|\{$|await|message\(|timer\(|signal\(|condition\()/.test(line),
+    );
 }
 
 const RACE_GATEWAYS = [
@@ -95,16 +104,22 @@ describe("idempotence: golden .bpmn -> IR2 -> DSL' -> IR3", () => {
   });
 
   it("the decompiled DSL' writes every branch head and both wait forms back", () => {
-    expect(rt.dslPrime).toContain('if (orderValue > 10000) {');
-    expect(rt.dslPrime).toContain('if (!stockShort) {');
-    expect(rt.dslPrime).toContain('else {');
-    expect(rt.dslPrime).toContain('if (overseas) {');
-    expect(rt.dslPrime.match(/await \{/g)).toHaveLength(2);
-    expect(rt.dslPrime).toContain('message("PaymentReceived") {');
-    expect(rt.dslPrime).toContain('timer("P3D", asyncBefore: true) {');
-    expect(rt.dslPrime).toContain('signal("StockArrived") {');
-    expect(rt.dslPrime).toContain('condition(stockShort) {');
-    expect(rt.dslPrime).toContain('await message("CarrierBooked")');
+    expect(blockHeads(rt.dslPrime)).toEqual([
+      'if (orderValue > 10000) {',
+      'if (!stockShort) {',
+      'else {',
+      'if (overseas) {',
+      '{',
+      '{',
+      '{',
+      'await {',
+      'message("PaymentReceived") {',
+      'timer("P3D", asyncBefore: true) {',
+      'await {',
+      'signal("StockArrived") {',
+      'condition(stockShort) {',
+      'await message("CarrierBooked")',
+    ]);
   });
 
   it("every edge folds into a block, so DSL' jumps nowhere", () => {
@@ -195,13 +210,10 @@ describe('gateway shape pins on the frozen .bpmn', () => {
 
 describeNoOverlappingShapes(rt);
 
-// A fork shape the golden pair above cannot carry: a fallback beside a branch
-// that carries no condition, so the fallback is left nothing to pick up. No
-// script authors it, the validator refusing the `else` it prints, so the
-// fixture is built as IR and taken in through the XML the way a modeled
-// diagram arrives. Import to print to re-read, with both channels asserted at
-// once: the report is what stands between the author and an error in the
-// editor with nothing behind it.
+// A fork the golden pair cannot carry: a fallback beside a branch with no
+// condition, so nothing is ever left for the fallback. No script authors it
+// (the validator refuses the `else` it prints), so the fixture is built as IR
+// and taken in through XML, the way a modeled diagram arrives.
 const DEAD_FALLBACK_FLOW = 'Flow_Gateway_1_fork_default';
 
 function inclusiveForkIr(fallbackTarget: string): BpmnProcess {
@@ -282,11 +294,7 @@ describe('a fork whose fallback can never fire', () => {
   });
 
   it('reports it because the printed source is what the validator refuses', () => {
-    // The two halves of the contract, pinned together: printing this shape
-    // draws exactly the refusal the report warns about, so a report dropped
-    // here leaves the refusal unexplained.
-    expect(errors).toHaveLength(1);
-    expect(errors[0]).toContain('could never run');
+    expect(errors).toEqual([expect.stringContaining('could never run')]);
   });
 
   it('says nothing when the fallback runs straight into the merge', async () => {

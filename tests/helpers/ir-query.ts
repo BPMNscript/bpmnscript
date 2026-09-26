@@ -31,7 +31,6 @@ export function subProcess(
   return el;
 }
 
-// Recurses into sub-processes.
 export function allElements(container: FlowContainer): FlowElement[] {
   return container.flowElements.flatMap((fe) =>
     fe.kind === 'subProcess' ? [fe, ...allElements(fe)] : [fe],
@@ -81,8 +80,8 @@ export function definitionOf(
 }
 
 // A handler's trigger sits on the start event of the event sub-process it
-// lowers to, so match on what it catches, never on the synthesized id. Every
-// event sub-process at any depth contributes, an unset trigger included.
+// lowers to, so match on what it catches, never on the synthesized id; every
+// depth contributes, an unset trigger included.
 export function handlerTriggerDefs(
   container: FlowContainer,
 ): (EventDefinition | undefined)[] {
@@ -118,7 +117,6 @@ export function allOf<K extends FlowElement['kind']>(
   );
 }
 
-// Throws unless exactly one match, for the common case of one carrier per kind.
 export function theOnly<K extends FlowElement['kind']>(
   container: FlowContainer,
   kind: K,

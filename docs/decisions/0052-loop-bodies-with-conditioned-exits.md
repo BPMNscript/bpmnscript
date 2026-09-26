@@ -87,6 +87,7 @@ The predicate is `enclosingContinuation` in `packages/transform/src/ir-to-dsl.ts
 `emitRoutes` asks a further step between the clean join and the guard clause, `convergence`, which reads where the split's live routes come back together off the model's routes by forward reachability bounded by the stop node, and so answers a split whose branch can end and whose post-dominator therefore lies at the exit.
 
 Amends ADR-0009, whose catalog gains the enclosing continuation beside the clean join and the guard clause.
+Amends ADR-0014, whose print hop now walks the route that stays inside a loop body inline and prints the leaving routes alone as jumps, for a split inside a loop body whose every route is conditioned.
 
 Related decisions: ADR-0009 (the catalog this rule extends).
 ADR-0036 (the inline terminal in a guard clause, whose region test the chain reuses).

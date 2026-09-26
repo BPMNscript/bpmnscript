@@ -163,6 +163,8 @@ Amends ADR-0020, whose four-trigger scope and "no authored name" hold for the re
 
 Amends ADR-0025, whose event-based gateway refusal relied on `mapIntermediateCatchEvent` turning a link away wherever it appeared; that refusal now rests on the importer's rule that no flow enters a link catch.
 
+Amends ADR-0016, whose terminality rule gains the one `emit` that ends its chain, `emit link`; the two printed words decide it, so terminality is still read off the text and never off position.
+
 Related decisions: ADR-0014 (the honest import contract, under which a rewrite of what is on the wire is not an option).
 ADR-0016 (the terminality rule; `emit link` is the one `emit` that ends its chain, but the two printed words decide it, so terminality is still read off the text and never off position).
 ADR-0017 (the payload surfaces the link name reuses).

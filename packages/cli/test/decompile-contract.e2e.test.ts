@@ -38,8 +38,6 @@ const ERROR_START_BPMN = path.resolve(
   'tests/fixtures/error-start.bpmn',
 );
 
-// `StartEvent_1`/`EndEvent_1` are what a modeler mints for a start and an end
-// drawn without a name of their own.
 /** A labeled start and end under the given ids, in process `generated-id-labels`. */
 const labeledTerminalsBpmn = (
   startId: string,
@@ -199,8 +197,8 @@ describe('decompile contract: the script it hands back goes through the pipeline
     expect(diagnostics).toHaveLength(0);
   });
 
-  // Only the exact ids the compiler generates for the process are left out
-  // of the script; a modelling tool's default ids are names like any other.
+  // Only the exact ids the compiler generates for the process are left out of
+  // the script; a modeller's defaults (`StartEvent_1`) are names like any other.
   it.each([
     [
       "a modelling tool's default ids keep their statements and labels",

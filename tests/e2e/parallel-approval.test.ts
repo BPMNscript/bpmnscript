@@ -38,7 +38,6 @@ describe('Always-on guard: parallel-approval.bpmnscript desugars to parallelGate
 describe.skipIf(SKIP)('E2E: parallel-approval on Spring Boot Operaton', () => {
   let fixture: FixtureAdapter;
 
-  // One deployment serves every case.
   beforeAll(async () => {
     fixture = await deployExamples('parallel-approval');
   }, ENGINE_BOOT_TIMEOUT_MS);

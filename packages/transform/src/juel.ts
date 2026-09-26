@@ -1,13 +1,12 @@
 /**
  * Parser, classifier, and DSL serializer for the JUEL subset, on the import
- * path. It decides whether a raw `${...}` or `#{...}` body fits the subset and
- * can print as clean unquoted DSL, or has to fall back to the quoted raw form,
- * `"${...}"` or `"#{...}"` with the opener it came with.
+ * path: a raw `${...}` or `#{...}` body either fits the subset and prints as
+ * bare DSL, or falls back to the quoted raw form with the opener it came with.
  *
  * The subset boundary is the Langium expression sub-grammar in
  * `packages/language/src/bpmn-script.langium`, whose precedence the
- * recursive-descent parser below reproduces. A test cross-checks this ladder
- * against the real grammar, so the two cannot drift:
+ * recursive-descent parser below reproduces; a test cross-checks this ladder
+ * against the real grammar:
  *
  *   ternary          c ? t : f
  *   logical          ||  &&
@@ -23,16 +22,16 @@
  * A method or bean call (`x.foo()`), a JUEL function (`fn:size(x)`), or a
  * malformed body is classified raw.
  *
- * Hand-rolled rather than re-invoking Langium: a synchronous, dependency-free
- * parser keeps `xmlToIr` and `irToDsl` off the language package's async parse
- * machinery on the hot import path.
- *
- * The surface form is shared with `renderExpression` in `@bpmn-script/language`:
- * double-quoted strings, spaced operators, `.prop`/`[idx]` accessors, author
- * parentheses preserved. That makes `parseJuel(renderExpression(x))` idempotent
- * on the subset, which is what keeps a round trip from re-wrapping a body it
- * already printed bare.
+ * Hand-rolled rather than re-invoking Langium so that `xmlToIr` and `irToDsl`
+ * stay synchronous and off the language package's parse machinery. The
+ * surface form matches `renderExpression` in `@bpmn-script/language`
+ * (double-quoted strings, spaced operators, `.prop`/`[idx]` accessors, author
+ * parentheses kept), which makes `parseJuel(renderExpression(x))` idempotent
+ * on the subset and keeps a round trip from re-wrapping a body it already
+ * printed bare.
  */
+
+import { ID_TERMINAL } from '@bpmn-script/language';
 
 export type JuelNode =
   | { kind: 'int'; value: number }
@@ -148,10 +147,9 @@ function stripWrapper(body: string): string | undefined {
 }
 
 /**
- * Only fills the `text` of a raw result, never the classification. It sees a
- * body with no wrapper or with an unclosed one, so it drops the opening
- * delimiter alone: taking a closing brace it never opened would corrupt the
- * text {@link renderRawFallback} re-wraps.
+ * Fills the `text` of a raw result whose wrapper is missing or unclosed, so it
+ * drops the opening delimiter alone: taking a closing brace it never opened
+ * would corrupt the text {@link renderRawFallback} re-wraps.
  */
 function stripWrapperLenient(body: string): string {
   const trimmed = body.trim();
@@ -174,10 +172,7 @@ const MULTI_CHAR_OPS = ['||', '&&', '==', '!=', '<=', '>='];
 const SINGLE_CHAR_OPS = ['<', '>', '+', '-', '*', '/', '%', '!', '?', ':'];
 const PUNCT = ['(', ')', '[', ']', '.'];
 
-const ID_START = /[_a-zA-Z]/;
-// The grammar's ID terminal: word chars with internal hyphen groups, where a
-// hyphen must be followed by at least one word char.
-const ID_REGEX = /^[_a-zA-Z]\w*(?:-\w+)*/;
+const ID_REGEX = new RegExp(`^${ID_TERMINAL.source}`, ID_TERMINAL.flags);
 const DECIMAL_REGEX = /^[0-9]+\.[0-9]+/;
 const INT_REGEX = /^[0-9]+/;
 
@@ -228,10 +223,9 @@ function tokenize(input: string): Token[] | undefined {
       continue;
     }
 
-    if (ID_START.test(ch)) {
-      const idMatch = ID_REGEX.exec(rest);
-      // ID_REGEX is anchored and ch is an id-start char, so this always matches.
-      const word = idMatch![0];
+    const idMatch = ID_REGEX.exec(rest);
+    if (idMatch) {
+      const word = idMatch[0];
       if (word === 'true' || word === 'false') {
         tokens.push({ type: 'bool', value: word });
       } else if (word === 'null') {
@@ -280,7 +274,6 @@ function readString(
   while (i < input.length) {
     const ch = input[i];
     if (ch === '\\') {
-      // Backslash escape: the next char is kept literally.
       if (i + 1 >= input.length) {
         return undefined;
       }
@@ -488,10 +481,9 @@ function renderNode(node: JuelNode): string {
     case 'decimal':
       return String(node.value);
     case 'string':
-      // The grammar's string reader (Langium's `convertEscapeCharacter`)
-      // resolves `\b \f \n \r \t \v \0` to control characters and, for any
-      // other character, drops the backslash and keeps the character, so only
-      // the doubled form reads back as a backslash; it is also the one escape
+      // Langium's `convertEscapeCharacter` resolves `\b \f \n \r \t \v \0` and
+      // drops the backslash before any other character, so only the doubled
+      // form reads back as a backslash; it is also the one escape
       // `Scanner.nextString` in operaton-juel takes besides `\"`.
       return `"${escapeQuoted(node.value)}"`;
     case 'bool':

@@ -1,10 +1,7 @@
-// Run `npm run build` before this suite: it consumes the compiled out/
-// directories of language, transform, and extension.
-//
-// What conversion makes of a given input is `conversion-core.test.ts`. What is
-// under test here is the one thing only a bundle can answer: whether the
-// transform still finds its moddle asset once esbuild has flattened it into a
-// single CommonJS file, which is how the extension actually ships.
+// Needs `npm run build` first: it consumes the compiled out/ of language,
+// transform and extension. Under test is the one thing only a bundle can
+// answer: whether the transform still finds its moddle asset once esbuild has
+// flattened it into a single CommonJS file, which is how the extension ships.
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import * as fs from 'node:fs';
@@ -17,8 +14,7 @@ import * as esbuild from 'esbuild';
 // @ts-ignore esbuild.mjs is a plain JS module with no type declarations.
 import { sharedBuildOptions, assetCopyPlugin } from '../esbuild.mjs';
 
-// Vitest transforms TS in place, so import.meta.url resolves to this source
-// file, not to any out/ directory.
+// Vitest transforms TS in place, so import.meta.url is this source file.
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
@@ -39,8 +35,8 @@ describe('bundled asset resolution and transform under the shim', () => {
   // Unique per run: parallel suites would otherwise collide on these paths.
   const runId = `${process.pid}-${Date.now()}`;
   const verifyEntryFile = path.join(os.tmpdir(), `verify-entry-${runId}.js`);
-  // Under out/extension/ so assetCopyPlugin lands operaton-moddle.json beside
-  // it whatever the cwd, which is what the import.meta.url shim then resolves.
+  // Under out/extension/ so assetCopyPlugin lands operaton-moddle.json where
+  // the import.meta.url shim resolves.
   const verifyOutfile = path.resolve(
     EXT_DIR,
     'out',
@@ -49,6 +45,8 @@ describe('bundled asset resolution and transform under the shim', () => {
   );
 
   beforeAll(async () => {
+    // The only check on assetCopyPlugin's outdir branch: the build below takes
+    // the outfile branch, and the extension itself ships through outdir.
     const moddlePath = path.resolve(
       EXT_DIR,
       'out',
@@ -78,8 +76,7 @@ describe('bundled asset resolution and transform under the shim', () => {
 
     fs.writeFileSync(verifyEntryFile, entrySource, 'utf-8');
 
-    // nodePaths is required: the entry lives in /tmp/, so esbuild's resolution
-    // walk finds no node_modules and cannot resolve @bpmn-script/transform.
+    // The entry lives in /tmp/, where esbuild's node_modules walk finds nothing.
     await esbuild.build({
       ...sharedBuildOptions,
       entryPoints: [verifyEntryFile],
@@ -90,8 +87,7 @@ describe('bundled asset resolution and transform under the shim', () => {
   }, 60_000);
 
   afterAll(() => {
-    // Only the two per-run files; out/extension/operaton-moddle.json belongs to
-    // the production build and must survive.
+    // out/extension/operaton-moddle.json belongs to the extension build.
     if (fs.existsSync(verifyEntryFile)) fs.unlinkSync(verifyEntryFile);
     if (fs.existsSync(verifyOutfile)) fs.unlinkSync(verifyOutfile);
   });

@@ -72,8 +72,16 @@ export {
 export { parseJuel, renderRawFallback } from './juel.js';
 export type { JuelNode, Accessor, BinaryOp, ExprResult } from './juel.js';
 
-export { irToXml, type IrToXmlOptions } from './ir-to-xml.js';
-export { xmlToIr } from './xml-to-ir.js';
+export { irToXml } from './ir-to-xml.js';
+export {
+  COMPENSATION_BOUNDARY_DETAIL,
+  CONNECTOR_CONSTRUCT,
+  dataConstructDropMessage,
+  IS_FOR_COMPENSATION_DETAIL,
+  loopDroppedMessage,
+  manualTaskMessage,
+  xmlToIr,
+} from './xml-to-ir.js';
 export type { ImportWarning, ImportWarningCategory } from './xml-to-ir.js';
 export {
   UnsupportedConstructError,

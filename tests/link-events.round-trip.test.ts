@@ -73,8 +73,34 @@ describe("idempotence: golden .bpmn -> IR2 -> DSL' -> IR3", () => {
   });
 
   it("the decompiled DSL' places each catch after a dead fall-through and keeps the rework chain structured", () => {
-    expect(rt.dslPrime).toContain(
+    expect(rt.dslPrime).toBe(
       [
+        'process claim-review {',
+        '  start Filed(label: "A claim is filed") {',
+        '    form {',
+        '      approved: boolean "Approved?"',
+        '      amount: number "Claim amount"',
+        '      receiptsComplete: boolean "Receipts complete?"',
+        '    }',
+        '  }',
+        '  user AssessClaim(label: "Assess the claim", assignee: "demo")',
+        '  if (!receiptsComplete) {',
+        '    goto ReworkMissingReceipts',
+        '  } else if (!approved) {',
+        '    goto ReworkRejected',
+        '  }',
+        '  subprocess Settlement(label: "Settle the claim") {',
+        '    start SettlementStart',
+        '    service PayClaim(label: "Pay the claim", class: "com.example.claims.PayClaimDelegate")',
+        '    if (amount > 1000) {',
+        '      goto ToAudit',
+        '    }',
+        '    end Settled',
+        '    emit link ToAudit("Audit")',
+        '    await link AtAudit("Audit")',
+        '    user AuditPayout(label: "Audit the payout", assignee: "manager")',
+        '    end Audited',
+        '  }',
         '  end Closed(label: "Claim closed")',
         '  emit link ReworkMissingReceipts("Rework")',
         '  emit link ReworkRejected("Rework")',
@@ -86,15 +112,8 @@ describe("idempotence: golden .bpmn -> IR2 -> DSL' -> IR3", () => {
         '    user NoteRework(label: "Note the rework", assignee: "demo")',
         '  }',
         '  goto AssessClaim',
-      ].join('\n'),
-    );
-    expect(rt.dslPrime).toContain(
-      [
-        '    end Settled',
-        '    emit link ToAudit("Audit")',
-        '    await link AtAudit("Audit")',
-        '    user AuditPayout(label: "Audit the payout", assignee: "manager")',
-        '    end Audited',
+        '}',
+        '',
       ].join('\n'),
     );
   });

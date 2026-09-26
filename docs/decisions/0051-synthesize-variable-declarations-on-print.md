@@ -90,5 +90,8 @@ The two-pass table in `tests/round-trip-constructs.test.ts` requires an empty di
 The walk is `variableDecls` in `packages/transform/src/ir-to-dsl.ts`.
 The validator's positions are in `checkExpression` in `packages/language/src/bpmn-script-validator.ts` and its symbol table in `packages/language/src/variable-symbol-provider.ts`.
 
+Amends ADR-0014, whose print hop now declares `var <name>: any` for every variable the printed script reads bare and nothing else declares, so a decompiled script builds without an undeclared-variable warning.
+Amends ADR-0027, whose collection declaration on print becomes one case of that rule rather than the only one.
+
 Related decisions: ADR-0027 (the collection declaration this generalizes, and the seeded loop counters).
 ADR-0014 (the honest import contract the clean rebuild belongs to).

@@ -69,7 +69,6 @@ describe.skipIf(SKIP)('E2E: loan-approval-kopp on Spring Boot Operaton', () => {
     const assess = pending.find((t) => t.taskDefinitionKey === 'AssessRisk');
     expect(assess).toBeDefined();
 
-    // Submit the `assessorRes` form field, exactly as Tasklist would.
     await fixture.completeTask(assess!.id, { assessorRes: 'low' });
 
     const remaining = await waitForTasks(

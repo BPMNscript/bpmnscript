@@ -1,23 +1,14 @@
-/**
- * `xmlToIr` followed by `irToDsl` must stay linear in the number of flow
- * nodes. Each of `tryWhile` and `tryDoWhileEntry` in `ir-to-dsl.ts` asks
- * `CfgAnalysis.backEdges()` once per emitted node; if that recomputes the
- * whole flow list by walking the dominator chain per edge, a straight chain
- * of n tasks costs O(n^3) and a Modeler-style export of a few thousand tasks
- * hangs with no output.
- *
- * Two guards in `cfg-analysis.ts` hold this together: `backEdges()` returns
- * a list computed once, and `dominates` answers in two map lookups. Reverting
- * either one alone leaves the chain at O(n^2), which still finishes inside
- * the budget; only reverting both turns this test red.
- */
+// `tryWhile` and `tryDoWhileEntry` in `ir-to-dsl.ts` ask
+// `CfgAnalysis.backEdges()` once per emitted node, so a straight chain of n
+// tasks costs O(n^3) unless `backEdges()` is computed once and `dominates`
+// answers in two map lookups. Reverting either guard alone leaves O(n^2),
+// which still finishes inside the budget; only reverting both turns this red.
 import { describe, expect, it } from 'vitest';
 import { xmlToIr } from '@bpmn-script/transform';
 import { parseToAst, printDsl } from './helpers/pipeline.js';
 
 const TASK_COUNT = 1000;
 
-/** A Modeler-style straight-line chain: start -> N plain tasks -> end. */
 function chainBpmn(taskCount: number): string {
   const flowElements: string[] = [
     '<bpmn:startEvent id="Begin"><bpmn:outgoing>Flow_0</bpmn:outgoing></bpmn:startEvent>',
@@ -28,8 +19,7 @@ function chainBpmn(taskCount: number): string {
   for (let i = 1; i <= taskCount; i++) {
     const taskId = `Task_${i}`;
     const flowId = `Flow_${i - 1}`;
-    // `name` matches `humanize(taskId)` exactly, so the printer drops it as
-    // a redundant label and each line below reads as plain `step Task_<i>`.
+    // `name` matches `humanize(taskId)`, so the printer drops the label.
     flowElements.push(
       `<bpmn:task id="${taskId}" name="Task ${i}"><bpmn:incoming>${flowId}</bpmn:incoming></bpmn:task>`,
     );

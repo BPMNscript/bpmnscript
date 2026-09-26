@@ -1,7 +1,7 @@
 /**
- * Renders a parsed JUEL-subset expression AST back to its canonical `${...}`
- * body string. It lives here rather than in `transform` so it carries no
- * dependency on that package; `astToIr` imports it the other way round.
+ * Renders a parsed JUEL-subset expression back to its `${...}` text. It lives
+ * here rather than in `transform` because `astToIr` imports it; the dependency
+ * runs transform -> language and never the reverse.
  */
 
 import type { Expr, Accessor } from './generated/ast.js';
@@ -24,10 +24,10 @@ import {
 } from './generated/ast.js';
 
 /**
- * The digits of an integer literal with its sign, or `undefined` for any other
- * expression. Bare, `-5` parses as a `-` unary over `5`, and every setting the
- * engine reads with `Integer.parseInt` or `Long.parseLong` takes that as the
- * one integer it is rather than as an expression.
+ * The digits of an integer literal with its sign, else `undefined`. A bare
+ * `-5` parses as a `-` unary over `5`, and every setting the engine reads with
+ * `Integer.parseInt` or `Long.parseLong` takes it as one integer, not an
+ * expression.
  */
 export function integerLiteralText(node: Expr): string | undefined {
   if (isLiteralInt(node)) {
@@ -39,7 +39,6 @@ export function integerLiteralText(node: Expr): string | undefined {
   return undefined;
 }
 
-/** A {@link RawExpr} is already a complete `${...}` or `#{...}` and comes back as written. */
 export function renderExpression(node: Expr): string {
   if (isRawExpr(node)) {
     return node.raw;
@@ -47,16 +46,12 @@ export function renderExpression(node: Expr): string {
   return `\${${renderExpressionInner(node)}}`;
 }
 
-/**
- * The inner text without the `${...}` wrapper. Parentheses are emitted only
- * where the author wrote them: a faithful structural render, not a
- * minimal-parenthesization printer.
- */
+/** The text inside the `${...}` wrapper. Parentheses are emitted only where the author wrote them. */
 export function renderExpressionInner(node: Expr): string {
   if (isRawExpr(node)) {
-    // JUEL has no `${` token once inside an expression, so a raw operand is
-    // spliced in by its body. A composite raw has no one body to splice and is
-    // left as written for the validator to refuse.
+    // JUEL has no `${` token inside an expression, so a raw operand is spliced
+    // in by its body; a composite has no one body and is left for the
+    // validator to refuse.
     const body = singleTemplateBody(node.raw);
     return body === undefined ? node.raw : `(${body})`;
   }
@@ -67,7 +62,6 @@ export function renderExpressionInner(node: Expr): string {
       `${renderExpressionInner(node.whenFalse)}`
     );
   }
-  // All five binary precedence levels share the same `left op right` shape.
   if (
     isLogical(node) ||
     isEquality(node) ||
@@ -90,10 +84,9 @@ export function renderExpressionInner(node: Expr): string {
     return String(node.value);
   }
   if (isLiteralString(node)) {
-    // The lexer stripped the author's quotes. This produces JUEL text, so it
-    // must double the backslash before escaping the quote, same as `juel.ts`
-    // in `@bpmn-script/transform` does: those are the only two escapes
-    // operaton-juel's `Scanner.nextString` accepts.
+    // JUEL text, so the backslash is doubled before the quote is escaped, as
+    // `escapeQuoted` in `@bpmn-script/transform`'s `juel.ts` does: those are
+    // the only two escapes operaton-juel's `Scanner.nextString` accepts.
     return `"${node.value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
   }
   if (isLiteralBool(node) || isLiteralNull(node)) {
@@ -109,8 +102,7 @@ function renderAccessor(accessor: Accessor): string {
   if (accessor.prop !== undefined) {
     return `.${accessor.prop}`;
   }
-  // The grammar guarantees `prop` XOR `index`, which TS cannot prove here;
-  // guard so a third accessor form throws instead of rendering `undefined`.
+  // The grammar guarantees `prop` XOR `index`, which TS cannot prove here.
   if (accessor.index === undefined) {
     throw new Error(
       'renderAccessor: accessor has neither a `prop` nor an `index` (unexpected accessor shape)',
@@ -120,12 +112,10 @@ function renderAccessor(accessor: Accessor): string {
 }
 
 /**
- * The body of a raw template that is exactly one template, `${body}` or
- * `#{body}` with no second opener and no `}` before the last, else
- * `undefined`: `${a} and ${b}` and `${a} b}` are composites the engine
- * evaluates to text around the one template each holds. A `}` or opener
- * inside a JUEL string literal is string text (`Scanner.nextString`), so
- * `${map['}']}` is one template.
+ * The body of a raw template that is exactly one template, else `undefined`:
+ * `${a} and ${b}` and `${a} b}` are composites the engine evaluates to text
+ * around the template. A `}` or opener inside a JUEL string literal is string
+ * text (`Scanner.nextString`), so `${map['}']}` is one template.
  */
 export function singleTemplateBody(raw: string): string | undefined {
   if (!/^[$#]\{[^]*\}$/.test(raw)) return undefined;

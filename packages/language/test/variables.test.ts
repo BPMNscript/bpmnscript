@@ -1,44 +1,41 @@
 /**
- * Tests for the {@link VariableSymbolProvider} service.
- *
- * The provider turns a `Process` AST into a flat, position-independent variable
- * table (declared variable names -> their Operaton-aligned types) that the
- * validators consult.
- *
- * The tests parse a process with `parseHelper` (no validation needed) and
- * exercise the provider directly.
+ * `VariableSymbolProvider.collect`, the flat table of every name a process
+ * declares, driven through the injected service on a parsed process.
  */
 
 import { beforeAll, describe, expect, test } from 'vitest';
 import { EmptyFileSystem } from 'langium';
 import { parseHelper } from 'langium/test';
-import type { Model, Process, VarType } from '@bpmn-script/language';
-import {
-  createBpmnScriptServices,
-  DefaultVariableSymbolProvider,
-  type VariableSymbolProvider,
+import type {
+  Model,
+  VariableSymbol,
+  VariableSymbolProvider,
+  VariableTable,
 } from '@bpmn-script/language';
+import { createBpmnScriptServices } from '@bpmn-script/language';
 import { formatParseFailure } from './helpers/parse-failure.js';
 
-let services: ReturnType<typeof createBpmnScriptServices>;
+let provider: VariableSymbolProvider;
 let parse: ReturnType<typeof parseHelper<Model>>;
 
 beforeAll(() => {
-  services = createBpmnScriptServices(EmptyFileSystem);
+  const services = createBpmnScriptServices(EmptyFileSystem);
+  provider = services.BpmnScript.references.VariableSymbolProvider;
   parse = parseHelper<Model>(services.BpmnScript);
 });
 
-describe('VariableSymbolProvider', () => {
-  test('is registered as an injectable language service', () => {
-    const provider: VariableSymbolProvider =
-      services.BpmnScript.references.VariableSymbolProvider;
-    expect(provider).toBeDefined();
-    expect(typeof provider.collect).toBe('function');
-  });
+const LOOP_COUNTERS: [string, VariableSymbol][] = [
+  'nrOfInstances',
+  'nrOfActiveInstances',
+  'nrOfCompletedInstances',
+  'loopCounter',
+].map((name) => [name, { name, type: 'number' }]);
 
-  test('collects declared variables with their types for a multi-var process', async () => {
-    const process = await parseProcess(`
-process p {
+describe('the variable table of a process', () => {
+  test.each<readonly [title: string, source: string, expected: VariableTable]>([
+    [
+      'a header var of every type enters with that type',
+      `process p {
   var amount: number
   var name: string
   var flag: boolean
@@ -47,96 +44,63 @@ process p {
   var misc: any
   start S
   end E
-}
-`);
-    const table = newProvider().collect(process);
-    expect(table.size).toBe(6);
-    expect(table.get('amount')?.type).toBe<VarType>('number');
-    expect(table.get('name')?.type).toBe<VarType>('string');
-    expect(table.get('flag')?.type).toBe<VarType>('boolean');
-    expect(table.get('due')?.type).toBe<VarType>('date');
-    expect(table.get('payload')?.type).toBe<VarType>('json');
-    expect(table.get('misc')?.type).toBe<VarType>('any');
-  });
-
-  test('a process with no var declarations yields an empty table', async () => {
-    const process = await parseProcess(`process p { start S end E }`);
-    expect(newProvider().collect(process).size).toBe(0);
-  });
-
-  test('a field name stays out of the table while input and output names enter it', async () => {
-    const process = await parseProcess(`
-process p {
+}`,
+      new Map([
+        ['amount', { name: 'amount', type: 'number' }],
+        ['name', { name: 'name', type: 'string' }],
+        ['flag', { name: 'flag', type: 'boolean' }],
+        ['due', { name: 'due', type: 'date' }],
+        ['payload', { name: 'payload', type: 'json' }],
+        ['misc', { name: 'misc', type: 'any' }],
+      ]),
+    ],
+    [
+      'a process declaring nothing has an empty table',
+      `process p { start S end E }`,
+      new Map(),
+    ],
+    [
+      'a field name stays out of the table while input and output names enter it',
+      `process p {
   service S(class: "com.acme.D") {
     input amount = 1
     output result = "x"
     field greeting = "hello"
     on start(class: "com.acme.L") { field salutation = "hi" }
   }
-}
-`);
-    expect(newProvider().collect(process)).toEqual(
+}`,
       new Map([
         ['amount', { name: 'amount', type: 'any' }],
         ['result', { name: 'result', type: 'any' }],
       ]),
-    );
-  });
-
-  test('a repeat element enters the table as any beside the loop counters', async () => {
-    const process = await parseProcess(`
-process p {
+    ],
+    [
+      'a repeat element enters the table as any beside the loop counters',
+      `process p {
   var items: json
   user U for each item in items
-}
-`);
-    expect(newProvider().collect(process)).toEqual(
-      new Map([
+}`,
+      new Map<string, VariableSymbol>([
         ['items', { name: 'items', type: 'json' }],
         ['item', { name: 'item', type: 'any' }],
-        ['nrOfInstances', { name: 'nrOfInstances', type: 'number' }],
-        [
-          'nrOfActiveInstances',
-          { name: 'nrOfActiveInstances', type: 'number' },
-        ],
-        [
-          'nrOfCompletedInstances',
-          { name: 'nrOfCompletedInstances', type: 'number' },
-        ],
-        ['loopCounter', { name: 'loopCounter', type: 'number' }],
+        ...LOOP_COUNTERS,
       ]),
-    );
-  });
-
-  test('collect() answers membership and type queries via the returned table', async () => {
-    const process = await parseProcess(`
-process p {
-  var amount: number
-  start S
-  end E
-}
-`);
-    const table = newProvider().collect(process);
-    expect(table.has('amount')).toBe(true);
-    expect(table.has('missing')).toBe(false);
-    expect(table.get('amount')?.type).toBe<VarType>('number');
-    expect(table.get('missing')?.type).toBeUndefined();
+    ],
+    [
+      'a count alone seeds the loop counters, and a declared one keeps its own type',
+      `process p {
+  var loopCounter: string
+  user U for 3
+}`,
+      new Map<string, VariableSymbol>([
+        ['loopCounter', { name: 'loopCounter', type: 'string' }],
+        ...LOOP_COUNTERS.filter(([name]) => name !== 'loopCounter'),
+      ]),
+    ],
+  ])('%s', async (_title, source, expected) => {
+    const document = await parse(source);
+    expect(formatParseFailure(document)).toBeUndefined();
+    const process = document.parseResult.value.processes[0]!;
+    expect(provider.collect(process)).toEqual(expected);
   });
 });
-
-// ── Helpers ──────────────────────────────────────────────────────────────────
-
-/** A fresh provider with no contributors. */
-function newProvider(): VariableSymbolProvider {
-  return new DefaultVariableSymbolProvider();
-}
-
-/** Parse a source string and return its single process, failing on parse error. */
-async function parseProcess(source: string): Promise<Process> {
-  const document = await parse(source.trim());
-  const failure = formatParseFailure(document);
-  if (failure) {
-    throw new Error(`source failed to parse:\n${failure}`);
-  }
-  return document.parseResult.value.processes[0]!;
-}

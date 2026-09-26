@@ -1,4 +1,4 @@
-// No `vscode` import here: the unit tests run this without an editor host.
+// No `vscode` import here: the unit tests run this without an editor host;
 // `conversion.ts` is the VS Code adapter.
 
 import { createBpmnScriptServices } from '@bpmn-script/language';
@@ -36,6 +36,8 @@ export type DecompileResult =
   | { ok: false; kind: 'unsupported'; message: string }
   | { ok: false; kind: 'error'; message: string };
 
+// LSP's `DiagnosticSeverity.Error`; `vscode-languageserver-types` is not a
+// dependency of this package.
 const SEVERITY_ERROR = 1;
 
 // Built once per module load: creating the services is expensive.
@@ -49,8 +51,8 @@ export async function compileDslToBpmn(
 ): Promise<CompileResult> {
   const uri = URI.parse(`memory:///conv-${nextDocId++}.bpmnscript`);
 
-  // Registered so the DocumentBuilder can resolve cross-references, and
-  // removed afterwards so the index does not grow with every call.
+  // Registered so the DocumentBuilder resolves cross-references, removed
+  // afterwards so the index does not grow with every call.
   const doc = shared.workspace.LangiumDocumentFactory.fromString<Model>(
     source,
     uri,
@@ -76,10 +78,11 @@ export async function compileDslToBpmn(
       return { ok: false, kind: 'validation', diagnostics };
     }
 
-    const ast = doc.parseResult.value as Model;
+    // The cli's build.ts and tests/helpers/pipeline.ts run the same
+    // astToIr -> irToXml chain, each with its own failure reporting.
     let ir;
     try {
-      ir = astToIr(ast);
+      ir = astToIr(doc.parseResult.value);
     } catch (err) {
       return {
         ok: false,
@@ -154,8 +157,8 @@ export async function decompileBpmnToDsl(
   return { ok: true, output, warnings: [...warnings, ...printWarnings] };
 }
 
-// Duplicated from `packages/cli/src/util.ts` rather than imported: importing it
-// would pull chalk and commander into the extension bundle.
+// The cli's `resolveOutputPath` does the same without an override, but
+// importing it would pull chalk and commander into the extension bundle.
 export function swapExtension(filePath: string, newExt: string): string {
   const dir = path.dirname(filePath);
   const base = path.basename(filePath, path.extname(filePath));

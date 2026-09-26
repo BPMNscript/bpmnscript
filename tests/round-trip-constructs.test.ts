@@ -9,7 +9,6 @@ import type { BpmnProcess } from '@bpmn-script/transform';
 import { normalizeIr } from './helpers/normalize-ir.js';
 import { realNodeReachability } from './helpers/real-node-reachability.js';
 import {
-  parse,
   parseToAst,
   printDsl,
   roundTripOf,
@@ -36,83 +35,71 @@ const UNSTRUCTURED_BPMN_PATH = resolve(
 
 describe('structured idempotence (invoice-approval, if/else)', () => {
   const run = roundTripOf(readFileSync(INVOICE_DSL_PATH, 'utf-8'));
-  let dsl2: string;
-
-  beforeAll(() => {
-    dsl2 = printDsl(run.ir3);
-  });
 
   it('final IR equals initial IR up to documented id normalization', () => {
     expect(normalizeIr(run.ir3)).toEqual(normalizeIr(run.ir1));
   });
 
-  it('re-emitted DSL is byte-identical to the first emitted DSL', () => {
-    // Deterministic structural ids make the emission byte-stable, so a second
-    // irToDsl over the re-desugared IR reproduces the first exactly.
-    expect(dsl2).toBe(run.dsl);
-  });
-
-  it('the emitted DSL is structured syntax (if/else, no gateway/edge form)', () => {
-    expect(run.dsl).toContain('process invoice-approval');
-    expect(run.dsl).toContain('if (amount > 1000)');
-    expect(run.dsl).toContain('else');
-    expect(run.dsl).not.toContain('gateway');
-    expect(run.dsl).not.toContain('->');
-  });
-
-  it('the if-condition survives as a conditional flow in the final IR', () => {
-    const conditional = run.ir3.sequenceFlows.find(
-      (sf) => sf.conditionExpression !== undefined,
+  it('the emitted DSL is structured syntax, and a second emission reproduces it byte for byte', () => {
+    expect(run.dsl).toBe(
+      [
+        'process invoice-approval {',
+        '  start ReviewStart {',
+        '    form {',
+        '      amount: number "Invoice amount"',
+        '    }',
+        '  }',
+        '  user ReviewInvoice(assignee: "demo")',
+        '  if (amount > 1000) {',
+        '    user SeniorApproval(assignee: "manager")',
+        '  } else {',
+        '    service AutoApprove(class: "com.example.invoice.AutoApproveDelegate")',
+        '  }',
+        '  end Done',
+        '}',
+        '',
+      ].join('\n'),
     );
-    expect(conditional).toBeDefined();
-    expect(conditional!.conditionExpression).toBe('${amount > 1000}');
+    expect(printDsl(run.ir3)).toBe(run.dsl);
   });
 });
 
-describe('loop round-trip (while => conditioned back-edge, never standardLoopCharacteristics)', () => {
+describe('while and parallel round-trip (structured-control-flow)', () => {
   const run = roundTripOf(readFileSync(STRUCTURED_DSL_PATH, 'utf-8'));
 
-  it('the BPMN XML contains no standardLoopCharacteristics', () => {
-    // A `while` desugars to a conditioned back-edge, not a loop-marker task.
+  it('lowers `while` to a conditioned back-edge and `parallel` to one fork and one join', () => {
     expect(run.xml).not.toContain('standardLoopCharacteristics');
+    expect(run.xml.match(/<bpmn:parallelGateway\b/g)).toHaveLength(2);
   });
 
-  it('the re-emitted DSL reconstructs the loop as `while`, with no goto', () => {
-    expect(run.dsl).toMatch(/\bwhile\s*\(/);
-    expect(run.dsl).toContain('while (retries < 3)');
-    expect(run.dsl).not.toContain('goto');
-  });
-
-  it('the loop body task survives the round-trip verbatim', () => {
-    expect(run.dsl).toContain(
-      'service RetryFetch(label: "Retry fetch", ' +
-        'class: "com.example.flow.RetryFetchDelegate")',
-    );
-  });
-});
-
-describe('parallel round-trip (parallelGateway fork/join => parallel { { } { } })', () => {
-  const run = roundTripOf(readFileSync(STRUCTURED_DSL_PATH, 'utf-8'));
-
-  it('the BPMN XML contains a parallelGateway fork and join (two parallelGateways)', () => {
-    expect(run.xml).toContain('bpmn:parallelGateway');
-    const forkJoin = run.xml.match(/<bpmn:parallelGateway\b/g) ?? [];
-    expect(forkJoin.length).toBe(2); // exactly one fork + one join
-  });
-
-  it('the re-emitted DSL reconstructs the nested `parallel { { } { } }` construct', () => {
-    expect(run.dsl).toMatch(/\bparallel\s*\{/);
-    expect(run.dsl).not.toContain('} and {');
-    expect(run.dsl).not.toMatch(/\band\b/);
-  });
-
-  it('both parallel branch tasks survive the round-trip verbatim', () => {
-    expect(run.dsl).toContain(
-      'user NotifyOwner(label: "Notify owner", assignee: "demo")',
-    );
-    expect(run.dsl).toContain(
-      'service AuditLog(label: "Write audit log", ' +
-        'class: "com.example.flow.AuditLogDelegate")',
+  it('the re-emitted DSL reconstructs the loop as `while` and the fork as `parallel`, with no goto', () => {
+    expect(run.dsl).toBe(
+      [
+        'process structured-control-flow {',
+        '  var priority: any',
+        '  var retries: any',
+        '  start Begin',
+        '  user Triage(label: "Triage request", assignee: "demo")',
+        '  if (priority > 5) {',
+        '    user EscalateReview(label: "Escalate review", assignee: "manager")',
+        '  } else {',
+        '    service AutoTriage(label: "Auto-triage", class: "com.example.flow.AutoTriageDelegate")',
+        '  }',
+        '  while (retries < 3) {',
+        '    service RetryFetch(label: "Retry fetch", class: "com.example.flow.RetryFetchDelegate")',
+        '  }',
+        '  parallel {',
+        '    {',
+        '      user NotifyOwner(label: "Notify owner", assignee: "demo")',
+        '    }',
+        '    {',
+        '      service AuditLog(label: "Write audit log", class: "com.example.flow.AuditLogDelegate")',
+        '    }',
+        '  }',
+        '  end Finish',
+        '}',
+        '',
+      ].join('\n'),
     );
   });
 });
@@ -121,10 +108,10 @@ describe('parallel round-trip (parallelGateway fork/join => parallel { { } { } }
 // between authored nodes survives, over a second round trip too. Edges with no
 // form at all belong to the goto-fallback suite.
 describe('goto-degradation preserves the edges that have a goto form', () => {
-  let irImport: BpmnProcess; // from xmlToIr(unstructured.bpmn)
-  let degradedDsl: string; // printDsl(irImport), contains goto(s)
-  let irReDesugared: BpmnProcess; // astToIr(parse(degradedDsl))
-  let irSecondRound: BpmnProcess; // astToIr(parse(printDsl(irReDesugared)))
+  let irImport: BpmnProcess;
+  let degradedDsl: string;
+  let irReDesugared: BpmnProcess;
+  let irSecondRound: BpmnProcess;
 
   beforeAll(async () => {
     const xml = readFileSync(UNSTRUCTURED_BPMN_PATH, 'utf-8');
@@ -132,27 +119,33 @@ describe('goto-degradation preserves the edges that have a goto form', () => {
     ({ ir: irImport } = await xmlToIr(xml));
     degradedDsl = printDsl(irImport);
     irReDesugared = astToIr(await parseToAst(degradedDsl));
-
-    const dsl2 = printDsl(irReDesugared);
-    irSecondRound = astToIr(await parseToAst(dsl2));
+    irSecondRound = astToIr(await parseToAst(printDsl(irReDesugared)));
   });
 
-  it('importing the unstructured fixture and re-emitting never throws', () => {
-    // The beforeAll ran the whole chain, so reaching here is most of the
-    // assertion. Pinning the import shape keeps it from being vacuous.
-    expect(irImport.id).toBe('unstructured-goto');
-    expect(irImport.sequenceFlows.length).toBeGreaterThan(0);
-  });
-
-  it('the degraded DSL falls back to at least one `goto`', () => {
-    expect(degradedDsl).toContain('goto');
-    const gotos = degradedDsl.match(/\bgoto\b/g) ?? [];
-    expect(gotos.length).toBeGreaterThanOrEqual(1);
-  });
-
-  it('the re-desugared DSL re-parses with zero parser errors', async () => {
-    const document = await parse(degradedDsl);
-    expect(document.parseResult.parserErrors).toHaveLength(0);
+  it('the degraded DSL prints every edge with no structured form as a `goto`', () => {
+    expect(degradedDsl).toBe(
+      [
+        'process unstructured-goto {',
+        '  var route: any',
+        '  var retry: any',
+        '  start Start',
+        '  user Intake(assignee: "demo")',
+        '  if (route == "A") {',
+        '    goto Alpha',
+        '  }',
+        '  user Beta(assignee: "manager")',
+        '  end DoneBeta',
+        '  user Alpha(assignee: "demo")',
+        '  if (retry == true) {',
+        '    goto Beta',
+        '  } else {',
+        '    end Done',
+        '  }',
+        '  goto DoneBeta',
+        '}',
+        '',
+      ].join('\n'),
+    );
   });
 
   it('the real-node reachability is identical after the round-trip', () => {
@@ -191,12 +184,18 @@ describe('goto-degradation preserves the edges that have a goto form', () => {
         .filter((fe) => !isGateway(fe))
         .map((fe) => fe.id)
         .sort();
+    expect(realIds(irImport)).toEqual([
+      'Alpha',
+      'Beta',
+      'Done',
+      'DoneBeta',
+      'Intake',
+      'Start',
+    ]);
     expect(realIds(irReDesugared)).toEqual(realIds(irImport));
   });
 
   it('the meaningfulness guard: a dropped edge would make reachability differ', () => {
-    // Removing one import flow changes the relation, so the equality above is
-    // load-bearing rather than always-true.
     const corrupt: BpmnProcess = {
       ...irImport,
       sequenceFlows: irImport.sequenceFlows.slice(1),
@@ -211,50 +210,34 @@ describe('goto-degradation preserves the edges that have a goto form', () => {
 // leaves tokens unconsumed, so it takes the raw fallback and has to survive the
 // round trip as the same quoted raw form.
 describe('bean-call condition stays quoted-raw end-to-end', () => {
-  const BEAN_DSL = [
-    'process bean-cond(label: "Bean Cond") {',
-    '  start S',
-    '  if ("${myBean.check()}") {',
-    '    user Approve(label: "Approve", assignee: "demo")',
-    '  } else {',
-    '    user Reject(label: "Reject", assignee: "demo")',
-    '  }',
-    '  end E',
-    '}',
-    '',
-  ].join('\n');
+  const run = roundTripOf(
+    [
+      'process bean-cond(label: "Bean Cond") {',
+      '  start S',
+      '  if ("${myBean.check()}") {',
+      '    user Approve(label: "Approve", assignee: "demo")',
+      '  } else {',
+      '    user Reject(label: "Reject", assignee: "demo")',
+      '  }',
+      '  end E',
+      '}',
+      '',
+    ].join('\n'),
+  );
 
-  const run = roundTripOf(BEAN_DSL);
-
-  const condition = (ir: BpmnProcess) =>
-    ir.sequenceFlows.find((sf) => sf.conditionExpression !== undefined)
-      ?.conditionExpression;
-
-  it('the bean call is preserved verbatim in the IR condition expression', () => {
-    expect(condition(run.ir1)).toBe('${myBean.check()}');
-    expect(condition(run.ir2)).toBe('${myBean.check()}');
-  });
-
-  it('the re-emitted DSL keeps the condition as the quoted raw `"${...}"` form', () => {
-    expect(run.dsl).toContain('if ("${myBean.check()}")');
-    // The bare (unquoted) form would signal a spurious parse-into-subset.
-    expect(run.dsl).not.toContain('if (myBean.check())');
-  });
-
-  it('the re-emitted DSL re-parses, and re-desugars to the same raw condition', () => {
-    expect(condition(run.ir3)).toBe('${myBean.check()}');
+  it('the bean call is preserved verbatim at every hop and re-emitted as the quoted raw form', () => {
+    const condition = (ir: BpmnProcess) =>
+      ir.sequenceFlows.find((sf) => sf.conditionExpression !== undefined)
+        ?.conditionExpression;
+    for (const [hop, ir] of run.hops) {
+      expect(condition(ir), `differs in ${hop}`).toBe('${myBean.check()}');
+    }
+    expect(run.dsl).toContain('  if ("${myBean.check()}") {\n');
   });
 });
 
-// Every row below prints, rebuilds and prints again; the suites elsewhere in
-// this repo stop after one hop each direction and never see a value that is
-// stable on the first print but drifts on the second. `xml2`/`dsl2` come from
-// feeding `dsl1` back through the same two hops, so a row pins idempotence,
-// not just a single compile.
-//
-// Two attribute values below carry a literal `"`, which this pipeline's XML
-// writer cannot place directly in an attribute and instead numeric-escapes
-// (`&#34;`, `&#10;`); decoding those before the substring check lets a
+// Two attribute values in the table carry a literal `"`, which this pipeline's
+// XML writer numeric-escapes (`&#34;`, `&#10;`); decoding them first lets a
 // fragment read the same whether it landed in an attribute or an element body.
 function decodeXmlEntities(xml: string): string {
   return xml.replace(/&#34;/g, '"').replace(/&#10;/g, '\n');

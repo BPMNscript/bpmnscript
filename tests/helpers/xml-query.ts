@@ -1,20 +1,17 @@
 // Regex rather than a parser: the tests workspace declares no moddle dependency.
 
-/** Every id carried by a `<bpmn:<tag>>` open tag, in document order. */
 export function idsOfTag(xml: string, tag: string): string[] {
   return [...xml.matchAll(new RegExp(`<bpmn:${tag} id="([^"]+)"`, 'g'))].map(
     (m) => m[1]!,
   );
 }
 
-/** Every `bpmn:message` root in the document, in document order. */
 export function messageRoots(xml: string): { id: string; name: string }[] {
   return [...xml.matchAll(/<bpmn:message id="([^"]+)" name="([^"]+)"/g)].map(
     (m) => ({ id: m[1]!, name: m[2]! }),
   );
 }
 
-/** Every `bpmn:error` root carrying `errorCode`, with the message it declares. */
 export function errorRoots(
   xml: string,
   errorCode: string,

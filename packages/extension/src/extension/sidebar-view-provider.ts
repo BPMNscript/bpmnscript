@@ -4,8 +4,7 @@ import * as fs from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { swapExtension } from './conversion-core.js';
 
-// Types shared between host and webview (duplicated in sidebar.js as JSDoc).
-
+// The webview in media/sidebar.js reads this shape untyped: change both.
 interface Counterpart {
   uri: string;
   name: string;
@@ -40,8 +39,8 @@ export class SidebarViewProvider implements vscode.WebviewViewProvider {
 
     webviewView.webview.html = this._buildHtml(webviewView.webview);
 
-    // retainContextWhenHidden is false, so the view is rebuilt on every show.
-    // Without collecting the disposable the listeners pile up.
+    // retainContextWhenHidden is false, so the view is rebuilt on every show
+    // and the listeners would pile up.
     const disposables: vscode.Disposable[] = [];
     webviewView.webview.onDidReceiveMessage(
       (message: unknown) => void this._handleMessage(message),

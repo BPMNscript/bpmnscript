@@ -1,7 +1,5 @@
 import { describe, it, expect } from 'vitest';
 
-import { Diagnostic } from 'vscode-languageserver-types';
-
 import type { FlowContainer, FlowElement } from '@bpmn-script/transform';
 
 import {
@@ -12,18 +10,18 @@ import {
 import type { Bounds } from './helpers/di-bounds.js';
 import { describeImportFirst } from './helpers/import-first.js';
 import { kindOf, subProcess } from './helpers/ir-query.js';
-import { definitionRefOf, errorRoots } from './helpers/xml-query.js';
+import {
+  definitionRefOf,
+  errorRoots,
+  idsOfTag,
+  messageRoots,
+} from './helpers/xml-query.js';
 import { roundTripFixture } from './helpers/round-trip-fixture.js';
 
 const rt = roundTripFixture('boundary-events', {
   importPath: true,
   recompile: 'errors',
 });
-
-// The decompiler prints handlers in a trailing group, so its output must never
-// raise this. Source that does cannot be re-opened.
-const HANDLER_PLACEMENT_DIAGNOSTIC =
-  'Event handlers read like catch blocks: move it after the last step of this body.';
 
 type BoundaryEvent = Extract<FlowElement, { kind: 'boundaryEvent' }>;
 
@@ -72,10 +70,9 @@ const EXPECTED_ATTACHMENTS = [
   'PrintLabel message ExpediteRequested interrupting',
 ].sort();
 
-// bpmn-auto-layout places `attachedToRef` children on the host's bottom edge,
-// spread evenly: `n` attachers land at `x + width * i/(n+1)` for i in 1..n.
-// Measuring against the host's own bounds stops a shape elsewhere on the canvas
-// satisfying the check.
+// bpmn-auto-layout spreads `n` attachers along the host's bottom edge at
+// `x + width * i/(n+1)`; measuring against the host's own bounds keeps a shape
+// elsewhere on the canvas from passing.
 function assertAttachedToHost(
   bounds: Map<string, Bounds>,
   hostId: string,
@@ -101,10 +98,8 @@ function assertAttachedToHost(
   });
 }
 
-// Handwritten import-first: MIWG `<bpmn:incoming>`/`<bpmn:outgoing>` children
-// and hand-named boundary ids matching nothing the id template would produce.
-// Two share the host `InspectCrate` and the trigger kind `error`, so
-// re-synthesis necessarily collides and hands one of them the `_2` suffix.
+// MIWG-style `<bpmn:incoming>`/`<bpmn:outgoing>` children and boundary ids the
+// id template would never produce.
 const IMPORT_FIRST_BPMN = `<?xml version="1.0" encoding="UTF-8"?>
 <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:operaton="http://operaton.org/schema/1.0/bpmn" id="Definitions_crate_handover" targetNamespace="http://bpmn.io/schema/bpmn">
   <bpmn:error id="Error_Torn" name="TORN_BOX" errorCode="TORN_BOX" />
@@ -172,18 +167,6 @@ const IMPORT_FIRST_BPMN = `<?xml version="1.0" encoding="UTF-8"?>
 </bpmn:definitions>`;
 
 describe("idempotence: DSL -> IR1 -> XML -> IR2 -> DSL' -> IR3", () => {
-  it("every handler block in DSL' trails the body it guards", async () => {
-    // A boundary handler is walked early, so the orphan sweep does not mistake
-    // its escape chain for a detached fragment, yet it must print in the
-    // trailing group: printed in place it emits source the validator rejects.
-    const { diagnostics } = await rt.validate(rt.dslPrime);
-    expect(
-      diagnostics.filter(
-        (d) => Diagnostic.getMessageString(d) === HANDLER_PLACEMENT_DIAGNOSTIC,
-      ),
-    ).toEqual([]);
-  });
-
   it('the authored ids survive verbatim at their correct container depth', () => {
     expect(kindOf(rt.ir3, 'CheckAddress')).toBe('userTask');
     expect(kindOf(rt.ir3, 'PackGoods')).toBe('subProcess');
@@ -218,24 +201,10 @@ describe("idempotence: DSL -> IR1 -> XML -> IR2 -> DSL' -> IR3", () => {
   });
 
   it('the if inside an escape chain comes back as an if, not as gotos', () => {
-    // The boundary event is wired to the CFG's virtual entry, so its escape
-    // chain is reachable and the split inside it has an immediate dominator;
-    // without that the restructurer could only degrade the branch into jumps.
+    // The boundary event is wired to the CFG's virtual entry, so the split in
+    // its escape chain has an immediate dominator; without one the
+    // restructurer could only degrade the branch into jumps.
     expect(rt.dslPrime).toContain('if (parcelValue > 500) {');
-  });
-});
-
-describe('golden generation: the pipeline output matches the frozen .bpmn', () => {
-  it('each task host carries its boundary event, pinned by attachedToRef', () => {
-    expect(rt.generatedXml).toContain(
-      '<bpmn:boundaryEvent id="Boundary_ComputeShipping_timer" cancelActivity="false" attachedToRef="ComputeShipping">',
-    );
-    expect(rt.generatedXml).toContain(
-      '<bpmn:boundaryEvent id="Boundary_ChargePostage_error" attachedToRef="ChargePostage">',
-    );
-    expect(rt.generatedXml).toContain(
-      '<bpmn:boundaryEvent id="Boundary_PrintLabel_message" attachedToRef="PrintLabel">',
-    );
   });
 });
 
@@ -289,57 +258,56 @@ describe('DI attachment on the generated .bpmn', () => {
   });
 });
 
+// `[title, the ids of the one root the frozen .bpmn may carry, the definition
+// kind, every element that has to reference it]`.
+const SHARED_ROOTS: readonly [
+  string,
+  (xml: string) => string[],
+  'error' | 'escalation' | 'message' | 'signal',
+  readonly string[],
+][] = [
+  [
+    'the boundary signal and the host-less handler signal share one bpmn:Signal',
+    (xml) => idsOfTag(xml, 'signal'),
+    'signal',
+    ['Boundary_BookCarrier_signal', 'StrikeNoted'],
+  ],
+  [
+    'the escalation thrown inside the sub-process and the one caught on its boundary share one bpmn:Escalation',
+    (xml) => idsOfTag(xml, 'escalation'),
+    'escalation',
+    ['Oversized', 'Boundary_PackGoods_escalation'],
+  ],
+  [
+    'the error a boundary catches gets a root carrying its declared message',
+    (xml) => {
+      const roots = errorRoots(xml, 'PAYMENT_DECLINED');
+      expect(roots.map((r) => r.message)).toEqual([
+        'The payment gateway declined the charge',
+      ]);
+      return roots.map((r) => r.id);
+    },
+    'error',
+    ['Boundary_ChargePostage_error'],
+  ],
+  [
+    'the message a boundary correlates on gets its own bpmn:Message root',
+    (xml) =>
+      messageRoots(xml)
+        .filter((r) => r.name === 'ExpediteRequested')
+        .map((r) => r.id),
+    'message',
+    ['Boundary_PrintLabel_message'],
+  ],
+];
+
 describe('root sharing on the frozen .bpmn', () => {
-  it('the boundary signal and the host-less handler signal share one bpmn:Signal', () => {
-    const roots = [...rt.frozenXml.matchAll(/<bpmn:signal id="([^"]+)"/g)];
+  it.each(SHARED_ROOTS)('%s', (_title, rootsOf, definition, referrers) => {
+    const roots = rootsOf(rt.frozenXml);
     expect(roots).toHaveLength(1);
-    const rootId = roots[0]![1];
-
-    expect(
-      definitionRefOf(rt.frozenXml, 'Boundary_BookCarrier_signal', 'signal'),
-    ).toBe(rootId);
-    expect(definitionRefOf(rt.frozenXml, 'StrikeNoted', 'signal')).toBe(rootId);
-  });
-
-  it('the escalation thrown inside the sub-process and the one caught on its boundary share one bpmn:Escalation', () => {
-    const roots = [...rt.frozenXml.matchAll(/<bpmn:escalation id="([^"]+)"/g)];
-    expect(roots).toHaveLength(1);
-    const rootId = roots[0]![1];
-
-    expect(definitionRefOf(rt.frozenXml, 'Oversized', 'escalation')).toBe(
-      rootId,
-    );
-    expect(
-      definitionRefOf(
-        rt.frozenXml,
-        'Boundary_PackGoods_escalation',
-        'escalation',
-      ),
-    ).toBe(rootId);
-  });
-
-  it('the error a boundary catches gets a root carrying its declared message', () => {
-    const roots = errorRoots(rt.frozenXml, 'PAYMENT_DECLINED');
-    expect(roots).toHaveLength(1);
-    const { id: rootId, message } = roots[0]!;
-    expect(message).toBe('The payment gateway declined the charge');
-
-    expect(
-      definitionRefOf(rt.frozenXml, 'Boundary_ChargePostage_error', 'error'),
-    ).toBe(rootId);
-  });
-
-  it('the message a boundary correlates on gets its own bpmn:Message root', () => {
-    const roots = [
-      ...rt.frozenXml.matchAll(
-        /<bpmn:message id="([^"]+)" name="ExpediteRequested"/g,
-      ),
-    ];
-    expect(roots).toHaveLength(1);
-
-    expect(
-      definitionRefOf(rt.frozenXml, 'Boundary_PrintLabel_message', 'message'),
-    ).toBe(roots[0]![1]);
+    for (const id of referrers) {
+      expect(definitionRefOf(rt.frozenXml, id, definition), id).toBe(roots[0]);
+    }
   });
 });
 

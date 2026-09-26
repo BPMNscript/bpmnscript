@@ -1,3 +1,12 @@
+/**
+ * Every diagnostic the language raises. Most messages and the value shapes
+ * come first, then the class, in this order: the process-wide checks, the
+ * per-element entry points `registerValidationChecks` wires, the
+ * attribute-block machinery from `checkAttributeKeys` on, gateways and blocks,
+ * handlers and events, declarations. Free helpers sit outside the class,
+ * nearest the check or message they serve.
+ */
+
 import {
   AstUtils,
   type AstNode,
@@ -145,8 +154,10 @@ import {
   engineSpellings,
   ERROR_MAPPING_HEAD,
   ERROR_MAPPING_WHEN,
+  EVENT_BINDING_FIELD_SET,
   EVENT_BINDING_FIELDS,
   EXECUTION_LISTENER_EVENTS,
+  EXPRESSION_ANYWHERE,
   EXPRESSION_OPEN,
   EXTERNAL_BINDING_KEY,
   EXTERNAL_TASK_EL_NAME,
@@ -161,6 +172,7 @@ import {
   formatPlainWordList,
   formatWordList,
   gatewayStatementRuleOf,
+  ID_TEXT,
   IO_DIRECTIONS,
   JOIN_ENGINE_KEYS,
   JOIN_KEY_BY_ENGINE_KEY,
@@ -170,6 +182,7 @@ import {
   LISTENER_BINDING_KEYS,
   listenerEventsFor,
   ON_TRIGGERS,
+  OUTPUT_DIRECTION,
   parameterDirectionsFor,
   PROCESS_HEADER_KEYS,
   PROPERTY_DIRECTION,
@@ -192,6 +205,7 @@ import {
   TRIGGER_PAYLOAD,
   TYPE_BINDING_KEY,
   TYPE_BINDING_VALUES,
+  USER_TASK_VERBATIM_KEYS,
   type AttributeBlockRule,
   type AttributeOwner,
   type BuiltinTaskType,
@@ -256,26 +270,23 @@ type GatewayStatement =
   | ParallelStatement
   | RaceStatement;
 
+/** A user task's own priority, `operaton:priority`, beside the job and external-task ones. */
+const USER_PRIORITY_KEY = 'priority';
+
 /**
- * Keys whose value names something outside process-variable scope, so a
- * bareword there must not warn about an undeclared variable, nor be scanned
- * for the JUEL spelling rules. `jobPriority`, `taskPriority`, `priority`, and
- * `businessKey` stay out: a bareword there lowers to `${...}` and does name a
- * variable. `assignee` is in: a bareword lowers to the plain text
- * `operaton:assignee="demo"`, which `TaskDecorator.initializeTaskAssignee`
- * reads as the user id `demo`, exactly as `candidateUsers` is read, and
- * `label`, `documentation` and `versionTag` lower as plain text the same way.
- * The date keys are here because `dueDate = deadline` emits
- * `operaton:dueDate="deadline"`, which Operaton cannot parse as a date, so
- * declaring `deadline` would hide the warning and leave the attribute just as
- * broken; {@link BpmnScriptValidator.checkAttributeValues} asks for a quoted
- * date instead.
+ * Keys whose value names something other than a process variable, so a
+ * bareword there neither warns as undeclared nor is scanned for the JUEL
+ * spelling rules. The priority keys and `businessKey` stay out because a
+ * bareword there lowers to `${...}`; `assignee` is in because it lowers to the
+ * plain text `operaton:assignee="demo"`, the user id
+ * (`TaskDecorator.initializeTaskAssignee`). The date keys are in so that
+ * declaring `deadline` cannot hide the unparseable-date error
+ * {@link BpmnScriptValidator.checkAttributeValues} raises for `dueDate = deadline`.
  */
 export const NON_VARIABLE_ATTR_KEYS: ReadonlySet<string> = new Set([
   'label',
   'documentation',
   'class',
-  'formKey',
   'formRef',
   'expression',
   'delegate',
@@ -285,11 +296,7 @@ export const NON_VARIABLE_ATTR_KEYS: ReadonlySet<string> = new Set([
   'binding',
   'version',
   'mapDecisionResult',
-  'assignee',
-  'candidateGroups',
-  'candidateUsers',
-  'dueDate',
-  'followUpDate',
+  ...USER_TASK_VERBATIM_KEYS.filter((key) => key !== USER_PRIORITY_KEY),
   ...engineSpellings('retryCycle'),
   'resultVariable',
   'versionTag',
@@ -305,31 +312,20 @@ const BOOLEAN_ATTR_KEYS: ReadonlySet<string> = new Set(
   BOOLEAN_ENGINE_KEYS.flatMap(engineSpellings),
 );
 
-/** Each timer job key is dead on an element with no job, so written alone it draws a warning. */
 const TIMER_JOB_KEYS_WITHOUT_PRIORITY: readonly string[] =
   TIMER_JOB_KEYS.filter((key) => key !== 'jobPriority');
 const TIMER_JOB_KEY_SET: ReadonlySet<string> = new Set(TIMER_JOB_KEYS);
 
-/** A user task's own priority, `operaton:priority`, beside the job and external-task ones. */
-const USER_PRIORITY_KEY = 'priority';
-
-/** The two dates a user task carries, read through one business calendar. */
 const DUE_DATE_KEYS: readonly string[] = ['dueDate', 'followUpDate'];
 const DUE_DATE_KEY_SET: ReadonlySet<string> = new Set(DUE_DATE_KEYS);
 
-/**
- * Keys `BpmnParse.parsePriority` reads: a constant there must parse as an
- * integer or the deployment fails, so anything else has to be an expression.
- * A user task's `priority` deploys unchecked and is held to the same shape
- * by `TaskDecorator.initializeTaskPriority` when the task is created.
- */
+/** Each parsed with `Integer.parseInt`, at deployment (`BpmnParse.parsePriority`) or when the task is created (`TaskDecorator.initializeTaskPriority`). */
 const PRIORITY_ATTR_KEYS: ReadonlySet<string> = new Set([
   ...engineSpellings('jobPriority'),
   TASK_PRIORITY_KEY,
   USER_PRIORITY_KEY,
 ]);
 
-/** Every spelling `retryCycle` carries, shared between the key-membership check and its shape check. */
 const RETRY_CYCLE_ATTR_KEYS: ReadonlySet<string> = new Set(
   engineSpellings('retryCycle'),
 );
@@ -353,13 +349,9 @@ const TEXT_ATTR_KEYS: ReadonlySet<string> = new Set([
 const DUE_DATE_TEXT = /^(P|\d{4}-\d{2}-\d{2})/;
 
 /**
- * `BaseCallableElement.getVersion` and
- * `TaskEntity.initializeFormRefFromTaskDefinition` parse the value as an
- * integer when the step runs, so a constant is the digits of a deployed
- * version, and a decimal deploys and then fails the instance. A bare name is
- * refused too, since `version` is in `NON_VARIABLE_ATTR_KEYS` and the name
- * would never be checked against the declarations; a raw template is the
- * spelling for a computed version.
+ * A bare name is refused too, unlike a priority's: `version` is in
+ * {@link NON_VARIABLE_ATTR_KEYS}, so the name would never be checked against
+ * the declarations, and a raw template is the spelling for a computed version.
  */
 const VERSION_TEXT = /^[1-9]\d*$/;
 
@@ -368,9 +360,6 @@ const HISTORY_TIME_TO_LIVE_TEXT = /^(P\d+D|\d+)$/;
 
 /** `ACT_RE_PROCDEF.VERSION_TAG_` is 64 characters wide in every `create.engine.sql`; nothing checks the length before the insert. */
 const VERSION_TAG_MAX_LENGTH = 64;
-
-/** A template anywhere in the text, not only at its start, since a starter list is split at commas first. */
-const TEMPLATE_ANYWHERE = /[$#]\{/;
 
 /**
  * The duration `DurationHelper.parsePeriod` reads (no anchors, for reuse in an
@@ -388,14 +377,11 @@ const ISO_DURATION_BODY = String.raw`(?:P\d+W|P(?!$)(\d+Y)?(\d+M)?(\d+D)?(T(?=\d
 const JODA_PERIOD_BODY = String.raw`P(?!$)(\d+Y)?(\d+M)?(\d+W)?(\d+D)?(T(?=\d)(\d+H)?(\d+M)?(\d+(\.\d+)?S)?)?`;
 
 /**
- * `DateTimeUtil.parseDateTime` is Joda's `ISODateTimeFormat.dateTimeParser`:
- * a calendar date (a year with an optional month and day), an ordinal date
- * (`2026-100`) or a week date (`2026-W10-1`), then an optional `T` with an
- * optional time down to hours and an optional zone, `Z` or an offset down to
- * hours, the colon optional. The zone sits inside the `T` group: Joda's
- * grammar is `date-element ['T' [time-element] [offset]]`, so `2026-12-01T`
- * parses and `2026-12-01Z` is refused. Joda is looser still (single-digit
- * fields, a time with no date); those spellings stay refused here.
+ * `DateTimeUtil.parseDateTime` is Joda's `ISODateTimeFormat.dateTimeParser`,
+ * whose grammar is `date-element ['T' [time-element] [offset]]`: the zone sits
+ * inside the `T` group, so `2026-12-01T` parses and `2026-12-01Z` is refused.
+ * Joda is looser still (single-digit fields, a time with no date); those
+ * spellings stay refused here.
  */
 const ISO_DATE_TIME_BODY = String.raw`(?:\d{4}(-\d{2}(-\d{2})?)?|\d{4}-\d{3}|\d{4}-W\d{2}(-\d)?)(T(\d{2}(:\d{2}(:\d{2})?)?([.,]\d+)?)?(Z|[+-]\d{2}(:?\d{2})?)?)?`;
 
@@ -405,7 +391,6 @@ const ISO_DATE_TIME_BODY = String.raw`(?:\d{4}(-\d{2}(-\d{2})?)?|\d{4}-\d{3}|\d{
  */
 const INTERVAL_BODY = String.raw`(?:${ISO_DURATION_BODY}(?:/${ISO_DATE_TIME_BODY})?|${ISO_DATE_TIME_BODY}/(?:${ISO_DURATION_BODY}|${ISO_DATE_TIME_BODY}))`;
 
-/** A `DurationHelper` repeat: `R`, an optional count, then the interval. */
 const REPEAT_BODY = String.raw`R\d*/${INTERVAL_BODY}`;
 
 /**
@@ -478,9 +463,6 @@ const ENGINE_KEY_BY_JOIN_KEY: Readonly<Record<string, string>> =
     Object.entries(JOIN_KEY_BY_ENGINE_KEY).map(([key, join]) => [join, key]),
   );
 const TIMER_PARTICLE_SET: ReadonlySet<string> = new Set(TIMER_PARTICLES);
-const EVENT_BINDING_FIELD_SET: ReadonlySet<string> = new Set(
-  EVENT_BINDING_FIELDS,
-);
 const IO_DIRECTION_SET: ReadonlySet<string> = new Set(IO_DIRECTIONS);
 const FIELD_BINDING_KEY_SET: ReadonlySet<string> = new Set(FIELD_BINDING_KEYS);
 /** The remaining binding keys, so the two lists cannot name the same word. */
@@ -514,14 +496,14 @@ const TASK_LISTENER_EVENT_SET: ReadonlySet<string> = new Set(
  * enforce. `attempt` shares its AST type with `subprocess`, so it has no row
  * of its own to read and is added back here.
  */
-const PARAMETER_HOSTS_MESSAGE = `parameters belong on ${formatPlainWordList(
+export const PARAMETER_HOSTS_MESSAGE = `parameters belong on ${formatPlainWordList(
   [...Object.values(ATTRIBUTE_BLOCK_RULES), ATTEMPT_BLOCK_RULE]
     .filter((rule) => rule.parameters)
     .map((rule) => rule.description),
   'and',
 )}.`;
 
-const REPEATED_OUTPUT_MESSAGE =
+export const REPEATED_OUTPUT_MESSAGE =
   "A repeated step cannot map an 'output' parameter: the engine refuses to " +
   'deploy it (BpmnParse.checkActivityOutputParameterSupported). Move the ' +
   'mapping to a step after the repetition.';
@@ -538,21 +520,15 @@ const FIELD_HOSTS_MESSAGE = `an injected field belongs on ${Object.values(
   .map((rule) => rule.description)
   .join(', ')}, and on a listener.`;
 
-/** @param description Noun phrase with article, e.g. `'a user task'`. */
-const noFieldHostMessage = (description: string) =>
+export const noFieldHostMessage = (description: string) =>
   `${capitalize(description)} cannot declare a 'field' parameter; ${FIELD_HOSTS_MESSAGE}`;
 
 /**
- * Refuses a field written under a binding that receives no field list;
- * {@link FIELD_BINDING_KEYS} states the rule.
- *
- * @param subject The message's leading noun phrase (`'A service task'`).
- * @param written The fieldless bindings the author wrote here. Naming those
- *   rather than every fieldless key keeps the tail off keys the subject cannot
- *   write: a listener takes neither `topic` nor `decision`.
- * @param takes The field bindings the subject can write, and what each names.
+ * `written` names the fieldless bindings the author wrote rather than every
+ * fieldless key, so the tail never names a key the subject cannot write: a
+ * listener takes neither `topic` nor `decision`.
  */
-const fieldBindingMessage = (
+export const fieldBindingMessage = (
   subject: string,
   written: readonly string[],
   takes: { keys: readonly string[]; targets: string },
@@ -563,46 +539,33 @@ const fieldBindingMessage = (
     ? '.'
     : `, and the binding written with ${formatWordList(written)} receives none.`);
 
-const ELEMENT_FIELD_BINDINGS = {
+export const ELEMENT_FIELD_BINDINGS = {
   keys: FIELD_BINDING_KEYS,
   targets: 'the class, the delegate, or the built-in behaviour',
 };
 
-const LISTENER_FIELD_BINDINGS = {
+export const LISTENER_FIELD_BINDINGS = {
   keys: LISTENER_FIELD_BINDING_KEYS,
   targets: 'the class or the delegate',
 };
 
-/** The bindings written on an element or a listener that receive no field list. */
 const fieldlessBindingsOf = (attrs: readonly Setting[]): string[] =>
   bindingKeysOf(attrs, FIELDLESS_BINDING_KEYS);
 
-/**
- * Read off the block rules, as {@link FIELD_HOSTS_MESSAGE} is. The extras are
- * legal beside `topic` alone: `parseExternalServiceTask`, their one reader,
- * runs for `operaton:type="external"` and for nothing else.
- */
+/** The extras are legal beside `topic` alone: `parseExternalServiceTask`, their one reader, runs for `operaton:type="external"` and for nothing else. */
 const EXTERNAL_HOSTS_PHRASE = `${formatPlainWordList(
   Object.values(ATTRIBUTE_BLOCK_RULES)
     .filter((rule) => rule.externalExtras)
     .map((rule) => rule.description),
 )} bound with 'topic'`;
 
-/** @param description Noun phrase with article, e.g. `'a user task'`. */
-const noPropertyHostMessage = (description: string) =>
+export const noPropertyHostMessage = (description: string) =>
   `${capitalize(description)} cannot declare a 'property' line; a property line belongs on ${EXTERNAL_HOSTS_PHRASE}, and in a form field's block.`;
 
-/** @param description Noun phrase with article, e.g. `'a user task'`. */
-const noMappingHostMessage = (description: string) =>
+export const noMappingHostMessage = (description: string) =>
   `${capitalize(description)} cannot map a reported failure; an 'error <Code> when <condition>' line belongs on ${EXTERNAL_HOSTS_PHRASE}, whose external worker is what reports one.`;
 
-/**
- * The shape of {@link fieldBindingMessage}.
- *
- * @param item The extra as written (`'a property line'`).
- * @param written The bindings the author wrote here, none of them `topic`.
- */
-const topicBindingMessage = (
+export const topicBindingMessage = (
   subject: string,
   item: string,
   written: readonly string[],
@@ -613,89 +576,85 @@ const topicBindingMessage = (
     : `, and the binding written with ${formatWordList(written)} hands the step to none.`);
 
 /** `ExternalTaskEntity.evaluateThrowBpmnError` raises a BPMN error and nothing else. */
-const MAPPING_HEAD_MESSAGE =
+export const MAPPING_HEAD_MESSAGE =
   'An external task maps a reported failure onto an error and nothing else; ' +
   `write '${ERROR_MAPPING_HEAD} <Code> ${ERROR_MAPPING_WHEN} <condition>'.`;
 
-const MAPPING_WHEN_MESSAGE = `Write '${ERROR_MAPPING_WHEN}' between the code and the condition: '${ERROR_MAPPING_HEAD} <Code> ${ERROR_MAPPING_WHEN} <condition>'.`;
+export const MAPPING_WHEN_MESSAGE = `Write '${ERROR_MAPPING_WHEN}' between the code and the condition: '${ERROR_MAPPING_HEAD} <Code> ${ERROR_MAPPING_WHEN} <condition>'.`;
 
-const priorityShapeMessage = (key: string) =>
+export const priorityShapeMessage = (key: string) =>
   key === USER_PRIORITY_KEY
     ? `Setting '${key}' takes an integer or a "\${...}" expression; the engine parses a constant with Integer.parseInt when the task is created (TaskDecorator.initializeTaskPriority) and fails the instance on anything else.`
     : `Setting '${key}' takes an integer or a "\${...}" expression; the engine refuses to deploy a constant that is not an integer.`;
 
-const VERSION_SHAPE_MESSAGE =
+export const VERSION_SHAPE_MESSAGE =
   `Setting 'version' takes a positive whole number, quoted or not, or a "\${...}" expression yielding one; ` +
   'the engine parses the value as an integer when the step runs (BaseCallableElement.getVersion, TaskEntity.initializeFormRefFromTaskDefinition) and fails the instance on anything else.';
 
-const dueDateShapeMessage = (key: string) =>
+export const dueDateShapeMessage = (key: string) =>
   `Setting '${key}' takes a period starting with 'P' or an ISO date-time such as "2026-01-01T09:00:00", or a "\${...}" expression; ` +
   'the engine parses a constant with DueDateBusinessCalendar.resolveDuedate when the task is created and fails the instance on anything else.';
 
-const RETRY_CYCLE_SHAPE_MESSAGE =
+export const RETRY_CYCLE_SHAPE_MESSAGE =
   "Setting 'retryCycle' takes an ISO 8601 duration, an 'R<n>/<duration>' repeat, or a comma " +
   'list of durations; a single interval the engine cannot read is logged and dropped, so the ' +
   'job keeps its default retries (ParseUtil.parseRetryIntervals), and a bad member of a list ' +
   'is stored unchecked and, when its turn comes, drops that retry to the default strategy ' +
   'with no wait (DefaultJobRetryCmd.execute).';
 
-/** @param binding The binding key written beside it (`'topic'` or `'type'`). */
-const resultVariableUnreadMessage = (binding: string) =>
+export const resultVariableUnreadMessage = (binding: string) =>
   `Setting 'resultVariable' has no effect beside '${binding}': the engine hands it to an 'expression' binding alone (BpmnParse.parseServiceTaskLike), so nothing writes the variable.`;
 
-const MAP_DECISION_RESULT_UNREAD_MESSAGE =
+export const MAP_DECISION_RESULT_UNREAD_MESSAGE =
   "Setting 'mapDecisionResult' has no effect without 'resultVariable': the engine applies the mapping only when storing the result into that variable (DecisionEvaluationUtil.evaluateDecision).";
 
-const decisionModifierMessage = (key: string) =>
+export const decisionModifierMessage = (key: string) =>
   `Setting '${key}' stands only beside 'decision': the engine reads 'binding', 'version' and 'mapDecisionResult' on a step answering a decision table alone (BpmnParse.parseBusinessRuleTask).`;
 
-/** The three settings the engine reads on the decision path alone. */
 const DECISION_MODIFIER_KEYS: readonly string[] = [
   'binding',
   'version',
   'mapDecisionResult',
 ];
 
-const HISTORY_TIME_TO_LIVE_MESSAGE =
+export const HISTORY_TIME_TO_LIVE_MESSAGE =
   "Setting 'historyTimeToLive' takes a quoted number of days, 'P<n>D' or '<n>'; " +
   'the engine reads the attribute as text, never as an expression, and refuses to deploy anything else (ParseUtil.parseHistoryTimeToLive).';
 
-const VERSION_TAG_LITERAL_MESSAGE =
+export const VERSION_TAG_LITERAL_MESSAGE =
   "Setting 'versionTag' takes a quoted string; the engine stores the tag as written, never evaluated (BpmnParse.parseProcess).";
 
-const VERSION_TAG_LENGTH_MESSAGE = `Setting 'versionTag' is longer than ${VERSION_TAG_MAX_LENGTH} characters, the width of the column it is stored in (ACT_RE_PROCDEF.VERSION_TAG_), so the deployment fails.`;
+export const VERSION_TAG_LENGTH_MESSAGE = `Setting 'versionTag' is longer than ${VERSION_TAG_MAX_LENGTH} characters, the width of the column it is stored in (ACT_RE_PROCDEF.VERSION_TAG_), so the deployment fails.`;
 
-const candidateStarterMessage = (key: string) =>
+export const candidateStarterMessage = (key: string) =>
   `Setting '${key}' takes ids as written: the engine stores each entry as a candidate identity link without evaluating it (BpmnDeployer.addAuthorizations), so a "\${...}" template names the id spelled by its text.`;
 
-const headerLiteralMessage = (key: string) =>
+export const headerLiteralMessage = (key: string) =>
   `Setting '${key}' takes a quoted string on a process header; the engine stores it as written, never evaluated (BpmnParse.parseProcess).`;
 
-/** @param description Noun phrase with article, e.g. `'a service task'`. */
-const runWithoutClauseMessage = (key: string, description: string) =>
+export const runWithoutClauseMessage = (key: string, description: string) =>
   `Setting '${key}' is not valid on ${description} that does not repeat: it makes one job per run, so write a 'for' clause, or '${ENGINE_KEY_BY_RUN_KEY[key]}' for one job around the step.`;
 
-const RUN_JOB_PRIORITY_MESSAGE = `Setting '${RUN_JOB_PRIORITY_KEY}' does not exist: Operaton reads a job priority off the step alone (BpmnParse.createActivityOnScope), so 'jobPriority' applies to every run's job.`;
+export const RUN_JOB_PRIORITY_MESSAGE = `Setting '${RUN_JOB_PRIORITY_KEY}' does not exist: Operaton reads a job priority off the step alone (BpmnParse.createActivityOnScope), so 'jobPriority' applies to every run's job.`;
 
-const REPEAT_COUNT_MESSAGE =
+export const REPEAT_COUNT_MESSAGE =
   'A repeat count must be a non-negative whole number, a variable, or a ' +
   '"${...}" expression yielding one; the engine reads a constant as text ' +
   'with Integer.parseInt and truncates any other number with intValue() ' +
   '(MultiInstanceActivityBehavior.resolveLoopCardinality).';
 
-const TYPE_VALUE_MESSAGE = `Setting '${TYPE_BINDING_KEY}' must be ${formatWordList(TYPE_BINDING_VALUES)}.`;
+export const TYPE_VALUE_MESSAGE = `Setting '${TYPE_BINDING_KEY}' must be ${formatWordList(TYPE_BINDING_VALUES)}.`;
 
-/** The class each type's fields are set on, for the refusal of an undeclared name. */
 const BUILTIN_BEHAVIOUR_CLASS: Readonly<Record<BuiltinTaskType, string>> = {
   mail: 'MailActivityBehavior',
   shell: 'ShellActivityBehavior',
 };
 
 /**
- * The bindings `BpmnParse.parseServiceTaskLike` fails the deployment for when
- * a result variable sits beside them, each with the attribute name its
- * refusal quotes. The `expression` branch alone is built with the variable;
- * the `type` branches never read it, and a `decision` reads it on its own path.
+ * The bindings `BpmnParse.parseServiceTaskLike` refuses a result variable
+ * beside, each with the attribute name its refusal quotes. The `expression`
+ * branch alone is built with the variable; the `type` branches never read it,
+ * and a `decision` reads it on its own path.
  */
 const RESULT_VARIABLE_REFUSING_BINDINGS: Readonly<Record<string, string>> = {
   class: 'class',
@@ -711,49 +670,42 @@ const SERVICE_TASK_LIKE_ELEMENT: Readonly<
   BusinessRuleTask: 'businessRuleTask',
 };
 
-/** @param description Noun phrase with article, e.g. `'a service task'`. */
-const resultVariableBindingMessage = (
+export const resultVariableBindingMessage = (
   description: string,
   binding: string,
   element: string,
 ) =>
   `${capitalize(description)} cannot carry 'resultVariable' beside '${binding}': the engine refuses to deploy it ('resultVariableName' not supported for ${element} elements using '${RESULT_VARIABLE_REFUSING_BINDINGS[binding]}'); bind with 'expression' to store the return value, or drop it.`;
 
-/** @param subject The message's leading noun phrase (`"Service task 'Notify'"`). */
-const missingBuiltinFieldMessage = (
+export const missingBuiltinFieldMessage = (
   subject: string,
   type: BuiltinTaskType,
   group: RequiredFieldGroup,
 ) =>
   `${subject} binds ${TYPE_BINDING_KEY}: "${type}" without a ${formatWordList(group.names)} field; Operaton refuses to deploy it: "${group.error}" (BpmnParse.${BUILTIN_FIELD_VALIDATOR[type]}).`;
 
-const unknownBuiltinFieldMessage = (name: string, type: BuiltinTaskType) =>
+export const unknownBuiltinFieldMessage = (
+  name: string,
+  type: BuiltinTaskType,
+) =>
   `Field '${name}' is not one a ${type} task takes; the engine sets it on ${BUILTIN_BEHAVIOUR_CLASS[type]}, which declares ${formatPlainWordList(BUILTIN_FIELD_NAMES[type], 'and')} (ClassDelegateUtil.applyFieldDeclaration).`;
 
-const shellFieldExpressionMessage = (name: string) =>
+export const shellFieldExpressionMessage = (name: string) =>
   `Field '${name}' on a shell task takes a quoted literal: Operaton reads every shell field as a fixed value (BpmnParse.validateFieldDeclarationsForShell) and fails the deployment on an expression.`;
 
-const shellFlagValueMessage = (name: string) =>
+export const shellFlagValueMessage = (name: string) =>
   `Field '${name}' on a shell task takes "true" or "false"; the engine reads any other spelling as false (ShellActivityBehavior.readFields).`;
 
 const SHELL_FLAG_LITERAL_SET: ReadonlySet<string> = new Set(
   SHELL_FLAG_LITERALS,
 );
 
-/**
- * A fenced body binds a listener in place of its settings, and the script
- * listener behaviours are built from the script alone. Naming the bindings
- * that do take a field would be a dead end here: a listener writing both a
- * script and a `class` setting reaches this and has already followed it.
- *
- * @param subject The message's leading noun phrase (`"The 'on start' listener"`).
- */
-const scriptListenerFieldMessage = (subject: string) =>
+export const scriptListenerFieldMessage = (subject: string) =>
   `${subject} runs a fenced script, which the engine hands no field list; ` +
   `remove the script and bind the listener with ${formatWordList(LISTENER_FIELD_BINDING_KEYS)} ` +
   'to inject one.';
 
-const fieldValueMessage = (name: string) =>
+export const fieldValueMessage = (name: string) =>
   `Field '${name}' takes a quoted string or a "\${...}" expression; ` +
   'put the value in quotes.';
 
@@ -763,22 +715,15 @@ const fieldValueMessage = (name: string) =>
  * to is decided by its opening, so a literal opening with one can only ever
  * reach the expression slot.
  */
-const escapedFieldLiteralMessage = (name: string) =>
+export const escapedFieldLiteralMessage = (name: string) =>
   `Field '${name}' cannot carry quoted text opening with '\${' or '#{': the expression slot is picked by that opening, so the text would be evaluated rather than injected as written. Drop the backslash to write an expression.`;
 
-/**
- * `getStringValueFromAttributeOrElement` reads an empty `stringValue` as
- * absent, so `parseStringFieldDeclaration` finds no literal and
- * `parseExpressionFieldDeclaration` finds no expression either: the
- * declaration is neither and the deployment fails.
- */
-const emptyFieldMessage = (name: string) =>
+export const emptyFieldMessage = (name: string) =>
   `Field '${name}' cannot be empty: the engine reads an empty value as absent, so the ` +
   'field declares neither a fixed value nor an expression and the deployment fails ' +
   `(BpmnParse.parseFieldDeclaration). Write '\${""}' for an actual empty string.`;
 
-/** `BpmnParseUtil.getElValueProvider` reads an empty attribute as no value at all, never as an empty string. */
-const EMPTY_STRING_VALUE_MESSAGE =
+export const EMPTY_STRING_VALUE_MESSAGE =
   'An empty or blank string writes no value at all: the engine trims it and ' +
   'reads it as absent rather than as an empty string (BpmnParseUtil.getElValueProvider). ' +
   'Write \'${""}\' for an actual empty string.';
@@ -787,34 +732,30 @@ const JUEL_RESERVED_WORD_SET: ReadonlySet<string> = new Set(
   JUEL_RESERVED_WORDS,
 );
 
-/**
- * A raw template is plain text, so unlike a declaration or a rendered
- * accessor it can spell `true`, `false` or `null` as a `.prop` read; the
- * scanner still returns their keyword tokens there (see
- * {@link JUEL_LITERAL_WORDS}).
- */
 const JUEL_RAW_TEMPLATE_WORD_SET: ReadonlySet<string> = new Set([
   ...JUEL_RESERVED_WORDS,
   ...JUEL_LITERAL_WORDS,
 ]);
 
-/** @param key The string-key spelling that reaches the name, `execution.getVariable('x')` or `order['x']`. */
-const juelKeywordMessage = (word: string, key: string) =>
+export const juelKeywordMessage = (word: string, key: string) =>
   `'${word}' is a JUEL keyword (Scanner.addKeyToken), so the engine refuses any expression naming it. Reach the variable through a string key instead: "\${${key}}".`;
 
 /** `Character.isJavaIdentifierPart('-')` is false, so the identifier ends at the hyphen. */
-const hyphenNameMessage = (name: string, key: string) =>
+export const hyphenNameMessage = (name: string, key: string) =>
   `'${name}' carries a hyphen, which JUEL scans as a minus (Scanner.nextIdentifier), so the engine reads a subtraction. Reach the variable through a string key instead: "\${${key}}".`;
 
 /** The slots whose value the engine casts to a Boolean, each throwing in its own method. */
 type ConditionSlot = 'condition' | 'until';
 
-const nonBooleanConditionMessage = (shape: string, slot: ConditionSlot) =>
+export const nonBooleanConditionMessage = (
+  shape: string,
+  slot: ConditionSlot,
+) =>
   slot === 'until'
     ? `An 'until' condition must be boolean, but this one is ${shape}: the engine throws when a completion condition evaluates to anything else (MultiInstanceActivityBehavior.completionConditionSatisfied).`
     : `A condition must be boolean, but this one is ${shape}: the engine throws 'condition expression returns ${shape === 'null' ? 'null' : 'non-Boolean'}' when it evaluates it (UelExpressionCondition.evaluate).`;
 
-const COMPOSITE_OPERAND_MESSAGE =
+export const COMPOSITE_OPERAND_MESSAGE =
   "A composite template cannot be spliced into the surrounding expression: JUEL has no '${' token once inside an expression (Scanner.nextEval), so only a raw that is exactly one '${...}' with no '}' outside a string literal in its body can be an operand. Write the whole expression as one raw template instead.";
 
 /** The keys whose value the engine evaluates as EL, so quoted text reaches it as a string. */
@@ -842,33 +783,22 @@ const EMPTY_BINDING_NOUN: Readonly<Record<string, string>> = {
   process: 'process to start',
 };
 
-const literalElBindingMessage = (key: string) =>
+export const literalElBindingMessage = (key: string) =>
   `Setting '${key}' takes a "\${...}" template or a bare name, never quoted text: ` +
   (key === 'expression'
     ? 'the string evaluates to itself and runs nothing'
     : 'a string resolves to no delegate to run') +
   `. Write '${key}: "\${...}"' or '${key}: <name>'.`;
 
-const templateAsClassMessage = (key: string, alternative: string) =>
+export const templateAsClassMessage = (key: string, alternative: string) =>
   `Setting '${key}' takes a class name, loaded as written (ClassDelegateUtil.instantiateDelegate); a "\${...}" template there is not evaluated. Write '${key}: com.example.X', or '${alternative}: "\${bean}"' to resolve one at runtime.`;
 
 /**
- * The shapes the binding keys refuse. A blank literal:
- * `BpmnParse.parseServiceTaskLike` passes over a blank `class` or `expression`
- * and `validateServiceTaskLike` then refuses the task as unbound,
- * `parseExecutionListener` refuses an empty `class` or `delegateExpression`
- * outright, and a blank `topic`, `decision`, `process` or mapping class
- * deploys and then names nothing at the step; a blank `delegate` or
- * `mapperDelegate` deploys too (`parseServiceTaskLike` and
- * `parseCallActivity` test that attribute against null alone) and its empty
- * expression evaluates to a string no delegate is, so
- * `ServiceTaskDelegateExpressionActivityBehavior.performExecution` and
- * `CallableElementActivityBehavior.getDelegateVariableMapping` throw at the
- * step; this language refuses all of them alike. Quoted text under an EL key
- * reaches the engine as a string:
- * `ServiceTaskDelegateExpressionActivityBehavior.performExecution` throws
- * because a string is no delegate, and an expression evaluates to the text
- * itself. A template under a class key is loaded as the class name it spells.
+ * A blank literal is refused under every key alike, though the engine treats
+ * them apart: `validateServiceTaskLike` and `parseExecutionListener` refuse a
+ * blank `class`, `expression` or `delegateExpression` at deployment, while a
+ * blank `topic`, `decision`, `process`, mapping class, `delegate` or
+ * `mapperDelegate` deploys and then names nothing, or throws, at the step.
  */
 function bindingValueMessage(key: string, value: Expr): string | undefined {
   const noun = EMPTY_BINDING_NOUN[key];
@@ -885,34 +815,34 @@ function bindingValueMessage(key: string, value: Expr): string | undefined {
     : undefined;
 }
 
-const unknownDirectionMessage = (word: string, legal: readonly string[]) =>
-  `Unknown parameter direction '${word}'; write ${formatWordList(legal)}.`;
+export const unknownDirectionMessage = (
+  word: string,
+  legal: readonly string[],
+) => `Unknown parameter direction '${word}'; write ${formatWordList(legal)}.`;
 
-const FORM_KEY_AND_REF_MESSAGE =
+export const FORM_KEY_AND_REF_MESSAGE =
   "A user task names its form with 'formKey' or with 'formRef', never both; " +
   'the engine refuses to deploy a task carrying the two.';
 
-/** One phrase per mode the setting takes, as an author writes it. */
 const BINDING_MODE_PHRASES: readonly string[] = CALL_BINDING_VALUES.map(
   (value) => `'binding: ${value}'`,
 );
 
-const FORM_REF_BINDING_MESSAGE = `A 'formRef' needs the binding resolving it: add ${formatPlainWordList(
+export const FORM_REF_BINDING_MESSAGE = `A 'formRef' needs the binding resolving it: add ${formatPlainWordList(
   [...BINDING_MODE_PHRASES, "'version: <number>'"],
 )}. The engine refuses to deploy a form reference with none.`;
 
-const FORM_REF_MISSING_MESSAGE =
+export const FORM_REF_MISSING_MESSAGE =
   "'binding' and 'version' pin which deployed version of a form the engine " +
   "resolves, so neither stands without a 'formRef'.";
 
-const formFieldSettingsOnlyMessage = (id: string, text: string) =>
+export const formFieldSettingsOnlyMessage = (id: string, text: string) =>
   `Form field '${id}' takes 'key: value' settings in its parens; '${text}' is not one.`;
 
-const unknownFormFieldSettingMessage = (id: string, key: string) =>
+export const unknownFormFieldSettingMessage = (id: string, key: string) =>
   `Unknown form field setting '${key}' on '${id}'; write ${formatWordList(FORM_FIELD_SETTING_KEYS)}.`;
 
-/** The engine deploys the pair and then fails every submission of the field ({@link FORM_CONSTRAINT_TYPES}). */
-const constraintMisfitMessage = (
+export const constraintMisfitMessage = (
   name: string,
   field: FormField,
   fits: readonly string[],
@@ -920,81 +850,74 @@ const constraintMisfitMessage = (
   `Constraint '${name}' fits a ${formatPlainWordList(fits)} field, not the ${field.type} field '${field.id}': the engine checks a submitted ${formatPlainWordList(fits)} alone and fails every other submission.`;
 
 /** `FormTypes.parseFormPropertyType` reads `datePattern` under `type="date"` alone. */
-const patternMisfitMessage = (field: FormField) =>
+export const patternMisfitMessage = (field: FormField) =>
   `Setting 'pattern' is the date pattern a 'date' field is parsed with; '${field.id}' is a ${field.type} field, which the engine reads no pattern off.`;
 
-const flagFalseMessage = (key: string) =>
+export const flagFalseMessage = (key: string) =>
   `A field is ${key} only while the setting is written, so '${key}: false' says nothing; leave the setting out.`;
 
-const flagNotTrueMessage = (key: string) =>
+export const flagNotTrueMessage = (key: string) =>
   `Setting '${key}' takes the literal true; write '${key}: true'.`;
 
-const integerBoundMessage = (key: string) =>
+export const integerBoundMessage = (key: string) =>
   `Setting '${key}' takes an integer literal or a quoted integer such as "-5".`;
 
-const PATTERN_VALUE_MESSAGE = `Setting 'pattern' takes a non-empty quoted date pattern such as "dd/MM/yyyy".`;
+export const PATTERN_VALUE_MESSAGE = `Setting 'pattern' takes a non-empty quoted date pattern such as "dd/MM/yyyy".`;
 
-const PATTERN_LETTERS_MESSAGE =
+export const PATTERN_LETTERS_MESSAGE =
   "Setting 'pattern' may hold only SimpleDateFormat letters " +
   '(G, y, Y, M, L, w, W, D, d, F, E, u, a, H, k, K, h, m, s, S, z, Z, X), ' +
   'quoted literal runs, and non-letters; the engine builds a java.text.SimpleDateFormat ' +
   'from it and throws on any other letter (DateFormType).';
 
-const VALIDATOR_EMPTY_MESSAGE =
+export const VALIDATOR_EMPTY_MESSAGE =
   "Setting 'validator' cannot be empty; name the class or the expression it " +
   'resolves (FormValidators.createValidator).';
 
-const valuesOnNonEnumMessage = (field: FormField) =>
+export const valuesOnNonEnumMessage = (field: FormField) =>
   `Value lines belong on an 'enum' field; '${field.id}' is a ${field.type} field.`;
 
 /** `EnumFormType.validateValue` refuses any value outside the (empty) map. */
-const emptyEnumMessage = (id: string) =>
+export const emptyEnumMessage = (id: string) =>
   `Enum field '${id}' offers no values, so the engine rejects every submitted value; add a value line such as 'basic "Basic"'.`;
 
-const duplicateValueMessage = (id: string) => `Duplicate value '${id}'.`;
+export const duplicateValueMessage = (id: string) => `Duplicate value '${id}'.`;
 
 /**
  * `FormFieldHandler.createFormField` converts the default through the enum type
  * on every render of the form, so the deployment succeeds and the form never
  * opens.
  */
-const enumDefaultMessage = (
+export const enumDefaultMessage = (
   id: string,
   value: string,
   ids: readonly string[],
 ) =>
   `The default "${value}" of enum field '${id}' names none of its values; write ${formatWordList(ids)}.`;
 
-/** `LongFormType.convertValue` runs `Long.valueOf` on every render; a decimal or a word throws. */
-const numberDefaultMessage = (id: string, text: string) =>
+export const numberDefaultMessage = (id: string, text: string) =>
   `The default ${text} of number field '${id}' is not an integer; the engine ` +
   'converts it with Long.valueOf every time the form renders (LongFormType.convertValue) ' +
   'and throws on anything else.';
 
-/** `BooleanFormType.convertValue` never throws; it reads anything but "true" as false with no error at all. */
-const booleanDefaultMessage = (id: string, text: string) =>
+export const booleanDefaultMessage = (id: string, text: string) =>
   `The default ${text} of boolean field '${id}' is not "true" or "false"; the engine ` +
   'reads any other spelling as false (BooleanFormType.convertValue).';
 
-/**
- * `DateFormType.convertToModelValue` parses the default with the field's
- * pattern, or the process engine's own "dd/MM/yyyy" where none is written
- * (`ProcessEngineConfigurationImpl.initFormTypes`); an ISO-shaped default is
- * the one mistake worth guessing at, since it reads as a legal date to a human.
- */
-const isoDateDefaultMessage = (id: string, value: string) =>
+/** An ISO-shaped default is the one misfit worth guessing at: it reads as a legal date to a human and fails the engine's own pattern. */
+export const isoDateDefaultMessage = (id: string, value: string) =>
   `The default "${value}" of date field '${id}' is an ISO date, but the engine's default ` +
   'pattern is "dd/MM/yyyy" (ProcessEngineConfigurationImpl.initFormTypes); add a \'pattern\' ' +
   'setting, or write the date to fit it.';
 
-const formFieldDirectionMessage = (
+export const formFieldDirectionMessage = (
   id: string,
   direction: string,
   isEnum: boolean,
 ) =>
   `Unknown member direction '${direction}' in form field '${id}': its block takes 'property <key> = "<value>"' lines${isEnum ? ' and value lines' : ''}.`;
 
-const propertyValueMessage = (name: string) =>
+export const propertyValueMessage = (name: string) =>
   `Property '${name}' takes a quoted string or a "\${...}" expression; ` +
   'put the value in quotes.';
 
@@ -1048,7 +971,6 @@ const datePatternShape: ValueShapeRule = (_key, value) => {
     : PATTERN_LETTERS_MESSAGE;
 };
 
-/** What each setting of a form field's parens takes; typed as {@link FORM_CONSTRAINT_TYPES} is. */
 const FORM_FIELD_VALUE_RULES: Readonly<Record<string, ValueShapeRule>> = {
   required: literalTrue,
   readonly: literalTrue,
@@ -1078,10 +1000,10 @@ const versionTag: ValueShapeRule = (_key, value) =>
       ? VERSION_TAG_LENGTH_MESSAGE
       : undefined;
 
-/** A bare name is an id as written; only a template, quoted whole or inside the list, is refused. */
+/** A bare name is an id as written; only a template, quoted whole or inside the comma-split list, is refused. */
 const candidateStarters: ValueShapeRule = (key, value) =>
   isRawExpr(value) ||
-  (isLiteralString(value) && TEMPLATE_ANYWHERE.test(value.value))
+  (isLiteralString(value) && EXPRESSION_ANYWHERE.test(value.value))
     ? candidateStarterMessage(key)
     : undefined;
 
@@ -1099,15 +1021,10 @@ const PROCESS_HEADER_VALUE_RULES: Readonly<Record<string, ValueShapeRule>> = {
   candidateStarterGroups: candidateStarters,
 };
 
-/** @param subject The clause or noun phrase that does take one, quoted as written. */
 function particleOnlyMessage(subject: string): string {
   return `Only ${subject} takes a particle.`;
 }
 
-/**
- * @param subject The message's leading noun phrase (`'An awaited message'`).
- * @param kind The event kind whose name is missing, for the possessive and plural.
- */
 function nameRequiredMessage(subject: string, kind: string): string {
   return `${subject} needs the ${kind}'s name: the engine matches ${kind}s by name.`;
 }
@@ -1115,13 +1032,13 @@ function nameRequiredMessage(subject: string, kind: string): string {
 const TIMER_PAYLOAD_PREFIX =
   'A timer needs to know how to read the time: write ';
 
-const TIMER_PAYLOAD_MESSAGE =
+export const TIMER_PAYLOAD_MESSAGE =
   TIMER_PAYLOAD_PREFIX +
   `'timer("PT1H")', 'timer(at: "2026-08-01T09:00:00")', or ` +
   `'timer(every: "R/PT10M")'.`;
 
 /** A listener writes the clause after its event word, so it needs its own wording. */
-const LISTENER_TIMER_PAYLOAD_MESSAGE =
+export const LISTENER_TIMER_PAYLOAD_MESSAGE =
   TIMER_PAYLOAD_PREFIX +
   `'after "PT1H"', 'at "2026-08-01T09:00:00"', or 'every "R/PT10M"'.`;
 
@@ -1132,25 +1049,25 @@ const timerShapeMessage = (
 ) =>
   `'${particle}' takes ${expected}; the engine reads it as text and fails when it does not fit (${calendar}).`;
 
-const AFTER_SHAPE_MESSAGE = timerShapeMessage(
+export const AFTER_SHAPE_MESSAGE = timerShapeMessage(
   'after',
   'an ISO 8601 duration such as "PT1H", on its own or beside a start or end date-time ("2026-01-01T00:00:00/PT1H", "PT1H/2026-12-31T00:00:00")',
   'DurationBusinessCalendar.resolveDuedate',
 );
 
-const AT_SHAPE_MESSAGE = timerShapeMessage(
+export const AT_SHAPE_MESSAGE = timerShapeMessage(
   'at',
   'an ISO date-time such as "2026-08-01T09:00:00", or a duration counted from now',
   'DueDateBusinessCalendar.resolveDuedate',
 );
 
-const EVERY_SHAPE_MESSAGE = timerShapeMessage(
+export const EVERY_SHAPE_MESSAGE = timerShapeMessage(
   'every',
   'an ISO 8601 repeat such as "R/PT10M", or a six-field cron expression or one of its nicknames such as "@daily"',
   'CycleBusinessCalendar.resolveDuedate',
 );
 
-/** The shape each particle's calendar reads; {@link BpmnScriptValidator.checkTimerShape} picks by {@link TimerPayload.particle}. */
+/** The shape each particle's calendar reads. */
 const TIMER_SHAPE_BY_PARTICLE: Readonly<
   Record<string, { pattern: RegExp; message: string }>
 > = {
@@ -1160,13 +1077,9 @@ const TIMER_SHAPE_BY_PARTICLE: Readonly<
 };
 
 /**
- * What the condition diagnostics differ by from one position to the next: the
- * subject of the sentence, the clause as that position spells it, and how a
- * sentence names the position on its own. `only` is separate because the start
- * clause carries a name slot: quoting `start S condition` at a user who never
- * wrote an `S` puts a placeholder in front of them that nothing introduces. The
- * three wordings themselves live once, in
- * {@link BpmnScriptValidator.checkConditionPayload}.
+ * `only` is separate from `clause` because the start clause carries a name
+ * slot: quoting `start S condition` at an author who never wrote an `S` puts
+ * a placeholder in front of them that nothing introduces.
  */
 const CONDITION_PHRASING = {
   handler: {
@@ -1188,83 +1101,85 @@ const CONDITION_PHRASING = {
 
 type ConditionPosition = keyof typeof CONDITION_PHRASING;
 
-const SECOND_PAREN_VALUE_MESSAGE =
+export const SECOND_PAREN_VALUE_MESSAGE =
   'The parens carry one unkeyed value, the payload; a second one names ' +
   "nothing and never reaches the engine. Write it as a 'key: value' setting, " +
   'or remove it.';
 
-const COMPENSATE_TYPO_MESSAGE =
+export const COMPENSATE_TYPO_MESSAGE =
   "Unknown event kind 'compensate'; write 'compensation'.";
 
-/** Answered the same wherever the near miss is written. */
-const CONDITIONAL_TYPO_MESSAGE = `Unknown event kind 'conditional'; did you mean 'condition'?`;
+export const CONDITIONAL_TYPO_MESSAGE = `Unknown event kind 'conditional'; did you mean 'condition'?`;
 
-const PARALLEL_SECOND_ELSE_MESSAGE =
+export const PARALLEL_SECOND_ELSE_MESSAGE =
   "A 'parallel' statement takes one 'else' branch at most; the first one " +
   'already runs when no condition held. Fold this branch into it or give it a ' +
   'condition.';
 
-const PARALLEL_ELSE_WITHOUT_CONDITION_MESSAGE =
+export const PARALLEL_ELSE_WITHOUT_CONDITION_MESSAGE =
   "An 'else' branch needs a sibling branch with a condition: with no condition " +
   'anywhere every branch runs, so there is nothing to fall back from. Give a ' +
   "sibling a condition, or drop the 'else'.";
 
-const PARALLEL_ELSE_BESIDE_UNCONDITIONED_MESSAGE =
+export const PARALLEL_ELSE_BESIDE_UNCONDITIONED_MESSAGE =
   "An 'else' branch runs only when no sibling branch was taken, and a branch " +
   'with no condition is always taken, so this one could never run. Give every ' +
   "sibling a condition, or drop the 'else'.";
 
-const START_TRIGGER_IN_HANDLER_MESSAGE =
+export const START_TRIGGER_IN_HANDLER_MESSAGE =
   "The start of an event-handler body carries no trigger; the handler's own " +
   "'on <kind>' is what it catches.";
 
-const NESTED_START_FORM_MESSAGE =
+export const NESTED_START_FORM_MESSAGE =
   'A start inside a subprocess, attempt block, or handler body takes no ' +
   "form: the engine reads a start form off the process's own start alone " +
   '(BpmnParse.parseStartFormHandlers) and BpmnParse.parseScopeStartEvent ' +
   'reads none, so this form is never shown.';
 
-const NESTED_START_INITIATOR_MESSAGE =
+export const NESTED_START_INITIATOR_MESSAGE =
   'A start inside a subprocess, attempt block, or handler body takes no ' +
   "'initiator': the engine reads it off the process's own start alone " +
   '(BpmnParse.parseProcessDefinitionStartEvent) and ' +
   'BpmnParse.parseScopeStartEvent reads none, so nothing is written.';
 
-const SECOND_DEFAULT_START_MESSAGE =
+export const SECOND_DEFAULT_START_MESSAGE =
   'A process takes one plain or timer start: Operaton refuses a second one ' +
   '(BpmnParse.selectInitial), so the deployment fails. Keep one, or give ' +
   'this start a message, signal, or condition trigger.';
 
-const START_AFTER_IMPLICIT_START_MESSAGE =
+export const START_AFTER_IMPLICIT_START_MESSAGE =
   'A body that does not open with a start gets a plain start of its own, ' +
   "so this is the process's second plain or timer start, which Operaton " +
   'refuses (BpmnParse.selectInitial), so the deployment fails. Open the ' +
   'body with this start, or give it a message, signal, or condition trigger.';
 
-function duplicateNamedStartMessage(trigger: string, name: string): string {
+export function duplicateNamedStartMessage(
+  trigger: string,
+  name: string,
+): string {
   return `Another start already subscribes to ${trigger} '${name}': Operaton keeps one ${trigger} start subscription per name and process (BpmnParse.addEventSubscriptionDeclaration), so the deployment fails.`;
 }
 
-function duplicateConditionStartMessage(text: string): string {
+export function duplicateConditionStartMessage(text: string): string {
   return `Another start already carries the condition '${text}': Operaton keeps one conditional start per condition text and process (BpmnParse.addEventSubscriptionDeclaration), so the deployment fails.`;
 }
 
-function timerJobKeyTwiceMessage(key: string): string {
+export function timerJobKeyTwiceMessage(key: string): string {
   return `Setting '${key}' is already written on the 'on timer' head, and both land on this start event, the element the engine reads the timer job's settings from (BpmnParse.parseTimer, DefaultFailedJobParseListener.parseStartEvent); keep one.`;
 }
 
-function raceDuplicateMessage(trigger: string, name: string): string {
+export function raceDuplicateMessage(trigger: string, name: string): string {
   return `Another branch of this 'await' already catches ${trigger} '${name}': every branch subscribes on the gateway's own scope (BpmnParse.parseIntermediateCatchEvent), which keeps one ${trigger} subscription per name (BpmnParse.addEventSubscriptionDeclaration), so the deployment fails.`;
 }
 
-const DEAD_LOOP_MESSAGE =
+export const DEAD_LOOP_MESSAGE =
   "This loop can never repeat: every path through the 'do' body ends or redirects the flow, so the condition is never evaluated and the loop gateway would lower to a disconnected node with no incoming flow, which is invalid BPMN. End after the loop, or keep one path through the body.";
 
-function emptyLoopBodyMessage(keyword: string): string {
+export function emptyLoopBodyMessage(keyword: string): string {
   return `The '${keyword}' body has no steps, so the loop and its condition would be dropped: with nothing to loop over, the gateway keeps only its exit and the condition is never written. Put a step in the body, or remove the loop.`;
 }
 
-function blockMemberMessage(what: string, verb: string): string {
+export function blockMemberMessage(what: string, verb: string): string {
   return `${what} written inside a body belongs to nothing and is dropped: put it in the attribute block of the element it ${verb}, the braces before that element's body.`;
 }
 
@@ -1272,14 +1187,14 @@ const END_TRIGGERS_MESSAGE =
   "An end event carries 'terminate', which stops every running path in this " +
   `scope, or 'cancel', which gives up the 'attempt' block it sits in.`;
 
-const END_TIMER_MESSAGE =
+export const END_TIMER_MESSAGE =
   'A timer cannot end a process; a timer is something a process waits on. ' +
   `Write 'await timer("PT1H")' to pause the flow here, ` +
   `'on timer("PT1H")' to react while the surrounding steps run, or ` +
   `'on <step>: timer("PT1H")' to watch only while that step runs. ` +
   END_TRIGGERS_MESSAGE;
 
-const END_CONDITION_MESSAGE =
+export const END_CONDITION_MESSAGE =
   'A condition cannot end a process; a condition is something a process ' +
   `waits on. Write 'await condition(amount > 100)' to pause the flow ` +
   `here, 'on condition(amount > 100)' to react while the surrounding ` +
@@ -1287,7 +1202,7 @@ const END_CONDITION_MESSAGE =
   'while that step runs. ' +
   END_TRIGGERS_MESSAGE;
 
-const END_TRIGGER_NO_CODE_MESSAGES: Readonly<Record<string, string>> = {
+export const END_TRIGGER_NO_CODE_MESSAGES: Readonly<Record<string, string>> = {
   terminate:
     'Terminate names nothing: it stops every running path in this scope; ' +
     'leave the payload out.',
@@ -1296,106 +1211,98 @@ const END_TRIGGER_NO_CODE_MESSAGES: Readonly<Record<string, string>> = {
     'payload out.',
 } satisfies Record<(typeof END_TRIGGERS)[number], string>;
 
-const CANCEL_END_PLACEMENT_MESSAGE =
+export const CANCEL_END_PLACEMENT_MESSAGE =
   "A cancel end belongs directly inside an 'attempt' block: it gives that " +
   'block up, and the engine refuses one anywhere else. Wrap the steps to ' +
   `give up in 'attempt <name> { ... }', or end this path with a plain 'end'.`;
 
-const CANCEL_HOSTLESS_MESSAGE =
+export const CANCEL_HOSTLESS_MESSAGE =
   "A cancel is caught on the block it gives up; write 'on <block>: cancel'. " +
   'A handler with no host opens on its own trigger, and nothing opens on a ' +
   'cancel.';
 
-const CANCEL_ALONGSIDE_MESSAGE =
+export const CANCEL_ALONGSIDE_MESSAGE =
   'Giving a block up ends every step still running inside it, so there is ' +
   "nothing left to run alongside; remove 'alongside'.";
 
-/** On `on`, catch-all is the omitted payload, so an empty code is a mistake. */
-const EMPTY_CODE_MESSAGE =
+export const EMPTY_CODE_MESSAGE =
   'An empty code ("") is not a catch-all; to catch every error, leave the ' +
   'payload out entirely.';
 
-const CANCEL_NO_CODE_MESSAGE =
+export const CANCEL_NO_CODE_MESSAGE =
   'A cancel handler catches nothing by name: it runs when its block is ' +
   'given up; leave the payload out.';
 
-const CANCEL_NOT_RAISED_MESSAGE =
+export const CANCEL_NOT_RAISED_MESSAGE =
   'A cancel is not raised: it is how a block gives itself up; write ' +
   `'end <name> cancel' inside the 'attempt' block.`;
 
 /** Unlike a thrower, an awaiting author needs the catch surface named too. */
-const CANCEL_NOT_AWAITED_MESSAGE =
+export const CANCEL_NOT_AWAITED_MESSAGE =
   'A cancel is not awaited: it is how a block gives itself up; write ' +
   `'end <name> cancel' inside the 'attempt' block, and ` +
   `'on <block>: cancel' beside the block to say what happens then.`;
 
-const COMPENSATION_NO_CODE_MESSAGE =
+export const COMPENSATION_NO_CODE_MESSAGE =
   "Compensation has no code or name: 'on compensation { }' is the undo block " +
   'of the subprocess or attempt block it sits in; leave the payload out.';
 
-const COMPENSATION_BINDINGS_MESSAGE =
+export const COMPENSATION_BINDINGS_MESSAGE =
   "'(code: c)' bindings belong to error and escalation handlers; compensation carries no values.";
 
-const COMPENSATION_ALONGSIDE_MESSAGE =
+export const COMPENSATION_ALONGSIDE_MESSAGE =
   'The work an undo block reverses has already finished, so there is no ' +
   "running flow to run alongside; remove 'alongside'.";
 
-const COMPENSATION_PLACEMENT_MESSAGE =
+export const COMPENSATION_PLACEMENT_MESSAGE =
   "An undo block belongs directly inside the 'subprocess' or 'attempt' whose " +
   'work it undoes: a process cannot undo itself.';
 
-const COMPENSATION_DUPLICATE_MESSAGE =
+export const COMPENSATION_DUPLICATE_MESSAGE =
   'A subprocess or an attempt block has one undo block; merge the steps.';
 
-const COMPENSATION_HOST_MESSAGE =
+export const COMPENSATION_HOST_MESSAGE =
   "Compensation cannot attach to a host: it undoes a subprocess's " +
   'already-completed work through its own undo block, not through a ' +
   "boundary event; remove the host and write 'on compensation { ... }' " +
   'directly inside the subprocess or attempt block it reverses.';
 
-const LINK_CATCH_FLOW_MESSAGE =
+export const LINK_CATCH_FLOW_MESSAGE =
   "Nothing may flow into an 'await link': end the path before it with 'end', " +
   "'throw', 'goto', or 'emit link', because a link catch is entered only by " +
   "'emit link' of the same name.";
 
 /** `BpmnParse.parseIntermediateCatchEvent` refuses a link catch behind an event-based gateway. */
-const LINK_IN_RACE_MESSAGE =
+export const LINK_IN_RACE_MESSAGE =
   "'link' cannot head a branch of an 'await' block: the engine refuses a link " +
   `catch after an event-based gateway; write 'await link("<name>")' as its ` +
   'own statement.';
 
-const ESCALATION_NO_MESSAGE_MESSAGE =
+export const ESCALATION_NO_MESSAGE_MESSAGE =
   'An escalation carries a code but no message.';
 
-/** What a header declaration writes inside its parens, both kinds together. */
-const DECLARATION_SETTINGS_ONLY_MESSAGE =
+export const DECLARATION_SETTINGS_ONLY_MESSAGE =
   `A declaration's parens take only ${formatWordList(EVENT_BINDING_FIELDS)} ` +
   "settings, written 'key: value'.";
 
-/** @param description Noun phrase with article, e.g. `'an if statement'`. */
-const settingsOnlyMessage = (description: string) =>
+export const settingsOnlyMessage = (description: string) =>
   `The parens of ${description} take only settings, written 'key: value'.`;
 
-/** @param description Noun phrase with article, e.g. `'a while loop'`. */
-const loopJoinKeyMessage = (key: string, description: string) =>
+export const loopJoinKeyMessage = (key: string, description: string) =>
   `Setting '${key}' is not valid on ${description}: a loop has one gateway, so write '${ENGINE_KEY_BY_JOIN_KEY[key]}'.`;
 
-const refusedHeadKeyMessage = (key: string, description: string): string =>
+export const refusedHeadKeyMessage = (
+  key: string,
+  description: string,
+): string =>
   `Setting '${key}' is not valid on ${description}: Operaton refuses it ` +
   'on an event-based gateway (BpmnParse.parseEventBasedGateway). Write it on ' +
   'the branch triggers instead.';
 
-/** @param description Noun phrase with article; the sentence points at this one. */
-const prunedJoinMessage = (description: string, key: string) =>
+export const prunedJoinMessage = (description: string, key: string) =>
   `Every branch of this ${description.replace(/^an? /, '')} ends its path, so there is no join for '${key}' to set; the setting has no effect.`;
 
-/**
- * `retryCycle`/`exclusive` fold into `BpmnParse.parseAsynchronousContinuation`,
- * which declares a job only when `asyncBefore` or `asyncAfter` is also true;
- * `DefaultFailedJobParseListener.parseActivity` reads a retry cycle the same
- * way. Written alone, the setting reaches an element with no job to carry it.
- */
-const noJobMessage = (
+export const noJobMessage = (
   key: string,
   pairing: readonly string[],
   description: string,
@@ -1404,14 +1311,7 @@ const noJobMessage = (
   `one only when ${formatWordList(pairing)} is also set ` +
   '(BpmnParse.parseAsynchronousContinuation, DefaultFailedJobParseListener.parseActivity).';
 
-/**
- * `BpmnParse.parseActivity` swaps the scope to the multi-instance body before
- * `createActivityOnScope`, so a repeated step's own `jobPriority` (there is no
- * `runJobPriority`) prices that per-run activity's job, the one `runAsyncBefore`
- * or `runAsyncAfter` creates, never the whole-loop job the plain async flags
- * create.
- */
-const noPerRunJobMessage = (
+export const noPerRunJobMessage = (
   key: string,
   pairing: readonly string[],
   description: string,
@@ -1440,14 +1340,11 @@ function isTimerCarrier(owner: AttributeOwner): boolean {
 
 /**
  * `BpmnParse.parseSignalCatchEventDefinition` gives a process's signal start
- * and an intermediate signal catch an `EventSubscriptionJobDeclaration`
- * priced from the catcher's `jobPriority`; `EventSubscriptionEntity.eventReceived`
- * creates that job when the throwing `signalEventDefinition` is async. The
- * job keeps the declaration's default `exclusive`, and the retry cycle is
- * read only for a timer or an async element, so the other two keys still
- * need a flag. A boundary signal (`parseBoundarySignalEventDefinition`) and
- * an event sub-process signal start (`parseEventDefinitionForSubprocess`)
- * declare no such job, so a handler is not one of these.
+ * and an intermediate signal catch a subscription job priced from the
+ * catcher's `jobPriority`; the job keeps the default `exclusive`, and the
+ * retry cycle is read only for a timer or an async element, so the other two
+ * keys still need a flag. A boundary signal and an event sub-process signal
+ * start declare no such job, so a handler is not one of these.
  */
 function isSignalSubscriptionJobCarrier(owner: AttributeOwner): boolean {
   return (
@@ -1459,27 +1356,14 @@ function isSignalSubscriptionJobCarrier(owner: AttributeOwner): boolean {
 }
 
 /**
- * Ids the `astToIr` desugarer synthesizes; an author-chosen statement name
- * matching one produces duplicate-id IR. ADR-0010 has the templates. Gateway
- * ids bypass the desugarer's collision guard entirely; `Boundary_` runs
- * through it but would be renamed with a suffix rather than flagged.
- *
- * The implicit start and end of a process or subprocess body are not here:
- * the desugarer mints exactly `StartEvent_<container>` and
- * `EndEvent_<container>`, and a prefix would refuse the Modeler's own default
- * `StartEvent_1` (ADR-0050).
- *
- * A handler body's own implicit start and end, and a boundary escape's end,
- * are the exception: the desugarer mints them off an id no author writes
- * (`StartEvent_EventSubProcess_<x>`, `EndEvent_EventSubProcess_<x>`,
- * `EndEvent_Boundary_<host>_<trigger>`), and that coordinate is not the
- * enclosing `Process`/`SubProcess` name `isReservedName` matches against, so
- * only a prefix catches them.
- *
- * `_di$`, `BPMNDiagram_`, and `BPMNPlane_` are not the desugarer's own ids:
- * `irToXml`'s `layoutProcess` mints `<id>_di` for every shape and edge, and
- * `BPMNDiagram_<process>`/`BPMNPlane_<process>` for the document once, so a
- * step reusing one of those collides with a duplicate `xs:ID` the same way.
+ * Ids the `astToIr` desugarer synthesizes (ADR-0010); a statement name
+ * matching one produces duplicate-id IR. A process or subprocess body's own
+ * `StartEvent_<container>` and `EndEvent_<container>` are matched exactly by
+ * {@link mintedTerminalRole} instead, since a prefix would refuse the
+ * Modeler's default `StartEvent_1` (ADR-0050); a handler body's and a boundary
+ * escape's terminals are minted off a coordinate no author writes, so only a
+ * prefix catches them. `_di$`, `BPMNDiagram_` and `BPMNPlane_` are `irToXml`'s
+ * layout ids, which collide as a duplicate `xs:ID` the same way.
  */
 const RESERVED_ID_PATTERNS: ReadonlyArray<RegExp> = [
   /^Gateway_.+_(split|join|fork|loop|race)$/,
@@ -1715,7 +1599,7 @@ function previousFlowStatement(
  * refused under a message of its own (a gateway head, a form field, a code
  * declaration).
  */
-export function settingsOnlyOwnerDescription(
+function settingsOnlyOwnerDescription(
   owner: ParenValue['$container'],
 ): string | undefined {
   if (isProcess(owner)) return 'a process header';
@@ -1749,13 +1633,12 @@ function duplicateKey(
   return parts.includes(undefined) ? undefined : parts.join(':');
 }
 
-/** Seed `seen` with keys that count as present before the first item. */
 function forEachDuplicate<T>(
   items: Iterable<T>,
   key: (item: T) => string | undefined,
   onDuplicate: (item: T) => void,
-  seen: Set<string> = new Set(),
 ): void {
+  const seen = new Set<string>();
   for (const item of items) {
     const k = key(item);
     if (k === undefined) {
@@ -1795,17 +1678,15 @@ export class BpmnScriptValidator {
   };
 
   /**
-   * A process body takes any number of top-level starts, each opening the
-   * body, following another `start`, or following a statement whose flow
-   * always ends or redirects. A start after a live chain is refused as
-   * ambiguous rather than guessed: Operaton accepts a flow into a start
-   * (`BpmnParse.parseSequenceFlow` has no arm for that destination) and runs
-   * the start as a pass-through step, so the page would state an ambiguity the
-   * engine resolves one way at runtime. A subprocess, attempt block, or
-   * event-handler body takes a start first and nowhere else, since the engine
-   * allows one start per such scope (`BpmnParse.parseScopeStartEvent`). A
-   * hosted handler's body lowers inline into its host's container, so it is
-   * no container of its own and gets its own message.
+   * A start after a live chain is refused rather than guessed at: Operaton
+   * accepts a flow into a start (`BpmnParse.parseSequenceFlow` has no arm for
+   * that destination) and runs it as a pass-through step, so the page would
+   * state an ambiguity the engine resolves one way at runtime. A subprocess,
+   * attempt block or handler body takes a start first and nowhere else, since
+   * the engine allows one start per such scope
+   * (`BpmnParse.parseScopeStartEvent`); a hosted handler's body lowers inline
+   * into its host's container, so it is no scope of its own and gets its own
+   * message.
    */
   private checkStartPosition(
     process: Process,
@@ -1857,24 +1738,16 @@ export class BpmnScriptValidator {
   }
 
   /**
-   * What the engine makes of a process's start set. Three refusals are
-   * mirrored: `BpmnParse.selectInitial` rejects a second plain or timer start,
-   * and `BpmnParse.addEventSubscriptionDeclaration` rejects a second message
-   * or signal start of one name and a second conditional start of one
-   * condition text, all registered on the process definition. Three facts
-   * stay silent at deploy time and are told here instead. With no plain or
-   * timer start, `initial` stays null and starting the process by key throws
-   * (`ProcessDefinitionImpl.ensureDefaultInitialExists`). A start form binds
-   * to `initial` only, so a form on any other start is parsed and never shown
-   * (`BpmnParse.parseStartFormHandlers`).
-   * `BpmnParse.parseProcessDefinitionStartEvent` reads `operaton:initiator`
-   * off every start in document order and sets each on the process
-   * definition, so only the last start naming one keeps its value.
-   *
-   * A body that does not open with a `start` gets a plain start minted for
-   * it, and that one is in the engine's count like a written one: the
-   * candidates are `[implicit, ...written plain or timer starts]`, and
-   * everything after the first is a second default start.
+   * The engine methods behind the three warnings, which do not name them: with
+   * no plain or timer start, `initial` stays null and starting by key throws
+   * (`ProcessDefinitionImpl.ensureDefaultInitialExists`); a start form binds
+   * to `initial` only (`BpmnParse.parseStartFormHandlers`); and
+   * `BpmnParse.parseProcessDefinitionStartEvent` sets `operaton:initiator`
+   * off every start in document order, so the last one wins. A body that
+   * does not open with a `start` gets a plain start minted for it, which is
+   * in the engine's count like a written one: the candidates are
+   * `[implicit, ...written plain or timer starts]`, and everything after the
+   * first is a second default start.
    */
   private checkDefaultStart(
     process: Process,
@@ -1975,24 +1848,16 @@ export class BpmnScriptValidator {
   };
 
   /**
-   * Reject a step control flow can never reach: it would lower to a
-   * disconnected node, which is invalid BPMN. A step named by some `goto`, a
-   * `start`, or an `await link` is reachable again: the last two each open a
-   * fresh entry of their own. A start after a live chain is
-   * {@link checkStartPosition}'s to refuse (a start after a start is legal,
-   * which `reachable` alone cannot tell); a link catch after one is refused
-   * here, where `reachable` is exactly "the previous statement still flows
-   * on", and before the `goto` re-rooting so a catch some `goto` names draws
-   * only the `goto` rule's error. Operaton accepts a flow into a link catch
-   * (`BpmnParse.parseSequenceFlow` gives it an ordinary transition); this
-   * surface refuses it since a modeller's link target never has an incoming
-   * flow, and an imported catch then prints after a dead fall-through the
-   * way the diagram drew it. Nested blocks are scanned
-   * only when their owner is reachable, so an unreachable `if` is reported
-   * once rather than once per step inside it, and a handler body is a fresh
-   * root since a handler is not part of the sequential flow. The scan is sound
-   * rather than exhaustive: a dead step may go unreported, a live one is never
-   * wrongly rejected.
+   * Operaton accepts a flow into a link catch (`BpmnParse.parseSequenceFlow`
+   * gives it an ordinary transition); it is refused here because a modeller's
+   * link target never has an incoming flow, and an imported catch would then
+   * print after a dead fall-through the way the diagram drew it. That check
+   * sits before the `goto` re-rooting so a catch some `goto` names draws only
+   * the `goto` rule's error; a start after a live chain is
+   * {@link checkStartPosition}'s to refuse, since a start after a start is
+   * legal and `reachable` alone cannot tell. The scan is sound rather than
+   * exhaustive: a dead step may go unreported, a live one is never wrongly
+   * rejected.
    */
   private checkUnreachableStatements(
     process: Process,
@@ -2048,17 +1913,12 @@ export class BpmnScriptValidator {
   }
 
   /**
-   * The rules that need both ends of a link pair at once. The engine keeps one
-   * table of link names per parsed file (`BpmnParse.eventLinkTargets`), so a
-   * second catch of a name is refused wherever it sits; a throw resolves
-   * against the catch in its own container, else the first in document order,
-   * so the duplicate is reported once and not through every throw beside it.
-   * A flow resolves only at its own level
+   * A throw resolves against the catch in its own container, else the first
+   * in document order, so a duplicate catch is reported once rather than
+   * through every throw beside it. A flow resolves only at its own level
    * (`ScopeImpl.findActivityAtLevelOfSubprocess`), so both ends must share a
-   * flow container, as a `goto` and its target must. A throw with no catch
-   * fails to deploy (`BpmnParse.parseSequenceFlow`); a catch with no throw
-   * deploys, and an imported diagram may carry one, so it only warns. A
-   * nameless end is left to the payload rules, which already report it.
+   * flow container, as a `goto` and its target must; a catch with no throw
+   * deploys, and an imported diagram may carry one, so it only warns.
    */
   private checkLinkEvents(process: Process, accept: ValidationAcceptor): void {
     const throws: EmitStatement[] = [];
@@ -2248,11 +2108,6 @@ export class BpmnScriptValidator {
     );
   }
 
-  /**
-   * The process-header key set, and why it leaves out the engine settings
-   * `BpmnParse.parseProcess` still reads off `bpmn:process`, are documented on
-   * {@link PROCESS_HEADER_KEYS}.
-   */
   private checkProcessAttributes(
     process: Process,
     accept: ValidationAcceptor,
@@ -2517,12 +2372,7 @@ export class BpmnScriptValidator {
     this.checkStartPayload(start, TRIGGER_PAYLOAD[start.trigger]!, accept);
   };
 
-  /**
-   * A host-less `on timer` writes `exclusive`, `jobPriority` and `retryCycle`
-   * onto the start event of its body, the element the engine builds the
-   * timer job from, so a key written on both the head and an authored start
-   * aims two values at one job and the lowering keeps the head's.
-   */
+  /** A host-less `on timer` writes its job keys onto the start event of its body, so a key written on both aims two values at one job and the lowering keeps the head's. */
   private checkTimerHeadKeys(
     start: StartEvent,
     owner: AstNode,
@@ -2541,8 +2391,9 @@ export class BpmnScriptValidator {
   }
 
   /**
-   * Mirrors {@link checkCatchPayload}. Neither gets the timer shape warnings: a
-   * repeating start is a legitimate schedule, not a one-shot mistake.
+   * Mirrors {@link checkCatchPayload}. Neither gets
+   * {@link checkTimerRepeatsOnce}'s warning: a repeating start is a
+   * legitimate schedule, not a one-shot mistake.
    */
   private checkStartPayload(
     start: StartEvent,
@@ -2558,10 +2409,14 @@ export class BpmnScriptValidator {
       );
     }
 
+    // `RAW_TEMPLATE` is anchored at the opening quote, so only a name that
+    // opens with `${` or `#{` lexes as a raw template; an opener further in
+    // leaves the name a plain string. Both reach here as text through
+    // `payloadTextOf`.
     if (
       start.trigger === 'message' &&
       name !== undefined &&
-      EXPRESSION_IN_NAME.test(name)
+      EXPRESSION_ANYWHERE.test(name)
     ) {
       accept('error', startMessageExpressionMessage(name), {
         node: payloadItemOf(start.items)!,
@@ -2626,12 +2481,9 @@ export class BpmnScriptValidator {
   };
 
   /**
-   * A form reference is a key plus the binding resolving which deployed
-   * version of that form the engine hands the assignee. Operaton refuses to
-   * deploy a task naming a form both ways, or naming one with no binding at
-   * all, so each is an error rather than a warning. Both are reported against
-   * the task's name, as {@link checkBindingVersionExclusion} is: a user task
-   * may legitimately name no form.
+   * Operaton refuses to deploy a task naming a form both ways, or with no
+   * binding at all, so each is an error; both land on the task's name, as
+   * {@link checkBindingVersionExclusion}'s does.
    */
   private checkFormReference(task: UserTask, accept: ValidationAcceptor): void {
     const attrs = settingsOf(task.items);
@@ -2710,8 +2562,6 @@ export class BpmnScriptValidator {
    * or shell task, reported here instead. A field's own shape is
    * {@link checkField}'s business and comes first, so a value that is neither
    * a literal nor an expression draws that refusal alone.
-   *
-   * @param subject The message's leading noun phrase (`"Service task 'Notify'"`).
    */
   private checkBuiltinBinding(
     task: ServiceTask | SendTask | BusinessRuleTask,
@@ -2800,10 +2650,6 @@ export class BpmnScriptValidator {
     }
   }
 
-  /**
-   * The three DMN settings stand only under a `decision` binding: the code
-   * and topic paths never read them, so each is refused rather than dropped.
-   */
   private checkDecisionModifiers(
     task: BusinessRuleTask,
     accept: ValidationAcceptor,
@@ -3038,7 +2884,6 @@ export class BpmnScriptValidator {
     }
   }
 
-  /** @param description Sentence-starting noun phrase, e.g. `'A service task'`. */
   private rejectFormBlock(
     forms: FormBlock[],
     description: string,
@@ -3054,11 +2899,9 @@ export class BpmnScriptValidator {
   }
 
   /**
-   * The engine settings alone. A duplicate is the caller's to check, over every
-   * setting the parens hold rather than these: a second `label` is as much a
-   * duplicate as a second `assignee`, and a structural key never reaches here.
-   *
-   * @param description Noun phrase with article, e.g. `'a user task'`.
+   * A duplicate is the caller's to check, over every setting the parens hold
+   * rather than these: a second `label` is as much a duplicate as a second
+   * `assignee`, and a structural key never reaches here.
    */
   private checkAttributeKeys(
     attrs: readonly Setting[],
@@ -3071,11 +2914,9 @@ export class BpmnScriptValidator {
   }
 
   /**
-   * A repeated *same* key is the duplicate-key check's business, so the count
+   * A repeated same key is the duplicate-key check's business, so the count
    * is over distinct keys.
    *
-   * @param subject The message's leading noun phrase (`"Service task 'total'"`).
-   * @param alternative Appended to the names-none message only.
    * @returns Whether exactly one binding is written, so a check reading that
    *   binding's value can stand down otherwise.
    */
@@ -3116,12 +2957,9 @@ export class BpmnScriptValidator {
   }
 
   /**
-   * A bare word in the parens is a flag. `sequentially` and `local` reach here
-   * rather than the parser because they are keywords elsewhere in the grammar
-   * and so lex inside any parens; without this they would be accepted and
-   * lower to nothing.
-   *
-   * @param description Noun phrase with article, e.g. `'a user task'`.
+   * `sequentially` and `local` reach here rather than the parser because they
+   * are keywords elsewhere in the grammar and so lex inside any parens;
+   * without this they would be accepted and lower to nothing.
    */
   private checkFlags(
     items: ParenItem[],
@@ -3263,11 +3101,7 @@ export class BpmnScriptValidator {
     this.checkListeners(owner, rule, accept);
   }
 
-  /**
-   * A run key on a statement with no `for` clause contradicts itself, so the
-   * refusal names both fixes. A kind that never takes a clause owns no run
-   * key, so the unknown-key check answers there.
-   */
+  /** A kind that never takes a clause owns no run key, so the unknown-key check answers there. */
   private checkRunSettings(
     owner: AttributeOwner,
     rule: AttributeBlockRule,
@@ -3371,12 +3205,6 @@ export class BpmnScriptValidator {
     }
   }
 
-  /**
-   * The block's members split four ways: the io directions, the field
-   * direction, the property direction, and a word that is none of them. Which
-   * of them the owner takes is its row's business, and a member of a direction
-   * it does not take is reported against the direction word the author wrote.
-   */
   private checkIoParameters(
     owner: AttributeOwner,
     rule: AttributeBlockRule,
@@ -3519,14 +3347,10 @@ export class BpmnScriptValidator {
   }
 
   /**
-   * A field configures the implementation the binding instantiates, so a
-   * binding running none has nothing to inject into and the engine hands it no
-   * field list. One diagnostic per member: a field with no place to go is the
-   * mistake to fix before its value shape. Called where the member is written,
-   * so the block's diagnostics stay in document order.
-   *
-   * @param refusal Why no field rides here, or `undefined` where one does. The
-   *   caller words it, since what to remove differs by what the owner wrote.
+   * One diagnostic per member: a field with no place to go is the mistake to
+   * fix before its value shape. Called where the member is written, so the
+   * block's diagnostics stay in document order; the caller words `refusal`,
+   * since what to remove differs by what the owner wrote.
    */
   private checkField(
     field: IoParameter,
@@ -3556,12 +3380,6 @@ export class BpmnScriptValidator {
     }
   }
 
-  /**
-   * The one authoring rule a repeat clause carries: Operaton rejects the
-   * deployment outright (`BpmnParse.checkActivityOutputParameterSupported`),
-   * so this is an error rather than a warning, reported once however many
-   * mappings the block holds. Every other shape rule is already the grammar's.
-   */
   private checkRepeatedOutput(
     owner: AttributeOwner,
     directed: readonly IoParameter[],
@@ -3570,7 +3388,9 @@ export class BpmnScriptValidator {
     if (!isRepeated(owner)) {
       return;
     }
-    const mapping = directed.find((param) => param.direction === 'output');
+    const mapping = directed.find(
+      (param) => param.direction === OUTPUT_DIRECTION,
+    );
     if (mapping) {
       accept('error', REPEATED_OUTPUT_MESSAGE, {
         node: mapping,
@@ -3580,15 +3400,11 @@ export class BpmnScriptValidator {
   }
 
   /**
-   * A map value may hold a list holding another map, so the walk goes to any
-   * depth. A keyless entry compiles to unimportable XML, and an empty literal
-   * anywhere in the tree - the value itself, a list item, or a map entry's
-   * value - is `BpmnParseUtil.getElValueProvider`'s null spelling rather than
-   * an empty string, and it trims before that test. A script anywhere in the
-   * tree follows the same fence rules a script task's body does:
+   * The walk goes to any depth, since a map value may hold a list holding
+   * another map. A keyless entry compiles to unimportable XML; a script
+   * anywhere in the tree follows a script task's fence rules, since
    * `ScriptingEngines.getGlobalScriptEngine` resolves the tag the same way,
-   * only later, when the parameter is first evaluated rather than at
-   * deployment.
+   * only when the parameter is first evaluated rather than at deployment.
    */
   private checkIoValueShapes(
     param: IoParameter,
@@ -3825,34 +3641,41 @@ export class BpmnScriptValidator {
   /** The grammar allows an empty `Block`, so an empty branch is a warning, not an error. */
   checkIfStatement = (stmt: IfStatement, accept: ValidationAcceptor): void => {
     this.checkGatewaySettings(stmt, accept);
-    this.warnIfEmptyBlock(stmt.then, "The 'if' branch has no steps.", accept);
+    this.checkEmptyBlock(
+      stmt.then,
+      'warning',
+      "The 'if' branch has no steps.",
+      accept,
+    );
     for (const elseIf of stmt.elseIfs) {
-      this.warnIfEmptyBlock(
+      this.checkEmptyBlock(
         elseIf.body,
+        'warning',
         "The 'else if' branch has no steps.",
         accept,
       );
     }
     if (stmt.elseBlock) {
-      this.warnIfEmptyBlock(
+      this.checkEmptyBlock(
         stmt.elseBlock,
+        'warning',
         "The 'else' branch has no steps.",
         accept,
       );
     }
   };
 
-  /**
-   * An empty loop body is an error where an empty branch is a warning: with
-   * no entry node to run the conditioned flow into, the lowering writes the
-   * gateway with its exit alone and the condition is lost.
-   */
   checkWhileStatement = (
     stmt: WhileStatement,
     accept: ValidationAcceptor,
   ): void => {
     this.checkGatewaySettings(stmt, accept);
-    this.refuseEmptyLoopBody(stmt.body, 'while', accept);
+    this.checkEmptyBlock(
+      stmt.body,
+      'error',
+      emptyLoopBodyMessage('while'),
+      accept,
+    );
   };
 
   checkDoWhileStatement = (
@@ -3860,7 +3683,12 @@ export class BpmnScriptValidator {
     accept: ValidationAcceptor,
   ): void => {
     this.checkGatewaySettings(stmt, accept);
-    this.refuseEmptyLoopBody(stmt.body, 'do', accept);
+    this.checkEmptyBlock(
+      stmt.body,
+      'error',
+      emptyLoopBodyMessage('do'),
+      accept,
+    );
     // The body runs before the gateway, so a body that always ends leaves
     // the gateway with no incoming flow; the unreachable-step scan only sees
     // the statements after it.
@@ -3868,19 +3696,6 @@ export class BpmnScriptValidator {
       accept('error', DEAD_LOOP_MESSAGE, { node: stmt, property: 'condition' });
     }
   };
-
-  private refuseEmptyLoopBody(
-    block: Block | undefined,
-    keyword: string,
-    accept: ValidationAcceptor,
-  ): void {
-    if (block !== undefined && block.statements.length === 0) {
-      accept('error', emptyLoopBodyMessage(keyword), {
-        node: block,
-        property: 'statements',
-      });
-    }
-  }
 
   /**
    * The grammar admits a parameter or a listener in any body so that one
@@ -3918,11 +3733,6 @@ export class BpmnScriptValidator {
     this.checkCancelPair(stmt, accept);
   };
 
-  /**
-   * A cancel end and the handler catching it are written apart, and each half
-   * is inert without the other: the engine deploys either alone and then stops
-   * at the first token reaching the end, or never enters the handler.
-   */
   private checkCancelPair(block: SubProcess, accept: ValidationAcceptor): void {
     if (!block.transactional || block.name === undefined) return;
 
@@ -3948,8 +3758,9 @@ export class BpmnScriptValidator {
   ): void => {
     this.checkGatewaySettings(stmt, accept);
     stmt.branches.forEach((branch, index) => {
-      this.warnIfEmptyBlock(
+      this.checkEmptyBlock(
         branch.body,
+        'warning',
         `Branch ${index + 1} of the 'parallel' statement has no steps.`,
         accept,
       );
@@ -3957,13 +3768,7 @@ export class BpmnScriptValidator {
     this.checkFallbackBranch(stmt, accept);
   };
 
-  /**
-   * The `else` branch runs when no sibling condition held. Two of them leave
-   * the second unreachable, and one beside an unconditioned branch is dead:
-   * that branch always runs, so nothing is left over to fall back on. With
-   * every branch unconditioned that is the whole statement, the sharper of the
-   * two diagnoses and the one reported.
-   */
+  /** With every branch unconditioned both diagnoses hold; the whole-statement one is the sharper and the one reported. */
   private checkFallbackBranch(
     stmt: ParallelStatement,
     accept: ValidationAcceptor,
@@ -3997,8 +3802,9 @@ export class BpmnScriptValidator {
     this.checkGatewaySettings(stmt, accept);
     stmt.branches.forEach((branch, index) => {
       this.checkAttributeBlock(branch, accept);
-      this.warnIfEmptyBlock(
+      this.checkEmptyBlock(
         branch.body,
+        'warning',
         `Branch ${index + 1} of the 'await' statement has no steps.`,
         accept,
       );
@@ -4018,24 +3824,18 @@ export class BpmnScriptValidator {
     );
   };
 
-  private warnIfEmptyBlock(
+  private checkEmptyBlock(
     block: Block | undefined,
+    severity: 'error' | 'warning',
     message: string,
     accept: ValidationAcceptor,
   ): void {
-    if (block === undefined) {
-      return;
-    }
-    if (block.statements.length === 0) {
-      accept('warning', message, { node: block, property: 'statements' });
+    if (block !== undefined && block.statements.length === 0) {
+      accept(severity, message, { node: block, property: 'statements' });
     }
   }
 
-  /**
-   * A branch's steps run only when the whole statement is reached, so a `goto`
-   * into one from outside is an error under both branching constructs. An
-   * unresolved `goto` is skipped: the linker already reports it.
-   */
+  /** An unresolved `goto` is skipped: the linker already reports it. */
   checkGotoStatement = (
     goto: GotoStatement,
     accept: ValidationAcceptor,
@@ -4129,11 +3929,6 @@ export class BpmnScriptValidator {
     );
   }
 
-  /**
-   * Both pin which deployed version runs, so declaring both is one error.
-   *
-   * @param subject The message's leading noun phrase (`'A call'`).
-   */
   private checkBindingVersionExclusion(
     owner: VersionPinnedElement,
     subject: string,
@@ -4152,7 +3947,7 @@ export class BpmnScriptValidator {
 
   /**
    * Both pin the same variable-mapping delegate, so the engine's if/else-if
-   * would silently drop one; refusing here beats mirroring that at import.
+   * would drop one without a word; refusing here beats mirroring that at import.
    */
   private checkCallMapperExclusion(
     call: CallActivity,
@@ -4230,8 +4025,9 @@ export class BpmnScriptValidator {
       this.checkHandlerBindings(handler, accept);
     }
 
-    this.warnIfEmptyBlock(
+    this.checkEmptyBlock(
       handler.body,
+      'warning',
       'The event handler has no steps.',
       accept,
     );
@@ -4291,13 +4087,7 @@ export class BpmnScriptValidator {
     }
   }
 
-  /**
-   * The three diagnostics a condition clause raises, wherever one is written:
-   * the clause is required where the trigger is `condition`, a quoted string
-   * there is a code rather than the condition, and an expression payload
-   * belongs to no other trigger. At most one of the three holds for a given
-   * node, so they need no ordering between them.
-   */
+  /** At most one of the three holds for a given node, so they need no ordering between them. */
   private checkConditionPayload(
     node: CatchHeader | OnHandler | StartEvent,
     rule: TriggerPayloadRule,
@@ -4332,14 +4122,11 @@ export class BpmnScriptValidator {
   }
 
   /**
-   * The timer a trigger's parens carry: a duration written bare, a date or a
-   * cycle under its key. A timer start's expression is parsed at deployment
+   * A timer start's expression is parsed at deployment
    * (`BpmnDeployer.adjustStartEventSubscriptions`,
    * `TimerDeclarationImpl.createStartTimerInstance`), so a bad shape there is
    * an error; every other carrier's is read only when its scope is entered,
    * so a bad shape there is a warning.
-   *
-   * @param particleOnly The message for a keyed time where the kind takes none.
    */
   private checkTimerClause(
     node: CatchHeader | OnHandler | StartEvent,
@@ -4454,13 +4241,7 @@ export class BpmnScriptValidator {
     }
   }
 
-  /**
-   * A handler scopes to a whole container, so it belongs directly in a process,
-   * `subprocess`, or handler body (BPMN allows nested event sub-processes) and
-   * never in a branch. `on compensation` is tighter still, belonging inside the
-   * one `subprocess` whose work it undoes; that rule only fires where the
-   * generic one passed, so one mistake gives one message.
-   */
+  /** The compensation rule fires only where the generic placement passed, so one mistake gives one message. */
   private checkHandlerPlacement(
     handler: OnHandler,
     accept: ValidationAcceptor,
@@ -4534,13 +4315,11 @@ export class BpmnScriptValidator {
   }
 
   /**
-   * Whether this handler may name a host, and whether the host it names is one
-   * it could legally attach to; stops at the first violation. An unresolved
-   * host is skipped, the linker already reports it. A host inside the handler's
-   * own body is circular: the scope provider offers those steps, but such a
-   * step only runs after the boundary event fired, so the engine would deploy a
-   * path nothing can take. The narrower `escalation` and `cancel` host sets are
-   * Operaton's own restrictions in `BpmnParse`.
+   * Stops at the first violation; an unresolved host is skipped, the linker
+   * already reports it. The scope provider offers a step inside the handler's
+   * own body as a host, so the circular case is refused here; the narrower
+   * `escalation` and `cancel` host sets are Operaton's own
+   * (`BpmnParse.parseBoundaryEvents`).
    */
   private checkHandlerHost(
     handler: OnHandler,
@@ -4821,15 +4600,9 @@ export class BpmnScriptValidator {
   }
 
   /**
-   * The header declarations a use site names. Two of one name leave a
-   * reference no way to say which it means; two of one code lower to a single
-   * event definition, so the second name would come back as the first. Codes
-   * are keyed per kind: an error and an escalation are separate definitions and
-   * share nothing by carrying one code.
-   *
-   * A name a step also uses stays legal. A reference resolves by type, so the
-   * two never compete, and reserving every declared name would take the word
-   * from the author for nothing.
+   * Codes are keyed per kind: an error and an escalation are separate
+   * definitions and share nothing by carrying one code. A name a step also
+   * uses stays legal: a reference resolves by type, so the two never compete.
    */
   private checkCodeDecls(process: Process, accept: ValidationAcceptor): void {
     const declaredNames = new Set<string>();
@@ -4932,12 +4705,7 @@ function collectExpressions(process: Process): Expr[] {
   return AstUtils.streamAst(process).filter(isExpr).toArray();
 }
 
-/**
- * Whether a name collides with the desugarer's own id namespace: the patterns,
- * and given the id of the container the statement sits in, the exact start and
- * end minted for it. Exported so the printer can warn about an imported
- * model's id from this one list.
- */
+/** Exported so the printer can warn about an imported model's id off this one list. */
 export function isReservedName(name: string, containerId?: string): boolean {
   return (
     RESERVED_ID_PATTERNS.some((re) => re.test(name)) ||
@@ -4947,10 +4715,10 @@ export function isReservedName(name: string, containerId?: string): boolean {
 }
 
 /**
- * The name of the process or `subprocess`/`attempt` block whose body holds the
- * statement, which seeds the implicit start and end the desugarer mints for
- * that body. A handler body is not one: its implicit events are seeded from a
- * coordinate-derived id no author writes.
+ * The process or `subprocess`/`attempt` block whose body holds the statement,
+ * whose name seeds the implicit start and end minted for that body. A handler
+ * body is not one: its implicit events are seeded from a coordinate no author
+ * writes.
  */
 function enclosingContainerName(node: NamedStatement): string | undefined {
   const container = AstUtils.getContainerOfType(
@@ -4964,7 +4732,6 @@ function capitalize(text: string): string {
   return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
-/** @param subject The message's leading noun phrase (`"Script task 'total'"`). */
 function checkFencedScript(
   raw: string,
   subject: string,
@@ -4986,17 +4753,9 @@ function checkFencedScript(
   }
 }
 
-/** The shape a `name=ID` slot takes, so a code spelled that way can be declared under itself. */
-const DECLARABLE_NAME = /^[_a-zA-Z]\w*(-\w+)*$/;
-
-/**
- * A code names a declaration rather than carrying its own text, so quoted text
- * in a code position is a missing declaration. Text a `name=ID` slot could hold
- * is offered as the name itself; anything else needs a name of the author's
- * choosing and keeps the text as the declaration's `code`.
- */
-function quotedCodeMessage(trigger: string, text: string): string {
-  const spellable = DECLARABLE_NAME.test(text);
+export function quotedCodeMessage(trigger: string, text: string): string {
+  // A code spelled like a `name=ID` slot can be declared under itself.
+  const spellable = ID_TEXT.test(text);
   const declaration = spellable
     ? `${trigger} ${text}`
     : `${trigger} <NAME>(code: ${JSON.stringify(text)})`;
@@ -5007,11 +4766,6 @@ function quotedCodeMessage(trigger: string, text: string): string {
   );
 }
 
-/**
- * The mirror of {@link quotedCodeMessage}: a message, signal, or link name is
- * the text the engine matches on, so it carries its own text rather than
- * referring to a declaration.
- */
 function barewordNameMessage(trigger: string, text: string): string {
   return (
     `A ${trigger} name is the text the engine matches by name, not a declared ` +
@@ -5023,12 +4777,8 @@ function unknownTriggerMessage(word: string, legal: readonly string[]): string {
   return `Unknown event kind '${word}'; write ${formatWordList(legal)}.`;
 }
 
-/**
- * A declaration and a step both open with a word, so a mistyped step keyword
- * followed by a name parses as a declaration and lands here rather than at the
- * parser's declaration-or-step guidance. The message names both readings.
- */
-function unknownDeclarationKindMessage(word: string): string {
+/** A mistyped step keyword followed by a name parses as a declaration and lands here rather than at the parser's declaration-or-step guidance, so the message names both readings. */
+export function unknownDeclarationKindMessage(word: string): string {
   return (
     `Unknown declaration kind '${word}'; write ` +
     `${formatWordList([...DECLARED_CODE_TRIGGERS])}, or a step keyword if a ` +
@@ -5036,7 +4786,7 @@ function unknownDeclarationKindMessage(word: string): string {
   );
 }
 
-function onTriggerMessage(word: string): string {
+export function onTriggerMessage(word: string): string {
   if (word === 'conditional') {
     return CONDITIONAL_TYPO_MESSAGE;
   }
@@ -5046,7 +4796,7 @@ function onTriggerMessage(word: string): string {
   return unknownTriggerMessage(word, ON_TRIGGERS);
 }
 
-function startTriggerMessage(word: string): string {
+export function startTriggerMessage(word: string): string {
   if (word === 'error' || word === 'escalation') {
     return (
       `A process cannot start on an ${word}: the engine ignores the trigger ` +
@@ -5068,7 +4818,7 @@ function startTriggerMessage(word: string): string {
 }
 
 /** Only the triggers that interrupt by nature reach this; each says why. */
-function alongsideMessage(trigger: string): string {
+export function alongsideMessage(trigger: string): string {
   if (trigger === 'compensation') return COMPENSATION_ALONGSIDE_MESSAGE;
   if (trigger === 'cancel') return CANCEL_ALONGSIDE_MESSAGE;
   return (
@@ -5077,7 +4827,7 @@ function alongsideMessage(trigger: string): string {
   );
 }
 
-function endTriggerMessage(word: string): string {
+export function endTriggerMessage(word: string): string {
   if (THROW_TRIGGERS_SET.has(word)) {
     const article = /^[aeiou]/.test(word) ? 'An' : 'A';
     return (
@@ -5098,14 +4848,7 @@ function endTriggerMessage(word: string): string {
   );
 }
 
-/**
- * `RAW_TEMPLATE` is anchored at the opening quote, so only a name that *opens*
- * with `${` or `#{` lexes as a raw template; an opener further in leaves the
- * name a plain string. Both reach here as text through `payloadTextOf`.
- */
-const EXPRESSION_IN_NAME = /\$\{|#\{/;
-
-function startMessageExpressionMessage(name: string): string {
+export function startMessageExpressionMessage(name: string): string {
   return (
     `A message start name cannot contain an expression ("${name}"): the ` +
     'engine rejects one there, because a process that has not started yet ' +
@@ -5115,7 +4858,7 @@ function startMessageExpressionMessage(name: string): string {
   );
 }
 
-function throwTriggerMessage(word: string): string {
+export function throwTriggerMessage(word: string): string {
   if (word === 'compensate') {
     return COMPENSATE_TYPO_MESSAGE;
   }
@@ -5128,7 +4871,7 @@ function throwTriggerMessage(word: string): string {
   return unknownTriggerMessage(word, THROW_TRIGGERS);
 }
 
-function emitTriggerMessage(word: string): string {
+export function emitTriggerMessage(word: string): string {
   if (word === 'error') {
     return "An error always aborts its path; write 'throw error'.";
   }
@@ -5141,7 +4884,7 @@ function emitTriggerMessage(word: string): string {
   return unknownTriggerMessage(word, EMIT_TRIGGERS);
 }
 
-function catchTriggerMessage(word: string): string {
+export function catchTriggerMessage(word: string): string {
   if (word === 'compensate') {
     return COMPENSATE_TYPO_MESSAGE;
   }
@@ -5188,10 +4931,6 @@ export function isAttemptBlock(node: AstNode | undefined): node is SubProcess {
   return node !== undefined && isSubProcess(node) && node.transactional;
 }
 
-/**
- * Whether a cancel end ends `block` itself. The enclosing container is the
- * scope the engine reads, so an end in an `if` branch of the block counts.
- */
 function hasCancelEndInScope(block: SubProcess): boolean {
   for (const node of AstUtils.streamAst(block)) {
     if (
@@ -5227,7 +4966,7 @@ function cancelHostMessage(host: Statement): string {
   );
 }
 
-function cancelEndWithoutHandlerMessage(name: string): string {
+export function cancelEndWithoutHandlerMessage(name: string): string {
   return (
     `'${name}' gives itself up but nothing catches it: the engine stops with ` +
     `an error the first time that end is reached. Write 'on ${name}: cancel ` +
@@ -5235,7 +4974,7 @@ function cancelEndWithoutHandlerMessage(name: string): string {
   );
 }
 
-function cancelHandlerWithoutEndMessage(name: string): string {
+export function cancelHandlerWithoutEndMessage(name: string): string {
   return (
     `Nothing inside '${name}' gives it up, so this handler never runs: write ` +
     `'end <name> cancel' on the path that should give the block up, or ` +
@@ -5244,13 +4983,12 @@ function cancelHandlerWithoutEndMessage(name: string): string {
 }
 
 /**
- * The noun phrase the diagnostics name a statement by, off the one table that
- * spells every element kind out, so an `attempt` block is named for the head
- * its author wrote rather than for the rule it shares. The fallback covers the
- * statements with no row, which no diagnostic reaches.
+ * Every caller hands a `SubProcess` or a resolved host, which the scope offers
+ * only for the named kinds, and each of those has a row; the row names an
+ * `attempt` block for the head its author wrote rather than the rule it shares.
  */
 function describeStatementKind(stmt: Statement): string {
-  return attributeBlockRuleOf(stmt)?.description ?? 'not an activity';
+  return attributeBlockRuleOf(stmt)!.description;
 }
 
 function startTriggerInBlockMessage(block: SubProcess): string {
@@ -5278,7 +5016,7 @@ function escalationHostMessage(host: Statement): string {
   );
 }
 
-function selfAttachedHostMessage(hostName: string): string {
+export function selfAttachedHostMessage(hostName: string): string {
   return (
     `A boundary event cannot attach to a step inside its own escape path: ` +
     `'${hostName}' only runs after this handler has already fired, so it ` +
@@ -5286,7 +5024,7 @@ function selfAttachedHostMessage(hostName: string): string {
   );
 }
 
-function hostedHandlerStartMessage(name: string): string {
+export function hostedHandlerStartMessage(name: string): string {
   return (
     `'start ${name}' cannot open a handler that names a host: the body runs ` +
     "inside the host's own container and is entered from the boundary event, " +
@@ -5295,7 +5033,7 @@ function hostedHandlerStartMessage(name: string): string {
   );
 }
 
-function noDefaultStartMessage(name: string): string {
+export function noDefaultStartMessage(name: string): string {
   return (
     `Process '${name}' has no default start: with only message, signal, or ` +
     'condition starts, the engine can create an instance only by triggering ' +
@@ -5303,12 +5041,12 @@ function noDefaultStartMessage(name: string): string {
   );
 }
 
-const FORM_NEVER_OFFERED_MESSAGE =
+export const FORM_NEVER_OFFERED_MESSAGE =
   "The engine offers a start form only on the process's default start, its " +
   'plain or timer start; this form is on a different start and is never ' +
   'shown.';
 
-const INITIATOR_SHADOWED_MESSAGE =
+export const INITIATOR_SHADOWED_MESSAGE =
   'The engine keeps one initiator per process: whichever start is parsed ' +
   'last wins, so this setting is never written. Move it to the last ' +
   'start, or drop it.';
@@ -5319,13 +5057,7 @@ const NAME_SCOPED_TRIGGERS: ReadonlySet<string> = new Set([
   'signal',
 ]);
 
-/**
- * Why a second catch of one thing on one scope is refused, per trigger. The
- * error arm is the one the engine does not refuse: `addErrorEventDefinition`
- * sorts the definitions and the first match wins, so the rule is this
- * surface's.
- */
-const HANDLER_DUPLICATE_RULE: Readonly<Record<string, string>> = {
+export const HANDLER_DUPLICATE_RULE: Readonly<Record<string, string>> = {
   message:
     'Operaton keeps one message subscription per name and scope (BpmnParse.addEventSubscriptionDeclaration), so the deployment fails',
   signal:
@@ -5350,17 +5082,15 @@ function subscriptionScopeOf(handler: OnHandler): AstNode | undefined {
 }
 
 /**
- * Which catches of one scope a handler is compared against. A message or
- * signal name is unique per scope among the catches that are not process
- * starts (`BpmnParse.hasMultipleEventDefinitionsWithSameName` keys the
- * start flag too, and `parseEventDefinitionForSubprocess` clears it), so
- * the boundary and the event sub-process collide while a message or signal
- * start of the same name sits beside either; an escalation, error, or cancel
+ * A message or signal name is unique per scope among the catches that are not
+ * process starts (`BpmnParse.hasMultipleEventDefinitionsWithSameName` keys the
+ * start flag, and `parseEventDefinitionForSubprocess` clears it), so a
+ * boundary and an event sub-process collide; an escalation, error or cancel
  * catch is compared against its own kind alone
- * (`BpmnParse.addEscalationEventDefinition` branches on
- * `isSubProcessScope`). A boundary on a repeated host subscribes on the
- * multi-instance body, one scope above the host's own
- * (`BpmnParse.getMultiInstanceScope`), so a name inside such a host stays free.
+ * (`BpmnParse.addEscalationEventDefinition` branches on `isSubProcessScope`).
+ * A boundary on a repeated host subscribes on the multi-instance body, one
+ * scope above the host's own (`BpmnParse.getMultiInstanceScope`), so a name
+ * inside such a host stays free.
  */
 function catchKindOf(handler: OnHandler): string {
   if (handler.host?.ref === undefined) return 'body';
@@ -5422,17 +5152,12 @@ function readsExternalTask(ref: VarRef): boolean {
 }
 
 /**
- * Whether `ref` reads a process variable, which is what the undeclared-variable
- * warning, a definition lookup and a rename all key on.
- * Every other position names something else: an `out` mapping's source is
- * evaluated in the called process's scope; the value of a
- * {@link NON_VARIABLE_ATTR_KEYS} setting is plain text (the direct value
- * alone, a nested reference is a variable); a declaration's parens hold the
- * text a code and its message are made of; a gateway head's parens take
- * settings alone; a code or a name position names an event; and
- * `externalTask` inside a mapping is the engine's own object. The answer is
- * read off the container chain alone, so it also holds for the stand-in
- * completion builds for a reference not yet typed, whose `ref` is empty.
+ * Whether `ref` reads a process variable, which the undeclared-variable
+ * warning, a definition lookup and a rename all key on. Only the direct value
+ * of a {@link NON_VARIABLE_ATTR_KEYS} setting is plain text; a reference
+ * nested in one is a variable. The answer is read off the container chain
+ * alone, so it also holds for the stand-in the completion provider builds for
+ * a reference not yet typed, whose `ref` is empty.
  */
 export function isVariableUse(ref: VarRef): boolean {
   const container = ref.$container;
@@ -5518,12 +5243,6 @@ function formDefaultShape(
   }
 }
 
-/**
- * Why no external extra rides here, or `undefined` where the parens bind a
- * `topic`. Asked on a kind whose row takes the extras alone.
- *
- * @param item The extra as written (`'a property line'`).
- */
 function topicRefusalOf(
   rule: AttributeBlockRule,
   settings: readonly Setting[],
@@ -5538,7 +5257,6 @@ function topicRefusalOf(
       );
 }
 
-/** Whether the parens name a binding the engine injects a field into. */
 function namesFieldBinding(attrs: readonly Setting[]): boolean {
   return attrs.some((attr) => FIELD_BINDING_KEY_SET.has(attr.key));
 }
@@ -5552,7 +5270,6 @@ function isFieldValue(value: IoValue | undefined): boolean {
   return value !== undefined && (isLiteralString(value) || isRawExpr(value));
 }
 
-/** The distinct binding keys written on an element, in document order. */
 function bindingKeysOf(
   attrs: readonly Setting[],
   keys: readonly string[],
@@ -5564,7 +5281,6 @@ function bindingKeysOf(
   ];
 }
 
-/** @param subject The message's leading noun phrase (`"Service task 'total'"`). */
 function checkAtMostOneBinding(
   attrs: readonly Setting[],
   keys: readonly string[],
@@ -5582,12 +5298,6 @@ function checkAtMostOneBinding(
   }
 }
 
-/**
- * An implementation is what makes the engine really send a thrown message, so
- * no other kind has one to run, and a message without one is legal and common.
- *
- * @param subject The leading noun phrase (`'a thrown'`/`'an emitted'`).
- */
 function checkThrowEmitBinding(
   stmt: ThrowStatement | EmitStatement,
   subject: 'a thrown' | 'an emitted',
@@ -5619,13 +5329,7 @@ function checkThrowEmitBinding(
   );
 }
 
-/**
- * There is no catch-all on the throwing side, so for every trigger but
- * `compensation` an omitted and an empty code are the same mistake;
- * `compensation` names nothing, so carrying a code at all is the mistake.
- *
- * @param subject The leading noun phrase (`'A thrown'`/`'An emitted'`).
- */
+/** There is no catch-all on the throwing side, so an omitted and an empty code are the same mistake. */
 function checkThrowEmitCode(
   stmt: ThrowStatement | EmitStatement,
   subject: 'A thrown' | 'An emitted',
@@ -5732,11 +5436,9 @@ const STRING_OR_PROPERTY_READ =
   /'(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*"|\.\s*([A-Za-z_$][\w$]*)/g;
 
 /**
- * Every `.prop` a raw template reads, held to the keyword rule a rendered
- * accessor is under, plus `true`/`false`/`null`: the scanner registers all of
- * them as operators or literal tokens wherever they stand, so `${order.and}`
- * and `${order.true}` both fail to parse at deployment, though the grammar
- * would never let either spell a variable or an accessor name. Text between
+ * `true`, `false` and `null` are held to the keyword rule too: a raw template
+ * is plain text, so unlike a rendered accessor it can spell them as a `.prop`
+ * read, and the scanner still returns their literal tokens there. Text between
  * two templates is never scanned as an expression, so a word there is text.
  */
 function checkRawTemplateNames(
@@ -5828,11 +5530,7 @@ function nonBooleanShapeOf(
   return undefined;
 }
 
-/**
- * The body of the nearest branch enclosing `node` and the keyword its statement
- * is written with. Both branch nodes have `body` as their only `Block`-typed
- * property, so a `Block` directly under one is that branch's body.
- */
+/** Both branch nodes have `body` as their only `Block`-typed property, so a `Block` directly under one is that branch's body. */
 function findEnclosingBranch(
   node: AstNode,
 ): { body: Block; keyword: 'parallel' | 'await' } | undefined {
@@ -5853,7 +5551,7 @@ function findEnclosingBranch(
   return undefined;
 }
 
-function intoBranchMessage(
+export function intoBranchMessage(
   subject: string,
   jump: string,
   keyword: 'parallel' | 'await',
@@ -5862,7 +5560,7 @@ function intoBranchMessage(
   return `'${subject}' jumps into a branch of ${article} '${keyword}' statement from outside that branch; a branch's steps run only when the whole '${keyword}' statement is reached, not via an external '${jump}'.`;
 }
 
-function linkThrowNeverRunsMessage(item: string): string {
+export function linkThrowNeverRunsMessage(item: string): string {
   return (
     `${item} has no effect on an emitted link: the engine creates no activity ` +
     "for a link throw, so nothing written on it runs. Put it on the 'await " +

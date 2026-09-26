@@ -1,11 +1,11 @@
-// `vscode` is injected by the extension host, not installed from npm, so it
-// has to be mocked with the surface the adapter touches. The conversion itself
-// is mocked too: what is under test is the notification each outcome composes.
+// `vscode` is injected by the extension host, not installed from npm, so it is
+// mocked with the surface the adapter touches. The conversion is mocked too:
+// under test is what each outcome shows the author.
 
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 
-// vi.mock factories are hoisted above the module body, so a plain top-level
-// const would still be in its temporal dead zone here. vi.hoisted is required.
+// vi.mock factories are hoisted above the module body, where a plain top-level
+// const is still in its temporal dead zone.
 const mocks = vi.hoisted(() => ({
   showWarningMessage: vi.fn(),
   showErrorMessage: vi.fn(),
@@ -69,7 +69,6 @@ function occurrences(haystack: string, needle: string): number {
   return haystack.split(needle).length - 1;
 }
 
-/** The first argument of every notification the run raised, by severity. */
 function notifications(): Record<'info' | 'warning' | 'error', string[]> {
   const firstArgs = (fn: { mock: { calls: unknown[][] } }): string[] =>
     fn.mock.calls.map((call) => String(call[0]));
@@ -80,20 +79,16 @@ function notifications(): Record<'info' | 'warning' | 'error', string[]> {
   };
 }
 
-/** The fsPath of every document the run opened, in call order. */
 function shownDocuments(): string[] {
   return mocks.showTextDocument.mock.calls.map(
     (call) => (call[0] as vscode.Uri).fsPath,
   );
 }
 
-/** The first argument of every editor command the run executed. */
 function executedCommands(): string[] {
   return mocks.executeCommand.mock.calls.map((call) => String(call[0]));
 }
 
-// Neither message names its own element: they say "here" and leave the id to
-// the caller, so unrendered they arrive as one line repeated.
 const SAME_WORDING =
   'The model weighs the route on from here with a condition, ' +
   'which the script leaves out.';
@@ -102,19 +97,16 @@ type Expected = {
   info?: string[];
   warning?: string[];
   error?: string[];
-  /** The uri the command returns, or undefined where it gives up. */
   returns: string | undefined;
-  /** Every document opened via showTextDocument, in call order. */
   shown?: string[];
-  /** Every editor command executed, in call order. */
   executed?: string[];
 };
 
 type Row = readonly [
   title: string,
   command: 'compile' | 'decompile',
-  /** Basename of the source file the row hands the command. */
-  sourceName: string,
+  // undefined hands the command no uri, with no active editor to fall back on.
+  sourceName: string | undefined,
   // undefined means the guard refuses the file before the core ever runs.
   result: CompileResult | DecompileResult | undefined,
   expected: Expected,
@@ -127,33 +119,7 @@ describe('conversion commands: what the author is shown', () => {
 
   test.each<Row>([
     [
-      'a decompile that dropped something names the file once and the dropped item after it',
-      'decompile',
-      'example.bpmn',
-      {
-        ok: true,
-        output: 'process P { start S end E }',
-        warnings: [
-          {
-            elementId: 'Task1',
-            category: 'extensionAttribute',
-            message:
-              "The 'formHandlerClass' setting on 'Task1' was not imported",
-          },
-        ],
-      },
-      {
-        info: ['BPMNscript: Decompiled "example.bpmn" -> "example.bpmnscript"'],
-        warning: [
-          'BPMNscript: "example.bpmn" reported 1 item(s) during decompile: ' +
-            "Task1: The 'formHandlerClass' setting on 'Task1' was not imported",
-        ],
-        returns: '/tmp/example.bpmnscript',
-        shown: ['/tmp/example.bpmnscript'],
-      },
-    ],
-    [
-      'two same-worded warnings are told apart by the element each is about',
+      'a decompile that dropped things names the file once and each dropped item by its element',
       'decompile',
       'example.bpmn',
       {
@@ -264,6 +230,18 @@ describe('conversion commands: what the author is shown', () => {
       },
     ],
     [
+      'compile with nothing selected and no editor open says so and stops',
+      'compile',
+      undefined,
+      undefined,
+      {
+        warning: [
+          'BPMNscript: No file selected. Open a .bpmnscript file or select one in the Explorer.',
+        ],
+        returns: undefined,
+      },
+    ],
+    [
       'compile takes an upper-case extension',
       'compile',
       'ORDER.BPMNSCRIPT',
@@ -290,7 +268,11 @@ describe('conversion commands: what the author is shown', () => {
       handler = decompileCommand();
     }
 
-    const returned = await handler(vscode.Uri.file(`/tmp/${sourceName}`));
+    const returned = await handler(
+      sourceName === undefined
+        ? undefined
+        : vscode.Uri.file(`/tmp/${sourceName}`),
+    );
 
     const {
       info = [],
@@ -307,10 +289,12 @@ describe('conversion commands: what the author is shown', () => {
     const core = command === 'compile' ? compileDslToBpmn : decompileBpmnToDsl;
     expect(core).toHaveBeenCalledTimes(result === undefined ? 0 : 1);
 
-    // The file is named once per line. The success line is the exception: it
+    // The file is named once per line; the success line is the exception, it
     // names the file it read and the file it wrote.
-    for (const message of [...warning, ...error]) {
-      expect(occurrences(message, sourceName)).toBe(1);
+    if (sourceName !== undefined) {
+      for (const message of [...warning, ...error]) {
+        expect(occurrences(message, sourceName)).toBe(1);
+      }
     }
   });
 });

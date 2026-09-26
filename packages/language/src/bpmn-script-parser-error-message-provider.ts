@@ -1,16 +1,13 @@
 /**
- * Reserved-word guidance for parse errors: a reserved grammar keyword (`date`,
- * `class`, `if`, ...) written where the parser expects a plain identifier gets
- * a message naming the word and pointing at the quoted `"${...}"` raw-string
- * fallback. Two Chevrotain paths reach that mistake, so both are overridden:
- * `buildMismatchTokenMessage` where the grammar expects exactly `ID`, and
- * `buildNoViableAltMessage` where `ID` is one alternative among several. A slot
- * whose alternatives are all keywords takes neither path and gets its own
- * message naming the words it does take. Every message here stays free of BPMN
- * vocabulary (ADR-0013).
- *
- * This only enriches the message Chevrotain already built; it cannot suppress
- * or restructure error recovery, nor change which token positions are legal.
+ * Guidance in place of Chevrotain's stock wording for the mistakes an author
+ * makes with the grammar's shape: a reserved word where a plain identifier
+ * belongs, a `var` or a repeat clause after the position that takes it, a
+ * mistyped statement keyword. A reserved word reaches the parser down two
+ * Chevrotain paths, so both builders are overridden: `buildMismatchTokenMessage`
+ * where the grammar expects exactly `ID`, `buildNoViableAltMessage` where `ID`
+ * is one alternative among several. Every message stays free of BPMN
+ * vocabulary (ADR-0013). Only the message changes; recovery and the legal
+ * token positions are Chevrotain's.
  */
 
 import {
@@ -27,42 +24,27 @@ import {
 const ID_TOKEN_NAME = 'ID';
 
 /**
- * A `var` declaration is legal only in the process header, so anywhere else the
- * parser has finished the statement list and reports "expecting `}`, found
- * `var`". `var` used as a name expects `ID` and takes the reserved-word path.
+ * A `var` after the first step, or a `for` after a statement that takes no
+ * repeat clause, ends the statement list early: the parser expects `}` and
+ * finds the keyword. An unclosed block reads the same way at `EOF`, whose
+ * image is the empty string, so the stock message would say "found ``".
  */
 const CLOSE_BRACE_TOKEN_NAME = '}';
 const VAR_KEYWORD_TOKEN_NAME = 'var';
-
-/** After a statement that takes no repeat clause, the same "expecting `}`". */
 const FOR_KEYWORD_TOKEN_NAME = 'for';
-
-/**
- * Chevrotain names the end-of-input token `EOF`; its image is the empty
- * string, so the stock message reads "found ``" where an unclosed block ran
- * out of source before its closing brace.
- */
 const EOF_TOKEN_NAME = 'EOF';
 
 /**
  * A code declaration is the one header declaration opening with a plain `ID`,
- * so a mistyped statement keyword in the header region is parsed as one and
- * fails at its name slot, where Chevrotain's raw expected-token list says
- * nothing about the actual mistake. A word that really does open a declaration
- * is excluded, so `error "PF"` still blames the text where the name belongs. A
- * mistyped kind *followed by a name* parses whole and never reaches here; the
- * validator names its kind instead.
+ * so a mistyped statement keyword parses as its kind and fails at the name
+ * slot. A word that really opens a declaration is excluded, so `error "PF"`
+ * still blames the text where the name belongs.
  */
 const CODE_DECL_RULE_NAME = 'CodeDecl';
 
-/** A token whose image could have been meant as a word rather than punctuation or a literal. */
 const WORD_SHAPED = /^[A-Za-z_]/;
 
-/**
- * Langium's generated Chevrotain rules carry a trailing zero-width space on
- * `ruleName` (`withRuleSuffix` in `langium-parser.ts`) so rule names never
- * collide with reserved JavaScript identifiers.
- */
+/** Langium suffixes every Chevrotain rule name with a zero-width space (`withRuleSuffix` in `langium-parser.ts`). */
 function bareRuleName(ruleName: string): string {
   return ruleName.replace(/\u200b+$/, '');
 }
@@ -167,10 +149,9 @@ export class BpmnScriptParserErrorMessageProvider extends LangiumParserErrorMess
   }
 
   /**
-   * The keywords a slot admits, in grammar order, when every alternative is one
-   * keyword and nothing else. `undefined` anywhere else, so a slot also taking
-   * an identifier, a literal, or a longer phrase keeps Chevrotain's message
-   * rather than being described as a closed set of words.
+   * The keywords a slot admits when every alternative is one keyword and
+   * nothing else, else `undefined`: a slot also taking an identifier, a
+   * literal or a longer phrase is not a closed set of words.
    */
   private keywordAlternatives(
     expectedPathsPerAlt: NoViableAltOptions['expectedPathsPerAlt'],

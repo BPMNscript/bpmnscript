@@ -1,21 +1,13 @@
 /**
- * Definition, references, rename, document highlight and hover for a
- * variable, in one service.
- *
- * `VarRef.ref` is a cross-reference to `CodeDecl` that the scope provider
- * resolves in a code position alone, so Langium's providers, which key on the
- * resolved reference and on a `name` node, know nothing of `if (amount > 1)`
- * and rename `var amount` on its own. All five resolve the caret through
- * `References.findDeclarations` and walk the sites through
- * `References.findReferences`, so one override serves them all.
- *
- * The identity a rename keys on is the variable, not a node: up to five node
- * kinds declare one, and a repeated statement declares its element beside its
- * own name, so no node can stand for the variable it declares. Each request
- * builds a fresh symbol node from `declaringSites` instead. That walk is three
- * passes over the AST and answers in single-digit milliseconds on a 3,000-line
- * file, so a document-highlight request per cursor move is affordable without
- * a cache.
+ * Definition, references, rename, document highlight and hover for a variable.
+ * `VarRef.ref` resolves in a code position alone, so Langium's five providers,
+ * keyed on the resolved reference and a `name` node, know nothing of
+ * `if (amount > 1)`; all five go through `References.findDeclarations` and
+ * `References.findReferences`, so one override serves them. No AST node stands
+ * for a variable (five node kinds declare one, and a repeated statement
+ * declares its element beside its own name), so each request builds a symbol
+ * node from `declaringSites`. That walk answers in single-digit milliseconds
+ * on a 3,000-line file, so a highlight per cursor move needs no cache.
  */
 
 import {
@@ -45,7 +37,7 @@ import type {
 } from './variable-symbol-provider.js';
 
 /** The node a variable's sites all resolve to. Its `$cstNode` is the first site's name leaf. */
-export interface VariableSymbolNode extends AstNode {
+interface VariableSymbolNode extends AstNode {
   readonly $type: 'VariableSymbolNode';
   readonly $container: Process;
   readonly name: string;
@@ -115,10 +107,10 @@ export class BpmnScriptReferences extends DefaultReferences {
   }
 
   /**
-   * The variable the leaf under the caret names: a declaring site's name, or a
-   * variable use whose name has at least one site. A name with no site (a loop
-   * counter, an undeclared name) falls through to the default, which finds no
-   * resolved reference and answers nothing, so it is not renameable.
+   * The variable the leaf under the caret names, by a declaring site or a use
+   * with at least one site. A name with no site (a loop counter, an undeclared
+   * name) falls through to the default, which finds no resolved reference and
+   * so refuses a rename.
    */
   private variableAt(cst: CstNode): VariableSymbolNode | undefined {
     const node = cst.astNode;

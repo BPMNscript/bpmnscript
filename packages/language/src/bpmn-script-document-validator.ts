@@ -1,18 +1,12 @@
 /**
- * Drops the link failures that were never meant to resolve.
- *
- * Every identifier in every expression is a cross-reference to a code
- * declaration, because nothing in the parens tells `error(OUT_OF_STOCK)` from
- * `condition(ready)`. A code position is the only one whose scope holds
- * anything, so `if (amount > 100)` fails to link by design and the
- * undeclared-variable warning stays the only diagnostic its author sees.
- *
- * This is the seam because the two earlier ones cannot be. `Linker` can only
- * reword: `createLinkingError` returns the error, `doLink` stores it on the
- * reference and lists the reference regardless. Skipping that push instead
- * would suppress the diagnostic and leave a stale `_ref` behind, since
- * `document.references` is the list `unlink()` walks to reset lazily-resolved
- * references between builds.
+ * Drops the link failures that were never meant to resolve. Every identifier
+ * in every expression is a cross-reference to a code declaration, and only a
+ * code position has a scope, so `if (amount > 100)` fails to link by design
+ * and the undeclared-variable warning stays the one diagnostic its author
+ * sees. This is the seam because `Linker` can only reword: `doLink` stores
+ * the error and lists the reference regardless, and skipping that push would
+ * leave a stale `_ref` behind, since `document.references` is what `unlink()`
+ * walks between builds.
  */
 
 import {
@@ -25,11 +19,7 @@ import type { Diagnostic } from 'vscode-languageserver-types';
 import { isVarRef } from './generated/ast.js';
 import { isCodePosition } from './paren-items.js';
 
-/**
- * A `goto` target and a handler host are reported as they always were: only an
- * identifier written outside a code position is one the author never asked to
- * resolve.
- */
+/** Only an identifier outside a code position is one the author never asked to resolve. */
 function isExpectedToResolve(source: AstNode): boolean {
   return !isVarRef(source) || isCodePosition(source);
 }
@@ -40,9 +30,8 @@ export class BpmnScriptDocumentValidator extends DefaultDocumentValidator {
     diagnostics: Diagnostic[],
     options: ValidationOptions,
   ): void {
-    // A view over the document rather than a copy of it: `textDocument` is a
-    // lazy getter, and spreading would build the whole TextDocument to
-    // validate one reference list.
+    // A view rather than a spread copy: `textDocument` is a lazy getter, and
+    // spreading would build the whole TextDocument for one reference list.
     const reported: LangiumDocument = Object.create(document, {
       references: {
         value: document.references.filter(

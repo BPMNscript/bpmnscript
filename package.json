@@ -1,9 +1,17 @@
 {
   "name": "bpmn-script-workspace",
-  "description": "Base workspace package",
+  "description": "Write executable business processes as text, compile to BPMN 2.0 XML, and read existing BPMN files back as text.",
   "version": "0.0.1",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/BPMNscript/bpmnscript.git"
+  },
   "type": "module",
   "private": true,
+  "engines": {
+    "node": ">=22.0.0"
+  },
   "scripts": {
     "clean": "npm run clean --workspaces --if-present",
     "watch": "tsc -b tsconfig.build.json --watch",

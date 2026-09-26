@@ -1,4 +1,5 @@
 export * from './bpmn-script-module.js';
+export { FLAG_WORD_RULE, SETTING_KEY_RULE } from './bpmn-script-completion.js';
 export * from './bpmn-script-validator.js';
 export * from './expression-render.js';
 export * from './variable-symbol-provider.js';

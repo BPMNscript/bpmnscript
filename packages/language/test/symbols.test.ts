@@ -1,12 +1,7 @@
 /**
- * The document outline, driven through the real `DocumentSymbolProvider` with
- * `expectSymbols` from `langium/test`, over the frozen
- * `boundary-events.bpmnscript` golden.
- *
- * The whole tree is flattened to one `Kind name` line per symbol, indented by
- * depth, and asserted as a single list: an `on` handler with no children of
- * its own would otherwise be invisible (its steps would float to the level
- * above), which is exactly the regression this pins.
+ * The outline of the `boundary-events.bpmnscript` golden, flattened to one
+ * `Kind name` line per symbol and indented by depth, so a handler whose steps
+ * floated up to the process would show.
  */
 
 import { readFileSync } from 'node:fs';
@@ -29,11 +24,8 @@ function flatten(symbols: DocumentSymbol[], depth: number): string[] {
   ]);
 }
 
-// Generated once against `boundary-events.bpmnscript` and read against the
-// golden's narrative before being pinned: three code declarations, every
-// named statement kinded and, per handler, one line for its own header with
-// its steps nested under it. `BookCarrier`'s `in`/`out` mapping lines are
-// absent, a mapping having no name to be a symbol by.
+// `BookCarrier`'s `in`/`out` mapping lines are absent, a mapping having no
+// name to be a symbol by.
 const EXPECTED = [
   'Module parcel-dispatch',
   '  Constant ADDRESS_REJECTED',

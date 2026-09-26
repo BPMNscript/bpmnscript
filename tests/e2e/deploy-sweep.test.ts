@@ -1,7 +1,7 @@
 // Every golden, fixture and example on the engine, in one boot: once as the
-// file is written, and once rebuilt from the tool's own print of it. The
-// second table is where a defect of the first kind hides: a deployable file
-// whose print compiles back to one the engine refuses.
+// file is written, and once rebuilt from the tool's own print of it, where a
+// deployable file whose print compiles back to one the engine refuses would
+// hide.
 //
 // Each row deploys in a tenant of its own, because
 // BpmnDeployer.addMessageStartEventSubscription refuses a second message start
@@ -92,7 +92,7 @@ describe.skipIf(SKIP)('E2E: every golden, fixture and example deploys', () => {
         buildExample(row.dslPath, row.xmlPath);
       }
     }
-    fixture = await startFixture('spring-boot');
+    fixture = await startFixture();
   }, ENGINE_BOOT_TIMEOUT_MS);
 
   afterAll(async () => {

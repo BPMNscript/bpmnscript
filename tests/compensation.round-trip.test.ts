@@ -1,9 +1,6 @@
-// Why the restructured DSL stays validator-clean: every throw and emit is
-// named, so the printer emits the authored id instead of a `Throw_<coord>` one
-// that would trip the reserved-name check, and the guards read variables
-// declared on the start form. The `var compensation` declaration does not
-// survive the round trip, but its only reference sits inside an opaque service
-// expression the validator never parses.
+// The guards read start-form fields, and the `var compensation` declaration
+// that does not survive the round trip is referenced only inside an opaque
+// service expression, so DSL' validates clean.
 
 import { describe, it, expect } from 'vitest';
 
@@ -35,10 +32,9 @@ function startEventOpenTag(xml: string, id: string): string | undefined {
   return new RegExp(`<bpmn:startEvent id="${id}"[^>]*>`).exec(xml)?.[0];
 }
 
-// Handwritten import-first. The compensation end event carries an explicit
-// `waitForCompletion="true"`, the moddle default, accepted on import and then
-// dropped as unmodeled. Every task label differs from the name humanized from
-// its id, so the importer keeps it.
+// The compensation end carries an explicit `waitForCompletion="true"`, the
+// moddle default, accepted on import and dropped as unmodeled. Every task label
+// differs from the name humanized from its id, so the importer keeps it.
 const IMPORT_FIRST_BPMN = `<?xml version="1.0" encoding="UTF-8"?>
 <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:operaton="http://operaton.org/schema/1.0/bpmn" id="Definitions_import_first_compensation" targetNamespace="http://bpmn.io/schema/bpmn">
   <bpmn:process id="warehouse-fulfilment" name="Warehouse Fulfilment" isExecutable="true">
@@ -138,12 +134,9 @@ describe('compensation shape pins on the frozen .bpmn', () => {
   });
 
   it('every bpmn:compensateEventDefinition is attribute-less', () => {
-    const all =
-      rt.frozenXml.match(/<bpmn:compensateEventDefinition\b[^>]*>/g) ?? [];
-    expect(all).toHaveLength(4);
-    for (const tag of all) {
-      expect(tag).toBe('<bpmn:compensateEventDefinition />');
-    }
+    expect(
+      rt.frozenXml.match(/<bpmn:compensateEventDefinition\b[^>]*>/g),
+    ).toEqual(Array<string>(4).fill('<bpmn:compensateEventDefinition />'));
   });
 
   it('each undo block is a triggeredByEvent sub-process whose start is interrupting', () => {

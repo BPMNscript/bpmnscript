@@ -10,7 +10,11 @@
  * construction.
  */
 
-import { BpmnScriptGrammar, reservedWordsOf } from '@bpmn-script/language';
+import {
+  BpmnScriptGrammar,
+  ID_TEXT,
+  reservedWordsOf,
+} from '@bpmn-script/language';
 
 const START_EVENT_PREFIX = 'StartEvent_';
 const END_EVENT_PREFIX = 'EndEvent_';
@@ -120,8 +124,8 @@ function claimId(base: string, taken: Set<string>): string {
   return id;
 }
 
-/** The grammar's `ID` terminal, the one shape a name in the script has. */
-export const ID_SHAPED = /^[_a-zA-Z]\w*(-\w+)*$/;
+/** The one shape a name in the script has. */
+export const ID_SHAPED = ID_TEXT;
 
 /** Whether the script can spell `word` as a name: `ID`-shaped and no keyword. */
 export function isWritableName(word: string): boolean {

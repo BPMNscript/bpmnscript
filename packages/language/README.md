@@ -15,7 +15,6 @@ The package also owns the base VS Code TextMate grammar (`syntaxes/bpmn-script.t
 
 ## The language
 
-One `process` block per file.
 Steps run top to bottom, so sequence flow is never written out, and control flow uses structured statements instead.
 Optional `var` declarations go in the process header, before the body, alongside the header's own settings: `versionTag`, which labels the deployed process definition, `historyTimeToLive`, and `candidateStarterUsers` and `candidateStarterGroups`, whose entries are listed as candidate starters (Tasklist's process list; `BpmnDeployer.addAuthorizations` stores each entry as written).
 `historyTimeToLive` is the number of days the engine keeps a finished instance's history, written `P<n>D` or `<n>`, and an absent value compiles to `P30D`, since `HistoryTimeToLiveParser.parseAndValidate` refuses a null value under the engine's default `enforceHistoryTimeToLive`; the cleanup itself runs only once its batch window is configured.
@@ -36,10 +35,9 @@ process invoice-approval {
 }
 ```
 
-Every targetable statement carries an explicit id, which is what `goto` and boundary events refer to.
 An id is ASCII only: a letter or `_`, then any run of letters, digits and `_`, with single hyphens allowed between such runs (the `ID` terminal in the grammar).
-A step, a call and a sub-process derive the BPMN `name` from that id (`ReviewInvoice` becomes "Review Invoice") unless a `label` setting gives one instead: `user ReviewInvoice(label: "Review invoice")`; a `start` and an `end` are named by `label` alone, and `on`, `throw`, `emit` and `await` show no name at all, except the two ends of a link pair, which carry the link name.
-A `documentation` setting carries free-form text alongside it, spelled the same way: `user ReviewInvoice(documentation: "Escalate to the senior approver above 1000.")`.
+A step, a call and a sub-process derive the BPMN `name` from that id (`ReviewInvoice` becomes "Review Invoice") unless a `label` setting gives one instead: `user ReviewInvoice(label: "Review invoice")`; a `start` and an `end` are named by `label` alone, and `on`, `throw`, `emit` and `await` show no name at all.
+A `documentation` setting carries free-form text alongside `label`, spelled the same way: `user ReviewInvoice(documentation: "Escalate to the senior approver above 1000.")`.
 
 ### Statements
 
@@ -107,42 +105,6 @@ A user task's `assignee` is the user id: a bare word or a quoted string reaches 
 A user task names its deployed form with `formKey` or with `formRef`, never both.
 `formRef` also needs `binding: latest`, `binding: deployment`, or `version: <number>` beside it, the same version-pinning a `call` or a `decide` step carries, since the engine refuses to deploy a form reference it cannot resolve a version for.
 `version` is a positive whole number, quoted or not, or an expression yielding one, on a `formRef`, a `call`, and a `decide` step alike: the engine parses it as an integer when the step runs (`BaseCallableElement.getVersion`, `TaskEntity.initializeFormRefFromTaskDefinition`), so `1.5` deploys and then fails the instance.
-
-#### Job settings on a gateway
-
-An `if`, a `while`, a `do...while`, a `parallel`, and a multi-branch `await` each synthesize a gateway with no name to hang a setting on.
-Its five settings sit in a parens on the statement head instead, right where an ordinary element's settings sit.
-`if`, `parallel`, and a multi-branch `await` also synthesize a join beside the split, and the join's settings share the same parens under a `join`-prefixed spelling: `joinAsyncBefore`, `joinAsyncAfter`, `joinExclusive`, `joinJobPriority`, `joinRetryCycle`.
-An `if` chain lowers to one exclusive-gateway split no matter how many `else if` branches it carries, so the head parens govern the whole chain and an `else if` head takes none of its own.
-
-```bpmnscript
-process order-fulfillment {
-  var amount: number
-
-  start OrderPlaced
-
-  if (amount > 10000) (asyncBefore: true, joinAsyncBefore: true, joinJobPriority: 5) {
-    user AuditReview(assignee: "auditor")
-  } else {
-    user SkipAudit(assignee: "clerk")
-  }
-
-  parallel (asyncBefore: true, exclusive: true, joinAsyncAfter: true) {
-    {
-      user PackItems
-    }
-    {
-      user PrintLabel
-    }
-  }
-
-  end OrderShipped
-}
-```
-
-A `while` or a `do...while` has one gateway, so a `join`-prefixed key on either is an error naming the plain spelling to write instead.
-A multi-branch `await` head refuses `asyncAfter`: `BpmnParse.parseEventBasedGateway` refuses the flag on the gateway it deploys, so the setting has to move onto whichever branch trigger should carry it.
-A `join`-prefixed setting on a statement whose branches all end their own path is a warning rather than an error, since the join it would set is never reached.
 
 #### Forms
 
@@ -256,7 +218,11 @@ process notify-ops {
 ```
 
 A mail task needs `to` and one of `text` or `html`; `cc` and `bcc` satisfy neither.
+`from` sets the sender address; left unset, `MailActivityBehavior` falls back to the process engine's configured default sender.
+`charset` sets the message's character encoding.
 A shell task needs `command`.
+`arg1` through `arg5` are positional arguments appended after `command`, in order; `ShellActivityBehavior` skips any left unset.
+`directory` sets the working directory the command runs in; left unset, it runs in the engine process's own.
 Every shell field is a quoted literal, never a `"${...}"` expression, and its three flags, `wait`, `redirectError`, and `cleanEnv`, are written `true` or `false`.
 A shell task's output has no `resultVariable` of its own to hold it.
 `field outputVariable = "..."` names the process variable the command's stdout is written to, and `field errorCodeVariable = "..."` the one its exit code is written to.
@@ -493,7 +459,6 @@ A second `else` branch on one statement is rejected, and so is an `else` on a st
 
 ### The event layer
 
-The event layer reads like try/catch.
 An `on <kind> { }` handler is a catch block, sitting at the end of the body it guards, the way a catch block sits after its try body: `on error(PAYMENT_FAILED) { ... }`.
 That body is a process, a `subprocess` or `attempt` block, or another handler's body, since BPMN lets one event sub-process nest inside another.
 
@@ -809,6 +774,42 @@ The `error` heading a mapping is the same soft trigger word every code site writ
 They're among the most common variable and property names a Java-background author reaches for, which is why they stay available.
 The editor still highlights and completes them, but only in the positions where they carry event meaning.
 
+### Job settings on a gateway
+
+An `if`, a `while`, a `do...while`, a `parallel`, and a multi-branch `await` each synthesize a gateway with no name to hang a setting on.
+Its five settings sit in a parens on the statement head instead, right where an ordinary element's settings sit.
+`if`, `parallel`, and a multi-branch `await` also synthesize a join beside the split, and the join's settings share the same parens under a `join`-prefixed spelling: `joinAsyncBefore`, `joinAsyncAfter`, `joinExclusive`, `joinJobPriority`, `joinRetryCycle`.
+An `if` chain lowers to one exclusive-gateway split no matter how many `else if` branches it carries, so the head parens govern the whole chain and an `else if` head takes none of its own.
+
+```bpmnscript
+process order-fulfillment {
+  var amount: number
+
+  start OrderPlaced
+
+  if (amount > 10000) (asyncBefore: true, joinAsyncBefore: true, joinJobPriority: 5) {
+    user AuditReview(assignee: "auditor")
+  } else {
+    user SkipAudit(assignee: "clerk")
+  }
+
+  parallel (asyncBefore: true, exclusive: true, joinAsyncAfter: true) {
+    {
+      user PackItems
+    }
+    {
+      user PrintLabel
+    }
+  }
+
+  end OrderShipped
+}
+```
+
+A `while` or a `do...while` has one gateway, so a `join`-prefixed key on either is an error naming the plain spelling to write instead.
+A multi-branch `await` head refuses `asyncAfter`: `BpmnParse.parseEventBasedGateway` refuses the flag on the gateway it deploys, so the setting has to move onto whichever branch trigger should carry it.
+A `join`-prefixed setting on a statement whose branches all end their own path is a warning rather than an error, since the join it would set is never reached.
+
 ### Expressions
 
 Condition expressions are parsed as a real AST over the JUEL native subset: integer, decimal, string, boolean, and null literals; variable references with dot-property and index accessors; unary `!` and `-`; binary arithmetic and comparison; logical `&&` and `||`; the ternary `? :`; and parentheses.
@@ -822,6 +823,7 @@ Validation beyond syntax lives in `src/bpmn-script-validator.ts`, which is the s
 The categories it covers:
 
 - Variables: an undeclared reference (warning), a type mismatch against the declared `var`, a name declared twice, a JUEL keyword or a hyphen in a name a rendered expression carries, a JUEL keyword read as a property inside a `"${...}"` template (`"${order.and}"`, outside its string literals), a condition whose static type is not boolean, and a composite `"${...} ${...}"` template under an operator.
+  The reserved words are `empty`, `div`, `mod`, `not`, `and`, `or`, `le`, `lt`, `eq`, `ne`, `ge`, `gt`, and `instanceof`; the literal words, reserved the same way, are `true`, `false`, and `null`.
 - Tasks: a duplicate attribute key, a `service`, `send`, or `decide` task without exactly one binding attribute, a binding value in the wrong shape (quoted text under `expression`, `delegate`, or `mapperDelegate`, a template under `class` or `mapper`, an empty `class`, `expression`, `delegate`, `mapper`, `mapperDelegate`, `topic`, `decision`, or `process`), a `resultVariable` beside a `class` or `delegate` binding, which the engine refuses to deploy, or beside `topic` or `type`, which nothing writes (warning), a `mapDecisionResult` outside the four result mappings or without a `resultVariable` to map into (warning), `binding`, `version`, or `mapDecisionResult` on a `decide` step with no `decision`, a `script` task with an unsupported fence tag or an empty or unterminated body.
   A user task adds its own: a `priority` that is neither an integer nor a `"${...}"` expression, and a `dueDate` or `followUpDate` constant that is neither a `P...` period nor an ISO date-time.
   A `version` on a `formRef`, a `call`, or a `decide` step that is not a positive whole number or an expression is refused on all three alike.

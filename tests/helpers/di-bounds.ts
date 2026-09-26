@@ -11,7 +11,7 @@ export interface Bounds {
   height: number;
 }
 
-// Regex rather than a parser: the tests workspace declares no moddle dependency.
+// Regex, for the reason xml-query.ts gives.
 export function parseShapeBounds(xml: string): Map<string, Bounds> {
   const shape =
     /<bpmndi:BPMNShape\b[^>]*\bbpmnElement="([^"]+)"[^>]*>\s*<dc:Bounds x="([-\d.]+)" y="([-\d.]+)" width="([-\d.]+)" height="([-\d.]+)"/g;
@@ -50,11 +50,6 @@ function sitsOnTheEdgeOf(attacher: FlowElement, host: FlowElement): boolean {
   );
 }
 
-/**
- * A flat plane's own containment check: every flow node of the root container
- * has a shape, and no two of them share space, apart from a boundary event and
- * the host it watches.
- */
 export function describeNoOverlappingShapes(rt: RoundTrip): void {
   describe('DI layout on the frozen .bpmn', () => {
     it('every flow node has a shape and only a boundary and its own host overlap', () => {
@@ -80,7 +75,6 @@ export function describeNoOverlappingShapes(rt: RoundTrip): void {
   });
 }
 
-/** DI is emitted once for the whole document, not once per container. */
 export function describeSingleDiagram(rt: RoundTrip): void {
   describe('DI on the generated .bpmn', () => {
     it('exactly one bpmndi:BPMNDiagram is emitted', () => {
@@ -127,13 +121,11 @@ function assertShapeContainment(
   }
 }
 
-// An event sub-process is a disconnected node, so the layout library only
-// places its box and its children inside the parent when the `isExpanded="true"`
-// stub irToXml emits is present. Removing that stub fails this block.
-//
-// `requiredIds` stops the walk passing because the interesting containers are
-// absent; pass a thunk when the ids come from the IR, which is readable only
-// after the pipeline has run.
+// The layout library places a disconnected event sub-process and its children
+// inside the parent only with the `isExpanded="true"` stub irToXml emits; drop
+// the stub and this block fails. `requiredIds` keeps the walk from passing
+// because the interesting containers are absent; a thunk defers ids that come
+// from the IR, readable only once the pipeline has run.
 export function describeDiContainment(
   rt: RoundTrip,
   requiredIds: readonly string[] | (() => readonly string[]) = [],

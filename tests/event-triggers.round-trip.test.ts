@@ -1,7 +1,5 @@
-// Why the restructured DSL is asserted validator-clean: the fixture avoids the
-// early-exit-inside-`if` shape that degrades a jump into a goto onto an unnamed
-// synthesized join, and every throw and emit is named, so the printer emits the
-// authored id instead of a `Throw_<coord>` one that trips the reserved-name check.
+// The fixture avoids the early-exit-inside-`if` shape, which degrades into a
+// goto onto an unnamed synthesized join, so DSL' validates clean.
 
 import { describe, it, expect } from 'vitest';
 
@@ -19,7 +17,7 @@ import {
   kindOf,
   subProcess,
 } from './helpers/ir-query.js';
-import { definitionRefOf } from './helpers/xml-query.js';
+import { definitionRefOf, messageRoots } from './helpers/xml-query.js';
 import { roundTripFixture } from './helpers/round-trip-fixture.js';
 
 const rt = roundTripFixture('event-triggers', {
@@ -34,9 +32,9 @@ function timerExpressions(container: FlowContainer): string[] {
     .sort();
 }
 
-// Handwritten import-first. One `bpmn:Signal` root is referenced twice, by the
-// intermediate throw and by the end event. Every task label differs from the
-// name humanized from its id, so the importer keeps it.
+// One `bpmn:Signal` root is referenced twice, by the intermediate throw and by
+// the end event. Every task label differs from the name humanized from its id,
+// so the importer keeps it.
 const IMPORT_FIRST_BPMN = `<?xml version="1.0" encoding="UTF-8"?>
 <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:operaton="http://operaton.org/schema/1.0/bpmn" id="Definitions_import_first_triggers" targetNamespace="http://bpmn.io/schema/bpmn">
   <bpmn:signal id="Signal_Sent" name="ParcelDispatched" />
@@ -115,15 +113,11 @@ describe("idempotence: DSL -> IR1 -> XML -> IR2 -> DSL' -> IR3", () => {
   it('the conditional handler condition survives as the same expression at every hop', () => {
     const isConditional = (def: EventDefinition | undefined): boolean =>
       def?.kind === 'conditional';
-    for (const ir of [rt.ir1, rt.ir2, rt.ir3]) {
-      const def = handlerTriggerDef(
-        subProcess(ir, 'FulfilOrder'),
-        isConditional,
-      );
-      expect(def, 'conditional handler missing in a hop').toBeDefined();
-      if (def?.kind === 'conditional') {
-        expect(def.condition).toBe('${stockLevel < 5}');
-      }
+    for (const [label, ir] of rt.hops) {
+      expect(
+        handlerTriggerDef(subProcess(ir, 'FulfilOrder'), isConditional),
+        `conditional handler differs in ${label}`,
+      ).toEqual({ kind: 'conditional', condition: '${stockLevel < 5}' });
     }
   });
 
@@ -169,9 +163,10 @@ describe('root sharing on the frozen .bpmn', () => {
     expect(definitionRefOf(rt.frozenXml, 'Announce', 'signal')).toBe(signalId);
   });
 
-  it('there is exactly one root per distinct message and signal name', () => {
-    expect(rt.frozenXml.match(/<bpmn:message id="[^"]+"/g)).toHaveLength(1);
-    expect(rt.frozenXml.match(/<bpmn:signal id="[^"]+"/g)).toHaveLength(1);
+  it('the one message handler gets the one bpmn:Message root', () => {
+    expect(messageRoots(rt.frozenXml).map((root) => root.name)).toEqual([
+      'OrderCancelled',
+    ]);
   });
 });
 

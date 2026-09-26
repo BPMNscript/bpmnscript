@@ -111,6 +111,8 @@ The IR variant is declared beside `ServiceTaskBinding` in `packages/transform/sr
 Amends ADR-0021, whose "exactly one of the four" binding count grows to five.
 Amends ADR-0032, whose field-binding rule grows from `class`/`delegate` to `class`/`delegate`/`type`.
 Amends ADR-0014, which narrows the `type` refusal to a value outside `external`, `mail`, and `shell`, and whose warned list gains a mail or shell task's shadowed attributes.
+Amends ADR-0033, which states ADR-0032's field rule as a rule about the two binding words `class` and `delegate` at seven sites; the rule stays keyed on words alone, and `type` on a task is the third.
+Amends ADR-0038, whose three extras stay with the `topic` binding: on a mail or shell `type` binding they refuse in a script and warn on import, since `parseExternalServiceTask` alone reads them.
 
 Amended by ADR-0048, under which `resultVariable` beside `type:` draws a warning that nothing writes the variable, rather than being accepted and ignored.
 

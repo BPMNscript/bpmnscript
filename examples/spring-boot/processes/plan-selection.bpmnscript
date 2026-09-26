@@ -1,6 +1,5 @@
-// A task form Operaton Tasklist renders from the field list: a required
-// enum the engine refuses to submit without a value or with one outside its
-// list, and a free-text note bounded in length.
+// The engine's form service refuses a submission that leaves the required
+// enum empty or names a value outside its list.
 
 process plan-selection {
   start SignedUp

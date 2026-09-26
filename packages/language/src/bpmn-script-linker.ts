@@ -1,15 +1,11 @@
 /**
- * Boundary-explanation linker for `goto` and for an `on` handler's host:
- * Langium's stock resolution failure, which names the grammar type
- * (`Statement`) rather than anything the author wrote, is replaced by a
- * message naming the boundary crossed where the name exists elsewhere in the
- * process, or by a plain "no step named" message where it exists nowhere at
- * all. A validator could not do the job: it only ever sees a `goto` that
- * already resolved. An undeclared code is reworded here for the same reason.
- *
- * Rewording is all a linker can do. `doLink` stores the error on the reference
- * and lists the reference either way, so whether the error becomes a diagnostic
- * is decided in `bpmn-script-document-validator.ts`.
+ * Langium's stock resolution failure names the grammar type (`Statement`)
+ * rather than anything the author wrote. A `goto` or host naming a step that
+ * exists elsewhere in the process gets the boundary it crosses instead, one
+ * naming nothing gets "no step named", and an undeclared code gets how to
+ * declare it. A validator cannot do this: it only sees a reference that
+ * already resolved. Rewording is all a linker can do; whether the error
+ * becomes a diagnostic is decided in `bpmn-script-document-validator.ts`.
  */
 
 import {
@@ -64,10 +60,6 @@ function handlerPhrase(handler: OnHandler): string | undefined {
   return `${article} '${header}' handler`;
 }
 
-/**
- * The kind a declaration of `name` in the enclosing process was written under,
- * or `undefined` where the process declares no such name.
- */
 function declaredCodeKind(source: AstNode, name: string): string | undefined {
   const process = AstUtils.getContainerOfType(source, isProcess);
   const decls = process?.decls.filter(isCodeDecl) ?? [];
@@ -80,11 +72,7 @@ interface Location {
   crossesHandler: boolean;
 }
 
-/**
- * Where `target` lives relative to `sourceContainer`, called once the two are
- * known to differ. A handler carrying a host is never reported: the container
- * walk passes through it.
- */
+/** Where `target` lives relative to `sourceContainer`, once the two are known to differ. */
 function locateTarget(
   target: NamedStatement,
   sourceContainer: FlowContainer,
@@ -132,10 +120,9 @@ export class BpmnScriptLinker extends DefaultLinker {
     const codeTrigger = codeTriggerOf(source);
     if (codeTrigger !== undefined) {
       const name = refInfo.reference.$refText;
-      // The scope holds this kind's declarations only, so a name declared
-      // under the other kind arrives here unresolved. Saying it is undeclared
-      // would be false, and advising a second declaration of that name would
-      // walk the author into the duplicate-name error.
+      // A name declared under the other kind arrives here unresolved too;
+      // advising a second declaration would walk the author into the
+      // duplicate-name error.
       const declaredKind = declaredCodeKind(source, name);
       const message =
         declaredKind === undefined

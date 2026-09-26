@@ -26,7 +26,6 @@ const CLI_ENTRY = path.resolve(__dirname, '../../packages/cli/bin/cli.js');
 describe.skipIf(SKIP)('E2E: invoice-approval on Spring Boot Operaton', () => {
   let fixture: FixtureAdapter;
 
-  // One deployment serves every case.
   beforeAll(async () => {
     fixture = await deployExamples('invoice-approval');
   }, ENGINE_BOOT_TIMEOUT_MS);
@@ -90,9 +89,8 @@ describe.skipIf(SKIP)('E2E: invoice-approval on Spring Boot Operaton', () => {
 
   // The fixture's service task carries no execution binding, so `xmlToIr`
   // rejects it with `UnsupportedServiceTaskFormError` and the CLI exits 1.
-  // Checking exit status and stderr content, rather than just that
-  // `execFileSync` threw, is what tells a real refusal apart from the CLI
-  // never having run at all (wrong path, spawn failure, timeout).
+  // Checking status and stderr, not just that `execFileSync` threw, tells a
+  // real refusal apart from the CLI never having run at all.
   it('refuses unsupported service-task form', () => {
     const badBpmnPath = path.resolve(
       __dirname,

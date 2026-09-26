@@ -10,10 +10,8 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
 /**
- * Completes "print-label" external tasks from inside the same JVM as the
- * embedded engine, so the shipment-label process reaches its end event without a
- * separate worker deployment. It polls the engine's external-task service on a
- * fixed delay and completes any task locked on the topic.
+ * Completes "print-label" external tasks from inside the engine's JVM, so the
+ * fixture needs no separate worker deployment.
  */
 @Component
 public class PrintLabelWorker {

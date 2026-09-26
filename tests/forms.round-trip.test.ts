@@ -9,8 +9,7 @@ import type { BpmnProcess, FormField } from '@bpmn-script/transform';
 import { roundTripFixture } from './helpers/round-trip-fixture.js';
 import { elementById } from './helpers/ir-query.js';
 
-// Only a start event and a user task carry a form; narrowing here keeps the
-// contract test itself free of `kind` bookkeeping.
+// Only a start event and a user task carry a form.
 function formFieldsOf(
   container: BpmnProcess,
   id: string,
@@ -153,6 +152,5 @@ describe('the frozen form-field contract', () => {
   });
 });
 
-// The fixture has no nested container (an `if`/`else` between two flat tasks),
-// so there is nothing for describeDiContainment to walk, the same reason
-// intermediate-catch leaves it out.
+// The fixture has no nested container, so there is nothing for
+// describeDiContainment to walk.

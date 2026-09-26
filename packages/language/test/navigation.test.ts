@@ -1,14 +1,6 @@
 /**
- * Definition, references, rename and document highlight, driven through the
- * real LSP providers on the shared services.
- *
- * Langium's four providers all resolve the caret through
- * `References.findDeclarations` and walk the sites through
- * `References.findReferences`, so one table per request is enough to pin the
- * `References` override: a variable is keyed on the sites that declare it,
- * everything else on the resolved cross-reference the default already handles.
- *
- * `langium/test` has no rename helper, so the rename rows drive
+ * Definition, references, rename and document highlight through the real LSP
+ * providers. `langium/test` has no rename helper, so the rename rows drive
  * `RenameProvider` by hand and assert the whole document after the edits: a
  * rename that touched the declaration alone cannot pass on the text.
  */
@@ -66,7 +58,6 @@ async function renamed(text: string, newName: string): Promise<string> {
   return TextDocument.applyEdits(document.textDocument, edits);
 }
 
-/** A row: a title, a program with one `<|>` caret, the new name, and the whole program afterwards. */
 type RenameRow = readonly [
   title: string,
   text: string,
@@ -161,7 +152,7 @@ const RENAMES: RenameRow[] = [
   ],
 ];
 
-/** A row: a title and a program with one `<|>` caret and the `<|...|>` ranges the request answers with. */
+/** A program with one `<|>` caret and the `<|...|>` ranges the request answers with. */
 type Row = readonly [title: string, text: string];
 
 const DEFINITIONS: Row[] = [

@@ -13,7 +13,6 @@ import {
 } from '../helpers/e2e-fixture.js';
 import { waitForTasks } from '../helpers/engine-rest.js';
 
-// Read off the compiled IR, so it holds without an engine.
 describe('Always-on guard: loan-approval.bpmnscript migration', () => {
   it('no longer contains the InitDelegate default-seeding service task', async () => {
     const ir = await irOfExample('loan-approval');
@@ -89,7 +88,6 @@ describe.skipIf(SKIP)('E2E: loan-approval on Spring Boot Operaton', () => {
     expect(pending).toHaveLength(1);
     expect(pending[0]!.taskDefinitionKey).toBe('Approve');
 
-    // Submit the `approved` form field, exactly as Tasklist would.
     await fixture.completeTask(pending[0]!.id, { approved: true });
 
     const remaining = await waitForTasks(

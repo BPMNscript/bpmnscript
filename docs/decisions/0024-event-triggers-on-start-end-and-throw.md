@@ -141,6 +141,7 @@ That last result is what shows an implementation-free message throw deploys and 
 
 ## More Information
 
+Superseded by ADR-0026 in the one consequence above recording a thrown message's send implementation as refused on import, which that surface now carries; the rest of this decision stands.
 ADR-0026 (task kinds on the authoring surface) supersedes the message-throw implementation refusal recorded above: Operaton reads that implementation off the `bpmn:messageEventDefinition`, so the same attributes on the event itself are inert.
 
 Amended by ADR-0034, which lifts the one-start-per-container rule for a process body and leaves it standing for a subprocess, a transaction, and an event handler.

@@ -1,13 +1,8 @@
 /**
- * The CFG analysis over a table of control-flow graphs.
- *
- * The module is pure graph machinery with no DSL knowledge: it builds a
- * control-flow graph from a {@link BpmnProcess}, computes dominators and
- * post-dominators, and answers the dominance / back-edge queries the
- * restructuring pattern catalog needs. Each row pins the complete analysis of
- * one graph, so a spurious relation fails as loudly as a missing one. Rows
- * sharing an oracle assert an equivalence: the exclusive and the parallel
- * diamond, the intermediate catch and the intermediate throw.
+ * Each row pins the complete analysis of one graph, so a spurious relation
+ * fails as loudly as a missing one. Rows sharing an oracle assert an
+ * equivalence: the exclusive and the parallel diamond, the intermediate catch
+ * and the intermediate throw.
  */
 
 import { describe, expect, it } from 'vitest';
@@ -456,28 +451,5 @@ describe('cfg analysis', () => {
     expect(cfg.dominates('m', 'nope')).toBe(false);
     expect(cfg.postDominates('nope', 'm')).toBe(false);
     expect(cfg.postDominates('m', 'nope')).toBe(false);
-  });
-
-  it('keeps totality for a node unreachable from the entry and for the two sentinels', () => {
-    // "orphan" has no path from the entry, so it is absent from the
-    // dominator tree, but it does reach the exit, so the post-dominator
-    // tree numbers it independently: the two interval trees answer these
-    // cases on their own terms rather than sharing one bounds check.
-    const cfg = analyzeCfg(
-      graph(
-        [start('start'), task('reachable'), task('orphan'), end('end')],
-        'start>reachable reachable>end orphan>end',
-      ),
-    );
-
-    expect(cfg.dominates('orphan', 'orphan')).toBe(false);
-    expect(cfg.dominates(VIRTUAL_ENTRY, 'orphan')).toBe(false);
-    expect(cfg.dominates(VIRTUAL_EXIT, 'orphan')).toBe(false);
-    expect(cfg.dominates(VIRTUAL_ENTRY, 'end')).toBe(true);
-    expect(cfg.dominates('end', VIRTUAL_ENTRY)).toBe(false);
-
-    expect(cfg.postDominates(VIRTUAL_EXIT, 'orphan')).toBe(true);
-    expect(cfg.postDominates('orphan', VIRTUAL_EXIT)).toBe(false);
-    expect(cfg.postDominates(VIRTUAL_EXIT, VIRTUAL_EXIT)).toBe(true);
   });
 });

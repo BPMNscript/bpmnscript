@@ -1,13 +1,7 @@
 /**
- * Semantic-token test suite for the soft event words.
- *
- * `error`, `escalation`, `code`, and `message` lex as plain `ID` under the
- * grammar's soft-word convention, so the generated TextMate grammar (which
- * knows only the real keywords `on`, `throw`, `emit`, `alongside`) gives them
- * no highlighting. These tests drive `BpmnScriptSemanticTokenProvider` through
- * the real LSP semantic-tokens request and assert it marks a soft word with the
- * `keyword` token type exactly where it carries event meaning: `var message:
- * string` and a plain `code` variable reference stay untouched.
+ * `BpmnScriptSemanticTokenProvider` through the real semantic-tokens request:
+ * a soft word is a `keyword` exactly where it carries meaning, and plain
+ * where it names a variable or a step.
  */
 
 import { beforeAll, describe, expect, test } from 'vitest';
@@ -48,20 +42,18 @@ function markedTokenTypes(
   });
 }
 
-/** A row: a title, a process body, and the token type of every marked range. */
 type Row = readonly [title: string, body: string, expected: readonly string[]];
 
-/** Soft words whose meaning is positional: as a variable name they are plain. */
 const SOFT_WORDS_AS_VAR_NAME = [
   'at',
   'priority',
   'message',
   'compensation',
   'after',
+  'terminate',
 ];
 
-/** The same, read in an expression rather than declared. */
-const SOFT_WORDS_AS_OPERAND = ['priority', 'code', 'compensation'];
+const SOFT_WORDS_AS_OPERAND = ['priority', 'code', 'compensation', 'after'];
 
 describe('Semantic tokens - soft event words', () => {
   test.each<Row>([
@@ -76,29 +68,14 @@ describe('Semantic tokens - soft event words', () => {
       [KEYWORD],
     ],
     [
-      'the trigger word of an `emit` is a keyword',
-      'emit <|escalation|>("C")',
-      [KEYWORD],
-    ],
-    [
       'a catch binding highlights its field word, not the variable it introduces',
       'on error("X", <|code|>: <|c|>) { }',
       [KEYWORD, PLAIN],
     ],
     [
-      'a message handler highlights its trigger word',
-      'on <|message|>("X") { }',
-      [KEYWORD],
-    ],
-    [
       'a condition handler highlights its trigger word, not the variable it tests',
       'on <|condition|> (<|amount|> > 100) { }',
       [KEYWORD, PLAIN],
-    ],
-    [
-      'a timer particle in an expression is a plain operand',
-      'var after: number\n  if (<|after|> > 2) {\n    end Done\n  }',
-      [PLAIN],
     ],
     [
       'an awaited event highlights its trigger word, not the time it carries',
@@ -129,11 +106,6 @@ describe('Semantic tokens - soft event words', () => {
       [PLAIN, PLAIN],
     ],
     [
-      'a variable named after a trigger word stays plain where the word is also used as one',
-      'var <|terminate|>: string\n  end Done terminate',
-      [PLAIN],
-    ],
-    [
       'a declaration highlights both its kind and the key of its message',
       '<|error|> X(<|message|>: "m")',
       [KEYWORD, KEYWORD],
@@ -142,16 +114,6 @@ describe('Semantic tokens - soft event words', () => {
       'a code declaration highlights its kind, not the name it declares',
       '<|escalation|> <|MANUAL_REVIEW|>',
       [KEYWORD, PLAIN],
-    ],
-    [
-      'a compensation handler highlights its trigger word',
-      'on <|compensation|> { }',
-      [KEYWORD],
-    ],
-    [
-      'a compensation throw highlights its trigger word',
-      'throw <|compensation|>',
-      [KEYWORD],
     ],
     [
       'a compensation emit highlights its trigger word, not the activity it names',

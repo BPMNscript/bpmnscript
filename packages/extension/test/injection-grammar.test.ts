@@ -1,7 +1,6 @@
-// These tests run the grammar's begin/end patterns through JS RegExp instead of
-// a TextMate engine. That only holds because the patterns stick to constructs
-// JS and Oniguruma agree on: literal backticks, alternation, \s, $, character
-// classes. Add an Oniguruma-only construct and this file stops modeling VS Code.
+// The begin/end patterns run through JS RegExp instead of a TextMate engine,
+// which holds only while they stick to constructs JS and Oniguruma agree on
+// (literal backticks, alternation, \s, $, character classes).
 
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
@@ -9,8 +8,8 @@ import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { SCRIPT_FORMAT_ALIASES } from '@bpmn-script/language';
 
-// The TextMate scope each canonical script format embeds. A format missing here
-// has no installed grammar, and every fence tag reaching it must say so below.
+// A format missing here has no installed grammar, and every tag reaching it
+// must be listed in NO_INSTALLED_GRAMMAR.
 const EMBEDDED_SCOPE_BY_FORMAT: Readonly<Record<string, string>> = {
   javascript: 'source.js',
   python: 'source.python',
@@ -18,7 +17,7 @@ const EMBEDDED_SCOPE_BY_FORMAT: Readonly<Record<string, string>> = {
   groovy: 'source.groovy',
 };
 
-// Tags deliberately left unhighlighted: VS Code ships no grammar for them.
+// VS Code ships no grammar for these.
 const NO_INSTALLED_GRAMMAR = new Set(['feel', 'juel']);
 
 const EXTENSION_DIR = path.resolve(
@@ -54,32 +53,19 @@ function matchFence(line: string): { name: string; rule: any } | undefined {
 }
 
 describe('fenced-script injection grammar', () => {
-  it('injects into source.bpmn-script and is registered with injectTo', () => {
+  it('is registered against source.bpmn-script at a path build:prepare copies it to', () => {
     expect(injection.injectionSelector).toContain('source.bpmn-script');
 
     const entry = pkg.contributes.grammars.find(
       (g: { scopeName: string }) => g.scopeName === injection.scopeName,
     );
     expect(entry).toBeDefined();
-    expect(entry.injectTo).toContain('source.bpmn-script');
-    expect(entry.path).toBe('syntaxes/bpmn-script.injection.tmLanguage.json');
-  });
-
-  it('build:prepare copies the injection asset into the runtime syntaxes dir', () => {
+    expect(entry.injectTo).toEqual(['source.bpmn-script']);
     expect(pkg.scripts['build:prepare']).toContain(
-      './injection/bpmn-script.injection.tmLanguage.json',
-    );
-    expect(pkg.scripts['build:prepare']).toContain(
-      './syntaxes/bpmn-script.injection.tmLanguage.json',
+      `cp -f ./injection/bpmn-script.injection.tmLanguage.json ./${entry.path}`,
     );
     expect(() =>
-      readFileSync(
-        path.join(
-          EXTENSION_DIR,
-          'syntaxes',
-          'bpmn-script.injection.tmLanguage.json',
-        ),
-      ),
+      readFileSync(path.join(EXTENSION_DIR, entry.path)),
     ).not.toThrow();
   });
 

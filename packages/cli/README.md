@@ -62,8 +62,8 @@ npm test
 | `src/main.ts`  | Entry point; registers `build` and `parse` through `commander`         |
 | `src/build.ts` | `buildAction`: parse, validate, `astToIr`, `irToXml`, write `.bpmn`    |
 | `src/parse.ts` | `parseAction`: read `.bpmn`, `xmlToIr`, `irToDsl`, write `.bpmnscript` |
-| `src/util.ts`  | `resolveOutputPath` (output-path derivation) and `CLI_VERSION`         |
-| `bin/cli.js`   | Shell script that calls the compiled entry point                       |
+| `src/util.ts`  | Shared by both actions: path guards, `buildDocument`, `CLI_VERSION`    |
+| `bin/cli.js`   | Node entry script; imports the compiled `out/main.js` and runs it      |
 
 ## Dependencies on other packages
 

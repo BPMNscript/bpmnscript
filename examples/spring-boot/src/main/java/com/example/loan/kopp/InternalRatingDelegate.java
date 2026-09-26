@@ -5,7 +5,7 @@ import org.operaton.bpm.engine.delegate.JavaDelegate;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-/** Internal rating service: stricter credit-score cutoff than the external bureaus. */
+/** A stricter credit-score cutoff than the external bureau S1 applies. */
 public class InternalRatingDelegate implements JavaDelegate {
 
     private static final Logger LOG = LoggerFactory.getLogger(InternalRatingDelegate.class);

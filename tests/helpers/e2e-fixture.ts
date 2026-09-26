@@ -17,8 +17,7 @@ export const SKIP_DOCKER = process.env.SKIP_DOCKER_TESTS === 'true';
 // A cold image build plus Spring Boot startup needs this much.
 export const ENGINE_BOOT_TIMEOUT_MS = 300_000;
 
-// Stopping and removing the container, which is bounded by the Docker stop
-// grace period rather than by anything the engine does.
+// Bounded by the Docker stop grace period, not by the engine.
 export const ENGINE_STOP_TIMEOUT_MS = 120_000;
 
 export function dslPath(name: string): string {
@@ -47,7 +46,7 @@ export async function deployExamples(
     return { name, xmlPath };
   });
 
-  const fixture = await startFixture('spring-boot');
+  const fixture = await startFixture();
   for (const { name, xmlPath } of built) {
     const { deploymentId } = await fixture.deploy(xmlPath, `${name}-test`);
     expect(deploymentId).toBeTruthy();

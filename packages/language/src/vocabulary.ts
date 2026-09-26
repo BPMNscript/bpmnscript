@@ -1,15 +1,18 @@
 /**
  * The words BPMNscript accepts and where each one is legal. The grammar takes
  * any word in these positions; the validator rejects one out of place and the
- * completion provider offers the ones that fit, both from these tables.
+ * completion provider offers the ones that fit, both from these tables and in
+ * list order.
  *
- * Every trigger list is a literal tuple, so a table keyed by one either carries
- * a row per word or fails to compile.
+ * A trigger or constraint list is a literal tuple. A table keyed by one is
+ * annotated `Record<string, ...>` so any word can be looked up, and
+ * `satisfies` the tuple so a missing row fails to compile.
  */
 
 import type { AstNode, Grammar } from 'langium';
-import { AstUtils, GrammarAST } from 'langium';
+import { AstUtils, GrammarAST, GrammarUtils } from 'langium';
 import { isSubProcess } from './generated/ast.js';
+import { BpmnScriptGrammar } from './generated/grammar.js';
 import type {
   BusinessRuleTask,
   CallActivity,
@@ -33,11 +36,9 @@ import type {
 const RESERVED_WORDS_BY_GRAMMAR = new WeakMap<Grammar, ReadonlySet<string>>();
 
 /**
- * The keywords that cannot be written where a plain name belongs, read out of
- * the grammar so the set stays correct as keywords change. A keyword's lexer
- * token is named after its literal value, so these strings match a token type
- * name as well as the source text; operators cannot be mistaken for a name and
- * are excluded. Memoized per grammar, which every caller shares.
+ * A keyword's lexer token is named after its literal value, so these strings
+ * match a token type name as well as the source text. Operators are left out;
+ * they cannot be mistaken for a name.
  */
 export function reservedWordsOf(grammar: Grammar): ReadonlySet<string> {
   let words = RESERVED_WORDS_BY_GRAMMAR.get(grammar);
@@ -64,7 +65,6 @@ export function formatPlainWordList(
   return `${words.slice(0, -1).join(', ')}, ${conjunction} ${words[words.length - 1]}`;
 }
 
-/** The same clause with every word quoted: `'a'`, `'b'`, or `'c'`. */
 export function formatWordList(words: readonly string[]): string {
   return formatPlainWordList(words.map((w) => `'${w}'`));
 }
@@ -99,11 +99,10 @@ export const BOOLEAN_ENGINE_KEYS: readonly EngineKey[] = [
 ];
 
 /**
- * The engine execution settings Operaton reads off any flow node, gateways
- * included: `BpmnParse.parseExclusiveGateway`, `parseInclusiveGateway`,
+ * The settings Operaton reads off any flow node, gateways included:
+ * `BpmnParse.parseExclusiveGateway`, `parseInclusiveGateway`,
  * `parseParallelGateway` and `parseEventBasedGateway` each go through
- * `parseAsynchronousContinuationForActivity` for the async flags and
- * `createActivityOnScope` for `jobPriority`, and
+ * `parseAsynchronousContinuationForActivity` and `createActivityOnScope`, and
  * `DefaultFailedJobParseListener.parseActivity` reads the retry cycle on the
  * same four.
  */
@@ -124,31 +123,26 @@ export const LOOP_VARIABLES = [
   'loopCounter',
 ] as const;
 
-/** `key` spelled for a second carrier in the same parens: `join` + `asyncBefore` is `joinAsyncBefore`. */
-export function prefixedSettingKey(prefix: string, key: string): string {
+function prefixedSettingKey(prefix: string, key: string): string {
   return prefix + key.charAt(0).toUpperCase() + key.slice(1);
 }
 
-/** `key` spelled for the synthesized join gateway: `join` + `asyncBefore` is `joinAsyncBefore`. */
 export function joinSettingKey(key: string): string {
   return prefixedSettingKey('join', key);
 }
 
-/** The join gateway's spelling of each engine setting, keyed by the split's. */
 export const JOIN_KEY_BY_ENGINE_KEY: Readonly<Record<string, string>> =
   Object.fromEntries(ENGINE_KEYS.map((key) => [key, joinSettingKey(key)]));
 
-/** The join spellings alone, in {@link ENGINE_KEYS} order. */
 export const JOIN_ENGINE_KEYS: readonly string[] = Object.values(
   JOIN_KEY_BY_ENGINE_KEY,
 );
 
-/** `key` spelled for the per-run carrier: `run` + `asyncBefore` is `runAsyncBefore`. */
 export function runSettingKey(key: string): string {
   return prefixedSettingKey('run', key);
 }
 
-/** An engine key under each spelling a parens carries it, the value shape being the same under all three. */
+/** An engine key under each spelling a parens carries it; the value shape is the same under all three. */
 export const engineSpellings = (key: string): string[] => [
   key,
   joinSettingKey(key),
@@ -156,40 +150,27 @@ export const engineSpellings = (key: string): string[] => [
 ];
 
 /**
- * The four settings a repetition writes on its `multiInstanceLoopCharacteristics`
- * element rather than on the repeated activity itself.
- * `BpmnParse.parseAsynchronousContinuationForActivity` hands that element to
- * `parseAsynchronousContinuation`, which reads the three async settings onto
- * each run, and `DefaultFailedJobParseListener.parseActivity` reads the retry
- * cycle there the same way; `BpmnParse.parseActivity` makes the multi-instance
- * body activity that `parseMultiInstanceLoopCharacteristics` builds for the
- * repeated element the scope before `createActivityOnScope` runs, so the
- * plain `jobPriority` in the same parens already prices each run's activity,
- * not the whole loop's, which is why there is no `runJobPriority`.
+ * The settings a repetition writes on its `multiInstanceLoopCharacteristics`
+ * element, which `BpmnParse.parseAsynchronousContinuationForActivity` and
+ * `DefaultFailedJobParseListener.parseActivity` read onto each run. There is
+ * no `runJobPriority`: `BpmnParse.parseActivity` makes the multi-instance body
+ * the scope before `createActivityOnScope` runs, so the plain `jobPriority` in
+ * the same parens already prices each run.
  */
 export const RUN_ENGINE_KEYS: readonly string[] = ENGINE_KEYS.filter(
   (key) => key !== 'jobPriority',
 ).map((key) => runSettingKey(key));
 
-/**
- * The fifth binding: `BpmnParse.parseServiceTaskLike` dispatches on this key's
- * value before it looks at any code attribute.
- */
+/** `BpmnParse.parseServiceTaskLike` dispatches on this key's value before it looks at any code attribute. */
 export const TYPE_BINDING_KEY = 'type';
 
-/**
- * The binding handing the step to an external worker, and so the one the
- * external extras ride: `taskPriority` in the parens, a `property` line and an
- * `error ... when` mapping in the block.
- */
 export const EXTERNAL_BINDING_KEY = 'topic';
 
 /**
- * Exactly one of these binds a service task. `topic` delegates to an external
- * worker polling the engine rather than the engine invoking the binding, and
- * `type` selects a behaviour the engine builds itself.
- * {@link BUSINESS_RULE_BINDING_KEYS} inherits it since `parseBusinessRuleTask`
- * without a `decisionRef` reaches `parseServiceTaskLike`.
+ * Exactly one of these binds a service task; `topic` hands the step to an
+ * external worker polling the engine instead of the engine invoking anything.
+ * `parseBusinessRuleTask` without a `decisionRef` reaches the same
+ * `parseServiceTaskLike`, so {@link BUSINESS_RULE_BINDING_KEYS} inherits it.
  */
 export const SERVICE_TASK_BINDING_KEYS: readonly string[] = [
   'class',
@@ -199,14 +180,10 @@ export const SERVICE_TASK_BINDING_KEYS: readonly string[] = [
   TYPE_BINDING_KEY,
 ];
 
-/**
- * What a thrown or emitted message binds: a thrown message has no member
- * block, so the fields a built-in behaviour requires cannot be written on it.
- */
+/** A thrown message has no member block, so the fields a built-in `type` requires cannot be written on it. */
 export const THROW_BINDING_KEYS: readonly string[] =
   SERVICE_TASK_BINDING_KEYS.filter((key) => key !== TYPE_BINDING_KEY);
 
-/** The one trigger whose throw or emit carries an implementation binding. */
 export const THROW_BINDING_TRIGGER = 'message';
 
 /** The two `operaton:type` values `parseServiceTaskLike` routes to a built-in behaviour. */
@@ -215,11 +192,10 @@ export const TYPE_BINDING_VALUES = ['mail', 'shell'] as const;
 export type BuiltinTaskType = (typeof TYPE_BINDING_VALUES)[number];
 
 /**
- * The field names each built-in behaviour class declares, in declaration
- * order. `ClassDelegateUtil.applyFieldDeclaration` throws "Field definition
- * uses unexisting field '<name>' on class ..." for any other name, reached
- * through `instantiateDelegate` from both `parseEmailServiceTask` and
- * `parseShellServiceTask`.
+ * In declaration order. `ClassDelegateUtil.applyFieldDeclaration` throws
+ * "Field definition uses unexisting field '<name>' on class ..." for any
+ * other name, reached through `instantiateDelegate` from both
+ * `parseEmailServiceTask` and `parseShellServiceTask`.
  */
 export const BUILTIN_FIELD_NAMES: Readonly<
   Record<BuiltinTaskType, readonly string[]>
@@ -248,13 +224,7 @@ export interface RequiredFieldGroup {
   readonly error: string;
 }
 
-/**
- * The field combinations `validateFieldDeclarationsForEmail` and
- * `validateFieldDeclarationsForShell` require before a mail or shell task
- * deploys, in the order the engine checks them. A mail task needs `to` and one
- * of `text`/`html`; `cc`/`bcc` satisfy neither. A shell task needs only
- * `command`.
- */
+/** In the order {@link BUILTIN_FIELD_VALIDATOR} checks them; `cc`/`bcc` satisfy neither mail group. */
 export const BUILTIN_REQUIRED_FIELDS: Readonly<
   Record<BuiltinTaskType, readonly RequiredFieldGroup[]>
 > = {
@@ -293,19 +263,13 @@ export const SHELL_FLAG_FIELDS: readonly string[] = [
 /** The spellings `ShellActivityBehavior.readFields` compares a flag with. */
 export const SHELL_FLAG_LITERALS: readonly string[] = ['true', 'false'];
 
-/**
- * A decision step binds to a decision table or, as a service task does, to
- * code. The engine requires one, and a decision key wins when both are written.
- */
+/** The engine requires one, and `decision` wins when both are written. */
 export const BUSINESS_RULE_BINDING_KEYS: readonly string[] = [
   ...SERVICE_TASK_BINDING_KEYS,
   'decision',
 ];
 
-/**
- * What lands in `resultVariable`, and what `operaton:mapDecisionResult` holds:
- * one entry, one row, one column, or every row.
- */
+/** What `operaton:mapDecisionResult` holds: one entry, one row, one column, or every row. */
 export const DECISION_RESULT_MAPPINGS = [
   'singleEntry',
   'singleResult',
@@ -313,23 +277,19 @@ export const DECISION_RESULT_MAPPINGS = [
   'resultList',
 ] as const;
 
-/** The service-task rule minus `topic`; a fenced body binds a listener too. */
-export const LISTENER_BINDING_KEYS: readonly string[] = [
-  'class',
-  'expression',
-  'delegate',
-];
+/** Outside this list, a fenced script body binds a listener too. */
+export const LISTENER_BINDING_KEYS: readonly string[] =
+  SERVICE_TASK_BINDING_KEYS.filter(
+    (key) => key !== EXTERNAL_BINDING_KEY && key !== TYPE_BINDING_KEY,
+  );
 
 /**
- * The bindings an injected field reaches. Operaton hands the field list to
- * the class a `class` binding names, to the delegate a `delegate` expression
- * resolves, and to the two built-in behaviours a `type` selects
- * (`BpmnParse.parseEmailServiceTask` and `parseShellServiceTask` both go
- * through `instantiateDelegate`), and to no other: an `expression` binding is
- * constructed from its expression and its result variable alone, a `topic`
- * hands the work to an external worker the engine injects nothing into, and a
- * `decision` binding runs no implementation at all. A task and both listener
- * kinds split the same way, a listener binding no `type`.
+ * The bindings Operaton hands a field list to: the class, the bean a
+ * `delegate` expression resolves, and the two built-in behaviours
+ * (`BpmnParse.parseEmailServiceTask` and `parseShellServiceTask` go through
+ * `instantiateDelegate`). An `expression` is built from its expression and
+ * result variable alone, a `topic` hands the work to a worker the engine
+ * injects nothing into, and a `decision` runs no implementation.
  */
 export const FIELD_BINDING_KEYS: readonly string[] = [
   'class',
@@ -338,10 +298,9 @@ export const FIELD_BINDING_KEYS: readonly string[] = [
 ];
 
 /**
- * A call activity's variable-mapping delegate computes its in/out mapping in
- * code, keyed by the IR mapper kind each spells. It is not `class`/`delegate`
- * because Operaton hands this binding no field list, which is exactly what
- * {@link FIELD_BINDING_KEYS} keys on.
+ * A call's variable-mapping delegate, keyed by the IR mapper kind. It is not
+ * spelled `class`/`delegate` because Operaton hands it no field list, which
+ * is what {@link FIELD_BINDING_KEYS} keys on.
  */
 export const CALL_MAPPER_KEY_BY_KIND = {
   class: 'mapper',
@@ -349,16 +308,15 @@ export const CALL_MAPPER_KEY_BY_KIND = {
 } as const;
 
 /** How a call or a decision step pins which deployed version the engine runs. */
-export const CALL_BINDING_VALUES: readonly string[] = ['latest', 'deployment'];
+export const CALL_BINDING_VALUES = ['latest', 'deployment'] as const;
+
+export type CallBindingValue = (typeof CALL_BINDING_VALUES)[number];
 
 /**
- * The settings a process header takes, in the order they are offered and
- * printed. Each attaches to the `bpmn:process` element itself rather than to
- * any node inside it. `BpmnParse.parseProcess` also reads `jobPriority`,
- * `taskPriority`, and `isStartableInTasklist` off the same element, and,
- * through `parseScope`, a process-level execution listener and
- * `potentialStarter`; this set leaves them out on purpose, since giving them
- * authoring surface is a separate addition, not a gap in this list.
+ * In the order they are offered and printed. `BpmnParse.parseProcess` also
+ * reads `jobPriority`, `taskPriority` and `isStartableInTasklist` off the
+ * process element, and `parseScope` a process-level listener and
+ * `potentialStarter`; those are left out on purpose, not gaps.
  */
 export const PROCESS_HEADER_KEYS: readonly string[] = [
   'label',
@@ -369,38 +327,55 @@ export const PROCESS_HEADER_KEYS: readonly string[] = [
   'candidateStarterGroups',
 ];
 
-export const IO_DIRECTIONS: readonly string[] = ['input', 'output'];
+export const INPUT_DIRECTION = 'input';
+export const OUTPUT_DIRECTION = 'output';
+
+export const IO_DIRECTIONS: readonly string[] = [
+  INPUT_DIRECTION,
+  OUTPUT_DIRECTION,
+];
 
 /**
- * The third direction a member of a block is written with. It names a property
- * of the class, delegate, or built-in behaviour the element binds, set once as
- * that implementation is instantiated, so it is neither read from nor written
- * to a process variable. See {@link FIELD_BINDING_KEYS} for where one is legal.
+ * A user task's settings that are the `operaton:` attribute of the same name,
+ * value verbatim; the IR field is named the same. In print order.
+ */
+export const USER_TASK_VERBATIM_KEYS = [
+  'assignee',
+  'formKey',
+  'candidateGroups',
+  'candidateUsers',
+  'dueDate',
+  'followUpDate',
+  'priority',
+] as const;
+
+/**
+ * A field names a property of the bound implementation, set once as it is
+ * instantiated, so it neither reads nor writes a process variable;
+ * {@link FIELD_BINDING_KEYS} says where one is legal.
  */
 export const FIELD_DIRECTION = 'field';
 
 /**
- * The fourth direction: a member of a form field's block or an external
- * task's, written to `operaton:properties` as text. On a form field
- * `DefaultFormHandler.parseProperties` reads it keyed by `id` and hands it to
- * Tasklist; on an external task `BpmnParseUtil.parseOperatonExtensionProperties`
- * reads it keyed by `name` and hands it to the worker. It declares no process
- * variable.
+ * Written to `operaton:properties` as text and declares no process variable.
+ * A form field's are read by `DefaultFormHandler.parseProperties` keyed by
+ * `id` and handed to Tasklist, an external task's by
+ * `BpmnParseUtil.parseOperatonExtensionProperties` keyed by `name` and
+ * handed to the worker.
  */
 export const PROPERTY_DIRECTION = 'property';
 
 /**
  * Read by `BpmnParse.parsePriority` inside `parseExternalServiceTask` and
- * nowhere else on a step; the process header's own `operaton:taskPriority` is
- * a separate site this surface does not carry. An integer or an expression.
+ * nowhere else on a step; an integer or an expression.
  */
 export const TASK_PRIORITY_KEY = 'taskPriority';
 
 /**
- * The name `VariableScopeElResolver` resolves to the external task entity in
+ * `VariableScopeElResolver` resolves this name to the external task entity in
  * an expression evaluated on its execution, which is where a mapping's
- * condition runs (`ExternalTaskEntity.evaluateThrowBpmnError`). A process
- * variable everywhere else, so it is admitted inside a mapping alone.
+ * condition runs (`ExternalTaskEntity.evaluateThrowBpmnError`); it is a
+ * process variable everywhere else, so it is admitted inside a mapping alone.
  */
 export const EXTERNAL_TASK_EL_NAME = 'externalTask';
 
@@ -408,27 +383,28 @@ export const EXTERNAL_TASK_EL_NAME = 'externalTask';
 export const ERROR_MAPPING_HEAD = 'error';
 export const ERROR_MAPPING_WHEN = 'when';
 
+export type TimerKind = 'duration' | 'date' | 'cycle';
+
 /**
  * The particle a timer clause is written with, keyed by the BPMN timer
- * definition it selects (`timeDuration`, `timeDate`, `timeCycle`). Read in
- * both directions, so the pairing cannot drift.
+ * definition it selects (`timeDuration`, `timeDate`, `timeCycle`).
  */
-export const TIMER_PARTICLE_BY_KIND: Readonly<
-  Record<'duration' | 'date' | 'cycle', string>
-> = {
+export const TIMER_PARTICLE_BY_KIND: Readonly<Record<TimerKind, string>> = {
   duration: 'after',
   date: 'at',
   cycle: 'every',
 };
 
-/** The particles alone, in the order diagnostics and completion list them. */
 export const TIMER_PARTICLES: readonly string[] = Object.values(
   TIMER_PARTICLE_BY_KIND,
 );
 
 export const EVENT_BINDING_FIELDS: readonly string[] = ['code', 'message'];
 
-/** The fields the `trigger`'s event carries: a code always, a message where its rule says so. */
+export const EVENT_BINDING_FIELD_SET: ReadonlySet<string> = new Set(
+  EVENT_BINDING_FIELDS,
+);
+
 export function eventBindingFieldsFor(trigger: string): readonly string[] {
   return EVENT_BINDING_FIELDS.filter(
     (field) => field !== 'message' || TRIGGER_PAYLOAD[trigger]?.message,
@@ -452,11 +428,10 @@ export const TASK_LISTENER_EVENTS = [
 ] as const;
 
 /**
- * The types a form field takes, in vendor-neutral spellings: `number` becomes
- * the Operaton `long` at export, and `json`/`any` have no `operaton:formField`
- * representation at all. `enum` is a form type and not a `var` type, so the
- * grammar's field type rule admits it beside `VarType` and the validator holds
- * the word to this list.
+ * Vendor-neutral spellings: `number` becomes the Operaton `long` at export,
+ * and `json`/`any` have no `operaton:formField` representation. `enum` is a
+ * form type and not a `var` type, so the grammar admits it beside `VarType`
+ * and the validator holds the word to this list.
  */
 export const FORM_FIELD_TYPES = [
   'string',
@@ -467,10 +442,9 @@ export const FORM_FIELD_TYPES = [
 ] as const;
 
 /**
- * The process variable a form field of `type` binds: an `enum` stores the
- * chosen value's id as a string (`EnumFormType.convertValue`), every other
- * form type is a `VarType` of the same name, and a word outside the list is
- * no type at all.
+ * An `enum` stores the chosen value's id as a string
+ * (`EnumFormType.convertValue`); every other form type is the `VarType` of
+ * the same name.
  */
 export function formFieldVariableType(type: string): VarType | undefined {
   const found = FORM_FIELD_TYPES.find((t) => t === type);
@@ -478,11 +452,10 @@ export function formFieldVariableType(type: string): VarType | undefined {
 }
 
 /**
- * The names a form field's `operaton:constraint` takes. The first six are the
- * validators `ProcessEngineConfigurationImpl.initFormFieldValidators`
- * registers; `FormValidators.createValidator` reads a class name or an
- * expression off `validator`'s `config` and fails the deployment on any other
- * name.
+ * The first six are the validators
+ * `ProcessEngineConfigurationImpl.initFormFieldValidators` registers;
+ * `FormValidators.createValidator` reads a class name or an expression off
+ * `validator`'s `config` and fails the deployment on any other name.
  */
 export const FORM_CONSTRAINT_NAMES = [
   'required',
@@ -501,13 +474,10 @@ export function isFormConstraintName(
 }
 
 /**
- * The field types each constraint is legal on.
  * `AbstractNumericValidator.validate` throws on any submitted value that is
  * not a Java number and `AbstractTextValueValidator.validate` on any that is
  * not a string, so the bounds fit one type each; the rest never read the
- * value's type. The `satisfies` clause forces a row per name in
- * {@link FORM_CONSTRAINT_NAMES}, while the annotation keeps the lookup open to
- * a word of any origin.
+ * value's type.
  */
 export const FORM_CONSTRAINT_TYPES: Readonly<
   Record<string, readonly (typeof FORM_FIELD_TYPES)[number][]>
@@ -525,14 +495,24 @@ export const FORM_CONSTRAINT_TYPES: Readonly<
 >;
 
 /**
- * The text a bound's `config` may hold, bare or quoted in the script. A
- * `number` field is an Operaton `long`, so `AbstractNumericValidator.validate`
- * parses a `min`/`max` config with `Long.parseLong`, and
- * `MinLengthValidator.validate` a length with `Integer.parseInt`; neither
- * reads an expression, and a decimal bound deploys and then fails every
- * submission with `FormFieldConfigurationException`.
+ * `AbstractNumericValidator.validate` parses a `min`/`max` config with
+ * `Long.parseLong` and `MinLengthValidator.validate` a length with
+ * `Integer.parseInt`; neither reads an expression, and a decimal bound
+ * deploys and then fails every submission with
+ * `FormFieldConfigurationException`.
  */
 export const FORM_BOUND_TEXT = /^-?\d+$/;
+
+/** The grammar's `ID` terminal as the lexer runs it, unanchored. */
+export const ID_TERMINAL: RegExp = GrammarUtils.terminalRegex(
+  BpmnScriptGrammar().rules.find(
+    (rule): rule is GrammarAST.TerminalRule =>
+      GrammarAST.isTerminalRule(rule) && rule.name === 'ID',
+  )!,
+);
+
+/** A whole string the lexer reads as one `ID` token. */
+export const ID_TEXT = new RegExp(`^${ID_TERMINAL.source}$`, ID_TERMINAL.flags);
 
 /**
  * What `StringUtil.isExpression` counts as one: an opening at the start of
@@ -540,6 +520,13 @@ export const FORM_BOUND_TEXT = /^-?\d+$/;
  * engine, and `BpmnParse.parsePriority` fails the deployment on it.
  */
 export const EXPRESSION_OPEN = /^\s*[$#]\{/;
+
+/**
+ * An opening anywhere in the text. `ExpressionManager.createExpression` hands
+ * JUEL the string as it stands, and JUEL evaluates a composite such as
+ * `a-${b}` as text around an expression; either opener marks an expression.
+ */
+export const EXPRESSION_ANYWHERE = /[$#]\{/;
 
 /**
  * The words JUEL's `Scanner.addKeyToken` registers as operators besides
@@ -564,12 +551,10 @@ export const JUEL_RESERVED_WORDS = [
 ] as const;
 
 /**
- * `true`, `false` and `null`, which the grammar spells as literals so a
- * variable or a rendered `.prop` accessor can never carry one. A raw template
- * is plain text, so `${order.true}` reaches `Scanner.nextIdentifier`, which
- * returns the `Symbol.TRUE` keyword token there too; `Parser.parseDotToken`'s
- * `consumeToken(IDENTIFIER)` then refuses it. The raw-template scan checks the
- * union of this and {@link JUEL_RESERVED_WORDS}.
+ * The grammar spells these as literals, so only a raw template can carry one
+ * as a name: `${order.true}` reaches `Scanner.nextIdentifier`, which returns
+ * the keyword token, and `Parser.parseDotToken`'s `consumeToken(IDENTIFIER)`
+ * refuses it.
  */
 export const JUEL_LITERAL_WORDS = ['true', 'false', 'null'] as const;
 
@@ -580,7 +565,6 @@ export const JUEL_LITERAL_WORDS = ['true', 'false', 'null'] as const;
  */
 export const DATE_PATTERN_KEY = 'pattern';
 
-/** Everything a form field's parens take, in the order diagnostics list them. */
 export const FORM_FIELD_SETTING_KEYS: readonly string[] = [
   ...FORM_CONSTRAINT_NAMES,
   DATE_PATTERN_KEY,
@@ -588,8 +572,7 @@ export const FORM_FIELD_SETTING_KEYS: readonly string[] = [
 
 /**
  * Soft trigger words: they lex as plain `ID`s rather than keywords, so an
- * unrecognized one is a validator diagnostic, not a parse error. The order is
- * the order diagnostics list them in.
+ * unrecognized one is a validator diagnostic, not a parse error.
  */
 export const ON_TRIGGERS = [
   'error',
@@ -603,9 +586,9 @@ export const ON_TRIGGERS = [
 ] as const;
 
 /**
- * Every kind with a terminal form. A timer fires off the clock and a condition
- * off data, so neither has anything to throw, and a cancel is written on the
- * end that gives up an `attempt` block.
+ * A timer fires off the clock and a condition off data, so neither has
+ * anything to throw; a cancel is written on the `end` that gives up an
+ * `attempt` block.
  */
 export const THROW_TRIGGERS = [
   'error',
@@ -616,9 +599,9 @@ export const THROW_TRIGGERS = [
 ] as const;
 
 /**
- * Every kind with a continuing form; an error always ends its path. A link
- * continues at its catch rather than at the next statement here, and `throw`
- * has no link form because a link throw is intermediate, never an end.
+ * An error always ends its path, so it has no continuing form. A link
+ * continues at its catch rather than at the next statement, and a link throw
+ * is intermediate, never an end, so `throw` has no link form.
  */
 export const EMIT_TRIGGERS = [
   'escalation',
@@ -629,9 +612,9 @@ export const EMIT_TRIGGERS = [
 ] as const;
 
 /**
- * The triggers legal behind an event-based gateway. `link` is left out:
- * `BpmnParse.parseIntermediateCatchEvent` addErrors a link catch there, so a
- * plain `await` is the only place one may stand.
+ * `link` is left out: `BpmnParse.parseIntermediateCatchEvent` refuses a link
+ * catch behind an event-based gateway, so a plain `await` is the only place
+ * one may stand.
  */
 export const RACE_TRIGGERS = [
   'message',
@@ -641,20 +624,18 @@ export const RACE_TRIGGERS = [
 ] as const;
 
 /**
- * The kinds with a blocking inline catch form: {@link RACE_TRIGGERS} plus
- * `link`, which only a plain `await` may head. Error and escalation travel
- * outward, compensation runs through a subprocess's own `on compensation`
- * body, and a cancel is caught by `on <block>: cancel`.
+ * Error and escalation travel outward, compensation runs through a
+ * subprocess's own `on compensation` body, and a cancel is caught by
+ * `on <block>: cancel`, so none of those has an inline catch.
  */
 export const CATCH_TRIGGERS = [...RACE_TRIGGERS, 'link'] as const;
 
 /**
- * The triggers `BpmnParse.parseProcessDefinitionStartEvent` dispatches a start
- * behaviour for. It sets `NoneStartEventActivityBehavior` on every
- * process-level start regardless, then only checks for a timer, message,
- * signal, or conditional definition; an error, escalation, or compensation
- * definition there is never inspected, so it starts as if none were written.
- * Those three stay off rather than emitting XML the engine disregards.
+ * `BpmnParse.parseProcessDefinitionStartEvent` looks only for a timer,
+ * message, signal or conditional definition; an error, escalation or
+ * compensation definition on a process-level start is never inspected, so it
+ * starts as if none were written. Those three stay off rather than emitting
+ * XML the engine disregards.
  */
 export const START_TRIGGERS = [
   'message',
@@ -664,9 +645,8 @@ export const START_TRIGGERS = [
 ] as const;
 
 /**
- * The two kinds an end event carries rather than raises. A terminate stops
- * every running path of its scope at once; a cancel gives up the `attempt`
- * block it sits in and hands the flow to that block's handler.
+ * Carried by an end event rather than raised: a terminate stops every running
+ * path of its scope at once, a cancel gives up the `attempt` block it sits in.
  */
 export const END_TRIGGERS = ['terminate', 'cancel'] as const;
 
@@ -688,17 +668,8 @@ export interface TriggerPayloadRule {
   readonly hostless: boolean;
 }
 
-/**
- * An error always interrupts, so it has no `alongside`. `message`/`signal` are
- * name-keyed subscriptions, so the name is required. `compensation` reverses
- * finished work: nothing to catch by name, no flow to run alongside. `cancel`
- * mirrors it, legal only on a host where compensation is legal only without
- * one. `link` opens no `on` handler: it keys the engine's per-file link table
- * by name alone, so it has no handler, boundary, or start form. The
- * `satisfies` clause forces a row per word in {@link ON_TRIGGERS} plus `link`,
- * while the annotation keeps the lookup open to a word of any origin.
- */
 export const TRIGGER_PAYLOAD: Readonly<Record<string, TriggerPayloadRule>> = {
+  // An error always interrupts.
   error: {
     code: 'optional',
     timer: false,
@@ -717,6 +688,7 @@ export const TRIGGER_PAYLOAD: Readonly<Record<string, TriggerPayloadRule>> = {
     boundary: true,
     hostless: true,
   },
+  // A message and a signal are name-keyed subscriptions.
   message: {
     code: 'required',
     timer: false,
@@ -753,6 +725,8 @@ export const TRIGGER_PAYLOAD: Readonly<Record<string, TriggerPayloadRule>> = {
     boundary: true,
     hostless: true,
   },
+  // Compensation reverses finished work: nothing to catch by name, no flow to
+  // run alongside.
   compensation: {
     code: 'forbidden',
     timer: false,
@@ -762,6 +736,7 @@ export const TRIGGER_PAYLOAD: Readonly<Record<string, TriggerPayloadRule>> = {
     boundary: false,
     hostless: true,
   },
+  // A cancel is caught on its `attempt` host alone.
   cancel: {
     code: 'forbidden',
     timer: false,
@@ -771,6 +746,8 @@ export const TRIGGER_PAYLOAD: Readonly<Record<string, TriggerPayloadRule>> = {
     boundary: true,
     hostless: false,
   },
+  // A link keys the engine's per-file link table by name alone, so it opens
+  // no `on` handler of any form.
   link: {
     code: 'required',
     timer: false,
@@ -783,36 +760,26 @@ export const TRIGGER_PAYLOAD: Readonly<Record<string, TriggerPayloadRule>> = {
 } satisfies Record<(typeof ON_TRIGGERS)[number] | 'link', TriggerPayloadRule>;
 
 /**
- * The triggers whose payload refers to a declaration rather than carrying a
- * name of its own: `throw error(OUT_OF_STOCK)` names a code declared in the
- * process header, while `message("OrderReceived")` names the subscription the
- * engine keys on and declares nothing. This is the pair a bare word in the
- * parens is resolved as a cross-reference under, and {@link namesACode} is the
- * wider question, taking `message` and `signal` too.
+ * `throw error(OUT_OF_STOCK)` names a code declared in the process header and
+ * is resolved as a cross-reference; `message("OrderReceived")` names the
+ * subscription the engine keys on and declares nothing.
  */
 export const DECLARED_CODE_TRIGGERS: ReadonlySet<string> = new Set([
   'error',
   'escalation',
 ]);
 
-/**
- * Whether the trigger names a code, as opposed to reading a timer, a condition,
- * or nothing at all. The completion snippets that scaffold a `"CODE"` string
- * offer exactly the words of their statement that pass.
- */
 export function namesACode(trigger: string): boolean {
   const code = TRIGGER_PAYLOAD[trigger]?.code;
   return code === 'required' || code === 'optional';
 }
 
 /**
- * Fence-tag aliases and the canonical Operaton `scriptFormat` they normalize
- * to; the printer emits the canonical tag, so `js` round-trips to `javascript`.
- * `juel` is the one engine the jar always registers
- * (`META-INF/services/javax.script.ScriptEngineFactory`,
- * `ScriptingEngines.DEFAULT_SCRIPTING_LANGUAGE`); every other tag resolves a
- * JSR-223 engine off the classpath at first evaluation. `ecmascript` is the
- * name Operaton also accepts for the JavaScript engine.
+ * Fence tags and the canonical `scriptFormat` each normalizes to; the printer
+ * emits the canonical one, so `js` round-trips to `javascript`. `juel` is the
+ * one engine the jar always registers
+ * (`ScriptingEngines.DEFAULT_SCRIPTING_LANGUAGE`); every other tag resolves a
+ * JSR-223 engine off the classpath at first evaluation.
  */
 export const SCRIPT_FORMAT_ALIASES: Readonly<Record<string, string>> = {
   juel: 'juel',
@@ -828,28 +795,22 @@ export const SCRIPT_FORMAT_ALIASES: Readonly<Record<string, string>> = {
 };
 
 /**
- * The one lookup the validator and every lowering site use: `juel`,
- * `JavaScript`, and `ECMAScript` all resolve, matching
- * `ScriptingEngines.getScriptEngineForLanguage`, which lowercases the
- * language before looking an engine up.
+ * Case-insensitive, as `ScriptingEngines.getScriptEngineForLanguage`
+ * lowercases the language before looking an engine up.
  */
 export function scriptFormatOf(tag: string): string | undefined {
   return SCRIPT_FORMAT_ALIASES[tag.toLowerCase()];
 }
 
 /**
- * Split a raw `FENCED_SCRIPT` token into the fence tag
- * {@link SCRIPT_FORMAT_ALIASES} is keyed by and the code body. The tag is the
- * maximal run of ASCII letters after the opening fence, and one line terminator
- * right after it is dropped; nothing else is touched, so indentation and
- * trailing newlines inside the body survive verbatim, except that every
- * remaining `\r\n` is normalized to `\n`: the terminal matches `\r` like any
- * other character, so a CRLF-checked-out source would otherwise carry a
- * carriage return into the written `<bpmn:script>` body that an LF checkout
- * never would.
+ * The tag is the run of ASCII letters after the opening fence, one line
+ * terminator after it is dropped, and the body is otherwise verbatim except
+ * that every `\r\n` becomes `\n`: the terminal matches `\r` like any other
+ * character, so a CRLF checkout would otherwise write a carriage return into
+ * `<bpmn:script>` that an LF checkout never would.
  */
 export function splitFencedScript(raw: string): { tag: string; code: string } {
-  const inner = raw.slice(3, -3); // strip the opening/closing ``` delimiters
+  const inner = raw.slice(3, -3);
   const tag = /^[a-zA-Z]+/.exec(inner)?.[0] ?? '';
   const rest = inner.slice(tag.length);
   const afterOpeningLine = rest.startsWith('\r\n')
@@ -883,51 +844,40 @@ export interface AttributeBlockRule {
   /** The element kind as a noun phrase with article, for diagnostics. */
   readonly description: string;
   /**
-   * The keys this kind owns, in the order they are offered. `label` and
-   * `documentation` are both present wherever the element lowers to a BPMN
-   * node carrying a diagram name; an `on` handler, a `throw`, and an `emit`
-   * have no `label` key, so either written there is an unknown key rather
-   * than a dropped one. An `await`'s own name is a grammar identifier for
-   * `goto`, not this key: a link pair's element name is stamped from the link
-   * name instead.
+   * The keys this kind owns. `label` and `documentation` appear wherever the
+   * element lowers to a BPMN node with a diagram name; a handler, a `throw`,
+   * an `emit`, an `await` and a branch of one take neither, so either written
+   * there is an unknown key, not a dropped one.
    */
   readonly own: readonly string[];
   /** {@link own} and the engine settings together, for membership tests. */
   readonly keys: ReadonlySet<string>;
   /**
-   * The bare words legal in the parens. Every flag word lexes as a flag
-   * wherever parens are written, being a keyword elsewhere in the grammar, so a
-   * kind that takes none still needs the empty row to refuse them.
+   * The bare words legal in the parens. A flag word lexes as one wherever
+   * parens are written, so a kind that takes none needs the empty row to
+   * refuse them.
    */
   readonly flags: readonly string[];
   readonly forms: boolean;
-  /**
-   * Whether the statement takes a `for` clause, and so its parens the
-   * {@link RUN_ENGINE_KEYS}: the settings of the job each run gets, written
-   * on the `multiInstanceLoopCharacteristics` element the clause lowers to.
-   */
+  /** Whether the statement takes a `for` clause, and so its parens the {@link RUN_ENGINE_KEYS}. */
   readonly repeats: boolean;
   readonly parameters: boolean;
   /**
-   * Whether the kind lowers to an element with an implementation to inject
-   * into. It answers for the element's own block: a listener's block follows
-   * the listener's own binding, so a task listener carries a field on a kind
-   * this says `false` for.
+   * Answers for the element's own block: a listener's block follows the
+   * listener's own binding, so a task listener carries a field on a kind this
+   * says `false` for.
    */
   readonly fields: boolean;
   readonly taskListeners: boolean;
   /**
    * Whether the kind takes an external task's extras: `taskPriority` in the
    * parens, and `property` and `error ... when` lines in the block, each
-   * checked against the binding actually written. A thrown message can bind a
-   * topic too, and this surface writes none of them for it;
-   * `BpmnParse.parseServiceTaskLike` reads the priority and the mappings off
-   * the message definition (the property list off the event element).
+   * checked against the binding written. A thrown message can bind a topic
+   * too, but this surface writes none of them for it.
    */
   readonly externalExtras: boolean;
 }
 
-/** Derive `keys` from `own` and `repeats` so they cannot disagree. */
 function withKeys(spec: Omit<AttributeBlockRule, 'keys'>): AttributeBlockRule {
   return {
     ...spec,
@@ -940,9 +890,9 @@ function withKeys(spec: Omit<AttributeBlockRule, 'keys'>): AttributeBlockRule {
 }
 
 /**
- * `process` is required on a call, and `binding`/`version` are mutually
- * exclusive version-pinning discriminators for whichever key they sit beside.
- * All of it is checked separately.
+ * Required keys (`process` on a call) and pairings (`binding`/`version`
+ * beside the key they pin) are checked separately; the table holds only what
+ * is legal.
  */
 export const ATTRIBUTE_BLOCK_RULES: Readonly<
   Record<AttributeOwner['$type'], AttributeBlockRule>
@@ -971,19 +921,13 @@ export const ATTRIBUTE_BLOCK_RULES: Readonly<
   }),
   UserTask: withKeys({
     description: 'a user task',
+    // Offered in print order, the form-reference triple right after `formKey`.
     own: [
       'label',
       'documentation',
-      'assignee',
-      'formKey',
-      'formRef',
-      'binding',
-      'version',
-      'candidateGroups',
-      'candidateUsers',
-      'dueDate',
-      'followUpDate',
-      'priority',
+      ...USER_TASK_VERBATIM_KEYS.flatMap((key) =>
+        key === 'formKey' ? [key, 'formRef', 'binding', 'version'] : [key],
+      ),
     ],
     flags: [],
     forms: true,
@@ -1176,26 +1120,17 @@ export const ATTRIBUTE_BLOCK_RULES: Readonly<
 };
 
 export interface GatewayStatementRule {
-  /** The statement as a noun phrase with article, for diagnostics. */
   readonly description: string;
   /**
    * Whether the statement synthesizes a join gateway beside its split, and so
-   * takes the {@link JOIN_ENGINE_KEYS}. A loop is one gateway with a
-   * back-edge, so its parens take the {@link ENGINE_KEYS} alone.
+   * takes the {@link JOIN_ENGINE_KEYS}; a loop is one gateway with a
+   * back-edge.
    */
   readonly join: boolean;
-  /**
-   * The {@link ENGINE_KEYS} the head does not take: the validator refuses
-   * them and completion leaves them out.
-   */
+  /** The {@link ENGINE_KEYS} the head does not take. */
   readonly refuses: readonly string[];
 }
 
-/**
- * The statements whose parens carry a gateway's engine settings. The head
- * takes the {@link ENGINE_KEYS} for the split, the loop gateway, or the
- * event-based gateway, less what its row refuses.
- */
 export const GATEWAY_STATEMENT_RULES: Readonly<
   Record<
     | 'IfStatement'
@@ -1240,7 +1175,6 @@ export function listenerEventsFor(rule: AttributeBlockRule): readonly string[] {
     : EXECUTION_LISTENER_EVENTS;
 }
 
-/** The directions a member of this kind's block is written with. */
 export function parameterDirectionsFor(
   rule: AttributeBlockRule,
 ): readonly string[] {
@@ -1252,10 +1186,9 @@ export function parameterDirectionsFor(
 }
 
 /**
- * The `attempt` head takes the same block as `subprocess`, so only the noun
- * differs. It stays out of {@link ATTRIBUTE_BLOCK_RULES} because that map is
- * keyed by AST type and the two heads share one, so a diagnostic enumerating
- * the kinds a setting is legal on adds it back alongside the map's rows.
+ * Out of {@link ATTRIBUTE_BLOCK_RULES} because that map is keyed by AST type
+ * and `attempt` shares `SubProcess`; a diagnostic enumerating the kinds a
+ * setting is legal on adds it back beside the map's rows.
  */
 export const ATTEMPT_BLOCK_RULE: AttributeBlockRule = {
   ...ATTRIBUTE_BLOCK_RULES.SubProcess,

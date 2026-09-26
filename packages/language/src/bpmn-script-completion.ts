@@ -34,10 +34,14 @@ import {
   isSubProcess,
   isThrowStatement,
   isVarRef,
+  CodeDecl,
+  ErrorMapping,
+  Listener,
+  LiteralBool,
+  OnHandler,
+  VarRef,
   type Block,
-  type OnHandler,
   type ParenItem,
-  type VarRef,
 } from './generated/ast.js';
 import type { BpmnScriptServices } from './bpmn-script-module.js';
 import {
@@ -112,30 +116,17 @@ const SCRIPT_LANGUAGES = [
   ...new Set(Object.values(SCRIPT_FORMAT_ALIASES)),
 ].join(',');
 
-/**
- * The words of `triggers` whose payload is a declared name, as a snippet choice
- * list. Their scaffold writes the name bare, so it reads as the cross-reference
- * it is.
- */
 const declaredCodeChoices = (triggers: readonly string[]): string =>
   triggers.filter((word) => DECLARED_CODE_TRIGGERS.has(word)).join(',');
 
-/**
- * The words whose payload is the name the engine keys a subscription by. It
- * declares nothing, so the scaffold quotes it.
- */
 const subscriptionChoices = (triggers: readonly string[]): string =>
   triggers
     .filter((word) => namesACode(word) && !DECLARED_CODE_TRIGGERS.has(word))
     .join(',');
 
 /**
- * Snippet bodies for the structural keywords, keyed by keyword text. Accepting
- * one scaffolds the whole construct so the caret lands inside the body, where
- * the next completions are already offered. Placeholders are LSP snippet
- * syntax: `$1` tab stops, `$0` final caret, `${n:default}`, `${n|a,b|}`
- * choices. A keyword absent here keeps the default bare-keyword completion, and
- * one opening several constructs lists a form per shape.
+ * Keyed by keyword; accepting one scaffolds the whole construct and leaves the
+ * caret inside it. A keyword absent here keeps Langium's bare-keyword item.
  */
 const STRUCTURE_SNIPPETS: Readonly<
   Record<string, string | readonly StructureForm[]>
@@ -167,11 +158,9 @@ const STRUCTURE_SNIPPETS: Readonly<
   ],
   subprocess: 'subprocess ${1:id} {\n\t$0\n}',
   attempt: 'attempt ${1:id} {\n\t$0\n}',
-  // Each event word takes one of two payloads, so each keyword lists a form per
-  // payload: a code names a declaration in the process header, a subscription
-  // carries its own quoted name. A trigger reading a timer or a condition
-  // instead is offered at the bare ID position. The host is a cross-reference,
-  // so no hosted variant is scaffolded.
+  // A code names a header declaration and is written bare; a subscription name
+  // is quoted. A timer or condition payload is scaffolded at the trigger word
+  // instead, and the host is a cross-reference, so neither gets a form here.
   on: [
     {
       label: 'on',
@@ -212,8 +201,6 @@ const STRUCTURE_SNIPPETS: Readonly<
         'emit ${1|' + subscriptionChoices(EMIT_TRIGGERS) + '|}("${2:NAME}")',
     },
   ],
-  // The second form waits on several triggers at once and continues down the
-  // one that fires first.
   await: [
     {
       label: 'await',
@@ -231,7 +218,6 @@ const STRUCTURE_SNIPPETS: Readonly<
     },
   ],
   call: 'call ${1:id}(process: "${2:process-id}") {\n\tin ${3:input}\n\tout ${4:result}\n}',
-  // Offered at the position after a statement's name, not as a setting.
   for: [
     { label: 'for each', insertText: 'for each ${1:item} in ${2:collection}' },
     { label: 'for', insertText: 'for ${1:3}' },
@@ -247,7 +233,6 @@ const ENGINE_VALUE_SNIPPETS: Readonly<Record<EngineKey, string>> = {
   retryCycle: '"${1:R3/PT10M}"',
 };
 
-/** @param keys The engine keys to spell through `keyOf`; a carrier may take fewer than all. */
 const engineSnippets = (
   keyOf: (key: string) => string,
   keys: readonly EngineKey[] = ENGINE_KEYS,
@@ -260,10 +245,9 @@ const engineSnippets = (
   );
 
 /**
- * Snippet bodies for the settings an element's parens can hold. These lex as
- * plain identifiers, so the default completion offers nothing for them. The
- * `\$` escapes keep an EL `${...}` literal instead of opening a nested
- * placeholder.
+ * Setting keys lex as plain identifiers, so the default completion offers
+ * nothing for them. The `\$` escapes keep an EL `${...}` literal instead of
+ * opening a nested placeholder.
  */
 const SETTING_SNIPPETS: Readonly<Record<string, string>> = {
   label: 'label: "${1:label}"',
@@ -304,8 +288,7 @@ const SETTING_SNIPPETS: Readonly<Record<string, string>> = {
   candidateStarterUsers: 'candidateStarterUsers: "${1:demo,manager}"',
   candidateStarterGroups: 'candidateStarterGroups: "${1:adjusters}"',
   initiator: 'initiator: "${1:starter}"',
-  // A form field's parens. The two flags are on while written, so neither
-  // scaffolds a choice.
+  // The two form flags are on while written, so neither scaffolds a choice.
   required: 'required: true',
   readonly: 'readonly: true',
   min: 'min: ${1:0}',
@@ -317,20 +300,15 @@ const SETTING_SNIPPETS: Readonly<Record<string, string>> = {
 };
 
 /**
- * A handler binds what the event it caught carries to variables of its own, so
- * the value is a name the handler introduces rather than one it looks up. The
- * same word means something else as a setting: `message` on a receive task
- * names the subscription the engine waits on.
+ * A catch binding names a variable the handler declares, so it is bare; the
+ * same `message` key on a receive task is the quoted subscription name.
  */
 const CATCH_BINDING_SNIPPETS: Readonly<Record<string, string>> = {
   code: 'code: ${1:code}',
   message: 'message: ${1:message}',
 };
 
-/**
- * A declaration's fields hold the text the event is made of, so both are
- * quoted where a handler's binding of the same name is a bare variable.
- */
+/** A declaration's fields are text, so both are quoted. */
 const DECLARATION_FIELD_SNIPPETS: Readonly<Record<string, string>> = {
   code: 'code: "${1:code}"',
   message: 'message: "${1:message}"',
@@ -342,7 +320,7 @@ const settingForms = (
 ): StructureForm[] =>
   keys.map((key) => ({ label: key, insertText: snippets[key] }));
 
-/** The words a setting's value slot offers, keyed by the setting; a quoted choice inserts its quotes. */
+/** The words a value slot offers; a quoted choice inserts its quotes. */
 const SETTING_VALUE_CHOICES: Readonly<Record<string, readonly string[]>> = {
   [TYPE_BINDING_KEY]: TYPE_BINDING_VALUES.map((value) => `"${value}"`),
   binding: CALL_BINDING_VALUES,
@@ -356,27 +334,22 @@ const BOOLEAN_SETTING_KEYS: ReadonlySet<string> = new Set(
 const LITERAL_WORDS: ReadonlySet<string> = new Set(JUEL_LITERAL_WORDS);
 
 /** The grammar rule of the two boolean words; `null` has one of its own. */
-const BOOLEAN_LITERAL_RULE = 'LiteralBool';
+const BOOLEAN_LITERAL_RULE = LiteralBool.$type;
 
 /**
- * The keys naming a timer's date and cycle. A duration is the bare payload the
- * trigger word's own snippet already scaffolds, so it is not offered again.
+ * A duration is the bare payload the trigger word's snippet scaffolds, so only
+ * the date and cycle keys are offered.
  */
 const TIMER_KEY_SNIPPETS: Readonly<Record<string, string>> = {
   [TIMER_PARTICLE_BY_KIND.date]: `${TIMER_PARTICLE_BY_KIND.date}: "\${1:2026-08-01T09:00:00}"`,
   [TIMER_PARTICLE_BY_KIND.cycle]: `${TIMER_PARTICLE_BY_KIND.cycle}: "\${1:R/PT10M}"`,
 };
 
-/** The keys a timer trigger takes, wherever one is written. */
-function timerKeyForms(node: AstNode): StructureForm[] {
-  if (triggerWordOf(node) !== 'timer') return [];
-  return Object.entries(TIMER_KEY_SNIPPETS).map(([label, insertText]) => ({
-    label,
-    insertText,
-  }));
-}
+const timerKeyForms = (node: AstNode): StructureForm[] =>
+  triggerWordOf(node) === 'timer'
+    ? settingForms(Object.keys(TIMER_KEY_SNIPPETS), TIMER_KEY_SNIPPETS)
+    : [];
 
-/** The bindings a handler catching an error or an escalation takes. */
 function catchBindingForms(node: AstNode): StructureForm[] {
   if (
     !isOnHandler(node) ||
@@ -389,15 +362,13 @@ function catchBindingForms(node: AstNode): StructureForm[] {
   );
 }
 
-/** The items written in `owner`'s parens; a kind without parens has none. */
 const itemsOf = (owner: AstNode): ParenItem[] =>
   (owner as { items?: ParenItem[] }).items ?? [];
 
 /**
- * Whether the unkeyed slot of `owner`'s parens has to be filled before a
- * setting is legal there: a subscription name, a timer clause, a condition,
- * and the code a throw or emit names, which is required even where a handler
- * may catch every code.
+ * Whether a setting is legal only after the unkeyed payload. A throw or emit
+ * must name its code even where a handler of the same trigger may catch every
+ * code.
  */
 function payloadRequired(owner: AstNode): boolean {
   const trigger = triggerWordOf(owner);
@@ -414,9 +385,8 @@ function payloadRequired(owner: AstNode): boolean {
 }
 
 /**
- * Whether the unkeyed slot is written before the caret's token, bare or as a
- * timer's keyed clause. A word still being typed there is that slot, not
- * something after it.
+ * Keyed on the payload's CST end against the caret's token, not the caret: a
+ * word still being typed at the slot is that slot, not something after it.
  */
 function payloadWritten(owner: AstNode, context: CompletionContext): boolean {
   const items = itemsOf(owner);
@@ -430,10 +400,6 @@ function payloadWritten(owner: AstNode, context: CompletionContext): boolean {
 const payloadOpen = (owner: AstNode, context: CompletionContext): boolean =>
   payloadRequired(owner) && !payloadWritten(owner, context);
 
-/**
- * Whether the caret opens the condition an event's parens take, the one item
- * start an expression belongs at.
- */
 function conditionSlotOpen(context: CompletionContext): boolean {
   const owner = owningElement(context);
   const trigger = owner === undefined ? undefined : triggerWordOf(owner);
@@ -446,9 +412,8 @@ function conditionSlotOpen(context: CompletionContext): boolean {
 }
 
 /**
- * The bare words `node`'s parens take. The one flag any rule lists is the
- * handler's `alongside`, so the list is offered whole where the trigger's
- * rule lets a handler run alongside its host.
+ * The only flag any rule lists is the handler's `alongside`, so the list is
+ * offered whole where the trigger admits it.
  */
 function flagWordsFor(node: AstNode): readonly string[] {
   const trigger = triggerWordOf(node);
@@ -458,21 +423,17 @@ function flagWordsFor(node: AstNode): readonly string[] {
 }
 
 /**
- * The settings the parens of `node` take, in the order they are offered, or
- * `undefined` where `node` has no parens of its own. The keys come from the
- * element's own row, so a kind that takes no label is offered none; a listener
- * carries a list of its own, being a callback on the element rather than one
- * of its settings. The `run` keys are offered only with a `for` clause, which
- * the validator requires for them.
+ * `undefined` where `node` has no parens of its own; `owningElement` keys on
+ * that. The `run` keys need the `for` clause the validator requires for them.
  */
 function settingFormsFor(node: AstNode): StructureForm[] | undefined {
-  if (node.$type === 'Process') {
+  if (isProcess(node)) {
     return settingForms(PROCESS_HEADER_KEYS);
   }
-  if (node.$type === 'Listener') {
+  if (isListener(node)) {
     return settingForms(LISTENER_BINDING_KEYS);
   }
-  if (node.$type === 'FormField') {
+  if (isFormField(node)) {
     return settingForms(FORM_FIELD_SETTING_KEYS);
   }
   if (isCodeDecl(node)) {
@@ -490,8 +451,7 @@ function settingFormsFor(node: AstNode): StructureForm[] | undefined {
   }
   const rule = attributeBlockRuleOf(node);
   if (!rule) return undefined;
-  // A throw or emit owns the implementation bindings, which only a thrown
-  // message carries.
+  // The implementation bindings belong to a thrown or emitted message alone.
   const own =
     (isThrowStatement(node) || isEmitStatement(node)) &&
     node.trigger !== THROW_BINDING_TRIGGER
@@ -510,10 +470,7 @@ function settingFormsFor(node: AstNode): StructureForm[] | undefined {
 const writtenKeysOf = (owner: AstNode): ReadonlySet<string> =>
   new Set(settingsOf(itemsOf(owner)).map((setting) => setting.key));
 
-/**
- * Whether the parens name a binding the engine injects a field into. A
- * listener's fenced script binds it in place of its settings and takes none.
- */
+/** A listener's fenced script binds it in place of its settings, so no field. */
 function bindsAField(owner: AstNode): boolean {
   if (isListener(owner) && owner.script !== undefined) return false;
   const keys = writtenKeysOf(owner);
@@ -528,11 +485,10 @@ const mappingOffered = (owner: AstNode): boolean =>
   (attributeBlockRuleOf(owner)?.externalExtras ?? false) && bindsATopic(owner);
 
 /**
- * The directions a member of `owner`'s block is written with. A listener's
- * block holds injected fields alone, for the reason
- * `BpmnScriptValidator.checkListenerFields` states, and a form field's holds
- * properties alone, so neither has a row to read. A field and a property each
- * ride one binding, so they are offered once that binding is written.
+ * A listener's block holds fields alone, for the reason
+ * `BpmnScriptValidator.checkListenerFields` gives, and a form field's holds
+ * properties alone, so neither has a rule row; a field or a property is
+ * offered once the binding it rides is written.
  */
 function parameterDirectionsOf(owner: AstNode): readonly string[] {
   if (isListener(owner)) {
@@ -553,21 +509,17 @@ function parameterDirectionsOf(owner: AstNode): readonly string[] {
 }
 
 /**
- * Whether the caret sits in `owner`'s body rather than in its member block.
- * The two open with the same brace and the parser reads the first as the body,
- * so a member offered there would land in the body, where it belongs to
+ * On an element with a body, a lone brace after its head opens the body, not
+ * the member block, and `Block` parses a parameter there as readily as the
+ * member block does, so none is offered in the body, where it belongs to
  * nothing.
  */
 const inBodyOf = (owner: AstNode, context: CompletionContext): boolean =>
   AstUtils.getContainerOfType(context.node, isBlock)?.$container === owner;
 
 /**
- * Whether a bare name at the value slot of `key` on `owner` reads a variable.
- * The validator's own predicate cannot be asked: with nothing typed after the
- * colon the recovered tree holds the key as a bare value and no setting node.
- * A text key takes its value as written, a boolean its two words, a form
- * field's constraints a number, a timer clause a time, a catch binding a name
- * it declares, and a declaration's fields text.
+ * The validator's `isVariableUse` cannot be asked: with nothing typed after
+ * the colon the recovered tree holds the key as a bare value and no `Setting`.
  */
 function valueSlotReadsVariable(owner: AstNode, key: string): boolean {
   return (
@@ -579,7 +531,7 @@ function valueSlotReadsVariable(owner: AstNode, key: string): boolean {
   );
 }
 
-/** The stand-in for a reference not yet typed, held by the caret's node as the default builds it. */
+/** The default's stand-in for an untyped reference, held by the caret's node. */
 const referenceStandInAt = (node: AstNode): VarRef => ({
   $type: 'VarRef',
   $container: node as VarRef['$container'],
@@ -589,29 +541,27 @@ const referenceStandInAt = (node: AstNode): VarRef => ({
 });
 
 /**
- * The word written before the token at the caret. A mapping with nothing after
- * its head word does not parse and leaves no node, so the head is read off the
- * text.
+ * A mapping with nothing after its head word leaves no node, so the head is
+ * read off the text.
  */
 const wordBefore = (context: CompletionContext): string | undefined =>
   /(\w+)\s*$/.exec(
     context.textDocument.getText().slice(0, context.tokenOffset),
   )?.[1];
 
-/** Whether both braces are written: a brace the recovery inserted leaves no leaf. */
+/** A brace the recovery inserted leaves no leaf. */
 function closesWithBrace(cst: CstNode): boolean {
   const last = isCompositeCstNode(cst) ? cst.content.at(-1) : undefined;
   return last !== undefined && isLeafCstNode(last) && last.text === '}';
 }
 
 /**
- * The blocks whose braces hold the caret, outermost first, read off the CST
- * rather than off the caret's node: a handler with its trigger still unwritten
- * does not parse, and the recovery closes the body before it and hangs the
- * handler on the process, so its containers say nothing about where it was
- * typed. A block the recovery closed stays open to a caret past its end.
+ * The innermost block whose braces hold the caret, read off the CST: at
+ * `on |` inside a block the recovery closes that block before the handler and
+ * hangs it on the process, so the handler's containers say nothing about where
+ * it was typed, and the closed block must still count as open past its end.
  */
-function openBlocksAt(context: CompletionContext): Block[] {
+function innermostOpenBlockAt(context: CompletionContext): Block | undefined {
   return AstUtils.streamAst(context.document.parseResult.value)
     .filter(isBlock)
     .filter((block) => {
@@ -622,15 +572,15 @@ function openBlocksAt(context: CompletionContext): Block[] {
         (cst.end > context.offset || !closesWithBrace(cst))
       );
     })
-    .toArray();
+    .toArray()
+    .at(-1);
 }
 
 /**
- * The words a handler at the caret catches. Host-less it is an event
- * sub-process, and an undo block belongs directly in the subprocess whose work
- * it undoes; hosted it is a boundary event, which Operaton attaches as a
- * cancel to an attempt block alone and as an escalation to the hosts
- * `isEscalationLegalHost` names. An unresolved host keeps the whole list.
+ * Host-less, a handler is an event sub-process and its undo block belongs in
+ * the subprocess it undoes; hosted, it is a boundary event, which Operaton
+ * attaches as a cancel to a transaction alone. An unresolved host keeps the
+ * whole list.
  */
 function handlerTriggerWords(
   handler: OnHandler,
@@ -638,7 +588,9 @@ function handlerTriggerWords(
   context: CompletionContext,
 ): readonly string[] {
   if (handler.host === undefined) {
-    const inSubProcess = isSubProcess(openBlocksAt(context).at(-1)?.$container);
+    const inSubProcess = isSubProcess(
+      innermostOpenBlockAt(context)?.$container,
+    );
     return words.filter(
       (word) =>
         TRIGGER_PAYLOAD[word]?.hostless &&
@@ -656,31 +608,31 @@ function handlerTriggerWords(
 }
 
 /**
- * The grammar rule `node` belongs to. Where one word is written by two rules
- * the rule tells them apart and the AST node cannot, because at a caret after a
- * finished construct the node is that construct, not the enclosing one.
+ * The grammar rule a feature belongs to. Where two rules write one word the
+ * rule tells them apart and the caret's node cannot: after a finished construct
+ * the node is that construct, not the enclosing one.
  */
 function ruleNameOf(node: AstNode): string | undefined {
   return AstUtils.getContainerOfType(node, GrammarAST.isParserRule)?.name;
 }
 
-/** A `MapKey` in a parameter value assigns `key` too, and takes the author's own keys. */
-const SETTING_KEY_RULE = 'ParenKey';
+/**
+ * A `MapKey` in a parameter value assigns `key` too, and takes the author's
+ * own keys. A datatype rule has no generated `$type` to name it by.
+ */
+export const SETTING_KEY_RULE = 'ParenKey';
 
-/** The rule of the bare words an element's parens take. */
-const FLAG_WORD_RULE = 'FlagWord';
+export const FLAG_WORD_RULE = 'FlagWord';
 
-/** Whether the caret opens a new item in an element's parens, where a key may start. */
 const atParenItemStart = (context: CompletionContext): boolean =>
   context.features.some(
     (next) => ruleNameOf(next.feature) === SETTING_KEY_RULE,
   );
 
 /**
- * The key whose value slot holds the caret, `key: |` or `key: pre|`, or
- * `undefined` anywhere else. With nothing typed after the colon the parser
- * recovers the key as a bare unkeyed value and drops the colon, so that shape
- * is told by the colon still standing between the word and the caret.
+ * The key whose value slot holds the caret, or `undefined`. At `key: |` the
+ * parser recovers the key as a bare unkeyed value and drops the colon, so that
+ * shape is told by the colon still standing between the word and the caret.
  */
 function settingKeyAt(context: CompletionContext): string | undefined {
   const node = context.node;
@@ -700,11 +652,10 @@ function settingKeyAt(context: CompletionContext): string | undefined {
 }
 
 /**
- * The element whose settings hold the caret. The node at the caret is that
- * element only while the parens are empty; afterwards it is the preceding
- * item's leaf. An item already closed above the caret is passed over, and
- * parens whose closing token is not typed yet enclose nothing, so there the
- * innermost element stands in.
+ * The element whose settings hold the caret. The caret's node is that element
+ * only while its parens are empty and the preceding item's leaf afterwards, so
+ * the walk climbs to the first element still enclosing the caret; parens whose
+ * closing token is not typed enclose nothing, so there the innermost stands in.
  */
 function owningElement(context: CompletionContext): AstNode | undefined {
   let innermost: AstNode | undefined;
@@ -724,11 +675,6 @@ function owningElement(context: CompletionContext): AstNode | undefined {
   return innermost;
 }
 
-/**
- * Scaffolds for the trigger words whose payload is neither a name nor a code.
- * A timer reads a bare duration, which is the common case; a fixed date or a
- * repeating cycle is written as an `at` or `every` setting instead.
- */
 const TRIGGER_PAYLOAD_SNIPPETS: Readonly<
   Record<string, { insertText: string; detail: string }>
 > = {
@@ -742,7 +688,6 @@ const TRIGGER_PAYLOAD_SNIPPETS: Readonly<
   },
 };
 
-/** The trigger words each statement takes, with the captions a word earns. */
 const STATEMENT_TRIGGERS: Readonly<
   Record<
     string,
@@ -784,10 +729,7 @@ const STATEMENT_TRIGGERS: Readonly<
   },
 };
 
-/**
- * The header declarations opening with a soft word, which no keyword path
- * offers. Each names its code; only an error carries a message.
- */
+/** The header declarations open with a soft word, so no keyword path offers them. */
 const CODE_DECLARATION_FORMS: readonly (StructureForm & { detail: string })[] =
   [...DECLARED_CODE_TRIGGERS].map((kind) => ({
     label: kind,
@@ -797,7 +739,6 @@ const CODE_DECLARATION_FORMS: readonly (StructureForm & { detail: string })[] =
       (TRIGGER_PAYLOAD[kind]?.message ? '(message: "${2:message}")' : ''),
   }));
 
-/** Captions replacing the default one, keyed as {@link STRUCTURE_SNIPPETS} is. */
 const STRUCTURE_DETAILS: Readonly<Record<string, string>> = {
   call: 'call another process like a function',
   for: 'how often the preceding step runs',
@@ -819,12 +760,7 @@ export class BpmnScriptCompletionProvider extends DefaultCompletionProvider {
     this.variables = services.references.VariableSymbolProvider;
   }
 
-  /**
-   * Offers items for the soft words at the `trigger`, `particle`, `key`,
-   * `direction`, `event` and `kind` positions, which lex as plain `ID`s.
-   * `OnHandler.host` is absent because it is a real cross-reference, already
-   * offered by the inherited `completionForCrossReference`.
-   */
+  /** The soft words lex as plain `ID`s, so the default offers nothing for them. */
   protected override completionFor(
     context: CompletionContext,
     next: NextFeature,
@@ -843,11 +779,14 @@ export class BpmnScriptCompletionProvider extends DefaultCompletionProvider {
       // a timer's date and cycle keys are that payload.
       const forms = payloadOpen(owner, context)
         ? timerKeyForms(owner)
-        : settingFormsFor(owner);
-      if (forms) {
-        this.acceptSettingSnippets(context, acceptor, forms);
-        return;
+        : (settingFormsFor(owner) ?? []);
+      for (const form of forms) {
+        this.acceptSnippet(context, acceptor, {
+          ...form,
+          detail: 'BPMNscript setting',
+        });
       }
+      return;
     }
     // A form field's type slot admits any word, so the grammar's own list of
     // variable types is replaced by the form types the validator holds it to.
@@ -892,30 +831,18 @@ export class BpmnScriptCompletionProvider extends DefaultCompletionProvider {
       this.acceptListenerEvents(context, acceptor, owner);
       return;
     }
-    if (next.property === 'kind' && next.type === 'CodeDecl') {
+    if (next.property === 'kind' && next.type === CodeDecl.$type) {
       for (const form of CODE_DECLARATION_FORMS) {
-        acceptor(context, {
-          label: form.label,
-          kind: CompletionItemKind.Snippet,
-          detail: form.detail,
-          insertText: form.insertText,
-          insertTextFormat: InsertTextFormat.Snippet,
-          sortText: '1',
-        });
+        this.acceptSnippet(context, acceptor, form);
       }
       return;
     }
-    // A mapping is offered where its binding takes one; elsewhere the block
-    // position offers nothing for it, so a user task is never handed one.
-    if (next.property === 'trigger' && next.type === 'ErrorMapping') {
+    if (next.property === 'trigger' && next.type === ErrorMapping.$type) {
       if (owner && mappingOffered(owner)) {
-        acceptor(context, {
+        this.acceptSnippet(context, acceptor, {
           label: ERROR_MAPPING_HEAD,
-          kind: CompletionItemKind.Snippet,
           detail: 'raise a declared error when a reported failure matches',
           insertText: `${ERROR_MAPPING_HEAD} \${1:CODE} ${ERROR_MAPPING_WHEN} \${2:condition}`,
-          insertTextFormat: InsertTextFormat.Snippet,
-          sortText: '1',
         });
       }
       return;
@@ -934,28 +861,28 @@ export class BpmnScriptCompletionProvider extends DefaultCompletionProvider {
   }
 
   /**
-   * A host resolves against every named statement, so the validator can say
+   * A host resolves against every named statement so the validator can say
    * why a start or a throw cannot carry a boundary event; the offer stops at
-   * the activities that can. The recovery of a trigger-less handler hangs it
-   * on the process, so the scope is read for a stand-in placed in the
-   * innermost block still open at the caret, where the handler was typed.
-   * With a body still open, `on Ins` parses as a complete `Listener`, not an
-   * `OnHandler`, so the guard keys on the property alone: only `OnHandler`
-   * has `host`.
+   * the activities that can.
    */
   protected override getReferenceCandidates(
     refInfo: ReferenceInfo,
     context: CompletionContext,
   ): Stream<AstNodeDescription> {
+    // Inside a block body a bare `on Ins` parses as a complete `Listener`, not
+    // an `OnHandler`, so the guard keys on the property: only `OnHandler` has
+    // `host`.
     if (refInfo.property !== 'host') {
       return super.getReferenceCandidates(refInfo, context);
     }
-    const block = openBlocksAt(context).at(-1);
+    // The recovery hangs a trigger-less handler on the process, so the scope
+    // is read for a stand-in placed where the handler was typed.
     const placed: ReferenceInfo = {
       ...refInfo,
       container: {
-        $type: 'OnHandler',
-        $container: block ?? refInfo.container.$container,
+        $type: OnHandler.$type,
+        $container:
+          innermostOpenBlockAt(context) ?? refInfo.container.$container,
       },
     };
     return super
@@ -971,10 +898,10 @@ export class BpmnScriptCompletionProvider extends DefaultCompletionProvider {
     next: NextFeature<GrammarAST.CrossReference>,
     acceptor: CompletionAcceptor,
   ): MaybePromise<void> {
-    if (next.type === 'ErrorMapping' && next.property === 'code') {
-      // context.node is the caret's leaf, which after any preceding member
-      // is that member, not the block's owner; climb to the nearest node
-      // with an attribute-block rule (the element the mapping belongs to).
+    if (next.type === ErrorMapping.$type && next.property === 'code') {
+      // Not `owningElement`: with only the head word written the member block
+      // is dropped from the CST and the element no longer encloses the caret,
+      // so an enclosure walk climbs past it.
       let owner = context.node;
       while (owner !== undefined && attributeBlockRuleOf(owner) === undefined) {
         owner = owner.$container;
@@ -989,7 +916,7 @@ export class BpmnScriptCompletionProvider extends DefaultCompletionProvider {
       return;
     }
     if (
-      next.type === 'VarRef' &&
+      next.type === VarRef.$type &&
       next.property === 'ref' &&
       this.variablesOffered(context)
     ) {
@@ -1000,17 +927,16 @@ export class BpmnScriptCompletionProvider extends DefaultCompletionProvider {
   }
 
   /**
-   * The stand-in the default builds for the code slot carries no trigger word,
-   * and with nothing after the head word no parsed mapping holds it either, so
-   * the scope would read no code kind. The parser reaches the slot only after
-   * the head word, so the stand-in is given it.
+   * The default's stand-in carries no trigger word, and with nothing after the
+   * head word no parsed mapping holds one either, so the scope would read no
+   * code kind; the stand-in is given the head word the parser has passed.
    */
   private acceptMappingCodes(
     context: CompletionContext,
     acceptor: CompletionAcceptor,
   ): void {
     const standIn: AstNode & { trigger: string } = {
-      $type: 'ErrorMapping',
+      $type: ErrorMapping.$type,
       $container: context.node,
       $containerProperty: 'code',
       trigger: ERROR_MAPPING_HEAD,
@@ -1028,12 +954,6 @@ export class BpmnScriptCompletionProvider extends DefaultCompletionProvider {
     }
   }
 
-  /**
-   * Whether a bare name at the caret reads a variable. In an element's parens
-   * only an open condition slot does; at a setting's value the key decides;
-   * elsewhere the validator's predicate answers on the stand-in for the
-   * reference, whose containers are the caret's.
-   */
   private variablesOffered(context: CompletionContext): boolean {
     if (atParenItemStart(context)) return conditionSlotOpen(context);
     const key = settingKeyAt(context);
@@ -1047,10 +967,7 @@ export class BpmnScriptCompletionProvider extends DefaultCompletionProvider {
     );
   }
 
-  /**
-   * Every variable the process knows, in the order the table seeds them. A
-   * declared name sorts ahead of a keyword, as a code or a host does.
-   */
+  /** A declared name sorts ahead of a keyword, as a code or a host does. */
   private acceptVariables(
     context: CompletionContext,
     acceptor: CompletionAcceptor,
@@ -1067,7 +984,6 @@ export class BpmnScriptCompletionProvider extends DefaultCompletionProvider {
     }
   }
 
-  /** A plain keyword item per word. */
   private acceptWords(
     context: CompletionContext,
     acceptor: CompletionAcceptor,
@@ -1084,12 +1000,19 @@ export class BpmnScriptCompletionProvider extends DefaultCompletionProvider {
     }
   }
 
-  /**
-   * Whether a literal word belongs at the caret. In an element's parens it is
-   * a payload, which an open condition slot alone takes and only as a boolean;
-   * at a setting's value it fits a boolean key alone; an expression position
-   * takes it as any operand.
-   */
+  private acceptSnippet(
+    context: CompletionContext,
+    acceptor: CompletionAcceptor,
+    item: StructureForm & { detail: string },
+  ): void {
+    acceptor(context, {
+      ...item,
+      kind: CompletionItemKind.Snippet,
+      insertTextFormat: InsertTextFormat.Snippet,
+      sortText: '1',
+    });
+  }
+
   private literalWordOffered(
     context: CompletionContext,
     boolean: boolean,
@@ -1101,7 +1024,6 @@ export class BpmnScriptCompletionProvider extends DefaultCompletionProvider {
     return key === undefined || (boolean && BOOLEAN_SETTING_KEYS.has(key));
   }
 
-  /** A plain keyword item per word, or a snippet where the word carries a payload. */
   private acceptEventWords(
     context: CompletionContext,
     acceptor: CompletionAcceptor,
@@ -1124,23 +1046,6 @@ export class BpmnScriptCompletionProvider extends DefaultCompletionProvider {
     }
   }
 
-  private acceptSettingSnippets(
-    context: CompletionContext,
-    acceptor: CompletionAcceptor,
-    forms: readonly StructureForm[],
-  ): void {
-    for (const form of forms) {
-      acceptor(context, {
-        label: form.label,
-        kind: CompletionItemKind.Snippet,
-        detail: 'BPMNscript setting',
-        insertText: form.insertText,
-        insertTextFormat: InsertTextFormat.Snippet,
-        sortText: '1',
-      });
-    }
-  }
-
   private static readonly DIRECTION_DETAILS: Readonly<Record<string, string>> =
     {
       input: 'a value handed to this step',
@@ -1152,10 +1057,9 @@ export class BpmnScriptCompletionProvider extends DefaultCompletionProvider {
     };
 
   /**
-   * A field's value is quoted where an io parameter's is not: it lowers to a
-   * `stringValue` attribute or to an expression child, and neither takes a
-   * list, a map, or an inline script. A property's is the same text in a
-   * `value` attribute.
+   * A field or property value is quoted where an io parameter's is not: a
+   * field lowers to a `stringValue` attribute or an expression child and a
+   * property to a `value` attribute, and none takes a list, map or script.
    */
   private static readonly DIRECTION_VALUES: Readonly<Record<string, string>> = {
     [FIELD_DIRECTION]: '"${2:value}"',
@@ -1171,24 +1075,20 @@ export class BpmnScriptCompletionProvider extends DefaultCompletionProvider {
       const value =
         BpmnScriptCompletionProvider.DIRECTION_VALUES[direction] ??
         '${2:value}';
-      acceptor(context, {
+      this.acceptSnippet(context, acceptor, {
         label: direction,
-        kind: CompletionItemKind.Snippet,
         detail: BpmnScriptCompletionProvider.DIRECTION_DETAILS[direction],
         insertText: `${direction} \${1:name} = ${value}`,
-        insertTextFormat: InsertTextFormat.Snippet,
-        sortText: '1',
       });
     }
   }
 
-  /** Each event scaffolds its binding and, for `timeout`, the timer clause. */
   private acceptListenerEvents(
     context: CompletionContext,
     acceptor: CompletionAcceptor,
     owner: AstNode,
   ): void {
-    const host = owner.$type === 'Listener' ? owner.$container : owner;
+    const host = isListener(owner) ? owner.$container : owner;
     const rule = host && attributeBlockRuleOf(host);
     if (!rule) {
       return;
@@ -1198,13 +1098,10 @@ export class BpmnScriptCompletionProvider extends DefaultCompletionProvider {
       // tab stops swap places on `timeout`.
       const timer = event === 'timeout' ? ' after "${1:PT1H}"' : '';
       const binding = event === 'timeout' ? '${2:' : '${1:';
-      acceptor(context, {
+      this.acceptSnippet(context, acceptor, {
         label: event,
-        kind: CompletionItemKind.Snippet,
         detail: 'BPMNscript listener event',
         insertText: `${event}${timer}(class: "${binding}com.example.Listener}")`,
-        insertTextFormat: InsertTextFormat.Snippet,
-        sortText: '1',
       });
     }
   }
@@ -1214,17 +1111,14 @@ export class BpmnScriptCompletionProvider extends DefaultCompletionProvider {
     keyword: GrammarAST.Keyword,
     acceptor: CompletionAcceptor,
   ): void {
-    if (keyword.value === 'on' && ruleNameOf(keyword) === 'Listener') {
-      acceptor(context, {
+    if (keyword.value === 'on' && ruleNameOf(keyword) === Listener.$type) {
+      this.acceptSnippet(context, acceptor, {
         label: 'on',
-        kind: CompletionItemKind.Snippet,
         detail: 'run code when this step reaches a lifecycle point',
         insertText:
           'on ${1|' +
           EXECUTION_LISTENER_EVENTS.join(',') +
           '|}(class: "${2:com.example.Listener}")',
-        insertTextFormat: InsertTextFormat.Snippet,
-        sortText: '1',
       });
       return;
     }
@@ -1238,9 +1132,9 @@ export class BpmnScriptCompletionProvider extends DefaultCompletionProvider {
       return;
     }
     const rule = ruleNameOf(keyword);
-    // A keyword in a setting position names a key or a flag, never the start of
-    // a construct. Which of them belongs to the element is answered from its own
-    // vocabulary, so the grammar's raw alternatives are dropped here.
+    // In a setting position a keyword is a key or a flag, and which of them the
+    // element takes is answered from its vocabulary, so the grammar's raw
+    // alternatives are dropped.
     if (rule === FLAG_WORD_RULE) {
       const owner = owningElement(context);
       if (
@@ -1266,22 +1160,14 @@ export class BpmnScriptCompletionProvider extends DefaultCompletionProvider {
       void super.completionForKeyword(context, keyword, acceptor);
       return;
     }
-    // Respect the same word-like filtering the default applies to keywords.
-    if (!this.filterKeyword(context, keyword)) {
-      return;
-    }
     const forms =
       typeof snippet === 'string'
         ? [{ label: keyword.value, insertText: snippet }]
         : snippet;
     for (const form of forms) {
-      acceptor(context, {
-        label: form.label,
-        kind: CompletionItemKind.Snippet,
+      this.acceptSnippet(context, acceptor, {
+        ...form,
         detail: STRUCTURE_DETAILS[keyword.value] ?? 'BPMNscript construct',
-        insertText: form.insertText,
-        insertTextFormat: InsertTextFormat.Snippet,
-        sortText: '1',
       });
     }
   }

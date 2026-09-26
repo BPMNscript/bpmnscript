@@ -3,7 +3,7 @@ import { describe, it, expect } from 'vitest';
 import type { FlowContainer } from '@bpmn-script/transform';
 
 import { describeDiContainment } from './helpers/di-bounds.js';
-import { kindOf, idsOf, subProcess } from './helpers/ir-query.js';
+import { idsOf } from './helpers/ir-query.js';
 import { roundTripFixture } from './helpers/round-trip-fixture.js';
 
 const rt = roundTripFixture('nested-subprocess', {
@@ -14,6 +14,50 @@ const rt = roundTripFixture('nested-subprocess', {
     'produces no diagnostics at all',
   ],
 });
+
+// `<kind> <id>` per container, at any depth, in element order.
+function containment(container: FlowContainer): Record<string, string[]> {
+  return Object.assign(
+    {
+      [container.id]: container.flowElements.map((fe) => `${fe.kind} ${fe.id}`),
+    },
+    ...container.flowElements
+      .filter((fe) => fe.kind === 'subProcess')
+      .map(containment),
+  );
+}
+
+const CONTAINMENT: Record<string, string[]> = {
+  'order-fulfillment': [
+    'startEvent OrderReceived',
+    'userTask RecordOrder',
+    'subProcess Payment',
+    'subProcess Fulfillment',
+    'userTask CloseOrder',
+    'endEvent OrderClosed',
+  ],
+  Payment: [
+    'startEvent StartEvent_Payment',
+    'exclusiveGateway Gateway_order-fulfillment_2_0_split',
+    'exclusiveGateway Gateway_order-fulfillment_2_0_join',
+    'userTask ManualReview',
+    'serviceTask AutoCharge',
+    'endEvent EndEvent_Payment',
+  ],
+  Fulfillment: [
+    'startEvent FulfillmentStart',
+    'exclusiveGateway Gateway_order-fulfillment_3_1_loop',
+    'serviceTask ReserveStock',
+    'subProcess Shipping',
+    'endEvent FulfillmentDone',
+  ],
+  Shipping: [
+    'startEvent StartEvent_Shipping',
+    'userTask PackParcel',
+    'serviceTask DispatchParcel',
+    'endEvent EndEvent_Shipping',
+  ],
+};
 
 // No sequence flow may reference an element outside its own container. That
 // invariant is what lets a parent treat a sub-process as one opaque activity.
@@ -35,90 +79,66 @@ function assertNoBoundaryCrossingFlows(container: FlowContainer): void {
 }
 
 describe("idempotence: DSL -> IR1 -> XML -> IR2 -> DSL' -> IR3", () => {
-  it("the restructured DSL' reconstructs both sub-processes as `subprocess` blocks", () => {
-    expect(rt.dslPrime).toContain(
-      'subprocess Payment(label: "Handle payment") {',
+  it("the restructured DSL' reconstructs every sub-process as a `subprocess` block around its own steps", () => {
+    expect(rt.dslPrime).toBe(
+      [
+        'process order-fulfillment {',
+        '  var amount: any',
+        '  var retries: any',
+        '  start OrderReceived',
+        '  user RecordOrder(label: "Record order", assignee: "demo")',
+        '  subprocess Payment(label: "Handle payment") {',
+        '    if (amount > 1000) {',
+        '      user ManualReview(label: "Manual review", assignee: "manager")',
+        '    } else {',
+        '      service AutoCharge(label: "Auto-charge card", class: "com.example.demo.LogDelegate")',
+        '    }',
+        '  }',
+        '  subprocess Fulfillment(label: "Fulfill the order") {',
+        '    start FulfillmentStart',
+        '    while (retries < 3) {',
+        '      service ReserveStock(label: "Reserve stock", class: "com.example.demo.LogDelegate")',
+        '    }',
+        '    subprocess Shipping(label: "Ship the parcel") {',
+        '      user PackParcel(label: "Pack parcel", assignee: "demo")',
+        '      service DispatchParcel(label: "Dispatch parcel", class: "com.example.demo.LogDelegate")',
+        '    }',
+        '    end FulfillmentDone',
+        '  }',
+        '  user CloseOrder(label: "Close order", assignee: "demo")',
+        '  end OrderClosed',
+        '}',
+        '',
+      ].join('\n'),
     );
-    expect(rt.dslPrime).toContain(
-      'subprocess Fulfillment(label: "Fulfill the order") {',
-    );
-    expect(rt.dslPrime).toContain(
-      'subprocess Shipping(label: "Ship the parcel") {',
-    );
-    expect(rt.dslPrime).toContain('if (amount > 1000)');
-    expect(rt.dslPrime).toContain('while (retries < 3)');
   });
 
-  it('authored ids survive verbatim at their correct container depth', () => {
-    expect(kindOf(rt.ir3, 'OrderReceived')).toBe('startEvent');
-    expect(kindOf(rt.ir3, 'RecordOrder')).toBe('userTask');
-    expect(kindOf(rt.ir3, 'Payment')).toBe('subProcess');
-    expect(kindOf(rt.ir3, 'Fulfillment')).toBe('subProcess');
-    expect(kindOf(rt.ir3, 'CloseOrder')).toBe('userTask');
-    expect(kindOf(rt.ir3, 'OrderClosed')).toBe('endEvent');
-
-    const payment = subProcess(rt.ir3, 'Payment');
-    expect(kindOf(payment, 'ManualReview')).toBe('userTask');
-    expect(kindOf(payment, 'AutoCharge')).toBe('serviceTask');
-    expect(idsOf(rt.ir3).has('ManualReview')).toBe(false);
-
-    const fulfillment = subProcess(rt.ir3, 'Fulfillment');
-    expect(kindOf(fulfillment, 'FulfillmentStart')).toBe('startEvent');
-    expect(kindOf(fulfillment, 'FulfillmentDone')).toBe('endEvent');
-    expect(kindOf(fulfillment, 'ReserveStock')).toBe('serviceTask');
-    expect(kindOf(fulfillment, 'Shipping')).toBe('subProcess');
-
-    const shipping = subProcess(fulfillment, 'Shipping');
-    expect(kindOf(shipping, 'PackParcel')).toBe('userTask');
-    expect(kindOf(shipping, 'DispatchParcel')).toBe('serviceTask');
-    expect(idsOf(fulfillment).has('PackParcel')).toBe(false);
-  });
-});
-
-// The nested shapes are named so the walk cannot pass on an empty tree.
-describeDiContainment(rt, ['Payment', 'Fulfillment', 'Shipping', 'PackParcel']);
-
-describe('structure: IR1 pins the containment shape', () => {
-  it('the parent chain threads start -> RecordOrder -> Payment -> Fulfillment -> CloseOrder -> end', () => {
-    const edge = (source: string) =>
-      rt.ir1.sequenceFlows.find((f) => f.sourceRef === source)?.targetRef;
-    expect(edge('OrderReceived')).toBe('RecordOrder');
-    expect(edge('RecordOrder')).toBe('Payment');
-    expect(edge('Payment')).toBe('Fulfillment');
-    expect(edge('Fulfillment')).toBe('CloseOrder');
-    expect(edge('CloseOrder')).toBe('OrderClosed');
-  });
-
-  it('nested elements do not leak into the parent container', () => {
-    const top = idsOf(rt.ir1);
-    for (const nested of [
-      'ManualReview',
-      'AutoCharge',
-      'ReserveStock',
-      'PackParcel',
-      'DispatchParcel',
-      'FulfillmentStart',
-      'FulfillmentDone',
-    ]) {
-      expect(top.has(nested)).toBe(false);
+  it('every container holds exactly its own elements, at every depth and every hop', () => {
+    for (const [label, ir] of rt.hops) {
+      expect(containment(ir), `containment differs in ${label}`).toEqual(
+        CONTAINMENT,
+      );
     }
   });
 
-  it('each sub-process holds its own body elements', () => {
-    const payment = subProcess(rt.ir1, 'Payment');
-    expect(idsOf(payment)).toContain('ManualReview');
-    expect(idsOf(payment)).toContain('AutoCharge');
-
-    const fulfillment = subProcess(rt.ir1, 'Fulfillment');
-    expect(idsOf(fulfillment)).toContain('ReserveStock');
-    expect(idsOf(fulfillment)).toContain('Shipping');
-
-    const shipping = subProcess(fulfillment, 'Shipping');
-    expect(idsOf(shipping)).toContain('PackParcel');
-    expect(idsOf(shipping)).toContain('DispatchParcel');
+  it('the parent chain threads start -> RecordOrder -> Payment -> Fulfillment -> CloseOrder -> end at every hop', () => {
+    for (const [label, ir] of rt.hops) {
+      expect(
+        ir.sequenceFlows.map((f) => `${f.sourceRef}->${f.targetRef}`),
+        `top-level flows differ in ${label}`,
+      ).toEqual([
+        'OrderReceived->RecordOrder',
+        'RecordOrder->Payment',
+        'Payment->Fulfillment',
+        'Fulfillment->CloseOrder',
+        'CloseOrder->OrderClosed',
+      ]);
+    }
   });
 
-  it('no sequence flow crosses a container boundary, at any depth', () => {
-    assertNoBoundaryCrossingFlows(rt.ir1);
+  it('no sequence flow crosses a container boundary, at any depth or hop', () => {
+    for (const [, ir] of rt.hops) assertNoBoundaryCrossingFlows(ir);
   });
 });
+
+describeDiContainment(rt, ['Payment', 'Fulfillment', 'Shipping', 'PackParcel']);

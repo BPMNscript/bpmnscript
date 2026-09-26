@@ -53,7 +53,6 @@ describe.skipIf(SKIP)(
       return { processInstanceId, activityIds };
     }
 
-    // The block's own history entry, read once it satisfies `settled`.
     async function blockInstance(
       processInstanceId: string,
       settled: (activity: HistoricActivityInstance) => boolean,

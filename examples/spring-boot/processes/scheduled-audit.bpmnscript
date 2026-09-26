@@ -1,6 +1,5 @@
-// The timer definition parks a job at deployment. The date is far enough out
-// that the engine's own clock never reaches it, so the test fires the job by
-// hand and the assertion never depends on wall time.
+// The timer start parks a job at deployment. The date is far enough out that
+// the clock never reaches it, so the E2E test fires the job by hand.
 
 process scheduled-audit {
   start AuditWindowOpens timer(at: "2099-01-01T00:00:00", label: "The audit window opens")

@@ -18,7 +18,7 @@ import type { BpmnProcess } from '@bpmn-script/transform';
 
 import { normalizeIr } from './helpers/normalize-ir.js';
 import { theOnly } from './helpers/ir-query.js';
-import { parse, parseToAst, printDsl } from './helpers/pipeline.js';
+import { parseToAst, printDsl } from './helpers/pipeline.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -43,136 +43,83 @@ describe('Round-trip equivalence: BPMN -> IR -> DSL -> IR -> XML -> IR', () => {
     expect(normalizeIr(ir3)).toEqual(normalizeIr(ir1));
   });
 
-  it('process metadata (id, name, isExecutable) survives the round-trip', () => {
-    expect(ir3.id).toBe(ir1.id);
-    expect(ir3.name).toBe(ir1.name);
-    expect(ir3.isExecutable).toBe(true);
-  });
-
-  it('all flow element kinds survive the round-trip (after normalization)', () => {
-    // irToDsl collapses the hand-named gateway into `if/else` and astToIr
-    // re-synthesizes a split plus a join the handwritten IR never had, so the
-    // raw flow-element set cannot match. Inlining the join makes them comparable.
-    const kinds1 = normalizeIr(ir1)
-      .flowElements.map((fe) => fe.kind)
-      .sort();
-    const kinds3 = normalizeIr(ir3)
-      .flowElements.map((fe) => fe.kind)
-      .sort();
-    expect(kinds3).toEqual(kinds1);
-  });
-
-  it('sequence flow count is preserved across the round-trip (after normalization)', () => {
-    // Same reason: `branch -> join -> Done` is two flows, the handwritten IR
-    // has one `branch -> Done`.
-    expect(normalizeIr(ir3).sequenceFlows).toHaveLength(
-      normalizeIr(ir1).sequenceFlows.length,
-    );
-  });
-
-  it('operaton attributes (assignee, class binding) survive the round-trip', () => {
-    const review = theOnly(ir3, 'userTask', (t) => t.id === 'ReviewInvoice');
-    expect(review.assignee).toBe('demo');
-
-    expect(theOnly(ir3, 'serviceTask').binding).toEqual({
-      kind: 'class',
-      className: 'com.example.invoice.AutoApproveDelegate',
-    });
-  });
-
-  it('conditionExpression survives the round-trip', () => {
-    const conditionalFlow = ir3.sequenceFlows.find(
-      (sf) => sf.conditionExpression !== undefined,
-    );
-    expect(conditionalFlow).toBeDefined();
-    expect(conditionalFlow!.conditionExpression).toBe('${amount > 1000}');
-  });
-
-  it('gateway has a synthesized default flow that points at the AutoApprove branch', () => {
+  it('the hand-named gateway prints as if/else and comes back with a synthesized default flow', () => {
     // The language has no edge-id syntax, so the hand-named `AutoApprovePath`
-    // comes back as `Flow_<gatewayId>_default`. Assert the behavior, not the
-    // literal id.
+    // comes back as `Flow_<gatewayId>_default`.
+    expect(dslSource).toBe(
+      [
+        'process invoice-approval {',
+        '  var amount: any',
+        '  start ReviewStart',
+        '  user ReviewInvoice(label: "Review invoice", assignee: "demo")',
+        '  if (amount > 1000) {',
+        '    user SeniorApproval(label: "Senior approval", assignee: "manager")',
+        '  } else {',
+        '    service AutoApprove(label: "Auto-approve", class: "com.example.invoice.AutoApproveDelegate")',
+        '  }',
+        '  end Done',
+        '}',
+        '',
+      ].join('\n'),
+    );
+
     const gw = theOnly(
       ir3,
       'exclusiveGateway',
       (g) => gatewayDefaultFlowId(g) !== undefined,
     );
     expect(gw.defaultFlowId).toMatch(/_default$/);
-
-    const defaultFlow = ir3.sequenceFlows.find(
-      (sf) => sf.id === gw.defaultFlowId,
-    );
-    expect(defaultFlow).toBeDefined();
-    expect(defaultFlow!.targetRef).toBe('AutoApprove');
-  });
-
-  it('DSL intermediate output parses without errors', async () => {
-    const document = await parse(dslSource);
-
-    expect(document.parseResult.parserErrors).toHaveLength(0);
-    expect(dslSource).toContain('process invoice-approval');
-  });
-
-  it('intermediate DSL is structured syntax (if/else blocks, no gateway/edge)', () => {
-    expect(dslSource).toContain('if (');
-    expect(dslSource).toContain('else');
-    expect(dslSource).toContain('{');
-
-    // Keyword plus whitespace, not a bare substring: an element named
-    // "...gateway..." would otherwise make this vacuous.
-    expect(dslSource).not.toMatch(/\bgateway\s/);
-    expect(dslSource).not.toContain('->');
+    expect(
+      ir3.sequenceFlows.find((sf) => sf.id === gw.defaultFlowId)?.targetRef,
+    ).toBe('AutoApprove');
   });
 });
 
-// Each case corrupts ir3 and asserts normalizeIr still reports a difference:
+// Each row corrupts ir3 and asserts normalizeIr still reports a difference:
 // the re-key rules canonicalize generated ids only, never structure.
 describe('normalizeIr preserves structural differences', () => {
-  it('dropping a sequence flow from ir3 makes the comparison FAIL', () => {
-    const ir3Corrupt: BpmnProcess = {
-      ...ir3,
-      sequenceFlows: ir3.sequenceFlows.slice(1),
-    };
-    expect(normalizeIr(ir3Corrupt)).not.toEqual(normalizeIr(ir1));
-  });
-
-  it('removing the real split gateway from ir3 makes the comparison FAIL', () => {
-    const ir3Corrupt: BpmnProcess = {
-      ...ir3,
-      flowElements: ir3.flowElements.filter(
-        (fe) => !(fe.kind === 'exclusiveGateway' && fe.id.endsWith('_split')),
-      ),
-    };
-    expect(normalizeIr(ir3Corrupt)).not.toEqual(normalizeIr(ir1));
-  });
-
-  it('re-targeting a branch flow in ir3 makes the comparison FAIL', () => {
-    const ir3Corrupt: BpmnProcess = {
-      ...ir3,
-      sequenceFlows: ir3.sequenceFlows.map((sf) =>
-        sf.targetRef === 'SeniorApproval'
-          ? { ...sf, targetRef: 'AutoApprove' }
-          : sf,
-      ),
-    };
-    expect(normalizeIr(ir3Corrupt)).not.toEqual(normalizeIr(ir1));
-  });
-
-  it('stripping the split gateway default flow makes the comparison FAIL', () => {
-    // A gateway's default flow is structure, so normalizeIr must not erase it.
-    const splitGw = ir3.flowElements.find(
-      (fe) => isGateway(fe) && gatewayDefaultFlowId(fe) !== undefined,
-    );
-    expect(splitGw).toBeDefined();
-
-    const stripped: BpmnProcess = {
-      ...ir3,
-      flowElements: ir3.flowElements.map((fe) =>
-        isGateway(fe) && gatewayDefaultFlowId(fe) !== undefined
-          ? { kind: fe.kind, id: fe.id, name: fe.name }
-          : fe,
-      ),
-    };
-    expect(normalizeIr(stripped)).not.toEqual(normalizeIr(ir1));
+  it.each([
+    [
+      'dropping a sequence flow',
+      (ir: BpmnProcess): BpmnProcess => ({
+        ...ir,
+        sequenceFlows: ir.sequenceFlows.slice(1),
+      }),
+    ],
+    [
+      'removing the real split gateway',
+      (ir: BpmnProcess): BpmnProcess => ({
+        ...ir,
+        flowElements: ir.flowElements.filter(
+          (fe) => !(fe.kind === 'exclusiveGateway' && fe.id.endsWith('_split')),
+        ),
+      }),
+    ],
+    [
+      're-targeting a branch flow',
+      (ir: BpmnProcess): BpmnProcess => ({
+        ...ir,
+        sequenceFlows: ir.sequenceFlows.map((sf) =>
+          sf.targetRef === 'SeniorApproval'
+            ? { ...sf, targetRef: 'AutoApprove' }
+            : sf,
+        ),
+      }),
+    ],
+    [
+      'stripping the split gateway default flow',
+      (ir: BpmnProcess): BpmnProcess => ({
+        ...ir,
+        flowElements: ir.flowElements.map((fe) =>
+          isGateway(fe) && gatewayDefaultFlowId(fe) !== undefined
+            ? { kind: fe.kind, id: fe.id, name: fe.name }
+            : fe,
+        ),
+      }),
+    ],
+  ])('%s from ir3 makes the comparison fail', (_title, corrupt) => {
+    const corrupted = corrupt(ir3);
+    expect(corrupted).not.toEqual(ir3);
+    expect(normalizeIr(corrupted)).not.toEqual(normalizeIr(ir1));
   });
 });
