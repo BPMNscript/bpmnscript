@@ -34,7 +34,6 @@ import {
   BpmnScriptNodeKindProvider,
 } from './bpmn-script-symbols.js';
 
-/** {@link VariableSymbolProvider} sits in `references`: resolving identifiers is its concern. */
 export type BpmnScriptAddedServices = {
   references: {
     VariableSymbolProvider: VariableSymbolProvider;
@@ -76,7 +75,7 @@ export const BpmnScriptModule: Module<
   },
 };
 
-/** `NodeKindProvider` lives on `LangiumSharedServices`, not the language module, so overriding it takes a second module here. */
+/** `NodeKindProvider` is a shared service, so overriding it takes a second module. */
 export const BpmnScriptSharedModule: Module<
   LangiumSharedServices,
   PartialLangiumSharedServices

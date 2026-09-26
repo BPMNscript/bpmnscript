@@ -1,6 +1,4 @@
-// `bpmn-auto-layout` is mocked rather than crashed for real (transform's
-// `ir-to-xml.layout-guard.test.ts` does that), and `vi.mock` applies to the
-// whole file, so the fallback gets a file of its own.
+// Its own file because `vi.mock` applies to the whole file.
 import { describe, it, expect, vi } from 'vitest';
 
 vi.mock('bpmn-auto-layout', () => ({

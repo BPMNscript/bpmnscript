@@ -48,12 +48,7 @@ export type {
 } from './ir/types.js';
 export type { BuiltinTaskType } from '@bpmn-script/language';
 
-export {
-  isGateway,
-  gatewayDefaultFlowId,
-  jobSettings,
-  carriesFields,
-} from './ir/types.js';
+export { isGateway, gatewayDefaultFlowId } from './ir/types.js';
 
 export {
   makeGatewaySplitId,
@@ -70,7 +65,7 @@ export {
 } from './synthesize-ids.js';
 
 export { parseJuel, renderRawFallback } from './juel.js';
-export type { JuelNode, Accessor, BinaryOp, ExprResult } from './juel.js';
+export type { JuelNode } from './juel.js';
 
 export { irToXml } from './ir-to-xml.js';
 export {
@@ -102,6 +97,7 @@ export {
   UnsupportedErrorMappingError,
   UnsupportedAssignmentError,
   LayoutError,
+  SERVICE_TASK_FORM_ATTRIBUTES,
 } from './errors.js';
 
 export { astToIr } from './ast-to-ir.js';

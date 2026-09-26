@@ -1,11 +1,5 @@
-// Grammar-driven program generator for the round-trip fuzz harness, plus the
-// printer and the delta-debugging reducer over the same program model.
-//
-// The word lists come from the language package so a construct the language
-// grows or drops changes the generator with it. Every generated program is a
-// candidate only: the harness validates it and keeps the validator-clean ones,
-// so the rules encoded below are the generator's best effort at staying inside
-// the validator, not a second copy of the validator.
+// Fuzz program generator, printer and delta-debugging reducer. Programs are
+// best-effort valid; the harness keeps only validator-clean ones.
 
 import {
   DECISION_RESULT_MAPPINGS,
@@ -27,19 +21,14 @@ import {
 
 const JUEL_WORDS: readonly string[] = JUEL_RESERVED_WORDS;
 
-// ---------------------------------------------------------------------------
-// Seeded randomness
-// ---------------------------------------------------------------------------
-
-export class Rng {
+class Rng {
   private state: number;
   constructor(seed: number) {
-    // Seed folding is inherently bitwise.
     // eslint-disable-next-line no-bitwise
     this.state = seed >>> 0 || 1;
   }
   next(): number {
-    // mulberry32's 32-bit state mixing is inherently bitwise.
+    // mulberry32
     /* eslint-disable no-bitwise */
     let t = (this.state += 0x6d2b79f5);
     t = Math.imul(t ^ (t >>> 15), t | 1);
@@ -58,26 +47,22 @@ export class Rng {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Program model
-// ---------------------------------------------------------------------------
+type ExprType = 'boolean' | 'number' | 'string' | 'unknown';
 
-export type ExprType = 'boolean' | 'number' | 'string' | 'unknown';
-
-export type Expr =
+type Expr =
   | { t: 'leaf'; text: string; type: ExprType }
   | { t: 'bin'; op: string; l: Expr; r: Expr; type: ExprType }
   | { t: 'un'; op: string; e: Expr; type: ExprType }
   | { t: 'paren'; e: Expr; type: ExprType }
   | { t: 'tern'; c: Expr; a: Expr; b: Expr; type: ExprType };
 
-export interface Item {
+interface Item {
   key?: string;
   value: string;
   flag?: true;
 }
 
-export interface FormFieldSpec {
+interface FormFieldSpec {
   id: string;
   type: string;
   label?: string;
@@ -87,7 +72,7 @@ export interface FormFieldSpec {
   props: { name: string; value: string }[];
 }
 
-export type Member =
+type Member =
   | { m: 'io'; dir: string; name: string; value: string }
   | {
       m: 'listener';
@@ -108,7 +93,7 @@ export type Member =
     }
   | { m: 'errorMapping'; code: string; condition: Expr };
 
-export interface Repeat {
+interface Repeat {
   cardinality?: string;
   element?: string;
   collection?: string;
@@ -116,7 +101,7 @@ export interface Repeat {
   until?: Expr;
 }
 
-export type Stmt =
+type Stmt =
   | {
       k: 'start';
       name: string;
@@ -206,7 +191,7 @@ export type Stmt =
       body: Stmt[];
     };
 
-export interface CodeDecl {
+interface CodeDecl {
   kind: 'error' | 'escalation';
   name: string;
   items: Item[];
@@ -220,14 +205,8 @@ export interface Program {
   body: Stmt[];
 }
 
-// ---------------------------------------------------------------------------
-// Printer
-// ---------------------------------------------------------------------------
-
-// A ternary arm and a binary operand are one precedence level down in the
-// grammar, so a ternary nested there is parenthesized; everything else is
-// printed as built.
-export function renderExpr(e: Expr): string {
+// A ternary arm or binary operand is one grammar precedence level down.
+function renderExpr(e: Expr): string {
   const operand = (x: Expr): string =>
     x.t === 'tern' ? `(${renderExpr(x)})` : renderExpr(x);
   switch (e.t) {
@@ -263,8 +242,7 @@ function indent(lines: string[], depth: number): string[] {
 }
 
 function renderFence(script: string): string[] {
-  // A fenced script keeps its own newlines; the tag line and the closing fence
-  // are part of the token.
+  // The script already contains its tag line and closing fence.
   return script.split('\n');
 }
 
@@ -362,7 +340,6 @@ function renderBlock(body: Stmt[]): string[] {
 }
 
 function withBlock(head: string, lines: string[]): string[] {
-  // `head {` on one line, the rest indented, closing brace alone.
   return [`${head} ${lines[0]}`, ...lines.slice(1)];
 }
 
@@ -371,7 +348,7 @@ function renderMemberBlock(members: Member[]): string[] | undefined {
   return ['{', ...indent(renderMembers(members), 1), '}'];
 }
 
-export function renderStmt(s: Stmt): string[] {
+function renderStmt(s: Stmt): string[] {
   switch (s.k) {
     case 'start':
     case 'end': {
@@ -509,10 +486,6 @@ export function renderProgram(p: Program): string {
   return out.join('\n');
 }
 
-// ---------------------------------------------------------------------------
-// Generator
-// ---------------------------------------------------------------------------
-
 export const PROCESS_NAMES = [
   'order-fulfilment',
   'claim-review',
@@ -579,21 +552,14 @@ const CYCLES = ['R3/PT10M', 'R/PT1H', '0 0 9 * * ?'];
 const RETRY = ['R3/PT10M', 'R5/PT5M'];
 
 interface Scope {
-  // the container (process, subprocess, attempt, host-less handler) this block belongs to
   container: 'process' | 'subprocess' | 'attempt' | 'handler';
-  // names of statements in this container (goto targets)
-  targets: string[];
-  // names of activity statements in this container usable as handler hosts, with kind
-  hosts: { name: string; kind: string }[];
-  // statements at this container level that end a chain (for `await link` placement)
-  linkCatchesWanted: string[]; // link names emitted in this container without a catch yet
+  targets: string[]; // goto targets
+  hosts: { name: string; kind: string }[]; // handler hosts
+  linkCatchesWanted: string[]; // emitted links without a catch yet
   usedHandlers: Set<string>; // trigger|code per subscription scope
-  // nesting depth of blocks
   depth: number;
-  // whether we are inside a parallel/race branch (goto/link into it refused)
-  inBranch: boolean;
-  // whether a hosted handler body: no start allowed, statements shared with host container
-  hostedBody: boolean;
+  inBranch: boolean; // goto/link into a parallel or race branch is refused
+  hostedBody: boolean; // no start; shares the host container's statements
 }
 
 export class Generator {
@@ -654,7 +620,6 @@ export class Generator {
       hostedBody: false,
     };
     const body: Stmt[] = [];
-    // starts
     if (r.chance(0.8)) {
       body.push(this.startEvent(true));
       if (r.chance(0.25)) body.push(this.startEvent(false));
@@ -824,7 +789,6 @@ export class Generator {
         type: 'boolean',
       };
     if (c === 5) {
-      // A ternary arm is a LogicalOr in the grammar, so a nested ternary needs parens.
       return {
         t: 'tern',
         c: this.boolExpr(depth + 1),
@@ -842,7 +806,6 @@ export class Generator {
     };
   }
 
-  // A value in one of the four forms: quoted string, bare variable, template, integer.
   private valueForm(allowInt = true, allowBare = true): string {
     const r = this.rng;
     const c = r.int(0, allowInt ? 3 : 2);
@@ -1324,8 +1287,7 @@ export class Generator {
             value: '"embedded:app:forms/triage.html"',
           });
         } else {
-          // Same-looking condition as the branch above, but each `chance`
-          // call draws independently, so this is not a dead branch.
+          // Not dead: each `chance` draws independently.
           if (r.chance(0.2)) {
             items.push({ key: 'formRef', value: '"payout-approval"' });
             items.push(
@@ -1799,7 +1761,6 @@ export class Generator {
     return body.some((s) => this.terminates(s));
   }
 
-  // A run of statements whose flow stays live except possibly at the very end.
   private chain(scope: Scope, processLevel: boolean): Stmt[] {
     const r = this.rng;
     const out: Stmt[] = [];
@@ -1815,7 +1776,6 @@ export class Generator {
       out.push(this.simpleTask(scope));
       this.stmtCount++;
     }
-    // A terminal statement at the end of a chain, sometimes.
     if (
       !this.terminates(out[out.length - 1]) &&
       r.chance(scope.depth === 0 ? 0.5 : 0.2)
@@ -1826,7 +1786,7 @@ export class Generator {
         this.stmtCount++;
       }
     }
-    // A second chain after a terminal statement: a `start` at process level or an `await link` catch.
+    // Reopen flow after a terminal: a `start` at process level or an `await link`.
     if (
       this.terminates(out[out.length - 1]) &&
       !scope.inBranch &&
@@ -1922,7 +1882,6 @@ export class Generator {
     }
   }
 
-  // Trailing handlers of a container, hosted and host-less.
   private handlers(scope: Scope, body: Stmt[]): Stmt[] {
     const r = this.rng;
     const out: Stmt[] = [];
@@ -2045,8 +2004,7 @@ export class Generator {
     return out;
   }
 
-  // Every `emit link` of the container gets its catch: close the flow, then
-  // one `await link` per pending name followed by a step.
+  // Every `emit link` needs an `await link` catch in the same container.
   private flushLinks(scope: Scope, body: Stmt[]): void {
     if (scope.linkCatchesWanted.length === 0) return;
     if (!this.terminates(body[body.length - 1])) {
@@ -2074,7 +2032,7 @@ export class Generator {
   }
 }
 
-export function childBlocks(s: Stmt): Stmt[][] {
+function childBlocks(s: Stmt): Stmt[][] {
   switch (s.k) {
     case 'sub':
     case 'while':
@@ -2099,17 +2057,12 @@ export function generateProgram(seed: number): Program {
   return new Generator(seed).generate();
 }
 
-// ---------------------------------------------------------------------------
-// Reducer: delta debugging over the program model
-// ---------------------------------------------------------------------------
-
 export type Keep = (candidate: Program) => Promise<boolean>;
 
 function clone<T>(x: T): T {
   return JSON.parse(JSON.stringify(x)) as T;
 }
 
-// Every statement list in the program, addressed so a candidate can drop one entry.
 function statementLists(p: Program): Stmt[][] {
   const lists: Stmt[][] = [p.body];
   const walk = (body: Stmt[]): void => {
@@ -2122,6 +2075,10 @@ function statementLists(p: Program): Stmt[][] {
   };
   walk(p.body);
   return lists;
+}
+
+export function countStatements(p: Program): number {
+  return statementLists(p).reduce((n, list) => n + list.length, 0);
 }
 
 async function dropStatements(p: Program, keep: Keep): Promise<Program> {
@@ -2144,7 +2101,7 @@ async function dropStatements(p: Program, keep: Keep): Promise<Program> {
       if (changed) break;
     }
   }
-  // Replace a compound statement by its body (unwrap), one at a time.
+  // Unwrap compound statements into their bodies.
   changed = true;
   while (changed) {
     changed = false;
@@ -2172,7 +2129,6 @@ async function dropStatements(p: Program, keep: Keep): Promise<Program> {
   return p;
 }
 
-// Every array of droppable settings/members in the program.
 function droppableArrays(p: Program): unknown[][] {
   const arrays: unknown[][] = [p.header, p.vars, p.codes];
   const walk = (body: Stmt[]): void => {
@@ -2218,7 +2174,6 @@ async function dropEntries(p: Program, keep: Keep): Promise<Program> {
       if (changed) break;
     }
   }
-  // Optional scalar fields: repeat clauses, else blocks, names, triggers, scripts, labels.
   const optionalFields: [string, string][] = [
     ['task', 'repeat'],
     ['call', 'repeat'],
@@ -2270,7 +2225,6 @@ function allNodes(p: Program): unknown[] {
   return nodes;
 }
 
-// Every expression slot, as a getter/setter pair over a cloned program.
 function exprSlots(p: Program): { get: () => Expr; set: (e: Expr) => void }[] {
   const slots: { get: () => Expr; set: (e: Expr) => void }[] = [];
   const walk = (body: Stmt[]): void => {
@@ -2332,7 +2286,6 @@ function simplerForms(e: Expr): Expr[] {
   return out;
 }
 
-// Children of an expression, for a depth-first replacement walk.
 function exprChildren(e: Expr): { get: () => Expr; set: (x: Expr) => void }[] {
   switch (e.t) {
     case 'bin':
@@ -2360,7 +2313,6 @@ async function simplifyExpressions(p: Program, keep: Keep): Promise<Program> {
     changed = false;
     const slotCount = exprSlots(p).length;
     for (let si = 0; si < slotCount && !changed; si++) {
-      // Try every node in the slot's tree, root first.
       const paths: number[][] = [];
       const collect = (e: Expr, path: number[]): void => {
         paths.push(path);
@@ -2396,7 +2348,7 @@ export async function minimize(p: Program, keep: Keep): Promise<Program> {
   p = await dropStatements(p, keep);
   p = await dropEntries(p, keep);
   p = await simplifyExpressions(p, keep);
-  // A second statement pass: entries dropped above may have freed statements.
+  // Dropped entries can free more statements.
   p = await dropStatements(p, keep);
   return p;
 }

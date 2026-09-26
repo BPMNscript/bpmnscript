@@ -1,8 +1,7 @@
-// The zero-warning import roundTripFixture registers is the load-bearing
-// assertion here: a parameter the importer cannot represent surfaces as an
-// extensionAttribute warning, not as a difference in the IR.
+// A parameter the importer cannot represent surfaces as an import warning,
+// not as an IR difference, so the fixture's zero-warning import is the check.
 
-import { describe, it, expect } from 'vitest';
+import { it, expect } from 'vitest';
 
 import type {
   FlowContainer,
@@ -10,7 +9,6 @@ import type {
   IoValue,
 } from '@bpmn-script/transform';
 
-import { describeDiContainment } from './helpers/di-bounds.js';
 import { allElements, theOnly } from './helpers/ir-query.js';
 import { roundTripFixture } from './helpers/round-trip-fixture.js';
 
@@ -37,8 +35,6 @@ function carriesParameters(el: FlowElement): el is ParameterCarrier {
   return (PARAMETER_CARRIERS as readonly string[]).includes(el.kind);
 }
 
-// Structural, not the DSL spelling: an expectation written in the printer's own
-// output would move whenever the printer does.
 function renderValue(value: IoValue): string {
   switch (value.kind) {
     case 'text':
@@ -57,9 +53,7 @@ function renderValue(value: IoValue): string {
   }
 }
 
-// Keyed by carrier id, so the comparison is blind to the order flow elements
-// come back in but strict about the order inside one carrier, which is what the
-// engine evaluates.
+// Blind to element order, strict about parameter order within a carrier.
 function parameterSignatures(
   container: FlowContainer,
 ): Record<string, string[]> {
@@ -103,87 +97,59 @@ const EXPECTED_PARAMETERS: Record<string, string[]> = {
   ],
 };
 
-describe("idempotence: DSL -> IR1 -> XML -> IR2 -> DSL' -> IR3", () => {
-  it('every parameter keeps its direction, name, and value shape, in order, at every hop', () => {
-    for (const [label, ir] of rt.hops) {
-      expect(parameterSignatures(ir), `parameters differ in ${label}`).toEqual(
-        EXPECTED_PARAMETERS,
-      );
-    }
-  });
-
-  it('every map key prints quoted, keyword-shaped or not', () => {
-    const literals = rt.dslPrime
-      .split('\n')
-      .map((line) => line.trim())
-      .filter((line) => /^(input|output) \w+ = [[{]/.test(line));
-    expect(literals).toEqual([
-      'input auditChecks = [{ "field": "receipts", "rule": "present" }, { "field": "mileage", "rule": "within-policy" }]',
-      'output payoutReceipt = { "start": "${payoutStart}", "lines": ["principal", "vat"] }',
-    ]);
-  });
-});
-
-describe('the call activity keeps its variable mappings and its parameters apart', () => {
-  it('both mechanisms survive on the same node at every hop, neither absorbing the other', () => {
-    for (const [label, ir] of rt.hops) {
-      const call = theOnly(ir, 'callActivity', (c) => c.id === 'PayOut');
-
-      expect(call.inMappings, `in mappings differ in ${label}`).toEqual([
-        { kind: 'variable', source: 'claimTotal', target: 'claimTotal' },
-      ]);
-      expect(call.outMappings, `out mappings differ in ${label}`).toEqual([
+it('keeps every parameter in order at every hop, the call activity its mappings beside them, and prints every map key quoted', () => {
+  for (const [label, ir] of rt.hops) {
+    expect(parameterSignatures(ir), label).toEqual(EXPECTED_PARAMETERS);
+    const call = theOnly(ir, 'callActivity', (c) => c.id === 'PayOut');
+    expect([call.inMappings, call.outMappings], label).toEqual([
+      [{ kind: 'variable', source: 'claimTotal', target: 'claimTotal' }],
+      [
         {
           kind: 'variable',
           source: 'paymentReference',
           target: 'paymentReference',
         },
-      ]);
-      expect(
-        call.inputParameters?.map((p) => p.name),
-        `input parameters differ in ${label}`,
-      ).toEqual(['payoutChannel']);
-      expect(
-        call.outputParameters?.map((p) => p.name),
-        `output parameters differ in ${label}`,
-      ).toEqual(['payoutReceipt']);
-    }
-  });
-
-  // Variable mappings sit beside the inputOutput block, not inside it. Nested
-  // in it they would still be present but would stop being read as mappings.
-  it('the frozen call activity serializes both, as siblings under extensionElements', () => {
-    expect(
-      /<bpmn:callActivity\b[\s\S]*?<\/bpmn:callActivity>/.exec(
-        rt.frozenXml,
-      )?.[0],
-    ).toBe(
-      [
-        '<bpmn:callActivity id="PayOut" name="Pay the reimbursement" calledElement="payment-run">',
-        '      <bpmn:extensionElements>',
-        '        <operaton:inputOutput>',
-        '          <operaton:inputParameter name="payoutChannel">sepa</operaton:inputParameter>',
-        '          <operaton:outputParameter name="payoutReceipt">',
-        '            <operaton:map>',
-        '              <operaton:entry key="start">${payoutStart}</operaton:entry>',
-        '              <operaton:entry key="lines">',
-        '                <operaton:list>',
-        '                  <operaton:value>principal</operaton:value>',
-        '                  <operaton:value>vat</operaton:value>',
-        '                </operaton:list>',
-        '              </operaton:entry>',
-        '            </operaton:map>',
-        '          </operaton:outputParameter>',
-        '        </operaton:inputOutput>',
-        '        <operaton:in source="claimTotal" target="claimTotal" />',
-        '        <operaton:out source="paymentReference" target="paymentReference" />',
-        '      </bpmn:extensionElements>',
-        '      <bpmn:incoming>Flow_AuditClaim_PayOut</bpmn:incoming>',
-        '      <bpmn:outgoing>Flow_PayOut_ClaimSettled</bpmn:outgoing>',
-        '    </bpmn:callActivity>',
-      ].join('\n'),
-    );
-  });
+      ],
+    ]);
+  }
+  const literals = rt.dslPrime
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => /^(input|output) \w+ = [[{]/.test(line));
+  expect(literals).toEqual([
+    'input auditChecks = [{ "field": "receipts", "rule": "present" }, { "field": "mileage", "rule": "within-policy" }]',
+    'output payoutReceipt = { "start": "${payoutStart}", "lines": ["principal", "vat"] }',
+  ]);
 });
 
-describeDiContainment(rt);
+// Nested inside inputOutput, the mappings would stop being read as mappings.
+it('writes the call activity mappings as siblings of its inputOutput block', () => {
+  expect(
+    /<bpmn:callActivity\b[\s\S]*?<\/bpmn:callActivity>/.exec(rt.frozenXml)?.[0],
+  ).toBe(
+    [
+      '<bpmn:callActivity id="PayOut" name="Pay the reimbursement" calledElement="payment-run">',
+      '      <bpmn:extensionElements>',
+      '        <operaton:inputOutput>',
+      '          <operaton:inputParameter name="payoutChannel">sepa</operaton:inputParameter>',
+      '          <operaton:outputParameter name="payoutReceipt">',
+      '            <operaton:map>',
+      '              <operaton:entry key="start">${payoutStart}</operaton:entry>',
+      '              <operaton:entry key="lines">',
+      '                <operaton:list>',
+      '                  <operaton:value>principal</operaton:value>',
+      '                  <operaton:value>vat</operaton:value>',
+      '                </operaton:list>',
+      '              </operaton:entry>',
+      '            </operaton:map>',
+      '          </operaton:outputParameter>',
+      '        </operaton:inputOutput>',
+      '        <operaton:in source="claimTotal" target="claimTotal" />',
+      '        <operaton:out source="paymentReference" target="paymentReference" />',
+      '      </bpmn:extensionElements>',
+      '      <bpmn:incoming>Flow_AuditClaim_PayOut</bpmn:incoming>',
+      '      <bpmn:outgoing>Flow_PayOut_ClaimSettled</bpmn:outgoing>',
+      '    </bpmn:callActivity>',
+    ].join('\n'),
+  );
+});

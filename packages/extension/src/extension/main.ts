@@ -47,7 +47,7 @@ export async function activate(
     vscode.window.onDidChangeActiveTextEditor(() => void provider.refresh()),
   );
 
-  // Safe before resolveWebviewView: refresh() no-ops until the view exists.
+  // refresh() no-ops until the view exists.
   void provider.refresh();
 
   client = await startLanguageClient(context);

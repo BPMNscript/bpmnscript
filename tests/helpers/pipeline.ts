@@ -3,6 +3,7 @@ import { EmptyFileSystem } from 'langium';
 import { parseHelper, validationHelper } from 'langium/test';
 import { createBpmnScriptServices } from '@bpmn-script/language';
 import type { Model } from '@bpmn-script/language';
+import { Diagnostic, DiagnosticSeverity } from 'vscode-languageserver-types';
 
 import {
   astToIr,
@@ -18,14 +19,18 @@ const services = createBpmnScriptServices(EmptyFileSystem);
 export const parse = parseHelper<Model>(services.BpmnScript);
 export const validate = validationHelper<Model>(services.BpmnScript);
 
-// For suites that assert printed source; the warnings channel is covered where
-// it lives.
+export async function validationErrors(source: string): Promise<string[]> {
+  const { diagnostics } = await validate(source);
+  return diagnostics
+    .filter((d) => d.severity === DiagnosticSeverity.Error)
+    .map((d) => Diagnostic.getMessageString(d));
+}
+
 export function printDsl(ir: BpmnProcess): string {
   return irToDsl(ir).source;
 }
 
-// Throws rather than returning: a round-tripped source that will not re-parse
-// is itself a round-trip failure and must abort the test.
+// Throws: DSL that will not re-parse is itself a round-trip failure.
 export async function parseToAst(source: string): Promise<Model> {
   const document = await parse(source);
   const errors = document.parseResult.parserErrors;
@@ -62,9 +67,7 @@ export interface RoundTripRun {
   hops: IrHops;
 }
 
-// The cli's build.ts and the extension's conversion-core.ts run the same
-// astToIr -> irToXml chain, each with its own failure reporting; here a
-// failure throws. Like both, a layout failure keeps the diagram-less XML,
+// Like the cli and the extension, a layout failure keeps the diagram-less XML,
 // since the model it carries is complete.
 export async function roundTrip(source: string): Promise<RoundTripRun> {
   const ir1 = astToIr(await parseToAst(source));
@@ -96,8 +99,7 @@ export function roundTripOf(source: string): RoundTripRun {
 }
 
 // The second pass starts from the first's printed DSL, catching a value that
-// is stable on the first print but drifts on the second, which one hop each
-// direction cannot see.
+// drifts only on the second print.
 export interface RoundTripTwice {
   xml1: string;
   dsl1: string;

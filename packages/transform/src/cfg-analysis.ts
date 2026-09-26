@@ -1,36 +1,21 @@
 /**
- * Dominators, post-dominators, and back-edges over a {@link FlowContainer}'s
- * `flowElements` and `sequenceFlows`. Pure graph machinery with no DSL
- * knowledge, so it runs the same on a whole process or one sub-process body;
- * `irToDsl`'s pattern catalog consumes it to recognize structured regions.
- *
- * ADR 0009, Use Dominator/Post-Dominator Analysis for IR-to-DSL Restructuring,
- * names the query set.
+ * Dominators, post-dominators and back-edges over one {@link FlowContainer},
+ * with no DSL knowledge (ADR 0009).
  */
-
 import { isGateway } from './ir/types.js';
 import type { FlowContainer, SequenceFlow } from './ir/types.js';
 
-/** Synthetic single source: dominator analysis needs one root. */
 export const VIRTUAL_ENTRY = '__cfg_entry__';
 
-/** Synthetic single sink: post-dominator analysis needs one. */
 export const VIRTUAL_EXIT = '__cfg_exit__';
 
-/**
- * Every method is total: a defined answer for any string, including unknown
- * ids, unreachable nodes, and the two sentinels. `dominates` and
- * `postDominates` are reflexive.
- */
+/** Total over any string, including unknown ids and the sentinels. */
 export interface CfgAnalysis {
-  /** `undefined` at the virtual entry, and for an unreachable or unknown node. */
   immediateDominator(node: string): string | undefined;
 
   /**
-   * `undefined` at the virtual exit, and for a node in a fragment the
-   * virtual entry never reaches: `loopEntries` walks only what
-   * `VIRTUAL_ENTRY` reaches, so no latch is recorded for such a fragment and
-   * `withLoopExits` has no head there to wire to the exit.
+   * `undefined` also for a fragment `VIRTUAL_ENTRY` never reaches: no latch is
+   * recorded there, so no head is wired to the exit.
    */
   immediatePostDominator(node: string): string | undefined;
 
@@ -39,42 +24,30 @@ export interface CfgAnalysis {
   postDominates(a: string, b: string): boolean;
 
   /**
-   * Dominance read from the process starts alone, the edges a handler or link
-   * catch re-enters pruned first (see `withoutReentries`). A re-entry into a
-   * loop body must not unmake the loop's own nesting, which plain `dominates`
-   * would: it counts the virtual re-entry root as a second path in, so a
-   * nested loop's test gateway stops dominating the outer one's.
+   * Dominance from the starts alone (see `withoutReentries`): a handler or link
+   * catch re-entering a loop body must not unnest the loop.
    */
   loopDominates(a: string, b: string): boolean;
 
-  /** The immediate dominator under {@link loopDominates}. */
   loopImmediateDominator(node: string): string | undefined;
 
-  /** Original {@link SequenceFlow} objects, in input order. */
   backEdges(): SequenceFlow[];
 
   /**
-   * The heads of the loops holding `to` past their head, for a `from` outside
-   * them: getting from `from` to `to` takes a jump into the loop body, as a
-   * `goto` does. Outermost first, and empty for any other pair.
+   * Heads of the loops `to` sits past, when `from` is outside them (reaching
+   * `to` needs a `goto`). Outermost first.
    */
   headsEnteredPast(from: string, to: string): string[];
 
   /**
-   * Whether a back edge into `node` (see {@link backEdges}) only closes a
-   * cycle of jumps: an enclosing loop's own exit route, not a nested loop's
-   * test. A caller reading such a back edge as a `while`'s or `do`'s own test
-   * would print a loop where the source has a `goto`.
+   * Whether the back edges into `node` only close a cycle of jumps, so they
+   * must print as `goto`, not a loop test.
    */
   isJumpCycleHead(node: string): boolean;
 
   /**
-   * The gateway whose own test closes the cycle at `node` (see
-   * {@link backEdges}): `node` itself for a `while`, or the distinct gateway
-   * a `do`'s test returns from. `undefined` where `node` heads no tested
-   * cycle. A second back edge into the same head, a `goto` closing there
-   * too, is never this gateway, however conditioned it prints, and however
-   * many of `node`'s back edges a caller has already consumed.
+   * The gateway whose test closes the loop at `node`: `node` for a `while`, the
+   * returning gateway for a `do`. Never a second back edge (a `goto`) into it.
    */
   ownLoopTest(node: string): string | undefined;
 
@@ -88,10 +61,8 @@ export function analyzeCfg(container: FlowContainer): CfgAnalysis {
 
   const idom = computeIdom(graph.succ, graph.pred, VIRTUAL_ENTRY);
 
-  // A back-edge closes a cycle at its head (see `loopEntries`), read from the
-  // starts alone (see `withoutReentries`). Where the loop is reducible that is
-  // exactly u -> v with v dominating u. Filtering the raw flow list keeps
-  // every parallel edge and excludes the sentinel edges.
+  // Back edges come from the starts-only graph (see `withoutReentries`).
+  // Filtering the raw flow list keeps parallel edges and drops sentinel edges.
   const forward = withoutReentries(graph);
   const loopIdom = computeIdom(forward.succ, forward.pred, VIRTUAL_ENTRY);
   const loopDominates = makeDominanceQuery(loopIdom, VIRTUAL_ENTRY);
@@ -103,11 +74,8 @@ export function analyzeCfg(container: FlowContainer): CfgAnalysis {
     latches.get(f.targetRef)?.has(f.sourceRef),
   );
 
-  // Post-dominators are the dominators of the reversed graph, rooted at a
-  // virtual exit (see {@link withLoopExits}). Every latch head is wired
-  // there, whether or not its own test survives `loopTestRank`'s
-  // nested-test filtering: a jump routed back through another test on the
-  // cycle can leave a real loop's test unranked.
+  // Every latch head is wired to the exit, even one whose test `loopTestRank`
+  // left unranked (a jump routed through another test on the cycle does that).
   const exitGraph = withLoopExits(graph, [...latches.keys()]);
   const ipdom = computeIdom(exitGraph.pred, exitGraph.succ, VIRTUAL_EXIT);
 
@@ -151,10 +119,8 @@ export function analyzeCfg(container: FlowContainer): CfgAnalysis {
 }
 
 interface Graph {
-  /** Insertion-ordered and de-duplicated; dominance is set-based. */
   succ: Map<string, string[]>;
   pred: Map<string, string[]>;
-  /** The boundary events and link catches wired to the virtual entry. */
   reentries: Set<string>;
 }
 
@@ -187,13 +153,9 @@ function buildGraph(container: FlowContainer): Graph {
     addEdge(f.sourceRef, f.targetRef);
   }
 
-  // A boundary event and a link catch are each an entry beside the start: a
-  // boundary's token appears when its trigger fires, a link catch's when the
-  // engine reroutes a throw of its name, never along a drawn flow. A caller
-  // that draws the throw -> catch hop as a flow has placed the catch, so it
-  // is no entry then. Any other node without a predecessor stays unwired: it
-  // really is unreachable. A link throw has no successor and drains to
-  // VIRTUAL_EXIT below.
+  // Boundary events and unfed link catches are entries beside the start: their
+  // token comes from a trigger or a link throw, never a drawn flow. Other nodes
+  // without a predecessor stay unwired, being unreachable.
   const hasAnyStart = container.flowElements.some(
     (e) => e.kind === 'startEvent',
   );
@@ -216,8 +178,7 @@ function buildGraph(container: FlowContainer): Graph {
     }
   }
 
-  // Every node with no real successor drains to the exit too, otherwise it
-  // is a second sink the post-dominator analysis cannot see.
+  // Every sink drains to the one exit post-dominance needs.
   for (const el of container.flowElements) {
     const hasRealSucc = succ.get(el.id)!.length > 0;
     if (el.kind === 'endEvent' || !hasRealSucc) addEdge(el.id, VIRTUAL_EXIT);
@@ -227,24 +188,16 @@ function buildGraph(container: FlowContainer): Graph {
 }
 
 /**
- * `graph` without the edges by which a re-entry's chain joins the flow the
- * starts reach, for finding loops: a handler or link catch jumping into a loop
- * body prints as a `goto` and must not unmake the loop. A node only a re-entry
- * reaches keeps its dominators from that re-entry. The other queries keep the
- * re-entries' edges, since a split whose merge a handler also enters has no
- * block to print.
+ * `graph` without the edges joining a re-entry's chain to what the starts
+ * reach, for loop finding only: other queries need them, since a split whose
+ * merge a handler also enters has no printable block.
  */
 function withoutReentries(graph: Graph): Graph {
-  const reached = new Set<string>([VIRTUAL_ENTRY]);
-  const pending = graph.succ
-    .get(VIRTUAL_ENTRY)!
-    .filter((n) => !graph.reentries.has(n));
-  while (pending.length > 0) {
-    const n = pending.pop()!;
-    if (reached.has(n)) continue;
-    reached.add(n);
-    pending.push(...graph.succ.get(n)!);
-  }
+  const reached = closure([VIRTUAL_ENTRY], (n) =>
+    n === VIRTUAL_ENTRY
+      ? graph.succ.get(n)!.filter((m) => !graph.reentries.has(m))
+      : graph.succ.get(n)!,
+  );
   const joinsStartFlow = (from: string, to: string) =>
     !reached.has(from) && reached.has(to) && to !== VIRTUAL_EXIT;
   const prune = (edges: Map<string, string[]>, forward: boolean) =>
@@ -264,16 +217,9 @@ function withoutReentries(graph: Graph): Graph {
 }
 
 /**
- * `graph` with an edge to `VIRTUAL_EXIT` from every cycle's head that has no
- * route there already: the head is where the loop leaves, a `while`'s
- * gateway or a `do`'s first step (or, a cycle of jumps alone, the statement
- * a flow into it lands on), so wiring it stands in for the route the loop
- * would take out were one printable. That only equals the head's actual
- * exit route when it leaves straight from there; the actual exit route can
- * instead loop back through another node into the cycle first. `heads`
- * lists outer cycles before the ones nested in them (see
- * `loopEntries`), so a head already reached through an enclosing one's new
- * edge, the two sharing one cycle a jump joins, needs none of its own.
+ * Wires each cycle head with no route to the exit to it, standing in for the
+ * loop's exit route. `heads` is outermost first, so a head reached through an
+ * enclosing head's new edge needs none of its own.
  */
 function withLoopExits(graph: Graph, heads: readonly string[]): Graph {
   const succ = new Map([...graph.succ].map(([n, ns]) => [n, [...ns]]));
@@ -286,27 +232,34 @@ function withLoopExits(graph: Graph, heads: readonly string[]): Graph {
   return { succ, pred, reentries: graph.reentries };
 }
 
-/** Every node with a route to `VIRTUAL_EXIT`, walked backward from it. */
 function reachesExit(pred: Map<string, string[]>): Set<string> {
-  const seen = new Set([VIRTUAL_EXIT]);
-  const stack = [VIRTUAL_EXIT];
-  while (stack.length > 0) {
-    const n = stack.pop()!;
-    for (const p of pred.get(n) ?? []) {
-      if (!seen.has(p)) {
-        seen.add(p);
-        stack.push(p);
-      }
-    }
+  return closure([VIRTUAL_EXIT], (n) => pred.get(n) ?? []);
+}
+
+/**
+ * Breadth-first reach from `seeds`. Reaching `stop` ends the walk early, so
+ * the result is complete only without it.
+ */
+export function closure(
+  seeds: readonly string[],
+  next: (n: string) => readonly string[],
+  stop?: string,
+): Set<string> {
+  const seen = new Set<string>();
+  const queue = [...seeds];
+  for (let i = 0; i < queue.length; i++) {
+    const n = queue[i]!;
+    if (seen.has(n)) continue;
+    seen.add(n);
+    if (n === stop) break;
+    queue.push(...next(n));
   }
   return seen;
 }
 
 /**
  * Cooper/Harvey/Kennedy iterative dominators, which tolerate the irreducible
- * graphs `goto` produces. Swap `succ`/`pred` and root at the exit for
- * post-dominators. Unreachable nodes are absent from the result, which
- * callers read as "no immediate dominator".
+ * graphs `goto` produces. Unreachable nodes are absent from the result.
  */
 function computeIdom(
   succ: Map<string, string[]>,
@@ -317,8 +270,7 @@ function computeIdom(
   const order = new Map<string, number>();
   rpo.forEach((id, i) => order.set(id, i));
 
-  // `undefined` means "not yet computed". Only the root is seeded, as its own
-  // dominator for the duration; the final value is set below.
+  // The root is its own dominator only while iterating.
   const idom = new Map<string, string | undefined>();
   idom.set(root, root);
 
@@ -372,7 +324,6 @@ function intersect(
   return finger1;
 }
 
-/** Iterative DFS, so a deep graph cannot overflow the stack. */
 function reversePostorder(root: string, succ: Map<string, string[]>): string[] {
   const postorder: string[] = [];
   const visited = new Set<string>();
@@ -403,30 +354,16 @@ function reversePostorder(root: string, succ: Map<string, string[]>): string[] {
 interface EnteredLoop {
   head: string;
   cycle: Set<string>;
-  /**
-   * The nodes of `cycle` other than its head and the gateways it is entered
-   * at; reaching one from outside without passing the head takes a jump.
-   */
+  /** Cycle nodes other than the head and the gateways it is entered at. */
   past: Set<string>;
 }
 
 /**
- * The cycles the starts reach: `latches`, keyed by head, are the flows closing
- * a cycle there, the back-edges, and `entered` holds each tested cycle with
- * the nodes past its head. A cycle is a strongly connected set of nodes; its
- * loops nested inside are the cycles left once its head is taken out, so an
- * outer cycle comes first.
- *
- * A reducible loop is entered only at its head. A `goto` into a loop body
- * adds a second entry, and neither entry dominates the other, so the head is
- * the entry the cycle's own test touches (see {@link loopTestRank}): its
- * gateway, a `while`, ahead of the node it returns to, a `do`. Model order,
- * arbitrary in a model another tool wrote, only breaks a tie. A cycle whose
- * own test touches none of its entries is made of jumps alone, so nothing in
- * it is past a head; nor is a gateway the cycle is entered at, since a jump
- * lands on a statement and a flow into a merge is the block around the cycle.
- * Once the compiler has read a print back, the printed loop keeps its head
- * ahead of its body, so every later print closes the same cycle.
+ * Finds cycles outermost first: each strongly connected set's head is removed
+ * and the rest searched again for nested cycles.
+ * A `goto` into a loop body makes a second entry, so the head is the entry the
+ * cycle's own test touches (see {@link loopTestRank}), model order only breaking
+ * ties. A cycle whose own test touches no entry is made of jumps alone.
  */
 function loopEntries(
   graph: Graph,
@@ -447,7 +384,6 @@ function loopEntries(
   const latches = new Map<string, Set<string>>();
   const entered: EnteredLoop[] = [];
   const jumpCycleHeads = new Set<string>();
-  // Backs `ownLoopTest` (see the interface doc), filled as each head is found.
   const testGateways = new Map<string, string>();
   const pending = [new Set(reversePostorder(VIRTUAL_ENTRY, graph.succ))];
   while (pending.length > 0) {
@@ -456,10 +392,8 @@ function loopEntries(
       const inside = new Set(scc);
       const outside = (n: string) =>
         graph.pred.get(n)!.filter((p) => !inside.has(p));
-      // An unconditioned flow in from outside `inside`: the fall-in a loop
-      // after a statement has. Only a hint of the cycle's real way in, not
-      // proof: a loop opening an `if` branch is entered by that branch's
-      // conditioned route, and `user Z; goto B` enters B unconditioned.
+      // An unconditioned flow in from outside: a hint of the cycle's way in, not
+      // proof (`user Z; goto B` enters B unconditioned too).
       const hasNaturalEntry = (n: string) =>
         outside(n).some((p) =>
           container.sequenceFlows.some(
@@ -469,13 +403,9 @@ function loopEntries(
               f.conditionExpression === undefined,
           ),
         );
-      // A node already latched to an enclosing head stays in `inside` here
-      // (only the head is removed below), so its own exit route can pull an
-      // otherwise acyclic tail back into a pseudo-cycle, the way a `goto`
-      // after the enclosing loop does. Only a reused node with no test of
-      // its own inside this cycle counts as such a waypoint: a while nested
-      // in a while reuses the same node as both the inner test's gateway and
-      // the outer's back-edge source, which does have its own test.
+      // A node latched to an enclosing head stays in `inside`, so its exit route
+      // can form a pseudo-cycle of jumps. Such a waypoint has no test of its own
+      // here; a while nested in a while reuses its node but does have one.
       const testSources = new Set(
         conditioned
           .filter((f) => inside.has(f.sourceRef) && inside.has(f.targetRef))
@@ -511,37 +441,17 @@ function loopEntries(
       if (jumpsOnly) {
         jumpCycleHeads.add(head);
       } else {
-        // Whether `head` is genuinely tested does not read `rank`: a guard
-        // several passes out, its own body swept broad or thin by the same
-        // subtraction `loopTestRank` already works around, can still outrank
-        // the real test there the way it outranks one closer by. A `while`
-        // head is tested by its own outgoing conditioned flow; a `do` head's
-        // conditioned back edges are its own test candidates, minus a
-        // multi-way branch (an `else if` chain, several conditioned routes
-        // off the one gateway): a loop's own test always has exactly one, so
-        // more marks a `goto` sharing the head, however conditioned it
-        // prints. Several genuine candidates left (loops nested at one body
-        // entry, as a `while` immediately inside another `while`'s own back
-        // edge) stay untold apart here: `tryDoWhileEntry`'s own dominance
-        // reads the outermost first and the body walk re-enters `node` for
-        // the next one in, so leaving more than one candidate defers to it.
-        // Whether a candidate is multi-way is asked of the whole container,
-        // not `inside`: an earlier pass has already taken its other target
-        // out of `inside` once that target's own head is found, which would
-        // otherwise make a later pass mistake the same branch gateway for a
-        // plain binary test.
+        // A `do` test is a conditioned back edge from a gateway with exactly one
+        // conditioned flow in the whole container (more is a multi-way branch
+        // sharing the head). `rank` is not read: an outer guard can outrank it.
         const ownTests = [...backSources].filter(
           (s) =>
             conditioned.some(
               (f) => f.sourceRef === s && f.targetRef === head,
             ) && conditioned.filter((f) => f.sourceRef === s).length === 1,
         );
-        // An unconditioned back edge from the body's tail, paired with the
-        // head's own conditioned exit, makes it a `while` head; only
-        // conditioned back edges make it a `do` head instead, whatever else
-        // the gateway also tests on its way out. Neither makes it no loop
-        // head at all here, only a cycle of jumps a later pass may still
-        // recognize by its statement.
+        // A `while` head has an unconditioned back edge and one conditioned exit;
+        // otherwise it may still be a jump cycle recognized later.
         const isWhileHead =
           gateways.has(head) &&
           conditioned.filter((f) => f.sourceRef === head).length === 1 &&
@@ -558,11 +468,8 @@ function loopEntries(
           : ownTests.length === 1
             ? ownTests[0]
             : undefined;
-        // Whether this cycle is tested at all still reads `rank`, not
-        // `owner`: several genuine candidates (see `ownTests` above) still
-        // close a real loop at `head`, just not one `ownLoopTest` can name
-        // yet, and gating `entered` on `owner` too would drop the cycle from
-        // `headsEnteredPast` the moment a second candidate appears.
+        // Gated on `rank`, not `owner`: several `do` candidates still close a real
+        // loop, which `headsEnteredPast` must keep.
         if (rank(head) < UNTESTED) {
           const past = new Set(scc);
           past.delete(head);
@@ -583,35 +490,23 @@ function loopEntries(
 const UNTESTED = 2;
 
 /**
- * Ranks a node by the cycle's own tests: 0 for a test's gateway (a `while`
- * head), 1 for the node a test returns to (a `do` head), `UNTESTED` otherwise.
- * A test is a conditioned flow `g -> t` inside the cycle, and its body is what
- * `t` reaches without passing `g`, less what `g`'s other routes reach too: an
- * `if` in a loop body closes at its merge, so its body is its branch alone.
- * A test is natural when its gateway or target has an unconditioned entry
- * from beyond the cycle (see `hasNaturalEntry`).
- * A test is the cycle's own unless its gateway sits in another test's body
- * that it does not hold in turn, which is where a nested loop's test sits, or
- * its loop closes without passing the other test's gateway while the other's
- * does not close without passing its: a jump from after the outer loop back
- * into the inner body puts that body on the outer test's exit route, so the
- * subtraction takes it out of the outer test's body, which the first rule
- * alone misses. The second never disqualifies a natural test, so a
- * conditional nested inside it must not outrank the loop's own test.
- * The first rule turns round, and the outer test loses, where only the
- * inner one is natural and the outer returns into the inner's loop: a
- * conditioned `goto` after the loop back into its body spans the whole
- * cycle, so read as a test it would enclose the loop's own. A real outer
- * loop's test returns ahead of the inner loop, which keeps an
- * unconditioned `goto` into a loop opening an `if` branch from turning it
- * round.
- * A test into a node entered from outside only by a jump is no test of this
- * cycle when its gateway's other routes come back to it past that node,
- * through an entry the flow before the cycle falls into: the cycle closes
- * there without the test, which is an `if` jumping into a loop of plain
- * flow, recognized again in the nested pass once the join is removed. Its
- * target ranks below every other entry, so model order cannot make it the
- * head.
+ * Ranks a node by the cycle's own tests: 0 for a test's gateway (`while`
+ * head), 1 for its target (`do` head), `UNTESTED` otherwise.
+ * A test is a conditioned flow `g -> t` inside the cycle; its body is what `t`
+ * reaches without passing `g`, less what `g`'s other routes reach.
+ * A test is natural when `g` or `t` has an unconditioned entry from outside.
+ * A test is not the cycle's own when:
+ * - its gateway sits in another test's body that it does not hold in turn
+ *   (a nested loop's test), unless only it is natural and the other returns
+ *   into its loop, where the other loses instead: that one is a conditioned
+ *   `goto` spanning the cycle, since a real outer test returns ahead of the
+ *   inner loop;
+ * - it is not natural, and its loop closes avoiding the other test's gateway
+ *   while the other's does not (a jump from after an outer loop into the
+ *   inner body);
+ * - it jumps into a node entered from outside only by a jump, and its
+ *   gateway's other routes return to it through a natural entry (an `if`
+ *   jumping into a plain-flow loop). Its target ranks below every entry.
  */
 function loopTestRank(
   inside: Set<string>,
@@ -620,17 +515,11 @@ function loopTestRank(
   hasNaturalEntry: (n: string) => boolean,
   entered: (n: string) => boolean,
 ): (n: string) => number {
-  const reach = (from: string, avoid: string) => {
-    const seen = new Set<string>();
-    const stack = [from];
-    while (stack.length > 0) {
-      const n = stack.pop()!;
-      if (n === avoid || !inside.has(n) || seen.has(n)) continue;
-      seen.add(n);
-      stack.push(...succ.get(n)!);
-    }
-    return seen;
-  };
+  const within = (n: string, avoid: string) => n !== avoid && inside.has(n);
+  const reach = (from: string, avoid: string) =>
+    closure(within(from, avoid) ? [from] : [], (n) =>
+      succ.get(n)!.filter((m) => within(m, avoid)),
+    );
   const tests = conditioned.filter(
     (f) => inside.has(f.sourceRef) && inside.has(f.targetRef),
   );
@@ -645,12 +534,8 @@ function loopTestRank(
       return [f, own];
     }),
   );
-  // `closesAvoiding` and `turnsRound` below each ask "is x reachable from a
-  // test's own target, avoiding some node", the same root over and over
-  // across the O(T^2) own/turnsRound checks that follow. Removing a node d
-  // from a graph disconnects exactly the nodes d dominates, so one
-  // dominator tree per test (`computeIdom`, restricted to `inside`, rooted
-  // at the test's target) answers every such query in O(1).
+  // Removing d disconnects exactly the nodes d dominates, so one dominator tree
+  // per test, rooted at its target, answers each "reachable avoiding d" in O(1).
   const insideSucc = new Map(
     [...inside].map((n) => [n, succ.get(n)!.filter((m) => inside.has(m))]),
   );
@@ -712,11 +597,7 @@ function loopTestRank(
           : UNTESTED;
 }
 
-/**
- * The strongly connected components of `succ` restricted to `nodes` that hold
- * a cycle: more than one node, or one flowing into itself. Tarjan's
- * algorithm, iterative like {@link reversePostorder}.
- */
+/** Strongly connected components holding a cycle (iterative Tarjan). */
 function cycles(nodes: Set<string>, succ: Map<string, string[]>): string[][] {
   const index = new Map<string, number>();
   const low = new Map<string, number>();
@@ -780,12 +661,8 @@ function cycles(nodes: Set<string>, succ: Map<string, string[]>): string[][] {
 }
 
 /**
- * `a` dominates `b` when `a` sits on `b`'s idom chain. Reflexive and total.
- * `idom` is a tree rooted at `root`, so one DFS numbers each node with a
- * pre-order entry time and, as its exit time, the last entry time handed out
- * in its subtree; `a` is an ancestor of `b` (or `b` itself) exactly when
- * `b`'s entry falls inside `a`'s [entry, exit]. A node absent from `idom`
- * (unknown or unreachable) gets no interval and answers false on either side.
+ * Dominance as interval containment of pre-order entry/exit numbers on the
+ * idom tree. Nodes absent from `idom` answer false.
  */
 function makeDominanceQuery(
   idom: Map<string, string | undefined>,
@@ -801,7 +678,6 @@ function makeDominanceQuery(
   };
 }
 
-/** Iterative pre-order DFS over the parent map `idom`, rooted at `root`. */
 function numberDominatorTree(
   idom: Map<string, string | undefined>,
   root: string,

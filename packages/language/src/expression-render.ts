@@ -1,7 +1,6 @@
 /**
- * Renders a parsed JUEL-subset expression back to its `${...}` text. It lives
- * here rather than in `transform` because `astToIr` imports it; the dependency
- * runs transform -> language and never the reverse.
+ * Here rather than in `transform` because `astToIr` imports it and the
+ * dependency runs transform -> language.
  */
 
 import type { Expr, Accessor } from './generated/ast.js';
@@ -23,12 +22,7 @@ import {
   isVarRef,
 } from './generated/ast.js';
 
-/**
- * The digits of an integer literal with its sign, else `undefined`. A bare
- * `-5` parses as a `-` unary over `5`, and every setting the engine reads with
- * `Integer.parseInt` or `Long.parseLong` takes it as one integer, not an
- * expression.
- */
+/** A bare `-5` parses as unary minus, but `Integer.parseInt` reads it as one integer. */
 export function integerLiteralText(node: Expr): string | undefined {
   if (isLiteralInt(node)) {
     return String(node.value);
@@ -46,12 +40,10 @@ export function renderExpression(node: Expr): string {
   return `\${${renderExpressionInner(node)}}`;
 }
 
-/** The text inside the `${...}` wrapper. Parentheses are emitted only where the author wrote them. */
+/** Parentheses are emitted only where the author wrote them. */
 export function renderExpressionInner(node: Expr): string {
   if (isRawExpr(node)) {
-    // JUEL has no `${` token inside an expression, so a raw operand is spliced
-    // in by its body; a composite has no one body and is left for the
-    // validator to refuse.
+    // JUEL has no `${` inside an expression, so a raw operand is spliced in by its body.
     const body = singleTemplateBody(node.raw);
     return body === undefined ? node.raw : `(${body})`;
   }
@@ -84,9 +76,7 @@ export function renderExpressionInner(node: Expr): string {
     return String(node.value);
   }
   if (isLiteralString(node)) {
-    // JUEL text, so the backslash is doubled before the quote is escaped, as
-    // `escapeQuoted` in `@bpmn-script/transform`'s `juel.ts` does: those are
-    // the only two escapes operaton-juel's `Scanner.nextString` accepts.
+    // The only two escapes JUEL's `Scanner.nextString` accepts; backslash first.
     return `"${node.value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
   }
   if (isLiteralBool(node) || isLiteralNull(node)) {
@@ -102,7 +92,6 @@ function renderAccessor(accessor: Accessor): string {
   if (accessor.prop !== undefined) {
     return `.${accessor.prop}`;
   }
-  // The grammar guarantees `prop` XOR `index`, which TS cannot prove here.
   if (accessor.index === undefined) {
     throw new Error(
       'renderAccessor: accessor has neither a `prop` nor an `index` (unexpected accessor shape)',
@@ -112,10 +101,8 @@ function renderAccessor(accessor: Accessor): string {
 }
 
 /**
- * The body of a raw template that is exactly one template, else `undefined`:
- * `${a} and ${b}` and `${a} b}` are composites the engine evaluates to text
- * around the template. A `}` or opener inside a JUEL string literal is string
- * text (`Scanner.nextString`), so `${map['}']}` is one template.
+ * `undefined` for a composite such as `${a} and ${b}`, which the engine
+ * evaluates to text. A `}` inside a JUEL string literal is string text.
  */
 export function singleTemplateBody(raw: string): string | undefined {
   if (!/^[$#]\{[^]*\}$/.test(raw)) return undefined;

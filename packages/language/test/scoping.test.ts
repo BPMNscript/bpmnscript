@@ -1,13 +1,5 @@
-/**
- * The scope provider and the linker, driven through `parseHelper` with
- * `{ validation: true }` so linking runs. Each row is one program and the
- * whole oracle read off it: every reference in document order with what it
- * reaches, then every diagnostic, so a row pins the target, the exact boundary
- * wording, and that nothing stacks a second diagnostic on a replaced one.
- * {@link codeResolutionsOf} lists every identifier and warnings too, since a
- * scope reaching past a code position shows up as a resolved identifier where
- * the undeclared-variable warning belongs.
- */
+// A row pins every reference in document order with its target, then every
+// diagnostic, so no second diagnostic can stack on a replaced one.
 
 import { beforeAll, describe, expect, test } from 'vitest';
 import {
@@ -17,6 +9,7 @@ import {
   type Reference,
 } from 'langium';
 import { parseHelper } from 'langium/test';
+import { DiagnosticSeverity } from 'vscode-languageserver-types';
 import type { Model, OnHandler } from '@bpmn-script/language';
 import {
   createBpmnScriptServices,
@@ -34,8 +27,6 @@ import {
   withTextMessages,
 } from './helpers/diagnostics.js';
 
-const SEVERITY_ERROR = 1;
-
 let services: ReturnType<typeof createBpmnScriptServices>;
 let parse: ReturnType<typeof parseHelper<Model>>;
 
@@ -50,7 +41,6 @@ type Row = readonly [
   expected: readonly string[],
 ];
 
-/** `on <host>: <trigger>(<payload>)`, each part where written, since a handler has no name. */
 function headerOf(handler: OnHandler): string {
   const head = handler.host
     ? `on ${handler.host.$refText}: ${handler.trigger}`
@@ -59,7 +49,6 @@ function headerOf(handler: OnHandler): string {
   return code ? `${head}(${code})` : head;
 }
 
-/** `container/.../name:Type`, so two same-named steps in different containers read apart. */
 function pathOf(node: AstNode): string {
   const segments: string[] = [];
   for (let n: AstNode | undefined = node.$container; n; n = n.$container) {
@@ -77,7 +66,6 @@ function targetOf(reference: Reference<AstNode>): string {
   return reference.ref ? pathOf(reference.ref) : 'unresolved';
 }
 
-/** Every `goto` target and handler host in document order, then every error. */
 async function resolutionsOf(source: string): Promise<string[]> {
   const document = await parse(source, { validation: true });
   expect(document.parseResult.parserErrors.map((e) => e.message)).toEqual([]);
@@ -91,7 +79,7 @@ async function resolutionsOf(source: string): Promise<string[]> {
     }
   }
   for (const diagnostic of withTextMessages(document.diagnostics ?? [])) {
-    if (diagnostic.severity === SEVERITY_ERROR) {
+    if (diagnostic.severity === DiagnosticSeverity.Error) {
       lines.push(`error: ${diagnostic.message}`);
     }
   }
@@ -106,7 +94,7 @@ async function checkRow(
   expect(await resolutionsOf(source)).toEqual(expected);
 }
 
-/** Every identifier and mapping code slot (`error E -> ...`) in document order, then every diagnostic of either severity. */
+/** Warnings count here: a scope reaching past a code position hides the undeclared-variable warning. */
 async function codeResolutionsOf(source: string): Promise<string[]> {
   const document = await parse(source, { validation: true });
   expect(document.parseResult.parserErrors.map((e) => e.message)).toEqual([]);
@@ -123,7 +111,7 @@ async function codeResolutionsOf(source: string): Promise<string[]> {
   }
   for (const diagnostic of withTextMessages(document.diagnostics ?? [])) {
     const severity =
-      diagnostic.severity === SEVERITY_ERROR ? 'error' : 'warning';
+      diagnostic.severity === DiagnosticSeverity.Error ? 'error' : 'warning';
     lines.push(`${severity}: ${diagnostic.message}`);
   }
   return lines;
@@ -160,7 +148,6 @@ function missingHost(name: string): string {
   return `error: No step named '${name}' in this process to attach to.`;
 }
 
-/** Every two-process fixture draws this; both processes are what the row needs. */
 const MULTI_PROCESS =
   'error: Only one process is supported per file. Move additional processes into separate files.';
 

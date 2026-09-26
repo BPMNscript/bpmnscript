@@ -5,31 +5,35 @@ import { parseToAst } from './pipeline.js';
 
 const compile = async (source: string) => astToIr(await parseToAst(source));
 
-// Shared by the rows that must be `changed`; each variant differs in one place.
-const baseline = (body: string): string => `process p {
-  var a: any
-  var b: any
-${body}
-}`;
+// Each `changed` row swaps one part of this baseline.
 const ifA = (then: string, otherwise: string): string => `  if (a) {
     step ${then}
   } else {
     step ${otherwise}
   }`;
-const parallel = `  parallel {
+const ifB = `  if (b) {
+    step W
+  }`;
+const PARTS = [
+  ifA('X', 'Y'),
+  `  parallel {
     {
       step P1
     }
     {
       step P2
     }
-  }`;
-const ifB = `  if (b) {
-    step W
-  }`;
-const base = baseline(
-  [ifA('X', 'Y'), parallel, '  step Z(asyncBefore: true)', ifB].join('\n'),
-);
+  }`,
+  '  step Z(asyncBefore: true)',
+  ifB,
+];
+const withPart = (index: number, part: string): string =>
+  `process p {
+  var a: any
+  var b: any
+${PARTS.map((p, i) => (i === index ? part : p)).join('\n')}
+}`;
+const base = withPart(-1, '');
 
 const joinSource = `process p {
   if (true) (joinAsyncAfter: true) {
@@ -190,54 +194,31 @@ const table: [title: string, a: string, b: string, want: ModelComparison][] = [
   [
     'swapped if and else bodies are changed',
     base,
-    baseline(
-      [ifA('Y', 'X'), parallel, '  step Z(asyncBefore: true)', ifB].join('\n'),
-    ),
+    withPart(0, ifA('Y', 'X')),
     'changed',
   ],
   [
     'a condition replaced by true is changed',
     base,
-    baseline(
-      [
-        ifA('X', 'Y'),
-        parallel,
-        '  step Z(asyncBefore: true)',
-        ifB.replace('(b)', '(true)'),
-      ].join('\n'),
-    ),
+    withPart(3, ifB.replace('(b)', '(true)')),
     'changed',
   ],
   [
     'asyncBefore dropped from a step is changed',
     base,
-    baseline([ifA('X', 'Y'), parallel, '  step Z', ifB].join('\n')),
+    withPart(2, '  step Z'),
     'changed',
   ],
   [
     'a parallel printed as a sequence is changed',
     base,
-    baseline(
-      [
-        ifA('X', 'Y'),
-        '  step P1\n  step P2',
-        '  step Z(asyncBefore: true)',
-        ifB,
-      ].join('\n'),
-    ),
+    withPart(1, '  step P1\n  step P2'),
     'changed',
   ],
   [
     'an added else branch is changed',
     base,
-    baseline(
-      [
-        ifA('X', 'Y'),
-        parallel,
-        '  step Z(asyncBefore: true)',
-        ifB.replace(/\}$/, '} else {\n    step W2\n  }'),
-      ].join('\n'),
-    ),
+    withPart(3, ifB.replace(/\}$/, '} else {\n    step W2\n  }')),
     'changed',
   ],
   [

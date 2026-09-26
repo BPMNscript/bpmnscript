@@ -1,46 +1,13 @@
-// Round-trip fuzz harness over generated programs.
+// Round-trip fuzz: per seed, generate a program, then parse -> astToIr -> irToXml
+// -> xmlToIr -> irToDsl -> revalidate -> astToIr, compare, and print a second time.
+// A valid seed fails on a FAIL_CLASSES class, any print warning, or an unstable
+// second print.
 //
-// Per seed: generate a program, validate it, then push its source through
-// parse -> astToIr -> irToXml -> xmlToIr -> irToDsl -> validate -> astToIr,
-// each stage inside a try, with the outcome classified (`runPipeline`,
-// `symptomOf`). A validator-clean seed fails the oracle when its class is
-// `crash`, `timeout`, `import-refused`, `dsl-invalid`, `silent-change` or
-// `warned-restructuring`, when its first print carries any print warning, or
-// when its second print differs from its first (`failingSeeds`, one
-// `toEqual([])` assertion over every one of those). A seed counts as clean
-// when `compareModels` (`./helpers/model-equivalence.ts`) reports `same`,
-// `canonical` (differs only by JUEL quote style or a minted coordinate id)
-// or `restructured` (a documented hoist, backward `goto` or branch sinking
-// that keeps every step's content and the routes between them); only
-// `changed` can fail.
-//
-// Environment: FUZZ_N (programs, default 200), FUZZ_SEED (first seed,
-// default 1; program i uses FUZZ_SEED + i), FUZZ_OUT (output directory;
-// when set, writes `results.jsonl`, `summary.json` and minimized programs
-// under `min/` and runs minimization; when unset, writes nothing and skips
-// minimization), FUZZ_SHUFFLE (`reverse`, or a number that seeds a
-// permutation; unset runs in compiler order). The same FUZZ_SEED and FUZZ_N
-// reproduce the same corpus on any tree; minimization re-applies the same
-// FUZZ_SHUFFLE mode to every candidate.
-//
-// FUZZ_SHUFFLE reorders the imported model's `flowElements` and
-// `sequenceFlows`, in the process and every nested container, before the
-// first print: as another BPMN tool might list them. A gateway's own
-// outgoing flows keep their relative order within that reordering, because
-// Operaton evaluates a gateway's conditioned routes in document order, so
-// shuffling them would change which route the model actually takes, not
-// just how the printer reads it. Keeping route order fixed removes that
-// artifact instead of asking the comparison to reconstruct
-// engine-observable order semantics.
-//
-// Another tool can still list a gateway's routes in any order, so a seed that
-// passes in that mode is printed a second time with every flow reordered,
-// routes included (`runSeed`). That print is a different model, so it skips
-// the comparison and fails only on the other conditions: a crash or refusal,
-// output the validator refuses, a print warning, or a second pass that
-// differs. Its symptoms carry a `routes|` prefix.
-//
-// Full run: FUZZ_N=2000 FUZZ_OUT=<dir> npm test --workspace tests -- fuzz.test.ts
+// FUZZ_N (default 200), FUZZ_SEED (default 1), FUZZ_OUT (writes results.jsonl,
+// summary.json and minimized programs to min/), FUZZ_SHUFFLE (`reverse` or a
+// numeric seed) reorders the imported model before printing. A gateway's own
+// outgoing flows keep their order, since Operaton evaluates conditions in
+// document order; passing seeds get a second `routes|` run that shuffles those too.
 
 import { describe, it, expect } from 'vitest';
 import { appendFileSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
@@ -61,14 +28,17 @@ import type {
   FlowElement,
 } from '@bpmn-script/transform';
 import type { Model } from '@bpmn-script/language';
+import { Diagnostic, DiagnosticSeverity } from 'vscode-languageserver-types';
 
 import { validate } from './helpers/pipeline.js';
 import { normalizeIr } from './helpers/normalize-ir.js';
 import {
   compareModels,
+  stable,
   type ModelComparison,
 } from './helpers/model-equivalence.js';
 import {
+  countStatements,
   generateProgram,
   minimize,
   renderProgram,
@@ -98,7 +68,6 @@ function parseShuffleMode(raw: string | undefined): ShuffleMode | undefined {
 
 const SHUFFLE = parseShuffleMode(process.env.FUZZ_SHUFFLE);
 
-// A seeded LCG, so (programSeed, mode) always draws the same permutation.
 function permutationRng(programSeed: number, mode: number): () => number {
   let state = Math.abs(programSeed * 2654435761 + mode) % 2147483647 || 1;
   return () => {
@@ -116,12 +85,7 @@ function permuted<T>(items: readonly T[], rand: () => number): T[] {
   return a;
 }
 
-// Reorders a flow list the way another BPMN tool might list it, keeping each
-// source's own outgoing flows in their original relative order: Operaton
-// evaluates a gateway's conditioned routes in document order, so shuffling
-// them changes which route the model takes, not just how the printer reads
-// it (see the header comment). Only the order of the (source, group) blocks
-// shuffles.
+// Shuffles per-source blocks only; a gateway's routes keep their order.
 function reorderFlows<F extends { sourceRef: string }>(
   flows: readonly F[],
   mode: ShuffleMode,
@@ -143,11 +107,7 @@ function reorderFlows<F extends { sourceRef: string }>(
   return reorderedSources.flatMap((s) => bySource.get(s)!);
 }
 
-// Reorders `flowElements` and `sequenceFlows` of `container` and every
-// nested sub-process body before the first print, a gateway's own routes
-// too when `routes` is set. One `rand` stream is shared across the whole
-// walk, so nested containers of the same size still draw distinct
-// permutations.
+// One shared `rand`, so same-size nested containers draw distinct permutations.
 function reorderContainer<T extends FlowContainer>(
   container: T,
   mode: ShuffleMode,
@@ -175,16 +135,7 @@ function reorderContainer<T extends FlowContainer>(
   return walk(container) as T;
 }
 
-type Cls =
-  | 'crash'
-  | 'timeout'
-  | 'import-refused'
-  | 'dsl-invalid'
-  | 'silent-change'
-  | 'warned-restructuring'
-  | 'clean';
-
-const CLASS_ORDER: Cls[] = [
+const CLASS_ORDER = [
   'crash',
   'timeout',
   'import-refused',
@@ -192,20 +143,10 @@ const CLASS_ORDER: Cls[] = [
   'silent-change',
   'warned-restructuring',
   'clean',
-];
+] as const;
+type Cls = (typeof CLASS_ORDER)[number];
 
-// A validator-clean seed fails on one of these classes regardless of the
-// second pass, when its first print carries any print warning (which
-// includes every `warned-restructuring` seed, since that class requires at
-// least one), or when the second print differs from the first.
-const FAIL_CLASSES = new Set<Cls>([
-  'crash',
-  'timeout',
-  'import-refused',
-  'dsl-invalid',
-  'silent-change',
-  'warned-restructuring',
-]);
+const FAIL_CLASSES = new Set<Cls>(CLASS_ORDER.filter((c) => c !== 'clean'));
 
 interface Outcome {
   cls: Cls;
@@ -239,8 +180,7 @@ class TimeoutError extends Error {
   }
 }
 
-// Bounds an async stage. A stage that never yields to the event loop cannot be
-// interrupted from inside the process; the bound fires as soon as it does.
+// Fires only once the stage yields; a synchronous hang cannot be interrupted.
 async function bounded<T>(stage: string, fn: () => Promise<T>): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const clock = new Promise<never>((_, reject) => {
@@ -251,26 +191,6 @@ async function bounded<T>(stage: string, fn: () => Promise<T>): Promise<T> {
   } finally {
     clearTimeout(timer);
   }
-}
-
-function isRefusal(e: unknown): e is UnsupportedConstructError {
-  return e instanceof UnsupportedConstructError;
-}
-
-// `toEqual` semantics on a string: sorted keys, `undefined` dropped.
-function stable(x: unknown): string {
-  return JSON.stringify(x, (_k, v) => {
-    if (v && typeof v === 'object' && !Array.isArray(v)) {
-      const o = v as Record<string, unknown>;
-      return Object.fromEntries(
-        Object.keys(o)
-          .sort()
-          .filter((k) => o[k] !== undefined)
-          .map((k) => [k, o[k]]),
-      );
-    }
-    return v;
-  });
 }
 
 // Element lists keyed by id so a diff names elements, not positions.
@@ -342,8 +262,7 @@ function short(x: unknown): string {
   return s.length > 160 ? s.slice(0, 157) + '...' : s;
 }
 
-// The generator's four process names and every counter, so one symptom is one
-// key whatever process and statement numbers a seed drew.
+// Blanks process names and numbers so one symptom is one key across seeds.
 const PROCESS_NAME_PATTERN = new RegExp(PROCESS_NAMES.join('|'), 'g');
 
 function normalizeMessage(m: string): string {
@@ -354,8 +273,6 @@ function normalizeMessage(m: string): string {
     .slice(0, 200);
 }
 
-// The leaves a structural diff touched, digits and process names blanked so a
-// moved coordinate or a different statement count does not split the group.
 function diffShape(diff: DiffEntry[]): string {
   const leaf = (path: string): string => {
     const segs = path.replace(/^\(positional\) /, '').split('.');
@@ -392,14 +309,12 @@ async function parseModel(text: string): Promise<{
   dispose: () => Promise<void>;
 }> {
   const result = await validate(text);
-  const messageOf = (m: string | { value: string }): string =>
-    typeof m === 'string' ? m : m.value;
   const errors = result.diagnostics
-    .filter((d) => d.severity === 1)
-    .map((d) => messageOf(d.message));
+    .filter((d) => d.severity === DiagnosticSeverity.Error)
+    .map((d) => Diagnostic.getMessageString(d));
   const warnings = result.diagnostics
-    .filter((d) => d.severity === 2)
-    .map((d) => messageOf(d.message));
+    .filter((d) => d.severity === DiagnosticSeverity.Warning)
+    .map((d) => Diagnostic.getMessageString(d));
   const dispose =
     (result as { dispose?: () => Promise<void> }).dispose ?? (async () => {});
   return {
@@ -429,8 +344,6 @@ function fails(o: Outcome): boolean {
   );
 }
 
-// The route-order-preserving run, and in FUZZ_SHUFFLE mode the fully
-// reordered one when the first passes (see the header comment).
 async function runSeed(text: string, programSeed: number): Promise<Outcome> {
   const o = await runPipeline(text, programSeed, false);
   if (SHUFFLE === undefined || fails(o)) return o;
@@ -464,34 +377,41 @@ async function runPipeline(
     return o;
   };
   let stage = 'compile';
+  // A layout failure still carries the complete, diagram-less model.
+  const serialize = async (ir: BpmnProcess): Promise<string> => {
+    try {
+      return await bounded(stage, () => irToXml(ir));
+    } catch (e) {
+      if (!(e instanceof LayoutError)) throw e;
+      o.layoutFallback = true;
+      return e.xml;
+    }
+  };
+  const importXml = async (
+    xml: string,
+  ): Promise<Awaited<ReturnType<typeof xmlToIr>> | undefined> => {
+    try {
+      return await bounded(stage, () => xmlToIr(xml));
+    } catch (e) {
+      if (!(e instanceof UnsupportedConstructError)) throw e;
+      finish({
+        cls: 'import-refused',
+        stage,
+        message: e.message,
+        errorName: e.name,
+      });
+      return undefined;
+    }
+  };
   try {
     const ir1 = await compile(text);
 
     stage = 'serialize';
-    let xml1: string;
-    try {
-      xml1 = await bounded(stage, () => irToXml(ir1));
-    } catch (e) {
-      if (!(e instanceof LayoutError)) throw e;
-      xml1 = e.xml;
-      o.layoutFallback = true;
-    }
+    const xml1 = await serialize(ir1);
 
     stage = 'import';
-    let imported: Awaited<ReturnType<typeof xmlToIr>>;
-    try {
-      imported = await bounded(stage, () => xmlToIr(xml1));
-    } catch (e) {
-      if (isRefusal(e)) {
-        return finish({
-          cls: 'import-refused',
-          stage,
-          message: e.message,
-          errorName: e.name,
-        });
-      }
-      throw e;
-    }
+    const imported = await importXml(xml1);
+    if (imported === undefined) return o;
     o.importWarnings = imported.warnings.length;
     o.importWarningCategories = [
       ...new Set(imported.warnings.map((w) => w.category)),
@@ -536,30 +456,11 @@ async function runPipeline(
     const n3 = normalizeIr(ir3);
 
     stage = 'serialize2';
-    let xml2: string;
-    try {
-      xml2 = await bounded(stage, () => irToXml(ir3));
-    } catch (e) {
-      if (!(e instanceof LayoutError)) throw e;
-      xml2 = e.xml;
-      o.layoutFallback = true;
-    }
+    const xml2 = await serialize(ir3);
 
     stage = 'import2';
-    let imported2: Awaited<ReturnType<typeof xmlToIr>>;
-    try {
-      imported2 = await bounded(stage, () => xmlToIr(xml2));
-    } catch (e) {
-      if (isRefusal(e)) {
-        return finish({
-          cls: 'import-refused',
-          stage,
-          message: e.message,
-          errorName: e.name,
-        });
-      }
-      throw e;
-    }
+    const imported2 = await importXml(xml2);
+    if (imported2 === undefined) return o;
 
     stage = 'print2';
     const dsl2 = irToDsl(imported2.ir).source;
@@ -571,9 +472,8 @@ async function runPipeline(
     stage = 'compare';
     const comparison = compareModels(ir1, ir3);
     if (comparison === 'changed') {
-      // Two flows can share a canonical key after normalization (a conditioned
-      // and a fallback flow between one fork and join), which `keyed` collapses;
-      // the positional diff then names the difference.
+      // `keyed` collapses flows sharing a canonical key (conditioned + fallback
+      // between one fork and join); fall back to a positional diff.
       let entries = diffPaths(keyed(n1), keyed(n3));
       if (entries.length === 0) {
         entries = diffPaths(n1, n3).map((d) => ({
@@ -621,16 +521,12 @@ function symptomOf(o: Outcome): string {
     case 'warned-restructuring':
       return `warned-restructuring|${o.printWarningCategories.join(',')}`;
     case 'clean':
-      // A clean comparison can still carry a print warning (the model did
-      // not change, but the print warned about it); that keeps the seed out
-      // of the ordinary `clean` bucket so it is minimized and reported.
       if (o.printWarningCategories.length > 0)
         return `clean-warned|${o.printWarningCategories.join(',')}`;
       return o.secondPassStable === false ? 'clean-unstable' : 'clean';
   }
 }
 
-// Whether a minimization candidate still shows the failure being reduced.
 function sameFailure(original: Outcome, candidate: Outcome): boolean {
   if (
     candidate.cls !== original.cls ||
@@ -666,23 +562,11 @@ interface SeedRow {
   outcome?: Outcome;
 }
 
-function countStatements(p: Program): number {
-  let n = 0;
-  const walk = (body: Program['body']): void => {
-    for (const s of body) {
-      n++;
-      if ('body' in s) walk(s.body);
-      if (s.k === 'if') {
-        walk(s.then);
-        for (const e of s.elseIfs) walk(e.body);
-        if (s.else) walk(s.else);
-      }
-      if (s.k === 'parallel' || s.k === 'race')
-        for (const b of s.branches) walk(b.body);
-    }
-  };
-  walk(p.body);
-  return n;
+type Tally = Record<string, { count: number; exampleSeed: number }>;
+
+function tally(t: Tally, key: string, seed: number): void {
+  t[key] ??= { count: 0, exampleSeed: seed };
+  t[key].count++;
 }
 
 function gitHead(): string {
@@ -699,7 +583,6 @@ describe('round-trip fuzz', () => {
     { timeout: 6 * 60 * 60 * 1000 },
     async () => {
       if (OUT !== undefined) {
-        // A stale minimized program from an earlier run would misattribute a symptom.
         rmSync(join(OUT, 'min'), { recursive: true, force: true });
         mkdirSync(join(OUT, 'min'), { recursive: true });
         writeFileSync(join(OUT, 'results.jsonl'), '');
@@ -741,7 +624,6 @@ describe('round-trip fuzz', () => {
         }
       }
 
-      // ---- aggregate ----
       const valid = rows.filter((r) => r.valid);
       const classes = Object.fromEntries(
         CLASS_ORDER.map((c) => [c, 0]),
@@ -762,14 +644,8 @@ describe('round-trip fuzz', () => {
       };
       const layoutFallbackSeeds: number[] = [];
       const cleanButUnstable: number[] = [];
-      const importWarningCategories: Record<
-        string,
-        { count: number; exampleSeed: number }
-      > = {};
-      const importWarningMessages: Record<
-        string,
-        { count: number; exampleSeed: number }
-      > = {};
+      const importWarningCategories: Tally = {};
+      const importWarningMessages: Tally = {};
       const unstable: {
         seed: number;
         cls: Cls;
@@ -777,28 +653,14 @@ describe('round-trip fuzz', () => {
         before: string;
         after: string;
       }[] = [];
-      const printWarningCategories: Record<
-        string,
-        { count: number; exampleSeed: number }
-      > = {};
-      const invalidMessages: Record<
-        string,
-        { count: number; exampleSeed: number }
-      > = {};
-      const warningMessages: Record<
-        string,
-        { count: number; exampleSeed: number }
-      > = {};
+      const printWarningCategories: Tally = {};
+      const invalidMessages: Tally = {};
+      const warningMessages: Tally = {};
       for (const r of rows) {
-        for (const w of r.warningMessages ?? []) {
-          const m = normalizeMessage(w);
-          warningMessages[m] ??= { count: 0, exampleSeed: r.seed };
-          warningMessages[m].count++;
-        }
+        for (const w of r.warningMessages ?? [])
+          tally(warningMessages, normalizeMessage(w), r.seed);
         if (!r.valid) {
-          const m = normalizeMessage(r.errors![0]);
-          invalidMessages[m] ??= { count: 0, exampleSeed: r.seed };
-          invalidMessages[m].count++;
+          tally(invalidMessages, normalizeMessage(r.errors![0]), r.seed);
           continue;
         }
         const o = r.outcome!;
@@ -809,18 +671,15 @@ describe('round-trip fuzz', () => {
           else side.importWarningsNonEmpty++;
         }
         for (const c of o.importWarningCategories) {
-          importWarningCategories[c] ??= { count: 0, exampleSeed: r.seed };
-          importWarningCategories[c].count++;
+          tally(importWarningCategories, c, r.seed);
         }
         for (const m of o.importWarningMessages) {
-          importWarningMessages[m] ??= { count: 0, exampleSeed: r.seed };
-          importWarningMessages[m].count++;
+          tally(importWarningMessages, m, r.seed);
         }
         if (o.unstableLines)
           unstable.push({ seed: r.seed, cls: o.cls, ...o.unstableLines });
         for (const c of o.printWarningCategories) {
-          printWarningCategories[c] ??= { count: 0, exampleSeed: r.seed };
-          printWarningCategories[c].count++;
+          tally(printWarningCategories, c, r.seed);
         }
         if (o.secondPassStable === undefined) side.secondPassNotReached++;
         else if (o.secondPassStable) side.secondPassStable++;
@@ -838,7 +697,6 @@ describe('round-trip fuzz', () => {
         if (fails(o)) failingSeeds.push(r.seed);
       }
 
-      // ---- symptoms ----
       interface Symptom {
         key: string;
         cls: Cls;
@@ -858,9 +716,6 @@ describe('round-trip fuzz', () => {
       const symptoms = new Map<string, Symptom>();
       for (const r of valid) {
         const o = r.outcome!;
-        // Every failing outcome gets a symptom entry, a warned or unstable
-        // clean seed included, so it is minimized and reported like any
-        // other failure.
         if (!fails(o)) continue;
         const s = symptoms.get(o.symptom) ?? {
           key: o.symptom,
@@ -876,10 +731,7 @@ describe('round-trip fuzz', () => {
         string,
         { categories: string[]; seeds: number[]; example: string }
       >();
-      const warnedCategoryCounts: Record<
-        string,
-        { count: number; exampleSeed: number }
-      > = {};
+      const warnedCategoryCounts: Tally = {};
       for (const r of valid) {
         const o = r.outcome!;
         if (o.cls !== 'warned-restructuring') continue;
@@ -892,18 +744,15 @@ describe('round-trip fuzz', () => {
         w.seeds.push(r.seed);
         warned.set(key, w);
         for (const c of o.printWarningCategories) {
-          warnedCategoryCounts[c] ??= { count: 0, exampleSeed: r.seed };
-          warnedCategoryCounts[c].count++;
+          tally(warnedCategoryCounts, c, r.seed);
         }
       }
 
-      // ---- minimize one seed per symptom ----
       if (OUT !== undefined) {
         const outDir = OUT;
         let k = 0;
         for (const s of symptoms.values()) {
           k++;
-          // the smallest failing seed of the group is the cheapest to reduce
           const seed = s.seeds
             .map((sd) => ({
               sd,

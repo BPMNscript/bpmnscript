@@ -1,9 +1,6 @@
 /**
- * Reads a `RAW_TEMPLATE` token the way Langium reads `STRING`, quotes dropped
- * and escapes resolved, so `"${fn(\"a\")}"` becomes `${fn("a")}`. Langium's
- * `DefaultValueConverter` unquotes only the terminal named `STRING`; kept
- * verbatim, the body would reach the engine with a `\` outside a JUEL string
- * and gain one more each time the printer quotes it.
+ * Langium unquotes only `STRING`; a verbatim `RAW_TEMPLATE` would reach the
+ * engine with a stray `\` and gain another each time the printer quotes it.
  */
 
 import {

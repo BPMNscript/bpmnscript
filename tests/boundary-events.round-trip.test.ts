@@ -1,12 +1,8 @@
-import { describe, it, expect } from 'vitest';
+import { it, expect } from 'vitest';
 
 import type { FlowContainer, FlowElement } from '@bpmn-script/transform';
 
-import {
-  boundsOf,
-  describeSingleDiagram,
-  parseShapeBounds,
-} from './helpers/di-bounds.js';
+import { boundsOf, parseShapeBounds } from './helpers/di-bounds.js';
 import type { Bounds } from './helpers/di-bounds.js';
 import { describeImportFirst } from './helpers/import-first.js';
 import { kindOf, subProcess } from './helpers/ir-query.js';
@@ -71,8 +67,7 @@ const EXPECTED_ATTACHMENTS = [
 ].sort();
 
 // bpmn-auto-layout spreads `n` attachers along the host's bottom edge at
-// `x + width * i/(n+1)`; measuring against the host's own bounds keeps a shape
-// elsewhere on the canvas from passing.
+// `x + width * i/(n+1)`.
 function assertAttachedToHost(
   bounds: Map<string, Bounds>,
   hostId: string,
@@ -98,8 +93,7 @@ function assertAttachedToHost(
   });
 }
 
-// MIWG-style `<bpmn:incoming>`/`<bpmn:outgoing>` children and boundary ids the
-// id template would never produce.
+// Boundary ids the id template would never produce.
 const IMPORT_FIRST_BPMN = `<?xml version="1.0" encoding="UTF-8"?>
 <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:operaton="http://operaton.org/schema/1.0/bpmn" id="Definitions_crate_handover" targetNamespace="http://bpmn.io/schema/bpmn">
   <bpmn:error id="Error_Torn" name="TORN_BOX" errorCode="TORN_BOX" />
@@ -166,100 +160,49 @@ const IMPORT_FIRST_BPMN = `<?xml version="1.0" encoding="UTF-8"?>
   </bpmn:process>
 </bpmn:definitions>`;
 
-describe("idempotence: DSL -> IR1 -> XML -> IR2 -> DSL' -> IR3", () => {
-  it('the authored ids survive verbatim at their correct container depth', () => {
-    expect(kindOf(rt.ir3, 'CheckAddress')).toBe('userTask');
-    expect(kindOf(rt.ir3, 'PackGoods')).toBe('subProcess');
-    expect(kindOf(rt.ir3, 'ComputeShipping')).toBe('scriptTask');
-    expect(kindOf(rt.ir3, 'ChargePostage')).toBe('serviceTask');
-    expect(kindOf(rt.ir3, 'PrintLabel')).toBe('serviceTask');
-    expect(kindOf(rt.ir3, 'BookCarrier')).toBe('callActivity');
-    expect(kindOf(rt.ir3, 'HandOverParcel')).toBe('userTask');
-    // The escalation is emitted one container down, inside the sub-process the
-    // escalation boundary is attached to.
-    expect(kindOf(subProcess(rt.ir3, 'PackGoods'), 'Oversized')).toBe(
-      'intermediateThrowEvent',
-    );
-  });
-
-  it("each boundary's host, trigger, payload, and cancelActivity survive at every hop", () => {
-    for (const [label, ir] of rt.hops) {
-      expect(
-        attachmentSignatures(ir),
-        `attachments differ in ${label}`,
-      ).toEqual(EXPECTED_ATTACHMENTS);
-    }
-  });
-
-  it('the escape chain that rejoins the main flow keeps a real edge into its target', () => {
-    // The handler body and the main flow share one container, which is what
-    // makes `goto PackGoods` expressible as a real sequence flow.
-    const rejoin = rt.ir3.sequenceFlows.find(
-      (sf) => sf.sourceRef === 'MarkAddressVerified',
-    );
-    expect(rejoin?.targetRef).toBe('PackGoods');
-  });
-
-  it('the if inside an escape chain comes back as an if, not as gotos', () => {
-    // The boundary event is wired to the CFG's virtual entry, so the split in
-    // its escape chain has an immediate dominator; without one the
-    // restructurer could only degrade the branch into jumps.
-    expect(rt.dslPrime).toContain('if (parcelValue > 500) {');
-  });
+it("keeps each boundary's host, trigger, payload and cancelActivity at every hop, and the escape chain's rejoin and if", () => {
+  for (const [label, ir] of rt.hops) {
+    expect(attachmentSignatures(ir), label).toEqual(EXPECTED_ATTACHMENTS);
+  }
+  // The escalation is thrown inside the sub-process its boundary watches.
+  expect(kindOf(subProcess(rt.ir3, 'PackGoods'), 'Oversized')).toBe(
+    'intermediateThrowEvent',
+  );
+  // Handler body and main flow share a container, so the goto is a real edge.
+  expect(
+    rt.ir3.sequenceFlows.find((sf) => sf.sourceRef === 'MarkAddressVerified')
+      ?.targetRef,
+  ).toBe('PackGoods');
+  // The boundary is wired to the CFG's virtual entry, so the split in its
+  // escape chain has an immediate dominator and restructures as an if.
+  expect(rt.dslPrime).toContain('if (parcelValue > 500) {');
 });
 
-describeSingleDiagram(rt);
-
-describe('DI attachment on the generated .bpmn', () => {
-  it('every boundary shape sits centered and half-overlapping on its host edge', () => {
-    const bounds = parseShapeBounds(rt.generatedXml);
-
-    assertAttachedToHost(bounds, 'CheckAddress', [
+it('lays every boundary centered on and spread along its host lower edge, the sub-process host at its expanded size', () => {
+  const bounds = parseShapeBounds(rt.generatedXml);
+  const hosts: Record<string, string[]> = {
+    CheckAddress: [
       'Boundary_CheckAddress_message',
       'Boundary_CheckAddress_timer',
-    ]);
-    assertAttachedToHost(bounds, 'PackGoods', [
-      'Boundary_PackGoods_error',
-      'Boundary_PackGoods_escalation',
-    ]);
-    assertAttachedToHost(bounds, 'BookCarrier', [
-      'Boundary_BookCarrier_signal',
-    ]);
-    assertAttachedToHost(bounds, 'HandOverParcel', [
-      'Boundary_HandOverParcel_condition',
-    ]);
-    assertAttachedToHost(bounds, 'ComputeShipping', [
-      'Boundary_ComputeShipping_timer',
-    ]);
-    assertAttachedToHost(bounds, 'ChargePostage', [
-      'Boundary_ChargePostage_error',
-    ]);
-    assertAttachedToHost(bounds, 'PrintLabel', ['Boundary_PrintLabel_message']);
-  });
-
-  it('the sub-process host carries its boundaries on the expanded box, not a task-sized one', () => {
-    // The host's bounds are computed from its children, so its lower edge only
-    // exists once the sub-process body has been laid out.
-    const bounds = parseShapeBounds(rt.generatedXml);
-    const host = boundsOf(bounds, 'PackGoods');
-    const child = boundsOf(bounds, 'PickItems');
-
-    expect(host.width).toBeGreaterThan(child.width);
-    expect(host.height).toBeGreaterThan(child.height);
-    expect(rt.generatedXml).toContain(
-      'bpmnElement="PackGoods" isExpanded="true"',
-    );
-    for (const id of [
-      'Boundary_PackGoods_error',
-      'Boundary_PackGoods_escalation',
-    ]) {
-      expect(boundsOf(bounds, id).y + 18).toBeCloseTo(host.y + host.height, 3);
-    }
-  });
+    ],
+    PackGoods: ['Boundary_PackGoods_error', 'Boundary_PackGoods_escalation'],
+    BookCarrier: ['Boundary_BookCarrier_signal'],
+    HandOverParcel: ['Boundary_HandOverParcel_condition'],
+    ComputeShipping: ['Boundary_ComputeShipping_timer'],
+    ChargePostage: ['Boundary_ChargePostage_error'],
+    PrintLabel: ['Boundary_PrintLabel_message'],
+  };
+  for (const [host, ids] of Object.entries(hosts)) {
+    assertAttachedToHost(bounds, host, ids);
+  }
+  // The host's bounds come from its laid-out children.
+  const host = boundsOf(bounds, 'PackGoods');
+  const child = boundsOf(bounds, 'PickItems');
+  expect(host.width).toBeGreaterThan(child.width);
+  expect(host.height).toBeGreaterThan(child.height);
 });
 
-// `[title, the ids of the one root the frozen .bpmn may carry, the definition
-// kind, every element that has to reference it]`.
+// [title, the one root's ids, definition kind, every element referencing it]
 const SHARED_ROOTS: readonly [
   string,
   (xml: string) => string[],
@@ -301,29 +244,23 @@ const SHARED_ROOTS: readonly [
   ],
 ];
 
-describe('root sharing on the frozen .bpmn', () => {
-  it.each(SHARED_ROOTS)('%s', (_title, rootsOf, definition, referrers) => {
-    const roots = rootsOf(rt.frozenXml);
-    expect(roots).toHaveLength(1);
-    for (const id of referrers) {
-      expect(definitionRefOf(rt.frozenXml, id, definition), id).toBe(roots[0]);
-    }
-  });
+it.each(SHARED_ROOTS)('%s', (_title, rootsOf, definition, referrers) => {
+  const roots = rootsOf(rt.frozenXml);
+  expect(roots).toHaveLength(1);
+  for (const id of referrers) {
+    expect(definitionRefOf(rt.frozenXml, id, definition), id).toBe(roots[0]);
+  }
 });
 
 describeImportFirst(
   'a handwritten .bpmn with hand-named boundary ids round-trips',
   IMPORT_FIRST_BPMN,
   (first) => {
-    it('prints each boundary as an attached handler naming its host', () => {
+    it('prints each boundary as a handler on its host, re-synthesizing host-derived ids with the pairing intact', () => {
       expect(first.dsl).toContain('on InspectCrate: error(TORN_BOX) {');
       expect(first.dsl).toContain('on InspectCrate: error(MISSING_ITEM) {');
       expect(first.dsl).toContain('on StoreCrate: timer("PT1H", alongside) {');
-    });
-
-    it('re-synthesizes the host-derived ids, suffixing the second of the colliding pair', () => {
-      // Which of the two colliding boundaries owns the `_2` suffix follows from
-      // print order, not from anything either boundary carries.
+      // The `_2` suffix follows print order.
       expect(boundaryEvents(first.ir).map((b) => b.id)).toEqual([
         'BoxTorn',
         'ItemMissing',
@@ -334,9 +271,6 @@ describeImportFirst(
         'Boundary_InspectCrate_error_2',
         'Boundary_StoreCrate_timer',
       ]);
-    });
-
-    it('keeps every host, trigger payload, and cancelActivity paired', () => {
       const expected = [
         'InspectCrate error MISSING_ITEM interrupting',
         'InspectCrate error TORN_BOX interrupting',

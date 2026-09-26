@@ -1,9 +1,3 @@
-/**
- * The outline of the `boundary-events.bpmnscript` golden, flattened to one
- * `Kind name` line per symbol and indented by depth, so a handler whose steps
- * floated up to the process would show.
- */
-
 import { readFileSync } from 'node:fs';
 import { describe, expect, test } from 'vitest';
 import { EmptyFileSystem } from 'langium';
@@ -24,8 +18,7 @@ function flatten(symbols: DocumentSymbol[], depth: number): string[] {
   ]);
 }
 
-// `BookCarrier`'s `in`/`out` mapping lines are absent, a mapping having no
-// name to be a symbol by.
+// A mapping has no name, so `BookCarrier`'s mapping lines are no symbols.
 const EXPECTED = [
   'Module parcel-dispatch',
   '  Constant ADDRESS_REJECTED',

@@ -1,20 +1,10 @@
-/**
- * The element kinds that take settings, as test fixtures.
- *
- * The validator suite checks what an element accepts and the completion suite
- * checks what it offers, which are two readings of one table. Both drive off
- * these rows, so a new kind is added in one place.
- */
+// The validator and completion suites both drive off these rows, so a new
+// element kind is added in one place.
 
 import { ENGINE_KEYS, type EngineKey } from '@bpmn-script/language';
 
-/**
- * A triple-backtick fence, assembled without a literal fence in the test source
- * so it can be interpolated into JS template-literal DSL fixtures.
- */
 export const FENCE = '`' + '`' + '`';
 
-/** A value each engine key takes, in the shape its lowering reads. */
 const VALID_ENGINE_VALUE: Readonly<Record<EngineKey, string>> = {
   asyncBefore: 'true',
   asyncAfter: 'true',
@@ -23,25 +13,18 @@ const VALID_ENGINE_VALUE: Readonly<Record<EngineKey, string>> = {
   retryCycle: '"R3/PT10M"',
 };
 
-/** `keys` as one parens' worth of items, each spelled through `keyOf`. */
 export const engineItems = (
   keys: readonly EngineKey[],
   keyOf: (key: string) => string = (key) => key,
 ): string =>
   keys.map((key) => `${keyOf(key)}: ${VALID_ENGINE_VALUE[key]}`).join(', ');
 
-/** Every engine execution setting, as one parens' worth of items. */
 export const ENGINE_SETTINGS = engineItems(ENGINE_KEYS);
 
 /**
- * One otherwise-valid program per element kind, with one slot left open:
- * `settings` opens the parens and `members` the brace block holding the forms,
- * the parameters, and the listeners. Everything else in each program already
- * validates, so the only diagnostics a case can produce are the slot's own.
- *
- * Both slots take non-empty contents. Parens with nothing between them are a
- * parse error, and an empty brace block is read as the body on the kinds that
- * take one.
+ * One otherwise-valid program per element kind with its parens (`settings`) or
+ * member block (`members`) open. Both take non-empty contents: empty parens do
+ * not parse, and an empty brace block reads as the body.
  */
 export const BLOCK_HOSTS: ReadonlyArray<
   [
@@ -155,12 +138,7 @@ export const BLOCK_HOSTS: ReadonlyArray<
   ],
 ];
 
-/**
- * The element kinds whose block carries `input`/`output` parameters. Neither
- * handler form is in the set: the hosted one lowers to a boundary event, which
- * carries none, and the host-less one to an event sub-process, which
- * `BpmnParse.checkActivityInputOutputSupported` refuses a mapping on.
- */
+/** No handler: a boundary event carries no parameters, and `BpmnParse.checkActivityInputOutputSupported` refuses them on an event sub-process. */
 export const PARAMETER_HOSTS = new Set([
   'user',
   'service',
@@ -174,20 +152,12 @@ export const PARAMETER_HOSTS = new Set([
   'call',
 ]);
 
-/** The element kinds whose block carries a `form` declaration. */
 export const FORM_HOSTS = new Set(['start', 'user']);
 
-/**
- * The element kinds that take an external task's extras: `taskPriority` in
- * the parens, `property` and `error ... when` lines in the block, each legal
- * beside a `topic` binding alone.
- */
+/** The kinds taking `taskPriority`, `property` and `error ... when`, each only beside `topic`. */
 export const EXTERNAL_HOSTS = new Set(['service', 'send', 'decide']);
 
-/**
- * The element kinds whose parens take a `label`. The rest lower to a BPMN node
- * with no name slot of its own, so a label there would be dropped.
- */
+/** The rest lower to a BPMN node with no name slot, which would drop a label. */
 export const LABEL_HOSTS = new Set([
   'start',
   'end',
@@ -203,11 +173,7 @@ export const LABEL_HOSTS = new Set([
   'call',
 ]);
 
-/**
- * A row's program with the caret placed in one of its slots, after `before`.
- * Every program writes its element on the first line, so the caret's line is
- * always zero.
- */
+/** Every program writes its element on the first line, so the caret's line is zero. */
 export function caretInSlot(
   program: (contents: string) => string,
   before: string,

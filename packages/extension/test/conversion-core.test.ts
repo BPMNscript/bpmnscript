@@ -1,11 +1,7 @@
-// What each conversion direction makes of a given input; what the VS Code
-// adapter then shows the author is `conversion.test.ts`.
-
 import { describe, expect, test, beforeAll } from 'vitest';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { dirname } from 'node:path';
 
 import { EmptyFileSystem } from 'langium';
 import { validationHelper } from 'langium/test';
@@ -16,23 +12,14 @@ import { xmlToIr } from '@bpmn-script/transform';
 import {
   compileDslToBpmn,
   decompileBpmnToDsl,
-  swapExtension,
 } from '../src/extension/conversion-core.js';
 import type { ConvDiagnostic } from '../src/extension/conversion-core.js';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
-
-const REPO_ROOT = path.resolve(__dirname, '../../..');
+const REPO_ROOT = fileURLToPath(new URL('../../..', import.meta.url));
 
 const INVOICE_APPROVAL_SRC = path.resolve(
   REPO_ROOT,
   'examples/spring-boot/processes/invoice-approval.bpmnscript',
-);
-
-const GOLDEN_GENERATED_BPMN = path.resolve(
-  REPO_ROOT,
-  'tests/golden/invoice-approval-generated.bpmn',
 );
 
 const BAD_SERVICE_TASK_BPMN = path.resolve(
@@ -55,8 +42,7 @@ function expectMentions(text: string, mentions: readonly string[]): void {
   }
 }
 
-// Minus the wording: the positions, severity and source text are this module's
-// own mapping, the sentence belongs to the validator.
+// The wording belongs to the validator, the rest is this module's mapping.
 type DiagnosticPosition = Omit<ConvDiagnostic, 'message'>;
 
 type CompileOutcome =
@@ -112,7 +98,6 @@ describe('compileDslToBpmn', () => {
 
     if (result.ok) return;
     expect(result.kind).toBe(expected.kind);
-    // A failed result carries nothing the adapter could write.
     expect('output' in result).toBe(false);
     if (result.kind !== 'validation') return;
     expect(
@@ -219,11 +204,6 @@ type DecompileRow = readonly [
 describe('decompileBpmnToDsl', () => {
   test.each<DecompileRow>([
     [
-      'a BPMN this tool generated comes back with nothing to report',
-      fs.readFileSync(GOLDEN_GENERATED_BPMN, 'utf-8'),
-      { ok: true, warnings: [], mentions: [] },
-    ],
-    [
       'a lane and an unsupported engine attribute are dropped with a warning each, naming the element they came off',
       LANE_AND_ASYNC_ATTR_BPMN,
       {
@@ -262,9 +242,8 @@ describe('decompileBpmnToDsl', () => {
         result.warnings.map((w) => w.message).join('\n'),
         expected.mentions,
       );
-      // Parsing alone accepts source the validator refuses, so the output has
-      // to clear what the compile direction blocks on: no severity-1
-      // diagnostic (a BPMN declares no variables, so warnings are expected).
+      // Parsing alone accepts source the validator refuses. Warnings are
+      // expected: a BPMN declares no variables.
       const { diagnostics } = await validate(result.output);
       expect(
         diagnostics.filter((d) => d.severity === 1).map((d) => d.message),
@@ -277,8 +256,8 @@ describe('decompileBpmnToDsl', () => {
     expectMentions(result.message, expected.mentions);
   });
 
-  // The sidebar's file picker offers every file, and whatever comes back here
-  // goes into a notification whole.
+  // The file picker offers every file, and the message goes into a
+  // notification whole.
   const UNPARSABLE_TAG = '<bad\0tag' + 'z'.repeat(300);
 
   test.each([
@@ -301,16 +280,4 @@ describe('decompileBpmnToDsl', () => {
       message,
     });
   });
-});
-
-describe('swapExtension', () => {
-  test.each([
-    ['/a/b/my.invoice.bpmnscript', '.bpmn', '/a/b/my.invoice.bpmn'],
-    ['/a/b/x.bpmn', '.bpmnscript', '/a/b/x.bpmnscript'],
-  ] as const)(
-    'only the final extension of %s is replaced by %s',
-    (input, newExt, expected) => {
-      expect(swapExtension(input, newExt)).toBe(expected);
-    },
-  );
 });

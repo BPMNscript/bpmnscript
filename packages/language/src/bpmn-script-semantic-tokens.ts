@@ -1,11 +1,7 @@
 /**
- * The soft words lex as plain `ID`, so the TextMate grammar, a regex over
- * token text, cannot tell `on error` from `var error: string`. A semantic
- * token comes off the parsed AST, so a soft word highlights exactly where the
- * grammar gave it that meaning, and VS Code's default themes render a
- * semantic `keyword` like a lexical one. `OnHandler.host` is a cross-reference
- * to the activity the handler attaches to, not a trigger word, so it is left
- * out.
+ * Soft words lex as `ID`, so TextMate cannot tell `on error` from
+ * `var error: string`; semantic tokens come off the AST. `OnHandler.host` is a
+ * reference, not a trigger word.
  */
 
 import type { AstNode } from 'langium';
@@ -35,7 +31,6 @@ export class BpmnScriptSemanticTokenProvider extends AbstractSemanticTokenProvid
     node: AstNode,
     acceptor: SemanticTokenAcceptor,
   ): void | undefined | 'prune' {
-    // Every soft word highlights as a keyword; only the property differs.
     const keyword = (property: string): void =>
       acceptor({ node, property, type: SemanticTokenTypes.keyword });
 

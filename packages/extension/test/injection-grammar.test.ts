@@ -8,8 +8,6 @@ import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { SCRIPT_FORMAT_ALIASES } from '@bpmn-script/language';
 
-// A format missing here has no installed grammar, and every tag reaching it
-// must be listed in NO_INSTALLED_GRAMMAR.
 const EMBEDDED_SCOPE_BY_FORMAT: Readonly<Record<string, string>> = {
   javascript: 'source.js',
   python: 'source.python',
@@ -71,39 +69,33 @@ describe('fenced-script injection grammar', () => {
 
   // Driven off the alias table, so a new alias fails here until it is either
   // routed by the grammar or declared as having no installed grammar.
-  it.each(Object.keys(SCRIPT_FORMAT_ALIASES))(
-    'tag ```%s routes to its embedded scope, or is a declared miss',
-    (tag) => {
+  it('every alias tag routes to its embedded scope or is a declared miss, and unknown tags fall back to a plain block', () => {
+    for (const tag of [
+      ...Object.keys(SCRIPT_FORMAT_ALIASES),
+      'kotlin',
+      'sql',
+    ]) {
       const match = matchFence('script demo ```' + tag);
-      expect(match).toBeDefined();
-      if (NO_INSTALLED_GRAMMAR.has(tag)) {
-        expect(match!.name).toBe('plain-block');
-        expect(match!.rule.contentName).toBeUndefined();
-        expect(match!.rule.patterns).toBeUndefined();
-        return;
-      }
+      expect(match, tag).toBeDefined();
       const format = SCRIPT_FORMAT_ALIASES[tag];
+      if (format === undefined || NO_INSTALLED_GRAMMAR.has(tag)) {
+        expect(
+          [match!.name, match!.rule.contentName, match!.rule.patterns],
+          tag,
+        ).toEqual(['plain-block', undefined, undefined]);
+        continue;
+      }
       const embedded = EMBEDDED_SCOPE_BY_FORMAT[format];
       expect(
         embedded,
         `tag '${tag}' normalizes to '${format}': give it an injection block and an EMBEDDED_SCOPE_BY_FORMAT entry, or add the tag to NO_INSTALLED_GRAMMAR`,
       ).toBeDefined();
-      expect(match!.rule.contentName).toBe(`meta.embedded.block.${format}`);
-      expect(match!.rule.patterns).toContainEqual({ include: embedded });
-    },
-  );
-
-  it.each([['kotlin'], ['sql']])(
-    'unknown tag ```%s falls back to a plain block (no embedded include)',
-    (tag) => {
-      expect(SCRIPT_FORMAT_ALIASES[tag]).toBeUndefined();
-      const match = matchFence('script demo ```' + tag);
-      expect(match).toBeDefined();
-      expect(match!.name).toBe('plain-block');
-      expect(match!.rule.contentName).toBeUndefined();
-      expect(match!.rule.patterns).toBeUndefined();
-    },
-  );
+      expect(match!.rule.contentName, tag).toBe(
+        `meta.embedded.block.${format}`,
+      );
+      expect(match!.rule.patterns, tag).toContainEqual({ include: embedded });
+    }
+  });
 
   it('a bare closing fence starts no block and matches an end pattern', () => {
     expect(matchFence('```')).toBeUndefined();

@@ -5,13 +5,7 @@ import chalk from 'chalk';
 import type { LangiumDocument } from 'langium';
 import { URI } from 'langium';
 import { NodeFileSystem } from 'langium/node';
-import { createBpmnScriptServices } from '@bpmn-script/language';
-
-type Diagnostic = NonNullable<LangiumDocument['diagnostics']>[number];
-
-/** LSP's `DiagnosticSeverity` values. */
-export const SEVERITY_ERROR = 1;
-export const SEVERITY_WARNING = 2;
+import { createBpmnScriptServices, Diagnostic } from '@bpmn-script/language';
 
 export function fail(code: number, message: string): never {
   console.error(chalk.red(message));
@@ -22,18 +16,7 @@ export function warn(message: string): void {
   console.error(chalk.yellow(message));
 }
 
-/**
- * Langium's `message` is a string or LSP markup; a template literal would
- * print the latter as `[object Object]`.
- */
-export function diagnosticMessage(diagnostic: Diagnostic): string {
-  return typeof diagnostic.message === 'string'
-    ? diagnostic.message
-    : diagnostic.message.value;
-}
-
-// Resolved relative to this module, which sits one level below the package
-// root in both `out/` (compiled) and `src/` (vitest).
+// One level below the package root in both `out/` and `src/`.
 export const CLI_VERSION: string = (
   JSON.parse(
     readFileSync(new URL('../package.json', import.meta.url), 'utf-8'),
@@ -50,7 +33,6 @@ export function resolveInputPath(fileName: string): string {
   return resolved;
 }
 
-// The extension's `swapExtension` (conversion-core.ts) is the no-override case.
 export function resolveOutputPath(
   resolvedInput: string,
   defaultExt: string,
@@ -61,19 +43,18 @@ export function resolveOutputPath(
     return path.join(path.dirname(resolvedInput), `${base}${defaultExt}`);
   }
   const resolved = path.resolve(outputOverride);
-  // `-o some/dir` names a place to put the file, not the file itself: without
-  // this, the write later fails with a bare EISDIR.
+  // `-o some/dir` names a place for the file.
   return existsSync(resolved) && statSync(resolved).isDirectory()
     ? path.join(resolved, `${base}${defaultExt}`)
     : resolved;
 }
 
-type GuardOptions = { force?: boolean };
+export type CommandOptions = { output?: string; force?: boolean };
 
 export function guardOutputPath(
   resolvedInput: string,
   outPath: string,
-  opts: GuardOptions,
+  opts: CommandOptions,
 ): void {
   if (outPath === resolvedInput) {
     fail(2, 'Error: the input and the output are the same file');
@@ -120,7 +101,7 @@ export function formatDiagnostic(
   diagnostic: Diagnostic,
 ): string {
   return (
-    `  line ${diagnostic.range.start.line + 1}: ${diagnosticMessage(diagnostic)}` +
+    `  line ${diagnostic.range.start.line + 1}: ${Diagnostic.getMessageString(diagnostic)}` +
     ` [${document.textDocument.getText(diagnostic.range)}]`
   );
 }

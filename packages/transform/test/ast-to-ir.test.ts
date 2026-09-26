@@ -1,405 +1,127 @@
-import { beforeAll, describe, expect, it } from 'vitest';
-import { EmptyFileSystem } from 'langium';
-import { parseHelper } from 'langium/test';
-import {
-  createBpmnScriptServices,
-  PROCESS_HEADER_KEYS,
-} from '@bpmn-script/language';
-import type { Model } from '@bpmn-script/language';
+import { describe, expect, it } from 'vitest';
 
 import { astToIr } from '../src/ast-to-ir.js';
-import { irToXml } from '../src/ir-to-xml.js';
-import { xmlToIr } from '../src/xml-to-ir.js';
 import {
-  makeGatewaySplitId,
-  makeGatewayJoinId,
-  makeGatewayForkId,
-  makeGatewayLoopId,
-  makeGatewayRaceId,
   makeDefaultFlowId,
-  makeStartEventId,
-  makeEndEventId,
-  makeThrowEventId,
   makeEventSubProcessId,
-  makeBoundaryEventId,
-  makeIntermediateCatchEventId,
+  makeGatewayLoopId,
+  makeThrowEventId,
 } from '../src/synthesize-ids.js';
 import type {
   BpmnProcess,
   CallActivity,
-  ExecutionListener,
   FlowContainer,
-  FlowElement,
-  Gateway,
-  InclusiveGateway,
-  IoValue,
-  JobSettings,
-  LoopCharacteristics,
   Repeatable,
-  SequenceFlow,
-  SubProcess,
 } from '../src/ir/types.js';
-import { isGateway } from '../src/ir/types.js';
 import { byId, only, subProcess } from './helpers/ir-query.js';
 import {
   builtinBinding,
-  callActivity,
   classBinding,
   conditionDef,
-  delegateBinding,
   edge,
   errorDef,
   escalationDef,
   exprBinding,
   externalBinding,
   gateway,
-  ioParam,
-  listValue,
-  mapEntry,
-  mapValue,
   messageDef,
   processIr,
   scriptTask,
   scriptValue,
-  serviceTask,
   signalDef,
-  textValue,
   timerDef,
 } from './helpers/ir-fixtures.js';
+import { ir, parse } from './helpers/parse.js';
 
-let parse: ReturnType<typeof parseHelper<Model>>;
-
-beforeAll(() => {
-  const services = createBpmnScriptServices(EmptyFileSystem);
-  parse = parseHelper<Model>(services.BpmnScript);
-});
-
-// Test helpers
-
-async function ir(source: string): Promise<BpmnProcess> {
-  const doc = await parse(source);
-  expect(doc.parseResult.parserErrors).toHaveLength(0);
-  return astToIr(doc.parseResult.value);
-}
+// Round trips pin valid lowering; this file keeps synthesized ids, fallbacks on rejected source and silent normalizations.
 
 // An error and an escalation share one declaration namespace, so the
 // escalation with code `X` needs a name of its own.
 const CODE_DECLS = 'error PF error X escalation LS escalation EscX(code: "X")';
 
-const parens = (...items: string[]): string => {
-  const written = items.filter((item) => item !== '');
-  return written.length > 0 ? `(${written.join(', ')})` : '';
-};
+/**
+ * Lowers `source(written)` for each row and compares what `read` takes off each
+ * result against the row's expectation, all rows in one keyed record.
+ */
+async function expectLowering(
+  rows: ReadonlyArray<readonly [string, unknown]>,
+  source: (written: string) => string,
+  read: (process: BpmnProcess) => unknown,
+): Promise<void> {
+  const actual: Record<string, unknown> = {};
+  for (const [written] of rows)
+    actual[written] = read(await ir(source(written)));
+  expect(actual).toEqual(Object.fromEntries(rows));
+}
 
-const afterA = (statements: string, decls = ''): Promise<BpmnProcess> =>
-  ir(`process p { ${decls} service A(class: "x.A") ${statements} }`);
+const inProcess = (statements: string): string => `process P { ${statements} }`;
 
-const xorGatewayIds = (container: FlowContainer): string[] =>
+const endIds = (container: FlowContainer): string[] =>
   container.flowElements
-    .filter((fe) => fe.kind === 'exclusiveGateway')
+    .filter((fe) => fe.kind === 'endEvent')
     .map((fe) => fe.id);
 
-async function expectCollidedEnd(source: string): Promise<void> {
-  const ends = (await ir(source)).flowElements.filter(
-    (fe) => fe.kind === 'endEvent',
-  );
-  expect(ends).toHaveLength(1);
-  expect(ends[0]!.id).toBe('EndEvent_P_2');
-}
-
-/** The one flow `source -> target`, asserting there is exactly one. */
-function flow(
-  container: FlowContainer,
-  source: string,
-  target: string,
-): SequenceFlow {
-  const matches = container.sequenceFlows.filter(
-    (f) => f.sourceRef === source && f.targetRef === target,
-  );
-  expect(matches).toHaveLength(1);
-  return matches[0]!;
-}
-
-describe('astToIr: implicit sequence and implicit start/end', () => {
-  it.each([
-    [
-      'chains bare statements and synthesizes the start and the end around them',
-      `process P { user A user B }`,
-      processIr(
-        'P',
-        [
-          { kind: 'startEvent', id: 'StartEvent_P' },
-          { kind: 'userTask', id: 'A' },
-          { kind: 'userTask', id: 'B' },
-          { kind: 'endEvent', id: 'EndEvent_P' },
-        ],
-        [edge('A', 'B'), edge('StartEvent_P', 'A'), edge('B', 'EndEvent_P')],
-      ),
-    ],
-    [
-      'keeps an explicit start and end verbatim, synthesizing neither',
-      `process P { start S user A end E }`,
-      processIr(
-        'P',
-        [
-          { kind: 'startEvent', id: 'S' },
-          { kind: 'userTask', id: 'A' },
-          { kind: 'endEvent', id: 'E' },
-        ],
-        [edge('S', 'A'), edge('A', 'E')],
-      ),
-    ],
-    [
-      'synthesizes only the start when the body already ends in an end',
-      `process P { user A end Done }`,
-      processIr(
-        'P',
-        [
-          { kind: 'startEvent', id: 'StartEvent_P' },
-          { kind: 'userTask', id: 'A' },
-          { kind: 'endEvent', id: 'Done' },
-        ],
-        [edge('A', 'Done'), edge('StartEvent_P', 'A')],
-      ),
-    ],
-    [
-      'starts written back to back each enter the step after them, none taking a flow',
-      `process P { start A start B message("M") user T end E }`,
-      processIr(
-        'P',
-        [
-          { kind: 'startEvent', id: 'A' },
-          { kind: 'startEvent', id: 'B', eventDefinition: messageDef('M') },
-          { kind: 'userTask', id: 'T' },
-          { kind: 'endEvent', id: 'E' },
-        ],
-        [edge('A', 'T'), edge('B', 'T'), edge('T', 'E')],
-      ),
-    ],
-    [
-      'starts with no step after them run straight to the synthesized end',
-      `process P { start A start B message("M") }`,
-      processIr(
-        'P',
-        [
-          { kind: 'startEvent', id: 'A' },
-          { kind: 'startEvent', id: 'B', eventDefinition: messageDef('M') },
-          { kind: 'endEvent', id: 'EndEvent_P' },
-        ],
-        [edge('A', 'EndEvent_P'), edge('B', 'EndEvent_P')],
-      ),
-    ],
-  ])('%s', async (_title, source, expected) => {
-    expect(await ir(source)).toEqual(expected);
-  });
-
-  it('synthesizes a start/end pair for a handler-only body', async () => {
-    const result = await ir(
-      `process p { error Boom on error(Boom) { end H } }`,
+describe('astToIr: synthesized ids', () => {
+  // Gateway ids are positional and never consult `taken`; only the implicit
+  // start and end ids do.
+  it('every named statement, also inside a race branch or a sub-process, reserves its name against the synthesized end', async () => {
+    await expectLowering(
+      [
+        'user EndEvent_P',
+        'step EndEvent_P',
+        'service EndEvent_P(topic: "t")',
+        'send EndEvent_P(class: "c")',
+        'receive EndEvent_P',
+        'decide EndEvent_P(decision: "d")',
+        'script EndEvent_P ```js\nx = 1;\n```',
+        'call EndEvent_P(process: "p")',
+        'await message EndEvent_P("M")',
+        'await { message("M") { user EndEvent_P } signal("S") { user B } }',
+      ].map((statement) => [statement, ['EndEvent_P_2']] as const),
+      inProcess,
+      endIds,
     );
-    const startId = makeStartEventId('p', new Set());
-    const endId = makeEndEventId('p', new Set());
-
-    expect(only(result, 'startEvent').id).toBe(startId);
-    expect(only(result, 'endEvent').id).toBe(endId);
-    flow(result, startId, endId);
+    const nested = await ir(
+      'process P { user EndEvent_S subprocess S { user A } }',
+    );
+    expect(endIds(subProcess(nested, 'S'))).toEqual(['EndEvent_S_2']);
   });
-});
 
-describe('astToIr: if/else exclusive gateway', () => {
-  const splitId = makeGatewaySplitId('P_0');
-  const joinId = makeGatewayJoinId('P_0');
-  const defaultFlowId = makeDefaultFlowId(splitId);
-  const start: FlowElement = { kind: 'startEvent', id: 'StartEvent_P' };
-  const end: FlowElement = { kind: 'endEvent', id: 'EndEvent_P' };
+  // A statement named `default` reached from the same gateway would take the
+  // gateway's `Flow_<gateway>_default` for its own incoming flow, so the claim
+  // has to precede the branch.
+  it('claims a gateway default-flow id before its branches, so no two sequence flows share one', async () => {
+    await expectLowering(
+      [
+        'if (a) { user default } else { user B }',
+        'parallel { if (a) { user default } else { user B } }',
+        'while (a) { user default }',
+        'do { user default } while (a)',
+      ].map((statement) => [statement, []] as const),
+      inProcess,
+      ({ sequenceFlows }) => {
+        const ids = sequenceFlows.map((f) => f.id);
+        return ids.filter((id, i) => ids.indexOf(id) !== i);
+      },
+    );
+  });
 
-  it('splits on the condition, rejoins both branches, and makes the else the unconditioned default', async () => {
+  it('holds no id back for a split that weighs nothing, so a `default` beside it keeps the plain one', async () => {
+    // An AND split leaves no branch out, so it names no fallback; claiming the
+    // id anyway would move the authored collider onto a suffix for nothing.
+    const result = await ir(
+      `process P { parallel { { user default } { user B } } }`,
+    );
     expect(
-      await ir(
-        `process P { if (amount > 1000) { user S } else { service A(class: "com.example.X") } }`,
-      ),
-    ).toEqual(
-      processIr(
-        'P',
-        [
-          start,
-          gateway(splitId, defaultFlowId),
-          gateway(joinId),
-          { kind: 'userTask', id: 'S' },
-          serviceTask('A', classBinding('com.example.X')),
-          end,
-        ],
-        [
-          edge(splitId, 'S', { condition: '${amount > 1000}' }),
-          edge('S', joinId),
-          edge(splitId, 'A', { id: defaultFlowId }),
-          edge('A', joinId),
-          edge('StartEvent_P', splitId),
-          edge(joinId, 'EndEvent_P'),
-        ],
-      ),
-    );
+      result.sequenceFlows
+        .filter((f) => f.targetRef === 'default')
+        .map((f) => f.id),
+    ).toEqual(['Flow_Gateway_P_0_fork_default']);
   });
 
-  it.each([
-    [
-      'a branch ending in an explicit end sends nothing on to the join',
-      `if (x) { user S end Done } else { user A }`,
-      [
-        start,
-        gateway(splitId, defaultFlowId),
-        gateway(joinId),
-        { kind: 'userTask', id: 'S' },
-        { kind: 'endEvent', id: 'Done' },
-        { kind: 'userTask', id: 'A' },
-        end,
-      ],
-      [
-        edge('S', 'Done'),
-        edge(splitId, 'S', { condition: '${x}' }),
-        edge(splitId, 'A', { id: defaultFlowId }),
-        edge('A', joinId),
-        edge('StartEvent_P', splitId),
-        edge(joinId, 'EndEvent_P'),
-      ],
-    ],
-    [
-      'both branches terminating prunes the join, its join settings with it, and the implicit end',
-      `error Failed if (c) (joinAsyncBefore: true) { throw error B(Failed) } else { end S }`,
-      [
-        start,
-        gateway(splitId, defaultFlowId),
-        { kind: 'endEvent', id: 'B', eventDefinition: errorDef('Failed') },
-        { kind: 'endEvent', id: 'S' },
-      ],
-      [
-        edge(splitId, 'B', { condition: '${c}' }),
-        edge(splitId, 'S', { id: defaultFlowId }),
-        edge('StartEvent_P', splitId),
-      ],
-    ],
-    [
-      'no else keeps the split->join default flow, so the join is never pruned',
-      `if (c) { end A }`,
-      [
-        start,
-        gateway(splitId, defaultFlowId),
-        gateway(joinId),
-        { kind: 'endEvent', id: 'A' },
-        end,
-      ],
-      [
-        edge(splitId, 'A', { condition: '${c}' }),
-        edge(splitId, joinId, { id: defaultFlowId }),
-        edge('StartEvent_P', splitId),
-        edge(joinId, 'EndEvent_P'),
-      ],
-    ],
-  ] satisfies Array<[string, string, FlowElement[], SequenceFlow[]]>)(
-    '%s',
-    async (_title, statement, elements, flows) => {
-      const result = await ir(`process P { ${statement} }`);
-      expect(result.flowElements).toEqual(elements);
-      expect(result.sequenceFlows).toEqual(flows);
-    },
-  );
-});
-
-describe('astToIr: else-if chain', () => {
-  const SOURCE = `process P {
-  if (a > 1) { user X }
-  else if (a > 2) { user Y }
-  else { user Z }
-}`;
-
-  it('conditions one flow per if/else-if, leaves the else the default, and converges all three on the join', async () => {
-    const splitId = makeGatewaySplitId('P_0');
-    const joinId = makeGatewayJoinId('P_0');
-    const defaultFlowId = makeDefaultFlowId(splitId);
-    const result = await ir(SOURCE);
-
-    expect(byId(result, splitId)).toEqual(gateway(splitId, defaultFlowId));
-    expect(result.sequenceFlows).toEqual([
-      edge(splitId, 'X', { condition: '${a > 1}' }),
-      edge('X', joinId),
-      edge(splitId, 'Y', { condition: '${a > 2}' }),
-      edge('Y', joinId),
-      edge(splitId, 'Z', { id: defaultFlowId }),
-      edge('Z', joinId),
-      edge('StartEvent_P', splitId),
-      edge(joinId, 'EndEvent_P'),
-    ]);
-  });
-});
-
-describe('astToIr: while loop', () => {
-  it('routes the entry into a loop gateway with a conditioned body entry, a back-edge and a default exit', async () => {
-    const loopId = makeGatewayLoopId('P_1');
-    const defaultFlowId = makeDefaultFlowId(loopId);
-
-    // The whole element list also pins that a loop is a gateway plus back-edge,
-    // never loop characteristics on an activity.
-    expect(
-      await ir(`process P { user Pre while (rejected) { user R } user Post }`),
-    ).toEqual(
-      processIr(
-        'P',
-        [
-          { kind: 'startEvent', id: 'StartEvent_P' },
-          { kind: 'userTask', id: 'Pre' },
-          gateway(loopId, defaultFlowId),
-          { kind: 'userTask', id: 'R' },
-          { kind: 'userTask', id: 'Post' },
-          { kind: 'endEvent', id: 'EndEvent_P' },
-        ],
-        [
-          edge(loopId, 'R', { condition: '${rejected}' }),
-          edge('R', loopId),
-          edge('Pre', loopId),
-          edge(loopId, 'Post', { id: defaultFlowId }),
-          edge('StartEvent_P', 'Pre'),
-          edge('Post', 'EndEvent_P'),
-        ],
-      ),
-    );
-  });
-
-  it('a body that always throws leaves the loop gateway its entry and its exit, with no back-edge', async () => {
-    const result = await ir(
-      `process P { error Failed while (c) { throw error B(Failed) } end Done }`,
-    );
-    const loopId = makeGatewayLoopId('P_0');
-    expect(result.sequenceFlows).toEqual([
-      edge(loopId, 'B', { condition: '${c}' }),
-      edge(loopId, 'Done', { id: makeDefaultFlowId(loopId) }),
-      edge('StartEvent_P', loopId),
-    ]);
-  });
-
-  it("a body ending in a loop carries that loop's reserved exit on the back-edge", async () => {
-    const outerLoop = makeGatewayLoopId('P_0');
-    const innerLoop = makeGatewayLoopId('P_0_0');
-    const result = await ir(
-      `process P { while (x) { while (b) { user A } } user C }`,
-    );
-    expect(result.sequenceFlows).toEqual([
-      edge(innerLoop, 'A', { condition: '${b}' }),
-      edge('A', innerLoop),
-      edge(outerLoop, innerLoop, { condition: '${x}' }),
-      edge(innerLoop, outerLoop, { id: makeDefaultFlowId(innerLoop) }),
-      edge(outerLoop, 'C', { id: makeDefaultFlowId(outerLoop) }),
-      edge('StartEvent_P', outerLoop),
-      edge('C', 'EndEvent_P'),
-    ]);
-    await expect(irToXml(result)).resolves.toBeDefined();
-  });
-});
-
-describe('astToIr: do-while loop', () => {
-  it('runs the body first, the start entering it rather than the gateway, then loops back on the condition', async () => {
+  it('runs a do-while body first, the start entering it rather than the gateway', async () => {
     const loopId = makeGatewayLoopId('P_0');
     const defaultFlowId = makeDefaultFlowId(loopId);
-
     expect(await ir(`process P { do { user R } while (rejected) }`)).toEqual(
       processIr(
         'P',
@@ -420,685 +142,216 @@ describe('astToIr: do-while loop', () => {
   });
 });
 
-describe('astToIr: goto', () => {
-  const splitId = makeGatewaySplitId('P_2');
-  const joinId = makeGatewayJoinId('P_2');
-  it.each([
-    [
-      'lands the flow out of the step before it on the target, minting no node of its own',
-      `user A goto Foo user Foo end Done`,
-      ['StartEvent_P', 'A', 'Foo', 'Done'],
-      [edge('A', 'Foo'), edge('Foo', 'Done'), edge('StartEvent_P', 'A')],
-    ],
-    [
-      'ends the chain, so no implicit end follows it',
-      `user A goto A`,
-      ['StartEvent_P', 'A'],
-      [edge('A', 'A'), edge('StartEvent_P', 'A')],
-    ],
-    [
-      // Only leaf statements carry a name, so a goto into a compound names the
-      // first statement of its body and bypasses the split.
-      "names a compound body's first statement, which the split still routes to itself",
-      `user A goto Inner if (x) { user Inner }`,
-      ['StartEvent_P', 'A', splitId, joinId, 'Inner', 'EndEvent_P'],
-      [
-        edge('A', 'Inner'),
-        edge(splitId, 'Inner', { condition: '${x}' }),
-        edge('Inner', joinId),
-        edge(splitId, joinId, { id: makeDefaultFlowId(splitId) }),
-        edge('StartEvent_P', 'A'),
-        edge(joinId, 'EndEvent_P'),
-      ],
-    ],
-  ])('%s', async (_title, statements, elementIds, flows) => {
-    const result = await ir(`process P { ${statements} }`);
-    expect(allElementIds(result)).toEqual(elementIds);
-    expect(result.sequenceFlows).toEqual(flows);
-  });
-});
-
-describe('astToIr: authored names against synthesized ids', () => {
-  // Gateway ids are positional and never consult `taken`; only the implicit
-  // start and end ids do.
-  it.each([
-    ['user EndEvent_P'],
-    ['step EndEvent_P'],
-    ['service EndEvent_P(topic: "t")'],
-    ['send EndEvent_P(class: "c")'],
-    ['receive EndEvent_P'],
-    ['decide EndEvent_P(decision: "d")'],
-    ['script EndEvent_P ```js\nx = 1;\n```'],
-    ['call EndEvent_P(process: "p")'],
-    ['await message EndEvent_P("M")'],
-  ])(
-    '`%s` reserves its name against the synthesized end',
-    async (statement) => {
-      await expectCollidedEnd(`process P { ${statement} }`);
-    },
-  );
-});
-
-describe('astToIr: attribute mapping', () => {
-  // Where each header key lands. The lowering reads the six one by one, so
-  // this pairing is what keeps it from drifting behind the vocabulary.
-  const HEADER_FIELD_BY_KEY: Readonly<Record<string, keyof BpmnProcess>> = {
-    label: 'name',
-    documentation: 'documentation',
-    versionTag: 'versionTag',
-    historyTimeToLive: 'historyTimeToLive',
-    candidateStarterUsers: 'candidateStarterUsers',
-    candidateStarterGroups: 'candidateStarterGroups',
-  };
-
-  it('lowers every header key the vocabulary declares', async () => {
-    expect(Object.keys(HEADER_FIELD_BY_KEY)).toEqual(PROCESS_HEADER_KEYS);
-
-    for (const [key, field] of Object.entries(HEADER_FIELD_BY_KEY)) {
-      const result = await ir(`process P(${key}: "carried") { user A }`);
-      expect(result[field], key).toBe('carried');
-    }
-  });
-
-  it('maps user assignee/formKey and service class to IR fields', async () => {
-    const result = await ir(`process P {
-      user T(label: "Task", assignee: "demo", formKey: "embedded:form")
-      service S(label: "Svc", class: "com.example.Delegate")
-    }`);
-
-    const task = only(result, 'userTask');
-    expect(task).toEqual({
-      kind: 'userTask',
-      id: 'T',
-      name: 'Task',
-      assignee: 'demo',
-      formKey: 'embedded:form',
-    });
-
-    const svc = only(result, 'serviceTask');
-    expect(svc).toEqual({
-      kind: 'serviceTask',
-      id: 'S',
-      name: 'Svc',
-      binding: classBinding('com.example.Delegate'),
-    });
-  });
-
-  it.each([
-    ['a bare header leaves every key out', `process P { user A }`, {}],
-    [
-      'a duplicated versionTag keeps the first (the validator owns the diagnostic)',
-      `process p(versionTag: "1.4", versionTag: "2.0") { user A }`,
-      { versionTag: '1.4' },
-    ],
-    [
-      'a label and a version tag ride the head beside a var declaration',
-      `process p(label: "Invoice", versionTag: "1.4") { var amount: number user A }`,
-      { name: 'Invoice', versionTag: '1.4' },
-    ],
-  ])('%s', async (_title, source, expected) => {
-    const {
-      name,
-      versionTag,
-      historyTimeToLive,
-      candidateStarterUsers,
-      candidateStarterGroups,
-    } = await ir(source);
-    expect({
-      name,
-      versionTag,
-      historyTimeToLive,
-      candidateStarterUsers,
-      candidateStarterGroups,
-    }).toEqual({
-      name: undefined,
-      versionTag: undefined,
-      historyTimeToLive: undefined,
-      candidateStarterUsers: undefined,
-      candidateStarterGroups: undefined,
-      ...expected,
-    });
-  });
-});
-
-describe('astToIr: documentation setting', () => {
-  const docOf = (container: FlowContainer, id: string): string | undefined => {
-    const node = byId(container, id);
-    return 'documentation' in node ? node.documentation : undefined;
-  };
-
-  it('carries documentation into the IR on the process header and on every element kind that takes it', async () => {
-    const result = await ir(`process P(documentation: "Process notes") {
-      start S(documentation: "Start notes")
-      user U(documentation: "User notes")
-      service V(documentation: "Service notes", class: "x.C")
-      script SC(documentation: "Script notes") \`\`\`js
-x = 1;
-\`\`\`
-      step ST(documentation: "Step notes")
-      send SN(documentation: "Send notes", class: "x.C")
-      receive RV(documentation: "Receive notes")
-      decide DC(documentation: "Decide notes", decision: "d")
-      subprocess SP(documentation: "Subprocess notes") { user X }
-      call CA(documentation: "Call notes", process: "other")
-      end E(documentation: "End notes")
-    }`);
-
-    const carrierIds = [
-      'S',
-      'U',
-      'V',
-      'SC',
-      'ST',
-      'SN',
-      'RV',
-      'DC',
-      'SP',
-      'CA',
-      'E',
-    ];
-    expect([
-      ['P', result.documentation],
-      ...carrierIds.map((id) => [id, docOf(result, id)]),
-    ]).toEqual([
-      ['P', 'Process notes'],
-      ['S', 'Start notes'],
-      ['U', 'User notes'],
-      ['V', 'Service notes'],
-      ['SC', 'Script notes'],
-      ['ST', 'Step notes'],
-      ['SN', 'Send notes'],
-      ['RV', 'Receive notes'],
-      ['DC', 'Decide notes'],
-      ['SP', 'Subprocess notes'],
-      ['CA', 'Call notes'],
-      ['E', 'End notes'],
-    ]);
-  });
-});
-
-describe('astToIr: service task binding variants', () => {
-  it.each([
-    [
-      'reads a dotted bareword `class` as a plain Java path, stripping the ${...} wrapper',
-      'class: com.example.X',
-      classBinding('com.example.X'),
-    ],
-    [
-      'maps `topic` to the external-worker binding',
-      'topic: "shipping"',
-      externalBinding('shipping'),
-    ],
-    [
-      'maps `expression: "${...}"` to binding {kind:"expression"}, the raw ${...} carried verbatim',
-      'expression: "${bean.method(execution)}"',
-      exprBinding('${bean.method(execution)}'),
-    ],
-    [
-      'maps `delegate: "${...}"` to binding {kind:"delegateExpression"} (friendly alias)',
-      'delegate: "${beanName}"',
-      delegateBinding('${beanName}'),
-    ],
-    [
-      'wraps a bareword `delegate: chargeService` (no quotes) in ${...} rather than stripping it',
-      'delegate: chargeService',
-      delegateBinding('${chargeService}'),
-    ],
-    [
-      // Unlike `class`, whose dotted-bareword value is a plain Java path and
-      // gets the ${...} wrapper stripped, `expression`/`delegate` must keep the
-      // wrapper so Operaton evaluates the value as EL, not a literal string.
-      'wraps a dotted-VarRef `expression: svc.status` (no quotes) in ${...} rather than stripping it',
-      'expression: svc.status',
-      exprBinding('${svc.status}'),
-    ],
-    [
-      'lower-cases `type: "Mail"` to the engine discriminator it compares case-insensitively',
-      'type: "Mail"',
-      builtinBinding('mail'),
-    ],
-    [
-      'reads a bareword `type: shell` like a quoted one',
-      'type: shell',
-      builtinBinding('shell'),
-    ],
-    [
-      'binds nothing for a `type` value the engine has no behaviour for, leaving it to the validator',
-      'type: "ftp"',
-      classBinding(''),
-    ],
-  ])('%s', async (_title, member, binding) => {
-    const result = await ir(`process P { service S(${member}) }`);
-    expect(only(result, 'serviceTask').binding).toEqual(binding);
-  });
-
-  const TAGS = [
-    ['service', undefined],
-    ['send', 'send'],
-    ['decide', 'businessRule'],
-  ] as const;
-  const BUILTINS = [
-    [
-      'mail',
-      'field to = "a@b" field text = "t"',
-      [
-        { name: 'to', value: 'a@b' },
-        { name: 'text', value: 't' },
-      ],
-    ],
-    [
-      'shell',
-      'field command = "echo" field arg1 = "x" field outputVariable = "o"',
-      [
-        { name: 'command', value: 'echo' },
-        { name: 'arg1', value: 'x' },
-        { name: 'outputVariable', value: 'o' },
-      ],
-    ],
-  ] as const;
-  it.each(
-    TAGS.flatMap(([tag, element]) =>
-      BUILTINS.map(
-        ([type, fields, injected]) =>
-          [tag, type, element, fields, injected] as const,
-      ),
-    ),
-  )(
-    'a %s task with type: "%s" lowers to the builtin binding carrying its fields in source order, resultVariable staying on the node',
-    async (tag, type, element, fields, injected) => {
-      const result = await ir(
-        `process P { ${tag} S(type: "${type}", resultVariable: "r") { ${fields} } }`,
-      );
-      expect(only(result, 'serviceTask')).toEqual({
-        kind: 'serviceTask',
-        id: 'S',
-        binding: builtinBinding(type, [...injected]),
-        resultVariable: 'r',
-        ...(element === undefined ? {} : { element }),
-      });
-    },
-  );
-});
-
-describe('astToIr: script task', () => {
-  it.each([
-    [
-      'maps a fenced ```js``` script to scriptTask{format:"javascript", code:<inner body>}',
-      'process P { script total ```js\ntotal = amount * 1.1;\n``` }',
-    ],
-    [
-      'drops a trailing \\r from a \\r\\n-terminated opening fence line',
-      'process P { script total ```js\r\ntotal = amount * 1.1;\n``` }',
-    ],
-    [
-      // `ScriptingEngines.getScriptEngineForLanguage` lowercases the language
-      // before the lookup, so a mixed-case tag lowers to the canonical
-      // spelling.
-      'lowers a mixed-case fence tag to its canonical scriptFormat',
-      'process P { script total ```JS\ntotal = amount * 1.1;\n``` }',
-    ],
-  ])('%s', async (_title, source) => {
-    expect(only(await ir(source), 'scriptTask')).toEqual(
-      scriptTask('total', 'javascript', 'total = amount * 1.1;\n'),
-    );
-  });
-});
-
-describe('astToIr: task-kind lowering (step/send/receive/decide)', () => {
-  it('step S(label: "Label") lowers to a task node with no other key', async () => {
-    const result = await ir('process P { step S(label: "Label") }');
-    expect(only(result, 'task')).toEqual({
-      kind: 'task',
-      id: 'S',
-      name: 'Label',
-    });
-  });
-
-  it('send binds exactly as a service task does, tagged element: "send"', async () => {
-    const classed = await ir('process P { send N(class: "com.example.Send") }');
-    expect(only(classed, 'serviceTask')).toEqual({
-      kind: 'serviceTask',
-      id: 'N',
-      binding: classBinding('com.example.Send'),
-      element: 'send',
-    });
-
-    const external = await ir('process P { send N(topic: "t") }');
-    expect(only(external, 'serviceTask').binding).toEqual(externalBinding('t'));
-  });
-
-  it('receive with a message key lowers with messageName; with none, no messageName key at all', async () => {
-    const named = await ir('process P { receive R(message: "OrderPaid") }');
-    expect(only(named, 'receiveTask')).toEqual({
-      kind: 'receiveTask',
-      id: 'R',
-      messageName: 'OrderPaid',
-    });
-
-    const unnamed = only(await ir('process P { receive R }'), 'receiveTask');
-    expect(unnamed).toEqual({ kind: 'receiveTask', id: 'R' });
-    expect('messageName' in unnamed).toBe(false);
-  });
-
-  const decideBinding = async (member: string) =>
-    only(
-      await ir(
-        `process P { decide D${parens('decision: "riskRating"', member)} }`,
-      ),
-      'serviceTask',
-    ).binding;
-
-  it('decide with a decision key lowers to element: "businessRule" with a decision binding', async () => {
-    const result = await ir('process P { decide D(decision: "riskRating") }');
-    expect(only(result, 'serviceTask')).toEqual({
-      kind: 'serviceTask',
-      id: 'D',
-      binding: { kind: 'decision', decisionRef: 'riskRating' },
-      element: 'businessRule',
-    });
-  });
-
-  it.each([
-    ['binding: latest', { binding: { kind: 'latest' } }],
-    ['version: 3', { binding: { kind: 'version', version: '3' } }],
-    ['mapDecisionResult: singleEntry', { mapDecisionResult: 'singleEntry' }],
-  ])(
-    '`%s` lowers verbatim alongside the decision reference',
-    async (member, extra) => {
-      expect(await decideBinding(member)).toEqual({
-        kind: 'decision',
-        decisionRef: 'riskRating',
-        ...extra,
-      });
-    },
-  );
-
-  it('decide falling through to a class binding when no decision key is written', async () => {
-    const result = await ir('process P { decide D(class: "c") }');
-    expect(only(result, 'serviceTask')).toEqual({
-      kind: 'serviceTask',
-      id: 'D',
-      binding: classBinding('c'),
-      element: 'businessRule',
-    });
-  });
-
-  it.each([
-    ['step', ''],
-    ['send', 'class: "c"'],
-    ['receive', ''],
-    ['decide', 'decision: "d"'],
-  ])(
-    '%s carries input/output parameters and engine settings into the IR',
-    async (keyword, binding) => {
-      const settings = parens(binding, 'asyncBefore: true', 'jobPriority: 5');
-      const result = await ir(
-        `process P { ${keyword} X${settings} { input a = "x" output b = "y" } }`,
-      );
-      const el = byId(result, 'X') as {
-        inputParameters?: unknown;
-        outputParameters?: unknown;
-        asyncBefore?: boolean;
-        jobPriority?: string;
-      };
-      expect(el.inputParameters).toEqual([
-        { name: 'a', value: textValue('x') },
-      ]);
-      expect(el.outputParameters).toEqual([
-        { name: 'b', value: textValue('y') },
-      ]);
-      expect(el.asyncBefore).toBe(true);
-      expect(el.jobPriority).toBe('5');
-    },
-  );
-});
-
-describe('astToIr: empty model error', () => {
+describe('astToIr: source the validator rejects still lowers', () => {
   it('throws when the model contains no process definitions', async () => {
     const doc = await parse('');
     expect(() => astToIr(doc.parseResult.value)).toThrow(
       /no process definitions/i,
     );
   });
-});
 
-describe('astToIr: sibling-branch coordinate uniqueness', () => {
-  it('gives a nested compound in each if-branch kind its own coordinate segment', async () => {
+  it('keeps the first of a duplicated header key or error code, binds nothing for an unknown service type, and stores no call binding for an unknown strategy', async () => {
     const result = await ir(
-      `process P {
-        if (a) { if (b) { user X } }
-        else if (c) { if (d) { user Y } }
-        else { if (e) { user Z } }
-      }`,
+      'process p(versionTag: "1.4", versionTag: "2.0") {' +
+        ' error PF(message: "first") error Repeated(code: "PF", message: "second")' +
+        ' service S(type: "ftp")' +
+        ' call C(process: "p", binding: weekly)' +
+        ' call Empty { } }',
     );
-    expect(allElementIds(result)).toEqual([
-      'StartEvent_P',
-      'Gateway_P_0_split',
-      'Gateway_P_0_join',
-      'Gateway_P_0_t_0_split',
-      'Gateway_P_0_t_0_join',
-      'X',
-      'Gateway_P_0_e0_0_split',
-      'Gateway_P_0_e0_0_join',
-      'Y',
-      'Gateway_P_0_e_0_split',
-      'Gateway_P_0_e_0_join',
-      'Z',
-      'EndEvent_P',
+    expect([
+      result.versionTag,
+      result.errorDecls,
+      only(result, 'serviceTask').binding,
+      byId(result, 'C'),
+      (byId(result, 'Empty') as CallActivity).calledElement,
+    ]).toEqual([
+      '1.4',
+      [{ name: 'PF', code: 'PF', message: 'first' }],
+      classBinding(''),
+      { kind: 'callActivity', id: 'C', calledElement: 'p' },
+      '',
     ]);
   });
-});
 
-describe('astToIr: synthesized ids never collide', () => {
-  it('compounds nested in sibling parallel branches and in both loop bodies keep distinct gateway ids', async () => {
-    const result = await ir(`process P {
-      while (a) { if (b) { user X } }
-      do { if (c) { user Y } } while (d)
-      parallel { { while (e) { user Z } } { while (f) { user W } } }
-    }`);
-    const ids = allElementIds(result);
-    expect(ids.filter((id, i) => ids.indexOf(id) !== i)).toEqual([]);
-  });
-
-  // The four shapes that reserve a default-flow id before pushing the flow. A
-  // statement named `default` reached from the same gateway would take that
-  // `Flow_<gateway>_default` for its own incoming flow, so the claim has to
-  // precede the branch.
-  const RESERVING_SHAPES = [
-    `process P { if (a) { user default } else { user B } }`,
-    `process P { parallel { if (a) { user default } else { user B } } }`,
-    `process P { while (a) { user default } }`,
-    `process P { do { user default } while (a) }`,
-  ];
-
-  it('claims a gateway default-flow id, so no two sequence flows share one', async () => {
-    const shared: Record<string, string[]> = {};
-    for (const source of RESERVING_SHAPES) {
-      const ids = (await ir(source)).sequenceFlows.map((f) => f.id);
-      shared[source] = ids.filter((id, i) => ids.indexOf(id) !== i);
-    }
-
-    expect(shared).toEqual(
-      Object.fromEntries(RESERVING_SHAPES.map((source) => [source, []])),
+  // A field with nowhere to go is dropped, a missing code catches all, and a
+  // word the position does not admit falls back to the error kind its
+  // validator message speaks of.
+  it('lowers every handler head, whatever it carries', async () => {
+    await expectLowering(
+      [
+        ['on error("")', errorDef('')],
+        ['on error(X, coed: c)', errorDef('X')],
+        ['on error(PF, code: "LITERAL")', errorDef('PF')],
+        ['on escalation', { kind: 'escalation' }],
+        ['on message', messageDef('')],
+        ['on message("X", code: c)', messageDef('X')],
+        ['on timer', timerDef('duration', '')],
+        ['on condition', conditionDef('${true}')],
+        ['on compensation("X", code: c)', { kind: 'compensation' }],
+        ['on banana("X")', errorDef('X')],
+        ['on banana(every: "x")', errorDef()],
+      ],
+      (head) => `process p { ${CODE_DECLS} ${head} { } }`,
+      (result) =>
+        only(subProcess(result, makeEventSubProcessId('p_0')), 'startEvent')
+          .eventDefinition,
     );
   });
 
-  it('holds no id back for a split that weighs nothing, so a `default` beside it keeps the plain one', async () => {
-    // An AND split leaves no branch out, so it names no fallback; claiming the
-    // id anyway would move the authored collider onto a suffix for nothing.
+  // BPMN has no intermediate error throw, so an unadmitted word falls back to
+  // `error` for a throw and to `escalation` for an emit.
+  it('lowers every throw and emit trigger, whatever it names', async () => {
+    const thrown = makeThrowEventId('p_1');
+    const end = (eventDefinition: unknown) => ({
+      kind: 'endEvent',
+      id: thrown,
+      eventDefinition,
+    });
+    const emitted = (eventDefinition: unknown) => ({
+      kind: 'intermediateThrowEvent',
+      id: thrown,
+      eventDefinition,
+    });
+    await expectLowering(
+      [
+        ['throw compensation("X")', end({ kind: 'compensation' })],
+        ['throw banana("X")', end(errorDef('X'))],
+        ['throw timer("X")', end(errorDef('X'))],
+        ['emit signal', emitted(signalDef(''))],
+        ['emit error(X)', emitted(escalationDef('X'))],
+        ['emit banana("X")', emitted(escalationDef('X'))],
+      ],
+      (statement) =>
+        `process p { ${CODE_DECLS} service A(class: "x.A") ${statement} service B(class: "x.B") }`,
+      (result) => byId(result, thrown),
+    );
+  });
+
+  it('drops a listener, field, form binding or run key with nowhere to go, and an end trigger an end does not take', async () => {
     const result = await ir(
-      `process P { parallel { { user default } { user B } } }`,
+      'process p { escalation Late' +
+        ' user T { on start on nonsense(class: "x") }' +
+        ' service S(class: "x.S") { on create(class: "x.C") }' +
+        ' service Ship(topic: "shipping") { field greeting = "hello" }' +
+        ' service Run(expression: "${bean.run()}") { field greeting = "hello" }' +
+        ' user Review(formRef: "review-form") { on assignment ```groovy\nx = 1\n``` { field role = "clerk" } }' +
+        ' step X(runAsyncBefore: true, runRetryCycle: "R2/PT1M")' +
+        ' end E escalation(Late) }',
     );
-
-    const into = result.sequenceFlows.find((f) => f.targetRef === 'default');
-    expect(into?.id).toBe('Flow_Gateway_P_0_fork_default');
-  });
-});
-
-describe('astToIr: sub-process lowering', () => {
-  it('lowers a sub-process body into its own container, the parent seeing one activity', async () => {
-    expect(
-      await ir(`process p { subprocess S { user A(assignee: "x") } }`),
-    ).toEqual(
-      processIr(
-        'p',
-        [
-          { kind: 'startEvent', id: 'StartEvent_p' },
-          {
-            kind: 'subProcess',
-            id: 'S',
-            flowElements: [
-              { kind: 'startEvent', id: 'StartEvent_S' },
-              { kind: 'userTask', id: 'A', assignee: 'x' },
-              { kind: 'endEvent', id: 'EndEvent_S' },
-            ],
-            sequenceFlows: [edge('StartEvent_S', 'A'), edge('A', 'EndEvent_S')],
-          },
-          { kind: 'endEvent', id: 'EndEvent_p' },
+    expect(result.flowElements.slice(1)).toEqual([
+      {
+        kind: 'userTask',
+        id: 'T',
+        executionListeners: [{ event: 'start', binding: classBinding('') }],
+      },
+      { kind: 'serviceTask', id: 'S', binding: classBinding('x.S') },
+      { kind: 'serviceTask', id: 'Ship', binding: externalBinding('shipping') },
+      {
+        kind: 'serviceTask',
+        id: 'Run',
+        binding: exprBinding('${bean.run()}'),
+      },
+      {
+        kind: 'userTask',
+        id: 'Review',
+        taskListeners: [
+          { event: 'assignment', binding: scriptValue('groovy', 'x = 1\n') },
         ],
-        [edge('StartEvent_p', 'S'), edge('S', 'EndEvent_p')],
-      ),
-    );
+      },
+      { kind: 'task', id: 'X' },
+      { kind: 'endEvent', id: 'E' },
+    ]);
   });
 
-  it('honors explicit start/end inside the body (no synthesized events)', async () => {
+  it('lowers a handler whose host does not resolve to a boundary event all the same', async () => {
+    // The lowering keys on the host slot, not on resolution.
     const result = await ir(
-      `process p { subprocess S { start In user A(assignee: "x") end Out } }`,
+      'process p { service A(class: "x.A") on Missing: timer("PT1H") { user R } }',
     );
-    expect(subProcess(result, 'S')).toEqual({
-      kind: 'subProcess',
-      id: 'S',
-      flowElements: [
-        { kind: 'startEvent', id: 'In' },
-        { kind: 'userTask', id: 'A', assignee: 'x' },
-        { kind: 'endEvent', id: 'Out' },
-      ],
-      sequenceFlows: [edge('In', 'A'), edge('A', 'Out')],
+    expect(only(result, 'boundaryEvent')).toEqual({
+      kind: 'boundaryEvent',
+      id: 'Boundary_Missing_timer',
+      attachedToRef: 'Missing',
+      eventDefinition: timerDef('duration', 'PT1H'),
     });
-  });
-
-  it.each([
-    [
-      'roots the body coordinate at the sub-process own structural coordinate',
-      `user Pre subprocess S { if (c) { user A } }`,
-      ['S'],
-      'p_1_0',
-    ],
-    [
-      'composes the coordinate through an if-branch segment',
-      `user A user B if (c) { subprocess S { if (d) { user X } } }`,
-      ['S'],
-      'p_2_t_0_0',
-    ],
-    [
-      'composes the coordinate through a nested sub-process',
-      `user A subprocess Outer { subprocess Inner { if (d) { user X } } }`,
-      ['Outer', 'Inner'],
-      'p_1_0_0',
-    ],
-  ])('%s', async (_title, statements, path, coordinate) => {
-    const sub = path.reduce(
-      (container: FlowContainer, id) => subProcess(container, id),
-      await ir(`process p { ${statements} }`),
-    );
-    expect(xorGatewayIds(sub)).toEqual([
-      makeGatewaySplitId(coordinate),
-      makeGatewayJoinId(coordinate),
-    ]);
-  });
-
-  it('maps an inline label to the container name, an empty body still getting its start/end pair', async () => {
-    const result = await ir(`process p { subprocess S(label: "Handle") { } }`);
-    expect(subProcess(result, 'S')).toEqual({
-      kind: 'subProcess',
-      id: 'S',
-      name: 'Handle',
-      flowElements: [
-        { kind: 'startEvent', id: 'StartEvent_S' },
-        { kind: 'endEvent', id: 'EndEvent_S' },
-      ],
-      sequenceFlows: [edge('StartEvent_S', 'EndEvent_S')],
-    });
-  });
-
-  it('threads the parent chain into and out of the sub-process, goto-targetable', async () => {
-    const result = await ir(
-      `process p {
-        start Begin
-        user Before(assignee: "x")
-        subprocess S { user A(assignee: "x") }
-        user After(assignee: "x")
-        goto S
-      }`,
-    );
-    expect(result.sequenceFlows).toEqual([
-      edge('Begin', 'Before'),
-      edge('Before', 'S'),
-      edge('S', 'After'),
-      edge('After', 'S'),
-    ]);
-  });
-
-  it('collision-resolves name-seeded implicit ids against the process-wide taken set', async () => {
-    const result = await ir(
-      `process p {
-        user EndEvent_S(assignee: "x")
-        subprocess S { user A(assignee: "x") }
-      }`,
-    );
-    expect(allElementIds(result)).toEqual([
-      'StartEvent_p',
-      'EndEvent_S',
-      'S',
-      'EndEvent_p',
-    ]);
-    expect(allElementIds(subProcess(result, 'S'))).toEqual([
-      'StartEvent_S',
-      'A',
-      'EndEvent_S_2',
-    ]);
-  });
-
-  it('lowers everything but the tag identically under both heads', async () => {
-    const tail =
-      'for 2(label: "Try to book and pay", asyncBefore: true) { user A(assignee: "x") }';
-    const attempted = subProcess(
-      await ir(`process p { attempt B ${tail} }`),
-      'B',
-    );
-    const plain = subProcess(
-      await ir(`process p { subprocess B ${tail} }`),
-      'B',
-    );
-    expect(attempted).toEqual({ ...plain, element: 'transaction' });
-  });
-
-  it('tags each block by its own head when they nest', async () => {
-    const result = await ir(
-      `process p { attempt Outer { subprocess Inner { attempt Deep { } } } }`,
-    );
-    const outer = subProcess(result, 'Outer');
-    const inner = subProcess(outer, 'Inner');
-    expect(outer.element).toBe('transaction');
-    expect('element' in inner).toBe(false);
-    expect(subProcess(inner, 'Deep').element).toBe('transaction');
   });
 });
 
-describe('astToIr: call activity lowering', () => {
-  it('lowers a minimal call into the parent chain with no optional fields', async () => {
-    const result = await ir(`process p { call F(process: "fulfilment") }`);
-
-    const startId = makeStartEventId('p', new Set());
-    const endId = makeEndEventId('p', new Set());
-    flow(result, startId, 'F');
-    flow(result, 'F', endId);
-
-    const call = only(result, 'callActivity');
-    expect(call).toEqual(callActivity('F', 'fulfilment'));
+describe('astToIr: normalizations that print back unchanged', () => {
+  it('lowers a fenced script to its canonical format, and a builtin type to its lower-case discriminator', async () => {
+    // Operaton lowercases the script language and compares the builtin type
+    // case-insensitively.
+    const result = await ir(
+      'process P { script A ```JS\nx = 1;\n``` script B ```js\r\nx = 1;\n``` service M(type: "Mail") }',
+    );
+    expect(result.flowElements.slice(1, -1)).toEqual([
+      scriptTask('A', 'javascript', 'x = 1;\n'),
+      scriptTask('B', 'javascript', 'x = 1;\n'),
+      { kind: 'serviceTask', id: 'M', binding: builtinBinding('mail') },
+    ]);
   });
 
-  it('lowers a full-featured call to the exact expected IR literal', async () => {
+  // A bare or quoted collection names a variable to Operaton; every other
+  // spelling becomes an expression or it names a variable nobody declared.
+  // Only a whole-number count prints bare again, so only it lowers bare: a
+  // decimal has no fixed point, and a quoted count is a JUEL string literal.
+  it('lowers a collection or count to a variable name only where Operaton reads one', async () => {
+    await expectLowering(
+      [
+        [
+          'for each line in lines',
+          { collection: 'lines', elementVariable: 'line' },
+        ],
+        [
+          'for each line in "order.lines"',
+          { collection: 'order.lines', elementVariable: 'line' },
+        ],
+        [
+          'for each line in order.lines',
+          { collection: '${order.lines}', elementVariable: 'line' },
+        ],
+        [
+          'for each line in "${order.lines}"',
+          { collection: '${order.lines}', elementVariable: 'line' },
+        ],
+        ['for 3', { cardinality: '3' }],
+        ['for 3.5', { cardinality: '${3.5}' }],
+        ['for "order.lines"', { cardinality: '${"order.lines"}' }],
+        ['for "${n}"', { cardinality: '${n}' }],
+        ['for (n)', { cardinality: '${(n)}' }],
+      ],
+      (clause) => `process P { user X ${clause} }`,
+      (result) => (byId(result, 'X') as Repeatable).loop,
+    );
+  });
+
+  it('declares each used code first, minting a writable name for a code no name could spell', async () => {
+    await expectLowering(
+      [
+        [
+          'error SECOND(message: "second") error FIRST(message: "first") throw error(FIRST)',
+          {
+            errorDecls: [
+              { name: 'FIRST', code: 'FIRST', message: 'first' },
+              { name: 'SECOND', code: 'SECOND', message: 'second' },
+            ],
+          },
+        ],
+        [
+          'throw error("order.failed")',
+          { errorDecls: [{ name: 'order_failed', code: 'order.failed' }] },
+        ],
+        [
+          'emit escalation(MR)',
+          { escalationDecls: [{ name: 'MR', code: 'MR' }] },
+        ],
+      ],
+      (statements) => `process p { ${statements} service A(class: "x.A") }`,
+      ({ errorDecls, escalationDecls }) => ({ errorDecls, escalationDecls }),
+    );
+  });
+
+  it('lowers a full-featured call, wrapping expressions and a bareword mapper in ${...}', async () => {
     const result = await ir(`process p {
       var amount: number
       var tax: number
@@ -1118,10 +371,9 @@ describe('astToIr: call activity lowering', () => {
         out shipmentId
         out shipped = confirmed
       }
+      call V(process: "v", version: 1.5)
     }`);
-
-    const call = only(result, 'callActivity');
-    const expected: CallActivity = {
+    expect(byId(result, 'Fulfilment')).toEqual({
       kind: 'callActivity',
       id: 'Fulfilment',
       name: 'Fulfil order',
@@ -1143,2044 +395,84 @@ describe('astToIr: call activity lowering', () => {
         { kind: 'variable', source: 'shipmentId', target: 'shipmentId' },
         { kind: 'variable', source: 'confirmed', target: 'shipped' },
       ],
-    };
-    expect(call).toEqual(expected);
-  });
-
-  it.each([
-    [
-      'a dotted source is an expression, not a variable',
-      'order.total',
-      '${order.total}',
-    ],
-    ['a literal source is its bare text, not wrapped in ${...}', '"u"', 'u'],
-  ])('%s', async (_title, written, sourceExpression) => {
-    const result = await ir(
-      `process p { call X(process: "p") { in y = ${written} } }`,
-    );
-    expect(only(result, 'callActivity').inMappings).toEqual([
-      { kind: 'expression', sourceExpression, target: 'y' },
-    ]);
-  });
-
-  it('lowers a literal businessKey to its bare text, not wrapped in ${...}', async () => {
-    const result = await ir(
-      `process p { call F(process: "fulfilment", businessKey: "abc") }`,
-    );
-    expect(only(result, 'callActivity').businessKey).toBe('abc');
-  });
-
-  const callBinding = async (member: string) =>
-    only(
-      await ir(`process p { call X${parens('process: "p"', member)} }`),
-      'callActivity',
-    ).binding;
-
-  it.each([
-    ['version: 3', { kind: 'version', version: '3' }],
-    ['version: 1.5', { kind: 'version', version: '1.5' }],
-    ['version: "1.0-GA"', { kind: 'version', version: '1.0-GA' }],
-    ['version: "${v}"', { kind: 'version', version: '${v}' }],
-    ['binding: latest', { kind: 'latest' }],
-    // `version` is read first, so it wins the contradiction the validator flags.
-    ['binding: deployment, version: 2', { kind: 'version', version: '2' }],
-    // Neither `latest` nor `deployment` resolves to a strategy, so none is stored.
-    ['binding: weekly', undefined],
-    ['', undefined],
-  ])('reads `%s` as its version binding', async (member, expected) => {
-    expect(await callBinding(member)).toEqual(expected);
-  });
-
-  it('stays total on an empty body, calledElement falling back to the empty string', async () => {
-    const empty = await ir(`process p { call X { } }`);
-    expect(only(empty, 'callActivity').calledElement).toBe('');
-  });
-});
-
-describe('astToIr: on-handler lowering', () => {
-  it('lowers a handler outside the sequence chain (flows go around it)', async () => {
-    const result = await afterA(
-      'on error(PF) { service R(class: "x.R") }',
-      'error PF',
-    );
-    const handlerId = makeEventSubProcessId('p_1');
-    const startId = makeStartEventId(handlerId, new Set());
-    const endId = makeEndEventId(handlerId, new Set());
-
-    expect(subProcess(result, handlerId)).toEqual({
-      kind: 'subProcess',
-      id: handlerId,
-      triggeredByEvent: true,
-      flowElements: [
-        { kind: 'startEvent', id: startId, eventDefinition: errorDef('PF') },
-        serviceTask('R', classBinding('x.R')),
-        { kind: 'endEvent', id: endId },
-      ],
-      sequenceFlows: [edge(startId, 'R'), edge('R', endId)],
     });
-
-    flow(result, 'StartEvent_p', 'A');
-    flow(result, 'A', 'EndEvent_p');
-    for (const f of result.sequenceFlows) {
-      expect(f.sourceRef).not.toBe(handlerId);
-      expect(f.targetRef).not.toBe(handlerId);
-    }
+    expect((byId(result, 'V') as CallActivity).binding).toEqual({
+      kind: 'version',
+      version: '1.5',
+    });
   });
-
-  it.each([
-    ['on error(PF)', errorDef('PF')],
-    ['on compensation', { kind: 'compensation' }],
-  ])(
-    'honors an explicit start in an `%s` handler as the trigger-carrying start',
-    async (head, expected) => {
-      const result = await ir(
-        `process p { error PF ${head} { start In(label: "Caught") service R(class: "x.R") } }`,
-      );
-      const handler = subProcess(result, makeEventSubProcessId('p_0'));
-      expect(handler.flowElements).toEqual([
-        {
-          kind: 'startEvent',
-          id: 'In',
-          name: 'Caught',
-          eventDefinition: expected,
-        },
-        serviceTask('R', classBinding('x.R')),
-        { kind: 'endEvent', id: makeEndEventId(handler.id, new Set()) },
-      ]);
-    },
-  );
-
-  it('roots the handler body coordinate at its own structural coordinate', async () => {
-    const result = await afterA(
-      `        service B(class: "x.B")
-        on error(PF) {
-          service X(class: "x.X")
-          if (c) { service Y(class: "x.Y") }
-        }
-      `,
-      'error PF',
-    );
-    const handler = subProcess(result, makeEventSubProcessId('p_2'));
-    expect(xorGatewayIds(handler)).toEqual([
-      makeGatewaySplitId('p_2_1'),
-      makeGatewayJoinId('p_2_1'),
-    ]);
-  });
-
-  it.each([
-    ['on error(PF)', errorDef('PF')],
-    ['on compensation', { kind: 'compensation' }],
-  ])(
-    'synthesizes start(def) -> flow -> end for an empty `%s` body',
-    async (head, expected) => {
-      const result = await ir(`process p { error PF ${head} { } }`);
-      const handlerId = makeEventSubProcessId('p_0');
-      const startId = makeStartEventId(handlerId, new Set());
-      const endId = makeEndEventId(handlerId, new Set());
-
-      expect(subProcess(result, handlerId)).toEqual({
-        kind: 'subProcess',
-        id: handlerId,
-        triggeredByEvent: true,
-        flowElements: [
-          { kind: 'startEvent', id: startId, eventDefinition: expected },
-          { kind: 'endEvent', id: endId },
-        ],
-        sequenceFlows: [edge(startId, endId)],
-      });
-    },
-  );
 });
 
-describe('astToIr: on-handler triggers', () => {
-  // Every handler lowers, whatever it carries: a field with nowhere to go is
-  // dropped, a missing code catches all, and a word the position does not
-  // admit falls back to the error kind its validator message speaks of.
-  it.each([
-    ['on error', errorDef()],
-    ['on error("")', errorDef('')],
-    ['on error(X, coed: c)', errorDef('X')],
-    ['on escalation', { kind: 'escalation' }],
-    ['on escalation(LS, code: v)', escalationDef('LS', 'v')],
-    [
-      'on error(PF, code: c, message: m)',
-      errorDef('PF', { codeVariable: 'c', messageVariable: 'm' }),
-    ],
-    ['on error(PF, code: "LITERAL")', errorDef('PF')],
-    ['on message("PaymentReceived")', messageDef('PaymentReceived')],
-    ['on message', messageDef('')],
-    ['on message("X", code: c)', messageDef('X')],
-    ['on signal("X")', signalDef('X')],
-    [
-      'on timer(at: "2024-01-01T00:00:00Z")',
-      timerDef('date', '2024-01-01T00:00:00Z'),
-    ],
-    ['on timer(every: "R/PT1H")', timerDef('cycle', 'R/PT1H')],
-    ['on timer("${dueDate}")', timerDef('duration', '${dueDate}')],
-    ['on timer(at: "${deadline}")', timerDef('date', '${deadline}')],
-    ['on timer', timerDef('duration', '')],
-    ['on timer("PT1H")', timerDef('duration', 'PT1H')],
-    ['on condition(amount > 100)', conditionDef('${amount > 100}')],
-    ['on condition("${bean.check()}")', conditionDef('${bean.check()}')],
-    ['on condition', conditionDef('${true}')],
-    ['on compensation("X", code: c)', { kind: 'compensation' }],
-    ['on banana("X")', errorDef('X')],
-    ['on banana(every: "x")', errorDef()],
-  ])('lowers `%s { }` to %j', async (head, expected) => {
+describe('astToIr: valid source no other test in this package lowers', () => {
+  it('carries the history and starter header keys, joins two starts into one step or the end, and ends an empty alongside boundary on its own end', async () => {
     expect(
-      handlerStart(await ir(`process p { ${CODE_DECLS} ${head} { } }`), 'p_0')
-        .eventDefinition,
-    ).toEqual(expected);
-  });
-
-  it.each([
-    ['on escalation(LS, alongside)', escalationDef('LS')],
-    ['on signal("X", alongside)', signalDef('X')],
-    ['on compensation("X", code: c, alongside)', { kind: 'compensation' }],
-  ])(
-    '`%s` marks the trigger start non-interrupting',
-    async (head, expected) => {
-      const start = handlerStart(
-        await ir(`process p { ${CODE_DECLS} ${head} { } }`),
-        'p_0',
-      );
-      expect(start.eventDefinition).toEqual(expected);
-      expect(start.isInterrupting).toBe(false);
-    },
-  );
-});
-
-describe('astToIr: hosted-handler lowering', () => {
-  it('emits a boundary event attached to the host, with the body inline in the same container', async () => {
-    const result = await afterA(
-      'on A: error(PF) { service R(class: "x.R") }',
-      'error PF',
-    );
-
-    const boundaryId = makeBoundaryEventId('A', 'error', new Set());
-    const boundary = only(result, 'boundaryEvent');
-    expect(boundary.id).toBe(boundaryId);
-    expect(boundary.attachedToRef).toBe('A');
-    expect(boundary.eventDefinition).toEqual(errorDef('PF'));
-    expect(boundary.cancelActivity).toBeUndefined();
-
-    // The boundary follows its host in the element list: the layout engine
-    // needs the host shape before the attacher.
-    const escapeEndId = makeEndEventId(boundaryId, new Set());
-    expect(allElementIds(result)).toEqual([
-      'StartEvent_p',
-      'A',
-      boundaryId,
-      'R',
-      escapeEndId,
-      'EndEvent_p',
-    ]);
-    expect(byId(result, escapeEndId).kind).toBe('endEvent');
-    expect(result.sequenceFlows).toEqual([
-      edge(boundaryId, 'R'),
-      edge('R', escapeEndId),
-      edge('StartEvent_p', 'A'),
-      edge('A', 'EndEvent_p'),
-    ]);
-  });
-
-  it('stores cancelActivity: false for an alongside handler only', async () => {
-    const result = await afterA(
-      'on A: timer("PT2H", alongside) { service R(class: "x.R") }',
-    );
-    const boundary = only(result, 'boundaryEvent');
-    expect(boundary.id).toBe(makeBoundaryEventId('A', 'timer', new Set()));
-    expect(boundary.cancelActivity).toBe(false);
-    expect(boundary.eventDefinition).toEqual(timerDef('duration', 'PT2H'));
-  });
-
-  it('lowers a cancel handler on a block to a cancel event definition', async () => {
-    const result = await ir(
-      `process p { start S attempt B { user A end X cancel } on B: cancel { user H } end E }`,
-    );
-    const boundary = only(result, 'boundaryEvent');
-    expect(boundary.id).toBe(makeBoundaryEventId('B', 'cancel', new Set()));
-    expect(boundary.attachedToRef).toBe('B');
-    expect(boundary.eventDefinition).toEqual({ kind: 'cancel' });
-  });
-
-  it('resolves a goto out of the body onto a main-flow node as a real flow', async () => {
-    const result = await afterA(
-      `        service B(class: "x.B")
-        on A: error(PF) {
-          service R(class: "x.R")
-          goto B
-        }
-      `,
-      'error PF',
-    );
-    const boundaryId = makeBoundaryEventId('A', 'error', new Set());
-    expect(allElementIds(result)).toEqual([
-      'StartEvent_p',
-      'A',
-      'B',
-      boundaryId,
-      'R',
-      'EndEvent_p',
-    ]);
-    expect(result.sequenceFlows).toEqual([
-      edge('A', 'B'),
-      edge('R', 'B'),
-      edge(boundaryId, 'R'),
-      edge('StartEvent_p', 'A'),
-      edge('B', 'EndEvent_p'),
-    ]);
-  });
-
-  it('still yields boundary -> end for an empty body', async () => {
-    const result = await afterA('on A: error(PF) { }', 'error PF');
-    const boundaryId = makeBoundaryEventId('A', 'error', new Set());
-    const endId = makeEndEventId(boundaryId, new Set());
-    flow(result, boundaryId, endId);
-    expect(byId(result, endId).kind).toBe('endEvent');
-  });
-
-  it('suffixes the second boundary id when two handlers share a host and trigger', async () => {
-    const result = await afterA(
-      `        on A: timer("PT1H") { service R(class: "x.R") }
-        on A: timer("PT2H") { service S(class: "x.S") }
-      `,
-    );
-    const boundaries = result.flowElements.filter(
-      (fe) => fe.kind === 'boundaryEvent',
-    );
-    expect(boundaries.map((fe) => fe.id)).toEqual([
-      'Boundary_A_timer',
-      'Boundary_A_timer_2',
-    ]);
-    flow(result, 'Boundary_A_timer', 'R');
-    flow(result, 'Boundary_A_timer_2', 'S');
-  });
-
-  it('lands a handler hosted inside a sub-process in that sub-process container', async () => {
-    const result = await ir(
-      `process p {
-        error PF
-        subprocess S {
-          service A(class: "x.A")
-          on A: error(PF) { service R(class: "x.R") }
-        }
-      }`,
-    );
-    const sub = subProcess(result, 'S');
-    const boundary = only(sub, 'boundaryEvent');
-    expect(boundary.attachedToRef).toBe('A');
-    expect(allElementIds(sub)).toEqual([
-      'StartEvent_S',
-      'A',
-      boundary.id,
-      'R',
-      makeEndEventId(boundary.id, new Set()),
-      'EndEvent_S',
-    ]);
-    expect(allElementIds(result)).toEqual(['StartEvent_p', 'S', 'EndEvent_p']);
-  });
-
-  it('keeps a host-less handler an event sub-process when a hosted one shares the container', async () => {
-    const result = await afterA(
-      `        on A: error(PF) { service R(class: "x.R") }
-        on escalation(LS) { service E(class: "x.E") }
-      `,
-      'error PF escalation LS',
-    );
-    expect(only(result, 'boundaryEvent').attachedToRef).toBe('A');
-    const handlerId = makeEventSubProcessId('p_2');
-    const handler = subProcess(result, handlerId);
-    expect(handler.triggeredByEvent).toBe(true);
-    expect(handler.flowElements.map((fe) => fe.id)).toEqual([
-      makeStartEventId(handlerId, new Set()),
-      'E',
-      makeEndEventId(handlerId, new Set()),
-    ]);
-    expect(only(handler, 'startEvent').eventDefinition).toEqual(
-      escalationDef('LS'),
-    );
-    for (const f of result.sequenceFlows) {
-      expect(f.sourceRef).not.toBe(handlerId);
-      expect(f.targetRef).not.toBe(handlerId);
-    }
-    expect(byId(result, 'R')).toBeDefined();
-  });
-
-  it('lifts a host-less handler written inside a hosted body into the outer container', async () => {
-    const result = await afterA(
-      `        on A: error(PF) {
-          service R(class: "x.R")
-          on escalation(LS) { service E(class: "x.E") }
-        }
-      `,
-      'error PF escalation LS',
-    );
-    // A hosted handler's body is not a scope of its own, so a host-less handler
-    // written inside it guards the whole enclosing container.
-    const handler = result.flowElements.find(
-      (fe): fe is SubProcess =>
-        fe.kind === 'subProcess' && fe.triggeredByEvent === true,
-    );
-    expect(handler).toBeDefined();
-    expect(only(result, 'boundaryEvent').attachedToRef).toBe('A');
-    expect(result.flowElements.find((fe) => fe.id === 'E')).toBeUndefined();
-    expect(byId(handler!, 'E')).toBeDefined();
-  });
-
-  it('carries a hyphenated host name into attachedToRef and the boundary id verbatim', async () => {
-    const result = await ir(
-      `process p {
-        service Check-Stock-2(class: "x.A")
-        on Check-Stock-2: timer("PT1H") { service R(class: "x.R") }
-      }`,
-    );
-    const boundary = only(result, 'boundaryEvent');
-    expect(boundary.attachedToRef).toBe('Check-Stock-2');
-    expect(boundary.id).toBe('Boundary_Check-Stock-2_timer');
-  });
-
-  it('lowers a handler whose host does not resolve to a boundary event all the same', async () => {
-    // An unresolved host is the validator's diagnostic; the lowering keys on
-    // the host slot, not on resolution.
-    const result = await afterA(
-      'on Missing: timer("PT1H") { service R(class: "x.R") }',
-    );
-    const boundary = only(result, 'boundaryEvent');
-    expect(boundary.attachedToRef).toBe('Missing');
-    expect(boundary.id).toBe('Boundary_Missing_timer');
-    expect(
-      result.flowElements.filter((fe) => fe.kind === 'subProcess'),
-    ).toEqual([]);
-  });
-});
-
-const throwChain = (statement: string): Promise<BpmnProcess> =>
-  afterA(
-    `        ${statement}
-        service B(class: "x.B")
-    `,
-    CODE_DECLS,
-  );
-
-describe('astToIr: throw/emit lowering', () => {
-  // A word the position does not admit still lowers: to `error` for a throw,
-  // to `escalation` for an emit, BPMN having no intermediate error throw.
-  it.each([
-    ['throw error(PF)', makeThrowEventId('p_1'), errorDef('PF')],
-    ['throw error', makeThrowEventId('p_1'), errorDef()],
-    ['throw signal("S")', makeThrowEventId('p_1'), signalDef('S')],
-    ['throw escalation Failed(EscX)', 'Failed', escalationDef('X')],
-    ['throw message Sent("Ack")', 'Sent', messageDef('Ack')],
-    ['throw compensation', makeThrowEventId('p_1'), { kind: 'compensation' }],
-    [
-      'throw compensation("X")',
-      makeThrowEventId('p_1'),
-      { kind: 'compensation' },
-    ],
-    ['throw banana("X")', makeThrowEventId('p_1'), errorDef('X')],
-    ['throw timer("X")', makeThrowEventId('p_1'), errorDef('X')],
-  ])(
-    'lowers `%s` to a typed end event with no fall-through',
-    async (statement, throwId, expected) => {
-      const result = await throwChain(statement);
-      expect(byId(result, throwId).kind).toBe('endEvent');
-      expect(definitionOf(result, throwId)).toEqual(expected);
-      expect(result.sequenceFlows).toEqual([
-        edge('A', throwId),
-        edge('StartEvent_p', 'A'),
-        edge('B', 'EndEvent_p'),
-      ]);
-      expect(byId(result, 'B')).toBeDefined();
-    },
-  );
-
-  it.each([
-    ['emit escalation(LS)', makeThrowEventId('p_1'), escalationDef('LS')],
-    ['emit signal Ping("S")', 'Ping', signalDef('S')],
-    ['emit signal', makeThrowEventId('p_1'), signalDef('')],
-    ['emit message("X")', makeThrowEventId('p_1'), messageDef('X')],
-    ['emit compensation Undo', 'Undo', { kind: 'compensation' }],
-    ['emit error(X)', makeThrowEventId('p_1'), escalationDef('X')],
-    ['emit banana("X")', makeThrowEventId('p_1'), escalationDef('X')],
-  ])(
-    'lowers `%s` to an intermediate throw wired into the chain',
-    async (statement, emitId, expected) => {
-      const result = await throwChain(statement);
-      expect(byId(result, emitId).kind).toBe('intermediateThrowEvent');
-      expect(definitionOf(result, emitId)).toEqual(expected);
-      flow(result, 'A', emitId);
-      flow(result, emitId, 'B');
-    },
-  );
-
-  it('lowers the implementation a thrown or emitted message carries', async () => {
-    const thrown = await ir(
-      `process p { throw message Sent("Ack", class: "com.example.Send") }`,
-    );
-    expect(bindingOf(thrown, 'Sent')).toEqual(classBinding('com.example.Send'));
-
-    const emitted = await ir(
-      `process p { emit message Ping("Ack", topic: "send-ack") }`,
-    );
-    expect(bindingOf(emitted, 'Ping')).toEqual(externalBinding('send-ack'));
-  });
-
-  it('lowers a message throw with no implementation with no binding key', async () => {
-    const result = await ir(`process p { throw message Sent("Ack") }`);
-    expect(Object.keys(byId(result, 'Sent'))).not.toContain('binding');
-  });
-});
-
-describe('astToIr: error and escalation declarations', () => {
-  it.each([
-    [
-      'orders declared-but-unused codes by declaration, not use',
-      'error PF(message: "boom") error LS(message: "low")',
-      '',
-      {
-        errorDecls: [
-          { name: 'PF', code: 'PF', message: 'boom' },
-          { name: 'LS', code: 'LS', message: 'low' },
-        ],
-      },
-    ],
-    [
-      'orders a used code ahead of an unused one whatever the header says',
-      'error SECOND(message: "second") error FIRST(message: "first")',
-      'throw error(FIRST)',
-      {
-        errorDecls: [
-          { name: 'FIRST', code: 'FIRST', message: 'first' },
-          { name: 'SECOND', code: 'SECOND', message: 'second' },
-        ],
-      },
-    ],
-    [
-      'keeps the first declaration of a duplicated code',
-      'error PF(message: "first") error Repeated(code: "PF", message: "second")',
-      '',
-      { errorDecls: [{ name: 'PF', code: 'PF', message: 'first' }] },
-    ],
-    ['omits both keys entirely when the process names no code', '', '', {}],
-    [
-      'declares a code only a throw names, so the use site has something to refer to',
-      '',
-      'throw error(PF)',
-      { errorDecls: [{ name: 'PF', code: 'PF' }] },
-    ],
-    [
-      'declares an escalation code only an emit names',
-      '',
-      'emit escalation(MR)',
-      { escalationDecls: [{ name: 'MR', code: 'MR' }] },
-    ],
-    [
-      'mints a writable name for a code no name could spell',
-      '',
-      'throw error("order.failed")',
-      { errorDecls: [{ name: 'order_failed', code: 'order.failed' }] },
-    ],
-    [
-      'takes a declared code from its code setting and the name from the declaration',
-      'error OrderFailed(code: "order.failed", message: "gone")',
-      'throw error(OrderFailed)',
-      {
-        errorDecls: [
-          { name: 'OrderFailed', code: 'order.failed', message: 'gone' },
-        ],
-      },
-    ],
-    [
-      'keeps an escalation declared in the header that nothing raises',
-      'escalation ManualReview',
-      '',
-      { escalationDecls: [{ name: 'ManualReview', code: 'ManualReview' }] },
-    ],
-  ])('%s', async (_title, decls, body, expected) => {
-    const result = await ir(
-      `process p { ${decls} ${body} service A(class: "x.A") }`,
-    );
-    expect({
-      errorDecls: result.errorDecls,
-      escalationDecls: result.escalationDecls,
-    }).toEqual({
-      errorDecls: undefined,
-      escalationDecls: undefined,
-      ...expected,
-    });
-  });
-
-  it('round-trips both declaration lists through XML when declared out of first-use order', async () => {
-    const ir1 = await ir(
-      `process p {
-        error SECOND(message: "second") error FIRST(message: "first")
-        escalation REVIEW
-        throw error(FIRST)
-        emit escalation(REVIEW)
-        throw error(SECOND)
-      }`,
-    );
-    const xml = await irToXml(ir1);
-    const { ir: ir3 } = await xmlToIr(xml);
-    expect(ir3.errorDecls).toEqual(ir1.errorDecls);
-    expect(ir3.escalationDecls).toEqual(ir1.escalationDecls);
-  });
-});
-
-describe('astToIr: handler inside a sub-process', () => {
-  it('lowers a compensation handler out of the sequence chain, rooted at the sub-process body coordinate', async () => {
-    const result = await ir(
-      `process p {
-        subprocess S {
-          service A(class: "x.A")
-          on compensation { service U(class: "x.U") }
-        }
-      }`,
-    );
-    const sub = subProcess(result, 'S');
-    flow(sub, 'StartEvent_S', 'A');
-    flow(sub, 'A', 'EndEvent_S');
-
-    const handlerId = makeEventSubProcessId('p_0_1');
-    const handler = subProcess(sub, handlerId);
-    expect(handler.triggeredByEvent).toBe(true);
-    for (const f of sub.sequenceFlows) {
-      expect(f.sourceRef).not.toBe(handlerId);
-      expect(f.targetRef).not.toBe(handlerId);
-    }
-
-    const start = only(handler, 'startEvent');
-    expect(start.eventDefinition).toEqual({ kind: 'compensation' });
-    expect(start.isInterrupting).toBeUndefined();
-  });
-});
-
-describe('astToIr: await intermediate catch lowering', () => {
-  it('lowers `await message` to an intermediate catch wired into the chain', async () => {
-    const result = await throwChain('await message("M")');
-    const catchId = makeIntermediateCatchEventId('p_1');
-    expect(byId(result, catchId).kind).toBe('intermediateCatchEvent');
-    expect(definitionOf(result, catchId)).toEqual(messageDef('M'));
-    flow(result, 'A', catchId);
-    flow(result, catchId, 'B');
-  });
-
-  it.each([
-    [`process p { await timer("PT1H") }`, timerDef('duration', 'PT1H')],
-    [
-      `process p { await timer(at: "2024-01-01T00:00:00Z") }`,
-      timerDef('date', '2024-01-01T00:00:00Z'),
-    ],
-    [`process p { await timer(every: "R/PT1H") }`, timerDef('cycle', 'R/PT1H')],
-    [
-      'process p { await timer(at: "${deadline}") }',
-      timerDef('date', '${deadline}'),
-    ],
-    [`process p { await signal("S") }`, signalDef('S')],
-    [
-      `process p { await condition(amount > 100) }`,
-      conditionDef('${amount > 100}'),
-    ],
-  ])('%s', async (source, expected) => {
-    const result = await ir(source);
-    expect(definitionOf(result, makeIntermediateCatchEventId('p_0'))).toEqual(
-      expected,
-    );
-  });
-
-  it('gives two catches in one body distinct, non-colliding ids', async () => {
-    const result = await ir(
-      `process p {
-        await message("First")
-        await signal("Second")
-      }`,
-    );
-    const firstId = makeIntermediateCatchEventId('p_0');
-    const secondId = makeIntermediateCatchEventId('p_1');
-    expect(result.flowElements).toEqual([
-      { kind: 'startEvent', id: 'StartEvent_p' },
-      {
-        kind: 'intermediateCatchEvent',
-        id: firstId,
-        eventDefinition: messageDef('First'),
-      },
-      {
-        kind: 'intermediateCatchEvent',
-        id: secondId,
-        eventDefinition: signalDef('Second'),
-      },
-      { kind: 'endEvent', id: 'EndEvent_p' },
-    ]);
-    expect(result.sequenceFlows).toEqual([
-      edge(firstId, secondId),
-      edge('StartEvent_p', firstId),
-      edge(secondId, 'EndEvent_p'),
-    ]);
-  });
-});
-
-describe('astToIr: link pair lowering', () => {
-  it('lowers a link pair as two disconnected nodes carrying one link name: nothing leaves the throw, nothing enters the catch', async () => {
-    const result = await ir(
-      `process p { service A(class: "x.A") emit link ToRetry("Retry") await link AtRetry("Retry") service B(class: "x.B") }`,
-    );
-
-    const linkEvents = result.flowElements
-      .filter((fe) => fe.id === 'ToRetry' || fe.id === 'AtRetry')
-      .map((fe) => [
-        fe.kind,
-        fe.id,
-        'eventDefinition' in fe ? fe.eventDefinition : undefined,
-      ]);
-    expect(linkEvents).toEqual([
-      [
-        'intermediateThrowEvent',
-        'ToRetry',
-        { kind: 'link', linkName: 'Retry' },
-      ],
-      [
-        'intermediateCatchEvent',
-        'AtRetry',
-        { kind: 'link', linkName: 'Retry' },
-      ],
-    ]);
-
-    expect(result.sequenceFlows.map((f) => [f.sourceRef, f.targetRef])).toEqual(
-      [
-        ['A', 'ToRetry'],
-        ['AtRetry', 'B'],
-        ['StartEvent_p', 'A'],
-        ['B', 'EndEvent_p'],
-      ],
-    );
-  });
-});
-
-describe('astToIr: engine attributes (asyncBefore/asyncAfter/exclusive/jobPriority/retryCycle)', () => {
-  const ENGINE_MEMBERS =
-    'asyncBefore: true, asyncAfter: true, exclusive: false, jobPriority: 50, retryCycle: "PT5M"';
-  const ENGINE_SETTINGS = `(${ENGINE_MEMBERS})`;
-  const SET = {
-    asyncBefore: true,
-    asyncAfter: true,
-    exclusive: false,
-    jobPriority: '50',
-    retryCycle: 'PT5M',
-  };
-  const engineFields = (fe: FlowElement): Partial<typeof SET> => {
-    const { asyncBefore, asyncAfter, exclusive, jobPriority, retryCycle } =
-      fe as Partial<typeof SET>;
-    return { asyncBefore, asyncAfter, exclusive, jobPriority, retryCycle };
-  };
-
-  const engineFieldsById = (
-    process: BpmnProcess,
-  ): Record<string, Partial<typeof SET>> =>
-    Object.fromEntries(
-      process.flowElements.map((fe) => [fe.id, engineFields(fe)]),
-    );
-
-  it('every statement kind that takes a block reads all five fields off it', async () => {
-    const result = await ir(
-      [
-        'process p { escalation X',
-        `  start S${ENGINE_SETTINGS}`,
-        `  user T${ENGINE_SETTINGS}`,
-        `  service Sv(class: "x.S", ${ENGINE_MEMBERS})`,
-        `  script Sc(${ENGINE_MEMBERS}) \`\`\`js\nx = 1;\n\`\`\``,
-        `  subprocess Sub${ENGINE_SETTINGS} { }`,
-        `  call C(process: "other", ${ENGINE_MEMBERS})`,
-        `  emit escalation(X, ${ENGINE_MEMBERS})`,
-        `  await message("M", ${ENGINE_MEMBERS})`,
-        `  end E${ENGINE_SETTINGS}`,
-        '}',
-      ].join('\n'),
-    );
-    expect(engineFieldsById(result)).toEqual({
-      S: SET,
-      T: SET,
-      Sv: SET,
-      Sc: SET,
-      Sub: SET,
-      C: SET,
-      [makeThrowEventId('p_6')]: SET,
-      [makeIntermediateCatchEventId('p_7')]: SET,
-      E: SET,
-    });
-
-    // A `throw` is a typed end event, so it cannot share a body with `end`.
-    const thrown = await ir(
-      `process p { error X throw error(X, ${ENGINE_MEMBERS}) }`,
-    );
-    expect(byId(thrown, makeThrowEventId('p_0'))).toMatchObject(SET);
-  });
-});
-
-describe('astToIr: an unauthored optional field is absent, never empty', () => {
-  it('writes no assignment attribute, no parameter list, no listener list, no resultVariable', async () => {
-    const result = await ir(
-      'process p { user T service Sv(class: "x.S") script Sc { } ```js\nx = 1;\n``` }',
-    );
-    expect(only(result, 'userTask')).toEqual({ kind: 'userTask', id: 'T' });
-    expect(only(result, 'serviceTask')).toEqual(
-      serviceTask('Sv', classBinding('x.S')),
-    );
-    expect(only(result, 'scriptTask')).toEqual(
-      scriptTask('Sc', 'javascript', 'x = 1;\n'),
-    );
-  });
-});
-
-describe('astToIr: boolean engine flags store only their non-default value', () => {
-  it.each([
-    ['asyncBefore', true],
-    ['asyncAfter', true],
-    ['exclusive', false],
-  ] as const)(
-    '%s stores %s and stores nothing for the engine default',
-    async (field, nonDefault) => {
-      const stored = await ir(
-        `process p { service S(class: "x", ${field}: ${String(nonDefault)}) }`,
-      );
-      expect(only(stored, 'serviceTask')[field]).toBe(nonDefault);
-
-      const omitted = await ir(
-        `process p { service S(class: "x", ${field}: ${String(!nonDefault)}) }`,
-      );
-      expect(only(omitted, 'serviceTask')[field]).toBeUndefined();
-    },
-  );
-});
-
-describe('astToIr: jobPriority/priority numeric-or-EL reading', () => {
-  it('reads an int literal, a string literal and a ${...} template as bare text', async () => {
-    const jobPriority = async (written: string) =>
-      only(
-        await ir(
-          `process p { service S(class: "x", jobPriority: ${written}) }`,
-        ),
-        'serviceTask',
-      ).jobPriority;
-
-    expect(await jobPriority('50')).toBe('50');
-    expect(await jobPriority('"7"')).toBe('7');
-    expect(await jobPriority('"${priority}"')).toBe('${priority}');
-
-    const task = await ir('process p { user T(priority: 20) }');
-    expect(only(task, 'userTask').priority).toBe('20');
-  });
-});
-
-describe('astToIr: user task assignment attributes', () => {
-  it('maps candidateGroups/candidateUsers/dueDate/followUpDate/priority verbatim', async () => {
-    const result = await ir(
-      `process p { user T(candidateGroups: "sales,support", candidateUsers: "alice,bob", dueDate: "2024-01-01T00:00:00Z", followUpDate: "2024-01-02T00:00:00Z", priority: 50) }`,
-    );
-    expect(only(result, 'userTask')).toEqual({
-      kind: 'userTask',
-      id: 'T',
-      candidateGroups: 'sales,support',
-      candidateUsers: 'alice,bob',
-      dueDate: '2024-01-01T00:00:00Z',
-      followUpDate: '2024-01-02T00:00:00Z',
-      priority: '50',
-    });
-  });
-});
-
-describe('astToIr: resultVariable on service/script tasks', () => {
-  it('maps a resultVariable on both the service task and the script task', async () => {
-    const result = await ir(
-      'process p { service Sv(class: "x.S", resultVariable: "outcome") script Sc(resultVariable: "total") ```js\nx = 1;\n``` }',
-    );
-    expect(only(result, 'serviceTask').resultVariable).toBe('outcome');
-    expect(only(result, 'scriptTask').resultVariable).toBe('total');
-  });
-});
-
-describe('astToIr: engine attributes on `on` handlers, placed by host slot', () => {
-  it("places a host-less handler's engine attributes on the event sub-process node, never on its trigger start event", async () => {
-    const result = await afterA(
-      'on error(PF, asyncBefore: true, jobPriority: 50) { service R(class: "x.R") }',
-      'error PF',
-    );
-    const handler = subProcess(result, makeEventSubProcessId('p_1'));
-    expect(handler.asyncBefore).toBe(true);
-    expect(handler.jobPriority).toBe('50');
-
-    const start = only(handler, 'startEvent');
-    expect(start.asyncBefore).toBeUndefined();
-    expect(start.jobPriority).toBeUndefined();
-  });
-
-  // `BpmnParse.parseTimer` reads the priority and
-  // `DefaultFailedJobParseListener.parseStartEvent` the retry cycle off the
-  // start event itself, never the enclosing sub-process.
-  it.each([
-    [
-      'a timer handler puts the three timer-job keys on its start and nothing on the sub-process',
-      '',
-      {},
-    ],
-    [
-      'the async flags stay on the sub-process, whose continuation job they create',
-      'asyncBefore: true, asyncAfter: true, ',
-      { asyncBefore: true, asyncAfter: true },
-    ],
-  ])('%s', async (_title, asyncFlags, onSubProcess) => {
-    const result = await afterA(
-      `on timer(every: "R/PT1H", ${asyncFlags}jobPriority: 5, exclusive: false, retryCycle: "R1/PT1M", alongside) { service R(class: "x.R") }`,
-    );
-    const handlerId = makeEventSubProcessId('p_1');
-    const startId = makeStartEventId(handlerId, new Set());
-    const endId = makeEndEventId(handlerId, new Set());
-    expect(subProcess(result, handlerId)).toEqual({
-      kind: 'subProcess',
-      id: handlerId,
-      triggeredByEvent: true,
-      flowElements: [
-        {
-          kind: 'startEvent',
-          id: startId,
-          eventDefinition: timerDef('cycle', 'R/PT1H'),
-          isInterrupting: false,
-          exclusive: false,
-          jobPriority: '5',
-          retryCycle: 'R1/PT1M',
-        },
-        serviceTask('R', classBinding('x.R')),
-        { kind: 'endEvent', id: endId },
-      ],
-      sequenceFlows: [edge(startId, 'R'), edge('R', endId)],
-      ...onSubProcess,
-    });
-  });
-
-  it('places a hosted handler engine attributes on the boundary event', async () => {
-    const result = await afterA(
-      'on A: error(PF, asyncBefore: true, jobPriority: 50) { service R(class: "x.R") }',
-      'error PF',
-    );
-    const boundary = only(result, 'boundaryEvent');
-    expect(boundary.asyncBefore).toBe(true);
-    expect(boundary.jobPriority).toBe('50');
-  });
-});
-
-describe('astToIr: input/output parameter value forms', () => {
-  async function firstInput(source: string) {
-    const result = await ir(source);
-    const params = only(result, 'userTask').inputParameters;
-    expect(params).toHaveLength(1);
-    return params![0]!;
-  }
-
-  // The two nested forms (a map inside a list, a list inside a map) are pinned
-  // end to end by `tests/input-output.round-trip.test.ts`.
-  it.each([
-    {
-      form: 'a string literal as text carrying its bare value',
-      written: '"hello"',
-      value: textValue('hello'),
-    },
-    {
-      form: 'a ${...} template body verbatim as text',
-      written: '"${amount}"',
-      value: textValue('${amount}'),
-    },
-    {
-      form: 'a #{...} template body verbatim as text',
-      written: '"#{amount}"',
-      value: textValue('#{amount}'),
-    },
-    {
-      form: 'a bareword variable wrapped in ${...}, evaluated rather than read as fixed text',
-      written: 'amount',
-      value: textValue('${amount}'),
-    },
-    {
-      form: 'a dotted bareword wrapped in ${...} as an EL path, not stripped',
-      written: 'com.example.X',
-      value: textValue('${com.example.X}'),
-    },
-    {
-      form: 'an integer literal wrapped in ${...} so the engine reads it as a number, not fixed text',
-      written: '5',
-      value: textValue('${5}'),
-    },
-    {
-      form: 'a fenced script as its normalized format and inner code',
-      written: '```js\nreturn 1;\n```',
-      value: scriptValue('javascript', 'return 1;\n'),
-    },
-    {
-      form: 'a list literal item by item, in source order',
-      written: '["x", "y"]',
-      value: listValue([textValue('x'), textValue('y')]),
-    },
-    {
-      form: 'a list item by its own form: a bareword wrapped, a literal bare',
-      written: '[amount, "s"]',
-      value: listValue([textValue('${amount}'), textValue('s')]),
-    },
-    {
-      form: 'an empty list literal as an empty item list',
-      written: '[]',
-      value: listValue([]),
-    },
-    {
-      form: 'a map literal, taking a quoted key as bare text',
-      written: '{ k: "v", "with space": "w" }',
-      value: mapValue([
-        mapEntry('k', textValue('v')),
-        mapEntry('with space', textValue('w')),
+      await ir(
+        'process P(historyTimeToLive: "P5D", candidateStarterUsers: "u", candidateStarterGroups: "g") { start A start B message("M") user T end E }',
+      ),
+    ).toEqual({
+      ...processIr('P', [
+        { kind: 'startEvent', id: 'A' },
+        { kind: 'startEvent', id: 'B', eventDefinition: messageDef('M') },
+        { kind: 'userTask', id: 'T' },
+        { kind: 'endEvent', id: 'E' },
       ]),
-    },
-  ] satisfies Array<{ form: string; written: string; value: IoValue }>)(
-    'lowers $form',
-    async ({ written, value }) => {
-      expect(
-        await firstInput(`process p { user T { input a = ${written} } }`),
-      ).toEqual({ name: 'a', value });
-    },
-  );
-});
-
-describe('astToIr: input/output parameter partition and ordering', () => {
-  it('partitions by direction, preserving each direction relative source order', async () => {
-    const result = await ir(
-      `process p { user T {
-        input a = "1"
-        output x = "2"
-        input b = "3"
-        output y = "4"
-      } }`,
-    );
-    const task = only(result, 'userTask');
-    expect(task.inputParameters?.map((param) => param.name)).toEqual([
-      'a',
-      'b',
-    ]);
-    expect(task.outputParameters?.map((param) => param.name)).toEqual([
-      'x',
-      'y',
-    ]);
-  });
-
-  it('reaches every activity kind, and a call activity keeps its variable mappings too', async () => {
-    const result = await ir(
-      `process p {
-        service Sv(class: "x.S") { input a = "1" output b = "2" }
-        script Sc { input a = "1" } \`\`\`js\nx = 1;\n\`\`\`
-        subprocess Sub { input a = "1" } { }
-        call C(process: "sub") { in orderId input a = "1" }
-      }`,
-    );
-    const inputA = [ioParam('a', textValue('1'))];
-    const service = only(result, 'serviceTask');
-    expect(service.inputParameters).toEqual(inputA);
-    expect(service.outputParameters).toEqual([ioParam('b', textValue('2'))]);
-    expect(only(result, 'scriptTask').inputParameters).toEqual(inputA);
-    expect(subProcess(result, 'Sub').inputParameters).toEqual(inputA);
-
-    const call = only(result, 'callActivity');
-    expect(call.inputParameters).toEqual(inputA);
-    expect(call.inMappings).toEqual([
-      { kind: 'variable', source: 'orderId', target: 'orderId' },
-    ]);
-  });
-
-  it('drops a parameter written on an element that carries none', async () => {
-    const result = await ir('process p { start S { input a = "1" } }');
-    expect(Object.keys(only(result, 'startEvent'))).not.toContain(
-      'inputParameters',
-    );
-  });
-});
-
-describe('astToIr: execution listeners', () => {
-  async function firstListener(source: string) {
-    const result = await ir(source);
-    const listeners = only(result, 'serviceTask').executionListeners;
-    expect(listeners).toHaveLength(1);
-    return listeners![0]!;
-  }
-
-  it.each([
-    {
-      form: 'a class binding, stripping the ${...} wrapper off a dotted path',
-      written: 'on start(class: com.example.L)',
-      listener: { event: 'start', binding: classBinding('com.example.L') },
-    },
-    {
-      form: 'an expression binding, ${...} wrapper verbatim',
-      written: 'on end(expression: "${bean.run(execution)}")',
-      listener: {
-        event: 'end',
-        binding: exprBinding('${bean.run(execution)}'),
-      },
-    },
-    {
-      form: 'delegate as a delegateExpression binding, wrapping a bareword',
-      written: 'on end(delegate: auditBean)',
-      listener: { event: 'end', binding: delegateBinding('${auditBean}') },
-    },
-    {
-      form: 'a fenced body as a script binding with a normalized format',
-      written: 'on end ```js\nx = 1;\n```',
-      listener: {
-        event: 'end',
-        binding: scriptValue('javascript', 'x = 1;\n'),
-      },
-    },
-    {
-      form: 'an empty class binding when the listener names none',
-      written: 'on start',
-      listener: { event: 'start', binding: classBinding('') },
-    },
-  ] satisfies Array<{
-    form: string;
-    written: string;
-    listener: ExecutionListener;
-  }>)('reads $form', async ({ written, listener }) => {
-    expect(
-      await firstListener(
-        `process p { service S(class: "x.S") { ${written} } }`,
-      ),
-    ).toEqual(listener);
-  });
-
-  it('keeps several listeners in source order', async () => {
-    const result = await ir(
-      'process p { service S(class: "x.S") { on end(class: "x.B") on start(class: "x.A") } }',
-    );
-    expect(
-      only(result, 'serviceTask').executionListeners?.map(
-        (listener) => listener.event,
-      ),
-    ).toEqual(['end', 'start']);
-  });
-
-  it('reaches every event and activity kind that takes a block', async () => {
-    const result = await ir(
-      `process p {
-        escalation X
-        start S { on end(class: "x.L") }
-        call C(process: "sub") { on end(class: "x.L") }
-        emit escalation(X) { on end(class: "x.L") }
-        await message("M") { on end(class: "x.L") }
-      }`,
-    );
-    const listenersById = Object.fromEntries(
-      result.flowElements.map((fe) => [
-        fe.id,
-        (fe as { executionListeners?: unknown }).executionListeners,
-      ]),
-    );
-    const onEnd = [{ event: 'end', binding: classBinding('x.L') }];
-    expect(listenersById).toMatchObject({
-      S: onEnd,
-      C: onEnd,
-      [makeThrowEventId('p_2')]: onEnd,
-      [makeIntermediateCatchEventId('p_3')]: onEnd,
+      historyTimeToLive: 'P5D',
+      candidateStarterUsers: 'u',
+      candidateStarterGroups: 'g',
+      sequenceFlows: [edge('A', 'T'), edge('B', 'T'), edge('T', 'E')],
     });
-  });
 
-  it('places a host-less handler listener on the event sub-process, not its trigger start', async () => {
-    const result = await afterA(
-      'on error(PF) { on start(class: "x.L") } { service R(class: "x.R") }',
-      'error PF',
-    );
-    const handler = subProcess(result, makeEventSubProcessId('p_1'));
-    expect(handler.executionListeners).toEqual([
-      { event: 'start', binding: classBinding('x.L') },
-    ]);
-    expect(only(handler, 'startEvent').executionListeners).toBeUndefined();
-  });
-
-  it('places a hosted handler listener on the boundary event', async () => {
-    const result = await afterA(
-      'on A: error(PF) { on start(class: "x.L") } { service R(class: "x.R") }',
-      'error PF',
-    );
-    expect(only(result, 'boundaryEvent').executionListeners).toEqual([
-      { event: 'start', binding: classBinding('x.L') },
-    ]);
-  });
-});
-
-describe('astToIr: task listeners', () => {
-  it('splits the task lifecycle events off the execution listeners', async () => {
-    const result = await ir(
-      `process p { user T {
-        on start(class: "x.S")
-        on create(class: "x.C")
-        on assignment(class: "x.A")
-        on end(class: "x.E")
-        on complete(class: "x.K")
-        on update(class: "x.U")
-        on delete(class: "x.D")
-      } }`,
-    );
-    const task = only(result, 'userTask');
-    expect(task.executionListeners?.map((l) => l.event)).toEqual([
-      'start',
-      'end',
-    ]);
-    expect(task.taskListeners?.map((l) => l.event)).toEqual([
-      'create',
-      'assignment',
-      'complete',
-      'update',
-      'delete',
-    ]);
-  });
-
-  it('reads every binding form the execution listeners read', async () => {
-    const result = await ir(
-      'process p { user T { on create(expression: "${bean.run()}") on assignment ```groovy\nx = 1\n``` } }',
-    );
-    expect(only(result, 'userTask').taskListeners).toEqual([
-      { event: 'create', binding: exprBinding('${bean.run()}') },
-      { event: 'assignment', binding: scriptValue('groovy', 'x = 1\n') },
-    ]);
-  });
-
-  it.each([
-    ['after "PT1H"', timerDef('duration', 'PT1H')],
-    ['at "2024-01-01T00:00:00Z"', timerDef('date', '2024-01-01T00:00:00Z')],
-    ['every "R3/PT1H"', timerDef('cycle', 'R3/PT1H')],
-    // The template alternative of the time slot carries its quotes out of the
-    // lexer; this row pins them stripped.
-    ['at "${deadline}"', timerDef('date', '${deadline}')],
-  ])(
-    'carries the `%s` clause of a timeout listener as its timer',
-    async (clause, timer) => {
-      const result = await ir(
-        `process p { user T { on timeout ${clause}(class: "x.T") } }`,
-      );
-      expect(only(result, 'userTask').taskListeners).toEqual([
-        { event: 'timeout', binding: classBinding('x.T'), timer },
-      ]);
-    },
-  );
-
-  it('omits the list when the block declares no task listener', async () => {
-    const result = await ir('process p { user T { on start(class: "x") } }');
-    expect(only(result, 'userTask').taskListeners).toBeUndefined();
-  });
-
-  it.each([
-    [
-      'a task lifecycle event on an element that has none',
-      'service S(class: "x.S") { on create(class: "x.C") }',
-      'S',
-    ],
-    [
-      'a listener whose event word is neither lifecycle',
-      'user T { on nonsense(class: "x") }',
-      'T',
-    ],
-  ])('drops %s, leaving both lists out', async (_title, statement, id) => {
-    const el = byId(await ir(`process p { ${statement} }`), id);
-    expect(Object.keys(el)).not.toContain('executionListeners');
-    expect(Object.keys(el)).not.toContain('taskListeners');
-  });
-});
-
-describe('astToIr: field injection and form references', () => {
-  it('hangs a field list on the class and delegate bindings a task and a listener name, and carries a form reference with its binding', async () => {
-    const service = only(
-      await ir(
-        'process p { service Ship(class: "com.example.Ship") {' +
-          ' field greeting = "hello" field target = "${order.address}" } }',
-      ),
-      'serviceTask',
-    );
-    const send = only(
-      await ir(
-        'process p { send Notify(delegate: "${notifier}") { field channel = "email" } }',
-      ),
-      'serviceTask',
-    );
-    const decide = only(
-      await ir(
-        'process p { decide Rate(class: "com.example.Rate") { field table = "rates" } }',
-      ),
-      'serviceTask',
-    );
-    const user = only(
-      await ir(
-        'process p { user Review(formRef: "review-form", version: 3) {' +
-          ' on start(class: "com.example.Enter") { field level = "INFO" }' +
-          ' on create(delegate: "${assignHook}") { field role = "clerk" } } }',
-      ),
-      'userTask',
-    );
-
-    expect({
-      service: service.binding,
-      send: send.binding,
-      decide: decide.binding,
-      executionListener: user.executionListeners?.[0]?.binding,
-      taskListener: user.taskListeners?.[0]?.binding,
-      formRef: user.formRef,
-    }).toEqual({
-      service: {
-        ...classBinding('com.example.Ship'),
-        fields: [
-          { name: 'greeting', value: 'hello' },
-          { name: 'target', value: '${order.address}' },
+    expect(await ir('process P { start A start B message("M") }')).toEqual(
+      processIr(
+        'P',
+        [
+          { kind: 'startEvent', id: 'A' },
+          { kind: 'startEvent', id: 'B', eventDefinition: messageDef('M') },
+          { kind: 'endEvent', id: 'EndEvent_P' },
         ],
-      },
-      send: {
-        ...delegateBinding('${notifier}'),
-        fields: [{ name: 'channel', value: 'email' }],
-      },
-      decide: {
-        ...classBinding('com.example.Rate'),
-        fields: [{ name: 'table', value: 'rates' }],
-      },
-      executionListener: {
-        ...classBinding('com.example.Enter'),
-        fields: [{ name: 'level', value: 'INFO' }],
-      },
-      taskListener: {
-        ...delegateBinding('${assignHook}'),
-        fields: [{ name: 'role', value: 'clerk' }],
-      },
-      formRef: {
-        key: 'review-form',
-        binding: { kind: 'version', version: '3' },
-      },
-    });
-  });
-
-  it('leaves the field off a binding the engine injects none into, and the form reference off a task naming no binding', async () => {
-    const external = only(
-      await ir(
-        'process p { service Ship(topic: "shipping") { field greeting = "hello" } }',
+        [edge('A', 'EndEvent_P'), edge('B', 'EndEvent_P')],
       ),
-      'serviceTask',
-    );
-    const unbound = await ir(
-      'process p { service Run(expression: "${bean.run()}") { field greeting = "hello" }' +
-        ' user Review(formRef: "review-form") { on assignment ```groovy\nx = 1\n``` { field role = "clerk" } } }',
-    );
-    const user = only(unbound, 'userTask');
-
-    expect({
-      external: external.binding,
-      expression: only(unbound, 'serviceTask').binding,
-      scriptListener: user.taskListeners?.[0]?.binding,
-      formRef: user.formRef,
-    }).toEqual({
-      external: externalBinding('shipping'),
-      expression: exprBinding('${bean.run()}'),
-      scriptListener: scriptValue('groovy', 'x = 1\n'),
-      formRef: undefined,
-    });
-  });
-});
-
-describe('astToIr: external task extras', () => {
-  it('lowers taskPriority, properties and error mappings onto an external binding only, each list omitted when empty', async () => {
-    const process = await ir(
-      'process p { error OrderFailed(code: "order.failed") error TIMEOUT' +
-        ' service Charge(topic: "charge-card", taskPriority: 42) {' +
-        '   property gateway = "stripe" property mode = "live"' +
-        '   error OrderFailed when externalTask.errorMessage == "declined"' +
-        '   error TIMEOUT when externalTask.retries == 0' +
-        ' }' +
-        ' send Notify(topic: "notify-support") { property channel = "email" }' +
-        ' decide Rate(topic: "rate-card") { error OrderFailed when "${flag}" }' +
-        ' service Legacy(class: "com.example.Legacy", taskPriority: 42) {' +
-        '   property gateway = "stripe" error OrderFailed when "${flag}"' +
-        ' } }',
     );
 
-    expect({
-      charge: bindingOf(process, 'Charge'),
-      notify: bindingOf(process, 'Notify'),
-      rate: bindingOf(process, 'Rate'),
-      legacy: bindingOf(process, 'Legacy'),
-    }).toEqual({
-      charge: {
-        ...externalBinding('charge-card'),
-        taskPriority: '42',
-        properties: [
-          { key: 'gateway', value: 'stripe' },
-          { key: 'mode', value: 'live' },
-        ],
-        errorMappings: [
+    expect(
+      await ir('process P { user A on A: signal("S", alongside) { } }'),
+    ).toEqual(
+      processIr(
+        'P',
+        [
+          { kind: 'startEvent', id: 'StartEvent_P' },
+          { kind: 'userTask', id: 'A' },
           {
-            errorCode: 'order.failed',
-            condition: '${externalTask.errorMessage == "declined"}',
+            kind: 'boundaryEvent',
+            id: 'Boundary_A_signal',
+            attachedToRef: 'A',
+            eventDefinition: signalDef('S'),
+            cancelActivity: false,
           },
-          { errorCode: 'TIMEOUT', condition: '${externalTask.retries == 0}' },
+          { kind: 'endEvent', id: 'EndEvent_Boundary_A_signal' },
+          { kind: 'endEvent', id: 'EndEvent_P' },
         ],
-      },
-      notify: {
-        ...externalBinding('notify-support'),
-        properties: [{ key: 'channel', value: 'email' }],
-      },
-      rate: {
-        ...externalBinding('rate-card'),
-        errorMappings: [{ errorCode: 'order.failed', condition: '${flag}' }],
-      },
-      // The engine reads the three off no owner but `parseExternalServiceTask`.
-      legacy: classBinding('com.example.Legacy'),
-    });
-  });
-
-  it('reads taskPriority as an int, a raw EL string or a bare name', async () => {
-    const taskPriority = async (written: string) =>
-      (
-        bindingOf(
-          await ir(
-            `process p { service S(topic: "t", taskPriority: ${written}) }`,
-          ),
-          'S',
-        ) as { taskPriority?: string }
-      ).taskPriority;
-
-    expect(await taskPriority('42')).toBe('42');
-    expect(await taskPriority('"${amount > 1000 ? 90 : 10}"')).toBe(
-      '${amount > 1000 ? 90 : 10}',
-    );
-    expect(await taskPriority('prio')).toBe('${prio}');
-  });
-});
-
-describe('astToIr: start/end triggers', () => {
-  const startS = { kind: 'startEvent', id: 'S' } as const;
-  it.each([
-    [
-      `start S message("OrderReceived")`,
-      { eventDefinition: messageDef('OrderReceived') },
-    ],
-    [`start S signal("Fired")`, { eventDefinition: signalDef('Fired') }],
-    [
-      `start S timer("PT1H")`,
-      { eventDefinition: timerDef('duration', 'PT1H') },
-    ],
-    [
-      `start S timer(at: "2026-08-01T09:00:00")`,
-      { eventDefinition: timerDef('date', '2026-08-01T09:00:00') },
-    ],
-    [
-      `start S timer(every: "R/PT10M")`,
-      { eventDefinition: timerDef('cycle', 'R/PT10M') },
-    ],
-    [
-      `start S condition(amount > 100)`,
-      { eventDefinition: conditionDef('${amount > 100}') },
-    ],
-    [
-      `start S message("M", label: "Scheduled")`,
-      { name: 'Scheduled', eventDefinition: messageDef('M') },
-    ],
-    [`start S(initiator: "starter")`, { initiator: 'starter' }],
-    [
-      `start S message("M") { form { amount: number } }`,
-      {
-        formFields: [{ id: 'amount', type: 'number' }],
-        eventDefinition: messageDef('M'),
-      },
-    ],
-  ])(
-    'lowers `%s` to a start carrying exactly that',
-    async (statement, carried) => {
-      const result = await ir(`process p { ${statement} }`);
-      expect(only(result, 'startEvent')).toEqual({ ...startS, ...carried });
-    },
-  );
-
-  it.each([
-    ['a plain start', `process p { start S user A end E }`, 'startEvent'],
-    ['a plain end', `process p { start S user A end E }`, 'endEvent'],
-    [
-      'an end carrying a trigger it does not take',
-      `process p { escalation Late start S user A end E escalation(Late) }`,
-      'endEvent',
-    ],
-  ] as const)(
-    'lowers %s with no eventDefinition key at all',
-    async (_title, source, kind) => {
-      expect(Object.keys(only(await ir(source), kind))).not.toContain(
-        'eventDefinition',
-      );
-    },
-  );
-
-  it.each([
-    [
-      'a terminate end at process level',
-      `process p { start S user A end E terminate(label: "All stop") }`,
-      [],
-      { kind: 'terminate' },
-    ],
-    [
-      'a cancel end inside an attempt block',
-      `process p { attempt B { end E cancel(label: "All stop") } }`,
-      ['B'],
-      { kind: 'cancel' },
-    ],
-  ] satisfies Array<[string, string, string[], { kind: string }]>)(
-    'lowers %s to its definition, keeping the label',
-    async (_title, source, path, eventDefinition) => {
-      const container = path.reduce(
-        (c: FlowContainer, id) => subProcess(c, id),
-        await ir(source),
-      );
-      expect(only(container, 'endEvent')).toEqual({
-        kind: 'endEvent',
-        id: 'E',
-        name: 'All stop',
-        eventDefinition,
-      });
-    },
-  );
-});
-
-describe('astToIr: repeat clause', () => {
-  const loopOf = async (
-    statement: string,
-  ): Promise<LoopCharacteristics | undefined> =>
-    (byId(await ir(`process P { ${statement} }`), 'X') as Repeatable).loop;
-
-  it.each([
-    [
-      'for each line in lines',
-      { collection: 'lines', elementVariable: 'line' },
-    ],
-    ['for each in lines', { collection: 'lines' }],
-    [
-      'for 2 each line in lines',
-      { cardinality: '2', collection: 'lines', elementVariable: 'line' },
-    ],
-    ['for 2 sequentially', { cardinality: '2', sequential: true }],
-    [
-      'for 2 until (nrOfCompletedInstances >= 2)',
-      {
-        cardinality: '2',
-        completionCondition: '${nrOfCompletedInstances >= 2}',
-      },
-    ],
-  ])('lowers `%s` to %j and to no other key', async (clause, expected) => {
-    expect(await loopOf(`user X ${clause}`)).toEqual(expected);
-  });
-
-  it('leaves out every key the clause did not write', async () => {
-    expect(
-      'elementVariable' in (await loopOf('user X for each in lines'))!,
-    ).toBe(false);
-    expect('sequential' in (await loopOf('user X for 2'))!).toBe(false);
-    expect('loop' in byId(await ir('process P { user X }'), 'X')).toBe(false);
-  });
-
-  // A bare name and a quoted name both name a variable to Operaton; every other
-  // spelling has to become an expression or it names a variable nobody declared.
-  it.each([
-    ['a bare name stays a name', 'for each line in lines', 'lines'],
-    [
-      'a quoted name stays a name',
-      'for each line in "order.lines"',
-      'order.lines',
-    ],
-    [
-      'an accessor becomes an expression',
-      'for each line in order.lines',
-      '${order.lines}',
-    ],
-    [
-      'a raw body stays an expression',
-      'for each line in "${order.lines}"',
-      '${order.lines}',
-    ],
-  ])('%s', async (_title, clause, collection) => {
-    expect((await loopOf(`user X ${clause}`))?.collection).toBe(collection);
-  });
-
-  // Only a whole number prints bare again, so only a whole number may lower
-  // bare: a decimal has no fixed point, and a quoted count is a JUEL string
-  // literal rather than the plain text an attribute value would carry.
-  it.each([
-    ['a literal count emits its digits', 'for 3', '3'],
-    ['a decimal is wrapped', 'for 3.5', '${3.5}'],
-    ['a quoted count is wrapped', 'for "order.lines"', '${"order.lines"}'],
-    ['a raw body emits its expression', 'for "${n}"', '${n}'],
-    ['anything else is wrapped', 'for (n)', '${(n)}'],
-  ])('%s', async (_title, clause, cardinality) => {
-    expect((await loopOf(`user X ${clause}`))?.cardinality).toBe(cardinality);
-  });
-
-  it.each([
-    ['user', 'user X for 2'],
-    ['service', 'service X for 2(class: "c")'],
-    ['script', 'script X for 2 ```js\nx = 1;\n```'],
-    ['step', 'step X for 2'],
-    ['send', 'send X for 2(class: "c")'],
-    ['receive', 'receive X for 2'],
-    ['decide', 'decide X for 2(decision: "d")'],
-    ['subprocess', 'subprocess X for 2 { step Q }'],
-    ['call', 'call X for 2(process: "p")'],
-  ])('a repeated %s carries the loop into the IR', async (_kind, statement) => {
-    expect(await loopOf(statement)).toEqual({ cardinality: '2' });
-  });
-
-  const jobPositionsOf = (
-    node: FlowElement,
-  ): { loop: LoopCharacteristics | undefined; own: JobSettings } => {
-    const {
-      loop,
-      asyncBefore,
-      asyncAfter,
-      exclusive,
-      jobPriority,
-      retryCycle,
-    } = node as Repeatable & JobSettings;
-    return {
-      loop,
-      own: { asyncBefore, asyncAfter, exclusive, jobPriority, retryCycle },
-    };
-  };
-
-  // Both positions in one parens, so a reader taking the other's spelling
-  // shows; `runJobPriority` has no reader in the engine, so it reaches neither.
-  const BOTH_POSITIONS =
-    'asyncBefore: true, jobPriority: 5, retryCycle: "R3/PT10M", runAsyncBefore: true, runAsyncAfter: true, runExclusive: false, runRetryCycle: "R2/PT1M", runJobPriority: 7';
-
-  it.each([
-    ['service', `service X for 2(class: "c", ${BOTH_POSITIONS})`],
-    ['step', `step X for 2(${BOTH_POSITIONS})`],
-    ['subprocess', `subprocess X for 2(${BOTH_POSITIONS}) { step Q }`],
-    ['call', `call X for 2(process: "p", ${BOTH_POSITIONS})`],
-  ])(
-    'the run keys of a repeated %s land on the loop and the element keys on the step',
-    async (_kind, statement) => {
-      expect(
-        jobPositionsOf(byId(await ir(`process P { ${statement} }`), 'X')),
-      ).toEqual({
-        loop: {
-          cardinality: '2',
-          asyncBefore: true,
-          asyncAfter: true,
-          exclusive: false,
-          retryCycle: 'R2/PT1M',
-        },
-        own: { asyncBefore: true, jobPriority: '5', retryCycle: 'R3/PT10M' },
-      });
-    },
-  );
-
-  it('run keys on a statement without a clause lower to nothing', async () => {
-    expect(
-      byId(
-        await ir(
-          'process P { step X(runAsyncBefore: true, runRetryCycle: "R2/PT1M") }',
-        ),
-        'X',
+        [
+          edge('Boundary_A_signal', 'EndEvent_Boundary_A_signal'),
+          edge('StartEvent_P', 'A'),
+          edge('A', 'EndEvent_P'),
+        ],
       ),
-    ).toEqual({ kind: 'task', id: 'X' });
+    );
+  });
+
+  it('lowers the raise forms no round trip here reaches', async () => {
+    await expectLowering(
+      [
+        ['throw escalation Sent(EscX)', escalationDef('X')],
+        ['throw signal Sent("S")', signalDef('S')],
+        ['emit compensation Sent', { kind: 'compensation' }],
+      ],
+      (written) => `process P { escalation EscX(code: "X") user A ${written} }`,
+      (process) => {
+        const node = byId(process, 'Sent');
+        return 'eventDefinition' in node ? node.eventDefinition : undefined;
+      },
+    );
   });
 });
-
-describe('astToIr: conditioned parallel branches', () => {
-  const forkId = makeGatewayForkId('P_0');
-  const joinId = makeGatewayJoinId('P_0');
-  const defaultFlowId = makeDefaultFlowId(forkId);
-
-  // The element is picked by one predicate, a condition on any branch, so an
-  // `else` on its own still lowers to the AND split the braces already say.
-  it.each([
-    ['no branch head', `process P { parallel { { user A } { user B } } }`],
-    [
-      'an else head alone',
-      `process P { parallel { else { user A } { user B } } }`,
-    ],
-  ])(
-    '%s lowers to a parallelGateway pair with no default flow',
-    async (_case, source) => {
-      const result = await ir(source);
-      expect(result.flowElements).toEqual([
-        { kind: 'startEvent', id: 'StartEvent_P' },
-        { kind: 'parallelGateway', id: forkId },
-        { kind: 'parallelGateway', id: joinId },
-        { kind: 'userTask', id: 'A' },
-        { kind: 'userTask', id: 'B' },
-        { kind: 'endEvent', id: 'EndEvent_P' },
-      ]);
-      expect(result.sequenceFlows).toEqual([
-        edge(forkId, 'A'),
-        edge('A', joinId),
-        edge(forkId, 'B'),
-        edge('B', joinId),
-        edge('StartEvent_P', forkId),
-        edge(joinId, 'EndEvent_P'),
-      ]);
-    },
-  );
-
-  it('prunes the AND join when every branch terminates', async () => {
-    const result = await ir(
-      `process P { parallel { { throw error B("e") } { end S } } }`,
-    );
-    expect(result.flowElements).toEqual([
-      { kind: 'startEvent', id: 'StartEvent_P' },
-      { kind: 'parallelGateway', id: forkId },
-      { kind: 'endEvent', id: 'B', eventDefinition: errorDef('e') },
-      { kind: 'endEvent', id: 'S' },
-    ]);
-  });
-
-  it('the first else branch takes the reserved default flow id and a second else is a plain branch', async () => {
-    const result = await ir(
-      `process P { parallel { if (a > 1) { user A } else { user B } else { user C } } }`,
-    );
-
-    const fork = byId(result, forkId) as InclusiveGateway;
-    expect(fork.defaultFlowId).toBe(defaultFlowId);
-    expect(flow(result, forkId, 'B').id).toBe(defaultFlowId);
-    expect(flow(result, forkId, 'B').conditionExpression).toBeUndefined();
-    expect(flow(result, forkId, 'C').id).toBe(`Flow_${forkId}_C`);
-    expect(flow(result, forkId, 'C').conditionExpression).toBeUndefined();
-    expect(
-      result.sequenceFlows.filter(
-        (f) => f.sourceRef === forkId && f.targetRef === joinId,
-      ),
-    ).toEqual([]);
-  });
-
-  it('an empty conditioned branch routes its condition straight to the join', async () => {
-    const result = await ir(
-      `process P { parallel { if (a > 1) { } { user B } } }`,
-    );
-    expect(
-      result.sequenceFlows.filter(
-        (f) => f.sourceRef === forkId && f.targetRef === joinId,
-      ),
-    ).toEqual([edge(forkId, joinId, { condition: '${a > 1}' })]);
-  });
-
-  // A condition on one branch makes both gateways inclusive. Whole element and
-  // flow lists, so a row pins where the fallback runs and that none is written
-  // beside an unconditioned sibling.
-  const inclusive = (id: string, flowId?: string): InclusiveGateway => ({
-    kind: 'inclusiveGateway',
-    id,
-    ...(flowId === undefined ? {} : { defaultFlowId: flowId }),
-  });
-  const start: FlowElement = { kind: 'startEvent', id: 'StartEvent_P' };
-  const end: FlowElement = { kind: 'endEvent', id: 'EndEvent_P' };
-  const task = (id: string): FlowElement => ({ kind: 'userTask', id });
-  const stop = (id: string): FlowElement => ({ kind: 'endEvent', id });
-  it.each([
-    [
-      'an unconditioned sibling always runs, so no fallback is reserved',
-      'parallel { if (a > 1) { user A } { user B } }',
-      [start, inclusive(forkId), inclusive(joinId), task('A'), task('B'), end],
-      [
-        edge(forkId, 'A', { condition: '${a > 1}' }),
-        edge('A', joinId),
-        edge(forkId, 'B'),
-        edge('B', joinId),
-        edge('StartEvent_P', forkId),
-        edge(joinId, 'EndEvent_P'),
-      ],
-    ],
-    [
-      'every branch conditioned reserves the fallback straight to the join',
-      'parallel { if (a > 1) { user A } if (b) { user B } }',
-      [
-        start,
-        inclusive(forkId, defaultFlowId),
-        inclusive(joinId),
-        task('A'),
-        task('B'),
-        end,
-      ],
-      [
-        edge(forkId, 'A', { condition: '${a > 1}' }),
-        edge('A', joinId),
-        edge(forkId, 'B', { condition: '${b}' }),
-        edge('B', joinId),
-        edge(forkId, joinId, { id: defaultFlowId }),
-        edge('StartEvent_P', forkId),
-        edge(joinId, 'EndEvent_P'),
-      ],
-    ],
-    [
-      'with every branch ending, an unconditioned sibling leaves nothing to reach the join',
-      'parallel { if (a > 1) { end X } { end Y } }',
-      [start, inclusive(forkId), stop('X'), stop('Y')],
-      [
-        edge(forkId, 'X', { condition: '${a > 1}' }),
-        edge(forkId, 'Y'),
-        edge('StartEvent_P', forkId),
-      ],
-    ],
-    [
-      'with every branch ending and conditioned, the fallback alone keeps the join',
-      'parallel { if (a > 1) { end X } if (b) { end Y } }',
-      [
-        start,
-        inclusive(forkId, defaultFlowId),
-        inclusive(joinId),
-        stop('X'),
-        stop('Y'),
-        end,
-      ],
-      [
-        edge(forkId, 'X', { condition: '${a > 1}' }),
-        edge(forkId, 'Y', { condition: '${b}' }),
-        edge(forkId, joinId, { id: defaultFlowId }),
-        edge('StartEvent_P', forkId),
-        edge(joinId, 'EndEvent_P'),
-      ],
-    ],
-  ])('%s', async (_title, statement, elements, flows) => {
-    const result = await ir(`process P { ${statement} }`);
-    expect(result.flowElements).toEqual(elements);
-    expect(result.sequenceFlows).toEqual(flows);
-  });
-});
-
-describe('astToIr: race lowering', () => {
-  const raceId = makeGatewayRaceId('P_0');
-  const joinId = makeGatewayJoinId('P_0');
-  const firstCatch = makeIntermediateCatchEventId('P_0_b0');
-  const secondCatch = makeIntermediateCatchEventId('P_0_b1');
-
-  it('lowers to an event-based fork, one catch per branch, and an exclusive join', async () => {
-    const result = await ir(
-      `process P { await { message("M") { user A } timer("P3D") { user B } } }`,
-    );
-
-    expect(result.flowElements.map((fe) => [fe.kind, fe.id])).toEqual([
-      ['startEvent', 'StartEvent_P'],
-      ['eventBasedGateway', raceId],
-      ['exclusiveGateway', joinId],
-      ['intermediateCatchEvent', firstCatch],
-      ['userTask', 'A'],
-      ['intermediateCatchEvent', secondCatch],
-      ['userTask', 'B'],
-      ['endEvent', 'EndEvent_P'],
-    ]);
-    expect(definitionOf(result, firstCatch)).toEqual(messageDef('M'));
-    expect(definitionOf(result, secondCatch)).toEqual(
-      timerDef('duration', 'P3D'),
-    );
-
-    // No flow out of the gateway carries a condition: Operaton builds no
-    // transition there at all and routes through the event scope instead.
-    expect(result.sequenceFlows).toEqual([
-      edge(raceId, firstCatch),
-      edge(firstCatch, 'A'),
-      edge('A', joinId),
-      edge(raceId, secondCatch),
-      edge(secondCatch, 'B'),
-      edge('B', joinId),
-      edge('StartEvent_P', raceId),
-      edge(joinId, 'EndEvent_P'),
-    ]);
-  });
-
-  it('an empty branch flows its catch to the join, and a race whose branches all terminate loses it', async () => {
-    const empty = await ir(
-      `process P { await { message("M") { } signal("S") { user B } } }`,
-    );
-    flow(empty, firstCatch, joinId);
-
-    const terminating = await ir(
-      `process P { error Failed await { message("M") { end Done } signal("S") { throw error B(Failed) } } }`,
-    );
-    expect(allElementIds(terminating)).toEqual([
-      'StartEvent_P',
-      raceId,
-      firstCatch,
-      'Done',
-      secondCatch,
-      'B',
-    ]);
-  });
-
-  it('a branch setting lands on the catch event and a head setting on the gateway, neither crossing over', async () => {
-    const result = await ir(
-      `process P { await (asyncBefore: true) { message("M", asyncAfter: true) { user A } signal("S") { user B } } }`,
-    );
-    expect(byId(result, raceId)).toEqual({
-      kind: 'eventBasedGateway',
-      id: raceId,
-      asyncBefore: true,
-    });
-    expect(byId(result, firstCatch)).toEqual({
-      kind: 'intermediateCatchEvent',
-      id: firstCatch,
-      eventDefinition: messageDef('M'),
-      asyncAfter: true,
-    });
-  });
-
-  it('a name inside a race branch reserves the collision seed', async () => {
-    await expectCollidedEnd(
-      `process P { await { message("M") { user EndEvent_P } signal("S") { user B } } }`,
-    );
-  });
-
-  it('nests with parallel in both directions without an id collision', async () => {
-    const raceInParallel = await ir(
-      `process P {
-        parallel {
-          { await { message("M") { user X } signal("S") { user Y } } }
-          { user Z }
-        }
-      }`,
-    );
-    expect(allElementIds(raceInParallel)).toEqual([
-      'StartEvent_P',
-      makeGatewayForkId('P_0'),
-      joinId,
-      makeGatewayRaceId('P_0_b0_0'),
-      makeGatewayJoinId('P_0_b0_0'),
-      makeIntermediateCatchEventId('P_0_b0_0_b0'),
-      'X',
-      makeIntermediateCatchEventId('P_0_b0_0_b1'),
-      'Y',
-      'Z',
-      'EndEvent_P',
-    ]);
-
-    const parallelInRace = await ir(
-      `process P {
-        await {
-          message("M") { parallel { { user X } { user Y } } }
-          signal("S") { user Z }
-        }
-      }`,
-    );
-    expect(allElementIds(parallelInRace)).toEqual([
-      'StartEvent_P',
-      raceId,
-      joinId,
-      firstCatch,
-      makeGatewayForkId('P_0_b0_0'),
-      makeGatewayJoinId('P_0_b0_0'),
-      'X',
-      'Y',
-      secondCatch,
-      'Z',
-      'EndEvent_P',
-    ]);
-  });
-});
-
-describe('astToIr: gateway settings', () => {
-  const HEAD =
-    'asyncBefore: true, asyncAfter: true, exclusive: false, jobPriority: 5, retryCycle: "R3/PT10M"';
-  const JOIN =
-    'joinAsyncBefore: true, joinAsyncAfter: true, joinExclusive: false, joinJobPriority: prio, joinRetryCycle: "R1/PT1M"';
-  const head = {
-    asyncBefore: true,
-    asyncAfter: true,
-    exclusive: false,
-    jobPriority: '5',
-    retryCycle: 'R3/PT10M',
-  };
-  const join = {
-    asyncBefore: true,
-    asyncAfter: true,
-    exclusive: false,
-    jobPriority: '${prio}',
-    retryCycle: 'R1/PT1M',
-  };
-  const splitId = makeGatewaySplitId('P_0');
-  const forkId = makeGatewayForkId('P_0');
-  const loopId = makeGatewayLoopId('P_0');
-  const raceId = makeGatewayRaceId('P_0');
-  const joinId = makeGatewayJoinId('P_0');
-
-  // Every gateway of the process with what it carries, so a row pins both that
-  // the settings landed and that nothing else was minted.
-  it.each([
-    [
-      'an if chain mints one split for the head keys, one join for the join keys, and no gateway per else if',
-      `if (a) (${HEAD}, ${JOIN}) { user A } else if (b) { user B } else if (c) { user C } else { user D }`,
-      [
-        [splitId, head],
-        [joinId, join],
-      ],
-    ],
-    [
-      'a while loop puts the head keys on its one gateway',
-      `while (a) (${HEAD}) { user A }`,
-      [[loopId, head]],
-    ],
-    [
-      'a do-while loop puts the head keys on its one gateway',
-      `do { user A } while (a) (${HEAD})`,
-      [[loopId, head]],
-    ],
-    [
-      'an AND parallel with join keys alone leaves the fork bare',
-      `parallel (${JOIN}) { { user A } { user B } }`,
-      [
-        [forkId, {}],
-        [joinId, join],
-      ],
-    ],
-    [
-      'an inclusive parallel with head keys alone leaves the join bare',
-      `parallel (${HEAD}) { if (a) { user A } { user B } }`,
-      [
-        [forkId, head],
-        [joinId, {}],
-      ],
-    ],
-    [
-      'an await block puts the head keys on the event-based gateway and joinAsyncBefore on the exclusive join',
-      `await (asyncBefore: true, jobPriority: 5, joinAsyncBefore: true) { message("M") { user A } timer("PT1H") { user B } }`,
-      [
-        [raceId, { asyncBefore: true, jobPriority: '5' }],
-        [joinId, { asyncBefore: true }],
-      ],
-    ],
-  ] as const)('%s', async (_title, statement, gateways) => {
-    const result = await ir(`process P { ${statement} }`);
-    expect(
-      result.flowElements.filter(isGateway).map((g) => [g.id, settingsOn(g)]),
-    ).toEqual(gateways);
-  });
-});
-
-// Local helpers
-
-function definitionOf(container: FlowContainer, id: string): unknown {
-  return (byId(container, id) as { eventDefinition?: unknown }).eventDefinition;
-}
-
-function bindingOf(container: FlowContainer, id: string): unknown {
-  return (byId(container, id) as { binding?: unknown }).binding;
-}
-
-function settingsOn(gateway: Gateway): JobSettings {
-  const {
-    kind: _kind,
-    id: _id,
-    defaultFlowId: _flow,
-    ...settings
-  } = gateway as Gateway & { defaultFlowId?: string };
-  return settings;
-}
-
-function allElementIds(container: FlowContainer): string[] {
-  return container.flowElements.map((fe) => fe.id);
-}
-
-function handlerStart(container: FlowContainer, coordinate: string) {
-  return only(
-    subProcess(container, makeEventSubProcessId(coordinate)),
-    'startEvent',
-  );
-}

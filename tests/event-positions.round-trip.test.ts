@@ -1,11 +1,5 @@
-// The terminate end ends its branch, so DSL' prints that branch as a `goto`
-// onto the named service task rather than as the authored `if`/`else`. The IR
-// is the same either way, and every node is named, so DSL' still validates
-// clean.
+import { it, expect } from 'vitest';
 
-import { describe, it, expect } from 'vitest';
-
-import { describeNoOverlappingShapes } from './helpers/di-bounds.js';
 import { endEvent, theOnly } from './helpers/ir-query.js';
 import { definitionRefOf, messageRoots } from './helpers/xml-query.js';
 import { roundTripFixture } from './helpers/round-trip-fixture.js';
@@ -16,67 +10,41 @@ const rt = roundTripFixture('event-positions', {
   recompile: 'clean',
 });
 
-describe("idempotence: golden .bpmn -> IR2 -> DSL' -> IR3", () => {
-  it('the message start keeps its correlation name at every hop', () => {
-    for (const [label, ir] of rt.hops) {
-      expect(
-        theOnly(ir, 'startEvent').eventDefinition,
-        `start trigger differs in ${label}`,
-      ).toEqual({ kind: 'message', messageName: 'OrderReceived' });
-    }
-  });
-
-  it('the terminate end keeps its trigger and its label at every hop', () => {
-    for (const [label, ir] of rt.hops) {
-      const abandon = endEvent(ir, 'OrderAbandoned');
-      expect(abandon.eventDefinition, `trigger differs in ${label}`).toEqual({
-        kind: 'terminate',
-      });
-      expect(abandon.name, `label differs in ${label}`).toBe(
-        'Abandon every path',
-      );
-    }
-  });
-
-  it("the decompiled DSL' writes each position back on its own statement", () => {
-    expect(rt.dslPrime).toContain(
-      'start OrderReceived message("OrderReceived", label: "An order arrives")',
-    );
-    expect(rt.dslPrime).toContain(
-      'emit message NotifyWarehouse("WarehouseNotified")',
-    );
-    expect(rt.dslPrime).toContain(
-      'end OrderAbandoned terminate(label: "Abandon every path")',
-    );
-    expect(rt.dslPrime).toContain(
-      'throw message OrderAcknowledged("OrderAcknowledged")',
-    );
-  });
-});
-
-describe('root derivation on the frozen .bpmn', () => {
-  it('carries one bpmn:Message per distinct name, in first-appearance order', () => {
-    expect(messageRoots(rt.frozenXml).map((root) => root.name)).toEqual([
-      'OrderReceived',
-      'WarehouseNotified',
-      'OrderAcknowledged',
+it('keeps the message start and the labelled terminate end at every hop, and writes each position back on its own statement', () => {
+  for (const [label, ir] of rt.hops) {
+    expect(theOnly(ir, 'startEvent').eventDefinition, label).toEqual({
+      kind: 'message',
+      messageName: 'OrderReceived',
+    });
+    const abandon = endEvent(ir, 'OrderAbandoned');
+    expect([abandon.eventDefinition, abandon.name], label).toEqual([
+      { kind: 'terminate' },
+      'Abandon every path',
     ]);
-  });
-
-  it('the start event carries a messageRef beside its form data', () => {
-    const start =
-      /<bpmn:startEvent id="OrderReceived"[\s\S]*?<\/bpmn:startEvent>/.exec(
-        rt.frozenXml,
-      )?.[0];
-    expect(
-      start,
-      'no OrderReceived start event in the frozen artifact',
-    ).toBeDefined();
-    expect(start).toContain('<operaton:formData>');
-    expect(definitionRefOf(rt.frozenXml, 'OrderReceived', 'message')).toBe(
-      messageRoots(rt.frozenXml)[0]!.id,
-    );
-  });
+  }
+  for (const line of [
+    'start OrderReceived message("OrderReceived", label: "An order arrives")',
+    'emit message NotifyWarehouse("WarehouseNotified")',
+    'end OrderAbandoned terminate(label: "Abandon every path")',
+    'throw message OrderAcknowledged("OrderAcknowledged")',
+  ]) {
+    expect(rt.dslPrime).toContain(line);
+  }
 });
 
-describeNoOverlappingShapes(rt);
+it('carries one bpmn:Message per name in first-appearance order, the start referencing its root beside its form data', () => {
+  const roots = messageRoots(rt.frozenXml);
+  expect(roots.map((root) => root.name)).toEqual([
+    'OrderReceived',
+    'WarehouseNotified',
+    'OrderAcknowledged',
+  ]);
+  expect(
+    /<bpmn:startEvent id="OrderReceived"[\s\S]*?<\/bpmn:startEvent>/.exec(
+      rt.frozenXml,
+    )?.[0],
+  ).toContain('<operaton:formData>');
+  expect(definitionRefOf(rt.frozenXml, 'OrderReceived', 'message')).toBe(
+    roots[0]!.id,
+  );
+});

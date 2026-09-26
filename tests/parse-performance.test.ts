@@ -1,8 +1,6 @@
-// `tryWhile` and `tryDoWhileEntry` in `ir-to-dsl.ts` ask
-// `CfgAnalysis.backEdges()` once per emitted node, so a straight chain of n
-// tasks costs O(n^3) unless `backEdges()` is computed once and `dominates`
-// answers in two map lookups. Reverting either guard alone leaves O(n^2),
-// which still finishes inside the budget; only reverting both turns this red.
+// The printer asks `CfgAnalysis.backEdges()` once per emitted node, so a chain
+// of n tasks is O(n^3) unless `backEdges()` is cached and `dominates` is two
+// map lookups. Only reverting both guards turns this red.
 import { describe, expect, it } from 'vitest';
 import { xmlToIr } from '@bpmn-script/transform';
 import { parseToAst, printDsl } from './helpers/pipeline.js';
@@ -19,7 +17,7 @@ function chainBpmn(taskCount: number): string {
   for (let i = 1; i <= taskCount; i++) {
     const taskId = `Task_${i}`;
     const flowId = `Flow_${i - 1}`;
-    // `name` matches `humanize(taskId)`, so the printer drops the label.
+    // `name` is `humanize(taskId)`, so the printer drops it.
     flowElements.push(
       `<bpmn:task id="${taskId}" name="Task ${i}"><bpmn:incoming>${flowId}</bpmn:incoming></bpmn:task>`,
     );

@@ -1,8 +1,6 @@
 /**
  * BPMN 2.0 XML to IR, the inverse of `irToXml`. Diagram interchange is dropped
- * (ADR 0003: the IR holds semantics only). Content the IR cannot express throws
- * an `UnsupportedConstructError` subclass before any IR exists; content it does
- * not carry comes back in `warnings`. See ADR 0014, Honest BPMN Import.
+ * (ADR 0003); ADR 0014 sets what refuses and what warns.
  */
 
 import {
@@ -20,6 +18,7 @@ import {
   FORM_CONSTRAINT_TYPES,
   formatPlainWordList,
   formatWordList,
+  ID_TEXT,
   scriptFormatOf,
   SHELL_FLAG_FIELDS,
   SHELL_FLAG_LITERALS,
@@ -31,7 +30,11 @@ import {
   TYPE_BINDING_VALUES,
   USER_TASK_VERBATIM_KEYS,
 } from '@bpmn-script/language';
-import type { BuiltinTaskType, TimerKind } from '@bpmn-script/language';
+import type {
+  BuiltinTaskType,
+  TimerJobKey,
+  TimerKind,
+} from '@bpmn-script/language';
 import { Parser } from 'saxen';
 import type {
   BoundaryEvent,
@@ -76,7 +79,6 @@ import type {
   SubProcess,
   Task,
   TaskListener,
-  TimerJobKey,
   UserTask,
   VersionBinding,
 } from './ir/types.js';
@@ -110,7 +112,6 @@ import {
 import { humanize } from './humanize.js';
 import {
   BARE_CARDINALITY,
-  BARE_ELEMENT_VARIABLE,
   INDENT,
   irToDsl,
   isElidedOnPrint,
@@ -144,7 +145,7 @@ export type ImportWarningCategory =
   | 'documentation'
   | 'unmappedConstruct';
 
-/** A non-fatal notice that `xmlToIr` dropped content. Refusals throw instead. */
+/** Dropped content; refusals throw instead. */
 export interface ImportWarning {
   elementId: string;
   category: ImportWarningCategory;
@@ -155,7 +156,6 @@ const SERVICE_TASK_LIKE_OWNERS: readonly string[] = Object.values(
   SERVICE_TASK_LIKE_TAG,
 );
 
-/** The `bpmn:Activity` subtypes this tool maps; every sweep that asks about an activity reads this one list. */
 const ACTIVITY_TAGS: readonly string[] = [
   'bpmn:Task',
   'bpmn:ManualTask',
@@ -167,7 +167,7 @@ const ACTIVITY_TAGS: readonly string[] = [
   'bpmn:CallActivity',
 ];
 
-/** The `$type`s whose IR node carries execution listeners beside the job settings; a gateway takes the settings alone. */
+/** A gateway takes the job settings but no listeners. */
 const ENGINE_ATTRIBUTE_OWNERS: readonly string[] = [
   'bpmn:StartEvent',
   'bpmn:EndEvent',
@@ -186,11 +186,7 @@ const GATEWAY_TAGS: readonly string[] = [
 
 const MULTI_INSTANCE = 'bpmn:MultiInstanceLoopCharacteristics';
 
-/**
- * The `$type`s whose IR node carries the job settings. The repetition element
- * carries all but the priority, which no engine method reads off it
- * ({@link sweepRepetition} reports it).
- */
+/** No engine method reads a priority off the repetition element. */
 const JOB_SETTING_OWNERS: readonly string[] = [
   ...ENGINE_ATTRIBUTE_OWNERS,
   ...GATEWAY_TAGS,
@@ -198,39 +194,47 @@ const JOB_SETTING_OWNERS: readonly string[] = [
 ];
 
 /**
- * `BpmnParse.parseIntermediateThrowEvent` and `parseEndEvents` hand
- * `parseServiceTaskLike` the message definition as the element to read, so a
- * thrown message carries every implementation attribute a service task does.
- * The catch side carries the same element type and honors none of it
- * ({@link warnCatchSideImplementationAttrs}).
+ * A thrown message's definition goes through `parseServiceTaskLike`, so it
+ * carries every implementation attribute; a catch honors none.
  */
 const IMPLEMENTATION_OWNERS = [
   ...SERVICE_TASK_LIKE_OWNERS,
   'bpmn:MessageEventDefinition',
 ] as const;
 
-/** What `parseServiceTaskLike` reads off the element beside the implementation. */
+/** Read by `parseServiceTaskLike` beside the implementation. */
 const IMPLEMENTATION_EXTRA_ATTRS = [
   'taskPriority',
   'resultVariable',
   'resultVariableName',
 ] as const;
 
-/** The extension children the same reader takes off the element. */
 const IMPLEMENTATION_EXTRA_CHILDREN: readonly string[] = [
   'operaton:Field',
   'operaton:ErrorEventDefinition',
 ];
 
 /**
- * `parseExternalServiceTask` reads `operaton:properties` off the event element
- * of a thrown message, so the block is marked read on both tags and reported
- * by hand on every other shape ({@link readThrowEventAttributes}).
+ * `parseExternalServiceTask` reads `operaton:properties` off a thrown message's
+ * event element too.
  */
 const THROW_EVENT_TAGS: readonly string[] = [
   'bpmn:IntermediateThrowEvent',
   'bpmn:EndEvent',
 ];
+
+/**
+ * Meaningful only beside a named decision, yet marked read on every business
+ * rule task.
+ */
+const DECISION_MODIFIER_ATTRS = [
+  'decisionRefBinding',
+  'decisionRefVersion',
+  'decisionRefTenantId',
+  'mapDecisionResult',
+] as const;
+
+const FORM_REF_MODIFIER_ATTRS = ['formRefBinding', 'formRefVersion'] as const;
 
 type ConsumptionRow = readonly [string, readonly string[]];
 
@@ -248,14 +252,8 @@ function ownedRows(
 }
 
 /**
- * Extension-attribute local names read into the IR, per owning `$type`:
- * `assignee` is data on a user task and unread decoration on a service task.
- * A row silences the sweep for every shape of its owner, so a name read on
- * one shape only (a throw, the process's own start, a link) is reported by
- * hand where it is read: {@link warnThrowSideBindingAttrs},
- * {@link sweepRepetition}, {@link warnLinkThrowEngineSettings},
- * {@link readThrownMessageBinding}, {@link warnCatchSideImplementationAttrs},
- * {@link readThrowEventAttributes}.
+ * A row silences the sweep for every shape of its owner, so a name read on one
+ * shape only is reported by hand.
  */
 const CONSUMED_EXTENSION_ATTRS = consumptionTable([
   ['asyncBefore', JOB_SETTING_OWNERS],
@@ -264,18 +262,17 @@ const CONSUMED_EXTENSION_ATTRS = consumptionTable([
   ['exclusive', [...JOB_SETTING_OWNERS, 'bpmn:TimerEventDefinition']],
   ['jobPriority', JOB_SETTING_OWNERS],
   ...ownedRows(
-    [...USER_TASK_VERBATIM_KEYS, 'formRef', 'formRefBinding', 'formRefVersion'],
+    [...USER_TASK_VERBATIM_KEYS, 'formRef', ...FORM_REF_MODIFIER_ATTRS],
     ['bpmn:UserTask'],
   ),
   ...ownedRows(IMPLEMENTATION_ATTRS, IMPLEMENTATION_OWNERS),
   ['taskPriority', IMPLEMENTATION_OWNERS],
   ['resultVariable', [...IMPLEMENTATION_OWNERS, 'bpmn:ScriptTask']],
   ['resultVariableName', [...IMPLEMENTATION_OWNERS, 'bpmn:ScriptTask']],
-  ['decisionRef', ['bpmn:BusinessRuleTask']],
-  ['decisionRefBinding', ['bpmn:BusinessRuleTask']],
-  ['decisionRefVersion', ['bpmn:BusinessRuleTask']],
-  ['decisionRefTenantId', ['bpmn:BusinessRuleTask']],
-  ['mapDecisionResult', ['bpmn:BusinessRuleTask']],
+  ...ownedRows(
+    ['decisionRef', ...DECISION_MODIFIER_ATTRS],
+    ['bpmn:BusinessRuleTask'],
+  ),
   ['calledElementBinding', ['bpmn:CallActivity']],
   ['calledElementVersion', ['bpmn:CallActivity']],
   ...ownedRows(Object.values(VARIABLE_MAPPING_ATTR_BY_KIND), [
@@ -299,8 +296,8 @@ const CONSUMED_EXTENSION_ELEMENTS = consumptionTable([
   ['operaton:FailedJobRetryTimeCycle', JOB_SETTING_OWNERS],
   ['operaton:In', ['bpmn:CallActivity']],
   ['operaton:Out', ['bpmn:CallActivity']],
-  // The none throw imports as a step and carries the mapping; the throws
-  // with a definition report it by hand ({@link mapIntermediateThrowEvent}).
+  // The none throw carries it as a step; a throw with a definition reports it
+  // by hand.
   ['operaton:InputOutput', [...ACTIVITY_TAGS, 'bpmn:IntermediateThrowEvent']],
   ['operaton:ExecutionListener', ENGINE_ATTRIBUTE_OWNERS],
   ['operaton:TaskListener', ['bpmn:UserTask']],
@@ -311,15 +308,9 @@ const CONSUMED_EXTENSION_ELEMENTS = consumptionTable([
 ]);
 
 /**
- * Per extension element the IR reads, the attribute local names its reader
- * reads off it. A `$type` missing here is never swept by
- * {@link warnUnreadChildAttrs}: a child no reader reads is reported whole.
- *
- * A key is the path of resolved keys down from `bpmn:ExtensionElements`,
- * falling back to the bare `$type` at each step, and a qualified row wins over
- * the bare one; that is how a task's `operaton:property` is keyed by `name`
- * (`BpmnParseUtil.parseOperatonExtensionProperties`) where a form field's is
- * keyed by `id` (`DefaultFormHandler.parseProperties`).
+ * A `$type` missing here is reported whole. Keys are paths from
+ * `bpmn:ExtensionElements`; a qualified row beats the bare `$type` (a task's
+ * `operaton:property` is keyed by `name`, a form field's by `id`).
  */
 const CONSUMED_CHILD_ATTRS = consumptionTable([
   ['operaton:FormData', []],
@@ -376,8 +367,8 @@ const CONSUMED_CHILD_ATTRS = consumptionTable([
     'operaton:ExecutionListener',
     ['event', 'class', 'expression', 'delegateExpression'],
   ],
-  // `id` keys a timeout listener's timer job (`BpmnParse.parseTimeoutTaskListener`)
-  // and the export mints one, so the one read drops without a word.
+  // `id` keys a timeout listener's timer job and the export mints one, so it
+  // drops without a warning.
   [
     'operaton:TaskListener',
     ['id', 'event', 'class', 'expression', 'delegateExpression'],
@@ -385,7 +376,7 @@ const CONSUMED_CHILD_ATTRS = consumptionTable([
   ['operaton:Field', ['name', 'stringValue']],
 ]);
 
-/** Tried in this order; the first one a child's reader reads names the child in a warning. */
+/** Tried in order; the first one read names the child in a warning. */
 const CHILD_IDENTITY_ATTRS = [
   'name',
   'key',
@@ -403,7 +394,6 @@ function isConsumedHere(
   return table.get(name)?.has(ownerType) === true;
 }
 
-/** The reverse of a map the export direction owns, so the pair is spelled once. */
 function invert<K extends string, V extends string>(
   map: Readonly<Record<K, V>>,
 ): Readonly<Record<V, K>> {
@@ -412,19 +402,13 @@ function invert<K extends string, V extends string>(
   ) as Record<V, K>;
 }
 
-/** `operaton:formField` types the DSL can express. */
 const OPERATON_TO_FORM_FIELD_TYPE: Readonly<Record<string, FormFieldType>> =
   invert(FORM_FIELD_TYPE_TO_OPERATON);
 
 /**
- * What Operaton reads off an owner kind whose IR node has no slot for it,
- * keyed `<owner $type>/<attribute local name or child $type>`, each with the
- * clause naming the reader; a name absent here is one no engine method reads
- * on that owner. A `throw:` or `initial:` prefix matches only a drop swept
- * under that qualifier: `parseSignalEventDefinition` reads `async` and
- * `operaton:in` with `isThrowing=true` alone, and `parseStartFormHandlers`
- * runs for the process's own start alone, so the bare key would claim a read
- * the engine never makes on a catch or a nested start.
+ * What Operaton reads off an owner whose IR node has no slot for it, with the
+ * reader. A `throw:`/`initial:` prefix limits a key to a throw or the process's
+ * own start.
  */
 const ENGINE_READS_ELSEWHERE: ReadonlyMap<string, string> = new Map<
   string,
@@ -490,7 +474,6 @@ const IMPORTED_FLOW_NOTE =
   '(this tool imports the executable flow and the engine settings on its ' +
   'steps, and nothing declared or drawn beside it).';
 
-/** Loose moddle-element type: the tiny surface every moddle node shares. */
 interface ModdleElement {
   readonly $type: string;
   readonly id?: string;
@@ -501,12 +484,12 @@ interface ModdleElement {
   get(name: string): unknown;
 }
 
-/** A moddle descriptor property: `name` is the storage key, `ns.name` the form `get()` accepts. */
+/** `name` is the storage key, `ns.name` the form `get()` accepts. */
 interface ModdlePropertyDescriptor {
   readonly name: string;
   readonly isAttr?: boolean;
   readonly isBody?: boolean;
-  /** A back-reference moddle fills in from the other end, not content of its own. */
+  /** Filled in from the other end, not content of its own. */
   readonly isReference?: boolean;
   readonly ns?: {
     readonly name: string;
@@ -516,10 +499,8 @@ interface ModdlePropertyDescriptor {
 }
 
 /**
- * The text of a reference moddle dropped for naming no element in the
- * document, per element and property, since Operaton reads some of them as a
- * variable name. Keyed by the parsed element, so two documents in flight
- * cannot see each other's.
+ * Reference text moddle dropped for naming no element; Operaton may read it as
+ * a variable name.
  */
 const UNRESOLVED_REFS = new WeakMap<ModdleElement, Map<string, string>>();
 
@@ -536,12 +517,11 @@ function recordUnresolvedRefs(moddleWarnings: unknown): void {
   }
 }
 
-/** The text a dropped `bpmn:` reference was written with, which Operaton reads as a name. */
 function unresolvedRef(el: ModdleElement, name: string): string | undefined {
   return UNRESOLVED_REFS.get(el)?.get(`bpmn:${name}`);
 }
 
-/** Only an `xmlns` declaration is rewritten: the same URI inside a documentation body or a script is text. */
+/** The same URI inside a documentation body or a script is text. */
 const CAMUNDA_XMLNS =
   /(xmlns(?::[\w.-]+)?\s*=\s*)(["'])http:\/\/camunda\.org\/schema\/1\.0\/bpmn\2/g;
 const OPERATON_NS = 'http://operaton.org/schema/1.0/bpmn';
@@ -552,29 +532,20 @@ export const CAMUNDA_ALIAS_MESSAGE =
   'falls back to the camunda URI wherever the operaton spelling is ' +
   'absent, and the document written back carries `operaton:` alone.';
 
-/**
- * Parse a BPMN 2.0 XML document into the IR. Throws when the XML is malformed
- * or when the document as a whole is one Operaton refuses or this tool cannot
- * read as one process ({@link refuseDocumentShapes}, {@link selectProcess}).
- */
 export async function xmlToIr(
   xml: string,
 ): Promise<{ ir: BpmnProcess; warnings: ImportWarning[] }> {
   const moddle = createModdle();
   refuseDocumentShapes(xml);
 
-  // `BpmnParse.OPERATON_BPMN_EXTENSIONS_NS` falls back to the camunda URI
-  // wherever the operaton spelling is absent, so the engine runs a `camunda:`
-  // element exactly as its `operaton:` spelling. moddle-xml binds a prefix to
-  // a package by URI, so rewriting the declared URI alone (never the prefix,
-  // which can recur inside attribute values) makes every `camunda:` element
-  // and attribute arrive typed as `operaton:`.
+  // Operaton reads `camunda:` as `operaton:`. moddle binds prefixes by URI, so
+  // rewriting the declared URI (never the prefix, which can recur in attribute
+  // values) retypes every node.
   const normalizedXml = xml.replace(CAMUNDA_XMLNS, `$1$2${OPERATON_NS}$2`);
   const camundaRead = normalizedXml !== xml;
 
-  // moddle records "unparsable content" only for elements in the registered
-  // `operaton:` namespace whose type the extension does not declare; declared
-  // operaton and foreign-namespace elements materialize as values instead.
+  // moddle reports "unparsable content" only for undeclared `operaton:`
+  // elements.
   const { rootElement, warnings: moddleWarnings } =
     await moddle.fromXML(normalizedXml);
 
@@ -605,8 +576,7 @@ export async function xmlToIr(
     });
   }
 
-  // One name space across both lists: an error and an escalation declaration
-  // share the scope a use site resolves in, so a name taken by one is taken.
+  // An error and an escalation declaration share one name scope.
   const declaredNames = new Set<string>();
   const errorDecls = readCodeDecls(
     rootElements.filter((e) => e.$type === 'bpmn:Error'),
@@ -652,16 +622,13 @@ export async function xmlToIr(
   return { ir, warnings };
 }
 
-/** The entities XML predefines; every other `&name;` needs a DOCTYPE to declare it. */
+/** Every other entity needs a DOCTYPE. */
 const UNDEFINED_ENTITY = /&(?!(?:amp|lt|gt|quot|apos);)[A-Za-z][\w.-]*;/;
 
 /**
- * Refuse, on the raw text, what the engine's parse refuses before `BpmnParse`
- * sees an element. Comments and CDATA sections are cut first: a script body
- * may hold `&name;` or `<!DOCTYPE`. `isSequential`/`triggeredByEvent` are
- * checked here because moddle coerces a `Boolean` attribute to
- * `value === 'true'` with the raw text gone, while `Parse.execute`'s
- * validating parse refuses a value outside the `xsd:boolean` lexical space.
+ * What the engine's XML parse refuses before `BpmnParse` runs. Comments and
+ * CDATA go first: a script body may hold `&name;` or `<!DOCTYPE`. Booleans are
+ * checked on raw text because moddle coerces them.
  */
 function refuseDocumentShapes(xml: string): void {
   const text = xml.replace(/<!--[\s\S]*?-->|<!\[CDATA\[[\s\S]*?\]\]>/g, '');
@@ -694,10 +661,8 @@ function refuseDocumentShapes(xml: string): void {
 }
 
 /**
- * moddle-xml drops an element whose id repeats or falls outside its ASCII
- * pattern, leaving a warning and a dangling reference. The engine's validating
- * parse against `BPMN20.xsd` (`Parse.execute`) refuses a duplicate `xs:ID`,
- * while it deploys a non-ASCII NCName this tool cannot read.
+ * moddle drops an element with a repeated or non-ASCII id. The engine refuses a
+ * duplicate `xs:ID` but deploys a non-ASCII NCName this tool cannot read.
  */
 function refuseDroppedIds(moddleWarnings: unknown): void {
   for (const warning of (moddleWarnings as ModdleWarning[] | undefined) ?? []) {
@@ -718,9 +683,8 @@ function refuseDroppedIds(moddleWarnings: unknown): void {
 }
 
 /**
- * `BpmnParse.parseImports` fails the deployment on every `importType` but
- * `http://schemas.xmlsoap.org/wsdl/`, and on that one without
- * `CxfWSDLImporter` on the classpath.
+ * `BpmnParse.parseImports` fails on every `importType` but WSDL, and on WSDL
+ * without `CxfWSDLImporter`.
  */
 function refuseImports(root: ModdleElement): void {
   const [theImport] = root.get('imports') as ModdleElement[];
@@ -733,11 +697,8 @@ function refuseImports(root: ModdleElement): void {
 }
 
 /**
- * The one process `BpmnParse.parseProcessDefinitions` deploys: the one marked
- * `isExecutable="true"` (an absent attribute defaults to `!deployment.isNew()`,
- * so a new deployment skips it). Two executable processes deploy side by side
- * and the IR holds one, so they refuse; a lone unmarked process imports with
- * {@link mapProcess}'s warning.
+ * Operaton deploys the process marked `isExecutable="true"`; the IR holds one,
+ * so two refuse.
  */
 function selectProcess(
   rootElements: ModdleElement[],
@@ -781,9 +742,8 @@ function selectProcess(
 }
 
 /**
- * `BpmnParse.parseCollaboration` records a participant's `processRef` for
- * `parseBPMNShape` alone, and no method in `BpmnParse` reads a message flow,
- * so a collaboration is diagram data: the imported process runs identically.
+ * No engine method reads a participant or a message flow, so a collaboration is
+ * diagram data.
  */
 function warnCollaborationDrops(
   rootElements: ModdleElement[],
@@ -833,7 +793,6 @@ function describePoolName(participant: ModdleElement): string {
   return name === undefined ? '' : `'${name}' `;
 }
 
-/** `BpmnParse.parseSignals` fails the deployment on a duplicate signal name. */
 function refuseDuplicateSignalNames(signalRoots: ModdleElement[]): void {
   const byName = new Map<string, string>();
   for (const root of signalRoots) {
@@ -855,11 +814,8 @@ function refuseDuplicateSignalNames(signalRoots: ModdleElement[]): void {
 }
 
 /**
- * The declarations `bpmn:Error` and `bpmn:Escalation` roots carry, in document
- * order, deduped by code; a root with no code is dropped with a warning. Two
- * roots agreeing on a code and disagreeing on `operaton:errorMessage` are
- * refused rather than merged, since that text is the one root datum usage
- * cannot recover.
+ * Deduped by code. Roots sharing a code but not `operaton:errorMessage` refuse:
+ * usage cannot recover that text.
  */
 function readCodeDecls(
   roots: ModdleElement[],
@@ -924,7 +880,7 @@ function readCodeDecls(
   return decls;
 }
 
-/** Warn once per message or signal root nothing in the IR uses; an error or escalation root imports as a declaration regardless. */
+/** An error or escalation root imports as a declaration regardless. */
 function warnUnreferencedRoots(
   messageRoots: ModdleElement[],
   signalRoots: ModdleElement[],
@@ -988,21 +944,18 @@ function warnUnreferencedNamedRoot(
   });
 }
 
-/** A `bpmn-moddle` parse warning. */
 interface ModdleWarning {
   readonly message?: string;
-  /** An `unresolved reference` warning carries the element, the property (`bpmn:loopDataInputRef`) and the text. */
   readonly element?: ModdleElement;
   readonly property?: string;
   readonly value?: string;
 }
 
-/** A source position as `line:column`: the only handle an "unparsable content" moddle warning gives on its element. */
+/** The only handle an "unparsable content" warning gives on its element. */
 function positionKey(line: number, column: number): string {
   return `${line}:${column}`;
 }
 
-/** The positions of every element written under a root whose id is in `rootIds`, read off the source text. */
 function positionsUnderRoots(
   xml: string,
   rootIds: ReadonlySet<string>,
@@ -1025,9 +978,8 @@ function positionsUnderRoots(
       if (!selfClosing) depth += 1;
     },
   );
-  // saxen raises `closeTag` for `<a/>` as well as for `</a>`, so the
-  // decrement is gated on the same flag as the increment; ungated, every
-  // self-closing tag sinks `depth` one below true nesting for good.
+  // saxen raises `closeTag` for `<a/>` too, so the decrement needs the same
+  // gate.
   parser.on('closeTag', (_elementName, _decodeEntities, selfClosing) => {
     if (selfClosing) return;
     depth -= 1;
@@ -1037,29 +989,20 @@ function positionsUnderRoots(
   return positions;
 }
 
-/** A `<bpmn:conditionExpression>` moddle dropped, read back off the source text by {@link recordDroppedConditions}. */
 interface DroppedCondition {
   xsiType: string;
   body: string;
-  /** Where moddle's warning places the element, so the residual sweep skips it. */
   position: string;
   language?: string;
-  /** The `resource` attribute, whichever prefix carries it in source text. */
   resource?: string;
 }
 
-/** Keyed by the flow the element sat in; see {@link UNRESOLVED_REFS} for why a WeakMap. */
 const DROPPED_CONDITIONS = new WeakMap<ModdleElement, DroppedCondition>();
 
 /**
- * moddle resolves an unprefixed `xsi:type` against the document's default
- * namespace, where `BpmnParse.parseConditionExpression` resolves it against
- * `BPMN20_NS` whatever the document declares, so `<bpmn:conditionExpression
- * xsi:type="tFormalExpression">` in a prefixed document is dropped by moddle
- * as unparsable content while the engine evaluates it. Such an element is
- * read back off the source text and keyed by its flow for
- * {@link mapSequenceFlow}; the positions taken are returned for the residual
- * sweep to skip.
+ * moddle resolves an unprefixed `xsi:type` against the default namespace, the
+ * engine against `BPMN20_NS`, so moddle drops a condition the engine runs. It
+ * is read back from source.
  */
 function recordDroppedConditions(
   root: ModdleElement,
@@ -1079,7 +1022,6 @@ function recordDroppedConditions(
   return positions;
 }
 
-/** Every flow element under `container`, containers' own children included. */
 function* flowElementsDeep(container: ModdleElement): Generator<ModdleElement> {
   const children = [
     ...((container.get('rootElements') as ModdleElement[] | undefined) ?? []),
@@ -1091,7 +1033,6 @@ function* flowElementsDeep(container: ModdleElement): Generator<ModdleElement> {
   }
 }
 
-/** The `conditionExpression` elements typed without a prefix, by the id of the flow each sits in. */
 function scanUnprefixedConditions(xml: string): Map<string, DroppedCondition> {
   const found = new Map<string, DroppedCondition>();
   const parser = new Parser();
@@ -1148,9 +1089,8 @@ function localNameOf(qualifiedName: string): string {
 }
 
 /**
- * An attribute of a raw-text tag, found by local name whatever prefix binds
- * it: the namespace swap in {@link xmlToIr} rewrites `xmlns:*` values alone,
- * so the document's own `camunda:` or `operaton:` prefix survives here.
+ * The namespace swap rewrites `xmlns:*` values only, so the source prefix
+ * survives here.
  */
 function nonEmptyAttr(
   attrs: Record<string, string>,
@@ -1164,10 +1104,7 @@ function nonEmptyAttr(
 }
 
 /**
- * One {@link ImportWarning} per residual "unparsable content" moddle warning,
- * attributed to the process because moddle cannot tie the dropped element to
- * a step. A residual inside a root {@link collectRootDrops} reported whole,
- * or a condition {@link recordDroppedConditions} read back, is skipped.
+ * Attributed to the process: moddle cannot tie an unparsable element to a step.
  */
 function collectUnparsableResidualDrops(
   moddleWarnings: unknown,
@@ -1207,7 +1144,7 @@ function collectUnparsableResidualDrops(
   }
 }
 
-/** All `bpmndi:`/`dc:`/`di:` content sits outside the process subtree, so iterating `flowElements` drops DI for free. */
+/** DI sits outside `flowElements`, so it drops for free. */
 function mapProcess(
   processEl: ModdleElement,
   warnings: ImportWarning[],
@@ -1218,9 +1155,8 @@ function mapProcess(
   }
   const named = readNamed(processEl, id, warnings);
 
-  // The one place import changes what the document says rather than leaving
-  // something out. An absent attribute is the same change:
-  // `BpmnParse.parseProcessDefinitions` defaults it to `!deployment.isNew()`.
+  // The one place import changes what the document says (an absent attribute
+  // defaults to `!deployment.isNew()`).
   const isExecutable = processEl.get('isExecutable');
   if (isExecutable === false) {
     warnings.push({
@@ -1254,9 +1190,8 @@ function mapProcess(
     'process',
   );
   const versionTag = readNamespacedAttr(processEl, 'versionTag');
-  // The exporter stamps HISTORY_TIME_TO_LIVE on every process that authored
-  // none, so reading that exact value back would invent a setting and leave a
-  // re-imported IR unequal to the one exported.
+  // The exporter stamps this default on every process; reading it back would
+  // break the round trip.
   const authoredTimeToLive = readNamespacedAttr(processEl, 'historyTimeToLive');
   const historyTimeToLive =
     authoredTimeToLive === HISTORY_TIME_TO_LIVE
@@ -1285,9 +1220,8 @@ function mapProcess(
 }
 
 /**
- * `BpmnParse.parseStartAuthorization` reads every `operaton:potentialStarter`
- * into the candidate-starter lists before the two attributes append theirs,
- * splitting each formal expression as a `bpmn:potentialOwner`'s is split.
+ * Starters first, then the two attributes, as `parseStartAuthorization` builds
+ * the list.
  */
 function readPotentialStarters(
   processEl: ModdleElement,
@@ -1329,11 +1263,6 @@ function readPotentialStarters(
   return { users, groups };
 }
 
-/**
- * Which container hosts the element being mapped: an undo handler sits
- * directly inside the block whose work it undoes, and a cancel end directly
- * inside a block that can be given up.
- */
 type ContainerHostKind =
   'process' | 'subProcess' | 'transaction' | 'eventSubProcess';
 
@@ -1352,12 +1281,8 @@ function mapContainer(
 }
 
 /**
- * A process takes one start per `start` statement, but `BpmnParse.selectInitial`
- * fails the deployment on a second plain or timer start; a subprocess or a
- * transaction takes exactly one (`BpmnParse.parseScopeStartEvent`). With none,
- * `BpmnParse.parseStartEvents` errors on a `process` or `subProcess` tag alone,
- * so a transaction with no start deploys and fails on entry
- * (`SubProcessActivityBehavior.execute`), where the script adds a start.
+ * `selectInitial` refuses a second plain or timer start in a process. A
+ * transaction with no start deploys and fails on entry, so the script adds one.
  */
 function checkStartEventCount(
   el: ModdleElement,
@@ -1417,7 +1342,6 @@ function checkStartEventCount(
 
 const ACTIVITY_TYPES: ReadonlySet<string> = new Set(ACTIVITY_TAGS);
 
-/** The general wording for an unpaired half of the pattern: nothing to name a rewrite from. */
 export const IS_FOR_COMPENSATION_DETAIL =
   'isForCompensation="true" marks this activity as excluded from normal ' +
   'flow: the boundary-event compensation-handler pattern, which this ' +
@@ -1443,7 +1367,6 @@ function refuseIfForCompensation(
   );
 }
 
-/** The paired wording for the handler side, or `undefined` when no association targets `handlerId` or the rewrite cannot be shown. */
 function describePairedHandler(
   containerEl: ModdleElement,
   handlerId: string,
@@ -1467,7 +1390,6 @@ function describePairedHandler(
   );
 }
 
-/** The element a `bpmn:association` in `containerEl`'s `artifacts` names on the opposite end from `id`. */
 function findAssociationEnd(
   containerEl: ModdleElement,
   knownEnd: 'sourceRef' | 'targetRef',
@@ -1481,7 +1403,6 @@ function findAssociationEnd(
   return association === undefined ? undefined : getEl(association, otherEnd);
 }
 
-/** `boundaryEl` as a compensation boundary with its host, or `undefined` when it is not one. */
 function compensationBoundaryOf(
   boundaryEl: ModdleElement,
 ): { id: string; hostEl: ModdleElement } | undefined {
@@ -1501,9 +1422,8 @@ const SERVICE_TASK_ELEMENT_BY_TAG: Readonly<
 > = invert(SERVICE_TASK_LIKE_TAG);
 
 /**
- * Per-tag dispatch for every activity kind but `bpmn:SubProcess`, which the
- * container dispatch maps by `triggeredByEvent` and the standalone mapping
- * always as a plain sub-process, so each keeps its own case for that tag.
+ * `bpmn:SubProcess` is dispatched by each caller: the container by
+ * `triggeredByEvent`, standalone as plain.
  */
 function mapActivityByTag(
   el: ModdleElement,
@@ -1537,11 +1457,6 @@ function mapActivityByTag(
   }
 }
 
-/**
- * One activity mapped outside `mapContainerChildren`, for
- * {@link describeCompensationRewrite}: the repetition is attached here as
- * that loop attaches it, so a repeated activity previews with its loop.
- */
 function mapActivityStandalone(
   el: ModdleElement,
   warnings: ImportWarning[],
@@ -1555,7 +1470,6 @@ function mapActivityStandalone(
   return out[0];
 }
 
-/** The paired wording for the boundary side, or `undefined` when no association leaves `boundaryId` or the rewrite cannot be shown. */
 function describePairedBoundary(
   containerEl: ModdleElement,
   boundaryId: string,
@@ -1563,9 +1477,7 @@ function describePairedBoundary(
 ): string | undefined {
   const handlerEl = findAssociationEnd(containerEl, 'sourceRef', boundaryId);
   if (handlerEl === undefined) return undefined;
-  // An association to an element that never declared itself a compensation
-  // handler is not this pattern; `parseAssociationOfCompensationBoundaryEvent`
-  // rejects it too.
+  // The engine rejects an association to a non-handler too.
   if (handlerEl.get('isForCompensation') !== true) return undefined;
   const rewrite = describeCompensationRewrite(hostEl, boundaryId, handlerEl);
   if (rewrite === undefined) return undefined;
@@ -1578,14 +1490,8 @@ function describePairedBoundary(
 }
 
 /**
- * The `subprocess`/`on compensation` rewrite an author would write by hand
- * for one compensation triple, built by mapping both activities through their
- * real mappers, wrapping them in a throwaway process and printing it through
- * the real `irToDsl`, whose own CFG pass nests a sub-process host correctly.
- * `undefined` when either activity refuses on its own, since the preview is a
- * courtesy on top of the compensation refusal already in flight. The wrapper
- * id `Compensated_<id>` is the one printed id, and it clears every reserved
- * prefix; the synthesized start is elided (`isElidedOnPrint`).
+ * `undefined` when either activity refuses: the preview only decorates a
+ * refusal already in flight.
  */
 function describeCompensationRewrite(
   hostEl: ModdleElement,
@@ -1631,17 +1537,14 @@ function describeCompensationRewrite(
     sequenceFlows: [],
   };
 
-  // Strip the `process Preview { ... }` shell (header, closing brace and the
-  // trailing newline) and the one indent level its direct child carries.
+  // Strip the `process Preview { ... }` shell and its indent.
   const lines = irToDsl(preview).source.split('\n').slice(1, -2);
   return lines.map((line) => line.slice(INDENT.length)).join('\n');
 }
 
 /**
- * `BpmnParse` reads neither quantity attribute. A BPMN-declared attribute is
- * invisible to both generic sweeps (it never reaches `$attrs`, and the
- * declared-attribute sweep looks at `operaton:` attributes only), so every
- * such drop is reported by hand.
+ * `BpmnParse` reads neither. A BPMN-declared attribute escapes both generic
+ * sweeps, so it is reported by hand.
  */
 function warnIgnoredQuantityAttrs(
   el: ModdleElement,
@@ -1650,7 +1553,7 @@ function warnIgnoredQuantityAttrs(
 ): void {
   if (!ACTIVITY_TYPES.has(el.$type)) return;
   for (const name of ['startQuantity', 'completionQuantity']) {
-    // An absent attribute reads back as moddle's descriptor default, 1.
+    // Absent reads back as moddle's default, 1.
     const value: unknown = el.get(name);
     if (value === 1) continue;
     warnings.push({
@@ -1664,11 +1567,7 @@ function warnIgnoredQuantityAttrs(
   }
 }
 
-/**
- * Per-child dispatch for a container's `flowElements`. Every rule about flows
- * or about a boundary's host runs after the loop, since a boundary event may
- * be written before its host.
- */
+/** Flow and host rules run after the loop: a boundary may precede its host. */
 function mapContainerChildren(
   el: ModdleElement,
   warnings: ImportWarning[],
@@ -1677,7 +1576,6 @@ function mapContainerChildren(
 ): { flowElements: FlowElement[]; sequenceFlows: SequenceFlow[] } {
   const flowElements: FlowElement[] = [];
   const sequenceFlows: SequenceFlow[] = [];
-  // What the printer's elision reads, asked once the list is complete.
   const container = { id: requireId(el), flowElements };
 
   const children = el.get('flowElements') as ModdleElement[];
@@ -1723,8 +1621,8 @@ function mapContainerChildren(
             : mapSubProcess(child, warnings),
         );
         break;
-      // Operaton reads `triggeredByEvent` on a bpmn:Transaction not at all
-      // (warnIgnoredTransactionAttrs reports it), so it maps like a task.
+      // Operaton ignores `triggeredByEvent` on a transaction, so it maps like a
+      // task.
       case 'bpmn:Task':
       case 'bpmn:ManualTask':
       case 'bpmn:UserTask':
@@ -1740,8 +1638,8 @@ function mapContainerChildren(
       case 'bpmn:SequenceFlow':
         sequenceFlows.push(mapSequenceFlow(child, warnings));
         break;
-      // `continue` skips the per-child sweeps below, which would draw a second
-      // warning for a `bpmn:dataObject`'s own `bpmn:dataState` child.
+      // `continue` skips the sweeps below, which would warn again for
+      // `bpmn:dataState`.
       case 'bpmn:DataObject':
       case 'bpmn:DataObjectReference':
       case 'bpmn:DataStoreReference':
@@ -1766,9 +1664,8 @@ function mapContainerChildren(
     }
   }
 
-  // Whether a start or an end prints is a question about the whole container
-  // (an end named for a boundary escape goes only if that boundary is in the
-  // list, which the export writes after the end), so the list is complete first.
+  // Whether an end prints depends on boundaries written after it, so the list
+  // is completed first.
   for (const mapped of flowElements) {
     if (mapped.kind === 'startEvent') {
       warnElidedNamedDrop(
@@ -1791,11 +1688,8 @@ function mapContainerChildren(
 }
 
 /**
- * The `default` a step names: `BpmnActivityBehavior.handleNoTransitions`
- * takes it when no other route out of the step held, and throws
- * `missingDefaultFlowException` on one that does not leave the step, which
- * is reported; a `default` naming no element is read back from moddle's
- * dropped reference for the same report.
+ * The engine throws `missingDefaultFlowException` on a `default` that does not
+ * leave the step; a dangling one is read back from moddle.
  */
 function attachDefaultFlows(
   children: ModdleElement[],
@@ -1833,12 +1727,8 @@ function attachDefaultFlows(
 }
 
 /**
- * The shapes `BpmnParse.validateExclusiveGateway` fails the deployment on,
- * asked of the document rather than the IR: the engine counts a condition
- * element with an empty body as a condition and a `default` naming no
- * element as a default, and the IR carries neither. One conditioned route
- * beside one plain route with no default is left alone: the engine takes the
- * plain one as the default and warns.
+ * Asked of the document: the engine counts an empty condition and a dangling
+ * `default`, which the IR drops.
  */
 function checkExclusiveGateways(children: ModdleElement[]): void {
   const flows = children.filter((c) => c.$type === 'bpmn:SequenceFlow');
@@ -1891,9 +1781,7 @@ function checkExclusiveGateways(children: ModdleElement[]): void {
 }
 
 /**
- * `BpmnParse.parseSequenceFlow` fails the deployment on a flow into or out of
- * an event sub-process, off the flow's own endpoints, so the check reads the
- * flows rather than the `incoming`/`outgoing` children a hand-written file omits.
+ * Reads flows, not `incoming`/`outgoing`, which a hand-written file may omit.
  */
 function checkHandlerFlows(
   flowElements: FlowElement[],
@@ -1926,11 +1814,8 @@ function checkHandlerFlows(
 }
 
 /**
- * Runs before {@link checkWaitBranches} so a wait branch into a link catch
- * draws this message. The engine refuses a flow out of a link throw at deploy
- * (`BpmnParse.parseSequenceFlow`) but runs one into a link catch as a
- * pass-through; that side is this surface's own refusal, since `await link`
- * takes no incoming flow and dropping one would change what runs.
+ * The engine runs a flow into a link catch, but `await link` takes none. Runs
+ * before {@link checkWaitBranches} so this message wins.
  */
 function checkLinkFlows(
   flowElements: FlowElement[],
@@ -1977,7 +1862,6 @@ function checkLinkFlows(
   }
 }
 
-/** The IR kinds of a `bpmn:Activity`: the ones that repeat and carry a `default`, and nothing else. */
 const ACTIVITY_KINDS = [
   'task',
   'userTask',
@@ -1997,7 +1881,10 @@ function isActivity(node: FlowElement): node is ActivityElement {
   return (ACTIVITY_KINDS as readonly string[]).includes(node.kind);
 }
 
-/** Operaton reads the repetition before its own tag dispatch and wraps whatever that produces, so one reader serves every repeatable tag. */
+/**
+ * Operaton wraps whatever the tag dispatch produces, so one reader serves every
+ * tag.
+ */
 function attachRepetition(
   flowElements: FlowElement[],
   index: number,
@@ -2012,7 +1899,6 @@ function attachRepetition(
   flowElements[index] = { ...mapped, loop };
 }
 
-/** The kinds a boundary event may attach to, each with the noun the refusals spell it with. */
 const BOUNDARY_HOST_NOUNS = {
   task: 'plain task',
   userTask: 'user task',
@@ -2029,13 +1915,13 @@ type BoundaryHost = Extract<FlowElement, { kind: BoundaryHostKind }>;
 const isBoundaryHost = (el: FlowElement): el is BoundaryHost =>
   Object.hasOwn(BOUNDARY_HOST_NOUNS, el.kind);
 
-/** One IR kind covers three tags, so `element` decides which noun a host takes. */
+/** One IR kind covers three tags. */
 const SERVICE_TASK_LIKE_NOUNS = {
   send: 'send task',
   businessRule: 'business rule task',
 } as const;
 
-/** The same for the container kind, whose second tag the surface writes `attempt`. */
+/** The surface writes a transaction as `attempt`. */
 const SUB_PROCESS_NOUNS = {
   transaction: 'attempt block',
 } as const;
@@ -2050,7 +1936,7 @@ function boundaryHostNoun(host: BoundaryHost): string {
   return BOUNDARY_HOST_NOUNS[host.kind];
 }
 
-/** Every remaining kind, named as the surface writes it; the `satisfies` makes a new kind stop the build here. */
+/** The `satisfies` makes a new kind stop the build here. */
 const OTHER_FLOW_ELEMENT_NOUNS = {
   startEvent: 'start',
   endEvent: 'end',
@@ -2069,11 +1955,10 @@ const OTHER_FLOW_ELEMENT_NOUNS = {
 const flowElementNoun = (el: FlowElement): string =>
   isBoundaryHost(el) ? boundaryHostNoun(el) : OTHER_FLOW_ELEMENT_NOUNS[el.kind];
 
-/** `a` or `an` by spelling, minus `u`, which the maps above open with only in `user task`. */
+/** `u` opens only `user task`. */
 const withArticle = (noun: string): string =>
   `${/^[aeio]/i.test(noun) ? 'an' : 'a'} ${noun}`;
 
-/** Every noun a host can be named by, for the refusal that enumerates them. */
 const BOUNDARY_HOST_NOUN_LIST = Object.entries(BOUNDARY_HOST_NOUNS).flatMap(
   ([kind, noun]) => {
     if (kind === 'serviceTask') {
@@ -2086,19 +1971,19 @@ const BOUNDARY_HOST_NOUN_LIST = Object.entries(BOUNDARY_HOST_NOUNS).flatMap(
   },
 );
 
-/** The hosts `BpmnParse.parseBoundaryEvents` allows an escalation boundary on. */
+/**
+ * The hosts `BpmnParse.parseBoundaryEvents` allows an escalation boundary on.
+ */
 const ESCALATION_BOUNDARY_HOST_KINDS: ReadonlySet<BoundaryHostKind> =
   new Set<BoundaryHostKind>(['subProcess', 'callActivity', 'userTask']);
 
-/** A block the surface writes with the `attempt` head: the only cancel host. */
+/** The only cancel host. */
 const givesUpItsWork = (el: FlowElement): el is SubProcess =>
   el.kind === 'subProcess' && el.element === 'transaction';
 
 /**
- * Validate every boundary event against its own container. The same pass
- * catches an inbound flow written only as `sequenceFlow/@targetRef`:
- * {@link mapBoundaryEvent} sees only the `incoming` list, which moddle fills
- * from optional `<bpmn:incoming>` children, while Operaton reads `targetRef`.
+ * Also catches an inbound flow written only as `targetRef`, which Operaton
+ * reads and moddle leaves out of `incoming`.
  */
 function checkBoundaryEventHosts(
   flowElements: FlowElement[],
@@ -2107,8 +1992,8 @@ function checkBoundaryEventHosts(
 ): void {
   const activityById = new Map<string, BoundaryHost>();
   for (const el of flowElements) {
-    // An event subprocess prints as a bare `on <trigger> { ... }` with no id,
-    // so a boundary event on one has nothing to print against.
+    // An event subprocess prints with no id, so a boundary on one has nothing
+    // to print against.
     if (
       isBoundaryHost(el) &&
       !(el.kind === 'subProcess' && el.triggeredByEvent === true)
@@ -2173,10 +2058,8 @@ function checkBoundaryEventHosts(
 }
 
 /**
- * The cancel end inside a block and the cancel handler on it are one
- * construct. Operaton takes one handler per block and refuses a file with
- * two; either half alone deploys and goes wrong at run time, so a lone half
- * warns rather than refusing.
+ * Operaton refuses two cancel handlers per block; a lone half deploys and
+ * misbehaves at run time, so it warns.
  */
 function checkCancelPairing(
   flowElements: FlowElement[],
@@ -2231,11 +2114,8 @@ function checkCancelPairing(
 }
 
 /**
- * `BpmnParse.parseEventBasedGateway` refuses a branch target that is not an
- * `intermediateCatchEvent`, and `BpmnParse.parseSequenceFlow` refuses any
- * other flow into a catch such a gateway opens; the engine misses the case
- * where every path in comes from an event-based gateway, so the second
- * refusal counts the paths instead. Neither shape is writable on the surface.
+ * The engine misses the case where every path into a catch comes from
+ * event-based gateways, so the paths are counted.
  */
 function checkWaitBranches(
   flowElements: FlowElement[],
@@ -2275,8 +2155,8 @@ function checkWaitBranches(
       );
     }
 
-    // No script can write this shape: the printer reaches a branch only
-    // through the wait that opens it.
+    // Unwritable in a script: the printer reaches a branch only through the
+    // wait that opens it.
     if ((incoming.get(target.id) ?? 0) > 1) {
       throw new UnsupportedEventFeatureError(
         target.id,
@@ -2290,7 +2170,6 @@ function checkWaitBranches(
   }
 }
 
-/** A `bpmn:SubProcess` or a `bpmn:Transaction`, which differ only in the tag they serialize back to. */
 function mapSubProcess(
   el: ModdleElement,
   warnings: ImportWarning[],
@@ -2318,11 +2197,7 @@ function mapSubProcess(
   };
 }
 
-/**
- * The BPMN attributes of a `<bpmn:transaction>` that `parseTransaction` reads
- * nothing of, reported by hand for the reason {@link warnIgnoredQuantityAttrs}
- * gives.
- */
+/** `parseTransaction` ignores these. */
 const IGNORED_TRANSACTION_ATTRS: ReadonlyMap<string, string> = new Map([
   ['method', 'Operaton reads it on a <bpmn:transaction> not at all'],
   ['protocol', 'Operaton reads it on a <bpmn:transaction> not at all'],
@@ -2339,7 +2214,8 @@ function warnIgnoredTransactionAttrs(
   warnings: ImportWarning[],
 ): void {
   for (const [name, reason] of IGNORED_TRANSACTION_ATTRS) {
-    // An absent attribute reads back as undefined or as the moddle default false.
+    // An absent attribute reads back as undefined or as the moddle default
+    // false.
     const value: unknown = el.get(name);
     if (value === undefined || value === false) continue;
     warnings.push({
@@ -2398,12 +2274,8 @@ function mapEventSubProcess(
 }
 
 /**
- * A timer-started event sub-process prints as a host-less `on timer(...)`
- * whose head spells the timer job keys once, for the start's timer job. The
- * sub-process's own copy reaches only its async continuation job
- * (`BpmnParse.createActivityOnScope`, `parseAsynchronousContinuation`,
- * `DefaultFailedJobParseListener.parseSubProcess`) and has no spelling on the
- * surface; kept on the node, it would print into the head beside the start's.
+ * The sub-process's own copy reaches only its async job, has no spelling, and
+ * would print beside the start's.
  */
 function dropContinuationCopyOfTimerJobSettings(
   settings: EngineAttributes,
@@ -2449,8 +2321,8 @@ function mapEventSubProcessStart(
     'start',
   );
 
-  // Operaton's compensation-handler lookup never asks what tag the block
-  // carries, so a transaction hosts one as a subprocess does.
+  // The engine's compensation-handler lookup ignores the tag, so a transaction
+  // hosts one as a subprocess does.
   if (
     eventDefinition.kind === 'compensation' &&
     hostKind !== 'subProcess' &&
@@ -2483,8 +2355,8 @@ function mapEventSubProcessStart(
     );
   }
 
-  // Unlike a boundary event, the start under an `on` header has a label slot;
-  // warnElidedNamedDrop reports the pair if the statement does not print.
+  // Unlike a boundary, the start under `on` has a label slot;
+  // warnElidedNamedDrop reports it if unprinted.
   const named = readNamed(startEl, id, warnings);
   return {
     kind: 'startEvent',
@@ -2497,7 +2369,6 @@ function mapEventSubProcessStart(
   };
 }
 
-/** The trigger kinds a `cancelActivity="false"` boundary refuses on; every other kind writes as `alongside`. */
 const NON_INTERRUPTING_REFUSALS: Partial<
   Record<EventDefinition['kind'], string>
 > = {
@@ -2512,7 +2383,7 @@ const NON_INTERRUPTING_REFUSALS: Partial<
     'which this surface cannot write back',
 };
 
-/** `attachedToRef` resolves to the host element; only its `id` is kept, and {@link checkBoundaryEventHosts} validates it afterwards. */
+/** Validated later by {@link checkBoundaryEventHosts}. */
 function mapBoundaryEvent(
   el: ModdleElement,
   warnings: ImportWarning[],
@@ -2582,9 +2453,9 @@ function mapBoundaryEvent(
 }
 
 /**
- * `BpmnParse.ensureNoIoMappingDefined` (a start or a boundary event) and
- * `BpmnParse.checkActivityInputOutputSupported` (a gateway or an event
- * sub-process) fail the deployment on an `operaton:inputOutput` here.
+ * `ensureNoIoMappingDefined` (start, boundary) and
+ * `checkActivityInputOutputSupported` (gateway, event sub-process) refuse an
+ * `operaton:inputOutput` here.
  */
 function refuseIoMapping(
   el: ModdleElement,
@@ -2608,11 +2479,8 @@ function refuseIoMapping(
 }
 
 /**
- * One event definition on the catch side. An error or escalation definition
- * with no ref, or whose root carries no code, is catch-all; a reference
- * naming no root is not: the engine catches its text as the code
- * ({@link readDanglingErrorCode}) or refuses the file
- * (`createEscalationEventDefinitionForEscalationHandler`).
+ * An error or escalation with no ref, or a codeless root, is catch-all; a
+ * dangling ref is not.
  */
 function readCatchEventDefinition(
   defEl: ModdleElement,
@@ -2680,8 +2548,8 @@ function readCatchEventDefinition(
     return { kind: 'cancel' };
   }
 
-  // On the catch side only `BpmnParse.parseIntermediateCatchEvent` reads a
-  // link: a start ignores it, and `parseBoundaryEvents` refuses it.
+  // Only `parseIntermediateCatchEvent` reads a link on the catch side: a start
+  // ignores it, a boundary refuses it.
   if (
     defEl.$type === 'bpmn:LinkEventDefinition' &&
     position === 'intermediate catch'
@@ -2690,7 +2558,7 @@ function readCatchEventDefinition(
   }
 
   // The await site admits no tag the arms above leave unread, so only a start
-  // or a boundary reaches this refusal.
+  // or boundary gets here.
   throw new UnsupportedEventDefinitionError(
     ownerId,
     position as 'start' | 'boundary',
@@ -2698,11 +2566,7 @@ function readCatchEventDefinition(
   );
 }
 
-/**
- * The text of an `errorRef` naming no root, which the engine's four error
- * readers each take as the code (`error == null ? errorRef :
- * error.getErrorCode()`); `undefined` when no reference was written at all.
- */
+/** The engine takes a dangling `errorRef`'s text as the code. */
 function readDanglingErrorCode(
   defEl: ModdleElement,
   ownerId: string,
@@ -2725,7 +2589,10 @@ function readDanglingErrorCode(
   return written;
 }
 
-/** Unlike an error, an escalation reference the engine cannot resolve fails the deployment. */
+/**
+ * Unlike an error, an escalation reference the engine cannot resolve fails the
+ * deployment.
+ */
 function danglingEscalationDetail(written: string, method: string): string {
   return (
     `its escalationRef '${written}' names no bpmn:escalation root, which ` +
@@ -2735,8 +2602,8 @@ function danglingEscalationDetail(written: string, method: string): string {
 }
 
 /**
- * `BpmnParse.parseIntermediateLinkEventCatchBehavior` throws on a nameless
- * catch, and `BpmnParse.parseSequenceFlow` fails every flow into a nameless throw.
+ * `parseIntermediateLinkEventCatchBehavior` throws on a nameless catch, and
+ * `parseSequenceFlow` fails every flow into a nameless throw.
  */
 function readLinkDefinition(
   defEl: ModdleElement,
@@ -2755,7 +2622,6 @@ function readLinkDefinition(
   return { kind: 'link', linkName };
 }
 
-/** The three definitions read the same on the catch and the throw side; `undefined` leaves the kind to the caller. */
 function readSharedEventDefinition(
   defEl: ModdleElement,
   ownerId: string,
@@ -2779,7 +2645,10 @@ function readSharedEventDefinition(
   return undefined;
 }
 
-/** moddle reads an absent `waitForCompletion` back as its default `true`, so only an explicit `false` is refused. */
+/**
+ * moddle reads an absent `waitForCompletion` back as its default `true`, so
+ * only an explicit `false` is refused.
+ */
 function refuseUnsupportedCompensateFeatures(
   defEl: ModdleElement,
   ownerId: string,
@@ -2803,10 +2672,8 @@ function refuseUnsupportedCompensateFeatures(
 }
 
 /**
- * The name is carried as written, an expression included:
- * `BpmnParse.parseMessages` and `BpmnParse.parseSignals` evaluate every name
- * through `createExpression`, and the script reads a quoted name opening with
- * `${` or `#{` back as the same text.
+ * The engine evaluates every message and signal name as an expression, so it is
+ * carried as written.
  */
 function resolveNamedRootRef(
   defEl: ModdleElement,
@@ -2870,7 +2737,10 @@ function readTimerDefinition(
   return { timerKind: TIMER_CHILD_TO_KIND[childName], expression };
 }
 
-/** Neither is declared by the moddle extension, so both surface in `$attrs` alone. */
+/**
+ * Neither is declared by the moddle extension, so both surface in `$attrs`
+ * alone.
+ */
 const CONDITIONAL_NARROWING_ATTRS: readonly string[] = [
   'variableName',
   'variableEvents',
@@ -2907,9 +2777,8 @@ function readConditionalDefinition(
 }
 
 /**
- * One event definition on the throw side. Only an intermediate throw reaches
- * this with a link: {@link mapEndEvent} refuses one by tag first, since
- * Operaton runs a link end as a none end.
+ * {@link mapEndEvent} refuses a link end first; Operaton runs one as a none
+ * end.
  */
 function readThrowEventDefinition(
   defEl: ModdleElement,
@@ -2917,7 +2786,7 @@ function readThrowEventDefinition(
   warnings: ImportWarning[],
 ): EventDefinition {
   // Every position reaching here runs `parseSignalEventDefinition` with
-  // `isThrowing=true`, which is what reads `async` and `operaton:in`.
+  // `isThrowing=true`, which reads `async` and `operaton:in`.
   collectExtensionDrops(defEl, ownerId, warnings, 'throw');
   collectUnmappedBpmnDrops(defEl, ownerId, warnings);
   warnDocumentationDrop(defEl, ownerId, 'an event definition', warnings);
@@ -2985,7 +2854,10 @@ function readThrowEventDefinition(
   return { kind: 'escalation', escalationCode };
 }
 
-/** Throw and catch carry the same definition `$type`, and the catch side reads these names, so the sweep cannot report them. */
+/**
+ * Throw and catch carry the same definition `$type`, and the catch side reads
+ * these names, so the sweep cannot report them.
+ */
 function warnThrowSideBindingAttrs(
   defEl: ModdleElement,
   ownerId: string,
@@ -3011,9 +2883,7 @@ function warnThrowSideBindingAttrs(
 }
 
 /**
- * `BpmnParse.parseIntermediateThrowEvent` returns before creating an activity
- * for a link throw, so the engine never reads these; the tables mark them
- * read on every intermediate throw for the other emit kinds' sake.
+ * `parseIntermediateThrowEvent` returns before reading these off a link throw.
  */
 function warnLinkThrowEngineSettings(
   el: ModdleElement,
@@ -3050,7 +2920,7 @@ function warnLinkThrowEngineSettings(
   }
 }
 
-/** The mirror of {@link warnThrowSideBindingAttrs}: only a throw sends the message, so a catch reads no implementation. */
+/** Only a throw sends the message, so a catch reads no implementation. */
 function warnCatchSideImplementationAttrs(
   defEl: ModdleElement,
   ownerId: string,
@@ -3079,15 +2949,13 @@ function warnCatchSideImplementationAttrs(
   }
 }
 
-/** {@link describeChild} without its article, for a sentence that leads with the child. */
 function childSubject(child: ModdleElement): string {
   return describeChild(child, child.$type).replace(/^an /, '');
 }
 
 /**
- * Report what a start or end the printer may leave unprinted takes with it.
- * {@link isElidedOnPrint} decides a start's fate alone; an end's is settled
- * by print position, unknown here, so an end's message covers both outcomes.
+ * An end's fate depends on print position, unknown here, so its message covers
+ * both outcomes.
  */
 function warnElidedNamedDrop(
   el: StartEvent | EndEvent,
@@ -3123,7 +2991,6 @@ function warnElidedNamedDrop(
   }
 }
 
-/** The label and the documentation of an element whose position has no IR node to hold either; `surface` names that position. */
 function warnNamedDrop(
   el: ModdleElement,
   id: string,
@@ -3144,7 +3011,6 @@ function warnNamedDrop(
   warnDocumentationDrop(el, id, surface, warnings);
 }
 
-/** A `bpmn:documentation` at a position with no IR node to hold it; a position that holds one reads it through {@link readNamed}. */
 function warnDocumentationDrop(
   el: ModdleElement,
   id: string,
@@ -3169,8 +3035,8 @@ function mapCallActivity(
   const named = readNamed(el, id, warnings);
 
   const calledElement = readString(el, 'calledElement');
-  // `BpmnParse.parseCallActivity` refuses neither and both, and runs a
-  // `caseRef` alone through `CaseCallActivityBehavior`.
+  // `parseCallActivity` refuses neither and both, and runs a `caseRef` alone as
+  // a case call.
   const caseRef = readNamespacedAttr(el, 'caseRef');
   if (calledElement === undefined) {
     throw new UnsupportedCallActivityError(
@@ -3230,9 +3096,8 @@ function mapCallActivity(
 }
 
 /**
- * `BpmnParse.parseCallActivity` resolves the variable-mapping delegate class
- * first and drops the delegate expression beside it, which loses nothing the
- * engine runs, so the loser warns rather than refuses.
+ * `parseCallActivity` takes the variable-mapping class and drops the delegate
+ * expression beside it, so the loser warns.
  */
 function readCallVariableMapper(
   el: ModdleElement,
@@ -3260,7 +3125,6 @@ function readCallVariableMapper(
   return undefined;
 }
 
-/** The one refusal `BpmnParse.parseTenantId` draws; `what` is the callable the tenant scopes. */
 function tenantPinDetail(attr: string, value: string, what: string): string {
   return (
     `it names operaton:${attr}="${value}", which pins the tenant ` +
@@ -3270,11 +3134,8 @@ function tenantPinDetail(attr: string, value: string, what: string): string {
 }
 
 /**
- * The `<prefix>Binding`/`<prefix>Version` pair, the inverse of `ir-to-xml.ts`'s
- * `versionBindingAttrs`. A word outside `BpmnParse.parseBinding`'s four leaves
- * the binding null, which `BaseCallableElement.isLatestBinding` reads as
- * latest, so it imports as such; `parseFormDefinition` refuses the same word
- * on a form reference.
+ * A word outside `parseBinding`'s four runs as latest; `parseFormDefinition`
+ * refuses it on a form reference.
  */
 function readVersionBinding(
   el: ModdleElement,
@@ -3375,9 +3236,8 @@ function warnMappingAttrIgnored(
 }
 
 /**
- * `BpmnParse.parseInputParameter` takes a non-empty `businessKey` and reads
- * nothing else off that `operaton:in`, and a later one overwrites the earlier
- * through `setBusinessKeyValueProvider`.
+ * `parseInputParameter` reads only a non-empty `businessKey` off that
+ * `operaton:in`; the last wins.
  */
 function readCallMappings(
   el: ModdleElement,
@@ -3443,10 +3303,8 @@ function readCallMappings(
 }
 
 /**
- * In `BpmnParse.parseCallableElementProvider`'s order: `variables="all"`
- * returns before any source is read, and a non-empty `source` is taken
- * before `sourceExpression` is looked at; an empty `source` is a deployment
- * error under the strict validation the engine runs by default.
+ * `variables="all"` returns before any source is read, and a non-empty `source`
+ * beats `sourceExpression`.
  */
 function readCallVariableMapping(
   value: ModdleElement,
@@ -3525,7 +3383,6 @@ function readCallVariableMapping(
   );
 }
 
-/** One warning per `bpmn:Lane`: the flat IR has no lane concept. */
 function collectLaneDrops(
   processEl: ModdleElement,
   processId: string,
@@ -3558,11 +3415,7 @@ function warnLaneSetDrops(
   }
 }
 
-/**
- * The element-valued moddle properties some reader in this file reads (a
- * warning sweep counts as a reader); every other BPMN child is reported by
- * {@link collectUnmappedBpmnDrops}.
- */
+/** A warning sweep counts as a reader. */
 const READ_BPMN_CHILDREN: ReadonlySet<string> = new Set([
   'completionCondition',
   'condition',
@@ -3584,12 +3437,7 @@ const READ_BPMN_CHILDREN: ReadonlySet<string> = new Set([
   ...Object.values(TIMER_KIND_TO_CHILD),
 ]);
 
-/**
- * One {@link ImportWarning} per piece of BPMN content on `el` that no reader
- * reads: a child outside {@link READ_BPMN_CHILDREN}, and an unnamespaced
- * attribute BPMN does not declare. An attribute in a foreign namespace is
- * left alone: that is where an editor parks its bookkeeping.
- */
+/** A foreign-namespace attribute is editor bookkeeping and stays silent. */
 function collectUnmappedBpmnDrops(
   el: ModdleElement,
   ownerId: string,
@@ -3613,8 +3461,7 @@ function collectUnmappedBpmnDrops(
     // `readAssignment` reads a user task's roles; no other activity's are read.
     if (prop.name === 'resources' && el.$type === 'bpmn:UserTask') continue;
     const value = el.get(prop.name);
-    // A single element is spelled as its property (`<bpmn:ioSpecification>`),
-    // a list item as its own type.
+    // A single element is spelled as its property, a list item as its own type.
     const items = Array.isArray(value) ? value : [value];
     const tag = Array.isArray(value) ? undefined : prop.ns?.name;
     for (const item of items) {
@@ -3631,7 +3478,6 @@ function collectUnmappedBpmnDrops(
   }
 }
 
-/** The root kinds {@link xmlToIr} handles, the collaboration by {@link warnCollaborationDrops}. */
 const HANDLED_ROOT_KINDS: ReadonlySet<string> = new Set([
   'bpmn:Process',
   'bpmn:Collaboration',
@@ -3641,11 +3487,7 @@ const HANDLED_ROOT_KINDS: ReadonlySet<string> = new Set([
   'bpmn:Signal',
 ]);
 
-/**
- * Report the root elements the IR does not model, and the extension content
- * on the ones it does (the process is swept as it is mapped). Returns the ids
- * of the roots reported whole, for {@link collectUnparsableResidualDrops}.
- */
+/** Returns the ids of the roots reported whole. */
 function collectRootDrops(
   rootElements: ModdleElement[],
   processId: string,
@@ -3678,7 +3520,6 @@ function collectRootDrops(
   return reportedRootIds;
 }
 
-/** The XML tag plus the id, or the `name` when there is no id; `tag` overrides the tag derived from the type. */
 function describeUnmapped(el: ModdleElement, tag?: string): string {
   const identity = el.id ?? readString(el, 'name');
   const name = tag ?? xmlTagOf(el.$type);
@@ -3693,7 +3534,7 @@ export function dataConstructDropMessage(subject: string): string {
   );
 }
 
-/** A data object or reference, reported whole: no flow ends at one, so no downstream check needs it mapped. */
+/** No flow ends at a data object, so nothing downstream needs it mapped. */
 function warnDataConstructDrop(
   child: ModdleElement,
   hostId: string | undefined,
@@ -3706,7 +3547,6 @@ function warnDataConstructDrop(
   });
 }
 
-/** `qualifier` narrows the {@link ENGINE_READS_ELSEWHERE} lookup to the position its reader runs at (`'throw'`, `'initial'`). */
 function collectExtensionDrops(
   el: ModdleElement,
   ownerId: string,
@@ -3719,10 +3559,8 @@ function collectExtensionDrops(
 }
 
 /**
- * Report `operaton:` attributes {@link CONSUMED_EXTENSION_ATTRS} does not list
- * for this owner kind. Any other namespace is left alone: that is where an
- * editor stamps its bookkeeping, and reporting it would bury the drops that
- * matter.
+ * Other namespaces hold editor bookkeeping; reporting them would bury real
+ * drops.
  */
 function warnUnreadPrefixedAttrs(
   el: ModdleElement,
@@ -3762,16 +3600,14 @@ function warnUnreadPrefixedAttrs(
   }
 }
 
-/** The reason a field drops from a position that holds none. */
 const FIELD_HAS_NO_HOME =
   'this tool carries an injected field on the step or the listener whose ' +
   'class or delegate binding receives it, on the step whose built-in mail ' +
   'or shell behaviour does, and on no other position';
 
 /**
- * Report the `<bpmn:extensionElements>` children {@link CONSUMED_EXTENSION_ELEMENTS}
- * does not list for this owner kind. An undeclared `operaton:` element leaves
- * no value behind; {@link collectUnparsableResidualDrops} reports it instead.
+ * An undeclared `operaton:` element leaves no value; the residual sweep reports
+ * it.
  */
 function warnUnreadExtensionElements(
   el: ModdleElement,
@@ -3813,10 +3649,8 @@ function warnUnreadExtensionElements(
 }
 
 /**
- * Report the attributes the operaton moddle extension declares that the IR
- * does not read off this owner kind. A declared attribute parses into a typed
- * property, never into `$attrs`, so {@link warnUnreadPrefixedAttrs} cannot
- * see it.
+ * A declared attribute parses into a typed property, never `$attrs`, so the
+ * prefixed sweep cannot see it.
  */
 function warnUnreadDeclaredAttrs(
   el: ModdleElement,
@@ -3857,7 +3691,6 @@ export function unimportedSettingMessage(
   );
 }
 
-/** One setting re-export will not write back; `ownerType` and `name` look up its engine reader in {@link ENGINE_READS_ELSEWHERE}. */
 function warnUnimportedSetting(
   warnings: ImportWarning[],
   ownerId: string,
@@ -3881,18 +3714,13 @@ function warnUnimportedSetting(
   });
 }
 
-/** `bpmn:StartEvent` -> `a <bpmn:startEvent>`, `operaton:TaskListener` -> `an <operaton:taskListener>`. */
 function describeTag(type: string): string {
   return `${type.startsWith('operaton:') ? 'an' : 'a'} <${xmlTagOf(type)}>`;
 }
 
 /**
- * Report every attribute on a consumed extension child that no reader reads,
- * descending through the children the readers do read. Declared attributes
- * (typed properties) and undeclared ones (`$attrs`) are swept apart, since
- * moddle stores them apart. `key` is the table key `el` resolved to under its
- * parent, so a qualified row chains: a child of `a/b` is looked up as `a/b/c`
- * before `c`.
+ * Declared and undeclared attributes live apart in moddle, so they are swept
+ * apart.
  */
 function warnUnreadChildAttrs(
   el: ModdleElement,
@@ -3936,13 +3764,11 @@ function warnUnreadChildAttrs(
   }
 }
 
-/** The {@link CONSUMED_CHILD_ATTRS} key for `type` under `parentKey`: the qualified row when one exists, else the bare `$type`. */
 function consumedKeyOf(type: string, parentKey: string): string {
   const qualified = `${parentKey}/${type}`;
   return CONSUMED_CHILD_ATTRS.has(qualified) ? qualified : type;
 }
 
-/** The child's XML tag plus the identity its row at `key` reads. */
 function describeChild(el: ModdleElement, key: string): string {
   const consumed = CONSUMED_CHILD_ATTRS.get(key);
   const identity = CHILD_IDENTITY_ATTRS.filter(
@@ -3954,7 +3780,6 @@ function describeChild(el: ModdleElement, key: string): string {
   return identity === undefined ? `an ${tag}` : `an ${tag} '${identity}'`;
 }
 
-/** The XML tag a moddle `$type` came from: `operaton:TaskListener` -> `operaton:taskListener`. */
 function xmlTagOf(type: string): string {
   const local = type.indexOf(':') + 1;
   return (
@@ -3964,7 +3789,7 @@ function xmlTagOf(type: string): string {
   );
 }
 
-/** The elements moddle materialized under `el`; a string-typed element property (an `operaton:field`'s body) holds none. */
+/** A string-typed element property (an `operaton:field` body) holds none. */
 function childElements(el: ModdleElement): ModdleElement[] {
   const children: ModdleElement[] = [];
   for (const prop of el.$descriptor?.properties ?? []) {
@@ -3982,7 +3807,7 @@ function childElements(el: ModdleElement): ModdleElement[] {
 
 /**
  * A `#{...}` body the printer spells as bare DSL comes back inside `${...}`;
- * one it keeps quoted (out of subset or composite) lowers as written.
+ * one it keeps quoted lowers as written.
  */
 function noteRewrappedExpression(
   body: string | undefined,
@@ -4007,7 +3832,6 @@ function noteRewrappedExpression(
   });
 }
 
-/** A container's own start; {@link readStartTrigger} bounds what it may carry. */
 function mapStartEvent(
   el: ModdleElement,
   warnings: ImportWarning[],
@@ -4028,11 +3852,8 @@ function mapStartEvent(
 }
 
 /**
- * The initiator and the start form, read off the process's own start alone:
- * `BpmnParse.parseStartEvents` sends every other start to
- * `parseScopeStartEvent`, which reads neither. Both are marked read on
- * `bpmn:StartEvent`, which silences the sweep for a nested start too, so the
- * drop is reported by hand.
+ * Only the process's own start reads these, yet `bpmn:StartEvent` marks them
+ * read, so a nested start reports by hand.
  */
 function readStartAttributes(
   el: ModdleElement,
@@ -4074,7 +3895,6 @@ function readStartAttributes(
   return {};
 }
 
-/** The triggers Operaton parses off a process start but never acts on, each with the validator's remedy for the same position. */
 const IGNORED_START_SUBJECTS: ReadonlyMap<
   string,
   { subject: string; remedy: string }
@@ -4104,7 +3924,7 @@ const IGNORED_START_SUBJECTS: ReadonlyMap<
   ],
 ]);
 
-/** The tags the triggers of one position are written with; `condition` is the one word the IR spells differently. */
+/** `condition` is the one word the IR spells differently. */
 function definitionTagsOf(
   triggers: readonly ((typeof ON_TRIGGERS)[number] | 'link')[],
 ): readonly string[] {
@@ -4119,7 +3939,6 @@ const THROW_CARRIED_TAGS = definitionTagsOf(THROW_TRIGGERS);
 const EMIT_CARRIED_TAGS = definitionTagsOf(EMIT_TRIGGERS);
 const AWAIT_CARRIED_TAGS = definitionTagsOf(CATCH_TRIGGERS);
 
-/** The trigger on a container's own start; an event handler's start goes through {@link mapEventSubProcessStart}. */
 function readStartTrigger(
   el: ModdleElement,
   id: string,
@@ -4178,7 +3997,7 @@ function readStartTrigger(
   return definition;
 }
 
-/** The kind a definition tag imports as, or `undefined` for a raised one; a terminate and a cancel print on the end statement itself, which keeps its label. */
+/** A terminate and a cancel print on the end statement itself. */
 function endCarriedKind(
   tag: string,
 ): (typeof END_TRIGGERS)[number] | undefined {
@@ -4240,8 +4059,7 @@ function mapEndEvent(
     throw new UnsupportedEventDefinitionError(id, 'end', defEl.$type);
   }
 
-  // The tag check above admits only the five thrown kinds, so the reader's
-  // link arm is unreachable here and the cast holds.
+  // The tag check admits only the five thrown kinds, so the cast holds.
   const eventDefinition = readThrowEventDefinition(
     defEl,
     id,
@@ -4264,11 +4082,7 @@ function mapEndEvent(
   };
 }
 
-/**
- * `BpmnParse.parseEndEvents` runs the mapping through
- * `parseActivityInputOutput`, whose output check fails the deployment on this
- * tag alone; the input half is read there and reported as a drop by the sweep.
- */
+/** `parseEndEvents` refuses an output mapping here. */
 function refuseEndOutputParameters(el: ModdleElement, id: string): void {
   const io = onlyIoMapping(el, id);
   const outputs =
@@ -4284,11 +4098,8 @@ function refuseEndOutputParameters(el: ModdleElement, id: string): void {
 }
 
 /**
- * A definition-less throw (the Modeler's milestone marker) is a step:
- * `BpmnParse.parseIntermediateThrowEvent` gives it
- * `IntermediateThrowNoneEventActivityBehavior`, whose `execute` is the bare
- * `leave` a `TaskActivityBehavior` performs, with the same async and listener
- * settings; only the activity type history reports changes.
+ * A definition-less throw runs as a bare `leave`, like a task, so it imports as
+ * a step.
  */
 function mapIntermediateThrowEvent(
   el: ModdleElement,
@@ -4342,8 +4153,7 @@ function mapIntermediateThrowEvent(
     );
   }
 
-  // The two checks above admit only the emittable kinds, so the reader's
-  // error arm is unreachable here and the cast holds.
+  // The checks above admit only emittable kinds, so the cast holds.
   const eventDefinition = readThrowEventDefinition(
     defEl,
     id,
@@ -4355,8 +4165,7 @@ function mapIntermediateThrowEvent(
     return { kind: 'intermediateThrowEvent', id, eventDefinition };
   }
   warnNamedDrop(el, id, 'an emit', warnings);
-  // The block is marked read on the tag for the none throw's sake, which
-  // carries it as a step; this node has no slot, so it reports it by hand.
+  // Marked read on the tag for the none throw; this node has no slot for it.
   const io = onlyIoMapping(el, id);
   if (io !== undefined) {
     warnUnimportedSetting(warnings, id, childSubject(io), el.$type, io.$type);
@@ -4378,9 +4187,8 @@ function mapIntermediateThrowEvent(
 }
 
 /**
- * The engine attributes of an end or an intermediate throw, after the
- * `operaton:properties` block {@link THROW_EVENT_TAGS} marks read: only an
- * external-bound thrown message reaches its reader, so every shape reports it.
+ * Only an external-bound thrown message reaches the `operaton:properties`
+ * reader.
  */
 function readThrowEventAttributes(
   el: ModdleElement,
@@ -4400,11 +4208,6 @@ function readThrowEventAttributes(
   return readEngineAttributes(el, id, warnings);
 }
 
-/**
- * One drop of what `BpmnParse.parseExternalServiceTask` reads: under an
- * external binding it reads `what` off `readOff` and the throw has no
- * position for it; under any other binding nothing reaches that reader.
- */
 function warnThrownMessageExtraDrop(
   id: string,
   what: string,
@@ -4435,14 +4238,8 @@ function hasConnector(el: ModdleElement): boolean {
 }
 
 /**
- * What makes Operaton send a thrown message: a service task's
- * implementation, written on the definition. A message thrown without one
- * records and continues, so a definition naming none imports as it stands; a
- * connector is that implementation in element form, which this surface cannot
- * keep, so it refuses rather than turning the send into a no-op. The throw
- * statement has a slot for nothing else `parseServiceTaskLike` reads off the
- * definition, so the result variable is refused where the engine refuses or
- * stores it and the rest is dropped naming its reader.
+ * A thrown message without an implementation records and continues. A connector
+ * cannot be kept, so it refuses rather than become a no-op.
  */
 function readThrownMessageBinding(
   defEl: ModdleElement,
@@ -4554,7 +4351,6 @@ function readThrownMessageBinding(
   return binding;
 }
 
-/** The triggers an await may head, as the refusals below name them. */
 const AWAITABLE_TRIGGERS = formatPlainWordList(CATCH_TRIGGERS);
 
 function mapIntermediateCatchEvent(
@@ -4562,7 +4358,7 @@ function mapIntermediateCatchEvent(
   warnings: ImportWarning[],
 ): IntermediateCatchEvent {
   const id = requireId(el);
-  // The single-block drop is reported by the owner sweep, which checks no multiplicity.
+  // The single-block drop is reported by the owner sweep.
   onlyIoMapping(el, id);
 
   if (el.get('parallelMultiple') === true) {
@@ -4622,7 +4418,7 @@ function mapIntermediateCatchEvent(
   };
 }
 
-/** A standard loop is not refused here: {@link readLoopCharacteristics} drops it with a warning on every host alike. */
+/** A standard loop warns in {@link readLoopCharacteristics} instead. */
 function refuseLoopCharacteristics(el: ModdleElement, id: string): void {
   const loop = getEl(el, 'loopCharacteristics');
   if (loop !== undefined && loop.$type === MULTI_INSTANCE) {
@@ -4643,12 +4439,9 @@ export function loopDroppedMessage(tag: string, id: string): string {
 }
 
 /**
- * How often a step runs, or `undefined` for one that runs once.
- * `parseMultiInstanceLoopCharacteristics` looks only for the multi-instance
- * child, so a `bpmn:standardLoopCharacteristics` runs once and drops with a
- * warning. A `completionCondition` reaches `createExpression` as text alone,
- * so a body with no `${`/`#{` opener is a literal there and its `language`
- * is read by nothing.
+ * The engine reads only the multi-instance child, so a standard loop runs once.
+ * A `completionCondition` without `${`/`#{` is a literal, its `language`
+ * unread.
  */
 function readLoopCharacteristics(
   el: ModdleElement,
@@ -4756,8 +4549,8 @@ function readCardinality(
       'its bpmn:loopCardinality is empty, so Operaton has no number of runs to read',
     );
   }
-  // A literal the printer has no bare form for would come back re-wrapped as
-  // an expression, a different document; BARE_CARDINALITY is the printer's test.
+  // The printer has no bare form for this literal; it would come back as an
+  // expression.
   if (
     !BARE_CARDINALITY.test(cardinality) &&
     !EXPRESSION_ANYWHERE.test(cardinality)
@@ -4775,14 +4568,9 @@ function readCardinality(
 }
 
 /**
- * Operaton reads the text of `bpmn:loopDataInputRef` as the collection
- * variable's name, while moddle resolves it as an id reference and drops one
- * naming no element, so the dropped text is read back from the parse warning.
- * `BpmnParse.parseMultiInstanceLoopCharacteristics` stores each spelling in
- * one of two fields by whether its text contains `{`, the reference second,
- * and `MultiInstanceActivityBehavior.resolveNrOfInstances` reads the
- * expression field first: of one shape the reference wins, of two shapes the
- * expression wins.
+ * Operaton reads `loopDataInputRef` as a variable name; moddle drops a dangling
+ * one, so its text comes from the parse warning. Of one shape the reference
+ * wins, of two the expression.
  */
 function readCollection(
   loopEl: ModdleElement,
@@ -4839,12 +4627,8 @@ function readElementVariable(
     });
   }
   const elementVariable = itemName ?? setting;
-  // A name outside the printer's one form (BARE_ELEMENT_VARIABLE) comes back
-  // as something the language cannot parse.
-  if (
-    elementVariable !== undefined &&
-    !BARE_ELEMENT_VARIABLE.test(elementVariable)
-  ) {
+  // A name outside the grammar's ID terminal would not parse back.
+  if (elementVariable !== undefined && !ID_TEXT.test(elementVariable)) {
     throw new UnsupportedLoopCharacteristicsError(
       id,
       MULTI_INSTANCE,
@@ -4878,7 +4662,7 @@ function warnShadowedRepetitionField(
   });
 }
 
-/** `BpmnParse.checkActivityOutputParameterSupported` fails the deployment of an output mapping on a step that repeats. */
+/** The engine refuses an output mapping on a repeating step. */
 function refuseOutputParameters(el: ModdleElement, id: string): void {
   const io = extensionValues(el).find(
     (value) => value.$type === 'operaton:InputOutput',
@@ -4897,7 +4681,6 @@ function refuseOutputParameters(el: ModdleElement, id: string): void {
   }
 }
 
-/** The repetition content Operaton parses and then never reads. */
 const IGNORED_REPETITION_REFS = [
   'loopDataOutputRef',
   'oneBehaviorEventRef',
@@ -4905,10 +4688,8 @@ const IGNORED_REPETITION_REFS = [
 ] as const;
 
 /**
- * Report what the repetition carries and nothing reads. The three references,
- * `behavior` and `operaton:jobPriority` are named by hand: the sweeps skip a
- * reference and a BPMN attribute, and the generic sentence would read as this
- * tool's limitation rather than a setting the engine never reads.
+ * References, `behavior` and `jobPriority` are reported by hand: the sweeps
+ * skip them, and generic wording would blame this tool rather than the engine.
  */
 function sweepRepetition(
   loopEl: ModdleElement,
@@ -4979,7 +4760,6 @@ function mapUserTask(el: ModdleElement, warnings: ImportWarning[]): UserTask {
   };
 }
 
-/** The resource roles `BpmnParse.parseTaskDefinition` reads, by tag, and the method reading each. */
 const ROLE_READERS: ReadonlyMap<string, string> = new Map([
   ['bpmn:HumanPerformer', 'parseHumanPerformerResourceAssignment'],
   ['bpmn:PotentialOwner', 'parsePotentialOwnerResourceAssignment'],
@@ -4988,7 +4768,10 @@ const ROLE_READERS: ReadonlyMap<string, string> = new Map([
 const USER_PREFIX = 'user(';
 const GROUP_PREFIX = 'group(';
 
-/** `BpmnParse.parseCommaSeparatedList`: only a comma outside a `${...}` splits, so `${groupOf(a, b)}` stays one entry. */
+/**
+ * `BpmnParse.parseCommaSeparatedList`: only a comma outside a `${...}` splits,
+ * so `${groupOf(a, b)}` stays one entry.
+ */
 function splitAsEngine(text: string): string[] {
   const entries: string[] = [];
   let current = '';
@@ -5014,7 +4797,10 @@ function assignmentId(entry: string, prefix: string): string {
   return entry.slice(prefix.length, -1).trim();
 }
 
-/** As `parsePotentialOwnerResourceAssignment` sorts them: `user(...)` to the users, `group(...)` and a bare entry to the groups. */
+/**
+ * As `parsePotentialOwnerResourceAssignment` sorts them: `user(...)` to the
+ * users, `group(...)` and a bare entry to the groups.
+ */
 function splitCandidates(text: string): { users: string[]; groups: string[] } {
   const users: string[] = [];
   const groups: string[] = [];
@@ -5030,7 +4816,6 @@ function splitCandidates(text: string): { users: string[]; groups: string[] } {
   return { users, groups };
 }
 
-/** The role entries first and the attribute's text after, as the engine builds the list. */
 function mergeCandidates(
   fromRoles: string[],
   fromAttr: string | undefined,
@@ -5040,10 +4825,8 @@ function mergeCandidates(
 }
 
 /**
- * The text of a role's `<bpmn:formalExpression>`, the one spelling the role
- * readers fetch by tag (`Element.elementsNS`); moddle gives the same `$type`
- * to `<bpmn:expression xsi:type="bpmn:tFormalExpression">`, so the raw
- * `xsi:type` tells the two apart.
+ * moddle gives `<bpmn:expression xsi:type="bpmn:tFormalExpression">` the same
+ * `$type`, but the engine reads the tag.
  */
 function formalExpressionTextOf(role: ModdleElement): string | undefined {
   const rae = getEl(role, 'resourceAssignmentExpression');
@@ -5055,10 +4838,8 @@ function formalExpressionTextOf(role: ModdleElement): string | undefined {
 }
 
 /**
- * `BpmnParse.parseTaskDefinition` reads the roles first and
- * `parseUserTaskCustomExtensions` appends the attributes' entries after.
- * Roles match on the exact `$type`: bpmn-moddle derives `PotentialOwner` from
- * `HumanPerformer`, and the engine reads by tag.
+ * Roles match on exact `$type`: bpmn-moddle derives `PotentialOwner` from
+ * `HumanPerformer`.
  */
 function readAssignment(
   el: ModdleElement,
@@ -5176,9 +4957,8 @@ function readAssignment(
 }
 
 /**
- * `parseFormDefinition` refuses to deploy a form key beside a form reference,
- * and a form reference whose binding is absent or outside the three it
- * resolves, so both shapes refuse here.
+ * `parseFormDefinition` refuses a key beside a reference, and a reference with
+ * no resolvable binding.
  */
 function readFormRef(
   el: ModdleElement,
@@ -5238,9 +5018,7 @@ export function manualTaskMessage(id: string): string {
 }
 
 /**
- * `ManualTaskActivityBehavior` is an empty subclass of `TaskActivityBehavior`
- * and `BpmnParse.parseManualTask` mirrors `parseTask`, so only the activity
- * type `createActivityOnScope` stores for history differs from a plain task.
+ * A manual task runs as a plain task; only the history activity type differs.
  */
 function mapManualTask(el: ModdleElement, warnings: ImportWarning[]): Task {
   const task = mapTask(el, warnings);
@@ -5273,7 +5051,6 @@ function mapReceiveTask(
   };
 }
 
-/** `element` is the tag that was read and names the subject of a refusal. */
 function mapServiceTask(
   el: ModdleElement,
   warnings: ImportWarning[],
@@ -5283,8 +5060,7 @@ function mapServiceTask(
   const named = readNamed(el, id, warnings);
   const binding = readServiceTaskBinding(el, id, element, warnings);
   const resultVariable = readResultVariable(el, id, warnings);
-  // `parseServiceTaskLike` hands the variable to the expression behaviour
-  // alone, so under a `type` binding it deploys and does nothing.
+  // Under a `type` binding the engine ignores the variable.
   if (
     resultVariable !== undefined &&
     (binding.kind === 'external' || binding.kind === 'builtin')
@@ -5311,7 +5087,10 @@ function mapServiceTask(
   };
 }
 
-/** `BpmnParse.parseResultVariable` reads `resultVariable` and falls back to `resultVariableName`. */
+/**
+ * `BpmnParse.parseResultVariable` reads `resultVariable` and falls back to
+ * `resultVariableName`.
+ */
 function readResultVariable(
   el: ModdleElement,
   id: string,
@@ -5342,7 +5121,6 @@ function readResultVariable(
   return older;
 }
 
-/** The noun a refusal leads with, per tag. */
 const SERVICE_TASK_LIKE_SUBJECT = {
   service: 'Service task',
   send: 'Send task',
@@ -5350,9 +5128,8 @@ const SERVICE_TASK_LIKE_SUBJECT = {
 } as const;
 
 /**
- * `ConnectorParseListener.parseConnectorElement` overwrites whatever behaviour
- * `parseServiceTaskLike` set, on a Connect-enabled engine alone, so the same
- * file has two possible executions and no warning can summarise it.
+ * On a Connect-enabled engine a connector overrides the task's behaviour, so
+ * the file has two possible executions.
  */
 export const CONNECTOR_CONSTRUCT =
   'an <operaton:connector> element, which the Connect plugin runs in place ' +
@@ -5370,12 +5147,11 @@ function readServiceTaskBinding(
   const refusal = (construct: string): Error =>
     new UnsupportedServiceTaskFormError(id, construct, subject);
 
-  // Before both reads: a connector wins at runtime over any of them, and a
-  // connector-only task would otherwise read as "no execution discriminator".
+  // First: a connector wins at runtime.
   if (hasConnector(el)) throw refusal(CONNECTOR_CONSTRUCT);
 
-  // The decision reference is the engine's discriminator, read before the
-  // code forms a business rule task may fall back to.
+  // The decision reference is the engine's discriminator, read before any code
+  // fallback.
   const binding =
     (element === 'businessRule'
       ? readDecisionBinding(el, id, refusal, warnings)
@@ -5397,11 +5173,6 @@ function readServiceTaskBinding(
   return withExternalExtras(bound, el, id, warnings);
 }
 
-/**
- * `BpmnParse.parseServiceTaskLike` fails the deployment when a `class` or
- * `delegateExpression` binding carries a result variable in either spelling;
- * `elementName` is the tag as that refusal names it (`serviceTask`).
- */
 function refuseResultVariableBeside(
   binding: ServiceTaskBinding,
   el: ModdleElement,
@@ -5419,7 +5190,6 @@ function refuseResultVariableBeside(
   );
 }
 
-/** The first result-variable spelling the element writes, in `parseResultVariable`'s order. */
 function writtenResultVariableAttr(
   el: ModdleElement,
 ): 'resultVariable' | 'resultVariableName' | undefined {
@@ -5429,10 +5199,7 @@ function writtenResultVariableAttr(
 }
 
 /**
- * Refuse the field lists the engine's parse refuses, in its order: shell
- * value shapes and flags, then missing fields, then an undeclared name. The
- * flag check is case-insensitive as the engine's is, so `"True"` imports as
- * written with a warning.
+ * In the engine's order; the flag check is case-insensitive like the engine's.
  */
 function refuseBuiltinShapes(
   binding: Extract<ServiceTaskBinding, { kind: 'builtin' }>,
@@ -5507,10 +5274,6 @@ function refuseBuiltinShapes(
   }
 }
 
-/**
- * What `BpmnParse.parseExternalServiceTask` reads beside the topic. No other
- * binding reaches that method, so under one the three are reported instead.
- */
 function withExternalExtras(
   binding: ServiceTaskBinding,
   el: ModdleElement,
@@ -5576,12 +5339,7 @@ function withExternalExtras(
   };
 }
 
-/**
- * In the order `parseOperatonErrorEventDefinitions` branches: a definition
- * with no `errorRef` is skipped whole (`undefined`), one with a reference and
- * no `expression` fails the deployment, and a reference naming no root is
- * read as the code ({@link readDanglingErrorCode}).
- */
+/** No `errorRef` skips the definition; a ref without `expression` refuses. */
 function readErrorMapping(
   defEl: ModdleElement,
   ownerId: string,
@@ -5627,15 +5385,12 @@ function readErrorMapping(
   return { errorCode, condition };
 }
 
-/** A thrown message's definition carries every form but the built-in ones, whose fields have no place on a throw. */
+/** A throw has no place for the built-in forms' fields. */
 type BindingHost = 'task' | 'thrownMessage';
 
 /**
- * The implementation Operaton resolves, in `parseServiceTaskLike`'s order:
- * `operaton:type` outranks every code attribute, then `class`, then
- * `delegateExpression`, then `expression`. A `type` this position cannot
- * carry returns `undefined` rather than falling back to a code attribute the
- * engine would never reach.
+ * A `type` this position cannot carry returns `undefined`, not a code attribute
+ * the engine never reaches.
  */
 function readCodeOrExternalBinding(
   el: ModdleElement,
@@ -5699,7 +5454,6 @@ function readCodeOrExternalBinding(
   return undefined;
 }
 
-/** `undefined` when no decision is named, so the task falls back to a code binding. */
 function readDecisionBinding(
   el: ModdleElement,
   id: string,
@@ -5742,18 +5496,6 @@ function readDecisionBinding(
   };
 }
 
-/** The settings only a named decision gives meaning to; the consumption table marks them read on every business rule task. */
-const DECISION_MODIFIER_ATTRS = [
-  'decisionRefBinding',
-  'decisionRefVersion',
-  'decisionRefTenantId',
-  'mapDecisionResult',
-] as const;
-
-/** The two settings only a named form gives meaning to. */
-const FORM_REF_MODIFIER_ATTRS = ['formRefBinding', 'formRefVersion'] as const;
-
-/** The settings that shape a reference the element never makes; `ref` names the missing reference. */
 function warnDanglingModifiers(
   el: ModdleElement,
   id: string,
@@ -5773,7 +5515,6 @@ function warnDanglingModifiers(
   }
 }
 
-/** `attr` is a no-op because `winner` already resolved the implementation. */
 function buildShadowedImplementationWarning(
   id: string,
   attr: string,
@@ -5790,10 +5531,8 @@ function buildShadowedImplementationWarning(
 }
 
 /**
- * Every implementation attribute `winner` leaves unread, as the engine leaves
- * it: `parseServiceTaskLike` stops at the first it resolves, and a named
- * decision goes to `parseDmnBusinessRuleTask`, which runs no implementation.
- * `consumed` names what `winner` itself read.
+ * `parseServiceTaskLike` stops at the first implementation, and a named
+ * decision runs none.
  */
 function warnShadowedImplementation(
   el: ModdleElement,
@@ -5819,7 +5558,6 @@ function builtinTypeOf(type: string): BuiltinTaskType | undefined {
   return TYPE_BINDING_VALUES.find((value) => value === lower);
 }
 
-/** The implementation attributes that carry code, in the order {@link readCodeOrExternalBinding} resolves them. */
 const CODE_ATTRS = [
   'class',
   'delegateExpression',
@@ -5827,9 +5565,8 @@ const CODE_ATTRS = [
 ] as const satisfies readonly (typeof IMPLEMENTATION_ATTRS)[number][];
 
 /**
- * What is wrong with the element, for the refusal. A code attribute beside an
- * `operaton:type` is named too, since a refusal that lists the supported
- * forms without it would read as if the document had none.
+ * A code attribute beside `operaton:type` is named too, or the refusal would
+ * read as if the document had none.
  */
 function detectUnsupportedServiceTaskForm(
   el: ModdleElement,
@@ -5874,10 +5611,7 @@ function mapScriptTask(
     );
   }
   const named = readNamed(el, id, warnings);
-  // moddle reads an absent attribute as `undefined` and an empty one as `''`;
-  // `BpmnParse.parseScriptTaskElement` defaults only the former to
-  // `ScriptingEngines.DEFAULT_SCRIPTING_LANGUAGE`, while `ScriptUtil.getScript`
-  // refuses the latter.
+  // The engine defaults an absent format but refuses an empty one.
   const rawFormat = el.get('scriptFormat') as string | undefined;
   if (rawFormat === '') {
     throw new UnsupportedExtensionFormError(
@@ -5936,7 +5670,6 @@ function mapScriptTask(
   };
 }
 
-/** The two kinds that carry a flow taken when no condition matched. */
 function mapDefaultingGateway(
   el: ModdleElement,
   kind: 'exclusiveGateway' | 'inclusiveGateway',
@@ -5971,7 +5704,6 @@ function mapParallelGateway(
   };
 }
 
-/** The branches this opens are validated by {@link checkWaitBranches}, which sees the whole container. */
 function mapEventBasedGateway(
   el: ModdleElement,
   warnings: ImportWarning[],
@@ -5998,11 +5730,8 @@ function mapEventBasedGateway(
 }
 
 /**
- * `BpmnParse.parseEventBasedGateway` reads neither `instantiate` nor
- * `eventGatewayType`; both are reported by hand for the reason
- * {@link warnIgnoredQuantityAttrs} gives. `gatewayDirection` is left out on
- * purpose: it restates the flows and is stamped on most exported files, so
- * reporting it would bury the diagnostics that mean something.
+ * The engine reads neither. `gatewayDirection` is skipped: it restates the
+ * flows and most exporters stamp it.
  */
 function warnIgnoredWaitAttrs(
   el: ModdleElement,
@@ -6020,7 +5749,6 @@ function warnIgnoredWaitAttrs(
     });
   };
 
-  // Both read back as the moddle default when the document writes neither.
   if (el.get('instantiate') === true) report('instantiate');
   const gatewayType = readString(el, 'eventGatewayType');
   if (gatewayType !== undefined && gatewayType !== 'Exclusive') {
@@ -6029,10 +5757,8 @@ function warnIgnoredWaitAttrs(
 }
 
 /**
- * `JuelExpressionManager.createExpression` builds a literal from a condition
- * body with no `${`/`#{` opener, and `UelExpressionCondition.evaluate` throws
- * on the string it yields; the script can only spell that body inside
- * `${...}`, so the rewrap is reported as the change in what runs that it is.
+ * The engine treats a body without `${`/`#{` as a literal and throws evaluating
+ * it; the script can only spell it wrapped, so the rewrap is reported.
  */
 function mapSequenceFlow(
   el: ModdleElement,
@@ -6054,8 +5780,7 @@ function mapSequenceFlow(
     if (dropped.xsiType !== 'tFormalExpression') {
       throw conditionTypeRefusal(dropped.xsiType, id);
     }
-    // `BpmnParse.parseConditionExpression` reads `language` and `resource`
-    // off the dropped element the same way.
+    // The engine reads `language` and `resource` off the dropped element alike.
     refuseOrWarnScriptedCondition(
       dropped.language,
       dropped.resource,
@@ -6103,8 +5828,8 @@ function mapSequenceFlow(
     warnings,
   );
 
-  // The exporter names a conditioned flow by its condition text and an
-  // unconditioned one not at all, so only a name that differs is lost.
+  // The exporter names a conditioned flow by its condition, so only a differing
+  // name is lost.
   const name = readString(el, 'name');
   const derived =
     conditionExpression === undefined
@@ -6144,13 +5869,9 @@ function conditionTypeRefusal(
 }
 
 /**
- * `parseConditionExpression` fails the deployment on an `xsi:type` that does
- * not resolve to `tFormalExpression` and accepts an absent one; moddle
- * resolves a prefixed type the same way, so the element's `$type` is
- * `bpmn:FormalExpression` exactly when the engine accepts it, and the raw
- * `$attrs` entry says whether one was written at all. With a `language` the
- * engine builds a `ScriptCondition` rather than a UEL one, which this surface
- * cannot write; `resource` is read inside that branch alone.
+ * moddle resolves `xsi:type` as the engine does, so `bpmn:FormalExpression`
+ * means accepted. A `language` makes a `ScriptCondition`, which the surface
+ * cannot write.
  */
 function checkConditionExpressionForm(
   expressionEl: ModdleElement,
@@ -6169,7 +5890,6 @@ function checkConditionExpressionForm(
   );
 }
 
-/** Shared by the moddle-parsed condition and a {@link DroppedCondition}, which the engine reads alike. */
 function refuseOrWarnScriptedCondition(
   language: string | undefined,
   resource: string | undefined,
@@ -6229,7 +5949,6 @@ function refuseMultipleEventDefinitions(
   }
 }
 
-/** Called on tasks and gateways too, which declare no `eventDefinitions`, so the fallback stays. */
 function eventDefinitionsOf(el: ModdleElement): ModdleElement[] {
   return (el.get('eventDefinitions') as ModdleElement[] | undefined) ?? [];
 }
@@ -6241,32 +5960,25 @@ function requireId(el: ModdleElement): string {
   return el.id;
 }
 
-/** An element-valued moddle property; moddle reports an absent one as `null`. */
+/** moddle reports an absent one as `null`. */
 function getEl(el: ModdleElement, name: string): ModdleElement | undefined {
   return (el.get(name) as ModdleElement | null | undefined) ?? undefined;
 }
 
-/** A string-valued moddle property, `undefined` when absent, empty, or non-string. */
 function readString(el: ModdleElement, name: string): string | undefined {
   const value = el.get(name);
   return typeof value === 'string' && value.length > 0 ? value : undefined;
 }
 
-/**
- * A string-valued moddle property kept as written, `""` included, for the
- * texts the engine stores verbatim (a label, an assignee, a form field's
- * label and default, a listener's binding attribute); every other reader
- * folds an empty attribute into absent through {@link readString}.
- */
+/** For texts the engine stores verbatim, where `""` differs from absent. */
 function readText(el: ModdleElement, name: string): string | undefined {
   const value = el.get(name);
   return typeof value === 'string' ? value : undefined;
 }
 
 /**
- * A `name`, dropped when it equals the label the export derives (`humanize(id)`
- * for every kind but a link event, whose label is its link name), which is
- * what makes DSL -> XML -> DSL idempotent.
+ * Dropped when it equals the derived label, which keeps DSL -> XML -> DSL
+ * idempotent.
  */
 function readDerivableName(
   el: ModdleElement,
@@ -6277,12 +5989,7 @@ function readDerivableName(
   return name === undefined || name === derived ? undefined : name;
 }
 
-/**
- * The label and the documentation, read as one pair; a position with no node
- * to hold them reports both through {@link warnNamedDrop} instead. A gateway
- * passes `name` itself: its id is a structural coordinate the export derives
- * no label from, so a name equal to the derived one is still the author's.
- */
+/** A gateway passes `name` itself: the export derives no label from its id. */
 function readNamed(
   el: ModdleElement,
   id: string,
@@ -6296,11 +6003,7 @@ function readNamed(
   };
 }
 
-/**
- * The text of a single plaintext `bpmn:documentation` child, verbatim; more
- * than one child, or a `textFormat` other than plain text, is reported
- * instead. moddle answers the `text/plain` default for an absent `textFormat`.
- */
+/** moddle answers `text/plain` for an absent `textFormat`. */
 function readDocumentation(
   el: ModdleElement,
   id: string,
@@ -6338,7 +6041,7 @@ function documentationChildren(el: ModdleElement): ModdleElement[] {
   return el.get('documentation') as ModdleElement[];
 }
 
-/** `get` falls back to the raw `$attrs` map for an undeclared property. */
+/** `get` falls back to `$attrs` for an undeclared property. */
 function readNamespacedAttr(
   el: ModdleElement,
   localName: string,
@@ -6354,7 +6057,7 @@ function extensionValues(el: ModdleElement): ModdleElement[] {
   return extensionElements.get('values') as ModdleElement[];
 }
 
-/** The one `operaton:inputOutput` block; `BpmnParseUtil.parseInputOutput` fails the deployment on a second. */
+/** `parseInputOutput` refuses a second block. */
 function onlyIoMapping(
   el: ModdleElement,
   ownerId: string,
@@ -6367,15 +6070,13 @@ function onlyIoMapping(
   );
 }
 
-/** The settings a repetition element carries as a step does ({@link LoopCharacteristics}), as {@link jobSettings} takes them. */
 function readRunSettings(
   el: ModdleElement,
   ownerId: string,
   warnings: ImportWarning[],
 ): Omit<Parameters<typeof jobSettings>[0], 'jobPriority'> {
-  // `DefaultFailedJobParseListener` reads the cycle on an async step, a
-  // timer-driven event and a typed throw alone; the refusal names that rather
-  // than deriving it per element kind.
+  // The engine reads the cycle only on an async step, a timer-driven event and
+  // a typed throw.
   const retryCycleEl = onlyExtensionElement(
     el,
     'operaton:FailedJobRetryTimeCycle',
@@ -6402,9 +6103,8 @@ export function asyncRespellingMessage(subject: string): string {
 }
 
 /**
- * `BpmnParse.isAsyncBefore` reads `operaton:async="true"` as `asyncBefore`
- * on every element it parses a continuation for, the repetition included; the
- * descriptor declares `asyncBefore` alone, so `async` is read raw.
+ * The engine reads `operaton:async="true"` as `asyncBefore`, but moddle
+ * declares only the latter, so it is read raw.
  */
 function readAsyncBefore(
   el: ModdleElement,
@@ -6432,7 +6132,7 @@ export function priorityRefusal(attr: string, value: string): string {
   );
 }
 
-/** `BpmnParse.parsePriority` parses a constant with `Integer.parseInt` and fails the deployment on any other. */
+/** `parsePriority` refuses a non-integer constant. */
 function requireIntegerOrExpression(
   value: string | undefined,
   ownerId: string,
@@ -6476,10 +6176,8 @@ function readJobSettings(
 }
 
 /**
- * `BpmnParse.parseTimer` locks the timer job by `operaton:exclusive` on the
- * definition; the same attribute on the event tag reaches only the async
- * continuation job. The surface spells one value for both, so the
- * definition's wins and the tag's stands in where the definition carries none.
+ * The definition's `operaton:exclusive` locks the timer job, the tag's only the
+ * async job; the surface spells one, so the definition's wins.
  */
 function timerJobExclusive(
   defEl: ModdleElement,
@@ -6518,9 +6216,8 @@ function readEngineAttributes(
 }
 
 /**
- * Whether the document wrote the declared property `name`: moddle answers a
- * schema default through `get` for one it never wrote, and stores a parsed
- * value as an own property alone.
+ * moddle answers a schema default through `get` but stores only parsed values
+ * as own properties.
  */
 function isAuthored(el: ModdleElement, name: string): boolean {
   return Object.hasOwn(el, name);
@@ -6556,7 +6253,6 @@ function readFormFields(
   return fields.map((field) => readFormField(field, ownerId, warnings));
 }
 
-/** A warning sink bound to one owner. */
 type Report = (message: string) => void;
 
 interface FieldContext {
@@ -6568,7 +6264,6 @@ interface FieldContext {
   report: Report;
 }
 
-/** The one shape for content the engine deploys but the compiler refuses. */
 function warnCarriedAsWritten(
   { subject, report }: FieldContext,
   what: string,
@@ -6581,9 +6276,8 @@ function warnCarriedAsWritten(
 }
 
 /**
- * A form field id or an io parameter name is the variable the engine sets
- * (`FormFieldHandler.handleSubmit`, `InputParameter.execute`), and the script
- * writes it as a bare name, so a minted name would change the variable.
+ * The id or name is the variable the engine sets, so a minted one would change
+ * it.
  */
 function refuseUnspellableVariable(
   name: string,
@@ -6640,8 +6334,7 @@ function readFormField(
       ? []
       : readPropertyEntries(propertiesEl, 'id', ctx.subject, ctx.report);
 
-  // `FormFieldHandler.createFormField` converts the default through the type
-  // on every render; a literal is decided here, an expression at run time.
+  // The engine converts the default on every render; a literal is checked here.
   if (defaultValue !== undefined && !EXPRESSION_ANYWHERE.test(defaultValue)) {
     const reason = literalDefaultReason(
       defaultValue,
@@ -6668,7 +6361,6 @@ function readFormField(
 
 const ISO_DATE_ONLY_TEXT = /^\d{4}-\d{2}-\d{2}$/;
 
-/** Why a literal default fails the conversion its type runs on every render, or `undefined` when it converts. */
 function literalDefaultReason(
   value: string,
   type: FormFieldType,
@@ -6710,9 +6402,8 @@ function literalDefaultReason(
 }
 
 /**
- * `FormTypes.parseFormPropertyType` reads the `operaton:value` children on an
- * enum field alone, into a `LinkedHashMap`: a repeated id keeps its first
- * position and takes its last `name`.
+ * The engine reads enum values into a `LinkedHashMap`: a repeated id keeps its
+ * first position and its last `name`.
  */
 function readEnumValues(
   field: ModdleElement,
@@ -6751,7 +6442,7 @@ function readEnumValues(
   return [...byId.values()];
 }
 
-/** The four bounds, each by the validator that parses `config` as an integer on every submission. */
+/** Each validator parses `config` as an integer on every submission. */
 const BOUND_VALIDATORS: Readonly<Record<string, string>> = {
   min: 'MinValidator.validate',
   max: 'MaxValidator.validate',
@@ -6759,13 +6450,13 @@ const BOUND_VALIDATORS: Readonly<Record<string, string>> = {
   maxlength: 'MaxLengthValidator.validate',
 };
 
-/** The constraints whose `config` the engine never reads, by the method that ignores it. */
+/** The engine never reads these constraints' `config`. */
 const FLAG_VALIDATORS: Readonly<Record<string, string>> = {
   required: 'RequiredValidator.validate',
   readonly: 'ReadOnlyValidator.validate',
 };
 
-/** Read `operaton:validation` in document order, which is the engine's validation order. */
+/** Document order is the engine's validation order. */
 function readConstraints(
   field: ModdleElement,
   ctx: FieldContext,
@@ -6841,10 +6532,8 @@ function readConstraints(
 }
 
 /**
- * What a repeated key comes to, by the attribute the engine reader keys on:
- * `DefaultFormHandler.parseProperties` reads a form field's by `id` into a
- * `LinkedHashMap`, `BpmnParseUtil.parseOperatonExtensionProperties` an
- * external task's by `name` into a `HashMap`, which keeps no position.
+ * A form field's properties go by `id` into a `LinkedHashMap`, an external
+ * task's by `name` into a `HashMap`, which keeps no position.
  */
 const PROPERTY_REWRITE_BY_KEY = {
   id: ', at its first position with its last value, as DefaultFormHandler.parseProperties keeps it (LinkedHashMap.put)',
@@ -6902,12 +6591,7 @@ function importFormFieldType(
   return mapped;
 }
 
-/**
- * The one `<extensionElements>` child of `type`. `Element.elementNS` throws
- * on a second child of one tag wherever `reader`, the engine method that asks
- * for it, runs; `when` names that shape where a caller cannot cheaply gate
- * the refusal on it.
- */
+/** `Element.elementNS` throws on a second child wherever `reader` runs. */
 function onlyExtensionElement(
   el: ModdleElement,
   type: string,
@@ -6982,11 +6666,8 @@ function readIoParameters(
 }
 
 /**
- * A parameter's or an entry's value: verbatim body text, or exactly one
- * nested value. The moddle descriptor declares the nested value as a
- * repeating property so that two of them stay visible here.
- * `BpmnParseUtil.parseNestedParamValueProvider` reads the one child element
- * and never the body text beside it, so that combination warns.
+ * The engine reads the nested child and never the body text beside it, so both
+ * together warn.
  */
 function readParameterValue(
   holder: ModdleElement,
@@ -7023,9 +6704,8 @@ function readParameterValue(
 }
 
 /**
- * The moddle descriptor declares both positions as the shared abstract
- * supertype, so an `operaton:entry` parses under a parameter as readily as in
- * an `operaton:map`; `position` is what tells the two apart.
+ * The descriptor types both positions as one supertype; `position` tells them
+ * apart.
  */
 function readNestedValue(
   def: ModdleElement,
@@ -7100,9 +6780,8 @@ function readMapEntry(
 }
 
 /**
- * `ScriptUtil.getScript` runs a resource in place of an inline body whenever
- * both are given, so importing the body would keep a script the engine never
- * runs; one rule for a script value's `resource` and a task's `operaton:resource`.
+ * `ScriptUtil.getScript` runs the resource over an inline body, so the body
+ * would never run.
  */
 function externalResourceDetail(where: string, resource: string): string {
   return (
@@ -7139,10 +6818,8 @@ function readScriptValue(
 }
 
 /**
- * The grammar's fence terminal ends at the first three backticks after its
- * tag, so a body holding three has no fence that can enclose it. An empty
- * body is carried: `ScriptUtil.getScript` checks the source for null and not
- * for emptiness, so the engine deploys it.
+ * The fence ends at the first three backticks. An empty body is carried: the
+ * engine checks for null only.
  */
 function checkScriptBody(
   code: string,
@@ -7178,10 +6855,8 @@ interface ListenerSpec<E extends string> {
 }
 
 /**
- * Document order is run order: `CoreModelElement.addListenerToMap` and
- * `TaskDefinition.addTaskListener` append to a per-event list, so several
- * listeners on one event are an ordinary shape; a `timeout` listener is keyed
- * by its own id instead (`TaskDefinition.addTimeoutTaskListener`).
+ * Document order is run order; a `timeout` listener is keyed by its own id
+ * instead.
  */
 function readListeners<E extends string, X extends object>(
   el: ModdleElement,
@@ -7276,9 +6951,8 @@ function readListenerBinding(
 }
 
 /**
- * `BpmnParse.parseTaskListener` checks no binding attribute for emptiness, so
- * an empty `class` or `delegateExpression` deploys and fails when the event
- * fires; an empty `expression` evaluates to the empty text instead.
+ * The engine checks no binding for emptiness: an empty class fails when the
+ * event fires, an empty expression yields empty text.
  */
 function buildEmptyTaskListenerBindingWarning(
   ownerId: string,
@@ -7297,11 +6971,8 @@ function buildEmptyTaskListenerBindingWarning(
 }
 
 /**
- * `BpmnParse.parseExecutionListener`/`parseTaskListener` read `class`, then
- * `expression`, then `delegateExpression`, then an `operaton:script` child,
- * and run the first; every loser warns rather than refuses, since the engine
- * drops it too. Each attribute is read through {@link readText}, so an empty
- * one is seen rather than folded into absent.
+ * `class`, `expression`, `delegateExpression`, then `operaton:script`; the
+ * first wins and losers warn.
  */
 function resolveListenerBinding(
   listener: ModdleElement,
@@ -7329,7 +7000,8 @@ function resolveListenerBinding(
     );
   }
   const [winner, ...losers] = present;
-  // Named against the listener: "on 'Svc'" would read as the step's own binding.
+  // Named against the listener: "on 'Svc'" would read as the step's own
+  // binding.
   for (const loser of losers) {
     warnings.push(
       buildShadowedImplementationWarning(
@@ -7357,8 +7029,8 @@ function resolveListenerBinding(
       }
       return { kind: 'class', className: className! };
     case 'expression':
-      // Both listener kinds call `expression.getValue`, and JUEL reads `""`
-      // as the empty string, so neither fails on it.
+      // Both listener kinds call `expression.getValue`, and JUEL reads `""` as
+      // the empty string.
       if (expression === '') {
         warnings.push({
           elementId: ownerId,
@@ -7453,7 +7125,6 @@ function readListenerTimer(
   return { kind: 'timer', ...readTimerDefinition(defs[0], ownerId) };
 }
 
-/** The surface writes each piece of extension content under its key once, so a second has nowhere to go. */
 function refuseRepeatedExtensionKey(
   keys: readonly string[],
   ownerId: string,
@@ -7468,7 +7139,10 @@ function refuseRepeatedExtensionKey(
   }
 }
 
-/** A listener declares `fields` as a property (moddle materializes it, empty or not); a step carries them loose in `extensionElements`. */
+/**
+ * moddle materializes a listener's `fields` property; a step carries them
+ * loose.
+ */
 function fieldChildren(carrier: ModdleElement): ModdleElement[] {
   const declared = carrier.get('fields') as ModdleElement[] | undefined;
   return (
@@ -7477,7 +7151,6 @@ function fieldChildren(carrier: ModdleElement): ModdleElement[] {
   );
 }
 
-/** How the drop names a binding that receives no field list. */
 const FIELDLESS_BINDING: Readonly<
   Record<'expression' | 'external' | 'decision' | 'script', string>
 > = {
@@ -7488,9 +7161,8 @@ const FIELDLESS_BINDING: Readonly<
 };
 
 /**
- * Operaton hands the field list to the behaviours a class, a delegate
- * expression and a built-in type select and to no other, on a step and on
- * both listener kinds alike, so a field under any other binding is reported.
+ * Operaton injects fields only into class, delegate-expression and
+ * built-in-type behaviours.
  */
 function withInjectedFields<B extends ServiceTaskBinding | ListenerBinding>(
   binding: B,
@@ -7523,9 +7195,8 @@ function withInjectedFields<B extends ServiceTaskBinding | ListenerBinding>(
 const RAW_TEMPLATE_OPEN = /^[$#]\{/;
 
 /**
- * The three slots Operaton writes a field's value in, and whether it
- * evaluates that slot. The IR holds one text and picks the slot back off its
- * leading `${` or `#{`, so a slot whose text disagrees with it is reported.
+ * The IR picks the slot from its leading `${`/`#{`, so a slot disagreeing with
+ * its text is reported.
  */
 const FIELD_VALUE_SLOTS = [
   {
@@ -7541,12 +7212,11 @@ const FIELD_VALUE_SLOTS = [
   },
 ] as const;
 
-/** A value quoted in a warning, its whitespace kept visible since that is often why it is reported. */
+/** Whitespace kept visible: it is often why the value is reported. */
 function oneLine(text: string): string {
   return text.replace(/\n/g, '\\n').replace(/\r/g, '\\r').replace(/\t/g, '\\t');
 }
 
-/** `undefined` when the field was reported as a drop instead of read. */
 function readField(
   field: ModdleElement,
   ownerId: string,
@@ -7565,9 +7235,8 @@ function readField(
     );
   }
 
-  // Every slot is read verbatim: `parseExpressionFieldDeclaration` and
-  // `getStringValueFromAttributeOrElement` trim nothing, so an indented
-  // body's whitespace is part of what the engine evaluates.
+  // Every slot is read verbatim: the engine trims nothing, so an indented
+  // body's whitespace is evaluated.
   const written = FIELD_VALUE_SLOTS.map((slot) => ({
     slot,
     value: readString(field, slot.property),
@@ -7576,13 +7245,13 @@ function readField(
       slot.value !== undefined,
   );
 
-  // `parseFieldDeclaration` reads the two literal slots first and never
-  // reaches the expression child once one answers.
+  // `parseFieldDeclaration` never reaches the expression child once a literal
+  // slot answers.
   const literals = written.filter((slot) => !slot.slot.evaluated);
   const evaluated = written.find((slot) => slot.slot.evaluated);
   const chosen = literals[0] ?? evaluated;
-  // `parseFieldDeclaration` fails the deployment on a field naming no slot,
-  // and `getStringValueFromAttributeOrElement` on one naming both literal slots.
+  // The engine refuses a field naming no slot, and one naming both literal
+  // slots.
   if (chosen === undefined || literals.length > 1) {
     throw new UnsupportedExtensionFormError(
       ownerId,
@@ -7593,10 +7262,8 @@ function readField(
     );
   }
 
-  // The compiler writes a value opening with `${` or `#{` into the expression
-  // slot and any other into `stringValue`, and spells the first as a raw
-  // template, whose opener follows its quote directly. A value the round trip
-  // would move to the other slot, or cannot spell, is reported.
+  // A value the round trip would move to the other slot, or cannot spell, is
+  // reported.
   const evaluatedBack = EXPRESSION_OPEN.test(chosen.value);
   let writtenBack: string | undefined;
   if (chosen.slot.evaluated && !evaluatedBack) {

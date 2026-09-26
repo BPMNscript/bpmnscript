@@ -1,7 +1,6 @@
-// Needs `npm run build` first: it consumes the compiled out/ of language,
-// transform and extension. Under test is the one thing only a bundle can
-// answer: whether the transform still finds its moddle asset once esbuild has
-// flattened it into a single CommonJS file, which is how the extension ships.
+// Needs `npm run build` first. Checks that the transform still finds its
+// moddle asset once esbuild flattens it into the single CommonJS file the
+// extension ships as.
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import * as fs from 'node:fs';
@@ -14,25 +13,16 @@ import * as esbuild from 'esbuild';
 // @ts-ignore esbuild.mjs is a plain JS module with no type declarations.
 import { sharedBuildOptions, assetCopyPlugin } from '../esbuild.mjs';
 
-// Vitest transforms TS in place, so import.meta.url is this source file.
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
-const REPO_ROOT = path.resolve(__dirname, '../../..');
-
-const EXT_DIR = path.resolve(__dirname, '..');
+const REPO_ROOT = fileURLToPath(new URL('../../..', import.meta.url));
+const EXT_DIR = fileURLToPath(new URL('..', import.meta.url));
 
 const GOLDEN_GENERATED_BPMN = path.resolve(
   REPO_ROOT,
   'tests/golden/invoice-approval-generated.bpmn',
 );
 
-if (!fs.existsSync(GOLDEN_GENERATED_BPMN)) {
-  throw new Error(`Fixture not found: ${GOLDEN_GENERATED_BPMN}`);
-}
-
 describe('bundled asset resolution and transform under the shim', () => {
-  // Unique per run: parallel suites would otherwise collide on these paths.
+  // Unique per run so parallel suites do not collide.
   const runId = `${process.pid}-${Date.now()}`;
   const verifyEntryFile = path.join(os.tmpdir(), `verify-entry-${runId}.js`);
   // Under out/extension/ so assetCopyPlugin lands operaton-moddle.json where
@@ -87,7 +77,6 @@ describe('bundled asset resolution and transform under the shim', () => {
   }, 60_000);
 
   afterAll(() => {
-    // out/extension/operaton-moddle.json belongs to the extension build.
     if (fs.existsSync(verifyEntryFile)) fs.unlinkSync(verifyEntryFile);
     if (fs.existsSync(verifyOutfile)) fs.unlinkSync(verifyOutfile);
   });

@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { it, expect } from 'vitest';
 
 import type {
   FieldInjection,
@@ -9,7 +9,6 @@ import type {
 } from '@bpmn-script/transform';
 
 import { roundTripFixture } from './helpers/round-trip-fixture.js';
-import { describeDiContainment } from './helpers/di-bounds.js';
 import { allElements } from './helpers/ir-query.js';
 
 const rt = roundTripFixture('listeners', {
@@ -18,11 +17,9 @@ const rt = roundTripFixture('listeners', {
   recompile: 'clean',
 });
 
-// Exact body of the fixture's inline-script listener, trailing newline included.
 const SCRIPT_BODY = 'task.setVariable("assessmentRevised", true);\n';
 
-// The handler header has no id slot, so this id is synthesized from the
-// statement's position.
+// The handler header has no id slot, so this id is positional.
 const WITHDRAWAL_HANDLER = 'EventSubProcess_claim-settlement_5';
 
 // `<carrier> <event> <binding>`, in the order a depth-first walk reaches them.
@@ -40,10 +37,7 @@ const EXPECTED_LISTENERS = [
   `${WITHDRAWAL_HANDLER} start class=com.example.claims.LogWithdrawal`,
 ];
 
-// `<carrier> <name>=<value>`, where a listener's carrier is the element and the
-// event it fires on. Listed separately from the binding signatures above,
-// because those format the binding's own shape and would still match with every
-// field gone.
+// `<carrier> <name>=<value>`; a listener's carrier is `<element> <event>`.
 const EXPECTED_FIELDS = [
   'ValidateClaim policyRegister=motor-policies',
   'ValidateClaim settlementCurrency=${claim.currency}',
@@ -56,8 +50,6 @@ type AnyBinding =
   | VersionBinding
   | NonNullable<Extract<FlowElement, { kind: 'serviceTask' }>['binding']>;
 
-// Only the two kinds Operaton injects into declare the slot at all, which is
-// what makes a field on any other binding unrepresentable rather than refused.
 function fieldsOf(binding: AnyBinding): FieldInjection[] {
   return binding.kind === 'class' || binding.kind === 'delegateExpression'
     ? (binding.fields ?? [])
@@ -77,14 +69,10 @@ function bindingSignature(binding: ListenerBinding): string {
   }
 }
 
-// A binding and what names it: an element's own, then its execution
-// listeners', then a user task's task listeners', which is the order both the
-// serializer and the printer emit. Both contracts below read this one walk, so
-// a carrier reaches both or neither.
+// An element's own binding, then its execution listeners', then its task
+// listeners': the order both the serializer and the printer emit.
 type Carried =
-  /** `carrier` is the element's id on its own binding. */
   | { on: 'element'; carrier: string; binding: AnyBinding }
-  /** `<element id> <event>`, plus the clause only a timeout listener adds. */
   | {
       on: 'listener';
       carrier: string;
@@ -140,56 +128,26 @@ function fieldSignatures(container: FlowContainer): string[] {
   );
 }
 
-describe("idempotence: DSL -> IR1 -> XML -> IR2 -> DSL' -> IR3", () => {
-  it('every injected field keeps its carrier, name, and value at every hop', () => {
-    for (const [label, ir] of rt.hops) {
-      expect(fieldSignatures(ir), `fields differ in ${label}`).toEqual(
-        EXPECTED_FIELDS,
-      );
-    }
-  });
-
-  it('every listener keeps its carrier, event, and binding at every hop', () => {
-    for (const [label, ir] of rt.hops) {
-      expect(listenerSignatures(ir), `listeners differ in ${label}`).toEqual(
-        EXPECTED_LISTENERS,
-      );
-    }
-  });
-
-  it('the inline-script listener keeps its body and language tag through the decompile', () => {
-    expect(rt.dslPrime).toContain('```javascript\n' + SCRIPT_BODY + '```');
-  });
+it('keeps every listener and injected field on its carrier at every hop, the script body under its language tag', () => {
+  for (const [label, ir] of rt.hops) {
+    expect(fieldSignatures(ir), label).toEqual(EXPECTED_FIELDS);
+    expect(listenerSignatures(ir), label).toEqual(EXPECTED_LISTENERS);
+  }
+  expect(rt.dslPrime).toContain('```javascript\n' + SCRIPT_BODY + '```');
 });
 
-describe('golden generation: the pipeline output matches the frozen .bpmn', () => {
-  it.each<[title: string, fragment: string]>([
+it('writes the timeout listener with the id and timer child BpmnParse.parseTimeoutTaskListener requires, the script verbatim, bindings unprefixed', () => {
+  for (const fragment of [
     [
-      'the timeout listener carries the id BpmnParse.parseTimeoutTaskListener requires and its timer as a bpmn:timerEventDefinition child',
-      [
-        '<operaton:taskListener id="InspectVehicle_timeout_1" event="timeout" delegateExpression="${assessmentEscalation}">',
-        '  <bpmn:timerEventDefinition>',
-        '    <bpmn:timeDuration xsi:type="bpmn:tFormalExpression">PT8H</bpmn:timeDuration>',
-        '  </bpmn:timerEventDefinition>',
-        '</operaton:taskListener>',
-      ].join('\n          '),
-    ],
-    [
-      'the inline-script listener writes its body verbatim under its language tag',
-      `<operaton:script scriptFormat="javascript">${SCRIPT_BODY}</operaton:script>`,
-    ],
-    [
-      'a listener binding is written unprefixed on its already-qualified element',
-      '<operaton:executionListener event="start" class="com.example.claims.OpenAuditTrail">',
-    ],
-  ])('%s', (_title, fragment) => {
+      '<operaton:taskListener id="InspectVehicle_timeout_1" event="timeout" delegateExpression="${assessmentEscalation}">',
+      '  <bpmn:timerEventDefinition>',
+      '    <bpmn:timeDuration xsi:type="bpmn:tFormalExpression">PT8H</bpmn:timeDuration>',
+      '  </bpmn:timerEventDefinition>',
+      '</operaton:taskListener>',
+    ].join('\n          '),
+    `<operaton:script scriptFormat="javascript">${SCRIPT_BODY}</operaton:script>`,
+    '<operaton:executionListener event="start" class="com.example.claims.OpenAuditTrail">',
+  ]) {
     expect(rt.frozenXml).toContain(fragment);
-  });
+  }
 });
-
-describeDiContainment(rt, [
-  'AssessDamage',
-  'InspectVehicle',
-  WITHDRAWAL_HANDLER,
-  'CancelSettlement',
-]);

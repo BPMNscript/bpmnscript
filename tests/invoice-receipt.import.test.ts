@@ -1,16 +1,13 @@
-// The Operaton invoice example: a pool wrapping three lanes, a data store and
-// its reference, an unreferenced message root, and an approve/review loop
-// whose inner split names no default. It imports with warnings, which
-// `describeImportFirst` refuses, so the pipeline runs by hand and pins that
-// the whole file survives import, print, validation and a second import.
+// The Operaton invoice example (pool, lanes, data store, unreferenced message,
+// approve/review loop whose inner split names no default) imports with
+// warnings, which `describeImportFirst` refuses, so this runs by hand.
 
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { xmlToIr, astToIr, irToDsl, irToXml } from '@bpmn-script/transform';
-import type { BpmnProcess } from '@bpmn-script/transform';
 
 import { realNodeReachability } from './helpers/real-node-reachability.js';
 import { parseToAst, validate } from './helpers/pipeline.js';
@@ -57,28 +54,13 @@ const PRINTED = [
   '',
 ].join('\n');
 
+const categories = (ws: { elementId?: string; category: string }[]) =>
+  ws.map((w) => ({ elementId: w.elementId, category: w.category }));
+
 describe('the Operaton invoice example', () => {
-  let imported: BpmnProcess;
-  let importWarnings: Awaited<ReturnType<typeof xmlToIr>>['warnings'];
-  let dsl: string;
-  let printWarnings: ReturnType<typeof irToDsl>['warnings'];
-  let reDesugared: BpmnProcess;
-
-  beforeAll(async () => {
-    ({ ir: imported, warnings: importWarnings } = await xmlToIr(FIXTURE));
-    const printed = irToDsl(imported);
-    dsl = printed.source;
-    printWarnings = printed.warnings;
-    reDesugared = astToIr(await parseToAst(dsl));
-  });
-
-  it('imports with exactly the warnings the pool, lanes and dropped extras produce', () => {
-    expect(
-      importWarnings.map((w) => ({
-        elementId: w.elementId,
-        category: w.category,
-      })),
-    ).toEqual([
+  it('imports with the pool, lane and dropped-extra warnings, prints one clean structured script, and re-desugars to the same reachability', async () => {
+    const { ir: imported, warnings: importWarnings } = await xmlToIr(FIXTURE);
+    expect(categories(importWarnings)).toEqual([
       { elementId: 'Accountant', category: 'lane' },
       { elementId: 'teamAssistant', category: 'lane' },
       { elementId: 'Approver', category: 'lane' },
@@ -95,33 +77,21 @@ describe('the Operaton invoice example', () => {
       { elementId: 'foxMessage_en', category: 'unreferencedRoot' },
       { elementId: 'FinancialAccountingSystem', category: 'unmappedConstruct' },
     ]);
-  });
 
-  it('prints the whole process as one structured script', () => {
+    const { source: dsl, warnings: printWarnings } = irToDsl(imported);
     expect(dsl).toEqual(PRINTED);
-
-    expect(
-      printWarnings.map((w) => ({
-        elementId: w.elementId,
-        category: w.category,
-      })),
-    ).toEqual([
+    expect(categories(printWarnings)).toEqual([
       { elementId: 'invoice_approved', category: 'label' },
       { elementId: 'reviewSuccessful_gw', category: 'label' },
       { elementId: 'invoice_approved', category: 'defaultFlow' },
       { elementId: 'reviewSuccessful_gw', category: 'droppedCondition' },
     ]);
-  });
+    expect((await validate(dsl)).diagnostics).toEqual([]);
 
-  it('validates with no diagnostics at all', async () => {
-    const { diagnostics } = await validate(dsl);
-    expect(diagnostics).toEqual([]);
-  });
-
-  it('re-desugars to the import reachability plus the join edges the default-less split invents, and re-imports clean', async () => {
-    // `invoice_approved` names no default: the else-less `if`/`else if` chain
-    // the printer emits for it falls through to the loop gateway on
-    // recompile, which gains `approveInvoice` every pair that gateway reaches.
+    // `invoice_approved` names no default, so the printed else-less chain
+    // falls through to the loop gateway on recompile, which gains
+    // `approveInvoice` every pair that gateway reaches.
+    const reDesugared = astToIr(await parseToAst(dsl));
     expect(realNodeReachability(reDesugared)).toEqual(
       [
         ...realNodeReachability(imported),
@@ -129,10 +99,6 @@ describe('the Operaton invoice example', () => {
         'approveInvoice->invoiceNotProcessed',
       ].sort(),
     );
-
-    const { warnings: secondImportWarnings } = await xmlToIr(
-      await irToXml(reDesugared),
-    );
-    expect(secondImportWarnings).toEqual([]);
+    expect((await xmlToIr(await irToXml(reDesugared))).warnings).toEqual([]);
   });
 });

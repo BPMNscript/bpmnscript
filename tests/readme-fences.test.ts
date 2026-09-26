@@ -1,6 +1,4 @@
-// Every `bpmnscript` fence in a Markdown file is a program a reader copies out
-// and runs, so each one is parsed, validated and compiled here, directory-driven
-// so a new document is covered the moment it lands.
+// Every `bpmnscript` fence in any Markdown file must parse, validate and compile.
 
 import { describe, it, expect } from 'vitest';
 import { readdirSync, readFileSync } from 'node:fs';
@@ -17,13 +15,12 @@ const ROOT = resolve(__dirname, '..');
 
 const UNVISITED = new Set(['node_modules', 'out', '.git', '.claude', 'target']);
 
-// The opening run's length is captured so a sample carrying a fenced script
-// body of its own, three backticks indented inside a four-backtick block, does
-// not close the block it sits in.
+// The opening run is back-referenced so a ``` inside a ```` block does not
+// close it.
 const FENCE = /^(`{3,})bpmnscript[ \t]*\r?\n([\s\S]*?)^\1`*[ \t]*$/gm;
 
 interface Sample {
-  where: string; // `packages/language/README.md:144`
+  where: string; // file:line
   source: string;
 }
 

@@ -1,4 +1,8 @@
-import { BpmnScriptLanguageMetaData } from '@bpmn-script/language';
+import {
+  BpmnScriptLanguageMetaData,
+  Diagnostic,
+  DiagnosticSeverity,
+} from '@bpmn-script/language';
 import type { Model } from '@bpmn-script/language';
 import chalk from 'chalk';
 import * as path from 'node:path';
@@ -11,10 +15,8 @@ import {
 } from '@bpmn-script/transform';
 import {
   CLI_VERSION,
-  SEVERITY_ERROR,
-  SEVERITY_WARNING,
+  type CommandOptions,
   buildDocument,
-  diagnosticMessage,
   fail,
   formatDiagnostic,
   guardOutputPath,
@@ -24,20 +26,13 @@ import {
   writeOutput,
 } from './util.js';
 
-type BuildOptions = {
-  output?: string;
-  force?: boolean;
-};
-
 export async function buildAction(
   fileName: string,
-  opts: BuildOptions,
+  opts: CommandOptions,
 ): Promise<void> {
   const resolvedInput = resolveInputPath(fileName);
 
-  // The document loader picks its language service by extension, so a wrong
-  // one cannot merely warn: it fails a few lines later with an internal
-  // Langium message ("service registry contains no services").
+  // A wrong extension fails later with an internal Langium "service registry contains no services".
   const extensions: readonly string[] =
     BpmnScriptLanguageMetaData.fileExtensions;
   if (!extensions.includes(path.extname(resolvedInput))) {
@@ -59,7 +54,7 @@ export async function buildAction(
   }
 
   const errors = (document.diagnostics ?? []).filter(
-    (d) => d.severity === SEVERITY_ERROR,
+    (d) => d.severity === DiagnosticSeverity.Error,
   );
   if (errors.length > 0) {
     console.error(chalk.red('Validation errors:'));
@@ -69,22 +64,19 @@ export async function buildAction(
     process.exit(1);
   }
 
-  // Checked after the error gate: a keyword typo also parses into a model with
-  // no processes, and should report its parser error instead.
+  // After the error gate: a keyword typo also parses into a model with no processes.
   const ast = document.parseResult.value as Model;
   if (ast.processes.length === 0) fail(1, `Error: ${NO_PROCESS_MESSAGE}`);
 
   const warnings = (document.diagnostics ?? []).filter(
-    (d) => d.severity === SEVERITY_WARNING,
+    (d) => d.severity === DiagnosticSeverity.Warning,
   );
   for (const diag of warnings) {
     warn(
-      `Warning: line ${diag.range.start.line + 1}: ${diagnosticMessage(diag)}`,
+      `Warning: line ${diag.range.start.line + 1}: ${Diagnostic.getMessageString(diag)}`,
     );
   }
 
-  // The extension's conversion-core.ts and tests/helpers/pipeline.ts run the
-  // same astToIr -> irToXml chain, each with its own failure reporting.
   let ir;
   try {
     ir = astToIr(ast);
@@ -99,8 +91,7 @@ export async function buildAction(
     if (!(err instanceof LayoutError)) {
       fail(1, `Error: ${(err as Error).message}`);
     }
-    // Operaton deploys the document without a diagram, so it is written
-    // rather than lost.
+    // Operaton deploys the document without a diagram.
     xml = err.xml;
     warn(
       `Warning: no diagram could be drawn for this process (${err.message}); the file deploys but opens without shapes in a modeler`,

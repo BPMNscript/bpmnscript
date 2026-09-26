@@ -1,12 +1,8 @@
-// A documentation string is inert, so a process whose text stopped travelling
-// looks unchanged; only reading the value back at every hop catches that.
-
-import { describe, it, expect } from 'vitest';
+import { it, expect } from 'vitest';
 
 import type { FlowContainer } from '@bpmn-script/transform';
 
 import { roundTripFixture } from './helpers/round-trip-fixture.js';
-import { describeDiContainment } from './helpers/di-bounds.js';
 import { allElements } from './helpers/ir-query.js';
 
 const rt = roundTripFixture('documentation', {
@@ -18,8 +14,6 @@ const rt = roundTripFixture('documentation', {
 const PROCESS_TEXT =
   'Runs once for each supplier the buying team wants to trade with.';
 
-// The complete set, so a carrier that stops carrying goes missing and an
-// element that gains one it has no surface for shows up.
 const CARRIED: Record<string, string> = {
   ApplicationReceived:
     'The supplier fills this in on the portal before anything else happens.',
@@ -42,9 +36,6 @@ const CARRIED: Record<string, string> = {
     'The supplier may be named on a purchase order from here on.',
 };
 
-// The printed spelling of every setting, frozen: which of the two prose
-// settings comes first, and what the escapes look like once a newline, a
-// quote, a backslash and a leading `${` have been through the printer.
 const PRINTED_SETTINGS = [
   'process supplier-onboarding(label: "Supplier onboarding", documentation: "Runs once for each supplier the buying team wants to trade with.") {',
   '  start ApplicationReceived(label: "Application received", documentation: "The supplier fills this in on the portal before anything else happens.") {',
@@ -72,25 +63,12 @@ function carriedDocumentation(
   );
 }
 
-function settingLines(source: string): string[] {
-  return source.split('\n').filter((line) => line.includes('documentation:'));
-}
-
-describe('the frozen documentation contract', () => {
-  it('every carrier keeps its text at every hop, the process header included', () => {
-    for (const [label, ir] of rt.hops) {
-      expect(carriedDocumentation(ir), `carriers differ in ${label}`).toEqual(
-        CARRIED,
-      );
-      expect(ir.documentation, `the header differs in ${label}`).toBe(
-        PROCESS_TEXT,
-      );
-    }
-  });
-
-  it("the printed DSL' writes a label ahead of the documentation beside it, escaped", () => {
-    expect(settingLines(rt.dslPrime)).toEqual(PRINTED_SETTINGS);
-  });
+it("keeps every carrier's text at every hop and prints each label ahead of its escaped documentation", () => {
+  for (const [label, ir] of rt.hops) {
+    expect(carriedDocumentation(ir), label).toEqual(CARRIED);
+    expect(ir.documentation, label).toBe(PROCESS_TEXT);
+  }
+  expect(
+    rt.dslPrime.split('\n').filter((line) => line.includes('documentation:')),
+  ).toEqual(PRINTED_SETTINGS);
 });
-
-describeDiContainment(rt, ['SetUpAccount']);

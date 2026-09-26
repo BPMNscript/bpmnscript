@@ -1,9 +1,7 @@
-// One half of a round-trip comparison carries authored ids, the other the ids
-// the pipeline synthesizes (ADR 0010); this canonicalizes that difference away
-// before `toEqual`. Gateways, boundaries and event sub-processes are re-keyed
-// by structural position, since the handwritten counterpart is hand-named;
-// task and event ids are never re-keyed and have to survive verbatim. Flows
-// never cross a sub-process boundary, so every step runs per container.
+// Canonicalizes authored vs synthesized ids before `toEqual`: gateways,
+// boundaries and event sub-processes are re-keyed by structure; task and event
+// ids must survive verbatim. Flows never cross a sub-process, so this runs per
+// container.
 
 import { ENGINE_KEYS } from '@bpmn-script/language';
 import {
@@ -15,7 +13,6 @@ import {
   type SequenceFlow,
 } from '@bpmn-script/transform';
 
-// The synthesized join family: XOR after `if/else`, AND after `parallel`.
 const SYNTHESIZED_JOIN_ID = /^Gateway_.+_join$/;
 
 export function normalizeIr(ir: BpmnProcess): BpmnProcess {
@@ -23,7 +20,7 @@ export function normalizeIr(ir: BpmnProcess): BpmnProcess {
 }
 
 function normalizeContainer<T extends FlowContainer>(container: T): T {
-  // Must run before re-keying: it gives both halves the same element set.
+  // Before re-keying, so both halves have the same element set.
   const inlined = inlinePassThroughJoins(container);
 
   const gatewayIdMap = buildCanonicalIds(inlined, (fe) =>
@@ -37,9 +34,8 @@ function normalizeContainer<T extends FlowContainer>(container: T): T {
 
   const flowElements: FlowElement[] = inlined.flowElements
     .map((fe) => {
-      // A plain sub-process keeps its authored id; a `triggeredByEvent` one
-      // has no surface id and is re-keyed to its trigger. Its `defaultFlowId`
-      // names a flow of this container, not of its body.
+      // A `triggeredByEvent` one has no surface id. Its `defaultFlowId` names
+      // a flow of this container, not of its body.
       if (fe.kind === 'subProcess') {
         const normalized = { ...normalizeContainer(fe), ...reKeyedDefault(fe) };
         return fe.triggeredByEvent === true
@@ -47,7 +43,6 @@ function normalizeContainer<T extends FlowContainer>(container: T): T {
           : normalized;
       }
 
-      // Only its own id moves; `attachedToRef` is an authored host id.
       if (fe.kind === 'boundaryEvent') {
         return { ...fe, id: canonicalId(fe.id) };
       }
@@ -55,15 +50,12 @@ function normalizeContainer<T extends FlowContainer>(container: T): T {
       if (!isGateway(fe)) return { ...fe, ...reKeyedDefault(fe) };
       const id = canonicalId(fe.id);
 
-      // The structured syntax has no slot for a gateway label, so only
-      // gateways lose their name.
+      // The structured syntax has no slot for a gateway label.
       const { name: _name, ...withoutName } = fe;
       return { ...withoutName, id, ...reKeyedDefault(fe) };
     })
     .sort((a, b) => a.id.localeCompare(b.id));
 
-  // The key a flow ends up under after `normalizeFlow`, so a `defaultFlowId`
-  // agrees with the flow it names; absent when the element names none.
   function reKeyedDefault(fe: FlowElement): { defaultFlowId?: string } {
     const declared = 'defaultFlowId' in fe ? fe.defaultFlowId : undefined;
     if (declared === undefined) return {};
@@ -78,7 +70,6 @@ function normalizeContainer<T extends FlowContainer>(container: T): T {
     .map((sf) => normalizeFlow(sf, canonicalId))
     .sort((a, b) => a.id.localeCompare(b.id));
 
-  // The spread keeps every other field, so this really is a `T`.
   return {
     ...container,
     flowElements,
@@ -86,10 +77,9 @@ function normalizeContainer<T extends FlowContainer>(container: T): T {
   } as T;
 }
 
-// A re-synthesized `if/else` grows a join the hand-authored IR never had, so
-// such a join is treated as transparent. One carrying a job setting stays:
-// inlining it would take the setting out of both sides of the comparison, and
-// a `join*` key one direction drops is what the comparison has to catch.
+// A re-synthesized `if/else` grows a join the authored IR never had, so such a
+// join is transparent. One carrying a job setting stays, or a dropped `join*`
+// key would vanish from both sides of the comparison.
 function inlinePassThroughJoins(ir: FlowContainer): FlowContainer {
   const successorOf = new Map<string, string>();
   for (const fe of ir.flowElements) {
@@ -118,9 +108,7 @@ function inlinePassThroughJoins(ir: FlowContainer): FlowContainer {
   return { ...ir, flowElements, sequenceFlows };
 }
 
-// A `signatureOf` returning undefined skips the element, so each signature
-// function also decides its own membership. Ties get a positional `#1`, `#2`
-// suffix in flowElements order.
+// `undefined` skips the element; ties get a positional `#n` suffix.
 function buildCanonicalIds(
   ir: FlowContainer,
   signatureOf: (fe: FlowElement) => string | undefined,
@@ -138,9 +126,8 @@ function buildCanonicalIds(
   return map;
 }
 
-// Once the join is inlined, a hand-named gateway and its synthesized twin sit
-// at the same topological position, so adjacency keys them equally. `kind` is
-// in the key so a XOR and an AND in one position never collapse together.
+// After join inlining, a hand-named gateway and its synthesized twin share
+// their adjacency.
 function gatewaySignature(
   fe: FlowElement,
   ir: FlowContainer,
@@ -159,10 +146,8 @@ function gatewaySignature(
   return `Gateway_${fe.kind}_[in:${incoming.join(',')}]_[out:${outgoing.join(',')}]`;
 }
 
-// An `on` handler's sub-process id is a synthesized coordinate that moves when
-// a round trip re-orders the container's statements, so key it off the trigger
-// start event instead. Two handlers with the same signature are a validator
-// error, so they cannot reach here from a valid program.
+// A handler's synthesized id moves when statements re-order, so key it by its
+// trigger; two handlers with one trigger are a validator error.
 function eventSubProcessSignature(fe: FlowElement): string | undefined {
   if (fe.kind !== 'subProcess' || fe.triggeredByEvent !== true)
     return undefined;
@@ -179,10 +164,8 @@ function eventSubProcessSignature(fe: FlowElement): string | undefined {
   return `EventSubProcess_[trigger:${kind}]_[code:${code}]_[${interrupting}]`;
 }
 
-// `on Pack: error(A)` and `on Pack: error(B)` both base to
-// `Boundary_Pack_error`, and the `_2` suffix that separates them is stable when
-// generating but not on import, because moddle may present the children in
-// either order. Keying on host plus trigger payload sidesteps that.
+// The `_2` suffix separating two same-trigger boundaries on one host is not
+// stable on import, since moddle may present them in either order.
 function boundarySignature(fe: FlowElement): string | undefined {
   if (fe.kind !== 'boundaryEvent') return undefined;
 
@@ -210,9 +193,8 @@ function definitionPayloadKey(def: EventDefinition | undefined): string {
       return `${def.timerKind} ${def.expression}`;
     case 'conditional':
       return def.condition;
-    // Payload-free; a container takes one undo block and a block one cancel
-    // handler, and a terminate is never a trigger, so a constant cannot
-    // collide.
+    // Constants cannot collide: one undo block per container, one cancel
+    // handler per block, and terminate is never a trigger.
     case 'compensation':
       return '<compensation>';
     case 'terminate':
@@ -226,7 +208,7 @@ function definitionPayloadKey(def: EventDefinition | undefined): string {
   }
 }
 
-// `Flow_` is the prefix of every generated flow id.
+// `Flow_` prefixes every generated flow id.
 function normalizeFlow(
   sf: SequenceFlow,
   canonicalId: (id: string) => string,

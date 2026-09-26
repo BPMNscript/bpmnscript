@@ -1,8 +1,4 @@
-/**
- * Readers over an element's parenthesised items. The payload, the settings
- * and the flags share one list and are told apart by node type, so every
- * reader lives here rather than spelling that union again at each site.
- */
+/** The payload, settings and flags share one list, told apart by node type. */
 
 import {
   DECLARED_CODE_TRIGGERS,
@@ -39,19 +35,12 @@ export function flagsOf(items: ParenItem[]): Flag[] {
   return items.filter(isFlag);
 }
 
-/**
- * The unkeyed value: an event's payload, or a `condition`'s expression. A
- * second one is a duplicate the validator reports, so this reads the first.
- */
+/** A second one is a duplicate the validator reports. */
 export function payloadItemOf(items: ParenItem[]): ParenValue | undefined {
   return items.find(isParenValue);
 }
 
-/**
- * A `code:`/`message:` setting on a handler, told from an engine setting by
- * its key alone. Only a bare name declares a variable, so `code: "LITERAL"`
- * leaves `variable` undefined and reads rather than binds.
- */
+/** Only a bare name declares a variable; `code: "LITERAL"` reads rather than binds. */
 interface CaughtBinding {
   readonly field: string;
   readonly variable: string | undefined;
@@ -70,12 +59,7 @@ export function caughtBindingsOf(items: ParenItem[]): CaughtBinding[] {
     }));
 }
 
-/**
- * A key that is a catch binding or a timer clause rather than a setting, so
- * the key check passes over it. Only a handler catches a code or a message and
- * only a timer names a date or a cycle; anywhere else the words are unknown
- * keys.
- */
+/** Catch bindings on a handler and timer keys on a timer; unknown keys anywhere else. */
 export function isStructuralParenKey(owner: AstNode, key: string): boolean {
   if (isOnHandler(owner) && EVENT_BINDING_FIELD_SET.has(key)) return true;
   return (
@@ -84,7 +68,6 @@ export function isStructuralParenKey(owner: AstNode, key: string): boolean {
   );
 }
 
-/** A timer says a duration by writing it bare, and a date or a cycle by key. */
 const TIMER_PARTICLE_KEYS: readonly TimerParticle[] = [
   TIMER_PARTICLE_BY_KIND.date,
   TIMER_PARTICLE_BY_KIND.cycle,
@@ -99,18 +82,12 @@ export function configuredSettingsOf(
 }
 
 /**
- * The trigger word of the event whose bare payload slot `node` sits in, else
- * `undefined`. Every identifier in every expression parses as the same
- * reference, so this is what separates `error(OUT_OF_STOCK)` from
- * `condition(ready)` for the scope provider, the linker, the validator and the
- * suppression alike. An operand of `error(a > b)` is contained by the operator
- * node, not the `ParenValue`, so a nested identifier answers `undefined` on
- * its own.
+ * Every identifier parses as the same reference, so this separates
+ * `error(OUT_OF_STOCK)` from `condition(ready)`. A nested operand is contained
+ * by its operator, so it answers `undefined`.
  */
 function payloadTriggerOf(node: AstNode): string | undefined {
-  // Only the stand-in Langium's `completionForCrossReference` builds is held
-  // in a `ref` slot; its container is where the caret sits, the `VarRef` a
-  // typed prefix has built or the event itself where nothing is written yet.
+  // Langium's completion stand-in sits in a `ref` slot under the caret's node.
   if (node.$containerProperty === 'ref' && node.$container !== undefined) {
     const caret = node.$container;
     return payloadTriggerOf(caret) ?? triggerWordOf(caret);
@@ -127,12 +104,7 @@ export function triggerWordOf(owner: AstNode): string | undefined {
     : undefined;
 }
 
-/**
- * The trigger word under which `node` names a declared code, else
- * `undefined`: the unkeyed value of an `error` or `escalation` event, or a
- * mapping's code slot, `error E when ...`, whose own trigger word heads the
- * line.
- */
+/** The unkeyed value of an `error` or `escalation`, or a mapping's code slot. */
 export function codeTriggerOf(node: AstNode): string | undefined {
   const trigger = isErrorMapping(node)
     ? mappingTriggerOf(node)
@@ -143,10 +115,8 @@ export function codeTriggerOf(node: AstNode): string | undefined {
 }
 
 /**
- * The completion stand-in for the code slot is a mapping with no trigger of
- * its own, held by the parsed mapping being typed, so its word is read off
- * that holder. The generated type says a mapping is held by an element, which
- * only the stand-in departs from, hence the widening.
+ * The completion stand-in is held by the mapping being typed, not an element,
+ * hence the widening.
  */
 function mappingTriggerOf(mapping: ErrorMapping): string | undefined {
   const holder: AstNode | undefined = mapping.$container;
@@ -160,11 +130,7 @@ function mappingTriggerOf(mapping: ErrorMapping): string | undefined {
   return mapping.trigger;
 }
 
-/**
- * The trigger word under which `node` writes a name rather than a code: a
- * message or a signal keys the engine's subscription by text, so a bare word
- * there is a missing pair of quotes.
- */
+/** A message or signal keys its subscription by text, so a bare word there is missing quotes. */
 export function nameTriggerOf(node: AstNode): string | undefined {
   const trigger = payloadTriggerOf(node);
   return trigger !== undefined &&
@@ -179,10 +145,8 @@ export function isCodePosition(node: AstNode): boolean {
 }
 
 /**
- * The code a declaration keys by: its `code` setting, which carries a code no
- * name could spell (`error OrderFailed(code: "order.failed")`), else its own
- * name. `undefined` for a written setting that is empty or not quoted text,
- * both of which the validator reports on its own.
+ * The `code` setting, else the name. `undefined` for an empty or unquoted
+ * setting, which the validator reports.
  */
 export function declaredCodeOf(decl: CodeDecl): string | undefined {
   const setting = settingsOf(decl.items).find(
@@ -195,12 +159,7 @@ export function declaredCodeOf(decl: CodeDecl): string | undefined {
   return setting.value.value;
 }
 
-/**
- * The payload as text: a message or signal name, a code, or a timer duration.
- * A code is a plain word naming its declaration and reads back as the same
- * text a quoted one would; a condition is an expression, not text, and is read
- * through {@link payloadItemOf} instead.
- */
+/** A code reads back as the same text a quoted one would; a condition is no text. */
 export function payloadTextOf(items: ParenItem[]): string | undefined {
   const value = payloadItemOf(items)?.value;
   if (value === undefined) return undefined;
@@ -210,13 +169,12 @@ export function payloadTextOf(items: ParenItem[]): string | undefined {
   return undefined;
 }
 
-/** Only quoted text is a value written where the position wants something else: a word names a declaration and a `${...}` template is an expression. */
+/** A word names a declaration and a `${...}` is an expression, so only quoted text counts. */
 export function hasQuotedPayload(items: ParenItem[]): boolean {
   const value = payloadItemOf(items)?.value;
   return value !== undefined && isLiteralString(value);
 }
 
-/** A timer clause, and the item a diagnostic about it belongs on. */
 export interface TimerPayload {
   readonly particle: TimerParticle;
   readonly time: string;
@@ -237,7 +195,7 @@ export function timerParticleOf(
   return undefined;
 }
 
-/** A bare duration answers the `after` particle it would carry elsewhere, so every caller reads one shape. */
+/** A bare duration answers the `after` particle, so callers read one shape. */
 export function timerPayloadOf(items: ParenItem[]): TimerPayload | undefined {
   const keyed = timerParticleOf(items);
   if (keyed !== undefined) return keyed;
@@ -263,7 +221,6 @@ export function hasFlag(items: ParenItem[], word: string): boolean {
   return flagOf(items, word) !== undefined;
 }
 
-/** Only a condition's payload is an expression rather than text, which is what separates `condition(a > b)` from `error(OUT_OF_STOCK)`. */
 export function hasExpressionPayload(items: ParenItem[]): boolean {
   return (
     payloadItemOf(items) !== undefined && payloadTextOf(items) === undefined

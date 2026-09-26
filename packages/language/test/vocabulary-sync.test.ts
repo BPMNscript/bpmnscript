@@ -1,11 +1,5 @@
-/**
- * Lists that have to agree with a list they cannot import: the TextMate
- * grammar cannot read TypeScript, so its keyword alternation is a second
- * derivation of what the parser reserves, generated into the gitignored
- * `syntaxes/` where a stale copy never shows in a diff. A trigger word and a
- * listener event both follow `on`, so one word in both would give `on <word>`
- * two meanings.
- */
+// The TextMate grammar cannot import TypeScript, and its generated copy under
+// the gitignored `syntaxes/` never shows in a diff, so these pin the two lists.
 
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -98,7 +92,7 @@ function grammarPatterns(): { name?: string; match?: string }[] {
     .patterns;
 }
 
-/** Every match of the named top-level pattern as a JS `RegExp`; Oniguruma agrees on the lookaround and classes used here, as `injection-grammar.test.ts` assumes too. */
+/** Oniguruma agrees with JS `RegExp` on the lookaround and classes used here. */
 function tokensOf(line: string, namePrefix: string): string[] {
   const pattern = grammarPatterns().find((p) => p.name?.startsWith(namePrefix));
   if (!pattern?.match) {

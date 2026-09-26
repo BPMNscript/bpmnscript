@@ -1,7 +1,10 @@
-// No `vscode` import here: the unit tests run this without an editor host;
-// `conversion.ts` is the VS Code adapter.
+// No `vscode` import, so unit tests run this without an editor host.
 
-import { createBpmnScriptServices } from '@bpmn-script/language';
+import {
+  createBpmnScriptServices,
+  Diagnostic,
+  DiagnosticSeverity,
+} from '@bpmn-script/language';
 import type { Model } from '@bpmn-script/language';
 import { EmptyFileSystem, URI } from 'langium';
 import * as path from 'node:path';
@@ -18,7 +21,6 @@ import {
 } from '@bpmn-script/transform';
 import type { ImportWarning, PrintWarning } from '@bpmn-script/transform';
 
-// Positions are 0-based, LSP convention.
 export interface ConvDiagnostic {
   line: number;
   character: number;
@@ -39,11 +41,6 @@ export type DecompileResult =
   | { ok: false; kind: 'unsupported'; message: string }
   | { ok: false; kind: 'error'; message: string };
 
-// LSP's `DiagnosticSeverity.Error`; `vscode-languageserver-types` is not a
-// dependency of this package.
-const SEVERITY_ERROR = 1;
-
-// Built once per module load: creating the services is expensive.
 const { shared } = createBpmnScriptServices(EmptyFileSystem);
 
 let nextDocId = 0;
@@ -54,8 +51,7 @@ export async function compileDslToBpmn(
 ): Promise<CompileResult> {
   const uri = URI.parse(`memory:///conv-${nextDocId++}.bpmnscript`);
 
-  // Registered so the DocumentBuilder resolves cross-references, removed
-  // afterwards so the index does not grow with every call.
+  // Registered so cross-references resolve, removed so the index does not grow.
   const doc = shared.workspace.LangiumDocumentFactory.fromString<Model>(
     source,
     uri,
@@ -66,7 +62,7 @@ export async function compileDslToBpmn(
     await shared.workspace.DocumentBuilder.build([doc], { validation: true });
 
     const errors = (doc.diagnostics ?? []).filter(
-      (d) => d.severity === SEVERITY_ERROR,
+      (d) => d.severity === DiagnosticSeverity.Error,
     );
     if (errors.length > 0) {
       const diagnostics: ConvDiagnostic[] = errors.map((d) => ({
@@ -74,21 +70,18 @@ export async function compileDslToBpmn(
         character: d.range.start.character,
         endLine: d.range.end.line,
         endCharacter: d.range.end.character,
-        message: typeof d.message === 'string' ? d.message : d.message.value,
-        severity: SEVERITY_ERROR,
+        message: Diagnostic.getMessageString(d),
+        severity: DiagnosticSeverity.Error,
         text: doc.textDocument.getText(d.range),
       }));
       return { ok: false, kind: 'validation', diagnostics };
     }
 
-    // Checked after the error gate: a keyword typo also parses into a model
-    // with no processes, and should report its parser error instead.
+    // After the error gate: a keyword typo also parses into a model with no processes.
     if (doc.parseResult.value.processes.length === 0) {
       return { ok: false, kind: 'error', message: NO_PROCESS_MESSAGE };
     }
 
-    // The cli's build.ts and tests/helpers/pipeline.ts run the same
-    // astToIr -> irToXml chain, each with its own failure reporting.
     let ir;
     try {
       ir = astToIr(doc.parseResult.value);
@@ -149,8 +142,7 @@ export async function decompileBpmnToDsl(
     if (err instanceof UnsupportedConstructError) {
       return { ok: false, kind: 'unsupported', message: err.message };
     }
-    // Straight into a notification otherwise: a parser error quotes the rest
-    // of the document, which for a large file is the whole file.
+    // A parser error quotes the rest of the document, too long for a notification.
     return {
       ok: false,
       kind: 'error',
@@ -173,8 +165,7 @@ export async function decompileBpmnToDsl(
   return { ok: true, output, warnings: [...warnings, ...printWarnings] };
 }
 
-// The cli's `resolveOutputPath` does the same without an override, but
-// importing it would pull chalk and commander into the extension bundle.
+// Importing the cli's `resolveOutputPath` would pull chalk and commander into the bundle.
 export function swapExtension(filePath: string, newExt: string): string {
   const dir = path.dirname(filePath);
   const base = path.basename(filePath, path.extname(filePath));

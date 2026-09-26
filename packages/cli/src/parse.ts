@@ -1,3 +1,4 @@
+import { DiagnosticSeverity } from '@bpmn-script/language';
 import chalk from 'chalk';
 import * as fs from 'node:fs/promises';
 
@@ -7,13 +8,14 @@ import {
   EMPTY_INPUT_MESSAGE,
   readableParseError,
   xmlInputProblem,
+  SERVICE_TASK_FORM_ATTRIBUTES,
   UnsupportedConstructError,
   UnsupportedServiceTaskFormError,
   UnsupportedElementError,
 } from '@bpmn-script/transform';
 import type { ImportWarning, PrintWarning } from '@bpmn-script/transform';
 import {
-  SEVERITY_ERROR,
+  type CommandOptions,
   buildDocument,
   fail,
   formatDiagnostic,
@@ -24,14 +26,9 @@ import {
   writeOutput,
 } from './util.js';
 
-type ParseOptions = {
-  output?: string;
-  force?: boolean;
-};
-
 export async function parseAction(
   fileName: string,
-  opts: ParseOptions,
+  opts: CommandOptions,
 ): Promise<void> {
   const resolvedInput = resolveInputPath(fileName);
   const outPath = resolveOutputPath(resolvedInput, '.bpmnscript', opts.output);
@@ -64,11 +61,7 @@ export async function parseAction(
         1,
         `Error: unsupported ${err.subject.toLowerCase()} form in ${fileName}:\n` +
           `  ${err.message}\n` +
-          '  The attributes are operaton:class (or the deprecated camunda:class ' +
-          'alias), operaton:expression, operaton:delegateExpression, ' +
-          'operaton:type="external" with operaton:topic, ' +
-          'operaton:type="mail" or "shell" with their operaton:field ' +
-          'children, and operaton:decisionRef.',
+          `  The attributes are ${SERVICE_TASK_FORM_ATTRIBUTES}.`,
       );
     }
     if (err instanceof UnsupportedElementError) {
@@ -101,18 +94,15 @@ export async function parseAction(
   await writeOutput(outPath, dsl);
   console.log(chalk.green(`Parsed: ${outPath}`));
 
-  // The id leads because several messages do not name their step, so two of
-  // them would otherwise print as the same line.
+  // Several messages do not name their step, so the id tells them apart.
   for (const w of [...warnings, ...printWarnings]) {
     warn(`Warning: ${w.elementId}: ${w.message}`);
   }
 
-  // The print hop never refuses and none of the warnings above run
-  // the validator, so a setting carried as written may still draw an error;
-  // building the written script the way `build` would is what catches it.
+  // Nothing above runs the validator, so rebuilding the written script is what catches an error.
   const rebuilt = await buildDocument(outPath);
   const buildErrors = (rebuilt.diagnostics ?? []).filter(
-    (d) => d.severity === SEVERITY_ERROR,
+    (d) => d.severity === DiagnosticSeverity.Error,
   );
   if (buildErrors.length > 0) {
     warn(

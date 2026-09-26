@@ -1,9 +1,7 @@
-// Decides whether a recompiled print keeps the model of its source. Three
-// layers, cheapest first: `normalizeIr` equality; the same after canonicalizing
-// JUEL bodies and minted coordinate ids; and a path signature that accepts a
-// restructured print as long as every step keeps its content and reaches the
-// same next steps through the same conditions, default routes, non-exclusive
-// gateways and gateway settings.
+// Whether a recompiled print keeps its source's model, cheapest check first:
+// `normalizeIr` equality; that after canonicalizing JUEL and minted ids; and a
+// path signature where every step keeps its content and reaches the same next
+// steps through the same conditions, defaults and non-trivial gateways.
 
 import { isGateway, parseJuel } from '@bpmn-script/transform';
 import type { BpmnProcess, FlowElement } from '@bpmn-script/transform';
@@ -28,7 +26,7 @@ function canonicalForm(ir: BpmnProcess): string {
 }
 
 // `toEqual` semantics on a string: sorted keys, `undefined` dropped.
-function stable(x: unknown): string {
+export function stable(x: unknown): string {
   return JSON.stringify(x, (_k, v: unknown) => {
     if (v !== null && typeof v === 'object' && !Array.isArray(v)) {
       const o = v as Record<string, unknown>;
@@ -43,13 +41,11 @@ function stable(x: unknown): string {
   });
 }
 
-// Every IR field that can hold an expression body.
 const EXPRESSION_KEYS =
   /^(conditionExpression|condition|expression|value|source|collection|cardinality|completionCondition|delegateExpression|code|stringValue)$/;
 const EXPRESSION_BODY = /^[$#]\{[\s\S]*\}$/;
 
-// A body inside the JUEL subset compares by its parse tree, so quote style and
-// spacing do not count; a raw body stays verbatim.
+// A body in the JUEL subset compares by parse tree; a raw body stays verbatim.
 function canonicalExpressions<T>(value: T): T {
   if (Array.isArray(value)) return value.map(canonicalExpressions) as T;
   if (value === null || typeof value !== 'object') return value;
@@ -71,17 +67,15 @@ function canonicalExpressions<T>(value: T): T {
   ) as T;
 }
 
-// `normalizeIr` re-keys gateways, handlers and boundary events but not the
-// coordinate ids the compiler mints for unnamed events, a handler body's own
-// start and end, and the handler itself (`Catch_p_0_b1`, `Throw_p_2`,
-// `EventSubProcess_p_3`), which move whenever the printer reorders or hoists a
-// statement. Each is renamed to its content (`#n` on a tie in element order).
+// Minted coordinate ids (`Catch_p_0_b1`, `Throw_p_2`, `EventSubProcess_p_3`)
+// move whenever the printer reorders or hoists a statement, so each is renamed
+// to its content (`#n` on a tie).
 const COORDINATE_ID =
   /^(Catch_|Throw_|StartEvent_EventSubProcess_|EndEvent_EventSubProcess_|EndEvent_Boundary_)/;
 const EVENT_SUB_PROCESS_ID = /^EventSubProcess_/;
 const COORDINATE_GATEWAY_ID = /^Gateway_.+_(split|join|fork|loop|race)$/;
 
-export function canonicalizeCoordinateIds(container: BpmnProcess): BpmnProcess {
+function canonicalizeCoordinateIds(container: BpmnProcess): BpmnProcess {
   const rename = new Map<string, string>();
   const used = new Map<string, number>();
   const mint = (id: string, base: string): void => {
@@ -107,11 +101,9 @@ export function canonicalizeCoordinateIds(container: BpmnProcess): BpmnProcess {
     }
   }
 
-  // A gateway's coordinate also sits inside the neighbour lists `normalizeIr`
-  // keys other gateways by, so it is renamed after the events, by its own
-  // kind and its neighbours under their new names; a second round lets a
-  // gateway whose neighbours are gateways pick up their first-round names.
-  // The `_join` suffix survives so `normalizeIr` still inlines a pass-through join.
+  // Gateways are renamed after the events, by kind and renamed neighbours; the
+  // second round gives gateway neighbours their first-round names. The role
+  // suffix survives so `normalizeIr` still inlines a pass-through join.
   const byId = new Map(elements.map((e) => [e.id, e]));
   for (let round = 0; round < 2; round++) {
     const previous = new Map(rename);
@@ -158,8 +150,7 @@ export function canonicalizeCoordinateIds(container: BpmnProcess): BpmnProcess {
   return { ...container, flowElements, sequenceFlows };
 }
 
-// A handler's own settings plus its trigger; two handlers with one trigger are
-// a validator error, so this cannot tie in a valid program.
+// Cannot tie: two handlers with one trigger are a validator error.
 function handlerContent(handler: FlowElement & { kind: 'subProcess' }): string {
   const start = handler.flowElements.find((e) => e.kind === 'startEvent');
   return stable({
@@ -179,12 +170,8 @@ function ownContent(el: object): Record<string, unknown> {
   return rest;
 }
 
-/**
- * Sorted, readable lines; two IRs keep the same model iff their signatures are
- * equal. Per container: one line for its own content, one per non-gateway
- * element, and one per pair of non-gateway elements joined through gateways
- * only, labelled with what the route crosses.
- */
+// Per container: its content, each non-gateway node, and each gateway-only
+// route between two nodes labelled with what it crosses.
 export function modelSignature(ir: BpmnProcess): string[] {
   return [
     ...new Set(
@@ -200,10 +187,9 @@ function containerSignature(container: BpmnProcess): string[] {
     outgoing.set(f.sourceRef, [...(outgoing.get(f.sourceRef) ?? []), f]);
   }
 
-  // An exclusive gateway without settings is pure routing: a hoist, a loop
-  // printed as a backward `goto` or a step sunk into its only live branch adds
-  // or removes exactly those, while the conditions on its flows still label
-  // the route. Any other gateway changes how the route runs and stays in.
+  // A settings-free exclusive gateway is pure routing that a hoist or a loop
+  // printed as a `goto` adds or removes; its flow conditions still label the
+  // route. Any other gateway changes how the route runs.
   const gatewayMark = (el: FlowElement): string | undefined => {
     const { name: _name, ...settings } = ownContent(el);
     return el.kind === 'exclusiveGateway' && Object.keys(settings).length === 1
@@ -214,9 +200,7 @@ function containerSignature(container: BpmnProcess): string[] {
   const nodes = container.flowElements.filter((el) => !isGateway(el));
   const routes: { from: string; route: string; to: string }[] = [];
   for (const el of nodes) {
-    // Every simple path through gateways; a gateway already on the current
-    // path is not re-entered, so gateway-only cycles terminate and the result
-    // does not depend on flow order.
+    // Simple paths only, so gateway-only cycles terminate.
     // ponytail: exponential in the length of a gateway-only chain; fine for
     // the chains the compiler emits, memoize per gateway if that changes.
     const walk = (at: string, labels: string[], onPath: Set<string>): void => {
@@ -266,12 +250,9 @@ function containerSignature(container: BpmnProcess): string[] {
   return lines;
 }
 
-// A node is named by its id and content. The `#n` tie-break on a minted id is
-// positional, so it is dropped; nodes that then share a name (identical
-// unnamed events) are told apart by the routes into and out of them, refined
-// until the partition is stable, and numbered in the sorted order of those
-// route shapes. Without that, identical events in two branches whose gotos
-// are swapped would produce the same set of lines.
+// A node is named by id and content with the positional `#n` dropped; nodes
+// that then tie (identical unnamed events) are told apart by colour refinement
+// over their routes, or swapped gotos between them would go unnoticed.
 function nodeKeys(
   byId: Map<string, FlowElement>,
   nodes: FlowElement[],
@@ -300,8 +281,7 @@ function nodeKeys(
         ]),
       ]),
     );
-    // Shapes can grow each round; renaming them to their rank keeps them short
-    // and still depends only on the graph, not on element order.
+    // Ranks keep shapes short and independent of element order.
     const ranked = [...new Set(next.values())].sort();
     shape = new Map(
       [...next].map(([id, s]) => [id, String(ranked.indexOf(s))]),

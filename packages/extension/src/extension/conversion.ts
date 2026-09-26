@@ -14,7 +14,7 @@ interface Source {
   text: string;
 }
 
-// Prefers an open TextDocument so unsaved edits convert, not the stale file.
+// An open TextDocument carries unsaved edits.
 async function readText(sourceUri: vscode.Uri): Promise<string> {
   const openDoc = vscode.workspace.textDocuments.find(
     (doc) => doc.uri.toString() === sourceUri.toString(),
@@ -52,7 +52,6 @@ async function confirmOverwrite(outputUri: vscode.Uri): Promise<boolean> {
   try {
     await vscode.workspace.fs.stat(outputUri);
   } catch {
-    // stat throws when the target does not exist: nothing to overwrite.
     return true;
   }
   const answer = await vscode.window.showWarningMessage(
@@ -99,8 +98,7 @@ export function compileCommand(extensionVersion: string): ConvertHandler {
     const result = await compileDslToBpmn(source.text, extensionVersion);
     if (!result.ok) {
       if (result.kind === 'validation') {
-        // The language client already publishes these diagnostics; a second
-        // collection would only duplicate them.
+        // The language client already publishes these diagnostics.
         await vscode.window.showTextDocument(source.uri);
         await vscode.commands.executeCommand('workbench.action.problems.focus');
         await vscode.window.showErrorMessage(
@@ -153,9 +151,7 @@ export function decompileCommand(): ConvertHandler {
       result.output,
     );
     if (outputUri && result.warnings.length > 0) {
-      // Prefixed with the element id: several messages describe the route on
-      // from a step without naming it, so two of them would read as one line
-      // repeated.
+      // Several messages do not name their step, so the id tells them apart.
       const details = result.warnings
         .map((w) => `${w.elementId}: ${w.message}`)
         .join('; ');

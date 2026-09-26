@@ -1,7 +1,3 @@
-// Runs a command the way `bpmns` does, minus the shell: a real file in and a
-// real file out, with the exit code, the stderr lines and the written output
-// handed back instead of leaving the process.
-
 import * as fs from 'node:fs';
 import * as fsp from 'node:fs/promises';
 import * as os from 'node:os';
@@ -11,9 +7,9 @@ import { expect, vi } from 'vitest';
 
 import { buildAction } from '../../src/build.js';
 import { parseAction } from '../../src/parse.js';
+import type { CommandOptions } from '../../src/util.js';
 
-// Captured stderr is compared line for line, so the colouring must not vary
-// with whether the runner happens to own a terminal.
+// Stderr is compared line for line, so colour must not depend on a TTY.
 chalk.level = 0;
 
 class ExitCalled extends Error {
@@ -32,11 +28,9 @@ export type ActionRun = {
 
 export type Input = { text: string } | { file: string };
 
-export type ActionOptions = { output?: string; force?: boolean };
-
 type Action = (
   fileName: string,
-  opts: ActionOptions,
+  opts: CommandOptions,
 ) => Promise<void | undefined>;
 
 async function capture(
@@ -48,8 +42,7 @@ async function capture(
       stderr.push(String(args[0]));
     }),
     vi.spyOn(console, 'log').mockImplementation(() => {}),
-    // Throws so the action stops where `process.exit` would have; a no-op
-    // mock would let it run on.
+    // A no-op mock would let the action run on past the exit.
     vi.spyOn(process, 'exit').mockImplementation((code?: unknown) => {
       throw new ExitCalled(typeof code === 'number' ? code : 0);
     }),
@@ -98,14 +91,11 @@ async function run(
   }
 }
 
-/**
- * For the guard tests, which lay out their own files: no path is invented or
- * cleaned up here, so a test can assert on the exact file it set up.
- */
+/** Runs on caller-owned paths: nothing is invented or cleaned up. */
 export const runActionAt = (
   action: 'build' | 'parse',
   inputPath: string,
-  opts: ActionOptions,
+  opts: CommandOptions,
 ): Promise<Pick<ActionRun, 'exit' | 'stderr'>> =>
   capture(() =>
     (action === 'build' ? buildAction : parseAction)(inputPath, opts),

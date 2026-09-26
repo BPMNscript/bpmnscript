@@ -1,13 +1,8 @@
 /**
- * Definition, references, rename, document highlight and hover for a variable.
- * `VarRef.ref` resolves in a code position alone, so Langium's five providers,
- * keyed on the resolved reference and a `name` node, know nothing of
- * `if (amount > 1)`; all five go through `References.findDeclarations` and
- * `References.findReferences`, so one override serves them. No AST node stands
- * for a variable (five node kinds declare one, and a repeated statement
- * declares its element beside its own name), so each request builds a symbol
- * node from `declaringSites`. That walk answers in single-digit milliseconds
- * on a 3,000-line file, so a highlight per cursor move needs no cache.
+ * `VarRef.ref` resolves in a code position alone, so Langium's definition,
+ * references, rename, highlight and hover know nothing of variables; all five
+ * go through `findDeclarations`/`findReferences`, overridden here with a
+ * symbol node built from `declaringSites` per request (fast enough uncached).
  */
 
 import {
@@ -36,7 +31,6 @@ import type {
   VariableSymbolProvider,
 } from './variable-symbol-provider.js';
 
-/** The node a variable's sites all resolve to. Its `$cstNode` is the first site's name leaf. */
 interface VariableSymbolNode extends AstNode {
   readonly $type: 'VariableSymbolNode';
   readonly $container: Process;
@@ -89,12 +83,10 @@ export class BpmnScriptReferences extends DefaultReferences {
         ...sites.map(nameLeafOf).filter((leaf) => leaf !== undefined),
       );
     }
-    // A catch binding is a `VarRef` too, and it is listed above as a site.
     const declaring = new Set(sites.map((site) => site.node));
     for (const ref of AstUtils.streamAst(process).filter(isVarRef)) {
       if (declaring.has(ref)) continue;
-      // The `ref` leaf alone, so `order.total` renames `order` and keeps
-      // `.total`.
+      // The `ref` leaf alone, so `order.total` renames `order` and keeps `.total`.
       const leaf = ref.ref.$refNode;
       if (leaf && ref.ref.$refText === node.name && isVariableUse(ref)) {
         leaves.push(leaf);
@@ -106,12 +98,7 @@ export class BpmnScriptReferences extends DefaultReferences {
     );
   }
 
-  /**
-   * The variable the leaf under the caret names, by a declaring site or a use
-   * with at least one site. A name with no site (a loop counter, an undeclared
-   * name) falls through to the default, which finds no resolved reference and
-   * so refuses a rename.
-   */
+  /** A name with no site falls through to the default, which refuses a rename. */
   private variableAt(cst: CstNode): VariableSymbolNode | undefined {
     const node = cst.astNode;
     const feature = GrammarUtils.findAssignment(cst)?.feature;

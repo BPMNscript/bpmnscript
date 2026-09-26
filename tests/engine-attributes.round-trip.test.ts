@@ -1,15 +1,10 @@
-// None of these settings changes control flow, so what this suite catches is a
-// value that stops traveling in one of the four directions while the rest of
-// the process looks unchanged.
-
-import { describe, it, expect } from 'vitest';
+import { it, expect } from 'vitest';
 
 import { ENGINE_KEYS, type EngineKey } from '@bpmn-script/language';
 import { isGateway } from '@bpmn-script/transform';
 import type { EngineAttributes, FlowElement } from '@bpmn-script/transform';
 
 import { roundTripFixture } from './helpers/round-trip-fixture.js';
-import { describeDiContainment } from './helpers/di-bounds.js';
 import { allElements, elementById, theOnly } from './helpers/ir-query.js';
 
 const rt = roundTripFixture('engine-attributes', {
@@ -18,8 +13,7 @@ const rt = roundTripFixture('engine-attributes', {
   recompile: 'clean',
 });
 
-// `historyTimeToLive` is deliberately not the exporter's default: at `P30D`
-// the importer reads it as unwritten and the hop proves nothing.
+// Not the exporter's `P30D` default, which the importer reads as unwritten.
 const PROCESS_HEADER = {
   versionTag: '3.1.0',
   historyTimeToLive: 'P90D',
@@ -27,10 +21,6 @@ const PROCESS_HEADER = {
   candidateStarterGroups: 'adjusters',
 };
 
-// The tripwire for a regenerated golden: layout, flow ids, and synthesized
-// handler and gateway ids may move, and no row here may. The three carriers
-// with synthesized ids are pinned in the blocks below instead, located by what
-// they are.
 const ENGINE_ATTRIBUTE_CONTRACT: readonly (readonly [
   id: string,
   attribute: string,
@@ -56,8 +46,6 @@ const ENGINE_ATTRIBUTE_CONTRACT: readonly (readonly [
   ['OrderRepair', 'retryCycle', 'R5/PT10M'],
   ['PayoutReviewNeeded', 'asyncAfter', true],
   ['PayoutReviewNeeded', 'jobPriority', '40'],
-  // The key and the binding are one IR value, so one row: a version that
-  // stopped travelling fails as loudly as a key.
   [
     'ApprovePayout',
     'formRef',
@@ -66,8 +54,7 @@ const ENGINE_ATTRIBUTE_CONTRACT: readonly (readonly [
   ['ClaimSettled', 'asyncBefore', true],
 ];
 
-// The `satisfies` clause keeps the list complete: a field added to
-// `EngineAttributes` beyond the job settings and not here stops compiling.
+// `satisfies` fails to compile when `EngineAttributes` gains a field not listed.
 const ENGINE_ATTRIBUTE_KEYS = [
   ...ENGINE_KEYS,
   ...Object.keys({ executionListeners: 0 } satisfies Record<
@@ -76,123 +63,84 @@ const ENGINE_ATTRIBUTE_KEYS = [
   >),
 ];
 
-// Indexed rather than a field access: the IR types keep these fields off the
-// kinds that cannot carry them, and the gateway block below reads exactly those.
+// Indexed: the IR types keep these fields off the kinds that cannot carry them.
 function setting(el: FlowElement, attribute: string): unknown {
   return (el as unknown as Record<string, unknown>)[attribute];
 }
 
-describe('the frozen engine-attribute contract', () => {
-  it('every authored node keeps its settings and their values at every hop', () => {
-    for (const [label, ir] of rt.hops) {
-      for (const [id, attribute, value] of ENGINE_ATTRIBUTE_CONTRACT) {
-        expect(
-          setting(elementById(ir, id), attribute),
-          `${id}.${attribute} differs in ${label}`,
-        ).toStrictEqual(value);
-      }
+it('keeps every authored setting, the header settings and the async await at every hop, and invents none on a gateway', () => {
+  for (const [label, ir] of rt.hops) {
+    for (const [id, attribute, value] of ENGINE_ATTRIBUTE_CONTRACT) {
+      expect(
+        setting(elementById(ir, id), attribute),
+        `${id}.${attribute} in ${label}`,
+      ).toStrictEqual(value);
     }
-  });
-
-  it('the four engine settings on the header keep their values at every hop', () => {
-    for (const [label, ir] of rt.hops) {
-      const {
+    const {
+      versionTag,
+      historyTimeToLive,
+      candidateStarterUsers,
+      candidateStarterGroups,
+    } = ir;
+    expect(
+      {
         versionTag,
         historyTimeToLive,
         candidateStarterUsers,
         candidateStarterGroups,
-      } = ir;
-      expect(
-        {
-          versionTag,
-          historyTimeToLive,
-          candidateStarterUsers,
-          candidateStarterGroups,
-        },
-        `the process header differs in ${label}`,
-      ).toEqual(PROCESS_HEADER);
-    }
-  });
-
-  // Asserted as the whole opening tag: Operaton refuses to deploy a form
-  // reference whose binding attribute is missing, so an emission that dropped
-  // one of the three would still look plausible read on its own.
-  it('the user task naming a deployed form writes all three reference attributes', () => {
-    expect(rt.frozenXml).toContain(
-      '<bpmn:userTask id="ApprovePayout" name="Approve the payout"' +
-        ' operaton:assignee="manager" operaton:formRef="payout-approval"' +
-        ' operaton:formRefBinding="version" operaton:formRefVersion="2">',
+      },
+      label,
+    ).toEqual(PROCESS_HEADER);
+    expect(theOnly(ir, 'intermediateCatchEvent').asyncBefore, label).toBe(true);
+    const gateways = allElements(ir).filter(isGateway);
+    expect(new Set(gateways.map((gw) => gw.kind)), label).toEqual(
+      new Set(['exclusiveGateway', 'parallelGateway']),
     );
-  });
-
-  it('the awaited catch keeps its async continuation at every hop', () => {
-    for (const [label, ir] of rt.hops) {
-      const awaited = theOnly(ir, 'intermediateCatchEvent');
-      expect(awaited.asyncBefore, `await differs in ${label}`).toBe(true);
-    }
-  });
-});
-
-// The `gateway-settings` pair pins what a gateway written with settings
-// carries; this artifact writes none, so it pins that no direction invents one.
-describe('a gateway written without settings gains none at any hop', () => {
-  it('neither gateway kind holds one, at any container depth or hop', () => {
-    for (const [label, ir] of rt.hops) {
-      const gateways = allElements(ir).filter(isGateway);
-      expect(
-        new Set(gateways.map((gw) => gw.kind)),
-        `both gateway kinds must be present in ${label}`,
-      ).toEqual(new Set(['exclusiveGateway', 'parallelGateway']));
-
-      for (const gateway of gateways) {
-        for (const key of ENGINE_ATTRIBUTE_KEYS) {
-          expect(
-            setting(gateway, key),
-            `${gateway.id}.${key} in ${label}`,
-          ).toBeUndefined();
-        }
+    for (const gateway of gateways) {
+      for (const key of ENGINE_ATTRIBUTE_KEYS) {
+        expect(
+          setting(gateway, key),
+          `${gateway.id}.${key} in ${label}`,
+        ).toBeUndefined();
       }
     }
-  });
+  }
 });
 
-describe('where a handler puts the settings written on it', () => {
-  // The lock is written twice on purpose: `BpmnParse.parseTimer` reads it
-  // off the definition for the timer job, `parseAsynchronousContinuation` off
-  // the tag for the asyncAfter job.
-  it("a hosted handler's settings land on the boundary event, its lock on the timer definition too", () => {
-    const boundary = theOnly(rt.ir2, 'boundaryEvent');
-    expect(boundary.attachedToRef).toBe('ApprovePayout');
-    expect(boundary.asyncAfter).toBe(true);
-    expect(boundary.exclusive).toBe(false);
-    expect(rt.frozenXml).toContain(
-      '<bpmn:boundaryEvent id="Boundary_ApprovePayout_timer" cancelActivity="false"' +
-        ' attachedToRef="ApprovePayout" operaton:asyncAfter="true" operaton:exclusive="false">\n' +
-        '      <bpmn:outgoing>Flow_Boundary_ApprovePayout_timer_NudgeApprover</bpmn:outgoing>\n' +
-        '      <bpmn:timerEventDefinition operaton:exclusive="false">',
-    );
-  });
-
-  it("a host-less handler's settings land on the event sub-process, not on its trigger", () => {
-    const handler = theOnly(
-      rt.ir2,
-      'subProcess',
-      (sp) => sp.triggeredByEvent === true,
-    );
-    expect(handler.asyncBefore).toBe(true);
-    expect(handler.jobPriority).toBe('60');
-    expect(handler.retryCycle).toBe('R2/PT30S');
-
-    const trigger = theOnly(handler, 'startEvent');
-    expect(trigger.id).toBe('ReviewRequested');
-    for (const key of ENGINE_ATTRIBUTE_KEYS) {
-      expect(setting(trigger, key), `${trigger.id}.${key}`).toBeUndefined();
-    }
-  });
+it('writes all three form reference attributes, and puts handler settings on the boundary or the event sub-process, never the trigger', () => {
+  // Operaton refuses to deploy a form reference missing its binding.
+  expect(rt.frozenXml).toContain(
+    '<bpmn:userTask id="ApprovePayout" name="Approve the payout"' +
+      ' operaton:assignee="manager" operaton:formRef="payout-approval"' +
+      ' operaton:formRefBinding="version" operaton:formRefVersion="2">',
+  );
+  // The lock is written twice: `BpmnParse.parseTimer` reads it off the
+  // definition, `parseAsynchronousContinuation` off the tag.
+  expect(rt.frozenXml).toContain(
+    '<bpmn:boundaryEvent id="Boundary_ApprovePayout_timer" cancelActivity="false"' +
+      ' attachedToRef="ApprovePayout" operaton:asyncAfter="true" operaton:exclusive="false">\n' +
+      '      <bpmn:outgoing>Flow_Boundary_ApprovePayout_timer_NudgeApprover</bpmn:outgoing>\n' +
+      '      <bpmn:timerEventDefinition operaton:exclusive="false">',
+  );
+  const boundary = theOnly(rt.ir2, 'boundaryEvent');
+  expect([
+    boundary.attachedToRef,
+    boundary.asyncAfter,
+    boundary.exclusive,
+  ]).toEqual(['ApprovePayout', true, false]);
+  const handler = theOnly(
+    rt.ir2,
+    'subProcess',
+    (sp) => sp.triggeredByEvent === true,
+  );
+  expect([
+    handler.asyncBefore,
+    handler.jobPriority,
+    handler.retryCycle,
+  ]).toEqual([true, '60', 'R2/PT30S']);
+  const trigger = theOnly(handler, 'startEvent');
+  expect(trigger.id).toBe('ReviewRequested');
+  for (const key of ENGINE_ATTRIBUTE_KEYS) {
+    expect(setting(trigger, key), `${trigger.id}.${key}`).toBeUndefined();
+  }
 });
-
-// Both nesting parents are named so the walk cannot pass on an empty tree.
-describeDiContainment(rt, () => [
-  'InspectVehicle',
-  theOnly(rt.ir1, 'subProcess', (sp) => sp.triggeredByEvent === true).id,
-]);

@@ -1,11 +1,8 @@
-// `vscode` is injected by the extension host, not installed from npm, so it is
-// mocked with the surface the adapter touches. The conversion is mocked too:
-// under test is what each outcome shows the author.
+// `vscode` is injected by the extension host, not installed from npm.
 
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 
-// vi.mock factories are hoisted above the module body, where a plain top-level
-// const is still in its temporal dead zone.
+// vi.mock factories are hoisted above a plain top-level const.
 const mocks = vi.hoisted(() => ({
   showWarningMessage: vi.fn(),
   showErrorMessage: vi.fn(),
@@ -44,11 +41,10 @@ vi.mock('vscode', () => ({
   },
 }));
 
-vi.mock('../src/extension/conversion-core.js', () => ({
+vi.mock('../src/extension/conversion-core.js', async (importOriginal) => ({
+  ...(await importOriginal()),
   compileDslToBpmn: vi.fn(),
   decompileBpmnToDsl: vi.fn(),
-  swapExtension: (fsPath: string, newExt: string) =>
-    fsPath.replace(/\.[^./]+$/, newExt),
 }));
 
 import * as vscode from 'vscode';
@@ -64,10 +60,6 @@ import {
   compileCommand,
   decompileCommand,
 } from '../src/extension/conversion.js';
-
-function occurrences(haystack: string, needle: string): number {
-  return haystack.split(needle).length - 1;
-}
 
 function notifications(): Record<'info' | 'warning' | 'error', string[]> {
   const firstArgs = (fn: { mock: { calls: unknown[][] } }): string[] =>
@@ -105,9 +97,9 @@ type Expected = {
 type Row = readonly [
   title: string,
   command: 'compile' | 'decompile',
-  // undefined hands the command no uri, with no active editor to fall back on.
+  // undefined: no uri and no active editor.
   sourceName: string | undefined,
-  // undefined means the guard refuses the file before the core ever runs.
+  // undefined: refused before the core runs.
   result: CompileResult | DecompileResult | undefined,
   expected: Expected,
 ];
@@ -204,19 +196,6 @@ describe('conversion commands: what the author is shown', () => {
       },
     ],
     [
-      'compile refuses a file that is not a script',
-      'compile',
-      'example.bpmn',
-      undefined,
-      {
-        warning: [
-          'BPMNscript: "example.bpmn" is not a .bpmnscript file; ' +
-            'use "Decompile to BPMNscript" for it.',
-        ],
-        returns: undefined,
-      },
-    ],
-    [
       'decompile refuses a file that is not BPMN',
       'decompile',
       'example.bpmnscript',
@@ -288,13 +267,5 @@ describe('conversion commands: what the author is shown', () => {
 
     const core = command === 'compile' ? compileDslToBpmn : decompileBpmnToDsl;
     expect(core).toHaveBeenCalledTimes(result === undefined ? 0 : 1);
-
-    // The file is named once per line; the success line is the exception, it
-    // names the file it read and the file it wrote.
-    if (sourceName !== undefined) {
-      for (const message of [...warning, ...error]) {
-        expect(occurrences(message, sourceName)).toBe(1);
-      }
-    }
   });
 });

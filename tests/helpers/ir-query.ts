@@ -79,9 +79,8 @@ export function definitionOf(
   return undefined;
 }
 
-// A handler's trigger sits on the start event of the event sub-process it
-// lowers to, so match on what it catches, never on the synthesized id; every
-// depth contributes, an unset trigger included.
+// Handler triggers at every depth, read off each event sub-process's start
+// event since the handler's id is synthesized.
 export function handlerTriggerDefs(
   container: FlowContainer,
 ): (EventDefinition | undefined)[] {
@@ -104,8 +103,6 @@ export function handlerTriggerDef(
   return handlerTriggerDefs(container).find(match);
 }
 
-// Locating a node by what it is, not by id, is what lets a suite pin a carrier
-// whose id the lowering synthesizes.
 export function allOf<K extends FlowElement['kind']>(
   container: FlowContainer,
   kind: K,

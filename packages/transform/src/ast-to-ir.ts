@@ -1,20 +1,11 @@
 /**
- * Desugaring AST -> IR. Lowers the Langium AST into the flat, BPMN-shaped
- * {@link BpmnProcess}: control-flow keywords become gateways and sequence
- * flows, implicit flow and implicit start/end events are materialized, and
- * conditions render to `${...}` bodies.
- *
- * Every synthesized id comes from `./synthesize-ids.js`, seeded by a structural
- * coordinate `<X>`: the statement's static position in the block tree, never a
- * traversal counter, so re-running this on `irToDsl` output yields identical
- * ids. See ADR 0010, Use Deterministic Structural Ids for Synthesized BPMN
- * Elements. Two things the ADR leaves open: an `on` handler owns a single
- * block, so like a loop body its enclosing coordinate is its own `<X>`; and a
- * sub-process body is rooted at that coordinate rather than at the
- * sub-process's name, because gateway ids skip `resolveCollision` and a
+ * Synthesized ids are seeded by a structural coordinate `<X>` (the statement's
+ * static position in the block tree, never a traversal counter), so lowering
+ * `irToDsl` output again yields identical ids. A sub-process body is rooted at
+ * its coordinate, not its name: gateway ids skip `resolveCollision`, so a
  * sub-process named like a coordinate could otherwise duplicate one.
  *
- * The desugarer is total: it never throws on a program the validator rejects.
+ * Throws only on a program the validator rejects.
  */
 
 import { AstUtils } from 'langium';
@@ -187,36 +178,32 @@ import {
 } from './synthesize-ids.js';
 
 /**
- * The fall-through boundary of a lowered statement or block. A `null` `exit`
- * suppresses both the implicit flow to the next sibling and the join/end
- * continuation.
+ * A `null` `exit` suppresses both the implicit flow to the next sibling and the
+ * join/end continuation.
  */
 interface Frontier {
-  /** Node an incoming flow targets; `null` for an empty block, whose caller routes to the join. */
+  /** `null` for an empty block, whose caller routes to the join. */
   entry: string | null;
   exit: string | null;
   /**
-   * The exact id the fall-through flow out of `exit` takes, a gateway's
-   * reserved default flow. Only set beside a non-null `exit`, so a `start`
-   * taking the empty `exit` slot leaves it alone.
+   * A gateway's reserved default flow id for the fall-through out of `exit`;
+   * only set beside a non-null `exit`.
    */
   exitFlowId?: string;
-  /** Starts beyond `exit` still waiting for a step; a container body routes them to its end. */
+  /**
+   * Starts beyond `exit` still waiting for a step; a container body routes them
+   * to its end.
+   */
   waitingStarts?: string[];
 }
 
-/**
- * One container's elements. `taken` is shared document-wide and seeded with
- * every authored name, so a synthesized id never clashes with one (BPMN `id`
- * is an XML ID).
- */
+/** `taken` is shared document-wide and seeded with every authored name. */
 interface Builder {
   readonly flowElements: FlowElement[];
   readonly sequenceFlows: IrSequenceFlow[];
   readonly taken: Set<string>;
 }
 
-/** A nested container's own element lists over the parent's `taken` set. */
 function nestedBuilder(parent: Builder): Builder {
   return { flowElements: [], sequenceFlows: [], taken: parent.taken };
 }
@@ -234,11 +221,8 @@ export function astToIr(model: Model): BpmnProcess {
     taken: collectNamedIds(process),
   };
 
-  // Both the top-level coordinate and the implicit-event seed are the process id.
   lowerContainerBody(builder, process.body, process.name, process.name);
 
-  const label = processSetting(process, 'label');
-  const documentation = processSetting(process, 'documentation');
   const versionTag = processSetting(process, 'versionTag');
   const historyTimeToLive = processSetting(process, 'historyTimeToLive');
   const candidateStarterUsers = processSetting(
@@ -262,8 +246,7 @@ export function astToIr(model: Model): BpmnProcess {
 
   return {
     id: process.name,
-    ...(label !== undefined ? { name: label } : {}),
-    ...(documentation !== undefined ? { documentation } : {}),
+    ...namedAttrs(process),
     isExecutable: true,
     ...(versionTag !== undefined ? { versionTag } : {}),
     ...(historyTimeToLive !== undefined ? { historyTimeToLive } : {}),
@@ -283,11 +266,10 @@ interface DeclaredCode {
 }
 
 /**
- * The header's error and escalation declarations plus one for every code only
- * a throw, an emit, or a catch names, in the order `irToXml` writes roots and
- * `xmlToIr` reads them back: every used code in first-use order, then every
- * unused declaration in source order. A code no declaration names still gets
- * one, since a use site refers to a declaration by name.
+ * Every used code in first-use order, then unused declarations in source
+ * order: the order `irToXml` writes roots and `xmlToIr` reads them back. An
+ * undeclared code still gets a declaration, since a use site refers to one by
+ * name.
  */
 function collectCodeDecls(
   process: Process,
@@ -324,7 +306,7 @@ function collectCodeDecls(
     ...[...from.values()].filter((d) => !used.has(d.code)),
   ];
 
-  // One namespace: a use site resolves error and escalation names in one scope.
+  // A use site resolves error and escalation names in one scope.
   const taken = new Set<string>();
   const errorDecls = canonical(usedErrorCodes, errors).map((d) => ({
     name: claimDeclarationName(d.code, taken, d.name),
@@ -340,10 +322,6 @@ function collectCodeDecls(
   return { errorDecls, escalationDecls };
 }
 
-/**
- * Lower one flow container's body plus its implicit start and end. `coord` is
- * the body's structural coordinate; `containerId` seeds the implicit event ids.
- */
 function lowerContainerBody(
   builder: Builder,
   statements: Statement[],
@@ -371,7 +349,7 @@ function lowerContainerBody(
       addFlow(builder, start, endId);
     }
   } else if (body.entry === null) {
-    // No flow step at all (empty, or only `on` handlers): neither branch above ran.
+    // Empty, or only `on` handlers.
     const startId = makeStartEventId(containerId, builder.taken);
     const endId = makeEndEventId(containerId, builder.taken);
     builder.flowElements.unshift({ kind: 'startEvent', id: startId });
@@ -381,11 +359,10 @@ function lowerContainerBody(
 }
 
 /**
- * Lower a flat statement list with implicit top-to-bottom flow. A `null` exit
- * breaks the chain: later statements are still lowered, since they may be jump
- * targets, but no implicit flow bridges the gap. A `start` takes no incoming
- * flow: it joins the exits waiting for the next step without consuming them,
- * so starts written back to back all enter the step after them.
+ * After a `null` exit later statements are still lowered (they may be jump
+ * targets), but no implicit flow bridges the gap. A `start` takes no incoming
+ * flow and does not consume the waiting exit, so back-to-back starts all enter
+ * the next step.
  */
 function lowerBlockStatements(
   builder: Builder,
@@ -398,7 +375,6 @@ function lowerBlockStatements(
   let waitingStarts: string[] = [];
 
   statements.forEach((stmt, index) => {
-    // An `on` handler is not a flow step: it lowers out of the chain.
     if (isOnHandler(stmt)) {
       if (stmt.host !== undefined) {
         // As in `lowerGoto`, `$refText` survives an unresolved host.
@@ -410,7 +386,6 @@ function lowerBlockStatements(
     }
 
     const frontier = lowerStatement(builder, stmt, coord, index);
-    // Only an empty block, never a statement, yields a null entry.
     const stmtEntry = frontier.entry!;
 
     if (entry === null) {
@@ -444,14 +419,13 @@ function lowerBlockStatements(
 }
 
 /**
- * The caller's `coord` carries any branch segment (`<X>_t`, `<X>_e`,
- * `<X>_b<i>`), so sibling blocks never share a coordinate.
+ * The caller's `coord` carries the branch segment (`<X>_t`, `<X>_e`,
+ * `<X>_b<i>`).
  */
 function lowerBlock(builder: Builder, block: Block, coord: string): Frontier {
   return lowerBlockStatements(builder, block.statements, coord);
 }
 
-/** `index` is the statement's position in its block, forming `<coord>_<index>`. */
 function lowerStatement(
   builder: Builder,
   stmt: Statement,
@@ -518,7 +492,6 @@ function lowerStatement(
   if (isIntermediateCatchEvent(stmt)) {
     return lowerIntermediateCatch(builder, stmt, coord, index);
   }
-  // `OnHandler` is intercepted by `lowerBlockStatements` and never reaches here.
   throw new Error(
     `astToIr: unexpected statement type '${(stmt as { $type: string }).$type}'.`,
   );
@@ -541,9 +514,8 @@ function lowerStartEvent(builder: Builder, stmt: AstStartEvent): Frontier {
 }
 
 /**
- * The word a position admits, or `undefined`. The literal return type makes
- * every dispatch below carry an arm per word in its vocabulary, so a word
- * cannot be admitted here and lowered as something else.
+ * The literal return type forces every dispatch to carry an arm per admitted
+ * word.
  */
 function admittedTrigger<W extends string>(
   vocabulary: readonly W[],
@@ -554,7 +526,6 @@ function admittedTrigger<W extends string>(
     : vocabulary.find((word) => word === written);
 }
 
-/** A word outside `START_TRIGGERS` lowers to nothing; the validator reports it. */
 function startEventDefinition(
   stmt: AstStartEvent,
 ): EventDefinition | undefined {
@@ -564,7 +535,6 @@ function startEventDefinition(
     : namedTriggerDefinition(trigger, stmt);
 }
 
-/** Both end words are payload-free, so the word is the kind; any other lowers to nothing. */
 function endEventDefinition(
   trigger: string | undefined,
 ): EndEventDefinition | undefined {
@@ -584,11 +554,6 @@ function lowerEndEvent(builder: Builder, stmt: AstEndEvent): Frontier {
   return { entry: stmt.name, exit: null };
 }
 
-/**
- * A user task is the one element with a human lifecycle, so its listener list
- * splits two ways: task events into `taskListeners`, `start`/`end` into
- * `executionListeners` with every other element's.
- */
 function lowerUserTask(builder: Builder, stmt: AstUserTask): Frontier {
   const settings = settingsOf(stmt.items);
   const assignee = attrValue(settings, 'assignee');
@@ -623,8 +588,8 @@ function lowerUserTask(builder: Builder, stmt: AstUserTask): Frontier {
 }
 
 /**
- * A form reference naming no binding is left out: Operaton refuses to deploy
- * one, so there is nothing to carry. The validator reports it.
+ * Dropped without a binding, which Operaton refuses to deploy; the validator
+ * reports it.
  */
 function readFormRef(attrs: KeyValueAttr[]): IrUserTask['formRef'] {
   const key = attrValue(attrs, 'formRef');
@@ -678,8 +643,8 @@ function toFormFieldType(type: string): FormFieldType {
 }
 
 /**
- * Source order, which the engine validates in. A key outside
- * `FORM_CONSTRAINT_NAMES` (`pattern` included) is left to the validator.
+ * Source order, which the engine validates in. Other keys (`pattern` included)
+ * are left to the validator.
  */
 function readFormFieldConstraints(
   settings: KeyValueAttr[],
@@ -691,11 +656,7 @@ function readFormFieldConstraints(
     .map((setting) => formFieldConstraint(setting.key, setting.value));
 }
 
-/**
- * `validator` reads the shape a `class:` binding takes. Exhaustive on
- * purpose: a name added to `FORM_CONSTRAINT_NAMES` stops compiling here until
- * it picks a reading.
- */
+/** `validator` reads the shape a `class:` binding takes. */
 function formFieldConstraint(
   name: FormConstraintName,
   value: Expr,
@@ -727,7 +688,6 @@ function renderFormDefault(expr: Expr): string {
   return renderExpression(expr);
 }
 
-/** The one node the three tags share; `element` picks the tag, absent is a service task. */
 function lowerServiceTaskLike(
   builder: Builder,
   stmt: AstServiceTask | AstSendTask | AstBusinessRuleTask,
@@ -778,14 +738,13 @@ function codeBinding(attrs: KeyValueAttr[]): CodeBinding | undefined {
   return undefined;
 }
 
-/** What a binding block with no key resolves to; the validator owns the diagnostic. */
+/** A binding block with no key; the validator reports it. */
 const NO_BINDING: CodeBinding = { kind: 'class', className: '' };
 
 function serviceTaskBinding(attrs: KeyValueAttr[]): ServiceTaskBinding {
   return writtenBinding(attrs) ?? NO_BINDING;
 }
 
-/** `undefined` where a binding is optional and the block names none. */
 function writtenBinding(attrs: KeyValueAttr[]): ServiceTaskBinding | undefined {
   const code = codeBinding(attrs);
   if (code !== undefined) {
@@ -800,9 +759,8 @@ function writtenBinding(attrs: KeyValueAttr[]): ServiceTaskBinding | undefined {
 }
 
 /**
- * Lower-cased first, since `BpmnParse.parseServiceTaskLike` compares the
- * attribute case-insensitively; any other value binds nothing here and the
- * validator refuses it.
+ * Lower-cased: `BpmnParse.parseServiceTaskLike` compares the attribute
+ * case-insensitively.
  */
 function builtinBinding(attrs: KeyValueAttr[]): ServiceTaskBinding | undefined {
   const written = attrValue(attrs, TYPE_BINDING_KEY)?.toLowerCase();
@@ -857,10 +815,7 @@ function lowerBusinessRuleTask(
   );
 }
 
-/**
- * `decision` names a decision table and takes {@link versionBinding} and
- * `mapDecisionResult` beside it; without it the block reads as a service task's.
- */
+/** Without `decision` the block reads as a service task's. */
 function businessRuleBinding(attrs: KeyValueAttr[]): ServiceTaskBinding {
   const decisionRef = attrValue(attrs, 'decision');
   if (decisionRef === undefined) {
@@ -888,7 +843,6 @@ function toDecisionResultMapping(mapping: string) {
   return mapped;
 }
 
-/** An unrecognized language tag is carried through as-is; the validator rejects it first. */
 function lowerScriptTask(builder: Builder, stmt: AstScriptTask): Frontier {
   const { tag, code } = splitFencedScript(stmt.body);
   const resultVariable = attrValue(settingsOf(stmt.items), 'resultVariable');
@@ -907,11 +861,9 @@ function lowerScriptTask(builder: Builder, stmt: AstScriptTask): Frontier {
 }
 
 /**
- * Lower `if`/`else if`/`else` to an exclusive split and join: one split with a
- * conditioned flow per branch, so the head parens govern it and an `else if`
- * head takes none. The `else`, or the fall-through standing in for an absent
- * one, is the default flow and never carries a condition: Operaton rejects a
- * conditioned default.
+ * One split for the whole chain, so an `else if` head takes no settings. The
+ * `else` (or the fall-through standing in for it) is the default flow and
+ * never conditioned: Operaton rejects a conditioned default.
  */
 function lowerIf(builder: Builder, stmt: IfStatement, x: string): Frontier {
   const splitId = makeGatewaySplitId(x);
@@ -959,17 +911,14 @@ function lowerIf(builder: Builder, stmt: IfStatement, x: string): Frontier {
 interface ForkBranch {
   block: Block;
   coord: string;
-  /** Rendered condition on the flow into the branch; absent means unconditioned. */
   condition?: string;
   /** Forces the flow's id, marking this branch as the gateway's default. */
   flowId?: string;
 }
 
 /**
- * Lower every branch and rejoin. An empty branch flows straight to the join; a
- * terminating one gets no continuation. When no branch claimed the reserved
- * `defaultFlowId`, it runs fork -> join, so a fork whose every branch is
- * conditioned has somewhere to go when none holds.
+ * An unclaimed `defaultFlowId` runs fork -> join, so an all-conditioned fork
+ * has somewhere to go when none holds.
  */
 function lowerForkBranches(
   builder: Builder,
@@ -998,11 +947,6 @@ function lowerForkBranches(
   }
 }
 
-/**
- * Pre-test XOR loop: the loop gateway takes a conditioned flow into the body,
- * an unconditioned default flow out, and the back-edge from the body's exit.
- * Never `standardLoopCharacteristics`.
- */
 function lowerWhile(
   builder: Builder,
   stmt: WhileStatement,
@@ -1031,11 +975,6 @@ function lowerWhile(
   return { entry: loopId, exit: loopId, exitFlowId: defaultFlowId };
 }
 
-/**
- * Post-test XOR loop: the body runs first, and the loop gateway after it holds
- * the conditioned back-edge into the body plus an unconditioned default flow
- * out.
- */
 function lowerDoWhile(
   builder: Builder,
   stmt: DoWhileStatement,
@@ -1069,18 +1008,12 @@ function lowerDoWhile(
 }
 
 /**
- * Lower `parallel { { A } { B } ... }` to a fork/join pair: inclusive when any
- * branch carries a condition, else an AND pair, on which Operaton ignores a
- * condition.
- *
- * `InclusiveGatewayActivityBehavior.execute` takes the default flow only when
- * no other flow was, and an unconditioned flow always is, so the fork gets one
- * only where it can run: onto the `else` branch, or straight to the join when
- * every branch is conditioned (without it the fork deploys, then throws a
- * stuck execution the first time no condition holds). That is also why an
- * `else` alone does not make the fork inclusive: beside an unconditioned
- * branch it would be dead, and the printer would spell it as an `else` the
- * validator refuses.
+ * Inclusive when any branch is conditioned; Operaton ignores conditions on a
+ * parallel gateway. The engine takes an inclusive default only when no other
+ * flow was, and an unconditioned flow always is, so the fork gets a default
+ * only onto an `else` or, when every branch is conditioned, to the join
+ * (without it the first time no condition holds is a stuck execution). For the
+ * same reason an `else` alone does not make the fork inclusive.
  */
 function lowerParallel(
   builder: Builder,
@@ -1099,8 +1032,7 @@ function lowerParallel(
     (stmt.branches.some((b) => b.otherwise) ||
       stmt.branches.every((b) => b.condition !== undefined));
 
-  // Claimed only where a flow takes it: an idle claim would rename an authored
-  // collider for nothing.
+  // An idle claim would rename an authored collider for nothing.
   let defaultFlowId: string | undefined;
   if (fallback) {
     defaultFlowId = reserveDefaultFlowId(builder, forkId);
@@ -1122,8 +1054,7 @@ function lowerParallel(
     builder.flowElements.push({ kind: 'parallelGateway', id: joinId, ...join });
   }
 
-  // Only the first `else` carries the default flow, so a second one (invalid)
-  // still lowers deterministically.
+  // Only the first `else`, so an invalid second one lowers deterministically.
   const defaultIndex = inclusive
     ? stmt.branches.findIndex((b) => b.otherwise)
     : -1;
@@ -1143,12 +1074,10 @@ function lowerParallel(
 }
 
 /**
- * Lower `await { <trigger> { A } ... }` to an event-based gateway, one catch
- * event per branch, and an exclusive join: the first branch to fire cancels
- * the rest, so the merge is a plain XOR join. No flow out of the gateway
- * carries a condition, since Operaton builds no transition for one and routes
- * through the event scope instead; a branch's settings land on its catch
- * event, where the engine's wait state is.
+ * The first branch to fire cancels the rest, so the merge is a plain XOR join.
+ * Flows out of an event-based gateway carry no condition (Operaton routes
+ * through the event scope); a branch's settings land on its catch event, where
+ * the wait state is.
  */
 function lowerRace(builder: Builder, stmt: RaceStatement, x: string): Frontier {
   const raceId = makeGatewayRaceId(x);
@@ -1185,11 +1114,6 @@ function lowerRace(builder: Builder, stmt: RaceStatement, x: string): Frontier {
   return { entry: raceId, exit: pruneUnreachableJoin(builder, joinId) };
 }
 
-/**
- * A nested flow container, one opaque node in the parent's flow. An `attempt`
- * differs only by tag, the one the engine needs before it accepts a cancel end
- * inside the block.
- */
 function lowerSubProcess(
   builder: Builder,
   stmt: AstSubProcess,
@@ -1213,12 +1137,8 @@ function lowerSubProcess(
 }
 
 /**
- * Lower a host-less `on` handler into a `triggeredByEvent` sub-process, the
- * caught trigger on its start event. Nothing wires it into the parent's flow,
- * so this returns nothing. The handler's settings land on the sub-process,
- * except the three a timer job takes off the start event that declares it
- * ({@link splitTimerJobSettings}); none of their readers looks at the
- * enclosing sub-process.
+ * Settings land on the sub-process, except the timer-job ones, which the
+ * engine reads only off the start event that declares the timer.
  */
 function lowerOnHandler(
   builder: Builder,
@@ -1256,16 +1176,11 @@ function lowerOnHandler(
 }
 
 /**
- * Lower a hosted `on <Host>: <trigger>` handler into a boundary event inline
- * in the host's container, with no wrapping container: the body's statements
- * are siblings of the main flow, so a `goto` crosses between the two in either
- * direction, the only way an escape chain can rejoin. The chain runs boundary
- * -> body -> its own end, seeded from the boundary id so the main flow's end
- * keeps its number whatever handlers the container has.
- *
- * `bpmn-auto-layout` positions an attached event from `attachedTo.di.bounds`,
- * so the host shape has to exist before the attacher is laid out; a handler
- * follows its host in the statement list, so the host precedes it here too.
+ * The body lowers inline as siblings of the main flow, so a `goto` can cross
+ * between the two, the only way an escape chain can rejoin. Its end id is
+ * seeded from the boundary id so the main flow's end keeps its number.
+ * The host must precede the boundary event: `bpmn-auto-layout` positions it
+ * from the host's bounds.
  */
 function lowerBoundaryHandler(
   builder: Builder,
@@ -1303,10 +1218,8 @@ function lowerBoundaryHandler(
 }
 
 /**
- * The handler body's start event. `lowerContainerBody` leaves one behind
- * unless `pruneUnreachableJoin` spliced an authored start that spells a later
- * join's id, a name the validator refuses; minting one keeps the desugarer
- * total over that program.
+ * Missing only when `pruneUnreachableJoin` spliced out an authored start named
+ * like a later join (a name the validator refuses).
  */
 function ensureHandlerStart(nested: Builder, id: string): IrStartEvent {
   const existing = nested.flowElements.find(
@@ -1324,10 +1237,8 @@ function ensureHandlerStart(nested: Builder, id: string): IrStartEvent {
 }
 
 /**
- * The caught {@link EventDefinition} of an `on` handler. Fields with nowhere
- * to go (a code on `compensation` or `cancel`, bindings on `message`/`signal`)
- * are dropped, a missing code is catch-all, and a word the position does not
- * admit falls back to error, the kind its validator message speaks of.
+ * An unadmitted word falls back to error, the kind its validator message speaks
+ * of.
  */
 function handlerEventDefinition(stmt: OnHandler): EventDefinition {
   const trigger = admittedTrigger(ON_TRIGGERS, stmt.trigger);
@@ -1371,7 +1282,6 @@ function handlerEventDefinition(stmt: OnHandler): EventDefinition {
   }
 }
 
-/** `TIMER_PARTICLE_BY_KIND` read backwards; a timer with no readable time lands on `duration`. */
 function timerParticleKind(particle: string | undefined): TimerKind {
   for (const [kind, word] of Object.entries(TIMER_PARTICLE_BY_KIND)) {
     if (word === particle) {
@@ -1403,10 +1313,6 @@ function lowerThrow(
   return { entry: id, exit: null };
 }
 
-/**
- * The implementation that makes the engine send the message; the validator
- * holds the binding keys to the `message` trigger.
- */
 function thrownMessageBinding(
   def: EventDefinition,
   attrs: KeyValueAttr[],
@@ -1419,8 +1325,8 @@ function thrownMessageBinding(
 }
 
 /**
- * A link ends the chain like a `goto`: `BpmnParse.parseSequenceFlow` refuses
- * a flow out of a link throw.
+ * A link ends the chain: `BpmnParse.parseSequenceFlow` refuses a flow out of a
+ * link throw.
  */
 function lowerEmit(
   builder: Builder,
@@ -1443,9 +1349,8 @@ function lowerEmit(
 }
 
 /**
- * BPMN has no intermediate error throw, so a word the emit position does not
- * admit lowers as an escalation and the validator points the author at
- * `throw error`.
+ * An unadmitted word lowers as an escalation, since BPMN has no intermediate
+ * error throw.
  */
 function emitEventDefinition(stmt: EmitStatement): EmitEventDefinition {
   const trigger = admittedTrigger(EMIT_TRIGGERS, stmt.trigger);
@@ -1487,7 +1392,6 @@ function lowerIntermediateCatch(
   return { entry: id, exit: id };
 }
 
-/** A word the throw position does not admit maps to `error`. */
 function throwEventDefinition(stmt: ThrowStatement): EndEventDefinition {
   const trigger = admittedTrigger(THROW_TRIGGERS, stmt.trigger);
   const code = raisedCodeOf(stmt.items);
@@ -1512,14 +1416,8 @@ function throwEventDefinition(stmt: ThrowStatement): EndEventDefinition {
   }
 }
 
-/** The condition a catch with no readable one waits on. */
 const ALWAYS_TRUE = '${true}';
 
-/**
- * Error, escalation and compensation are raised with `throw`/`emit` and never
- * awaited inline; a word the await position does not admit falls back to the
- * always-true conditional.
- */
 function catchEventDefinition(
   stmt: IntermediateCatchEvent | RaceBranch,
 ): CatchEventDefinition {
@@ -1530,10 +1428,8 @@ function catchEventDefinition(
 }
 
 /**
- * The code a payload raises. A bare word names a declaration, which keys by
- * its own `code` setting, so `error OrderFailed(code: "order.failed")` reaches
- * the engine as `order.failed` however its use sites spell it; anywhere but a
- * code position a bare word is the text written.
+ * A bare word naming a declaration resolves to that declaration's `code`
+ * setting.
  */
 function raisedCodeOf(items: ParenItem[]): string | undefined {
   const payload = payloadItemOf(items)?.value;
@@ -1544,7 +1440,6 @@ function raisedCodeOf(items: ParenItem[]): string | undefined {
     : payloadTextOf(items);
 }
 
-/** The trigger words that mean the same thing in every position that takes them. */
 type NamedTrigger = (typeof CATCH_TRIGGERS)[number];
 
 function namedTriggerDefinition(
@@ -1607,7 +1502,7 @@ function lowerCallActivity(builder: Builder, stmt: AstCallActivity): Frontier {
   return { entry: stmt.name, exit: stmt.name };
 }
 
-/** Class first, the order Operaton resolves the two attributes in. */
+/** Class first, the order Operaton resolves them in. */
 function callVariableMapper(
   attrs: KeyValueAttr[],
 ): CallVariableMapper | undefined {
@@ -1625,11 +1520,7 @@ function callVariableMapper(
   return undefined;
 }
 
-/**
- * The `binding`/`version` pin a call activity and a decision step share.
- * `version` wins even beside a stray `binding` (the pair is a validator
- * error), and a `binding` resolves only for a bare `latest` or `deployment`.
- */
+/** `version` wins over a stray `binding` (the pair is a validator error). */
 function versionBinding(attrs: KeyValueAttr[]): VersionBinding | undefined {
   const versionAttr = attrs.find((a) => a.key === 'version');
   if (versionAttr !== undefined) {
@@ -1648,7 +1539,6 @@ function versionBinding(attrs: KeyValueAttr[]): VersionBinding | undefined {
   return undefined;
 }
 
-/** An int or decimal literal stays bare; anything else reads as {@link elText} does. */
 function numericOrElValue(expr: Expr): string {
   const integer = integerLiteralText(expr);
   if (integer !== undefined) {
@@ -1681,11 +1571,6 @@ function lowerCallMappings(mappings: VariableMapping[]): {
   return { inMappings, outMappings };
 }
 
-/**
- * `all` (`*`) copies everything; a bare `target` is the same-name shorthand; a
- * single-segment `VarRef` source copies that variable by name; anything else
- * becomes its {@link elText}.
- */
 function lowerCallMapping(mapping: VariableMapping): CallVariableMapping {
   const local = mapping.local ? ({ local: true } as const) : {};
   if (mapping.all) {
@@ -1711,17 +1596,11 @@ function lowerCallMapping(mapping: VariableMapping): CallVariableMapping {
   };
 }
 
-/**
- * A `goto` produces no node: its `entry` is the target's id, so the chain's
- * implicit flow lands there, and its `exit` is `null`. `$refText` is the id
- * verbatim and is there even when the linker could not resolve it, which keeps
- * the desugarer total over unresolved gotos.
- */
+/** No node: `entry` is the target. `$refText` survives an unresolved link. */
 function lowerGoto(stmt: GotoStatement): Frontier {
   return { entry: stmt.target.$refText, exit: null };
 }
 
-/** Structural, as {@link EngineAttributeOwner} is. */
 interface RepeatOwner {
   cardinality?: Expr;
   collection?: Expr;
@@ -1732,12 +1611,9 @@ interface RepeatOwner {
 }
 
 /**
- * A statement carrying no repeat clause spreads nothing, not even a `run*`
- * setting written beside it (the validator reports that). A clause always sets
- * a count, a collection or both, which is what tells it from an absent one:
- * `sequential` is a plain boolean the parser leaves `false` either way.
- * Nothing in the engine reads a priority off the loop, so `runJobPriority` is
- * dropped.
+ * A clause is present iff it sets a count or collection (`sequential` is
+ * `false` either way); without one even stray `run*` settings are dropped.
+ * The engine reads no priority off the loop, so `runJobPriority` is dropped.
  */
 function readLoop(stmt: RepeatOwner): Repeatable {
   if (stmt.cardinality === undefined && stmt.collection === undefined) {
@@ -1759,7 +1635,6 @@ function readLoop(stmt: RepeatOwner): Repeatable {
       ...(stmt.completion !== undefined
         ? { completionCondition: renderExpression(stmt.completion) }
         : {}),
-      // Parallel is the engine default, so only the marked form is stored.
       ...(stmt.sequential ? { sequential: true as const } : {}),
       ...runSettings,
     },
@@ -1767,10 +1642,8 @@ function readLoop(stmt: RepeatOwner): Repeatable {
 }
 
 /**
- * Only a plain integer goes in bare:
- * `MultiInstanceActivityBehavior.resolveLoopCardinality` `Integer.parseInt`s a
- * body with no `${`/`#{` on every run. Anything else is wrapped, so the engine
- * evaluates it as EL and truncates with `intValue()`.
+ * The engine `Integer.parseInt`s a body without `${`, so only a plain integer
+ * goes in bare.
  */
 function loopCardinality(expr: Expr): string {
   if (isLiteralInt(expr)) {
@@ -1780,10 +1653,8 @@ function loopCardinality(expr: Expr): string {
 }
 
 /**
- * Operaton reads `operaton:collection` as a variable name unless the text
- * carries `${`, so only a bare identifier and a quoted string emit a name; an
- * accessor such as `order.lines` names no variable and has to become an
- * expression or the process cannot run.
+ * Operaton reads `operaton:collection` as a variable name unless it carries
+ * `${`, so an accessor such as `order.lines` must become an expression.
  */
 function loopCollection(expr: Expr): string {
   if (isVarRef(expr) && expr.accessors.length === 0) {
@@ -1795,7 +1666,6 @@ function loopCollection(expr: Expr): string {
   return renderExpression(expr);
 }
 
-/** Structural rather than a union of statement types, so every carrier reads the same. */
 interface EngineAttributeOwner {
   items: ParenItem[];
   listeners: AstListener[];
@@ -1809,7 +1679,10 @@ function readEngineAttributes(owner: EngineAttributeOwner): EngineAttributes {
   };
 }
 
-/** `keyOf` respells the keys for a second carrier sharing the parens; {@link jobSettings} decides what is kept. */
+/**
+ * `keyOf` respells the keys for a second carrier sharing the parens (join, loop
+ * run).
+ */
 function readJobSettings(
   attrs: Setting[],
   keyOf: (key: string) => string = (key) => key,
@@ -1824,9 +1697,8 @@ function readJobSettings(
 }
 
 /**
- * The event word, not the element, splits execution from task listeners, so a
- * task event on an element with no such lifecycle is dropped here for the
- * validator.
+ * A task event on an element without a task lifecycle is dropped; the validator
+ * reports it.
  */
 function readExecutionListeners(
   listeners: AstListener[],
@@ -1840,7 +1712,6 @@ function readExecutionListeners(
   return lowered.length > 0 ? lowered : undefined;
 }
 
-/** `timeout` has no lifecycle transition of its own, so it carries the timer that says when it runs. */
 function readTaskListeners(
   listeners: AstListener[],
 ): TaskListener[] | undefined {
@@ -1862,7 +1733,6 @@ function readTaskListeners(
   return lowered.length > 0 ? lowered : undefined;
 }
 
-/** The event word is a soft identifier, so membership picks the list; a word in neither is dropped. */
 function listenersFor<E extends string>(
   listeners: AstListener[],
   events: readonly E[],
@@ -1872,7 +1742,6 @@ function listenersFor<E extends string>(
   );
 }
 
-/** A fenced body replaces the brace block entirely, so it is checked first. */
 function listenerBinding(listener: AstListener): ListenerBinding {
   if (listener.script !== undefined) {
     const { tag, code } = splitFencedScript(listener.script);
@@ -1884,10 +1753,6 @@ function listenerBinding(listener: AstListener): ListenerBinding {
   );
 }
 
-/**
- * Carry the block's fields onto a binding the engine hands a field list; the
- * validator reports a write onto one it does not.
- */
 function withDeclaredFields<
   B extends CodeBinding | Extract<ServiceTaskBinding, { kind: 'builtin' }>,
 >(binding: B, params: AstIoParameter[]): B {
@@ -1897,8 +1762,8 @@ function withDeclaredFields<
 }
 
 /**
- * A list, a map, and an inline script have no `operaton:field` slot, so a
- * value in one of those forms is left out for the validator to report.
+ * A list, map, or script has no `operaton:field` form; the validator reports
+ * it.
  */
 function readFieldInjections(params: AstIoParameter[]): FieldInjection[] {
   return params
@@ -1925,7 +1790,6 @@ function readExtensionProperties(
   return properties.length === 0 ? undefined : properties;
 }
 
-/** What `parseExternalServiceTask` reads beside `topic`; no other binding reaches that reader. */
 function withExternalExtras(
   binding: Extract<ServiceTaskBinding, { kind: 'external' }>,
   stmt: AstServiceTask | AstSendTask | AstBusinessRuleTask,
@@ -1944,11 +1808,6 @@ function withExternalExtras(
   };
 }
 
-/**
- * The code is read through the declaration's `code` setting, as
- * {@link raisedCodeOf} does; an unresolved reference falls back to the text
- * written.
- */
 function lowerErrorMappings(
   mappings: AstErrorMapping[],
 ): IrErrorMapping[] | undefined {
@@ -2016,9 +1875,8 @@ function boolAttrValue(
 }
 
 /**
- * Claim a gateway's default-flow id before any branch is lowered: a statement
- * named `default` would otherwise take the same `Flow_<gateway>_default` for
- * its own incoming flow, and BPMN forbids two flows under one id.
+ * Claimed before branches lower, or a statement named `default` could take the
+ * same flow id.
  */
 function reserveDefaultFlowId(builder: Builder, gatewayId: string): string {
   const id = resolveCollision(makeDefaultFlowId(gatewayId), builder.taken);
@@ -2026,10 +1884,6 @@ function reserveDefaultFlowId(builder: Builder, gatewayId: string): string {
   return id;
 }
 
-/**
- * `forcedId` is a reserved default flow's id, claimed by
- * {@link reserveDefaultFlowId} before anything else could take it.
- */
 function addFlow(
   builder: Builder,
   sourceRef: string,
@@ -2058,11 +1912,7 @@ function joinContinuation(
   }
 }
 
-/**
- * Drop the join when nothing flows into it, i.e. every branch terminated; a
- * join with no incoming flow is invalid BPMN. The join itself is still in
- * place, pushed before the branches.
- */
+/** A join with no incoming flow (every branch terminated) is invalid BPMN. */
 function pruneUnreachableJoin(builder: Builder, joinId: string): string | null {
   if (builder.sequenceFlows.some((flow) => flow.targetRef === joinId)) {
     return joinId;
@@ -2074,11 +1924,6 @@ function pruneUnreachableJoin(builder: Builder, joinId: string): string | null {
   return null;
 }
 
-/**
- * An on-handler's id is positional and never registered, which
- * {@link isNamedStatement} encodes by leaving `OnHandler` out; `streamAst`
- * still walks its body for the names inside it.
- */
 function collectNamedIds(process: Process): Set<string> {
   return new Set(
     AstUtils.streamAst(process)
@@ -2087,10 +1932,8 @@ function collectNamedIds(process: Process): Set<string> {
   );
 }
 
-/** The `key`/`value` shape every setting carries. */
 type KeyValueAttr = { key: string; value: Expr };
 
-/** The IR calls the `label` setting `name`, since BPMN's `name` is the human-facing text. */
 function namedAttrs(stmt: { items: ParenItem[] }): Named {
   const attrs = settingsOf(stmt.items);
   const name = attrValue(attrs, 'label');
@@ -2101,18 +1944,15 @@ function namedAttrs(stmt: { items: ParenItem[] }): Named {
   };
 }
 
-/** The first `key` setting's value as {@link exprText} reads it. */
 function attrValue(attrs: KeyValueAttr[], key: string): string | undefined {
   const attr = attrs.find((a) => a.key === key);
   return attr === undefined ? undefined : exprText(attr.value);
 }
 
 /**
- * Text the engine takes as written (`label`, `documentation`, `class`): a
- * string literal bare, a bareword or dotted path verbatim, anything else its
- * `${...}` body. A key the engine evaluates as EL (`expression`, `delegate`,
- * `businessKey`, an io value) reads through {@link elText} instead, which keeps
- * a bareword wrapped so it is a variable lookup rather than a fixed string.
+ * For text the engine takes as written (`label`, `class`): a bareword or dotted
+ * path stays verbatim. Keys the engine evaluates as EL use {@link elText},
+ * which keeps a bareword wrapped so it stays a variable lookup.
  */
 function exprText(value: Expr): string {
   if (isLiteralString(value)) {
@@ -2129,7 +1969,6 @@ function exprText(value: Expr): string {
   return rendered;
 }
 
-/** Text the engine evaluates as EL; {@link exprText} explains the split. */
 function elText(value: Expr): string {
   if (isLiteralString(value)) {
     return value.value;
@@ -2137,7 +1976,6 @@ function elText(value: Expr): string {
   return renderExpression(value);
 }
 
-/** The first `key` setting's value as {@link elText} reads it. */
 function elAttrValue(attrs: KeyValueAttr[], key: string): string | undefined {
   const attr = attrs.find((a) => a.key === key);
   return attr === undefined ? undefined : elText(attr.value);

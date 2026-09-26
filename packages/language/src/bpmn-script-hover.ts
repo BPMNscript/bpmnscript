@@ -1,8 +1,6 @@
 /**
- * Hover for a named statement, a declared code and a variable. Langium
- * resolves the caret through `References.findDeclarations` first, so a `goto`
- * target, a host, a thrown or caught code and every site of a variable show
- * their declaration's line with no case of their own.
+ * Langium resolves the caret through `findDeclarations` first, so every
+ * reference shows its declaration with no case of its own.
  */
 
 import type { AstNode } from 'langium';
@@ -42,8 +40,7 @@ function namedStatementHover(node: NamedStatement): string {
 function codeDeclHover(decl: CodeDecl): string {
   const article = /^[aeiou]/i.test(decl.kind) ? 'an' : 'a';
   let line = `${article} ${decl.kind} '${decl.name}'`;
-  // `declaredCodeOf` falls back to the name; hover quotes only a written
-  // setting.
+  // `declaredCodeOf` falls back to the name; hover quotes only a written setting.
   const hasCodeSetting = settingsOf(decl.items).some(
     (item) => item.key === EVENT_CODE_FIELD,
   );

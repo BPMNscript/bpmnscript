@@ -1,12 +1,8 @@
 // A `goto` names a statement, and gateways have no statement form, so an edge
 // into a gateway is expressible only through the gateway's successor, and only
-// while the gateway routes one way. The shapes below sit on both sides of that
-// line, and the clean ones at the end pin that the fallback never turns a
-// `while` into a jump.
+// while the gateway routes one way.
 
 import { describe, it, expect } from 'vitest';
-
-import { DiagnosticSeverity } from 'vscode-languageserver-types';
 
 import {
   xmlToIr,
@@ -15,73 +11,74 @@ import {
   irToXml,
   UNSTRUCTURED_MARKER,
 } from '@bpmn-script/transform';
-import type { BpmnProcess } from '@bpmn-script/transform';
+import type { BpmnProcess, FlowElement } from '@bpmn-script/transform';
 
 import { realNodeReachability } from './helpers/real-node-reachability.js';
 import {
   parseToAst as parseUnvalidated,
-  printDsl,
-  validate,
+  validationErrors,
 } from './helpers/pipeline.js';
 
-// Validates as well as parses: a `goto` naming an elided node, or one that
-// leaves a later statement unreachable, parses fine and fails only in the
-// validator.
+// A `goto` naming an elided node, or one that leaves a later statement
+// unreachable, parses fine and fails only in the validator.
 async function parseToAst(source: string) {
-  const { document, diagnostics } = await validate(source);
-  const problems = diagnostics.filter(
-    (d) => d.severity === DiagnosticSeverity.Error,
-  );
+  const problems = await validationErrors(source);
   if (problems.length > 0) {
-    throw new Error(
-      'Errors in emitted DSL:\n' + problems.map((d) => d.message).join('\n'),
-    );
+    throw new Error('Errors in emitted DSL:\n' + problems.join('\n'));
   }
-  return document.parseResult.value;
+  return parseUnvalidated(source);
 }
 
-async function emit(ir: BpmnProcess) {
-  const { ir: imported, warnings } = await xmlToIr(await irToXml(ir));
-  expect(warnings).toEqual([]);
-  return { imported, dsl: printDsl(imported) };
-}
-
-const flow = (id: string, from: string, to: string, condition?: string) => ({
+const proc = (
+  id: string,
+  flowElements: FlowElement[],
+  flows: [id: string, from: string, to: string, condition?: string][],
+): BpmnProcess => ({
   id,
-  sourceRef: from,
-  targetRef: to,
-  ...(condition !== undefined ? { conditionExpression: condition } : {}),
+  isExecutable: true,
+  flowElements,
+  sequenceFlows: flows.map(([fid, sourceRef, targetRef, condition]) => ({
+    id: fid,
+    sourceRef,
+    targetRef,
+    ...(condition !== undefined ? { conditionExpression: condition } : {}),
+  })),
 });
 
 const task = (id: string) => ({ kind: 'userTask' as const, id });
+const xor = (id: string) => ({ kind: 'exclusiveGateway' as const, id });
+const start = { kind: 'startEvent' as const, id: 'Start_1' };
+const end = (id = 'End_1') => ({ kind: 'endEvent' as const, id });
 
-const JOIN_HEADED_LOOP: BpmnProcess = {
-  id: 'JoinHeadedLoop',
-  isExecutable: true,
-  flowElements: [
-    { kind: 'startEvent', id: 'Start_1' },
-    { kind: 'exclusiveGateway', id: 'Gateway_H_join' },
-    task('T1'),
-    { kind: 'exclusiveGateway', id: 'Gateway_X_split' },
-    task('T2'),
-    { kind: 'endEvent', id: 'End_1' },
-  ],
-  sequenceFlows: [
-    flow('f1', 'Start_1', 'Gateway_H_join'),
-    flow('f2', 'Gateway_H_join', 'T1'),
-    flow('f3', 'T1', 'Gateway_X_split'),
-    flow('f4', 'Gateway_X_split', 'T2', '${c}'),
-    flow('f5', 'Gateway_X_split', 'End_1'),
-    flow('f6', 'T2', 'Gateway_H_join'),
-  ],
-};
-
-describe('back-edge into a pass-through join whose out-edge is already consumed', () => {
-  // The structured walk printed the join's out-edge, but printing an edge does
-  // not stop it existing, so the jump resolves through the join to `T1`.
-  it("carries the back-edge as a `goto` naming the join's successor and keeps the reachability", async () => {
-    const { imported, dsl } = await emit(JOIN_HEADED_LOOP);
-    expect(dsl).toBe(
+// `gained` is what the recompiled print reaches beyond the import; null skips
+// the check, for rows whose print drops an edge behind a marker.
+describe('an edge with no statement form degrades without inventing a target, and clean shapes stay structured', () => {
+  it.each<
+    [title: string, ir: BpmnProcess, printed: string[], gained: string[] | null]
+  >([
+    [
+      // Printing the join's out-edge does not stop it existing, so the jump
+      // resolves through the join to `T1`.
+      "a back-edge into a pass-through join whose out-edge is already printed is a `goto` naming the join's successor",
+      proc(
+        'JoinHeadedLoop',
+        [
+          start,
+          xor('Gateway_H_join'),
+          task('T1'),
+          xor('Gateway_X_split'),
+          task('T2'),
+          end(),
+        ],
+        [
+          ['f1', 'Start_1', 'Gateway_H_join'],
+          ['f2', 'Gateway_H_join', 'T1'],
+          ['f3', 'T1', 'Gateway_X_split'],
+          ['f4', 'Gateway_X_split', 'T2', '${c}'],
+          ['f5', 'Gateway_X_split', 'End_1'],
+          ['f6', 'T2', 'Gateway_H_join'],
+        ],
+      ),
       [
         'process JoinHeadedLoop {',
         '  var c: any',
@@ -94,46 +91,24 @@ describe('back-edge into a pass-through join whose out-edge is already consumed'
         '  end End_1',
         '}',
         '',
-      ].join('\n'),
-    );
-    const reDesugared = astToIr(await parseToAst(dsl));
-    expect(realNodeReachability(reDesugared)).toEqual(
-      realNodeReachability(imported),
-    );
-  });
-});
-
-const BACK_EDGE_CONDITION_LOOP: BpmnProcess = {
-  id: 'BackEdgeConditionLoop',
-  isExecutable: true,
-  flowElements: [
-    { kind: 'startEvent', id: 'Start_1' },
-    { kind: 'exclusiveGateway', id: 'Gateway_L_loop' },
-    task('Body_1'),
-    { kind: 'endEvent', id: 'End_1' },
-  ],
-  sequenceFlows: [
-    flow('f1', 'Start_1', 'Gateway_L_loop'),
-    flow('f2', 'Gateway_L_loop', 'Body_1'),
-    flow('f3', 'Gateway_L_loop', 'End_1', '${done}'),
-    flow('f4', 'Body_1', 'Gateway_L_loop', '${more}'),
-  ],
-};
-
-describe('loop condition on the back-edge (no expressible jump target)', () => {
-  // No loop pattern matches, so the head prints as an `if` and the back-edge
-  // still points at a two-way gateway. A jump to the head would re-run the
-  // `done` test and a jump to the body would skip it, so the edge is dropped
-  // and the marker names where.
-  it('drops the conditioned back-edge with a marker naming the gateway, and never invents a target', async () => {
-    const { imported, dsl } = await emit(BACK_EDGE_CONDITION_LOOP);
-    // The loss happens on emission, not on import: the IR still has the edge.
-    expect(
-      imported.sequenceFlows.find(
-        (f) => f.sourceRef === 'Body_1' && f.targetRef === 'Gateway_L_loop',
-      )?.conditionExpression,
-    ).toBe('${more}');
-    expect(dsl).toBe(
+      ],
+      [],
+    ],
+    [
+      // No loop pattern matches, so the back-edge still points at a two-way
+      // gateway: a jump to the head would re-run the `done` test and a jump to
+      // the body would skip it.
+      'a conditioned back-edge into a two-way loop head is dropped with a marker naming the gateway',
+      proc(
+        'BackEdgeConditionLoop',
+        [start, xor('Gateway_L_loop'), task('Body_1'), end()],
+        [
+          ['f1', 'Start_1', 'Gateway_L_loop'],
+          ['f2', 'Gateway_L_loop', 'Body_1'],
+          ['f3', 'Gateway_L_loop', 'End_1', '${done}'],
+          ['f4', 'Body_1', 'Gateway_L_loop', '${more}'],
+        ],
+      ),
       [
         'process BackEdgeConditionLoop {',
         '  var done: any',
@@ -147,45 +122,38 @@ describe('loop condition on the back-edge (no expressible jump target)', () => {
         '  end End_1',
         '}',
         '',
-      ].join('\n'),
-    );
-    await expect(parseToAst(dsl)).resolves.toBeDefined();
-  });
-});
-
-// The approve-review loop as a modeler draws it: the split inside the body and
-// the loop gateway both carry a condition on every route and name no default.
-// The route leaving the loop puts the split's immediate post-dominator outside
-// it, so the split has neither a clean join nor a guard clause.
-const REVIEW_LOOP: BpmnProcess = {
-  id: 'ReviewLoop',
-  isExecutable: true,
-  flowElements: [
-    { kind: 'startEvent', id: 'Start_1' },
-    task('Approve'),
-    { kind: 'exclusiveGateway', id: 'Gateway_approved' },
-    task('Review'),
-    { kind: 'exclusiveGateway', id: 'Gateway_clarified' },
-    task('Pay'),
-    { kind: 'endEvent', id: 'End_1' },
-    { kind: 'endEvent', id: 'End_2' },
-  ],
-  sequenceFlows: [
-    flow('f1', 'Start_1', 'Approve'),
-    flow('f2', 'Approve', 'Gateway_approved'),
-    flow('f3', 'Gateway_approved', 'Pay', '${approved}'),
-    flow('f4', 'Gateway_approved', 'Review', '${!approved}'),
-    flow('f5', 'Review', 'Gateway_clarified'),
-    flow('f6', 'Gateway_clarified', 'Approve', '${clarified}'),
-    flow('f7', 'Gateway_clarified', 'End_2', '${!clarified}'),
-    flow('f8', 'Pay', 'End_1'),
-  ],
-};
-
-describe('a split inside a loop body whose every route is conditioned', () => {
-  it('keeps the route that stays in the loop, so only the leaving route is a jump', async () => {
-    const { imported, dsl } = await emit(REVIEW_LOOP);
-    expect(dsl).toBe(
+      ],
+      null,
+    ],
+    [
+      // Every route of both gateways is conditioned and none is a default, so
+      // the split's post-dominator lies outside the loop. The chain closes with
+      // no `else`, so the recompiled split falls through to the loop gateway:
+      // `Approve` gains the two routes it takes.
+      'a split inside a loop body whose every route is conditioned keeps the route that stays in the loop',
+      proc(
+        'ReviewLoop',
+        [
+          start,
+          task('Approve'),
+          xor('Gateway_approved'),
+          task('Review'),
+          xor('Gateway_clarified'),
+          task('Pay'),
+          end(),
+          end('End_2'),
+        ],
+        [
+          ['f1', 'Start_1', 'Approve'],
+          ['f2', 'Approve', 'Gateway_approved'],
+          ['f3', 'Gateway_approved', 'Pay', '${approved}'],
+          ['f4', 'Gateway_approved', 'Review', '${!approved}'],
+          ['f5', 'Review', 'Gateway_clarified'],
+          ['f6', 'Gateway_clarified', 'Approve', '${clarified}'],
+          ['f7', 'Gateway_clarified', 'End_2', '${!clarified}'],
+          ['f8', 'Pay', 'End_1'],
+        ],
+      ),
       [
         'process ReviewLoop {',
         '  var approved: any',
@@ -204,52 +172,32 @@ describe('a split inside a loop body whose every route is conditioned', () => {
         '  end End_1',
         '}',
         '',
-      ].join('\n'),
-    );
-
-    // The chain closes with no `else`, so the recompiled split falls through
-    // to the loop gateway where the model had no route: `Approve` gains the
-    // two routes that gateway takes, and loses none it had.
-    const reDesugared = astToIr(await parseToAst(dsl));
-    expect(realNodeReachability(reDesugared)).toEqual(
-      [
-        ...realNodeReachability(imported),
-        'Approve->Approve',
-        'Approve->End_2',
-      ].sort(),
-    );
-  });
-});
-
-const SURPLUS_EDGE_ON_TASK: BpmnProcess = {
-  id: 'SurplusEdgeOnTask',
-  isExecutable: true,
-  flowElements: [
-    { kind: 'startEvent', id: 'Start_1' },
-    { kind: 'exclusiveGateway', id: 'Gateway_H_join' },
-    task('T1'),
-    task('Cont'),
-    task('Later'),
-    { kind: 'endEvent', id: 'End_1' },
-  ],
-  sequenceFlows: [
-    flow('f1', 'Start_1', 'Gateway_H_join'),
-    flow('f2', 'Gateway_H_join', 'T1'),
-    flow('f3', 'T1', 'Cont'),
-    flow('f4', 'T1', 'Gateway_H_join'),
-    flow('f5', 'Cont', 'Later'),
-    flow('f6', 'Later', 'End_1'),
-  ],
-};
-
-describe('surplus out-edge on a plain node keeps the fall-through', () => {
-  // A bare `goto` beside the fall-through would end the chain and leave
-  // everything after it unreachable, so both routes head a branch. The back
-  // edge names `T1`, the one step the join leads to, and each route ends in
-  // its own branch, so the fork needs no merge to print as a block.
-  it('gives both routes a branch rather than a jump beside the fall-through, and keeps the rest reachable', async () => {
-    const { imported, dsl } = await emit(SURPLUS_EDGE_ON_TASK);
-    expect(dsl).toBe(
+      ],
+      ['Approve->Approve', 'Approve->End_2'],
+    ],
+    [
+      // A bare `goto` beside the fall-through would leave the rest
+      // unreachable, so both routes head a branch.
+      'a surplus out-edge on a plain node gives both routes a branch rather than a jump beside the fall-through',
+      proc(
+        'SurplusEdgeOnTask',
+        [
+          start,
+          xor('Gateway_H_join'),
+          task('T1'),
+          task('Cont'),
+          task('Later'),
+          end(),
+        ],
+        [
+          ['f1', 'Start_1', 'Gateway_H_join'],
+          ['f2', 'Gateway_H_join', 'T1'],
+          ['f3', 'T1', 'Cont'],
+          ['f4', 'T1', 'Gateway_H_join'],
+          ['f5', 'Cont', 'Later'],
+          ['f6', 'Later', 'End_1'],
+        ],
+      ),
       [
         'process SurplusEdgeOnTask {',
         '  start Start_1',
@@ -266,37 +214,27 @@ describe('surplus out-edge on a plain node keeps the fall-through', () => {
         '  }',
         '}',
         '',
-      ].join('\n'),
-    );
-    const reDesugared = astToIr(await parseToAst(dsl));
-    expect(realNodeReachability(reDesugared)).toEqual(
-      realNodeReachability(imported),
-    );
-  });
-});
-
-// A synthesized terminal is not printed at all, and `await` prints only its
-// trigger, so a jump into either has nothing to name.
-describe('a goto never names a node the emitter elides', () => {
-  it.each<[title: string, ir: BpmnProcess, printed: string[]]>([
+      ],
+      [],
+    ],
     [
-      'marks the edge instead of naming a synthesized terminal',
-      {
-        id: 'ElidedTerminal',
-        isExecutable: true,
-        flowElements: [
-          { kind: 'startEvent', id: 'Start_1' },
+      // A synthesized terminal is not printed, so a jump into it has nothing to name.
+      'an edge into a synthesized terminal is marked, not a goto',
+      proc(
+        'ElidedTerminal',
+        [
+          start,
           task('T1'),
-          { kind: 'exclusiveGateway', id: 'Gateway_E_join' },
-          { kind: 'endEvent', id: 'EndEvent_ElidedTerminal' },
+          xor('Gateway_E_join'),
+          end('EndEvent_ElidedTerminal'),
         ],
-        sequenceFlows: [
-          flow('f1', 'Start_1', 'T1'),
-          flow('f2', 'T1', 'Gateway_E_join'),
-          flow('f3', 'Gateway_E_join', 'EndEvent_ElidedTerminal'),
-          flow('f4', 'T1', 'Gateway_E_join'),
+        [
+          ['f1', 'Start_1', 'T1'],
+          ['f2', 'T1', 'Gateway_E_join'],
+          ['f3', 'Gateway_E_join', 'EndEvent_ElidedTerminal'],
+          ['f4', 'T1', 'Gateway_E_join'],
         ],
-      },
+      ),
       [
         'process ElidedTerminal {',
         '  start Start_1',
@@ -310,14 +248,15 @@ describe('a goto never names a node the emitter elides', () => {
         '}',
         '',
       ],
+      null,
     ],
     [
-      'marks the edge instead of naming an awaited catch event',
-      {
-        id: 'CatchLoop',
-        isExecutable: true,
-        flowElements: [
-          { kind: 'startEvent', id: 'Start_1' },
+      // `await` prints only its trigger, so a jump into it has nothing to name.
+      'an edge into an awaited catch event is marked, not a goto',
+      proc(
+        'CatchLoop',
+        [
+          start,
           {
             kind: 'intermediateCatchEvent',
             id: 'Catch_1',
@@ -329,12 +268,12 @@ describe('a goto never names a node the emitter elides', () => {
           },
           task('T1'),
         ],
-        sequenceFlows: [
-          flow('f1', 'Start_1', 'Catch_1'),
-          flow('f2', 'Catch_1', 'T1'),
-          flow('f3', 'T1', 'Catch_1'),
+        [
+          ['f1', 'Start_1', 'Catch_1'],
+          ['f2', 'Catch_1', 'T1'],
+          ['f3', 'T1', 'Catch_1'],
         ],
-      },
+      ),
       [
         'process CatchLoop {',
         '  start Start_1',
@@ -344,45 +283,36 @@ describe('a goto never names a node the emitter elides', () => {
         '}',
         '',
       ],
+      null,
     ],
-  ])('%s', async (_title, ir, printed) => {
-    const { dsl } = await emit(ir);
-    expect(dsl).toBe(printed.join('\n'));
-    await expect(parseToAst(dsl)).resolves.toBeDefined();
-  });
-});
-
-describe('shapes that structure cleanly stay structured', () => {
-  it.each<[title: string, ir: BpmnProcess, printed: string[]]>([
     [
-      'nests an `if` inside an `if` branch',
-      {
-        id: 'NestedIf',
-        isExecutable: true,
-        flowElements: [
-          { kind: 'startEvent', id: 'Start_1' },
-          { kind: 'exclusiveGateway', id: 'Gateway_O_split' },
-          { kind: 'exclusiveGateway', id: 'Gateway_I_split' },
+      'an `if` nested inside an `if` branch stays nested',
+      proc(
+        'NestedIf',
+        [
+          start,
+          xor('Gateway_O_split'),
+          xor('Gateway_I_split'),
           task('Inner_1'),
           task('Inner_2'),
-          { kind: 'exclusiveGateway', id: 'Gateway_I_join' },
+          xor('Gateway_I_join'),
           task('Outer_1'),
-          { kind: 'exclusiveGateway', id: 'Gateway_O_join' },
-          { kind: 'endEvent', id: 'End_1' },
+          xor('Gateway_O_join'),
+          end(),
         ],
-        sequenceFlows: [
-          flow('f1', 'Start_1', 'Gateway_O_split'),
-          flow('f2', 'Gateway_O_split', 'Gateway_I_split', '${a}'),
-          flow('f3', 'Gateway_O_split', 'Outer_1'),
-          flow('f4', 'Gateway_I_split', 'Inner_1', '${b}'),
-          flow('f5', 'Gateway_I_split', 'Inner_2'),
-          flow('f6', 'Inner_1', 'Gateway_I_join'),
-          flow('f7', 'Inner_2', 'Gateway_I_join'),
-          flow('f8', 'Gateway_I_join', 'Gateway_O_join'),
-          flow('f9', 'Outer_1', 'Gateway_O_join'),
-          flow('f10', 'Gateway_O_join', 'End_1'),
+        [
+          ['f1', 'Start_1', 'Gateway_O_split'],
+          ['f2', 'Gateway_O_split', 'Gateway_I_split', '${a}'],
+          ['f3', 'Gateway_O_split', 'Outer_1'],
+          ['f4', 'Gateway_I_split', 'Inner_1', '${b}'],
+          ['f5', 'Gateway_I_split', 'Inner_2'],
+          ['f6', 'Inner_1', 'Gateway_I_join'],
+          ['f7', 'Inner_2', 'Gateway_I_join'],
+          ['f8', 'Gateway_I_join', 'Gateway_O_join'],
+          ['f9', 'Outer_1', 'Gateway_O_join'],
+          ['f10', 'Gateway_O_join', 'End_1'],
         ],
-      },
+      ),
       [
         'process NestedIf {',
         '  var a: any',
@@ -401,34 +331,34 @@ describe('shapes that structure cleanly stay structured', () => {
         '}',
         '',
       ],
+      [],
     ],
     [
-      'emits two sibling `if`s for two independent splits in sequence',
-      {
-        id: 'SiblingIfs',
-        isExecutable: true,
-        flowElements: [
-          { kind: 'startEvent', id: 'Start_1' },
-          { kind: 'exclusiveGateway', id: 'Gateway_A_split' },
+      'two independent splits in sequence print as two sibling `if`s',
+      proc(
+        'SiblingIfs',
+        [
+          start,
+          xor('Gateway_A_split'),
           task('A_1'),
-          { kind: 'exclusiveGateway', id: 'Gateway_A_join' },
-          { kind: 'exclusiveGateway', id: 'Gateway_B_split' },
+          xor('Gateway_A_join'),
+          xor('Gateway_B_split'),
           task('B_1'),
-          { kind: 'exclusiveGateway', id: 'Gateway_B_join' },
-          { kind: 'endEvent', id: 'End_1' },
+          xor('Gateway_B_join'),
+          end(),
         ],
-        sequenceFlows: [
-          flow('f1', 'Start_1', 'Gateway_A_split'),
-          flow('f2', 'Gateway_A_split', 'A_1', '${a}'),
-          flow('f3', 'Gateway_A_split', 'Gateway_A_join'),
-          flow('f4', 'A_1', 'Gateway_A_join'),
-          flow('f5', 'Gateway_A_join', 'Gateway_B_split'),
-          flow('f6', 'Gateway_B_split', 'B_1', '${b}'),
-          flow('f7', 'Gateway_B_split', 'Gateway_B_join'),
-          flow('f8', 'B_1', 'Gateway_B_join'),
-          flow('f9', 'Gateway_B_join', 'End_1'),
+        [
+          ['f1', 'Start_1', 'Gateway_A_split'],
+          ['f2', 'Gateway_A_split', 'A_1', '${a}'],
+          ['f3', 'Gateway_A_split', 'Gateway_A_join'],
+          ['f4', 'A_1', 'Gateway_A_join'],
+          ['f5', 'Gateway_A_join', 'Gateway_B_split'],
+          ['f6', 'Gateway_B_split', 'B_1', '${b}'],
+          ['f7', 'Gateway_B_split', 'Gateway_B_join'],
+          ['f8', 'B_1', 'Gateway_B_join'],
+          ['f9', 'Gateway_B_join', 'End_1'],
         ],
-      },
+      ),
       [
         'process SiblingIfs {',
         '  var a: any',
@@ -444,43 +374,35 @@ describe('shapes that structure cleanly stay structured', () => {
         '}',
         '',
       ],
+      [],
     ],
-  ])('%s', async (_title, ir, printed) => {
-    const dsl = printDsl(ir);
+  ])('%s', async (_title, ir, printed, gained) => {
+    const { ir: imported, warnings } = await xmlToIr(await irToXml(ir));
+    expect(warnings).toEqual([]);
+    // Any loss happens on emission, never on import.
+    expect(imported.sequenceFlows).toEqual(ir.sequenceFlows);
+
+    const { source: dsl } = irToDsl(imported);
     expect(dsl).toBe(printed.join('\n'));
-    await expect(parseToAst(dsl)).resolves.toBeDefined();
+    const reDesugared = astToIr(await parseToAst(dsl));
+    if (gained !== null) {
+      expect(realNodeReachability(reDesugared)).toEqual(
+        [...realNodeReachability(imported), ...gained].sort(),
+      );
+    }
   });
 });
 
 const compiled = async (source: string) => astToIr(await parseToAst(source));
 
-// `do { end X } while (true)` compiles to a loop gateway with no incoming flow
-// (the body always ends, so `lowerDoWhile` wires no back edge), and the
-// validator refuses the statement it proves unreachable, so the shapes carrying
-// it skip validation or are built as IR, the way a Modeler file would import.
+// `do { end X } while (true)` compiles to a loop gateway with no incoming flow,
+// and the validator refuses the statement it proves unreachable, so those
+// shapes skip validation or are built as IR, the way a Modeler file imports.
 const compiledUnvalidated = async (source: string) =>
   astToIr(await parseUnvalidated(source));
 
-const DANGLING_LOOP_HEAD: BpmnProcess = {
-  id: 'DanglingLoopHead',
-  isExecutable: true,
-  flowElements: [
-    { kind: 'startEvent', id: 'S' },
-    { kind: 'endEvent', id: 'X' },
-    { kind: 'exclusiveGateway', id: 'Gateway_L_loop', defaultFlowId: 'f3' },
-    { kind: 'endEvent', id: 'Done' },
-  ],
-  sequenceFlows: [
-    flow('f1', 'S', 'X'),
-    flow('f2', 'Gateway_L_loop', 'X', '${true}'),
-    flow('f3', 'Gateway_L_loop', 'Done'),
-  ],
-};
-
-// Shapes a fuzz run drew, each exported, imported and printed. A row pins the
-// print's whole warning list by category and whether the print validates, so a
-// shape that stops being reported, or starts failing, turns the row red rather
-// than the next fuzz run.
+// Fuzz-drawn shapes: each row pins the print's warning categories and whether
+// it validates.
 describe('composite shapes through compile, import and print', () => {
   it.each<
     [
@@ -560,7 +482,27 @@ describe('composite shapes through compile, import and print', () => {
     ],
     [
       'a post-test loop whose body ends prints its unreachable head as a jump',
-      () => Promise.resolve(DANGLING_LOOP_HEAD),
+      () =>
+        Promise.resolve(
+          proc(
+            'DanglingLoopHead',
+            [
+              { kind: 'startEvent', id: 'S' },
+              end('X'),
+              {
+                kind: 'exclusiveGateway',
+                id: 'Gateway_L_loop',
+                defaultFlowId: 'f3',
+              },
+              end('Done'),
+            ],
+            [
+              ['f1', 'S', 'X'],
+              ['f2', 'Gateway_L_loop', 'X', '${true}'],
+              ['f3', 'Gateway_L_loop', 'Done'],
+            ],
+          ),
+        ),
       [],
       false,
     ],

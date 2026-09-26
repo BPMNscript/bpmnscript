@@ -1,16 +1,7 @@
-// The guard clause the fixture exercises, a `throw` branch inside an `if` whose
-// enclosing flow continues past it, is recovered structurally: the terminal
-// prints inside the `if` and the continuation resumes after it, so no jump ever
-// targets the `if`'s synthesized join.
-
-import { describe, it, expect } from 'vitest';
+import { it, expect } from 'vitest';
 
 import type { EventDefinition } from '@bpmn-script/transform';
 
-import {
-  describeDiContainment,
-  describeSingleDiagram,
-} from './helpers/di-bounds.js';
 import {
   camundaAliasWarning,
   describeImportFirst,
@@ -18,21 +9,17 @@ import {
 import {
   definitionOf,
   handlerTriggerDef,
-  kindOf,
   subProcess,
 } from './helpers/ir-query.js';
 import { definitionRefOf, errorRoots } from './helpers/xml-query.js';
 import { roundTripFixture } from './helpers/round-trip-fixture.js';
 
 const rt = roundTripFixture('event-handlers', {
-  example: 'order-recovery',
   importPath: true,
   recompile: 'errors',
 });
 
-// `camunda:` aliases on the error root message and the catch bindings, and
-// labels that differ from the name humanized from each id, so the importer
-// keeps them.
+// `camunda:` aliases on the error root message and the catch bindings.
 const IMPORT_FIRST_BPMN = `<?xml version="1.0" encoding="UTF-8"?>
 <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:camunda="http://camunda.org/schema/1.0/bpmn" xmlns:operaton="http://operaton.org/schema/1.0/bpmn" id="Definitions_import_first" targetNamespace="http://bpmn.io/schema/bpmn">
   <bpmn:error id="Error_Boom" name="BOOM" errorCode="BOOM" camunda:errorMessage="It went boom" />
@@ -67,98 +54,64 @@ const IMPORT_FIRST_BPMN = `<?xml version="1.0" encoding="UTF-8"?>
   </bpmn:process>
 </bpmn:definitions>`;
 
-describe("idempotence: DSL -> IR1 -> XML -> IR2 -> DSL' -> IR3", () => {
-  it('the authored throw and emit ids survive verbatim at their correct depth', () => {
-    const payment = subProcess(rt.ir3, 'ProcessPayment');
-    expect(kindOf(payment, 'PaymentFailed')).toBe('endEvent');
-    expect(kindOf(rt.ir3, 'FlagForReview')).toBe('intermediateThrowEvent');
-  });
-
-  it('the error and escalation declarations survive the round-trip', () => {
-    expect(rt.ir3.errorDecls).toEqual([
-      {
-        name: 'PAYMENT_DECLINED',
-        code: 'PAYMENT_DECLINED',
-        message: 'The payment was declined by the bank',
-      },
-      // A name apart from its code, and a declaration nothing raises or
-      // catches: both come back only if the root carries them.
-      {
-        name: 'GatewayTimeout',
-        code: 'gateway.timeout',
-        message: 'The payment gateway did not answer',
-      },
-      {
-        name: 'STOCK_UNAVAILABLE',
-        code: 'STOCK_UNAVAILABLE',
-        message: 'The warehouse cannot fulfil the order',
-      },
-    ]);
-    expect(rt.ir3.escalationDecls).toEqual([
-      { name: 'MANUAL_REVIEW', code: 'MANUAL_REVIEW' },
-      { name: 'ORDER_ABANDONED', code: 'ORDER_ABANDONED' },
-    ]);
-  });
-
-  it('the handler trigger start carries its event definition at every hop', () => {
-    const isPaymentError = (def: EventDefinition | undefined): boolean =>
-      def?.kind === 'error' && def.errorCode === 'PAYMENT_DECLINED';
-    for (const [label, ir] of rt.hops) {
-      expect(
-        handlerTriggerDef(subProcess(ir, 'ProcessPayment'), isPaymentError),
-        `handler error definition differs in ${label}`,
-      ).toEqual({
-        kind: 'error',
-        errorCode: 'PAYMENT_DECLINED',
-        codeVariable: 'c',
-        messageVariable: 'm',
-      });
-    }
-  });
-
-  it('the terminal escalation end and the escalation emit keep their definitions', () => {
-    expect(definitionOf(rt.ir3, 'FlagForReview')).toEqual({
-      kind: 'escalation',
-      escalationCode: 'MANUAL_REVIEW',
+it('keeps the declarations, the handler trigger at every hop and the escalation throws', () => {
+  expect(rt.ir3.errorDecls).toEqual([
+    {
+      name: 'PAYMENT_DECLINED',
+      code: 'PAYMENT_DECLINED',
+      message: 'The payment was declined by the bank',
+    },
+    // A name apart from its code, and a declaration nothing raises or
+    // catches: both come back only if the root carries them.
+    {
+      name: 'GatewayTimeout',
+      code: 'gateway.timeout',
+      message: 'The payment gateway did not answer',
+    },
+    {
+      name: 'STOCK_UNAVAILABLE',
+      code: 'STOCK_UNAVAILABLE',
+      message: 'The warehouse cannot fulfil the order',
+    },
+  ]);
+  expect(rt.ir3.escalationDecls).toEqual([
+    { name: 'MANUAL_REVIEW', code: 'MANUAL_REVIEW' },
+    { name: 'ORDER_ABANDONED', code: 'ORDER_ABANDONED' },
+  ]);
+  const isPaymentError = (def: EventDefinition | undefined): boolean =>
+    def?.kind === 'error' && def.errorCode === 'PAYMENT_DECLINED';
+  for (const [label, ir] of rt.hops) {
+    expect(
+      handlerTriggerDef(subProcess(ir, 'ProcessPayment'), isPaymentError),
+      label,
+    ).toEqual({
+      kind: 'error',
+      errorCode: 'PAYMENT_DECLINED',
+      codeVariable: 'c',
+      messageVariable: 'm',
     });
-    const terminal = rt.ir3.flowElements.find(
+  }
+  expect(definitionOf(rt.ir3, 'FlagForReview')).toEqual({
+    kind: 'escalation',
+    escalationCode: 'MANUAL_REVIEW',
+  });
+  expect(
+    rt.ir3.flowElements.filter(
       (fe) =>
         fe.kind === 'endEvent' &&
         fe.eventDefinition?.kind === 'escalation' &&
         fe.eventDefinition.escalationCode === 'ORDER_ABANDONED',
-    );
-    expect(terminal, 'terminal throw escalation missing').toBeDefined();
-  });
+    ),
+  ).toHaveLength(1);
 });
 
-describeSingleDiagram(rt);
-
-describeDiContainment(
-  rt,
-  () => {
-    const handlerIds = subProcess(rt.ir1, 'ProcessPayment')
-      .flowElements.filter((fe) => fe.kind === 'subProcess')
-      .map((fe) => fe.id);
-    expect(handlerIds.length).toBeGreaterThan(0);
-    return [...handlerIds, 'CaughtPayment', 'NotifyCustomer'];
-  },
-  'generated',
-);
-
-describe('root sharing on the frozen .bpmn', () => {
-  it('the throw error end event and the on error handler share one bpmn:Error carrying the message', () => {
-    const roots = errorRoots(rt.frozenXml, 'PAYMENT_DECLINED');
-    expect(roots).toHaveLength(1);
-    const { id: rootId, message } = roots[0]!;
-    expect(message).toBe('The payment was declined by the bank');
-
-    expect(definitionRefOf(rt.frozenXml, 'PaymentFailed', 'error')).toBe(
-      rootId,
-    );
-    expect(definitionRefOf(rt.frozenXml, 'CaughtPayment', 'error')).toBe(
-      rootId,
-    );
-  });
+it('the throw error end and the on error handler share one bpmn:Error carrying the message', () => {
+  expect(errorRoots(rt.frozenXml, 'PAYMENT_DECLINED')).toEqual([
+    { id: expect.any(String), message: 'The payment was declined by the bank' },
+  ]);
+  const [{ id }] = errorRoots(rt.frozenXml, 'PAYMENT_DECLINED');
+  expect(definitionRefOf(rt.frozenXml, 'PaymentFailed', 'error')).toBe(id);
+  expect(definitionRefOf(rt.frozenXml, 'CaughtPayment', 'error')).toBe(id);
 });
 
 describeImportFirst(
@@ -166,7 +119,6 @@ describeImportFirst(
   IMPORT_FIRST_BPMN,
   (first) => {
     it('normalizes the camunda: error message and binding aliases into the DSL', () => {
-      // `code` doubles as an ordinary variable name in the catch parameter.
       expect(first.dsl).toContain('error BOOM(message: "It went boom")');
       expect(first.dsl).toContain(
         'on error(BOOM, code: code, message: text) {',

@@ -1,101 +1,70 @@
-// The shared blocks every golden-pair suite registers, listed under "What the
-// pair tests do" in tests/golden/README.md. Suites differ only through
-// RoundTripOptions; one needing an extra assertion re-opens the describe in its
-// own file.
+// The checks every golden-pair suite shares; a suite adds its own in its file.
 
-import { describe, it, expect, beforeAll } from 'vitest';
+import { it, expect, beforeAll } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import type { Model } from '@bpmn-script/language';
-
 import { xmlToIr, astToIr, irToXml } from '@bpmn-script/transform';
-import type { BpmnProcess } from '@bpmn-script/transform';
+import type { BpmnProcess, ImportWarning } from '@bpmn-script/transform';
 
+import { DiagnosticSeverity } from 'vscode-languageserver-types';
+
+import { expectSoundLayout } from './di-bounds.js';
 import { normalizeIr } from './normalize-ir.js';
-import { irHops, parse, parseToAst, printDsl, validate } from './pipeline.js';
+import { irHops, parseToAst, printDsl, validate } from './pipeline.js';
 import type { IrHops } from './pipeline.js';
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-
-const GOLDEN_DIR = resolve(__dirname, '../golden');
-const EXAMPLES_DIR = resolve(__dirname, '../../examples/spring-boot/processes');
+const GOLDEN_DIR = resolve(
+  dirname(fileURLToPath(import.meta.url)),
+  '../golden',
+);
 
 export interface RoundTripOptions {
-  // Basename under examples/spring-boot/processes/, asserted validator-clean
-  // alongside the fixture. Not every construct has one.
-  example?: string;
-
-  // Where DSL' is read back out of. 'frozen' re-reads the golden .bpmn from
-  // disk, so the suite is driven by the file rather than by the generator.
+  // 'frozen' reads DSL' back out of the golden .bpmn instead of the generated XML.
   dslPrimeFrom?: 'generated' | 'frozen';
-
-  // Registers the import-path block: the frozen artifact imports warning-free
-  // and re-desugars normalized-equal to IR1.
+  // The frozen .bpmn imports warning-free and re-desugars normalized-equal to IR1.
   importPath?: boolean;
-
-  // 'clean' checks every diagnostic and fits only fixtures that name every
-  // throw and emit, so nothing synthesizes an id the reserved-name check
-  // rejects; 'errors' checks error severity alone, for fixtures whose decompiled
-  // form does warn; 'errors-standalone' is 'errors' in a block of its own.
-  recompile: 'errors' | 'clean' | 'errors-standalone';
-
-  validatorCleanTitles?: [describeTitle: string, itTitle: string];
+  // 'clean' checks every diagnostic on DSL'; 'errors' only error severity, for
+  // fixtures with unnamed throws whose synthesized ids draw a reserved-name warning.
+  recompile: 'errors' | 'clean';
 }
 
 export interface RoundTrip {
-  parse: typeof parse;
-  validate: typeof validate;
-  parseToAst: (source: string) => Promise<Model>;
-
   fixtureSrc: string;
   frozenXml: string;
   generatedXml: string;
-  // ir1 = astToIr(parse(fixture)); ir2 = xmlToIr(...) per dslPrimeFrom;
-  // ir3 = re-desugared from DSL'.
   ir1: BpmnProcess;
   ir2: BpmnProcess;
   ir3: BpmnProcess;
   hops: IrHops;
   dslPrime: string;
-  // The next two are only filled when `importPath` is on.
-  importWarnings: Awaited<ReturnType<typeof xmlToIr>>['warnings'];
+  // Filled only with `importPath`: the frozen .bpmn imported, printed and re-desugared.
   irFromImport: BpmnProcess;
+  importWarnings: ImportWarning[];
 }
 
-// `name` is the basename the `.bpmnscript` and `.bpmn` share. The returned
-// handle is filled by a beforeAll, so read it only from inside an `it` body.
+// `name` is the basename the `.bpmnscript` and `.bpmn` share. The handle is
+// filled by a beforeAll, so read it only from inside an `it` body.
 export function roundTripFixture(
   name: string,
   options: RoundTripOptions,
 ): RoundTrip {
-  const rt = { parse, validate, parseToAst } as RoundTrip;
-  let exampleSrc: string;
+  const rt = {} as RoundTrip;
+  const read = (ext: string): string =>
+    readFileSync(resolve(GOLDEN_DIR, `${name}.${ext}`), 'utf-8');
 
   beforeAll(async () => {
-    rt.fixtureSrc = readFileSync(
-      resolve(GOLDEN_DIR, `${name}.bpmnscript`),
-      'utf-8',
-    );
-    rt.frozenXml = readFileSync(resolve(GOLDEN_DIR, `${name}.bpmn`), 'utf-8');
-    if (options.example !== undefined) {
-      exampleSrc = readFileSync(
-        resolve(EXAMPLES_DIR, `${options.example}.bpmnscript`),
-        'utf-8',
-      );
-    }
-
+    rt.fixtureSrc = read('bpmnscript');
+    rt.frozenXml = read('bpmn');
     rt.ir1 = astToIr(await parseToAst(rt.fixtureSrc));
     rt.generatedXml = await irToXml(rt.ir1);
-
     ({ ir: rt.ir2 } = await xmlToIr(
       options.dslPrimeFrom === 'frozen' ? rt.frozenXml : rt.generatedXml,
     ));
     rt.dslPrime = printDsl(rt.ir2);
     rt.ir3 = astToIr(await parseToAst(rt.dslPrime));
     rt.hops = irHops(rt.ir1, rt.ir2, rt.ir3);
-
     if (options.importPath === true) {
       const imported = await xmlToIr(rt.frozenXml);
       rt.importWarnings = imported.warnings;
@@ -103,81 +72,22 @@ export function roundTripFixture(
     }
   });
 
-  describe('golden generation: the pipeline output matches the frozen .bpmn', () => {
-    it('irToXml(astToIr(parse(fixture))) equals the frozen artifact byte-for-byte', () => {
-      expect(rt.generatedXml).toBe(rt.frozenXml);
-    });
-  });
-
-  const idempotenceTitle =
-    options.dslPrimeFrom === 'frozen'
-      ? "idempotence: golden .bpmn -> IR2 -> DSL' -> IR3"
-      : "idempotence: DSL -> IR1 -> XML -> IR2 -> DSL' -> IR3";
-
-  describe(idempotenceTitle, () => {
-    it('normalizeIr(IR1) equals normalizeIr(IR3)', () => {
-      expect(normalizeIr(rt.ir3)).toEqual(normalizeIr(rt.ir1));
-    });
-
-    it("the restructured DSL' re-parses with zero parser errors", async () => {
-      const document = await parse(rt.dslPrime);
-      expect(document.parseResult.parserErrors).toHaveLength(0);
-    });
-
-    if (options.recompile === 'errors') {
-      it('the decompiled DSL recompiles without validation errors', async () => {
-        const { diagnostics } = await validate(rt.dslPrime);
-        expect(diagnostics.filter((d) => d.severity === 1)).toEqual([]);
-      });
-    }
-
-    if (options.recompile === 'clean') {
-      it("the restructured DSL' is validator-clean (named throws re-parse cleanly)", async () => {
-        const { diagnostics } = await validate(rt.dslPrime);
-        expect(diagnostics).toEqual([]);
-      });
-    }
-  });
-
-  if (options.recompile === 'errors-standalone') {
-    describe("recompile-validity: the decompiled DSL' recompiles clean", () => {
-      it("the decompiled DSL' validates with zero error diagnostics", async () => {
-        const { diagnostics } = await validate(rt.dslPrime);
-        expect(diagnostics.filter((d) => d.severity === 1)).toEqual([]);
-      });
-    });
-  }
-
-  if (options.importPath === true) {
-    describe('import path: the frozen artifact imports cleanly and round-trips', () => {
-      it('xmlToIr(frozen) produces no warnings', () => {
-        expect(rt.importWarnings).toEqual([]);
-      });
-
-      it('imported -> DSL -> re-desugared IR is normalized-equal to IR1', () => {
-        expect(normalizeIr(rt.irFromImport)).toEqual(normalizeIr(rt.ir1));
-      });
-    });
-  }
-
-  const [cleanDescribe, cleanIt] = options.validatorCleanTitles ?? [
-    options.example !== undefined
-      ? 'the authored programs open validator-clean'
-      : 'the authored program opens validator-clean',
-    'the fixture produces no diagnostics at all',
-  ];
-
-  describe(cleanDescribe, () => {
-    it(cleanIt, async () => {
-      const { diagnostics } = await validate(rt.fixtureSrc);
-      expect(diagnostics).toEqual([]);
-    });
-
-    if (options.example !== undefined) {
-      it('the deployable example produces no diagnostics at all', async () => {
-        const { diagnostics } = await validate(exampleSrc);
-        expect(diagnostics).toEqual([]);
-      });
+  it('regenerates the frozen .bpmn byte for byte with a sound layout, round-trips to the same IR and opens validator-clean', async () => {
+    expect(rt.generatedXml).toBe(rt.frozenXml);
+    expectSoundLayout(rt.frozenXml, rt.ir1);
+    expect(normalizeIr(rt.ir3)).toEqual(normalizeIr(rt.ir1));
+    expect((await validate(rt.fixtureSrc)).diagnostics).toEqual([]);
+    const { diagnostics } = await validate(rt.dslPrime);
+    expect(
+      diagnostics.filter(
+        (d) =>
+          options.recompile === 'clean' ||
+          d.severity === DiagnosticSeverity.Error,
+      ),
+    ).toEqual([]);
+    if (options.importPath === true) {
+      expect(rt.importWarnings).toEqual([]);
+      expect(normalizeIr(rt.irFromImport)).toEqual(normalizeIr(rt.ir1));
     }
   });
 

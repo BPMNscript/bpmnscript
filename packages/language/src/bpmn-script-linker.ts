@@ -1,11 +1,7 @@
 /**
- * Langium's stock resolution failure names the grammar type (`Statement`)
- * rather than anything the author wrote. A `goto` or host naming a step that
- * exists elsewhere in the process gets the boundary it crosses instead, one
- * naming nothing gets "no step named", and an undeclared code gets how to
- * declare it. A validator cannot do this: it only sees a reference that
- * already resolved. Rewording is all a linker can do; whether the error
- * becomes a diagnostic is decided in `bpmn-script-document-validator.ts`.
+ * Rewords Langium's resolution failure, which names the grammar type: the
+ * boundary a `goto` or host crosses, or how to declare a missing code. A
+ * validator cannot, since it only sees resolved references.
  */
 
 import {
@@ -45,10 +41,6 @@ function findNamedStatement(
   return undefined;
 }
 
-/**
- * `undefined` when error recovery left the trigger empty: with no boundary to
- * name, the stock unresolved-reference message runs instead.
- */
 function handlerPhrase(handler: OnHandler): string | undefined {
   if (handler.trigger === undefined) return undefined;
 
@@ -66,13 +58,11 @@ function declaredCodeKind(source: AstNode, name: string): string | undefined {
   return decls.find((decl) => decl.name === name)?.kind;
 }
 
-/** `crossesHandler` picks the trailing boundary sentence. */
 interface Location {
   phrase: string;
   crossesHandler: boolean;
 }
 
-/** Where `target` lives relative to `sourceContainer`, once the two are known to differ. */
 function locateTarget(
   target: NamedStatement,
   sourceContainer: FlowContainer,
@@ -84,8 +74,7 @@ function locateTarget(
   if (targetContainer && isOnHandler(targetContainer)) {
     return handlerLocation(targetContainer, 'inside');
   }
-  // The target lives at process level; since it did not resolve, the
-  // reference itself must be inside a subprocess or a handler body.
+  // It did not resolve, so the reference sits inside a subprocess or handler body.
   if (isOnHandler(sourceContainer)) {
     return handlerLocation(sourceContainer, 'outside');
   }
@@ -120,9 +109,7 @@ export class BpmnScriptLinker extends DefaultLinker {
     const codeTrigger = codeTriggerOf(source);
     if (codeTrigger !== undefined) {
       const name = refInfo.reference.$refText;
-      // A name declared under the other kind arrives here unresolved too;
-      // advising a second declaration would walk the author into the
-      // duplicate-name error.
+      // Advising a second declaration under the other kind would lead to the duplicate-name error.
       const declaredKind = declaredCodeKind(source, name);
       const message =
         declaredKind === undefined

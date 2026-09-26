@@ -1,4 +1,7 @@
-/** Outline kinds; the default provider skips an `on` handler (no `name`) and flattens its steps into the process. */
+/**
+ * The default outline skips an `on` handler (no `name`) and flattens its steps
+ * into the process.
+ */
 
 import type { AstNode, AstNodeDescription, LangiumDocument } from 'langium';
 import { GrammarUtils } from 'langium';
@@ -9,7 +12,6 @@ import {
 import { SymbolKind, type DocumentSymbol } from 'vscode-languageserver-types';
 import { isOnHandler } from './generated/ast.js';
 
-/** A dense table, hand-formatted rather than one property per Prettier's default. */
 // prettier-ignore
 const SYMBOL_KIND_BY_TYPE: Readonly<Record<string, SymbolKind>> = {
   Process: SymbolKind.Module, SubProcess: SymbolKind.Namespace,
@@ -28,7 +30,7 @@ export class BpmnScriptNodeKindProvider extends DefaultNodeKindProvider {
   }
 }
 
-/** Named by its own header (`alongside` included: it tells two handlers on one host apart). */
+/** A handler is named by its header; `alongside` tells two on one host apart. */
 export class BpmnScriptDocumentSymbolProvider extends DefaultDocumentSymbolProvider {
   protected override getSymbol(
     document: LangiumDocument,

@@ -1,14 +1,9 @@
-/**
- * Validation of the BPMNscript AST.
- *
- * A case is one source program and the complete list of diagnostics it raises,
- * in the order they are reported, so it fails both when a check stops firing
- * and when one fires that should not. A warning carries a `warning:` prefix;
- * everything else is an error, whether from a check, the linker, or the parser.
- */
+// A case pins a program's whole diagnostic list in report order; a warning
+// carries a `warning:` prefix.
 
 import { beforeAll, describe, expect, test } from 'vitest';
 import { EmptyFileSystem } from 'langium';
+import { DiagnosticSeverity } from 'vscode-languageserver-types';
 import { validationHelper, type ValidationResult } from 'langium/test';
 import type { FormField, Model } from '@bpmn-script/language';
 import {
@@ -169,8 +164,6 @@ import {
   withTextMessages,
 } from './helpers/diagnostics.js';
 
-const SEVERITY_WARNING = 2;
-
 let validate: (input: string) => Promise<ValidationResult<Model>>;
 
 beforeAll(() => {
@@ -181,7 +174,9 @@ beforeAll(() => {
 async function diagnosticsOf(source: string): Promise<string[]> {
   const { diagnostics } = await validate(source);
   return withTextMessages(diagnostics).map((d) =>
-    d.severity === SEVERITY_WARNING ? `warning: ${d.message}` : d.message,
+    d.severity === DiagnosticSeverity.Warning
+      ? `warning: ${d.message}`
+      : d.message,
   );
 }
 
@@ -199,22 +194,23 @@ function checks(concern: string, cases: Case[]): void {
 
 const capitalized = (text: string) => text[0]!.toUpperCase() + text.slice(1);
 
-/** An enum gets a value so its own empty-values warning stays out of the list. */
+/** One form, a field `f<i>` per row; an enum gets a value to keep its empty-values warning out. */
 function formFieldRows(
   concern: string,
-  pairs: Array<[setting: string, type: string, expected: string[]]>,
-): Case[] {
-  return pairs.map(([setting, type, expected]) => [
-    `${concern}: ${setting} on ${type}`,
-    `process p { start S { form { f: ${type} (${setting})${type === 'enum' ? ' { a }' : ''} } } }`,
-    expected,
-  ]);
+  rows: Array<
+    [setting: string, type: string, expected: (id: string) => string[]]
+  >,
+): Case {
+  const fields = rows.map(
+    ([setting, type], i) =>
+      `f${i}: ${type} (${setting})${type === 'enum' ? ' { a }' : ''}`,
+  );
+  return [
+    concern,
+    `process p { start S { form { ${fields.join(' ')} } } }`,
+    rows.flatMap(([, , expected], i) => expected(`f${i}`)),
+  ];
 }
-
-// The messages, each spelled once
-//
-// A message the validator exports is imported; a helper below adapts the few
-// that take an AST node or a slot to the strings a case spells.
 
 const nonBooleanCondition = (shape: string) =>
   nonBooleanConditionMessage(shape, 'condition');
@@ -250,7 +246,6 @@ const noFlowSteps = (name: string) =>
   `Process '${name}' has no flow steps: a process needs at least one step on its main flow (handlers alone do not start a process).`;
 const blockNoFlowSteps = (kind: string, name: string) =>
   `${capitalized(kind)} named '${name}' has no flow steps: ${kind} needs at least one step on its main flow (handlers alone do not start it).`;
-/** The shapes are derived from the patterns, so this pins the pair. */
 const RESERVED_SHAPES =
   `'Gateway_..._(split|join|fork|loop|race)', 'Flow_..._...', 'Throw_', ` +
   `'EventSubProcess_', 'Boundary_', 'Catch_', 'EndEvent_Boundary_', ` +
@@ -274,8 +269,6 @@ const catchBindingTypeClash = (name: string, prior: string) =>
 const formFieldTypeClash = (id: string, type: string, prior: string) =>
   `Form field '${id}' is typed '${type}', but '${id}' is already declared as '${prior}'; the types must agree.`;
 
-// Element settings.
-
 const duplicateSetting = (key: string) => `Duplicate setting '${key}'.`;
 const notValidOn = (key: string, description: string) =>
   `Setting '${key}' is not valid on ${description}.`;
@@ -295,7 +288,7 @@ const unquotedText = (key: string) =>
   'put the value in quotes.';
 const SERVICE_BINDINGS = `'class', 'expression', 'delegate', 'topic', or 'type'`;
 const DECISION_BINDINGS = `'class', 'expression', 'delegate', 'topic', 'type', or 'decision'`;
-/** A thrown message has no member block for the fields a built-in behaviour needs. */
+/** No `type`: a thrown message has no member block for a built-in behaviour's fields. */
 const THROW_BINDINGS = `'class', 'expression', 'delegate', or 'topic'`;
 const LISTENER_BINDINGS = `'class', 'expression', or 'delegate'`;
 const emptyBinding = (key: string, noun: string) =>
@@ -308,10 +301,6 @@ const MAP_DECISION_RESULT =
   `Setting 'mapDecisionResult' must be 'singleEntry', 'singleResult', ` +
   `'collectEntries', or 'resultList'.`;
 
-// The process header.
-
-// Forms.
-
 const noFormBlock = (description: string) =>
   `${capitalized(description)} cannot declare a 'form' block; forms belong on start events and user tasks.`;
 const oneFormBlock = (description: string) =>
@@ -319,8 +308,6 @@ const oneFormBlock = (description: string) =>
 const duplicateFormField = (id: string) => `Duplicate form field '${id}'.`;
 const formFieldType = (id: string, type: string) =>
   `Form field '${id}' has type '${type}', which a form cannot use. Use string, number, boolean, date, or enum.`;
-
-// Parameters and listeners.
 
 const noParameters = (description: string) =>
   `${capitalized(description)} cannot declare an 'input' or 'output' parameter; ${PARAMETER_HOSTS_MESSAGE}`;
@@ -336,12 +323,8 @@ const unknownListenerEvent = (event: string, events: string) =>
 const USER_LISTENER_EVENTS = `'start', 'end', 'create', 'assignment', 'complete', 'update', 'delete', or 'timeout'`;
 const LISTENER_PARTICLE_ONLY = "Only 'on timeout' takes a particle.";
 
-// The extras of a step handed to an external worker.
-
 const codeNotDeclared = (trigger: string, name: string) =>
   `'${name}' is not declared. Add '${trigger} ${name}' to the process.`;
-
-// Fenced scripts.
 
 const unsupportedScriptTag = (subject: string, tag: string) =>
   `${subject} has an unsupported language tag '${tag}'. ` +
@@ -352,12 +335,7 @@ const unterminatedScript = (name: string) =>
   `Script task '${name}' has a malformed or unterminated fenced script body; ` +
   'a script must be a closed ```<lang> ... ``` block.';
 
-/**
- * `juel` (the engine's own default), a mixed-case alias, and `ecmascript`
- * resolve the same as their canonical spelling; every other tag is refused,
- * `ScriptingEngines.getScriptEngineForLanguage` lowercasing the language
- * before it looks an engine up.
- */
+/** `ScriptingEngines.getScriptEngineForLanguage` lowercases the tag, so a mixed-case alias resolves. */
 const SCRIPT_TAG_MATRIX: ReadonlyArray<
   readonly [tag: string, refused: boolean]
 > = [
@@ -378,8 +356,6 @@ function scriptTagCases(
   ]);
 }
 
-// Control flow.
-
 const emptyBranch = (what: string) => `The ${what} has no steps.`;
 const emptyNumberedBranch = (index: number, keyword: string) =>
   `Branch ${index} of the '${keyword}' statement has no steps.`;
@@ -398,8 +374,6 @@ const reservedWord = (word: string) =>
   `'${word}' is a reserved word and cannot be used as a plain name here. ` +
   `To refer to a variable named '${word}', write it as a quoted raw expression: "\${${word}}".`;
 
-// Calls.
-
 const CALL_PROCESS_REQUIRED =
   'A call must name the process it starts: add process: "<id>".';
 const BINDING_VALUE = `Setting 'binding' must be 'latest' or 'deployment'.`;
@@ -410,8 +384,6 @@ const duplicateMapping = (direction: string, target: string) =>
   `Duplicate '${direction}' mapping target '${target}'.`;
 const duplicateAllMapping = (direction: string) =>
   `Duplicate '${direction} *' mapping; a direction can copy every variable only once.`;
-
-// Start events.
 
 const startNotFirst = (name: string) =>
   `'start ${name}' must be a top-level statement of its process, or the ` +
@@ -445,17 +417,11 @@ const startNameRequired = (trigger: string) =>
   `A ${trigger} start needs the ${trigger}'s name: the engine matches ${trigger}s by name.`;
 const START_PARTICLE_ONLY = 'Only a timer start takes a particle.';
 
-// Timers.
-
 const unknownParticle = (word: string) =>
   `Unknown timer particle '${word}'; write 'after', 'at', or 'every'.`;
 const REPEATING_INTERRUPTS =
   'A repeating timer that interrupts its scope fires at most once: ' +
   "add 'alongside' to let it repeat, or give it a duration instead.";
-
-// End events.
-
-// Event handlers.
 
 const HANDLER_PLACEMENT =
   'An event handler belongs directly in the body of a process, a subprocess, ' +
@@ -482,8 +448,6 @@ const eventName = (value: string) => `name '${value}'`;
 const escalationCatchAllBesideCoded = (scope: string) =>
   `An 'on escalation' handler with no code cannot sit beside one with a code on scope '${scope}': the code-less one would catch every escalation, and Operaton refuses the pair (BpmnParse.addEscalationEventDefinition). Give both a code, or keep one.`;
 
-// Boundary hosts.
-
 const illegalHost = (name: string, kind: string) =>
   'A boundary event can only attach to an activity: a user, service, script, ' +
   'send, or receive task, a step, a decision step, a subprocess, an attempt ' +
@@ -492,19 +456,13 @@ const escalationHost = (name: string, kind: string) =>
   'An escalation boundary can only attach to a subprocess, an attempt block, ' +
   `a call, or a user task; '${name}' is ${kind}.`;
 
-// Compensation.
-
 const throwCompensationNames = (keyword: 'throw' | 'emit') =>
   'Compensation undoes completed work: there is nothing to name; ' +
   `write '${keyword} compensation'.`;
 
-// Cancel.
-
 const cancelHost = (name: string, kind: string) =>
   `A cancel handler can only attach to an 'attempt' block: it catches that ` +
   `block being given up; '${name}' is ${kind}.`;
-
-// Throw, emit, and await.
 
 const codeRequired = (
   subject: 'A thrown' | 'An emitted',
@@ -523,8 +481,6 @@ const AWAIT_CONDITION_NO_CODE =
 const AWAIT_CONDITION_ONLY =
   "Only 'await condition' takes a condition expression.";
 const AWAIT_PARTICLE_ONLY = "Only 'await timer' takes a particle.";
-
-// Link events.
 
 const linkNoCatch = (name: string) =>
   `No 'await link("${name}")' catches this link, and the engine refuses to ` +
@@ -546,8 +502,6 @@ const gotoToLink = (target: string) =>
   `'goto ${target}' cannot target an awaited link: a link catch is entered ` +
   "by 'emit link' of the same name, not by a sequence flow.";
 
-// Code declarations.
-
 const declarationNotAString = (kind: string, key: string) =>
   `An ${kind} declaration's ${key} must be a quoted string.`;
 const declarationEmpty = (kind: string, key: string) =>
@@ -557,58 +511,36 @@ const alreadyDeclared = (kind: string, name: string) =>
 const duplicateDeclaredCode = (kind: string, code: string, owner: string) =>
   `${capitalized(kind)} code '${code}' is already declared by '${owner}'; two declarations cannot share a code.`;
 
-// Cases
-
 checks('Validation - variables in expressions', [
   [
-    'an undeclared variable in a condition warns and names it',
-    `process p { if (amount > 1000) { user A } }`,
-    [warn(undeclared('amount'))],
+    'expressions type-check variables against their declared types',
+    `process p {
+  var name: string
+  var flag: boolean
+  var x: any
+  if (amount > 1000) { user A }
+  user T(formKey: forms.review)
+  service S(expression: someBareword)
+  service S2(class: com.example.X)
+  if (name > 1000) { user A2 }
+  if (flag + 1 > 0) { user A3 }
+  if (x > 1000) { user A4 }
+}`,
+    [
+      warn(undeclared('amount')),
+      typeMismatch('name', 'string', 'an ordered comparison', '>'),
+      typeMismatch('flag', 'boolean', 'an arithmetic expression', '+'),
+    ],
   ],
   [
-    'a declared variable used compatibly is clean',
-    `process p { var amount: number if (amount > 1000) { user A } }`,
-    [],
-  ],
-  [
-    'a dotted formKey names a form, not a variable',
-    `process p { user T(formKey: forms.review) }`,
-    [],
-  ],
-  [
-    'a bareword expression is an EL binding, not a variable',
-    `process p { service S(expression: someBareword) }`,
-    [],
-  ],
-  [
-    'a dotted class names a Java class, not a variable',
-    `process p { service S(class: com.example.X) }`,
-    [],
-  ],
-  [
-    'a string-typed variable compared with a number is a type error',
-    `process p { var name: string if (name > 1000) { user A } }`,
-    [typeMismatch('name', 'string', 'an ordered comparison', '>')],
-  ],
-  [
-    'a number-typed variable in an ordered comparison is clean',
-    `process p { var amount: number if (amount >= 1000) { user A } }`,
-    [],
-  ],
-  [
-    'a boolean-typed variable in arithmetic is a type error',
-    `process p { var flag: boolean if (flag + 1 > 0) { user A } }`,
-    [typeMismatch('flag', 'boolean', 'an arithmetic expression', '+')],
-  ],
-  [
-    'a number-typed variable in a logical expression is a type error',
-    `process p { var amount: number if (amount && true) { user A } }`,
+    "a variable's declared type gates which operators accept it",
+    `process p {
+  var amount: number
+  if (amount > 1000) { user A }
+  if (amount >= 1000) { user A2 }
+  if (amount && true) { user A3 }
+}`,
     [typeMismatch('amount', 'number', 'a logical expression', '&&')],
-  ],
-  [
-    'an any-typed variable never mismatches',
-    `process p { var x: any if (x > 1000) { user A } }`,
-    [],
   ],
   [
     "an undeclared variable in an 'on condition' expression warns the same way",
@@ -632,120 +564,69 @@ checks('Validation - variables in expressions', [
 
 checks('Validation - barewords in engine-side attribute values', [
   [
-    'a bareword candidateGroups reaches the engine as written',
-    `process p { user U(candidateGroups: approvers) }`,
-    [],
-  ],
-  [
-    'a bareword candidateUsers reaches the engine as written',
-    `process p { user U(candidateUsers: approvers) }`,
-    [],
-  ],
-  [
-    'a bareword assignee is the user id, as the compiler and the engine read it',
-    `process p { user U(assignee: demo, candidateUsers: demo) }`,
-    [],
-  ],
-  [
-    'a hyphenated assignee is a user id too, never scanned as a subtraction',
-    `process p { user U(assignee: john-doe) }`,
-    [],
-  ],
-  [
-    'a bareword resultVariable names the variable to fill, not one to read',
-    `process p { service V(expression: "\${bean.run()}", resultVariable: approvers) }`,
-    [],
-  ],
-  [
-    'a bareword dueDate is a date the engine cannot parse, so it asks for quotes',
-    `process p { user U(dueDate: approvers) }`,
-    [unquotedText('dueDate')],
-  ],
-  [
-    'a bareword followUpDate asks for quotes the same way',
-    `process p { user U(followUpDate: approvers) }`,
-    [unquotedText('followUpDate')],
-  ],
-  [
-    'a bareword retryCycle asks for quotes the same way',
-    `process p { user U(asyncBefore: true, retryCycle: approvers) }`,
-    [unquotedText('retryCycle')],
-  ],
-  [
-    'a bareword priority lowers to an expression, so it warns when undeclared',
-    `process p { user U(priority: deadline) }`,
-    [warn(undeclared('deadline'))],
-  ],
-  [
-    'a bareword jobPriority warns the same way',
-    `process p { user U(asyncBefore: true, jobPriority: deadline) }`,
-    [warn(undeclared('deadline'))],
-  ],
-  [
-    'a bareword businessKey warns the same way',
-    `process p { call C(process: "q", businessKey: deadline) }`,
-    [warn(undeclared('deadline'))],
+    'each engine-side attribute treats a bareword as text, a variable, or a bad date consistently',
+    `process p {
+  user U(candidateGroups: approvers)
+  user U2(candidateUsers: approvers)
+  user U3(assignee: demo, candidateUsers: demo)
+  user U4(assignee: john-doe)
+  service V(expression: "\${bean.run()}", resultVariable: approvers)
+  user U5(dueDate: approvers)
+  user U6(followUpDate: approvers)
+  user U7(asyncBefore: true, retryCycle: approvers)
+  user U8(priority: deadline)
+  user U9(asyncBefore: true, jobPriority: deadline)
+  call C(process: "q", businessKey: deadline)
+}`,
+    [
+      warn(undeclared('deadline')),
+      warn(undeclared('deadline')),
+      warn(undeclared('deadline')),
+      unquotedText('dueDate'),
+      unquotedText('followUpDate'),
+      unquotedText('retryCycle'),
+    ],
   ],
 ]);
 
 checks('Validation - a JUEL keyword or a hyphen in a rendered name', [
-  ...JUEL_RESERVED_WORDS.flatMap((word): Case[] => [
+  ...JUEL_RESERVED_WORDS.map((word): Case => [
+    `'${word}' is an operator to the engine as a variable and as a property, in and outside a raw template`,
+    `process p { var ${word}: boolean var order: json if (${word}) { user A } if (order.${word}) { user B } if ("\${order.${word}}") { user C } }`,
     [
-      `'${word}' as a variable is an operator to the engine, at the declaration and at the use`,
-      `process p { var ${word}: boolean if (${word}) { user A } }`,
-      [
-        juelKeywordMessage(word, `execution.getVariable('${word}')`),
-        juelKeywordMessage(word, `execution.getVariable('${word}')`),
-      ],
-    ],
-    [
-      `'${word}' as a property is an operator to the engine`,
-      `process p { var order: json if (order.${word}) { user A } }`,
-      [juelKeywordMessage(word, `order['${word}']`)],
-    ],
-    [
-      `'${word}' as a property inside a raw template is the same operator`,
-      `process p { if ("\${order.${word}}") { user A } }`,
-      [juelKeywordMessage(word, `order['${word}']`)],
+      juelKeywordMessage(word, `execution.getVariable('${word}')`),
+      juelKeywordMessage(word, `execution.getVariable('${word}')`),
+      juelKeywordMessage(word, `order['${word}']`),
+      juelKeywordMessage(word, `order['${word}']`),
     ],
   ]),
   [
-    "'true' as a property inside a raw template is the same operator",
-    `process p { if ("\${order.true}") { user A } }`,
-    [juelKeywordMessage('true', "order['true']")],
-  ],
-  [
-    'a keyword read off a bracketed object in a raw template is keyed on that object',
-    `process p { if ("\${items[0].and}") { user A } }`,
-    [juelKeywordMessage('and', "items[0]['and']")],
-  ],
-  [
-    'a keyword inside a JUEL string literal or between two templates is text, not a read',
-    `process p { user A(assignee: "\${map['x.and'] == 'a.or'} or.and \${b}") }`,
-    [],
-  ],
-  [
-    'a keyword read in a listener timeout template is the same operator',
-    `process p { user A { on timeout after "\${order.and}"(class: "c.X") } }`,
-    [juelKeywordMessage('and', "order['and']")],
+    'a JUEL keyword or hyphen inside a template scans the same way everywhere',
+    `process p {
+  var order: json
+  if ("\${order.true}") { user A }
+  if ("\${items[0].and}") { user A2 }
+  user A3(assignee: "\${map['x.and'] == 'a.or'} or.and \${b}")
+  if (order.line.is-paid) { user A5 }
+  if (my-flag) { user A6 }
+  user U for each x in order.line-items
+  service S(class: com.example.mod) service T(topic: order-events)
+  user A4 { on timeout after "\${order.and}"(class: "c.X") }
+}`,
+    [
+      juelKeywordMessage('true', "order['true']"),
+      juelKeywordMessage('and', "items[0]['and']"),
+      hyphenNameMessage('is-paid', "order.line['is-paid']"),
+      hyphenNameMessage('my-flag', "execution.getVariable('my-flag')"),
+      warn(undeclared('my-flag')),
+      hyphenNameMessage('line-items', "order['line-items']"),
+      juelKeywordMessage('and', "order['and']"),
+    ],
   ],
   [
     'a hyphenated variable scans as a subtraction',
     `process p { var my-flag: boolean if (my-flag) { user A } }`,
     [hyphenNameMessage('my-flag', "execution.getVariable('my-flag')")],
-  ],
-  [
-    'a hyphenated property scans the same way, keyed on its object',
-    `process p { var order: json if (order.line.is-paid) { user A } }`,
-    [hyphenNameMessage('is-paid', "order.line['is-paid']")],
-  ],
-  [
-    'an undeclared hyphenated variable keeps its warning beside the error',
-    `process p { if (my-flag) { user A } }`,
-    [
-      hyphenNameMessage('my-flag', "execution.getVariable('my-flag')"),
-      warn(undeclared('my-flag')),
-    ],
   ],
   [
     'a bare collection name is looked up as a variable, not evaluated',
@@ -755,16 +636,6 @@ checks('Validation - a JUEL keyword or a hyphen in a rendered name', [
   [
     'a bare in-mapping source is copied by name, not evaluated',
     `process p { var check-close: json call C(process: "q") { in y = check-close } }`,
-    [],
-  ],
-  [
-    'a collection under an accessor is evaluated, so its spelling counts',
-    `process p { var order: json user U for each x in order.line-items }`,
-    [hyphenNameMessage('line-items', "order['line-items']")],
-  ],
-  [
-    'a class name and a topic reach the engine as written',
-    `process p { service S(class: com.example.mod) service T(topic: order-events) }`,
     [],
   ],
 ]);
@@ -812,151 +683,97 @@ checks('Validation - a condition must be boolean', [
     [nonBooleanCondition("a variable of type 'number'")],
   ]),
   [
-    "an 'until' clause cites the multi-instance behaviour",
-    `process p { user U for 3 until (nrOfCompletedInstances) }`,
-    [nonBooleanConditionMessage("a variable of type 'number'", 'until')],
-  ],
-  [
-    'a string literal',
-    `process p { if ("yes") { user A } }`,
-    [nonBooleanCondition('a string')],
-  ],
-  [
-    'a json variable is a Spin node, never a Boolean',
-    `process p { var order: json if (order) { user A } }`,
-    [nonBooleanCondition("a variable of type 'json'")],
-  ],
-  [
-    'a null literal cites the null check',
-    `process p { if (null) { user A } }`,
+    'a condition accepts only boolean-shaped expressions, whatever the syntax',
+    `process p {
+  var order: json
+  var n: number
+  var flag: boolean
+  var f: boolean
+  user U for 3 until (nrOfCompletedInstances)
+  if ("yes") { user A }
+  if (order) { user A2 }
+  if (null) { user A3 }
+  if (1) { user A4 }
+  if (n + 1) { user A5 }
+  if (-n) { user A6 }
+  if (n > 1 ? "a" : 2) { user A7 }
+  if ("\${a} and \${b}") { user A8 }
+  if (("yes")) { user A9 }
+  if (flag) { user A10 } if (flag && "\${a.b}") { user B } user U2 for 3 until (nrOfCompletedInstances > 1)
+  if (x) { user A11 }
+  if (order.paid) { user A12 } if (f ? f : 1) { user B2 }
+}`,
     [
+      nonBooleanConditionMessage("a variable of type 'number'", 'until'),
+      nonBooleanCondition('a string'),
+      nonBooleanCondition("a variable of type 'json'"),
       "A condition must be boolean, but this one is null: the engine throws 'condition expression returns null' when it evaluates it (UelExpressionCondition.evaluate).",
-    ],
-  ],
-  [
-    'a number literal',
-    `process p { if (1) { user A } }`,
-    [nonBooleanCondition('a number')],
-  ],
-  [
-    'an arithmetic expression',
-    `process p { var n: number if (n + 1) { user A } }`,
-    [nonBooleanCondition('an arithmetic expression')],
-  ],
-  [
-    'a negation',
-    `process p { var n: number if (-n) { user A } }`,
-    [nonBooleanCondition('an arithmetic expression')],
-  ],
-  [
-    'a ternary with no boolean arm',
-    `process p { var n: number if (n > 1 ? "a" : 2) { user A } }`,
-    [nonBooleanCondition('a ternary with no boolean arm')],
-  ],
-  [
-    'text around a template evaluates to a string',
-    `process p { if ("\${a} and \${b}") { user A } }`,
-    [
+      nonBooleanCondition('a number'),
+      nonBooleanCondition('an arithmetic expression'),
+      nonBooleanCondition('an arithmetic expression'),
+      nonBooleanCondition('a ternary with no boolean arm'),
       nonBooleanCondition(
         'text around a template, which evaluates to a string',
       ),
+      nonBooleanCondition('a string'),
+      warn(undeclared('x')),
     ],
-  ],
-  [
-    'parentheses do not change the shape',
-    `process p { if (("yes")) { user A } }`,
-    [nonBooleanCondition('a string')],
-  ],
-  [
-    'a boolean variable, a comparison and a template body are clean',
-    `process p { var flag: boolean if (flag) { user A } if (flag && "\${a.b}") { user B } user U for 3 until (nrOfCompletedInstances > 1) }`,
-    [],
-  ],
-  [
-    'an undeclared variable keeps its warning and nothing more',
-    `process p { if (x) { user A } }`,
-    [warn(undeclared('x'))],
-  ],
-  [
-    'a property and a ternary with one boolean arm have no known type',
-    `process p { var order: json var f: boolean if (order.paid) { user A } if (f ? f : 1) { user B } }`,
-    [],
   ],
 ]);
 
 checks('Validation - a composite raw template cannot be an operand', [
   [
-    'negated',
-    `process p { if (!"\${a} and \${b}") { user A } }`,
-    [COMPOSITE_OPERAND_MESSAGE],
-  ],
-  [
-    'compared',
-    `process p { if ("\${a} b" == "x") { user A } }`,
-    [COMPOSITE_OPERAND_MESSAGE],
-  ],
-  [
-    'as an index',
-    `process p { var m: json if (m["\${a} \${b}"]) { user A } }`,
-    [COMPOSITE_OPERAND_MESSAGE],
-  ],
-  [
-    'in a ternary arm',
-    `process p { var f: boolean if (f ? "\${a} \${b}" : true) { user A } }`,
-    [COMPOSITE_OPERAND_MESSAGE],
-  ],
-  [
-    'one template under an operator splices in',
-    `process p { if (!"\${a.b}") { user A } }`,
-    [],
-  ],
-  [
-    'a brace or opener inside a JUEL string literal is string text (Scanner.nextString), so "${map[\'}\']}" and "${fn(\'${\')}" are one template',
-    `process p { if (!"\${map['}']}" && !"\${fn('\${')}") { user A } }`,
-    [],
-  ],
-  [
-    'a composite at the top of its position is carried as written',
-    `process p { service S(class: "com.acme.D") { field subject = "\${a} and \${b}" } }`,
-    [],
+    'a composite raw template is refused as an operand in every position',
+    `process p {
+  var m: json
+  var f: boolean
+  if (!"\${a} and \${b}") { user A }
+  if ("\${a} b" == "x") { user A2 }
+  if (m["\${a} \${b}"]) { user A3 }
+  if (f ? "\${a} \${b}" : true) { user A4 }
+  if (!"\${a.b}") { user A5 }
+  if (!"\${map['}']}" && !"\${fn('\${')}") { user A6 }
+  service S(class: "com.acme.D") { field subject = "\${a} and \${b}" }
+}`,
+    [
+      COMPOSITE_OPERAND_MESSAGE,
+      COMPOSITE_OPERAND_MESSAGE,
+      COMPOSITE_OPERAND_MESSAGE,
+      COMPOSITE_OPERAND_MESSAGE,
+    ],
   ],
 ]);
 
 checks('Validation - binding values', [
   [
-    'a quoted delegate on a service task never resolves',
-    `process p { service S(delegate: "bean") }`,
-    [literalElBindingMessage('delegate')],
-  ],
-  [
-    'a quoted expression on a listener evaluates to its own text',
-    `process p { user U { on start(expression: "bean.run()") } }`,
-    [literalElBindingMessage('expression')],
-  ],
-  [
-    'a quoted mapperDelegate on a call never resolves',
-    `process p { call C(process: "q", mapperDelegate: "bean") }`,
-    [literalElBindingMessage('mapperDelegate')],
+    "a binding value's shape decides whether it resolves as a class, name, or text",
+    `process p {
+  service S(delegate: "bean")
+  call C(process: "q", mapperDelegate: "bean")
+  service S2(class: "\${cls}")
+  call C2(process: "q", mapper: "\${cls}")
+  decide D(decision: "")
+  call C3(process: "q", mapper: "") call D2(process: "q", mapperDelegate: "")
+  service S3(delegate: bean) service T(expression: bean.method) service U3(class: "com.acme.D3") call C4(process: "q", mapper: com.acme.M)
+  user U { on start(expression: "bean.run()") }
+  user U2 { on start(class: "\${cls}") }
+}`,
+    [
+      literalElBindingMessage('delegate'),
+      literalElBindingMessage('mapperDelegate'),
+      templateAsClassMessage('class', 'delegate'),
+      templateAsClassMessage('mapper', 'mapperDelegate'),
+      emptyBinding('decision', 'decision table to evaluate'),
+      emptyBinding('mapper', 'mapping class to load'),
+      emptyBinding('mapperDelegate', 'mapping delegate to resolve'),
+      literalElBindingMessage('expression'),
+      templateAsClassMessage('class', 'delegate'),
+    ],
   ],
   [
     'a quoted expression on a thrown message evaluates to its own text',
     `process p { start S throw message("Ack", expression: "b") }`,
     [literalElBindingMessage('expression')],
-  ],
-  [
-    'a template as a class is loaded as a class name',
-    `process p { service S(class: "\${cls}") }`,
-    [templateAsClassMessage('class', 'delegate')],
-  ],
-  [
-    'a template as a listener class is loaded the same way',
-    `process p { user U { on start(class: "\${cls}") } }`,
-    [templateAsClassMessage('class', 'delegate')],
-  ],
-  [
-    'a template as a mapper is loaded the same way',
-    `process p { call C(process: "q", mapper: "\${cls}") }`,
-    [templateAsClassMessage('mapper', 'mapperDelegate')],
   ],
   ...(
     [
@@ -981,69 +798,57 @@ checks('Validation - binding values', [
     `process p { user U { on start(${key}: " ") } }`,
     [emptyBinding(key, noun)],
   ]),
-  [
-    'an empty decision on a decide step',
-    `process p { decide D(decision: "") }`,
-    [emptyBinding('decision', 'decision table to evaluate')],
-  ],
-  [
-    'an empty mapper and mapperDelegate on a call',
-    `process p { call C(process: "q", mapper: "") call D(process: "q", mapperDelegate: "") }`,
-    [
-      emptyBinding('mapper', 'mapping class to load'),
-      emptyBinding('mapperDelegate', 'mapping delegate to resolve'),
-    ],
-  ],
-  [
-    'a bare or dotted name and a template are the shapes the keys take',
-    `process p { service S(delegate: bean) service T(expression: bean.method) service U(class: "com.acme.D") call C(process: "q", mapper: com.acme.M) }`,
-    [],
-  ],
 ]);
 
 checks('Validation - an escaped literal as a field value', [
   [
-    'quoted text opening with an escaped template has no field slot',
-    `process p { service S(class: "com.acme.D") { field x = "\\\${y" } }`,
-    [escapedFieldLiteralMessage('x')],
-  ],
-  [
-    'the hash opener and leading whitespace are the same slot',
-    `process p { service S(class: "com.acme.D") { field x = "\\#{y}" field z = " \\\${y}" } }`,
-    [escapedFieldLiteralMessage('x'), escapedFieldLiteralMessage('z')],
-  ],
-  [
-    'on a listener as well',
-    `process p { user U { on start(class: "com.acme.L") { field x = "\\\${y" } } }`,
-    [escapedFieldLiteralMessage('x')],
-  ],
-  [
-    'an opener further in is plain text',
-    `process p { service S(class: "com.acme.D") { field x = "cost: \\\${y}" } }`,
-    [],
-  ],
-  [
-    'an empty literal has neither a fixed value nor an expression',
-    `process p { service S(class: "com.acme.D") { field x = "" } }`,
-    [emptyFieldMessage('x')],
-  ],
-  [
-    'an empty literal on a listener as well',
-    `process p { user U { on start(class: "com.acme.L") { field x = "" } } }`,
-    [emptyFieldMessage('x')],
+    'an escaped template in a field value is text, not an expression, in every host',
+    `process p {
+  service S(class: "com.acme.D") { field x = "\\\${y" }
+  service S2(class: "com.acme.D2") { field x = "\\#{y}" field z = " \\\${y}" }
+  service S3(class: "com.acme.D3") { field x = "cost: \\\${y}" }
+  service S4(class: "com.acme.D4") { field x = "" }
+  user U { on start(class: "com.acme.L") { field x = "\\\${y" } }
+  user U2 { on start(class: "com.acme.L2") { field x = "" } }
+}`,
+    [
+      escapedFieldLiteralMessage('x'),
+      escapedFieldLiteralMessage('x'),
+      escapedFieldLiteralMessage('z'),
+      emptyFieldMessage('x'),
+      escapedFieldLiteralMessage('x'),
+      emptyFieldMessage('x'),
+    ],
   ],
 ]);
 
 checks('Validation - attribute keys and value shapes', [
   [
-    'a repeated key in one block is one error naming it',
-    `process p { user T(assignee: "a", assignee: "b") }`,
-    [duplicateSetting('assignee')],
-  ],
-  [
-    'a second unkeyed value is dropped, so it is refused',
-    `process p { var x: number start S await message("M", x > 1) }`,
-    [SECOND_PAREN_VALUE_MESSAGE],
+    "an attribute's declared value shape is enforced regardless of element kind",
+    `process p {
+  var x: number
+  start S await message("M", x > 1)
+  user T(assignee: "a", assignee: "b")
+  user U(assignee: "demo", formKey: "f", candidateGroups: "approvers", candidateUsers: "ada", dueDate: "2026-09-01T09:00:00", followUpDate: "2026-08-30T09:00:00", priority: 10)
+  script T2(resultVariable: "total") ${FENCE}js\n1 + 1\n${FENCE}
+  user U2(asyncBefore: true, exclusive: "true")
+  user U3(asyncBefore: 1)
+  user U4(asyncBefore: flag)
+  user U5(asyncBefore: "\${flag}")
+  user U6(asyncBefore: true, retryCycle: "R3/PT10M", dueDate: "\${due}", followUpDate: "\${due}")
+  user U7(asyncBefore: true, retryCycle: 3)
+  user U8(asyncBefore: true, jobPriority: "\${weight}")
+}`,
+    [
+      warn(undeclared('flag')),
+      SECOND_PAREN_VALUE_MESSAGE,
+      duplicateSetting('assignee'),
+      quotedBoolean('exclusive'),
+      quotedBoolean('asyncBefore'),
+      quotedBoolean('asyncBefore'),
+      quotedBoolean('asyncBefore'),
+      unquotedText('retryCycle'),
+    ],
   ],
   [
     'the refusal counts one per extra value, whatever the element',
@@ -1081,8 +886,11 @@ checks('Validation - attribute keys and value shapes', [
     [settingsOnlyMessage('a process header')],
   ],
   [
-    'assignee on a service task is not valid there',
-    `process p { service S(assignee: "x") }`,
+    'assignee and initiator are each valid only on their own element kind',
+    `process p {
+  start S2(initiator: claimant)
+  service S(assignee: "x")
+}`,
     [
       notValidOn('assignee', 'a service task'),
       bindingRequired(`Service task 'S'`, SERVICE_BINDINGS),
@@ -1109,58 +917,8 @@ checks('Validation - attribute keys and value shapes', [
     [notValidOn(key, description)],
   ]),
   [
-    'a user task accepts every key it owns',
-    `process p { user U(assignee: "demo", formKey: "f", candidateGroups: "approvers", candidateUsers: "ada", dueDate: "2026-09-01T09:00:00", followUpDate: "2026-08-30T09:00:00", priority: 10) }`,
-    [],
-  ],
-  [
-    'a script task accepts resultVariable',
-    `process p { script T(resultVariable: "total") ${FENCE}js\n1 + 1\n${FENCE} }`,
-    [],
-  ],
-  [
-    'a quoted boolean is one error naming the unquoted form',
-    `process p { user U(asyncBefore: true, exclusive: "true") }`,
-    [quotedBoolean('exclusive')],
-  ],
-  [
-    'a number in a boolean attribute is one error',
-    `process p { user U(asyncBefore: 1) }`,
-    [quotedBoolean('asyncBefore')],
-  ],
-  [
-    'a bareword in a boolean attribute is one error, and still reads as a variable',
-    `process p { user U(asyncBefore: flag) }`,
-    [warn(undeclared('flag')), quotedBoolean('asyncBefore')],
-  ],
-  [
-    'an expression in a boolean attribute is one error, since the lowering drops it',
-    `process p { user U(asyncBefore: "\${flag}") }`,
-    [quotedBoolean('asyncBefore')],
-  ],
-  [
-    'every engine-side text attribute takes a quoted string or an expression',
-    `process p { user U(asyncBefore: true, retryCycle: "R3/PT10M", dueDate: "\${due}", followUpDate: "\${due}") }`,
-    [],
-  ],
-  [
-    'a number in retryCycle asks for quotes',
-    `process p { user U(asyncBefore: true, retryCycle: 3) }`,
-    [unquotedText('retryCycle')],
-  ],
-  [
     'a bareword starter list names a principal, not a variable',
     `process p(candidateStarterUsers: demo, candidateStarterGroups: adjusters) { start S }`,
-    [],
-  ],
-  [
-    'a bareword initiator names the variable the engine writes, not one in scope',
-    `process p { start S(initiator: claimant) }`,
-    [],
-  ],
-  [
-    'an expression in a numeric attribute carries no value-shape rule',
-    `process p { user U(asyncBefore: true, jobPriority: "\${weight}") }`,
     [],
   ],
   [
@@ -1172,81 +930,63 @@ checks('Validation - attribute keys and value shapes', [
 
 checks('Validation - service, send, and decision bindings', [
   [
-    'a service task with no binding names the five attributes',
-    `process p { service S { } }`,
-    [bindingRequired(`Service task 'S'`, SERVICE_BINDINGS)],
+    "a service, send, or decision task's binding decides which keys it may carry",
+    `process p {
+  service S { }
+  service S2(expression: "\${bean.method(execution)}") service T(delegate: "\${beanName}") service U(topic: "shipping")
+  service V(resultVariable: "r", asyncBefore: true)
+  service V2(class: com.example.X, resultVariable: "outcome")
+  service V3(delegate: "\${bean}", resultVariable: "outcome")
+  send N(class: com.example.X2, resultVariable: "outcome")
+  decide D(delegate: "\${bean}", resultVariable: "outcome")
+  service V4(expression: "\${bean.method(execution)}", resultVariable: "outcome")
+  decide D2(decision: riskRating)
+  decide D3(decision: "riskRating", binding: latest, version: 3)
+  decide D4(decision: "riskRating", binding: version)
+  decide D5(decision: "riskRating", mapDecisionResult: nonsense)
+  receive R(message: "OrderPaid")
+}`,
+    [
+      bindingRequired(`Service task 'S'`, SERVICE_BINDINGS),
+      bindingRequired(`Service task 'V'`, SERVICE_BINDINGS),
+      resultVariableBindingMessage('A service task', 'class', 'serviceTask'),
+      resultVariableBindingMessage('A service task', 'delegate', 'serviceTask'),
+      resultVariableBindingMessage('A send task', 'class', 'sendTask'),
+      resultVariableBindingMessage(
+        'A decision step',
+        'delegate',
+        'businessRuleTask',
+      ),
+      bindingVersionClash('A decision step'),
+      BINDING_IS_VERSION,
+      MAP_DECISION_RESULT,
+    ],
   ],
   [
-    'a service task with two bindings names both',
-    `process p { service S(class: com.example.X, expression: "\${bean.method(execution)}") }`,
+    'a doubled or missing binding on a service, send, or decision task is fully named',
+    `process p {
+  service S(class: com.example.X, expression: "\${bean.method(execution)}")
+  send N { }
+  decide D { }
+}`,
     [
       bindingConflict(
         `Service task 'S'`,
         'class, expression',
         SERVICE_BINDINGS,
       ),
+      bindingRequired(`Send task 'N'`, SERVICE_BINDINGS),
+      bindingRequired(`Decision step 'D'`, DECISION_BINDINGS),
     ],
   ],
   [
-    'an expression, a delegate, or a topic binding alone is enough',
-    `process p { service S(expression: "\${bean.method(execution)}") service T(delegate: "\${beanName}") service U(topic: "shipping") }`,
-    [],
-  ],
-  [
-    'keys that bind nothing leave a service task without a binding',
-    `process p { service V(resultVariable: "r", asyncBefore: true) }`,
-    [bindingRequired(`Service task 'V'`, SERVICE_BINDINGS)],
-  ],
-  [
-    'a service task cannot carry resultVariable beside class: the engine refuses to deploy it',
-    `process p { service V(class: com.example.X, resultVariable: "outcome") }`,
-    [resultVariableBindingMessage('A service task', 'class', 'serviceTask')],
-  ],
-  [
-    'a service task cannot carry resultVariable beside delegate either',
-    `process p { service V(delegate: "\${bean}", resultVariable: "outcome") }`,
-    [resultVariableBindingMessage('A service task', 'delegate', 'serviceTask')],
-  ],
-  [
-    'a send task bound with class refuses resultVariable under its own element name',
-    `process p { send N(class: com.example.X, resultVariable: "outcome") }`,
-    [resultVariableBindingMessage('A send task', 'class', 'sendTask')],
-  ],
-  [
-    'a decision step bound with delegate refuses resultVariable under its own element name',
-    `process p { decide D(delegate: "\${bean}", resultVariable: "outcome") }`,
+    'a send task or a decision step names both bindings when it carries two',
+    `process p {
+  send N(class: "com.example.Send", topic: "t")
+  decide D(decision: "riskRating", class: "com.example.Rate")
+}`,
     [
-      resultVariableBindingMessage(
-        'A decision step',
-        'delegate',
-        'businessRuleTask',
-      ),
-    ],
-  ],
-  [
-    'resultVariable beside an expression binding is where the engine stores the return value',
-    `process p { service V(expression: "\${bean.method(execution)}", resultVariable: "outcome") }`,
-    [],
-  ],
-  [
-    'a send task with no binding names the five attributes',
-    `process p { send N { } }`,
-    [bindingRequired(`Send task 'N'`, SERVICE_BINDINGS)],
-  ],
-  [
-    'a send task with two bindings names both',
-    `process p { send N(class: "com.example.Send", topic: "t") }`,
-    [bindingConflict(`Send task 'N'`, 'class, topic', SERVICE_BINDINGS)],
-  ],
-  [
-    'a decision step with no binding names the six attributes',
-    `process p { decide D { } }`,
-    [bindingRequired(`Decision step 'D'`, DECISION_BINDINGS)],
-  ],
-  [
-    'a decision step bound to both a decision and code names both',
-    `process p { decide D(decision: "riskRating", class: "com.example.Rate") }`,
-    [
+      bindingConflict(`Send task 'N'`, 'class, topic', SERVICE_BINDINGS),
       bindingConflict(
         `Decision step 'D'`,
         'decision, class',
@@ -1254,48 +994,24 @@ checks('Validation - service, send, and decision bindings', [
       ),
     ],
   ],
-  [
-    'a bareword decision names a decision table, not a variable',
-    `process p { decide D(decision: riskRating) }`,
-    [],
-  ],
-  [
-    'a decision step combining binding and version is one error',
-    `process p { decide D(decision: "riskRating", binding: latest, version: 3) }`,
-    [bindingVersionClash('A decision step')],
-  ],
-  [
-    "'binding: version' on a decision step points at the version setting",
-    `process p { decide D(decision: "riskRating", binding: version) }`,
-    [BINDING_IS_VERSION],
-  ],
-  [
-    'an unrecognized mapDecisionResult names the four mappings',
-    `process p { decide D(decision: "riskRating", mapDecisionResult: nonsense) }`,
-    [MAP_DECISION_RESULT],
-  ],
-  [
-    'a receive task takes a message name',
-    `process p { receive R(message: "OrderPaid") }`,
-    [],
-  ],
 ]);
 
 checks('Validation - settings the engine reads under one binding alone', [
   [
-    'resultVariable beside a topic warns that nothing writes it',
-    `process p { service V(topic: "t", resultVariable: "r") }`,
-    [warn(resultVariableUnreadMessage('topic'))],
-  ],
-  [
-    'resultVariable beside a topic on a decision step warns the same way',
-    `process p { decide D(topic: "t", resultVariable: "r") }`,
-    [warn(resultVariableUnreadMessage('topic'))],
-  ],
-  [
-    'mapDecisionResult with no resultVariable is built and never applied',
-    `process p { decide D(decision: "riskRating", mapDecisionResult: singleEntry) }`,
-    [warn(MAP_DECISION_RESULT_UNREAD_MESSAGE)],
+    'resultVariable and mapDecisionResult beside a topic binding are each refused once',
+    `process p {
+  service V(topic: "t", resultVariable: "r")
+  decide D(topic: "t", resultVariable: "r")
+  decide D2(decision: "riskRating", mapDecisionResult: singleEntry)
+  decide D3(topic: "t", binding: latest, mapDecisionResult: singleEntry)
+}`,
+    [
+      warn(resultVariableUnreadMessage('topic')),
+      warn(resultVariableUnreadMessage('topic')),
+      warn(MAP_DECISION_RESULT_UNREAD_MESSAGE),
+      decisionModifierMessage('binding'),
+      decisionModifierMessage('mapDecisionResult'),
+    ],
   ],
   ...['singleEntry', 'singleResult', 'collectEntries', 'resultList'].map(
     (mapping): Case => [
@@ -1313,114 +1029,124 @@ checks('Validation - settings the engine reads under one binding alone', [
     `process p { decide D(class: "com.example.Rate", ${setting}) }`,
     [decisionModifierMessage(key!)],
   ]),
-  [
-    'two modifiers beside a topic are each refused once',
-    `process p { decide D(topic: "t", binding: latest, mapDecisionResult: singleEntry) }`,
-    [
-      decisionModifierMessage('binding'),
-      decisionModifierMessage('mapDecisionResult'),
-    ],
-  ],
 ]);
 
 const userWith = (setting: string) => `process p { user U(${setting}) }`;
 
-const VERSION_CARRIERS: Array<[carrier: string, at: (v: string) => string]> = [
-  ['a call', (v) => `process p { call C(process: "q", version: ${v}) }`],
+type ValueShape = [
+  key: string,
+  program: (value: string) => string,
+  parsed: string[],
+  refused: string[],
+  message: string,
+];
+
+const VALUE_SHAPES: ValueShape[] = [
   [
-    'a decision step',
-    (v) => `process p { decide D(decision: "riskRating", version: ${v}) }`,
+    'priority',
+    (v) => `process p { var weight: number user U(priority: ${v}) }`,
+    ['7', '"7"', '"${p}"', 'weight'],
+    ['1.5', '"high"'],
+    priorityShapeMessage('priority'),
+  ],
+  ...Object.entries({
+    'a call': (v: string) =>
+      `process p { call C(process: "q", version: ${v}) }`,
+    'a decision step': (v: string) =>
+      `process p { decide D(decision: "riskRating", version: ${v}) }`,
+    'a form reference': (v: string) =>
+      userWith(`formRef: "review-form", version: ${v}`),
+  }).map(([carrier, at]): ValueShape => [
+    `version on ${carrier}`,
+    at,
+    ['2', '"2"', '"${v}"'],
+    ['1.5', '"abc"', '-1', '0', 'v'],
+    VERSION_SHAPE_MESSAGE,
+  ]),
+  [
+    'dueDate',
+    (v) => userWith(`dueDate: ${v}`),
+    ['"P2D"', '"2026-01-01T00:00:00"', '"${d}"'],
+    ['"tomorrow"'],
+    dueDateShapeMessage('dueDate'),
   ],
   [
-    'a form reference',
-    (v) => userWith(`formRef: "review-form", version: ${v}`),
+    'followUpDate',
+    (v) => userWith(`followUpDate: ${v}`),
+    ['"P2D"'],
+    ['"next week"'],
+    dueDateShapeMessage('followUpDate'),
+  ],
+  [
+    'retryCycle',
+    (v) => userWith(`asyncBefore: true, retryCycle: ${v}`),
+    ['"PT10M"', '"R3/PT10M"', '"PT5M,PT10M"', '"${r}"'],
+    ['"bogus"'],
+    warn(RETRY_CYCLE_SHAPE_MESSAGE),
   ],
 ];
 
-checks('Validation - values the engine parses when the step runs', [
-  ...['7', '"7"', '"${p}"', 'weight'].map((value): Case => [
-    `priority ${value} parses or evaluates to an integer`,
-    `process p { var weight: number user U(priority: ${value}) }`,
-    [],
-  ]),
-  ...['1.5', '"high"'].map((value): Case => [
-    `priority ${value} fails the task creation, so it is refused`,
-    userWith(`priority: ${value}`),
-    [priorityShapeMessage('priority')],
-  ]),
-  ...VERSION_CARRIERS.flatMap(([carrier, at]): Case[] => [
-    ...['2', '"2"', '"${v}"'].map((value): Case => [
-      `version ${value} on ${carrier} converts to an integer`,
-      at(value),
-      [],
-    ]),
-    ...['1.5', '"abc"', '-1', '0', 'v'].map((value): Case => [
-      `version ${value} on ${carrier} fails at the step, so it is refused`,
-      at(value),
-      [VERSION_SHAPE_MESSAGE],
-    ]),
-  ]),
-  ...['"P2D"', '"2026-01-01T00:00:00"', '"${d}"'].map((value): Case => [
-    `dueDate ${value} is a shape the business calendar resolves`,
-    userWith(`dueDate: ${value}`),
-    [],
-  ]),
-  [
-    'a due date the calendar cannot resolve is refused on both keys',
-    userWith('dueDate: "tomorrow", followUpDate: "next week"'),
-    [dueDateShapeMessage('dueDate'), dueDateShapeMessage('followUpDate')],
-  ],
-  ...['"PT10M"', '"R3/PT10M"', '"PT5M,PT10M"', '"${r}"'].map((value): Case => [
-    `retryCycle ${value} is a shape the retry parser resolves`,
-    userWith(`asyncBefore: true, retryCycle: ${value}`),
-    [],
-  ]),
-  [
-    'a retryCycle the parser cannot resolve is dropped, so it only warns',
-    userWith('asyncBefore: true, retryCycle: "bogus"'),
-    [warn(RETRY_CYCLE_SHAPE_MESSAGE)],
-  ],
-]);
+describe('Validation - values the engine parses when the step runs', () => {
+  test.each(VALUE_SHAPES)(
+    '%s is refused exactly when the engine cannot parse it',
+    async (_key, program, parsed, refused, message) => {
+      const values = [...parsed, ...refused];
+      expect(
+        await Promise.all(values.map((v) => diagnosticsOf(program(v)))),
+      ).toEqual(values.map((v) => (refused.includes(v) ? [message] : [])));
+    },
+  );
+});
 
 checks('Validation - the mail and shell bindings', [
   [
-    'a mail task with a recipient and a text body is clean',
-    `process p { service N(type: "mail") { field to = "a@b" field text = "t" } }`,
-    [],
+    "mail and shell task fields validate against each behaviour's own declared shape",
+    `process p {
+  start S2 emit message("Ack", type: "shell")
+  service N(type: "mail") { field to = "a@b" field text = "t" }
+  send S(type: "shell") { field command = "echo" field arg1 = "x" field outputVariable = "o" field wait = "true" }
+  decide D(type: "shell") { field command = "true" }
+  service N2(type: mail) { field to = "a@b" field text = "t" }
+  service N3(type: "MAIL")
+  service N4(type: "ftp")
+  service N5(type: "mail") { field to = "a@b" field text = "t" field html = "<p>t</p>" }
+  service R(type: "shell") { field command = "\${cmd}" }
+  service R2(type: "shell") { field command = "ls" field wait = "True" }
+  service N6(type: "mail") { field to = "a@b" field text = "t" field recipient = "x" }
+  service R3(type: "shell") { field command = "ls" field args = "x" }
+  service R4(type: "shell") { field command = ["ls"] }
+  user U(type: "mail")
+  service R5(type: "shell", resultVariable: "r") { field command = "ls" }
+}`,
+    [
+      notValidOn('type', 'an emit statement'),
+      TYPE_VALUE_MESSAGE,
+      TYPE_VALUE_MESSAGE,
+      shellFieldExpressionMessage('command'),
+      shellFlagValueMessage('wait'),
+      unknownBuiltinFieldMessage('recipient', 'mail'),
+      unknownBuiltinFieldMessage('args', 'shell'),
+      fieldValueMessage('command'),
+      notValidOn('type', 'a user task'),
+      warn(resultVariableUnreadMessage('type')),
+    ],
   ],
   [
-    'a shell send task with a command, an argument, an output variable, and a flag is clean',
-    `process p { send S(type: "shell") { field command = "echo" field arg1 = "x" field outputVariable = "o" field wait = "true" } }`,
-    [],
-  ],
-  [
-    'a shell decision step with a command alone is clean',
-    `process p { decide D(type: "shell") { field command = "true" } }`,
-    [],
-  ],
-  [
-    'the type is read bare as it is read quoted',
-    `process p { service N(type: mail) { field to = "a@b" field text = "t" } }`,
-    [],
-  ],
-  [
-    'an upper-case type is refused: one printed form keeps the round trip stable',
-    `process p { service N(type: "MAIL") }`,
-    [TYPE_VALUE_MESSAGE],
-  ],
-  [
-    'a type the engine has no behaviour for names the two it has',
-    `process p { service N(type: "ftp") }`,
-    [TYPE_VALUE_MESSAGE],
-  ],
-  [
-    'a cc does not stand in for the recipient',
-    `process p { service N(type: "mail") { field cc = "c@d" field text = "t" } }`,
+    'a mail cc is not a recipient, and a shell command is required',
+    `process p {
+  service N(type: "mail") { field cc = "c@d" field text = "t" }
+  send S(type: "shell") { field wait = "true" }
+}`,
     [
       missingBuiltinFieldMessage(
         `Service task 'N'`,
         'mail',
         BUILTIN_REQUIRED_FIELDS.mail[0]!,
+      ),
+      missingBuiltinFieldMessage(
+        `Send task 'S'`,
+        'shell',
+        BUILTIN_REQUIRED_FIELDS.shell[0]!,
       ),
     ],
   ],
@@ -1434,11 +1160,6 @@ checks('Validation - the mail and shell bindings', [
         BUILTIN_REQUIRED_FIELDS.mail[1]!,
       ),
     ],
-  ],
-  [
-    'a mail task with both bodies is clean',
-    `process p { service N(type: "mail") { field to = "a@b" field text = "t" field html = "<p>t</p>" } }`,
-    [],
   ],
   [
     'a mail task with no field at all draws one refusal per requirement',
@@ -1457,42 +1178,6 @@ checks('Validation - the mail and shell bindings', [
     ],
   ],
   [
-    'a shell task without a command names the engine check',
-    `process p { send S(type: "shell") { field wait = "true" } }`,
-    [
-      missingBuiltinFieldMessage(
-        `Send task 'S'`,
-        'shell',
-        BUILTIN_REQUIRED_FIELDS.shell[0]!,
-      ),
-    ],
-  ],
-  [
-    'a shell field written as an expression fails the deployment, so it is refused',
-    `process p { service R(type: "shell") { field command = "\${cmd}" } }`,
-    [shellFieldExpressionMessage('command')],
-  ],
-  [
-    'a shell flag the engine would read as false is refused',
-    `process p { service R(type: "shell") { field command = "ls" field wait = "True" } }`,
-    [shellFlagValueMessage('wait')],
-  ],
-  [
-    'a field the mail behaviour does not declare names the ones it does',
-    `process p { service N(type: "mail") { field to = "a@b" field text = "t" field recipient = "x" } }`,
-    [unknownBuiltinFieldMessage('recipient', 'mail')],
-  ],
-  [
-    'a field the shell behaviour does not declare names the ones it does',
-    `process p { service R(type: "shell") { field command = "ls" field args = "x" } }`,
-    [unknownBuiltinFieldMessage('args', 'shell')],
-  ],
-  [
-    "a field's own shape is refused first, and the shell rules stand down",
-    `process p { service R(type: "shell") { field command = ["ls"] } }`,
-    [fieldValueMessage('command')],
-  ],
-  [
     'a type beside a code binding is the one-binding conflict and nothing more',
     `process p { service N(class: "com.example.X", type: "mail") }`,
     [bindingConflict(`Service task 'N'`, 'class, type', SERVICE_BINDINGS)],
@@ -1501,21 +1186,6 @@ checks('Validation - the mail and shell bindings', [
     'a thrown message has no block for the fields, so it takes no type',
     `process p { start S throw message("Ack", type: "mail") }`,
     [notValidOn('type', 'a throw statement')],
-  ],
-  [
-    'an emitted message takes none either',
-    `process p { start S emit message("Ack", type: "shell") }`,
-    [notValidOn('type', 'an emit statement')],
-  ],
-  [
-    'a user task takes no type',
-    `process p { user U(type: "mail") }`,
-    [notValidOn('type', 'a user task')],
-  ],
-  [
-    'a result variable beside a type warns that nothing writes it, as beside a topic',
-    `process p { service R(type: "shell", resultVariable: "r") { field command = "ls" } }`,
-    [warn(resultVariableUnreadMessage('type'))],
   ],
 ]);
 
@@ -1543,14 +1213,13 @@ checks('Validation - script tasks and fenced scripts', [
 
 checks('Validation - goto', [
   [
-    'an unresolved goto is the linker error alone',
-    `process p { user Foo goto Missing }`,
+    'a goto resolves to any flow step kind, or is an unresolved linker error alone',
+    `process p {
+  var c: boolean
+  user Foo goto Missing
+  user Foo2 service Ship(topic: "shipping") script Compute ${FENCE}js\nx = 1\n${FENCE} call F(process: "p") if (c) { goto Foo2 } if (c) { goto Ship } if (c) { goto Compute } goto F
+}`,
     [missingStep('Missing')],
-  ],
-  [
-    'a goto resolves to a user task, a service task, a script task, and a call',
-    `process p { var c: boolean user Foo service Ship(topic: "shipping") script Compute ${FENCE}js\nx = 1\n${FENCE} call F(process: "p") if (c) { goto Foo } if (c) { goto Ship } if (c) { goto Compute } goto F }`,
-    [],
   ],
   [
     'a goto from outside into a parallel branch is one error',
@@ -1558,24 +1227,18 @@ checks('Validation - goto', [
     [gotoIntoBranch('A', 'parallel')],
   ],
   [
-    'a goto from one parallel branch into its sibling is one error',
-    `process p { parallel { { user A goto B } { user B } } }`,
+    'a goto stays clean within its own branch but not across parallel siblings',
+    `process p {
+  parallel { { user A goto B } { user B } }
+  parallel { { user A2 goto A2 } { user B2 } }
+  await { message("M") { user A3 goto A3 } signal("S") { user B3 } }
+}`,
     [gotoIntoBranch('B', 'parallel')],
-  ],
-  [
-    'a goto within one parallel branch is clean',
-    `process p { parallel { { user A goto A } { user B } } }`,
-    [],
   ],
   [
     'a goto from outside into a race branch names the await statement',
     `process p { await { message("M") { user A } signal("S") { user B } } goto A }`,
     [gotoIntoBranch('A', 'await')],
-  ],
-  [
-    'a goto within one race branch is clean',
-    `process p { await { message("M") { user A goto A } signal("S") { user B } } }`,
-    [],
   ],
 ]);
 
@@ -1590,7 +1253,14 @@ checks('Validation - a body with no flow steps', [
     `process p { error Boom on error(Boom) { end H } }`,
     [noFlowSteps('p')],
   ],
-  ['a start alone is a flow step', `process p { start S }`, []],
+  [
+    'an empty body is refused by naming the step that would need one',
+    `process p {
+  start S
+  attempt A { }
+}`,
+    [blockNoFlowSteps('an attempt block', 'A')],
+  ],
   [
     'an empty subprocess body names the subprocess head',
     `process p { subprocess S { } }`,
@@ -1601,63 +1271,40 @@ checks('Validation - a body with no flow steps', [
     `process p { error Boom subprocess S { on error(Boom) { end H } } }`,
     [blockNoFlowSteps('a subprocess', 'S')],
   ],
-  [
-    'an empty attempt body names the attempt head instead',
-    `process p { attempt A { } }`,
-    [blockNoFlowSteps('an attempt block', 'A')],
-  ],
 ]);
 
 checks('Validation - empty branches and bodies', [
   [
-    "an empty 'if' branch is one warning",
-    `process p { var flag: boolean if (flag == true) { } }`,
-    [warn(emptyBranch(`'if' branch`))],
-  ],
-  [
-    "an empty 'else if' branch is one warning",
-    `process p { var flag: boolean if (flag == true) { user A } else if (flag == false) { } }`,
-    [warn(emptyBranch(`'else if' branch`))],
-  ],
-  [
-    "an empty 'else' branch is one warning",
-    `process p { var flag: boolean if (flag == true) { user A } else { } }`,
-    [warn(emptyBranch(`'else' branch`))],
-  ],
-  [
-    "an empty 'while' body would lose the loop's condition",
-    `process p { var flag: boolean while (flag == true) { } }`,
-    [emptyLoopBodyMessage('while')],
-  ],
-  [
-    "an empty 'do ... while' body would lose the loop's condition",
-    `process p { var flag: boolean do { } while (flag == true) }`,
-    [emptyLoopBodyMessage('do')],
-  ],
-  [
-    'a parameter written in a handler body configures nothing',
-    `process p { user T on message("Late") { input who = "x" end LateEnd } }`,
-    [blockParameter('input')],
+    'an empty branch or body is warned about, naming what it would lose',
+    `process p {
+  var flag: boolean
+  var c: boolean
+  if (flag == true) { }
+  if (flag == true) { user A } else if (flag == false) { }
+  if (flag == true) { user A2 } else { }
+  while (flag == true) { }
+  do { } while (flag == true)
+  while (c) { user A3 output y = 1 }
+  parallel { { user A4 } { } }
+  await { message("M") { } signal("S") { user B } }
+  user T on message("Late") { input who = "x" end LateEnd }
+}`,
+    [
+      warn(emptyBranch(`'if' branch`)),
+      warn(emptyBranch(`'else if' branch`)),
+      warn(emptyBranch(`'else' branch`)),
+      emptyLoopBodyMessage('while'),
+      emptyLoopBodyMessage('do'),
+      blockParameter('output'),
+      warn(emptyNumberedBranch(2, 'parallel')),
+      warn(emptyNumberedBranch(1, 'await')),
+      blockParameter('input'),
+    ],
   ],
   [
     'a listener written first in a subprocess body observes nothing',
     `process p { subprocess S { on start(class: "x.L") user A } }`,
     [BLOCK_LISTENER],
-  ],
-  [
-    'a parameter written in a loop body configures nothing',
-    `process p { var c: boolean while (c) { user A output y = 1 } }`,
-    [blockParameter('output')],
-  ],
-  [
-    'an empty parallel branch is one warning naming its position',
-    `process p { parallel { { user A } { } } }`,
-    [warn(emptyNumberedBranch(2, 'parallel'))],
-  ],
-  [
-    'an empty race branch is one warning naming its position',
-    `process p { await { message("M") { } signal("S") { user B } } }`,
-    [warn(emptyNumberedBranch(1, 'await'))],
   ],
   [
     'an empty handler body is one warning',
@@ -1668,121 +1315,25 @@ checks('Validation - empty branches and bodies', [
 
 checks('Validation - reserved synthesized-id names', [
   [
-    'every Gateway_ suffix the desugarer synthesizes is reserved',
+    'synthesized ids the desugarer or layouter would generate are reserved names',
     `process p {
   start Gateway_foo_split
   user Gateway_invoice-approval_2_join
   service Gateway_p_0_fork(class: com.example.X)
   user Gateway_p_1_loop
   user Gateway_p_1_race
-}`,
-    [
-      reservedName('Gateway_foo_split'),
-      reservedName('Gateway_invoice-approval_2_join'),
-      reservedName('Gateway_p_0_fork'),
-      reservedName('Gateway_p_1_loop'),
-      reservedName('Gateway_p_1_race'),
-    ],
-  ],
-  [
-    'a Gateway_ name from an underscore-prefixed process id is caught too',
-    `process _p { user Gateway__p_split }`,
-    [reservedName('Gateway__p_split')],
-  ],
-  [
-    'every reserved prefix, and the two-segment Flow_ shape, is rejected',
-    `process p {
-  start Flow_A_B
-  user Boundary_X_error
-  user Throw_p_1
-  user EventSubProcess_x
-  user Catch_p_1
-}`,
-    [
-      reservedName('Flow_A_B'),
-      reservedName('Boundary_X_error'),
-      reservedName('Throw_p_1'),
-      reservedName('EventSubProcess_x'),
-      reservedName('Catch_p_1'),
-    ],
-  ],
-  [
-    // The desugarer mints these off a handler's own coordinate, never the
-    // enclosing process or subprocess name, so only a prefix catches them.
-    'a boundary escape end and a handler body start/end are rejected under any container',
-    `process p {
   user EndEvent_Boundary_T_error
   user StartEvent_EventSubProcess_p_1
   user EndEvent_EventSubProcess_p_1
-}`,
-    [
-      reservedName('EndEvent_Boundary_T_error'),
-      reservedName('StartEvent_EventSubProcess_p_1'),
-      reservedName('EndEvent_EventSubProcess_p_1'),
-    ],
-  ],
-  [
-    'a subprocess and a call carry the same rule',
-    `process p {
   subprocess Gateway_x_split { user A }
   subprocess Throw_foo { user B }
   call Catch_x(process: "p")
-}`,
-    [
-      reservedName('Gateway_x_split'),
-      reservedName('Throw_foo'),
-      reservedName('Catch_x'),
-    ],
-  ],
-  [
-    'the exact implicit start and end of the process body are reserved',
-    `process p { user StartEvent_p  user EndEvent_p }`,
-    [
-      mintedTerminal('StartEvent_p', 'start', 'p'),
-      mintedTerminal('EndEvent_p', 'end', 'p'),
-    ],
-  ],
-  [
-    "a modelling tool's default start id is an ordinary name",
-    `process p { start StartEvent_1  user EndEvent_1 }`,
-    [],
-  ],
-  [
-    'a subprocess body reserves its own implicit end, under either head word',
-    `process p { subprocess S { user EndEvent_S }  attempt T { user StartEvent_T } }`,
-    [
-      mintedTerminal('EndEvent_S', 'end', 'S'),
-      mintedTerminal('StartEvent_T', 'start', 'T'),
-    ],
-  ],
-  [
-    "another container's implicit end is free outside that container",
-    `process p { user EndEvent_S  subprocess S { user A } }`,
-    [],
-  ],
-  [
-    'the subprocess statement itself sits in the enclosing body',
-    `process p { subprocess StartEvent_p { user A } }`,
-    [mintedTerminal('StartEvent_p', 'start', 'p')],
-  ],
-  [
-    "the layouter's own diagram, plane, and per-shape ids are reserved too",
-    `process p {
+  user StartEvent_p  user EndEvent_p
+  subprocess S { user EndEvent_S }  attempt T { user StartEvent_T }
+  user EndEvent_S2  subprocess S2 { user A2 }
   user S_di
   user BPMNDiagram_p
   user BPMNPlane_p
-}`,
-    [
-      reservedName('S_di'),
-      reservedName('BPMNDiagram_p'),
-      reservedName('BPMNPlane_p'),
-    ],
-  ],
-  // A single-segment `Flow_` name cannot match `Flow_<src>_<tgt>`; the rest
-  // miss the prefix or the suffix.
-  [
-    'a name merely resembling one of the shapes is free',
-    `process p {
   user GatewayCheck
   user MyFlow_Thing
   user Flow_Control
@@ -1791,6 +1342,54 @@ checks('Validation - reserved synthesized-id names', [
   user EndEventHandler
   user Gateway_split
 }`,
+    [
+      reservedName('Gateway_foo_split'),
+      reservedName('Gateway_invoice-approval_2_join'),
+      reservedName('Gateway_p_0_fork'),
+      reservedName('Gateway_p_1_loop'),
+      reservedName('Gateway_p_1_race'),
+      reservedName('EndEvent_Boundary_T_error'),
+      reservedName('StartEvent_EventSubProcess_p_1'),
+      reservedName('EndEvent_EventSubProcess_p_1'),
+      reservedName('Gateway_x_split'),
+      reservedName('Throw_foo'),
+      reservedName('Catch_x'),
+      mintedTerminal('StartEvent_p', 'start', 'p'),
+      mintedTerminal('EndEvent_p', 'end', 'p'),
+      mintedTerminal('EndEvent_S', 'end', 'S'),
+      mintedTerminal('StartEvent_T', 'start', 'T'),
+      reservedName('S_di'),
+      reservedName('BPMNDiagram_p'),
+      reservedName('BPMNPlane_p'),
+    ],
+  ],
+  [
+    'a Gateway_ name from an underscore-prefixed process id is caught too',
+    `process _p { user Gateway__p_split }`,
+    [reservedName('Gateway__p_split')],
+  ],
+  [
+    'every reserved id prefix and shape is rejected, wherever it is written',
+    `process p {
+  start Flow_A_B
+  user Boundary_X_error
+  user Throw_p_1
+  user EventSubProcess_x
+  user Catch_p_1
+  subprocess StartEvent_p { user A }
+}`,
+    [
+      reservedName('Flow_A_B'),
+      reservedName('Boundary_X_error'),
+      reservedName('Throw_p_1'),
+      reservedName('EventSubProcess_x'),
+      reservedName('Catch_p_1'),
+      mintedTerminal('StartEvent_p', 'start', 'p'),
+    ],
+  ],
+  [
+    "a modelling tool's default start id is an ordinary name",
+    `process p { start StartEvent_1  user EndEvent_1 }`,
     [],
   ],
 ]);
@@ -1830,24 +1429,22 @@ checks('Validation - where a start may sit', [
     [startNotFirst('Nested')],
   ],
   [
-    'a start opening a host-less handler body is legal',
-    `process p { error PF service A(class: "x.A") on error(PF) { start S service R(class: "x.R") } }`,
+    'a start event is clean when it opens a handler or subprocess body',
+    `process p {
+  error PF
+  subprocess S2 { start In user A2 end Out }
+  service A(class: "x.A") on error(PF) { start S service R(class: "x.R") }
+}`,
     [],
   ],
   [
-    'a start opening a hosted handler body has no scope of its own',
-    `process p { error PF service A(class: "x.A") on A: error(PF) { start S service R(class: "x.R") } }`,
-    [hostedHandlerStartMessage('S')],
-  ],
-  [
-    'a start first in a subprocess body is clean',
-    `process p { subprocess S { start In user A end Out } }`,
-    [],
-  ],
-  [
-    'a start second in a subprocess body is one error',
-    `process p { subprocess S { user A start In } }`,
-    [startNotFirst('In')],
+    'a start out of place in a hosted handler or subprocess body is one error',
+    `process p {
+  error PF
+  subprocess S2 { user A2 start In }
+  service A(class: "x.A") on A: error(PF) { start S service R(class: "x.R") }
+}`,
+    [startNotFirst('In'), hostedHandlerStartMessage('S')],
   ],
 ]);
 
@@ -1858,13 +1455,11 @@ checks('Validation - the default start among several', [
     [warn(noDefaultStartMessage('p'))],
   ],
   [
-    'a timer start beside a message start is the default',
-    `process p { start A timer(every: "R/PT1H") start B message("M") user T end E }`,
-    [],
-  ],
-  [
-    'a single message start is its own default',
-    `process p { start A message("M") user T end E }`,
+    'the default start among several is picked by trigger kind, or by being alone',
+    `process p {
+  start A timer(every: "R/PT1H") start B message("M") user T end E
+  start A2 message("M2") user T2 end E2
+}`,
     [],
   ],
   [
@@ -1964,50 +1559,43 @@ checks('Validation - duplicate declarations', [
     [duplicateSetting('label')],
   ],
   [
-    'two steps with one name make a goto ambiguous',
-    `process p { user Review user Review }`,
-    [duplicateStepName('Review', 'p')],
+    'a duplicate name collides across element kinds, the process id, and goto targets',
+    `process p {
+  error X
+  escalation Y
+  user Review user Review
+  user p
+  service A(topic: "shipping") script A ${FENCE}js\nx = 1\n${FENCE}
+  subprocess S { user A2 } subprocess S { user B }
+  throw error Same(X) throw escalation Same(Y)
+}`,
+    [
+      duplicateStepName('Review', 'p'),
+      duplicateStepName('A', 'p'),
+      duplicateStepName('S', 'p'),
+      duplicateStepName('Same', 'p'),
+      stepNameEqualsProcess('p'),
+      UNREACHABLE,
+    ],
   ],
   [
-    'a step named like the process id collides with it in the compiled document',
-    `process p { user p }`,
-    [stepNameEqualsProcess('p')],
-  ],
-  [
-    'the ambiguity crosses element kinds',
-    `process p { service A(topic: "shipping") script A ${FENCE}js\nx = 1\n${FENCE} }`,
-    [duplicateStepName('A', 'p')],
-  ],
-  [
-    'two subprocesses with one name is one error',
-    `process p { subprocess S { user A } subprocess S { user B } }`,
-    [duplicateStepName('S', 'p')],
-  ],
-  [
-    'a step inside a subprocess reusing a parent step name is one error',
-    `process p { user A subprocess S { user A } }`,
-    [duplicateStepName('A', 'p')],
+    'a subprocess step name collides with its parent, and an await shares that namespace',
+    `process p {
+  user A subprocess S { user A }
+  user Wait await message Wait("M")
+}`,
+    [duplicateStepName('A', 'p'), duplicateStepName('Wait', 'p')],
   ],
   [
     'a call sharing a name with a task is one error',
     `process p { user A call A(process: "p") }`,
     [duplicateStepName('A', 'p')],
   ],
-  [
-    'two named throws sharing a name is one error, and the second is dead',
-    `process p { error X escalation Y throw error Same(X) throw escalation Same(Y) }`,
-    [duplicateStepName('Same', 'p'), UNREACHABLE],
-  ],
-  [
-    'a named await shares the step namespace',
-    `process p { user Wait await message Wait("M") }`,
-    [duplicateStepName('Wait', 'p')],
-  ],
 ]);
 
 checks('Validation - parallel branch heads', [
   [
-    "an 'else' branch beside conditioned siblings is clean",
+    'an else branch needs a conditioned sibling to fall back from',
     `process p {
   var amount: number
   parallel {
@@ -2015,8 +1603,9 @@ checks('Validation - parallel branch heads', [
     if (amount > 0) { service RecordReceipt(topic: "receipts") }
     else { user ManualTriage }
   }
+  parallel { { user A } else { user B } }
 }`,
-    [],
+    [PARALLEL_ELSE_WITHOUT_CONDITION_MESSAGE],
   ],
   [
     "an 'else' branch beside an unconditioned one could never run",
@@ -2042,11 +1631,6 @@ checks('Validation - parallel branch heads', [
 }`,
     [PARALLEL_SECOND_ELSE_MESSAGE],
   ],
-  [
-    "an 'else' branch with no conditioned sibling has nothing to fall back from",
-    `process p { parallel { { user A } else { user B } } }`,
-    [PARALLEL_ELSE_WITHOUT_CONDITION_MESSAGE],
-  ],
 ]);
 
 describe('Validation - parallel branch heads, reported in place', () => {
@@ -2066,10 +1650,7 @@ process p {
   });
 });
 
-/**
- * The `if` carries an `else if`, so a row on it also pins that the chain's one
- * head takes the settings for the whole chain.
- */
+/** The `if` carries an `else if`, pinning that the chain's one head takes the settings. */
 const GATEWAY_HOSTS: ReadonlyArray<
   [kind: string, description: string, head: (items: string) => string]
 > = [
@@ -2108,7 +1689,6 @@ const ifHead = hostOf('if');
 const awaitHead = hostOf('await');
 
 checks('Validation - gateway settings', [
-  // The await head leaves `asyncAfter` out: its own row below refuses it.
   ...GATEWAY_HOSTS.map(([kind, , head]): Case => [
     `${kind} takes every head key`,
     head(
@@ -2369,7 +1949,7 @@ checks('Validation - job-setting pairing', [
     [],
   ],
   [
-    'a signal start, an awaited signal and a signal race branch price their subscription job with jobPriority alone; exclusive and retryCycle still need the flag, and a signal handler declares no such job',
+    'jobPriority alone prices a signal subscription, other settings still need their flag',
     `process p {
   start Begin signal("S1", jobPriority: 5, exclusive: false, retryCycle: "PT1M")
   await signal("S2", jobPriority: 5)
@@ -2404,12 +1984,13 @@ checks('Validation - job-setting pairing', [
 
 checks('Validation - form fields', [
   [
-    'a form on a start event and on a user task is clean',
+    'a form field belongs only on a start event or a user task',
     `process p {
   start Begin { form { amount: number "Amount" } }
   user Approve(assignee: "demo") { form { approved: boolean "OK?" = false } }
+  service S(class: "com.x.Y") { form { a: number } }
 }`,
-    [],
+    [noFormBlock('a service task')],
   ],
   [
     'a form field declares the variable it binds',
@@ -2425,11 +2006,6 @@ checks('Validation - form fields', [
     'an unrecognized field type beside a constraint draws only the type error, the fit check never runs',
     `process p { start Begin { form { blob: json "Blob" (minlength: 2) } } }`,
     [formFieldType('blob', 'json')],
-  ],
-  [
-    'a form block on a service task belongs elsewhere',
-    `process p { service S(class: "com.x.Y") { form { a: number } } }`,
-    [noFormBlock('a service task')],
   ],
   [
     'a bare attribute on a start event is not valid there',
@@ -2478,39 +2054,43 @@ checks('Validation - form fields', [
     `process p { start S { form { amount: number (minimum: 0) } } }`,
     [unknownFormFieldSettingMessage('amount', 'minimum')],
   ],
-  ...formFieldRows('a constraint fits the type its validator checks', [
-    ['min: 0', 'string', [constraintMisfit('min', 'f', 'string', 'number')]],
+  formFieldRows('a constraint fits the type its validator checks', [
+    [
+      'min: 0',
+      'string',
+      (f) => [constraintMisfit('min', f, 'string', 'number')],
+    ],
     [
       'maxlength: 2',
       'number',
-      [constraintMisfit('maxlength', 'f', 'number', 'string')],
+      (f) => [constraintMisfit('maxlength', f, 'number', 'string')],
     ],
     [
       'minlength: 2',
       'date',
-      [constraintMisfit('minlength', 'f', 'date', 'string')],
+      (f) => [constraintMisfit('minlength', f, 'date', 'string')],
     ],
-    ['pattern: "dd/MM/yyyy"', 'string', [patternMisfit('f', 'string')]],
-    ['pattern: "dd/MM/yyyy"', 'enum', [patternMisfit('f', 'enum')]],
-    ['min: 0', 'number', []],
-    ['minlength: 2', 'string', []],
-    ['required: true', 'boolean', []],
-    ['pattern: "dd/MM/yyyy"', 'date', []],
+    ['pattern: "dd/MM/yyyy"', 'string', (f) => [patternMisfit(f, 'string')]],
+    ['pattern: "dd/MM/yyyy"', 'enum', (f) => [patternMisfit(f, 'enum')]],
+    ['min: 0', 'number', () => []],
+    ['minlength: 2', 'string', () => []],
+    ['required: true', 'boolean', () => []],
+    ['pattern: "dd/MM/yyyy"', 'date', () => []],
   ]),
-  ...formFieldRows('a constraint takes one value shape', [
-    ['required: false', 'string', [flagFalseMessage('required')]],
-    ['required: "true"', 'string', [flagNotTrueMessage('required')]],
-    ['min: "abc"', 'number', [integerBoundMessage('min')]],
-    ['max: 1.5', 'number', [integerBoundMessage('max')]],
-    ['minlength: 2.5', 'string', [integerBoundMessage('minlength')]],
-    ['pattern: ""', 'date', [PATTERN_VALUE_MESSAGE]],
-    ['min: -5', 'number', []],
-    ['min: "-5"', 'number', []],
-    ['maxlength: "80"', 'string', []],
-    ['validator: com.example.Check', 'string', []],
-    ['validator: ""', 'string', [VALIDATOR_EMPTY_MESSAGE]],
-    ['pattern: "dd-xx-yyyy"', 'date', [PATTERN_LETTERS_MESSAGE]],
-    [`pattern: "'T'HH:mm"`, 'date', []],
+  formFieldRows('a constraint takes one value shape', [
+    ['required: false', 'string', () => [flagFalseMessage('required')]],
+    ['required: "true"', 'string', () => [flagNotTrueMessage('required')]],
+    ['min: "abc"', 'number', () => [integerBoundMessage('min')]],
+    ['max: 1.5', 'number', () => [integerBoundMessage('max')]],
+    ['minlength: 2.5', 'string', () => [integerBoundMessage('minlength')]],
+    ['pattern: ""', 'date', () => [PATTERN_VALUE_MESSAGE]],
+    ['min: -5', 'number', () => []],
+    ['min: "-5"', 'number', () => []],
+    ['maxlength: "80"', 'string', () => []],
+    ['validator: com.example.Check', 'string', () => []],
+    ['validator: ""', 'string', () => [VALIDATOR_EMPTY_MESSAGE]],
+    ['pattern: "dd-xx-yyyy"', 'date', () => [PATTERN_LETTERS_MESSAGE]],
+    [`pattern: "'T'HH:mm"`, 'date', () => []],
   ]),
   [
     "a bare word in a field's parens is not a setting",
@@ -2602,19 +2182,29 @@ checks('Validation - form field defaults', [
 
 checks('Validation - unreachable statements', [
   [
-    'every dead step after an end is reported',
-    `process p { start S end Done user A user B }`,
-    [UNREACHABLE, UNREACHABLE],
+    'a step after an end or a goto is reported as unreachable everywhere',
+    `process p {
+  start S end Done user A user B
+  user A2 goto A2 user Dead
+  await { message("M") { end A3 user DeadInside } signal("S2") { end B2 } } user DeadAfter
+  subprocess S3 { start In end Out user Dead2 }
+}`,
+    [
+      UNREACHABLE,
+      UNREACHABLE,
+      UNREACHABLE,
+      UNREACHABLE,
+      UNREACHABLE,
+      UNREACHABLE,
+    ],
   ],
   [
-    'a step after a goto can never run',
-    `process p { user A goto A user Dead }`,
-    [UNREACHABLE],
-  ],
-  [
-    'a goto target after an end stays reachable',
-    `process p { start S if (cond) { goto Retry } end Done user Retry }`,
-    [warn(undeclared('cond'))],
+    'a goto target survives past an end, but a step after total termination does not',
+    `process p {
+  start S if (cond) { goto Retry } end Done user Retry
+  if (cond) { end A } else { end B } user Dead
+}`,
+    [warn(undeclared('cond')), warn(undeclared('cond')), UNREACHABLE],
   ],
   [
     'an unreachable compound is reported once, not once per nested step',
@@ -2622,23 +2212,21 @@ checks('Validation - unreachable statements', [
     [warn(undeclared('cond')), UNREACHABLE],
   ],
   [
-    'a step after an all-terminating if/else can never run',
-    `process p { if (cond) { end A } else { end B } user Dead }`,
-    [warn(undeclared('cond')), UNREACHABLE],
-  ],
-  [
-    'a step after an all-terminating parallel can never run',
-    `process p { var c: boolean parallel { { end A } { end B } } user Dead }`,
+    'reachability after a parallel or a loop follows whether every branch ends',
+    `process p {
+  var c: boolean
+  start S do { if (c) { end X } else { user A2 } } while (c)
+  parallel { { end A } { end B } } user Dead
+}`,
     [UNREACHABLE],
   ],
   [
-    'a parallel with every branch conditioned keeps a fallback to its join',
-    `process p { var c: boolean parallel { if (c) { end A } if (!c) { end B } } user Alive }`,
-    [],
-  ],
-  [
-    'a parallel mixing a conditioned and a plain branch has no fallback, so every branch ending kills the step after it',
-    `process p { var c: boolean parallel { if (c) { end A } { end B } } user Dead }`,
+    "a parallel's fallback to its join depends on whether every branch is conditioned",
+    `process p {
+  var c: boolean
+  parallel { if (c) { end A } if (!c) { end B } } user Alive
+  parallel { if (c) { end A2 } { end B2 } } user Dead
+}`,
     [UNREACHABLE],
   ],
   [
@@ -2647,39 +2235,24 @@ checks('Validation - unreachable statements', [
     [UNREACHABLE],
   ],
   [
-    'a race reports the dead step inside a branch and the one after it',
-    `process p { await { message("M") { end A user DeadInside } signal("S") { end B } } user DeadAfter }`,
-    [UNREACHABLE, UNREACHABLE],
-  ],
-  [
-    'a step after an if without else stays reachable',
-    `process p { if (cond) { end A } user Alive }`,
-    [warn(undeclared('cond'))],
-  ],
-  [
-    'a step after a while whose body ends stays reachable',
-    `process p { while (cond) { end A } user Alive }`,
-    [warn(undeclared('cond'))],
-  ],
-  [
-    'a step after a do-while whose body always ends can never run, and neither can the loop',
-    `process p { var c: boolean do { end X } while (c) user Dead }`,
-    [UNREACHABLE, DEAD_LOOP_MESSAGE],
+    'a step after a loop or a conditionless if stays reachable unless the loop always ends',
+    `process p {
+  var c: boolean
+  if (cond) { end A } user Alive
+  while (cond) { end A2 } user Alive2
+  do { end X } while (c) user Dead
+}`,
+    [
+      warn(undeclared('cond')),
+      warn(undeclared('cond')),
+      UNREACHABLE,
+      DEAD_LOOP_MESSAGE,
+    ],
   ],
   [
     'a last do-while whose body always ends leaves its gateway with no incoming flow',
     `process p { var c: boolean start S do { end X } while (c) }`,
     [DEAD_LOOP_MESSAGE],
-  ],
-  [
-    'a do-while whose body ends on one branch only keeps its loop',
-    `process p { var c: boolean start S do { if (c) { end X } else { user A } } while (c) }`,
-    [],
-  ],
-  [
-    'a step after an end inside a subprocess can never run',
-    `process p { subprocess S { start In end Out user Dead } }`,
-    [UNREACHABLE],
   ],
   [
     'an unreachable subprocess is reported once, not once per nested step',
@@ -2692,9 +2265,13 @@ checks('Validation - unreachable statements', [
     [],
   ],
   [
-    'a step after a throw can never run',
-    `process p { error X throw error(X) user Dead }`,
-    [UNREACHABLE],
+    'a goto target reopens reachability that a throw or an end had closed',
+    `process p {
+  error X
+  start S if (c) { goto Wait } end Done await message Wait("M")
+  throw error(X) user Dead
+}`,
+    [warn(undeclared('c')), UNREACHABLE],
   ],
   [
     'a goto-targeted step after a throw stays reachable',
@@ -2706,17 +2283,15 @@ checks('Validation - unreachable statements', [
     `process p { escalation X emit escalation(X) user Alive }`,
     [],
   ],
-  [
-    'a named await after an end is reachable again as a goto target',
-    `process p { start S if (c) { goto Wait } end Done await message Wait("M") }`,
-    [warn(undeclared('c'))],
-  ],
 ]);
 
 checks('Validation - call activities', [
   [
-    'every attribute and mapping shape together is clean',
+    "a call activity's binding, mappings, and mapper together follow one exclusion rule set",
     `process p {
+  var a: number
+  var b: number
+  var calleeVar: string
   var amount: number
   var tax: number
   var vipFlag: boolean
@@ -2734,93 +2309,33 @@ checks('Validation - call activities', [
     out shipmentId
     out shipped = confirmed
   }
+  call X(process: "p", binding: latest)
+  call X2 { }
+  call X3(process: "")
+  call X4(process: "p", binding: version)
+  call X5(process: "p", binding: weekly)
+  call X6(process: "p", binding: deployment, version: 2)
+  call X7(process: "p", version: 2)
+  call X8(process: "p") { in x = a in x = b }
+  call X9(process: "p") { in x out x }
+  call X10(process: "p") { in * in * }
+  call X11(process: "p") { in * in x }
+  call X12(process: "p") { out y = calleeVar }
+  call X13(process: "p") { out y = calleeVar > 5 && true }
+  call X14(process: "p") { in y = callerVar }
+  call X15(process: some-id)
+  call X16(process: "p", mapper: "com.acme.Mapper") { in * out result } call Y(process: "p", mapperDelegate: "\${mapperBean}")
+  call X17(process: "p", mapper: "com.acme.Mapper2", mapperDelegate: "\${mapperBean}")
 }`,
-    [],
-  ],
-  [
-    'an explicit binding: latest is clean',
-    `process p { call X(process: "p", binding: latest) }`,
-    [],
-  ],
-  [
-    'a call with no process attribute names the requirement',
-    `process p { call X { } }`,
-    [CALL_PROCESS_REQUIRED],
-  ],
-  [
-    'a call with an empty process attribute is one error',
-    `process p { call X(process: "") }`,
-    [emptyBinding('process', 'process to start')],
-  ],
-  [
-    "'binding: version' points at the version setting",
-    `process p { call X(process: "p", binding: version) }`,
-    [BINDING_IS_VERSION],
-  ],
-  [
-    'an unrecognized binding value names both legal ones',
-    `process p { call X(process: "p", binding: weekly) }`,
-    [BINDING_VALUE],
-  ],
-  [
-    'binding and version together is one mutual-exclusion error',
-    `process p { call X(process: "p", binding: deployment, version: 2) }`,
-    [bindingVersionClash('A call')],
-  ],
-  [
-    'version alone is clean',
-    `process p { call X(process: "p", version: 2) }`,
-    [],
-  ],
-  [
-    'two in mappings naming one target is one error',
-    `process p { var a: number var b: number call X(process: "p") { in x = a in x = b } }`,
-    [duplicateMapping('in', 'x')],
-  ],
-  [
-    'in and out are independent namespaces',
-    `process p { call X(process: "p") { in x out x } }`,
-    [],
-  ],
-  [
-    'two copy-everything mappings in one direction is one error',
-    `process p { call X(process: "p") { in * in * } }`,
-    [duplicateAllMapping('in')],
-  ],
-  [
-    'a copy-everything mapping beside a named one is clean',
-    `process p { call X(process: "p") { in * in x } }`,
-    [],
-  ],
-  [
-    'an out mapping source is evaluated in the callee, so it is exempt',
-    `process p { call X(process: "p") { out y = calleeVar } }`,
-    [],
-  ],
-  [
-    'the exemption reaches a source nested inside operators',
-    `process p { var calleeVar: string call X(process: "p") { out y = calleeVar > 5 && true } }`,
-    [],
-  ],
-  [
-    'an in mapping source is caller-scope, so it still warns',
-    `process p { call X(process: "p") { in y = callerVar } }`,
-    [warn(undeclared('callerVar'))],
-  ],
-  [
-    'a bareword process value names a deployed process, not a variable',
-    `process p { call X(process: some-id) }`,
-    [],
-  ],
-  [
-    'a mapper class or a mapper delegate is clean, and runs beside the declared mappings',
-    `process p { call X(process: "p", mapper: "com.acme.Mapper") { in * out result } call Y(process: "p", mapperDelegate: "\${mapperBean}") }`,
-    [],
-  ],
-  [
-    'both mapper spellings on one call is one exclusion error',
-    `process p { call X(process: "p", mapper: "com.acme.Mapper", mapperDelegate: "\${mapperBean}") }`,
     [
+      warn(undeclared('callerVar')),
+      CALL_PROCESS_REQUIRED,
+      emptyBinding('process', 'process to start'),
+      BINDING_IS_VERSION,
+      BINDING_VALUE,
+      bindingVersionClash('A call'),
+      duplicateMapping('in', 'x'),
+      duplicateAllMapping('in'),
       bindingConflict(
         'A call',
         'mapper, mapperDelegate',
@@ -2849,9 +2364,19 @@ checks('Validation - event handlers', [
     [],
   ],
   [
-    'a handler inside a subprocess is clean',
-    `process p { error X subprocess S { user A on error(X) { user B } } }`,
-    [],
+    'an event handler scopes to its nearest container and names unknown triggers',
+    `process p {
+  error X
+  start S2 on erorr("X2") { }
+  subprocess S { user A on error(X) { user B } }
+  if (true) { on error(X) { user A2 } }
+  user T on timer("PT1H", jobPriority: 5) { start ES(jobPriority: 7, exclusive: false) user A3 }
+}`,
+    [
+      onTriggerMessage('erorr'),
+      HANDLER_PLACEMENT,
+      timerJobKeyTwiceMessage('jobPriority'),
+    ],
   ],
   [
     'a handler nested inside another handler is clean',
@@ -2869,14 +2394,14 @@ checks('Validation - event handlers', [
     [],
   ],
   [
-    'a handler nested in an if scopes to a branch, not a container',
-    `process p { error X if (true) { on error(X) { user A } } }`,
-    [HANDLER_PLACEMENT],
-  ],
-  [
-    'a step after a handler reads out of order',
-    `process p { error X on error(X) { user A } service S(class: "x.Y") }`,
-    [HANDLER_TRAILING],
+    'a misspelled trigger is a did-you-mean, and a timer job key is written once',
+    `process p {
+  error X
+  start S2 on conditional { user A2 }
+  on error(X) { user A } service S(class: "x.Y")
+  user T on timer("PT1H", jobPriority: 5) { start ES(exclusive: false) user A3 } on timer("PT2H") { start ES2(retryCycle: "R3/PT1M") user B }
+}`,
+    [CONDITIONAL_TYPO_MESSAGE, HANDLER_TRAILING],
   ],
   [
     'an error handler cannot run alongside the scope it takes over',
@@ -2939,24 +2464,14 @@ checks('Validation - event handlers', [
     [warn(undeclared('c')), notValidOn('coed', 'an event handler')],
   ],
   [
-    'an unknown trigger word names every kind an on handler takes',
-    `process p { start S on erorr("X") { } }`,
-    [onTriggerMessage('erorr')],
-  ],
-  [
-    "'on conditional' is a did-you-mean",
-    `process p { start S on conditional { user A } }`,
-    [CONDITIONAL_TYPO_MESSAGE],
-  ],
-  [
-    "'on compensate' is a did-you-mean",
-    `process p { start S on compensate { user A } }`,
+    "'compensate' is a did-you-mean, and a variable can share a binding field's name",
+    `process p {
+  error X
+  var message: string
+  start S on compensate { user A }
+  if (message == "x") { user A2 } on error(X, message: m) { user B }
+}`,
     [COMPENSATE_TYPO_MESSAGE],
-  ],
-  [
-    'a variable named message coexists with the binding field of that word',
-    `process p { error X var message: string if (message == "x") { user A } on error(X, message: m) { user B } }`,
-    [],
   ],
   [
     'two message handlers sharing one name are ambiguous',
@@ -2977,16 +2492,6 @@ checks('Validation - event handlers', [
     'an escalation catch-all beside a coded catch at process level is refused',
     `process p { escalation X on escalation(X) { user A } on escalation { user B } }`,
     [noFlowSteps('p'), escalationCatchAllBesideCoded('p')],
-  ],
-  [
-    "a timer job key on a timer handler's start repeats the head's",
-    `process p { user T on timer("PT1H", jobPriority: 5) { start ES(jobPriority: 7, exclusive: false) user A } }`,
-    [timerJobKeyTwiceMessage('jobPriority')],
-  ],
-  [
-    'a timer job key on the head alone, or on the start alone, is written once',
-    `process p { user T on timer("PT1H", jobPriority: 5) { start ES(exclusive: false) user A } on timer("PT2H") { start ES2(retryCycle: "R3/PT1M") user B } }`,
-    [],
   ],
   [
     'one signal name in two containers is no duplicate',
@@ -3060,12 +2565,9 @@ checks('Validation - event handlers', [
   ],
 ]);
 
-/**
- * A timer start deploys the expression up front
- * (`BpmnDeployer.adjustStartEventSubscriptions`), so its bad shape is an
- * error; every other carrier reads it only when its scope is entered, so its
- * bad shape is a warning.
- */
+// A timer start's expression is read at deployment
+// (`BpmnDeployer.adjustStartEventSubscriptions`), so its bad shape is an error;
+// every other carrier reads it on entering its scope, so it only warns.
 const TIMER_CARRIERS: ReadonlyArray<{
   name: string;
   severity: 'error' | 'warning';
@@ -3090,8 +2592,6 @@ const TIMER_CARRIERS: ReadonlyArray<{
       `process p { await { message("M") { user A } timer(${timerClause(particle, value)}) { user B } } }`,
   },
   {
-    // An interrupting 'every' handler also draws the fires-at-most-once
-    // warning, pinned under "Validation - event handlers".
     name: 'an on-handler timer',
     severity: 'warning',
     source: (particle, value) =>
@@ -3158,46 +2658,60 @@ const TIMER_PARTICLE_SHAPES: ReadonlyArray<{
   },
 ];
 
-checks(
-  "Validation - the timer clause's shape, per carrier and per particle",
-  TIMER_CARRIERS.flatMap(({ name, severity, source }) =>
-    TIMER_PARTICLE_SHAPES.flatMap(
-      ({ particle, bad, good, message }): Case[] => [
-        ...bad.map((value): Case => [
-          `${name} rejects '${particle}: "${value}"'`,
-          source(particle, value),
-          [severity === 'error' ? message : warn(message)],
-        ]),
-        ...good.map((value): Case => [
-          `${name} accepts '${particle}: "${value}"'`,
-          source(particle, value),
-          [],
-        ]),
-      ],
+describe("Validation - the timer clause's shape", () => {
+  test.each(TIMER_PARTICLE_SHAPES)(
+    "every '$particle' value is checked against its shape",
+    async ({ particle, bad, good, message }) => {
+      const awaits = [...bad, ...good]
+        .map((value) => `await timer(${timerClause(particle, value)})`)
+        .join(' ');
+      expect(await diagnosticsOf(`process p { ${awaits} }`)).toEqual(
+        bad.map(() => warn(message)),
+      );
+    },
+  );
+
+  test.each(
+    TIMER_CARRIERS.flatMap(({ name, severity, source }) =>
+      TIMER_PARTICLE_SHAPES.map(
+        ({ particle, bad, good, message }) =>
+          [
+            name,
+            particle,
+            severity,
+            source,
+            bad[0]!,
+            good[0]!,
+            message,
+          ] as const,
+      ),
     ),
-  ),
-);
+  )(
+    "%s checks its '%s' value",
+    async (_name, particle, severity, source, bad, good, message) => {
+      expect(await diagnosticsOf(source(particle, bad))).toEqual([
+        severity === 'error' ? message : warn(message),
+      ]);
+      expect(await diagnosticsOf(source(particle, good))).toEqual([]);
+    },
+  );
+});
 
 checks('Validation - boundary hosts', [
   [
-    'compensation has no attached form, so it refuses a host',
-    `process p { subprocess S { user A on A: compensation { user Undo } } }`,
-    [COMPENSATION_HOST_MESSAGE],
-  ],
-  [
-    'a host-less undo block is unaffected by that rule',
-    `process p { subprocess S { user A on compensation { user Undo } } }`,
-    [],
+    'a boundary host is required only where the trigger kind actually needs one',
+    `process p {
+  error X
+  subprocess S { user A on A: compensation { user Undo } }
+  subprocess S2 { user A2 on compensation { user Undo2 } }
+  user A3 emit signal Sig("S3") on Sig: error(X) { user B }
+}`,
+    [COMPENSATION_HOST_MESSAGE, illegalHost('Sig', 'an emit statement')],
   ],
   [
     'a start event is no activity to attach to',
     `process p { error X start S on S: error(X) { user A } }`,
     [illegalHost('S', 'a start event')],
-  ],
-  [
-    'an emit statement is no activity to attach to',
-    `process p { error X user A emit signal Sig("S") on Sig: error(X) { user B } }`,
-    [illegalHost('Sig', 'an emit statement')],
   ],
   [
     'an end event is no activity to attach to',
@@ -3247,8 +2761,6 @@ ${FENCE}
     `process p { script Pack ${FENCE}js\nx = 1\n${FENCE} on Pack: escalation { user A } }`,
     [escalationHost('Pack', 'a script task')],
   ],
-  // Operaton gates the escalation boundary on a subprocess scope, and it makes
-  // an `attempt` block one, so the block is a legal host beside `subprocess`.
   [
     'an escalation boundary takes a subprocess, an attempt block, a call, and a user task',
     `process p {
@@ -3309,14 +2821,13 @@ ${FENCE}
     [escalationCatchAllBesideCoded('Sub')],
   ],
   [
-    'an escalation catch-all beside a coded catch, both inside one block, is refused',
-    `process p { escalation X subprocess Sub { user A on escalation { user B } on escalation(X) { user C } } }`,
+    'a catch-all and a coded catch conflict inside one container, but not across it',
+    `process p {
+  escalation X
+  subprocess Sub { user A on escalation { user B } on escalation(X) { user C } }
+  subprocess Sub2 { user A2 on escalation { user B2 } } on Sub2: escalation(X) { user C2 }
+}`,
     [escalationCatchAllBesideCoded('Sub')],
-  ],
-  [
-    'an escalation catch-all inside a block beside a coded catch attached to it is the legal mix',
-    `process p { escalation X subprocess Sub { user A on escalation { user B } } on Sub: escalation(X) { user C } }`,
-    [],
   ],
   [
     'two escalation catch-alls attached to one host are refused',
@@ -3339,14 +2850,17 @@ ${FENCE}
     [missingHost('Missing')],
   ],
   [
-    'two host-less handlers of an unknown trigger word draw the unknown-kind error alone',
-    `process p { user T on foo { user A } on foo { user B } }`,
-    [onTriggerMessage('foo'), onTriggerMessage('foo')],
-  ],
-  [
-    'a hosted error handler still cannot run alongside',
-    `process p { error X user Pack on Pack: error(X, alongside) { user A } }`,
-    [alongsideMessage('error')],
+    'two same-trigger handlers on one host conflict, whether hosted or not',
+    `process p {
+  error X
+  user T on foo { user A } on foo { user B }
+  user Pack on Pack: error(X, alongside) { user A2 }
+}`,
+    [
+      onTriggerMessage('foo'),
+      onTriggerMessage('foo'),
+      alongsideMessage('error'),
+    ],
   ],
   [
     'a fully host-less program fires no boundary machinery',
@@ -3365,24 +2879,34 @@ ${FENCE}
 
 checks('Validation - compensation', [
   [
-    'a subprocess with an undo block is clean',
-    `process p { subprocess S { user A on compensation { user Undo } } }`,
+    'compensation as a trigger word coexists with a variable of the same name',
+    `process p {
+  error X
+  var compensation: number
+  if (compensation > 1) { user A3 }
+  subprocess S { user A on compensation { user Undo } }
+  user A2 on error(X) { emit compensation throw compensation Undo2 }
+}`,
     [],
   ],
   [
-    'an emitted and a named thrown compensation in a handler body are clean',
-    `process p { error X user A on error(X) { emit compensation throw compensation Undo } }`,
-    [],
-  ],
-  [
-    'a variable named compensation coexists with the trigger word',
-    `process p { var compensation: number if (compensation > 1) { user A } }`,
-    [],
-  ],
-  [
-    'an undo block names nothing, so a code string is dropped',
-    `process p { subprocess S { on compensation("X") { user A } } }`,
-    [blockNoFlowSteps('a subprocess', 'S'), COMPENSATION_NO_CODE_MESSAGE],
+    'an undo block inherits the placement and setting rules of its container',
+    `process p {
+  var amount: number
+  subprocess S { on compensation("X") { user A } }
+  subprocess S2 { start In on compensation(at: "PT1H") { user A2 } }
+  subprocess S3 { start In2 on compensation(amount > 100) { user A3 } }
+  subprocess S4 { if (true) { on compensation { user A4 } } }
+  subprocess S1 { user A5 on compensation { user U1 } }
+  subprocess S22 { user B on compensation { user U2 } }
+}`,
+    [
+      blockNoFlowSteps('a subprocess', 'S'),
+      COMPENSATION_NO_CODE_MESSAGE,
+      PARTICLE_ONLY,
+      CONDITION_ONLY,
+      HANDLER_PLACEMENT,
+    ],
   ],
   [
     'an undo block carries no values, so bindings are dropped',
@@ -3395,16 +2919,6 @@ checks('Validation - compensation', [
     [blockNoFlowSteps('a subprocess', 'S'), COMPENSATION_ALONGSIDE_MESSAGE],
   ],
   [
-    'a timer key on an undo block is the inherited timer-only rule',
-    `process p { subprocess S { start In on compensation(at: "PT1H") { user A } } }`,
-    [PARTICLE_ONLY],
-  ],
-  [
-    'a condition on an undo block is the inherited condition-only rule',
-    `process p { var amount: number subprocess S { start In on compensation(amount > 100) { user A } } }`,
-    [CONDITION_ONLY],
-  ],
-  [
     'a process cannot undo itself',
     `process p { on compensation { user A } }`,
     [noFlowSteps('p'), COMPENSATION_PLACEMENT_MESSAGE],
@@ -3415,11 +2929,6 @@ checks('Validation - compensation', [
     [noFlowSteps('p'), COMPENSATION_PLACEMENT_MESSAGE],
   ],
   [
-    'an undo block in a branch is the generic placement error, once',
-    `process p { subprocess S { if (true) { on compensation { user A } } } }`,
-    [HANDLER_PLACEMENT],
-  ],
-  [
     'two undo blocks in one subprocess merge into one',
     `process p { subprocess S { on compensation { user A } on compensation { user B } } }`,
     [COMPENSATION_DUPLICATE_MESSAGE, blockNoFlowSteps('a subprocess', 'S')],
@@ -3428,14 +2937,6 @@ checks('Validation - compensation', [
     'two undo blocks in one attempt block merge the same way',
     `process p { attempt A { on compensation { user U1 } on compensation { user U2 } } }`,
     [COMPENSATION_DUPLICATE_MESSAGE, blockNoFlowSteps('an attempt block', 'A')],
-  ],
-  [
-    'one undo block in each of two subprocesses is clean',
-    `process p {
-  subprocess S1 { user A on compensation { user U1 } }
-  subprocess S2 { user B on compensation { user U2 } }
-}`,
-    [],
   ],
   ...(['throw', 'emit', 'await'] as const).map((keyword): Case => [
     `'${keyword} compensate' is a did-you-mean`,
@@ -3574,34 +3075,37 @@ checks('Validation - the cancel end and its handler', [
 
 checks('Validation - throw and emit', [
   [
-    "'emit error' points at 'throw error'",
-    `process p { error X emit error(X) }`,
-    [emitTriggerMessage('error')],
+    "'emit error' redirects to 'throw error', and an emitted signal carries no code",
+    `process p {
+  error X
+  start S emit signal("Ready", class: "c")
+  emit error(X)
+  throw banana("X2")
+}`,
+    [
+      noImplementation('class', 'an emitted signal'),
+      emitTriggerMessage('error'),
+      throwTriggerMessage('banana'),
+    ],
   ],
   [
-    'an unknown throw kind names the kinds with a terminal form',
-    `process p { throw banana("X") }`,
-    [throwTriggerMessage('banana')],
+    'an unknown emit kind excludes error, and a codeless thrown error names its shape',
+    `process p {
+  emit banana("X")
+  throw error
+}`,
+    [emitTriggerMessage('banana'), codeRequired('A thrown', 'error', 'throw')],
   ],
   [
-    'an unknown emit kind leaves error off the list',
-    `process p { emit banana("X") }`,
-    [emitTriggerMessage('banana')],
-  ],
-  [
-    'a thrown error with no code names the shape',
-    `process p { throw error }`,
-    [codeRequired('A thrown', 'error', 'throw')],
-  ],
-  [
-    'an emitted signal with no code names the shape',
-    `process p { emit signal }`,
-    [codeRequired('An emitted', 'signal', 'emit')],
-  ],
-  [
-    'an empty code is the same mistake as an omitted one',
-    `process p { throw escalation("") }`,
-    [codeRequired('A thrown', 'escalation', 'throw')],
+    'an empty code is the same mistake as leaving it out entirely',
+    `process p {
+  emit signal
+  throw escalation("")
+}`,
+    [
+      codeRequired('An emitted', 'signal', 'emit'),
+      codeRequired('A thrown', 'escalation', 'throw'),
+    ],
   ],
   [
     'a thrown compensation names nothing',
@@ -3643,11 +3147,6 @@ checks('Validation - throw and emit', [
     [noImplementation('class', 'a thrown error')],
   ],
   [
-    'an emitted signal carries none either',
-    `process p { start S emit signal("Ready", class: "c") }`,
-    [noImplementation('class', 'an emitted signal')],
-  ],
-  [
     'a thrown message with two implementations names both',
     `process p { start S throw message("Ack", class: "a", expression: "\${b}") }`,
     [bindingConflict('A thrown message', 'class, expression', THROW_BINDINGS)],
@@ -3661,85 +3160,53 @@ checks('Validation - throw and emit', [
 
 checks('Validation - awaited events', [
   [
-    'an awaited message, timer, signal, and condition are clean',
-    `process p { var x: number await message("M") await timer("PT1H") await signal("S") await condition(x > 1) }`,
-    [],
-  ],
-  [
-    'an error is raised outward, so it cannot be awaited',
-    `process p { error E await error(E) }`,
-    [catchTriggerMessage('error')],
+    "an awaited event's payload and settings are validated per trigger kind",
+    `process p {
+  var x: number
+  error E
+  start S2 await nonsense
+  await message("M") await timer("PT1H") await signal("S") await condition(x > 1)
+  await error(E)
+  await compensation
+  await message
+  await signal
+  await timer
+  await condition
+  await message(at: "PT1H2")
+  await message(x > 1)
+  await condition("X")
+  await condition("X2", at: "2026-01-01")
+  await { message("M2", assignee: "u") { user A } signal("S3") { user B } }
+  await { message("Dup") { user A2 } signal("Dup") { user B2 } }
+}`,
+    [
+      catchTriggerMessage('nonsense'),
+      catchTriggerMessage('error'),
+      catchTriggerMessage('compensation'),
+      awaitNameRequired('message'),
+      awaitNameRequired('signal'),
+      TIMER_PAYLOAD_MESSAGE,
+      AWAIT_CONDITION_REQUIRED,
+      awaitNameRequired('message'),
+      AWAIT_PARTICLE_ONLY,
+      awaitNameRequired('message'),
+      AWAIT_CONDITION_ONLY,
+      AWAIT_CONDITION_NO_CODE,
+      AWAIT_CONDITION_NO_CODE,
+      AWAIT_PARTICLE_ONLY,
+      notValidOn('assignee', 'a branch of an await block'),
+    ],
   ],
   [
     'an escalation cannot be awaited either',
     `process p { escalation E await escalation(E) }`,
     [catchTriggerMessage('escalation')],
   ],
-  [
-    'compensation runs through an undo block, not an await',
-    `process p { await compensation }`,
-    [catchTriggerMessage('compensation')],
-  ],
-  [
-    'an unknown word names the kinds an await takes and where the rest are written',
-    `process p { start S await nonsense }`,
-    [catchTriggerMessage('nonsense')],
-  ],
-  [
-    'an awaited message with no name asks for it',
-    `process p { await message }`,
-    [awaitNameRequired('message')],
-  ],
-  [
-    'an awaited signal with no name asks for it',
-    `process p { await signal }`,
-    [awaitNameRequired('signal')],
-  ],
-  [
-    'an awaited timer with no payload asks how to read the time',
-    `process p { await timer }`,
-    [TIMER_PAYLOAD_MESSAGE],
-  ],
-  [
-    'an awaited condition with no parens asks for the condition',
-    `process p { await condition }`,
-    [AWAIT_CONDITION_REQUIRED],
-  ],
-  [
-    'a timer key on an awaited message belongs to a timer',
-    `process p { await message(at: "PT1H") }`,
-    [awaitNameRequired('message'), AWAIT_PARTICLE_ONLY],
-  ],
-  [
-    'a condition on an awaited message belongs to an awaited condition',
-    `process p { var x: number await message(x > 1) }`,
-    [awaitNameRequired('message'), AWAIT_CONDITION_ONLY],
-  ],
-  [
-    'a code string on an awaited condition is not the condition',
-    `process p { await condition("X") }`,
-    [AWAIT_CONDITION_NO_CODE],
-  ],
-  [
-    'an awaited condition carrying both mistakes reports them left to right',
-    `process p { await condition("X", at: "2026-01-01") }`,
-    [AWAIT_CONDITION_NO_CODE, AWAIT_PARTICLE_ONLY],
-  ],
-  [
-    'a race branch takes the settings keys an awaited event takes',
-    `process p { await { message("M", assignee: "u") { user A } signal("S") { user B } } }`,
-    [notValidOn('assignee', 'a branch of an await block')],
-  ],
   ...(['message', 'signal'] as const).map((trigger): Case => [
     `two ${trigger} branches of one race on one name subscribe twice on the gateway`,
     `process p { await { ${trigger}("Dup") { user A } timer("PT1H") { user T } ${trigger}("Dup") { user B } } }`,
     [raceDuplicateMessage(trigger, 'Dup')],
   ]),
-  [
-    'a message branch and a signal branch of one name are two subscriptions',
-    `process p { await { message("Dup") { user A } signal("Dup") { user B } } }`,
-    [],
-  ],
   [
     'a race branch a parse error leaves without a trigger draws no phantom trigger error',
     `process p { start S  await { (label: "x") message M } }`,
@@ -3808,39 +3275,37 @@ checks('Validation - link events', [
     [],
   ],
   [
-    'a step after an emit link can never run',
-    `process p { step A emit link T("L") step Dead await link C("L") }`,
-    [UNREACHABLE],
+    'reachability across a link follows the emit and catch on either end',
+    `process p {
+  step A emit link T("L") step Dead await link C("L")
+  step A2 await link C2("L2") step B emit link T2("L2")
+}`,
+    [UNREACHABLE, LINK_CATCH_FLOW_MESSAGE],
   ],
   [
-    'a link catch after a live step refuses the flow that would enter it',
-    `process p { step A await link C("L") step B emit link T("L") }`,
-    [LINK_CATCH_FLOW_MESSAGE],
-  ],
-  [
-    'a link cannot head a race branch',
-    `process p { await { link("L") { user A } message("M") { user B } } }`,
-    [LINK_IN_RACE_MESSAGE],
-  ],
-  [
-    'an awaited link with no name asks for it',
-    `process p { step A end E await link C }`,
-    [awaitNameRequired('link')],
-  ],
-  [
-    'an emitted link with no name asks for it',
-    `process p { step A emit link }`,
-    [codeRequired('An emitted', 'link', 'emit')],
-  ],
-  [
-    'a bareword link name is a missing pair of quotes',
-    `process p { step A emit link T(Retry) await link C(Retry) }`,
-    [barewordName('link', 'Retry'), barewordName('link', 'Retry')],
-  ],
-  [
-    'engine settings and listeners on an emitted link are refused, one each',
-    `process p { step A emit link T("L", asyncBefore: true, jobPriority: 5) { on end(class: "x.L") } await link C("L") }`,
+    'a link needs a name and cannot head a race branch',
+    `process p {
+  await { link("L") { user A } message("M") { user B } }
+  step A2 end E await link C
+  step A3 emit link
+}`,
     [
+      LINK_IN_RACE_MESSAGE,
+      awaitNameRequired('link'),
+      codeRequired('An emitted', 'link', 'emit'),
+    ],
+  ],
+  [
+    'an emit link refuses engine settings and listeners without duplicating the never-runs error',
+    `process p {
+  step A emit link T(Retry) await link C(Retry)
+  step A3 emit link T3("L2", topic: "shipping") await link C3("L2")
+  step A2 emit link T2("L", asyncBefore: true, jobPriority: 5) { on end(class: "x.L") } await link C2("L")
+}`,
+    [
+      barewordName('link', 'Retry'),
+      barewordName('link', 'Retry'),
+      noImplementation('topic', 'an emitted link'),
       linkThrowNeverRunsMessage("Setting 'asyncBefore'"),
       linkThrowNeverRunsMessage("Setting 'jobPriority'"),
       linkThrowNeverRunsMessage("The 'on end' listener"),
@@ -3852,14 +3317,12 @@ checks('Validation - link events', [
     [linkNoCatch('L')],
   ],
   [
-    'a binding key on an emit link draws its own not-valid error alone, not the never-runs message too',
-    `process p { step A emit link T("L", topic: "shipping") await link C("L") }`,
-    [noImplementation('topic', 'an emitted link')],
-  ],
-  [
-    'a link catch in another container is out of reach',
-    `process p { subprocess S { step A emit link T("L") } end E await link C("L") step B }`,
-    [linkOtherContainer('L')],
+    "a link catch reaches only its own container, and 'throw link' redirects to 'emit link'",
+    `process p {
+  subprocess S { step A emit link T("L") } end E await link C("L") step B
+  step A2 throw link("L2")
+}`,
+    [linkOtherContainer('L'), throwTriggerMessage('link')],
   ],
   [
     'an emit link cannot enter a parallel branch from outside it',
@@ -3867,122 +3330,81 @@ checks('Validation - link events', [
     [warn(undeclared('c')), linkIntoBranch('L', 'parallel')],
   ],
   [
-    'two catches of one link name are refused even across subprocesses',
-    `process p { step A emit link T("L") await link C1("L") subprocess S { step B emit link T2("L") await link C2("L") step D } }`,
-    [linkNameTaken('L')],
+    "a link name's catches are unique across subprocesses, and goto cannot target one",
+    `process p {
+  step A emit link T("L") await link C1("L") subprocess S { step B emit link T2("L") await link C2("L") step D }
+  step A2 if (c) { goto C } emit link T3("L2") await link C("L2") step B2
+}`,
+    [warn(undeclared('c')), linkNameTaken('L'), gotoToLink('C')],
   ],
   [
     'a link catch nothing emits is a warning, not an error',
     `process p { step A end E await link C("L") step B }`,
     [warn(linkUnused('L'))],
   ],
-  [
-    'a goto cannot target a link catch',
-    `process p { step A if (c) { goto C } emit link T("L") await link C("L") step B }`,
-    [warn(undeclared('c')), gotoToLink('C')],
-  ],
-  [
-    'throw link points at emit link',
-    `process p { step A throw link("L") }`,
-    [throwTriggerMessage('link')],
-  ],
 ]);
 
 checks('Validation - start triggers', [
   [
-    'a message start, a signal start, and a labelled repeating timer start are clean',
-    `process p { start A message("OrderReceived") start B signal("Ready") start C timer(every: "R/PT10M", label: "Scheduled") user T end E }`,
-    [],
+    "a start event's trigger decides which payload it requires or ignores",
+    `process p {
+  error X
+  var amount: number
+  start A message("OrderReceived") start B signal("Ready") start C timer(every: "R/PT10M", label: "Scheduled") user T end E
+  start S message
+  start S2 signal
+  start S3 message(at: "PT1H")
+  start S4 error(X)
+  start S5 compensation
+  start S6 condition(amount > 100) user A2
+}`,
+    [
+      startNameRequired('message'),
+      startNameRequired('signal'),
+      startNameRequired('message'),
+      START_PARTICLE_ONLY,
+      startTriggerMessage('error'),
+      startTriggerMessage('compensation'),
+    ],
   ],
   [
-    'a message start with no name names what the engine matches on',
-    `process p { start S message }`,
-    [startNameRequired('message')],
+    "a start event's missing payload, wrong setting, or bad spelling is named precisely",
+    `process p {
+  escalation X
+  var amount: number
+  start S timer
+  start S2 escalation(X)
+  start S3 condition
+  start S4 condition("X2")
+  start S5 condition("X3", at: "2026-01-01")
+  start S6 message(amount > 100)
+  start S7 conditional
+  start S8 nonsense("X4")
+  start S9 message("Order\${x}")
+  start S10 message("#{orderType}")
+}`,
+    [
+      TIMER_PAYLOAD_MESSAGE,
+      startTriggerMessage('escalation'),
+      START_CONDITION_REQUIRED,
+      START_CONDITION_NO_CODE,
+      START_CONDITION_NO_CODE,
+      START_PARTICLE_ONLY,
+      startNameRequired('message'),
+      START_CONDITION_ONLY,
+      CONDITIONAL_TYPO_MESSAGE,
+      startTriggerMessage('nonsense'),
+      startMessageExpressionMessage('Order${x}'),
+      startMessageExpressionMessage('#{orderType}'),
+    ],
   ],
   [
-    'a signal start with no name names what the engine matches on',
-    `process p { start S signal }`,
-    [startNameRequired('signal')],
-  ],
-  [
-    'a timer start with no payload asks how to read the time',
-    `process p { start S timer }`,
-    [TIMER_PAYLOAD_MESSAGE],
-  ],
-  [
-    'a timer key on a non-timer start belongs to a timer',
-    `process p { start S message(at: "PT1H") }`,
-    [startNameRequired('message'), START_PARTICLE_ONLY],
-  ],
-  [
-    'the engine ignores an error start',
-    `process p { error X start S error(X) }`,
-    [startTriggerMessage('error')],
-  ],
-  [
-    'the engine ignores an escalation start',
-    `process p { escalation X start S escalation(X) }`,
-    [startTriggerMessage('escalation')],
-  ],
-  [
-    'a compensation start points at the undo block',
-    `process p { start S compensation }`,
-    [startTriggerMessage('compensation')],
-  ],
-  [
-    'a condition start carrying its condition is clean',
-    `process p { var amount: number start S condition(amount > 100) user A }`,
-    [],
-  ],
-  [
-    'a condition start with no condition asks for it',
-    `process p { start S condition }`,
-    [START_CONDITION_REQUIRED],
-  ],
-  [
-    'a code string on a condition start is not the condition',
-    `process p { start S condition("X") }`,
-    [START_CONDITION_NO_CODE],
-  ],
-  [
-    'a condition start carrying both mistakes reports them left to right',
-    `process p { start S condition("X", at: "2026-01-01") }`,
-    [START_CONDITION_NO_CODE, START_PARTICLE_ONLY],
-  ],
-  [
-    'a condition on a message start belongs to a condition start',
-    `process p { var amount: number start S message(amount > 100) }`,
-    [startNameRequired('message'), START_CONDITION_ONLY],
-  ],
-  [
-    'the near-miss spelling is answered as a typo',
-    `process p { start S conditional }`,
-    [CONDITIONAL_TYPO_MESSAGE],
-  ],
-  [
-    'an unknown start kind names the legal ones',
-    `process p { start S nonsense("X") }`,
-    [startTriggerMessage('nonsense')],
-  ],
-  [
-    'a message start name cannot hold a trailing expression',
-    `process p { start S message("Order\${x}") }`,
-    [startMessageExpressionMessage('Order${x}')],
-  ],
-  [
-    'a message start name cannot hold a whole expression',
-    `process p { start S message("#{orderType}") }`,
-    [startMessageExpressionMessage('#{orderType}')],
-  ],
-  [
-    'the other expression spelling is rejected too',
-    `process p { start S message("Order#{x}") }`,
+    'a message or signal name accepts either expression spelling, consistently',
+    `process p {
+  start S message("Order#{x}")
+  start P start S2 signal("Order2\${x}") start T signal("#{orderType}") await message("Order2\${x}") await message("#{orderType}") user A on message("Order2\${x}") { user B }
+}`,
     [startMessageExpressionMessage('Order#{x}')],
-  ],
-  [
-    'a signal start, an awaited message, and a handler message name may hold either expression spelling: the process is running',
-    `process p { start P start S signal("Order\${x}") start T signal("#{orderType}") await message("Order\${x}") await message("#{orderType}") user A on message("Order\${x}") { user B } }`,
-    [],
   ],
   [
     'only the process own start carries a trigger, not a subprocess start',
@@ -4099,14 +3521,12 @@ checks('Validation - a message or signal name is text, not a reference', [
     [barewordName('message', 'OrderReceived')],
   ],
   [
-    'a signal start names its subscription',
-    `process p { start S signal(Ready) user U }`,
-    [barewordName('signal', 'Ready')],
-  ],
-  [
-    'an awaited message names its subscription',
-    `process p { await message(OrderReceived) }`,
-    [barewordName('message', 'OrderReceived')],
+    'a signal start and an awaited message both refuse a bareword name',
+    `process p {
+  start S signal(Ready) user U
+  await message(OrderReceived)
+}`,
+    [barewordName('signal', 'Ready'), barewordName('message', 'OrderReceived')],
   ],
   [
     'a message handler names its subscription',
@@ -4119,14 +3539,12 @@ checks('Validation - a message or signal name is text, not a reference', [
     [barewordName('message', 'OrderReceived')],
   ],
   [
-    'an emitted signal names its subscription',
-    `process p { start S emit signal(Ready) user U }`,
-    [barewordName('signal', 'Ready')],
-  ],
-  [
-    'a race branch head names its subscription',
-    `process p { await { message(OrderReceived) { user A } timer("PT1H") { user B } } }`,
-    [barewordName('message', 'OrderReceived')],
+    'an emitted signal and a race branch head both refuse a bareword name',
+    `process p {
+  start S emit signal(Ready) user U
+  await { message(OrderReceived) { user A } timer("PT1H") { user B } }
+}`,
+    [barewordName('signal', 'Ready'), barewordName('message', 'OrderReceived')],
   ],
   [
     'an error code is a declared name and stays one',
@@ -4135,11 +3553,7 @@ checks('Validation - a message or signal name is text, not a reference', [
   ],
 ]);
 
-/**
- * A paren item is one of several, so a diagnostic reported on the whole list
- * would underline whichever came first. Every source below writes the offending
- * item second.
- */
+/** Each source writes the offending paren item second, so a diagnostic on the whole list would miss it. */
 describe('Validation - paren items, reported in place', () => {
   test.each([
     [
@@ -4204,14 +3618,50 @@ describe('Validation - paren items, reported in place', () => {
 
 checks('Validation - code declarations', [
   [
-    'an error carrying a code and a message and a bare escalation both declare cleanly',
-    `process p { error OUT_OF_STOCK(code: "order.failed", message: "Out of stock") escalation MANUAL_REVIEW user A }`,
-    [],
+    'a code declaration is unique per name and per code, across every declaring kind',
+    `process p {
+  error OUT_OF_STOCK(code: "order.failed", message: "Out of stock")
+  escalation MANUAL_REVIEW
+  error A
+  escalation A
+  error B(code: "A")
+  error X
+  escalation Y(code: "X")
+  escalation E(message: "m", wibble: "x")
+  error Pack
+  start S emit escalation("review.manual")
+  user A
+  user U
+  user U2
+  user U3
+  user A2
+  user Pack
+}`,
+    [
+      quotedCodeMessage('escalation', 'review.manual'),
+      alreadyDeclared('escalation', 'A'),
+      duplicateDeclaredCode('error', 'A', 'A'),
+      notValidOn('wibble', 'an escalation declaration'),
+      ESCALATION_NO_MESSAGE_MESSAGE,
+    ],
   ],
   [
-    'an unknown declaration kind names the kinds a declaration takes',
-    `process p { usr Review user A }`,
-    [unknownDeclarationKindMessage('usr')],
+    'an unknown declaration kind, a shared code, and a repeated key are each named',
+    `process p {
+  error A(code: "PA")
+  error A(code: "PB")
+  error C(code: "PB")
+  error E(code: "a", code: "b")
+  usr Review user A
+  user U
+  user U2
+}`,
+    [
+      alreadyDeclared('error', 'A'),
+      duplicateDeclaredCode('error', 'PB', 'A'),
+      duplicateSetting('code'),
+      unknownDeclarationKindMessage('usr'),
+    ],
   ],
   [
     'a mistyped step keyword is named rather than blamed on the brace after it',
@@ -4224,52 +3674,24 @@ checks('Validation - code declarations', [
     ],
   ],
   [
-    'a second declaration of one name is refused',
-    `process p { error A escalation A user U }`,
-    [alreadyDeclared('escalation', 'A')],
-  ],
-  [
-    'a second declaration of one code is refused',
-    `process p { error A error B(code: "A") user U }`,
-    [duplicateDeclaredCode('error', 'A', 'A')],
-  ],
-  [
-    'one code declared once per kind is no collision',
-    `process p { error X escalation Y(code: "X") user U }`,
-    [],
-  ],
-  [
     'a repeated name reports the name alone, since it repeats the code it stands for',
     `process p { error A error A user U }`,
     [alreadyDeclared('error', 'A')],
   ],
   [
-    'a repeated name still reports a code it shares with a third declaration',
-    `process p { error A(code: "PA") error A(code: "PB") error C(code: "PB") user U }`,
-    [alreadyDeclared('error', 'A'), duplicateDeclaredCode('error', 'PB', 'A')],
-  ],
-  [
-    'two empty codes name nothing, so neither collides with the other',
-    `process p { error A(code: "") error B(code: "") user U }`,
-    [declarationEmpty('error', 'code'), declarationEmpty('error', 'code')],
-  ],
-  [
-    'a setting a declaration does not take, and a message on an escalation, are both refused',
-    `process p { escalation E(message: "m", wibble: "x") user A }`,
+    'two empty codes never collide, but an unquoted code is a missing pair of quotes',
+    `process p {
+  error A(code: "")
+  error B(code: "")
+  error E(code: FOO)
+  user U
+  user A2
+}`,
     [
-      notValidOn('wibble', 'an escalation declaration'),
-      ESCALATION_NO_MESSAGE_MESSAGE,
+      declarationEmpty('error', 'code'),
+      declarationEmpty('error', 'code'),
+      declarationNotAString('error', 'code'),
     ],
-  ],
-  [
-    'a second setting of one key is refused',
-    `process p { error E(code: "a", code: "b") user U }`,
-    [duplicateSetting('code')],
-  ],
-  [
-    'an unquoted code is a missing pair of quotes, not an undeclared variable',
-    `process p { error E(code: FOO) user A }`,
-    [declarationNotAString('error', 'code')],
   ],
   [
     'an empty code and an empty message name nothing',
@@ -4287,21 +3709,9 @@ checks('Validation - code declarations', [
     [DECLARATION_SETTINGS_ONLY_MESSAGE],
   ],
   [
-    'a declaration may carry the name of a step',
-    `process p { error Pack user Pack }`,
-    [],
-  ],
-  // The grammar admits the string here and always will, since a message name
-  // is written the same way; only this rule separates the two.
-  [
     'a thrown code is a declared name, not quoted text',
     `process p { start S throw error("PAYMENT_DECLINED") }`,
     [quotedCodeMessage('error', 'PAYMENT_DECLINED')],
-  ],
-  [
-    'text no name could spell is declared under a name the author picks',
-    `process p { start S emit escalation("review.manual") }`,
-    [quotedCodeMessage('escalation', 'review.manual')],
   ],
   [
     'a caught code is a declared name too',
@@ -4315,10 +3725,6 @@ checks('Validation - code declarations', [
   ],
 ]);
 
-/**
- * Each of the four minimal task kinds, all named `X` so a `goto` and a boundary
- * host read the same for every row.
- */
 const TASK_KINDS: Array<
   [kind: string, description: string, statement: string]
 > = [
@@ -4330,54 +3736,19 @@ const TASK_KINDS: Array<
 
 describe('Validation - the task kinds', () => {
   test.each(TASK_KINDS)(
-    'a %s is clean in a process body, a subprocess body, and a handler body',
-    async (_kind, _description, statement) => {
-      for (const program of [
-        `process p { ${statement} }`,
+    'a %s is clean in every body, takes a goto and a timer boundary, but no escalation boundary and no repeated name',
+    async (_kind, description, statement) => {
+      const programs = [
+        `process p { user A goto X ${statement} on X: timer("PT1H") { user B } on X: escalation { user C } }`,
         `process p { subprocess S { ${statement} } }`,
         `process p { start S on error { ${statement} } }`,
-      ]) {
-        expect(await diagnosticsOf(program), program).toEqual([]);
-      }
-    },
-  );
-
-  test.each(TASK_KINDS)(
-    'a timer boundary event attaches to a %s',
-    async (_kind, _description, statement) => {
-      expect(
-        await diagnosticsOf(
-          `process p { ${statement} on X: timer("PT1H") { user A } }`,
-        ),
-      ).toEqual([]);
-    },
-  );
-
-  test.each(TASK_KINDS)(
-    'an escalation boundary event does not attach to a %s',
-    async (_kind, description, statement) => {
-      expect(
-        await diagnosticsOf(
-          `process p { ${statement} on X: escalation { user A } }`,
-        ),
-      ).toEqual([escalationHost('X', description)]);
-    },
-  );
-
-  test.each(TASK_KINDS)(
-    'a goto resolves into a %s',
-    async (_kind, _description, statement) => {
-      expect(
-        await diagnosticsOf(`process p { user A goto X ${statement} }`),
-      ).toEqual([]);
-    },
-  );
-
-  test.each(TASK_KINDS)(
-    'a %s repeating an earlier step name is ambiguous',
-    async (_kind, _description, statement) => {
-      expect(await diagnosticsOf(`process p { user X ${statement} }`)).toEqual([
-        duplicateStepName('X', 'p'),
+        `process p { user X ${statement} }`,
+      ];
+      expect(await Promise.all(programs.map(diagnosticsOf))).toEqual([
+        [escalationHost('X', description)],
+        [],
+        [],
+        [duplicateStepName('X', 'p')],
       ]);
     },
   );
@@ -4400,152 +3771,57 @@ describe('Validation - the task kinds', () => {
   );
 });
 
-const TASK_KIND_BLOCKS = BLOCK_HOSTS.filter(([kind]) =>
-  TASK_KINDS.some(([taskKind]) => taskKind === kind),
-);
-
-/**
- * `label` and `documentation` share their whole derivation: both are owned by
- * exactly the kinds lowering to a BPMN node with a name slot. Each key runs
- * against every host so neither stands in for the other.
- */
-const NAME_SLOT_HOSTS = ['label', 'documentation'].flatMap((key) =>
-  BLOCK_HOSTS.map(
-    ([kind, description, , settings]) =>
-      [key, kind, description, settings] as const,
-  ),
-);
-
 describe('Validation - every element with settings and a member block', () => {
+  // A flag word lexes as a flag inside any parens, so a stray one reaches the
+  // validator. A form or mapping in a `call` block is a parse error, and an
+  // external host takes property and mapping lines only under `topic` (below).
   test.each(BLOCK_HOSTS)(
-    'the engine settings are accepted on %s',
-    async (_kind, _description, _members, settings) => {
-      expect(await diagnosticsOf(settings(ENGINE_SETTINGS))).toEqual([]);
-    },
-  );
-
-  test.each(BLOCK_HOSTS)(
-    'an unknown key on %s names the element kind',
-    async (_kind, description, _members, settings) => {
-      expect(await diagnosticsOf(settings('wibble: 1'))).toEqual([
+    'the settings and members of %s draw exactly the misfit diagnostics',
+    async (kind, description, members, settings) => {
+      const labelled = LABEL_HOSTS.has(kind);
+      expect(
+        await diagnosticsOf(
+          settings(
+            `${ENGINE_SETTINGS}, wibble: 1, sequentially, label: "L", documentation: "L"`,
+          ),
+        ),
+      ).toEqual([
         notValidOn('wibble', description),
-      ]);
-    },
-  );
-
-  // Every flag word lexes as a flag inside any parens, being a keyword
-  // elsewhere in the grammar, so one written out of place reaches the validator
-  // rather than the parser.
-  test.each(BLOCK_HOSTS)(
-    'a stray flag on %s names the element kind',
-    async (_kind, description, _members, settings) => {
-      expect(await diagnosticsOf(settings('sequentially'))).toEqual([
+        ...(labelled
+          ? []
+          : [
+              notValidOn('label', description),
+              notValidOn('documentation', description),
+            ]),
         flagNotValidOn('sequentially', description),
       ]);
-    },
-  );
 
-  test.each(NAME_SLOT_HOSTS.filter(([, kind]) => LABEL_HOSTS.has(kind)))(
-    '%s is accepted on %s',
-    async (key, _kind, _description, settings) => {
-      expect(await diagnosticsOf(settings(`${key}: "L"`))).toEqual([]);
-    },
-  );
-
-  test.each(NAME_SLOT_HOSTS.filter(([, kind]) => !LABEL_HOSTS.has(kind)))(
-    '%s on %s names the element kind, having no name slot to land in',
-    async (key, _kind, description, settings) => {
-      expect(await diagnosticsOf(settings(`${key}: "L"`))).toEqual([
-        notValidOn(key, description),
-      ]);
-    },
-  );
-
-  test.each(BLOCK_HOSTS)(
-    'an execution listener is accepted on %s',
-    async (_kind, _description, program) => {
+      const task = TASK_KINDS.some(([taskKind]) => taskKind === kind);
+      const external = EXTERNAL_HOSTS.has(kind);
+      const block = [
+        'on start(class: "com.example.L")',
+        task ? 'on create(class: "com.example.L")' : '',
+        kind === 'call' ? '' : 'form { a: number }',
+        'input a = 1 output b = "two"',
+        external ? '' : 'property k = "v"',
+        external || kind === 'call' ? '' : 'error E when "${x}"',
+      ].join(' ');
       expect(
-        await diagnosticsOf(program('on start(class: "com.example.L")')),
-      ).toEqual([]);
-    },
-  );
-
-  test.each(TASK_KIND_BLOCKS)(
-    'a task listener is not accepted on %s',
-    async (_kind, description, program) => {
-      expect(
-        await diagnosticsOf(program('on create(class: "com.example.L")')),
-      ).toEqual([taskListenerOnly('create', description)]);
-    },
-  );
-
-  // `call` is absent from both lists: its body has no `form` member at all, so
-  // a form written there is a parse error rather than this diagnostic.
-  test.each(
-    BLOCK_HOSTS.filter(([kind]) => !FORM_HOSTS.has(kind) && kind !== 'call'),
-  )(
-    'a form block on %s names the element kind',
-    async (_kind, description, program) => {
-      expect(await diagnosticsOf(program('form { a: number }'))).toEqual([
-        noFormBlock(description),
-      ]);
-    },
-  );
-
-  test.each(BLOCK_HOSTS.filter(([kind]) => FORM_HOSTS.has(kind)))(
-    'a form block is accepted on %s',
-    async (_kind, _description, program) => {
-      expect(await diagnosticsOf(program('form { a: number }'))).toEqual([]);
-    },
-  );
-
-  test.each(BLOCK_HOSTS.filter(([kind]) => PARAMETER_HOSTS.has(kind)))(
-    'input and output parameters are accepted on %s',
-    async (_kind, _description, program) => {
-      expect(
-        await diagnosticsOf(program('input a = 1 output b = "two"')),
-      ).toEqual([]);
-    },
-  );
-
-  test.each(BLOCK_HOSTS.filter(([kind]) => !PARAMETER_HOSTS.has(kind)))(
-    'a parameter on %s names the element kind and the hosts that take one',
-    async (_kind, description, program) => {
-      expect(await diagnosticsOf(program('input a = 1'))).toEqual([
-        noParameters(description),
-      ]);
-    },
-  );
-
-  test.each(BLOCK_HOSTS.filter(([kind]) => !EXTERNAL_HOSTS.has(kind)))(
-    'a property line on %s names the element kind and the hosts that take one',
-    async (_kind, description, program) => {
-      expect(await diagnosticsOf(program('property k = "v"'))).toEqual([
-        noPropertyHostMessage(description),
-      ]);
-    },
-  );
-
-  // `call` is absent: its own block has no mapping member, so one written
-  // there is a parse error rather than this diagnostic. The code is declared
-  // in the header so the linker stays out of the list.
-  test.each(
-    BLOCK_HOSTS.filter(
-      ([kind]) => !EXTERNAL_HOSTS.has(kind) && kind !== 'call',
-    ).map(
-      ([kind, description, members]) =>
-        [
-          kind,
-          description,
-          (c: string) =>
-            members(c).replace('process p {', 'process p { error E '),
-        ] as const,
-    ),
-  )(
-    'an error mapping on %s names the element kind and the hosts that take one',
-    async (_kind, description, program) => {
-      expect(await diagnosticsOf(program('error E when "${x}"'))).toEqual([
-        noMappingHostMessage(description),
+        await diagnosticsOf(
+          members(block).replace('process p {', 'process p { error E '),
+        ),
+      ).toEqual([
+        ...(kind === 'call' || FORM_HOSTS.has(kind)
+          ? []
+          : [noFormBlock(description)]),
+        ...(PARAMETER_HOSTS.has(kind)
+          ? []
+          : [noParameters(description), noParameters(description)]),
+        ...(external ? [] : [noPropertyHostMessage(description)]),
+        ...(external || kind === 'call'
+          ? []
+          : [noMappingHostMessage(description)]),
+        ...(task ? [taskListenerOnly('create', description)] : []),
       ]);
     },
   );
@@ -4568,54 +3844,39 @@ describe('Validation - every element with settings and a member block', () => {
 
 checks('Validation - input and output parameters', [
   [
-    'an unrecognized direction names the two legal ones',
-    `process p { user U { inp a = 1 } }`,
-    [unknownDirectionMessage('inp', ['input', 'output'])],
-  ],
-  [
-    'a repeated name within one direction is one error',
-    `process p { user U { input a = 1 input a = 2 } }`,
-    [duplicateParameter('input', 'a')],
-  ],
-  [
-    'the two directions are independent namespaces',
-    `process p { user U { input a = 1 output a = 2 } }`,
-    [],
-  ],
-  [
-    'a list, a map, and an inline script are parameter values',
-    `process p { service V(topic: "t") { input items = [1, 2] input rows = { k: "v" } input computed = ${FENCE}groovy\n1 + 1\n${FENCE} } }`,
-    [],
+    'input and output parameters validate their direction, name, and value the same way',
+    `process p {
+  var count: string
+  user U { inp a = 1 }
+  user U2 { input a = 1 input a = 2 }
+  user U3 { input a = 1 output a = 2 }
+  service V(topic: "t") { input items = [1, 2] input rows = { k: "v" } input computed = ${FENCE}groovy\n1 + 1\n${FENCE} }
+  user U4 { input xs = [${FENCE}cobol\n1\n${FENCE}] }
+  user U5 { input m = { "": "empty" } }
+  user U6 { input m = { rows: [{ cells: { "": 1 } }] } }
+  user U7 { input a = "" input b = "  " }
+  user U8 { input a = ["x", ""] input b = { k: "" } }
+  user U9 { input count = 1 } step T for 3 until (count >= 2)
+  user U10 { input m = { "say \\"hi\\"": 1, "{ braces }": 2, "two
+lines": 3, "Grüße 日本": 4 } }
+}`,
+    [
+      typeMismatch('count', 'string', 'an ordered comparison', '>='),
+      unknownDirectionMessage('inp', ['input', 'output']),
+      duplicateParameter('input', 'a'),
+      unsupportedScriptTag(`Input 'xs'`, 'cobol'),
+      EMPTY_MAP_KEY,
+      EMPTY_MAP_KEY,
+      warn(EMPTY_STRING_VALUE_MESSAGE),
+      warn(EMPTY_STRING_VALUE_MESSAGE),
+      warn(EMPTY_STRING_VALUE_MESSAGE),
+      warn(EMPTY_STRING_VALUE_MESSAGE),
+    ],
   ],
   ...scriptTagCases(
     (tag) => `process p { user U { input x = ${FENCE}${tag}\n1\n${FENCE} } }`,
     `Input 'x'`,
   ),
-  [
-    'a script nested in a list is checked the same as a top-level one',
-    `process p { user U { input xs = [${FENCE}cobol\n1\n${FENCE}] } }`,
-    [unsupportedScriptTag(`Input 'xs'`, 'cobol')],
-  ],
-  [
-    'an empty map key says what to write',
-    `process p { user U { input m = { "": "empty" } } }`,
-    [EMPTY_MAP_KEY],
-  ],
-  [
-    'an empty map key is reached through a nested list and map',
-    `process p { user U { input m = { rows: [{ cells: { "": 1 } }] } } }`,
-    [EMPTY_MAP_KEY],
-  ],
-  [
-    'an empty or a whitespace-only string value writes no value at all',
-    `process p { user U { input a = "" input b = "  " } }`,
-    [warn(EMPTY_STRING_VALUE_MESSAGE), warn(EMPTY_STRING_VALUE_MESSAGE)],
-  ],
-  [
-    "an empty string reached through a list item or a map entry's value warns the same way",
-    `process p { user U { input a = ["x", ""] input b = { k: "" } } }`,
-    [warn(EMPTY_STRING_VALUE_MESSAGE), warn(EMPTY_STRING_VALUE_MESSAGE)],
-  ],
   [
     'a parameter name is in scope for the collection it feeds',
     `process p { start S subprocess B { input lines = ["a", "b"] } { user U for each line in lines } end E }`,
@@ -4626,39 +3887,54 @@ checks('Validation - input and output parameters', [
     `process p { start S user U { output total = 1 } step T { input seen = total } end E }`,
     [],
   ],
-  [
-    "an author's own declaration wins over the seeded parameter name",
-    `process p { var count: string user U { input count = 1 } step T for 3 until (count >= 2) }`,
-    [typeMismatch('count', 'string', 'an ordered comparison', '>=')],
-  ],
-  [
-    'a key holding a quote, a brace, a newline, or non-ASCII text is accepted',
-    `process p { user U { input m = { "say \\"hi\\"": 1, "{ braces }": 2, "two
-lines": 3, "Grüße 日本": 4 } } }`,
-    [],
-  ],
 ]);
 
 checks('Validation - injected fields', [
   [
-    'a class-bound service task, a delegate-bound send task, and a class-bound decision step carry a field, quoted or as an expression, beside io parameters',
-    `process p { service V(class: "com.acme.D") { field greeting = "hello" } send N(delegate: "\${sender}") { field subject = "\${topic}" } decide D(class: "com.acme.R") { input amount = 1 field greeting = "hello" output risk = 2 } }`,
-    [],
-  ],
-  [
-    'an expression-bound service task takes no field',
-    `process p { service V(expression: "\${bean.run(execution)}") { field greeting = "hello" } }`,
-    [fieldBinding('A service task', 'expression')],
-  ],
-  [
-    'a topic-bound service task hands work to a worker, so it takes no field',
-    `process p { service V(topic: "t") { field greeting = "hello" } }`,
-    [fieldBinding('A service task', 'topic')],
-  ],
-  [
-    'a decision-bound decide step runs no implementation, so it takes no field',
-    `process p { decide D(decision: "riskRating") { field greeting = "hello" } }`,
-    [fieldBinding('A decision step', 'decision')],
+    "a field value's binding rules apply the same way across tasks and listeners",
+    `process p {
+  var salutation: string
+  start S { field greeting = "hello" }
+  service V(class: "com.acme.D") { field greeting = "hello" } send N(delegate: "\${sender}") { field subject = "\${topic}" } decide D(class: "com.acme.R") { input amount = 1 field greeting = "hello" output risk = 2 }
+  service V2(expression: "\${bean.run(execution)}") { field greeting = "hello" }
+  service V3(topic: "t") { field greeting = "hello" }
+  decide D2(decision: "riskRating") { field greeting = "hello" }
+  service V4(class: "com.acme.D3") { field greeting = 3 fld x = 1 }
+  user U { field greeting = "hello" }
+  service V5(class: "com.acme.D4") { field retries = 3 field greeting = salutation field greetings = ["a", "b"] field text = { text: "hi" } field body = ${FENCE}groovy\n"hi"\n${FENCE} }
+  service V6(class: "com.acme.D5") { field greeting = "hi" field greeting = "ho" }
+  service V7(class: "com.acme.D6") { input greeting = 1 field greeting = "hi" }
+  service V8(class: "com.acme.D7") { fld greeting = "hi" }
+  user U2 { on start(class: "com.acme.L") { field greeting = "hello" } on complete(delegate: "\${listenerBean}") { field greeting = "hello" } }
+  user U3 { on start(expression: "\${bean.run(task)}") { field greeting = "hello" } }
+  user U4 { on start ${FENCE}groovy\nlog(task)\n${FENCE} { field greeting = "hello" } }
+  user U5 { on start(class: "com.acme.L2") ${FENCE}groovy\nlog(task)\n${FENCE} { field greeting = "hello" } }
+  user U6 { on start(class: "com.acme.L3") { input x = 1 } }
+}`,
+    [
+      noFieldHostMessage('a start event'),
+      fieldBinding('A service task', 'expression'),
+      fieldBinding('A service task', 'topic'),
+      fieldBinding('A decision step', 'decision'),
+      fieldValueMessage('greeting'),
+      unknownDirectionMessage('fld', ['input', 'output', 'field', 'property']),
+      noFieldHostMessage('a user task'),
+      fieldValueMessage('retries'),
+      fieldValueMessage('greeting'),
+      fieldValueMessage('greetings'),
+      fieldValueMessage('text'),
+      fieldValueMessage('body'),
+      duplicateParameter('field', 'greeting'),
+      unknownDirectionMessage('fld', ['input', 'output', 'field', 'property']),
+      fieldBindingMessage(
+        `The 'on start' listener`,
+        ['expression'],
+        LISTENER_FIELD_BINDINGS,
+      ),
+      scriptListenerFieldMessage(`The 'on start' listener`),
+      scriptListenerFieldMessage(`The 'on start' listener`),
+      unknownDirectionMessage('input', ['field']),
+    ],
   ],
   [
     'a service task binding nothing at all has no binding to name in the refusal',
@@ -4668,150 +3944,43 @@ checks('Validation - injected fields', [
       bindingRequired(`Service task 'V'`, SERVICE_BINDINGS),
     ],
   ],
-  [
-    'a field and a member of an unknown direction report in the order they are written',
-    `process p { service V(class: "com.acme.D") { field greeting = 3 fld x = 1 } }`,
-    [
-      fieldValueMessage('greeting'),
-      unknownDirectionMessage('fld', ['input', 'output', 'field', 'property']),
-    ],
-  ],
-  [
-    'a user task names the kinds that take a field',
-    `process p { user U { field greeting = "hello" } }`,
-    [noFieldHostMessage('a user task')],
-  ],
-  [
-    'a start event names the kinds that take a field',
-    `process p { start S { field greeting = "hello" } }`,
-    [noFieldHostMessage('a start event')],
-  ],
-  [
-    'a class-bound listener and a delegate-bound task listener carry a field',
-    `process p { user U { on start(class: "com.acme.L") { field greeting = "hello" } on complete(delegate: "\${listenerBean}") { field greeting = "hello" } } }`,
-    [],
-  ],
-  [
-    'an expression-bound listener takes no field',
-    `process p { user U { on start(expression: "\${bean.run(task)}") { field greeting = "hello" } } }`,
-    [
-      fieldBindingMessage(
-        `The 'on start' listener`,
-        ['expression'],
-        LISTENER_FIELD_BINDINGS,
-      ),
-    ],
-  ],
-  [
-    'a fenced-script listener takes no field',
-    `process p { user U { on start ${FENCE}groovy\nlog(task)\n${FENCE} { field greeting = "hello" } } }`,
-    [scriptListenerFieldMessage(`The 'on start' listener`)],
-  ],
-  [
-    'a fenced script beside a class binding is still what refuses the field',
-    `process p { user U { on start(class: "com.acme.L") ${FENCE}groovy\nlog(task)\n${FENCE} { field greeting = "hello" } } }`,
-    [scriptListenerFieldMessage(`The 'on start' listener`)],
-  ],
-  [
-    'a number, a bareword, a list, a map, and an inline script are not field values, one refusal each',
-    `process p { var salutation: string service V(class: "com.acme.D") { field retries = 3 field greeting = salutation field greetings = ["a", "b"] field text = { text: "hi" } field body = ${FENCE}groovy\n"hi"\n${FENCE} } }`,
-    [
-      fieldValueMessage('retries'),
-      fieldValueMessage('greeting'),
-      fieldValueMessage('greetings'),
-      fieldValueMessage('text'),
-      fieldValueMessage('body'),
-    ],
-  ],
-  [
-    'a repeated field name is one error',
-    `process p { service V(class: "com.acme.D") { field greeting = "hi" field greeting = "ho" } }`,
-    [duplicateParameter('field', 'greeting')],
-  ],
-  [
-    'a field and an input of the same name are independent namespaces',
-    `process p { service V(class: "com.acme.D") { input greeting = 1 field greeting = "hi" } }`,
-    [],
-  ],
-  [
-    'an unrecognized direction on a service task names field as legal too',
-    `process p { service V(class: "com.acme.D") { fld greeting = "hi" } }`,
-    [unknownDirectionMessage('fld', ['input', 'output', 'field', 'property'])],
-  ],
-  [
-    "a listener's block takes a field alone, so an input there is unrecognized",
-    `process p { user U { on start(class: "com.acme.L") { input x = 1 } } }`,
-    [unknownDirectionMessage('input', ['field'])],
-  ],
 ]);
 
 /** `BpmnParse.parseExternalServiceTask` reads these extras and nothing else does. */
 checks('Validation - external task extras', [
   [
-    'a priority under a class binding names the binding written',
-    `process p { service V(class: "c.D", taskPriority: 5) }`,
-    [topicBindingMessage('A service task', "'taskPriority'", ['class'])],
-  ],
-  [
-    'a priority under a decision binding names the binding written',
-    `process p { decide D(decision: "k", taskPriority: 5) }`,
-    [topicBindingMessage('A decision step', "'taskPriority'", ['decision'])],
-  ],
-  [
-    'a priority on a thrown message is an unknown key, topic or not',
-    `process p { start S emit message M("X", topic: "t", taskPriority: 5) }`,
-    [notValidOn('taskPriority', 'an emit statement')],
-  ],
-  [
-    'a property line under a class binding names the binding written',
-    `process p { service V(class: "c.D") { property k = "v" } }`,
-    [topicBindingMessage('A service task', 'a property line', ['class'])],
-  ],
-  [
-    'a property value is text',
-    `process p { service V(topic: "t") { property k = ["a"] } }`,
-    [propertyValueMessage('k')],
-  ],
-  [
-    'a repeated property key is one duplicate',
-    `process p { service V(topic: "t") { property k = "1" property k = "2" } }`,
-    [duplicateParameter('property', 'k')],
-  ],
-  [
-    'a property declares no process variable',
-    `process p { service V(topic: "t") { property k = "v" } if (k) { step A } }`,
-    [warn(undeclared('k'))],
-  ],
-  [
-    'a mapping under a class binding names the binding written',
-    `process p { error E service V(class: "c.D") { error E when "\${x}" } }`,
-    [topicBindingMessage('A service task', 'an error mapping', ['class'])],
-  ],
-  [
-    'a mapping raises an error and nothing else',
-    `process p { escalation S service V(topic: "t") { escalation S when "\${x}" } }`,
-    [MAPPING_HEAD_MESSAGE],
-  ],
-  [
-    'a mapping is written with when',
-    `process p { error E service V(topic: "t") { error E wenn "\${x}" } }`,
-    [MAPPING_WHEN_MESSAGE],
-  ],
-  [
-    'a mapping naming an undeclared code draws the linker message alone',
-    `process p { service V(topic: "t") { error NOPE when "\${x}" } }`,
-    [codeNotDeclared('error', 'NOPE')],
-  ],
-  // `externalTask` is resolved on an external task's execution alone.
-  [
-    "a mapping's condition reads the external task",
-    `process p { error E service V(topic: "t") { error E when externalTask.errorMessage == "x" } }`,
-    [],
-  ],
-  [
-    'an if reading the external task warns like any undeclared variable',
-    `process p { if (externalTask.retries == 0) { step A } }`,
-    [warn(undeclared('externalTask'))],
+    'external task priority, properties, and mappings each name the binding they belong to',
+    `process p {
+  error E
+  escalation S
+  start S emit message M("X", topic: "t", taskPriority: 5)
+  service V(class: "c.D", taskPriority: 5)
+  decide D2(decision: "k", taskPriority: 5)
+  service V2(class: "c.D3") { property k = "v" }
+  service V3(topic: "t") { property k = ["a"] }
+  service V4(topic: "t") { property k = "1" property k = "2" }
+  service V5(topic: "t") { property k = "v" } if (k) { step A }
+  service V6(class: "c.D4") { error E when "\${x}" }
+  service V7(topic: "t") { escalation S when "\${x}" }
+  service V8(topic: "t") { error E wenn "\${x}" }
+  service V9(topic: "t") { error NOPE when "\${x}" }
+  service V10(topic: "t") { error E when externalTask.errorMessage == "x" }
+  if (externalTask.retries == 0) { step A2 }
+}`,
+    [
+      codeNotDeclared('error', 'NOPE'),
+      warn(undeclared('k')),
+      warn(undeclared('externalTask')),
+      notValidOn('taskPriority', 'an emit statement'),
+      topicBindingMessage('A service task', "'taskPriority'", ['class']),
+      topicBindingMessage('A decision step', "'taskPriority'", ['decision']),
+      topicBindingMessage('A service task', 'a property line', ['class']),
+      propertyValueMessage('k'),
+      duplicateParameter('property', 'k'),
+      topicBindingMessage('A service task', 'an error mapping', ['class']),
+      MAPPING_HEAD_MESSAGE,
+      MAPPING_WHEN_MESSAGE,
+    ],
   ],
 ]);
 
@@ -4841,50 +4010,32 @@ checks(
 
 checks('Validation - form references on a user task', [
   [
-    'a form reference resolved by binding or pinned to a version, a bareword form id, and a form key alone are accepted',
-    `process p { user T(formRef: "review-form", binding: latest) user U(formRef: "review-form", version: 2) user V(formRef: reviewForm, binding: latest) user W(formKey: "review-form") }`,
-    [],
-  ],
-  [
-    'a form key beside a form reference is one error',
-    `process p { user T(formKey: "k", formRef: "review-form", binding: latest) }`,
-    [FORM_KEY_AND_REF_MESSAGE],
-  ],
-  [
-    'a form reference with no binding is one error',
-    `process p { user T(formRef: "review-form") }`,
-    [FORM_REF_BINDING_MESSAGE],
-  ],
-  [
-    'a binding with no form reference has nothing to pin',
-    `process p { user T(binding: latest) }`,
-    [FORM_REF_MISSING_MESSAGE],
-  ],
-  [
-    'a version with no form reference has nothing to pin',
-    `process p { user T(version: 2) }`,
-    [FORM_REF_MISSING_MESSAGE],
-  ],
-  [
-    'a binding and a version together is reported once',
-    `process p { user T(formRef: "review-form", binding: latest, version: 2) }`,
-    [bindingVersionClash('A user task')],
-  ],
-  [
-    "'binding: version' redirects to the numeric form",
-    `process p { user T(formRef: "review-form", binding: version) }`,
-    [BINDING_IS_VERSION],
-  ],
-  [
-    'an unrecognized binding names the two it accepts',
-    `process p { user T(formRef: "review-form", binding: newest) }`,
-    [BINDING_VALUE],
+    'a form reference and a form key each validate their own binding and version rules',
+    `process p {
+  user T(formRef: "review-form", binding: latest) user U(formRef: "review-form", version: 2) user V(formRef: reviewForm, binding: latest) user W(formKey: "review-form")
+  user T2(formKey: "k", formRef: "review-form", binding: latest)
+  user T3(formRef: "review-form")
+  user T4(binding: latest)
+  user T5(version: 2)
+  user T6(formRef: "review-form", binding: latest, version: 2)
+  user T7(formRef: "review-form", binding: version)
+  user T8(formRef: "review-form", binding: newest)
+}`,
+    [
+      FORM_KEY_AND_REF_MESSAGE,
+      FORM_REF_BINDING_MESSAGE,
+      FORM_REF_MISSING_MESSAGE,
+      FORM_REF_MISSING_MESSAGE,
+      bindingVersionClash('A user task'),
+      BINDING_IS_VERSION,
+      BINDING_VALUE,
+    ],
   ],
 ]);
 
 checks('Validation - listeners', [
   [
-    'every task-listener event is accepted on a user task',
+    'a task listener validates its event, binding, and timer the same way a task does',
     `process p {
   user U {
     on create(class: "com.example.A")
@@ -4896,92 +4047,51 @@ checks('Validation - listeners', [
     on delete(class: "com.example.D")
     on timeout after "PT8H"(class: "com.example.T")
   }
+  service V(topic: "t") { on create(class: "com.example.C") }
+  user U2 { on start(class: "com.example.L", alongside) }
+  user U3 { on assign(class: "com.example.C2") }
+  subprocess S { on wibble(class: "com.example.C3") } { user U4 }
+  user U5 { on start }
+  user U6 { on start(class: "com.example.C4", delegate: "\${bean}") }
+  user U7 { on start(topic: "t") }
+  user U8 { on timeout(class: "com.example.T2") }
+  user U9 { on create after "PT1H" (class: "com.example.C5") }
+  user U10 { on timeout whenever "PT1H2" (class: "com.example.T3") }
+  user U11 { on start ${FENCE}php\necho 1;\n${FENCE} }
+  user U12 { on start ${FENCE}groovy\n${FENCE} }
 }`,
-    [],
-  ],
-  [
-    'a task-listener event elsewhere says only a user task has one',
-    `process p { service V(topic: "t") { on create(class: "com.example.C") } }`,
-    [taskListenerOnly('create', 'a service task')],
-  ],
-  [
-    'a listener binds and nothing else, so a bare flag is refused there too',
-    `process p { user U { on start(class: "com.example.L", alongside) } }`,
-    [flagNotValidOn('alongside', 'a listener')],
-  ],
-  [
-    "'on assign' is refused with the list, whose word is 'assignment' (BpmnParse.parseTaskListeners)",
-    `process p { user U { on assign(class: "com.example.C") } }`,
-    [unknownListenerEvent('assign', USER_LISTENER_EVENTS)],
-  ],
-  [
-    'an unknown event word lists only the execution events elsewhere',
-    `process p { subprocess S { on wibble(class: "com.example.C") } { user U } }`,
-    [unknownListenerEvent('wibble', `'start' or 'end'`)],
-  ],
-  [
-    'a listener with no binding names the three attributes and the script body',
-    `process p { user U { on start } }`,
     [
+      taskListenerOnly('create', 'a service task'),
+      flagNotValidOn('alongside', 'a listener'),
+      unknownListenerEvent('assign', USER_LISTENER_EVENTS),
+      unknownListenerEvent('wibble', `'start' or 'end'`),
       bindingRequired(
         `The 'on start' listener`,
         LISTENER_BINDINGS,
         ', or a fenced script body',
       ),
-    ],
-  ],
-  [
-    'a listener with two bindings names both',
-    `process p { user U { on start(class: "com.example.C", delegate: "\${bean}") } }`,
-    [
       bindingConflict(
         `The 'on start' listener`,
         'class, delegate',
         LISTENER_BINDINGS,
       ),
-    ],
-  ],
-  [
-    'a key that binds nothing is rejected inside a listener block',
-    `process p { user U { on start(topic: "t") } }`,
-    [
       notValidOn('topic', 'a listener'),
       bindingRequired(
         `The 'on start' listener`,
         LISTENER_BINDINGS,
         ', or a fenced script body',
       ),
+      LISTENER_TIMER_PAYLOAD_MESSAGE,
+      LISTENER_PARTICLE_ONLY,
+      unknownParticle('whenever'),
+      unsupportedScriptTag(`The 'on start' listener`, 'php'),
+      emptyScript(`The 'on start' listener`),
     ],
-  ],
-  [
-    'a timeout listener without a timer asks for the particle clause',
-    `process p { user U { on timeout(class: "com.example.T") } }`,
-    [LISTENER_TIMER_PAYLOAD_MESSAGE],
-  ],
-  [
-    'a timer on any other listener event is one error',
-    `process p { user U { on create after "PT1H" (class: "com.example.C") } }`,
-    [LISTENER_PARTICLE_ONLY],
-  ],
-  [
-    'an unknown particle on a timeout listener names the legal ones',
-    `process p { user U { on timeout whenever "PT1H" (class: "com.example.T") } }`,
-    [unknownParticle('whenever')],
   ],
   [
     'listeners repeat freely and fire in written order (CoreModelElement.addListenerToMap appends)',
     `process p { user U { on start(class: "a.B") on start(class: "c.D") on timeout after "PT1H"(class: "x.Y") on timeout after "P1D"(class: "x.Z") } }`,
     [],
-  ],
-  [
-    "a script binding follows the script task's fence rules",
-    `process p { user U { on start ${FENCE}php\necho 1;\n${FENCE} } }`,
-    [unsupportedScriptTag(`The 'on start' listener`, 'php')],
-  ],
-  [
-    'an empty script binding is one error',
-    `process p { user U { on start ${FENCE}groovy\n${FENCE} } }`,
-    [emptyScript(`The 'on start' listener`)],
   ],
   ...scriptTagCases(
     (tag) =>
@@ -4991,9 +4101,7 @@ checks('Validation - listeners', [
 ]);
 
 describe('Validation - the timer clause, reported in place', () => {
-  // A listener names its kind in `event` and everything else in `trigger`, so
-  // the squiggle covers the word the author wrote rather than the whole
-  // construct around it.
+  // The squiggle covers the word the author wrote, not the whole listener.
   test.each([
     [
       'a listener is marked on its event word',
@@ -5120,10 +4228,6 @@ checks('Validation - process header value shapes', [
 const DECORATED_CLAUSE =
   'for each line in lines sequentially until (nrOfCompletedInstances >= 2)';
 
-/**
- * Each host writes whatever else its own validation demands, so the only
- * diagnostics a case can produce are the slots'.
- */
 const REPEAT_HOSTS: Array<
   [
     kind: string,
@@ -5161,114 +4265,69 @@ function repeatHost(head: string, own = '', tail = '') {
 
 describe('Validation - the repeat clause', () => {
   // Nothing in the clause's validation branches on the statement kind or on how
-  // deeply it nests, so one host carries the forms; per-host reachability is the
-  // parameter matrices below and the parse sweep in `parsing.test.ts`.
-  test.each([
-    'for 3',
-    'for each line in lines',
-    'for each in lines',
-    'for 2 each line in lines',
-    DECORATED_CLAUSE,
-  ])('`%s` validates clean', async (clause) => {
-    expect(
-      await diagnosticsOf(`process p { var lines: json user U ${clause} }`),
-    ).toEqual([]);
-  });
-
-  test.each(['for 1.5', 'for -3', 'for "high"'])(
-    '`%s` is not a repeat count',
-    async (clause) => {
-      expect(await diagnosticsOf(`process p { user U ${clause} }`)).toEqual([
-        REPEAT_COUNT_MESSAGE,
-      ]);
-    },
-  );
-
-  test.each(['for "3"', 'for count', `for "\${count}"`])(
-    '`%s` is a clean repeat count',
-    async (clause) => {
-      expect(
-        await diagnosticsOf(`process p { var count: number user U ${clause} }`),
-      ).toEqual([]);
-    },
-  );
-
-  test.each([
-    ['a subprocess', `subprocess Outer { user U ${DECORATED_CLAUSE} }`],
-    ['an on handler body', `start S on error { user U ${DECORATED_CLAUSE} }`],
-  ])('the decorated form validates clean inside %s', async (_where, body) => {
-    expect(
-      await diagnosticsOf(`process p { var lines: json ${body} }`),
-    ).toEqual([]);
-  });
-
-  test.each([
-    'nrOfInstances',
-    'nrOfActiveInstances',
-    'nrOfCompletedInstances',
-    'loopCounter',
-  ])('`%s` is in scope in a process carrying a clause', async (variable) => {
+  // deeply it nests, so one host carries the forms.
+  test('every clause form validates, and only a count that is no integer or expression is refused', async () => {
+    const clauses = [
+      'for 3',
+      'for each line in lines',
+      'for each in lines',
+      'for 2 each line in lines',
+      DECORATED_CLAUSE,
+      'for "3"',
+      'for count',
+      `for "\${count}"`,
+      ...[
+        'nrOfInstances',
+        'nrOfActiveInstances',
+        'nrOfCompletedInstances',
+        'loopCounter',
+      ].map((variable) => `for 3 until (${variable} >= 2)`),
+      'for 1.5',
+      'for -3',
+      'for "high"',
+    ];
     expect(
       await diagnosticsOf(
-        `process p { user U for 3 until (${variable} >= 2) }`,
+        `process p { var lines: json var count: number ${clauses.map((c, i) => `user U${i} ${c}`).join(' ')} subprocess Outer { user V ${DECORATED_CLAUSE} } on error { user W ${DECORATED_CLAUSE} } }`,
       ),
-    ).toEqual([]);
+    ).toEqual([
+      REPEAT_COUNT_MESSAGE,
+      REPEAT_COUNT_MESSAGE,
+      REPEAT_COUNT_MESSAGE,
+    ]);
   });
 
   test.each(REPEAT_HOSTS)(
-    "an 'output' parameter on a repeated %s is one error saying to move it",
+    "only an 'output' parameter on a repeated %s is refused",
     async (_kind, _description, statement) => {
       expect(
-        await diagnosticsOf(
-          `process p { ${statement('for 3', '', 'output b = 1')} }`,
+        await Promise.all(
+          [
+            statement('for 3', '', 'input a = 1 output b = 1'),
+            statement('', '', 'output b = 1'),
+          ].map((body) => diagnosticsOf(`process p { ${body} }`)),
         ),
-      ).toEqual([REPEATED_OUTPUT_MESSAGE]);
-    },
-  );
-
-  test.each(REPEAT_HOSTS)(
-    "an 'input' parameter on a repeated %s is accepted",
-    async (_kind, _description, statement) => {
-      expect(
-        await diagnosticsOf(
-          `process p { ${statement('for 3', '', 'input a = 1')} }`,
-        ),
-      ).toEqual([]);
-    },
-  );
-
-  test.each(REPEAT_HOSTS)(
-    "an 'output' parameter on an unrepeated %s stays clean",
-    async (_kind, _description, statement) => {
-      expect(
-        await diagnosticsOf(
-          `process p { ${statement('', '', 'output b = 1')} }`,
-        ),
-      ).toEqual([]);
+      ).toEqual([[REPEATED_OUTPUT_MESSAGE], []]);
     },
   );
 });
 
 checks('Validation - the repeat clause in scope', [
   [
-    'the element variable a clause binds is in scope inside the statement',
-    `process p { var lines: json user U for each line in lines { input x = line } }`,
-    [],
+    "the repeat clause's element variable is in scope, and an author's own declaration wins",
+    `process p {
+  var lines: json
+  var loopCounter: string
+  user U for each line in lines { input x = line }
+  user U2 for 3 until (loopCounter >= 2)
+  subprocess B for each line in lines { user U3 for 2 }
+}`,
+    [typeMismatch('loopCounter', 'string', 'an ordered comparison', '>=')],
   ],
   [
     'a process with no clause still warns about a loop variable',
     `process p { user U { input x = loopCounter } }`,
     [warn(undeclared('loopCounter'))],
-  ],
-  [
-    "an author's own declaration wins over the seeded loop variable",
-    `process p { var loopCounter: string user U for 3 until (loopCounter >= 2) }`,
-    [typeMismatch('loopCounter', 'string', 'an ordered comparison', '>=')],
-  ],
-  [
-    'a clause nests inside a repeated subprocess',
-    `process p { var lines: json subprocess B for each line in lines { user U for 2 } }`,
-    [],
   ],
 ]);
 
@@ -5293,53 +4352,36 @@ checks('Validation - per-run job settings', [
     ],
   ]),
   [
-    'a run key on a kind that never repeats is an unknown key there',
-    `process p { start S(runAsyncBefore: true) }`,
-    [notValidOn('runAsyncBefore', 'a start event')],
-  ],
-  [
-    'a run key on a gateway head is an unknown key there',
-    `process p { var a: boolean if (a) (runAsyncBefore: true) { user A } }`,
-    [notValidOn('runAsyncBefore', 'an if statement')],
-  ],
-  [
-    'runJobPriority on a repeated step names the key the engine reads',
-    `process p { step X for 2(runJobPriority: 5) }`,
-    [RUN_JOB_PRIORITY_MESSAGE],
+    'a per-run job key is legal only on a step that actually repeats',
+    `process p {
+  var a: boolean
+  start S(runAsyncBefore: true)
+  if (a) (runAsyncBefore: true) { user A }
+  step X for 2(runJobPriority: 5)
+  service V for 3(topic: "t", runAsyncBefore: true, runExclusive: "false")
+  service V2 for 3(topic: "t", runAsyncBefore: true, runRetryCycle: 3)
+  service V3 for 3(topic: "t", runAsyncBefore: true, runRetryCycle: R2)
+  step X2 for 2(asyncBefore: true, runAsyncBefore: true)
+}`,
+    [
+      notValidOn('runAsyncBefore', 'a start event'),
+      notValidOn('runAsyncBefore', 'an if statement'),
+      RUN_JOB_PRIORITY_MESSAGE,
+      quotedBoolean('runExclusive'),
+      unquotedText('runRetryCycle'),
+      unquotedText('runRetryCycle'),
+    ],
   ],
   [
     'runJobPriority on a kind that never repeats is an unknown key there',
     `process p { start S(runJobPriority: 5) }`,
     [notValidOn('runJobPriority', 'a start event')],
   ],
-  [
-    'a quoted boolean in a run key names the unquoted form',
-    `process p { service V for 3(topic: "t", runAsyncBefore: true, runExclusive: "false") }`,
-    [quotedBoolean('runExclusive')],
-  ],
-  [
-    'a number in runRetryCycle asks for quotes',
-    `process p { service V for 3(topic: "t", runAsyncBefore: true, runRetryCycle: 3) }`,
-    [unquotedText('runRetryCycle')],
-  ],
-  [
-    'a bareword in runRetryCycle asks for quotes and names no variable',
-    `process p { service V for 3(topic: "t", runAsyncBefore: true, runRetryCycle: R2) }`,
-    [unquotedText('runRetryCycle')],
-  ],
-  [
-    'a run key beside the step key of the same setting is clean: one job around, one per run',
-    `process p { step X for 2(asyncBefore: true, runAsyncBefore: true) }`,
-    [],
-  ],
 ]);
 
 /**
- * A hard keyword in a slot makes the parser recover with the slot left empty,
- * so each program reaches one check that reads an empty name or trigger back.
- * A row without a word empties its slot another way: a form field type is a
- * keyword alternation with no `ID` alternative, and a trailing `STRING` or
- * value can be left out.
+ * A hard keyword in a slot makes the parser recover with the slot empty; a row
+ * without a word empties its slot another way, by omitting it.
  */
 const UNPARSED_SLOT: Array<[where: string, program: string, word?: string]> = [
   ['a `var` name', `process p { var while: number start S end E }`, 'while'],
@@ -5351,8 +4393,7 @@ const UNPARSED_SLOT: Array<[where: string, program: string, word?: string]> = [
     `process p { start S subprocess while { user U } end E }`,
     'while',
   ],
-  // A name is only read back when something crosses the boundary it labels, and
-  // the reserved-word spelling above cannot get far enough to be crossed.
+  // A container name is only read back when a goto crosses it.
   [
     'a subprocess name a goto reaches into',
     `process p { start S subprocess { user U } goto U end E }`,
@@ -5362,8 +4403,7 @@ const UNPARSED_SLOT: Array<[where: string, program: string, word?: string]> = [
     `process p { start S subprocess { goto Fin } user U end Fin }`,
   ],
   ['a process name', `process while { start S end E }`, 'while'],
-  // Each duplicate walk names the process it scopes, so the reader is a second
-  // declaration colliding with the first rather than the empty name alone.
+  // A duplicate walk is what reads the process name back.
   [
     'a process name a duplicate step name reports',
     `process { start S user U user U end E }`,
@@ -5424,8 +4464,7 @@ const UNPARSED_SLOT: Array<[where: string, program: string, word?: string]> = [
     'while',
   ],
   [
-    // The colliding `var` is the reader: without it the agreement check that
-    // names the type never runs.
+    // The colliding `var` makes the agreement check read the type.
     'a form field type',
     `process p { var a: number start S user U { form { a: while } } end E }`,
   ],
@@ -5439,8 +4478,7 @@ const UNPARSED_SLOT: Array<[where: string, program: string, word?: string]> = [
     `process p { error C(message:) start S end E }`,
   ],
   ['an io parameter value', `process p { start S user U { input a } end E }`],
-  // The two keys a duplicate walk builds from more than one slot: a template
-  // literal would stringify the missing half and collide with itself.
+  // Duplicate keys built from two slots, where a missing half would stringify.
   [
     'a call mapping target',
     `process p { start S call C(process: "q") { in in } end E }`,
@@ -5458,58 +4496,42 @@ const UNPARSED_SLOT: Array<[where: string, program: string, word?: string]> = [
 ];
 
 describe('Validation - an unparsed slot', () => {
-  const containing = (messages: string[], needle: string) =>
-    messages.filter((message) => message.includes(needle));
-
-  test.each(UNPARSED_SLOT)(
-    '%s produces no crash and no diagnostic naming an element it cannot name',
-    async (_where, program, word) => {
+  test('no unparsed slot crashes a check or draws a diagnostic naming what it cannot name', async () => {
+    const problems: string[][] = [];
+    for (const [where, program, word] of UNPARSED_SLOT) {
       const messages = await diagnosticsOf(program);
-      if (word !== undefined) {
-        expect(messages).toContain(reservedWord(word));
+      const wrong = messages.filter(
+        (m) =>
+          m.includes('An error occurred during validation') ||
+          m.includes('undefined'),
+      );
+      if (word !== undefined && !messages.includes(reservedWord(word))) {
+        wrong.push(`missing: ${reservedWord(word)}`);
       }
-      expect(
-        containing(messages, 'An error occurred during validation'),
-      ).toEqual([]);
-      expect(containing(messages, 'undefined')).toEqual([]);
-    },
-  );
+      if (wrong.length > 0) problems.push([where, ...wrong]);
+    }
+    expect(problems).toEqual([]);
+  });
 
-  // The boundary explanation names the container that was crossed, so an
-  // unparsed name or trigger leaves it nothing to name and it stands down.
-  test.each([
-    [
-      'a handler a goto reaches into',
-      `process p { start S on { step T } goto T end E }`,
-      'T',
-    ],
-    [
-      'a handler a goto reaches out of',
-      `process p { start S on { goto T } step T end E }`,
-      'T',
-    ],
-    [
-      'a subprocess a goto reaches into',
-      `process p { start S subprocess { user U } goto U end E }`,
-      'U',
-    ],
-    [
-      'a subprocess a goto reaches out of',
-      `process p { start S subprocess { goto Fin } user U end Fin }`,
-      'Fin',
-    ],
-  ])(
-    '%s keeps the stock unresolved-reference message',
-    async (_where, program, name) => {
-      expect(await diagnosticsOf(program)).toContain(unresolvedStatement(name));
-    },
-  );
+  // With no container name to cite, the boundary explanation stands down.
+  test('a goto across an unnamed handler or subprocess keeps the stock unresolved-reference message', async () => {
+    const crossings: Array<[program: string, name: string]> = [
+      [`process p { start S on { step T } goto T end E }`, 'T'],
+      [`process p { start S on { goto T } step T end E }`, 'T'],
+      [`process p { start S subprocess { user U } goto U end E }`, 'U'],
+      [`process p { start S subprocess { goto Fin } user U end Fin }`, 'Fin'],
+    ];
+    for (const [program, name] of crossings) {
+      expect(await diagnosticsOf(program), program).toContain(
+        unresolvedStatement(name),
+      );
+    }
+  });
 
   test('an unterminated fence resolves to the malformed-body error', async () => {
     const messages = await diagnosticsOf(
       `process p { script total ${FENCE}js\nx = 1\n }`,
     );
-    // Reported exactly once, while tolerating surrounding parser noise.
     expect(messages.filter((m) => m === unterminatedScript('total'))).toEqual([
       unterminatedScript('total'),
     ]);

@@ -1,16 +1,7 @@
-/**
- * Turning a Langium parse result into a readable failure, shared by the suites
- * that treat any parse error as an aborted test rather than an assertion.
- */
-
 import type { LangiumDocument } from 'langium';
 import { isModel } from '@bpmn-script/language';
 
-/**
- * Every parse failure in `document` as one human-readable string, or `undefined`
- * when it parsed cleanly. Lexer errors are checked first because they fire
- * before the parser and would otherwise be masked.
- */
+/** Lexer errors come first: they fire before the parser and would otherwise be masked. */
 export function formatParseFailure(
   document: LangiumDocument,
 ): string | undefined {

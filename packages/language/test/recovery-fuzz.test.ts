@@ -1,14 +1,7 @@
-/**
- * Validation stays total on a broken document: no check crashes, and none
- * reports an element by a name the parser never filled in. A hand-written
- * table varies one axis per row (a keyword in an identifier slot reaches
- * different empty slots than a deleted token), so the corpus is mutated
- * mechanically instead: tokenized by the language's own lexer, then
- * substituted, duplicated and deleted at a fixed seed. Changing `SEED`
- * explores elsewhere; past roughly 150_000 mutants the documents the
- * validation helper retains exhaust the default heap, so a wider run wants
- * `NODE_OPTIONS=--max-old-space-size=8192`.
- */
+// Validation stays total on mutated documents: no check crashes and none names
+// an element the parser never filled in. Past roughly 150_000 mutants the
+// retained documents exhaust the default heap
+// (`NODE_OPTIONS=--max-old-space-size=8192`).
 
 import { beforeAll, describe, expect, test } from 'vitest';
 import { AstUtils, EmptyFileSystem, GrammarAST } from 'langium';
@@ -21,23 +14,15 @@ import { withTextMessages } from './helpers/diagnostics.js';
 const SEED = 0x5eed;
 const MUTANTS = 2000;
 
-/**
- * A mutant costs about 0.5ms warm and fifteen times that on a cold, contended
- * CPU; the budget only catches a runaway.
- */
+/** Only catches a runaway: a mutant costs about 0.5ms warm, fifteen times that cold. */
 const TIMEOUT_MS = MUTANTS * 30;
 
 const FENCE = '`' + '`' + '`';
 
 /**
- * Well-formed sources covering every construct a check reads a slot off. Where
- * the reader is a second construct referring to the first (a handler's trigger
- * is only printed when a `goto` crosses its boundary, a field's type only when
- * a `var` of the same name disagrees), the corpus carries the pair. A
- * substitution draws from the grammar's vocabulary and never reproduces an
- * identifier the source spells, so the last entry collides outright on all
- * three process-scoped duplicates, and its mutants reach the duplicate walks
- * with one half of each pair torn up.
+ * Where a slot is only read back through a second construct (a `goto` crossing
+ * a handler, a disagreeing `var`), the corpus carries the pair; the last entry
+ * collides on all three process-scoped duplicates.
  */
 const CORPUS = [
   `process p { error E(code: "c", message: "m") start S throw error(E) }`,
@@ -62,7 +47,7 @@ const CORPUS = [
   `process p(label: "x", label: "y") { var a: number var a: number start S user U user U end E }`,
 ];
 
-/** Park-Miller, so a failure names a mutant that replays, and free of the bitwise operators the lint config bans. */
+/** Park-Miller: seeded so a failure replays, and free of the bitwise operators the lint bans. */
 function seededRandom(seed: number): () => number {
   const modulus = 2147483647;
   let state = seed % modulus;
@@ -81,8 +66,7 @@ beforeAll(() => {
   validate = validationHelper<Model>(services);
   tokenize = (text) =>
     services.parser.Lexer.tokenize(text).tokens.map((t) => t.image);
-  // Every keyword the grammar declares; the three terminal samples cannot be
-  // read out of a regular expression, so they are the one hand-written part.
+  // The terminal samples cannot be read out of a regular expression.
   const keywords = new Set<string>(['name', '"s"', '1']);
   for (const node of AstUtils.streamAllContents(services.Grammar)) {
     if (GrammarAST.isKeyword(node)) keywords.add(node.value);

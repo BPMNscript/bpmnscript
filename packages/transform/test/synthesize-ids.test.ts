@@ -1,9 +1,4 @@
-/**
- * The templates are frozen by ADR 0010, Use Deterministic Structural Ids for
- * Synthesized BPMN Elements, and the validator reserves every form they mint
- * from a pattern list it spells itself, so each row pins the exact id and
- * that `isReservedName` refuses it.
- */
+// The templates are frozen (ADR 0010) and the validator reserves their forms from its own pattern list.
 
 import { describe, expect, it } from 'vitest';
 import { isReservedName } from '@bpmn-script/language';
@@ -83,9 +78,7 @@ describe('every template mints its documented form, which the validator reserves
           new Set(['Boundary_Pack_timer', 'Boundary_Pack_timer_2']),
         ),
     ],
-    // A boundary escape's end and a handler body's own start: minted off a
-    // coordinate no container name reaches, so the validator reserves the
-    // prefix rather than the exact form (no `container` argument here).
+    // Minted off a coordinate no container name reaches, so reserved by prefix.
     [
       'EndEvent_Boundary_Pack_timer',
       () => makeEndEventId('Boundary_Pack_timer', new Set()),
@@ -97,14 +90,10 @@ describe('every template mints its documented form, which the validator reserves
   ])('%s', (expected, make, container) => {
     const id = make();
     expect(id).toBe(expected);
-    // The validator's package cannot import these templates, so this row is
-    // what keeps its pattern list and the templates the same set.
     expect(isReservedName(id, container)).toBe(true);
     if (container !== undefined) expect(isReservedName(id)).toBe(false);
   });
 
-  // The suffixed id minted past a taken name is an ordinary name: the
-  // validator does not reserve it, and the printer does not elide it.
   it('the minted start and end are recognized exactly, per container', () => {
     const boundaries = ['Boundary_Pack_error'];
     expect(

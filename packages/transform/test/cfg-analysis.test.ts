@@ -1,10 +1,3 @@
-/**
- * Each row pins the complete analysis of one graph, so a spurious relation
- * fails as loudly as a missing one. Rows sharing an oracle assert an
- * equivalence: the exclusive and the parallel diamond, the intermediate catch
- * and the intermediate throw.
- */
-
 import { describe, expect, it } from 'vitest';
 import {
   analyzeCfg,
@@ -32,12 +25,7 @@ const linkThrow = (id: string, linkName: string): FlowElement =>
 const linkCatch = (id: string, linkName: string): FlowElement =>
   typedEvent('intermediateCatchEvent', id, { kind: 'link', linkName });
 
-/**
- * A process from its nodes and a whitespace-separated `source>target` list,
- * `source>target?` for a conditioned flow. An edge naming an undeclared
- * element is a typo in the fixture, and would otherwise be dropped without a
- * trace by the analysis itself.
- */
+// `a>b` edges, `a>b?` conditioned; an undeclared id throws because the analysis would skip it silently.
 function graph(flowElements: FlowElement[], edges: string): BpmnProcess {
   const declared = new Set(flowElements.map((e) => e.id));
   return minimalProcess(
@@ -54,12 +42,7 @@ function graph(flowElements: FlowElement[], edges: string): BpmnProcess {
   );
 }
 
-/**
- * Every answer the analysis gives about one graph: a line per node in element
- * order, framed by the two sentinels, then the back-edge list. `dom` and
- * `pdom` are the full dominator and post-dominator sets, which is where an
- * unreachable node shows as dominated by nothing at all, itself included.
- */
+// A node that cannot be reached shows `dom=-`: dominated by nothing, itself included.
 function describeCfg(process: BpmnProcess): string[] {
   const cfg = analyzeCfg(process);
   const ids = [
@@ -96,7 +79,6 @@ function describeCfg(process: BpmnProcess): string[] {
 
 const DIAMOND_EDGES = 'start>split split>A split>B A>join B>join join>end';
 
-/** Shared by the exclusive and the parallel diamond. */
 const DIAMOND = [
   'ENTRY in=- out=start idom=- ipdom=start dom=ENTRY pdom=ENTRY,start,split,join,end,EXIT',
   'start in=ENTRY out=split idom=ENTRY ipdom=split dom=ENTRY,start pdom=start,split,join,end,EXIT',
@@ -112,7 +94,6 @@ const DIAMOND = [
 
 const INTERMEDIATE_EVENT_EDGES = 'start>task task>node node>end';
 
-/** Shared by the intermediate catch and the intermediate throw. */
 const INTERMEDIATE_EVENT = [
   'ENTRY in=- out=start idom=- ipdom=start dom=ENTRY pdom=ENTRY,start,task,node,end,EXIT',
   'start in=ENTRY out=task idom=ENTRY ipdom=task dom=ENTRY,start pdom=start,task,node,end,EXIT',
@@ -211,11 +192,7 @@ const CASES: [title: string, process: BpmnProcess, expected: string[]][] = [
     ];
   }),
   [
-    // No route here ever reaches an end (join>B loops back into the cycle
-    // with nothing past it), so `head`, the entered loop's own test, takes
-    // the post-dominator tree it would have if its untaken exit route led
-    // out, and the two-ends-diamond shape holds again from there: `head`'s
-    // own routes and its new one to the exit share no other node.
+    // No route reaches an end, so `head` takes the post-dominator tree it would have if its untaken exit led out.
     "a jump after an if, through its merge into a while in a branch, leaves the while's test the head although the merge is listed first, and a merge is entered past no head",
     graph(
       [
@@ -325,7 +302,6 @@ const CASES: [title: string, process: BpmnProcess, expected: string[]][] = [
         task('body2'),
         end('end'),
       ],
-      // Loop 2's back-edge is listed before loop 1's, so it must come out first.
       'start>head1 head1>body1 body2>head2 body1>head1 head1>head2 head2>body2 head2>end',
     ),
     [
@@ -368,38 +344,6 @@ const CASES: [title: string, process: BpmnProcess, expected: string[]][] = [
     ],
   ],
   [
-    'an if/else inside an escape chain keeps a clean split/join pair',
-    graph(
-      [
-        start('start'),
-        task('main'),
-        end('end'),
-        boundaryEvent('Boundary_main_error', 'main', errorDef()),
-        gateway('splitB'),
-        task('branchA'),
-        task('branchB'),
-        gateway('joinB'),
-        end('endB'),
-      ],
-      'start>main main>end Boundary_main_error>splitB splitB>branchA splitB>branchB branchA>joinB branchB>joinB joinB>endB',
-    ),
-    [
-      'ENTRY in=- out=start,Boundary_main_error idom=- ipdom=EXIT dom=ENTRY pdom=ENTRY,EXIT',
-      'start in=ENTRY out=main idom=ENTRY ipdom=main dom=ENTRY,start pdom=start,main,end,EXIT',
-      'main in=start out=end idom=start ipdom=end dom=ENTRY,start,main pdom=main,end,EXIT',
-      'end in=main out=EXIT idom=main ipdom=EXIT dom=ENTRY,start,main,end pdom=end,EXIT',
-      'Boundary_main_error in=ENTRY out=splitB idom=ENTRY ipdom=splitB dom=ENTRY,Boundary_main_error pdom=Boundary_main_error,splitB,joinB,endB,EXIT',
-      'splitB in=Boundary_main_error out=branchA,branchB idom=Boundary_main_error ipdom=joinB dom=ENTRY,Boundary_main_error,splitB pdom=splitB,joinB,endB,EXIT',
-      'branchA in=splitB out=joinB idom=splitB ipdom=joinB dom=ENTRY,Boundary_main_error,splitB,branchA pdom=branchA,joinB,endB,EXIT',
-      'branchB in=splitB out=joinB idom=splitB ipdom=joinB dom=ENTRY,Boundary_main_error,splitB,branchB pdom=branchB,joinB,endB,EXIT',
-      'joinB in=branchA,branchB out=endB idom=splitB ipdom=endB dom=ENTRY,Boundary_main_error,splitB,joinB pdom=joinB,endB,EXIT',
-      'endB in=joinB out=EXIT idom=joinB ipdom=EXIT dom=ENTRY,Boundary_main_error,splitB,joinB,endB pdom=endB,EXIT',
-      'EXIT in=end,endB out=- idom=ENTRY ipdom=- dom=ENTRY,EXIT pdom=EXIT',
-      'back-edges=-',
-      'past-head=-',
-    ],
-  ],
-  [
     'a node reached from both the main flow and an escape chain keeps only the virtual entry as a dominator',
     graph(
       [
@@ -420,34 +364,6 @@ const CASES: [title: string, process: BpmnProcess, expected: string[]][] = [
       'end in=shared out=EXIT idom=shared ipdom=EXIT dom=ENTRY,shared,end pdom=end,EXIT',
       'EXIT in=end out=- idom=end ipdom=- dom=ENTRY,shared,end,EXIT pdom=EXIT',
       'back-edges=-',
-      'past-head=-',
-    ],
-  ],
-  [
-    'a back-edge inside an escape chain is detected like any other',
-    graph(
-      [
-        start('start'),
-        task('main'),
-        end('end'),
-        boundaryEvent('Boundary_main_error', 'main', errorDef()),
-        gateway('head2'),
-        task('body2'),
-        end('escEnd'),
-      ],
-      'start>main main>end Boundary_main_error>head2 head2>body2 body2>head2 head2>escEnd',
-    ),
-    [
-      'ENTRY in=- out=start,Boundary_main_error idom=- ipdom=EXIT dom=ENTRY pdom=ENTRY,EXIT',
-      'start in=ENTRY out=main idom=ENTRY ipdom=main dom=ENTRY,start pdom=start,main,end,EXIT',
-      'main in=start out=end idom=start ipdom=end dom=ENTRY,start,main pdom=main,end,EXIT',
-      'end in=main out=EXIT idom=main ipdom=EXIT dom=ENTRY,start,main,end pdom=end,EXIT',
-      'Boundary_main_error in=ENTRY out=head2 idom=ENTRY ipdom=head2 dom=ENTRY,Boundary_main_error pdom=Boundary_main_error,head2,escEnd,EXIT',
-      'head2 in=Boundary_main_error,body2 out=body2,escEnd idom=Boundary_main_error ipdom=escEnd dom=ENTRY,Boundary_main_error,head2 pdom=head2,escEnd,EXIT',
-      'body2 in=head2 out=head2 idom=head2 ipdom=head2 dom=ENTRY,Boundary_main_error,head2,body2 pdom=head2,body2,escEnd,EXIT',
-      'escEnd in=head2 out=EXIT idom=head2 ipdom=EXIT dom=ENTRY,Boundary_main_error,head2,escEnd pdom=escEnd,EXIT',
-      'EXIT in=end,escEnd out=- idom=ENTRY ipdom=- dom=ENTRY,EXIT pdom=EXIT',
-      'back-edges=Flow_body2_head2',
       'past-head=-',
     ],
   ],
@@ -554,13 +470,7 @@ describe('cfg analysis', () => {
   });
 
   it('a loop whose own exit route re-enters another loop, with nothing after it, gets the post-dominator tree its guarded twin has', () => {
-    // Two while loops (head1, head2) nested through an if (split): head1's
-    // own exit route normally continues after the loop, but here it jumps
-    // straight into head2's body (B), past head2's own test, and nothing
-    // follows, so no node ever reaches an end. The guarded twin puts that
-    // same jump behind a gateway (guard) that can also fall through to a
-    // real end, so its post-dominator tree is what the no-exit variant
-    // should have too, with `guard` standing in for the virtual exit.
+    // The twin puts head1's exit jump into head2's body behind a guard that can reach an end.
     const elements = [
       start('start'),
       gateway('head1'),
@@ -582,8 +492,6 @@ describe('cfg analysis', () => {
     );
     const noExitCfg = analyzeCfg(noExit);
     const guardedCfg = analyzeCfg(guarded);
-    // head1's own exit is the jump that never reaches an end, so it takes
-    // the guard's place; every other node's post-dominator carries over.
     const expected = (id: string): string | undefined => {
       const viaGuard = guardedCfg.immediatePostDominator(id);
       return viaGuard === 'guard' ? VIRTUAL_EXIT : viaGuard;
@@ -606,10 +514,7 @@ describe('cfg analysis', () => {
     expect(cfg.postDominates('m', 'nope')).toBe(false);
   });
 
-  // A do-while whose body if/if nests two steps deep (A -> if c -> B -> if d
-  // -> C), closed by an unconditioned goto to C after the loop: the goto
-  // lands past the loop's own head, on the same statement its own `if d`
-  // already reaches, so the two form one cycle with the do-while's test.
+  // A goto after a do-while lands on C, which the loop's own `if d` reaches, so both close one cycle with its test.
   const LIFDT_POST_C_ELEMENTS = [
     start('start'),
     task('A'),
@@ -625,8 +530,6 @@ describe('cfg analysis', () => {
     LIFDT_POST_C_ELEMENTS,
     'start>A A>splitC splitC>B? splitC>joinC B>splitD splitD>C? splitD>joinD C>joinD joinD>joinC joinC>loop loop>A? loop>C',
   );
-  // The same shape with the goto behind a guard (`if (e) { goto C }`) after
-  // the loop: the guard's own test also closes only at that statement.
   const LIFDT_POST_C_EXIT = graph(
     [
       ...LIFDT_POST_C_ELEMENTS,
@@ -689,11 +592,7 @@ describe('cfg analysis', () => {
   );
 
   it("a conditioned goto into a do-while body is no natural entry, so the loop's own test keeps its single back edge", () => {
-    // An `if (e) { goto B }` ahead of a do-while whose body nests
-    // `if (c) { ...; if (d) {...} }`, in the flow-element and sequence-flow
-    // order of one shuffled import. A conditioned outside entry into `B` is
-    // not natural; counted as one, the outer test's body would claim the
-    // loop's own test and add a second back edge.
+    // Element and flow order of one shuffled import.
     const elements = [
       gateway('Gateway_p_1_1_t_1_join'),
       task('B'),

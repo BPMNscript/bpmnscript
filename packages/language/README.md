@@ -129,7 +129,7 @@ The type is `string`, `number`, `boolean`, `date`, or `enum`.
 `number` is written as `long` on the wire, the engine's own name for it, and an `enum` field stores the id of the chosen value, so its variable is a string.
 
 Each setting in the parens but `pattern` is one `operaton:constraint`, evaluated in the order written.
-`FormValidators.createValidator` fails the deployment on any constraint name the engine has not registered, so the seven below are the closed set the parens take.
+`FormValidators.createValidator` fails the deployment on any constraint name the engine has not registered, so the seven constraint names below, together with `pattern`, are the closed set the parens take.
 
 | Setting                            | What the engine checks                                                                    | Fits     | Value                                                                                   |
 | ---------------------------------- | ----------------------------------------------------------------------------------------- | -------- | --------------------------------------------------------------------------------------- |

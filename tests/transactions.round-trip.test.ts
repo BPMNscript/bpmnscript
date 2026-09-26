@@ -1,11 +1,6 @@
-import { describe, it, expect } from 'vitest';
+import { it, expect } from 'vitest';
 
-import {
-  boundsOf,
-  describeDiContainment,
-  describeNoOverlappingShapes,
-  parseShapeBounds,
-} from './helpers/di-bounds.js';
+import { boundsOf, parseShapeBounds } from './helpers/di-bounds.js';
 import { endEvent, subProcess, theOnly } from './helpers/ir-query.js';
 import { idsOfTag } from './helpers/xml-query.js';
 import { roundTripFixture } from './helpers/round-trip-fixture.js';
@@ -17,8 +12,7 @@ const rt = roundTripFixture('transactions', {
   recompile: 'clean',
 });
 
-// Neither block nests another of its own tag, so a lazy match to the first
-// closing tag reads exactly one block.
+// No block nests another of its own tag, so the lazy match reads exactly one.
 function blockOf(xml: string, tag: string, id: string): string {
   const found = new RegExp(
     `<bpmn:${tag} id="${id}"[\\s\\S]*?</bpmn:${tag}>`,
@@ -30,8 +24,8 @@ function blockOf(xml: string, tag: string, id: string): string {
   return found![0];
 }
 
-describe("idempotence: golden .bpmn -> IR2 -> DSL' -> IR3", () => {
-  it.each([
+it('keeps both kinds of block, the cancel pair and the repetition at every hop, written back in the surface spelling', () => {
+  const picks = [
     [
       'the outer block that can be given up keeps its element',
       (ir: BpmnProcess) => subProcess(ir, 'BookAndPay').element,
@@ -93,123 +87,86 @@ describe("idempotence: golden .bpmn -> IR2 -> DSL' -> IR3", () => {
         asyncBefore: true,
       },
     ],
-  ] as const)('%s at every hop', (_title, pick, expected) => {
-    for (const [label, ir] of rt.hops) {
-      expect(pick(ir), `differs in ${label}`).toEqual(expected);
+  ] as const;
+  for (const [label, ir] of rt.hops) {
+    for (const [title, pick, expected] of picks) {
+      expect(pick(ir), `${title} in ${label}`).toEqual(expected);
     }
-  });
-
-  it("the decompiled DSL' writes every head and trigger back in the surface spelling", () => {
-    expect(rt.dslPrime).toContain(
-      'attempt BookAndPay(label: "Try to book and pay for the seats") {',
-    );
-    expect(rt.dslPrime).toContain(
-      'attempt AssignSeatRows for each row in seatRows sequentially(' +
-        'label: "Spread the party across rows", asyncBefore: true) {',
-    );
-    expect(rt.dslPrime).toContain(
-      'subprocess HoldSeats(label: "Hold the seats") {',
-    );
-    expect(rt.dslPrime).toContain(
-      'end BookingAbandoned cancel(label: "Give up the booking")',
-    );
-    expect(rt.dslPrime).toContain('on BookAndPay: cancel {');
-    expect(rt.dslPrime).toContain(
-      'on BookAndPay: error(PAYMENT_UNAVAILABLE, code: c, message: m) {',
-    );
-  });
+  }
+  for (const line of [
+    'attempt BookAndPay(label: "Try to book and pay for the seats") {',
+    'attempt AssignSeatRows for each row in seatRows sequentially(' +
+      'label: "Spread the party across rows", asyncBefore: true) {',
+    'subprocess HoldSeats(label: "Hold the seats") {',
+    'end BookingAbandoned cancel(label: "Give up the booking")',
+    'on BookAndPay: cancel {',
+    'on BookAndPay: error(PAYMENT_UNAVAILABLE, code: c, message: m) {',
+  ]) {
+    expect(rt.dslPrime).toContain(line);
+  }
 });
 
-describe('block shape pins on the frozen .bpmn', () => {
-  it('freezes the two heads as two tags, side by side', () => {
-    expect(idsOfTag(rt.frozenXml, 'transaction')).toEqual([
-      'BookAndPay',
-      'AssignSeatRows',
-    ]);
-    expect(idsOfTag(rt.frozenXml, 'subProcess')).toEqual([
-      'HoldSeats',
-      'EventSubProcess_seat-booking_2_1_3',
-      'PrepareDeparture',
-    ]);
-  });
+it('writes the two heads as two tags, the cancel end inside its block, both handlers as boundaries centered on it, the undo block and the repetition', () => {
+  expect(idsOfTag(rt.frozenXml, 'transaction')).toEqual([
+    'BookAndPay',
+    'AssignSeatRows',
+  ]);
+  expect(idsOfTag(rt.frozenXml, 'subProcess')).toEqual([
+    'HoldSeats',
+    'EventSubProcess_seat-booking_2_1_3',
+    'PrepareDeparture',
+  ]);
+  expect(rt.frozenXml.match(/<bpmn:cancelEventDefinition\b[^>]*>/g)).toEqual([
+    '<bpmn:cancelEventDefinition />',
+    '<bpmn:cancelEventDefinition />',
+  ]);
 
-  it('the cancel end sits inside the block it gives up and carries a bare definition', () => {
-    expect(rt.frozenXml.match(/<bpmn:cancelEventDefinition\b[^>]*>/g)).toEqual([
-      '<bpmn:cancelEventDefinition />',
-      '<bpmn:cancelEventDefinition />',
-    ]);
-
-    const block = blockOf(rt.frozenXml, 'transaction', 'BookAndPay');
-    expect(blockOf(block, 'endEvent', 'BookingAbandoned')).toBe(
-      '<bpmn:endEvent id="BookingAbandoned" name="Give up the booking">\n' +
-        '        <bpmn:incoming>Flow_Gateway_seat-booking_2_3_split_BookingAbandoned</bpmn:incoming>\n' +
-        '        <bpmn:cancelEventDefinition />\n' +
-        '      </bpmn:endEvent>',
+  const block = blockOf(rt.frozenXml, 'transaction', 'BookAndPay');
+  expect(blockOf(block, 'endEvent', 'BookingAbandoned')).toBe(
+    '<bpmn:endEvent id="BookingAbandoned" name="Give up the booking">\n' +
+      '        <bpmn:incoming>Flow_Gateway_seat-booking_2_3_split_BookingAbandoned</bpmn:incoming>\n' +
+      '        <bpmn:cancelEventDefinition />\n' +
+      '      </bpmn:endEvent>',
+  );
+  expect(block.match(/<bpmn:cancelEventDefinition\b/g)).toHaveLength(1);
+  expect(
+    blockOf(rt.frozenXml, 'boundaryEvent', 'Boundary_BookAndPay_cancel'),
+  ).toBe(
+    '<bpmn:boundaryEvent id="Boundary_BookAndPay_cancel" attachedToRef="BookAndPay">\n' +
+      '      <bpmn:outgoing>Flow_Boundary_BookAndPay_cancel_ApologizeToTraveler</bpmn:outgoing>\n' +
+      '      <bpmn:cancelEventDefinition />\n' +
+      '    </bpmn:boundaryEvent>',
+  );
+  expect(
+    blockOf(rt.frozenXml, 'boundaryEvent', 'Boundary_BookAndPay_error'),
+  ).toBe(
+    '<bpmn:boundaryEvent id="Boundary_BookAndPay_error" attachedToRef="BookAndPay">\n' +
+      '      <bpmn:outgoing>Flow_Boundary_BookAndPay_error_RecordProviderOutage</bpmn:outgoing>\n' +
+      '      <bpmn:errorEventDefinition errorRef="Error_PAYMENT_UNAVAILABLE" operaton:errorCodeVariable="c" operaton:errorMessageVariable="m" />\n' +
+      '    </bpmn:boundaryEvent>',
+  );
+  const undo = blockOf(
+    rt.frozenXml,
+    'subProcess',
+    'EventSubProcess_seat-booking_2_1_3',
+  );
+  expect(undo).toContain('triggeredByEvent="true"');
+  expect(undo).toContain('<bpmn:compensateEventDefinition />');
+  const repeated = blockOf(rt.frozenXml, 'transaction', 'AssignSeatRows');
+  expect(repeated).toContain('operaton:asyncBefore="true"');
+  expect(repeated).toContain(
+    '<bpmn:multiInstanceLoopCharacteristics isSequential="true" operaton:collection="seatRows" operaton:elementVariable="row" />',
+  );
+  const bounds = parseShapeBounds(rt.frozenXml);
+  const host = boundsOf(bounds, 'BookAndPay');
+  for (const id of [
+    'Boundary_BookAndPay_cancel',
+    'Boundary_BookAndPay_error',
+  ]) {
+    const attacher = boundsOf(bounds, id);
+    expect(attacher.y + attacher.height / 2, id).toBeCloseTo(
+      host.y + host.height,
+      3,
     );
-    expect(block.match(/<bpmn:cancelEventDefinition\b/g)).toHaveLength(1);
-  });
-
-  it('the cancel and error handlers are both boundary events attached to that same block', () => {
-    expect(
-      blockOf(rt.frozenXml, 'boundaryEvent', 'Boundary_BookAndPay_cancel'),
-    ).toBe(
-      '<bpmn:boundaryEvent id="Boundary_BookAndPay_cancel" attachedToRef="BookAndPay">\n' +
-        '      <bpmn:outgoing>Flow_Boundary_BookAndPay_cancel_ApologizeToTraveler</bpmn:outgoing>\n' +
-        '      <bpmn:cancelEventDefinition />\n' +
-        '    </bpmn:boundaryEvent>',
-    );
-    expect(
-      blockOf(rt.frozenXml, 'boundaryEvent', 'Boundary_BookAndPay_error'),
-    ).toBe(
-      '<bpmn:boundaryEvent id="Boundary_BookAndPay_error" attachedToRef="BookAndPay">\n' +
-        '      <bpmn:outgoing>Flow_Boundary_BookAndPay_error_RecordProviderOutage</bpmn:outgoing>\n' +
-        '      <bpmn:errorEventDefinition errorRef="Error_PAYMENT_UNAVAILABLE" operaton:errorCodeVariable="c" operaton:errorMessageVariable="m" />\n' +
-        '    </bpmn:boundaryEvent>',
-    );
-  });
-
-  it('the undo block inside the block is a triggeredByEvent block on a compensate start', () => {
-    const undo = blockOf(
-      rt.frozenXml,
-      'subProcess',
-      'EventSubProcess_seat-booking_2_1_3',
-    );
-    expect(undo).toContain('triggeredByEvent="true"');
-    expect(undo).toContain('<bpmn:compensateEventDefinition />');
-  });
-
-  it('the repeated block writes its repetition and its setting on the transaction tag', () => {
-    const block = blockOf(rt.frozenXml, 'transaction', 'AssignSeatRows');
-    expect(block).toContain('operaton:asyncBefore="true"');
-    expect(block).toContain(
-      '<bpmn:multiInstanceLoopCharacteristics isSequential="true" operaton:collection="seatRows" operaton:elementVariable="row" />',
-    );
-  });
+  }
 });
-
-describeNoOverlappingShapes(rt);
-
-describe('boundary placement on the frozen .bpmn', () => {
-  it('both attachers sit centered on the lower edge of the block they watch', () => {
-    const bounds = parseShapeBounds(rt.frozenXml);
-    const host = boundsOf(bounds, 'BookAndPay');
-
-    for (const id of [
-      'Boundary_BookAndPay_cancel',
-      'Boundary_BookAndPay_error',
-    ]) {
-      const attacher = boundsOf(bounds, id);
-      expect(
-        attacher.y + attacher.height / 2,
-        `${id} is not centered on the lower edge of BookAndPay`,
-      ).toBeCloseTo(host.y + host.height, 3);
-    }
-  });
-});
-
-describeDiContainment(rt, [
-  'BookAndPay',
-  'HoldSeats',
-  'PrepareDeparture',
-  'AssignSeatRows',
-]);

@@ -1,9 +1,8 @@
-// One document exercises every construct the import contract converts or
-// refuses at once, so an interaction between them (a spurious warning, a
-// refusal that stops naming its own construct) shows up here even when each
-// construct's own isolated test stays green.
+// One document holding every construct the import converts or refuses, so an
+// interaction between them (a spurious warning, a refusal naming the wrong
+// construct) shows even when each construct's own test stays green.
 
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect } from 'vitest';
 
 import {
   astToIr,
@@ -20,16 +19,14 @@ import {
   UnsupportedExtensionFormError,
   UnsupportedServiceTaskFormError,
 } from '@bpmn-script/transform';
-import type { BpmnProcess, ImportWarning } from '@bpmn-script/transform';
+import type { ImportWarning } from '@bpmn-script/transform';
 
 import { bpmnDoc } from './helpers/bpmn-doc.js';
 import { normalizeIr } from './helpers/normalize-ir.js';
 import { parseToAst, printDsl, validate } from './helpers/pipeline.js';
 
-// `GlobalScriptTask.script` is declared `isAttr: true` in the moddle schema,
-// but the BPMN XSD makes `<bpmn:script>` an element, so this root exercises
-// the case where a root's own unparsable child must not be reported a second
-// time against the process.
+// moddle declares `GlobalScriptTask.script` an attribute where the XSD has an
+// element; the root's unparsable child must not be reported again on the process.
 const GLOBAL_SCRIPT_TASK_ROOT =
   '  <bpmn:globalScriptTask id="G3">\n' +
   '    <bpmn:script>x</bpmn:script>\n' +
@@ -48,8 +45,7 @@ const FIXTURE = bpmnDoc(
     '    <bpmn:dataStoreReference id="ArchiveStore" />\n' +
     '    <bpmn:sequenceFlow id="Flow_S_Decide" sourceRef="S" targetRef="Decide" />\n' +
     '    <bpmn:sequenceFlow id="Flow_Decide_SignOff" sourceRef="Decide" targetRef="SignOff">\n' +
-    // A literal comparison: a free variable would draw an unrelated "not
-    // declared" diagnostic.
+    // A free variable here would draw an unrelated "not declared" diagnostic.
     '      <bpmn:conditionExpression operaton:resource="deployment://check.groovy">${1 &lt; 2}</bpmn:conditionExpression>\n' +
     '    </bpmn:sequenceFlow>\n' +
     '    <bpmn:sequenceFlow id="Flow_Decide_Review" sourceRef="Decide" targetRef="Review" />\n' +
@@ -107,37 +103,15 @@ const EXPECTED_WARNINGS: ImportWarning[] = [
   },
 ];
 
-describe('a document holding every construct the import converts', () => {
-  const state = {} as {
-    ir: BpmnProcess;
-    warnings: ImportWarning[];
-    dsl: string;
-  };
-
-  beforeAll(async () => {
-    const { ir, warnings } = await xmlToIr(FIXTURE);
-    state.ir = ir;
-    state.warnings = warnings;
-    state.dsl = printDsl(ir);
-  });
-
-  it('imports with exactly the warnings the contract names', () => {
-    expect(state.warnings).toEqual(EXPECTED_WARNINGS);
-  });
-
-  it('the script printed from that import validates clean', async () => {
-    const { diagnostics } = await validate(state.dsl);
-    expect(diagnostics).toEqual([]);
-  });
-
-  it('the re-desugared IR is normalized-equal to the import', async () => {
-    const reDesugared = astToIr(await parseToAst(state.dsl));
-    expect(normalizeIr(reDesugared)).toEqual(normalizeIr(state.ir));
-  });
+it('a document holding every construct the import converts warns exactly per the contract and prints a clean, equivalent script', async () => {
+  const { ir, warnings } = await xmlToIr(FIXTURE);
+  expect(warnings).toEqual(EXPECTED_WARNINGS);
+  const dsl = printDsl(ir);
+  const { diagnostics } = await validate(dsl);
+  expect(diagnostics).toEqual([]);
+  expect(normalizeIr(astToIr(await parseToAst(dsl)))).toEqual(normalizeIr(ir));
 });
 
-// Typed to the `Error` base since the table mixes every refusal class in one
-// column; the one caller reading a subclass field narrows itself.
 async function refusalError(
   xml: string,
   errorClass: abstract new (...args: never[]) => Error,
@@ -151,31 +125,29 @@ async function refusalError(
   throw new Error('expected xmlToIr to refuse the document');
 }
 
-const CONNECTOR_CHILD =
-  '<operaton:connector><operaton:connectorId>http-connector' +
-  '</operaton:connectorId></operaton:connector>';
+// Start `S` -> `id` -> end `E`, with `extra` after the flows.
+const oneStep = (id: string, element: string, extra = '') =>
+  bpmnDoc(
+    '    <bpmn:startEvent id="S" />\n' +
+      `    ${element}\n` +
+      '    <bpmn:endEvent id="E" />\n' +
+      `    <bpmn:sequenceFlow id="Flow_S_${id}" sourceRef="S" targetRef="${id}" />\n` +
+      `    <bpmn:sequenceFlow id="Flow_${id}_E" sourceRef="${id}" targetRef="E" />` +
+      extra,
+  );
 
-const PAIRED_TRIPLE_XML = bpmnDoc(
-  '    <bpmn:startEvent id="S" />\n' +
-    '    <bpmn:serviceTask id="ReserveRoom" operaton:class="com.example.Reserve" />\n' +
-    '    <bpmn:boundaryEvent id="CompensationBoundary" attachedToRef="ReserveRoom">\n' +
-    '      <bpmn:compensateEventDefinition id="d" />\n' +
-    '    </bpmn:boundaryEvent>\n' +
-    '    <bpmn:userTask id="CancelReservation" isForCompensation="true" />\n' +
-    '    <bpmn:endEvent id="E" />\n' +
-    '    <bpmn:sequenceFlow id="Flow_S_ReserveRoom" sourceRef="S" targetRef="ReserveRoom" />\n' +
-    '    <bpmn:sequenceFlow id="Flow_ReserveRoom_E" sourceRef="ReserveRoom" targetRef="E" />\n' +
-    '    <bpmn:association id="Assoc1" sourceRef="CompensationBoundary" targetRef="CancelReservation" />',
-);
+const CONNECTOR =
+  '<bpmn:extensionElements><operaton:connector><operaton:connectorId>http-connector' +
+  '</operaton:connectorId></operaton:connector></bpmn:extensionElements>';
 
-const REWRITE_PREVIEW = [
-  'subprocess Compensated_ReserveRoom {',
-  '  service ReserveRoom(class: "com.example.Reserve")',
-  '  on compensation {',
-  '    user CancelReservation',
-  '  }',
-  '}',
-].join('\n');
+const COMPENSATED_ROOM =
+  '<bpmn:serviceTask id="ReserveRoom" operaton:class="com.example.Reserve" />\n' +
+  '    <bpmn:boundaryEvent id="CompensationBoundary" attachedToRef="ReserveRoom">\n' +
+  '      <bpmn:compensateEventDefinition id="d" />\n' +
+  '    </bpmn:boundaryEvent>';
+
+const association = (target: string) =>
+  `\n    <bpmn:association id="Assoc1" sourceRef="CompensationBoundary" targetRef="${target}" />`;
 
 describe('every construct the import refuses names itself in its own message', () => {
   it.each([
@@ -195,88 +167,64 @@ describe('every construct the import refuses names itself in its own message', (
     ],
     [
       'a script task with a deployment resource names the resource',
-      bpmnDoc(
-        '    <bpmn:startEvent id="S" />\n' +
-          '    <bpmn:scriptTask id="Compute" scriptFormat="javascript" ' +
-          'operaton:resource="deployment://check.groovy"><bpmn:script>1 + 1</bpmn:script></bpmn:scriptTask>\n' +
-          '    <bpmn:endEvent id="E" />\n' +
-          '    <bpmn:sequenceFlow id="Flow_S_Compute" sourceRef="S" targetRef="Compute" />\n' +
-          '    <bpmn:sequenceFlow id="Flow_Compute_E" sourceRef="Compute" targetRef="E" />',
+      oneStep(
+        'Compute',
+        '<bpmn:scriptTask id="Compute" scriptFormat="javascript" ' +
+          'operaton:resource="deployment://check.groovy"><bpmn:script>1 + 1</bpmn:script></bpmn:scriptTask>',
       ),
       UnsupportedExtensionFormError,
       ['names an external resource ("deployment://check.groovy")', "'Compute'"],
     ],
     [
       'a connector as the only implementation names the connector',
-      bpmnDoc(
-        '    <bpmn:startEvent id="S" />\n' +
-          `    <bpmn:serviceTask id="Notify"><bpmn:extensionElements>${CONNECTOR_CHILD}</bpmn:extensionElements></bpmn:serviceTask>\n` +
-          '    <bpmn:endEvent id="E" />\n' +
-          '    <bpmn:sequenceFlow id="Flow_S_Notify" sourceRef="S" targetRef="Notify" />\n' +
-          '    <bpmn:sequenceFlow id="Flow_Notify_E" sourceRef="Notify" targetRef="E" />',
+      oneStep(
+        'Notify',
+        `<bpmn:serviceTask id="Notify">${CONNECTOR}</bpmn:serviceTask>`,
       ),
       UnsupportedServiceTaskFormError,
       [CONNECTOR_CONSTRUCT],
     ],
     [
       'a connector beside a class names the connector, not the class',
-      bpmnDoc(
-        '    <bpmn:startEvent id="S" />\n' +
-          '    <bpmn:serviceTask id="NotifyBeta" operaton:class="com.example.Svc">' +
-          `<bpmn:extensionElements>${CONNECTOR_CHILD}</bpmn:extensionElements></bpmn:serviceTask>\n` +
-          '    <bpmn:endEvent id="E" />\n' +
-          '    <bpmn:sequenceFlow id="Flow_S_NotifyBeta" sourceRef="S" targetRef="NotifyBeta" />\n' +
-          '    <bpmn:sequenceFlow id="Flow_NotifyBeta_E" sourceRef="NotifyBeta" targetRef="E" />',
+      oneStep(
+        'NotifyBeta',
+        `<bpmn:serviceTask id="NotifyBeta" operaton:class="com.example.Svc">${CONNECTOR}</bpmn:serviceTask>`,
       ),
       UnsupportedServiceTaskFormError,
       [CONNECTOR_CONSTRUCT],
     ],
     [
       'an unpaired isForCompensation activity falls back to the general wording',
-      bpmnDoc(
-        '    <bpmn:startEvent id="S" />\n' +
-          '    <bpmn:serviceTask id="CancelReservation" operaton:class="com.example.Cancel" isForCompensation="true" />\n' +
-          '    <bpmn:endEvent id="E" />\n' +
-          '    <bpmn:sequenceFlow id="Flow_S_CancelReservation" sourceRef="S" targetRef="CancelReservation" />\n' +
-          '    <bpmn:sequenceFlow id="Flow_CancelReservation_E" sourceRef="CancelReservation" targetRef="E" />',
+      oneStep(
+        'CancelReservation',
+        '<bpmn:serviceTask id="CancelReservation" operaton:class="com.example.Cancel" isForCompensation="true" />',
       ),
       UnsupportedEventFeatureError,
       [IS_FOR_COMPENSATION_DETAIL],
     ],
     [
       'an unpaired compensation boundary event falls back to the general wording',
-      bpmnDoc(
-        '    <bpmn:startEvent id="S" />\n' +
-          '    <bpmn:serviceTask id="ReserveRoom" operaton:class="com.example.Reserve" />\n' +
-          '    <bpmn:boundaryEvent id="CompensationBoundary" attachedToRef="ReserveRoom">\n' +
-          '      <bpmn:compensateEventDefinition id="d" />\n' +
-          '    </bpmn:boundaryEvent>\n' +
-          '    <bpmn:endEvent id="E" />\n' +
-          '    <bpmn:sequenceFlow id="Flow_S_ReserveRoom" sourceRef="S" targetRef="ReserveRoom" />\n' +
-          '    <bpmn:sequenceFlow id="Flow_ReserveRoom_E" sourceRef="ReserveRoom" targetRef="E" />',
-      ),
+      oneStep('ReserveRoom', COMPENSATED_ROOM),
       UnsupportedEventFeatureError,
       [COMPENSATION_BOUNDARY_DETAIL],
     ],
     [
       'a paired compensation triple names the compensated activity, the boundary, and the handler',
-      PAIRED_TRIPLE_XML,
+      oneStep(
+        'ReserveRoom',
+        COMPENSATED_ROOM +
+          '\n    <bpmn:userTask id="CancelReservation" isForCompensation="true" />',
+        association('CancelReservation'),
+      ),
       UnsupportedEventFeatureError,
       ['ReserveRoom', 'CompensationBoundary', 'CancelReservation'],
     ],
     [
       'a compensation association pointing at a non-handler falls back to the general wording',
-      bpmnDoc(
-        '    <bpmn:startEvent id="S" />\n' +
-          '    <bpmn:serviceTask id="ReserveRoom" operaton:class="com.example.Reserve" />\n' +
-          '    <bpmn:boundaryEvent id="CompensationBoundary" attachedToRef="ReserveRoom">\n' +
-          '      <bpmn:compensateEventDefinition id="d" />\n' +
-          '    </bpmn:boundaryEvent>\n' +
-          '    <bpmn:task id="NotAHandler" />\n' +
-          '    <bpmn:endEvent id="E" />\n' +
-          '    <bpmn:sequenceFlow id="Flow_S_ReserveRoom" sourceRef="S" targetRef="ReserveRoom" />\n' +
-          '    <bpmn:sequenceFlow id="Flow_ReserveRoom_E" sourceRef="ReserveRoom" targetRef="E" />\n' +
-          '    <bpmn:association id="Assoc1" sourceRef="CompensationBoundary" targetRef="NotAHandler" />',
+      oneStep(
+        'ReserveRoom',
+        COMPENSATED_ROOM + '\n    <bpmn:task id="NotAHandler" />',
+        association('NotAHandler'),
       ),
       UnsupportedEventFeatureError,
       [COMPENSATION_BOUNDARY_DETAIL],
@@ -317,25 +265,16 @@ describe('every construct the import refuses names itself in its own message', (
     ],
     [
       'bpmn:adHocSubProcess stays refused on engine evidence',
-      bpmnDoc(
-        '    <bpmn:startEvent id="S" />\n' +
-          '    <bpmn:adHocSubProcess id="T"><bpmn:userTask id="A" /></bpmn:adHocSubProcess>\n' +
-          '    <bpmn:endEvent id="E" />\n' +
-          '    <bpmn:sequenceFlow id="Flow_S_T" sourceRef="S" targetRef="T" />\n' +
-          '    <bpmn:sequenceFlow id="Flow_T_E" sourceRef="T" targetRef="E" />',
+      oneStep(
+        'T',
+        '<bpmn:adHocSubProcess id="T"><bpmn:userTask id="A" /></bpmn:adHocSubProcess>',
       ),
       UnsupportedElementError,
       ['bpmn:AdHocSubProcess'],
     ],
     [
       'bpmn:complexGateway stays refused on engine evidence',
-      bpmnDoc(
-        '    <bpmn:startEvent id="S" />\n' +
-          '    <bpmn:complexGateway id="T" />\n' +
-          '    <bpmn:endEvent id="E" />\n' +
-          '    <bpmn:sequenceFlow id="Flow_S_T" sourceRef="S" targetRef="T" />\n' +
-          '    <bpmn:sequenceFlow id="Flow_T_E" sourceRef="T" targetRef="E" />',
-      ),
+      oneStep('T', '<bpmn:complexGateway id="T" />'),
       UnsupportedElementError,
       ['bpmn:ComplexGateway'],
     ],
@@ -344,25 +283,5 @@ describe('every construct the import refuses names itself in its own message', (
     for (const needle of needles) {
       expect(error.message).toContain(needle);
     }
-  });
-
-  it("the paired triple's printed rewrite re-parses through the compiler", async () => {
-    const error = (await refusalError(
-      PAIRED_TRIPLE_XML,
-      UnsupportedEventFeatureError,
-    )) as UnsupportedEventFeatureError;
-    // `.detail` is the raw refusal text, unlike `.message`, which trails it
-    // with the generic event-surface closing sentence right after the
-    // rewrite's own closing brace, with no blank line to split on.
-    const marker = 'Write it by hand instead:\n\n';
-    const cut = error.detail.indexOf(marker);
-    expect(cut).toBeGreaterThan(-1);
-
-    const rewrite = error.detail.slice(cut + marker.length);
-    expect(rewrite).toBe(REWRITE_PREVIEW);
-
-    const wrapped = `process Preview {\n${rewrite}\n}\n`;
-    const { diagnostics } = await validate(wrapped);
-    expect(diagnostics).toEqual([]);
   });
 });

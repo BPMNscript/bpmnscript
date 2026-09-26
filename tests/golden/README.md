@@ -53,9 +53,9 @@ Everything each section below calls a contract must stay exactly as it is.
 
 ## What the pair tests do
 
-Each pair has a round-trip test at `tests/<name>.round-trip.test.ts`, and `tests/helpers/round-trip-fixture.ts` registers what they share: reproduce the pipeline and compare byte-for-byte against the frozen `.bpmn`, round-trip the source through XML and back asserting IR equivalence through `tests/helpers/normalize-ir.ts`, re-parse and re-validate the restructured DSL, and open the authored fixture validator-clean.
+Each pair has a round-trip test at `tests/<name>.round-trip.test.ts`, and `tests/helpers/round-trip-fixture.ts` registers what they share: reproduce the pipeline and compare byte-for-byte against the frozen `.bpmn`, check its layout (one diagram, no two sibling shapes overlapping except a boundary on its host's edge, every nested shape strictly inside its sub-process), round-trip the source through XML and back asserting IR equivalence through `tests/helpers/normalize-ir.ts`, re-parse and re-validate the restructured DSL, and open the authored fixture validator-clean.
 Every pair but `intermediate-catch` also asserts that the frozen `.bpmn` imports without a single warning and re-desugars back to the IR the fixture compiled to.
-The DI assertion is each suite's own, since what the layout has to get right differs: nested shapes inside their parent's bounds wherever a fixture nests (the `isExpanded` hint from `irToXml`, without which a disconnected event sub-process leaks into the root plane), and a boundary shape centered on its host's lower edge in `boundary-events`.
+Nested shapes stay inside their parent only through the `isExpanded` hint from `irToXml`, without which a disconnected event sub-process leaks into the root plane.
 Per-fixture extras, such as which root elements must be shared or how strictly the restructured DSL is validated, live in the test file.
 `tests/e2e/deploy-sweep.test.ts` deploys every frozen `.bpmn` here, every fixture under `tests/fixtures/`, and every example, on the engine, both as written and rebuilt from its own print; that suite lives outside the pair suites and runs once per file rather than once per pair.
 

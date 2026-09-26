@@ -1,7 +1,6 @@
-// One dominator tree per test keeps `loopTestRank` near O(T*N) per pass,
-// but `loopEntries` still re-runs it once per nested SCC, so a model whose
-// gotos tie every loop into one cycle prints in roughly cubic time in the
-// flow node count. The budget below guards that known limit from growing.
+// `loopEntries` re-runs `loopTestRank` once per nested SCC, so gotos tying
+// every loop into one cycle print in roughly cubic time; the budget keeps that
+// known limit from growing.
 import { describe, expect, it } from 'vitest';
 import { astToIr, irToDsl } from '@bpmn-script/transform';
 import { parseToAst } from './helpers/pipeline.js';
@@ -9,8 +8,7 @@ import { parseToAst } from './helpers/pipeline.js';
 const WHILE_COUNT = 150;
 const BUDGET_MS = 60_000;
 
-// Each `while` closes its own cycle; each `goto` after one ties it into the
-// previous while's body, so gotos chain every loop into a single SCC.
+// Each `goto` ties a while into the previous one's body: one SCC overall.
 function cyclicWhiles(n: number): string {
   const lines = ['process p {', '  var x: any', '  var c: any'];
   for (let i = 0; i < n; i++) {

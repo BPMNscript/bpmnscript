@@ -1,13 +1,7 @@
 /**
- * Guidance in place of Chevrotain's stock wording for the mistakes an author
- * makes with the grammar's shape: a reserved word where a plain identifier
- * belongs, a `var` or a repeat clause after the position that takes it, a
- * mistyped statement keyword. A reserved word reaches the parser down two
- * Chevrotain paths, so both builders are overridden: `buildMismatchTokenMessage`
- * where the grammar expects exactly `ID`, `buildNoViableAltMessage` where `ID`
- * is one alternative among several. Every message stays free of BPMN
- * vocabulary. Only the message changes; recovery and the legal
- * token positions are Chevrotain's.
+ * Guidance in place of Chevrotain's stock wording; recovery is unchanged. A
+ * reserved word arrives as a token mismatch where the grammar expects `ID` and
+ * as no viable alternative where `ID` is one choice, so both are overridden.
  */
 
 import {
@@ -24,10 +18,8 @@ import {
 const ID_TOKEN_NAME = 'ID';
 
 /**
- * A `var` after the first step, or a `for` after a statement that takes no
- * repeat clause, ends the statement list early: the parser expects `}` and
- * finds the keyword. An unclosed block reads the same way at `EOF`, whose
- * image is the empty string, so the stock message would say "found ``".
+ * A misplaced `var` or `for` ends the statement list early; at `EOF` the stock
+ * message would say "found ``".
  */
 const CLOSE_BRACE_TOKEN_NAME = '}';
 const VAR_KEYWORD_TOKEN_NAME = 'var';
@@ -35,16 +27,14 @@ const FOR_KEYWORD_TOKEN_NAME = 'for';
 const EOF_TOKEN_NAME = 'EOF';
 
 /**
- * A code declaration is the one header declaration opening with a plain `ID`,
- * so a mistyped statement keyword parses as its kind and fails at the name
- * slot. A word that really opens a declaration is excluded, so `error "PF"`
- * still blames the text where the name belongs.
+ * A mistyped statement keyword parses as a code declaration and fails at the
+ * name slot; a real declaration word is excluded.
  */
 const CODE_DECL_RULE_NAME = 'CodeDecl';
 
 const WORD_SHAPED = /^[A-Za-z_]/;
 
-/** Langium suffixes every Chevrotain rule name with a zero-width space (`withRuleSuffix` in `langium-parser.ts`). */
+/** Langium suffixes every Chevrotain rule name with a zero-width space. */
 function bareRuleName(ruleName: string): string {
   return ruleName.replace(/\u200b+$/, '');
 }
@@ -148,11 +138,7 @@ export class BpmnScriptParserErrorMessageProvider extends LangiumParserErrorMess
     return `'${word}' is not a word this position takes; write ${formatWordList(alternatives)}.`;
   }
 
-  /**
-   * The keywords a slot admits when every alternative is one keyword and
-   * nothing else, else `undefined`: a slot also taking an identifier, a
-   * literal or a longer phrase is not a closed set of words.
-   */
+  /** `undefined` unless every alternative is a single keyword. */
   private keywordAlternatives(
     expectedPathsPerAlt: NoViableAltOptions['expectedPathsPerAlt'],
   ): readonly string[] | undefined {

@@ -1,32 +1,25 @@
-// The decompile contract on the two fixtures that carry it: what the import
-// keeps, what it warns about, what it refuses, and that the script it hands
-// back compiles again. `build-parse.smoke.test.ts` covers the commands
-// themselves.
-
-import { describe, it, test, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll } from 'vitest';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { dirname } from 'node:path';
 
 import { EmptyFileSystem } from 'langium';
-import { parseHelper, validationHelper } from 'langium/test';
-import { createBpmnScriptServices } from '@bpmn-script/language';
-import type { Model } from '@bpmn-script/language';
+import { validationHelper } from 'langium/test';
+import {
+  createBpmnScriptServices,
+  Diagnostic,
+  intoBranchMessage,
+  type Model,
+} from '@bpmn-script/language';
 import {
   xmlToIr,
   irToDsl,
-  UnsupportedConstructError,
   UnsupportedEventFeatureError,
 } from '@bpmn-script/transform';
 
-import { diagnosticMessage } from '../src/util.js';
 import { runBuild, runParse, expectMentions } from './helpers/actions.js';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
-
-const REPO_ROOT = path.resolve(__dirname, '../../..');
+const REPO_ROOT = fileURLToPath(new URL('../../..', import.meta.url));
 
 const LANES_AND_ASYNC_BPMN = path.resolve(
   REPO_ROOT,
@@ -38,7 +31,6 @@ const ERROR_START_BPMN = path.resolve(
   'tests/fixtures/error-start.bpmn',
 );
 
-/** A labeled start and end under the given ids, in process `generated-id-labels`. */
 const labeledTerminalsBpmn = (
   startId: string,
   endId: string,
@@ -67,21 +59,18 @@ function assertNoForbiddenJargon(text: string): void {
   }
 }
 
-let parse: ReturnType<typeof parseHelper<Model>>;
 let validate: ReturnType<typeof validationHelper<Model>>;
 
 beforeAll(() => {
   const services = createBpmnScriptServices(EmptyFileSystem);
-  parse = parseHelper<Model>(services.BpmnScript);
   validate = validationHelper<Model>(services.BpmnScript);
 });
 
-describe('decompile contract: what the import makes of a fixture', () => {
-  it('the lanes-and-async fixture imports into the supported subset, keeping the engine settings the IR carries and warning once per dropped item', async () => {
-    const xml = fs.readFileSync(LANES_AND_ASYNC_BPMN, 'utf-8');
-    const { ir, warnings } = await xmlToIr(xml);
-
-    expect(ir.id).toBe('lanes-and-async');
+describe('decompile contract on the fixtures', () => {
+  it('the lanes-and-async fixture imports into the supported subset, warns once per dropped item, and its script builds and re-imports cleanly', async () => {
+    const { ir, warnings } = await xmlToIr(
+      fs.readFileSync(LANES_AND_ASYNC_BPMN, 'utf-8'),
+    );
     expect(ir.flowElements.map((fe) => fe.kind)).toEqual([
       'startEvent',
       'userTask',
@@ -90,118 +79,61 @@ describe('decompile contract: what the import makes of a fixture', () => {
     const task = ir.flowElements.find((fe) => fe.kind === 'userTask');
     expect(task?.kind === 'userTask' && task.assignee).toBe('demo');
     expect(task?.kind === 'userTask' && task.asyncBefore).toBe(true);
-
     // operaton:properties is a declared type, so moddle ties the drop to the
     // task that carries it rather than to the process.
     expect(warnings.map((w) => [w.elementId, w.category])).toEqual([
       ['Lane_Ops', 'lane'],
       ['ReviewRequest', 'extensionAttribute'],
     ]);
-    expectMentions(warnings.map((w) => w.message).join('\n'), [
-      'operaton:properties',
+
+    const parsed = await runParse({ file: LANES_AND_ASYNC_BPMN });
+    expect(parsed.exit).toBeUndefined();
+    expect(
+      parsed.stderr.map((line) => /^Warning: ([^:]+): /.exec(line)?.[1]),
+    ).toEqual(['Lane_Ops', 'ReviewRequest']);
+    expectMentions(parsed.stderr.join('\n'), ['operaton:properties']);
+    const dsl = parsed.output!;
+    expectMentions(dsl, [
+      'process lanes-and-async',
+      'start ReviewStart',
+      'user ReviewRequest',
+      'assignee: "demo"',
+      'end ReviewDone',
     ]);
+
+    const { document, diagnostics } = await validate(dsl);
+    expect(document.parseResult.parserErrors).toHaveLength(0);
+    expect(diagnostics).toHaveLength(0);
+
+    const built = await runBuild({ text: dsl });
+    expect(built.exit).toBeUndefined();
+    expect(built.stderr).toEqual([]);
+    expect((await xmlToIr(built.output!)).ir.id).toBe('lanes-and-async');
   });
 
-  it('the error-start fixture is refused with UnsupportedEventFeatureError naming the offending start event, with no BPMN jargon', async () => {
-    const xml = fs.readFileSync(ERROR_START_BPMN, 'utf-8');
-
-    await expect(xmlToIr(xml)).rejects.toBeInstanceOf(
-      UnsupportedEventFeatureError,
+  it('the error-start fixture is refused, by the import and by `bpmns parse` with exit 1 and nothing written, naming the start event without BPMN jargon', async () => {
+    const err: unknown = await xmlToIr(
+      fs.readFileSync(ERROR_START_BPMN, 'utf-8'),
+    ).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(UnsupportedEventFeatureError);
+    expect((err as UnsupportedEventFeatureError).elementId).toBe(
+      'ShipmentFailed',
     );
 
-    try {
-      await xmlToIr(xml);
-      expect.fail('Should have thrown');
-    } catch (err) {
-      expect(err).toBeInstanceOf(UnsupportedConstructError);
-      const e = err as UnsupportedEventFeatureError;
-      expect(e.elementId).toBe('ShipmentFailed');
-      expect(e.message).toContain('ShipmentFailed');
-      expect(e.message).toContain("Catch it with 'on error'");
-      assertNoForbiddenJargon(e.message);
-    }
-  });
-});
-
-type ParseExpectation =
-  | {
-      /** Ran to the end: the ids of the warning lines, in the order printed. */
-      exit?: undefined;
-      warningIds: string[];
-      mentions: string[];
-      script: string[];
-    }
-  | { exit: number; mentions: string[] };
-
-type ParseRow = readonly [
-  title: string,
-  fixture: string,
-  expected: ParseExpectation,
-];
-
-describe('decompile contract: what `bpmns parse` does with the same fixtures', () => {
-  test.each<ParseRow>([
-    [
-      'a dropped lane and a dropped engine attribute are printed as warnings, and the script is written anyway',
-      LANES_AND_ASYNC_BPMN,
-      {
-        warningIds: ['Lane_Ops', 'ReviewRequest'],
-        mentions: ['operaton:properties'],
-        script: [
-          'process lanes-and-async',
-          'start ReviewStart',
-          'user ReviewRequest',
-          'assignee: "demo"',
-          'end ReviewDone',
-        ],
-      },
-    ],
-    [
-      'a refused construct exits 1, writes nothing, and says which element it was',
-      ERROR_START_BPMN,
-      // 1 means unsupported construct; 2 would mean I/O or generic failure.
-      { exit: 1, mentions: ['ShipmentFailed', 'on error'] },
-    ],
-  ])('%s', async (_title, fixture, expected) => {
-    const run = await runParse({ file: fixture });
+    // 1 means unsupported construct; 2 would mean I/O or generic failure.
+    const run = await runParse({ file: ERROR_START_BPMN });
+    expect(run.exit).toBe(1);
+    expect(run.output).toBeUndefined();
     const stderr = run.stderr.join('\n');
-
-    expect(run.exit).toBe(expected.exit);
-    expectMentions(stderr, expected.mentions);
-
-    if (expected.exit !== undefined) {
-      // A refusal is the one message the author has to act on, so it stays in
-      // the vocabulary the DSL uses.
-      assertNoForbiddenJargon(stderr);
-      expect(run.output).toBeUndefined();
-      return;
-    }
-
-    expect(
-      run.stderr.map((line) => /^Warning: ([^:]+): /.exec(line)?.[1]),
-    ).toEqual(expected.warningIds);
-    expectMentions(run.output ?? '', expected.script);
+    expectMentions(stderr, ['ShipmentFailed', "Catch it with 'on error'"]);
+    assertNoForbiddenJargon(stderr);
   });
 });
 
 describe('decompile contract: the script it hands back goes through the pipeline again', () => {
-  it('the DSL produced from the lanes-and-async fixture re-parses with zero parser errors and zero validation diagnostics', async () => {
-    const xml = fs.readFileSync(LANES_AND_ASYNC_BPMN, 'utf-8');
-    const { ir } = await xmlToIr(xml);
-    const dsl = irToDsl(ir).source;
-
-    const document = await parse(dsl, { validation: true });
-    expect(document.parseResult.parserErrors).toHaveLength(0);
-
-    const { diagnostics } = await validate(dsl);
-    expect(diagnostics).toHaveLength(0);
-  });
-
-  // Only the exact ids the compiler generates for the process are left out of
-  // the script; a modeller's defaults (`StartEvent_1`) are names like any
-  // other. A start with nowhere else to carry a label still drops it, warned
-  // at import; an end always has the statement to carry one, so it prints
-  // and is refused on the name alone instead, its label never lost.
+  // Only the ids the compiler generates are left out; a modeller's defaults
+  // are names like any other. A generated-id start drops its label with an
+  // import warning, a generated-id end prints and is refused on the name.
   it.each([
     [
       "a modelling tool's default ids keep their statements and labels",
@@ -237,10 +169,8 @@ describe('decompile contract: the script it hands back goes through the pipeline
       );
       const dsl = irToDsl(ir).source;
 
-      const document = await parse(dsl, { validation: true });
+      const { document, diagnostics } = await validate(dsl);
       expect(document.parseResult.parserErrors).toHaveLength(0);
-
-      const { diagnostics } = await validate(dsl);
       expect(diagnostics).toHaveLength(diagnosticCount);
       expect(
         dsl.split('\n').filter((line) => /^\s+(start|end) /.test(line)),
@@ -256,17 +186,6 @@ describe('decompile contract: the script it hands back goes through the pipeline
       }
     },
   );
-
-  it('the DSL produced from the lanes-and-async fixture builds again without validation errors, and the rebuilt BPMN re-imports cleanly', async () => {
-    const xml = fs.readFileSync(LANES_AND_ASYNC_BPMN, 'utf-8');
-    const { ir } = await xmlToIr(xml);
-
-    const run = await runBuild({ text: irToDsl(ir).source });
-
-    expect(run.exit).toBeUndefined();
-    expect(run.stderr).toEqual([]);
-    expect((await xmlToIr(run.output!)).ir.id).toBe('lanes-and-async');
-  });
 });
 
 describe('decompile contract: language integrity', () => {
@@ -288,22 +207,17 @@ process Second {
     const { document, diagnostics } = await validate(source);
     expect(document.parseResult.parserErrors).toHaveLength(0);
 
-    expect(diagnostics).toHaveLength(2);
     for (const d of diagnostics) {
       expect(d.severity).toBe(1);
-      assertNoForbiddenJargon(diagnosticMessage(d));
+      assertNoForbiddenJargon(Diagnostic.getMessageString(d));
     }
-
-    const extraProcess = diagnostics.find((d) =>
-      diagnosticMessage(d).includes('Only one process is supported'),
-    );
-    expect(extraProcess).toBeDefined();
-
-    const gotoIntoParallel = diagnostics.find((d) =>
-      diagnosticMessage(d).toLowerCase().includes('branch'),
-    );
-    expect(gotoIntoParallel && diagnosticMessage(gotoIntoParallel)).toContain(
-      'A',
+    expect(
+      diagnostics.map((d) => Diagnostic.getMessageString(d)).sort(),
+    ).toEqual(
+      [
+        'Only one process is supported per file. Move additional processes into separate files.',
+        intoBranchMessage('goto A', 'goto', 'parallel'),
+      ].sort(),
     );
   });
 });

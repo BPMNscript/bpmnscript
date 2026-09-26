@@ -1,13 +1,6 @@
-/**
- * Pins `operaton-moddle.json` against a real `BpmnModdle`, with no
- * `xmlToIr`/`irToXml` involved. Three moddle behaviours the descriptor exists
- * to close: `extensionElements` drops a registered-namespace child of an
- * undeclared type with only a document-level warning and no back-pointer to
- * the element that lost it; a single-valued nested-value property would keep
- * only the last of two co-present values, with no warning; and `default` on a
- * boolean attribute makes moddle omit it on write at the default value, which
- * is the IR's own convention for the job settings.
- */
+// Pins operaton-moddle.json against a bare BpmnModdle: moddle drops an undeclared extension child with only a
+// document-level warning, keeps only the last of two values in a single-valued property, and omits a boolean
+// attribute at its declared default on write.
 
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
@@ -18,12 +11,10 @@ import { BpmnModdle, type ModdleElement } from 'bpmn-moddle';
 
 const here = dirname(fileURLToPath(import.meta.url));
 
-/** The Operaton moddle extension descriptor under test, read from source. */
 const OPERATON_EXTENSION: Record<string, unknown> = JSON.parse(
   readFileSync(resolve(here, '../src/operaton-moddle.json'), 'utf-8'),
 );
 
-/** A raw `BpmnModdle` carrying only the Operaton extension (no `camunda-bpmn-moddle`). */
 function operatonModdle(): InstanceType<typeof BpmnModdle> {
   return new BpmnModdle({ operaton: OPERATON_EXTENSION });
 }
@@ -33,11 +24,6 @@ const XML_HEADER = `<?xml version="1.0" encoding="UTF-8"?>
                   xmlns:operaton="http://operaton.org/schema/1.0/bpmn"
                   targetNamespace="http://test">`;
 
-/**
- * The single `bpmn:Process` with the `bpmn:Definitions` root that holds it; a
- * re-serialize starts from the root, since `toXML` writes its own XML
- * declaration.
- */
 async function parseProcess(
   moddle: InstanceType<typeof BpmnModdle>,
   xmlStr: string,
@@ -55,7 +41,6 @@ async function parseProcess(
   return { definitions: rootElement, process, warnings };
 }
 
-/** The typed `extensionElements.values` of a flow node, or `[]` if none. */
 function extensionValues(el: ModdleElement): ModdleElement[] {
   const extensionElements = el.get('extensionElements') as
     ModdleElement | undefined;
@@ -70,7 +55,6 @@ const elementsOf = (process: ModdleElement): ModdleElement[] =>
 const definitionsOf = (parameter: ModdleElement): ModdleElement[] =>
   parameter.get('definitions') as ModdleElement[];
 
-/** The `operaton:inputParameter` children of the process's first element. */
 function inputParameters(process: ModdleElement): ModdleElement[] {
   const [io] = extensionValues(elementsOf(process)[0]);
   return io.get('inputParameters') as ModdleElement[];
@@ -82,7 +66,7 @@ describe('every declared type parses with zero warnings, every child at its expe
                 operaton:candidateStarterUsers="demo,manager" operaton:candidateStarterGroups="adjusters">
     <bpmn:startEvent id="Start" operaton:initiator="claimant" />
     <bpmn:userTask id="Review" operaton:assignee="alice" operaton:candidateUsers="bob,carol"
-                   operaton:candidateGroups="reviewers" operaton:dueDate="P1D"
+                   operaton:candidateGroups="approvers" operaton:dueDate="P1D"
                    operaton:followUpDate="P2D" operaton:priority="50">
       <bpmn:extensionElements>
         <operaton:inputOutput>
@@ -195,7 +179,7 @@ describe('every declared type parses with zero warnings, every child at its expe
     review: {
       assignee: 'alice',
       candidateUsers: 'bob,carol',
-      candidateGroups: 'reviewers',
+      candidateGroups: 'approvers',
       dueDate: 'P1D',
       followUpDate: 'P2D',
       priority: '50',
@@ -291,7 +275,6 @@ describe('every declared type parses with zero warnings, every child at its expe
   </bpmn:process>
 </bpmn:definitions>`;
 
-  /** Every child of the form field, at the path each direction reads it from. */
   function formFieldSnapshot(process: ModdleElement): unknown {
     const [formData] = extensionValues(elementsOf(process)[0]);
     const [field] = formData.get('fields') as ModdleElement[];
@@ -330,7 +313,6 @@ describe('every declared type parses with zero warnings, every child at its expe
   </bpmn:process>
 </bpmn:definitions>`;
 
-  /** Every child `xmlToIr` reads, at the path it reads it from. */
   function externalTaskSnapshot(process: ModdleElement): unknown {
     const task = elementsOf(process)[0];
     const [propertiesEl, definitionEl] = extensionValues(task);
@@ -385,7 +367,6 @@ describe('every declared type parses with zero warnings, every child at its expe
       EVERY_TYPE_EXPECTED,
     ],
     [
-      // A single-valued `definition` property would keep only the map.
       'InputOutputParameterDefinition is isMany: a parameter carrying a list and a map keeps both, in document order',
       LIST_AND_MAP_FIXTURE,
       (process: ModdleElement) =>
@@ -393,10 +374,7 @@ describe('every declared type parses with zero warnings, every child at its expe
       ['operaton:List', 'operaton:Map'],
     ],
     [
-      // `Entry` subclasses `InputOutputParameterDefinition`, so it satisfies
-      // both `List.items` and `InputParameter.definitions`; refusing a stray
-      // entry outside a map is the importer's job, so the descriptor keeps it
-      // where the importer can see it.
+      // Refusing an entry outside a map is the importer's job, so the descriptor keeps it visible.
       'operaton:entry is accepted inside a list and directly under an input parameter',
       ENTRY_FIXTURE,
       (process: ModdleElement) => {
@@ -458,8 +436,6 @@ describe('every declared type parses with zero warnings, every child at its expe
       },
     ],
     [
-      // Drop the `extends` entry for the loop element and these typed reads
-      // answer `undefined`, the raw attributes sitting in `$attrs` instead.
       'AsyncCapable extends the multi-instance element, so a repetition carries per-run job settings and its retry child',
       LOOP_SETTINGS_FIXTURE,
       (process: ModdleElement) => {
@@ -535,8 +511,6 @@ describe('per-element attribution of a dropped extension child', () => {
 
     const { process, warnings } = await parseProcess(operatonModdle(), fixture);
 
-    // The surviving child is one this descriptor introduces, so the assertion
-    // measures the declaration rather than what `bpmn-moddle` already knew.
     expect(extensionValues(elementsOf(process)[0]).map((v) => v.$type)).toEqual(
       ['operaton:FailedJobRetryTimeCycle'],
     );
@@ -578,9 +552,7 @@ describe('a potential starter declares the formal expression BpmnParse.parseStar
       'user(a), group(g)',
     ]);
 
-    // moddle writes the subtype through `xsi:type`, which the engine's
-    // `Element.element("formalExpression")` does not find by tag; that is why
-    // the import respells the starter into the two attributes.
+    // The engine finds formalExpression by tag, not through this xsi:type, so the import respells the starter.
     const { xml } = await moddle.toXML(definitions, { format: false });
     expect(xml).toContain(
       '<operaton:potentialStarter><bpmn:resourceAssignmentExpression>' +
@@ -642,8 +614,6 @@ describe('a timer definition declares the lock BpmnParse.parseTimer reads off it
     const [start, wait] = elementsOf(process);
     const definitionOf = (el: ModdleElement): ModdleElement =>
       (el.get('eventDefinitions') as ModdleElement[])[0];
-    // Drop the type extending the definition and `get` answers `undefined`
-    // for both, the raw attribute sitting in `$attrs` instead.
     expect([
       definitionOf(start).get('exclusive'),
       definitionOf(wait).get('exclusive'),

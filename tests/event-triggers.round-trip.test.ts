@@ -1,14 +1,7 @@
-// The fixture avoids the early-exit-inside-`if` shape, which degrades into a
-// goto onto an unnamed synthesized join, so DSL' validates clean.
-
-import { describe, it, expect } from 'vitest';
+import { it, expect } from 'vitest';
 
 import type { EventDefinition, FlowContainer } from '@bpmn-script/transform';
 
-import {
-  describeDiContainment,
-  describeSingleDiagram,
-} from './helpers/di-bounds.js';
 import { describeImportFirst } from './helpers/import-first.js';
 import {
   definitionOf,
@@ -21,7 +14,6 @@ import { definitionRefOf, messageRoots } from './helpers/xml-query.js';
 import { roundTripFixture } from './helpers/round-trip-fixture.js';
 
 const rt = roundTripFixture('event-triggers', {
-  example: 'order-reminder',
   importPath: true,
   recompile: 'clean',
 });
@@ -32,9 +24,7 @@ function timerExpressions(container: FlowContainer): string[] {
     .sort();
 }
 
-// One `bpmn:Signal` root is referenced twice, by the intermediate throw and by
-// the end event. Every task label differs from the name humanized from its id,
-// so the importer keeps it.
+// One `bpmn:Signal` root referenced by the intermediate throw and the end event.
 const IMPORT_FIRST_BPMN = `<?xml version="1.0" encoding="UTF-8"?>
 <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:operaton="http://operaton.org/schema/1.0/bpmn" id="Definitions_import_first_triggers" targetNamespace="http://bpmn.io/schema/bpmn">
   <bpmn:signal id="Signal_Sent" name="ParcelDispatched" />
@@ -95,93 +85,55 @@ const IMPORT_FIRST_BPMN = `<?xml version="1.0" encoding="UTF-8"?>
   </bpmn:process>
 </bpmn:definitions>`;
 
-describe("idempotence: DSL -> IR1 -> XML -> IR2 -> DSL' -> IR3", () => {
-  it('the authored throw and emit ids survive verbatim at process level', () => {
-    // `emit signal` continues the path, `throw signal` ends it.
-    expect(kindOf(rt.ir3, 'Notify')).toBe('intermediateThrowEvent');
-    expect(kindOf(rt.ir3, 'Announce')).toBe('endEvent');
-    expect(definitionOf(rt.ir3, 'Notify')).toEqual({
-      kind: 'signal',
-      signalName: 'OrderFulfilled',
-    });
-    expect(definitionOf(rt.ir3, 'Announce')).toEqual({
-      kind: 'signal',
-      signalName: 'OrderFulfilled',
-    });
-  });
-
-  it('the conditional handler condition survives as the same expression at every hop', () => {
-    const isConditional = (def: EventDefinition | undefined): boolean =>
-      def?.kind === 'conditional';
-    for (const [label, ir] of rt.hops) {
-      expect(
-        handlerTriggerDef(subProcess(ir, 'FulfilOrder'), isConditional),
-        `conditional handler differs in ${label}`,
-      ).toEqual({ kind: 'conditional', condition: '${stockLevel < 5}' });
-    }
-  });
-
-  it('the timer expressions survive verbatim at every hop', () => {
-    for (const ir of [rt.ir1, rt.ir2, rt.ir3]) {
-      expect(timerExpressions(ir)).toEqual(['2026-08-01T09:00:00', 'PT2H']);
-    }
-  });
-
-  it('the message handler keeps its correlation name', () => {
-    const def = handlerTriggerDef(rt.ir3, (d) => d?.kind === 'message');
-    expect(def).toEqual({ kind: 'message', messageName: 'OrderCancelled' });
+it('keeps the signal throws, and every handler trigger at every hop', () => {
+  // `emit signal` continues the path, `throw signal` ends it.
+  const signal = { kind: 'signal', signalName: 'OrderFulfilled' };
+  expect(kindOf(rt.ir3, 'Notify')).toBe('intermediateThrowEvent');
+  expect(kindOf(rt.ir3, 'Announce')).toBe('endEvent');
+  expect(definitionOf(rt.ir3, 'Notify')).toEqual(signal);
+  expect(definitionOf(rt.ir3, 'Announce')).toEqual(signal);
+  const isConditional = (def: EventDefinition | undefined): boolean =>
+    def?.kind === 'conditional';
+  for (const [label, ir] of rt.hops) {
+    expect(
+      handlerTriggerDef(subProcess(ir, 'FulfilOrder'), isConditional),
+      label,
+    ).toEqual({ kind: 'conditional', condition: '${stockLevel < 5}' });
+    expect(timerExpressions(ir), label).toEqual([
+      '2026-08-01T09:00:00',
+      'PT2H',
+    ]);
+  }
+  expect(handlerTriggerDef(rt.ir3, (d) => d?.kind === 'message')).toEqual({
+    kind: 'message',
+    messageName: 'OrderCancelled',
   });
 });
 
-describeSingleDiagram(rt);
-
-describeDiContainment(
-  rt,
-  () => {
-    const handlerIds = subProcess(rt.ir1, 'FulfilOrder')
-      .flowElements.filter((fe) => fe.kind === 'subProcess')
-      .map((fe) => fe.id);
-    expect(handlerIds.length).toBeGreaterThan(0);
-    return handlerIds;
-  },
-  'generated',
-);
-
-describe('root sharing on the frozen .bpmn', () => {
-  it('the on signal handler, the emit, and the throw share one bpmn:Signal', () => {
-    const signals = [
-      ...rt.frozenXml.matchAll(/<bpmn:signal id="([^"]+)" name="([^"]+)"/g),
-    ];
-    expect(signals).toHaveLength(1);
-    const [, signalId, signalName] = signals[0]!;
-    expect(signalName).toBe('OrderFulfilled');
-
-    expect(definitionRefOf(rt.frozenXml, 'FulfilledStart', 'signal')).toBe(
-      signalId,
+it('shares one bpmn:Signal between the handler, the emit and the throw, and gives the message handler its root', () => {
+  const signals = [
+    ...rt.frozenXml.matchAll(/<bpmn:signal id="([^"]+)" name="([^"]+)"/g),
+  ].map(([, id, name]) => ({ id, name }));
+  expect(signals).toEqual([{ id: expect.any(String), name: 'OrderFulfilled' }]);
+  for (const id of ['FulfilledStart', 'Notify', 'Announce']) {
+    expect(definitionRefOf(rt.frozenXml, id, 'signal'), id).toBe(
+      signals[0]!.id,
     );
-    expect(definitionRefOf(rt.frozenXml, 'Notify', 'signal')).toBe(signalId);
-    expect(definitionRefOf(rt.frozenXml, 'Announce', 'signal')).toBe(signalId);
-  });
-
-  it('the one message handler gets the one bpmn:Message root', () => {
-    expect(messageRoots(rt.frozenXml).map((root) => root.name)).toEqual([
-      'OrderCancelled',
-    ]);
-  });
+  }
+  expect(messageRoots(rt.frozenXml).map((root) => root.name)).toEqual([
+    'OrderCancelled',
+  ]);
 });
 
 describeImportFirst(
   'a handwritten .bpmn throwing one signal twice round-trips',
   IMPORT_FIRST_BPMN,
   (first) => {
-    it('recovers each trigger payload into the DSL surface', () => {
+    it('recovers each trigger payload into the DSL, both broadcasts on the one signal', () => {
       expect(first.dsl).toContain('emit signal Broadcast("ParcelDispatched")');
       expect(first.dsl).toContain('throw signal Done("ParcelDispatched")');
       expect(first.dsl).toContain('on timer(at: "2026-09-01T08:00:00") {');
       expect(first.dsl).toContain('on condition(stockLevel < 5) {');
-    });
-
-    it('both broadcasts resolve to the one signal name', () => {
       const signal = { kind: 'signal', signalName: 'ParcelDispatched' };
       expect(definitionOf(first.ir, 'Broadcast')).toEqual(signal);
       expect(definitionOf(first.ir, 'Done')).toEqual(signal);

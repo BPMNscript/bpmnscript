@@ -1,5 +1,3 @@
-/** Hover through the real `HoverProvider`, with `expectHover` from `langium/test`. */
-
 import { describe, test, beforeAll } from 'vitest';
 import { EmptyFileSystem } from 'langium';
 import { expectHover } from 'langium/test';
@@ -11,7 +9,6 @@ beforeAll(() => {
   hover = expectHover(createBpmnScriptServices(EmptyFileSystem).BpmnScript);
 });
 
-/** A program with one `<|>` caret and the hover text there, `undefined` for none. */
 type Row = readonly [title: string, text: string, expected: string | undefined];
 
 const ROWS: Row[] = [
@@ -51,7 +48,7 @@ const ROWS: Row[] = [
     "an error 'E': Payment failed",
   ],
   [
-    'a written code setting is quoted; the fallback to the name is not',
+    'hover text quotes an explicit code, not a name used as fallback',
     'process p {\n  escalation <|>OVERSIZED(code: "big-parcel")\n}',
     'an escalation \'OVERSIZED\' with code "big-parcel"',
   ],

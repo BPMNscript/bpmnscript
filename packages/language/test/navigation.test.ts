@@ -1,10 +1,3 @@
-/**
- * Definition, references, rename and document highlight through the real LSP
- * providers. `langium/test` has no rename helper, so the rename rows drive
- * `RenameProvider` by hand and assert the whole document after the edits: a
- * rename that touched the declaration alone cannot pass on the text.
- */
-
 import { beforeAll, describe, expect, test } from 'vitest';
 import { EmptyFileSystem, TextDocument } from 'langium';
 import {
@@ -38,10 +31,7 @@ beforeAll(() => {
 
 const REFUSED = 'refused';
 
-/**
- * The whole document after renaming the name under `<|>` to `newName`, or
- * `REFUSED` where `prepareRename` and `rename` both answer `undefined`.
- */
+/** The whole document after the rename at `<|>`, or `REFUSED`. */
 async function renamed(text: string, newName: string): Promise<string> {
   const { output, indices } = replaceIndices({ text });
   const document = await parse(output);
@@ -152,7 +142,6 @@ const RENAMES: RenameRow[] = [
   ],
 ];
 
-/** A program with one `<|>` caret and the `<|...|>` ranges the request answers with. */
 type Row = readonly [title: string, text: string];
 
 const DEFINITIONS: Row[] = [

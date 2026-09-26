@@ -1,8 +1,4 @@
-/**
- * The table is the contract: `irToXml` derives a `name` with this function
- * and `xmlToIr` drops any `name` equal to it, so the exact mapping must stay
- * stable.
- */
+// irToXml derives a `name` with humanize and xmlToIr drops a `name` equal to it, so the mapping is frozen.
 import { describe, expect, it } from 'vitest';
 
 import { humanize } from '../src/humanize.js';

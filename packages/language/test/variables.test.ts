@@ -1,8 +1,3 @@
-/**
- * `VariableSymbolProvider.collect`, the flat table of every name a process
- * declares, driven through the injected service on a parsed process.
- */
-
 import { beforeAll, describe, expect, test } from 'vitest';
 import { EmptyFileSystem } from 'langium';
 import { parseHelper } from 'langium/test';

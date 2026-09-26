@@ -1,26 +1,19 @@
-// Minimized shapes from fuzz finds, one row each: a fuzz run reaches a shape
-// only while the generator still draws it, so each is pinned here.
+// Minimized fuzz finds, pinned here since a fuzz run reaches a shape only
+// while the generator still draws it.
 
-import { describe, it, expect } from 'vitest';
+import { it, expect } from 'vitest';
 
 import { xmlToIr, irToDsl } from '@bpmn-script/transform';
 import type { BpmnProcess, FlowContainer } from '@bpmn-script/transform';
 
 import { bpmnDoc } from './helpers/bpmn-doc.js';
-import { printDsl, roundTrip, validate } from './helpers/pipeline.js';
+import { printDsl, roundTrip, validationErrors } from './helpers/pipeline.js';
 import { compareModels, modelSignature } from './helpers/model-equivalence.js';
 import type { ModelComparison } from './helpers/model-equivalence.js';
 
-async function errorMessages(source: string) {
-  const { diagnostics } = await validate(source);
-  return diagnostics.filter((d) => d.severity === 1).map((d) => d.message);
-}
-
-// Shapes whose print depends on the order the model lists its elements and
-// flows in: a goto into a loop body enters the cycle a second time, past its
-// head, and a chain or a start walked first claims what follows it. The third
-// element pins the exact class the reversed-order reread compares back to
-// (see `compareModels`); a row with none keeps the model identical.
+// Shapes whose print depends on the model's element and flow order. The third
+// column is the `compareModels` class of the reversed-order reread ('same' if
+// absent).
 const ORDER_ROWS: [
   title: string,
   source: string,
@@ -2320,34 +2313,24 @@ const ROWS: [title: string, source: string, comparison?: ModelComparison][] = [
   goto D
 }`,
   ],
-  ...ORDER_ROWS,
 ];
 
-describe('every regression input is accepted by the validator', () => {
-  it.each(ROWS.map(([title, source]) => [title, source] as const))(
-    '%s',
-    async (_title, source) => {
-      expect(await errorMessages(source)).toEqual([]);
-    },
-  );
+// Valid source prints valid, the same model, and stable on the next pass.
+async function expectStableRoundTrip(source: string) {
+  expect(await validationErrors(source)).toEqual([]);
+  const first = await roundTrip(source);
+  expect(await validationErrors(first.dsl)).toEqual([]);
+  expect(modelSignature(first.ir3)).toEqual(modelSignature(first.ir1));
+  expect((await roundTrip(first.dsl)).dsl).toBe(first.dsl);
+  return first;
+}
+
+it.each(ROWS)('%s', async (_title, source) => {
+  await expectStableRoundTrip(source);
 });
 
-describe('round-trip regressions from minimized fuzz finds', () => {
-  for (const [title, source] of ROWS) {
-    it(title, async () => {
-      const first = await roundTrip(source);
-      expect(await errorMessages(first.dsl)).toEqual([]);
-      expect(modelSignature(first.ir3)).toEqual(modelSignature(first.ir1));
-
-      const second = await roundTrip(first.dsl);
-      expect(second.dsl).toBe(first.dsl);
-    });
-  }
-});
-
-// A model from another tool lists its elements and flows in any order, so
-// which chain, start or loop entry the printer takes first must not depend on
-// it, nor move once the print is read back in statement order.
+// A model from another tool lists its elements and flows in any order, so the
+// print must hold with the order reversed too.
 function reversed<C extends FlowContainer>(c: C): C {
   return {
     ...c,
@@ -2358,22 +2341,18 @@ function reversed<C extends FlowContainer>(c: C): C {
   };
 }
 
-describe('an order-dependent shape prints the same model, stable on the next pass, when the model lists its elements in reverse', () => {
-  for (const [title, source, comparison = 'same'] of ORDER_ROWS) {
-    it(title, async () => {
-      const { ir1, ir2 } = await roundTrip(source);
-      const dsl = printDsl(reversed(ir2));
-      expect(await errorMessages(dsl)).toEqual([]);
-      const { ir1: reread, dsl: next } = await roundTrip(dsl);
-      expect(compareModels(ir1, reread)).toBe(comparison);
-      expect(next).toBe(dsl);
-    });
-  }
-});
+it.each(ORDER_ROWS)(
+  '%s, in model order and reversed',
+  async (_title, source, comparison = 'same') => {
+    const { ir1, ir2 } = await expectStableRoundTrip(source);
+    const dsl = printDsl(reversed(ir2));
+    expect(await validationErrors(dsl)).toEqual([]);
+    const { ir1: reread, dsl: next } = await roundTrip(dsl);
+    expect(compareModels(ir1, reread)).toBe(comparison);
+    expect(next).toBe(dsl);
+  },
+);
 
-// A plain reprint of the round-tripped IR, and the same with element and flow
-// order reversed (standing in for a model authored by another tool); a row
-// picks whichever mechanism its regression needs.
 async function plain(source: string): Promise<BpmnProcess> {
   return (await roundTrip(source)).ir2;
 }
@@ -2381,18 +2360,16 @@ async function reversedOrder(source: string): Promise<BpmnProcess> {
   return reversed((await roundTrip(source)).ir2);
 }
 
-// The printer writes no boundary id, so an authored one is minted afresh on
-// the next compile: printed first, it would take its minted sibling's base
-// id. No script source produces that id collision, so the XML is mutated
-// after a first round trip instead.
+// The printer writes no boundary id, so an authored one printed first would
+// take its minted sibling's base id on the next compile. No source produces
+// that collision, so the XML is mutated instead.
 async function mintedSiblingOrder(source: string): Promise<BpmnProcess> {
   const { xml } = await roundTrip(source);
   const { ir } = await xmlToIr(xml.replaceAll('Boundary_A_signal_2', 'MyB'));
   return reversed(ir);
 }
 
-// Two authored ids share no minted rank to order by, so nothing but the
-// model's own listing order can settle a print between them.
+// Two authored ids share no minted rank, so only listing order settles them.
 async function modelListingOrder(source: string): Promise<BpmnProcess> {
   const { xml } = await roundTrip(source);
   const { ir } = await xmlToIr(
@@ -2403,17 +2380,15 @@ async function modelListingOrder(source: string): Promise<BpmnProcess> {
   return ir;
 }
 
-// Every row's print keeps every path the source keeps too, so a check that
-// only compares reachable steps and conditions (as `ROWS`'s round-trip test
-// does) would pass a misplaced print as readily as the right one; only the
-// literal print, revalidated through the compiler, pins the regression.
+// A misplaced print keeps the same paths, so the model comparison `ROWS` uses
+// would pass it; only the literal print pins these. `expected` defaults to the
+// source.
 const PRINTS_AS_WRITTEN: [
   title: string,
   source: string,
   produce: (source: string) => Promise<BpmnProcess>,
+  expected?: string,
 ][] = [
-  // The join spelled as an extra `else { goto After }` reads the same paths
-  // reversed too.
   [
     'two sibling branches that each jump back before their if keep the join after the if in reverse order',
     `process p {
@@ -2437,9 +2412,8 @@ const PRINTS_AS_WRITTEN: [
 `,
     reversedOrder,
   ],
-  // The jump is the split's first conditioned route, the one a `do` test
-  // needs, but the split sits inside a block opened after the jump target,
-  // so the `while` would close the loop inside that block.
+  // The split sits in a block opened after the jump target, so a loop test
+  // there would close the loop inside that block.
   [
     'a jump back above the enclosing parallel, tested first, stays a goto inside its branch',
     `process p {
@@ -2521,9 +2495,8 @@ const PRINTS_AS_WRITTEN: [
 `,
     modelListingOrder,
   ],
-  // `Fail` and `X` are both authored, so inlining `step X  throw error Fail(E)`
-  // re-derives the same ids either way: the authored-tail rule's reason to
-  // hoist a chain behind the block does not apply here.
+  // Both ids are authored, so the authored-tail rule's reason to hoist does
+  // not apply.
   [
     'a hoisted chain of named steps stays in its branch',
     `process p {
@@ -2540,9 +2513,7 @@ const PRINTS_AS_WRITTEN: [
 `,
     plain,
   ],
-  // `B` is also entered by the ordinary flow after the outer `if`, through
-  // the nested `if (c)`, so inlining `goto B`'s target there would print `B`
-  // before the steps that flow into it the ordinary way.
+  // Inlining `B` at the goto would print it before its ordinary predecessors.
   [
     'a goto stays a goto when the flow after its block also reaches the same target',
     `process p {
@@ -2561,10 +2532,8 @@ const PRINTS_AS_WRITTEN: [
 `,
     plain,
   ],
-  // A step ahead of the boundary handler's own `goto` moves the re-entering
-  // predecessor from the boundary event itself to a step it dominates; the
-  // walk must still trace that step back to the boundary rather than treating
-  // it as ordinary flow.
+  // The re-entering predecessor is a step the boundary dominates, which must
+  // still trace back to the boundary.
   [
     "a boundary handler's own goto does not push a branch entry out of the branch when a step comes before it",
     `process claim-review {
@@ -2582,21 +2551,9 @@ const PRINTS_AS_WRITTEN: [
 `,
     plain,
   ],
-];
-
-describe('a printed regression re-parses and revalidates as written', () => {
-  it.each(PRINTS_AS_WRITTEN)('%s', async (_title, source, produce) => {
-    const printed = irToDsl(await produce(source));
-    expect(printed.warnings).toEqual([]);
-    expect(printed.source).toBe(source);
-    expect(await errorMessages(printed.source)).toEqual([]);
-  });
-});
-
-// Printed as a jump back, this loop reads the same paths, so the row contract
-// alone would pass it: the print itself is the regression.
-it('a boundary handler jumping into a do-while body leaves the loop printed as a do-while', async () => {
-  const source = `process p {
+  [
+    'a boundary handler jumping into a do-while body leaves the loop printed as a do-while',
+    `process p {
   var u: any
   do {
     user A
@@ -2607,17 +2564,178 @@ it('a boundary handler jumping into a do-while body leaves the loop printed as a
     goto B
   }
 }
-`;
-  const { dsl } = await roundTrip(source);
-  expect(dsl).toBe(source);
-  expect(await errorMessages(dsl)).toEqual([]);
-});
+`,
+    plain,
+  ],
+  // Without `wallStaysOff`'s `postDominates(entry, join)` case, the later
+  // `goto A` hoists `A` behind the implicit end.
+  [
+    'a nested if branch a later goto jumps back into stays inside the if, not hoisted behind the implicit end',
+    `process p {
+  var c: any
+  var d: any
+  if (c) {
+    if (d) {
+      goto A
+    }
+  }
+  user K
+  user A
+  user N
+  user Z
+}
+`,
+    plain,
+  ],
+  // Re-entry past the inner test gateway must not stop it dominating the outer.
+  [
+    'a boundary handler re-entering the outer body past a nested do-while leaves both loops printed as do-while',
+    `process p {
+  var u: any
+  var v: any
+  do {
+    do {
+      user A
+      user B
+    } while (v)
+    user C
+  } while (u)
+  user E
+  on E: signal("R") {
+    goto C
+  }
+}
+`,
+    plain,
+  ],
+  // The inner test and the outer `goto B` both close the head, so gating
+  // `headsEnteredPast` on `ownLoopTest`'s single owner instead of the CFG's
+  // rank would let the other branch hold the loop.
+  [
+    'an if whose branches both close on the same nested do-while keeps the loop in the else branch',
+    `process p {
+  var d: any
+  var e: any
+  var x: any
+  var y: any
+  if (d) {
+    do {
+      user A
+      do {
+        user B
+        user C
+      } while (y)
+    } while (x)
+  } else {
+    user Z
+    goto B
+  }
+  if (e) {
+    goto B
+  }
+}
+`,
+    plain,
+    'process p {\n' +
+      '  var d: any\n' +
+      '  var e: any\n' +
+      '  var x: any\n' +
+      '  var y: any\n' +
+      '  if (d) {\n' +
+      '    goto A\n' +
+      '  } else {\n' +
+      '    user Z\n' +
+      '    do {\n' +
+      '      do {\n' +
+      '        user B\n' +
+      '        user C\n' +
+      '      } while (y)\n' +
+      '      if (x) {\n' +
+      '        user A\n' +
+      '        goto B\n' +
+      '      }\n' +
+      '    } while (e)\n' +
+      '  }\n' +
+      '}\n',
+  ],
+  // Deciding whether the first branch's chain prints inline must stop at nodes
+  // its entry does not loop-dominate, or the `goto Charge7` exit pulls
+  // `Release19` in.
+  [
+    "a goto between an if-chain's branches does not pull the target branch's chain into the other branch's inline check",
+    `process p {
+  var order: any
+  var urgent: any
+  var approved: any
+  user Charge7
+  if (order['div']) {
+    user InFirst
+    await message Wait14("OrderReceived") {
+    }
+    parallel {
+      if ((order == null)) {
+        call Call15(process: "invoice-approval")
+        emit signal("Ready")
+      }
+      if (urgent) {
+        service check-stock16(class: "org.acme.Audit")
+        goto Charge7
+      }
+    }
+    throw signal Fail18("StockLow")
+  } else if (approved) {
+    service Release19(class: "com.example.orders.Ship")
+    goto Wait14
+  } else {
+    service Charge(class: "com.example.Delegate")
+  }
+  end Done21
+}
+`,
+    plain,
+    `process p {
+  var approved: any
+  var order: any
+  var urgent: any
+  user Charge7
+  if (order["div"]) {
+    user InFirst
+    await message Wait14("OrderReceived")
+    parallel {
+      if ((order == null)) {
+        call Call15(process: "invoice-approval")
+        emit signal("Ready")
+      }
+      if (urgent) {
+        service check-stock16(class: "org.acme.Audit")
+        goto Charge7
+      }
+    }
+    throw signal Fail18("StockLow")
+  } else if (approved) {
+    service Release19(class: "com.example.orders.Ship")
+    goto Wait14
+  } else {
+    service Charge(class: "com.example.Delegate")
+  }
+  end Done21
+}
+`,
+  ],
+];
 
-// The source itself is refused (the validator counts the `emit link` as
-// ending the branch even with its `await link` right behind it, so `user
-// After` reads as unreachable there), so it is compiled without validation;
-// only the print, which sinks `user After`
-// into the branch that carries the live route, is checked.
+it.each(PRINTS_AS_WRITTEN)(
+  '%s',
+  async (_title, source, produce, expected = source) => {
+    const printed = irToDsl(await produce(source));
+    expect(printed.warnings).toEqual([]);
+    expect(printed.source).toBe(expected);
+    expect(await validationErrors(printed.source)).toEqual([]);
+  },
+);
+
+// The validator refuses the source (it counts `emit link` as ending the branch,
+// so `user After` reads as unreachable); only the print is checked.
 it('an if whose only live branch crosses a link pair sinks the step after it into that branch', async () => {
   const source = `process p {
   var c: any
@@ -2641,15 +2759,13 @@ it('an if whose only live branch crosses a link pair sinks the step after it int
   }
 }`;
   const { dsl } = await roundTrip(source);
-  expect(await errorMessages(dsl)).toEqual([]);
+  expect(await validationErrors(dsl)).toEqual([]);
   const second = await roundTrip(dsl);
   expect(second.dsl).toBe(dsl);
 });
 
-// `goto X` after the unreachable `user Z` (dead code behind `end E`) is
-// itself unreachable, so it must not count as a predecessor entering `X`
-// from outside the branch. The source is refused for that dead code, not
-// for the branch placement under test, so only the print is checked here.
+// The unreachable `goto X` must not count as entering `X` from outside the
+// branch. The source is refused for that dead code, so only the print is checked.
 it('an unreachable predecessor of a branch entry does not push its chain out of the branch', async () => {
   const source = `process p {
   var c: any
@@ -2671,116 +2787,8 @@ it('an unreachable predecessor of a branch entry does not push its chain out of 
   expect(dsl).toBe(source);
 });
 
-// `wallStaysOff`'s `postDominates(entry, join)` branch keeps a nested if
-// branch's entry from walling itself off when the entry is also every route
-// out of the join: without it, a later `goto A` from past the outer if hoists
-// `A` behind the implicit end instead of leaving it inside the nested if.
-it('a nested if branch a later goto jumps back into stays inside the if, not hoisted behind the implicit end', async () => {
-  const source = `process p {
-  var c: any
-  var d: any
-  if (c) {
-    if (d) {
-      goto A
-    }
-  }
-  user K
-  user A
-  user N
-  user Z
-}
-`;
-  const { dsl } = await roundTrip(source);
-  expect(dsl).toBe(source);
-  expect(await errorMessages(dsl)).toEqual([]);
-});
-
-// A nested do-while has two back-edge candidates sharing its head (the inner
-// do's own test and the outer if's `goto B`), so `ownLoopTest` cannot name a
-// single owner for the cycle; gating `headsEnteredPast` on that owner instead
-// of the CFG's rank would drop the cycle there and let the walk pick the
-// other if branch's flow to hold the loop instead.
-it('an if whose branches both close on the same nested do-while keeps the loop in the else branch', async () => {
-  const source = `process p {
-  var d: any
-  var e: any
-  var x: any
-  var y: any
-  if (d) {
-    do {
-      user A
-      do {
-        user B
-        user C
-      } while (y)
-    } while (x)
-  } else {
-    user Z
-    goto B
-  }
-  if (e) {
-    goto B
-  }
-}
-`;
-  const { dsl } = await roundTrip(source);
-  expect(dsl).toBe(
-    'process p {\n' +
-      '  var d: any\n' +
-      '  var e: any\n' +
-      '  var x: any\n' +
-      '  var y: any\n' +
-      '  if (d) {\n' +
-      '    goto A\n' +
-      '  } else {\n' +
-      '    user Z\n' +
-      '    do {\n' +
-      '      do {\n' +
-      '        user B\n' +
-      '        user C\n' +
-      '      } while (y)\n' +
-      '      if (x) {\n' +
-      '        user A\n' +
-      '        goto B\n' +
-      '      }\n' +
-      '    } while (e)\n' +
-      '  }\n' +
-      '}\n',
-  );
-  expect(await errorMessages(dsl)).toEqual([]);
-});
-
-// Both loops read the same paths whether nested or flattened to if/goto, so
-// the row contract alone would pass this too: the print itself is the
-// regression. The handler re-enters the outer body past the inner loop's
-// test gateway, which must not stop that gateway from dominating the outer
-// one's.
-it('a boundary handler re-entering the outer body past a nested do-while leaves both loops printed as do-while', async () => {
-  const source = `process p {
-  var u: any
-  var v: any
-  do {
-    do {
-      user A
-      user B
-    } while (v)
-    user C
-  } while (u)
-  user E
-  on E: signal("R") {
-    goto C
-  }
-}
-`;
-  const { dsl } = await roundTrip(source);
-  expect(dsl).toBe(source);
-  expect(await errorMessages(dsl)).toEqual([]);
-});
-
-// The generator cannot draw one gateway that both merges and splits, so this
-// shape comes in as modeled XML: J joins two of F's routes and forks again.
-// The script has no mixed gateway, so J prints as a join and a fork, which is
-// why the path signature, counting gateways per route, is not compared.
+// J joins two of F's routes and forks again; the script has no mixed gateway,
+// so J prints as a join and a fork.
 const MIXED_JOIN = bpmnDoc(
   [
     '<bpmn:startEvent id="S" />',
@@ -2842,21 +2850,24 @@ it('a gateway that merges a fork with an ending branch and splits again prints a
   }
 }
 `);
-  expect(await errorMessages(dsl1)).toEqual([]);
+  expect(await validationErrors(dsl1)).toEqual([]);
   const second = await roundTrip(dsl1);
   expect(second.dsl).toBe(dsl1);
 });
 
-// No script source lowers to this: the implicit start and a conditional start
-// both enter T, which runs into the implicit end. A body opening with `start B`
-// would have no implicit start, so the print must jump to T first.
+const conditionalStart = (id: string, variable: string): string =>
+  `<bpmn:startEvent id="${id}"><bpmn:conditionalEventDefinition>` +
+  '<bpmn:condition xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="bpmn:tFormalExpression">' +
+  `\${${variable}}</bpmn:condition>` +
+  '</bpmn:conditionalEventDefinition></bpmn:startEvent>';
+
+// The implicit start and a conditional start both enter T. A body opening with
+// `start B` would have no implicit start, so the print jumps to T first.
 it('an implicit start and a conditional start entering the same step keep both starts and the implicit end', async () => {
   const xml = bpmnDoc(
     [
       '<bpmn:startEvent id="StartEvent_p" />',
-      '<bpmn:startEvent id="B"><bpmn:conditionalEventDefinition>' +
-        '<bpmn:condition xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="bpmn:tFormalExpression">${c}</bpmn:condition>' +
-        '</bpmn:conditionalEventDefinition></bpmn:startEvent>',
+      conditionalStart('B', 'c'),
       '<bpmn:userTask id="T" />',
       '<bpmn:endEvent id="EndEvent_p" />',
       '<bpmn:sequenceFlow id="f1" sourceRef="StartEvent_p" targetRef="T" />',
@@ -2873,28 +2884,20 @@ it('an implicit start and a conditional start entering the same step keep both s
   user T
 }
 `);
-  expect(await errorMessages(dsl)).toEqual([]);
+  expect(await validationErrors(dsl)).toEqual([]);
   const { ir1: reread, dsl: next } = await roundTrip(dsl);
   expect(compareModels(ir, reread)).toBe('restructured');
   expect(next).toBe(dsl);
 });
 
-// A link throw's catch prints right behind it with no `goto` between them
-// (`emit link` / `await link`), so the flow the throw carried still runs on
-// through the catch's own routes. `start C` enters the merge that chain
-// reaches and `start B` enters the step past it, so both need their own
-// `goto` closing that still-live flow first, the same as a start entering a
-// step an ordinary fall-through chain already reaches.
+// The catch prints right behind its link throw, so the flow still runs on
+// through it; each start needs a `goto` closing that live flow first.
 it('a start entering a step reached only through a printed link hop keeps the flow closed with a goto', async () => {
   const xml = bpmnDoc(
     [
       '<bpmn:startEvent id="StartEvent_p" />',
-      '<bpmn:startEvent id="B"><bpmn:conditionalEventDefinition>' +
-        '<bpmn:condition xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="bpmn:tFormalExpression">${c}</bpmn:condition>' +
-        '</bpmn:conditionalEventDefinition></bpmn:startEvent>',
-      '<bpmn:startEvent id="C"><bpmn:conditionalEventDefinition>' +
-        '<bpmn:condition xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="bpmn:tFormalExpression">${d}</bpmn:condition>' +
-        '</bpmn:conditionalEventDefinition></bpmn:startEvent>',
+      conditionalStart('B', 'c'),
+      conditionalStart('C', 'd'),
       '<bpmn:userTask id="A" />',
       '<bpmn:intermediateThrowEvent id="Th"><bpmn:linkEventDefinition name="L" /></bpmn:intermediateThrowEvent>',
       '<bpmn:intermediateCatchEvent id="Ca"><bpmn:linkEventDefinition name="L" /></bpmn:intermediateCatchEvent>',
@@ -2925,15 +2928,12 @@ it('a start entering a step reached only through a printed link hop keeps the fl
   user T
 }
 `);
-  expect(await errorMessages(dsl)).toEqual([]);
+  expect(await validationErrors(dsl)).toEqual([]);
   const { ir1: reread, dsl: dsl2 } = await roundTrip(dsl);
   expect(compareModels(ir, reread)).toBe('restructured');
-  // The round trip compiles the merge gateway away: three plain flows land on
-  // `T` directly, so `Ca`'s own chain now reaches the elided end on its own.
-  // The tail rule still has to treat that end as displaced, since `B` and `C`
-  // reach it too, or this second print pushes `end EndEvent_p` off the tail
-  // and prints it as a name the compiler refuses.
-  expect(await errorMessages(dsl2)).toEqual([]);
+  // The merge is compiled away, so `Ca` reaches the elided end on its own; the
+  // end must still count as displaced, or it prints under a refused name.
+  expect(await validationErrors(dsl2)).toEqual([]);
   expect(dsl2).toBe(`process p {
   var c: any
   var d: any
@@ -2951,18 +2951,13 @@ it('a start entering a step reached only through a printed link hop keeps the fl
   expect(dsl3).toBe(dsl2);
 });
 
-// The elided end's own branch does nothing once the walk reaches the end
-// itself: pushing a `goto` there instead would name a target the deferred
-// `end` print has not reached yet, so the leftover edge into it degrades to
-// the unstructured-region marker rather than a wrong jump. The deferred `end`
-// still lands ahead of `start B` in the printed order.
+// A `goto` to the deferred end would name a target not yet printed, so the
+// leftover edge degrades to the marker rather than a wrong jump.
 it('a conditional start entering the elided end keeps the end printed before the start', async () => {
   const xml = bpmnDoc(
     [
       '<bpmn:startEvent id="StartEvent_p" />',
-      '<bpmn:startEvent id="B"><bpmn:conditionalEventDefinition>' +
-        '<bpmn:condition xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="bpmn:tFormalExpression">${c}</bpmn:condition>' +
-        '</bpmn:conditionalEventDefinition></bpmn:startEvent>',
+      conditionalStart('B', 'c'),
       '<bpmn:userTask id="A" />',
       '<bpmn:endEvent id="EndEvent_p" />',
       '<bpmn:sequenceFlow id="f1" sourceRef="StartEvent_p" targetRef="A" />',
@@ -2998,74 +2993,4 @@ it('a conditional start entering the elided end keeps the end printed before the
         'read back. Rename the step in the model and print it again.',
     },
   ]);
-});
-
-// Minimized from a fuzz find: the `else if` branch's own `service Release19
-// goto Wait14` chain is walked while deciding whether the first branch's own
-// chain (`InFirst`, `Wait14`, the `parallel`, `Fail18`) can print inline. That
-// walk must stop at every node the first branch's entry does not
-// loop-dominate, or it follows the `parallel`'s `goto Charge7` exit past the
-// nodes the branch owns and reads `Release19` as part of it. The row contract
-// alone would pass the misplaced print too, since the model stays equivalent
-// either way; the print itself is the regression.
-it("a goto between an if-chain's branches does not pull the target branch's chain into the other branch's inline check", async () => {
-  const source = `process p {
-  var order: any
-  var urgent: any
-  var approved: any
-  user Charge7
-  if (order['div']) {
-    user InFirst
-    await message Wait14("OrderReceived") {
-    }
-    parallel {
-      if ((order == null)) {
-        call Call15(process: "invoice-approval")
-        emit signal("Ready")
-      }
-      if (urgent) {
-        service check-stock16(class: "org.acme.Audit")
-        goto Charge7
-      }
-    }
-    throw signal Fail18("StockLow")
-  } else if (approved) {
-    service Release19(class: "com.example.orders.Ship")
-    goto Wait14
-  } else {
-    service Charge(class: "com.example.Delegate")
-  }
-  end Done21
-}
-`;
-  const { dsl } = await roundTrip(source);
-  expect(await errorMessages(dsl)).toEqual([]);
-  expect(dsl).toBe(`process p {
-  var approved: any
-  var order: any
-  var urgent: any
-  user Charge7
-  if (order["div"]) {
-    user InFirst
-    await message Wait14("OrderReceived")
-    parallel {
-      if ((order == null)) {
-        call Call15(process: "invoice-approval")
-        emit signal("Ready")
-      }
-      if (urgent) {
-        service check-stock16(class: "org.acme.Audit")
-        goto Charge7
-      }
-    }
-    throw signal Fail18("StockLow")
-  } else if (approved) {
-    service Release19(class: "com.example.orders.Ship")
-    goto Wait14
-  } else {
-    service Charge(class: "com.example.Delegate")
-  }
-  end Done21
-}
-`);
 });
