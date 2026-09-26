@@ -25,7 +25,7 @@ export function buildExample(dslPath: string, xmlOutPath: string): void {
   mkdirSync(dirname(xmlOutPath), { recursive: true });
   execFileSync(
     process.execPath,
-    [CLI_ENTRY, 'build', dslPath, '-o', xmlOutPath],
+    [CLI_ENTRY, 'build', dslPath, '-o', xmlOutPath, '--force'],
     { stdio: 'inherit' },
   );
 }

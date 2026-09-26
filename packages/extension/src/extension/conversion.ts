@@ -64,11 +64,7 @@ export function compileCommand(
     const sourceFileName = path.basename(sourceUri.fsPath);
     const text = await readText(sourceUri);
 
-    const result = await compileDslToBpmn(
-      text,
-      sourceFileName,
-      extensionVersion,
-    );
+    const result = await compileDslToBpmn(text, extensionVersion);
 
     // Cleared on every outcome; the validation branch repopulates.
     diagnostics.delete(sourceUri);
@@ -91,6 +87,12 @@ export function compileCommand(
       void vscode.window.showInformationMessage(
         `BPMNscript: Compiled "${sourceFileName}" -> "${path.basename(outputPath)}"`,
       );
+
+      if (result.layoutWarning) {
+        void vscode.window.showWarningMessage(
+          `BPMNscript: "${sourceFileName}" compiled without a diagram: ${result.layoutWarning}`,
+        );
+      }
 
       return outputUri;
     } else if (result.kind === 'validation') {
@@ -123,7 +125,7 @@ export function decompileCommand(
     const sourceFileName = path.basename(sourceUri.fsPath);
     const text = await readText(sourceUri);
 
-    const result = await decompileBpmnToDsl(text, sourceFileName);
+    const result = await decompileBpmnToDsl(text);
 
     diagnostics.delete(sourceUri);
 

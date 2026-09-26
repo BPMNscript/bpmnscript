@@ -156,9 +156,10 @@ export const BLOCK_HOSTS: ReadonlyArray<
 ];
 
 /**
- * The element kinds whose block carries `input`/`output` parameters. A
- * host-less `on` handler is in the set because it lowers to an event
- * sub-process; the hosted form lowers to a boundary event and is not.
+ * The element kinds whose block carries `input`/`output` parameters. Neither
+ * handler form is in the set: the hosted one lowers to a boundary event, which
+ * carries none, and the host-less one to an event sub-process, which
+ * `BpmnParse.checkActivityInputOutputSupported` refuses a mapping on.
  */
 export const PARAMETER_HOSTS = new Set([
   'user',
@@ -171,7 +172,6 @@ export const PARAMETER_HOSTS = new Set([
   'subprocess',
   'attempt',
   'call',
-  'on',
 ]);
 
 /** The element kinds whose block carries a `form` declaration. */

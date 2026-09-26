@@ -1,4 +1,6 @@
 import { describe, it, expect } from 'vitest';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
 import * as path from 'node:path';
 import {
   diagnosticMessage,
@@ -22,6 +24,18 @@ describe('resolveOutputPath', () => {
     expect(resolveOutputPath(path.resolve(input), '.bpmn', override)).toBe(
       path.resolve(expected),
     );
+  });
+
+  it('an override naming an existing directory writes inside it under the input basename', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bpmns-util-'));
+    try {
+      const input = path.join(dir, 'invoice-approval.bpmnscript');
+      expect(resolveOutputPath(input, '.bpmn', dir)).toBe(
+        path.join(dir, 'invoice-approval.bpmn'),
+      );
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

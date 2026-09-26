@@ -106,6 +106,8 @@ The moddle declaration is in `packages/transform/src/operaton-moddle.json`.
 Amends ADR-0027, closing the gap the language README's Repetition section named.
 Amends ADR-0014, whose `UnsupportedLoopCharacteristicsError` bullet no longer refuses an async or retry setting on the repetition element itself.
 
+Amended by ADR-0048, which adds the validator's job-setting pairing warning and states plainly that a repeated step's own `jobPriority` prices the per-run job, never the whole-loop one, correcting the "one job around the whole repetition" reading above.
+
 Related decisions: ADR-0010 (the deterministic ids a repeated activity keeps).
 ADR-0022 (engine attributes as named IR fields, the convention this decision extends onto a second element).
 ADR-0029 (the one bracket shape reused here).

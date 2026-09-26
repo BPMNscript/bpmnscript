@@ -13,6 +13,8 @@ import {
   parseToAst,
   printDsl,
   roundTripOf,
+  roundTripTwice,
+  validate,
 } from './helpers/pipeline.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -241,5 +243,340 @@ describe('bean-call condition stays quoted-raw end-to-end', () => {
 
   it('the re-emitted DSL re-parses, and re-desugars to the same raw condition', () => {
     expect(condition(run.ir3)).toBe('${myBean.check()}');
+  });
+});
+
+// The fuzz found every row below by printing, rebuilding and printing again;
+// the suites elsewhere in this repo stop after one hop each direction and
+// never see a value that is stable on the first print but drifts on the
+// second. `xml2`/`dsl2` come from feeding `dsl1` back through the same two
+// hops, so a row pins idempotence, not just a single compile.
+//
+// Two attribute values below carry a literal `"`, which this pipeline's XML
+// writer cannot place directly in an attribute and instead numeric-escapes
+// (`&#34;`, `&#10;`); decoding those before the substring check lets a
+// fragment read the same whether it landed in an attribute or an element body.
+function decodeXmlEntities(xml: string): string {
+  return xml.replace(/&#34;/g, '"').replace(/&#10;/g, '\n');
+}
+
+const RAW_CONDITION_QUOTE_SRC = [
+  'process p {',
+  '  if (\'${execution.getVariable("x")}\') {',
+  '    user A',
+  '  }',
+  '}',
+  '',
+].join('\n');
+
+const RAW_UNDER_UNARY_SRC = [
+  'process p {',
+  "  if (!'${x}') {",
+  '    user A',
+  '  }',
+  '}',
+  '',
+].join('\n');
+
+const QUOTED_RAW_BINDINGS_SRC = [
+  'process p {',
+  '  service S(delegate: \'${fn("a")}\')',
+  '  service T(expression: "${bean.m(\\"a\\")}")',
+  '  user U(assignee: "${who(\\"a\\")}")',
+  '}',
+  '',
+].join('\n');
+
+const BARE_VARIABLE_IO_SRC = [
+  'process p {',
+  '  var notify_sync: any',
+  '  service A(class: "x") {',
+  '    output a = notify_sync',
+  '    input b = notify_sync.lines',
+  '    input c = [notify_sync, 1, -644, "s"]',
+  '    input d = { k: notify_sync, k2: null, k3: true }',
+  '  }',
+  '  call C(process: "x") {',
+  '    in y = notify_sync',
+  '  }',
+  '}',
+  '',
+].join('\n');
+
+const HASH_TEMPLATE_POSITIONS_SRC = [
+  'process p {',
+  '  user Review(assignee: "#{initiator}", priority: "#{prio}") {',
+  '    on end(delegate: "#{auditListener}")',
+  '    on create(expression: "#{notifier.created(task)}")',
+  '  }',
+  '  service Notify(delegate: "#{emailAdapter}")',
+  '  service Compute(expression: "#{calc.run(order)}", resultVariable: "result")',
+  '  call Sub(process: "#{subKey}", businessKey: "#{execution.processBusinessKey}") {',
+  '    in orderId = "#{order.id}"',
+  '    out subResult = "#{result}"',
+  '  }',
+  '}',
+  '',
+].join('\n');
+
+const CONTROL_CHAR_BODIES_SRC = [
+  'process p {',
+  '  service A(class: "x") {',
+  '    input m = { "a\\nb": 1 }',
+  '    input s = "l1\\nl2"',
+  '    field f = "f1\\nf2"',
+  '  }',
+  '}',
+  '',
+].join('\n');
+
+const HYPHENATED_COLLECTION_SRC = [
+  'process p {',
+  '  var check-close: any',
+  '  user A for each in check-close',
+  '}',
+  '',
+].join('\n');
+
+const LITERAL_BUSINESS_KEY_SRC = [
+  'process p {',
+  '  call C(process: "x", businessKey: "abc") {',
+  '    in y = "u"',
+  '  }',
+  '}',
+  '',
+].join('\n');
+
+const CONDITION_VARIABLE_SRC = [
+  'process p {',
+  '  var shipPlan: any',
+  '  await condition SendLoad(419 >= shipPlan)',
+  '}',
+  '',
+].join('\n');
+
+const SHARED_END_STARTS_SRC = [
+  'process claim-review {',
+  '  var urgent: boolean',
+  '  start FromDesk',
+  '  start WhenUrgent condition(urgent)',
+  '}',
+  '',
+].join('\n');
+
+const RACE_INTO_SELF_LOOPING_STEP_SRC = [
+  'process claim-review {',
+  '  await {',
+  '    message("OrderReceived") {',
+  '      user Log',
+  '    }',
+  '    condition("${fn(\\"a\\")}" * 0.91 == (247)) {',
+  '      user Nudge',
+  '    }',
+  '  }',
+  '  decide Ship6(decision: "approve-claim")',
+  '  goto Ship6',
+  '}',
+  '',
+].join('\n');
+
+const ENDING_BRANCH_BESIDE_ELSE_CHAIN_SRC = [
+  'process onboarding {',
+  '  var a: boolean',
+  '  var b: boolean',
+  '  if (a) {',
+  '    end Done7',
+  '  } else if (b) {',
+  '    user Log',
+  '  } else {',
+  '    service Approve10(class: "org.acme.Audit")',
+  '  }',
+  '}',
+  '',
+].join('\n');
+
+const EXPRESSION_MAP_KEY_SRC = [
+  'process p {',
+  '  service A(class: "x") {',
+  '    input m = { "\\${dyn}": 1, "\\#{other}": 2, plain: 3 }',
+  '  }',
+  '}',
+  '',
+].join('\n');
+
+const BACKSLASH_IN_JUEL_STRING_SRC = [
+  'process order-fulfilment {',
+  '  if ("${region == \\"a\\\\\\\\b\\"}") {',
+  '    user A',
+  '  }',
+  '}',
+  '',
+].join('\n');
+
+describe('two-pass round trip: printed expression text stays engine-runnable and stable', () => {
+  it.each([
+    [
+      'a backslash inside a JUEL string literal prints as the doubled escape and compiles back to the same three characters',
+      BACKSLASH_IN_JUEL_STRING_SRC,
+      ['${region == "a\\\\b"}'],
+      ['if (region == "a\\\\b") {'],
+    ],
+    [
+      'an out-of-subset raw condition with a quoted method call keeps its inner quotes, not doubled escapes',
+      RAW_CONDITION_QUOTE_SRC,
+      ['${execution.getVariable("x")}'],
+      [],
+    ],
+    [
+      'a raw operand under a unary operator splices its body instead of nesting a second ${ }',
+      RAW_UNDER_UNARY_SRC,
+      ['${!(x)}'],
+      [],
+    ],
+    [
+      'quoted-raw method-call bindings on delegate, expression and assignee keep their inner quotes',
+      QUOTED_RAW_BINDINGS_SRC,
+      [
+        'operaton:delegateExpression="${fn("a")}"',
+        'operaton:expression="${bean.m("a")}"',
+        'operaton:assignee="${who("a")}"',
+      ],
+      [],
+    ],
+    [
+      'a bare variable in an io value, a list item or a map entry renders as ${var}, not as its name in text',
+      BARE_VARIABLE_IO_SRC,
+      [
+        '<operaton:outputParameter name="a">${notify_sync}</operaton:outputParameter>',
+        '<operaton:inputParameter name="b">${notify_sync.lines}</operaton:inputParameter>',
+        '<operaton:value>${notify_sync}</operaton:value>',
+        '<operaton:value>${1}</operaton:value>',
+        '<operaton:value>${-644}</operaton:value>',
+        '<operaton:value>s</operaton:value>',
+        '<operaton:entry key="k">${notify_sync}</operaton:entry>',
+        '<operaton:entry key="k2">${null}</operaton:entry>',
+        '<operaton:entry key="k3">${true}</operaton:entry>',
+        '<operaton:in source="notify_sync" target="y" />',
+      ],
+      [],
+    ],
+    [
+      '#{ } bindings across a listener, tasks and a call activity print verbatim with the # opener kept',
+      HASH_TEMPLATE_POSITIONS_SRC,
+      [
+        'operaton:assignee="#{initiator}"',
+        'operaton:priority="#{prio}"',
+        '<operaton:executionListener event="end" delegateExpression="#{auditListener}" />',
+        '<operaton:taskListener event="create" expression="#{notifier.created(task)}" />',
+        'operaton:delegateExpression="#{emailAdapter}"',
+        'operaton:expression="#{calc.run(order)}" operaton:resultVariable="result"',
+        'calledElement="#{subKey}"',
+        '<operaton:in businessKey="#{execution.processBusinessKey}" />',
+        '<operaton:in sourceExpression="#{order.id}" target="orderId" />',
+        '<operaton:out sourceExpression="#{result}" target="subResult" />',
+      ],
+      [],
+    ],
+    [
+      // No tab sub-case: moddle-xml's attribute escaper does not escape a
+      // tab, so a tab in an attribute value reaches a strict XML parser as a
+      // space (XML attribute-value normalization). Pinning it here would only
+      // pin this tool's own reader, not byte fidelity through a strict parser.
+      'a real line feed in an io value, a map key or a field value prints as its two-character escape',
+      CONTROL_CHAR_BODIES_SRC,
+      [
+        'stringValue="f1\nf2"',
+        'key="a\nb"',
+        '<operaton:inputParameter name="s">l1\nl2</operaton:inputParameter>',
+      ],
+      ['"f1\\nf2"', '"l1\\nl2"'],
+    ],
+    [
+      'a map key that is itself a template opener prints with a backslash so it re-parses as a literal key, not a raw template',
+      EXPRESSION_MAP_KEY_SRC,
+      [
+        '<operaton:entry key="${dyn}">${1}</operaton:entry>',
+        '<operaton:entry key="#{other}">${2}</operaton:entry>',
+        '<operaton:entry key="plain">${3}</operaton:entry>',
+      ],
+      ['"\\${dyn}"', '"\\#{other}"'],
+    ],
+    [
+      'a hyphenated collection variable prints as a bare operaton:collection reference, not a quoted string',
+      HYPHENATED_COLLECTION_SRC,
+      ['operaton:collection="check-close"'],
+      ['for each in check-close'],
+    ],
+    [
+      'a literal businessKey and a literal in-mapping source print as bare EL text, not a wrapped literal',
+      LITERAL_BUSINESS_KEY_SRC,
+      [
+        '<operaton:in businessKey="abc" />',
+        '<operaton:in sourceExpression="u" target="y" />',
+      ],
+      [],
+    ],
+    [
+      'a variable a condition reads comes back declared, so the printed script validates clean',
+      CONDITION_VARIABLE_SRC,
+      [
+        '<bpmn:condition xsi:type="bpmn:tFormalExpression">${419 &gt;= shipPlan}</bpmn:condition>',
+      ],
+      [
+        '  var shipPlan: any\n',
+        '  await condition SendLoad(419 >= shipPlan)\n',
+      ],
+    ],
+    [
+      'two starts sharing the implicit end print back to back, and the end stays unwritten',
+      SHARED_END_STARTS_SRC,
+      [
+        '<bpmn:sequenceFlow id="Flow_FromDesk_EndEvent_claim-review" sourceRef="FromDesk" targetRef="EndEvent_claim-review" />',
+        '<bpmn:sequenceFlow id="Flow_WhenUrgent_EndEvent_claim-review" sourceRef="WhenUrgent" targetRef="EndEvent_claim-review" />',
+      ],
+      ['  start FromDesk\n  start WhenUrgent condition(urgent)\n}\n'],
+    ],
+    [
+      // The step after the race loops on itself, so no node reaches the exit
+      // and the container has no post-dominators to find the merge with.
+      'a race with empty branches into a step that loops on itself keeps the step after the block',
+      RACE_INTO_SELF_LOOPING_STEP_SRC,
+      [
+        '<bpmn:sequenceFlow id="Flow_Gateway_claim-review_0_join_Ship6" sourceRef="Gateway_claim-review_0_join" targetRef="Ship6" />',
+        '<bpmn:sequenceFlow id="Flow_Ship6_Ship6" sourceRef="Ship6" targetRef="Ship6" />',
+      ],
+      [
+        '    }\n  }\n  decide Ship6(decision: "approve-claim")\n  goto Ship6\n}\n',
+      ],
+    ],
+    [
+      // The ending branch takes the split's post-dominator to the exit, so
+      // the else chain used to be read as the continuation and the middle
+      // branch walked on through the join to the implicit end.
+      'an if chain with an ending branch beside an else chain keeps the else, and the implicit end stays unwritten',
+      ENDING_BRANCH_BESIDE_ELSE_CHAIN_SRC,
+      [
+        '<bpmn:sequenceFlow id="Flow_Approve10_Gateway_onboarding_0_join" sourceRef="Approve10" targetRef="Gateway_onboarding_0_join" />',
+      ],
+      [
+        '  } else if (b) {\n    user Log\n  } else {\n    service Approve10(class: "org.acme.Audit")\n  }\n}\n',
+      ],
+    ],
+  ] as const)('%s', async (_title, source, xmlContains, dslContains) => {
+    const { xml1, dsl1, xml2, dsl2 } = await roundTripTwice(source);
+
+    const decodedXml = decodeXmlEntities(xml1);
+    for (const fragment of xmlContains) {
+      expect(decodedXml).toContain(fragment);
+    }
+    for (const fragment of dslContains) {
+      expect(dsl1).toContain(fragment);
+    }
+
+    const { diagnostics } = await validate(dsl1);
+    expect(diagnostics.map((d) => d.message)).toEqual([]);
+
+    expect(xml2).toBe(xml1);
+    expect(dsl2).toBe(dsl1);
   });
 });

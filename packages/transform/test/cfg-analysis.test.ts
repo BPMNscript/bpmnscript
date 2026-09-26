@@ -457,4 +457,27 @@ describe('cfg analysis', () => {
     expect(cfg.postDominates('nope', 'm')).toBe(false);
     expect(cfg.postDominates('m', 'nope')).toBe(false);
   });
+
+  it('keeps totality for a node unreachable from the entry and for the two sentinels', () => {
+    // "orphan" has no path from the entry, so it is absent from the
+    // dominator tree, but it does reach the exit, so the post-dominator
+    // tree numbers it independently: the two interval trees answer these
+    // cases on their own terms rather than sharing one bounds check.
+    const cfg = analyzeCfg(
+      graph(
+        [start('start'), task('reachable'), task('orphan'), end('end')],
+        'start>reachable reachable>end orphan>end',
+      ),
+    );
+
+    expect(cfg.dominates('orphan', 'orphan')).toBe(false);
+    expect(cfg.dominates(VIRTUAL_ENTRY, 'orphan')).toBe(false);
+    expect(cfg.dominates(VIRTUAL_EXIT, 'orphan')).toBe(false);
+    expect(cfg.dominates(VIRTUAL_ENTRY, 'end')).toBe(true);
+    expect(cfg.dominates('end', VIRTUAL_ENTRY)).toBe(false);
+
+    expect(cfg.postDominates(VIRTUAL_EXIT, 'orphan')).toBe(true);
+    expect(cfg.postDominates('orphan', VIRTUAL_EXIT)).toBe(false);
+    expect(cfg.postDominates(VIRTUAL_EXIT, VIRTUAL_EXIT)).toBe(true);
+  });
 });

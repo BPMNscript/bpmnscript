@@ -16,7 +16,9 @@ import type {
   FORM_FIELD_TYPES,
   TASK_LISTENER_EVENTS,
   THROW_TRIGGERS,
+  TimerJobKey,
 } from '@bpmn-script/language';
+import { TIMER_JOB_KEYS } from '@bpmn-script/language';
 
 /**
  * Sequence flows never cross a container boundary, so a parent can treat a
@@ -36,9 +38,13 @@ export interface BpmnProcess extends FlowContainer, Named {
   versionTag?: string;
   /** Absent means the exporter's default; see `HISTORY_TIME_TO_LIVE`. */
   historyTimeToLive?: string;
-  /** Comma-separated user ids the engine checks before it will start the process. */
+  /**
+   * Comma-separated user ids listed as candidate starters (Tasklist's process
+   * list); `BpmnDeployer.addAuthorizations` stores each entry as written, and
+   * nothing checks them when an instance starts.
+   */
   candidateStarterUsers?: string;
-  /** Comma-separated group ids the engine checks before it will start the process. */
+  /** Comma-separated group ids, listed and stored the same way. */
   candidateStarterGroups?: string;
   /**
    * Every error code the process raises, catches, or declares, in canonical
@@ -244,9 +250,12 @@ export type EventDefinition =
     }
   | {
       /**
-       * Payload-less: BPMN compensation carries no code and no `activityRef`.
-       * `waitForCompletion` stays unmodeled because the moddle schema defaults
-       * it to `true` and the engine supports no other value.
+       * Payload-less in this IR: no code and no `activityRef`, so a throw
+       * always compensates its whole scope rather than one activity.
+       * `BpmnParse.parseThrowCompensateEventDefinition` reads both
+       * `activityRef` and `waitForCompletion` off the BPMN definition;
+       * `waitForCompletion` stays unmodeled here because the moddle schema
+       * defaults it to `true` and the engine warns on any other value.
        */
       kind: 'compensation';
     }
@@ -360,6 +369,35 @@ export function jobSettings(found: {
   };
 }
 
+export type { TimerJobKey };
+
+/**
+ * Split the settings of an element that declares a timer between the two jobs
+ * it can create. `BpmnParse.parseTimer` builds the timer job with the lock off
+ * the timer definition and the priority off the declaring activity, and
+ * `DefaultFailedJobParseListener.parseStartEvent`, `parseBoundaryEvent` and
+ * `parseIntermediateCatchEvent` read its retry cycle off the declaring element.
+ * The async flags create the continuation job and stay with it. `timer` is
+ * normalized as {@link jobSettings} is, so a key absent on `settings` stays
+ * absent.
+ */
+export function splitTimerJobSettings<T extends JobSettings>(
+  settings: T,
+): { timer: JobSettings; continuation: Omit<T, TimerJobKey> } {
+  const continuation = { ...settings } as Omit<T, TimerJobKey>;
+  for (const key of TIMER_JOB_KEYS) delete (continuation as JobSettings)[key];
+  return {
+    timer: jobSettings({
+      asyncBefore: undefined,
+      asyncAfter: undefined,
+      exclusive: settings.exclusive,
+      jobPriority: settings.jobPriority,
+      retryCycle: settings.retryCycle,
+    }),
+    continuation,
+  };
+}
+
 /**
  * {@link JobSettings} plus execution listeners. Mixed into every event and
  * activity kind; the four gateway kinds extend `JobSettings` directly and
@@ -393,7 +431,10 @@ export function ioMapped(
  * `cardinality` and `collection` is present: with both, the count drives the
  * runs while each run still sees its element. The job settings are the ones
  * the engine reads off this element onto each run, `RUN_ENGINE_KEYS` in the
- * language package, which is why there is no `jobPriority`.
+ * language package. There is no `jobPriority` field here because the plain
+ * one on the repeated activity already prices each run's job, not the whole
+ * loop's; the whole-loop job takes the process definition's own priority,
+ * since nothing writes one on this element.
  */
 export interface LoopCharacteristics extends Omit<JobSettings, 'jobPriority'> {
   /** A literal count, or an expression that yields one. */
@@ -414,6 +455,17 @@ export interface LoopCharacteristics extends Omit<JobSettings, 'jobPriority'> {
 /** Every activity may repeat; no event and no gateway may. */
 export interface Repeatable {
   loop?: LoopCharacteristics;
+}
+
+/** What BPMN declares on `bpmn:Activity` alone, so every step kind carries it and no event or gateway does. */
+export interface Activity extends Repeatable {
+  /**
+   * The BPMN `default` attribute on a step: `BpmnActivityBehavior.findTransitionsToTake`
+   * skips it while weighing the other routes and `handleNoTransitions` takes
+   * it when none of them held, so a step with several routes carries it the
+   * way a gateway does.
+   */
+  defaultFlowId?: string;
 }
 
 /**
@@ -571,8 +623,7 @@ export interface IntermediateCatchEvent extends EngineAttributes {
   eventDefinition: CatchEventDefinition;
 }
 
-export interface UserTask
-  extends EngineAttributes, IoMapped, Repeatable, Named {
+export interface UserTask extends EngineAttributes, IoMapped, Activity, Named {
   kind: 'userTask';
   id: string;
   assignee?: string;
@@ -662,7 +713,7 @@ export function carriesFields(
 }
 
 export interface ServiceTask
-  extends EngineAttributes, IoMapped, Repeatable, Named {
+  extends EngineAttributes, IoMapped, Activity, Named {
   kind: 'serviceTask';
   id: string;
   binding: ServiceTaskBinding;
@@ -680,7 +731,7 @@ export interface ServiceTask
 }
 
 export interface ScriptTask
-  extends EngineAttributes, IoMapped, Repeatable, Named {
+  extends EngineAttributes, IoMapped, Activity, Named {
   kind: 'scriptTask';
   id: string;
   /** Canonical Operaton `scriptFormat`, e.g. `"javascript"`, `"groovy"`. */
@@ -692,7 +743,7 @@ export interface ScriptTask
 }
 
 /** A step the engine records and leaves at once; the work happens outside it. */
-export interface Task extends EngineAttributes, IoMapped, Repeatable, Named {
+export interface Task extends EngineAttributes, IoMapped, Activity, Named {
   kind: 'task';
   id: string;
 }
@@ -702,7 +753,7 @@ export interface Task extends EngineAttributes, IoMapped, Repeatable, Named {
  * API rather than a correlation.
  */
 export interface ReceiveTask
-  extends EngineAttributes, IoMapped, Repeatable, Named {
+  extends EngineAttributes, IoMapped, Activity, Named {
   kind: 'receiveTask';
   id: string;
   /** `messageRef`, and the dedupe key: one name, one root element. */
@@ -793,7 +844,7 @@ export function gatewayDefaultFlowId(gateway: Gateway): string | undefined {
 
 /** An activity that is itself a container; the parent wires flow to it by `id`. */
 export interface SubProcess
-  extends FlowContainer, EngineAttributes, IoMapped, Repeatable, Named {
+  extends FlowContainer, EngineAttributes, IoMapped, Activity, Named {
   kind: 'subProcess';
   /** The event sub-process an `on` lowers to, fired by its start event's trigger. */
   triggeredByEvent?: true;
@@ -846,7 +897,7 @@ export type CallVariableMapper =
  * stable: `businessKey`, then `inMappings`, then `outMappings`.
  */
 export interface CallActivity
-  extends EngineAttributes, IoMapped, Repeatable, Named {
+  extends EngineAttributes, IoMapped, Activity, Named {
   kind: 'callActivity';
   id: string;
   /** The id of the invoked process. */

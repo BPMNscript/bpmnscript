@@ -1,0 +1,36 @@
+// Review-loop round-trip fixture: the approve-review loop of an invoice
+// process, the shape every approve-or-rework loop drawn by hand takes.
+//
+//   - an invoice is approved or sent back for review, and a review that
+//     clarifies it goes round again, so the loop is a `do ... while` whose
+//     head is the "clarified" decision;
+//   - the split inside the loop body carries a condition on both routes, one
+//     leaving the loop for the bank transfer and one staying in it for the
+//     review, and the chain names no `else`.
+//
+// The two condition variables are declared as `var` lines, which the IR does
+// not carry, so the restructured DSL' declares them again as `var x: any`.
+process invoice-review {
+  var approved: boolean
+  var clarified: boolean
+
+  start InvoiceReceived
+
+  do {
+    user ApproveInvoice(assignee: "demo")
+    if (approved) {
+      goto PrepareBankTransfer
+    } else if (!approved) {
+      call ReviewInvoice(process: "ReviewInvoice") {
+        in invoiceDocument
+        out clarified
+      }
+    }
+  } while (clarified)
+
+  end InvoiceNotProcessed(label: "Invoice not processed")
+
+  user PrepareBankTransfer(candidateGroups: "accounting")
+  service ArchiveInvoice(class: "org.operaton.bpm.example.invoice.service.ArchiveInvoiceService")
+  end InvoiceProcessed(label: "Invoice processed")
+}

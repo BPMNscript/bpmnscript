@@ -79,9 +79,14 @@ class SpringBootAdapter implements FixtureAdapter {
   async deploy(
     xmlPath: string,
     deploymentName = path.basename(xmlPath, '.bpmn'),
+    tenantId?: string,
   ): Promise<{ deploymentId: string }> {
     const form = new FormData();
     form.append('deployment-name', deploymentName);
+    // The part name DeploymentRestServiceImpl.createDeployment reads.
+    if (tenantId !== undefined) {
+      form.append('tenant-id', tenantId);
+    }
 
     const xmlBytes = await import('node:fs/promises').then((fs) =>
       fs.readFile(xmlPath),

@@ -58,3 +58,25 @@ export function roundTripOf(source: string): RoundTripRun {
   });
   return run;
 }
+
+// Two full compile/decompile passes, chaining the second onto the first's
+// printed DSL. Every other suite stops after one hop each direction, which
+// misses a value that is stable on the first print but drifts on the second
+// (a fuzz-only class of bug: idempotence, not correctness of a single hop).
+export interface RoundTripTwice {
+  xml1: string;
+  dsl1: string;
+  xml2: string;
+  dsl2: string;
+}
+
+export async function roundTripTwice(source: string): Promise<RoundTripTwice> {
+  const first = await roundTrip(source);
+  const second = await roundTrip(first.dsl);
+  return {
+    xml1: first.xml,
+    dsl1: first.dsl,
+    xml2: second.xml,
+    dsl2: second.dsl,
+  };
+}

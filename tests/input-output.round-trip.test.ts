@@ -79,10 +79,6 @@ function parameterSignatures(
   return into;
 }
 
-// A handler has no name of its own, so this is the one carrier in the fixture
-// whose id is structural rather than authored.
-const RECALL_HANDLER_ID = 'EventSubProcess_expense-reimbursement_7';
-
 const EXPECTED_PARAMETERS: Record<string, string[]> = {
   ReviewReceipts: [
     'input receiptHint = "Match every receipt against the trip dates"',
@@ -105,7 +101,6 @@ const EXPECTED_PARAMETERS: Record<string, string[]> = {
     'input payoutChannel = "sepa"',
     'output payoutReceipt = {"start": "${payoutStart}", "lines": ["principal", "vat"]}',
   ],
-  [RECALL_HANDLER_ID]: ['input recallReason = "${recallText}"'],
 };
 
 describe("idempotence: DSL -> IR1 -> XML -> IR2 -> DSL' -> IR3", () => {

@@ -13,7 +13,7 @@ Which language workbench should be used to implement the DSL infrastructure?
 
 ## Decision Drivers
 
-- VS Code must be the primary IDE target, with first-class extension support
+- The primary IDE target had to be Visual Studio Code or IntelliJ, the author's two familiar, high-adoption editors, with first-class extension support
 - IDE features (syntax highlighting, autocomplete, jump-to-definition, inline errors) are a core value proposition of a textual DSL
 - A 15-week thesis timeline requires fast bootstrapping and minimal boilerplate
 - A post-thesis browser-based playground should be architecturally feasible
@@ -30,7 +30,9 @@ Which language workbench should be used to implement the DSL infrastructure?
 
 ## Decision Outcome
 
-Chosen option: "Langium", because it is the only workbench that natively targets VS Code with TypeScript, generates an LSP server and VS Code extension from a grammar definition, and supports browser deployment for a future playground, all within a timeline-feasible learning curve.
+Chosen option: "Langium", primarily for its own ergonomics: a smaller, more approachable toolchain than Xtext's, and native access to the existing TypeScript BPMN tooling this project builds on: `bpmn-moddle` to read and write BPMN 2.0 XML, and `bpmn-auto-layout` to generate the Diagram Interchange (DI) data a textual syntax has no coordinate system to produce by hand (see ADR-0003).
+The IDE target followed from this choice rather than preceding it: Langium's TypeScript toolchain generates an LSP server and VS Code extension directly from the grammar, which made Visual Studio Code the easier of the two viable targets to reach, whereas an IntelliJ plugin for Xtext would not have benefited from that same generation path.
+Browser deployment for a future playground was a secondary factor, all within a timeline-feasible learning curve.
 
 ### Consequences
 
@@ -51,6 +53,7 @@ Chosen option: "Langium", because it is the only workbench that natively targets
 
 - Good, because it generates a full LSP server and VS Code extension from a single grammar file
 - Good, because it uses TypeScript throughout: the same language for grammar processing, validation, code generation, and the VS Code extension
+- Good, because it shares the TypeScript/npm ecosystem with `bpmn-moddle` and `bpmn-auto-layout`, the libraries this project uses to read/write and lay out BPMN 2.0 XML, with no cross-language bridge needed to reach them
 - Good, because it natively supports browser deployment via web workers and Monaco Editor
 - Good, because it provides built-in scoping, cross-reference resolution, and validation infrastructure
 - Good, because it is actively developed (v4.2, February 2026) with TypeFox as primary maintainer

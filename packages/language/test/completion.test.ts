@@ -208,7 +208,7 @@ const STATEMENTS: Item[] = [
   [
     'script',
     CONSTRUCT,
-    'script ${1:id} ```${2|javascript,groovy,python,ruby,feel|}\n\t$0\n```',
+    'script ${1:id} ```${2|juel,javascript,groovy,python,ruby,feel|}\n\t$0\n```',
   ],
   ['step', CONSTRUCT, 'step ${1:id}'],
   ['send', CONSTRUCT, 'send ${1:id}(class: "${2:com.example.Delegate}")'],
@@ -405,13 +405,6 @@ const FIELD_BLOCK_MEMBERS: Item[] = [
   ERROR_MAPPING,
 ];
 
-/**
- * The first brace block of an element that also takes a body is ambiguous while
- * it is still open: no member commits it to being the member block, so a
- * statement stays possible and both sets are offered.
- */
-const BLOCK_OR_BODY: Item[] = [...STATEMENTS, ...PARAMETERS];
-
 /** The three ways a listener binds; also the whole listener parens. */
 const BINDINGS: Item[] = [
   ['class', SETTING, 'class: "${1:com.example.Delegate}"'],
@@ -559,7 +552,7 @@ const EXECUTION_EVENTS: Item[] = [listenerEvent('start'), listenerEvent('end')];
 const TASK_EVENTS: Item[] = [
   ...EXECUTION_EVENTS,
   listenerEvent('create'),
-  listenerEvent('assign'),
+  listenerEvent('assignment'),
   listenerEvent('complete'),
   listenerEvent('update'),
   listenerEvent('delete'),
@@ -807,13 +800,15 @@ describe('the completions offered at a caret', () => {
       'process p {\n  user T {\n    on create(class: "com.example.L") {\n      |\n    }\n  }\n}',
       [FIELD],
     ],
+    // The engine refuses a mapping on an event sub-process and a boundary
+    // event carries none, so neither handler form offers a parameter.
     [
-      'a host-less handler block offers parameters, which a boundary event has none of',
-      'process p {\n  start S\n  on error {\n    input x = 1\n    |\n  } {\n    end Failed\n  }\n}',
-      BLOCK_OR_BODY,
+      'a host-less handler block offers no parameter',
+      'process p {\n  start S\n  on error {\n    |\n  } {\n    end Failed\n  }\n}',
+      STATEMENTS,
     ],
     [
-      'a hosted handler lowers to a boundary event, so its block offers no parameter',
+      'a hosted handler block offers no parameter either',
       'process p {\n  user U\n  on U: error {\n    |\n  } {\n    end Failed\n  }\n}',
       STATEMENTS,
     ],
@@ -969,6 +964,11 @@ const FORM_REFERENCE_MODIFIERS = new Set(['binding', 'version']);
 const pinsAForm = ([label]: Item) => FORM_REFERENCE_MODIFIERS.has(label);
 const namesAForm = ([label]: Item) => label === 'formRef';
 
+/** The settings a decision step carries only beside `decision`, so their host binds one. */
+const DECISION_MODIFIERS = new Set(['binding', 'version', 'mapDecisionResult']);
+
+const pinsADecision = ([label]: Item) => DECISION_MODIFIERS.has(label);
+
 /**
  * The declaration a statement scaffold needs in the header. Every scaffold
  * writes its code as the same placeholder name, and a code reaches only the
@@ -1046,8 +1046,13 @@ describe('a scaffold parses and validates once accepted', () => {
     ),
     ...scaffolds(
       'the parens of a decision step',
-      DECIDE_PARENS.filter((item) => !binds(item)),
+      DECIDE_PARENS.filter((item) => !binds(item) && !pinsADecision(item)),
       (setting) => `process p {\n  decide D(topic: "t", ${setting})\n}`,
+    ),
+    ...scaffolds(
+      'the parens of a decision step',
+      DECIDE_PARENS.filter(pinsADecision),
+      (setting) => `process p {\n  decide D(decision: "d", ${setting})\n}`,
     ),
     ...scaffolds(
       'the parens of a decision step',

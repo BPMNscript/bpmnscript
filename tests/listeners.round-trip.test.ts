@@ -31,7 +31,7 @@ const EXPECTED_LISTENERS = [
   'ValidateClaim end expression=${auditTrail.close(execution)}',
   'AssessDamage start delegateExpression=${assessmentTracker}',
   'InspectVehicle create class=com.example.claims.NotifyAssessor',
-  'InspectVehicle assign expression=${assessorRoster.record(task)}',
+  'InspectVehicle assignment expression=${assessorRoster.record(task)}',
   'InspectVehicle complete delegateExpression=${assessmentRecorder}',
   `InspectVehicle update script=javascript ${JSON.stringify(SCRIPT_BODY)}`,
   'InspectVehicle delete class=com.example.claims.ReleaseAssessor',
@@ -165,10 +165,10 @@ describe("idempotence: DSL -> IR1 -> XML -> IR2 -> DSL' -> IR3", () => {
 });
 
 describe('golden generation: the pipeline output matches the frozen .bpmn', () => {
-  it('the timeout listener carries its timer as a bpmn:timerEventDefinition child', () => {
+  it('the timeout listener carries the id BpmnParse.parseTimeoutTaskListener requires and its timer as a bpmn:timerEventDefinition child', () => {
     expect(rt.frozenXml).toContain(
       [
-        '<operaton:taskListener event="timeout" delegateExpression="${assessmentEscalation}">',
+        '<operaton:taskListener id="InspectVehicle_timeout_1" event="timeout" delegateExpression="${assessmentEscalation}">',
         '  <bpmn:timerEventDefinition>',
         '    <bpmn:timeDuration xsi:type="bpmn:tFormalExpression">PT8H</bpmn:timeDuration>',
         '  </bpmn:timerEventDefinition>',

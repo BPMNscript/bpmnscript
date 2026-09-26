@@ -1,6 +1,9 @@
 // Exercises if/else, while, and parallel in a single process; see README.md.
 
 process structured-control-flow {
+  var priority: number
+  var retries: number
+
   start Begin
 
   user Triage(label: "Triage request", assignee: "demo")

@@ -35,10 +35,47 @@ export type ActionRun = {
 /** Either a source written into the temp dir, or a file already on disk. */
 export type Input = { text: string } | { file: string };
 
+export type ActionOptions = { output?: string; force?: boolean };
+
 type Action = (
   fileName: string,
-  opts: { output?: string },
+  opts: ActionOptions,
 ) => Promise<void | undefined>;
+
+/**
+ * Installs the same console/exit capture `run` uses, without owning a
+ * directory or picking paths: the guard tests below manage their own temp
+ * dir, since they need file layouts `run`'s fixed `input`/`output` names
+ * cannot express (a pre-existing output, `-o` equal to the input, a
+ * directory as either argument).
+ */
+async function capture(
+  invoke: () => Promise<void | undefined>,
+): Promise<Pick<ActionRun, 'exit' | 'stderr'>> {
+  const stderr: string[] = [];
+  const spies = [
+    vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => {
+      stderr.push(String(args[0]));
+    }),
+    vi.spyOn(console, 'log').mockImplementation(() => {}),
+    // Throws so the action stops where process.exit() would have. A no-op
+    // mock would let it fall through and keep running.
+    vi.spyOn(process, 'exit').mockImplementation((code?: unknown) => {
+      throw new ExitCalled(typeof code === 'number' ? code : 0);
+    }),
+  ];
+
+  let exit: number | undefined;
+  try {
+    await invoke();
+  } catch (err) {
+    if (!(err instanceof ExitCalled)) throw err;
+    exit = err.code;
+  } finally {
+    for (const spy of spies) spy.mockRestore();
+  }
+  return { exit, stderr };
+}
 
 async function run(
   action: Action,
@@ -55,28 +92,9 @@ async function run(
     }
     const outputPath = path.join(dir, `output${outputExt}`);
 
-    const stderr: string[] = [];
-    const spies = [
-      vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => {
-        stderr.push(String(args[0]));
-      }),
-      vi.spyOn(console, 'log').mockImplementation(() => {}),
-      // Throws so the action stops where process.exit() would have. A no-op
-      // mock would let it fall through and keep running.
-      vi.spyOn(process, 'exit').mockImplementation((code?: unknown) => {
-        throw new ExitCalled(typeof code === 'number' ? code : 0);
-      }),
-    ];
-
-    let exit: number | undefined;
-    try {
-      await action(inputPath, { output: outputPath });
-    } catch (err) {
-      if (!(err instanceof ExitCalled)) throw err;
-      exit = err.code;
-    } finally {
-      for (const spy of spies) spy.mockRestore();
-    }
+    const { exit, stderr } = await capture(() =>
+      action(inputPath, { output: outputPath }),
+    );
 
     return {
       exit,
@@ -89,6 +107,21 @@ async function run(
     await fsp.rm(dir, { recursive: true, force: true });
   }
 }
+
+/**
+ * Runs an action against a path the caller already put on disk, with the
+ * caller's own options, for the destructive-path guards: no path is
+ * invented or cleaned up here, so the test can assert on the exact file it
+ * set up (still present, overwritten, or written inside a directory).
+ */
+export const runActionAt = (
+  action: 'build' | 'parse',
+  inputPath: string,
+  opts: ActionOptions,
+): Promise<Pick<ActionRun, 'exit' | 'stderr'>> =>
+  capture(() =>
+    (action === 'build' ? buildAction : parseAction)(inputPath, opts),
+  );
 
 /** Compiles a `.bpmnscript` source to BPMN, as `bpmns build` does. */
 export const runBuild = (input: Input): Promise<ActionRun> =>

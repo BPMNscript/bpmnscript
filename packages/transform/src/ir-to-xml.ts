@@ -12,8 +12,9 @@
 
 import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { basename, dirname, extname, join } from 'node:path';
+import { dirname, join } from 'node:path';
 
+import { EXPRESSION_OPEN } from '@bpmn-script/language';
 import {
   BpmnModdle,
   type BpmnModdleInstance,
@@ -24,6 +25,7 @@ import {
 import { layoutProcess } from 'bpmn-auto-layout';
 
 import { humanize } from './humanize.js';
+import { LayoutError } from './errors.js';
 import { resolveCollision } from './synthesize-ids.js';
 import type {
   BpmnProcess,
@@ -54,12 +56,16 @@ import type {
 import {
   carriesFields,
   eventIdentities,
-  gatewayDefaultFlowId,
   isGateway,
   repeats,
 } from './ir/types.js';
 
-/** Opaque to Operaton; it never has to resolve. */
+/**
+ * `BpmnParse.parseDefinitionsAttributes` stores this as `this.targetNamespace`,
+ * `parseProcess` sets it as the process definition's category, and
+ * `resolveName` prefixes every unqualified message and signal id and ref with
+ * it. None of that dereferences it as a URI; the engine never fetches it.
+ */
 const TARGET_NAMESPACE = 'http://bpmnscript.io/processes';
 
 /**
@@ -98,11 +104,14 @@ function resolveOperatonModdlePath(): string {
  * Both directions of the XML boundary build their moddle here, so the read and
  * write paths stay symmetric.
  *
- * `camunda:` stays unregistered on purpose. `camunda-bpmn-moddle` defines the
- * same property names (`class`, `assignee`, `formKey`, `historyTimeToLive`) on
- * the same BPMN types as the Operaton fork, and moddle then refuses both with
- * `property <...> already defined; ... not allowed without redefines`. Reading
- * `camunda:*` needs no extension anyway: moddle falls through to `$attrs`.
+ * `camunda:` stays unregistered: the importer rewrites the camunda namespace
+ * URI to the operaton one before this moddle instance ever reads the text (see
+ * `xmlToIr`), so no camunda-bound element or attribute reaches `fromXML` under
+ * a foreign prefix at all. Registering `camunda-bpmn-moddle` here besides would
+ * collide: it defines the same property names (`class`, `assignee`, `formKey`,
+ * `historyTimeToLive`) on the same BPMN types as the Operaton fork, and moddle
+ * would refuse both with `property <...> already defined; ... not allowed
+ * without redefines`.
  */
 export function createModdle(): BpmnModdleInstance {
   return new BpmnModdle({
@@ -111,7 +120,6 @@ export function createModdle(): BpmnModdleInstance {
 }
 
 export interface IrToXmlOptions {
-  sourceFileName?: string;
   exporterVersion?: string;
 }
 
@@ -149,12 +157,9 @@ export async function irToXml(
   };
   const processElement = moddle.create('bpmn:Process', processAttrs);
 
-  const stem = options?.sourceFileName
-    ? basename(options.sourceFileName, extname(options.sourceFileName))
-    : process.id;
   const diagrams = buildSubProcessExpansionHint(moddle, processElement);
   const definitions = moddle.create('bpmn:Definitions', {
-    id: `Definitions_${stem}`,
+    id: resolveCollision(`Definitions_${process.id}`, roots.taken),
     targetNamespace: TARGET_NAMESPACE,
     exporter: 'BPMNscript',
     exporterVersion: options?.exporterVersion ?? '0.0.0',
@@ -172,20 +177,38 @@ export async function irToXml(
   // with its own formatting.
   const { xml } = await moddle.toXML(definitions, { format: true });
 
-  const xmlWithDi = await layoutProcess(xml);
+  // `bpmn-auto-layout` re-parses this string with `moddle.fromXML` internally
+  // and silently drops anything that draws a warning there (an illegal or
+  // duplicate id chief among them), serializing whatever survives with no
+  // indication that the document lost its process. Catching that here, before
+  // the layouter runs, turns a two-line output with exit 0 into a thrown error
+  // naming the actual defect.
+  const { warnings } = await createModdle().fromXML(xml);
+  if (warnings.length > 0) {
+    throw new Error(
+      `IR to XML produced a document bpmn-moddle cannot re-read: ${warnings[0]!.message}`,
+    );
+  }
 
-  return xmlWithDi;
+  try {
+    return await layoutProcess(xml);
+  } catch (cause) {
+    throw new LayoutError(xml, cause);
+  }
 }
 
 /**
  * BPMN puts these at `bpmn:Definitions` level, deduped by code or name, so one
- * identity maps to one element. Map order is emission order.
+ * identity maps to one element. Map order is emission order. `taken` is every
+ * id already in the document, so the `bpmn:Definitions` id itself can join the
+ * same collision check these roots use.
  */
 interface RootElementIndex {
   errorByCode: Map<string, ModdleElement>;
   escalationByCode: Map<string, ModdleElement>;
   messageByName: Map<string, ModdleElement>;
   signalByName: Map<string, ModdleElement>;
+  taken: Set<string>;
 }
 
 /**
@@ -261,7 +284,7 @@ function synthesizeRootElements(
     taken,
   );
 
-  return { errorByCode, escalationByCode, messageByName, signalByName };
+  return { errorByCode, escalationByCode, messageByName, signalByName, taken };
 }
 
 /** The name is the engine-side identity, so every use of it shares one root. */
@@ -336,16 +359,27 @@ function serviceTaskBindingAttrs(
 }
 
 /**
- * No code means no `errorRef`/`escalationRef`: a ref-less definition catches any.
- *
- * @param binding The implementation of a thrown message, which Operaton reads
- * off the definition rather than off the event.
+ * What Operaton reads off the definition rather than off the event that owns
+ * it. Both fields are the owner's own, passed through so the node stays the
+ * one place a setting is stored.
  */
+interface DefinitionOwner {
+  /** The implementation of a thrown message. */
+  binding?: ServiceTaskBinding;
+  /**
+   * The timer job's lock, which `BpmnParse.parseTimer` takes from
+   * `operaton:exclusive` on the definition. The same attribute on the event
+   * tag reaches only the async continuation job.
+   */
+  exclusive?: false;
+}
+
+/** No code means no `errorRef`/`escalationRef`: a ref-less definition catches any. */
 function buildEventDefinition(
   moddle: BpmnModdleInstance,
   def: EventDefinition,
   roots: RootElementIndex,
-  binding?: ServiceTaskBinding,
+  owner: DefinitionOwner = {},
 ): ModdleElement {
   switch (def.kind) {
     case 'error': {
@@ -374,7 +408,9 @@ function buildEventDefinition(
     case 'message':
       return moddle.create('bpmn:MessageEventDefinition', {
         messageRef: roots.messageByName.get(def.messageName),
-        ...(binding === undefined ? {} : serviceTaskBindingAttrs(binding)),
+        ...(owner.binding === undefined
+          ? {}
+          : serviceTaskBindingAttrs(owner.binding)),
       });
     case 'signal':
       return moddle.create('bpmn:SignalEventDefinition', {
@@ -388,6 +424,7 @@ function buildEventDefinition(
       });
       return moddle.create('bpmn:TimerEventDefinition', {
         [TIMER_KIND_TO_CHILD[def.timerKind]]: expression,
+        ...(owner.exclusive === false ? { 'operaton:exclusive': false } : {}),
       });
     }
     case 'conditional':
@@ -417,11 +454,11 @@ function eventDefinitionAttrs(
   moddle: BpmnModdleInstance,
   def: EventDefinition | undefined,
   roots: RootElementIndex,
-  binding?: ServiceTaskBinding,
+  owner: DefinitionOwner,
 ): Record<string, unknown> {
   return def === undefined
     ? {}
-    : { eventDefinitions: [buildEventDefinition(moddle, def, roots, binding)] };
+    : { eventDefinitions: [buildEventDefinition(moddle, def, roots, owner)] };
 }
 
 /** Read back by the import direction, which inverts it. */
@@ -508,7 +545,7 @@ function buildContainerChildren(
   }
 
   attachIncomingOutgoing(container, flowNodeById, sequenceFlowById);
-  attachGatewayDefaults(container, flowNodeById, sequenceFlowById);
+  attachDefaultFlows(container, flowNodeById, sequenceFlowById);
   attachBoundaryHosts(container, flowNodeById);
 
   return [
@@ -535,7 +572,7 @@ function createFlowNode(
     case 'startEvent': {
       const attrs: Record<string, unknown> = {
         ...baseAttrs,
-        ...eventDefinitionAttrs(moddle, node.eventDefinition, roots),
+        ...eventDefinitionAttrs(moddle, node.eventDefinition, roots, node),
         ...(node.initiator !== undefined
           ? { 'operaton:initiator': node.initiator }
           : {}),
@@ -550,36 +587,26 @@ function createFlowNode(
     case 'endEvent':
       return moddle.create('bpmn:EndEvent', {
         ...baseAttrs,
-        ...eventDefinitionAttrs(
-          moddle,
-          node.eventDefinition,
-          roots,
-          node.binding,
-        ),
+        ...eventDefinitionAttrs(moddle, node.eventDefinition, roots, node),
       });
 
     case 'intermediateThrowEvent':
       return moddle.create('bpmn:IntermediateThrowEvent', {
         ...baseAttrs,
-        ...eventDefinitionAttrs(
-          moddle,
-          node.eventDefinition,
-          roots,
-          node.binding,
-        ),
+        ...eventDefinitionAttrs(moddle, node.eventDefinition, roots, node),
       });
 
     case 'intermediateCatchEvent':
       return moddle.create('bpmn:IntermediateCatchEvent', {
         ...baseAttrs,
-        ...eventDefinitionAttrs(moddle, node.eventDefinition, roots),
+        ...eventDefinitionAttrs(moddle, node.eventDefinition, roots, node),
       });
 
     case 'boundaryEvent': {
       // `attachedToRef` is wired later, by `attachBoundaryHosts`.
       const attrs: Record<string, unknown> = {
         ...baseAttrs,
-        ...eventDefinitionAttrs(moddle, node.eventDefinition, roots),
+        ...eventDefinitionAttrs(moddle, node.eventDefinition, roots, node),
       };
       // BPMN defaults to interrupting, and the serializer drops a default.
       if (node.cancelActivity === false) {
@@ -939,7 +966,8 @@ function buildExtensionElements(
   // (`operaton:class`/`operaton:delegateExpression`), so it precedes even the
   // io-parameter block. Only a serviceTask-like tag has that implementation
   // slot; a thrown or emitted message's binding lives on its message
-  // definition instead, which carries no field slot of its own (ADR 0032).
+  // definition instead, which the language keeps no member block for
+  // (ADR 0032), so no field is ever written there.
   if (node.kind === 'serviceTask') {
     for (const field of codeBindingFields(node.binding)) {
       values.push(buildField(moddle, field));
@@ -950,9 +978,11 @@ function buildExtensionElements(
     values.push(inputOutput);
   }
   // A thrown message's binding lives on its `bpmn:MessageEventDefinition`
-  // (`serviceTaskBindingAttrs`, called from `buildEventDefinition`), which has
-  // no `extensionElements` of its own to carry a property list or a mapping
-  // into; only a serviceTask-like tag reaches here with one.
+  // (`serviceTaskBindingAttrs`, called from `buildEventDefinition`). The
+  // engine reads a mapping off that definition and a property list off the
+  // event (`BpmnParse.parseServiceTaskLike` is handed both), but the language
+  // has no position for either on a throw, so none is written; only a
+  // serviceTask-like tag reaches here with one.
   if (node.kind === 'serviceTask' && node.binding.kind === 'external') {
     if (node.binding.properties !== undefined) {
       values.push(buildProperties(moddle, node.binding.properties, 'name'));
@@ -973,9 +1003,19 @@ function buildExtensionElements(
     );
   }
   if (node.kind === 'userTask') {
+    // `BpmnParse.parseTimeoutTaskListener` refuses a timeout listener with no
+    // id, the key `TaskDefinition.addTimeoutTaskListener` stores it under, so
+    // each gets one minted here; the importer drops it and this re-mints it.
+    let timeouts = 0;
     for (const listener of node.taskListeners ?? []) {
+      let id: string | undefined;
+      if (listener.event === 'timeout') {
+        timeouts += 1;
+        id = resolveCollision(`${node.id}_timeout_${timeouts}`, roots.taken);
+        roots.taken.add(id);
+      }
       values.push(
-        buildListener(moddle, 'operaton:TaskListener', listener, roots),
+        buildListener(moddle, 'operaton:TaskListener', listener, roots, id),
       );
     }
   }
@@ -1079,9 +1119,10 @@ function codeBindingFields(
 
 /**
  * One `operaton:field`. `stringValue` is injected into the bean verbatim;
- * `expression` is evaluated per instantiation. The moddle declares
- * `expression` as a non-attribute String, so it serializes as a child rather
- * than an attribute, which is what lets the two slots share one DSL spelling.
+ * `expression` is evaluated per instantiation, and a value opening with `${`
+ * or `#{` lands there. The moddle declares `expression` as a non-attribute
+ * String, so it serializes as a child rather than an attribute, which is what
+ * lets the two slots share one DSL spelling.
  */
 function buildField(
   moddle: BpmnModdleInstance,
@@ -1089,7 +1130,7 @@ function buildField(
 ): ModdleElement {
   return moddle.create('operaton:Field', {
     name: field.name,
-    ...(field.value.startsWith('${')
+    ...(EXPRESSION_OPEN.test(field.value)
       ? { expression: field.value }
       : { stringValue: field.value }),
   });
@@ -1101,9 +1142,11 @@ function buildListener(
   type: 'operaton:ExecutionListener' | 'operaton:TaskListener',
   listener: ExecutionListener | TaskListener,
   roots: RootElementIndex,
+  id?: string,
 ): ModdleElement {
   const fields = codeBindingFields(listener.binding);
   const attrs: Record<string, unknown> = {
+    ...(id !== undefined ? { id } : {}),
     event: listener.event,
     ...listenerBindingAttrs(moddle, listener.binding),
     ...(fields.length > 0
@@ -1300,8 +1343,12 @@ function callMappingAttrs(
   return attrs;
 }
 
-/** `${amount > 1000}` -> `amount > 1000`. Anything undelimited passes through. */
-function conditionLabel(conditionExpression: string): string {
+/**
+ * `${amount > 1000}` -> `amount > 1000`. Anything undelimited passes through.
+ * The import reads a flow's `name` against the same rule, so a name this
+ * would write back is not reported as lost.
+ */
+export function conditionLabel(conditionExpression: string): string {
   return conditionExpression.replace(/^\$\{([\s\S]*)\}$/, '$1');
 }
 
@@ -1363,24 +1410,28 @@ function attachIncomingOutgoing(
   }
 }
 
-/** `bpmn:default` holds a moddle-element reference, not the raw id. */
-function attachGatewayDefaults(
+/**
+ * `bpmn:default` holds a moddle-element reference, not the raw id. The two
+ * split kinds and every activity kind carry one; `defaultFlowId` is the only
+ * key of that name, so its presence is the whole question.
+ */
+function attachDefaultFlows(
   container: FlowContainer,
   flowNodeById: Map<string, ModdleElement>,
   sequenceFlowById: Map<string, ModdleElement>,
 ): void {
   for (const node of container.flowElements) {
-    if (!isGateway(node)) continue;
-    const defaultFlowId = gatewayDefaultFlowId(node);
+    const defaultFlowId =
+      'defaultFlowId' in node ? node.defaultFlowId : undefined;
     if (defaultFlowId === undefined) continue;
-    const gateway = requireById(flowNodeById, node.id);
+    const owner = requireById(flowNodeById, node.id);
     const defaultFlow = sequenceFlowById.get(defaultFlowId);
     if (defaultFlow === undefined) {
       throw new Error(
         `${node.kind} "${node.id}" declares default flow "${defaultFlowId}" that does not exist.`,
       );
     }
-    gateway.default = defaultFlow;
+    owner.default = defaultFlow;
   }
 }
 

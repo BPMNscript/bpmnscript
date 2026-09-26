@@ -73,5 +73,7 @@ A parameterized sweep on the import hop and one on the print hop each name every
 
 Amends ADR-0014, whose warned-construct list read `bpmn:documentation` on any element; the bullet now names the narrower set this decision leaves warned.
 
+Amended by ADR-0044, under which the raw reader resolves the string escapes as a literal's reader does, so `quote()` escapes the same five characters as `quoteLiteral()` and the split between the two rests on the leading opener alone.
+
 Related decisions: ADR-0029 (the bracket shape that keeps documentation a setting rather than a construct).
 ADR-0030 (the declared-name rule that puts an error or escalation code on the same quoting side as documentation).

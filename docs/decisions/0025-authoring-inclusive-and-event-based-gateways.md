@@ -66,11 +66,11 @@ process expense-approval {
 }
 ```
 
-Operaton takes every non-default flow that has no condition or a true one (`InclusiveGatewayActivityBehavior.java:64-68`), and adds the default only when that set comes out empty (lines 71-83).
+Operaton takes every non-default flow that has no condition or a true one, and adds the default only when that set comes out empty (`InclusiveGatewayActivityBehavior.execute`).
 The default flow is always emitted and never asked for.
 With an `else` it points at that branch; without one it goes straight to the join, the rule `lowerIf` already applies at the same position (`packages/transform/src/ast-to-ir.ts`).
-That is a lowering rule rather than a validator rule because `parseInclusiveGateway` validates nothing (`BpmnParse.java:2105-2117`).
-An all-conditional gateway without a default deploys, runs, then throws a stuck execution when nothing matches (`InclusiveGatewayActivityBehavior.java:71-75`).
+That is a lowering rule rather than a validator rule because `BpmnParse.parseInclusiveGateway` validates nothing.
+An all-conditional gateway without a default deploys, runs, then throws a stuck execution when nothing matches (`InclusiveGatewayActivityBehavior.execute`).
 A branch carrying no condition is in the taken set every time, which is why an `else` written beside one is rejected: the set never comes out empty and the fallback behind the `else` never runs.
 
 The race is a multi-branch `await`.
@@ -87,11 +87,11 @@ process order-shipping {
 
 A branch is a trigger header in the payload grammar `on` and `await` share, its settings, then the body.
 Two branches are the minimum, enforced by the grammar as `ParallelStatement` already does (`bpmn-script.langium`).
-The triggers are the four `await` already takes, which is also everything Operaton accepts in this position (`BpmnParse.java:1549-1594`).
+The triggers are the four `await` already takes, which is also everything Operaton accepts in this position (`BpmnParse.parseIntermediateCatchEvent`).
 Reusing the word costs nothing, because `await {` cannot parse today: the `IntermediateCatchEvent` shape takes a trigger word after the keyword (`bpmn-script.langium`).
 
 The race falls through to a synthesized exclusive join, reusing `if`'s join and its pruning when every branch terminates (`pruneUnreachableJoin`, `ast-to-ir.ts`).
-Operaton gives every catch event behind an event-based gateway the start behavior `CANCEL_EVENT_SCOPE` (`BpmnParse.java:1564-1566`), so exactly one branch of a race ever runs.
+Operaton gives every catch event behind an event-based gateway the start behavior `CANCEL_EVENT_SCOPE` (`BpmnParse.parseIntermediateCatchEvent`), so exactly one branch of a race ever runs.
 
 An inclusive pair reuses `Gateway_<X>_fork` and `Gateway_<X>_join` unchanged, since exactly one `parallel` statement sits at any structural coordinate.
 The race adds one template, `Gateway_<X>_race`, whose segment word joins the reserved-name pattern.
@@ -108,9 +108,9 @@ Both gateways move from a blanket refusal to a carry.
 An inclusive gateway carries with no exceptions, reading `name` and `default`, because Operaton refuses nothing about it.
 An event-based gateway carries, refusing three shapes, each following a refusal in Operaton's own parser:
 
-- an outgoing flow whose target is not a `bpmn:intermediateCatchEvent` (`BpmnParse.java:2162`)
-- a downstream catch carrying a link definition (`BpmnParse.java:1583-1585`), which `mapIntermediateCatchEvent` turns away wherever a link appears, so the gateway needs no rule of its own for it
-- a downstream catch reached by more than one path (`BpmnParse.java:4371-4377`), counted over every path in
+- an outgoing flow whose target is not a `bpmn:intermediateCatchEvent` (`BpmnParse.parseEventBasedGateway`)
+- a downstream catch carrying a link definition (`BpmnParse.parseIntermediateCatchEvent`), which `mapIntermediateCatchEvent` turns away wherever a link appears, so the gateway needs no rule of its own for it
+- a downstream catch reached by more than one path (`BpmnParse.parseSequenceFlow`), counted over every path in
 
 The last is wider than the engine's rule: Operaton lets a path through where it leaves an event-based gateway, so it takes a catch reached only by such paths, and this refuses that too.
 Neither that shape nor the one Operaton refuses is authorable, so the extra width costs no script anything.
@@ -125,7 +125,7 @@ Since ADR-0040 a multi-branch `await` head takes the gateway's job settings, so 
 - Bad, because a conditioned `parallel` reads as one construct but compiles to either of two BPMN elements, so a BPMN-literate reader must read every branch.
 - Bad, because `irToDsl` changes its return shape, touching every call site, and the drop that motivated it costs the reader a gateway's name rather than anything the process does.
 - Bad, because the label comes back on a BPMN-to-BPMN pass but never on a BPMN-to-DSL one, so a decompiled and recompiled document loses every gateway label.
-- Bad, because a conditional branch of a race can win without waiting (`EventBasedGatewayActivityBehavior.java:30-46`), which no part of the surface shows.
+- Bad, because a conditional branch of a race can win without waiting (`EventBasedGatewayActivityBehavior.execute`), which no part of the surface shows.
 - Bad, because an inclusive fork closed on an exclusive merge, the common hand-drawn shape, degrades to `goto`s a reader repairs by hand.
 
 ### Confirmation
@@ -159,7 +159,7 @@ A Docker-gated end-to-end test shows the losing race branch canceled and the inc
 Related decisions: ADR-0008 and ADR-0013 set the surface and its two rules, ADR-0009 gains an inclusive pattern and a race pattern, and ADR-0010 gains one id template.
 ADR-0014 supplies the import contract extended here to the print hop, ADR-0016 the soft trigger words, and ADR-0017 the payload surface a race branch header reuses.
 ADR-0019 supplies the live-parser method, and ADR-0020 the keyword and trigger scope the race inherits.
-Operaton behavior was read from `BpmnParse.java`, `InclusiveGatewayActivityBehavior.java`, and `EventBasedGatewayActivityBehavior.java` in the `operaton/operaton` repository, with line numbers as of the time of writing.
+Operaton behavior was read from `BpmnParse.java`, `InclusiveGatewayActivityBehavior.java`, and `EventBasedGatewayActivityBehavior.java` in the `operaton/operaton` repository.
 The documented restrictions are from <https://docs.operaton.org/docs/documentation/reference/bpmn20/gateways/event-based-gateway/>.
 The dataset behind Compagnucci, Corradini, Fornari and Re (BISE 66(1), 2024, DOI 10.1007/s12599-023-00818-7) has an event-based gateway in roughly 12 percent of its 38,863 models and an inclusive gateway in roughly 6 percent.
 
@@ -167,3 +167,5 @@ Amended by ADR-0035, which admits a link definition on an intermediate catch and
 The event-based gateway's second refusal now rests on the rule that no sequence flow may enter a link catch, which the importer enforces for every flow and so for a branch of a wait as well.
 
 Amended by ADR-0040, which gives every gateway synthesized here a settings parens on its statement head, so a multi-branch `await` now refuses `asyncAfter` by validation rather than by having nothing to write it on.
+
+Amended by ADR-0045, which reserves the inclusive fork's default flow only beside an `else` or when every branch is conditioned; beside an unheaded branch, which the engine takes every time, none is written.

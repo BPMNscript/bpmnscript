@@ -163,11 +163,20 @@ describe('a gateway written without settings gains none at any hop', () => {
 });
 
 describe('where a handler puts the settings written on it', () => {
-  it("a hosted handler's settings land on the boundary event", () => {
+  // The lock is written twice on purpose: `BpmnParse.parseTimer` reads it
+  // off the definition for the timer job, `parseAsynchronousContinuation` off
+  // the tag for the asyncAfter job.
+  it("a hosted handler's settings land on the boundary event, its lock on the timer definition too", () => {
     const boundary = theOnly(rt.ir2, 'boundaryEvent');
     expect(boundary.attachedToRef).toBe('ApprovePayout');
     expect(boundary.asyncAfter).toBe(true);
     expect(boundary.exclusive).toBe(false);
+    expect(rt.frozenXml).toContain(
+      '<bpmn:boundaryEvent id="Boundary_ApprovePayout_timer" cancelActivity="false"' +
+        ' attachedToRef="ApprovePayout" operaton:asyncAfter="true" operaton:exclusive="false">\n' +
+        '      <bpmn:outgoing>Flow_Boundary_ApprovePayout_timer_NudgeApprover</bpmn:outgoing>\n' +
+        '      <bpmn:timerEventDefinition operaton:exclusive="false">',
+    );
   });
 
   it("a host-less handler's settings land on the event sub-process, not on its trigger", () => {

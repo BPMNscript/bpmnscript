@@ -11,8 +11,9 @@
 //     Every sibling of an `else` carries a condition, because a branch without
 //     one is always taken and would leave the fallback nothing to pick up;
 //   - the second `parallel` leaves the fallback out. Customs paperwork is
-//     prepared only for an overseas parcel and the label is always printed, so
-//     the default flow runs straight to the join and the source never shows it;
+//     prepared only for an overseas parcel and the label is always printed;
+//     the unconditioned branch always keeps a token arriving at the join, so
+//     the fork reserves no default flow at all;
 //   - the third `parallel` weighs nothing, so both branches always run and the
 //     pair stays an AND fork and join;
 //   - the first `await` block races the settled payment against a three-day

@@ -11,6 +11,7 @@ import {
   xmlToIr,
   irToDsl,
   UnsupportedConstructError,
+  LayoutError,
 } from '@bpmn-script/transform';
 import type { ImportWarning, PrintWarning } from '@bpmn-script/transform';
 
@@ -26,7 +27,7 @@ export interface ConvDiagnostic {
 }
 
 export type CompileResult =
-  | { ok: true; output: string }
+  | { ok: true; output: string; layoutWarning?: string }
   | { ok: false; kind: 'validation'; diagnostics: ConvDiagnostic[] }
   | { ok: false; kind: 'error'; message: string };
 
@@ -44,7 +45,6 @@ let nextDocId = 0;
 
 export async function compileDslToBpmn(
   source: string,
-  sourceFileName: string,
   exporterVersion: string,
 ): Promise<CompileResult> {
   const uri = URI.parse(`memory:///conv-${nextDocId++}.bpmnscript`);
@@ -89,17 +89,27 @@ export async function compileDslToBpmn(
     }
 
     let output;
+    let layoutWarning: string | undefined;
     try {
-      output = await irToXml(ir, { sourceFileName, exporterVersion });
+      output = await irToXml(ir, { exporterVersion });
     } catch (err) {
-      return {
-        ok: false,
-        kind: 'error',
-        message: `IR to XML conversion failed: ${(err as Error).message}`,
-      };
+      if (err instanceof LayoutError) {
+        output = err.xml;
+        layoutWarning = err.message;
+      } else {
+        return {
+          ok: false,
+          kind: 'error',
+          message: `IR to XML conversion failed: ${(err as Error).message}`,
+        };
+      }
     }
 
-    return { ok: true, output };
+    return {
+      ok: true,
+      output,
+      ...(layoutWarning !== undefined ? { layoutWarning } : {}),
+    };
   } catch (err) {
     return {
       ok: false,
@@ -113,7 +123,6 @@ export async function compileDslToBpmn(
 
 export async function decompileBpmnToDsl(
   xml: string,
-  _sourceFileName: string, // unused; keeps the signature parallel to compile
 ): Promise<DecompileResult> {
   let ir;
   let warnings: ImportWarning[];

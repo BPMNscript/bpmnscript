@@ -64,9 +64,23 @@ declare module 'saxen' {
     getContext: () => ParseContext,
   ) => void;
 
+  /** Raw text between tags, entities still encoded; `decodeEntities` resolves them. */
+  export type TextHandler = (
+    value: string,
+    decodeEntities: (text: string) => string,
+    getContext: () => ParseContext,
+  ) => void;
+
+  export type CDataHandler = (
+    value: string,
+    getContext: () => ParseContext,
+  ) => void;
+
   export class Parser {
     on(event: 'openTag', handler: OpenTagHandler): void;
     on(event: 'closeTag', handler: CloseTagHandler): void;
+    on(event: 'text', handler: TextHandler): void;
+    on(event: 'cdata', handler: CDataHandler): void;
     parse(xml: string): void;
   }
 }

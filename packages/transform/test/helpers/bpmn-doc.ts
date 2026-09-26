@@ -52,7 +52,7 @@ export const dualDefs = wrap(HEAD_DUAL, DEFINITIONS_CLOSE);
 
 export const bpmnDoc = doc(HEAD_BPMN);
 export const operatonDoc = doc(HEAD_OPERATON);
-/** Declares only the deprecated `camunda:` prefix, for the alias fixtures. */
+/** Declares the camunda namespace (every Camunda Modeler export), which `xmlToIr` reads as operaton:. */
 export const camundaDoc = doc(HEAD_CAMUNDA);
 /** Declares both prefixes, for fixtures that write one against the other. */
 export const dualDoc = doc(HEAD_DUAL);

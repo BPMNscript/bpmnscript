@@ -92,3 +92,5 @@ The round-trip normalizer (`tests/helpers/normalize-ir.ts`) uses the id patterns
 The id templates are frozen, because they are consumed by `astToIr`, `irToDsl`, and the round-trip normalizer.
 Any change requires updating all three consumers and regenerating the `invoice-approval-generated.bpmn` golden file.
 The frozen contract is documented in the header of `packages/transform/src/synthesize-ids.ts`.
+
+Amended by ADR-0050, which narrows the reserved `StartEvent_*` and `EndEvent_*` patterns to the exact `StartEvent_<container>` and `EndEvent_<container>` the desugarer mints, and respells an id the script cannot spell on print.

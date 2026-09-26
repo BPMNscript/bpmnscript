@@ -9,6 +9,7 @@ import { caughtBindingsOf } from './paren-items.js';
 import {
   FIELD_DIRECTION,
   formFieldVariableType,
+  LOOP_VARIABLES,
   PROPERTY_DIRECTION,
 } from './vocabulary.js';
 import {
@@ -49,18 +50,6 @@ export function isRepeated(node: AstNode): node is AstNode & RepeatSlots {
     ('collection' in node && node.collection !== undefined)
   );
 }
-
-/**
- * The variables Operaton sets around a repeated step: three counters on the
- * repetition and `loopCounter` on each run (`MultiInstanceActivityBehavior`).
- * They exist undeclared, so a process that repeats anything gets them in scope.
- */
-const LOOP_VARIABLES = [
-  'nrOfInstances',
-  'nrOfActiveInstances',
-  'nrOfCompletedInstances',
-  'loopCounter',
-] as const;
 
 export class DefaultVariableSymbolProvider implements VariableSymbolProvider {
   collect(process: Process): VariableTable {

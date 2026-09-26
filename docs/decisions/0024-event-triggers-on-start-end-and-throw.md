@@ -145,6 +145,8 @@ ADR-0026 (task kinds on the authoring surface) supersedes the message-throw impl
 
 Amended by ADR-0034, which lifts the one-start-per-container rule for a process body and leaves it standing for a subprocess, a transaction, and an event handler.
 
+Amended by ADR-0044, which lifts the lexical refusal of a message or signal name opening with `${`; the refusal of an expression on a message start stays, for the engine's reason.
+
 Related decisions: ADR-0016 (soft trigger words and the `throw`/`emit` terminality rule).
 ADR-0017 (the payload surfaces the four start triggers reuse, including the timer mapping).
 ADR-0014 (the honest import contract behind every refusal here).

@@ -1,0 +1,153 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI" xmlns:dc="http://www.omg.org/spec/DD/20100524/DC" xmlns:di="http://www.omg.org/spec/DD/20100524/DI" xmlns:operaton="http://operaton.org/schema/1.0/bpmn" id="Definitions_invoice-review" targetNamespace="http://bpmnscript.io/processes" exporter="BPMNscript" exporterVersion="0.0.0">
+  <bpmn:process id="invoice-review" name="Invoice Review" isExecutable="true" operaton:historyTimeToLive="P30D">
+    <bpmn:startEvent id="InvoiceReceived">
+      <bpmn:outgoing>Flow_InvoiceReceived_ApproveInvoice</bpmn:outgoing>
+    </bpmn:startEvent>
+    <bpmn:userTask id="ApproveInvoice" name="Approve Invoice" operaton:assignee="demo">
+      <bpmn:incoming>Flow_Gateway_invoice-review_1_loop_ApproveInvoice</bpmn:incoming>
+      <bpmn:incoming>Flow_InvoiceReceived_ApproveInvoice</bpmn:incoming>
+      <bpmn:outgoing>Flow_ApproveInvoice_Gateway_invoice-review_1_1_split</bpmn:outgoing>
+    </bpmn:userTask>
+    <bpmn:exclusiveGateway id="Gateway_invoice-review_1_1_split" default="Flow_Gateway_invoice-review_1_1_split_default">
+      <bpmn:incoming>Flow_ApproveInvoice_Gateway_invoice-review_1_1_split</bpmn:incoming>
+      <bpmn:outgoing>Flow_Gateway_invoice-review_1_1_split_PrepareBankTransfer</bpmn:outgoing>
+      <bpmn:outgoing>Flow_Gateway_invoice-review_1_1_split_ReviewInvoice</bpmn:outgoing>
+      <bpmn:outgoing>Flow_Gateway_invoice-review_1_1_split_default</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+    <bpmn:exclusiveGateway id="Gateway_invoice-review_1_1_join">
+      <bpmn:incoming>Flow_ReviewInvoice_Gateway_invoice-review_1_1_join</bpmn:incoming>
+      <bpmn:incoming>Flow_Gateway_invoice-review_1_1_split_default</bpmn:incoming>
+      <bpmn:outgoing>Flow_Gateway_invoice-review_1_1_join_Gateway_invoice-review_1_loop</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+    <bpmn:callActivity id="ReviewInvoice" name="Review Invoice" calledElement="ReviewInvoice">
+      <bpmn:extensionElements>
+        <operaton:in source="invoiceDocument" target="invoiceDocument" />
+        <operaton:out source="clarified" target="clarified" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_Gateway_invoice-review_1_1_split_ReviewInvoice</bpmn:incoming>
+      <bpmn:outgoing>Flow_ReviewInvoice_Gateway_invoice-review_1_1_join</bpmn:outgoing>
+    </bpmn:callActivity>
+    <bpmn:exclusiveGateway id="Gateway_invoice-review_1_loop" default="Flow_Gateway_invoice-review_1_loop_default">
+      <bpmn:incoming>Flow_Gateway_invoice-review_1_1_join_Gateway_invoice-review_1_loop</bpmn:incoming>
+      <bpmn:outgoing>Flow_Gateway_invoice-review_1_loop_ApproveInvoice</bpmn:outgoing>
+      <bpmn:outgoing>Flow_Gateway_invoice-review_1_loop_default</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+    <bpmn:endEvent id="InvoiceNotProcessed" name="Invoice not processed">
+      <bpmn:incoming>Flow_Gateway_invoice-review_1_loop_default</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:userTask id="PrepareBankTransfer" name="Prepare Bank Transfer" operaton:candidateGroups="accounting">
+      <bpmn:incoming>Flow_Gateway_invoice-review_1_1_split_PrepareBankTransfer</bpmn:incoming>
+      <bpmn:outgoing>Flow_PrepareBankTransfer_ArchiveInvoice</bpmn:outgoing>
+    </bpmn:userTask>
+    <bpmn:serviceTask id="ArchiveInvoice" name="Archive Invoice" operaton:class="org.operaton.bpm.example.invoice.service.ArchiveInvoiceService">
+      <bpmn:incoming>Flow_PrepareBankTransfer_ArchiveInvoice</bpmn:incoming>
+      <bpmn:outgoing>Flow_ArchiveInvoice_InvoiceProcessed</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:endEvent id="InvoiceProcessed" name="Invoice processed">
+      <bpmn:incoming>Flow_ArchiveInvoice_InvoiceProcessed</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:sequenceFlow id="Flow_Gateway_invoice-review_1_1_split_PrepareBankTransfer" name="approved" sourceRef="Gateway_invoice-review_1_1_split" targetRef="PrepareBankTransfer">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">${approved}</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="Flow_Gateway_invoice-review_1_1_split_ReviewInvoice" name="!approved" sourceRef="Gateway_invoice-review_1_1_split" targetRef="ReviewInvoice">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">${!approved}</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="Flow_ReviewInvoice_Gateway_invoice-review_1_1_join" sourceRef="ReviewInvoice" targetRef="Gateway_invoice-review_1_1_join" />
+    <bpmn:sequenceFlow id="Flow_Gateway_invoice-review_1_1_split_default" sourceRef="Gateway_invoice-review_1_1_split" targetRef="Gateway_invoice-review_1_1_join" />
+    <bpmn:sequenceFlow id="Flow_ApproveInvoice_Gateway_invoice-review_1_1_split" sourceRef="ApproveInvoice" targetRef="Gateway_invoice-review_1_1_split" />
+    <bpmn:sequenceFlow id="Flow_Gateway_invoice-review_1_1_join_Gateway_invoice-review_1_loop" sourceRef="Gateway_invoice-review_1_1_join" targetRef="Gateway_invoice-review_1_loop" />
+    <bpmn:sequenceFlow id="Flow_Gateway_invoice-review_1_loop_ApproveInvoice" name="clarified" sourceRef="Gateway_invoice-review_1_loop" targetRef="ApproveInvoice">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">${clarified}</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="Flow_InvoiceReceived_ApproveInvoice" sourceRef="InvoiceReceived" targetRef="ApproveInvoice" />
+    <bpmn:sequenceFlow id="Flow_Gateway_invoice-review_1_loop_default" sourceRef="Gateway_invoice-review_1_loop" targetRef="InvoiceNotProcessed" />
+    <bpmn:sequenceFlow id="Flow_PrepareBankTransfer_ArchiveInvoice" sourceRef="PrepareBankTransfer" targetRef="ArchiveInvoice" />
+    <bpmn:sequenceFlow id="Flow_ArchiveInvoice_InvoiceProcessed" sourceRef="ArchiveInvoice" targetRef="InvoiceProcessed" />
+  </bpmn:process>
+  <bpmndi:BPMNDiagram id="BPMNDiagram_invoice-review">
+    <bpmndi:BPMNPlane id="BPMNPlane_invoice-review" bpmnElement="invoice-review">
+      <bpmndi:BPMNShape id="InvoiceReceived_di" bpmnElement="InvoiceReceived">
+        <dc:Bounds x="57" y="52" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="ApproveInvoice_di" bpmnElement="ApproveInvoice">
+        <dc:Bounds x="175" y="30" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_invoice-review_1_1_split_di" bpmnElement="Gateway_invoice-review_1_1_split" isMarkerVisible="true">
+        <dc:Bounds x="350" y="45" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="PrepareBankTransfer_di" bpmnElement="PrepareBankTransfer">
+        <dc:Bounds x="475" y="30" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="ArchiveInvoice_di" bpmnElement="ArchiveInvoice">
+        <dc:Bounds x="625" y="30" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="InvoiceProcessed_di" bpmnElement="InvoiceProcessed">
+        <dc:Bounds x="807" y="52" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="ReviewInvoice_di" bpmnElement="ReviewInvoice">
+        <dc:Bounds x="475" y="170" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_invoice-review_1_1_join_di" bpmnElement="Gateway_invoice-review_1_1_join" isMarkerVisible="true">
+        <dc:Bounds x="650" y="185" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_invoice-review_1_loop_di" bpmnElement="Gateway_invoice-review_1_loop" isMarkerVisible="true">
+        <dc:Bounds x="800" y="185" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="InvoiceNotProcessed_di" bpmnElement="InvoiceNotProcessed">
+        <dc:Bounds x="957" y="192" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_InvoiceReceived_ApproveInvoice_di" bpmnElement="Flow_InvoiceReceived_ApproveInvoice">
+        <di:waypoint x="93" y="70" />
+        <di:waypoint x="175" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ApproveInvoice_Gateway_invoice-review_1_1_split_di" bpmnElement="Flow_ApproveInvoice_Gateway_invoice-review_1_1_split">
+        <di:waypoint x="275" y="70" />
+        <di:waypoint x="350" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Gateway_invoice-review_1_1_split_PrepareBankTransfer_di" bpmnElement="Flow_Gateway_invoice-review_1_1_split_PrepareBankTransfer">
+        <di:waypoint x="400" y="70" />
+        <di:waypoint x="475" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Gateway_invoice-review_1_1_split_ReviewInvoice_di" bpmnElement="Flow_Gateway_invoice-review_1_1_split_ReviewInvoice">
+        <di:waypoint x="375" y="95" />
+        <di:waypoint x="375" y="210" />
+        <di:waypoint x="475" y="210" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Gateway_invoice-review_1_1_split_default_di" bpmnElement="Flow_Gateway_invoice-review_1_1_split_default">
+        <di:waypoint x="400" y="70" />
+        <di:waypoint x="450" y="70" />
+        <di:waypoint x="450" y="140" />
+        <di:waypoint x="600" y="140" />
+        <di:waypoint x="600" y="210" />
+        <di:waypoint x="650" y="210" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_PrepareBankTransfer_ArchiveInvoice_di" bpmnElement="Flow_PrepareBankTransfer_ArchiveInvoice">
+        <di:waypoint x="575" y="70" />
+        <di:waypoint x="625" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ArchiveInvoice_InvoiceProcessed_di" bpmnElement="Flow_ArchiveInvoice_InvoiceProcessed">
+        <di:waypoint x="725" y="70" />
+        <di:waypoint x="807" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ReviewInvoice_Gateway_invoice-review_1_1_join_di" bpmnElement="Flow_ReviewInvoice_Gateway_invoice-review_1_1_join">
+        <di:waypoint x="575" y="210" />
+        <di:waypoint x="650" y="210" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Gateway_invoice-review_1_1_join_Gateway_invoice-review_1_loop_di" bpmnElement="Flow_Gateway_invoice-review_1_1_join_Gateway_invoice-review_1_loop">
+        <di:waypoint x="700" y="210" />
+        <di:waypoint x="800" y="210" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Gateway_invoice-review_1_loop_ApproveInvoice_di" bpmnElement="Flow_Gateway_invoice-review_1_loop_ApproveInvoice">
+        <di:waypoint x="825" y="235" />
+        <di:waypoint x="825" y="280" />
+        <di:waypoint x="225" y="280" />
+        <di:waypoint x="225" y="110" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Gateway_invoice-review_1_loop_default_di" bpmnElement="Flow_Gateway_invoice-review_1_loop_default">
+        <di:waypoint x="850" y="210" />
+        <di:waypoint x="957" y="210" />
+      </bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>

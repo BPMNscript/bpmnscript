@@ -1,8 +1,8 @@
 /**
  * Parser, classifier, and DSL serializer for the JUEL subset, on the import
  * path. It decides whether a raw `${...}` or `#{...}` body fits the subset and
- * can print as clean unquoted DSL, or has to fall back to the quoted `"${...}"`
- * raw form.
+ * can print as clean unquoted DSL, or has to fall back to the quoted raw form,
+ * `"${...}"` or `"#{...}"` with the opener it came with.
  *
  * The subset boundary is the Langium expression sub-grammar in
  * `packages/language/src/bpmn-script.langium`, whose precedence the
@@ -68,51 +68,69 @@ export type BinaryOp =
   | '/'
   | '%';
 
-/** A raw `text` is the verbatim inner body, without the wrapper it came in. */
+/**
+ * A raw `text` is the verbatim inner body, without the wrapper it came in;
+ * `open` is that wrapper's first character, `$` when the body had none.
+ */
 export type ExprResult =
-  { kind: 'structured'; expr: JuelNode } | { kind: 'raw'; text: string };
+  | { kind: 'structured'; expr: JuelNode }
+  | { kind: 'raw'; text: string; open: '$' | '#' };
 
 /** Never throws: anything outside the subset comes back as a raw result. */
 export function parseJuel(body: string): ExprResult {
+  const open = /^#\{/.test(body.trim()) ? '#' : '$';
   const inner = stripWrapper(body);
   if (inner === undefined) {
-    return { kind: 'raw', text: stripWrapperLenient(body) };
+    return { kind: 'raw', text: stripWrapperLenient(body), open };
   }
   try {
     const tokens = tokenize(inner);
     if (tokens === undefined) {
-      return { kind: 'raw', text: inner };
+      return { kind: 'raw', text: inner, open };
     }
     const parser = new Parser(tokens);
     const expr = parser.parseExpr();
     // Trailing tokens, such as the `()` of a method call, put the body outside
     // the subset, so the parse has to consume the whole stream.
     if (!parser.atEnd()) {
-      return { kind: 'raw', text: inner };
+      return { kind: 'raw', text: inner, open };
     }
     return { kind: 'structured', expr };
   } catch {
-    return { kind: 'raw', text: inner };
+    return { kind: 'raw', text: inner, open };
   }
 }
 
 /**
  * The DSL surface string `irToDsl` writes into a condition or attribute:
- * `amount > 1000` when structured, the quoted `"${...}"` fallback when raw, so
- * an out-of-subset body survives the round trip with its text intact, rewrapped
- * as `${...}`.
+ * `amount > 1000` when structured, the quoted raw template when raw, so an
+ * out-of-subset body survives the round trip with its text and opener intact.
  */
 export function renderRawFallback(result: ExprResult): string {
   if (result.kind === 'raw') {
-    return `"\${${result.text}}"`;
+    return `"${result.open}{${escapeQuoted(result.text)}}"`;
   }
   return renderNode(result.expr);
 }
 
 /**
+ * The body of a double-quoted DSL string, the exact inverse of the grammar's
+ * `convertString` on a `STRING` or `RAW_TEMPLATE` token: the reader resolves
+ * these five escapes and no other character needs one.
+ */
+export function escapeQuoted(value: string): string {
+  return value
+    .replace(/\\/g, '\\\\')
+    .replace(/"/g, '\\"')
+    .replace(/\n/g, '\\n')
+    .replace(/\r/g, '\\r')
+    .replace(/\t/g, '\\t');
+}
+
+/**
  * Either delimiter opens an EL body, and Operaton evaluates one written with
- * either the same way, so a `#{...}` body reads in here and prints back out
- * through the `${...}` surface the DSL has a form for.
+ * either the same way, so a structured `#{...}` body prints bare and the
+ * rebuilt document writes it inside `${...}`.
  */
 const OPEN_WRAPPER = /^[$#]\{/;
 
@@ -382,7 +400,8 @@ class Parser {
         this.pos++;
         return { kind: 'null' };
       case 'id':
-        return this.parseVarRef();
+        this.pos++;
+        return this.parseVarRef(tok.value);
       case 'punct':
         if (tok.value === '(') {
           this.pos++;
@@ -396,9 +415,8 @@ class Parser {
     }
   }
 
-  /** `id (.prop | [expr])*`. */
-  private parseVarRef(): JuelNode {
-    const idTok = this.advance();
+  /** `id (.prop | [expr])*`, entered with the id consumed. */
+  private parseVarRef(name: string): JuelNode {
     const accessors: Accessor[] = [];
     for (;;) {
       const tok = this.peek();
@@ -421,20 +439,11 @@ class Parser {
       }
       break;
     }
-    return { kind: 'varRef', name: idTok.value, accessors };
+    return { kind: 'varRef', name, accessors };
   }
 
   private peek(): Token | undefined {
     return this.tokens[this.pos];
-  }
-
-  private advance(): Token {
-    const tok = this.tokens[this.pos];
-    if (tok === undefined) {
-      throw new ParseError('unexpected end of input');
-    }
-    this.pos++;
-    return tok;
   }
 
   private peekOp(): string | undefined {
@@ -479,8 +488,10 @@ function renderNode(node: JuelNode): string {
     case 'decimal':
       return String(node.value);
     case 'string':
-      // Canonical form is double-quoted, so an embedded quote is re-escaped.
-      return `"${node.value.replace(/"/g, '\\"')}"`;
+      // The grammar's string reader turns `\b` into a backspace and drops any
+      // other lone backslash, so only the doubled form reads back; it is also
+      // the one escape `Scanner.nextString` in operaton-juel takes besides `\"`.
+      return `"${escapeQuoted(node.value)}"`;
     case 'bool':
       return node.value;
     case 'null':

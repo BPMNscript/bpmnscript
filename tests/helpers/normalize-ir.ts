@@ -12,7 +12,6 @@
 
 import { ENGINE_KEYS } from '@bpmn-script/language';
 import {
-  gatewayDefaultFlowId,
   isGateway,
   type BpmnProcess,
   type EventDefinition,
@@ -44,9 +43,10 @@ function normalizeContainer<T extends FlowContainer>(container: T): T {
   const flowElements: FlowElement[] = inlined.flowElements
     .map((fe) => {
       // A plain sub-process id is authored, so it stays. A `triggeredByEvent`
-      // one has no surface id and is re-keyed to its trigger signature.
+      // one has no surface id and is re-keyed to its trigger signature. Its
+      // own `defaultFlowId` names a flow of this container, not of its body.
       if (fe.kind === 'subProcess') {
-        const normalized = normalizeContainer(fe);
+        const normalized = { ...normalizeContainer(fe), ...reKeyedDefault(fe) };
         return fe.triggeredByEvent === true
           ? { ...normalized, id: handlerIdMap.get(fe.id) ?? fe.id }
           : normalized;
@@ -57,28 +57,29 @@ function normalizeContainer<T extends FlowContainer>(container: T): T {
         return { ...fe, id: canonicalId(fe.id) };
       }
 
-      if (!isGateway(fe)) return fe;
+      // A step's `defaultFlowId` points at a flow that is itself re-keyed
+      // below; a gateway's is handled with the gateway.
+      if (!isGateway(fe)) return { ...fe, ...reKeyedDefault(fe) };
       const id = canonicalId(fe.id);
 
       // The structured syntax has no slot for a gateway label, so only gateways
       // lose their name. Task and event names survive verbatim.
       const { name: _name, ...withoutName } = fe;
-
-      // `defaultFlowId` points at a flow that is itself re-keyed below.
-      const declaredDefault = gatewayDefaultFlowId(fe);
-      if (declaredDefault !== undefined) {
-        const target = inlined.sequenceFlows.find(
-          (sf) => sf.id === declaredDefault,
-        );
-        const defaultFlowId =
-          target !== undefined
-            ? canonicalFlowKey(target, canonicalId)
-            : declaredDefault;
-        return { ...withoutName, id, defaultFlowId };
-      }
-      return { ...withoutName, id };
+      return { ...withoutName, id, ...reKeyedDefault(fe) };
     })
     .sort((a, b) => a.id.localeCompare(b.id));
+
+  // The key a flow ends up under after `normalizeFlow`, so a `defaultFlowId`
+  // agrees with the flow it names; absent when the element names none.
+  function reKeyedDefault(fe: FlowElement): { defaultFlowId?: string } {
+    const declared = 'defaultFlowId' in fe ? fe.defaultFlowId : undefined;
+    if (declared === undefined) return {};
+    const target = inlined.sequenceFlows.find((sf) => sf.id === declared);
+    return {
+      defaultFlowId:
+        target === undefined ? declared : normalizeFlow(target, canonicalId).id,
+    };
+  }
 
   const sequenceFlows: SequenceFlow[] = inlined.sequenceFlows
     .map((sf) => normalizeFlow(sf, canonicalId))
@@ -259,7 +260,7 @@ function normalizeFlow(
   return sf;
 }
 
-// Flow ids and a gateway's `defaultFlowId` both route through here so they agree.
+// A re-keyed flow's id; `reKeyedDefault` reaches it through `normalizeFlow`, so the two agree.
 function canonicalFlowKey(
   sf: SequenceFlow,
   canonicalId: (id: string) => string,

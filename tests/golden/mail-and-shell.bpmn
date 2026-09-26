@@ -17,7 +17,7 @@
       <bpmn:incoming>Flow_IncidentLogged_RateSeverity</bpmn:incoming>
       <bpmn:outgoing>Flow_RateSeverity_PageOnCall</bpmn:outgoing>
     </bpmn:businessRuleTask>
-    <bpmn:sendTask id="PageOnCall" name="Page the on-call engineer" operaton:type="shell" operaton:resultVariable="pageResult">
+    <bpmn:sendTask id="PageOnCall" name="Page the on-call engineer" operaton:type="shell">
       <bpmn:extensionElements>
         <operaton:field name="command" stringValue="page" />
         <operaton:field name="arg1" stringValue="oncall" />

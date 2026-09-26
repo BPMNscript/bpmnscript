@@ -72,3 +72,5 @@ The import side records what is carried and what is still dropped in `packages/t
 Related decisions: ADR-0006 (IR shape and naming rule, applied here), ADR-0007 (the `operaton:` moddle extension), ADR-0008 and ADR-0010 (block-structured grammar and synthesized ids, which set the gateway limit), ADR-0023 (DSL spelling for listeners).
 
 Amended by ADR-0040, which gives the four gateway kinds the `JobSettings` mixin, authored on the statement head, so the gateway limit above holds for listeners alone.
+
+Amended by ADR-0047, under which a timer carrier's `exclusive` is written on the `bpmn:timerEventDefinition` as well as on the node, since `BpmnParse.parseTimer` locks the timer job from the definition.

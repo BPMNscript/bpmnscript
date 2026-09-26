@@ -102,5 +102,7 @@ The validator rows in `packages/language/test/validating.test.ts` pin every posi
 
 Amends ADR-0024, whose Decision Outcome stated one start per container; that now holds for a subprocess, a transaction, and an event handler only.
 
+Amended by ADR-0048, which mirrors `BpmnParse.selectInitial` after all: a second plain or timer start is an error, and a second message, signal, or condition start repeating an earlier one's payload is refused beside it.
+
 Related decisions: ADR-0019 (every start wired to the virtual entry, and the synthesized-gateway corner this decision inherits).
 ADR-0014 (the honest import contract under which the process-level refusal is lifted).

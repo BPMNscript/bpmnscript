@@ -137,7 +137,7 @@ The round-trip normalizer compensates on the comparison side instead: its canoni
 ### Consequences
 
 - Good, because the colon resolves the host/trigger ambiguity with no reserved word, no residual parser-generator warning, and no change to ADR-0016's soft-trigger-word design.
-- Good, because the six-trigger scope admits only what Operaton's own parser accepts, so a boundary event the validator passes always deploys.
+- Good, because the six-trigger scope admits only what Operaton's own parser accepts, so a boundary event the validator passes carries a trigger the engine deploys.
   The converse does not hold: a compensation boundary is refused on ADR-0018's attachment-mechanism grounds rather than on an engine refusal, and Operaton would deploy the document that refusal rejects.
 - Good, because excluding compensation costs nothing new to build: the existing `on compensation` undo block already covers the granularity a boundary compensation event would have reached, and the import-side refusal that keeps `isForCompensation` honest needed no new mechanism, only a new call site for the existing one.
 - Good, because the self-contained body is uniform across interrupting and non-interrupting boundaries, so there is exactly one rule to learn ("the body ends where it ends; rejoin with `goto`") instead of one rule per cancellation mode.

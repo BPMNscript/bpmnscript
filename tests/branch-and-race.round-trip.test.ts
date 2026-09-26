@@ -80,8 +80,9 @@ describe("idempotence: golden .bpmn -> IR2 -> DSL' -> IR3", () => {
         `race gateways differ in ${label}`,
       ).toBe(2);
 
-      // Only the forks name a default; a join has one incoming path per branch
-      // and nothing to fall back to.
+      // Only the first fork names a default: a join has one incoming path per
+      // branch and nothing to fall back to, and the second fork's unheaded
+      // branch always runs, so a fallback there could never be taken.
       const carried = ir.flowElements.filter(
         (fe) =>
           fe.kind === 'inclusiveGateway' && fe.defaultFlowId !== undefined,
@@ -89,10 +90,7 @@ describe("idempotence: golden .bpmn -> IR2 -> DSL' -> IR3", () => {
       expect(
         carried.map((fe) => fe.id),
         `defaults differ in ${label}`,
-      ).toEqual([
-        'Gateway_order-handling_2_fork',
-        'Gateway_order-handling_3_fork',
-      ]);
+      ).toEqual(['Gateway_order-handling_2_fork']);
     }
   });
 
@@ -115,9 +113,9 @@ describe("idempotence: golden .bpmn -> IR2 -> DSL' -> IR3", () => {
   });
 
   it('printing the imported IR reports nothing at all', () => {
-    // Every gateway of the artifact is nameless and every fork names its
-    // default, so neither the elided-label nor the invented-fallback warning
-    // has anything to report.
+    // Every gateway of the artifact is nameless, and every fork either names
+    // its default or has an unheaded branch that always runs, so neither the
+    // elided-label nor the invented-fallback warning has anything to report.
     expect(irToDsl(rt.ir2).warnings).toEqual([]);
   });
 });
@@ -141,25 +139,27 @@ describe('gateway shape pins on the frozen .bpmn', () => {
     ]);
   });
 
-  it('the fallback with a branch of its own points at it, the one without at the join', () => {
+  it('the one fallback points at its else branch, and the fork beside an unheaded branch names none', () => {
     expect(declaredDefaults(rt.frozenXml)).toEqual([
       [
         'Gateway_order-handling_2_fork',
         'Flow_Gateway_order-handling_2_fork_default',
       ],
-      [
-        'Gateway_order-handling_3_fork',
-        'Flow_Gateway_order-handling_3_fork_default',
-      ],
     ]);
 
-    const byId = new Map(sequenceFlows(rt.frozenXml).map((f) => [f.id, f]));
+    const flows = sequenceFlows(rt.frozenXml);
     expect(
-      byId.get('Flow_Gateway_order-handling_2_fork_default')?.targetRef,
+      flows.find((f) => f.id === 'Flow_Gateway_order-handling_2_fork_default')
+        ?.targetRef,
     ).toBe('TriageOrder');
     expect(
-      byId.get('Flow_Gateway_order-handling_3_fork_default')?.targetRef,
-    ).toBe('Gateway_order-handling_3_join');
+      flows
+        .filter((f) => f.sourceRef === 'Gateway_order-handling_3_fork')
+        .map((f) => [f.targetRef, f.conditioned]),
+    ).toEqual([
+      ['PrepareCustoms', true],
+      ['PrintLabel', false],
+    ]);
   });
 
   it('each race gateway waits on one catch event per branch and weighs none of them', () => {

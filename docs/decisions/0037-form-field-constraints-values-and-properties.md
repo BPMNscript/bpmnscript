@@ -127,5 +127,8 @@ Amends ADR-0014 (the refusal list gains `UnsupportedFormFieldConstraintError`, t
 Related decisions: ADR-0007 (the moddle fork, which gains the `Properties`, `Property`, `Validation`, and `Constraint` types).
 ADR-0022 (engine attributes as named IR fields, the typing rule the constraint name union follows).
 
+Amended by ADR-0054, under which a literal default the field's type cannot convert (a `number` that is not an integer, a `boolean` outside `true`/`false`, an ISO date on a field naming no pattern) joins the enum default among the shapes carried as written with a warning.
+The repeated-name refusal says that `DefaultFormHandler.parseValidation` deploys both.
+
 Amended by ADR-0038, under which a `property` line is shared with an external task.
 There it reaches the wire as `operaton:property name=`, on a form field as `operaton:property id=`, since the engine reads the two by different attributes.

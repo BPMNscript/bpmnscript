@@ -35,19 +35,19 @@ Refused constructs throw a subclass of `UnsupportedConstructError` before any IR
 
 - an event definition of a kind the event's position does not accept -> `UnsupportedEventDefinitionError`
 - a multi-instance repetition the engine refuses to deploy, one this tool cannot write back unchanged, or one on an event handler, which its trigger enters rather than repeats -> `UnsupportedLoopCharacteristicsError`
-- a collaboration (pools/message flows) -> `UnsupportedCollaborationError`
+- two or more executable processes -> `UnsupportedCollaborationError`; a pool or a message flow warns, and a document shape the engine refuses before it reads an element draws `UnsupportedDocumentError` (ADR-0049)
 - an event of a supported kind carrying a shape the surface cannot express, such as an error throw with no code -> `UnsupportedEventFeatureError`
 - a call activity with no `calledElement`, with a version binding the surface cannot pin, with a `calledElementTenantId`, which decides which tenant's copy of the called process runs, or with an `operaton:in`/`out` mapping in a shape the surface cannot spell -> `UnsupportedCallActivityError`
 - an `operaton:formField` of a type the form surface does not map -> `UnsupportedFormFieldTypeError`
 - an `operaton:constraint` the engine refuses to deploy or the surface cannot spell: an unregistered name, a `validator` or a bound with no `config`, or a name repeated on one field -> `UnsupportedFormFieldConstraintError` (ADR-0037)
-- Operaton extension content the IR's discriminated unions cannot represent, such as a parameter carrying body text and a nested value at once -> `UnsupportedExtensionFormError`
+- Operaton extension content in a shape the surface cannot write or the engine refuses to deploy, as ADR-0054 lists it -> `UnsupportedExtensionFormError`
 - an unsupported flow-element kind (pre-existing) -> `UnsupportedElementError`
 - an unsupported service-task execution form (pre-existing), an `operaton:type` outside `external`, `mail`, and `shell`, or a `mail`/`shell` type on a thrown message -> `UnsupportedServiceTaskFormError` (ADR-0042)
   A mail or shell task missing a field its behaviour's own parse requires or naming a field its behaviour class does not declare draws the same error.
   So does a shell task carrying a field as an expression, or spelling a flag outside `true`/`false` in any letter case.
   A service, send, or business rule task without a decision reference that carries `operaton:resultVariable`, or the older `operaton:resultVariableName`, beside `operaton:class` or `operaton:delegateExpression` draws it too, since `BpmnParse.parseServiceTaskLike` fails the deployment (ADR-0043).
 - a sequence flow's condition expression or a conditional event definition's condition carrying a `language`, which Operaton hands to a script engine rather than evaluating as the UEL expression this tool writes -> `UnsupportedConditionExpressionError`
-- an `operaton:errorEventDefinition` on an external task carrying `errorRef` and no `expression`, which fails the deployment, or an `errorRef` naming no error root with a code -> `UnsupportedErrorMappingError` (ADR-0038)
+- an `operaton:errorEventDefinition` on an external task carrying `errorRef` and no `expression`, which fails the deployment, or an `errorRef` naming an error root with no code -> `UnsupportedErrorMappingError` (ADR-0038; a definition with no `errorRef` is skipped and a dangling one imports as its text since ADR-0054)
 - a user task carrying a `bpmn:humanPerformer` beside `operaton:assignee`, or more than one `bpmn:humanPerformer`, both of which Operaton refuses to deploy -> `UnsupportedAssignmentError` (ADR-0039)
 - an event-based gateway carrying `operaton:asyncAfter`, which `BpmnParse.parseEventBasedGateway` refuses to deploy -> `UnsupportedEventFeatureError` (ADR-0040)
 
@@ -65,7 +65,7 @@ Warned constructs are returned in a `warnings: ImportWarning[]` array alongside 
   That is a bound on a type its validator refuses, a bound whose `config` is not an integer, and a literal enum default naming no value.
   A repeated enum value id is kept once, as the engine keeps it, and the warning names the rewrite (ADR-0037).
 - lanes
-- a `name` on an event handler, a boundary event, a throw, an emit, or an await, since none of those has a label slot in this tool's surface; and a `name` on a start or an end whose id carries a synthesized-id prefix, which no script can spell back, so the statement that would have carried the label is left out whole
+- a `name` on an event handler, a boundary event, a throw, an emit, or an await, since none of those has a label slot in this tool's surface; and a `name` on a start or an end whose id is the one the compiler mints for its container (ADR-0050), which no script can spell back, so the statement that would have carried the label is left out whole
 - a `bpmn:Message` or `bpmn:Signal` root that nothing in the imported process references, a receive task's `messageRef` included; and an error or escalation root carrying no code, which nothing can key it by.
   An error or escalation root carrying a code imports as the declaration ADR-0030 gives it, whether or not anything raises it.
 - `bpmn:documentation` on the definitions root, an event definition, an external task's `operaton:errorEventDefinition`, an Error, Escalation, Message, or Signal root, a multi-instance loop characteristics element, a sequence flow, or one of the three intermediate events with no label slot, since none of those has a node in the IR to hold it.
@@ -76,10 +76,10 @@ Warned constructs are returned in a `warnings: ImportWarning[]` array alongside 
 - an attribute written without a namespace that BPMN does not declare
 - a BPMN-declared attribute the engine itself reads nothing of, an `instantiate="true"` or an `eventGatewayType` other than `Exclusive` on a wait with several branches, or a `startQuantity` or `completionQuantity` other than `1` on an activity (ADR-0039), so the imported process runs exactly as the source document does.
   Each is reported only where the document set it away from the value it reads back as when nothing is written, which is why an exported gateway carrying `eventGatewayType="Exclusive"` warns about nothing.
-- a `default` on a step, which the engine does read: it names the route Operaton takes when no other route out of the step is taken, and this tool carries a fallback on a split alone, so the imported process loses that route and does not run as the source document does.
+- a `default` on a step naming a flow that does not leave the step, which `BpmnActivityBehavior.handleNoTransitions` finds nothing to take for; one naming a route out of the step is carried since ADR-0054 and printed as the fallback of the step's block (ADR-0053).
 - a `bpmn:standardLoopCharacteristics` or a `bpmn:loopCondition` on any host, which Operaton parses and never dispatches on, so the step imports and runs once exactly as the source document runs it
 - a `bpmn:dataObject`, a `bpmn:dataObjectReference`, or a `bpmn:dataStoreReference`, which Operaton replaces with its own variable mechanism and never reads
-- `isExecutable="false"` on the process, which imports as an executable process regardless
+- `isExecutable="false"` on the process, which imports as an executable process regardless; an absent one warns the same way (ADR-0049)
 - a `bpmn:manualTask`, which imports as a plain step, since `ManualTaskActivityBehavior` is a pass-through identical to a plain task.
   The warning names the rewrite rather than the drop, because the engine stores the tag it parsed as the activity type and history reports `task` where the document said `manualTask`.
 
@@ -89,7 +89,7 @@ The lane structure goes the same way, reported lane by lane, with anything hung 
 What is dropped without a warning is the diagram interchange data ADR-0003 settles, and an attribute the transform does not read.
 One shape of that is an attribute in a foreign namespace written directly on a mapped BPMN element, which is where an editor parks its own bookkeeping.
 The same attribute on an extension child the IR reads is reported, and so is an attribute written in no namespace at all that BPMN does not declare, since no editor writes there.
-The other is a BPMN attribute the transform neither reads nor reports, such as a sequence flow's `name` or a process's `processType` or `isClosed`.
+The other is a BPMN attribute the transform neither reads nor reports, such as a process's `processType` or `isClosed`; a sequence flow's `name` warns since ADR-0054.
 
 Returning `{ ir, warnings }` makes the warnings channel unignorable at the type level: every call site must destructure or explicitly discard `warnings`, so a caller cannot silently drop the diagnostics this decision exists to guarantee.
 The alternatives, an optional collector parameter (`xmlToIr(xml, sink?)`) or a second function (`xmlToIrWithWarnings`), leave the channel easy to skip.
@@ -108,7 +108,7 @@ ADR-0025 is the decision that extended this contract to the print hop.
 
 - Good, because every caller (the CLI, the VS Code extension, the round-trip test suite) now surfaces both the refusal and the warning channel instead of only one or neither.
 - Good, because the shared `UnsupportedConstructError` base keeps consumer classification to one `instanceof` check as new refusal categories are added.
-- Bad, because some warned items on the import hop do bear on what runs, against the boundary this decision draws, among them a dropped `operaton:field`, which leaves the bound class without a value it was injected with, a dropped `default` on a step, which takes away the route the engine falls back to, and `isExecutable="false"`, which imports as an executable process.
+- Bad, because some warned items on the import hop do bear on what runs, against the boundary this decision draws, among them a dropped `operaton:field`, which leaves the bound class without a value it was injected with, and `isExecutable="false"`, which imports as an executable process; a step's `default`, once among them, is carried since ADR-0054.
   Refusing any of them would reject files that otherwise import cleanly, and carrying `isExecutable` through would mean an IR field, a serializer path, and a DSL surface for a flag this tool has no use for, so they are reported instead.
 - Bad, because every call site of `xmlToIr` had to migrate from `const ir = await xmlToIr(xml)` to `const { ir } = await xmlToIr(xml)`, a one-time, mechanical, but repo-wide edit.
 - Bad, because a handful of undeclared `operaton:` extension elements cannot be tied by `bpmn-moddle` to a specific owning element; their warnings are attributed to the process id rather than the precise element.
@@ -132,13 +132,27 @@ Amended by ADR-0038, which adds the error mapping refusal and the warning on an 
 Amended by ADR-0039, which adds the assignment refusal, narrows the resource-role drop to the roles the engine never reads, adds the quantity attributes to the warned list, and removes `startQuantity` from the unreported examples.
 
 Amended by ADR-0040, which adds the event-based gateway refusal above and carries a gateway's five job settings instead of warning about them.
-A listener or an input/output parameter found on a gateway still warns, since no gateway kind reads either.
+A listener found on a gateway still warns, and the warning names `BpmnParse.parseExecutionListenersOnScope`, which every gateway parser runs it through, since the surface has no position for it; an `operaton:inputOutput` there refuses, as `checkActivityInputOutputSupported` refuses to deploy it (ADR-0054).
 
 Amended by ADR-0041, which carries an async, exclusive, or retry setting found on a repetition's `multiInstanceLoopCharacteristics` element instead of refusing it, narrowing the `UnsupportedLoopCharacteristicsError` bullet above.
 
 Amended by ADR-0042, which adds the `UnsupportedServiceTaskFormError` and extras-warning detail above for a mail or shell task.
 
 Amended by ADR-0043, which adds a result variable beside a class or delegate expression binding to the `UnsupportedServiceTaskFormError` bullet above.
+
+Amended by ADR-0049, which narrows the `UnsupportedCollaborationError` bullet to two or more executable processes, warns per pool and message flow, adds `UnsupportedDocumentError` for the document shapes the engine refuses before it reads an element, reads the camunda namespace as the operaton one, and warns on an absent `isExecutable` as on a false one.
+
+Amended by ADR-0050, under which the label bullet's minted id is the exact `StartEvent_<container>` or `EndEvent_<container>` rather than a prefix, any other start or end prints under its id, an id the script cannot spell is respelled on print with a `renamedId` warning, and a form field id or an input/output parameter name the script cannot spell refuses.
+
+Amended by ADR-0051, under which the print hop declares `var <name>: any` for every variable the printed script reads bare and nothing else declares, so a decompiled script builds without an undeclared-variable warning.
+
+Amended by ADR-0052, under which a split inside a loop body whose every route is conditioned walks the route that stays inside the body inline and prints the leaving routes alone as jumps.
+
+Amended by ADR-0053, under which a step's routes print as the fork block the engine runs them as, with the step's `default` as the `else`, a degraded split keeps its conditions on its jumps under a marker line, and an empty gateway, a self-loop, and a jump across a branch border each draw a print warning.
+
+Amended by ADR-0054, which moves the tiers above to where the engine's parse draws them: what `BpmnParse` fails the deployment on refuses naming the method, and what it deploys and this surface cannot spell warns naming the reader.
+Under it the exclusive gateway shapes refuse as `UnsupportedGatewayShapeError`, and so do a condition typed through `xsi:type` as anything but `tFormalExpression`, a flow into or out of an event handler, a second plain or timer start, a repeated extension block, an io mapping on a start, a gateway, or a handler, and a priority that is not a number.
+Listeners repeat per event, a step's `default` is carried, a thrown message's result variable refuses beside a class, delegate, or expression binding, and a dangling `errorRef` imports as its text.
 
 Related decisions: ADR-0006 (the shared IR, where `warnings` deliberately lives outside the IR, which stays serializable).
 ADR-0007 (the Operaton moddle extension fork, whose declared and undeclared elements determine warning-attribution precision).

@@ -52,7 +52,7 @@ import {
   integerLiteralText,
   renderExpression,
   formatPlainWordList,
-  SCRIPT_FORMAT_ALIASES,
+  scriptFormatOf,
   splitFencedScript,
   CALL_MAPPER_KEY_BY_KIND,
   CATCH_TRIGGERS,
@@ -161,6 +161,7 @@ import {
   eventIdentities,
   ioMapped,
   jobSettings,
+  splitTimerJobSettings,
 } from './ir/types.js';
 import {
   makeGatewaySplitId,
@@ -790,18 +791,19 @@ function lowerServiceTask(builder: Builder, stmt: AstServiceTask): Frontier {
  * Build the {@link CodeBinding} whichever of `class`/`expression`/`delegate`
  * the block names, in that order. `class` reads through {@link attrValue},
  * which strips the `${...}` wrapper so a bareword stays a dotted Java path; the
- * other two keep it, that text being what Operaton evaluates as EL.
+ * other two read through {@link elAttrValue}, which keeps it, that text
+ * being what Operaton evaluates as EL.
  */
 function codeBinding(attrs: KeyValueAttr[]): CodeBinding | undefined {
   const className = attrValue(attrs, 'class');
   if (className !== undefined) {
     return { kind: 'class', className };
   }
-  const expression = rawExpressionAttrValue(attrs, 'expression');
+  const expression = elAttrValue(attrs, 'expression');
   if (expression !== undefined) {
     return { kind: 'expression', expression };
   }
-  const delegate = rawExpressionAttrValue(attrs, 'delegate');
+  const delegate = elAttrValue(attrs, 'delegate');
   if (delegate !== undefined) {
     return { kind: 'delegateExpression', expression: delegate };
   }
@@ -929,7 +931,7 @@ function lowerScriptTask(builder: Builder, stmt: AstScriptTask): Frontier {
     kind: 'scriptTask',
     id: stmt.name,
     ...namedAttrs(stmt),
-    format: SCRIPT_FORMAT_ALIASES[tag] ?? tag,
+    format: scriptFormatOf(tag) ?? tag,
     code,
     ...(resultVariable !== undefined ? { resultVariable } : {}),
     ...readLoop(stmt),
@@ -1071,7 +1073,7 @@ function lowerWhile(
     addFlow(builder, loopId, body.entry, condition);
   }
   if (body.exit !== null) {
-    addFlow(builder, body.exit, loopId);
+    addFlow(builder, body.exit, loopId, undefined, body.exitFlowId);
   }
 
   // The loop gateway's one non-back-edge outgoing flow is its unconditioned
@@ -1125,11 +1127,14 @@ function lowerDoWhile(
  * semantics the unconditioned siblings always run, so the fallback would be
  * dead.
  *
- * The inclusive fork always gets a default flow, stamped exactly as `if` stamps
- * its own: onto the `else` branch when one is written, otherwise straight to
- * the join. A gateway whose every branch is conditioned and that carries no
- * default deploys and runs, then throws a stuck execution in Operaton the first
- * time no condition holds.
+ * The inclusive fork gets a default flow only where the engine can take it:
+ * onto the `else` branch when one is written, or straight to the join when
+ * every branch is conditioned, since such a fork with no default deploys and
+ * runs, then throws a stuck execution the first time no condition holds.
+ * `InclusiveGatewayActivityBehavior.execute` takes the default only when no
+ * other flow was taken, and a flow with no condition always is, so beside an
+ * unconditioned branch the fallback would be dead, and the printer would spell
+ * it as an `else` the validator refuses.
  */
 function lowerParallel(
   builder: Builder,
@@ -1143,15 +1148,22 @@ function lowerParallel(
   const fork = readJobSettings(settings);
   const join = readJobSettings(settings, joinSettingKey);
 
-  // Reserved only where a fallback is named: an AND split pushes no flow under
-  // the id, so claiming it would move an authored collider off it for nothing.
+  const fallback =
+    inclusive &&
+    (stmt.branches.some((b) => b.otherwise) ||
+      stmt.branches.every((b) => b.condition !== undefined));
+
+  // Reserved only where a fallback is written: a fork that pushes no flow under
+  // the id would move an authored collider off it for nothing.
   let defaultFlowId: string | undefined;
-  if (inclusive) {
+  if (fallback) {
     defaultFlowId = reserveDefaultFlowId(builder, forkId);
+  }
+  if (inclusive) {
     builder.flowElements.push({
       kind: 'inclusiveGateway',
       id: forkId,
-      defaultFlowId,
+      ...(defaultFlowId === undefined ? {} : { defaultFlowId }),
       ...fork,
     });
     builder.flowElements.push({
@@ -1272,9 +1284,11 @@ function lowerSubProcess(
  * is also invalid BPMN without its trigger start, so an empty body still gets
  * start -> flow -> end for {@link ensureHandlerStart} to attach the trigger to.
  *
- * The handler's own settings land on this sub-process node, never on the
- * trigger start it wraps: that start is elided on print, so anything stored
- * there would be unrecoverable on the way back.
+ * The handler's own settings land on this sub-process node, except the three
+ * a timer job takes off the start event that declares it
+ * ({@link splitTimerJobSettings}); none of their readers looks at the
+ * enclosing sub-process. The printer lifts the three back into the head when
+ * the start prints no statement of its own.
  */
 function lowerOnHandler(
   builder: Builder,
@@ -1298,14 +1312,20 @@ function lowerOnHandler(
     start.isInterrupting = false;
   }
 
+  let settings = readEngineAttributes(stmt);
+  if (start.eventDefinition.kind === 'timer') {
+    const { timer, continuation } = splitTimerJobSettings(settings);
+    Object.assign(start, timer);
+    settings = continuation;
+  }
+
   builder.flowElements.push({
     kind: 'subProcess',
     id,
     triggeredByEvent: true,
     flowElements: nested.flowElements,
     sequenceFlows: nested.sequenceFlows,
-    ...readIoParameters(stmt.params),
-    ...readEngineAttributes(stmt),
+    ...settings,
   });
 }
 
@@ -1656,10 +1676,7 @@ function namedTriggerDefinition(
 function lowerCallActivity(builder: Builder, stmt: AstCallActivity): Frontier {
   const calledElement = attrValue(settingsOf(stmt.items), 'process') ?? '';
   const binding = versionBinding(settingsOf(stmt.items));
-  const businessKey = rawExpressionAttrValue(
-    settingsOf(stmt.items),
-    'businessKey',
-  );
+  const businessKey = elAttrValue(settingsOf(stmt.items), 'businessKey');
   const mapper = callVariableMapper(settingsOf(stmt.items));
   const { inMappings, outMappings } = lowerCallMappings(stmt.mappings);
 
@@ -1684,8 +1701,8 @@ function lowerCallActivity(builder: Builder, stmt: AstCallActivity): Frontier {
  * The {@link CallVariableMapper} a call's settings name, class first, matching
  * the order Operaton resolves the two attributes in. The class reads through
  * {@link attrValue}, which strips the `${...}` wrapper so a bareword stays a
- * dotted Java path; the delegate keeps it, that text being what Operaton
- * evaluates as EL.
+ * dotted Java path; the delegate reads through {@link elAttrValue}, which
+ * keeps it, that text being what Operaton evaluates as EL.
  */
 function callVariableMapper(
   attrs: KeyValueAttr[],
@@ -1694,7 +1711,7 @@ function callVariableMapper(
   if (className !== undefined) {
     return { kind: 'class', className };
   }
-  const expression = rawExpressionAttrValue(
+  const expression = elAttrValue(
     attrs,
     CALL_MAPPER_KEY_BY_KIND.delegateExpression,
   );
@@ -1778,8 +1795,9 @@ function lowerCallMappings(mappings: VariableMapping[]): {
 /**
  * Lower one `in`/`out` mapping. `all` (`*`) copies everything; a bare `target`
  * is the same-name shorthand; a single-segment `VarRef` source copies that
- * variable by name; anything else renders to a `${...}` body. `local` is
- * stamped only when set, so the IR never carries `local: false`.
+ * variable by name; anything else becomes its {@link elText}: a string
+ * literal bare, everything else a `${...}` body. `local` is stamped only
+ * when set, so the IR never carries `local: false`.
  */
 function lowerCallMapping(mapping: VariableMapping): CallVariableMapping {
   const local = mapping.local ? ({ local: true } as const) : {};
@@ -1800,7 +1818,7 @@ function lowerCallMapping(mapping: VariableMapping): CallVariableMapping {
   }
   return {
     kind: 'expression',
-    sourceExpression: renderExpression(mapping.source),
+    sourceExpression: elText(mapping.source),
     target,
     ...local,
   };
@@ -1864,9 +1882,11 @@ function readLoop(stmt: RepeatOwner): Repeatable {
 }
 
 /**
- * A whole number is the one count that goes into the attribute bare: Operaton
- * parses a plain `loopCardinality` body as an integer and evaluates anything
- * else as EL, so a decimal has to be wrapped to yield a number at all.
+ * A whole number is the one count that goes into the attribute bare:
+ * `MultiInstanceActivityBehavior.resolveLoopCardinality` `Integer.parseInt`s
+ * a body with no `${`/`#{` on every run, which only a plain integer
+ * survives; anything else is wrapped so the engine evaluates it as EL and
+ * truncates the result with `intValue()` instead.
  */
 function loopCardinality(expr: Expr): string {
   if (isLiteralInt(expr)) {
@@ -1979,7 +1999,7 @@ function listenersFor<E extends string>(
 function listenerBinding(listener: AstListener): ListenerBinding {
   if (listener.script !== undefined) {
     const { tag, code } = splitFencedScript(listener.script);
-    return { kind: 'script', format: SCRIPT_FORMAT_ALIASES[tag] ?? tag, code };
+    return { kind: 'script', format: scriptFormatOf(tag) ?? tag, code };
   }
   return withDeclaredFields(
     codeBinding(settingsOf(listener.items)) ?? NO_BINDING,
@@ -2096,7 +2116,7 @@ function lowerIoParameters(
     .map((param) => ({ name: param.name, value: lowerIoValue(param.value) }));
 }
 
-/** Lists and maps recurse; anything else becomes the plain text {@link attrValue} resolves. */
+/** Lists and maps recurse; anything else becomes the EL text {@link elText} resolves. */
 function lowerIoValue(value: AstIoValue): IoValue {
   if (isListLiteral(value)) {
     return { kind: 'list', items: value.items.map(lowerIoValue) };
@@ -2112,9 +2132,9 @@ function lowerIoValue(value: AstIoValue): IoValue {
   }
   if (isScriptLiteral(value)) {
     const { tag, code } = splitFencedScript(value.body);
-    return { kind: 'script', format: SCRIPT_FORMAT_ALIASES[tag] ?? tag, code };
+    return { kind: 'script', format: scriptFormatOf(tag) ?? tag, code };
   }
-  return { kind: 'text', text: exprText(value) };
+  return { kind: 'text', text: elText(value) };
 }
 
 function boolAttrValue(
@@ -2181,15 +2201,17 @@ function joinContinuation(
  * Drop the synthesized join gateway when nothing flows into it, which happens
  * when every branch terminates via `end`/`throw`/`goto` or a nested compound
  * that never falls through. A join with zero incoming flows is invalid BPMN.
+ * The join is always still in place here: its lowering pushed it before the
+ * branches, and nothing between removes an element.
  */
 function pruneUnreachableJoin(builder: Builder, joinId: string): string | null {
   if (builder.sequenceFlows.some((flow) => flow.targetRef === joinId)) {
     return joinId;
   }
-  const index = builder.flowElements.findIndex((fe) => fe.id === joinId);
-  if (index !== -1) {
-    builder.flowElements.splice(index, 1);
-  }
+  builder.flowElements.splice(
+    builder.flowElements.findIndex((fe) => fe.id === joinId),
+    1,
+  );
   return null;
 }
 
@@ -2227,8 +2249,9 @@ function namedAttrs(stmt: { items: ParenItem[] }): Named {
 
 /**
  * The first matching setting's value, as the plain string the IR carries. NOT
- * for `expression`/`delegate`: {@link rawExpressionAttrValue} keeps their
- * `${...}` wrapper instead of stripping it.
+ * for a key the engine evaluates as EL (`expression`, `delegate`,
+ * `mapperDelegate`, `businessKey`, an io value): {@link elAttrValue} keeps a
+ * bareword or dotted path wrapped in `${...}` instead of stripping it.
  */
 function attrValue(attrs: KeyValueAttr[], key: string): string | undefined {
   const attr = attrs.find((a) => a.key === key);
@@ -2236,9 +2259,11 @@ function attrValue(attrs: KeyValueAttr[], key: string): string | undefined {
 }
 
 /**
- * Read an expression as the plain BPMN text a body or attribute carries rather
- * than as a `${...}` body: a string literal yields its bare value, a bareword
- * its dotted path verbatim, anything else its canonical `${...}` body.
+ * Read an expression as the plain BPMN text a key the engine takes as
+ * written carries (`label`, `documentation`, `class`, ...) rather than
+ * evaluates as EL: a string literal yields its bare value, a bareword its
+ * dotted path verbatim, anything else its canonical `${...}` body. For a key
+ * the engine evaluates as EL, see {@link elText}.
  */
 function exprText(value: Expr): string {
   if (isLiteralString(value)) {
@@ -2258,17 +2283,27 @@ function exprText(value: Expr): string {
 }
 
 /**
- * The first matching attribute's value as the `${...}` body a raw JUEL
- * attribute carries verbatim. Unlike {@link attrValue} this never strips the
- * wrapper: a bareword or dotted `VarRef` is wrapped instead, which is what
- * Operaton evaluates as EL.
+ * Read an expression as the EL text `createExpression` evaluates to what the
+ * author meant: a string literal is fixed text with no `${...}` slot to
+ * lose. A bareword, a dotted path, an operator chain, or a raw template
+ * takes its canonical `${...}`/`#{...}` rendering instead, since the engine
+ * reads bare text as a fixed string rather than as a variable lookup.
  */
-function rawExpressionAttrValue(
-  attrs: KeyValueAttr[],
-  key: string,
-): string | undefined {
+function elText(value: Expr): string {
+  if (isLiteralString(value)) {
+    return value.value;
+  }
+  return renderExpression(value);
+}
+
+/**
+ * The first matching attribute's value as {@link elText} reads it. Unlike
+ * {@link attrValue} a bareword or dotted `VarRef` stays wrapped in `${...}`,
+ * which is what Operaton evaluates as EL.
+ */
+function elAttrValue(attrs: KeyValueAttr[], key: string): string | undefined {
   const attr = attrs.find((a) => a.key === key);
-  return attr === undefined ? undefined : renderExpression(attr.value);
+  return attr === undefined ? undefined : elText(attr.value);
 }
 
 /** For dotted-identifier values the grammar parses as a `VarRef` but BPMN wants as text. */

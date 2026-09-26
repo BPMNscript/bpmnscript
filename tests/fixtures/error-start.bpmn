@@ -1,13 +1,14 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <bpmn:definitions
     xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+    xmlns:operaton="http://operaton.org/schema/1.0/bpmn"
     xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
     id="Definitions_ErrorStart"
     targetNamespace="http://bpmn.io/schema/bpmn"
     exporter="Operaton Modeler"
     exporterVersion="5.0.0">
 
-  <bpmn:process id="error-start" name="Error Start" isExecutable="true">
+  <bpmn:process id="error-start" name="Error Start" isExecutable="true" operaton:historyTimeToLive="P30D">
 
     <bpmn:startEvent id="ShipmentFailed">
       <bpmn:outgoing>Flow_ShipmentFailed_Notify</bpmn:outgoing>

@@ -7,7 +7,7 @@
     exporter="Operaton Modeler"
     exporterVersion="5.0.0">
 
-  <bpmn:process id="lanes-and-async" name="Lanes And Async" isExecutable="true">
+  <bpmn:process id="lanes-and-async" name="Lanes And Async" isExecutable="true" operaton:historyTimeToLive="P30D">
 
     <bpmn:laneSet id="LaneSet_Ops">
       <bpmn:lane id="Lane_Ops" name="Operations">

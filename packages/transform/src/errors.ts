@@ -1,5 +1,5 @@
 /**
- * Refusals raised by `xmlToIr`.
+ * Refusals raised by `xmlToIr`, plus {@link LayoutError}, raised by `irToXml`.
  *
  * Content the IR cannot express is refused before any IR is produced. Content
  * the IR does not carry but that costs no semantics is dropped with a warning
@@ -245,16 +245,33 @@ export class UnsupportedLoopCharacteristicsError extends UnsupportedConstructErr
   }
 }
 
-/** Pools or message flows: the IR models a single standalone process. */
+/**
+ * Two or more executable processes: `BpmnParse.parseProcessDefinitions`
+ * deploys each of them, and the IR holds one. A pool or a message flow is
+ * diagram data to the engine and is warned about instead.
+ */
 export class UnsupportedCollaborationError extends UnsupportedConstructError {
   declare readonly detail: string;
 
   constructor(detail: string) {
     super(
-      `The file contains ${detail}, which this tool cannot import. ` +
-        'Only a single standalone process (no pools or message flows) is supported.',
+      `The file contains ${detail}; this tool imports one process, and ` +
+        '`BpmnParse.parseProcessDefinitions` deploys each of them.',
       { detail },
     );
+  }
+}
+
+/**
+ * A document Operaton refuses to deploy whole (a `<!DOCTYPE>`, an undefined
+ * entity, a duplicate id, a `bpmn:import`), or one this tool cannot read as
+ * one process. `detail` says what was found and what reads it that way.
+ */
+export class UnsupportedDocumentError extends UnsupportedConstructError {
+  declare readonly detail: string;
+
+  constructor(detail: string) {
+    super(`The document cannot be imported: ${detail}.`, { detail });
   }
 }
 
@@ -303,12 +320,13 @@ export class UnsupportedFormReferenceError extends UnsupportedConstructError {
 }
 
 /**
- * A condition Operaton evaluates outside UEL: a sequence flow's
+ * A condition Operaton evaluates outside UEL, or refuses: a sequence flow's
  * `bpmn:conditionExpression`, or a conditional event definition's
  * `bpmn:condition`. Both reach Operaton's `parseConditionExpression`, so
- * `detail` names the same shape either way, a `language` attribute: Operaton
- * builds a `ScriptCondition` from it and runs the body in that language,
- * never as the UEL expression this tool writes.
+ * `detail` names the same two shapes either way: a `language` attribute, from
+ * which Operaton builds a `ScriptCondition` and runs the body in that
+ * language, never as the UEL expression this tool writes; or an `xsi:type`
+ * other than `tFormalExpression`, which fails the deployment.
  */
 export class UnsupportedConditionExpressionError extends UnsupportedConstructError {
   declare readonly elementId: string;
@@ -317,9 +335,30 @@ export class UnsupportedConditionExpressionError extends UnsupportedConstructErr
   constructor(elementId: string, detail: string) {
     super(
       `The condition on '${elementId}' cannot be imported: ${detail}. This ` +
-        'tool writes a condition as an expression Operaton evaluates as ' +
-        'UEL, and a condition Operaton hands to a script engine has no ' +
-        'spelling here.',
+        'tool writes a condition as a tFormalExpression Operaton evaluates ' +
+        'as UEL; a condition of another type, or one Operaton hands to a ' +
+        'script engine, has no spelling here.',
+      { elementId, detail },
+    );
+  }
+}
+
+/**
+ * An exclusive gateway whose outgoing flows `BpmnParse.validateExclusiveGateway`
+ * fails the deployment on. `detail` is the engine's own sentence for the
+ * shape, so the refusal reads as the deployment error would.
+ */
+export class UnsupportedGatewayShapeError extends UnsupportedConstructError {
+  declare readonly elementId: string;
+  declare readonly detail: string;
+
+  constructor(elementId: string, detail: string) {
+    super(
+      `The exclusive gateway '${elementId}' cannot be imported: ${detail} ` +
+        "Operaton's BpmnParse.validateExclusiveGateway fails the deployment " +
+        'on this shape, so there is nothing that runs to write back; give ' +
+        'every route but the fallback a condition, and name the fallback ' +
+        "in the gateway's 'default'.",
       { elementId, detail },
     );
   }
@@ -390,5 +429,24 @@ function supportedKindsMessage(
         `A boundary event supports ${formatPlainWordList(BOUNDARY_TRIGGERS)}, ` +
         'plus cancel on a block that can be given up.'
       );
+  }
+}
+
+/**
+ * `bpmn-auto-layout`'s grid solver throws on some validator-clean flow shapes
+ * (a `goto` restructuring among them). `xml` is the document as serialized
+ * before the layout call: no `bpmndi:` diagram, but otherwise the document
+ * Operaton deploys the same as a laid-out one
+ * (`BpmnParse.parseDiagramInterchangeElements` reads a diagram only when one
+ * is present), so a caller can fall back to it.
+ */
+export class LayoutError extends Error {
+  readonly xml: string;
+
+  constructor(xml: string, cause: unknown) {
+    const causeMessage = cause instanceof Error ? cause.message : String(cause);
+    super(`bpmn-auto-layout failed to lay out the process: ${causeMessage}`);
+    this.name = 'LayoutError';
+    this.xml = xml;
   }
 }

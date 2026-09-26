@@ -83,5 +83,8 @@ A host-less handler lowers to two elements instead, a `bpmn:subProcess` and a ne
 The intermediate representation carries a listener as an event plus a four-way tagged binding mirroring `ServiceTaskBinding`.
 A `timeout` task listener also carries the timer the event layer already models.
 Amended by ADR-0032, which gives a listener's own brace block a field member alongside its bindings, because a field is none of the form, parameter, or nested-listener shapes this decision ruled out.
+Amended by ADR-0047, under which a host-less timer handler's `jobPriority`, `retryCycle` and `exclusive` go on the trigger start event rather than the sub-process, since the timer job is that start's, and the printer lifts them back into the head while the start prints no statement.
+Amended by ADR-0046, which spells the assignment event `assignment`, the word `BpmnParse.parseTaskListeners` reads, and writes every `timeout` listener with the id `BpmnParse.parseTimeoutTaskListener` requires.
+Amended by ADR-0054, which drops the one-listener-per-event rule: `CoreModelElement.addListenerToMap` and `TaskDefinition.addTaskListener` both append rather than replace, so several listeners on one event run in the order they are written, and `TaskDefinition.addTimeoutTaskListener` keys each `timeout` listener by its id, so several of them each fire on their own timer.
 
 Related decisions: ADR-0016 (soft words), ADR-0017 (the timer particle clause), ADR-0019 (the hosted form), ADR-0021 (the exactly-one binding rule), ADR-0022 (engine attributes as named IR fields), and ADR-0014 (the import contract this surface honors).

@@ -11,7 +11,8 @@
  *     bare unquoted expression (`amount > 1000`).
  *   - A body outside the subset (method/bean calls, JUEL functions, or anything
  *     unparseable) -> a `{ kind: 'raw' }` result, rendered as the quoted
- *     `"${...}"` fallback. `parseJuel` never throws.
+ *     `"${...}"` or `"#{...}"` fallback with the opener it came with and the
+ *     string escapes the grammar reads back. `parseJuel` never throws.
  *
  * The subset boundary is fixed by the grammar; the final two suites
  * (`idempotence with the grammar renderer` and `subset parity with the real
@@ -25,6 +26,8 @@ import { EmptyFileSystem } from 'langium';
 import { parseHelper } from 'langium/test';
 import {
   createBpmnScriptServices,
+  isEquality,
+  isLiteralString,
   renderExpression,
 } from '@bpmn-script/language';
 import type { Expr, Model } from '@bpmn-script/language';
@@ -61,6 +64,8 @@ describe('parseJuel: structured classification', () => {
     ['${ready ? a : b}', 'ready ? a : b'],
     ['${order.items[0].price}', 'order.items[0].price'],
     ['${flag-name}', 'flag-name'],
+    ['${region == "a\\\\b"}', 'region == "a\\\\b"'],
+    ['${map["a\\\\b"]}', 'map["a\\\\b"]'],
   ])('classifies %s as structured, rendered bare as %s', (body, surface) => {
     const r = parseJuel(body);
     expect(r.kind).toBe('structured');
@@ -95,22 +100,67 @@ describe('parseJuel: raw fallback classification', () => {
 });
 
 // ---------------------------------------------------------------------------
-// The `#{...}` spelling: Operaton accepts either delimiter, the DSL writes `${`
+// The `#{...}` spelling: Operaton accepts either delimiter. A structured body
+// prints bare and rebuilds inside `${`; a raw one keeps the opener it came with.
 // ---------------------------------------------------------------------------
 
 describe('parseJuel: the #{...} delimiter', () => {
-  it('classifies an in-subset #{...} body as structured', () => {
-    expect(parseJuel('#{lineCount}').kind).toBe('structured');
+  it('classifies an in-subset #{...} body as structured and renders it bare', () => {
+    const result = parseJuel('#{lineCount}');
+    expect(result.kind).toBe('structured');
+    expect(renderRawFallback(result)).toBe('lineCount');
   });
 
-  it('renders an in-subset #{...} body as the same bare expression', () => {
-    expect(renderRawFallback(parseJuel('#{lineCount}'))).toBe('lineCount');
+  it('tags a wrapperless body as $ even when its text starts with #', () => {
+    expect(parseJuel('#foo')).toEqual({ kind: 'raw', text: '#foo', open: '$' });
   });
+});
 
-  it('renders an out-of-subset #{...} body as the ${...} fallback', () => {
-    expect(renderRawFallback(parseJuel('#{myBean.check()}'))).toBe(
+describe('renderRawFallback: a raw body prints as a quoted template the grammar reads back to the same text', () => {
+  it.each([
+    [
+      'an out-of-subset ${...} body',
+      '${myBean.check()}',
       '"${myBean.check()}"',
-    );
+    ],
+    [
+      'an out-of-subset #{...} body keeps its opener',
+      '#{myBean.check()}',
+      '"#{myBean.check()}"',
+    ],
+    [
+      'a quote inside the body is escaped once',
+      '${execution.getVariable("x")}',
+      '"${execution.getVariable(\\"x\\")}"',
+    ],
+    [
+      'a composite body keeps the opener it starts with',
+      '${a} #{b}',
+      '"${a} #{b}"',
+    ],
+  ])('%s: %s prints as %s', async (_title, body, printed) => {
+    expect(renderRawFallback(parseJuel(body))).toBe(printed);
+    const doc = await parse(`process P { if (${printed}) { } }`);
+    expect(doc.parseResult.parserErrors).toEqual([]);
+    const stmt = doc.parseResult.value.processes[0].body[0];
+    const cond = (stmt as { condition: Expr }).condition;
+    expect(cond.$type === 'RawExpr' && cond.raw).toBe(body);
+  });
+});
+
+describe('a string literal prints with the escapes the grammar reads back to the same characters', () => {
+  it.each([
+    ['a backslash', '${region == "a\\\\b"}', 'a\\b'],
+    ['an embedded quote', '${region == "say \\"hi\\""}', 'say "hi"'],
+  ])('%s', async (_title, body, chars) => {
+    const surface = renderRawFallback(parseJuel(body));
+    const doc = await parse(`process P { if (${surface}) { } }`);
+    expect(doc.parseResult.parserErrors).toEqual([]);
+    const stmt = doc.parseResult.value.processes[0].body[0];
+    const cond = (stmt as { condition: Expr }).condition;
+    expect(
+      isEquality(cond) && isLiteralString(cond.right) && cond.right.value,
+    ).toBe(chars);
   });
 });
 
@@ -141,6 +191,9 @@ describe('parseJuel: totality (never throws)', () => {
     'no-wrapper-at-all',
     '${a == }',
     '${* 5}',
+    '${"a\\',
+    '${(a}',
+    '${a[0}',
   ];
 
   it.each(malformed)('never throws on %j', (body) => {
@@ -215,10 +268,11 @@ describe('idempotence with the grammar renderExpression', () => {
     'order.items[0].price',
     // String literals: verifies the grammar renderer (expression-render.ts) and
     // the transform renderer (juel.ts) agree on the canonical quoted form,
-    // including re-escaping an embedded double quote.
+    // including re-escaping an embedded double quote and an embedded backslash.
     // `greeting` avoids the `label` keyword.
     'x == "hello"',
     'greeting == "say \\"hi\\""',
+    'x == "a\\\\b"',
   ];
 
   it.each(structuredInputs)(

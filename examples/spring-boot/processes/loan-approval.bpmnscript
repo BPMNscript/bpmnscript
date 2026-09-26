@@ -1,5 +1,4 @@
 process loan-approval(
-  label: "Loan Approval",
   documentation: "Decides a consumer loan request. Small loans are screened automatically and only the ones the screening does not clear reach a loan officer.",
   historyTimeToLive: "P180D",
   candidateStarterUsers: "demo",

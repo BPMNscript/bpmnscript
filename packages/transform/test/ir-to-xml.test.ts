@@ -103,6 +103,32 @@ describe('irToXml: bpmn-moddle round-trip', () => {
   });
 });
 
+describe('irToXml: bpmn:Definitions id', () => {
+  it('names bpmn:Definitions after the process id', async () => {
+    const definitions = await parseDefinitionsWithOperaton(
+      await irToXml(minimalProcess([{ kind: 'task', id: 'X' }])),
+    );
+    expect(definitions.id).toBe('Definitions_p');
+  });
+
+  it('resolves a collision against an authored element id and keeps the process element', async () => {
+    const definitions = await parseDefinitionsWithOperaton(
+      await irToXml(minimalProcess([{ kind: 'task', id: 'Definitions_p' }])),
+    );
+    expect(definitions.id).toBe('Definitions_p_2');
+    expect(processOf(definitions).id).toBe('p');
+  });
+
+  it('throws naming the moddle-xml warning when two elements share an id', async () => {
+    const dup = minimalProcess([
+      { kind: 'task', id: 'X' },
+      { kind: 'task', id: 'X' },
+    ]);
+
+    await expect(irToXml(dup)).rejects.toThrow(/duplicate ID/);
+  });
+});
+
 describe('irToXml: Operaton extension attributes', () => {
   it.each([
     'operaton:assignee="demo"',
@@ -290,6 +316,31 @@ describe('irToXml: inclusive and event-based gateway serialization', () => {
     expect(degreeOf(gatewaysXml, 'Fork').out).toBe(3);
     expect(degreeOf(gatewaysXml, 'Merge').in).toBe(3);
     expect(degreeOf(gatewaysXml, 'Race').out).toBe(2);
+  });
+
+  it('writes the default a step carries, on the step', async () => {
+    const stepDefault = processIr(
+      'step-default',
+      [
+        { kind: 'startEvent', id: 'Start' },
+        { kind: 'userTask', id: 'Triage', defaultFlowId: 'F_Triage_B' },
+        { kind: 'userTask', id: 'A' },
+        { kind: 'userTask', id: 'B' },
+      ],
+      [
+        { id: 'F_Start_Triage', sourceRef: 'Start', targetRef: 'Triage' },
+        {
+          id: 'F_Triage_A',
+          sourceRef: 'Triage',
+          targetRef: 'A',
+          conditionExpression: '${a}',
+        },
+        { id: 'F_Triage_B', sourceRef: 'Triage', targetRef: 'B' },
+      ],
+    );
+    const xml = await irToXml(stepDefault);
+    expect(extractNodeBlock(xml, 'Triage')).toContain('default="F_Triage_B"');
+    await expectNoModdleWarnings(xml);
   });
 
   it('names the offending gateway kind when a declared default flow is missing', async () => {
@@ -2211,6 +2262,65 @@ beforeAll(async () => {
   nestedGroupsBlock = extensionBlock(nestedGroupsXml);
 });
 
+describe("irToXml: a timer job's lock is written where BpmnParse.parseTimer reads it", () => {
+  /** `S -> Host -> E` with one timer carrier of the given kind beside it. */
+  const withTimerCarrier = (carrier: FlowElement): BpmnProcess =>
+    processIr(
+      'p',
+      [
+        { kind: 'startEvent', id: 'S' },
+        { kind: 'userTask', id: 'Host' },
+        { kind: 'endEvent', id: 'E' },
+        carrier,
+        { kind: 'endEvent', id: 'Escaped' },
+      ],
+      [
+        edge('S', 'Host'),
+        edge('Host', 'E'),
+        edge(carrier.id, 'Escaped', { id: 'SF_escape' }),
+      ],
+    );
+
+  const timer = timerDef('duration', 'PT1H');
+
+  // The tag keeps the attribute for the async continuation job, which
+  // `parseAsynchronousContinuation` reads there; the definition gains it for
+  // the timer job. Revert: drop the definition attribute and the third column
+  // finds the tag alone.
+  it.each<[string, FlowElement, number]>([
+    [
+      'a non-exclusive boundary timer writes it on the definition and the tag',
+      {
+        ...boundaryEvent('Boundary_Host_timer', 'Host', timer),
+        exclusive: false,
+      },
+      2,
+    ],
+    [
+      'a boundary timer with no lock written writes it nowhere',
+      boundaryEvent('Boundary_Host_timer', 'Host', timer),
+      0,
+    ],
+    [
+      'a non-exclusive await writes it on the definition and the tag',
+      {
+        ...typedEvent('intermediateCatchEvent', 'Wait', timer),
+        exclusive: false,
+      },
+      2,
+    ],
+  ])('%s', async (_title, carrier, occurrences) => {
+    const xml = await irToXml(withTimerCarrier(carrier));
+    const block = extractNodeBlock(xml, carrier.id);
+    expect(block.match(/operaton:exclusive="false"/g) ?? []).toHaveLength(
+      occurrences,
+    );
+    expect(
+      block.includes('<bpmn:timerEventDefinition operaton:exclusive="false">'),
+    ).toBe(occurrences > 0);
+  });
+});
+
 describe('irToXml: input/output parameters', () => {
   it('emits one operaton:inputOutput holding every value form, in IR order', () => {
     expect(nestedGroupsBlock).toMatch(
@@ -2274,7 +2384,7 @@ describe('irToXml: listeners', () => {
       /<operaton:taskListener event="create" expression="\$\{audit\.log\(\)\}"\s*\/>/,
     );
     expect(nestedGroupsBlock).toMatch(
-      /<operaton:taskListener event="timeout" delegateExpression="\$\{escalate\}"\s*>/,
+      /<operaton:taskListener id="Review_timeout_1" event="timeout" delegateExpression="\$\{escalate\}"\s*>/,
     );
     expect(nestedGroupsBlock).toMatch(
       /<operaton:executionListener event="end">\s*<operaton:script scriptFormat="javascript">\s*log\(1\);\s*<\/operaton:script>\s*<\/operaton:executionListener>/,
@@ -2282,8 +2392,43 @@ describe('irToXml: listeners', () => {
 
     // A timeout task listener also carries its timer as a bpmn child.
     expect(nestedGroupsBlock).toMatch(
-      /<operaton:taskListener event="timeout"[^>]*>\s*<bpmn:timerEventDefinition>\s*<bpmn:timeDuration[^>]*>\s*PT2H\s*<\/bpmn:timeDuration>\s*<\/bpmn:timerEventDefinition>\s*<\/operaton:taskListener>/,
+      /<operaton:taskListener id="Review_timeout_1" event="timeout"[^>]*>\s*<bpmn:timerEventDefinition>\s*<bpmn:timeDuration[^>]*>\s*PT2H\s*<\/bpmn:timeDuration>\s*<\/bpmn:timerEventDefinition>\s*<\/operaton:taskListener>/,
     );
+  });
+
+  it('every timeout listener gets its own id, stepping around an id the document already holds', async () => {
+    // `BpmnParse.parseTimeoutTaskListener` refuses a timeout listener with no
+    // id, and `TaskDefinition.addTimeoutTaskListener` keys the listeners by
+    // it, so two on one task need two. The second base is taken by a task.
+    const timeout = (className: string, duration: string) => ({
+      event: 'timeout' as const,
+      binding: classBinding(className),
+      timer: timerDef('duration', duration),
+    });
+    const xmlStr = await irToXml(
+      minimalProcess(
+        [
+          { kind: 'startEvent', id: 'S' },
+          {
+            kind: 'userTask',
+            id: 'Review',
+            taskListeners: [
+              timeout('x.A', 'PT1H'),
+              { event: 'create', binding: classBinding('x.C') },
+              timeout('x.B', 'PT2H'),
+            ],
+          },
+          { kind: 'userTask', id: 'Review_timeout_2' },
+          { kind: 'endEvent', id: 'E' },
+        ],
+        flowChain('S', 'Review', 'Review_timeout_2', 'E'),
+      ),
+    );
+    expect(listenerTags(extensionBlock(xmlStr))).toEqual([
+      '<operaton:taskListener id="Review_timeout_1" event="timeout" class="x.A">',
+      '<operaton:taskListener event="create" class="x.C" />',
+      '<operaton:taskListener id="Review_timeout_2_2" event="timeout" class="x.B">',
+    ]);
   });
 });
 
@@ -2292,6 +2437,8 @@ const STRING_FIELD_TAG =
   /<operaton:field name="greeting" stringValue="hello"\s*\/>/;
 const EXPRESSION_FIELD_TAG =
   /<operaton:field name="greeting">\s*<operaton:expression>\$\{x\}<\/operaton:expression>\s*<\/operaton:field>/;
+const DEFERRED_EXPRESSION_FIELD_TAG =
+  /<operaton:field name="greeting">\s*<operaton:expression>#\{x\}<\/operaton:expression>\s*<\/operaton:field>/;
 
 describe('irToXml: field injection', () => {
   type Carrier = 'service task' | 'execution listener' | 'task listener';
@@ -2329,6 +2476,12 @@ describe('irToXml: field injection', () => {
       'service task',
       '${x}',
       EXPRESSION_FIELD_TAG,
+    ],
+    [
+      'a #{...} value on a class-bound service task writes an operaton:expression child too',
+      'service task',
+      '#{x}',
+      DEFERRED_EXPRESSION_FIELD_TAG,
     ],
     [
       'a literal value on a class-bound execution listener writes the stringValue attribute',
@@ -2622,6 +2775,23 @@ describe('irToXml: task kinds', () => {
     expect(rate).toContain('operaton:decisionRefVersion="3"');
     expect(rate).toContain('operaton:mapDecisionResult="singleEntry"');
     expect(rate).toContain('operaton:resultVariable="risk"');
+  });
+
+  it('a decision binding with no version or result-mapping modifier writes decisionRef alone', async () => {
+    const xml = await irToXml(
+      around({
+        kind: 'serviceTask',
+        id: 'Rate',
+        element: 'businessRule',
+        binding: { kind: 'decision', decisionRef: 'riskRating' },
+      }),
+    );
+    expect(extractNodeBlock(xml, 'Rate')).toBe(
+      '<bpmn:businessRuleTask id="Rate" name="Rate" operaton:decisionRef="riskRating">\n' +
+        '      <bpmn:incoming>F1</bpmn:incoming>\n' +
+        '      <bpmn:outgoing>F2</bpmn:outgoing>\n' +
+        '    </bpmn:businessRuleTask>',
+    );
   });
 
   it('re-reads through the Operaton descriptor with no moddle warnings', async () => {

@@ -6,8 +6,7 @@
 //     the engine requires of a shell task;
 //   - a send task running a shell command with an argument, the variables its
 //     output and exit code land in, and `wait` spelled the one way the engine
-//     reads as true, beside a `resultVariable` the engine accepts on the tag
-//     and never reads for a shell task;
+//     reads as true;
 //   - a service task mailing the on-call engineer: `to`, `cc`, a `subject`
 //     given as an expression, a `text` literal, and an `html` body given as an
 //     expression, so both value slots a field takes sit on one task.
@@ -28,7 +27,7 @@ process incident-report {
     field command = "rate-severity"
   }
 
-  send PageOnCall(label: "Page the on-call engineer", type: "shell", resultVariable: "pageResult") {
+  send PageOnCall(label: "Page the on-call engineer", type: "shell") {
     field command = "page"
     field arg1 = "oncall"
     field outputVariable = "pageReceipt"

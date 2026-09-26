@@ -117,7 +117,7 @@ describe('compileDslToBpmn', () => {
       { ok: true, reimportsAs: 'p' },
     ],
   ])('%s', async (_title, source, expected) => {
-    const result = await compileDslToBpmn(source, 'test.bpmnscript', '0.0.1');
+    const result = await compileDslToBpmn(source, '0.0.1');
 
     expect(result.ok).toBe(expected.ok);
     if (expected.ok) {
@@ -139,6 +139,34 @@ describe('compileDslToBpmn', () => {
     expect(result.diagnostics.map((d) => d.message.length > 0)).toEqual(
       expected.diagnostics.map(() => true),
     );
+  });
+
+  // `bpmn-auto-layout`'s grid solver throws on this validator-clean `goto`
+  // restructuring (a mixed true/false/expression `else if` chain feeding one
+  // `goto` each); the source is otherwise unremarkable.
+  test('a layouter crash on a validator-clean goto graph still compiles, without a diagram, and reports why', async () => {
+    const source = `process p {
+  if (true) {
+    goto L
+  } else if (a.b) {
+    goto U
+  } else if (false) {
+  }
+  receive R
+  end E
+  emit compensation L
+  user U
+  end H
+}
+`;
+
+    const result = await compileDslToBpmn(source, '0.0.1');
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.output).toContain('<bpmn:process');
+    expect(result.output).not.toContain('bpmndi:');
+    expect(result.layoutWarning).toContain('bpmn-auto-layout');
   });
 });
 
@@ -230,7 +258,7 @@ describe('decompileBpmnToDsl', () => {
       { ok: true, warnings: [], mentions: [] },
     ],
   ])('%s', async (_title, xml, expected) => {
-    const result = await decompileBpmnToDsl(xml, 'input.bpmn');
+    const result = await decompileBpmnToDsl(xml);
 
     expect(result.ok).toBe(expected.ok);
     if (expected.ok) {

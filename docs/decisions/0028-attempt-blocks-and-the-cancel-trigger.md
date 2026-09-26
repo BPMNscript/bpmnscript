@@ -74,7 +74,7 @@ A handler on a block whose body holds no cancel end warns for the same reason, s
   `CancelEndEventActivityBehavior.execute` throws the compensation synchronously, and only its `doLeave` hands the run to the handler.
 - Good, because a block written with the new head and carrying no cancel anywhere is an ordinary block of work to the engine, which is what lets an imported transaction round-trip unchanged.
 - Good, because such a block may carry its own `on compensation`, so an enclosing scope can undo it in turn.
-  Operaton's `hasCompensationEventSubprocess` asks only whether the handler is a sub-process scope triggered by an event, never what tag the block it undoes carries.
+  Operaton's `CompensationUtil.hasCompensationEventSubprocess` asks only whether the handler is a sub-process scope triggered by an event, never what tag the block it undoes carries.
 - Neutral, because `method` and `protocol` are reported on import and never written back, since `parseTransaction` reads no attribute of its own and the imported process runs exactly as the source document does.
 - Bad, because one more ordinary English word stops being available as an identifier anywhere in a file.
 

@@ -80,5 +80,9 @@ The CFG analysis utility lives at `packages/transform/src/cfg-analysis.ts` and e
 
 Amended by ADR-0036, which lets a bare authored terminal print inline in a guard clause when the split's own route is its only incoming flow, rather than staying a `goto`.
 
+Amended by ADR-0052, which continues a split whose every route is conditioned at the enclosing construct's stop node when a route stays inside it, so only the leaving routes print as jumps.
+
+Amended by ADR-0053, which prints a statement with more than one route out as the fork block the engine runs it as, keeps each route's condition on its jump where a fork or race degrades, under a marker line naming the split, and reports a split with no route out, a split routing back into itself, and a jump across a branch border.
+
 RPST decomposition is left for later.
 It would recover more structured patterns, but the dominator-based catalog with a `goto` fallback already covers the current scope, so the added machinery is not yet justified.

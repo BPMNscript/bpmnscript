@@ -77,4 +77,6 @@ The import tables in `packages/transform/test/xml-to-ir.test.ts` pin the merge, 
 
 Amends ADR-0014 (the refusal list gains `UnsupportedAssignmentError`; the warned list narrows the resource-assignment drop to the roles the engine never reads and gains the quantity attributes; `startQuantity` leaves the unreported list).
 
+Amended by ADR-0054, under which an `operaton:potentialStarter` on the process is read the way this decision reads a `bpmn:potentialOwner`: its formal expression is split as `BpmnParse.parseStartAuthorization` splits it, onto `candidateStarterUsers` and `candidateStarterGroups` after the attributes' own, with one warning per element naming the rewrite.
+
 Related decisions: ADR-0022 (engine attributes as named IR fields, where `assignee`, `candidateUsers`, and `candidateGroups` live).

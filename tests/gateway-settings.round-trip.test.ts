@@ -37,7 +37,11 @@ const GATEWAY_SETTINGS: Record<string, JobSettings> = {
   },
   'Gateway_loan-application_3_1_split': {},
   'Gateway_loan-application_3_1_join': {},
-  'Gateway_loan-application_4_0_loop': { exclusive: false, jobPriority: '10' },
+  'Gateway_loan-application_4_0_loop': {
+    asyncBefore: true,
+    exclusive: false,
+    jobPriority: '10',
+  },
   'Gateway_loan-application_5_fork': { asyncBefore: true },
   'Gateway_loan-application_5_join': {
     asyncAfter: true,
@@ -45,6 +49,7 @@ const GATEWAY_SETTINGS: Record<string, JobSettings> = {
     retryCycle: 'R2/PT1M',
   },
   'Gateway_loan-application_6_fork': {
+    asyncBefore: true,
     jobPriority: '${selfEmployed ? 90 : 50}',
   },
   'Gateway_loan-application_6_join': { asyncBefore: true },
@@ -121,6 +126,7 @@ describe('the frozen gateway-settings contract', () => {
         'operaton:failedJobRetryTimeCycle',
         'R3/PT10M',
       ],
+      ['Gateway_loan-application_4_0_loop', 'operaton:asyncBefore', 'true'],
       ['Gateway_loan-application_4_0_loop', 'operaton:exclusive', 'false'],
       ['Gateway_loan-application_4_0_loop', 'operaton:jobPriority', '10'],
       ['Gateway_loan-application_5_fork', 'operaton:asyncBefore', 'true'],
@@ -131,6 +137,7 @@ describe('the frozen gateway-settings contract', () => {
         'operaton:failedJobRetryTimeCycle',
         'R2/PT1M',
       ],
+      ['Gateway_loan-application_6_fork', 'operaton:asyncBefore', 'true'],
       [
         'Gateway_loan-application_6_fork',
         'operaton:jobPriority',
@@ -157,9 +164,9 @@ describe('the frozen gateway-settings contract', () => {
       '} else if (creditScore >= 600) {',
       'while (documentsMissing) (asyncAfter: true, retryCycle: "R3/PT10M") {',
       'if (selfEmployed) {',
-      '} while (referencesPending) (exclusive: false, jobPriority: 10)',
+      '} while (referencesPending) (asyncBefore: true, exclusive: false, jobPriority: 10)',
       'parallel (asyncBefore: true, joinAsyncAfter: true, joinExclusive: false, joinRetryCycle: "R2/PT1M") {',
-      'parallel (jobPriority: "${selfEmployed ? 90 : 50}", joinAsyncBefore: true) {',
+      'parallel (asyncBefore: true, jobPriority: "${selfEmployed ? 90 : 50}", joinAsyncBefore: true) {',
       'if (amount > 250000) {',
       'await (asyncBefore: true, jobPriority: 5, joinAsyncBefore: true) {',
     ]);
@@ -201,6 +208,7 @@ describeImportFirst(
       expect(first.dsl).toBe(
         [
           'process p {',
+          '  var creditScore: any',
           '  start Applied',
           '  if (creditScore >= 700) (jobPriority: 7, joinAsyncBefore: true) {',
           '    user Approve(assignee: "demo")',

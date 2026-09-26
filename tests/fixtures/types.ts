@@ -11,9 +11,12 @@ export interface FixtureAdapter {
   // Returns when the runtime accepts deployments.
   start(): Promise<void>;
 
+  // A tenant id isolates the deployment's message-start subscriptions from
+  // every other tenant's; without one the deployment is shared.
   deploy(
     xmlPath: string,
     deploymentName?: string,
+    tenantId?: string,
   ): Promise<{ deploymentId: string }>;
 
   startProcess(

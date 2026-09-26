@@ -1,24 +1,27 @@
-import {
-  createBpmnScriptServices,
-  BpmnScriptLanguageMetaData,
-} from '@bpmn-script/language';
+import { BpmnScriptLanguageMetaData } from '@bpmn-script/language';
 import type { Model } from '@bpmn-script/language';
-import { NodeFileSystem } from 'langium/node';
-import { URI } from 'langium';
 import chalk from 'chalk';
 import * as fs from 'node:fs/promises';
 import * as fsSync from 'node:fs';
 import * as path from 'node:path';
 
-import { astToIr, irToXml } from '@bpmn-script/transform';
-import { CLI_VERSION, diagnosticMessage, resolveOutputPath } from './util.js';
+import { astToIr, irToXml, LayoutError } from '@bpmn-script/transform';
+import {
+  CLI_VERSION,
+  SEVERITY_ERROR,
+  SEVERITY_WARNING,
+  buildDocument,
+  diagnosticMessage,
+  formatDiagnostic,
+  guardOutputPath,
+  refuseDirectoryInput,
+  resolveOutputPath,
+} from './util.js';
 
 export type BuildOptions = {
   output?: string;
+  force?: boolean;
 };
-
-const SEVERITY_ERROR = 1;
-const SEVERITY_WARNING = 2;
 
 export async function buildAction(
   fileName: string,
@@ -30,30 +33,28 @@ export async function buildAction(
     console.error(chalk.red(`Error: file not found: ${fileName}`));
     process.exit(2);
   }
+  refuseDirectoryInput(resolvedInput, fileName);
 
+  // The document loader below picks its language service by extension, so a
+  // wrong one cannot merely warn: it fails a few lines later with an internal
+  // Langium message ("service registry contains no services").
   const extensions: readonly string[] =
     BpmnScriptLanguageMetaData.fileExtensions;
   if (!extensions.includes(path.extname(resolvedInput))) {
     console.error(
-      chalk.yellow(
-        `Warning: expected a file with one of these extensions: ${extensions.join(', ')}`,
+      chalk.red(
+        `Error: expected a file with one of these extensions: ${extensions.join(', ')}`,
       ),
     );
+    process.exit(2);
   }
 
   const outPath = resolveOutputPath(resolvedInput, '.bpmn', opts.output);
-
-  const services = createBpmnScriptServices(NodeFileSystem).BpmnScript;
+  guardOutputPath(resolvedInput, outPath, opts);
 
   let document;
   try {
-    document =
-      await services.shared.workspace.LangiumDocuments.getOrCreateDocument(
-        URI.file(resolvedInput),
-      );
-    await services.shared.workspace.DocumentBuilder.build([document], {
-      validation: true,
-    });
+    document = await buildDocument(resolvedInput);
   } catch (err) {
     console.error(
       chalk.red(
@@ -69,13 +70,19 @@ export async function buildAction(
   if (errors.length > 0) {
     console.error(chalk.red('Validation errors:'));
     for (const diag of errors) {
-      console.error(
-        chalk.red(
-          `  line ${diag.range.start.line + 1}: ${diagnosticMessage(diag)}` +
-            ` [${document.textDocument.getText(diag.range)}]`,
-        ),
-      );
+      console.error(chalk.red(formatDiagnostic(document, diag)));
     }
+    process.exit(1);
+  }
+
+  // A comment-only or blank source parses without error into a model with no
+  // processes; catching that here, on the parsed model, keeps this message
+  // for every such case instead of leaking astToIr's own internal wording.
+  // Checked only once the document is error-free, so a keyword typo (which
+  // also yields zero Process nodes) reports its real parser error instead.
+  const ast = document.parseResult?.value as Model;
+  if (ast.processes.length === 0) {
+    console.error(chalk.red('Error: the file has no process'));
     process.exit(1);
   }
 
@@ -90,33 +97,30 @@ export async function buildAction(
     );
   }
 
-  const ast = document.parseResult?.value as Model;
-
   let ir;
   try {
     ir = astToIr(ast);
   } catch (err) {
-    console.error(
-      chalk.red(
-        `Error: AST to IR conversion failed: ${(err as Error).message}`,
-      ),
-    );
+    console.error(chalk.red(`Error: ${(err as Error).message}`));
     process.exit(1);
   }
 
-  let xml;
+  let xml: string;
   try {
-    xml = await irToXml(ir, {
-      sourceFileName: path.basename(resolvedInput),
-      exporterVersion: CLI_VERSION,
-    });
+    xml = await irToXml(ir, { exporterVersion: CLI_VERSION });
   } catch (err) {
+    if (!(err instanceof LayoutError)) {
+      console.error(chalk.red(`Error: ${(err as Error).message}`));
+      process.exit(1);
+    }
+    // The document itself is fine (Operaton deploys it); only the auto-layout
+    // step failed, so the file is written without a diagram instead of lost.
+    xml = err.xml;
     console.error(
-      chalk.red(
-        `Error: IR to XML conversion failed: ${(err as Error).message}`,
+      chalk.yellow(
+        `Warning: no diagram could be drawn for this process (${err.message}); the file deploys but opens without shapes in a modeler`,
       ),
     );
-    process.exit(1);
   }
 
   try {

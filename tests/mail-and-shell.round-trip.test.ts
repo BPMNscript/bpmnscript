@@ -1,9 +1,7 @@
 // The three tags that take a `type` binding each carry one of the two
 // behaviours Operaton builds itself, with the fields the engine sets on it, so
 // a field that stops travelling in one direction or a type that comes back in
-// another spelling fails the whole-object comparison below. A dropped
-// `resultVariable` sits beside the binding, so the frozen tag, the printed
-// head, and the fixture's idempotence check catch that one instead.
+// another spelling fails the whole-object comparison below.
 
 import { describe, it, expect } from 'vitest';
 
@@ -80,7 +78,7 @@ describe('the frozen mail-and-shell binding contract', () => {
         '      </bpmn:extensionElements>',
     );
     expect(rt.frozenXml).toContain(
-      '<bpmn:sendTask id="PageOnCall" name="Page the on-call engineer" operaton:type="shell" operaton:resultVariable="pageResult">\n' +
+      '<bpmn:sendTask id="PageOnCall" name="Page the on-call engineer" operaton:type="shell">\n' +
         '      <bpmn:extensionElements>\n' +
         '        <operaton:field name="command" stringValue="page" />\n' +
         '        <operaton:field name="arg1" stringValue="oncall" />\n' +
@@ -117,7 +115,7 @@ describe('the frozen mail-and-shell binding contract', () => {
     expect(lines).toEqual([
       'decide RateSeverity(label: "Rate the severity", type: "shell") {',
       'field command = "rate-severity"',
-      'send PageOnCall(label: "Page the on-call engineer", type: "shell", resultVariable: "pageResult") {',
+      'send PageOnCall(label: "Page the on-call engineer", type: "shell") {',
       'field command = "page"',
       'field arg1 = "oncall"',
       'field outputVariable = "pageReceipt"',

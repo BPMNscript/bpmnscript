@@ -2,15 +2,18 @@
 // moment it lands. A few examples are also the only place a construct's
 // desugared shape is pinned without a golden fixture, so those keep a block of
 // their own below.
+// The round-trip block below is the examples' counterpart of the golden pair
+// suites' import path: same hops, over the directory instead of one fixture.
 
 import { describe, it, expect } from 'vitest';
 import { readdirSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { astToIr, irToXml } from '@bpmn-script/transform';
+import { astToIr, irToDsl, irToXml, xmlToIr } from '@bpmn-script/transform';
 
-import { parse, validate } from './helpers/pipeline.js';
+import { parse, parseToAst, validate } from './helpers/pipeline.js';
+import { normalizeIr } from './helpers/normalize-ir.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -41,6 +44,48 @@ describe('every deployable example', () => {
     );
     expect(diagnostics).toEqual([]);
   });
+});
+
+describe("every example round-trips through the tool's own output without a word", () => {
+  it.each(EXAMPLES)(
+    "%s round-trips through the tool's own output without a word",
+    async (file) => {
+      const document = await parse(
+        readFileSync(resolve(PROCESSES_DIR, file), 'utf-8'),
+      );
+      expect(document.parseResult.parserErrors).toEqual([]);
+      const ir1 = astToIr(document.parseResult.value);
+
+      const xml1 = await irToXml(ir1);
+      const { ir: ir2, warnings: importWarnings } = await xmlToIr(xml1);
+      const { source: dslPrime, warnings: printWarnings } = irToDsl(ir2);
+      const ir3 = astToIr(await parseToAst(dslPrime));
+      const { diagnostics } = await validate(dslPrime);
+
+      // Mapped rather than compared raw: a failure then names the id and the
+      // category or message, not a range and offset nobody reads.
+      expect({
+        importWarnings: importWarnings.map((w) => ({
+          elementId: w.elementId,
+          category: w.category,
+        })),
+        printWarnings: printWarnings.map((w) => ({
+          elementId: w.elementId,
+          category: w.category,
+        })),
+        dslPrimeDiagnostics: diagnostics.map((d) => ({
+          severity: d.severity,
+          message: d.message,
+        })),
+      }).toEqual({
+        importWarnings: [],
+        printWarnings: [],
+        dslPrimeDiagnostics: [],
+      });
+
+      expect(normalizeIr(ir3)).toEqual(normalizeIr(ir1));
+    },
+  );
 });
 
 describe('construct shapes pinned only by a deployable example', () => {

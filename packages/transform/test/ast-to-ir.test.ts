@@ -378,6 +378,27 @@ describe('astToIr: while loop', () => {
     expect(outgoing).toHaveLength(2);
     expect(flow(result, loopId, 'Done')).toBeDefined();
   });
+
+  // Revert: the back-edge added without `body.exitFlowId` -> the inner exit
+  // loses its reserved id, and `irToXml` refuses the default the inner gateway
+  // still declares.
+  it("a body ending in a loop carries that loop's reserved exit on the back-edge", async () => {
+    const outerLoop = makeGatewayLoopId('P_0');
+    const innerLoop = makeGatewayLoopId('P_0_0');
+    const result = await ir(
+      `process P { while (x) { while (b) { user A } } user C }`,
+    );
+    expect(result.sequenceFlows).toEqual([
+      edge(innerLoop, 'A', { condition: '${b}' }),
+      edge('A', innerLoop),
+      edge(outerLoop, innerLoop, { condition: '${x}' }),
+      edge(innerLoop, outerLoop, { id: makeDefaultFlowId(innerLoop) }),
+      edge(outerLoop, 'C', { id: makeDefaultFlowId(outerLoop) }),
+      edge('StartEvent_P', outerLoop),
+      edge('C', 'EndEvent_P'),
+    ]);
+    await expect(irToXml(result)).resolves.toBeDefined();
+  });
 });
 
 describe('astToIr: do-while loop', () => {
@@ -770,6 +791,16 @@ describe('astToIr: script task', () => {
   ])('%s', async (_title, source) => {
     expect(only(await ir(source), 'scriptTask')).toEqual(
       scriptTask('total', 'javascript', 'total = amount * 1.1;\n'),
+    );
+  });
+
+  // `ScriptingEngines.getScriptEngineForLanguage` lowercases the language
+  // before it looks an engine up, so a mixed-case tag still lowers to the
+  // canonical spelling rather than being carried through as written.
+  it('a mixed-case fence tag lowers to its canonical scriptFormat', async () => {
+    const source = 'process P { script total ```JS\nx = 1;\n``` }';
+    expect(only(await ir(source), 'scriptTask')).toEqual(
+      scriptTask('total', 'javascript', 'x = 1;\n'),
     );
   });
 });
@@ -1226,7 +1257,8 @@ describe('astToIr: call activity lowering', () => {
         label: "Fulfil order",
         process: "fulfilment-process",
         binding: deployment,
-        businessKey: "\${execution.processBusinessKey}"
+        businessKey: "\${execution.processBusinessKey}",
+        mapperDelegate: callMapperBean
       ) {
         in *
         in orderId
@@ -1245,6 +1277,7 @@ describe('astToIr: call activity lowering', () => {
       calledElement: 'fulfilment-process',
       binding: { kind: 'deployment' },
       businessKey: '${execution.processBusinessKey}',
+      mapper: { kind: 'delegateExpression', expression: '${callMapperBean}' },
       inMappings: [
         { kind: 'all' },
         { kind: 'variable', source: 'orderId', target: 'orderId' },
@@ -1277,6 +1310,22 @@ describe('astToIr: call activity lowering', () => {
         target: 'doubled',
       },
     ]);
+  });
+
+  it('lowers a literal mapping source to its bare text, not wrapped in ${...}', async () => {
+    const result = await ir(
+      `process p { call X(process: "p") { in y = "u" } }`,
+    );
+    expect(only(result, 'callActivity').inMappings).toEqual([
+      { kind: 'expression', sourceExpression: 'u', target: 'y' },
+    ]);
+  });
+
+  it('lowers a literal businessKey to its bare text, not wrapped in ${...}', async () => {
+    const result = await ir(
+      `process p { call F(process: "fulfilment", businessKey: "abc") }`,
+    );
+    expect(only(result, 'callActivity').businessKey).toBe('abc');
   });
 
   /** The binding a `call X` carrying the given extra member lowers to. */
@@ -1451,6 +1500,7 @@ describe('astToIr: on-handler triggers', () => {
     ['on error', errorDef()],
     ['on error("")', errorDef('')],
     ['on error(X, coed: c)', errorDef('X')],
+    ['on escalation', { kind: 'escalation' }],
     ['on escalation(LS, code: v)', escalationDef('LS', 'v')],
     [
       'on error(PF, code: c, message: m)',
@@ -2262,6 +2312,51 @@ describe('astToIr: engine attributes on `on` handlers, placed by host slot', () 
     expect(start.jobPriority).toBeUndefined();
   });
 
+  // The timer job is the start event's: `BpmnParse.parseTimer` takes its
+  // priority off that activity and `DefaultFailedJobParseListener.parseStartEvent`
+  // its retry cycle off that element, and neither looks at the enclosing
+  // sub-process. Revert: hand the timer keys to the sub-process and the start
+  // in both rows loses them.
+  it.each([
+    [
+      'a timer handler puts the three timer-job keys on its start and nothing on the sub-process',
+      '',
+      {},
+    ],
+    [
+      'the async flags stay on the sub-process, whose continuation job they create',
+      'asyncBefore: true, asyncAfter: true, ',
+      { asyncBefore: true, asyncAfter: true },
+    ],
+  ])('%s', async (_title, asyncFlags, onSubProcess) => {
+    const result = await afterA(
+      `on timer(every: "R/PT1H", ${asyncFlags}jobPriority: 5, exclusive: false, retryCycle: "R1/PT1M", alongside) { service R(class: "x.R") }`,
+    );
+    const handlerId = makeEventSubProcessId('p_1');
+    const startId = makeStartEventId(handlerId, new Set());
+    const endId = makeEndEventId(handlerId, new Set());
+    expect(subProcess(result, handlerId)).toEqual({
+      kind: 'subProcess',
+      id: handlerId,
+      triggeredByEvent: true,
+      flowElements: [
+        {
+          kind: 'startEvent',
+          id: startId,
+          eventDefinition: timerDef('cycle', 'R/PT1H'),
+          isInterrupting: false,
+          exclusive: false,
+          jobPriority: '5',
+          retryCycle: 'R1/PT1M',
+        },
+        serviceTask('R', classBinding('x.R')),
+        { kind: 'endEvent', id: endId },
+      ],
+      sequenceFlows: [edge(startId, 'R'), edge('R', endId)],
+      ...onSubProcess,
+    });
+  });
+
   it('places a hosted handler engine attributes on the boundary event', async () => {
     const result = await afterA(
       'on A: error(PF, asyncBefore: true, jobPriority: 50) { service R(class: "x.R") }',
@@ -2270,25 +2365,6 @@ describe('astToIr: engine attributes on `on` handlers, placed by host slot', () 
     const boundary = only(result, 'boundaryEvent');
     expect(boundary.asyncBefore).toBe(true);
     expect(boundary.jobPriority).toBe('50');
-  });
-
-  // A host-less handler lowers to an event sub-process, which carries
-  // `operaton:inputOutput` the way any sub-process does. Reachable on import
-  // too: `mapEventSubProcess` reads the mapping, so dropping it here would
-  // break the round trip in silence.
-  it('carries a host-less handler io parameters onto the event sub-process node', async () => {
-    const result = await afterA(
-      'on error(PF) { input reason = "boom" output code = "c" } { service R(class: "x.R") }',
-      'error PF',
-    );
-    const handler = subProcess(result, makeEventSubProcessId('p_1'));
-    expect(handler.inputParameters).toEqual([
-      ioParam('reason', textValue('boom')),
-    ]);
-    expect(handler.outputParameters).toEqual([ioParam('code', textValue('c'))]);
-
-    const start = only(handler, 'startEvent');
-    expect(start).not.toHaveProperty('inputParameters');
   });
 });
 
@@ -2315,9 +2391,24 @@ describe('astToIr: input/output parameter value forms', () => {
       value: textValue('${amount}'),
     },
     {
-      form: 'a dotted bareword as its plain path, stripping the ${...} wrapper',
+      form: 'a #{...} template body verbatim as text',
+      written: '"#{amount}"',
+      value: textValue('#{amount}'),
+    },
+    {
+      form: 'a bareword variable wrapped in ${...}, evaluated rather than read as fixed text',
+      written: 'amount',
+      value: textValue('${amount}'),
+    },
+    {
+      form: 'a dotted bareword wrapped in ${...} as an EL path, not stripped',
       written: 'com.example.X',
-      value: textValue('com.example.X'),
+      value: textValue('${com.example.X}'),
+    },
+    {
+      form: 'an integer literal wrapped in ${...} so the engine reads it as a number, not fixed text',
+      written: '5',
+      value: textValue('${5}'),
     },
     {
       form: 'a fenced script as its normalized format and inner code',
@@ -2328,6 +2419,11 @@ describe('astToIr: input/output parameter value forms', () => {
       form: 'a list literal item by item, in source order',
       written: '["x", "y"]',
       value: listValue([textValue('x'), textValue('y')]),
+    },
+    {
+      form: 'a list item by its own form: a bareword wrapped, a literal bare',
+      written: '[amount, "s"]',
+      value: listValue([textValue('${amount}'), textValue('s')]),
     },
     {
       form: 'an empty list literal as an empty item list',
@@ -2522,7 +2618,7 @@ describe('astToIr: task listeners', () => {
       `process p { user T {
         on start(class: "x.S")
         on create(class: "x.C")
-        on assign(class: "x.A")
+        on assignment(class: "x.A")
         on end(class: "x.E")
         on complete(class: "x.K")
         on update(class: "x.U")
@@ -2536,7 +2632,7 @@ describe('astToIr: task listeners', () => {
     ]);
     expect(task.taskListeners?.map((l) => l.event)).toEqual([
       'create',
-      'assign',
+      'assignment',
       'complete',
       'update',
       'delete',
@@ -2545,11 +2641,11 @@ describe('astToIr: task listeners', () => {
 
   it('reads every binding form the execution listeners read', async () => {
     const result = await ir(
-      'process p { user T { on create(expression: "${bean.run()}") on assign ```groovy\nx = 1\n``` } }',
+      'process p { user T { on create(expression: "${bean.run()}") on assignment ```groovy\nx = 1\n``` } }',
     );
     expect(only(result, 'userTask').taskListeners).toEqual([
       { event: 'create', binding: exprBinding('${bean.run()}') },
-      { event: 'assign', binding: scriptValue('groovy', 'x = 1\n') },
+      { event: 'assignment', binding: scriptValue('groovy', 'x = 1\n') },
     ]);
   });
 
@@ -2677,7 +2773,7 @@ describe('astToIr: field injection and form references', () => {
     );
     const unbound = await ir(
       'process p { service Run(expression: "${bean.run()}") { field greeting = "hello" }' +
-        ' user Review(formRef: "review-form") { on assign ```groovy\nx = 1\n``` { field role = "clerk" } } }',
+        ' user Review(formRef: "review-form") { on assignment ```groovy\nx = 1\n``` { field role = "clerk" } } }',
     );
     const user = only(unbound, 'userTask');
 
@@ -3033,32 +3129,6 @@ describe('astToIr: conditioned parallel branches', () => {
     expect(result.flowElements.some((fe) => fe.id === joinId)).toBe(false);
   });
 
-  it('a condition on one branch turns both gateways inclusive and adds the default flow to the join', async () => {
-    const result = await ir(
-      `process P { parallel { if (a > 1) { user A } { user B } } }`,
-    );
-
-    const gateways = result.flowElements.filter(
-      (fe): fe is InclusiveGateway => fe.kind === 'inclusiveGateway',
-    );
-    expect(gateways.map((g) => g.id)).toEqual([forkId, joinId]);
-    expect(gateways[0]!.defaultFlowId).toBe(defaultFlowId);
-    expect('defaultFlowId' in gateways[1]!).toBe(false);
-    expect(
-      result.flowElements.some((fe) => fe.kind === 'parallelGateway'),
-    ).toBe(false);
-
-    expect(result.sequenceFlows).toEqual([
-      edge(forkId, 'A', { condition: '${a > 1}' }),
-      edge('A', joinId),
-      edge(forkId, 'B'),
-      edge('B', joinId),
-      edge(forkId, joinId, { id: defaultFlowId }),
-      edge('StartEvent_P', forkId),
-      edge(joinId, 'EndEvent_P'),
-    ]);
-  });
-
   it('the first else branch takes the reserved default flow id and a second else is a plain branch', async () => {
     const result = await ir(
       `process P { parallel { if (a > 1) { user A } else { user B } else { user C } } }`,
@@ -3078,7 +3148,7 @@ describe('astToIr: conditioned parallel branches', () => {
     ).toEqual([]);
   });
 
-  it('an empty conditioned branch routes its condition straight to the join, and the join survives only while something can still reach it', async () => {
+  it('an empty conditioned branch routes its condition straight to the join', async () => {
     const result = await ir(
       `process P { parallel { if (a > 1) { } { user B } } }`,
     );
@@ -3086,24 +3156,91 @@ describe('astToIr: conditioned parallel branches', () => {
       result.sequenceFlows.filter(
         (f) => f.sourceRef === forkId && f.targetRef === joinId,
       ),
-    ).toEqual([
-      edge(forkId, joinId, { condition: '${a > 1}' }),
-      edge(forkId, joinId, { id: defaultFlowId }),
-    ]);
+    ).toEqual([edge(forkId, joinId, { condition: '${a > 1}' })]);
+  });
 
-    // Every branch ends, so nothing walks out of the fork: written with an
-    // otherwise, the fork needs no fallback flow and the join is pruned;
-    // written without one, the invented fallback keeps the join alive. The
-    // validator's termination guard reads the same rule the other way round.
-    const otherwise = await ir(
-      `process P { parallel { if (a > 1) { end X } else { end Y } } }`,
-    );
-    expect(otherwise.flowElements.some((fe) => fe.id === joinId)).toBe(false);
-
-    const noOtherwise = await ir(
-      `process P { parallel { if (a > 1) { end X } { end Y } } }`,
-    );
-    expect(noOtherwise.flowElements.some((fe) => fe.id === joinId)).toBe(true);
+  // A condition on one branch makes both gateways inclusive. Every element
+  // and flow of the process, so a row pins where the fallback runs and that
+  // none is written where an unconditioned sibling would leave it dead.
+  // Revert: the reservation back to any inclusive fork -> the unconditioned
+  // rows find a fallback.
+  const inclusive = (id: string, flowId?: string): InclusiveGateway => ({
+    kind: 'inclusiveGateway',
+    id,
+    ...(flowId === undefined ? {} : { defaultFlowId: flowId }),
+  });
+  const start: FlowElement = { kind: 'startEvent', id: 'StartEvent_P' };
+  const end: FlowElement = { kind: 'endEvent', id: 'EndEvent_P' };
+  const task = (id: string): FlowElement => ({ kind: 'userTask', id });
+  const stop = (id: string): FlowElement => ({ kind: 'endEvent', id });
+  it.each([
+    [
+      'an unconditioned sibling always runs, so no fallback is reserved',
+      'parallel { if (a > 1) { user A } { user B } }',
+      [start, inclusive(forkId), inclusive(joinId), task('A'), task('B'), end],
+      [
+        edge(forkId, 'A', { condition: '${a > 1}' }),
+        edge('A', joinId),
+        edge(forkId, 'B'),
+        edge('B', joinId),
+        edge('StartEvent_P', forkId),
+        edge(joinId, 'EndEvent_P'),
+      ],
+    ],
+    [
+      'every branch conditioned reserves the fallback straight to the join',
+      'parallel { if (a > 1) { user A } if (b) { user B } }',
+      [
+        start,
+        inclusive(forkId, defaultFlowId),
+        inclusive(joinId),
+        task('A'),
+        task('B'),
+        end,
+      ],
+      [
+        edge(forkId, 'A', { condition: '${a > 1}' }),
+        edge('A', joinId),
+        edge(forkId, 'B', { condition: '${b}' }),
+        edge('B', joinId),
+        edge(forkId, joinId, { id: defaultFlowId }),
+        edge('StartEvent_P', forkId),
+        edge(joinId, 'EndEvent_P'),
+      ],
+    ],
+    [
+      'with every branch ending, an unconditioned sibling leaves nothing to reach the join',
+      'parallel { if (a > 1) { end X } { end Y } }',
+      [start, inclusive(forkId), stop('X'), stop('Y')],
+      [
+        edge(forkId, 'X', { condition: '${a > 1}' }),
+        edge(forkId, 'Y'),
+        edge('StartEvent_P', forkId),
+      ],
+    ],
+    [
+      'with every branch ending and conditioned, the fallback alone keeps the join',
+      'parallel { if (a > 1) { end X } if (b) { end Y } }',
+      [
+        start,
+        inclusive(forkId, defaultFlowId),
+        inclusive(joinId),
+        stop('X'),
+        stop('Y'),
+        end,
+      ],
+      [
+        edge(forkId, 'X', { condition: '${a > 1}' }),
+        edge(forkId, 'Y', { condition: '${b}' }),
+        edge(forkId, joinId, { id: defaultFlowId }),
+        edge('StartEvent_P', forkId),
+        edge(joinId, 'EndEvent_P'),
+      ],
+    ],
+  ])('%s', async (_title, statement, elements, flows) => {
+    const result = await ir(`process P { ${statement} }`);
+    expect(result.flowElements).toEqual(elements);
+    expect(result.sequenceFlows).toEqual(flows);
   });
 });
 

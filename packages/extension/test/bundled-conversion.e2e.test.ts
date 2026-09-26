@@ -70,7 +70,7 @@ describe('bundled asset resolution and transform under the shim', () => {
       '  const bpmnPath = process.argv[2];',
       "  const xml = readFileSync(bpmnPath, 'utf-8');",
       '  const { ir } = await xmlToIr(xml);',
-      "  const bpmnOut = await irToXml(ir, { sourceFileName: 'verify', exporterVersion: '0.0.1' });",
+      "  const bpmnOut = await irToXml(ir, { exporterVersion: '0.0.1' });",
       "  process.stdout.write('PROCESS_ID:' + ir.id + '\\n');",
       '  process.stdout.write(bpmnOut);',
       '})().catch(err => { console.error(err); process.exit(1); });',

@@ -238,6 +238,60 @@ describe('normalizeIr: gateway re-key', () => {
     ).toBe(true);
   });
 
+  // Revert: the `subProcess` branch returning its normalized container
+  // without `reKeyedDefault` leaves the block row's default at `Flow_2`.
+  it.each([
+    [
+      'a task naming a generated route as its default',
+      'userTask',
+      'Flow_2',
+      'Flow_Triage_Skip',
+    ],
+    [
+      'a block naming a generated route as its default',
+      'subProcess',
+      'Flow_2',
+      'Flow_Triage_Skip',
+    ],
+    ['a task naming no default', 'userTask', undefined, undefined],
+  ] as const)(
+    "re-keys %s's defaultFlowId with the flow it names, and adds none where there is none",
+    (_title, kind, authored, expected) => {
+      const triage: FlowElement =
+        kind === 'subProcess'
+          ? { kind, id: 'Triage', flowElements: [], sequenceFlows: [] }
+          : { kind, id: 'Triage' };
+      const ir = process(
+        [
+          {
+            ...triage,
+            ...(authored === undefined ? {} : { defaultFlowId: authored }),
+          },
+          { kind: 'userTask', id: 'Review' },
+          { kind: 'userTask', id: 'Skip' },
+        ],
+        [
+          {
+            id: 'Flow_1',
+            sourceRef: 'Triage',
+            targetRef: 'Review',
+            conditionExpression: '${big}',
+          },
+          { id: 'Flow_2', sourceRef: 'Triage', targetRef: 'Skip' },
+        ],
+      );
+      const normalized = normalizeIr(ir);
+      expect(normalized.flowElements.find((fe) => fe.id === 'Triage')).toEqual({
+        ...triage,
+        ...(expected === undefined ? {} : { defaultFlowId: expected }),
+      });
+      expect(normalized.sequenceFlows.map((sf) => sf.id)).toEqual([
+        'Flow_Triage_Review',
+        'Flow_Triage_Skip',
+      ]);
+    },
+  );
+
   it('re-keys an event-based gateway by its position, the way the other three kinds are re-keyed', () => {
     const race = (id: string): BpmnProcess =>
       process(

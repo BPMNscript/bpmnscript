@@ -129,6 +129,7 @@ A completion condition ends a repetition after two runs, a count drives a servic
 ## More Information
 
 Amended by ADR-0041, which gives the clause four `run`-prefixed settings that write onto the `multiInstanceLoopCharacteristics` element itself and import an async, exclusive, or retry setting found there instead of refusing it.
+Amended by ADR-0051, under which the print declares every variable it reads bare as `var <name>: any`, so a collection iterated by name is one case of that rule rather than the only one.
 
 Related decisions: ADR-0010 (the synthesized ids a wrapping form would have had to invent).
 ADR-0013 (the rule that a keyword names what the author means, and the reason `sequential: true` is not one).

@@ -152,6 +152,9 @@ Amended by ADR-0042, which adds `type` on a task to the binding words ADR-0032's
 
 Amends ADR-0014, whose refused-construct list read "a call activity naming a resolution shape the surface cannot write back"; the bullet now names the four shapes this decision leaves refused.
 
+Amended by ADR-0054, under which a `calledElementBinding` word outside the four `BpmnParse.parseBinding` matches imports as `latest`, as `BaseCallableElement.isLatestBinding` reads it, and an `operaton:in`/`out` naming two shapes keeps the one `parseCallableElementProvider` reads first and warns on the rest.
+Only `variables` outside `all`, an empty `source`, a source with no `target`, and a mapping of no recognized shape still refuse.
+
 Related decisions: ADR-0029 (the bracket shape that keeps a variable mapping a setting in the parens).
 ADR-0032 (the field rule this spelling keeps keyed on a word alone).
 ADR-0022 (engine attributes as named IR fields, the precedent `CallVariableMapper` extends).

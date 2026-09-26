@@ -19,7 +19,7 @@ const EMBEDDED_SCOPE_BY_FORMAT: Readonly<Record<string, string>> = {
 };
 
 // Tags deliberately left unhighlighted: VS Code ships no grammar for them.
-const NO_INSTALLED_GRAMMAR = new Set(['feel']);
+const NO_INSTALLED_GRAMMAR = new Set(['feel', 'juel']);
 
 const EXTENSION_DIR = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),

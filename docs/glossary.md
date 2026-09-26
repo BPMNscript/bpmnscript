@@ -35,7 +35,7 @@ Terms that show up across the READMEs, the ADRs, and the code.
   The parser's structured, in-memory representation of a source file, with nodes for each `process`, `user`, `service`, `if`, `while`, `parallel`, and so on.
 - **IR**: intermediate representation.
   A small set of plain objects (`packages/transform/src/ir/types.ts`) that every transform reads from or writes to, in both directions.
-  See [ADR-0006](decisions/0006-engine-agnostic-intermediate-representation.md).
+  See [ADR-0006](decisions/0006-intermediate-representation-between-ast-and-bpmn.md).
   [ADR-0022](decisions/0022-engine-attributes-as-named-ir-fields.md) and [ADR-0023](decisions/0023-listeners-on-the-attribute-block.md) extend that shape to the engine's execution settings, input/output parameters, and lifecycle listeners.
 - **Validator**: checks that a parsed process is structurally sound and reports errors in the editor.
   The full list of checks is in [packages/language/README.md](../packages/language/README.md#diagnostics).

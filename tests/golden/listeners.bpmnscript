@@ -16,7 +16,7 @@ process claim-settlement {
     start AssessmentOpened
     user InspectVehicle(label: "Inspect the vehicle", assignee: "demo", candidateGroups: "assessors") {
       on create(class: "com.example.claims.NotifyAssessor")
-      on assign(expression: "${assessorRoster.record(task)}")
+      on assignment(expression: "${assessorRoster.record(task)}")
       on complete(delegate: "${assessmentRecorder}") {
         field reviewedBy = "${task.assignee}"
       }
@@ -36,7 +36,6 @@ task.setVariable("assessmentRevised", true);
   }
 
   on message("ClaimWithdrawn") {
-    input withdrawnBy = "${initiator}"
     on start(class: "com.example.claims.LogWithdrawal")
   } {
     start WithdrawalOpened

@@ -11,7 +11,10 @@ import {
   describeDiContainment,
   describeSingleDiagram,
 } from './helpers/di-bounds.js';
-import { describeImportFirst } from './helpers/import-first.js';
+import {
+  camundaAliasWarning,
+  describeImportFirst,
+} from './helpers/import-first.js';
 import {
   definitionOf,
   handlerTriggerDef,
@@ -168,4 +171,5 @@ describeImportFirst(
       );
     });
   },
+  [camundaAliasWarning('import-first')],
 );

@@ -372,7 +372,7 @@ describe('per-element attribution of a dropped extension child', () => {
     <bpmn:serviceTask id="T">
       <bpmn:extensionElements>
         <operaton:failedJobRetryTimeCycle>R3/PT10M</operaton:failedJobRetryTimeCycle>
-        <operaton:potentialStarter />
+        <operaton:formProperty />
       </bpmn:extensionElements>
     </bpmn:serviceTask>
   </bpmn:process>
@@ -394,7 +394,55 @@ describe('per-element attribution of a dropped extension child', () => {
     // Never infer a per-element drop from a document-level boolean: assert
     // the exact warning count and that its message names the dropped type.
     expect(warnings).toHaveLength(1);
-    expect(warnings[0].message).toContain('operaton:potentialStarter');
+    expect(warnings[0].message).toContain('operaton:formProperty');
+  });
+});
+
+describe('a potential starter declares the formal expression BpmnParse.parseStartAuthorization reads off it', () => {
+  it('parses the resourceAssignmentExpression as a typed bpmn child and writes it back', async () => {
+    const fixture = `${XML_HEADER}
+  <bpmn:process id="P">
+    <bpmn:extensionElements>
+      <operaton:potentialStarter>
+        <bpmn:resourceAssignmentExpression>
+          <bpmn:formalExpression>user(a), group(g)</bpmn:formalExpression>
+        </bpmn:resourceAssignmentExpression>
+      </operaton:potentialStarter>
+    </bpmn:extensionElements>
+  </bpmn:process>
+</bpmn:definitions>`;
+
+    const moddle = operatonModdle();
+    const { definitions, process, warnings } = await parseProcess(
+      moddle,
+      fixture,
+    );
+    expect(warnings).toHaveLength(0);
+
+    // Revert: drop the PotentialStarter type, and the element is dropped
+    // from `values` with one document-level warning naming it.
+    const [starter] = extensionValues(process);
+    const rae = starter.get('resourceAssignmentExpression') as ModdleElement;
+    expect([
+      starter.$type,
+      rae.$type,
+      rae.get('expression').get('body'),
+    ]).toEqual([
+      'operaton:PotentialStarter',
+      'bpmn:ResourceAssignmentExpression',
+      'user(a), group(g)',
+    ]);
+
+    // moddle writes the subtype through `xsi:type`, which
+    // `Element.element("formalExpression")` does not find by tag, which is
+    // why the import respells the starter into the two attributes rather
+    // than writing it back.
+    const { xml } = await moddle.toXML(definitions, { format: false });
+    expect(xml).toContain(
+      '<operaton:potentialStarter><bpmn:resourceAssignmentExpression>' +
+        '<bpmn:expression xsi:type="bpmn:tFormalExpression">user(a), group(g)' +
+        '</bpmn:expression>',
+    );
   });
 });
 
@@ -640,5 +688,47 @@ describe('TaskListener timer event definition', () => {
     const { xml } = await first.toXML(process, { format: false });
     expect(xml).toContain('timerEventDefinition');
     expect(xml).toContain('PT1H');
+  });
+});
+
+describe('a timer definition declares the lock BpmnParse.parseTimer reads off it', () => {
+  it('parses operaton:exclusive on bpmn:timerEventDefinition as a typed boolean and writes it back off its default only', async () => {
+    const fixture = `${XML_HEADER}
+  <bpmn:process id="P">
+    <bpmn:startEvent id="S">
+      <bpmn:timerEventDefinition operaton:exclusive="false">
+        <bpmn:timeCycle>R/PT1H</bpmn:timeCycle>
+      </bpmn:timerEventDefinition>
+    </bpmn:startEvent>
+    <bpmn:intermediateCatchEvent id="C">
+      <bpmn:timerEventDefinition operaton:exclusive="true">
+        <bpmn:timeDuration>PT1H</bpmn:timeDuration>
+      </bpmn:timerEventDefinition>
+    </bpmn:intermediateCatchEvent>
+  </bpmn:process>
+</bpmn:definitions>`;
+
+    const moddle = operatonModdle();
+    const { definitions, process, warnings } = await parseProcess(
+      moddle,
+      fixture,
+    );
+    expect(warnings).toHaveLength(0);
+
+    const [start, wait] = process.get('flowElements') as ModdleElement[];
+    const definitionOf = (el: ModdleElement): ModdleElement =>
+      (el.get('eventDefinitions') as ModdleElement[])[0];
+    // Revert: drop the type extending the definition and `get` answers
+    // `undefined` for both, the raw attribute sitting in `$attrs` instead.
+    expect([
+      definitionOf(start).get('exclusive'),
+      definitionOf(wait).get('exclusive'),
+    ]).toEqual([false, true]);
+
+    const { xml } = await moddle.toXML(definitions, { format: false });
+    expect(xml).toContain(
+      '<bpmn:timerEventDefinition operaton:exclusive="false">',
+    );
+    expect(xml).toContain('<bpmn:timerEventDefinition><bpmn:timeDuration>PT1H');
   });
 });

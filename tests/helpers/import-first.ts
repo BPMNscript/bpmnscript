@@ -11,6 +11,17 @@ import type { BpmnProcess, ImportWarning } from '@bpmn-script/transform';
 import { normalizeIr } from './normalize-ir.js';
 import { parseToAst, printDsl } from './pipeline.js';
 
+/** The one warning `xmlToIr` pushes for a document declaring the camunda namespace, against the process `elementId`. */
+export const camundaAliasWarning = (elementId: string): ImportWarning => ({
+  elementId,
+  category: 'unmappedConstruct',
+  message:
+    'The file declares the camunda namespace; it was read as the operaton ' +
+    'namespace, since `BpmnParse.OPERATON_BPMN_EXTENSIONS_NS` falls back ' +
+    'to the camunda URI wherever the operaton spelling is absent, and the ' +
+    'document written back carries `operaton:` alone.',
+});
+
 export interface ImportFirst {
   ir: BpmnProcess;
   warnings: ImportWarning[];
@@ -24,6 +35,7 @@ export function describeImportFirst(
   what: string,
   xml: string,
   extra: (first: ImportFirst) => void = () => undefined,
+  expectedWarnings: ImportWarning[] = [],
 ): void {
   const first = {} as ImportFirst;
 
@@ -36,8 +48,8 @@ export function describeImportFirst(
       first.reDesugared = astToIr(await parseToAst(first.dsl));
     });
 
-    it('imports warning-free', () => {
-      expect(first.warnings).toEqual([]);
+    it('imports with exactly the expected warnings', () => {
+      expect(first.warnings).toEqual(expectedWarnings);
     });
 
     extra(first);

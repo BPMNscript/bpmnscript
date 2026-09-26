@@ -16,6 +16,7 @@ import type {
   ImportWarning,
 } from '@bpmn-script/transform';
 
+import { camundaAliasWarning } from './helpers/import-first.js';
 import { normalizeIr } from './helpers/normalize-ir.js';
 import { idsOf, subProcess as findSubProcess } from './helpers/ir-query.js';
 import {
@@ -433,8 +434,8 @@ describe('round-trip: import-first, with interleaved mappings and the camunda: b
     irSecondImport = astToIr(await parseToAst(dsl));
   });
 
-  it('imports the alias binding and the interleaved mappings with zero warnings', () => {
-    expect(importWarnings).toEqual([]);
+  it('imports the alias binding and the interleaved mappings with exactly the one namespace-alias warning', () => {
+    expect(importWarnings).toEqual([camundaAliasWarning('call-import-demo')]);
     const call = findCallActivity(irFirstImport, 'ReviewApprovalCall');
     expect(call.binding).toEqual({ kind: 'deployment' });
     expect(call.inMappings).toEqual([

@@ -22,13 +22,18 @@ import { Diagnostic, DiagnosticSeverity } from 'vscode-languageserver-types';
 import {
   xmlToIr,
   astToIr,
+  irToDsl,
   irToXml,
   UNSTRUCTURED_MARKER,
 } from '@bpmn-script/transform';
 import type { BpmnProcess } from '@bpmn-script/transform';
 
 import { realNodeReachability } from './helpers/real-node-reachability.js';
-import { parse, printDsl } from './helpers/pipeline.js';
+import {
+  parse,
+  parseToAst as parseUnvalidated,
+  printDsl,
+} from './helpers/pipeline.js';
 
 // Validation, not just parsing: a `goto` naming an elided node parses fine and
 // fails only once the reference is linked, and a `goto` written ahead of a
@@ -171,6 +176,55 @@ describe('loop condition on the back-edge (no expressible jump target)', () => {
   });
 });
 
+// The approve-review loop as a modeler draws it: the split inside the body
+// carries a condition on both routes and names no default, and so does the
+// loop gateway. The route leaving the loop puts the split's immediate
+// post-dominator outside it, so the split has no clean join, and with no
+// unconditioned route it has no guard clause either.
+const REVIEW_LOOP: BpmnProcess = {
+  id: 'ReviewLoop',
+  isExecutable: true,
+  flowElements: [
+    { kind: 'startEvent', id: 'Start_1' },
+    { kind: 'userTask', id: 'Approve' },
+    { kind: 'exclusiveGateway', id: 'Gateway_approved' },
+    { kind: 'userTask', id: 'Review' },
+    { kind: 'exclusiveGateway', id: 'Gateway_clarified' },
+    { kind: 'userTask', id: 'Pay' },
+    { kind: 'endEvent', id: 'End_1' },
+    { kind: 'endEvent', id: 'End_2' },
+  ],
+  sequenceFlows: [
+    flow('f1', 'Start_1', 'Approve'),
+    flow('f2', 'Approve', 'Gateway_approved'),
+    flow('f3', 'Gateway_approved', 'Pay', '${approved}'),
+    flow('f4', 'Gateway_approved', 'Review', '${!approved}'),
+    flow('f5', 'Review', 'Gateway_clarified'),
+    flow('f6', 'Gateway_clarified', 'Approve', '${clarified}'),
+    flow('f7', 'Gateway_clarified', 'End_2', '${!clarified}'),
+    flow('f8', 'Pay', 'End_1'),
+  ],
+};
+
+describe('a split inside a loop body whose every route is conditioned', () => {
+  it('keeps the route that stays in the loop, so only the leaving route is a jump', async () => {
+    const { imported, dsl } = await emit(REVIEW_LOOP);
+    expect(dsl).not.toContain(UNSTRUCTURED_MARKER);
+
+    // The chain closes with no `else`, so the recompiled split falls through
+    // to the loop gateway where the model had no route: `Approve` gains the
+    // two routes that gateway takes, and loses none it had.
+    const reDesugared = astToIr(await parseToAst(dsl));
+    expect(realNodeReachability(reDesugared)).toEqual(
+      [
+        ...realNodeReachability(imported),
+        'Approve->Approve',
+        'Approve->End_2',
+      ].sort(),
+    );
+  });
+});
+
 const SURPLUS_EDGE_ON_TASK: BpmnProcess = {
   id: 'SurplusEdgeOnTask',
   isExecutable: true,
@@ -204,11 +258,15 @@ describe('surplus out-edge on a plain node keeps the fall-through', () => {
     // everything after it with no incoming flow. Both routes head a branch
     // instead, so the second route keeps its edge and the first keeps its
     // chain. The back edge names `T1` because the join it runs into has one
-    // way out, and that is the step it leads to.
+    // way out, and that is the step it leads to. The step forks in the model
+    // and no merge closes it, which the marker names; no edge is dropped.
     expect(dsl).toContain('if (true) {');
     expect(dsl).toContain('goto Cont');
     expect(dsl).toContain('goto T1');
-    expect(dsl).not.toContain(UNSTRUCTURED_MARKER);
+    expect(dsl).toContain(
+      `${UNSTRUCTURED_MARKER} (split T1 degraded to jumps; was parallel)`,
+    );
+    expect(dsl).not.toContain('dropped edge');
   });
 
   it('keeps the rest of the process reachable and valid', async () => {
@@ -311,6 +369,8 @@ describe('shapes that structure cleanly stay structured', () => {
     expect(printDsl(ir)).toBe(
       [
         'process NestedIf {',
+        '  var a: any',
+        '  var b: any',
         '  start Start_1',
         '  if (a) {',
         '    if (b) {',
@@ -357,6 +417,8 @@ describe('shapes that structure cleanly stay structured', () => {
     expect(printDsl(ir)).toBe(
       [
         'process SiblingIfs {',
+        '  var a: any',
+        '  var b: any',
         '  start Start_1',
         '  if (a) {',
         '    user A_1',
@@ -369,5 +431,136 @@ describe('shapes that structure cleanly stay structured', () => {
         '',
       ].join('\n'),
     );
+  });
+});
+
+// Shapes a fuzz run drew, each compiled, exported, imported and printed. A
+// row pins the print's whole warning list by category and whether the print
+// validates, so a shape that stops being reported, or starts failing, turns
+// the row red rather than the next fuzz run.
+describe('composite shapes through compile, import and print', () => {
+  it.each<
+    [title: string, source: string, categories: string[], valid: boolean]
+  >([
+    [
+      'a loop and a throw inside a guarded branch walk inline',
+      [
+        'process p {',
+        '  escalation E',
+        '  start S',
+        '  if (true) {',
+        '    while (true) {',
+        '      script A ```javascript',
+        'x = 1',
+        '```',
+        '    }',
+        '    throw escalation X(E)',
+        '  }',
+        '  end Done',
+        '}',
+      ].join('\n'),
+      [],
+      true,
+    ],
+    [
+      'a pre-test loop whose body ends prints as a guard clause jumping to the body',
+      'process p {\n  start S\n  while (true) {\n    user A\n    end X\n  }\n  user B\n  end Done\n}',
+      [],
+      true,
+    ],
+    [
+      'a fork with an empty weighed branch beside an ending one prints whole',
+      'process p {\n  start S\n  parallel {\n    if (true) {\n    }\n    {\n      end X\n    }\n  }\n  end Done\n}',
+      [],
+      true,
+    ],
+    [
+      'a fork carrying settings with an ending branch prints whole',
+      'process p {\n  start S\n  parallel (retryCycle: "R1/PT1M") {\n    {\n      user A\n    }\n    {\n      end X\n    }\n  }\n  end Done\n}',
+      [],
+      true,
+    ],
+  ])('%s', async (_title, source, categories, valid) => {
+    const { ir: imported, warnings } = await xmlToIr(
+      await irToXml(astToIr(await parseToAst(source))),
+    );
+    expect(warnings).toEqual([]);
+    const printed = irToDsl(imported);
+
+    expect(printed.warnings.map((w) => w.category)).toEqual(categories);
+    expect(
+      await parseToAst(printed.source).then(
+        () => true,
+        () => false,
+      ),
+    ).toBe(valid);
+  });
+
+  // `do { end X } while (true)` inside a branch is refused as source, since
+  // the loop gateway would have no incoming flow, so the two shapes below
+  // skip validation, the way a Modeler file carrying them would import.
+  it.each<[string, string]>([
+    [
+      'a race branch holding a post-test loop whose body ends draws a jump into the branch',
+      'process p {\n  start S\n  await {\n    timer("PT1M") {\n    }\n    message("m") {\n      do {\n        end X\n      } while (true)\n    }\n  }\n  end Done\n}',
+    ],
+    [
+      'a fork branch holding a post-test loop whose body ends draws a jump into the branch',
+      'process p {\n  start S\n  parallel {\n    {\n      user F\n    }\n    if (true) {\n      do {\n        end S2\n      } while (true)\n    }\n  }\n  end Done\n}',
+    ],
+  ])('%s', async (_title, source) => {
+    const { ir: imported, warnings } = await xmlToIr(
+      await irToXml(astToIr(await parseUnvalidated(source))),
+    );
+    expect(warnings).toEqual([]);
+    const printed = irToDsl(imported);
+
+    expect(printed.warnings.map((w) => w.category)).toEqual([
+      'refusedStatement',
+    ]);
+    expect(
+      await parseToAst(printed.source).then(
+        () => true,
+        () => false,
+      ),
+    ).toBe(false);
+  });
+
+  // `do { end X } while (true)` compiles a loop gateway with no incoming
+  // flow: the body always ends, so `lowerDoWhile` never wires the back edge
+  // from the body into the gateway, only the gateway's two outgoing edges.
+  // A step after such a loop can no longer be written as source, since the
+  // validator now refuses a statement it can prove unreachable, so this
+  // shape is built as IR directly, the way a Modeler file would import it.
+  const DANGLING_LOOP_HEAD: BpmnProcess = {
+    id: 'DanglingLoopHead',
+    isExecutable: true,
+    flowElements: [
+      { kind: 'startEvent', id: 'S' },
+      { kind: 'endEvent', id: 'X' },
+      { kind: 'exclusiveGateway', id: 'Gateway_L_loop', defaultFlowId: 'f3' },
+      { kind: 'endEvent', id: 'Done' },
+    ],
+    sequenceFlows: [
+      flow('f1', 'S', 'X'),
+      flow('f2', 'Gateway_L_loop', 'X', '${true}'),
+      flow('f3', 'Gateway_L_loop', 'Done'),
+    ],
+  };
+
+  it('a post-test loop whose body ends prints its unreachable head as a jump', async () => {
+    const { ir: imported, warnings } = await xmlToIr(
+      await irToXml(DANGLING_LOOP_HEAD),
+    );
+    expect(warnings).toEqual([]);
+    const printed = irToDsl(imported);
+
+    expect(printed.warnings.map((w) => w.category)).toEqual([]);
+    expect(
+      await parseToAst(printed.source).then(
+        () => true,
+        () => false,
+      ),
+    ).toBe(false);
   });
 });

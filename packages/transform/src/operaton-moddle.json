@@ -532,6 +532,16 @@
       ]
     },
     {
+      "name": "PotentialStarter",
+      "superClass": ["Element"],
+      "properties": [
+        {
+          "name": "resourceAssignmentExpression",
+          "type": "bpmn:ResourceAssignmentExpression"
+        }
+      ]
+    },
+    {
       "name": "Connector",
       "superClass": ["Element"],
       "properties": [
@@ -582,6 +592,19 @@
           "name": "escalationCodeVariable",
           "isAttr": true,
           "type": "String"
+        }
+      ]
+    },
+    {
+      "name": "TimerEventDefinition",
+      "isAbstract": true,
+      "extends": ["bpmn:TimerEventDefinition"],
+      "properties": [
+        {
+          "name": "exclusive",
+          "isAttr": true,
+          "type": "Boolean",
+          "default": true
         }
       ]
     },

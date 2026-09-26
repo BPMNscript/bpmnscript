@@ -270,9 +270,11 @@ DoWhileStatement:
 
 // parallel -> AND fork/join, or an OR fork/join when any branch carries a
 // condition. An unheaded branch always runs, a conditioned one when its
-// condition holds, and the `else` branch only when none held; left out, that
-// fallback goes straight to the join. The parens after the keyword hold the
-// fork's settings and, `join`-prefixed, the join's; a branch head takes none.
+// condition holds, and the `else` branch only when none held. Left out, the
+// fallback goes straight to the join when every branch is conditioned, and is
+// not written at all beside an unheaded branch, which the engine takes every
+// time. The parens after the keyword hold the fork's settings and,
+// `join`-prefixed, the join's; a branch head takes none.
 ParallelStatement:
     'parallel' SettingsParens? '{' branches+=ParallelBranch (branches+=ParallelBranch)+ '}';
 
@@ -474,9 +476,9 @@ Paren:
 
 // The escape hatch for expressions outside the JUEL subset and for variables
 // colliding with a keyword, valid anywhere an Expr is; the renderer emits `raw`
-// verbatim. It is told apart from a plain LiteralString purely by content, a
-// quoted string whose body begins with `${`, which the RAW_TEMPLATE terminal
-// captures.
+// as written. It is told apart from a plain LiteralString purely by content, a
+// quoted string whose body begins with `${` or `#{`, the two openers the engine
+// evaluates, which the RAW_TEMPLATE terminal captures.
 RawExpr:
     raw=RAW_TEMPLATE;
 
@@ -501,8 +503,8 @@ terminal INT returns number: /[0-9]+/;
 terminal FENCED_SCRIPT: /```[a-zA-Z]+[\s\S]*?```/;
 
 // Declared before STRING: the two regexes overlap on a body beginning with
-// `${`, so declaration order is what makes that input a RawExpr.
-terminal RAW_TEMPLATE: /"\$\{(\\.|[^"\\])*"|'\$\{(\\.|[^'\\])*'/;
+// `${` or `#{`, so declaration order is what makes that input a RawExpr.
+terminal RAW_TEMPLATE: /"[$#]\{(\\.|[^"\\])*"|'[$#]\{(\\.|[^'\\])*'/;
 
 terminal STRING: /"(\\.|[^"\\])*"|'(\\.|[^'\\])*'/;
 

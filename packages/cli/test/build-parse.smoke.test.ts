@@ -4,6 +4,8 @@
 
 import { describe, test, expect, beforeAll } from 'vitest';
 import * as fs from 'node:fs';
+import * as fsp from 'node:fs/promises';
+import * as os from 'node:os';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { dirname } from 'node:path';
@@ -16,6 +18,7 @@ import { xmlToIr } from '@bpmn-script/transform';
 
 import {
   expectMentions,
+  runActionAt,
   runBuild,
   runParse,
   type Input,
@@ -97,6 +100,31 @@ const TWO_DROPPED_CONDITIONS_BPMN = `<?xml version="1.0" encoding="UTF-8"?>
   </bpmn:process>
 </bpmn:definitions>`;
 
+// An external task's `taskPriority` is carried as written, with an import
+// warning naming the step (`BpmnParse.parsePriority` fails the deployment on
+// a non-integer constant); the warning says so but does not itself run the
+// validator, so re-validating the printed script is what actually confirms
+// `"abc"` draws the error.
+/** A number field whose default the engine's `LongFormType` cannot convert: imported as written, refused by the validator. */
+const DECIMAL_DEFAULT_BPMN = `<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  xmlns:operaton="http://operaton.org/schema/1.0/bpmn"
+                  targetNamespace="http://test">
+  <bpmn:process id="decimal-default-carry" isExecutable="true">
+    <bpmn:startEvent id="S" />
+    <bpmn:userTask id="Review">
+      <bpmn:extensionElements>
+        <operaton:formData>
+          <operaton:formField id="amount" type="long" defaultValue="1.5" />
+        </operaton:formData>
+      </bpmn:extensionElements>
+    </bpmn:userTask>
+    <bpmn:endEvent id="E" />
+    <bpmn:sequenceFlow id="F0" sourceRef="S" targetRef="Review" />
+    <bpmn:sequenceFlow id="F1" sourceRef="Review" targetRef="E" />
+  </bpmn:process>
+</bpmn:definitions>`;
+
 type ParseExpectation = {
   /** The id of every `Warning: <id>: ...` line, in the order printed. */
   warningIds: string[];
@@ -106,6 +134,13 @@ type ParseExpectation = {
   script?: string[];
   /** Set where the warnings differ in nothing but the element they name. */
   sameMessage?: boolean;
+  /**
+   * The exact lines the re-validation of the printed script appends after
+   * every `warningIds` line, one entry per line, asserted whole: a string for
+   * an exact match, a pattern where the message text is pinned but a detail
+   * (the line number) is not.
+   */
+  buildErrorLines?: (string | RegExp)[];
 };
 
 type ParseRow = readonly [
@@ -141,22 +176,49 @@ describe('bpmns parse', () => {
         script: ['CheckStock', 'ReserveGoods'],
       },
     ],
+    [
+      'a setting the import warning names as an eventual failure is confirmed, after that warning, by re-validating the printed script',
+      { text: DECIMAL_DEFAULT_BPMN },
+      {
+        warningIds: ['Review'],
+        mentions: ["default '1.5'", 'imported as written'],
+        script: ['amount: number = 1.5'],
+        buildErrorLines: [
+          'Warning: the printed script draws 1 error(s) when built; hand-repair is needed:',
+          /^ {2}line \d+: The default 1\.5 of number field 'amount' is not an integer; the engine converts it with Long\.valueOf every time the form renders \(LongFormType\.convertValue\) and throws on anything else\. \[.+\]$/,
+        ],
+      },
+    ],
   ])('%s', async (_title, input, expected) => {
     const run = await runParse(input);
 
     expect(run.exit).toBeUndefined();
     expect(run.output).toBeDefined();
 
-    const prefixes = run.stderr.map(
+    // Every stderr line is accounted for: the id-prefixed warnings, then
+    // (where the row expects them) the re-validation lines appended after.
+    const tailLen = expected.buildErrorLines?.length ?? 0;
+    expect(run.stderr).toHaveLength(expected.warningIds.length + tailLen);
+    const splitAt = run.stderr.length - tailLen;
+    const idLines = run.stderr.slice(0, splitAt);
+    const tail = run.stderr.slice(splitAt);
+
+    const prefixes = idLines.map(
       (line) => /^Warning: ([^:]+): /.exec(line)?.[1],
     );
     expect(prefixes).toEqual(expected.warningIds);
 
-    expectMentions(run.stderr.join('\n'), expected.mentions ?? []);
+    tail.forEach((line, i) => {
+      const want = expected.buildErrorLines![i];
+      if (want instanceof RegExp) expect(line).toMatch(want);
+      else expect(line).toBe(want);
+    });
+
+    expectMentions(idLines.join('\n'), expected.mentions ?? []);
     expectMentions(run.output ?? '', expected.script ?? []);
 
     if (expected.sameMessage) {
-      const bodies = run.stderr.map((line, i) =>
+      const bodies = idLines.map((line, i) =>
         line.slice(`Warning: ${expected.warningIds[i]}: `.length),
       );
       expect(new Set(bodies).size).toBe(1);
@@ -180,6 +242,11 @@ const WARNING_ONLY_SOURCE = `process warning-only {
   end Done
 }
 `;
+
+// A keyword typo (`proces` for `process`) leaves the grammar unable to find
+// a Process node at all, the same symptom an empty file produces; only the
+// parser error, not the no-process message, tells the two apart.
+const KEYWORD_TYPO_SOURCE = 'proces p { user A }\n';
 
 // Declares `amount` as string, then compares it numerically: severity 1.
 const TYPE_MISMATCH_SOURCE = `process type-mismatch {
@@ -230,6 +297,15 @@ describe('bpmns build', () => {
       { text: TYPE_MISMATCH_SOURCE },
       { exit: 1, stderrLines: 2, mentions: ['Validation errors:'] },
     ],
+    [
+      'a keyword typo lists the parser error instead of the no-process message',
+      { text: KEYWORD_TYPO_SOURCE },
+      {
+        exit: 1,
+        stderrLines: 2,
+        mentions: ['Validation errors:', 'proces'],
+      },
+    ],
   ])('%s', async (_title, input, expected) => {
     const run = await runBuild(input);
 
@@ -243,6 +319,396 @@ describe('bpmns build', () => {
     }
     expect(run.output).toBeDefined();
     expect((await xmlToIr(run.output!)).ir.id).toBe(expected.reimportsAs);
+  });
+});
+
+const VALID_DSL = 'process guard { start S end E }';
+
+const VALID_BPMN = `<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  targetNamespace="http://test">
+  <bpmn:process id="guard" isExecutable="true">
+    <bpmn:startEvent id="S" />
+    <bpmn:endEvent id="E" />
+    <bpmn:sequenceFlow id="F" sourceRef="S" targetRef="E" />
+  </bpmn:process>
+</bpmn:definitions>`;
+
+// DSL text handed to `parse` by mistake: no comma, no newline, over 40
+// characters, so the preview's cutoff is visible without hand-counting it.
+const SWAPPED_DSL =
+  'process invoice_approval { start S user Review(assignee: "demo") end E }';
+
+// Accented text a real BPMN export can carry: only control bytes are
+// stripped from the preview now, so these survive it. Over 40 characters, so
+// the cutoff is visible without hand-counting it.
+const NON_ASCII_PREVIEW_SOURCE =
+  'prüfen, ob Umlaute überleben und nicht nur ASCII-Zeichen übrig bleiben';
+
+type GuardCase = {
+  inputPath: string;
+  opts: { output?: string; force?: boolean };
+  exit: number | undefined;
+  /** The exact first stderr line, where the row expects one. */
+  line?: string;
+  /** Run after the action, for what a stderr line can't say (file contents). */
+  check?: () => void;
+};
+
+type GuardRow = readonly [
+  title: string,
+  action: 'build' | 'parse',
+  make: (dir: string) => GuardCase,
+];
+
+// One table for both commands: the five destructive-path guards (same file,
+// existing output, --force, directory input, `-o` a directory) are one
+// mechanism shared by `build` and `parse` through `util.ts`, so a row pair
+// proves it fires identically on both rather than trusting a build-only test.
+describe('bpmns build / bpmns parse: guards against destructive or unclear failures', () => {
+  test.each<GuardRow>([
+    [
+      'build: an existing output is refused without --force, and is left untouched',
+      'build',
+      (dir) => {
+        const inputPath = path.join(dir, 'order.bpmnscript');
+        fs.writeFileSync(inputPath, VALID_DSL, 'utf-8');
+        const outputPath = path.join(dir, 'order.bpmn');
+        fs.writeFileSync(outputPath, 'PRE-EXISTING', 'utf-8');
+        return {
+          inputPath,
+          opts: {},
+          exit: 2,
+          line: `Error: ${outputPath} exists; pass --force to overwrite it or -o for another path`,
+          check: () =>
+            expect(fs.readFileSync(outputPath, 'utf-8')).toBe('PRE-EXISTING'),
+        };
+      },
+    ],
+    [
+      'build: --force overwrites an existing output',
+      'build',
+      (dir) => {
+        const inputPath = path.join(dir, 'order.bpmnscript');
+        fs.writeFileSync(inputPath, VALID_DSL, 'utf-8');
+        const outputPath = path.join(dir, 'order.bpmn');
+        fs.writeFileSync(outputPath, 'PRE-EXISTING', 'utf-8');
+        return {
+          inputPath,
+          opts: { force: true },
+          exit: undefined,
+          check: () =>
+            expect(fs.readFileSync(outputPath, 'utf-8')).toContain('<?xml'),
+        };
+      },
+    ],
+    [
+      'build: an -o equal to the input path is refused, and the source is left untouched',
+      'build',
+      (dir) => {
+        const inputPath = path.join(dir, 'same.bpmnscript');
+        fs.writeFileSync(inputPath, VALID_DSL, 'utf-8');
+        return {
+          inputPath,
+          opts: { output: inputPath },
+          exit: 2,
+          line: 'Error: the input and the output are the same file',
+          check: () =>
+            expect(fs.readFileSync(inputPath, 'utf-8')).toBe(VALID_DSL),
+        };
+      },
+    ],
+    [
+      'build: a directory input is refused',
+      'build',
+      (dir) => ({
+        inputPath: dir,
+        opts: {},
+        exit: 2,
+        line: `Error: ${dir} is a directory`,
+      }),
+    ],
+    [
+      'build: an -o naming a directory writes inside it under the default basename',
+      'build',
+      (dir) => {
+        const inputPath = path.join(dir, 'order.bpmnscript');
+        fs.writeFileSync(inputPath, VALID_DSL, 'utf-8');
+        const outDir = path.join(dir, 'out');
+        fs.mkdirSync(outDir);
+        return {
+          inputPath,
+          opts: { output: outDir },
+          exit: undefined,
+          check: () =>
+            expect(
+              fs.readFileSync(path.join(outDir, 'order.bpmn'), 'utf-8'),
+            ).toContain('<?xml'),
+        };
+      },
+    ],
+    [
+      'build: a wrong extension is refused outright, not warned about then crashed on',
+      'build',
+      (dir) => {
+        const inputPath = path.join(dir, 'order.txt');
+        fs.writeFileSync(inputPath, VALID_DSL, 'utf-8');
+        return {
+          inputPath,
+          opts: {},
+          exit: 2,
+          line: 'Error: expected a file with one of these extensions: .bpmnscript',
+        };
+      },
+    ],
+    [
+      'build: an empty source is reported plainly, without a pipeline stage name',
+      'build',
+      (dir) => {
+        const inputPath = path.join(dir, 'empty.bpmnscript');
+        fs.writeFileSync(inputPath, '   \n  \n', 'utf-8');
+        return {
+          inputPath,
+          opts: {},
+          exit: 1,
+          line: 'Error: the file has no process',
+        };
+      },
+    ],
+    [
+      'build: a comment-only source is reported the same way, not as an astToIr internal error',
+      'build',
+      (dir) => {
+        const inputPath = path.join(dir, 'comment-only.bpmnscript');
+        fs.writeFileSync(inputPath, '// nothing but a comment here\n', 'utf-8');
+        return {
+          inputPath,
+          opts: {},
+          exit: 1,
+          line: 'Error: the file has no process',
+        };
+      },
+    ],
+    [
+      'parse: an existing output is refused without --force, and is left untouched',
+      'parse',
+      (dir) => {
+        const inputPath = path.join(dir, 'order.bpmn');
+        fs.writeFileSync(inputPath, VALID_BPMN, 'utf-8');
+        const outputPath = path.join(dir, 'order.bpmnscript');
+        fs.writeFileSync(outputPath, 'PRE-EXISTING', 'utf-8');
+        return {
+          inputPath,
+          opts: {},
+          exit: 2,
+          line: `Error: ${outputPath} exists; pass --force to overwrite it or -o for another path`,
+          check: () =>
+            expect(fs.readFileSync(outputPath, 'utf-8')).toBe('PRE-EXISTING'),
+        };
+      },
+    ],
+    [
+      'parse: --force overwrites an existing output',
+      'parse',
+      (dir) => {
+        const inputPath = path.join(dir, 'order.bpmn');
+        fs.writeFileSync(inputPath, VALID_BPMN, 'utf-8');
+        const outputPath = path.join(dir, 'order.bpmnscript');
+        fs.writeFileSync(outputPath, 'PRE-EXISTING', 'utf-8');
+        return {
+          inputPath,
+          opts: { force: true },
+          exit: undefined,
+          check: () =>
+            expect(fs.readFileSync(outputPath, 'utf-8')).toContain(
+              'process guard',
+            ),
+        };
+      },
+    ],
+    [
+      'parse: an -o equal to the input path is refused, and the source is left untouched',
+      'parse',
+      (dir) => {
+        const inputPath = path.join(dir, 'same.bpmn');
+        fs.writeFileSync(inputPath, VALID_BPMN, 'utf-8');
+        return {
+          inputPath,
+          opts: { output: inputPath },
+          exit: 2,
+          line: 'Error: the input and the output are the same file',
+          check: () =>
+            expect(fs.readFileSync(inputPath, 'utf-8')).toBe(VALID_BPMN),
+        };
+      },
+    ],
+    [
+      'parse: a directory input is refused',
+      'parse',
+      (dir) => ({
+        inputPath: dir,
+        opts: {},
+        exit: 2,
+        line: `Error: ${dir} is a directory`,
+      }),
+    ],
+    [
+      'parse: an -o naming a directory writes inside it under the default basename',
+      'parse',
+      (dir) => {
+        const inputPath = path.join(dir, 'order.bpmn');
+        fs.writeFileSync(inputPath, VALID_BPMN, 'utf-8');
+        const outDir = path.join(dir, 'out');
+        fs.mkdirSync(outDir);
+        return {
+          inputPath,
+          opts: { output: outDir },
+          exit: undefined,
+          check: () =>
+            expect(
+              fs.readFileSync(path.join(outDir, 'order.bpmnscript'), 'utf-8'),
+            ).toContain('process guard'),
+        };
+      },
+    ],
+    [
+      'parse: an empty file is reported plainly, not as an XML parse failure',
+      'parse',
+      (dir) => {
+        const inputPath = path.join(dir, 'empty.bpmn');
+        fs.writeFileSync(inputPath, '', 'utf-8');
+        return {
+          inputPath,
+          opts: {},
+          exit: 2,
+          line: 'Error: the file is empty',
+        };
+      },
+    ],
+    [
+      'parse: binary input is reported, not dumped onto stderr',
+      'parse',
+      (dir) => {
+        const inputPath = path.join(dir, 'binary.bpmn');
+        const bytes = Buffer.from([0x00, 0x01, 0x02, 0xff, 0xfe, 0x00]);
+        fs.writeFileSync(inputPath, bytes);
+        // Only control bytes (0x00, 0x01, 0x02) are stripped now; 0xff/0xfe
+        // are not valid UTF-8 on their own and decode as U+FFFD, a printable
+        // symbol the preview keeps.
+        const preview = bytes.toString('utf-8').replace(/\p{C}/gu, '');
+        return {
+          inputPath,
+          opts: {},
+          exit: 2,
+          line:
+            `Error: not an XML document (starts with "${preview}"); ` +
+            'a .bpmnscript file is built with `bpmns build`',
+        };
+      },
+    ],
+    [
+      'parse: an accented preview keeps its own characters, only control bytes are stripped',
+      'parse',
+      (dir) => {
+        const inputPath = path.join(dir, 'umlaut.bpmn');
+        fs.writeFileSync(inputPath, NON_ASCII_PREVIEW_SOURCE, 'utf-8');
+        return {
+          inputPath,
+          opts: {},
+          exit: 2,
+          line:
+            `Error: not an XML document (starts with "${NON_ASCII_PREVIEW_SOURCE.slice(0, 40)}"); ` +
+            'a .bpmnscript file is built with `bpmns build`',
+        };
+      },
+    ],
+    [
+      'parse: DSL text given by mistake is reported, not echoed back whole',
+      'parse',
+      (dir) => {
+        const inputPath = path.join(dir, 'swapped.bpmn');
+        fs.writeFileSync(inputPath, SWAPPED_DSL, 'utf-8');
+        return {
+          inputPath,
+          opts: {},
+          exit: 2,
+          line:
+            `Error: not an XML document (starts with "${SWAPPED_DSL.slice(0, 40)}"); ` +
+            'a .bpmnscript file is built with `bpmns build`',
+        };
+      },
+    ],
+    [
+      'parse: a non-BPMN root names the tag and namespace it expected',
+      'parse',
+      (dir) => {
+        const inputPath = path.join(dir, 'not-definitions.bpmn');
+        fs.writeFileSync(inputPath, '<html><body>hi</body></html>', 'utf-8');
+        return {
+          inputPath,
+          opts: {},
+          exit: 2,
+          line:
+            `Error: failed to parse ${inputPath}: failed to parse document as <bpmn:Definitions> ` +
+            '(root element is <html>; expected <bpmn:definitions> in namespace ' +
+            'http://www.omg.org/spec/BPMN/20100524/MODEL)',
+        };
+      },
+    ],
+    [
+      'parse: a wrong bpmn namespace names the namespace it found',
+      'parse',
+      (dir) => {
+        const inputPath = path.join(dir, 'wrong-ns.bpmn');
+        fs.writeFileSync(
+          inputPath,
+          '<bpmn:definitions xmlns:bpmn="http://example.com/wrong" ' +
+            'xmlns:operaton="http://operaton.org/schema/1.0/bpmn" id="d">' +
+            '<bpmn:process id="p"/></bpmn:definitions>',
+          'utf-8',
+        );
+        return {
+          inputPath,
+          opts: {},
+          exit: 2,
+          line:
+            `Error: failed to parse ${inputPath}: failed to parse document as <bpmn:Definitions> ` +
+            '(root element is <bpmn:definitions>; expected <bpmn:definitions> in namespace ' +
+            'http://www.omg.org/spec/BPMN/20100524/MODEL; found xmlns:bpmn=http://example.com/wrong)',
+        };
+      },
+    ],
+    [
+      'parse: an unclosed tag with no closing bracket anywhere is cut to its first line, capped at 200 characters, with any control byte stripped',
+      'parse',
+      (dir) => {
+        const inputPath = path.join(dir, 'unclosed.bpmn');
+        // `saxen` echoes the whole unparsed remainder into this one line, a
+        // control byte included, then appends `\n\tline: ...` after it, which
+        // this row's cutoff must never reach.
+        const unclosedTag = '<bad tag' + 'z'.repeat(300);
+        fs.writeFileSync(inputPath, unclosedTag, 'utf-8');
+        const rawFirstLine = `unparsable content ${unclosedTag} detected`;
+        const capped = rawFirstLine.slice(0, 200) + '...';
+        return {
+          inputPath,
+          opts: {},
+          exit: 2,
+          line: `Error: failed to parse ${inputPath}: ${capped.replace(/\p{C}/gu, '')}`,
+        };
+      },
+    ],
+  ])('%s', async (_title, action, make) => {
+    const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'bpmns-guard-'));
+    try {
+      const { inputPath, opts, exit, line, check } = make(dir);
+      const run = await runActionAt(action, inputPath, opts);
+      expect(run.exit).toBe(exit);
+      if (line !== undefined) expect(run.stderr[0]).toBe(line);
+      check?.();
+    } finally {
+      await fsp.rm(dir, { recursive: true, force: true });
+    }
   });
 });
 

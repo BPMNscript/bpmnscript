@@ -39,10 +39,10 @@ export function integerLiteralText(node: Expr): string | undefined {
   return undefined;
 }
 
-/** A {@link RawExpr} body is already a complete one and comes back verbatim. */
+/** A {@link RawExpr} is already a complete `${...}` or `#{...}` and comes back as written. */
 export function renderExpression(node: Expr): string {
   if (isRawExpr(node)) {
-    return unquoteRaw(node.raw);
+    return node.raw;
   }
   return `\${${renderExpressionInner(node)}}`;
 }
@@ -54,7 +54,11 @@ export function renderExpression(node: Expr): string {
  */
 export function renderExpressionInner(node: Expr): string {
   if (isRawExpr(node)) {
-    return unquoteRaw(node.raw);
+    // JUEL has no `${` token once inside an expression, so a raw operand is
+    // spliced in by its body. A composite raw has no one body to splice and is
+    // left as written for the validator to refuse.
+    const body = singleTemplateBody(node.raw);
+    return body === undefined ? node.raw : `(${body})`;
   }
   if (isTernary(node)) {
     return (
@@ -86,9 +90,11 @@ export function renderExpressionInner(node: Expr): string {
     return String(node.value);
   }
   if (isLiteralString(node)) {
-    // The lexer stripped the author's quotes. Re-quoting the way `juel.ts` in
-    // `@bpmn-script/transform` does keeps a parse of this output idempotent.
-    return `"${node.value.replace(/"/g, '\\"')}"`;
+    // The lexer stripped the author's quotes. This produces JUEL text, so it
+    // must double the backslash before escaping the quote, same as `juel.ts`
+    // in `@bpmn-script/transform` does: those are the only two escapes
+    // operaton-juel's `Scanner.nextString` accepts.
+    return `"${node.value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
   }
   if (isLiteralBool(node) || isLiteralNull(node)) {
     return node.value;
@@ -114,16 +120,16 @@ function renderAccessor(accessor: Accessor): string {
 }
 
 /**
- * Langium auto-unquotes only the default STRING terminal, so RAW_TEMPLATE keeps
- * the author's surrounding `"` or `'`. An unquoted body passes through.
+ * The body of a raw template that is exactly one template, `${body}` or
+ * `#{body}` with no second opener and no `}` before the last, else
+ * `undefined`: `${a} and ${b}` and `${a} b}` are composites the engine
+ * evaluates to text around the one template each holds. A `}` or opener
+ * inside a JUEL string literal is string text (`Scanner.nextString`), so
+ * `${map['}']}` is one template.
  */
-export function unquoteRaw(raw: string): string {
-  if (raw.length >= 2) {
-    const first = raw[0];
-    const last = raw[raw.length - 1];
-    if ((first === '"' && last === '"') || (first === "'" && last === "'")) {
-      return raw.slice(1, -1);
-    }
-  }
-  return raw;
+export function singleTemplateBody(raw: string): string | undefined {
+  if (!/^[$#]\{[^]*\}$/.test(raw)) return undefined;
+  const body = raw.slice(2, -1);
+  const unquoted = body.replace(/'(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*"/g, '');
+  return /\}|[$#]\{/.test(unquoted) ? undefined : body;
 }

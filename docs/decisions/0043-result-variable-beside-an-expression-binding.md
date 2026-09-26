@@ -82,6 +82,11 @@ The validator's refused-binding table sits beside the `type` binding tables in `
 
 Amends ADR-0014, whose `UnsupportedServiceTaskFormError` bullet gains this case.
 
+Amended by ADR-0048, under which `resultVariable` beside `topic:` or `type:` draws a warning that nothing writes the variable, rather than staying accepted and ignored.
+
+Amended by ADR-0054, under which the importer reads `operaton:resultVariableName` as `resultVariable` with a warning naming the respelling, and carries the attribute beside an external or built-in `type` binding with a warning that the binding never writes it.
+On a thrown message it refuses the attribute beside `operaton:expression` too, since `parseServiceTaskLike` stores the expression's value under it and the script's throw has no slot for it.
+
 Related decisions: ADR-0014 (the honest import contract behind the refusal).
 ADR-0021 (the binding list this rule reads).
 ADR-0042 (the `type` binding, whose parse-mirroring checks this one sits beside).

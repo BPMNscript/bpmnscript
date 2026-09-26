@@ -9,7 +9,7 @@
 
 import type { AstNode, Grammar } from 'langium';
 import { AstUtils, GrammarAST } from 'langium';
-import { isOnHandler, isSubProcess } from './generated/ast.js';
+import { isSubProcess } from './generated/ast.js';
 import type {
   BusinessRuleTask,
   CallActivity,
@@ -69,6 +69,23 @@ export function formatWordList(words: readonly string[]): string {
   return formatPlainWordList(words.map((w) => `'${w}'`));
 }
 
+/** The two flags that create a continuation job (`BpmnParse.parseAsynchronousContinuation`). */
+export const ASYNC_FLAG_KEYS = ['asyncBefore', 'asyncAfter'] as const;
+
+/**
+ * The three settings that only configure a job something else declares, and
+ * that a timer job takes off the element declaring the timer: the lock and
+ * the priority in `BpmnParse.parseTimer`, the retry cycle in
+ * `DefaultFailedJobParseListener.parseStartEvent`, `parseBoundaryEvent` and
+ * `parseIntermediateCatchEvent`.
+ */
+export const TIMER_JOB_KEYS = [
+  'exclusive',
+  'jobPriority',
+  'retryCycle',
+] as const;
+export type TimerJobKey = (typeof TIMER_JOB_KEYS)[number];
+
 /**
  * The engine execution settings Operaton reads off any flow node, gateways
  * included: `BpmnParse.parseExclusiveGateway`, `parseInclusiveGateway`,
@@ -79,12 +96,21 @@ export function formatWordList(words: readonly string[]): string {
  * same four.
  */
 export const ENGINE_KEYS: readonly string[] = [
-  'asyncBefore',
-  'asyncAfter',
-  'exclusive',
-  'jobPriority',
-  'retryCycle',
+  ...ASYNC_FLAG_KEYS,
+  ...TIMER_JOB_KEYS,
 ];
+
+/**
+ * The variables Operaton sets around a repeated step: three counters on the
+ * repetition and `loopCounter` on each run (`MultiInstanceActivityBehavior`).
+ * They exist undeclared, so a process that repeats anything has them in scope.
+ */
+export const LOOP_VARIABLES = [
+  'nrOfInstances',
+  'nrOfActiveInstances',
+  'nrOfCompletedInstances',
+  'loopCounter',
+] as const;
 
 /** `key` spelled for a second carrier in the same parens: `join` + `asyncBefore` is `joinAsyncBefore`. */
 export function prefixedSettingKey(prefix: string, key: string): string {
@@ -116,8 +142,11 @@ export function runSettingKey(key: string): string {
  * `BpmnParse.parseAsynchronousContinuationForActivity` hands that element to
  * `parseAsynchronousContinuation`, which reads the three async settings onto
  * each run, and `DefaultFailedJobParseListener.parseActivity` reads the retry
- * cycle there the same way; `createActivityOnScope` reads a job priority off
- * the activity element alone, which is why there is no `runJobPriority`.
+ * cycle there the same way; `BpmnParse.parseActivity` makes the multi-instance
+ * body activity that `parseMultiInstanceLoopCharacteristics` builds for the
+ * repeated element the scope before `createActivityOnScope` runs, so the
+ * plain `jobPriority` in the same parens already prices each run's activity,
+ * not the whole loop's, which is why there is no `runJobPriority`.
  */
 export const RUN_ENGINE_KEYS: readonly string[] = ENGINE_KEYS.filter(
   (key) => key !== 'jobPriority',
@@ -296,7 +325,11 @@ export const CALL_BINDING_VALUES: readonly string[] = ['latest', 'deployment'];
 /**
  * The settings a process header takes, in the order they are offered and
  * printed. Each attaches to the `bpmn:process` element itself rather than to
- * any node inside it.
+ * any node inside it. `BpmnParse.parseProcess` also reads `jobPriority`,
+ * `taskPriority`, `isStartableInTasklist`, a process-level execution listener,
+ * and `potentialStarter` off the same element; this set leaves them out on
+ * purpose, since giving them authoring surface is a separate addition, not a
+ * gap in this list.
  */
 export const PROCESS_HEADER_KEYS: readonly string[] = [
   'label',
@@ -369,10 +402,13 @@ export const EVENT_BINDING_FIELDS: readonly string[] = ['code', 'message'];
 /** Legal on every element with a member block, since each lowers to a flow node. */
 export const EXECUTION_LISTENER_EVENTS = ['start', 'end'] as const;
 
-/** Legal on a user task alone; `timeout` is the one carrying a timer clause. */
+/**
+ * Legal on a user task alone, spelled as `BpmnParse.parseTaskListeners`
+ * accepts them; `timeout` is the one carrying a timer clause.
+ */
 export const TASK_LISTENER_EVENTS = [
   'create',
-  'assign',
+  'assignment',
   'complete',
   'update',
   'delete',
@@ -470,6 +506,28 @@ export const FORM_BOUND_TEXT = /^-?\d+$/;
 export const EXPRESSION_OPEN = /^\s*[$#]\{/;
 
 /**
+ * The words JUEL's `Scanner.addKeyToken` registers as operators besides
+ * `true`, `false` and `null`, which the grammar spells as literals. A variable
+ * or property named one of these renders as `${mod > 1}`, which the JUEL
+ * parser refuses at deployment.
+ */
+export const JUEL_RESERVED_WORDS = [
+  'empty',
+  'div',
+  'mod',
+  'not',
+  'and',
+  'or',
+  'le',
+  'lt',
+  'eq',
+  'ne',
+  'ge',
+  'gt',
+  'instanceof',
+] as const;
+
+/**
  * Written to `datePattern`, which `FormTypes.parseFormPropertyType` reads on
  * a `date` field alone. A type parameter rather than a constraint, so it is
  * not in {@link FORM_CONSTRAINT_NAMES}.
@@ -545,9 +603,12 @@ export const RACE_TRIGGERS = [
 export const CATCH_TRIGGERS = [...RACE_TRIGGERS, 'link'] as const;
 
 /**
- * The triggers Operaton dispatches a start behaviour for. It ignores an error,
- * escalation, or compensation trigger there and starts as if none were
- * written, so those stay off rather than emitting XML the engine disregards.
+ * The triggers `BpmnParse.parseProcessDefinitionStartEvent` dispatches a start
+ * behaviour for. It sets `NoneStartEventActivityBehavior` on every
+ * process-level start regardless, then only checks for a timer, message,
+ * signal, or conditional definition; an error, escalation, or compensation
+ * definition there is never inspected, so it starts as if none were written.
+ * Those three stay off rather than emitting XML the engine disregards.
  */
 export const START_TRIGGERS = [
   'message',
@@ -690,10 +751,17 @@ export function namesACode(trigger: string): boolean {
 /**
  * Fence-tag aliases and the canonical Operaton `scriptFormat` they normalize
  * to; the printer emits the canonical tag, so `js` round-trips to `javascript`.
+ * `juel` is the one engine the jar always registers
+ * (`META-INF/services/javax.script.ScriptEngineFactory`,
+ * `ScriptingEngines.DEFAULT_SCRIPTING_LANGUAGE`); every other tag resolves a
+ * JSR-223 engine off the classpath at first evaluation. `ecmascript` is the
+ * name Operaton also accepts for the JavaScript engine.
  */
 export const SCRIPT_FORMAT_ALIASES: Readonly<Record<string, string>> = {
+  juel: 'juel',
   js: 'javascript',
   javascript: 'javascript',
+  ecmascript: 'javascript',
   groovy: 'groovy',
   py: 'python',
   python: 'python',
@@ -703,22 +771,36 @@ export const SCRIPT_FORMAT_ALIASES: Readonly<Record<string, string>> = {
 };
 
 /**
+ * The one lookup the validator and every lowering site use: `juel`,
+ * `JavaScript`, and `ECMAScript` all resolve, matching
+ * `ScriptingEngines.getScriptEngineForLanguage`, which lowercases the
+ * language before looking an engine up.
+ */
+export function scriptFormatOf(tag: string): string | undefined {
+  return SCRIPT_FORMAT_ALIASES[tag.toLowerCase()];
+}
+
+/**
  * Split a raw `FENCED_SCRIPT` token into the fence tag
  * {@link SCRIPT_FORMAT_ALIASES} is keyed by and the code body. The tag is the
  * maximal run of ASCII letters after the opening fence, and one line terminator
  * right after it is dropped; nothing else is touched, so indentation and
- * trailing newlines inside the body survive verbatim.
+ * trailing newlines inside the body survive verbatim, except that every
+ * remaining `\r\n` is normalized to `\n`: the terminal matches `\r` like any
+ * other character, so a CRLF-checked-out source would otherwise carry a
+ * carriage return into the written `<bpmn:script>` body that an LF checkout
+ * never would.
  */
 export function splitFencedScript(raw: string): { tag: string; code: string } {
   const inner = raw.slice(3, -3); // strip the opening/closing ``` delimiters
   const tag = /^[a-zA-Z]+/.exec(inner)?.[0] ?? '';
   const rest = inner.slice(tag.length);
-  const code = rest.startsWith('\r\n')
+  const afterOpeningLine = rest.startsWith('\r\n')
     ? rest.slice(2)
     : rest.startsWith('\n')
       ? rest.slice(1)
       : rest;
-  return { tag, code };
+  return { tag, code: afterOpeningLine.replace(/\r\n/g, '\n') };
 }
 
 /** Each carries `items`, `params`, and `listeners`; all but `call` also carry `forms`. */
@@ -781,7 +863,9 @@ export interface AttributeBlockRule {
    * Whether the kind takes an external task's extras: `taskPriority` in the
    * parens, and `property` and `error ... when` lines in the block, each
    * checked against the binding actually written. A thrown message can bind a
-   * topic too and takes none of them.
+   * topic too, and this surface writes none of them for it;
+   * `BpmnParse.parseServiceTaskLike` reads the priority and the mappings off
+   * the message definition (the property list off the event element).
    */
   readonly externalExtras: boolean;
 }
@@ -970,6 +1054,10 @@ export const ATTRIBUTE_BLOCK_RULES: Readonly<
     taskListeners: false,
     externalExtras: false,
   }),
+  // A hosted handler lowers to a boundary event, on which
+  // `BpmnParse.parseBoundaryEvents` refuses a mapping, and a host-less one to
+  // an event sub-process, which `BpmnParse.checkActivityInputOutputSupported`
+  // refuses one on.
   OnHandler: withKeys({
     description: 'an event handler',
     own: [],
@@ -1089,16 +1177,6 @@ export function gatewayStatementRuleOf(
   return rules[node.$type];
 }
 
-/**
- * A host-less `on` handler lowers to an event sub-process, so it carries
- * parameters as a `subprocess` does. A hosted one lowers to a boundary event,
- * which has none, and keeps the plain row.
- */
-const EVENT_SUB_PROCESS_RULE: AttributeBlockRule = {
-  ...ATTRIBUTE_BLOCK_RULES.OnHandler,
-  parameters: true,
-};
-
 export function listenerEventsFor(rule: AttributeBlockRule): readonly string[] {
   return rule.taskListeners
     ? [...EXECUTION_LISTENER_EVENTS, ...TASK_LISTENER_EVENTS]
@@ -1133,9 +1211,6 @@ export function attributeBlockRuleOf(
   const rules: Readonly<Record<string, AttributeBlockRule>> =
     ATTRIBUTE_BLOCK_RULES;
   const rule = rules[node.$type];
-  if (rule && isOnHandler(node) && node.host === undefined) {
-    return EVENT_SUB_PROCESS_RULE;
-  }
   if (rule && isSubProcess(node) && node.transactional) {
     return ATTEMPT_BLOCK_RULE;
   }

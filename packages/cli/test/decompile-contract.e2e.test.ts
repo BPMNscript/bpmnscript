@@ -39,16 +39,19 @@ const ERROR_START_BPMN = path.resolve(
 );
 
 // `StartEvent_1`/`EndEvent_1` are what a modeler mints for a start and an end
-// drawn without a name of their own, and the shape the desugarer reserves for
-// the ids it generates, so a script cannot spell either one back.
-const GENERATED_ID_LABELS_BPMN = `<?xml version="1.0" encoding="UTF-8"?>
+// drawn without a name of their own.
+/** A labeled start and end under the given ids, in process `generated-id-labels`. */
+const labeledTerminalsBpmn = (
+  startId: string,
+  endId: string,
+): string => `<?xml version="1.0" encoding="UTF-8"?>
 <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" targetNamespace="http://test">
   <bpmn:process id="generated-id-labels" isExecutable="true">
-    <bpmn:startEvent id="StartEvent_1" name="Order received" />
+    <bpmn:startEvent id="${startId}" name="Order received" />
     <bpmn:userTask id="Approve" />
-    <bpmn:endEvent id="EndEvent_1" name="Order filed" />
-    <bpmn:sequenceFlow id="F1" sourceRef="StartEvent_1" targetRef="Approve" />
-    <bpmn:sequenceFlow id="F2" sourceRef="Approve" targetRef="EndEvent_1" />
+    <bpmn:endEvent id="${endId}" name="Order filed" />
+    <bpmn:sequenceFlow id="F1" sourceRef="${startId}" targetRef="Approve" />
+    <bpmn:sequenceFlow id="F2" sourceRef="Approve" targetRef="${endId}" />
   </bpmn:process>
 </bpmn:definitions>
 `;
@@ -97,7 +100,7 @@ describe('decompile contract: what the import makes of a fixture', () => {
       ['ReviewRequest', 'extensionAttribute'],
     ]);
     expectMentions(warnings.map((w) => w.message).join('\n'), [
-      'operaton:Properties',
+      'operaton:properties',
     ]);
   });
 
@@ -145,7 +148,7 @@ describe('decompile contract: what `bpmns parse` does with the same fixtures', (
       LANES_AND_ASYNC_BPMN,
       {
         warningIds: ['Lane_Ops', 'ReviewRequest'],
-        mentions: ['operaton:Properties'],
+        mentions: ['operaton:properties'],
         script: [
           'process lanes-and-async',
           'start ReviewStart',
@@ -196,25 +199,53 @@ describe('decompile contract: the script it hands back goes through the pipeline
     expect(diagnostics).toHaveLength(0);
   });
 
-  it('the DSL produced from a diagram whose labeled start and end carry generated-shaped ids re-parses with zero diagnostics, and each dropped label is warned about', async () => {
-    const { ir, warnings } = await xmlToIr(GENERATED_ID_LABELS_BPMN);
-    const dsl = irToDsl(ir).source;
-
-    const document = await parse(dsl, { validation: true });
-    expect(document.parseResult.parserErrors).toHaveLength(0);
-
-    const { diagnostics } = await validate(dsl);
-    expect(diagnostics).toHaveLength(0);
-
-    const labelWarnings = warnings.filter((w) => w.category === 'label');
-    expect(labelWarnings.map((w) => w.elementId)).toEqual([
+  // Only the exact ids the compiler generates for the process are left out
+  // of the script; a modelling tool's default ids are names like any other.
+  it.each([
+    [
+      "a modelling tool's default ids keep their statements and labels",
       'StartEvent_1',
       'EndEvent_1',
-    ]);
-    expect(labelWarnings[0]?.message).toContain('Order received');
-    expect(labelWarnings[1]?.message).toContain('Order filed');
-    for (const w of labelWarnings) assertNoForbiddenJargon(w.message);
-  });
+      [
+        'start StartEvent_1(label: "Order received")',
+        'end EndEvent_1(label: "Order filed")',
+      ],
+      [],
+    ],
+    [
+      'the ids this tool generates for the process drop their statements, and each dropped label is warned about',
+      'StartEvent_generated-id-labels',
+      'EndEvent_generated-id-labels',
+      [],
+      ['StartEvent_generated-id-labels', 'EndEvent_generated-id-labels'],
+    ],
+  ])(
+    'the DSL produced from a diagram where %s re-parses with zero diagnostics',
+    async (_title, startId, endId, printedLines, warnedIds) => {
+      const { ir, warnings } = await xmlToIr(
+        labeledTerminalsBpmn(startId, endId),
+      );
+      const dsl = irToDsl(ir).source;
+
+      const document = await parse(dsl, { validation: true });
+      expect(document.parseResult.parserErrors).toHaveLength(0);
+
+      const { diagnostics } = await validate(dsl);
+      expect(diagnostics).toHaveLength(0);
+      expect(
+        dsl.split('\n').filter((line) => /^\s+(start|end) /.test(line)),
+      ).toEqual(printedLines.map((line) => `  ${line}`));
+
+      const labelWarnings = warnings.filter((w) => w.category === 'label');
+      expect(labelWarnings.map((w) => w.elementId)).toEqual(warnedIds);
+      for (const w of labelWarnings) {
+        expect(w.message).toContain(
+          w.elementId === startId ? 'Order received' : 'Order filed',
+        );
+        assertNoForbiddenJargon(w.message);
+      }
+    },
+  );
 
   it('the DSL produced from the lanes-and-async fixture builds again without validation errors, and the rebuilt BPMN re-imports cleanly', async () => {
     const xml = fs.readFileSync(LANES_AND_ASYNC_BPMN, 'utf-8');

@@ -125,5 +125,8 @@ Amends ADR-0037 (`property` is shared with an external task, keyed differently o
 
 Amended by ADR-0042, under which a built-in mail or shell `type` binding joins the bindings the extras are refused on in a script and warned about on import, since `parseExternalServiceTask` alone reads them.
 
+Amended by ADR-0054, under which a definition with no `errorRef` is skipped with a warning, as `parseOperatonErrorEventDefinitions` skips it, and one whose `errorRef` names no root imports as the code spelled by the text, as every engine reader takes it.
+A thrown message's extras warn naming `parseExternalServiceTask` or `parseServiceTaskLike` as their reader.
+
 Related decisions: ADR-0007 (the moddle fork, which gains `taskPriority` on `ServiceTaskLike` and a concrete `ErrorEventDefinition` type beside the trait carrying the catch-side variables).
 ADR-0016 (derived root elements, which a mapping's code now feeds).

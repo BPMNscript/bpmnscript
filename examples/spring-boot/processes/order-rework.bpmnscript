@@ -6,7 +6,7 @@
 // Both steps are user tasks assigned to "demo", so this process deploys and
 // runs on the demo profile without additional Java classes.
 
-process order-rework(label: "Order Rework") {
+process order-rework {
   var approved: boolean
 
   start Received

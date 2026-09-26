@@ -49,8 +49,6 @@ execution.setVariable("allowanceBase", base)
   end ClaimSettled
 
   on message("ClaimRecalled") {
-    input recallReason = "${recallText}"
-  } {
     start RecallNoted
     service RecordRecall(label: "Record the recalled claim", class: "com.example.expenses.RecallDelegate")
     end RecallRecorded

@@ -102,7 +102,7 @@ execution.setVariable("mechanicsGrade", grade)
     </bpmn:endEvent>
     <bpmn:boundaryEvent id="Boundary_ApprovePayout_timer" cancelActivity="false" attachedToRef="ApprovePayout" operaton:asyncAfter="true" operaton:exclusive="false">
       <bpmn:outgoing>Flow_Boundary_ApprovePayout_timer_NudgeApprover</bpmn:outgoing>
-      <bpmn:timerEventDefinition>
+      <bpmn:timerEventDefinition operaton:exclusive="false">
         <bpmn:timeDuration xsi:type="bpmn:tFormalExpression">PT8H</bpmn:timeDuration>
       </bpmn:timerEventDefinition>
     </bpmn:boundaryEvent>

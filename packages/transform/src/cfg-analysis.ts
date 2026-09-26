@@ -51,6 +51,14 @@ export function analyzeCfg(container: FlowContainer): CfgAnalysis {
   const dominates = makeDominanceQuery(idom, VIRTUAL_ENTRY);
   const postDominates = makeDominanceQuery(ipdom, VIRTUAL_EXIT);
 
+  // A back-edge is u -> v where v dominates u. Filtering the raw flow list
+  // keeps every parallel edge and excludes the sentinel edges. Computed once:
+  // `tryWhile` and `tryDoWhileEntry` each ask for it per emitted node, and a
+  // straight chain of n tasks would otherwise refilter all n flows n times.
+  const backEdgeList = container.sequenceFlows.filter((f) =>
+    dominates(f.targetRef, f.sourceRef),
+  );
+
   return {
     immediateDominator(node) {
       return idom.get(node);
@@ -61,11 +69,7 @@ export function analyzeCfg(container: FlowContainer): CfgAnalysis {
     dominates,
     postDominates,
     backEdges() {
-      // A back-edge is u -> v where v dominates u. Filtering the raw flow
-      // list keeps every parallel edge and excludes the sentinel edges.
-      return container.sequenceFlows.filter((f) =>
-        dominates(f.targetRef, f.sourceRef),
-      );
+      return backEdgeList;
     },
     outgoing(node) {
       return [...(graph.succ.get(node) ?? [])];
@@ -245,23 +249,66 @@ function reversePostorder(root: string, succ: Map<string, string[]>): string[] {
   return postorder.reverse();
 }
 
-/** `a` dominates `b` when `a` sits on `b`'s idom chain. Reflexive and total. */
+/**
+ * `a` dominates `b` when `a` sits on `b`'s idom chain. Reflexive and total.
+ *
+ * `idom` is a tree rooted at `root`: every reachable node has exactly one
+ * parent, so numbering it by one DFS gives each node a pre-order entry time
+ * and, as its exit time, the last entry time handed out anywhere in its
+ * subtree. `a` is then an ancestor of `b` (or `b` itself) exactly when `b`'s
+ * entry time falls inside `a`'s [entry, exit] interval, a classic Euler-tour
+ * containment test that answers in two map lookups.
+ * A node absent from `idom` (unknown or unreachable) gets no interval and the
+ * query answers false for it on either side, which is what "dominated by
+ * nothing and dominates nothing" requires.
+ */
 function makeDominanceQuery(
   idom: Map<string, string | undefined>,
   root: string,
 ): (a: string, b: string) => boolean {
-  return (a, b) => {
-    if (!idom.has(b)) return false;
-    if (a !== root && !idom.has(a)) return false;
+  const { entry, exit } = numberDominatorTree(idom, root);
 
-    let cur: string | undefined = b;
-    const guard = idom.size + 1;
-    let steps = 0;
-    while (cur !== undefined && steps++ <= guard) {
-      if (cur === a) return true;
-      if (cur === root) break;
-      cur = idom.get(cur);
-    }
-    return false;
+  return (a, b) => {
+    const ea = entry.get(a);
+    const eb = entry.get(b);
+    if (ea === undefined || eb === undefined) return false;
+    return ea <= eb && eb <= exit.get(a)!;
   };
+}
+
+/** Iterative pre-order DFS over the parent map `idom`, rooted at `root`. */
+function numberDominatorTree(
+  idom: Map<string, string | undefined>,
+  root: string,
+): { entry: Map<string, number>; exit: Map<string, number> } {
+  const children = new Map<string, string[]>();
+  for (const [node, parent] of idom) {
+    if (node === root || parent === undefined) continue;
+    if (!children.has(parent)) children.set(parent, []);
+    children.get(parent)!.push(node);
+  }
+
+  const entry = new Map<string, number>();
+  const exit = new Map<string, number>();
+  let counter = 0;
+
+  const stack: Array<{ node: string; childIdx: number }> = [
+    { node: root, childIdx: 0 },
+  ];
+  entry.set(root, counter++);
+
+  while (stack.length > 0) {
+    const frame = stack[stack.length - 1];
+    const kids = children.get(frame.node) ?? [];
+    if (frame.childIdx < kids.length) {
+      const child = kids[frame.childIdx++];
+      entry.set(child, counter++);
+      stack.push({ node: child, childIdx: 0 });
+    } else {
+      exit.set(frame.node, counter - 1);
+      stack.pop();
+    }
+  }
+
+  return { entry, exit };
 }

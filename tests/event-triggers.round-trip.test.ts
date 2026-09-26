@@ -34,14 +34,12 @@ function timerExpressions(container: FlowContainer): string[] {
     .sort();
 }
 
-// Handwritten import-first. Two `bpmn:Signal` roots share a name but are
-// referenced by different elements, one by the intermediate throw and one by the
-// end event. Every task label differs from the name humanized from its id, so
-// the importer keeps it.
+// Handwritten import-first. One `bpmn:Signal` root is referenced twice, by the
+// intermediate throw and by the end event. Every task label differs from the
+// name humanized from its id, so the importer keeps it.
 const IMPORT_FIRST_BPMN = `<?xml version="1.0" encoding="UTF-8"?>
 <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:operaton="http://operaton.org/schema/1.0/bpmn" id="Definitions_import_first_triggers" targetNamespace="http://bpmn.io/schema/bpmn">
-  <bpmn:signal id="Signal_Sent_A" name="ParcelDispatched" />
-  <bpmn:signal id="Signal_Sent_B" name="ParcelDispatched" />
+  <bpmn:signal id="Signal_Sent" name="ParcelDispatched" />
   <bpmn:process id="parcel-tracking" name="Parcel Tracking" isExecutable="true">
     <bpmn:startEvent id="Begin">
       <bpmn:outgoing>Flow_Begin_Dispatch</bpmn:outgoing>
@@ -53,11 +51,11 @@ const IMPORT_FIRST_BPMN = `<?xml version="1.0" encoding="UTF-8"?>
     <bpmn:intermediateThrowEvent id="Broadcast">
       <bpmn:incoming>Flow_Dispatch_Broadcast</bpmn:incoming>
       <bpmn:outgoing>Flow_Broadcast_Done</bpmn:outgoing>
-      <bpmn:signalEventDefinition signalRef="Signal_Sent_A" />
+      <bpmn:signalEventDefinition signalRef="Signal_Sent" />
     </bpmn:intermediateThrowEvent>
     <bpmn:endEvent id="Done">
       <bpmn:incoming>Flow_Broadcast_Done</bpmn:incoming>
-      <bpmn:signalEventDefinition signalRef="Signal_Sent_B" />
+      <bpmn:signalEventDefinition signalRef="Signal_Sent" />
     </bpmn:endEvent>
     <bpmn:sequenceFlow id="Flow_Begin_Dispatch" sourceRef="Begin" targetRef="Dispatch" />
     <bpmn:sequenceFlow id="Flow_Dispatch_Broadcast" sourceRef="Dispatch" targetRef="Broadcast" />
@@ -178,7 +176,7 @@ describe('root sharing on the frozen .bpmn', () => {
 });
 
 describeImportFirst(
-  'a handwritten .bpmn with two same-name signals round-trips',
+  'a handwritten .bpmn throwing one signal twice round-trips',
   IMPORT_FIRST_BPMN,
   (first) => {
     it('recovers each trigger payload into the DSL surface', () => {
@@ -188,10 +186,10 @@ describeImportFirst(
       expect(first.dsl).toContain('on condition(stockLevel < 5) {');
     });
 
-    it('both broadcasts resolve to the one collapsed signal name', () => {
-      const collapsed = { kind: 'signal', signalName: 'ParcelDispatched' };
-      expect(definitionOf(first.ir, 'Broadcast')).toEqual(collapsed);
-      expect(definitionOf(first.ir, 'Done')).toEqual(collapsed);
+    it('both broadcasts resolve to the one signal name', () => {
+      const signal = { kind: 'signal', signalName: 'ParcelDispatched' };
+      expect(definitionOf(first.ir, 'Broadcast')).toEqual(signal);
+      expect(definitionOf(first.ir, 'Done')).toEqual(signal);
     });
   },
 );

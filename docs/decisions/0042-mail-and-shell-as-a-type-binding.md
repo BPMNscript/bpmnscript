@@ -112,7 +112,9 @@ Amends ADR-0021, whose "exactly one of the four" binding count grows to five.
 Amends ADR-0032, whose field-binding rule grows from `class`/`delegate` to `class`/`delegate`/`type`.
 Amends ADR-0014, which narrows the `type` refusal to a value outside `external`, `mail`, and `shell`, and whose warned list gains a mail or shell task's shadowed attributes.
 
-Related decisions: ADR-0006 (the engine-agnostic IR whose tagged union this decision extends).
+Amended by ADR-0048, under which `resultVariable` beside `type:` draws a warning that nothing writes the variable, rather than being accepted and ignored.
+
+Related decisions: ADR-0006 (the IR between the AST and BPMN XML, which carries Operaton's semantics under vendor-free names, whose tagged union this decision extends).
 ADR-0013 (the minimal keyword surface a fifth key, rather than two more keywords, follows).
 ADR-0014 (the honest import contract behind every refusal above).
 ADR-0021 (folding an external topic into `service` as a fourth binding, the precedent this decision repeats for a fifth).

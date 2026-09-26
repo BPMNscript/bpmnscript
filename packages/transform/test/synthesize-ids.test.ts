@@ -10,8 +10,8 @@
  *   Gateway_<X>_loop          XOR loop-head gateway for a `while` statement X
  *   Flow_<gatewayId>_default  Default (else-branch) flow out of a gateway
  *   Flow_<sourceId>_<targetId>  Sequence flow (plain); duplicate pairs get _2, _3, ...
- *   StartEvent_<processId>    Implicit start event
- *   EndEvent_<processId>      Implicit end event; duplicates get _2, _3, ...
+ *   StartEvent_<containerId>  Implicit start event of a container
+ *   EndEvent_<containerId>    Implicit end event of a container, or of a boundary escape
  *   Throw_<X>                 Unnamed `throw`/`emit` event at coordinate X
  *   EventSubProcess_<X>       `on` handler (event sub-process) at coordinate X
  *   Boundary_<hostId>_<trigger>  Hosted `on <Host>: <trigger>` handler; duplicates get _2, _3, ...
@@ -20,6 +20,9 @@
 import { describe, expect, it } from 'vitest';
 import { isReservedName } from '@bpmn-script/language';
 import {
+  isMintedEndId,
+  isMintedStartId,
+  isWritableName,
   makeGatewaySplitId,
   makeGatewayJoinId,
   makeGatewayForkId,
@@ -33,6 +36,7 @@ import {
   makeEventSubProcessId,
   makeBoundaryEventId,
   makeIntermediateCatchEventId,
+  mintPrintableName,
   resolveCollision,
 } from '../src/synthesize-ids.js';
 
@@ -61,11 +65,12 @@ describe('determinism', () => {
 
 // ---------------------------------------------------------------------------
 // Structural stability: templates match the exact documented forms, and every
-// form is one the validator reserves
+// form is one the validator reserves; a start or end only inside the container
+// that seeds it
 // ---------------------------------------------------------------------------
 
 describe('structural stability', () => {
-  it.each([
+  it.each<[string, () => string, string?]>([
     ['Gateway_AmountCheck_split', () => makeGatewaySplitId('AmountCheck')],
     ['Gateway_Step1_split', () => makeGatewaySplitId('Step1')],
     ['Gateway_AmountCheck_join', () => makeGatewayJoinId('AmountCheck')],
@@ -84,27 +89,17 @@ describe('structural stability', () => {
     [
       'StartEvent_invoice-approval',
       () => makeStartEventId('invoice-approval', new Set()),
+      'invoice-approval',
     ],
-    ['StartEvent_my-process', () => makeStartEventId('my-process', new Set())],
+    [
+      'StartEvent_my-process',
+      () => makeStartEventId('my-process', new Set()),
+      'my-process',
+    ],
     [
       'EndEvent_invoice-approval',
       () => makeEndEventId('invoice-approval', new Set()),
-    ],
-    [
-      'EndEvent_invoice-approval_2',
-      () =>
-        makeEndEventId(
-          'invoice-approval',
-          new Set(['EndEvent_invoice-approval']),
-        ),
-    ],
-    [
-      'EndEvent_invoice-approval_3',
-      () =>
-        makeEndEventId(
-          'invoice-approval',
-          new Set(['EndEvent_invoice-approval', 'EndEvent_invoice-approval_2']),
-        ),
+      'invoice-approval',
     ],
     ['Throw_p_1', () => makeThrowEventId('p_1')],
     [
@@ -143,13 +138,56 @@ describe('structural stability', () => {
           new Set(['Boundary_Pack_timer', 'Boundary_Pack_timer_2']),
         ),
     ],
-  ] as const)('%s', (expected, make) => {
+    // A boundary escape's end and a handler body's own start: minted off a
+    // coordinate no container name reaches, so the validator reserves the
+    // prefix rather than the exact form (no `container` argument here).
+    [
+      'EndEvent_Boundary_Pack_timer',
+      () => makeEndEventId('Boundary_Pack_timer', new Set()),
+    ],
+    [
+      'StartEvent_EventSubProcess_p_1',
+      () => makeStartEventId('EventSubProcess_p_1', new Set()),
+    ],
+  ])('%s', (expected, make, container) => {
     const id = make();
     expect(id).toBe(expected);
     // An authored name matching a synthesized id is refused, from a pattern
     // list the validator spells itself. Its package cannot import these
     // templates, so this row is what keeps the two lists the same set.
-    expect(isReservedName(id)).toBe(true);
+    expect(isReservedName(id, container)).toBe(true);
+    if (container !== undefined) expect(isReservedName(id)).toBe(false);
+  });
+
+  // The suffixed id minted past a taken name is an ordinary name: the
+  // validator does not reserve it, and the printer does not elide it.
+  it('the minted start and end are recognized exactly, per container', () => {
+    const boundaries = ['Boundary_Pack_error'];
+    expect(
+      [
+        'StartEvent_p',
+        'StartEvent_1',
+        'StartEvent_p_2',
+        'StartEvent_q',
+        'EndEvent_p',
+        'EndEvent_Boundary_Pack_error',
+        'EndEvent_p_2',
+        'EndEvent_q',
+      ].map((id) => [
+        id,
+        isMintedStartId(id, 'p'),
+        isMintedEndId(id, 'p', boundaries),
+      ]),
+    ).toEqual([
+      ['StartEvent_p', true, false],
+      ['StartEvent_1', false, false],
+      ['StartEvent_p_2', false, false],
+      ['StartEvent_q', false, false],
+      ['EndEvent_p', false, true],
+      ['EndEvent_Boundary_Pack_error', false, true],
+      ['EndEvent_p_2', false, false],
+      ['EndEvent_q', false, false],
+    ]);
   });
 
   it('the positional throw/handler/catch templates take no taken set (no collision resolution)', () => {
@@ -164,6 +202,32 @@ describe('structural stability', () => {
     const taken = new Set<string>();
     const id = makeBoundaryEventId('Pack', 'error', taken);
     expect(taken.has(id)).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Names for what the script cannot spell
+// ---------------------------------------------------------------------------
+
+describe('mintPrintableName', () => {
+  // Revert: drop the leading underscore for a keyword and `user` mints itself.
+  it.each([
+    ['a dot becomes an underscore', 'Task.1', false, 'Task_1'],
+    ['a keyword takes a leading underscore', 'user', false, '_user'],
+    ['a trailing hyphen becomes an underscore', 'Review-', false, 'Review_'],
+    ['every non-word character becomes one', 'WFP-6-', false, 'WFP_6_'],
+    ['a leading digit takes a leading underscore', '1st', false, '_1st'],
+    [
+      'an inner hyphen is a name already',
+      'invoice-approval',
+      true,
+      'invoice-approval',
+    ],
+  ])('%s', (_title, id, writable, expected) => {
+    expect([isWritableName(id), mintPrintableName(id)]).toEqual([
+      writable,
+      expected,
+    ]);
   });
 });
 

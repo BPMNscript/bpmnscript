@@ -17,7 +17,9 @@ The package also owns the base VS Code TextMate grammar (`syntaxes/bpmn-script.t
 
 One `process` block per file.
 Steps run top to bottom, so sequence flow is never written out, and control flow uses structured statements instead.
-Optional `var` declarations go in the process header, before the body, alongside the header's own settings: `versionTag`, which labels the deployed process definition, and `historyTimeToLive`, `candidateStarterUsers`, and `candidateStarterGroups`, which the engine reads before it starts an instance.
+Optional `var` declarations go in the process header, before the body, alongside the header's own settings: `versionTag`, which labels the deployed process definition, `historyTimeToLive`, and `candidateStarterUsers` and `candidateStarterGroups`, whose entries are listed as candidate starters (Tasklist's process list; `BpmnDeployer.addAuthorizations` stores each entry as written).
+`historyTimeToLive` is the number of days the engine keeps a finished instance's history, written `P<n>D` or `<n>`, and an absent value compiles to `P30D`, since `HistoryTimeToLiveParser.parseAndValidate` refuses a null value under the engine's default `enforceHistoryTimeToLive`; the cleanup itself runs only once its batch window is configured.
+Every header value is stored as written, never evaluated: `label`, `documentation` and `versionTag` are quoted strings, the tag at most 64 characters, and no header setting takes a `"${...}"` expression.
 
 ```bpmnscript
 process invoice-approval {
@@ -35,7 +37,8 @@ process invoice-approval {
 ```
 
 Every targetable statement carries an explicit id, which is what `goto` and boundary events refer to.
-The BPMN `name` is derived from that id (`ReviewInvoice` becomes "Review Invoice") unless a `label` setting gives one instead: `user ReviewInvoice(label: "Review invoice")`.
+An id is ASCII only: a letter or `_`, then any run of letters, digits and `_`, with single hyphens allowed between such runs (the `ID` terminal in the grammar).
+A step, a call and a sub-process derive the BPMN `name` from that id (`ReviewInvoice` becomes "Review Invoice") unless a `label` setting gives one instead: `user ReviewInvoice(label: "Review invoice")`; a `start` and an `end` are named by `label` alone, and `on`, `throw`, `emit` and `await` show no name at all, except the two ends of a link pair, which carry the link name.
 A `documentation` setting carries free-form text alongside it, spelled the same way: `user ReviewInvoice(documentation: "Escalate to the senior approver above 1000.")`.
 
 ### Statements
@@ -76,7 +79,7 @@ Five engine execution settings are legal on every element that takes settings, `
 
 | Element                                       | Keys beyond the engine settings                                                                                                             |
 | --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| `start`                                       | `initiator`                                                                                                                                 |
+| `start`                                       | `initiator`, on the process's own start                                                                                                     |
 | `end`, `await`, `on`, `subprocess`, `attempt` | none                                                                                                                                        |
 | `user`                                        | `assignee`, `formKey`, `formRef`, `binding`, `version`, `candidateGroups`, `candidateUsers`, `dueDate`, `followUpDate`, `priority`          |
 | `service`                                     | `class`, `expression`, `delegate`, `topic`, `type`, `resultVariable`, `taskPriority`                                                        |
@@ -90,13 +93,20 @@ Five engine execution settings are legal on every element that takes settings, `
 | process header                                | `label`, `documentation`, `versionTag`, `historyTimeToLive`, `candidateStarterUsers`, `candidateStarterGroups`                              |
 
 The engine settings are `asyncBefore` and `asyncAfter`, which put a transaction boundary before or after the step, `exclusive`, which says whether the engine may run the step's jobs beside other jobs of the same instance, `jobPriority`, which orders those jobs in the queue, and `retryCycle`, the ISO cycle a failed job is retried on.
+`exclusive`, `jobPriority`, or `retryCycle` written without `asyncBefore` or `asyncAfter` beside it configures no job and draws a warning, since Operaton creates the job only from the async flags (BpmnParse.parseAsynchronousContinuation, DefaultFailedJobParseListener.parseActivity); a timer carrier is exempt, since the timer itself creates the job.
+A process's signal start, an awaited signal, and a signal race branch are exempt for `jobPriority` alone: the subscription job BpmnParse.parseSignalCatchEventDefinition declares for them takes its priority from the catcher and runs when the throwing side is async, while `exclusive` and `retryCycle` still reach that job only through the async flags.
 The gateways that `if`, `while`, `do...while`, `parallel`, and a multi-branch `await` synthesize take the same five settings on the statement head, see [Job settings on a gateway](#job-settings-on-a-gateway).
 `taskPriority` rides a `topic` binding alone, see [External task extras](#external-task-extras).
 A repeated step also takes `runAsyncBefore`, `runAsyncAfter`, `runExclusive`, and `runRetryCycle`, written to the repetition itself and read by the engine onto each run rather than around the whole loop.
-There is no `runJobPriority`, since the engine reads a job priority off the step alone, see [Repetition](#repetition).
+There is no `runJobPriority`: `jobPriority` already prices each run's job once a step repeats, because `createActivityOnScope` reads it off the step regardless of what repeats around it; the whole-loop job takes the process's own priority instead, see [Repetition](#repetition).
 
+A user task's `assignee` is the user id: a bare word or a quoted string reaches the engine as written, and `"${who}"` reads a variable.
+`candidateUsers` and `candidateGroups` are read the same way.
+`dueDate` and `followUpDate` take a period starting with `P`, an ISO date-time such as `"2026-01-01T09:00:00"`, or a `"${...}"` expression, the shapes `DueDateBusinessCalendar.resolveDuedate` parses when the task is created.
+`priority` is an integer or an expression yielding one; `TaskDecorator.initializeTaskPriority` parses a constant with `Integer.parseInt` at task creation, so `"high"` deploys and then fails the instance.
 A user task names its deployed form with `formKey` or with `formRef`, never both.
 `formRef` also needs `binding: latest`, `binding: deployment`, or `version: <number>` beside it, the same version-pinning a `call` or a `decide` step carries, since the engine refuses to deploy a form reference it cannot resolve a version for.
+`version` is a positive whole number, quoted or not, or an expression yielding one, on a `formRef`, a `call`, and a `decide` step alike: the engine parses it as an integer when the step runs (`BaseCallableElement.getVersion`, `TaskEntity.initializeFormRefFromTaskDefinition`), so `1.5` deploys and then fails the instance.
 
 #### Job settings on a gateway
 
@@ -111,13 +121,13 @@ process order-fulfillment {
 
   start OrderPlaced
 
-  if (amount > 10000) (asyncBefore: true, joinJobPriority: 5) {
+  if (amount > 10000) (asyncBefore: true, joinAsyncBefore: true, joinJobPriority: 5) {
     user AuditReview(assignee: "auditor")
   } else {
     user SkipAudit(assignee: "clerk")
   }
 
-  parallel (exclusive: true, joinAsyncAfter: true) {
+  parallel (asyncBefore: true, exclusive: true, joinAsyncAfter: true) {
     {
       user PackItems
     }
@@ -136,7 +146,7 @@ A `join`-prefixed setting on a statement whose branches all end their own path i
 
 #### Forms
 
-A `start` and a `user` task each take one `form` block, `operaton:formData` on the wire, which Tasklist renders as one input per field and which fills one process variable per field when the form is submitted.
+A process's own `start` and a `user` task each take one `form` block, `operaton:formData` on the wire, which Tasklist renders as one input per field and which fills one process variable per field when the form is submitted.
 A field takes the shape every element takes ([ADR-0029](../../docs/decisions/0029-one-bracket-shape-for-every-element.md)): `id: type "label" = default (settings) { members }`, the label and the default optional.
 The parens hold what the engine validates a submission under, plus the date pattern; the braces hold what the field is built from, an `enum`'s values and its `property` lines.
 `id` is the process variable the field fills, so a `var` of the same name has to declare the same type.
@@ -147,18 +157,23 @@ The type is `string`, `number`, `boolean`, `date`, or `enum`.
 Each setting in the parens but `pattern` is one `operaton:constraint`, evaluated in the order written.
 `FormValidators.createValidator` fails the deployment on any constraint name the engine has not registered, so the seven below are the closed set the parens take.
 
-| Setting                            | What the engine checks                                                                    | Fits     | Value                                                              |
-| ---------------------------------- | ----------------------------------------------------------------------------------------- | -------- | ------------------------------------------------------------------ |
-| `required: true`                   | a value was submitted, or the variable or the default already holds one; empty text fails | any type | the literal `true`                                                 |
-| `readonly: true`                   | no value was submitted for the field                                                      | any type | the literal `true`                                                 |
-| `min: <n>`, `max: <n>`             | the submitted number is at least `n`, or below `n` (`MaxValidator.validate` is exclusive) | `number` | an integer literal or a quoted integer such as `"-5"`              |
-| `minlength: <n>`, `maxlength: <n>` | the submitted text has at least, or at most, `n` characters                               | `string` | an integer literal or a quoted integer                             |
-| `validator: "..."`                 | whatever the named class or expression decides                                            | any type | a class name or a `"${...}"` expression, the shapes `class:` takes |
-| `pattern: "..."`                   | nothing; it is the format a submitted date is parsed with, `datePattern` on the wire      | `date`   | a non-empty quoted pattern such as `"dd/MM/yyyy"`                  |
+| Setting                            | What the engine checks                                                                    | Fits     | Value                                                                                   |
+| ---------------------------------- | ----------------------------------------------------------------------------------------- | -------- | --------------------------------------------------------------------------------------- |
+| `required: true`                   | a value was submitted, or the variable or the default already holds one; empty text fails | any type | the literal `true`                                                                      |
+| `readonly: true`                   | no value was submitted for the field                                                      | any type | the literal `true`                                                                      |
+| `min: <n>`, `max: <n>`             | the submitted number is at least `n`, or below `n` (`MaxValidator.validate` is exclusive) | `number` | an integer literal or a quoted integer such as `"-5"`                                   |
+| `minlength: <n>`, `maxlength: <n>` | the submitted text has at least, or at most, `n` characters                               | `string` | an integer literal or a quoted integer                                                  |
+| `validator: "..."`                 | whatever the named class or expression decides                                            | any type | a non-empty class name or a `"${...}"` expression                                       |
+| `pattern: "..."`                   | nothing; it is the format a submitted date is parsed with, `datePattern` on the wire      | `date`   | quoted `SimpleDateFormat` letters, quoted runs, and non-letters, such as `"dd/MM/yyyy"` |
 
 A flag is on while written and off otherwise, so `required: false` is an error telling you to leave the setting out.
 The bounds fit one type each: `AbstractNumericValidator.validate` throws on a submitted value that is not a number and `AbstractTextValueValidator.validate` on one that is not text, so a `min` on a `string` field would deploy and then fail every submission.
 All four take an integer, since a `number` field is an Operaton `long`, whose validator parses the bound with `Long.parseLong`, and a length is a character count.
+`validator` cannot be empty, the one shape `FormValidators.createValidator` refuses to deploy, and `pattern` builds a `java.text.SimpleDateFormat`, which throws on a letter outside that set.
+
+A literal default is converted through the field's type on every render, exactly as a submitted value is (`FormFieldHandler.createFormField`).
+A `number` default has to be an integer, which `LongFormType.convertValue` reads with `Long.valueOf`; a `boolean` default has to be `true` or `false`, since `BooleanFormType.convertValue` reads anything else as `false` with no error at all; and a `date` default with no `pattern` setting is read against the engine's own default, `"dd/MM/yyyy"` (`ProcessEngineConfigurationImpl.initFormTypes`), so an ISO-shaped default such as `"2026-01-01"` is refused unless a `pattern` says otherwise.
+A bare name or a `"${...}"` expression is left to the engine, since it is evaluated fresh at every render.
 
 An `enum` field lists its values in the braces, one `id "Label"` line each in the order the form offers them, the label optional.
 Its default, when it is a literal, has to name one of them: `FormFieldHandler.createFormField` converts the default through the type on every render of the form, so a default naming no value deploys and then fails to open.
@@ -198,9 +213,11 @@ process gym-membership {
 
 A `service` task takes exactly one of five binding attributes.
 `class` is a Java delegate class name, `expression` maps to `operaton:expression`, `delegate` is the friendlier spelling of `operaton:delegateExpression`, `topic` hands the work to an external worker through `operaton:type="external"` and `operaton:topic`, and `type` selects a behaviour Operaton builds itself, see [Mail and shell tasks](#mail-and-shell-tasks).
+`expression:` and `delegate:` take a `"${...}"` template or a bare name, never a quoted string: the engine evaluates the value, so quoted text under `delegate:` reaches it as a string that resolves to no delegate, and under `expression:` as a string that evaluates to itself and runs nothing.
+`class:` takes a class name alone, loaded as written, so a template there is not evaluated.
 `resultVariable` names the process variable the invocation's return value is stored in, and is not itself a binding.
 It is legal beside `expression:`, where the engine stores the return value, and beside `decision:` on a `decide` task, where it holds the decision result.
-Beside `topic:` and `type:` it is accepted and ignored, and beside `class:` and `delegate:` it is refused, because the engine refuses to deploy that combination.
+Beside `topic:` and `type:` it is deployed and never written, since `BpmnParse.parseServiceTaskLike` hands it to the `expression` binding alone, so the validator warns; beside `class:` and `delegate:` it is refused, because the engine refuses to deploy that combination.
 
 #### Send, receive, and decision tasks
 
@@ -213,7 +230,8 @@ With no `message` key it still waits, but names nothing to correlate on: only th
 
 A `decide` task answers a decision table when `decision` names one.
 `binding: latest` or `binding: deployment` pins the deployed version the same way a `call` does, `version: <n>` pins a specific one, and `mapDecisionResult` picks what lands in `resultVariable`: `singleEntry`, `singleResult`, `collectEntries`, or `resultList`.
-With no `decision` key it falls back to the same five binding attributes a `service` task takes, serialized as a `bpmn:businessRuleTask` instead of a `bpmn:serviceTask`.
+`mapDecisionResult` without a `resultVariable` is built and never applied (`DecisionEvaluationUtil.evaluateDecision` maps only when storing), so the validator warns.
+With no `decision` key it falls back to the same five binding attributes a `service` task takes, serialized as a `bpmn:businessRuleTask` instead of a `bpmn:serviceTask`, and `binding`, `version` and `mapDecisionResult` are refused there, since `BpmnParse.parseBusinessRuleTask` reads them on the decision path alone.
 
 #### Mail and shell tasks
 
@@ -242,12 +260,12 @@ A shell task needs `command`.
 Every shell field is a quoted literal, never a `"${...}"` expression, and its three flags, `wait`, `redirectError`, and `cleanEnv`, are written `true` or `false`.
 A shell task's output has no `resultVariable` of its own to hold it.
 `field outputVariable = "..."` names the process variable the command's stdout is written to, and `field errorCodeVariable = "..."` the one its exit code is written to.
-`resultVariable` beside `type:` is accepted and ignored, the same as beside `topic:`.
+`resultVariable` beside `type:` is deployed and never written, the same as beside `topic:`, and draws the same warning.
 
 #### Input and output parameters
 
-`input <name> = <value>` and `output <name> = <value>` map data across a step's boundary as `operaton:inputParameter` and `operaton:outputParameter` entries in its `operaton:inputOutput` block, and are legal on a `user`, `service`, `script`, `step`, `send`, `receive`, or `decide` task, a `subprocess`, an `attempt` block, a `call`, and an `on` handler with no host.
-A host-less handler takes them because it lowers to an event sub-process; a hosted `on <Host>:` handler lowers to a boundary event, which carries none.
+`input <name> = <value>` and `output <name> = <value>` map data across a step's boundary as `operaton:inputParameter` and `operaton:outputParameter` entries in its `operaton:inputOutput` block, and are legal on a `user`, `service`, `script`, `step`, `send`, `receive`, or `decide` task, a `subprocess`, an `attempt` block, and a `call`.
+An `on` handler takes none in either form: a hosted `on <Host>:` handler lowers to a boundary event and a host-less one to an event sub-process, and the engine refuses to deploy either with one (`BpmnParse.parseBoundaryEvents`, `BpmnParse.checkActivityInputOutputSupported`).
 A value is an ordinary expression, a `[ ... ]` list, a `{ key: value }` map, or a fenced script that computes it, and lists and maps nest freely.
 Entries keep the order they were written in, and a name may repeat across the two directions but not within one.
 
@@ -290,7 +308,8 @@ A worker fetching the task with `includeExtensionProperties` receives the list.
 An `error <Code> when <condition>` line is an `operaton:errorEventDefinition errorRef= expression=`: it raises the declared code (see [The event layer](#the-event-layer)) when the condition holds, checked on a failure the worker reports and again on a completion.
 `ExternalTaskEntity.evaluateThrowBpmnError` runs the mappings in the order written, and the first true one wins.
 Beside the process variables the condition may read `externalTask.errorMessage`, `externalTask.errorDetails`, and `externalTask.retries`, the names the engine resolves on an external task's execution and nowhere else, so `externalTask` inside a mapping draws no undeclared-variable warning and in an `if` it does.
-`parseExternalServiceTask` is the only reader of all three, so each is an error on a task bound with `class`, `expression`, `delegate`, `type`, or `decision`, and on a `throw message` or an `emit message` bound with a topic, which take none of them.
+`parseExternalServiceTask` is the only reader of all three, so each is an error on a task bound with `class`, `expression`, `delegate`, `type`, or `decision`.
+Each is an error on a `throw message` or an `emit message` bound with a topic too: `parseServiceTaskLike` reads the priority and the mappings off the message definition there (the property list off the event element), but this surface writes none of them for a throw.
 
 ```bpmnscript
 process card-payment {
@@ -312,13 +331,13 @@ An element's braces also hold listeners, written with `on <event>` and the thing
 An execution listener fires when the element starts or ends and is legal on every element that takes settings.
 A task listener fires on a step in a user task's lifecycle and is legal on a `user` task alone.
 
-| Listener kind     | Events                                                        |
-| ----------------- | ------------------------------------------------------------- |
-| execution         | `start`, `end`                                                |
-| task, `user` only | `create`, `assign`, `complete`, `update`, `delete`, `timeout` |
+| Listener kind     | Events                                                            |
+| ----------------- | ----------------------------------------------------------------- |
+| execution         | `start`, `end`                                                    |
+| task, `user` only | `create`, `assignment`, `complete`, `update`, `delete`, `timeout` |
 
 A listener runs exactly one thing: `class`, `expression`, or `delegate` in its own parens, or a fenced script whose opening tag names the language.
-That is the same choice a service task binding makes, without the external `topic` or the built-in `type`.
+That is the same choice a service task binding makes, without the external `topic` or the built-in `type`, and each value takes the shape it takes there: a class name under `class`, a `"${...}"` template or a bare name under `expression` and `delegate`.
 A `class` or `delegate` binding also opens a brace block of its own, holding injected fields the same way a `service`, `send`, or `decide` task's braces do; see [Field injection](#field-injection).
 `on timeout` carries the timer that says when it runs, written as an `after`, `at`, or `every` particle and a time, and no other event takes one.
 
@@ -338,7 +357,8 @@ An `on` inside an element's braces is a listener; an `on` at statement position 
 
 #### Script tasks
 
-A `script` task's body is a markdown-style fenced block whose opening tag names the language: `javascript` or `js`, `groovy`, `python` or `py`, `ruby` or `rb`, and `feel`.
+A `script` task's body is a markdown-style fenced block whose opening tag names the language: `juel`, `javascript`/`js` (or `ecmascript`), `groovy`, `python`/`py`, `ruby`/`rb`, and `feel`.
+`juel` is the only one every Operaton deployment can run out of the box; the others need a JSR-223 engine on the deployment's classpath, which `ScriptingEngines.getScriptEngineForLanguage` resolves the first time the script runs rather than at deployment.
 
 #### Sub-processes
 
@@ -357,7 +377,7 @@ A `call` reads like a function call at the process boundary.
 A `local` mapping (`in local x = y`) reads from or writes to variables belonging to the call step itself rather than to the whole process.
 It's rare when authoring, and exists mainly so diagrams that use step-local variables import faithfully.
 
-`mapper: "<class>"` and `mapperDelegate: "${bean}"` name a Java class or a bean that computes the mapping in code, `operaton:variableMappingClass` and `operaton:variableMappingDelegateExpression` on the wire.
+`mapper: "<class>"` and `mapperDelegate: "${bean}"` name a Java class or a bean that computes the mapping in code, `operaton:variableMappingClass` and `operaton:variableMappingDelegateExpression` on the wire; they take the shapes `class` and `delegate` take on a `service` task.
 Either one names an implementation of Operaton's `DelegateVariableMapping`, whose `mapInputVariables` runs after the declared `in` mappings and whose `mapOutputVariables` runs after the declared `out` ones.
 A mapper therefore adds to what the call declares rather than standing in for it, and sits beside any `in` and `out` mappings the same call carries.
 Writing both spellings on one call is an error, since Operaton would read the class and drop the delegate expression without saying so.
@@ -388,6 +408,8 @@ It is legal on `user`, `service`, `script`, `step`, `send`, `receive`, `decide`,
 | `for 3`                    | three times                                                            |
 | `for 3 each line in lines` | three times, run `n` still seeing element `n` of `lines`               |
 
+A literal count is a non-negative whole number, quoted or not; a bare name or a `"${...}"` expression is left to the engine, which reads a constant count as text with `Integer.parseInt` and truncates any other number with `intValue()` (`MultiInstanceActivityBehavior.resolveLoopCardinality`).
+
 A count and a collection are not alternatives.
 Writing both lets the count decide how many runs there are while each run still binds its element.
 A collection written as a plain name is the process variable of that name, and anything else is written as a quoted expression, so `for each line in "${order.lines}"` reads a property where `for each line in lines` reads a variable.
@@ -397,7 +419,8 @@ The runs happen at once, which is the engine's own default, unless `sequentially
 
 `until ( <condition> )` drops the runs still outstanding, once the condition holds.
 Operaton keeps `nrOfInstances`, `nrOfActiveInstances`, and `nrOfCompletedInstances` on the repetition as a whole and evaluates the completion condition there, so those three are the names the condition can read.
-`loopCounter` is set on each run instead, which makes it a name the step's own body and its `input` parameters read rather than the condition.
+`loopCounter` is set on each run and is readable there too: in the run's body, its `input` parameters, and the `until` condition alike.
+A sequential repetition evaluates the condition on the run that just finished, since only one run is ever active (`SequentialMultiInstanceActivityBehavior.complete`); a parallel one evaluates it on whichever concurrent run just ended, not the whole set, so `loopCounter` there names that one run's index (`ParallelMultiInstanceActivityBehavior.concurrentChildExecutionEnded`).
 All four are in scope without a `var` declaration, as is the element name.
 
 ```bpmnscript
@@ -413,10 +436,11 @@ process invoice-batch {
 }
 ```
 
-`asyncBefore` in a repeated step's settings puts one job around the whole repetition rather than one job per run.
+`asyncBefore`, `asyncAfter`, `exclusive`, and `retryCycle` in a repeated step's settings put one job around the whole repetition rather than one job per run.
 `runAsyncBefore`, `runAsyncAfter`, `runExclusive`, and `runRetryCycle` put the matching job on each run instead, written in the same parens as the step's own settings.
-There is no `runJobPriority`: the engine reads a job priority off the step alone, so writing one on the repetition would be honored by nothing.
+There is no `runJobPriority`: `jobPriority` prices the per-run job on its own, since `createActivityOnScope` reads it off the step regardless of what repeats around it; the whole-loop job takes the process's own priority, and no attribute writes one there.
 A `run*` key on a step with no `for` clause is an error, since one job per run means nothing where there is no run.
+`exclusive` or `retryCycle` needs `asyncBefore` or `asyncAfter` beside it for the whole-loop job, and `jobPriority`, `runExclusive`, or `runRetryCycle` needs `runAsyncBefore` or `runAsyncAfter` beside it for the per-run job, or the setting configures nothing (warning).
 
 ```bpmnscript
 process order-notifications {
@@ -440,9 +464,10 @@ The head decides the element for the whole statement, not just for its own branc
 No condition anywhere on the statement compiles to the ordinary `bpmn:parallelGateway` fork and join.
 A condition on any one branch compiles both the fork and the join to `bpmn:inclusiveGateway` instead, and every unconditioned sibling still runs, alongside whichever conditioned branches also matched.
 
-The compiler always emits a fallback flow out of an inclusive fork, whether or not an `else` branch is written.
-Operaton only takes that flow when none of the fork's other flows were taken, so a fork with every branch conditioned and no fallback at all would still deploy, then stop with a stuck execution the first time nothing matches.
-Writing `else` gives the fallback a body to run before the join; leaving it out routes the fallback straight to the join.
+The compiler emits a fallback flow out of an inclusive fork only where Operaton can take it.
+The engine takes that flow when none of the fork's other flows were taken, so a fork with every branch conditioned and no fallback at all would still deploy, then stop with a stuck execution the first time nothing matches.
+Writing `else` gives the fallback a body to run before the join; leaving it out routes the fallback straight to the join when every branch carries a condition.
+A branch with no head is taken every time, so beside one no fallback is written at all.
 
 ```bpmnscript
 process expense-approval {
@@ -662,6 +687,7 @@ process order-intake {
 
 Four words are legal there: `message`, `signal`, `timer`, and `condition`, each with the payload it already carries elsewhere, a name for the first two, a duration or an `at` or `every` key for the third, and the condition expression, the same clause `on condition` and `await condition` carry, for the fourth.
 A subprocess start and an event-handler start take none, because both are entered by their container rather than by an event of their own; the validator rejects a trigger written on either.
+Neither takes `initiator` or a `form` block: `BpmnParse.parseScopeStartEvent` reads neither off a start that is not the process's own, so the validator rejects both there too.
 
 Writing `error`, `escalation`, or `compensation` on a process start is rejected too, for a different reason: Operaton's own start-event parser does not branch on those three, so the engine ignores the trigger and starts the process exactly as if none were written, and this surface refuses to compile XML the engine would disregard.
 
@@ -682,6 +708,8 @@ A `start` opens a chain and takes no incoming flow, so it sits first, right afte
 Starts written back to back share the chain that follows, which is how `ByAgent` and `ByEmail` both enter `Triage`, and a start after an `end` opens a chain of its own that reaches a shared step by `goto`.
 A start after a step whose flow is still live is an error, since the page would not say whether that flow runs past the start or stops at it.
 A subprocess, an `attempt` block, and an event-handler body keep exactly one start, because Operaton's `BpmnParse.parseScopeStartEvent` rejects a second start on any scope that is not a process.
+A process keeps one plain or timer start, because `BpmnParse.selectInitial` rejects a second, and one message or signal start per name and one condition start per condition, because `BpmnParse.addEventSubscriptionDeclaration` rejects a repeat; the validator refuses each of those before the engine does.
+A body that does not open with a `start` gets a plain start of its own from the compiler, and that one is in the count: a plain or timer `start` further down such a body is the second one, so it needs a message, signal, or condition trigger, or has to open the body itself.
 
 Two warnings follow from how the engine picks a default start.
 A process whose starts are all message, signal, or condition starts has no default, so the engine can create an instance only by triggering one of them, and starting it by key fails at runtime.
@@ -784,7 +812,8 @@ The editor still highlights and completes them, but only in the positions where 
 ### Expressions
 
 Condition expressions are parsed as a real AST over the JUEL native subset: integer, decimal, string, boolean, and null literals; variable references with dot-property and index accessors; unary `!` and `-`; binary arithmetic and comparison; logical `&&` and `||`; the ternary `? :`; and parentheses.
-Anything outside that subset uses the quoted raw fallback, `"${...}"`.
+Anything outside that subset uses the quoted raw fallback, `"${...}"` or `"#{...}"`, carried as written.
+Both openers are the ones the engine evaluates, and a raw template is read with the same escapes as a string literal, so `"${fn(\"a\")}"` is the expression `${fn("a")}`.
 `on condition(...)` reuses the same grammar, so a variable read inside it goes through the same undeclared-variable and type checks as one read inside an `if`.
 
 ## Diagnostics
@@ -792,28 +821,32 @@ Anything outside that subset uses the quoted raw fallback, `"${...}"`.
 Validation beyond syntax lives in `src/bpmn-script-validator.ts`, which is the source of truth for the exact rules and their wording.
 The categories it covers:
 
-- Variables: an undeclared reference (warning), a type mismatch against the declared `var`, a name declared twice.
-- Tasks: a duplicate attribute key, a `service`, `send`, or `decide` task without exactly one binding attribute, a `resultVariable` beside a `class` or `delegate` binding, which the engine refuses to deploy, a `mapDecisionResult` outside the four result mappings, a `script` task with an unsupported fence tag or an empty or unterminated body.
+- Variables: an undeclared reference (warning), a type mismatch against the declared `var`, a name declared twice, a JUEL keyword or a hyphen in a name a rendered expression carries, a JUEL keyword read as a property inside a `"${...}"` template (`"${order.and}"`, outside its string literals), a condition whose static type is not boolean, and a composite `"${...} ${...}"` template under an operator.
+- Tasks: a duplicate attribute key, a `service`, `send`, or `decide` task without exactly one binding attribute, a binding value in the wrong shape (quoted text under `expression`, `delegate`, or `mapperDelegate`, a template under `class` or `mapper`, an empty `class`, `expression`, `delegate`, `mapper`, `mapperDelegate`, `topic`, `decision`, or `process`), a `resultVariable` beside a `class` or `delegate` binding, which the engine refuses to deploy, or beside `topic` or `type`, which nothing writes (warning), a `mapDecisionResult` outside the four result mappings or without a `resultVariable` to map into (warning), `binding`, `version`, or `mapDecisionResult` on a `decide` step with no `decision`, a `script` task with an unsupported fence tag or an empty or unterminated body.
+  A user task adds its own: a `priority` that is neither an integer nor a `"${...}"` expression, and a `dueDate` or `followUpDate` constant that is neither a `P...` period nor an ISO date-time.
+  A `version` on a `formRef`, a `call`, or a `decide` step that is not a positive whole number or an expression is refused on all three alike.
   An external task's extras add their own: a `taskPriority` or an `error ... when` mapping on a step not bound with `topic`, a mapping headed by a word other than `error` or missing `when`, a mapping naming an undeclared code, and a `taskPriority` or `jobPriority` that is neither an integer nor a `"${...}"` expression.
   A `service`, `send`, or `decide` task bound with `type` adds its own: a required field its type's own parse requires missing, a field name its behaviour class does not declare, and, on a shell task, a field carried as an expression or a flag other than `true`/`false`.
-- Settings: a key the element does not own, a value in a shape its lowering cannot read (a quoted `asyncBefore`, an unquoted `versionTag`), a `form` block on an element that renders none, and a process header carrying a key it does not own.
+- Settings: a key the element does not own, a value in a shape its lowering cannot read (a quoted `asyncBefore`, an unquoted `retryCycle`), a `retryCycle` the engine's retry parser cannot read, which is dropped rather than refused (warning), a `for` clause's count that is not a non-negative whole number, a variable, or an expression yielding one, a `form` block on an element that renders none, a process header carrying a key it does not own, and an unkeyed value in the parens of an element with no payload to read it as (a task, a call, a subprocess, a listener, the process header, or a `start` or `end` with no trigger, where `start S("PT30M")` is a timer payload missing its `timer` word).
+  A process header adds its own, since the engine stores every header value as written: a `historyTimeToLive` outside `P<n>D` or `<n>`, a `versionTag` that is not a quoted string or runs past 64 characters, a `"${...}"` template anywhere in `candidateStarterUsers` or `candidateStarterGroups`, and a `label` or `documentation` that is not a quoted string.
   A gateway statement's parens add their own: a bare value rather than a `key: value` setting, a `join`-prefixed key on a `while` or `do...while` loop, and `asyncAfter` on a multi-branch `await` head.
   A `join`-prefixed key on a statement whose branches all terminate warns, since the join it would set is pruned.
   A `run*` key on a step with no `for` clause, and `runJobPriority`, which does not exist, since the engine reads a job priority off the step alone.
-- Parameters: a direction word the owner doesn't take, a parameter on an element that carries none, a name repeated within one direction, and an `output` mapping on a repeated step.
-  A `field` also errors on a kind that takes none, when its binding is anything other than `class`, `delegate`, or `type`, and when its value is neither a quoted string nor a `"${...}"` expression.
+  `exclusive`, `jobPriority`, or `retryCycle`, plain, `join`-, or `run`-prefixed, without the matching `asyncBefore`/`asyncAfter` beside it configures no job (warning); a timer carrier is exempt, since the timer itself creates the job, and a signal start, an `await signal`, or a signal race branch is exempt for `jobPriority`, which prices its subscription job (a boundary or handler signal catch declares none and keeps the warning).
+- Parameters: a direction word the owner doesn't take, a parameter on an element that carries none, a name repeated within one direction, an `output` mapping on a repeated step, an empty or blank string as a value, a list item, or a map entry's value, which the engine trims and reads as no value at all rather than as an empty string (warning), and the same fence rules a `script` task's body follows on a fenced script anywhere in a value, a list, or a map, since the engine resolves that tag only when the parameter is first evaluated.
+  A `field` also errors on a kind that takes none, when its binding is anything other than `class`, `delegate`, or `type`, when its value is neither a quoted string nor a `"${...}"` expression, when it is empty, which deploys as neither a fixed value nor an expression, and when its quoted string opens with an escaped `\${` or `#{`, which has no fixed-text slot.
   A `property` line errors the same way on a kind that takes none and on a `service`, `send`, or `decide` step not bound with `topic`.
 - Listeners: an event word the element does not have, a binding count other than one, a missing timer on `on timeout` or a timer on any other event, a repeated event on one element, and the same fence rules a `script` body follows.
-- Structure: an empty process, subprocess, or handler body, an empty branch or loop body (warning), an unreachable statement, a process-level `start` after a step whose flow still runs on, a `start` anywhere but first in its subprocess, attempt block, or handler body, a process with several starts and no plain or timer one among them (warning), a `form` block on a start that is not the default one (warning), a `goto` reaching into a `parallel` or `await` branch from outside it, a second `else` branch on a `parallel` statement, an `else` branch with no conditioned sibling, and an `else` branch beside a sibling carrying no condition.
-- Names: a reused process name, step name, or `label`, and a name matching a synthesized-id pattern ([ADR-0010](../../docs/decisions/0010-deterministic-structural-ids.md)).
+- Structure: an empty process, subprocess, or handler body, an empty branch (warning), an empty loop body, which would drop the loop and its condition, a `do` body that always ends or redirects the flow, which would leave the loop gateway with no incoming flow, a parameter or listener written inside a body rather than in an element's attribute block, an unreachable statement, a process-level `start` after a step whose flow still runs on, a `start` anywhere but first in its subprocess, attempt block, or handler body, a second plain or timer start on a process, counting the plain start the compiler adds to a body that does not open with a `start`, a second message, signal, or condition start repeating an earlier one's payload, `initiator` or a `form` block on a start inside a subprocess, attempt block, or handler body, a process with several starts and no plain or timer one among them (warning), a `form` block on a start that is not the default one (warning), a `goto` reaching into a `parallel` or `await` branch from outside it, a second `else` branch on a `parallel` statement, an `else` branch with no conditioned sibling, and an `else` branch beside a sibling carrying no condition.
+- Names: a reused process name, step name, or `label`, a step name equal to the process id, which the compiled document can hold only once, and a name matching a synthesized-id pattern, the desugarer's own or the layouter's `_di`, `BPMNDiagram_`, and `BPMNPlane_` ids ([ADR-0010](../../docs/decisions/0010-deterministic-structural-ids.md)).
 - Call activities: a missing `process`, an unknown `binding` value, `binding` and `version` together, `mapper` and `mapperDelegate` together, and duplicate `in` or `out` mappings.
   A `decide` step pins its decision table with `binding` and `version`, under those same two rules.
-- Form fields: a type outside the five, a repeated field id, a field typed against a `var` of its name, a settings key outside the seven constraints and `pattern`, a constraint on a type its validator refuses or a `pattern` off a `date` field, a value in a shape the engine cannot parse (`required: false`, a bound that is not an integer, an empty `pattern`), a value line on a field that is not an `enum`, an `enum` offering no values (warning), a repeated value id, a literal default naming none of the values, a block member that is not a `property` line, and a property value that is neither a quoted string nor a `"${...}"` expression.
+- Form fields: a type outside the five, a repeated field id, a field typed against a `var` of its name, a settings key outside the seven constraints and `pattern`, a constraint on a type its validator refuses or a `pattern` off a `date` field, a value in a shape the engine cannot parse (`required: false`, a bound that is not an integer, an empty `pattern` or `validator`, a `pattern` holding a letter `SimpleDateFormat` does not read), a literal default that is not what its type converts (`number`, not an integer; `boolean`, not `true` or `false`; `date` with no `pattern`, an ISO date rather than the engine's own `dd/MM/yyyy`), a value line on a field that is not an `enum`, an `enum` offering no values (warning), a repeated value id, a literal default naming none of the values, a block member that is not a `property` line, and a property value that is neither a quoted string nor a `"${...}"` expression.
 - Form references: `formKey` beside `formRef` on a user task, a `formRef` with neither `binding` nor `version`, and `binding` or `version` with no `formRef` to pin, under the same `binding`/`version` exclusivity a `call` and a `decide` step already use.
-- Events: a trigger word outside the set its verb accepts, a payload that doesn't match its trigger's shape, a handler in the wrong container or not at the end of its body, `alongside` on `error`, `compensation`, or `cancel`, two handlers that would catch the same thing, a host that isn't an activity a token can sit at, a binding attribute on a `throw` or `emit` whose trigger is not `message`, and more than one binding on one whose trigger is.
+- Events: a trigger word outside the set its verb accepts, a payload that doesn't match its trigger's shape, a handler in the wrong container or not at the end of its body, `alongside` on `error`, `compensation`, or `cancel`, two handlers registering one catch on one engine scope (a handler inside a block and one attached to that block share it), an escalation catch-all beside a coded catch of its own kind, two branches of one `await` block on one message or signal name, a timer job setting written on both an `on timer` head and its body's start, a host that isn't an activity a token can sit at, a binding attribute on a `throw` or `emit` whose trigger is not `message`, and more than one binding on one whose trigger is.
   A link pair adds its own: an `await link` after a statement whose flow still runs on, an `emit link` with no catch of its name, a second `await link` of one name anywhere in the file, a pair split across containers, an `emit link` reaching into a `parallel` or `await` branch from outside, `link` heading a race branch, a `goto` onto a link catch, an engine setting or listener on `emit link`, a `throw link`, and an `await link` nothing emits (warning).
 - The cancel construct: a cancel end outside an `attempt` block, a cancel handler with no host or on a host that is not one, and either half of the pair written without the other (warning).
-- Timers: an unknown particle, a value that doesn't look like its particle expects (warning), and a repeating `every` on an interrupting handler (warning).
+- Timers: an unknown particle, and a value that does not fit its particle's shape (`after` an ISO 8601 duration on its own or beside a start or end date-time, `at` a period or an ISO date-time, `every` an `R<n>/...` repeat, a six-field cron, or a cron nickname such as `@daily`): an error on a timer start, which the engine parses at deployment, and a warning on every other carrier (an awaited timer, a race branch, an `on` handler, a timeout listener), which reads it only once its scope is entered; plus a repeating `every` on an interrupting handler (warning).
 
 Diagnostics name the valid alternative rather than reporting an unknown identifier, so `emit error` points at `throw error` and `binding = version` points at `version = <number>`.
 
@@ -884,7 +917,7 @@ npm test
 | `src/bpmn-script-parser-error-message-provider.ts` | Guidance for a reserved word used as an identifier                                                   |
 | `src/bpmn-script-completion.ts`                    | Snippet completions for the structural keywords and for the settings an element holds                |
 | `src/bpmn-script-semantic-tokens.ts`               | Highlights the soft words (trigger, attribute key, parameter direction, listener event)              |
-| `src/bpmn-script-value-converter.ts`               | Unquotes a timer's `"${...}"` time so both `time` alternatives carry the same shape                  |
+| `src/bpmn-script-value-converter.ts`               | Reads a raw template, `"${...}"` or `"#{...}"`, with the string escapes a literal gets               |
 | `src/bpmn-script-module.ts`                        | Langium dependency injection wiring                                                                  |
 | `src/expression-render.ts`                         | `renderExpression(astNode): string`, serializing a parsed expression AST to `${...}` text            |
 | `src/variable-symbol-provider.ts`                  | `VariableSymbolProvider`, collecting `var` declarations and the names a repetition brings into scope |

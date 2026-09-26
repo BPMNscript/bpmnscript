@@ -13,7 +13,6 @@ import {
   TIMER_PARTICLE_BY_KIND,
 } from './vocabulary.js';
 import type { AstNode } from 'langium';
-import { unquoteRaw } from './expression-render.js';
 import {
   isErrorMapping,
   isLiteralString,
@@ -224,7 +223,7 @@ export function payloadTextOf(items: ParenItem[]): string | undefined {
   if (value === undefined) return undefined;
   if (isLiteralString(value)) return value.value;
   if (isVarRef(value)) return value.ref.$refText;
-  if (isRawExpr(value)) return unquoteRaw(value.raw);
+  if (isRawExpr(value)) return value.raw;
   return undefined;
 }
 
@@ -275,10 +274,10 @@ export function timerPayloadOf(items: ParenItem[]): TimerPayload | undefined {
     : { particle: TIMER_PARTICLE_BY_KIND.duration, time, node: bare };
 }
 
-/** A time is quoted text; a raw template carries its quotes and is stripped here. */
+/** A time is quoted text or a raw template, both read as the text they carry. */
 function timeTextOf(value: Expr): string | undefined {
   if (isLiteralString(value)) return value.value;
-  if (isRawExpr(value)) return unquoteRaw(value.raw);
+  if (isRawExpr(value)) return value.raw;
   return undefined;
 }
 

@@ -19,6 +19,7 @@ import {
   END_TRIGGERS,
   EXECUTION_LISTENER_EVENTS,
   ON_TRIGGERS,
+  splitFencedScript,
   START_TRIGGERS,
   TASK_LISTENER_EVENTS,
   THROW_TRIGGERS,
@@ -78,5 +79,20 @@ describe('lists that must not drift apart', () => {
       ...TASK_LISTENER_EVENTS,
     ];
     expect(listenerEvents.filter((event) => triggers.has(event))).toEqual([]);
+  });
+});
+
+describe('splitFencedScript', () => {
+  test('a CRLF-checked-out source normalizes the body to LF', () => {
+    expect(
+      splitFencedScript('```groovy\r\ndef a = 1\r\ndef b = 2\r\n```'),
+    ).toEqual({ tag: 'groovy', code: 'def a = 1\ndef b = 2\n' });
+  });
+
+  test('a one-line fence with no newline after the tag still splits it from the body', () => {
+    expect(splitFencedScript('```groovy1 + 1```')).toEqual({
+      tag: 'groovy',
+      code: '1 + 1',
+    });
   });
 });

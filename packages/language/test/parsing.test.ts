@@ -323,7 +323,7 @@ describe('Parsing - control flow and containers', () => {
     out shipped = confirmed
   }
 }`,
-      '[CallActivity(name="Fulfilment", items=[Setting(key="label", value=LiteralString(value="Fulfil order")), Setting(key="process", value=LiteralString(value="fulfilment-process")), Setting(key="binding", value=VarRef(ref=->deployment)), Setting(key="businessKey", value=RawExpr(raw="\\"${execution.processBusinessKey}\\""))], mappings=[VariableMapping(direction="in", all=true), VariableMapping(direction="in", target="orderId"), VariableMapping(direction="in", target="total", source=Additive(left=VarRef(ref=->amount), op="+", right=VarRef(ref=->tax))), VariableMapping(direction="in", local=true, target="vip", source=VarRef(ref=->vipFlag)), VariableMapping(direction="out", target="shipmentId"), VariableMapping(direction="out", target="shipped", source=VarRef(ref=->confirmed))])]',
+      '[CallActivity(name="Fulfilment", items=[Setting(key="label", value=LiteralString(value="Fulfil order")), Setting(key="process", value=LiteralString(value="fulfilment-process")), Setting(key="binding", value=VarRef(ref=->deployment)), Setting(key="businessKey", value=RawExpr(raw="${execution.processBusinessKey}"))], mappings=[VariableMapping(direction="in", all=true), VariableMapping(direction="in", target="orderId"), VariableMapping(direction="in", target="total", source=Additive(left=VarRef(ref=->amount), op="+", right=VarRef(ref=->tax))), VariableMapping(direction="in", local=true, target="vip", source=VarRef(ref=->vipFlag)), VariableMapping(direction="out", target="shipmentId"), VariableMapping(direction="out", target="shipped", source=VarRef(ref=->confirmed))])]',
     ],
     [
       'an integer attribute value is a LiteralInt',
@@ -333,7 +333,7 @@ describe('Parsing - control flow and containers', () => {
     [
       'a raw-template attribute value is a RawExpr',
       `process p { call C(version: "\${v}") }`,
-      '[CallActivity(name="C", items=[Setting(key="version", value=RawExpr(raw="\\"${v}\\""))])]',
+      '[CallActivity(name="C", items=[Setting(key="version", value=RawExpr(raw="${v}"))])]',
     ],
     [
       'a minimal call with only `process` parses and carries no mappings',
@@ -451,7 +451,7 @@ describe('Parsing - the event layer', () => {
     [
       'a quoted raw template in the parens is a RawExpr condition',
       `process p { on condition("\${bean.check()}") { } }`,
-      '[OnHandler(trigger="condition", items=[ParenValue(value=RawExpr(raw="\\"${bean.check()}\\""))], body=Block)]',
+      '[OnHandler(trigger="condition", items=[ParenValue(value=RawExpr(raw="${bean.check()}"))], body=Block)]',
     ],
     [
       'alongside is legal on a condition handler',
@@ -709,9 +709,19 @@ describe('Parsing - expressions', () => {
       'VarRef(ref=->items, accessors=[Accessor(index=LiteralInt(value=0))])',
     ],
     [
-      'a method call falls back to the quoted raw template, quotes and all',
+      'a method call falls back to the raw template, read without its quotes',
       '"${bean.method()}"',
-      'RawExpr(raw="\\"${bean.method()}\\"")',
+      'RawExpr(raw="${bean.method()}")',
+    ],
+    [
+      'the `#{` opener is a raw template too, not a string literal',
+      '"#{bean.method()}"',
+      'RawExpr(raw="#{bean.method()}")',
+    ],
+    [
+      'a raw template resolves its string escapes the way a literal does',
+      '"${fn(\\"a\\", \'b\')}"',
+      'RawExpr(raw="${fn(\\"a\\", \'b\')}")',
     ],
     [
       'a ternary parses to a Ternary node over three expressions',
@@ -745,12 +755,12 @@ describe('Parsing - expressions', () => {
     [
       'the raw-template fallback carries a reserved word as an identifier',
       '"${version > 2}"',
-      'RawExpr(raw="\\"${version > 2}\\"")',
+      'RawExpr(raw="${version > 2}")',
     ],
     [
       'the raw-template fallback carries a reserved event keyword as an identifier',
       '"${emit}"',
-      'RawExpr(raw="\\"${emit}\\"")',
+      'RawExpr(raw="${emit}")',
     ],
     [
       'an equality over a soft event word parses',
@@ -761,10 +771,25 @@ describe('Parsing - expressions', () => {
     expect(shape(await parseCondition(expr))).toBe(expected);
   });
 
-  // The RawExpr row is the one that strips the author's surrounding quotes.
+  // A raw template at the top is printed as read, opener included and escapes
+  // resolved; one nested under an operator is a single template spliced in as a
+  // parenthesised operand, or a composite left as written for the validator.
   test.each([
     ['amount > 1000', '${amount > 1000}'],
+    ['a == null', '${a == null}'],
     ['"${bean.method()}"', '${bean.method()}'],
+    ['"#{bean.method()}"', '#{bean.method()}'],
+    ["'${a}'", '${a}'],
+    ['"${fn(\\"a\\")}"', '${fn("a")}'],
+    ['"a\\\\b" == x', '${"a\\\\b" == x}'],
+    ['"${a} and ${b}"', '${a} and ${b}'],
+    ['!"${x}"', '${!(x)}'],
+    ['"${a.b}" > 1', '${(a.b) > 1}'],
+    ['"${x}" && x', '${(x) && x}'],
+    ['!"#{x}"', '${!(x)}'],
+    ['!"${a} and ${b}"', '${!${a} and ${b}}'],
+    ['!"${a} b}"', '${!${a} b}}'],
+    ['!"${map[\'}\']}"', "${!(map['}'])}"],
     [
       'order.total > 1000 && items[0] == status',
       '${order.total > 1000 && items[0] == status}',
@@ -920,7 +945,7 @@ ${FENCE} }
     [
       'the start and end statement keywords are usable as listener events',
       `process p { service S { on start(class: "A") on end(expression: "\${b.m()}") } }`,
-      '[ServiceTask(name="S", listeners=[Listener(event="start", items=[Setting(key="class", value=LiteralString(value="A"))]), Listener(event="end", items=[Setting(key="expression", value=RawExpr(raw="\\"${b.m()}\\""))])])]',
+      '[ServiceTask(name="S", listeners=[Listener(event="start", items=[Setting(key="class", value=LiteralString(value="A"))]), Listener(event="end", items=[Setting(key="expression", value=RawExpr(raw="${b.m()}"))])])]',
     ],
     [
       'a timeout listener carries a timer particle and its time',
@@ -959,7 +984,7 @@ ${FENCE}
   call C(process: "q") { on start(class: "X") }
   end E { on end(delegate: "\${bean}") }
 }`,
-      '[CallActivity(name="C", items=[Setting(key="process", value=LiteralString(value="q"))], listeners=[Listener(event="start", items=[Setting(key="class", value=LiteralString(value="X"))])]), EndEvent(name="E", listeners=[Listener(event="end", items=[Setting(key="delegate", value=RawExpr(raw="\\"${bean}\\""))])])]',
+      '[CallActivity(name="C", items=[Setting(key="process", value=LiteralString(value="q"))], listeners=[Listener(event="start", items=[Setting(key="class", value=LiteralString(value="X"))])]), EndEvent(name="E", listeners=[Listener(event="end", items=[Setting(key="delegate", value=RawExpr(raw="${bean}"))])])]',
     ],
     [
       'settings, a form block, parameters and listeners mix on one element',
@@ -1011,7 +1036,7 @@ describe("Parsing - an external task's extras", () => {
     [
       'a mapping with a word other than `when` parses, so the validator can name the word',
       `process p { service V(topic: "t") { error E wenn "\${x}" } }`,
-      'Process(name="p", body=[ServiceTask(name="V", items=[Setting(key="topic", value=LiteralString(value="t"))], errorMappings=[ErrorMapping(trigger="error", code=->E, when="wenn", condition=RawExpr(raw="\\"${x}\\""))])])',
+      'Process(name="p", body=[ServiceTask(name="V", items=[Setting(key="topic", value=LiteralString(value="t"))], errorMappings=[ErrorMapping(trigger="error", code=->E, when="wenn", condition=RawExpr(raw="${x}"))])])',
     ],
   ])('%s', async (_title, source, expected) => {
     await expectProcess(source, expected);
@@ -1050,12 +1075,12 @@ describe('Parsing - task kinds, service bindings and fenced scripts', () => {
     [
       'an expression binding parses; the value is a raw template',
       `process p { service S(expression: "\${bean.method(execution)}") }`,
-      '[ServiceTask(name="S", items=[Setting(key="expression", value=RawExpr(raw="\\"${bean.method(execution)}\\""))])]',
+      '[ServiceTask(name="S", items=[Setting(key="expression", value=RawExpr(raw="${bean.method(execution)}"))])]',
     ],
     [
       'a delegate binding parses; the value is a raw template',
       `process p { service S(delegate: "\${beanName}") }`,
-      '[ServiceTask(name="S", items=[Setting(key="delegate", value=RawExpr(raw="\\"${beanName}\\""))])]',
+      '[ServiceTask(name="S", items=[Setting(key="delegate", value=RawExpr(raw="${beanName}"))])]',
     ],
     [
       'a topic binding parses with a label',
@@ -1096,7 +1121,7 @@ ${FENCE}
 y = 2
 ${FENCE}
 }`,
-      '[ServiceTask(name="Auto", items=[Setting(key="class", value=VarRef(ref=->com, accessors=[Accessor(prop="acme"), Accessor(prop="X")]))]), UserTask(name="Review", items=[Setting(key="assignee", value=RawExpr(raw="\\"${bean.pick()}\\""))]), ScriptTask(name="total", body="```js\\ny = 2\\n```")]',
+      '[ServiceTask(name="Auto", items=[Setting(key="class", value=VarRef(ref=->com, accessors=[Accessor(prop="acme"), Accessor(prop="X")]))]), UserTask(name="Review", items=[Setting(key="assignee", value=RawExpr(raw="${bean.pick()}"))]), ScriptTask(name="total", body="```js\\ny = 2\\n```")]',
     ],
     [
       'DSL-looking text inside a fence is captured, not parsed as DSL',
@@ -1147,7 +1172,7 @@ describe('Parsing - repeat clause', () => {
     [
       'the clause and the settings parse together in that order',
       `process p { user U for each line in "\${order.lines}" sequentially until (done) (label: "Label", assignee: "demo") }`,
-      '[UserTask(name="U", element="line", collection=RawExpr(raw="\\"${order.lines}\\""), sequential=true, completion=VarRef(ref=->done), items=[Setting(key="label", value=LiteralString(value="Label")), Setting(key="assignee", value=LiteralString(value="demo"))])]',
+      '[UserTask(name="U", element="line", collection=RawExpr(raw="${order.lines}"), sequential=true, completion=VarRef(ref=->done), items=[Setting(key="label", value=LiteralString(value="Label")), Setting(key="assignee", value=LiteralString(value="demo"))])]',
     ],
     [
       'the clause on the statement after a start event is not swallowed',

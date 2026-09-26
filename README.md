@@ -81,6 +81,8 @@ npx bpmns parse invoice-approval.bpmn -o invoice-approval.bpmnscript
 
 Exit codes are `0` for success, `1` for validation or parse errors, `2` for I/O errors.
 Both directions print non-fatal warnings to stderr without changing the exit code, so an undeclared variable reference on compile, or a dropped lane on import is warned about but still produces a file.
+`parse` also re-validates the script it wrote and lists every error `build` would draw from it, still with exit `0`.
+Both commands read a file from disk, never stdin, and refuse to write to the input path itself, or to overwrite an existing output unless you pass `--force`; see [packages/cli/README.md](packages/cli/README.md) for the exact rules.
 
 ## Using the VS Code extension
 
@@ -89,7 +91,7 @@ VS Code opens a second window with the extension loaded, where `.bpmnscript` fil
 
 - syntax highlighting, including inside a `script` task's fenced body, which is highlighted in its own language
 - autocompletion and hover, from the same grammar that drives the compiler
-- errors and warnings inline as you type, so a `goto` that can't reach its target or a `string` variable compared against a number is flagged before you ever run the compiler
+- errors and warnings inline as you type, so a `goto` that can't reach its target, a `string` variable under an ordered comparison, or a `boolean` in arithmetic is flagged before you ever run the compiler
 - a **Convert** panel in the sidebar: compile the open file, jump to its counterpart when one exists, or pick a `.bpmn` from disk to decompile
 
 Compiling and decompiling are the same two operations as `bpmns build` and `bpmns parse` above, without leaving the editor.
@@ -100,45 +102,46 @@ See [packages/extension/README.md](packages/extension/README.md) for how the pie
 
 One `process` block per file.
 Steps run top to bottom, so you never write a sequence flow; control flow is expressed with the structured statements you'd expect from a programming language.
-Every step carries an id (`user ReviewInvoice`), which is what `goto` and boundary events refer to, and which becomes the BPMN element's name (`ReviewInvoice` -> "Review Invoice") unless a `label` setting gives one instead.
-The event statements `on`, `throw`, `emit` and `await` are the exception: their id is a jump target only, so they take no `label`, and the diagram shows no name on them, except on the two ends of a link pair, which carry their link name.
+Every step carries an id (`user ReviewInvoice`), which is what `goto` and boundary events refer to.
+A step, a call and a sub-process take their diagram name from that id (`ReviewInvoice` -> "Review Invoice") unless a `label` setting gives one instead; a `start` and an `end` are named by `label` alone, and their id is never humanized into a name.
+The event statements `on`, `throw`, `emit` and `await` are the exception: their id is a jump target only, so they take no `label` and show no name at all, except on the two ends of a link pair, which carry their link name.
 
-| BPMNscript                                  | What it means                                                                                              | BPMN element                                                  |
-| ------------------------------------------- | ---------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
-| `process X { }`                             | the bpmn process, one per file                                                                             | `bpmn:process`                                                |
-| `var x: number`                             | declare a variable so its uses get type-checked                                                            | none; authoring-time only                                     |
-| `start X` / `end X`                         | where the flow begins and ends                                                                             | start / end event                                             |
-| `start X <kind>(...)`                       | start when an event arrives                                                                                | start event with a trigger                                    |
-| `end X terminate`                           | stop every running path                                                                                    | terminate end event                                           |
-| `end X cancel`                              | give up the block of steps around this end                                                                 | cancel end event                                              |
-| `form { x: number "Label" }`                | part of start element, pre-fills variables                                                                 | form fields on the start event                                |
-| `user X(assignee: "...")`                   | a step a person performs                                                                                   | user task                                                     |
-| `service X(class: "...")`                   | a step the system performs, in the engine                                                                  | service task                                                  |
-| `service X(topic: "...")`                   | a step an external worker picks up by topic                                                                | service task, external type                                   |
-| `service X(type: "shell")`                  | a step the engine runs itself, a shell command or a mail                                                   | service task, built-in type                                   |
-| `script X` + a fenced body                  | an inline script, in JS, Groovy, Python, Ruby or FEEL                                                      | script task                                                   |
-| `step X`                                    | a step nothing in the engine automates                                                                     | task                                                          |
-| `send X(class: "...")`                      | a step that sends something out                                                                            | send task                                                     |
-| `receive X(message: "...")`                 | wait here until that message arrives                                                                       | receive task                                                  |
-| `decide X(decision: "...")`                 | a step a decision table answers                                                                            | business rule task                                            |
-| `if` / `else if` / `else`                   | a decision                                                                                                 | exclusive gateway                                             |
-| `while` / `do ... while`                    | a loop                                                                                                     | exclusive gateway loop                                        |
-| `parallel { { } { } }`                      | branches that run at the same time                                                                         | parallel gateway fork and join                                |
-| `parallel { if (c) { } else { } }`          | the branches whose condition holds run, or the `else` branch when none does                                | inclusive gateway fork and join                               |
-| `subprocess X { }`                          | a group of steps as one unit                                                                               | embedded sub-process                                          |
-| `attempt X { }`                             | a group of steps that can be given up as one                                                               | transaction sub-process                                       |
-| `call X(process: "other")`                  | start another process and wait for it                                                                      | call activity                                                 |
-| `goto X`                                    | jump to a named step in the same container                                                                 | sequence flow                                                 |
-| `on <kind> { }`                             | catch an event anywhere in this body                                                                       | event sub-process                                             |
-| `on Host: <kind> { }`                       | catch an event only while `Host` runs                                                                      | boundary event                                                |
-| `await <kind>(...)`                         | stop here until the event arrives                                                                          | intermediate catch event                                      |
-| `await { <kind>(...) { } <kind>(...) { } }` | wait on several triggers, continue down whichever fires first                                              | event-based gateway, a catch event per branch, exclusive join |
-| `throw` / `emit <kind>`                     | raise an event, ending the path or continuing                                                              | throw event                                                   |
-| `emit link("X")` / `await link("X")`        | jump to the catch of the same name, a diagram's off-page connector                                         | intermediate throw and catch event, with no flow between them |
-| `for each x in c`                           | run a step once per item, or a set number of times                                                         | multi-instance marker                                         |
-| `asyncBefore: true`                         | engine settings: async, exclusive, priority, retries, or, with a `run` prefix, on each run of a repetition | `operaton:` attribute/element                                 |
-| `input x = "..."`                           | data into a step's execution, and `output` back out                                                        | `operaton:inputOutput`                                        |
-| `on create(class: "...")`                   | code on a step's lifecycle, not a caught event                                                             | execution / task listener                                     |
+| BPMNscript                                  | What it means                                                                                              | BPMN element                                                                                                   |
+| ------------------------------------------- | ---------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| `process X { }`                             | the bpmn process, one per file                                                                             | `bpmn:process`                                                                                                 |
+| `var x: number`                             | declare a variable so its uses get type-checked                                                            | none; the importer declares `var x: any` for every variable the printed script reads and nothing else declares |
+| `start X` / `end X`                         | where the flow begins and ends                                                                             | start / end event                                                                                              |
+| `start X <kind>(...)`                       | start when an event arrives                                                                                | start event with a trigger                                                                                     |
+| `end X terminate`                           | stop every running path                                                                                    | terminate end event                                                                                            |
+| `end X cancel`                              | give up the block of steps around this end                                                                 | cancel end event                                                                                               |
+| `form { x: number "Label" }`                | part of start element, pre-fills variables                                                                 | form fields on the start event                                                                                 |
+| `user X(assignee: "...")`                   | a step a person performs                                                                                   | user task                                                                                                      |
+| `service X(class: "...")`                   | a step the system performs, in the engine                                                                  | service task                                                                                                   |
+| `service X(topic: "...")`                   | a step an external worker picks up by topic                                                                | service task, external type                                                                                    |
+| `service X(type: "shell")`                  | a step the engine runs itself, a shell command or a mail                                                   | service task, built-in type                                                                                    |
+| `script X` + a fenced body                  | an inline script, in JS, Groovy, Python, Ruby or FEEL                                                      | script task                                                                                                    |
+| `step X`                                    | a step nothing in the engine automates                                                                     | task                                                                                                           |
+| `send X(class: "...")`                      | a step that sends something out                                                                            | send task                                                                                                      |
+| `receive X(message: "...")`                 | wait here until that message arrives                                                                       | receive task                                                                                                   |
+| `decide X(decision: "...")`                 | a step a decision table answers                                                                            | business rule task                                                                                             |
+| `if` / `else if` / `else`                   | a decision                                                                                                 | exclusive gateway                                                                                              |
+| `while` / `do ... while`                    | a loop                                                                                                     | exclusive gateway loop                                                                                         |
+| `parallel { { } { } }`                      | branches that run at the same time                                                                         | parallel gateway fork and join                                                                                 |
+| `parallel { if (c) { } else { } }`          | the branches whose condition holds run, or the `else` branch when none does                                | inclusive gateway fork and join                                                                                |
+| `subprocess X { }`                          | a group of steps as one unit                                                                               | embedded sub-process                                                                                           |
+| `attempt X { }`                             | a group of steps that can be given up as one                                                               | transaction sub-process                                                                                        |
+| `call X(process: "other")`                  | start another process and wait for it                                                                      | call activity                                                                                                  |
+| `goto X`                                    | jump to a named step in the same container                                                                 | sequence flow                                                                                                  |
+| `on <kind> { }`                             | catch an event anywhere in this body                                                                       | event sub-process                                                                                              |
+| `on Host: <kind> { }`                       | catch an event only while `Host` runs                                                                      | boundary event                                                                                                 |
+| `await <kind>(...)`                         | stop here until the event arrives                                                                          | intermediate catch event                                                                                       |
+| `await { <kind>(...) { } <kind>(...) { } }` | wait on several triggers, continue down whichever fires first                                              | event-based gateway, a catch event per branch, exclusive join                                                  |
+| `throw` / `emit <kind>`                     | raise an event, ending the path or continuing                                                              | throw event                                                                                                    |
+| `emit link("X")` / `await link("X")`        | jump to the catch of the same name, a diagram's off-page connector                                         | intermediate throw and catch event, with no flow between them                                                  |
+| `for each x in c`                           | run a step once per item, or a set number of times                                                         | multi-instance marker                                                                                          |
+| `asyncBefore: true`                         | engine settings: async, exclusive, priority, retries, or, with a `run` prefix, on each run of a repetition | `operaton:` attribute/element                                                                                  |
+| `input x = "..."`                           | data into a step's execution, and `output` back out                                                        | `operaton:inputOutput`                                                                                         |
+| `on create(class: "...")`                   | code on a step's lifecycle, not a caught event                                                             | execution / task listener                                                                                      |
 
 The `for` row is a modifier rather than a statement: every activity in the table takes it between the id and the parens, meaning `user`, `service`, `script`, `step`, `send`, `receive`, `decide`, `subprocess`, `attempt`, and `call`.
 The last three rows are members of an element rather than statements: an engine setting joins the rest in the `( )`, a parameter and a listener go in the `{ }`, and not every element takes every one.
@@ -248,14 +251,19 @@ The end-to-end suite deploys several of that directory's processes to an Operato
 BPMN is a much larger language than this DSL, so a `.bpmn` file can hold more than a `.bpmnscript` has a form for.
 A decompile deals with that in three ways.
 
-- A construct the DSL cannot express (a collaboration, an ad hoc subprocess, a compensation boundary event, an event definition the language doesn't model) is refused with an error and nothing is written.
-- Content the intermediate representation doesn't carry (a lane, a text annotation, a listener or an input/output parameter found on a gateway, a manual task, a standard loop, a data object) is dropped with a warning naming each item, and so is an `isExecutable="false"`, which imports as executable whatever the source said.
+- A construct the DSL cannot express (an ad hoc subprocess, a compensation boundary event, an event definition the language doesn't model) is refused with an error and nothing is written, and so is a shape Operaton refuses to deploy, such as an exclusive gateway with two unconditioned routes or an `operaton:inputOutput` on a gateway.
+- Content the intermediate representation doesn't carry (a pool, a lane, a text annotation, a listener found on a gateway, a manual task, a standard loop, a data object) is dropped with a warning naming each item, and so is an `isExecutable="false"`, which imports as executable whatever the source said.
   The exceptions are attributes the importer doesn't read.
 - What the print hop cannot carry into the script is warned about too, and those warnings are the ones to read before building the output.
   A gateway's name merely drops, since the script derives its splits and merges from block structure and no statement is left to carry one.
   A fork whose branches all carry conditions and that named no fallback changes what a recompiled document runs, because the printed block falls through where the model stops with a stuck execution.
   A route with no `goto` target to jump to is left out entirely, replaced by a `// unstructured region: hand-repair required` comment naming the element it led into.
   An `else` beside a branch that runs whatever the conditions do prints a fallback nothing can reach, and the validator then rejects the script `bpmns parse` just wrote.
+  An id the script cannot spell is respelled and the change is reported, since the engine keys history, a migration plan and a start-before-activity on that id, so a rebuilt document does not run as the same process.
+  A jump into a step reached from outside the `await` or `parallel` branch it printed in is still written and reported, and the validator then refuses it once `bpmns parse` reads the script back, because a branch's steps run only when the whole block is reached.
+  A split or wait left with no route out is dropped from the script outright, and the warning names what the engine does in its place, from ending the run the same way to refusing to deploy the model at all.
+
+A branch that only rejoins the block's tail may print after the block instead, reached by a `goto`, and the block's join may be replaced by direct edges into that tail; the set of steps and their order along each path is unchanged, so this restructuring prints with no warning at all.
 
 What each hop reports, item by item, is the import contract in [packages/transform/README.md](packages/transform/README.md#the-import-contract) and `PrintWarningCategory` with the warnings built beside it in [packages/transform/src/ir-to-dsl.ts](packages/transform/src/ir-to-dsl.ts).
 [ADR-0009](docs/decisions/0009-dominator-based-restructuring.md) covers which shapes degrade and why.
@@ -297,7 +305,7 @@ flowchart LR
 A source file is parsed into an AST, converted into the IR (a small set of plain TypeScript objects in `packages/transform/src/ir/types.ts` that describe a process without reference to any specific engine), and written out from there.
 Compiling is `.bpmnscript` -> AST -> IR -> `.bpmn`; decompiling is `.bpmn` -> IR -> `.bpmnscript`.
 
-The IR stays vendor-neutral: the engine's bindings, execution settings, input/output parameters and lifecycle listeners are all plain-named IR fields, and `operaton:` is applied only where `irToXml` builds the moddle element from a local [moddle extension](packages/transform/src/operaton-moddle.json), which keeps the engine's specifics out of the core data model ([ADR-0006](docs/decisions/0006-engine-agnostic-intermediate-representation.md), [ADR-0022](docs/decisions/0022-engine-attributes-as-named-ir-fields.md), [ADR-0023](docs/decisions/0023-listeners-on-the-attribute-block.md)).
+The IR carries Operaton's semantics under names with no vendor prefix: the engine's bindings, execution settings, input/output parameters and lifecycle listeners are all plain-named IR fields, and `operaton:` is applied only where `irToXml` builds the moddle element from a local [moddle extension](packages/transform/src/operaton-moddle.json) ([ADR-0006](docs/decisions/0006-intermediate-representation-between-ast-and-bpmn.md), [ADR-0022](docs/decisions/0022-engine-attributes-as-named-ir-fields.md), [ADR-0023](docs/decisions/0023-listeners-on-the-attribute-block.md)).
 
 | Library                                                         | Role                                                |
 | --------------------------------------------------------------- | --------------------------------------------------- |

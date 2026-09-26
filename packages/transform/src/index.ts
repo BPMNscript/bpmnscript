@@ -30,6 +30,7 @@ export type {
   IoMapped,
   LoopCharacteristics,
   Repeatable,
+  Activity,
   IoParameter,
   IoValue,
   FieldInjection,
@@ -83,13 +84,16 @@ export {
   UnsupportedEventFeatureError,
   UnsupportedLoopCharacteristicsError,
   UnsupportedCollaborationError,
+  UnsupportedDocumentError,
   UnsupportedCallActivityError,
   UnsupportedExtensionFormError,
   UnsupportedFormReferenceError,
   UnsupportedConditionExpressionError,
+  UnsupportedGatewayShapeError,
   UnsupportedFormFieldConstraintError,
   UnsupportedErrorMappingError,
   UnsupportedAssignmentError,
+  LayoutError,
 } from './errors.js';
 
 export { astToIr } from './ast-to-ir.js';

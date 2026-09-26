@@ -12,9 +12,9 @@
 
 import { BpmnScriptGrammar, reservedWordsOf } from '@bpmn-script/language';
 
-/** The prefixes the printer matches on to tell a minted id from an authored one. */
-export const START_EVENT_PREFIX = 'StartEvent_';
-export const END_EVENT_PREFIX = 'EndEvent_';
+const START_EVENT_PREFIX = 'StartEvent_';
+const END_EVENT_PREFIX = 'EndEvent_';
+/** The prefixes the printer matches on to tell a minted throw or catch from an authored one. */
 export const THROW_EVENT_PREFIX = 'Throw_';
 export const CATCH_EVENT_PREFIX = 'Catch_';
 
@@ -63,6 +63,32 @@ export function makeEndEventId(processId: string, taken: Set<string>): string {
   return claimId(`${END_EVENT_PREFIX}${processId}`, taken);
 }
 
+/**
+ * Whether `id` is exactly the start the compiler mints for the container.
+ * Exact rather than a prefix test: the Modeler names its default start
+ * `StartEvent_1`, which is an authored id like any other and has to print.
+ * The validator reserves the same two forms, so a script cannot spell them.
+ */
+export function isMintedStartId(id: string, containerId: string): boolean {
+  return id === `${START_EVENT_PREFIX}${containerId}`;
+}
+
+/**
+ * The end the compiler mints for the container, or for a boundary escape in
+ * it, whose chain ends in `EndEvent_<boundaryId>` inside the host container.
+ */
+export function isMintedEndId(
+  id: string,
+  containerId: string,
+  boundaryIds: Iterable<string>,
+): boolean {
+  if (id === `${END_EVENT_PREFIX}${containerId}`) return true;
+  for (const boundaryId of boundaryIds) {
+    if (id === `${END_EVENT_PREFIX}${boundaryId}`) return true;
+  }
+  return false;
+}
+
 export function makeThrowEventId(coordinate: string): string {
   return `${THROW_EVENT_PREFIX}${coordinate}`;
 }
@@ -94,10 +120,11 @@ function claimId(base: string, taken: Set<string>): string {
   return id;
 }
 
-/** Mirrors the `ID` terminal, which is the only shape a declaration name has. */
-const ID_SHAPED = /^[_a-zA-Z]\w*(-\w+)*$/;
+/** The grammar's `ID` terminal, the one shape a name in the script has. */
+export const ID_SHAPED = /^[_a-zA-Z]\w*(-\w+)*$/;
 
-function isWritableName(word: string): boolean {
+/** Whether the script can spell `word` as a name: `ID`-shaped and no keyword. */
+export function isWritableName(word: string): boolean {
   return (
     ID_SHAPED.test(word) && !reservedWordsOf(BpmnScriptGrammar()).has(word)
   );
@@ -118,13 +145,17 @@ export function claimDeclarationName(
   const base =
     preferred !== undefined && isWritableName(preferred)
       ? preferred
-      : mintDeclarationName(code);
+      : mintPrintableName(code);
   return claimId(base, taken);
 }
 
-/** A code a name cannot spell keeps its word characters and loses the rest. */
-function mintDeclarationName(code: string): string {
-  const sanitized = isWritableName(code) ? code : code.replace(/\W/g, '_');
+/**
+ * The name the script writes for text it cannot spell, an error code or an
+ * element id: the word characters kept and the rest replaced. Not claimed
+ * here, since the callers resolve collisions against different sets.
+ */
+export function mintPrintableName(text: string): string {
+  const sanitized = isWritableName(text) ? text : text.replace(/\W/g, '_');
   // A keyword lexes as itself rather than as an `ID`, and a word opening on a
   // digit does not lex as one at all, so neither can name a declaration. An
   // underscore fixes both, and no keyword carries one.
