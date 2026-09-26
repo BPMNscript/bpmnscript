@@ -70,6 +70,7 @@ import {
   HANDLER_DUPLICATE_RULE,
   headerLiteralMessage,
   HISTORY_TIME_TO_LIVE_MESSAGE,
+  booleanShapeMessage,
   hostedHandlerStartMessage,
   hyphenNameMessage,
   INITIATOR_SHADOWED_MESSAGE,
@@ -1194,6 +1195,11 @@ checks('Validation - script tasks and fenced scripts', [
     'an unsupported language tag names the tag and the supported ones',
     `process p { script total ${FENCE}php\nx = 1\n${FENCE} }`,
     [unsupportedScriptTag(`Script task 'total'`, 'php')],
+  ],
+  [
+    'the tag runs to the first whitespace, so a tag glued to its code is one unsupported tag',
+    `process p { script total ${FENCE}groovy1 + 1${FENCE} }`,
+    [unsupportedScriptTag(`Script task 'total'`, 'groovy1')],
   ],
   [
     'an empty script body is one error naming the task',
@@ -3213,7 +3219,9 @@ checks('Validation - awaited events', [
     [
       "Expecting token of type 'ID' but found `(`.",
       "Expecting token of type '{' but found `message`.",
-      "Expecting token of type '=' but found `}`.",
+      "Expected '=' after 'M': inside a block, two plain words start a " +
+        "parameter such as 'input name = value'; every step starts with a " +
+        "keyword such as 'start', 'user', 'service', 'if', 'on', 'throw', 'emit', ...",
       "Expecting: expecting at least one iteration which starts with one of these possible Token sequences::\n  <[ID]>\nbut found: '}'",
       notValidOn('label', 'a branch of an await block'),
       warn(emptyNumberedBranch(1, 'await')),
@@ -4146,7 +4154,7 @@ checks('Validation - process header attributes', [
   ],
   [
     'the header and the start take every key their own element carries',
-    `process p(label: "P", documentation: "D", versionTag: "1.0.0", historyTimeToLive: "P90D", candidateStarterUsers: "demo,manager", candidateStarterGroups: "adjusters") {
+    `process p(label: "P", documentation: "D", versionTag: "1.0.0", historyTimeToLive: "P90D", candidateStarterUsers: "demo,manager", candidateStarterGroups: "adjusters", isStartableInTasklist: false) {
   start S(initiator: "claimant")
 }`,
     [],
@@ -4207,6 +4215,11 @@ checks('Validation - process header value shapes', [
       candidateStarterMessage('candidateStarterUsers'),
       candidateStarterMessage('candidateStarterGroups'),
     ],
+  ],
+  [
+    'a quoted isStartableInTasklist is refused, since it would lower to nothing',
+    header('isStartableInTasklist: "false"'),
+    [booleanShapeMessage('isStartableInTasklist')],
   ],
   [
     'a header label or documentation is a quoted string, never a number or a template',

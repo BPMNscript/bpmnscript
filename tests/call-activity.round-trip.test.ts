@@ -298,7 +298,7 @@ const HANDWRITTEN_BPMN = `<?xml version="1.0" encoding="UTF-8"?>
     id="Definitions_1"
     targetNamespace="http://bpmn.io/schema/bpmn">
 
-  <bpmn:process id="call-import-demo" isExecutable="true">
+  <bpmn:process id="call-import-demo" isExecutable="true" operaton:historyTimeToLive="P30D">
 
     <bpmn:startEvent id="Start">
       <bpmn:outgoing>Flow_Start_ReviewApprovalCall</bpmn:outgoing>

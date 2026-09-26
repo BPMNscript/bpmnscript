@@ -1044,6 +1044,207 @@ describe('irToDsl: routes leaving a loop beside the two it is built from', () =>
   );
 });
 
+describe('irToDsl: a loop head whose exit is listed before its route into the body', () => {
+  // The engine tests the exit first, which `while (c)` cannot say, so the loop
+  // stays unfolded and its back edge becomes the hand-repair marker.
+  const marker = `${UNSTRUCTURED_MARKER} (dropped edge into L)`;
+  it.each<[title: string, exits: SequenceFlow[], body: string[]]>([
+    [
+      'an exit listed first keeps its place ahead of the body',
+      [edge('L', 'A', { condition: '${x > 1}' })],
+      [
+        '  if (x > 1) {',
+        '  } else if (n > 100) {',
+        '    user T',
+        `    ${marker}`,
+        '  }',
+        '  user A',
+        '  end EA',
+      ],
+    ],
+    [
+      'an exit listed first keeps its place with another exit after the body',
+      [
+        edge('L', 'A', { condition: '${x > 1}' }),
+        edge('L', 'B', { condition: '${y > 1}' }),
+      ],
+      [
+        '  if (x > 1) {',
+        '    user A',
+        '    end EA',
+        '  } else if (n > 100) {',
+        '    goto T',
+        '  }',
+        '  user B',
+        '  end EB',
+        '  user T',
+        `  ${marker}`,
+      ],
+    ],
+  ])('%s', async (_, exits, body) => {
+    const [first, ...after] = exits;
+    const exitSteps = exits.map((f) => f.targetRef);
+    const ir = minimalProcess(
+      [
+        start('S'),
+        gateway('L'),
+        user('T'),
+        ...exitSteps.map(user),
+        ...exitSteps.map((id) => end(`E${id}`)),
+      ],
+      [
+        edge('S', 'L'),
+        first!,
+        edge('L', 'T', { condition: '${n > 100}' }),
+        ...after,
+        edge('T', 'L'),
+        ...exitSteps.map((id) => edge(id, `E${id}`)),
+      ],
+    );
+    const { source, warnings } = printDsl(ir);
+
+    expect(bodyOf(source)).toBe(
+      ['process p {', '  start S', ...body, '}', ''].join('\n'),
+    );
+    expectReports(warnings, ['inventedFallback', 'L'], ['droppedEdge', 'L']);
+    const second = irToDsl(await reDesugar(await printed(ir)));
+    const withoutMarker = bodyOf(source)
+      .split('\n')
+      .filter((line) => line.trim() !== marker)
+      .join('\n');
+    expect(bodyOf(second)).toBe(withoutMarker);
+  });
+});
+
+describe('irToDsl: a loop route with no condition listed before a conditioned one', () => {
+  // Operaton's exclusive split: the first route but the default, in document
+  // order, with no condition or one that holds, else the default.
+  const run = (ir: BpmnProcess, vars: Record<string, unknown>): string[] => {
+    const holds = (c: string): boolean =>
+      Boolean(
+        new Function(...Object.keys(vars), `return ${c.slice(2, -1)};`)(
+          ...Object.values(vars),
+        ),
+      );
+    const trace: string[] = [];
+    let at: FlowElement = only(ir, 'startEvent');
+    while (at.kind !== 'endEvent' && trace.length < 4) {
+      if (at.kind === 'userTask') trace.push(at.id);
+      const fallback = 'defaultFlowId' in at ? at.defaultFlowId : undefined;
+      const outs = ir.sequenceFlows.filter((f) => f.sourceRef === at.id);
+      const next =
+        outs.find(
+          (f) =>
+            f.id !== fallback &&
+            (f.conditionExpression === undefined ||
+              holds(f.conditionExpression)),
+        ) ?? outs.find((f) => f.id === fallback);
+      if (next === undefined) return [...trace, 'stuck'];
+      at = byId(ir, next.targetRef);
+    }
+    return trace;
+  };
+  const marker = `${UNSTRUCTURED_MARKER} (dropped edge into L)`;
+
+  it.each<
+    [
+      title: string,
+      elements: FlowElement[],
+      flows: SequenceFlow[],
+      body: string[],
+      reports: [keyof typeof REPORT, string][],
+      runs: Record<string, unknown>[],
+    ]
+  >([
+    [
+      'an exit listed before the back edge of a do-while stays tested first',
+      [start('S'), user('T'), gateway('L'), end('E')],
+      [...chain('S', 'T', 'L', 'E'), edge('L', 'T', { condition: '${c}' })],
+      [
+        '  user T',
+        '  if (true) {',
+        '  } else if (c) {',
+        '    goto T',
+        '  }',
+        '  end E',
+      ],
+      [],
+      [{ c: true }, { c: false }],
+    ],
+    [
+      'an exit listed before a route back into a printed step stays tested first',
+      [start('S'), user('T'), gateway('G'), user('A'), end('EA')],
+      [
+        ...chain('S', 'T', 'G', 'A', 'EA'),
+        edge('G', 'T', { condition: '${x > 5}' }),
+      ],
+      [
+        '  user T',
+        '  if (true) {',
+        '  } else if (x > 5) {',
+        '    goto T',
+        '  }',
+        '  user A',
+        '  end EA',
+      ],
+      [],
+      [{ x: 0 }, { x: 10 }],
+    ],
+    [
+      'a back edge to a while head listed before a conditioned route is marked',
+      [
+        start('S'),
+        gateway('L', 'Flow_L_E'),
+        user('T'),
+        gateway('G'),
+        user('B'),
+        end('EB'),
+        end('E'),
+      ],
+      [
+        edge('S', 'L'),
+        edge('L', 'T', { condition: '${n > 100}' }),
+        edge('L', 'E'),
+        ...chain('T', 'G', 'L'),
+        edge('G', 'B', { condition: '${x > 1}' }),
+        edge('B', 'EB'),
+      ],
+      [
+        '  if (n > 100) {',
+        '    user T',
+        '    if (true) {',
+        `      ${marker}`,
+        '    } else if (x > 1) {',
+        '      user B',
+        '    }',
+        '  } else {',
+        '    end E',
+        '  }',
+        '  end EB',
+      ],
+      [['droppedEdge', 'L']],
+      [],
+    ],
+  ])('%s', async (_, elements, flows, body, reports, runs) => {
+    const ir = minimalProcess(elements, flows);
+    const { source, warnings } = printDsl(ir);
+
+    expect(bodyOf(source)).toBe(
+      ['process p {', '  start S', ...body, '}', ''].join('\n'),
+    );
+    expectReports(warnings, ...reports);
+    const rebuilt = await reDesugar(await printed(ir));
+    const withoutMarker = bodyOf(source)
+      .split('\n')
+      .filter((line) => line.trim() !== marker)
+      .join('\n');
+    expect(bodyOf(irToDsl(rebuilt))).toBe(withoutMarker);
+    expect(runs.map((vars) => run(rebuilt, vars))).toEqual(
+      runs.map((vars) => run(ir, vars)),
+    );
+  });
+});
+
 describe('irToDsl: a split inside a loop body whose every route is conditioned', () => {
   const reviewLoopIr = (
     staying: readonly (readonly [step: string, condition: string])[],
@@ -2372,16 +2573,100 @@ describe('irToDsl: a split with no route out', () => {
   });
 });
 
+describe('irToDsl: a route with no condition at an exclusive split', () => {
+  // Operaton takes the first route in document order that carries no condition
+  // or one that holds, so a `true` head keeps an early one in its place.
+  it.each<
+    [title: string, split: FlowElement, routes: SequenceFlow[], body: string[]]
+  >([
+    [
+      'listed before a conditioned route, it heads the chain as true',
+      gateway('G'),
+      [edge('G', 'A'), edge('G', 'B', { condition: '${x > 5}' })],
+      [
+        '  if (true) {',
+        '    user A',
+        '  } else if (x > 5) {',
+        '    user B',
+        '  }',
+        '  end E',
+      ],
+    ],
+    [
+      'listed between two conditioned routes, it heads its place as true',
+      gateway('G'),
+      [
+        edge('G', 'B', { condition: '${x > 5}' }),
+        edge('G', 'A'),
+        edge('G', 'C', { condition: '${x > 9}' }),
+      ],
+      [
+        '  if (x > 5) {',
+        '    user B',
+        '  } else if (true) {',
+        '    user A',
+        '  } else if (x > 9) {',
+        '    user C',
+        '  }',
+        '  end E',
+      ],
+    ],
+    [
+      'listed last, it is the continuation as drawn',
+      gateway('G'),
+      [edge('G', 'B', { condition: '${x > 5}' }), edge('G', 'A')],
+      [
+        '  if (x > 5) {',
+        '    user B',
+        '  } else {',
+        '    user A',
+        '  }',
+        '  end E',
+      ],
+    ],
+    [
+      'named as the default, it is tried last wherever it is listed',
+      gateway('G', 'F_A'),
+      [
+        edge('G', 'A', { id: 'F_A' }),
+        edge('G', 'B', { condition: '${x > 5}' }),
+      ],
+      [
+        '  if (x > 5) {',
+        '    user B',
+        '  } else {',
+        '    user A',
+        '  }',
+        '  end E',
+      ],
+    ],
+  ])('%s', async (_, split, routes, body) => {
+    const steps = routes.map((f) => f.targetRef);
+    const ir = minimalProcess(
+      [start('S'), split, ...steps.map(user), end('E')],
+      [edge('S', 'G'), ...routes, ...steps.map((id) => edge(id, 'E'))],
+    );
+    const { source, warnings } = printDsl(ir);
+
+    expect(bodyOf(source)).toBe(
+      ['process p {', '  start S', ...body, '}', ''].join('\n'),
+    );
+    expect(warnings).toEqual([]);
+    expect(irToDsl(await reDesugar(await printed(ir)))).toBe(source);
+  });
+});
+
 describe('irToDsl: a split that routes back into itself', () => {
   it.each([
     [
       'a plain route back beside a weighed way on',
       gateway('G'),
       [edge('G', 'G'), edge('G', 'A', { condition: '${go}' })],
-      '  if (go) {\n' +
-        '  } else {\n' +
+      '  if (true) {\n' +
         `    ${UNSTRUCTURED_MARKER} (dropped edge into G)\n` +
+        '  } else if (go) {\n' +
         '  }\n',
+      [['droppedEdge', 'G']],
     ],
     [
       'a weighed route back beside the fallback',
@@ -2393,10 +2678,11 @@ describe('irToDsl: a split that routes back into itself', () => {
       '  if (again) {\n' +
         `    ${UNSTRUCTURED_MARKER} (dropped edge into G)\n` +
         '  }\n',
+      [['droppedEdge', 'G']],
     ],
   ] as const)(
     '%s prints the marker rather than a loop',
-    async (_title, split, routes, chain) => {
+    async (_title, split, routes, chain, reports) => {
       const ir = minimalProcess(
         [start('S'), split, user('A'), end('E')],
         [edge('S', 'G'), ...routes, edge('A', 'E')],
@@ -2406,7 +2692,7 @@ describe('irToDsl: a split that routes back into itself', () => {
       expect(bodyOf(source)).toBe(
         'process p {\n  start S\n' + chain + '  user A\n  end E\n}\n',
       );
-      expectReports(warnings, ['droppedEdge', 'G']);
+      expectReports(warnings, ...reports);
       await printed(ir);
     },
   );
@@ -2944,7 +3230,7 @@ describe('warnings: a condition the script has nowhere to write', () => {
     expectReports(
       warnings,
       ['choiceFallbackCondition', 'Split'],
-      ['droppedFlowCondition', 'Split'],
+      ['droppedEdge', 'Loop'],
     );
   });
 
@@ -3177,6 +3463,160 @@ describe('irToDsl: conditioned parallel branches', () => {
 });
 
 describe('irToDsl: a split left with nowhere to go when no condition holds', () => {
+  // Operaton tries an exclusive split's routes in document order, so only the
+  // last one may print as the fall-through and give up its condition.
+  const invoiceIr = (
+    approval: [condition: string, target: string][],
+  ): BpmnProcess =>
+    minimalProcess(
+      [
+        start('S'),
+        user('Approve'),
+        gateway('G'),
+        user('Pay'),
+        user('Review'),
+        gateway('G2'),
+        end('E1'),
+        end('E2'),
+      ],
+      [
+        ...chain('S', 'Approve', 'G'),
+        ...approval.map(([condition, target]) =>
+          edge('G', target, { condition }),
+        ),
+        edge('Pay', 'E1'),
+        edge('Review', 'G2'),
+        edge('G2', 'E2', { condition: '${!clarified}' }),
+        edge('G2', 'Approve', { condition: '${clarified}' }),
+      ],
+    );
+  it.each<
+    [
+      title: string,
+      ir: BpmnProcess,
+      body: string[],
+      reports: (readonly [keyof typeof REPORT, string])[],
+    ]
+  >([
+    [
+      'overlapping conditions keep their order: the first keeps its condition and the last falls through',
+      minimalProcess(
+        [start('S'), gateway('G'), user('A'), user('B'), end('EA'), end('EB')],
+        [
+          edge('S', 'G'),
+          edge('G', 'A', { condition: '${x > 1}' }),
+          edge('G', 'B', { condition: '${x > 5}' }),
+          edge('A', 'EA'),
+          edge('B', 'EB'),
+        ],
+      ),
+      [
+        '  start S',
+        '  if (x > 1) {',
+        '    user A',
+        '    end EA',
+        '  }',
+        '  user B',
+        '  end EB',
+      ],
+      [['inventedFallback', 'G']],
+    ],
+    [
+      'an approval listed before its review falls through to the review',
+      invoiceIr([
+        ['${approved}', 'Pay'],
+        ['${!approved}', 'Review'],
+      ]),
+      [
+        '  start S',
+        '  user Approve',
+        '  if (approved) {',
+        '    user Pay',
+        '    end E1',
+        '  }',
+        '  user Review',
+        '  if (!clarified) {',
+        '    end E2',
+        '  } else if (clarified) {',
+        '    goto Approve',
+        '  }',
+        '  goto E1',
+      ],
+      [
+        ['inventedFallback', 'G'],
+        ['inventedFallback', 'G2'],
+      ],
+    ],
+    [
+      'an approval listed after its review falls through to the approval',
+      invoiceIr([
+        ['${!approved}', 'Review'],
+        ['${approved}', 'Pay'],
+      ]),
+      [
+        '  start S',
+        '  user Approve',
+        '  if (!approved) {',
+        '    user Review',
+        '    if (!clarified) {',
+        '      end E2',
+        '    } else if (clarified) {',
+        '      goto Approve',
+        '    }',
+        '  }',
+        '  user Pay',
+        '  end E1',
+      ],
+      [
+        ['inventedFallback', 'G'],
+        ['inventedFallback', 'G2'],
+      ],
+    ],
+    [
+      'a last route into a step reached from elsewhere keeps its condition behind an empty first branch',
+      minimalProcess(
+        [
+          start('S'),
+          gateway('G0'),
+          gateway('G'),
+          user('A'),
+          user('B'),
+          end('EA'),
+          end('EB'),
+        ],
+        [
+          edge('S', 'G0'),
+          edge('G0', 'B', { condition: '${p}' }),
+          edge('G0', 'G'),
+          edge('G', 'A', { condition: '${a}' }),
+          edge('G', 'B', { condition: '${b}' }),
+          edge('A', 'EA'),
+          edge('B', 'EB'),
+        ],
+      ),
+      [
+        '  start S',
+        '  if (p) {',
+        '    goto B',
+        '  }',
+        '  if (a) {',
+        '  } else if (b) {',
+        '    goto B',
+        '  }',
+        '  user A',
+        '  end EA',
+        '  user B',
+        '  end EB',
+      ],
+      [['inventedFallback', 'G']],
+    ],
+  ])('%s', async (_, ir, body, reports) => {
+    const { source, warnings } = printDsl(ir);
+    expect(bodyOf(source)).toBe(['process p {', ...body, '}', ''].join('\n'));
+    expectReports(warnings, ...reports);
+    await printed(ir);
+  });
+
   it('reads the fallback an imported step carries, and reports only the condition on it that is weighed nowhere', async () => {
     const condition = (body: string): string =>
       `<bpmn:conditionExpression xsi:type="bpmn:tFormalExpression" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">${body}</bpmn:conditionExpression>`;
@@ -3212,6 +3652,57 @@ describe('irToDsl: a split left with nowhere to go when no condition holds', () 
         '}\n',
     );
     expectReports(warnings, ['forkFallbackCondition', 'Triage']);
+    await printed(ir);
+  });
+
+  it('an empty condition body leaves two routes unconditioned, so none is resumed', async () => {
+    // The import refusal counts the empty body as a condition, as Operaton
+    // does, but the flow imports without one.
+    const { ir, warnings: imported } = await xmlToIr(bpmnDoc`
+    <bpmn:startEvent id="S" />
+    <bpmn:exclusiveGateway id="G" />
+    <bpmn:userTask id="A" />
+    <bpmn:userTask id="B" />
+    <bpmn:userTask id="C" />
+    <bpmn:endEvent id="EA" />
+    <bpmn:endEvent id="EB" />
+    <bpmn:endEvent id="EC" />
+    <bpmn:sequenceFlow id="F0" sourceRef="S" targetRef="G" />
+    <bpmn:sequenceFlow id="F1" sourceRef="G" targetRef="A">
+      <bpmn:conditionExpression />
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="F2" sourceRef="G" targetRef="B" />
+    <bpmn:sequenceFlow id="F3" sourceRef="G" targetRef="C">
+      <bpmn:conditionExpression>${'${c}'}</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="FA" sourceRef="A" targetRef="EA" />
+    <bpmn:sequenceFlow id="FB" sourceRef="B" targetRef="EB" />
+    <bpmn:sequenceFlow id="FC" sourceRef="C" targetRef="EC" />`);
+
+    expect(imported.map((w) => w.elementId)).toEqual(['F1']);
+    const { source, warnings } = printDsl(ir);
+    expect(bodyOf(source)).toBe(
+      [
+        'process p {',
+        '  start S',
+        '  if (true) {',
+        '    goto A',
+        '  } else if (true) {',
+        '    goto B',
+        '  } else if (c) {',
+        '    goto C',
+        '  }',
+        '  user A',
+        '  end EA',
+        '  user B',
+        '  end EB',
+        '  user C',
+        '  end EC',
+        '}',
+        '',
+      ].join('\n'),
+    );
+    expect(warnings).toEqual([]);
     await printed(ir);
   });
 

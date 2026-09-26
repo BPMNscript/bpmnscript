@@ -1,7 +1,7 @@
 /**
  * IR to BPMN~2.0 XML Operaton can deploy. `operaton:` attributes come from the
- * vendor-free IR names (ADR 0006); `bpmn-auto-layout` regenerates `bpmndi:`
- * on every export (ADR 0003).
+ * vendor-free IR names (ADR 0007); `bpmn-auto-layout` regenerates `bpmndi:`
+ * on every export (ADR 0009).
  */
 
 import { existsSync, readFileSync } from 'node:fs';
@@ -132,6 +132,13 @@ export async function irToXml(
     ...(process.candidateStarterGroups !== undefined
       ? { 'operaton:candidateStarterGroups': process.candidateStarterGroups }
       : {}),
+    ...(process.isStartableInTasklist !== undefined
+      ? {
+          'operaton:isStartableInTasklist': String(
+            process.isStartableInTasklist,
+          ),
+        }
+      : {}),
     flowElements: buildContainerChildren(moddle, process, roots),
   };
   const processElement = moddle.create('bpmn:Process', processAttrs);
@@ -164,7 +171,7 @@ export async function irToXml(
   }
 
   try {
-    return await layoutProcess(xml);
+    return escapeAttributeWhitespace(await layoutProcess(xml));
   } catch (cause) {
     // The expansion hint has no `dc:Bounds`, and `BpmnParse.parseDIBounds` fails
     // deployment on a bounds-less shape, so the fallback drops the diagram.
@@ -172,8 +179,20 @@ export async function irToXml(
     const { xml: xmlWithoutDiagram } = await moddle.toXML(definitions, {
       format: true,
     });
-    throw new LayoutError(xmlWithoutDiagram, cause);
+    throw new LayoutError(escapeAttributeWhitespace(xmlWithoutDiagram), cause);
   }
+}
+
+/**
+ * moddle-xml escapes a line feed in an attribute value but writes a tab or a
+ * carriage return raw, and XML attribute-value normalization turns either into
+ * a space in the engine's parser. The writer escapes `<` and `>` everywhere
+ * and emits no CDATA or comment, so every `<...>` span is a tag.
+ */
+function escapeAttributeWhitespace(xml: string): string {
+  return xml.replace(/<[^>]*>/g, (tag) =>
+    tag.replace(/\t/g, '&#9;').replace(/\r/g, '&#13;'),
+  );
 }
 
 /** `taken` holds every id in the document, the `bpmn:Definitions` id included. */
@@ -464,7 +483,7 @@ export const TIMER_KIND_TO_CHILD: Record<
 /**
  * Without this `bpmn-auto-layout` draws a sub-process (or transaction)
  * collapsed and scatters its children. It finds the shape by id, so it needs
- * one; bounds are recomputed (ADR 0015).
+ * one; bounds are recomputed (ADR 0009).
  */
 function buildSubProcessExpansionHint(
   moddle: BpmnModdleInstance,
@@ -854,7 +873,7 @@ function retryCycleElement(
       });
 }
 
-/** For carriers with no other extension group (gateways, ADR 0010; loop elements). */
+/** For carriers with no other extension group (gateways, ADR 0021; loop elements). */
 function bareJobSettingAttrs(
   moddle: BpmnModdleInstance,
   node: JobSettings,
@@ -899,7 +918,7 @@ function buildExtensionElements(
 ): ModdleElement | undefined {
   const values: ModdleElement[] = [];
   // Fields configure the implementation, so they precede the io block. A thrown
-  // message's binding has no field slot (ADR 0032).
+  // message's binding has no field slot (ADR 0017).
   if (node.kind === 'serviceTask') {
     for (const field of codeBindingFields(node.binding)) {
       values.push(buildField(moddle, field));

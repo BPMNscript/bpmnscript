@@ -66,6 +66,7 @@ import {
 import type { XmlTag } from './helpers/bpmn-doc.js';
 import {
   bpmnDefs,
+  TIME_TO_LIVE,
   bpmnDoc,
   camundaDoc,
   dualDefs,
@@ -78,7 +79,7 @@ import {
 } from './helpers/bpmn-doc.js';
 import { importById, importOnly } from './helpers/import-node.js';
 import { byId, subProcess } from './helpers/ir-query.js';
-import { parse } from './helpers/parse.js';
+import { parse, validate } from './helpers/parse.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const HANDWRITTEN_XML = readFileSync(
@@ -130,7 +131,7 @@ const unread = (
 
 const CAMUNDA_ALIAS_WARNING = {
   elementId: 'p',
-  category: 'unmappedConstruct',
+  category: 'rewritten',
   message: CAMUNDA_ALIAS_MESSAGE,
 };
 
@@ -157,7 +158,7 @@ const expectOneWarning = (
 };
 
 const rootedDoc = (roots: string, body: string, defs = bpmnDefs): string =>
-  defs`${roots}  <bpmn:process id="p" isExecutable="true">
+  defs`${roots}  <bpmn:process id="p" isExecutable="true" ${TIME_TO_LIVE}>
     <bpmn:startEvent id="S" />
 ${body}
   </bpmn:process>`;
@@ -271,6 +272,7 @@ describe('xmlToIr: script task support', () => {
       '',
       '<bpmn:script>x = 1;</bpmn:script>',
       { format: 'juel' },
+      'rewritten',
       "The script on 'ST' has no scriptFormat; " +
         '`BpmnParse.parseScriptTaskElement` substitutes ' +
         '`ScriptingEngines.DEFAULT_SCRIPTING_LANGUAGE` (juel), and it was ' +
@@ -281,6 +283,7 @@ describe('xmlToIr: script task support', () => {
       'scriptFormat="cobol"',
       '<bpmn:script>1</bpmn:script>',
       { format: 'cobol' },
+      'carriedAsWritten',
       "The script on 'ST' names the language 'cobol', which the DSL " +
         'has no fence alias for; it was imported as written, and the ' +
         'printed script draws an error there.',
@@ -290,6 +293,7 @@ describe('xmlToIr: script task support', () => {
       'scriptFormat="javascript"',
       '<bpmn:script/>',
       { code: '' },
+      'carriedAsWritten',
       "The body of the script on 'ST' is empty: ScriptUtil.getScript " +
         'deploys it, since it checks the source for null and not for ' +
         'emptiness, and the printed script draws an empty-body error there.',
@@ -312,19 +316,39 @@ describe('xmlToIr: script task support', () => {
           },
         ],
       },
+      'carriedAsWritten',
       'The body of the operaton:script in an operaton:executionListener is ' +
         'empty: ScriptUtil.getScript deploys it, since it checks the source ' +
         'for null and not for emptiness, and the printed script draws an ' +
         'empty-body error there.',
     ],
-  ])('%s', async (_title, attrs, children, carried, message) => {
-    const { node, warnings } = await importOnly(
-      scriptTask(attrs, children),
-      'scriptTask',
+  ] as const)(
+    '%s',
+    async (_title, attrs, children, carried, category, message) => {
+      const { node, warnings } = await importOnly(
+        scriptTask(attrs, children),
+        'scriptTask',
+      );
+      expect(node).toMatchObject(carried);
+      expect(warnings).toEqual([{ elementId: 'ST', category, message }]);
+    },
+  );
+
+  it('a URI scriptFormat prints a fence whose error names the whole format', async () => {
+    const { ir } = await xmlToIr(
+      scriptTask(
+        'scriptFormat="http://www.java.com/java"',
+        '<bpmn:script>x = 1;</bpmn:script>',
+      ),
     );
-    expect(node).toMatchObject(carried);
-    expect(warnings).toEqual([
-      { elementId: 'ST', category: 'extensionAttribute', message },
+    const { diagnostics } = await validate(irToDsl(ir).source);
+    expect(diagnostics.map((d) => [d.severity, d.message])).toEqual([
+      [
+        1,
+        "Script task 'ST' has an unsupported language tag " +
+          "'http://www.java.com/java'. Use 'juel', 'js', 'javascript', " +
+          "'ecmascript', 'groovy', 'py', 'python', 'rb', 'ruby', or 'feel'.",
+      ],
     ]);
   });
 
@@ -376,7 +400,7 @@ describe('xmlToIr: the document level', () => {
     <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="A" />
     <bpmn:sequenceFlow id="F2" sourceRef="A" targetRef="E" />`;
   const process = (attrs: string, id = 'p', content = STEPS): string =>
-    `  <bpmn:process id="${id}"${attrs}>\n${content}\n  </bpmn:process>`;
+    `  <bpmn:process id="${id}" ${TIME_TO_LIVE}${attrs}>\n${content}\n  </bpmn:process>`;
   const EXECUTABLE = process(' isExecutable="true"');
   const collaboration = (children: string): string =>
     `  <bpmn:collaboration id="C">\n${children}\n  </bpmn:collaboration>`;
@@ -456,9 +480,10 @@ ${EXECUTABLE}`,
       {
         imports: 'p',
         warnings: [
-          unmapped(
+          warning(
             'p',
             /^The process 'p' is not marked isExecutable="true", which `BpmnParse\.parseProcessDefinitions` skips in a new deployment; it was imported as an executable process and is written back as one\.$/,
+            'behaviourChanged',
           ),
         ],
       },
@@ -551,6 +576,21 @@ ${EXECUTABLE}`,
       },
     ],
     [
+      'a process without an id refuses',
+      bpmnDefs`${EXECUTABLE.replace('id="p" ', '')}`,
+      {
+        refusal: UnsupportedDocumentError,
+        detail:
+          'its process has no id; Operaton deploys a process under its id as ' +
+          'the definition key, and the deployment fails without one',
+      },
+    ],
+    [
+      'a start without an id imports in a process the engine does not deploy',
+      bpmnDefs`${approval}\n${process(' isExecutable="false"', 'sketch', '    <bpmn:startEvent />')}`,
+      { imports: 'approval', warnings: [twoPoolsWarnings[0]] },
+    ],
+    [
       'an empty process refuses, since parseStartEvents fails the deployment without a start',
       bpmnDefs`${process(' isExecutable="true"', 'p', '')}`,
       {
@@ -568,6 +608,271 @@ ${EXECUTABLE}`,
     expect(ir.id).toBe(expected.imports);
     expect(warnings).toEqual(expected.warnings);
   });
+
+  it.each([
+    [
+      'a sequence flow imports under a minted id clear of every authored one',
+      `    <bpmn:sequenceFlow sourceRef="S" targetRef="A" />
+    <bpmn:sequenceFlow id="Flow_S_A" sourceRef="A" targetRef="E" />`,
+      ['S', 'A', 'E'],
+      ['Flow_S_A_2', 'Flow_S_A'],
+      [],
+    ],
+    [
+      "two tasks and an end event import under distinct minted ids, the end clear of the compiler's implicit end",
+      `    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="A" />
+    <bpmn:sequenceFlow id="F2" sourceRef="A" targetRef="E" />
+    <bpmn:userTask />
+    <bpmn:userTask />
+    <bpmn:endEvent />`,
+      ['S', 'A', 'E', 'UserTask_p', 'UserTask_p_2', 'EndEvent_p_2'],
+      ['F1', 'F2'],
+      [4, 5, 6],
+    ],
+    [
+      "an end event imports clear of a boundary escape's implicit end, whose boundary id is the container's with a counter",
+      `    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="A" />
+    <bpmn:sequenceFlow id="F2" sourceRef="A" targetRef="E" />
+    <bpmn:sequenceFlow id="F3" sourceRef="p_2" targetRef="E2" />
+    <bpmn:endEvent id="E2" />
+    <bpmn:boundaryEvent id="p_2" attachedToRef="A"><bpmn:timerEventDefinition><bpmn:timeDuration>PT1H</bpmn:timeDuration></bpmn:timerEventDefinition></bpmn:boundaryEvent>
+    <bpmn:endEvent />`,
+      ['S', 'A', 'E', 'E2', 'p_2', 'EndEvent_p_3'],
+      ['F1', 'F2', 'F3'],
+      [4],
+    ],
+  ])(
+    'an element without an id, which the engine deploys: %s',
+    async (_title, content, nodes, flows, neverRunLines) => {
+      const { ir, warnings } = await xmlToIr(
+        bpmnDefs`${process(' isExecutable="true"', 'p', `    <bpmn:startEvent id="S" />\n    <bpmn:userTask id="A" />\n    <bpmn:endEvent id="E" />\n${content}`)}`,
+      );
+      // Nothing can flow into a node without an id, so its step never runs.
+      const { diagnostics } = await validate(irToDsl(ir).source);
+      expect([
+        ir.flowElements.map((n) => n.id),
+        ir.sequenceFlows.map((f) => f.id),
+        warnings,
+        diagnostics.map((d) => [d.range.start.line, d.message]),
+      ]).toEqual([
+        nodes,
+        flows,
+        [],
+        neverRunLines.map((line) => [
+          line,
+          expect.stringMatching(/^This step can never run:/),
+        ]),
+      ]);
+    },
+  );
+
+  const TIMER =
+    '<bpmn:timerEventDefinition><bpmn:timeDuration>PT1H</bpmn:timeDuration></bpmn:timerEventDefinition>';
+  const LINEAR =
+    '    <bpmn:startEvent id="S" />\n    <bpmn:userTask id="A" />\n    <bpmn:endEvent id="E" />\n';
+
+  const DEPLOY = (method: string, quote = ''): string =>
+    `, which ${method} fails the deployment on${quote}`;
+  const RUN = (method: string, when: string): string =>
+    `: Operaton deploys it and ${method} fails the run ${when}`;
+  const NO_ID = '("boundary event has no id")';
+  const boundary = (def: string): string =>
+    `${LINEAR}    <bpmn:boundaryEvent attachedToRef="A">${def}</bpmn:boundaryEvent>`;
+
+  it.each([
+    [
+      'a lone start event',
+      '    <bpmn:startEvent />',
+      'startEvent',
+      'p',
+      DEPLOY('BpmnParse.parseStartFormHandlers'),
+    ],
+    [
+      'a message start where the process has no plain start',
+      `    <bpmn:startEvent><bpmn:messageEventDefinition messageRef="M1" /></bpmn:startEvent>
+    <bpmn:startEvent id="S2"><bpmn:messageEventDefinition messageRef="M2" /></bpmn:startEvent>`,
+      'startEvent',
+      'p',
+      DEPLOY('BpmnParse.parseStartFormHandlers'),
+    ],
+    [
+      'a timer start',
+      `    <bpmn:startEvent>${TIMER}</bpmn:startEvent>`,
+      'startEvent',
+      'p',
+      DEPLOY('BpmnParse.parseTimer', ` ('Attribute "id" is required!')`),
+    ],
+    [
+      'the start event of a subprocess',
+      `${LINEAR}    <bpmn:subProcess id="Sub"><bpmn:startEvent /></bpmn:subProcess>`,
+      'startEvent',
+      'Sub',
+      DEPLOY('HistoryParseListener.parseStartEvent'),
+    ],
+    [
+      'the start event of an event sub-process',
+      `${LINEAR}    <bpmn:subProcess id="ES" triggeredByEvent="true"><bpmn:startEvent><bpmn:messageEventDefinition messageRef="M1" /></bpmn:startEvent></bpmn:subProcess>`,
+      'startEvent',
+      'ES',
+      DEPLOY('HistoryParseListener.parseStartEvent'),
+    ],
+    [
+      'a timer boundary event',
+      boundary(TIMER),
+      'boundaryEvent',
+      'p',
+      DEPLOY('BpmnParse.parseTimer', ` ('Attribute "id" is required!')`),
+    ],
+    [
+      'a message boundary event',
+      boundary('<bpmn:messageEventDefinition messageRef="M1" />'),
+      'boundaryEvent',
+      'p',
+      DEPLOY('BpmnParse.parseBoundaryMessageEventDefinition', ` ${NO_ID}`),
+    ],
+    [
+      'a signal boundary event',
+      boundary('<bpmn:signalEventDefinition />'),
+      'boundaryEvent',
+      'p',
+      DEPLOY('BpmnParse.parseBoundarySignalEventDefinition', ` ${NO_ID}`),
+    ],
+    [
+      'an error boundary event, which deploys but fails the run the error reaches',
+      boundary('<bpmn:errorEventDefinition />'),
+      'boundaryEvent',
+      'p',
+      RUN(
+        'ErrorDeclarationForProcessInstanceFinder.isReThrowingErrorEventSubprocess',
+        'when an error is thrown inside its step',
+      ),
+    ],
+    [
+      'an escalation boundary event, which deploys but fails the run the escalation reaches',
+      `${LINEAR}    <bpmn:subProcess id="Sub"><bpmn:startEvent id="SS" /></bpmn:subProcess>
+    <bpmn:boundaryEvent attachedToRef="Sub"><bpmn:escalationEventDefinition /></bpmn:boundaryEvent>`,
+      'boundaryEvent',
+      'p',
+      RUN(
+        'ExecutionEntity.generateActivityInstanceId',
+        'when an escalation reaches it',
+      ),
+    ],
+    [
+      'a cancel boundary event, which deploys but fails the run that cancels the transaction',
+      `${LINEAR}    <bpmn:transaction id="Tx"><bpmn:startEvent id="SS" /></bpmn:transaction>
+    <bpmn:boundaryEvent attachedToRef="Tx"><bpmn:cancelEventDefinition /></bpmn:boundaryEvent>`,
+      'boundaryEvent',
+      'p',
+      RUN(
+        'ExecutionEntity.generateActivityInstanceId',
+        'when the transaction is cancelled',
+      ),
+    ],
+    [
+      'a conditional boundary event, which deploys but fails the run of its step',
+      boundary(
+        '<bpmn:conditionalEventDefinition><bpmn:condition>go</bpmn:condition></bpmn:conditionalEventDefinition>',
+      ),
+      'boundaryEvent',
+      'p',
+      RUN('ConditionalEventHandler.handleEvent', 'of its step'),
+    ],
+    [
+      'a timer catch event',
+      `${LINEAR}    <bpmn:intermediateCatchEvent>${TIMER}</bpmn:intermediateCatchEvent>`,
+      'intermediateCatchEvent',
+      'p',
+      DEPLOY('BpmnParse.parseTimer', ` ('Attribute "id" is required!')`),
+    ],
+    [
+      'an event-based gateway',
+      `${LINEAR}    <bpmn:eventBasedGateway />`,
+      'eventBasedGateway',
+      'p',
+      DEPLOY('BpmnParse.parseEventBasedGateway'),
+    ],
+  ])(
+    'an element without an id, which the engine refuses: %s',
+    async (_title, content, tag, container, failure) => {
+      await expectRefusal(
+        xmlToIr(
+          bpmnDefs`  <bpmn:message id="M1" name="One" />
+  <bpmn:message id="M2" name="Two" />
+${process(' isExecutable="true"', 'p', content)}`,
+        ),
+        UnsupportedDocumentError,
+        `a bpmn:${tag} in '${container}' has no id${failure}; give it one`,
+      );
+    },
+  );
+
+  const HERE = "without an id in 'p')";
+  it.each([
+    [
+      'a compensation boundary, which the engine runs, reaches the compensation refusal',
+      boundary('<bpmn:compensateEventDefinition />'),
+      UnsupportedEventFeatureError,
+      `The element (a bpmn:boundaryEvent ${HERE} cannot be imported`,
+    ],
+    [
+      'a boundary with no trigger definition reaches the one-trigger refusal',
+      boundary(''),
+      UnsupportedEventFeatureError,
+      `The element (a bpmn:boundaryEvent ${HERE} cannot be imported`,
+    ],
+    [
+      'a boundary inside a sub-process without an id names neither minted id',
+      `${LINEAR}    <bpmn:subProcess><bpmn:startEvent id="SS" /><bpmn:userTask id="B" /><bpmn:boundaryEvent attachedToRef="B"><bpmn:compensateEventDefinition /></bpmn:boundaryEvent></bpmn:subProcess>`,
+      UnsupportedEventFeatureError,
+      'The element (a bpmn:boundaryEvent without an id) cannot be imported',
+    ],
+    [
+      'a compensation handler',
+      `${LINEAR}    <bpmn:userTask isForCompensation="true" />`,
+      UnsupportedEventFeatureError,
+      `The element (a bpmn:userTask ${HERE} cannot be imported`,
+    ],
+    [
+      'a link throw naming no link',
+      `${LINEAR}    <bpmn:intermediateThrowEvent><bpmn:linkEventDefinition /></bpmn:intermediateThrowEvent>`,
+      UnsupportedEventFeatureError,
+      `The element (a bpmn:intermediateThrowEvent ${HERE} cannot be imported`,
+    ],
+    [
+      'a service task with no binding',
+      `${LINEAR}    <bpmn:serviceTask />`,
+      UnsupportedServiceTaskFormError,
+      `Service task (a bpmn:serviceTask ${HERE} uses unsupported execution form`,
+    ],
+    [
+      'two input parameters sharing a name',
+      `${LINEAR}    <bpmn:userTask><bpmn:extensionElements><operaton:inputOutput><operaton:inputParameter name="a">1</operaton:inputParameter><operaton:inputParameter name="a">2</operaton:inputParameter></operaton:inputOutput></bpmn:extensionElements></bpmn:userTask>`,
+      UnsupportedExtensionFormError,
+      `The Operaton extension content on (a bpmn:userTask ${HERE} cannot be imported`,
+    ],
+    [
+      'a call activity naming nothing to call',
+      `${LINEAR}    <bpmn:callActivity />`,
+      UnsupportedCallActivityError,
+      `The call activity (a bpmn:callActivity ${HERE} cannot be imported`,
+    ],
+  ] as const)(
+    'an element without an id refused past the id check names no minted id: %s',
+    async (_title, content, refusal, subject) => {
+      const err = await expectRefusal(
+        xmlToIr(operatonDefs`${process(' isExecutable="true"', 'p', content)}`),
+        refusal,
+      );
+      const minted = /\b[A-Z][A-Za-z]*_(p|SubProcess_p)(_\d+)?\b/;
+      expect([
+        err.message.split(': ')[0],
+        Object.values(err).filter(
+          (v) => typeof v === 'string' && minted.test(v),
+        ),
+      ]).toEqual([subject, []]);
+    },
+  );
 });
 
 describe('xmlToIr: start, end, and emit triggers', () => {
@@ -586,7 +891,7 @@ describe('xmlToIr: start, end, and emit triggers', () => {
     definition: string,
     { attrs = '', roots = '', defs = bpmnDefs }: EventXmlOptions = {},
   ): string =>
-    defs`${roots}  <bpmn:process id="p" isExecutable="true">
+    defs`${roots}  <bpmn:process id="p" isExecutable="true" ${TIME_TO_LIVE}>
     <bpmn:startEvent id="TStart" ${attrs}>
       ${definition}
     </bpmn:startEvent>
@@ -602,7 +907,7 @@ describe('xmlToIr: start, end, and emit triggers', () => {
       defs = operatonDefs,
     }: EventXmlOptions = {},
   ): string =>
-    defs`${roots}  <bpmn:process id="p" isExecutable="true">
+    defs`${roots}  <bpmn:process id="p" isExecutable="true" ${TIME_TO_LIVE}>
     <bpmn:startEvent id="S" />
     <bpmn:endEvent id="Typed" ${attrs}>
       ${definition}
@@ -611,7 +916,7 @@ describe('xmlToIr: start, end, and emit triggers', () => {
   </bpmn:process>`;
 
   const emitXml = (definition: string): string =>
-    operatonDefs`${MESSAGE_ROOT}  <bpmn:process id="p" isExecutable="true">
+    operatonDefs`${MESSAGE_ROOT}  <bpmn:process id="p" isExecutable="true" ${TIME_TO_LIVE}>
     <bpmn:startEvent id="S" />
     <bpmn:intermediateThrowEvent id="Emit1">
       ${definition}
@@ -685,7 +990,7 @@ ${content}
     ],
     [
       'two plain starts in a process, which selectInitial fails the deployment on',
-      bpmnDefs`  <bpmn:process id="p" isExecutable="true">
+      bpmnDefs`  <bpmn:process id="p" isExecutable="true" ${TIME_TO_LIVE}>
     <bpmn:startEvent id="S1" />
     <bpmn:startEvent id="S2" />
     <bpmn:endEvent id="E" />
@@ -767,7 +1072,7 @@ ${content}
     expect(e.elementId).toBe(elementId);
     if (remedy !== undefined) {
       expect(e.message).toBe(
-        `The event construct at '${elementId}' cannot be imported: ${detail}. ${remedy}`,
+        `The element '${elementId}' cannot be imported: ${detail}. ${remedy}`,
       );
     }
   });
@@ -788,7 +1093,7 @@ ${content}
     expect(warnings).toEqual([
       {
         elementId: 'Sub',
-        category: 'unmappedConstruct',
+        category: 'behaviourChanged',
         message:
           "The bpmn:transaction 'Sub' has no start event: Operaton " +
           'deploys it and SubProcessActivityBehavior.execute fails on ' +
@@ -1054,7 +1359,7 @@ describe('xmlToIr: imports a repetition', () => {
       },
       [
         on(
-          'unmappedConstruct',
+          'behaviourChanged',
           "The bpmn:completionCondition on 'T' is the bare text " +
             '"nrOfCompletedInstances > 1" with no "${...}" or "#{...}" opener: ' +
             'parseMultiInstanceLoopCharacteristics hands it to createExpression as ' +
@@ -1076,12 +1381,7 @@ describe('xmlToIr: imports a repetition', () => {
       'operaton:collection="lines" operaton:async="true"',
       '',
       { collection: 'lines', asyncBefore: true },
-      [
-        on(
-          'unmappedConstruct',
-          asyncRespellingMessage("the repetition of 'T'"),
-        ),
-      ],
+      [on('rewritten', asyncRespellingMessage("the repetition of 'T'"))],
     ],
     ...(
       [
@@ -1255,7 +1555,7 @@ describe('xmlToIr: a #{...} body the printer spells bare is rebuilt inside ${...
   ] as const)('%s reports the rewrap', async (_title, xml, message) => {
     const { warnings } = await xmlToIr(xml);
     expect(warnings.map((w) => w.message)).toEqual([message]);
-    expect(warnings.map((w) => w.category)).toEqual(['unmappedConstruct']);
+    expect(warnings.map((w) => w.category)).toEqual(['rewritten']);
   });
 });
 
@@ -1333,7 +1633,7 @@ describe('xmlToIr: a scripted condition on a sequence flow or a conditional even
       'an unprefixed xsi:type="tFormalExpression" in a default-namespace document',
       `<?xml version="1.0" encoding="UTF-8"?>
 <definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" targetNamespace="http://test">
-  <process id="p" isExecutable="true">
+  <process id="p" isExecutable="true" ${TIME_TO_LIVE}>
     <startEvent id="S" />
     <exclusiveGateway id="X" />
     <userTask id="T" />
@@ -1394,7 +1694,7 @@ describe('xmlToIr: a scripted condition on a sequence flow or a conditional even
       );
       expect(conditionOf(ir)).toBe(imported);
       expect(warnings).toEqual([
-        { elementId: 'F2', category: 'unmappedConstruct', message },
+        { elementId: 'F2', category: 'behaviourChanged', message },
       ]);
     },
   );
@@ -1523,21 +1823,57 @@ describe('xmlToIr: warns for dropped extension attributes', () => {
     startAttrs = '',
     startId = 'S',
   ): string =>
-    operatonDefs`  <bpmn:process id="p" isExecutable="true" ${processAttrs}>
+    operatonDefs`  <bpmn:process id="p" isExecutable="true" ${TIME_TO_LIVE} ${processAttrs}>
     <bpmn:startEvent id="${startId}" ${startAttrs} />
     <bpmn:endEvent id="E" />
     <bpmn:sequenceFlow id="F1" sourceRef="${startId}" targetRef="E" />
   </bpmn:process>`;
 
-  it('a process keeps the history time to live it authored', async () => {
+  it.each([
+    ['an authored history time to live is kept', 'P90D', 'P90D', []],
+    ['the exported default reads back as absent', 'P30D', undefined, []],
+    [
+      'an absent history time to live warns that the rebuilt process deploys',
+      undefined,
+      undefined,
+      [
+        {
+          elementId: 'p',
+          category: 'behaviourChanged',
+          message:
+            "The process 'p' sets no historyTimeToLive, which " +
+            'HistoryTimeToLiveParser.parseAndValidate refuses under the ' +
+            "engine's default enforceHistoryTimeToLive; it is written back " +
+            "with 'P30D', so the rebuilt process deploys where the source " +
+            'did not.',
+        },
+      ],
+    ],
+  ])('%s', async (_title, authored, expected, expectedWarnings) => {
     const { ir, warnings } = await xmlToIr(
-      headerDoc('operaton:historyTimeToLive="P90D"'),
+      operatonDefs`  <bpmn:process id="p" isExecutable="true"${authored === undefined ? '' : ` operaton:historyTimeToLive="${authored}"`}>
+    <bpmn:startEvent id="S" />
+    <bpmn:endEvent id="E" />
+    <bpmn:sequenceFlow id="F1" sourceRef="S" targetRef="E" />
+  </bpmn:process>`,
     );
-    expect([ir.historyTimeToLive, warnings]).toEqual(['P90D', []]);
+    expect([ir.historyTimeToLive, warnings]).toEqual([
+      expected,
+      expectedWarnings,
+    ]);
+  });
+
+  it('isStartableInTasklist imports as BpmnParse.isStartable reads it, true only for a case-insensitive "true"', async () => {
+    const read = async (value: string) =>
+      (await xmlToIr(headerDoc(`operaton:isStartableInTasklist="${value}"`))).ir
+        .isStartableInTasklist;
+    expect(
+      await Promise.all(['TRUE', 'true', 'false', 'no'].map(read)),
+    ).toEqual([true, true, false, false]);
   });
 
   const starterDoc = (processAttrs: string, children: string): string =>
-    operatonDefs`  <bpmn:process id="p" isExecutable="true" ${processAttrs}>
+    operatonDefs`  <bpmn:process id="p" isExecutable="true" ${TIME_TO_LIVE} ${processAttrs}>
     <bpmn:extensionElements>
 ${children}
     </bpmn:extensionElements>
@@ -1569,7 +1905,7 @@ ${children}
       },
       warnings: [
         [
-          'unmappedConstruct',
+          'rewritten',
           'p',
           "The operaton:potentialStarter on 'p' imports as " +
             'candidateStarterUsers: "a,b" and candidateStarterGroups: "g,h": ' +
@@ -1683,10 +2019,8 @@ ${children}
     },
     {
       title:
-        'the job priority, task priority and tasklist flag on the process name parseProcess',
-      xml: headerDoc(
-        'operaton:jobPriority="3" operaton:taskPriority="4" operaton:isStartableInTasklist="false"',
-      ),
+        'the job priority and task priority on the process name parseProcess',
+      xml: headerDoc('operaton:jobPriority="3" operaton:taskPriority="4"'),
       warnings: [
         unread(
           "'operaton:jobPriority' setting",
@@ -1699,12 +2033,6 @@ ${children}
           'p',
           'a <bpmn:process>',
           'reads it (BpmnParse.parseProcess through parsePriority)',
-        ),
-        unread(
-          "'operaton:isStartableInTasklist' setting",
-          'p',
-          'a <bpmn:process>',
-          'reads it (BpmnParse.parseProcess through isStartable)',
         ),
       ],
     },
@@ -1836,7 +2164,7 @@ describe('xmlToIr: bpmn:documentation', () => {
   <bpmn:escalation id="Esc" name="Late" escalationCode="LATE">${doc('Raised on day three.')}</bpmn:escalation>
   <bpmn:message id="Msg" name="Paid">${doc('Sent by billing.')}</bpmn:message>
   <bpmn:signal id="Sig" name="Stocked">${doc('Broadcast by the warehouse.')}</bpmn:signal>
-  <bpmn:process id="p" isExecutable="true">${doc('Onboarding, end to end.')}
+  <bpmn:process id="p" isExecutable="true" ${TIME_TO_LIVE}>${doc('Onboarding, end to end.')}
     <bpmn:startEvent id="S">${doc('Fires when HR files the request.')}</bpmn:startEvent>
 ${KINDS.map(([tag, attrs]) => `    <bpmn:${tag} id="${tag}" ${attrs}>${doc(`On ${tag}.`)}${CONTENT[tag] ?? ''}</bpmn:${tag}>`).join('\n')}
     <bpmn:userTask id="Verbatim"><bpmn:documentation>
@@ -1963,7 +2291,7 @@ describe('xmlToIr: warns for unmapped BPMN content', () => {
     attrs = 'isExecutable="true"',
   ) =>
     bpmnDefs`${roots}
-  <bpmn:process id="p" ${attrs}>
+  <bpmn:process id="p" ${TIME_TO_LIVE} ${attrs}>
     <bpmn:startEvent id="S" />
     ${content}
     <bpmn:endEvent id="E" />
@@ -2010,9 +2338,34 @@ describe('xmlToIr: warns for unmapped BPMN content', () => {
       ],
     ],
     [
+      'an eventDefinitionRef is reported on the event that names it, beside the root it names',
+      withRoots('  <bpmn:terminateEventDefinition id="TED" />').replace(
+        '<bpmn:startEvent id="S" />',
+        '<bpmn:startEvent id="S">\n      <bpmn:eventDefinitionRef>TED</bpmn:eventDefinitionRef>\n    </bpmn:startEvent>',
+      ),
+      [
+        {
+          elementId: 'S',
+          category: 'unmappedConstruct',
+          message:
+            "The eventDefinitionRef 'TED' on 'S' was not imported: BpmnParse " +
+            'reads only the event definitions nested in the event, so the ' +
+            'document written back runs the same.',
+        },
+        {
+          elementId: 'TED',
+          category: 'unmappedConstruct',
+          message:
+            "A bpmn:terminateEventDefinition 'TED' root element was not " +
+            'imported (this tool imports the executable flow and the engine ' +
+            'settings on its steps, and nothing declared or drawn beside it).',
+        },
+      ],
+    ],
+    [
       'isExecutable="false" is reported, and the process imports as executable regardless',
       withRoots('', '', 'isExecutable="false"'),
-      [warning('p', /isExecutable="false".*deploy/i, 'unmappedConstruct')],
+      [warning('p', /isExecutable="false".*deploy/i, 'behaviourChanged')],
     ],
   ])('%s', async (_title, xml, expected) => {
     const { ir, warnings } = await xmlToIr(xml);
@@ -2120,7 +2473,7 @@ describe('xmlToIr: callActivity import', () => {
             'word and BaseCallableElement.isLatestBinding reads none as ' +
             'latest, and this tool writes it back as ' +
             'calledElementBinding="latest", which the engine reads the same.',
-          'unmappedConstruct',
+          'rewritten',
         ),
         CAMUNDA_ALIAS_WARNING,
       ],
@@ -2293,7 +2646,7 @@ describe('xmlToIr: callActivity import', () => {
 describe('xmlToIr: event layer import', () => {
   const fullEventXml = dualDefs`  <bpmn:error id="Error_PF" name="PF" errorCode="PF" operaton:errorMessage="boom" />
   <bpmn:escalation id="Escalation_LS" name="LS" escalationCode="LS" />
-  <bpmn:process id="p" isExecutable="true">
+  <bpmn:process id="p" isExecutable="true" ${TIME_TO_LIVE}>
     <bpmn:startEvent id="PStart" />
     <bpmn:subProcess id="ErrHandler" triggeredByEvent="true">
       <bpmn:startEvent id="ErrStart">
@@ -2574,7 +2927,7 @@ describe('xmlToIr: event layer import', () => {
 
     const danglingErrorRef = (ownerId: string): ImportWarning => ({
       elementId: ownerId,
-      category: 'unmappedConstruct',
+      category: 'rewritten',
       message:
         `The errorRef 'Error_Missing' on '${ownerId}' names no bpmn:error ` +
         "root and imports as the code 'Error_Missing': Operaton takes a " +
@@ -2962,7 +3315,7 @@ describe('xmlToIr: boundary event import', () => {
   const boundaryXml = bpmnDefs`  <bpmn:error id="Error_Oops" errorCode="OOPS" />
   <bpmn:message id="Message_Ping" name="Ping" />
   <bpmn:signal id="Signal_Go" name="Go" />
-  <bpmn:process id="p" isExecutable="true">
+  <bpmn:process id="p" isExecutable="true" ${TIME_TO_LIVE}>
     <bpmn:startEvent id="PStart" />
     <bpmn:userTask id="Review" />
     <bpmn:subProcess id="Booking">
@@ -3274,7 +3627,7 @@ describe('xmlToIr: link events', () => {
     extraFlows = '',
     defs = bpmnDefs,
   }: PairOptions = {}): string =>
-    defs`  <bpmn:process id="p" isExecutable="true">
+    defs`  <bpmn:process id="p" isExecutable="true" ${TIME_TO_LIVE}>
     <bpmn:startEvent id="S" />
     <bpmn:userTask id="A" />
     <bpmn:intermediateThrowEvent id="ToRetry" ${throwAttrs}>${throwChildren}
@@ -3529,7 +3882,7 @@ describe('xmlToIr: BPMN-native assignment and the quantity attributes', () => {
       );
       expect(node).toEqual({ kind: 'userTask', id: 'Review', ...imported });
       expect(reported(warnings)).toEqual([
-        ['unmappedConstruct', 'Review', expect.stringContaining(detail)],
+        ['rewritten', 'Review', expect.stringContaining(detail)],
       ]);
     },
   );
@@ -3561,7 +3914,7 @@ ${role('potentialOwner', 'Owner_1', 'managers')}
     });
     expect(reported(warnings)).toEqual([
       [
-        'unmappedConstruct',
+        'rewritten',
         'Review',
         expect.stringMatching(
           /^The bpmn:humanPerformer 'Lead' on 'Review' imports as assignee: "demo":/,
@@ -3641,7 +3994,7 @@ ${role('potentialOwner', 'Owner_1', 'managers')}
 
 describe('xmlToIr: flat engine settings on every carrying node kind', () => {
   const everyKindXml = operatonDefs`  <bpmn:escalation id="Escalation_Up" escalationCode="UP" />
-  <bpmn:process id="p" isExecutable="true" operaton:versionTag="1.4">
+  <bpmn:process id="p" isExecutable="true" ${TIME_TO_LIVE} operaton:versionTag="1.4">
     <bpmn:startEvent id="Start" operaton:asyncBefore="true" />
     <bpmn:userTask id="Review" operaton:asyncBefore="true" />
     <bpmn:serviceTask id="Charge" operaton:expression="\${charge.run(execution)}"
@@ -3713,7 +4066,7 @@ describe('xmlToIr: flat engine settings on every carrying node kind', () => {
 
   const RESPELLED_RESULT_VARIABLE = {
     elementId: 'T',
-    category: 'unmappedConstruct',
+    category: 'rewritten',
     message:
       'The operaton:resultVariableName="out" on \'T\' imports as ' +
       'resultVariable: "out": BpmnParse.parseResultVariable reads the two ' +
@@ -3766,7 +4119,7 @@ describe('xmlToIr: flat engine settings on every carrying node kind', () => {
 
 describe("xmlToIr: a timer job's lock is read where BpmnParse.parseTimer reads it", () => {
   const boundaryTimerDoc = (tagAttrs: string, defAttrs: string): string =>
-    operatonDefs`  <bpmn:process id="p" isExecutable="true">
+    operatonDefs`  <bpmn:process id="p" isExecutable="true" ${TIME_TO_LIVE}>
     <bpmn:startEvent id="S" />
     <bpmn:userTask id="Host" />
     <bpmn:endEvent id="E" />
@@ -3786,7 +4139,7 @@ describe("xmlToIr: a timer job's lock is read where BpmnParse.parseTimer reads i
     defAttrs: string,
     subAttrs = '',
   ): string =>
-    operatonDefs`  <bpmn:process id="p" isExecutable="true">
+    operatonDefs`  <bpmn:process id="p" isExecutable="true" ${TIME_TO_LIVE}>
     <bpmn:startEvent id="S" />
     <bpmn:subProcess id="Handler" triggeredByEvent="true" ${subAttrs}>
       <bpmn:startEvent id="HStart" ${tagAttrs}>
@@ -3890,7 +4243,7 @@ describe('xmlToIr: the job settings on a gateway', () => {
       asyncBefore: true,
     });
     expect(warnings.map((w) => [w.elementId, w.category, w.message])).toEqual([
-      ['G', 'unmappedConstruct', asyncRespellingMessage("'G'")],
+      ['G', 'rewritten', asyncRespellingMessage("'G'")],
     ]);
   });
 });
@@ -3920,7 +4273,7 @@ const ioBlock = (params: string): string =>
 describe('xmlToIr: input/output parameters', () => {
   it('every activity kind reads its own io block, and an event that runs one reports it naming parseActivityInputOutput', async () => {
     const xml = operatonDefs`  <bpmn:signal id="Sig" name="sig" />
-  <bpmn:process id="p" isExecutable="true">
+  <bpmn:process id="p" isExecutable="true" ${TIME_TO_LIVE}>
     <bpmn:startEvent id="Start" />
     <bpmn:userTask id="Review">${IO()}</bpmn:userTask>
     <bpmn:scriptTask id="Calc" scriptFormat="javascript">${IO()}
@@ -4101,7 +4454,7 @@ describe('xmlToIr: execution listeners', () => {
         `        <operaton:executionListener event="${event}" class="com.example.L" />`,
       );
     const { warnings } = await xmlToIr(
-      operatonDefs`  <bpmn:process id="p" isExecutable="true">${listener('start')}
+      operatonDefs`  <bpmn:process id="p" isExecutable="true" ${TIME_TO_LIVE}>${listener('start')}
     <bpmn:startEvent id="S" />
     <bpmn:exclusiveGateway id="G">${listener('end')}</bpmn:exclusiveGateway>
     <bpmn:endEvent id="E" />
@@ -4140,7 +4493,7 @@ describe('xmlToIr: execution listeners', () => {
       warnings: [
         {
           elementId: 'Svc',
-          category: 'extensionAttribute',
+          category: 'carriedAsWritten',
           message:
             'An operaton:executionListener on \'Svc\' has expression="": ' +
             'ExpressionExecutionListener evaluates the empty text rather ' +
@@ -4217,7 +4570,7 @@ describe('xmlToIr: task listeners', () => {
       warnings: [
         {
           elementId: 'Review',
-          category: 'extensionAttribute',
+          category: 'carriedAsWritten',
           message:
             'An operaton:taskListener on \'Review\' has class="": ' +
             'BpmnParse.parseTaskListener checks no listener attribute for ' +
@@ -4234,7 +4587,7 @@ describe('xmlToIr: task listeners', () => {
       warnings: [
         {
           elementId: 'Review',
-          category: 'extensionAttribute',
+          category: 'carriedAsWritten',
           message:
             'An operaton:taskListener on \'Review\' has expression="": ' +
             'ExpressionTaskListener evaluates the empty text rather than ' +
@@ -4249,7 +4602,7 @@ describe('xmlToIr: task listeners', () => {
       warnings: [
         {
           elementId: 'Review',
-          category: 'extensionAttribute',
+          category: 'carriedAsWritten',
           message:
             "An operaton:taskListener on 'Review' has " +
             'delegateExpression="": BpmnParse.parseTaskListener checks no ' +
@@ -4378,6 +4731,11 @@ describe('xmlToIr: an injected field rides a class or a delegate binding', () =>
     message,
   });
 
+  const rewrote = (message: string): ImportWarning => ({
+    ...warned(message),
+    category: 'rewritten',
+  });
+
   const dropped = (reason: string, name = "'greeting'"): ImportWarning =>
     warned(`The injected field ${name} on 'Svc' was not imported: ${reason}.`);
 
@@ -4406,7 +4764,7 @@ describe('xmlToIr: an injected field rides a class or a delegate binding', () =>
       field('name="greeting"', '<operaton:string>hello</operaton:string>'),
       SVC_INJECTED,
       [
-        warned(
+        rewrote(
           "The injected field 'greeting' on 'Svc' writes its value in an " +
             'operaton:string child, which this tool writes back as a ' +
             'stringValue attribute; the engine injects the same text either way.',
@@ -4568,7 +4926,7 @@ describe('xmlToIr: a mail or shell task imports with its fields on the three tag
       warnings: [
         {
           elementId: 'T',
-          category: 'extensionAttribute',
+          category: 'carriedAsWritten',
           message:
             "The resultVariable 'out' on 'T' was imported as written, and " +
             'the printed script draws a warning at the step: ' +
@@ -4592,7 +4950,7 @@ describe('xmlToIr: a mail or shell task imports with its fields on the three tag
       warnings: [
         {
           elementId: 'T',
-          category: 'extensionAttribute',
+          category: 'carriedAsWritten',
           message:
             "The shell field 'wait' spelled 'TRUE' on 'T' was imported as " +
             'written, and the printed script draws an error at the field: ' +
@@ -4675,7 +5033,7 @@ describe('xmlToIr: a service-like task the engine would refuse is refused with i
     [
       'a built-in type on the definition of a thrown message',
       operatonDefs`  <bpmn:message id="Message_1" name="OrderReceived" />
-  <bpmn:process id="p" isExecutable="true">
+  <bpmn:process id="p" isExecutable="true" ${TIME_TO_LIVE}>
     <bpmn:startEvent id="S" />
     <bpmn:endEvent id="Typed">
       <bpmn:messageEventDefinition id="md" messageRef="Message_1" operaton:type="mail" />
@@ -4971,6 +5329,9 @@ ${validation(constraints)}
   });
 
   const reviewWarning = (message: RegExp) => warning('Review', message);
+  const carried = (message: RegExp) =>
+    warning('Review', message, 'carriedAsWritten');
+  const rewrote = (message: RegExp) => warning('Review', message, 'rewritten');
 
   it.each([
     {
@@ -5021,7 +5382,7 @@ ${validation('              <operaton:constraint name="min" config="0" />')}
         constraints: [{ name: 'min', config: '0' }],
       },
       warnings: [
-        reviewWarning(
+        carried(
           /'min'.*imported as written.*number field.*MinValidator\.validate/,
         ),
       ],
@@ -5037,9 +5398,7 @@ ${validation('              <operaton:constraint name="min" config="abc" />')}
         constraints: [{ name: 'min', config: 'abc' }],
       },
       warnings: [
-        reviewWarning(
-          /'min'.*imported as written.*MinValidator\.validate.*'abc'/,
-        ),
+        carried(/'min'.*imported as written.*MinValidator\.validate.*'abc'/),
       ],
     },
     {
@@ -5055,9 +5414,7 @@ ${validation('              <operaton:constraint name="min" config="abc" />')}
         values: [{ id: 'a' }, { id: 'b' }],
       },
       warnings: [
-        reviewWarning(
-          /'zzz'.*imported as written.*EnumFormType\.validateValue/,
-        ),
+        carried(/'zzz'.*imported as written.*EnumFormType\.validateValue/),
       ],
     },
     {
@@ -5065,7 +5422,7 @@ ${validation('              <operaton:constraint name="min" config="abc" />')}
       field: `          <operaton:formField id="amount" type="long" defaultValue="1.5" />`,
       imported: { id: 'amount', type: 'number', defaultValue: '1.5' },
       warnings: [
-        reviewWarning(
+        carried(
           /^The default '1\.5' on form field 'amount' of 'Review' was imported as written.*LongFormType\.convertValue.*Long\.valueOf/,
         ),
       ],
@@ -5075,7 +5432,7 @@ ${validation('              <operaton:constraint name="min" config="abc" />')}
       field: `          <operaton:formField id="flag" type="boolean" defaultValue="maybe" />`,
       imported: { id: 'flag', type: 'boolean', defaultValue: 'maybe' },
       warnings: [
-        reviewWarning(
+        carried(
           /^The default 'maybe' on form field 'flag' of 'Review' was imported as written.*BooleanFormType\.convertValue.*Boolean\.valueOf/,
         ),
       ],
@@ -5085,7 +5442,7 @@ ${validation('              <operaton:constraint name="min" config="abc" />')}
       field: `          <operaton:formField id="due" type="date" defaultValue="2026-01-01" />`,
       imported: { id: 'due', type: 'date', defaultValue: '2026-01-01' },
       warnings: [
-        reviewWarning(
+        carried(
           /^The default '2026-01-01' on form field 'due' of 'Review' was imported as written.*DateFormType.*dd\/MM\/yyyy/,
         ),
       ],
@@ -5108,7 +5465,7 @@ ${validation('              <operaton:constraint name="min" config="abc" />')}
         type: 'enum',
         values: [{ id: 'a', label: 'Again' }, { id: 'b' }],
       },
-      warnings: [reviewWarning(/value 'a'.*'plan'.*LinkedHashMap/)],
+      warnings: [rewrote(/value 'a'.*'plan'.*LinkedHashMap/)],
     },
     {
       case: 'an enum value with no id is dropped',
@@ -5137,7 +5494,7 @@ ${validation('              <operaton:constraint name="min" config="abc" />')}
         ],
       },
       warnings: [
-        reviewWarning(
+        rewrote(
           /property 'hint'.*'note'.*once, at its first position with its last value, as DefaultFormHandler.parseProperties keeps it \(LinkedHashMap.put\)/,
         ),
       ],
@@ -5186,7 +5543,7 @@ ${validation('              <operaton:constraint name="min" config="abc" />')}
 const codedErrorsDoc = (body: string): string =>
   operatonDefs`  <bpmn:error id="Err_Declined" errorCode="DECLINED" />
   <bpmn:error id="Err_Timeout" errorCode="TIMEOUT" />
-  <bpmn:process id="p" isExecutable="true">
+  <bpmn:process id="p" isExecutable="true" ${TIME_TO_LIVE}>
     <bpmn:startEvent id="S" />
 ${body}
     <bpmn:endEvent id="E" />
@@ -5208,7 +5565,7 @@ describe('xmlToIr: external task extras', () => {
   const BLANK_ROOT = '  <bpmn:error id="Err_Blank" />\n';
 
   const mappingDoc = (mapping: string, roots = CODED_ROOT): string =>
-    operatonDefs`${roots}  <bpmn:process id="p" isExecutable="true">
+    operatonDefs`${roots}  <bpmn:process id="p" isExecutable="true" ${TIME_TO_LIVE}>
     <bpmn:startEvent id="S" />
 ${externalTask('', mapping)}
     <bpmn:endEvent id="E" />
@@ -5266,17 +5623,25 @@ ${externalTask('', mapping)}
 
   it.each([
     {
-      case: 'a property with no name is skipped, naming which',
+      case: 'a property with no name is skipped and a repeated name is kept once with its last value, each naming which',
       body: externalTask(
         '',
         propertiesOf(`          <operaton:property name="k" value="v" />
-          <operaton:property value="orphan" />`),
+          <operaton:property value="orphan" />
+          <operaton:property name="k" value="w" />`),
       ),
       binding: {
         ...externalBinding('charge-card'),
-        properties: [{ key: 'k', value: 'v' }],
+        properties: [{ key: 'k', value: 'w' }],
       },
-      warnings: [warning('Charge', /operaton:property #2.*no name/)],
+      warnings: [
+        warning('Charge', /operaton:property #2.*no name/),
+        warning(
+          'Charge',
+          /operaton:property 'k'.*written twice.*HashMap\.put/,
+          'rewritten',
+        ),
+      ],
     },
     {
       case: 'the three extras on a class-bound service task are dropped, each naming the one reader',
@@ -5312,7 +5677,7 @@ ${errorMapping('errorRef="Err_Declined" expression="${true}"')}`)}</bpmn:service
   ])('$case', async ({ body, binding, warnings: expected }) => {
     // The clean task comes first, so a misattributed warning fails.
     const xml = operatonDefs`  <bpmn:error id="Err_Declined" errorCode="DECLINED" />
-  <bpmn:process id="p" isExecutable="true">
+  <bpmn:process id="p" isExecutable="true" ${TIME_TO_LIVE}>
     <bpmn:startEvent id="S" />
     <bpmn:serviceTask id="Clean" operaton:type="external" operaton:topic="clean" operaton:taskPriority="1">
 ${extensionElements(`${propertiesOf('          <operaton:property name="a" value="b" />')}
@@ -5576,7 +5941,7 @@ describe('xmlToIr: task kinds', () => {
     '  <bpmn:message id="Msg_OrderPaid" name="OrderPaid" />\n';
 
   const receiveDoc = (attrs: string, roots = ''): string =>
-    operatonDefs`${roots}  <bpmn:process id="p" isExecutable="true">
+    operatonDefs`${roots}  <bpmn:process id="p" isExecutable="true" ${TIME_TO_LIVE}>
     <bpmn:startEvent id="S" />
     <bpmn:receiveTask id="T" ${attrs} />
     <bpmn:endEvent id="E" />
@@ -5679,7 +6044,7 @@ describe('xmlToIr: task kinds', () => {
 
   const MANUAL_TASK_WARNING = {
     elementId: 'M1',
-    category: 'unmappedConstruct',
+    category: 'rewritten',
     message:
       "The bpmn:manualTask 'M1' imports as a plain step: token flow, " +
       'waiting, listeners, async and job configuration are all unchanged, ' +
@@ -5718,7 +6083,7 @@ describe('xmlToIr: task kinds', () => {
     expect(warnings).toEqual([
       {
         elementId: 'M',
-        category: 'unmappedConstruct',
+        category: 'rewritten',
         message:
           "The bpmn:intermediateThrowEvent 'M' carries no event definition " +
           'and imports as a plain step: BpmnParse.parseIntermediateThrowEvent ' +
@@ -5726,7 +6091,7 @@ describe('xmlToIr: task kinds', () => {
           "leaves, as a task's behaviour does, so token flow, listeners, " +
           'async and job configuration are unchanged, but history and ' +
           "Cockpit will report its activity type as 'task' rather than " +
-          "'intermediateThrowEvent'.",
+          "'intermediateNoneThrowEvent'.",
       },
     ]);
 
@@ -5822,7 +6187,7 @@ ${beside}    <bpmn:endEvent id="E" />
     );
     expect(e.elementId).toBe(elementId);
     expect(e.message).toBe(
-      `The event construct at '${elementId}' cannot be imported: ${detail}`,
+      `The element '${elementId}' cannot be imported: ${detail}`,
     );
   });
 
@@ -5835,6 +6200,7 @@ ${beside}    <bpmn:endEvent id="E" />
         'cancel boundary event attached to it: Operaton deploys the file and ' +
         'then stops with an error the first time that end is reached. Write ' +
         "'on Book: cancel { ... }' beside the block to catch it.",
+      'carriedAsWritten',
     ],
     [
       'a cancel boundary on a block that never gives itself up warns, naming the unreachable path',
@@ -5843,6 +6209,7 @@ ${beside}    <bpmn:endEvent id="E" />
       "The cancel boundary event on 'Book' was imported, but nothing " +
         'inside the block gives it up, so what follows the boundary can ' +
         'never run.',
+      'carriedAsWritten',
     ],
     [
       'a method on the block is dropped, since Operaton never reads it there',
@@ -5851,6 +6218,7 @@ ${beside}    <bpmn:endEvent id="E" />
       "The 'method' attribute on 'Book' was not imported: Operaton reads it " +
         'on a <bpmn:transaction> not at all, so the imported block runs ' +
         'exactly as the source document does.',
+      'unmappedConstruct',
     ],
     [
       'triggeredByEvent on the block is dropped, since Operaton runs it as an ordinary step',
@@ -5860,22 +6228,21 @@ ${beside}    <bpmn:endEvent id="E" />
         'Operaton ignores it on a <bpmn:transaction> and runs the block as ' +
         'an ordinary step of the surrounding flow, so the imported block ' +
         'runs exactly as the source document does.',
+      'unmappedConstruct',
     ],
-  ])('%s', async (_title, xml, elementId, message) => {
+  ])('%s', async (_title, xml, elementId, message, category) => {
     const { ir, warnings } = await xmlToIr(xml);
     const book = subProcess(ir, 'Book');
     expect(book.element).toBe('transaction');
     expect(book).not.toHaveProperty('method');
     expect(book).not.toHaveProperty('triggeredByEvent');
-    expect(warnings).toEqual([
-      { elementId, category: 'unmappedConstruct', message },
-    ]);
+    expect(warnings).toEqual([{ elementId, category, message }]);
   });
 });
 
 describe('xmlToIr: an either-branch split', () => {
   const xorDoc = (gateway: string, routes: string): string =>
-    bpmnDefs`  <bpmn:process id="p" isExecutable="true">
+    bpmnDefs`  <bpmn:process id="p" isExecutable="true" ${TIME_TO_LIVE}>
     <bpmn:startEvent id="S" />
     ${gateway}
     <bpmn:userTask id="A" />
@@ -5942,7 +6309,7 @@ describe('xmlToIr: a fallback route named on a step', () => {
     `<bpmn:conditionExpression xsi:type="bpmn:tFormalExpression" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">${body}</bpmn:conditionExpression>`;
 
   const stepDoc = (element: string): string =>
-    bpmnDefs`  <bpmn:process id="p" isExecutable="true">
+    bpmnDefs`  <bpmn:process id="p" isExecutable="true" ${TIME_TO_LIVE}>
     <bpmn:startEvent id="S" />
 ${element}
     <bpmn:endEvent id="E1" />
@@ -6055,7 +6422,7 @@ describe('xmlToIr: a wait with several branches', () => {
     extraFlows = '',
     defs = bpmnDefs,
   }: WaitOptions = {}): string =>
-    defs`${roots}  <bpmn:process id="p" isExecutable="true">
+    defs`${roots}  <bpmn:process id="p" isExecutable="true" ${TIME_TO_LIVE}>
     <bpmn:startEvent id="S" />
     <bpmn:eventBasedGateway id="Wait" ${attrs}${
       children === ''
@@ -6118,7 +6485,7 @@ ${branches
     );
     expect(err.elementId).toBe('Wait');
     expect(err.message).toBe(
-      "The event construct at 'Wait' cannot be imported: 'Wait' is marked " +
+      "The element 'Wait' cannot be imported: 'Wait' is marked " +
         'asyncAfter, which BpmnParse.parseEventBasedGateway refuses to ' +
         'deploy on a wait with several branches. Drop the asyncAfter ' +
         "setting from 'Wait'; its other job settings are read as written.",
@@ -6145,7 +6512,7 @@ describe('xmlToIr: refusal and warning wording', () => {
 
   const candidateUsersWarning = (id: string, users: string) => ({
     elementId: 'Review',
-    category: 'unmappedConstruct' as const,
+    category: 'rewritten' as const,
     message:
       `The bpmn:potentialOwner '${id}' on 'Review' imports as ` +
       `candidateUsers: "${users}": Operaton reads its formal expression ` +

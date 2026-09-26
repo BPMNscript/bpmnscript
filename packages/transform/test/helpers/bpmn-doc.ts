@@ -25,7 +25,13 @@ const HEAD_OPERATON = head(NS_BPMN, NS_OPERATON);
 const HEAD_CAMUNDA = head(NS_BPMN, NS_CAMUNDA);
 const HEAD_DUAL = head(NS_BPMN, NS_OPERATON, NS_CAMUNDA);
 
-const PROCESS_OPEN = '  <bpmn:process id="p" isExecutable="true">';
+/**
+ * Spread into a process's opening tag, it keeps the importer's warning about
+ * an absent time to live out of a fixture that is not about it.
+ */
+export const TIME_TO_LIVE = `${NS_OPERATON} operaton:historyTimeToLive="P30D"`;
+
+const PROCESS_OPEN = `  <bpmn:process id="p" isExecutable="true" ${TIME_TO_LIVE}>`;
 const PROCESS_CLOSE = '  </bpmn:process>';
 const DEFINITIONS_CLOSE = '</bpmn:definitions>';
 
@@ -126,7 +132,7 @@ export const handlerDoc = (
     defs = bpmnDefs,
   }: HandlerOptions = {},
 ): string =>
-  defs`${roots}  <bpmn:process id="p" isExecutable="true">
+  defs`${roots}  <bpmn:process id="p" isExecutable="true" ${TIME_TO_LIVE}>
     <bpmn:startEvent id="S" />
     <bpmn:subProcess id="${id}" triggeredByEvent="true">
       <bpmn:startEvent id="HStart" ${startAttrs}>

@@ -26,7 +26,7 @@ function startEventOpenTag(xml: string, id: string): string | undefined {
 // `waitForCompletion="true"` is the moddle default, so import drops it.
 const IMPORT_FIRST_BPMN = `<?xml version="1.0" encoding="UTF-8"?>
 <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:operaton="http://operaton.org/schema/1.0/bpmn" id="Definitions_import_first_compensation" targetNamespace="http://bpmn.io/schema/bpmn">
-  <bpmn:process id="warehouse-fulfilment" name="Warehouse Fulfilment" isExecutable="true">
+  <bpmn:process id="warehouse-fulfilment" name="Warehouse Fulfilment" isExecutable="true" operaton:historyTimeToLive="P30D">
     <bpmn:startEvent id="Begin">
       <bpmn:outgoing>Flow_Begin_Pick</bpmn:outgoing>
     </bpmn:startEvent>

@@ -1,7 +1,7 @@
 // Canonicalizes authored vs synthesized ids before `toEqual`: gateways,
-// boundaries and event sub-processes are re-keyed by structure; task and event
-// ids must survive verbatim. Flows never cross a sub-process, so this runs per
-// container.
+// boundaries, event sub-processes and flows are re-keyed by structure; task and
+// event ids must survive verbatim. Flows never cross a sub-process, so this
+// runs per container.
 
 import { ENGINE_KEYS } from '@bpmn-script/language';
 import {
@@ -12,8 +12,6 @@ import {
   type FlowElement,
   type SequenceFlow,
 } from '@bpmn-script/transform';
-
-const SYNTHESIZED_JOIN_ID = /^Gateway_.+_join$/;
 
 export function normalizeIr(ir: BpmnProcess): BpmnProcess {
   return normalizeContainer(ir);
@@ -52,9 +50,23 @@ function normalizeContainer<T extends FlowContainer>(container: T): T {
 
       // The structured syntax has no slot for a gateway label.
       const { name: _name, ...withoutName } = fe;
-      return { ...withoutName, id, ...reKeyedDefault(fe) };
+      return { ...withoutName, id, ...reKeyedDefault(fe), ...routeOrder(fe) };
     })
     .sort((a, b) => a.id.localeCompare(b.id));
+
+  // Operaton takes the first non-default flow of an exclusive gateway that
+  // carries no condition or one that holds, in document order, so that order
+  // is compared.
+  function routeOrder(fe: FlowElement): { routeOrder?: string[] } {
+    if (fe.kind !== 'exclusiveGateway') return {};
+    const routes = inlined.sequenceFlows
+      .filter((sf) => sf.sourceRef === fe.id && sf.id !== fe.defaultFlowId)
+      .map(
+        (sf) =>
+          `${canonicalId(sf.targetRef)} ${sf.conditionExpression ?? '<none>'}`,
+      );
+    return routes.length > 1 ? { routeOrder: routes } : {};
+  }
 
   function reKeyedDefault(fe: FlowElement): { defaultFlowId?: string } {
     const declared = 'defaultFlowId' in fe ? fe.defaultFlowId : undefined;
@@ -68,7 +80,13 @@ function normalizeContainer<T extends FlowContainer>(container: T): T {
 
   const sequenceFlows: SequenceFlow[] = inlined.sequenceFlows
     .map((sf) => normalizeFlow(sf, canonicalId))
-    .sort((a, b) => a.id.localeCompare(b.id));
+    .sort(
+      (a, b) =>
+        a.id.localeCompare(b.id) ||
+        (a.conditionExpression ?? '').localeCompare(
+          b.conditionExpression ?? '',
+        ),
+    );
 
   return {
     ...container,
@@ -77,33 +95,66 @@ function normalizeContainer<T extends FlowContainer>(container: T): T {
   } as T;
 }
 
-// A re-synthesized `if/else` grows a join the authored IR never had, so such a
-// join is transparent. One carrying a job setting stays, or a dropped `join*`
-// key would vanish from both sides of the comparison.
+// A settings-free exclusive gateway with one outgoing flow merges without
+// synchronizing, as an activity with several incoming flows does, so it is
+// transparent unless the node it leads to is a parallel or inclusive join.
+// A parallel or inclusive gateway is transparent only with one incoming flow,
+// and an event-based one never is, since it waits for its event. One
+// carrying a job setting stays, or a dropped `join*` key would vanish from
+// both sides of the comparison.
 function inlinePassThroughJoins(ir: FlowContainer): FlowContainer {
+  const byId = new Map(ir.flowElements.map((fe) => [fe.id, fe]));
   const successorOf = new Map<string, string>();
   for (const fe of ir.flowElements) {
-    if (!isGateway(fe)) continue;
-    if (!SYNTHESIZED_JOIN_ID.test(fe.id)) continue;
-    if (ENGINE_KEYS.some((key) => key in fe)) continue;
-
+    if (!isGateway(fe) || fe.kind === 'eventBasedGateway') continue;
+    if (ENGINE_KEYS.some((key) => key in fe) || fe.documentation !== undefined)
+      continue;
     const outgoing = ir.sequenceFlows.filter((sf) => sf.sourceRef === fe.id);
     const incoming = ir.sequenceFlows.filter((sf) => sf.targetRef === fe.id);
-    if (outgoing.length === 1 && incoming.length >= 1) {
+    if (outgoing.length !== 1 || incoming.length === 0) continue;
+    if (incoming.length === 1 || fe.kind === 'exclusiveGateway') {
       successorOf.set(fe.id, outgoing[0].targetRef);
     }
   }
 
+  // A chain of joins resolves to the first node that stays; a gateway-only
+  // cycle is kept whole.
+  const resolve = (id: string): string | undefined => {
+    const seen = new Set<string>();
+    let at = id;
+    while (successorOf.has(at)) {
+      if (seen.has(at)) return undefined;
+      seen.add(at);
+      at = successorOf.get(at)!;
+    }
+    return at;
+  };
+  // Keeping a merge only shortens other chains, so the loop reaches the same
+  // fixpoint whatever the element order.
+  for (let kept = true; kept;) {
+    kept = false;
+    for (const [id] of successorOf) {
+      const end = resolve(id);
+      const kind = end === undefined ? undefined : byId.get(end)?.kind;
+      const merges = ir.sequenceFlows.filter((sf) => sf.targetRef === id);
+      const synchronizes =
+        kind === 'parallelGateway' || kind === 'inclusiveGateway';
+      if (end === undefined || (merges.length > 1 && synchronizes)) {
+        successorOf.delete(id);
+        kept = true;
+      }
+    }
+  }
   if (successorOf.size === 0) return ir;
 
   const flowElements = ir.flowElements.filter((fe) => !successorOf.has(fe.id));
-
   const sequenceFlows = ir.sequenceFlows
     .filter((sf) => !successorOf.has(sf.sourceRef))
-    .map((sf) => {
-      const successor = successorOf.get(sf.targetRef);
-      return successor !== undefined ? { ...sf, targetRef: successor } : sf;
-    });
+    .map((sf) =>
+      successorOf.has(sf.targetRef)
+        ? { ...sf, targetRef: resolve(sf.targetRef)! }
+        : sf,
+    );
 
   return { ...ir, flowElements, sequenceFlows };
 }
@@ -127,20 +178,25 @@ function buildCanonicalIds(
 }
 
 // After join inlining, a hand-named gateway and its synthesized twin share
-// their adjacency.
+// their adjacency. A neighbouring gateway is named by its kind, since its own
+// id differs between the two sides.
 function gatewaySignature(
   fe: FlowElement,
   ir: FlowContainer,
 ): string | undefined {
   if (!isGateway(fe)) return undefined;
 
+  const name = (id: string): string => {
+    const el = ir.flowElements.find((e) => e.id === id);
+    return el !== undefined && isGateway(el) ? `gateway:${el.kind}` : id;
+  };
   const incoming = ir.sequenceFlows
     .filter((sf) => sf.targetRef === fe.id)
-    .map((sf) => sf.sourceRef)
+    .map((sf) => name(sf.sourceRef))
     .sort();
   const outgoing = ir.sequenceFlows
     .filter((sf) => sf.sourceRef === fe.id)
-    .map((sf) => sf.targetRef)
+    .map((sf) => name(sf.targetRef))
     .sort();
 
   return `Gateway_${fe.kind}_[in:${incoming.join(',')}]_[out:${outgoing.join(',')}]`;
@@ -208,23 +264,12 @@ function definitionPayloadKey(def: EventDefinition | undefined): string {
   }
 }
 
-// `Flow_` prefixes every generated flow id.
+// The DSL has no syntax for a flow id, so every flow is keyed by its ends.
 function normalizeFlow(
   sf: SequenceFlow,
   canonicalId: (id: string) => string,
 ): SequenceFlow {
   const sourceRef = canonicalId(sf.sourceRef);
   const targetRef = canonicalId(sf.targetRef);
-  const touchesReKeyedNode =
-    sourceRef !== sf.sourceRef || targetRef !== sf.targetRef;
-
-  if (/^Flow_/.test(sf.id) || touchesReKeyedNode) {
-    return {
-      ...sf,
-      id: `Flow_${sourceRef}_${targetRef}`,
-      sourceRef,
-      targetRef,
-    };
-  }
-  return sf;
+  return { ...sf, id: `Flow_${sourceRef}_${targetRef}`, sourceRef, targetRef };
 }

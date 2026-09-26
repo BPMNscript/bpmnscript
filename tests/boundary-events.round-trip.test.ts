@@ -98,7 +98,7 @@ const IMPORT_FIRST_BPMN = `<?xml version="1.0" encoding="UTF-8"?>
 <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:operaton="http://operaton.org/schema/1.0/bpmn" id="Definitions_crate_handover" targetNamespace="http://bpmn.io/schema/bpmn">
   <bpmn:error id="Error_Torn" name="TORN_BOX" errorCode="TORN_BOX" />
   <bpmn:error id="Error_Missing" name="MISSING_ITEM" errorCode="MISSING_ITEM" />
-  <bpmn:process id="crate-handover" name="Crate Handover" isExecutable="true">
+  <bpmn:process id="crate-handover" name="Crate Handover" isExecutable="true" operaton:historyTimeToLive="P30D">
     <bpmn:startEvent id="CrateArrived">
       <bpmn:outgoing>Flow_CrateArrived_InspectCrate</bpmn:outgoing>
     </bpmn:startEvent>

@@ -19,6 +19,7 @@ const PROCESS_HEADER = {
   historyTimeToLive: 'P90D',
   candidateStarterUsers: 'demo,manager',
   candidateStarterGroups: 'adjusters',
+  isStartableInTasklist: false,
 };
 
 const ENGINE_ATTRIBUTE_CONTRACT: readonly (readonly [
@@ -81,6 +82,7 @@ it('keeps every authored setting, the header settings and the async await at eve
       historyTimeToLive,
       candidateStarterUsers,
       candidateStarterGroups,
+      isStartableInTasklist,
     } = ir;
     expect(
       {
@@ -88,6 +90,7 @@ it('keeps every authored setting, the header settings and the async await at eve
         historyTimeToLive,
         candidateStarterUsers,
         candidateStarterGroups,
+        isStartableInTasklist,
       },
       label,
     ).toEqual(PROCESS_HEADER);

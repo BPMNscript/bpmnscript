@@ -803,6 +803,10 @@ const notAStepKeyword = (word: string) =>
   'followed by the name it declares; every step starts ' +
   "with a keyword such as 'start', 'user', 'service', 'if', 'on', 'throw', 'emit', ...";
 
+const stepKeywordOnly = (word: string) =>
+  `'${word}' is not a step keyword; every step starts with a keyword such as ` +
+  "'start', 'user', 'service', 'if', 'on', 'throw', 'emit', ...";
+
 const notATypeWord = (word: string) =>
   `'${word}' is not a word this position takes; write 'string', 'number', ` +
   `'boolean', 'date', 'json', or 'any'.`;
@@ -898,6 +902,40 @@ describe('Parsing - sources the parser rejects', () => {
       'a mistyped statement keyword gets the declaration-or-step guidance',
       `process p { usr }`,
       [notAStepKeyword('usr')],
+    ],
+    [
+      'a mistyped statement keyword after the first step gets the step guidance',
+      `process p {\n  user B\n  usr A\n}`,
+      [stepKeywordOnly('usr')],
+    ],
+    [
+      'a mistyped step keyword with a name in a braced block names the missing = and the step guidance',
+      `process p { if (a) { user B usr A } }`,
+      [
+        "Expected '=' after 'A': inside a block, two plain words start a " +
+          "parameter such as 'input name = value'; every step starts with a " +
+          "keyword such as 'start', 'user', 'service', 'if', 'on', 'throw', 'emit', ...",
+      ],
+    ],
+    [
+      'a mistyped step keyword alone in a braced block gets the step guidance',
+      `process p { parallel { { user B usr } { user C } } }`,
+      [stepKeywordOnly('usr')],
+    ],
+    [
+      'a parameter direction missing its name keeps the stock message, since the word is not a mistyped step',
+      `process p { if (a) { user B input } }`,
+      ["Expecting token of type 'ID' but found `}`."],
+    ],
+    [
+      'a missing ) names the token it stopped at',
+      `process p { if (a { user A } }`,
+      ["Expected ')' before '{': a '(' is still open."],
+    ],
+    [
+      'a missing ) at the end of the file says so',
+      `process p { user A (asyncBefore: true`,
+      ["Expected ')' before the end of the file: a '(' is still open."],
     ],
     [
       'a declaration kind followed by text blames the name slot, not the kind word',

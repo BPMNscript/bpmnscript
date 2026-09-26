@@ -40,7 +40,7 @@ const ASSIGNMENT_BPMN = `<?xml version="1.0" encoding="UTF-8"?>
 <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
                   xmlns:operaton="http://operaton.org/schema/1.0/bpmn"
                   targetNamespace="http://example.com/assignment">
-  <bpmn:process id="${ASSIGNMENT_KEY}" isExecutable="true">
+  <bpmn:process id="${ASSIGNMENT_KEY}" isExecutable="true" operaton:historyTimeToLive="P30D">
     <bpmn:startEvent id="Opened" />
     <bpmn:userTask id="Review" name="Review the request" operaton:candidateGroups="finance">
       <bpmn:humanPerformer id="Lead">
@@ -177,8 +177,8 @@ describe.skipIf(SKIP)('E2E: forms and external tasks on Operaton', () => {
       candidateGroups: 'managers,finance',
     });
     expect(warnings.map((w) => [w.category, w.elementId])).toEqual([
-      ['unmappedConstruct', 'Review'],
-      ['unmappedConstruct', 'Review'],
+      ['rewritten', 'Review'],
+      ['rewritten', 'Review'],
     ]);
 
     const xmlPath = resolve(__dirname, `../../out/${ASSIGNMENT_KEY}.bpmn`);

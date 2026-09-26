@@ -54,8 +54,12 @@ export function makeStartEventId(
   return claimId(`${START_EVENT_PREFIX}${processId}`, taken);
 }
 
+export function endIdOf(containerId: string): string {
+  return `${END_EVENT_PREFIX}${containerId}`;
+}
+
 export function makeEndEventId(processId: string, taken: Set<string>): string {
-  return claimId(`${END_EVENT_PREFIX}${processId}`, taken);
+  return claimId(endIdOf(processId), taken);
 }
 
 /**
@@ -71,9 +75,9 @@ export function isMintedEndId(
   containerId: string,
   boundaryIds: Iterable<string>,
 ): boolean {
-  if (id === `${END_EVENT_PREFIX}${containerId}`) return true;
+  if (id === endIdOf(containerId)) return true;
   for (const boundaryId of boundaryIds) {
-    if (id === `${END_EVENT_PREFIX}${boundaryId}`) return true;
+    if (id === endIdOf(boundaryId)) return true;
   }
   return false;
 }
@@ -103,7 +107,7 @@ export function boundaryEventIdBase(hostId: string, trigger: string): string {
   return `Boundary_${hostId}_${trigger}`;
 }
 
-function claimId(base: string, taken: Set<string>): string {
+export function claimId(base: string, taken: Set<string>): string {
   const id = resolveCollision(base, taken);
   taken.add(id);
   return id;

@@ -31,6 +31,11 @@
           "name": "candidateStarterGroups",
           "isAttr": true,
           "type": "String"
+        },
+        {
+          "name": "isStartableInTasklist",
+          "isAttr": true,
+          "type": "String"
         }
       ]
     },

@@ -410,8 +410,8 @@ terminal INT returns number: /[0-9]+/;
 
 // One token, so code-like text such as `if (a) { }` inside the fence is never
 // lexed as DSL; `[\s\S]*?` matches across newlines up to the first closing
-// fence. Nothing delimits the tag from the body, so the downstream split takes
-// the leading letter run as the tag.
+// fence. The downstream split takes everything up to the first whitespace as
+// the tag.
 terminal FENCED_SCRIPT: /```[a-zA-Z]+[\s\S]*?```/;
 
 // Before STRING: the two regexes overlap on a body opening with `${` or `#{`,

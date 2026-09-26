@@ -3,7 +3,8 @@ process claim-settlement(
   versionTag: "3.1.0",
   historyTimeToLive: "P90D",
   candidateStarterUsers: "demo,manager",
-  candidateStarterGroups: "adjusters"
+  candidateStarterGroups: "adjusters",
+  isStartableInTasklist: false
 ) {
   escalation PAYOUT_REVIEW
 

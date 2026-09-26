@@ -16,7 +16,7 @@ The package also owns the base VS Code TextMate grammar (`syntaxes/bpmn-script.t
 ## The language
 
 Steps run top to bottom, so sequence flow is never written out, and control flow uses structured statements instead.
-Optional `var` declarations go in the process header, before the body, alongside the header's own settings: `versionTag`, which labels the deployed process definition, `historyTimeToLive`, and `candidateStarterUsers` and `candidateStarterGroups`, whose entries are listed as candidate starters (Tasklist's process list; `BpmnDeployer.addAuthorizations` stores each entry as written).
+Optional `var` declarations go in the process header, before the body, alongside the header's own settings: `versionTag`, which labels the deployed process definition, `historyTimeToLive`, `candidateStarterUsers` and `candidateStarterGroups`, whose entries are listed as candidate starters (Tasklist's process list; `BpmnDeployer.addAuthorizations` stores each entry as written), and `isStartableInTasklist`, an unquoted boolean that, set to `false`, hides the process from Tasklist's start list.
 `historyTimeToLive` is the number of days the engine keeps a finished instance's history, written `P<n>D` or `<n>`, and an absent value compiles to `P30D`, since `HistoryTimeToLiveParser.parseAndValidate` refuses a null value under the engine's default `enforceHistoryTimeToLive`; the cleanup itself runs only once its batch window is configured.
 Every header value is stored as written, never evaluated: `label`, `documentation` and `versionTag` are quoted strings, the tag at most 64 characters, and no header setting takes a `"${...}"` expression.
 
@@ -100,7 +100,7 @@ Five engine execution settings are legal on every element that takes settings, `
 | `decide`                                      | `class`, `expression`, `delegate`, `topic`, `type`, `decision`, `binding`, `version`, `mapDecisionResult`, `resultVariable`, `taskPriority` |
 | `call`                                        | `process`, `binding`, `version`, `businessKey`, `mapper`, `mapperDelegate`                                                                  |
 | `throw`, `emit`                               | `class`, `expression`, `delegate`, `topic` (on a `message` trigger only)                                                                    |
-| process header                                | `label`, `documentation`, `versionTag`, `historyTimeToLive`, `candidateStarterUsers`, `candidateStarterGroups`                              |
+| process header                                | `label`, `documentation`, `versionTag`, `historyTimeToLive`, `candidateStarterUsers`, `candidateStarterGroups`, `isStartableInTasklist`     |
 
 The engine settings are `asyncBefore` and `asyncAfter`, which put a transaction boundary before or after the step, `exclusive`, which says whether the engine may run the step's jobs beside other jobs of the same instance, `jobPriority`, which orders those jobs in the queue, and `retryCycle`, the ISO cycle a failed job is retried on.
 `exclusive`, `jobPriority`, or `retryCycle` written without `asyncBefore` or `asyncAfter` beside it configures no job and draws a warning, since Operaton creates the job only from the async flags (BpmnParse.parseAsynchronousContinuation, DefaultFailedJobParseListener.parseActivity); a timer carrier is exempt, since the timer itself creates the job.
@@ -337,6 +337,7 @@ An `on` inside an element's braces is a listener; an `on` at statement position 
 #### Script tasks
 
 A `script` task's body is a markdown-style fenced block whose opening tag names the language: `juel`, `javascript`/`js` (or `ecmascript`), `groovy`, `python`/`py`, `ruby`/`rb`, and `feel`.
+The tag runs to the first whitespace or line break, so on a one-line fence a space separates the tag from the code, and an imported `scriptFormat` such as `http://www.java.com/java` or `python3` prints as a tag the validator names whole.
 `juel` is the only one every Operaton deployment can run out of the box; the others need a JSR-223 engine on the deployment's classpath, which `ScriptingEngines.getScriptEngineForLanguage` resolves the first time the script runs rather than at deployment.
 
 #### Sub-processes
@@ -844,7 +845,7 @@ The categories it covers:
   An external task's extras add their own: a `taskPriority` or an `error ... when` mapping on a step not bound with `topic`, a mapping headed by a word other than `error` or missing `when`, a mapping naming an undeclared code, and a `taskPriority` or `jobPriority` that is neither an integer nor a `"${...}"` expression.
   A `service`, `send`, or `decide` task bound with `type` adds its own: a required field its type's own parse requires missing, a field name its behaviour class does not declare, and, on a shell task, a field carried as an expression or a flag other than `true`/`false`.
 - Settings: a key the element does not own, a value in a shape its lowering cannot read (a quoted `asyncBefore`, an unquoted `retryCycle`), a `retryCycle` the engine's retry parser cannot read, which is dropped rather than refused (warning), a `for` clause's count that is not a non-negative whole number, a variable, or an expression yielding one, a `form` block on an element that renders none, a process header carrying a key it does not own, and an unkeyed value in the parens of an element with no payload to read it as (a task, a call, a subprocess, a listener, the process header, or a `start` or `end` with no trigger, where `start S("PT30M")` is a timer payload missing its `timer` word).
-  A process header adds its own, since the engine stores every header value as written: a `historyTimeToLive` outside `P<n>D` or `<n>`, a `versionTag` that is not a quoted string or runs past 64 characters, a `"${...}"` template anywhere in `candidateStarterUsers` or `candidateStarterGroups`, and a `label` or `documentation` that is not a quoted string.
+  A process header adds its own, since the engine stores every header value as written: a `historyTimeToLive` outside `P<n>D` or `<n>`, a `versionTag` that is not a quoted string or runs past 64 characters, a `"${...}"` template anywhere in `candidateStarterUsers` or `candidateStarterGroups`, an `isStartableInTasklist` that is not an unquoted boolean, and a `label` or `documentation` that is not a quoted string.
   A gateway statement's parens add their own: a bare value rather than a `key: value` setting, a `join`-prefixed key on a `while` or `do...while` loop, and `asyncAfter` on a multi-branch `await` head.
   A `join`-prefixed key on a statement whose branches all terminate warns, since the join it would set is pruned.
   A `run*` key on a step with no `for` clause, and `runJobPriority`, which does not exist, since the engine reads a job priority off the step alone.

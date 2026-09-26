@@ -102,8 +102,7 @@ function canonicalizeCoordinateIds(container: BpmnProcess): BpmnProcess {
   }
 
   // Gateways are renamed after the events, by kind and renamed neighbours; the
-  // second round gives gateway neighbours their first-round names. The role
-  // suffix survives so `normalizeIr` still inlines a pass-through join.
+  // second round gives gateway neighbours their first-round names.
   const byId = new Map(elements.map((e) => [e.id, e]));
   for (let round = 0; round < 2; round++) {
     const previous = new Map(rename);
@@ -190,11 +189,14 @@ function containerSignature(container: BpmnProcess): string[] {
   // A settings-free exclusive gateway is pure routing that a hoist or a loop
   // printed as a `goto` adds or removes; its flow conditions still label the
   // route. Any other gateway changes how the route runs.
+  // A join synchronizes its incoming flows, so their number is part of it.
   const gatewayMark = (el: FlowElement): string | undefined => {
     const { name: _name, ...settings } = ownContent(el);
-    return el.kind === 'exclusiveGateway' && Object.keys(settings).length === 1
-      ? undefined
-      : stable(settings);
+    if (el.kind === 'exclusiveGateway' && Object.keys(settings).length === 1) {
+      return undefined;
+    }
+    const joins = container.sequenceFlows.filter((f) => f.targetRef === el.id);
+    return stable({ ...settings, joins: joins.length });
   };
 
   const nodes = container.flowElements.filter((el) => !isGateway(el));
@@ -205,10 +207,18 @@ function containerSignature(container: BpmnProcess): string[] {
     // the chains the compiler emits, memoize per gateway if that changes.
     const walk = (at: string, labels: string[], onPath: Set<string>): void => {
       const source = byId.get(at);
+      // An exclusive gateway tries its non-default flows in document order.
+      const ranked =
+        source?.kind === 'exclusiveGateway'
+          ? (outgoing.get(at) ?? []).filter(
+              (f) => f.id !== source.defaultFlowId,
+            )
+          : [];
       for (const f of outgoing.get(at) ?? []) {
         const route = [...labels];
+        const rank = ranked.includes(f) ? `#${ranked.indexOf(f)} ` : '';
         if (f.conditionExpression !== undefined) {
-          route.push(`if ${f.conditionExpression}`);
+          route.push(`if ${rank}${f.conditionExpression}`);
         } else if (
           source !== undefined &&
           'defaultFlowId' in source &&

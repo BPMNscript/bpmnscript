@@ -493,6 +493,7 @@ const PROCESS_PARENS: Item[] = [
     SETTING,
     'candidateStarterGroups: "${1:adjusters}"',
   ],
+  ['isStartableInTasklist', SETTING, 'isStartableInTasklist: ${1|false,true|}'],
 ];
 
 const START_PARENS: Item[] = [

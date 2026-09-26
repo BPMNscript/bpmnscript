@@ -1,6 +1,6 @@
 /**
  * Dominators, post-dominators and back-edges over one {@link FlowContainer},
- * with no DSL knowledge (ADR 0009).
+ * with no DSL knowledge (ADR 0014).
  */
 import { isGateway } from './ir/types.js';
 import type { FlowContainer, SequenceFlow } from './ir/types.js';

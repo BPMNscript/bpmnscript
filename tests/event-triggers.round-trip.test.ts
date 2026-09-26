@@ -28,7 +28,7 @@ function timerExpressions(container: FlowContainer): string[] {
 const IMPORT_FIRST_BPMN = `<?xml version="1.0" encoding="UTF-8"?>
 <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:operaton="http://operaton.org/schema/1.0/bpmn" id="Definitions_import_first_triggers" targetNamespace="http://bpmn.io/schema/bpmn">
   <bpmn:signal id="Signal_Sent" name="ParcelDispatched" />
-  <bpmn:process id="parcel-tracking" name="Parcel Tracking" isExecutable="true">
+  <bpmn:process id="parcel-tracking" name="Parcel Tracking" isExecutable="true" operaton:historyTimeToLive="P30D">
     <bpmn:startEvent id="Begin">
       <bpmn:outgoing>Flow_Begin_Dispatch</bpmn:outgoing>
     </bpmn:startEvent>

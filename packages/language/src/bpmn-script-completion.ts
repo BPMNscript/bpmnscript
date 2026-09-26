@@ -287,6 +287,7 @@ const SETTING_SNIPPETS: Readonly<Record<string, string>> = {
   historyTimeToLive: 'historyTimeToLive: "${1:P30D}"',
   candidateStarterUsers: 'candidateStarterUsers: "${1:demo,manager}"',
   candidateStarterGroups: 'candidateStarterGroups: "${1:adjusters}"',
+  isStartableInTasklist: 'isStartableInTasklist: ${1|false,true|}',
   initiator: 'initiator: "${1:starter}"',
   // The form flags are on while written, so neither scaffolds a choice.
   required: 'required: true',

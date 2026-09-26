@@ -42,6 +42,7 @@ interface BpmnProcess {
   historyTimeToLive?: string; // operaton:historyTimeToLive, absent means the exporter's default (P30D)
   candidateStarterUsers?: string; // operaton:candidateStarterUsers, comma-separated user ids stored as written
   candidateStarterGroups?: string; // operaton:candidateStarterGroups, comma-separated group ids
+  isStartableInTasklist?: boolean; // operaton:isStartableInTasklist, absent means the engine default (true)
   flowElements: FlowElement[];
   sequenceFlows: SequenceFlow[];
   errorDecls?: { name: string; code: string; message?: string }[]; // every error code the process raises, catches, or declares
@@ -131,11 +132,11 @@ const { source, warnings: printWarnings } = irToDsl(ir); // sync; warns for what
 ## The import contract
 
 `xmlToIr` never discards an element without saying so.
-What it cannot represent falls into two buckets; the reasoning is in [ADR-0012](../../docs/decisions/0012-honest-bpmn-import.md), and the rule that draws the line where the engine's own parse draws it is in [ADR-0012](../../docs/decisions/0012-honest-bpmn-import.md).
+What it cannot represent falls into two buckets, split where the engine's own parse splits them ([ADR-0012](../../docs/decisions/0012-honest-bpmn-import.md)).
 
 Content the IR cannot express at all is refused: `xmlToIr` throws a subclass of `UnsupportedConstructError` before producing any IR, so there is no partial output.
-Content Operaton refuses to deploy is refused the same way, since there is nothing that runs to write back, and the message names the `BpmnParse` method that fails the deployment.
-A document whose root is not `bpmn:definitions`, a process or flow element without an `id`, or a sequence flow whose `sourceRef` or `targetRef` resolves to nothing is malformed rather than unsupported and throws a plain `Error`, which the CLI reports as a parse failure and exits `2`.
+Content Operaton refuses to deploy is refused the same way, since there is nothing that runs to write back, and the message names the engine method that fails the deployment.
+A document whose root is not `bpmn:definitions` or a sequence flow whose `sourceRef` or `targetRef` resolves to nothing is malformed rather than unsupported and throws a plain `Error`, which the CLI reports as a parse failure and exits `2`.
 Content the IR does not carry (an extra Operaton extension attribute, a lane, a text annotation) comes back through the `warnings` array instead.
 Every drop of a setting the engine reads names the method that reads it and says the document written back runs without it, so a reader can tell a cosmetic drop from one that changes what runs.
 
@@ -156,6 +157,7 @@ The other is a BPMN attribute this surface neither reads nor reports: a process'
 Each of those is content left out.
 A lone `operaton:resource` on a sequence flow's condition expression or a conditional event definition's condition is the one exception that is reported rather than dropped: Operaton reads it only alongside a `language`, so on its own it reaches nothing, and the condition still imports as the expression its body writes.
 `isExecutable="false"`, whose import changes what the document says, is reported instead of left for the reader to notice, and so is an absent `isExecutable`, which `BpmnParse.parseProcessDefinitions` defaults to `!deployment.isNew()` and therefore reads as false in every deployment of a new resource, skipping the process.
+An absent `operaton:historyTimeToLive` is reported for the same reason: `HistoryTimeToLiveParser.parseAndValidate` refuses it under the engine's default `enforceHistoryTimeToLive`, and the export writes `P30D` in its place, so the rebuilt process deploys where the source did not.
 
 ### Refusals
 
@@ -167,6 +169,10 @@ That is a `<!DOCTYPE>` declaration, which `Parser.setXxeProcessing` disallows, a
 It is an `isSequential` or `triggeredByEvent` value outside `true` and `false`, which `Parse.execute`, the validating parse against `BPMN20.xsd`, refuses.
 It is an id written on two elements, which the same validation refuses as a duplicate `xs:ID`, and an id outside the ASCII letters, digits, `_`, `-`, and `.` this tool reads, where the schema admits any letter.
 It is a `bpmn:import`, which `BpmnParse.parseImports` fails on for every type but WSDL.
+It is a process without an id, and a start event, a timer event, an event-based gateway, or a message or signal boundary event without one, which Operaton fails the deployment on.
+It is also an error, escalation, cancel or conditional boundary event without an id, which Operaton deploys and then fails the run on, and the message names the method that fails it; an id minted for it would make the rebuilt document run where the source does not.
+Any other flow element without an id imports under a minted one, and a compensation boundary event among them is then refused like every compensation boundary event ([ADR-0010](../../docs/decisions/0010-deterministic-synthesized-ids.md)).
+A refusal names such an element by its tag and container, as in `(a bpmn:userTask without an id in 'p')`, since the minted id appears nowhere in the file.
 And it is no `bpmn:process` at all, or several processes of which none is marked `isExecutable="true"`, which `parseProcessDefinitions` deploys none of.
 The first three of those are refused by `refuseDocumentShapes` on the raw document text, before it is parsed, on a copy with the comments and CDATA sections cut out, so a `<!DOCTYPE` or an `&name;` inside a script body does not refuse the file.
 
@@ -249,7 +255,10 @@ interface ImportWarning {
     | 'label'
     | 'unreferencedRoot'
     | 'documentation'
-    | 'unmappedConstruct';
+    | 'unmappedConstruct'
+    | 'rewritten'
+    | 'behaviourChanged'
+    | 'carriedAsWritten';
   message: string; // names the concrete construct
 }
 ```
@@ -259,7 +268,7 @@ The question is asked per owner kind, so an `operaton:formData` on a service tas
 Where the owner is one the engine does read the setting on, the warning names the reader and says the document written back runs without it.
 That is an execution listener on the process (`BpmnParse.parseExecutionListenersOnScope`), on a sequence flow (`parseExecutionListenersOnTransition`), or on any gateway kind.
 It is an `operaton:inputOutput` on an intermediate catch, an intermediate throw, or an end event (`parseActivityInputOutput`).
-It is `formKey`, `formRef`, its binding and version, or `formHandlerClass` on the process's own start (`parseStartFormHandlers`), and `jobPriority`, `taskPriority`, or `isStartableInTasklist` on the process (`parseProcess`).
+It is `formKey`, `formRef`, its binding and version, or `formHandlerClass` on the process's own start (`parseStartFormHandlers`), and `jobPriority` or `taskPriority` on the process (`parseProcess`).
 And it is `async` or an `operaton:in` payload on a thrown signal (`parseSignalEventDefinition`).
 A `failedJobRetryTimeCycle` written as an attribute is reported with its own sentence: the engine reads the element form alone.
 A timer-started event sub-process's own `exclusive`, `jobPriority`, or `retryCycle` is dropped with a warning: that copy reaches only the sub-process's async continuation job, and the `on timer` head the handler prints as spells those keys for the timer job its start event creates.
@@ -268,28 +277,19 @@ It is asked again of every extension child the IR does read, so an unread attrib
 An `operaton:taskListener`'s `id` is consumed without a word: on a `timeout` listener it is the key `BpmnParse.parseTimeoutTaskListener` requires and the export mints one per timeout listener from the task id, and on every other event `parseTaskListener` never reads it.
 The same `operaton:value` tag on a form field is an enum value the IR reads, `id` and `name` included.
 An injected field drops in three shapes: one riding a binding other than `class`, `delegate`, or a built-in `type`, since Operaton hands no field list to any other; one whose stored value disagrees with the `${` or `#{` opening that decides whether it is written back as a literal or as an expression; and one whose `operaton:expression` child opens with whitespace before the `${`, as a pretty-printer indents it, since a raw template opens directly after its quote and a quoted literal opening with an expression is refused.
-An `operaton:string` child is carried rather than dropped: its text lands on the field the same way a `stringValue` attribute's would, and the warning names only that this tool writes it back as a `stringValue` attribute on export.
 A form field drops three things the engine never reads, each warning naming the method that ignores it: a `datePattern` off a `date` field, `operaton:value` children off an `enum` field, and a `config` on a `required` or `readonly` constraint.
-What the engine deploys and then fails on is carried as written, with a warning that the printed script draws an error at the field, since dropping it would change what runs.
-That is a bound on a type its validator refuses, a bound whose `config` is not an integer, and a literal enum default naming none of the values.
-A literal default the field's type cannot convert goes the same way: a `number` default that is not an integer, which `LongFormType.convertValue` throws on, a `boolean` default outside `true`/`false`, which `BooleanFormType.convertValue` reads as false, and an ISO date default on a `date` field naming no pattern, which `DateFormType` parses under `dd/MM/yyyy`.
-A shell task's `wait`, `redirectError`, or `cleanEnv` flag spelled in any case but lowercase, such as `wait="TRUE"`, is carried the same way: it deploys, and `ShellActivityBehavior.readFields` compares it with `"true"` case-sensitively, so the engine reads it as false.
-A script task with no `scriptFormat` at all is imported as `juel`, the `ScriptingEngines.DEFAULT_SCRIPTING_LANGUAGE` that `BpmnParse.parseScriptTaskElement` substitutes, and the warning says so; one carrying a `scriptFormat` outside the fence tags this surface knows is imported as written, with a warning that the printed script draws an error there.
-A `bpmn:script` or `operaton:script` with an empty body is carried the same way, since `ScriptUtil.getScript` checks the source for null and not for emptiness, and the printed fence draws the empty-body error.
-A repeated enum value id is rewritten the way `FormTypes.parseFormPropertyType` keeps it, once at its first position with its last `name`, and the warning names the rewrite.
 An external task's `operaton:taskPriority`, `operaton:properties`, or `operaton:errorEventDefinition` on a service, send, or business rule task bound by class, expression, delegate expression, decision, or a built-in mail or shell type is reported here too, one warning per item, since `parseExternalServiceTask` alone reads them and the step runs without them either way.
 On a thrown message the same three, and an injected field, are reported by their reader: with `operaton:type="external"` the sentence says `parseExternalServiceTask` reads it off the message definition (or off the event, for `operaton:properties`) and this surface's throw has no position for it, so the document written back runs without it; with any other binding, that the engine never reads it there.
 A thrown message is a service task to the engine: `parseIntermediateThrowEvent` and `parseEndEvents` hand its message definition to `parseServiceTaskLike`, so every binding word, the injected fields, the result variable, the priority, and the error mappings are read off it, and a throw carrying the binding alone drops or refuses each of the rest.
-A `resultVariable` beside an `external` or a built-in `type` binding on a task, or beside `external` or no binding on a thrown message, is carried on the task and dropped on the throw, either way with a warning that `parseServiceTaskLike` hands it to an expression binding alone.
+A `resultVariable` beside `external` or no binding on a thrown message is dropped with a warning that `parseServiceTaskLike` hands it to an expression binding alone.
 The `errorCodeVariable` and `errorMessageVariable` on such a definition warn as they do on a thrown error: the engine stores them and reads them off the catching definition alone.
-A task's `operaton:property` is keyed by `name`, as `BpmnParseUtil.parseOperatonExtensionProperties` reads it, and a form field's by `id`, as `DefaultFormHandler.parseProperties` reads it, so each side reports the other attribute as unread; an entry missing its key or its value is skipped with a warning, and a repeated key is kept once at its first position with its last value, as both readers keep it.
+A task's `operaton:property` is keyed by `name`, as `BpmnParseUtil.parseOperatonExtensionProperties` reads it, and a form field's by `id`, as `DefaultFormHandler.parseProperties` reads it, so each side reports the other attribute as unread; an entry missing its key or its value is skipped with a warning.
 A repetition naming its collection in both the BPMN and the `operaton:` spelling keeps the one `MultiInstanceActivityBehavior.resolveNrOfInstances` reads and reports the other: when exactly one of the two is an expression (a value containing `{`), that one, since `parseMultiInstanceLoopCharacteristics` stores an expression and a variable name in two fields and the expression field is read first; otherwise the `bpmn:loopDataInputRef`, which the engine writes into the one field second.
 An element variable named in both spellings keeps the `bpmn:inputDataItem`, written second into the engine's one field.
 An implementation attribute that a higher-ranked one shadows is reported here too, on a service, send, or business rule task, on a thrown message, and on a call activity naming both of its variable-mapping attributes, since Operaton never reads past the binding it resolves.
 An `operaton:in`/`out` on a call activity naming more than one shape keeps the one `parseCallableElementProvider` reads first and reports the rest: `variables="all"` ahead of a `source`, `sourceExpression`, or `target`, a `source` ahead of a `sourceExpression`, and a `businessKey` ahead of them all, which `parseInputParameter` takes while reading nothing else off that element; a second `businessKey` keeps the last, as `setBusinessKeyValueProvider` overwrites.
 Listeners repeat freely: several on one event import in document order, which is the order `CoreModelElement.addListenerToMap` and `TaskDefinition.addTaskListener` run them in.
 A listener naming two or more bindings keeps the first in the order `parseExecutionListener` and `parseTaskListener` read them (`class`, `expression`, `delegateExpression`, then an `operaton:script` child) and reports each loser.
-An execution listener with `expression=""` and a task listener with `class=""`, `expression=""`, or `delegateExpression=""` carry the empty text with a warning, since the engine deploys each (`ExpressionExecutionListener` and `ExpressionTaskListener` evaluate the empty text, while `ClassDelegateTaskListener` and `DelegateExpressionTaskListener` fail when the listener's event fires) and the printed script draws an error there.
 An empty `name`, `label`, `defaultValue`, or `operaton:assignee` is read as the empty text in the same way and carried as `""`, so the document written back spells the attribute as the source did; every other reader folds an empty attribute into an absent one.
 A timer under a task listener that is not a `timeout` is dropped with a warning, since `parseTaskListener` reads no event definition there.
 An input/output parameter carrying body text beside one nested value keeps the nested value and reports the text, as `BpmnParseUtil.parseNestedParamValueProvider` reads it.
@@ -322,8 +322,8 @@ A process holding no flow element at all imports with a warning that the printed
 On an element it touches: an artifact on a process or sub-process (a `bpmn:textAnnotation`, its `bpmn:association`, a `bpmn:group`), a `bpmn:ioSpecification`, a `bpmn:property`, a data association, a `bpmn:auditing` or `bpmn:monitoring` block, and a resource role the engine reads nothing of.
 On a user task a `bpmn:humanPerformer` and a `bpmn:potentialOwner` are read instead, the way `BpmnParse.parseTaskDefinition` reads them: the performer's formal expression is the assignee, each owner's is split as `parseCommaSeparatedList` splits it into `user(x)` candidate users and `group(x)` or bare candidate groups, and the role-derived entries come before the `operaton:` attribute's own, in the engine's order.
 That split runs on the commas outside an expression alone, so a list written as one `${...}` or `#{...}` body stays a single entry.
-One warning per role names the rewrite, since the script writes `assignee`, `candidateUsers`, and `candidateGroups` and the exported document carries the Operaton attributes alone; the engine builds the same identity links from either spelling ([ADR-0012](../../docs/decisions/0012-honest-bpmn-import.md)).
-An `operaton:potentialStarter` on the process is read the same way, as `parseStartAuthorization` reads it: its formal expression is split onto `candidateStarterUsers` and `candidateStarterGroups` after the attributes' own, with one warning per element naming the rewrite; one carrying no formal expression is dropped, since the engine reads nothing else off it.
+One `rewritten` warning per role names the rewrite, since the script writes `assignee`, `candidateUsers`, and `candidateGroups` and the exported document carries the Operaton attributes alone; the engine builds the same identity links from either spelling ([ADR-0012](../../docs/decisions/0012-honest-bpmn-import.md)).
+An `operaton:potentialStarter` on the process is read the same way, as `parseStartAuthorization` reads it: its formal expression is split onto `candidateStarterUsers` and `candidateStarterGroups` after the attributes' own, with one `rewritten` warning per element naming the rewrite; one carrying no formal expression is dropped, since the engine reads nothing else off it.
 What the engine reads nothing of stays a drop: a `bpmn:performer` or a bare `bpmn:resourceRole`, a role with no `bpmn:formalExpression` child (a `bpmn:expression` typed `tFormalExpression` through `xsi:type` included, since the engine fetches the child by tag), a role's `resourceRef` or parameter binding, and any role on an activity other than a user task.
 A `startQuantity` or `completionQuantity` other than `1` on an activity is reported here too: BPMN declares both with a default of `1` and `BpmnParse` never reads either, so the step runs as if it read `1`, which is what the source document runs.
 On a repetition: the `bpmn:loopDataOutputRef`, `bpmn:oneBehaviorEventRef`, and `bpmn:noneBehaviorEventRef` references and a `behavior` other than `All`, all of which Operaton parses and then never reads, and a `language` on a `bpmn:completionCondition`, which `parseMultiInstanceLoopCharacteristics` hands to `createExpression` as bare text.
@@ -331,30 +331,45 @@ An `operaton:jobPriority` there joins them, since Operaton reads a job priority 
 A `bpmn:standardLoopCharacteristics`, with its `bpmn:loopCondition` child, drops whole rather than importing as a repetition: Operaton's own parser looks only for a multi-instance child there, so the activity deploys through its ordinary path and runs once regardless of what the source declared.
 As a flow element in its own right: a `bpmn:dataObject` (with anything nested under it, such as a `bpmn:dataState`), a `bpmn:dataObjectReference`, or a `bpmn:dataStoreReference`, at process level and inside a sub-process alike; none of the three is something a `bpmn:sequenceFlow` can point at, so dropping it leaves no hole in the graph, and Operaton keeps process variables in its own store regardless.
 On a `bpmn:transaction`: the `method` and `protocol` attributes, which Operaton never reads, and `triggeredByEvent="true"`, which it ignores on that tag and runs the block as an ordinary step of the surrounding flow.
-A `bpmn:transaction` with no start event imports with one added, since Operaton deploys it and `SubProcessActivityBehavior.execute` fails on entering it; a `bpmn:process` or a `bpmn:subProcess` with none, an empty process included, is refused, since `parseStartEvents` fails the deployment there.
+A `bpmn:transaction` with no start event imports with one added, reported as `behaviourChanged`, since Operaton deploys it and `SubProcessActivityBehavior.execute` fails on entering it; a `bpmn:process` or a `bpmn:subProcess` with none, an empty process included, is refused, since `parseStartEvents` fails the deployment there.
 On a wait with several branches: an `instantiate="true"`, and an `eventGatewayType` other than `Exclusive`, neither of which Operaton's own parser ever reads.
 On any step: a `default` naming one of the step's own outgoing flows is carried, since `BpmnActivityBehavior.handleNoTransitions` takes it when no other route holds, and the printed script writes it as the fallback of the block the step's routes print as; a `default` naming any other flow is dropped with a warning, since `handleNoTransitions` finds no flow to take and fails the step.
 An `operaton:errorEventDefinition` on an external task written with no `errorRef` is skipped with a warning, as `parseOperatonErrorEventDefinitions` skips it.
 The category also covers an attribute written without a namespace that BPMN does not declare, attributed to the element carrying it.
-Several members of the category report a changed value or a rewrite rather than a dropped construct.
+
+`rewritten` covers content imported in a changed form that the engine reads as the source, where nothing is dropped.
 One is an expression body opening with `#{` on a `bpmn:loopCardinality`, a `bpmn:completionCondition`, a `bpmn:conditionExpression`, a `bpmn:condition`, or an `operaton:errorEventDefinition`'s `expression` that the printer spells as bare DSL: the rebuilt document writes that body inside `${...}`, which Operaton evaluates identically.
 Everywhere else a `#{...}` body is carried and printed back as written, a body the printer keeps quoted included.
-A `bpmn:conditionExpression` or `bpmn:completionCondition` body with no `${` or `#{` opener at all goes the same way, with a warning that says more: `UelExpressionCondition.evaluate` (or `MultiInstanceActivityBehavior.completionConditionSatisfied`) reads the bare text as a string and fails on every run, where the script writes it inside `${...}`, which evaluates it; an empty condition body is carried as no condition with the same warning.
-`isExecutable="false"` on the process: the IR holds an executable process and nothing else, so the import and the file written back from it are both executable and an engine will run what the source document held back.
-An absent `isExecutable` on a lone process is reported the same way, since `parseProcessDefinitions` skips it in a new deployment.
 The `camunda` namespace, when the document declares it, is reported once against the process: it was read as the `operaton` namespace and the document written back carries `operaton:` alone.
 A `bpmn:manualTask` is imported through the same mapper as `bpmn:task`: `ManualTaskActivityBehavior` and `TaskActivityBehavior` differ in nothing Operaton reads, so token flow, waiting, listeners, async, and job configuration are unchanged, but `HistoricActivityInstance.getActivityType()` reports `task` where the source wrote `manualTask`, and the warning names that rewrite.
-A `bpmn:intermediateThrowEvent` carrying no event definition, the Modeler's milestone marker, imports as a plain step the same way: `parseIntermediateThrowEvent` gives it `IntermediateThrowNoneEventActivityBehavior`, which only leaves, and history reports `task` where the document said `intermediateThrowEvent`.
+A `bpmn:intermediateThrowEvent` carrying no event definition, the Modeler's milestone marker, imports as a plain step the same way: `parseIntermediateThrowEvent` gives it `IntermediateThrowNoneEventActivityBehavior`, which only leaves, and history reports `task` where the source reports `intermediateNoneThrowEvent`.
 A spelling the engine reads as one of its own is imported under the spelling this tool writes, with a warning naming the rewrite.
 `operaton:async="true"` imports as `asyncBefore` (`BpmnParse.isAsyncBefore`), and `operaton:resultVariableName` as `resultVariable` (`parseResultVariable`).
 A `calledElementBinding` or `decisionRefBinding` word outside the four `parseBinding` matches imports as `latest`, since `BaseCallableElement.isLatestBinding` reads no binding as latest.
 An `errorRef` naming no `bpmn:error` root imports as the error code spelled by its text, on a catch, a throw, and an external task's mapping alike: `parseBoundaryErrorEventDefinition`, `parseErrorStartEventDefinition`, `parseEndEvents`, and `parseOperatonErrorEventDefinitions` each take a dangling reference's text as the code, and the rebuilt document declares an error root carrying it.
+A script task with no `scriptFormat` is imported as `juel`, the `ScriptingEngines.DEFAULT_SCRIPTING_LANGUAGE` that `BpmnParse.parseScriptTaskElement` substitutes.
+An injected field's `operaton:string` child is written back as a `stringValue` attribute, whose text the engine injects the same way.
+A repeated enum value id on a form field is kept the way `FormTypes.parseFormPropertyType` keeps it, once at its first position with its last `name`, and a repeated `operaton:property` key once at its first position with its last value, as `DefaultFormHandler.parseProperties` and `BpmnParseUtil.parseOperatonExtensionProperties` keep it.
 
-Two more members report neither a drop nor a change, but a construct that arrived half-written.
+`behaviourChanged` covers content imported in a changed form that the engine deploys or runs differently from the source, where the warning names the difference.
+`isExecutable="false"` on the process: the IR holds an executable process and nothing else, so the import and the file written back from it are both executable and an engine will run what the source document held back.
+An absent `isExecutable` on a lone process is reported the same way, since `parseProcessDefinitions` skips it in a new deployment.
+An absent `operaton:historyTimeToLive` is written back as `P30D`, so the rebuilt process deploys where the source, under the engine's default `enforceHistoryTimeToLive`, did not.
+A `bpmn:transaction` with no start event imports with one added, so the block runs where `SubProcessActivityBehavior.execute` fails the source on entering it.
+A `bpmn:conditionExpression` or `bpmn:completionCondition` body with no `${` or `#{` opener at all is written inside `${...}`, which evaluates it, where `UelExpressionCondition.evaluate` (or `MultiInstanceActivityBehavior.completionConditionSatisfied`) reads the bare text as a string and fails on every run.
+An empty condition body, which fails the same way, is dropped instead: the flow imports with no condition and the rebuild routes along it.
+
+`carriedAsWritten` covers a construct that arrived half-written and imports unchanged, with a warning that the engine deploys it and then fails or misreads it, and that the printed script draws a diagnostic there.
+On a form field that is a bound on a type its validator refuses, a bound whose `config` is not an integer, and a literal enum default naming none of the values.
+A literal default the field's type cannot convert goes the same way: a `number` default that is not an integer, which `LongFormType.convertValue` throws on, a `boolean` default outside `true`/`false`, which `BooleanFormType.convertValue` reads as false, and an ISO date default on a `date` field naming no pattern, which `DateFormType` parses under `dd/MM/yyyy`.
+A shell task's `wait`, `redirectError`, or `cleanEnv` flag spelled in any case but lowercase, such as `wait="TRUE"`, deploys, and `ShellActivityBehavior.readFields` compares it with `"true"` case-sensitively, so the engine reads it as false.
+A `resultVariable` beside an `external` or a built-in `type` binding on a task deploys and is never written, since `parseServiceTaskLike` hands it to an expression binding alone.
+A script whose `scriptFormat` lies outside the fence tags this surface knows imports under that tag, and a `bpmn:script` or `operaton:script` with an empty body imports empty, since `ScriptUtil.getScript` checks the source for null and not for emptiness.
+An execution listener with `expression=""` and a task listener with `class=""`, `expression=""`, or `delegateExpression=""` carry the empty text: `ExpressionExecutionListener` and `ExpressionTaskListener` evaluate it, while `ClassDelegateTaskListener` and `DelegateExpressionTaskListener` fail when the listener's event fires.
 A cancel end and the cancel boundary event that catches it are wired together when Operaton parses the boundary, and nothing but such an end ever reaches such a boundary, so either half alone deploys and then goes wrong at run time.
 A block holding a cancel end with no cancel boundary attached imports whole, and the warning names the error the engine stops with the first time that end is reached.
 A cancel boundary on a block nothing inside gives up imports whole too, and the warning names the path that can never run.
-Refusing either would reject a file the engine deploys, which the import contract does not license.
+Refusing either would reject a file the engine deploys although the rebuilt document fails the same way the source does; a boundary event without an id is refused even where it deploys, because the id minted for it would change what runs.
 
 ### Print warnings
 

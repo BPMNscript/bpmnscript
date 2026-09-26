@@ -62,6 +62,7 @@ import {
   OUTPUT_DIRECTION,
   PROPERTY_DIRECTION,
   START_TRIGGERS,
+  STARTABLE_KEY,
   TASK_PRIORITY_KEY,
   TYPE_BINDING_KEY,
   TYPE_BINDING_VALUES,
@@ -233,6 +234,10 @@ export function astToIr(model: Model): BpmnProcess {
     process,
     'candidateStarterGroups',
   );
+  const isStartableInTasklist = boolAttrValue(
+    settingsOf(process.items),
+    STARTABLE_KEY,
+  );
   const { errorCodes, escalationCodes } = eventIdentities({
     id: process.name,
     flowElements: builder.flowElements,
@@ -252,6 +257,7 @@ export function astToIr(model: Model): BpmnProcess {
     ...(historyTimeToLive !== undefined ? { historyTimeToLive } : {}),
     ...(candidateStarterUsers !== undefined ? { candidateStarterUsers } : {}),
     ...(candidateStarterGroups !== undefined ? { candidateStarterGroups } : {}),
+    ...(isStartableInTasklist !== undefined ? { isStartableInTasklist } : {}),
     flowElements: builder.flowElements,
     sequenceFlows: builder.sequenceFlows,
     ...(errorDecls.length > 0 ? { errorDecls } : {}),

@@ -153,7 +153,7 @@ const LANE_AND_ASYNC_ATTR_BPMN = `<?xml version="1.0" encoding="UTF-8"?>
 <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
                   xmlns:operaton="http://operaton.org/schema/1.0/bpmn"
                   targetNamespace="http://test">
-  <bpmn:process id="warns" isExecutable="true">
+  <bpmn:process id="warns" isExecutable="true" operaton:historyTimeToLive="P30D">
     <bpmn:laneSet id="LS1">
       <bpmn:lane id="Lane_Ops" name="Ops">
         <bpmn:flowNodeRef>S</bpmn:flowNodeRef>
@@ -175,7 +175,7 @@ const CONDITIONAL_START_BPMN = `<?xml version="1.0" encoding="UTF-8"?>
 <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
                   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
                   targetNamespace="http://test">
-  <bpmn:process id="conditional" isExecutable="true">
+  <bpmn:process id="conditional" isExecutable="true" xmlns:operaton="http://operaton.org/schema/1.0/bpmn" operaton:historyTimeToLive="P30D">
     <bpmn:startEvent id="ConditionalStart">
       <bpmn:conditionalEventDefinition id="cd">
         <bpmn:condition xsi:type="bpmn:tFormalExpression">\${stockLevel &lt; 5}</bpmn:condition>

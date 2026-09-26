@@ -184,6 +184,7 @@ import {
   OUTPUT_DIRECTION,
   parameterDirectionsFor,
   PROCESS_HEADER_KEYS,
+  STARTABLE_KEY,
   PROPERTY_DIRECTION,
   RUN_ENGINE_KEYS,
   runSettingKey,
@@ -776,6 +777,9 @@ export const patternMisfitMessage = (field: FormField) =>
 export const flagFalseMessage = (key: string) =>
   `A field is ${key} only while the setting is written, so '${key}: false' says nothing; leave the setting out.`;
 
+export const booleanShapeMessage = (key: string) =>
+  `Setting '${key}' takes an unquoted boolean; write '${key}: true' or '${key}: false'.`;
+
 export const flagNotTrueMessage = (key: string) =>
   `Setting '${key}' takes the literal true; write '${key}: true'.`;
 
@@ -855,6 +859,9 @@ const literalTrue: ValueShapeRule = (key, value) =>
       : flagFalseMessage(key)
     : flagNotTrueMessage(key);
 
+const unquotedBoolean: ValueShapeRule = (key, value) =>
+  isLiteralBool(value) ? undefined : booleanShapeMessage(key);
+
 const integer: ValueShapeRule = (key, value) =>
   isIntegerValue(value) || isQuotedMatching(value, FORM_BOUND_TEXT)
     ? undefined
@@ -920,6 +927,7 @@ const PROCESS_HEADER_VALUE_RULES: Readonly<Record<string, ValueShapeRule>> = {
   historyTimeToLive,
   candidateStarterUsers: candidateStarters,
   candidateStarterGroups: candidateStarters,
+  [STARTABLE_KEY]: unquotedBoolean,
 };
 
 function particleOnlyMessage(subject: string): string {
@@ -2766,12 +2774,10 @@ export class BpmnScriptValidator {
         continue;
       }
       if (BOOLEAN_SETTING_KEYS.has(attr.key) && !isLiteralBool(attr.value)) {
-        accept(
-          'error',
-          `Setting '${attr.key}' takes an unquoted boolean; ` +
-            `write '${attr.key}: true' or '${attr.key}: false'.`,
-          { node: attr, property: 'value' },
-        );
+        accept('error', booleanShapeMessage(attr.key), {
+          node: attr,
+          property: 'value',
+        });
       } else if (
         TEXT_ATTR_KEYS.has(attr.key) &&
         !isLiteralString(attr.value) &&

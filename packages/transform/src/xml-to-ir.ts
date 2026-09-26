@@ -1,6 +1,6 @@
 /**
  * BPMN 2.0 XML to IR, the inverse of `irToXml`. Diagram interchange is dropped
- * (ADR 0003); ADR 0014 sets what refuses and what warns.
+ * (ADR 0009); ADR 0012 sets what refuses and what warns.
  */
 
 import {
@@ -132,9 +132,13 @@ import {
 } from './ir-to-xml.js';
 import {
   claimDeclarationName,
+  endIdOf,
+  makeEndEventId,
   isWritableName,
   makeEventSubProcessId,
+  makeSequenceFlowId,
   makeStartEventId,
+  claimId,
 } from './synthesize-ids.js';
 
 export type ImportWarningCategory =
@@ -143,9 +147,12 @@ export type ImportWarningCategory =
   | 'label'
   | 'unreferencedRoot'
   | 'documentation'
-  | 'unmappedConstruct';
+  | 'unmappedConstruct'
+  | 'rewritten'
+  | 'behaviourChanged'
+  | 'carriedAsWritten';
 
-/** Dropped content; refusals throw instead. */
+/** Content the import dropped, rewrote, or carried as written; refusals throw instead. */
 export interface ImportWarning {
   elementId: string;
   category: ImportWarningCategory;
@@ -284,6 +291,7 @@ const CONSUMED_EXTENSION_ATTRS = consumptionTable([
   ['historyTimeToLive', ['bpmn:Process']],
   ['candidateStarterUsers', ['bpmn:Process']],
   ['candidateStarterGroups', ['bpmn:Process']],
+  ['isStartableInTasklist', ['bpmn:Process']],
   ['initiator', ['bpmn:StartEvent']],
   ['errorCodeVariable', ['bpmn:ErrorEventDefinition']],
   ['errorMessageVariable', ['bpmn:ErrorEventDefinition']],
@@ -439,10 +447,6 @@ const ENGINE_READS_ELSEWHERE: ReadonlyMap<string, string> = new Map<
     'reads it (BpmnParse.parseProcess through parsePriority)',
   ]),
   [
-    'bpmn:Process/isStartableInTasklist',
-    'reads it (BpmnParse.parseProcess through isStartable)',
-  ],
-  [
     'bpmn:Process/operaton:ExecutionListener',
     'runs it on the process instance ' +
       '(BpmnParse.parseExecutionListenersOnScope)',
@@ -478,10 +482,12 @@ interface ModdleElement {
   readonly $type: string;
   readonly id?: string;
   readonly $attrs: Record<string, string | undefined>;
+  readonly $parent?: ModdleElement;
   readonly $descriptor?: {
     readonly properties?: readonly ModdlePropertyDescriptor[];
   };
   get(name: string): unknown;
+  $instanceOf(type: string): boolean;
 }
 
 /** `name` is the storage key, `ns.name` the form `get()` accepts. */
@@ -535,6 +541,43 @@ export const CAMUNDA_ALIAS_MESSAGE =
 export async function xmlToIr(
   xml: string,
 ): Promise<{ ir: BpmnProcess; warnings: ImportWarning[] }> {
+  const minted = new Map<string, string>();
+  try {
+    return await importDocument(xml, minted);
+  } catch (e) {
+    throw e instanceof UnsupportedConstructError
+      ? withoutMintedIds(e, minted)
+      : e;
+  }
+}
+
+/**
+ * A refusal leaves no script behind, so an id the import minted names nothing
+ * the author can find: every field and message naming one describes the
+ * element instead.
+ */
+function withoutMintedIds(
+  error: UnsupportedConstructError,
+  minted: ReadonlyMap<string, string>,
+): UnsupportedConstructError {
+  const fields = error as unknown as Record<string, unknown>;
+  for (const key of Object.getOwnPropertyNames(error)) {
+    const value = fields[key];
+    if (typeof value !== 'string') continue;
+    fields[key] = minted.has(value)
+      ? undefined
+      : [...minted].reduce(
+          (text, [id, element]) => text.replaceAll(`'${id}'`, `(${element})`),
+          value,
+        );
+  }
+  return error;
+}
+
+async function importDocument(
+  xml: string,
+  minted: Map<string, string>,
+): Promise<{ ir: BpmnProcess; warnings: ImportWarning[] }> {
   const moddle = createModdle();
   refuseDocumentShapes(xml);
 
@@ -546,8 +589,11 @@ export async function xmlToIr(
 
   // moddle reports "unparsable content" only for undeclared `operaton:`
   // elements.
-  const { rootElement, warnings: moddleWarnings } =
-    await moddle.fromXML(normalizedXml);
+  const {
+    rootElement,
+    warnings: moddleWarnings,
+    elementsById,
+  } = await moddle.fromXML(normalizedXml);
 
   const root = rootElement as ModdleElement;
   if (root.$type !== 'bpmn:Definitions') {
@@ -558,6 +604,7 @@ export async function xmlToIr(
 
   refuseDroppedIds(moddleWarnings);
   refuseImports(root);
+  nameAnonymousElements(root, new Set(Object.keys(elementsById)), minted);
 
   const rootElements = root.get('rootElements') as ModdleElement[];
   const warnings: ImportWarning[] = [];
@@ -571,7 +618,7 @@ export async function xmlToIr(
   if (camundaRead) {
     warnings.push({
       elementId: mappedProcess.id,
-      category: 'unmappedConstruct',
+      category: 'rewritten',
       message: CAMUNDA_ALIAS_MESSAGE,
     });
   }
@@ -1022,6 +1069,56 @@ function recordDroppedConditions(
   return positions;
 }
 
+const MINTED_IDS = new WeakSet<ModdleElement>();
+
+/** An unsupported element's refusal names no id the document does not carry. */
+function authoredId(el: ModdleElement): string | undefined {
+  return MINTED_IDS.has(el) ? undefined : el.id;
+}
+
+/**
+ * The DSL names every element, so one without an id gets a minted one before
+ * anything keys it. `BpmnParse` deploys a flow without an id as an unnamed
+ * transition and most nodes without one as an activity nothing can flow into;
+ * the events it cannot run without an id are refused in
+ * `refuseAnonymousEvents`.
+ */
+function nameAnonymousElements(
+  root: ModdleElement,
+  taken: Set<string>,
+  minted: Map<string, string>,
+): void {
+  // The printer leaves an end out of the script when its id is the one the
+  // compiler gives the implicit end of a container or a boundary escape, so a
+  // minted end claims past `EndEvent_<id>` for every id in the document.
+  const endTaken = new Set([...taken].flatMap((id) => [id, endIdOf(id)]));
+  for (const el of flowElementsDeep(root)) {
+    if (!el.$instanceOf('bpmn:FlowElement') || (el.id ?? '') !== '') continue;
+    const parent = el.$parent as ModdleElement;
+    const end = (name: string): string =>
+      (el.get(name) as ModdleElement | undefined)?.id ?? '';
+    MINTED_IDS.add(el);
+    const id =
+      el.$type === 'bpmn:SequenceFlow'
+        ? makeSequenceFlowId(end('sourceRef'), end('targetRef'), taken)
+        : el.$type === 'bpmn:EndEvent'
+          ? makeEndEventId(parent.id ?? '', endTaken)
+          : claimId(
+              `${el.$type.slice('bpmn:'.length)}_${parent.id ?? ''}`,
+              taken,
+            );
+    taken.add(id);
+    endTaken.add(id).add(endIdOf(id));
+    const parentId = authoredId(parent);
+    minted.set(
+      id,
+      `a ${xmlTagOf(el.$type)} without an id` +
+        (parentId === undefined ? '' : ` in '${parentId}'`),
+    );
+    (el as { id?: string }).id = id;
+  }
+}
+
 function* flowElementsDeep(container: ModdleElement): Generator<ModdleElement> {
   const children = [
     ...((container.get('rootElements') as ModdleElement[] | undefined) ?? []),
@@ -1151,7 +1248,10 @@ function mapProcess(
 ): BpmnProcess {
   const id = processEl.id;
   if (id === undefined) {
-    throw new Error("<bpmn:process> is missing its required 'id' attribute.");
+    throw new UnsupportedDocumentError(
+      'its process has no id; Operaton deploys a process under its id as ' +
+        'the definition key, and the deployment fails without one',
+    );
   }
   const named = readNamed(processEl, id, warnings);
 
@@ -1161,7 +1261,7 @@ function mapProcess(
   if (isExecutable === false) {
     warnings.push({
       elementId: id,
-      category: 'unmappedConstruct',
+      category: 'behaviourChanged',
       message:
         `The process '${id}' is marked isExecutable="false", which this ` +
         'surface cannot express: it was imported as an executable process ' +
@@ -1171,7 +1271,7 @@ function mapProcess(
   } else if (isExecutable !== true) {
     warnings.push({
       elementId: id,
-      category: 'unmappedConstruct',
+      category: 'behaviourChanged',
       message:
         `The process '${id}' is not marked isExecutable="true", which ` +
         '`BpmnParse.parseProcessDefinitions` skips in a new deployment; it ' +
@@ -1193,10 +1293,28 @@ function mapProcess(
   // The exporter stamps this default on every process; reading it back would
   // break the round trip.
   const authoredTimeToLive = readNamespacedAttr(processEl, 'historyTimeToLive');
+  if (authoredTimeToLive === undefined) {
+    warnings.push({
+      elementId: id,
+      category: 'behaviourChanged',
+      message:
+        `The process '${id}' sets no historyTimeToLive, which ` +
+        'HistoryTimeToLiveParser.parseAndValidate refuses under the ' +
+        "engine's default enforceHistoryTimeToLive; it is written back with " +
+        `'${HISTORY_TIME_TO_LIVE}', so the rebuilt process deploys where the ` +
+        'source did not.',
+    });
+  }
   const historyTimeToLive =
     authoredTimeToLive === HISTORY_TIME_TO_LIVE
       ? undefined
       : authoredTimeToLive;
+  // `BpmnParse.isStartable` compares ignoring case, and anything else is false.
+  const startable = processEl.get('operaton:isStartableInTasklist');
+  const isStartableInTasklist =
+    typeof startable === 'string'
+      ? startable.toLowerCase() === 'true'
+      : undefined;
   const candidateStarterUsers = mergeCandidates(
     starters.users,
     readNamespacedAttr(processEl, 'candidateStarterUsers'),
@@ -1214,6 +1332,7 @@ function mapProcess(
     ...(historyTimeToLive === undefined ? {} : { historyTimeToLive }),
     ...(candidateStarterUsers === undefined ? {} : { candidateStarterUsers }),
     ...(candidateStarterGroups === undefined ? {} : { candidateStarterGroups }),
+    ...(isStartableInTasklist === undefined ? {} : { isStartableInTasklist }),
     flowElements,
     sequenceFlows,
   };
@@ -1230,8 +1349,11 @@ function readPotentialStarters(
 ): { users: string[]; groups: string[] } {
   const users: string[] = [];
   const groups: string[] = [];
-  const report = (message: string): void => {
-    warnings.push({ elementId: id, category: 'unmappedConstruct', message });
+  const report = (
+    message: string,
+    category: ImportWarningCategory = 'unmappedConstruct',
+  ): void => {
+    warnings.push({ elementId: id, category, message });
   };
   for (const starter of extensionValues(processEl)) {
     if (starter.$type !== 'operaton:PotentialStarter') continue;
@@ -1258,6 +1380,7 @@ function readPotentialStarters(
         '(BpmnParse.parsePotentialStarterResourceAssignment), and this tool ' +
         `writes it back as ${became.map(([key]) => `operaton:${key}`).join(' and ')}, ` +
         'which the engine reads the same.',
+      'rewritten',
     );
   }
   return { users, groups };
@@ -1279,6 +1402,81 @@ function mapContainer(
     hostKind,
   );
 }
+
+/**
+ * Operaton keys these events by id, and `anonymousFailure` names where a
+ * missing one fails. Every other element, a compensation boundary included,
+ * imports under a minted id.
+ */
+function refuseAnonymousEvents(container: ModdleElement): void {
+  for (const child of container.get('flowElements') as ModdleElement[]) {
+    if (!MINTED_IDS.has(child)) continue;
+    const failure = anonymousFailure(child, container);
+    if (failure === undefined) continue;
+    throw new UnsupportedDocumentError(
+      `a ${xmlTagOf(child.$type)} in '${container.id}' has no id${failure}; ` +
+        'give it one',
+    );
+  }
+}
+
+function anonymousFailure(
+  el: ModdleElement,
+  container: ModdleElement,
+): string | undefined {
+  const defs = eventDefinitionsOf(el).map((def) => def.$type);
+  if (defs.includes('bpmn:TimerEventDefinition')) {
+    return ', which BpmnParse.parseTimer fails the deployment on (\'Attribute "id" is required!\')';
+  }
+  switch (el.$type) {
+    case 'bpmn:StartEvent':
+      return container.$type === 'bpmn:Process'
+        ? ', which BpmnParse.parseStartFormHandlers fails the deployment on'
+        : ', which HistoryParseListener.parseStartEvent fails the deployment on';
+    case 'bpmn:EventBasedGateway':
+      return ', which BpmnParse.parseEventBasedGateway fails the deployment on';
+    case 'bpmn:BoundaryEvent':
+      return defs.length === 1
+        ? ANONYMOUS_BOUNDARY_FAILURES.get(defs[0])
+        : undefined;
+    default:
+      return undefined;
+  }
+}
+
+const ANONYMOUS_BOUNDARY_FAILURES: ReadonlyMap<string, string> = new Map([
+  [
+    'bpmn:MessageEventDefinition',
+    ', which BpmnParse.parseBoundaryMessageEventDefinition fails the ' +
+      'deployment on ("boundary event has no id")',
+  ],
+  [
+    'bpmn:SignalEventDefinition',
+    ', which BpmnParse.parseBoundarySignalEventDefinition fails the ' +
+      'deployment on ("boundary event has no id")',
+  ],
+  [
+    'bpmn:ErrorEventDefinition',
+    ': Operaton deploys it and ' +
+      'ErrorDeclarationForProcessInstanceFinder.isReThrowingErrorEventSubprocess ' +
+      'fails the run when an error is thrown inside its step',
+  ],
+  [
+    'bpmn:EscalationEventDefinition',
+    ': Operaton deploys it and ExecutionEntity.generateActivityInstanceId ' +
+      'fails the run when an escalation reaches it',
+  ],
+  [
+    'bpmn:CancelEventDefinition',
+    ': Operaton deploys it and ExecutionEntity.generateActivityInstanceId ' +
+      'fails the run when the transaction is cancelled',
+  ],
+  [
+    'bpmn:ConditionalEventDefinition',
+    ': Operaton deploys it and ConditionalEventHandler.handleEvent fails ' +
+      'the run of its step',
+  ],
+]);
 
 /**
  * `selectInitial` refuses a second plain or timer start in a process. A
@@ -1330,7 +1528,7 @@ function checkStartEventCount(
   if (starts.length === 0) {
     warnings.push({
       elementId: id,
-      category: 'unmappedConstruct',
+      category: 'behaviourChanged',
       message:
         `The bpmn:transaction '${id}' has no start event: Operaton deploys ` +
         'it and SubProcessActivityBehavior.execute fails on entering it ' +
@@ -1453,7 +1651,7 @@ function mapActivityByTag(
     case 'bpmn:CallActivity':
       return mapCallActivity(el, warnings);
     default:
-      throw new UnsupportedElementError(el.$type, el.id);
+      throw new UnsupportedElementError(el.$type, authoredId(el));
   }
 }
 
@@ -1577,6 +1775,7 @@ function mapContainerChildren(
   const flowElements: FlowElement[] = [];
   const sequenceFlows: SequenceFlow[] = [];
   const container = { id: requireId(el), flowElements };
+  refuseAnonymousEvents(el);
 
   const children = el.get('flowElements') as ModdleElement[];
   for (const child of children) {
@@ -1646,7 +1845,7 @@ function mapContainerChildren(
         warnDataConstructDrop(child, el.id, warnings);
         continue;
       default:
-        throw new UnsupportedElementError(child.$type, child.id);
+        throw new UnsupportedElementError(child.$type, authoredId(child));
     }
     attachRepetition(flowElements, mappedAt, child, warnings);
     if (child.id !== undefined) {
@@ -2091,7 +2290,7 @@ function checkCancelPairing(
     if (givenUp && boundaryId === undefined) {
       warnings.push({
         elementId: el.id,
-        category: 'unmappedConstruct',
+        category: 'carriedAsWritten',
         message:
           `The block '${el.id}' holds an end event that gives it up, with ` +
           'no cancel boundary event attached to it: Operaton deploys the ' +
@@ -2103,7 +2302,7 @@ function checkCancelPairing(
     if (!givenUp && boundaryId !== undefined) {
       warnings.push({
         elementId: boundaryId,
-        category: 'unmappedConstruct',
+        category: 'carriedAsWritten',
         message:
           `The cancel boundary event on '${el.id}' was imported, but ` +
           'nothing inside the block gives it up, so what follows the ' +
@@ -2576,7 +2775,7 @@ function readDanglingErrorCode(
   if (written === undefined || written === '') return undefined;
   warnings.push({
     elementId: ownerId,
-    category: 'unmappedConstruct',
+    category: 'rewritten',
     message:
       `The errorRef '${written}' on '${ownerId}' names no bpmn:error root ` +
       `and imports as the code '${written}': Operaton takes a dangling ` +
@@ -3180,7 +3379,7 @@ function readVersionBinding(
       binding = { kind: 'latest' };
       warnings.push({
         elementId: id,
-        category: 'unmappedConstruct',
+        category: 'rewritten',
         message:
           `The ${prefix}Binding="${bindingValue}" on '${id}' imports as ` +
           'binding: latest: BpmnParse.parseBinding sets no binding for that ' +
@@ -3456,6 +3655,19 @@ function collectUnmappedBpmnDrops(
 
   for (const prop of el.$descriptor?.properties ?? []) {
     if (prop.isAttr === true || prop.isBody === true) continue;
+    if (prop.name === 'eventDefinitionRef') {
+      for (const ref of el.get(prop.name) as ModdleElement[]) {
+        warnings.push({
+          elementId: ownerId,
+          category: 'unmappedConstruct',
+          message:
+            `The eventDefinitionRef '${ref.id}' on '${ownerId}' was not ` +
+            'imported: BpmnParse reads only the event definitions nested in ' +
+            'the event, so the document written back runs the same.',
+        });
+      }
+      continue;
+    }
     if (prop.isReference === true) continue;
     if (READ_BPMN_CHILDREN.has(prop.name)) continue;
     // `readAssignment` reads a user task's roles; no other activity's are read.
@@ -3824,7 +4036,7 @@ function noteRewrappedExpression(
   }
   warnings.push({
     elementId: ownerId,
-    category: 'unmappedConstruct',
+    category: 'rewritten',
     message:
       `The ${slot} on '${ownerId}' is written with "#{...}"; the script ` +
       'prints its body as bare DSL and the rebuilt document writes it ' +
@@ -4112,7 +4324,7 @@ function mapIntermediateThrowEvent(
     const named = readNamed(el, id, warnings);
     warnings.push({
       elementId: id,
-      category: 'unmappedConstruct',
+      category: 'rewritten',
       message:
         `The bpmn:intermediateThrowEvent '${id}' carries no event ` +
         'definition and imports as a plain step: ' +
@@ -4120,7 +4332,7 @@ function mapIntermediateThrowEvent(
         'IntermediateThrowNoneEventActivityBehavior, which only leaves, as ' +
         "a task's behaviour does, so token flow, listeners, async and job " +
         'configuration are unchanged, but history and Cockpit will report ' +
-        "its activity type as 'task' rather than 'intermediateThrowEvent'.",
+        "its activity type as 'task' rather than 'intermediateNoneThrowEvent'.",
     });
     return {
       kind: 'task',
@@ -4490,7 +4702,7 @@ function readLoopCharacteristics(
   ) {
     warnings.push({
       elementId: id,
-      category: 'unmappedConstruct',
+      category: 'behaviourChanged',
       message:
         `The bpmn:completionCondition on '${id}' is the bare text ` +
         `${JSON.stringify(completionCondition)} with no "\${...}" or ` +
@@ -4910,7 +5122,7 @@ function readAssignment(
     }
     warnings.push({
       elementId: id,
-      category: 'unmappedConstruct',
+      category: 'rewritten',
       message:
         `The ${tag} on '${id}' imports as ` +
         `${became.map(([key, value]) => `${key}: "${value}"`).join(' and ')}: ` +
@@ -5024,7 +5236,7 @@ function mapManualTask(el: ModdleElement, warnings: ImportWarning[]): Task {
   const task = mapTask(el, warnings);
   warnings.push({
     elementId: task.id,
-    category: 'unmappedConstruct',
+    category: 'rewritten',
     message: manualTaskMessage(task.id),
   });
   return task;
@@ -5067,7 +5279,7 @@ function mapServiceTask(
   ) {
     warnings.push({
       elementId: id,
-      category: 'extensionAttribute',
+      category: 'carriedAsWritten',
       message:
         `The resultVariable '${resultVariable}' on '${id}' was imported as ` +
         'written, and the printed script draws a warning at the step: ' +
@@ -5111,7 +5323,7 @@ function readResultVariable(
   }
   warnings.push({
     elementId: id,
-    category: 'unmappedConstruct',
+    category: 'rewritten',
     message:
       `The operaton:resultVariableName="${older}" on '${id}' imports as ` +
       `resultVariable: "${older}": BpmnParse.parseResultVariable reads the ` +
@@ -5243,7 +5455,7 @@ function refuseBuiltinShapes(
       }
       warnings.push({
         elementId: id,
-        category: 'extensionAttribute',
+        category: 'carriedAsWritten',
         message:
           `The shell field '${field.name}' spelled '${field.value}' on ` +
           `'${id}' was imported as written, and the printed script draws an ` +
@@ -5320,13 +5532,14 @@ function withExternalExtras(
   const properties =
     propertiesEl === undefined
       ? []
-      : readPropertyEntries(propertiesEl, 'name', `'${id}'`, (message) => {
-          warnings.push({
-            elementId: id,
-            category: 'extensionAttribute',
-            message,
-          });
-        });
+      : readPropertyEntries(
+          propertiesEl,
+          'name',
+          `'${id}'`,
+          (message, category = 'extensionAttribute') => {
+            warnings.push({ elementId: id, category, message });
+          },
+        );
   const errorMappings = definitions.flatMap(
     (defEl) => readErrorMapping(defEl, id, warnings) ?? [],
   );
@@ -5633,7 +5846,7 @@ function mapScriptTask(
     format = 'juel';
     warnings.push({
       elementId: id,
-      category: 'extensionAttribute',
+      category: 'rewritten',
       message:
         `The script on '${id}' has no scriptFormat; ` +
         '`BpmnParse.parseScriptTaskElement` substitutes ' +
@@ -5646,7 +5859,7 @@ function mapScriptTask(
       format = rawFormat;
       warnings.push({
         elementId: id,
-        category: 'extensionAttribute',
+        category: 'carriedAsWritten',
         message:
           `The script on '${id}' names the language '${rawFormat}', which ` +
           'the DSL has no fence alias for; it was imported as written, and ' +
@@ -5798,7 +6011,7 @@ function mapSequenceFlow(
   if (written && conditionExpression === undefined) {
     warnings.push({
       elementId: id,
-      category: 'unmappedConstruct',
+      category: 'behaviourChanged',
       message:
         `The condition on '${id}' has an empty body: ` +
         'UelExpressionCondition.evaluate reads it as a string and fails the ' +
@@ -5811,7 +6024,7 @@ function mapSequenceFlow(
   ) {
     warnings.push({
       elementId: id,
-      category: 'unmappedConstruct',
+      category: 'behaviourChanged',
       message:
         `The condition on '${id}' is the bare text ` +
         `${JSON.stringify(conditionExpression)} with no "\${...}" or ` +
@@ -6119,7 +6332,7 @@ function readAsyncBefore(
       : `'${ownerId}'`;
   warnings.push({
     elementId: ownerId,
-    category: 'unmappedConstruct',
+    category: 'rewritten',
     message: asyncRespellingMessage(subject),
   });
   return true;
@@ -6253,7 +6466,7 @@ function readFormFields(
   return fields.map((field) => readFormField(field, ownerId, warnings));
 }
 
-type Report = (message: string) => void;
+type Report = (message: string, category?: ImportWarningCategory) => void;
 
 interface FieldContext {
   fieldId: string;
@@ -6272,6 +6485,7 @@ function warnCarriedAsWritten(
   report(
     `The ${what} on ${subject} was imported as written, and the printed ` +
       `script draws an error at the field: ${reason}.`,
+    'carriedAsWritten',
   );
 }
 
@@ -6307,12 +6521,8 @@ function readFormField(
     ownerId,
     type,
     subject: `form field '${fieldId}' of '${ownerId}'`,
-    report: (message) => {
-      warnings.push({
-        elementId: ownerId,
-        category: 'extensionAttribute',
-        message,
-      });
+    report: (message, category = 'extensionAttribute') => {
+      warnings.push({ elementId: ownerId, category, message });
     },
   };
 
@@ -6434,6 +6644,7 @@ function readEnumValues(
         `The operaton:value '${id}' of ${subject} is written twice and was ` +
           'imported once, at its first position with its last name, as ' +
           'FormTypes.parseFormPropertyType keeps it (LinkedHashMap.put).',
+        'rewritten',
       );
     }
     const label = readString(valueEl, 'name');
@@ -6565,6 +6776,7 @@ function readPropertyEntries(
       report(
         `The operaton:property '${key}' of ${subject} is written twice and ` +
           `was imported once${PROPERTY_REWRITE_BY_KEY[keyAttr]}.`,
+        'rewritten',
       );
     }
     byKey.set(key, { key, value });
@@ -6837,7 +7049,7 @@ function checkScriptBody(
   if (code.trim() === '') {
     warnings.push({
       elementId: ownerId,
-      category: 'extensionAttribute',
+      category: 'carriedAsWritten',
       message:
         `The body of ${where} is empty: ScriptUtil.getScript deploys it, ` +
         'since it checks the source for null and not for emptiness, and ' +
@@ -6961,7 +7173,7 @@ function buildEmptyTaskListenerBindingWarning(
 ): ImportWarning {
   return {
     elementId: ownerId,
-    category: 'extensionAttribute',
+    category: 'carriedAsWritten',
     message:
       `An ${tag} on '${ownerId}' has ${attr}="": ` +
       'BpmnParse.parseTaskListener checks no listener attribute for ' +
@@ -7034,7 +7246,7 @@ function resolveListenerBinding(
       if (expression === '') {
         warnings.push({
           elementId: ownerId,
-          category: 'extensionAttribute',
+          category: 'carriedAsWritten',
           message:
             `An ${tag} on '${ownerId}' has expression="": ` +
             `${isExecutionListener ? 'ExpressionExecutionListener' : 'ExpressionTaskListener'} ` +
@@ -7289,7 +7501,7 @@ function readField(
   if (chosen.slot.property === 'string') {
     warnings.push({
       elementId: ownerId,
-      category: 'extensionAttribute',
+      category: 'rewritten',
       message:
         `The injected field '${name}' on ${where} writes its value in an ` +
         'operaton:string child, which this tool writes back as a stringValue ' +

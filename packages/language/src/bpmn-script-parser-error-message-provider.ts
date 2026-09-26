@@ -12,6 +12,7 @@ import {
 import {
   DECLARED_CODE_TRIGGERS,
   formatWordList,
+  IO_DIRECTIONS,
   reservedWordsOf,
 } from './vocabulary.js';
 
@@ -31,6 +32,20 @@ const EOF_TOKEN_NAME = 'EOF';
  * name slot; a real declaration word is excluded.
  */
 const CODE_DECL_RULE_NAME = 'CodeDecl';
+
+/**
+ * After the first step a plain word ends the process body early. In a braced
+ * block the same word opens a parameter (`direction=ID name=ID '='`) and fails
+ * at its name slot or at its `=`, where only the name is left to quote.
+ */
+const PROCESS_RULE_NAME = 'Process';
+const IO_PARAMETER_RULE_NAME = 'IoParameter';
+const EQUALS_TOKEN_NAME = '=';
+const CLOSE_PAREN_TOKEN_NAME = ')';
+
+const STEP_KEYWORD_HINT =
+  'every step starts with a keyword such as ' +
+  "'start', 'user', 'service', 'if', 'on', 'throw', 'emit', ...";
 
 const WORD_SHAPED = /^[A-Za-z_]/;
 
@@ -57,6 +72,24 @@ export class BpmnScriptParserErrorMessageProvider extends LangiumParserErrorMess
 
   override buildMismatchTokenMessage(options: MismatchTokenOptions): string {
     const { expected, actual } = options;
+    const rule = bareRuleName(options.ruleName);
+    if (expected.name === CLOSE_PAREN_TOKEN_NAME) {
+      const where =
+        actual.tokenType.name === EOF_TOKEN_NAME
+          ? 'the end of the file'
+          : `'${actual.image}'`;
+      return `Expected ')' before ${where}: a '(' is still open.`;
+    }
+    if (
+      expected.name === EQUALS_TOKEN_NAME &&
+      rule === IO_PARAMETER_RULE_NAME
+    ) {
+      return (
+        `Expected '=' after '${options.previous.image}': inside a block, two ` +
+        "plain words start a parameter such as 'input name = value'; " +
+        STEP_KEYWORD_HINT
+      );
+    }
     if (expected.name === CLOSE_BRACE_TOKEN_NAME) {
       if (actual.tokenType.name === VAR_KEYWORD_TOKEN_NAME) {
         return this.varPlacementMessage();
@@ -67,17 +100,23 @@ export class BpmnScriptParserErrorMessageProvider extends LangiumParserErrorMess
       if (actual.tokenType.name === EOF_TOKEN_NAME) {
         return this.unclosedBlockMessage();
       }
+      if (
+        actual.tokenType.name === ID_TOKEN_NAME &&
+        rule === PROCESS_RULE_NAME
+      ) {
+        return `'${actual.image}' is not a step keyword; ${STEP_KEYWORD_HINT}`;
+      }
     }
     if (expected.name === ID_TOKEN_NAME) {
       if (this.isReservedWord(actual.tokenType.name)) {
         return this.reservedWordMessage(actual.image);
       }
       const word = options.previous.image;
-      if (
-        bareRuleName(options.ruleName) === CODE_DECL_RULE_NAME &&
-        !DECLARED_CODE_TRIGGERS.has(word)
-      ) {
+      if (rule === CODE_DECL_RULE_NAME && !DECLARED_CODE_TRIGGERS.has(word)) {
         return this.declarationOrStepMessage(word);
+      }
+      if (rule === IO_PARAMETER_RULE_NAME && !IO_DIRECTIONS.includes(word)) {
+        return `'${word}' is not a step keyword; ${STEP_KEYWORD_HINT}`;
       }
     }
     return super.buildMismatchTokenMessage(options);
@@ -108,8 +147,7 @@ export class BpmnScriptParserErrorMessageProvider extends LangiumParserErrorMess
       `'${word}' is neither a known declaration nor a step keyword. ` +
       'A declaration starting with a plain word is ' +
       `${formatWordList([...DECLARED_CODE_TRIGGERS])} followed by the name it ` +
-      'declares; every step starts with a keyword such as ' +
-      "'start', 'user', 'service', 'if', 'on', 'throw', 'emit', ..."
+      `declares; ${STEP_KEYWORD_HINT}`
     );
   }
 

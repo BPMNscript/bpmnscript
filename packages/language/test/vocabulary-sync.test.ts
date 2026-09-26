@@ -147,10 +147,13 @@ describe('splitFencedScript', () => {
     ).toEqual({ tag: 'groovy', code: 'def a = 1\ndef b = 2\n' });
   });
 
-  test('a one-line fence with no newline after the tag still splits it from the body', () => {
-    expect(splitFencedScript('```groovy1 + 1```')).toEqual({
-      tag: 'groovy',
-      code: '1 + 1',
-    });
+  test('the tag runs to the first whitespace', () => {
+    expect([
+      splitFencedScript('```groovy 1 + 1```'),
+      splitFencedScript('```http://www.java.com/java\nx```'),
+    ]).toEqual([
+      { tag: 'groovy', code: ' 1 + 1' },
+      { tag: 'http://www.java.com/java', code: 'x' },
+    ]);
   });
 });

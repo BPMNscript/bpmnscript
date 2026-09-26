@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { astToIr } from '@bpmn-script/transform';
+import type { BpmnProcess, FlowElement } from '@bpmn-script/transform';
 import { compareModels, type ModelComparison } from './model-equivalence.js';
 import { parseToAst } from './pipeline.js';
 
@@ -156,7 +157,7 @@ const table: [title: string, a: string, b: string, want: ModelComparison][] = [
     'restructured',
   ],
   [
-    'a do-while printed as an if with a backward goto is restructured',
+    'a do-while printed as an if with a backward goto is the same model',
     `process p {
   var x: any
   var y: any
@@ -189,7 +190,7 @@ const table: [title: string, a: string, b: string, want: ModelComparison][] = [
     goto Call
   }
 }`,
-    'restructured',
+    'same',
   ],
   [
     'swapped if and else bodies are changed',
@@ -244,8 +245,176 @@ const table: [title: string, a: string, b: string, want: ModelComparison][] = [
   ],
 ];
 
+// Shapes the compiler never emits, as a modeler's document can: node kinds by
+// id, and flows as `[id: ]source -> target[ ? condition]`.
+const model = (
+  kinds: Record<string, string>,
+  flows: string[],
+): BpmnProcess => ({
+  id: 'p',
+  isExecutable: true,
+  flowElements: Object.entries(kinds).map(
+    ([id, kind]) => ({ kind, id }) as FlowElement,
+  ),
+  sequenceFlows: flows.map((flow, i) => {
+    const [, id = `Flow_${i}`, sourceRef, targetRef, condition] =
+      /^(?:(\S+): )?(\S+) -> (\S+)(?: \? (.+))?$/.exec(flow)!;
+    return {
+      id,
+      sourceRef,
+      targetRef,
+      ...(condition === undefined ? {} : { conditionExpression: condition }),
+    };
+  }),
+});
+
+// A parallel fork into A, B and C whose branches meet at `join`, A and B first
+// through an exclusive merge when `merged`.
+const forked = (join: string, merged = false): BpmnProcess =>
+  model(
+    {
+      S: 'startEvent',
+      F: 'parallelGateway',
+      A: 'userTask',
+      B: 'userTask',
+      C: 'userTask',
+      ...(merged ? { M: 'exclusiveGateway' } : {}),
+      J: join,
+      E: 'endEvent',
+    },
+    [
+      'S -> F',
+      'F -> A',
+      'F -> B',
+      'F -> C',
+      ...(merged ? ['A -> M', 'B -> M', 'M -> J'] : ['A -> J', 'B -> J']),
+      'C -> J',
+      'J -> E',
+    ],
+  );
+const chainedJoins = (end: string): BpmnProcess =>
+  model(
+    {
+      T: 'userTask',
+      Gateway_a_join: 'exclusiveGateway',
+      Gateway_b_join: 'exclusiveGateway',
+      E1: 'endEvent',
+      E2: 'endEvent',
+    },
+    [
+      'T -> Gateway_a_join',
+      'Gateway_a_join -> Gateway_b_join',
+      `Gateway_b_join -> ${end}`,
+    ],
+  );
+const split = (routes: string[]): BpmnProcess =>
+  model(
+    { T: 'userTask', G: 'exclusiveGateway', A: 'userTask', B: 'userTask' },
+    ['T -> G', ...routes],
+  );
+const documented = (ir: BpmnProcess, id: string): BpmnProcess => ({
+  ...ir,
+  flowElements: ir.flowElements.map((el) =>
+    el.id === id ? { ...el, documentation: 'Why we merge' } : el,
+  ),
+});
+const nestedSplits = (
+  [outer, inner]: [string, string],
+  merge?: string,
+  flowId = (_n: number): string => '',
+): BpmnProcess =>
+  model(
+    {
+      T: 'userTask',
+      A: 'userTask',
+      B: 'userTask',
+      C: 'userTask',
+      D: 'userTask',
+      [outer]: 'exclusiveGateway',
+      [inner]: 'exclusiveGateway',
+      ...(merge === undefined ? {} : { [merge]: 'exclusiveGateway' }),
+    },
+    [
+      `T -> ${outer}`,
+      `${outer} -> A ? \${a}`,
+      `${outer} -> ${inner} ? \${b}`,
+      `${inner} -> B ? \${c}`,
+      `${inner} -> C ? \${d}`,
+      ...(merge === undefined
+        ? ['A -> D', 'B -> D', 'C -> D']
+        : [`A -> ${merge}`, `B -> ${merge}`, `C -> ${merge}`, `${merge} -> D`]),
+    ].map((flow, n) => flowId(n) + flow),
+  );
+
+const builtTable: [
+  title: string,
+  a: BpmnProcess,
+  b: BpmnProcess,
+  want: ModelComparison,
+][] = [
+  [
+    'a parallel join and an exclusive join over the same branches are changed',
+    forked('parallelGateway'),
+    forked('exclusiveGateway'),
+    'changed',
+  ],
+  [
+    'an exclusive merge dropped in front of a parallel join is changed',
+    forked('parallelGateway', true),
+    forked('parallelGateway'),
+    'changed',
+  ],
+  [
+    'two chained joins leading to different ends are changed',
+    chainedJoins('E1'),
+    chainedJoins('E2'),
+    'changed',
+  ],
+  [
+    'swapped overlapping conditions at an exclusive split are changed',
+    split(['G -> A ? ${a}', 'G -> B ? ${a}']),
+    split(['G -> B ? ${a}', 'G -> A ? ${a}']),
+    'changed',
+  ],
+  [
+    'a route with no condition swapped with a conditioned one at an exclusive split is changed',
+    split(['G -> A', 'G -> B ? ${a}']),
+    split(['G -> B ? ${a}', 'G -> A']),
+    'changed',
+  ],
+  [
+    'an event-based gateway with one route out is not a transparent merge',
+    model(
+      { T: 'userTask', R: 'eventBasedGateway', W: 'intermediateCatchEvent' },
+      ['T -> R', 'R -> W'],
+    ),
+    model({ T: 'userTask', W: 'intermediateCatchEvent' }, ['T -> W']),
+    'changed',
+  ],
+  [
+    "a modeler's own flow and gateway ids and an extra merge are the same model",
+    nestedSplits(['Gateway_p_0_split', 'Gateway_p_1_split']),
+    nestedSplits(
+      ['Gateway_0x', 'Gateway_1y'],
+      'Gateway_2z',
+      (n) => `SequenceFlow_${n}: `,
+    ),
+    'same',
+  ],
+  [
+    'documentation on an otherwise transparent merge is changed',
+    nestedSplits(['G1', 'G2'], 'M'),
+    documented(nestedSplits(['G1', 'G2'], 'M'), 'M'),
+    'changed',
+  ],
+];
+
 describe('compareModels', () => {
   it.each(table)('%s', async (_title, a, b, want) => {
     expect(compareModels(await compile(a), await compile(b))).toBe(want);
+  });
+
+  it.each(builtTable)('%s', (_title, a, b, want) => {
+    expect(compareModels(a, b)).toBe(want);
   });
 });

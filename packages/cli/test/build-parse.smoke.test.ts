@@ -64,7 +64,7 @@ beforeAll(() => {
 const UNSTRUCTURED_FORK_BPMN = `<?xml version="1.0" encoding="UTF-8"?>
 <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
                   targetNamespace="http://test">
-  <bpmn:process id="unstructured" isExecutable="true">
+  <bpmn:process id="unstructured" isExecutable="true" xmlns:operaton="http://operaton.org/schema/1.0/bpmn" operaton:historyTimeToLive="P30D">
     <bpmn:startEvent id="S" />
     <bpmn:parallelGateway id="Fork" />
     <bpmn:userTask id="A" name="A" />
@@ -84,7 +84,7 @@ const TWO_DROPPED_CONDITIONS_BPMN = `<?xml version="1.0" encoding="UTF-8"?>
 <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
                   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
                   targetNamespace="http://test">
-  <bpmn:process id="two-conditions" isExecutable="true">
+  <bpmn:process id="two-conditions" isExecutable="true" xmlns:operaton="http://operaton.org/schema/1.0/bpmn" operaton:historyTimeToLive="P30D">
     <bpmn:startEvent id="Start" />
     <bpmn:userTask id="CheckStock" name="Check stock" />
     <bpmn:userTask id="ReserveGoods" name="Reserve goods" />
@@ -107,7 +107,7 @@ const DECIMAL_DEFAULT_BPMN = `<?xml version="1.0" encoding="UTF-8"?>
 <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
                   xmlns:operaton="http://operaton.org/schema/1.0/bpmn"
                   targetNamespace="http://test">
-  <bpmn:process id="decimal-default-carry" isExecutable="true">
+  <bpmn:process id="decimal-default-carry" isExecutable="true" operaton:historyTimeToLive="P30D">
     <bpmn:startEvent id="S" />
     <bpmn:userTask id="Review">
       <bpmn:extensionElements>

@@ -1,7 +1,7 @@
 // Round-trip fuzz: per seed, generate a program, then parse -> astToIr -> irToXml
 // -> xmlToIr -> irToDsl -> revalidate -> astToIr, compare, and print a second time.
 // A valid seed fails on a FAIL_CLASSES class, any print warning, or an unstable
-// second print.
+// second print; the run fails on any import warning but the uncaught-cancel one.
 //
 // FUZZ_N (default 200), FUZZ_SEED (default 1), FUZZ_OUT (writes results.jsonl,
 // summary.json and minimized programs to min/), FUZZ_SHUFFLE (`reverse` or a
@@ -264,6 +264,14 @@ function short(x: unknown): string {
 
 // Blanks process names and numbers so one symptom is one key across seeds.
 const PROCESS_NAME_PATTERN = new RegExp(PROCESS_NAMES.join('|'), 'g');
+
+/**
+ * The generator keeps a cancel end in an attempt block nothing catches, a shape
+ * that deploys but fails the run when the end is reached, so the importer
+ * warns about it and nothing else.
+ */
+const UNCAUGHT_CANCEL_WARNING =
+  /^The block '[^']+' holds an end event that gives it up, with no cancel boundary event attached to it: /;
 
 function normalizeMessage(m: string): string {
   return m
@@ -885,6 +893,11 @@ describe('round-trip fuzz', () => {
       );
       expect(rows.length).toBe(N);
       expect(failingSeeds).toEqual([]);
+      expect(
+        Object.keys(importWarningMessages).filter(
+          (m) => !UNCAUGHT_CANCEL_WARNING.test(m),
+        ),
+      ).toEqual([]);
     },
   );
 });

@@ -29,7 +29,7 @@ How should `irToDsl` decide which subgraphs can be phrased as `if`, `while`, `pa
 ## Considered Options
 
 - Dominator and post-dominator analysis with a fixed pattern catalog and a `goto` fallback: each construct gets a criterion that reads the graph rather than a heuristic, and the fallback is a form the language already has, so totality costs no new syntax.
-- RPST (Refined Program Structure Tree) decomposition: a region tree would recover more structured patterns and would answer the continuation question for every construct at once, but the catalog with a `goto` fallback already covers the current scope.
+- RPST (Refined Process Structure Tree) decomposition: a region tree would recover more structured patterns and would answer the continuation question for every construct at once, but the catalog with a `goto` fallback already covers the current scope.
 - Ad-hoc recursive pattern matching without formal control-flow analysis: there is no criterion to check a match against, so an unstructured graph has no defined outcome and the decompiler is free to loop or to throw.
 - An `if` chain for a step with more than one route out, and jumps carrying no conditions where a split degrades: the print of a common modeler shape, a task with two plain flows, then runs one route where the model runs both, and a degraded split's conditions are discarded with no marker for the reader to find.
 - Refusing a step with more than one outgoing flow on import: the printer never sees the shape, but the engine deploys and runs it, and the import contract refuses only what the engine refuses or what changes a stored value.
@@ -47,8 +47,11 @@ The pattern catalog:
 
 - XOR split with a post-dominating join -> `if`/`else if`/`else`
 - Statement with more than one route out -> the fork block the engine runs it as, inclusive or parallel
-- Unconditioned back-edge from a body exit to the XOR head dominating it -> `while`, the loop condition read from the head's edge into the body
-- Conditioned back-edge from an XOR head to the body entry dominating it -> `do...while`, the loop condition read from the back-edge itself
+- Unconditioned back-edge from a body exit to the XOR head dominating it -> `while`, the loop condition read from the head's edge into the body, when that edge is the head's first route other than its default
+  Operaton tests the routes in document order, so an exit listed before the body route is tested first, which `while` cannot say, and the head then prints as an `if` chain with the back edge as a dropped-edge marker.
+  The body's end is where a split's other routes fall through, so a back edge that leaves an exclusive split ahead of another route other than the default would print with that route tested first, and it prints as a dropped-edge marker instead.
+- Conditioned back-edge from an XOR head to the body entry dominating it -> `do...while`, the loop condition read from the back-edge itself, when that back-edge is the head's first route other than its default
+  A route listed before it keeps its place as the head of an `if` chain, with the back-edge as a `goto` into the body.
 - AND fork with a matching AND join -> `parallel { { } { } }`
 - OR fork with a matching OR join -> the same `parallel` block with each conditioned branch headed by its condition, and the fallback flow heading a branch as `else`.
   A fallback that runs straight into the join is left out where enough branches remain to fill the block, and prints as an empty `else` where dropping it would leave too few.
@@ -57,13 +60,21 @@ The pattern catalog:
 
 A gateway a pattern folds is never printed, which is what keeps the round trip idempotent.
 
-`emitRoutes` asks where a split's routes come back together in four steps.
+`emitRoutes` asks where a split's routes come back together in six steps.
+The split's own merge comes first: `pairMerges` walks up the dominator tree from each merge, a split passed on the way being closed by a merge passed before it, and the first split left open owns the merge.
+`ownJoin` takes that merge while it is unprinted, at least one route reaches it before the stop node, and no route runs through a gateway the split does not dominate on the way.
 The clean join is the post-dominator the split dominates, refused when the enclosing construct's stop node does not post-dominate it, since inside a `do` body the body dominates every node behind the loop, so a join behind the loop would otherwise pass the dominance checks whenever a leaving route and the loop exit share an end.
 `convergence` reads where the split's live routes come back together off the model's routes by forward reachability bounded by the stop node, and so answers a split whose branch can end and whose post-dominator therefore lies at the exit.
 The guard clause answers when exactly one route is unconditioned, that route being the continuation; it admits a bare authored terminal as a branch entry when the split's route is the terminal's only incoming flow, so the terminal prints inside the `if` rather than as a `goto` with a trailing statement, and it admits a gateway the split dominates, which a jump could not name anyway.
+Operaton takes the first route in document order that carries no condition or one that holds, so the chain keeps that order: a route without a condition listed before a conditioned one, the guard clause's continuation included, heads its branch as `true` in its place, and the routes after it stay in the chain although neither the engine nor the rebuilt split ever takes them.
 The enclosing continuation is the stop node the enclosing construct handed down, and answers only while that node is defined, no route is unconditioned, and at least one route's target is dominated by the split and post-dominated by the stop node; the chain then walks that route inline, prints the routes that leave the region as jumps, and stops at the stop node where the enclosing construct carries on.
 The same rule serves a split inside a `while` body, a `do` body and a branch, including a split inside a guarded branch.
-Outside any enclosing construct the jumps stay, so a split at process level whose every route is conditioned prints as jumps, closing with no `else`, so the recompiled split gains a fallback into the join that the model never named, and the print reports it.
+Outside any enclosing construct, a split whose every route is conditioned and that has no default continues at a route whose target has no other incoming flow, which leaves that target unprinted and outside any loop the split is not in: its last route in document order when that one qualifies, else its first that does.
+The recompiled split gains a fallback the model never named, which the print reports, and that fallback runs into the statement the print put after the `if`, so a second print reads the same.
+The last route prints as the chain's fall-through rather than as an empty branch, so the print builds without the validator's empty-branch warning.
+Its condition gives way to the fallback, and since Operaton tries the routes in document order and so tries that route last anyway, only the no-match case changes, which the print reports.
+Any other route keeps its condition over an empty branch, since dropping it would make the route the engine tries first the one the rebuilt split tries last.
+With no such route the jumps stay, closing with no `else`.
 A loop gateway's own exit condition prints as the fall-through after the `} while (...)` line and is reported as dropped.
 Every route of a folded exclusive split gets a form: a condition heads its branch, and a route carrying none heads a branch as `true`, takes the chain's `else`, or runs straight into the join as the chain's fall-through, since heading that last route instead would put a `true` over an empty branch and leave the rest of the chain unreachable.
 
@@ -104,7 +115,7 @@ Either way the fix it names is a rename in the diagram.
 - Good, because a step with two plain routes or with a weighed route beside a plain one round-trips to the routing the engine runs, with no report.
 - Good, because the conditions of a degraded split survive on its jumps, and the marker line puts the reader at the split rather than leaving the jumps to explain themselves.
 - Good, because the fork printer, the invented-fallback report and the fallback-condition report each have one home, and a gateway and a step share it.
-- Good, because the CFG analysis is a pure, stateless utility with its own test suite, auditable independently of the emitter, and the same dominator queries answer the clean join, the guard clause and the enclosing continuation.
+- Good, because the CFG analysis is a pure, stateless utility with its own test suite, auditable independently of the emitter, and the same dominator queries answer the own merge, the clean join and the enclosing continuation, while `convergence` reads forward reachability and the guard clause only which routes carry a condition.
 - Good, because a split whose every route is conditioned inside a loop body prints its staying routes inline, so the Operaton invoice example prints its review call inside the loop and the rebuilt process keeps the loop.
   A cascade of such splits inside one body prints as nested chains, each continuing at the same stop node, and the rule adds no state to the walk.
 - Good, because the restructurer reports what it drops instead of leaving the caller to find it, including where the drop changes what a recompiled document runs.

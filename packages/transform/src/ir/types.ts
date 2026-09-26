@@ -40,6 +40,8 @@ export interface BpmnProcess extends FlowContainer, Named {
    */
   candidateStarterUsers?: string;
   candidateStarterGroups?: string;
+  /** `operaton:isStartableInTasklist`; absent means the engine's default, `true`. */
+  isStartableInTasklist?: boolean;
   /**
    * Codes in use in first-use order, then unused declared ones. Stored, not
    * derived, because a declared code emits its root even when unused and usage

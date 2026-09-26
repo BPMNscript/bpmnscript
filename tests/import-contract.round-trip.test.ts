@@ -64,7 +64,7 @@ const dataDropped = (tag: string, id: string) =>
 const EXPECTED_WARNINGS: ImportWarning[] = [
   {
     elementId: 'SignOff',
-    category: 'unmappedConstruct',
+    category: 'rewritten',
     message: manualTaskMessage('SignOff'),
   },
   {

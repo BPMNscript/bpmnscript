@@ -12,7 +12,7 @@ import { parseToAst, printDsl } from './pipeline.js';
 
 export const camundaAliasWarning = (elementId: string): ImportWarning => ({
   elementId,
-  category: 'unmappedConstruct',
+  category: 'rewritten',
   message:
     'The file declares the camunda namespace; it was read as the operaton ' +
     'namespace, since `BpmnParse.OPERATON_BPMN_EXTENSIONS_NS` falls back ' +

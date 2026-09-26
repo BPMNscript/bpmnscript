@@ -196,7 +196,7 @@ export class UnsupportedEventFeatureError extends UnsupportedConstructError {
     remedy: string = EVENT_SURFACE_NOTE,
   ) {
     super(
-      `The event construct at '${elementId}' cannot be imported: ${detail}. ${remedy}`,
+      `The element '${elementId}' cannot be imported: ${detail}. ${remedy}`,
       { elementId, detail },
     );
   }

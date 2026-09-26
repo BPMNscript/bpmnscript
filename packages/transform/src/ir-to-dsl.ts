@@ -1,5 +1,5 @@
 /**
- * IR -> DSL, the inverse of `astToIr`. Dominator patterns (ADR 0009) fold what
+ * IR -> DSL, the inverse of `astToIr`. Dominator patterns (ADR 0014) fold what
  * they can; the rest degrades to `goto`, else an {@link UNSTRUCTURED_MARKER}.
  * Matched gateways are elided: the desugarer derives gateway ids from
  * structural coordinates, so re-parsing re-synthesizes the same ids.
@@ -24,6 +24,7 @@ import {
   LOOP_VARIABLES,
   OUTPUT_DIRECTION,
   PROCESS_ENGINE_HEADER_KEYS,
+  STARTABLE_KEY,
   PROPERTY_DIRECTION,
   runSettingKey,
   TASK_PRIORITY_KEY,
@@ -1220,16 +1221,24 @@ class Emitter {
     );
     this.warnInventedFallback(splitId);
 
-    const join =
+    const found =
       this.ownJoin(splitId, outs, stop) ??
       this.cleanJoin(splitId, outs, stop) ??
       this.convergence(splitId, outs, stop) ??
       this.guardClauseContinuation(unconditioned) ??
       this.enclosingContinuation(splitId, outs, stop);
+    const noMatch =
+      found === undefined
+        ? this.noMatchContinuation(splitId, outs, stop)
+        : undefined;
+    // Operaton tries the routes in document order, so only the last one can
+    // lose its condition without changing which route a holding condition takes.
+    const fallThrough = noMatch === outs.at(-1) ? noMatch : undefined;
+    const join = found ?? noMatch?.targetRef;
 
     for (const f of outs) this.consumedFlows.add(f.id);
     this.emitIfChain(
-      conditioned,
+      conditioned.filter((f) => f !== fallThrough),
       unconditioned,
       fallback,
       join,
@@ -1279,16 +1288,21 @@ class Emitter {
     lines: string[],
     depth: number,
   ): void {
+    // Operaton takes the first route in document order that has no condition
+    // or one that holds, so the heads keep that order and only a route listed
+    // after every condition can be the `else`.
+    const order = this.routesOut(splitId);
+    const lastWeighed = Math.max(-1, ...weighed.map((f) => order.indexOf(f)));
+    const trailing = unweighed.filter((f) => order.indexOf(f) > lastWeighed);
     const elseFlow =
-      fallback ??
-      unweighed.find((f) => f.targetRef === join) ??
-      unweighed.at(-1);
-    const heads: [condition: string, flow: SequenceFlow][] = [
-      ...weighed.map((f): [string, SequenceFlow] => [renderCondition(f), f]),
-      ...unweighed
-        .filter((f) => f !== elseFlow)
-        .map((f): [string, SequenceFlow] => ['true', f]),
-    ];
+      fallback ?? trailing.find((f) => f.targetRef === join) ?? trailing.at(-1);
+    const heads = [...weighed, ...unweighed]
+      .filter((f) => f !== elseFlow)
+      .sort((a, b) => order.indexOf(a) - order.indexOf(b))
+      .map((f): [condition: string, flow: SequenceFlow] => [
+        weighed.includes(f) ? renderCondition(f) : 'true',
+        f,
+      ]);
 
     heads.forEach(([condition, f], i) => {
       lines.push(
@@ -1586,6 +1600,34 @@ class Emitter {
   }
 
   /**
+   * With no fallback, the compiler sends the no-match case to the statement
+   * after the `if`. Left to the jump passes, that statement is whichever chain
+   * prints next, and the rebuilt default then makes the next print pick a
+   * different structure. Continuing at a route's own entry keeps the two
+   * prints the same. The last route is preferred, since only it can print as
+   * the fall-through rather than as an empty branch.
+   */
+  private noMatchContinuation(
+    splitId: string,
+    outs: SequenceFlow[],
+    stop: string | undefined,
+  ): SequenceFlow | undefined {
+    if (
+      stop !== undefined ||
+      this.splitFallbackFlowId(splitId) !== undefined ||
+      // Reached with two unconditioned routes: an empty condition body passes
+      // the import's one-unconditioned-route check and imports as none.
+      outs.some((f) => f.conditionExpression === undefined)
+    ) {
+      return undefined;
+    }
+    const resumable = (f: SequenceFlow): boolean =>
+      this.cfg.incoming(f.targetRef).length === 1;
+    const last = outs.at(-1)!;
+    return resumable(last) ? last : outs.find(resumable);
+  }
+
+  /**
    * Walk or `goto` is decided per branch. `this.branch` is installed because a
    * route can dip past its join into a sibling's step, which only
    * {@link leavesInnermostBranch} stops.
@@ -1829,13 +1871,22 @@ class Emitter {
       (f) =>
         f.targetRef === loop.id &&
         f.sourceRef !== loop.id &&
-        f.conditionExpression === undefined,
+        f.conditionExpression === undefined &&
+        !this.testedAfter(f),
     );
     if (backEdge === undefined) return undefined;
 
+    // Operaton tests the routes in document order and `while (c)` reads back
+    // with the body route first, so only a body route listed first folds.
     const outs = this.unconsumedOut(loop.id);
-    const cond = outs.find((f) => f.conditionExpression !== undefined);
-    if (cond === undefined) return undefined;
+    const fallbackId = this.splitFallbackFlowId(loop.id);
+    const cond = this.routesOut(loop.id).find((f) => f.id !== fallbackId);
+    if (
+      cond?.conditionExpression === undefined ||
+      !this.reachesUnconsumed(cond.targetRef, loop.id, backEdge.sourceRef)
+    ) {
+      return undefined;
+    }
 
     this.emittedNodes.add(loop.id);
     this.consumedFlows.add(cond.id);
@@ -1848,6 +1899,19 @@ class Emitter {
     lines.push('}');
 
     return this.emitRoutes(loop.id, rest, stop, lines, depth);
+  }
+
+  /**
+   * The body's end is where the rest of a split's routes fall through, so a
+   * route of an exclusive split listed after this unconditioned one would be
+   * tested first, while Operaton never reaches it.
+   */
+  private testedAfter(f: SequenceFlow): boolean {
+    if (this.byId.get(f.sourceRef)?.kind !== 'exclusiveGateway') return false;
+    const fallbackId = this.splitFallbackFlowId(f.sourceRef);
+    if (f.id === fallbackId) return false;
+    const routes = this.routesOut(f.sourceRef);
+    return routes.slice(routes.indexOf(f) + 1).some((o) => o.id !== fallbackId);
   }
 
   /**
@@ -1906,8 +1970,9 @@ class Emitter {
 
   /**
    * The condition tells a do-while from a `while`'s join-to-head edge. Operaton
-   * tests conditioned routes in order and `while (c)` reads back as the first,
-   * so only the first conditioned route qualifies.
+   * tests every route but the default in document order, unconditioned ones
+   * included, and `while (c)` reads back as the first, so only the route listed
+   * first qualifies.
    */
   private isDoWhileTest(f: SequenceFlow): boolean {
     if (f.sourceRef === f.targetRef) return false;
@@ -1915,8 +1980,9 @@ class Emitter {
     // A jump-cycle head closes on a `goto`, not on this gateway's test.
     if (this.cfg.isJumpCycleHead(f.targetRef)) return false;
     const head = this.byId.get(f.sourceRef);
+    const fallbackId = this.splitFallbackFlowId(f.sourceRef);
     const firstTest = this.routesOut(f.sourceRef).find(
-      (o) => o.conditionExpression !== undefined,
+      (o) => o.id !== fallbackId,
     );
     return (
       head?.kind === 'exclusiveGateway' &&
@@ -2723,6 +2789,11 @@ function buildProcessHeader(process: BpmnProcess, names: PrintNames): string {
     if (value !== undefined) {
       settings.push(setting(key, PROCESS_HEADER_RENDER[key](value)));
     }
+  }
+  if (process.isStartableInTasklist !== undefined) {
+    settings.push(
+      setting(STARTABLE_KEY, String(process.isStartableInTasklist)),
+    );
   }
   return `process ${nameOf(names, process.id)}${parens(settings)} {`;
 }

@@ -13,10 +13,9 @@ import { realNodeReachability } from './helpers/real-node-reachability.js';
 import { parseToAst, validate } from './helpers/pipeline.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const FIXTURE = readFileSync(
-  resolve(__dirname, 'fixtures/invoice-receipt.bpmn'),
-  'utf-8',
-);
+const fixture = (name: string) =>
+  readFileSync(resolve(__dirname, 'fixtures', name), 'utf-8');
+const FIXTURE = fixture('invoice-receipt.bpmn');
 
 const PRINTED = [
   'process invoice(label: "Invoice Receipt", versionTag: "V2.0", historyTimeToLive: "45") {',
@@ -68,7 +67,7 @@ describe('the Operaton invoice example', () => {
       { elementId: 'prepareBankTransfer', category: 'unmappedConstruct' },
       { elementId: 'prepareBankTransfer', category: 'unmappedConstruct' },
       { elementId: 'StartEvent_1', category: 'extensionAttribute' },
-      { elementId: 'ServiceTask_1', category: 'unmappedConstruct' },
+      { elementId: 'ServiceTask_1', category: 'rewritten' },
       { elementId: 'reviewSuccessful', category: 'label' },
       { elementId: 'reviewNotSuccessful', category: 'label' },
       { elementId: 'invoiceApproved', category: 'label' },
@@ -101,4 +100,22 @@ describe('the Operaton invoice example', () => {
     );
     expect((await xmlToIr(await irToXml(reDesugared))).warnings).toEqual([]);
   });
+
+  it.each([
+    ['the loop-test version', 'invoice-receipt.bpmn'],
+    [
+      'the version whose approval split names no fallback',
+      'invoice-receipt-no-fallback.bpmn',
+    ],
+  ])(
+    '%s prints a script that builds without warnings and prints the same script again from the document it builds',
+    async (_, name) => {
+      const print = async (xml: string) =>
+        irToDsl((await xmlToIr(xml)).ir).source;
+      const first = await print(fixture(name));
+      expect((await validate(first)).diagnostics).toEqual([]);
+      const rebuilt = await irToXml(astToIr(await parseToAst(first)));
+      expect(await print(rebuilt)).toEqual(first);
+    },
+  );
 });

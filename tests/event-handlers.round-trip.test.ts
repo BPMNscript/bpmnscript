@@ -23,7 +23,7 @@ const rt = roundTripFixture('event-handlers', {
 const IMPORT_FIRST_BPMN = `<?xml version="1.0" encoding="UTF-8"?>
 <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:camunda="http://camunda.org/schema/1.0/bpmn" xmlns:operaton="http://operaton.org/schema/1.0/bpmn" id="Definitions_import_first" targetNamespace="http://bpmn.io/schema/bpmn">
   <bpmn:error id="Error_Boom" name="BOOM" errorCode="BOOM" camunda:errorMessage="It went boom" />
-  <bpmn:process id="import-first" name="Import First" isExecutable="true">
+  <bpmn:process id="import-first" name="Import First" isExecutable="true" operaton:historyTimeToLive="P30D">
     <bpmn:startEvent id="Begin">
       <bpmn:outgoing>Flow_Begin_DoWork</bpmn:outgoing>
     </bpmn:startEvent>

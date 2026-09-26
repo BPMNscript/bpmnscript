@@ -274,14 +274,17 @@ export const PROCESS_ENGINE_HEADER_KEYS = [
   'candidateStarterGroups',
 ] as const;
 
+/** The one header setting that takes a boolean rather than text. */
+export const STARTABLE_KEY = 'isStartableInTasklist';
+
 /**
- * In offer and print order. The `jobPriority`, `taskPriority`,
- * `isStartableInTasklist`, listeners and `potentialStarter` Operaton also reads
- * off a process are left out on purpose.
+ * In offer and print order. The `jobPriority`, `taskPriority`, listeners and
+ * `potentialStarter` Operaton also reads off a process are left out on purpose.
  */
 export const PROCESS_HEADER_KEYS: readonly string[] = [
   ...LABEL_KEYS,
   ...PROCESS_ENGINE_HEADER_KEYS,
+  STARTABLE_KEY,
 ];
 
 export const INPUT_DIRECTION = 'input';
@@ -684,12 +687,14 @@ export function scriptFormatOf(tag: string): string | undefined {
 }
 
 /**
- * One line terminator after the tag is dropped and `\r\n` becomes `\n`, so a
- * CRLF checkout writes the same `<bpmn:script>` as an LF one.
+ * The tag runs to the first whitespace, so a scriptFormat such as
+ * `http://www.java.com/java` reads whole. One line terminator after the tag is
+ * dropped and `\r\n` becomes `\n`, so a CRLF checkout writes the same
+ * `<bpmn:script>` as an LF one.
  */
 export function splitFencedScript(raw: string): { tag: string; code: string } {
   const inner = raw.slice(3, -3);
-  const tag = /^[a-zA-Z]+/.exec(inner)?.[0] ?? '';
+  const tag = /^\S*/.exec(inner)?.[0] ?? '';
   const rest = inner.slice(tag.length);
   const afterOpeningLine = rest.startsWith('\r\n')
     ? rest.slice(2)

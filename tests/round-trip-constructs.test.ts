@@ -153,9 +153,16 @@ it('goto degradation keeps every authored node, edge and condition over two roun
   expect(realIds(irReDesugared)).toEqual(realIds(irImport));
 });
 
-// The XML writer numeric-escapes `"` and line feeds in attribute values.
+// Reads attribute values as a conforming XML parser does: a raw tab, carriage
+// return or line feed becomes a space (XML 1.0, 3.3.3), a character reference
+// keeps its character.
 function decodeXmlEntities(xml: string): string {
-  return xml.replace(/&#34;/g, '"').replace(/&#10;/g, '\n');
+  return xml
+    .replace(/<[^>]*>/g, (tag) => tag.replace(/[\t\r\n]/g, ' '))
+    .replace(/&#34;/g, '"')
+    .replace(/&#10;/g, '\n')
+    .replace(/&#9;/g, '\t')
+    .replace(/&#13;/g, '\r');
 }
 
 describe('two-pass round trip: printed expression text stays engine-runnable and stable', () => {
@@ -292,24 +299,24 @@ describe('two-pass round trip: printed expression text stays engine-runnable and
       [],
     ],
     [
-      // No tab case: moddle-xml leaves a tab in an attribute unescaped, so a strict parser reads it as a space.
-      'a real line feed in an io value, a map key or a field value prints as its two-character escape',
+      'a real line feed, tab or carriage return in an io value, a map key, a field value or a label reaches the engine and prints as its two-character escape',
       [
         'process p {',
-        '  service A(class: "x") {',
+        '  service A(class: "x", label: "a\\tb\\rc") {',
         '    input m = { "a\\nb": 1 }',
         '    input s = "l1\\nl2"',
-        '    field f = "f1\\nf2"',
+        '    field f = "f1\\nf2\\tf3\\rf4"',
         '  }',
         '}',
         '',
       ].join('\n'),
       [
-        'stringValue="f1\nf2"',
+        'name="a\tb\rc"',
+        'stringValue="f1\nf2\tf3\rf4"',
         'key="a\nb"',
         '<operaton:inputParameter name="s">l1\nl2</operaton:inputParameter>',
       ],
-      ['"f1\\nf2"', '"l1\\nl2"'],
+      ['"a\\tb\\rc"', '"f1\\nf2\\tf3\\rf4"', '"l1\\nl2"'],
     ],
     [
       'a map key that is itself a template opener prints with a backslash so it re-parses as a literal key, not a raw template',

@@ -12,8 +12,8 @@ import { compareModels, modelSignature } from './helpers/model-equivalence.js';
 import type { ModelComparison } from './helpers/model-equivalence.js';
 
 // Shapes whose print depends on the model's element and flow order. The third
-// column is the `compareModels` class of the reversed-order reread ('same' if
-// absent).
+// column is the `compareModels` class of the reread against the reversed model
+// ('same' if absent).
 const ORDER_ROWS: [
   title: string,
   source: string,
@@ -389,7 +389,7 @@ const ORDER_ROWS: [
   }
   goto Fin
 }`,
-    'restructured',
+    'canonical',
   ],
   [
     'a triggered start whose chain ends in its own authored end prints ahead of a plain start whose chain runs on to the implicit one',
@@ -766,7 +766,6 @@ const ORDER_ROWS: [
     goto B
   }
 }`,
-    'restructured',
   ],
   [
     'a do-while around a while that gotos enter from before and after keeps both loops',
@@ -849,7 +848,6 @@ const ORDER_ROWS: [
     } while (y)
   }
 }`,
-    'restructured',
   ],
   [
     'a nested if branch that only a later goto jumps back to prints inside its if, not after the implicit end',
@@ -918,7 +916,6 @@ const ORDER_ROWS: [
     goto B
   }
 }`,
-    'restructured',
   ],
   [
     'an if around a do-while keeps its own merge when a goto after the loop inside it has one too',
@@ -940,7 +937,6 @@ const ORDER_ROWS: [
     }
   }
 }`,
-    'restructured',
   ],
   [
     'a goto from a nested if into a while head after the if keeps the loop when a later goto enters the inner while',
@@ -2344,11 +2340,13 @@ function reversed<C extends FlowContainer>(c: C): C {
 it.each(ORDER_ROWS)(
   '%s, in model order and reversed',
   async (_title, source, comparison = 'same') => {
-    const { ir1, ir2 } = await expectStableRoundTrip(source);
-    const dsl = printDsl(reversed(ir2));
+    // Reversing swaps the order an exclusive split tries its conditions in,
+    // so the reread is compared with the reversed model, not the source.
+    const model = reversed((await expectStableRoundTrip(source)).ir2);
+    const dsl = printDsl(model);
     expect(await validationErrors(dsl)).toEqual([]);
     const { ir1: reread, dsl: next } = await roundTrip(dsl);
-    expect(compareModels(ir1, reread)).toBe(comparison);
+    expect(compareModels(model, reread)).toBe(comparison);
     expect(next).toBe(dsl);
   },
 );
@@ -2886,7 +2884,7 @@ it('an implicit start and a conditional start entering the same step keep both s
 `);
   expect(await validationErrors(dsl)).toEqual([]);
   const { ir1: reread, dsl: next } = await roundTrip(dsl);
-  expect(compareModels(ir, reread)).toBe('restructured');
+  expect(compareModels(ir, reread)).toBe('same');
   expect(next).toBe(dsl);
 });
 
@@ -2930,7 +2928,7 @@ it('a start entering a step reached only through a printed link hop keeps the fl
 `);
   expect(await validationErrors(dsl)).toEqual([]);
   const { ir1: reread, dsl: dsl2 } = await roundTrip(dsl);
-  expect(compareModels(ir, reread)).toBe('restructured');
+  expect(compareModels(ir, reread)).toBe('same');
   // The merge is compiled away, so `Ca` reaches the elided end on its own; the
   // end must still count as displaced, or it prints under a refused name.
   expect(await validationErrors(dsl2)).toEqual([]);
@@ -2947,7 +2945,7 @@ it('a start entering a step reached only through a printed link hop keeps the fl
 }
 `);
   const { ir1: rereadAgain, dsl: dsl3 } = await roundTrip(dsl2);
-  expect(compareModels(ir, rereadAgain)).toBe('restructured');
+  expect(compareModels(ir, rereadAgain)).toBe('same');
   expect(dsl3).toBe(dsl2);
 });
 
