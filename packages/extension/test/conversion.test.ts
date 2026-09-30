@@ -59,6 +59,7 @@ import type {
 import {
   compileCommand,
   decompileCommand,
+  pickBpmnAndDecompileCommand,
 } from '../src/extension/conversion.js';
 
 function notifications(): Record<'info' | 'warning' | 'error', string[]> {
@@ -221,6 +222,18 @@ describe('conversion commands: what the author is shown', () => {
       },
     ],
     [
+      'decompile with nothing selected and no editor open says so and stops',
+      'decompile',
+      undefined,
+      undefined,
+      {
+        warning: [
+          'BPMNscript: No file selected. Open a .bpmn file or select one in the Explorer.',
+        ],
+        returns: undefined,
+      },
+    ],
+    [
       'compile takes an upper-case extension',
       'compile',
       'ORDER.BPMNSCRIPT',
@@ -267,5 +280,68 @@ describe('conversion commands: what the author is shown', () => {
 
     const core = command === 'compile' ? compileDslToBpmn : decompileBpmnToDsl;
     expect(core).toHaveBeenCalledTimes(result === undefined ? 0 : 1);
+  });
+});
+
+describe('conversion commands: what reaches the disk', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(compileDslToBpmn).mockResolvedValue({
+      ok: true,
+      output: '<bpmn/>',
+    });
+  });
+
+  test('unsaved edits are converted, not the stale file on disk', async () => {
+    const uri = vscode.Uri.file('/tmp/example.bpmnscript');
+    const openDocs = vscode.workspace.textDocuments as vscode.TextDocument[];
+    openDocs.push({ uri, getText: () => 'EDITED' } as vscode.TextDocument);
+    try {
+      await compileCommand('0.0.1')(uri);
+    } finally {
+      openDocs.length = 0;
+    }
+    expect(compileDslToBpmn).toHaveBeenCalledWith('EDITED', '0.0.1');
+    expect(vscode.workspace.fs.readFile).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    ['declining the prompt writes nothing', undefined, undefined, 0],
+    [
+      "answering 'Overwrite' writes the output",
+      'Overwrite',
+      '/tmp/example.bpmn',
+      1,
+    ],
+  ])('an existing output: %s', async (_title, answer, returns, writes) => {
+    vi.mocked(vscode.workspace.fs.stat).mockResolvedValueOnce(
+      {} as vscode.FileStat,
+    );
+    mocks.showWarningMessage.mockResolvedValueOnce(answer);
+
+    const returned = await compileCommand('0.0.1')(
+      vscode.Uri.file('/tmp/example.bpmnscript'),
+    );
+
+    expect(returned?.fsPath).toBe(returns);
+    expect(vscode.workspace.fs.writeFile).toHaveBeenCalledTimes(writes);
+  });
+
+  test.each([
+    ['a cancelled dialog decompiles nothing', undefined, []],
+    [
+      'the picked file is decompiled',
+      [vscode.Uri.file('/tmp/example.bpmn')],
+      ['/tmp/example.bpmn'],
+    ],
+  ])('open and decompile: %s', async (_title, picked, decompiled) => {
+    vi.mocked(vscode.window.showOpenDialog).mockResolvedValueOnce(picked);
+    const decompile = vi.fn();
+
+    await pickBpmnAndDecompileCommand(decompile)();
+
+    expect(
+      decompile.mock.calls.map((call) => (call[0] as vscode.Uri).fsPath),
+    ).toEqual(decompiled);
   });
 });

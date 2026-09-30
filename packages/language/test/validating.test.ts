@@ -431,8 +431,8 @@ const HANDLER_PLACEMENT =
 const HANDLER_TRAILING =
   'Event handlers read like catch blocks: move it after the last step of ' +
   'this body.';
-const MESSAGELESS_NAME =
-  "A message handler needs the message's name: the engine matches messages by name.";
+const nameless = (trigger: string) =>
+  `A ${trigger} handler needs the ${trigger}'s name: the engine matches ${trigger}s by name.`;
 const CONDITION_REQUIRED =
   "A condition handler needs its condition: 'on condition(amount > 100)'.";
 const CONDITION_NO_CODE =
@@ -2517,12 +2517,12 @@ checks('Validation - event handlers', [
   [
     'a name-less message handler asks for the name',
     `process p { on message { user A } }`,
-    [noFlowSteps('p'), MESSAGELESS_NAME],
+    [noFlowSteps('p'), nameless('message')],
   ],
   [
     'a name-less signal handler asks for the name',
     `process p { on signal { user A } }`,
-    [noFlowSteps('p'), MESSAGELESS_NAME],
+    [noFlowSteps('p'), nameless('signal')],
   ],
   [
     'a payload-less timer handler asks how to read the time',
@@ -2547,7 +2547,7 @@ checks('Validation - event handlers', [
   [
     'a timer key on a signal handler belongs to a timer',
     `process p { on signal(at: "PT1H") { user A } }`,
-    [noFlowSteps('p'), MESSAGELESS_NAME, PARTICLE_ONLY],
+    [noFlowSteps('p'), nameless('signal'), PARTICLE_ONLY],
   ],
   [
     'a code string on a condition handler is not the condition',
