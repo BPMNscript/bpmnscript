@@ -11,6 +11,7 @@
 ### Prerequisites
 
 - [Node.js](https://nodejs.org/) >= 22 (the project uses Node 24 via `.nvmrc`; [nvm](https://github.com/nvm-sh/nvm)'s `nvm use` reads it)
+  `.nvmrc` pins `24.19.0` because 24.20.0 and 24.21.0 fail `langium generate` with `ERR_INVALID_URL`; move it back to `24` once a later 24.x generates cleanly.
 - [VS Code](https://code.visualstudio.com/) with the recommended extensions (VS Code will prompt you on first open)
 - [Docker](https://www.docker.com/) for end-to-end tests (alternatives: [Podman](https://podman.io/), [Rancher Desktop](https://rancherdesktop.io/))
 

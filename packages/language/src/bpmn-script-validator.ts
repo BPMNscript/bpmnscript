@@ -3745,10 +3745,11 @@ export class BpmnScriptValidator {
     const payload = payloadItemOf(handler.items);
     if (rule.code === 'required') {
       if (!code) {
-        accept('error', nameRequiredMessage('A message handler', 'message'), {
-          node: handler,
-          property: 'trigger',
-        });
+        accept(
+          'error',
+          nameRequiredMessage(`A ${handler.trigger} handler`, handler.trigger),
+          { node: handler, property: 'trigger' },
+        );
       }
     } else if (rule.code === 'optional') {
       checkEmptyCode(code, handler.items, accept);

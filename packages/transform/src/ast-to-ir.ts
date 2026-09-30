@@ -3,7 +3,9 @@
  * static position in the block tree, never a traversal counter), so lowering
  * `irToDsl` output again yields identical ids. A sub-process body is rooted at
  * its coordinate, not its name: gateway ids skip `resolveCollision`, so a
- * sub-process named like a coordinate could otherwise duplicate one.
+ * sub-process named like a coordinate could otherwise duplicate one. The
+ * validator's reserved `Gateway_..._split` pattern relies on that too: it is
+ * end-anchored, so a `_2` collision suffix would slip past it.
  *
  * Throws only on a program the validator rejects.
  */

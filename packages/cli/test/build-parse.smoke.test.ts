@@ -460,6 +460,49 @@ describe('bpmns build / bpmns parse: guards against destructive or unclear failu
       }),
     ],
     [
+      'build: a missing input is refused',
+      'build',
+      (dir) => {
+        const inputPath = path.join(dir, 'missing.bpmnscript');
+        return {
+          inputPath,
+          opts: {},
+          exit: 2,
+          line: `Error: file not found: ${inputPath}`,
+        };
+      },
+    ],
+    [
+      'parse: an unreadable input is refused',
+      'parse',
+      (dir) => {
+        const { inputPath } = writeInput(dir, 'parse');
+        fs.chmodSync(inputPath, 0o000);
+        return {
+          inputPath,
+          opts: {},
+          exit: 2,
+          line: `Error: could not read ${inputPath}: EACCES: permission denied, open '${inputPath}'`,
+        };
+      },
+    ],
+    [
+      'build: an unwritable output is refused',
+      'build',
+      (dir) => {
+        const { inputPath } = writeInput(dir, 'build');
+        const readOnly = path.join(dir, 'read-only');
+        fs.mkdirSync(readOnly, 0o555);
+        const outputPath = path.join(readOnly, 'order.bpmn');
+        return {
+          inputPath,
+          opts: { output: outputPath },
+          exit: 2,
+          line: `Error: could not write output to ${outputPath}: EACCES: permission denied, open '${outputPath}'`,
+        };
+      },
+    ],
+    [
       'build: an -o naming a directory writes inside it under the default basename',
       'build',
       (dir) => {
