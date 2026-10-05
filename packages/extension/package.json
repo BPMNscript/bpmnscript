@@ -115,10 +115,10 @@
   "dependencies": {
     "@bpmn-script/language": "0.0.1",
     "@bpmn-script/transform": "0.0.1",
-    "vscode-languageclient": "~10.1.1"
+    "vscode-languageclient": "~10.1.2"
   },
   "devDependencies": {
-    "@types/vscode": "~1.134.0",
+    "@types/vscode": "~1.140.0",
     "@vscode/vsce": "^4.0.0",
     "concurrently": "^10.0.5",
     "esbuild": "~0.28.2",
