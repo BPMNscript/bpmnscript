@@ -14,10 +14,9 @@ export function withTextMessages(
 }
 
 export const UNREACHABLE =
-  'This step can never run: an earlier `end`, `throw`, `goto`, `emit link`, ' +
-  'or an all-terminating `if`/`parallel`/`await` in the same block always ' +
-  'ends or redirects the flow before reaching it, so this step would lower ' +
-  'to a disconnected node with no incoming flow, which is invalid BPMN.';
+  'this step can never run\n' +
+  "note: an earlier 'end', 'throw', 'goto', 'emit link', or an 'if', 'parallel', or 'await' whose every branch ends always ends or redirects the flow before it\n" +
+  'note: the step would have no incoming flow, which is invalid BPMN';
 
 export const undeclaredVariable = (name: string): string =>
-  `Variable '${name}' is not declared. Add 'var ${name}: <type>' to the process.`;
+  `variable '${name}' is not declared\nhelp: add 'var ${name}: <type>' to the process`;

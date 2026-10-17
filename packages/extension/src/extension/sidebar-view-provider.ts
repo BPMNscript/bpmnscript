@@ -52,32 +52,19 @@ export class SidebarViewProvider implements vscode.WebviewViewProvider {
     });
   }
 
-  async refresh(): Promise<void> {
-    if (!this._view) return;
-    await this._postState();
-  }
-
   private async _handleMessage(message: unknown): Promise<void> {
     const msg = message as { type: string; uri?: string };
 
     switch (msg.type) {
       case 'ready':
-        await this._postState();
+        await this.refresh();
         break;
 
       case 'compile':
-        if (msg.uri) {
-          await vscode.commands.executeCommand(
-            'bpmnscript.compile',
-            vscode.Uri.parse(msg.uri),
-          );
-        }
-        break;
-
       case 'decompile':
         if (msg.uri) {
           await vscode.commands.executeCommand(
-            'bpmnscript.decompile',
+            `bpmnscript.${msg.type}`,
             vscode.Uri.parse(msg.uri),
           );
         }
@@ -95,7 +82,7 @@ export class SidebarViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
-  private async _postState(): Promise<void> {
+  async refresh(): Promise<void> {
     if (!this._view) return;
 
     const editor = vscode.window.activeTextEditor;
@@ -104,7 +91,7 @@ export class SidebarViewProvider implements vscode.WebviewViewProvider {
     if (editor) {
       const uri = editor.document.uri;
       const ext = path.extname(uri.fsPath).toLowerCase();
-      const kind: 'dsl' | 'bpmn' | null =
+      const kind: ActiveFile['kind'] =
         ext === '.bpmnscript' ? 'dsl' : ext === '.bpmn' ? 'bpmn' : null;
 
       activeFile = {
@@ -135,8 +122,6 @@ export class SidebarViewProvider implements vscode.WebviewViewProvider {
 
   private _buildHtml(webview: vscode.Webview): string {
     const nonce = randomBytes(16).toString('hex');
-    const cspSource = webview.cspSource;
-
     const cssUri = webview
       .asWebviewUri(
         vscode.Uri.joinPath(this._extensionUri, 'media', 'sidebar.css'),
@@ -153,14 +138,11 @@ export class SidebarViewProvider implements vscode.WebviewViewProvider {
       'media',
       'sidebar.html',
     ).fsPath;
-    let html = fs.readFileSync(templatePath, 'utf-8');
-
-    html = html
+    return fs
+      .readFileSync(templatePath, 'utf-8')
       .replaceAll('{{NONCE}}', nonce)
-      .replaceAll('{{CSP_SOURCE}}', cspSource)
+      .replaceAll('{{CSP_SOURCE}}', webview.cspSource)
       .replace('{{CSS_URI}}', cssUri)
       .replace('{{JS_URI}}', jsUri);
-
-    return html;
   }
 }

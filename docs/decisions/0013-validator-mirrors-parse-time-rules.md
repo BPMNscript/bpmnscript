@@ -8,16 +8,16 @@ decision-makers: Marlon Kranz
 
 ## Context and Problem Statement
 
-`BpmnParse` refuses a set of documents at deployment that this surface compiled without a word.
+`BpmnParse` refuses a set of documents at deployment that a validator blind to the engine compiles without a word.
 `addEventSubscriptionDeclaration` keeps one message or signal subscription per name on one scope, and one conditional start per condition text on the process.
 A handler written inside a block subscribes on that block, since the event sub-process it lowers to takes the block as its event scope (`parseEventDefinitionForSubprocess`), and a handler attached to the block subscribes on the block too (`parseBoundaryEvents`), so the two collide on one name.
 Every branch of an `await` block subscribes on the gateway (`parseIntermediateCatchEvent`), so two branches on one name collide as well.
 `addEscalationEventDefinition` refuses an escalation catch without a code beside one with a code when both are boundary events on one host or both event sub-processes in one scope.
 `selectInitial` refuses a second plain or timer start on a process.
-The validator keyed a handler by its host name and grouped handlers by syntactic container, so none of these collisions drew a diagnostic, and the deployment failed with an engine message naming a generated id.
+A validator that keys a handler by its host name and groups handlers by syntactic container draws no diagnostic for any of these collisions, and the deployment fails with an engine message naming a generated id.
 
 Three more facts sit beside those, silent rather than refused.
-`parseScopeStartEvent` reads neither `operaton:initiator` nor a start form off a start that is not the process's own, so both compiled onto a nested start and did nothing.
+`parseScopeStartEvent` reads neither `operaton:initiator` nor a start form off a start that is not the process's own, so both compile onto a nested start and do nothing.
 `DefaultFailedJobParseListener.parseActivity` stores a retry cycle only for an activity with an async flag, and `parseAsynchronousContinuation` folds `exclusive` into the async flags it sets.
 `createActivityOnScope` stores a job priority that only a job declaration reads.
 Each of the three keys therefore configures nothing without the job its async flag creates.
@@ -60,10 +60,10 @@ A timer carrier is exempt for all three, since the timer job reads them off the 
 
 ### Consequences
 
-- Good, because a script that compiles now deploys where these rules are concerned, and the message names the scope and the engine method.
+- Good, because a script that compiles also deploys where these rules are concerned, and the message names the scope and the engine method.
 - Good, because a setting that configures nothing is reported at the key that carries it.
 - Bad, because the validator restates engine rules that can move under a new engine version; each rule cites the method it mirrors so the drift can be checked.
-- Neutral, because a script with a nested start form, an unpaired job setting, or a `resultVariable` beside `topic` draws a diagnostic where it drew none.
+- Neutral, because a script with a nested start form, an unpaired job setting, or a `resultVariable` beside `topic` draws a diagnostic although it deploys.
 
 ### Confirmation
 

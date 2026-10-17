@@ -8,9 +8,9 @@ decision-makers: Marlon Kranz
 
 ## Context and Problem Statement
 
-`xmlToIr`'s docstring stated that silent semantic loss is impossible, while the transform dropped several kinds of content without any diagnostic: event definitions on start and end events, loop characteristics on tasks, whole collaborations, Operaton and camunda extension content, and lanes.
+An importer that promises no silent semantic loss has to say what happens to every piece of content the IR cannot carry: event definitions on start and end events, loop characteristics on tasks, whole collaborations, Operaton and camunda extension content, and lanes among them.
 Some of those drops change what the imported process executes; others do not.
-The import contract has to make good on its own claim: what should happen when `xmlToIr` meets content the IR cannot carry, and should every such case be treated the same way?
+What should happen when `xmlToIr` meets content the IR cannot carry, and should every such case be treated the same way?
 
 A surface that answers from its own reading of the IR disagrees with `BpmnParse` in both directions, refusing files the engine deploys while carrying files it refuses, and it says nothing about what the engine does with what it drops.
 Camunda Modeler's default export is the case that costs most: it writes a `bpmn:collaboration` with one participant for any diagram with a pool or a lane, an `isExecutable="false"` process for every empty pool, and `xmlns:camunda` on every file, which is also the shape of the Operaton invoice example and four MIWG reference files.
@@ -30,10 +30,10 @@ Document shapes the engine rejects before `BpmnParse` sees an element pass throu
 
 - Two tiers drawn where `BpmnParse` draws them: refuse what the engine fails the deployment on, warn on what it deploys and this surface cannot spell.
 - Refuse everything the IR cannot express, with no warning tier: nothing the engine runs is ever dropped and a listener on a gateway could not slip through, but it refuses every file a real modeler exports over content that costs the reader a warning rather than a run.
-- Drop what the IR cannot carry in silence and correct the docstring to describe that.
+- Drop what the IR cannot carry in silence and document that the importer does so.
 - Draw the tiers from the surface's own reading of the IR and correct the wording of the drops alone.
 - Refuse every setting the engine reads that this surface cannot spell.
-- Refuse every collaboration and every multi-process document, on the reading that a pool means several linked processes: nothing is dropped, but the refusal blocks most real input on a shape the engine ignores, and its message called a lone pool "multiple linked processes".
+- Refuse every collaboration and every multi-process document, on the reading that a pool means several linked processes: nothing is dropped, but the refusal blocks most real input on a shape the engine ignores, and its message would call a lone pool "multiple linked processes".
 - Write the pool back on export rather than warn that the round trip loses it: the frame would survive, but it needs a `bpmn:collaboration`, a participant shape whose bounds enclose every laid-out element, and a plane over the collaboration, none of which `bpmn-auto-layout` produces, for a frame the engine never reads.
 - Read the camunda namespace through a second moddle package, or by rewriting the prefix in the document text: a second package would key every consumption table twice, and a prefix rewrite could hit a prefix spelled inside attribute text, where the URI cannot appear.
 - Carry documentation as a list of `{ text, textFormat }` members per node, or rework the printer to give a setting a multi-line entry: nothing in the corpus writes two children on one element, so neither buys anything the single escaped string does not.
@@ -45,7 +45,7 @@ Document shapes the engine rejects before `BpmnParse` sees an element pass throu
 Chosen option: two tiers, drawn where `BpmnParse` draws them, because it is the only option consistent with the no-silent-semantic-loss claim that accepts what the engine deploys, within the scope bounds below (one executable process per file, no event without an id that the engine deploys but cannot run, and no construct this surface cannot spell), and says what the engine does with what it drops.
 
 The rule has three clauses.
-A shape `BpmnParse` fails the deployment on refuses, and the message names the method and quotes its sentence, since there is nothing that runs to write back.
+A shape `BpmnParse` fails the deployment on refuses, and the message names the method, since there is nothing that runs to write back.
 A shape the engine deploys and this surface can spell is carried, with a warning where the spelling changes.
 A shape the engine deploys and this surface cannot spell either drops with a warning that names the method that reads it and says the document written back runs without it, or is refused with its reason.
 `packages/transform/README.md` lists the refused ones, among them a `bpmn:complexGateway`, a compensation boundary event, two input parameters sharing a name, a script body no fence can enclose, and a thrown message's result variable beside an `expression` binding, where the engine stores a value the throw has no slot for.
@@ -66,6 +66,9 @@ Three document-level shapes follow from the same rule rather than from any one e
 A file with two or more processes marked executable is refused, although `parseProcessDefinitions` deploys each of them as a definition of its own: the IR and a script hold one process, so one executable process per file is a scope bound of this tool, not an engine rule.
 A collaboration is diagram data to the engine, since `parseCollaboration` records a participant's `processRef` only so that `parseBPMNShape` can attach the pool's bounds and no method in `BpmnParse` reads a `bpmn:messageFlow`, so a pool warns rather than refuses.
 The camunda namespace is read as the operaton one by replacing the URI in the document text before `moddle.fromXML`, with one warning per document: `BpmnParse.OPERATON_BPMN_EXTENSIONS_NS` falls back to the camunda URI only when the operaton lookup finds nothing, and moddle-xml binds a prefix to a package by URI rather than by spelling, so after the swap every `camunda:` element arrives typed `operaton:*` and every `camunda:` attribute reads through the one `operaton:` reader.
+That fallback runs per attribute name on one element and per child tag name under one parent (`Element.attributeNS`, `elementNS`, and `elementsNS`), so a file declaring both URIs would merge two spellings the engine keeps apart.
+Before the swap, the camunda spellings the engine never reaches are cut from the text, and one `extensionAttribute` warning per element names them.
+Children `BpmnParse` fetches by tag alone, such as list items, map entries, and an external task's `errorEventDefinition`, run under both spellings and import under both.
 
 BPMN's own resource roles on a user task import onto the Operaton assignment attributes, with one warning per role naming the rewrite, since `BpmnParse.parseTaskDefinition` reads both into the same assignee and candidate lists that `operaton:assignee`, `operaton:candidateUsers`, and `operaton:candidateGroups` fill.
 The exported document carries the Operaton attributes alone, and the engine builds the same identity links from them.
@@ -74,18 +77,26 @@ A single plaintext `bpmn:documentation` child imports onto one optional `documen
 The body is carried verbatim, so a modeler's pretty-printed whitespace inside the element comes back as it was written rather than trimmed.
 Tying documentation to the name means the positions that report it instead are already the positions a label is reported at: an element with no slot for a name has no slot for documentation either, so there is one rule rather than two.
 
+A documentation child inside a value the engine reads is carried as well, since BPMN gives every expression the base element's `documentation`.
+The values are a condition on a sequence flow or a conditional event, a timer's time, a repetition's count and completion condition, and the `bpmn:inputDataItem` naming the variable each run sees.
+`documentation` always documents the element, and a value always takes a key named for the word that introduces it: `conditionDocumentation`, `timerDocumentation`, `countDocumentation` or `eachDocumentation`.
+So `if (amount > 1000, conditionDocumentation: "...")` documents the condition and leaves the parentheses after it to the gateway, and `user R for 3 until (done, conditionDocumentation: "...")` documents the completion condition.
+A `documentation` inside a condition's own parentheses is refused, since it would document a value under the element's key.
+The writer puts a documented expression's text flush against its documentation child, because `BpmnParse` reads a loop count and a completion condition untrimmed and the formatter's indentation would otherwise become part of them.
+A documented element variable is written as a named `bpmn:inputDataItem` instead of `operaton:elementVariable`, which `parseMultiInstanceLoopCharacteristics` reads into the same field, and a `bpmn:inputDataItem` without a name has no variable to hold the text, so its documentation is reported.
+
 The contract covers two hops.
 `irToDsl` reports in the same shape, returning `{ source, warnings }` for the reason `xmlToIr` returns `{ ir, warnings }`: a channel a caller can skip is a silent drop.
-Some of what its warnings name merely drops, such as a gateway label no statement form can hold; some changes what a recompiled document runs, such as a fallback re-derived on an imported fork whose branches all carry conditions and that named none; and some is printed as the model spells it and draws an error when the source is read back, such as an `else` beside a branch that runs whatever the conditions do.
+Some of what its warnings name merely drops, such as a gateway label no statement form can hold; some changes what a recompiled document runs, such as an inclusive split degraded to jumps, whose recompiled form takes one route where the model takes every route whose condition holds; and some is printed as the model spells it and draws an error when the source is read back, such as an `else` beside a branch that runs whatever the conditions do.
 Every one of them is warned rather than refused, because a refusal has no meaning on this hop: the restructurer is total and always produces source.
 
 ### Consequences
 
-- Good, because a document the engine deploys imports, provided it marks at most one process executable, holds no event without an id that the engine cannot run, and uses no construct this surface cannot spell, among them the Modeler's default collaboration file, the Operaton invoice example, and the MIWG files with one executable process, and one the engine refuses is refused with the engine's own sentence rather than imported into a script that cannot deploy.
+- Good, because a document the engine deploys imports, provided it marks at most one process executable, holds no event without an id that the engine cannot run, and uses no construct this surface cannot spell, among them the Modeler's default collaboration file, the Operaton invoice example, and the MIWG files with one executable process, and one the engine refuses is refused with the name of the engine method that refuses it rather than imported into a script that cannot deploy.
 - Good, because every caller, the CLI, the VS Code extension, and the round-trip suite, surfaces both the refusal and the warning channel instead of only one or neither, and the shared `UnsupportedConstructError` base keeps classification to one `instanceof` check as new refusal categories are added.
 - Good, because every warning on a setting the engine reads says which method reads it, so the reader knows whether the drop changes a run.
 - Bad, because the engine's sentences are quoted in the importer and drift with the engine's wording.
-- Bad, because a shape the engine deploys and then fails at run time, such as an empty listener `class` on a task, is carried into a script that draws an error at the step, which the reader has to repair by hand.
+- Bad, because a shape the engine deploys and then fails at run time, such as an empty task listener `class`, is carried into a script that draws an error at the step, which the reader has to repair by hand.
 - Bad, because some warned items do bear on what runs, against the boundary this decision draws, among them a dropped `operaton:field`, which leaves the bound class without a value it was injected with, and `isExecutable="false"`, which imports as an executable process.
   Refusing either would reject files that otherwise import cleanly, and carrying `isExecutable` through would mean an IR field, a serializer path, and a DSL surface for a flag this tool has no use for.
 - Bad, because the round trip rewrites a document in places: the pool is gone, so a pooled diagram opens as a plain process, and a `bpmn:potentialOwner` comes back as `operaton:candidateGroups`.
@@ -94,12 +105,13 @@ Every one of them is warned rather than refused, because a refusal has no meanin
 
 ### Confirmation
 
-The refusal and warning tables in `packages/transform/test/xml-to-ir.test.ts` pin every documented row with the whole warning list or the refusal class and detail, including the document level, the `camunda: prefix alias` describe, the resource-role merge, and the quantity warning.
+The refusal and warning tables in `packages/transform/test/xml-to-ir.test.ts` pin every documented row with the whole warning list or the refusal class and detail, including the document level, the `camunda:` file and the setting spelled under both prefixes, the resource-role merge, and the quantity warning.
 `tests/review-loop.round-trip.test.ts` and the invoice fixture in `tests/` pin the Modeler-shaped documents end to end, and `tests/e2e/forms-and-external-tasks.test.ts` deploys the re-export of a task assigned in BPMN's own words to a real engine and reads the identity links back.
 The frozen `documentation` golden pair and a parameterized sweep per hop name every position that carries documentation and every position that reports it instead, so a position wired to neither branch fails the sweep rather than passing in silence.
+`tests/value-documentation.round-trip.test.ts` takes every value position through one table, from script to XML and back and from that XML to a rebuild with no model difference.
 
 ## More Information
 
-The refuse and warn boundary and the `ImportWarning` shape (`elementId`, `category`, `message`) live in `packages/transform/src/errors.ts` and `packages/transform/src/xml-to-ir.ts`, where the checks are `refuseDocumentShapes`, `refuseDroppedIds`, `refuseImports`, `selectProcess`, `warnCollaborationDrops`, `checkExclusiveGateways`, `checkStartEventCount`, `checkHandlerFlows`, `attachDefaultFlows`, `refuseIoMapping`, `onlyExtensionElement`, `resolveListenerBinding`, `readThrownMessageBinding`, and the `ENGINE_READS_ELSEWHERE` table behind `warnUnimportedSetting`; the namespace swap sits at the top of `xmlToIr`.
+The refuse and warn boundary and the `ImportWarning` shape (`elementId`, `category`, `message`) live in `packages/transform/src/errors.ts` and `packages/transform/src/xml-to-ir.ts`, where the checks are `refuseDocumentShapes`, `refuseDroppedIds`, `refuseImports`, `selectProcess`, `warnCollaborationDrops`, `checkExclusiveGateways`, `checkStartEventCount`, `checkHandlerFlows`, `attachDefaultFlows`, `refuseIoMapping`, `onlyExtensionElement`, `resolveListenerBinding`, `readThrownMessageBinding`, and the `ENGINE_READS_ELSEWHERE` table behind `warnUnimportedSetting`; the namespace swap sits at the top of `importDocument`, which `xmlToIr` calls.
 `PrintWarningCategory` and the warnings built beside it in `packages/transform/src/ir-to-dsl.ts` settle which reports the print hop makes and what each one costs.
 The consumer-facing summary is the import contract section of `packages/transform/README.md`.

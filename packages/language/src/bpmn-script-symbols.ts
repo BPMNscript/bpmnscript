@@ -25,7 +25,8 @@ const SYMBOL_KIND_BY_TYPE: Readonly<Record<string, SymbolKind>> = {
 
 export class BpmnScriptNodeKindProvider extends DefaultNodeKindProvider {
   override getSymbolKind(node: AstNode | AstNodeDescription): SymbolKind {
-    const type = 'type' in node ? node.type : node.$type;
+    // A VarDecl node has a `type` of its own (its declared type), so test `$type` first.
+    const type = '$type' in node ? node.$type : node.type;
     return SYMBOL_KIND_BY_TYPE[type] ?? super.getSymbolKind(node);
   }
 }

@@ -38,7 +38,7 @@ It serializes DI-less BPMN XML and hands it to `bpmn-auto-layout`, which lays ou
 
 Fed DI-less XML containing a `bpmn:subProcess`, the library does not throw, and it does not produce a degraded-but-sane result either: it renders the sub-process as a collapsed box and scatters shapes for its nested children into the root plane, at coordinates that duplicate unrelated top-level elements.
 The output parses and validates, so nothing signals the problem, while a viewer opening the generated diagram shows the sub-process's children floating on top of sibling top-level elements instead of nested inside their parent.
-The library reads an existing shape's `isExpanded` flag before computing bounds, and simply had nothing to read when no shape pre-existed.
+The library reads an existing shape's `isExpanded` flag before computing bounds, and has nothing to read when no shape pre-existed.
 Supplying that one boolean per sub-process is the smallest input that makes it take the branch it already has for expanded containers.
 
 Before calling `moddle.toXML`, `irToXml` walks the built moddle tree for every `bpmn:SubProcess` element at any nesting depth.

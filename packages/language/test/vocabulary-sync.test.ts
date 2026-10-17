@@ -7,6 +7,7 @@ import { describe, expect, test } from 'vitest';
 import { EmptyFileSystem } from 'langium';
 import {
   CATCH_TRIGGERS,
+  ELSE_FAIL_WORD,
   EMIT_TRIGGERS,
   END_TRIGGERS,
   EXECUTION_LISTENER_EVENTS,
@@ -138,6 +139,47 @@ describe('the TextMate grammar scopes a line', () => {
     expect(tokensOf(line, 'constant.numeric')).toEqual(numbers);
     expect(tokensOf(line, 'keyword.operator')).toEqual(operators);
   });
+});
+
+describe('the TextMate grammar and the lexer agree on a name in backticks', () => {
+  test('the name pattern runs before the keywords, so a keyword inside colours as a name', () => {
+    const names = grammarPatterns().map((p) => p.name);
+    expect(names.indexOf('entity.name.bpmn-script')).toBe(
+      names.indexOf('keyword.control.bpmn-script') - 1,
+    );
+  });
+
+  test.each([
+    ['a keyword in backticks', 'user `process`', ['`process`']],
+    ['an escaped backtick stays inside', 'goto `a\\`b`', ['`a\\`b`']],
+    ['two names on one line', 'on `T.1`: error(`x y`)', ['`T.1`', '`x y`']],
+    ['a fence opener is no name', 'script S ```js', []],
+  ])('%s', (_title, line, expected) => {
+    const lexer =
+      createBpmnScriptServices(EmptyFileSystem).BpmnScript.parser.Lexer;
+    const lexed = lexer
+      .tokenize(line)
+      .tokens.filter((t) => t.tokenType.name === 'QUOTED_NAME')
+      .map((t) => t.image);
+    expect([tokensOf(line, 'entity.name'), lexed]).toEqual([
+      expected,
+      expected,
+    ]);
+  });
+});
+
+test("the TextMate grammar colours the word the parser reads after 'else' as the fallback that fails, and not as a variable name", () => {
+  const pattern = grammarPatterns().find(
+    (p) => p.match?.includes('(else)') === true,
+  );
+  const scoped = (line: string): string[] =>
+    [...line.matchAll(new RegExp(pattern?.match ?? '$^', 'g'))].flatMap((m) =>
+      m.slice(1),
+    );
+  expect([
+    scoped(`  } else ${ELSE_FAIL_WORD}`),
+    scoped(`  var ${ELSE_FAIL_WORD}: boolean`),
+  ]).toEqual([['else', ELSE_FAIL_WORD], []]);
 });
 
 describe('splitFencedScript', () => {

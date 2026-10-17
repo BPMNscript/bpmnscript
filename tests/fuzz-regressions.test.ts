@@ -2,12 +2,23 @@
 // while the generator still draws it.
 
 import { it, expect } from 'vitest';
+import { Diagnostic } from 'vscode-languageserver-types';
 
 import { xmlToIr, irToDsl } from '@bpmn-script/transform';
-import type { BpmnProcess, FlowContainer } from '@bpmn-script/transform';
+import type {
+  BpmnProcess,
+  FlowContainer,
+  PrintWarning,
+} from '@bpmn-script/transform';
 
 import { bpmnDoc } from './helpers/bpmn-doc.js';
-import { printDsl, roundTrip, validationErrors } from './helpers/pipeline.js';
+import {
+  printDsl,
+  roundTrip,
+  validate,
+  validationErrors,
+} from './helpers/pipeline.js';
+import { generateProgram, renderProgram } from './helpers/fuzz-generator.js';
 import { compareModels, modelSignature } from './helpers/model-equivalence.js';
 import type { ModelComparison } from './helpers/model-equivalence.js';
 
@@ -1079,6 +1090,52 @@ const ORDER_ROWS: [
   user Z
 }`,
   ],
+  [
+    "a chain only a boundary handler's branch jumps to prints from its head, not from its end",
+    `process invoice_batch {
+  escalation NEEDS_REVIEW
+
+  service Notify(type: "shell") {
+    field command = "df"
+  }
+  end Done4
+  start Start5 signal("Ready")
+  end Done9
+  on Notify: error {
+    if (true) {
+    } else if (true) {
+      call Call15(process: "payment-run")
+      emit escalation(NEEDS_REVIEW)
+      end Done18
+    }
+  }
+}`,
+    'canonical',
+  ],
+  [
+    'a step an await branch shares with a sibling if branch prints in the if branch, not the await branch',
+    `process order-fulfilment {
+  if (true) {
+    parallel {
+      {
+      }
+      {
+      }
+    }
+    receive Record
+  } else if (true) {
+    await {
+      timer(every: "R3/PT10M") {
+        goto Record
+      }
+      message("Quote Received") {
+        end Done
+      }
+    }
+  }
+}`,
+    'canonical',
+  ],
 ];
 
 const ROWS: [title: string, source: string, comparison?: ModelComparison][] = [
@@ -1922,22 +1979,6 @@ const ROWS: [title: string, source: string, comparison?: ModelComparison][] = [
 }`,
   ],
   [
-    'a goto from an if into a cycle a later if also jumps back into prints the same on the next pass',
-    `process p {
-  var c: any
-  var d: any
-  if (d) {
-    goto B
-  }
-  user A
-  if (c) {
-    user B
-  }
-  user C
-  goto A
-}`,
-  ],
-  [
     'a step an await branch jumps to, in an else-if branch before the await, prints outside the await',
     `process onboarding {
   if (true) {
@@ -2088,34 +2129,6 @@ const ROWS: [title: string, source: string, comparison?: ModelComparison][] = [
       user C
     } while (y)
   } while (x)
-}`,
-  ],
-  [
-    'a start after an if that runs into the implicit end prints at the tail and keeps that end implicit',
-    `process onboarding {
-  var order: any
-  if (true) {
-    emit link("Rework")
-    await link("Rework")
-  } else {
-    throw signal("Ready")
-  }
-  start Start18 condition(order.paid)
-}`,
-  ],
-  [
-    'a start after an if, entering a step that runs into the implicit end, prints before that step and keeps that end implicit',
-    `process claim-review {
-  var order: any
-  if (true) {
-    emit link("Retry")
-    await link("Retry")
-  } else {
-    emit link("Rework")
-    await link("Rework")
-  }
-  start Start19 condition(order.paid)
-  service Review20(class: "com.example.Delegate")
 }`,
   ],
   [
@@ -2346,7 +2359,7 @@ it.each(ORDER_ROWS)(
     const dsl = printDsl(model);
     expect(await validationErrors(dsl)).toEqual([]);
     const { ir1: reread, dsl: next } = await roundTrip(dsl);
-    expect(compareModels(model, reread)).toBe(comparison);
+    expect(compareModels(model, reread).level).toBe(comparison);
     expect(next).toBe(dsl);
   },
 );
@@ -2720,22 +2733,26 @@ const PRINTS_AS_WRITTEN: [
 }
 `,
   ],
-];
-
-it.each(PRINTS_AS_WRITTEN)(
-  '%s',
-  async (_title, source, produce, expected = source) => {
-    const printed = irToDsl(await produce(source));
-    expect(printed.warnings).toEqual([]);
-    expect(printed.source).toBe(expected);
-    expect(await validationErrors(printed.source)).toEqual([]);
-  },
-);
-
-// The validator refuses the source (it counts `emit link` as ending the branch,
-// so `user After` reads as unreachable); only the print is checked.
-it('an if whose only live branch crosses a link pair sinks the step after it into that branch', async () => {
-  const source = `process p {
+  // A link catch printed right behind its throw keeps the flow running, so a
+  // route over the hop reaches the merge like any other.
+  [
+    'an if branch that hops over a link pair beside an ending branch keeps the step after the if',
+    `process p {
+  var c: any
+  if (c) {
+    emit link("A")
+    await link("A")
+  } else {
+    end E
+  }
+  user After
+}
+`,
+    plain,
+  ],
+  [
+    'an if whose only live branch crosses a link pair keeps the step after its inner if in that branch',
+    `process p {
   var c: any
   var x: any
   if (c) {
@@ -2755,15 +2772,61 @@ it('an if whose only live branch crosses a link pair sinks the step after it int
   } else {
     end Done
   }
-}`;
-  const { dsl } = await roundTrip(source);
-  expect(await validationErrors(dsl)).toEqual([]);
-  const second = await roundTrip(dsl);
-  expect(second.dsl).toBe(dsl);
-});
+}
+`,
+    plain,
+  ],
+  [
+    'a do-while whose body runs over link pairs to its test prints as a do-while',
+    `process p {
+  var c: any
+  do {
+    if (c) {
+      emit link("A")
+      await link("A")
+    } else {
+      emit link("B")
+      await link("B")
+    }
+    user After
+  } while (c)
+}
+`,
+    plain,
+  ],
+  [
+    'a start after an if whose branches hop over link pairs closes the flow into its step with a goto',
+    `process claim-review {
+  var order: any
+  if (true) {
+    emit link("Retry")
+    await link("Retry")
+  } else {
+    emit link("Rework")
+    await link("Rework")
+  }
+  goto Review20
+  start Start19 condition(order.paid)
+  service Review20(class: "com.example.Delegate")
+}
+`,
+    plain,
+  ],
+];
 
-// The unreachable `goto X` must not count as entering `X` from outside the
-// branch. The source is refused for that dead code, so only the print is checked.
+it.each(PRINTS_AS_WRITTEN)(
+  '%s',
+  async (_title, source, produce, expected = source) => {
+    const printed = irToDsl(await produce(source));
+    expect(printed.warnings).toEqual([]);
+    expect(printed.source).toBe(expected);
+    expect(await validationErrors(printed.source)).toEqual([]);
+  },
+);
+
+// The print leaves the unreachable `goto X` out, so it cannot count as entering
+// `X` from outside the branch. The source is refused for that dead code, so
+// only the print is checked.
 it('an unreachable predecessor of a branch entry does not push its chain out of the branch', async () => {
   const source = `process p {
   var c: any
@@ -2782,7 +2845,7 @@ it('an unreachable predecessor of a branch entry does not push its chain out of 
 }
 `;
   const { dsl } = await roundTrip(source);
-  expect(dsl).toBe(source);
+  expect(dsl).toBe(source.replace('  user Z\n  goto X\n', ''));
 });
 
 // J joins two of F's routes and forks again; the script has no mixed gateway,
@@ -2819,10 +2882,19 @@ const MIXED_JOIN = bpmnDoc(
   ].join('\n'),
 );
 
-it('a gateway that merges a fork with an ending branch and splits again prints as the parallel join followed by a parallel', async () => {
-  const { ir } = await xmlToIr(MIXED_JOIN);
-  const dsl1 = printDsl(ir);
-  expect(dsl1).toBe(`process p {
+const conditionalStart = (id: string, variable: string): string =>
+  `<bpmn:startEvent id="${id}"><bpmn:conditionalEventDefinition>` +
+  '<bpmn:condition xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="bpmn:tFormalExpression">' +
+  `\${${variable}}</bpmn:condition>` +
+  '</bpmn:conditionalEventDefinition></bpmn:startEvent>';
+
+// Imported models whose print is pinned literally, valid, stable, and reread
+// as the same model.
+it.each<[title: string, xml: string, printed: string]>([
+  [
+    'a gateway that merges a fork with an ending branch and splits again prints as the parallel join followed by a parallel',
+    MIXED_JOIN,
+    `process p {
   start S
   parallel {
     {
@@ -2847,44 +2919,38 @@ it('a gateway that merges a fork with an ending branch and splits again prints a
     }
   }
 }
-`);
-  expect(await validationErrors(dsl1)).toEqual([]);
-  const second = await roundTrip(dsl1);
-  expect(second.dsl).toBe(dsl1);
-});
-
-const conditionalStart = (id: string, variable: string): string =>
-  `<bpmn:startEvent id="${id}"><bpmn:conditionalEventDefinition>` +
-  '<bpmn:condition xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="bpmn:tFormalExpression">' +
-  `\${${variable}}</bpmn:condition>` +
-  '</bpmn:conditionalEventDefinition></bpmn:startEvent>';
-
-// The implicit start and a conditional start both enter T. A body opening with
-// `start B` would have no implicit start, so the print jumps to T first.
-it('an implicit start and a conditional start entering the same step keep both starts and the implicit end', async () => {
-  const xml = bpmnDoc(
-    [
-      '<bpmn:startEvent id="StartEvent_p" />',
-      conditionalStart('B', 'c'),
-      '<bpmn:userTask id="T" />',
-      '<bpmn:endEvent id="EndEvent_p" />',
-      '<bpmn:sequenceFlow id="f1" sourceRef="StartEvent_p" targetRef="T" />',
-      '<bpmn:sequenceFlow id="f2" sourceRef="B" targetRef="T" />',
-      '<bpmn:sequenceFlow id="f3" sourceRef="T" targetRef="EndEvent_p" />',
-    ].join('\n'),
-  );
-  const { ir } = await xmlToIr(xml);
-  const dsl = printDsl(ir);
-  expect(dsl).toBe(`process p {
+`,
+  ],
+  [
+    // A body opening with `start B` would have no implicit start, so the
+    // print jumps to T first.
+    'an implicit start and a conditional start entering the same step keep both starts and the implicit end',
+    bpmnDoc(
+      [
+        '<bpmn:startEvent id="StartEvent_p" />',
+        conditionalStart('B', 'c'),
+        '<bpmn:userTask id="T" />',
+        '<bpmn:endEvent id="EndEvent_p" />',
+        '<bpmn:sequenceFlow id="f1" sourceRef="StartEvent_p" targetRef="T" />',
+        '<bpmn:sequenceFlow id="f2" sourceRef="B" targetRef="T" />',
+        '<bpmn:sequenceFlow id="f3" sourceRef="T" targetRef="EndEvent_p" />',
+      ].join('\n'),
+    ),
+    `process p {
   var c: any
   goto T
   start B condition(c)
   user T
 }
-`);
+`,
+  ],
+])('%s', async (_title, xml, printed) => {
+  const { ir } = await xmlToIr(xml);
+  const dsl = printDsl(ir);
+  expect(dsl).toBe(printed);
   expect(await validationErrors(dsl)).toEqual([]);
   const { ir1: reread, dsl: next } = await roundTrip(dsl);
-  expect(compareModels(ir, reread)).toBe('same');
+  expect(compareModels(ir, reread).level).toBe('same');
   expect(next).toBe(dsl);
 });
 
@@ -2928,7 +2994,7 @@ it('a start entering a step reached only through a printed link hop keeps the fl
 `);
   expect(await validationErrors(dsl)).toEqual([]);
   const { ir1: reread, dsl: dsl2 } = await roundTrip(dsl);
-  expect(compareModels(ir, reread)).toBe('same');
+  expect(compareModels(ir, reread).level).toBe('same');
   // The merge is compiled away, so `Ca` reaches the elided end on its own; the
   // end must still count as displaced, or it prints under a refused name.
   expect(await validationErrors(dsl2)).toEqual([]);
@@ -2945,50 +3011,115 @@ it('a start entering a step reached only through a printed link hop keeps the fl
 }
 `);
   const { ir1: rereadAgain, dsl: dsl3 } = await roundTrip(dsl2);
-  expect(compareModels(ir, rereadAgain)).toBe('same');
+  expect(compareModels(ir, rereadAgain).level).toBe('same');
   expect(dsl3).toBe(dsl2);
 });
 
-// A `goto` to the deferred end would name a target not yet printed, so the
-// leftover edge degrades to the marker rather than a wrong jump.
-it('a conditional start entering the elided end keeps the end printed before the start', async () => {
-  const xml = bpmnDoc(
-    [
-      '<bpmn:startEvent id="StartEvent_p" />',
-      conditionalStart('B', 'c'),
-      '<bpmn:userTask id="A" />',
-      '<bpmn:endEvent id="EndEvent_p" />',
-      '<bpmn:sequenceFlow id="f1" sourceRef="StartEvent_p" targetRef="A" />',
-      '<bpmn:sequenceFlow id="f2" sourceRef="A" targetRef="EndEvent_p" />',
-      '<bpmn:sequenceFlow id="f3" sourceRef="B" targetRef="EndEvent_p" />',
-    ].join('\n'),
-  );
-  const { ir } = await xmlToIr(xml);
-  const printed = irToDsl(ir);
-  expect(printed.source).toBe(`process p {
+// The elided end prints before the start, since a `goto` to it would name a
+// target not yet printed, and the leftover edge degrades to the marker.
+const elidedEndWarnings = (end: string): PrintWarning[] => [
+  {
+    elementId: end,
+    category: 'droppedEdge',
+    message:
+      `a route into '${end}' was left out of the script\n` +
+      'note: the route has no form in the script, so this part of the script is unstructured\n' +
+      `note: the marker comment where it belonged names '${end}' and is where hand-repair starts`,
+  },
+  {
+    elementId: end,
+    category: 'refusedStatement',
+    message:
+      `step '${end}' has a name the script keeps for the names it derives itself\n` +
+      'note: the printed script draws an error there when it is read back\n' +
+      'help: rename the step in the model and print it again',
+  },
+];
+
+it.each<
+  [
+    title: string,
+    model: () => Promise<BpmnProcess>,
+    end: string,
+    printed: string,
+  ]
+>([
+  [
+    'a conditional start entering the elided end keeps the end printed before the start',
+    async () =>
+      (
+        await xmlToIr(
+          bpmnDoc(
+            [
+              '<bpmn:startEvent id="StartEvent_p" />',
+              conditionalStart('B', 'c'),
+              '<bpmn:userTask id="A" />',
+              '<bpmn:endEvent id="EndEvent_p" />',
+              '<bpmn:sequenceFlow id="f1" sourceRef="StartEvent_p" targetRef="A" />',
+              '<bpmn:sequenceFlow id="f2" sourceRef="A" targetRef="EndEvent_p" />',
+              '<bpmn:sequenceFlow id="f3" sourceRef="B" targetRef="EndEvent_p" />',
+            ].join('\n'),
+          ),
+        )
+      ).ir,
+    'EndEvent_p',
+    `process p {
   var c: any
   user A
   end EndEvent_p
   start B condition(c)
   // unstructured region: hand-repair required (dropped edge into EndEvent_p)
 }
-`);
-  expect(printed.warnings).toEqual([
-    {
-      elementId: 'EndEvent_p',
-      category: 'droppedEdge',
-      message:
-        'The script has an unstructured region: a route the model takes has no ' +
-        'form here and was left out. The marker comment where it belonged ' +
-        'names the step it led to and is where hand-repair starts.',
-    },
-    {
-      elementId: 'EndEvent_p',
-      category: 'refusedStatement',
-      message:
-        'The name this step carries in the model is one the script keeps for ' +
-        'the names it derives itself, so it draws an error when the source is ' +
-        'read back. Rename the step in the model and print it again.',
-    },
-  ]);
+`,
+  ],
+  [
+    // The source is refused, since the if's flow runs on through the link
+    // catch into the start; only its model is printed.
+    'a start after an if whose branch hops over a link pair, both entering the elided end, closes the flow with that end',
+    () =>
+      plain(`process onboarding {
+  var order: any
+  if (true) {
+    emit link("Rework")
+    await link("Rework")
+  } else {
+    throw signal("Ready")
+  }
+  start Start18 condition(order.paid)
+}`),
+    'EndEvent_onboarding',
+    `process onboarding {
+  var order: any
+  if (true) {
+    emit link("Rework")
+    await link("Rework")
+  } else {
+    throw signal("Ready")
+  }
+  end EndEvent_onboarding
+  start Start18 condition(order.paid)
+  // unstructured region: hand-repair required (dropped edge into EndEvent_onboarding)
+}
+`,
+  ],
+])('%s', async (_title, model, end, expected) => {
+  const printed = irToDsl(await model());
+  expect(printed.source).toBe(expected);
+  expect(printed.warnings).toEqual(elidedEndWarnings(end));
 });
+
+// These seeds once drew a cancel handler on an attempt with no cancel end,
+// which the importer warns about and the fuzz run refuses.
+it.each([2572, 3567, 7098, 7694, 9501])(
+  'generated program %i hosts no cancel handler on an attempt nothing gives up',
+  async (seed) => {
+    const { diagnostics } = await validate(
+      renderProgram(generateProgram(seed)),
+    );
+    expect(
+      diagnostics
+        .map((d) => Diagnostic.getMessageString(d))
+        .filter((m) => m.startsWith('Nothing inside')),
+    ).toEqual([]);
+  },
+);

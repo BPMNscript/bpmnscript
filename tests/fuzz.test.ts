@@ -31,10 +31,10 @@ import type { Model } from '@bpmn-script/language';
 import { Diagnostic, DiagnosticSeverity } from 'vscode-languageserver-types';
 
 import { validate } from './helpers/pipeline.js';
-import { normalizeIr } from './helpers/normalize-ir.js';
 import {
   compareModels,
   stable,
+  type ElementDifference,
   type ModelComparison,
 } from './helpers/model-equivalence.js';
 import {
@@ -169,7 +169,8 @@ interface Outcome {
   routesShuffled: boolean;
   dsl1?: string;
   diff?: string[];
-  diffEntries?: DiffEntry[];
+  diffEntries?: ElementDifference[];
+  normalizations?: string[][];
   ms: number;
 }
 
@@ -193,68 +194,13 @@ async function bounded<T>(stage: string, fn: () => Promise<T>): Promise<T> {
   }
 }
 
-// Element lists keyed by id so a diff names elements, not positions.
-function keyed(v: unknown): unknown {
-  if (Array.isArray(v)) {
-    if (
-      v.length > 0 &&
-      v.every((e) => e && typeof e === 'object' && 'id' in e)
-    ) {
-      const o: Record<string, unknown> = {};
-      for (const e of v) o[(e as { id: string }).id] = keyed(e);
-      return o;
-    }
-    return v.map(keyed);
-  }
-  if (v && typeof v === 'object') {
-    const o = v as Record<string, unknown>;
-    return Object.fromEntries(
-      Object.keys(o)
-        .filter((k) => o[k] !== undefined)
-        .map((k) => [k, keyed(o[k])]),
-    );
-  }
-  return v;
-}
-
-interface DiffEntry {
-  path: string;
-  kind: 'only-before' | 'only-after' | 'changed';
-  before?: unknown;
-  after?: unknown;
-}
-
-function diffPaths(
-  a: unknown,
-  b: unknown,
-  path = '',
-  out: DiffEntry[] = [],
-): DiffEntry[] {
-  if (out.length >= 40) return out;
-  if (stable(a) === stable(b)) return out;
-  const isObj = (x: unknown): x is Record<string, unknown> =>
-    x !== null && typeof x === 'object';
-  if (isObj(a) && isObj(b)) {
-    const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
-    for (const k of [...keys].sort()) {
-      const p = path ? `${path}.${k}` : k;
-      if (!(k in a)) out.push({ path: p, kind: 'only-after', after: b[k] });
-      else if (!(k in b))
-        out.push({ path: p, kind: 'only-before', before: a[k] });
-      else diffPaths(a[k], b[k], p, out);
-    }
-    return out;
-  }
-  out.push({ path, kind: 'changed', before: a, after: b });
-  return out;
-}
-
-function diffText(d: DiffEntry): string {
-  if (d.kind === 'only-after')
-    return `${d.path}: only after = ${short(d.after)}`;
-  if (d.kind === 'only-before')
-    return `${d.path}: only before = ${short(d.before)}`;
-  return `${d.path}: ${short(d.before)} -> ${short(d.after)}`;
+// One line per differing field, or per element present on one side only.
+function diffLines(d: ElementDifference): string[] {
+  const key = `${d.container}/${d.element}`;
+  if (d.only !== undefined) return [`${key}: only in ${d.only}`];
+  return d.fields.map(
+    (f) => `${key}.${f.path}: ${short(f.a)} -> ${short(f.b)}`,
+  );
 }
 
 function short(x: unknown): string {
@@ -271,7 +217,7 @@ const PROCESS_NAME_PATTERN = new RegExp(PROCESS_NAMES.join('|'), 'g');
  * warns about it and nothing else.
  */
 const UNCAUGHT_CANCEL_WARNING =
-  /^The block '[^']+' holds an end event that gives it up, with no cancel boundary event attached to it: /;
+  /^block '[^']+' has an end event that gives it up, but no cancel boundary event\s/;
 
 function normalizeMessage(m: string): string {
   return m
@@ -281,14 +227,22 @@ function normalizeMessage(m: string): string {
     .slice(0, 200);
 }
 
-function diffShape(diff: DiffEntry[]): string {
+function diffShape(diff: ElementDifference[]): string {
   const leaf = (path: string): string => {
-    const segs = path.replace(/^\(positional\) /, '').split('.');
+    const segs = path.split('.');
     return segs[segs.length - 1]
       .replace(PROCESS_NAME_PATTERN, '<process>')
       .replace(/\d+/g, '#');
   };
-  const leaves = [...new Set(diff.map((d) => leaf(d.path)))].sort();
+  const leaves = [
+    ...new Set(
+      diff.flatMap((d) =>
+        d.only !== undefined
+          ? [`only-${d.only}`]
+          : d.fields.map((f) => leaf(f.path)),
+      ),
+    ),
+  ].sort();
   return leaves.slice(0, 4).join(',');
 }
 
@@ -356,7 +310,13 @@ async function runSeed(text: string, programSeed: number): Promise<Outcome> {
   const o = await runPipeline(text, programSeed, false);
   if (SHUFFLE === undefined || fails(o)) return o;
   const routes = await runPipeline(text, programSeed, true);
-  return fails(routes) ? routes : o;
+  if (!fails(routes)) return o;
+  // The first run's verdict stays on the row; the routes failure is in cls and symptom.
+  return {
+    ...routes,
+    comparison: o.comparison,
+    normalizations: o.normalizations,
+  };
 }
 
 async function runPipeline(
@@ -460,8 +420,6 @@ async function runPipeline(
     } finally {
       await dispose();
     }
-    const n1 = normalizeIr(ir1);
-    const n3 = normalizeIr(ir3);
 
     stage = 'serialize2';
     const xml2 = await serialize(ir3);
@@ -478,28 +436,28 @@ async function runPipeline(
     if (routesShuffled) return finish({ cls: 'clean', stage, message: '' });
 
     stage = 'compare';
-    const comparison = compareModels(ir1, ir3);
+    const report = compareModels(ir1, ir3);
+    const comparison = report.level;
+    const normalizations = report.normalizations.map((n) => n.names);
     if (comparison === 'changed') {
-      // `keyed` collapses flows sharing a canonical key (conditioned + fallback
-      // between one fork and join); fall back to a positional diff.
-      let entries = diffPaths(keyed(n1), keyed(n3));
-      if (entries.length === 0) {
-        entries = diffPaths(n1, n3).map((d) => ({
-          ...d,
-          path: `(positional) ${d.path}`,
-        }));
-      }
-      const diff = entries.map(diffText);
-      o.diffEntries = entries;
+      const diff = report.differences.flatMap(diffLines);
+      o.diffEntries = report.differences;
       return finish({
         cls: pw.length > 0 ? 'warned-restructuring' : 'silent-change',
         comparison,
+        normalizations,
         stage: 'compare',
         message: diff.slice(0, 3).join('; '),
         diff,
       });
     }
-    return finish({ cls: 'clean', comparison, stage: 'compare', message: '' });
+    return finish({
+      cls: 'clean',
+      comparison,
+      normalizations,
+      stage: 'compare',
+      message: '',
+    });
   } catch (e) {
     if (e instanceof TimeoutError) {
       return finish({ cls: 'timeout', stage, message: e.message });
@@ -803,7 +761,7 @@ describe('round-trip fuzz', () => {
             'message:',
             outcome.message,
             ...(outcome.diff
-              ? ['', 'diff (normalized ir1 -> ir3):', ...outcome.diff]
+              ? ['', 'diff (reduced ir1 -> ir3):', ...outcome.diff]
               : []),
             ...(outcome.dsl1 !== undefined
               ? ['', 'printed dsl1:', outcome.dsl1]

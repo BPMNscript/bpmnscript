@@ -109,12 +109,26 @@ describeImportFirst(
   IMPORT_FIRST_BPMN,
   (first) => {
     it('recovers each compensation surface into the DSL', () => {
-      expect(first.dsl).toContain(
-        'subprocess Pick(label: "Pick the whole order") {',
+      expect(first.dsl).toBe(
+        [
+          'process warehouse-fulfilment {',
+          '  start Begin',
+          '  subprocess Pick(label: "Pick the whole order") {',
+          '    start PickBegin',
+          '    service Grab(label: "Take the item off the shelf", class: "com.example.GrabDelegate")',
+          '    end PickDone',
+          '    on compensation {',
+          '      start UndoPick',
+          '      service PutBack(label: "Return the item to the shelf", class: "com.example.PutBackDelegate")',
+          '      end UndoDone',
+          '    }',
+          '  }',
+          '  emit compensation Raise',
+          '  throw compensation GiveUp',
+          '}',
+          '',
+        ].join('\n'),
       );
-      expect(first.dsl).toContain('on compensation {');
-      expect(first.dsl).toContain('emit compensation Raise');
-      expect(first.dsl).toContain('throw compensation GiveUp');
       expect(definitionOf(first.ir, 'Raise')).toEqual({ kind: 'compensation' });
       expect(definitionOf(first.ir, 'GiveUp')).toEqual({
         kind: 'compensation',

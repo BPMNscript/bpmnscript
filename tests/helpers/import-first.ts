@@ -14,10 +14,10 @@ export const camundaAliasWarning = (elementId: string): ImportWarning => ({
   elementId,
   category: 'rewritten',
   message:
-    'The file declares the camunda namespace; it was read as the operaton ' +
-    'namespace, since `BpmnParse.OPERATON_BPMN_EXTENSIONS_NS` falls back ' +
-    'to the camunda URI wherever the operaton spelling is absent, and the ' +
-    'document written back carries `operaton:` alone.',
+    "the file's 'camunda' namespace was read as the 'operaton' namespace\n" +
+    "note: 'BpmnParse.OPERATON_BPMN_EXTENSIONS_NS' falls back to the " +
+    "'camunda' URI wherever the 'operaton' spelling is absent\n" +
+    "note: the rebuilt document carries 'operaton:' alone",
 });
 
 export interface ImportFirst {

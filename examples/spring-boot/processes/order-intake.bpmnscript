@@ -1,12 +1,9 @@
-// Neither thrown message carries an implementation, so the engine passes the
-// token straight through both.
-
 process order-intake {
   start OrderReceived message("OrderReceived", label: "An order arrives")
 
   user ConfirmOrder(label: "Confirm the order", assignee: "demo")
 
-  emit message NotifyWarehouse("WarehouseNotified")
+  emit message NotifyWarehouse("WarehouseNotified", class: "com.example.demo.LogDelegate")
 
-  throw message OrderAcknowledged("OrderAcknowledged")
+  throw message OrderAcknowledged("OrderAcknowledged", class: "com.example.demo.LogDelegate")
 }

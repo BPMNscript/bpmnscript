@@ -20,7 +20,7 @@ The question this decision settles is which of BPMN's two attachment shapes, or 
 - The engine restricts one of the two BPMN attachment forms, the compensation event sub-process, to embedded sub-processes and one per level; a surface that treats both forms as equally general everywhere would produce documents the engine does not support.
 - The audience writes processes without BPMN vocabulary already established for `on`/`throw`/`emit`; a second attachment mechanism, boundary event, association, and a normally-dormant activity, for one event kind breaks the pattern every other trigger kind follows.
 - `waitForCompletion="false"` and `activityRef`-targeted throws only matter in combination with boundary-attached handlers; neither has a use once boundary handlers are out of scope.
-- The honest import contract (ADR-0012) already distinguishes constructs the DSL refuses from ones it silently drops; a construct this decision does not model needs to land on one side of that line, not the other.
+- The honest import contract (ADR-0012) already distinguishes constructs the importer refuses from ones it drops with a warning; a construct this decision does not model needs to land on one side of that line, not the other.
 
 ## Considered Options
 
@@ -31,7 +31,7 @@ The question this decision settles is which of BPMN's two attachment shapes, or 
 
 ## Decision Outcome
 
-Chosen option: "Compensation handlers exist only as a subprocess's `on compensation` block, thrown with the existing `throw`/`emit` pair and no code", because it keeps compensation inside the vocabulary the rest of the event layer already uses, and the rejected alternatives either duplicate a granularity the subprocess construct already provides or only pay for themselves once that duplication exists.
+Chosen option: "Compensation handlers only as a subprocess's `on compensation` block", because it keeps compensation inside the vocabulary the rest of the event layer already uses, and the rejected alternatives either duplicate a granularity the subprocess construct already provides or only pay for themselves once that duplication exists.
 
 An undo block lowers to a `bpmn:subProcess triggeredByEvent="true"` nested inside the `bpmn:subProcess` it undoes, whose start event carries a `compensateEventDefinition`.
 The at-most-one rule and the container rule are the engine's own restriction rather than a choice of this surface, and a process has no completed enclosing scope to reverse, so `on compensation` at process level is rejected rather than approximated.
@@ -58,7 +58,7 @@ BPMNscript reaches the same granularity without a second mechanism: wrapping the
 
 ### Confirmation
 
-Round-trip coverage in `packages/transform/test` pins an undo block lowering to a nested `triggeredByEvent` sub-process with exactly one `compensateEventDefinition`-carrying start event, `throw compensation` and `emit compensation` lowering to a compensation end event and a compensation intermediate throw without an `activityRef`, and each of the four refused shapes producing a distinct refusal rather than a silently altered import.
+Round-trip coverage in `packages/transform/test` pins an undo block lowering to a nested `triggeredByEvent` sub-process with exactly one `compensateEventDefinition`-carrying start event, `throw compensation` and `emit compensation` lowering to a compensation end event and a compensation intermediate throw without an `activityRef`, and each of the four refused shapes producing a distinct refusal rather than an altered import.
 `packages/language/test/validating.test.ts` pins the container rule, including the rejection of a second undo block in one `subprocess` or one `attempt`.
 Two suites under `tests/e2e/` deploy to a real Operaton and confirm that an undo block executes on a running engine rather than only lowering to the right shape: an `emit compensation` raised by a process-level error handler reaching the undo block of a subprocess that had already completed, and a completed subprocess's undo steps running once the `attempt` block around it is given up.
 

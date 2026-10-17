@@ -63,7 +63,7 @@ Root ids are sanitized from the code and de-collided against the rest of the doc
 
 The name and the code both reach BPMN, `@name` holding the declared name and `errorCode` or `escalationCode` holding the code, and they are the same text wherever the code is identifier-shaped.
 `operaton:errorMessage` lives on the root rather than at the throw site, because two throws sharing a code share one root and a message at the throw site would need a mechanism to reconcile disagreeing copies.
-Import reads the pair back off each root, taking the root's `name` where a declaration can be written with it and minting one from the code otherwise (`claimDeclarationName`, `packages/transform/src/synthesize-ids.ts`), so a root nothing raises imports as a declaration nothing uses.
+Import reads the pair back off each root, taking the root's `name` as written, in backticks where it is no plain name, and the code where the root has none (`claimDeclarationName`, `packages/transform/src/synthesize-ids.ts`), so a root nothing raises imports as a declaration nothing uses.
 An imported document whose two roots share a code but disagree on the message is refused rather than merged, since collapsing them would change what a throw carries at runtime.
 
 The reference sits on `VarRef` rather than on an alternative of its own, and this was measured against the grammar rather than reasoned about: the parser cannot separate `error(OUT_OF_STOCK)` from `condition(ready)`, since both are one identifier inside the same `SettingsParens`.
@@ -75,14 +75,14 @@ Outside a code position the link fails by design, and `BpmnScriptDocumentValidat
 Throw and emit decide terminality by keyword, not by position, so `throw` always ends its path and `emit` always continues into whatever follows it.
 A single verb whose compiled form depends on being last in its block looks appealing, one fewer keyword, but it does not survive the round trip.
 Take an IR shape the importer must be able to reproduce, a branch that fires an escalation and rejoins the main flow, `split -> A -> escalation-intermediate-throw -> join`.
-Printed inside its branch block, that statement is the last statement of the block simply because the branch has nothing after it, not because the event ends anything.
+Printed inside its branch block, that statement is the last statement of the block only because the branch has nothing after it, not because the event ends anything.
 A position-decided desugarer reads "last in block", turns the statement back into an escalation end event on the way in, and drops the join edge the original graph had, so the same printed text would mean two different graphs depending on information the text itself does not carry.
 `throw` also matches the intuition every reader brings from exception handling in a general-purpose language, and both escalation forms, end event and intermediate throw, stay independently printable.
 
 `emit` is a general continuing verb, not an escalation-specific one, so error, which has no continuing BPMN form, has no `emit`, and later event kinds that fire and continue reuse the same verb instead of growing their own.
 Giving every kind its own throw-and-continue verb turns the surface into a vocabulary quiz.
 
-Trigger kinds and binding fields are validated identifiers, not keywords: `on`, `throw`, `emit` and `alongside` are the only words this event layer reserves.
+Trigger kinds and binding fields are validated identifiers, not keywords: `on`, `throw`, `emit`, `alongside` and `await` ([ADR-0026](0026-intermediate-catch-events.md)) are the only words the event layer reserves.
 The reason is the audience, not parsing convenience.
 `message` and `code` are two of the most ordinary variable names in Java-style code, and a Langium keyword is lexer-global, so there is no way to reserve a word only inside `on`, `throw` and `emit` and leave it free everywhere else.
 What a keyword gives away for free is rebuilt explicitly, each part in the mechanism meant for it: a validator checks each word against its small legal set and names the options directly in the diagnostic, a semantic-token provider marks exactly the AST properties that carry meaning, so `on error` highlights `error` while `var error` stays plain, and completion items are offered at the same positions.

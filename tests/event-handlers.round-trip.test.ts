@@ -119,9 +119,21 @@ describeImportFirst(
   IMPORT_FIRST_BPMN,
   (first) => {
     it('normalizes the camunda: error message and binding aliases into the DSL', () => {
-      expect(first.dsl).toContain('error BOOM(message: "It went boom")');
-      expect(first.dsl).toContain(
-        'on error(BOOM, code: code, message: text) {',
+      expect(first.dsl).toBe(
+        [
+          'process import-first {',
+          '  error BOOM(message: "It went boom")',
+          '  start Begin',
+          '  service DoWork(label: "Perform the work", class: "com.example.WorkDelegate")',
+          '  end Finish',
+          '  on error(BOOM, code: code, message: text) {',
+          '    start CaughtBoom',
+          '    service Cleanup(label: "Clean things up", class: "com.example.CleanupDelegate")',
+          '    end Recovered',
+          '  }',
+          '}',
+          '',
+        ].join('\n'),
       );
     });
   },

@@ -4,7 +4,7 @@ date: 2026-04-13
 decision-makers: Marlon Kranz
 ---
 
-# Use VS Code as Primary IDE Target
+# Use VS Code as the primary IDE target
 
 ## Context and Problem Statement
 
@@ -26,11 +26,11 @@ Which IDE should be the primary target?
 
 ## Decision Outcome
 
-Chosen option: "VS Code (primary) with IntelliJ as stretch goal via LSP", because Langium generates a VS Code extension natively, and LSP provides a path to IntelliJ support via LSP4IJ without additional framework-specific work.
+Chosen option: "VS Code (primary) with IntelliJ as stretch goal via LSP", because Langium's project template provides a VS Code extension that hosts the language server ([ADR-0003](0003-use-langium-as-language-workbench.md)), and LSP provides a path to IntelliJ support via LSP4IJ without additional framework-specific work.
 
 ### Consequences
 
-- Good, because Langium generates a working VS Code extension from the grammar with no additional framework
+- Good, because the language server is built on the grammar and hosted by a VS Code extension from the Langium project template, with no additional framework
 - Good, because LSP-based architecture enables IntelliJ support (via LSP4IJ) as a secondary target
 - Good, because the same language server can be reused in a browser-based Monaco editor
 - Neutral, because IntelliJ integration via LSP is functional but lacks deep features such as native syntax highlighting

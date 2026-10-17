@@ -55,12 +55,9 @@ The shape is `verb Id(attributes) { children }`.
 An element with no members has no brace, so `user Review(label: "Review the order", assignee: "demo")` is a complete statement, and an element with no settings has no parens.
 It adds no reserved words, and the `:` inside the parens is the separator the form block and the `var` declaration already use.
 
-### What the shape alone does not decide
-
-A handler keeps the colon after its host, as in `on Pack: error(OUT_OF_STOCK, code: c)`.
-Dropping it makes a hostless handler carrying a code and a hosted handler carrying none both read as `on` followed by two identifiers.
-No lookahead separates those, because the trigger words are soft identifiers and the host is a cross-reference the parser cannot resolve while it is parsing.
-The same colon settles the same question for `throw` and `emit`.
+The shape alone leaves four things open.
+A handler keeps the colon after its host, as in `on Pack: error(OUT_OF_STOCK, code: c)`, for the reason [ADR-0027](0027-boundary-events-attached-to-an-activity.md) gives.
+`throw`, `emit` and `await` settle the same question without a colon by writing their optional name after the trigger word, as in `throw error PaymentFailed(PAYMENT_DECLINED)`.
 
 A trigger keeps its own slot, so an event-bearing element reads `verb Id trigger(payload, settings) { children }`.
 The payload is positional, since `TriggerPayloadRule` gives every trigger at most one code, and a key would spell that code's role twice.

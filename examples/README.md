@@ -1,20 +1,19 @@
 # Examples
 
 Deployment fixtures for running a compiled `.bpmn` file on Operaton.
-
-One mode exists: `spring-boot/`, with Operaton embedded in a Spring Boot application.
+There is one so far, `spring-boot/`.
 
 ## `spring-boot/`
 
-Operaton 2.1.0 embedded in a Spring Boot 4.0.6 application on Java 17, exposing the Operaton REST API on port 8080.
-It's packaged as a Docker image so the E2E harness can start and stop it.
+Operaton 2.1.0 embedded in a Spring Boot 4.0.6 application on Java 17, serving the Operaton REST API on port 8080.
+It's packaged as a Docker image so the end-to-end tests can start and stop it, and its [README](spring-boot/README.md#running-processes-on-operaton-demo) is a hands-on tour of running the processes in Cockpit and Tasklist.
 
-The DSL sources under `spring-boot/processes/` cover one construct or construct combination each, and `bpmns build` on any of them produces the deployable `.bpmn`.
+Each source under `spring-boot/processes/` covers one construct or combination, and `bpmns build` on any of them produces a deployable `.bpmn`.
 
 | Source                  | Covers                                                                     |
 | ----------------------- | -------------------------------------------------------------------------- |
-| `invoice-approval`      | `if`/`else` desugaring                                                     |
-| `parallel-approval`     | `parallel { { } { } }` desugaring                                          |
+| `invoice-approval`      | `if`/`else`                                                                |
+| `parallel-approval`     | `parallel { { } { } }`                                                     |
 | `service-delegate`      | The `delegate` service binding, against a Spring-managed bean              |
 | `service-expression`    | The `expression` service binding, a JUEL expression Operaton evaluates     |
 | `external-task`         | The `topic` binding, against a worker polling `print-label`                |
@@ -23,8 +22,8 @@ The DSL sources under `spring-boot/processes/` cover one construct or construct 
 | `order-handling`        | Sub-process containment, plus interrupting and non-interrupting boundaries |
 | `order-recovery`        | The error and escalation layer, both handler kinds                         |
 | `order-reminder`        | The timer and message triggers                                             |
-| `loan-approval`         | The `demo` walkthrough                                                     |
-| `loan-approval-kopp`    | The `demo` walkthrough, parallel-rating variant                            |
+| `loan-approval`         | The demo walkthrough                                                       |
+| `loan-approval-kopp`    | The demo walkthrough, parallel-rating variant                              |
 | `awaiting-confirmation` | `await message`, released by an outside correlation                        |
 | `charge-with-recovery`  | An error boundary on a service task host                                   |
 | `compensating-saga`     | Compensation raised from a process-level error handler                     |
@@ -44,19 +43,18 @@ The DSL sources under `spring-boot/processes/` cover one construct or construct 
 | `nightly-report`        | An async join, per-run jobs on a repetition, and a shell task              |
 | `outage-notice`         | A mail task, deployed and never started                                    |
 | `expense-claim`         | A `while` loop, an `if`/`else`, and a `parallel` block in one process      |
+| `claim-routing`         | `else fail` closing an `if` chain and a conditioned `parallel` block       |
 
-[Running processes on Operaton](spring-boot/README.md#running-processes-on-operaton-demo) is a hands-on tour of the two loan-approval processes.
+### End-to-end tests
 
-### Testcontainers harness
-
-The E2E tests in `tests/e2e/` use [testcontainers-node](https://testcontainers.com/) to start the Docker image, deploy compiled BPMN over the Operaton REST API, start instances, and assert what the engine does with what the compiled document only declares.
-The suite builds the image and starts one engine once, and every file runs against it; each file names the example it drives or the examples it deploys.
+The tests in `tests/e2e/` use [testcontainers](https://testcontainers.com/) to start the Docker image, deploy compiled BPMN over the Operaton REST API, start instances, and check what the engine does.
+The suite builds the image and starts one engine, and every test file runs against it.
 `deploy-sweep` deploys every golden under `tests/golden/`, every fixture under `tests/fixtures/`, and every example here, once as written and once rebuilt from the tool's own print of it.
 
-Docker tests run by default, in CI too, and are skipped only when `SKIP_DOCKER_TESTS=true`.
+The Docker tests run by default, in CI too, and are skipped only when `SKIP_DOCKER_TESTS=true`.
 
-## Adding a new deployment mode
+## Adding a deployment
 
-1. Create a subdirectory with a `README.md` and whatever runtime files it needs, such as a `pom.xml`, `Dockerfile`, or `docker-compose.yml`.
+1. Create a subdirectory with a `README.md` and the runtime files it needs, such as a `pom.xml`, `Dockerfile`, or `docker-compose.yml`.
 2. Implement the `FixtureAdapter` interface from `tests/fixtures/types.ts` in a new file under `tests/fixtures/adapters/`.
-3. Have `startFixture` in `tests/fixtures/index.ts` pick the adapter, for example by a mode argument, since it starts the one adapter today.
+3. Make `startFixture` in `tests/fixtures/index.ts` choose between adapters, for example by a mode argument; it starts the Spring Boot one unconditionally today.

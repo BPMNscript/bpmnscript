@@ -21,7 +21,7 @@ import {
   EVENT_MESSAGE_FIELD,
 } from './vocabulary.js';
 import { isVariableSymbolNode } from './bpmn-script-references.js';
-import { declaredCodeOf, settingsOf } from './paren-items.js';
+import { settingsOf } from './paren-items.js';
 
 function literalSetting(items: ParenItem[], key: string): string | undefined {
   const setting = settingsOf(items).find((item) => item.key === key);
@@ -40,12 +40,9 @@ function namedStatementHover(node: NamedStatement): string {
 function codeDeclHover(decl: CodeDecl): string {
   const article = /^[aeiou]/i.test(decl.kind) ? 'an' : 'a';
   let line = `${article} ${decl.kind} '${decl.name}'`;
-  // `declaredCodeOf` falls back to the name; hover quotes only a written setting.
-  const hasCodeSetting = settingsOf(decl.items).some(
-    (item) => item.key === EVENT_CODE_FIELD,
-  );
-  const code = hasCodeSetting ? declaredCodeOf(decl) : undefined;
-  if (code !== undefined) line += ` with code "${code}"`;
+  // Not `declaredCodeOf`, which falls back to the name; an empty code is not quoted.
+  const code = literalSetting(decl.items, EVENT_CODE_FIELD);
+  if (code) line += ` with code "${code}"`;
   const message = literalSetting(decl.items, EVENT_MESSAGE_FIELD);
   if (message !== undefined) line += `: ${message}`;
   return line;

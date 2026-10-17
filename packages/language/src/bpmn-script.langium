@@ -3,7 +3,7 @@
 // structured statements and there is no `gateway` keyword.
 //
 // The AST property `name` is the cross-reference key, which is what lets
-// `goto target=[Statement:ID]` resolve through Langium's default NameProvider;
+// `goto target=[Statement:Name]` resolve through Langium's default NameProvider;
 // the BPMN label is the separate `label` setting.
 //
 // Reserved words are exactly this file's keywords (`reservedWordsOf` in
@@ -23,13 +23,21 @@ entry Model:
 // Declarations go into `decls` and statements into `body`, so the desugarer
 // and the validator address them apart.
 Process:
-    'process' name=ID SettingsParens? '{'
+    'process' name=Name SettingsParens? '{'
         (decls+=ProcessDecl)*
         body+=Statement*
     '}';
 
 ProcessDecl:
     VarDecl | CodeDecl;
+
+// A name becomes an element id, which the engine and other tools key on, so
+// any id has to be writable as it stands: one the plain `ID` cannot spell (a
+// keyword, a dot, a trailing hyphen) is written in backticks. Both forms carry
+// the bare text, so a plain name and the same text in backticks are one name
+// to the linker and the validator.
+Name returns string:
+    ID | QUOTED_NAME;
 
 // `VarType` is aligned with Operaton's variable types.
 VarDecl:
@@ -38,7 +46,7 @@ VarDecl:
 VarType returns string:
     'string' | 'number' | 'boolean' | 'date' | 'json' | 'any';
 
-// Every concrete subtype that is a jump target exposes `name=ID`.
+// Every concrete subtype that is a jump target exposes `name=Name`.
 Statement:
       StartEvent | EndEvent
     | UserTask | ServiceTask | ScriptTask
@@ -52,42 +60,42 @@ Block:
     '{' (statements+=Statement | listeners+=Listener | params+=IoParameter)* '}';
 
 // The trigger clause is the one `on` and `await` use; only the process's own
-// start carries one, and the validator rejects it elsewhere. `name=ID` is
+// start carries one, and the validator rejects it elsewhere. `name=Name` is
 // mandatory and first, so the second token decides: ID is the trigger, `(` the
 // settings, `{` the member block. Every statement is keyword-led, so one can
 // never be swallowed here.
 StartEvent:
-    'start' name=ID (trigger=ID)? SettingsParens? AttributeBlock?;
+    'start' name=Name (trigger=ID)? SettingsParens? AttributeBlock?;
 
 // Any trigger word parses here, so a kind belonging on `throw` earns a
 // validator message rather than a parse error.
 EndEvent:
-    'end' name=ID (trigger=ID)? SettingsParens? AttributeBlock?;
+    'end' name=Name (trigger=ID)? SettingsParens? AttributeBlock?;
 
 UserTask:
-    'user' name=ID RepeatClause? SettingsParens? AttributeBlock?;
+    'user' name=Name RepeatClause? SettingsParens? AttributeBlock?;
 
 // One shape for every execution form; the validator requires exactly one
 // binding attribute.
 ServiceTask:
-    'service' name=ID RepeatClause? SettingsParens? AttributeBlock?;
+    'service' name=Name RepeatClause? SettingsParens? AttributeBlock?;
 
 GenericTask:
-    'step' name=ID RepeatClause? SettingsParens? AttributeBlock?;
+    'step' name=Name RepeatClause? SettingsParens? AttributeBlock?;
 
 SendTask:
-    'send' name=ID RepeatClause? SettingsParens? AttributeBlock?;
+    'send' name=Name RepeatClause? SettingsParens? AttributeBlock?;
 
 ReceiveTask:
-    'receive' name=ID RepeatClause? SettingsParens? AttributeBlock?;
+    'receive' name=Name RepeatClause? SettingsParens? AttributeBlock?;
 
 BusinessRuleTask:
-    'decide' name=ID RepeatClause? SettingsParens? AttributeBlock?;
+    'decide' name=Name RepeatClause? SettingsParens? AttributeBlock?;
 
 // The fence is one token; the language tag and the script text are split
 // downstream.
 ScriptTask:
-    'script' name=ID RepeatClause? SettingsParens? AttributeBlock? body=FENCED_SCRIPT;
+    'script' name=Name RepeatClause? SettingsParens? AttributeBlock? body=FENCED_SCRIPT;
 
 // The member block holds what an element is built from; the settings it runs
 // under go in the parens. Which members each kind takes is the validator's
@@ -104,7 +112,7 @@ fragment AttributeBlock:
 // told from a parameter's `=` at the third token, so the line costs no
 // reserved word.
 ErrorMapping:
-    trigger=ID code=[CodeDecl:ID] when=ID condition=Expr;
+    trigger=ID code=[CodeDecl:Name] when=ID condition=Expr;
 
 // `for each line in lines`, `for 3`, or both together with the count driving
 // the runs. The four words are hard: the clause sits between a statement's
@@ -116,7 +124,7 @@ fragment RepeatClause:
       | 'each' (element=ID)? 'in' collection=Expr
     )
     (sequential?='sequentially')?
-    ('until' '(' completion=Expr ')')?;
+    ('until' '(' completion=Expr (',' completionItems+=ParenItem)* ')')?;
 
 // A list on the owning element, so a second block is flaggable.
 FormBlock:
@@ -169,8 +177,11 @@ ParenKey returns string:
 FlagWord returns string:
     'alongside' | 'sequentially' | 'local';
 
+// The name is a key the engine takes as any string, so a keyword or other
+// text the plain form cannot spell goes in backticks. Not `Name`, so a missing
+// name reports against this rule rather than a code declaration's.
 IoParameter:
-    direction=ID name=ID '=' value=IoValue;
+    direction=ID name=(ID | QUOTED_NAME) '=' value=IoValue;
 
 // `[` and `{` predict a list and a map, since no expression starts with
 // either, so `items[0]` on the right of a parameter is still an accessor.
@@ -211,36 +222,44 @@ Listener:
 ListenerEvent returns string:
     ID | 'start' | 'end';
 
+// What follows a condition inside its own parentheses documents that
+// condition, so the parentheses after them stay the gateway's. No expression
+// holds a top-level comma, so the first one ends the condition.
+fragment ConditionItems:
+    (',' conditionItems+=ParenItem)*;
+
 // One exclusive gateway per chain, so the parens after the condition hold the
 // split's settings and, `join`-prefixed, the join's, and an `else if` head
-// takes none.
+// takes none. `else fail` writes no default flow, so the engine stops the run
+// when no condition holds; `fail` is soft, so `var fail: boolean` stays legal.
 IfStatement:
-    'if' '(' condition=Expr ')' SettingsParens? then=Block
+    'if' '(' condition=Expr ConditionItems ')' SettingsParens? then=Block
     (elseIfs+=ElseIf)*
-    ('else' elseBlock=Block)?;
+    ('else' (elseBlock=Block | fail=ID))?;
 
 ElseIf:
-    'else' 'if' '(' condition=Expr ')' body=Block;
+    'else' 'if' '(' condition=Expr ConditionItems ')' body=Block;
 
 // An XOR gateway and a back-edge, never standardLoopCharacteristics. One
 // gateway, so the parens take no `join` spelling; the validator says so.
 WhileStatement:
-    'while' '(' condition=Expr ')' SettingsParens? body=Block;
+    'while' '(' condition=Expr ConditionItems ')' SettingsParens? body=Block;
 
 DoWhileStatement:
-    'do' body=Block 'while' '(' condition=Expr ')' SettingsParens?;
+    'do' body=Block 'while' '(' condition=Expr ConditionItems ')' SettingsParens?;
 
 // An AND fork and join, or an OR pair when any branch carries a condition.
 // The parens after the keyword hold the fork's settings and, `join`-prefixed,
-// the join's; a branch head takes none.
+// the join's; a branch head takes none. A closing `else fail` is the OR
+// fork's form of the `if` one.
 ParallelStatement:
-    'parallel' SettingsParens? '{' branches+=ParallelBranch (branches+=ParallelBranch)+ '}';
+    'parallel' SettingsParens? '{' branches+=ParallelBranch (branches+=ParallelBranch)+ ('else' fail=ID)? '}';
 
 ParallelBranch:
-    ('if' '(' condition=Expr ')' | otherwise?='else')? body=Block;
+    ('if' '(' condition=Expr ConditionItems ')' | otherwise?='else')? body=Block;
 
 GotoStatement:
-    'goto' target=[Statement:ID];
+    'goto' target=[Statement:Name];
 
 // `attempt` is the same container marked as work that may be given up. It
 // serializes to `bpmn:transaction`, the only tag under which Operaton accepts a
@@ -248,14 +267,14 @@ GotoStatement:
 // as an embedded sub-process, so the two heads share one rule and one node
 // type.
 SubProcess:
-    (transactional?='attempt' | 'subprocess') name=ID RepeatClause? SettingsParens? AttributeBlock? body=Block;
+    (transactional?='attempt' | 'subprocess') name=Name RepeatClause? SettingsParens? AttributeBlock? body=Block;
 
 // The member block is inline rather than `AttributeBlock`, which admits a
 // `form` block and has no place for mappings. `in`/`out` are keyword tokens
 // while `input`/`output` lex as identifiers, so the two member kinds never
 // collide.
 CallActivity:
-    'call' name=ID RepeatClause? SettingsParens? ('{' (mappings+=VariableMapping | params+=IoParameter | listeners+=Listener)* '}')?;
+    'call' name=Name RepeatClause? SettingsParens? ('{' (mappings+=VariableMapping | params+=IoParameter | listeners+=Listener)* '}')?;
 
 // The left side is the receiving name in the receiving scope; omitting
 // `source` copies a variable under the same name and `all='*'` copies every
@@ -270,17 +289,17 @@ VariableMapping:
 // decides at token 2 that the first word is a host rather than the trigger,
 // before either reading of `on Pack error` has to be committed to.
 OnHandler:
-    'on' (host=[Statement:ID] ':')? trigger=ID
+    'on' (host=[Statement:Name] ':')? trigger=ID
     SettingsParens? AttributeBlock? body=Block;
 
 // `name` is the optional goto-target id, synthesized when omitted. `ID`
 // predicts it and anything else ends the statement, since every statement is
 // keyword-led and can never be swallowed as `name`.
 ThrowStatement:
-    'throw' trigger=ID (name=ID)? SettingsParens? AttributeBlock?;
+    'throw' trigger=ID (name=Name)? SettingsParens? AttributeBlock?;
 
 EmitStatement:
-    'emit' trigger=ID (name=ID)? SettingsParens? AttributeBlock?;
+    'emit' trigger=ID (name=Name)? SettingsParens? AttributeBlock?;
 
 // Two shapes told apart by the token after the keyword: an `ID` is the trigger
 // of the single catch, `(` or `{` opens the race. One rule for both, so the
@@ -294,7 +313,7 @@ EmitStatement:
 AwaitStatement:
     'await' (
         {infer IntermediateCatchEvent}
-        trigger=ID (name=ID)? SettingsParens? AttributeBlock?
+        trigger=ID (name=Name)? SettingsParens? AttributeBlock?
       | {infer RaceStatement}
         SettingsParens? '{' branches+=RaceBranch (branches+=RaceBranch)+ '}'
     );
@@ -310,7 +329,7 @@ RaceBranch:
 // so `var error: string` and `on error` keep working; no statement can be
 // swallowed here, since every statement opens with a hard keyword.
 CodeDecl:
-    kind=ID name=ID SettingsParens?;
+    kind=ID name=Name SettingsParens?;
 
 // The expression sub-language, a JUEL native subset, as parser rules rather
 // than a terminal: validation, hover and jump-to-definition all need a real
@@ -382,7 +401,7 @@ LiteralNull:
 // resolves it only in a code position, and `BpmnScriptDocumentValidator` drops
 // the link failure everywhere else.
 VarRef:
-    ref=[CodeDecl:ID] (accessors+=Accessor)*;
+    ref=[CodeDecl:Name] (accessors+=Accessor)*;
 
 Accessor:
     '.' prop=ID | '[' index=Expr ']';
@@ -419,6 +438,11 @@ terminal FENCED_SCRIPT: /```[a-zA-Z]+[\s\S]*?```/;
 terminal RAW_TEMPLATE: /"[$#]\{(\\.|[^"\\])*"|'[$#]\{(\\.|[^'\\])*'/;
 
 terminal STRING: /"(\\.|[^"\\])*"|'(\\.|[^'\\])*'/;
+
+// After FENCED_SCRIPT, and never empty, so a fence's opening backticks cannot
+// lex as a name. A backslash takes the next character literally, which is how
+// a backtick or a backslash gets in; a name never spans lines.
+terminal QUOTED_NAME: /`(\\.|[^`\\\r\n])+`/;
 
 hidden terminal ML_COMMENT: /\/\*[\s\S]*?\*\//;
 hidden terminal SL_COMMENT: /\/\/[^\n\r]*/;

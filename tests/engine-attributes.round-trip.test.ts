@@ -13,7 +13,7 @@ const rt = roundTripFixture('engine-attributes', {
   recompile: 'clean',
 });
 
-// Not the exporter's `P30D` default, which the importer reads as unwritten.
+// Not the exporter's `P30D` default, which the printer leaves out of the script.
 const PROCESS_HEADER = {
   versionTag: '3.1.0',
   historyTimeToLive: 'P90D',

@@ -72,7 +72,7 @@ The printer lifts the three back into the `on timer` head as long as the start p
 Every other host-less handler writes its settings on the event sub-process.
 
 The process header's settings follow the same naming rule, and `historyTimeToLive` is the one with a default.
-`HistoryTimeToLiveParser.parseAndValidate` refuses a process without one under the engine's default `enforceHistoryTimeToLive`, so `irToXml` writes `P30D` when the IR names none, and the importer reads exactly that value back as absent to keep the round trip stable.
+`HistoryTimeToLiveParser.parseAndValidate` refuses a process without one under the engine's default `enforceHistoryTimeToLive`, so a script without one lowers to `P30D`, `irToXml` writes `P30D` for an imported process that names none, and the printer leaves exactly that value out of the script.
 An imported document that sets none is warned about, since its rebuilt process deploys where the source did not.
 `isStartableInTasklist` is the one that takes a boolean, and the importer reads it as `BpmnParse.isStartable` does, so any value but a case-insensitive `true` imports as `false`.
 

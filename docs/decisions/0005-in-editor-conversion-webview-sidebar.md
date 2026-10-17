@@ -4,12 +4,12 @@ date: 2026-06-28
 decision-makers: Marlon Kranz
 ---
 
-# In-Editor Conversion: Webview Sidebar and Two Layers
+# In-editor conversion: a webview sidebar and two layers
 
 ## Context and Problem Statement
 
-The only way to compile `.bpmnscript` to `.bpmn` or decompile `.bpmn` to `.bpmnscript` was the `bpmns` CLI.
-The CLI entry points (`buildAction`/`parseAction`) bake in `process.exit()` and `console.log`, making them unusable inside the VS Code extension host.
+Without an editor surface, the `bpmns` CLI is the only way to compile `.bpmnscript` to `.bpmn` or decompile `.bpmn` to `.bpmnscript`.
+The CLI entry points (`buildAction`/`parseAction`) bake in `process.exit()` and `console.log`, which makes them unusable inside the VS Code extension host.
 Three related questions arose.
 Which surface should the in-editor conversion use, a native VS Code tree view or a webview panel in a dedicated activity-bar container?
 How should the conversion logic be structured so it can be tested without the VS Code host, which is unavailable under plain vitest?

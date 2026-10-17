@@ -1,7 +1,7 @@
 {
   "name": "bpmn-script-workspace",
   "description": "Write executable business processes as text, compile to BPMN 2.0 XML, and read existing BPMN files back as text.",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
@@ -25,14 +25,14 @@
     "test": "npm run test --workspaces --if-present"
   },
   "devDependencies": {
-    "@types/node": "^26.4.0",
-    "@typescript-eslint/parser": "^8.69.0",
-    "@vitest/coverage-v8": "^4.1.11",
-    "eslint": "^9.0.0",
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^26.6.5",
+    "@typescript-eslint/parser": "^8.71.2",
+    "@vitest/coverage-v8": "^5.0.5",
+    "eslint": "^10.13.0",
     "eslint-config-prettier": "^10.1.8",
-    "eslint-plugin-bpmn-io": "^2.3.1",
-    "prettier": "^3.9.6",
-    "shx": "~0.4.0",
+    "globals": "^17.13.0",
+    "prettier": "^3.9.10",
     "typescript": "~6.0.0"
   },
   "workspaces": [

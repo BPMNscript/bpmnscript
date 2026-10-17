@@ -1,70 +1,76 @@
 # vscode-bpmnscript
 
 The VS Code extension for BPMNscript.
-It runs the Langium language server for highlighting, completion, hover, go to definition, references, rename, the outline and inline diagnostics, and it converts the open file between `.bpmnscript` and `.bpmn` from a sidebar panel or the command palette.
+It runs the language server for highlighting, completion, hover, go to definition, references, rename, the outline and inline diagnostics, and it converts the open file between `.bpmnscript` and `.bpmn` from a sidebar panel or the command palette.
 
-The language intelligence itself lives in `@bpmn-script/language`; this package loads it in VS Code.
-That wiring is mostly Langium scaffold, which is the point of choosing Langium in the first place ([ADR-0003](https://github.com/BPMNscript/bpmnscript/blob/main/docs/decisions/0003-use-langium-as-language-workbench.md)).
-The conversion layer on top is project-specific: three commands (`bpmnscript.compile`, `bpmnscript.decompile`, and `bpmnscript.openAndDecompile`, which picks a BPMN file from disk and decompiles it) and a sidebar webview that drives them for the active file.
-
-## How it fits together
-
-Three parts, two bundles: the client and the conversion layer in `out/extension/main.cjs`, the language server in `out/language/main.cjs`.
-
-The extension client (`src/extension/main.ts`) runs inside VS Code.
-Opening a `.bpmnscript` file starts the language server and connects to it; the client also registers the conversion commands, wires up the sidebar webview provider, and listens for editor changes to keep the sidebar in sync.
-
-The language server (`src/language/main.ts`) runs in a background process.
-It imports `createBpmnScriptServices` from `@bpmn-script/language` and answers the editor's LSP requests.
-Hover shows a step's kind and label, a code's kind and message, a variable's type, and a `/** ... */` comment written before the statement.
-Completion offers only what the validator accepts at that position, never a fixed keyword list.
-Rename edits every site of a step, a code or a variable, or refuses when the caret isn't on one.
-
-The conversion layer splits along the VS Code boundary.
-`conversion-core.ts` is a pure, `vscode`-free module driving the `compileDslToBpmn` and `decompileBpmnToDsl` pipelines, and it holds the decisions: severity gating (warnings don't block a compile), error classification, unsupported-element handling.
-A successful decompile also returns `warnings`, what `xmlToIr` reported on the way in and `irToDsl` on the way out, in one list.
-Because nothing here touches `vscode`, it's testable under vitest with no editor host.
-`conversion.ts` is the adapter around it: it resolves the source URI (an argument, otherwise the active editor), refuses a file whose extension is not the one the command takes and names the command that is, reads the text (preferring an unsaved in-memory document), calls the core, opens the Problems panel on a validation failure (the language server already publishes the same diagnostics), asks before overwriting an existing output file, writes the result next to the source with the extension swapped, and opens it.
-A BPMN construct the transform refuses surfaces as an error notification and no file is written; any `warnings` surface as one aggregated notification listing what the two hops reported.
-
-`sidebar-view-provider.ts` implements `WebviewViewProvider` for the "Convert" view in the "BPMNscript" activity-bar container.
-The webview (`media/sidebar.{html,css,js}`) posts `{type:'compile'|'decompile'|'open'|'pick', uri}` messages that the provider dispatches to those same commands, so the sidebar and the palette behave identically.
-It follows the active editor, showing the current file, one convert button, and a link to the counterpart file when that already exists on disk.
-Conversions open their output, so moving between the two files is one click.
-
-## Syntax highlighting
-
-The base TextMate grammar is generated from the `language` package's `.langium` grammar at build time and copied in, so it always tracks the real grammar.
-`packages/language/textmate-postprocess.mjs` adjusts it right after generation, so a hyphenated name keeps its color instead of losing it at the first `-`, and so numbers and operators get a scope the generator leaves out.
-
-A second, hand-maintained TextMate injection grammar (`injection/bpmn-script.injection.tmLanguage.json`) colors the body of a `script` task the way a markdown fenced code block works: the opening language tag selects the embedded scope (`source.js`, `source.python`, `source.ruby`, `source.groovy`), and `feel` or any other accepted tag without an installed grammar falls back to a plain uncolored block.
-This is highlighting only, with no autocomplete, hover, or diagnostics inside the fence.
-`build:prepare` copies the injection asset into `syntaxes/` next to the base grammar, and `package.json`'s `contributes.grammars` registers it with `injectTo: ["source.bpmn-script"]`.
-
-## Build and run
-
-```bash
-# From repo root
-npm run build --workspace packages/extension
-```
-
-`esbuild` bundles both entry points into CommonJS under `out/`, which is how VS Code loads extensions.
-To try it live, press <kbd>F5</kbd> in VS Code from the repo root: a second window opens with the extension loaded, where `.bpmnscript` files get language support and `.bpmn` files get the decompile command and the sidebar panel.
-See [CONTRIBUTING.md](https://github.com/BPMNscript/bpmnscript/blob/main/CONTRIBUTING.md#trying-it-out-in-vs-code).
-
-Build order matters.
-The extension bundles `@bpmn-script/language` and `@bpmn-script/transform` from their compiled `out/` directories, so a source edit in either one is invisible until you rebuild it (or run `npm run build` from the repo root).
+The language intelligence lives in `@bpmn-script/language`, and this package loads it into VS Code.
+That wiring is mostly Langium scaffold ([ADR-0003](https://github.com/BPMNscript/bpmnscript/blob/main/docs/decisions/0003-use-langium-as-language-workbench.md)).
+What is specific to this project is the conversion layer: three commands (`bpmnscript.compile`, `bpmnscript.decompile`, and `bpmnscript.openAndDecompile`, which picks a BPMN file from disk and decompiles it) and a sidebar webview that drives them.
 
 ## Installing
 
 ```bash
 npm run build
 npm run package -w packages/extension
-code --install-extension packages/extension/vscode-bpmnscript-0.0.1.vsix
+code --install-extension packages/extension/vscode-bpmnscript-0.1.0.vsix
 ```
 
 VS Code then shows the BPMNscript icon in the activity bar and offers `BPMNscript: Compile to BPMN` in the command palette when a `.bpmnscript` file is open.
-F5 from the repo root stays the way to try a change to the extension itself without packaging it.
+
+To try a change to the extension without packaging it, press <kbd>F5</kbd> in VS Code from the repo root.
+A second window opens with the extension loaded.
+
+## How it fits together
+
+The extension has three parts in two bundles: the client and the conversion layer in `out/extension/main.cjs`, and the language server in `out/language/main.cjs`.
+
+The client (`src/extension/main.ts`) runs inside VS Code.
+It starts the language server when a `.bpmnscript` file opens, registers the conversion commands and the sidebar, and keeps the sidebar in sync with the active editor.
+
+The language server (`src/language/main.ts`) runs in a separate process.
+It loads `createBpmnScriptServices` from `@bpmn-script/language` and answers the editor's LSP requests.
+Hover shows a step's kind and label, a code's kind and message, a variable's type, and a `/** ... */` comment written before the statement.
+Completion offers only what the validator accepts at that position.
+Rename edits every site of a step, a code or a variable.
+
+The conversion layer is split along the VS Code boundary.
+`conversion-core.ts` has no `vscode` import, so vitest tests it without an editor host.
+It runs the compile and decompile pipelines and decides what blocks a conversion: errors do, warnings don't.
+A decompile returns the warnings from both `xmlToIr` and `irToDsl` in one list.
+`conversion.ts` is the VS Code adapter around it, and it behaves as follows:
+
+- The source is the command's argument, otherwise the active editor, and an unsaved editor's text is used as it stands.
+- A file with the wrong extension for the command is refused, and the message names the command that takes it.
+- A validation failure opens the Problems panel, where the language server already shows the diagnostics.
+- The output goes next to the source with the extension swapped; an existing file is overwritten only after you confirm, and the output opens when written.
+- A compile whose diagram can't be drawn still writes the file and shows a warning.
+- A BPMN construct the transform refuses shows an error notification with its headline, and nothing is written.
+- Warnings show as one notification giving their count.
+  Its Show Details button opens the BPMNscript output channel, which holds the full messages with their `note:` and `help:` lines.
+
+`sidebar-view-provider.ts` provides the "Convert" view in the "BPMNscript" activity-bar container.
+The webview (`media/sidebar.{html,css,js}`) shows the active file, one convert button, and a link to the counterpart file when it exists on disk.
+Its buttons post messages that the provider dispatches to the same commands as the palette, so both behave identically.
+
+## Syntax highlighting
+
+The base TextMate grammar is generated from the `language` package's Langium grammar at build time and copied in, so it always tracks the real grammar.
+`packages/language/textmate-postprocess.mjs` adjusts it after generation, so a hyphenated name keeps its color past the first `-`, and numbers and operators get a scope.
+
+A hand-maintained injection grammar (`injection/bpmn-script.injection.tmLanguage.json`) colors the body of a `script` task the way a Markdown fenced code block works.
+The opening tag selects the embedded scope (`source.js`, `source.python`, `source.ruby`, `source.groovy`); `feel` and any other accepted tag without an installed grammar stay uncolored.
+Inside the fence there is highlighting only, with no completion, hover, or diagnostics.
+`build:prepare` copies the injection grammar into `syntaxes/`, and `contributes.grammars` in `package.json` registers it with `injectTo: ["source.bpmn-script"]`.
+
+## Build
+
+```bash
+# From repo root
+npm run build --workspace packages/extension
+```
+
+`esbuild` bundles both entry points into CommonJS under `out/`.
+The bundle takes `@bpmn-script/language` and `@bpmn-script/transform` from their compiled `out/` directories, so a source change in either is invisible until you rebuild it, or run `npm run build` from the repo root.
 
 ## Source layout
 
@@ -85,4 +91,4 @@ F5 from the repo root stays the way to try a change to the extension itself with
 | `esbuild.mjs`                                     | Bundles both entry points; adds the `import.meta.url` CJS shim and copies the moddle asset                                    |
 | `injection/bpmn-script.injection.tmLanguage.json` | Injection grammar for embedded-language highlighting inside a `script` body                                                   |
 | `syntaxes/`                                       | TextMate grammars, both copied in at build time: the base grammar from `language` and the injection grammar from `injection/` |
-| `LICENSE`, `CHANGELOG.md`                         | Copied from the repo root by `build:prepare`, git-ignored, packed into the vsix                                               |
+| `LICENSE`                                         | Copied from the repo root by `build:prepare`, git-ignored, packed into the vsix                                               |

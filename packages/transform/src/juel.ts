@@ -10,7 +10,7 @@
  * to itself.
  */
 
-import { ID_TERMINAL } from '@bpmn-script/language';
+import { ID_TERMINAL, isPlainName } from '@bpmn-script/language';
 
 export type JuelNode =
   | { kind: 'int'; value: number }
@@ -186,6 +186,10 @@ function tokenize(input: string): Token[] | undefined {
         tokens.push({ type: 'bool', value: word });
       } else if (word === 'null') {
         tokens.push({ type: 'null', value: word });
+      } else if (!isPlainName(word)) {
+        // The grammar lexes a keyword as itself, so `var == 1` or `a.end`
+        // would not parse back; the quoted raw form spells it.
+        return undefined;
       } else {
         tokens.push({ type: 'id', value: word });
       }
@@ -244,7 +248,17 @@ function readString(
   return undefined;
 }
 
-/** Binary levels are left-associative; {@link ParseError} becomes a raw result. */
+/** Loosest first; every level is left-associative. */
+const BINARY_LEVELS: readonly (readonly BinaryOp[])[] = [
+  ['||'],
+  ['&&'],
+  ['==', '!='],
+  ['<=', '>=', '<', '>'],
+  ['+', '-'],
+  ['*', '/', '%'],
+];
+
+/** A {@link ParseError} becomes a raw result. */
 class Parser {
   private pos = 0;
 
@@ -255,58 +269,30 @@ class Parser {
   }
 
   parseExpr(): JuelNode {
-    return this.parseTernary();
-  }
-
-  private parseTernary(): JuelNode {
-    const condition = this.parseLogicalOr();
+    const condition = this.parseBinary(0);
     if (this.matchOp('?')) {
-      const whenTrue = this.parseLogicalOr();
+      const whenTrue = this.parseBinary(0);
       this.expectOp(':');
-      const whenFalse = this.parseLogicalOr();
+      const whenFalse = this.parseBinary(0);
       return { kind: 'ternary', condition, whenTrue, whenFalse };
     }
     return condition;
   }
 
-  private parseLogicalOr(): JuelNode {
-    return this.parseBinaryLevel(['||'], () => this.parseLogicalAnd());
-  }
-
-  private parseLogicalAnd(): JuelNode {
-    return this.parseBinaryLevel(['&&'], () => this.parseEquality());
-  }
-
-  private parseEquality(): JuelNode {
-    return this.parseBinaryLevel(['==', '!='], () => this.parseRelational());
-  }
-
-  private parseRelational(): JuelNode {
-    return this.parseBinaryLevel(['<=', '>=', '<', '>'], () =>
-      this.parseAdditive(),
-    );
-  }
-
-  private parseAdditive(): JuelNode {
-    return this.parseBinaryLevel(['+', '-'], () => this.parseMultiplicative());
-  }
-
-  private parseMultiplicative(): JuelNode {
-    return this.parseBinaryLevel(['*', '/', '%'], () => this.parseUnary());
-  }
-
-  private parseBinaryLevel(ops: BinaryOp[], operand: () => JuelNode): JuelNode {
-    let left = operand();
-    for (;;) {
-      const op = this.peekOp();
-      if (op !== undefined && (ops as string[]).includes(op)) {
-        this.pos++;
-        const right = operand();
-        left = { kind: 'binary', op: op as BinaryOp, left, right };
-      } else {
-        return left;
-      }
+  private parseBinary(level: number): JuelNode {
+    if (level === BINARY_LEVELS.length) return this.parseUnary();
+    const ops: readonly string[] = BINARY_LEVELS[level]!;
+    let left = this.parseBinary(level + 1);
+    for (
+      let op = this.peekOp();
+      op !== undefined && ops.includes(op);
+      op = this.peekOp()
+    ) {
+      this.pos++;
+      const right = this.parseBinary(level + 1);
+      left = { kind: 'binary', op: op as BinaryOp, left, right };
     }
+    return left;
   }
 
   private parseUnary(): JuelNode {

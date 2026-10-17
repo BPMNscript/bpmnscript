@@ -18,6 +18,7 @@ import {
   type ReferenceDescription,
   type Stream,
 } from 'langium';
+import { DefaultRenameProvider } from 'langium/lsp';
 import {
   isProcess,
   isVarRef,
@@ -26,6 +27,7 @@ import {
 } from './generated/ast.js';
 import type { BpmnScriptServices } from './bpmn-script-module.js';
 import { isVariableUse } from './bpmn-script-validator.js';
+import { printName, unquoteName } from './vocabulary.js';
 import type {
   DeclaringSite,
   VariableSymbolProvider,
@@ -141,5 +143,41 @@ export class BpmnScriptReferences extends DefaultReferences {
       segment: CstUtils.toDocumentSegment(leaf),
       local: true,
     };
+  }
+}
+
+type RenameArgs = Parameters<DefaultRenameProvider['rename']>;
+
+/**
+ * A step or code renamed to text the plain form cannot spell is written in
+ * backticks at every site; a variable has no backtick form.
+ */
+export class BpmnScriptRenameProvider extends DefaultRenameProvider {
+  override async rename(
+    ...[document, params, cancelToken]: RenameArgs
+  ): ReturnType<DefaultRenameProvider['rename']> {
+    const typed = /^`.+`$/.test(params.newName)
+      ? unquoteName(params.newName)
+      : params.newName;
+    const newName = this.renamesVariable(document, params)
+      ? typed
+      : printName(typed);
+    return super.rename(document, { ...params, newName }, cancelToken);
+  }
+
+  private renamesVariable(
+    document: LangiumDocument,
+    params: RenameArgs[1],
+  ): boolean {
+    const root = document.parseResult.value.$cstNode;
+    const leaf =
+      root &&
+      CstUtils.findDeclarationNodeAtOffset(
+        root,
+        document.textDocument.offsetAt(params.position),
+        this.grammarConfig.nameRegexp,
+      );
+    const [target] = leaf ? this.references.findDeclarations(leaf) : [];
+    return target !== undefined && isVariableSymbolNode(target);
   }
 }

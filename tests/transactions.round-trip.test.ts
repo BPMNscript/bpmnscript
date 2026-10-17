@@ -93,17 +93,57 @@ it('keeps both kinds of block, the cancel pair and the repetition at every hop, 
       expect(pick(ir), `${title} in ${label}`).toEqual(expected);
     }
   }
-  for (const line of [
-    'attempt BookAndPay(label: "Try to book and pay for the seats") {',
-    'attempt AssignSeatRows for each row in seatRows sequentially(' +
-      'label: "Spread the party across rows", asyncBefore: true) {',
-    'subprocess HoldSeats(label: "Hold the seats") {',
-    'end BookingAbandoned cancel(label: "Give up the booking")',
-    'on BookAndPay: cancel {',
-    'on BookAndPay: error(PAYMENT_UNAVAILABLE, code: c, message: m) {',
-  ]) {
-    expect(rt.dslPrime).toContain(line);
-  }
+  expect(rt.dslPrime).toBe(
+    [
+      'process seat-booking {',
+      '  error PAYMENT_UNAVAILABLE(message: "The payment provider could not be reached")',
+      '  var seatRows: any',
+      '  start BookingRequested {',
+      '    form {',
+      '      chargeDeclined: boolean "Whether the card issuer declined the charge"',
+      '    }',
+      '  }',
+      '  user ReviewRequest(label: "Review the seat request", assignee: "demo")',
+      '  attempt BookAndPay(label: "Try to book and pay for the seats") {',
+      '    start BookingOpened',
+      '    subprocess HoldSeats(label: "Hold the seats") {',
+      '      start HoldOpened',
+      '      service ReserveSeats(label: "Take the seats off sale", class: "com.example.booking.ReserveSeatsDelegate")',
+      '      end SeatsHeld',
+      '      on compensation {',
+      '        start ReleaseOpened',
+      '        service ReleaseSeats(label: "Put the seats back on sale", class: "com.example.booking.ReleaseSeatsDelegate")',
+      '        end SeatsReleased',
+      '      }',
+      '    }',
+      '    service ChargeCard(label: "Charge the travel card", class: "com.example.booking.ChargeCardDelegate")',
+      '    if (chargeDeclined) {',
+      '      end BookingAbandoned cancel(label: "Give up the booking")',
+      '    }',
+      '    service IssueTickets(label: "Issue the boarding tickets", class: "com.example.booking.IssueTicketsDelegate")',
+      '    end BookingSecured',
+      '  }',
+      '  subprocess PrepareDeparture(label: "Prepare the departure list") {',
+      '    start DepartureOpened',
+      '    attempt AssignSeatRows for each row in seatRows sequentially(label: "Spread the party across rows", asyncBefore: true) {',
+      '      service AssignRow(label: "Assign one row of seats", class: "com.example.booking.AssignRowDelegate")',
+      '    }',
+      '    end DeparturePrepared',
+      '  }',
+      '  user ConfirmBooking(label: "Confirm the seats with the traveler", assignee: "demo")',
+      '  end BookingComplete',
+      '  on BookAndPay: cancel {',
+      '    user ApologizeToTraveler(label: "Apologize and confirm the seats were released", assignee: "demo")',
+      '    end BookingCancelled',
+      '  }',
+      '  on BookAndPay: error(PAYMENT_UNAVAILABLE, code: c, message: m) {',
+      '    service RecordProviderOutage(label: "Record the payment outage", class: "com.example.booking.RecordOutageDelegate")',
+      '    end BookingHalted',
+      '  }',
+      '}',
+      '',
+    ].join('\n'),
+  );
 });
 
 it('writes the two heads as two tags, the cancel end inside its block, both handlers as boundaries centered on it, the undo block and the repetition', () => {

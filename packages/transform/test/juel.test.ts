@@ -72,6 +72,8 @@ describe('parseJuel: raw classification keeps the verbatim body and its opener',
     ['${fn:size(list)}', 'fn:size(list)', '$'],
     ['${ns:fn(x, y)}', 'ns:fn(x, y)', '$'],
     ['#{myBean.check()}', 'myBean.check()', '#'],
+    ['${var == 1}', 'var == 1', '$'],
+    ['${order.end}', 'order.end', '$'],
     // A wrapperless body is tagged $ even when its text starts with #.
     ['#foo', '#foo', '$'],
   ])('%s', async (body, text, open) => {

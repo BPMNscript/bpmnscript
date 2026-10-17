@@ -10,6 +10,7 @@ import { astToIr, irToDsl, irToXml, xmlToIr } from '@bpmn-script/transform';
 
 import { parseToAst, validate } from './helpers/pipeline.js';
 import { normalizeIr } from './helpers/normalize-ir.js';
+import { allOf } from './helpers/ir-query.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -64,20 +65,17 @@ describe('every deployable example', () => {
 });
 
 describe('construct shapes pinned only by a deployable example', () => {
-  it('awaiting-confirmation desugars the await into an intermediateCatchEvent carrying the message definition', async () => {
+  it('awaiting-confirmation desugars its one await into an intermediateCatchEvent carrying the message definition', async () => {
     const ir = astToIr(await parseToAst(sourceOf('awaiting-confirmation')));
     expect(
-      ir.flowElements.find((el) => el.kind === 'intermediateCatchEvent'),
-    ).toMatchObject({
-      kind: 'intermediateCatchEvent',
-      eventDefinition: { kind: 'message', messageName: 'ConfirmationReceived' },
-    });
+      allOf(ir, 'intermediateCatchEvent').map((el) => el.eventDefinition),
+    ).toEqual([{ kind: 'message', messageName: 'ConfirmationReceived' }]);
   });
 
   it.each([
     [
       'order-handling',
-      'the attached boundary events',
+      'every handler as a boundary event on its host',
       [
         '<bpmn:boundaryEvent id="Boundary_ReviewOrder_timer" cancelActivity="false" attachedToRef="ReviewOrder">',
         '<bpmn:boundaryEvent id="Boundary_ReviewOrder_message" attachedToRef="ReviewOrder">',
@@ -88,22 +86,26 @@ describe('construct shapes pinned only by a deployable example', () => {
     ],
     [
       'charge-with-recovery',
-      'an interrupting error boundary on the charge service task',
+      'one interrupting error boundary on the charge service task',
       [
         '<bpmn:boundaryEvent id="Boundary_ChargeCard_error" attachedToRef="ChargeCard">',
       ],
     ],
-    [
-      'compensating-saga',
-      'the undo handler wired over the compensable subprocess',
-      [
-        '<bpmn:subProcess id="ReserveSeat" name="Reserve the seat">',
-        /<bpmn:subProcess id="EventSubProcess_compensating-saga_\d+(?:_\d+)?" triggeredByEvent="true">[\s\S]*?<bpmn:compensateEventDefinition \/>/,
-        '<bpmn:serviceTask id="ReleaseSeat" name="Release the seat" operaton:class="com.example.demo.LogDelegate">',
-      ],
-    ],
-  ])('%s compiles with %s', async (file, _what, fragments) => {
+  ])('%s compiles %s', async (file, _what, boundaries) => {
     const xml = await irToXml(astToIr(await parseToAst(sourceOf(file))));
-    for (const fragment of fragments) expect(xml).toMatch(fragment);
+    expect(xml.match(/<bpmn:boundaryEvent\b[^>]*>/g)).toEqual(boundaries);
+  });
+
+  it('compensating-saga compiles the undo handler wired over the compensable subprocess', async () => {
+    const xml = await irToXml(
+      astToIr(await parseToAst(sourceOf('compensating-saga'))),
+    );
+    for (const fragment of [
+      '<bpmn:subProcess id="ReserveSeat" name="Reserve the seat">',
+      /<bpmn:subProcess id="EventSubProcess_compensating-saga_\d+(?:_\d+)?" triggeredByEvent="true">[\s\S]*?<bpmn:compensateEventDefinition \/>/,
+      '<bpmn:serviceTask id="ReleaseSeat" name="Release the seat" operaton:class="com.example.demo.LogDelegate">',
+    ]) {
+      expect(xml).toMatch(fragment);
+    }
   });
 });

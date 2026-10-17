@@ -81,9 +81,8 @@ describe.skipIf(SKIP)('E2E: start, end, throw and link on Operaton', () => {
     ).toContain('ConfirmOrder');
   }, 60_000);
 
-  // Neither thrown message carries an implementation, so the question the
-  // engine answers here is whether it passes the token through both or refuses
-  // the definition outright.
+  // Both thrown messages are bound to the demo's logging delegate, so the
+  // engine runs it on each and carries the token on through both.
   it('message throw and message end: the token passes through both and the instance ends', async () => {
     const processInstanceId = await startByMessage(fixture, 'OrderReceived');
     await fixture.completeTask(

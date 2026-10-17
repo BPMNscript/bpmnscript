@@ -3,7 +3,7 @@ import * as fsp from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import chalk from 'chalk';
-import { expect, vi } from 'vitest';
+import { vi } from 'vitest';
 
 import { buildAction } from '../../src/build.js';
 import { parseAction } from '../../src/parse.js';
@@ -106,14 +106,3 @@ export const runBuild = (input: Input): Promise<ActionRun> =>
 
 export const runParse = (input: Input): Promise<ActionRun> =>
   run(parseAction, '.bpmn', '.bpmnscript', input);
-
-export function expectMentions(
-  text: string,
-  mentions: readonly string[],
-): void {
-  for (const mention of mentions) {
-    expect(text, `expected to find "${mention}" in: ${text}`).toContain(
-      mention,
-    );
-  }
-}

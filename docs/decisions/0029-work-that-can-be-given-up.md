@@ -10,7 +10,7 @@ decision-makers: Marlon Kranz
 
 BPMN has a container for work abandoned as a unit: a `bpmn:transaction`, given up by an end event inside it carrying a `bpmn:cancelEventDefinition`, caught by a boundary event of the same kind.
 Operaton rejects either cancel position outside such a container, so neither is expressible until the container is.
-This grammar had no container to put them in, so any document carrying the element refused on import and the round trip stopped there.
+Without a container to put them in, any document carrying the element refuses on import and the round trip stops there.
 The question this decision settles: what does the container head say, where may a cancel sit, and which shapes does the surface decline to carry?
 
 ## Decision Drivers
@@ -51,7 +51,7 @@ A handler on a block whose body holds no cancel end warns for the same reason, s
 
 ### Consequences
 
-- Good, because a document the engine runs as work that can be given up now imports, prints, and recompiles byte for byte, where before it stopped the import at the container.
+- Good, because a document the engine runs as work that can be given up imports, prints, and recompiles byte for byte.
 - Good, because a block written with the new head and carrying no cancel anywhere is an ordinary block of work to the engine, which is what lets an imported transaction round-trip unchanged.
 - Good, because such a block may carry its own `on compensation`, so an enclosing scope can undo it in turn: Operaton's `CompensationUtil.hasCompensationEventSubprocess` asks only whether the handler is a sub-process scope triggered by an event, never what tag the block it undoes carries.
 - Neutral, because giving up a block undoes the finished work of every child inside it that carries an undo block, and reaches nothing around it.

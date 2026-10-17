@@ -4,10 +4,12 @@ import { UnsupportedConstructError } from '../../src/errors.js';
 
 /**
  * Asserts that an import was refused: `refusal` rejects with `errorClass`, and
- * (when `detail` is given) the error's `detail` field names the offending
- * construct. Returns the error so a caller can pin its remaining fields.
+ * (when `detail` is given) the error names the offending construct. Returns
+ * the error so a caller can pin its remaining fields.
  *
- * A regular expression is matched with `toMatch`, a string with `toBe`.
+ * A string is the error's `detail` field, compared with `toBe`. A regular
+ * expression is matched against the whole message, whose note lines carry
+ * the engine's reasons.
  */
 export const expectRefusal = async <
   E extends UnsupportedConstructError = UnsupportedConstructError,
@@ -22,11 +24,10 @@ export const expectRefusal = async <
   );
   expect(err).toBeInstanceOf(errorClass);
   if (detail !== undefined) {
-    const actual = (err as { detail: string }).detail;
     if (detail instanceof RegExp) {
-      expect(actual).toMatch(detail);
+      expect((err as Error).message).toMatch(detail);
     } else {
-      expect(actual).toBe(detail);
+      expect((err as { detail: string }).detail).toBe(detail);
     }
   }
   return err as E;

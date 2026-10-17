@@ -7,6 +7,7 @@ import {
 } from '@bpmn-script/language';
 import type { Model } from '@bpmn-script/language';
 import { EmptyFileSystem, URI } from 'langium';
+import type { LangiumDocument } from 'langium';
 import * as path from 'node:path';
 import {
   astToIr,
@@ -37,7 +38,13 @@ export type CompileResult =
   | { ok: false; kind: 'error'; message: string };
 
 export type DecompileResult =
-  | { ok: true; output: string; warnings: (ImportWarning | PrintWarning)[] }
+  | {
+      ok: true;
+      output: string;
+      warnings: (ImportWarning | PrintWarning)[];
+      /** Errors the printed script draws when compiled; it is still returned. */
+      buildErrors: ConvDiagnostic[];
+    }
   | { ok: false; kind: 'unsupported'; message: string }
   | { ok: false; kind: 'error'; message: string };
 
@@ -45,10 +52,10 @@ const { shared } = createBpmnScriptServices(EmptyFileSystem);
 
 let nextDocId = 0;
 
-export async function compileDslToBpmn(
+async function withBuiltDocument<T>(
   source: string,
-  exporterVersion: string,
-): Promise<CompileResult> {
+  use: (doc: LangiumDocument<Model>) => T | Promise<T>,
+): Promise<T> {
   const uri = URI.parse(`memory:///conv-${nextDocId++}.bpmnscript`);
 
   // Registered so cross-references resolve, removed so the index does not grow.
@@ -60,69 +67,72 @@ export async function compileDslToBpmn(
 
   try {
     await shared.workspace.DocumentBuilder.build([doc], { validation: true });
+    return await use(doc);
+  } finally {
+    shared.workspace.LangiumDocuments.deleteDocument(uri);
+  }
+}
 
-    const errors = (doc.diagnostics ?? []).filter(
-      (d) => d.severity === DiagnosticSeverity.Error,
-    );
-    if (errors.length > 0) {
-      const diagnostics: ConvDiagnostic[] = errors.map((d) => ({
-        line: d.range.start.line,
-        character: d.range.start.character,
-        endLine: d.range.end.line,
-        endCharacter: d.range.end.character,
-        message: Diagnostic.getMessageString(d),
-        severity: DiagnosticSeverity.Error,
-        text: doc.textDocument.getText(d.range),
-      }));
-      return { ok: false, kind: 'validation', diagnostics };
-    }
+function errorDiagnostics(doc: LangiumDocument): ConvDiagnostic[] {
+  return (doc.diagnostics ?? [])
+    .filter((d) => d.severity === DiagnosticSeverity.Error)
+    .map((d) => ({
+      line: d.range.start.line,
+      character: d.range.start.character,
+      endLine: d.range.end.line,
+      endCharacter: d.range.end.character,
+      message: Diagnostic.getMessageString(d),
+      severity: DiagnosticSeverity.Error,
+      text: doc.textDocument.getText(d.range),
+    }));
+}
 
-    // After the error gate: a keyword typo also parses into a model with no processes.
-    if (doc.parseResult.value.processes.length === 0) {
-      return { ok: false, kind: 'error', message: NO_PROCESS_MESSAGE };
-    }
+export async function compileDslToBpmn(
+  source: string,
+  exporterVersion: string,
+): Promise<CompileResult> {
+  try {
+    return await withBuiltDocument(source, async (doc) => {
+      const diagnostics = errorDiagnostics(doc);
+      if (diagnostics.length > 0) {
+        return { ok: false, kind: 'validation', diagnostics };
+      }
 
-    let ir;
-    try {
-      ir = astToIr(doc.parseResult.value);
-    } catch (err) {
-      return {
-        ok: false,
-        kind: 'error',
-        message: `AST to IR conversion failed: ${(err as Error).message}`,
-      };
-    }
+      // After the error gate: a keyword typo also parses into a model with no processes.
+      if (doc.parseResult.value.processes.length === 0) {
+        return { ok: false, kind: 'error', message: NO_PROCESS_MESSAGE };
+      }
 
-    let output;
-    let layoutWarning: string | undefined;
-    try {
-      output = await irToXml(ir, { exporterVersion });
-    } catch (err) {
-      if (err instanceof LayoutError) {
-        output = err.xml;
-        layoutWarning = err.message;
-      } else {
+      let ir;
+      try {
+        ir = astToIr(doc.parseResult.value);
+      } catch (err) {
+        return {
+          ok: false,
+          kind: 'error',
+          message: `AST to IR conversion failed: ${(err as Error).message}`,
+        };
+      }
+
+      try {
+        return { ok: true, output: await irToXml(ir, { exporterVersion }) };
+      } catch (err) {
+        if (err instanceof LayoutError) {
+          return { ok: true, output: err.xml, layoutWarning: err.message };
+        }
         return {
           ok: false,
           kind: 'error',
           message: `IR to XML conversion failed: ${(err as Error).message}`,
         };
       }
-    }
-
-    return {
-      ok: true,
-      output,
-      ...(layoutWarning !== undefined ? { layoutWarning } : {}),
-    };
+    });
   } catch (err) {
     return {
       ok: false,
       kind: 'error',
       message: (err as Error).message,
     };
-  } finally {
-    shared.workspace.LangiumDocuments.deleteDocument(uri);
   }
 }
 
@@ -162,7 +172,20 @@ export async function decompileBpmnToDsl(
     };
   }
 
-  return { ok: true, output, warnings: [...warnings, ...printWarnings] };
+  // Nothing above runs the validator, so building the script is what catches an error.
+  let buildErrors: ConvDiagnostic[];
+  try {
+    buildErrors = await withBuiltDocument(output, errorDiagnostics);
+  } catch (err) {
+    return { ok: false, kind: 'error', message: (err as Error).message };
+  }
+
+  return {
+    ok: true,
+    output,
+    warnings: [...warnings, ...printWarnings],
+    buildErrors,
+  };
 }
 
 // Importing the cli's `resolveOutputPath` would pull chalk and commander into the bundle.

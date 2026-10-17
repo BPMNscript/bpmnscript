@@ -24,7 +24,7 @@ process order-dispatch {
 
   user ConfirmOrder(label: "Confirm the order", assignee: "demo")
 
-  emit message NotifyWarehouse("WarehouseNotified")
+  emit message NotifyWarehouse("WarehouseNotified", class: "com.example.orders.NotifyWarehouseDelegate")
 
   if (amount > 1000) {
     service EscalateOrder(label: "Escalate the order", class: "com.example.orders.EscalateDelegate")
@@ -33,5 +33,5 @@ process order-dispatch {
     service DispatchOrder(label: "Dispatch the order", class: "com.example.orders.DispatchDelegate")
   }
 
-  throw message OrderAcknowledged("OrderAcknowledged")
+  throw message OrderAcknowledged("OrderAcknowledged", class: "com.example.orders.AcknowledgeOrderDelegate")
 }

@@ -2,10 +2,12 @@
 
 import { describe, expect, it } from 'vitest';
 import { isReservedName } from '@bpmn-script/language';
+import * as synthesizeIds from '../src/synthesize-ids.js';
 import {
+  boundaryEventIdBase,
+  endIdOf,
   isMintedEndId,
   isMintedStartId,
-  isWritableName,
   makeGatewaySplitId,
   makeGatewayJoinId,
   makeGatewayForkId,
@@ -19,79 +21,138 @@ import {
   makeEventSubProcessId,
   makeBoundaryEventId,
   makeIntermediateCatchEventId,
-  mintPrintableName,
   resolveCollision,
 } from '../src/synthesize-ids.js';
+import { irToXml } from '../src/ir-to-xml.js';
+import { chainedSub, minimalProcess } from './helpers/ir-fixtures.js';
+
+type Maker = (...args: never[]) => string;
+
+// A container's own minted start and end are reserved only against that container, named in the last column.
+const MINTED: [
+  expected: string,
+  maker: Maker,
+  args: unknown[],
+  container?: string,
+][] = [
+  ['Gateway_AmountCheck_split', makeGatewaySplitId, ['AmountCheck']],
+  ['Gateway_AmountCheck_join', makeGatewayJoinId, ['AmountCheck']],
+  ['Gateway_Step1_fork', makeGatewayForkId, ['Step1']],
+  ['Gateway_OrderWait_race', makeGatewayRaceId, ['OrderWait']],
+  ['Gateway_MyWhile_loop', makeGatewayLoopId, ['MyWhile']],
+  [
+    'Flow_Gateway_AmountCheck_split_default',
+    makeDefaultFlowId,
+    ['Gateway_AmountCheck_split'],
+  ],
+  [
+    'Flow_ReviewInvoice_AmountCheck',
+    makeSequenceFlowId,
+    ['ReviewInvoice', 'AmountCheck', new Set()],
+  ],
+  [
+    'StartEvent_invoice-approval',
+    makeStartEventId,
+    ['invoice-approval', new Set()],
+    'invoice-approval',
+  ],
+  [
+    'EndEvent_invoice-approval',
+    makeEndEventId,
+    ['invoice-approval', new Set()],
+    'invoice-approval',
+  ],
+  [
+    'Throw_invoice-approval_2_t_0',
+    makeThrowEventId,
+    ['invoice-approval_2_t_0'],
+  ],
+  [
+    'EventSubProcess_invoice-approval_0',
+    makeEventSubProcessId,
+    ['invoice-approval_0'],
+  ],
+  [
+    'Catch_invoice-approval_1_c_0',
+    makeIntermediateCatchEventId,
+    ['invoice-approval_1_c_0'],
+  ],
+  ['Boundary_Pack_error', makeBoundaryEventId, ['Pack', 'error', new Set()]],
+  [
+    'Boundary_Pack_timer_2',
+    makeBoundaryEventId,
+    ['Pack', 'timer', new Set(['Boundary_Pack_timer'])],
+  ],
+  [
+    'Boundary_Pack_timer_3',
+    makeBoundaryEventId,
+    [
+      'Pack',
+      'timer',
+      new Set(['Boundary_Pack_timer', 'Boundary_Pack_timer_2']),
+    ],
+  ],
+  ['Boundary_Pack_timer', boundaryEventIdBase, ['Pack', 'timer']],
+  // Minted off a coordinate no container name reaches, so reserved by prefix.
+  [
+    'EndEvent_Boundary_Pack_timer',
+    makeEndEventId,
+    ['Boundary_Pack_timer', new Set()],
+  ],
+  [
+    'StartEvent_EventSubProcess_p_1',
+    makeStartEventId,
+    ['EventSubProcess_p_1', new Set()],
+  ],
+  ['EndEvent_EventSubProcess_p_1', endIdOf, ['EventSubProcess_p_1']],
+];
+
+// The exports that read, claim or suffix an id rather than mint one of their own shape.
+const NOT_MINTERS = new Set<unknown>([
+  synthesizeIds.isMintedStartId,
+  synthesizeIds.isMintedEndId,
+  synthesizeIds.claimId,
+  synthesizeIds.claimDeclarationName,
+  synthesizeIds.resolveCollision,
+]);
 
 describe('every template mints its documented form, which the validator reserves', () => {
-  it.each<[string, () => string, string?]>([
-    ['Gateway_AmountCheck_split', () => makeGatewaySplitId('AmountCheck')],
-    ['Gateway_AmountCheck_join', () => makeGatewayJoinId('AmountCheck')],
-    ['Gateway_Step1_fork', () => makeGatewayForkId('Step1')],
-    ['Gateway_OrderWait_race', () => makeGatewayRaceId('OrderWait')],
-    ['Gateway_MyWhile_loop', () => makeGatewayLoopId('MyWhile')],
-    [
-      'Flow_Gateway_AmountCheck_split_default',
-      () => makeDefaultFlowId('Gateway_AmountCheck_split'),
-    ],
-    [
-      'Flow_ReviewInvoice_AmountCheck',
-      () => makeSequenceFlowId('ReviewInvoice', 'AmountCheck', new Set()),
-    ],
-    [
-      'StartEvent_invoice-approval',
-      () => makeStartEventId('invoice-approval', new Set()),
-      'invoice-approval',
-    ],
-    [
-      'EndEvent_invoice-approval',
-      () => makeEndEventId('invoice-approval', new Set()),
-      'invoice-approval',
-    ],
-    [
-      'Throw_invoice-approval_2_t_0',
-      () => makeThrowEventId('invoice-approval_2_t_0'),
-    ],
-    [
-      'EventSubProcess_invoice-approval_0',
-      () => makeEventSubProcessId('invoice-approval_0'),
-    ],
-    [
-      'Catch_invoice-approval_1_c_0',
-      () => makeIntermediateCatchEventId('invoice-approval_1_c_0'),
-    ],
-    [
-      'Boundary_Pack_error',
-      () => makeBoundaryEventId('Pack', 'error', new Set()),
-    ],
-    [
-      'Boundary_Pack_timer_2',
-      () =>
-        makeBoundaryEventId('Pack', 'timer', new Set(['Boundary_Pack_timer'])),
-    ],
-    [
-      'Boundary_Pack_timer_3',
-      () =>
-        makeBoundaryEventId(
-          'Pack',
-          'timer',
-          new Set(['Boundary_Pack_timer', 'Boundary_Pack_timer_2']),
-        ),
-    ],
-    // Minted off a coordinate no container name reaches, so reserved by prefix.
-    [
-      'EndEvent_Boundary_Pack_timer',
-      () => makeEndEventId('Boundary_Pack_timer', new Set()),
-    ],
-    [
-      'StartEvent_EventSubProcess_p_1',
-      () => makeStartEventId('EventSubProcess_p_1', new Set()),
-    ],
-  ])('%s', (expected, make, container) => {
-    const id = make();
+  it.each(MINTED)('%s', (expected, maker, args, container) => {
+    const id = (maker as (...args: unknown[]) => string)(...args);
     expect(id).toBe(expected);
     expect(isReservedName(id, container)).toBe(true);
     if (container !== undefined) expect(isReservedName(id)).toBe(false);
+  });
+
+  it('no exported id maker is missing from that table', () => {
+    const covered = new Set<unknown>(MINTED.map(([, maker]) => maker));
+    expect(
+      Object.entries(synthesizeIds)
+        .filter(
+          ([, value]) =>
+            typeof value === 'function' &&
+            !NOT_MINTERS.has(value) &&
+            !covered.has(value),
+        )
+        .map(([name]) => name),
+    ).toEqual([]);
+  });
+
+  it('every diagram id the writer emits, a sub-process expansion included, is reserved', async () => {
+    const xml = await irToXml(
+      minimalProcess([chainedSub('Sub', [{ kind: 'task', id: 'T' }])]),
+    );
+    expect(
+      [...xml.matchAll(/<bpmndi:\w+ id="([^"]+)"/g)].map(([, id]) => [
+        id,
+        isReservedName(id!),
+      ]),
+    ).toEqual([
+      ['BPMNDiagram_p', true],
+      ['BPMNPlane_p', true],
+      ['Sub_di', true],
+      ['T_di', true],
+    ]);
   });
 
   it('the minted start and end are recognized exactly, per container', () => {
@@ -138,27 +199,6 @@ describe('a template whose base an author can take claims its result and suffixe
     const minted = [make(taken), make(taken), make(taken)];
     expect(minted).toEqual([base, `${base}_2`, `${base}_3`]);
     expect([...taken]).toEqual(minted);
-  });
-});
-
-describe('mintPrintableName', () => {
-  it.each([
-    ['a dot becomes an underscore', 'Task.1', false, 'Task_1'],
-    ['a keyword takes a leading underscore', 'user', false, '_user'],
-    ['a trailing hyphen becomes an underscore', 'Review-', false, 'Review_'],
-    ['every non-word character becomes one', 'WFP-6-', false, 'WFP_6_'],
-    ['a leading digit takes a leading underscore', '1st', false, '_1st'],
-    [
-      'an inner hyphen is a name already',
-      'invoice-approval',
-      true,
-      'invoice-approval',
-    ],
-  ])('%s', (_title, id, writable, expected) => {
-    expect([isWritableName(id), mintPrintableName(id)]).toEqual([
-      writable,
-      expected,
-    ]);
   });
 });
 

@@ -1,3 +1,4 @@
+import { HISTORY_TIME_TO_LIVE } from '../../src/ir-to-xml.js';
 import type { BuiltinTaskType } from '@bpmn-script/language';
 import type {
   BoundaryEvent,
@@ -298,43 +299,12 @@ export const eventHandler = (
     { kind: 'endEvent', id: `${id}_End` },
   ]);
 
-interface EventSubProcessOptions {
-  id?: string;
-  isInterrupting?: false;
-}
-
-// `<prefix>Start -> <prefix>End` over `SF_<prefix>`.
-export const eventSubProcess = (
-  prefix: string,
-  eventDefinition: EventDefinition,
-  { id = `${prefix}Handler`, isInterrupting }: EventSubProcessOptions = {},
-): SubProcess => ({
-  kind: 'subProcess',
-  id,
-  triggeredByEvent: true,
-  flowElements: [
-    {
-      kind: 'startEvent',
-      id: `${prefix}Start`,
-      ...(isInterrupting === false ? { isInterrupting } : {}),
-      eventDefinition,
-    },
-    { kind: 'endEvent', id: `${prefix}End` },
-  ],
-  sequenceFlows: [
-    {
-      id: `SF_${prefix}`,
-      sourceRef: `${prefix}Start`,
-      targetRef: `${prefix}End`,
-    },
-  ],
-});
-
 // The IR xmlToIr produces from tests/golden/invoice-approval-handwritten.bpmn. The process name is absent
 // because "Invoice Approval" equals humanize("invoice-approval"), which import drops as derivable.
 export const HANDWRITTEN_IMPORT_IR: BpmnProcess = {
   id: 'invoice-approval',
   isExecutable: true,
+  historyTimeToLive: HISTORY_TIME_TO_LIVE,
   flowElements: [
     { kind: 'startEvent', id: 'ReviewStart' },
     {

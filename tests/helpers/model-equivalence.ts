@@ -2,27 +2,302 @@
 // `normalizeIr` equality; that after canonicalizing JUEL and minted ids; and a
 // path signature where every step keeps its content and reaches the same next
 // steps through the same conditions, defaults and non-trivial gateways.
+//
+// Loaded outside vitest through Node's type stripping: import only the
+// workspace packages and `normalize-ir.ts`, with `.ts` extensions.
 
-import { isGateway, parseJuel } from '@bpmn-script/transform';
-import type { BpmnProcess, FlowElement } from '@bpmn-script/transform';
-import { normalizeIr } from './normalize-ir.js';
+import {
+  HISTORY_TIME_TO_LIVE,
+  isGateway,
+  isSynthesizedTerminalId,
+  parseJuel,
+} from '@bpmn-script/transform';
+import type {
+  BpmnProcess,
+  FlowContainer,
+  FlowElement,
+  SequenceFlow,
+} from '@bpmn-script/transform';
+import {
+  NORMALIZATIONS,
+  hasOnly,
+  isPlainFlow,
+  normalizeIr,
+  type NormalizationName,
+} from './normalize-ir.ts';
+
+export { NORMALIZATIONS, normalizeIr, type NormalizationName };
 
 export type ModelComparison = 'same' | 'canonical' | 'restructured' | 'changed';
 
-export function compareModels(a: BpmnProcess, b: BpmnProcess): ModelComparison {
-  if (stable(normalizeIr(a)) === stable(normalizeIr(b))) return 'same';
-  if (canonicalForm(a) === canonicalForm(b)) return 'canonical';
-  if (stable(modelSignature(a)) === stable(modelSignature(b))) {
-    return 'restructured';
-  }
-  return 'changed';
+export interface AppliedNormalization {
+  /** One name, or a minimal group needed only together, in `NORMALIZATIONS` order. */
+  names: NormalizationName[];
+  /** Keys of the differences that appear only with these switched off, sorted. */
+  elements: string[];
 }
 
-// Expressions go first: a minted coordinate name embeds its event definition.
-function canonicalForm(ir: BpmnProcess): string {
-  return stable(
-    normalizeIr(canonicalizeCoordinateIds(canonicalExpressions(ir))),
+export interface ElementDifference {
+  /** Container path from the process, ids joined by '/'. */
+  container: string;
+  /** Element or flow key, or the process's own id for its own fields. */
+  element: string;
+  only?: 'a' | 'b';
+  /** Differing fields as dotted paths; empty when `only` is set. */
+  fields: { path: string; a?: unknown; b?: unknown }[];
+}
+
+export interface ModelReport {
+  level: ModelComparison;
+  normalizations: AppliedNormalization[];
+  /** Measured on the fully reduced models: empty iff `level` is `same` or `canonical`. */
+  differences: ElementDifference[];
+}
+
+export function compareModels(a: BpmnProcess, b: BpmnProcess): ModelReport {
+  const bridged = withDefaultTimeToLive(a, b);
+  const differences = diffModels(reduce(bridged), reduce(b));
+  const level: ModelComparison =
+    stable(normalizeIr(bridged)) === stable(normalizeIr(b))
+      ? 'same'
+      : stable(reduce(bridged)) === stable(reduce(b))
+        ? 'canonical'
+        : stable(modelSignature(bridged)) === stable(modelSignature(b))
+          ? 'restructured'
+          : 'changed';
+  return {
+    level,
+    normalizations: differences.length === 0 ? needed(a, bridged, b) : [],
+    differences,
+  };
+}
+
+// One way only: the exporter writes `HISTORY_TIME_TO_LIVE` for an original
+// (`a`) that sets none, so a rebuild (`b`) carrying it is expected. A rebuild
+// that loses a value the original set is a real change.
+function withDefaultTimeToLive(a: BpmnProcess, b: BpmnProcess): BpmnProcess {
+  return a.historyTimeToLive === undefined &&
+    b.historyTimeToLive === HISTORY_TIME_TO_LIVE
+    ? { ...a, historyTimeToLive: HISTORY_TIME_TO_LIVE }
+    : a;
+}
+
+// Expressions are canonicalized before ids: a minted coordinate name embeds
+// its event definition.
+function reduce(
+  ir: BpmnProcess,
+  off: ReadonlySet<NormalizationName> = new Set(),
+): BpmnProcess {
+  const expressions = off.has('expression-parse-trees')
+    ? ir
+    : canonicalExpressions(ir);
+  const normalized = normalizeIr(
+    off.has('synthesized-ids')
+      ? expressions
+      : canonicalizeCoordinateIds(expressions),
+    off,
   );
+  return off.has('implicit-end') ? normalized : withoutImplicitEnds(normalized);
+}
+
+// A minted none end event, as `canonicalizeCoordinateIds` renames it.
+const MINTED_END = /^endEvent:(#\d+)?$/;
+
+// Drops each minted, settings-free none end event whose every incoming flow is
+// plain and its source's only outgoing one, the source being no gateway: a
+// gateway left with no flow runs its own code, not the one below. Operaton ends a token that finds
+// no outgoing flow with the `execution.end(true)` a none end event runs
+// (`BpmnActivityBehavior.handleNoTransitions`), and with `asyncAfter` the
+// activity end is then the async step, so the job count matches too. Only a
+// minted id marks an end as one the compiler wrote for a branch without
+// `end`, so this needs `synthesized-ids`. It runs after `normalizeIr`, so
+// pass-through gateways are already gone.
+function withoutImplicitEnds<T extends FlowContainer>(container: T): T {
+  const byId = new Map(container.flowElements.map((el) => [el.id, el]));
+  const fanOut = (id: string): number =>
+    container.sequenceFlows.filter((f) => f.sourceRef === id).length;
+  const ends = new Set(
+    container.flowElements
+      .filter((el) => el.kind === 'endEvent' && MINTED_END.test(el.id))
+      .filter((el) => hasOnly(el, ['kind', 'id']))
+      .map((el) => el.id)
+      .filter((id) => {
+        const incoming = container.sequenceFlows.filter(
+          (f) => f.targetRef === id,
+        );
+        return incoming.every(
+          (f) =>
+            isPlainFlow(f) &&
+            fanOut(f.sourceRef) === 1 &&
+            !isGateway(byId.get(f.sourceRef)!),
+        );
+      }),
+  );
+  return {
+    ...container,
+    flowElements: container.flowElements
+      .filter((el) => !ends.has(el.id))
+      .map((el) => (el.kind === 'subProcess' ? withoutImplicitEnds(el) : el)),
+    sequenceFlows: container.sequenceFlows.filter(
+      (f) => !ends.has(f.targetRef),
+    ),
+  };
+}
+
+// Only for pairs whose reduced models are equal: on a differing pair, switching
+// `synthesized-ids` off re-labels an existing difference's key, which would
+// read as a new one. A normalization is needed when switching it off alone
+// yields a difference. Two that overlap (each suffices alone) are needed by
+// neither, so the smallest jointly needed groups stand in for them.
+function needed(
+  original: BpmnProcess,
+  bridged: BpmnProcess,
+  b: BpmnProcess,
+): AppliedNormalization[] {
+  const a = (off: ReadonlySet<NormalizationName>) =>
+    off.has('default-history-time-to-live') ? original : bridged;
+  const switchedOff = (names: NormalizationName[]) => {
+    const off = new Set(names);
+    const added = diffModels(reduce(a(off), off), reduce(b, off));
+    const elements = [...new Set(added.map(keyOf))].sort();
+    return { added: added.length, entry: { names, elements } };
+  };
+
+  const singles = NORMALIZATIONS.map((n) => switchedOff([n]))
+    .filter(({ added }) => added > 0)
+    .map(({ entry }) => entry);
+  if (singles.length > 0) return singles;
+
+  const allOff = new Set(NORMALIZATIONS);
+  const identicalWithEverythingOff =
+    stable(reduce(original, allOff)) === stable(reduce(b, allOff));
+  if (identicalWithEverythingOff) return [];
+
+  for (let size = 2; size <= NORMALIZATIONS.length; size++) {
+    const groups = subsets(NORMALIZATIONS, size)
+      .map(switchedOff)
+      .filter(({ added }) => added > 0)
+      .map(({ entry }) => entry);
+    if (groups.length > 0) return groups;
+  }
+  return [];
+}
+
+function subsets<T>(xs: readonly T[], size: number): T[][] {
+  if (size === 0) return [[]];
+  return xs.flatMap((x, i) =>
+    subsets(xs.slice(i + 1), size - 1).map((rest) => [x, ...rest]),
+  );
+}
+
+function keyOf(d: ElementDifference): string {
+  return d.container === d.element
+    ? d.container
+    : `${d.container}/${d.element}`;
+}
+
+function diffModels(a: BpmnProcess, b: BpmnProcess): ElementDifference[] {
+  const out: ElementDifference[] = [];
+  diffContainer(a, b, a.id, a.id, out);
+  return out;
+}
+
+// A sub-process's own fields and body order are an entry of its parent; its
+// body's elements are entries of its own path.
+function diffContainer(
+  a: FlowContainer,
+  b: FlowContainer,
+  parent: string,
+  element: string,
+  out: ElementDifference[],
+): void {
+  const path = parent === element ? parent : `${parent}/${element}`;
+  const { flowElements: _ae, sequenceFlows: _af, ...ownA } = a;
+  const { flowElements: _be, sequenceFlows: _bf, ...ownB } = b;
+  const elementsA = keyed(a.flowElements, a.sequenceFlows);
+  const elementsB = keyed(b.flowElements, b.sequenceFlows);
+
+  // With `element-order` on both sides are sorted, so only an order that
+  // normalization left alone can show up here.
+  const orderOf = (
+    own: Map<string, FlowElement | SequenceFlow>,
+    other: Map<string, FlowElement | SequenceFlow>,
+    flows: boolean,
+  ): string[] =>
+    [...own]
+      .filter(([k, x]) => other.has(k) && 'sourceRef' in x === flows)
+      .map(([k]) => k);
+  const fields = fieldDiffs(ownA, ownB);
+  for (const [field, flows] of [
+    ['flowElements', false],
+    ['sequenceFlows', true],
+  ] as const) {
+    const orderA = orderOf(elementsA, elementsB, flows);
+    const orderB = orderOf(elementsB, elementsA, flows);
+    if (stable(orderA) !== stable(orderB)) {
+      fields.push({ path: field, a: orderA, b: orderB });
+    }
+  }
+  if (fields.length > 0) out.push({ container: parent, element, fields });
+
+  for (const [key, x] of elementsA) {
+    const y = elementsB.get(key);
+    if (y === undefined) {
+      out.push({ container: path, element: key, only: 'a', fields: [] });
+    } else if ('flowElements' in x && 'flowElements' in y) {
+      diffContainer(x, y, path, key, out);
+    } else {
+      const fields = fieldDiffs(x, y);
+      if (fields.length > 0)
+        out.push({ container: path, element: key, fields });
+    }
+  }
+  for (const key of elementsB.keys()) {
+    if (!elementsA.has(key)) {
+      out.push({ container: path, element: key, only: 'b', fields: [] });
+    }
+  }
+}
+
+// Ids, with an occurrence suffix: re-keyed flows between one pair of nodes
+// (a conditioned route and its fallback) share an id.
+function keyed(
+  elements: FlowElement[],
+  flows: SequenceFlow[],
+): Map<string, FlowElement | SequenceFlow> {
+  const seen = new Map<string, number>();
+  return new Map(
+    [...elements, ...flows].map((x) => {
+      const n = (seen.get(x.id) ?? 0) + 1;
+      seen.set(x.id, n);
+      return [n === 1 ? x.id : `${x.id} #${n}`, x];
+    }),
+  );
+}
+
+function fieldDiffs(
+  a: unknown,
+  b: unknown,
+  path = '',
+  out: ElementDifference['fields'] = [],
+): ElementDifference['fields'] {
+  if (stable(a) === stable(b)) return out;
+  const isRecord = (x: unknown): x is Record<string, unknown> =>
+    x !== null && typeof x === 'object' && !Array.isArray(x);
+  if (isRecord(a) && isRecord(b)) {
+    for (const k of [
+      ...new Set([...Object.keys(a), ...Object.keys(b)]),
+    ].sort()) {
+      fieldDiffs(a[k], b[k], path === '' ? k : `${path}.${k}`, out);
+    }
+  } else {
+    out.push({
+      path,
+      ...(a === undefined ? {} : { a }),
+      ...(b === undefined ? {} : { b }),
+    });
+  }
+  return out;
 }
 
 // `toEqual` semantics on a string: sorted keys, `undefined` dropped.
@@ -67,14 +342,11 @@ function canonicalExpressions<T>(value: T): T {
   ) as T;
 }
 
-// Minted coordinate ids (`Catch_p_0_b1`, `Throw_p_2`, `EventSubProcess_p_3`)
-// move whenever the printer reorders or hoists a statement, so each is renamed
-// to its content (`#n` on a tie).
-const COORDINATE_ID =
-  /^(Catch_|Throw_|StartEvent_EventSubProcess_|EndEvent_EventSubProcess_|EndEvent_Boundary_)/;
-const EVENT_SUB_PROCESS_ID = /^EventSubProcess_/;
-const COORDINATE_GATEWAY_ID = /^Gateway_.+_(split|join|fork|loop|race)$/;
-
+// Minted ids (`Catch_p_0_b1`, `Throw_p_2`, `EventSubProcess_p_3`) move whenever
+// the printer reorders or hoists a statement, so each is renamed to its content
+// (`#n` on a tie). A race branch's catch has no id slot in the script, so it is
+// recognised by position whatever its id. Gateways need no rename here:
+// `normalizeIr` re-keys every one, and the signature never prints their ids.
 function canonicalizeCoordinateIds(container: BpmnProcess): BpmnProcess {
   const rename = new Map<string, string>();
   const used = new Map<string, number>();
@@ -92,45 +364,21 @@ function canonicalizeCoordinateIds(container: BpmnProcess): BpmnProcess {
         ) as unknown as FlowElement)
       : el,
   );
+  const kindOf = new Map(container.flowElements.map((e) => [e.id, e.kind]));
+  const raceBranches = new Set(
+    container.sequenceFlows
+      .filter((f) => kindOf.get(f.sourceRef) === 'eventBasedGateway')
+      .map((f) => f.targetRef),
+  );
   for (const el of elements) {
-    if (COORDINATE_ID.test(el.id)) {
+    if (el.kind === 'subProcess' && el.triggeredByEvent === true) {
+      mint(el.id, `EventSubProcess:${handlerContent(el)}`);
+    } else if (
+      isSynthesizedTerminalId(el.id, el.kind, container) ||
+      (el.kind === 'intermediateCatchEvent' && raceBranches.has(el.id))
+    ) {
       const def = 'eventDefinition' in el ? stable(el.eventDefinition) : '';
       mint(el.id, `${el.kind}:${def}`);
-    } else if (EVENT_SUB_PROCESS_ID.test(el.id) && el.kind === 'subProcess') {
-      mint(el.id, `EventSubProcess:${handlerContent(el)}`);
-    }
-  }
-
-  // Gateways are renamed after the events, by kind and renamed neighbours; the
-  // second round gives gateway neighbours their first-round names.
-  const byId = new Map(elements.map((e) => [e.id, e]));
-  for (let round = 0; round < 2; round++) {
-    const previous = new Map(rename);
-    const neighbourName = (id: string): string => {
-      const el = byId.get(id);
-      if (el !== undefined && COORDINATE_GATEWAY_ID.test(id)) {
-        return round === 0 ? `gateway:${el.kind}` : (previous.get(id) ?? id);
-      }
-      return previous.get(id) ?? id;
-    };
-    for (const k of [...used.keys()]) {
-      if (k.startsWith('Gateway_')) used.delete(k);
-    }
-    for (const el of elements) {
-      const role = COORDINATE_GATEWAY_ID.exec(el.id)?.[1];
-      if (role === undefined) continue;
-      const ins = container.sequenceFlows
-        .filter((f) => f.targetRef === el.id)
-        .map((f) => neighbourName(f.sourceRef))
-        .sort();
-      const outs = container.sequenceFlows
-        .filter((f) => f.sourceRef === el.id)
-        .map((f) => neighbourName(f.targetRef))
-        .sort();
-      mint(
-        el.id,
-        `Gateway_${el.kind}:[${ins.join(',')}]:[${outs.join(',')}]_${role}`,
-      );
     }
   }
 

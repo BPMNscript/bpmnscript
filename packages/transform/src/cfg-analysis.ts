@@ -162,18 +162,13 @@ function buildGraph(container: FlowContainer): Graph {
   const reentries = new Set<string>();
   for (const el of container.flowElements) {
     const hasRealPred = pred.get(el.id)!.length > 0;
-    const isLinkCatch =
-      el.kind === 'intermediateCatchEvent' &&
-      el.eventDefinition.kind === 'link' &&
-      !hasRealPred;
-    if (el.kind === 'boundaryEvent' || isLinkCatch) reentries.add(el.id);
-    if (
-      el.kind === 'startEvent' ||
+    const reentry =
       el.kind === 'boundaryEvent' ||
-      isLinkCatch
-    ) {
-      addEdge(VIRTUAL_ENTRY, el.id);
-    } else if (!hasAnyStart && !hasRealPred) {
+      (el.kind === 'intermediateCatchEvent' &&
+        el.eventDefinition.kind === 'link' &&
+        !hasRealPred);
+    if (reentry) reentries.add(el.id);
+    if (reentry || el.kind === 'startEvent' || (!hasAnyStart && !hasRealPred)) {
       addEdge(VIRTUAL_ENTRY, el.id);
     }
   }
@@ -225,15 +220,11 @@ function withLoopExits(graph: Graph, heads: readonly string[]): Graph {
   const succ = new Map([...graph.succ].map(([n, ns]) => [n, [...ns]]));
   const pred = new Map([...graph.pred].map(([n, ns]) => [n, [...ns]]));
   for (const head of heads) {
-    if (reachesExit(pred).has(head)) continue;
+    if (closure([VIRTUAL_EXIT], (n) => pred.get(n) ?? []).has(head)) continue;
     succ.get(head)!.push(VIRTUAL_EXIT);
     pred.get(VIRTUAL_EXIT)!.push(head);
   }
   return { succ, pred, reentries: graph.reentries };
-}
-
-function reachesExit(pred: Map<string, string[]>): Set<string> {
-  return closure([VIRTUAL_EXIT], (n) => pred.get(n) ?? []);
 }
 
 /**
@@ -282,8 +273,7 @@ function computeIdom(
 
       let newIdom: string | undefined;
       for (const p of pred.get(node) ?? []) {
-        if (!order.has(p)) continue; // predecessor not reachable from root
-        if (idom.get(p) === undefined) continue; // not processed yet
+        if (!order.has(p) || idom.get(p) === undefined) continue;
         newIdom =
           newIdom === undefined ? p : intersect(newIdom, p, idom, order);
       }
@@ -381,6 +371,15 @@ function loopEntries(
   const conditioned = container.sequenceFlows.filter(
     (f) => f.conditionExpression !== undefined,
   );
+  const plainFlow = (from: string, to: string) =>
+    container.sequenceFlows.some(
+      (f) =>
+        f.sourceRef === from &&
+        f.targetRef === to &&
+        f.conditionExpression === undefined,
+    );
+  const conditionedOut = (n: string) =>
+    conditioned.filter((f) => f.sourceRef === n).length;
   const latches = new Map<string, Set<string>>();
   const entered: EnteredLoop[] = [];
   const jumpCycleHeads = new Set<string>();
@@ -395,14 +394,7 @@ function loopEntries(
       // An unconditioned flow in from outside: a hint of the cycle's way in, not
       // proof (`user Z; goto B` enters B unconditioned too).
       const hasNaturalEntry = (n: string) =>
-        outside(n).some((p) =>
-          container.sequenceFlows.some(
-            (f) =>
-              f.sourceRef === p &&
-              f.targetRef === n &&
-              f.conditionExpression === undefined,
-          ),
-        );
+        outside(n).some((p) => plainFlow(p, n));
       // A node latched to an enclosing head stays in `inside`, so its exit route
       // can form a pseudo-cycle of jumps. Such a waypoint has no test of its own
       // here; a while nested in a while reuses its node but does have one.
@@ -448,21 +440,14 @@ function loopEntries(
           (s) =>
             conditioned.some(
               (f) => f.sourceRef === s && f.targetRef === head,
-            ) && conditioned.filter((f) => f.sourceRef === s).length === 1,
+            ) && conditionedOut(s) === 1,
         );
         // A `while` head has an unconditioned back edge and one conditioned exit;
         // otherwise it may still be a jump cycle recognized later.
         const isWhileHead =
           gateways.has(head) &&
-          conditioned.filter((f) => f.sourceRef === head).length === 1 &&
-          [...backSources].some((s) =>
-            container.sequenceFlows.some(
-              (f) =>
-                f.sourceRef === s &&
-                f.targetRef === head &&
-                f.conditionExpression === undefined,
-            ),
-          );
+          conditionedOut(head) === 1 &&
+          [...backSources].some((s) => plainFlow(s, head));
         const owner = isWhileHead
           ? head
           : ownTests.length === 1

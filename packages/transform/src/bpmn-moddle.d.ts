@@ -39,6 +39,8 @@ declare module 'saxen' {
   export interface ParseContext {
     line: number;
     column: number;
+    /** The source text of the tag being reported. */
+    data: string;
   }
 
   export type OpenTagHandler = (

@@ -1,6 +1,7 @@
 import {
   AstUtils,
   GrammarAST,
+  GrammarUtils,
   isCompositeCstNode,
   isLeafCstNode,
   type AstNode,
@@ -14,6 +15,7 @@ import {
   DefaultCompletionProvider,
   type CompletionAcceptor,
   type CompletionContext,
+  type CompletionValueItem,
   type NextFeature,
 } from 'langium/lsp';
 import {
@@ -53,6 +55,7 @@ import {
 } from './bpmn-script-validator.js';
 import {
   isStructuralParenKey,
+  payloadDocumentationKeyOf,
   payloadItemOf,
   settingsOf,
   timerParticleOf,
@@ -70,6 +73,7 @@ import {
   CATCH_TRIGGERS,
   DECLARED_CODE_TRIGGERS,
   DECISION_RESULT_MAPPINGS,
+  ELSE_FAIL_WORD,
   EMIT_TRIGGERS,
   END_TRIGGERS,
   ENGINE_KEYS,
@@ -96,6 +100,7 @@ import {
   ON_TRIGGERS,
   OUTPUT_DIRECTION,
   parameterDirectionsFor,
+  printName,
   PROCESS_HEADER_KEYS,
   PROPERTY_DIRECTION,
   RACE_TRIGGERS,
@@ -109,6 +114,7 @@ import {
   TRIGGER_PAYLOAD,
   TYPE_BINDING_KEY,
   TYPE_BINDING_VALUES,
+  VALUE_DOCUMENTATION_KEYS,
   VAR_TYPES,
   type EngineKey,
 } from './vocabulary.js';
@@ -129,6 +135,24 @@ const subscriptionChoices = (triggers: readonly string[]): string =>
   triggers
     .filter((word) => namesACode(word) && !DECLARED_CODE_TRIGGERS.has(word))
     .join(',');
+
+/** A code is written bare, a subscription name quoted. */
+const triggerForms = (
+  word: string,
+  triggers: readonly string[],
+  body = '',
+): StructureForm[] => [
+  {
+    label: word,
+    insertText:
+      word + ' ${1|' + declaredCodeChoices(triggers) + '|}(${2:CODE})' + body,
+  },
+  {
+    label: `${word} message`,
+    insertText:
+      word + ' ${1|' + subscriptionChoices(triggers) + '|}("${2:NAME}")' + body,
+  },
+];
 
 /** A keyword absent here keeps Langium's bare-keyword item. */
 const STRUCTURE_SNIPPETS: Readonly<
@@ -161,48 +185,10 @@ const STRUCTURE_SNIPPETS: Readonly<
   ],
   subprocess: 'subprocess ${1:id} {\n\t$0\n}',
   attempt: 'attempt ${1:id} {\n\t$0\n}',
-  // A code is written bare, a subscription name quoted; timer and condition are
-  // scaffolded at the trigger word.
-  on: [
-    {
-      label: 'on',
-      insertText:
-        'on ${1|' +
-        declaredCodeChoices(ON_TRIGGERS) +
-        '|}(${2:CODE}) {\n\t$0\n}',
-    },
-    {
-      label: 'on message',
-      insertText:
-        'on ${1|' +
-        subscriptionChoices(ON_TRIGGERS) +
-        '|}("${2:NAME}") {\n\t$0\n}',
-    },
-  ],
-  throw: [
-    {
-      label: 'throw',
-      insertText:
-        'throw ${1|' + declaredCodeChoices(THROW_TRIGGERS) + '|}(${2:CODE})',
-    },
-    {
-      label: 'throw message',
-      insertText:
-        'throw ${1|' + subscriptionChoices(THROW_TRIGGERS) + '|}("${2:NAME}")',
-    },
-  ],
-  emit: [
-    {
-      label: 'emit',
-      insertText:
-        'emit ${1|' + declaredCodeChoices(EMIT_TRIGGERS) + '|}(${2:CODE})',
-    },
-    {
-      label: 'emit message',
-      insertText:
-        'emit ${1|' + subscriptionChoices(EMIT_TRIGGERS) + '|}("${2:NAME}")',
-    },
-  ],
+  // Timer and condition are scaffolded at the trigger word.
+  on: triggerForms('on', ON_TRIGGERS, ' {\n\t$0\n}'),
+  throw: triggerForms('throw', THROW_TRIGGERS),
+  emit: triggerForms('emit', EMIT_TRIGGERS),
   await: [
     {
       label: 'await',
@@ -252,6 +238,12 @@ const engineSnippets = (
 const SETTING_SNIPPETS: Readonly<Record<string, string>> = {
   label: 'label: "${1:label}"',
   documentation: 'documentation: "${1:documentation}"',
+  ...Object.fromEntries(
+    Object.values(VALUE_DOCUMENTATION_KEYS).map((key) => [
+      key,
+      `${key}: "\${1:documentation}"`,
+    ]),
+  ),
   ...engineSnippets((key) => key),
   ...engineSnippets(joinSettingKey),
   ...engineSnippets(
@@ -387,13 +379,58 @@ const payloadOpen = (owner: AstNode, context: CompletionContext): boolean =>
 
 function conditionSlotOpen(context: CompletionContext): boolean {
   const owner = owningElement(context);
-  const trigger = owner === undefined ? undefined : triggerWordOf(owner);
+  if (owner === undefined) return false;
+  const trigger = triggerWordOf(owner);
   return (
-    owner !== undefined &&
     trigger !== undefined &&
     TRIGGER_PAYLOAD[trigger]?.parens === 'condition' &&
     !payloadWritten(owner, context)
   );
+}
+
+/**
+ * The items written inside the parentheses that hold a condition when the
+ * caret is there, where the validator accepts the condition's documentation
+ * alone.
+ */
+function conditionItemsAt(context: CompletionContext): ParenItem[] | undefined {
+  for (
+    let node: AstNode | undefined = context.node;
+    node;
+    node = node.$container
+  ) {
+    const owner = node as {
+      condition?: AstNode;
+      conditionItems?: ParenItem[];
+      completion?: AstNode;
+      completionItems?: ParenItem[];
+    };
+    for (const [value, items] of [
+      [owner.condition, owner.conditionItems],
+      [owner.completion, owner.completionItems],
+    ] as const) {
+      const start = value?.$cstNode?.end;
+      if (items === undefined || start === undefined) continue;
+      const close = GrammarUtils.findNodesForKeyword(node.$cstNode, ')').find(
+        (paren) => paren.offset >= start,
+      );
+      if (
+        close !== undefined &&
+        context.offset > start &&
+        context.offset <= close.offset
+      ) {
+        return items;
+      }
+    }
+  }
+  return undefined;
+}
+
+function conditionItemForms(items: ParenItem[]): StructureForm[] {
+  const key = VALUE_DOCUMENTATION_KEYS.condition;
+  return settingsOf(items).some((setting) => setting.key === key)
+    ? []
+    : settingForms([key]);
 }
 
 /** The only flag any rule lists is the handler's `alongside`. */
@@ -410,7 +447,10 @@ function settingFormsFor(node: AstNode): StructureForm[] | undefined {
     return settingForms(PROCESS_HEADER_KEYS);
   }
   if (isListener(node)) {
-    return settingForms(LISTENER_BINDING_KEYS);
+    return settingForms([
+      ...LISTENER_BINDING_KEYS,
+      ...(node.event === 'timeout' ? [VALUE_DOCUMENTATION_KEYS.timer] : []),
+    ]);
   }
   if (isFormField(node)) {
     return settingForms(FORM_FIELD_SETTING_KEYS);
@@ -442,7 +482,23 @@ function settingFormsFor(node: AstNode): StructureForm[] | undefined {
       ...own,
       ...ENGINE_KEYS,
       ...(rule.repeats && isRepeated(node) ? RUN_ENGINE_KEYS : []),
+      ...valueDocumentationKeysOf(node),
     ]),
+  ];
+}
+
+/** Offered only beside the value each documents. */
+function valueDocumentationKeysOf(node: AstNode): string[] {
+  const trigger = triggerWordOf(node);
+  const payloadKey =
+    trigger === undefined ? undefined : payloadDocumentationKeyOf(trigger);
+  const clause = node as { cardinality?: unknown; element?: string };
+  return [
+    ...(payloadKey === undefined ? [] : [payloadKey]),
+    ...(clause.cardinality === undefined
+      ? []
+      : [VALUE_DOCUMENTATION_KEYS.count]),
+    ...(clause.element === undefined ? [] : [VALUE_DOCUMENTATION_KEYS.each]),
   ];
 }
 
@@ -697,9 +753,23 @@ const STRUCTURE_DETAILS: Readonly<Record<string, string>> = {
   for: 'how often the preceding step runs',
 };
 
-const FLAG_DETAIL = 'BPMNscript flag';
-const FORM_TYPE_DETAIL = 'BPMNscript form type';
-const SETTING_VALUE_DETAIL = 'BPMNscript setting value';
+const DIRECTION_DETAILS: Readonly<Record<string, string>> = {
+  [INPUT_DIRECTION]: 'a value handed to this step',
+  [OUTPUT_DIRECTION]: 'a value this step hands back',
+  [FIELD_DIRECTION]:
+    'a value injected into the class, delegate, or built-in behaviour this step names',
+  [PROPERTY_DIRECTION]:
+    'a value Tasklist or a worker reads off the step, never a variable',
+};
+
+/**
+ * A field lowers to `stringValue` or an expression and a property to `value`,
+ * so both are quoted.
+ */
+const DIRECTION_VALUES: Readonly<Record<string, string>> = {
+  [FIELD_DIRECTION]: '"${2:value}"',
+  [PROPERTY_DIRECTION]: '"${2:value}"',
+};
 
 export class BpmnScriptCompletionProvider extends DefaultCompletionProvider {
   private readonly variables: VariableSymbolProvider;
@@ -714,9 +784,6 @@ export class BpmnScriptCompletionProvider extends DefaultCompletionProvider {
     next: NextFeature,
     acceptor: CompletionAcceptor,
   ): MaybePromise<void> {
-    // While a keyword still opens several shapes the caret's node is the shared
-    // rule, so the next feature decides.
-    const nodeType = next.type ?? context.node?.$type;
     const owner = owningElement(context);
     if (
       next.property === 'key' &&
@@ -725,9 +792,13 @@ export class BpmnScriptCompletionProvider extends DefaultCompletionProvider {
     ) {
       // Until a required payload is written only it is offered; a timer's date
       // and cycle keys are that payload.
-      const forms = payloadOpen(owner, context)
-        ? timerKeyForms(owner)
-        : (settingFormsFor(owner) ?? []);
+      const conditionItems = conditionItemsAt(context);
+      const forms =
+        conditionItems !== undefined
+          ? conditionItemForms(conditionItems)
+          : payloadOpen(owner, context)
+            ? timerKeyForms(owner)
+            : (settingFormsFor(owner) ?? []);
       for (const form of forms) {
         this.acceptSnippet(context, acceptor, {
           ...form,
@@ -742,7 +813,12 @@ export class BpmnScriptCompletionProvider extends DefaultCompletionProvider {
       AstUtils.getContainerOfType(context.node, isFormField)
     ) {
       if (!GrammarAST.isKeyword(next.feature)) {
-        this.acceptWords(context, acceptor, FORM_FIELD_TYPES, FORM_TYPE_DETAIL);
+        this.acceptWords(
+          context,
+          acceptor,
+          FORM_FIELD_TYPES,
+          'BPMNscript form type',
+        );
       }
       return;
     }
@@ -755,7 +831,12 @@ export class BpmnScriptCompletionProvider extends DefaultCompletionProvider {
         const choices =
           key === undefined ? undefined : SETTING_VALUE_CHOICES[key];
         if (choices) {
-          this.acceptWords(context, acceptor, choices, SETTING_VALUE_DETAIL);
+          this.acceptWords(
+            context,
+            acceptor,
+            choices,
+            'BPMNscript setting value',
+          );
           return;
         }
       }
@@ -777,6 +858,15 @@ export class BpmnScriptCompletionProvider extends DefaultCompletionProvider {
       this.acceptListenerEvents(context, acceptor, owner);
       return;
     }
+    if (next.property === 'fail') {
+      this.acceptWords(
+        context,
+        acceptor,
+        [ELSE_FAIL_WORD],
+        'stop the run with an error when no condition holds',
+      );
+      return;
+    }
     if (next.property === 'kind' && next.type === CodeDecl.$type) {
       for (const form of CODE_DECLARATION_FORMS) {
         this.acceptSnippet(context, acceptor, form);
@@ -793,6 +883,9 @@ export class BpmnScriptCompletionProvider extends DefaultCompletionProvider {
       }
       return;
     }
+    // While a keyword still opens several shapes the caret's node is the shared
+    // rule, so the next feature decides.
+    const nodeType = next.type ?? context.node?.$type;
     if (next.property === 'trigger' && nodeType) {
       const triggers = STATEMENT_TRIGGERS[nodeType];
       if (triggers) {
@@ -834,6 +927,18 @@ export class BpmnScriptCompletionProvider extends DefaultCompletionProvider {
         (candidate) =>
           isStatement(candidate.node) && isActivityStatement(candidate.node),
       );
+  }
+
+  /** A name the plain form cannot spell is offered as written, in backticks. */
+  protected override createReferenceCompletionItem(
+    nodeDescription: AstNodeDescription,
+    refInfo: ReferenceInfo,
+    context: CompletionContext,
+  ): CompletionValueItem {
+    return {
+      ...super.createReferenceCompletionItem(nodeDescription, refInfo, context),
+      label: printName(nodeDescription.name),
+    };
   }
 
   protected override completionForCrossReference(
@@ -986,37 +1091,16 @@ export class BpmnScriptCompletionProvider extends DefaultCompletionProvider {
     }
   }
 
-  private static readonly DIRECTION_DETAILS: Readonly<Record<string, string>> =
-    {
-      [INPUT_DIRECTION]: 'a value handed to this step',
-      [OUTPUT_DIRECTION]: 'a value this step hands back',
-      [FIELD_DIRECTION]:
-        'a value injected into the class, delegate, or built-in behaviour this step names',
-      [PROPERTY_DIRECTION]:
-        'a value Tasklist or a worker reads off the step, never a variable',
-    };
-
-  /**
-   * A field lowers to `stringValue` or an expression and a property to `value`,
-   * so both are quoted.
-   */
-  private static readonly DIRECTION_VALUES: Readonly<Record<string, string>> = {
-    [FIELD_DIRECTION]: '"${2:value}"',
-    [PROPERTY_DIRECTION]: '"${2:value}"',
-  };
-
   private acceptParameterDirections(
     context: CompletionContext,
     acceptor: CompletionAcceptor,
     directions: readonly string[],
   ): void {
     for (const direction of directions) {
-      const value =
-        BpmnScriptCompletionProvider.DIRECTION_VALUES[direction] ??
-        '${2:value}';
+      const value = DIRECTION_VALUES[direction] ?? '${2:value}';
       this.acceptSnippet(context, acceptor, {
         label: direction,
-        detail: BpmnScriptCompletionProvider.DIRECTION_DETAILS[direction],
+        detail: DIRECTION_DETAILS[direction],
         insertText: `${direction} \${1:name} = ${value}`,
       });
     }
@@ -1077,7 +1161,7 @@ export class BpmnScriptCompletionProvider extends DefaultCompletionProvider {
         !payloadOpen(owner, context) &&
         flagWordsFor(owner).includes(keyword.value)
       ) {
-        this.acceptWords(context, acceptor, [keyword.value], FLAG_DETAIL);
+        this.acceptWords(context, acceptor, [keyword.value], 'BPMNscript flag');
       }
       return;
     }

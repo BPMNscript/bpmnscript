@@ -53,7 +53,6 @@ const doc = (headText: string): XmlTag =>
 
 export const bpmnDefs = wrap(HEAD_BPMN, DEFINITIONS_CLOSE);
 export const operatonDefs = wrap(HEAD_OPERATON, DEFINITIONS_CLOSE);
-export const camundaDefs = wrap(HEAD_CAMUNDA, DEFINITIONS_CLOSE);
 export const dualDefs = wrap(HEAD_DUAL, DEFINITIONS_CLOSE);
 
 export const bpmnDoc = doc(HEAD_BPMN);

@@ -4,7 +4,7 @@ date: 2026-04-13
 decision-makers: Marlon Kranz
 ---
 
-# Use Apache 2.0 License
+# Use the Apache 2.0 license
 
 ## Context and Problem Statement
 
@@ -32,4 +32,4 @@ It is compatible with both MIT and EPL-2.0 dependencies.
 
 - Good, because Apache 2.0 includes an explicit patent grant, protecting contributors and users
 - Good, because it is compatible with the licenses of all key dependencies
-- Neutral, because Apache 2.0 requires a NOTICE file for derivative works, adding slight administrative overhead
+- Neutral, because Apache 2.0 section 4(d) requires redistributors to keep a NOTICE file only if the work includes one, and this project ships none

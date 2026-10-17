@@ -1,7 +1,15 @@
 /** A `var` declared anywhere is visible from every expression in the process. */
 
 import { AstUtils, type AstNode } from 'langium';
-import type { Process, VarType } from './generated/ast.js';
+import {
+  isIoParameter,
+  isOnHandler,
+  isStartEvent,
+  isUserTask,
+  isVarDecl,
+  type Process,
+  type VarType,
+} from './generated/ast.js';
 import { caughtBindingsOf } from './paren-items.js';
 import {
   FIELD_DIRECTION,
@@ -9,13 +17,6 @@ import {
   LOOP_VARIABLES,
   PROPERTY_DIRECTION,
 } from './vocabulary.js';
-import {
-  isIoParameter,
-  isOnHandler,
-  isVarDecl,
-  isStartEvent,
-  isUserTask,
-} from './generated/ast.js';
 
 export interface VariableSymbol {
   name: string;
@@ -51,74 +52,72 @@ export function isRepeated(node: AstNode): node is AstNode & RepeatSlots {
   );
 }
 
-/**
- * In precedence order: `var`, form field, catch binding, then parameters and
- * repeat elements in source order.
- */
-export function declaringSites(process: Process): DeclaringSite[] {
-  const declared: DeclaringSite[] = [];
-  for (const decl of process.decls) {
-    if (isVarDecl(decl)) {
-      declared.push({
-        node: decl,
-        property: 'name',
-        name: decl.name,
-        type: decl.type,
-      });
-    }
-  }
-  const formFields: DeclaringSite[] = [];
-  const catchBindings: DeclaringSite[] = [];
-  const mapped: DeclaringSite[] = [];
-  for (const node of AstUtils.streamAst(process)) {
-    if (isStartEvent(node) || isUserTask(node)) {
-      for (const form of node.forms) {
-        for (const field of form.fields) {
-          const type = formFieldVariableType(field.type);
-          if (type !== undefined) {
-            formFields.push({
-              node: field,
-              property: 'id',
-              name: field.id,
-              type,
-            });
-          }
-        }
-      }
-    } else if (isOnHandler(node)) {
-      for (const { variable, node: setting } of caughtBindingsOf(node.items)) {
-        if (variable === undefined) continue;
-        catchBindings.push({
-          node: setting.value,
-          property: 'ref',
-          name: variable,
-          type: 'string',
+export class DefaultVariableSymbolProvider implements VariableSymbolProvider {
+  /**
+   * In precedence order: `var`, form field, catch binding, then parameters and
+   * repeat elements in source order.
+   */
+  declaringSites(process: Process): DeclaringSite[] {
+    const declared: DeclaringSite[] = [];
+    for (const decl of process.decls) {
+      if (isVarDecl(decl)) {
+        declared.push({
+          node: decl,
+          property: 'name',
+          name: decl.name,
+          type: decl.type,
         });
       }
     }
-    if (isIoParameter(node)) {
-      // A field or property is not a process variable.
-      if (
-        node.direction !== FIELD_DIRECTION &&
-        node.direction !== PROPERTY_DIRECTION
-      ) {
-        mapped.push({ node, property: 'name', name: node.name, type: 'any' });
+    const formFields: DeclaringSite[] = [];
+    const catchBindings: DeclaringSite[] = [];
+    const mapped: DeclaringSite[] = [];
+    for (const node of AstUtils.streamAst(process)) {
+      if (isStartEvent(node) || isUserTask(node)) {
+        for (const form of node.forms) {
+          for (const field of form.fields) {
+            const type = formFieldVariableType(field.type);
+            if (type !== undefined) {
+              formFields.push({
+                node: field,
+                property: 'id',
+                name: field.id,
+                type,
+              });
+            }
+          }
+        }
+      } else if (isOnHandler(node)) {
+        for (const { variable, node: setting } of caughtBindingsOf(
+          node.items,
+        )) {
+          if (variable === undefined) continue;
+          catchBindings.push({
+            node: setting.value,
+            property: 'ref',
+            name: variable,
+            type: 'string',
+          });
+        }
       }
-    } else if (isRepeated(node) && node.element !== undefined) {
-      mapped.push({
-        node,
-        property: 'element',
-        name: node.element,
-        type: 'any',
-      });
+      if (isIoParameter(node)) {
+        // A field or property is not a process variable.
+        if (
+          node.direction !== FIELD_DIRECTION &&
+          node.direction !== PROPERTY_DIRECTION
+        ) {
+          mapped.push({ node, property: 'name', name: node.name, type: 'any' });
+        }
+      } else if (isRepeated(node) && node.element !== undefined) {
+        mapped.push({
+          node,
+          property: 'element',
+          name: node.element,
+          type: 'any',
+        });
+      }
     }
-  }
-  return [...declared, ...formFields, ...catchBindings, ...mapped];
-}
-
-export class DefaultVariableSymbolProvider implements VariableSymbolProvider {
-  declaringSites(process: Process): DeclaringSite[] {
-    return declaringSites(process);
+    return [...declared, ...formFields, ...catchBindings, ...mapped];
   }
 
   collect(process: Process): VariableTable {

@@ -106,7 +106,8 @@ describe.skipIf(SKIP)('E2E: invoice-approval on Spring Boot Operaton', () => {
     }
 
     expect(status).toBe(1);
-    expect(stderr).toContain("Service task 'BadService_1'");
-    expect(stderr).toContain('unsupported service task form');
+    expect(stderr.split('\n')[0]).toMatch(
+      /^Error: .*: service task 'BadService_1' uses an unsupported execution form: no execution discriminator$/,
+    );
   }, 30_000);
 });

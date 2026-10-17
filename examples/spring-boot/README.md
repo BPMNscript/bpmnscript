@@ -1,11 +1,9 @@
 # examples/spring-boot
 
-Operaton 2.1.0 embedded in Spring Boot 4.0.6, the deployment fixture for the BPMNscript end-to-end (E2E) test harness.
-The engine starts with nothing pre-deployed; the testcontainers harness deploys definitions at test time over REST.
+Operaton 2.1.0 embedded in Spring Boot 4.0.6, the engine the end-to-end tests deploy to.
+It starts with nothing deployed, and each test deploys its processes over REST.
 
-It doubles as a hands-on demo.
-The `demo` profile compiles and deploys the example processes and serves the Operaton web apps, Cockpit and Tasklist, so you can start instances and complete tasks by hand.
-See [Running processes on Operaton](#running-processes-on-operaton-demo).
+It's also a hands-on demo: the `demo` profile deploys the compiled example processes and serves the Operaton web apps, Cockpit and Tasklist, so you can start instances and complete tasks by hand ([Running processes on Operaton](#running-processes-on-operaton-demo)).
 
 ## Stack
 
@@ -24,7 +22,7 @@ docker build -t bpmnscript-invoice .
 docker run -d --name bpmnscript-invoice -p 8080:8080 bpmnscript-invoice
 ```
 
-Wait for the container to become healthy, roughly 30 to 60 seconds on a first run and faster with cached layers, then check the engine is up:
+Wait for the container to become healthy, which takes 30 to 60 seconds, then check the engine is up:
 
 ```bash
 curl http://localhost:8080/engine-rest/engine
@@ -37,7 +35,7 @@ When you're done:
 docker stop bpmnscript-invoice && docker rm bpmnscript-invoice
 ```
 
-## REST endpoints the testcontainers harness uses
+## REST endpoints the tests use
 
 The deployment and lifecycle calls the fixture adapter makes:
 
@@ -49,21 +47,21 @@ The deployment and lifecycle calls the fixture adapter makes:
 | `GET`  | `/engine-rest/task?processInstanceId={id}`        | List active user tasks for a process instance                    |
 | `POST` | `/engine-rest/task/{id}/complete`                 | Complete a user task, optionally setting variables               |
 
-The assertions reach further into the same API through `tests/helpers/engine-rest.ts`.
+The assertions query more of the same API through `tests/helpers/engine-rest.ts`.
 
 ## Admin credentials
 
 Username `demo`, password `demo`, configured in `src/main/resources/application.yml`.
 
-> For any non-test deployment, replace the `operaton.bpm.admin-user` block with a real credential and probably move it to an env var.
+> For anything beyond local testing, replace the `operaton.bpm.admin-user` block with a real credential, for example from an environment variable.
 
 ## Running processes on Operaton (demo)
 
-Compile any BPMNscript process to BPMN, deploy it to a real Operaton engine, and drive it from Cockpit and Tasklist.
-Loan approval is the worked example, and you can add your own (see [Add your own process](#add-your-own-process)).
+Compile the BPMNscript processes, deploy them to a real Operaton engine, and drive them from Cockpit and Tasklist.
+Loan approval is the worked example, and you can [add your own process](#add-your-own-process).
 
-The `.bpmnscript` sources live in [`processes/`](processes).
-The compile step turns each one into a deployable `.bpmn` under `src/main/resources/processes/`, which is generated and git-ignored, and the `demo` profile auto-deploys them all on startup.
+The sources are in [`processes/`](processes).
+The compile step writes a `.bpmn` for each into `src/main/resources/processes/`, which is git-ignored, and the `demo` profile deploys them all on startup.
 
 ### 1. Build the toolchain
 
@@ -94,10 +92,10 @@ From `examples/spring-boot/`, either run it with Maven:
 mvn clean spring-boot:run -Dspring-boot.run.profiles=demo
 ```
 
-The `clean` matters.
-It wipes `target/`, so a process you renamed or removed doesn't linger there as a stale compiled copy; two deployed definitions with the same key make Operaton refuse to start (`The deployment contains definitions with the same key ...`).
+Keep the `clean`.
+It empties `target/`, where a process you renamed or removed would otherwise linger as a stale copy, and two definitions with the same key make Operaton refuse to start (`The deployment contains definitions with the same key ...`).
 
-Or run it in Docker, noting the `SPRING_PROFILES_ACTIVE=demo` env var:
+Or run it in Docker with `SPRING_PROFILES_ACTIVE=demo`:
 
 ```bash
 docker build -t bpmnscript-demo .
@@ -107,14 +105,14 @@ docker run -d --name bpmnscript-demo -p 8080:8080 -e SPRING_PROFILES_ACTIVE=demo
 ### 4. Open the web apps
 
 Go to <http://localhost:8080/operaton/app/welcome/> and log in with `demo` / `demo`.
-Every compiled process is deployed, so pick one in Cockpit to watch instances and live diagrams, or in Tasklist to start one and complete its tasks.
+Every compiled process is deployed: Cockpit shows instances and live diagrams, and Tasklist starts processes and completes their tasks.
 
 ### The loan approval walkthrough
 
-The loan approval example from the [WS-BPEL 2.0 specification](https://docs.oasis-open.org/wsbpel/2.0/wsbpel-v2.0.html).
+This is the loan approval example from the [WS-BPEL 2.0 specification](https://docs.oasis-open.org/wsbpel/2.0/wsbpel-v2.0.html).
 A request arrives with an `amount` and a `creditScore`.
 Loans under 10,000 are screened by an automated risk assessment, and a low-risk small loan is approved automatically.
-Everything else, meaning large loans and small loans that aren't low-risk, goes to a human "Approve loan" task.
+Everything else, large loans and small loans that aren't low-risk, goes to a human "Approve loan" task.
 The outcome is recorded as `decision = ACCEPTED` or `REJECTED`.
 Its four service tasks are `JavaDelegate`s in [`src/main/java/com/example/loan/`](src/main/java/com/example/loan).
 
@@ -142,7 +140,7 @@ Its delegates live in `src/main/java/com/example/loan/kopp/`.
 
 Start it the same way, through Start process and Loan Approval (Kopp 2009), with `amount` and `creditScore` in the start form.
 The manual-assessment task's form shows the pre-seeded `assessorRes`: set it to `low` to approve that path, leave it `high` to decline.
-Inputs worth trying:
+Inputs to try:
 
 - `creditScore = 750`, `amount = 5000`: all three rate low.
   Both externals rating low already grants acceptance, but the assessor task still appears because the internal rating is low, so complete it to let the instance finish.
@@ -159,7 +157,7 @@ Inputs worth trying:
 
 ## Configuration notes
 
-Classpath auto-deployment is off by default (`operaton.bpm.auto-deployment-enabled: false`).
-The test harness deploys everything over REST, which keeps the fixture stateless between runs.
-The `demo` profile (`application-demo.yml`) turns it on to deploy the compiled processes under `src/main/resources/processes/` at startup.
-H2 runs in-memory, so process state lives only as long as the container, and the two-stage Dockerfile keeps the runtime image down to the fat jar on a plain JRE.
+Classpath auto-deployment is off by default (`operaton.bpm.auto-deployment-enabled: false`), so the tests deploy everything over REST and every run starts from an empty engine.
+The `demo` profile (`application-demo.yml`) turns it on to deploy the compiled processes at startup.
+The history level is `audit`, which records the task and variable history the end-to-end assertions read.
+H2 runs in memory, so process state lives only as long as the container, and the two-stage Dockerfile ships only the fat jar on a plain JRE.

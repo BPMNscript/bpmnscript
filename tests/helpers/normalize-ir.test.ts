@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { normalizeIr } from './normalize-ir.js';
+import {
+  normalizeIr,
+  NORMALIZATIONS,
+  type NormalizationName,
+} from './normalize-ir.js';
 import type {
   BpmnProcess,
   EventDefinition,
@@ -298,4 +302,300 @@ describe('normalizeIr', () => {
     );
     expect(normalizeIr(ir)).toEqual({ ...ir, flowElements, sequenceFlows });
   });
+});
+
+const tasks = (...ids: string[]): FlowElement[] =>
+  ids.map((id) => ({ kind: 'userTask', id }));
+const flow = (id: string, sourceRef: string, targetRef: string) => ({
+  id,
+  sourceRef,
+  targetRef,
+});
+const nested = (gateway: string, dflt: string): BpmnProcess =>
+  process(
+    [
+      {
+        kind: 'subProcess',
+        id: 'S',
+        flowElements: [
+          ...tasks('A', 'B', 'C'),
+          { kind: 'exclusiveGateway', id: gateway, defaultFlowId: dflt },
+        ],
+        sequenceFlows: [
+          flow('f1', 'A', gateway),
+          { ...flow('f2', gateway, 'B'), conditionExpression: '${x}' },
+          flow(dflt, gateway, 'C'),
+        ],
+      },
+    ],
+    [],
+  );
+const fork = (gateway: FlowElement, flowIds: [string, string, string]) =>
+  process(
+    [...tasks('A', 'B', 'C'), gateway],
+    [
+      flow(flowIds[0], 'A', gateway.id),
+      flow(flowIds[1], gateway.id, 'B'),
+      flow(flowIds[2], gateway.id, 'C'),
+    ],
+  );
+
+// A task leaving through a fork `gateway`, or directly when there is none,
+// for B and C on conditions and for D otherwise.
+const split = (
+  gateway?: FlowElement,
+  task: Record<string, unknown> = {},
+): BpmnProcess => {
+  const from = gateway?.id ?? 'A';
+  return process(
+    [
+      { kind: 'serviceTask', id: 'A', ...BUILTIN, ...task } as FlowElement,
+      ...tasks('B', 'C', 'D'),
+      ...(gateway === undefined ? [] : [gateway]),
+    ],
+    [
+      ...(gateway === undefined ? [] : [flow('f0', 'A', from)]),
+      { ...flow('f1', from, 'B'), conditionExpression: '${b}' },
+      { ...flow('f2', from, 'C'), conditionExpression: '${c}' },
+      flow('f3', from, 'D'),
+    ],
+  );
+};
+const BUILTIN = { binding: { kind: 'expression', expression: '${run}' } };
+const CLASS_TASK = { binding: { kind: 'class', className: 'Route' } };
+const DELEGATE_TASK = {
+  binding: { kind: 'delegateExpression', expression: '${route}' },
+};
+const MI = { cardinality: '3' };
+const MI_AFTER = { cardinality: '3', asyncAfter: true };
+
+describe('normalizeIr switches', () => {
+  const ordered = process(tasks('A', 'B'), [
+    flow('f1', 'A', 'B'),
+    flow('f2', 'B', 'A'),
+  ]);
+
+  it.each<[string, BpmnProcess, BpmnProcess, NormalizationName[]]>([
+    [
+      'a named and an unnamed gateway',
+      fork({ kind: 'parallelGateway', id: 'G', name: 'Split' }, [
+        'f1',
+        'f2',
+        'f3',
+      ]),
+      fork({ kind: 'parallelGateway', id: 'G' }, ['f1', 'f2', 'f3']),
+      ['gateway-names'],
+    ],
+    [
+      'an extra settings-free merge in front of a task',
+      process(
+        [...tasks('A', 'B'), { kind: 'exclusiveGateway', id: 'M' }],
+        [flow('f1', 'A', 'M'), flow('f2', 'M', 'B')],
+      ),
+      process(tasks('A', 'B'), [flow('f1', 'A', 'B')]),
+      ['pass-through-gateways'],
+    ],
+    [
+      'the same elements and flows in reversed order',
+      ordered,
+      process(tasks('B', 'A'), [flow('f2', 'B', 'A'), flow('f1', 'A', 'B')]),
+      ['element-order'],
+    ],
+    [
+      'a hand-named and a synthesized split',
+      fork({ kind: 'exclusiveGateway', id: 'Decide' }, ['f1', 'f2', 'f3']),
+      fork({ kind: 'exclusiveGateway', id: 'Gateway_p_0_split' }, [
+        'f1',
+        'f2',
+        'f3',
+      ]),
+      ['synthesized-ids'],
+    ],
+    [
+      'a hand-named and a synthesized gateway with a default flow inside a block',
+      nested('Decide', 'ToC'),
+      nested('Gateway_p_0_split', 'Flow_Gateway_p_0_split_default'),
+      ['synthesized-ids'],
+    ],
+    [
+      'several flows entering a task against an exclusive merge in front of it',
+      process(
+        [...tasks('A', 'B', 'C'), { kind: 'exclusiveGateway', id: 'M' }],
+        [flow('f1', 'A', 'M'), flow('f2', 'B', 'M'), flow('f3', 'M', 'C')],
+      ),
+      process(tasks('A', 'B', 'C'), [
+        flow('f1', 'A', 'C'),
+        flow('f2', 'B', 'C'),
+      ]),
+      ['uncontrolled-flow'],
+    ],
+    [
+      'two unconditioned flows leaving a task against a parallel fork after it',
+      fork({ kind: 'parallelGateway', id: 'G' }, ['f1', 'f2', 'f3']),
+      process(tasks('A', 'B', 'C'), [
+        flow('f2', 'A', 'B'),
+        flow('f3', 'A', 'C'),
+      ]),
+      ['uncontrolled-flow'],
+    ],
+    [
+      'conditioned flows and a default leaving a task against an inclusive fork after it',
+      split({ kind: 'inclusiveGateway', id: 'G', defaultFlowId: 'f3' }),
+      split(undefined, { defaultFlowId: 'f3' }),
+      ['uncontrolled-flow'],
+    ],
+    [
+      'a single-route parallel gateway after a task',
+      process(
+        [...tasks('A', 'B'), { kind: 'parallelGateway', id: 'G' }],
+        [flow('f1', 'A', 'G'), flow('f2', 'G', 'B')],
+      ),
+      process(tasks('A', 'B'), [flow('f1', 'A', 'B')]),
+      ['pass-through-gateways'],
+    ],
+    [
+      'a named parallel fork against a parallel split stays apart without gateway names',
+      fork({ kind: 'parallelGateway', id: 'G', name: 'Both' }, [
+        'f1',
+        'f2',
+        'f3',
+      ]),
+      process(tasks('A', 'B', 'C'), [
+        flow('f2', 'A', 'B'),
+        flow('f3', 'A', 'C'),
+      ]),
+      ['gateway-names', 'uncontrolled-flow'],
+    ],
+  ])(
+    '%s: only its own normalizations make the difference vanish',
+    (_, a, b, names) => {
+      expect(normalizeIr(a)).toEqual(normalizeIr(b));
+      for (const n of NORMALIZATIONS) {
+        const off = new Set([n]);
+        const equal =
+          JSON.stringify(normalizeIr(a, off)) ===
+          JSON.stringify(normalizeIr(b, off));
+        expect([n, equal]).toEqual([n, !names.includes(n)]);
+      }
+    },
+  );
+
+  // Each row breaks one condition under which Operaton leaves the task the way
+  // the fork routes, so dropping that one guard turns its row red.
+  it.each<[string, BpmnProcess, BpmnProcess]>([
+    [
+      'a task continuing after its job',
+      split({ kind: 'inclusiveGateway', id: 'G' }, { asyncAfter: true }),
+      split(undefined, { asyncAfter: true }),
+    ],
+    [
+      'a loop continuing after its job',
+      split({ kind: 'inclusiveGateway', id: 'G' }, { loop: MI_AFTER }),
+      split(undefined, { loop: MI_AFTER }),
+    ],
+    [
+      'a loop with a default flow',
+      split(
+        { kind: 'inclusiveGateway', id: 'G', defaultFlowId: 'f3' },
+        { loop: MI },
+      ),
+      split(undefined, { loop: MI, defaultFlowId: 'f3' }),
+    ],
+    [
+      'a delegate class, which may pick its flow itself',
+      split({ kind: 'inclusiveGateway', id: 'G' }, CLASS_TASK),
+      split(undefined, CLASS_TASK),
+    ],
+    [
+      'a delegate expression, which may pick its flow itself',
+      split({ kind: 'inclusiveGateway', id: 'G' }, DELEGATE_TASK),
+      split(undefined, DELEGATE_TASK),
+    ],
+    [
+      'a parallel fork ignoring the conditions the task would evaluate',
+      split({ kind: 'parallelGateway', id: 'G' }),
+      split(),
+    ],
+    [
+      'a fork that also joins',
+      process(
+        [...tasks('A', 'B', 'C', 'D'), { kind: 'parallelGateway', id: 'G' }],
+        [
+          flow('f1', 'A', 'G'),
+          flow('f0', 'D', 'G'),
+          flow('f2', 'G', 'B'),
+          flow('f3', 'G', 'C'),
+        ],
+      ),
+      process(tasks('A', 'B', 'C', 'D'), [
+        flow('f2', 'A', 'B'),
+        flow('f3', 'A', 'C'),
+        flow('f4', 'D', 'B'),
+        flow('f5', 'D', 'C'),
+      ]),
+    ],
+    [
+      'a task whose only flow carries a condition',
+      process(
+        [...tasks('A', 'B', 'C'), { kind: 'parallelGateway', id: 'G' }],
+        [
+          { ...flow('f1', 'A', 'G'), conditionExpression: '${go}' },
+          flow('f2', 'G', 'B'),
+          flow('f3', 'G', 'C'),
+        ],
+      ),
+      process(tasks('A', 'B', 'C'), [
+        flow('f2', 'A', 'B'),
+        flow('f3', 'A', 'C'),
+      ]),
+    ],
+    [
+      'a task with a second flow of its own',
+      process(
+        [...tasks('A', 'B', 'C', 'D'), { kind: 'parallelGateway', id: 'G' }],
+        [
+          flow('f1', 'A', 'G'),
+          flow('f4', 'A', 'D'),
+          flow('f2', 'G', 'B'),
+          flow('f3', 'G', 'C'),
+        ],
+      ),
+      process(tasks('A', 'B', 'C', 'D'), [
+        flow('f2', 'A', 'B'),
+        flow('f3', 'A', 'C'),
+        flow('f4', 'A', 'D'),
+      ]),
+    ],
+  ])(
+    'a fork after %s stays apart from flows leaving the task directly',
+    (_, withFork, direct) => {
+      expect(normalizeIr(withFork)).not.toEqual(normalizeIr(direct));
+    },
+  );
+
+  it('a non-default history time to live stays unequal to none under every switch', () => {
+    const a = { ...ordered, historyTimeToLive: 'P7D' };
+    for (const n of [...NORMALIZATIONS, undefined]) {
+      const off = new Set(n === undefined ? [] : [n]);
+      expect([n, normalizeIr(a, off)]).not.toEqual([
+        n,
+        normalizeIr(ordered, off),
+      ]);
+    }
+  });
+
+  it.each(['exclusiveGateway', 'inclusiveGateway'] as const)(
+    'a conditioned single route out of a %s is kept',
+    (kind) => {
+      const build = (conditionExpression?: string) =>
+        process(
+          [...tasks('A', 'B'), { kind, id: 'M' }],
+          [
+            flow('f1', 'A', 'M'),
+            { ...flow('f2', 'M', 'B'), conditionExpression },
+          ],
+        );
+      expect(normalizeIr(build('${x}'))).not.toEqual(normalizeIr(build()));
+    },
+  );
 });

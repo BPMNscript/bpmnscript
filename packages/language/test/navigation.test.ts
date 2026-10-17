@@ -140,6 +140,30 @@ const RENAMES: RenameRow[] = [
     'Declined',
     'process p {\n  error Declined\n  service S(topic: "t") { error Declined when true }\n  throw error(Declined)\n  on error(Declined) { end Failed }\n}',
   ],
+  [
+    'a step renamed to an id the plain form cannot spell is written in backticks at every site',
+    'process p {\n  user Review\n  goto <|>Review\n  on Review: timer("PT1H") { end Late }\n}',
+    'Task.1',
+    'process p {\n  user `Task.1`\n  goto `Task.1`\n  on `Task.1`: timer("PT1H") { end Late }\n}',
+  ],
+  [
+    'a name in backticks renamed at its plain twin edits both spellings',
+    'process p {\n  user `Review`\n  goto <|>Review\n}',
+    'Check',
+    'process p {\n  user Check\n  goto Check\n}',
+  ],
+  [
+    'a new name typed in backticks is not quoted twice',
+    'process p {\n  user <|>`Task.1`\n  goto Task\n  user Task\n}',
+    '`process`',
+    'process p {\n  user `process`\n  goto Task\n  user Task\n}',
+  ],
+  [
+    'a code renamed to text with a space is written in backticks in the throw',
+    'process p {\n  error E\n  throw error(<|>E)\n}',
+    'Payment failed',
+    'process p {\n  error `Payment failed`\n  throw error(`Payment failed`)\n}',
+  ],
 ];
 
 type Row = readonly [title: string, text: string];
@@ -172,6 +196,10 @@ const DEFINITIONS: Row[] = [
   [
     "a host goes to the step's name",
     'process p {\n  user <|Review|>\n  on <|>Review: timer("PT1H") { end Late }\n}',
+  ],
+  [
+    'a plain goto goes to its twin in backticks',
+    'process p {\n  user <|`Review`|>\n  goto <|>Review\n}',
   ],
   [
     "a thrown code goes to the declaration's name",

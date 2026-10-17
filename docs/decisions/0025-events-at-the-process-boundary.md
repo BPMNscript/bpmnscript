@@ -69,7 +69,7 @@ Neither clause needs a new reserved word.
 Nothing else can appear there, because every statement in this grammar is keyword-led, and both rules were built into a live Langium parser with Chevrotain's self-analysis on, which reported no ambiguity.
 `terminate` and the four start words therefore stay soft identifiers, and `var terminate: string` parses beside `end Done terminate`.
 
-The attributes that make the engine really send a thrown message, `operaton:class`, `expression`, `delegateExpression`, `type`, `topic`, and an `<operaton:connector>` child, are read off the `bpmn:messageEventDefinition`, which is the surface the task kinds carry; the same attributes on the event element itself are inert.
+A thrown message carries the implementation that makes the engine send it on its `bpmn:messageEventDefinition`, as [ADR-0016](0016-task-kinds-on-the-authoring-surface.md) records.
 
 A `start` opens a chain and takes no incoming flow, so it may sit first in the process body, directly after another `start`, or after a statement whose flow always ends or redirects, and a start after a step whose flow is still live is refused with a message naming the fix, because either reading of that page invents a flow the author did not write.
 That freedom holds for a process body only: an embedded `subprocess`, an `attempt` block, and an event-handler body keep exactly one start, at their head, because `parseScopeStartEvent` rejects the second start of any scope that is not a process definition, and a second start in one of them is refused on import by count (`checkStartEventCount`, `packages/transform/src/xml-to-ir.ts`), naming that engine reason, while a process is let through.

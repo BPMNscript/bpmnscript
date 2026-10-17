@@ -7,6 +7,7 @@ import {
   namesACode,
   TIMER_PARTICLE_BY_KIND,
   type TimerParticle,
+  VALUE_DOCUMENTATION_KEYS,
 } from './vocabulary.js';
 import type { AstNode } from 'langium';
 import {
@@ -59,13 +60,26 @@ export function caughtBindingsOf(items: ParenItem[]): CaughtBinding[] {
     }));
 }
 
-/** Catch bindings on a handler and timer keys on a timer; unknown keys anywhere else. */
+/**
+ * Catch bindings on a handler, timer keys on a timer, and the payload's own
+ * documentation key on a timer or condition; unknown keys anywhere else.
+ */
 export function isStructuralParenKey(owner: AstNode, key: string): boolean {
   if (isOnHandler(owner) && EVENT_BINDING_FIELD_SET.has(key)) return true;
+  const trigger = triggerWordOf(owner);
+  if (trigger !== undefined && key === payloadDocumentationKeyOf(trigger)) {
+    return true;
+  }
   return (
     'trigger' in owner &&
     TIMER_PARTICLE_KEYS.some((particle) => particle === key)
   );
+}
+
+export function payloadDocumentationKeyOf(trigger: string): string | undefined {
+  return trigger === 'timer' || trigger === 'condition'
+    ? VALUE_DOCUMENTATION_KEYS[trigger]
+    : undefined;
 }
 
 const TIMER_PARTICLE_KEYS: readonly TimerParticle[] = [

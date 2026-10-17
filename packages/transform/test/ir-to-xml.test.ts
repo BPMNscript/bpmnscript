@@ -149,6 +149,18 @@ describe('irToXml: document', () => {
       'inclusiveGateway "Fork" declares default flow "F_absent"',
     ],
     [
+      'a default flow on a repeated step, which the engine can never take',
+      minimalProcess([
+        {
+          kind: 'userTask',
+          id: 'T',
+          loop: { cardinality: '2' },
+          defaultFlowId: 'F',
+        },
+      ]),
+      'userTask "T" is repeated and declares default flow "F", which the engine can never take.',
+    ],
+    [
       'a boundary event whose host sits inside a sub-process',
       minimalProcess([
         chainedSub('Sub', [{ kind: 'userTask', id: 'Host' }]),
@@ -1028,31 +1040,16 @@ describe('irToXml: extension elements', () => {
       }),
     );
     expect(xml.match(/<bpmn:extensionElements/g)).toHaveLength(1);
-    expect(extensionBlock(xml)).toMatch(
-      /^<bpmn:extensionElements>\s*<operaton:inputOutput>\s*<operaton:outputParameter name="body">\$\{response\}<\/operaton:outputParameter>\s*<\/operaton:inputOutput>\s*<\/bpmn:extensionElements>$/,
-    );
+    expect(extensionBlock(xml)).toBe(`<bpmn:extensionElements>
+        <operaton:inputOutput>
+          <operaton:outputParameter name="body">\${response}</operaton:outputParameter>
+        </operaton:inputOutput>
+      </bpmn:extensionElements>`);
   });
 });
 
 describe('irToXml: user task forms', () => {
-  it('writes a formRef with a latest binding as formRef and formRefBinding, no version', async () => {
-    const xml = await irToXml(
-      around({
-        kind: 'userTask',
-        id: 'Task',
-        formRef: { key: 'review-form', binding: { kind: 'latest' } },
-      }),
-    );
-    expect(
-      pick(childById(await parseProc(xml), 'Task'), [
-        'formRef',
-        'formRefBinding',
-        'formRefVersion',
-      ]),
-    ).toEqual({ formRef: 'review-form', formRefBinding: 'latest' });
-  });
-
-  it('serializes every extra a form field carries in descriptor order, datePattern and constraints in IR order, and no empty group for a field with none', async () => {
+  it('writes a latest formRef with no version, and every extra a form field carries in descriptor order, datePattern and constraints in IR order, no empty group for a field with none', async () => {
     const fields: FormField[] = [
       {
         id: 'plan',
@@ -1078,8 +1075,20 @@ describe('irToXml: user task forms', () => {
       { id: 'note', type: 'string' },
     ];
     const xml = await irToXml(
-      around({ kind: 'userTask', id: 'Task', formFields: fields }),
+      around({
+        kind: 'userTask',
+        id: 'Task',
+        formRef: { key: 'review-form', binding: { kind: 'latest' } },
+        formFields: fields,
+      }),
     );
+    expect(
+      pick(childById(await parseProc(xml), 'Task'), [
+        'formRef',
+        'formRefBinding',
+        'formRefVersion',
+      ]),
+    ).toEqual({ formRef: 'review-form', formRefBinding: 'latest' });
     expect(extensionBlock(xml)).toBe(`<bpmn:extensionElements>
         <operaton:formData>
           <operaton:formField id="plan" label="Plan" type="enum" defaultValue="basic">
@@ -1456,10 +1465,6 @@ interface Moddle {
   extensionElements?: { values: Moddle[] };
   incoming?: Moddle[];
   outgoing?: Moddle[];
-  sourceRef?: Moddle;
-  targetRef?: Moddle;
-  default?: Moddle;
-  attachedToRef?: Moddle;
   errorRef?: Moddle;
   escalationRef?: Moddle;
   messageRef?: Moddle;

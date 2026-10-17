@@ -3,8 +3,9 @@
  * dependency runs transform -> language.
  */
 
-import type { Expr, Accessor } from './generated/ast.js';
 import {
+  type Accessor,
+  type Expr,
   isAdditive,
   isEquality,
   isLiteralBool,

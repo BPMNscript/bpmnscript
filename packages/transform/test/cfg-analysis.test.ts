@@ -504,14 +504,16 @@ describe('cfg analysis', () => {
   it('answers every query for an id no element declares, rather than throwing', () => {
     const cfg = analyzeCfg(graph([start('s'), task('m'), end('e')], 's>m m>e'));
 
-    expect(cfg.outgoing('nope')).toEqual([]);
-    expect(cfg.incoming('nope')).toEqual([]);
-    expect(cfg.immediateDominator('nope')).toBeUndefined();
-    expect(cfg.immediatePostDominator('nope')).toBeUndefined();
-    expect(cfg.dominates('nope', 'm')).toBe(false);
-    expect(cfg.dominates('m', 'nope')).toBe(false);
-    expect(cfg.postDominates('nope', 'm')).toBe(false);
-    expect(cfg.postDominates('m', 'nope')).toBe(false);
+    expect([
+      cfg.outgoing('nope'),
+      cfg.incoming('nope'),
+      cfg.immediateDominator('nope'),
+      cfg.immediatePostDominator('nope'),
+      cfg.dominates('nope', 'm'),
+      cfg.dominates('m', 'nope'),
+      cfg.postDominates('nope', 'm'),
+      cfg.postDominates('m', 'nope'),
+    ]).toEqual([[], [], undefined, undefined, false, false, false, false]);
   });
 
   // A goto after a do-while lands on C, which the loop's own `if d` reaches, so both close one cycle with its test.
@@ -540,30 +542,6 @@ describe('cfg analysis', () => {
     'start>A A>splitC splitC>B? splitC>joinC B>splitD splitD>C? splitD>joinD C>joinD joinD>joinC joinC>loop loop>A? loop>guard guard>C? guard>guardJoin guardJoin>end',
   );
 
-  it.each([
-    [
-      "a jump after a do-while lands on the same step its own nested if reaches: the jump closes the loop's exit route, not a nested test, and its head is that step, not the ifs' merge",
-      LIFDT_POST_C,
-      ['Flow_loop_A', 'Flow_loop_C'],
-      true,
-    ],
-    [
-      "the same jump behind a guard still closes the outer loop's exit route: the guard's own test is a cycle of jumps too, not a nested do-while on the guard",
-      LIFDT_POST_C_EXIT,
-      ['Flow_loop_A', 'Flow_guard_C'],
-      true,
-    ],
-  ] as [
-    title: string,
-    process: BpmnProcess,
-    backEdges: string[],
-    jumpCycleHeadC: boolean,
-  ][])('%s', (_title, process, backEdges, jumpCycleHeadC) => {
-    const cfg = analyzeCfg(process);
-    expect(cfg.backEdges().map((f) => f.id)).toEqual(backEdges);
-    expect(cfg.isJumpCycleHead('C')).toBe(jumpCycleHeadC);
-  });
-
   const JUMP_CYCLE_ELEMENTS = [
     start('start'),
     gateway('split'),
@@ -574,26 +552,12 @@ describe('cfg analysis', () => {
     gateway('ifJoin'),
     task('C'),
   ];
-  it.each([
-    ['listed in statement order', JUMP_CYCLE_ELEMENTS],
-    ['listed with the jumped-to step first', JUMP_CYCLE_ELEMENTS.toReversed()],
-  ])(
-    'an if jumping into a cycle of plain flow, the flow before it falling in elsewhere, is no do-while test when %s',
-    (_title, elements) => {
-      const cfg = analyzeCfg(
-        graph(
-          elements,
-          'start>split split>B? split>join join>A A>ifSplit ifSplit>B? ifSplit>ifJoin B>ifJoin ifJoin>C C>A',
-        ),
-      );
-      expect(cfg.backEdges().map((f) => f.id)).toEqual(['Flow_C_A']);
-      expect(cfg.ownLoopTest('B')).toBeUndefined();
-    },
-  );
+  const JUMP_CYCLE_EDGES =
+    'start>split split>B? split>join join>A A>ifSplit ifSplit>B? ifSplit>ifJoin B>ifJoin ifJoin>C C>A';
 
-  it("a conditioned goto into a do-while body is no natural entry, so the loop's own test keeps its single back edge", () => {
-    // Element and flow order of one shuffled import.
-    const elements = [
+  // Element and flow order of one shuffled import.
+  const GOTO_INTO_DO_WHILE = graph(
+    [
       gateway('Gateway_p_1_1_t_1_join'),
       task('B'),
       gateway('Gateway_p_0_join'),
@@ -606,28 +570,20 @@ describe('cfg analysis', () => {
       task('A'),
       gateway('Gateway_p_1_1_t_1_split'),
       start('StartEvent_p'),
-    ];
-    const process = graph(
-      elements,
-      'Gateway_p_0_split>B? B>Gateway_p_1_1_t_1_split ' +
-        'Gateway_p_1_1_split>Gateway_p_1_1_join ' +
-        'Gateway_p_1_1_t_1_join>Gateway_p_1_1_join ' +
-        'Gateway_p_1_1_t_1_split>Gateway_p_1_1_t_1_join ' +
-        'Gateway_p_1_loop>EndEvent_p Gateway_p_1_loop>A? ' +
-        'C>Gateway_p_1_1_t_1_join Gateway_p_1_1_t_1_split>C? ' +
-        'Gateway_p_0_join>A StartEvent_p>Gateway_p_0_split ' +
-        'A>Gateway_p_1_1_split Gateway_p_1_1_join>Gateway_p_1_loop ' +
-        'Gateway_p_1_1_split>B? Gateway_p_0_split>Gateway_p_0_join',
-    );
-    expect(
-      analyzeCfg(process)
-        .backEdges()
-        .map((f) => f.id),
-    ).toEqual(['Flow_Gateway_p_1_loop_A']);
-  });
+    ],
+    'Gateway_p_0_split>B? B>Gateway_p_1_1_t_1_split ' +
+      'Gateway_p_1_1_split>Gateway_p_1_1_join ' +
+      'Gateway_p_1_1_t_1_join>Gateway_p_1_1_join ' +
+      'Gateway_p_1_1_t_1_split>Gateway_p_1_1_t_1_join ' +
+      'Gateway_p_1_loop>EndEvent_p Gateway_p_1_loop>A? ' +
+      'C>Gateway_p_1_1_t_1_join Gateway_p_1_1_t_1_split>C? ' +
+      'Gateway_p_0_join>A StartEvent_p>Gateway_p_0_split ' +
+      'A>Gateway_p_1_1_split Gateway_p_1_1_join>Gateway_p_1_loop ' +
+      'Gateway_p_1_1_split>B? Gateway_p_0_split>Gateway_p_0_join',
+  );
 
-  it("hasNaturalEntry counts only a flow from outside the cycle: in the element order below, the inner loop's own unconditioned back edge (A>B) would otherwise pass for the outer loop's outside entry and steal its back edge", () => {
-    const elements = [
+  const NESTED_LOOPS = graph(
+    [
       gateway('Gateway_p_1_loop'),
       task('B'),
       gateway('Gateway_p_1_1_loop'),
@@ -636,22 +592,81 @@ describe('cfg analysis', () => {
       task('A'),
       task('C'),
       start('StartEvent_p'),
-    ];
-    const process = graph(
-      elements,
-      'Gateway_p_1_loop>A? Gateway_p_1_1_loop>Gateway_p_1_loop ' +
-        'Gateway_p_1_1_loop>B? B>C Gateway_p_0_join>A ' +
-        'C>Gateway_p_1_1_loop Gateway_p_0_split>Gateway_p_0_join A>B ' +
-        'Gateway_p_1_loop>C Gateway_p_0_split>B? StartEvent_p>Gateway_p_0_split',
-    );
-    expect(
-      analyzeCfg(process)
-        .backEdges()
-        .map((f) => f.id),
-    ).toEqual([
-      'Flow_Gateway_p_1_loop_A',
-      'Flow_Gateway_p_1_1_loop_B',
-      'Flow_Gateway_p_1_loop_C',
-    ]);
+    ],
+    'Gateway_p_1_loop>A? Gateway_p_1_1_loop>Gateway_p_1_loop ' +
+      'Gateway_p_1_1_loop>B? B>C Gateway_p_0_join>A ' +
+      'C>Gateway_p_1_1_loop Gateway_p_0_split>Gateway_p_0_join A>B ' +
+      'Gateway_p_1_loop>C Gateway_p_0_split>B? StartEvent_p>Gateway_p_0_split',
+  );
+
+  it.each<
+    [
+      title: string,
+      process: BpmnProcess,
+      backEdges: string[],
+      jumpCycleHeads: string[],
+      ownLoopTests: [step: string, test: string][],
+    ]
+  >([
+    [
+      "a jump after a do-while lands on the same step its own nested if reaches: the jump closes the loop's exit route, not a nested test, and its head is that step, not the ifs' merge",
+      LIFDT_POST_C,
+      ['Flow_loop_A', 'Flow_loop_C'],
+      ['C'],
+      [['A', 'loop']],
+    ],
+    [
+      "the same jump behind a guard still closes the outer loop's exit route: the guard's own test is a cycle of jumps too, not a nested do-while on the guard",
+      LIFDT_POST_C_EXIT,
+      ['Flow_loop_A', 'Flow_guard_C'],
+      ['C'],
+      [['A', 'loop']],
+    ],
+    [
+      'an if jumping into a cycle of plain flow, the flow before it falling in elsewhere, is no do-while test when listed in statement order',
+      graph(JUMP_CYCLE_ELEMENTS, JUMP_CYCLE_EDGES),
+      ['Flow_C_A'],
+      [],
+      [],
+    ],
+    [
+      'the same if is no do-while test when listed with the jumped-to step first',
+      graph(JUMP_CYCLE_ELEMENTS.toReversed(), JUMP_CYCLE_EDGES),
+      ['Flow_C_A'],
+      [],
+      [],
+    ],
+    [
+      "a conditioned goto into a do-while body is no natural entry, so the loop's own test keeps its single back edge",
+      GOTO_INTO_DO_WHILE,
+      ['Flow_Gateway_p_1_loop_A'],
+      [],
+      [['A', 'Gateway_p_1_loop']],
+    ],
+    [
+      "hasNaturalEntry counts only a flow from outside the cycle: in the element order below, the inner loop's own unconditioned back edge (A>B) would otherwise pass for the outer loop's outside entry and steal its back edge",
+      NESTED_LOOPS,
+      [
+        'Flow_Gateway_p_1_loop_A',
+        'Flow_Gateway_p_1_1_loop_B',
+        'Flow_Gateway_p_1_loop_C',
+      ],
+      ['C'],
+      [
+        ['B', 'Gateway_p_1_1_loop'],
+        ['A', 'Gateway_p_1_loop'],
+      ],
+    ],
+  ])('%s', (_title, process, backEdges, jumpCycleHeads, ownLoopTests) => {
+    const cfg = analyzeCfg(process);
+    const ids = process.flowElements.map((e) => e.id);
+    expect({
+      backEdges: cfg.backEdges().map((f) => f.id),
+      jumpCycleHeads: ids.filter((id) => cfg.isJumpCycleHead(id)),
+      ownLoopTests: ids.flatMap((id) => {
+        const test = cfg.ownLoopTest(id);
+        return test === undefined ? [] : [[id, test]];
+      }),
+    }).toEqual({ backEdges, jumpCycleHeads, ownLoopTests });
   });
 });

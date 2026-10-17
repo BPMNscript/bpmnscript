@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { astToIr } from '../src/ast-to-ir.js';
+import { HISTORY_TIME_TO_LIVE } from '../src/ir-to-xml.js';
 import {
   makeDefaultFlowId,
   makeEventSubProcessId,
@@ -25,13 +26,19 @@ import {
   externalBinding,
   gateway,
   messageDef,
-  processIr,
+  processIr as bareProcessIr,
   scriptTask,
   scriptValue,
   signalDef,
   timerDef,
 } from './helpers/ir-fixtures.js';
 import { ir, parse } from './helpers/parse.js';
+
+// A script that sets no historyTimeToLive lowers to the exporter's default.
+const processIr = (...args: Parameters<typeof bareProcessIr>): BpmnProcess => ({
+  ...bareProcessIr(...args),
+  historyTimeToLive: HISTORY_TIME_TO_LIVE,
+});
 
 // Round trips pin valid lowering; this file keeps synthesized ids, fallbacks on rejected source and silent normalizations.
 
@@ -325,7 +332,7 @@ describe('astToIr: normalizations that print back unchanged', () => {
     );
   });
 
-  it('declares each used code first, minting a writable name for a code no name could spell', async () => {
+  it('declares each used code first, naming an undeclared code by its own text', async () => {
     await expectLowering(
       [
         [
@@ -339,7 +346,7 @@ describe('astToIr: normalizations that print back unchanged', () => {
         ],
         [
           'throw error("order.failed")',
-          { errorDecls: [{ name: 'order_failed', code: 'order.failed' }] },
+          { errorDecls: [{ name: 'order.failed', code: 'order.failed' }] },
         ],
         [
           'emit escalation(MR)',

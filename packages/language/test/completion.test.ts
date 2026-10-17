@@ -17,6 +17,7 @@ import {
   FORM_CONSTRAINT_TYPES,
   FORM_FIELD_TYPES,
   TRIGGER_PAYLOAD,
+  VALUE_DOCUMENTATION_KEYS,
 } from '@bpmn-script/language';
 import { BLOCK_HOSTS, caretInSlot } from './helpers/block-hosts.js';
 import { withTextMessages } from './helpers/diagnostics.js';
@@ -161,6 +162,12 @@ const TIMER_KEYS: Item[] = [
 ];
 
 const START: Item = ['start', CONSTRUCT, 'start ${1:name}'];
+
+const ELSE_FAIL: Item = [
+  'fail',
+  'stop the run with an error when no condition holds',
+  'fail',
+];
 
 const STATEMENTS: Item[] = [
   START,
@@ -404,7 +411,15 @@ const SERVICE_PARENS: Item[] = [
   ...ENGINE_SETTINGS,
 ];
 
-const REPEATED_SERVICE_PARENS: Item[] = [...SERVICE_PARENS, ...RUN_SETTINGS];
+const REPEATED_SERVICE_PARENS: Item[] = [
+  ...SERVICE_PARENS,
+  ...RUN_SETTINGS,
+  [
+    VALUE_DOCUMENTATION_KEYS.count,
+    SETTING,
+    `${VALUE_DOCUMENTATION_KEYS.count}: "\${1:documentation}"`,
+  ],
+];
 
 const CALL_PARENS: Item[] = [
   LABEL,
@@ -469,6 +484,13 @@ const ESCALATION_HANDLER_PARENS: Item[] = [
 const DECLARATION_FIELDS: Item[] = [
   ['code', SETTING, 'code: "${1:code}"'],
   ['message', SETTING, 'message: "${1:message}"'],
+];
+
+const DECLARED_ERROR: Item = [
+  'PAYMENT_DECLINED',
+  'CodeDecl',
+  'PAYMENT_DECLINED',
+  CompletionItemKind.Reference,
 ];
 
 const SETTING_VALUE = 'BPMNscript setting value';
@@ -647,11 +669,11 @@ describe('the completions offered at a caret', () => {
     // `Decoy` (another process) and `Inner` (a nested body) are named
     // statements the scope keeps out.
     [
-      "the host position offers the container's activities and nothing from another scope",
-      'process p {\n  user Review\n  service Ship\n  subprocess Sub {\n    user Inner\n  }\n  on |\n}\nprocess q { user Decoy }',
+      "the host position offers the container's activities, one in backticks as written, and nothing from another scope",
+      'process p {\n  user Review\n  service `Ship.1`\n  subprocess Sub {\n    user Inner\n  }\n  on |\n}\nprocess q { user Decoy }',
       [
         ['Review', 'UserTask', 'Review', CompletionItemKind.Reference],
-        ['Ship', 'ServiceTask', 'Ship', CompletionItemKind.Reference],
+        ['`Ship.1`', 'ServiceTask', '`Ship.1`', CompletionItemKind.Reference],
         ['Sub', 'SubProcess', 'Sub', CompletionItemKind.Reference],
         ...ON_TRIGGERS,
       ],
@@ -855,6 +877,16 @@ describe('the completions offered at a caret', () => {
         ['any', KEYWORD, 'any'],
       ],
     ],
+    [
+      "the word after an 'if' chain's 'else' offers 'fail' beside 'else if'",
+      'process p {\n  var a: boolean\n  if (a) {\n    user A\n  } else |\n}',
+      [ELSE_FAIL],
+    ],
+    [
+      "the word after a 'parallel' block's last branch offers 'fail' after 'else'",
+      'process p {\n  var a: boolean\n  parallel {\n    if (a) {\n      user A\n    }\n    if (!a) {\n      user B\n    }\n    else |\n  }\n}',
+      [ELSE_FAIL],
+    ],
     // The scope keeps the declared codes out of an expression's offer.
     [
       'an expression position offers no code declaration, only the literal words',
@@ -864,52 +896,24 @@ describe('the completions offered at a caret', () => {
     [
       'a code position offers the declared codes of its own kind and nothing else',
       'process p {\n  error PAYMENT_DECLINED(message: "x")\n  escalation PAYMENT_REVIEW\n  throw error(PAY|)\n}',
-      [
-        [
-          'PAYMENT_DECLINED',
-          'CodeDecl',
-          'PAYMENT_DECLINED',
-          CompletionItemKind.Reference,
-        ],
-      ],
+      [DECLARED_ERROR],
     ],
     [
       "a mapping's code slot offers the declared errors and nothing else",
       'process p {\n  error PAYMENT_DECLINED(message: "x")\n  escalation PAYMENT_REVIEW\n  service S(topic: "t") {\n    error PAY| when "${x}"\n  }\n}',
-      [
-        [
-          'PAYMENT_DECLINED',
-          'CodeDecl',
-          'PAYMENT_DECLINED',
-          CompletionItemKind.Reference,
-        ],
-      ],
+      [DECLARED_ERROR],
     ],
     // With nothing after the head word the mapping does not parse.
     [
       "a mapping's code slot offers the declared errors before the rest of the line is written",
       'process p {\n  error PAYMENT_DECLINED(message: "x")\n  escalation PAYMENT_REVIEW\n  service S(topic: "t") {\n    error |\n  }\n}',
-      [
-        [
-          'PAYMENT_DECLINED',
-          'CodeDecl',
-          'PAYMENT_DECLINED',
-          CompletionItemKind.Reference,
-        ],
-      ],
+      [DECLARED_ERROR],
     ],
     // The caret's node is the preceding member, not the service task.
     [
       "a mapping's code slot offers the declared errors after a preceding member too",
       'process p {\n  error PAYMENT_DECLINED(message: "x")\n  escalation PAYMENT_REVIEW\n  service S(topic: "t") {\n    property k = "v"\n    error |\n  }\n}',
-      [
-        [
-          'PAYMENT_DECLINED',
-          'CodeDecl',
-          'PAYMENT_DECLINED',
-          CompletionItemKind.Reference,
-        ],
-      ],
+      [DECLARED_ERROR],
     ],
     [
       'a class-bound service block offers no code at the head word, since it maps nothing',
@@ -1312,7 +1316,7 @@ describe('offered is a subset of accepted', () => {
       'a timer handler offers settings and the flag after its duration',
       (x) =>
         `process p {\n  start S\n  on timer("PT1H", ${x}) {\n    end Late\n  }\n}`,
-      [...ENGINE_KEYS, ALONGSIDE[0]],
+      [...ENGINE_KEYS, VALUE_DOCUMENTATION_KEYS.timer, ALONGSIDE[0]],
     ],
     [
       'a condition handler offers the boolean words at its open payload',
@@ -1324,7 +1328,7 @@ describe('offered is a subset of accepted', () => {
       'a condition handler offers settings and the flag after its condition',
       (x) =>
         `process p {\n  var x: number\n  start S\n  on condition(x > 1, ${x}) {\n    end E\n  }\n}`,
-      [...ENGINE_KEYS, ALONGSIDE[0]],
+      [...ENGINE_KEYS, VALUE_DOCUMENTATION_KEYS.condition, ALONGSIDE[0]],
     ],
     [
       'a message handler offers nothing before its name is written',
@@ -1363,6 +1367,47 @@ describe('offered is a subset of accepted', () => {
       (x) =>
         `process p {\n  var a: boolean\n  if (a) (${x}) {\n    user A\n  }\n}`,
       labels(SPLIT_AND_JOIN_PARENS),
+    ],
+    [
+      "an if condition's parentheses offer its documentation key alone",
+      (x) =>
+        `process p {\n  var a: boolean\n  if (a, ${x}) {\n    user A\n  }\n}`,
+      [VALUE_DOCUMENTATION_KEYS.condition],
+    ],
+    [
+      'a partly typed key after an if condition still offers its documentation key',
+      (x) =>
+        `process p {\n  var a: boolean\n  if (a, ${x === '|' ? 'd|' : x}) {\n    user A\n  }\n}`,
+      [VALUE_DOCUMENTATION_KEYS.condition],
+    ],
+    [
+      "a while condition's parentheses offer its documentation key alone",
+      (x) =>
+        `process p {\n  var a: boolean\n  while (a, ${x}) {\n    user A\n  }\n}`,
+      [VALUE_DOCUMENTATION_KEYS.condition],
+    ],
+    [
+      "a do-while condition's parentheses offer its documentation key alone",
+      (x) =>
+        `process p {\n  var a: boolean\n  do {\n    user A\n  } while (a, ${x})\n}`,
+      [VALUE_DOCUMENTATION_KEYS.condition],
+    ],
+    [
+      "a parallel branch condition's parentheses offer its documentation key alone",
+      (x) =>
+        `process p {\n  var a: boolean\n  parallel {\n    if (a, ${x}) {\n      user A\n    }\n    else {\n      user B\n    }\n  }\n}`,
+      [VALUE_DOCUMENTATION_KEYS.condition],
+    ],
+    [
+      "a completion condition's parentheses offer its documentation key alone",
+      (x) => `process p {\n  var a: boolean\n  user R for 3 until (a, ${x})\n}`,
+      [VALUE_DOCUMENTATION_KEYS.condition],
+    ],
+    [
+      'a written condition documentation is not offered again',
+      (x) =>
+        `process p {\n  var a: boolean\n  if (a, conditionDocumentation: "d", ${x}) {\n    user A\n  }\n}`,
+      [],
     ],
     [
       'a version pin on a user task offers its two words',

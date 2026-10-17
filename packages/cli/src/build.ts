@@ -17,9 +17,12 @@ import {
   CLI_VERSION,
   type CommandOptions,
   buildDocument,
+  diagnosticsOf,
   fail,
+  failInternal,
   formatDiagnostic,
   guardOutputPath,
+  indentNotes,
   resolveInputPath,
   resolveOutputPath,
   warn,
@@ -38,8 +41,8 @@ export async function buildAction(
   if (!extensions.includes(path.extname(resolvedInput))) {
     fail(
       2,
-      `Error: expected a file with one of these extensions: ${extensions.join(', ')}; ` +
-        'a .bpmn file is decompiled with `bpmns parse`',
+      `Error: expected a file with one of these extensions: ${extensions.join(', ')}\n` +
+        "  help: decompile a .bpmn file with 'bpmns parse'",
     );
   }
 
@@ -53,9 +56,7 @@ export async function buildAction(
     fail(2, `Error: failed to parse ${fileName}: ${(err as Error).message}`);
   }
 
-  const errors = (document.diagnostics ?? []).filter(
-    (d) => d.severity === DiagnosticSeverity.Error,
-  );
+  const errors = diagnosticsOf(document, DiagnosticSeverity.Error);
   if (errors.length > 0) {
     console.error(chalk.red('Validation errors:'));
     for (const diag of errors) {
@@ -68,12 +69,9 @@ export async function buildAction(
   const ast = document.parseResult.value as Model;
   if (ast.processes.length === 0) fail(1, `Error: ${NO_PROCESS_MESSAGE}`);
 
-  const warnings = (document.diagnostics ?? []).filter(
-    (d) => d.severity === DiagnosticSeverity.Warning,
-  );
-  for (const diag of warnings) {
+  for (const diag of diagnosticsOf(document, DiagnosticSeverity.Warning)) {
     warn(
-      `Warning: line ${diag.range.start.line + 1}: ${Diagnostic.getMessageString(diag)}`,
+      `Warning: line ${diag.range.start.line + 1}: ${indentNotes(Diagnostic.getMessageString(diag))}`,
     );
   }
 
@@ -81,20 +79,20 @@ export async function buildAction(
   try {
     ir = astToIr(ast);
   } catch (err) {
-    fail(1, `Error: ${(err as Error).message}`);
+    failInternal(err);
   }
 
   let xml: string;
   try {
     xml = await irToXml(ir, { exporterVersion: CLI_VERSION });
   } catch (err) {
-    if (!(err instanceof LayoutError)) {
-      fail(1, `Error: ${(err as Error).message}`);
-    }
+    if (!(err instanceof LayoutError)) failInternal(err);
     // Operaton deploys the document without a diagram.
     xml = err.xml;
     warn(
-      `Warning: no diagram could be drawn for this process (${err.message}); the file deploys but opens without shapes in a modeler`,
+      'Warning: no diagram could be drawn for this process\n' +
+        `  note: ${err.message}\n` +
+        '  note: the file deploys, but opens without shapes in a modeler',
     );
   }
 

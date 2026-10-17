@@ -17,7 +17,7 @@ import {
   UnsupportedEventFeatureError,
 } from '@bpmn-script/transform';
 
-import { runBuild, runParse, expectMentions } from './helpers/actions.js';
+import { runBuild, runParse } from './helpers/actions.js';
 
 const REPO_ROOT = fileURLToPath(new URL('../../..', import.meta.url));
 
@@ -87,19 +87,23 @@ describe('decompile contract on the fixtures', () => {
     ]);
 
     const parsed = await runParse({ file: LANES_AND_ASYNC_BPMN });
-    expect(parsed.exit).toBeUndefined();
-    expect(
-      parsed.stderr.map((line) => /^Warning: ([^:]+): /.exec(line)?.[1]),
-    ).toEqual(['Lane_Ops', 'ReviewRequest']);
-    expectMentions(parsed.stderr.join('\n'), ['operaton:properties']);
+    expect(parsed).toEqual({
+      exit: undefined,
+      stderr: [
+        "Warning: lane 'Operations' (Lane_Ops) was not imported\n" +
+          '  note: every step is placed in a single flat process',
+        "Warning: 'operaton:properties' on 'ReviewRequest' was not imported\n" +
+          "  note: BPMNscript reads no such setting on a 'bpmn:userTask'\n" +
+          '  note: the rebuilt document carries none',
+      ],
+      output: `process lanes-and-async {
+  start ReviewStart
+  user ReviewRequest(label: "Review request", assignee: "demo", asyncBefore: true)
+  end ReviewDone
+}
+`,
+    });
     const dsl = parsed.output!;
-    expectMentions(dsl, [
-      'process lanes-and-async',
-      'start ReviewStart',
-      'user ReviewRequest',
-      'assignee: "demo"',
-      'end ReviewDone',
-    ]);
 
     const { document, diagnostics } = await validate(dsl);
     expect(document.parseResult.parserErrors).toHaveLength(0);
@@ -122,11 +126,16 @@ describe('decompile contract on the fixtures', () => {
 
     // 1 means unsupported construct; 2 would mean I/O or generic failure.
     const run = await runParse({ file: ERROR_START_BPMN });
-    expect(run.exit).toBe(1);
-    expect(run.output).toBeUndefined();
-    const stderr = run.stderr.join('\n');
-    expectMentions(stderr, ['ShipmentFailed', "Catch it with 'on error'"]);
-    assertNoForbiddenJargon(stderr);
+    expect(run).toEqual({
+      exit: 1,
+      stderr: [
+        `Error: ${ERROR_START_BPMN}: element 'ShipmentFailed' cannot be imported: a process cannot start on an error\n` +
+          '  note: Operaton ignores the trigger and starts the process as if none were written\n' +
+          '  note: importing it would write back a document the engine runs differently from what it says\n' +
+          "  help: catch it with 'on error' inside the scope that raises it",
+      ],
+      output: undefined,
+    });
   });
 });
 
@@ -139,51 +148,52 @@ describe('decompile contract: the script it hands back goes through the pipeline
       "a modelling tool's default ids keep their statements and labels",
       'StartEvent_1',
       'EndEvent_1',
-      [
-        'start StartEvent_1(label: "Order received")',
-        'end EndEvent_1(label: "Order filed")',
-      ],
+      `process generated-id-labels {
+  start StartEvent_1(label: "Order received")
+  user Approve
+  end EndEvent_1(label: "Order filed")
+}
+`,
       [],
-      0,
+      [],
     ],
     [
       'the start id this tool generates for the process drops its statement and label, but a like-named end keeps both and is refused on the name alone',
       'StartEvent_generated-id-labels',
       'EndEvent_generated-id-labels',
-      ['end EndEvent_generated-id-labels(label: "Order filed")'],
-      ['StartEvent_generated-id-labels'],
-      1,
+      `process generated-id-labels {
+  user Approve
+  end EndEvent_generated-id-labels(label: "Order filed")
+}
+`,
+      [
+        "label 'Order received' on 'StartEvent_generated-id-labels' was not written to the script\n" +
+          "note: 'StartEvent_generated-id-labels' is the kind of name BPMNscript generates for itself, which a script cannot repeat\n" +
+          'note: this start is left out entirely, and its label with it\n' +
+          'help: rename it in the diagram to keep the label',
+      ],
+      [
+        "statement name 'EndEvent_generated-id-labels' is the id generated for the implicit end event of 'generated-id-labels'\n" +
+          'help: choose another name',
+      ],
     ],
   ])(
     'the DSL produced from a diagram where %s',
-    async (
-      _title,
-      startId,
-      endId,
-      printedLines,
-      warnedIds,
-      diagnosticCount,
-    ) => {
+    async (_title, startId, endId, printed, labelWarnings, errors) => {
       const { ir, warnings } = await xmlToIr(
         labeledTerminalsBpmn(startId, endId),
       );
       const dsl = irToDsl(ir).source;
+      expect(dsl).toBe(printed);
+      expect(
+        warnings.filter((w) => w.category === 'label').map((w) => w.message),
+      ).toEqual(labelWarnings);
 
       const { document, diagnostics } = await validate(dsl);
       expect(document.parseResult.parserErrors).toHaveLength(0);
-      expect(diagnostics).toHaveLength(diagnosticCount);
       expect(
-        dsl.split('\n').filter((line) => /^\s+(start|end) /.test(line)),
-      ).toEqual(printedLines.map((line) => `  ${line}`));
-
-      const labelWarnings = warnings.filter((w) => w.category === 'label');
-      expect(labelWarnings.map((w) => w.elementId)).toEqual(warnedIds);
-      for (const w of labelWarnings) {
-        expect(w.message).toContain(
-          w.elementId === startId ? 'Order received' : 'Order filed',
-        );
-        assertNoForbiddenJargon(w.message);
-      }
+        diagnostics.map((d) => [d.severity, Diagnostic.getMessageString(d)]),
+      ).toEqual(errors.map((message) => [1, message]));
     },
   );
 });
@@ -215,7 +225,8 @@ process Second {
       diagnostics.map((d) => Diagnostic.getMessageString(d)).sort(),
     ).toEqual(
       [
-        'Only one process is supported per file. Move additional processes into separate files.',
+        'only one process is supported per file\n' +
+          'help: move additional processes into separate files',
         intoBranchMessage('goto A', 'goto', 'parallel'),
       ].sort(),
     );

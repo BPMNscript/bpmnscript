@@ -5,19 +5,33 @@ import chalk from 'chalk';
 import type { LangiumDocument } from 'langium';
 import { URI } from 'langium';
 import { NodeFileSystem } from 'langium/node';
-import { createBpmnScriptServices, Diagnostic } from '@bpmn-script/language';
+import {
+  createBpmnScriptServices,
+  Diagnostic,
+  DiagnosticSeverity,
+} from '@bpmn-script/language';
 
 export function fail(code: number, message: string): never {
   console.error(chalk.red(message));
   process.exit(code);
 }
 
+/** Exit 3: an unexpected exception in a transform, as opposed to bad input. */
+export function failInternal(err: unknown): never {
+  fail(3, `Error: internal error (a bug in bpmns): ${(err as Error).message}`);
+}
+
 export function warn(message: string): void {
   console.error(chalk.yellow(message));
 }
 
+/** Indents a message's note and help lines under its headline. */
+export function indentNotes(message: string): string {
+  return message.replaceAll('\n', '\n  ');
+}
+
 // One level below the package root in both `out/` and `src/`.
-export const CLI_VERSION: string = (
+export const CLI_VERSION = (
   JSON.parse(
     readFileSync(new URL('../package.json', import.meta.url), 'utf-8'),
   ) as { version: string }
@@ -62,7 +76,8 @@ export function guardOutputPath(
   if (!opts.force && existsSync(outPath)) {
     fail(
       2,
-      `Error: ${outPath} exists; pass --force to overwrite it or -o for another path`,
+      `Error: ${outPath} exists\n` +
+        "  help: pass '--force' to overwrite it, or '-o' for another path",
     );
   }
 }
@@ -96,12 +111,22 @@ export async function buildDocument(
   return document;
 }
 
+export function diagnosticsOf(
+  document: LangiumDocument,
+  severity: DiagnosticSeverity,
+): Diagnostic[] {
+  return (document.diagnostics ?? []).filter((d) => d.severity === severity);
+}
+
 export function formatDiagnostic(
   document: LangiumDocument,
   diagnostic: Diagnostic,
 ): string {
-  return (
-    `  line ${diagnostic.range.start.line + 1}: ${Diagnostic.getMessageString(diagnostic)}` +
-    ` [${document.textDocument.getText(diagnostic.range)}]`
-  );
+  const [headline, ...notes] =
+    Diagnostic.getMessageString(diagnostic).split('\n');
+  return [
+    `  line ${diagnostic.range.start.line + 1}: ${headline}` +
+      ` [${document.textDocument.getText(diagnostic.range)}]`,
+    ...notes.map((note) => `    ${note}`),
+  ].join('\n');
 }

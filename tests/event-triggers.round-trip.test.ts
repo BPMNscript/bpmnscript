@@ -130,10 +130,28 @@ describeImportFirst(
   IMPORT_FIRST_BPMN,
   (first) => {
     it('recovers each trigger payload into the DSL, both broadcasts on the one signal', () => {
-      expect(first.dsl).toContain('emit signal Broadcast("ParcelDispatched")');
-      expect(first.dsl).toContain('throw signal Done("ParcelDispatched")');
-      expect(first.dsl).toContain('on timer(at: "2026-09-01T08:00:00") {');
-      expect(first.dsl).toContain('on condition(stockLevel < 5) {');
+      expect(first.dsl).toBe(
+        [
+          'process parcel-tracking {',
+          '  var stockLevel: any',
+          '  start Begin',
+          '  service Dispatch(label: "Send the parcel out", class: "com.example.DispatchDelegate")',
+          '  emit signal Broadcast("ParcelDispatched")',
+          '  throw signal Done("ParcelDispatched")',
+          '  on condition(stockLevel < 5) {',
+          '    start LowStock',
+          '    service Reorder(label: "Reorder the item", class: "com.example.ReorderDelegate")',
+          '    end Reordered',
+          '  }',
+          '  on timer(at: "2026-09-01T08:00:00") {',
+          '    start Deadline',
+          '    service Chase(label: "Chase the courier", class: "com.example.ChaseDelegate")',
+          '    end Chased',
+          '  }',
+          '}',
+          '',
+        ].join('\n'),
+      );
       const signal = { kind: 'signal', signalName: 'ParcelDispatched' };
       expect(definitionOf(first.ir, 'Broadcast')).toEqual(signal);
       expect(definitionOf(first.ir, 'Done')).toEqual(signal);
